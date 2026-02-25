@@ -1,0 +1,66 @@
+name: .NET Core Desktop
+
+on:
+  push:
+    tags:
+      - "v*" # v1.0.0, v1.0.1 등 태그 푸시 시 실행
+  workflow_dispatch: # 수동 실행 가능
+
+permissions:
+  contents: write # 릴리스 생성을 위한 권한 필요
+
+jobs:
+  build-and-release:
+
+    runs-on: windows-latest  # WPF requires Windows runner
+
+    env:
+      Solution_Name: TradingBot.sln
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install .NET Core
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 9.0.x
+
+    - name: Install Velopack Tool
+      run: dotnet tool install -g vpk
+
+    - name: Publish Application
+      run: dotnet publish TradingBot/TradingBot.csproj -c Release -r win-x64 --self-contained -o ./publish
+
+    - name: Pack with Velopack
+      shell: pwsh
+      run: |
+        # 태그에서 버전 추출 (예: v1.0.0 -> 1.0.0)
+        $version = "${{ github.ref_name }}".TrimStart('v')
+        echo "Packaging version: $version"
+        vpk pack -u TradingBot -v $version -p ./publish -e TradingBot.exe
+
+    - name: Create GitHub Release
+      id: create_release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: |
+          Releases/Setup.exe
+          Releases/*.nupkg
+          Releases/RELEASES
+          Releases/assets.json
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Notify Success via Telegram
+      if: success()
+      run: |
+        curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} -d text="✅ 배포 성공: ${{ github.repository }} (${{ github.ref_name }})%0A%0A다운로드: ${{ steps.create_release.outputs.html_url }}"
+
+    - name: Notify Failure via Telegram
+      if: failure()
+      run: |
+        curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} -d text="❌ 배포 실패: ${{ github.repository }} (${{ github.ref_name }})"

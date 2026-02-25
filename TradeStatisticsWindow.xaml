@@ -1,0 +1,53 @@
+<Window x:Class="TradingBot.TradeStatisticsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:lvc="clr-namespace:LiveCharts.Wpf;assembly=LiveCharts.Wpf"
+        Title="매매 통계 분석" Height="650" Width="1000" WindowStartupLocation="CenterOwner">
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- 요약 정보 -->
+        <Border Grid.Row="0" Background="#F1F5F9" Padding="15" CornerRadius="8" Margin="0,0,0,15">
+            <TextBlock Text="{Binding SummaryText}" FontSize="16" FontWeight="Bold" Foreground="#1E293B" HorizontalAlignment="Center"/>
+        </Border>
+
+        <!-- 상단: 승률 및 누적 수익 -->
+        <Grid Grid.Row="1" Margin="0,0,0,15">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1*"/>
+                <ColumnDefinition Width="2*"/>
+            </Grid.ColumnDefinitions>
+
+            <GroupBox Header="승률 (Win Rate)" Margin="0,0,10,0" Padding="10">
+                <lvc:PieChart Series="{Binding WinRateSeries}" LegendLocation="Right" InnerRadius="40" Hoverable="True"/>
+            </GroupBox>
+
+            <GroupBox Header="누적 수익 곡선 (Cumulative PnL)" Grid.Column="1" Padding="10">
+                <lvc:CartesianChart Series="{Binding CumulativeProfitSeries}" LegendLocation="None">
+                    <lvc:CartesianChart.AxisX>
+                        <lvc:Axis Labels="{Binding TradeLabels}" ShowLabels="False"/>
+                    </lvc:CartesianChart.AxisX>
+                    <lvc:CartesianChart.AxisY>
+                        <lvc:Axis Title="Profit ($)" LabelFormatter="{Binding CurrencyFormatter}"/>
+                    </lvc:CartesianChart.AxisY>
+                </lvc:CartesianChart>
+            </GroupBox>
+        </Grid>
+
+        <!-- 하단: 시간대별 수익 -->
+        <GroupBox Header="시간대별 수익 현황 (Hourly Profit Analysis)" Grid.Row="2" Padding="10">
+            <lvc:CartesianChart Series="{Binding HourlyProfitSeries}" LegendLocation="None">
+                <lvc:CartesianChart.AxisX>
+                    <lvc:Axis Labels="{Binding HourlyLabels}" Title="Hour (0 ~ 23)"/>
+                </lvc:CartesianChart.AxisX>
+                <lvc:CartesianChart.AxisY>
+                    <lvc:Axis Title="Profit ($)" LabelFormatter="{Binding CurrencyFormatter}"/>
+                </lvc:CartesianChart.AxisY>
+            </lvc:CartesianChart>
+        </GroupBox>
+    </Grid>
+</Window>

@@ -1,0 +1,59 @@
+<Window x:Class="TradingBot.SignUpWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Sign Up" Height="700" Width="400" WindowStartupLocation="CenterScreen" ResizeMode="NoResize">
+    <Grid Background="#1E1E1E">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel VerticalAlignment="Center" Margin="30">
+                <TextBlock Text="CREATE ACCOUNT" Foreground="White" FontSize="20" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,20"/>
+
+                <TextBlock Text="Username" Foreground="Gray"/>
+                <TextBox x:Name="txtUser" Height="25" Background="#2D2D2D" Foreground="White" BorderThickness="0" Margin="0,0,0,2" TextChanged="txtUser_TextChanged"/>
+                <TextBlock x:Name="lblUserFeedback" FontSize="10" Margin="0,0,0,10"/>
+
+                <TextBlock Text="Email" Foreground="Gray"/>
+                <Grid Margin="0,0,0,2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="txtEmail" Grid.Column="0" Height="25" Background="#2D2D2D" Foreground="White" BorderThickness="0" TextChanged="txtEmail_TextChanged"/>
+                    <Button x:Name="btnVerifyEmail" Grid.Column="1" Content="Verify" Width="60" Height="25" Margin="5,0,0,0" Background="#333" Foreground="White" BorderThickness="0" Click="btnVerifyEmail_Click"/>
+                </Grid>
+                <TextBlock x:Name="lblEmailFeedback" FontSize="10" Margin="0,0,0,10"/>
+
+                <TextBlock Text="Verification Code" Foreground="Gray" x:Name="lblCode" Visibility="Collapsed"/>
+                <TextBox x:Name="txtCode" Height="25" Background="#2D2D2D" Foreground="White" BorderThickness="0" Margin="0,0,0,10" Visibility="Collapsed"/>
+
+                <TextBlock Text="Password" Foreground="Gray"/>
+                <PasswordBox x:Name="txtPass" Height="25" Background="#2D2D2D" Foreground="White" BorderThickness="0" Margin="0,0,0,10"/>
+
+                <TextBlock Text="Binance API Key" Foreground="#00E676" Margin="0,10,0,0"/>
+                <PasswordBox x:Name="txtApiKey" Height="25" Background="#2D2D2D" Foreground="White" BorderThickness="0" Margin="0,0,0,5"/>
+
+                <TextBlock Text="Binance Secret Key" Foreground="#00E676"/>
+                <PasswordBox x:Name="txtSecretKey" Height="25" Background="#2D2D2D" Foreground="White" BorderThickness="0" Margin="0,0,0,10"/>
+
+                <TextBlock Text="Bybit API Key" Foreground="#FFB11A" Margin="0,5,0,0"/>
+                <PasswordBox x:Name="txtBybitKey" Height="25" Background="#2D2D2D" Foreground="White" BorderThickness="0" Margin="0,0,0,5"/>
+                <TextBlock Text="Bybit Secret Key" Foreground="#FFB11A"/>
+                <PasswordBox x:Name="txtBybitSecret" Height="25" Background="#2D2D2D" Foreground="White" BorderThickness="0" Margin="0,0,0,10"/>
+
+                <TextBlock Text="Bitget API Key" Foreground="#00F0FF" Margin="0,5,0,0"/>
+                <PasswordBox x:Name="txtBitgetKey" Height="25" Background="#2D2D2D" Foreground="White" BorderThickness="0" Margin="0,0,0,5"/>
+                <TextBlock Text="Bitget Secret Key" Foreground="#00F0FF"/>
+                <PasswordBox x:Name="txtBitgetSecret" Height="25" Background="#2D2D2D" Foreground="White" BorderThickness="0" Margin="0,0,0,10"/>
+                <TextBlock Text="Bitget Passphrase" Foreground="#00F0FF"/>
+                <PasswordBox x:Name="txtBitgetPassphrase" Height="25" Background="#2D2D2D" Foreground="White" BorderThickness="0" Margin="0,0,0,10"/>
+
+                <TextBlock Text="Telegram Chat ID" Foreground="#2196F3" Margin="0,5,0,0"/>
+                <TextBox x:Name="txtChatId" Height="25" Background="#2D2D2D" Foreground="White" BorderThickness="0" Margin="0,0,0,5"/>
+
+                <TextBlock Text="Telegram Bot Token" Foreground="#2196F3"/>
+                <TextBox x:Name="txtBotToken" Height="25" Background="#2D2D2D" Foreground="White" BorderThickness="0" Margin="0,0,0,20"/>
+
+                <Button x:Name="btnRegister" Content="REGISTER" Height="40" Background="#00E676" Foreground="Black" FontWeight="Bold" BorderThickness="0" Click="btnRegister_Click"/>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Window>
