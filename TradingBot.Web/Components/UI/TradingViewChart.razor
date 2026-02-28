@@ -1,0 +1,25 @@
+@inject IJSRuntime JSRuntime
+@implements IAsyncDisposable
+
+<div @ref="chartContainer" style="width: 100%; height: 400px;"></div>
+
+@code {
+    private ElementReference chartContainer;
+    private IJSObjectReference? chartModule;
+
+    [Parameter] public List<TradingBot.Shared.Models.CandleModel> Data { get; set; } = new();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // JS에서 차트 초기화
+            await JSRuntime.InvokeVoidAsync("initChart", chartContainer, Data);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        // 리소스 정리 필요 시
+    }
+}

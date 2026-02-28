@@ -1,0 +1,220 @@
+﻿@page "/"
+@using TradingBot.Web.Services
+@using TradingBot.Shared.Models
+@using TradingBot.Web.Components.UI
+@using System.Text.Json
+@implements IDisposable
+@inject DashboardService DashboardService
+
+<PageTitle>TradingBot Dashboard</PageTitle>
+
+<div class="container-fluid bg-dark text-light min-vh-100 p-4">
+    <h1 class="mb-4">Trading Dashboard</h1>
+
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card bg-secondary text-white shadow-sm">
+                <div class="card-body">
+                    <h5 class="card-title text-uppercase small">Total PnL</h5>
+                    <h2 class="@(totalPnL >= 0 ? "text-success" : "text-danger")">
+                        @totalPnL.ToString("F2") USDT
+                    </h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-secondary text-white shadow-sm">
+                <div class="card-body">
+                    <h5 class="card-title text-uppercase small">Recent Trade Success</h5>
+                    <h2>@successRate.ToString("P1")</h2>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card bg-secondary text-white shadow-sm">
+                <div class="card-header bg-dark">
+                    <h5 class="mb-0">Active Positions (@activePositions.Count)</h5>
+                </div>
+                <div class="card-body p-0">
+                    <table class="table table-dark table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Side</th>
+                                <th>Entry</th>
+                                <th>ROE %</th>
+                                <th>Unrealized PnL</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var pos in activePositions)
+                            {
+                                <tr>
+                                    <td>@pos.Symbol</td>
+                                    <td>
+                                        <span class="badge @(pos.Quantity > 0 ? "bg-primary" : "bg-danger")">
+                                            @(pos.Quantity > 0 ? "LONG" : "SHORT") x@pos.Leverage
+                                        </span>
+                                    </td>
+                                    <td>@pos.EntryPrice.ToString("F4")</td>
+                                    <td class="@(pos.Roe >= 0 ? "text-success" : "text-danger")">@pos.Roe.ToString("F2")%</td>
+                                    <td class="@(pos.UnrealizedPnL >= 0 ? "text-success" : "text-danger")">@pos.UnrealizedPnL.ToString("F2")</td>
+                                    <td>
+                                        @if (pos.Symbol != null)
+                                        {
+                                            <button class="btn btn-sm btn-danger" @onclick="() => ClosePosition(pos.Symbol)">Close</button>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-8">
+            <div class="card bg-secondary text-white shadow-sm mb-4">
+                <div class="card-header bg-dark border-secondary">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="d-flex align-items-center">
+                            <h5 class="mb-0 me-3">Live Chart:</h5>
+                            <select class="form-select form-select-sm bg-dark text-white border-secondary w-auto" 
+                                    @bind="selectedSymbol" @bind:after="OnSymbolChanged">
+                                @foreach (var sym in availableSymbols)
+                                {
+                                    <option value="@sym">@sym</option>
+                                }
+                            </select>
+                        </div>
+                        <button class="btn btn-sm btn-outline-info" @onclick="RefreshData">Refresh</button>
+                    </div>
+                </div>
+                <div class="card-body p-0">
+                    @if (candles != null && candles.Any())
+                    {
+                        <TradingViewChart @key="selectedSymbol" Data="candles" />
+                    }
+                    else
+                    {
+                        <div class="p-5 text-center">Loading chart data for @selectedSymbol...</div>
+                    }
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card bg-secondary text-white shadow-sm">
+                <div class="card-header bg-dark border-secondary">
+                    <h5 class="mb-0">Recent Trade Logs</h5>
+                </div>
+                <div class="card-body p-0 overflow-auto" style="max-height: 400px;">
+                    <table class="table table-dark table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Side</th>
+                                <th>PnL</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var log in recentLogs)
+                            {
+                                <tr>
+                                    <td>@log.Symbol</td>
+                                    <td class="@(log.Side == "BUY" ? "text-primary" : "text-danger")">@log.Side</td>
+                                    <td class="@(log.PnL >= 0 ? "text-success" : "text-danger")">@log.PnL.ToString("F2")</td>
+                                    <td class="small">@log.Time.ToString("HH:mm:ss")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private List<TradeLog> recentLogs = new();
+    private List<CandleModel> candles = new();
+    private List<PositionInfo> activePositions = new();
+    private List<string> availableSymbols = new() { "BTCUSDT" };
+    private string selectedSymbol = "BTCUSDT";
+    private decimal totalPnL;
+    private double successRate;
+    private System.Threading.Timer? _timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        availableSymbols = await DashboardService.GetAvailableSymbolsAsync();
+        if (!availableSymbols.Contains(selectedSymbol) && availableSymbols.Any())
+        {
+            selectedSymbol = availableSymbols.First();
+        }
+        
+        await RefreshData();
+        _timer = new System.Threading.Timer(async _ => 
+        {
+            await InvokeAsync(async () => 
+            {
+                await RefreshData();
+                StateHasChanged();
+            });
+        }, null, 5000, 5000);
+    }
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+    }
+
+    private async Task OnSymbolChanged()
+    {
+        candles = await DashboardService.GetCandleDataAsync(selectedSymbol, 100);
+    }
+
+    private async Task RefreshData()
+    {
+        try
+        {
+            recentLogs = await DashboardService.GetRecentTradeLogsAsync(10);
+            totalPnL = await DashboardService.GetTotalPnLAsync();
+            candles = await DashboardService.GetCandleDataAsync(selectedSymbol, 100);
+            activePositions = await DashboardService.GetActivePositionsAsync();
+
+            if (recentLogs.Any())
+            {
+                var wins = recentLogs.Count(l => l.PnL > 0);
+                successRate = (double)wins / recentLogs.Count;
+            }
+        }
+        catch (Exception)
+        {
+            // Handle error
+        }
+    }
+
+    private async Task ClosePosition(string symbol)
+    {
+        if (await DashboardService.ClosePositionAsync(symbol))
+        {
+            await RefreshData();
+        }
+    }
+}
+
+<style>
+    body { background-color: #121212 !important; }
+    .card { border: none !important; }
+    .bg-dark { background-color: #1a1a1a !important; }
+    .bg-secondary { background-color: #242424 !important; }
+    .text-success { color: #4CAF50 !important; }
+    .text-danger { color: #FF5252 !important; }
+</style>
