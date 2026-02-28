@@ -3,8 +3,9 @@
 ## 🐛 버그 수정
 
 ### StaticResourceHolder XAML 오류 해결
+
 - **문제**: 로그인 창에서 MainWindow로 전환할 시 `System.Windows.Markup.StaticResourceHolder` 오류 발생
-- **원인**: 
+- **원인**:
   - App.xaml에서 Color를 참조하는 Brush 리소스들
   - MainWindow.xaml의 `BasedOn="{StaticResource {x:Type Border}}"` 스타일
   - 창 전환 시 리소스 초기화 타이밍 문제
@@ -18,6 +19,7 @@
 ## ✨ 개선사항
 
 ### 로그인 UI 개선
+
 - 회전 스피너 애니메이션 추가 (0° → 360°, 1초 주기)
 - 진행률 바 시각화 (0% → 100%)
 - 진행 상태 메시지 표시
@@ -29,6 +31,7 @@
   5. 완료 (100%)
 
 ### 창 동작 변경
+
 - **X 버튼**: 프로그램 종료 (이전: 트레이로 최소화)
 - **최소화 버튼**: 트레이로 전환 (이전: 창 최소화)
 
@@ -44,11 +47,13 @@
 ## 🔧 기술 세부사항
 
 ### 빌드 정보
+
 - 프레임워크: .NET 9.0 (net9.0-windows)
 - 빌드 타입: Release (자체 포함, Single File)
 - 실행 파일 크기: ~427MB
 
 ### 테스트 완료 항목
+
 - [x] 첫 번째 로그인 성공 (오류 없음)
 - [x] 프로그레스 바 애니메이션
 - [x] MainWindow 전환 완료

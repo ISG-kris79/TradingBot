@@ -23,13 +23,13 @@
 #>
 
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$PublishPath,
     
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
     [string]$Version,
     
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
     [switch]$SkipGitHubRelease
 )
 
@@ -90,7 +90,8 @@ if (-not $vpkExists) {
         exit 1
     }
     Write-Success "Velopack 설치 완료"
-} else {
+}
+else {
     Write-Success "Velopack 도구 확인 완료"
 }
 
@@ -144,10 +145,12 @@ if (Test-Path $releaseNotesScript) {
     
     if ($LASTEXITCODE -eq 0) {
         Write-Success "릴리스 노트 생성 완료"
-    } else {
+    }
+    else {
         Write-Warning-Custom "릴리스 노트 생성 실패 (계속 진행)"
     }
-} else {
+}
+else {
     Write-Warning-Custom "generate_release_notes.ps1을 찾을 수 없습니다."
 }
 
@@ -155,7 +158,8 @@ if (Test-Path $releaseNotesScript) {
 if ($SkipGitHubRelease) {
     Write-Step "[4/4] GitHub 릴리스 건너뜀" "Yellow"
     Write-Warning-Custom "-SkipGitHubRelease 플래그가 설정되어 GitHub 릴리스를 건너뜁니다."
-} else {
+}
+else {
     Write-Step "[4/4] GitHub 릴리스 생성" "Yellow"
     
     # GitHub CLI 확인
@@ -165,14 +169,16 @@ if ($SkipGitHubRelease) {
         Write-Host "  설치 방법: https://cli.github.com/" -ForegroundColor Gray
         Write-Host "  또는: winget install GitHub.cli" -ForegroundColor Gray
         Write-Warning-Custom "GitHub 릴리스 생성을 건너뜁니다."
-    } else {
+    }
+    else {
         Write-Host "  GitHub CLI 확인 완료" -ForegroundColor Gray
         
         # Git 저장소 확인
         $gitRoot = git rev-parse --show-toplevel 2>$null
         if (-not $gitRoot) {
             Write-Warning-Custom "Git 저장소가 아닙니다. GitHub 릴리스를 건너뜁니다."
-        } else {
+        }
+        else {
             Write-Host "  Git 저장소: $gitRoot" -ForegroundColor Gray
             
             # 릴리스 노트 파일 확인
@@ -182,7 +188,8 @@ if ($SkipGitHubRelease) {
             if (Test-Path $releaseNotesFile) {
                 $releaseBody = Get-Content $releaseNotesFile -Raw
                 Write-Host "  릴리스 노트 파일 사용: release_notes.md" -ForegroundColor Gray
-            } else {
+            }
+            else {
                 $releaseBody = @"
 TradingBot v$Version Release
 
@@ -227,7 +234,8 @@ Note:
                     if ($overwrite -eq 'y' -or $overwrite -eq 'Y') {
                         Write-Host "  기존 릴리스 삭제 중..." -ForegroundColor Gray
                         gh release delete $tag --yes
-                    } else {
+                    }
+                    else {
                         Write-Warning-Custom "GitHub 릴리스 생성을 취소했습니다."
                         exit 0
                     }
@@ -251,10 +259,12 @@ Note:
                 if ($LASTEXITCODE -eq 0) {
                     Write-Success "GitHub 릴리스 생성 완료!"
                     Write-Host "  🔗 릴리스 URL: https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/releases/tag/$tag" -ForegroundColor Cyan
-                } else {
+                }
+                else {
                     Write-Error-Custom "GitHub 릴리스 생성 실패 (Exit Code: $LASTEXITCODE)"
                 }
-            } catch {
+            }
+            catch {
                 Write-Error-Custom "GitHub 릴리스 생성 중 오류: $_"
             }
         }
@@ -269,7 +279,8 @@ Write-Host "  1. Releases 폴더의 파일 확인" -ForegroundColor Gray
 if (-not $SkipGitHubRelease -and $ghExists) {
     Write-Host "  2. GitHub Releases 페이지에서 릴리스 확인" -ForegroundColor Gray
     Write-Host "  3. 사용자에게 업데이트 알림" -ForegroundColor Gray
-} else {
+}
+else {
     Write-Host "  2. GitHub에 수동으로 릴리스 업로드 (선택)" -ForegroundColor Gray
 }
 Write-Host ""

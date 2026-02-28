@@ -15,6 +15,56 @@ CoinFF TradingBot은 C# WPF 기반의 암호화폐 자동 매매 프로그램입
 * **백테스팅**: 과거 데이터를 기반으로 전략 수익률 검증 및 시뮬레이션
 * **안정성**: 서킷 브레이커, 자동 재연결, 텔레그램 알림 및 원격 제어
 
+## ⚙️ 설정 관리 (Configuration)
+
+### GeneralSettings 초기화 시스템
+
+앱 시작 시 자동으로 GeneralSettings를 로드합니다:
+
+1. **appsettings.json** 기본값 로드
+2. **DB 사용자별 설정** 로드 (우선순위 높음)
+3. **메모리 캐시**: `MainWindow.CurrentGeneralSettings` static 필드에 저장
+
+**사용 예시 (TradingEngine):**
+
+```csharp
+// TradingEngine 초기화 시
+_settings = MainWindow.CurrentGeneralSettings 
+    ?? AppConfig.Current?.Trading?.GeneralSettings 
+    ?? new TradingSettings();
+
+// 실시간 설정 접근
+int leverage = _settings.DefaultLeverage;
+decimal margin = _settings.DefaultMargin;
+decimal targetRoe = _settings.TargetRoe;
+```
+
+**GeneralSettingsProvider 싱글톤:**
+
+```csharp
+// 싱글톤 인스턴스로 접근
+var settings = GeneralSettingsProvider.Instance.GetSettings();
+
+// 빠른 접근 헬퍼
+int leverage = GeneralSettingsProvider.Instance.DefaultLeverage;
+decimal margin = GeneralSettingsProvider.Instance.DefaultMargin;
+
+// 설정 저장
+await GeneralSettingsProvider.Instance.SaveSettingsAsync(newSettings);
+
+// 설정 새로고침
+await GeneralSettingsProvider.Instance.RefreshSettingsAsync();
+```
+
+**설정 항목:**
+
+* `DefaultLeverage`: 기본 레버리지 (기본값: 20x)
+* `DefaultMargin`: 기본 마진 (기본값: 200 USDT)
+* `TargetRoe`: 목표 수익률 (기본값: 20%)
+* `StopLossRoe`: 손절 수익률 (기본값: 15%)
+* `TrailingStartRoe`: 트레일링 시작 수익률 (기본값: 20%)
+* `TrailingDropRoe`: 트레일링 드롭 수익률 (기본값: 5%)
+
 ## 🛠 기술 스택 (Tech Stack)
 
 ### Core Framework
@@ -248,6 +298,7 @@ gh auth login
 ```
 
 **커밋 메시지 규칙 (권장):**
+
 * `feat:` - 새로운 기능 (✨ Features 섹션)
 * `fix:` - 버그 수정 (🐛 Bug Fixes 섹션)
 * `docs:` - 문서 변경 (📚 Documentation 섹션)
@@ -266,6 +317,7 @@ git commit -m "docs: 설치 가이드 업데이트"
 ```
 
 **수동으로 CHANGELOG.md 관리:**
+
 * `CHANGELOG.md` 파일을 직접 수정하여 릴리스 노트 관리 가능
 * [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/) 형식 준수
 * 배포 전 `[Unreleased]` 섹션을 새 버전으로 변경
@@ -315,19 +367,21 @@ git commit -m "docs: 설치 가이드 업데이트"
 
 ### Phase 7: 고급 AI 및 최적화 (예정)
 
-- [ ] **Transformer 기반 모델 도입**: 기존 LSTM을 넘어선 최신 시계열 예측 모델 적용
+* [ ] **Transformer 기반 모델 도입**: 기존 LSTM을 넘어선 최신 시계열 예측 모델 적용
+
 * [ ] **강화학습(RL) 고도화**: PPO, SAC 등 심층 강화학습 알고리즘 적용 및 학습 환경 개선
 * [ ] **하이퍼파라미터 자동 튜닝**: Optuna 등을 활용한 전략 파라미터 자동 최적화
 
 ### Phase 8: DeFi 및 확장성
 
-- [ ] **DEX 연동**: Uniswap, dYdX 등 탈중앙화 거래소 지원
+* [ ] **DEX 연동**: Uniswap, dYdX 등 탈중앙화 거래소 지원
+
 * [ ] **On-chain 데이터 분석**: 고래 지갑 추적 및 트랜잭션 분석 기능
 * [ ] **모바일 앱 연동**: 상태 모니터링을 위한 모바일 컴패니언 앱 개발
 
 ### 커뮤니티 (Community)
 
-- [ ] **커뮤니티 피드백 반영**: 사용자 피드백을 기반으로 한 기능 개선 및 우선순위 조정
+* [ ] **커뮤니티 피드백 반영**: 사용자 피드백을 기반으로 한 기능 개선 및 우선순위 조정
 
 ## 🤝 기여 방법 (Contributing)
 
