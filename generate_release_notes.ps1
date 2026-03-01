@@ -1,4 +1,4 @@
-# 릴리스 노트 자동 생성 스크립트
+﻿# 릴리스 노트 자동 생성 스크립트
 # 커밋 메시지 규칙: feat:, fix:, docs:, style:, refactor:, perf:, test:, chore:
 
 param(
@@ -6,11 +6,17 @@ param(
     [string]$CurrentVersion = "1.1.2"
 )
 
+$ErrorActionPreference = "Continue"
+
 # 이전 태그 자동 찾기
 if ([string]::IsNullOrEmpty($PreviousTag)) {
     $PreviousTag = git describe --tags --abbrev=0 HEAD^ 2>$null
-    if (-not $PreviousTag) {
-        $PreviousTag = git rev-list --max-parents=0 HEAD
+    if (-not $PreviousTag -or $LASTEXITCODE -ne 0) {
+        $PreviousTag = git rev-list --max-parents=0 HEAD 2>$null
+        if (-not $PreviousTag) {
+            Write-Warning "Git 히스토리를 찾을 수 없습니다. 릴리스 노트 생성을 건너뜁니다."
+            exit 0
+        }
         Write-Host "첫 릴리스입니다. 모든 커밋을 포함합니다."
     }
 }

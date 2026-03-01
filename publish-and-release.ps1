@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 <#
 .SYNOPSIS
     Visual Studio 게시 후 자동으로 Velopack 패키징 및 GitHub 릴리스를 생성합니다.
@@ -223,6 +223,12 @@ Note:
             if ($nupkgFile) { $releaseFiles += $nupkgFile.FullName }
             if (Test-Path $releasesFile) { $releaseFiles += $releasesFile }
             
+            # Velopack 자동 업데이트에 필요한 JSON 파일들도 포함
+            $releasesWinJson = Join-Path $ReleasesDir "releases.win.json"
+            $assetsWinJson = Join-Path $ReleasesDir "assets.win.json"
+            if (Test-Path $releasesWinJson) { $releaseFiles += $releasesWinJson }
+            if (Test-Path $assetsWinJson) { $releaseFiles += $assetsWinJson }
+            
             $filesArgs = $releaseFiles | ForEach-Object { "`"$_`"" }
             
             try {
@@ -294,3 +300,4 @@ if (Test-Path $ReleasesDir) {
 }
 
 exit 0
+
