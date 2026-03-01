@@ -3,6 +3,7 @@
 ## 📋 배포 전 체크리스트
 
 ### 1. 버전 업데이트
+
 **TradingBot/TradingBot.csproj** 파일에서 버전 정보를 수정합니다:
 
 ```xml
@@ -14,6 +15,7 @@
 ⚠️ **중요**: 이 버전 정보가 로그인 창과 앱 전체에 표시됩니다.
 
 ### 2. 변경사항 커밋
+
 ```powershell
 git add -A
 git commit -m "chore: Release vX.X.X - 변경사항 요약"
@@ -28,22 +30,26 @@ git commit -m "chore: Release vX.X.X - 변경사항 요약"
 ### 자동 배포 (권장)
 
 #### 1단계: 클린 빌드
+
 ```powershell
 dotnet clean TradingBot/TradingBot.csproj
 dotnet publish TradingBot/TradingBot.csproj -c Release -o bin/publish --self-contained false
 ```
 
 #### 2단계: 배포 스크립트 실행
+
 ```powershell
 .\publish-and-release.ps1 -PublishPath "bin\publish" -Version "X.X.X"
 ```
 
 > **자동으로 수행되는 작업**:
+>
 > 1. Velopack 패키징 (Setup.exe, Portable.zip, .nupkg)
 > 2. 릴리스 노트 생성 (release_notes.md)
 > 3. GitHub 릴리스 생성 시도 (실패 시 수동 진행)
 
 #### 3단계: GitHub 릴리스 수동 생성 (자동 실패 시)
+
 ```powershell
 gh release create "vX.X.X" `
   --title "TradingBot vX.X.X" `
@@ -79,23 +85,26 @@ gh release create "vX.X.X" `
 ## ✅ 배포 확인
 
 ### 1. GitHub 릴리스 확인
+
 ```powershell
 gh release view vX.X.X
 ```
 
 확인 사항:
+
 - [ ] Latest 태그가 있는가?
 - [ ] 6개의 파일이 모두 업로드되었는가?
 - [ ] 릴리스 날짜가 올바른가?
 
 ### 2. 웹 브라우저 확인
-https://github.com/ISG-kris79/TradingBot/releases
+<https://github.com/ISG-kris79/TradingBot/releases>
 
 - [ ] 릴리스 목록에 표시되는가?
 - [ ] 한글 릴리스 노트가 정상 표시되는가?
 - [ ] "Latest" 배지가 있는가?
 
 ### 3. 자동 업데이트 테스트
+
 1. 이전 버전 앱 실행
 2. 로그인 진행
 3. "새 버전 X.X.X를 발견했습니다" 알림 확인
@@ -111,6 +120,7 @@ https://github.com/ISG-kris79/TradingBot/releases
 **원인**: `releases.win.json` 파일이 GitHub에 업로드되지 않음
 
 **해결**:
+
 ```powershell
 gh release upload vX.X.X "Releases\releases.win.json" "Releases\assets.win.json" --clobber
 ```
@@ -120,8 +130,10 @@ gh release upload vX.X.X "Releases\releases.win.json" "Releases\assets.win.json"
 **원인**: `.csproj` 파일의 버전이 업데이트되지 않음
 
 **해결**:
+
 1. `TradingBot/TradingBot.csproj`에서 버전 수정
 2. 리빌드 및 재배포:
+
 ```powershell
 dotnet clean TradingBot/TradingBot.csproj
 dotnet publish TradingBot/TradingBot.csproj -c Release -o bin/publish
@@ -134,11 +146,14 @@ gh release delete vX.X.X --yes  # 기존 릴리스 삭제
 **원인**: 브라우저 캐시 또는 Git 태그 동기화 문제
 
 **해결**:
+
 1. 브라우저 강력 새로고침: `Ctrl + Shift + R`
 2. Git 태그 동기화:
+
 ```powershell
 git fetch --tags
 ```
+
 3. 직접 URL 접근: `https://github.com/ISG-kris79/TradingBot/releases/tag/vX.X.X`
 
 ### 문제 4: 릴리스 날짜가 과거로 표시됨
@@ -146,6 +161,7 @@ git fetch --tags
 **원인**: Git 태그가 이전 커밋을 가리키고 있음
 
 **해결**:
+
 ```powershell
 # 최신 커밋 생성
 git add -A
@@ -166,6 +182,7 @@ gh release delete vX.X.X --yes
 **원인**: UTF-8 BOM 인코딩이 아님
 
 **해결**:
+
 ```powershell
 $content = Get-Content "publish-and-release.ps1" -Raw -Encoding UTF8
 [System.IO.File]::WriteAllText("$PWD\publish-and-release.ps1", $content, (New-Object System.Text.UTF8Encoding $true))
@@ -176,15 +193,18 @@ $content = Get-Content "publish-and-release.ps1" -Raw -Encoding UTF8
 ## 📝 배포 후 작업
 
 ### 1. Git 푸시
+
 ```powershell
 git push origin master
 git push origin vX.X.X  # 태그 푸시
 ```
 
 ### 2. 릴리스 노트 업데이트 (필요시)
+
 GitHub 웹에서 릴리스 노트를 수동으로 편집할 수 있습니다.
 
 ### 3. 사용자 공지
+
 - Discord/텔레그램 등에 업데이트 공지
 - 주요 변경사항 안내
 
