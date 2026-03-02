@@ -21,10 +21,22 @@ namespace TradingBot.Services.AI
         private readonly int _seqLen;
         private readonly string _modelPath;
         private readonly string _statsPath;
-        
+
         private TimeSeriesTransformer _model;
         private readonly Device _device;
         private TimeSeriesDataLoader _dataLoader; // 최적화된 데이터 로더
+
+        // [추가] 외부에서 시퀀스 길이 참조 가능하도록 공개
+        public int SeqLen => _seqLen;
+
+        // [추가] 추론 준비 상태 공개
+        public bool IsModelReady =>
+            _model != null &&
+            _dataLoader != null &&
+            _means != null && _stds != null &&
+            _means.Length == _inputDim &&
+            _stds.Length == _inputDim &&
+            _stds.All(s => Math.Abs(s) > 1e-8f);
 
         // 정규화 파라미터 (DataLoader에서 관리)
         private float[] _means;
@@ -43,7 +55,7 @@ namespace TradingBot.Services.AI
                     "TorchSharp를 사용할 수 없습니다. TransformerTrainer를 초기화할 수 없습니다.\n" +
                     TradingBot.Services.TorchInitializer.ErrorMessage);
             }
-            
+
             _inputDim = inputDim;
             _dModel = dModel;
             _nHeads = nHeads;
@@ -83,7 +95,7 @@ namespace TradingBot.Services.AI
             }
 
             OnLog?.Invoke($"[TransformerTrainer] 최적화된 데이터 로더로 전처리 중... (Count: {data.Count})");
-            
+
             // 최적화된 DataLoader 사용
             _dataLoader = new TimeSeriesDataLoader(
                 sequenceLength: _seqLen,
@@ -140,7 +152,7 @@ namespace TradingBot.Services.AI
                 }
 
                 float avgLoss = totalLoss / batchCount;
-                
+
                 // [수정] 이벤트 발생 (UI 업데이트용)
                 OnEpochCompleted?.Invoke(epoch + 1, epochs, avgLoss);
                 OnLog?.Invoke($"📉 [Transformer] Epoch {epoch + 1}/{epochs} | Loss: {avgLoss:F6}");
@@ -178,11 +190,11 @@ namespace TradingBot.Services.AI
                 useCache: false, // 매번 다른 데이터이므로 캐시 사용 안함
                 device: _device
             );
-            
+
             // 기존 Mean/Std 주입
             onlineLoader.Means = _dataLoader.Means;
             onlineLoader.Stds = _dataLoader.Stds;
-            
+
             onlineLoader.LoadData(newData);
 
             var optimizer = Adam(_model.parameters(), learningRate);
@@ -218,9 +230,16 @@ namespace TradingBot.Services.AI
                 throw new ArgumentException($"시퀀스 길이가 맞지 않습니다. 필요: {_seqLen}, 현재: {recentSequence?.Count ?? 0}");
             }
 
-            if (_dataLoader == null || _means == null || _stds == null)
+            // [수정] 런타임에서 아직 준비되지 않았다면 1회 자동 로드 시도
+            if (!IsModelReady)
             {
-                throw new InvalidOperationException("모델이 학습되지 않았거나 정규화 파라미터가 없습니다. LoadModel()을 먼저 호출하세요.");
+                LoadModel();
+            }
+
+            if (!IsModelReady)
+            {
+                throw new InvalidOperationException(
+                    $"모델이 학습되지 않았거나 정규화 파라미터가 없습니다. 모델 파일({_modelPath})/통계 파일({_statsPath})을 확인하세요.");
             }
 
             _model.eval();
@@ -229,10 +248,10 @@ namespace TradingBot.Services.AI
             {
                 using var inputTensor = _dataLoader.CreateInferenceTensor(recentSequence);
                 using var output = _model.forward(inputTensor);
-                
+
                 float normalizedPrediction = output[0, 0].item<float>();
                 float denormalizedPrice = _dataLoader.DenormalizeTarget(normalizedPrediction);
-                
+
                 return denormalizedPrice;
             }
         }
@@ -334,25 +353,46 @@ namespace TradingBot.Services.AI
         public void SaveModel()
         {
             _model.save(_modelPath);
-            
+
             // 정규화 파라미터 저장
             var stats = new { Means = _means, Stds = _stds };
             File.WriteAllText(_statsPath, JsonSerializer.Serialize(stats));
-            
+
             OnLog?.Invoke($"💾 [TransformerTrainer] 모델 저장 완료: {_modelPath}");
         }
 
         public void LoadModel()
         {
-            if (File.Exists(_modelPath) && File.Exists(_statsPath))
+            if (!File.Exists(_modelPath))
+            {
+                OnLog?.Invoke($"⚠️ [TransformerTrainer] 모델 파일이 없습니다: {_modelPath}");
+                return;
+            }
+
+            if (!File.Exists(_statsPath))
+            {
+                OnLog?.Invoke($"⚠️ [TransformerTrainer] 정규화 통계 파일이 없습니다: {_statsPath}");
+                return;
+            }
+
+            try
             {
                 _model.load(_modelPath);
                 _model.eval();
 
                 var statsJson = File.ReadAllText(_statsPath);
                 var stats = JsonSerializer.Deserialize<ModelStats>(statsJson);
-                _means = stats?.Means ?? new float[_inputDim];
-                _stds = stats?.Stds ?? new float[_inputDim];
+                _means = stats?.Means ?? Array.Empty<float>();
+                _stds = stats?.Stds ?? Array.Empty<float>();
+
+                if (_means.Length != _inputDim || _stds.Length != _inputDim)
+                {
+                    OnLog?.Invoke($"⚠️ [TransformerTrainer] 통계 파라미터 길이 불일치 (Means: {_means.Length}, Stds: {_stds.Length}, Expected: {_inputDim})");
+                    _means = Array.Empty<float>();
+                    _stds = Array.Empty<float>();
+                    _dataLoader = null;
+                    return;
+                }
 
                 // DataLoader 초기화 (추론용)
                 _dataLoader = new TimeSeriesDataLoader(
@@ -363,12 +403,19 @@ namespace TradingBot.Services.AI
                     useCache: false,
                     device: _device
                 );
-                
+
                 // 정규화 파라미터 복원
                 _dataLoader.Means = _means;
                 _dataLoader.Stds = _stds;
 
                 OnLog?.Invoke($"📂 [TransformerTrainer] 모델 로드 완료: {_modelPath}");
+            }
+            catch (Exception ex)
+            {
+                _dataLoader = null;
+                _means = Array.Empty<float>();
+                _stds = Array.Empty<float>();
+                OnLog?.Invoke($"❌ [TransformerTrainer] 모델 로드 실패: {ex.Message}");
             }
         }
 
