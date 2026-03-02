@@ -1,0 +1,1840 @@
+<Window x:Class="TradingBot.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:lvc="clr-namespace:LiveCharts.Wpf;assembly=LiveCharts.Wpf"
+        xmlns:local="clr-namespace:TradingBot"
+        Title="COINFF TRADINGBOT"
+        Height="900"
+        Width="1500"
+        Background="#121212"
+        Foreground="White"
+        FontFamily="Segoe UI"
+        WindowStyle="None"
+        WindowStartupLocation="CenterScreen"
+        Icon="/trading_bot.ico">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="40"
+                      ResizeBorderThickness="5"
+                      GlassFrameThickness="0"
+                      CornerRadius="0"/>
+    </WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <!-- Converters -->
+        <local:StatusToIconConverter x:Key="StatusToIconConverter"/>
+        <local:GreaterThanConverter x:Key="GreaterThanConverter"/>
+        <local:LessThanConverter x:Key="LessThanConverter"/>
+        <local:InvertBooleanConverter x:Key="InvertBooleanConverter"/>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
+
+        <!-- Storyboards -->
+        <Storyboard x:Key="FlashGreen">
+            <ColorAnimation Storyboard.TargetProperty="(Control.Foreground).(SolidColorBrush.Color)"
+                            From="#00E676"
+                            To="White"
+                            Duration="0:0:0.8"/>
+        </Storyboard>
+        <Storyboard x:Key="FlashRed">
+            <ColorAnimation Storyboard.TargetProperty="(Control.Foreground).(SolidColorBrush.Color)"
+                            From="#FF5252"
+                            To="White"
+                            Duration="0:0:0.8"/>
+        </Storyboard>
+        <Storyboard x:Key="RowEntranceFlash">
+            <ColorAnimation Storyboard.TargetProperty="(Panel.Background).(SolidColorBrush.Color)"
+                            From="#00E676"
+                            To="#1A3A5A"
+                            Duration="0:0:2"
+                            AutoReverse="False"
+                            RepeatBehavior="1x"/>
+            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                             From="0.5"
+                             To="1.0"
+                             Duration="0:0:0.5"
+                             RepeatBehavior="2x"/>
+        </Storyboard>
+
+        <!-- Button Styles -->
+        <Style x:Key="ProButtonStyle"
+               TargetType="Button">
+            <Setter Property="Foreground"
+                    Value="White"/>
+            <Setter Property="FontWeight"
+                    Value="Bold"/>
+            <Setter Property="Cursor"
+                    Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="MainBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="6"
+                                Padding="10">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsEnabled"
+                                     Value="False">
+                                <Setter TargetName="MainBorder"
+                                        Property="Background"
+                                        Value="#2D3142"/>
+                                <Setter Property="Foreground"
+                                        Value="#575E75"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver"
+                                     Value="True">
+                                <Setter TargetName="MainBorder"
+                                        Property="Opacity"
+                                        Value="0.8"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="WindowControlButtonStyle"
+               TargetType="Button">
+            <Setter Property="WindowChrome.IsHitTestVisibleInChrome"
+                    Value="True"/>
+            <Setter Property="Background"
+                    Value="Transparent"/>
+            <Setter Property="Foreground"
+                    Value="#94A3B8"/>
+            <Setter Property="BorderThickness"
+                    Value="0"/>
+            <Setter Property="Width"
+                    Value="46"/>
+            <Setter Property="Height"
+                    Value="32"/>
+            <Setter Property="FontSize"
+                    Value="14"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver"
+                                     Value="True">
+                                <Setter Property="Background"
+                                        Value="#333"/>
+                                <Setter Property="Foreground"
+                                        Value="White"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- DataGrid Styles -->
+        <Style x:Key="DarkColumnHeader"
+               TargetType="DataGridColumnHeader">
+            <Setter Property="Background"
+                    Value="#1E2235"/>
+            <Setter Property="Foreground"
+                    Value="#94A3B8"/>
+            <Setter Property="Padding"
+                    Value="12,10"/>
+            <Setter Property="FontSize"
+                    Value="11"/>
+            <Setter Property="BorderThickness"
+                    Value="0,0,0,1"/>
+            <Setter Property="BorderBrush"
+                    Value="#2D3142"/>
+        </Style>
+
+        <!-- Dashboard Card Styles -->
+        <Style x:Key="DashboardCardGroupBoxStyle"
+               TargetType="GroupBox">
+            <Setter Property="Foreground"
+                    Value="#94A3B8"/>
+            <Setter Property="BorderThickness"
+                    Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="GroupBox">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <ContentPresenter ContentSource="Header"
+                                              Grid.Row="0"
+                                              Margin="10,0,0,5"
+                                              TextElement.FontWeight="Bold"
+                                              TextElement.FontSize="11"/>
+                            <Border Grid.Row="1"
+                                    CornerRadius="8"
+                                    BorderThickness="1"
+                                    Padding="{TemplateBinding Padding}">
+                                <Border.Background>
+                                    <LinearGradientBrush StartPoint="0,0"
+                                                         EndPoint="1,1">
+                                        <GradientStop Color="#1A1D2C"
+                                                      Offset="0"/>
+                                        <GradientStop Color="#161925"
+                                                      Offset="1"/>
+                                    </LinearGradientBrush>
+                                </Border.Background>
+                                <Border.BorderBrush>
+                                    <LinearGradientBrush StartPoint="0,0"
+                                                         EndPoint="1,1">
+                                        <GradientStop Color="#3D415D"
+                                                      Offset="0"/>
+                                        <GradientStop Color="#2D3142"
+                                                      Offset="1"/>
+                                    </LinearGradientBrush>
+                                </Border.BorderBrush>
+                                <Border.Effect>
+                                    <DropShadowEffect BlurRadius="10"
+                                                      ShadowDepth="2"
+                                                      Direction="270"
+                                                      Color="Black"
+                                                      Opacity="0.3"/>
+                                </Border.Effect>
+                                <ContentPresenter/>
+                            </Border>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="DashboardCardBorderStyle"
+               TargetType="Border">
+            <Setter Property="CornerRadius"
+                    Value="8"/>
+            <Setter Property="Padding"
+                    Value="15"/>
+            <Setter Property="Margin"
+                    Value="0,0,0,10"/>
+            <Setter Property="BorderThickness"
+                    Value="1"/>
+            <Setter Property="Effect">
+                <Setter.Value>
+                    <DropShadowEffect BlurRadius="10"
+                                      ShadowDepth="2"
+                                      Direction="270"
+                                      Color="Black"
+                                      Opacity="0.3"/>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Background">
+                <Setter.Value>
+                    <LinearGradientBrush StartPoint="0,0"
+                                         EndPoint="1,1">
+                        <GradientStop Color="#1A1D2C"
+                                      Offset="0"/>
+                        <GradientStop Color="#161925"
+                                      Offset="1"/>
+                    </LinearGradientBrush>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="BorderBrush">
+                <Setter.Value>
+                    <LinearGradientBrush StartPoint="0,0"
+                                         EndPoint="1,1">
+                        <GradientStop Color="#3D415D"
+                                      Offset="0"/>
+                        <GradientStop Color="#2D3142"
+                                      Offset="1"/>
+                    </LinearGradientBrush>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Modern Window Style -->
+        <Style x:Key="ModernWindowStyle"
+               TargetType="Window">
+            <Setter Property="Background"
+                    Value="#121212"/>
+            <Setter Property="Foreground"
+                    Value="White"/>
+            <Setter Property="FontFamily"
+                    Value="Segoe UI"/>
+            <Setter Property="WindowStyle"
+                    Value="None"/>
+            <Setter Property="ResizeMode"
+                    Value="CanResize"/>
+            <Setter Property="WindowChrome.WindowChrome">
+                <Setter.Value>
+                    <WindowChrome CaptionHeight="40"
+                                  ResizeBorderThickness="5"
+                                  GlassFrameThickness="0"
+                                  CornerRadius="0"/>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="30"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+                Panel.ZIndex="100"
+                Padding="20,12"
+                BorderBrush="#333"
+                BorderThickness="0,0,0,1">
+            <Border.Background>
+                <LinearGradientBrush StartPoint="0,0"
+                                     EndPoint="1,1">
+                    <GradientStop Color="#151515"
+                                  Offset="0"/>
+                    <GradientStop Color="#252525"
+                                  Offset="1"/>
+                </LinearGradientBrush>
+            </Border.Background>
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="15"
+                                  ShadowDepth="4"
+                                  Direction="270"
+                                  Color="Black"
+                                  Opacity="0.5"/>
+            </Border.Effect>
+            <DockPanel>
+                <StackPanel Orientation="Horizontal">
+                    <!-- 브랜드 로고 및 타이틀 -->
+                    <Border Width="40"
+                            Height="40"
+                            CornerRadius="8"
+                            Background="#2D2D2D"
+                            Margin="0,0,15,0">
+                        <Image Source="trading_bot.jpg"
+                               Stretch="UniformToFill">
+                            <Image.Clip>
+                                <RectangleGeometry Rect="0,0,40,40"
+                                                   RadiusX="8"
+                                                   RadiusY="8"/>
+                            </Image.Clip>
+                        </Image>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="COINFF"
+                                       FontSize="20"
+                                       FontWeight="Black"
+                                       Foreground="#00E676"
+                                       VerticalAlignment="Bottom">
+                                <TextBlock.Effect>
+                                    <DropShadowEffect Color="#00E676"
+                                                      BlurRadius="10"
+                                                      ShadowDepth="0"
+                                                      Opacity="0.4"/>
+                                </TextBlock.Effect>
+                            </TextBlock>
+                            <TextBlock Text=" TRADINGBOT"
+                                       FontSize="18"
+                                       FontWeight="Light"
+                                       Foreground="White"
+                                       VerticalAlignment="Bottom"
+                                       Margin="2,0,0,0"/>
+                        </StackPanel>
+                        <TextBlock Text="PREMIUM AI ENGINE"
+                                   FontSize="9"
+                                   Foreground="#888"
+                                   FontWeight="Bold"
+                                   Margin="0,-2,0,0"/>
+                    </StackPanel>
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            WindowChrome.IsHitTestVisibleInChrome="True">
+                    <!-- [Agent 2] 레이아웃 설정 메뉴 -->
+                    <Menu Background="Transparent"
+                          Margin="0,0,10,0"
+                          VerticalAlignment="Center">
+                        <MenuItem Header="👁️ VIEW"
+                                  Foreground="{Binding TextForeground}"
+                                  FontWeight="Bold"
+                                  Cursor="Hand">
+                            <MenuItem.Resources>
+                                <Style TargetType="MenuItem">
+                                    <Setter Property="Foreground"
+                                            Value="Black"/>
+                                    <Setter Property="FontSize"
+                                            Value="12"/>
+                                </Style>
+                            </MenuItem.Resources>
+                            <MenuItem Header="Account Summary"
+                                      IsCheckable="True"
+                                      IsChecked="{Binding IsAccountSummaryVisible}"/>
+                            <MenuItem Header="Live Log &amp; Alerts"
+                                      IsCheckable="True"
+                                      IsChecked="{Binding IsLiveLogVisible}"/>
+                            <MenuItem Header="Profit Chart"
+                                      IsCheckable="True"
+                                      IsChecked="{Binding IsChartVisible}"/>
+                        </MenuItem>
+                    </Menu>
+
+                    <!-- 관리자 메뉴 (관리자만 표시) -->
+                    <Menu x:Name="mnuAdmin"
+                          Background="Transparent"
+                          Margin="0,0,10,0"
+                          VerticalAlignment="Center"
+                          Visibility="Collapsed">
+                        <MenuItem Header="👑 ADMIN"
+                                  Foreground="#FFD700"
+                                  FontWeight="Bold"
+                                  Cursor="Hand">
+                            <MenuItem.Resources>
+                                <Style TargetType="MenuItem">
+                                    <Setter Property="Foreground"
+                                            Value="Black"/>
+                                    <Setter Property="FontSize"
+                                            Value="12"/>
+                                </Style>
+                            </MenuItem.Resources>
+                            <MenuItem Header="👥 사용자 관리"
+                                      Click="mnuUserManagement_Click"/>
+                            <Separator/>
+                            <MenuItem x:Name="mnuPendingCount"
+                                      Header="⏳ 승인 대기: 0명"
+                                      IsEnabled="False"
+                                      Foreground="Orange"/>
+                        </MenuItem>
+                    </Menu>
+
+                    <Button Content="👤"
+                            Width="40"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            Foreground="{Binding TextForeground}"
+                            FontSize="16"
+                            Cursor="Hand"
+                            Click="btnProfile_Click"
+                            Margin="0,0,10,0"
+                            ToolTip="User Profile"/>
+                    <Button x:Name="btnSettings"
+                            Content="⚙️"
+                            Width="40"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            Foreground="{Binding TextForeground}"
+                            FontSize="16"
+                            Cursor="Hand"
+                            Click="btnSettings_Click"
+                            Margin="0,0,10,0"
+                            ToolTip="Settings (GeneralSettings)"/>
+
+                    <!-- 거래소 선택 ComboBox -->
+                    <ComboBox x:Name="cmbExchange"
+                              Width="120"
+                              Margin="0,0,10,0"
+                              VerticalAlignment="Center"
+                              SelectedIndex="0"
+                              Background="White"
+                              Foreground="Black"
+                              BorderBrush="#2D3142">
+                        <ComboBoxItem Content="Binance"/>
+                        <ComboBoxItem Content="Bybit"/>
+                    </ComboBox>
+
+                    <Button x:Name="btnBacktest"
+                            Content="BACKTEST"
+                            Width="100"
+                            Background="#3B82F6"
+                            Style="{StaticResource ProButtonStyle}"
+                            Margin="0,0,10,0"
+                            Click="btnBacktest_Click"/>
+                    <Button x:Name="btnOptimize"
+                            Content="OPTIMIZE"
+                            Width="100"
+                            Background="#8B5CF6"
+                            Style="{StaticResource ProButtonStyle}"
+                            Margin="0,0,10,0"
+                            Click="btnOptimize_Click"/>
+                    <Button x:Name="btnStart"
+                            Content="RUN"
+                            Width="140"
+                            Background="#10B981"
+                            Style="{StaticResource ProButtonStyle}"
+                            Margin="0,0,10,0"
+                            Click="btnStart_Click"/>
+                    <Button x:Name="btnStop"
+                            Content="STOP"
+                            Width="100"
+                            Background="#EF4444"
+                            Style="{StaticResource ProButtonStyle}"
+                            IsEnabled="False"
+                            Click="btnStop_Click"
+                            Margin="0,0,10,0"/>
+
+                    <!-- 윈도우 제어 버튼 -->
+                    <StackPanel Orientation="Horizontal"
+                                VerticalAlignment="Top"
+                                Margin="10,-12,-20,0">
+                        <Button Content="—"
+                                Style="{StaticResource WindowControlButtonStyle}"
+                                Click="OnMinimize_Click"/>
+                        <Button Content="☐"
+                                Style="{StaticResource WindowControlButtonStyle}"
+                                Click="OnMaximize_Click"/>
+                        <Button Content="✕"
+                                Click="OnClose_Click">
+                            <Button.Style>
+                                <Style TargetType="Button"
+                                       BasedOn="{StaticResource WindowControlButtonStyle}">
+                                    <Style.Triggers>
+                                        <Trigger Property="IsMouseOver"
+                                                 Value="True">
+                                            <Setter Property="Background"
+                                                    Value="#E81123"/>
+                                            <Setter Property="Foreground"
+                                                    Value="White"/>
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                    </StackPanel>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <ProgressBar Grid.Row="1"
+                     x:Name="pgScanning"
+                     Height="4"
+                     Background="#0F111A"
+                     Foreground="#00E676"
+                     BorderThickness="0"/>
+
+        <TabControl Grid.Row="2"
+                    Margin="15"
+                    Background="Transparent"
+                    BorderThickness="0">
+            <TabControl.Resources>
+                <Style TargetType="TabItem">
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="TabItem">
+                                <Border Name="Border"
+                                        BorderThickness="0,0,0,2"
+                                        BorderBrush="Transparent"
+                                        Margin="0,0,10,0"
+                                        Padding="10,5"
+                                        Cursor="Hand">
+                                    <ContentPresenter x:Name="ContentSite"
+                                                      VerticalAlignment="Center"
+                                                      HorizontalAlignment="Center"
+                                                      ContentSource="Header"
+                                                      Margin="10,2"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsSelected"
+                                             Value="True">
+                                        <Setter TargetName="Border"
+                                                Property="BorderBrush"
+                                                Value="#00E676"/>
+                                        <Setter Property="Foreground"
+                                                Value="#00E676"/>
+                                        <Setter Property="FontWeight"
+                                                Value="Bold"/>
+                                    </Trigger>
+                                    <Trigger Property="IsSelected"
+                                             Value="False">
+                                        <Setter Property="Foreground"
+                                                Value="#64748B"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </TabControl.Resources>
+
+            <TabItem Header="DASHBOARD">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="380"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0"
+                                Margin="0,0,15,0">
+                        <Border Style="{StaticResource DashboardCardBorderStyle}"
+                                Padding="14">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="RISK CARD"
+                                           Foreground="#93C5FD"
+                                           FontSize="13"
+                                           FontWeight="Bold"
+                                           Margin="0,0,0,10"/>
+                                <Grid Grid.Row="1">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Row="0"
+                                               Grid.Column="0"
+                                               Text="Total Equity"
+                                               Foreground="#94A3B8"
+                                               FontSize="13"/>
+                                    <TextBlock x:Name="txtTotalEquity"
+                                               Grid.Row="0"
+                                               Grid.Column="1"
+                                               Text="$0.00"
+                                               Foreground="{Binding TextForeground}"
+                                               FontSize="18"
+                                               FontWeight="Bold"/>
+
+                                    <TextBlock Grid.Row="1"
+                                               Grid.Column="0"
+                                               Text="Available"
+                                               Foreground="#94A3B8"
+                                               FontSize="13"
+                                               Margin="0,8,0,0"/>
+                                    <TextBlock x:Name="txtAvailableBalance"
+                                               Grid.Row="1"
+                                               Grid.Column="1"
+                                               Text="$0.00"
+                                               Foreground="{Binding TextForeground}"
+                                               FontSize="18"
+                                               FontWeight="Bold"
+                                               Margin="0,8,0,0"/>
+
+                                    <TextBlock Grid.Row="2"
+                                               Grid.Column="0"
+                                               Text="ROI"
+                                               Foreground="#94A3B8"
+                                               FontSize="13"
+                                               Margin="0,8,0,0"/>
+                                    <TextBlock Grid.Row="2"
+                                               Grid.Column="1"
+                                               Text="{Binding AverageRoe, StringFormat={}{0:F2}%}"
+                                               Foreground="#FACC15"
+                                               FontSize="18"
+                                               FontWeight="Bold"
+                                               Margin="0,8,0,0"/>
+
+                                    <TextBlock Grid.Row="3"
+                                               Grid.Column="0"
+                                               Text="Active Positions"
+                                               Foreground="#94A3B8"
+                                               FontSize="13"
+                                               Margin="0,8,0,0"/>
+                                    <TextBlock x:Name="txtTotalPositionInfo"
+                                               Grid.Row="3"
+                                               Grid.Column="1"
+                                               Text="Active: 0 명"
+                                               Foreground="{Binding TextForeground}"
+                                               FontSize="16"
+                                               FontWeight="SemiBold"
+                                               Margin="0,8,0,0"/>
+                                </Grid>
+                            </Grid>
+                        </Border>
+
+                        <Border Style="{StaticResource DashboardCardBorderStyle}"
+                                BorderBrush="#00E676"
+                                BorderThickness="0,2,0,0"
+                                CornerRadius="0,0,8,8"
+                                Padding="15"
+                                Height="260"
+                                Margin="0,0,0,10">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="CRITICAL ALERTS"
+                                           Foreground="#00E676"
+                                           FontSize="12"
+                                           FontWeight="Bold"
+                                           Margin="0,0,0,8"/>
+                                <ListBox x:Name="lstAlerts"
+                                         Grid.Row="1"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         Foreground="{Binding TextForeground}"
+                                         FontFamily="Consolas"
+                                         FontSize="14"
+                                         SnapsToDevicePixels="True"
+                                         TextOptions.TextFormattingMode="Display"
+                                         TextOptions.TextRenderingMode="ClearType">
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem">
+                                            <Setter Property="Padding"
+                                                    Value="4,3"/>
+                                            <Setter Property="BorderThickness"
+                                                    Value="0,0,0,1"/>
+                                            <Setter Property="BorderBrush"
+                                                    Value="#2D3142"/>
+                                            <Setter Property="Background"
+                                                    Value="Transparent"/>
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                </ListBox>
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+
+                    <Border Grid.Column="1"
+                            Background="{Binding PanelBackground}"
+                            CornerRadius="10"
+                            Padding="5">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="12"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <DataGrid x:Name="dgMultiTimeframe"
+                                      Grid.Row="0"
+                                      AutoGenerateColumns="False"
+                                      Background="Transparent"
+                                      Foreground="{Binding TextForeground}"
+                                      BorderThickness="0"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      IsReadOnly="True"
+                                      RowHeight="56"
+                                      ColumnHeaderHeight="36"
+                                      MaxHeight="372"
+                                      VerticalAlignment="Top"
+                                      ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                      GridLinesVisibility="Horizontal"
+                                      HorizontalGridLinesBrush="{Binding BorderColor}"
+                                      ColumnHeaderStyle="{StaticResource DarkColumnHeader}"
+                                      CanUserSortColumns="True"
+                                      FontSize="13"
+                                      EnableRowVirtualization="True"
+                                      VirtualizingStackPanel.IsVirtualizing="True"
+                                      SelectedItem="{Binding SelectedSymbol}"
+                                      MouseDoubleClick="dgMultiTimeframe_MouseDoubleClick"
+                                      SelectionMode="Single">
+
+                                <DataGrid.RowStyle>
+                                    <Style TargetType="DataGridRow">
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="DataGridRow">
+                                                    <Border x:Name="RowBorder"
+                                                            Background="{Binding DataContext.PanelBackground, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                            BorderBrush="{Binding DataContext.BorderColor, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                            BorderThickness="0,0,0,1">
+                                                        <SelectiveScrollingGrid>
+                                                            <SelectiveScrollingGrid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                                <ColumnDefinition Width="*"/>
+                                                            </SelectiveScrollingGrid.ColumnDefinitions>
+                                                            <DataGridCellsPresenter Grid.Column="1"
+                                                                                    ItemsPanel="{TemplateBinding ItemsPanel}"
+                                                                                    SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                                                        </SelectiveScrollingGrid>
+                                                    </Border>
+
+                                                    <ControlTemplate.Triggers>
+                                                        <DataTrigger Binding="{Binding IsPositionActive}"
+                                                                     Value="True">
+                                                            <DataTrigger.EnterActions>
+                                                                <BeginStoryboard>
+                                                                    <Storyboard>
+                                                                        <ColorAnimation Storyboard.TargetName="RowBorder"
+                                                                                        Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                                                                                        From="#00E676"
+                                                                                        To="#1A3A5A"
+                                                                                        Duration="0:0:1.5"/>
+                                                                    </Storyboard>
+                                                                </BeginStoryboard>
+                                                            </DataTrigger.EnterActions>
+                                                            <Setter TargetName="RowBorder"
+                                                                    Property="Background"
+                                                                    Value="#1A3A5A"/>
+                                                            <Setter Property="Foreground"
+                                                                    Value="#FFD700"/>
+                                                            <Setter Property="FontWeight"
+                                                                    Value="Bold"/>
+                                                        </DataTrigger>
+
+                                                        <!-- [추가] 수익률 양수(>0)일 때 배경색 은은한 초록색 깜빡임 효과 -->
+                                                        <DataTrigger Binding="{Binding ProfitRate, Converter={StaticResource GreaterThanConverter}, ConverterParameter=0}"
+                                                                     Value="True">
+                                                            <DataTrigger.EnterActions>
+                                                                <BeginStoryboard x:Name="ProfitBlinkAnim">
+                                                                    <Storyboard RepeatBehavior="Forever"
+                                                                                AutoReverse="True">
+                                                                        <ColorAnimation Storyboard.TargetName="RowBorder"
+                                                                                        Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                                                                                        To="#0A351C"
+                                                                                        Duration="0:0:1.2"/>
+                                                                    </Storyboard>
+                                                                </BeginStoryboard>
+                                                            </DataTrigger.EnterActions>
+                                                            <DataTrigger.ExitActions>
+                                                                <StopStoryboard BeginStoryboardName="ProfitBlinkAnim"/>
+                                                            </DataTrigger.ExitActions>
+                                                        </DataTrigger>
+
+                                                        <!-- [추가] 수익률 음수(<0)일 때 배경색 은은한 붉은색 깜빡임 효과 -->
+                                                        <DataTrigger Binding="{Binding ProfitRate, Converter={StaticResource LessThanConverter}, ConverterParameter=0}"
+                                                                     Value="True">
+                                                            <DataTrigger.EnterActions>
+                                                                <BeginStoryboard x:Name="LossBlinkAnim">
+                                                                    <Storyboard RepeatBehavior="Forever"
+                                                                                AutoReverse="True">
+                                                                        <ColorAnimation Storyboard.TargetName="RowBorder"
+                                                                                        Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                                                                                        To="#350A0A"
+                                                                                        Duration="0:0:1.2"/>
+                                                                    </Storyboard>
+                                                                </BeginStoryboard>
+                                                            </DataTrigger.EnterActions>
+                                                            <DataTrigger.ExitActions>
+                                                                <StopStoryboard BeginStoryboardName="LossBlinkAnim"/>
+                                                            </DataTrigger.ExitActions>
+                                                        </DataTrigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </DataGrid.RowStyle>
+
+                                <DataGrid.Columns>
+                                    <DataGridTemplateColumn Header="SYMBOL"
+                                                            Width="130">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Symbol}"
+                                                               FontSize="14"
+                                                               FontWeight="Bold">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsPositionActive}"
+                                                                                 Value="True">
+                                                                        <DataTrigger.EnterActions>
+                                                                            <BeginStoryboard Storyboard="{StaticResource FlashGreen}"/>
+                                                                        </DataTrigger.EnterActions>
+                                                                        <Setter Property="Foreground"
+                                                                                Value="LimeGreen"/>
+                                                                        <Setter Property="FontWeight"
+                                                                                Value="ExtraBold"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                    <TextBlock Visibility="{Binding IsPositionActive, Converter={StaticResource BoolToVisibilityConverter}}">
+                                                    <Run Text="{Binding PositionSide, Mode=OneWay}"
+                                                         FontSize="10"
+                                                         FontFamily="Consolas"
+                                                         FontWeight="Bold"
+                                                         Foreground="{Binding PositionSideColor}"/>
+                                                    </TextBlock>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+
+                                    <DataGridTemplateColumn Header="PRICE"
+                                                            Width="130">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="0,0,10,0">
+                                                    <TextBlock Text="{Binding LastPrice, StringFormat=N2}"
+                                                               FontFamily="Consolas"
+                                                               FontSize="14"
+                                                               FontWeight="Bold"
+                                                               Foreground="{Binding PriceColor}"
+                                                               TextAlignment="Right"/>
+                                                    <TextBlock Visibility="{Binding IsPositionActive, Converter={StaticResource BoolToVisibilityConverter}}">
+                                                    <Run Text="진입: "
+                                                         FontSize="10"
+                                                         Foreground="Gray"/>
+                                                    <Run Text="{Binding EntryPrice, StringFormat=N2, Mode=OneWay}"
+                                                         FontSize="10"
+                                                         FontFamily="Consolas"
+                                                         Foreground="LightGray"/>
+                                                    </TextBlock>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+
+                                    <DataGridTextColumn Header="L/S SCORE"
+                                                        Binding="{Binding LsScoreText}"
+                                                        Width="120">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="HorizontalAlignment"
+                                                        Value="Center"/>
+                                                <Setter Property="VerticalAlignment"
+                                                        Value="Center"/>
+                                                <Setter Property="Foreground"
+                                                        Value="#E2E8F0"/>
+                                                <Setter Property="FontFamily"
+                                                        Value="Consolas"/>
+                                                <Setter Property="FontSize"
+                                                        Value="13"/>
+                                                <Setter Property="FontWeight"
+                                                        Value="Bold"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+
+                                    <DataGridTemplateColumn Header="DECISION"
+                                                            Width="120">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Border Background="{Binding DecisionBg}"
+                                                        CornerRadius="4"
+                                                        Padding="8,3"
+                                                        Margin="4">
+                                                    <TextBlock Text="{Binding Decision}"
+                                                               Foreground="White"
+                                                               FontWeight="Bold"
+                                                               HorizontalAlignment="Center"/>
+                                                </Border>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+
+                                    <DataGridTextColumn Header="SOURCE"
+                                                        Binding="{Binding SignalSource}"
+                                                        Width="95">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="HorizontalAlignment"
+                                                        Value="Center"/>
+                                                <Setter Property="VerticalAlignment"
+                                                        Value="Center"/>
+                                                <Setter Property="Foreground"
+                                                        Value="#93C5FD"/>
+                                                <Setter Property="FontWeight"
+                                                        Value="Bold"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+
+                                    <DataGridTextColumn Header="SETUP (5m)"
+                                                        Binding="{Binding ShortTermContext}"
+                                                        Width="*">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="FontStyle"
+                                                        Value="Normal"/>
+                                                <Setter Property="Foreground"
+                                                        Value="#94A3B8"/>
+                                                <Setter Property="VerticalAlignment"
+                                                        Value="Center"/>
+                                                <Setter Property="Margin"
+                                                        Value="10,0"/>
+                                                <Setter Property="FontFamily"
+                                                        Value="Consolas"/>
+                                                <Setter Property="FontSize"
+                                                        Value="13"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="ROI (%)"
+                                                        Width="100">
+                                        <DataGridTextColumn.Binding>
+                                            <Binding Path="ProfitRate"
+                                                     StringFormat="{}{0:F2}%"
+                                                     Mode="OneWay"/>
+                                        </DataGridTextColumn.Binding>
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground"
+                                                        Value="{Binding ProfitColor}"/>
+                                                <Setter Property="FontWeight"
+                                                        Value="Bold"/>
+                                                <Setter Property="TextAlignment"
+                                                        Value="Center"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+
+                                    <!-- [추가] 수동 청산 버튼 컬럼 -->
+                                    <DataGridTemplateColumn Header="ACTION"
+                                                            Width="80">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Content="CLOSE"
+                                                        Command="{Binding DataContext.ClosePositionCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="{Binding Symbol}"
+                                                        Background="#EF4444"
+                                                        Foreground="White"
+                                                        FontWeight="Bold"
+                                                        FontSize="10"
+                                                        Padding="5,2"
+                                                        BorderThickness="0"
+                                                        Cursor="Hand">
+                                                    <Button.Style>
+                                                        <Style TargetType="Button"
+                                                               BasedOn="{StaticResource {x:Type Button}}">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsPositionActive}"
+                                                                             Value="False">
+                                                                    <Setter Property="Visibility"
+                                                                            Value="Collapsed"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Button.Style>
+                                                </Button>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+
+                            <Border Grid.Row="2"
+                                    Style="{StaticResource DashboardCardBorderStyle}"
+                                    Margin="0"
+                                    Padding="12">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="LOG"
+                                               Foreground="#93C5FD"
+                                               FontSize="13"
+                                               FontWeight="Bold"
+                                               Margin="0,0,0,8"/>
+                                    <ListBox Grid.Row="1"
+                                             ItemsSource="{Binding LiveLogs}"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             Foreground="{Binding TextForeground}"
+                                             FontFamily="Consolas"
+                                             FontSize="14"
+                                             VirtualizingPanel.IsVirtualizing="True"
+                                             VirtualizingPanel.VirtualizationMode="Recycling"
+                                             ScrollViewer.CanContentScroll="True"
+                                             SnapsToDevicePixels="True"
+                                             TextOptions.TextFormattingMode="Display"
+                                             TextOptions.TextRenderingMode="ClearType">
+                                        <ListBox.ItemContainerStyle>
+                                            <Style TargetType="ListBoxItem">
+                                                <Setter Property="Padding"
+                                                        Value="4,3"/>
+                                                <Setter Property="BorderThickness"
+                                                        Value="0,0,0,1"/>
+                                                <Setter Property="BorderBrush"
+                                                        Value="#2D3142"/>
+                                                <Setter Property="Background"
+                                                        Value="Transparent"/>
+                                            </Style>
+                                        </ListBox.ItemContainerStyle>
+                                    </ListBox>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="TRADE HISTORY">
+                <Grid Margin="10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Toolbar -->
+                    <StackPanel Orientation="Horizontal"
+                                Margin="0,0,0,15">
+                        <TextBlock Text="Start Date:"
+                                   VerticalAlignment="Center"
+                                   Foreground="{Binding SubTextForeground}"
+                                   Margin="0,0,10,0"/>
+                        <DatePicker SelectedDate="{Binding StartDate}"
+                                    Width="120"
+                                    Margin="0,0,20,0"
+                                    VerticalContentAlignment="Center"/>
+
+                        <TextBlock Text="End Date:"
+                                   VerticalAlignment="Center"
+                                   Foreground="{Binding SubTextForeground}"
+                                   Margin="0,0,10,0"/>
+                        <DatePicker SelectedDate="{Binding EndDate}"
+                                    Width="120"
+                                    Margin="0,0,20,0"
+                                    VerticalContentAlignment="Center"/>
+
+                        <Button Content="SEARCH"
+                                Command="{Binding LoadHistoryCommand}"
+                                Width="100"
+                                Background="#3B82F6"
+                                Style="{StaticResource ProButtonStyle}"/>
+
+                        <!-- [Agent 3] CSV 내보내기 버튼 -->
+                        <Button Content="Export to CSV"
+                                Command="{Binding ExportHistoryCommand}"
+                                Width="120"
+                                Background="#10B981"
+                                Style="{StaticResource ProButtonStyle}"
+                                Margin="10,0,0,0"/>
+
+                        <TextBlock Text="{Binding TradeHistory.Count, StringFormat='Total: {0} Records'}"
+                                   VerticalAlignment="Center"
+                                   Foreground="{Binding SubTextForeground}"
+                                   Margin="20,0,0,0"/>
+                    </StackPanel>
+
+                    <!-- 통계 차트 패널 -->
+                    <Border Grid.Row="1"
+                            Background="{Binding PanelBackground}"
+                            BorderBrush="{Binding BorderColor}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="15"
+                            Margin="0,0,0,15">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- 승률 -->
+                            <StackPanel Grid.Column="0"
+                                        Margin="10">
+                                <TextBlock Text="승률"
+                                           FontSize="12"
+                                           Foreground="{Binding SubTextForeground}"
+                                           HorizontalAlignment="Center"/>
+                                <TextBlock Text="{Binding WinRate, StringFormat={}{0:F1}%}"
+                                           FontSize="24"
+                                           FontWeight="Bold"
+                                           Foreground="#00E676"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,5,0,0"/>
+                            </StackPanel>
+
+                            <!-- 총 수익 -->
+                            <StackPanel Grid.Column="1"
+                                        Margin="10">
+                                <TextBlock Text="총 수익"
+                                           FontSize="12"
+                                           Foreground="{Binding SubTextForeground}"
+                                           HorizontalAlignment="Center"/>
+                                <TextBlock Text="{Binding TotalProfit, StringFormat={}{0:N2} USDT}"
+                                           FontSize="24"
+                                           FontWeight="Bold"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,5,0,0">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground"
+                                                    Value="White"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding TotalProfit, Converter={StaticResource GreaterThanConverter}, ConverterParameter=0}"
+                                                             Value="True">
+                                                    <Setter Property="Foreground"
+                                                            Value="#00E676"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding TotalProfit, Converter={StaticResource LessThanConverter}, ConverterParameter=0}"
+                                                             Value="True">
+                                                    <Setter Property="Foreground"
+                                                            Value="#FF5252"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+
+                            <!-- 총 수익률 (ROI %) -->
+                            <StackPanel Grid.Column="2"
+                                        Margin="10">
+                                <TextBlock Text="총 수익률 (ROI %)"
+                                           FontSize="12"
+                                           Foreground="{Binding SubTextForeground}"
+                                           HorizontalAlignment="Center"/>
+                                <TextBlock Text="{Binding AverageRoe, StringFormat={}{0:F2}%}"
+                                           FontSize="24"
+                                           FontWeight="Bold"
+                                           Foreground="#3B82F6"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,5,0,0"/>
+                            </StackPanel>
+
+                            <!-- 총 거래 횟수 -->
+                            <StackPanel Grid.Column="3"
+                                        Margin="10">
+                                <TextBlock Text="총 거래"
+                                           FontSize="12"
+                                           Foreground="{Binding SubTextForeground}"
+                                           HorizontalAlignment="Center"/>
+                                <TextBlock Text="{Binding TradeHistory.Count, StringFormat={}{0}회}"
+                                           FontSize="24"
+                                           FontWeight="Bold"
+                                           Foreground="#8B5CF6"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,5,0,0"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- DataGrid -->
+                    <DataGrid Grid.Row="2"
+                              ItemsSource="{Binding TradeHistory}"
+                              AutoGenerateColumns="False"
+                              Background="Transparent"
+                              RowBackground="Transparent"
+                              Foreground="{Binding TextForeground}"
+                              BorderThickness="1"
+                              BorderBrush="{Binding BorderColor}"
+                              GridLinesVisibility="Horizontal"
+                              HorizontalGridLinesBrush="{Binding BorderColor}"
+                              MouseDoubleClick="DataGrid_MouseDoubleClick"
+                              ColumnHeaderStyle="{StaticResource DarkColumnHeader}"
+                              CanUserAddRows="False"
+                              IsReadOnly="True">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="TIME"
+                                                Binding="{Binding Time, StringFormat='yyyy-MM-dd HH:mm:ss'}"
+                                                Width="160"/>
+                            <DataGridTextColumn Header="SYMBOL"
+                                                Binding="{Binding Symbol}"
+                                                Width="100"
+                                                FontWeight="Bold"/>
+                            <DataGridTemplateColumn Header="SIDE"
+                                                    Width="80">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Side}"
+                                                   FontWeight="Bold">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Side}"
+                                                                     Value="BUY">
+                                                            <Setter Property="Foreground"
+                                                                    Value="#00E676"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding Side}"
+                                                                     Value="SELL">
+                                                            <Setter Property="Foreground"
+                                                                    Value="#FF5252"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="PRICE"
+                                                Binding="{Binding Price, StringFormat=N4}"
+                                                Width="100"/>
+                            <DataGridTextColumn Header="STRATEGY"
+                                                Binding="{Binding Strategy}"
+                                                Width="150"/>
+                            <DataGridTextColumn Header="AI SCORE"
+                                                Binding="{Binding AiScore, StringFormat=F1}"
+                                                Width="80">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground"
+                                                Value="White"/>
+                                        <Setter Property="FontWeight"
+                                                Value="Bold"/>
+                                        <Setter Property="HorizontalAlignment"
+                                                Value="Center"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+
+                            <!-- [추가] PnL 및 수익률 컬럼 -->
+                            <DataGridTextColumn Header="PnL (USDT)"
+                                                Binding="{Binding PnL, StringFormat=N2}"
+                                                Width="100">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground"
+                                                Value="White"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding PnL, Converter={StaticResource LessThanConverter}, ConverterParameter=0}"
+                                                         Value="True">
+                                                <Setter Property="Foreground"
+                                                        Value="#FF5252"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding PnL, Converter={StaticResource GreaterThanConverter}, ConverterParameter=0}"
+                                                         Value="True">
+                                                <Setter Property="Foreground"
+                                                        Value="#00E676"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+
+                            <DataGridTextColumn Header="ROE (%)"
+                                                Binding="{Binding PnLPercent, StringFormat={}{0:F2}%}"
+                                                Width="80"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
+            <!-- [Phase 14] 고급 거래 기능 탭 -->
+            <TabItem Header="ADVANCED FEATURES"
+                     Visibility="Collapsed">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <Grid Margin="10">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- 1. 차익거래 패널 -->
+                        <Border Grid.Row="0"
+                                Background="{Binding PanelBackground}"
+                                CornerRadius="10"
+                                Padding="15"
+                                Margin="0,0,0,10">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <!-- 제목 -->
+                                <TextBlock Grid.Row="0"
+                                           Text="💰 차익거래 (Arbitrage)"
+                                           FontSize="16"
+                                           FontWeight="Bold"
+                                           Foreground="#00E676"
+                                           Margin="0,0,0,10"/>
+
+                                <!-- 설정 -->
+                                <Grid Grid.Row="1"
+                                      Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Column="0"
+                                               Text="최소 수익률 (%):"
+                                               Foreground="{Binding SubTextForeground}"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,10,0"/>
+                                    <TextBox x:Name="txtArbitrageMinProfit"
+                                             Grid.Column="1"
+                                             Text="0.2"
+                                             Width="80"
+                                             HorizontalAlignment="Left"
+                                             Background="{Binding PanelBackground}"
+                                             Foreground="{Binding TextForeground}"
+                                             BorderBrush="{Binding BorderColor}"
+                                             Padding="5"/>
+
+                                    <TextBlock Grid.Column="2"
+                                               Text="스캔 간격 (초):"
+                                               Foreground="{Binding SubTextForeground}"
+                                               VerticalAlignment="Center"
+                                               Margin="20,0,10,0"/>
+                                    <TextBox x:Name="txtArbitrageScanInterval"
+                                             Grid.Column="3"
+                                             Text="60"
+                                             Width="80"
+                                             HorizontalAlignment="Left"
+                                             Background="{Binding PanelBackground}"
+                                             Foreground="{Binding TextForeground}"
+                                             BorderBrush="{Binding BorderColor}"
+                                             Padding="5"/>
+                                </Grid>
+
+                                <!-- 버튼 및 상태 -->
+                                <Grid Grid.Row="2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <Button x:Name="btnStartArbitrage"
+                                            Grid.Column="0"
+                                            Content="▶ 시작"
+                                            Width="100"
+                                            Background="#10B981"
+                                            Style="{StaticResource ProButtonStyle}"
+                                            Click="BtnStartArbitrage_Click"
+                                            Margin="0,0,10,0"/>
+
+                                    <Button x:Name="btnStopArbitrage"
+                                            Grid.Column="1"
+                                            Content="■ 중지"
+                                            Width="100"
+                                            Background="#EF4444"
+                                            Style="{StaticResource ProButtonStyle}"
+                                            Click="BtnStopArbitrage_Click"
+                                            IsEnabled="False"
+                                            Margin="0,0,10,0"/>
+
+                                    <TextBlock x:Name="txtArbitrageStatus"
+                                               Grid.Column="2"
+                                               Text="상태: 중지됨"
+                                               Foreground="#64748B"
+                                               VerticalAlignment="Center"
+                                               FontSize="12"/>
+                                </Grid>
+                            </Grid>
+                        </Border>
+
+                        <!-- 2. 자금 이동 패널 -->
+                        <Border Grid.Row="1"
+                                Background="{Binding PanelBackground}"
+                                CornerRadius="10"
+                                Padding="15"
+                                Margin="0,0,0,10">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <!-- 제목 -->
+                                <TextBlock Grid.Row="0"
+                                           Text="💱 자금 이동 (Fund Transfer)"
+                                           FontSize="16"
+                                           FontWeight="Bold"
+                                           Foreground="#3B82F6"
+                                           Margin="0,0,0,10"/>
+
+                                <!-- 설정 -->
+                                <Grid Grid.Row="1"
+                                      Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Column="0"
+                                               Text="체크 간격 (분):"
+                                               Foreground="{Binding SubTextForeground}"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,10,0"/>
+                                    <TextBox x:Name="txtFundTransferInterval"
+                                             Grid.Column="1"
+                                             Text="60"
+                                             Width="80"
+                                             HorizontalAlignment="Left"
+                                             Background="{Binding PanelBackground}"
+                                             Foreground="{Binding TextForeground}"
+                                             BorderBrush="{Binding BorderColor}"
+                                             Padding="5"/>
+
+                                    <TextBlock Grid.Column="2"
+                                               Text="최소 이동 금액 (USDT):"
+                                               Foreground="{Binding SubTextForeground}"
+                                               VerticalAlignment="Center"
+                                               Margin="20,0,10,0"/>
+                                    <TextBox x:Name="txtFundTransferMinAmount"
+                                             Grid.Column="3"
+                                             Text="100"
+                                             Width="80"
+                                             HorizontalAlignment="Left"
+                                             Background="{Binding PanelBackground}"
+                                             Foreground="{Binding TextForeground}"
+                                             BorderBrush="{Binding BorderColor}"
+                                             Padding="5"/>
+                                </Grid>
+
+                                <!-- 버튼 및 상태 -->
+                                <Grid Grid.Row="2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <Button x:Name="btnStartFundTransfer"
+                                            Grid.Column="0"
+                                            Content="▶ 시작"
+                                            Width="100"
+                                            Background="#10B981"
+                                            Style="{StaticResource ProButtonStyle}"
+                                            Click="BtnStartFundTransfer_Click"
+                                            Margin="0,0,10,0"/>
+
+                                    <Button x:Name="btnStopFundTransfer"
+                                            Grid.Column="1"
+                                            Content="■ 중지"
+                                            Width="100"
+                                            Background="#EF4444"
+                                            Style="{StaticResource ProButtonStyle}"
+                                            Click="BtnStopFundTransfer_Click"
+                                            IsEnabled="False"
+                                            Margin="0,0,10,0"/>
+
+                                    <TextBlock x:Name="txtFundTransferStatus"
+                                               Grid.Column="2"
+                                               Text="상태: 중지됨"
+                                               Foreground="#64748B"
+                                               VerticalAlignment="Center"
+                                               FontSize="12"/>
+                                </Grid>
+                            </Grid>
+                        </Border>
+
+                        <!-- 3. 리밸런싱 패널 -->
+                        <Border Grid.Row="2"
+                                Background="{Binding PanelBackground}"
+                                CornerRadius="10"
+                                Padding="15">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <!-- 제목 -->
+                                <TextBlock Grid.Row="0"
+                                           Text="⚖️ 포트폴리오 리밸런싱"
+                                           FontSize="16"
+                                           FontWeight="Bold"
+                                           Foreground="#F59E0B"
+                                           Margin="0,0,0,10"/>
+
+                                <!-- 설정 -->
+                                <Grid Grid.Row="1"
+                                      Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Column="0"
+                                               Text="체크 간격 (시간):"
+                                               Foreground="{Binding SubTextForeground}"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,10,0"/>
+                                    <TextBox x:Name="txtRebalancingInterval"
+                                             Grid.Column="1"
+                                             Text="24"
+                                             Width="80"
+                                             HorizontalAlignment="Left"
+                                             Background="{Binding PanelBackground}"
+                                             Foreground="{Binding TextForeground}"
+                                             BorderBrush="{Binding BorderColor}"
+                                             Padding="5"/>
+
+                                    <TextBlock Grid.Column="2"
+                                               Text="리밸런싱 임계값 (%):"
+                                               Foreground="{Binding SubTextForeground}"
+                                               VerticalAlignment="Center"
+                                               Margin="20,0,10,0"/>
+                                    <TextBox x:Name="txtRebalancingThreshold"
+                                             Grid.Column="3"
+                                             Text="5.0"
+                                             Width="80"
+                                             HorizontalAlignment="Left"
+                                             Background="{Binding PanelBackground}"
+                                             Foreground="{Binding TextForeground}"
+                                             BorderBrush="{Binding BorderColor}"
+                                             Padding="5"/>
+                                </Grid>
+
+                                <!-- 버튼 및 상태 -->
+                                <Grid Grid.Row="2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <Button x:Name="btnStartRebalancing"
+                                            Grid.Column="0"
+                                            Content="▶ 시작"
+                                            Width="100"
+                                            Background="#10B981"
+                                            Style="{StaticResource ProButtonStyle}"
+                                            Click="BtnStartRebalancing_Click"
+                                            Margin="0,0,10,0"/>
+
+                                    <Button x:Name="btnStopRebalancing"
+                                            Grid.Column="1"
+                                            Content="■ 중지"
+                                            Width="100"
+                                            Background="#EF4444"
+                                            Style="{StaticResource ProButtonStyle}"
+                                            Click="BtnStopRebalancing_Click"
+                                            IsEnabled="False"
+                                            Margin="0,0,10,0"/>
+
+                                    <TextBlock x:Name="txtRebalancingStatus"
+                                               Grid.Column="2"
+                                               Text="상태: 중지됨"
+                                               Foreground="#64748B"
+                                               VerticalAlignment="Center"
+                                               FontSize="12"/>
+                                </Grid>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- [AI 모니터링] 개선된 탭 -->
+            <TabItem Header="AI MONITOR">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <Grid Margin="10">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="300"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="300"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- 1. 실시간 정확도 대시보드 -->
+                        <Border Grid.Row="0"
+                                Background="{Binding PanelBackground}"
+                                CornerRadius="10"
+                                Padding="15"
+                                Margin="0,0,0,10">
+                            <StackPanel>
+                                <TextBlock Text="🎯 실시간 AI 모델 정확도"
+                                           FontSize="16"
+                                           FontWeight="Bold"
+                                           Foreground="{Binding TextForeground}"
+                                           Margin="0,0,0,10"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- ML.NET -->
+                                    <Border Grid.Column="0"
+                                            Background="#1E293B"
+                                            CornerRadius="8"
+                                            Padding="10"
+                                            Margin="0,0,5,0">
+                                        <StackPanel>
+                                            <TextBlock Text="ML.NET"
+                                                       Foreground="#94A3B8"
+                                                       FontSize="12"
+                                                       HorizontalAlignment="Center"/>
+                                            <TextBlock Text="{Binding MLNetAccuracy, StringFormat={}{0:F1}%}"
+                                                       FontSize="24"
+                                                       FontWeight="Bold"
+                                                       Foreground="#00E676"
+                                                       HorizontalAlignment="Center"
+                                                       Margin="0,5,0,0"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- ONNX -->
+                                    <Border Grid.Column="1"
+                                            Background="#1E293B"
+                                            CornerRadius="8"
+                                            Padding="10"
+                                            Margin="5,0">
+                                        <StackPanel>
+                                            <TextBlock Text="ONNX Runtime"
+                                                       Foreground="#94A3B8"
+                                                       FontSize="12"
+                                                       HorizontalAlignment="Center"/>
+                                            <TextBlock Text="{Binding OnnxAccuracy, StringFormat={}{0:F1}%}"
+                                                       FontSize="24"
+                                                       FontWeight="Bold"
+                                                       Foreground="#00E676"
+                                                       HorizontalAlignment="Center"
+                                                       Margin="0,5,0,0"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- Transformer -->
+                                    <Border Grid.Column="2"
+                                            Background="#1E293B"
+                                            CornerRadius="8"
+                                            Padding="10"
+                                            Margin="5,0,0,0">
+                                        <StackPanel>
+                                            <TextBlock Text="Transformer"
+                                                       Foreground="#94A3B8"
+                                                       FontSize="12"
+                                                       HorizontalAlignment="Center"/>
+                                            <TextBlock Text="{Binding TransformerAccuracy, StringFormat={}{0:F1}%}"
+                                                       FontSize="24"
+                                                       FontWeight="Bold"
+                                                       Foreground="#00E676"
+                                                       HorizontalAlignment="Center"
+                                                       Margin="0,5,0,0"/>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 2. 모델 성능 비교 테이블 -->
+                        <Border Grid.Row="1"
+                                Background="{Binding PanelBackground}"
+                                CornerRadius="10"
+                                Padding="15"
+                                Margin="0,0,0,10">
+                            <StackPanel>
+                                <TextBlock Text="📊 모델 성능 비교"
+                                           FontSize="16"
+                                           FontWeight="Bold"
+                                           Foreground="{Binding TextForeground}"
+                                           Margin="0,0,0,10"/>
+                                <DataGrid ItemsSource="{Binding ModelPerformances}"
+                                          AutoGenerateColumns="False"
+                                          Background="Transparent"
+                                          Foreground="{Binding TextForeground}"
+                                          BorderThickness="0"
+                                          CanUserAddRows="False"
+                                          CanUserDeleteRows="False"
+                                          IsReadOnly="True"
+                                          RowHeight="40"
+                                          GridLinesVisibility="Horizontal"
+                                          HorizontalGridLinesBrush="{Binding BorderColor}"
+                                          HeadersVisibility="Column">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="모델명"
+                                                            Binding="{Binding ModelName}"
+                                                            Width="*"/>
+                                        <DataGridTextColumn Header="정확도"
+                                                            Binding="{Binding Accuracy, StringFormat={}{0:F2}%}"
+                                                            Width="100">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground"
+                                                            Value="{Binding StatusColor}"/>
+                                                    <Setter Property="FontWeight"
+                                                            Value="Bold"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+                                        <DataGridTextColumn Header="총 예측"
+                                                            Binding="{Binding TotalPredictions}"
+                                                            Width="80"/>
+                                        <DataGridTextColumn Header="성공"
+                                                            Binding="{Binding CorrectPredictions}"
+                                                            Width="80"/>
+                                        <DataGridTextColumn Header="평균 신뢰도"
+                                                            Binding="{Binding AvgConfidence, StringFormat={}{0:F2}%}"
+                                                            Width="120"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 3. 실시간 예측 vs 실제 가격 비교 차트 -->
+                        <Border Grid.Row="2"
+                                Background="{Binding PanelBackground}"
+                                CornerRadius="10"
+                                Padding="15"
+                                Margin="0,0,0,10">
+                            <StackPanel>
+                                <TextBlock Text="🔮 실시간 예측 vs 실제 가격 비교 (최근 20개)"
+                                           FontSize="16"
+                                           FontWeight="Bold"
+                                           Foreground="{Binding TextForeground}"
+                                           Margin="0,0,0,10"/>
+                                <lvc:CartesianChart Series="{Binding PredictionComparisonSeries}"
+                                                    LegendLocation="Bottom"
+                                                    Hoverable="True">
+                                    <lvc:CartesianChart.AxisY>
+                                        <lvc:Axis Title="Price (USDT)"
+                                                  Foreground="#94A3B8"
+                                                  LabelFormatter="{Binding LiveChartYFormatter}"/>
+                                    </lvc:CartesianChart.AxisY>
+                                    <lvc:CartesianChart.AxisX>
+                                        <lvc:Axis Title="Prediction #"
+                                                  Foreground="#94A3B8"/>
+                                    </lvc:CartesianChart.AxisX>
+                                </lvc:CartesianChart>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 4. RL 보상 차트 -->
+                        <TextBlock Grid.Row="3"
+                                   Text="🧠 Reinforcement Learning Rewards"
+                                   FontSize="16"
+                                   FontWeight="Bold"
+                                   Foreground="{Binding TextForeground}"
+                                   Margin="0,0,0,10"/>
+
+                        <Border Grid.Row="4"
+                                Background="{Binding PanelBackground}"
+                                CornerRadius="10"
+                                Padding="15">
+                            <lvc:CartesianChart Series="{Binding RLRewardSeries}"
+                                                LegendLocation="Bottom"
+                                                Hoverable="True">
+                                <lvc:CartesianChart.AxisY>
+                                    <lvc:Axis Title="Reward"
+                                              Foreground="#94A3B8"/>
+                                </lvc:CartesianChart.AxisY>
+                            </lvc:CartesianChart>
+                        </Border>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+
+        <StatusBar Grid.Row="3"
+                   Background="#0F111A"
+                   BorderBrush="#1E293B"
+                   BorderThickness="0,1,0,0">
+            <StatusBarItem>
+                <TextBlock x:Name="lblFooter"
+                           Text="SYSTEM READY | WAITING FOR COMMAND"
+                           Foreground="AliceBlue"
+                           FontSize="14"/>
+            </StatusBarItem>
+            <StatusBarItem HorizontalAlignment="Right">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="txtTelegramStatus"
+                               Text="Telegram: Off"
+                               Foreground="Gray"
+                               FontSize="14"
+                               Margin="0,0,15,0"/>
+                    <TextBlock Text="Binance USDT-Futures API Connected"
+                               Foreground="#10B981"
+                               FontSize="14"
+                               Margin="0,0,10,0"/>
+                </StackPanel>
+            </StatusBarItem>
+        </StatusBar>
+    </Grid>
+</Window>
