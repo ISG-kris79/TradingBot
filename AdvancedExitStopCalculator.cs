@@ -38,9 +38,8 @@ namespace TradingBot.Services
         /// ROE 20% 이상에서만 활용되며, 기존 3단계 스탑과의 max() 비교로 최종 결정
         /// </summary>
         public AdvancedExitSignal CalculateAdvancedExitStop(
-            Position position, 
-            TechnicalData tech,
             decimal stage3StopPrice,    // 기존 3단계 스탑 (절대값)
+            TechnicalData tech,
             bool isLong)
         {
             var signal = new AdvancedExitSignal();
@@ -129,7 +128,7 @@ namespace TradingBot.Services
         /// - 50% 남겨두고 지표 기반 트레일링 적용
         /// </summary>
         public (bool ShouldExecutePartial, decimal PartialQuantity) EvaluatePartialExit(
-            Position position,
+            decimal positionQuantity,
             decimal currentPrice,
             double currentRoe,
             bool isLong)
@@ -137,7 +136,7 @@ namespace TradingBot.Services
             // ROE 20% 도달 시 분할 익절 추천
             if (Math.Abs(currentRoe - 20.0) < 0.1)  // ROE가 20% 근처일 때
             {
-                decimal halfQuantity = position.Quantity / 2;
+                decimal halfQuantity = positionQuantity / 2;
                 LogSignal($"💰 [분할 익절] ROE 20% 도달. 50% 즉시 익절 ({halfQuantity:F8}). 나머지 50%는 지표 추격.", isLong);
                 return (true, halfQuantity);
             }

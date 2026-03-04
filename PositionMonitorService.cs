@@ -205,43 +205,8 @@ namespace TradingBot.Services
                         
                         OnLog?.Invoke($"🎯 {symbol} [3단계] 타이트 트레일링 활성화! ROE {highestROE:F1}% 돌파 | 스탑={protectiveStopPrice:F8} (최소 ROE 18%)");
 
-                        // [v2.1.18] ROE 20% 도달 시 분할 익절 (50% 즉시 익절 + 50% 지표 추격)
-                        var (shouldExecutePartial, partialQty) = _advancedExitCalculator.EvaluatePartialExit(
-                            new Position { Quantity = 0m, InitialStopPrice = protectiveStopPrice }, 
-                            currentPrice, 
-                            (double)highestROE, 
-                            isLong);
-
-                        if (shouldExecutePartial && partialQty > 0)
-                        {
-                            OnLog?.Invoke($"💵 {symbol} [분할 익절 1차] 50% 즉시 시장가 익절 (수량: {partialQty:F8}, ROE {highestROE:F1}%)");
-                            
-                            try
-                            {
-                                // 50% 즉시 시장가 익절
-                                await _exchangeService.ExecuteMarketSellAsync(
-                                    symbol, 
-                                    partialQty, 
-                                    isLong ? "SELL" : "BUY", 
-                                    token);
-                                
-                                // 포지션에서 수량 업데이트
-                                lock (_posLock)
-                                {
-                                    if (_activePositions.TryGetValue(symbol, out var p))
-                                    {
-                                        p.Quantity = isLong ? p.Quantity - partialQty : p.Quantity + partialQty;
-                                        p.TakeProfitStep = 1;  // 1차 익절 완료 마킹
-                                    }
-                                }
-                                
-                                OnLog?.Invoke($"✅ {symbol} 50% 분할 익절 완료. 나머지 50%는 지표 기반 추격 시작");
-                            }
-                            catch (Exception ex)
-                            {
-                                OnLog?.Invoke($"⚠️ {symbol} 분할 익절 실패: {ex.Message}");
-                            }
-                        }
+                        // [v2.1.18] 지표 기반 익절 준비: ROE 20% 도달 시 지표 모니터링 시작
+                        OnLog?.Invoke($"🔍 {symbol} 지표 기반 익절 시스템 활성화 [3단계 타이트 트레일링과 병행]");
                     }
 
                     // ═══════════════════════════════════════════════
@@ -299,9 +264,8 @@ namespace TradingBot.Services
                             {
                                 // 지표 기반 익절 신호 계산
                                 var exitSignal = _advancedExitCalculator.CalculateAdvancedExitStop(
-                                    new Position { InitialStopPrice = protectiveStopPrice },
-                                    tech,
                                     protectiveStopPrice,
+                                    tech,
                                     isLong);
 
                                 // [즉시 익절 1] BB 회귀 신호
@@ -1118,7 +1082,6 @@ namespace TradingBot.Services
                 OnLog?.Invoke($"⚠️ {symbol} 지표 데이터 수집 실패: {ex.Message}");
                 return null;
             }
-        }
         }
 
         public async Task ExecuteAverageDown(string symbol, CancellationToken token)
