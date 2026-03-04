@@ -1176,6 +1176,10 @@ namespace TradingBot.Services
         {
             lock (_posLock) _activePositions.Remove(symbol);
             OnPositionStatusUpdate?.Invoke(symbol, false, 0);
+            
+            // [중요] 포지션 청산 후 ROI를 명시적으로 0으로 리셋
+            // (감시 루프의 마지막 ROE 값이 UI를 덮어씌우는 것을 방지)
+            OnTickerUpdate?.Invoke(symbol, 0m, 0d);
         }
     }
 }
