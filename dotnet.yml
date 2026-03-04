@@ -1,0 +1,100 @@
+name: .NET Core Desktop
+
+on:
+  push:
+    tags:
+      - "v*" # v1.0.0, v1.0.1 등 태그 푸시 시 실행
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version (e.g. 1.0.0)'
+        required: true
+        default: '1.0.0'
+
+permissions:
+  contents: write # 릴리스 생성을 위한 권한 필요
+
+jobs:
+  build-and-release:
+
+    runs-on: windows-latest  # WPF requires Windows runner
+
+    env:
+      Solution_Name: TradingBot.sln
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install .NET Core
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 9.0.x
+
+    - name: Run Unit Tests
+      run: dotnet test --configuration Release
+
+    - name: Install Velopack Tool
+      run: dotnet tool install -g vpk
+
+    - name: Publish Application
+      run: dotnet publish TradingBot/TradingBot.csproj -c Release -r win-x64 --self-contained -o ./publish
+
+    - name: Pack with Velopack
+      shell: pwsh
+      run: |
+        # 태그에서 버전 추출 (예: v1.0.0 -> 1.0.0)
+        if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+          $version = "${{ github.event.inputs.version }}"
+        } else {
+          $version = "${{ github.ref_name }}".TrimStart('v')
+        }
+        
+        Write-Host "Packaging version: $version"
+        vpk pack -u TradingBot -v $version -p ./publish -e TradingBot.exe
+
+    - name: Generate Release Notes
+      id: release_notes
+      shell: pwsh
+      run: |
+        # 현재 버전 추출
+        if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+          $version = "${{ github.event.inputs.version }}"
+        } else {
+          $version = "${{ github.ref_name }}".TrimStart('v')
+        }
+        
+        # 릴리스 노트 생성 스크립트 실행
+        .\generate_release_notes.ps1 -CurrentVersion $version
+        
+        Write-Host "Release notes generated and saved to release_notes.md"
+
+    - name: Create GitHub Release
+      id: create_release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        body_path: release_notes.md
+        files: |
+          Releases/*Setup.exe
+          Releases/*Portable.zip
+          Releases/*.nupkg
+          Releases/RELEASES
+          LICENSE.md
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Notify Success via Telegram
+      if: success()
+      run: |
+        curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} -d text="✅ 배포 성공: ${{ github.repository }} (${{ github.ref_name }})%0A%0A다운로드: ${{ steps.create_release.outputs.html_url }}"
+
+    - name: Notify Failure via Telegram
+      if: failure()
+      run: |
+        curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} -d text="❌ 배포 실패: ${{ github.repository }} (${{ github.ref_name }})"

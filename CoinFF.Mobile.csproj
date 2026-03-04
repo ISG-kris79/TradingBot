@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<TargetFrameworks>net9.0-android;net9.0-ios;net9.0-maccatalyst</TargetFrameworks>
+		<TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">$(TargetFrameworks);net9.0-windows10.0.19041.0</TargetFrameworks>
+		<OutputType>Exe</OutputType>
+		<RootNamespace>CoinFF.Mobile</RootNamespace>
+		<UseMaui>true</UseMaui>
+		<SingleProject>true</SingleProject>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<ApplicationTitle>CoinFF Monitor</ApplicationTitle>
+		<ApplicationId>com.coinff.monitor</ApplicationId>
+
+		<!-- 앱 버전 정보 -->
+		<ApplicationDisplayVersion>1.2.8</ApplicationDisplayVersion>
+		<ApplicationVersion>1</ApplicationVersion>
+
+		<!-- Android 설정 -->
+		<AndroidPackageFormat>apk</AndroidPackageFormat>
+
+		<!-- 릴리스 빌드 서명 설정 (필요 시 주석 해제 및 수정) -->
+		<!-- <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+			<AndroidSigningKeyStore>your-release.keystore</AndroidSigningKeyStore>
+			<AndroidSigningKeyAlias>your-alias</AndroidSigningKeyAlias>
+			<AndroidSigningKeyPass>your-password</AndroidSigningKeyPass>
+			<AndroidSigningStorePass>your-password</AndroidSigningStorePass>
+		</PropertyGroup> -->
+	</PropertyGroup>
+
+	<ItemGroup>
+		<!-- App Icon -->
+		<MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#512BD4" />
+
+		<!-- Splash Screen -->
+		<MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#512BD4" BaseSize="128,128" />
+	</ItemGroup>
+
+</Project>

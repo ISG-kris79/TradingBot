@@ -1,0 +1,201 @@
+﻿<Window x:Class="TradingBot.TradeStatisticsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:lvc="clr-namespace:LiveCharts.Wpf;assembly=LiveCharts.Wpf"
+        Title="留ㅻℓ ?듦퀎 遺꾩꽍"
+        Height="650"
+        Width="1000"
+        WindowStartupLocation="CenterOwner"
+        Background="#121212"
+        Foreground="White"
+        FontFamily="Segoe UI"
+        WindowStyle="None">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="40"
+                ResizeBorderThickness="5"
+                      GlassFrameThickness="0"
+                CornerRadius="0"/>
+    </WindowChrome.WindowChrome>
+    <Window.Resources>
+        <Style x:Key="WindowControlButtonStyle"
+                TargetType="Button">
+            <Setter Property="WindowChrome.IsHitTestVisibleInChrome"
+                    Value="True"/>
+            <Setter Property="Background"
+                    Value="Transparent"/>
+            <Setter Property="Foreground"
+                    Value="#94A3B8"/>
+            <Setter Property="BorderThickness"
+                    Value="0"/>
+            <Setter Property="Width"
+                    Value="46"/>
+            <Setter Property="Height"
+                    Value="32"/>
+            <Setter Property="FontSize"
+                    Value="14"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver"
+                                    Value="True">
+                                <Setter Property="Background"
+                                        Value="#333"/>
+                                <Setter Property="Foreground"
+                                        Value="White"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="ModernWindowStyle"
+                TargetType="Window">
+            <Setter Property="Background"
+                    Value="#121212"/>
+            <Setter Property="Foreground"
+                    Value="White"/>
+            <Setter Property="FontFamily"
+                    Value="Segoe UI"/>
+            <Setter Property="WindowStyle"
+                    Value="None"/>
+            <Setter Property="ResizeMode"
+                    Value="CanResize"/>
+            <Setter Property="WindowChrome.WindowChrome">
+                <Setter.Value>
+                    <WindowChrome CaptionHeight="40"
+                            ResizeBorderThickness="5"
+                                  GlassFrameThickness="0"
+                            CornerRadius="0"/>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Border BorderBrush="#333"
+            BorderThickness="1"
+            Background="#1E1E1E">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="40"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- Title Bar -->
+            <Grid Grid.Row="0"
+                    Background="Transparent"
+                    MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+                <TextBlock Text="留ㅻℓ ?듦퀎 遺꾩꽍"
+                        VerticalAlignment="Center"
+                        HorizontalAlignment="Left"
+                        Margin="10,0,0,0"
+                        Foreground="White"
+                        FontWeight="Bold"/>
+                <StackPanel Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Top">
+                    <Button Content="—"
+                            Style="{StaticResource WindowControlButtonStyle}"
+                            Click="OnMinimize_Click"/>
+                    <Button Content="☐"
+                            Style="{StaticResource WindowControlButtonStyle}"
+                            Click="OnMaximize_Click"/>
+                    <Button Content="✕"
+                            Click="OnClose_Click">
+                        <Button.Style>
+                            <Style TargetType="Button"
+                                    BasedOn="{StaticResource WindowControlButtonStyle}">
+                                <Style.Triggers>
+                                    <Trigger Property="IsMouseOver"
+                                            Value="True">
+                                        <Setter Property="Background"
+                                                Value="#E81123"/>
+                                        <Setter Property="Foreground"
+                                                Value="White"/>
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                </StackPanel>
+            </Grid>
+
+            <!-- Original Content -->
+            <Grid Grid.Row="1"
+                    Margin="15">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <!-- ?붿빟 ?뺣낫 -->
+                <Border Grid.Row="0"
+                        Background="#F1F5F9"
+                        Padding="15"
+                        CornerRadius="8"
+                        Margin="0,0,0,15">
+                    <TextBlock Text="{Binding SummaryText}"
+                            FontSize="16"
+                            FontWeight="Bold"
+                            Foreground="#1E293B"
+                            HorizontalAlignment="Center"/>
+                </Border>
+
+                <!-- ?곷떒: ?밸쪧 諛??꾩쟻 ?섏씡 -->
+                <Grid Grid.Row="1"
+                        Margin="0,0,0,15">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1*"/>
+                        <ColumnDefinition Width="2*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <GroupBox Header="?밸쪧 (Win Rate)"
+                            Margin="0,0,10,0"
+                            Padding="10">
+                        <lvc:PieChart Series="{Binding WinRateSeries}"
+                                LegendLocation="Right"
+                                InnerRadius="40"
+                                Hoverable="True"/>
+                    </GroupBox>
+
+                    <GroupBox Header="?꾩쟻 ?섏씡 怨≪꽑 (Cumulative PnL)"
+                            Grid.Column="1"
+                            Padding="10">
+                        <lvc:CartesianChart Series="{Binding CumulativeProfitSeries}"
+                                LegendLocation="None">
+                            <lvc:CartesianChart.AxisX>
+                                <lvc:Axis Labels="{Binding TradeLabels}"
+                                        ShowLabels="False"/>
+                            </lvc:CartesianChart.AxisX>
+                            <lvc:CartesianChart.AxisY>
+                                <lvc:Axis Title="Profit ($)"
+                                        LabelFormatter="{Binding CurrencyFormatter}"/>
+                            </lvc:CartesianChart.AxisY>
+                        </lvc:CartesianChart>
+                    </GroupBox>
+                </Grid>
+
+                <!-- ?섎떒: ?쒓컙?蹂??섏씡 -->
+                <GroupBox Header="?쒓컙?蹂??섏씡 ?꾪솴 (Hourly Profit Analysis)"
+                        Grid.Row="2"
+                        Padding="10">
+                    <lvc:CartesianChart Series="{Binding HourlyProfitSeries}"
+                            LegendLocation="None">
+                        <lvc:CartesianChart.AxisX>
+                            <lvc:Axis Labels="{Binding HourlyLabels}"
+                                    Title="Hour (0 ~ 23)"/>
+                        </lvc:CartesianChart.AxisX>
+                        <lvc:CartesianChart.AxisY>
+                            <lvc:Axis Title="Profit ($)"
+                                    LabelFormatter="{Binding CurrencyFormatter}"/>
+                        </lvc:CartesianChart.AxisY>
+                    </lvc:CartesianChart>
+                </GroupBox>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>

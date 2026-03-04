@@ -1,0 +1,65 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36717.8
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TradingBot", "TradingBot\TradingBot.csproj", "{4628546D-4718-42FD-8A9C-94BE51605967}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TradingBot.Shared", "TradingBot.Shared\TradingBot.Shared.csproj", "{2C9F6A98-1D8E-4D56-9CCA-853B2DB19136}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TradingBot.Tests", "TradingBot.Tests\TradingBot.Tests.csproj", "{CD745814-9935-4EC6-ADCE-CF48BF8ECEB9}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{4628546D-4718-42FD-8A9C-94BE51605967}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4628546D-4718-42FD-8A9C-94BE51605967}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4628546D-4718-42FD-8A9C-94BE51605967}.Debug|x64.ActiveCfg = Debug|x64
+		{4628546D-4718-42FD-8A9C-94BE51605967}.Debug|x64.Build.0 = Debug|x64
+		{4628546D-4718-42FD-8A9C-94BE51605967}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{4628546D-4718-42FD-8A9C-94BE51605967}.Debug|x86.Build.0 = Debug|Any CPU
+		{4628546D-4718-42FD-8A9C-94BE51605967}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4628546D-4718-42FD-8A9C-94BE51605967}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4628546D-4718-42FD-8A9C-94BE51605967}.Release|x64.ActiveCfg = Release|x64
+		{4628546D-4718-42FD-8A9C-94BE51605967}.Release|x64.Build.0 = Release|x64
+		{4628546D-4718-42FD-8A9C-94BE51605967}.Release|x86.ActiveCfg = Release|Any CPU
+		{4628546D-4718-42FD-8A9C-94BE51605967}.Release|x86.Build.0 = Release|Any CPU
+		{2C9F6A98-1D8E-4D56-9CCA-853B2DB19136}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2C9F6A98-1D8E-4D56-9CCA-853B2DB19136}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2C9F6A98-1D8E-4D56-9CCA-853B2DB19136}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{2C9F6A98-1D8E-4D56-9CCA-853B2DB19136}.Debug|x64.Build.0 = Debug|Any CPU
+		{2C9F6A98-1D8E-4D56-9CCA-853B2DB19136}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{2C9F6A98-1D8E-4D56-9CCA-853B2DB19136}.Debug|x86.Build.0 = Debug|Any CPU
+		{2C9F6A98-1D8E-4D56-9CCA-853B2DB19136}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2C9F6A98-1D8E-4D56-9CCA-853B2DB19136}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2C9F6A98-1D8E-4D56-9CCA-853B2DB19136}.Release|x64.ActiveCfg = Release|Any CPU
+		{2C9F6A98-1D8E-4D56-9CCA-853B2DB19136}.Release|x64.Build.0 = Release|Any CPU
+		{2C9F6A98-1D8E-4D56-9CCA-853B2DB19136}.Release|x86.ActiveCfg = Release|Any CPU
+		{2C9F6A98-1D8E-4D56-9CCA-853B2DB19136}.Release|x86.Build.0 = Release|Any CPU
+		{CD745814-9935-4EC6-ADCE-CF48BF8ECEB9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CD745814-9935-4EC6-ADCE-CF48BF8ECEB9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CD745814-9935-4EC6-ADCE-CF48BF8ECEB9}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{CD745814-9935-4EC6-ADCE-CF48BF8ECEB9}.Debug|x64.Build.0 = Debug|Any CPU
+		{CD745814-9935-4EC6-ADCE-CF48BF8ECEB9}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{CD745814-9935-4EC6-ADCE-CF48BF8ECEB9}.Debug|x86.Build.0 = Debug|Any CPU
+		{CD745814-9935-4EC6-ADCE-CF48BF8ECEB9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CD745814-9935-4EC6-ADCE-CF48BF8ECEB9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CD745814-9935-4EC6-ADCE-CF48BF8ECEB9}.Release|x64.ActiveCfg = Release|Any CPU
+		{CD745814-9935-4EC6-ADCE-CF48BF8ECEB9}.Release|x64.Build.0 = Release|Any CPU
+		{CD745814-9935-4EC6-ADCE-CF48BF8ECEB9}.Release|x86.ActiveCfg = Release|Any CPU
+		{CD745814-9935-4EC6-ADCE-CF48BF8ECEB9}.Release|x86.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {68202FAA-1E55-4D10-8B60-491CAE8F30E9}
+	EndGlobalSection
+EndGlobal
