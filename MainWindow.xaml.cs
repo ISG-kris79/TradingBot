@@ -86,6 +86,23 @@ namespace TradingBot
         // GeneralSettings 캐시 (앱 전체에서 사용)
         public static TradingSettings? CurrentGeneralSettings { get; private set; }
 
+        public static void ApplyGeneralSettings(TradingSettings settings)
+        {
+            CurrentGeneralSettings = settings ?? new TradingSettings();
+            CurrentGeneralSettings.MajorTrendProfile = string.Equals(CurrentGeneralSettings.MajorTrendProfile, "Aggressive", StringComparison.OrdinalIgnoreCase)
+                ? "Aggressive"
+                : "Balanced";
+
+            if (AppConfig.Current?.Trading != null)
+            {
+                AppConfig.Current.Trading.GeneralSettings = CurrentGeneralSettings;
+            }
+
+            Instance?.ViewModel?.UpdateMajorProfileStatus(CurrentGeneralSettings.MajorTrendProfile);
+
+            Instance?.AddLog($"[GeneralSettings] ✅ 런타임 적용 완료 (MajorProfile: {CurrentGeneralSettings.MajorTrendProfile})");
+        }
+
         public MainWindow()
         {
             InitializeComponent();
@@ -113,6 +130,8 @@ namespace TradingBot
             txtAvailableBalance.SetBinding(TextBlock.TextProperty, new Binding("AvailableBalance"));
             txtTelegramStatus.SetBinding(TextBlock.TextProperty, new Binding("TelegramStatus"));
             txtTelegramStatus.SetBinding(TextBlock.ForegroundProperty, new Binding("TelegramStatusColor"));
+            txtMajorProfileStatus.SetBinding(TextBlock.TextProperty, new Binding("MajorProfileStatusText"));
+            txtMajorProfileStatus.SetBinding(TextBlock.ForegroundProperty, new Binding("MajorProfileStatusColor"));
             txtTotalPositionInfo.SetBinding(TextBlock.TextProperty, new Binding("TotalPositionInfo"));
             lblFooter.SetBinding(TextBlock.TextProperty, new Binding("FooterText"));
             pgScanning.SetBinding(ProgressBar.ValueProperty, new Binding("ScanProgress"));
@@ -856,6 +875,12 @@ namespace TradingBot
 
                     if (dbSettings != null)
                     {
+                        if (string.IsNullOrWhiteSpace(dbSettings.MajorTrendProfile) &&
+                            !string.IsNullOrWhiteSpace(CurrentGeneralSettings?.MajorTrendProfile))
+                        {
+                            dbSettings.MajorTrendProfile = CurrentGeneralSettings.MajorTrendProfile;
+                        }
+
                         CurrentGeneralSettings = dbSettings;
                         AddLog($"[GeneralSettings] ✅ DB 사용자 설정 로드 완료 (Leverage: {CurrentGeneralSettings.DefaultLeverage}x, Margin: {CurrentGeneralSettings.DefaultMargin})");
                     }
@@ -867,6 +892,12 @@ namespace TradingBot
                     CurrentGeneralSettings = new TradingSettings();
                     AddLog("[GeneralSettings] ⚠️ 기본값 사용");
                 }
+
+                CurrentGeneralSettings.MajorTrendProfile = string.Equals(CurrentGeneralSettings.MajorTrendProfile, "Aggressive", StringComparison.OrdinalIgnoreCase)
+                    ? "Aggressive"
+                    : "Balanced";
+
+                ApplyGeneralSettings(CurrentGeneralSettings);
 
                 AddLog("[GeneralSettings] ✅ 기본 설정 로드 완료");
             }

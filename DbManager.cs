@@ -369,9 +369,9 @@ namespace TradingBot.Services
                     string sql = @"
                         MERGE dbo.GeneralSettings AS target
                         USING (SELECT @UserId AS Id, @DefaultLeverage, @DefaultMargin, @TargetRoe, @StopLossRoe, @TrailingStartRoe, @TrailingDropRoe,
-                                      @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct) 
+                                      @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile) 
                             AS source (Id, DefaultLeverage, DefaultMargin, TargetRoe, StopLossRoe, TrailingStartRoe, TrailingDropRoe,
-                                      PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct)
+                                      PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct, MajorTrendProfile)
                         ON target.Id = source.Id
                         WHEN MATCHED THEN
                             UPDATE SET 
@@ -386,12 +386,13 @@ namespace TradingBot.Services
                                 target.PumpTimeStopMinutes = source.PumpTimeStopMinutes,
                                 target.PumpStopDistanceWarnPct = source.PumpStopDistanceWarnPct,
                                 target.PumpStopDistanceBlockPct = source.PumpStopDistanceBlockPct,
+                                target.MajorTrendProfile = source.MajorTrendProfile,
                                 target.UpdatedAt = GETUTCDATE()
                         WHEN NOT MATCHED THEN
                             INSERT (Id, DefaultLeverage, DefaultMargin, TargetRoe, StopLossRoe, TrailingStartRoe, TrailingDropRoe,
-                                    PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct)
+                                    PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct, MajorTrendProfile)
                             VALUES (@UserId, @DefaultLeverage, @DefaultMargin, @TargetRoe, @StopLossRoe, @TrailingStartRoe, @TrailingDropRoe,
-                                    @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct);";
+                                    @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile);";
 
                     var parameters = new DynamicParameters();
                     parameters.Add("@UserId", userId);
@@ -406,12 +407,13 @@ namespace TradingBot.Services
                     parameters.Add("@PumpTimeStopMinutes", settings.PumpTimeStopMinutes);
                     parameters.Add("@PumpStopDistanceWarnPct", settings.PumpStopDistanceWarnPct);
                     parameters.Add("@PumpStopDistanceBlockPct", settings.PumpStopDistanceBlockPct);
+                    parameters.Add("@MajorTrendProfile", settings.MajorTrendProfile);
 
                     try
                     {
                         await db.ExecuteAsync(sql, parameters);
                     }
-                    catch (SqlException ex) when (ex.Message.Contains("PumpTp1Roe") || ex.Message.Contains("PumpTp2Roe") || ex.Message.Contains("PumpTimeStopMinutes") || ex.Message.Contains("PumpStopDistanceWarnPct") || ex.Message.Contains("PumpStopDistanceBlockPct"))
+                    catch (SqlException ex) when (ex.Message.Contains("PumpTp1Roe") || ex.Message.Contains("PumpTp2Roe") || ex.Message.Contains("PumpTimeStopMinutes") || ex.Message.Contains("PumpStopDistanceWarnPct") || ex.Message.Contains("PumpStopDistanceBlockPct") || ex.Message.Contains("MajorTrendProfile"))
                     {
                         // 하위 호환: 구 스키마(펌프 컬럼 없음)에서는 기본 필드만 저장
                         string fallbackSql = @"

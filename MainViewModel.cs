@@ -78,6 +78,20 @@ namespace TradingBot.ViewModels
         private string _footerText = "Ready";
         public string FooterText { get => _footerText; set { _footerText = value; OnPropertyChanged(); } }
 
+        private string _majorProfileStatusText = "● Major Profile: Balanced";
+        public string MajorProfileStatusText
+        {
+            get => _majorProfileStatusText;
+            set { _majorProfileStatusText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _majorProfileStatusColor = Brushes.LightGray;
+        public Brush MajorProfileStatusColor
+        {
+            get => _majorProfileStatusColor;
+            set { _majorProfileStatusColor = value; OnPropertyChanged(); }
+        }
+
         private double _scanProgress = 0;
         public double ScanProgress { get => _scanProgress; set { _scanProgress = value; OnPropertyChanged(); } }
 
@@ -218,6 +232,8 @@ namespace TradingBot.ViewModels
 
         public MainViewModel()
         {
+            UpdateMajorProfileStatus(AppConfig.Current?.Trading?.GeneralSettings?.MajorTrendProfile);
+
             // Initialize Engine
             if (!DesignerProperties.GetIsInDesignMode(new DependencyObject()))
             {
@@ -685,6 +701,16 @@ namespace TradingBot.ViewModels
 
             // 초기 실행 시 이력 로드
             _ = LoadTradeHistory();
+        }
+
+        public void UpdateMajorProfileStatus(string? profile)
+        {
+            bool isAggressive = string.Equals(profile, "Aggressive", StringComparison.OrdinalIgnoreCase);
+
+            MajorProfileStatusText = isAggressive
+                ? "⚡ Major Profile: Aggressive"
+                : "● Major Profile: Balanced";
+            MajorProfileStatusColor = isAggressive ? Brushes.Orange : Brushes.LightGray;
         }
 
         public async Task LoadTradeHistory()

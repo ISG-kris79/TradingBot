@@ -89,6 +89,11 @@ namespace TradingBot
                     txtPumpTimeStopMinutes.Text = dbSettings.PumpTimeStopMinutes.ToString("F2");
                     txtPumpStopWarnPct.Text = dbSettings.PumpStopDistanceWarnPct.ToString("F3");
                     txtPumpStopBlockPct.Text = dbSettings.PumpStopDistanceBlockPct.ToString("F3");
+
+                    if (!string.IsNullOrWhiteSpace(dbSettings.MajorTrendProfile))
+                    {
+                        SelectMajorTrendProfile(dbSettings.MajorTrendProfile);
+                    }
                 }
             }
         }
@@ -97,6 +102,8 @@ namespace TradingBot
         {
             try
             {
+                SelectMajorTrendProfile("Balanced");
+
                 string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, SettingsFileName);
                 if (File.Exists(path))
                 {
@@ -123,6 +130,7 @@ namespace TradingBot
                             txtLeverage.Text = generalNode["DefaultLeverage"]?.ToString() ?? "10";
                             txtTargetRoe.Text = generalNode["TargetRoe"]?.ToString() ?? "20.0";
                             txtStopLossRoe.Text = generalNode["StopLossRoe"]?.ToString() ?? "15.0";
+                            SelectMajorTrendProfile(generalNode["MajorTrendProfile"]?.ToString());
                             txtPumpTp1Roe.Text = generalNode["PumpTp1Roe"]?.ToString() ?? "20.0";
                             txtPumpTp2Roe.Text = generalNode["PumpTp2Roe"]?.ToString() ?? "50.0";
                             txtPumpTimeStopMinutes.Text = generalNode["PumpTimeStopMinutes"]?.ToString() ?? "15.0";
@@ -255,6 +263,10 @@ namespace TradingBot
                     generalSettings.StopLossRoe = stopLossRoe;
                 }
 
+                string selectedProfile = ((cboMajorTrendProfile.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Balanced").Trim();
+                _rootNode["Trading"]["GeneralSettings"]["MajorTrendProfile"] = selectedProfile;
+                generalSettings.MajorTrendProfile = selectedProfile;
+
                 if (decimal.TryParse(txtPumpTp1Roe.Text, out decimal pumpTp1Roe))
                 {
                     _rootNode["Trading"]["GeneralSettings"]["PumpTp1Roe"] = pumpTp1Roe;
@@ -315,6 +327,7 @@ namespace TradingBot
                 if (AppConfig.Current?.Trading != null)
                 {
                     AppConfig.Current.Trading.IsSimulationMode = chkSimulationMode.IsChecked == true;
+                    AppConfig.Current.Trading.GeneralSettings = generalSettings;
                 }
 
                 // Symbols 배열 처리
@@ -410,6 +423,8 @@ namespace TradingBot
                     NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
                 };
                 File.WriteAllText(path, _rootNode.ToJsonString(options));
+
+                MainWindow.ApplyGeneralSettings(generalSettings);
 
                 // 4. GeneralSettings를 DB에도 저장
                 if (_dbManager != null && AppConfig.CurrentUser != null)
@@ -586,6 +601,19 @@ namespace TradingBot
             }
 
             return true;
+        }
+
+        private void SelectMajorTrendProfile(string? profile)
+        {
+            string normalized = (profile ?? string.Empty).Trim();
+
+            if (string.Equals(normalized, "Aggressive", StringComparison.OrdinalIgnoreCase))
+            {
+                cboMajorTrendProfile.SelectedIndex = 1;
+                return;
+            }
+
+            cboMajorTrendProfile.SelectedIndex = 0;
         }
 
         private static bool TryParseIntInRange(TextBox textBox, string fieldName, int min, int max, out int value, out string error)

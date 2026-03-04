@@ -284,7 +284,9 @@ namespace TradingBot
             }
 
             _pumpStrategy = new PumpScanStrategy(_client, _symbols, AppConfig.Current?.Trading?.PumpSettings ?? new PumpScanSettings());
-            _majorStrategy = new MajorCoinStrategy(_marketDataManager);
+            _majorStrategy = new MajorCoinStrategy(
+                _marketDataManager,
+                () => MainWindow.CurrentGeneralSettings ?? AppConfig.Current?.Trading?.GeneralSettings);
             _gridStrategy = new GridStrategy(_exchangeService);
 
             _pumpStrategy.OnSignalAnalyzed += vm => OnSignalUpdate?.Invoke(vm);

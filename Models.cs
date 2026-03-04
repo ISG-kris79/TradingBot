@@ -27,6 +27,7 @@ namespace TradingBot.Models
         public decimal StopLossRoe { get; set; } = 15.0m;
         public decimal TrailingStartRoe { get; set; } = 20.0m;
         public decimal TrailingDropRoe { get; set; } = 5.0m;
+        public string MajorTrendProfile { get; set; } = string.Empty;
 
         // [Phase 12: PUMP 전략 지원] PUMP 전략 전용 레버리지
         public int PumpLeverage { get; set; } = 20;

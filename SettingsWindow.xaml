@@ -202,6 +202,7 @@
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="150"/>
@@ -469,6 +470,26 @@
                                              Background="#1E2235"
                                              Foreground="White"
                                              BorderBrush="#2D3142"/>
+
+                                    <!-- 메이저 전략 프로파일 -->
+                                    <TextBlock Text="메이저 추세 프로파일:"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="14"
+                                               Foreground="#94A3B8"
+                                               Margin="0,0,0,15"/>
+                                    <ComboBox x:Name="cboMajorTrendProfile"
+                                              Grid.Row="14"
+                                              Grid.Column="1"
+                                              Margin="0,0,0,15"
+                                              Height="35"
+                                              Padding="8"
+                                              Background="#1E2235"
+                                              Foreground="White"
+                                              BorderBrush="#2D3142"
+                                              BorderThickness="1">
+                                        <ComboBoxItem Content="균형형 (Balanced)" Tag="Balanced"/>
+                                        <ComboBoxItem Content="공격형 (Aggressive)" Tag="Aggressive"/>
+                                    </ComboBox>
                                 </Grid>
                             </Border>
                         </ScrollViewer>

@@ -1845,6 +1845,11 @@
                     <StackPanel Orientation="Horizontal"
                                 HorizontalAlignment="Right"
                                 VerticalAlignment="Center">
+                        <TextBlock x:Name="txtMajorProfileStatus"
+                               Text="Major Profile: Balanced"
+                               Foreground="#9CA3AF"
+                               FontSize="11"
+                               Margin="0,0,16,0"/>
                         <TextBlock x:Name="txtTelegramStatus"
                                    Text="Telegram: Offline"
                                    Foreground="#6B7280"
