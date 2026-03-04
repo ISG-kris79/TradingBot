@@ -1,0 +1,468 @@
+<Window x:Class="TradingBot.LoginWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="TradingBot Login"
+        Height="720"
+        Width="350"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        Background="#121212"
+        Foreground="White"
+        FontFamily="Segoe UI"
+        WindowStyle="None"
+        Icon="/trading_bot.ico">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="40"
+                ResizeBorderThickness="5"
+                      GlassFrameThickness="0"
+                CornerRadius="0"/>
+    </WindowChrome.WindowChrome>
+    <Window.Resources>
+        <!-- WindowControlButtonStyle -->
+        <Style x:Key="WindowControlButtonStyle"
+                TargetType="Button">
+            <Setter Property="WindowChrome.IsHitTestVisibleInChrome"
+                    Value="True"/>
+            <Setter Property="Background"
+                    Value="Transparent"/>
+            <Setter Property="Foreground"
+                    Value="#94A3B8"/>
+            <Setter Property="BorderThickness"
+                    Value="0"/>
+            <Setter Property="Width"
+                    Value="46"/>
+            <Setter Property="Height"
+                    Value="32"/>
+            <Setter Property="FontSize"
+                    Value="14"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver"
+                                    Value="True">
+                                <Setter Property="Background"
+                                        Value="#333"/>
+                                <Setter Property="Foreground"
+                                        Value="White"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Border BorderBrush="#333"
+            BorderThickness="1"
+            Background="#1E1E1E">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="40"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- Title Bar -->
+            <Grid Grid.Row="0"
+                  Background="Transparent"
+                  MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+                <TextBlock Text="COINFF TRADINGBOT"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Left"
+                           Margin="10,0,0,0"
+                           Foreground="White"
+                           FontWeight="Bold"/>
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Top">
+                    <Button Content="—"
+                            Style="{StaticResource WindowControlButtonStyle}"
+                            Click="OnMinimize_Click"/>
+                    <!-- Maximize is disabled for this fixed-size window -->
+                    <Button Content="☐"
+                            Style="{StaticResource WindowControlButtonStyle}"
+                            IsEnabled="False"/>
+                    <Button Content="✕"
+                            Click="OnClose_Click">
+                        <Button.Style>
+                            <Style TargetType="Button"
+                                   BasedOn="{StaticResource WindowControlButtonStyle}">
+                                <Style.Triggers>
+                                    <Trigger Property="IsMouseOver"
+                                             Value="True">
+                                        <Setter Property="Background"
+                                                Value="#E81123"/>
+                                        <Setter Property="Foreground"
+                                                Value="White"/>
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                </StackPanel>
+            </Grid>
+
+            <!-- Content -->
+            <Grid Grid.Row="1">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <ScrollViewer VerticalScrollBarVisibility="Disabled">
+                    <StackPanel Grid.Row="0"
+                                VerticalAlignment="Top"
+                                Margin="40,10,40,40">
+                        <!-- 로봇 로고 (AI 트레이딩봇 심볼) -->
+                        <Border Width="120"
+                                Height="120"
+                                Margin="0,0,0,25"
+                                CornerRadius="20"
+                                Background="#1A1A1A">
+                            <Border.Effect>
+                                <DropShadowEffect BlurRadius="25"
+                                                  ShadowDepth="0"
+                                                  Opacity="0.4"
+                                                  Color="#00E676"/>
+                            </Border.Effect>
+
+                            <Grid>
+                                <!-- 배경 그래디언트 -->
+                                <Border CornerRadius="20"
+                                        Opacity="0.6">
+                                    <Border.Background>
+                                        <RadialGradientBrush Center="0.5,0.4">
+                                            <GradientStop Color="#2A2A2A"
+                                                          Offset="0"/>
+                                            <GradientStop Color="#1A1A1A"
+                                                          Offset="1"/>
+                                        </RadialGradientBrush>
+                                    </Border.Background>
+                                </Border>
+
+                                <!-- 로봇 아이콘 (Canvas로 그리기) -->
+                                <Canvas>
+                                    <!-- 머리 (상단 큰 원) -->
+                                    <Ellipse Canvas.Left="35"
+                                             Canvas.Top="15"
+                                             Width="50"
+                                             Height="50"
+                                             Fill="Transparent"
+                                             Stroke="#00E676"
+                                             StrokeThickness="2"/>
+
+                                    <!-- 왼쪽 눈 -->
+                                    <Ellipse Canvas.Left="42"
+                                             Canvas.Top="32"
+                                             Width="8"
+                                             Height="8"
+                                             Fill="#00E676"/>
+
+                                    <!-- 오른쪽 눈 -->
+                                    <Ellipse Canvas.Left="70"
+                                             Canvas.Top="32"
+                                             Width="8"
+                                             Height="8"
+                                             Fill="#00E676"/>
+
+                                    <!-- 몸통 (하단) -->
+                                    <Rectangle Canvas.Left="38"
+                                               Canvas.Top="68"
+                                               Width="44"
+                                               Height="35"
+                                               Fill="Transparent"
+                                               Stroke="#00E676"
+                                               StrokeThickness="2"
+                                               RadiusX="4"
+                                               RadiusY="4"/>
+
+                                    <!-- 안텐나 왼쪽 -->
+                                    <Line X1="50"
+                                          Y1="15"
+                                          X2="45"
+                                          Y2="3"
+                                          Stroke="#00E676"
+                                          StrokeThickness="2"/>
+
+                                    <!-- 안텐나 오른쪽 -->
+                                    <Line X1="70"
+                                          Y1="15"
+                                          X2="75"
+                                          Y2="3"
+                                          Stroke="#00E676"
+                                          StrokeThickness="2"/>
+
+                                    <!-- 왼쪽 팔 -->
+                                    <Rectangle Canvas.Left="25"
+                                               Canvas.Top="78"
+                                               Width="13"
+                                               Height="8"
+                                               Fill="Transparent"
+                                               Stroke="#00E676"
+                                               StrokeThickness="1.5"
+                                               RadiusX="2"
+                                               RadiusY="2"/>
+
+                                    <!-- 오른쪽 팔 -->
+                                    <Rectangle Canvas.Left="82"
+                                               Canvas.Top="78"
+                                               Width="13"
+                                               Height="8"
+                                               Fill="Transparent"
+                                               Stroke="#00E676"
+                                               StrokeThickness="1.5"
+                                               RadiusX="2"
+                                               RadiusY="2"/>
+
+                                    <!-- 중앙 회로 라인 -->
+                                    <Line X1="60"
+                                          Y1="68"
+                                          X2="60"
+                                          Y2="103"
+                                          Stroke="#00E676"
+                                          StrokeThickness="1"
+                                          Opacity="0.5"/>
+                                </Canvas>
+
+                                <!-- 광택 오버레이 -->
+                                <Border CornerRadius="20"
+                                        Opacity="0.08">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0,0"
+                                                             EndPoint="1,1">
+                                            <GradientStop Color="White"
+                                                          Offset="0"/>
+                                            <GradientStop Color="Transparent"
+                                                          Offset="0.6"/>
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                </Border>
+                            </Grid>
+                        </Border>
+
+                        <TextBlock Text="TradingBot AI"
+                                   Foreground="White"
+                                   FontSize="26"
+                                   FontWeight="ExtraBold"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,0,0,5">
+                            <TextBlock.Effect>
+                                <DropShadowEffect BlurRadius="10"
+                                                  ShadowDepth="2"
+                                                  Opacity="0.5"/>
+                            </TextBlock.Effect>
+                        </TextBlock>
+                        <TextBlock Text="Next Gen Trading Engine"
+                                   Foreground="#00E676"
+                                   FontSize="11"
+                                   FontWeight="SemiBold"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,0,0,30"
+                                   Opacity="0.8"
+                                   TextOptions.TextFormattingMode="Display"/>
+
+                        <TextBlock Text="Username"
+                                   Foreground="#AAA"
+                                   FontSize="12"
+                                   Margin="0,0,0,5"/>
+                        <Border CornerRadius="5"
+                                Background="#2D2D2D"
+                                Height="35"
+                                Margin="0,0,0,15">
+                            <TextBox x:Name="txtUsername"
+                                     Background="Transparent"
+                                     Foreground="White"
+                                     BorderThickness="0"
+                                     VerticalContentAlignment="Center"
+                                     Padding="10,0"/>
+                        </Border>
+
+                        <TextBlock Text="Password"
+                                   Foreground="#AAA"
+                                   FontSize="12"
+                                   Margin="0,0,0,5"/>
+                        <Border CornerRadius="5"
+                                Background="#2D2D2D"
+                                Height="35"
+                                Margin="0,0,0,15">
+                            <PasswordBox x:Name="txtPassword"
+                                         Background="Transparent"
+                                         Foreground="White"
+                                         BorderThickness="0"
+                                         VerticalContentAlignment="Center"
+                                         Padding="10,0"/>
+                        </Border>
+
+                        <CheckBox x:Name="chkAutoLogin"
+                                  Content="Remember me"
+                                  Foreground="#AAA"
+                                  FontSize="12"
+                                  Margin="0,0,0,20"/>
+
+                        <Button x:Name="btnLogin"
+                                Content="LOGIN"
+                                Height="40"
+                                Margin="0,0,0,15"
+                                IsDefault="True"
+                                Background="#00E676"
+                                Foreground="Black"
+                                FontWeight="Bold"
+                                BorderThickness="0"
+                                Click="btnLogin_Click">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border x:Name="Border"
+                                            CornerRadius="5"
+                                            Background="{TemplateBinding Background}"
+                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                            BorderThickness="{TemplateBinding BorderThickness}">
+                                        <ContentPresenter HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center"
+                                                          Content="{TemplateBinding Content}"
+                                                          ContentTemplate="{TemplateBinding ContentTemplate}"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver"
+                                                 Value="True">
+                                            <Setter TargetName="Border"
+                                                    Property="Background"
+                                                    Value="#1EBE5F"/>
+                                        </Trigger>
+                                        <Trigger Property="IsPressed"
+                                                 Value="True">
+                                            <Setter TargetName="Border"
+                                                    Property="Background"
+                                                    Value="#00B24D"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Button.Template>
+                        </Button>
+
+                        <!-- 로딩 표시 -->
+                        <StackPanel x:Name="pnlLoading"
+                                    Visibility="Collapsed"
+                                    HorizontalAlignment="Center"
+                                    Margin="0,0,0,15">
+                            <!-- 회전 스피너 -->
+                            <Viewbox Width="24"
+                                     Height="24"
+                                     Margin="0,0,0,10">
+                                <Canvas Width="50"
+                                        Height="50"
+                                        RenderTransformOrigin="0.5,0.5">
+                                    <Canvas.RenderTransform>
+                                        <RotateTransform x:Name="SpinnerRotate"
+                                                         Angle="0"/>
+                                    </Canvas.RenderTransform>
+                                    <Canvas.Triggers>
+                                        <EventTrigger RoutedEvent="Canvas.Loaded">
+                                            <BeginStoryboard>
+                                                <Storyboard>
+                                                    <DoubleAnimation Storyboard.TargetName="SpinnerRotate"
+                                                                     Storyboard.TargetProperty="Angle"
+                                                                     From="0"
+                                                                     To="360"
+                                                                     Duration="0:0:1"
+                                                                     RepeatBehavior="Forever"/>
+                                                </Storyboard>
+                                            </BeginStoryboard>
+                                        </EventTrigger>
+                                    </Canvas.Triggers>
+                                    <!-- 스피너 원 -->
+                                    <Ellipse Width="50"
+                                             Height="50"
+                                             Stroke="#00E676"
+                                             StrokeThickness="4"
+                                             StrokeDashArray="30 70"
+                                             StrokeDashCap="Round"/>
+                                </Canvas>
+                            </Viewbox>
+
+                            <!-- 진행률 바 -->
+                            <ProgressBar x:Name="pgLoginProgress"
+                                         Width="200"
+                                         Height="4"
+                                         Minimum="0"
+                                         Maximum="100"
+                                         Value="0"
+                                         Foreground="#00E676"
+                                         Background="#2D2D2D"
+                                         Margin="0,0,0,8"/>
+
+                            <!-- 진행률 텍스트 -->
+                            <TextBlock x:Name="txtProgressPercent"
+                                       Text="0%"
+                                       Foreground="#00E676"
+                                       FontSize="12"
+                                       FontWeight="Bold"
+                                       HorizontalAlignment="Center"
+                                       Margin="0,0,0,5"/>
+
+                            <!-- 상태 메시지 -->
+                            <TextBlock x:Name="txtLoadingMessage"
+                                       Text="로그인 중..."
+                                       Foreground="#AAA"
+                                       FontSize="11"
+                                       HorizontalAlignment="Center"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Vertical"
+                                    HorizontalAlignment="Center"
+                                    Margin="0,10,0,0">
+                            <StackPanel Orientation="Horizontal"
+                                        HorizontalAlignment="Center"
+                                        Margin="0,0,0,10">
+                                <TextBlock Text="Don't have an account?"
+                                           Foreground="#666"
+                                           FontSize="12"/>
+                                <Button x:Name="btnSignUp"
+                                        Content="Sign Up"
+                                        Margin="5,0,0,0"
+                                        FontSize="12"
+                                        Background="Transparent"
+                                        Foreground="#00E676"
+                                        BorderThickness="0"
+                                        Click="btnSignUp_Click"
+                                        Cursor="Hand">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <TextBlock Text="{TemplateBinding Content}"
+                                                       Foreground="{TemplateBinding Foreground}"
+                                                       TextDecorations="Underline"/>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                </Button>
+                            </StackPanel>
+
+                            <Button x:Name="btnForgotPassword"
+                                    Content="Forgot Password?"
+                                    FontSize="11"
+                                    Background="Transparent"
+                                    Foreground="#888"
+                                    BorderThickness="0"
+                                    Click="btnForgotPassword_Click"
+                                    Cursor="Hand">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <TextBlock Text="{TemplateBinding Content}"
+                                                   Foreground="{TemplateBinding Foreground}"/>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+                <TextBlock Grid.Row="1"
+                           x:Name="txtVersion"
+                           Text="v1.0.0"
+                           Foreground="White"
+                           FontSize="16"
+                           HorizontalAlignment="Center"
+                           Margin="0,20,0,20"/>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>
