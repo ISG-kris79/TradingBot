@@ -55,6 +55,49 @@ namespace TradingBot.Services
             }
             catch (Exception ex) { Console.WriteLine($"[DB Error] {ex.Message}"); }
         }
+
+        public async Task<DateTime?> GetLatestSyncedOpenTimeAcrossTablesAsync(string symbol, string interval = "5m")
+        {
+            try
+            {
+                using var conn = new SqlConnection(_connStr);
+
+                var marketCandlesMax = await conn.ExecuteScalarAsync<DateTime?>(
+                    "SELECT MAX(OpenTime) FROM MarketCandles WHERE Symbol = @Symbol",
+                    new { Symbol = symbol },
+                    commandTimeout: QueryTimeout);
+
+                var candleDataMax = await conn.ExecuteScalarAsync<DateTime?>(
+                    "SELECT MAX(OpenTime) FROM CandleData WHERE Symbol = @Symbol",
+                    new { Symbol = symbol },
+                    commandTimeout: QueryTimeout);
+
+                var candleHistoryMax = await conn.ExecuteScalarAsync<DateTime?>(
+                    "SELECT MAX(OpenTime) FROM CandleHistory WHERE Symbol = @Symbol AND [Interval] = @Interval",
+                    new { Symbol = symbol, Interval = interval },
+                    commandTimeout: QueryTimeout);
+
+                var marketDataMax = await conn.ExecuteScalarAsync<DateTime?>(
+                    "SELECT MAX(OpenTime) FROM MarketData WHERE Symbol = @Symbol AND [Interval] = @Interval",
+                    new { Symbol = symbol, Interval = interval },
+                    commandTimeout: QueryTimeout);
+
+                var candidates = new[] { marketCandlesMax, candleDataMax, candleHistoryMax, marketDataMax }
+                    .Where(v => v.HasValue)
+                    .Select(v => v!.Value)
+                    .ToList();
+
+                if (!candidates.Any()) return null;
+
+                return candidates.Min();
+            }
+            catch (Exception ex)
+            {
+                Log($"❌ [DB] 최신 OpenTime 조회 실패 ({symbol}): {ex.Message}");
+                return null;
+            }
+        }
+
         // 1. 데이터 대량 저장 (Bulk Insert) - CandleData 테이블
         public async Task SaveCandlesAsync(string symbol, IEnumerable<IBinanceKline> klines)
         {

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using Binance.Net.Interfaces;
@@ -13,8 +14,11 @@ namespace TradingBot.Services
 {
     public class MarketHistoryService
     {
+        private static readonly TimeSpan CandleInterval = TimeSpan.FromMinutes(5);
+        private static readonly TimeZoneInfo SeoulTimeZone = GetSeoulTimeZone();
         private readonly MarketDataManager _marketDataManager;
         private readonly DatabaseService _databaseService;
+        private readonly ConcurrentDictionary<string, DateTime> _latestSavedOpenTimes = new();
 
         public MarketHistoryService(MarketDataManager marketDataManager, string connectionString)
         {
@@ -58,6 +62,15 @@ namespace TradingBot.Services
                 // 최소 데이터가 너무 적으면 저장 생략
                 if (klineSnapshot.Count < 2) return;
 
+                // 새 봉이 생겼을 때 저장 대상은 '막 닫힌 이전 봉'
+                var closedKline = klineSnapshot[^2];
+                var closedOpenTimeUtc = NormalizeToUtc(closedKline.OpenTime);
+                var closedOpenTimeSeoul = ConvertUtcToSeoul(closedOpenTimeUtc);
+                if (!IsCandleClosed(closedOpenTimeUtc)) return;
+
+                var latestSavedOpenTime = await GetLatestSavedOpenTimeAsync(symbol);
+                if (latestSavedOpenTime.HasValue && closedOpenTimeSeoul <= latestSavedOpenTime.Value) return;
+
                 int fibLookback = Math.Min(60, klineSnapshot.Count);
 
                 // 보조지표 계산 (전체 캐시 기반)
@@ -72,12 +85,12 @@ namespace TradingBot.Services
                 {
                     Symbol = symbol,
                     Interval = "5m",
-                    OpenTime = newKline.OpenTime,
-                    Open = newKline.OpenPrice,
-                    High = newKline.HighPrice,
-                    Low = newKline.LowPrice,
-                    Close = newKline.ClosePrice,
-                    Volume = (float)newKline.Volume,
+                    OpenTime = closedOpenTimeSeoul,
+                    Open = closedKline.OpenPrice,
+                    High = closedKline.HighPrice,
+                    Low = closedKline.LowPrice,
+                    Close = closedKline.ClosePrice,
+                    Volume = (float)closedKline.Volume,
                     RSI = (float)rsi,
                     BollingerUpper = (float)bb.Upper,
                     BollingerLower = (float)bb.Lower,
@@ -103,11 +116,35 @@ namespace TradingBot.Services
                 };
                 await Task.WhenAll(tasks);
 
-                MainWindow.Instance?.AddLog($"💾 [실시간 저장] {symbol} {newKline.OpenTime:HH:mm:ss} 캔들 저장 완료");
+                _latestSavedOpenTimes.AddOrUpdate(symbol, candleData.OpenTime,
+                    (_, current) => candleData.OpenTime > current ? candleData.OpenTime : current);
+
+                MainWindow.Instance?.AddLog($"💾 [실시간 저장] {symbol} OpenTime(KST) {candleData.OpenTime:yyyy-MM-dd HH:mm:ss} 저장 완료");
             }
             catch (Exception ex)
             {
                 MainWindow.Instance?.AddLog($"❌ [실시간 저장] {symbol} 저장 중 예외: {ex.Message}");
+            }
+        }
+
+        public async Task BackfillToNowBeforeStartAsync(CancellationToken token)
+        {
+            try
+            {
+                MainWindow.Instance?.AddLog("⏳ [MarketHistory] 시작 전 백필 동기화 시작 (현시각까지)");
+
+                await WaitForKlineCacheWarmupAsync(token);
+                await SaveAllSymbolsAsync(saveAllClosedCandles: true, token);
+
+                MainWindow.Instance?.AddLog("✅ [MarketHistory] 시작 전 백필 동기화 완료");
+            }
+            catch (OperationCanceledException)
+            {
+                MainWindow.Instance?.AddLog("⚠️ [MarketHistory] 시작 전 백필 동기화 취소");
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"❌ [MarketHistory] 시작 전 백필 동기화 실패: {ex.Message}");
             }
         }
 
@@ -118,13 +155,13 @@ namespace TradingBot.Services
             try
             {
                 // 첫 저장은 즉시 실행
-                await SaveAllSymbolsAsync();
+                await SaveAllSymbolsAsync(saveAllClosedCandles: false, token);
 
                 while (!token.IsCancellationRequested)
                 {
                     // 5분마다 KlineCache의 데이터를 DB에 저장
                     await Task.Delay(TimeSpan.FromMinutes(5), token);
-                    await SaveAllSymbolsAsync();
+                    await SaveAllSymbolsAsync(saveAllClosedCandles: false, token);
                 }
             }
             catch (OperationCanceledException)
@@ -137,15 +174,18 @@ namespace TradingBot.Services
             }
         }
 
-        private async Task SaveAllSymbolsAsync()
+        private async Task SaveAllSymbolsAsync(bool saveAllClosedCandles, CancellationToken token)
         {
             try
             {
                 int totalSaved = 0;
+                DateTime? latestSavedSeoul = null;
 
                 // 모든 KlineCache 심볼에 대해 저장
                 foreach (var kvp in _marketDataManager.KlineCache)
                 {
+                    token.ThrowIfCancellationRequested();
+
                     string symbol = kvp.Key;
                     var klines = kvp.Value;
 
@@ -162,6 +202,35 @@ namespace TradingBot.Services
                         // 최소 데이터가 너무 적으면 저장 생략
                         if (klineSnapshot.Count < 2) continue;
 
+                        var closedKlines = klineSnapshot
+                            .Where(k => IsCandleClosed(NormalizeToUtc(k.OpenTime)))
+                            .ToList();
+
+                        if (!closedKlines.Any())
+                        {
+                            MainWindow.Instance?.AddLog($"ℹ️ [MarketHistory] {symbol} 저장 대상(종료봉) 없음");
+                            continue;
+                        }
+
+                        if (!saveAllClosedCandles)
+                        {
+                            closedKlines = closedKlines.TakeLast(20).ToList();
+                        }
+
+                        var latestSavedOpenTime = await GetLatestSavedOpenTimeAsync(symbol);
+                        if (latestSavedOpenTime.HasValue)
+                        {
+                            closedKlines = closedKlines
+                                .Where(k => ConvertUtcToSeoul(NormalizeToUtc(k.OpenTime)) > latestSavedOpenTime.Value)
+                                .ToList();
+                        }
+
+                        if (!closedKlines.Any())
+                        {
+                            MainWindow.Instance?.AddLog($"ℹ️ [MarketHistory] {symbol} 신규 저장 대상 없음(이미 최신)");
+                            continue;
+                        }
+
                         int fibLookback = Math.Min(60, klineSnapshot.Count);
 
                         // 보조지표 계산 (전체 캐시 기반)
@@ -172,14 +241,13 @@ namespace TradingBot.Services
                         var fib = IndicatorCalculator.CalculateFibonacci(klineSnapshot, fibLookback);
                         bool elliottUptrend = klineSnapshot.Count >= 20 && IndicatorCalculator.AnalyzeElliottWave(klineSnapshot);
 
-                        // 최근 20개만 저장
-                        foreach (var k in klineSnapshot.TakeLast(20))
+                        foreach (var k in closedKlines)
                         {
                             candleDataList.Add(new CandleData
                             {
                                 Symbol = symbol,
                                 Interval = "5m",
-                                OpenTime = k.OpenTime,
+                                OpenTime = ConvertUtcToSeoul(NormalizeToUtc(k.OpenTime)),
                                 Open = k.OpenPrice,
                                 High = k.HighPrice,
                                 Low = k.LowPrice,
@@ -213,6 +281,15 @@ namespace TradingBot.Services
                             };
                             await Task.WhenAll(tasks);
                             totalSaved += candleDataList.Count;
+
+                            var maxOpenTime = candleDataList.Max(x => x.OpenTime);
+                            _latestSavedOpenTimes.AddOrUpdate(symbol, maxOpenTime,
+                                (_, current) => maxOpenTime > current ? maxOpenTime : current);
+
+                            if (!latestSavedSeoul.HasValue || maxOpenTime > latestSavedSeoul.Value)
+                            {
+                                latestSavedSeoul = maxOpenTime;
+                            }
                         }
                     }
                     catch (Exception symbolEx)
@@ -224,12 +301,107 @@ namespace TradingBot.Services
                 if (totalSaved > 0)
                 {
                     MainWindow.Instance?.AddLog($"✅ [MarketHistory] {totalSaved}건 × 4개 테이블 저장 완료 (MarketCandles, CandleData, CandleHistory, MarketData)");
+                    if (latestSavedSeoul.HasValue)
+                    {
+                        var closedAtLocal = latestSavedSeoul.Value.AddMinutes(5);
+                        MainWindow.Instance?.AddLog($"🕒 [MarketHistory] 최신 저장 OpenTime(KST): {latestSavedSeoul:yyyy-MM-dd HH:mm:ss} (종가시각 KST {closedAtLocal:HH:mm:ss})");
+                    }
                 }
             }
             catch (Exception ex)
             {
                 MainWindow.Instance?.AddLog($"❌ [MarketHistory] 저장 실패: {ex.Message}");
             }
+        }
+
+        private async Task<DateTime?> GetLatestSavedOpenTimeAsync(string symbol)
+        {
+            if (_latestSavedOpenTimes.TryGetValue(symbol, out var cached))
+                return cached;
+
+            var latest = await _databaseService.GetLatestSyncedOpenTimeAcrossTablesAsync(symbol, "5m");
+            if (latest.HasValue)
+            {
+                _latestSavedOpenTimes[symbol] = NormalizeDbOpenTimeToSeoul(latest.Value);
+            }
+
+            return _latestSavedOpenTimes.TryGetValue(symbol, out var normalized) ? normalized : latest;
+        }
+
+        private static bool IsCandleClosed(DateTime openTime)
+        {
+            return openTime.Add(CandleInterval) <= DateTime.UtcNow;
+        }
+
+        private static DateTime NormalizeToUtc(DateTime value)
+        {
+            if (value.Kind == DateTimeKind.Utc) return value;
+            if (value.Kind == DateTimeKind.Local) return value.ToUniversalTime();
+            return DateTime.SpecifyKind(value, DateTimeKind.Utc);
+        }
+
+        private static DateTime ConvertUtcToSeoul(DateTime utcTime)
+        {
+            return TimeZoneInfo.ConvertTimeFromUtc(NormalizeToUtc(utcTime), SeoulTimeZone);
+        }
+
+        private static DateTime NormalizeDbOpenTimeToSeoul(DateTime dbTime)
+        {
+            // 기존 데이터가 UTC로 들어갔을 수 있으므로
+            // 1) KST로 이미 저장된 값, 2) UTC로 저장된 값을 KST 변환한 값 중
+            // 현재 시각(서울) 기준 유효한 쪽을 선택
+            var nowSeoul = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, SeoulTimeZone);
+
+            var asSeoul = DateTime.SpecifyKind(dbTime, DateTimeKind.Unspecified);
+            var asUtcToSeoul = ConvertUtcToSeoul(DateTime.SpecifyKind(dbTime, DateTimeKind.Utc));
+
+            bool seoulValid = asSeoul <= nowSeoul.AddMinutes(5);
+            bool utcValid = asUtcToSeoul <= nowSeoul.AddMinutes(5);
+
+            if (seoulValid && utcValid)
+                return asSeoul > asUtcToSeoul ? asSeoul : asUtcToSeoul;
+
+            if (utcValid) return asUtcToSeoul;
+            if (seoulValid) return asSeoul;
+
+            return asSeoul;
+        }
+
+        private static TimeZoneInfo GetSeoulTimeZone()
+        {
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById("Korea Standard Time");
+            }
+            catch
+            {
+                return TimeZoneInfo.CreateCustomTimeZone("KST", TimeSpan.FromHours(9), "KST", "KST");
+            }
+        }
+
+        private async Task WaitForKlineCacheWarmupAsync(CancellationToken token)
+        {
+            var timeoutAt = DateTime.UtcNow.AddSeconds(20);
+
+            while (DateTime.UtcNow < timeoutAt)
+            {
+                token.ThrowIfCancellationRequested();
+
+                bool hasReadySymbol = _marketDataManager.KlineCache.Any(kvp =>
+                {
+                    lock (kvp.Value)
+                    {
+                        return kvp.Value.Count >= 2;
+                    }
+                });
+
+                if (hasReadySymbol)
+                    return;
+
+                await Task.Delay(500, token);
+            }
+
+            MainWindow.Instance?.AddLog("⚠️ [MarketHistory] KlineCache 워밍업 타임아웃 (가능한 데이터부터 백필 진행)");
         }
     }
 }

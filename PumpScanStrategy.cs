@@ -8,9 +8,11 @@ namespace TradingBot.Strategies
 {
     public class PumpScanStrategy : ITradingStrategy
     {
+        private static readonly TimeZoneInfo SeoulTimeZone = GetSeoulTimeZone();
         private readonly IBinanceRestClient _client;
         private readonly List<string> _majorSymbols;
         private readonly PumpScanSettings _settings;
+        private DateTime _lastProfileLogTime = DateTime.MinValue;
 
         // 이벤트: 분석 결과 알림
         public event Action<MultiTimeframeViewModel>? OnSignalAnalyzed;
@@ -27,8 +29,9 @@ namespace TradingBot.Strategies
         // [Agent 1] ITradingStrategy 구현: 단일 심볼 분석 인터페이스
         public async Task AnalyzeAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
+            var profile = GetScanProfile();
             // 단일 분석 요청 시 블랙리스트 체크 없이(또는 빈 목록으로) 즉시 분석 수행
-            await AnalyzeSymbolAsync(symbol, new Dictionary<string, DateTime>(), token);
+            await AnalyzeSymbolAsync(symbol, new Dictionary<string, DateTime>(), token, profile);
         }
 
         public async Task ExecuteScanAsync(
@@ -36,6 +39,8 @@ namespace TradingBot.Strategies
             Dictionary<string, DateTime> blacklistedSymbols,
             CancellationToken token)
         {
+            var profile = GetScanProfile();
+
             // 1. 스캔 대상 필터링 (로컬 캐시 사용)
             var allTickers = tickerCache.Values
                 .Where(t => !string.IsNullOrEmpty(t.Symbol) && t.Symbol.EndsWith("USDT") && !_majorSymbols.Contains(t.Symbol))
@@ -51,11 +56,17 @@ namespace TradingBot.Strategies
 
             var topTickers = afterCandleFilter
                 .OrderByDescending(t => t.QuoteVolume)
-                .Take(10)
+                .Take(profile.CandidateCount)
                 .ToList();
 
             // 디버깅 로그
-            OnLog?.Invoke($"[급등주 스캔] 전체: {allTickers.Count} → 고점필터: {afterHighPriceFilter.Count} → 양봉필터: {afterCandleFilter.Count} → 상위10: {topTickers.Count}");
+            OnLog?.Invoke($"[급등주 스캔] 전체: {allTickers.Count} → 고점필터: {afterHighPriceFilter.Count} → 양봉필터: {afterCandleFilter.Count} → 상위{profile.CandidateCount}: {topTickers.Count}");
+
+            if ((DateTime.Now - _lastProfileLogTime).TotalMinutes >= 5)
+            {
+                OnLog?.Invoke($"[스캔 프로파일] {profile.Name} | 변동률≥{profile.MinPriceChangePercentage:F2}% 거래량비≥{profile.MinVolumeRatio:F2}x 5m거래량비≥{profile.MinVolumeRatio5m:F2}x 호가비≥{profile.MinOrderBookRatio:F2} 체결강도≥{profile.MinTakerBuyRatio:F2}");
+                _lastProfileLogTime = DateTime.Now;
+            }
 
             if (topTickers.Count > 0)
             {
@@ -69,7 +80,7 @@ namespace TradingBot.Strategies
                 try
                 {
                     if (!string.IsNullOrEmpty(ticker.Symbol))
-                        await AnalyzeSymbolAsync(ticker.Symbol, blacklistedSymbols, token);
+                        await AnalyzeSymbolAsync(ticker.Symbol, blacklistedSymbols, token, profile);
                 }
                 catch (Exception ex)
                 {
@@ -80,7 +91,7 @@ namespace TradingBot.Strategies
             await Task.WhenAll(tasks);
         }
 
-        private async Task AnalyzeSymbolAsync(string symbol, Dictionary<string, DateTime> blacklist, CancellationToken token)
+        private async Task AnalyzeSymbolAsync(string symbol, Dictionary<string, DateTime> blacklist, CancellationToken token, ScanProfile profile)
         {
             // 블랙리스트 확인
             lock (blacklist)
@@ -99,16 +110,16 @@ namespace TradingBot.Strategies
             if (data1m.Count < 20) return;
 
             var last1m = data1m.Last();
-            decimal rangePercent = (last1m.HighPrice - last1m.LowPrice) / last1m.OpenPrice * 100;
+            double rangePercent = (double)((last1m.HighPrice - last1m.LowPrice) / last1m.OpenPrice * 100);
             double avgVol1m = data1m.Take(20).Average(c => (double)c.Volume);
             double volRatio = avgVol1m > 0 ? (double)last1m.Volume / avgVol1m : 0;
 
             // 디버깅 로그
             OnLog?.Invoke($"[1분봉 체크] {symbol} | 변동률: {rangePercent:F2}% | 거래량비: {volRatio:F2}x");
 
-            if (rangePercent < _settings.MinPriceChangePercentage || volRatio < _settings.MinVolumeRatio)
+            if (rangePercent < profile.MinPriceChangePercentage || volRatio < profile.MinVolumeRatio)
             {
-                OnLog?.Invoke($"[스캔 제외] {symbol} | 조건 미달 (변동률 {rangePercent:F2}% < {_settings.MinPriceChangePercentage}% 또는 거래량비 {volRatio:F2}x < {_settings.MinVolumeRatio}x)");
+                OnLog?.Invoke($"[스캔 제외] {symbol} | 조건 미달 (변동률 {rangePercent:F2}% < {profile.MinPriceChangePercentage:F2}% 또는 거래량비 {volRatio:F2}x < {profile.MinVolumeRatio:F2}x)");
                 return;
             }
 
@@ -138,7 +149,7 @@ namespace TradingBot.Strategies
             var depth = depthTask.Result.Data;
             decimal totalBids = depth.Bids.Sum(b => b.Quantity);
             decimal totalAsks = depth.Asks.Sum(a => a.Quantity);
-            bool isOrderBookBullish = totalAsks > 0 && (double)(totalBids / totalAsks) >= _settings.MinOrderBookRatio;
+            bool isOrderBookBullish = totalAsks > 0 && (double)(totalBids / totalAsks) >= profile.MinOrderBookRatio;
 
             // 점수 산출
             int aiScore = CalculateScore(rsi15m, bb15m, currentPrice, isElliottUptrend);
@@ -154,10 +165,10 @@ namespace TradingBot.Strategies
             var recentCandles = data1m.TakeLast(3).ToList();
             decimal sumBuyVol = recentCandles.Sum(k => k.TakerBuyBaseVolume);
             decimal sumSellVol = recentCandles.Sum(k => k.Volume) - sumBuyVol;
-            bool isTakerStrong = sumSellVol > 0 && (double)(sumBuyVol / sumSellVol) >= _settings.MinTakerBuyRatio;
+            bool isTakerStrong = sumSellVol > 0 && (double)(sumBuyVol / sumSellVol) >= profile.MinTakerBuyRatio;
 
-            if (aiScore >= 85 && volRatio >= 3.5 && volRatio5m >= _settings.MinVolumeRatio5m && is5mBullish && isOrderBookBullish && isTakerStrong && isAboveMA99) decision = "🚀 PUMP";
-            else if (aiScore >= 70) decision = "MOMENTUM";
+            if (aiScore >= profile.PumpScoreThreshold && volRatio >= profile.PumpVolumeRatio && volRatio5m >= profile.MinVolumeRatio5m && is5mBullish && isOrderBookBullish && isTakerStrong && isAboveMA99) decision = "🚀 PUMP";
+            else if (aiScore >= profile.MomentumScoreThreshold) decision = "MOMENTUM";
 
             // 결과 알림 (의미있는 결과만 UI에 전송)
             if (decision != "WAIT" || aiScore >= 60)
@@ -199,5 +210,62 @@ namespace TradingBot.Strategies
 
             return Math.Clamp(score, 0, 100);
         }
+
+        private ScanProfile GetScanProfile()
+        {
+            var nowSeoul = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, SeoulTimeZone);
+            bool isKstDaytime = nowSeoul.Hour >= 10 && nowSeoul.Hour < 19;
+
+            if (!isKstDaytime)
+            {
+                return new ScanProfile(
+                    Name: "DEFAULT",
+                    MinPriceChangePercentage: (double)_settings.MinPriceChangePercentage,
+                    MinVolumeRatio: _settings.MinVolumeRatio,
+                    MinVolumeRatio5m: _settings.MinVolumeRatio5m,
+                    MinOrderBookRatio: _settings.MinOrderBookRatio,
+                    MinTakerBuyRatio: _settings.MinTakerBuyRatio,
+                    PumpScoreThreshold: 85,
+                    MomentumScoreThreshold: 70,
+                    PumpVolumeRatio: 3.5,
+                    CandidateCount: 10);
+            }
+
+            return new ScanProfile(
+                Name: "KST_DAY_10_19",
+                MinPriceChangePercentage: Math.Max(0.20, (double)_settings.MinPriceChangePercentage * 0.65),
+                MinVolumeRatio: Math.Max(1.20, _settings.MinVolumeRatio * 0.70),
+                MinVolumeRatio5m: Math.Max(1.20, _settings.MinVolumeRatio5m * 0.70),
+                MinOrderBookRatio: Math.Max(1.10, _settings.MinOrderBookRatio * 0.70),
+                MinTakerBuyRatio: Math.Max(1.05, _settings.MinTakerBuyRatio * 0.85),
+                PumpScoreThreshold: 78,
+                MomentumScoreThreshold: 65,
+                PumpVolumeRatio: 2.6,
+                CandidateCount: 20);
+        }
+
+        private static TimeZoneInfo GetSeoulTimeZone()
+        {
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById("Korea Standard Time");
+            }
+            catch
+            {
+                return TimeZoneInfo.CreateCustomTimeZone("KST", TimeSpan.FromHours(9), "KST", "KST");
+            }
+        }
+
+        private readonly record struct ScanProfile(
+            string Name,
+            double MinPriceChangePercentage,
+            double MinVolumeRatio,
+            double MinVolumeRatio5m,
+            double MinOrderBookRatio,
+            double MinTakerBuyRatio,
+            int PumpScoreThreshold,
+            int MomentumScoreThreshold,
+            double PumpVolumeRatio,
+            int CandidateCount);
     }
 }

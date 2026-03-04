@@ -7,6 +7,7 @@ namespace TradingBot.Strategies
 {
     public class MajorCoinStrategy : ITradingStrategy
     {
+        private static readonly TimeZoneInfo SeoulTimeZone = GetSeoulTimeZone();
         private readonly MarketDataManager _marketData;
 
         public event Action<MultiTimeframeViewModel>? OnSignalAnalyzed;
@@ -60,13 +61,18 @@ namespace TradingBot.Strategies
                 sma120,
                 volumeRatio);
 
+            var nowSeoul = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, SeoulTimeZone);
+            bool isKstDaytime = nowSeoul.Hour >= 10 && nowSeoul.Hour < 19;
+            int longThreshold = isKstDaytime ? 60 : 65;
+            int shortThreshold = isKstDaytime ? 30 : 25;
+
             string decision = "WAIT";
-            if (aiScore >= 65)
+            if (aiScore >= longThreshold)
             {
                 bool longConfirm = isUptrend && macd.Hist >= -0.001 && volumeRatio >= 0.95;
                 if (longConfirm) decision = "LONG";
             }
-            else if (aiScore <= 25)
+            else if (aiScore <= shortThreshold)
             {
                 bool isStrongBearish =
                     !isUptrend &&
@@ -101,8 +107,8 @@ namespace TradingBot.Strategies
                 BBPosition = currentPrice >= (decimal)bb.Upper ? "Upper" : (currentPrice <= (decimal)bb.Lower ? "Lower" : "Mid")
             });
 
-            // 로그 출력 (항상)
-            string logMsg = $"[MAJOR] {symbol} | Price: ${currentPrice:F2} | RSI: {rsi:F1} | Score: {aiScore} | MA: {maState} | Fib: {fibPos} | Vol: {volumeRatio:F2}x | Decision: {decision}";
+            string profile = isKstDaytime ? "DAY" : "DEFAULT";
+            string logMsg = $"[MAJOR:{profile}] {symbol} | Price: ${currentPrice:F2} | RSI: {rsi:F1} | Score: {aiScore} | Th(L/S): {longThreshold}/{shortThreshold} | MA: {maState} | Fib: {fibPos} | Vol: {volumeRatio:F2}x | Decision: {decision}";
             OnLog?.Invoke(logMsg);
 
             if (decision != "WAIT")
@@ -163,6 +169,18 @@ namespace TradingBot.Strategies
             if (volumeRatio < 0.75) score -= 6;
 
             return Math.Clamp(score, 0, 100);
+        }
+
+        private static TimeZoneInfo GetSeoulTimeZone()
+        {
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById("Korea Standard Time");
+            }
+            catch
+            {
+                return TimeZoneInfo.CreateCustomTimeZone("KST", TimeSpan.FromHours(9), "KST", "KST");
+            }
         }
     }
 }

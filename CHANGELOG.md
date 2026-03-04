@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-03-04
+
+### Changed
+
+- **버전 업데이트**: 프로젝트 버전을 `2.1.2`로 상향 (`Version`, `AssemblyVersion`, `FileVersion`).
+- **설정 검증 확장**: 설정창 저장 시 `General`/`Transformer` 입력값 범위 검증 및 상호 조건 검증을 추가.
+
 ## [2.1.1] - 2026-03-04
 
 ### Changed

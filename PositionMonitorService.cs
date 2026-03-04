@@ -54,16 +54,46 @@ namespace TradingBot.Services
             _settings = settings;
         }
 
-        public async Task MonitorPositionStandard(string symbol, decimal entryPrice, bool isLong, CancellationToken token)
+        public async Task MonitorPositionStandard(
+            string symbol,
+            decimal entryPrice,
+            bool isLong,
+            CancellationToken token,
+            string mode = "TREND",
+            decimal customTakeProfitPrice = 0m,
+            decimal customStopLossPrice = 0m)
         {
-            OnLog?.Invoke($"🔍 {symbol} 감시 시작 (진입가: {entryPrice})");
+            bool isSidewaysMode = string.Equals(mode, "SIDEWAYS", StringComparison.OrdinalIgnoreCase);
+            bool partialTaken = false;
+
+            lock (_posLock)
+            {
+                if (_activePositions.TryGetValue(symbol, out var p))
+                {
+                    entryPrice = p.EntryPrice;
+                    isLong = p.IsLong;
+                    partialTaken = p.TakeProfitStep >= 1;
+
+                    if (customTakeProfitPrice <= 0 && p.TakeProfit > 0)
+                        customTakeProfitPrice = p.TakeProfit;
+
+                    if (customStopLossPrice <= 0 && p.StopLoss > 0)
+                        customStopLossPrice = p.StopLoss;
+
+                    isSidewaysMode = isSidewaysMode || (p.TakeProfit > 0 && p.StopLoss > 0);
+                }
+            }
+
+            OnLog?.Invoke($"🔍 {symbol} 감시 시작 (진입가: {entryPrice}) | mode={(isSidewaysMode ? "SIDEWAYS" : "TREND")}");
 
             // [추가] 안전장치: 서버사이드 손절 주문 설정 (Stop Market)
             try
             {
-                decimal stopPrice = isLong
-                    ? entryPrice * (1 - _settings.StopLossRoe / _settings.DefaultLeverage / 100)
-                    : entryPrice * (1 + _settings.StopLossRoe / _settings.DefaultLeverage / 100);
+                decimal stopPrice = (isSidewaysMode && customStopLossPrice > 0)
+                    ? customStopLossPrice
+                    : (isLong
+                        ? entryPrice * (1 - _settings.StopLossRoe / _settings.DefaultLeverage / 100)
+                        : entryPrice * (1 + _settings.StopLossRoe / _settings.DefaultLeverage / 100));
 
                 // 수량 조회 (락 필요)
                 decimal qty = 0;
@@ -95,6 +125,51 @@ namespace TradingBot.Services
                     decimal currentROE = priceChangePercent * _settings.DefaultLeverage;
 
                     OnTickerUpdate?.Invoke(symbol, 0m, (double)currentROE);
+
+                    if (isSidewaysMode)
+                    {
+                        bool customStopHit = customStopLossPrice > 0 &&
+                            ((isLong && currentPrice <= customStopLossPrice) || (!isLong && currentPrice >= customStopLossPrice));
+
+                        if (customStopHit)
+                        {
+                            OnLog?.Invoke($"[청산 트리거] {symbol} SIDEWAYS 커스텀 손절 | 현재가={currentPrice:F8}, SL={customStopLossPrice:F8}");
+                            await ExecuteMarketClose(symbol, $"SIDEWAYS 커스텀 손절 ({currentPrice:F8})", token);
+                            break;
+                        }
+
+                        bool customTpHit = customTakeProfitPrice > 0 &&
+                            ((isLong && currentPrice >= customTakeProfitPrice) || (!isLong && currentPrice <= customTakeProfitPrice));
+
+                        if (!partialTaken && customTpHit)
+                        {
+                            await ExecutePartialClose(symbol, 0.5m, token);
+                            partialTaken = true;
+
+                            lock (_posLock)
+                            {
+                                if (_activePositions.TryGetValue(symbol, out var p))
+                                {
+                                    p.TakeProfitStep = 1;
+                                    p.BreakevenPrice = entryPrice;
+                                    p.StopLoss = entryPrice;
+                                }
+                            }
+
+                            OnLog?.Invoke($"💰 {symbol} SIDEWAYS 중단선 도달: 50% 부분익절, 잔여는 본절가({entryPrice:F8}) 보호");
+                        }
+
+                        if (partialTaken)
+                        {
+                            bool breakEvenHit = (isLong && currentPrice <= entryPrice) || (!isLong && currentPrice >= entryPrice);
+                            if (breakEvenHit)
+                            {
+                                OnLog?.Invoke($"[청산 트리거] {symbol} SIDEWAYS 잔여 본절 청산 | 현재가={currentPrice:F8}, 본절={entryPrice:F8}");
+                                await ExecuteMarketClose(symbol, "SIDEWAYS 본절가 청산", token);
+                                break;
+                            }
+                        }
+                    }
 
                     if (currentROE >= _settings.TargetRoe)
                     {

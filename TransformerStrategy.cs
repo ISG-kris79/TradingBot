@@ -23,13 +23,14 @@ namespace TradingBot.Strategies
         private readonly TransformerTrainer _trainer;
         private readonly NewsSentimentService _newsService;
         private readonly ElliottWave3WaveStrategy? _elliotWave3Strategy;
+        private readonly TransformerSettings _settings;
         private readonly HybridStrategyScorer _hybridScorer = new();
         private bool _modelNotReadyLogged;
         private readonly object _signalHistoryLock = new object();
         private readonly List<string> _recentSignalDirections = new List<string>();
 
         // 이벤트 정의
-        public event Action<string, string, decimal, decimal>? OnTradeSignal;
+        public event Action<string, string, decimal, decimal, string, decimal, decimal>? OnTradeSignal;
         public event Action<string, decimal, decimal>? OnPredictionUpdated;
         public event Action<MultiTimeframeViewModel>? OnSignalAnalyzed;
         public event Action<string>? OnLog;
@@ -39,12 +40,18 @@ namespace TradingBot.Strategies
         private const int SignalHistoryLimit = 100;
         private const double TargetShortRatio = 0.30;
 
-        public TransformerStrategy(IBinanceRestClient client, TransformerTrainer trainer, NewsSentimentService newsService, ElliottWave3WaveStrategy? elliotWave3Strategy = null)
+        public TransformerStrategy(
+            IBinanceRestClient client,
+            TransformerTrainer trainer,
+            NewsSentimentService newsService,
+            ElliottWave3WaveStrategy? elliotWave3Strategy = null,
+            TransformerSettings? settings = null)
         {
             _client = client;
             _trainer = trainer;
             _newsService = newsService;
             _elliotWave3Strategy = elliotWave3Strategy;
+            _settings = settings ?? new TransformerSettings();
         }
 
         public async Task AnalyzeAsync(string symbol, decimal currentPrice, CancellationToken token)
@@ -96,7 +103,11 @@ namespace TradingBot.Strategies
                 // 5. 기술적 컨텍스트 구성
                 var technicalCtx = BuildTechnicalContext(symbol, klines, currentPrice);
 
-                // 6. ═══════ 하이브리드 멀티 전략 스코어링 ═══════
+                // 6. ADX 기반 모드 판별 (횡보/추세)
+                var (adx, plusDi, minusDi) = IndicatorCalculator.CalculateADX(klines, _settings.AdxPeriod);
+                bool isSidewaysMarket = adx < _settings.AdxSidewaysThreshold;
+
+                // 6.5. ═══════ 하이브리드 멀티 전략 스코어링 ═══════
                 var longResult = _hybridScorer.EvaluateLong(symbol, predictedChange, predictedPrice, technicalCtx);
                 var shortResult = _hybridScorer.EvaluateShort(symbol, predictedChange, predictedPrice, technicalCtx);
 
@@ -109,8 +120,68 @@ namespace TradingBot.Strategies
                     shortResult.FinalScore = Math.Clamp(shortResult.FinalScore + shortBonus, 0, 100);
                 }
 
-                // UI 전용 Decision 결정 (점수 기반)
-                string decisionForUi = GetUiDecision(longResult, shortResult);
+                bool longCondition = false;
+                bool shortCondition = false;
+                string mode = isSidewaysMarket ? "SIDEWAYS" : "TREND";
+                string decisionForUi = "WAIT";
+                decimal customTakeProfitPrice = 0m;
+                decimal customStopLossPrice = 0m;
+
+                if (isSidewaysMarket)
+                {
+                    OnLog?.Invoke($"⚖️ [횡보장 모드] {symbol} ADX:{adx:F1} (+DI:{plusDi:F1}/-DI:{minusDi:F1}) | 박스권 핑퐁 대기");
+
+                    longCondition =
+                        currentPrice <= (decimal)technicalCtx.BbLower * _settings.SidewaysLongLowerBandTouchMultiplier &&
+                        technicalCtx.RSI <= _settings.SidewaysRsiLongMax &&
+                        predictedChange > 0 &&
+                        technicalCtx.VolumeRatio < _settings.SidewaysVolumeRatioMax;
+
+                    shortCondition =
+                        currentPrice >= (decimal)technicalCtx.BbUpper * _settings.SidewaysShortUpperBandTouchMultiplier &&
+                        technicalCtx.RSI >= _settings.SidewaysRsiShortMin &&
+                        predictedChange < 0 &&
+                        technicalCtx.VolumeRatio < _settings.SidewaysVolumeRatioMax;
+
+                    if (longCondition)
+                    {
+                        decisionForUi = "LONG";
+                        customTakeProfitPrice = (decimal)technicalCtx.BbMid;
+                        customStopLossPrice = (decimal)technicalCtx.BbLower * _settings.SidewaysLongStopLossMultiplier;
+                    }
+                    else if (shortCondition)
+                    {
+                        decisionForUi = "SHORT";
+                        customTakeProfitPrice = (decimal)technicalCtx.BbMid;
+                        customStopLossPrice = (decimal)technicalCtx.BbUpper * _settings.SidewaysShortStopLossMultiplier;
+                    }
+                }
+                else
+                {
+                    OnLog?.Invoke($"🔥 [추세장 모드] {symbol} ADX:{adx:F1} (+DI:{plusDi:F1}/-DI:{minusDi:F1}) | 엘리엇+Transformer 가동");
+
+                    bool safeToLong = plusDi >= minusDi;
+                    bool safeToShort = minusDi > plusDi;
+
+                    if (longResult.FinalScore >= dynamicThreshold && longResult.FinalScore > shortResult.FinalScore && safeToLong)
+                    {
+                        longCondition = true;
+                        decisionForUi = "LONG";
+                    }
+                    else if (shortResult.FinalScore >= dynamicThreshold && shortResult.FinalScore > longResult.FinalScore && safeToShort)
+                    {
+                        if (CanEmitShortSignal(shortResult.FinalScore, predictedChange))
+                        {
+                            shortCondition = true;
+                            decisionForUi = "SHORT";
+                        }
+                    }
+
+                    if (decisionForUi == "WAIT")
+                    {
+                        decisionForUi = GetUiDecision(longResult, shortResult);
+                    }
+                }
 
                 // 분석 데이터 UI 전송
                 OnSignalAnalyzed?.Invoke(new MultiTimeframeViewModel
@@ -120,7 +191,7 @@ namespace TradingBot.Strategies
                     RSI_1H = technicalCtx.RSI,
                     AIScore = (float)Math.Max(longResult.FinalScore, shortResult.FinalScore),
                     Decision = decisionForUi,
-                    StrategyName = "Hybrid AI(5m)",
+                    StrategyName = isSidewaysMarket ? "Hybrid AI Sideways(5m)" : "Hybrid AI Trend(5m)",
                     SignalSource = "TRANSFORMER",
                     ShortLongScore = longResult.FinalScore,
                     ShortShortScore = shortResult.FinalScore,
@@ -136,23 +207,34 @@ namespace TradingBot.Strategies
                     TransformerChange = (double)(predictedChange * 100)
                 });
 
-                // 7. ═══════ 최종 진입/비진입 판정 (동적 임계값 적용) ═══════
-                if (longResult.FinalScore >= dynamicThreshold && longResult.FinalScore > shortResult.FinalScore)
+                // 7. ═══════ 최종 신호 발생 ═══════
+                if (longCondition)
                 {
                     RegisterSignalDirection("LONG");
                     string majorTag = HybridStrategyScorer.IsMajorCoin(symbol) ? " [MAJOR]" : "";
-                    OnLog?.Invoke($"🚀{majorTag} [LONG] {symbol} | Score: {longResult.FinalScore:F1}/{dynamicThreshold:F0} | 예측: {predictedChange * 100:F2}% | AI:{longResult.AiPredictionScore:F0} EW:{longResult.ElliottWaveScore:F0} Vol:{longResult.VolumeMomentumScore:F0} RSI/M:{longResult.RsiMacdScore:F0} BB:{longResult.BollingerScore:F0}");
-                    OnTradeSignal?.Invoke(symbol, "LONG", currentPrice, predictedPrice);
-                }
-                else if (shortResult.FinalScore >= dynamicThreshold && shortResult.FinalScore > longResult.FinalScore)
-                {
-                    if (CanEmitShortSignal(shortResult.FinalScore, predictedChange))
+                    if (isSidewaysMarket)
                     {
-                        RegisterSignalDirection("SHORT");
-                        string majorTag = HybridStrategyScorer.IsMajorCoin(symbol) ? " [MAJOR]" : "";
-                        OnLog?.Invoke($"📉{majorTag} [SHORT] {symbol} | Score: {shortResult.FinalScore:F1}/{dynamicThreshold:F0} | 예측: {predictedChange * 100:F2}% | AI:{shortResult.AiPredictionScore:F0} EW:{shortResult.ElliottWaveScore:F0} Vol:{shortResult.VolumeMomentumScore:F0} RSI/M:{shortResult.RsiMacdScore:F0} BB:{shortResult.BollingerScore:F0}");
-                        OnTradeSignal?.Invoke(symbol, "SHORT", currentPrice, predictedPrice);
+                        OnLog?.Invoke($"⚖️{majorTag} [SIDEWAYS LONG] {symbol} | ADX:{adx:F1} RSI:{technicalCtx.RSI:F1} Vol:{technicalCtx.VolumeRatio:F2}x | TP(mid):{customTakeProfitPrice:F8} SL:{customStopLossPrice:F8}");
                     }
+                    else
+                    {
+                        OnLog?.Invoke($"🚀{majorTag} [TREND LONG] {symbol} | Score: {longResult.FinalScore:F1}/{dynamicThreshold:F0} | 예측: {predictedChange * 100:F2}% | AI:{longResult.AiPredictionScore:F0} EW:{longResult.ElliottWaveScore:F0} Vol:{longResult.VolumeMomentumScore:F0} RSI/M:{longResult.RsiMacdScore:F0} BB:{longResult.BollingerScore:F0}");
+                    }
+                    OnTradeSignal?.Invoke(symbol, "LONG", currentPrice, predictedPrice, mode, customTakeProfitPrice, customStopLossPrice);
+                }
+                else if (shortCondition)
+                {
+                    RegisterSignalDirection("SHORT");
+                    string majorTag = HybridStrategyScorer.IsMajorCoin(symbol) ? " [MAJOR]" : "";
+                    if (isSidewaysMarket)
+                    {
+                        OnLog?.Invoke($"⚖️{majorTag} [SIDEWAYS SHORT] {symbol} | ADX:{adx:F1} RSI:{technicalCtx.RSI:F1} Vol:{technicalCtx.VolumeRatio:F2}x | TP(mid):{customTakeProfitPrice:F8} SL:{customStopLossPrice:F8}");
+                    }
+                    else
+                    {
+                        OnLog?.Invoke($"📉{majorTag} [TREND SHORT] {symbol} | Score: {shortResult.FinalScore:F1}/{dynamicThreshold:F0} | 예측: {predictedChange * 100:F2}% | AI:{shortResult.AiPredictionScore:F0} EW:{shortResult.ElliottWaveScore:F0} Vol:{shortResult.VolumeMomentumScore:F0} RSI/M:{shortResult.RsiMacdScore:F0} BB:{shortResult.BollingerScore:F0}");
+                    }
+                    OnTradeSignal?.Invoke(symbol, "SHORT", currentPrice, predictedPrice, mode, customTakeProfitPrice, customStopLossPrice);
                 }
             }
             catch (Exception ex)

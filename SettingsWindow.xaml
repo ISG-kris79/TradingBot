@@ -474,6 +474,159 @@
                         </ScrollViewer>
                     </TabItem>
 
+                    <TabItem Header="Transformer">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <Border Background="#161925"
+                                    CornerRadius="10"
+                                    Padding="20"
+                                    Margin="10">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="210"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Text="ADX Period:"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="0"
+                                               Foreground="#94A3B8"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtTfAdxPeriod"
+                                             Grid.Row="0"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="ADX 횡보 임계값:"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="1"
+                                               Foreground="#94A3B8"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtTfAdxSidewaysThreshold"
+                                             Grid.Row="1"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="횡보 LONG RSI 최대:"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="2"
+                                               Foreground="#94A3B8"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtTfSidewaysRsiLongMax"
+                                             Grid.Row="2"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="횡보 SHORT RSI 최소:"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="3"
+                                               Foreground="#94A3B8"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtTfSidewaysRsiShortMin"
+                                             Grid.Row="3"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="횡보 거래량비 최대:"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="4"
+                                               Foreground="#94A3B8"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtTfSidewaysVolumeRatioMax"
+                                             Grid.Row="4"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="LONG 하단 터치 배수:"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="5"
+                                               Foreground="#94A3B8"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtTfSidewaysLongLowerTouch"
+                                             Grid.Row="5"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="SHORT 상단 터치 배수:"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="6"
+                                               Foreground="#94A3B8"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtTfSidewaysShortUpperTouch"
+                                             Grid.Row="6"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="LONG 손절 배수:"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="7"
+                                               Foreground="#94A3B8"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtTfSidewaysLongSlMul"
+                                             Grid.Row="7"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="SHORT 손절 배수:"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="8"
+                                               Foreground="#94A3B8"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtTfSidewaysShortSlMul"
+                                             Grid.Row="8"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+                                </Grid>
+                            </Border>
+                        </ScrollViewer>
+                    </TabItem>
+
                     <TabItem Header="Grid Strategy">
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <Border Background="#161925"

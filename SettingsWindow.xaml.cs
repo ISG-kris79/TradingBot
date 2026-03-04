@@ -158,6 +158,33 @@ namespace TradingBot
                             bool autoHedge = arbNode["AutoHedge"]?.GetValue<bool>() ?? true;
                             chkAutoHedge.IsChecked = autoHedge;
                         }
+
+                        // Transformer Settings 로드
+                        var tfNode = tradingNode["TransformerSettings"];
+                        if (tfNode != null)
+                        {
+                            txtTfAdxPeriod.Text = tfNode["AdxPeriod"]?.ToString() ?? "14";
+                            txtTfAdxSidewaysThreshold.Text = tfNode["AdxSidewaysThreshold"]?.ToString() ?? "20.0";
+                            txtTfSidewaysRsiLongMax.Text = tfNode["SidewaysRsiLongMax"]?.ToString() ?? "35.0";
+                            txtTfSidewaysRsiShortMin.Text = tfNode["SidewaysRsiShortMin"]?.ToString() ?? "65.0";
+                            txtTfSidewaysVolumeRatioMax.Text = tfNode["SidewaysVolumeRatioMax"]?.ToString() ?? "1.5";
+                            txtTfSidewaysLongLowerTouch.Text = tfNode["SidewaysLongLowerBandTouchMultiplier"]?.ToString() ?? "1.001";
+                            txtTfSidewaysShortUpperTouch.Text = tfNode["SidewaysShortUpperBandTouchMultiplier"]?.ToString() ?? "0.999";
+                            txtTfSidewaysLongSlMul.Text = tfNode["SidewaysLongStopLossMultiplier"]?.ToString() ?? "0.9975";
+                            txtTfSidewaysShortSlMul.Text = tfNode["SidewaysShortStopLossMultiplier"]?.ToString() ?? "1.0025";
+                        }
+                        else
+                        {
+                            txtTfAdxPeriod.Text = "14";
+                            txtTfAdxSidewaysThreshold.Text = "20.0";
+                            txtTfSidewaysRsiLongMax.Text = "35.0";
+                            txtTfSidewaysRsiShortMin.Text = "65.0";
+                            txtTfSidewaysVolumeRatioMax.Text = "1.5";
+                            txtTfSidewaysLongLowerTouch.Text = "1.001";
+                            txtTfSidewaysShortUpperTouch.Text = "0.999";
+                            txtTfSidewaysLongSlMul.Text = "0.9975";
+                            txtTfSidewaysShortSlMul.Text = "1.0025";
+                        }
                     }
                 }
                 else
@@ -175,6 +202,18 @@ namespace TradingBot
         {
             try
             {
+                if (!ValidateGeneralInputs(out string generalValidationError))
+                {
+                    MessageBox.Show(generalValidationError, "입력값 오류", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                if (!ValidateTransformerInputs(out string validationError))
+                {
+                    MessageBox.Show(validationError, "입력값 오류", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
                 if (_rootNode == null) _rootNode = new JsonObject();
 
                 // Trading Settings 업데이트
@@ -297,6 +336,71 @@ namespace TradingBot
 
                 _rootNode["Trading"]["ArbitrageSettings"]["AutoHedge"] = chkAutoHedge.IsChecked == true;
 
+                // Transformer Settings 저장
+                if (_rootNode["Trading"]["TransformerSettings"] == null)
+                    _rootNode["Trading"]["TransformerSettings"] = new JsonObject();
+
+                var tfSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
+
+                if (int.TryParse(txtTfAdxPeriod.Text, out int adxPeriod))
+                {
+                    _rootNode["Trading"]["TransformerSettings"]["AdxPeriod"] = adxPeriod;
+                    tfSettings.AdxPeriod = adxPeriod;
+                }
+
+                if (double.TryParse(txtTfAdxSidewaysThreshold.Text, out double adxSidewaysThreshold))
+                {
+                    _rootNode["Trading"]["TransformerSettings"]["AdxSidewaysThreshold"] = adxSidewaysThreshold;
+                    tfSettings.AdxSidewaysThreshold = adxSidewaysThreshold;
+                }
+
+                if (double.TryParse(txtTfSidewaysRsiLongMax.Text, out double sidewaysRsiLongMax))
+                {
+                    _rootNode["Trading"]["TransformerSettings"]["SidewaysRsiLongMax"] = sidewaysRsiLongMax;
+                    tfSettings.SidewaysRsiLongMax = sidewaysRsiLongMax;
+                }
+
+                if (double.TryParse(txtTfSidewaysRsiShortMin.Text, out double sidewaysRsiShortMin))
+                {
+                    _rootNode["Trading"]["TransformerSettings"]["SidewaysRsiShortMin"] = sidewaysRsiShortMin;
+                    tfSettings.SidewaysRsiShortMin = sidewaysRsiShortMin;
+                }
+
+                if (double.TryParse(txtTfSidewaysVolumeRatioMax.Text, out double sidewaysVolumeRatioMax))
+                {
+                    _rootNode["Trading"]["TransformerSettings"]["SidewaysVolumeRatioMax"] = sidewaysVolumeRatioMax;
+                    tfSettings.SidewaysVolumeRatioMax = sidewaysVolumeRatioMax;
+                }
+
+                if (decimal.TryParse(txtTfSidewaysLongLowerTouch.Text, out decimal longLowerTouch))
+                {
+                    _rootNode["Trading"]["TransformerSettings"]["SidewaysLongLowerBandTouchMultiplier"] = longLowerTouch;
+                    tfSettings.SidewaysLongLowerBandTouchMultiplier = longLowerTouch;
+                }
+
+                if (decimal.TryParse(txtTfSidewaysShortUpperTouch.Text, out decimal shortUpperTouch))
+                {
+                    _rootNode["Trading"]["TransformerSettings"]["SidewaysShortUpperBandTouchMultiplier"] = shortUpperTouch;
+                    tfSettings.SidewaysShortUpperBandTouchMultiplier = shortUpperTouch;
+                }
+
+                if (decimal.TryParse(txtTfSidewaysLongSlMul.Text, out decimal longSlMul))
+                {
+                    _rootNode["Trading"]["TransformerSettings"]["SidewaysLongStopLossMultiplier"] = longSlMul;
+                    tfSettings.SidewaysLongStopLossMultiplier = longSlMul;
+                }
+
+                if (decimal.TryParse(txtTfSidewaysShortSlMul.Text, out decimal shortSlMul))
+                {
+                    _rootNode["Trading"]["TransformerSettings"]["SidewaysShortStopLossMultiplier"] = shortSlMul;
+                    tfSettings.SidewaysShortStopLossMultiplier = shortSlMul;
+                }
+
+                if (AppConfig.Current?.Trading != null)
+                {
+                    AppConfig.Current.Trading.TransformerSettings = tfSettings;
+                }
+
 
                 // 3. 파일 저장
                 string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, SettingsFileName);
@@ -361,6 +465,193 @@ namespace TradingBot
                 case 0: pnlBinance.Visibility = Visibility.Visible; break; // Binance
                 case 1: pnlBybit.Visibility = Visibility.Visible; break;   // Bybit
             }
+        }
+
+        private bool ValidateTransformerInputs(out string errorMessage)
+        {
+            errorMessage = string.Empty;
+
+            if (!TryParseIntInRange(txtTfAdxPeriod, "ADX Period", 2, 100, out _, out errorMessage))
+                return false;
+
+            if (!TryParseDoubleInRange(txtTfAdxSidewaysThreshold, "ADX 횡보 임계값", 1.0, 80.0, out _, out errorMessage))
+                return false;
+
+            if (!TryParseDoubleInRange(txtTfSidewaysRsiLongMax, "횡보 LONG RSI 최대", 0.0, 100.0, out double longRsiMax, out errorMessage))
+                return false;
+
+            if (!TryParseDoubleInRange(txtTfSidewaysRsiShortMin, "횡보 SHORT RSI 최소", 0.0, 100.0, out double shortRsiMin, out errorMessage))
+                return false;
+
+            if (longRsiMax >= shortRsiMin)
+            {
+                txtTfSidewaysRsiLongMax.Focus();
+                txtTfSidewaysRsiLongMax.SelectAll();
+                errorMessage = "횡보 RSI 조건이 잘못되었습니다. LONG RSI 최대값은 SHORT RSI 최소값보다 작아야 합니다.";
+                return false;
+            }
+
+            if (!TryParseDoubleInRange(txtTfSidewaysVolumeRatioMax, "횡보 거래량비 최대", 0.1, 10.0, out _, out errorMessage))
+                return false;
+
+            if (!TryParseDecimalInRange(txtTfSidewaysLongLowerTouch, "LONG 하단 터치 배수", 0.9m, 1.1m, out _, out errorMessage))
+                return false;
+
+            if (!TryParseDecimalInRange(txtTfSidewaysShortUpperTouch, "SHORT 상단 터치 배수", 0.9m, 1.1m, out _, out errorMessage))
+                return false;
+
+            if (!TryParseDecimalInRange(txtTfSidewaysLongSlMul, "LONG 손절 배수", 0.9m, 1.1m, out _, out errorMessage))
+                return false;
+
+            if (!TryParseDecimalInRange(txtTfSidewaysShortSlMul, "SHORT 손절 배수", 0.9m, 1.1m, out _, out errorMessage))
+                return false;
+
+            return true;
+        }
+
+        private bool ValidateGeneralInputs(out string errorMessage)
+        {
+            errorMessage = string.Empty;
+
+            if (!TryParseDecimalInRange(txtDefaultMargin, "기본 마진 (USDT)", 1m, 100000m, out _, out errorMessage))
+                return false;
+
+            if (!TryParseIntInRange(txtLeverage, "레버리지", 1, 125, out _, out errorMessage))
+                return false;
+
+            if (!TryParseDecimalInRange(txtTargetRoe, "목표 ROE", 0.1m, 500m, out _, out errorMessage))
+                return false;
+
+            if (!TryParseDecimalInRange(txtStopLossRoe, "손절 ROE", 0.1m, 500m, out _, out errorMessage))
+                return false;
+
+            if (!TryParseDecimalInRange(txtPumpTp1Roe, "PUMP 1차 익절 ROE", 0.1m, 1000m, out decimal pumpTp1, out errorMessage))
+                return false;
+
+            if (!TryParseDecimalInRange(txtPumpTp2Roe, "PUMP 2차 익절 ROE", 0.1m, 1000m, out decimal pumpTp2, out errorMessage))
+                return false;
+
+            if (pumpTp2 <= pumpTp1)
+            {
+                txtPumpTp2Roe.Focus();
+                txtPumpTp2Roe.SelectAll();
+                errorMessage = "PUMP 2차 익절 ROE는 1차 익절 ROE보다 커야 합니다.";
+                return false;
+            }
+
+            if (!TryParseDecimalInRange(txtPumpTimeStopMinutes, "PUMP 시간손절(분)", 1m, 1440m, out _, out errorMessage))
+                return false;
+
+            if (!TryParseDecimalInRange(txtPumpStopWarnPct, "PUMP 손절거리 경고(%)", 0.01m, 50m, out decimal warnPct, out errorMessage))
+                return false;
+
+            if (!TryParseDecimalInRange(txtPumpStopBlockPct, "PUMP 손절거리 차단(%)", 0.01m, 50m, out decimal blockPct, out errorMessage))
+                return false;
+
+            if (blockPct <= warnPct)
+            {
+                txtPumpStopBlockPct.Focus();
+                txtPumpStopBlockPct.SelectAll();
+                errorMessage = "PUMP 손절거리 차단값은 경고값보다 커야 합니다.";
+                return false;
+            }
+
+            if (!TryParseDecimalInRange(txtRisk, "리스크 비율(%)", 0.01m, 100m, out _, out errorMessage))
+                return false;
+
+            if (!TryParseIntInRange(txtGridLevels, "Grid Levels", 2, 200, out _, out errorMessage))
+                return false;
+
+            if (!TryParseDecimalInRange(txtGridSpacing, "Grid Spacing(%)", 0.01m, 20m, out _, out errorMessage))
+                return false;
+
+            var symbols = txtSymbols.Text
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .ToArray();
+
+            if (symbols.Length == 0)
+            {
+                txtSymbols.Focus();
+                errorMessage = "주요 심볼은 최소 1개 이상 입력해야 합니다. (예: BTCUSDT,ETHUSDT)";
+                return false;
+            }
+
+            if (symbols.Any(s => s.Length < 6 || !s.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)))
+            {
+                txtSymbols.Focus();
+                txtSymbols.SelectAll();
+                errorMessage = "심볼 형식이 올바르지 않습니다. 쉼표로 구분하고 각 심볼은 USDT로 끝나야 합니다. (예: BTCUSDT,ETHUSDT)";
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool TryParseIntInRange(TextBox textBox, string fieldName, int min, int max, out int value, out string error)
+        {
+            if (!int.TryParse(textBox.Text, out value))
+            {
+                textBox.Focus();
+                textBox.SelectAll();
+                error = $"{fieldName} 값이 숫자가 아닙니다.";
+                return false;
+            }
+
+            if (value < min || value > max)
+            {
+                textBox.Focus();
+                textBox.SelectAll();
+                error = $"{fieldName} 값은 {min} ~ {max} 범위여야 합니다.";
+                return false;
+            }
+
+            error = string.Empty;
+            return true;
+        }
+
+        private static bool TryParseDoubleInRange(TextBox textBox, string fieldName, double min, double max, out double value, out string error)
+        {
+            if (!double.TryParse(textBox.Text, out value))
+            {
+                textBox.Focus();
+                textBox.SelectAll();
+                error = $"{fieldName} 값이 숫자가 아닙니다.";
+                return false;
+            }
+
+            if (value < min || value > max)
+            {
+                textBox.Focus();
+                textBox.SelectAll();
+                error = $"{fieldName} 값은 {min} ~ {max} 범위여야 합니다.";
+                return false;
+            }
+
+            error = string.Empty;
+            return true;
+        }
+
+        private static bool TryParseDecimalInRange(TextBox textBox, string fieldName, decimal min, decimal max, out decimal value, out string error)
+        {
+            if (!decimal.TryParse(textBox.Text, out value))
+            {
+                textBox.Focus();
+                textBox.SelectAll();
+                error = $"{fieldName} 값이 숫자가 아닙니다.";
+                return false;
+            }
+
+            if (value < min || value > max)
+            {
+                textBox.Focus();
+                textBox.SelectAll();
+                error = $"{fieldName} 값은 {min} ~ {max} 범위여야 합니다.";
+                return false;
+            }
+
+            error = string.Empty;
+            return true;
         }
     }
 }

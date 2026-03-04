@@ -345,7 +345,7 @@ namespace TradingBot
             };
 
             // [3파 통합] TransformerStrategy에 ElliottWave3WaveStrategy 주입
-            _transformerStrategy = new TransformerStrategy(_client, _transformerTrainer, _newsService, _elliotWave3Strategy);
+            _transformerStrategy = new TransformerStrategy(_client, _transformerTrainer, _newsService, _elliotWave3Strategy, tfSettings);
             _transformerStrategy.OnLog += msg => OnStatusLog?.Invoke(msg);
             _transformerStrategy.OnSignalAnalyzed += vm => OnSignalUpdate?.Invoke(vm);
 
@@ -364,12 +364,15 @@ namespace TradingBot
                 });
             };
 
-            _transformerStrategy.OnTradeSignal += async (symbol, side, currentPrice, predictedPrice) =>
+            _transformerStrategy.OnTradeSignal += async (symbol, side, currentPrice, predictedPrice, mode, customTakeProfitPrice, customStopLossPrice) =>
             {
                 // Transformer 전략 신호 발생 시 자동 매매 실행 (LONG/SHORT)
-                await ExecuteAutoOrder(symbol, side, currentPrice, _cts.Token, "TRANSFORMER");
+                await ExecuteAutoOrder(symbol, side, currentPrice, _cts.Token, $"TRANSFORMER_{mode}", mode, customTakeProfitPrice, customStopLossPrice);
                 // 하이브리드 이탈 관리자에 등록 (AI 기반 익절/트레일링 스탑)
-                _hybridExitManager.RegisterEntry(symbol, side, currentPrice, predictedPrice);
+                if (mode != "SIDEWAYS")
+                {
+                    _hybridExitManager.RegisterEntry(symbol, side, currentPrice, predictedPrice);
+                }
             };
 
             // [Phase 8] DeFi 서비스 초기화
@@ -513,6 +516,8 @@ namespace TradingBot
                     EnsureSymbolInList(symbol);
                 }
 
+                OnStatusLog?.Invoke($"📌 추적 심볼: {string.Join(", ", _symbols)}");
+
                 // 1. 초기화 (지갑 잔고 및 현재 포지션 동기화)
                 await InitializeSeedAsync(token); // InitialBalance 설정
                 _riskManager.Initialize((decimal)InitialBalance); // RiskManager 초기화
@@ -542,14 +547,21 @@ namespace TradingBot
                 TelegramService.Instance.OnRequestStop = StopEngine;
                 TelegramService.Instance.StartReceiving();
 
-                _ = _marketHistoryService?.StartRecordingAsync(token);
-
                 _ = ProcessTickerChannelAsync(token);
                 _ = ProcessAccountChannelAsync(token); // [Agent 2] 계좌 업데이트 처리 시작
                 _ = ProcessOrderChannelAsync(token);   // [Agent 2] 주문 업데이트 처리 시작
 
                 // 2. 실시간 감시 시작 (Non-blocking)
                 await _marketDataManager.StartAsync(token);
+
+                // 시작 직후 5분봉 캐시 선로딩(최대 1000개) 후, 현시각까지 DB 백필 저장 완료를 보장
+                await _marketDataManager.PreloadRecentKlinesAsync(limit: 1000, token);
+                if (_marketHistoryService != null)
+                {
+                    await _marketHistoryService.BackfillToNowBeforeStartAsync(token);
+                    _ = _marketHistoryService.StartRecordingAsync(token);
+                }
+
                 _ = StartPeriodicTrainingAsync(token);
 
                 await PreloadInitialAiScoresAsync(token);
@@ -1900,7 +1912,15 @@ namespace TradingBot
         /// <summary>
         /// 자동 매매 실행 메인 메서드
         /// </summary>
-        private async Task ExecuteAutoOrder(string symbol, string decision, decimal currentPrice, CancellationToken token, string signalSource = "UNKNOWN")
+        private async Task ExecuteAutoOrder(
+            string symbol,
+            string decision,
+            decimal currentPrice,
+            CancellationToken token,
+            string signalSource = "UNKNOWN",
+            string mode = "TREND",
+            decimal customTakeProfitPrice = 0m,
+            decimal customStopLossPrice = 0m)
         {
             // 1. 진입 신호가 아니면 즉시 종료
             if (decision != "LONG" && decision != "SHORT") return;
@@ -1983,7 +2003,7 @@ namespace TradingBot
             }
 
             OnStatusLog?.Invoke(
-                $"🧾 [진입 검증] src={signalSource} | {symbol} {decision} | AI.Score={aiScore:F3} | AI.Prob={aiProbability:P1} | AI.Dir={(aiPredictUp.HasValue ? (aiPredictUp.Value ? "UP" : "DOWN") : "N/A")} | RSI={(latestCandle != null ? latestCandle.RSI.ToString("F1") : "N/A")}");
+                $"🧾 [진입 검증] src={signalSource} | mode={mode} | {symbol} {decision} | AI.Score={aiScore:F3} | AI.Prob={aiProbability:P1} | AI.Dir={(aiPredictUp.HasValue ? (aiPredictUp.Value ? "UP" : "DOWN") : "N/A")} | RSI={(latestCandle != null ? latestCandle.RSI.ToString("F1") : "N/A")}");
 
             try
             {
@@ -2043,7 +2063,9 @@ namespace TradingBot
                         Fib0786Level = waveState?.Fib786Level ?? 0,
                         Fib1618Target = waveState?.Fib1618Target ?? 0,
                         PartialProfitStage = 0,
-                        BreakevenPrice = 0
+                        BreakevenPrice = 0,
+                        TakeProfit = customTakeProfitPrice > 0 ? customTakeProfitPrice : 0,
+                        StopLoss = customStopLossPrice > 0 ? customStopLossPrice : 0
                     };
                 }
 
@@ -2092,7 +2114,7 @@ namespace TradingBot
                     _soundService.PlaySuccess();
 
                     // 🔥 [핵심] 감시 루프 시작 (Task.Run으로 별도 스레드에서 실행)
-                    _ = Task.Run(() => _positionMonitor.MonitorPositionStandard(symbol, currentPrice, decision == "LONG", token), token);
+                    _ = Task.Run(() => _positionMonitor.MonitorPositionStandard(symbol, currentPrice, decision == "LONG", token, mode, customTakeProfitPrice, customStopLossPrice), token);
 
                 }
             }

@@ -65,6 +65,82 @@ namespace TradingBot.Services
             return atr?.Atr ?? 0;
         }
 
+        public static (double Adx, double PlusDi, double MinusDi) CalculateADX(List<IBinanceKline> klines, int period = 14)
+        {
+            if (klines == null || klines.Count <= period * 2)
+                return (0, 0, 0);
+
+            double[] tr = new double[klines.Count];
+            double[] plusDm = new double[klines.Count];
+            double[] minusDm = new double[klines.Count];
+
+            for (int i = 1; i < klines.Count; i++)
+            {
+                double high = (double)klines[i].HighPrice;
+                double low = (double)klines[i].LowPrice;
+                double prevHigh = (double)klines[i - 1].HighPrice;
+                double prevLow = (double)klines[i - 1].LowPrice;
+                double prevClose = (double)klines[i - 1].ClosePrice;
+
+                double tr1 = high - low;
+                double tr2 = Math.Abs(high - prevClose);
+                double tr3 = Math.Abs(low - prevClose);
+                tr[i] = Math.Max(tr1, Math.Max(tr2, tr3));
+
+                double upMove = high - prevHigh;
+                double downMove = prevLow - low;
+
+                plusDm[i] = (upMove > downMove && upMove > 0) ? upMove : 0;
+                minusDm[i] = (downMove > upMove && downMove > 0) ? downMove : 0;
+            }
+
+            double smoothedTr = 0;
+            double smoothedPlusDm = 0;
+            double smoothedMinusDm = 0;
+
+            for (int i = 1; i <= period; i++)
+            {
+                smoothedTr += tr[i];
+                smoothedPlusDm += plusDm[i];
+                smoothedMinusDm += minusDm[i];
+            }
+
+            double[] dx = new double[klines.Count];
+            double currentPlusDi = 0;
+            double currentMinusDi = 0;
+
+            for (int i = period; i < klines.Count; i++)
+            {
+                if (i > period)
+                {
+                    smoothedTr = smoothedTr - (smoothedTr / period) + tr[i];
+                    smoothedPlusDm = smoothedPlusDm - (smoothedPlusDm / period) + plusDm[i];
+                    smoothedMinusDm = smoothedMinusDm - (smoothedMinusDm / period) + minusDm[i];
+                }
+
+                currentPlusDi = smoothedTr == 0 ? 0 : 100 * (smoothedPlusDm / smoothedTr);
+                currentMinusDi = smoothedTr == 0 ? 0 : 100 * (smoothedMinusDm / smoothedTr);
+
+                double diDiff = Math.Abs(currentPlusDi - currentMinusDi);
+                double diSum = currentPlusDi + currentMinusDi;
+                dx[i] = diSum == 0 ? 0 : 100 * (diDiff / diSum);
+            }
+
+            double adx = 0;
+            for (int i = period; i < period * 2; i++)
+            {
+                adx += dx[i];
+            }
+            adx /= period;
+
+            for (int i = period * 2; i < klines.Count; i++)
+            {
+                adx = ((adx * (period - 1)) + dx[i]) / period;
+            }
+
+            return (adx, currentPlusDi, currentMinusDi);
+        }
+
         public static (double Macd, double Signal, double Hist) CalculateMACD(List<IBinanceKline> candles)
         {
             if (candles.Count < 26) return (0, 0, 0);

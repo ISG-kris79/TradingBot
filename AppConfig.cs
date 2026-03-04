@@ -255,6 +255,18 @@ namespace TradingBot
         public int BatchSize { get; set; } = 32;
         public int Epochs { get; set; } = 10;
         public double LearningRate { get; set; } = 0.001;
+
+        public int AdxPeriod { get; set; } = 14;
+        public double AdxSidewaysThreshold { get; set; } = 20.0;
+
+        public double SidewaysRsiLongMax { get; set; } = 35.0;
+        public double SidewaysRsiShortMin { get; set; } = 65.0;
+        public double SidewaysVolumeRatioMax { get; set; } = 1.5;
+
+        public decimal SidewaysLongLowerBandTouchMultiplier { get; set; } = 1.001m;
+        public decimal SidewaysShortUpperBandTouchMultiplier { get; set; } = 0.999m;
+        public decimal SidewaysLongStopLossMultiplier { get; set; } = 0.9975m;
+        public decimal SidewaysShortStopLossMultiplier { get; set; } = 1.0025m;
     }
 
     public class DeFiSettings

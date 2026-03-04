@@ -23,6 +23,7 @@ namespace TradingBot.Services
         private readonly IBinanceRestClient _restClient;
         private readonly BinanceSocketClient _socketClient;
         private readonly BybitSocketClient? _bybitSocketClient;
+        private readonly BybitRestClient? _bybitRestClient;
         private readonly List<string> _majorSymbols;
         private CancellationTokenSource? _cts;
 
@@ -57,6 +58,14 @@ namespace TradingBot.Services
             }
             else if (exchange == ExchangeType.Bybit)
             {
+                _bybitRestClient = new BybitRestClient(options =>
+                {
+                    if (!string.IsNullOrWhiteSpace(AppConfig.BybitApiKey) && !string.IsNullOrWhiteSpace(AppConfig.BybitApiSecret))
+                    {
+                        options.ApiCredentials = new ApiCredentials(AppConfig.BybitApiKey, AppConfig.BybitApiSecret);
+                    }
+                });
+
                 _bybitSocketClient = new BybitSocketClient(options =>
                 {
                     if (!string.IsNullOrWhiteSpace(AppConfig.BybitApiKey) && !string.IsNullOrWhiteSpace(AppConfig.BybitApiSecret))
@@ -87,6 +96,61 @@ namespace TradingBot.Services
             {
                 // Start Bybit streams
                 await StartBybitStreamsAsync(internalToken);
+            }
+        }
+
+        public async Task PreloadRecentKlinesAsync(int limit, CancellationToken token)
+        {
+            if (limit <= 0) return;
+
+            var exchange = (AppConfig.Current?.Trading?.SelectedExchange).GetValueOrDefault(ExchangeType.Binance);
+
+            if (exchange == ExchangeType.Binance)
+            {
+                foreach (var symbol in _majorSymbols)
+                {
+                    try
+                    {
+                        var klines = await _restClient.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, BinanceEnums.KlineInterval.FiveMinutes, limit: limit, ct: token);
+                        if (klines.Success && klines.Data != null && klines.Data.Any())
+                        {
+                            KlineCache[symbol] = klines.Data.Cast<IBinanceKline>().ToList();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLog?.Invoke($"⚠️ [{symbol}] Binance 캔들 선로딩 실패: {ex.Message}");
+                    }
+                }
+
+                OnLog?.Invoke($"📥 Binance 5분봉 선로딩 완료 (symbol={_majorSymbols.Count}, limit={limit})");
+                return;
+            }
+
+            if (exchange == ExchangeType.Bybit && _bybitRestClient != null)
+            {
+                foreach (var symbol in _majorSymbols)
+                {
+                    try
+                    {
+                        var result = await _bybitRestClient.V5Api.ExchangeData.GetKlinesAsync(BybitEnums.Category.Linear, symbol, BybitEnums.KlineInterval.FiveMinutes, limit: limit, ct: token);
+                        if (result.Success && result.Data?.List != null && result.Data.List.Any())
+                        {
+                            var list = result.Data.List
+                                .OrderBy(k => k.StartTime)
+                                .Select(k => (IBinanceKline)new BybitRestKlineAdapter(k, BinanceEnums.KlineInterval.FiveMinutes))
+                                .ToList();
+
+                            KlineCache[symbol] = list;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLog?.Invoke($"⚠️ [{symbol}] Bybit 캔들 선로딩 실패: {ex.Message}");
+                    }
+                }
+
+                OnLog?.Invoke($"📥 Bybit 5분봉 선로딩 완료 (symbol={_majorSymbols.Count}, limit={limit})");
             }
         }
 
@@ -194,53 +258,67 @@ namespace TradingBot.Services
                     if (klines.Success)
                     {
                         KlineCache[symbol] = klines.Data.Cast<IBinanceKline>().ToList();
+                        OnLog?.Invoke($"📥 [{symbol}] 초기 5분봉 로드: {KlineCache[symbol].Count}개");
+                    }
+                    else
+                    {
+                        OnLog?.Invoke($"⚠️ [{symbol}] 초기 5분봉 로드 실패: {klines.Error}");
                     }
                 }
-                catch { /* Ignore */ }
+                catch (Exception ex)
+                {
+                    OnLog?.Invoke($"⚠️ [{symbol}] 초기 5분봉 로드 예외: {ex.Message}");
+                }
             }
 
             // 2. Subscribe (실시간 업데이트)
-            var subResult = await _socketClient.UsdFuturesApi.ExchangeData.SubscribeToKlineUpdatesAsync(_majorSymbols, BinanceEnums.KlineInterval.FiveMinutes, data =>
+            foreach (var symbol in _majorSymbols)
             {
-                var symbol = data.Symbol;
-                var kline = data.Data.Data;
-                bool isNewCandle = false;
-
-                KlineCache.AddOrUpdate(symbol ?? "",
-                    k => new List<IBinanceKline> { kline },
-                    (k, list) =>
-                    {
-                        lock (list)
-                        {
-                            var last = list.LastOrDefault();
-                            if (last != null && last.OpenTime == kline.OpenTime)
-                            {
-                                list[list.Count - 1] = kline; // 현재 봉 갱신
-                            }
-                            else
-                            {
-                                list.Add(kline); // 새 봉 추가
-                                if (list.Count > 120) list.RemoveAt(0); // 개수 유지
-                                isNewCandle = true; // [실시간 저장] 새 봉 플래그
-                            }
-                        }
-                        return list;
-                    });
-
-                // [실시간 저장] 새 봉이 추가되었으면 즉시 DB 저장 이벤트 발생
-                if (isNewCandle && symbol != null)
+                var subResult = await _socketClient.UsdFuturesApi.ExchangeData.SubscribeToKlineUpdatesAsync(symbol, BinanceEnums.KlineInterval.FiveMinutes, data =>
                 {
-                    OnNewKlineAdded?.Invoke(symbol, kline);
-                }
-            }, ct: token);
+                    var klineSymbol = data.Symbol;
+                    var kline = data.Data.Data;
+                    bool isNewCandle = false;
 
-            if (subResult.Success)
-            {
-                subResult.Data.ConnectionLost += () => OnLog?.Invoke("⚠️ 캔들 스트림 연결 끊김...");
-                subResult.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ 캔들 스트림 복구 ({ts.TotalSeconds:F1}초)");
-                OnLog?.Invoke("📡 주요 종목 5분봉 캔들 스트림 가동");
+                    KlineCache.AddOrUpdate(klineSymbol ?? "",
+                        k => new List<IBinanceKline> { kline },
+                        (k, list) =>
+                        {
+                            lock (list)
+                            {
+                                var last = list.LastOrDefault();
+                                if (last != null && last.OpenTime == kline.OpenTime)
+                                {
+                                    list[list.Count - 1] = kline; // 현재 봉 갱신
+                                }
+                                else
+                                {
+                                    list.Add(kline); // 새 봉 추가
+                                    if (list.Count > 120) list.RemoveAt(0); // 개수 유지
+                                    isNewCandle = true; // [실시간 저장] 새 봉 플래그
+                                }
+                            }
+                            return list;
+                        });
+
+                    // [실시간 저장] 새 봉이 추가되었으면 즉시 DB 저장 이벤트 발생
+                    if (isNewCandle && klineSymbol != null)
+                    {
+                        OnNewKlineAdded?.Invoke(klineSymbol, kline);
+                    }
+                }, ct: token);
+
+                if (subResult.Success)
+                {
+                    subResult.Data.ConnectionLost += () => OnLog?.Invoke($"⚠️ [{symbol}] 캔들 스트림 연결 끊김...");
+                    subResult.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ [{symbol}] 캔들 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                    OnLog?.Invoke($"📡 [{symbol}] 5분봉 캔들 스트림 가동");
+                }
+                else
+                {
+                    OnLog?.Invoke($"❌ [{symbol}] 캔들 스트림 실패: {subResult.Error}");
+                }
             }
-            else OnLog?.Invoke($"❌ 캔들 스트림 실패: {subResult.Error}");
         }
 
         private async Task StartBybitStreamsAsync(CancellationToken token)
@@ -441,6 +519,46 @@ namespace TradingBot.Services
                 set { }
             }
             public decimal QuoteVolume { get => _kline.Volume * _kline.ClosePrice; set { } } // Turnover 대체
+            public int TradeCount { get; set; }
+            public decimal TakerBuyBaseVolume { get; set; }
+            public decimal TakerBuyQuoteVolume { get; set; }
+        }
+
+        // Bybit REST Kline을 IBinanceKline으로 변환하는 어댑터
+        private class BybitRestKlineAdapter : IBinanceKline
+        {
+            private readonly Bybit.Net.Objects.Models.V5.BybitKline _kline;
+            private readonly BinanceEnums.KlineInterval _interval;
+
+            public BybitRestKlineAdapter(Bybit.Net.Objects.Models.V5.BybitKline kline, BinanceEnums.KlineInterval interval)
+            {
+                _kline = kline;
+                _interval = interval;
+            }
+
+            public decimal OpenPrice { get => _kline.OpenPrice; set { } }
+            public decimal HighPrice { get => _kline.HighPrice; set { } }
+            public decimal LowPrice { get => _kline.LowPrice; set { } }
+            public decimal ClosePrice { get => _kline.ClosePrice; set { } }
+            public decimal Volume { get => _kline.Volume; set { } }
+            public DateTime OpenTime { get => _kline.StartTime; set { } }
+            public DateTime CloseTime
+            {
+                get
+                {
+                    int seconds = _interval switch
+                    {
+                        BinanceEnums.KlineInterval.OneMinute => 60,
+                        BinanceEnums.KlineInterval.FiveMinutes => 300,
+                        BinanceEnums.KlineInterval.FifteenMinutes => 900,
+                        BinanceEnums.KlineInterval.OneHour => 3600,
+                        _ => 3600
+                    };
+                    return _kline.StartTime.AddSeconds(seconds);
+                }
+                set { }
+            }
+            public decimal QuoteVolume { get => _kline.Volume * _kline.ClosePrice; set { } }
             public int TradeCount { get; set; }
             public decimal TakerBuyBaseVolume { get; set; }
             public decimal TakerBuyQuoteVolume { get; set; }
