@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:lvc="clr-namespace:LiveCharts.Wpf;assembly=LiveCharts.Wpf"
         xmlns:local="clr-namespace:TradingBot"
-        Title="COINFF TRADINGBOT v2.1.3"
+            Title="COINFF TRADINGBOT"
         Height="950"
         Width="1600"
         MinHeight="700"
@@ -443,7 +443,8 @@
                                            FontWeight="Light"
                                            Foreground="#E0E7FF"
                                            Margin="2,0,0,0"/>
-                                <TextBlock Text=" v2.1.3"
+                                <TextBlock x:Name="txtHeaderVersion"
+                                           Text=" v0.0.0"
                                            FontSize="10"
                                            FontWeight="Bold"
                                            Foreground="{StaticResource PrimaryBrush}"
@@ -965,6 +966,21 @@
                                         <DataGridTextColumn Header="AI"
                                                             Binding="{Binding AIScore, StringFormat=F1}"
                                                             Width="70"/>
+
+                                        <DataGridTextColumn Header="AI시각"
+                                                    Binding="{Binding AIScoreUpdatedText}"
+                                                    Width="78">
+                                            <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="FontFamily"
+                                                    Value="Consolas"/>
+                                                <Setter Property="HorizontalAlignment"
+                                                    Value="Center"/>
+                                                <Setter Property="Foreground"
+                                                    Value="#9CA3AF"/>
+                                            </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
 
                                         <DataGridTextColumn Header="L/S"
                                                             Binding="{Binding LsScoreText}"

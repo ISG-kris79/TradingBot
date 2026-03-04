@@ -631,6 +631,29 @@ namespace TradingBot.Models
                 }
             }
         }
+
+        private DateTime? _aiScoreUpdatedAt;
+        public DateTime? AIScoreUpdatedAt
+        {
+            get => _aiScoreUpdatedAt;
+            set
+            {
+                if (_aiScoreUpdatedAt != value)
+                {
+                    _aiScoreUpdatedAt = value;
+                    OnPropertyChanged(nameof(AIScoreUpdatedAt));
+                    OnPropertyChanged(nameof(AIScoreUpdatedText));
+                }
+            }
+        }
+
+        public string AIScoreUpdatedText => AIScoreUpdatedAt?.ToString("HH:mm:ss") ?? "-";
+
+        public void TouchAIScoreUpdatedAt()
+        {
+            AIScoreUpdatedAt = DateTime.Now;
+        }
+
         public Brush ScoreColor
         {
             get

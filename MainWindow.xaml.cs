@@ -93,7 +93,9 @@ namespace TradingBot
 
             // 버전 정보를 제목 표시줄에 표시
             var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
-            this.Title = $"TradingBot v{version?.Major}.{version?.Minor}.{version?.Build}";
+            string versionText = $"v{version?.Major}.{version?.Minor}.{version?.Build}";
+            this.Title = $"COINFF TRADINGBOT {versionText}";
+            txtHeaderVersion.Text = $" {versionText}";
 
             // ViewModel 먼저 초기화 (AddLog에서 사용되므로)
             ViewModel = new MainViewModel();
@@ -370,7 +372,10 @@ namespace TradingBot
                     if (signal.RSI_1H != 0)
                         existingItem.RSI_1H = signal.RSI_1H;
                     if (signal.AIScore != 0)
+                    {
                         existingItem.AIScore = signal.AIScore;
+                        existingItem.TouchAIScoreUpdatedAt();
+                    }
                     if (!string.IsNullOrEmpty(signal.Decision))
                         existingItem.Decision = signal.Decision;
                     if (!string.IsNullOrEmpty(signal.BBPosition))
@@ -410,6 +415,9 @@ namespace TradingBot
                 }
                 else
                 {
+                    if (signal.AIScore != 0)
+                        signal.TouchAIScoreUpdatedAt();
+
                     ViewModel.MarketDataList.Add(signal);
                 }
             });

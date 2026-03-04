@@ -1037,7 +1037,11 @@ namespace TradingBot.ViewModels
                     // Update properties
                     if (signal.LastPrice > 0) existing.LastPrice = signal.LastPrice;
                     if (signal.RSI_1H > 0) existing.RSI_1H = signal.RSI_1H;
-                    if (signal.AIScore > 0) existing.AIScore = signal.AIScore;
+                    if (signal.AIScore > 0)
+                    {
+                        existing.AIScore = signal.AIScore;
+                        existing.TouchAIScoreUpdatedAt();
+                    }
                     if (!string.IsNullOrEmpty(signal.Decision)) existing.Decision = signal.Decision;
                     if (!string.IsNullOrEmpty(signal.BBPosition)) existing.BBPosition = signal.BBPosition;
                     if (!string.IsNullOrEmpty(signal.SignalSource)) existing.SignalSource = signal.SignalSource;
@@ -1064,6 +1068,9 @@ namespace TradingBot.ViewModels
                 }
                 else
                 {
+                    if (signal.AIScore > 0)
+                        signal.TouchAIScoreUpdatedAt();
+
                     MarketDataList.Add(signal);
                 }
             });
