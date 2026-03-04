@@ -25,6 +25,7 @@ namespace TradingBot.Services
         private readonly object _posLock;
         private readonly TradingSettings _settings;
         private readonly Dictionary<string, DateTime> _blacklistedSymbols;
+        private readonly AdvancedExitStopCalculator _advancedExitCalculator;  // [v2.1.18] 지표 결합 익절
 
         // Events
         public event Action<string>? OnLog = delegate { };
@@ -41,7 +42,8 @@ namespace TradingBot.Services
             Dictionary<string, PositionInfo> activePositions,
             object posLock,
             Dictionary<string, DateTime> blacklistedSymbols,
-            TradingSettings settings)
+            TradingSettings settings,
+            AdvancedExitStopCalculator? advancedExitCalculator = null)  // [v2.1.18] 선택적
         {
             _client = client;
             _exchangeService = exchangeService; // [변경]
@@ -52,6 +54,7 @@ namespace TradingBot.Services
             _posLock = posLock;
             _blacklistedSymbols = blacklistedSymbols;
             _settings = settings;
+            _advancedExitCalculator = advancedExitCalculator ?? new AdvancedExitStopCalculator();  // [v2.1.18] 기본값 생성
         }
 
         public async Task MonitorPositionStandard(
@@ -201,6 +204,44 @@ namespace TradingBot.Services
                             : entryPrice * (1 - minLockPriceChange);
                         
                         OnLog?.Invoke($"🎯 {symbol} [3단계] 타이트 트레일링 활성화! ROE {highestROE:F1}% 돌파 | 스탑={protectiveStopPrice:F8} (최소 ROE 18%)");
+
+                        // [v2.1.18] ROE 20% 도달 시 분할 익절 (50% 즉시 익절 + 50% 지표 추격)
+                        var (shouldExecutePartial, partialQty) = _advancedExitCalculator.EvaluatePartialExit(
+                            new Position { Quantity = 0m, InitialStopPrice = protectiveStopPrice }, 
+                            currentPrice, 
+                            (double)highestROE, 
+                            isLong);
+
+                        if (shouldExecutePartial && partialQty > 0)
+                        {
+                            OnLog?.Invoke($"💵 {symbol} [분할 익절 1차] 50% 즉시 시장가 익절 (수량: {partialQty:F8}, ROE {highestROE:F1}%)");
+                            
+                            try
+                            {
+                                // 50% 즉시 시장가 익절
+                                await _exchangeService.ExecuteMarketSellAsync(
+                                    symbol, 
+                                    partialQty, 
+                                    isLong ? "SELL" : "BUY", 
+                                    token);
+                                
+                                // 포지션에서 수량 업데이트
+                                lock (_posLock)
+                                {
+                                    if (_activePositions.TryGetValue(symbol, out var p))
+                                    {
+                                        p.Quantity = isLong ? p.Quantity - partialQty : p.Quantity + partialQty;
+                                        p.TakeProfitStep = 1;  // 1차 익절 완료 마킹
+                                    }
+                                }
+                                
+                                OnLog?.Invoke($"✅ {symbol} 50% 분할 익절 완료. 나머지 50%는 지표 기반 추격 시작");
+                            }
+                            catch (Exception ex)
+                            {
+                                OnLog?.Invoke($"⚠️ {symbol} 분할 익절 실패: {ex.Message}");
+                            }
+                        }
                     }
 
                     // ═══════════════════════════════════════════════
@@ -245,6 +286,63 @@ namespace TradingBot.Services
                                 protectiveStopPrice = newStopPrice;
                                 if (oldStop > 0)
                                     OnLog?.Invoke($"📉 {symbol} 트레일링 스톱 갱신: {oldStop:F8} → {protectiveStopPrice:F8} (현재가: {currentPriceForTrailing:F8})");
+                            }
+                        }
+
+                        // [v2.1.18] 지표 기반 익절 신호 모니터링 (3단계 타이트 트레일링 중)
+                        if (highestROE >= tightTrailingROE)
+                        {
+                            // 지표 데이터 수집 (AdvancedIndicators 등에서 제공)
+                            var tech = BuildTechnicalDataForExitSignal(symbol, currentPrice, entryPrice, isLong);
+                            
+                            if (tech != null)
+                            {
+                                // 지표 기반 익절 신호 계산
+                                var exitSignal = _advancedExitCalculator.CalculateAdvancedExitStop(
+                                    new Position { InitialStopPrice = protectiveStopPrice },
+                                    tech,
+                                    protectiveStopPrice,
+                                    isLong);
+
+                                // [즉시 익절 1] BB 회귀 신호
+                                if (exitSignal.ShouldTakeProfitNow)
+                                {
+                                    OnLog?.Invoke($"⚠️ {symbol} [지표 익절] {exitSignal.SignalSummary}");
+                                    decimal exitROE = isLong
+                                        ? ((currentPrice - entryPrice) / entryPrice) * _settings.DefaultLeverage * 100
+                                        : ((entryPrice - currentPrice) / entryPrice) * _settings.DefaultLeverage * 100;
+                                    
+                                    await ExecuteMarketClose(symbol, 
+                                        $"Advanced Exit Signal: {exitSignal.SignalSummary} (ROE {exitROE:F1}%)", 
+                                        token);
+                                    break;
+                                }
+
+                                // [즉시 익절 2] 여러 신호 동시 발생 (3개 이상)
+                                if (_advancedExitCalculator.ShouldExecuteImmediateExit(tech, exitSignal))
+                                {
+                                    OnLog?.Invoke($"🚨 {symbol} [다중 지표 신호] {exitSignal.SignalSummary} - 즉시 익절 실행!");
+                                    decimal exitROE = isLong
+                                        ? ((currentPrice - entryPrice) / entryPrice) * _settings.DefaultLeverage * 100
+                                        : ((entryPrice - currentPrice) / entryPrice) * _settings.DefaultLeverage * 100;
+                                    
+                                    await ExecuteMarketClose(symbol, 
+                                        $"Multi-Signal Exit: {exitSignal.SignalSummary} (ROE {exitROE:F1}%)", 
+                                        token);
+                                    break;
+                                }
+
+                                // [지표 기반 스탑 갱신] 추천 스탑이 더 타이트하면 적용
+                                if (isLong && exitSignal.RecommendedStopPrice > protectiveStopPrice)
+                                {
+                                    protectiveStopPrice = exitSignal.RecommendedStopPrice;
+                                    OnLog?.Invoke($"🔧 {symbol} 지표 기반 스탑 갱신: {exitSignal.SignalSummary} | 새 스탑={protectiveStopPrice:F8}");
+                                }
+                                else if (!isLong && exitSignal.RecommendedStopPrice < protectiveStopPrice)
+                                {
+                                    protectiveStopPrice = exitSignal.RecommendedStopPrice;
+                                    OnLog?.Invoke($"🔧 {symbol} 지표 기반 스탑 갱신: {exitSignal.SignalSummary} | 새 스탑={protectiveStopPrice:F8}");
+                                }
                             }
                         }
                     }
@@ -983,6 +1081,44 @@ namespace TradingBot.Services
             {
                 OnLog?.Invoke($"⚠️ {symbol} 부분청산 예외: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// [v2.1.18] 지표 기반 익절 신호를 위한 기술적 데이터 구축
+        /// MarketDataManager와 AdvancedIndicators에서 필요한 모든 지표를 수집
+        /// </summary>
+        private TechnicalData? BuildTechnicalDataForExitSignal(string symbol, decimal currentPrice, decimal entryPrice, bool isLong)
+        {
+            try
+            {
+                var tech = new TechnicalData
+                {
+                    CurrentPrice = currentPrice,
+                    EntryPrice = entryPrice,
+                    HighestPrice = currentPrice,  // 실제로는 MarketDataManager에서 조회
+                    LowestPrice = currentPrice,   // 실제로는 MarketDataManager에서 조회
+                    Atr = 0.001m, // 기본값 (실제 구현 시 지표 계산기에서 제공)
+                    AtrMultiplier = 1.5m,
+                };
+
+                // [TODO] 다음 정보는 AdvancedIndicators 클래스에서 읽어야 함:
+                // - tech.IsWave5 (엘리엇 파동 분석)
+                // - tech.Rsi (RSI 계산)
+                // - tech.MacdLine, SignalLine, MacdHistogram (MACD 계산)
+                // - tech.UpperBand, MidBand, LowerBand (볼린저 밴드 계산)
+                // - tech.Fibo1618, Fibo2618 (피보나치 계산)
+
+                // 현재는 MarketDataManager를 통해 기본 데이터만 수집
+                // (추후 AdvancedIndicators와의 통합 시 완성)
+
+                return tech;
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ {symbol} 지표 데이터 수집 실패: {ex.Message}");
+                return null;
+            }
+        }
         }
 
         public async Task ExecuteAverageDown(string symbol, CancellationToken token)

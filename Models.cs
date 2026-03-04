@@ -769,6 +769,72 @@ namespace TradingBot.Models
         protected void OnPropertyChanged([CallerMemberName] string? name = null) =>
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name ?? string.Empty));
     }
+
+    /// <summary>
+    /// [v2.1.18] 지표 결합형 동적 익절 시스템
+    /// 5개 지표(엘리엇, 피보나치, RSI, BB, MACD)의 신호를 통합하여 익절 스탑을 동적으로 조정
+    /// </summary>
+    public class TechnicalData
+    {
+        // 기본 가격 데이터
+        public decimal CurrentPrice { get; set; }
+        public decimal HighestPrice { get; set; }
+        public decimal LowestPrice { get; set; }
+
+        // ATR (Average True Range)
+        public decimal Atr { get; set; }
+        public decimal AtrMultiplier { get; set; } = 1.5m;
+
+        // 엘리엇 파동
+        public bool IsWave5 { get; set; }              // 5파동 완성 신호
+        public bool IsWaveExtended { get; set; }       // 파동 연장 중
+        public int CurrentWaveCount { get; set; }
+
+        // RSI (Relative Strength Index)
+        public double Rsi { get; set; }
+        public bool IsRsiOverbought => Rsi > 75;       // 과매수 (75 이상)
+        public bool IsRsiExtreme => Rsi > 80;          // 극단적 과매수 (80 이상)
+
+        // MACD (Moving Average Convergence Divergence)
+        public double MacdLine { get; set; }
+        public double SignalLine { get; set; }
+        public double MacdHistogram { get; set; }
+        public double PrevMacdHistogram { get; set; }
+        public bool IsMacdHistogramDecreasing => MacdHistogram < PrevMacdHistogram;
+        public bool IsMacdDeadCross => (MacdLine > SignalLine && MacdHistogram < 0);
+
+        // 볼린저 밴드 (Bollinger Bands)
+        public decimal MidBand { get; set; }           // 20일 SMA
+        public decimal UpperBand { get; set; }         // SMA + 2*StdDev
+        public decimal LowerBand { get; set; }         // SMA - 2*StdDev
+        public bool HighWasAboveUpperBand { get; set; }
+        public bool IsAboveUpperBand => CurrentPrice > UpperBand;
+        public bool IsReturningToMidBand => HighWasAboveUpperBand && CurrentPrice < UpperBand;
+
+        // 피보나치 (Fibonacci Extensions)
+        public decimal EntryPrice { get; set; }
+        public decimal Fibo1618 { get; set; }          // 1.618
+        public decimal Fibo2618 { get; set; }          // 2.618
+        public bool IsFibo1618Hit => CurrentPrice >= Fibo1618;
+    }
+
+    /// <summary>
+    /// [v2.1.18] 고급 익절 신호
+    /// 여러 지표의 신호를 종합하여 익절 추천 여부를 판단
+    /// </summary>
+    public class AdvancedExitSignal
+    {
+        public decimal RecommendedStopPrice { get; set; }
+        public double TightModifier { get; set; } = 1.0;
+        public bool ShouldTakeProfitNow { get; set; }
+        public bool ShouldExecutePartialExit { get; set; }
+
+        // 활성화된 신호 (로그용)
+        public List<string> ActiveSignals { get; set; } = new();
+
+        public string SignalSummary => string.Join(", ", ActiveSignals);
+    }
+
     public class MarketData : INotifyPropertyChanged
     {
         public string? Symbol { get; set; }
