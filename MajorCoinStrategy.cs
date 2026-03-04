@@ -135,6 +135,19 @@ namespace TradingBot.Strategies
                 _ => "대기 중"
             };
 
+            // AI 필터 차단 가능성 표시 (Major 자체는 LONG이지만 ExecuteAutoOrder에서 AI필터로 차단될 수 있음)
+            string aiFilterWarning = "";
+            if (decision == "LONG" || decision == "SHORT")
+            {
+                try
+                {
+                    var settings = _settingsAccessor?.Invoke();
+                    // AI 예측기를 직접 호출할 수 없으므로, 결정이 LONG/SHORT일 때 AI 필터에 의해 차단될 수 있음을 표시
+                    aiFilterWarning = " ⚠️AI필터 통과 필요";
+                }
+                catch { }
+            }
+
             string reason = "";
             if (decision == "WAIT")
             {
@@ -147,7 +160,7 @@ namespace TradingBot.Strategies
                     reason = $" (사유: {string.Join(" ", reasons)})";
             }
 
-            string logMsg = $"{nowSeoul:HH:mm:ss} {symbol} ${currentPrice:F2} {decisionKr}{reason}";
+            string logMsg = $"{nowSeoul:HH:mm:ss} {symbol} ${currentPrice:F2} {decisionKr}{aiFilterWarning}{reason}";
             OnLog?.Invoke(logMsg);
 
             if (decision != "WAIT")

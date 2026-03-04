@@ -152,7 +152,7 @@ namespace TradingBot
                         }
 
                         // [Agent 2] Grid Settings 로드
-                        var gridNode = tradingNode["GridSettings"];
+                        var gridNode = tradingNode["GridStrategySettings"];
                         if (gridNode != null)
                         {
                             txtGridLevels.Text = gridNode["GridLevels"]?.ToString() ?? "10";
@@ -337,12 +337,12 @@ namespace TradingBot
                 _rootNode["Trading"]["Symbols"] = symbolsArray;
 
                 // [Agent 2] Grid Settings 저장
-                if (_rootNode["Trading"]["GridSettings"] == null) _rootNode["Trading"]["GridSettings"] = new JsonObject();
+                if (_rootNode["Trading"]["GridStrategySettings"] == null) _rootNode["Trading"]["GridStrategySettings"] = new JsonObject();
 
                 if (int.TryParse(txtGridLevels.Text, out int gridLevels))
-                    _rootNode["Trading"]["GridSettings"]["GridLevels"] = gridLevels;
+                    _rootNode["Trading"]["GridStrategySettings"]["GridLevels"] = gridLevels;
                 if (decimal.TryParse(txtGridSpacing.Text, out decimal gridSpacing))
-                    _rootNode["Trading"]["GridSettings"]["GridSpacingPercentage"] = gridSpacing;
+                    _rootNode["Trading"]["GridStrategySettings"]["GridSpacingPercentage"] = gridSpacing;
 
                 // [Agent 2] Arbitrage Settings 저장
                 if (_rootNode["Trading"]["ArbitrageSettings"] == null) _rootNode["Trading"]["ArbitrageSettings"] = new JsonObject();

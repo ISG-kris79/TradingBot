@@ -1846,7 +1846,7 @@
                                 HorizontalAlignment="Right"
                                 VerticalAlignment="Center">
                         <TextBlock x:Name="txtMajorProfileStatus"
-                               Text="Major Profile: Balanced"
+                               Text="● Major Profile: Balanced"
                                Foreground="#9CA3AF"
                                FontSize="11"
                                Margin="0,0,16,0"/>

@@ -116,7 +116,7 @@ namespace TradingBot
 
         private DateTime _lastHeartbeatTime = DateTime.MinValue;
         private bool _initialTransformerTrainingTriggered = false;
-        private readonly TimeSpan _entryWarmupDuration = TimeSpan.FromMinutes(1);
+        private readonly TimeSpan _entryWarmupDuration = TimeSpan.FromSeconds(30); // 워밍업 30초로 단축 (2025-03-04)
         private DateTime _lastEntryWarmupLogTime = DateTime.MinValue;
 
         public TradingEngine()
@@ -1924,6 +1924,9 @@ namespace TradingBot
             decimal customTakeProfitPrice = 0m,
             decimal customStopLossPrice = 0m)
         {
+            // 진입 시도 로그 (디버깅용)
+            OnStatusLog?.Invoke($"📋 [{signalSource}] {symbol} {decision} 진입 시도 시작 (가격: ${currentPrice:F2})");
+
             // 1. 진입 신호가 아니면 즉시 종료
             if (decision != "LONG" && decision != "SHORT") return;
 
@@ -1944,6 +1947,35 @@ namespace TradingBot
             float aiScore = 0;
             float aiProbability = 0;
             bool? aiPredictUp = null;
+            if (latestCandle == null)
+            {
+                OnStatusLog?.Invoke($"⚠️ {symbol} 캔들 데이터 미수신으로 진입 차단");
+                return;
+            }
+
+            // [긴급 방어 1] ATR 변동성 필터 (흔들기 구간 진입 금지)
+            // 5분봉 기준 ATR이 평소(20봉 평균)보다 2배 이상이면 '변동성 폭발' 구간으로 판단
+            var klines = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, limit: 40, ct: token);
+            if (klines.Success && klines.Data != null && klines.Data.Count() >= 30)
+            {
+                var candles = klines.Data.ToList();
+                double currentAtr = IndicatorCalculator.CalculateATR(candles.TakeLast(20).ToList(), 14);
+                double averageAtr = IndicatorCalculator.CalculateATR(candles.Take(20).ToList(), 14);
+
+                if (averageAtr > 0)
+                {
+                    double atrRatio = currentAtr / averageAtr;
+                    if (atrRatio > 2.0)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ {symbol} 변동성 과다(흔들기 구간) | ATR비율={atrRatio:F2}x > 2.0x → 진입 금지");
+                        return;
+                    }
+                    else if (atrRatio > 1.5)
+                    {
+                        OnStatusLog?.Invoke($"⚡ {symbol} 변동성 상승 주의 | ATR비율={atrRatio:F2}x");
+                    }
+                }
+            }
             if (_aiPredictor != null)
             {
                 if (latestCandle != null)
@@ -1952,10 +1984,11 @@ namespace TradingBot
                     aiScore = prediction.Score;
                     aiProbability = prediction.Probability;
                     aiPredictUp = prediction.Prediction;
-                    // [수정] LONG AI 필터 기준 상향: 55% → 60% (SHORT와 동일하게)
-                    if (decision == "LONG" && prediction.Probability < 0.60f)
+                    // [수정] LONG AI 필터: MAJOR 전략은 자체 스코어링이 있으므로 45%로 완화, 그 외 60%
+                    float longAiThreshold = (signalSource == "MAJOR") ? 0.45f : 0.60f;
+                    if (decision == "LONG" && prediction.Probability < longAiThreshold)
                     {
-                        OnStatusLog?.Invoke($"🤖 {symbol} AI 필터: 롱 진입 차단 (상승 확률 {prediction.Probability:P1} 미달)");
+                        OnStatusLog?.Invoke($"🤖 {symbol} AI 필터: 롱 진입 차단 (상승 확률 {prediction.Probability:P1} < {longAiThreshold:P0}, source={signalSource})");
                         return;
                     }
 
@@ -2088,12 +2121,51 @@ namespace TradingBot
 
                 if (quantity <= 0) return;
 
-                // 7. 주문 실행 (LONG 이면 Buy, SHORT 이면 Sell)
+                // [긴급 방어 2] 슬리피지 검증 (호가창 확인)
+                var orderBook = await _exchangeService.GetOrderBookAsync(symbol, token);
+                if (orderBook.HasValue)
+                {
+                    decimal bestBid = orderBook.Value.bestBid;
+                    decimal bestAsk = orderBook.Value.bestAsk;
+
+                    // LONG 진입 시: bestAsk가 현재가보다 0.05% 이상 비싸면 진입 포기
+                    if (decision == "LONG" && bestAsk > currentPrice * 1.0005m)
+                    {
+                        OnStatusLog?.Invoke($"❌ {symbol} 슬리피지 과다 (BestAsk={bestAsk:F4} > Target={currentPrice * 1.0005m:F4}, +{((bestAsk - currentPrice) / currentPrice * 100):F3}%) → 진입 취소");
+                        lock (_posLock) { _activePositions.Remove(symbol); }
+                        return;
+                    }
+
+                    // SHORT 진입 시: bestBid가 현재가보다 0.05% 이상 낮으면 진입 포기
+                    if (decision == "SHORT" && bestBid < currentPrice * 0.9995m)
+                    {
+                        OnStatusLog?.Invoke($"❌ {symbol} 슬리피지 과다 (BestBid={bestBid:F4} < Target={currentPrice * 0.9995m:F4}, {((bestBid - currentPrice) / currentPrice * 100):F3}%) → 진입 취소");
+                        lock (_posLock) { _activePositions.Remove(symbol); }
+                        return;
+                    }
+
+                    OnStatusLog?.Invoke($"✅ {symbol} 슬리피지 검증 통과 | BestBid={bestBid:F4} / Ask={bestAsk:F4} / Mid={(bestBid + bestAsk) / 2:F4}");
+                }
+
+                // 7. 주문 실행 (지정가 주문으로 변경하여 슬리피지 방어)
                 var side = (decision == "LONG") ? "BUY" : "SELL";
+                
+                // [긴급 방어 3] 시장가 대신 '최우선 호가' 지정가 사용
+                decimal limitPrice = currentPrice;
+                if (orderBook.HasValue)
+                {
+                    // LONG: 현재 최우선 매도호가(bestAsk)에 지정가 주문
+                    // SHORT: 현재 최우선 매수호가(bestBid)에 지정가 주문
+                    limitPrice = (decision == "LONG") ? orderBook.Value.bestAsk : orderBook.Value.bestBid;
+                }
+
+                OnStatusLog?.Invoke($"💼 {symbol} {side} 지정가 주문 실행: 수량={quantity} @ ${limitPrice:F4} (슬리피지 방어형)");
+                
                 bool success = await _exchangeService.PlaceOrderAsync(
                     symbol,
                     side,
                     quantity: quantity,
+                    price: limitPrice,  // 지정가로 변경
                     ct: token);
 
                 if (success)
@@ -2118,6 +2190,10 @@ namespace TradingBot
                     // 🔥 [핵심] 감시 루프 시작 (Task.Run으로 별도 스레드에서 실행)
                     _ = Task.Run(() => _positionMonitor.MonitorPositionStandard(symbol, currentPrice, decision == "LONG", token, mode, customTakeProfitPrice, customStopLossPrice), token);
 
+                }
+                else
+                {
+                    OnStatusLog?.Invoke($"❌ {symbol} 주문 실패");
                 }
             }
             catch (Exception ex)

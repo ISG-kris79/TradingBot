@@ -197,6 +197,21 @@ namespace TradingBot.Services
             return exchangeInfo;
         }
 
+        public async Task<(decimal bestBid, decimal bestAsk)?> GetOrderBookAsync(string symbol, CancellationToken ct = default)
+        {
+            try
+            {
+                var result = await _client.UsdFuturesApi.ExchangeData.GetOrderBookAsync(symbol, limit: 5, ct: ct);
+                if (!result.Success || result.Data == null) return null;
+
+                var bestBid = result.Data.Bids.FirstOrDefault()?.Price ?? 0;
+                var bestAsk = result.Data.Asks.FirstOrDefault()?.Price ?? 0;
+
+                return (bestBid, bestAsk);
+            }
+            catch { return null; }
+        }
+
         public async Task<decimal> GetFundingRateAsync(string symbol, CancellationToken token = default)
         {
             var result = await _client.UsdFuturesApi.ExchangeData.GetFundingRatesAsync(symbol, limit: 1, ct: token);

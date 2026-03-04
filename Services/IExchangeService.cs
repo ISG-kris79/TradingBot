@@ -18,6 +18,9 @@ namespace TradingBot.Services
         // [추가] 거래소 정보 조회 (LotSize 등)
         Task<ExchangeInfo?> GetExchangeInfoAsync(CancellationToken token = default);
 
+        // [슬리피지 방어] 호가창 조회 (Best Bid/Ask)
+        Task<(decimal bestBid, decimal bestAsk)?> GetOrderBookAsync(string symbol, CancellationToken ct = default);
+
         // [Phase 4] 펀딩비 조회
         Task<decimal> GetFundingRateAsync(string symbol, CancellationToken token = default);
 

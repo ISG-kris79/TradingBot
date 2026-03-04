@@ -169,6 +169,18 @@ namespace TradingBot.Services
             return Task.FromResult(0.0001m); // 기본 0.01% 가정
         }
 
+        public Task<(decimal bestBid, decimal bestAsk)?> GetOrderBookAsync(string symbol, CancellationToken ct = default)
+        {
+            // Mock: 현재 시뮬레이션 가격 기준으로 ±0.01% 호가창 생성
+            if (_currentPrices.TryGetValue(symbol, out decimal price))
+            {
+                decimal bestBid = price * 0.9999m;
+                decimal bestAsk = price * 1.0001m;
+                return Task.FromResult<(decimal, decimal)?>((bestBid, bestAsk));
+            }
+            return Task.FromResult<(decimal, decimal)?>(null);
+        }
+
         public async Task<BatchOrderResult> PlaceBatchOrdersAsync(List<BatchOrderRequest> orders, CancellationToken ct = default)
         {
             var result = new BatchOrderResult();

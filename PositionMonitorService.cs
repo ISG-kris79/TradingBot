@@ -86,6 +86,20 @@ namespace TradingBot.Services
 
             OnLog?.Invoke($"🔍 {symbol} 감시 시작 (진입가: {entryPrice}) | mode={(isSidewaysMode ? "SIDEWAYS" : "TREND")}");
 
+            // [3단계 본절 보호 & 수익 잠금] 스마트 방어 시스템
+            decimal highestROE = -999m;            // 최고 ROE 추적
+            decimal protectiveStopPrice = 0m;      // 방어적 스탑 가격
+            bool breakEvenActivated = false;       // ROE 10% 본절 보호 활성화
+            bool profitLockActivated = false;      // ROE 15% 수익 잠금 활성화
+            bool tightTrailingActivated = false;   // ROE 20% 타이트 트레일링 활성화
+            
+            // 3단계 파라미터
+            decimal breakEvenROE = 10.0m;          // 1단계: 본절 확보
+            decimal profitLockROE = 15.0m;         // 2단계: 수익 잠금
+            decimal tightTrailingROE = 20.0m;      // 3단계: 타이트 트레일링
+            decimal minLockROE = 18.0m;            // 3단계 최소 수익 (ROE 18%)
+            decimal tightGapPercent = 0.0015m;     // 3단계 간격 (0.15%)
+
             // [추가] 안전장치: 서버사이드 손절 주문 설정 (Stop Market)
             try
             {
@@ -125,6 +139,140 @@ namespace TradingBot.Services
                     decimal currentROE = priceChangePercent * _settings.DefaultLeverage;
 
                     OnTickerUpdate?.Invoke(symbol, 0m, (double)currentROE);
+
+                    // [3단계 스마트 방어 시스템] 수익 보존 로직
+                    
+                    // 최고 ROE 추적
+                    if (currentROE > highestROE)
+                    {
+                        highestROE = currentROE;
+                        
+                        // 포지션에 최고 ROE 기록
+                        lock (_posLock)
+                        {
+                            if (_activePositions.TryGetValue(symbol, out var p))
+                            {
+                                p.HighestROEForTrailing = highestROE;
+                            }
+                        }
+                    }
+
+                    // ═══════════════════════════════════════════════
+                    // 1단계: ROE 10% 도달 → 본절 보호 (Break-even)
+                    // ═══════════════════════════════════════════════
+                    if (!breakEvenActivated && highestROE >= breakEvenROE)
+                    {
+                        breakEvenActivated = true;
+                        
+                        // 진입가 + 0.1% (수수료 방어 + 본절 확보)
+                        protectiveStopPrice = isLong 
+                            ? entryPrice * 1.001m
+                            : entryPrice * 0.999m;
+                        
+                        OnLog?.Invoke($"🛡️ {symbol} [1단계] 본절 보호 활성화! ROE {highestROE:F1}% 도달 | 스탑={protectiveStopPrice:F8} (본절가 + 0.1%)");
+                    }
+
+                    // ═══════════════════════════════════════════════
+                    // 2단계: ROE 15% 도달 → 수익 잠금 (최소 ROE 7%)
+                    // ═══════════════════════════════════════════════
+                    if (breakEvenActivated && !profitLockActivated && highestROE >= profitLockROE)
+                    {
+                        profitLockActivated = true;
+                        
+                        // 진입가 + 0.35% (ROE 약 7% 지점)
+                        protectiveStopPrice = isLong 
+                            ? entryPrice * 1.0035m
+                            : entryPrice * 0.9965m;
+                        
+                        OnLog?.Invoke($"💰 {symbol} [2단계] 수익 잠금 활성화! ROE {highestROE:F1}% 도달 | 스탑={protectiveStopPrice:F8} (최소 ROE 7% 확보)");
+                    }
+
+                    // ═══════════════════════════════════════════════
+                    // 3단계: ROE 20% 도달 → 타이트한 트레일링 (최소 ROE 18%)
+                    // ═══════════════════════════════════════════════
+                    if (profitLockActivated && !tightTrailingActivated && highestROE >= tightTrailingROE)
+                    {
+                        tightTrailingActivated = true;
+                        
+                        // ROE 18% = 0.9% 가격 변동 (20배 레버리지)
+                        decimal minLockPriceChange = minLockROE / _settings.DefaultLeverage / 100;
+                        protectiveStopPrice = isLong 
+                            ? entryPrice * (1 + minLockPriceChange)
+                            : entryPrice * (1 - minLockPriceChange);
+                        
+                        OnLog?.Invoke($"🎯 {symbol} [3단계] 타이트 트레일링 활성화! ROE {highestROE:F1}% 돌파 | 스탑={protectiveStopPrice:F8} (최소 ROE 18%)");
+                    }
+
+                    // ═══════════════════════════════════════════════
+                    // 3단계 활성화 후: 최고가 추적 + 0.15% 타이트 트레일링
+                    // ═══════════════════════════════════════════════
+                    if (tightTrailingActivated)
+                    {
+                        decimal currentPriceForTrailing = currentPrice;
+                        
+                        if (isLong)
+                        {
+                            // 롱: 최고가 - 0.15% 간격
+                            decimal newStopPrice = currentPriceForTrailing * (1 - tightGapPercent);
+                            
+                            // ROE 18% 아래로는 절대 내려가지 않음
+                            decimal minLockPrice = entryPrice * (1 + minLockROE / _settings.DefaultLeverage / 100);
+                            if (newStopPrice < minLockPrice)
+                                newStopPrice = minLockPrice;
+                            
+                            // 스탑 가격 상승만 허용 (절대 뒤로 물러나지 않음)
+                            if (newStopPrice > protectiveStopPrice)
+                            {
+                                decimal oldStop = protectiveStopPrice;
+                                protectiveStopPrice = newStopPrice;
+                                OnLog?.Invoke($"📈 {symbol} 트레일링 스톱 갱신: {oldStop:F8} → {protectiveStopPrice:F8} (현재가: {currentPriceForTrailing:F8})");
+                            }
+                        }
+                        else // 숏 포지션
+                        {
+                            // 숏: 최저가 + 0.15% 간격
+                            decimal newStopPrice = currentPriceForTrailing * (1 + tightGapPercent);
+                            
+                            // ROE 18% 위로는 절대 올라가지 않음
+                            decimal minLockPrice = entryPrice * (1 - minLockROE / _settings.DefaultLeverage / 100);
+                            if (newStopPrice > minLockPrice)
+                                newStopPrice = minLockPrice;
+                            
+                            // 스탑 가격 하락만 허용 (절대 뒤로 물러나지 않음)
+                            if (protectiveStopPrice == 0m || newStopPrice < protectiveStopPrice)
+                            {
+                                decimal oldStop = protectiveStopPrice;
+                                protectiveStopPrice = newStopPrice;
+                                if (oldStop > 0)
+                                    OnLog?.Invoke($"📉 {symbol} 트레일링 스톱 갱신: {oldStop:F8} → {protectiveStopPrice:F8} (현재가: {currentPriceForTrailing:F8})");
+                            }
+                        }
+                    }
+
+                    // ═══════════════════════════════════════════════
+                    // 방어적 스탑 체크: 현재가가 스탑 가격 터치 시 청산
+                    // ═══════════════════════════════════════════════
+                    if (protectiveStopPrice > 0)
+                    {
+                        bool stopHit = isLong 
+                            ? (currentPrice <= protectiveStopPrice)
+                            : (currentPrice >= protectiveStopPrice);
+                        
+                        if (stopHit)
+                        {
+                            decimal finalROE = isLong
+                                ? ((currentPrice - entryPrice) / entryPrice) * _settings.DefaultLeverage * 100
+                                : ((entryPrice - currentPrice) / entryPrice) * _settings.DefaultLeverage * 100;
+                            
+                            string stage = tightTrailingActivated ? "3단계 타이트 트레일링" 
+                                         : profitLockActivated ? "2단계 수익 잠금" 
+                                         : "1단계 본절 보호";
+                            
+                            OnLog?.Invoke($"[청산 트리거] {symbol} {stage} 스톱 발동! | 현재가={currentPrice:F8}, 스탑={protectiveStopPrice:F8} | 최종ROE={finalROE:F1}%");
+                            await ExecuteMarketClose(symbol, $"Smart Protective Stop [{stage}] (ROE {finalROE:F1}%)", token);
+                            break;
+                        }
+                    }
 
                     if (isSidewaysMode)
                     {

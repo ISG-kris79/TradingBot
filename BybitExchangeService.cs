@@ -225,6 +225,21 @@ namespace TradingBot.Services
             return result.Data.List.First().FundingRate ?? 0;
         }
 
+        public async Task<(decimal bestBid, decimal bestAsk)?> GetOrderBookAsync(string symbol, CancellationToken ct = default)
+        {
+            try
+            {
+                var result = await _client.V5Api.ExchangeData.GetOrderbookAsync(Bybit.Net.Enums.Category.Linear, symbol, limit: 5, ct: ct);
+                if (!HandleError(result) || result.Data == null) return null;
+
+                var bestBid = result.Data.Bids.FirstOrDefault()?.Price ?? 0;
+                var bestAsk = result.Data.Asks.FirstOrDefault()?.Price ?? 0;
+
+                return (bestBid, bestAsk);
+            }
+            catch { return null; }
+        }
+
         // [Phase 12: PUMP 전략 지원] 지정가 주문
         public async Task<(bool Success, string OrderId)> PlaceLimitOrderAsync(
             string symbol,
