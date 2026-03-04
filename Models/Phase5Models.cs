@@ -25,6 +25,23 @@ namespace TradingBot.Models
         public List<TradeLog> TradeHistory { get; set; } = new();
         public List<decimal> EquityCurve { get; set; } = new();
         public List<string> TradeDates { get; set; } = new();
+        public List<OptimizationTrialItem> TopTrials { get; set; } = new();
+    }
+
+    public class OptimizationTrialItem
+    {
+        public int Rank { get; set; }
+        public string Medal => Rank switch
+        {
+            1 => "🥇",
+            2 => "🥈",
+            3 => "🥉",
+            _ => "·"
+        };
+        public int TrialId { get; set; }
+        public decimal FinalBalance { get; set; }
+        public decimal ProfitPercent { get; set; }
+        public string Parameters { get; set; } = string.Empty;
     }
 
     public class ExchangeInfoModel

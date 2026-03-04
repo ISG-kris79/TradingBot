@@ -232,9 +232,29 @@ Note:
             $filesArgs = $releaseFiles | ForEach-Object { "`"$_`"" }
             
             try {
-                # 기존 릴리스 확인
-                $existingRelease = gh release view $tag 2>$null
-                if ($existingRelease) {
+                # 기존 릴리스 확인 (없으면 정상 진행)
+                $releaseExists = $false
+                $releaseListJson = gh release list --limit 200 --json tagName 2>$null
+                if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($releaseListJson)) {
+                    try {
+                        $releaseList = $releaseListJson | ConvertFrom-Json
+                        $releaseTags = @()
+                        foreach ($item in @($releaseList)) {
+                            if ($item.tagName) {
+                                $releaseTags += [string]$item.tagName
+                            }
+                        }
+
+                        if ($releaseTags -contains $tag) {
+                            $releaseExists = $true
+                        }
+                    }
+                    catch {
+                        Write-Warning-Custom "기존 릴리스 목록 파싱 실패: $_"
+                    }
+                }
+
+                if ($releaseExists) {
                     Write-Warning-Custom "릴리스 $tag가 이미 존재합니다."
                     $overwrite = Read-Host "덮어쓰시겠습니까? (y/N)"
                     if ($overwrite -eq 'y' -or $overwrite -eq 'Y') {

@@ -5,6 +5,7 @@ using CryptoExchange.Net.Authentication;
 using LiveCharts;
 using LiveCharts.Defaults;
 using LiveCharts.Wpf;
+using Microsoft.Data.SqlClient;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -201,6 +202,7 @@ namespace TradingBot.ViewModels
         public ICommand StopCommand { get; private set; }
         public ICommand RunBacktestCommand { get; private set; }
         public ICommand OptimizeCommand { get; private set; }
+        public ICommand RecollectDataCommand { get; private set; }
         public ICommand ToggleThemeCommand { get; private set; }
         public ICommand LoadHistoryCommand { get; private set; }
         public ICommand ClosePositionCommand { get; private set; }
@@ -284,13 +286,19 @@ namespace TradingBot.ViewModels
                 }
             }, _ => IsStopEnabled);
 
-            RunBacktestCommand = new RelayCommand(async _ =>
+            RunBacktestCommand = new RelayCommand(_ =>
             {
                 // 심볼 선택 확인
                 if (SelectedSymbol == null)
                 {
-                    AddLog("⚠️ Select a symbol first by clicking on the grid");
-                    MessageBox.Show("Please select a symbol from the market grid first.", "No Symbol Selected", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    AddLog("⚠️ 백테스트를 실행하려면 먼저 종목을 선택하세요");
+                    MessageBox.Show(
+                        "백테스트를 실행하려면 아래 시장 그리드에서\n" +
+                        "종목을 더블클릭하여 선택한 후 다시 시도해주세요.\n\n" +
+                        "예: BTCUSDT, ETHUSDT 등의 행을 더블클릭",
+                        "종목 선택 필요",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
                     return;
                 }
 
@@ -300,10 +308,10 @@ namespace TradingBot.ViewModels
                     AddLog("⚠️ Invalid symbol selected");
                     return;
                 }
-                AddLog($"🔄 {symbol} Backtest starting (30 days, RSI strategy)...");
+                AddLog($"🔄 {symbol} Backtest starting (30 days, ElliottWave strategy)...");
 
-                // UI 블로킹 방지: 백그라운드 실행
-                await Task.Run(async () =>
+                // UI 블로킹 방지: 백그라운드 실행 (fire-and-forget)
+                _ = Task.Run(async () =>
                 {
                     try
                     {
@@ -311,22 +319,105 @@ namespace TradingBot.ViewModels
                         var endDate = DateTime.Now;
                         var startDate = endDate.AddDays(-30);
 
-                        var result = await service.RunBacktestAsync(symbol, startDate, endDate, BacktestStrategyType.RSI);
+                        RunOnUI(() => AddLog($"📅 데이터 조회: {startDate:yyyy-MM-dd} ~ {endDate:yyyy-MM-dd}"));
+
+                        // [수정] 기본 백테스트 전략을 RSI에서 ElliottWave로 변경
+                        BacktestResult result = await service.RunBacktestAsync(symbol, startDate, endDate, BacktestStrategyType.ElliottWave);
+
+                        if (result == null)
+                        {
+                            RunOnUI(() => AddLog($"❌ 백테스트 결과가 null입니다."));
+                            return;
+                        }
+
+                        if (result.Candles == null || result.Candles.Count == 0)
+                        {
+                            MessageBoxResult recollectChoice = MessageBoxResult.No;
+                            RunOnUI(() =>
+                            {
+                                AddLog($"⚠️ {symbol} 데이터가 없습니다. DB에 과거 데이터가 저장되어 있는지 확인하세요.");
+                                recollectChoice = MessageBox.Show(
+                                    $"'{symbol}' 종목의 과거 데이터가 없습니다.\n\n" +
+                                    "지금 최근 30일 데이터를 재수집할까요?\n" +
+                                    "(완료 후 백테스트를 자동 재시도합니다)",
+                                    "데이터 없음",
+                                    MessageBoxButton.YesNo,
+                                    MessageBoxImage.Question);
+                            });
+
+                            if (recollectChoice == MessageBoxResult.Yes)
+                            {
+                                RunOnUI(() => AddLog($"🔄 {symbol} 과거 데이터 재수집 시작..."));
+                                int recollectedCount = await service.RecollectRecentCandleDataAsync(symbol, 30);
+                                RunOnUI(() => AddLog($"✅ {symbol} 재수집 완료: {recollectedCount}개"));
+
+                                result = await service.RunBacktestAsync(symbol, startDate, endDate, BacktestStrategyType.ElliottWave);
+                            }
+
+                            if (result.Candles == null || result.Candles.Count == 0)
+                            {
+                                RunOnUI(() =>
+                                {
+                                    MessageBox.Show(
+                                        $"'{symbol}' 종목 데이터가 여전히 부족합니다.\n\n" +
+                                        "1) START로 실시간 수집을 켜두고\n" +
+                                        "2) 몇 분 후 다시 백테스트를 실행해주세요.",
+                                        "데이터 부족",
+                                        MessageBoxButton.OK,
+                                        MessageBoxImage.Warning);
+                                });
+                                return;
+                            }
+                        }
+
+                        RunOnUI(() => AddLog($"✅ {result.Candles.Count}개 캔들 데이터 로드 완료"));
 
                         // UI 업데이트는 메인 스레드에서
                         RunOnUI(() =>
                         {
-                            UpdateBacktestChart(result);
+                            try
+                            {
+                                UpdateBacktestChart(result);
 
-                            var window = new BacktestWindow(result, $"📊 BACKTEST - {symbol}");
-                            window.Show();
+                                var window = new BacktestWindow(result, $"📊 BACKTEST - {symbol}");
+                                window.Show();
 
-                            AddLog($"✅ 백테스팅 완료: 수익률 {result.ProfitPercentage:F2}%, MDD {result.MaxDrawdown:F2}%, 승률 {result.WinRate:F1}%");
+                                AddLog($"✅ 백테스팅 완료: 수익률 {result.ProfitPercentage:F2}%, MDD {result.MaxDrawdown:F2}%, 승률 {result.WinRate:F1}%");
+                            }
+                            catch (Exception uiEx)
+                            {
+                                AddLog($"❌ UI 업데이트 실패: {uiEx.Message}");
+                                MessageBox.Show($"백테스트 결과 창 표시 오류:\n{uiEx.Message}", "오류", MessageBoxButton.OK, MessageBoxImage.Error);
+                            }
+                        });
+                    }
+                    catch (SqlException sqlEx)
+                    {
+                        RunOnUI(() => 
+                        {
+                            AddLog($"❌ 데이터베이스 오류: {sqlEx.Message}");
+                            MessageBox.Show(
+                                $"데이터베이스 연결 오류:\n{sqlEx.Message}\n\n" +
+                                "appsettings.json의 ConnectionString을 확인하세요.",
+                                "DB 오류",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Error);
                         });
                     }
                     catch (Exception ex)
                     {
-                        RunOnUI(() => AddLog($"❌ 백테스팅 실패: {ex.Message}"));
+                        RunOnUI(() => 
+                        {
+                            AddLog($"❌ 백테스팅 실패: {ex.Message}");
+                            AddLog($"📍 Stack Trace: {ex.StackTrace}");
+                            MessageBox.Show(
+                                $"백테스트 실행 중 오류:\n\n{ex.Message}\n\n" +
+                                $"타입: {ex.GetType().Name}\n\n" +
+                                "자세한 내용은 로그를 확인하세요.",
+                                "백테스트 오류",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Error);
+                        });
                     }
                 });
             });
@@ -336,8 +427,14 @@ namespace TradingBot.ViewModels
                 // 심볼 선택 확인
                 if (SelectedSymbol == null)
                 {
-                    AddLog("⚠️ Select a symbol first by clicking on the grid");
-                    MessageBox.Show("Please select a symbol from the market grid first.", "No Symbol Selected", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    AddLog("⚠️ 최적화를 실행하려면 먼저 종목을 선택하세요");
+                    MessageBox.Show(
+                        "최적화를 실행하려면 아래 시장 그리드에서\n" +
+                        "종목을 더블클릭하여 선택한 후 다시 시도해주세요.\n\n" +
+                        "예: BTCUSDT, ETHUSDT 등의 행을 더블클릭",
+                        "종목 선택 필요",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
                     return;
                 }
 
@@ -348,17 +445,127 @@ namespace TradingBot.ViewModels
                     return;
                 }
 
-                // BacktestWindow 열기
-                try
+                AddLog($"⚙ {symbol} 최적화 시작 (Optuna 20회)...");
+
+                _ = Task.Run(async () =>
                 {
-                    var backtestWindow = new BacktestWindow();
-                    backtestWindow.Owner = Application.Current.MainWindow;
-                    backtestWindow.ShowDialog();
-                }
-                catch (Exception ex)
+                    try
+                    {
+                        var service = new BacktestService();
+                        var endDate = DateTime.Now;
+                        var startDate = endDate.AddDays(-30);
+
+                        // 데이터 존재 확인
+                        var precheck = await service.RunBacktestAsync(symbol, startDate, endDate, BacktestStrategyType.RSI);
+                        if (precheck.Candles == null || precheck.Candles.Count == 0)
+                        {
+                            MessageBoxResult recollectChoice = MessageBoxResult.No;
+                            RunOnUI(() =>
+                            {
+                                recollectChoice = MessageBox.Show(
+                                    $"'{symbol}' 최적화용 데이터가 없습니다.\n\n" +
+                                    "최근 30일 데이터를 재수집할까요?",
+                                    "데이터 없음",
+                                    MessageBoxButton.YesNo,
+                                    MessageBoxImage.Question);
+                            });
+
+                            if (recollectChoice == MessageBoxResult.Yes)
+                            {
+                                RunOnUI(() => AddLog($"🔄 {symbol} 최적화용 데이터 재수집 시작..."));
+                                int recollectedCount = await service.RecollectRecentCandleDataAsync(symbol, 30);
+                                RunOnUI(() => AddLog($"✅ {symbol} 재수집 완료: {recollectedCount}개"));
+
+                                precheck = await service.RunBacktestAsync(symbol, startDate, endDate, BacktestStrategyType.RSI);
+                            }
+                        }
+
+                        if (precheck.Candles == null || precheck.Candles.Count == 0)
+                        {
+                            RunOnUI(() => MessageBox.Show(
+                                $"'{symbol}' 데이터가 부족해 최적화를 실행할 수 없습니다.",
+                                "최적화 실패",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Warning));
+                            return;
+                        }
+
+                        var optimizeResult = await service.OptimizeWithOptunaAsync(symbol, startDate, endDate, 1000m, 20);
+                        optimizeResult.Symbol = symbol;
+                        if (optimizeResult.Candles == null || optimizeResult.Candles.Count == 0)
+                            optimizeResult.Candles = precheck.Candles;
+                        if (optimizeResult.FinalBalance <= 0)
+                            optimizeResult.FinalBalance = optimizeResult.InitialBalance;
+
+                        RunOnUI(() =>
+                        {
+                            var window = new BacktestWindow(optimizeResult, $"⚙ OPTIMIZE - {symbol}");
+                            window.Show();
+                            AddLog($"✅ 최적화 완료: {optimizeResult.StrategyConfiguration}");
+                            AddLog($"ℹ️ {optimizeResult.Message}");
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        RunOnUI(() =>
+                        {
+                            AddLog($"❌ 최적화 실패: {ex.Message}");
+                            MessageBox.Show(
+                                $"최적화 실행 중 오류:\n\n{ex.Message}",
+                                "최적화 오류",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Error);
+                        });
+                    }
+                });
+            });
+
+            RecollectDataCommand = new RelayCommand(_ =>
+            {
+                if (SelectedSymbol == null || string.IsNullOrWhiteSpace(SelectedSymbol.Symbol))
                 {
-                    AddLog($"❌ 백테스트 창 열기 실패: {ex.Message}");
+                    MessageBox.Show(
+                        "재수집할 종목을 먼저 선택해주세요.\n(시장 그리드에서 행 더블클릭)",
+                        "종목 선택 필요",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                    return;
                 }
+
+                var symbol = SelectedSymbol.Symbol;
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var service = new BacktestService();
+                        RunOnUI(() => AddLog($"🔄 {symbol} 최근 30일 데이터 재수집 시작..."));
+
+                        int count = await service.RecollectRecentCandleDataAsync(symbol, 30);
+
+                        RunOnUI(() =>
+                        {
+                            AddLog($"✅ {symbol} 재수집 완료: {count}개 캔들 저장");
+                            MessageBox.Show(
+                                $"{symbol} 재수집 완료\n저장 건수: {count}개\n\n이제 BACKTEST/OPTIMIZE를 다시 실행하세요.",
+                                "재수집 완료",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Information);
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        RunOnUI(() =>
+                        {
+                            AddLog($"❌ 데이터 재수집 실패: {ex.Message}");
+                            MessageBox.Show(
+                                $"데이터 재수집 중 오류:\n\n{ex.Message}",
+                                "재수집 오류",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Error);
+                        });
+                    }
+                });
             });
 
             // [Agent 3] 매매 이력 내보내기 커맨드
@@ -940,19 +1147,36 @@ namespace TradingBot.ViewModels
 
                 if (!klinesResult.Success) return;
 
-                var candleValues = new ChartValues<OhlcPoint>();
+                var closeValues = new ChartValues<double>();
+                var xLabels = new List<string>();
                 foreach (var kline in klinesResult.Data)
                 {
-                    candleValues.Add(new OhlcPoint((double)kline.OpenPrice, (double)kline.HighPrice, (double)kline.LowPrice, (double)kline.ClosePrice));
+                    closeValues.Add((double)kline.ClosePrice);
+                    xLabels.Add(kline.OpenTime.ToLocalTime().ToString("HH:mm"));
                 }
+
+                LiveChartXFormatter = val =>
+                {
+                    int index = (int)Math.Round(val);
+                    return (index >= 0 && index < xLabels.Count) ? xLabels[index] : string.Empty;
+                };
 
                 LiveChartSeries = new SeriesCollection
                 {
-                    new OhlcSeries { Title = symbol, Values = candleValues },
+                    new LineSeries
+                    {
+                        Title = $"{symbol} Close",
+                        Values = closeValues,
+                        PointGeometry = null,
+                        LineSmoothness = 0,
+                        Stroke = Brushes.DeepSkyBlue,
+                        Fill = Brushes.Transparent
+                    },
                     new ScatterSeries { Title = "Buy", Values = new ChartValues<ScatterPoint>(), PointGeometry = DefaultGeometries.Triangle, Fill = Brushes.LimeGreen, MinPointShapeDiameter = 15, DataLabels = false },
                     new ScatterSeries { Title = "Sell", Values = new ChartValues<ScatterPoint>(), PointGeometry = DefaultGeometries.Triangle, Fill = Brushes.Red, MinPointShapeDiameter = 15, DataLabels = false }
                 };
                 OnPropertyChanged(nameof(LiveChartSeries));
+                OnPropertyChanged(nameof(LiveChartXFormatter));
                 OnPropertyChanged(nameof(IsLiveChartEmpty));
             }
             catch (Exception ex)
@@ -965,6 +1189,13 @@ namespace TradingBot.ViewModels
         {
             RunOnUI(() =>
             {
+                if (result == null || result.EquityCurve == null || result.EquityCurve.Count == 0)
+                {
+                    BacktestSeries = new SeriesCollection();
+                    BacktestLabels = Array.Empty<string>();
+                    return;
+                }
+
                 var values = new ChartValues<double>();
                 var buyPoints = new ChartValues<ScatterPoint>();
                 var sellPoints = new ChartValues<ScatterPoint>();
@@ -987,7 +1218,7 @@ namespace TradingBot.ViewModels
                     string timeStr = trade.Time.ToString("MM/dd HH:mm");
                     int index = result.TradeDates.IndexOf(timeStr);
 
-                    if (index >= 0)
+                    if (index >= 0 && index < result.EquityCurve.Count)
                     {
                         if (trade.Side == "BUY")
                             buyPoints.Add(new ScatterPoint(index, (double)result.EquityCurve[index], 10));

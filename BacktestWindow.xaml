@@ -21,6 +21,9 @@
                 CornerRadius="0"/>
     </WindowChrome.WindowChrome>
     <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+        <local:GreaterThanConverter x:Key="GreaterThanConverter"/>
+        <local:LessThanConverter x:Key="LessThanConverter"/>
         <Style x:Key="WindowControlButtonStyle"
                 TargetType="Button">
             <Setter Property="WindowChrome.IsHitTestVisibleInChrome"
@@ -132,6 +135,8 @@
                   Margin="15">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
@@ -195,8 +200,133 @@
                     </Grid>
                 </Border>
 
+                <Border Grid.Row="1"
+                        Background="#101826"
+                        CornerRadius="8"
+                        Padding="12"
+                        Margin="0,0,0,12">
+                    <StackPanel>
+                        <TextBlock Text="테스트 정보"
+                                   Foreground="#93C5FD"
+                                   FontWeight="Bold"
+                                   Margin="0,0,0,6"/>
+                        <TextBlock Text="{Binding StrategySummary}"
+                                   Foreground="#E5E7EB"
+                                   TextWrapping="Wrap"
+                                   Margin="0,0,0,4"/>
+                        <TextBlock Text="{Binding MessageSummary}"
+                                   Foreground="#CBD5E1"
+                                   TextWrapping="Wrap"
+                                   Margin="0,0,0,4"/>
+                        <TextBlock Text="{Binding PeriodSummary}"
+                                   Foreground="#94A3B8"
+                                   Margin="0,0,0,2"/>
+                        <TextBlock Text="{Binding DatasetSummary}"
+                                   Foreground="#94A3B8"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="2"
+                        Background="#0F172A"
+                        BorderBrush="#243041"
+                        BorderThickness="1"
+                        CornerRadius="8"
+                        Padding="10"
+                        Margin="0,0,0,12"
+                        Visibility="{Binding HasTopTrials, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <StackPanel>
+                        <TextBlock Text="OPTIMIZE TOP 5 TRIALS"
+                                   Foreground="#93C5FD"
+                                   FontWeight="Bold"
+                                   Margin="0,0,0,8"/>
+                        <DataGrid ItemsSource="{Binding TopTrials}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  CanUserSortColumns="True"
+                                  IsReadOnly="True"
+                                  HeadersVisibility="Column"
+                                  RowHeight="28"
+                                  Background="#111827"
+                                  Foreground="#E5E7EB"
+                                  GridLinesVisibility="Horizontal"
+                                  BorderThickness="0">
+                            <DataGrid.RowStyle>
+                                <Style TargetType="DataGridRow">
+                                    <Setter Property="FontWeight" Value="Normal"/>
+                                    <Setter Property="Background" Value="#111827"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Rank}" Value="1">
+                                            <Setter Property="Background" Value="#3F2E00"/>
+                                            <Setter Property="FontWeight" Value="Bold"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Rank}" Value="2">
+                                            <Setter Property="Background" Value="#2F3545"/>
+                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Rank}" Value="3">
+                                            <Setter Property="Background" Value="#3A2A1E"/>
+                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DataGrid.RowStyle>
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="🏅"
+                                                    Binding="{Binding Medal}"
+                                                    Width="45">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="HorizontalAlignment" Value="Center"/>
+                                            <Setter Property="VerticalAlignment" Value="Center"/>
+                                            <Setter Property="FontSize" Value="15"/>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="#"
+                                                    Binding="{Binding Rank}"
+                                                    SortMemberPath="Rank"
+                                                    Width="45"/>
+                                <DataGridTextColumn Header="Trial"
+                                                    Binding="{Binding TrialId}"
+                                                    SortMemberPath="TrialId"
+                                                    Width="80"/>
+                                <DataGridTextColumn Header="Final Balance"
+                                                    Binding="{Binding FinalBalance, StringFormat={}{0:N2}}"
+                                                    SortMemberPath="FinalBalance"
+                                                    Width="130"/>
+                                <DataGridTextColumn Header="Profit %"
+                                                    Binding="{Binding ProfitPercent, StringFormat={}{0:F2}%}"
+                                                    SortMemberPath="ProfitPercent"
+                                                    Width="90">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="HorizontalAlignment" Value="Right"/>
+                                            <Setter Property="Foreground" Value="#E5E7EB"/>
+                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding ProfitPercent}" Value="0">
+                                                    <Setter Property="Foreground" Value="#94A3B8"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding ProfitPercent, Converter={StaticResource GreaterThanConverter}, ConverterParameter=0}" Value="True">
+                                                    <Setter Property="Foreground" Value="#22C55E"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding ProfitPercent, Converter={StaticResource LessThanConverter}, ConverterParameter=0}" Value="True">
+                                                    <Setter Property="Foreground" Value="#EF4444"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="Parameters"
+                                                    Binding="{Binding Parameters}"
+                                                    Width="*"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </StackPanel>
+                </Border>
+
                 <!-- 2. 李⑦듃 -->
-                <lvc:CartesianChart Grid.Row="1"
+                <lvc:CartesianChart Grid.Row="3"
                                     Series="{Binding ChartSeries}"
                                     LegendLocation="Bottom"
                                     Hoverable="True"

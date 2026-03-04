@@ -48,14 +48,24 @@ namespace TradingBot
             WindowInteropHelper helper = new WindowInteropHelper(this);
             if (helper.Handle == IntPtr.Zero) return;
 
-            FLASHWINFO fi = new FLASHWINFO();
-            fi.cbSize = (uint)Marshal.SizeOf(fi);
-            fi.hwnd = helper.Handle;
-            fi.dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG;
-            fi.uCount = uint.MaxValue; // 무한 반복
-            fi.dwTimeout = 0;
+            try
+            {
+                FLASHWINFO fi = new FLASHWINFO
+                {
+                    cbSize = (uint)Marshal.SizeOf<FLASHWINFO>(),
+                    hwnd = helper.Handle,
+                    dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG,
+                    uCount = 10, // 10회 깜빡임 (uint.MaxValue는 스택 손상 유발)
+                    dwTimeout = 0
+                };
 
-            FlashWindowEx(ref fi);
+                FlashWindowEx(ref fi);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[FlashWindow] 오류: {ex.Message}");
+                // P/Invoke 실패 시 조용히 무시 (UI 알림은 필수 기능 아님)
+            }
         }
         public static MainWindow? Instance { get; private set; }
 
@@ -216,6 +226,11 @@ namespace TradingBot
             ViewModel.OptimizeCommand.Execute(null);
         }
 
+        private void btnRecollect_Click(object sender, RoutedEventArgs e)
+        {
+            ViewModel.RecollectDataCommand.Execute(null);
+        }
+
         private void UpdateDateTimeDisplay()
         {
             var now = DateTime.Now;
@@ -262,15 +277,41 @@ namespace TradingBot
 
         private void btnPopOutChart_Click(object sender, RoutedEventArgs e)
         {
-            var chartWindow = new ActivePnLWindow(ViewModel);
-            chartWindow.Show();
+            if (ViewModel == null)
+            {
+                MessageBox.Show("ViewModel이 초기화되지 않았습니다.", "오류", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                var chartWindow = new ActivePnLWindow(ViewModel);
+                chartWindow.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"차트 창을 열 수 없습니다: {ex.Message}", "오류", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private void btnStatistics_Click(object sender, RoutedEventArgs e)
         {
-            var statsWindow = new TradeStatisticsWindow(ViewModel.TradeHistory);
-            statsWindow.Owner = this;
-            statsWindow.Show();
+            if (ViewModel?.TradeHistory == null)
+            {
+                MessageBox.Show("거래 내역이 없습니다.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            try
+            {
+                var statsWindow = new TradeStatisticsWindow(ViewModel.TradeHistory);
+                statsWindow.Owner = this;
+                statsWindow.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"통계 창을 열 수 없습니다: {ex.Message}", "오류", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         // 윈도우 컨트롤 버튼 이벤트 핸들러
@@ -480,29 +521,50 @@ namespace TradingBot
 
         private void dgMultiTimeframe_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
-            if (dgMultiTimeframe.SelectedItem is not MultiTimeframeViewModel)
+            // 1. null 체크 추가
+            if (ViewModel == null)
+            {
+                AddLog("⚠️ ViewModel이 초기화되지 않았습니다.");
+                return;
+            }
+
+            // 2. SelectedItem null 체크 개선
+            if (dgMultiTimeframe.SelectedItem is not MultiTimeframeViewModel selectedItem)
             {
                 return;
             }
 
-            if (_symbolChartWindow == null || !_symbolChartWindow.IsVisible)
+            // 3. 선택된 종목을 ViewModel에 설정
+            ViewModel.SelectedSymbol = selectedItem;
+
+            try
             {
-                _symbolChartWindow = new SymbolChartWindow(ViewModel)
+                // 4. 차트 창 생성/표시
+                if (_symbolChartWindow == null || !_symbolChartWindow.IsVisible)
                 {
-                    Owner = this
-                };
-                _symbolChartWindow.Closed += (_, _) => _symbolChartWindow = null;
-                _symbolChartWindow.Show();
-                return;
-            }
+                    _symbolChartWindow = new SymbolChartWindow(ViewModel)
+                    {
+                        Owner = this
+                    };
+                    _symbolChartWindow.Closed += (_, _) => _symbolChartWindow = null;
+                    _symbolChartWindow.Show();
+                    return;
+                }
 
-            if (_symbolChartWindow.WindowState == WindowState.Minimized)
+                if (_symbolChartWindow.WindowState == WindowState.Minimized)
+                {
+                    _symbolChartWindow.WindowState = WindowState.Normal;
+                }
+
+                _symbolChartWindow.Activate();
+                _symbolChartWindow.Focus();
+            }
+            catch (Exception ex)
             {
-                _symbolChartWindow.WindowState = WindowState.Normal;
+                AddLog($"⚠️ 차트 창 오류: {ex.Message}");
+                // 오류 발생 시 기존 창 초기화
+                _symbolChartWindow = null;
             }
-
-            _symbolChartWindow.Activate();
-            _symbolChartWindow.Focus();
         }
 
 

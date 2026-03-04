@@ -1,4 +1,7 @@
 using Dapper;
+using Binance.Net.Clients;
+using Binance.Net.Enums;
+using Binance.Net.Interfaces;
 using Microsoft.Data.SqlClient;
 using TradingBot.Models;
 using TradingBot.Services.BacktestStrategies;
@@ -10,7 +13,8 @@ namespace TradingBot.Services
     {
         RSI,
         MA_Cross,
-        BollingerBand
+        BollingerBand,
+        ElliottWave // [추가]
     }
 
     public class BacktestService
@@ -26,14 +30,19 @@ namespace TradingBot.Services
         {
             // 1. DB에서 데이터 조회
             using var conn = new SqlConnection(_connectionString);
-            string sql = @"
-                SELECT * FROM MarketCandles 
-                WHERE Symbol = @symbol AND OpenTime >= @startDate AND OpenTime <= @endDate 
-                ORDER BY OpenTime ASC";
+            var candles = await LoadBacktestCandlesAsync(conn, symbol, startDate, endDate);
 
-            var candles = (await conn.QueryAsync<CandleData>(sql, new { symbol, startDate, endDate })).ToList();
-
-            if (candles.Count == 0) return new BacktestResult { Symbol = symbol, InitialBalance = initialBalance, FinalBalance = initialBalance };
+            if (candles.Count == 0)
+            {
+                return new BacktestResult
+                {
+                    Symbol = symbol,
+                    InitialBalance = initialBalance,
+                    FinalBalance = initialBalance,
+                    StrategyConfiguration = strategy.Name,
+                    Message = $"데이터 없음: {symbol} | 구간 {startDate:yyyy-MM-dd} ~ {endDate:yyyy-MM-dd}"
+                };
+            }
 
             // 2. 시뮬레이션 초기화
             var result = new BacktestResult { Symbol = symbol, InitialBalance = initialBalance, FinalBalance = initialBalance };
@@ -43,8 +52,119 @@ namespace TradingBot.Services
             
             // 성과 지표 계산
             CalculateMetrics(result);
+
+            if (string.IsNullOrWhiteSpace(result.StrategyConfiguration))
+                result.StrategyConfiguration = strategy.Name;
+
+            if (string.IsNullOrWhiteSpace(result.Message))
+            {
+                result.Message =
+                    $"전략: {strategy.Name} | 기간: {startDate:yyyy-MM-dd} ~ {endDate:yyyy-MM-dd} | " +
+                    $"데이터: {candles.Count}개 | 초기자본: {initialBalance:N0} USDT";
+            }
             
             return result;
+        }
+
+        private async Task<List<CandleData>> LoadBacktestCandlesAsync(SqlConnection conn, string symbol, DateTime startDate, DateTime endDate)
+        {
+            const string marketCandlesSql = @"
+                SELECT
+                    Symbol,
+                    OpenTime,
+                    OpenPrice AS [Open],
+                    HighPrice AS [High],
+                    LowPrice AS [Low],
+                    ClosePrice AS [Close],
+                    CAST(Volume AS real) AS Volume
+                FROM MarketCandles
+                WHERE Symbol = @symbol AND OpenTime >= @startDate AND OpenTime <= @endDate
+                ORDER BY OpenTime ASC";
+
+            try
+            {
+                var marketCandles = (await conn.QueryAsync<CandleData>(marketCandlesSql, new { symbol, startDate, endDate })).ToList();
+                if (marketCandles.Count > 0)
+                    return marketCandles;
+            }
+            catch
+            {
+                // MarketCandles 스키마가 다른 경우 CandleData로 폴백
+            }
+
+            const string candleDataSql = @"
+                SELECT
+                    Symbol,
+                    OpenTime,
+                    [Open],
+                    [High],
+                    [Low],
+                    [Close],
+                    CAST(Volume AS real) AS Volume
+                FROM CandleData
+                WHERE Symbol = @symbol AND OpenTime >= @startDate AND OpenTime <= @endDate
+                ORDER BY OpenTime ASC";
+
+            return (await conn.QueryAsync<CandleData>(candleDataSql, new { symbol, startDate, endDate })).ToList();
+        }
+
+        public async Task<int> RecollectRecentCandleDataAsync(string symbol, int days = 30, int maxChunks = 8)
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+                throw new ArgumentException("Symbol is required", nameof(symbol));
+
+            int safeDays = Math.Max(1, days);
+            int safeChunks = Math.Max(1, maxChunks);
+
+            var endUtc = DateTime.UtcNow;
+            var startUtc = endUtc.AddDays(-safeDays);
+
+            using var client = new BinanceRestClient();
+            var allKlines = new List<IBinanceKline>();
+            var cursor = startUtc;
+
+            for (int i = 0; i < safeChunks && cursor < endUtc; i++)
+            {
+                var response = await client.UsdFuturesApi.ExchangeData.GetKlinesAsync(
+                    symbol,
+                    KlineInterval.FiveMinutes,
+                    startTime: cursor,
+                    endTime: endUtc,
+                    limit: 1500);
+
+                if (!response.Success)
+                    throw new InvalidOperationException(response.Error?.Message ?? "Kline 재수집 실패");
+
+                var batch = response.Data?
+                    .OrderBy(k => k.OpenTime)
+                    .Cast<IBinanceKline>()
+                    .ToList() ?? new List<IBinanceKline>();
+
+                if (batch.Count == 0)
+                    break;
+
+                allKlines.AddRange(batch);
+
+                var nextCursor = batch[^1].OpenTime.AddMinutes(5);
+                if (nextCursor <= cursor || batch.Count < 1500)
+                    break;
+
+                cursor = nextCursor;
+            }
+
+            var deduped = allKlines
+                .GroupBy(k => k.OpenTime)
+                .Select(g => g.First())
+                .OrderBy(k => k.OpenTime)
+                .ToList();
+
+            if (deduped.Count == 0)
+                return 0;
+
+            var db = new DatabaseService();
+            await db.SaveCandlesAsync(symbol, deduped);
+
+            return deduped.Count;
         }
 
         public async Task<BacktestResult> RunBacktestAsync(string symbol, DateTime startDate, DateTime endDate, BacktestStrategyType strategyType, decimal initialBalance = 1000)
@@ -54,6 +174,7 @@ namespace TradingBot.Services
                 BacktestStrategyType.RSI => new RsiBacktestStrategy(),
                 BacktestStrategyType.MA_Cross => new MaCrossBacktestStrategy(),
                 BacktestStrategyType.BollingerBand => new BollingerBandBacktestStrategy(),
+                BacktestStrategyType.ElliottWave => new ElliottWaveBacktestStrategy(), // [추가]
                 _ => throw new ArgumentException("Invalid strategy type")
             };
 
@@ -144,12 +265,65 @@ namespace TradingBot.Services
                 return (double)result.FinalBalance; // 최대화할 값
             }, nTrials);
 
-            // 최적 결과 반환
-            var bestParams = study.BestTrial?.Params;
-            var bestResult = new BacktestResult { FinalBalance = (decimal)study.BestValue };
-            bestResult.StrategyConfiguration = $"[Optuna Best] Buy:{bestParams?["RsiBuy"]:F2}, Sell:{bestParams?["RsiSell"]:F2}";
-            
+            if (study.BestTrial?.Params == null)
+            {
+                return new BacktestResult
+                {
+                    Symbol = symbol,
+                    InitialBalance = initialBalance,
+                    FinalBalance = initialBalance,
+                    StrategyConfiguration = $"Optuna RSI (Trials: {nTrials})",
+                    Message = "최적화 결과를 찾지 못했습니다."
+                };
+            }
+
+            var bestParams = study.BestTrial.Params;
+            double bestBuy = bestParams.TryGetValue("RsiBuy", out var buyObj) ? Convert.ToDouble(buyObj) : 30;
+            double bestSell = bestParams.TryGetValue("RsiSell", out var sellObj) ? Convert.ToDouble(sellObj) : 70;
+
+            var bestStrategy = new RsiBacktestStrategy
+            {
+                BuyThreshold = bestBuy,
+                SellThreshold = bestSell
+            };
+
+            var bestResult = await RunBacktestAsync(symbol, startDate, endDate, bestStrategy, initialBalance);
+            bestResult.StrategyConfiguration =
+                $"Optuna RSI 최적화 (Trials: {nTrials}) | Buy < {bestBuy:F2}, Sell > {bestSell:F2}";
+            bestResult.Message =
+                $"최적화 완료: {nTrials}회 탐색, 최고 최종자산 {study.BestValue:N2} USDT (Trial #{study.BestTrial.Id})";
+
+            bestResult.TopTrials = study.Trials
+                .OrderByDescending(t => t.ObjectiveValue)
+                .Take(5)
+                .Select((t, index) => new OptimizationTrialItem
+                {
+                    Rank = index + 1,
+                    TrialId = t.Id,
+                    FinalBalance = (decimal)t.ObjectiveValue,
+                    ProfitPercent = initialBalance > 0
+                        ? ((decimal)t.ObjectiveValue - initialBalance) / initialBalance * 100m
+                        : 0m,
+                    Parameters = FormatTrialParams(t.Params)
+                })
+                .ToList();
+
             return bestResult;
+        }
+
+        private static string FormatTrialParams(Dictionary<string, object> parameters)
+        {
+            if (parameters == null || parameters.Count == 0)
+                return "-";
+
+            return string.Join(", ", parameters.Select(kvp =>
+            {
+                if (kvp.Value is double d)
+                    return $"{kvp.Key}={d:F2}";
+                if (kvp.Value is float f)
+                    return $"{kvp.Key}={f:F2}";
+                return $"{kvp.Key}={kvp.Value}";
+            }));
         }
 
         public async Task<BacktestResult> OptimizeBollingerStrategyAsync(string symbol, DateTime startDate, DateTime endDate, decimal initialBalance)

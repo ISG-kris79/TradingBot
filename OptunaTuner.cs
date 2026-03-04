@@ -8,19 +8,53 @@ namespace TradingBot.Services.Optimization
     public class Trial
     {
         public int Id { get; set; }
+        public double ObjectiveValue { get; set; } = double.MinValue;
         public Dictionary<string, object> Params { get; } = new();
         private readonly Random _random = new();
+        private readonly Study _study;
+
+        public Trial(int id, Study study)
+        {
+            Id = id;
+            _study = study;
+        }
 
         public double SuggestFloat(string name, double min, double max)
         {
-            double val = _random.NextDouble() * (max - min) + min;
+            double val;
+            // [개선] 초기 5회는 랜덤 탐색, 이후 Best 값이 있으면 70% 확률로 Best 주변 탐색 (Exploitation)
+            if (_study.BestTrial != null && _study.Trials.Count > 5 && _random.NextDouble() < 0.7)
+            {
+                if (_study.BestTrial.Params.TryGetValue(name, out object? bestValObj) && bestValObj is double bestVal)
+                {
+                    // Gaussian Sampling (Box-Muller Transform)
+                    double u1 = 1.0 - _random.NextDouble();
+                    double u2 = 1.0 - _random.NextDouble();
+                    double randStdNormal = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2);
+                    
+                    // 표준편차: 전체 범위의 10%로 설정 (지역 탐색)
+                    double sigma = (max - min) * 0.1;
+                    val = bestVal + (sigma * randStdNormal);
+                    val = Math.Clamp(val, min, max);
+                    
+                    Params[name] = val;
+                    return val;
+                }
+            }
+
+            // 기본 Random Search (Exploration)
+            val = _random.NextDouble() * (max - min) + min;
             Params[name] = val;
             return val;
         }
 
         public int SuggestInt(string name, int min, int max)
         {
-            int val = _random.Next(min, max + 1);
+            // SuggestFloat와 동일한 로직을 정수형에 적용
+            double valDouble = SuggestFloat(name, min, max);
+            int val = (int)Math.Round(valDouble);
+            val = Math.Clamp(val, min, max);
+            
             Params[name] = val;
             return val;
         }
@@ -34,6 +68,8 @@ namespace TradingBot.Services.Optimization
 
         public void Report(Trial trial, double value)
         {
+            trial.ObjectiveValue = value;
+
             if (value > BestValue)
             {
                 BestValue = value;
@@ -65,7 +101,7 @@ namespace TradingBot.Services.Optimization
                 {
                     try
                     {
-                        var trial = new Trial { Id = trialId };
+                        var trial = new Trial(trialId, study);
                         double result = await objective(trial);
                         
                         lock (study)

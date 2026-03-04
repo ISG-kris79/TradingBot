@@ -101,7 +101,9 @@ namespace TradingBot
                 txtProgressPercent.Text = "100%";
                 await System.Threading.Tasks.Task.Delay(200);
                 // 메인 윈도우 실행
-                new MainWindow().Show();
+                var mainWindow = new MainWindow();
+                Application.Current.MainWindow = mainWindow;
+                mainWindow.Show();
                 this.Close();
             }
             catch (Exception ex)

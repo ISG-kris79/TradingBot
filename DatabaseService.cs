@@ -102,21 +102,36 @@ namespace TradingBot.Services
         public async Task SaveCandlesAsync(string symbol, IEnumerable<IBinanceKline> klines)
         {
             using var conn = new SqlConnection(_connStr);
-            string sql = @"
-            IF NOT EXISTS (SELECT 1 FROM CandleData WHERE Symbol = @Symbol AND OpenTime = @OpenTime)
-            INSERT INTO CandleData (Symbol, OpenTime, [Open], [High], [Low], [Close], Volume)
-            VALUES (@Symbol, @OpenTime, @OpenPrice, @HighPrice, @LowPrice, @ClosePrice, @Volume)";
-
-            await conn.ExecuteAsync(sql, klines.Select(k => new
+            var payload = klines.Select(k => new
             {
                 Symbol = symbol,
+                IntervalText = "5m",
                 OpenTime = k.OpenTime,
                 OpenPrice = k.OpenPrice,
                 HighPrice = k.HighPrice,
                 LowPrice = k.LowPrice,
                 ClosePrice = k.ClosePrice,
                 Volume = k.Volume
-            }), commandTimeout: QueryTimeout);
+            }).ToList();
+
+            try
+            {
+                string sqlWithInterval = @"
+                IF NOT EXISTS (SELECT 1 FROM CandleData WHERE Symbol = @Symbol AND OpenTime = @OpenTime)
+                INSERT INTO CandleData (Symbol, IntervalText, OpenTime, [Open], [High], [Low], [Close], Volume)
+                VALUES (@Symbol, @IntervalText, @OpenTime, @OpenPrice, @HighPrice, @LowPrice, @ClosePrice, @Volume)";
+
+                await conn.ExecuteAsync(sqlWithInterval, payload, commandTimeout: QueryTimeout);
+            }
+            catch (SqlException ex) when (ex.Message.Contains("Invalid column name 'IntervalText'"))
+            {
+                string legacySql = @"
+                IF NOT EXISTS (SELECT 1 FROM CandleData WHERE Symbol = @Symbol AND OpenTime = @OpenTime)
+                INSERT INTO CandleData (Symbol, OpenTime, [Open], [High], [Low], [Close], Volume)
+                VALUES (@Symbol, @OpenTime, @OpenPrice, @HighPrice, @LowPrice, @ClosePrice, @Volume)";
+
+                await conn.ExecuteAsync(legacySql, payload, commandTimeout: QueryTimeout);
+            }
         }
 
         // CandleData 테이블 대량 저장 (Models.CandleData 사용)
@@ -127,12 +142,24 @@ namespace TradingBot.Services
             try
             {
                 using var conn = new SqlConnection(_connStr);
+                var payload = data.Select(d => new
+                {
+                    d.Symbol,
+                    Interval = string.IsNullOrWhiteSpace(d.Interval) ? "5m" : d.Interval,
+                    d.OpenTime,
+                    d.Open,
+                    d.High,
+                    d.Low,
+                    d.Close,
+                    d.Volume
+                }).ToList();
+
                 string sql = @"
                 IF NOT EXISTS (SELECT 1 FROM CandleData WHERE Symbol = @Symbol AND OpenTime = @OpenTime)
                 INSERT INTO CandleData (Symbol, IntervalText, OpenTime, [Open], [High], [Low], [Close], Volume)
                 VALUES (@Symbol, @Interval, @OpenTime, @Open, @High, @Low, @Close, @Volume)";
 
-                int affected = await conn.ExecuteAsync(sql, data, commandTimeout: QueryTimeout);
+                int affected = await conn.ExecuteAsync(sql, payload, commandTimeout: QueryTimeout);
                 if (affected > 0) Log($"✅ [DB] {affected}건 저장 완료 (CandleData)");
             }
             catch (Exception ex) { Log($"❌ [DB] CandleData 저장 실패: {ex.Message}"); }

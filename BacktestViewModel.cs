@@ -19,6 +19,35 @@ namespace TradingBot.ViewModels
         public Func<double, string> Formatter { get; set; }
         public Brush ProfitColor => (Result?.TotalProfit ?? 0) >= 0 ? Brushes.LimeGreen : Brushes.Tomato;
         public string WindowTitle { get; set; } = string.Empty;
+        public string StrategySummary => string.IsNullOrWhiteSpace(Result?.StrategyConfiguration)
+            ? "전략 정보 없음"
+            : Result.StrategyConfiguration;
+        public string MessageSummary => string.IsNullOrWhiteSpace(Result?.Message)
+            ? "테스트 상세 설명 없음"
+            : Result.Message;
+        public string PeriodSummary
+        {
+            get
+            {
+                if (Result?.Candles == null || !Result.Candles.Any())
+                    return "기간 정보 없음";
+
+                var first = Result.Candles.First().OpenTime;
+                var last = Result.Candles.Last().OpenTime;
+                return $"{first:yyyy-MM-dd HH:mm} ~ {last:yyyy-MM-dd HH:mm}";
+            }
+        }
+        public string DatasetSummary
+        {
+            get
+            {
+                int candleCount = Result?.Candles?.Count ?? 0;
+                int tradeCount = Result?.TotalTrades ?? 0;
+                return $"캔들 {candleCount}개 · 체결 {tradeCount}회 (승 {Result?.WinCount ?? 0} / 패 {Result?.LossCount ?? 0})";
+            }
+        }
+        public List<OptimizationTrialItem> TopTrials => Result?.TopTrials ?? new List<OptimizationTrialItem>();
+        public bool HasTopTrials => TopTrials.Count > 0;
 
         public BacktestViewModel(BacktestResult result, string title = "Backtest Result")
         {
@@ -28,11 +57,11 @@ namespace TradingBot.ViewModels
 
             if (result.Candles == null || !result.Candles.Any()) return;
 
-            // 1. 캔들 차트 데이터 생성
-            var candleValues = new ChartValues<OhlcPoint>();
+            // 1. 종가 라인 차트 데이터 생성 (OHLC 대비 렌더링 안정성 우선)
+            var closeValues = new ChartValues<double>();
             foreach (var c in result.Candles)
             {
-                candleValues.Add(new OhlcPoint((double)c.Open, (double)c.High, (double)c.Low, (double)c.Close));
+                closeValues.Add((double)c.Close);
             }
 
             // 2. 매매 시점 마커 데이터 생성
@@ -64,10 +93,14 @@ namespace TradingBot.ViewModels
             // 3. 차트 시리즈 컬렉션 조립
             ChartSeries = new SeriesCollection
             {
-                new OhlcSeries
+                new LineSeries
                 {
-                    Title = result.Symbol,
-                    Values = candleValues
+                    Title = $"{result.Symbol} Close",
+                    Values = closeValues,
+                    PointGeometry = null,
+                    LineSmoothness = 0,
+                    Stroke = Brushes.DeepSkyBlue,
+                    Fill = Brushes.Transparent
                 },
                 new ScatterSeries
                 {

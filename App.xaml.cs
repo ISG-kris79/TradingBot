@@ -182,18 +182,17 @@ namespace TradingBot
             this.MainWindow = loginWindow;
             loginWindow.Show();
 
-            // 로그인 창 이후에 업데이트 확인 및 적용 (UI 스레드에서 실행)
-            _ = System.Threading.Tasks.Task.Run(async () =>
+            // 로그인 창 이후 업데이트 확인 (강제 종료 없이 안전 실행)
+            _ = loginWindow.Dispatcher.InvokeAsync(async () =>
             {
-                // UI 작업은 Dispatcher를 통해 실행
-                await loginWindow.Dispatcher.InvokeAsync(async () =>
+                try
                 {
-                    var updateApplied = await CheckForUpdatesAfterLoginAsync();
-                    if (updateApplied)
-                    {
-                        Application.Current.Shutdown();
-                    }
-                });
+                    await CheckForUpdatesAfterLoginAsync();
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[Update] 로그인 후 업데이트 확인 중 오류: {ex.Message}");
+                }
             });
 
         }

@@ -266,5 +266,63 @@ namespace TradingBot.Services
             var emaResults = quotes.GetEma(period).ToList();
             return emaResults.Select(e => e?.Ema ?? 0).ToList();
         }
+
+        public static (List<double> Macd, List<double> Signal, List<double> Hist) CalculateMACDSeries(List<double> closePrices)
+        {
+            if (closePrices.Count < 26)
+                return (new List<double>(), new List<double>(), new List<double>());
+
+            var quotes = closePrices.Select((price, i) => new Quote
+            {
+                Date = DateTime.Now.AddMinutes(-closePrices.Count + i),
+                Close = (decimal)price
+            }).ToList();
+
+            var results = quotes.GetMacd().ToList();
+            
+            return (
+                results.Select(r => r?.Macd ?? 0).ToList(),
+                results.Select(r => r?.Signal ?? 0).ToList(),
+                results.Select(r => r?.Histogram ?? 0).ToList()
+            );
+        }
+
+        public static (List<double> Upper, List<double> Mid, List<double> Lower) CalculateBBSeries(List<double> closePrices, int period = 20, double multiplier = 2.0)
+        {
+            if (closePrices.Count < period)
+                return (new List<double>(), new List<double>(), new List<double>());
+
+            var quotes = closePrices.Select((price, i) => new Quote
+            {
+                Date = DateTime.Now.AddMinutes(-closePrices.Count + i),
+                Close = (decimal)price
+            }).ToList();
+
+            var results = quotes.GetBollingerBands(period, multiplier).ToList();
+            return (
+                results.Select(r => r?.UpperBand ?? 0).ToList(),
+                results.Select(r => r?.Sma ?? 0).ToList(),
+                results.Select(r => r?.LowerBand ?? 0).ToList()
+            );
+        }
+
+        public static List<double> CalculateATRSeries(List<CandleData> candles, int period = 14)
+        {
+            if (candles.Count < period + 1)
+                return Enumerable.Repeat(0.0, candles.Count).ToList();
+
+            var quotes = candles.Select(k => new Quote
+            {
+                Date = k.OpenTime,
+                Open = k.Open,
+                High = k.High,
+                Low = k.Low,
+                Close = k.Close,
+                Volume = (decimal)k.Volume
+            }).ToList();
+
+            var results = quotes.GetAtr(period).ToList();
+            return results.Select(r => r?.Atr ?? 0).ToList();
+        }
     }
 }

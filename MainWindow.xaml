@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:lvc="clr-namespace:LiveCharts.Wpf;assembly=LiveCharts.Wpf"
         xmlns:local="clr-namespace:TradingBot"
-        Title="COINFF TRADINGBOT v2.1.1"
+        Title="COINFF TRADINGBOT v2.1.3"
         Height="950"
         Width="1600"
         MinHeight="700"
@@ -443,7 +443,7 @@
                                            FontWeight="Light"
                                            Foreground="#E0E7FF"
                                            Margin="2,0,0,0"/>
-                                <TextBlock Text=" v2.1.1"
+                                <TextBlock Text=" v2.1.3"
                                            FontSize="10"
                                            FontWeight="Bold"
                                            Foreground="{StaticResource PrimaryBrush}"
@@ -536,6 +536,7 @@
                                 Style="{StaticResource ModernButtonStyle}"
                                 Click="btnBacktest_Click"
                                 WindowChrome.IsHitTestVisibleInChrome="True"
+                                ToolTip="시장 그리드에서 종목을 더블클릭으로 선택한 후 클릭&#x0a;30일간 엘리엇 웨이브 전략으로 백테스트 실행"
                                 Margin="0,0,8,0"/>
                         <Button x:Name="btnOptimize"
                                 Content="⚙ OPTIMIZE"
@@ -543,7 +544,17 @@
                                 Height="36"
                                 Style="{StaticResource ModernButtonStyle}"
                                 Click="btnOptimize_Click"
-                                WindowChrome.IsHitTestVisibleInChrome="True"/>
+                                WindowChrome.IsHitTestVisibleInChrome="True"
+                            ToolTip="시장 그리드에서 종목을 더블클릭으로 선택한 후 클릭&#x0a;다양한 전략과 기간으로 최적화 테스트"
+                            Margin="0,0,8,0"/>
+                        <Button x:Name="btnRecollect"
+                            Content="🔄 RECOLLECT"
+                            Width="145"
+                            Height="36"
+                            Style="{StaticResource ModernButtonStyle}"
+                            Click="btnRecollect_Click"
+                            WindowChrome.IsHitTestVisibleInChrome="True"
+                            ToolTip="선택한 종목의 최근 30일 5분봉 데이터를 재수집&#x0a;BACKTEST/OPTIMIZE 실패 시 먼저 실행"/>
                     </StackPanel>
 
                     <!-- Right Controls -->
