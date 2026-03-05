@@ -21,10 +21,10 @@ namespace TradingBot.Services
         private readonly RiskManager _riskManager;
         private readonly MarketDataManager _marketDataManager;
         private readonly DbManager _dbManager;
-        private readonly ConcurrentDictionary<string, PositionInfo> _activePositions;
+        private readonly Dictionary<string, PositionInfo> _activePositions;
         private readonly object _posLock;
         private readonly TradingSettings _settings;
-        private readonly ConcurrentDictionary<string, DateTime> _blacklistedSymbols;
+        private readonly Dictionary<string, DateTime> _blacklistedSymbols;
         private readonly AdvancedExitStopCalculator _advancedExitCalculator;  // [v2.1.18] 지표 결합 익절
 
         // Events
@@ -32,11 +32,6 @@ namespace TradingBot.Services
         public event Action<string>? OnAlert = delegate { };
         public event Action<string, decimal, double?>? OnTickerUpdate = delegate { };
         public event Action<string, bool, decimal>? OnPositionStatusUpdate = delegate { };
-        /// <summary>
-        /// [ISSUE-3] 서버사이드 스탑 주문 설정 완료 이벤트 (symbol, orderId, stopPrice, isLong)
-        /// BinanceExecutionService에 등록하여 Cancel &amp; Replace 트레일링 연동
-        /// </summary>
-        public event Action<string, long, decimal, bool>? OnStopOrderPlaced = delegate { };
 
         public PositionMonitorService(
             IBinanceRestClient client,
@@ -44,9 +39,9 @@ namespace TradingBot.Services
             RiskManager riskManager,
             MarketDataManager marketDataManager,
             DbManager dbManager,
-            ConcurrentDictionary<string, PositionInfo> activePositions,
+            Dictionary<string, PositionInfo> activePositions,
             object posLock,
-            ConcurrentDictionary<string, DateTime> blacklistedSymbols,
+            Dictionary<string, DateTime> blacklistedSymbols,
             TradingSettings settings,
             AdvancedExitStopCalculator? advancedExitCalculator = null)  // [v2.1.18] 선택적
         {
@@ -69,8 +64,7 @@ namespace TradingBot.Services
             CancellationToken token,
             string mode = "TREND",
             decimal customTakeProfitPrice = 0m,
-            decimal customStopLossPrice = 0m,
-            bool delegateExitToHybrid = false)  // [ISSUE-4] Transformer 포지션: HybridExitManager가 익절/트레일링 전담
+            decimal customStopLossPrice = 0m)
         {
             bool isSidewaysMode = string.Equals(mode, "SIDEWAYS", StringComparison.OrdinalIgnoreCase);
             bool partialTaken = false;
@@ -124,31 +118,11 @@ namespace TradingBot.Services
 
                 if (qty > 0)
                 {
-                    // [ISSUE-5 수정] _client 직접 사용으로 OrderId 추적
-                    var orderSide = isLong ? OrderSide.Sell : OrderSide.Buy;
-                    var stopResult = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
-                        symbol,
-                        orderSide,
-                        FuturesOrderType.StopMarket,
-                        qty,
-                        stopPrice: stopPrice,
-                        reduceOnly: true,
-                        ct: token);
-
-                    if (stopResult.Success && stopResult.Data != null)
+                    bool success = await _exchangeService.PlaceStopOrderAsync(symbol, isLong ? "SELL" : "BUY", qty, stopPrice, token);
+                    if (success)
                     {
-                        lock (_posLock)
-                        {
-                            if (_activePositions.TryGetValue(symbol, out var p))
-                                p.StopOrderId = stopResult.Data.Id;
-                        }
-                        OnLog?.Invoke($"🛡️ {symbol} 서버 손절 주문 설정 완료 (가: {stopPrice:F4}, OrderId: {stopResult.Data.Id})");
-                        // [ISSUE-3] BinanceExecutionService에 스탑 주문 등록 (Cancel & Replace 트레일링 연동)
-                        OnStopOrderPlaced?.Invoke(symbol, stopResult.Data.Id, stopPrice, isLong);
-                    }
-                    else
-                    {
-                        OnLog?.Invoke($"⚠️ {symbol} 서버 손절 주문 실패: {stopResult.Error?.Message}");
+                        // lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = ...; } // ID 추적은 거래소별 구현 필요
+                        OnLog?.Invoke($"🛡️ {symbol} 서버 손절 주문 설정 완료 (가: {stopPrice:F4})");
                     }
                 }
             }
@@ -186,12 +160,6 @@ namespace TradingBot.Services
                         }
                     }
 
-                    // ═══════════════════════════════════════════════
-                    // [ISSUE-4] Transformer 포지션은 HybridExitManager가 익절/트레일링 전담
-                    // → 3단계 스마트 방어 & AdvancedExitCalculator 스킵 (서버 스탑 + 절대 손절만 유지)
-                    // ═══════════════════════════════════════════════
-                    if (!delegateExitToHybrid)
-                    {
                     // ═══════════════════════════════════════════════
                     // 1단계: ROE 10% 도달 → 본절 보호 (Break-even)
                     // ═══════════════════════════════════════════════
@@ -342,8 +310,6 @@ namespace TradingBot.Services
                             }
                         }
                     }
-
-                    } // end if (!delegateExitToHybrid) — 3단계 스마트 방어 블록
 
                     // ═══════════════════════════════════════════════
                     // 방어적 스탑 체크: 현재가가 스탑 가격 터치 시 청산
@@ -1083,100 +1049,31 @@ namespace TradingBot.Services
 
         /// <summary>
         /// [v2.1.18] 지표 기반 익절 신호를 위한 기술적 데이터 구축
-        /// MarketDataManager의 KlineCache에서 실제 지표를 계산하여 반환
+        /// MarketDataManager와 AdvancedIndicators에서 필요한 모든 지표를 수집
         /// </summary>
         private TechnicalData? BuildTechnicalDataForExitSignal(string symbol, decimal currentPrice, decimal entryPrice, bool isLong)
         {
             try
             {
-                // KlineCache에서 5분봉 캔들 데이터 조회
-                if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var klines) || klines == null || klines.Count < 30)
-                {
-                    OnLog?.Invoke($"⚠️ {symbol} 지표 계산 불가: 캔들 데이터 부족 ({klines?.Count ?? 0}/30)");
-                    return null;
-                }
-
-                // 최근 30개 봉 사용
-                var recentKlines = klines.TakeLast(30).ToList();
-                var closes = recentKlines.Select(k => (double)k.ClosePrice).ToList();
-
-                // RSI 계산
-                double rsi = IndicatorCalculator.CalculateRSI(recentKlines, 14);
-
-                // 볼린저 밴드 계산
-                var bb = IndicatorCalculator.CalculateBB(recentKlines.TakeLast(20).ToList(), 20, 2.0);
-
-                // MACD 계산 (충분한 데이터 필요)
-                double macdLine = 0, signalLine = 0, macdHist = 0, prevMacdHist = 0;
-                if (closes.Count >= 26)
-                {
-                    var (macd, signal, hist) = IndicatorCalculator.CalculateMACD(recentKlines);
-                    macdLine = macd;
-                    signalLine = signal;
-                    macdHist = hist;
-
-                    // 이전 MACD 히스토그램 계산 (2개 이상 봉이 필요)
-                    if (recentKlines.Count >= 2)
-                    {
-                        var prevKlines = klines.TakeLast(31).Take(30).ToList();
-                        if (prevKlines.Count >= 26)
-                        {
-                            var (_, _, prevHist) = IndicatorCalculator.CalculateMACD(prevKlines);
-                            prevMacdHist = prevHist;
-                        }
-                    }
-                }
-
-                // ATR 계산
-                double atr = IndicatorCalculator.CalculateATR(recentKlines, 14);
-
-                // 최고가/최저가 (포지션 진입 이후 추적용 — 캔들 범위에서 추정)
-                decimal highestPrice = recentKlines.Max(k => k.HighPrice);
-                decimal lowestPrice = recentKlines.Min(k => k.LowPrice);
-
-                // 피보나치 확장 (진입가 기준)
-                decimal priceRange = Math.Abs(highestPrice - entryPrice);
-                decimal fibo1618 = isLong
-                    ? entryPrice + priceRange * 1.618m
-                    : entryPrice - priceRange * 1.618m;
-                decimal fibo2618 = isLong
-                    ? entryPrice + priceRange * 2.618m
-                    : entryPrice - priceRange * 2.618m;
-
-                // BB 상단 이탈 여부 체크 (과거 5봉 내)
-                bool wasAboveUpperBand = recentKlines.TakeLast(5).Any(k => k.HighPrice > (decimal)bb.Upper);
-
                 var tech = new TechnicalData
                 {
                     CurrentPrice = currentPrice,
                     EntryPrice = entryPrice,
-                    HighestPrice = highestPrice,
-                    LowestPrice = lowestPrice,
-                    Atr = (decimal)atr,
+                    HighestPrice = currentPrice,  // 실제로는 MarketDataManager에서 조회
+                    LowestPrice = currentPrice,   // 실제로는 MarketDataManager에서 조회
+                    Atr = 0.001m, // 기본값 (실제 구현 시 지표 계산기에서 제공)
                     AtrMultiplier = 1.5m,
-
-                    // RSI
-                    Rsi = rsi,
-
-                    // MACD
-                    MacdLine = macdLine,
-                    SignalLine = signalLine,
-                    MacdHistogram = macdHist,
-                    PrevMacdHistogram = prevMacdHist,
-
-                    // 볼린저 밴드
-                    UpperBand = (decimal)bb.Upper,
-                    MidBand = (decimal)bb.Mid,
-                    LowerBand = (decimal)bb.Lower,
-                    HighWasAboveUpperBand = wasAboveUpperBand,
-
-                    // 피보나치
-                    Fibo1618 = fibo1618,
-                    Fibo2618 = fibo2618,
-
-                    // 엘리엇 파동 (캔들 데이터로 분석)
-                    IsWave5 = IndicatorCalculator.AnalyzeElliottWave(recentKlines),
                 };
+
+                // [TODO] 다음 정보는 AdvancedIndicators 클래스에서 읽어야 함:
+                // - tech.IsWave5 (엘리엇 파동 분석)
+                // - tech.Rsi (RSI 계산)
+                // - tech.MacdLine, SignalLine, MacdHistogram (MACD 계산)
+                // - tech.UpperBand, MidBand, LowerBand (볼린저 밴드 계산)
+                // - tech.Fibo1618, Fibo2618 (피보나치 계산)
+
+                // 현재는 MarketDataManager를 통해 기본 데이터만 수집
+                // (추후 AdvancedIndicators와의 통합 시 완성)
 
                 return tech;
             }
@@ -1277,7 +1174,7 @@ namespace TradingBot.Services
 
         private void CleanupPositionData(string symbol)
         {
-            lock (_posLock) _activePositions.TryRemove(symbol, out _);
+            lock (_posLock) _activePositions.Remove(symbol);
             OnPositionStatusUpdate?.Invoke(symbol, false, 0);
             
             // [중요] 포지션 청산 후 ROI를 명시적으로 0으로 리셋

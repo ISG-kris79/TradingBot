@@ -135,6 +135,12 @@ namespace TradingBot.Models
         public DateTime OpenTime { get; set; }
         public DateTime CloseTime { get; set; }
 
+        // OI / Funding / Squeeze (통합 호환 필드)
+        public float OpenInterest { get; set; }
+        public float OI_Change_Pct { get; set; }
+        public float FundingRate { get; set; }
+        public int SqueezeLabel { get; set; }
+
         // ──────────────────── 보조지표 Features ────────────────────
         // 1. 기본 보조지표
         public float RSI { get; set; }
@@ -184,17 +190,6 @@ namespace TradingBot.Models
         // 뉴스 감성
         public float SentimentScore { get; set; }
 
-        // ──────────────────── 시장 구조 Features (OI/펀딩비) ────────────────────
-        // 9. 미결제약정 (Open Interest)
-        public float OpenInterest { get; set; }              // 현재 미결제약정 (절대값)
-        public float OI_Change_Pct { get; set; }             // OI 변화율 (%) - 5분 기준
-        
-        // 10. 펀딩비 (Funding Rate)
-        public float FundingRate { get; set; }               // 현재 펀딩비 (-0.01 ~ +0.01)
-        
-        // 11. 숏 스퀴즈 라벨 (학습용)
-        public float SqueezeLabel { get; set; }              // 0=Normal, 1=Squeeze event
-
         // ──────────────────── Labels ────────────────────
         public bool Label { get; set; }                      // 기존 호환용 (다음 봉 상승 여부)
 
@@ -223,6 +218,17 @@ namespace TradingBot.Models
 
         public float Probability { get; set; } // 확신도 (0.0 ~ 1.0)
         public float Score { get; set; }
+    }
+
+    // AI 예측 검증 대기 항목 (AIPredictionValidationService 호환)
+    public class AIPrediction
+    {
+        public long Id { get; set; }
+        public string Symbol { get; set; } = string.Empty;
+        public decimal PriceAtPrediction { get; set; }
+        public string PredictedDirection { get; set; } = string.Empty; // "UP" / "DOWN"
+        public string ModelName { get; set; } = string.Empty;
+        public float Confidence { get; set; }
     }
 
     // AI 모니터링: 예측 추적 레코드
@@ -289,26 +295,6 @@ namespace TradingBot.Models
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
-    }
-
-    /// <summary>
-    /// AI 예측 추적 - 예측 시점의 데이터를 저장하고 나중에 실제 결과와 비교
-    /// </summary>
-    public class AIPrediction
-    {
-        public long Id { get; set; }
-        public string Symbol { get; set; } = string.Empty;
-        public string ModelName { get; set; } = string.Empty;      // "ML.NET", "Transformer", "ONNX"
-        public string PredictedDirection { get; set; } = string.Empty; // "UP", "DOWN"
-        public float Confidence { get; set; }                      // 0~1 (예측 확률)
-        public decimal PriceAtPrediction { get; set; }             // 예측 시점 가격
-        public DateTime PredictionTime { get; set; }               // 예측 시각
-        public int ValidationMinutes { get; set; } = 15;           // 검증 시간 (기본 15분)
-        
-        // 검증 결과 (나중에 업데이트)
-        public decimal? ActualPrice { get; set; }                  // 검증 시점 실제 가격
-        public bool? IsCorrect { get; set; }                       // 예측 정확 여부
-        public DateTime? ValidationTime { get; set; }              // 검증 완료 시각
     }
 
     // Removed PositionInfo - use TradingBot.Shared.Models.PositionInfo instead

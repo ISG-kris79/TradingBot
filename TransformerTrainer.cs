@@ -294,7 +294,7 @@ namespace TradingBot.Services.AI
             for (int i = 0; i < count; i++)
             {
                 var c = data[i];
-                // Feature Mapping (21 features: 기본 17 + OI 4)
+                // Feature Mapping (17 features)
                 rawFeatures[i, 0] = (float)c.Open;
                 rawFeatures[i, 1] = (float)c.High;
                 rawFeatures[i, 2] = (float)c.Low;
@@ -312,12 +312,6 @@ namespace TradingBot.Services.AI
                 rawFeatures[i, 14] = c.Fib_500;
                 rawFeatures[i, 15] = c.Fib_618;
                 rawFeatures[i, 16] = c.SentimentScore;
-
-                // OI / FundingRate 확장 피처 (inputDim > 17일 때만)
-                if (_inputDim > 17) rawFeatures[i, 17] = c.OpenInterest;
-                if (_inputDim > 18) rawFeatures[i, 18] = c.OI_Change_Pct;
-                if (_inputDim > 19) rawFeatures[i, 19] = c.FundingRate;
-                if (_inputDim > 20) rawFeatures[i, 20] = c.SqueezeLabel;
 
                 // Target: 다음 봉의 종가 (Close)
                 rawTargets[i] = (float)c.Close;

@@ -546,7 +546,7 @@ namespace TradingBot
             }
         }
 
-        private void dgMultiTimeframe_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        private async void dgMultiTimeframe_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
             // 1. null 체크 추가
             if (ViewModel == null)
@@ -563,10 +563,13 @@ namespace TradingBot
 
             // 3. 선택된 종목을 ViewModel에 설정
             ViewModel.SelectedSymbol = selectedItem;
+            
+            // 4. 차트 데이터 로드 대기 (LoadLiveChartData가 자동으로 호출됨)
+            await Task.Delay(500); // 차트 데이터 로드를 위한 짧은 대기
 
             try
             {
-                // 4. 차트 창 생성/표시
+                // 5. 차트 창 생성/표시
                 if (_symbolChartWindow == null || !_symbolChartWindow.IsVisible)
                 {
                     _symbolChartWindow = new SymbolChartWindow(ViewModel)
@@ -589,6 +592,7 @@ namespace TradingBot
             catch (Exception ex)
             {
                 AddLog($"⚠️ 차트 창 오류: {ex.Message}");
+                MessageBox.Show($"차트 창을 열 수 없습니다.\n\n{ex.Message}", "오류", MessageBoxButton.OK, MessageBoxImage.Warning);
                 // 오류 발생 시 기존 창 초기화
                 _symbolChartWindow = null;
             }

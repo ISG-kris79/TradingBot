@@ -29,11 +29,6 @@ namespace TradingBot.Services.BacktestStrategies
             double highestROE = 0;
             bool previousHitBBUpper = false;
             
-            // [추가] RSI 분할매도 추적
-            bool rsiPartial1Taken = false;  // RSI ≥ 80 → 50% 분할매도
-            bool rsiPartial2Taken = false;  // RSI ≥ 85 또는 RSI 80+ 지속 → 잔량 청산
-            int rsiAbove80Count = 0;        // RSI 80 이상 연속 캔들 수
-            
             // 지표 미리 계산 (성능 최적화)
             var closes = candles.Select(c => (double)c.Close).ToList();
             var rsiList = IndicatorCalculator.CalculateRSISeries(closes, 14);
@@ -152,48 +147,11 @@ namespace TradingBot.Services.BacktestStrategies
                         result.EquityCurve.Add(currentBalance + (positionQuantity * currentPrice));
                     }
 
-                    // 2. RSI ≥ 80 단계별 분할매도 (전량 청산 → 50%+잔량 분할로 개선)
+                    // 2. RSI 80+ 과매수 전량 청산
                     if (partialTaken && rsiList[i] >= 80)
                     {
-                        rsiAbove80Count++;
-
-                        // 2-1. RSI ≥ 85 극단 과매수 → 즉시 전량 청산
-                        if (rsiList[i] >= 85)
-                        {
-                            shouldExit = true;
-                            exitReason = $"RSI_극단과매수_{rsiList[i]:F1}";
-                        }
-                        // 2-2. RSI 80~85 최초 도달 → 50% 분할매도
-                        else if (!rsiPartial1Taken)
-                        {
-                            rsiPartial1Taken = true;
-                            decimal closeQty = positionQuantity * 0.5m;
-                            if (closeQty > 0 && positionQuantity > closeQty)
-                            {
-                                decimal revenue = closeQty * currentPrice;
-                                decimal profit = revenue - (closeQty * entryPrice);
-                                currentBalance += revenue;
-                                positionQuantity -= closeQty;
-
-                                result.TradeHistory.Add(new TradeLog(symbol, "SELL", $"RSI_분할매도_50%_RSI{rsiList[i]:F1}", currentPrice, 0, currentCandle.OpenTime, profit, (profit / revenue) * 100));
-                                result.EquityCurve.Add(currentBalance + (positionQuantity * currentPrice));
-
-                                // ATR 트레일링을 더 타이트하게 조정 (0.3x 멀티플라이어)
-                                decimal tightStop = highestPriceSinceEntry - (decimal)(atrList[i] * 0.3);
-                                if (tightStop > currentTrailingStopPrice)
-                                    currentTrailingStopPrice = tightStop;
-                            }
-                        }
-                        // 2-3. RSI 80+ 3캔들 이상 지속 → 잔량 전량 청산
-                        else if (rsiPartial1Taken && rsiAbove80Count >= 3)
-                        {
-                            shouldExit = true;
-                            exitReason = $"RSI_과매수_지속_{rsiAbove80Count}캔들_RSI{rsiList[i]:F1}";
-                        }
-                    }
-                    else
-                    {
-                        rsiAbove80Count = 0; // RSI 80 미만이면 카운터 리셋
+                        shouldExit = true;
+                        exitReason = $"RSI_과매수_{rsiList[i]:F1}";
                     }
 
                     // 3. BB 상단 이탈 후 재진입 청산
@@ -255,9 +213,6 @@ namespace TradingBot.Services.BacktestStrategies
                         currentTrailingStopPrice = 0;
                         highestROE = 0;
                         previousHitBBUpper = false;
-                        rsiPartial1Taken = false;
-                        rsiPartial2Taken = false;
-                        rsiAbove80Count = 0;
                         strategy.ResetState(symbol);
                     }
                 }
@@ -266,9 +221,7 @@ namespace TradingBot.Services.BacktestStrategies
         }
 
         /// <summary>
-        /// ATR 기반 동적 트레일링 스톱 계산 (강화 버전)
-        /// ─────────────────────────────────────
-        /// ROE 단계별 멀티플라이어 + RSI 과열 반영 + 수익 보장선
+        /// ATR 기반 동적 트레일링 스톱 계산 (HybridExitManager 로직 복제)
         /// </summary>
         private decimal CalculateDynamicTrailingStop(
             decimal entryPrice,
@@ -279,48 +232,23 @@ namespace TradingBot.Services.BacktestStrategies
             decimal priceChangeRate = (highestPrice - entryPrice) / entryPrice;
             decimal roe = priceChangeRate * 20 * 100;
 
-            // [강화] ROE 단계별 + RSI 결합 ATR 멀티플라이어
+            // ATR 멀티플라이어 결정
             double atrMultiplier;
-            if (roe < 5)
-                atrMultiplier = 2.0;  // 진입 초기: 넓은 방어 (변동성 흡수)
-            else if (roe < 10)
-                atrMultiplier = 1.5;  // 초반 수익: 기본 방어
-            else if (roe >= 10 && roe < 20 && currentRsi < 70)
-                atrMultiplier = 1.0;  // 추세 진행 중
-            else if (roe >= 20 && currentRsi < 70)
-                atrMultiplier = 0.7;  // 고수익 구간: 점진적 타이트닝
+            if (roe < 10)
+                atrMultiplier = 1.5; // 진입 직후 방어
+            else if (roe >= 10 && currentRsi < 70)
+                atrMultiplier = 1.0; // 추세 진행
             else if (currentRsi >= 70 && currentRsi < 80)
-                atrMultiplier = 0.4;  // 과열 접근: 강한 타이트닝
-            else if (currentRsi >= 80 && currentRsi < 85)
-                atrMultiplier = 0.2;  // 극단 과열: 밀착 트레일링
+                atrMultiplier = 0.5; // 과열 진입
             else
-                atrMultiplier = 0.1;  // RSI 85+: 초밀착 (거의 피크)
+                atrMultiplier = 0.2; // 극단적 과열
 
             decimal trailingDistance = (decimal)(currentAtr * atrMultiplier);
             decimal calculatedStopPrice = highestPrice - trailingDistance;
 
-            // [강화] ROE 기반 단계별 수익 보장선
-            if (roe >= 10)
-            {
-                // ROE 10%+ → 최소 ROE 5% 보장
-                decimal minGuaranteePrice = entryPrice * (1 + 5m / 20m / 100m);  // ROE 5% 지점
-                if (calculatedStopPrice < minGuaranteePrice)
-                    calculatedStopPrice = minGuaranteePrice;
-            }
-            if (roe >= 15)
-            {
-                // ROE 15%+ → 최소 ROE 10% 보장
-                decimal minGuaranteePrice = entryPrice * (1 + 10m / 20m / 100m);
-                if (calculatedStopPrice < minGuaranteePrice)
-                    calculatedStopPrice = minGuaranteePrice;
-            }
-            if (roe >= 25)
-            {
-                // ROE 25%+ → 최소 ROE 18% 보장
-                decimal minGuaranteePrice = entryPrice * (1 + 18m / 20m / 100m);
-                if (calculatedStopPrice < minGuaranteePrice)
-                    calculatedStopPrice = minGuaranteePrice;
-            }
+            // ROE 15% 이상이면 본절가 이하로 내려가지 않음
+            if (roe >= 15 && calculatedStopPrice < entryPrice)
+                calculatedStopPrice = entryPrice + (entryPrice * 0.001m);
 
             return calculatedStopPrice;
         }
