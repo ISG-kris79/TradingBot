@@ -264,8 +264,18 @@ namespace TradingBot
             _positionMonitor.OnPositionStatusUpdate += (s, a, p) =>
             {
                 OnPositionStatusUpdate?.Invoke(s, a, p);
-                // 포지션 종료 시 HybridExitManager 상태 정리
-                if (!a) _hybridExitManager?.RemoveState(s);
+                // 포지션 종료 시 HybridExitManager 상태 정리 + ExecutionService 스탑 정리
+                if (!a)
+                {
+                    _hybridExitManager?.RemoveState(s);
+                    _executionService?.RemoveStopOrder(s);
+                }
+            };
+            // [ISSUE-3] 서버사이드 스탑 주문 설정 후 BinanceExecutionService에 등록
+            // → Cancel & Replace 트레일링 스탑이 모든 포지션에서 작동
+            _positionMonitor.OnStopOrderPlaced += (symbol, orderId, stopPrice, isLong) =>
+            {
+                _executionService?.RegisterExternalStopOrder(symbol, orderId, stopPrice, isLong);
             };
 
             // [Agent 3] 멀티 에이전트 매니저 초기화 (상태 차원: 3 [RSI, MACD, BB], 행동 차원: 3 [Hold, Buy, Sell])
@@ -2553,7 +2563,9 @@ namespace TradingBot
                     }
 
                     // 🔥 [핵심] 감시 루프 시작 (Task.Run으로 별도 스레드에서 실행)
-                    _ = Task.Run(() => _positionMonitor.MonitorPositionStandard(symbol, currentPrice, decision == "LONG", token, mode, customTakeProfitPrice, customStopLossPrice), token);
+                    // [ISSUE-4] Transformer 포지션(non-SIDEWAYS)은 HybridExitManager가 익절/트레일링 전담
+                    bool isTransformerManaged = _hybridExitManager != null && _hybridExitManager.HasState(symbol);
+                    _ = Task.Run(() => _positionMonitor.MonitorPositionStandard(symbol, currentPrice, decision == "LONG", token, mode, customTakeProfitPrice, customStopLossPrice, delegateExitToHybrid: isTransformerManaged), token);
 
                 }
                 else

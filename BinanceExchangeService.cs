@@ -86,35 +86,68 @@ namespace TradingBot.Services
             OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
             FuturesOrderType orderType = price.HasValue ? FuturesOrderType.Limit : FuturesOrderType.Market;
 
-            try
+            // [ISSUE-9] 재시도 로직 (최대 3회, 지수 백오프)
+            const int maxRetries = 3;
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
             {
-                var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
-                    symbol,
-                    orderSide,
-                    orderType,
-                    quantity,
-                    price,
-                    reduceOnly: reduceOnly,
-                    ct: ct);
-
-                if (!result.Success)
+                try
                 {
-                    Console.WriteLine($"❌ [Binance] 주문 실패 - {symbol} {side} {quantity}");
-                    Console.WriteLine($"   에러 코드: {result.Error?.Code}");
-                    Console.WriteLine($"   에러 메시지: {result.Error?.Message}");
-                    return false;
-                }
+                    var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                        symbol,
+                        orderSide,
+                        orderType,
+                        quantity,
+                        price,
+                        reduceOnly: reduceOnly,
+                        ct: ct);
 
-                Console.WriteLine($"✅ [Binance] 주문 성공 - {symbol} {side} {quantity} (OrderId: {result.Data?.Id})");
-                return true;
+                    if (result.Success)
+                    {
+                        Console.WriteLine($"✅ [Binance] 주문 성공 - {symbol} {side} {quantity} (OrderId: {result.Data?.Id}){(attempt > 1 ? $" [재시도 {attempt}/{maxRetries}]" : "")}");
+                        return true;
+                    }
+
+                    // 재시도 불가능한 에러 (잔고 부족, 수량 오류 등)는 즉시 실패
+                    int errorCode = result.Error?.Code ?? 0;
+                    if (errorCode == -2019 || errorCode == -1013 || errorCode == -4003 || errorCode == -4015)
+                    {
+                        Console.WriteLine($"❌ [Binance] 주문 실패 (재시도 불가) - {symbol} {side} {quantity}");
+                        Console.WriteLine($"   에러 코드: {errorCode}, 메시지: {result.Error?.Message}");
+                        return false;
+                    }
+
+                    Console.WriteLine($"⚠️ [Binance] 주문 실패 (시도 {attempt}/{maxRetries}) - {symbol} {side} {quantity}");
+                    Console.WriteLine($"   에러 코드: {result.Error?.Code}, 메시지: {result.Error?.Message}");
+
+                    if (attempt < maxRetries)
+                    {
+                        int delayMs = attempt * 500; // 500ms, 1000ms 백오프
+                        await Task.Delay(delayMs, ct);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    return false; // 취소 시 즉시 종료
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"❌ [Binance] 주문 예외 (시도 {attempt}/{maxRetries}) - {symbol} {side} {quantity}");
+                    Console.WriteLine($"   예외: {ex.Message}");
+
+                    if (attempt < maxRetries)
+                    {
+                        int delayMs = attempt * 500;
+                        await Task.Delay(delayMs, ct);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"   StackTrace: {ex.StackTrace}");
+                    }
+                }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ [Binance] 주문 예외 발생 - {symbol} {side} {quantity}");
-                Console.WriteLine($"   예외: {ex.Message}");
-                Console.WriteLine($"   StackTrace: {ex.StackTrace}");
-                return false;
-            }
+
+            Console.WriteLine($"❌ [Binance] 주문 최종 실패 (3회 시도 소진) - {symbol} {side} {quantity}");
+            return false;
         }
 
         public async Task<bool> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default)
