@@ -239,11 +239,13 @@ namespace TradingBot
 
         private void btnBacktest_Click(object sender, RoutedEventArgs e)
         {
+            AddLog("🧪 btnBacktest_Click 진입");
             ViewModel.RunBacktestCommand.Execute(null);
         }
 
         private void btnOptimize_Click(object sender, RoutedEventArgs e)
         {
+            AddLog("🧪 btnOptimize_Click 진입");
             ViewModel.OptimizeCommand.Execute(null);
         }
 

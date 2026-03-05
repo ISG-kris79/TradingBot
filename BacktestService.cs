@@ -214,6 +214,16 @@ namespace TradingBot.Services
 
                 if (stdDev > 0)
                     result.SharpeRatio = (avgReturn / stdDev) * Math.Sqrt(returns.Count); // 연율화 대신 전체 기간 기준
+
+                // 3. Sortino Ratio (하방 변동성 기준)
+                var downsideReturns = returns.Where(r => r < 0).ToList();
+                if (downsideReturns.Count > 0)
+                {
+                    double downsideVariance = downsideReturns.Sum(r => r * r) / downsideReturns.Count;
+                    double downsideDeviation = Math.Sqrt(downsideVariance);
+                    if (downsideDeviation > 0)
+                        result.SortinoRatio = (avgReturn / downsideDeviation) * Math.Sqrt(returns.Count);
+                }
             }
         }
 

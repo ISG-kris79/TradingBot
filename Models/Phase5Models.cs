@@ -18,6 +18,7 @@ namespace TradingBot.Models
         public decimal WinRate => TotalTrades > 0 ? (decimal)WinCount / TotalTrades * 100 : 0;
         public decimal MaxDrawdown { get; set; }
         public double SharpeRatio { get; set; }
+        public double SortinoRatio { get; set; }
         public string Message { get; set; } = string.Empty;
         public string StrategyConfiguration { get; set; } = string.Empty;
 
