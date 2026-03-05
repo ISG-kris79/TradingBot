@@ -208,6 +208,23 @@ namespace TradingBot.Services
             return sma?.Sma ?? 0;
         }
 
+        public static double CalculateEMA(List<IBinanceKline> candles, int period)
+        {
+            if (candles.Count < period) return 0;
+            var quotes = candles.Select(k => new Quote
+            {
+                Date = k.OpenTime,
+                Open = k.OpenPrice,
+                High = k.HighPrice,
+                Low = k.LowPrice,
+                Close = k.ClosePrice,
+                Volume = k.Volume
+            }).ToList();
+
+            var ema = quotes.GetEma(period).LastOrDefault();
+            return ema?.Ema ?? 0;
+        }
+
         public static bool AnalyzeElliottWave(List<IBinanceKline> candles)
         {
             // Simplified Elliott Wave logic: Check for Higher Highs and Higher Lows in recent swing points

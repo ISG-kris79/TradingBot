@@ -15,6 +15,25 @@ namespace TradingBot.Services
     /// - tightModifier (1.0 ~ 0.1): 스탑 간격의 공격성을 제어
     /// - floorPrice: 절대로 내려가지 않을 최소 익절 보장선
     /// - 최종 스탑 = max(지표 기반 스탑, 3단계 스탑)
+    /// 
+    /// ═══════════════════════════════════════════════════════
+    /// 📈 피보나치 손익비 설정 (20배 레버리지 최적화)
+    /// ═══════════════════════════════════════════════════════
+    /// 
+    /// 진입(Entry): Fib 0.382 ~ 0.618
+    /// 손절(Stop Loss): Fib 0.786 또는 전저점 이탈 (약 -1.3% 내외)
+    /// 익절(Take Profit): Fib 확장 1.618 (ROE 약 20%)
+    /// 
+    /// 20배 레버리지 기준:
+    /// - 가격 변동 1% = ROE 20%
+    /// - 손절 1.3% = 최대 손실 26%
+    /// - 익절 1% = ROE 20%
+    /// 
+    /// 손익비 = 20% / 26% ≈ 0.77
+    /// (진입율 0.5%로 공격적 손익비 보상)
+    /// 
+    /// 사용법: FibonacciRiskRewardCalculator 클래스 참조
+    /// ═══════════════════════════════════════════════════════
     /// </summary>
     public class AdvancedExitStopCalculator
     {
@@ -26,6 +45,12 @@ namespace TradingBot.Services
         public double RsiOverboughtLevel { get; set; } = 75.0;
         public double RsiExtremeLevel { get; set; } = 80.0;
         public decimal FiboFloorRatio { get; set; } = 0.85m;  // Fibo 1.618을 최소선으로 설정할 때 사용
+        
+        // 피보나치 손익비 레벨 (20배 레버리지 기준)
+        public const decimal FIB_ENTRY_MIN = 0.382m;   // 진입 최소
+        public const decimal FIB_ENTRY_MAX = 0.618m;   // 진입 최대
+        public const decimal FIB_STOP_LOSS = 0.786m;   // 손절 레벨
+        public const decimal FIB_TAKE_PROFIT = 1.618m; // 익절 레벨 (확장)
 
         public AdvancedExitStopCalculator()
         {
