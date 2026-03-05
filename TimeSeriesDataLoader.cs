@@ -53,7 +53,8 @@ namespace TradingBot.Services.AI
             for (int i = 0; i < count; i++)
             {
                 var c = data[i];
-                // Feature Mapping (17 features)
+                // Feature Mapping (최대 21 features, InputDim에 따라 자동 조절)
+                // [0-16] 기존 17개 피처
                 _rawFeatures[i, 0] = (float)c.Open;
                 _rawFeatures[i, 1] = (float)c.High;
                 _rawFeatures[i, 2] = (float)c.Low;
@@ -71,6 +72,12 @@ namespace TradingBot.Services.AI
                 _rawFeatures[i, 14] = c.Fib_500;
                 _rawFeatures[i, 15] = c.Fib_618;
                 _rawFeatures[i, 16] = c.SentimentScore;
+                
+                // [17-20] 확장 피처 (OI/펀딩비/숏스퀴즈) - InputDim>=21 일 때만
+                if (_inputDim > 17) _rawFeatures[i, 17] = c.OpenInterest;
+                if (_inputDim > 18) _rawFeatures[i, 18] = c.OI_Change_Pct;
+                if (_inputDim > 19) _rawFeatures[i, 19] = c.FundingRate;
+                if (_inputDim > 20) _rawFeatures[i, 20] = c.SqueezeLabel;
 
                 // Target: Close Price
                 _rawTargets[i] = (float)c.Close;
@@ -193,7 +200,13 @@ namespace TradingBot.Services.AI
             for (int t = 0; t < _seqLen; t++)
             {
                 var c = data[t];
-                float[] feats = { (float)c.Open, (float)c.High, (float)c.Low, (float)c.Close, (float)c.Volume, c.RSI, c.BollingerUpper, c.BollingerLower, c.MACD, c.MACD_Signal, c.MACD_Hist, c.ATR, c.Fib_236, c.Fib_382, c.Fib_500, c.Fib_618, c.SentimentScore };
+                // 기본 17개 피처 + 확장 피처(InputDim 따라)
+                var featList = new List<float> { (float)c.Open, (float)c.High, (float)c.Low, (float)c.Close, (float)c.Volume, c.RSI, c.BollingerUpper, c.BollingerLower, c.MACD, c.MACD_Signal, c.MACD_Hist, c.ATR, c.Fib_236, c.Fib_382, c.Fib_500, c.Fib_618, c.SentimentScore };
+                if (_inputDim > 17) featList.Add(c.OpenInterest);
+                if (_inputDim > 18) featList.Add(c.OI_Change_Pct);
+                if (_inputDim > 19) featList.Add(c.FundingRate);
+                if (_inputDim > 20) featList.Add(c.SqueezeLabel);
+                float[] feats = featList.ToArray();
 
                 for (int f = 0; f < _inputDim; f++)
                 {

@@ -129,3 +129,65 @@ PRINT '  -- 통계 조회';
 PRINT '  SELECT * FROM vw_TradeStatisticsBySymbol;';
 PRINT '  SELECT * FROM vw_DailyTradeStatistics ORDER BY TradeDate DESC;';
 PRINT '============================================================================';
+
+-- ============================================================================
+-- 5. AIPredictions 테이블 (AI 예측 추적 및 정확도 계산)
+-- ============================================================================
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'AIPredictions')
+BEGIN
+    CREATE TABLE AIPredictions (
+        Id BIGINT IDENTITY(1,1) PRIMARY KEY,
+        Symbol NVARCHAR(20) NOT NULL,                       -- 심볼
+        ModelName NVARCHAR(50) NOT NULL,                    -- 모델 이름 (ML.NET, Transformer, ONNX)
+        PredictedDirection NVARCHAR(10) NOT NULL,           -- 예측 방향 (UP, DOWN)
+        Confidence FLOAT NOT NULL,                          -- 예측 확률 (0~1)
+        PriceAtPrediction DECIMAL(18, 8) NOT NULL,          -- 예측 시점 가격
+        PredictionTime DATETIME2 NOT NULL DEFAULT GETDATE(), -- 예측 시각
+        ValidationMinutes INT NOT NULL DEFAULT 15,          -- 검증 시간 (분)
+        
+        -- 검증 결과 (나중에 업데이트)
+        ActualPrice DECIMAL(18, 8) NULL,                    -- 검증 시점 실제 가격
+        IsCorrect BIT NULL,                                 -- 예측 정확 여부
+        ValidationTime DATETIME2 NULL,                      -- 검증 완료 시각
+        
+        INDEX IX_AIPredictions_Symbol (Symbol),
+        INDEX IX_AIPredictions_ModelName (ModelName),
+        INDEX IX_AIPredictions_PredictionTime (PredictionTime DESC),
+        INDEX IX_AIPredictions_Validation (ValidationTime DESC) WHERE ValidationTime IS NOT NULL
+    );
+    
+    PRINT '✅ AIPredictions 테이블 생성 완료';
+END
+ELSE
+BEGIN
+    PRINT '⚠️ AIPredictions 테이블이 이미 존재합니다';
+END
+GO
+
+-- 6. 모델별 정확도 통계 뷰
+IF EXISTS (SELECT * FROM sys.views WHERE name = 'vw_AIModelAccuracy')
+    DROP VIEW vw_AIModelAccuracy;
+GO
+
+CREATE VIEW vw_AIModelAccuracy AS
+SELECT 
+    ModelName,
+    COUNT(*) AS TotalPredictions,
+    SUM(CASE WHEN IsCorrect = 1 THEN 1 ELSE 0 END) AS CorrectPredictions,
+    CAST(SUM(CASE WHEN IsCorrect = 1 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS DECIMAL(10,2)) AS Accuracy,
+    CAST(AVG(Confidence) AS DECIMAL(10,4)) AS AvgConfidence,
+    MIN(PredictionTime) AS FirstPrediction,
+    MAX(PredictionTime) AS LastPrediction
+FROM AIPredictions
+WHERE IsCorrect IS NOT NULL  -- 검증 완료된 예측만
+GROUP BY ModelName;
+GO
+
+PRINT '✅ vw_AIModelAccuracy 뷰 생성 완료';
+GO
+
+PRINT '';
+PRINT '🎯 AI 예측 추적 시스템 추가 완료!';
+PRINT '  - AIPredictions: AI 모델 예측 기록 및 검증';
+PRINT '  - vw_AIModelAccuracy: 모델별 정확도 통계';
+PRINT '';

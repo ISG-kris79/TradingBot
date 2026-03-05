@@ -97,6 +97,126 @@ namespace TradingBot.Services
         }
 
         // ============================================================================
+        // [AI 모니터링] 예측 추적 메서드
+        // ============================================================================
+
+        /// <summary>
+        /// AI 예측을 DB에 저장 (나중에 검증용)
+        /// </summary>
+        public async Task<long> SaveAIPredictionAsync(AIPrediction prediction)
+        {
+            try
+            {
+                if (prediction == null)
+                {
+                    MainWindow.Instance?.AddLog($"⚠️ SaveAIPredictionAsync: prediction 객체가 null입니다");
+                    return -1;
+                }
+
+                using (IDbConnection db = new SqlConnection(_connectionString))
+                {
+                    string insertSql = @"
+                        INSERT INTO AIPredictions (Symbol, ModelName, PredictedDirection, Confidence, 
+                                                   PriceAtPrediction, PredictionTime, ValidationMinutes)
+                        VALUES (@Symbol, @ModelName, @PredictedDirection, @Confidence, 
+                                @PriceAtPrediction, @PredictionTime, @ValidationMinutes);
+                        SELECT CAST(SCOPE_IDENTITY() AS BIGINT);";
+
+                    long id = await db.QuerySingleAsync<long>(insertSql, prediction);
+                    return id;
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"❌ [AIPrediction 저장 실패] {ex.Message}");
+                return -1;
+            }
+        }
+
+        /// <summary>
+        /// 검증 대기 중인 예측 조회 (ValidationTime이 null이고 예측 시간이 지난 것들)
+        /// </summary>
+        public async Task<List<AIPrediction>> GetPendingValidationsAsync()
+        {
+            try
+            {
+                using (IDbConnection db = new SqlConnection(_connectionString))
+                {
+                    string sql = @"
+                        SELECT * FROM AIPredictions 
+                        WHERE ValidationTime IS NULL 
+                          AND DATEADD(MINUTE, ValidationMinutes, PredictionTime) <= GETDATE()
+                        ORDER BY PredictionTime ASC";
+                    
+                    var result = await db.QueryAsync<AIPrediction>(sql);
+                    return result.ToList();
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"❌ [검증 대기 조회 실패] {ex.Message}");
+                return new List<AIPrediction>();
+            }
+        }
+
+        /// <summary>
+        /// 예측 결과 검증 업데이트
+        /// </summary>
+        public async Task UpdatePredictionValidationAsync(long id, decimal actualPrice, bool isCorrect)
+        {
+            try
+            {
+                using (IDbConnection db = new SqlConnection(_connectionString))
+                {
+                    string updateSql = @"
+                        UPDATE AIPredictions 
+                        SET ActualPrice = @ActualPrice,
+                            IsCorrect = @IsCorrect,
+                            ValidationTime = GETDATE()
+                        WHERE Id = @Id";
+
+                    await db.ExecuteAsync(updateSql, new { Id = id, ActualPrice = actualPrice, IsCorrect = isCorrect });
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"❌ [예측 검증 업데이트 실패] {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 모델별 정확도 통계 조회
+        /// </summary>
+        public async Task<Dictionary<string, (int total, int correct, double accuracy, double avgConfidence)>> GetModelAccuracyStatsAsync()
+        {
+            try
+            {
+                using (IDbConnection db = new SqlConnection(_connectionString))
+                {
+                    string sql = "SELECT * FROM vw_AIModelAccuracy";
+                    var rows = await db.QueryAsync(sql);
+                    
+                    var result = new Dictionary<string, (int, int, double, double)>();
+                    foreach (var row in rows)
+                    {
+                        string modelName = row.ModelName;
+                        int total = row.TotalPredictions;
+                        int correct = row.CorrectPredictions;
+                        double accuracy = row.Accuracy;
+                        double avgConf = row.AvgConfidence;
+                        result[modelName] = (total, correct, accuracy, avgConf);
+                    }
+                    return result;
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"❌ [모델 정확도 조회 실패] {ex.Message}");
+                return new Dictionary<string, (int, int, double, double)>();
+            }
+        }
+
+        // ============================================================================
         // [Phase 14] 고급 거래 기능 로깅 메서드
         // ============================================================================
 

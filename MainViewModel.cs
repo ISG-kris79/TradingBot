@@ -29,6 +29,7 @@ namespace TradingBot.ViewModels
 
         private TradingEngine? _engine;
         private DatabaseService? _dbService;
+        private AIPredictionValidationService? _aiValidationService;
 
         // TradingEngine 속성 노출
         public decimal InitialBalance => _engine?.InitialBalance ?? 0;
@@ -244,6 +245,40 @@ namespace TradingBot.ViewModels
                 try
                 {
                     _dbService = new DatabaseService((msg) => AddLiveLog(msg));
+                    
+                    // Initialize AI Prediction Validation Service
+                    var connString = AppConfig.ConnectionString;
+                    if (!string.IsNullOrEmpty(connString))
+                    {
+                        var dbManager = new DbManager(connString);
+                        var exchangeService = new BinanceExchangeService(AppConfig.BinanceApiKey, AppConfig.BinanceApiSecret);
+                        _aiValidationService = new AIPredictionValidationService(dbManager, exchangeService);
+                        
+                        // 정확도 업데이트 이벤트 구독
+                        _aiValidationService.OnAccuracyUpdated += (modelName, accuracy, total, correct, avgConf) =>
+                        {
+                            RunOnUI(() =>
+                            {
+                                // ModelPerformances 컬렉션에서 해당 모델 찾아서 업데이트
+                                var model = ModelPerformances.FirstOrDefault(m => m.ModelName == modelName);
+                                if (model != null)
+                                {
+                                    model.Accuracy = accuracy;
+                                    model.TotalPredictions = total;
+                                    model.CorrectPredictions = correct;
+                                    model.AvgConfidence = avgConf * 100; // 0~1을 0~100으로 변환
+                                    model.StatusColor = accuracy >= 60 ? Brushes.LimeGreen : 
+                                                       accuracy >= 50 ? Brushes.Orange : Brushes.Tomato;
+                                }
+                                
+                                // 개별 정확도 프로퍼티 업데이트
+                                if (modelName == "ML.NET")
+                                    MLNetAccuracy = accuracy;
+                                else if (modelName == "Transformer")
+                                    TransformerAccuracy = accuracy;
+                            });
+                        };
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -270,6 +305,9 @@ namespace TradingBot.ViewModels
                     {
                         if (_engine != null)
                             await _engine.StartScanningOptimizedAsync();
+                        
+                        // AI 검증 서비스 시작
+                        _aiValidationService?.Start();
                     }
                     catch (Exception ex)
                     {
@@ -292,6 +330,10 @@ namespace TradingBot.ViewModels
                 {
                     if (_engine != null)
                         _engine.StopEngine();
+                    
+                    // AI 검증 서비스 중지
+                    _aiValidationService?.Stop();
+                    
                     IsStopEnabled = false;
                     IsStartEnabled = true;
                     AddLog("엔진 정지 명령을 보냈습니다.");

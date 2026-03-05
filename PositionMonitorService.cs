@@ -21,10 +21,10 @@ namespace TradingBot.Services
         private readonly RiskManager _riskManager;
         private readonly MarketDataManager _marketDataManager;
         private readonly DbManager _dbManager;
-        private readonly Dictionary<string, PositionInfo> _activePositions;
+        private readonly ConcurrentDictionary<string, PositionInfo> _activePositions;
         private readonly object _posLock;
         private readonly TradingSettings _settings;
-        private readonly Dictionary<string, DateTime> _blacklistedSymbols;
+        private readonly ConcurrentDictionary<string, DateTime> _blacklistedSymbols;
         private readonly AdvancedExitStopCalculator _advancedExitCalculator;  // [v2.1.18] 지표 결합 익절
 
         // Events
@@ -39,9 +39,9 @@ namespace TradingBot.Services
             RiskManager riskManager,
             MarketDataManager marketDataManager,
             DbManager dbManager,
-            Dictionary<string, PositionInfo> activePositions,
+            ConcurrentDictionary<string, PositionInfo> activePositions,
             object posLock,
-            Dictionary<string, DateTime> blacklistedSymbols,
+            ConcurrentDictionary<string, DateTime> blacklistedSymbols,
             TradingSettings settings,
             AdvancedExitStopCalculator? advancedExitCalculator = null)  // [v2.1.18] 선택적
         {
@@ -118,11 +118,29 @@ namespace TradingBot.Services
 
                 if (qty > 0)
                 {
-                    bool success = await _exchangeService.PlaceStopOrderAsync(symbol, isLong ? "SELL" : "BUY", qty, stopPrice, token);
-                    if (success)
+                    // [ISSUE-5 수정] _client 직접 사용으로 OrderId 추적
+                    var orderSide = isLong ? OrderSide.Sell : OrderSide.Buy;
+                    var stopResult = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                        symbol,
+                        orderSide,
+                        FuturesOrderType.StopMarket,
+                        qty,
+                        stopPrice: stopPrice,
+                        reduceOnly: true,
+                        ct: token);
+
+                    if (stopResult.Success && stopResult.Data != null)
                     {
-                        // lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = ...; } // ID 추적은 거래소별 구현 필요
-                        OnLog?.Invoke($"🛡️ {symbol} 서버 손절 주문 설정 완료 (가: {stopPrice:F4})");
+                        lock (_posLock)
+                        {
+                            if (_activePositions.TryGetValue(symbol, out var p))
+                                p.StopOrderId = stopResult.Data.Id;
+                        }
+                        OnLog?.Invoke($"🛡️ {symbol} 서버 손절 주문 설정 완료 (가: {stopPrice:F4}, OrderId: {stopResult.Data.Id})");
+                    }
+                    else
+                    {
+                        OnLog?.Invoke($"⚠️ {symbol} 서버 손절 주문 실패: {stopResult.Error?.Message}");
                     }
                 }
             }
@@ -1174,7 +1192,7 @@ namespace TradingBot.Services
 
         private void CleanupPositionData(string symbol)
         {
-            lock (_posLock) _activePositions.Remove(symbol);
+            lock (_posLock) _activePositions.TryRemove(symbol, out _);
             OnPositionStatusUpdate?.Invoke(symbol, false, 0);
             
             // [중요] 포지션 청산 후 ROI를 명시적으로 0으로 리셋

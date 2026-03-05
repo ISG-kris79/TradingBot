@@ -35,11 +35,11 @@ namespace TradingBot
         private DateTime _engineStartTime = DateTime.Now;
         private DateTime _lastReportTime = DateTime.MinValue;
 
-        // 현재 보유 중인 포지션 정보 (심볼, 진입가)
-        private Dictionary<string, PositionInfo> _activePositions = new Dictionary<string, PositionInfo>();
+        // 현재 보유 중인 포지션 정보 (심볼, 진입가) — ConcurrentDictionary로 스레드 안전성 강화
+        private ConcurrentDictionary<string, PositionInfo> _activePositions = new ConcurrentDictionary<string, PositionInfo>();
         private readonly object _posLock = new object();
         // 블랙리스트 (심볼, 해제시간) - 지루함 청산 종목 재진입 방지
-        private Dictionary<string, DateTime> _blacklistedSymbols = new Dictionary<string, DateTime>();
+        private ConcurrentDictionary<string, DateTime> _blacklistedSymbols = new ConcurrentDictionary<string, DateTime>();
         // 슬롯 설정
         private const int MAX_MAJOR_SLOTS = 4; // BTC, ETH, SOL, XRP 전용
         private const int MAX_PUMP_SLOTS = 2;  // 실시간 급등주 전용
@@ -56,6 +56,11 @@ namespace TradingBot
         private ElliottWave3WaveStrategy _elliotWave3Strategy; // [3파 확정형 단타]
         private HybridExitManager _hybridExitManager; // [하이브리드 AI 익절/손절 관리]
         private BinanceExecutionService _executionService; // [실시간 레버리지 주문 실행 서비스]
+
+        // [OI/Double Check] 미결제약정 수집 및 더블 체크 필터
+        private OiDataCollector? _oiCollector;
+        private SqueezeLabeller? _squeezeLabeller;
+        private DoubleCheckFilter _doubleCheckFilter;
 
         // [Phase 8] DeFi Services
         private DexService _dexService;
@@ -306,25 +311,38 @@ namespace TradingBot
 
             // [Phase 7] Transformer 모델 및 전략 초기화 (설정 파일 로드)
             var tfSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
-            _transformerTrainer = new TransformerTrainer(
-                tfSettings.InputDim,
-                tfSettings.DModel,
-                tfSettings.NHeads,
-                tfSettings.NLayers,
-                tfSettings.OutputDim,
-                tfSettings.SeqLen
-            );
-
-            // [Phase 7] Transformer 학습 상태 이벤트 연결
-            _transformerTrainer.OnLog += msg => OnLiveLog?.Invoke(msg);
-            _transformerTrainer.OnEpochCompleted += (epoch, total, loss) =>
+            
+            // TorchSharp 초기화 실패 시에도 엔진 계속 동작하도록 안전하게 처리
+            try
             {
-                // 학습 진행 상황을 상태바에도 표시 (선택 사항)
-                // OnStatusLog?.Invoke($"🧠 AI 학습 중... Epoch {epoch}/{total} (Loss: {loss:F5})");
-            };
+                _transformerTrainer = new TransformerTrainer(
+                    tfSettings.InputDim,
+                    tfSettings.DModel,
+                    tfSettings.NHeads,
+                    tfSettings.NLayers,
+                    tfSettings.OutputDim,
+                    tfSettings.SeqLen
+                );
 
-            // 기존 학습된 모델이 있다면 로드
-            _transformerTrainer.LoadModel();
+                // [Phase 7] Transformer 학습 상태 이벤트 연결
+                _transformerTrainer.OnLog += msg => OnLiveLog?.Invoke(msg);
+                _transformerTrainer.OnEpochCompleted += (epoch, total, loss) =>
+                {
+                    // 학습 진행 상황을 상태바에도 표시 (선택 사항)
+                    // OnStatusLog?.Invoke($"🧠 AI 학습 중... Epoch {epoch}/{total} (Loss: {loss:F5})");
+                };
+
+                // 기존 학습된 모델이 있다면 로드
+                _transformerTrainer.LoadModel();
+                
+                OnStatusLog?.Invoke("✅ Transformer 모델 초기화 완료");
+            }
+            catch (Exception ex)
+            {
+                _transformerTrainer = null;
+                OnStatusLog?.Invoke($"⚠️ Transformer 초기화 실패 (TorchSharp 사용 불가): {ex.Message}");
+                OnStatusLog?.Invoke("ℹ️ Transformer 전략 없이 계속 진행합니다. Visual C++ Redistributable 설치 필요.");
+            }
 
             // [3파 확정형 전략] 먼저 초기화 (TransformerStrategy에서 사용하기 위해)
             _elliotWave3Strategy = new ElliottWave3WaveStrategy();
@@ -346,36 +364,73 @@ namespace TradingBot
                 await _executionService.UpdateTrailingStopAsync(symbol, newStopPrice);
             };
 
-            // [3파 통합] TransformerStrategy에 ElliottWave3WaveStrategy 주입
-            _transformerStrategy = new TransformerStrategy(_client, _transformerTrainer, _newsService, _elliotWave3Strategy, tfSettings);
-            _transformerStrategy.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _transformerStrategy.OnSignalAnalyzed += vm => OnSignalUpdate?.Invoke(vm);
-
-            // [Phase 7] Transformer 예측 결과 UI 연동
-            _transformerStrategy.OnPredictionUpdated += (symbol, currentPrice, predictedPrice) =>
+            // [3파 통합] TransformerStrategy에 ElliottWave3WaveStrategy 주입 (Trainer 사용 가능 시에만)
+            if (_transformerTrainer != null)
             {
-                double change = 0;
-                if (currentPrice > 0)
-                    change = (double)((predictedPrice - currentPrice) / currentPrice * 100);
+                _transformerStrategy = new TransformerStrategy(_client, _transformerTrainer, _newsService, _elliotWave3Strategy, tfSettings);
+                _transformerStrategy.OnLog += msg => OnStatusLog?.Invoke(msg);
+                _transformerStrategy.OnSignalAnalyzed += vm => OnSignalUpdate?.Invoke(vm);
 
-                OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
+                // [Phase 7] Transformer 예측 결과 UI 연동 및 DB 저장
+                _transformerStrategy.OnPredictionUpdated += (symbol, currentPrice, predictedPrice) =>
                 {
-                    Symbol = symbol,
-                    TransformerPrice = predictedPrice,
-                    TransformerChange = change
-                });
-            };
+                    double change = 0;
+                    if (currentPrice > 0)
+                        change = (double)((predictedPrice - currentPrice) / currentPrice * 100);
 
-            _transformerStrategy.OnTradeSignal += async (symbol, side, currentPrice, predictedPrice, mode, customTakeProfitPrice, customStopLossPrice) =>
+                    OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
+                    {
+                        Symbol = symbol,
+                        TransformerPrice = predictedPrice,
+                        TransformerChange = change
+                    });
+
+                    // [AI 모니터링] Transformer 예측 DB 저장
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            bool predictedUp = predictedPrice > currentPrice;
+                            float confidence = Math.Abs((float)change) / 100f; // 변화율을 0~1 confidence로 변환
+                            confidence = Math.Min(confidence * 10f, 1.0f); // 10% 변화 = 100% 신뢰도로 스케일링
+
+                            var aiPrediction = new AIPrediction
+                            {
+                                Symbol = symbol,
+                                ModelName = "Transformer",
+                                PredictedDirection = predictedUp ? "UP" : "DOWN",
+                                Confidence = confidence,
+                                PriceAtPrediction = currentPrice,
+                                PredictionTime = DateTime.Now,
+                                ValidationMinutes = 15  // 15분 후 검증
+                            };
+                            await _dbManager.SaveAIPredictionAsync(aiPrediction);
+                        }
+                        catch (Exception ex)
+                        {
+                            OnStatusLog?.Invoke($"⚠️ {symbol} Transformer 예측 저장 실패: {ex.Message}");
+                        }
+                    });
+                };
+            }
+            else
             {
-                // Transformer 전략 신호 발생 시 자동 매매 실행 (LONG/SHORT)
-                await ExecuteAutoOrder(symbol, side, currentPrice, _cts.Token, $"TRANSFORMER_{mode}", mode, customTakeProfitPrice, customStopLossPrice);
-                // 하이브리드 이탈 관리자에 등록 (AI 기반 익절/트레일링 스탑)
-                if (mode != "SIDEWAYS")
+                OnStatusLog?.Invoke("⚠️ TransformerStrategy 비활성화 (Trainer 초기화 실패)");
+            }
+
+            if (_transformerStrategy != null)
+            {
+                _transformerStrategy.OnTradeSignal += async (symbol, side, currentPrice, predictedPrice, mode, customTakeProfitPrice, customStopLossPrice) =>
                 {
-                    _hybridExitManager.RegisterEntry(symbol, side, currentPrice, predictedPrice);
-                }
-            };
+                    // Transformer 전략 신호 발생 시 자동 매매 실행 (LONG/SHORT)
+                    await ExecuteAutoOrder(symbol, side, currentPrice, _cts.Token, $"TRANSFORMER_{mode}", mode, customTakeProfitPrice, customStopLossPrice);
+                    // 하이브리드 이탈 관리자에 등록 (AI 기반 익절/트레일링 스탑)
+                    if (mode != "SIDEWAYS")
+                    {
+                        _hybridExitManager.RegisterEntry(symbol, side, currentPrice, predictedPrice);
+                    }
+                };
+            }
 
             // [Phase 8] DeFi 서비스 초기화
             var defiSettings = AppConfig.Current?.Trading?.DeFiSettings ?? new DeFiSettings();
@@ -392,6 +447,15 @@ namespace TradingBot
                 // 고래가 거래소로 입금 시 하락 가능성 등 전략에 반영 가능
                 _ = _notificationService.SendPushNotificationAsync("Whale Alert", msg); // [Agent 4] 푸시 알림
             };
+
+            // [OI/Double Check] OI 수집기 및 더블 체크 필터 초기화
+            _oiCollector = new OiDataCollector(_client);
+            _oiCollector.OnLog += msg => OnLiveLog?.Invoke(msg);
+            _squeezeLabeller = new SqueezeLabeller(_oiCollector, _client);
+            _squeezeLabeller.OnLog += msg => OnLiveLog?.Invoke(msg);
+            _doubleCheckFilter = new DoubleCheckFilter();
+            _doubleCheckFilter.OnLog += msg => OnStatusLog?.Invoke(msg);
+            OnStatusLog?.Invoke("✅ OI 수집기 및 Double Check 필터 초기화 완료");
         }
 
         // 초기 자산 저장 전용 메서드
@@ -465,7 +529,7 @@ namespace TradingBot
                 {
                     lock (_posLock)
                     {
-                        _activePositions.Clear();
+                        _activePositions.Clear(); // ConcurrentDictionary.Clear() is thread-safe
                         foreach (var pos in positions)
                         {
                             if (string.IsNullOrEmpty(pos.Symbol)) continue; // Null 검사
@@ -475,8 +539,9 @@ namespace TradingBot
                                 EntryPrice = pos.EntryPrice,
                                 IsLong = pos.IsLong,
                                 Side = pos.Side,
+                                Quantity = Math.Abs(pos.Quantity),
                                 AiScore = 0, // 재시작 시 AI 점수 정보는 소실됨
-                                Leverage = _settings.DefaultLeverage
+                                Leverage = pos.Leverage > 0 ? pos.Leverage : _settings.DefaultLeverage
                             };
 
                             OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
@@ -533,7 +598,35 @@ namespace TradingBot
                 await SyncCurrentPositionsAsync(token);
 
                 // [추가] 엔진 시작 시 Transformer 초기 학습 1회 자동 실행 (모델 미준비 시)
-                await TriggerInitialTransformerTrainingIfNeededAsync(token);
+                if (_transformerTrainer != null)
+                {
+                    await TriggerInitialTransformerTrainingIfNeededAsync(token);
+                }
+                else
+                {
+                    OnStatusLog?.Invoke("ℹ️ Transformer 학습 건너뜀 (Trainer 초기화 실패)");
+                }
+
+                // [OI] 실시간 OI/펀딩비 수집 시작 (5분 주기)
+                _oiCollector?.StartCollection(_symbols);
+                // 초기 OI 히스토리 선로딩 (BTC, XRP)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        foreach (var sym in new[] { "BTCUSDT", "XRPUSDT", "ETHUSDT", "SOLUSDT" })
+                        {
+                            if (_oiCollector != null)
+                                await _oiCollector.GetHistoricalOiAsync(sym, "5m", 500, token);
+                            await Task.Delay(300, token);
+                        }
+                        OnStatusLog?.Invoke("✅ OI 히스토리 선로딩 완료");
+                    }
+                    catch (Exception ex)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ OI 히스토리 선로딩 실패: {ex.Message}");
+                    }
+                }, token);
 
                 // 텔레그램 시작 알림 전송
                 string startMessage = $"🚀 *[봇 시작]*\n\n" +
@@ -710,7 +803,7 @@ namespace TradingBot
                         await Task.Delay(500, token); // API 제한 고려
                     }
 
-                    if (trainingData.Count > 100)
+                    if (trainingData.Count > 100 && _transformerTrainer != null)
                     {
                         // 2. 모델 학습 및 저장 (백그라운드에서 실행하여 UI 블로킹 방지)
                         // 설정 파일에서 학습 파라미터 로드
@@ -748,7 +841,10 @@ namespace TradingBot
                     }
                     else
                     {
-                        OnStatusLog?.Invoke("⚠️ 학습 데이터 부족으로 재학습 건너뜀.");
+                        if (_transformerTrainer == null)
+                            OnStatusLog?.Invoke("⚠️ 학습 건너뜀 (Transformer Trainer 사용 불가)");
+                        else
+                            OnStatusLog?.Invoke("⚠️ 학습 데이터 부족으로 재학습 건너뜀.");
                     }
                 }
                 catch (OperationCanceledException) { break; }
@@ -763,6 +859,12 @@ namespace TradingBot
         {
             if (_initialTransformerTrainingTriggered)
                 return;
+            
+            if (_transformerTrainer == null)
+            {
+                OnStatusLog?.Invoke("⚠️ Transformer 학습 불가 (Trainer가 null)");
+                return;
+            }
 
             _initialTransformerTrainingTriggered = true;
 
@@ -1069,6 +1171,12 @@ namespace TradingBot
                     RSI_Divergence = rsiDivergence,
                     ElliottWaveState = elliottState,
                     SentimentScore = 0, // 학습 데이터에서는 뉴스 감성 없음
+
+                    // OI / FundingRate (수집기가 활성화된 경우)
+                    OpenInterest = _oiCollector != null ? (float)_oiCollector.GetOiAtTime(symbol, current.OpenTime) : 0,
+                    OI_Change_Pct = _oiCollector != null ? (float)(_oiCollector.GetOiChangeAtTime(symbol, current.OpenTime)) : 0,
+                    FundingRate = 0, // 과거 펀딩비는 별도 수집 필요
+                    SqueezeLabel = 0, // 학습 시 SqueezeLabeller가 후처리
 
                     // 레이블
                     Label = legacyLabel,
@@ -1917,7 +2025,7 @@ namespace TradingBot
                 {
                     if (pos.Quantity == 0)
                     {
-                        _activePositions.Remove(pos.Symbol);
+                        _activePositions.TryRemove(pos.Symbol, out _);
                         _hybridExitManager?.RemoveState(pos.Symbol); // [추가] 즉시 state 정리
                         OnPositionStatusUpdate?.Invoke(pos.Symbol, false, 0); // UI 및 데이터 정리
                     }
@@ -2089,6 +2197,48 @@ namespace TradingBot
                     aiProbability = prediction.Probability;
                     aiPredictUp = prediction.Prediction;
                     
+                    // [AI 모니터링] 예측 기록 저장 (나중에 검증용)
+                    if (aiPredictUp.HasValue)
+                    {
+                        // (1) DB 저장 (장기 이력)
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var aiPrediction = new AIPrediction
+                                {
+                                    Symbol = symbol,
+                                    ModelName = "ML.NET",
+                                    PredictedDirection = aiPredictUp.Value ? "UP" : "DOWN",
+                                    Confidence = prediction.Probability,
+                                    PriceAtPrediction = currentPrice,
+                                    PredictionTime = DateTime.Now,
+                                    ValidationMinutes = 15  // 15분 후 검증
+                                };
+                                await _dbManager.SaveAIPredictionAsync(aiPrediction);
+                            }
+                            catch (Exception ex)
+                            {
+                                OnStatusLog?.Invoke($"⚠️ {symbol} AI 예측 저장 실패: {ex.Message}");
+                            }
+                        });
+
+                        // (2) 메모리 등록 → 5분 후 실시간 검증 → AI 모니터 정확도 카드 반영
+                        string predictionKey = $"MLNET_{symbol}_{DateTime.Now:yyyyMMddHHmmss}";
+                        decimal predictedPrice = currentPrice * (aiPredictUp.Value ? 1.02m : 0.98m);
+                        _pendingPredictions[predictionKey] = (DateTime.Now, predictedPrice, aiPredictUp.Value, "ML.NET", prediction.Probability);
+
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await Task.Delay(TimeSpan.FromMinutes(5), token);
+                                await ValidatePredictionAsync(predictionKey, symbol, token);
+                            }
+                            catch (OperationCanceledException) { }
+                        }, token);
+                    }
+                    
                     // ═══════════════════════════════════════════════════════════════
                     // [보너스 점수 시스템] AI 필터 개선 (2025-05-XX)
                     // ═══════════════════════════════════════════════════════════════
@@ -2135,6 +2285,38 @@ namespace TradingBot
                     if (decision == "LONG")
                     {
                         OnStatusLog?.Invoke($"✅ {symbol} AI 필터 통과 | 기본점수={baseAiScore:F1} + 보너스={bonusPoints:F0} = 최종={finalAiScore:F1} >= 임계값={adjustedThreshold}");
+                    }
+
+                    // ═══════════════════════════════════════════════════════════════
+                    // [Double Check] 기술점수 + Transformer 확률 병렬 검증
+                    // ═══════════════════════════════════════════════════════════════
+                    // Transformer가 준비된 경우에만 Double Check 적용
+                    if (_transformerStrategy != null && _transformerTrainer != null && _transformerTrainer.IsModelReady)
+                    {
+                        // Transformer 예측 확률 (0~1, 상승 확률)
+                        float transformerProb = prediction.Probability; // ML.NET 확률을 기본값으로 사용
+                        
+                        // OI 변화율 조회
+                        float oiChangePct = 0f;
+                        if (_oiCollector != null)
+                        {
+                            var oiSnapshot = await _oiCollector.GetCurrentOiAsync(symbol, token);
+                            if (oiSnapshot != null)
+                                oiChangePct = (float)oiSnapshot.OiChangePct;
+                        }
+
+                        // 횡보장 여부 확인 (BB 폭 기준)
+                        bool isSideways = latestCandle.BB_Width < 1.0f; // BB폭 1% 미만 = 횡보
+
+                        var doubleCheck = _doubleCheckFilter.Evaluate(
+                            symbol, decision, finalAiScore, transformerProb, isSideways, oiChangePct);
+
+                        if (!doubleCheck.IsApproved)
+                        {
+                            OnStatusLog?.Invoke($"🔒 {symbol} Double Check 차단: {doubleCheck.Reason}");
+                            return;
+                        }
+                        OnStatusLog?.Invoke($"🔓 {symbol} Double Check 승인: {doubleCheck.ApprovedBy}");
                     }
 
                     // 숏 진입은 더 엄격하게 필터링 (하락 예측 + 충분한 확률 + 과매도 추격 방지)
@@ -2277,7 +2459,7 @@ namespace TradingBot
                     if (decision == "LONG" && bestAsk > currentPrice * 1.0005m)
                     {
                         OnStatusLog?.Invoke($"❌ {symbol} 슬리피지 과다 (BestAsk={bestAsk:F4} > Target={currentPrice * 1.0005m:F4}, +{((bestAsk - currentPrice) / currentPrice * 100):F3}%) → 진입 취소");
-                        lock (_posLock) { _activePositions.Remove(symbol); }
+                        lock (_posLock) { _activePositions.TryRemove(symbol, out _); }
                         return;
                     }
 
@@ -2285,7 +2467,7 @@ namespace TradingBot
                     if (decision == "SHORT" && bestBid < currentPrice * 0.9995m)
                     {
                         OnStatusLog?.Invoke($"❌ {symbol} 슬리피지 과다 (BestBid={bestBid:F4} < Target={currentPrice * 0.9995m:F4}, {((bestBid - currentPrice) / currentPrice * 100):F3}%) → 진입 취소");
-                        lock (_posLock) { _activePositions.Remove(symbol); }
+                        lock (_posLock) { _activePositions.TryRemove(symbol, out _); }
                         return;
                     }
 
@@ -2315,12 +2497,29 @@ namespace TradingBot
 
                 if (success)
                 {
+                    // [체결 확인] 지정가 주문이므로 3초 대기 후 실제 체결 여부 확인
+                    await Task.Delay(3000, token);
+                    var posCheck = await _exchangeService.GetPositionsAsync(token);
+                    var filled = posCheck?.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.Quantity) > 0);
+
+                    if (filled == null || Math.Abs(filled.Quantity) <= 0)
+                    {
+                        // 미체결 → 미체결 주문 취소 + 포지션 제거
+                        OnStatusLog?.Invoke($"⚠️ {symbol} 지정가 주문 미체결 → 취소 처리");
+                        try { await _client.UsdFuturesApi.Trading.CancelAllOrdersAsync(symbol, ct: token); } catch { }
+                        lock (_posLock) { _activePositions.TryRemove(symbol, out _); }
+                        return;
+                    }
+
+                    // 체결된 수량으로 업데이트
+                    decimal filledQty = Math.Abs(filled.Quantity);
+
                     // [수정] 주문 성공 시 실제 수량 업데이트
                     lock (_posLock)
                     {
                         if (_activePositions.TryGetValue(symbol, out var pos))
                         {
-                            pos.Quantity = quantity;
+                            pos.Quantity = filledQty;
                             OnTradeExecuted?.Invoke(symbol, decision, currentPrice, quantity);
                         }
                         else
@@ -2359,7 +2558,8 @@ namespace TradingBot
                 }
                 else
                 {
-                    OnStatusLog?.Invoke($"❌ {symbol} 주문 실패");
+                    OnStatusLog?.Invoke($"❌ {symbol} 주문 실패 → 포지션 등록 해제");
+                    lock (_posLock) { _activePositions.TryRemove(symbol, out _); }
                 }
             }
             catch (Exception ex)
@@ -2781,10 +2981,13 @@ namespace TradingBot
                         return false;
                 }
                 
-                // 5) TODO: Open Interest 급감 확인 (현재는 placeholder)
-                // 실제 구현 시 Binance API로 OI 변화율 조회 필요
-                // var oiChange = await GetOpenInterestChangeAsync(symbol, token);
-                // if (oiChange > -0.8) return false;
+                // 5) Open Interest 급감 확인 (OiDataCollector 실시간 조회)
+                if (_oiCollector != null)
+                {
+                    var oiSnapshot = await _oiCollector.GetCurrentOiAsync(symbol, token);
+                    if (oiSnapshot == null || oiSnapshot.OiChangePct > -0.8)
+                        return false; // OI 급감 없으면 스퀴즈 아님
+                }
                 
                 return true; // 숏 스퀴즈 조건 만족
             }
