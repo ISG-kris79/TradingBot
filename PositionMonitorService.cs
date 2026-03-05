@@ -1110,7 +1110,7 @@ namespace TradingBot.Services
                 double macdLine = 0, signalLine = 0, macdHist = 0, prevMacdHist = 0;
                 if (closes.Count >= 26)
                 {
-                    var (macd, signal, hist) = IndicatorCalculator.CalculateMACD(recentKlines, 12, 26, 9);
+                    var (macd, signal, hist) = IndicatorCalculator.CalculateMACD(recentKlines);
                     macdLine = macd;
                     signalLine = signal;
                     macdHist = hist;
@@ -1121,7 +1121,7 @@ namespace TradingBot.Services
                         var prevKlines = klines.TakeLast(31).Take(30).ToList();
                         if (prevKlines.Count >= 26)
                         {
-                            var (_, _, prevHist) = IndicatorCalculator.CalculateMACD(prevKlines, 12, 26, 9);
+                            var (_, _, prevHist) = IndicatorCalculator.CalculateMACD(prevKlines);
                             prevMacdHist = prevHist;
                         }
                     }

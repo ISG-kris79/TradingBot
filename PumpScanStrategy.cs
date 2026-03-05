@@ -31,12 +31,12 @@ namespace TradingBot.Strategies
         {
             var profile = GetScanProfile();
             // 단일 분석 요청 시 블랙리스트 체크 없이(또는 빈 목록으로) 즉시 분석 수행
-            await AnalyzeSymbolAsync(symbol, new Dictionary<string, DateTime>(), token, profile);
+            await AnalyzeSymbolAsync(symbol, new ConcurrentDictionary<string, DateTime>(), token, profile);
         }
 
         public async Task ExecuteScanAsync(
             ConcurrentDictionary<string, TickerCacheItem> tickerCache,
-            Dictionary<string, DateTime> blacklistedSymbols,
+            ConcurrentDictionary<string, DateTime> blacklistedSymbols,
             CancellationToken token)
         {
             var profile = GetScanProfile();
@@ -91,16 +91,13 @@ namespace TradingBot.Strategies
             await Task.WhenAll(tasks);
         }
 
-        private async Task AnalyzeSymbolAsync(string symbol, Dictionary<string, DateTime> blacklist, CancellationToken token, ScanProfile profile)
+        private async Task AnalyzeSymbolAsync(string symbol, ConcurrentDictionary<string, DateTime> blacklist, CancellationToken token, ScanProfile profile)
         {
             // 블랙리스트 확인
-            lock (blacklist)
+            if (blacklist.TryGetValue(symbol, out var expiry))
             {
-                if (blacklist.TryGetValue(symbol, out var expiry))
-                {
-                    if (DateTime.Now < expiry) return;
-                    blacklist.Remove(symbol);
-                }
+                if (DateTime.Now < expiry) return;
+                blacklist.TryRemove(symbol, out _);
             }
 
             // [1단계] 1분봉 조회 (빠른 필터링)

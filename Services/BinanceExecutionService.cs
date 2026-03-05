@@ -242,6 +242,24 @@ namespace TradingBot.Services
             return _stopOrders.TryGetValue(symbol, out var state) ? state.StopPrice : null;
         }
 
+        /// <summary>
+        /// 4. 외부에서 설정한 스탑 주문을 ExecutionService에 등록 (Cancel & Replace 트레일링 연동)
+        /// PositionMonitorService에서 설정한 서버사이드 스탑 주문의 ID를 등록하여
+        /// HybridExitManager 등의 트레일링 스탑 갱신이 정상 동작하도록 합니다.
+        /// </summary>
+        public void RegisterExternalStopOrder(string symbol, long orderId, decimal stopPrice, bool isLong)
+        {
+            _stopOrders[symbol] = new StopOrderState
+            {
+                Symbol = symbol,
+                OrderId = orderId,
+                StopPrice = stopPrice,
+                PositionSide = isLong ? PositionSide.Long : PositionSide.Short,
+                LastUpdateTime = DateTime.Now,
+            };
+            OnLog?.Invoke($"🔗 [{symbol}] 외부 스탑 주문 등록 (OrderId: {orderId}, StopPrice: {stopPrice:F8})");
+        }
+
         // ════════════════ 헬퍼 메서드 ════════════════
 
         /// <summary>
