@@ -392,6 +392,8 @@ namespace TradingBot.Models
             get => _profitPercent;
             set
             {
+                value = SanitizeProfitPercent(value);
+
                 if (_profitPercent != value)
                 {
                     _profitPercent = value;
@@ -415,7 +417,7 @@ namespace TradingBot.Models
             {
                 // 포지션이 활성화되어 있고 진입가가 있을 때만 계산
                 if (!IsPositionActive || EntryPrice == 0 || LastPrice == 0)
-                    return _profitPercent;
+                    return SanitizeProfitPercent(_profitPercent);
 
                 // 바이낸스/바이비트 표준 ROI 계산:
                 // LONG: ROI% = (Mark Price - Entry Price) / Entry Price × Leverage × 100
@@ -435,20 +437,27 @@ namespace TradingBot.Models
                 else
                 {
                     // 예상치 못한 값이면 기본값 반환
-                    return _profitPercent;
+                    return SanitizeProfitPercent(_profitPercent);
                 }
 
                 double roi = (double)(priceChange / EntryPrice) * Leverage * 100;
+                if (double.IsNaN(roi) || double.IsInfinity(roi))
+                    return SanitizeProfitPercent(_profitPercent);
 
                 // 계산된 값을 내부 필드에도 저장 (UI 업데이트를 위해)
                 if (Math.Abs(_profitPercent - roi) > 0.001)
                 {
-                    _profitPercent = roi;
+                    _profitPercent = SanitizeProfitPercent(roi);
                 }
 
-                return roi;
+                return SanitizeProfitPercent(roi);
             }
             set => ProfitPercent = value;
+        }
+
+        private static double SanitizeProfitPercent(double value)
+        {
+            return double.IsNaN(value) || double.IsInfinity(value) ? 0d : value;
         }
 
         // 4. 수익률에 따른 색상 로직

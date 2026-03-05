@@ -19,6 +19,15 @@ namespace TradingBot.Services.BacktestStrategies
             decimal positionQuantity = 0;
             bool inPosition = false;
 
+            result.EquityCurve.Clear();
+            result.TradeDates.Clear();
+
+            if (candles.Count > 0)
+            {
+                result.EquityCurve.Add(currentBalance);
+                result.TradeDates.Add(candles[0].OpenTime.ToString("MM/dd HH:mm"));
+            }
+
             for (int i = 21; i < candles.Count; i++)
             {
                 decimal currentPrice = (decimal)candles[i].Close;
@@ -45,13 +54,13 @@ namespace TradingBot.Services.BacktestStrategies
 
                     result.TradeHistory.Add(new TradeLog(result.Symbol, "SELL", "Backtest_MA", currentPrice, 0, candles[i].OpenTime));
 
-                    // 수익 곡선 기록
-                    result.EquityCurve.Add(currentBalance);
-                    result.TradeDates.Add(candles[i].OpenTime.ToString("MM/dd HH:mm"));
-
                     inPosition = false;
                     positionQuantity = 0;
                 }
+
+                decimal markToMarketEquity = currentBalance + (inPosition ? positionQuantity * currentPrice : 0m);
+                result.EquityCurve.Add(markToMarketEquity);
+                result.TradeDates.Add(candles[i].OpenTime.ToString("MM/dd HH:mm"));
             }
             result.FinalBalance = currentBalance + (inPosition ? positionQuantity * (decimal)candles.Last().Close : 0);
         }

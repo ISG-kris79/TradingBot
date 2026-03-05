@@ -16,6 +16,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using TradingBot.Models;
 using TradingBot.Services;
+using TradingBot.Services.BacktestStrategies;
 using TradingBot.Shared.Models;
 
 namespace TradingBot.ViewModels
@@ -345,9 +346,11 @@ namespace TradingBot.ViewModels
 
                 var selectedStrategy = optionsDialog.SelectedStrategy;
                 var selectedDays = optionsDialog.SelectedDays;
+                var selectedMetricOptions = optionsDialog.SelectedMetricOptions;
                 var strategyName = selectedStrategy.ToString();
 
                 AddLog($"🔄 {symbol} Backtest starting ({selectedDays}일, {strategyName} 전략)...");
+                AddLog($"📐 지표 기준: RF {selectedMetricOptions.RiskFreeRateAnnualPct:F2}% | {selectedMetricOptions.AnnualizationMode}");
                 
                 // 진행 상태 초기화 (이미 UI 스레드)
                 FooterText = $"📋 BACKTEST 실행 중: {symbol} | {strategyName} | {selectedDays}일";
@@ -369,7 +372,25 @@ namespace TradingBot.ViewModels
                             ScanProgress = 30;
                         });
 
-                        BacktestResult result = await service.RunBacktestAsync(symbol, startDate, endDate, selectedStrategy);
+                        BacktestResult result = await service.RunBacktestAsync(symbol, startDate, endDate, selectedStrategy, 1000m, selectedMetricOptions);
+
+                        if ((result?.Candles?.Count ?? 0) > 0 && (result?.TotalTrades ?? 0) == 0)
+                        {
+                            RunOnUI(() => AddLog("ℹ️ 체결 0회로 RSI(40/60) 대체 백테스트를 자동 시도합니다."));
+                            var fallbackStrategy = new RsiBacktestStrategy
+                            {
+                                RsiPeriod = 14,
+                                BuyThreshold = 40,
+                                SellThreshold = 60
+                            };
+
+                            var fallbackResult = await service.RunBacktestAsync(symbol, startDate, endDate, fallbackStrategy, 1000m, selectedMetricOptions);
+                            if ((fallbackResult?.TotalTrades ?? 0) > 0)
+                            {
+                                fallbackResult.Message = "[자동 대체 실행] 선택 전략 체결이 없어 RSI(40/60) 결과를 표시합니다. | " + fallbackResult.Message;
+                                result = fallbackResult;
+                            }
+                        }
 
                         if (result == null)
                         {
@@ -410,7 +431,7 @@ namespace TradingBot.ViewModels
                                     ScanProgress = 50;
                                 });
 
-                                result = await service.RunBacktestAsync(symbol, startDate, endDate, selectedStrategy);
+                                result = await service.RunBacktestAsync(symbol, startDate, endDate, selectedStrategy, 1000m, selectedMetricOptions);
                             }
 
                             if (result.Candles == null || result.Candles.Count == 0)
@@ -614,6 +635,27 @@ namespace TradingBot.ViewModels
                             optimizeResult.Candles = precheck.Candles;
                         if (optimizeResult.FinalBalance <= 0)
                             optimizeResult.FinalBalance = optimizeResult.InitialBalance;
+
+                        if ((optimizeResult?.Candles?.Count ?? 0) > 0 && (optimizeResult?.TotalTrades ?? 0) == 0)
+                        {
+                            RunOnUI(() => AddLog("ℹ️ 최적화 결과 체결 0회로 RSI(40/60) 대체 백테스트를 자동 시도합니다."));
+                            var fallbackStrategy = new RsiBacktestStrategy
+                            {
+                                RsiPeriod = 14,
+                                BuyThreshold = 40,
+                                SellThreshold = 60
+                            };
+
+                            var fallbackResult = await service.RunBacktestAsync(symbol, startDate, endDate, fallbackStrategy, 1000m);
+                            if ((fallbackResult?.TotalTrades ?? 0) > 0)
+                            {
+                                fallbackResult.TopTrials = optimizeResult.TopTrials;
+                                fallbackResult.Symbol = symbol;
+                                fallbackResult.Message = "[자동 대체 실행] 최적화 결과 체결이 없어 RSI(40/60) 결과를 표시합니다. | " + fallbackResult.Message;
+                                fallbackResult.StrategyConfiguration = $"{optimizeResult.StrategyConfiguration} | Fallback RSI(40/60)";
+                                optimizeResult = fallbackResult;
+                            }
+                        }
 
                         RunOnUI(() => 
                         {
@@ -942,11 +984,16 @@ namespace TradingBot.ViewModels
         {
             RunOnUI(() =>
             {
-                var scalpingValues = RLRewardSeries[0].Values;
-                var swingValues = RLRewardSeries[1].Values;
+                var scalpingValues = RLRewardSeries[0].Values as ChartValues<double>;
+                var swingValues = RLRewardSeries[1].Values as ChartValues<double>;
+                if (scalpingValues == null || swingValues == null)
+                    return;
 
-                scalpingValues.Add(scalpingReward);
-                swingValues.Add(swingReward);
+                var safeScalping = ToFinite(scalpingReward, scalpingValues.Count > 0 ? scalpingValues[^1] : 0d);
+                var safeSwing = ToFinite(swingReward, swingValues.Count > 0 ? swingValues[^1] : 0d);
+
+                scalpingValues.Add(safeScalping);
+                swingValues.Add(safeSwing);
 
                 // 최근 100개만 유지
                 if (scalpingValues.Count > 100) scalpingValues.RemoveAt(0);
@@ -993,8 +1040,9 @@ namespace TradingBot.ViewModels
             {
                 if (SelectedSymbol != null && SelectedSymbol.Symbol == symbol && LiveChartSeries.Count > 2)
                 {
-                    var tradeTime = DateTime.Now;
-                    var point = new ScatterPoint(tradeTime.Ticks, (double)price);
+                    var y = ToFinite((double)price);
+                    var x = Math.Max(0, (LiveChartSeries[0].Values?.Count ?? 1) - 1);
+                    var point = new ScatterPoint(x, y, 10);
 
                     // side가 "BUY" 또는 "LONG"일 경우
                     if (side.ToUpper() == "BUY" || side.ToUpper() == "LONG")
@@ -1100,6 +1148,12 @@ namespace TradingBot.ViewModels
         {
             RunOnUI(() =>
             {
+                if (!IsFinite(equity) || !IsFinite(available))
+                {
+                    AddLiveLog("⚠️ 대시보드 값에 NaN/Infinity가 감지되어 업데이트를 건너뜁니다.");
+                    return;
+                }
+
                 TotalEquity = $"${equity:N2}";
                 AvailableBalance = $"${available:N2}";
                 double pnl = equity - available;
@@ -1117,7 +1171,14 @@ namespace TradingBot.ViewModels
         {
             RunOnUI(() =>
             {
-                var activePositions = MarketDataList.Where(x => x.IsPositionActive).ToList();
+                var activePositions = MarketDataList
+                    .Where(x => x.IsPositionActive)
+                    .Select(x => new
+                    {
+                        Symbol = x.Symbol ?? "Unknown",
+                        ProfitPercent = ToFinite(x.ProfitPercent)
+                    })
+                    .ToList();
 
                 if (activePositions.Any())
                 {
@@ -1133,7 +1194,7 @@ namespace TradingBot.ViewModels
                             DataLabels = true
                         }
                     };
-                    ActivePnLLabels = activePositions.Select(x => x.Symbol ?? "Unknown").ToArray();
+                    ActivePnLLabels = activePositions.Select(x => x.Symbol).ToArray();
                     OnPropertyChanged(nameof(ActivePnLLabels));
                 }
                 else
@@ -1224,7 +1285,11 @@ namespace TradingBot.ViewModels
                     MarketDataList.Add(existing);
                 }
                 if (price > 0) existing.LastPrice = price;
-                if (pnl.HasValue) existing.ProfitPercent = pnl.Value;
+                if (pnl.HasValue)
+                {
+                    var safePnl = ToFinite(pnl.Value, existing.ProfitPercent);
+                    existing.ProfitPercent = safePnl;
+                }
             });
         }
 
@@ -1298,10 +1363,20 @@ namespace TradingBot.ViewModels
 
                 var closeValues = new ChartValues<double>();
                 var xLabels = new List<string>();
+                double? lastValidClose = null;
                 foreach (var kline in klinesResult.Data)
                 {
-                    closeValues.Add((double)kline.ClosePrice);
+                    var close = ToFinite((double)kline.ClosePrice, lastValidClose ?? 0d);
+                    lastValidClose = close;
+                    closeValues.Add(close);
                     xLabels.Add(kline.OpenTime.ToLocalTime().ToString("HH:mm"));
+                }
+
+                if (closeValues.Count == 0)
+                {
+                    LiveChartSeries = new SeriesCollection();
+                    OnPropertyChanged(nameof(IsLiveChartEmpty));
+                    return;
                 }
 
                 LiveChartXFormatter = val =>
@@ -1379,7 +1454,7 @@ namespace TradingBot.ViewModels
 
                 for (int i = 0; i < result.EquityCurve.Count; i++)
                 {
-                    values.Add((double)result.EquityCurve[i]);
+                    values.Add(ToFinite((double)result.EquityCurve[i]));
                 }
 
                 // 매매 기록을 차트 좌표에 매핑
@@ -1391,10 +1466,11 @@ namespace TradingBot.ViewModels
 
                     if (index >= 0 && index < result.EquityCurve.Count)
                     {
+                        var y = ToFinite((double)result.EquityCurve[index]);
                         if (trade.Side == "BUY")
-                            buyPoints.Add(new ScatterPoint(index, (double)result.EquityCurve[index], 10));
+                            buyPoints.Add(new ScatterPoint(index, y, 10));
                         else if (trade.Side == "SELL")
-                            sellPoints.Add(new ScatterPoint(index, (double)result.EquityCurve[index], 10));
+                            sellPoints.Add(new ScatterPoint(index, y, 10));
                     }
                 }
 
@@ -1499,6 +1575,19 @@ namespace TradingBot.ViewModels
         private void RunOnUI(Action action)
         {
             Application.Current?.Dispatcher.Invoke(action);
+        }
+
+        private static bool IsFinite(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value);
+        }
+
+        private static double ToFinite(double value, double fallback = 0d)
+        {
+            if (IsFinite(value))
+                return value;
+
+            return IsFinite(fallback) ? fallback : 0d;
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

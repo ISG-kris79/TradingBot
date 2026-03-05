@@ -232,7 +232,7 @@
                                            FontWeight="Bold"
                                            Foreground="#10B981"/>
                             </StackPanel>
-                        </Grid.ColumnDefinitions>
+                        </Grid>
                     </Grid>
                 </Border>
 
@@ -254,11 +254,27 @@
                                    Foreground="#CBD5E1"
                                    TextWrapping="Wrap"
                                    Margin="0,0,0,4"/>
+                        <TextBlock Text="{Binding MetricsSummary}"
+                                   Foreground="#FDE68A"
+                                   TextWrapping="Wrap"
+                                   Margin="0,0,0,4"/>
                         <TextBlock Text="{Binding PeriodSummary}"
                                    Foreground="#94A3B8"
                                    Margin="0,0,0,2"/>
                         <TextBlock Text="{Binding DatasetSummary}"
                                    Foreground="#94A3B8"/>
+                        <Border Background="#3A1F1F"
+                                BorderBrush="#EF4444"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="8,4"
+                                Margin="0,8,0,0"
+                                Visibility="{Binding IsTradeSampleInsufficient, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <TextBlock Text="{Binding TradeSampleBadgeText}"
+                                       Foreground="#FCA5A5"
+                                       FontSize="12"
+                                       FontWeight="SemiBold"/>
+                        </Border>
                     </StackPanel>
                 </Border>
 
@@ -286,6 +302,17 @@
                                   Foreground="#E5E7EB"
                                   GridLinesVisibility="Horizontal"
                                   BorderThickness="0">
+                            <DataGrid.ColumnHeaderStyle>
+                                <Style TargetType="DataGridColumnHeader">
+                                    <Setter Property="Background" Value="#1F2937"/>
+                                    <Setter Property="Foreground" Value="#E5E7EB"/>
+                                    <Setter Property="BorderBrush" Value="#374151"/>
+                                    <Setter Property="BorderThickness" Value="0,0,0,1"/>
+                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                                    <Setter Property="Height" Value="30"/>
+                                </Style>
+                            </DataGrid.ColumnHeaderStyle>
                             <DataGrid.RowStyle>
                                 <Style TargetType="DataGridRow">
                                     <Setter Property="FontWeight" Value="Normal"/>
@@ -381,6 +408,8 @@
                     </lvc:CartesianChart.AxisX>
                     <lvc:CartesianChart.AxisY>
                         <lvc:Axis Title="Price"
+                                  MinValue="{Binding YAxisMin}"
+                                  MaxValue="{Binding YAxisMax}"
                                   LabelFormatter="{Binding Formatter}"
                                   Foreground="#94A3B8">
                             <lvc:Axis.Separator>

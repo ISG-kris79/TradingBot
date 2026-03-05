@@ -28,6 +28,15 @@ namespace TradingBot.Services.BacktestStrategies
             decimal currentTrailingStopPrice = 0;
             double highestROE = 0;
             bool previousHitBBUpper = false;
+
+            result.EquityCurve.Clear();
+            result.TradeDates.Clear();
+
+            if (candles.Count > 0)
+            {
+                result.EquityCurve.Add(currentBalance);
+                result.TradeDates.Add(candles[0].OpenTime.ToString("MM/dd HH:mm"));
+            }
             
             // 지표 미리 계산 (성능 최적화)
             var closes = candles.Select(c => (double)c.Close).ToList();
@@ -144,7 +153,6 @@ namespace TradingBot.Services.BacktestStrategies
                         partialTaken = true;
 
                         result.TradeHistory.Add(new TradeLog(symbol, "SELL", "ElliottWave_TP1_50%", currentPrice, 0, currentCandle.OpenTime, profit, (profit/revenue)*100));
-                        result.EquityCurve.Add(currentBalance + (positionQuantity * currentPrice));
                     }
 
                     // 2. RSI 80+ 과매수 전량 청산
@@ -203,8 +211,6 @@ namespace TradingBot.Services.BacktestStrategies
                         if (profit > 0) result.WinCount++; else result.LossCount++;
 
                         result.TradeHistory.Add(new TradeLog(symbol, "SELL", exitReason, currentPrice, 0, currentCandle.OpenTime, profit, (profit/revenue)*100));
-                        result.EquityCurve.Add(currentBalance);
-                        result.TradeDates.Add(currentCandle.OpenTime.ToString("MM/dd HH:mm"));
 
                         inPosition = false;
                         positionQuantity = 0;
@@ -216,6 +222,10 @@ namespace TradingBot.Services.BacktestStrategies
                         strategy.ResetState(symbol);
                     }
                 }
+
+                decimal markToMarketEquity = currentBalance + (inPosition ? positionQuantity * currentPrice : 0m);
+                result.EquityCurve.Add(markToMarketEquity);
+                result.TradeDates.Add(currentCandle.OpenTime.ToString("MM/dd HH:mm"));
             }
             result.FinalBalance = currentBalance + (inPosition ? positionQuantity * (decimal)candles.Last().Close : 0);
         }

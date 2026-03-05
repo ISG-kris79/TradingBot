@@ -26,11 +26,30 @@ namespace TradingBot.Services
             _connectionString = AppConfig.ConnectionString;
         }
 
-        public async Task<BacktestResult> RunBacktestAsync(string symbol, DateTime startDate, DateTime endDate, IBacktestStrategy strategy, decimal initialBalance = 1000)
+        public async Task<BacktestResult> RunBacktestAsync(
+            string symbol,
+            DateTime startDate,
+            DateTime endDate,
+            IBacktestStrategy strategy,
+            decimal initialBalance = 1000,
+            BacktestMetricOptions? metricOptions = null)
         {
             // 1. DB에서 데이터 조회
             using var conn = new SqlConnection(_connectionString);
             var candles = await LoadBacktestCandlesAsync(conn, symbol, startDate, endDate);
+            bool loadedFromApiFallback = false;
+
+            if (candles.Count == 0)
+            {
+                candles = await FetchCandlesFromBinanceRangeAsync(symbol, startDate, endDate);
+                loadedFromApiFallback = candles.Count > 0;
+
+                if (loadedFromApiFallback)
+                {
+                    var db = new DatabaseService();
+                    await db.SaveCandleDataBulkAsync(candles);
+                }
+            }
 
             if (candles.Count == 0)
             {
@@ -40,6 +59,7 @@ namespace TradingBot.Services
                     InitialBalance = initialBalance,
                     FinalBalance = initialBalance,
                     StrategyConfiguration = strategy.Name,
+                    MetricsComputationNote = "데이터가 없어 Sharpe/Sortino를 계산하지 않았습니다.",
                     Message = $"데이터 없음: {symbol} | 구간 {startDate:yyyy-MM-dd} ~ {endDate:yyyy-MM-dd}"
                 };
             }
@@ -51,7 +71,7 @@ namespace TradingBot.Services
             strategy.Execute(candles, result);
             
             // 성과 지표 계산
-            CalculateMetrics(result);
+            CalculateMetrics(result, metricOptions);
 
             if (string.IsNullOrWhiteSpace(result.StrategyConfiguration))
                 result.StrategyConfiguration = strategy.Name;
@@ -60,10 +80,80 @@ namespace TradingBot.Services
             {
                 result.Message =
                     $"전략: {strategy.Name} | 기간: {startDate:yyyy-MM-dd} ~ {endDate:yyyy-MM-dd} | " +
-                    $"데이터: {candles.Count}개 | 초기자본: {initialBalance:N0} USDT";
+                    $"데이터: {candles.Count}개({(loadedFromApiFallback ? "Binance API" : "DB")}) | 초기자본: {initialBalance:N0} USDT";
+            }
+
+            if (result.TotalTrades == 0)
+            {
+                result.Message += " | 체결 0회: 기간 확대 또는 다른 전략(RSI/MA/Bollinger) 비교를 권장";
             }
             
             return result;
+        }
+
+        private async Task<List<CandleData>> FetchCandlesFromBinanceRangeAsync(
+            string symbol,
+            DateTime startDate,
+            DateTime endDate,
+            int maxChunks = 80)
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+                return new List<CandleData>();
+
+            var startUtc = startDate.Kind == DateTimeKind.Utc ? startDate : startDate.ToUniversalTime();
+            var endUtc = endDate.Kind == DateTimeKind.Utc ? endDate : endDate.ToUniversalTime();
+
+            if (endUtc <= startUtc)
+                return new List<CandleData>();
+
+            using var client = new BinanceRestClient();
+            var all = new List<CandleData>();
+            var cursor = startUtc;
+
+            for (int i = 0; i < Math.Max(1, maxChunks) && cursor < endUtc; i++)
+            {
+                var response = await client.UsdFuturesApi.ExchangeData.GetKlinesAsync(
+                    symbol,
+                    KlineInterval.FiveMinutes,
+                    startTime: cursor,
+                    endTime: endUtc,
+                    limit: 1500);
+
+                if (!response.Success)
+                    break;
+
+                var batch = response.Data?
+                    .OrderBy(k => k.OpenTime)
+                    .ToList() ?? new List<IBinanceKline>();
+
+                if (batch.Count == 0)
+                    break;
+
+                all.AddRange(batch.Select(k => new CandleData
+                {
+                    Symbol = symbol,
+                    Interval = "5m",
+                    OpenTime = k.OpenTime,
+                    CloseTime = k.CloseTime,
+                    Open = k.OpenPrice,
+                    High = k.HighPrice,
+                    Low = k.LowPrice,
+                    Close = k.ClosePrice,
+                    Volume = (float)k.Volume
+                }));
+
+                var nextCursor = batch[^1].OpenTime.AddMinutes(5);
+                if (nextCursor <= cursor || batch.Count < 1500)
+                    break;
+
+                cursor = nextCursor;
+            }
+
+            return all
+                .GroupBy(c => c.OpenTime)
+                .Select(g => g.First())
+                .OrderBy(c => c.OpenTime)
+                .ToList();
         }
 
         private async Task<List<CandleData>> LoadBacktestCandlesAsync(SqlConnection conn, string symbol, DateTime startDate, DateTime endDate)
@@ -167,7 +257,13 @@ namespace TradingBot.Services
             return deduped.Count;
         }
 
-        public async Task<BacktestResult> RunBacktestAsync(string symbol, DateTime startDate, DateTime endDate, BacktestStrategyType strategyType, decimal initialBalance = 1000)
+        public async Task<BacktestResult> RunBacktestAsync(
+            string symbol,
+            DateTime startDate,
+            DateTime endDate,
+            BacktestStrategyType strategyType,
+            decimal initialBalance = 1000,
+            BacktestMetricOptions? metricOptions = null)
         {
             IBacktestStrategy strategy = strategyType switch
             {
@@ -178,12 +274,20 @@ namespace TradingBot.Services
                 _ => throw new ArgumentException("Invalid strategy type")
             };
 
-            return await RunBacktestAsync(symbol, startDate, endDate, strategy, initialBalance);
+            return await RunBacktestAsync(symbol, startDate, endDate, strategy, initialBalance, metricOptions);
         }
 
-        private void CalculateMetrics(BacktestResult result)
+        private void CalculateMetrics(BacktestResult result, BacktestMetricOptions? metricOptions)
         {
-            if (result.EquityCurve.Count == 0) return;
+            metricOptions ??= new BacktestMetricOptions();
+
+            if (result.EquityCurve.Count == 0)
+            {
+                result.MetricsComputationNote = result.TotalTrades == 0
+                    ? "체결(청산) 거래가 없어 Sharpe/Sortino가 0으로 표시됩니다. 전략 조건이 엄격하거나 기간이 짧을 수 있습니다."
+                    : "손익 곡선 데이터가 없어 Sharpe/Sortino를 계산하지 못했습니다.";
+                return;
+            }
 
             // 1. MDD (Max Drawdown)
             decimal peak = result.InitialBalance;
@@ -197,34 +301,125 @@ namespace TradingBot.Services
             }
             result.MaxDrawdown = maxDrawdown;
 
-            // 2. Sharpe Ratio (간이 계산)
-            // 수익률의 평균 / 수익률의 표준편차
+            // 2. Sharpe/Sortino 계산용 수익률 시계열
             var returns = new List<double>();
             for (int i = 1; i < result.EquityCurve.Count; i++)
             {
+                if (result.EquityCurve[i - 1] == 0)
+                    continue;
+
                 double r = (double)((result.EquityCurve[i] - result.EquityCurve[i - 1]) / result.EquityCurve[i - 1]);
                 returns.Add(r);
             }
 
-            if (returns.Count > 0)
+            if (returns.Count == 0)
             {
-                double avgReturn = returns.Average();
-                double sumSq = returns.Sum(r => Math.Pow(r - avgReturn, 2));
-                double stdDev = Math.Sqrt(sumSq / returns.Count);
-
-                if (stdDev > 0)
-                    result.SharpeRatio = (avgReturn / stdDev) * Math.Sqrt(returns.Count); // 연율화 대신 전체 기간 기준
-
-                // 3. Sortino Ratio (하방 변동성 기준)
-                var downsideReturns = returns.Where(r => r < 0).ToList();
-                if (downsideReturns.Count > 0)
-                {
-                    double downsideVariance = downsideReturns.Sum(r => r * r) / downsideReturns.Count;
-                    double downsideDeviation = Math.Sqrt(downsideVariance);
-                    if (downsideDeviation > 0)
-                        result.SortinoRatio = (avgReturn / downsideDeviation) * Math.Sqrt(returns.Count);
-                }
+                result.MetricsComputationNote = "수익률 표본이 부족하여 Sharpe/Sortino가 0으로 표시됩니다.";
+                return;
             }
+
+            double periodsPerYear = DetermineAnnualizationPeriods(result, metricOptions.AnnualizationMode);
+            double annualizationFactor = metricOptions.AnnualizationMode == BacktestAnnualizationMode.None
+                ? 1.0
+                : Math.Sqrt(periodsPerYear);
+
+            double rfAnnual = metricOptions.RiskFreeRateAnnualPct / 100.0;
+            double rfPerPeriod = metricOptions.AnnualizationMode == BacktestAnnualizationMode.None
+                ? 0.0
+                : Math.Pow(1.0 + rfAnnual, 1.0 / periodsPerYear) - 1.0;
+
+            var excessReturns = returns.Select(r => r - rfPerPeriod).ToList();
+            double avgExcess = excessReturns.Average();
+            double variance = excessReturns.Sum(r => Math.Pow(r - avgExcess, 2)) / excessReturns.Count;
+            double stdDev = Math.Sqrt(variance);
+            bool isFlatEquityCurve = result.EquityCurve.All(e => e == result.EquityCurve[0]);
+
+            if (stdDev > 0)
+                result.SharpeRatio = (avgExcess / stdDev) * annualizationFactor;
+
+            var downsideExcess = excessReturns.Where(r => r < 0).ToList();
+            if (downsideExcess.Count > 0)
+            {
+                double downsideVariance = downsideExcess.Sum(r => r * r) / downsideExcess.Count;
+                double downsideDeviation = Math.Sqrt(downsideVariance);
+                if (downsideDeviation > 0)
+                    result.SortinoRatio = (avgExcess / downsideDeviation) * annualizationFactor;
+            }
+
+            string annualizationText = metricOptions.AnnualizationMode switch
+            {
+                BacktestAnnualizationMode.None => "None",
+                BacktestAnnualizationMode.TradingDays252 => "252",
+                BacktestAnnualizationMode.CalendarDays365 => "365",
+                BacktestAnnualizationMode.Crypto5m => "Crypto5m(105120)",
+                _ => $"Auto({periodsPerYear:F0})"
+            };
+
+            result.MetricsComputationNote =
+                $"지표 기준: RF={metricOptions.RiskFreeRateAnnualPct:F2}%/year, Annualization={annualizationText}, 표본={returns.Count}";
+
+            if (result.TotalTrades == 0)
+            {
+                result.MetricsComputationNote += " | 체결 거래가 없어 곡선이 평탄하면 지표가 0에 수렴합니다.";
+            }
+            else if (isFlatEquityCurve)
+            {
+                result.MetricsComputationNote += " | EquityCurve가 평탄하여 지표가 0에 가깝습니다.";
+            }
+            else if (stdDev == 0)
+            {
+                result.MetricsComputationNote += " | 초과수익률 변동성(표준편차)이 0이라 Sharpe가 0으로 표시됩니다.";
+            }
+
+            if (downsideExcess.Count == 0)
+            {
+                result.MetricsComputationNote += " | 하방 수익률 표본이 없어 Sortino가 0으로 표시될 수 있습니다.";
+            }
+        }
+
+        private static double DetermineAnnualizationPeriods(BacktestResult result, BacktestAnnualizationMode mode)
+        {
+            return mode switch
+            {
+                BacktestAnnualizationMode.None => 1.0,
+                BacktestAnnualizationMode.TradingDays252 => 252.0,
+                BacktestAnnualizationMode.CalendarDays365 => 365.0,
+                BacktestAnnualizationMode.Crypto5m => 365.0 * 24.0 * 12.0,
+                _ => InferPeriodsPerYearFromCandles(result)
+            };
+        }
+
+        private static double InferPeriodsPerYearFromCandles(BacktestResult result)
+        {
+            if (result.Candles == null || result.Candles.Count < 2)
+                return 365.0;
+
+            var sorted = result.Candles
+                .Select(c => c.OpenTime)
+                .OrderBy(t => t)
+                .ToList();
+
+            var minuteDiffs = new List<double>();
+            for (int i = 1; i < sorted.Count; i++)
+            {
+                var diff = (sorted[i] - sorted[i - 1]).TotalMinutes;
+                if (diff > 0)
+                    minuteDiffs.Add(diff);
+            }
+
+            if (minuteDiffs.Count == 0)
+                return 365.0;
+
+            minuteDiffs.Sort();
+            double medianMinutes = minuteDiffs[minuteDiffs.Count / 2];
+            if (medianMinutes <= 0)
+                return 365.0;
+
+            double periods = (365.0 * 24.0 * 60.0) / medianMinutes;
+            if (double.IsNaN(periods) || double.IsInfinity(periods) || periods <= 0)
+                return 365.0;
+
+            return Math.Max(1.0, periods);
         }
 
         public async Task<BacktestResult> OptimizeRsiStrategyAsync(string symbol, DateTime startDate, DateTime endDate, decimal initialBalance)

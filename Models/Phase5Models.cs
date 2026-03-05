@@ -5,6 +5,21 @@ using TradingBot.Shared.Models;
 
 namespace TradingBot.Models
 {
+    public enum BacktestAnnualizationMode
+    {
+        Auto,
+        None,
+        TradingDays252,
+        CalendarDays365,
+        Crypto5m
+    }
+
+    public class BacktestMetricOptions
+    {
+        public double RiskFreeRateAnnualPct { get; set; } = 0.0;
+        public BacktestAnnualizationMode AnnualizationMode { get; set; } = BacktestAnnualizationMode.Auto;
+    }
+
     public class BacktestResult
     {
         public string Symbol { get; set; } = string.Empty;
@@ -19,6 +34,7 @@ namespace TradingBot.Models
         public decimal MaxDrawdown { get; set; }
         public double SharpeRatio { get; set; }
         public double SortinoRatio { get; set; }
+        public string MetricsComputationNote { get; set; } = string.Empty;
         public string Message { get; set; } = string.Empty;
         public string StrategyConfiguration { get; set; } = string.Empty;
 

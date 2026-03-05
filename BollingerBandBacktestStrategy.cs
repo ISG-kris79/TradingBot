@@ -20,6 +20,15 @@ namespace TradingBot.Services.BacktestStrategies
             decimal positionQuantity = 0;
             bool inPosition = false;
 
+            result.EquityCurve.Clear();
+            result.TradeDates.Clear();
+
+            if (candles.Count > 0)
+            {
+                result.EquityCurve.Add(currentBalance);
+                result.TradeDates.Add(candles[0].OpenTime.ToString("MM/dd HH:mm"));
+            }
+
             var closes = candles.Select(c => (double)c.Close).ToArray();
             var uppers = new double[candles.Count];
             var lowers = new double[candles.Count];
@@ -69,13 +78,14 @@ namespace TradingBot.Services.BacktestStrategies
                     if (profit > 0) result.WinCount++; else result.LossCount++;
 
                     result.TradeHistory.Add(new TradeLog(result.Symbol, "SELL", "Backtest_BB", currentPrice, 0, candle.OpenTime));
-                    
-                    result.EquityCurve.Add(currentBalance);
-                    result.TradeDates.Add(candle.OpenTime.ToString("MM/dd HH:mm"));
 
                     inPosition = false;
                     positionQuantity = 0;
                 }
+
+                decimal markToMarketEquity = currentBalance + (inPosition ? positionQuantity * currentPrice : 0m);
+                result.EquityCurve.Add(markToMarketEquity);
+                result.TradeDates.Add(candle.OpenTime.ToString("MM/dd HH:mm"));
             }
             result.FinalBalance = currentBalance + (inPosition ? positionQuantity * (decimal)candles.Last().Close : 0);
         }

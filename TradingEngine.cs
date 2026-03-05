@@ -2059,6 +2059,24 @@ namespace TradingBot
             // 진입 시도 로그 (디버깅용)
             OnStatusLog?.Invoke($"📋 [{signalSource}] {symbol} {decision} 진입 시도 시작 (가격: ${currentPrice:F2})");
 
+            bool positionReserved = false;
+            bool orderPlaced = false;
+
+            void CleanupReservedPosition(string reason)
+            {
+                if (!positionReserved || orderPlaced)
+                    return;
+
+                lock (_posLock)
+                {
+                    if (_activePositions.TryGetValue(symbol, out var reservedPos) && reservedPos.Quantity == 0)
+                    {
+                        _activePositions.Remove(symbol);
+                        OnStatusLog?.Invoke($"🧹 {symbol} 예약 포지션 정리: {reason}");
+                    }
+                }
+            }
+
             // 1. 진입 신호가 아니면 즉시 종료
             if (decision != "LONG" && decision != "SHORT") return;
 
@@ -2276,9 +2294,16 @@ namespace TradingBot
                         StopLoss = customStopLossPrice > 0 ? customStopLossPrice : 0
                     };
                 }
+                positionReserved = true;
 
                 // 4. 레버리지 및 마진 모드(격리) 설정
-                await _exchangeService.SetLeverageAsync(symbol, leverage, token);
+                bool leverageSet = await _exchangeService.SetLeverageAsync(symbol, leverage, token);
+                if (!leverageSet)
+                {
+                    CleanupReservedPosition("레버리지 설정 실패");
+                    OnStatusLog?.Invoke($"❌ {symbol} 레버리지 설정 실패로 진입 취소");
+                    return;
+                }
 
                 // 수량 계산: (증거금 * 레버리지) / 현재가
                 decimal quantity = (marginUsdt * leverage) / currentPrice;
@@ -2292,7 +2317,12 @@ namespace TradingBot
                     quantity = Math.Floor(quantity / stepSize) * stepSize;
                 }
 
-                if (quantity <= 0) return;
+                if (quantity <= 0)
+                {
+                    CleanupReservedPosition("수량 계산 결과 0");
+                    OnStatusLog?.Invoke($"❌ {symbol} 수량 계산 결과가 0 이하라 진입 취소");
+                    return;
+                }
 
                 // [긴급 방어 2] 슬리피지 검증 (호가창 확인)
                 var orderBook = await _exchangeService.GetOrderBookAsync(symbol, token);
@@ -2349,6 +2379,7 @@ namespace TradingBot
                         if (_activePositions.TryGetValue(symbol, out var pos))
                         {
                             pos.Quantity = quantity;
+                            orderPlaced = true;
                             OnTradeExecuted?.Invoke(symbol, decision, currentPrice, quantity);
                         }
                         else
@@ -2382,16 +2413,18 @@ namespace TradingBot
                     }
 
                     // 🔥 [핵심] 감시 루프 시작 (Task.Run으로 별도 스레드에서 실행)
-                    _ = Task.Run(() => _positionMonitor.MonitorPositionStandard(symbol, currentPrice, decision == "LONG", token, mode, customTakeProfitPrice, customStopLossPrice), token);
+                    _ = Task.Run(() => _positionMonitor.MonitorPositionStandard(symbol, limitPrice, decision == "LONG", token, mode, customTakeProfitPrice, customStopLossPrice), token);
 
                 }
                 else
                 {
                     OnStatusLog?.Invoke($"❌ {symbol} 주문 실패");
+                    CleanupReservedPosition("주문 실패");
                 }
             }
             catch (Exception ex)
             {
+                CleanupReservedPosition($"예외 발생: {ex.GetType().Name}");
                 OnStatusLog?.Invoke($"⚠️ ExecuteAutoOrder 에러: {ex.Message}");
                 try
                 {

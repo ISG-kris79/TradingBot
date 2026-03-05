@@ -23,23 +23,32 @@ namespace TradingBot.Services.BacktestStrategies
             decimal positionQuantity = 0;
             bool inPosition = false;
 
-            // RSI 시리즈 계산 (Period가 14가 아닐 경우를 대비하거나 일관성을 위해)
-            List<double> rsiValues;
-            if (RsiPeriod == 14)
+            result.EquityCurve.Clear();
+            result.TradeDates.Clear();
+
+            if (candles.Count > 0)
             {
-                rsiValues = candles.Select(c => (double)c.RSI).ToList();
+                result.EquityCurve.Add(currentBalance);
+                result.TradeDates.Add(candles[0].OpenTime.ToString("MM/dd HH:mm"));
             }
-            else
-            {
-                var prices = candles.Select(c => (double)c.Close).ToList();
-                rsiValues = IndicatorCalculator.CalculateRSISeries(prices, RsiPeriod);
-            }
+
+            // RSI는 DB 저장값이 0인 경우가 있어, 항상 종가 기반으로 재계산
+            var prices = candles.Select(c => (double)c.Close).ToList();
+            var rsiValues = IndicatorCalculator.CalculateRSISeries(prices, RsiPeriod);
 
             for (int i = 0; i < candles.Count; i++)
             {
                 var candle = candles[i];
                 decimal currentPrice = (decimal)candle.Close;
                 double currentRsi = rsiValues[i];
+
+                if (currentPrice <= 0 || double.IsNaN(currentRsi) || double.IsInfinity(currentRsi))
+                {
+                    decimal markToMarketInvalid = currentBalance + (inPosition ? positionQuantity * currentPrice : 0m);
+                    result.EquityCurve.Add(markToMarketInvalid);
+                    result.TradeDates.Add(candle.OpenTime.ToString("MM/dd HH:mm"));
+                    continue;
+                }
 
                 // [매수] RSI BuyThreshold 미만
                 if (!inPosition && currentRsi < BuyThreshold && currentRsi > 0)
@@ -63,13 +72,13 @@ namespace TradingBot.Services.BacktestStrategies
 
                     result.TradeHistory.Add(new TradeLog(result.Symbol, "SELL", "Backtest_RSI", currentPrice, 0, candle.OpenTime));
 
-                    // 수익 곡선 기록
-                    result.EquityCurve.Add(currentBalance);
-                    result.TradeDates.Add(candle.OpenTime.ToString("MM/dd HH:mm"));
-
                     inPosition = false;
                     positionQuantity = 0;
                 }
+
+                decimal markToMarketEquity = currentBalance + (inPosition ? positionQuantity * currentPrice : 0m);
+                result.EquityCurve.Add(markToMarketEquity);
+                result.TradeDates.Add(candle.OpenTime.ToString("MM/dd HH:mm"));
             }
             result.FinalBalance = currentBalance + (inPosition ? positionQuantity * (decimal)candles.Last().Close : 0);
         }

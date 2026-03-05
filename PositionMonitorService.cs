@@ -1029,6 +1029,48 @@ namespace TradingBot.Services
                     return;
                 }
 
+                decimal exitPrice = 0;
+                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var cached))
+                {
+                    exitPrice = cached.LastPrice;
+                }
+
+                if (exitPrice == 0)
+                {
+                    exitPrice = await _exchangeService.GetPriceAsync(symbol, ct: token);
+                }
+
+                decimal pnl = localPosition.IsLong
+                    ? (exitPrice - localPosition.EntryPrice) * closeQty
+                    : (localPosition.EntryPrice - exitPrice) * closeQty;
+
+                _riskManager.UpdatePnlAndCheck(pnl);
+
+                decimal pnlPercent = 0;
+                if (localPosition.EntryPrice > 0)
+                {
+                    pnlPercent = (pnl / (localPosition.EntryPrice * closeQty)) * 100 * localPosition.Leverage;
+                }
+
+                var partialLog = new TradeLog(
+                    symbol,
+                    side,
+                    "PartialClose",
+                    exitPrice,
+                    localPosition.AiScore,
+                    DateTime.Now,
+                    pnl,
+                    pnlPercent);
+
+                try
+                {
+                    await _dbManager.SaveTradeLogAsync(partialLog);
+                }
+                catch (Exception dbEx)
+                {
+                    OnLog?.Invoke($"⚠️ {symbol} 부분청산 DB 저장 실패: {dbEx.Message}");
+                }
+
                 var remainingQty = Math.Max(0, currentQty - closeQty);
                 lock (_posLock)
                 {
@@ -1038,7 +1080,7 @@ namespace TradingBot.Services
                     }
                 }
 
-                OnLog?.Invoke($"✅ {symbol} 부분청산 완료: 청산={closeQty}, 잔여={remainingQty}");
+                OnLog?.Invoke($"✅ {symbol} 부분청산 완료: 청산={closeQty}, 잔여={remainingQty}, PnL={pnl:F2}, ROE={pnlPercent:F2}%");
                 OnPositionStatusUpdate?.Invoke(symbol, remainingQty > 0, 0);
             }
             catch (Exception ex)
