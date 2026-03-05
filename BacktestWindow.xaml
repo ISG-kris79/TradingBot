@@ -147,14 +147,18 @@
                         Padding="15"
                         Margin="0,0,0,15">
                     <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
-                        <StackPanel Grid.Column="0"
+                        <StackPanel Grid.Row="0"
+                                    Grid.Column="0"
                                     HorizontalAlignment="Center">
                             <TextBlock Text="Total Profit"
                                        Foreground="#94A3B8"
@@ -165,7 +169,8 @@
                                        Foreground="{Binding ProfitColor}"/>
                         </StackPanel>
 
-                        <StackPanel Grid.Column="1"
+                        <StackPanel Grid.Row="0"
+                                    Grid.Column="1"
                                     HorizontalAlignment="Center">
                             <TextBlock Text="Profit %"
                                        Foreground="#94A3B8"
@@ -176,7 +181,8 @@
                                        Foreground="{Binding ProfitColor}"/>
                         </StackPanel>
 
-                        <StackPanel Grid.Column="2"
+                        <StackPanel Grid.Row="0"
+                                    Grid.Column="2"
                                     HorizontalAlignment="Center">
                             <TextBlock Text="Win Rate"
                                        Foreground="#94A3B8"
@@ -187,16 +193,46 @@
                                        Foreground="#3B82F6"/>
                         </StackPanel>
 
-                        <StackPanel Grid.Column="3"
-                                    HorizontalAlignment="Center">
-                            <TextBlock Text="Max Drawdown"
-                                       Foreground="#94A3B8"
-                                       FontSize="12"/>
-                            <TextBlock Text="{Binding Result.MaxDrawdown, StringFormat={}{0:F2}%}"
-                                       FontSize="18"
-                                       FontWeight="Bold"
-                                       Foreground="#EF4444"/>
-                        </StackPanel>
+                        <Grid Grid.Row="1" Grid.ColumnSpan="3" Margin="0,14,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0"
+                                        HorizontalAlignment="Center">
+                                <TextBlock Text="Max Drawdown"
+                                           Foreground="#94A3B8"
+                                           FontSize="12"/>
+                                <TextBlock Text="{Binding Result.MaxDrawdown, StringFormat={}{0:F2}%}"
+                                           FontSize="18"
+                                           FontWeight="Bold"
+                                           Foreground="#EF4444"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="1"
+                                        HorizontalAlignment="Center">
+                                <TextBlock Text="Sharpe Ratio"
+                                           Foreground="#94A3B8"
+                                           FontSize="12"/>
+                                <TextBlock Text="{Binding Result.SharpeRatio, StringFormat={}{0:F2}}"
+                                           FontSize="18"
+                                           FontWeight="Bold"
+                                           Foreground="#F59E0B"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2"
+                                        HorizontalAlignment="Center">
+                                <TextBlock Text="Sortino Ratio"
+                                           Foreground="#94A3B8"
+                                           FontSize="12"/>
+                                <TextBlock Text="{Binding Result.SortinoRatio, StringFormat={}{0:F2}}"
+                                           FontSize="18"
+                                           FontWeight="Bold"
+                                           Foreground="#10B981"/>
+                            </StackPanel>
+                        </Grid.ColumnDefinitions>
                     </Grid>
                 </Border>
 
