@@ -505,6 +505,101 @@ namespace TradingBot.Models
             }
         }
 
+        private bool _hasCloseIncomplete;
+        public bool HasCloseIncomplete
+        {
+            get => _hasCloseIncomplete;
+            set
+            {
+                if (_hasCloseIncomplete != value)
+                {
+                    _hasCloseIncomplete = value;
+                    OnPropertyChanged(nameof(HasCloseIncomplete));
+                    OnPropertyChanged(nameof(CloseStatusText));
+                    OnPropertyChanged(nameof(CloseStatusBackground));
+                    OnPropertyChanged(nameof(CloseStatusForeground));
+                    OnPropertyChanged(nameof(Status));
+                }
+            }
+        }
+
+        private string? _closeIncompleteDetail;
+        public string? CloseIncompleteDetail
+        {
+            get => _closeIncompleteDetail;
+            set
+            {
+                if (_closeIncompleteDetail != value)
+                {
+                    _closeIncompleteDetail = value;
+                    OnPropertyChanged(nameof(CloseIncompleteDetail));
+                    OnPropertyChanged(nameof(CloseStatusText));
+                }
+            }
+        }
+
+        public string CloseStatusText => HasCloseIncomplete && IsPositionActive ? "청산미완료" : "-";
+
+        public Brush CloseStatusBackground => HasCloseIncomplete && IsPositionActive
+            ? new SolidColorBrush(Color.FromRgb(185, 28, 28))
+            : new SolidColorBrush(Color.FromRgb(51, 65, 85));
+
+        public Brush CloseStatusForeground => HasCloseIncomplete && IsPositionActive
+            ? Brushes.White
+            : Brushes.LightGray;
+
+        private string? _externalSyncStatus;
+        public string? ExternalSyncStatus
+        {
+            get => _externalSyncStatus;
+            set
+            {
+                if (_externalSyncStatus != value)
+                {
+                    _externalSyncStatus = value;
+                    OnPropertyChanged(nameof(ExternalSyncStatus));
+                    OnPropertyChanged(nameof(SyncStatusText));
+                    OnPropertyChanged(nameof(SyncStatusBackground));
+                    OnPropertyChanged(nameof(SyncStatusForeground));
+                }
+            }
+        }
+
+        private string? _externalSyncDetail;
+        public string? ExternalSyncDetail
+        {
+            get => _externalSyncDetail;
+            set
+            {
+                if (_externalSyncDetail != value)
+                {
+                    _externalSyncDetail = value;
+                    OnPropertyChanged(nameof(ExternalSyncDetail));
+                }
+            }
+        }
+
+        public string SyncStatusText => string.IsNullOrWhiteSpace(ExternalSyncStatus) ? "-" : ExternalSyncStatus!;
+
+        public Brush SyncStatusBackground
+        {
+            get
+            {
+                return ExternalSyncStatus switch
+                {
+                    "외부청산" => new SolidColorBrush(Color.FromRgb(30, 64, 175)),
+                    "외부부분" => new SolidColorBrush(Color.FromRgb(180, 83, 9)),
+                    "외부증가" => new SolidColorBrush(Color.FromRgb(22, 101, 52)),
+                    "외부복원" => new SolidColorBrush(Color.FromRgb(109, 40, 217)),
+                    _ => new SolidColorBrush(Color.FromRgb(51, 65, 85))
+                };
+            }
+        }
+
+        public Brush SyncStatusForeground => string.IsNullOrWhiteSpace(ExternalSyncStatus)
+            ? Brushes.LightGray
+            : Brushes.White;
+
         // [Phase 7] Transformer 예측 결과
         private decimal _transformerPrice;
         public decimal TransformerPrice
@@ -753,6 +848,7 @@ namespace TradingBot.Models
             get
             {
                 if (!IsPositionActive) return PositionStatus.None;
+                if (HasCloseIncomplete) return PositionStatus.Danger;
                 if (ProfitRate <= -1.0) return PositionStatus.Danger; // 손절 임박
                 if (ProfitRate >= 2.0) return PositionStatus.TakeProfitReady; // 익절 구간 진입
                 return PositionStatus.Monitoring; // 일반 감시 중

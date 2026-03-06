@@ -15,13 +15,31 @@ namespace TradingBot.Services
     /// </summary>
     public class MockExchangeService : IExchangeService
     {
+        private sealed class MockOrderStatus
+        {
+            public decimal FilledQuantity { get; set; }
+            public decimal AveragePrice { get; set; }
+        }
+
+        private sealed class MockStopOrder
+        {
+            public string Symbol { get; set; } = string.Empty;
+            public string Side { get; set; } = string.Empty;
+            public decimal Quantity { get; set; }
+            public decimal StopPrice { get; set; }
+        }
+
         private decimal _balance;
         private Dictionary<string, PositionInfo> _positions = new();
         private Dictionary<string, decimal> _currentPrices = new();
+        private Dictionary<string, int> _symbolLeverages = new();
+        private Dictionary<string, MockOrderStatus> _filledOrders = new();
+        private Dictionary<string, MockStopOrder> _stopOrders = new();
         // [수정] 거래소별 수수료 시뮬레이션 (기본값: Binance Taker 0.05%)
         private decimal _makerFeeRate = 0.0002m; // 0.02%
         private decimal _takerFeeRate = 0.0005m; // 0.05%
         private readonly Random _random = new Random();
+        private readonly object _syncLock = new object();
 
         public string ExchangeName => "MockExchange";
 
@@ -33,7 +51,11 @@ namespace TradingBot.Services
         // 백테스팅 엔진에서 현재 가격을 주입
         public void SetCurrentPrice(string symbol, decimal price)
         {
-            _currentPrices[symbol] = price;
+            lock (_syncLock)
+            {
+                _currentPrices[symbol] = price;
+                TriggerStopOrders(symbol, price);
+            }
         }
 
         public Task<decimal> GetBalanceAsync(string asset, CancellationToken token = default)
@@ -43,113 +65,61 @@ namespace TradingBot.Services
 
         public Task<decimal> GetPriceAsync(string symbol, CancellationToken token = default)
         {
-            return Task.FromResult(_currentPrices.ContainsKey(symbol) ? _currentPrices[symbol] : 0m);
+            lock (_syncLock)
+            {
+                return Task.FromResult(_currentPrices.ContainsKey(symbol) ? _currentPrices[symbol] : 0m);
+            }
         }
 
         public Task<List<PositionInfo>> GetPositionsAsync(CancellationToken token = default)
         {
-            return Task.FromResult(_positions.Values.ToList());
+            lock (_syncLock)
+            {
+                return Task.FromResult(_positions.Values.Select(ClonePosition).ToList());
+            }
         }
 
         public Task<bool> PlaceOrderAsync(string symbol, string side, decimal quantity, decimal? price = null, CancellationToken token = default, bool reduceOnly = false)
         {
-            // 간단한 시뮬레이션: 시장가 즉시 체결, 지정가는 현재가 도달 시 체결 가정(여기선 즉시 체결로 단순화)
-            decimal execPrice = price ?? (_currentPrices.ContainsKey(symbol) ? _currentPrices[symbol] : 0);
-            if (execPrice == 0) return Task.FromResult(false);
+            var result = ExecuteOrder(symbol, side, quantity, price, reduceOnly);
+            return Task.FromResult(result.Success);
+        }
 
-            // [추가] 주문 실패 시뮬레이션 (1% 확률로 실패)
-            if (_random.NextDouble() < 0.01)
+        public Task<bool> SetLeverageAsync(string symbol, int leverage, CancellationToken token = default)
+        {
+            lock (_syncLock)
             {
-                return Task.FromResult(false);
-            }
-
-            // [추가] 슬리피지 시뮬레이션 (0 ~ 0.1% 불리한 가격 체결)
-            decimal slippage = (decimal)(_random.NextDouble() * 0.001);
-            if (side.ToUpper() == "BUY") execPrice *= (1 + slippage);
-            else execPrice *= (1 - slippage);
-
-            bool isMaker = price.HasValue; // 지정가 주문은 Maker로 가정
-            decimal feeRate = isMaker ? _makerFeeRate : _takerFeeRate;
-
-            decimal cost = execPrice * quantity; // 레버리지 미적용 단순 계산 (증거금 차감 로직은 생략하고 PnL만 추적)
-
-            if (reduceOnly && !_positions.ContainsKey(symbol))
-            {
-                return Task.FromResult(true);
-            }
-
-            if (side.ToUpper() == "BUY") // LONG 진입 or SHORT 청산
-            {
-                if (_positions.ContainsKey(symbol) && !_positions[symbol].IsLong) // Short Close
-                {
-                    var pos = _positions[symbol];
-                    decimal pnl = (pos.EntryPrice - execPrice) * pos.Quantity;
-                    decimal fee = (pos.EntryPrice * pos.Quantity * feeRate) + (execPrice * pos.Quantity * feeRate);
-
-                    _balance += (pnl - fee);
-                    _positions.Remove(symbol);
-                }
-                else // Long Open
-                {
-                    if (reduceOnly)
-                    {
-                        return Task.FromResult(true);
-                    }
-
-                    _positions[symbol] = new PositionInfo
-                    {
-                        Symbol = symbol,
-                        EntryPrice = execPrice,
-                        Quantity = quantity,
-                        IsLong = true,
-                        Side = OrderSide.Buy
-                    };
-                }
-            }
-            else // SELL: SHORT 진입 or LONG 청산
-            {
-                if (_positions.ContainsKey(symbol) && _positions[symbol].IsLong) // Long Close
-                {
-                    var pos = _positions[symbol];
-                    decimal pnl = (execPrice - pos.EntryPrice) * pos.Quantity;
-                    decimal fee = (pos.EntryPrice * pos.Quantity * feeRate) + (execPrice * pos.Quantity * feeRate);
-
-                    _balance += (pnl - fee);
-                    _positions.Remove(symbol);
-                }
-                else // Short Open
-                {
-                    if (reduceOnly)
-                    {
-                        return Task.FromResult(true);
-                    }
-
-                    _positions[symbol] = new PositionInfo
-                    {
-                        Symbol = symbol,
-                        EntryPrice = execPrice,
-                        Quantity = quantity,
-                        IsLong = false,
-                        Side = OrderSide.Sell
-                    };
-                }
+                _symbolLeverages[symbol] = leverage;
             }
 
             return Task.FromResult(true);
         }
 
-        public Task<bool> SetLeverageAsync(string symbol, int leverage, CancellationToken token = default) => Task.FromResult(true);
-
-        public Task<bool> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default)
+        public Task<(bool Success, string OrderId)> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default)
         {
-            // 스탑 오더 시뮬레이션 (간단히 즉시 실행으로 처리)
-            return PlaceOrderAsync(symbol, side, quantity, stopPrice, ct, reduceOnly: true);
+            lock (_syncLock)
+            {
+                string orderId = Guid.NewGuid().ToString();
+                _stopOrders[orderId] = new MockStopOrder
+                {
+                    Symbol = symbol,
+                    Side = side,
+                    Quantity = quantity,
+                    StopPrice = stopPrice
+                };
+
+                return Task.FromResult((true, orderId));
+            }
         }
 
         public Task<bool> CancelOrderAsync(string symbol, string orderId, CancellationToken ct = default)
         {
-            // Mock은 Order ID 추적 안 함 - 항상 성공 반환
-            return Task.FromResult(true);
+            lock (_syncLock)
+            {
+                _stopOrders.Remove(orderId);
+                _filledOrders.Remove(orderId);
+                return Task.FromResult(true);
+            }
         }
 
         public Task<List<IBinanceKline>> GetKlinesAsync(string symbol, KlineInterval interval, int limit, CancellationToken ct = default)
@@ -249,10 +219,23 @@ namespace TradingBot.Services
             decimal price,
             CancellationToken ct = default)
         {
-            // Mock: 지정가 주문을 즉시 체결로 시뮬레이션
-            bool success = PlaceOrderAsync(symbol, side, quantity, price, ct).Result;
-            string orderId = success ? Guid.NewGuid().ToString() : string.Empty;
-            return Task.FromResult((success, orderId));
+            var result = ExecuteOrder(symbol, side, quantity, price, reduceOnly: false);
+            if (!result.Success)
+            {
+                return Task.FromResult((false, string.Empty));
+            }
+
+            lock (_syncLock)
+            {
+                string orderId = Guid.NewGuid().ToString();
+                _filledOrders[orderId] = new MockOrderStatus
+                {
+                    FilledQuantity = result.ExecutedQuantity,
+                    AveragePrice = result.ExecutedPrice
+                };
+
+                return Task.FromResult((true, orderId));
+            }
         }
 
         /// <summary>
@@ -263,9 +246,173 @@ namespace TradingBot.Services
             string orderId,
             CancellationToken ct = default)
         {
-            // Mock: 항상 체결 완료로 반환
-            decimal price = _currentPrices.ContainsKey(symbol) ? _currentPrices[symbol] : 0m;
-            return Task.FromResult((true, 1m, price));
+            lock (_syncLock)
+            {
+                if (_filledOrders.TryGetValue(orderId, out var status))
+                {
+                    return Task.FromResult((true, status.FilledQuantity, status.AveragePrice));
+                }
+
+                decimal price = _currentPrices.ContainsKey(symbol) ? _currentPrices[symbol] : 0m;
+                return Task.FromResult((false, 0m, price));
+            }
+        }
+
+        private PositionInfo ClonePosition(PositionInfo pos)
+        {
+            return new PositionInfo
+            {
+                Symbol = pos.Symbol,
+                EntryPrice = pos.EntryPrice,
+                Quantity = pos.Quantity,
+                IsLong = pos.IsLong,
+                Side = pos.Side,
+                Leverage = pos.Leverage,
+                EntryTime = pos.EntryTime,
+                IsPumpStrategy = pos.IsPumpStrategy,
+                AiScore = pos.AiScore,
+                TakeProfit = pos.TakeProfit,
+                StopLoss = pos.StopLoss,
+                StopOrderId = pos.StopOrderId,
+                TakeProfitStep = pos.TakeProfitStep,
+                IsAveragedDown = pos.IsAveragedDown,
+                Wave1LowPrice = pos.Wave1LowPrice,
+                Wave1HighPrice = pos.Wave1HighPrice,
+                Fib0618Level = pos.Fib0618Level,
+                Fib0786Level = pos.Fib0786Level,
+                Fib1618Target = pos.Fib1618Target,
+                HighestROEForTrailing = pos.HighestROEForTrailing,
+                PartialProfitStage = pos.PartialProfitStage,
+                BreakevenPrice = pos.BreakevenPrice
+            };
+        }
+
+        private (bool Success, decimal ExecutedQuantity, decimal ExecutedPrice) ExecuteOrder(string symbol, string side, decimal quantity, decimal? price, bool reduceOnly)
+        {
+            lock (_syncLock)
+            {
+                return ExecuteOrderCore(symbol, side, quantity, price, reduceOnly);
+            }
+        }
+
+        private (bool Success, decimal ExecutedQuantity, decimal ExecutedPrice) ExecuteOrderCore(string symbol, string side, decimal quantity, decimal? price, bool reduceOnly)
+        {
+            decimal basePrice = price ?? (_currentPrices.ContainsKey(symbol) ? _currentPrices[symbol] : 0m);
+            if (basePrice <= 0 || quantity <= 0)
+            {
+                return (false, 0m, 0m);
+            }
+
+            if (_random.NextDouble() < 0.01)
+            {
+                return (false, 0m, 0m);
+            }
+
+            decimal slippage = (decimal)(_random.NextDouble() * 0.001);
+            decimal execPrice = side.ToUpper() == "BUY"
+                ? basePrice * (1 + slippage)
+                : basePrice * (1 - slippage);
+
+            bool isMaker = price.HasValue;
+            decimal feeRate = isMaker ? _makerFeeRate : _takerFeeRate;
+            string normalizedSide = side.ToUpperInvariant();
+
+            if (!_positions.TryGetValue(symbol, out var existingPosition))
+            {
+                if (reduceOnly)
+                {
+                    return (true, 0m, execPrice);
+                }
+
+                OpenNewPosition(symbol, normalizedSide == "BUY", quantity, execPrice);
+                return (true, quantity, execPrice);
+            }
+
+            bool closesExisting = (normalizedSide == "BUY" && !existingPosition.IsLong) || (normalizedSide == "SELL" && existingPosition.IsLong);
+            if (closesExisting)
+            {
+                decimal closeQty = Math.Min(quantity, existingPosition.Quantity);
+                if (closeQty > 0)
+                {
+                    decimal pnl = existingPosition.IsLong
+                        ? (execPrice - existingPosition.EntryPrice) * closeQty
+                        : (existingPosition.EntryPrice - execPrice) * closeQty;
+                    decimal fee = (existingPosition.EntryPrice * closeQty * feeRate) + (execPrice * closeQty * feeRate);
+                    _balance += (pnl - fee);
+
+                    existingPosition.Quantity -= closeQty;
+                    if (existingPosition.Quantity <= 0)
+                    {
+                        _positions.Remove(symbol);
+                    }
+                }
+
+                decimal remainingOpenQty = quantity - closeQty;
+                if (!reduceOnly && remainingOpenQty > 0)
+                {
+                    OpenNewPosition(symbol, normalizedSide == "BUY", remainingOpenQty, execPrice);
+                }
+
+                return (true, closeQty, execPrice);
+            }
+
+            if (reduceOnly)
+            {
+                return (true, 0m, execPrice);
+            }
+
+            decimal oldQty = existingPosition.Quantity;
+            decimal newQty = oldQty + quantity;
+            existingPosition.EntryPrice = ((existingPosition.EntryPrice * oldQty) + (execPrice * quantity)) / newQty;
+            existingPosition.Quantity = newQty;
+            existingPosition.Leverage = _symbolLeverages.TryGetValue(symbol, out var leverage) ? leverage : existingPosition.Leverage;
+
+            return (true, quantity, execPrice);
+        }
+
+        private void OpenNewPosition(string symbol, bool isLong, decimal quantity, decimal execPrice)
+        {
+            _positions[symbol] = new PositionInfo
+            {
+                Symbol = symbol,
+                EntryPrice = execPrice,
+                Quantity = quantity,
+                IsLong = isLong,
+                Side = isLong ? OrderSide.Buy : OrderSide.Sell,
+                Leverage = _symbolLeverages.TryGetValue(symbol, out var leverage) ? leverage : 20,
+                EntryTime = DateTime.Now
+            };
+        }
+
+        private void TriggerStopOrders(string symbol, decimal currentPrice)
+        {
+            var triggeredIds = new List<string>();
+
+            foreach (var kvp in _stopOrders)
+            {
+                var stopOrder = kvp.Value;
+                if (!string.Equals(stopOrder.Symbol, symbol, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                bool shouldTrigger = stopOrder.Side.ToUpperInvariant() == "SELL"
+                    ? currentPrice <= stopOrder.StopPrice
+                    : currentPrice >= stopOrder.StopPrice;
+
+                if (!shouldTrigger)
+                {
+                    continue;
+                }
+
+                ExecuteOrderCore(stopOrder.Symbol, stopOrder.Side, stopOrder.Quantity, currentPrice, reduceOnly: true);
+                triggeredIds.Add(kvp.Key);
+            }
+
+            foreach (var orderId in triggeredIds)
+            {
+                _stopOrders.Remove(orderId);
+            }
         }
     }
 }

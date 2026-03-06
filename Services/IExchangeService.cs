@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using TradingBot.Models;
 using TradingBot.Shared.Models;
 using Binance.Net.Enums;
+using Binance.Net.Interfaces;
 
 namespace TradingBot.Services
 {
@@ -15,6 +16,8 @@ namespace TradingBot.Services
         Task<bool> PlaceOrderAsync(string symbol, string side, decimal quantity, decimal? price = null, CancellationToken ct = default, bool reduceOnly = false);
         Task<bool> SetLeverageAsync(string symbol, int leverage, CancellationToken token = default);
 
+        Task<List<IBinanceKline>> GetKlinesAsync(string symbol, KlineInterval interval, int limit, CancellationToken ct = default);
+
         // [추가] 거래소 정보 조회 (LotSize 등)
         Task<ExchangeInfo?> GetExchangeInfoAsync(CancellationToken token = default);
 
@@ -25,7 +28,7 @@ namespace TradingBot.Services
         Task<decimal> GetFundingRateAsync(string symbol, CancellationToken token = default);
 
         // [추가] 포지션 관리
-        Task<bool> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default);
+        Task<(bool Success, string OrderId)> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default);
         Task<bool> CancelOrderAsync(string symbol, string orderId, CancellationToken ct = default);
 
         // [Phase 11] Batch Order for Grid Strategy

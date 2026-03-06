@@ -114,7 +114,14 @@ namespace TradingBot
 
         public static void ApplyGeneralSettings(TradingSettings settings)
         {
-            CurrentGeneralSettings = settings ?? new TradingSettings();
+            var nextSettings = settings ?? new TradingSettings();
+
+            if (CurrentGeneralSettings == null)
+            {
+                CurrentGeneralSettings = new TradingSettings();
+            }
+
+            CopyTradingSettings(CurrentGeneralSettings, nextSettings);
             CurrentGeneralSettings.MajorTrendProfile = string.Equals(CurrentGeneralSettings.MajorTrendProfile, "Aggressive", StringComparison.OrdinalIgnoreCase)
                 ? "Aggressive"
                 : "Balanced";
@@ -126,7 +133,24 @@ namespace TradingBot
 
             Instance?.ViewModel?.UpdateMajorProfileStatus(CurrentGeneralSettings.MajorTrendProfile);
 
-            Instance?.AddLog($"[GeneralSettings] ✅ 런타임 적용 완료 (MajorProfile: {CurrentGeneralSettings.MajorTrendProfile})");
+            Instance?.AddLog($"[GeneralSettings] ✅ 런타임 적용 완료 (Leverage: {CurrentGeneralSettings.DefaultLeverage}x, TP: {CurrentGeneralSettings.TargetRoe:F2}%, SL: {CurrentGeneralSettings.StopLossRoe:F2}%, MajorProfile: {CurrentGeneralSettings.MajorTrendProfile})");
+        }
+
+        private static void CopyTradingSettings(TradingSettings target, TradingSettings source)
+        {
+            target.DefaultLeverage = source.DefaultLeverage;
+            target.DefaultMargin = source.DefaultMargin;
+            target.TargetRoe = source.TargetRoe;
+            target.StopLossRoe = source.StopLossRoe;
+            target.TrailingStartRoe = source.TrailingStartRoe;
+            target.TrailingDropRoe = source.TrailingDropRoe;
+            target.MajorTrendProfile = source.MajorTrendProfile;
+            target.PumpLeverage = source.PumpLeverage;
+            target.PumpTp1Roe = source.PumpTp1Roe;
+            target.PumpTp2Roe = source.PumpTp2Roe;
+            target.PumpTimeStopMinutes = source.PumpTimeStopMinutes;
+            target.PumpStopDistanceWarnPct = source.PumpStopDistanceWarnPct;
+            target.PumpStopDistanceBlockPct = source.PumpStopDistanceBlockPct;
         }
 
         public MainWindow()

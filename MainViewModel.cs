@@ -824,8 +824,17 @@ namespace TradingBot.ViewModels
 
                     if (sfd.ShowDialog() == true)
                     {
-                        var db = new DatabaseService();
-                        await db.ExportTradeHistoryToCsvAsync(sfd.FileName);
+                        int userId = AppConfig.CurrentUser?.Id ?? 0;
+                        if (userId <= 0)
+                        {
+                            AddLog("⚠️ 로그인 사용자 ID를 확인할 수 없어 매매 이력을 내보낼 수 없습니다.");
+                            return;
+                        }
+
+                        var db = new DbManager(AppConfig.ConnectionString);
+                        var start = StartDate.Date;
+                        var end = EndDate.Date.AddDays(1).AddTicks(-1);
+                        await db.ExportTradeHistoryToCsvAsync(sfd.FileName, userId, start, end);
                         AddLog($"✅ 매매 이력 저장 완료: {sfd.FileName}");
                     }
                 }
@@ -841,8 +850,16 @@ namespace TradingBot.ViewModels
                     if (MessageBox.Show($"{symbol} 포지션을 현재가로 청산하시겠습니까?", "수동 청산", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
                     {
                         if (_engine != null)
+                        {
                             await _engine.ClosePositionAsync(symbol);
-                        AddLog($"⚡ {symbol} 수동 청산 명령 전송됨");
+                            AddLog($"⚡ {symbol} 수동 청산 명령 전송됨");
+                            // [FIX] 청산 후 TradeHistory 즉시 갱신
+                            await LoadTradeHistory();
+                        }
+                        else
+                        {
+                            AddLog($"⚠️ {symbol} 수동 청산 실패: 엔진이 실행 중이 아닙니다.");
+                        }
                     }
                 }
             });
@@ -907,18 +924,24 @@ namespace TradingBot.ViewModels
         {
             try
             {
-                var db = new DatabaseService();
+                int userId = AppConfig.CurrentUser?.Id ?? 0;
+                if (userId <= 0)
+                {
+                    AddLog("⚠️ 로그인 사용자 ID를 확인할 수 없어 매매 이력을 로드할 수 없습니다.");
+                    return;
+                }
+
+                var db = new DbManager(AppConfig.ConnectionString);
                 var start = StartDate.Date;
                 var end = EndDate.Date.AddDays(1).AddTicks(-1);
-                var historyModels = await db.GetTradeHistoryAsync(start, end, 5000);
+                var historyModels = await db.GetTradeHistoryAsync(userId, start, end, 5000);
 
                 RunOnUI(() =>
                 {
                     TradeHistory.Clear();
                     foreach (var model in historyModels)
                     {
-                        // TradeHistoryModel -> TradeLog 변환
-                        TradeHistory.Add(new TradeLog(model.Symbol, model.Side, model.ExitReason, model.ExitPrice, 0, model.ExitTime, model.PnL, model.PnLPercent));
+                        TradeHistory.Add(model);
                     }
 
                     // 통계 계산
@@ -942,10 +965,22 @@ namespace TradingBot.ViewModels
                 return;
             }
 
-            var profitableTrades = TradeHistory.Where(t => t.PnL > 0).ToList();
-            WinRate = (double)profitableTrades.Count / TradeHistory.Count * 100;
-            TotalProfit = (double)TradeHistory.Sum(t => t.PnL);
-            AverageRoe = (double)TradeHistory.Average(t => t.PnLPercent);
+            var closedTrades = TradeHistory
+                .Where(t => !string.Equals(t.ExitReason, "OPEN_POSITION", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (closedTrades.Count == 0)
+            {
+                WinRate = 0;
+                TotalProfit = 0;
+                AverageRoe = 0;
+                return;
+            }
+
+            var profitableTrades = closedTrades.Where(t => t.PnL > 0).ToList();
+            WinRate = (double)profitableTrades.Count / closedTrades.Count * 100;
+            TotalProfit = (double)closedTrades.Sum(t => t.PnL);
+            AverageRoe = (double)closedTrades.Average(t => t.PnLPercent);
         }
 
         private void ApplyTheme()
@@ -1091,6 +1126,8 @@ namespace TradingBot.ViewModels
             _engine.OnTickerUpdate += (symbol, price, pnl) => UpdateTicker(symbol, price, pnl);
             _engine.OnSymbolTracking += symbol => EnsureSymbolInList(symbol);
             _engine.OnPositionStatusUpdate += (symbol, isActive, entryPrice) => UpdatePositionStatus(symbol, isActive, entryPrice);
+            _engine.OnCloseIncompleteStatusChanged += (symbol, isIncomplete, detail) => UpdateCloseIncompleteStatus(symbol, isIncomplete, detail);
+            _engine.OnExternalSyncStatusChanged += (symbol, status, detail) => UpdateExternalSyncStatus(symbol, status, detail);
             _engine.OnTradeExecuted += HandleTradeExecuted;
 
             // [추가] RL 통계 구독
@@ -1104,10 +1141,18 @@ namespace TradingBot.ViewModels
             {
                 AddPredictionRecord(record);
             };
+
+            // [FIX] 청산 시 TradeHistory 자동 갱신
+            _engine.OnTradeHistoryUpdated += () =>
+            {
+                _ = LoadTradeHistory();
+            };
         }
 
         private void HandleTradeExecuted(string symbol, string side, decimal price, decimal qty)
         {
+            UpdateExternalSyncStatus(symbol, null, null);
+
             // 1. 알림 로그 추가
             AddAlert($"[거래 체결] {symbol} {side} | 가격: {price:F4} | 수량: {qty}");
 
@@ -1415,6 +1460,8 @@ namespace TradingBot.ViewModels
                 {
                     existing.IsPositionActive = isActive;
                     existing.EntryPrice = entryPrice;
+                    existing.HasCloseIncomplete = false;
+                    existing.CloseIncompleteDetail = null;
                     if (isActive)
                     {
                         existing.TargetPrice = entryPrice * 1.03m;
@@ -1426,6 +1473,38 @@ namespace TradingBot.ViewModels
                         existing.ProfitPercent = 0;
                     }
                 }
+            });
+        }
+
+        private void UpdateCloseIncompleteStatus(string symbol, bool isIncomplete, string? detail)
+        {
+            RunOnUI(() =>
+            {
+                var existing = MarketDataList.FirstOrDefault(x => x.Symbol == symbol);
+                if (existing == null)
+                {
+                    existing = new MultiTimeframeViewModel { Symbol = symbol };
+                    MarketDataList.Add(existing);
+                }
+
+                existing.HasCloseIncomplete = isIncomplete;
+                existing.CloseIncompleteDetail = detail;
+            });
+        }
+
+        private void UpdateExternalSyncStatus(string symbol, string? status, string? detail)
+        {
+            RunOnUI(() =>
+            {
+                var existing = MarketDataList.FirstOrDefault(x => x.Symbol == symbol);
+                if (existing == null)
+                {
+                    existing = new MultiTimeframeViewModel { Symbol = symbol };
+                    MarketDataList.Add(existing);
+                }
+
+                existing.ExternalSyncStatus = status;
+                existing.ExternalSyncDetail = detail;
             });
         }
 

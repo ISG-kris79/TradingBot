@@ -1042,6 +1042,44 @@
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
 
+                                        <DataGridTemplateColumn Header="EXIT"
+                                                                Width="110">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <Border Background="{Binding CloseStatusBackground}"
+                                                            CornerRadius="6"
+                                                            Padding="8,4"
+                                                            Margin="4"
+                                                            ToolTip="{Binding CloseIncompleteDetail}">
+                                                        <TextBlock Text="{Binding CloseStatusText}"
+                                                                   Foreground="{Binding CloseStatusForeground}"
+                                                                   FontWeight="Bold"
+                                                                   FontSize="11"
+                                                                   HorizontalAlignment="Center"/>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+
+                                        <DataGridTemplateColumn Header="SYNC"
+                                                                Width="100">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <Border Background="{Binding SyncStatusBackground}"
+                                                            CornerRadius="6"
+                                                            Padding="8,4"
+                                                            Margin="4"
+                                                            ToolTip="{Binding ExternalSyncDetail}">
+                                                        <TextBlock Text="{Binding SyncStatusText}"
+                                                                   Foreground="{Binding SyncStatusForeground}"
+                                                                   FontWeight="Bold"
+                                                                   FontSize="11"
+                                                                   HorizontalAlignment="Center"/>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+
                                         <DataGridTextColumn Header="SOURCE"
                                                             Binding="{Binding SignalSource, TargetNullValue=-, FallbackValue=-}"
                                                             Width="85">
@@ -1352,6 +1390,34 @@
                                       ColumnHeaderStyle="{StaticResource ModernColumnHeaderStyle}"
                                       MouseDoubleClick="DataGrid_MouseDoubleClick">
                                 <DataGrid.Columns>
+                                    <DataGridTemplateColumn Header="STATUS"
+                                                            Width="90">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Border CornerRadius="4"
+                                                        Padding="8,4"
+                                                        ToolTip="{Binding ExitReason}">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Background"
+                                                                    Value="#334155"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsOpenPosition}"
+                                                                             Value="True">
+                                                                    <Setter Property="Background"
+                                                                            Value="{StaticResource WarningBrush}"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <TextBlock Text="{Binding PositionStatus}"
+                                                               Foreground="White"
+                                                               FontWeight="Bold"
+                                                               HorizontalAlignment="Center"/>
+                                                </Border>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
                                     <DataGridTextColumn Header="TIME"
                                                         Binding="{Binding Time, StringFormat='yyyy-MM-dd HH:mm:ss'}"
                                                         Width="160"/>

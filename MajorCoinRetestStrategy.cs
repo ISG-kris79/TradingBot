@@ -33,10 +33,10 @@ namespace TradingBot.Services
             "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"
         };
 
-        // EMA 20 눌림목 설정
-        public double Ema20DeviationThreshold { get; set; } = 0.002;  // ±0.2%
-        public double RsiSupportMin { get; set; } = 45.0;
-        public double VolumeCorrectionMax { get; set; } = 1.0;  // 조정 구간 거래량
+        // EMA 20 눌림목 설정 (엄격화: 어설픈 자리 진입 방지)
+        public double Ema20DeviationThreshold { get; set; } = 0.0012;  // ±0.12% (기존 0.2% → 더 정확한 터치만 허용)
+        public double RsiSupportMin { get; set; } = 48.0;  // RSI 48 이상 (기존 45 → 더 강한 지지 요구)
+        public double VolumeCorrectionMax { get; set; } = 0.85;  // 조정 구간 거래량 (기존 1.0 → 더 확실한 저볼륨 조정)
 
         // 숏 스퀴즈 설정
         public decimal PriceChangeThreshold { get; set; } = 0.3m;   // 5분 상승 0.3%
@@ -102,7 +102,25 @@ namespace TradingBot.Services
                 return false;
             }
 
-            LogInfo($"✅ [EMA 20 눌림목] 진입 조건 충족! EMA20=${ema20:F2}, RSI={tech.Rsi:F2}, 거래량={tech.VolumeRatio:F2}x");
+            // [5] 저점 상승 패턴 확인 (선택적 가산점 → 엄격모드: 필수)
+            if (!tech.IsMakingHigherLows)
+            {
+                LogDebug("❌ EMA 20 눌림목: 저점 상승 패턴 미확인 (Higher Lows 필요)");
+                return false;
+            }
+
+            // [6] 현재가가 EMA20 아래에서 접근하는 경우만 허용 (위에서 떨어지는 하방 터치 차단)
+            if (price > ema20)
+            {
+                // 위에서 내려오는 경우 이격도 더 엄격 적용 (0.06% 이내만)
+                if (deviation > Ema20DeviationThreshold * 0.5)
+                {
+                    LogDebug($"❌ EMA 20 눌림목: 상방에서 접근 중 이격 과다 ({deviation:P2})");
+                    return false;
+                }
+            }
+
+            LogInfo($"✅ [EMA 20 눌림목] 진입 조건 충족! EMA20=${ema20:F2}, RSI={tech.Rsi:F2}, 거래량={tech.VolumeRatio:F2}x, HigherLows={tech.IsMakingHigherLows}");
             return true;
         }
 

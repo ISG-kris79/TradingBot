@@ -44,14 +44,30 @@ namespace TradingBot.Services
         {
             _logger?.Invoke(msg); // MainWindow의 Log 메소드를 대신 실행
         }
+
+        private static TradeHistoryModel ToTradeHistoryModel(TradeLog row)
+        {
+            return new TradeHistoryModel
+            {
+                Id = row.Id,
+                Symbol = row.Symbol ?? string.Empty,
+                Side = row.Side ?? string.Empty,
+                EntryPrice = row.EntryPrice,
+                ExitPrice = row.ExitPrice,
+                Quantity = row.Quantity,
+                PnL = row.PnL,
+                PnLPercent = row.PnLPercent,
+                ExitReason = row.ExitReason ?? string.Empty,
+                ExitTime = row.ExitTime == default ? row.Time : row.ExitTime
+            };
+        }
+
         public async Task SaveLogAsync(TradeLog log)
         {
             try
             {
-                using var db = new SqlConnection(_connStr);
-                string sql = @"INSERT INTO TradeLogs (Symbol, Side, StrategyType, EntryPrice, AiScore) 
-                               VALUES (@Symbol, @Side, @Strategy, @Price, @AiScore)";
-                await db.ExecuteAsync(sql, log, commandTimeout: QueryTimeout);
+                var dbManager = new DbManager(_connStr);
+                await dbManager.SaveTradeLogAsync(log);
             }
             catch (Exception ex) { Console.WriteLine($"[DB Error] {ex.Message}"); }
         }
@@ -260,35 +276,27 @@ namespace TradingBot.Services
 
             try
             {
-                using (var conn = new SqlConnection(_connStr))
+                var dbManager = new DbManager(_connStr);
+                var tradeLog = new TradeLog(
+                    pos.Symbol,
+                    pos.IsLong ? "SELL" : "BUY",
+                    "DatabaseService_LegacyClose",
+                    exitPrice,
+                    pos.AiScore,
+                    DateTime.Now,
+                    pnl,
+                    pnlPercent)
                 {
-                    string sql = @"
-                INSERT INTO TradeHistory (
-                    Symbol, Side, EntryPrice, ExitPrice, Quantity, 
-                    PnL, PnLPercent, ExitReason, EntryTime, ExitTime
-                ) VALUES (
-                    @Symbol, @Side, @EntryPrice, @ExitPrice, @Quantity, 
-                    @PnL, @PnLPercent, @ExitReason, @EntryTime, GETDATE()
-                )";
+                    EntryPrice = pos.EntryPrice,
+                    ExitPrice = exitPrice,
+                    Quantity = Math.Abs(pos.Quantity),
+                    EntryTime = pos.EntryTime,
+                    ExitTime = DateTime.Now,
+                    ExitReason = reason
+                };
 
-                    var parameters = new
-                    {
-                        Symbol = pos.Symbol,
-                        Side = pos.Side?.ToString()?.ToUpperInvariant() ?? "UNKNOWN", // BUY 또는 SELL
-                        EntryPrice = pos.EntryPrice,
-                        ExitPrice = exitPrice,
-                        Quantity = pos.Quantity,
-                        PnL = pnl,
-                        PnLPercent = pnlPercent,
-                        ExitReason = reason,
-                        EntryTime = pos.EntryTime
-                    };
-
-                    // Dapper를 사용하여 비동기 실행
-                    await conn.ExecuteAsync(sql, parameters, commandTimeout: QueryTimeout);
-
-                    Log($"🗄️ [{pos.Symbol}] 거래 기록 DB 저장 완료.");
-                }
+                await dbManager.CompleteTradeAsync(tradeLog);
+                Log($"🗄️ [{pos.Symbol}] 거래 기록 DB 저장 완료.");
             }
             catch (Exception ex)
             {
@@ -505,38 +513,35 @@ namespace TradingBot.Services
 
         public async Task<List<TradeHistoryModel>> GetTradeHistoryAsync(int limit = 100)
         {
-            using var conn = new SqlConnection(_connStr);
-            string sql = "SELECT TOP (@Limit) * FROM TradeHistory ORDER BY ExitTime DESC";
-            var result = await conn.QueryAsync<TradeHistoryModel>(sql, new { Limit = limit }, commandTimeout: QueryTimeout);
-            return result.ToList();
+            int userId = TradingBot.AppConfig.CurrentUser?.Id ?? 0;
+            if (userId <= 0)
+                return new List<TradeHistoryModel>();
+
+            var dbManager = new DbManager(_connStr);
+            var result = await dbManager.GetTradeHistoryAsync(userId, DateTime.MinValue, DateTime.MaxValue, limit);
+            return result.Select(ToTradeHistoryModel).ToList();
         }
 
         public async Task<List<TradeHistoryModel>> GetTradeHistoryAsync(DateTime start, DateTime end, int limit = 1000)
         {
-            using var conn = new SqlConnection(_connStr);
-            string sql = @"
-                SELECT TOP (@Limit) *
-                FROM TradeHistory
-                WHERE ExitTime >= @Start AND ExitTime <= @End
-                ORDER BY ExitTime DESC";
+            int userId = TradingBot.AppConfig.CurrentUser?.Id ?? 0;
+            if (userId <= 0)
+                return new List<TradeHistoryModel>();
 
-            var result = await conn.QueryAsync<TradeHistoryModel>(
-                sql,
-                new { Limit = limit, Start = start, End = end },
-                commandTimeout: QueryTimeout);
-
-            return result.ToList();
+            var dbManager = new DbManager(_connStr);
+            var result = await dbManager.GetTradeHistoryAsync(userId, start, end, limit);
+            return result.Select(ToTradeHistoryModel).ToList();
         }
 
         // [추가] 매매 이력 CSV 내보내기
         public async Task ExportTradeHistoryToCsvAsync(string filePath)
         {
-            var history = await GetTradeHistoryAsync(10000); // 최대 10000건
-            using (var writer = new StreamWriter(filePath))
-            using (var csv = new CsvHelper.CsvWriter(writer, CultureInfo.InvariantCulture))
-            {
-                await csv.WriteRecordsAsync(history);
-            }
+            int userId = TradingBot.AppConfig.CurrentUser?.Id ?? 0;
+            if (userId <= 0)
+                return;
+
+            var dbManager = new DbManager(_connStr);
+            await dbManager.ExportTradeHistoryToCsvAsync(filePath, userId, DateTime.MinValue, DateTime.MaxValue, 10000);
         }
 
         // ========== 관리자 기능 (User Management) ==========

@@ -119,7 +119,7 @@ namespace TradingBot.Services
             }
         }
 
-        public async Task<bool> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default)
+        public async Task<(bool Success, string OrderId)> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default)
         {
             OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
             var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
@@ -130,7 +130,9 @@ namespace TradingBot.Services
                 stopPrice: stopPrice,
                 reduceOnly: true,
                 ct: ct);
-            return result.Success;
+            return result.Success && result.Data != null
+                ? (true, result.Data.Id.ToString())
+                : (false, string.Empty);
         }
 
         public async Task<bool> CancelOrderAsync(string symbol, string orderId, CancellationToken ct = default)
@@ -160,7 +162,8 @@ namespace TradingBot.Services
                     IsLong = p.Quantity > 0,
                     Quantity = Math.Abs(p.Quantity),
                     EntryPrice = p.EntryPrice,
-                    UnrealizedPnL = p.UnrealizedPnl
+                    UnrealizedPnL = p.UnrealizedPnl,
+                    Leverage = p.Leverage
                 })
                 .ToList();
         }

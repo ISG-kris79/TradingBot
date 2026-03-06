@@ -31,6 +31,8 @@ namespace TradingBot.Shared.Models
         public string ExitReason { get; set; } = string.Empty;
         public DateTime EntryTime { get; set; }
         public DateTime ExitTime { get; set; }
+        public bool IsOpenPosition => string.Equals(ExitReason, "OPEN_POSITION", StringComparison.OrdinalIgnoreCase);
+        public string PositionStatus => IsOpenPosition ? "OPEN" : "CLOSED";
     }
 
     public class PositionInfo
@@ -47,7 +49,11 @@ namespace TradingBot.Shared.Models
         public decimal HighestPrice { get; set; }
         public decimal TakeProfit { get; set; }
         public decimal StopLoss { get; set; }
-        public long StopOrderId { get; set; }
+        public string StopOrderId { get; set; } = string.Empty;
+        public decimal EntryBbPosition { get; set; }
+        public string EntryZoneTag { get; set; } = string.Empty;
+        public float AiConfidencePercent { get; set; }
+        public bool IsHybridMidBandLongEntry { get; set; }
 
         public bool IsLong { get; set; }
         public bool IsPumpStrategy { get; set; }

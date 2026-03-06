@@ -7,6 +7,47 @@
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-03-06
+
+### Fixed
+
+- **TradeHistory DB 등록 누락 문제 완전 해결**:
+  - 메인UI CLOSE 버튼으로 수동 청산 시 DB 기록 미등록 문제 수정
+  - 청산 주문 성공 후 포지션 잔존 감지 시에도 DB 저장 보장 (부분 체결 대응)
+  - 반대방향 포지션 생성 시 원래 포지션 청산 기록 누락 수정
+  - CancellationToken 취소 시 DB 저장 스킵 문제 해결 (엔진 정지 중 청산 시)
+  - 모든 청산 경로(손절/익절/타임아웃/부분청산)에서 DB 저장 일원화
+
+- **TradeHistory UI 자동 갱신 구현**:
+  - 청산 완료 시 자동으로 TradeHistory 테이블 갱신
+  - "Load History" 버튼 수동 클릭 불필요
+  - `OnTradeHistoryUpdated` 이벤트 체인 추가 (PositionMonitorService → TradingEngine → MainViewModel)
+
+- **DB 저장 실패 로깅 개선**:
+  - userId = 0 (비로그인) 상태에서 청산 시 명확한 에러 메시지 출력
+  - `AppConfig.CurrentUser` null 체크 및 상세 디버깅 정보 제공
+
+- **엔진 미시작 상태 수동 청산 방어**:
+  - `ClosePositionAsync` 호출 시 `_positionMonitor` null 체크 추가
+  - 명확한 안내 메시지 출력: "엔진이 초기화되지 않았습니다. 스캔을 먼저 시작해주세요."
+
+### Added
+
+- **SaveCloseTradeToDbAsync 헬퍼 메서드**:
+  - 모든 청산 경로에서 재사용 가능한 DB 저장 로직 통합
+  - 청산가 조회 실패 시 진입가 폴백 처리
+  - PnL/ROE 계산 및 텔레그램 알림 자동 전송
+
+### Technical Details
+
+- `PositionMonitorService.ExecuteMarketClose` 강화:
+  - `ConfirmRemainingPositionAsync` try-catch로 CancellationToken 취소 방어
+  - 반대방향 포지션 감지 시 원래 청산 기록 먼저 저장 후 재청산 시도
+  - 같은 방향 부분 체결 감지 시 체결된 수량만큼 DB 저장
+- 모든 청산 경로에 `OnTradeHistoryUpdated?.Invoke()` 이벤트 추가
+- `MainViewModel.ClosePositionCommand`에 청산 후 `LoadTradeHistory()` 즉시 호출
+- `DbManager.UpsertTradeEntryAsync`/`CompleteTradeAsync` userId 실패 로그 강화
+
 ## [2.0.30] - 2026-03-06
 
 ### Fixed

@@ -1,6 +1,8 @@
 ﻿using Dapper;
 using Microsoft.Data.SqlClient;
 using System.Data;
+using System.Globalization;
+using System.IO;
 using TradingBot.Models;
 using TradingBot; // [수정] MainWindow 접근을 위해 추가
 using TradingBot.Shared.Models;
@@ -11,49 +13,675 @@ namespace TradingBot.Services
     {
         private readonly string _connectionString;
 
+        private sealed class TradeHistoryOpenRow
+        {
+            public int Id { get; set; }
+            public string Side { get; set; } = string.Empty;
+            public string Strategy { get; set; } = string.Empty;
+            public decimal EntryPrice { get; set; }
+            public decimal Quantity { get; set; }
+            public float AiScore { get; set; }
+            public DateTime EntryTime { get; set; }
+        }
+
         public DbManager(string connectionString)
         {
             _connectionString = connectionString;
         }
 
-        public async Task SaveTradeLogAsync(TradeLog log)
+        private static int GetCurrentUserId() => AppConfig.CurrentUser?.Id ?? 0;
+
+        private static string InferEntrySideFromCloseSide(string? closeSide)
+        {
+            return string.Equals(closeSide, "SELL", StringComparison.OrdinalIgnoreCase) ? "BUY" : "SELL";
+        }
+
+        private async Task EnsureTradeHistorySchemaAsync(SqlConnection db, SqlTransaction? tx = null)
+        {
+            string sql = @"
+IF OBJECT_ID('dbo.TradeHistory', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.TradeHistory (
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        UserId INT NOT NULL CONSTRAINT DF_TradeHistory_UserId DEFAULT 0,
+        Symbol NVARCHAR(50) NOT NULL,
+        Side NVARCHAR(10) NOT NULL,
+        Strategy NVARCHAR(150) NULL,
+        EntryPrice DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradeHistory_EntryPrice DEFAULT 0,
+        ExitPrice DECIMAL(18,8) NULL,
+        Quantity DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradeHistory_Quantity DEFAULT 0,
+        AiScore REAL NOT NULL CONSTRAINT DF_TradeHistory_AiScore DEFAULT 0,
+        PnL DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradeHistory_PnL DEFAULT 0,
+        PnLPercent DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradeHistory_PnLPercent DEFAULT 0,
+        ExitReason NVARCHAR(255) NULL,
+        EntryTime DATETIME2 NOT NULL CONSTRAINT DF_TradeHistory_EntryTime DEFAULT GETDATE(),
+        ExitTime DATETIME2 NULL,
+        IsClosed BIT NOT NULL CONSTRAINT DF_TradeHistory_IsClosed DEFAULT 1,
+        CloseVerified BIT NOT NULL CONSTRAINT DF_TradeHistory_CloseVerified DEFAULT 1,
+        LastUpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_TradeHistory_LastUpdatedAt DEFAULT GETDATE()
+    );
+END
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'UserId')
+    ALTER TABLE dbo.TradeHistory ADD UserId INT NOT NULL CONSTRAINT DF_TradeHistory_UserId_Legacy DEFAULT 0;
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'Strategy')
+    ALTER TABLE dbo.TradeHistory ADD Strategy NVARCHAR(150) NULL;
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'AiScore')
+    ALTER TABLE dbo.TradeHistory ADD AiScore REAL NOT NULL CONSTRAINT DF_TradeHistory_AiScore_Legacy DEFAULT 0;
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'IsClosed')
+    ALTER TABLE dbo.TradeHistory ADD IsClosed BIT NOT NULL CONSTRAINT DF_TradeHistory_IsClosed_Legacy DEFAULT 1;
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'CloseVerified')
+    ALTER TABLE dbo.TradeHistory ADD CloseVerified BIT NOT NULL CONSTRAINT DF_TradeHistory_CloseVerified_Legacy DEFAULT 1;
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'LastUpdatedAt')
+    ALTER TABLE dbo.TradeHistory ADD LastUpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_TradeHistory_LastUpdatedAt_Legacy DEFAULT GETDATE();
+
+IF EXISTS (
+    SELECT 1
+    FROM sys.columns
+    WHERE object_id = OBJECT_ID('dbo.TradeHistory')
+      AND name = 'ExitPrice'
+      AND is_nullable = 0)
+BEGIN
+    ALTER TABLE dbo.TradeHistory ALTER COLUMN ExitPrice DECIMAL(18,8) NULL;
+END
+
+IF EXISTS (
+    SELECT 1
+    FROM sys.columns
+    WHERE object_id = OBJECT_ID('dbo.TradeHistory')
+      AND name = 'ExitTime'
+      AND is_nullable = 0)
+BEGIN
+    ALTER TABLE dbo.TradeHistory ALTER COLUMN ExitTime DATETIME2 NULL;
+END
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE object_id = OBJECT_ID('dbo.TradeHistory')
+      AND name = 'IX_TradeHistory_UserId_IsClosed_Symbol_EntryTime')
+BEGIN
+    CREATE INDEX IX_TradeHistory_UserId_IsClosed_Symbol_EntryTime
+    ON dbo.TradeHistory(UserId, IsClosed, Symbol, EntryTime DESC);
+END";
+
+            await db.ExecuteAsync(sql, transaction: tx);
+        }
+
+        public async Task<bool> UpsertTradeEntryAsync(TradeLog log)
         {
             try
             {
                 if (log == null)
                 {
-                    MainWindow.Instance?.AddLog($"⚠️ SaveTradeLogAsync: log 객체가 null입니다");
-                    return;
+                    MainWindow.Instance?.AddLog("⚠️ UpsertTradeEntryAsync: log 객체가 null입니다");
+                    return false;
                 }
 
-                using (IDbConnection db = new SqlConnection(_connectionString))
+                int userId = GetCurrentUserId();
+                if (userId <= 0)
                 {
-                    db.Open(); // [중요] DB 연결 명시화
-
-                    string insertSql = @"
-                        INSERT INTO TradeLogs (Symbol, Side, Strategy, Price, AiScore, Time, PnL, PnLPercent)
-                        VALUES (@Symbol, @Side, @Strategy, @Price, @AiScore, @Time, @PnL, @PnLPercent)";
-
-                    MainWindow.Instance?.AddLog($"📝 [DB] TradeLogs 저장 시도: {log.Symbol} {log.Side} @ {log.Price:F4} ROE={log.PnLPercent:F2}%");
-
-                    int result = await db.ExecuteAsync(insertSql, log);
-
-                    if (result > 0)
-                    {
-                        MainWindow.Instance?.AddLog($"✅ [DB] TradeLogs 저장 성공: {log.Symbol} PnL={log.PnL:F2} USDT");
-                    }
-                    else
-                    {
-                        MainWindow.Instance?.AddLog($"⚠️ [DB] TradeLogs 저장 미실행: ExecuteAsync result={result}");
-                    }
+                    MainWindow.Instance?.AddLog($"❌ [{log.Symbol}] 진입 이력 저장 실패: 로그인 사용자 ID 없음 (AppConfig.CurrentUser: {(AppConfig.CurrentUser == null ? "null" : AppConfig.CurrentUser.Id.ToString())})");
+                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 로그인 후 다시 시도하세요. Strategy={log.Strategy}, EntryPrice={log.EntryPrice:F4}");
+                    return false;
                 }
+
+                decimal entryPrice = log.EntryPrice > 0 ? log.EntryPrice : log.Price;
+                decimal quantity = Math.Abs(log.Quantity);
+                DateTime entryTime = log.EntryTime == default ? log.Time : log.EntryTime;
+                string strategy = string.IsNullOrWhiteSpace(log.Strategy) ? "UNKNOWN" : log.Strategy;
+
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                using var tx = db.BeginTransaction();
+
+                await EnsureTradeHistorySchemaAsync(db, tx);
+
+                string updateSql = @"
+;WITH LatestOpen AS (
+    SELECT TOP (1) *
+    FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+    WHERE UserId = @UserId AND Symbol = @Symbol AND IsClosed = 0
+    ORDER BY EntryTime DESC, Id DESC
+)
+UPDATE LatestOpen
+SET Side = @Side,
+    Strategy = @Strategy,
+    EntryPrice = @EntryPrice,
+    Quantity = @Quantity,
+    AiScore = @AiScore,
+    EntryTime = @EntryTime,
+    LastUpdatedAt = GETDATE(),
+    CloseVerified = 0;";
+
+                int affected = await db.ExecuteAsync(updateSql, new
+                {
+                    UserId = userId,
+                    log.Symbol,
+                    Side = log.Side,
+                    Strategy = strategy,
+                    EntryPrice = entryPrice,
+                    Quantity = quantity,
+                    log.AiScore,
+                    EntryTime = entryTime
+                }, tx);
+
+                if (affected == 0)
+                {
+                    string insertSql = @"
+INSERT INTO dbo.TradeHistory
+    (UserId, Symbol, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime, ExitPrice, PnL, PnLPercent, ExitReason, IsClosed, CloseVerified, LastUpdatedAt)
+VALUES
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @Quantity, @AiScore, @EntryTime, NULL, 0, 0, NULL, 0, 0, GETDATE());";
+
+                    await db.ExecuteAsync(insertSql, new
+                    {
+                        UserId = userId,
+                        log.Symbol,
+                        Side = log.Side,
+                        Strategy = strategy,
+                        EntryPrice = entryPrice,
+                        Quantity = quantity,
+                        log.AiScore,
+                        EntryTime = entryTime
+                    }, tx);
+                }
+
+                await tx.CommitAsync();
+                MainWindow.Instance?.AddLog($"✅ [DB] TradeHistory 진입 upsert 완료: U{userId} {log.Symbol} {log.Side} Qty={quantity}");
+                return true;
             }
             catch (Exception ex)
             {
-                MainWindow.Instance?.AddLog($"❌ [DB 저장 실패] {ex.GetType().Name}: {ex.Message}");
-                if (ex.InnerException != null)
-                    MainWindow.Instance?.AddLog($"  내부 오류: {ex.InnerException.Message}");
+                MainWindow.Instance?.AddLog($"❌ [DB 진입 저장 실패] {ex.GetType().Name}: {ex.Message}");
+                return false;
             }
+        }
+
+        public async Task<(bool Success, DateTime EntryTime, float AiScore, bool Created)> EnsureOpenTradeForPositionAsync(PositionInfo position, string? fallbackStrategy = null)
+        {
+            try
+            {
+                if (position == null || string.IsNullOrWhiteSpace(position.Symbol))
+                    return (false, DateTime.Now, 0f, false);
+
+                int userId = GetCurrentUserId();
+                if (userId <= 0)
+                {
+                    MainWindow.Instance?.AddLog($"⚠️ [{position.Symbol}] 시작 포지션 이력 보정 스킵: 로그인 사용자 ID 없음");
+                    return (false, position.EntryTime == default ? DateTime.Now : position.EntryTime, position.AiScore, false);
+                }
+
+                string side = position.Side?.ToString()?.ToUpperInvariant() ?? string.Empty;
+                if (side != "BUY" && side != "SELL")
+                    side = position.IsLong ? "BUY" : "SELL";
+
+                DateTime entryTime = position.EntryTime == default ? DateTime.Now : position.EntryTime;
+                string strategy = string.IsNullOrWhiteSpace(fallbackStrategy) ? "SYNC_RESTORED" : fallbackStrategy;
+                decimal quantity = Math.Abs(position.Quantity);
+
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                using var tx = db.BeginTransaction();
+
+                await EnsureTradeHistorySchemaAsync(db, tx);
+
+                var openTrade = await db.QueryFirstOrDefaultAsync<TradeHistoryOpenRow>(@"
+SELECT TOP (1) Id, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime
+FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+WHERE UserId = @UserId AND Symbol = @Symbol AND IsClosed = 0
+ORDER BY EntryTime DESC, Id DESC;",
+                    new { UserId = userId, position.Symbol }, tx);
+
+                if (openTrade != null)
+                {
+                    await db.ExecuteAsync(@"
+UPDATE dbo.TradeHistory
+SET Side = @Side,
+    Strategy = CASE WHEN NULLIF(LTRIM(RTRIM(Strategy)), '') IS NULL THEN @Strategy ELSE Strategy END,
+    EntryPrice = @EntryPrice,
+    Quantity = @Quantity,
+    AiScore = CASE WHEN AiScore = 0 AND @AiScore <> 0 THEN @AiScore ELSE AiScore END,
+    LastUpdatedAt = GETDATE()
+WHERE Id = @Id;",
+                        new
+                        {
+                            Id = openTrade.Id,
+                            Side = side,
+                            Strategy = strategy,
+                            EntryPrice = position.EntryPrice,
+                            Quantity = quantity,
+                            AiScore = position.AiScore
+                        }, tx);
+
+                    await tx.CommitAsync();
+                    DateTime resolvedEntryTime = openTrade.EntryTime == default ? entryTime : openTrade.EntryTime;
+                    float resolvedAiScore = openTrade.AiScore != 0 ? openTrade.AiScore : position.AiScore;
+                    return (true, resolvedEntryTime, resolvedAiScore, false);
+                }
+
+                await db.ExecuteAsync(@"
+INSERT INTO dbo.TradeHistory
+    (UserId, Symbol, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime, ExitPrice, PnL, PnLPercent, ExitReason, IsClosed, CloseVerified, LastUpdatedAt)
+VALUES
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @Quantity, @AiScore, @EntryTime, NULL, 0, 0, NULL, 0, 0, GETDATE());",
+                    new
+                    {
+                        UserId = userId,
+                        position.Symbol,
+                        Side = side,
+                        Strategy = strategy,
+                        EntryPrice = position.EntryPrice,
+                        Quantity = quantity,
+                        AiScore = position.AiScore,
+                        EntryTime = entryTime
+                    }, tx);
+
+                await tx.CommitAsync();
+                MainWindow.Instance?.AddLog($"📝 [DB] 시작 포지션 TradeHistory 보정 insert: U{userId} {position.Symbol} {side} Qty={quantity}");
+                return (true, entryTime, position.AiScore, true);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"❌ [DB 시작 포지션 보정 실패] {position?.Symbol}: {ex.Message}");
+                DateTime fallbackEntryTime = position is { EntryTime: var posEntryTime } && posEntryTime != default
+                    ? posEntryTime
+                    : DateTime.Now;
+                return (false, fallbackEntryTime, position?.AiScore ?? 0f, false);
+            }
+        }
+
+        public async Task<bool> CompleteTradeAsync(TradeLog log)
+        {
+            try
+            {
+                if (log == null)
+                {
+                    MainWindow.Instance?.AddLog("⚠️ CompleteTradeAsync: log 객체가 null입니다");
+                    return false;
+                }
+
+                int userId = GetCurrentUserId();
+                if (userId <= 0)
+                {
+                    MainWindow.Instance?.AddLog($"❌ [{log.Symbol}] 청산 이력 저장 실패: 로그인 사용자 ID 없음 (AppConfig.CurrentUser: {(AppConfig.CurrentUser == null ? "null" : AppConfig.CurrentUser.Id.ToString())})");
+                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 로그인 후 다시 시도하세요. ExitReason={log.ExitReason}, PnL={log.PnL:F2}");
+                    return false;
+                }
+
+                decimal exitPrice = log.ExitPrice > 0 ? log.ExitPrice : log.Price;
+                decimal entryPrice = log.EntryPrice > 0 ? log.EntryPrice : 0m;
+                decimal quantity = Math.Abs(log.Quantity);
+                DateTime entryTime = log.EntryTime == default ? log.Time : log.EntryTime;
+                DateTime exitTime = log.ExitTime == default ? log.Time : log.ExitTime;
+                string exitReason = string.IsNullOrWhiteSpace(log.ExitReason) ? log.Strategy ?? "MarketClose" : log.ExitReason;
+
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                using var tx = db.BeginTransaction();
+
+                await EnsureTradeHistorySchemaAsync(db, tx);
+
+                var openTrade = await db.QueryFirstOrDefaultAsync<TradeHistoryOpenRow>(@"
+SELECT TOP (1) Id, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime
+FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+WHERE UserId = @UserId AND Symbol = @Symbol AND IsClosed = 0
+ORDER BY EntryTime DESC, Id DESC;",
+                    new { UserId = userId, log.Symbol }, tx);
+
+                if (openTrade != null)
+                {
+                    await db.ExecuteAsync(@"
+UPDATE dbo.TradeHistory
+SET ExitPrice = @ExitPrice,
+    Quantity = CASE WHEN @Quantity > 0 THEN @Quantity ELSE Quantity END,
+    AiScore = CASE WHEN @AiScore <> 0 THEN @AiScore ELSE AiScore END,
+    PnL = @PnL,
+    PnLPercent = @PnLPercent,
+    ExitReason = @ExitReason,
+    ExitTime = @ExitTime,
+    IsClosed = 1,
+    CloseVerified = 1,
+    LastUpdatedAt = GETDATE()
+WHERE Id = @Id;",
+                        new
+                        {
+                            Id = openTrade.Id,
+                            ExitPrice = exitPrice,
+                            Quantity = quantity,
+                            AiScore = log.AiScore,
+                            log.PnL,
+                            log.PnLPercent,
+                            ExitReason = exitReason,
+                            ExitTime = exitTime
+                        }, tx);
+
+                    await tx.CommitAsync();
+                    MainWindow.Instance?.AddLog($"✅ [DB] TradeHistory 청산 update 완료: U{userId} {log.Symbol} Exit={exitPrice:F4} PnL={log.PnL:F2}");
+                    return true;
+                }
+
+                string entrySide = InferEntrySideFromCloseSide(log.Side);
+                string fallbackStrategy = string.IsNullOrWhiteSpace(log.Strategy) ? "RECOVERED_CLOSE" : log.Strategy;
+
+                await db.ExecuteAsync(@"
+INSERT INTO dbo.TradeHistory
+    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, LastUpdatedAt)
+VALUES
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, GETDATE());",
+                    new
+                    {
+                        UserId = userId,
+                        log.Symbol,
+                        Side = entrySide,
+                        Strategy = fallbackStrategy,
+                        EntryPrice = entryPrice,
+                        ExitPrice = exitPrice,
+                        Quantity = quantity,
+                        log.AiScore,
+                        log.PnL,
+                        log.PnLPercent,
+                        ExitReason = exitReason,
+                        EntryTime = entryTime,
+                        ExitTime = exitTime
+                    }, tx);
+
+                await tx.CommitAsync();
+                MainWindow.Instance?.AddLog($"⚠️ [DB] TradeHistory 열린 진입건 미발견 → 청산 insert 보정: U{userId} {log.Symbol}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"❌ [DB 청산 저장 실패] {ex.GetType().Name}: {ex.Message}");
+                return false;
+            }
+        }
+
+        public async Task<bool> TryCompleteOpenTradeAsync(TradeLog log)
+        {
+            try
+            {
+                if (log == null)
+                {
+                    MainWindow.Instance?.AddLog("⚠️ TryCompleteOpenTradeAsync: log 객체가 null입니다");
+                    return false;
+                }
+
+                int userId = GetCurrentUserId();
+                if (userId <= 0)
+                {
+                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 외부 청산 동기화 스킵: 로그인 사용자 ID 없음");
+                    return false;
+                }
+
+                decimal exitPrice = log.ExitPrice > 0 ? log.ExitPrice : log.Price;
+                decimal quantity = Math.Abs(log.Quantity);
+                DateTime exitTime = log.ExitTime == default ? log.Time : log.ExitTime;
+                string exitReason = string.IsNullOrWhiteSpace(log.ExitReason) ? log.Strategy ?? "EXTERNAL_CLOSE_SYNC" : log.ExitReason;
+
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                using var tx = db.BeginTransaction();
+
+                await EnsureTradeHistorySchemaAsync(db, tx);
+
+                var openTrade = await db.QueryFirstOrDefaultAsync<TradeHistoryOpenRow>(@"
+SELECT TOP (1) Id, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime
+FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+WHERE UserId = @UserId AND Symbol = @Symbol AND IsClosed = 0
+ORDER BY EntryTime DESC, Id DESC;",
+                    new { UserId = userId, log.Symbol }, tx);
+
+                if (openTrade == null)
+                {
+                    await tx.CommitAsync();
+                    return false;
+                }
+
+                decimal resolvedQuantity = quantity > 0 ? quantity : openTrade.Quantity;
+                float resolvedAiScore = log.AiScore != 0 ? log.AiScore : openTrade.AiScore;
+
+                await db.ExecuteAsync(@"
+UPDATE dbo.TradeHistory
+SET ExitPrice = @ExitPrice,
+    Quantity = @Quantity,
+    AiScore = CASE WHEN @AiScore <> 0 THEN @AiScore ELSE AiScore END,
+    PnL = @PnL,
+    PnLPercent = @PnLPercent,
+    ExitReason = @ExitReason,
+    ExitTime = @ExitTime,
+    IsClosed = 1,
+    CloseVerified = 1,
+    LastUpdatedAt = GETDATE()
+WHERE Id = @Id;",
+                    new
+                    {
+                        Id = openTrade.Id,
+                        ExitPrice = exitPrice,
+                        Quantity = resolvedQuantity,
+                        AiScore = resolvedAiScore,
+                        log.PnL,
+                        log.PnLPercent,
+                        ExitReason = exitReason,
+                        ExitTime = exitTime
+                    }, tx);
+
+                await tx.CommitAsync();
+                MainWindow.Instance?.AddLog($"✅ [DB] 외부 청산 동기화 완료: U{userId} {log.Symbol} Exit={exitPrice:F4}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"❌ [DB 외부 청산 동기화 실패] {ex.GetType().Name}: {ex.Message}");
+                return false;
+            }
+        }
+
+        public async Task<bool> RecordPartialCloseAsync(TradeLog log)
+        {
+            try
+            {
+                if (log == null)
+                {
+                    MainWindow.Instance?.AddLog("⚠️ RecordPartialCloseAsync: log 객체가 null입니다");
+                    return false;
+                }
+
+                int userId = GetCurrentUserId();
+                if (userId <= 0)
+                {
+                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 부분청산 이력 저장 스킵: 로그인 사용자 ID 없음");
+                    return false;
+                }
+
+                decimal exitPrice = log.ExitPrice > 0 ? log.ExitPrice : log.Price;
+                decimal entryPrice = log.EntryPrice > 0 ? log.EntryPrice : 0m;
+                decimal closeQty = Math.Abs(log.Quantity);
+                DateTime entryTime = log.EntryTime == default ? log.Time : log.EntryTime;
+                DateTime exitTime = log.ExitTime == default ? log.Time : log.ExitTime;
+                string exitReason = string.IsNullOrWhiteSpace(log.ExitReason) ? "PartialClose" : log.ExitReason;
+
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                using var tx = db.BeginTransaction();
+
+                await EnsureTradeHistorySchemaAsync(db, tx);
+
+                var duplicatedPartial = await db.ExecuteScalarAsync<int?>(@"
+SELECT TOP (1) Id
+FROM dbo.TradeHistory
+WHERE UserId = @UserId
+  AND Symbol = @Symbol
+  AND IsClosed = 1
+  AND CloseVerified = 1
+  AND ExitReason = @ExitReason
+  AND ABS(Quantity - @Quantity) < 0.000001
+  AND ABS(ExitPrice - @ExitPrice) < 0.000001
+  AND ExitTime >= DATEADD(SECOND, -5, @ExitTime)
+  AND ExitTime <= DATEADD(SECOND, 5, @ExitTime)
+ORDER BY Id DESC;",
+                    new
+                    {
+                        UserId = userId,
+                        log.Symbol,
+                        ExitReason = exitReason,
+                        Quantity = closeQty,
+                        ExitPrice = exitPrice,
+                        ExitTime = exitTime
+                    }, tx);
+
+                if (duplicatedPartial.HasValue)
+                {
+                    await tx.CommitAsync();
+                    MainWindow.Instance?.AddLog($"ℹ️ [DB] TradeHistory 부분청산 중복 감지로 스킵: U{userId} {log.Symbol} Qty={closeQty}");
+                    return true;
+                }
+
+                var openTrade = await db.QueryFirstOrDefaultAsync<TradeHistoryOpenRow>(@"
+SELECT TOP (1) Id, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime
+FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+WHERE UserId = @UserId AND Symbol = @Symbol AND IsClosed = 0
+ORDER BY EntryTime DESC, Id DESC;",
+                    new { UserId = userId, log.Symbol }, tx);
+
+                string entrySide = openTrade?.Side ?? InferEntrySideFromCloseSide(log.Side);
+                string strategy = !string.IsNullOrWhiteSpace(openTrade?.Strategy) ? openTrade!.Strategy : (log.Strategy ?? "PartialClose");
+                float aiScore = openTrade?.AiScore ?? log.AiScore;
+                decimal resolvedEntryPrice = openTrade is { EntryPrice: > 0 } ? openTrade.EntryPrice : entryPrice;
+                DateTime resolvedEntryTime = openTrade is { EntryTime: var openEntryTime } && openEntryTime != default ? openEntryTime : entryTime;
+
+                if (openTrade != null)
+                {
+                    decimal remainingQty = Math.Max(0m, openTrade.Quantity - closeQty);
+
+                    if (remainingQty <= 0.000001m)
+                    {
+                        await db.ExecuteAsync(@"
+UPDATE dbo.TradeHistory
+SET ExitPrice = @ExitPrice,
+    Quantity = @Quantity,
+    AiScore = CASE WHEN @AiScore <> 0 THEN @AiScore ELSE AiScore END,
+    PnL = @PnL,
+    PnLPercent = @PnLPercent,
+    ExitReason = @ExitReason,
+    ExitTime = @ExitTime,
+    IsClosed = 1,
+    CloseVerified = 1,
+    LastUpdatedAt = GETDATE()
+WHERE Id = @Id;",
+                            new
+                            {
+                                Id = openTrade.Id,
+                                ExitPrice = exitPrice,
+                                Quantity = closeQty,
+                                AiScore = aiScore,
+                                log.PnL,
+                                log.PnLPercent,
+                                ExitReason = exitReason,
+                                ExitTime = exitTime
+                            }, tx);
+
+                        await tx.CommitAsync();
+                        MainWindow.Instance?.AddLog($"✅ [DB] TradeHistory 부분청산 잔량 0 → 전량청산 update 처리: U{userId} {log.Symbol}");
+                        return true;
+                    }
+
+                    await db.ExecuteAsync(@"
+INSERT INTO dbo.TradeHistory
+    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, LastUpdatedAt)
+VALUES
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, GETDATE());",
+                        new
+                        {
+                            UserId = userId,
+                            log.Symbol,
+                            Side = entrySide,
+                            Strategy = strategy,
+                            EntryPrice = resolvedEntryPrice,
+                            ExitPrice = exitPrice,
+                            Quantity = closeQty,
+                            AiScore = aiScore,
+                            log.PnL,
+                            log.PnLPercent,
+                            ExitReason = exitReason,
+                            EntryTime = resolvedEntryTime,
+                            ExitTime = exitTime
+                        }, tx);
+
+                    await db.ExecuteAsync(@"
+UPDATE dbo.TradeHistory
+SET Quantity = @RemainingQty,
+    LastUpdatedAt = GETDATE()
+WHERE Id = @Id;",
+                        new { Id = openTrade.Id, RemainingQty = remainingQty }, tx);
+                }
+                else
+                {
+                    await db.ExecuteAsync(@"
+INSERT INTO dbo.TradeHistory
+    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, LastUpdatedAt)
+VALUES
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, GETDATE());",
+                        new
+                        {
+                            UserId = userId,
+                            log.Symbol,
+                            Side = entrySide,
+                            Strategy = strategy,
+                            EntryPrice = resolvedEntryPrice,
+                            ExitPrice = exitPrice,
+                            Quantity = closeQty,
+                            AiScore = aiScore,
+                            log.PnL,
+                            log.PnLPercent,
+                            ExitReason = exitReason,
+                            EntryTime = resolvedEntryTime,
+                            ExitTime = exitTime
+                        }, tx);
+
+                    MainWindow.Instance?.AddLog($"⚠️ [DB] 열린 진입건 없이 부분청산 이력만 보정 insert: U{userId} {log.Symbol}");
+                }
+
+                await tx.CommitAsync();
+                MainWindow.Instance?.AddLog($"✅ [DB] TradeHistory 부분청산 기록 완료: U{userId} {log.Symbol} Qty={closeQty}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"❌ [DB 부분청산 저장 실패] {ex.GetType().Name}: {ex.Message}");
+                return false;
+            }
+        }
+
+        public async Task SaveTradeLogAsync(TradeLog log)
+        {
+            if (log == null)
+            {
+                MainWindow.Instance?.AddLog("⚠️ SaveTradeLogAsync: log 객체가 null입니다");
+                return;
+            }
+
+            if (string.Equals(log.ExitReason, "PartialClose", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(log.Strategy, "PartialClose", StringComparison.OrdinalIgnoreCase))
+            {
+                await RecordPartialCloseAsync(log);
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(log.ExitReason)
+                || string.Equals(log.Strategy, "MarketClose", StringComparison.OrdinalIgnoreCase)
+                || log.PnL != 0
+                || log.ExitPrice > 0)
+            {
+                await CompleteTradeAsync(log);
+                return;
+            }
+
+            await UpsertTradeEntryAsync(log);
         }
 
         // ============================================================================
@@ -108,6 +736,90 @@ namespace TradingBot.Services
             {
                 return new List<TradeLog>();
             }
+        }
+
+        public async Task<List<TradeLog>> GetTradeHistoryAsync(int userId, DateTime startDate, DateTime endDate, int limit = 1000)
+        {
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await EnsureTradeHistorySchemaAsync(db);
+
+                string sql = @"
+SELECT TOP (@Limit)
+    Id,
+    Symbol,
+    Side,
+    Strategy,
+    AiScore,
+        CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime) END AS Time,
+        CASE WHEN IsClosed = 0 THEN EntryPrice ELSE COALESCE(ExitPrice, EntryPrice) END AS Price,
+    PnL,
+    PnLPercent,
+    EntryPrice,
+        CASE WHEN IsClosed = 0 THEN 0 ELSE COALESCE(ExitPrice, 0) END AS ExitPrice,
+    Quantity,
+        CASE WHEN IsClosed = 0 THEN N'OPEN_POSITION' ELSE COALESCE(ExitReason, N'') END AS ExitReason,
+    EntryTime,
+        CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime) END AS ExitTime
+FROM dbo.TradeHistory
+WHERE UserId = @UserId
+    AND (
+                (IsClosed = 1 AND CloseVerified = 1 AND ExitTime >= @StartDate AND ExitTime <= @EndDate)
+                OR
+                (IsClosed = 0 AND EntryTime >= @StartDate AND EntryTime <= @EndDate)
+            )
+ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime) END DESC, Id DESC";
+
+                var rows = await db.QueryAsync<TradeLog>(sql, new { UserId = userId, StartDate = startDate, EndDate = endDate, Limit = limit });
+                return rows.ToList();
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"❌ [DB] TradeHistory 조회 실패: {ex.Message}");
+                return new List<TradeLog>();
+            }
+        }
+
+        public async Task ExportTradeHistoryToCsvAsync(string filePath, int userId, DateTime startDate, DateTime endDate, int limit = 10000)
+        {
+            var rows = await GetTradeHistoryAsync(userId, startDate, endDate, limit);
+
+            using var writer = new StreamWriter(filePath);
+            await writer.WriteLineAsync("Id,UserId,Time,Symbol,Side,Price,Strategy,AiScore,PnL,PnLPercent,Quantity,EntryPrice,ExitPrice,EntryTime,ExitTime,ExitReason");
+
+            foreach (var row in rows)
+            {
+                string line = string.Join(",",
+                    row.Id,
+                    userId,
+                    row.Time.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
+                    CsvEscape(row.Symbol),
+                    CsvEscape(row.Side),
+                    row.Price.ToString(CultureInfo.InvariantCulture),
+                    CsvEscape(row.Strategy),
+                    row.AiScore.ToString(CultureInfo.InvariantCulture),
+                    row.PnL.ToString(CultureInfo.InvariantCulture),
+                    row.PnLPercent.ToString(CultureInfo.InvariantCulture),
+                    row.Quantity.ToString(CultureInfo.InvariantCulture),
+                    row.EntryPrice.ToString(CultureInfo.InvariantCulture),
+                    row.ExitPrice.ToString(CultureInfo.InvariantCulture),
+                    row.EntryTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
+                    row.ExitTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
+                    CsvEscape(row.ExitReason));
+
+                await writer.WriteLineAsync(line);
+            }
+        }
+
+        private static string CsvEscape(string? value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return string.Empty;
+
+            string escaped = value.Replace("\"", "\"\"");
+            return $"\"{escaped}\"";
         }
 
         // [추가] 학습용 데이터 추출 (예시)

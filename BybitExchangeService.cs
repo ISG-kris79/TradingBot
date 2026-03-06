@@ -123,7 +123,7 @@ namespace TradingBot.Services
             return result ?? false;
         }
 
-        public async Task<bool> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default)
+        public async Task<(bool Success, string OrderId)> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default)
         {
             var orderSide = side.ToUpper() == "BUY" ? Bybit.Net.Enums.OrderSide.Buy : Bybit.Net.Enums.OrderSide.Sell;
 
@@ -139,7 +139,13 @@ namespace TradingBot.Services
                 ct: ct
             );
 
-            return HandleError(result);
+            if (result.Success && result.Data != null)
+            {
+                return (true, result.Data.OrderId);
+            }
+
+            HandleError(result);
+            return (false, string.Empty);
         }
 
         public async Task<bool> CancelOrderAsync(string symbol, string orderId, CancellationToken ct = default)

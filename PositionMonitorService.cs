@@ -24,14 +24,18 @@ namespace TradingBot.Services
         private readonly Dictionary<string, PositionInfo> _activePositions;
         private readonly object _posLock;
         private readonly TradingSettings _settings;
-        private readonly Dictionary<string, DateTime> _blacklistedSymbols;
+        private readonly ConcurrentDictionary<string, DateTime> _blacklistedSymbols;
+        private readonly ConcurrentDictionary<string, int> _closingPositions = new();
         private readonly AdvancedExitStopCalculator _advancedExitCalculator;  // [v2.1.18] 지표 결합 익절
+        private AIPredictor? _aiPredictor;
 
         // Events
         public event Action<string>? OnLog = delegate { };
         public event Action<string>? OnAlert = delegate { };
         public event Action<string, decimal, double?>? OnTickerUpdate = delegate { };
         public event Action<string, bool, decimal>? OnPositionStatusUpdate = delegate { };
+        public event Action<string, bool, string?>? OnCloseIncompleteStatusChanged = delegate { };
+        public event Action? OnTradeHistoryUpdated = delegate { };
 
         public PositionMonitorService(
             IBinanceRestClient client,
@@ -41,8 +45,9 @@ namespace TradingBot.Services
             DbManager dbManager,
             Dictionary<string, PositionInfo> activePositions,
             object posLock,
-            Dictionary<string, DateTime> blacklistedSymbols,
+            ConcurrentDictionary<string, DateTime> blacklistedSymbols,
             TradingSettings settings,
+            AIPredictor? aiPredictor = null,
             AdvancedExitStopCalculator? advancedExitCalculator = null)  // [v2.1.18] 선택적
         {
             _client = client;
@@ -54,7 +59,46 @@ namespace TradingBot.Services
             _posLock = posLock;
             _blacklistedSymbols = blacklistedSymbols;
             _settings = settings;
+            _aiPredictor = aiPredictor;
             _advancedExitCalculator = advancedExitCalculator ?? new AdvancedExitStopCalculator();  // [v2.1.18] 기본값 생성
+        }
+
+        public void UpdateAiPredictor(AIPredictor? aiPredictor)
+        {
+            _aiPredictor = aiPredictor;
+        }
+
+        public bool IsCloseInProgress(string symbol)
+        {
+            return !string.IsNullOrWhiteSpace(symbol)
+                && _closingPositions.TryGetValue(symbol, out var count)
+                && count > 0;
+        }
+
+        private void MarkCloseStarted(string symbol)
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+                return;
+
+            _closingPositions.AddOrUpdate(symbol, 1, (_, current) => current + 1);
+        }
+
+        private void MarkCloseFinished(string symbol)
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+                return;
+
+            while (_closingPositions.TryGetValue(symbol, out var current))
+            {
+                if (current <= 1)
+                {
+                    _closingPositions.TryRemove(symbol, out _);
+                    return;
+                }
+
+                if (_closingPositions.TryUpdate(symbol, current - 1, current))
+                    return;
+            }
         }
 
         public async Task MonitorPositionStandard(
@@ -68,6 +112,20 @@ namespace TradingBot.Services
         {
             bool isSidewaysMode = string.Equals(mode, "SIDEWAYS", StringComparison.OrdinalIgnoreCase);
             bool partialTaken = false;
+            bool hybridDcaTaken = false;
+            bool hybridDcaDeferredLogged = false;
+            decimal leverage = _settings.DefaultLeverage;
+            decimal hybridDcaTriggerRoe = -5.0m;
+            DateTime positionEntryTime = DateTime.Now;
+            bool timeDecayBreakevenApplied = false;
+            double timeDecayBreakevenMinutes = 60.0;
+            double maxHoldingMinutes = 120.0;
+            decimal timeoutExitRoeThreshold = 10.0m;
+            DateTime nextAiRecheckTime = DateTime.Now.AddMinutes(60);
+            bool squeezeDefenseReduced = false;
+            double squeezeDefenseMinutes = 90.0;
+            decimal squeezeDefenseMaxRoe = 8.0m;
+            decimal squeezeDefenseBbWidthThreshold = 0.60m;
 
             lock (_posLock)
             {
@@ -76,6 +134,11 @@ namespace TradingBot.Services
                     entryPrice = p.EntryPrice;
                     isLong = p.IsLong;
                     partialTaken = p.TakeProfitStep >= 1;
+                    hybridDcaTaken = p.IsAveragedDown;
+                    leverage = p.Leverage > 0 ? p.Leverage : leverage;
+                    positionEntryTime = p.EntryTime == default ? positionEntryTime : p.EntryTime;
+                    squeezeDefenseReduced = p.TakeProfitStep >= 1;
+                    nextAiRecheckTime = positionEntryTime.AddMinutes(60);
 
                     if (customTakeProfitPrice <= 0 && p.TakeProfit > 0)
                         customTakeProfitPrice = p.TakeProfit;
@@ -96,21 +159,27 @@ namespace TradingBot.Services
             bool profitLockActivated = false;      // ROE 15% 수익 잠금 활성화
             bool tightTrailingActivated = false;   // ROE 20% 타이트 트레일링 활성화
             
-            // 3단계 파라미터
-            decimal breakEvenROE = 10.0m;          // 1단계: 본절 확보
-            decimal profitLockROE = 15.0m;         // 2단계: 수익 잠금
-            decimal tightTrailingROE = 20.0m;      // 3단계: 타이트 트레일링
-            decimal minLockROE = 18.0m;            // 3단계 최소 수익 (ROE 18%)
-            decimal tightGapPercent = 0.0015m;     // 3단계 간격 (0.15%)
+            // 3단계 파라미터 (빠른 본절 방어: 20배 레버리지에서 5% ROE = 0.25% 가격 변동)
+            decimal breakEvenROE = 5.0m;           // 1단계: 빠른 본절 확보 (5% ROE)
+            decimal profitLockROE = 12.0m;         // 2단계: 수익 잠금
+            decimal tightTrailingROE = 18.0m;      // 3단계: 타이트 트레일링
+            decimal minLockROE = 15.0m;            // 3단계 최소 수익 (ROE 15%)
+            decimal tightGapPercent = 0.0020m;     // 3단계 간격 (0.20%)
+            bool hasCustomAbsoluteStop = customStopLossPrice > 0;
+
+            if (hasCustomAbsoluteStop && !isSidewaysMode)
+            {
+                OnLog?.Invoke($"🛡️ {symbol} ATR 하이브리드 손절 활성화 | 절대손절가={customStopLossPrice:F8}");
+            }
 
             // [추가] 안전장치: 서버사이드 손절 주문 설정 (Stop Market)
             try
             {
-                decimal stopPrice = (isSidewaysMode && customStopLossPrice > 0)
+                decimal stopPrice = customStopLossPrice > 0
                     ? customStopLossPrice
                     : (isLong
-                        ? entryPrice * (1 - _settings.StopLossRoe / _settings.DefaultLeverage / 100)
-                        : entryPrice * (1 + _settings.StopLossRoe / _settings.DefaultLeverage / 100));
+                        ? entryPrice * (1 - _settings.StopLossRoe / leverage / 100)
+                        : entryPrice * (1 + _settings.StopLossRoe / leverage / 100));
 
                 // 수량 조회 (락 필요)
                 decimal qty = 0;
@@ -118,10 +187,14 @@ namespace TradingBot.Services
 
                 if (qty > 0)
                 {
-                    bool success = await _exchangeService.PlaceStopOrderAsync(symbol, isLong ? "SELL" : "BUY", qty, stopPrice, token);
+                    var (success, orderId) = await _exchangeService.PlaceStopOrderAsync(symbol, isLong ? "SELL" : "BUY", qty, stopPrice, token);
                     if (success)
                     {
-                        // lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = ...; } // ID 추적은 거래소별 구현 필요
+                        lock (_posLock)
+                        {
+                            if (_activePositions.TryGetValue(symbol, out var p))
+                                p.StopOrderId = orderId;
+                        }
                         OnLog?.Invoke($"🛡️ {symbol} 서버 손절 주문 설정 완료 (가: {stopPrice:F4})");
                     }
                 }
@@ -133,15 +206,82 @@ namespace TradingBot.Services
                 try
                 {
                     decimal currentPrice = await _exchangeService.GetPriceAsync(symbol, ct: token);
+                    if (currentPrice == 0 && _marketDataManager.TickerCache.TryGetValue(symbol, out var ticker))
+                        currentPrice = ticker.LastPrice;
+
                     if (currentPrice == 0) { await Task.Delay(2000, token); continue; }
+
+                    lock (_posLock)
+                    {
+                        if (_activePositions.TryGetValue(symbol, out var livePos) && livePos.Leverage > 0)
+                            leverage = livePos.Leverage;
+                    }
 
                     decimal priceChangePercent = isLong
                         ? (currentPrice - entryPrice) / entryPrice * 100
                         : (entryPrice - currentPrice) / entryPrice * 100;
 
-                    decimal currentROE = priceChangePercent * _settings.DefaultLeverage;
+                    decimal currentROE = priceChangePercent * leverage;
+                    TimeSpan holdingTime = DateTime.Now - positionEntryTime;
 
                     OnTickerUpdate?.Invoke(symbol, 0m, (double)currentROE);
+
+                    if (_aiPredictor != null && DateTime.Now >= nextAiRecheckTime)
+                    {
+                        if (TryEvaluateAiReversalExit(symbol, currentPrice, isLong, out string aiRecheckReason))
+                        {
+                            OnLog?.Invoke($"🧠 [AI 재검증 청산] {symbol} {aiRecheckReason}");
+                            await ExecuteMarketClose(symbol, $"AI Reversal Exit ({aiRecheckReason})", token);
+                            break;
+                        }
+
+                        OnLog?.Invoke($"🧠 [AI 재검증 유지] {symbol} {aiRecheckReason}");
+                        nextAiRecheckTime = DateTime.Now.AddMinutes(60);
+                    }
+
+                    if (!timeDecayBreakevenApplied && holdingTime.TotalMinutes >= timeDecayBreakevenMinutes)
+                    {
+                        decimal breakevenStopPrice = entryPrice;
+                        bool stopTightened = false;
+                        decimal previousStop = 0m;
+
+                        if (hasCustomAbsoluteStop)
+                        {
+                            previousStop = customStopLossPrice;
+                            if ((isLong && customStopLossPrice < breakevenStopPrice) || (!isLong && customStopLossPrice > breakevenStopPrice))
+                            {
+                                customStopLossPrice = breakevenStopPrice;
+                                stopTightened = true;
+                            }
+                        }
+                        else
+                        {
+                            previousStop = protectiveStopPrice;
+                            if (protectiveStopPrice <= 0m || (isLong && protectiveStopPrice < breakevenStopPrice) || (!isLong && protectiveStopPrice > breakevenStopPrice))
+                            {
+                                protectiveStopPrice = breakevenStopPrice;
+                                stopTightened = true;
+                            }
+                        }
+
+                        lock (_posLock)
+                        {
+                            if (_activePositions.TryGetValue(symbol, out var p))
+                            {
+                                decimal storedStop = p.StopLoss;
+                                if (storedStop <= 0m || (isLong && storedStop < breakevenStopPrice) || (!isLong && storedStop > breakevenStopPrice))
+                                {
+                                    p.StopLoss = breakevenStopPrice;
+                                }
+                            }
+                        }
+
+                        OnLog?.Invoke(stopTightened
+                            ? $"🛡️ [시간 기반 보호] {symbol} {holdingTime.TotalMinutes:F0}분 경과 → 손절가를 본절({breakevenStopPrice:F8})로 상향 조정 (이전={previousStop:F8})"
+                            : $"🛡️ [시간 기반 보호] {symbol} {holdingTime.TotalMinutes:F0}분 경과 → 기존 스탑이 본절 이상으로 유지 중입니다.");
+
+                        timeDecayBreakevenApplied = true;
+                    }
 
                     // [3단계 스마트 방어 시스템] 수익 보존 로직
                     
@@ -161,49 +301,49 @@ namespace TradingBot.Services
                     }
 
                     // ═══════════════════════════════════════════════
-                    // 1단계: ROE 10% 도달 → 본절 보호 (Break-even)
+                    // 1단계: ROE 5% 도달 → 빠른 본절 보호 (20x에서 0.25% 가격변동)
                     // ═══════════════════════════════════════════════
                     if (!breakEvenActivated && highestROE >= breakEvenROE)
                     {
                         breakEvenActivated = true;
                         
-                        // 진입가 + 0.1% (수수료 방어 + 본절 확보)
+                        // 진입가 + 0.05% (수수료 방어 + 본절 확보)
                         protectiveStopPrice = isLong 
-                            ? entryPrice * 1.001m
-                            : entryPrice * 0.999m;
+                            ? entryPrice * 1.0005m
+                            : entryPrice * 0.9995m;
                         
-                        OnLog?.Invoke($"🛡️ {symbol} [1단계] 본절 보호 활성화! ROE {highestROE:F1}% 도달 | 스탑={protectiveStopPrice:F8} (본절가 + 0.1%)");
+                        OnLog?.Invoke($"🛡️ {symbol} [1단계] 빠른 본절 보호 활성화! ROE {highestROE:F1}% 도달 | 스탑={protectiveStopPrice:F8} (본절가 + 0.05%)");
                     }
 
                     // ═══════════════════════════════════════════════
-                    // 2단계: ROE 15% 도달 → 수익 잠금 (최소 ROE 7%)
+                    // 2단계: ROE 12% 도달 → 수익 잠금 (최소 ROE ~5%)
                     // ═══════════════════════════════════════════════
                     if (breakEvenActivated && !profitLockActivated && highestROE >= profitLockROE)
                     {
                         profitLockActivated = true;
                         
-                        // 진입가 + 0.35% (ROE 약 7% 지점)
+                        // 진입가 + 0.25% (ROE 약 5% 지점)
                         protectiveStopPrice = isLong 
-                            ? entryPrice * 1.0035m
-                            : entryPrice * 0.9965m;
+                            ? entryPrice * 1.0025m
+                            : entryPrice * 0.9975m;
                         
-                        OnLog?.Invoke($"💰 {symbol} [2단계] 수익 잠금 활성화! ROE {highestROE:F1}% 도달 | 스탑={protectiveStopPrice:F8} (최소 ROE 7% 확보)");
+                        OnLog?.Invoke($"💰 {symbol} [2단계] 수익 잠금 활성화! ROE {highestROE:F1}% 도달 | 스탑={protectiveStopPrice:F8} (최소 ROE 5% 확보)");
                     }
 
                     // ═══════════════════════════════════════════════
-                    // 3단계: ROE 20% 도달 → 타이트한 트레일링 (최소 ROE 18%)
+                    // 3단계: ROE 18% 도달 → 타이트한 트레일링 (최소 ROE 15%)
                     // ═══════════════════════════════════════════════
                     if (profitLockActivated && !tightTrailingActivated && highestROE >= tightTrailingROE)
                     {
                         tightTrailingActivated = true;
                         
-                        // ROE 18% = 0.9% 가격 변동 (20배 레버리지)
-                        decimal minLockPriceChange = minLockROE / _settings.DefaultLeverage / 100;
+                        // ROE 15% = 0.75% 가격 변동 (20배 레버리지)
+                        decimal minLockPriceChange = minLockROE / leverage / 100;
                         protectiveStopPrice = isLong 
                             ? entryPrice * (1 + minLockPriceChange)
                             : entryPrice * (1 - minLockPriceChange);
                         
-                        OnLog?.Invoke($"🎯 {symbol} [3단계] 타이트 트레일링 활성화! ROE {highestROE:F1}% 돌파 | 스탑={protectiveStopPrice:F8} (최소 ROE 18%)");
+                        OnLog?.Invoke($"🎯 {symbol} [3단계] 타이트 트레일링 활성화! ROE {highestROE:F1}% 돌파 | 스탑={protectiveStopPrice:F8} (최소 ROE 15%)");
 
                         // [v2.1.18] 지표 기반 익절 준비: ROE 20% 도달 시 지표 모니터링 시작
                         OnLog?.Invoke($"🔍 {symbol} 지표 기반 익절 시스템 활성화 [3단계 타이트 트레일링과 병행]");
@@ -222,7 +362,7 @@ namespace TradingBot.Services
                             decimal newStopPrice = currentPriceForTrailing * (1 - tightGapPercent);
                             
                             // ROE 18% 아래로는 절대 내려가지 않음
-                            decimal minLockPrice = entryPrice * (1 + minLockROE / _settings.DefaultLeverage / 100);
+                            decimal minLockPrice = entryPrice * (1 + minLockROE / leverage / 100);
                             if (newStopPrice < minLockPrice)
                                 newStopPrice = minLockPrice;
                             
@@ -240,7 +380,7 @@ namespace TradingBot.Services
                             decimal newStopPrice = currentPriceForTrailing * (1 + tightGapPercent);
                             
                             // ROE 18% 위로는 절대 올라가지 않음
-                            decimal minLockPrice = entryPrice * (1 - minLockROE / _settings.DefaultLeverage / 100);
+                            decimal minLockPrice = entryPrice * (1 - minLockROE / leverage / 100);
                             if (newStopPrice > minLockPrice)
                                 newStopPrice = minLockPrice;
                             
@@ -273,8 +413,8 @@ namespace TradingBot.Services
                                 {
                                     OnLog?.Invoke($"⚠️ {symbol} [지표 익절] {exitSignal.SignalSummary}");
                                     decimal exitROE = isLong
-                                        ? ((currentPrice - entryPrice) / entryPrice) * _settings.DefaultLeverage * 100
-                                        : ((entryPrice - currentPrice) / entryPrice) * _settings.DefaultLeverage * 100;
+                                        ? ((currentPrice - entryPrice) / entryPrice) * leverage * 100
+                                        : ((entryPrice - currentPrice) / entryPrice) * leverage * 100;
                                     
                                     await ExecuteMarketClose(symbol, 
                                         $"Advanced Exit Signal: {exitSignal.SignalSummary} (ROE {exitROE:F1}%)", 
@@ -287,8 +427,8 @@ namespace TradingBot.Services
                                 {
                                     OnLog?.Invoke($"🚨 {symbol} [다중 지표 신호] {exitSignal.SignalSummary} - 즉시 익절 실행!");
                                     decimal exitROE = isLong
-                                        ? ((currentPrice - entryPrice) / entryPrice) * _settings.DefaultLeverage * 100
-                                        : ((entryPrice - currentPrice) / entryPrice) * _settings.DefaultLeverage * 100;
+                                        ? ((currentPrice - entryPrice) / entryPrice) * leverage * 100
+                                        : ((entryPrice - currentPrice) / entryPrice) * leverage * 100;
                                     
                                     await ExecuteMarketClose(symbol, 
                                         $"Multi-Signal Exit: {exitSignal.SignalSummary} (ROE {exitROE:F1}%)", 
@@ -323,8 +463,8 @@ namespace TradingBot.Services
                         if (stopHit)
                         {
                             decimal finalROE = isLong
-                                ? ((currentPrice - entryPrice) / entryPrice) * _settings.DefaultLeverage * 100
-                                : ((entryPrice - currentPrice) / entryPrice) * _settings.DefaultLeverage * 100;
+                                ? ((currentPrice - entryPrice) / entryPrice) * leverage * 100
+                                : ((entryPrice - currentPrice) / entryPrice) * leverage * 100;
                             
                             string stage = tightTrailingActivated ? "3단계 타이트 트레일링" 
                                          : profitLockActivated ? "2단계 수익 잠금" 
@@ -332,6 +472,17 @@ namespace TradingBot.Services
                             
                             OnLog?.Invoke($"[청산 트리거] {symbol} {stage} 스톱 발동! | 현재가={currentPrice:F8}, 스탑={protectiveStopPrice:F8} | 최종ROE={finalROE:F1}%");
                             await ExecuteMarketClose(symbol, $"Smart Protective Stop [{stage}] (ROE {finalROE:F1}%)", token);
+                            break;
+                        }
+                    }
+
+                    if (hasCustomAbsoluteStop && !isSidewaysMode)
+                    {
+                        bool customStopHit = (isLong && currentPrice <= customStopLossPrice) || (!isLong && currentPrice >= customStopLossPrice);
+                        if (customStopHit)
+                        {
+                            OnLog?.Invoke($"[청산 트리거] {symbol} ATR 하이브리드 손절 | 현재가={currentPrice:F8}, SL={customStopLossPrice:F8}");
+                            await ExecuteMarketClose(symbol, $"ATR 2.5x Hybrid Stop ({currentPrice:F8})", token);
                             break;
                         }
                     }
@@ -381,16 +532,75 @@ namespace TradingBot.Services
                         }
                     }
 
+                    if (!isSidewaysMode && isLong && !hybridDcaTaken && currentROE <= hybridDcaTriggerRoe)
+                    {
+                        if (TryShouldExecuteHybridLongDca(symbol, currentPrice, out string dcaReason))
+                        {
+                            OnAlert?.Invoke($"💧 {symbol} 하이브리드 DCA 시도 (ROE: {currentROE:F2}%) | {dcaReason}");
+                            await ExecuteAverageDown(symbol, token);
+                            lock (_posLock)
+                            {
+                                if (_activePositions.TryGetValue(symbol, out var p))
+                                {
+                                    entryPrice = p.EntryPrice;
+                                    hybridDcaTaken = p.IsAveragedDown;
+                                }
+                            }
+                            hybridDcaDeferredLogged = false;
+                            continue;
+                        }
+
+                        if (!hybridDcaDeferredLogged)
+                        {
+                            OnLog?.Invoke($"⏸️ {symbol} 하이브리드 DCA 보류 | {dcaReason}");
+                            hybridDcaDeferredLogged = true;
+                        }
+                    }
+                    else
+                    {
+                        hybridDcaDeferredLogged = false;
+                    }
+
+                    if (!squeezeDefenseReduced && holdingTime.TotalMinutes >= squeezeDefenseMinutes && currentROE < squeezeDefenseMaxRoe)
+                    {
+                        if (TryGetCurrentBbWidthPct(symbol, out decimal currentBbWidthPct) && currentBbWidthPct > 0m && currentBbWidthPct <= squeezeDefenseBbWidthThreshold)
+                        {
+                            await ExecutePartialClose(symbol, 0.5m, token);
+                            partialTaken = true;
+                            squeezeDefenseReduced = true;
+
+                            lock (_posLock)
+                            {
+                                if (_activePositions.TryGetValue(symbol, out var p))
+                                {
+                                    p.TakeProfitStep = Math.Max(p.TakeProfitStep, 1);
+                                    p.BreakevenPrice = entryPrice;
+                                    p.StopLoss = entryPrice;
+                                }
+                            }
+
+                            OnLog?.Invoke($"📦 [스퀴즈 방어 축소] {symbol} {holdingTime.TotalMinutes:F0}분 경과 + BB폭 {currentBbWidthPct:F2}% → 50% 축소 후 본절 보호 전환");
+                            continue;
+                        }
+                    }
+
+                    if (holdingTime.TotalMinutes >= maxHoldingMinutes && currentROE < timeoutExitRoeThreshold)
+                    {
+                        OnLog?.Invoke($"⏳ [시간 초과 종료] {symbol} {holdingTime.TotalMinutes:F0}분 경과 | 현재ROE={currentROE:F2}% < {timeoutExitRoeThreshold:F2}% → 추세 소멸로 포지션 정리");
+                        await ExecuteMarketClose(symbol, $"TimeOut Exit ({holdingTime.TotalMinutes:F0}m, ROE {currentROE:F2}%)", token);
+                        break;
+                    }
+
                     if (currentROE >= _settings.TargetRoe)
                     {
                         OnLog?.Invoke($"[청산 트리거] {symbol} 메이저 익절 조건 충족 | 방향={(isLong ? "LONG" : "SHORT")}, 현재ROE={currentROE:F2}%, 목표ROE={_settings.TargetRoe:F2}%");
                         await ExecuteMarketClose(symbol, $"메이저 익절 달성 ({currentROE:F2}%)", token);
                         break;
                     }
-                    else if (currentROE <= -_settings.StopLossRoe)
+                    else if (!hasCustomAbsoluteStop && currentROE <= -_settings.StopLossRoe)
                     {
                         OnLog?.Invoke($"[청산 트리거] {symbol} 메이저 손절 조건 충족 | 방향={(isLong ? "LONG" : "SHORT")}, 현재ROE={currentROE:F2}%, 손절ROE=-{_settings.StopLossRoe:F2}%");
-                        await ExecuteMarketClose(symbol, $"메이저 손절 실행 ({currentROE:F2}%)", token);
+                        await ExecuteMarketClose(symbol, $"메이저 손절 실행 (현재 {currentROE:F2}%, 기준 -{_settings.StopLossRoe:F2}%)", token);
                         break;
                     }
 
@@ -487,6 +697,8 @@ namespace TradingBot.Services
                 await Task.Delay(500, token);
 
                 decimal currentPrice = await _exchangeService.GetPriceAsync(symbol, ct: token);
+                if (currentPrice == 0 && _marketDataManager.TickerCache.TryGetValue(symbol, out var ticker))
+                    currentPrice = ticker.LastPrice;
                 if (currentPrice == 0) continue;
                 decimal priceChangePercent = isLongPosition
                     ? (currentPrice - entryPrice) / entryPrice * 100
@@ -831,25 +1043,318 @@ namespace TradingBot.Services
             }
         }
 
-        public async Task ExecuteMarketClose(string symbol, string reason, CancellationToken token)
+        private bool TryShouldExecuteHybridLongDca(string symbol, decimal currentPrice, out string reason)
+        {
+            reason = string.Empty;
+
+            PositionInfo? localPosition;
+            lock (_posLock)
+            {
+                _activePositions.TryGetValue(symbol, out localPosition);
+            }
+
+            if (localPosition == null)
+            {
+                reason = "내부 포지션 정보 없음";
+                return false;
+            }
+
+            if (!localPosition.IsLong)
+            {
+                reason = "SHORT 포지션은 하이브리드 DCA 비활성";
+                return false;
+            }
+
+            if (!localPosition.IsHybridMidBandLongEntry)
+            {
+                reason = $"중단 롱 진입 포지션 아님 (EntryZone={localPosition.EntryZoneTag ?? string.Empty})";
+                return false;
+            }
+
+            if (localPosition.AiConfidencePercent < 70f)
+            {
+                reason = $"AI 확률 {localPosition.AiConfidencePercent:F1}% < 70%";
+                return false;
+            }
+
+            if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var recentCandles) || recentCandles.Count < 20)
+            {
+                reason = "5분봉 데이터 부족";
+                return false;
+            }
+
+            var recent20 = recentCandles.TakeLast(20).ToList();
+            var bb = IndicatorCalculator.CalculateBB(recent20, 20, 2);
+            decimal bbLower = (decimal)bb.Lower;
+            decimal bbUpper = (decimal)bb.Upper;
+            decimal bbRange = bbUpper - bbLower;
+            if (bbRange <= 0m)
+            {
+                reason = "BB 계산 불가";
+                return false;
+            }
+
+            decimal bbPosition = (currentPrice - bbLower) / bbRange;
+            if (bbPosition <= 0.10m)
+            {
+                reason = $"%B {bbPosition:P0} 하단 붕괴 구간에서는 DCA 금지";
+                return false;
+            }
+
+            if (bbPosition > 0.15m)
+            {
+                reason = $"하단 DCA 대기 구간 아님 (%B {bbPosition:P0})";
+                return false;
+            }
+
+            reason = $"하단 DCA 구간 도달 (%B {bbPosition:P0}, AI {localPosition.AiConfidencePercent:F1}%)";
+            return true;
+        }
+
+        private bool TryEvaluateAiReversalExit(string symbol, decimal currentPrice, bool isLong, out string reason)
+        {
+            reason = "AI 재검증 데이터 부족";
+
+            if (_aiPredictor == null)
+                return false;
+
+            var candle = BuildAiRecheckCandle(symbol, currentPrice);
+            if (candle == null)
+                return false;
+
+            var prediction = _aiPredictor.Predict(candle);
+            float confidencePct = prediction.Probability * 100f;
+            bool oppositeSignal = isLong ? !prediction.Prediction : prediction.Prediction;
+
+            lock (_posLock)
+            {
+                if (_activePositions.TryGetValue(symbol, out var p))
+                {
+                    p.AiScore = prediction.Score;
+                    p.AiConfidencePercent = confidencePct;
+                }
+            }
+
+            if (oppositeSignal && prediction.Probability >= 0.58f)
+            {
+                reason = $"반대 예측 감지 | 방향={(prediction.Prediction ? "LONG" : "SHORT")}, 확률={confidencePct:F1}%";
+                return true;
+            }
+
+            reason = $"현재 방향 유지 | 예측={(prediction.Prediction ? "LONG" : "SHORT")}, 확률={confidencePct:F1}%";
+            return false;
+        }
+
+        private CandleData? BuildAiRecheckCandle(string symbol, decimal currentPrice)
         {
             try
             {
+                if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var candles) || candles.Count < 30)
+                    return null;
+
+                var recent = candles.TakeLast(120).ToList();
+                var recent20 = recent.TakeLast(20).ToList();
+                var latest = recent[^1];
+                var previous = recent.Count >= 2 ? recent[^2] : latest;
+
+                var bb = IndicatorCalculator.CalculateBB(recent20, 20, 2);
+                var macd = IndicatorCalculator.CalculateMACD(recent);
+                double rsi = IndicatorCalculator.CalculateRSI(recent20, 14);
+                double atr = IndicatorCalculator.CalculateATR(recent20, 14);
+                double sma20 = IndicatorCalculator.CalculateSMA(recent, 20);
+                double sma60 = IndicatorCalculator.CalculateSMA(recent, 60);
+                double sma120 = IndicatorCalculator.CalculateSMA(recent, 120);
+
+                decimal mid = (decimal)bb.Mid;
+                decimal upper = (decimal)bb.Upper;
+                decimal lower = (decimal)bb.Lower;
+                decimal high = latest.HighPrice;
+                decimal low = latest.LowPrice;
+                decimal open = latest.OpenPrice;
+                decimal close = currentPrice > 0 ? currentPrice : latest.ClosePrice;
+                decimal range = Math.Max(high - low, 0.00000001m);
+                float volumeRatio = 0f;
+                var avgVolume = recent20.Take(recent20.Count - 1).Select(k => (double)k.Volume).DefaultIfEmpty((double)latest.Volume).Average();
+                if (avgVolume > 0)
+                    volumeRatio = (float)((double)latest.Volume / avgVolume);
+
+                float volumeChangePct = 0f;
+                if (previous.Volume > 0)
+                    volumeChangePct = (float)(((double)latest.Volume - (double)previous.Volume) / (double)previous.Volume * 100.0);
+
+                decimal bbWidthPct = mid > 0 ? ((upper - lower) / mid) * 100m : 0m;
+                decimal priceToMidPct = mid > 0 ? ((close - mid) / mid) * 100m : 0m;
+                decimal sma20Dec = (decimal)sma20;
+                decimal priceToSma20Pct = sma20Dec > 0 ? ((close - sma20Dec) / sma20Dec) * 100m : 0m;
+                decimal body = Math.Abs(close - open);
+                decimal upperShadow = high - Math.Max(open, close);
+                decimal lowerShadow = Math.Min(open, close) - low;
+
+                return new CandleData
+                {
+                    Symbol = symbol,
+                    Open = open,
+                    High = high,
+                    Low = low,
+                    Close = close,
+                    Volume = (float)latest.Volume,
+                    OpenTime = latest.OpenTime,
+                    CloseTime = latest.CloseTime,
+                    RSI = (float)rsi,
+                    BollingerUpper = (float)upper,
+                    BollingerLower = (float)lower,
+                    MACD = (float)macd.Macd,
+                    MACD_Signal = (float)macd.Signal,
+                    MACD_Hist = (float)macd.Hist,
+                    ATR = (float)atr,
+                    SMA_20 = (float)sma20,
+                    SMA_60 = (float)sma60,
+                    SMA_120 = (float)sma120,
+                    Price_Change_Pct = open > 0 ? (float)(((close - open) / open) * 100m) : 0f,
+                    Price_To_BB_Mid = (float)priceToMidPct,
+                    BB_Width = (float)bbWidthPct,
+                    Price_To_SMA20_Pct = (float)priceToSma20Pct,
+                    Candle_Body_Ratio = (float)(body / range),
+                    Upper_Shadow_Ratio = (float)(Math.Max(upperShadow, 0m) / range),
+                    Lower_Shadow_Ratio = (float)(Math.Max(lowerShadow, 0m) / range),
+                    Volume_Ratio = volumeRatio,
+                    Volume_Change_Pct = volumeChangePct
+                };
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ {symbol} AI 재검증 캔들 생성 실패: {ex.Message}");
+                return null;
+            }
+        }
+
+        private bool TryGetCurrentBbWidthPct(string symbol, out decimal bbWidthPct)
+        {
+            bbWidthPct = 0m;
+
+            try
+            {
+                if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var candles) || candles.Count < 20)
+                    return false;
+
+                var recent20 = candles.TakeLast(20).ToList();
+                var bb = IndicatorCalculator.CalculateBB(recent20, 20, 2);
+                decimal mid = (decimal)bb.Mid;
+                decimal upper = (decimal)bb.Upper;
+                decimal lower = (decimal)bb.Lower;
+                if (mid <= 0m || upper <= lower)
+                    return false;
+
+                bbWidthPct = ((upper - lower) / mid) * 100m;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public async Task ExecuteMarketClose(string symbol, string reason, CancellationToken token)
+        {
+            MarkCloseStarted(symbol);
+            try
+            {
+                OnCloseIncompleteStatusChanged?.Invoke(symbol, false, null);
+
+                PositionInfo? localTrackedPosition = null;
+                lock (_posLock)
+                {
+                    if (_activePositions.TryGetValue(symbol, out var localPos) && Math.Abs(localPos.Quantity) > 0)
+                    {
+                        localTrackedPosition = new PositionInfo
+                        {
+                            Symbol = symbol,
+                            IsLong = localPos.IsLong,
+                            Quantity = Math.Abs(localPos.Quantity),
+                            EntryPrice = localPos.EntryPrice,
+                            Leverage = localPos.Leverage,
+                            UnrealizedPnL = localPos.UnrealizedPnL,
+                            Side = localPos.Side,
+                            EntryTime = localPos.EntryTime,
+                            AiScore = localPos.AiScore
+                        };
+                    }
+                }
+
                 var positions = await _exchangeService.GetPositionsAsync(ct: token);
                 var position = positions.FirstOrDefault(p => p.Symbol == symbol && p.Quantity != 0);
                 if (position == null)
                 {
+                    if (localTrackedPosition != null)
+                    {
+                        decimal fallbackExitPrice = 0m;
+                        if (_marketDataManager.TickerCache.TryGetValue(symbol, out var cachedTicker))
+                            fallbackExitPrice = cachedTicker.LastPrice;
+
+                        if (fallbackExitPrice <= 0)
+                        {
+                            try
+                            {
+                                fallbackExitPrice = await _exchangeService.GetPriceAsync(symbol, ct: token);
+                            }
+                            catch (Exception priceEx)
+                            {
+                                OnLog?.Invoke($"⚠️ {symbol} 이미 종료된 포지션의 종료가 재조회 실패: {priceEx.Message}");
+                            }
+                        }
+
+                        if (fallbackExitPrice <= 0)
+                            fallbackExitPrice = localTrackedPosition.EntryPrice;
+
+                        decimal fallbackAbsQty = Math.Abs(localTrackedPosition.Quantity);
+                        decimal fallbackPnl = localTrackedPosition.IsLong
+                            ? (fallbackExitPrice - localTrackedPosition.EntryPrice) * fallbackAbsQty
+                            : (localTrackedPosition.EntryPrice - fallbackExitPrice) * fallbackAbsQty;
+
+                        decimal fallbackPnlPercent = 0m;
+                        if (localTrackedPosition.EntryPrice > 0 && fallbackAbsQty > 0)
+                        {
+                            fallbackPnlPercent = (fallbackPnl / (localTrackedPosition.EntryPrice * fallbackAbsQty)) * 100m * localTrackedPosition.Leverage;
+                        }
+
+                        var alreadyClosedLog = new TradeLog(
+                            symbol,
+                            localTrackedPosition.IsLong ? "SELL" : "BUY",
+                            "ALREADY_CLOSED_SYNC",
+                            fallbackExitPrice,
+                            localTrackedPosition.AiScore,
+                            DateTime.Now,
+                            fallbackPnl,
+                            fallbackPnlPercent)
+                        {
+                            EntryPrice = localTrackedPosition.EntryPrice,
+                            ExitPrice = fallbackExitPrice,
+                            Quantity = fallbackAbsQty,
+                            EntryTime = localTrackedPosition.EntryTime == default ? DateTime.Now : localTrackedPosition.EntryTime,
+                            ExitTime = DateTime.Now,
+                            ExitReason = string.IsNullOrWhiteSpace(reason) ? "ALREADY_CLOSED_SYNC" : reason
+                        };
+
+                        bool dbSaved = await _dbManager.CompleteTradeAsync(alreadyClosedLog);
+                        OnLog?.Invoke(dbSaved
+                            ? $"📝 {symbol} 거래소상 이미 종료된 포지션을 TradeHistory에 보정 반영했습니다."
+                            : $"⚠️ {symbol} 거래소상 이미 종료된 포지션이었지만 TradeHistory 보정 반영에 실패했습니다.");
+
+                        // [FIX] 청산 이력 갱신 이벤트
+                        if (dbSaved) OnTradeHistoryUpdated?.Invoke();
+                    }
+
                     CleanupPositionData(symbol);
                     return;
                 }
 
                 // [추가] 포지션 종료 전, 걸어둔 서버사이드 손절 주문 취소
-                long stopOrderId = 0;
+                string stopOrderId = string.Empty;
                 lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) stopOrderId = p.StopOrderId; }
 
-                if (stopOrderId > 0)
+                if (!string.IsNullOrWhiteSpace(stopOrderId))
                 {
-                    await _exchangeService.CancelOrderAsync(symbol, stopOrderId.ToString(), token);
+                    await _exchangeService.CancelOrderAsync(symbol, stopOrderId, token);
                 }
 
                 bool isLongPosition = position.IsLong;
@@ -880,11 +1385,105 @@ namespace TradingBot.Services
                     }
                 }
 
+                bool IsLocalPositionClosed()
+                {
+                    lock (_posLock)
+                    {
+                        return !_activePositions.TryGetValue(symbol, out var localPos) || Math.Abs(localPos.Quantity) <= 0;
+                    }
+                }
+
+                PositionInfo? GetLocalTrackedPositionSnapshot()
+                {
+                    lock (_posLock)
+                    {
+                        if (_activePositions.TryGetValue(symbol, out var localPos) && Math.Abs(localPos.Quantity) > 0)
+                        {
+                            return new PositionInfo
+                            {
+                                Symbol = symbol,
+                                IsLong = localPos.IsLong,
+                                Quantity = Math.Abs(localPos.Quantity),
+                                EntryPrice = localPos.EntryPrice,
+                                Leverage = localPos.Leverage,
+                                UnrealizedPnL = localPos.UnrealizedPnL,
+                                Side = localPos.Side,
+                                EntryTime = localPos.EntryTime,
+                                AiScore = localPos.AiScore
+                            };
+                        }
+
+                        return null;
+                    }
+                }
+
+                async Task<PositionInfo?> ConfirmRemainingPositionAsync()
+                {
+                    PositionInfo? lastSeen = null;
+                    const int maxAttempts = 8;
+
+                    for (int attempt = 1; attempt <= maxAttempts; attempt++)
+                    {
+                        if (attempt == 1)
+                            await Task.Delay(200, token);
+                        else
+                            await Task.Delay(300, token);
+
+                        if (IsLocalPositionClosed())
+                        {
+                            OnLog?.Invoke($"[청산 재확인] {symbol} 웹소켓/내부 상태에서 포지션 종료 확인 ({attempt}/{maxAttempts})");
+                            return null;
+                        }
+
+                        PositionInfo? open = null;
+                        try
+                        {
+                            var latestPositions = await _exchangeService.GetPositionsAsync(ct: token);
+                            open = latestPositions.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.Quantity) > 0);
+                        }
+                        catch (Exception restEx)
+                        {
+                            OnLog?.Invoke($"⚠️ [청산 재확인] {symbol} REST 재조회 실패 ({attempt}/{maxAttempts}): {restEx.Message}");
+                        }
+
+                        if (open == null)
+                        {
+                            OnLog?.Invoke($"[청산 재확인] {symbol} REST 재조회에서 포지션 0 확인 ({attempt}/{maxAttempts})");
+
+                            return null;
+                        }
+
+                        lastSeen = open;
+
+                        if (attempt < maxAttempts)
+                        {
+                            string openDirection = open.IsLong ? "LONG" : "SHORT";
+                            OnLog?.Invoke($"⏳ [청산 재확인] {symbol} {attempt}/{maxAttempts} | 잔존감지 {openDirection} {Math.Abs(open.Quantity)} -> 재조회 대기");
+                        }
+                    }
+
+                    if (IsLocalPositionClosed())
+                    {
+                        OnLog?.Invoke($"[청산 재확인] {symbol} 최종 확인에서 웹소켓/내부 상태 기준 포지션 종료 확인");
+                        return null;
+                    }
+
+                    return lastSeen ?? GetLocalTrackedPositionSnapshot();
+                }
+
                 if (absQty <= 0)
                 {
                     OnLog?.Invoke($"⚠️ [청산 스킵] {symbol} 수량이 0입니다. 포지션 데이터 정리.");
                     CleanupPositionData(symbol);
                     return;
+                }
+
+                // [FIX] 진입시간을 주문 전에 미리 가져옴 (DB 저장에 필요)
+                DateTime entryTimeForHistory = DateTime.Now;
+                lock (_posLock)
+                {
+                    if (_activePositions.TryGetValue(symbol, out var localPosForTime) && localPosForTime.EntryTime != default)
+                        entryTimeForHistory = localPosForTime.EntryTime;
                 }
 
                 OnLog?.Invoke($"[청산 검증] {symbol} 포지션={positionDirection}, 진입가={position.EntryPrice:F4}, 수량={absQty}, 청산주문={expectedCloseDirection}");
@@ -900,8 +1499,17 @@ namespace TradingBot.Services
                 }
 
                 // [엄격모드] 주문 성공만으로는 청산 완료로 간주하지 않음 (거래소 포지션 0 확인 필수)
-                var afterClosePositions = await _exchangeService.GetPositionsAsync(ct: token);
-                var stillOpen = afterClosePositions.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.Quantity) > 0);
+                PositionInfo? stillOpen = null;
+                try
+                {
+                    stillOpen = await ConfirmRemainingPositionAsync();
+                }
+                catch (OperationCanceledException)
+                {
+                    OnLog?.Invoke($"⚠️ {symbol} 청산 확인 중 취소됨 - DB 저장 시도 계속");
+                    // CancellationToken 취소 시에도 DB 저장은 진행
+                }
+
                 if (stillOpen != null)
                 {
                     string stillOpenDirection = stillOpen.IsLong ? "LONG" : "SHORT";
@@ -911,9 +1519,13 @@ namespace TradingBot.Services
 
                     if (isOppositeDirection)
                     {
+                        OnCloseIncompleteStatusChanged?.Invoke(symbol, true, $"반대 방향 포지션 잔존: {stillOpenDirection} {Math.Abs(stillOpen.Quantity)}");
                         OnAlert?.Invoke($"🚨🚨 {symbol} 반대 방향 포지션 생성됨! 원래={positionDirection}, 현재={stillOpenDirection}, 수량={Math.Abs(stillOpen.Quantity)} - 즉시 재청산 시도");
                         OnLog?.Invoke($"[긴급] {symbol} 반대 방향 포지션 감지! 원래 청산 방향={expectedCloseDirection}, 실제 포지션={stillOpenDirection}");
                         await LogExchangePositionSnapshotAsync("반대방향포지션감지");
+
+                        // [FIX] 반대방향이라도 원래 포지션은 청산됐으므로 DB에 원래 청산 기록 저장
+                        await SaveCloseTradeToDbAsync(symbol, side, position, isLongPosition, absQty, reason, entryTimeForHistory, CancellationToken.None);
 
                         // 재귀 호출로 반대 포지션 청산 (무한 루프 방지: reason에 "반대방향" 포함 시 1회만)
                         if (!reason.Contains("반대방향"))
@@ -927,15 +1539,55 @@ namespace TradingBot.Services
                         return;
                     }
 
-                    // 같은 방향이면 기존 로직 (잔량 있음)
+                    // 같은 방향이면 기존 로직 (잔량 있음) - 하지만 부분 체결 가능성 → DB 저장
+                    decimal closedQty = absQty - Math.Abs(stillOpen.Quantity);
+                    if (closedQty > 0)
+                    {
+                        OnLog?.Invoke($"📝 {symbol} 부분 체결 감지: 원래={absQty}, 잔존={Math.Abs(stillOpen.Quantity)}, 체결={closedQty}");
+                        await SaveCloseTradeToDbAsync(symbol, side, position, isLongPosition, closedQty, reason + " (부분체결)", entryTimeForHistory, CancellationToken.None);
+                    }
+
+                    OnCloseIncompleteStatusChanged?.Invoke(symbol, true, $"청산 주문 후 잔존 포지션: {stillOpenDirection} {Math.Abs(stillOpen.Quantity)}");
                     OnAlert?.Invoke($"🚨 {symbol} 청산 미완료! 주문은 성공했지만 포지션 잔존 ({stillOpenDirection} {Math.Abs(stillOpen.Quantity)})");
                     await LogExchangePositionSnapshotAsync("청산주문성공_잔존포지션확인");
                     return; // 잔존 포지션이 있으므로 내부 상태/DB 정리 금지
                 }
 
+                OnCloseIncompleteStatusChanged?.Invoke(symbol, false, null);
                 OnLog?.Invoke($"[청산 검증완료] {symbol} 청산 후 거래소 오픈 포지션 0 확인");
 
-                // [수정] 청산가 정확한 조회 (캐시 우선, 폴백: 현재가 API)
+                // [FIX] 헬퍼 메서드로 DB 저장 통합 (청산 완료 확인 후)
+                await SaveCloseTradeToDbAsync(symbol, side, position, isLongPosition, absQty, reason, entryTimeForHistory, CancellationToken.None);
+
+                OnAlert?.Invoke($"✅ {symbol} 청산 완료(검증됨): {reason}");
+
+                if (reason.Contains("지루함") || reason.Contains("Boredom"))
+                {
+                    _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
+                    OnLog?.Invoke($"🚫 {symbol} 30분간 블랙리스트 등록 (재진입 금지)");
+                }
+
+                CleanupPositionData(symbol);
+            }
+            catch (Exception ex) { OnLog?.Invoke($"⚠️ {symbol} 종료 로직 에러: {ex.Message}"); }
+            finally
+            {
+                MarkCloseFinished(symbol);
+            }
+        }
+
+        /// <summary>
+        /// [FIX] 청산 시 DB TradeHistory 저장을 일원화하는 헬퍼 메서드.
+        /// 모든 청산 경로(정상 청산, 반대방향 청산, 부분 체결 등)에서 호출.
+        /// </summary>
+        private async Task SaveCloseTradeToDbAsync(
+            string symbol, string side, PositionInfo position,
+            bool isLongPosition, decimal quantity, string reason,
+            DateTime entryTimeForHistory, CancellationToken token)
+        {
+            try
+            {
+                // 청산가 조회 (캐시 우선, 폴백: 현재가 API)
                 decimal exitPrice = 0;
                 if (_marketDataManager.TickerCache.TryGetValue(symbol, out var cached))
                 {
@@ -944,52 +1596,74 @@ namespace TradingBot.Services
 
                 if (exitPrice == 0)
                 {
-                    exitPrice = await _exchangeService.GetPriceAsync(symbol, ct: token);
+                    try
+                    {
+                        exitPrice = await _exchangeService.GetPriceAsync(symbol, ct: token);
+                    }
+                    catch (Exception priceEx)
+                    {
+                        OnLog?.Invoke($"⚠️ {symbol} 청산가 조회 실패, 진입가로 대체: {priceEx.Message}");
+                        exitPrice = position.EntryPrice;
+                    }
                 }
 
+                if (exitPrice == 0)
+                    exitPrice = position.EntryPrice;
+
+                decimal absQty = Math.Abs(quantity);
                 decimal pnl = isLongPosition
                     ? (exitPrice - position.EntryPrice) * absQty
                     : (position.EntryPrice - exitPrice) * absQty;
                 _riskManager.UpdatePnlAndCheck(pnl);
 
-                // [수정] 수익률 계산 및 DB 저장
+                // 수익률 계산
                 decimal pnlPercent = 0;
-                if (position.EntryPrice > 0)
+                decimal positionLeverage = position.Leverage;
+                lock (_posLock)
                 {
-                    pnlPercent = (pnl / (position.EntryPrice * absQty)) * 100 * position.Leverage;
+                    if (positionLeverage <= 0 && _activePositions.TryGetValue(symbol, out var localPos) && localPos.Leverage > 0)
+                        positionLeverage = localPos.Leverage;
+                }
+
+                if (position.EntryPrice > 0 && absQty > 0)
+                {
+                    pnlPercent = (pnl / (position.EntryPrice * absQty)) * 100 * positionLeverage;
                 }
 
                 // DB에 매매 이력 저장
-                var log = new TradeLog(symbol, side, "MarketClose", exitPrice, position.AiScore, DateTime.Now, pnl, pnlPercent);
-                try
+                var log = new TradeLog(symbol, side, "MarketClose", exitPrice, position.AiScore, DateTime.Now, pnl, pnlPercent)
                 {
-                    await _dbManager.SaveTradeLogAsync(log); // [수정] fire-and-forget에서 await로 변경
-                }
-                catch (Exception dbEx)
-                {
-                    OnLog?.Invoke($"⚠️ {symbol} DB 저장 중 오류: {dbEx.Message}");
-                }
+                    EntryPrice = position.EntryPrice,
+                    ExitPrice = exitPrice,
+                    Quantity = absQty,
+                    ExitReason = reason,
+                    EntryTime = entryTimeForHistory,
+                    ExitTime = DateTime.Now
+                };
+
+                bool dbSaved = await _dbManager.CompleteTradeAsync(log);
+                OnLog?.Invoke(dbSaved
+                    ? $"✅ [DB 확인] {symbol} 청산 이력이 TradeHistory에 반영되었습니다. (PnL={pnl:F2}, ROE={pnlPercent:F2}%)"
+                    : $"⚠️ [DB 확인] {symbol} 청산은 완료됐지만 TradeHistory 반영에 실패했습니다. (userId 확인 필요)");
+
+                OnLog?.Invoke($"[청산 확인] {symbol} 종료가={exitPrice:F4}, PnL={pnl:F2}, ROE={pnlPercent:F2}%");
+                OnLog?.Invoke($"[종료] {symbol} | 수량: {absQty} | 사유: {reason}");
 
                 // 텔레그램, 디스코드, 푸시 알림 통합 전송
                 _ = NotificationService.Instance.NotifyProfitAsync(symbol, pnl, pnlPercent);
 
-                OnAlert?.Invoke($"✅ {symbol} 청산 완료(검증됨): {reason}");
-                OnLog?.Invoke($"[청산 확인] {symbol} 포지션={positionDirection} -> 주문={side}, 종료가={exitPrice:F4}, PnL={pnl:F2}, ROE={pnlPercent:F2}%");
-                OnLog?.Invoke($"[종료] {symbol} | 수량: {absQty} | 사유: {reason}");
-
-                if (reason.Contains("지루함") || reason.Contains("Boredom"))
-                {
-                    lock (_blacklistedSymbols) _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
-                    OnLog?.Invoke($"🚫 {symbol} 30분간 블랙리스트 등록 (재진입 금지)");
-                }
-
-                CleanupPositionData(symbol);
+                // 청산 완료 이벤트 발생 (UI 자동 갱신 트리거)
+                OnTradeHistoryUpdated?.Invoke();
             }
-            catch (Exception ex) { OnLog?.Invoke($"⚠️ {symbol} 종료 로직 에러: {ex.Message}"); }
+            catch (Exception dbEx)
+            {
+                OnLog?.Invoke($"❌ {symbol} DB 저장 중 치명적 오류: {dbEx.Message}");
+            }
         }
 
         public async Task ExecutePartialClose(string symbol, decimal ratio, CancellationToken token)
         {
+            MarkCloseStarted(symbol);
             try
             {
                 if (ratio <= 0 || ratio >= 1)
@@ -1029,6 +1703,43 @@ namespace TradingBot.Services
                     return;
                 }
 
+                decimal remainingQty = Math.Max(0, currentQty - closeQty);
+                try
+                {
+                    PositionInfo? confirmedPosition = null;
+                    for (int attempt = 1; attempt <= 4; attempt++)
+                    {
+                        await Task.Delay(attempt == 1 ? 200 : 300, token);
+
+                        var latestPositions = await _exchangeService.GetPositionsAsync(ct: token);
+                        confirmedPosition = latestPositions.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.Quantity) > 0);
+
+                        if (confirmedPosition == null)
+                        {
+                            remainingQty = 0;
+                            break;
+                        }
+
+                        decimal exchangeQty = Math.Abs(confirmedPosition.Quantity);
+                        if (exchangeQty < currentQty - 0.000001m)
+                        {
+                            remainingQty = exchangeQty;
+                            break;
+                        }
+                    }
+                }
+                catch (Exception confirmEx)
+                {
+                    OnLog?.Invoke($"⚠️ {symbol} 부분청산 재확인 실패, 계산 수량으로 반영: {confirmEx.Message}");
+                }
+
+                decimal actualClosedQty = Math.Max(0, currentQty - remainingQty);
+                if (actualClosedQty <= 0.000001m)
+                {
+                    actualClosedQty = closeQty;
+                    remainingQty = Math.Max(0, currentQty - actualClosedQty);
+                }
+
                 decimal exitPrice = 0;
                 if (_marketDataManager.TickerCache.TryGetValue(symbol, out var cached))
                 {
@@ -1041,15 +1752,52 @@ namespace TradingBot.Services
                 }
 
                 decimal pnl = localPosition.IsLong
-                    ? (exitPrice - localPosition.EntryPrice) * closeQty
-                    : (localPosition.EntryPrice - exitPrice) * closeQty;
+                    ? (exitPrice - localPosition.EntryPrice) * actualClosedQty
+                    : (localPosition.EntryPrice - exitPrice) * actualClosedQty;
 
                 _riskManager.UpdatePnlAndCheck(pnl);
 
                 decimal pnlPercent = 0;
-                if (localPosition.EntryPrice > 0)
+                if (localPosition.EntryPrice > 0 && actualClosedQty > 0)
                 {
-                    pnlPercent = (pnl / (localPosition.EntryPrice * closeQty)) * 100 * localPosition.Leverage;
+                    pnlPercent = (pnl / (localPosition.EntryPrice * actualClosedQty)) * 100 * localPosition.Leverage;
+                }
+
+                DateTime now = DateTime.Now;
+                if (remainingQty <= 0.000001m)
+                {
+                    var closeLog = new TradeLog(
+                        symbol,
+                        side,
+                        "PartialCloseFullFill",
+                        exitPrice,
+                        localPosition.AiScore,
+                        now,
+                        pnl,
+                        pnlPercent)
+                    {
+                        EntryPrice = localPosition.EntryPrice,
+                        ExitPrice = exitPrice,
+                        Quantity = currentQty,
+                        EntryTime = localPosition.EntryTime,
+                        ExitTime = now,
+                        ExitReason = "PartialClose_FullClose"
+                    };
+
+                    try
+                    {
+                        await _dbManager.CompleteTradeAsync(closeLog);
+                        OnTradeHistoryUpdated?.Invoke();
+                    }
+                    catch (Exception dbEx)
+                    {
+                        OnLog?.Invoke($"⚠️ {symbol} 부분청산→전량청산 DB 저장 실패: {dbEx.Message}");
+                    }
+
+                    OnAlert?.Invoke($"ℹ️ {symbol} 부분청산 주문이 전량 체결되어 포지션 종료 처리됨");
+                    CleanupPositionData(symbol);
+                    OnLog?.Invoke($"✅ {symbol} 부분청산 주문 전량 체결: 청산={currentQty}, 잔여=0, PnL={pnl:F2}, ROE={pnlPercent:F2}%");
+                    return;
                 }
 
                 var partialLog = new TradeLog(
@@ -1058,20 +1806,28 @@ namespace TradingBot.Services
                     "PartialClose",
                     exitPrice,
                     localPosition.AiScore,
-                    DateTime.Now,
+                    now,
                     pnl,
-                    pnlPercent);
+                    pnlPercent)
+                {
+                    EntryPrice = localPosition.EntryPrice,
+                    ExitPrice = exitPrice,
+                    Quantity = actualClosedQty,
+                    EntryTime = localPosition.EntryTime,
+                    ExitTime = now,
+                    ExitReason = "PartialClose"
+                };
 
                 try
                 {
-                    await _dbManager.SaveTradeLogAsync(partialLog);
+                    await _dbManager.RecordPartialCloseAsync(partialLog);
+                    OnTradeHistoryUpdated?.Invoke();
                 }
                 catch (Exception dbEx)
                 {
                     OnLog?.Invoke($"⚠️ {symbol} 부분청산 DB 저장 실패: {dbEx.Message}");
                 }
 
-                var remainingQty = Math.Max(0, currentQty - closeQty);
                 lock (_posLock)
                 {
                     if (_activePositions.TryGetValue(symbol, out var p))
@@ -1080,12 +1836,16 @@ namespace TradingBot.Services
                     }
                 }
 
-                OnLog?.Invoke($"✅ {symbol} 부분청산 완료: 청산={closeQty}, 잔여={remainingQty}, PnL={pnl:F2}, ROE={pnlPercent:F2}%");
+                OnLog?.Invoke($"✅ {symbol} 부분청산 완료: 청산={actualClosedQty}, 잔여={remainingQty}, PnL={pnl:F2}, ROE={pnlPercent:F2}%");
                 OnPositionStatusUpdate?.Invoke(symbol, remainingQty > 0, 0);
             }
             catch (Exception ex)
             {
                 OnLog?.Invoke($"⚠️ {symbol} 부분청산 예외: {ex.Message}");
+            }
+            finally
+            {
+                MarkCloseFinished(symbol);
             }
         }
 
@@ -1166,6 +1926,8 @@ namespace TradingBot.Services
                 }
 
                 var marketPrice = await _exchangeService.GetPriceAsync(symbol, ct: token);
+                if (marketPrice == 0 && _marketDataManager.TickerCache.TryGetValue(symbol, out var ticker))
+                    marketPrice = ticker.LastPrice;
                 if (marketPrice <= 0)
                 {
                     marketPrice = localPosition.EntryPrice;
@@ -1183,6 +1945,23 @@ namespace TradingBot.Services
                         }
                         p.Quantity = p.IsLong ? totalQty : -totalQty;
                         p.IsAveragedDown = true;
+
+                        var averagedLog = new TradeLog(
+                            symbol,
+                            p.IsLong ? "BUY" : "SELL",
+                            "AverageDown",
+                            p.EntryPrice,
+                            p.AiScore,
+                            DateTime.Now,
+                            0,
+                            0)
+                        {
+                            EntryPrice = p.EntryPrice,
+                            Quantity = Math.Abs(p.Quantity),
+                            EntryTime = p.EntryTime == default ? DateTime.Now : p.EntryTime
+                        };
+
+                        _ = _dbManager.UpsertTradeEntryAsync(averagedLog);
                     }
                 }
 
@@ -1205,7 +1984,7 @@ namespace TradingBot.Services
                 if (_activePositions.TryGetValue(symbol, out var pos))
                 {
                     // [수정] data.Id -> data.OrderId
-                    if (pos.StopOrderId == data.OrderId && data.Status == OrderStatus.Filled)
+                    if (pos.StopOrderId == data.OrderId.ToString() && data.Status == OrderStatus.Filled)
                     {
                         OnAlert?.Invoke($"🛑 {symbol} 서버사이드 손절 주문 체결 완료! (체결가: {data.AveragePrice})");
                         OnLog?.Invoke($"[체결] {symbol} STOP_MARKET Filled at {data.AveragePrice}");
@@ -1217,6 +1996,7 @@ namespace TradingBot.Services
         private void CleanupPositionData(string symbol)
         {
             lock (_posLock) _activePositions.Remove(symbol);
+            OnCloseIncompleteStatusChanged?.Invoke(symbol, false, null);
             OnPositionStatusUpdate?.Invoke(symbol, false, 0);
             
             // [중요] 포지션 청산 후 ROI를 명시적으로 0으로 리셋
