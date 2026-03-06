@@ -787,7 +787,8 @@ namespace TradingBot.Models
             }
         }
         public string? BB_Status { get; set; }
-        public string AIScoreText => $"{(AIScore * 100):F1}%";
+        // AIScore는 이미 0-100 스케일이므로 *100 제거
+        public string AIScoreText => $"{AIScore:F1}%";
 
         private string? _decision;
         public string? Decision

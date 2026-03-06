@@ -304,12 +304,21 @@ namespace TradingBot
             {
                 _aiPredictor = new AIPredictor();
                 _positionMonitor.UpdateAiPredictor(_aiPredictor);
-                OnStatusLog?.Invoke("🧠 AI 예측 모델 로드 완료");
+                
+                // 실제 모델 로드 여부 확인
+                if (_aiPredictor.IsModelLoaded)
+                {
+                    OnStatusLog?.Invoke("🧠 AI 예측 모델 로드 완료");
+                }
+                else
+                {
+                    OnStatusLog?.Invoke("⚠️ AI 모델 파일 없음 (학습 후 사용 가능)");
+                }
             }
             catch (Exception ex)
             {
                 _positionMonitor.UpdateAiPredictor(null);
-                OnStatusLog?.Invoke($"⚠️ AI 모델 로드 실패 (학습 후 사용 가능): {ex.Message}");
+                OnStatusLog?.Invoke($"⚠️ AI 모델 로드 실패: {ex.Message}");
             }
 
             _pumpStrategy = new PumpScanStrategy(_client, _symbols, AppConfig.Current?.Trading?.PumpSettings ?? new PumpScanSettings());
@@ -1529,28 +1538,27 @@ namespace TradingBot
                         {
                             // TransformerStrategy가 내부적으로 _trainer.Predict를 호출하므로
                             // 여기서는 ML.NET AIPredictor를 사용한 방향 재확인
-                            // [FIX] klines가 비어있지 않은지 확인
+                            // [FIX] klines가 비어있지 않은지 확인 - 완전한 feature 계산 사용
                             if (_aiPredictor != null && klines.Any())
                             {
-                                var lastKline = klines.Last();
-                                var latestCandle = new CandleData
+                                try
                                 {
-                                    Open = lastKline.OpenPrice,
-                                    High = lastKline.HighPrice,
-                                    Low = lastKline.LowPrice,
-                                    Close = lastKline.ClosePrice,
-                                    Volume = (float)lastKline.Volume,
-                                };
-                                var pred = _aiPredictor.Predict(latestCandle);
-                                // AI 방향 반전 확인용으로 PredictedPrice를 업데이트
-                                if (pred != null)
-                                {
-                                    // Scalping 예측의 Score 기반으로 방향성 판단
-                                    decimal predDirection = pred.Score > 0.5f
-                                        ? currentPrice * 1.005m  // 상승 예측 → 현재가+0.5%
-                                        : currentPrice * 0.995m; // 하락 예측 → 현재가-0.5%
-                                    newPrediction = predDirection;
+                                    // 재예측은 완전한 CandleData 생성 필요 (학습 피처와 동일)
+                                    var candleData = await GetLatestCandleDataAsync(symbol, _cts.Token);
+                                    if (candleData != null)
+                                    {
+                                        var pred = _aiPredictor.Predict(candleData);
+                                        if (pred != null)
+                                        {
+                                            // Prediction (bool) 기반 방향성 판단 - Score는 raw margin이라 부적합
+                                            decimal predDirection = pred.Prediction
+                                                ? currentPrice * 1.005m  // 상승 예측 → 현재가+0.5%
+                                                : currentPrice * 0.995m; // 하락 예측 → 현재가-0.5%
+                                            newPrediction = predDirection;
+                                        }
+                                    }
                                 }
+                                catch { /* 재예측 실패 시 무시 */ }
                             }
                         }
                     }
