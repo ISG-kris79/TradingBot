@@ -253,12 +253,9 @@ namespace TradingBot.ViewModels
         {
             UpdateMajorProfileStatus(AppConfig.Current?.Trading?.GeneralSettings?.MajorTrendProfile);
 
-            // Initialize Engine
+            // Initialize services
             if (!DesignerProperties.GetIsInDesignMode(new DependencyObject()))
             {
-                _engine = new TradingEngine();
-                SubscribeToEngineEvents();
-
                 // Initialize DatabaseService
                 try
                 {
@@ -282,6 +279,48 @@ namespace TradingBot.ViewModels
             {
                 IsStartEnabled = false;
                 IsStopEnabled = true;
+
+                try
+                {
+                    // 최신 설정(손절/익절/시뮬레이션/거래소)을 반영하기 위해 시작 시마다 엔진을 새로 생성
+                    _engine?.StopEngine();
+                    _engine = new TradingEngine();
+                    SubscribeToEngineEvents();
+                    OnPropertyChanged(nameof(InitialBalance));
+                }
+                catch (Exception ex)
+                {
+                    AddLog($"엔진 초기화 오류: {ex.Message}");
+                    IsStartEnabled = true;
+                    IsStopEnabled = false;
+                    return;
+                }
+
+                // 시뮬레이션 모드 표시 및 확인
+                bool isSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false;
+                decimal simBalance = AppConfig.Current?.Trading?.SimulationInitialBalance ?? 10000m;
+                
+                RunOnUI(() =>
+                {
+                    if (MainWindow.Instance != null)
+                    {
+                        var txtAccountMode = MainWindow.Instance.FindName("txtAccountMode") as System.Windows.Controls.TextBlock;
+                        if (txtAccountMode != null)
+                        {
+                            txtAccountMode.Text = isSimulation ? "🎮 SIMULATION" : "";
+                        }
+                    }
+                    
+                    // 시작 시 현재 모드 로그 출력
+                    if (isSimulation)
+                    {
+                        AddLog($"🎮 [Start] 시뮬레이션 모드로 시작합니다. 초기 잔고: ${simBalance:N2}");
+                    }
+                    else
+                    {
+                        AddLog($"💰 [Start] 실거래 모드로 시작합니다.");
+                    }
+                });
 
                 _ = Task.Run(async () =>
                 {
@@ -310,10 +349,27 @@ namespace TradingBot.ViewModels
                 try
                 {
                     if (_engine != null)
+                    {
                         _engine.StopEngine();
+                        _engine = null;
+                        OnPropertyChanged(nameof(InitialBalance));
+                    }
                     IsStopEnabled = false;
                     IsStartEnabled = true;
                     AddLog("엔진 정지 명령을 보냈습니다.");
+                    
+                    // 시뮬레이션 모드 표시 제거
+                    RunOnUI(() =>
+                    {
+                        if (MainWindow.Instance != null)
+                        {
+                            var txtAccountMode = MainWindow.Instance.FindName("txtAccountMode") as System.Windows.Controls.TextBlock;
+                            if (txtAccountMode != null)
+                            {
+                                txtAccountMode.Text = "";
+                            }
+                        }
+                    });
                 }
                 catch (Exception ex)
                 {

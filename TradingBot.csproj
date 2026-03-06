@@ -14,9 +14,9 @@
     <DesignTimeBuild>false</DesignTimeBuild>
     <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
     <LangVersion>latest</LangVersion>
-      <Version>2.0.29</Version>
-      <AssemblyVersion>2.0.29.0</AssemblyVersion>
-      <FileVersion>2.0.29.0</FileVersion>
+      <Version>2.0.30</Version>
+      <AssemblyVersion>2.0.30.0</AssemblyVersion>
+      <FileVersion>2.0.30.0</FileVersion>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
     <Company>TradingBot</Company>
     <Product>CoinFF TradingBot</Product>
@@ -46,13 +46,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- WPF Window Icon용 (XAML에서 참조) -->
+    <!-- WPF Window Icon용 (어셈블리에 임베드) -->
     <Resource Include="trading_bot.ico" />
     <Resource Include="trading_bot.jpg" />
     <Resource Include="trading_bot.png" />
-    <!-- 시스템 트레이 아이콘용 (출력 디렉터리에 복사) -->
+    <!-- 시스템 트레이 및 출력 폴더용 -->
     <Content Include="trading_bot.ico">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
 

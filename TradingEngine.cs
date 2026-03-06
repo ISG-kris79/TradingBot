@@ -426,19 +426,34 @@ namespace TradingBot
         {
             try
             {
-                decimal balance = await _exchangeService.GetBalanceAsync("USDT", token);
-                if (balance > 0)
+                bool isSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false;
+                string serviceType = _exchangeService?.GetType().Name ?? "Unknown";
+                
+                OnStatusLog?.Invoke($"🔍 [InitializeSeed] Mode: {(isSimulation ? "Simulation" : "Real")}, Service: {serviceType}");
+                
+                if (isSimulation)
                 {
-                    InitialBalance = balance;
-                    OnLiveLog?.Invoke($"💰 초기 시드 설정 완료: ${InitialBalance:N2}");
+                    // 시뮬레이션 모드: 설정된 초기 잔고 사용
+                    InitialBalance = AppConfig.Current?.Trading?.SimulationInitialBalance ?? 10000m;
+                    OnLiveLog?.Invoke($"🎮 [Simulation] 초기 시드: ${InitialBalance:N2}");
+                }
+                else
+                {
+                    // 실거래 모드: 거래소에서 잔고 조회
+                    decimal balance = await _exchangeService.GetBalanceAsync("USDT", token);
+                    if (balance > 0)
+                    {
+                        InitialBalance = balance;
+                        OnLiveLog?.Invoke($"💰 [Real] 초기 시드: ${InitialBalance:N2}");
 
-                    // 텔레그램 및 디스코드 시작 알림
-                    await NotificationService.Instance.NotifyAsync($"봇 가동 시작\n초기 자산: ${InitialBalance:N2} USDT", NotificationChannel.Alert);
+                        // 텔레그램 및 디스코드 시작 알림
+                        await NotificationService.Instance.NotifyAsync($"봇 가동 시작\n초기 자산: ${InitialBalance:N2} USDT", NotificationChannel.Alert);
+                    }
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                OnStatusLog?.Invoke("❌ 초기 잔고 조회 실패. 수익률 계산이 정확하지 않을 수 있습니다.");
+                OnStatusLog?.Invoke($"❌ 초기 잔고 조회 실패: {ex.Message}");
             }
         }
 
@@ -1942,7 +1957,7 @@ namespace TradingBot
             try
             {
                 decimal balance = await _exchangeService.GetBalanceAsync("USDT", token);
-                double equity = (double)balance; // 미실현 손익 포함 여부는 거래소 API에 따라 다름
+                double equity = (double)balance;
                 double available = (double)balance;
 
                 int currentMajor = 0;
@@ -1952,6 +1967,14 @@ namespace TradingBot
                 {
                     currentMajor = _activePositions.Values.Count(p => !p.IsPumpStrategy);
                     currentPump = _activePositions.Values.Count(p => p.IsPumpStrategy);
+                }
+
+                // [디버그] 서비스 타입 확인 (처음 한번만)
+                if (_engineStartTime != DateTime.MinValue && (DateTime.Now - _engineStartTime).TotalSeconds < 10)
+                {
+                    string serviceType = _exchangeService?.GetType().Name ?? "Unknown";
+                    bool isSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false;
+                    OnStatusLog?.Invoke($"🔍 [Dashboard] Service: {serviceType}, Config Mode: {(isSimulation ? "Simulation" : "Real")}, Balance: ${balance:N2}");
                 }
 
                 // UI 업데이트 및 DataGrid 정렬 유지

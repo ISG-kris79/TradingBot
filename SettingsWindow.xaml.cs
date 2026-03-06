@@ -18,6 +18,8 @@ namespace TradingBot
         private JsonNode? _rootNode;
         private DbManager? _dbManager;
         private int _initialExchangeIndex = 0;
+        private bool _initialSimulationMode = false;
+        private decimal _initialSimulationBalance = 10000m;
 
         public SettingsWindow()
         {
@@ -143,6 +145,7 @@ namespace TradingBot
                         // 시뮬레이션 모드 로드
                         bool isSimulation = tradingNode["IsSimulationMode"]?.GetValue<bool>() ?? false;
                         chkSimulationMode.IsChecked = isSimulation;
+                        _initialSimulationMode = isSimulation;
 
                         // 시뮬레이션 초기 잔고 로드 (기본값 10000)
                         decimal simBalance = 10000m;
@@ -151,6 +154,7 @@ namespace TradingBot
                             simBalance = tradingNode["SimulationInitialBalance"].GetValue<decimal>();
                         }
                         txtSimulationBalance.Text = simBalance.ToString("F2");
+                        _initialSimulationBalance = simBalance;
                         
                         // 시뮬레이션 잔고 패널 가시성 설정
                         pnlSimulationBalance.Visibility = isSimulation ? Visibility.Visible : Visibility.Collapsed;
@@ -459,10 +463,20 @@ namespace TradingBot
                 {
                     await _dbManager.SaveGeneralSettingsAsync(AppConfig.CurrentUser.Id, generalSettings);
 
+                    // 시뮬레이션 모드 또는 잔고 변경 확인
+                    bool simulationModeChanged = _initialSimulationMode != (chkSimulationMode.IsChecked == true);
+                    bool simulationBalanceChanged = _initialSimulationBalance != (decimal.TryParse(txtSimulationBalance.Text, out decimal newBalance) ? newBalance : 10000m);
+
                     string message = $"✅ [{AppConfig.CurrentUser.Username}]의 설정이 저장되었습니다.";
+                    
                     if (exchangeChanged)
                     {
                         message += "\n\n⚠️ 거래소 변경이 감지되었습니다.\n거래를 중지하고 다시 시작하면 새 거래소가 적용됩니다.\n(또는 앱을 재시작하세요)";
+                    }
+                    
+                    if (simulationModeChanged || simulationBalanceChanged)
+                    {
+                        message += "\n\n⚠️ 시뮬레이션 설정이 변경되었습니다.\n거래를 중지하고 다시 시작하면 새 설정이 적용됩니다.";
                     }
 
                     MessageBox.Show(message, "저장 완료", MessageBoxButton.OK, MessageBoxImage.Information);
