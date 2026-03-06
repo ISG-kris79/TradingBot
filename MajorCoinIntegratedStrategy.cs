@@ -123,7 +123,11 @@ namespace TradingBot.Strategies
                 return new MajorTechnicalData { CurrentPrice = currentPrice };
             }
 
-            var list = cache.ToList();
+            List<IBinanceKline> list;
+            lock (cache)
+            {
+                list = cache.ToList();
+            }
             if (list.Count < 120)
             {
                 return new MajorTechnicalData { CurrentPrice = currentPrice };

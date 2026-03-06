@@ -728,12 +728,12 @@ namespace TradingBot.Services
                             List<IBinanceKline> snapshot;
                             lock (recentCandles)
                             {
-                                snapshot = recentCandles.ToList(); // [동시성 안전] 스냅샷 복사
+                                snapshot = recentCandles.TakeLast(20).ToList(); // [동시성 안전] 스냅샷 복사
                             }
                             
-                            if (snapshot.Count == 0) continue;
+                            if (snapshot.Count < 20) continue;
                             var last = snapshot[snapshot.Count - 1];
-                            var bb = IndicatorCalculator.CalculateBB(snapshot.TakeLast(20).ToList(), 20, 2);
+                            var bb = IndicatorCalculator.CalculateBB(snapshot, 20, 2);
                             decimal mid = (decimal)bb.Mid;
                             bool bearishCloseBelowMid = (decimal)last.ClosePrice < (decimal)last.OpenPrice && (decimal)last.ClosePrice < mid;
                             if (bearishCloseBelowMid)
@@ -785,6 +785,7 @@ namespace TradingBot.Services
                                 {
                                     snapshot = recentCandles.TakeLast(20).ToList(); // [동시성 안전]
                                 }
+                                if (snapshot.Count < 20) continue;
                                 var rsiNow = IndicatorCalculator.CalculateRSI(snapshot, 14);
                                 if (rsiNow >= 80) secondRatio = 0.40m; // 초과매수면 익절 강도 강화
                             }
@@ -854,6 +855,7 @@ namespace TradingBot.Services
                                 {
                                     snapshot = recentCandles.TakeLast(20).ToList(); // [동시성 안전]
                                 }
+                                if (snapshot.Count < 20) continue;
                                 var bbAnalysis = IndicatorCalculator.CalculateBB(snapshot, 20, 2);
                                 decimal bbLower = (decimal)bbAnalysis.Lower;
                                 if (currentPrice < bbLower)
@@ -904,14 +906,14 @@ namespace TradingBot.Services
                             List<IBinanceKline> snapshot;
                             lock (recentCandles)
                             {
-                                snapshot = recentCandles.ToList(); // [동시성 안전] 스냅샷 복사
+                                snapshot = recentCandles.TakeLast(20).ToList(); // [동시성 안전] 스냅샷 복사
                             }
                             
-                            if (snapshot.Count == 0) continue;
+                            if (snapshot.Count < 20) continue;
                             var lastCandle = snapshot[snapshot.Count - 1];
                             decimal lastClose = (decimal)lastCandle.ClosePrice;
 
-                            var bbAnalysis = IndicatorCalculator.CalculateBB(snapshot.TakeLast(20).ToList(), 20, 2);
+                            var bbAnalysis = IndicatorCalculator.CalculateBB(snapshot, 20, 2);
                             decimal bbMiddle = (decimal)bbAnalysis.Mid; // 20EMA
 
                             // 종가가 BB 중단 아래: 추세가 죽었다고 판단 → 즉시 청산
@@ -944,7 +946,7 @@ namespace TradingBot.Services
                                     snapshot = recentCandles.TakeLast(30).ToList(); // [동시성 안전]
                                 }
                                 
-                                if (snapshot.Count < 2) continue;
+                                if (snapshot.Count < 30) continue;
                                 var candles = snapshot;
                                 if (candles.Count < 2)
                                 {
@@ -1125,6 +1127,11 @@ namespace TradingBot.Services
             {
                 recent20 = recentCandles.TakeLast(20).ToList(); // [동시성 안전]
             }
+            if (recent20.Count < 20)
+            {
+                reason = "5분봉 스냅샷 부족";
+                return false;
+            }
             var bb = IndicatorCalculator.CalculateBB(recent20, 20, 2);
             decimal bbLower = (decimal)bb.Lower;
             decimal bbUpper = (decimal)bb.Upper;
@@ -1198,9 +1205,9 @@ namespace TradingBot.Services
                 {
                     recent = candles.TakeLast(120).ToList(); // [동시성 안전]
                 }
-                if (recent.Count == 0)
+                if (recent.Count < 20)
                 {
-                    OnLog?.Invoke($"⚠️ {symbol} recent 데이터 없음 (MarketStatus)");
+                    OnLog?.Invoke($"⚠️ {symbol} recent 데이터 부족 (MarketStatus, Count: {recent.Count})");
                     return null;
                 }
                 var recent20 = recent.TakeLast(20).ToList();
@@ -1292,6 +1299,8 @@ namespace TradingBot.Services
                 {
                     recent20 = candles.TakeLast(20).ToList(); // [동시성 안전]
                 }
+                if (recent20.Count < 20)
+                    return false;
                 var bb = IndicatorCalculator.CalculateBB(recent20, 20, 2);
                 decimal mid = (decimal)bb.Mid;
                 decimal upper = (decimal)bb.Upper;

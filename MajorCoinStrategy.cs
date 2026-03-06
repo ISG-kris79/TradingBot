@@ -25,161 +25,186 @@ namespace TradingBot.Strategies
         public Task AnalyzeAsync(string symbol, decimal currentPrice, CancellationToken token)
 #pragma warning restore CS1998
         {
-            if (!_marketData.KlineCache.TryGetValue(symbol, out var cache)) return Task.CompletedTask;
-
-            List<IBinanceKline> list;
-            lock (cache)
+            try
             {
-                list = cache.ToList(); // Thread-safe copy
-            }
+                if (!_marketData.KlineCache.TryGetValue(symbol, out var cache)) return Task.CompletedTask;
 
-            if (list.Count < 120) return Task.CompletedTask;
-
-            double rsi = IndicatorCalculator.CalculateRSI(list, 14);
-            var bb = IndicatorCalculator.CalculateBB(list, 20, 2);
-            bool isUptrend = IndicatorCalculator.AnalyzeElliottWave(list);
-            var macd = IndicatorCalculator.CalculateMACD(list);
-            var fib = IndicatorCalculator.CalculateFibonacci(list, 100);
-            double sma20 = IndicatorCalculator.CalculateSMA(list, 20);
-            double sma50 = IndicatorCalculator.CalculateSMA(list, 50);
-            double sma60 = IndicatorCalculator.CalculateSMA(list, 60);
-            double sma120 = IndicatorCalculator.CalculateSMA(list, 120);
-            string maState = sma20 > sma60 && sma60 > sma120 ? "BULL" : (sma20 < sma60 && sma60 < sma120 ? "BEAR" : "MIX");
-            string fibPos = currentPrice >= (decimal)fib.Level382 ? "ABOVE382" : (currentPrice <= (decimal)fib.Level618 ? "BELOW618" : "MID");
-
-            var recent20 = list.TakeLast(20).ToList();
-            double avgVolume20 = recent20.Any() ? recent20.Average(k => (double)k.Volume) : 0;
-            // [안전성] recent20 비어있으면 0 반환
-            double currentVolume = (recent20.Count > 0) ? (double)recent20[recent20.Count - 1].Volume : 0;
-            double volumeRatio = avgVolume20 > 0 ? currentVolume / avgVolume20 : 1;
-
-            var recent3 = list.TakeLast(3).ToList();
-            var previous10 = list.Skip(Math.Max(0, list.Count - 13)).Take(10).ToList();
-            double avgVolume3 = recent3.Any() ? recent3.Average(k => (double)k.Volume) : 0;
-            double avgVolumePrev10 = previous10.Any() ? previous10.Average(k => (double)k.Volume) : 0;
-            double volumeMomentum = avgVolumePrev10 > 0 ? avgVolume3 / avgVolumePrev10 : 1;
-
-            MajorProfile profile = ResolveProfile();
-            bool isMakingHigherLows = IsMakingHigherLows(list, profile.HigherLowSegmentSize, profile.HigherLowMinRiseRatio);
-            bool isTrendHealthyOnLowVolume = currentPrice > (decimal)sma20 && sma20 > sma50 && rsi > 50;
-            bool allowLowVolumeTrendBypass = volumeMomentum < profile.LongConfirmVolumeMin &&
-                                             (isTrendHealthyOnLowVolume || (isMakingHigherLows && currentPrice > (decimal)sma20));
-
-            int aiScore = CalculateScore(
-                rsi,
-                bb,
-                currentPrice,
-                isUptrend,
-                macd,
-                fib,
-                sma20,
-                sma50,
-                sma60,
-                sma120,
-                volumeMomentum,
-                isMakingHigherLows,
-                allowLowVolumeTrendBypass,
-                profile);
-
-            var nowSeoul = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, SeoulTimeZone);
-            bool isKstDaytime = nowSeoul.Hour >= 10 && nowSeoul.Hour < 19;
-            int longThreshold = CalculateDynamicThreshold(isKstDaytime, volumeMomentum, isMakingHigherLows, profile);
-            int shortThreshold = isKstDaytime ? 30 : 25;
-
-            string decision = "WAIT";
-            if (aiScore >= longThreshold)
-            {
-                bool bullishStructure = isUptrend || (isMakingHigherLows && currentPrice > (decimal)sma20);
-                bool longConfirm = bullishStructure && macd.Hist >= -0.001 &&
-                                   (volumeMomentum >= profile.LongConfirmVolumeMin || allowLowVolumeTrendBypass);
-                if (longConfirm) decision = "LONG";
-            }
-            else if (aiScore <= shortThreshold)
-            {
-                bool isStrongBearish =
-                    !isUptrend &&
-                    macd.Hist < 0 &&
-                    currentPrice < (decimal)sma20 &&
-                    volumeRatio >= 1.10 &&
-                    currentPrice < (decimal)fib.Level618;
-
-                if (isStrongBearish)
+                List<IBinanceKline> list;
+                lock (cache)
                 {
-                    decision = "SHORT";
+                    list = cache.ToList(); // Thread-safe copy
                 }
-            }
 
-            OnSignalAnalyzed?.Invoke(new MultiTimeframeViewModel
-            {
-                Symbol = symbol,
-                LastPrice = currentPrice,
-                RSI_1H = rsi,
-                AIScore = aiScore,
-                Decision = decision,
-                StrategyName = $"Major Scalping(5m) [{profile.Name}]",
-                SignalSource = "MAJOR",
-                ShortLongScore = aiScore,
-                ShortShortScore = 100 - aiScore,
-                MacdHist = macd.Hist,
-                ElliottTrend = isUptrend ? "UP" : "DOWN",
-                MAState = maState,
-                FibPosition = fibPos,
-                VolumeRatioValue = volumeMomentum,
-                VolumeRatio = $"{volumeMomentum:F2}x",
-                BBPosition = currentPrice >= (decimal)bb.Upper ? "Upper" : (currentPrice <= (decimal)bb.Lower ? "Lower" : "Mid")
-            });
+                if (list.Count < 120) return Task.CompletedTask;
 
-            if (!isUptrend && isMakingHigherLows && currentPrice > (decimal)sma20)
-            {
-                OnLog?.Invoke("ℹ️ 횡보 중이나 저점 상승 확인 - 추세 점수 가산");
-            }
+                double rsi = IndicatorCalculator.CalculateRSI(list, 14);
+                var bb = IndicatorCalculator.CalculateBB(list, 20, 2);
+                bool isUptrend = IndicatorCalculator.AnalyzeElliottWave(list);
+                var macd = IndicatorCalculator.CalculateMACD(list);
+                var fib = IndicatorCalculator.CalculateFibonacci(list, 100);
+                double sma20 = IndicatorCalculator.CalculateSMA(list, 20);
+                double sma50 = IndicatorCalculator.CalculateSMA(list, 50);
+                double sma60 = IndicatorCalculator.CalculateSMA(list, 60);
+                double sma120 = IndicatorCalculator.CalculateSMA(list, 120);
+                string maState = sma20 > sma60 && sma60 > sma120 ? "BULL" : (sma20 < sma60 && sma60 < sma120 ? "BEAR" : "MIX");
+                string fibPos = currentPrice >= (decimal)fib.Level382 ? "ABOVE382" : (currentPrice <= (decimal)fib.Level618 ? "BELOW618" : "MID");
 
-            if (allowLowVolumeTrendBypass)
-            {
-                OnLog?.Invoke("ℹ️ 거래량은 적으나 EMA/RSI 추세 지지 확인 - 거래량 감점 우회");
-            }
+                var recent20 = list.TakeLast(20).ToList();
+                double avgVolume20 = recent20.Any() ? recent20.Average(k => (double)k.Volume) : 0;
+                // [안전성] recent20 비어있으면 0 반환
+                double currentVolume = (recent20.Count > 0) ? (double)recent20[recent20.Count - 1].Volume : 0;
+                double volumeRatio = avgVolume20 > 0 ? currentVolume / avgVolume20 : 1;
 
-            string decisionKr = decision switch
-            {
-                "LONG" => "롱 진입",
-                "SHORT" => "숏 진입",
-                _ => "대기 중"
-            };
+                var recent3 = list.TakeLast(3).ToList();
+                var previous10 = list.Skip(Math.Max(0, list.Count - 13)).Take(10).ToList();
+                double avgVolume3 = recent3.Any() ? recent3.Average(k => (double)k.Volume) : 0;
+                double avgVolumePrev10 = previous10.Any() ? previous10.Average(k => (double)k.Volume) : 0;
+                double volumeMomentum = avgVolumePrev10 > 0 ? avgVolume3 / avgVolumePrev10 : 1;
 
-            // AI 필터 차단 가능성 표시 (Major 자체는 LONG이지만 ExecuteAutoOrder에서 AI필터로 차단될 수 있음)
-            string aiFilterWarning = "";
-            if (decision == "LONG" || decision == "SHORT")
-            {
+                MajorProfile profile = ResolveProfile();
+                bool isMakingHigherLows = IsMakingHigherLows(list, profile.HigherLowSegmentSize, profile.HigherLowMinRiseRatio);
+                bool isTrendHealthyOnLowVolume = currentPrice > (decimal)sma20 && sma20 > sma50 && rsi > 50;
+                bool allowLowVolumeTrendBypass = volumeMomentum < profile.LongConfirmVolumeMin &&
+                                                 (isTrendHealthyOnLowVolume || (isMakingHigherLows && currentPrice > (decimal)sma20));
+
+                int aiScore = CalculateScore(
+                    rsi,
+                    bb,
+                    currentPrice,
+                    isUptrend,
+                    macd,
+                    fib,
+                    sma20,
+                    sma50,
+                    sma60,
+                    sma120,
+                    volumeMomentum,
+                    isMakingHigherLows,
+                    allowLowVolumeTrendBypass,
+                    profile);
+
+                var nowSeoul = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, SeoulTimeZone);
+                bool isKstDaytime = nowSeoul.Hour >= 10 && nowSeoul.Hour < 19;
+                int longThreshold = CalculateDynamicThreshold(isKstDaytime, volumeMomentum, isMakingHigherLows, profile);
+                int shortThreshold = isKstDaytime ? 30 : 25;
+
+                string decision = "WAIT";
+                if (aiScore >= longThreshold)
+                {
+                    bool bullishStructure = isUptrend || (isMakingHigherLows && currentPrice > (decimal)sma20);
+                    bool longConfirm = bullishStructure && macd.Hist >= -0.001 &&
+                                       (volumeMomentum >= profile.LongConfirmVolumeMin || allowLowVolumeTrendBypass);
+                    if (longConfirm) decision = "LONG";
+                }
+                else if (aiScore <= shortThreshold)
+                {
+                    bool isStrongBearish =
+                        !isUptrend &&
+                        macd.Hist < 0 &&
+                        currentPrice < (decimal)sma20 &&
+                        volumeRatio >= 1.10 &&
+                        currentPrice < (decimal)fib.Level618;
+
+                    if (isStrongBearish)
+                    {
+                        decision = "SHORT";
+                    }
+                }
+
                 try
                 {
-                    var settings = _settingsAccessor?.Invoke();
-                    // AI 예측기를 직접 호출할 수 없으므로, 결정이 LONG/SHORT일 때 AI 필터에 의해 차단될 수 있음을 표시
-                    aiFilterWarning = " ⚠️AI필터 통과 필요";
+                    OnSignalAnalyzed?.Invoke(new MultiTimeframeViewModel
+                    {
+                        Symbol = symbol,
+                        LastPrice = currentPrice,
+                        RSI_1H = rsi,
+                        AIScore = aiScore,
+                        Decision = decision,
+                        StrategyName = $"Major Scalping(5m) [{profile.Name}]",
+                        SignalSource = "MAJOR",
+                        ShortLongScore = aiScore,
+                        ShortShortScore = 100 - aiScore,
+                        MacdHist = macd.Hist,
+                        ElliottTrend = isUptrend ? "UP" : "DOWN",
+                        MAState = maState,
+                        FibPosition = fibPos,
+                        VolumeRatioValue = volumeMomentum,
+                        VolumeRatio = $"{volumeMomentum:F2}x",
+                        BBPosition = currentPrice >= (decimal)bb.Upper ? "Upper" : (currentPrice <= (decimal)bb.Lower ? "Lower" : "Mid")
+                    });
                 }
-                catch { }
-            }
+                catch (Exception eventEx)
+                {
+                    OnLog?.Invoke($"⚠️ [MajorCoinStrategy] {symbol} 시그널 UI 반영 오류: {eventEx.Message}");
+                    System.Diagnostics.Debug.WriteLine(eventEx);
+                }
 
-            string reason = "";
-            if (decision == "WAIT")
+                if (!isUptrend && isMakingHigherLows && currentPrice > (decimal)sma20)
+                {
+                    OnLog?.Invoke("ℹ️ 횡보 중이나 저점 상승 확인 - 추세 점수 가산");
+                }
+
+                if (allowLowVolumeTrendBypass)
+                {
+                    OnLog?.Invoke("ℹ️ 거래량은 적으나 EMA/RSI 추세 지지 확인 - 거래량 감점 우회");
+                }
+
+                string decisionKr = decision switch
+                {
+                    "LONG" => "롱 진입",
+                    "SHORT" => "숏 진입",
+                    _ => "대기 중"
+                };
+
+                // AI 필터 차단 가능성 표시 (Major 자체는 LONG이지만 ExecuteAutoOrder에서 AI필터로 차단될 수 있음)
+                string aiFilterWarning = "";
+                if (decision == "LONG" || decision == "SHORT")
+                {
+                    try
+                    {
+                        var settings = _settingsAccessor?.Invoke();
+                        // AI 예측기를 직접 호출할 수 없으므로, 결정이 LONG/SHORT일 때 AI 필터에 의해 차단될 수 있음을 표시
+                        aiFilterWarning = " ⚠️AI필터 통과 필요";
+                    }
+                    catch { }
+                }
+
+                string reason = "";
+                if (decision == "WAIT")
+                {
+                    var reasons = new List<string>();
+                    if (volumeMomentum < 1.00 && !allowLowVolumeTrendBypass) reasons.Add("거래량 부족");
+                    if (!isUptrend && !isMakingHigherLows) reasons.Add("2파 횡보장 인식");
+                    if (aiScore < longThreshold && aiScore > shortThreshold) reasons.Add("스코어 불충분");
+
+                    if (reasons.Any())
+                        reason = $" (사유: {string.Join(" ", reasons)})";
+                }
+
+                string logMsg = $"{nowSeoul:HH:mm:ss} {symbol} ${currentPrice:F2} {decisionKr}{aiFilterWarning}{reason}";
+                OnLog?.Invoke(logMsg);
+
+                if (decision != "WAIT")
+                {
+                    try
+                    {
+                        OnTradeSignal?.Invoke(symbol, decision, currentPrice);
+                    }
+                    catch (Exception eventEx)
+                    {
+                        OnLog?.Invoke($"⚠️ [MajorCoinStrategy] {symbol} 주문 이벤트 반영 오류: {eventEx.Message}");
+                        System.Diagnostics.Debug.WriteLine(eventEx);
+                    }
+                }
+
+                return Task.CompletedTask;
+            }
+            catch (Exception ex)
             {
-                var reasons = new List<string>();
-                if (volumeMomentum < 1.00 && !allowLowVolumeTrendBypass) reasons.Add("거래량 부족");
-                if (!isUptrend && !isMakingHigherLows) reasons.Add("2파 횡보장 인식");
-                if (aiScore < longThreshold && aiScore > shortThreshold) reasons.Add("스코어 불충분");
-
-                if (reasons.Any())
-                    reason = $" (사유: {string.Join(" ", reasons)})";
+                OnLog?.Invoke($"⚠️ [MajorCoinStrategy] {symbol} 분석 오류: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine(ex);
+                return Task.CompletedTask;
             }
-
-            string logMsg = $"{nowSeoul:HH:mm:ss} {symbol} ${currentPrice:F2} {decisionKr}{aiFilterWarning}{reason}";
-            OnLog?.Invoke(logMsg);
-
-            if (decision != "WAIT")
-            {
-                OnTradeSignal?.Invoke(symbol, decision, currentPrice);
-            }
-
-            return Task.CompletedTask;
         }
 
         private int CalculateScore(
