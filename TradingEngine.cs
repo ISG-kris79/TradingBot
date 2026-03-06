@@ -3551,6 +3551,12 @@ namespace TradingBot
                 for (int offset = startIndex; offset <= recentKlines.Count - period; offset++)
                 {
                     var subset = recentKlines.Skip(offset).Take(period).ToList();
+                    // [FIX] subset이 비어있으면 건너뛰기
+                    if (!subset.Any())
+                    {
+                        OnStatusLog?.Invoke($"⚠️ subset 데이터 부족 (offset: {offset}, period: {period})");
+                        continue;
+                    }
                     if (subset.Count < period)
                         continue;
 
@@ -4061,7 +4067,9 @@ namespace TradingBot
                 // 이전 RSI 계산 (간단히 5분봉 2번째 마지막으로 근사)
                 if (candles5m.Count >= 21)
                 {
-                    var prevCandles = candles5m.Take(candles5m.Count - 1).ToList();
+                    var prevCandles = candles5m.Count >= 2 
+                        ? candles5m.Take(candles5m.Count - 1).ToList()
+                        : new List<IBinanceKline>(); // 데이터 부족시 빈 리스트
                     double prevRSI = IndicatorCalculator.CalculateRSI(prevCandles, 14);
                     if (latestCandle.RSI <= prevRSI)
                         return false; // RSI 하락 중이면 눌림목 아님
@@ -4106,6 +4114,13 @@ namespace TradingBot
                     return false;
                 
                 var candles5m = k5m.Data.ToList();
+                // [FIX] 빈 리스트 체크 추가
+                if (candles5m.Count < 2)
+                {
+                    OnStatusLog?.Invoke($"⚠️ {symbol} 5분봉 데이터 부족 (필요: 2, 실제: {candles5m.Count})");
+                    return false;
+                }
+                
                 var current = candles5m.Last();
                 var previous = candles5m[candles5m.Count - 2];
                 

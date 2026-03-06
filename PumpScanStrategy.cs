@@ -155,6 +155,11 @@ namespace TradingBot.Strategies
 
             // Decision Logic
             string decision = "WAIT";
+            if (data5m.Count == 0)
+            {
+                OnLog?.Invoke($"[PumpScan 안전성 체크] {symbol} 5분봉 데이터 없음");
+                return;
+            }
             double volRatio5m = data5m.Take(20).Average(c => (double)c.Volume) > 0 ? (double)data5m.Last().Volume / data5m.Take(20).Average(c => (double)c.Volume) : 0;
             bool is5mBullish = data5m.Last().ClosePrice >= data5m.Last().OpenPrice;
 

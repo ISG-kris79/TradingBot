@@ -295,6 +295,34 @@ namespace TradingBot.Strategies
 
             // 거래량 모멘텀
             var recent20 = klines.TakeLast(20).ToList();
+            if (recent20.Count == 0)
+            {
+                OnLog?.Invoke($"[TransformerStrategy] {symbol} 거래량 데이터 부족 (recent20 empty)");
+                // 기본 TechnicalContext 반환
+                return new HybridStrategyScorer.TechnicalContext
+                {
+                    CurrentPrice = currentPrice,
+                    BbUpper = 0,
+                    BbMid = 0,
+                    BbLower = 0,
+                    BbWidth = 0,
+                    RSI = 50,
+                    MacdHist = 0,
+                    MacdLine = 0,
+                    MacdSignal = 0,
+                    Sma20 = 0,
+                    Sma50 = 0,
+                    Sma200 = 0,
+                    IsElliottUptrend = false,
+                    ElliottPhase = "Idle",
+                    Fib382 = currentPrice,
+                    Fib500 = currentPrice,
+                    Fib618 = currentPrice,
+                    VolumeRatio = 1,
+                    VolumeMomentum = 1,
+                    RsiDivergence = 0
+                };
+            }
             double avgVolume = recent20.Average(k => (double)k.Volume);
             double currentVolume = (double)recent20.Last().Volume;
             double prevVolume = recent20.Count >= 2 ? (double)recent20[^2].Volume : currentVolume;
