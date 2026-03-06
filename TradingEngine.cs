@@ -3629,7 +3629,7 @@ namespace TradingBot
                         }
                         catch (Exception priceEx)
                         {
-                            OnLog?.Invoke($"⚠️ {closedPos.Symbol} 가격 조회 실패, 진입가로 대체: {priceEx.Message}");
+                            OnStatusLog?.Invoke($"⚠️ {closedPos.Symbol} 가격 조회 실패, 진입가로 대체: {priceEx.Message}");
                             exitPrice = closedPos.EntryPrice;
                         }
                     }
