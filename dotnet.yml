@@ -82,6 +82,8 @@ jobs:
           Releases/*Portable.zip
           Releases/*.nupkg
           Releases/RELEASES
+          Releases/assets.win.json
+          Releases/releases.win.json
           LICENSE.md
         draft: false
         prerelease: false
