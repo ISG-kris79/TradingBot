@@ -7,6 +7,53 @@
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-03-06
+
+### Changed
+
+- **텔레그램 청산 알림 메시지 개선**:
+  - 메시지 언어를 영어에서 한글로 변경
+  - 금일 누적 손익(총수익금) 정보 추가
+  - 익절/손절 구분 이모지 자동 선택 (💰 익절 / 📉 손절)
+  - 타임스탬프 형식 개선 (yyyy-MM-dd HH:mm:ss)
+  - Push 알림 제목도 한글로 변경
+
+### Fixed
+
+- **PnL 계산 정확도 개선 (수수료 및 슬리피지 반영)**:
+  - 기존: 순수 가격 차이만 계산하여 실제 손실보다 낮게 표시
+  - 개선: 거래 수수료(왕복 0.08%) + 슬리피지(0.05%) 차감
+  - 모든 청산 경로에 적용 (전량청산, 부분청산, 외부청산, 동기화청산)
+  - 디버깅용 상세 로그 추가: 순수PnL / 수수료 / 슬리피지 / 최종PnL 출력
+  - 예시: 순수 손실 -9.05 USDT → 실제 손실 -12.96 USDT (수수료 0.16 + 슬리피지 3.75)
+
+### Added
+
+- **거래소 포지션 자동 동기화 시스템**:
+  - `TradingEngine.SyncExchangePositionsAsync` 메서드 추가
+  - 거래소에는 없지만 로컬에 남아있는 포지션 자동 감지 및 청산 기록 복구
+  - WebSocket 연결 끊김이나 봇 중지 중 발생한 청산 자동 보정
+  - 30분 주기 자동 동기화 실행
+
+- **수동 동기화 UI 추가**:
+  - TradeHistory 탭에 "🔄 Sync" 버튼 추가
+  - `MainViewModel.SyncPositionsCommand` 명령 구현
+  - 사용자가 필요시 즉시 동기화 실행 가능
+
+### Fixed
+
+- **누락된 청산 기록 자동 복구**:
+  - 외부에서 청산된 포지션이 TradeHistory에 기록되지 않는 문제 해결
+  - `MISSED_CLOSE_SYNC` 전략으로 누락 청산 구분 가능
+  - 동기화 완료 시 알림 및 TradeHistory 자동 갱신
+
+### Technical Details
+
+- `TradingEngine._lastPositionSyncTime` 타이머 추가 (30분 주기)
+- 동기화 시 `IsCloseInProgress` 상태 확인하여 중복 처리 방지
+- 현재가 조회 실패 시 진입가 폴백 처리
+- 동기화 완료 시 `OnTradeHistoryUpdated` 이벤트 발생
+
 ## [2.2.0] - 2026-03-06
 
 ### Fixed

@@ -33,15 +33,25 @@ namespace TradingBot.Services
             }
         }
 
-        public async Task NotifyProfitAsync(string symbol, decimal pnl, decimal pnlPercent)
+        public async Task NotifyProfitAsync(string symbol, decimal pnl, decimal pnlPercent, decimal totalPnl = 0)
         {
-            string message = $"💰 [Profit Notification]\nSymbol: {symbol}\nPnL: {pnl:F2} USDT ({pnlPercent:F2}%)";
+            // 이모지 선택
+            string emoji = pnl >= 0 ? "💰" : "📉";
+            string resultText = pnl >= 0 ? "익절" : "손절";
+            
+            string message = $"{emoji} *[{resultText} 완료]*\n\n" +
+                           $"📊 *심볼*: {symbol}\n" +
+                           $"💵 *손익금*: {pnl:F2} USDT\n" +
+                           $"📈 *수익률*: {pnlPercent:F2}%\n" +
+                           $"💼 *금일 누적*: {totalPnl:F2} USDT\n" +
+                           $"⏰ *시각*: {DateTime.Now:yyyy-MM-dd HH:mm:ss}";
             
             // Telegram 전송
             await TelegramService.Instance.SendMessageAsync(message);
 
             // Push 전송
-            await SendPushNotificationAsync("💰 수익 발생!", message);
+            string pushTitle = pnl >= 0 ? "💰 익절 완료!" : "📉 손절 완료";
+            await SendPushNotificationAsync(pushTitle, $"{symbol}: {pnl:F2} USDT ({pnlPercent:F2}%)");
         }
 
         public async Task SendPushNotificationAsync(string title, string body, string topic = "all")

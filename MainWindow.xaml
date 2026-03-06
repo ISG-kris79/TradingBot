@@ -1278,7 +1278,15 @@
                                     Height="36"
                                     Margin="0,0,12,0"/>
 
-                            <Button Content="📥 Export CSV"
+                            <Button Content="� Sync"
+                                    Command="{Binding SyncPositionsCommand}"
+                                    Style="{StaticResource PrimaryButtonStyle}"
+                                    Width="90"
+                                    Height="36"
+                                    Margin="0,0,12,0"
+                                    ToolTip="거래소 포지션 동기화 (누락된 청산 복구)"/>
+
+                            <Button Content="�📥 Export CSV"
                                     Command="{Binding ExportHistoryCommand}"
                                     Style="{StaticResource SuccessButtonStyle}"
                                     Width="130"

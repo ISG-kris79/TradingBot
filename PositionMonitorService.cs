@@ -1307,9 +1307,17 @@ namespace TradingBot.Services
                             fallbackExitPrice = localTrackedPosition.EntryPrice;
 
                         decimal fallbackAbsQty = Math.Abs(localTrackedPosition.Quantity);
-                        decimal fallbackPnl = localTrackedPosition.IsLong
+                        
+                        // 순수 가격 차이
+                        decimal fallbackRawPnl = localTrackedPosition.IsLong
                             ? (fallbackExitPrice - localTrackedPosition.EntryPrice) * fallbackAbsQty
                             : (localTrackedPosition.EntryPrice - fallbackExitPrice) * fallbackAbsQty;
+
+                        // 거래 수수료 및 슬리피지 차감
+                        decimal fallbackEntryFee = localTrackedPosition.EntryPrice * fallbackAbsQty * 0.0004m;
+                        decimal fallbackExitFee = fallbackExitPrice * fallbackAbsQty * 0.0004m;
+                        decimal fallbackSlippage = fallbackExitPrice * fallbackAbsQty * 0.0005m;
+                        decimal fallbackPnl = fallbackRawPnl - fallbackEntryFee - fallbackExitFee - fallbackSlippage;
 
                         decimal fallbackPnlPercent = 0m;
                         if (localTrackedPosition.EntryPrice > 0 && fallbackAbsQty > 0)
@@ -1611,9 +1619,22 @@ namespace TradingBot.Services
                     exitPrice = position.EntryPrice;
 
                 decimal absQty = Math.Abs(quantity);
-                decimal pnl = isLongPosition
+                
+                // [수정] 순수 가격 차이로 PnL 계산
+                decimal rawPnl = isLongPosition
                     ? (exitPrice - position.EntryPrice) * absQty
                     : (position.EntryPrice - exitPrice) * absQty;
+
+                // [추가] 거래 수수료 차감 (Binance Taker 기준: 진입 0.04% + 청산 0.04%)
+                decimal entryFee = position.EntryPrice * absQty * 0.0004m;
+                decimal exitFee = exitPrice * absQty * 0.0004m;
+                decimal totalFee = entryFee + exitFee;
+
+                // [추가] 슬리피지 예상치 차감 (시장가 주문: 약 0.05% 예상)
+                decimal estimatedSlippage = exitPrice * absQty * 0.0005m;
+
+                // [최종] 실제 PnL = 순수 가격 차이 - 수수료 - 슬리피지
+                decimal pnl = rawPnl - totalFee - estimatedSlippage;
                 _riskManager.UpdatePnlAndCheck(pnl);
 
                 // 수익률 계산
@@ -1629,6 +1650,9 @@ namespace TradingBot.Services
                 {
                     pnlPercent = (pnl / (position.EntryPrice * absQty)) * 100 * positionLeverage;
                 }
+
+                // [디버깅] 상세 내역 로그
+                OnLog?.Invoke($"[PnL 계산] {symbol} | 순수: {rawPnl:F2} | 수수료: -{totalFee:F2} | 슬리피지: -{estimatedSlippage:F2} | 최종: {pnl:F2} ({pnlPercent:F2}%)");
 
                 // DB에 매매 이력 저장
                 var log = new TradeLog(symbol, side, "MarketClose", exitPrice, position.AiScore, DateTime.Now, pnl, pnlPercent)
@@ -1649,8 +1673,9 @@ namespace TradingBot.Services
                 OnLog?.Invoke($"[청산 확인] {symbol} 종료가={exitPrice:F4}, PnL={pnl:F2}, ROE={pnlPercent:F2}%");
                 OnLog?.Invoke($"[종료] {symbol} | 수량: {absQty} | 사유: {reason}");
 
-                // 텔레그램, 디스코드, 푸시 알림 통합 전송
-                _ = NotificationService.Instance.NotifyProfitAsync(symbol, pnl, pnlPercent);
+                // 텔레그램, 디스코드, 푸시 알림 통합 전송 (총 수익금 포함)
+                decimal totalPnl = _riskManager?.DailyRealizedPnl ?? 0m;
+                _ = NotificationService.Instance.NotifyProfitAsync(symbol, pnl, pnlPercent, totalPnl);
 
                 // 청산 완료 이벤트 발생 (UI 자동 갱신 트리거)
                 OnTradeHistoryUpdated?.Invoke();
@@ -1751,9 +1776,16 @@ namespace TradingBot.Services
                     exitPrice = await _exchangeService.GetPriceAsync(symbol, ct: token);
                 }
 
-                decimal pnl = localPosition.IsLong
+                // 순수 가격 차이
+                decimal rawPnl = localPosition.IsLong
                     ? (exitPrice - localPosition.EntryPrice) * actualClosedQty
                     : (localPosition.EntryPrice - exitPrice) * actualClosedQty;
+
+                // 거래 수수료 및 슬리피지 차감
+                decimal entryFee = localPosition.EntryPrice * actualClosedQty * 0.0004m;
+                decimal exitFee = exitPrice * actualClosedQty * 0.0004m;
+                decimal estimatedSlippage = exitPrice * actualClosedQty * 0.0005m;
+                decimal pnl = rawPnl - entryFee - exitFee - estimatedSlippage;
 
                 _riskManager.UpdatePnlAndCheck(pnl);
 

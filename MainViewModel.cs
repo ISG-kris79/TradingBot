@@ -241,6 +241,7 @@ namespace TradingBot.ViewModels
         public ICommand ClosePositionCommand { get; private set; }
         public ICommand ToggleWidgetCommand { get; private set; }
         public ICommand ExportHistoryCommand { get; private set; } // [Agent 3] 추가
+        public ICommand SyncPositionsCommand { get; private set; } // [FIX] 거래소 포지션 동기화
 
         // Command Properties for Button State
         private bool _isStartEnabled = true;
@@ -861,6 +862,22 @@ namespace TradingBot.ViewModels
                             AddLog($"⚠️ {symbol} 수동 청산 실패: 엔진이 실행 중이 아닙니다.");
                         }
                     }
+                }
+            });
+
+            // [FIX] 거래소 포지션 동기화 명령
+            SyncPositionsCommand = new RelayCommand(async _ =>
+            {
+                if (_engine != null)
+                {
+                    AddLog("🔄 거래소 포지션 동기화 시작...");
+                    await _engine.SyncExchangePositionsAsync();
+                    AddLog("✅ 거래소 포지션 동기화 완료");
+                    await LoadTradeHistory();
+                }
+                else
+                {
+                    AddLog("⚠️ 거래소 동기화 실패: 엔진이 실행 중이 아닙니다.");
                 }
             });
 

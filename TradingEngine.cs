@@ -131,6 +131,7 @@ namespace TradingBot
         public event Action? OnTradeHistoryUpdated; // [FIX] 청산 시 TradeHistory 자동 갱신 트리거
 
         private DateTime _lastHeartbeatTime = DateTime.MinValue;
+        private DateTime _lastPositionSyncTime = DateTime.MinValue; // [FIX] 마지막 포지션 동기화 시간
         private bool _initialTransformerTrainingTriggered = false;
         private readonly TimeSpan _entryWarmupDuration = TimeSpan.FromSeconds(30); // 워밍업 30초로 단축 (2025-03-04)
         private DateTime _lastEntryWarmupLogTime = DateTime.MinValue;
@@ -762,6 +763,7 @@ namespace TradingBot
                 _engineStartTime = DateTime.Now;
                 _lastHeartbeatTime = DateTime.Now; // 시작 시점 기록 (1시간 후 첫 알림)
                 _lastReportTime = DateTime.Now;    // 시작 시점 기록 (1시간 후 첫 보고)
+                _lastPositionSyncTime = DateTime.Now; // [FIX] 시작 시점 기록 (30분 후 첫 동기화)
                 OnStatusLog?.Invoke($"⏳ 진입 워밍업 시작: {_entryWarmupDuration.TotalSeconds:F0}초 동안 신규 진입 제한");
 
                 // 3. 메인 관리 루프 (REST API 호출 최소화)
@@ -833,6 +835,14 @@ namespace TradingBot
                             await NotificationService.Instance.NotifyAsync(heartbeatMsg, NotificationChannel.Log);
                             LoggerService.Info("Heartbeat sent.");
                             _lastHeartbeatTime = DateTime.Now;
+                        }
+
+                        // [FIX] 거래소 포지션 동기화 (30분 주기)
+                        if ((DateTime.Now - _lastPositionSyncTime).TotalMinutes >= 30)
+                        {
+                            OnStatusLog?.Invoke("🔄 정기 거래소 포지션 동기화 시작...");
+                            await SyncExchangePositionsAsync(token);
+                            _lastPositionSyncTime = DateTime.Now;
                         }
 
                         // [B] 텔레그램 정기 수익 보고 (1시간 주기)
@@ -2165,9 +2175,17 @@ namespace TradingBot
                             exitPrice = closedSnapshot.EntryPrice;
 
                         decimal closeQty = Math.Abs(closedSnapshot.Quantity);
-                        decimal pnl = closedSnapshot.IsLong
+                        
+                        // 순수 가격 차이
+                        decimal rawPnl = closedSnapshot.IsLong
                             ? (exitPrice - closedSnapshot.EntryPrice) * closeQty
                             : (closedSnapshot.EntryPrice - exitPrice) * closeQty;
+
+                        // 거래 수수료 및 슬리피지 차감
+                        decimal entryFee = closedSnapshot.EntryPrice * closeQty * 0.0004m;
+                        decimal exitFee = exitPrice * closeQty * 0.0004m;
+                        decimal estimatedSlippage = exitPrice * closeQty * 0.0005m;
+                        decimal pnl = rawPnl - entryFee - exitFee - estimatedSlippage;
 
                         decimal pnlPercent = 0m;
                         if (closedSnapshot.EntryPrice > 0 && closeQty > 0)
@@ -2229,9 +2247,16 @@ namespace TradingBot
                         if (syncExitPrice <= 0)
                             syncExitPrice = pos.EntryPrice > 0 ? pos.EntryPrice : existing.EntryPrice;
 
-                        decimal syncPnl = existing.IsLong
+                        // 순수 가격 차이
+                        decimal rawSyncPnl = existing.IsLong
                             ? (syncExitPrice - existing.EntryPrice) * externalClosedQty
                             : (existing.EntryPrice - syncExitPrice) * externalClosedQty;
+
+                        // 거래 수수료 및 슬리피지 차감
+                        decimal syncEntryFee = existing.EntryPrice * externalClosedQty * 0.0004m;
+                        decimal syncExitFee = syncExitPrice * externalClosedQty * 0.0004m;
+                        decimal syncSlippage = syncExitPrice * externalClosedQty * 0.0005m;
+                        decimal syncPnl = rawSyncPnl - syncEntryFee - syncExitFee - syncSlippage;
 
                         decimal syncPnlPercent = 0m;
                         if (existing.EntryPrice > 0 && externalClosedQty > 0)
@@ -3532,6 +3557,146 @@ namespace TradingBot
             else
             {
                 OnStatusLog?.Invoke($"⚠️ {symbol} 수동 청산 실패: 엔진이 초기화되지 않았습니다. 스캔을 먼저 시작해주세요.");
+            }
+        }
+
+        /// <summary>
+        /// [FIX] 거래소 포지션과 로컬 포지션을 동기화하고 누락된 청산을 TradeHistory에 반영합니다.
+        /// WebSocket 연결 끊김이나 봇 중지 중 발생한 청산을 자동 보정합니다.
+        /// </summary>
+        public async Task SyncExchangePositionsAsync(CancellationToken token = default)
+        {
+            try
+            {
+                // 거래소에서 현재 오픈 포지션 목록 조회
+                var exchangePositions = await _exchangeService.GetPositionsAsync(ct: token);
+                var exchangeSymbols = new HashSet<string>(
+                    exchangePositions.Where(p => Math.Abs(p.Quantity) > 0).Select(p => p.Symbol)
+                );
+
+                List<PositionInfo> missingClosedPositions = new List<PositionInfo>();
+
+                lock (_posLock)
+                {
+                    // 로컬에는 있지만 거래소에는 없는 포지션 = 외부/누락 청산
+                    foreach (var kvp in _activePositions.ToList())
+                    {
+                        string symbol = kvp.Key;
+                        PositionInfo localPos = kvp.Value;
+
+                        // 거래소에 포지션이 없고, 현재 청산 진행 중이 아닌 경우
+                        if (!exchangeSymbols.Contains(symbol) && 
+                            !_positionMonitor.IsCloseInProgress(symbol) &&
+                            Math.Abs(localPos.Quantity) > 0)
+                        {
+                            missingClosedPositions.Add(new PositionInfo
+                            {
+                                Symbol = symbol,
+                                IsLong = localPos.IsLong,
+                                Quantity = Math.Abs(localPos.Quantity),
+                                EntryPrice = localPos.EntryPrice,
+                                Leverage = localPos.Leverage,
+                                UnrealizedPnL = localPos.UnrealizedPnL,
+                                Side = localPos.Side,
+                                EntryTime = localPos.EntryTime,
+                                AiScore = localPos.AiScore
+                            });
+
+                            // 로컬 포지션 제거
+                            _activePositions.Remove(symbol);
+                            _hybridExitManager?.RemoveState(symbol);
+                            OnPositionStatusUpdate?.Invoke(symbol, false, 0);
+                        }
+                    }
+                }
+
+                // 누락된 청산 건들을 TradeHistory에 반영
+                foreach (var closedPos in missingClosedPositions)
+                {
+                    decimal exitPrice = 0m;
+
+                    // 현재가 조회 시도
+                    if (_marketDataManager.TickerCache.TryGetValue(closedPos.Symbol, out var ticker))
+                    {
+                        exitPrice = ticker.LastPrice;
+                    }
+
+                    if (exitPrice <= 0)
+                    {
+                        try
+                        {
+                            exitPrice = await _exchangeService.GetPriceAsync(closedPos.Symbol, ct: token);
+                        }
+                        catch (Exception priceEx)
+                        {
+                            OnLog?.Invoke($"⚠️ {closedPos.Symbol} 가격 조회 실패, 진입가로 대체: {priceEx.Message}");
+                            exitPrice = closedPos.EntryPrice;
+                        }
+                    }
+
+                    if (exitPrice <= 0)
+                        exitPrice = closedPos.EntryPrice;
+
+                    decimal closeQty = Math.Abs(closedPos.Quantity);
+                    
+                    // 순수 가격 차이
+                    decimal rawPnl = closedPos.IsLong
+                        ? (exitPrice - closedPos.EntryPrice) * closeQty
+                        : (closedPos.EntryPrice - exitPrice) * closeQty;
+
+                    // 거래 수수료 및 슬리피지 차감
+                    decimal entryFee = closedPos.EntryPrice * closeQty * 0.0004m;
+                    decimal exitFee = exitPrice * closeQty * 0.0004m;
+                    decimal estimatedSlippage = exitPrice * closeQty * 0.0005m;
+                    decimal pnl = rawPnl - entryFee - exitFee - estimatedSlippage;
+
+                    decimal pnlPercent = 0m;
+                    if (closedPos.EntryPrice > 0 && closeQty > 0)
+                    {
+                        pnlPercent = (pnl / (closedPos.EntryPrice * closeQty)) * 100m * closedPos.Leverage;
+                    }
+
+                    var missedCloseLog = new TradeLog(
+                        closedPos.Symbol,
+                        closedPos.IsLong ? "SELL" : "BUY",
+                        "MISSED_CLOSE_SYNC",
+                        exitPrice,
+                        closedPos.AiScore,
+                        DateTime.Now,
+                        pnl,
+                        pnlPercent)
+                    {
+                        EntryPrice = closedPos.EntryPrice,
+                        ExitPrice = exitPrice,
+                        Quantity = closeQty,
+                        EntryTime = closedPos.EntryTime == default ? DateTime.Now : closedPos.EntryTime,
+                        ExitTime = DateTime.Now,
+                        ExitReason = "MISSED_CLOSE_SYNC (거래소 동기화)"
+                    };
+
+                    bool synced = await _dbManager.TryCompleteOpenTradeAsync(missedCloseLog);
+                    if (synced)
+                    {
+                        OnStatusLog?.Invoke($"📝 [동기화] {closedPos.Symbol} 누락된 청산 감지 → TradeHistory 반영 완료 (PnL={pnl:F2}, ROE={pnlPercent:F2}%)");
+                        OnAlert?.Invoke($"⚠️ [누락 청산 복구] {closedPos.Symbol} 청산이 TradeHistory에 복구되었습니다.");
+                        
+                        // 청산 이력 갱신 이벤트
+                        OnTradeHistoryUpdated?.Invoke();
+                    }
+                    else
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [동기화 실패] {closedPos.Symbol} TradeHistory 반영 실패 (userId 확인 필요)");
+                    }
+                }
+
+                if (missingClosedPositions.Count > 0)
+                {
+                    OnStatusLog?.Invoke($"✅ [거래소 동기화] {missingClosedPositions.Count}개 누락 청산 복구 완료");
+                }
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"❌ [거래소 동기화 오류] {ex.Message}");
             }
         }
 
