@@ -48,6 +48,57 @@ function Write-Success {
     Write-Host "✅ $Message" -ForegroundColor Green
 }
 
+function Show-ReleaseChecklist {
+    $checklistPath = Join-Path $PSScriptRoot "RELEASE_CHECKLIST.md"
+    
+    if (Test-Path $checklistPath) {
+        Write-Host "`n" -ForegroundColor Yellow
+        Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Yellow
+        Write-Host "⚠️  배포 전 체크리스트 확인이 필요합니다!" -ForegroundColor Yellow
+        Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "📋 RELEASE_CHECKLIST.md를 확인하셨나요?" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "필수 확인 사항:" -ForegroundColor White
+        Write-Host "  ✓ 버전 번호 업데이트 (TradingBot.csproj)" -ForegroundColor Gray
+        Write-Host "  ✓ CHANGELOG.md 업데이트" -ForegroundColor Gray
+        Write-Host "  ✓ Git 커밋 및 푸시 완료" -ForegroundColor Gray
+        Write-Host "  ✓ Git 태그 생성 완료" -ForegroundColor Gray
+        Write-Host ""
+        
+        $response = Read-Host "체크리스트를 확인하셨습니까? [Y/N/Open]"
+        
+        if ($response -eq "Open" -or $response -eq "O") {
+            Write-Host "📄 RELEASE_CHECKLIST.md를 엽니다..." -ForegroundColor Cyan
+            
+            # VS Code로 열기 시도
+            if (Get-Command code -ErrorAction SilentlyContinue) {
+                code $checklistPath
+            } else {
+                # 기본 텍스트 에디터로 열기
+                Start-Process $checklistPath
+            }
+            
+            Write-Host ""
+            $response = Read-Host "체크리스트 확인 후 계속하시겠습니까? [Y/N]"
+        }
+        
+        if ($response -ne "Y" -and $response -ne "y") {
+            Write-Host "❌ 배포가 취소되었습니다." -ForegroundColor Red
+            Write-Host "💡 Tip: RELEASE_CHECKLIST.md를 확인하고 필요한 단계를 완료하세요." -ForegroundColor Yellow
+            exit 1
+        }
+        
+        Write-Success "체크리스트 확인 완료! 배포를 계속합니다..."
+    } else {
+        Write-Host "⚠️  경고: RELEASE_CHECKLIST.md를 찾을 수 없습니다." -ForegroundColor Yellow
+        $response = Read-Host "계속하시겠습니까? [Y/N]"
+        if ($response -ne "Y" -and $response -ne "y") {
+            exit 1
+        }
+    }
+}
+
 function Write-Error-Custom {
     param([string]$Message)
     Write-Host "❌ $Message" -ForegroundColor Red
@@ -57,6 +108,11 @@ function Write-Warning-Custom {
     param([string]$Message)
     Write-Host "⚠️  $Message" -ForegroundColor Yellow
 }
+
+# ========================================
+# 배포 전 체크리스트 확인
+# ========================================
+Show-ReleaseChecklist
 
 # 버전 추출 (없으면 .csproj에서 읽기)
 if ([string]::IsNullOrWhiteSpace($Version)) {
