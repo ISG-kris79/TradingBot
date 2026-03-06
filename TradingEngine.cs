@@ -397,53 +397,69 @@ namespace TradingBot
             // [FIX] TorchSharp 네이티브 라이브러리 크래시 방지를 위한 안전장치 추가
             var tfSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
             bool transformerInitSuccess = false;
-            try
+            if (tfSettings.Enabled)
             {
-                // 메모리 정리
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                
-                _transformerTrainer = new TransformerTrainer(
-                    tfSettings.InputDim,
-                    tfSettings.DModel,
-                    tfSettings.NHeads,
-                    tfSettings.NLayers,
-                    tfSettings.OutputDim,
-                    tfSettings.SeqLen
-                );
-
-                // [Phase 7] Transformer 학습 상태 이벤트 연결
-                _transformerTrainer.OnLog += msg => OnLiveLog?.Invoke(msg);
-                _transformerTrainer.OnEpochCompleted += (epoch, total, loss) =>
-                {
-                    // 학습 진행 상황을 상태바에도 표시 (선택 사항)
-                    // OnStatusLog?.Invoke($"🧠 AI 학습 중... Epoch {epoch}/{total} (Loss: {loss:F5})");
-                };
-
-                // 기존 학습된 모델이 있다면 로드
-                _transformerTrainer.LoadModel();
-                transformerInitSuccess = true;
-                OnStatusLog?.Invoke("✅ TorchSharp Transformer 초기화 완료");
-            }
-            catch (Exception ex)
-            {
-                OnAlert?.Invoke($"⚠️ Transformer AI 초기화 실패: {ex.Message}");
-                OnStatusLog?.Invoke("⚠️ Transformer 기능이 비활성화됩니다 (기본 전략으로 동작)");
-                _transformerTrainer = null;
-                
-                // 크래시 로그 저장
                 try
                 {
-                    string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "TRANSFORMER_CRASH.txt");
-                    File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Transformer Init Failed\n" +
-                        $"Message: {ex.Message}\n" +
-                        $"StackTrace: {ex.StackTrace}\n" +
-                        $"InnerException: {ex.InnerException?.Message ?? "None"}\n\n");
+                    bool torchReady = TorchInitializer.IsAvailable || TorchInitializer.TryInitialize();
+                    if (!torchReady)
+                    {
+                        OnStatusLog?.Invoke("⚠️ TorchSharp 초기화 실패로 Transformer 기능이 비활성화됩니다.");
+                    }
+                    else
+                    {
+                        // 메모리 정리
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+
+                        _transformerTrainer = new TransformerTrainer(
+                            tfSettings.InputDim,
+                            tfSettings.DModel,
+                            tfSettings.NHeads,
+                            tfSettings.NLayers,
+                            tfSettings.OutputDim,
+                            tfSettings.SeqLen
+                        );
+
+                        // [Phase 7] Transformer 학습 상태 이벤트 연결
+                        _transformerTrainer.OnLog += msg => OnLiveLog?.Invoke(msg);
+                        _transformerTrainer.OnEpochCompleted += (epoch, total, loss) =>
+                        {
+                            // 학습 진행 상황을 상태바에도 표시 (선택 사항)
+                            // OnStatusLog?.Invoke($"🧠 AI 학습 중... Epoch {epoch}/{total} (Loss: {loss:F5})");
+                        };
+
+                        // 기존 학습된 모델이 있다면 로드
+                        _transformerTrainer.LoadModel();
+                        transformerInitSuccess = true;
+                        OnStatusLog?.Invoke("✅ TorchSharp Transformer 초기화 완료");
+                    }
                 }
-                catch (Exception fileEx)
+                catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine($"Transformer crash log 저장 실패: {fileEx.Message}");
+                    OnAlert?.Invoke($"⚠️ Transformer AI 초기화 실패: {ex.Message}");
+                    OnStatusLog?.Invoke("⚠️ Transformer 기능이 비활성화됩니다 (기본 전략으로 동작)");
+                    _transformerTrainer = null;
+
+                    // 크래시 로그 저장
+                    try
+                    {
+                        string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "TRANSFORMER_CRASH.txt");
+                        File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Transformer Init Failed\n" +
+                            $"Message: {ex.Message}\n" +
+                            $"StackTrace: {ex.StackTrace}\n" +
+                            $"InnerException: {ex.InnerException?.Message ?? "None"}\n\n");
+                    }
+                    catch (Exception fileEx)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Transformer crash log 저장 실패: {fileEx.Message}");
+                    }
                 }
+            }
+            else
+            {
+                OnStatusLog?.Invoke("ℹ️ Transformer/TorchSharp 기능이 설정에서 비활성화되어 있습니다.");
+                _transformerTrainer = null;
             }
 
             // [3파 확정형 전략] 먼저 초기화 (TransformerStrategy에서 사용하기 위해)
@@ -487,7 +503,9 @@ namespace TradingBot
             }
             else
             {
-                OnStatusLog?.Invoke("⚠️ TransformerStrategy 비활성화 (Transformer 초기화 실패)");
+                OnStatusLog?.Invoke(tfSettings.Enabled
+                    ? "⚠️ TransformerStrategy 비활성화 (Transformer 초기화 실패)"
+                    : "ℹ️ TransformerStrategy 비활성화 (설정에서 꺼짐)");
                 _transformerStrategy = null;
             }
 

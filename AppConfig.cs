@@ -249,6 +249,7 @@ namespace TradingBot
 
     public class TransformerSettings
     {
+        public bool Enabled { get; set; } = false;
         public int InputDim { get; set; } = 21;
         public int DModel { get; set; } = 128;
         public int NHeads { get; set; } = 8;

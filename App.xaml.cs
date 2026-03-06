@@ -260,28 +260,35 @@ namespace TradingBot
             Debug.WriteLine("[App] 🔧 DEBUG 모드 - VC++ Redistributable 체크 스킵");
 #endif
 
-            // [추가] TorchSharp 초기화 시도 (PPO, Transformer 기능)
-            bool torchAvailable = Services.TorchInitializer.TryInitialize();
-            if (!torchAvailable)
+            // [안정성] TorchSharp는 네이티브 라이브러리 접근 시 프로세스 크래시가 발생할 수 있어
+            // 시작 시 선행 초기화를 하지 않고, 설정에서 명시적으로 활성화된 경우에만 지연 초기화합니다.
+            var transformerSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
+            if (transformerSettings.Enabled)
             {
-                Debug.WriteLine("[App] TorchSharp 초기화 실패 - RL 기능 비활성화");
-                Debug.WriteLine($"[App] Error: {Services.TorchInitializer.ErrorMessage}");
-
-                // 사용자에게 알림 (방해하지 않도록 Debug로만 출력)
-                // 필요한 경우에만 MessageBox 표시
-                if (Services.TorchInitializer.ErrorMessage != null &&
-                    Services.TorchInitializer.ErrorMessage.Contains("Visual C++"))
+                bool torchAvailable = Services.TorchInitializer.TryInitialize();
+                if (!torchAvailable)
                 {
-                    MessageBox.Show(
-                        Services.TorchInitializer.ErrorMessage,
-                        "TorchSharp 초기화 실패",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning);
+                    Debug.WriteLine("[App] TorchSharp 초기화 실패 - RL 기능 비활성화");
+                    Debug.WriteLine($"[App] Error: {Services.TorchInitializer.ErrorMessage}");
+
+                    if (Services.TorchInitializer.ErrorMessage != null &&
+                        Services.TorchInitializer.ErrorMessage.Contains("Visual C++"))
+                    {
+                        MessageBox.Show(
+                            Services.TorchInitializer.ErrorMessage,
+                            "TorchSharp 초기화 실패",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                    }
+                }
+                else
+                {
+                    Debug.WriteLine("[App] TorchSharp 초기화 성공");
                 }
             }
             else
             {
-                Debug.WriteLine("[App] TorchSharp 초기화 성공");
+                Debug.WriteLine("[App] TorchSharp 시작시 초기화 비활성화됨");
             }
 
             // [추가] DB 연결 문자열 확인 및 설정 유도
