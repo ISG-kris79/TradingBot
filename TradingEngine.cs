@@ -1,4 +1,4 @@
-﻿using Binance.Net.Clients;
+using Binance.Net.Clients;
 using Binance.Net.Enums;
 using Binance.Net.Interfaces;
 using Binance.Net.Interfaces.Clients;
@@ -373,6 +373,9 @@ namespace TradingBot
                 float confidence = (float)Math.Min(Math.Abs(change) / 5.0, 1.0); // 변화율 기반 신뢰도 (5%를 1.0으로)
                 string predictionKey = $"TF_{symbol}_{DateTime.Now:yyyyMMddHHmmss}";
                 _pendingPredictions[predictionKey] = (DateTime.Now, predictedPrice, predictedDirection, "Transformer", confidence);
+
+                string direction = predictedDirection ? "상승" : "하락";
+                OnStatusLog?.Invoke($"🔮 [Transformer] {symbol} 예측 등록: {direction} (신뢰도: {confidence:P0}) → 5분 후 검증 예정");
 
                 var cts = _cts;
                 if (cts != null && !cts.Token.IsCancellationRequested)
@@ -1647,9 +1650,12 @@ namespace TradingBot
                         aiScore = prediction.Score;
 
                         // [AI 모니터링] 예측 기록 (5분 후 검증)
-                        string predictionKey = $"{symbol}_{DateTime.Now:yyyyMMddHHmmss}";
+                        string predictionKey = $"ML_{symbol}_{DateTime.Now:yyyyMMddHHmmss}";
                         decimal predictedPrice = currentPrice * (prediction.Prediction ? 1.02m : 0.98m); // 2% 변동 예측
                         _pendingPredictions[predictionKey] = (DateTime.Now, predictedPrice, prediction.Prediction, "ML.NET", prediction.Probability);
+
+                        string mlDirection = prediction.Prediction ? "상승" : "하락";
+                        OnStatusLog?.Invoke($"🔮 [ML.NET] {symbol} 예측 등록: {mlDirection} (확률: {prediction.Probability:P0}) → 5분 후 검증 예정");
 
                         // 5분 후 검증 태스크 시작
                         _ = Task.Run(async () =>
@@ -2944,14 +2950,22 @@ namespace TradingBot
             try
             {
                 if (!_pendingPredictions.TryRemove(predictionKey, out var predictionInfo))
+                {
+                    OnStatusLog?.Invoke($"⚠️ [{symbol}] 예측 키({predictionKey})를 찾을 수 없음");
                     return;
+                }
 
                 var (timestamp, predictedPrice, predictedDirection, modelName, confidence) = predictionInfo;
+                
+                OnStatusLog?.Invoke($"🔍 [{modelName}] {symbol} 예측 검증 시작 (5분 경과)");
 
                 // 현재 가격 조회
                 var tickerResult = await _client.UsdFuturesApi.ExchangeData.GetTickerAsync(symbol, token);
                 if (!tickerResult.Success || tickerResult.Data == null)
+                {
+                    OnStatusLog?.Invoke($"❌ [{symbol}] 가격 조회 실패 - 예측 검증 중단");
                     return;
+                }
 
                 decimal actualPrice = tickerResult.Data.LastPrice;
                 decimal entryPrice = predictedPrice / (predictedDirection ? 1.02m : 0.98m); // 원래 가격 역산
@@ -2977,6 +2991,10 @@ namespace TradingBot
                 };
 
                 OnAIPrediction?.Invoke(record);
+                
+                string resultIcon = isCorrect ? "✅" : "❌";
+                string direction = predictedDirection ? "상승" : "하락";
+                OnStatusLog?.Invoke($"{resultIcon} [{modelName}] {symbol} 예측 검증 완료: {direction} 예측 → {(isCorrect ? "정확" : "오류")} (예측: ${predictedPrice:F4} / 실제: ${actualPrice:F4})");
 
                 // RL 보상 계산 및 업데이트
                 double reward = isCorrect ? (confidence * 10) : (-confidence * 5);
