@@ -77,7 +77,11 @@ namespace TradingBot.ViewModels
             double? lastValidClose = null;
             foreach (var c in result.Candles)
             {
-                var close = ToFinite((double)c.Close, lastValidClose ?? 0d);
+                var close = ToFinite((double)c.Close, lastValidClose ?? 1000d);
+                
+                // 추가 안전장치: 0이나 음수 방지
+                if (close <= 0)
+                    close = lastValidClose ?? 1000d;
 
                 lastValidClose = close;
                 closeValues.Add(close);
@@ -97,9 +101,14 @@ namespace TradingBot.ViewModels
             {
                 // 거래가 발생한 캔들의 인덱스를 찾습니다.
                 var candleIndex = result.Candles.FindIndex(c => c.OpenTime <= trade.Time && c.OpenTime.AddMinutes(15) > trade.Time); // 15분봉 가정
-                if (candleIndex != -1)
+                if (candleIndex != -1 && candleIndex < closeValues.Count)
                 {
-                    var tradePrice = ToFinite((double)trade.Price, candleIndex < closeValues.Count ? closeValues[candleIndex] : 0d);
+                    var tradePrice = ToFinite((double)trade.Price, closeValues[candleIndex]);
+                    
+                    // NaN/Infinity 체크: ScatterPoint는 유한한 값만 허용
+                    if (!IsFinite(candleIndex) || !IsFinite(tradePrice))
+                        continue;
+                    
                     var point = new ScatterPoint(candleIndex, tradePrice, 10);
                     if (string.Equals(trade.Side, "BUY", StringComparison.OrdinalIgnoreCase))
                     {
@@ -148,18 +157,26 @@ namespace TradingBot.ViewModels
         private void ConfigureYAxisRange(IEnumerable<double> values)
         {
             var finiteValues = values
-                .Where(v => !double.IsNaN(v) && !double.IsInfinity(v))
+                .Where(v => !double.IsNaN(v) && !double.IsInfinity(v) && v > 0) // 0 이하 값도 제외
                 .ToList();
 
             if (finiteValues.Count == 0)
             {
                 YAxisMin = 0;
-                YAxisMax = 1;
+                YAxisMax = 10000; // 기본값을 더 현실적으로
                 return;
             }
 
             var min = finiteValues.Min();
             var max = finiteValues.Max();
+
+            // 추가 안전장치: min/max가 여전히 유효하지 않으면
+            if (!IsFinite(min) || !IsFinite(max) || min <= 0 || max <= 0)
+            {
+                YAxisMin = 0;
+                YAxisMax = 10000;
+                return;
+            }
 
             if (Math.Abs(max - min) < 1e-12)
             {
@@ -172,7 +189,7 @@ namespace TradingBot.ViewModels
             if (!IsFinite(min) || !IsFinite(max) || min >= max)
             {
                 YAxisMin = 0;
-                YAxisMax = 1;
+                YAxisMax = 10000;
                 return;
             }
 

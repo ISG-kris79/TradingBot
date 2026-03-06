@@ -1439,6 +1439,7 @@ namespace TradingBot.ViewModels
                 {
                     BacktestSeries = new SeriesCollection();
                     BacktestLabels = Array.Empty<string>();
+                    AddLiveLog("⚠️ 백테스트 차트 데이터가 없습니다.");
                     return;
                 }
 
@@ -1446,27 +1447,41 @@ namespace TradingBot.ViewModels
                 var buyPoints = new ChartValues<ScatterPoint>();
                 var sellPoints = new ChartValues<ScatterPoint>();
 
-                // EquityCurve와 TradeHistory 매핑
-                // EquityCurve는 매 캔들마다 기록된다고 가정 (BacktestService 수정 필요)
-                // 현재 구조상 EquityCurve는 매도 시점에만 기록되므로, 이를 보완하거나
-                // TradeHistory의 Time을 X축 인덱스로 변환해야 함.
-                // 여기서는 EquityCurve의 인덱스를 기준으로 표시합니다.
-
+                // EquityCurve 데이터 변환 (NaN/Infinity 필터링)
                 for (int i = 0; i < result.EquityCurve.Count; i++)
                 {
-                    values.Add(ToFinite((double)result.EquityCurve[i]));
+                    var equityValue = ToFinite((double)result.EquityCurve[i], 1000d);
+                    
+                    // 추가 검증: 음수나 0 방지
+                    if (equityValue <= 0)
+                        equityValue = i > 0 ? values[i - 1] : 1000d;
+                    
+                    values.Add(equityValue);
                 }
 
-                // 매매 기록을 차트 좌표에 매핑
-                // TradeDates 리스트와 TradeLog.Time을 비교하여 인덱스 찾기
+                // 유효한 데이터 확인
+                if (values.Count == 0 || values.All(v => !IsFinite(v)))
+                {
+                    BacktestSeries = new SeriesCollection();
+                    BacktestLabels = Array.Empty<string>();
+                    AddLiveLog("⚠️ 백테스트 차트에 유효한 데이터가 없습니다.");
+                    return;
+                }
+
+                // 매매 기록을 차트 좌표에 매핑 (NaN 방지)
                 foreach (var trade in result.TradeHistory)
                 {
                     string timeStr = trade.Time.ToString("MM/dd HH:mm");
                     int index = result.TradeDates.IndexOf(timeStr);
 
-                    if (index >= 0 && index < result.EquityCurve.Count)
+                    if (index >= 0 && index < values.Count)
                     {
-                        var y = ToFinite((double)result.EquityCurve[index]);
+                        var y = values[index];
+                        
+                        // ScatterPoint는 유한한 값만 허용
+                        if (!IsFinite(y) || y <= 0)
+                            continue;
+                        
                         if (trade.Side == "BUY")
                             buyPoints.Add(new ScatterPoint(index, y, 10));
                         else if (trade.Side == "SELL")

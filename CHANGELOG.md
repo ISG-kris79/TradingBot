@@ -7,6 +7,25 @@
 
 ## [Unreleased]
 
+## [2.0.24] - 2026-03-06
+
+### Fixed
+
+- **Optimize 차트 NaN 오류 수정**:
+  - `BacktestViewModel`: ScatterPoint 생성 시 NaN/Infinity 필터링 추가
+  - `BacktestViewModel`: closeValues에 0 이하 값 방지 로직 추가
+  - `BacktestViewModel`: ConfigureYAxisRange에서 음수/0 값 필터링 강화
+  - `MainViewModel.UpdateBacktestChart`: EquityCurve 변환 시 음수/0 방지
+  - `MainViewModel.UpdateBacktestChart`: ScatterPoint 생성 전 유효성 검증 강화
+  - 오류 메시지: "'NaN'은(는) 'Y1' 속성의 유효한 값이 아닙니다" 해결
+  
+### Technical Details
+
+- LiveCharts의 AxisSeparatorElement는 NaN 값을 허용하지 않음
+- 모든 차트 데이터에 대해 IsFinite() 검증 추가
+- 기본 fallback 값을 0에서 1000/10000으로 변경 (더 현실적인 가격대)
+- ScatterPoint(X, Y, Weight) 생성 시 X, Y 모두 유한한 값이어야 함
+
 ## [2.0.23] - 2026-03-06
 
 ### Fixed
