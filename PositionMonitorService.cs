@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Binance.Net.Enums;
+using Binance.Net.Interfaces;
 using Binance.Net.Interfaces.Clients;
 using Binance.Net.Objects.Models.Futures;
 using Binance.Net.Objects.Models.Futures.Socket;
@@ -724,8 +725,15 @@ namespace TradingBot.Services
                     {
                         if (_marketDataManager.KlineCache.TryGetValue(symbol, out var recentCandles) && recentCandles.Count >= 20)
                         {
-                            var last = recentCandles.Last();
-                            var bb = IndicatorCalculator.CalculateBB(recentCandles.TakeLast(20).ToList(), 20, 2);
+                            List<IBinanceKline> snapshot;
+                            lock (recentCandles)
+                            {
+                                snapshot = recentCandles.ToList(); // [동시성 안전] 스냅샷 복사
+                            }
+                            
+                            if (snapshot.Count == 0) continue;
+                            var last = snapshot[snapshot.Count - 1];
+                            var bb = IndicatorCalculator.CalculateBB(snapshot.TakeLast(20).ToList(), 20, 2);
                             decimal mid = (decimal)bb.Mid;
                             bool bearishCloseBelowMid = (decimal)last.ClosePrice < (decimal)last.OpenPrice && (decimal)last.ClosePrice < mid;
                             if (bearishCloseBelowMid)
@@ -772,7 +780,12 @@ namespace TradingBot.Services
                         {
                             if (_marketDataManager.KlineCache.TryGetValue(symbol, out var recentCandles) && recentCandles.Count >= 20)
                             {
-                                var rsiNow = IndicatorCalculator.CalculateRSI(recentCandles.TakeLast(20).ToList(), 14);
+                                List<IBinanceKline> snapshot;
+                                lock (recentCandles)
+                                {
+                                    snapshot = recentCandles.TakeLast(20).ToList(); // [동시성 안전]
+                                }
+                                var rsiNow = IndicatorCalculator.CalculateRSI(snapshot, 14);
                                 if (rsiNow >= 80) secondRatio = 0.40m; // 초과매수면 익절 강도 강화
                             }
                         }
@@ -836,7 +849,12 @@ namespace TradingBot.Services
                         {
                             if (_marketDataManager.KlineCache.TryGetValue(symbol, out var recentCandles) && recentCandles.Count >= 20)
                             {
-                                var bbAnalysis = IndicatorCalculator.CalculateBB(recentCandles.TakeLast(20).ToList(), 20, 2);
+                                List<IBinanceKline> snapshot;
+                                lock (recentCandles)
+                                {
+                                    snapshot = recentCandles.TakeLast(20).ToList(); // [동시성 안전]
+                                }
+                                var bbAnalysis = IndicatorCalculator.CalculateBB(snapshot, 20, 2);
                                 decimal bbLower = (decimal)bbAnalysis.Lower;
                                 if (currentPrice < bbLower)
                                 {
@@ -883,10 +901,17 @@ namespace TradingBot.Services
                     {
                         if (_marketDataManager.KlineCache.TryGetValue(symbol, out var recentCandles) && recentCandles.Count >= 20)
                         {
-                            var lastCandle = recentCandles.Last();
+                            List<IBinanceKline> snapshot;
+                            lock (recentCandles)
+                            {
+                                snapshot = recentCandles.ToList(); // [동시성 안전] 스냅샷 복사
+                            }
+                            
+                            if (snapshot.Count == 0) continue;
+                            var lastCandle = snapshot[snapshot.Count - 1];
                             decimal lastClose = (decimal)lastCandle.ClosePrice;
 
-                            var bbAnalysis = IndicatorCalculator.CalculateBB(recentCandles.TakeLast(20).ToList(), 20, 2);
+                            var bbAnalysis = IndicatorCalculator.CalculateBB(snapshot.TakeLast(20).ToList(), 20, 2);
                             decimal bbMiddle = (decimal)bbAnalysis.Mid; // 20EMA
 
                             // 종가가 BB 중단 아래: 추세가 죽었다고 판단 → 즉시 청산
@@ -913,7 +938,14 @@ namespace TradingBot.Services
                         {
                             if (_marketDataManager.KlineCache.TryGetValue(symbol, out var recentCandles) && recentCandles.Count >= 30)
                             {
-                                var candles = recentCandles.TakeLast(30).ToList();
+                                List<IBinanceKline> snapshot;
+                                lock (recentCandles)
+                                {
+                                    snapshot = recentCandles.TakeLast(30).ToList(); // [동시성 안전]
+                                }
+                                
+                                if (snapshot.Count < 2) continue;
+                                var candles = snapshot;
                                 if (candles.Count < 2)
                                 {
                                     OnLog?.Invoke($"⚠️ {symbol} candles 부족 (BB 분석, Count: {candles.Count})");
@@ -1088,7 +1120,11 @@ namespace TradingBot.Services
                 return false;
             }
 
-            var recent20 = recentCandles.TakeLast(20).ToList();
+            List<IBinanceKline> recent20;
+            lock (recentCandles)
+            {
+                recent20 = recentCandles.TakeLast(20).ToList(); // [동시성 안전]
+            }
             var bb = IndicatorCalculator.CalculateBB(recent20, 20, 2);
             decimal bbLower = (decimal)bb.Lower;
             decimal bbUpper = (decimal)bb.Upper;
@@ -1157,7 +1193,11 @@ namespace TradingBot.Services
                 if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var candles) || candles.Count < 30)
                     return null;
 
-                var recent = candles.TakeLast(120).ToList();
+                List<IBinanceKline> recent;
+                lock (candles)
+                {
+                    recent = candles.TakeLast(120).ToList(); // [동시성 안전]
+                }
                 if (recent.Count == 0)
                 {
                     OnLog?.Invoke($"⚠️ {symbol} recent 데이터 없음 (MarketStatus)");
@@ -1247,7 +1287,11 @@ namespace TradingBot.Services
                 if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var candles) || candles.Count < 20)
                     return false;
 
-                var recent20 = candles.TakeLast(20).ToList();
+                List<IBinanceKline> recent20;
+                lock (candles)
+                {
+                    recent20 = candles.TakeLast(20).ToList(); // [동시성 안전]
+                }
                 var bb = IndicatorCalculator.CalculateBB(recent20, 20, 2);
                 decimal mid = (decimal)bb.Mid;
                 decimal upper = (decimal)bb.Upper;

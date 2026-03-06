@@ -49,7 +49,8 @@ namespace TradingBot.Strategies
 
             var recent20 = list.TakeLast(20).ToList();
             double avgVolume20 = recent20.Any() ? recent20.Average(k => (double)k.Volume) : 0;
-            double currentVolume = recent20.LastOrDefault() != null ? (double)recent20.Last().Volume : 0;
+            // [안전성] recent20 비어있으면 0 반환
+            double currentVolume = (recent20.Count > 0) ? (double)recent20[recent20.Count - 1].Volume : 0;
             double volumeRatio = avgVolume20 > 0 ? currentVolume / avgVolume20 : 1;
 
             var recent3 = list.TakeLast(3).ToList();

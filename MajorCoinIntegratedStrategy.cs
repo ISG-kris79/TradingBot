@@ -137,12 +137,18 @@ namespace TradingBot.Strategies
 
             // RSI 추세 확인
             var recent5Rsi = list.TakeLast(5).Select(k => IndicatorCalculator.CalculateRSI(list.Take(list.IndexOf(k) + 1).ToList(), 14)).ToList();
-            bool isRsiUptrend = recent5Rsi.Count >= 2 && recent5Rsi.Last() > recent5Rsi.First();
+            // [안전성] recent5Rsi가 비어있거나 2개 미만이면 기본값 사용
+            bool isRsiUptrend = false;
+            if (recent5Rsi.Count >= 2)
+            {
+                isRsiUptrend = recent5Rsi.Last() > recent5Rsi.First();
+            }
 
             // 거래량 비율
             var recent20 = list.TakeLast(20).ToList();
             double avgVolume = recent20.Any() ? recent20.Average(k => (double)k.Volume) : 0;
-            double currentVolume = recent20.LastOrDefault() != null ? (double)recent20.Last().Volume : 0;
+            // [안전성] recent20 비어있으면 0 반환
+            double currentVolume = (recent20.Count > 0) ? (double)recent20[recent20.Count - 1].Volume : 0;
             double volumeRatio = avgVolume > 0 ? currentVolume / avgVolume : 1;
 
             // 저점 상승 패턴
