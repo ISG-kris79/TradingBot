@@ -93,109 +93,130 @@ namespace TradingBot.Strategies
 
         private async Task AnalyzeSymbolAsync(string symbol, ConcurrentDictionary<string, DateTime> blacklist, CancellationToken token, ScanProfile profile)
         {
-            // 블랙리스트 확인
-            if (blacklist.TryGetValue(symbol, out var expiry))
+            try
             {
-                if (DateTime.Now < expiry) return;
-                blacklist.TryRemove(symbol, out _);
-            }
-
-            // [1단계] 1분봉 조회 (빠른 필터링)
-            var k1mRes = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.OneMinute, limit: 30, ct: token);
-            if (!k1mRes.Success) return;
-            var data1m = k1mRes.Data.ToList();
-            if (data1m.Count < 20) return;
-
-            var last1m = data1m.Last();
-            double rangePercent = (double)((last1m.HighPrice - last1m.LowPrice) / last1m.OpenPrice * 100);
-            double avgVol1m = data1m.Take(20).Average(c => (double)c.Volume);
-            double volRatio = avgVol1m > 0 ? (double)last1m.Volume / avgVol1m : 0;
-
-            // 디버깅 로그
-            OnLog?.Invoke($"[1분봉 체크] {symbol} | 변동률: {rangePercent:F2}% | 거래량비: {volRatio:F2}x");
-
-            if (rangePercent < profile.MinPriceChangePercentage || volRatio < profile.MinVolumeRatio)
-            {
-                OnLog?.Invoke($"[스캔 제외] {symbol} | 조건 미달 (변동률 {rangePercent:F2}% < {profile.MinPriceChangePercentage:F2}% 또는 거래량비 {volRatio:F2}x < {profile.MinVolumeRatio:F2}x)");
-                return;
-            }
-
-            // [2단계] 정밀 데이터 조회
-            var k5mTask = _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, limit: 30, ct: token);
-            var k15mTask = _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, limit: 30, ct: token);
-            var k1hTask = _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.OneHour, limit: 100, ct: token);
-            var depthTask = _client.UsdFuturesApi.ExchangeData.GetOrderBookAsync(symbol, limit: 20, ct: token);
-
-            await Task.WhenAll(k5mTask, k15mTask, k1hTask, depthTask);
-            if (!k5mTask.Result.Success || !k15mTask.Result.Success || !k1hTask.Result.Success || !depthTask.Result.Success) return;
-
-            var data5m = k5mTask.Result.Data.ToList();
-            var data15m = k15mTask.Result.Data.ToList();
-            var data1h = k1hTask.Result.Data.ToList();
-            decimal currentPrice = last1m.ClosePrice;
-
-            // 지표 계산
-            double ma99 = IndicatorCalculator.CalculateSMA(data1h, 99);
-            bool isAboveMA99 = (double)currentPrice > ma99;
-            bool isElliottUptrend = IndicatorCalculator.AnalyzeElliottWave(data1m);
-            var bb15m = IndicatorCalculator.CalculateBB(data15m, 20, 2);
-            double rsi15m = IndicatorCalculator.CalculateRSI(data15m, 14);
-            double atr15m = IndicatorCalculator.CalculateATR(data15m, 14);
-
-            // 호가창 분석
-            var depth = depthTask.Result.Data;
-            decimal totalBids = depth.Bids.Sum(b => b.Quantity);
-            decimal totalAsks = depth.Asks.Sum(a => a.Quantity);
-            bool isOrderBookBullish = totalAsks > 0 && (double)(totalBids / totalAsks) >= profile.MinOrderBookRatio;
-
-            // 점수 산출
-            int aiScore = CalculateScore(rsi15m, bb15m, currentPrice, isElliottUptrend);
-            if ((double)currentPrice > bb15m.Upper) aiScore += 15;
-            if (rsi15m >= 85) aiScore -= 40;
-
-            // Decision Logic
-            string decision = "WAIT";
-            if (data5m.Count == 0)
-            {
-                OnLog?.Invoke($"[PumpScan 안전성 체크] {symbol} 5분봉 데이터 없음");
-                return;
-            }
-            double volRatio5m = data5m.Take(20).Average(c => (double)c.Volume) > 0 ? (double)data5m.Last().Volume / data5m.Take(20).Average(c => (double)c.Volume) : 0;
-            bool is5mBullish = data5m.Last().ClosePrice >= data5m.Last().OpenPrice;
-
-            // 체결강도
-            var recentCandles = data1m.TakeLast(3).ToList();
-            decimal sumBuyVol = recentCandles.Sum(k => k.TakerBuyBaseVolume);
-            decimal sumSellVol = recentCandles.Sum(k => k.Volume) - sumBuyVol;
-            bool isTakerStrong = sumSellVol > 0 && (double)(sumBuyVol / sumSellVol) >= profile.MinTakerBuyRatio;
-
-            if (aiScore >= profile.PumpScoreThreshold && volRatio >= profile.PumpVolumeRatio && volRatio5m >= profile.MinVolumeRatio5m && is5mBullish && isOrderBookBullish && isTakerStrong && isAboveMA99) decision = "🚀 PUMP";
-            else if (aiScore >= profile.MomentumScoreThreshold) decision = "MOMENTUM";
-
-            // 결과 알림 (의미있는 결과만 UI에 전송)
-            if (decision != "WAIT" || aiScore >= 60)
-            {
-                OnSignalAnalyzed?.Invoke(new MultiTimeframeViewModel
+                // 블랙리스트 확인
+                if (blacklist.TryGetValue(symbol, out var expiry))
                 {
-                    Symbol = symbol,
-                    LastPrice = currentPrice,
-                    RSI_1H = rsi15m,
-                    AIScore = aiScore,
-                    Decision = decision,
-                    StrategyName = "Pump Scan"
-                });
-            }
+                    if (DateTime.Now < expiry) return;
+                    blacklist.TryRemove(symbol, out _);
+                }
 
-            if (decision == "🚀 PUMP")
-            {
-                OnPumpDetected?.Invoke(symbol, currentPrice, decision, rsi15m, atr15m);
-            }
+                // [1단계] 1분봉 조회 (빠른 필터링)
+                var k1mRes = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.OneMinute, limit: 30, ct: token);
+                if (!k1mRes.Success || k1mRes.Data == null) return;
+                var data1m = k1mRes.Data.ToList();
+                if (data1m.Count < 20) return;
 
-            // [추가] 분석 결과 로그 출력 (동작 확인용)
-            // 너무 빈번한 로그를 방지하기 위해 점수가 높거나 특정 조건일 때만 출력
-            if (aiScore >= 60 || decision != "WAIT")
+                var last1m = data1m[data1m.Count - 1];
+                double rangePercent = (double)((last1m.HighPrice - last1m.LowPrice) / last1m.OpenPrice * 100);
+                double avgVol1m = data1m.Take(20).Average(c => (double)c.Volume);
+                double volRatio = avgVol1m > 0 ? (double)last1m.Volume / avgVol1m : 0;
+
+                // 디버깅 로그
+                OnLog?.Invoke($"[1분봉 체크] {symbol} | 변동률: {rangePercent:F2}% | 거래량비: {volRatio:F2}x");
+
+                if (rangePercent < profile.MinPriceChangePercentage || volRatio < profile.MinVolumeRatio)
+                {
+                    OnLog?.Invoke($"[스캔 제외] {symbol} | 조건 미달 (변동률 {rangePercent:F2}% < {profile.MinPriceChangePercentage:F2}% 또는 거래량비 {volRatio:F2}x < {profile.MinVolumeRatio:F2}x)");
+                    return;
+                }
+
+                // [2단계] 정밀 데이터 조회
+                var k5mTask = _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, limit: 30, ct: token);
+                var k15mTask = _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, limit: 30, ct: token);
+                var k1hTask = _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.OneHour, limit: 100, ct: token);
+                var depthTask = _client.UsdFuturesApi.ExchangeData.GetOrderBookAsync(symbol, limit: 20, ct: token);
+
+                await Task.WhenAll(k5mTask, k15mTask, k1hTask, depthTask);
+                if (!k5mTask.Result.Success || !k15mTask.Result.Success || !k1hTask.Result.Success || !depthTask.Result.Success) return;
+                if (k5mTask.Result.Data == null || k15mTask.Result.Data == null || k1hTask.Result.Data == null || depthTask.Result.Data == null) return;
+
+                var data5m = k5mTask.Result.Data.ToList();
+                var data15m = k15mTask.Result.Data.ToList();
+                var data1h = k1hTask.Result.Data.ToList();
+                if (data5m.Count < 20 || data15m.Count < 20 || data1h.Count < 99) return;
+
+                decimal currentPrice = last1m.ClosePrice;
+
+                // 지표 계산
+                double ma99 = IndicatorCalculator.CalculateSMA(data1h, 99);
+                bool isAboveMA99 = (double)currentPrice > ma99;
+                bool isElliottUptrend = IndicatorCalculator.AnalyzeElliottWave(data1m);
+                var bb15m = IndicatorCalculator.CalculateBB(data15m, 20, 2);
+                double rsi15m = IndicatorCalculator.CalculateRSI(data15m, 14);
+                double atr15m = IndicatorCalculator.CalculateATR(data15m, 14);
+
+                // 호가창 분석
+                var depth = depthTask.Result.Data;
+                decimal totalBids = depth.Bids.Sum(b => b.Quantity);
+                decimal totalAsks = depth.Asks.Sum(a => a.Quantity);
+                bool isOrderBookBullish = totalAsks > 0 && (double)(totalBids / totalAsks) >= profile.MinOrderBookRatio;
+
+                // 점수 산출
+                int aiScore = CalculateScore(rsi15m, bb15m, currentPrice, isElliottUptrend);
+                if ((double)currentPrice > bb15m.Upper) aiScore += 15;
+                if (rsi15m >= 85) aiScore -= 40;
+
+                // Decision Logic
+                string decision = "WAIT";
+                var last5m = data5m[data5m.Count - 1];
+                double avgVol5m = data5m.Take(20).Average(c => (double)c.Volume);
+                double volRatio5m = avgVol5m > 0 ? (double)last5m.Volume / avgVol5m : 0;
+                bool is5mBullish = last5m.ClosePrice >= last5m.OpenPrice;
+
+                // 체결강도
+                var recentCandles = data1m.TakeLast(3).ToList();
+                if (recentCandles.Count == 0) return;
+                decimal sumBuyVol = recentCandles.Sum(k => k.TakerBuyBaseVolume);
+                decimal sumSellVol = recentCandles.Sum(k => k.Volume) - sumBuyVol;
+                bool isTakerStrong = sumSellVol > 0 && (double)(sumBuyVol / sumSellVol) >= profile.MinTakerBuyRatio;
+
+                if (aiScore >= profile.PumpScoreThreshold && volRatio >= profile.PumpVolumeRatio && volRatio5m >= profile.MinVolumeRatio5m && is5mBullish && isOrderBookBullish && isTakerStrong && isAboveMA99) decision = "🚀 PUMP";
+                else if (aiScore >= profile.MomentumScoreThreshold) decision = "MOMENTUM";
+
+                // 결과 알림 (의미있는 결과만 UI에 전송)
+                if (decision != "WAIT" || aiScore >= 60)
+                {
+                    try
+                    {
+                        OnSignalAnalyzed?.Invoke(new MultiTimeframeViewModel
+                        {
+                            Symbol = symbol,
+                            LastPrice = currentPrice,
+                            RSI_1H = rsi15m,
+                            AIScore = aiScore,
+                            Decision = decision,
+                            StrategyName = "Pump Scan"
+                        });
+                    }
+                    catch (Exception eventEx)
+                    {
+                        OnLog?.Invoke($"[스캔 이벤트 오류] {symbol}: {eventEx.Message}");
+                    }
+                }
+
+                if (decision == "🚀 PUMP")
+                {
+                    try
+                    {
+                        OnPumpDetected?.Invoke(symbol, currentPrice, decision, rsi15m, atr15m);
+                    }
+                    catch (Exception eventEx)
+                    {
+                        OnLog?.Invoke($"[Pump 이벤트 오류] {symbol}: {eventEx.Message}");
+                    }
+                }
+
+                // [추가] 분석 결과 로그 출력 (동작 확인용)
+                if (aiScore >= 60 || decision != "WAIT")
+                {
+                    OnLog?.Invoke($"[스캔] {symbol} | Score: {aiScore} | R: {rsi15m:F1} | Dec: {decision}");
+                }
+            }
+            catch (Exception ex)
             {
-                OnLog?.Invoke($"[스캔] {symbol} | Score: {aiScore} | R: {rsi15m:F1} | Dec: {decision}");
+                OnLog?.Invoke($"[스캔 오류] {symbol}: {ex.Message}");
             }
         }
 

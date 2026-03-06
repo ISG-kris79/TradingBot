@@ -318,7 +318,11 @@ namespace TradingBot
                 () => MainWindow.CurrentGeneralSettings ?? AppConfig.Current?.Trading?.GeneralSettings);
             _gridStrategy = new GridStrategy(_exchangeService);
 
-            _pumpStrategy.OnSignalAnalyzed += vm => OnSignalUpdate?.Invoke(vm);
+            _pumpStrategy.OnSignalAnalyzed += vm =>
+            {
+                try { OnSignalUpdate?.Invoke(vm); }
+                catch (Exception ex) { OnLiveLog?.Invoke($"⚠️ Pump 시그널 UI 반영 오류: {ex.Message}"); }
+            };
             _pumpStrategy.OnPumpDetected += async (symbol, price, decision, rsi, atr) =>
             {
                 await HandlePumpEntry(symbol, price, decision, rsi, atr, _cts.Token);
@@ -328,7 +332,11 @@ namespace TradingBot
 
             if (_majorStrategy != null)
             {
-                _majorStrategy.OnSignalAnalyzed += vm => OnSignalUpdate?.Invoke(vm);
+                _majorStrategy.OnSignalAnalyzed += vm =>
+                {
+                    try { OnSignalUpdate?.Invoke(vm); }
+                    catch (Exception ex) { OnLiveLog?.Invoke($"⚠️ Major 시그널 UI 반영 오류: {ex.Message}"); }
+                };
                 _majorStrategy.OnTradeSignal += async (symbol, decision, price) => await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR");
                 _majorStrategy.OnLog += msg => OnLiveLog?.Invoke(msg);
             }
@@ -427,12 +435,19 @@ namespace TradingBot
                     if (currentPrice > 0)
                         change = (double)((predictedPrice - currentPrice) / currentPrice * 100);
 
-                    OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
+                    try
                     {
-                        Symbol = symbol,
-                        TransformerPrice = predictedPrice,
-                        TransformerChange = change
-                    });
+                        OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
+                        {
+                            Symbol = symbol,
+                            TransformerPrice = predictedPrice,
+                            TransformerChange = change
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLiveLog?.Invoke($"⚠️ Transformer 예측 UI 반영 오류: {ex.Message}");
+                    }
 
                     // [AI 모니터] Transformer 예측을 _pendingPredictions에 등록 → 5분 후 검증
                     bool predictedDirection = predictedPrice > currentPrice; // 상승 예측 여부

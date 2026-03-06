@@ -1,6 +1,7 @@
 using System.Windows;
 using Velopack;
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Linq;
 using TradingBot.Services;
@@ -17,6 +18,26 @@ namespace TradingBot
         public App()
         {
             this.DispatcherUnhandledException += App_DispatcherUnhandledException;
+            AppDomain.CurrentDomain.FirstChanceException += CurrentDomain_FirstChanceException;
+        }
+
+        private void CurrentDomain_FirstChanceException(object? sender, FirstChanceExceptionEventArgs e)
+        {
+            try
+            {
+                if (e.Exception is not IndexOutOfRangeException && e.Exception is not ArgumentOutOfRangeException)
+                    return;
+
+                string logPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "FIRST_CHANCE_RANGE_ERROR.txt");
+                string logContent = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {e.Exception.GetType().Name}\n" +
+                    $"Message: {e.Exception.Message}\n" +
+                    $"StackTrace: {e.Exception.StackTrace}\n\n";
+                System.IO.File.AppendAllText(logPath, logContent);
+            }
+            catch
+            {
+                // 로깅 실패는 무시
+            }
         }
 
         private void App_DispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)

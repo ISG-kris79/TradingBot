@@ -124,7 +124,12 @@ namespace TradingBot.Services
                 double oiChangePct = 0;
                 if (_oiCache.TryGetValue(symbol, out var history) && history.Count > 0)
                 {
-                    var lastOi = history.Last().OpenInterest;
+                    List<OiSnapshot> historySnapshot;
+                    lock (history)
+                    {
+                        historySnapshot = history.ToList();
+                    }
+                    var lastOi = historySnapshot.Count > 0 ? historySnapshot[historySnapshot.Count - 1].OpenInterest : 0;
                     if (lastOi > 0)
                         oiChangePct = (currentOi - lastOi) / lastOi * 100;
                 }
@@ -179,8 +184,16 @@ namespace TradingBot.Services
             if (!_oiCache.TryGetValue(symbol, out var history) || history.Count == 0)
                 return 0;
 
+            List<OiSnapshot> historySnapshot;
+            lock (history)
+            {
+                historySnapshot = history.ToList();
+            }
+            if (historySnapshot.Count == 0)
+                return 0;
+
             // 가장 가까운 시점의 데이터 찾기
-            var closest = history
+            var closest = historySnapshot
                 .OrderBy(h => Math.Abs((h.Timestamp - time).TotalSeconds))
                 .FirstOrDefault();
 
@@ -195,7 +208,15 @@ namespace TradingBot.Services
             if (!_oiCache.TryGetValue(symbol, out var history) || history.Count == 0)
                 return 0;
 
-            var closest = history
+            List<OiSnapshot> historySnapshot;
+            lock (history)
+            {
+                historySnapshot = history.ToList();
+            }
+            if (historySnapshot.Count == 0)
+                return 0;
+
+            var closest = historySnapshot
                 .OrderBy(h => Math.Abs((h.Timestamp - time).TotalSeconds))
                 .FirstOrDefault();
 
@@ -236,14 +257,22 @@ namespace TradingBot.Services
                             var snapshot = await GetCurrentOiAsync(symbol, _cts.Token);
                             if (snapshot != null)
                             {
-                                if (!_oiCache.ContainsKey(symbol))
-                                    _oiCache[symbol] = new List<OiSnapshot>();
-
-                                _oiCache[symbol].Add(snapshot);
-
-                                // 캐시 크기 제한 (최근 500건)
-                                if (_oiCache[symbol].Count > 500)
-                                    _oiCache[symbol] = _oiCache[symbol].TakeLast(500).ToList();
+                                _oiCache.AddOrUpdate(
+                                    symbol,
+                                    _ => new List<OiSnapshot> { snapshot },
+                                    (_, list) =>
+                                    {
+                                        lock (list)
+                                        {
+                                            var updated = list.ToList();
+                                            updated.Add(snapshot);
+                                            if (updated.Count > 500)
+                                            {
+                                                updated = updated.TakeLast(500).ToList();
+                                            }
+                                            return updated;
+                                        }
+                                    });
                             }
 
                             // 2. 현재 펀딩비
