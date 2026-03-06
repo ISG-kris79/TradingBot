@@ -7,6 +7,29 @@
 
 ## [Unreleased]
 
+## [2.0.25] - 2026-03-06
+
+### Fixed
+
+- **백테스트 EquityCurve 근본 검증 강화**:
+  - `BacktestService.OptimizeWithOptunaAsync`: 반환 전 EquityCurve 검증 및 정리 로직 추가
+  - `RsiBacktestStrategy`: markToMarketEquity 계산 시 음수/0 방지
+  - `ElliottWaveBacktestStrategy`: markToMarketEquity 계산 시 음수/0 방지
+  - `MaCrossBacktestStrategy`: markToMarketEquity 계산 시 음수/0 방지
+  - `BollingerBandBacktestStrategy`: markToMarketEquity 계산 시 음수/0 방지
+  - 모든 전략에서 FinalBalance 계산 시 검증 추가
+  - 무효한 데이터 감지 시 이전 equity 유지
+  
+### Technical Details
+
+- **근본 원인**: EquityCurve에 0 이하 값이 들어가면 LiveCharts 변환 시 NaN 발생
+- **검증 레이어**:
+  1. 전략 Execute 단계: markToMarketEquity <= 0 체크
+  2. BacktestService 단계: 반환 전 EquityCurve 전체 검증
+  3. ViewModel 단계: ToFinite() 변환 (v2.0.24)
+- **폴백 캘인**: 무효값 → 이전 equity → InitialBalance
+- **EquityCurve 비어있을 경우**: InitialBalance로 초기화
+
 ## [2.0.24] - 2026-03-06
 
 ### Fixed

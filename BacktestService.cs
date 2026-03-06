@@ -493,6 +493,40 @@ namespace TradingBot.Services
             };
 
             var bestResult = await RunBacktestAsync(symbol, startDate, endDate, bestStrategy, initialBalance);
+            
+            // [NaN 방지] EquityCurve 검증 및 정리
+            if (bestResult.EquityCurve != null && bestResult.EquityCurve.Count > 0)
+            {
+                var validEquity = new List<decimal>();
+                foreach (var equity in bestResult.EquityCurve)
+                {
+                    // Infinity나 NaN을 decimal로 변환할 수 없지만, 음수/0 체크
+                    if (equity <= 0)
+                    {
+                        // 이전 값 또는 InitialBalance 사용
+                        var lastValid = validEquity.Count > 0 ? validEquity[^1] : initialBalance;
+                        validEquity.Add(lastValid);
+                    }
+                    else
+                    {
+                        validEquity.Add(equity);
+                    }
+                }
+                bestResult.EquityCurve = validEquity;
+            }
+            else
+            {
+                // EquityCurve가 비어있으면 InitialBalance로 채움
+                bestResult.EquityCurve = new List<decimal> { initialBalance };
+                bestResult.TradeDates = new List<string> { startDate.ToString("MM/dd HH:mm") };
+            }
+            
+            // FinalBalance 검증
+            if (bestResult.FinalBalance <= 0)
+            {
+                bestResult.FinalBalance = bestResult.EquityCurve.LastOrDefault(initialBalance);
+            }
+            
             bestResult.StrategyConfiguration =
                 $"Optuna RSI 최적화 (Trials: {nTrials}) | Buy < {bestBuy:F2}, Sell > {bestSell:F2}";
             bestResult.Message =

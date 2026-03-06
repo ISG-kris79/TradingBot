@@ -44,8 +44,11 @@ namespace TradingBot.Services.BacktestStrategies
 
                 if (currentPrice <= 0 || double.IsNaN(currentRsi) || double.IsInfinity(currentRsi))
                 {
-                    decimal markToMarketInvalid = currentBalance + (inPosition ? positionQuantity * currentPrice : 0m);
-                    result.EquityCurve.Add(markToMarketInvalid);
+                    // 무효한 데이터는 이전 equity 유지
+                    decimal lastValidEquity = result.EquityCurve.Count > 0 
+                        ? result.EquityCurve[^1] 
+                        : currentBalance;
+                    result.EquityCurve.Add(lastValidEquity);
                     result.TradeDates.Add(candle.OpenTime.ToString("MM/dd HH:mm"));
                     continue;
                 }
@@ -77,10 +80,26 @@ namespace TradingBot.Services.BacktestStrategies
                 }
 
                 decimal markToMarketEquity = currentBalance + (inPosition ? positionQuantity * currentPrice : 0m);
+                
+                // 추가 안전장치: 음수나 0 방지
+                if (markToMarketEquity <= 0)
+                {
+                    markToMarketEquity = result.EquityCurve.Count > 0 
+                        ? result.EquityCurve[^1] 
+                        : result.InitialBalance;
+                }
+                
                 result.EquityCurve.Add(markToMarketEquity);
                 result.TradeDates.Add(candle.OpenTime.ToString("MM/dd HH:mm"));
             }
-            result.FinalBalance = currentBalance + (inPosition ? positionQuantity * (decimal)candles.Last().Close : 0);
+            
+            // FinalBalance 계산 시에도 검증
+            decimal finalEquity = currentBalance + (inPosition ? positionQuantity * (decimal)candles.Last().Close : 0);
+            if (finalEquity <= 0)
+            {
+                finalEquity = result.EquityCurve.LastOrDefault(result.InitialBalance);
+            }
+            result.FinalBalance = finalEquity;
         }
     }
 }
