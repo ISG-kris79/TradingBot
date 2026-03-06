@@ -1598,6 +1598,14 @@ namespace TradingBot
                 }
 
                 var bbAnalysis = IndicatorCalculator.CalculateBB(candles.ToList(), 20, 2);
+                
+                // [안전성 체크] 배열 인덱스 접근 전 Count 확인
+                if (candles.Count == 0 || rsiValues.Count == 0 || macdValues.Count == 0)
+                {
+                    OnStatusLog?.Invoke($"⚠️ {symbol} ElliottWave3Wave 데이터 부족 (candles: {candles.Count}, rsi: {rsiValues.Count}, macd: {macdValues.Count})");
+                    return;
+                }
+                
                 var currentCandle = new CandleData
                 {
                     Symbol = symbol,

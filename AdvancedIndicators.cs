@@ -10,7 +10,7 @@ namespace TradingBot.Services
         // 일목균형표 (Ichimoku Cloud)
         public static (decimal Tenkan, decimal Kijun, decimal SenkouA, decimal SenkouB, decimal Chikou) CalculateIchimoku(List<IBinanceKline> candles)
         {
-            if (candles.Count < 52) return (0, 0, 0, 0, 0);
+            if (candles == null || candles.Count < 52) return (0, 0, 0, 0, 0);
 
             // 전환선 (9일)
             var high9 = candles.TakeLast(9).Max(c => c.HighPrice);
@@ -31,7 +31,7 @@ namespace TradingBot.Services
             var senkouB = (high52 + low52) / 2;
 
             // 후행스팬 (현재 종가를 26일 뒤로 미룸 - 여기서는 현재값만 반환)
-            var chikou = candles.Last().ClosePrice;
+            var chikou = candles[candles.Count - 1].ClosePrice;
 
             return (tenkan, kijun, senkouA, senkouB, chikou);
         }

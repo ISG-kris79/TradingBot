@@ -914,6 +914,11 @@ namespace TradingBot.Services
                             if (_marketDataManager.KlineCache.TryGetValue(symbol, out var recentCandles) && recentCandles.Count >= 30)
                             {
                                 var candles = recentCandles.TakeLast(30).ToList();
+                                if (candles.Count < 2)
+                                {
+                                    OnLog?.Invoke($"⚠️ {symbol} candles 부족 (BB 분석, Count: {candles.Count})");
+                                    continue;
+                                }
                                 var bbNow = IndicatorCalculator.CalculateBB(candles, 20, 2);
                                 var prevCandles = candles.Take(candles.Count - 1).ToList();
                                 var bbPrev = IndicatorCalculator.CalculateBB(prevCandles, 20, 2);
@@ -1153,6 +1158,11 @@ namespace TradingBot.Services
                     return null;
 
                 var recent = candles.TakeLast(120).ToList();
+                if (recent.Count == 0)
+                {
+                    OnLog?.Invoke($"⚠️ {symbol} recent 데이터 없음 (MarketStatus)");
+                    return null;
+                }
                 var recent20 = recent.TakeLast(20).ToList();
                 var latest = recent[^1];
                 var previous = recent.Count >= 2 ? recent[^2] : latest;
