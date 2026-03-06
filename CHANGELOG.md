@@ -7,6 +7,19 @@
 
 ## [Unreleased]
 
+## [2.0.28] - 2026-03-06
+
+### Changed
+
+- **메인 DataGrid UI 개선**:
+  - ROI 컬럼을 PRICE 컬럼 바로 옆으로 이동하여 가격 관련 정보를 그룹화
+  - 사용자가 포지션의 가격과 수익률을 한눈에 확인할 수 있도록 레이아웃 개선
+
+### Technical Details
+
+- `MainWindow.xaml`의 DataGrid 컬럼 순서 변경: SYMBOL → PRICE → **ROI** → AI → AI시각 → L/S → SIGNAL → SOURCE → SETUP → ACTION
+- 포지션 모니터링 시 가격 정보와 수익률의 시각적 연관성 강화
+
 ## [2.0.27] - 2026-03-06
 
 ### Fixed

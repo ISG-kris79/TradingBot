@@ -963,6 +963,21 @@
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
 
+                                        <DataGridTextColumn Header="ROI"
+                                                            Binding="{Binding ProfitRate, StringFormat={}{0:F2}%}"
+                                                            Width="80">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="FontWeight"
+                                                            Value="Bold"/>
+                                                    <Setter Property="HorizontalAlignment"
+                                                            Value="Center"/>
+                                                    <Setter Property="Foreground"
+                                                            Value="{Binding ProfitColor}"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+
                                         <DataGridTextColumn Header="AI"
                                                             Binding="{Binding AIScore, StringFormat=F1}"
                                                             Width="70"/>
@@ -1045,21 +1060,6 @@
                                                             Value="#9CA3AF"/>
                                                     <Setter Property="Margin"
                                                             Value="12,0"/>
-                                                </Style>
-                                            </DataGridTextColumn.ElementStyle>
-                                        </DataGridTextColumn>
-
-                                        <DataGridTextColumn Header="ROI"
-                                                            Binding="{Binding ProfitRate, StringFormat={}{0:F2}%}"
-                                                            Width="80">
-                                            <DataGridTextColumn.ElementStyle>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="FontWeight"
-                                                            Value="Bold"/>
-                                                    <Setter Property="HorizontalAlignment"
-                                                            Value="Center"/>
-                                                    <Setter Property="Foreground"
-                                                            Value="{Binding ProfitColor}"/>
                                                 </Style>
                                             </DataGridTextColumn.ElementStyle>
                                         </DataGridTextColumn>
