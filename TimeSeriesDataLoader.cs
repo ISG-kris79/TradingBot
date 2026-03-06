@@ -7,6 +7,41 @@ using static TorchSharp.torch;
 
 namespace TradingBot.Services.AI
 {
+    internal static class TransformerFeatureMapper
+    {
+        internal static float[] CreateFeatureVector(CandleData c, int inputDim)
+        {
+            var source = new float[]
+            {
+                (float)c.Open,
+                (float)c.High,
+                (float)c.Low,
+                (float)c.Close,
+                (float)c.Volume,
+                c.RSI,
+                c.BollingerUpper,
+                c.BollingerLower,
+                c.MACD,
+                c.MACD_Signal,
+                c.MACD_Hist,
+                c.ATR,
+                c.Fib_236,
+                c.Fib_382,
+                c.Fib_500,
+                c.Fib_618,
+                c.SentimentScore,
+                c.ElliottWaveState,
+                c.SMA_20,
+                c.SMA_60,
+                c.SMA_120
+            };
+
+            var features = new float[Math.Max(0, inputDim)];
+            Array.Copy(source, features, Math.Min(source.Length, features.Length));
+            return features;
+        }
+    }
+
     /// <summary>
     /// 시계열 데이터 전처리 및 배치 로더 (TorchSharp 최적화)
     /// 기능: Feature 추출, 정규화(Z-Score), 슬라이딩 윈도우, 배치 생성, GPU 전송
@@ -53,24 +88,11 @@ namespace TradingBot.Services.AI
             for (int i = 0; i < count; i++)
             {
                 var c = data[i];
-                // Feature Mapping (17 features)
-                _rawFeatures[i, 0] = (float)c.Open;
-                _rawFeatures[i, 1] = (float)c.High;
-                _rawFeatures[i, 2] = (float)c.Low;
-                _rawFeatures[i, 3] = (float)c.Close;
-                _rawFeatures[i, 4] = (float)c.Volume;
-                _rawFeatures[i, 5] = c.RSI;
-                _rawFeatures[i, 6] = c.BollingerUpper;
-                _rawFeatures[i, 7] = c.BollingerLower;
-                _rawFeatures[i, 8] = c.MACD;
-                _rawFeatures[i, 9] = c.MACD_Signal;
-                _rawFeatures[i, 10] = c.MACD_Hist;
-                _rawFeatures[i, 11] = c.ATR;
-                _rawFeatures[i, 12] = c.Fib_236;
-                _rawFeatures[i, 13] = c.Fib_382;
-                _rawFeatures[i, 14] = c.Fib_500;
-                _rawFeatures[i, 15] = c.Fib_618;
-                _rawFeatures[i, 16] = c.SentimentScore;
+                var features = TransformerFeatureMapper.CreateFeatureVector(c, _inputDim);
+                for (int j = 0; j < features.Length; j++)
+                {
+                    _rawFeatures[i, j] = features[j];
+                }
 
                 // Target: Close Price
                 _rawTargets[i] = (float)c.Close;
@@ -205,7 +227,7 @@ namespace TradingBot.Services.AI
             for (int t = 0; t < _seqLen; t++)
             {
                 var c = data[t];
-                float[] feats = { (float)c.Open, (float)c.High, (float)c.Low, (float)c.Close, (float)c.Volume, c.RSI, c.BollingerUpper, c.BollingerLower, c.MACD, c.MACD_Signal, c.MACD_Hist, c.ATR, c.Fib_236, c.Fib_382, c.Fib_500, c.Fib_618, c.SentimentScore };
+                float[] feats = TransformerFeatureMapper.CreateFeatureVector(c, _inputDim);
 
                 for (int f = 0; f < _inputDim; f++)
                 {

@@ -294,24 +294,11 @@ namespace TradingBot.Services.AI
             for (int i = 0; i < count; i++)
             {
                 var c = data[i];
-                // Feature Mapping (17 features)
-                rawFeatures[i, 0] = (float)c.Open;
-                rawFeatures[i, 1] = (float)c.High;
-                rawFeatures[i, 2] = (float)c.Low;
-                rawFeatures[i, 3] = (float)c.Close;
-                rawFeatures[i, 4] = (float)c.Volume;
-                rawFeatures[i, 5] = c.RSI;
-                rawFeatures[i, 6] = c.BollingerUpper;
-                rawFeatures[i, 7] = c.BollingerLower;
-                rawFeatures[i, 8] = c.MACD;
-                rawFeatures[i, 9] = c.MACD_Signal;
-                rawFeatures[i, 10] = c.MACD_Hist;
-                rawFeatures[i, 11] = c.ATR;
-                rawFeatures[i, 12] = c.Fib_236;
-                rawFeatures[i, 13] = c.Fib_382;
-                rawFeatures[i, 14] = c.Fib_500;
-                rawFeatures[i, 15] = c.Fib_618;
-                rawFeatures[i, 16] = c.SentimentScore;
+                var features = TransformerFeatureMapper.CreateFeatureVector(c, _inputDim);
+                for (int j = 0; j < features.Length; j++)
+                {
+                    rawFeatures[i, j] = features[j];
+                }
 
                 // Target: 다음 봉의 종가 (Close)
                 rawTargets[i] = (float)c.Close;

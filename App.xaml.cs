@@ -31,9 +31,11 @@ namespace TradingBot
                     return;
 
                 string logPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "FIRST_CHANCE_RANGE_ERROR.txt");
+                string currentStackTrace = new StackTrace(true).ToString();
                 string logContent = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {e.Exception.GetType().Name}\n" +
                     $"Message: {e.Exception.Message}\n" +
-                    $"StackTrace: {e.Exception.StackTrace}\n\n";
+                    $"ExceptionStackTrace: {e.Exception.StackTrace}\n" +
+                    $"CurrentStackTrace: {currentStackTrace}\n\n";
                 System.IO.File.AppendAllText(logPath, logContent);
             }
             catch

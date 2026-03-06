@@ -7,6 +7,22 @@
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-03-06
+
+### Fixed
+
+- **Transformer 입력 차원 불일치 수정**:
+  - `appsettings.json`의 `TransformerSettings.InputDim=21`과 실제 feature 매핑 개수를 일치시킴
+  - `TimeSeriesDataLoader` 학습/추론 경로 모두 동일한 21차원 feature 벡터 사용
+  - `TransformerTrainer` 레거시 전처리 경로도 동일 매핑으로 통일
+  - 메이저 코인 분석 중 반복되던 `IndexOutOfRangeException` 발생 가능성 제거
+
+### Added
+
+- **범위 오류 추적 로그 강화**:
+  - `FIRST_CHANCE_RANGE_ERROR.txt`에 예외 스택뿐 아니라 현재 호출 스택도 함께 기록
+  - 재발 시 실제 throw 지점을 더 빠르게 추적할 수 있도록 진단 정보 보강
+
 ## [2.2.2] - 2026-03-06
 
 ### Fixed
