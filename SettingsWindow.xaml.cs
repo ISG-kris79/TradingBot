@@ -144,6 +144,23 @@ namespace TradingBot
                         bool isSimulation = tradingNode["IsSimulationMode"]?.GetValue<bool>() ?? false;
                         chkSimulationMode.IsChecked = isSimulation;
 
+                        // 시뮬레이션 초기 잔고 로드 (기본값 10000)
+                        decimal simBalance = 10000m;
+                        if (tradingNode["SimulationInitialBalance"] != null)
+                        {
+                            simBalance = tradingNode["SimulationInitialBalance"].GetValue<decimal>();
+                        }
+                        txtSimulationBalance.Text = simBalance.ToString("F2");
+                        
+                        // 시뮬레이션 잔고 패널 가시성 설정
+                        pnlSimulationBalance.Visibility = isSimulation ? Visibility.Visible : Visibility.Collapsed;
+                        
+                        // AppConfig에 반영
+                        if (AppConfig.Current?.Trading != null)
+                        {
+                            AppConfig.Current.Trading.SimulationInitialBalance = simBalance;
+                        }
+
                         // Symbols
                         var symbolsNode = tradingNode["Symbols"];
                         if (symbolsNode is JsonArray arr)
@@ -323,10 +340,21 @@ namespace TradingBot
                 // 시뮬레이션 모드 저장
                 _rootNode["Trading"]["IsSimulationMode"] = chkSimulationMode.IsChecked == true;
 
+                // 시뮬레이션 초기 잔고 저장
+                if (decimal.TryParse(txtSimulationBalance.Text, out decimal simBalance))
+                {
+                    _rootNode["Trading"]["SimulationInitialBalance"] = simBalance;
+                }
+                else
+                {
+                    _rootNode["Trading"]["SimulationInitialBalance"] = 10000m;
+                }
+
                 // AppConfig에 즉시 반영
                 if (AppConfig.Current?.Trading != null)
                 {
                     AppConfig.Current.Trading.IsSimulationMode = chkSimulationMode.IsChecked == true;
+                    AppConfig.Current.Trading.SimulationInitialBalance = decimal.TryParse(txtSimulationBalance.Text, out decimal sb) ? sb : 10000m;
                     AppConfig.Current.Trading.GeneralSettings = generalSettings;
                 }
 
@@ -600,6 +628,13 @@ namespace TradingBot
                 return false;
             }
 
+            // 시뮬레이션 모드 활성화 시 초기 잔고 검증
+            if (chkSimulationMode.IsChecked == true)
+            {
+                if (!TryParseDecimalInRange(txtSimulationBalance, "시뮬레이션 초기 잔고", 1m, 1000000m, out _, out errorMessage))
+                    return false;
+            }
+
             return true;
         }
 
@@ -680,6 +715,22 @@ namespace TradingBot
 
             error = string.Empty;
             return true;
+        }
+
+        private void chkSimulationMode_Checked(object sender, RoutedEventArgs e)
+        {
+            if (pnlSimulationBalance != null)
+            {
+                pnlSimulationBalance.Visibility = Visibility.Visible;
+            }
+        }
+
+        private void chkSimulationMode_Unchecked(object sender, RoutedEventArgs e)
+        {
+            if (pnlSimulationBalance != null)
+            {
+                pnlSimulationBalance.Visibility = Visibility.Collapsed;
+            }
         }
     }
 }

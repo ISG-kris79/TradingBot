@@ -166,9 +166,10 @@ namespace TradingBot
 
             if (isSimulation)
             {
-                // 가상 거래소 서비스 주입 (초기 자본 10,000 USDT)
-                _exchangeService = new MockExchangeService(10000);
-                OnStatusLog?.Invoke("🎮 [Simulation Mode] 가상 거래소 서비스가 활성화되었습니다.");
+                // 가상 거래소 서비스 주입 (설정에서 초기 자본 읽기)
+                decimal simulationBalance = AppConfig.Current?.Trading?.SimulationInitialBalance ?? 10000m;
+                _exchangeService = new MockExchangeService(simulationBalance);
+                OnStatusLog?.Invoke($"🎮 [Simulation Mode] 가상 거래소 서비스 활성화 (초기 잔고: ${simulationBalance:N2})");
             }
             else
             {

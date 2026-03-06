@@ -371,30 +371,50 @@
 
                                     <!-- 시뮬레이션 모드 -->
                                     <TextBlock Text="매매 모드:"
-                                               VerticalAlignment="Center"
+                                               VerticalAlignment="Top"
                                                Grid.Row="8"
                                                Foreground="#94A3B8"
-                                               Margin="0,0,0,15"/>
-                                    <CheckBox x:Name="chkSimulationMode"
-                                              Grid.Row="8"
-                                              Grid.Column="1"
-                                              Margin="0,0,0,15"
-                                              VerticalAlignment="Center"
-                                              Foreground="White"
-                                              Content="시뮬레이션 모드 (실제 매매 없음)"
-                                              FontSize="13">
-                                        <CheckBox.Style>
-                                            <Style TargetType="CheckBox">
-                                                <Style.Triggers>
-                                                    <Trigger Property="IsChecked"
-                                                             Value="True">
-                                                        <Setter Property="Foreground"
-                                                                Value="#FFB800"/>
-                                                    </Trigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </CheckBox.Style>
-                                    </CheckBox>
+                                               Margin="0,5,0,15"/>
+                                    <StackPanel Grid.Row="8"
+                                                Grid.Column="1"
+                                                Margin="0,0,0,15">
+                                        <CheckBox x:Name="chkSimulationMode"
+                                                  Foreground="White"
+                                                  Content="시뮬레이션 모드 (실제 매매 없음)"
+                                                  FontSize="13"
+                                                  Checked="chkSimulationMode_Checked"
+                                                  Unchecked="chkSimulationMode_Unchecked">
+                                            <CheckBox.Style>
+                                                <Style TargetType="CheckBox">
+                                                    <Style.Triggers>
+                                                        <Trigger Property="IsChecked"
+                                                                 Value="True">
+                                                            <Setter Property="Foreground"
+                                                                    Value="#FFB800"/>
+                                                        </Trigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </CheckBox.Style>
+                                        </CheckBox>
+                                        
+                                        <!-- 시뮬레이션 초기 잔고 입력 -->
+                                        <StackPanel x:Name="pnlSimulationBalance"
+                                                    Margin="20,10,0,0"
+                                                    Visibility="Collapsed">
+                                            <TextBlock Text="초기 잔고 (USDT):"
+                                                       Foreground="#94A3B8"
+                                                       FontSize="12"
+                                                       Margin="0,0,0,5"/>
+                                            <TextBox x:Name="txtSimulationBalance"
+                                                     Text="10000"
+                                                     Padding="8"
+                                                     Background="#1E2235"
+                                                     Foreground="White"
+                                                     BorderBrush="#2D3142"
+                                                     Width="200"
+                                                     HorizontalAlignment="Left"/>
+                                        </StackPanel>
+                                    </StackPanel>
 
                                     <!-- PUMP 1차 익절 ROE -->
                                     <TextBlock Text="PUMP 1차 익절 ROE (%):"

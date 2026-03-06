@@ -237,6 +237,7 @@ namespace TradingBot
         public FundTransferSettings FundTransferSettings { get; set; } = new(); // [Phase 13] 추가
         public PortfolioRebalancingSettings PortfolioRebalancingSettings { get; set; } = new(); // [Phase 13] 추가
         public bool IsSimulationMode { get; set; } = false;
+        public decimal SimulationInitialBalance { get; set; } = 10000m;
     }
 
     public class ExternalApiSettings
