@@ -942,8 +942,24 @@ namespace TradingBot.ViewModels
 
                 if (predictedValues != null && actualValues != null)
                 {
-                    predictedValues.Add(record.PredictedPrice);
-                    actualValues.Add(record.ActualPrice);
+                    // NaN/Infinity/비정상 값 방지 (LiveCharts Y1 축 오류 방지)
+                    var predictedPrice = record.PredictedPrice;
+                    var actualPrice = record.ActualPrice;
+
+                    // decimal의 유효 범위 검증 (차트 렌더링 시 double 변환 안전성)
+                    if (predictedPrice > 0 && predictedPrice < decimal.MaxValue / 2)
+                        predictedValues.Add(predictedPrice);
+                    else if (predictedValues.Count > 0)
+                        predictedValues.Add(predictedValues[predictedValues.Count - 1]); // 이전 값 유지
+                    else
+                        predictedValues.Add(0m); // 기본값
+
+                    if (actualPrice > 0 && actualPrice < decimal.MaxValue / 2)
+                        actualValues.Add(actualPrice);
+                    else if (actualValues.Count > 0)
+                        actualValues.Add(actualValues[actualValues.Count - 1]); // 이전 값 유지
+                    else
+                        actualValues.Add(0m); // 기본값
 
                     if (predictedValues.Count > 20) predictedValues.RemoveAt(0);
                     if (actualValues.Count > 20) actualValues.RemoveAt(0);

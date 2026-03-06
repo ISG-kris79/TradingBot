@@ -7,6 +7,25 @@
 
 ## [Unreleased]
 
+## [2.0.26] - 2026-03-06
+
+### Fixed
+
+- **실시간 AI 예측 차트 NaN 오류 수정**:
+  - `MainViewModel.AddPredictionRecord`: AI 예측 차트에 값 추가 시 유효성 검증 강화
+  - decimal 값이 비정상적이거나 차트 렌더링 시 double 변환되면서 NaN 발생하던 문제 해결
+  - PredictedPrice와 ActualPrice의 유효 범위(> 0, < decimal.MaxValue/2) 검증 추가
+  - 무효한 값 감지 시 이전 값 유지 또는 기본값(0) 사용
+  - 오류 메시지: "치명적 오류 발생: 'NaN'은(는) 'Y1' 속성의 유효한 값이 아닙니다" (실시간 실행 중 발생) 해결
+
+### Technical Details
+
+- **근본 원인**: AddPredictionRecord에서 record.PredictedPrice/ActualPrice를 검증 없이 차트에 추가
+- 백테스트 차트는 v2.0.24/v2.0.25에서 수정됐으나, **실시간 AI 예측 차트**에서 NaN 발생
+- 검증 로직: `predictedPrice > 0 && predictedPrice < decimal.MaxValue / 2`
+- 폴백 전략: 무효값 → 이전 차트 값 → 0 (기본값)
+- LiveCharts는 decimal → double 변환 시 비정상 값을 NaN으로 처리
+
 ## [2.0.25] - 2026-03-06
 
 ### Fixed
