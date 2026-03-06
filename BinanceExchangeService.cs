@@ -95,6 +95,7 @@ namespace TradingBot.Services
                     orderType,
                     quantity,
                     price,
+                    timeInForce: price.HasValue ? TimeInForce.GoodTillCanceled : null,
                     reduceOnly: reduceOnly,
                     ct: ct);
 

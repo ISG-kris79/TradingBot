@@ -107,8 +107,24 @@ namespace TradingBot
 
             foreach (var t in sortedTrades)
             {
-                currentSum += t.PnL;
-                cumulativeValues.Add(currentSum);
+                // PnL 유효성 검증 (NaN 방지)
+                if (t.PnL > decimal.MinValue && t.PnL < decimal.MaxValue)
+                {
+                    currentSum += t.PnL;
+                }
+                // 누적합 유효성 검증
+                if (currentSum > decimal.MinValue / 2 && currentSum < decimal.MaxValue / 2)
+                {
+                    cumulativeValues.Add(currentSum);
+                }
+                else if (cumulativeValues.Count > 0)
+                {
+                    cumulativeValues.Add(cumulativeValues[cumulativeValues.Count - 1]); // 이전 값 유지
+                }
+                else
+                {
+                    cumulativeValues.Add(0m); // 기본값
+                }
                 labels.Add(t.Time.ToString("MM/dd HH:mm"));
             }
 
@@ -130,10 +146,22 @@ namespace TradingBot
             var hourlyProfit = new decimal[24];
             foreach (var t in trades)
             {
-                hourlyProfit[t.Time.Hour] += t.PnL;
+                // PnL 유효성 검증
+                if (t.PnL > decimal.MinValue && t.PnL < decimal.MaxValue)
+                {
+                    hourlyProfit[t.Time.Hour] += t.PnL;
+                }
             }
 
-            var hourlyValues = new ChartValues<decimal>(hourlyProfit);
+            // 시간대별 수익 값 검증 (NaN 방지)
+            var hourlyValues = new ChartValues<decimal>();
+            foreach (var profit in hourlyProfit)
+            {
+                if (profit > decimal.MinValue / 2 && profit < decimal.MaxValue / 2)
+                    hourlyValues.Add(profit);
+                else
+                    hourlyValues.Add(0m);
+            }
 
             HourlyProfitSeries = new SeriesCollection
             {

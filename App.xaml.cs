@@ -21,6 +21,21 @@ namespace TradingBot
 
         private void App_DispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
         {
+            if (e.Exception is ArgumentException argumentException
+                && argumentException.Message.Contains("'NaN'")
+                && argumentException.Message.Contains("'Y1'"))
+            {
+                try
+                {
+                    global::TradingBot.MainWindow.Instance?.ViewModel?.RecoverFromChartRenderError();
+                    Debug.WriteLine($"[App] LiveCharts NaN 렌더링 오류 복구: {argumentException.Message}");
+                }
+                catch { }
+
+                e.Handled = true;
+                return;
+            }
+
             // 예외 메시지 팝업 및 로그 기록
             string msg = $"치명적 오류 발생: {e.Exception.Message}\n\n{e.Exception.StackTrace}";
 

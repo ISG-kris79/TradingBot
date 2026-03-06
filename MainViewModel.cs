@@ -132,6 +132,12 @@ namespace TradingBot.ViewModels
         public string[] ActivePnLLabels { get; set; } = Array.Empty<string>();
         public Func<double, string> PnLFormatter { get; set; }
 
+        private double _activePnLAxisMin = -1d;
+        public double ActivePnLAxisMin { get => _activePnLAxisMin; set { _activePnLAxisMin = value; OnPropertyChanged(); } }
+
+        private double _activePnLAxisMax = 1d;
+        public double ActivePnLAxisMax { get => _activePnLAxisMax; set { _activePnLAxisMax = value; OnPropertyChanged(); } }
+
         public string LoggedInUser => $"User: {AppConfig.CurrentUsername}";
 
         private bool _isDarkTheme = true;
@@ -156,6 +162,12 @@ namespace TradingBot.ViewModels
         public Func<double, string> LiveChartYFormatter { get; set; }
         public bool IsLiveChartEmpty => LiveChartSeries == null || LiveChartSeries.Count == 0;
 
+        private double _liveChartAxisMin = 0d;
+        public double LiveChartAxisMin { get => _liveChartAxisMin; set { _liveChartAxisMin = value; OnPropertyChanged(); } }
+
+        private double _liveChartAxisMax = 1d;
+        public double LiveChartAxisMax { get => _liveChartAxisMax; set { _liveChartAxisMax = value; OnPropertyChanged(); } }
+
         // [추가] RL 보상 차트 데이터
         private SeriesCollection _rlRewardSeries = new SeriesCollection();
         public SeriesCollection RLRewardSeries { get => _rlRewardSeries; set { _rlRewardSeries = value; OnPropertyChanged(); } }
@@ -172,6 +184,12 @@ namespace TradingBot.ViewModels
         }
 
         public string[] PredictionLabels { get; set; } = Array.Empty<string>();
+
+        private double _predictionChartAxisMin = 0d;
+        public double PredictionChartAxisMin { get => _predictionChartAxisMin; set { _predictionChartAxisMin = value; OnPropertyChanged(); } }
+
+        private double _predictionChartAxisMax = 1d;
+        public double PredictionChartAxisMax { get => _predictionChartAxisMax; set { _predictionChartAxisMax = value; OnPropertyChanged(); } }
 
         // [AI 모니터링] 실시간 정확도
         private double _mlNetAccuracy = 0.0;
@@ -799,45 +817,8 @@ namespace TradingBot.ViewModels
             LiveChartYFormatter = val => val.ToString("N4");
             PnLFormatter = value => value.ToString("F2") + "%";
 
-            // [추가] RL 차트 초기화
-            RLRewardSeries.Add(new LineSeries
-            {
-                Title = "Scalping Reward",
-                Values = new ChartValues<double>(),
-                PointGeometry = null,
-                LineSmoothness = 0,
-                Stroke = Brushes.Cyan,
-                Fill = Brushes.Transparent
-            });
-            RLRewardSeries.Add(new LineSeries
-            {
-                Title = "Swing Reward",
-                Values = new ChartValues<double>(),
-                PointGeometry = null,
-                LineSmoothness = 0,
-                Stroke = Brushes.Orange,
-                Fill = Brushes.Transparent
-            });
-
-            // [AI 모니터링] 예측 비교 차트 초기화
-            PredictionComparisonSeries.Add(new LineSeries
-            {
-                Title = "Predicted Price",
-                Values = new ChartValues<decimal>(),
-                PointGeometry = DefaultGeometries.Circle,
-                PointGeometrySize = 8,
-                Stroke = Brushes.Cyan,
-                Fill = Brushes.Transparent
-            });
-            PredictionComparisonSeries.Add(new LineSeries
-            {
-                Title = "Actual Price",
-                Values = new ChartValues<decimal>(),
-                PointGeometry = DefaultGeometries.Diamond,
-                PointGeometrySize = 8,
-                Stroke = Brushes.LimeGreen,
-                Fill = Brushes.Transparent
-            });
+            ResetRLRewardSeries();
+            ResetPredictionComparisonSeries();
 
             // [AI 모니터링] 모델 성능 초기화
             BindingOperations.EnableCollectionSynchronization(ModelPerformances, new object());
@@ -937,32 +918,42 @@ namespace TradingBot.ViewModels
             RunOnUI(() =>
             {
                 // 예측 vs 실제 차트 업데이트 (최근 20개만 유지)
+                // IndexOutOfRangeException 방지: Count 체크 추가
+                if (PredictionComparisonSeries.Count < 2)
+                {
+                    AddLog("⚠️ PredictionComparisonSeries가 초기화되지 않았습니다.");
+                    return;
+                }
+
                 var predictedValues = PredictionComparisonSeries[0].Values as ChartValues<decimal>;
                 var actualValues = PredictionComparisonSeries[1].Values as ChartValues<decimal>;
 
                 if (predictedValues != null && actualValues != null)
                 {
-                    // NaN/Infinity/비정상 값 방지 (LiveCharts Y1 축 오류 방지)
-                    var predictedPrice = record.PredictedPrice;
-                    var actualPrice = record.ActualPrice;
+                    var previousPredicted = predictedValues.Count > 0 ? predictedValues[^1] : (decimal?)null;
+                    var previousActual = actualValues.Count > 0 ? actualValues[^1] : (decimal?)null;
+                    var safePredicted = SanitizeChartPrice(record.PredictedPrice, previousPredicted);
+                    var safeActual = SanitizeChartPrice(record.ActualPrice, previousActual);
 
-                    // decimal의 유효 범위 검증 (차트 렌더링 시 double 변환 안전성)
-                    if (predictedPrice > 0 && predictedPrice < decimal.MaxValue / 2)
-                        predictedValues.Add(predictedPrice);
-                    else if (predictedValues.Count > 0)
-                        predictedValues.Add(predictedValues[predictedValues.Count - 1]); // 이전 값 유지
-                    else
-                        predictedValues.Add(0m); // 기본값
+                    if (!safePredicted.HasValue || !safeActual.HasValue)
+                    {
+                        AddLog($"⚠️ 예측 차트 업데이트 건너뜀: Predicted={record.PredictedPrice}, Actual={record.ActualPrice}");
+                        return;
+                    }
 
-                    if (actualPrice > 0 && actualPrice < decimal.MaxValue / 2)
-                        actualValues.Add(actualPrice);
-                    else if (actualValues.Count > 0)
-                        actualValues.Add(actualValues[actualValues.Count - 1]); // 이전 값 유지
-                    else
-                        actualValues.Add(0m); // 기본값
+                    predictedValues.Add(safePredicted.Value);
+                    actualValues.Add(safeActual.Value);
 
                     if (predictedValues.Count > 20) predictedValues.RemoveAt(0);
                     if (actualValues.Count > 20) actualValues.RemoveAt(0);
+
+                    UpdateAxisRange(
+                        predictedValues.Select(v => (double)v).Concat(actualValues.Select(v => (double)v)),
+                        min => PredictionChartAxisMin = min,
+                        max => PredictionChartAxisMax = max,
+                        defaultMin: 0d,
+                        defaultMax: 1d,
+                        requirePositive: true);
                 }
 
                 // 모델 성능 업데이트
@@ -1000,13 +991,26 @@ namespace TradingBot.ViewModels
         {
             RunOnUI(() =>
             {
+                // IndexOutOfRangeException 방지: Count 체크 추가
+                if (RLRewardSeries.Count < 2)
+                {
+                    AddLog("⚠️ RLRewardSeries가 초기화되지 않았습니다.");
+                    return;
+                }
+
                 var scalpingValues = RLRewardSeries[0].Values as ChartValues<double>;
                 var swingValues = RLRewardSeries[1].Values as ChartValues<double>;
                 if (scalpingValues == null || swingValues == null)
                     return;
 
-                var safeScalping = ToFinite(scalpingReward, scalpingValues.Count > 0 ? scalpingValues[^1] : 0d);
-                var safeSwing = ToFinite(swingReward, swingValues.Count > 0 ? swingValues[^1] : 0d);
+                var safeScalping = ToFinite(scalpingReward, scalpingValues.Count > 0 ? scalpingValues[^1] : double.NaN);
+                var safeSwing = ToFinite(swingReward, swingValues.Count > 0 ? swingValues[^1] : double.NaN);
+
+                if (!IsFinite(safeScalping) || !IsFinite(safeSwing))
+                {
+                    AddLog($"⚠️ RL 보상 차트 업데이트 건너뜀: Scalping={scalpingReward}, Swing={swingReward}");
+                    return;
+                }
 
                 scalpingValues.Add(safeScalping);
                 swingValues.Add(safeSwing);
@@ -1056,8 +1060,22 @@ namespace TradingBot.ViewModels
             {
                 if (SelectedSymbol != null && SelectedSymbol.Symbol == symbol && LiveChartSeries.Count > 2)
                 {
+                    // NaN/Infinity 검증 강화
                     var y = ToFinite((double)price);
-                    var x = Math.Max(0, (LiveChartSeries[0].Values?.Count ?? 1) - 1);
+                    if (!IsFinite(y) || y <= 0)
+                    {
+                        AddLog($"⚠️ 거래 차트 마커 추가 실패: 가격 값이 유효하지 않음 (price={price}, y={y})");
+                        return;
+                    }
+
+                    var count = LiveChartSeries[0].Values?.Count ?? 0;
+                    if (count == 0)
+                    {
+                        AddLog("⚠️ LiveChartSeries[0].Values가 비어있습니다.");
+                        return;
+                    }
+
+                    var x = Math.Max(0, count - 1);
                     var point = new ScatterPoint(x, y, 10);
 
                     // side가 "BUY" 또는 "LONG"일 경우
@@ -1194,11 +1212,20 @@ namespace TradingBot.ViewModels
                         Symbol = x.Symbol ?? "Unknown",
                         ProfitPercent = ToFinite(x.ProfitPercent)
                     })
+                    .Where(x => IsFinite(x.ProfitPercent))
                     .ToList();
 
                 if (activePositions.Any())
                 {
                     var values = new ChartValues<double>(activePositions.Select(x => x.ProfitPercent));
+
+                    UpdateAxisRange(
+                        values,
+                        min => ActivePnLAxisMin = min,
+                        max => ActivePnLAxisMax = max,
+                        defaultMin: -1d,
+                        defaultMax: 1d,
+                        requirePositive: false);
 
                     ActivePnLSeries = new SeriesCollection
                     {
@@ -1216,6 +1243,8 @@ namespace TradingBot.ViewModels
                 else
                 {
                     ActivePnLSeries = new SeriesCollection();
+                    ActivePnLAxisMin = -1d;
+                    ActivePnLAxisMax = 1d;
                 }
             });
         }
@@ -1349,6 +1378,8 @@ namespace TradingBot.ViewModels
             if (SelectedSymbol == null)
             {
                 LiveChartSeries = new SeriesCollection();
+                LiveChartAxisMin = 0d;
+                LiveChartAxisMax = 1d;
                 OnPropertyChanged(nameof(IsLiveChartEmpty));
                 return;
             }
@@ -1359,6 +1390,8 @@ namespace TradingBot.ViewModels
                 if (string.IsNullOrWhiteSpace(symbol))
                 {
                     LiveChartSeries = new SeriesCollection();
+                    LiveChartAxisMin = 0d;
+                    LiveChartAxisMax = 1d;
                     OnPropertyChanged(nameof(IsLiveChartEmpty));
                     return;
                 }
@@ -1373,6 +1406,8 @@ namespace TradingBot.ViewModels
                 if (!klinesResult.Success)
                 {
                     LiveChartSeries = new SeriesCollection();
+                    LiveChartAxisMin = 0d;
+                    LiveChartAxisMax = 1d;
                     OnPropertyChanged(nameof(IsLiveChartEmpty));
                     return;
                 }
@@ -1382,7 +1417,10 @@ namespace TradingBot.ViewModels
                 double? lastValidClose = null;
                 foreach (var kline in klinesResult.Data)
                 {
-                    var close = ToFinite((double)kline.ClosePrice, lastValidClose ?? 0d);
+                    var close = ToFinite((double)kline.ClosePrice, lastValidClose ?? double.NaN);
+                    if (!IsFinite(close) || close <= 0)
+                        continue;
+
                     lastValidClose = close;
                     closeValues.Add(close);
                     xLabels.Add(kline.OpenTime.ToLocalTime().ToString("HH:mm"));
@@ -1391,9 +1429,19 @@ namespace TradingBot.ViewModels
                 if (closeValues.Count == 0)
                 {
                     LiveChartSeries = new SeriesCollection();
+                    LiveChartAxisMin = 0d;
+                    LiveChartAxisMax = 1d;
                     OnPropertyChanged(nameof(IsLiveChartEmpty));
                     return;
                 }
+
+                UpdateAxisRange(
+                    closeValues,
+                    min => LiveChartAxisMin = min,
+                    max => LiveChartAxisMax = max,
+                    defaultMin: 0d,
+                    defaultMax: 1d,
+                    requirePositive: true);
 
                 LiveChartXFormatter = val =>
                 {
@@ -1443,8 +1491,29 @@ namespace TradingBot.ViewModels
             {
                 AddLog($"차트 로딩 실패: {ex.Message}");
                 LiveChartSeries = new SeriesCollection();
+                LiveChartAxisMin = 0d;
+                LiveChartAxisMax = 1d;
                 OnPropertyChanged(nameof(IsLiveChartEmpty));
             }
+        }
+
+        public void RecoverFromChartRenderError()
+        {
+            RunOnUI(() =>
+            {
+                AddLog("⚠️ LiveCharts 렌더링 오류를 감지하여 차트 상태를 안전하게 초기화합니다.");
+                LiveChartSeries = new SeriesCollection();
+                ActivePnLSeries = new SeriesCollection();
+                ResetPredictionComparisonSeries();
+                ResetRLRewardSeries();
+                LiveChartAxisMin = 0d;
+                LiveChartAxisMax = 1d;
+                PredictionChartAxisMin = 0d;
+                PredictionChartAxisMax = 1d;
+                ActivePnLAxisMin = -1d;
+                ActivePnLAxisMax = 1d;
+                OnPropertyChanged(nameof(IsLiveChartEmpty));
+            });
         }
 
         public void UpdateBacktestChart(BacktestResult result)
@@ -1613,12 +1682,128 @@ namespace TradingBot.ViewModels
             return !double.IsNaN(value) && !double.IsInfinity(value);
         }
 
+        private static decimal? SanitizeChartPrice(decimal value, decimal? fallback = null)
+        {
+            if (value > 0m)
+                return value;
+
+            if (fallback.HasValue && fallback.Value > 0m)
+                return fallback.Value;
+
+            return null;
+        }
+
         private static double ToFinite(double value, double fallback = 0d)
         {
             if (IsFinite(value))
                 return value;
 
             return IsFinite(fallback) ? fallback : 0d;
+        }
+
+        private void ResetPredictionComparisonSeries()
+        {
+            PredictionComparisonSeries = new SeriesCollection
+            {
+                new LineSeries
+                {
+                    Title = "Predicted Price",
+                    Values = new ChartValues<decimal>(),
+                    PointGeometry = DefaultGeometries.Circle,
+                    PointGeometrySize = 8,
+                    Stroke = Brushes.Cyan,
+                    Fill = Brushes.Transparent
+                },
+                new LineSeries
+                {
+                    Title = "Actual Price",
+                    Values = new ChartValues<decimal>(),
+                    PointGeometry = DefaultGeometries.Diamond,
+                    PointGeometrySize = 8,
+                    Stroke = Brushes.LimeGreen,
+                    Fill = Brushes.Transparent
+                }
+            };
+
+            PredictionChartAxisMin = 0d;
+            PredictionChartAxisMax = 1d;
+        }
+
+        private void ResetRLRewardSeries()
+        {
+            RLRewardSeries = new SeriesCollection
+            {
+                new LineSeries
+                {
+                    Title = "Scalping Reward",
+                    Values = new ChartValues<double>(),
+                    PointGeometry = null,
+                    LineSmoothness = 0,
+                    Stroke = Brushes.Cyan,
+                    Fill = Brushes.Transparent
+                },
+                new LineSeries
+                {
+                    Title = "Swing Reward",
+                    Values = new ChartValues<double>(),
+                    PointGeometry = null,
+                    LineSmoothness = 0,
+                    Stroke = Brushes.Orange,
+                    Fill = Brushes.Transparent
+                }
+            };
+        }
+
+        private void UpdateAxisRange(
+            IEnumerable<double> rawValues,
+            Action<double> setMin,
+            Action<double> setMax,
+            double defaultMin,
+            double defaultMax,
+            bool requirePositive)
+        {
+            var values = rawValues
+                .Where(IsFinite)
+                .Where(v => !requirePositive || v > 0d)
+                .ToList();
+
+            if (values.Count == 0)
+            {
+                setMin(defaultMin);
+                setMax(defaultMax);
+                return;
+            }
+
+            var min = values.Min();
+            var max = values.Max();
+
+            if (!IsFinite(min) || !IsFinite(max))
+            {
+                setMin(defaultMin);
+                setMax(defaultMax);
+                return;
+            }
+
+            if (Math.Abs(max - min) < 1e-9)
+            {
+                var baseValue = Math.Max(Math.Abs(max), 1d);
+                var padding = baseValue * 0.01;
+                min -= padding;
+                max += padding;
+            }
+
+            if (requirePositive && min <= 0d)
+                min = Math.Max(max * 0.99, 1e-6);
+
+            if (!IsFinite(min) || !IsFinite(max) || min >= max)
+            {
+                setMin(defaultMin);
+                setMax(defaultMax);
+                return;
+            }
+
+            setMin(min);
+            setMax(max);
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

@@ -7,6 +7,31 @@
 
 ## [Unreleased]
 
+## [2.0.27] - 2026-03-06
+
+### Fixed
+
+- **실시간 차트 NaN/축 범위 오류 복구 강화**:
+  - `MainViewModel`에 예측 차트, 라이브 차트, RL 차트, 활성 PnL 차트 축 범위 보호 로직 추가
+  - `App.xaml.cs`에서 LiveCharts `Y1` NaN 예외를 감지하면 차트 상태를 자동 복구하도록 처리
+  - `MainWindow.xaml`, `SymbolChartWindow.xaml`, `ActivePnLWindow.xaml`에 Y축 Min/Max 바인딩 추가
+  - `MainWindow.xaml.cs`, `TradeStatisticsWindow.xaml.cs`에 무효 차트 데이터 방어 로직 추가
+
+- **실거래 주문 체결/슬롯 처리 보강**:
+  - `BinanceExchangeService.PlaceOrderAsync`에서 지정가 주문 시 `GoodTillCanceled` 적용
+  - `TradingEngine.ExecuteAutoOrder`에서 지정가 주문 후 실제 체결 여부를 확인하고 미체결/부분체결을 처리
+  - `TradingEngine.HandlePumpEntry`에서 PUMP 슬롯 계산을 전체 포지션 수가 아닌 PUMP 포지션 수 기준으로 수정
+
+- **메이저 코인 저거래량 진입 허들 완화**:
+  - `MajorCoinStrategy`에서 EMA/RSI/저점상승 조건이 유효하면 거래량 부족 감점을 우회하도록 조정
+  - `TradingEngine` AI 필터에 메이저 저거래량 특권 로직을 추가해 OI/이평선 추세를 우선 반영
+
+### Technical Details
+
+- 실시간 차트의 축 범위를 유한값 기준으로 재계산해 LiveCharts 내부 `Y1 = NaN` 예외 가능성을 줄였습니다.
+- 메이저 코인은 단순 거래량 비율만으로 차단하지 않고 `RSI`, `SMA_20/60/120`, `OI_Change_Pct`를 함께 사용하도록 조정했습니다.
+- 자동매매 지정가 주문은 제출 성공만으로 진입 완료 처리하지 않고, 실제 체결 수량/평균가 기준으로 포지션을 확정합니다.
+
 ## [2.0.26] - 2026-03-06
 
 ### Fixed

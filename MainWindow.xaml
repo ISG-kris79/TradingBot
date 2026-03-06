@@ -1099,6 +1099,8 @@
                                                         Height="240">
                                         <lvc:CartesianChart.AxisY>
                                             <lvc:Axis Title="Price"
+                                                      MinValue="{Binding LiveChartAxisMin}"
+                                                      MaxValue="{Binding LiveChartAxisMax}"
                                                       Foreground="#9CA3AF"/>
                                         </lvc:CartesianChart.AxisY>
                                         <lvc:CartesianChart.AxisX>
@@ -1574,6 +1576,8 @@
                                                         Hoverable="True">
                                         <lvc:CartesianChart.AxisY>
                                             <lvc:Axis Title="Price (USDT)"
+                                                      MinValue="{Binding PredictionChartAxisMin}"
+                                                      MaxValue="{Binding PredictionChartAxisMax}"
                                                       Foreground="#9CA3AF"
                                                       LabelFormatter="{Binding LiveChartYFormatter}"/>
                                         </lvc:CartesianChart.AxisY>

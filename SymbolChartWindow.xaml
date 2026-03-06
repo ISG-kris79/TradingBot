@@ -57,6 +57,8 @@
                     </lvc:CartesianChart.AxisX>
                     <lvc:CartesianChart.AxisY>
                         <lvc:Axis ShowLabels="True"
+                                  MinValue="{Binding LiveChartAxisMin}"
+                                  MaxValue="{Binding LiveChartAxisMax}"
                                   Foreground="#94A3B8"
                                   LabelFormatter="{Binding LiveChartYFormatter}">
                             <lvc:Axis.Separator>

@@ -1527,16 +1527,23 @@ namespace TradingBot
             }
 
             bool isHolding = false;
-            int currentHoldCount = 0;
+            int currentPumpCount = 0;
 
             lock (_posLock)
             {
                 isHolding = _activePositions.ContainsKey(symbol);
-                currentHoldCount = _activePositions.Count;
+                currentPumpCount = _activePositions.Values.Count(p => p.IsPumpStrategy);
             }
 
-            // 이미 보유 중이거나 포지션이 2개 꽉 찼으면 진입 안 함
-            if (isHolding || currentHoldCount >= 2) return;
+            // 이미 보유 중이거나 PUMP 슬롯이 꽉 찼으면 진입 안 함
+            if (isHolding)
+                return;
+
+            if (currentPumpCount >= MAX_PUMP_SLOTS)
+            {
+                OnStatusLog?.Invoke($"⛔ {symbol} PUMP 슬롯 가득 참 ({currentPumpCount}/{MAX_PUMP_SLOTS})으로 진입 보류");
+                return;
+            }
 
             decimal marginUsdt = CalculateDynamicPositionSize(atr, currentPrice);
 
@@ -2155,6 +2162,12 @@ namespace TradingBot
                     aiScore = prediction.Score;
                     aiProbability = prediction.Probability;
                     aiPredictUp = prediction.Prediction;
+                    bool isMajorCoin = signalSource == "MAJOR" || signalSource.StartsWith("MAJOR_");
+                    bool isLowVolume = latestCandle.Volume_Ratio > 0f && latestCandle.Volume_Ratio < 1.0f;
+                    bool isTrendHealthy = latestCandle.Close > (decimal)latestCandle.SMA_20 && latestCandle.RSI > 50f;
+                    bool isPerfectAlignment = latestCandle.SMA_20 > latestCandle.SMA_60 && latestCandle.SMA_60 > latestCandle.SMA_120;
+                    bool hasOiSupport = latestCandle.OI_Change_Pct > 0.5f;
+                    bool majorLowVolumePrivilege = isMajorCoin && decision == "LONG" && isLowVolume && (isTrendHealthy || isPerfectAlignment || hasOiSupport);
                     
                     // ═══════════════════════════════════════════════════════════════
                     // [보너스 점수 시스템] AI 필터 개선 (2025-05-XX)
@@ -2170,7 +2183,7 @@ namespace TradingBot
                     float bonusPoints = 0;
                     
                     // 메이저 코인인 경우 보너스 체크
-                    if (signalSource == "MAJOR" || signalSource.StartsWith("MAJOR_"))
+                    if (isMajorCoin)
                     {
                         // 1) EMA 20 눌림목 감지 → +10점
                         if (await CheckEMA20RetestAsync(symbol, latestCandle, token))
@@ -2185,14 +2198,24 @@ namespace TradingBot
                             bonusPoints += 15;
                             OnStatusLog?.Invoke($"➕ {symbol} 숏 스퀴즈 감지 → AI 보너스 +15점");
                         }
+
+                        if (majorLowVolumePrivilege)
+                        {
+                            bonusPoints += 10;
+                            OnStatusLog?.Invoke($"🛡️ [Major 특권] {symbol} 거래량 부족보다 OI/이평선 추세를 우선합니다. (Vol={latestCandle.Volume_Ratio:F2}x, OI={latestCandle.OI_Change_Pct:F2}%)");
+                        }
                     }
                     
                     float finalAiScore = baseAiScore + bonusPoints;
                     
                     // 조정된 임계값: MAJOR 65점, 기타 75점
-                    float adjustedThreshold = (signalSource == "MAJOR" || signalSource.StartsWith("MAJOR_")) ? 65f : 75f;
+                    float adjustedThreshold = isMajorCoin ? 65f : 75f;
+                    if (majorLowVolumePrivilege)
+                    {
+                        adjustedThreshold = Math.Min(adjustedThreshold, 65f);
+                    }
                     
-                    if (decision == "LONG" && finalAiScore < adjustedThreshold)
+                    if (decision == "LONG" && finalAiScore < adjustedThreshold && !majorLowVolumePrivilege)
                     {
                         OnStatusLog?.Invoke($"🤖 {symbol} AI 필터: 롱 진입 차단 | 기본점수={baseAiScore:F1} + 보너스={bonusPoints:F0} = 최종={finalAiScore:F1} < 임계값={adjustedThreshold} (source={signalSource})");
                         return;
@@ -2201,7 +2224,10 @@ namespace TradingBot
                     // 진입 승인 로그
                     if (decision == "LONG")
                     {
-                        OnStatusLog?.Invoke($"✅ {symbol} AI 필터 통과 | 기본점수={baseAiScore:F1} + 보너스={bonusPoints:F0} = 최종={finalAiScore:F1} >= 임계값={adjustedThreshold}");
+                        if (majorLowVolumePrivilege && finalAiScore < adjustedThreshold)
+                            OnStatusLog?.Invoke($"✅ {symbol} Major 저거래량 예외 승인 | 기본점수={baseAiScore:F1} + 보너스={bonusPoints:F0} = 최종={finalAiScore:F1} | OI/정배열 추세 우선");
+                        else
+                            OnStatusLog?.Invoke($"✅ {symbol} AI 필터 통과 | 기본점수={baseAiScore:F1} + 보너스={bonusPoints:F0} = 최종={finalAiScore:F1} >= 임계값={adjustedThreshold}");
                     }
 
                     // 숏 진입은 더 엄격하게 필터링 (하락 예측 + 충분한 확률 + 과매도 추격 방지)
@@ -2385,30 +2411,52 @@ namespace TradingBot
 
                 OnStatusLog?.Invoke($"💼 {symbol} {side} 지정가 주문 실행: 수량={quantity} @ ${limitPrice:F4} (슬리피지 방어형)");
                 
-                bool success = await _exchangeService.PlaceOrderAsync(
+                var (success, orderId) = await _exchangeService.PlaceLimitOrderAsync(
                     symbol,
                     side,
-                    quantity: quantity,
-                    price: limitPrice,  // 지정가로 변경
-                    ct: token);
+                    quantity,
+                    limitPrice,
+                    token);
 
-                if (success)
+                if (success && !string.IsNullOrWhiteSpace(orderId))
                 {
-                    // [수정] 주문 성공 시 실제 수량 업데이트
+                    OnStatusLog?.Invoke($"⏳ {symbol} 자동매매 지정가 주문 대기 (가: {limitPrice:F4}, 3초)");
+                    await Task.Delay(3000, token);
+
+                    var (filled, filledQty, avgPrice) = await _exchangeService.GetOrderStatusAsync(symbol, orderId, token);
+
+                    if (!filled || filledQty <= 0)
+                    {
+                        await _exchangeService.CancelOrderAsync(symbol, orderId, token);
+                        CleanupReservedPosition("자동매매 지정가 미체결 취소");
+                        OnStatusLog?.Invoke($"🚫 {symbol} 자동매매 지정가 미체결로 주문 취소");
+                        return;
+                    }
+
+                    if (filledQty < quantity)
+                    {
+                        await _exchangeService.CancelOrderAsync(symbol, orderId, token);
+                        OnStatusLog?.Invoke($"✂️ {symbol} 자동매매 부분 체결 후 잔량 취소 (체결: {filledQty}/{quantity})");
+                    }
+
+                    var actualEntryPrice = avgPrice > 0 ? avgPrice : limitPrice;
+
                     lock (_posLock)
                     {
                         if (_activePositions.TryGetValue(symbol, out var pos))
                         {
-                            pos.Quantity = quantity;
+                            pos.Quantity = filledQty;
+                            pos.EntryPrice = actualEntryPrice;
                             orderPlaced = true;
-                            OnTradeExecuted?.Invoke(symbol, decision, currentPrice, quantity);
-                        }
-                        else
-                        {
-                            // 등록되지 않은 경우 (비정상 경로)
-                            MainWindow.Instance?.AddLog($"⚠️ {symbol} 포지션 등록 누락 (비정상)");
                         }
                     }
+
+                    if (!orderPlaced)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ {symbol} 체결 후 포지션 예약이 사라져 상태 동기화를 대기합니다.");
+                    }
+
+                    OnTradeExecuted?.Invoke(symbol, decision, actualEntryPrice, filledQty);
                     OnAlert?.Invoke($"🤖 자동 매매 진입: {symbol} [{decision}] | 증거금: {marginUsdt}U");
                     _soundService.PlaySuccess();
 
@@ -2417,7 +2465,7 @@ namespace TradingBot
                         symbol, 
                         side, 
                         signalSource, 
-                        limitPrice, 
+                        actualEntryPrice, 
                         aiScore, 
                         DateTime.Now, 
                         0,      // 진입 시점에는 손익 0
@@ -2434,12 +2482,12 @@ namespace TradingBot
                     }
 
                     // 🔥 [핵심] 감시 루프 시작 (Task.Run으로 별도 스레드에서 실행)
-                    _ = Task.Run(() => _positionMonitor.MonitorPositionStandard(symbol, limitPrice, decision == "LONG", token, mode, customTakeProfitPrice, customStopLossPrice), token);
+                    _ = Task.Run(() => _positionMonitor.MonitorPositionStandard(symbol, actualEntryPrice, decision == "LONG", token, mode, customTakeProfitPrice, customStopLossPrice), token);
 
                 }
                 else
                 {
-                    OnStatusLog?.Invoke($"❌ {symbol} 주문 실패");
+                    OnStatusLog?.Invoke($"❌ {symbol} 지정가 주문 제출 실패");
                     CleanupReservedPosition("주문 실패");
                 }
             }

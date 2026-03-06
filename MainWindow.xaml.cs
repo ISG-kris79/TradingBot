@@ -394,9 +394,14 @@ namespace TradingBot
         {
             Dispatcher.Invoke(() =>
             {
-                ViewModel.ProfitHistory.Add(currentEquity);
-                // 데이터가 너무 많아지면 앞부분 삭제 (최근 50개 유지)
-                if (ViewModel.ProfitHistory.Count > 50) ViewModel.ProfitHistory.RemoveAt(0);
+                // NaN/Infinity 검증 추가 (LiveCharts Y1 축 오류 방지)
+                if (!double.IsNaN(currentEquity) && !double.IsInfinity(currentEquity) && currentEquity >= 0)
+                {
+                    ViewModel.ProfitHistory.Add(currentEquity);
+                    // 데이터가 너무 많아지면 앞부분 삭제 (최근 50개 유지)
+                    if (ViewModel.ProfitHistory.Count > 50) ViewModel.ProfitHistory.RemoveAt(0);
+                }
+                // else: 무효한 값은 무시 (이전 차트 유지)
             });
         }
 

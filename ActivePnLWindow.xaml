@@ -150,6 +150,8 @@
                     </lvc:CartesianChart.AxisX>
                     <lvc:CartesianChart.AxisY>
                         <lvc:Axis Title="Profit (%)"
+                                                                MinValue="{Binding ActivePnLAxisMin}"
+                                                                MaxValue="{Binding ActivePnLAxisMax}"
                                 LabelFormatter="{Binding PnLFormatter}"/>
                     </lvc:CartesianChart.AxisY>
                 </lvc:CartesianChart>

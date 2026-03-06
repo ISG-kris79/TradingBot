@@ -60,6 +60,9 @@ namespace TradingBot.Strategies
 
             MajorProfile profile = ResolveProfile();
             bool isMakingHigherLows = IsMakingHigherLows(list, profile.HigherLowSegmentSize, profile.HigherLowMinRiseRatio);
+            bool isTrendHealthyOnLowVolume = currentPrice > (decimal)sma20 && sma20 > sma50 && rsi > 50;
+            bool allowLowVolumeTrendBypass = volumeMomentum < profile.LongConfirmVolumeMin &&
+                                             (isTrendHealthyOnLowVolume || (isMakingHigherLows && currentPrice > (decimal)sma20));
 
             int aiScore = CalculateScore(
                 rsi,
@@ -74,6 +77,7 @@ namespace TradingBot.Strategies
                 sma120,
                 volumeMomentum,
                 isMakingHigherLows,
+                allowLowVolumeTrendBypass,
                 profile);
 
             var nowSeoul = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, SeoulTimeZone);
@@ -85,7 +89,8 @@ namespace TradingBot.Strategies
             if (aiScore >= longThreshold)
             {
                 bool bullishStructure = isUptrend || (isMakingHigherLows && currentPrice > (decimal)sma20);
-                bool longConfirm = bullishStructure && macd.Hist >= -0.001 && volumeMomentum >= profile.LongConfirmVolumeMin;
+                bool longConfirm = bullishStructure && macd.Hist >= -0.001 &&
+                                   (volumeMomentum >= profile.LongConfirmVolumeMin || allowLowVolumeTrendBypass);
                 if (longConfirm) decision = "LONG";
             }
             else if (aiScore <= shortThreshold)
@@ -128,6 +133,11 @@ namespace TradingBot.Strategies
                 OnLog?.Invoke("ℹ️ 횡보 중이나 저점 상승 확인 - 추세 점수 가산");
             }
 
+            if (allowLowVolumeTrendBypass)
+            {
+                OnLog?.Invoke("ℹ️ 거래량은 적으나 EMA/RSI 추세 지지 확인 - 거래량 감점 우회");
+            }
+
             string decisionKr = decision switch
             {
                 "LONG" => "롱 진입",
@@ -152,7 +162,7 @@ namespace TradingBot.Strategies
             if (decision == "WAIT")
             {
                 var reasons = new List<string>();
-                if (volumeMomentum < 1.00) reasons.Add("거래량 부족");
+                if (volumeMomentum < 1.00 && !allowLowVolumeTrendBypass) reasons.Add("거래량 부족");
                 if (!isUptrend && !isMakingHigherLows) reasons.Add("2파 횡보장 인식");
                 if (aiScore < longThreshold && aiScore > shortThreshold) reasons.Add("스코어 불충분");
 
@@ -184,6 +194,7 @@ namespace TradingBot.Strategies
             double sma120,
             double volumeMomentum,
             bool isMakingHigherLows,
+            bool allowLowVolumeTrendBypass,
             MajorProfile profile)
         {
             int score = 50;
@@ -218,6 +229,7 @@ namespace TradingBot.Strategies
 
             if (volumeMomentum >= 1.10) score += 10;
             else if (volumeMomentum >= 1.00) score += 5;
+            else if (allowLowVolumeTrendBypass) score += 15;
 
             if (isMakingHigherLows && currentPrice > (decimal)sma20) score += profile.HigherLowBonus;
 
