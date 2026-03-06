@@ -1,16 +1,22 @@
 using System;
 using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
 
 namespace TradingBot.Services
 {
     /// <summary>
-    /// TorchSharp 초기화를 안전하게 처리하는 유틸리티 클래스
+    /// TorchSharp 초기화를 안전하게 처리하는 유틸리티 클래스.
+    /// 네이티브 라이브러리 크래시(0xc0000005)는 .NET try-catch로 잡을 수 없으므로
+    /// 서브프로세스 프로브 방식으로 사전 호환성 검증 후 초기화합니다.
     /// </summary>
     public static class TorchInitializer
     {
         private static bool _initialized = false;
         private static bool _available = false;
         private static string? _errorMessage = null;
+        private static readonly string _probeCachePath =
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".torch_probe_result");
 
         /// <summary>
         /// TorchSharp가 사용 가능한지 확인
@@ -23,7 +29,48 @@ namespace TradingBot.Services
         public static string? ErrorMessage => _errorMessage;
 
         /// <summary>
-        /// TorchSharp 초기화 시도
+        /// 서브프로세스 프로브 전용 진입점.
+        /// 프로세스 인수에 --torch-probe가 있으면 호출하여 TorchSharp 호환성만 테스트하고 종료합니다.
+        /// </summary>
+        /// <returns>프로브 모드이면 true (앱을 즉시 종료해야 함), 아니면 false</returns>
+        public static bool HandleProbeIfRequested(string[] args)
+        {
+            bool isProbe = false;
+            foreach (var arg in args)
+            {
+                if (arg == "--torch-probe")
+                {
+                    isProbe = true;
+                    break;
+                }
+            }
+            if (!isProbe) return false;
+
+            try
+            {
+                // 프로브 결과 파일 경로 (부모 프로세스와 동일 디렉토리)
+                string probeResultPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".torch_probe_result");
+
+                // TorchSharp의 static 초기화 트리거 — 네이티브 크래시 시 이 프로세스만 종료됨
+                var device = TorchSharp.torch.CPU;
+                File.WriteAllText(probeResultPath, "OK");
+                Environment.Exit(0);
+            }
+            catch (Exception)
+            {
+                try
+                {
+                    string probeResultPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".torch_probe_result");
+                    File.WriteAllText(probeResultPath, "FAIL");
+                }
+                catch { /* 파일 쓰기 실패 시 무시 */ }
+                Environment.Exit(1);
+            }
+            return true; // 도달하지 않지만 컴파일러용
+        }
+
+        /// <summary>
+        /// TorchSharp 초기화 시도 (서브프로세스 프로브 → 실제 초기화 순서)
         /// </summary>
         public static bool TryInitialize()
         {
@@ -32,13 +79,47 @@ namespace TradingBot.Services
 
             _initialized = true;
 
+            // ── 1단계: 캐시된 프로브 결과 확인 ──
+            if (File.Exists(_probeCachePath))
+            {
+                try
+                {
+                    string cached = File.ReadAllText(_probeCachePath).Trim();
+                    if (cached == "FAIL")
+                    {
+                        _errorMessage = "이전 프로브에서 TorchSharp 환경 비호환이 감지되었습니다.\n" +
+                                        "Transformer 기능이 비활성화됩니다.\n\n" +
+                                        "해결 방법:\n" +
+                                        "1. Visual C++ Redistributable 2015-2022 x64 설치\n" +
+                                        "   다운로드: https://aka.ms/vs/17/release/vc_redist.x64.exe\n" +
+                                        "2. .torch_probe_result 파일 삭제 후 앱 재시작";
+                        Debug.WriteLine($"[TorchInitializer] 캐시된 프로브 결과: FAIL — 초기화 건너뜀");
+                        _available = false;
+                        return false;
+                    }
+                    // cached == "OK" → 프로브 성공 캐시, 아래로 계속 진행
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[TorchInitializer] 프로브 캐시 읽기 실패: {ex.Message}");
+                    // 캐시 손상 → 프로브 재실행
+                }
+            }
+
+            // ── 2단계: 서브프로세스 프로브 실행 ──
+            bool probeResult = RunSubprocessProbe();
+            if (!probeResult)
+            {
+                _available = false;
+                return false;
+            }
+
+            // ── 3단계: 프로브 통과 후 실제 초기화 ──
             try
             {
-                // TorchSharp의 static 초기화를 트리거
                 var device = TorchSharp.torch.CPU;
                 Debug.WriteLine($"[TorchInitializer] TorchSharp 초기화 성공 - Device: {device}");
-                
-                // CUDA 체크 (선택 사항)
+
                 try
                 {
                     bool cudaAvailable = TorchSharp.torch.cuda.is_available();
@@ -62,18 +143,169 @@ namespace TradingBot.Services
                                "TorchSharp 기능(PPO 에이전트, Transformer)은 비활성화됩니다.\n" +
                                "ML.NET 기반 예측은 정상 작동합니다.";
                 Debug.WriteLine($"[TorchInitializer] {_errorMessage}");
-                Debug.WriteLine($"[TorchInitializer] Exception Details: {ex}");
                 _available = false;
+                TrySaveProbeFail(); // 다음 실행 시 바로 건너뛰도록 캐시
                 return false;
             }
             catch (Exception ex)
             {
                 _errorMessage = $"TorchSharp 초기화 중 예외 발생: {ex.Message}";
                 Debug.WriteLine($"[TorchInitializer] {_errorMessage}");
-                Debug.WriteLine($"[TorchInitializer] Exception: {ex}");
                 _available = false;
+                TrySaveProbeFail();
                 return false;
             }
+        }
+
+        /// <summary>
+        /// 프로브 실패 결과를 캐시 파일에 저장
+        /// </summary>
+        public static void ClearProbeCache()
+        {
+            try { if (File.Exists(_probeCachePath)) File.Delete(_probeCachePath); }
+            catch { /* ignore */ }
+        }
+
+        /// <summary>
+        /// 서브프로세스로 TorchSharp 호환성 프로브 실행.
+        /// 네이티브 크래시(0xc0000005)가 발생해도 부모 프로세스는 안전합니다.
+        /// </summary>
+        private static bool RunSubprocessProbe()
+        {
+            try
+            {
+                // 네이티브 DLL 사전 로드 검증 (빠른 실패)
+                if (!PreCheckNativeLibraries())
+                {
+                    TrySaveProbeResult("FAIL");
+                    return false;
+                }
+
+                string exePath = Environment.ProcessPath
+                    ?? Process.GetCurrentProcess().MainModule?.FileName
+                    ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "TradingBot.exe");
+
+                if (!File.Exists(exePath))
+                {
+                    Debug.WriteLine($"[TorchInitializer] 프로브 실행 파일 없음: {exePath} — 직접 초기화 시도");
+                    TrySaveProbeResult("OK"); // 개발 환경에서는 OK 가정
+                    return true;
+                }
+
+                using var process = new Process();
+                process.StartInfo = new ProcessStartInfo
+                {
+                    FileName = exePath,
+                    Arguments = "--torch-probe",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+
+                // 프로브 전에 이전 캐시 파일 삭제 (프로브 프로세스가 새로 작성하도록)
+                if (File.Exists(_probeCachePath))
+                {
+                    try { File.Delete(_probeCachePath); } catch { }
+                }
+
+                process.Start();
+                bool exited = process.WaitForExit(15000); // 15초 타임아웃
+
+                if (!exited)
+                {
+                    try { process.Kill(); } catch { }
+                    _errorMessage = "TorchSharp 프로브 타임아웃 (15초). Transformer 기능이 비활성화됩니다.";
+                    Debug.WriteLine($"[TorchInitializer] {_errorMessage}");
+                    TrySaveProbeResult("FAIL");
+                    return false;
+                }
+
+                // 프로브 프로세스가 직접 작성한 결과 파일 확인
+                string probeFileResult = "";
+                if (File.Exists(_probeCachePath))
+                {
+                    try { probeFileResult = File.ReadAllText(_probeCachePath).Trim(); } catch { }
+                }
+
+                if (process.ExitCode == 0 && probeFileResult == "OK")
+                {
+                    Debug.WriteLine("[TorchInitializer] 서브프로세스 프로브 성공 — TorchSharp 사용 가능");
+                    return true;
+                }
+                else
+                {
+                    string detail = $"Exit code: {process.ExitCode}";
+                    if (process.ExitCode != 0 && string.IsNullOrEmpty(probeFileResult))
+                    {
+                        // 프로브 프로세스가 네이티브 크래시(0xc0000005)로 비정상 종료
+                        detail = $"네이티브 라이브러리 크래시 (Exit: 0x{process.ExitCode:X})";
+                    }
+
+                    _errorMessage = $"TorchSharp 환경 비호환 ({detail}).\n" +
+                                    "Transformer 기능이 비활성화됩니다.\n\n" +
+                                    "해결 방법:\n" +
+                                    "1. Visual C++ Redistributable 2015-2022 x64 설치\n" +
+                                    "   다운로드: https://aka.ms/vs/17/release/vc_redist.x64.exe\n" +
+                                    "2. .torch_probe_result 파일 삭제 후 앱 재시작";
+                    Debug.WriteLine($"[TorchInitializer] 프로브 실패 — {detail}");
+                    TrySaveProbeResult("FAIL");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[TorchInitializer] 프로브 실행 예외: {ex.Message} — 직접 초기화 시도");
+                // 프로브 자체가 실행 불가능하면 직접 초기화 시도 (위험하지만 fallback)
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// 네이티브 DLL 존재/로드 가능 여부 사전 검증
+        /// </summary>
+        private static bool PreCheckNativeLibraries()
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+
+            // LibTorchSharp.dll 확인 (TorchSharp managed → native 브릿지)
+            string libTorchSharpPath = Path.Combine(baseDir, "LibTorchSharp.dll");
+            if (!File.Exists(libTorchSharpPath))
+            {
+                // runtimes 폴더 확인
+                string runtimePath = Path.Combine(baseDir, "runtimes", "win-x64", "native", "LibTorchSharp.dll");
+                if (!File.Exists(runtimePath))
+                {
+                    _errorMessage = "LibTorchSharp.dll을 찾을 수 없습니다. TorchSharp NuGet 패키지를 확인하세요.";
+                    Debug.WriteLine($"[TorchInitializer] {_errorMessage}");
+                    return false;
+                }
+            }
+
+            // torch_cpu.dll 존재 확인 (실제 로드는 서브프로세스에서)
+            string torchCpuPath = Path.Combine(baseDir, "torch_cpu.dll");
+            if (!File.Exists(torchCpuPath))
+            {
+                string runtimePath = Path.Combine(baseDir, "runtimes", "win-x64", "native", "torch_cpu.dll");
+                if (!File.Exists(runtimePath))
+                {
+                    _errorMessage = "torch_cpu.dll을 찾을 수 없습니다. libtorch-cpu NuGet 패키지를 확인하세요.";
+                    Debug.WriteLine($"[TorchInitializer] {_errorMessage}");
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static void TrySaveProbeResult(string result)
+        {
+            try { File.WriteAllText(_probeCachePath, result); }
+            catch (Exception ex) { Debug.WriteLine($"[TorchInitializer] 프로브 결과 저장 실패: {ex.Message}"); }
+        }
+
+        private static void TrySaveProbeFail()
+        {
+            TrySaveProbeResult("FAIL");
         }
 
         /// <summary>

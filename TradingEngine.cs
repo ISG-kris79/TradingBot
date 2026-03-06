@@ -394,20 +394,25 @@ namespace TradingBot
             }
 
             // [Phase 7] Transformer 모델 및 전략 초기화 (설정 파일 로드)
-            // [FIX] TorchSharp 네이티브 라이브러리 크래시 방지를 위한 안전장치 추가
+            // [FIX] 서브프로세스 프로브로 TorchSharp 호환성 사전 검증 후 초기화
             var tfSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
             bool transformerInitSuccess = false;
             if (tfSettings.Enabled)
             {
                 try
                 {
+                    OnStatusLog?.Invoke("🔍 TorchSharp 환경 호환성 검증 중...");
                     bool torchReady = TorchInitializer.IsAvailable || TorchInitializer.TryInitialize();
                     if (!torchReady)
                     {
-                        OnStatusLog?.Invoke("⚠️ TorchSharp 초기화 실패로 Transformer 기능이 비활성화됩니다.");
+                        string errMsg = TorchInitializer.ErrorMessage ?? "알 수 없는 오류";
+                        OnStatusLog?.Invoke($"⚠️ TorchSharp 초기화 실패로 Transformer 기능이 비활성화됩니다. ({errMsg})");
+                        OnAlert?.Invoke("⚠️ Transformer AI 비활성 — TorchSharp 환경 비호환. MajorCoinStrategy(지표 기반)만 동작합니다.");
                     }
                     else
                     {
+                        OnStatusLog?.Invoke("✅ TorchSharp 환경 검증 통과");
+
                         // 메모리 정리
                         GC.Collect();
                         GC.WaitForPendingFinalizers();

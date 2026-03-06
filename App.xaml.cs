@@ -163,6 +163,14 @@ namespace TradingBot
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            // ── TorchSharp 서브프로세스 프로브 모드 ──
+            // --torch-probe 인수로 실행된 경우, TorchSharp 호환성만 테스트하고 즉시 종료
+            if (TorchInitializer.HandleProbeIfRequested(Environment.GetCommandLineArgs()))
+            {
+                this.Shutdown();
+                return;
+            }
+
             // 중복 실행 방지 (전역 Mutex 사용)
             const string mutexName = @"Global\TradingBot_SingleInstance_8F9A2B3C";
 
@@ -260,36 +268,10 @@ namespace TradingBot
             Debug.WriteLine("[App] 🔧 DEBUG 모드 - VC++ Redistributable 체크 스킵");
 #endif
 
-            // [안정성] TorchSharp는 네이티브 라이브러리 접근 시 프로세스 크래시가 발생할 수 있어
-            // 시작 시 선행 초기화를 하지 않고, 설정에서 명시적으로 활성화된 경우에만 지연 초기화합니다.
-            var transformerSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
-            if (transformerSettings.Enabled)
-            {
-                bool torchAvailable = Services.TorchInitializer.TryInitialize();
-                if (!torchAvailable)
-                {
-                    Debug.WriteLine("[App] TorchSharp 초기화 실패 - RL 기능 비활성화");
-                    Debug.WriteLine($"[App] Error: {Services.TorchInitializer.ErrorMessage}");
-
-                    if (Services.TorchInitializer.ErrorMessage != null &&
-                        Services.TorchInitializer.ErrorMessage.Contains("Visual C++"))
-                    {
-                        MessageBox.Show(
-                            Services.TorchInitializer.ErrorMessage,
-                            "TorchSharp 초기화 실패",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Warning);
-                    }
-                }
-                else
-                {
-                    Debug.WriteLine("[App] TorchSharp 초기화 성공");
-                }
-            }
-            else
-            {
-                Debug.WriteLine("[App] TorchSharp 시작시 초기화 비활성화됨");
-            }
+            // [안정성] TorchSharp 초기화는 앱 시작 시 수행하지 않습니다.
+            // 네이티브 라이브러리(torch_cpu.dll)가 프로세스 크래시(0xc0000005)를 유발할 수 있으므로,
+            // TradingEngine 시작 시 서브프로세스 프로브로 안전하게 검증 후 초기화합니다.
+            Debug.WriteLine("[App] TorchSharp 초기화는 엔진 시작 시 서브프로세스 프로브로 지연 실행됩니다.");
 
             // [추가] DB 연결 문자열 확인 및 설정 유도
             if (string.IsNullOrEmpty(AppConfig.ConnectionString))

@@ -7,6 +7,25 @@
 
 ## [Unreleased]
 
+## [2.2.7] - 2026-03-06
+
+### Fixed
+
+- **메이저 코인 AI 분석 재활성화**:
+  - v2.2.6에서 `TransformerSettings.Enabled = false`로 크래시를 방지했으나 Transformer AI 전체가 비활성화됨
+  - 서브프로세스 프로브 방식 도입: 별도 프로세스에서 TorchSharp 호환성 사전 검증
+  - 네이티브 라이브러리 크래시(`0xc0000005`)가 발생해도 메인 앱은 안전하게 보호
+  - `.torch_probe_result` 파일로 프로브 결과 캐싱하여 매번 테스트 방지
+  - `TransformerSettings.Enabled` 기본값 복원 (`false` → `true`)
+  - 메이저 코인 AI 시그널 및 Transformer 예측 정상 동작 확인
+
+### Changed
+
+- **TorchSharp 초기화 방식 개선**:
+  - App.xaml.cs에서 즉시 초기화 제거, TradingEngine 시작 시 지연 초기화로 변경
+  - `--torch-probe` 인수로 실행 시 호환성 테스트 전용 모드 진입
+  - 호환성 검증 실패 시 MajorCoinStrategy(지표 기반)로 안정적 fallback
+
 ## [2.2.6] - 2026-03-06
 
 ### Fixed
