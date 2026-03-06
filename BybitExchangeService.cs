@@ -244,7 +244,11 @@ namespace TradingBot.Services
 
                 return (bestBid, bestAsk);
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Bybit] GetOrderBookAsync failed: {ex.Message}");
+                return null;
+            }
         }
 
         // [Phase 12: PUMP 전략 지원] 지정가 주문
@@ -625,19 +629,19 @@ namespace TradingBot.Services
         /// <summary>
         /// Position Mode 조회 (Bybit는 One-way/Hedge 모드 지원)
         /// </summary>
-        public async Task<bool> GetPositionModeAsync(CancellationToken ct = default)
+        public Task<bool> GetPositionModeAsync(CancellationToken ct = default)
         {
             try
             {
                 // Bybit V5 API에서는 계정 설정을 통해 포지션 모드를 확인
                 // 현재 Bybit.Net에서 직접 API가 없으므로 기본 One-way 모드로 가정
                 System.Diagnostics.Debug.WriteLine("[Bybit] Position Mode API not available in current Bybit.Net version");
-                return false; // One-way mode 기본값
+                return Task.FromResult(false); // One-way mode 기본값
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[Bybit] GetPositionMode Error: {ex.Message}");
-                return false;
+                return Task.FromResult(false);
             }
         }
 

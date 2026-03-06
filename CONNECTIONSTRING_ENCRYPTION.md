@@ -37,7 +37,7 @@ Server=localhost;Database=TradingBotDB;User Id=sa;Password=1234;TrustServerCerti
 ```csharp
 using TradingBot.Services;
 
-string original = "Server=localhost;Database=TradingBotDB;User Id=sa;Password=1234;TrustServerCertificate=True;";
+string original = "";
 string encrypted = SecurityService.EncryptString(original);
 Console.WriteLine(encrypted);
 ```
@@ -51,7 +51,7 @@ Console.WriteLine(encrypted);
 ```json
 {
   "ConnectionStrings": {
-    "DefaultConnection": "AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAA...(암호화된 긴 문자열)",
+    "DefaultConnection": "",
     "IsEncrypted": true
   },
   "Binance": {
@@ -65,7 +65,7 @@ Console.WriteLine(encrypted);
 ```json
 {
   "ConnectionStrings": {
-    "DefaultConnection": "Server=localhost;Database=TradingBotDB;Integrated Security=True;TrustServerCertificate=True;",
+    "DefaultConnection": "",
     "IsEncrypted": false
   }
 }
@@ -113,24 +113,20 @@ Console.WriteLine(encrypted);
 
 **평문**:
 ```
-Server=localhost\SQLEXPRESS;Database=TradingBotDB;Integrated Security=True;TrustServerCertificate=True;
 ```
 
 **암호화 후**:
 ```
-AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAA2X5OZVqh4UG7nrqR7gX3VwAAAAACAAAAAAAQZgAAAAEAACAAAAA...
 ```
 
 ### 예시 2: SQL Server (SQL 인증)
 
 **평문**:
 ```
-Server=192.168.1.100;Database=TradingBotDB;User Id=trader;Password=MySecr3tP@ss;TrustServerCertificate=True;
 ```
 
 **암호화 후**:
 ```
-AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAA5K9pQwLm4kG3oX1Y8Vz2WQAAAAACAAAAAAAQZgAAAAEAACAAAAB...
 ```
 
 ---

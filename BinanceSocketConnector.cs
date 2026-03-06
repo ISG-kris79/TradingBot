@@ -20,22 +20,39 @@ namespace TradingBot
             });
         }
 
-        public async void SubscribeTicker(string symbol)
+        public void SubscribeTicker(string symbol)
         {
-            // 바이낸스 선물(Futures) 실시간 가격 구독 예시
-            var subscribeResult = await _socketClient.UsdFuturesApi.ExchangeData.SubscribeToTickerUpdatesAsync(symbol, data =>
+            _ = SubscribeTickerAsync(symbol);
+        }
+
+        public async Task SubscribeTickerAsync(string symbol)
+        {
+            try
             {
-                // UI 업데이트를 위해 메인 윈도우 인스턴스에 전달
-                MainWindow.Instance?.Dispatcher.Invoke(() =>
+                // 바이낸스 선물(Futures) 실시간 가격 구독 예시
+                var subscribeResult = await _socketClient.UsdFuturesApi.ExchangeData.SubscribeToTickerUpdatesAsync(symbol, data =>
                 {
-                    var viewModel = new MultiTimeframeViewModel
+                    // UI 업데이트를 위해 메인 윈도우 인스턴스에 전달
+                    MainWindow.Instance?.Dispatcher.Invoke(() =>
                     {
-                        Symbol = data.Data.Symbol,
-                        LastPrice = data.Data.LastPrice
-                    };
-                    MainWindow.Instance.RefreshSignalUI(viewModel);
+                        var viewModel = new MultiTimeframeViewModel
+                        {
+                            Symbol = data.Data.Symbol,
+                            LastPrice = data.Data.LastPrice
+                        };
+                        MainWindow.Instance.RefreshSignalUI(viewModel);
+                    });
                 });
-            });
+
+                if (!subscribeResult.Success)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[BinanceSocketConnector] Ticker 구독 실패: {subscribeResult.Error}");
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[BinanceSocketConnector] SubscribeTickerAsync 오류: {ex.Message}");
+            }
         }
 
         public void Dispose()

@@ -155,7 +155,10 @@ public class MLService : IDisposable
             var backups = Directory.GetFiles(_modelDir, "scalping_model_*.zip").OrderByDescending(f => f).Skip(5).ToList();
             foreach (var old in backups) File.Delete(old);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            MainWindow.Instance?.AddLog($"⚠️ 오래된 ML 백업 정리 실패: {ex.Message}");
+        }
     }
 
     public void LoadModel()
@@ -187,7 +190,11 @@ public class MLService : IDisposable
                 .FirstOrDefault();
             return best?.Path ?? _modelPath;
         }
-        catch { return _modelPath; }
+        catch (Exception ex)
+        {
+            MainWindow.Instance?.AddLog($"⚠️ ML 최적 모델 탐색 실패: {ex.Message}");
+            return _modelPath;
+        }
     }
 
     public ScalpingPrediction? Predict(CandleData current)
@@ -233,7 +240,10 @@ public class MLService : IDisposable
             _predictionEngine = null;
             _model = null;
         }
-        catch { }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[MLService] Dispose 오류: {ex.Message}");
+        }
         finally
         {
             _disposed = true;

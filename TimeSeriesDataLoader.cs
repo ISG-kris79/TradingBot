@@ -210,7 +210,8 @@ namespace TradingBot.Services.AI
                 var xTensor = torch.tensor(xBatchFlat, new long[] { size, _seqLen, _inputDim }, device: _device);
                 var yTensor = torch.tensor(yBatchFlat, new long[] { size, 1 }, device: _device);
 
-                if (_useCache) _cachedBatches.Add((xTensor, yTensor));
+                if (_useCache)
+                    _cachedBatches?.Add((xTensor, yTensor));
 
                 yield return (xTensor, yTensor);
             }

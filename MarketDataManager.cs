@@ -22,7 +22,7 @@ namespace TradingBot.Services
     {
         private bool _disposed = false;
         private readonly IBinanceRestClient _restClient;
-        private readonly BinanceSocketClient _socketClient;
+        private readonly BinanceSocketClient _socketClient = null!;
         private readonly BybitSocketClient? _bybitSocketClient;
         private readonly BybitRestClient? _bybitRestClient;
         private readonly List<string> _majorSymbols;

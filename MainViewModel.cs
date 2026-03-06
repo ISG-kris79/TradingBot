@@ -198,9 +198,6 @@ namespace TradingBot.ViewModels
         private double _transformerAccuracy = 0.0;
         public double TransformerAccuracy { get => _transformerAccuracy; set { _transformerAccuracy = value; OnPropertyChanged(); } }
 
-        // [추가] RL 탭 가시성
-        private bool _isAiMonitorVisible = true;
-
         private MultiTimeframeViewModel? _selectedSymbol;
         public MultiTimeframeViewModel? SelectedSymbol
         {
@@ -211,7 +208,7 @@ namespace TradingBot.ViewModels
                 {
                     _selectedSymbol = value;
                     OnPropertyChanged();
-                    LoadLiveChartData();
+                    _ = LoadLiveChartDataAsync();
                 }
             }
         }
@@ -351,6 +348,7 @@ namespace TradingBot.ViewModels
                 {
                     if (_engine != null)
                     {
+                        UnsubscribeFromEngineEvents();
                         _engine.StopEngine();
                         _engine = null;
                         OnPropertyChanged(nameof(InitialBalance));
@@ -460,9 +458,9 @@ namespace TradingBot.ViewModels
                             };
 
                             var fallbackResult = await service.RunBacktestAsync(symbol, startDate, endDate, fallbackStrategy, 1000m, selectedMetricOptions);
-                            if ((fallbackResult?.TotalTrades ?? 0) > 0)
+                            if (fallbackResult != null && fallbackResult.TotalTrades > 0)
                             {
-                                fallbackResult.Message = "[자동 대체 실행] 선택 전략 체결이 없어 RSI(40/60) 결과를 표시합니다. | " + fallbackResult.Message;
+                                fallbackResult.Message = "[자동 대체 실행] 선택 전략 체결이 없어 RSI(40/60) 결과를 표시합니다. | " + (fallbackResult.Message ?? string.Empty);
                                 result = fallbackResult;
                             }
                         }
@@ -705,13 +703,26 @@ namespace TradingBot.ViewModels
                         });
                         
                         var optimizeResult = await service.OptimizeWithOptunaAsync(symbol, startDate, endDate, 1000m, selectedTrials);
-                        optimizeResult.Symbol = symbol;
-                        if (optimizeResult.Candles == null || optimizeResult.Candles.Count == 0)
-                            optimizeResult.Candles = precheck.Candles;
-                        if (optimizeResult.FinalBalance <= 0)
-                            optimizeResult.FinalBalance = optimizeResult.InitialBalance;
+                        if (optimizeResult == null)
+                        {
+                            RunOnUI(() => 
+                            {
+                                AddLog("❌ 최적화 결과가 null입니다.");
+                                FooterText = "SYSTEM READY  •  WAITING FOR COMMAND";
+                                ScanProgress = 0;
+                            });
+                            return;
+                        }
 
-                        if ((optimizeResult?.Candles?.Count ?? 0) > 0 && (optimizeResult?.TotalTrades ?? 0) == 0)
+                        var finalOptimizeResult = optimizeResult;
+
+                        finalOptimizeResult.Symbol = symbol;
+                        if (finalOptimizeResult.Candles == null || finalOptimizeResult.Candles.Count == 0)
+                            finalOptimizeResult.Candles = precheck.Candles;
+                        if (finalOptimizeResult.FinalBalance <= 0)
+                            finalOptimizeResult.FinalBalance = finalOptimizeResult.InitialBalance;
+
+                        if ((finalOptimizeResult.Candles?.Count ?? 0) > 0 && finalOptimizeResult.TotalTrades == 0)
                         {
                             RunOnUI(() => AddLog("ℹ️ 최적화 결과 체결 0회로 RSI(40/60) 대체 백테스트를 자동 시도합니다."));
                             var fallbackStrategy = new RsiBacktestStrategy
@@ -722,23 +733,23 @@ namespace TradingBot.ViewModels
                             };
 
                             var fallbackResult = await service.RunBacktestAsync(symbol, startDate, endDate, fallbackStrategy, 1000m);
-                            if ((fallbackResult?.TotalTrades ?? 0) > 0)
+                            if (fallbackResult != null && fallbackResult.TotalTrades > 0)
                             {
-                                fallbackResult.TopTrials = optimizeResult.TopTrials;
+                                fallbackResult.TopTrials = finalOptimizeResult.TopTrials;
                                 fallbackResult.Symbol = symbol;
-                                fallbackResult.Message = "[자동 대체 실행] 최적화 결과 체결이 없어 RSI(40/60) 결과를 표시합니다. | " + fallbackResult.Message;
-                                fallbackResult.StrategyConfiguration = $"{optimizeResult.StrategyConfiguration} | Fallback RSI(40/60)";
-                                optimizeResult = fallbackResult;
+                                fallbackResult.Message = "[자동 대체 실행] 최적화 결과 체결이 없어 RSI(40/60) 결과를 표시합니다. | " + (fallbackResult.Message ?? string.Empty);
+                                fallbackResult.StrategyConfiguration = $"{finalOptimizeResult.StrategyConfiguration ?? string.Empty} | Fallback RSI(40/60)";
+                                finalOptimizeResult = fallbackResult;
                             }
                         }
 
                         RunOnUI(() => 
                         {
                             ScanProgress = 90;
-                            var window = new BacktestWindow(optimizeResult, $"⚙ OPTIMIZE - {symbol}");
+                            var window = new BacktestWindow(finalOptimizeResult, $"⚙ OPTIMIZE - {symbol}");
                             window.Show();
-                            AddLog($"✅ 최적화 완료: {optimizeResult.StrategyConfiguration}");
-                            AddLog($"ℹ️ {optimizeResult.Message}");
+                            AddLog($"✅ 최적화 완료: {finalOptimizeResult.StrategyConfiguration ?? string.Empty}");
+                            AddLog($"ℹ️ {finalOptimizeResult.Message ?? string.Empty}");
                             
                             FooterText = "SYSTEM READY  •  WAITING FOR COMMAND";
                             ScanProgress = 100;
@@ -1132,6 +1143,8 @@ namespace TradingBot.ViewModels
         private void SubscribeToEngineEvents()
         {
             if (_engine == null) return;
+            // 기존 구독 해제 후 재구독 (이중 구독 방지)
+            UnsubscribeFromEngineEvents();
             _engine.OnLiveLog += msg => AddLiveLog(msg);
             _engine.OnAlert += msg => AddAlert(msg);
             _engine.OnStatusLog += msg => AddLog(msg);
@@ -1164,6 +1177,11 @@ namespace TradingBot.ViewModels
             {
                 _ = LoadTradeHistory();
             };
+        }
+
+        private void UnsubscribeFromEngineEvents()
+        {
+            _engine?.ClearEventSubscriptions();
         }
 
         private void HandleTradeExecuted(string symbol, string side, decimal price, decimal qty)
@@ -1525,7 +1543,7 @@ namespace TradingBot.ViewModels
             });
         }
 
-        private async void LoadLiveChartData()
+        private async Task LoadLiveChartDataAsync()
         {
             if (SelectedSymbol == null)
             {
@@ -1826,7 +1844,11 @@ namespace TradingBot.ViewModels
 
         private void RunOnUI(Action action)
         {
-            Application.Current?.Dispatcher.Invoke(action);
+            var app = Application.Current;
+            if (app == null) return;
+            var dispatcher = app.Dispatcher;
+            if (dispatcher == null || dispatcher.HasShutdownStarted) return;
+            dispatcher.Invoke(action);
         }
 
         private static bool IsFinite(double value)

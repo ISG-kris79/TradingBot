@@ -97,7 +97,7 @@ namespace TradingBot
             try
             {
                 btnVerifyEmail.IsEnabled = false;
-                await _emailService.SendVerificationCodeAsync(email, _generatedCode);
+                await (_emailService?.SendVerificationCodeAsync(email, _generatedCode!) ?? Task.CompletedTask);
                 MessageBox.Show($"인증 코드가 {email}로 발송되었습니다.\n 인증코드가 없을 시 스팸메일확인!!"); // 실제 배포 시 코드 노출 제거
 
                 lblCode.Visibility = Visibility.Visible;
@@ -121,6 +121,12 @@ namespace TradingBot
 
         private async void btnRegister_Click(object sender, RoutedEventArgs e)
         {
+            if (_dbService == null)
+            {
+                MessageBox.Show("데이터베이스 서비스가 초기화되지 않았습니다.");
+                return;
+            }
+
             if (string.IsNullOrWhiteSpace(txtUser.Text) || string.IsNullOrWhiteSpace(txtPass.Password))
             {
                 MessageBox.Show("아이디와 비밀번호는 필수입니다.");
@@ -212,7 +218,11 @@ namespace TradingBot
                 var accountInfo = await client.UsdFuturesApi.Account.GetBalancesAsync();
                 return accountInfo.Success;
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Binance API 검증 실패] {ex.Message}");
+                return false;
+            }
         }
 
         private async Task<bool> ValidateBybitKeys(string apiKey, string apiSecret)
@@ -250,7 +260,11 @@ namespace TradingBot
                 }
                 return false;
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Bybit API 검증 실패] {ex.Message}");
+                return false;
+            }
         }
 
         private bool IsPasswordComplex(string password)
@@ -305,6 +319,13 @@ namespace TradingBot
 
             try
             {
+                if (_dbService == null)
+                {
+                    lblEmailFeedback.Text = "DB 서비스가 초기화되지 않았습니다.";
+                    lblEmailFeedback.Foreground = Brushes.Red;
+                    return;
+                }
+
                 if (await _dbService.IsEmailExistsAsync(email))
                 {
                     lblEmailFeedback.Text = "이미 등록된 이메일입니다.";

@@ -111,6 +111,10 @@ namespace TradingBot
                 {
                     string json = File.ReadAllText(path);
                     _rootNode = JsonNode.Parse(json);
+                    if (_rootNode == null)
+                    {
+                        _rootNode = new JsonObject();
+                    }
 
                     // Trading Settings
                     var tradingNode = _rootNode["Trading"];
@@ -149,9 +153,9 @@ namespace TradingBot
 
                         // 시뮬레이션 초기 잔고 로드 (기본값 10000)
                         decimal simBalance = 10000m;
-                        if (tradingNode["SimulationInitialBalance"] != null)
+                        if (tradingNode["SimulationInitialBalance"] is JsonValue simBalanceNode)
                         {
-                            simBalance = tradingNode["SimulationInitialBalance"].GetValue<decimal>();
+                            simBalance = simBalanceNode.GetValue<decimal>();
                         }
                         txtSimulationBalance.Text = simBalance.ToString("F2");
                         _initialSimulationBalance = simBalance;
@@ -169,7 +173,7 @@ namespace TradingBot
                         var symbolsNode = tradingNode["Symbols"];
                         if (symbolsNode is JsonArray arr)
                         {
-                            txtSymbols.Text = string.Join(",", arr.Select(x => x.ToString().Trim('"')));
+                            txtSymbols.Text = string.Join(",", arr.Where(x => x != null).Select(x => x!.ToString().Trim('"')));
                         }
 
                         // [Agent 2] Grid Settings 로드
@@ -246,11 +250,12 @@ namespace TradingBot
                 if (_rootNode == null) _rootNode = new JsonObject();
 
                 // Trading Settings 업데이트
-                if (_rootNode["Trading"] == null) _rootNode["Trading"] = new JsonObject();
+                var tradingNode = (_rootNode["Trading"] as JsonObject) ?? new JsonObject();
+                _rootNode["Trading"] = tradingNode;
 
                 // 거래소 선택 저장
                 int newExchangeIndex = cboExchange.SelectedIndex;
-                _rootNode["Trading"]["SelectedExchange"] = newExchangeIndex;
+                tradingNode["SelectedExchange"] = newExchangeIndex;
                 bool exchangeChanged = (_initialExchangeIndex != newExchangeIndex);
 
                 // AppConfig에 즉시 반영 (재시작 없이 적용 가능하도록)
@@ -260,98 +265,98 @@ namespace TradingBot
                 }
 
                 // GeneralSettings 섹션
-                if (_rootNode["Trading"]["GeneralSettings"] == null)
-                    _rootNode["Trading"]["GeneralSettings"] = new JsonObject();
+                var generalNode = (tradingNode["GeneralSettings"] as JsonObject) ?? new JsonObject();
+                tradingNode["GeneralSettings"] = generalNode;
 
                 // GeneralSettings 객체 생성 (DB 저장용)
                 var generalSettings = new TradingSettings();
 
                 if (int.TryParse(txtLeverage.Text, out int leverage))
                 {
-                    _rootNode["Trading"]["GeneralSettings"]["DefaultLeverage"] = leverage;
+                    generalNode["DefaultLeverage"] = leverage;
                     generalSettings.DefaultLeverage = leverage;
                 }
 
                 if (decimal.TryParse(txtTargetRoe.Text, out decimal targetRoe))
                 {
-                    _rootNode["Trading"]["GeneralSettings"]["TargetRoe"] = targetRoe;
+                    generalNode["TargetRoe"] = targetRoe;
                     generalSettings.TargetRoe = targetRoe;
                 }
 
                 if (decimal.TryParse(txtStopLossRoe.Text, out decimal stopLossRoe))
                 {
-                    _rootNode["Trading"]["GeneralSettings"]["StopLossRoe"] = stopLossRoe;
+                    generalNode["StopLossRoe"] = stopLossRoe;
                     generalSettings.StopLossRoe = stopLossRoe;
                 }
 
                 string selectedProfile = ((cboMajorTrendProfile.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Balanced").Trim();
-                _rootNode["Trading"]["GeneralSettings"]["MajorTrendProfile"] = selectedProfile;
+                generalNode["MajorTrendProfile"] = selectedProfile;
                 generalSettings.MajorTrendProfile = selectedProfile;
 
                 if (decimal.TryParse(txtPumpTp1Roe.Text, out decimal pumpTp1Roe))
                 {
-                    _rootNode["Trading"]["GeneralSettings"]["PumpTp1Roe"] = pumpTp1Roe;
+                    generalNode["PumpTp1Roe"] = pumpTp1Roe;
                     generalSettings.PumpTp1Roe = pumpTp1Roe;
                 }
 
                 if (decimal.TryParse(txtPumpTp2Roe.Text, out decimal pumpTp2Roe))
                 {
-                    _rootNode["Trading"]["GeneralSettings"]["PumpTp2Roe"] = pumpTp2Roe;
+                    generalNode["PumpTp2Roe"] = pumpTp2Roe;
                     generalSettings.PumpTp2Roe = pumpTp2Roe;
                 }
 
                 if (decimal.TryParse(txtPumpTimeStopMinutes.Text, out decimal pumpTimeStopMinutes))
                 {
-                    _rootNode["Trading"]["GeneralSettings"]["PumpTimeStopMinutes"] = pumpTimeStopMinutes;
+                    generalNode["PumpTimeStopMinutes"] = pumpTimeStopMinutes;
                     generalSettings.PumpTimeStopMinutes = pumpTimeStopMinutes;
                 }
 
                 if (decimal.TryParse(txtPumpStopWarnPct.Text, out decimal pumpStopWarnPct))
                 {
-                    _rootNode["Trading"]["GeneralSettings"]["PumpStopDistanceWarnPct"] = pumpStopWarnPct;
+                    generalNode["PumpStopDistanceWarnPct"] = pumpStopWarnPct;
                     generalSettings.PumpStopDistanceWarnPct = pumpStopWarnPct;
                 }
 
                 if (decimal.TryParse(txtPumpStopBlockPct.Text, out decimal pumpStopBlockPct))
                 {
-                    _rootNode["Trading"]["GeneralSettings"]["PumpStopDistanceBlockPct"] = pumpStopBlockPct;
+                    generalNode["PumpStopDistanceBlockPct"] = pumpStopBlockPct;
                     generalSettings.PumpStopDistanceBlockPct = pumpStopBlockPct;
                 }
 
                 // DefaultMargin 저장 (UI에서 입력받지 않으면 기본값 사용)
                 if (decimal.TryParse(txtDefaultMargin?.Text ?? "200.0", out decimal defaultMargin))
                 {
-                    _rootNode["Trading"]["GeneralSettings"]["DefaultMargin"] = defaultMargin;
+                    generalNode["DefaultMargin"] = defaultMargin;
                     generalSettings.DefaultMargin = defaultMargin;
                 }
 
                 // TrailingStartRoe, TrailingDropRoe도 저장 (UI에 필드가 없으면 기본값 유지)
-                if (_rootNode["Trading"]["GeneralSettings"]["TrailingStartRoe"] != null &&
-                    decimal.TryParse(_rootNode["Trading"]["GeneralSettings"]["TrailingStartRoe"].ToString(), out decimal trailingStart))
+                if (generalNode["TrailingStartRoe"] != null &&
+                    decimal.TryParse(generalNode["TrailingStartRoe"]?.ToString(), out decimal trailingStart))
                 {
                     generalSettings.TrailingStartRoe = trailingStart;
                 }
 
-                if (_rootNode["Trading"]["GeneralSettings"]["TrailingDropRoe"] != null &&
-                    decimal.TryParse(_rootNode["Trading"]["GeneralSettings"]["TrailingDropRoe"].ToString(), out decimal trailingDrop))
+                if (generalNode["TrailingDropRoe"] != null &&
+                    decimal.TryParse(generalNode["TrailingDropRoe"]?.ToString(), out decimal trailingDrop))
                 {
                     generalSettings.TrailingDropRoe = trailingDrop;
                 }
 
                 if (decimal.TryParse(txtRisk.Text, out decimal risk))
-                    _rootNode["Trading"]["RiskPercentage"] = risk;
+                    tradingNode["RiskPercentage"] = risk;
 
                 // 시뮬레이션 모드 저장
-                _rootNode["Trading"]["IsSimulationMode"] = chkSimulationMode.IsChecked == true;
+                tradingNode["IsSimulationMode"] = chkSimulationMode.IsChecked == true;
 
                 // 시뮬레이션 초기 잔고 저장
                 if (decimal.TryParse(txtSimulationBalance.Text, out decimal simBalance))
                 {
-                    _rootNode["Trading"]["SimulationInitialBalance"] = simBalance;
+                    tradingNode["SimulationInitialBalance"] = simBalance;
                 }
                 else
                 {
-                    _rootNode["Trading"]["SimulationInitialBalance"] = 10000m;
+                    tradingNode["SimulationInitialBalance"] = 10000m;
                 }
 
                 // AppConfig에 즉시 반영
@@ -366,78 +371,80 @@ namespace TradingBot
                 var symbols = txtSymbols.Text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
                 var symbolsArray = new JsonArray();
                 foreach (var s in symbols) symbolsArray.Add(s);
-                _rootNode["Trading"]["Symbols"] = symbolsArray;
+                tradingNode["Symbols"] = symbolsArray;
 
                 // [Agent 2] Grid Settings 저장
-                if (_rootNode["Trading"]["GridStrategySettings"] == null) _rootNode["Trading"]["GridStrategySettings"] = new JsonObject();
+                var gridNode = (tradingNode["GridStrategySettings"] as JsonObject) ?? new JsonObject();
+                tradingNode["GridStrategySettings"] = gridNode;
 
                 if (int.TryParse(txtGridLevels.Text, out int gridLevels))
-                    _rootNode["Trading"]["GridStrategySettings"]["GridLevels"] = gridLevels;
+                    gridNode["GridLevels"] = gridLevels;
                 if (decimal.TryParse(txtGridSpacing.Text, out decimal gridSpacing))
-                    _rootNode["Trading"]["GridStrategySettings"]["GridSpacingPercentage"] = gridSpacing;
+                    gridNode["GridSpacingPercentage"] = gridSpacing;
 
                 // [Agent 2] Arbitrage Settings 저장
-                if (_rootNode["Trading"]["ArbitrageSettings"] == null) _rootNode["Trading"]["ArbitrageSettings"] = new JsonObject();
+                var arbNode = (tradingNode["ArbitrageSettings"] as JsonObject) ?? new JsonObject();
+                tradingNode["ArbitrageSettings"] = arbNode;
 
-                _rootNode["Trading"]["ArbitrageSettings"]["AutoHedge"] = chkAutoHedge.IsChecked == true;
+                arbNode["AutoHedge"] = chkAutoHedge.IsChecked == true;
 
                 // Transformer Settings 저장
-                if (_rootNode["Trading"]["TransformerSettings"] == null)
-                    _rootNode["Trading"]["TransformerSettings"] = new JsonObject();
+                var tfNode = (tradingNode["TransformerSettings"] as JsonObject) ?? new JsonObject();
+                tradingNode["TransformerSettings"] = tfNode;
 
                 var tfSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
 
                 if (int.TryParse(txtTfAdxPeriod.Text, out int adxPeriod))
                 {
-                    _rootNode["Trading"]["TransformerSettings"]["AdxPeriod"] = adxPeriod;
+                    tfNode["AdxPeriod"] = adxPeriod;
                     tfSettings.AdxPeriod = adxPeriod;
                 }
 
                 if (double.TryParse(txtTfAdxSidewaysThreshold.Text, out double adxSidewaysThreshold))
                 {
-                    _rootNode["Trading"]["TransformerSettings"]["AdxSidewaysThreshold"] = adxSidewaysThreshold;
+                    tfNode["AdxSidewaysThreshold"] = adxSidewaysThreshold;
                     tfSettings.AdxSidewaysThreshold = adxSidewaysThreshold;
                 }
 
                 if (double.TryParse(txtTfSidewaysRsiLongMax.Text, out double sidewaysRsiLongMax))
                 {
-                    _rootNode["Trading"]["TransformerSettings"]["SidewaysRsiLongMax"] = sidewaysRsiLongMax;
+                    tfNode["SidewaysRsiLongMax"] = sidewaysRsiLongMax;
                     tfSettings.SidewaysRsiLongMax = sidewaysRsiLongMax;
                 }
 
                 if (double.TryParse(txtTfSidewaysRsiShortMin.Text, out double sidewaysRsiShortMin))
                 {
-                    _rootNode["Trading"]["TransformerSettings"]["SidewaysRsiShortMin"] = sidewaysRsiShortMin;
+                    tfNode["SidewaysRsiShortMin"] = sidewaysRsiShortMin;
                     tfSettings.SidewaysRsiShortMin = sidewaysRsiShortMin;
                 }
 
                 if (double.TryParse(txtTfSidewaysVolumeRatioMax.Text, out double sidewaysVolumeRatioMax))
                 {
-                    _rootNode["Trading"]["TransformerSettings"]["SidewaysVolumeRatioMax"] = sidewaysVolumeRatioMax;
+                    tfNode["SidewaysVolumeRatioMax"] = sidewaysVolumeRatioMax;
                     tfSettings.SidewaysVolumeRatioMax = sidewaysVolumeRatioMax;
                 }
 
                 if (decimal.TryParse(txtTfSidewaysLongLowerTouch.Text, out decimal longLowerTouch))
                 {
-                    _rootNode["Trading"]["TransformerSettings"]["SidewaysLongLowerBandTouchMultiplier"] = longLowerTouch;
+                    tfNode["SidewaysLongLowerBandTouchMultiplier"] = longLowerTouch;
                     tfSettings.SidewaysLongLowerBandTouchMultiplier = longLowerTouch;
                 }
 
                 if (decimal.TryParse(txtTfSidewaysShortUpperTouch.Text, out decimal shortUpperTouch))
                 {
-                    _rootNode["Trading"]["TransformerSettings"]["SidewaysShortUpperBandTouchMultiplier"] = shortUpperTouch;
+                    tfNode["SidewaysShortUpperBandTouchMultiplier"] = shortUpperTouch;
                     tfSettings.SidewaysShortUpperBandTouchMultiplier = shortUpperTouch;
                 }
 
                 if (decimal.TryParse(txtTfSidewaysLongSlMul.Text, out decimal longSlMul))
                 {
-                    _rootNode["Trading"]["TransformerSettings"]["SidewaysLongStopLossMultiplier"] = longSlMul;
+                    tfNode["SidewaysLongStopLossMultiplier"] = longSlMul;
                     tfSettings.SidewaysLongStopLossMultiplier = longSlMul;
                 }
 
                 if (decimal.TryParse(txtTfSidewaysShortSlMul.Text, out decimal shortSlMul))
                 {
-                    _rootNode["Trading"]["TransformerSettings"]["SidewaysShortStopLossMultiplier"] = shortSlMul;
+                    tfNode["SidewaysShortStopLossMultiplier"] = shortSlMul;
                     tfSettings.SidewaysShortStopLossMultiplier = shortSlMul;
                 }
 

@@ -26,7 +26,7 @@ namespace TradingBot
         private bool _disposed = false;
         public bool IsBotRunning { get; private set; } = false;
         private readonly IBinanceRestClient _client;
-        private CancellationTokenSource _cts;
+        private CancellationTokenSource? _cts;
         private readonly string apiKey;
         private readonly string apiSecret;
 
@@ -53,8 +53,8 @@ namespace TradingBot
         private GridStrategy _gridStrategy;
         private ArbitrageStrategy _arbitrageStrategy;
         private NewsSentimentService _newsService;
-        private TransformerStrategy _transformerStrategy;
-        private TransformerTrainer _transformerTrainer;
+        private TransformerStrategy? _transformerStrategy;
+        private TransformerTrainer? _transformerTrainer;
         private ElliottWave3WaveStrategy _elliotWave3Strategy; // [3파 확정형 단타]
         private HybridExitManager _hybridExitManager; // [하이브리드 AI 익절/손절 관리]
         private BinanceExecutionService _executionService; // [실시간 레버리지 주문 실행 서비스]
@@ -98,8 +98,8 @@ namespace TradingBot
         private OiDataCollector? _oiCollector;
 
         // [AI 모니터링] 예측 추적용 Dictionary (symbol + timestamp -> 예측 정보)
-        private ConcurrentDictionary<string, (DateTime timestamp, decimal predictedPrice, bool predictedDirection, string modelName, float confidence)> _pendingPredictions
-            = new ConcurrentDictionary<string, (DateTime, decimal, bool, string, float)>();
+        private ConcurrentDictionary<string, (DateTime timestamp, decimal entryPrice, decimal predictedPrice, bool predictedDirection, string modelName, float confidence)> _pendingPredictions
+            = new ConcurrentDictionary<string, (DateTime, decimal, decimal, bool, string, float)>();
 
         // [캔들 확인 지연 진입] 신호 발생 시 즉시 진입하지 않고 다음 캔들 확인 후 진입
         private readonly ConcurrentDictionary<string, DelayedEntrySignal> _pendingDelayedEntries
@@ -119,7 +119,9 @@ namespace TradingBot
         public event Action<int, int>? OnProgress;
         public event Action<double, double, int>? OnDashboardUpdate; // equity, available, posCount
         public event Action<int, int, int, int>? OnSlotStatusUpdate; // major, majorMax, pump, pumpMax
+    #pragma warning disable CS0067
         public event Action<bool, string>? OnTelegramStatusUpdate;
+    #pragma warning restore CS0067
         public event Action<MultiTimeframeViewModel>? OnSignalUpdate;
         public event Action<string, decimal, double?>? OnTickerUpdate; // symbol, price, pnl
         public event Action<string>? OnSymbolTracking; // Ensure symbol in list
@@ -130,6 +132,30 @@ namespace TradingBot
         public event Action<string, float, float>? OnRLStatsUpdate; // [추가] RL 학습 상태 업데이트
         public event Action<AIPredictionRecord>? OnAIPrediction; // [AI 모니터링] 예측 기록 이벤트
         public event Action? OnTradeHistoryUpdated; // [FIX] 청산 시 TradeHistory 자동 갱신 트리거
+
+        /// <summary>
+        /// 외부에서 모든 이벤트 구독을 해제합니다 (event 키워드로 인해 내부에서만 초기화 가능)
+        /// </summary>
+        public void ClearEventSubscriptions()
+        {
+            OnLiveLog = null;
+            OnAlert = null;
+            OnStatusLog = null;
+            OnProgress = null;
+            OnDashboardUpdate = null;
+            OnSlotStatusUpdate = null;
+            OnTelegramStatusUpdate = null;
+            OnSignalUpdate = null;
+            OnTickerUpdate = null;
+            OnSymbolTracking = null;
+            OnTradeExecuted = null;
+            OnPositionStatusUpdate = null;
+            OnCloseIncompleteStatusChanged = null;
+            OnExternalSyncStatusChanged = null;
+            OnRLStatsUpdate = null;
+            OnAIPrediction = null;
+            OnTradeHistoryUpdated = null;
+        }
 
         private DateTime _lastHeartbeatTime = DateTime.MinValue;
         private DateTime _lastPositionSyncTime = DateTime.MinValue; // [FIX] 마지막 포지션 동기화 시간
@@ -414,7 +440,10 @@ namespace TradingBot
                         $"StackTrace: {ex.StackTrace}\n" +
                         $"InnerException: {ex.InnerException?.Message ?? "None"}\n\n");
                 }
-                catch { }
+                catch (Exception fileEx)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Transformer crash log 저장 실패: {fileEx.Message}");
+                }
             }
 
             // [3파 확정형 전략] 먼저 초기화 (TransformerStrategy에서 사용하기 위해)
@@ -490,7 +519,7 @@ namespace TradingBot
                     bool predictedDirection = predictedPrice > currentPrice; // 상승 예측 여부
                     float confidence = (float)Math.Min(Math.Abs(change) / 5.0, 1.0); // 변화율 기반 신뢰도 (5%를 1.0으로)
                     string predictionKey = $"TF_{symbol}_{DateTime.Now:yyyyMMddHHmmss}";
-                    _pendingPredictions[predictionKey] = (DateTime.Now, predictedPrice, predictedDirection, "Transformer", confidence);
+                    _pendingPredictions[predictionKey] = (DateTime.Now, currentPrice, predictedPrice, predictedDirection, "Transformer", confidence);
 
                     string direction = predictedDirection ? "상승" : "하락";
                     OnStatusLog?.Invoke($"🔮 [Transformer] {symbol} 예측 등록: {direction} (신뢰도: {confidence:P0}) → 5분 후 검증 예정");
@@ -565,6 +594,12 @@ namespace TradingBot
                 else
                 {
                     // 실거래 모드: 거래소에서 잔고 조회
+                    if (_exchangeService == null)
+                    {
+                        OnStatusLog?.Invoke("⚠️ [InitializeSeed] 거래소 서비스가 초기화되지 않아 초기 잔고 조회를 건너뜁니다.");
+                        return;
+                    }
+
                     decimal balance = await _exchangeService.GetBalanceAsync("USDT", token);
                     if (balance > 0)
                     {
@@ -799,6 +834,7 @@ namespace TradingBot
 
             try
             {
+                _cts?.Dispose();
                 _cts = new CancellationTokenSource();
                 var token = _cts.Token;
 
@@ -840,6 +876,7 @@ namespace TradingBot
                 TelegramService.Instance.OnRequestStatus = GetEngineStatusReport;
                 TelegramService.Instance.OnRequestStop = StopEngine;
                 TelegramService.Instance.StartReceiving();
+                OnTelegramStatusUpdate?.Invoke(true, "Telegram: Connected");
 
                 _ = ProcessTickerChannelAsync(token);
                 _ = ProcessAccountChannelAsync(token); // [Agent 2] 계좌 업데이트 처리 시작
@@ -1486,7 +1523,10 @@ namespace TradingBot
                 // ═══════════════════════════
                 await CheckHybridExitAsync(symbol, currentPrice, token);
             }
-            catch { /* 로그 생략 */ }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[TradingEngine] TickerProcessing failed for {symbol}: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -1544,7 +1584,7 @@ namespace TradingBot
                                 try
                                 {
                                     // 재예측은 완전한 CandleData 생성 필요 (학습 피처와 동일)
-                                    var candleData = await GetLatestCandleDataAsync(symbol, _cts.Token);
+                                    var candleData = await GetLatestCandleDataAsync(symbol, _cts?.Token ?? token);
                                     if (candleData != null)
                                     {
                                         var pred = _aiPredictor.Predict(candleData);
@@ -1558,11 +1598,17 @@ namespace TradingBot
                                         }
                                     }
                                 }
-                                catch { /* 재예측 실패 시 무시 */ }
+                                catch (Exception predEx)
+                                {
+                                    System.Diagnostics.Debug.WriteLine($"[CheckHybridExit] AI 재예측 실패: {predEx.Message}");
+                                }
                             }
                         }
                     }
-                    catch { /* 재예측 실패 시 무시 */ }
+                    catch (Exception stateEx)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[CheckHybridExit] State access 실패: {stateEx.Message}");
+                    }
                 }
 
                 var exitAction = _hybridExitManager.CheckExit(
@@ -1783,8 +1829,11 @@ namespace TradingBot
             {
                 _cts.Cancel();
             }
+            _cts?.Dispose();
+            _cts = null;
             TelegramService.Instance.OnRequestStatus = null!;
             TelegramService.Instance.OnRequestStop = null!;
+            OnTelegramStatusUpdate?.Invoke(false, "Telegram: Disconnected");
             IsBotRunning = false;
             OnStatusLog?.Invoke("엔진 정지");
         }
@@ -1949,15 +1998,14 @@ namespace TradingBot
             {
                 var candleData = await GetLatestCandleDataAsync(symbol, token);
                 if (candleData != null)
-                    if (candleData != null) // Check for null
-                    {
-                        var prediction = _aiPredictor.Predict(candleData);
-                        aiScore = prediction.Score;
+                {
+                    var prediction = _aiPredictor.Predict(candleData);
+                    aiScore = prediction.Score;
 
                         // [AI 모니터링] 예측 기록 (5분 후 검증)
                         string predictionKey = $"ML_{symbol}_{DateTime.Now:yyyyMMddHHmmss}";
                         decimal predictedPrice = currentPrice * (prediction.Prediction ? 1.02m : 0.98m); // 2% 변동 예측
-                        _pendingPredictions[predictionKey] = (DateTime.Now, predictedPrice, prediction.Prediction, "ML.NET", prediction.Probability);
+                        _pendingPredictions[predictionKey] = (DateTime.Now, currentPrice, predictedPrice, prediction.Prediction, "ML.NET", prediction.Probability);
 
                         string mlDirection = prediction.Prediction ? "상승" : "하락";
                         OnStatusLog?.Invoke($"🔮 [ML.NET] {symbol} 예측 등록: {mlDirection} (확률: {prediction.Probability:P0}) → 5분 후 검증 예정");
@@ -3295,7 +3343,10 @@ namespace TradingBot
                 {
                     await TelegramService.Instance.SendMessageAsync($"⚠️ *[자동 매매 오류]*\n{symbol} 진입 중 예외 발생:\n{ex.Message}");
                 }
-                catch { }
+                catch (Exception tgEx)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Telegram 알림 전송 실패: {tgEx.Message}");
+                }
             }
         }
 
@@ -3985,7 +4036,11 @@ namespace TradingBot
                     SentimentScore = (float)sentiment,
                 };
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[GetLatestCandleData] 지표 계산 실패: {ex.Message}");
+                return null;
+            }
         }
 
         #endregion
@@ -4037,7 +4092,10 @@ namespace TradingBot
                     return System.Text.Json.JsonSerializer.Serialize(data, options);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"JSON 직렬화 오류: {ex.Message}");
+            }
             return "[]";
         }
 
@@ -4298,7 +4356,7 @@ namespace TradingBot
                     return;
                 }
 
-                var (timestamp, predictedPrice, predictedDirection, modelName, confidence) = predictionInfo;
+                var (timestamp, entryPrice, predictedPrice, predictedDirection, modelName, confidence) = predictionInfo;
                 
                 OnStatusLog?.Invoke($"🔍 [{modelName}] {symbol} 예측 검증 시작 (5분 경과)");
 
@@ -4311,9 +4369,8 @@ namespace TradingBot
                 }
 
                 decimal actualPrice = tickerResult.Data.LastPrice;
-                decimal entryPrice = predictedPrice / (predictedDirection ? 1.02m : 0.98m); // 원래 가격 역산
 
-                // 실제 방향 계산
+                // 실제 방향 계산 (저장된 진입 가격 기준)
                 bool actualDirection = actualPrice > entryPrice;
 
                 // 정확도 판단
@@ -4337,7 +4394,7 @@ namespace TradingBot
                 
                 string resultIcon = isCorrect ? "✅" : "❌";
                 string direction = predictedDirection ? "상승" : "하락";
-                OnStatusLog?.Invoke($"{resultIcon} [{modelName}] {symbol} 예측 검증 완료: {direction} 예측 → {(isCorrect ? "정확" : "오류")} (예측: ${predictedPrice:F4} / 실제: ${actualPrice:F4})");
+                OnStatusLog?.Invoke($"{resultIcon} [{modelName}] {symbol} 예측 검증 완료: {direction} 예측 → {(isCorrect ? "정확" : "미적중")} (진입: ${entryPrice:F4} / 예측: ${predictedPrice:F4} / 실제: ${actualPrice:F4})");
 
                 // RL 보상 계산 및 업데이트
                 double reward = isCorrect ? (confidence * 10) : (-confidence * 5);

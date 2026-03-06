@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using TorchSharp;
 using TradingBot.Models;
 using static TorchSharp.torch;
@@ -25,6 +26,7 @@ namespace TradingBot.Services.AI
         private TimeSeriesTransformer? _model;
         private readonly Device _device;
         private TimeSeriesDataLoader? _dataLoader; // 최적화된 데이터 로더
+        private readonly ReaderWriterLockSlim _modelLock = new();
 
         // [추가] 외부에서 시퀀스 길이 참조 가능하도록 공개
         public int SeqLen => _seqLen;
@@ -128,52 +130,60 @@ namespace TradingBot.Services.AI
                     return;
                 }
 
-                var optimizer = Adam(_model.parameters(), learningRate);
-                var lossFunc = MSELoss();
-
-                _model.train();
-
-                OnLog?.Invoke($"🚀 [TransformerTrainer] 학습 시작: {epochs} epochs, {_dataLoader.TotalBatches} batches/epoch");
-
-                for (int epoch = 0; epoch < epochs; epoch++)
+                _modelLock.EnterWriteLock();
+                try
                 {
-                    float totalLoss = 0;
-                    int batchCount = 0;
+                    using var optimizer = Adam(_model.parameters(), learningRate);
+                    using var lossFunc = MSELoss();
 
-                    // 배치별 학습 (메모리 효율적)
-                    foreach (var (xBatch, yBatch) in _dataLoader.GetBatches())
+                    _model.train();
+
+                    OnLog?.Invoke($"🚀 [TransformerTrainer] 학습 시작: {epochs} epochs, {_dataLoader.TotalBatches} batches/epoch");
+
+                    for (int epoch = 0; epoch < epochs; epoch++)
                     {
-                        using (xBatch)
-                        using (yBatch)
+                        float totalLoss = 0;
+                        int batchCount = 0;
+
+                        // 배치별 학습 (메모리 효율적)
+                        foreach (var (xBatch, yBatch) in _dataLoader.GetBatches())
                         {
-                            optimizer.zero_grad();
+                            using (xBatch)
+                            using (yBatch)
+                            {
+                                optimizer.zero_grad();
 
-                            using var output = _model.forward(xBatch);
-                            using var loss = lossFunc.forward(output, yBatch);
+                                using var output = _model.forward(xBatch);
+                                using var loss = lossFunc.forward(output, yBatch);
 
-                            loss.backward();
-                            optimizer.step();
+                                loss.backward();
+                                optimizer.step();
 
-                            totalLoss += loss.item<float>();
-                            batchCount++;
+                                totalLoss += loss.item<float>();
+                                batchCount++;
+                            }
+                        }
+
+                        float avgLoss = totalLoss / batchCount;
+
+                        // [수정] 이벤트 발생 (UI 업데이트용)
+                        OnEpochCompleted?.Invoke(epoch + 1, epochs, avgLoss);
+                        OnLog?.Invoke($"📉 [Transformer] Epoch {epoch + 1}/{epochs} | Loss: {avgLoss:F6}");
+
+                        // 주기적 저장 (10 epoch마다)
+                        if ((epoch + 1) % 10 == 0)
+                        {
+                            SaveModel();
                         }
                     }
 
-                    float avgLoss = totalLoss / batchCount;
-
-                    // [수정] 이벤트 발생 (UI 업데이트용)
-                    OnEpochCompleted?.Invoke(epoch + 1, epochs, avgLoss);
-                    OnLog?.Invoke($"📉 [Transformer] Epoch {epoch + 1}/{epochs} | Loss: {avgLoss:F6}");
-
-                    // 주기적 저장 (10 epoch마다)
-                    if ((epoch + 1) % 10 == 0)
-                    {
-                        SaveModel();
-                    }
+                    SaveModel();
+                    OnLog?.Invoke("✅ [TransformerTrainer] 학습 완료!");
                 }
-
-                SaveModel();
-                OnLog?.Invoke("✅ [TransformerTrainer] 학습 완료!");
+                finally
+                {
+                    _modelLock.ExitWriteLock();
+                }
             }
             catch (Exception ex)
             {
@@ -216,27 +226,36 @@ namespace TradingBot.Services.AI
 
             onlineLoader.LoadData(newData);
 
-            var optimizer = Adam(_model.parameters(), learningRate);
-            var lossFunc = MSELoss();
-            _model.train();
-
-            for (int epoch = 0; epoch < epochs; epoch++)
+            _modelLock.EnterWriteLock();
+            try
             {
-                foreach (var (xBatch, yBatch) in onlineLoader.GetBatches())
+                using var optimizer = Adam(_model.parameters(), learningRate);
+                using var lossFunc = MSELoss();
+
+                _model.train();
+
+                for (int epoch = 0; epoch < epochs; epoch++)
                 {
-                    using (xBatch)
-                    using (yBatch)
+                    foreach (var (xBatch, yBatch) in onlineLoader.GetBatches())
                     {
-                        optimizer.zero_grad();
-                        using var output = _model.forward(xBatch);
-                        using var loss = lossFunc.forward(output, yBatch);
-                        loss.backward();
-                        optimizer.step();
+                        using (xBatch)
+                        using (yBatch)
+                        {
+                            optimizer.zero_grad();
+                            using var output = _model.forward(xBatch);
+                            using var loss = lossFunc.forward(output, yBatch);
+                            loss.backward();
+                            optimizer.step();
+                        }
                     }
                 }
             }
+            finally
+            {
+                _modelLock.ExitWriteLock();
+                onlineLoader.Dispose();
+            }
             OnLog?.Invoke($"✨ [Transformer] 온라인 학습 완료 ({newData.Count}건)");
-            onlineLoader.Dispose();
         }
 
         /// <summary>
@@ -266,17 +285,25 @@ namespace TradingBot.Services.AI
                 throw new InvalidOperationException("모델 또는 데이터 로더가 초기화되지 않았습니다.");
             }
 
-            _model.eval();
-
-            using (torch.no_grad())
+            _modelLock.EnterReadLock();
+            try
             {
-                using var inputTensor = _dataLoader.CreateInferenceTensor(recentSequence);
-                using var output = _model.forward(inputTensor);
+                _model.eval();
 
-                float normalizedPrediction = output[0, 0].item<float>();
-                float denormalizedPrice = _dataLoader.DenormalizeTarget(normalizedPrediction);
+                using (torch.no_grad())
+                {
+                    using var inputTensor = _dataLoader.CreateInferenceTensor(recentSequence);
+                    using var output = _model.forward(inputTensor);
 
-                return denormalizedPrice;
+                    float normalizedPrediction = output[0, 0].item<float>();
+                    float denormalizedPrice = _dataLoader.DenormalizeTarget(normalizedPrediction);
+
+                    return denormalizedPrice;
+                }
+            }
+            finally
+            {
+                _modelLock.ExitReadLock();
             }
         }
 
@@ -456,7 +483,7 @@ namespace TradingBot.Services.AI
             }
         }
 
-        private bool _disposed = false;
+        private volatile bool _disposed = false;
 
         /// <summary>
         /// 리소스 정리
@@ -475,6 +502,8 @@ namespace TradingBot.Services.AI
                 
                 _means = null;
                 _stds = null;
+
+                _modelLock?.Dispose();
             }
             catch (Exception ex)
             {

@@ -3,15 +3,15 @@ namespace TradingBot.Models
     public class User
     {
         public int Id { get; set; }
-        public string Username { get; set; }
-        public string Email { get; set; }
-        public string PasswordHash { get; set; }
-        public string BinanceApiKey { get; set; }
-        public string BinanceApiSecret { get; set; }
-        public string TelegramBotToken { get; set; }
-        public string TelegramChatId { get; set; }
-        public string BybitApiKey { get; set; }
-        public string BybitApiSecret { get; set; }
+        public string Username { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
+        public string PasswordHash { get; set; } = string.Empty;
+        public string BinanceApiKey { get; set; } = string.Empty;
+        public string BinanceApiSecret { get; set; } = string.Empty;
+        public string TelegramBotToken { get; set; } = string.Empty;
+        public string TelegramChatId { get; set; } = string.Empty;
+        public string BybitApiKey { get; set; } = string.Empty;
+        public string BybitApiSecret { get; set; } = string.Empty;
 
         /// <summary>
         /// 관리자 승인 여부 (false: 승인대기, true: 승인완료)

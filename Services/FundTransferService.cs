@@ -43,21 +43,23 @@ namespace TradingBot.Services
         /// <summary>
         /// 자동 자금 이동 모니터링 시작
         /// </summary>
-        public async Task StartMonitoringAsync(CancellationToken ct = default)
+        public Task StartMonitoringAsync(CancellationToken ct = default)
         {
             if (_isMonitoring)
             {
                 OnLog?.Invoke("[FundTransfer] ⚠️ 이미 모니터링 중입니다.");
-                return;
+                return Task.CompletedTask;
             }
             
             _isMonitoring = true;
+            _cts?.Dispose();
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var token = _cts.Token;
             
             OnLog?.Invoke($"[FundTransfer] 🚀 자금 이동 모니터링 시작 (체크 간격: {_settings.CheckIntervalMinutes}분)");
             
-            _ = Task.Run(async () => await MonitoringLoopAsync(token), token);
+            _ = Task.Run(() => MonitoringLoopAsync(token), token);
+            return Task.CompletedTask;
         }
         
         /// <summary>
@@ -66,6 +68,8 @@ namespace TradingBot.Services
         public void Stop()
         {
             _cts?.Cancel();
+            _cts?.Dispose();
+            _cts = null;
             _isMonitoring = false;
             OnLog?.Invoke("[FundTransfer] 🛑 자금 이동 모니터링 중지");
         }
@@ -161,20 +165,20 @@ namespace TradingBot.Services
         /// <summary>
         /// 수동 자금 이동 요청
         /// </summary>
-        public async Task<FundTransferResult> RequestTransferAsync(
+        public Task<FundTransferResult> RequestTransferAsync(
             ExchangeType fromExchange,
             ExchangeType toExchange,
             decimal amount,
             CancellationToken ct = default)
         {
             OnLog?.Invoke($"[FundTransfer] 📤 수동 자금 이동 요청: {fromExchange} → {toExchange}, {amount:F2} USDT");
-            return await InitiateTransferAsync(fromExchange, toExchange, amount, ct);
+            return InitiateTransferAsync(fromExchange, toExchange, amount, ct);
         }
         
         /// <summary>
         /// 자금 이동 실행 (출금 → 입금)
         /// </summary>
-        private async Task<FundTransferResult> InitiateTransferAsync(
+        private Task<FundTransferResult> InitiateTransferAsync(
             ExchangeType fromExchange,
             ExchangeType toExchange,
             decimal amount,
@@ -217,7 +221,7 @@ namespace TradingBot.Services
                     // [Phase 14] DB 로그 저장
                     if (_dbManager != null)
                     {
-                        _ = Task.Run(async () => await _dbManager.SaveFundTransferLogAsync(result));
+                        _ = Task.Run(() => _dbManager.SaveFundTransferLogAsync(result));
                     }
                     
                     OnTransferCompleted?.Invoke(result);
@@ -225,7 +229,7 @@ namespace TradingBot.Services
                     // [Phase 14] Telegram 알림
                     if (_telegram != null)
                     {
-                        _ = Task.Run(async () => await _telegram.SendFundTransferNotificationAsync(
+                        _ = Task.Run(() => _telegram.SendFundTransferNotificationAsync(
                             request.FromExchange.ToString(),
                             request.ToExchange.ToString(),
                             request.Asset,
@@ -235,14 +239,13 @@ namespace TradingBot.Services
                         ));
                     }
                     
-                    return result;
+                    return Task.FromResult(result);
                 }
                 
                 OnLog?.Invoke($"[FundTransfer] ⚠️ 실제 출금/입금 모드: 실제 자금이 이동됩니다!");
                 
                 // 실제 출금/입금 API 구현
                 var fromService = _exchanges[fromExchange];
-                var toService = _exchanges[toExchange];
                 
                 // 1단계: 목적지 거래소의 입금 주소 조회
                 // 주의: IExchangeService에 GetDepositAddressAsync 메서드가 있어야 함
@@ -271,12 +274,17 @@ namespace TradingBot.Services
                 // var depositConfirmed = await WaitForDepositConfirmationAsync(toService, request.Asset, amount, ct);
                 // result.DepositSuccess = depositConfirmed;
                 
-                // 현재는 미구현 상태이므로 에러 발생
-                throw new NotImplementedException(
-                    "실제 출금/입금 API는 아직 구현되지 않았습니다. " +
+                // [미구현] 실제 출금/입금 API는 아직 구현되지 않음
+                result.Success = false;
+                result.ErrorMessage = "실제 출금/입금 API는 아직 구현되지 않았습니다. " +
                     "IExchangeService에 GetDepositAddressAsync, WithdrawAsync 메서드를 추가해야 합니다. " +
-                    "시뮬레이션 모드(SimulationMode: true)를 사용하세요."
-                );
+                    "시뮬레이션 모드(SimulationMode: true)를 사용하세요.";
+                result.EndTime = DateTime.UtcNow;
+                
+                OnLog?.Invoke($"[FundTransfer] ⚠️ 미구현 기능: {result.ErrorMessage}");
+                OnTransferCompleted?.Invoke(result);
+                
+                return Task.FromResult(result);
                 
                 // result.Success = result.WithdrawSuccess && result.DepositSuccess;
                 // result.EndTime = DateTime.UtcNow;
@@ -304,7 +312,6 @@ namespace TradingBot.Services
                 //     ));
                 // }
                 
-                return result;
             }
             catch (Exception ex)
             {
@@ -317,7 +324,7 @@ namespace TradingBot.Services
                 // [Phase 14] DB 로그 저장 (실패도 기록)
                 if (_dbManager != null)
                 {
-                    _ = Task.Run(async () => await _dbManager.SaveFundTransferLogAsync(result));
+                    _ = Task.Run(() => _dbManager.SaveFundTransferLogAsync(result));
                 }
                 
                 OnTransferCompleted?.Invoke(result);
@@ -325,7 +332,7 @@ namespace TradingBot.Services
                 // [Phase 14] Telegram 알림 - 자금 이동 실패
                 if (_telegram != null)
                 {
-                    _ = Task.Run(async () => await _telegram.SendFundTransferNotificationAsync(
+                    _ = Task.Run(() => _telegram.SendFundTransferNotificationAsync(
                         request.FromExchange.ToString(),
                         request.ToExchange.ToString(),
                         request.Asset,
@@ -335,7 +342,7 @@ namespace TradingBot.Services
                     ));
                 }
                 
-                return result;
+                return Task.FromResult(result);
             }
         }
     }

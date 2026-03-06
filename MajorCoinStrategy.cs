@@ -166,7 +166,10 @@ namespace TradingBot.Strategies
                         // AI 예측기를 직접 호출할 수 없으므로, 결정이 LONG/SHORT일 때 AI 필터에 의해 차단될 수 있음을 표시
                         aiFilterWarning = " ⚠️AI필터 통과 필요";
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[MajorCoinStrategy] Settings access failed: {ex.Message}");
+                    }
                 }
 
                 string reason = "";

@@ -69,14 +69,14 @@ namespace TradingBot.Models
     public class TradeHistoryModel
     {
         public int Id { get; set; }
-        public string Symbol { get; set; }
-        public string Side { get; set; }
+        public string Symbol { get; set; } = string.Empty;
+        public string Side { get; set; } = string.Empty;
         public decimal EntryPrice { get; set; }
         public decimal ExitPrice { get; set; }
         public decimal Quantity { get; set; }
         public decimal PnL { get; set; }
         public decimal PnLPercent { get; set; }
-        public string ExitReason { get; set; }
+        public string ExitReason { get; set; } = string.Empty;
         public DateTime ExitTime { get; set; }
     }
 }

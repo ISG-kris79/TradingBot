@@ -7,6 +7,24 @@
 
 ## [Unreleased]
 
+## [2.2.5] - 2026-03-06
+
+### Fixed
+
+- **예외 처리 및 로깅 개선**:
+  - 주요 빈 catch {} 블록에 디버그 로깅 추가로 운영 중 추적성 대폭 개선
+  - TradingEngine, SignUpWindow, WebServerService 등에서 예외 발생 시 로그 출력 추가
+  - Binance/Bybit API 키 검증 실패 시 구체적인 오류 메시지 제공
+
+- **미구현 서비스 안정성 개선**:
+  - FundTransferService, PortfolioRebalancingService의 NotImplementedException 제거
+  - 실제 출금/입금 API 미구현 시 충돌 대신 안전한 오류 메시지 반환
+  - 시뮬레이션 모드 사용 권장 메시지 추가
+
+- **UI/UX 개선**:
+  - AI 예측 검증 결과 표현 개선: "부정확" → "미적중"으로 변경
+  - 보다 중립적이고 사용자 친화적인 메시지 제공
+
 ## [2.2.4] - 2026-03-06
 
 ### Fixed

@@ -744,7 +744,10 @@ namespace TradingBot.Services
                             }
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        OnLog?.Invoke($"⚠️ [{symbol}] BB중단 하향 분석 오류: {ex.Message}");
+                    }
                 }
 
                 // ============================================================
@@ -790,7 +793,10 @@ namespace TradingBot.Services
                                 if (rsiNow >= 80) secondRatio = 0.40m; // 초과매수면 익절 강도 강화
                             }
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            OnLog?.Invoke($"⚠️ [{symbol}] ElliottWave 부분익절 RSI 계산 오류: {ex.Message}");
+                        }
 
                         await ExecutePartialClose(symbol, secondRatio, token);
                         lock (_posLock)
@@ -972,7 +978,10 @@ namespace TradingBot.Services
                                 }
                             }
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            OnLog?.Invoke($"⚠️ [{symbol}] 밴드라이딩/레벨업 스탑 분석 오류: {ex.Message}");
+                        }
                     }
 
                     if (shouldLevelUpStop)

@@ -92,7 +92,24 @@ namespace TradingBot.Strategies
                 _modelNotReadyLogged = false;
 
                 // 4. AI 예측 수행
-                float predictedPriceFloat = _trainer.Predict(recentSequence);
+                float predictedPriceFloat;
+                try
+                {
+                    predictedPriceFloat = _trainer.Predict(recentSequence);
+                }
+                catch (InvalidOperationException)
+                {
+                    // 모델 미준비 상태 — 이미 위에서 IsModelReady 체크했으나 경합 상태 가능
+                    if (!_modelNotReadyLogged) { OnLog?.Invoke("⚠️ 모델 준비 대기 중..."); _modelNotReadyLogged = true; }
+                    return;
+                }
+                catch (ArgumentException argEx)
+                {
+                    // 시퀀스 길이 불일치 등 데이터 문제 — 반복 로깅 방지
+                    OnLog?.Invoke($"ℹ️ [{symbol}] 예측 입력 데이터 부적합: {argEx.Message}");
+                    return;
+                }
+
                 decimal predictedPrice = (decimal)predictedPriceFloat;
                 try
                 {
@@ -446,6 +463,9 @@ namespace TradingBot.Strategies
 
             for (int i = 50; i < klines.Count; i++)
             {
+                // 대량 데이터 처리 시 100건마다 Task.Yield로 봐주기
+                if ((i - 50) % 100 == 0)
+                    await Task.Yield();
                 var subset = klines.GetRange(0, i + 1);
                 var current = klines[i];
                 var rsi = IndicatorCalculator.CalculateRSI(subset, 14);

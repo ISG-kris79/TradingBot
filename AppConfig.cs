@@ -106,10 +106,12 @@ namespace TradingBot
                 }
             }
 
-            // [디버깅용] 설정 로드 여부 확인 (Visual Studio 출력 창에서 확인)
-            System.Diagnostics.Debug.WriteLine($"[AppConfig] Binance Key Loaded: {!string.IsNullOrEmpty(BinanceApiKey)}");
-            System.Diagnostics.Debug.WriteLine($"[AppConfig] Telegram Token Loaded: {!string.IsNullOrEmpty(TelegramBotToken)}");
-            System.Diagnostics.Debug.WriteLine($"[AppConfig] ConnectionString Loaded: {!string.IsNullOrEmpty(ConnectionString)}");
+            // [디버깅용] 설정 로드 여부 확인 (민감도 높은 항목은 DEBUG 빌드에서만 최소 정보 출력)
+#if DEBUG
+            System.Diagnostics.Debug.WriteLine($"[AppConfig] Credentials configured: {!string.IsNullOrEmpty(BinanceApiKey)}");
+            System.Diagnostics.Debug.WriteLine($"[AppConfig] Telegram configured: {!string.IsNullOrEmpty(TelegramBotToken)}");
+            System.Diagnostics.Debug.WriteLine($"[AppConfig] Database configured: {!string.IsNullOrEmpty(ConnectionString)}");
+#endif
         }
 
         public static void SetUserCredentials(string apiKey, string apiSecret, string botToken, string chatId, string username)

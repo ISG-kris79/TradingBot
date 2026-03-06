@@ -26,7 +26,9 @@ namespace TradingBot.Services.DeFi
         private readonly HttpClient _httpClient;
         private readonly decimal _thresholdUsd;
 
+    #pragma warning disable CS0067
         public event Action<WhaleTransaction>? OnWhaleAlert;
+    #pragma warning restore CS0067
 
         public OnChainAnalysisService(string apiKey, decimal thresholdUsd)
         {

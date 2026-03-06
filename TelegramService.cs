@@ -204,7 +204,8 @@ namespace TradingBot
             }
             catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.ErrorCode == 400)
             {
-                MainWindow.Instance?.AddLog($"⚠️ 텔레그램 전송 실패(400): {ex.Message} | ChatId: {ChatId}");
+                string maskedChatId = ChatId.Length > 4 ? $"***{ChatId[^4..]}" : "***";
+                MainWindow.Instance?.AddLog($"⚠️ 텔레그램 전송 실패(400): {ex.Message} | ChatId: {maskedChatId}");
             }
             catch (Exception ex)
             {

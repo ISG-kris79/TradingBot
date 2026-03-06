@@ -972,7 +972,7 @@ namespace TradingBot
         /// <summary>
         /// [Phase 14] 고급 기능 서비스 초기화 (차익거래, 자금 이동, 리밸런싱)
         /// </summary>
-        private async Task InitializeAdvancedFeaturesAsync()
+        private Task InitializeAdvancedFeaturesAsync()
         {
             try
             {
@@ -1060,6 +1060,8 @@ namespace TradingBot
             {
                 AddAlert($"❌ 고급 기능 서비스 초기화 실패: {ex.Message}");
             }
+
+            return Task.CompletedTask;
         }
 
         /// <summary>

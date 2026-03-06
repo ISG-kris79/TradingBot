@@ -55,7 +55,11 @@ namespace TradingBot.Strategies
                 }
                 return 0;
             }
-            catch { return 0; }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[ArbitrageStrategy] GetBybitPrice failed: {ex.Message}");
+                return 0;
+            }
         }
     }
 }

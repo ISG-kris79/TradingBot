@@ -43,21 +43,23 @@ namespace TradingBot.Services
         /// <summary>
         /// 자동 리밸런싱 모니터링 시작
         /// </summary>
-        public async Task StartMonitoringAsync(CancellationToken ct = default)
+        public Task StartMonitoringAsync(CancellationToken ct = default)
         {
             if (_isMonitoring)
             {
                 OnLog?.Invoke("[Rebalancing] ⚠️ 이미 모니터링 중입니다.");
-                return;
+                return Task.CompletedTask;
             }
             
             _isMonitoring = true;
+            _cts?.Dispose();
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var token = _cts.Token;
             
             OnLog?.Invoke($"[Rebalancing] 🚀 리밸런싱 모니터링 시작 (체크 간격: {_settings.CheckIntervalHours}시간)");
             
-            _ = Task.Run(async () => await MonitoringLoopAsync(token), token);
+            _ = Task.Run(() => MonitoringLoopAsync(token), token);
+            return Task.CompletedTask;
         }
         
         /// <summary>
@@ -66,6 +68,8 @@ namespace TradingBot.Services
         public void Stop()
         {
             _cts?.Cancel();
+            _cts?.Dispose();
+            _cts = null;
             _isMonitoring = false;
             OnLog?.Invoke("[Rebalancing] 🛑 리밸런싱 모니터링 중지");
         }
@@ -247,9 +251,9 @@ namespace TradingBot.Services
                                 consolidatedPortfolio[asset] += valueInUsdt;
                             }
                         }
-                        catch
+                        catch (Exception assetEx)
                         {
-                            // 개별 자산 조회 실패는 무시
+                            OnLog?.Invoke($"[Rebalancing] ℹ️ {exchangeType} {asset} 잔고 조회 건너뜀: {assetEx.Message}");
                         }
                     }
                 }
@@ -310,56 +314,51 @@ namespace TradingBot.Services
                     // [Phase 14] 실제 주문 모드
                     OnLog?.Invoke("[Rebalancing] ⚠️ 실제 주문 모드: 실제 자금이 사용됩니다!");
                     
-                    // 매도 먼저 실행 (현금 마련)
-                    var sellActions = actions.Where(a => a.Action == "매도").OrderByDescending(a => a.Deviation);
-                    foreach (var action in sellActions)
-                    {
-                        OnLog?.Invoke($"[Rebalancing] 📉 {action.Asset} 매도 준비 (수량: {action.CurrentQuantity:F8})...");
-                        
-                        // TODO: 실제 매도 주문 실행
-                        // 여러 거래소에서 가장 유리한 가격의 거래소 선택
-                        // var bestExchange = _exchanges.OrderByDescending(e => e.GetBidPrice(action.Asset)).First();
-                        // var orderResult = await bestExchange.PlaceOrderAsync(
-                        //     action.Asset,
-                        //     OrderSide.Sell,
-                        //     OrderType.Market,
-                        //     action.CurrentQuantity
-                        // );
-                        
-                        // 현재는 NotImplementedException 던지기
-                        throw new NotImplementedException(
-                            $"실제 매도 주문은 아직 구현되지 않았습니다. " +
-                            $"IExchangeService.PlaceOrderAsync 메서드를 사용하여 {action.Asset} {action.CurrentQuantity:F8} 매도를 구현해야 합니다. " +
-                            $"시뮬레이션 모드(SimulationMode: true)를 사용하세요."
-                        );
-                    }
+                    // [미구현] 실제 매도/매수 주문 API는 아직 구현되지 않음
+                    report.Success = false;
+                    report.ErrorMessage = "실제 매도/매수 주문은 아직 구현되지 않았습니다. " +
+                        "IExchangeService.PlaceOrderAsync 및 GetCurrentPriceAsync 메서드를 사용하여 구현해야 합니다. " +
+                        "시뮬레이션 모드(SimulationMode: true)를 사용하세요.";
                     
+                    OnLog?.Invoke($"[Rebalancing] ⚠️ 미구현 기능: {report.ErrorMessage}");
+                    
+                    // 매도 먼저 실행 (현금 마련) - 주석 처리
+                    // var sellActions = actions.Where(a => a.Action == "매도").OrderByDescending(a => a.Deviation);
+                    // foreach (var action in sellActions)
+                    // {
+                    //     OnLog?.Invoke($"[Rebalancing] 📉 {action.Asset} 매도 준비 (수량: {action.CurrentQuantity:F8})...");
+                    //     
+                    //     // TODO: 실제 매도 주문 실행
+                    //     // 여러 거래소에서 가장 유리한 가격의 거래소 선택
+                    //     // var bestExchange = _exchanges.OrderByDescending(e => e.GetBidPrice(action.Asset)).First();
+                    //     // var orderResult = await bestExchange.PlaceOrderAsync(
+                    //     //     action.Asset,
+                    //     //     OrderSide.Sell,
+                    //     //     OrderType.Market,
+                    //     //     action.CurrentQuantity
+                    //     // );
+                    // }
+                    // 
                     // 매수 실행
-                    var buyActions = actions.Where(a => a.Action == "매수").OrderByDescending(a => a.Deviation);
-                    foreach (var action in buyActions)
-                    {
-                        OnLog?.Invoke($"[Rebalancing] 📈 {action.Asset} 매수 준비 (금액: {action.TargetValue:F2} USDT)...");
-                        
-                        // TODO: 실제 매수 주문 실행
-                        // var bestExchange = _exchanges.OrderBy(e => e.GetAskPrice(action.Asset)).First();
-                        // var currentPrice = await bestExchange.GetCurrentPriceAsync(action.Asset);
-                        // var quantity = action.TargetValue / currentPrice;
-                        // var orderResult = await bestExchange.PlaceOrderAsync(
-                        //     action.Asset,
-                        //     OrderSide.Buy,
-                        //     OrderType.Market,
-                        //     quantity
-                        // );
-                        
-                        throw new NotImplementedException(
-                            $"실제 매수 주문은 아직 구현되지 않았습니다. " +
-                            $"IExchangeService.PlaceOrderAsync 및 GetCurrentPriceAsync 메서드를 사용하여 {action.Asset} {action.TargetValue:F2} USDT 매수를 구현해야 합니다. " +
-                            $"시뮬레이션 모드(SimulationMode: true)를 사용하세요."
-                        );
-                    }
-                    
-                    report.Success = true;
-                    OnLog?.Invoke($"[Rebalancing] ✅ 리밸런싱 완료 (실행된 액션: {report.ExecutedActions.Count}개)");
+                    // var buyActions = actions.Where(a => a.Action == "매수").OrderByDescending(a => a.Deviation);
+                    // foreach (var action in buyActions)
+                    // {
+                    //     OnLog?.Invoke($"[Rebalancing] 📈 {action.Asset} 매수 준비 (금액: {action.TargetValue:F2} USDT)...");
+                    //     
+                    //     // TODO: 실제 매수 주문 실행
+                    //     // var bestExchange = _exchanges.OrderBy(e => e.GetAskPrice(action.Asset)).First();
+                    //     // var currentPrice = await bestExchange.GetCurrentPriceAsync(action.Asset);
+                    //     // var quantity = action.TargetValue / currentPrice;
+                    //     // var orderResult = await bestExchange.PlaceOrderAsync(
+                    //     //     action.Asset,
+                    //     //     OrderSide.Buy,
+                    //     //     OrderType.Market,
+                    //     //     quantity
+                    //     // );
+                    // }
+                    // 
+                    // report.Success = true;
+                    // OnLog?.Invoke($"[Rebalancing] ✅ 리밸런싱 완료 (실행된 액션: {report.ExecutedActions.Count}개)");
                 }
             }
             catch (Exception ex)

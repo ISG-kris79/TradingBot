@@ -47,27 +47,29 @@ namespace TradingBot.Services
         /// <summary>
         /// 차익거래 스캔 시작
         /// </summary>
-        public async Task StartAsync(List<string> symbols, CancellationToken ct = default)
+        public Task StartAsync(List<string> symbols, CancellationToken ct = default)
         {
             if (_isRunning)
             {
                 OnLog?.Invoke("[Arbitrage] ⚠️ 이미 실행 중입니다.");
-                return;
+                return Task.CompletedTask;
             }
             
             if (_exchanges.Count < 2)
             {
                 OnLog?.Invoke("[Arbitrage] ⚠️ 최소 2개 이상의 거래소가 필요합니다.");
-                return;
+                return Task.CompletedTask;
             }
             
             _isRunning = true;
+            _cts?.Dispose();
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var token = _cts.Token;
             
             OnLog?.Invoke($"[Arbitrage] 🚀 차익거래 스캔 시작 (심볼: {symbols.Count}개, 최소 수익률: {Settings.MinProfitPercent}%)");
             
-            _ = Task.Run(async () => await ScanLoopAsync(symbols, token), token);
+            _ = Task.Run(() => ScanLoopAsync(symbols, token), token);
+            return Task.CompletedTask;
         }
         
         /// <summary>
@@ -76,6 +78,8 @@ namespace TradingBot.Services
         public void Stop()
         {
             _cts?.Cancel();
+            _cts?.Dispose();
+            _cts = null;
             _isRunning = false;
             OnLog?.Invoke("[Arbitrage] 🛑 차익거래 스캔 중지");
         }

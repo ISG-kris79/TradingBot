@@ -109,9 +109,9 @@ namespace TradingBot.Services
         /// <summary>
         /// 특정 기기의 FCM 토픽 구독을 해지합니다.
         /// </summary>
-        public async Task UnsubscribeFromTopicAsync(string deviceToken, string topic)
+        public Task UnsubscribeFromTopicAsync(string deviceToken, string topic)
         {
-            if (string.IsNullOrEmpty(_fcmServerKey)) return;
+            if (string.IsNullOrEmpty(_fcmServerKey)) return Task.CompletedTask;
 
             try
             {
@@ -120,7 +120,12 @@ namespace TradingBot.Services
                 // 참고: IID API는 Deprecated 되었으므로, 실제 운영 시 Firebase Admin SDK 사용을 권장합니다.
                 // 여기서는 HTTP 요청 구조만 유지합니다.
             }
-            catch { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[NotificationService] Unsubscribe Exception: {ex.Message}");
+            }
+
+            return Task.CompletedTask;
         }
     }
 }

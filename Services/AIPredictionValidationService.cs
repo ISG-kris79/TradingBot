@@ -135,7 +135,7 @@ namespace TradingBot.Services
                 // DB 업데이트
                 await _dbManager.UpdatePredictionValidationAsync(prediction.Id, actualPrice, isCorrect);
 
-                string result = isCorrect ? "✅ 정확" : "❌ 부정확";
+                string result = isCorrect ? "✅ 정확" : "❌ 미적중";
                 MainWindow.Instance?.AddLog($"{result} [{prediction.ModelName}] {prediction.Symbol}: {prediction.PredictedDirection} 예측, 실제 {changePercent:F2}%");
             }
             catch (Exception ex)

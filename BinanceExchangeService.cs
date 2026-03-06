@@ -214,7 +214,11 @@ namespace TradingBot.Services
 
                 return (bestBid, bestAsk);
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Binance] GetOrderBookAsync failed: {ex.Message}");
+                return null;
+            }
         }
 
         public async Task<decimal> GetFundingRateAsync(string symbol, CancellationToken token = default)

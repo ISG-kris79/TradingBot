@@ -36,15 +36,19 @@ namespace TradingBot.Services
                     _model = _mlContext.Model.Load(loadPath, out _);
                     _scalpingEngine = _mlContext.Model.CreatePredictionEngine<CandleData, ScalpingPrediction>(_model);
                 }
-                catch
+                catch (Exception ex)
                 {
                     // ScalpingPrediction 스키마 불일치 시 Legacy로 fallback
+                    System.Diagnostics.Debug.WriteLine($"[AIPredictor] ScalpingPrediction 엔진 생성 실패(Legacy 시도): {ex.Message}");
                     try
                     {
                         _model = _mlContext.Model.Load(loadPath, out _);
                         _legacyEngine = _mlContext.Model.CreatePredictionEngine<CandleData, PredictionResult>(_model);
                     }
-                    catch { }
+                    catch (Exception innerEx)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[AIPredictor] Legacy 엔진도 생성 실패: {innerEx.Message}");
+                    }
                 }
             }
         }
@@ -72,7 +76,10 @@ namespace TradingBot.Services
                 if (bestModel != null)
                     return Path.Combine(_baseDir, bestModel.FileName);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[AIPredictor] 최적 모델 탐색 실패: {ex.Message}");
+            }
             return _modelPath;
         }
 

@@ -66,7 +66,11 @@ namespace TradingBot.Services
                     var context = await _listener.GetContextAsync();
                     _ = ProcessRequest(context);
                 }
-                catch { break; }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[WebServer] GetContext failed: {ex.Message}");
+                    break;
+                }
             }
         }
 
@@ -131,7 +135,10 @@ namespace TradingBot.Services
                 await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
                 response.Close();
             }
-            catch { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[WebServer] Response write failed: {ex.Message}");
+            }
         }
     }
 }

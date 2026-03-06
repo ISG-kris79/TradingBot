@@ -135,7 +135,7 @@ namespace TradingBot
             }
 
             // 예외 메시지 팝업 및 로그 기록
-            string exceptionType = e.Exception.GetType().FullName;
+            string exceptionType = e.Exception.GetType().FullName ?? e.Exception.GetType().Name;
             string msg = $"치명적 오류 발생\n" +
                 $"Type: {exceptionType}\n" +
                 $"Message: {e.Exception.Message}\n" +
