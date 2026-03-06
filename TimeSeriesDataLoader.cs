@@ -120,14 +120,26 @@ namespace TradingBot.Services.AI
             if (_rawFeatures == null || _rawTargets == null || Means == null || Stds == null)
                 throw new InvalidOperationException("정규화에 필요한 데이터가 준비되지 않았습니다.");
 
+            // [FIX] 배열 인덱스 범위 체크 추가
+            if (Means == null || Stds == null || Means.Length < 4 || Stds.Length < 4)
+            {
+                throw new InvalidOperationException($"정규화 파라미터 배열 크기 부족 (means: {Means?.Length ?? 0}, stds: {Stds?.Length ?? 0}, 필요: 4)");
+            }
+            
             for (int i = 0; i < count; i++)
             {
-                for (int j = 0; j < _inputDim; j++)
+                for (int j = 0; j < _inputDim && j < Means.Length && j < Stds.Length; j++)
                 {
-                    _rawFeatures[i, j] = (_rawFeatures[i, j] - Means[j]) / Stds[j];
+                    if (Math.Abs(Stds[j]) > 1e-8f)
+                    {
+                        _rawFeatures[i, j] = (_rawFeatures[i, j] - Means[j]) / Stds[j];
+                    }
                 }
                 // Target 정규화 (Close Price index = 3)
-                _rawTargets[i] = (_rawTargets[i] - Means[3]) / Stds[3];
+                if (Math.Abs(Stds[3]) > 1e-8f)
+                {
+                    _rawTargets[i] = (_rawTargets[i] - Means[3]) / Stds[3];
+                }
             }
         }
 
@@ -206,8 +218,16 @@ namespace TradingBot.Services.AI
 
         public float DenormalizeTarget(float value)
         {
+            // [FIX] 배열 인덱스 범위 체크 추가
             if (Means == null || Stds == null)
                 throw new InvalidOperationException("정규화 파라미터가 없습니다.");
+            
+            if (Means.Length < 4 || Stds.Length < 4)
+                throw new InvalidOperationException($"정규화 파라미터 배열 크기 부족 (means: {Means.Length}, stds: {Stds.Length}, 필요: 4)");
+            
+            if (Math.Abs(Stds[3]) < 1e-8f)
+                return value; // 표준편차가 0이면 원본 반환
+            
             return (value * Stds[3]) + Means[3];
         }
 

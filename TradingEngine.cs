@@ -5,6 +5,7 @@ using Binance.Net.Interfaces.Clients;
 using CryptoExchange.Net.Authentication;
 using Binance.Net.Objects.Models.Futures.Socket;
 using System.Collections.Concurrent;
+using System.IO; // [FIX] Path, File 사용을 위해 추가
 using TradingBot.Models;
 using TradingBot.Services;
 using TradingBot.Strategies;
@@ -333,26 +334,54 @@ namespace TradingBot
             }
 
             // [Phase 7] Transformer 모델 및 전략 초기화 (설정 파일 로드)
+            // [FIX] TorchSharp 네이티브 라이브러리 크래시 방지를 위한 안전장치 추가
             var tfSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
-            _transformerTrainer = new TransformerTrainer(
-                tfSettings.InputDim,
-                tfSettings.DModel,
-                tfSettings.NHeads,
-                tfSettings.NLayers,
-                tfSettings.OutputDim,
-                tfSettings.SeqLen
-            );
-
-            // [Phase 7] Transformer 학습 상태 이벤트 연결
-            _transformerTrainer.OnLog += msg => OnLiveLog?.Invoke(msg);
-            _transformerTrainer.OnEpochCompleted += (epoch, total, loss) =>
+            bool transformerInitSuccess = false;
+            try
             {
-                // 학습 진행 상황을 상태바에도 표시 (선택 사항)
-                // OnStatusLog?.Invoke($"🧠 AI 학습 중... Epoch {epoch}/{total} (Loss: {loss:F5})");
-            };
+                // 메모리 정리
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                
+                _transformerTrainer = new TransformerTrainer(
+                    tfSettings.InputDim,
+                    tfSettings.DModel,
+                    tfSettings.NHeads,
+                    tfSettings.NLayers,
+                    tfSettings.OutputDim,
+                    tfSettings.SeqLen
+                );
 
-            // 기존 학습된 모델이 있다면 로드
-            _transformerTrainer.LoadModel();
+                // [Phase 7] Transformer 학습 상태 이벤트 연결
+                _transformerTrainer.OnLog += msg => OnLiveLog?.Invoke(msg);
+                _transformerTrainer.OnEpochCompleted += (epoch, total, loss) =>
+                {
+                    // 학습 진행 상황을 상태바에도 표시 (선택 사항)
+                    // OnStatusLog?.Invoke($"🧠 AI 학습 중... Epoch {epoch}/{total} (Loss: {loss:F5})");
+                };
+
+                // 기존 학습된 모델이 있다면 로드
+                _transformerTrainer.LoadModel();
+                transformerInitSuccess = true;
+                OnStatusLog?.Invoke("✅ TorchSharp Transformer 초기화 완료");
+            }
+            catch (Exception ex)
+            {
+                OnAlert?.Invoke($"⚠️ Transformer AI 초기화 실패: {ex.Message}");
+                OnStatusLog?.Invoke("⚠️ Transformer 기능이 비활성화됩니다 (기본 전략으로 동작)");
+                _transformerTrainer = null;
+                
+                // 크래시 로그 저장
+                try
+                {
+                    string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "TRANSFORMER_CRASH.txt");
+                    File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Transformer Init Failed\n" +
+                        $"Message: {ex.Message}\n" +
+                        $"StackTrace: {ex.StackTrace}\n" +
+                        $"InnerException: {ex.InnerException?.Message ?? "None"}\n\n");
+                }
+                catch { }
+            }
 
             // [3파 확정형 전략] 먼저 초기화 (TransformerStrategy에서 사용하기 위해)
             _elliotWave3Strategy = new ElliottWave3WaveStrategy();
@@ -375,58 +404,71 @@ namespace TradingBot
             };
 
             // [3파 통합] TransformerStrategy에 ElliottWave3WaveStrategy 주입
-            _transformerStrategy = new TransformerStrategy(_client, _transformerTrainer, _newsService, _elliotWave3Strategy, tfSettings);
-            _transformerStrategy.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _transformerStrategy.OnSignalAnalyzed += vm => OnSignalUpdate?.Invoke(vm);
+            // [FIX] Transformer 초기화 실패 시 null 전달하여 안전하게 비활성화
+            if (transformerInitSuccess && _transformerTrainer != null)
+            {
+                _transformerStrategy = new TransformerStrategy(_client, _transformerTrainer, _newsService, _elliotWave3Strategy, tfSettings);
+                _transformerStrategy.OnLog += msg => OnStatusLog?.Invoke(msg);
+                _transformerStrategy.OnSignalAnalyzed += vm => OnSignalUpdate?.Invoke(vm);
+            }
+            else
+            {
+                OnStatusLog?.Invoke("⚠️ TransformerStrategy 비활성화 (Transformer 초기화 실패)");
+                _transformerStrategy = null;
+            }
 
             // [Phase 7] Transformer 예측 결과 UI 연동 + AI 모니터 정확도 추적
-            _transformerStrategy.OnPredictionUpdated += (symbol, currentPrice, predictedPrice) =>
+            // [FIX] null 체크 추가 - Transformer 초기화 실패 시 이벤트 연결 스킵
+            if (_transformerStrategy != null)
             {
-                double change = 0;
-                if (currentPrice > 0)
-                    change = (double)((predictedPrice - currentPrice) / currentPrice * 100);
-
-                OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
+                _transformerStrategy.OnPredictionUpdated += (symbol, currentPrice, predictedPrice) =>
                 {
-                    Symbol = symbol,
-                    TransformerPrice = predictedPrice,
-                    TransformerChange = change
-                });
+                    double change = 0;
+                    if (currentPrice > 0)
+                        change = (double)((predictedPrice - currentPrice) / currentPrice * 100);
 
-                // [AI 모니터] Transformer 예측을 _pendingPredictions에 등록 → 5분 후 검증
-                bool predictedDirection = predictedPrice > currentPrice; // 상승 예측 여부
-                float confidence = (float)Math.Min(Math.Abs(change) / 5.0, 1.0); // 변화율 기반 신뢰도 (5%를 1.0으로)
-                string predictionKey = $"TF_{symbol}_{DateTime.Now:yyyyMMddHHmmss}";
-                _pendingPredictions[predictionKey] = (DateTime.Now, predictedPrice, predictedDirection, "Transformer", confidence);
-
-                string direction = predictedDirection ? "상승" : "하락";
-                OnStatusLog?.Invoke($"🔮 [Transformer] {symbol} 예측 등록: {direction} (신뢰도: {confidence:P0}) → 5분 후 검증 예정");
-
-                var cts = _cts;
-                if (cts != null && !cts.Token.IsCancellationRequested)
-                {
-                    _ = Task.Run(async () =>
+                    OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
                     {
-                        try
-                        {
-                            await Task.Delay(TimeSpan.FromMinutes(5), cts.Token);
-                            await ValidatePredictionAsync(predictionKey, symbol, cts.Token);
-                        }
-                        catch (OperationCanceledException) { }
-                    }, cts.Token);
-                }
-            };
+                        Symbol = symbol,
+                        TransformerPrice = predictedPrice,
+                        TransformerChange = change
+                    });
 
-            _transformerStrategy.OnTradeSignal += async (symbol, side, currentPrice, predictedPrice, mode, customTakeProfitPrice, customStopLossPrice) =>
-            {
-                // Transformer 전략 신호 발생 시 자동 매매 실행 (LONG/SHORT)
-                await ExecuteAutoOrder(symbol, side, currentPrice, _cts.Token, $"TRANSFORMER_{mode}", mode, customTakeProfitPrice, customStopLossPrice);
-                // 하이브리드 이탈 관리자에 등록 (AI 기반 익절/트레일링 스탑)
-                if (mode != "SIDEWAYS")
+                    // [AI 모니터] Transformer 예측을 _pendingPredictions에 등록 → 5분 후 검증
+                    bool predictedDirection = predictedPrice > currentPrice; // 상승 예측 여부
+                    float confidence = (float)Math.Min(Math.Abs(change) / 5.0, 1.0); // 변화율 기반 신뢰도 (5%를 1.0으로)
+                    string predictionKey = $"TF_{symbol}_{DateTime.Now:yyyyMMddHHmmss}";
+                    _pendingPredictions[predictionKey] = (DateTime.Now, predictedPrice, predictedDirection, "Transformer", confidence);
+
+                    string direction = predictedDirection ? "상승" : "하락";
+                    OnStatusLog?.Invoke($"🔮 [Transformer] {symbol} 예측 등록: {direction} (신뢰도: {confidence:P0}) → 5분 후 검증 예정");
+
+                    var cts = _cts;
+                    if (cts != null && !cts.Token.IsCancellationRequested)
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await Task.Delay(TimeSpan.FromMinutes(5), cts.Token);
+                                await ValidatePredictionAsync(predictionKey, symbol, cts.Token);
+                            }
+                            catch (OperationCanceledException) { }
+                        }, cts.Token);
+                    }
+                };
+
+                _transformerStrategy.OnTradeSignal += async (symbol, side, currentPrice, predictedPrice, mode, customTakeProfitPrice, customStopLossPrice) =>
                 {
-                    _hybridExitManager.RegisterEntry(symbol, side, currentPrice, predictedPrice);
-                }
-            };
+                    // Transformer 전략 신호 발생 시 자동 매매 실행 (LONG/SHORT)
+                    await ExecuteAutoOrder(symbol, side, currentPrice, _cts.Token, $"TRANSFORMER_{mode}", mode, customTakeProfitPrice, customStopLossPrice);
+                    // 하이브리드 이탈 관리자에 등록 (AI 기반 익절/트레일링 스탑)
+                    if (mode != "SIDEWAYS")
+                    {
+                        _hybridExitManager.RegisterEntry(symbol, side, currentPrice, predictedPrice);
+                    }
+                };
+            }
 
             // [Phase 8] DeFi 서비스 초기화
             var defiSettings = AppConfig.Current?.Trading?.DeFiSettings ?? new DeFiSettings();
@@ -917,6 +959,13 @@ namespace TradingBot
                         var tfSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
 
                         // [Agent 1] 모델 재학습 (예외 처리 강화)
+                        // [FIX] TorchSharp null 체크 추가
+                        if (_transformerTrainer == null)
+                        {
+                            OnStatusLog?.Invoke("⚠️ Transformer가 비활성화되어 있어 학습을 건너뜁니다.");
+                            return;
+                        }
+
                         try
                         {
                             await Task.Run(() =>
@@ -966,6 +1015,13 @@ namespace TradingBot
 
             _initialTransformerTrainingTriggered = true;
 
+            // [FIX] TorchSharp null 체크 추가
+            if (_transformerTrainer == null)
+            {
+                OnStatusLog?.Invoke("⚠️ Transformer가 비활성화되어 있어 초기 학습을 건너뜁니다.");
+                return;
+            }
+
             try
             {
                 if (_transformerTrainer.IsModelReady)
@@ -974,7 +1030,7 @@ namespace TradingBot
                     return;
                 }
 
-                OnStatusLog?.Invoke("🧠 Transformer 초기 학습 시작 (엔진 시작 1회)...");
+                OnStatusLog?.Invoke("🧠 Transformer 초기 학습 시작 (엔진 시작 1회 )...");
 
                 var trainingData = new List<CandleData>();
                 foreach (var symbol in _symbols)
@@ -1357,7 +1413,14 @@ namespace TradingBot
                     await _transformerStrategy.AnalyzeAsync(symbol, currentPrice, token);
 
                 // [3파 확정형 전략] 5분봉 엘리엇 파동 분석
-                await AnalyzeElliottWave3WaveAsync(symbol, currentPrice, token);
+                try
+                {
+                    await AnalyzeElliottWave3WaveAsync(symbol, currentPrice, token);
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ Elliott Wave 분석 오류: {ex.Message}");
+                }
 
                 // ═══════════════════════════
                 // [Hybrid Exit] AI+지표 기반 이탈 관리
@@ -1416,15 +1479,17 @@ namespace TradingBot
                         {
                             // TransformerStrategy가 내부적으로 _trainer.Predict를 호출하므로
                             // 여기서는 ML.NET AIPredictor를 사용한 방향 재확인
-                            if (_aiPredictor != null)
+                            // [FIX] klines가 비어있지 않은지 확인
+                            if (_aiPredictor != null && klines.Any())
                             {
+                                var lastKline = klines.Last();
                                 var latestCandle = new CandleData
                                 {
-                                    Open = klines.Last().OpenPrice,
-                                    High = klines.Last().HighPrice,
-                                    Low = klines.Last().LowPrice,
-                                    Close = klines.Last().ClosePrice,
-                                    Volume = (float)klines.Last().Volume,
+                                    Open = lastKline.OpenPrice,
+                                    High = lastKline.HighPrice,
+                                    Low = lastKline.LowPrice,
+                                    Close = lastKline.ClosePrice,
+                                    Volume = (float)lastKline.Volume,
                                 };
                                 var pred = _aiPredictor.Predict(latestCandle);
                                 // AI 방향 반전 확인용으로 PredictedPrice를 업데이트
@@ -1741,6 +1806,13 @@ namespace TradingBot
             bool inEntryZone = currentPrice >= fib323 && currentPrice <= fib618;
 
             var bb5m = IndicatorCalculator.CalculateBB(candles5m, 20, 2);
+            // [FIX] 빈 컬렉션 체크 추가
+            if (!candles5m.Any())
+            {
+                OnStatusLog?.Invoke($"⚠️ {symbol} 5분봉 데이터 없음");
+                return;
+            }
+            
             var last5m = candles5m.Last();
             
             // [개선] BB 중단선 허용도 완화: ±0.3% → ±0.5% (20배 레버리지에서 합리적 범위)

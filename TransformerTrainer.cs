@@ -339,8 +339,22 @@ namespace TradingBot.Services.AI
             }
 
             // Target 정규화 (Close Price 인덱스 3 사용)
+            // [FIX] 배열 인덱스 범위 체크 추가
+            if (_means == null || _stds == null || _means.Length < 4 || _stds.Length < 4)
+            {
+                OnLog?.Invoke($"[TransformerTrainer] 오류: 정규화 파라미터 배열 크기 부족 (means: {_means?.Length ?? 0}, stds: {_stds?.Length ?? 0}, 필요: 4)");
+                return (torch.empty(0), torch.empty(0));
+            }
+            
             float targetMean = _means[3];
             float targetStd = _stds[3];
+            
+            if (Math.Abs(targetStd) < 1e-8f)
+            {
+                OnLog?.Invoke("[TransformerTrainer] 경고: Target 표준편차가 0에 가까워 정규화를 건너뜁니다.");
+                targetStd = 1.0f;
+            }
+            
             for (int i = 0; i < count; i++)
             {
                 rawTargets[i] = (rawTargets[i] - targetMean) / targetStd;

@@ -36,8 +36,60 @@ namespace TradingBot
                 return;
             }
 
+            // [FIX] 배열 인덱스 범위 초과 오류 처리
+            if (e.Exception is IndexOutOfRangeException indexEx)
+            {
+                Debug.WriteLine($"[App] 배열 인덱스 범위 초과 오류: {indexEx.Message}");
+                Debug.WriteLine($"StackTrace: {indexEx.StackTrace}");
+                
+                try
+                {
+                    string logPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "INDEX_OUT_OF_RANGE_ERROR.txt");
+                    string logContent = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] INDEX OUT OF RANGE ERROR\n" +
+                        $"Message: {indexEx.Message}\n" +
+                        $"StackTrace: {indexEx.StackTrace}\n\n";
+                    System.IO.File.AppendAllText(logPath, logContent);
+                }
+                catch { }
+
+                global::TradingBot.MainWindow.Instance?.AddAlert($"⚠️ 데이터 처리 오류 발생 (복구됨)");
+                e.Handled = true;
+                return;
+            }
+
+            // [FIX] ArgumentOutOfRange 오류 처리
+            if (e.Exception is ArgumentOutOfRangeException argOutEx)
+            {
+                Debug.WriteLine($"[App] 인수 범위 초과 오류: {argOutEx.Message}");
+                Debug.WriteLine($"StackTrace: {argOutEx.StackTrace}");
+                
+                try
+                {
+                    string logPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ARG_OUT_OF_RANGE_ERROR.txt");
+                    string logContent = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] ARGUMENT OUT OF RANGE ERROR\n" +
+                        $"Message: {argOutEx.Message}\n" +
+                        $"StackTrace: {argOutEx.StackTrace}\n\n";
+                    System.IO.File.AppendAllText(logPath, logContent);
+                }
+                catch { }
+
+                global::TradingBot.MainWindow.Instance?.AddAlert($"⚠️ 데이터 범위 오류 발생 (복구됨)");
+                e.Handled = true;
+                return;
+            }
+
             // 예외 메시지 팝업 및 로그 기록
-            string msg = $"치명적 오류 발생: {e.Exception.Message}\n\n{e.Exception.StackTrace}";
+            string exceptionType = e.Exception.GetType().FullName;
+            string msg = $"치명적 오류 발생\n" +
+                $"Type: {exceptionType}\n" +
+                $"Message: {e.Exception.Message}\n" +
+                $"HResult: 0x{e.Exception.HResult:X8}\n\n" +
+                $"StackTrace:\n{e.Exception.StackTrace}";
+            
+            if (e.Exception.InnerException != null)
+            {
+                msg += $"\n\nInner Exception: {e.Exception.InnerException.Message}";
+            }
 
             // 파일로 에러 로그 저장
             try

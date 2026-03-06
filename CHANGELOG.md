@@ -7,6 +7,55 @@
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-03-06
+
+### Fixed
+
+- **프로그램 크래시 안정성 대폭 개선**:
+  - TorchSharp TransformerTrainer 초기화 예외 처리 강화
+  - 초기화 실패 시 기본 전략으로 안전하게 폴백
+  - 크래시 로그 자동 저장: `TRANSFORMER_CRASH.txt`
+  
+- **배열 인덱스 범위 초과 오류 방지**:
+  - TransformerTrainer: `_means[3]`, `_stds[3]` 접근 전 배열 길이 검증
+  - TimeSeriesDataLoader: 정규화 파라미터 배열 크기 검증 추가
+  - TradingEngine: `.Last()` 호출 전 빈 컬렉션 체크
+  - 모든 배열 접근에 안전장치 추가
+
+- **전역 예외 처리 강화**:
+  - `IndexOutOfRangeException` 자동 복구 및 로그 저장
+  - `ArgumentOutOfRangeException` 자동 복구 및 로그 저장
+  - 예외 발생 시 사용자 알림 후 계속 실행
+  - 상세한 예외 정보 자동 로깅 (타입, 메시지, HResult, 스택 트레이스)
+
+### Added
+
+- **크래시 로그 자동 기록 시스템**:
+  - `TRANSFORMER_CRASH.txt`: TorchSharp 초기화 실패 로그
+  - `INDEX_OUT_OF_RANGE_ERROR.txt`: 배열 인덱스 오류 로그
+  - `ARG_OUT_OF_RANGE_ERROR.txt`: 인수 범위 오류 로그
+  - `CRITICAL_ERROR.txt`: 기타 치명적 오류 로그
+
+- **배포 자동화 시스템**:
+  - `start-release.ps1`: 배포 도우미 스크립트 추가
+  - `publish-and-release.ps1`: 실행 시 자동 체크리스트 확인 프롬프트
+  - Git pre-push hook: 태그 푸시 시 배포 체크리스트 알림
+  - `RELEASE_CHECKLIST.md`: 상세 배포 가이드 및 GPG 서명 설정
+
+### Changed
+
+- **Null 안전성 강화**:
+  - Transformer 관련 모든 작업에 null 체크 추가
+  - TransformerStrategy 초기화 실패 시 null 전달하여 안전하게 비활성화
+  - 데이터 검증 강화 (빈 배열, 부족한 데이터 등)
+
+### Technical Details
+
+- 네이티브 라이브러리(TorchSharp) 크래시 방지를 위한 안전장치 구현
+- 스택 버퍼 오버런(0xc0000409) 예외 원인 추적 및 해결
+- ucrtbase.dll 관련 네이티브 예외 로깅 강화
+- 메모리 정리(GC) 호출 추가하여 TorchSharp 초기화 안정성 향상
+
 ## [2.2.1] - 2026-03-06
 
 ### Changed
