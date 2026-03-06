@@ -7,6 +7,28 @@
 
 ## [Unreleased]
 
+## [2.0.29] - 2026-03-06
+
+### Changed
+
+- **애플리케이션 아이콘 리뉴얼**:
+  - 로그인 창, 메인 창, 설치 프로그램 아이콘을 모던하고 프로페셔널한 디자인으로 전면 교체
+  - 암호화폐(₿), AI 네트워크, 상승 차트를 조합한 새로운 비주얼 아이덴티티
+  - 다크 네이비 배경에 청록색 링, 금색 코인 심볼, 초록색 차트 라인으로 구성
+  - 16x16부터 256x256까지 멀티 사이즈 지원으로 모든 환경에서 선명한 표시
+
+### Fixed
+
+- **DataGrid 배열 인덱스 오류 수정**:
+  - MainWindow의 TriggerPriceAnimation 메서드에서 컬럼 수 체크 추가
+  - 컬럼 초기화 전 접근으로 인한 "index was outside the bounds of the array" 오류 해결
+
+### Technical Details
+
+- 새 아이콘은 C# System.Drawing을 사용해 프로그래매틱하게 생성
+- 그라디언트, 안티앨리어싱, 글로우 효과 적용으로 고품질 렌더링
+- trading_bot.ico, trading_bot.png 파일 생성
+
 ## [2.0.28] - 2026-03-06
 
 ### Changed

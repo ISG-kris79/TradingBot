@@ -497,7 +497,7 @@ namespace TradingBot
             var row = dgMultiTimeframe.ItemContainerGenerator.ContainerFromItem(
                 ViewModel.MarketDataList.FirstOrDefault(x => x.Symbol == symbol)) as DataGridRow;
 
-            if (row != null)
+            if (row != null && dgMultiTimeframe.Columns.Count > 1)
             {
                 // 가격 컬럼(Index 1)의 시각적 요소 가져오기
                 var cell = dgMultiTimeframe.Columns[1].GetCellContent(row) as TextBlock;

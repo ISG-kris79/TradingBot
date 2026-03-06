@@ -58,64 +58,141 @@ class IconGenerator
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
 
-            // 배경 색상
-            Color bgColor = Color.FromArgb(15, 23, 42);          // 진한 파란색
-            Color gradientColor = Color.FromArgb(30, 58, 138);   // 그라디언트
-            Color primaryColor = Color.FromArgb(59, 130, 246);   // 밝은 파란색
-            Color accentColor = Color.FromArgb(34, 197, 94);     // 초록색 (상승)
+            // 모던 컬러 팔레트
+            Color bgDarkNavy = Color.FromArgb(10, 14, 39);       // 진한 네이비
+            Color bgMidNavy = Color.FromArgb(26, 31, 74);        // 미드 네이비
+            Color primaryCyan = Color.FromArgb(0, 229, 255);     // 밝은 청록색 (#00E5FF)
+            Color secondaryPurple = Color.FromArgb(124, 77, 255);// 보라색 (#7C4DFF)
+            Color accentGreen = Color.FromArgb(0, 230, 118);     // 초록색 (#00E676)
+            Color goldYellow = Color.FromArgb(255, 193, 7);      // 금색 (#FFC107)
 
-            // 배경 채우기
-            g.Clear(bgColor);
-
-            // 라운드 코너 사각형 배경
-            int margin = size / 16;
-            Rectangle bgRect = new Rectangle(margin, margin, size - margin * 2, size - margin * 2);
-            using (var path = RoundedRectangle(bgRect, size / 8))
+            // 1. 배경 원형 그라디언트
+            int center = size / 2;
+            using (var bgBrush = new LinearGradientBrush(
+                new Point(0, 0), 
+                new Point(size, size),
+                bgDarkNavy, 
+                bgMidNavy))
             {
-                g.FillPath(new SolidBrush(gradientColor), path);
-                g.DrawPath(new Pen(primaryColor, Math.Max(1, size / 32)), path);
+                g.FillEllipse(bgBrush, 0, 0, size, size);
             }
 
-            // 차트 막대 그리기 (상승 추세)
-            int chartMargin = size / 4;
-            int barWidth = size / 16;
-            int yBottom = size - chartMargin;
-
-            // 막대 1
-            int x1 = chartMargin;
-            int bar1Height = size / 5;
-            g.FillRectangle(new SolidBrush(primaryColor),
-                new Rectangle(x1, yBottom - bar1Height, barWidth, bar1Height));
-
-            // 막대 2 (높음)
-            int x2 = x1 + (int)(barWidth * 1.5);
-            int bar2Height = size / 3;
-            g.FillRectangle(new SolidBrush(accentColor),
-                new Rectangle(x2, yBottom - bar2Height, barWidth, bar2Height));
-
-            // 막대 3
-            int x3 = x2 + (int)(barWidth * 1.5);
-            int bar3Height = size / 4;
-            g.FillRectangle(new SolidBrush(primaryColor),
-                new Rectangle(x3, yBottom - bar3Height, barWidth, bar3Height));
-
-            // 상승 화살표 그리기
-            int arrowX = size / 2 + size / 8;
-            int arrowY = size / 4;
-            int arrowSize = size / 12;
-
-            Point[] arrowPoints = new Point[]
+            // 2. 외곽 링 (2중)
+            int ringWidth = Math.Max(2, size / 128);
+            using (var pen1 = new Pen(primaryCyan, ringWidth))
+            using (var pen2 = new Pen(Color.FromArgb(180, secondaryPurple), ringWidth / 2))
             {
-                new Point(arrowX - arrowSize, arrowY + arrowSize),
-                new Point(arrowX + arrowSize, arrowY + arrowSize),
-                new Point(arrowX, arrowY - arrowSize)
-            };
-            g.FillPolygon(new SolidBrush(accentColor), arrowPoints);
+                int margin1 = size / 16;
+                int margin2 = margin1 + ringWidth * 2;
+                g.DrawEllipse(pen1, margin1, margin1, size - margin1 * 2, size - margin1 * 2);
+                g.DrawEllipse(pen2, margin2, margin2, size - margin2 * 2, size - margin2 * 2);
+            }
 
-            // 화살표 막대
-            int barX = arrowX - arrowSize / 4;
-            g.FillRectangle(new SolidBrush(accentColor),
-                new Rectangle(barX, arrowY + arrowSize, arrowSize / 2, arrowSize));
+            // 3. 중앙 코인 원
+            int coinSize = size / 2;
+            int coinX = size / 4;
+            int coinY = size / 4;
+            
+            // 코인 배경
+            using (var coinBrush = new SolidBrush(Color.FromArgb(240, bgMidNavy)))
+            using (var coinPen = new Pen(primaryCyan, Math.Max(1, size / 170)))
+            {
+                g.FillEllipse(coinBrush, coinX, coinY, coinSize, coinSize);
+                g.DrawEllipse(coinPen, coinX, coinY, coinSize, coinSize);
+            }
+
+            // 4. 코인 심볼 (₿ 스타일 - 간소화)
+            int symbolX = coinX + coinSize / 2;
+            int symbolY = coinY + coinSize / 2;
+            int symbolSize = coinSize / 3;
+            
+            // 심볼 B 형태 그리기
+            using (var symbolBrush = new SolidBrush(goldYellow))
+            using (var font = new Font("Arial", symbolSize, FontStyle.Bold, GraphicsUnit.Pixel))
+            {
+                // B 문자 그리기 (중앙 정렬)
+                StringFormat sf = new StringFormat
+                {
+                    Alignment = StringAlignment.Center,
+                    LineAlignment = StringAlignment.Center
+                };
+                g.DrawString("₿", font, symbolBrush, symbolX, symbolY, sf);
+            }
+
+            // 5. 차트 라인 (좌측 하단 - 상승 추세)
+            if (size >= 32)
+            {
+                int chartMargin = size / 8;
+                Point[] chartPoints = new Point[]
+                {
+                    new Point(chartMargin, size - chartMargin),
+                    new Point(chartMargin + size/12, size - chartMargin - size/16),
+                    new Point(chartMargin + size/6, size - chartMargin - size/12),
+                    new Point(chartMargin + size/4, size - chartMargin - size/8)
+                };
+                
+                using (var chartPen = new Pen(accentGreen, Math.Max(2, size / 64)))
+                {
+                    chartPen.LineJoin = LineJoin.Round;
+                    g.DrawLines(chartPen, chartPoints);
+                }
+                
+                // 차트 포인트
+                foreach (var point in chartPoints)
+                {
+                    int dotSize = Math.Max(2, size / 80);
+                    g.FillEllipse(new SolidBrush(accentGreen), 
+                        point.X - dotSize, point.Y - dotSize, dotSize * 2, dotSize * 2);
+                }
+            }
+
+            // 6. AI 뉴럴 네트워크 패턴 (우측 상단 - 간소화)
+            if (size >= 48)
+            {
+                int netMargin = size - size / 4;
+                int netSize = size / 16;
+                Point[] nodes = new Point[]
+                {
+                    new Point(netMargin - netSize * 2, size / 6),
+                    new Point(netMargin, size / 6 - netSize),
+                    new Point(netMargin - netSize, size / 5 + netSize),
+                    new Point(netMargin - netSize, size / 4 + netSize)
+                };
+                
+                // 연결선
+                using (var netPen = new Pen(Color.FromArgb(120, secondaryPurple), Math.Max(1, size / 128)))
+                {
+                    g.DrawLine(netPen, nodes[0], nodes[2]);
+                    g.DrawLine(netPen, nodes[1], nodes[2]);
+                    g.DrawLine(netPen, nodes[0], nodes[3]);
+                }
+                
+                // 노드
+                int nodeSize = Math.Max(2, size / 64);
+                foreach (var node in nodes)
+                {
+                    g.FillEllipse(new SolidBrush(secondaryPurple), 
+                        node.X - nodeSize, node.Y - nodeSize, nodeSize * 2, nodeSize * 2);
+                    g.DrawEllipse(new Pen(primaryCyan, 1), 
+                        node.X - nodeSize, node.Y - nodeSize, nodeSize * 2, nodeSize * 2);
+                }
+            }
+
+            // 7. 글로우 효과 (중앙 코인 주변)
+            if (size >= 64)
+            {
+                for (int i = 0; i < 5; i++)
+                {
+                    int offset = i * 2;
+                    int alpha = 80 - i * 15;
+                    using (var glowPen = new Pen(Color.FromArgb(alpha, primaryCyan), 1))
+                    {
+                        g.DrawEllipse(glowPen, 
+                            coinX - offset, coinY - offset, 
+                            coinSize + offset * 2, coinSize + offset * 2);
+                    }
+                }
+            }
         }
 
         return bmp;
