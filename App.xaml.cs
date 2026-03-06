@@ -19,6 +19,8 @@ namespace TradingBot
         {
             this.DispatcherUnhandledException += App_DispatcherUnhandledException;
             AppDomain.CurrentDomain.FirstChanceException += CurrentDomain_FirstChanceException;
+            AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
+            TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
         }
 
         private void CurrentDomain_FirstChanceException(object? sender, FirstChanceExceptionEventArgs e)
@@ -38,6 +40,37 @@ namespace TradingBot
             {
                 // 로깅 실패는 무시
             }
+        }
+
+        private void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            try
+            {
+                var ex = e.ExceptionObject as Exception;
+                string logPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "BACKGROUND_UNHANDLED_ERROR.txt");
+                string logContent = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] BACKGROUND UNHANDLED EXCEPTION\n" +
+                    $"IsTerminating: {e.IsTerminating}\n" +
+                    $"Type: {ex?.GetType().FullName ?? e.ExceptionObject?.GetType().FullName}\n" +
+                    $"Message: {ex?.Message ?? e.ExceptionObject?.ToString()}\n" +
+                    $"StackTrace: {ex?.StackTrace}\n\n";
+                System.IO.File.AppendAllText(logPath, logContent);
+            }
+            catch { }
+        }
+
+        private void TaskScheduler_UnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+        {
+            try
+            {
+                string logPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "UNOBSERVED_TASK_ERROR.txt");
+                string logContent = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] UNOBSERVED TASK EXCEPTION\n" +
+                    $"Message: {e.Exception.Message}\n" +
+                    $"StackTrace: {e.Exception.StackTrace}\n\n";
+                System.IO.File.AppendAllText(logPath, logContent);
+            }
+            catch { }
+
+            e.SetObserved();
         }
 
         private void App_DispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)

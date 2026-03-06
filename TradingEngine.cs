@@ -325,7 +325,14 @@ namespace TradingBot
             };
             _pumpStrategy.OnPumpDetected += async (symbol, price, decision, rsi, atr) =>
             {
-                await HandlePumpEntry(symbol, price, decision, rsi, atr, _cts.Token);
+                try
+                {
+                    await HandlePumpEntry(symbol, price, decision, rsi, atr, _cts.Token);
+                }
+                catch (Exception ex)
+                {
+                    OnLiveLog?.Invoke($"⚠️ Pump 진입 처리 오류 [{symbol}]: {ex.Message}");
+                }
             };
 
             _pumpStrategy.OnLog += msg => OnLiveLog?.Invoke(msg);
@@ -337,7 +344,17 @@ namespace TradingBot
                     try { OnSignalUpdate?.Invoke(vm); }
                     catch (Exception ex) { OnLiveLog?.Invoke($"⚠️ Major 시그널 UI 반영 오류: {ex.Message}"); }
                 };
-                _majorStrategy.OnTradeSignal += async (symbol, decision, price) => await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR");
+                _majorStrategy.OnTradeSignal += async (symbol, decision, price) =>
+                {
+                    try
+                    {
+                        await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR");
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLiveLog?.Invoke($"⚠️ Major 주문 처리 오류 [{symbol}]: {ex.Message}");
+                    }
+                };
                 _majorStrategy.OnLog += msg => OnLiveLog?.Invoke(msg);
             }
 
@@ -408,7 +425,14 @@ namespace TradingBot
             // HybridExitManager의 트레일링 스탑 갱신 이벤트를 ExecutionService와 연결
             _hybridExitManager.OnTrailingStopUpdate += async (symbol, newStopPrice) =>
             {
-                await _executionService.UpdateTrailingStopAsync(symbol, newStopPrice);
+                try
+                {
+                    await _executionService.UpdateTrailingStopAsync(symbol, newStopPrice);
+                }
+                catch (Exception ex)
+                {
+                    OnLiveLog?.Invoke($"⚠️ 트레일링 스탑 갱신 오류 [{symbol}]: {ex.Message}");
+                }
             };
 
             // [3파 통합] TransformerStrategy에 ElliottWave3WaveStrategy 주입
@@ -417,7 +441,11 @@ namespace TradingBot
             {
                 _transformerStrategy = new TransformerStrategy(_client, _transformerTrainer, _newsService, _elliotWave3Strategy, tfSettings);
                 _transformerStrategy.OnLog += msg => OnStatusLog?.Invoke(msg);
-                _transformerStrategy.OnSignalAnalyzed += vm => OnSignalUpdate?.Invoke(vm);
+                _transformerStrategy.OnSignalAnalyzed += vm =>
+                {
+                    try { OnSignalUpdate?.Invoke(vm); }
+                    catch (Exception ex) { OnLiveLog?.Invoke($"⚠️ Transformer 시그널 UI 반영 오류: {ex.Message}"); }
+                };
             }
             else
             {
@@ -475,12 +503,19 @@ namespace TradingBot
 
                 _transformerStrategy.OnTradeSignal += async (symbol, side, currentPrice, predictedPrice, mode, customTakeProfitPrice, customStopLossPrice) =>
                 {
-                    // Transformer 전략 신호 발생 시 자동 매매 실행 (LONG/SHORT)
-                    await ExecuteAutoOrder(symbol, side, currentPrice, _cts.Token, $"TRANSFORMER_{mode}", mode, customTakeProfitPrice, customStopLossPrice);
-                    // 하이브리드 이탈 관리자에 등록 (AI 기반 익절/트레일링 스탑)
-                    if (mode != "SIDEWAYS")
+                    try
                     {
-                        _hybridExitManager.RegisterEntry(symbol, side, currentPrice, predictedPrice);
+                        // Transformer 전략 신호 발생 시 자동 매매 실행 (LONG/SHORT)
+                        await ExecuteAutoOrder(symbol, side, currentPrice, _cts.Token, $"TRANSFORMER_{mode}", mode, customTakeProfitPrice, customStopLossPrice);
+                        // 하이브리드 이탈 관리자에 등록 (AI 기반 익절/트레일링 스탑)
+                        if (mode != "SIDEWAYS")
+                        {
+                            _hybridExitManager.RegisterEntry(symbol, side, currentPrice, predictedPrice);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLiveLog?.Invoke($"⚠️ Transformer 주문 처리 오류 [{symbol}]: {ex.Message}");
                     }
                 };
             }
