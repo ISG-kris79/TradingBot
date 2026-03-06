@@ -81,8 +81,7 @@ await GeneralSettingsProvider.Instance.RefreshSettingsAsync();
 ### AI/ML & 데이터 분석
 
 * **Machine Learning**: [ML.NET 5.0.0](https://dotnet.microsoft.com/apps/machinelearning-ai/ml-dotnet) + FastTree 5.0.0
-* **Deep Learning**: TorchSharp - Transformer 기반 시계열 예측 모델
-* **ONNX Runtime**: ONNX 모델 추론 (LSTM, 강화학습)
+* **Deep Learning**: [TorchSharp 0.104.0](https://github.com/dotnet/TorchSharp) - Transformer 기반 시계열 예측 모델
 * **Technical Indicators**: [Skender.Stock.Indicators 2.7.1](https://github.com/DaveSkender/Stock.Indicators)
 * **Data Pipeline**: TimeSeriesDataLoader - 최적화된 배치 처리 및 정규화
 

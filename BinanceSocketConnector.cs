@@ -4,9 +4,10 @@ using TradingBot.Models;
 
 namespace TradingBot
 {
-    public class BinanceSocketConnector
+    public class BinanceSocketConnector : IDisposable
     {
         private BinanceSocketClient _socketClient;
+        private bool _disposed = false;
 
         public BinanceSocketConnector()
         {
@@ -35,6 +36,24 @@ namespace TradingBot
                     MainWindow.Instance.RefreshSignalUI(viewModel);
                 });
             });
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            
+            try
+            {
+                _socketClient?.UnsubscribeAllAsync().Wait(TimeSpan.FromSeconds(5));
+                _socketClient?.Dispose();
+            }
+            catch { }
+            finally
+            {
+                _disposed = true;
+            }
+            
+            GC.SuppressFinalize(this);
         }
     }
 }

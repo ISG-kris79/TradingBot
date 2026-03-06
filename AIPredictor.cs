@@ -5,7 +5,7 @@ using TradingBot.Models;
 
 namespace TradingBot.Services
 {
-    public class AIPredictor
+    public class AIPredictor : IDisposable
     {
         private MLContext? _mlContext;
         private ITransformer? _model;
@@ -13,6 +13,7 @@ namespace TradingBot.Services
         private PredictionEngine<CandleData, PredictionResult>? _legacyEngine;
         private readonly string _modelPath;
         private readonly string _baseDir;
+        private bool _disposed = false;
 
         public AIPredictor()
         {
@@ -98,5 +99,26 @@ namespace TradingBot.Services
         }
 
         public bool IsModelLoaded => _scalpingEngine != null || _legacyEngine != null;
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            
+            try
+            {
+                _scalpingEngine?.Dispose();
+                _legacyEngine?.Dispose();
+                _model = null;
+                _mlContext = null;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[AIPredictor] Dispose 오류: {ex.Message}");
+            }
+            finally
+            {
+                _disposed = true;
+            }
+        }
     }
 }

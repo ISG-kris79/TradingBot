@@ -20,8 +20,9 @@ using ExchangeType = TradingBot.Shared.Models.ExchangeType;
 
 namespace TradingBot
 {
-    public class TradingEngine
+    public class TradingEngine : IDisposable
     {
+        private bool _disposed = false;
         public bool IsBotRunning { get; private set; } = false;
         private readonly IBinanceRestClient _client;
         private CancellationTokenSource _cts;
@@ -441,13 +442,27 @@ namespace TradingBot
         {
             try
             {
-                var balanceRes = await _client.UsdFuturesApi.Account.GetBalancesAsync(ct: token);
-                if (!balanceRes.Success || balanceRes.Data == null) return;
+                decimal currentBalance = 0;
+                
+                // 시뮬레이션 모드 체크
+                bool isSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false;
+                
+                if (isSimulation)
+                {
+                    // 시뮬레이션 모드: MockExchangeService 사용
+                    currentBalance = await _exchangeService.GetBalanceAsync("USDT", token);
+                }
+                else
+                {
+                    // 실거래 모드: Binance REST API 사용
+                    var balanceRes = await _client.UsdFuturesApi.Account.GetBalancesAsync(ct: token);
+                    if (!balanceRes.Success || balanceRes.Data == null) return;
 
-                var usdt = balanceRes.Data.FirstOrDefault(b => b.Asset == "USDT");
-                if (usdt == null) return;
+                    var usdt = balanceRes.Data.FirstOrDefault(b => b.Asset == "USDT");
+                    if (usdt == null) return;
 
-                decimal currentBalance = usdt.WalletBalance;
+                    currentBalance = usdt.WalletBalance;
+                }
 
                 // 초기 자산이 0인 경우(설정 실패 등) 현재 잔고를 초기 자산으로 임시 대체하여 에러 방지
                 decimal initial = InitialBalance > 0 ? InitialBalance : currentBalance;
@@ -2974,6 +2989,52 @@ namespace TradingBot
             {
                 OnStatusLog?.Invoke($"❌ 예측 검증 실패: {ex.Message}");
             }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            
+            try
+            {
+                // CancellationTokenSource 정리
+                _cts?.Cancel();
+                _cts?.Dispose();
+                
+                // REST/Socket 클라이언트 정리
+                _client?.Dispose();
+                _marketDataManager?.Dispose();
+                
+                // 거래소 서비스 정리
+                if (_exchangeService is IDisposable disposableExchange)
+                {
+                    disposableExchange.Dispose();
+                }
+                
+                // AI 서비스 정리
+                _aiPredictor?.Dispose();
+                _transformerTrainer?.Dispose();
+                
+                // 데이터베이스 연결 정리
+                // DbManager는 연결을 공유하므로 명시적 Dispose 불필요
+                
+                OnStatusLog?.Invoke("✅ TradingEngine 리소스 정리 완료");
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ TradingEngine Dispose 오류: {ex.Message}");
+            }
+            finally
+            {
+                _disposed = true;
+            }
+            
+            GC.SuppressFinalize(this);
+        }
+
+        ~TradingEngine()
+        {
+            Dispose();
         }
     }
 }

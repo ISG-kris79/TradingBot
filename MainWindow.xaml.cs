@@ -23,7 +23,8 @@ namespace TradingBot
     public partial class MainWindow : Window
     {
         // --- Windows API 호출을 위한 구조체 및 메서드 정의 ---
-        [StructLayout(LayoutKind.Sequential)]
+        // [FIX] 스택 버퍼 오버런 방지: Pack=4 명시 및 크기 검증
+        [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 20)]
         public struct FLASHWINFO
         {
             public uint cbSize;
@@ -34,15 +35,27 @@ namespace TradingBot
         }
         public const uint FLASHW_ALL = 3;         // 캡션과 작업표시줄 모두 깜빡임
         public const uint FLASHW_TIMERNOFG = 12;  // 창이 활성화될 때까지 계속 깜빡임
+        private const uint FLASHW_STOP = 0;       // 깜빡임 중지
 
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool FlashWindowEx(ref FLASHWINFO pwfi);
 
         // 아이콘 깜빡임 실행 메서드
         public void FlashWindow()
         {
-            if (!CheckAccess()) { Dispatcher.Invoke(() => FlashWindow()); return; }
+            if (!CheckAccess()) 
+            { 
+                try 
+                { 
+                    Dispatcher.Invoke(() => FlashWindow()); 
+                } 
+                catch 
+                { 
+                    // Dispatcher shutdown 중 호출 시 무시
+                } 
+                return; 
+            }
 
             // 현재 창의 핸들 가져오기
             WindowInteropHelper helper = new WindowInteropHelper(this);
@@ -50,16 +63,29 @@ namespace TradingBot
 
             try
             {
+                // [FIX] 안전한 크기 계산 및 검증
+                int structSize = Marshal.SizeOf(typeof(FLASHWINFO));
+                if (structSize != 20)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[FlashWindow] 경고: 구조체 크기 불일치 ({structSize} != 20)");
+                    return;
+                }
+
                 FLASHWINFO fi = new FLASHWINFO
                 {
-                    cbSize = (uint)Marshal.SizeOf<FLASHWINFO>(),
+                    cbSize = (uint)structSize,
                     hwnd = helper.Handle,
                     dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG,
-                    uCount = 10, // 10회 깜빡임 (uint.MaxValue는 스택 손상 유발)
+                    uCount = 3, // [FIX] 3회로 축소 (안전성 향상)
                     dwTimeout = 0
                 };
 
-                FlashWindowEx(ref fi);
+                bool success = FlashWindowEx(ref fi);
+                if (!success)
+                {
+                    int error = Marshal.GetLastWin32Error();
+                    System.Diagnostics.Debug.WriteLine($"[FlashWindow] Win32 오류: {error}");
+                }
             }
             catch (Exception ex)
             {

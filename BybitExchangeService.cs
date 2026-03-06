@@ -18,7 +18,7 @@ namespace TradingBot.Services
     /// Bybit 거래소 서비스 (V5 API)
     /// Phase 12: 완전 호환 및 안정화 - 재시도 로직, Rate Limiting, Circuit Breaker 구현
     /// </summary>
-    public class BybitExchangeService : IExchangeService
+    public class BybitExchangeService : IExchangeService, IDisposable
     {
         private readonly BybitRestClient _client;
         private readonly SemaphoreSlim _rateLimiter = new SemaphoreSlim(10, 10); // 동시 요청 10개 제한
@@ -28,6 +28,7 @@ namespace TradingBot.Services
         private DateTime _circuitBreakerUntil = DateTime.MinValue;
         private const int MAX_RETRY_ATTEMPTS = 3;
         private const int CIRCUIT_BREAKER_THRESHOLD = 5;
+        private bool _disposed = false;
 
         public string ExchangeName => "Bybit";
 
@@ -664,6 +665,24 @@ namespace TradingBot.Services
                 System.Diagnostics.Debug.WriteLine($"[Bybit] SetPositionMode Exception: {ex.Message}");
                 return false;
             }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            
+            try
+            {
+                _rateLimiter?.Dispose();
+                _client?.Dispose();
+            }
+            catch { }
+            finally
+            {
+                _disposed = true;
+            }
+            
+            GC.SuppressFinalize(this);
         }
     }
 }

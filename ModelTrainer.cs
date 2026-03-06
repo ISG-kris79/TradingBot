@@ -13,7 +13,7 @@ namespace TradingBot.Services
         public ModelTrainer()
         {
             _mlContext = new MLContext(seed: 1);
-            // AiInferenceService에서 사용하는 model.zip 경로와 일치시킴
+            // ML.NET 모델 파일 경로 (model.zip)
             _modelPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "model.zip");
         }
 

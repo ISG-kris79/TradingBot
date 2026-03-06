@@ -14,9 +14,9 @@
     <DesignTimeBuild>false</DesignTimeBuild>
     <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
     <LangVersion>latest</LangVersion>
-      <Version>2.0.19</Version>
-      <AssemblyVersion>2.0.19.0</AssemblyVersion>
-      <FileVersion>2.0.19.0</FileVersion>
+      <Version>2.0.22</Version>
+      <AssemblyVersion>2.0.22.0</AssemblyVersion>
+      <FileVersion>2.0.22.0</FileVersion>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
     <Company>TradingBot</Company>
     <Product>CoinFF TradingBot</Product>

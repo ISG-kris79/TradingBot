@@ -3,9 +3,10 @@ using Binance.Net.Clients;
 using TradingBot;
 using TradingBot.Models;
 
-public class BinanceSocketService
+public class BinanceSocketService : IDisposable
 {
     private BinanceSocketClient _socketClient = new BinanceSocketClient();
+    private bool _disposed = false;
 
     public async Task StartPriceStream(IEnumerable<string> symbols)
     {
@@ -24,5 +25,23 @@ public class BinanceSocketService
                 });
             });
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        
+        try
+        {
+            _socketClient?.UnsubscribeAllAsync().Wait(TimeSpan.FromSeconds(5));
+            _socketClient?.Dispose();
+        }
+        catch { }
+        finally
+        {
+            _disposed = true;
+        }
+        
+        GC.SuppressFinalize(this);
     }
 }

@@ -11,13 +11,14 @@ using TradingBot.Services;
 /// - 20배 레버리지 기준 레이블링 (목표 +2.5%, 손절 -1.0%)
 /// - 정규화된 파생 피처 사용 (가격 이격도, 거래량 비율, 캔들 패턴 등)
 /// </summary>
-public class MLService
+public class MLService : IDisposable
 {
     private MLContext _mlContext = new MLContext(seed: 42);
     private ITransformer? _model;
     private PredictionEngine<CandleData, ScalpingPrediction>? _predictionEngine;
     private readonly string _modelPath;
     private readonly string _modelDir;
+    private bool _disposed = false;
 
     // 학습에 사용할 전체 피처 목록 (정규화된 파생 지표 중심)
     public static readonly string[] FeatureColumns = new[]
@@ -220,6 +221,25 @@ public class MLService
                 catch (Exception ex) { MainWindow.Instance?.AddLog($"학습 에러: {ex.Message}"); }
             });
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        
+        try
+        {
+            _predictionEngine?.Dispose();
+            _predictionEngine = null;
+            _model = null;
+        }
+        catch { }
+        finally
+        {
+            _disposed = true;
+        }
+        
+        GC.SuppressFinalize(this);
     }
 }
 

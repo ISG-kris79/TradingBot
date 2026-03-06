@@ -11,7 +11,7 @@ using static TorchSharp.torch.optim;
 
 namespace TradingBot.Services.AI
 {
-    public class TransformerTrainer
+    public class TransformerTrainer : IDisposable
     {
         private readonly int _inputDim;
         private readonly int _dModel;
@@ -455,13 +455,41 @@ namespace TradingBot.Services.AI
             }
         }
 
+        private bool _disposed = false;
+
         /// <summary>
         /// 리소스 정리
         /// </summary>
         public void Dispose()
         {
-            _dataLoader?.Dispose();
-            _model?.Dispose();
+            if (_disposed) return;
+            
+            try
+            {
+                _dataLoader?.Dispose();
+                _dataLoader = null;
+                
+                _model?.Dispose();
+                _model = null;
+                
+                _means = null;
+                _stds = null;
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"[TransformerTrainer] Dispose 오류: {ex.Message}");
+            }
+            finally
+            {
+                _disposed = true;
+            }
+            
+            GC.SuppressFinalize(this);
+        }
+
+        ~TransformerTrainer()
+        {
+            Dispose();
         }
 
         private class ModelStats

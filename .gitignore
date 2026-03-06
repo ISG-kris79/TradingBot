@@ -50,9 +50,7 @@ publish-x64/
 publish-x86/
 
 # ML Models (너무 큰 경우 제외)
-*.onnx
 *.zip
-model.onnx
 TradingModel.zip
 
 # User-specific files

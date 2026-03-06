@@ -18,8 +18,9 @@ using ExchangeType = TradingBot.Shared.Models.ExchangeType;
 
 namespace TradingBot.Services
 {
-    public class MarketDataManager
+    public class MarketDataManager : IDisposable
     {
+        private bool _disposed = false;
         private readonly IBinanceRestClient _restClient;
         private readonly BinanceSocketClient _socketClient;
         private readonly BybitSocketClient? _bybitSocketClient;
@@ -562,6 +563,35 @@ namespace TradingBot.Services
             public int TradeCount { get; set; }
             public decimal TakerBuyBaseVolume { get; set; }
             public decimal TakerBuyQuoteVolume { get; set; }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            
+            try
+            {
+                _cts?.Cancel();
+                _cts?.Dispose();
+                
+                _socketClient?.UnsubscribeAllAsync().Wait(TimeSpan.FromSeconds(5));
+                _socketClient?.Dispose();
+                
+                _bybitSocketClient?.UnsubscribeAllAsync().Wait(TimeSpan.FromSeconds(5));
+                _bybitSocketClient?.Dispose();
+                
+                _bybitRestClient?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"[MarketDataManager] Dispose 오류: {ex.Message}");
+            }
+            finally
+            {
+                _disposed = true;
+            }
+            
+            GC.SuppressFinalize(this);
         }
     }
 }

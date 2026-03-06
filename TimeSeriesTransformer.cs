@@ -11,6 +11,7 @@ namespace TradingBot.Services.AI
     /// </summary>
     public class TimeSeriesTransformer : Module<Tensor, Tensor>
     {
+        private bool _disposed = false;
         private readonly int _dModel;
         private readonly Module<Tensor, Tensor> _inputEmbedding;
         private readonly PositionalEncoding _positionalEncoding;
@@ -78,6 +79,24 @@ namespace TradingBot.Services.AI
 
             return output;
         }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (!_disposed)
+            {
+                if (disposing)
+                {
+                    try
+                    {
+                        // Module의 Dispose가 자동으로 하위 레이어 정리
+                        // 추가 정리가 필요한 리소스만 여기서 처리
+                    }
+                    catch { }
+                }
+                _disposed = true;
+            }
+            base.Dispose(disposing);
+        }
     }
 
     /// <summary>
@@ -85,6 +104,7 @@ namespace TradingBot.Services.AI
     /// </summary>
     public class PositionalEncoding : Module<Tensor, Tensor>
     {
+        private bool _peDisposed = false;
         private readonly Tensor _pe;
         private readonly Module<Tensor, Tensor> _dropout;
 
@@ -126,6 +146,21 @@ namespace TradingBot.Services.AI
             var peOnDevice = peSlice.to(x.device);
 
             return _dropout.forward(x + peOnDevice);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (!_peDisposed && disposing)
+            {
+                try
+                {
+                    // _pe는 register_buffer로 등록되어 Module.Dispose가 자동 처리
+                    // 추가 정리 불필요
+                }
+                catch { }
+                _peDisposed = true;
+            }
+            base.Dispose(disposing);
         }
     }
 }

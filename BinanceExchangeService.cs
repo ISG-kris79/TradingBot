@@ -12,9 +12,10 @@ using TradingBot.Shared.Models;
 
 namespace TradingBot.Services
 {
-    public class BinanceExchangeService : IExchangeService
+    public class BinanceExchangeService : IExchangeService, IDisposable
     {
         private readonly BinanceRestClient _client;
+        private bool _disposed = false;
 
         public string ExchangeName => "Binance";
 
@@ -474,6 +475,23 @@ namespace TradingBot.Services
                 System.Diagnostics.Debug.WriteLine($"[Binance] SetPositionMode Exception: {ex.Message}");
                 return false;
             }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            
+            try
+            {
+                _client?.Dispose();
+            }
+            catch { }
+            finally
+            {
+                _disposed = true;
+            }
+            
+            GC.SuppressFinalize(this);
         }
     }
 }

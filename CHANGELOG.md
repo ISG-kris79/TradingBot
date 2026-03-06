@@ -7,6 +7,77 @@
 
 ## [Unreleased]
 
+## [2.0.22] - 2026-03-06
+
+### Removed
+
+- **ONNX 지원 제거 (코드 정리)**:
+  - `AiInferenceService.cs` 파일 삭제 (사용되지 않으며 ML.NET 중복 기능)
+  - `.gitignore`에서 `*.onnx`, `model.onnx` 항목 제거
+  - `copilot-instructions.md`에서 ONNX 관련 잘못된 정보 수정
+  - `README.md`에서 "ONNX Runtime" 항목 제거
+  - `ModelTrainer.cs`에서 AiInferenceService 주석 제거
+
+### Technical Details
+
+- **사유**: AiInferenceService는 ONNX Runtime이 아닌 ML.NET을 사용하며, `AIPredictor` 및 `MLService`와 기능 중복
+- **현재 AI/ML 스택**: ML.NET (AIPredictor, MLService) + TorchSharp (TransformerTrainer)
+- **프로젝트에 ONNX Runtime 패키지 없음**: 불필요한 의존성 제거
+
+## [2.0.21] - 2026-03-06
+
+### Fixed
+
+- **전면적 메모리 누수 수정 (Transformer 및 네이티브 리소스)**:
+  - `TransformerTrainer`: IDisposable 명시 구현, 소멸자 추가
+  - `TimeSeriesTransformer`: protected Dispose 구현
+  - `PositionalEncoding`: protected Dispose 구현
+  - `TimeSeriesDataLoader`: 캐시된 Tensor 정리 보장
+  - `MarketDataManager`: Socket 클라이언트 정리 추가
+  - `BinanceSocketService`: IDisposable 구현
+  - `BinanceSocketConnector`: IDisposable 구현
+  - `BinanceExchangeService`: IDisposable 구현
+  - `BybitExchangeService`: IDisposable 구현, SemaphoreSlim 정리
+  - `MLService`: IDisposable 명시 구현
+  - `TradingEngine`: IDisposable 구현, 모든 서비스 정리
+
+### Changed
+
+- **리소스 관리 강화**:
+  - 모든 네이티브 리소스에 finalizer 추가
+  - GC.SuppressFinalize() 호출로 성능 최적화
+  - _disposed 플래그로 중복 정리 방지
+  - try-catch-finally 패턴으로 안전한 정리 보장
+
+### Technical Details
+
+- **TorchSharp 리소스**: Transformer 모델 및 데이터 로더의 네이티브 메모리 정리
+- **Socket 연결**: UnsubscribeAllAsync 호출 후 5초 타임아웃으로 정리
+- **ML.NET PredictionEngine**: 명시적 Dispose로 네이티브 핸들 해제
+- **메모리 프로파일링 권장**: 장시간 실행 후 메모리 사용량 모니터링 필요
+
+## [2.0.20] - 2026-03-06
+
+### Fixed
+
+- **스택 버퍼 오버런 수정 (ucrtbase.dll 0xc0000409 예외)**:
+  - `FLASHWINFO` 구조체에 `Pack=4, Size=20` 명시적 지정
+  - `FlashWindowEx` P/Invoke 호출에 `SetLastError=true` 추가
+  - 구조체 크기 검증 로직 추가 (크기 불일치 시 호출 중단)
+  - `uCount` 값을 10에서 3으로 축소 (안정성 향상)
+  - Dispatcher 종료 시 예외 처리 강화
+
+- **메모리 누수 방지**:
+  - `AIPredictor`에 `IDisposable` 구현 추가
+  - `AiInferenceService`에 `IDisposable` 구현 추가
+  - `PredictionEngine` 리소스 적절한 정리 보장
+
+### Technical Details
+
+- **문제 원인**: Windows API `FlashWindowEx` 호출 시 구조체 레이아웃 불일치로 인한 스택 메모리 손상
+- **해결 방법**: `StructLayout`에 명시적 크기 및 Pack 지정, Win32 오류 코드 확인
+- **추가 보호**: ML.NET `PredictionEngine` 네이티브 리소스 정리 보장
+
 ## [2.1.18] - 2026-03-05
 
 ### Added
