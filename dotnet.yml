@@ -40,7 +40,7 @@ jobs:
       run: dotnet tool install -g vpk
 
     - name: Publish Application
-      run: dotnet publish TradingBot/TradingBot.csproj -c Release -r win-x64 --self-contained -o ./publish
+      run: dotnet publish TradingBot.csproj -c Release -r win-x64 --self-contained -o ./publish
 
     - name: Pack with Velopack
       shell: pwsh

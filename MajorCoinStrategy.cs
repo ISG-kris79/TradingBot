@@ -151,24 +151,40 @@ namespace TradingBot.Strategies
 
                 string decisionKr = decision switch
                 {
-                    "LONG" => "롱 진입",
-                    "SHORT" => "숏 진입",
-                    _ => "대기 중"
+                    "LONG" => "LONG",
+                    "SHORT" => "SHORT",
+                    _ => "WAIT"
                 };
 
-                // AI 필터 차단 가능성 표시 (Major 자체는 LONG이지만 ExecuteAutoOrder에서 AI필터로 차단될 수 있음)
-                string aiFilterWarning = "";
+                // AI 필터는 엔진(ExecuteAutoOrder)에서 최종 판정되므로, 여기서는 사전신호 안내만 표시
+                string aiFilterInfo = "";
                 if (decision == "LONG" || decision == "SHORT")
                 {
                     try
                     {
                         var settings = _settingsAccessor?.Invoke();
-                        // AI 예측기를 직접 호출할 수 없으므로, 결정이 LONG/SHORT일 때 AI 필터에 의해 차단될 수 있음을 표시
-                        aiFilterWarning = " ⚠️AI필터 통과 필요";
+                        
+                        // [개선] AI 필터 통과 조건 미리 안내
+                        var filterHints = new List<string>();
+                        
+                        if (volumeMomentum < 1.0)
+                            filterHints.Add($"거래량{volumeMomentum:F2}x");
+                        
+                        if (rsi < 40)
+                            filterHints.Add($"RSI{rsi:F0}↓");
+                        
+                        if (!isUptrend && !(sma20 > sma60))
+                            filterHints.Add("정배열✗");
+                        
+                        string hintText = filterHints.Count > 0 ? $" [{string.Join(", ", filterHints)}]" : "";
+                        aiFilterInfo = filterHints.Count > 0
+                            ? $"prefilter=need-ai-check{hintText}"
+                            : "prefilter=need-ai-check";
                     }
                     catch (Exception ex)
                     {
                         System.Diagnostics.Debug.WriteLine($"[MajorCoinStrategy] Settings access failed: {ex.Message}");
+                        aiFilterInfo = "prefilter=need-ai-check";
                     }
                 }
 
@@ -181,16 +197,17 @@ namespace TradingBot.Strategies
                     if (aiScore < longThreshold && aiScore > shortThreshold) reasons.Add("스코어 불충분");
 
                     if (reasons.Any())
-                        reason = $" (사유: {string.Join(" ", reasons)})";
+                        reason = $"holdReason={string.Join("/", reasons)}";
                 }
 
-                string logMsg = $"{nowSeoul:HH:mm:ss} {symbol} ${currentPrice:F2} {decisionKr}{aiFilterWarning}{reason}";
+                string logMsg = $"📡 [SIGNAL][MAJOR][CANDIDATE] sym={symbol} side={decisionKr} px={currentPrice:F4} {aiFilterInfo}{(string.IsNullOrWhiteSpace(reason) ? string.Empty : " | " + reason)}";
                 OnLog?.Invoke(logMsg);
 
                 if (decision != "WAIT")
                 {
                     try
                     {
+                        OnLog?.Invoke($"📨 [SIGNAL][MAJOR][EMIT] sym={symbol} side={decisionKr} px={currentPrice:F4}");
                         OnTradeSignal?.Invoke(symbol, decision, currentPrice);
                     }
                     catch (Exception eventEx)

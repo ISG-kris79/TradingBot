@@ -231,6 +231,8 @@ namespace TradingBot
         public ExchangeType SelectedExchange { get; set; } = ExchangeType.Binance;
         public PumpScanSettings PumpSettings { get; set; } = new();
         public TradingSettings GeneralSettings { get; set; } = new();
+        public PerformanceMonitoringSettings PerformanceMonitoring { get; set; } = new();
+        public DualAIPredictorSettings DualAIPredictor { get; set; } = new();
         public GridStrategySettings GridSettings { get; set; } = new();
         public ArbitrageSettings ArbitrageSettings { get; set; } = new();
         public TransformerSettings TransformerSettings { get; set; } = new();
@@ -261,7 +263,7 @@ namespace TradingBot
         public double LearningRate { get; set; } = 0.001;
 
         public int AdxPeriod { get; set; } = 14;
-        public double AdxSidewaysThreshold { get; set; } = 20.0;
+        public double AdxSidewaysThreshold { get; set; } = 17.0;
 
         public double SidewaysRsiLongMax { get; set; } = 35.0;
         public double SidewaysRsiShortMin { get; set; } = 65.0;
@@ -271,6 +273,21 @@ namespace TradingBot
         public decimal SidewaysShortUpperBandTouchMultiplier { get; set; } = 0.999m;
         public decimal SidewaysLongStopLossMultiplier { get; set; } = 0.9975m;
         public decimal SidewaysShortStopLossMultiplier { get; set; } = 1.0025m;
+
+        public bool PatternMatchingEnabled { get; set; } = true;
+        public int PatternMinSamples { get; set; } = 30;
+        public int PatternTopK { get; set; } = 5;
+        public int PatternLookbackDays { get; set; } = 120;
+        public int PatternMaxSamples { get; set; } = 600;
+        public double PatternSimilarityThreshold { get; set; } = 0.80;
+        public double PatternSuperSimilarityThreshold { get; set; } = 0.90;
+        public double PatternSuperProbabilityThreshold { get; set; } = 0.65;
+        public decimal PatternMaxPositionSizeMultiplier { get; set; } = 3.0m;
+        public bool PatternLossBlockEnabled { get; set; } = true;
+        public int PatternLossBlockMinSamples { get; set; } = 8;
+        public double PatternLossBlockSimilarityThreshold { get; set; } = 0.86;
+        public double PatternLossBlockDominanceGap { get; set; } = 0.03;
+        public double PatternLossBlockProbabilityCeil { get; set; } = 0.52;
     }
 
     public class DeFiSettings

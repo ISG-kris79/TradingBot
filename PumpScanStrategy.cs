@@ -19,6 +19,11 @@ namespace TradingBot.Strategies
         public event Action<string, decimal, string, double, double>? OnPumpDetected; // symbol, price, decision, rsi, atr
         public event Action<string>? OnLog; // [추가] 로그 이벤트
 
+        private void PumpSignalLog(string stage, string detail)
+        {
+            OnLog?.Invoke($"📡 [SIGNAL][PUMP][{stage}] {detail}");
+        }
+
         public PumpScanStrategy(IBinanceRestClient client, List<string> majorSymbols, PumpScanSettings settings)
         {
             _client = client;
@@ -60,18 +65,18 @@ namespace TradingBot.Strategies
                 .ToList();
 
             // 디버깅 로그
-            OnLog?.Invoke($"[급등주 스캔] 전체: {allTickers.Count} → 고점필터: {afterHighPriceFilter.Count} → 양봉필터: {afterCandleFilter.Count} → 상위{profile.CandidateCount}: {topTickers.Count}");
+            PumpSignalLog("SCAN", $"total={allTickers.Count} highPriceFilter={afterHighPriceFilter.Count} bullishFilter={afterCandleFilter.Count} top={topTickers.Count} candidateCap={profile.CandidateCount}");
 
             if ((DateTime.Now - _lastProfileLogTime).TotalMinutes >= 5)
             {
-                OnLog?.Invoke($"[스캔 프로파일] {profile.Name} | 변동률≥{profile.MinPriceChangePercentage:F2}% 거래량비≥{profile.MinVolumeRatio:F2}x 5m거래량비≥{profile.MinVolumeRatio5m:F2}x 호가비≥{profile.MinOrderBookRatio:F2} 체결강도≥{profile.MinTakerBuyRatio:F2}");
+                PumpSignalLog("PROFILE", $"name={profile.Name} minChangePct={profile.MinPriceChangePercentage:F2} minVolRatio={profile.MinVolumeRatio:F2} minVolRatio5m={profile.MinVolumeRatio5m:F2} minOrderBook={profile.MinOrderBookRatio:F2} minTakerBuy={profile.MinTakerBuyRatio:F2}");
                 _lastProfileLogTime = DateTime.Now;
             }
 
             if (topTickers.Count > 0)
             {
                 var symbols = string.Join(", ", topTickers.Take(5).Select(t => t.Symbol));
-                OnLog?.Invoke($"[급등주 후보] {symbols}...");
+                PumpSignalLog("CANDIDATE", $"symbols={symbols}");
             }
 
             // 2. 병렬 분석 실행
@@ -84,7 +89,7 @@ namespace TradingBot.Strategies
                 }
                 catch (Exception ex)
                 {
-                    OnLog?.Invoke($"[스캔 오류] {ticker.Symbol}: {ex.Message}");
+                    PumpSignalLog("ERROR", $"sym={ticker.Symbol} source=parallelScan detail={ex.Message}");
                 }
             });
 
@@ -114,11 +119,11 @@ namespace TradingBot.Strategies
                 double volRatio = avgVol1m > 0 ? (double)last1m.Volume / avgVol1m : 0;
 
                 // 디버깅 로그
-                OnLog?.Invoke($"[1분봉 체크] {symbol} | 변동률: {rangePercent:F2}% | 거래량비: {volRatio:F2}x");
+                PumpSignalLog("CHECK_1M", $"sym={symbol} rangePct={rangePercent:F2} volRatio={volRatio:F2}");
 
                 if (rangePercent < profile.MinPriceChangePercentage || volRatio < profile.MinVolumeRatio)
                 {
-                    OnLog?.Invoke($"[스캔 제외] {symbol} | 조건 미달 (변동률 {rangePercent:F2}% < {profile.MinPriceChangePercentage:F2}% 또는 거래량비 {volRatio:F2}x < {profile.MinVolumeRatio:F2}x)");
+                    PumpSignalLog("REJECT", $"sym={symbol} reason=threshold rangePct={rangePercent:F2}/{profile.MinPriceChangePercentage:F2} volRatio={volRatio:F2}/{profile.MinVolumeRatio:F2}");
                     return;
                 }
 
@@ -192,7 +197,7 @@ namespace TradingBot.Strategies
                     }
                     catch (Exception eventEx)
                     {
-                        OnLog?.Invoke($"[스캔 이벤트 오류] {symbol}: {eventEx.Message}");
+                        PumpSignalLog("ERROR", $"sym={symbol} source=signalEvent detail={eventEx.Message}");
                     }
                 }
 
@@ -200,23 +205,24 @@ namespace TradingBot.Strategies
                 {
                     try
                     {
+                        PumpSignalLog("EMIT", $"sym={symbol} side=LONG decision=PUMP score={aiScore} rsi={rsi15m:F1} price={currentPrice:F4}");
                         OnPumpDetected?.Invoke(symbol, currentPrice, decision, rsi15m, atr15m);
                     }
                     catch (Exception eventEx)
                     {
-                        OnLog?.Invoke($"[Pump 이벤트 오류] {symbol}: {eventEx.Message}");
+                        PumpSignalLog("ERROR", $"sym={symbol} source=pumpEvent detail={eventEx.Message}");
                     }
                 }
 
                 // [추가] 분석 결과 로그 출력 (동작 확인용)
                 if (aiScore >= 60 || decision != "WAIT")
                 {
-                    OnLog?.Invoke($"[스캔] {symbol} | Score: {aiScore} | R: {rsi15m:F1} | Dec: {decision}");
+                    PumpSignalLog("ANALYZE", $"sym={symbol} score={aiScore} rsi={rsi15m:F1} decision={decision}");
                 }
             }
             catch (Exception ex)
             {
-                OnLog?.Invoke($"[스캔 오류] {symbol}: {ex.Message}");
+                PumpSignalLog("ERROR", $"sym={symbol} source=analyze detail={ex.Message}");
             }
         }
 

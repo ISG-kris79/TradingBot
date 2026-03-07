@@ -16,6 +16,7 @@ namespace TradingBot.Services
         private sealed class TradeHistoryOpenRow
         {
             public int Id { get; set; }
+            public string Symbol { get; set; } = string.Empty;
             public string Side { get; set; } = string.Empty;
             public string Strategy { get; set; } = string.Empty;
             public decimal EntryPrice { get; set; }
@@ -31,9 +32,131 @@ namespace TradingBot.Services
 
         private static int GetCurrentUserId() => AppConfig.CurrentUser?.Id ?? 0;
 
+        private static string TrimForDb(string? value, int maxLength)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return string.Empty;
+
+            string trimmed = value.Trim();
+            return trimmed.Length <= maxLength ? trimmed : trimmed.Substring(0, maxLength);
+        }
+
+        private static float SanitizeFloatForDb(float value, float fallback = 0f)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value))
+                return fallback;
+
+            return value;
+        }
+
         private static string InferEntrySideFromCloseSide(string? closeSide)
         {
             return string.Equals(closeSide, "SELL", StringComparison.OrdinalIgnoreCase) ? "BUY" : "SELL";
+        }
+
+        private async Task<string> ResolveCloseSymbolAsync(
+            SqlConnection db,
+            SqlTransaction tx,
+            int userId,
+            TradeLog log,
+            string closeSide)
+        {
+            string directSymbol = TrimForDb(log.Symbol, 50);
+            if (!string.IsNullOrWhiteSpace(directSymbol))
+                return directSymbol;
+
+            string inferredEntrySide = InferEntrySideFromCloseSide(closeSide);
+            decimal targetEntryPrice = log.EntryPrice > 0 ? log.EntryPrice : 0m;
+            decimal targetQuantity = Math.Abs(log.Quantity);
+            DateTime? targetEntryTime = log.EntryTime == default ? null : log.EntryTime;
+
+            string? symbolByStrictMatch = await db.QueryFirstOrDefaultAsync<string>(@"
+SELECT TOP (1) Symbol
+FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+WHERE UserId = @UserId
+  AND IsClosed = 0
+  AND Side = @Side
+  AND (@EntryPrice <= 0 OR ABS(CAST(EntryPrice AS FLOAT) - CAST(@EntryPrice AS FLOAT)) <= ABS(CAST(@EntryPrice AS FLOAT)) * 0.02)
+  AND (@Quantity <= 0 OR ABS(CAST(Quantity AS FLOAT) - CAST(@Quantity AS FLOAT)) <= ABS(CAST(@Quantity AS FLOAT)) * 0.30)
+ORDER BY
+  CASE WHEN @EntryTime IS NULL THEN 0 ELSE ABS(DATEDIFF(SECOND, EntryTime, @EntryTime)) END,
+  Id DESC;",
+                new
+                {
+                    UserId = userId,
+                    Side = inferredEntrySide,
+                    EntryPrice = targetEntryPrice,
+                    Quantity = targetQuantity,
+                    EntryTime = targetEntryTime
+                }, tx);
+
+            string resolvedSymbol = TrimForDb(symbolByStrictMatch, 50);
+            if (!string.IsNullOrWhiteSpace(resolvedSymbol))
+            {
+                MainWindow.Instance?.AddLog($"ℹ️ [DB][Symbol복원] strict 매칭으로 심볼 복원: {resolvedSymbol}");
+                return resolvedSymbol;
+            }
+
+            string? symbolBySide = await db.QueryFirstOrDefaultAsync<string>(@"
+SELECT TOP (1) Symbol
+FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+WHERE UserId = @UserId
+  AND IsClosed = 0
+  AND Side = @Side
+ORDER BY EntryTime DESC, Id DESC;",
+                new
+                {
+                    UserId = userId,
+                    Side = inferredEntrySide
+                }, tx);
+
+            resolvedSymbol = TrimForDb(symbolBySide, 50);
+            if (!string.IsNullOrWhiteSpace(resolvedSymbol))
+            {
+                MainWindow.Instance?.AddLog($"ℹ️ [DB][Symbol복원] side 매칭으로 심볼 복원: {resolvedSymbol}");
+                return resolvedSymbol;
+            }
+
+            var onlyOneOpen = await db.QueryFirstOrDefaultAsync<string>(@"
+SELECT TOP (1) Symbol
+FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+WHERE UserId = @UserId
+  AND IsClosed = 0
+ORDER BY EntryTime DESC, Id DESC;",
+                new { UserId = userId }, tx);
+
+            resolvedSymbol = TrimForDb(onlyOneOpen, 50);
+            if (!string.IsNullOrWhiteSpace(resolvedSymbol))
+            {
+                MainWindow.Instance?.AddLog($"ℹ️ [DB][Symbol복원] open 포지션 최신건으로 심볼 복원: {resolvedSymbol}");
+                return resolvedSymbol;
+            }
+
+            return string.Empty;
+        }
+
+        private static bool IsStopLossReason(string? reason)
+        {
+            if (string.IsNullOrWhiteSpace(reason))
+                return false;
+
+            string text = reason.Trim().ToLowerInvariant();
+            return text.Contains("손절")
+                || text.Contains("stop")
+                || text.Contains("sl");
+        }
+
+        private static bool IsTakeProfitReason(string? reason)
+        {
+            if (string.IsNullOrWhiteSpace(reason))
+                return false;
+
+            string text = reason.Trim().ToLowerInvariant();
+            return text.Contains("익절")
+                || text.Contains("takeprofit")
+                || text.Contains("take profit")
+                || text.Contains("tp")
+                || text.Contains("profit run");
         }
 
         private async Task EnsureTradeHistorySchemaAsync(SqlConnection db, SqlTransaction? tx = null)
@@ -67,6 +190,46 @@ IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeH
 
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'Strategy')
     ALTER TABLE dbo.TradeHistory ADD Strategy NVARCHAR(150) NULL;
+
+IF EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('dbo.TradeHistory')
+      AND name = 'Symbol'
+      AND max_length <> -1
+      AND max_length < 100)
+BEGIN
+    ALTER TABLE dbo.TradeHistory ALTER COLUMN Symbol NVARCHAR(50) NOT NULL;
+END
+
+IF EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('dbo.TradeHistory')
+      AND name = 'Side'
+      AND max_length <> -1
+      AND max_length < 20)
+BEGIN
+    ALTER TABLE dbo.TradeHistory ALTER COLUMN Side NVARCHAR(10) NOT NULL;
+END
+
+IF EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('dbo.TradeHistory')
+      AND name = 'Strategy'
+      AND max_length <> -1
+      AND max_length < 300)
+BEGIN
+    ALTER TABLE dbo.TradeHistory ALTER COLUMN Strategy NVARCHAR(150) NULL;
+END
+
+IF EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('dbo.TradeHistory')
+      AND name = 'ExitReason'
+      AND max_length <> -1
+      AND max_length < 510)
+BEGIN
+    ALTER TABLE dbo.TradeHistory ALTER COLUMN ExitReason NVARCHAR(255) NULL;
+END
 
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'AiScore')
     ALTER TABLE dbo.TradeHistory ADD AiScore REAL NOT NULL CONSTRAINT DF_TradeHistory_AiScore_Legacy DEFAULT 0;
@@ -112,6 +275,508 @@ END";
             await db.ExecuteAsync(sql, transaction: tx);
         }
 
+        private async Task EnsureTradeLogsSchemaAsync(SqlConnection db, SqlTransaction? tx = null)
+        {
+            string sql = @"
+IF OBJECT_ID('dbo.TradeLogs', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.TradeLogs (
+        Id BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        Symbol NVARCHAR(50) NOT NULL,
+        Side NVARCHAR(10) NOT NULL,
+        Strategy NVARCHAR(150) NULL,
+        Price DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradeLogs_Price DEFAULT 0,
+        AiScore FLOAT NOT NULL CONSTRAINT DF_TradeLogs_AiScore DEFAULT 0,
+        [Time] DATETIME2 NOT NULL CONSTRAINT DF_TradeLogs_Time DEFAULT GETDATE(),
+        PnL DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradeLogs_PnL DEFAULT 0,
+        PnLPercent DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradeLogs_PnLPercent DEFAULT 0,
+        EntryPrice DECIMAL(18,8) NULL,
+        ExitPrice DECIMAL(18,8) NULL,
+        Quantity DECIMAL(18,8) NULL,
+        ExitReason NVARCHAR(255) NULL
+    );
+END
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeLogs') AND name = 'EntryPrice')
+    ALTER TABLE dbo.TradeLogs ADD EntryPrice DECIMAL(18,8) NULL;
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeLogs') AND name = 'ExitPrice')
+    ALTER TABLE dbo.TradeLogs ADD ExitPrice DECIMAL(18,8) NULL;
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeLogs') AND name = 'Quantity')
+    ALTER TABLE dbo.TradeLogs ADD Quantity DECIMAL(18,8) NULL;
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeLogs') AND name = 'ExitReason')
+    ALTER TABLE dbo.TradeLogs ADD ExitReason NVARCHAR(255) NULL;
+
+IF EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('dbo.TradeLogs')
+      AND name = 'Symbol'
+      AND max_length <> -1
+      AND max_length < 100)
+BEGIN
+    ALTER TABLE dbo.TradeLogs ALTER COLUMN Symbol NVARCHAR(50) NOT NULL;
+END
+
+IF EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('dbo.TradeLogs')
+      AND name = 'Side'
+      AND max_length <> -1
+      AND max_length < 20)
+BEGIN
+    ALTER TABLE dbo.TradeLogs ALTER COLUMN Side NVARCHAR(10) NOT NULL;
+END
+
+IF EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('dbo.TradeLogs')
+      AND name = 'Strategy'
+      AND max_length <> -1
+      AND max_length < 300)
+BEGIN
+    ALTER TABLE dbo.TradeLogs ALTER COLUMN Strategy NVARCHAR(150) NULL;
+END
+
+IF EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('dbo.TradeLogs')
+      AND name = 'ExitReason'
+      AND max_length <> -1
+      AND max_length < 510)
+BEGIN
+    ALTER TABLE dbo.TradeLogs ALTER COLUMN ExitReason NVARCHAR(255) NULL;
+END
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE object_id = OBJECT_ID('dbo.TradeLogs')
+      AND name = 'IX_TradeLogs_Symbol_Time')
+BEGIN
+    CREATE INDEX IX_TradeLogs_Symbol_Time
+    ON dbo.TradeLogs(Symbol, [Time] DESC);
+END";
+
+            await db.ExecuteAsync(sql, transaction: tx);
+        }
+
+        private async Task TryMirrorToTradeLogsAsync(
+            string? symbol,
+            string? side,
+            string? strategy,
+            decimal price,
+            float aiScore,
+            DateTime time,
+            decimal pnl,
+            decimal pnlPercent,
+            decimal entryPrice,
+            decimal exitPrice,
+            decimal quantity,
+            string? exitReason)
+        {
+            try
+            {
+                string symbolValue = TrimForDb(symbol, 50);
+                if (string.IsNullOrWhiteSpace(symbolValue))
+                    return;
+
+                string sideValue = TrimForDb(side, 10);
+                string strategyValue = TrimForDb(strategy, 150);
+                string exitReasonValue = TrimForDb(exitReason, 255);
+                float aiScoreValue = SanitizeFloatForDb(aiScore);
+                DateTime timeValue = time == default ? DateTime.Now : time;
+
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await EnsureTradeLogsSchemaAsync(db);
+
+                string sql = @"
+IF NOT EXISTS (
+    SELECT 1
+    FROM dbo.TradeLogs
+    WHERE Symbol = @Symbol
+      AND Side = @Side
+      AND ISNULL(Strategy, '') = ISNULL(@Strategy, '')
+      AND ABS(CAST(Price AS FLOAT) - CAST(@Price AS FLOAT)) < 0.0000001
+      AND ABS(CAST(PnL AS FLOAT) - CAST(@PnL AS FLOAT)) < 0.0000001
+      AND [Time] >= DATEADD(SECOND, -3, @Time)
+      AND [Time] <= DATEADD(SECOND, 3, @Time)
+)
+BEGIN
+    INSERT INTO dbo.TradeLogs
+        (Symbol, Side, Strategy, Price, AiScore, [Time], PnL, PnLPercent, EntryPrice, ExitPrice, Quantity, ExitReason)
+    VALUES
+        (@Symbol, @Side, @Strategy, @Price, @AiScore, @Time, @PnL, @PnLPercent, @EntryPrice, @ExitPrice, @Quantity, @ExitReason);
+END";
+
+                await db.ExecuteAsync(sql, new
+                {
+                    Symbol = symbolValue,
+                    Side = sideValue,
+                    Strategy = strategyValue,
+                    Price = price,
+                    AiScore = aiScoreValue,
+                    Time = timeValue,
+                    PnL = pnl,
+                    PnLPercent = pnlPercent,
+                    EntryPrice = entryPrice,
+                    ExitPrice = exitPrice > 0 ? exitPrice : (decimal?)null,
+                    Quantity = quantity > 0 ? quantity : (decimal?)null,
+                    ExitReason = string.IsNullOrWhiteSpace(exitReasonValue) ? null : exitReasonValue
+                });
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] TradeLogs 미러 저장 실패: {ex.Message}");
+            }
+        }
+
+        private async Task EnsureTradePatternSchemaAsync(SqlConnection db, SqlTransaction? tx = null)
+        {
+            string sql = @"
+IF OBJECT_ID('dbo.TradePatternSnapshots', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.TradePatternSnapshots (
+        Id BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        UserId INT NOT NULL CONSTRAINT DF_TradePatternSnapshots_UserId DEFAULT 0,
+        Symbol NVARCHAR(30) NOT NULL,
+        Side NVARCHAR(10) NOT NULL,
+        Strategy NVARCHAR(120) NULL,
+        Mode NVARCHAR(20) NULL,
+        EntryTime DATETIME2 NOT NULL,
+        ExitTime DATETIME2 NULL,
+        EntryPrice DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradePatternSnapshots_EntryPrice DEFAULT 0,
+
+        FinalScore FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_FinalScore DEFAULT 0,
+        AiScore FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_AiScore DEFAULT 0,
+        ElliottScore FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_ElliottScore DEFAULT 0,
+        VolumeScore FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_VolumeScore DEFAULT 0,
+        RsiMacdScore FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_RsiMacdScore DEFAULT 0,
+        BollingerScore FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_BollingerScore DEFAULT 0,
+        PredictedChangePct FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_PredictedChangePct DEFAULT 0,
+        ScoreGap FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_ScoreGap DEFAULT 0,
+
+        AtrPercent FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_AtrPercent DEFAULT 0,
+        HtfPenalty FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_HtfPenalty DEFAULT 0,
+        Adx FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_Adx DEFAULT 0,
+        PlusDi FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_PlusDi DEFAULT 0,
+        MinusDi FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_MinusDi DEFAULT 0,
+        Rsi FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_Rsi DEFAULT 0,
+        MacdHist FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_MacdHist DEFAULT 0,
+        BbPosition FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_BbPosition DEFAULT 0,
+        VolumeRatio FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_VolumeRatio DEFAULT 0,
+
+        SimilarityScore FLOAT NULL,
+        EuclideanSimilarity FLOAT NULL,
+        CosineSimilarity FLOAT NULL,
+        MatchProbability FLOAT NULL,
+        MatchedPatternId BIGINT NULL,
+        IsSuperEntry BIT NOT NULL CONSTRAINT DF_TradePatternSnapshots_IsSuperEntry DEFAULT 0,
+        PositionSizeMultiplier DECIMAL(10,4) NOT NULL CONSTRAINT DF_TradePatternSnapshots_PositionSizeMultiplier DEFAULT 1.0,
+        TakeProfitMultiplier DECIMAL(10,4) NOT NULL CONSTRAINT DF_TradePatternSnapshots_TakeProfitMultiplier DEFAULT 1.0,
+
+        Label TINYINT NULL,
+        PnL DECIMAL(18,8) NULL,
+        PnLPercent DECIMAL(18,8) NULL,
+        ExitReason NVARCHAR(255) NULL,
+        ExitType NVARCHAR(20) NULL,
+
+        ComponentMix NVARCHAR(500) NULL,
+        ContextJson NVARCHAR(MAX) NULL,
+
+        CreatedAt DATETIME2 NOT NULL CONSTRAINT DF_TradePatternSnapshots_CreatedAt DEFAULT SYSUTCDATETIME(),
+        UpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_TradePatternSnapshots_UpdatedAt DEFAULT SYSUTCDATETIME()
+    );
+END
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE object_id = OBJECT_ID('dbo.TradePatternSnapshots')
+      AND name = 'IX_TradePatternSnapshots_User_Symbol_Side_Label_Entry')
+BEGIN
+    CREATE INDEX IX_TradePatternSnapshots_User_Symbol_Side_Label_Entry
+    ON dbo.TradePatternSnapshots(UserId, Symbol, Side, Label, EntryTime DESC);
+END
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE object_id = OBJECT_ID('dbo.TradePatternSnapshots')
+      AND name = 'IX_TradePatternSnapshots_User_Symbol_Entry')
+BEGIN
+    CREATE INDEX IX_TradePatternSnapshots_User_Symbol_Entry
+    ON dbo.TradePatternSnapshots(UserId, Symbol, EntryTime DESC);
+END
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradePatternSnapshots') AND name = 'ExitReason')
+    ALTER TABLE dbo.TradePatternSnapshots ADD ExitReason NVARCHAR(255) NULL;
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradePatternSnapshots') AND name = 'ExitType')
+    ALTER TABLE dbo.TradePatternSnapshots ADD ExitType NVARCHAR(20) NULL;
+";
+
+            await db.ExecuteAsync(sql, transaction: tx);
+        }
+
+        public async Task<long?> SaveTradePatternSnapshotAsync(TradePatternSnapshotRecord snapshot)
+        {
+            try
+            {
+                int userId = GetCurrentUserId();
+                if (userId <= 0)
+                {
+                    userId = 1; // [개발용] 기본 사용자 ID 할당
+                    MainWindow.Instance?.AddLog($"⚠️ 패턴 저장: 로그인 사용자 없음 → 기본 UserId=1로 저장 (개발 모드)");
+                }
+
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                using var tx = db.BeginTransaction();
+
+                await EnsureTradePatternSchemaAsync(db, tx);
+
+                string sql = @"
+INSERT INTO dbo.TradePatternSnapshots
+(
+    UserId, Symbol, Side, Strategy, Mode, EntryTime, EntryPrice,
+    FinalScore, AiScore, ElliottScore, VolumeScore, RsiMacdScore, BollingerScore,
+    PredictedChangePct, ScoreGap,
+    AtrPercent, HtfPenalty, Adx, PlusDi, MinusDi, Rsi, MacdHist, BbPosition, VolumeRatio,
+    SimilarityScore, EuclideanSimilarity, CosineSimilarity, MatchProbability, MatchedPatternId,
+    IsSuperEntry, PositionSizeMultiplier, TakeProfitMultiplier,
+    ComponentMix, ContextJson, UpdatedAt
+)
+OUTPUT INSERTED.Id
+VALUES
+(
+    @UserId, @Symbol, @Side, @Strategy, @Mode, @EntryTime, @EntryPrice,
+    @FinalScore, @AiScore, @ElliottScore, @VolumeScore, @RsiMacdScore, @BollingerScore,
+    @PredictedChangePct, @ScoreGap,
+    @AtrPercent, @HtfPenalty, @Adx, @PlusDi, @MinusDi, @Rsi, @MacdHist, @BbPosition, @VolumeRatio,
+    @SimilarityScore, @EuclideanSimilarity, @CosineSimilarity, @MatchProbability, @MatchedPatternId,
+    @IsSuperEntry, @PositionSizeMultiplier, @TakeProfitMultiplier,
+    @ComponentMix, @ContextJson, SYSUTCDATETIME()
+);";
+
+                long id = await db.ExecuteScalarAsync<long>(sql, new
+                {
+                    UserId = userId,
+                    snapshot.Symbol,
+                    snapshot.Side,
+                    snapshot.Strategy,
+                    snapshot.Mode,
+                    snapshot.EntryTime,
+                    snapshot.EntryPrice,
+                    snapshot.FinalScore,
+                    snapshot.AiScore,
+                    snapshot.ElliottScore,
+                    snapshot.VolumeScore,
+                    snapshot.RsiMacdScore,
+                    snapshot.BollingerScore,
+                    snapshot.PredictedChangePct,
+                    snapshot.ScoreGap,
+                    snapshot.AtrPercent,
+                    snapshot.HtfPenalty,
+                    snapshot.Adx,
+                    snapshot.PlusDi,
+                    snapshot.MinusDi,
+                    snapshot.Rsi,
+                    snapshot.MacdHist,
+                    snapshot.BbPosition,
+                    snapshot.VolumeRatio,
+                    snapshot.SimilarityScore,
+                    snapshot.EuclideanSimilarity,
+                    snapshot.CosineSimilarity,
+                    snapshot.MatchProbability,
+                    snapshot.MatchedPatternId,
+                    snapshot.IsSuperEntry,
+                    snapshot.PositionSizeMultiplier,
+                    snapshot.TakeProfitMultiplier,
+                    snapshot.ComponentMix,
+                    snapshot.ContextJson
+                }, tx);
+
+                await tx.CommitAsync();
+                return id;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] 패턴 스냅샷 저장 실패: {ex.Message}");
+                return null;
+            }
+        }
+
+        public async Task<bool> CompleteTradePatternSnapshotAsync(string symbol, DateTime entryTime, DateTime exitTime, decimal pnl, decimal pnlPercent, string? exitReason = null)
+        {
+            try
+            {
+                int userId = GetCurrentUserId();
+                if (userId <= 0)
+                {
+                    userId = 1; // [개발용] 기본 사용자 ID 할당
+                    MainWindow.Instance?.AddLog($"⚠️ 패턴 완성: 로그인 사용자 없음 → 기본 UserId=1로 저장 (개발 모드)");
+                }
+
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                using var tx = db.BeginTransaction();
+
+                await EnsureTradePatternSchemaAsync(db, tx);
+
+                string normalizedExitReason = TrimForDb(exitReason, 255);
+                bool isStopLoss = IsStopLossReason(normalizedExitReason);
+                bool isTakeProfit = IsTakeProfitReason(normalizedExitReason);
+
+                byte label = pnl > 0 ? (byte)1 : (byte)0;
+                string exitType = pnl > 0 ? "TAKEPROFIT" : "STOPLOSS";
+
+                if (isStopLoss)
+                {
+                    label = 0;
+                    exitType = "STOPLOSS";
+                }
+                else if (isTakeProfit)
+                {
+                    label = 1;
+                    exitType = "TAKEPROFIT";
+                }
+
+                string sql = @"
+;WITH TargetRow AS
+(
+    SELECT TOP (1) Id
+    FROM dbo.TradePatternSnapshots WITH (UPDLOCK, HOLDLOCK)
+    WHERE UserId = @UserId
+      AND Symbol = @Symbol
+      AND Label IS NULL
+    ORDER BY ABS(DATEDIFF(SECOND, EntryTime, @EntryTime)), Id DESC
+)
+UPDATE t
+SET
+    ExitTime = @ExitTime,
+    PnL = @PnL,
+    PnLPercent = @PnLPercent,
+    Label = @Label,
+    ExitReason = @ExitReason,
+    ExitType = @ExitType,
+    UpdatedAt = SYSUTCDATETIME()
+FROM dbo.TradePatternSnapshots t
+INNER JOIN TargetRow x ON x.Id = t.Id;";
+
+                int affected = await db.ExecuteAsync(sql, new
+                {
+                    UserId = userId,
+                    Symbol = symbol,
+                    EntryTime = entryTime,
+                    ExitTime = exitTime,
+                    PnL = pnl,
+                    PnLPercent = pnlPercent,
+                    Label = label,
+                    ExitReason = string.IsNullOrWhiteSpace(normalizedExitReason) ? null : normalizedExitReason,
+                    ExitType = exitType
+                }, tx);
+
+                await tx.CommitAsync();
+                return affected > 0;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] 패턴 라벨 업데이트 실패: {ex.Message}");
+                return false;
+            }
+        }
+
+        public async Task<List<TradePatternSnapshotRecord>> GetLabeledTradePatternSnapshotsAsync(string symbol, string side, int lookbackDays = 120, int maxRows = 600)
+        {
+            try
+            {
+                int userId = GetCurrentUserId();
+                if (userId <= 0 || string.IsNullOrWhiteSpace(symbol) || string.IsNullOrWhiteSpace(side))
+                    return new List<TradePatternSnapshotRecord>();
+
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                await EnsureTradePatternSchemaAsync(db);
+
+                string sql = @"
+SELECT TOP (@MaxRows)
+    Id, UserId, Symbol, Side, Strategy, Mode, EntryTime, ExitTime, EntryPrice,
+    FinalScore, AiScore, ElliottScore, VolumeScore, RsiMacdScore, BollingerScore,
+    PredictedChangePct, ScoreGap,
+    AtrPercent, HtfPenalty, Adx, PlusDi, MinusDi, Rsi, MacdHist, BbPosition, VolumeRatio,
+    SimilarityScore, EuclideanSimilarity, CosineSimilarity, MatchProbability, MatchedPatternId,
+    IsSuperEntry, PositionSizeMultiplier, TakeProfitMultiplier,
+    Label, PnL, PnLPercent,
+    ComponentMix, ContextJson,
+    CreatedAt, UpdatedAt
+FROM dbo.TradePatternSnapshots
+WHERE UserId = @UserId
+  AND Symbol = @Symbol
+  AND Side = @Side
+  AND Label IN (0, 1)
+  AND EntryTime >= DATEADD(DAY, -@LookbackDays, SYSUTCDATETIME())
+ORDER BY EntryTime DESC;";
+
+                var rows = await db.QueryAsync<TradePatternSnapshotRecord>(sql, new
+                {
+                    UserId = userId,
+                    Symbol = symbol,
+                    Side = side,
+                    LookbackDays = Math.Max(1, lookbackDays),
+                    MaxRows = Math.Clamp(maxRows, 50, 3000)
+                });
+
+                return rows.ToList();
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] 패턴 학습 조회 실패: {ex.Message}");
+                return new List<TradePatternSnapshotRecord>();
+            }
+        }
+
+        /// <summary>
+        /// DB에서 IsClosed=0인 모든 오픈 포지션 조회 (봇 시작 시 거래소와 비교용)
+        /// </summary>
+        public async Task<List<(string Symbol, string Side, decimal EntryPrice, decimal Quantity, DateTime EntryTime)>> GetOpenTradesAsync(int userId)
+        {
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                await EnsureTradeHistorySchemaAsync(db);
+
+                string sql = @"
+SELECT Symbol, Side, EntryPrice, Quantity, EntryTime
+FROM dbo.TradeHistory
+WHERE UserId = @UserId AND IsClosed = 0
+ORDER BY EntryTime DESC;";
+
+                var rows = await db.QueryAsync(sql, new { UserId = userId });
+                
+                var result = new List<(string Symbol, string Side, decimal EntryPrice, decimal Quantity, DateTime EntryTime)>();
+                foreach (var row in rows)
+                {
+                    result.Add((
+                        Symbol: (string)row.Symbol,
+                        Side: (string)row.Side,
+                        EntryPrice: (decimal)row.EntryPrice,
+                        Quantity: (decimal)row.Quantity,
+                        EntryTime: (DateTime)row.EntryTime
+                    ));
+                }
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] 오픈 포지션 조회 실패: {ex.Message}");
+                return new List<(string Symbol, string Side, decimal EntryPrice, decimal Quantity, DateTime EntryTime)>();
+            }
+        }
+
         public async Task<bool> UpsertTradeEntryAsync(TradeLog log)
         {
             try
@@ -125,9 +790,8 @@ END";
                 int userId = GetCurrentUserId();
                 if (userId <= 0)
                 {
-                    MainWindow.Instance?.AddLog($"❌ [{log.Symbol}] 진입 이력 저장 실패: 로그인 사용자 ID 없음 (AppConfig.CurrentUser: {(AppConfig.CurrentUser == null ? "null" : AppConfig.CurrentUser.Id.ToString())})");
-                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 로그인 후 다시 시도하세요. Strategy={log.Strategy}, EntryPrice={log.EntryPrice:F4}");
-                    return false;
+                    userId = 1; // [개발용] 기본 사용자 ID 할당
+                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 진입 이력: 로그인 사용자 없음 → 기본 UserId=1로 저장 (개발 모드)");
                 }
 
                 decimal entryPrice = log.EntryPrice > 0 ? log.EntryPrice : log.Price;
@@ -192,12 +856,26 @@ VALUES
                 }
 
                 await tx.CommitAsync();
-                MainWindow.Instance?.AddLog($"✅ [DB] TradeHistory 진입 upsert 완료: U{userId} {log.Symbol} {log.Side} Qty={quantity}");
+                await TryMirrorToTradeLogsAsync(
+                    log.Symbol,
+                    log.Side,
+                    strategy,
+                    entryPrice,
+                    log.AiScore,
+                    entryTime,
+                    0m,
+                    0m,
+                    entryPrice,
+                    0m,
+                    quantity,
+                    null);
+                MainWindow.Instance?.AddLog($"✅ [DB][TradeHistory][EntryUpsert] user={userId} sym={log.Symbol} side={log.Side} qty={quantity}");
                 return true;
             }
             catch (Exception ex)
             {
                 MainWindow.Instance?.AddLog($"❌ [DB 진입 저장 실패] {ex.GetType().Name}: {ex.Message}");
+                MainWindow.Instance?.AddAlert($"❌ [DB] 진입 저장 실패: {ex.Message}");
                 return false;
             }
         }
@@ -212,8 +890,8 @@ VALUES
                 int userId = GetCurrentUserId();
                 if (userId <= 0)
                 {
-                    MainWindow.Instance?.AddLog($"⚠️ [{position.Symbol}] 시작 포지션 이력 보정 스킵: 로그인 사용자 ID 없음");
-                    return (false, position.EntryTime == default ? DateTime.Now : position.EntryTime, position.AiScore, false);
+                    userId = 1; // [개발용] 기본 사용자 ID 할당
+                    MainWindow.Instance?.AddLog($"⚠️ [{position.Symbol}] 시작 포지션 보정: 로그인 사용자 없음 → 기본 UserId=1로 저장 (개발 모드)");
                 }
 
                 string side = position.Side?.ToString()?.ToUpperInvariant() ?? string.Empty;
@@ -308,9 +986,8 @@ VALUES
                 int userId = GetCurrentUserId();
                 if (userId <= 0)
                 {
-                    MainWindow.Instance?.AddLog($"❌ [{log.Symbol}] 청산 이력 저장 실패: 로그인 사용자 ID 없음 (AppConfig.CurrentUser: {(AppConfig.CurrentUser == null ? "null" : AppConfig.CurrentUser.Id.ToString())})");
-                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 로그인 후 다시 시도하세요. ExitReason={log.ExitReason}, PnL={log.PnL:F2}");
-                    return false;
+                    userId = 1; // [개발용] 기본 사용자 ID 할당
+                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 로그인 사용자 없음 → 기본 UserId=1로 저장 (개발 모드)");
                 }
 
                 decimal exitPrice = log.ExitPrice > 0 ? log.ExitPrice : log.Price;
@@ -318,7 +995,15 @@ VALUES
                 decimal quantity = Math.Abs(log.Quantity);
                 DateTime entryTime = log.EntryTime == default ? log.Time : log.EntryTime;
                 DateTime exitTime = log.ExitTime == default ? log.Time : log.ExitTime;
-                string exitReason = string.IsNullOrWhiteSpace(log.ExitReason) ? log.Strategy ?? "MarketClose" : log.ExitReason;
+                string sideValue = TrimForDb(log.Side, 10);
+                if (string.IsNullOrWhiteSpace(sideValue))
+                    sideValue = "SELL";
+
+                string strategyValue = TrimForDb(log.Strategy, 150);
+                string exitReason = string.IsNullOrWhiteSpace(log.ExitReason)
+                    ? (string.IsNullOrWhiteSpace(strategyValue) ? "MarketClose" : strategyValue)
+                    : TrimForDb(log.ExitReason, 255);
+                float aiScoreValue = SanitizeFloatForDb(log.AiScore);
 
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
@@ -326,15 +1011,26 @@ VALUES
 
                 await EnsureTradeHistorySchemaAsync(db, tx);
 
+                string symbolValue = await ResolveCloseSymbolAsync(db, tx, userId, log, sideValue);
+                if (string.IsNullOrWhiteSpace(symbolValue))
+                {
+                    MainWindow.Instance?.AddLog("⚠️ CompleteTradeAsync: Symbol 복원 실패로 저장을 진행할 수 없습니다");
+                    MainWindow.Instance?.AddLog($"   - Side={sideValue}, EntryPrice={entryPrice:F8}, Qty={quantity}, EntryTime={entryTime:yyyy-MM-dd HH:mm:ss}");
+                    MainWindow.Instance?.AddAlert($"❌ [DB] 청산 저장 실패: Symbol 복원 실패 (Side={sideValue}, Qty={quantity})");
+                    await tx.RollbackAsync();
+                    return false;
+                }
+
                 var openTrade = await db.QueryFirstOrDefaultAsync<TradeHistoryOpenRow>(@"
 SELECT TOP (1) Id, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime
 FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
 WHERE UserId = @UserId AND Symbol = @Symbol AND IsClosed = 0
 ORDER BY EntryTime DESC, Id DESC;",
-                    new { UserId = userId, log.Symbol }, tx);
+                    new { UserId = userId, Symbol = symbolValue }, tx);
 
                 if (openTrade != null)
                 {
+                    string closeReasonStrategy = TrimForDb($"CLOSE:{exitReason}", 150);
                     await db.ExecuteAsync(@"
 UPDATE dbo.TradeHistory
 SET ExitPrice = @ExitPrice,
@@ -353,7 +1049,7 @@ WHERE Id = @Id;",
                             Id = openTrade.Id,
                             ExitPrice = exitPrice,
                             Quantity = quantity,
-                            AiScore = log.AiScore,
+                            AiScore = aiScoreValue,
                             log.PnL,
                             log.PnLPercent,
                             ExitReason = exitReason,
@@ -361,12 +1057,27 @@ WHERE Id = @Id;",
                         }, tx);
 
                     await tx.CommitAsync();
-                    MainWindow.Instance?.AddLog($"✅ [DB] TradeHistory 청산 update 완료: U{userId} {log.Symbol} Exit={exitPrice:F4} PnL={log.PnL:F2}");
+                    await TryMirrorToTradeLogsAsync(
+                        symbolValue,
+                        sideValue,
+                        closeReasonStrategy,
+                        exitPrice,
+                        aiScoreValue,
+                        exitTime,
+                        log.PnL,
+                        log.PnLPercent,
+                        openTrade.EntryPrice > 0 ? openTrade.EntryPrice : entryPrice,
+                        exitPrice,
+                        quantity > 0 ? quantity : openTrade.Quantity,
+                        exitReason);
+                    MainWindow.Instance?.AddLog($"✅ [DB][TradeHistory][CloseUpdate] user={userId} sym={symbolValue} exit={exitPrice:F4} pnl={log.PnL:F2} reason={exitReason}");
                     return true;
                 }
 
-                string entrySide = InferEntrySideFromCloseSide(log.Side);
-                string fallbackStrategy = string.IsNullOrWhiteSpace(log.Strategy) ? "RECOVERED_CLOSE" : log.Strategy;
+                // 열린 진입건이 없을 때 INSERT로 보정
+                MainWindow.Instance?.AddLog($"⚠️ [DB][TradeHistory][CloseFallback] user={userId} sym={symbolValue} openEntry=notFound action=insertRecovery");
+                string entrySide = InferEntrySideFromCloseSide(sideValue);
+                string fallbackStrategy = string.IsNullOrWhiteSpace(strategyValue) ? "RECOVERED_CLOSE" : strategyValue;
 
                 await db.ExecuteAsync(@"
 INSERT INTO dbo.TradeHistory
@@ -376,13 +1087,13 @@ VALUES
                     new
                     {
                         UserId = userId,
-                        log.Symbol,
+                        Symbol = symbolValue,
                         Side = entrySide,
                         Strategy = fallbackStrategy,
                         EntryPrice = entryPrice,
                         ExitPrice = exitPrice,
                         Quantity = quantity,
-                        log.AiScore,
+                        AiScore = aiScoreValue,
                         log.PnL,
                         log.PnLPercent,
                         ExitReason = exitReason,
@@ -391,12 +1102,31 @@ VALUES
                     }, tx);
 
                 await tx.CommitAsync();
-                MainWindow.Instance?.AddLog($"⚠️ [DB] TradeHistory 열린 진입건 미발견 → 청산 insert 보정: U{userId} {log.Symbol}");
+                await TryMirrorToTradeLogsAsync(
+                    symbolValue,
+                    sideValue,
+                    TrimForDb($"CLOSE:{exitReason}", 150),
+                    exitPrice,
+                    aiScoreValue,
+                    exitTime,
+                    log.PnL,
+                    log.PnLPercent,
+                    entryPrice,
+                    exitPrice,
+                    quantity,
+                    exitReason);
+                MainWindow.Instance?.AddLog($"⚠️ [DB][TradeHistory][CloseInserted] user={userId} sym={symbolValue} reason={exitReason}");
                 return true;
             }
             catch (Exception ex)
             {
-                MainWindow.Instance?.AddLog($"❌ [DB 청산 저장 실패] {ex.GetType().Name}: {ex.Message}");
+                string detailMsg = $"Type={ex.GetType().Name}, Msg={ex.Message}";
+                if (ex.InnerException != null)
+                    detailMsg += $", Inner={ex.InnerException.Message}";
+                MainWindow.Instance?.AddLog($"❌ [DB 청산 저장 실패] {log?.Symbol ?? "Unknown"} | {detailMsg}");
+                MainWindow.Instance?.AddLog($"   - ExitReason: {log?.ExitReason ?? "N/A"}, PnL: {log?.PnL ?? 0}");
+                MainWindow.Instance?.AddLog($"   - ExitReasonLen: {log?.ExitReason?.Length ?? 0}, AiScore: {(log == null ? 0 : log.AiScore)}");
+                MainWindow.Instance?.AddAlert($"❌ [DB] 청산 저장 실패: {log?.Symbol ?? "Unknown"} | {ex.Message}");
                 return false;
             }
         }
@@ -414,8 +1144,8 @@ VALUES
                 int userId = GetCurrentUserId();
                 if (userId <= 0)
                 {
-                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 외부 청산 동기화 스킵: 로그인 사용자 ID 없음");
-                    return false;
+                    userId = 1; // [개발용] 기본 사용자 ID 할당
+                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 외부 청산 동기화: 로그인 사용자 없음 → 기본 UserId=1로 저장 (개발 모드)");
                 }
 
                 decimal exitPrice = log.ExitPrice > 0 ? log.ExitPrice : log.Price;
@@ -438,8 +1168,49 @@ ORDER BY EntryTime DESC, Id DESC;",
 
                 if (openTrade == null)
                 {
+                    string entrySide = InferEntrySideFromCloseSide(log.Side);
+                    string fallbackStrategy = string.IsNullOrWhiteSpace(log.Strategy) ? "EXTERNAL_CLOSE_SYNC" : log.Strategy;
+                    decimal entryPrice = log.EntryPrice > 0 ? log.EntryPrice : exitPrice;
+                    DateTime entryTime = log.EntryTime == default ? exitTime : log.EntryTime;
+
+                    await db.ExecuteAsync(@"
+INSERT INTO dbo.TradeHistory
+    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, LastUpdatedAt)
+VALUES
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, GETDATE());",
+                        new
+                        {
+                            UserId = userId,
+                            log.Symbol,
+                            Side = entrySide,
+                            Strategy = fallbackStrategy,
+                            EntryPrice = entryPrice,
+                            ExitPrice = exitPrice,
+                            Quantity = quantity,
+                            log.AiScore,
+                            log.PnL,
+                            log.PnLPercent,
+                            ExitReason = exitReason,
+                            EntryTime = entryTime,
+                            ExitTime = exitTime
+                        }, tx);
+
                     await tx.CommitAsync();
-                    return false;
+                    await TryMirrorToTradeLogsAsync(
+                        log.Symbol,
+                        log.Side,
+                        TrimForDb($"CLOSE:{exitReason}", 150),
+                        exitPrice,
+                        log.AiScore,
+                        exitTime,
+                        log.PnL,
+                        log.PnLPercent,
+                        entryPrice,
+                        exitPrice,
+                        quantity,
+                        exitReason);
+                    MainWindow.Instance?.AddLog($"⚠️ [DB] 외부 청산 동기화: 열린 진입건 미발견 → 청산 insert 보정(U{userId}, {log.Symbol})");
+                    return true;
                 }
 
                 decimal resolvedQuantity = quantity > 0 ? quantity : openTrade.Quantity;
@@ -471,12 +1242,26 @@ WHERE Id = @Id;",
                     }, tx);
 
                 await tx.CommitAsync();
+                await TryMirrorToTradeLogsAsync(
+                    log.Symbol,
+                    log.Side,
+                    TrimForDb($"CLOSE:{exitReason}", 150),
+                    exitPrice,
+                    resolvedAiScore,
+                    exitTime,
+                    log.PnL,
+                    log.PnLPercent,
+                    openTrade.EntryPrice,
+                    exitPrice,
+                    resolvedQuantity,
+                    exitReason);
                 MainWindow.Instance?.AddLog($"✅ [DB] 외부 청산 동기화 완료: U{userId} {log.Symbol} Exit={exitPrice:F4}");
                 return true;
             }
             catch (Exception ex)
             {
                 MainWindow.Instance?.AddLog($"❌ [DB 외부 청산 동기화 실패] {ex.GetType().Name}: {ex.Message}");
+                MainWindow.Instance?.AddAlert($"❌ [DB] 외부 청산 동기화 실패: {log?.Symbol ?? "Unknown"} | {ex.Message}");
                 return false;
             }
         }
@@ -494,8 +1279,8 @@ WHERE Id = @Id;",
                 int userId = GetCurrentUserId();
                 if (userId <= 0)
                 {
-                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 부분청산 이력 저장 스킵: 로그인 사용자 ID 없음");
-                    return false;
+                    userId = 1; // [개발용] 기본 사용자 ID 할당
+                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 로그인 사용자 없음 → 기본 UserId=1로 저장 (개발 모드)");
                 }
 
                 decimal exitPrice = log.ExitPrice > 0 ? log.ExitPrice : log.Price;
@@ -586,6 +1371,19 @@ WHERE Id = @Id;",
                             }, tx);
 
                         await tx.CommitAsync();
+                        await TryMirrorToTradeLogsAsync(
+                            log.Symbol,
+                            log.Side,
+                            TrimForDb($"PARTIAL:{exitReason}", 150),
+                            exitPrice,
+                            aiScore,
+                            exitTime,
+                            log.PnL,
+                            log.PnLPercent,
+                            resolvedEntryPrice,
+                            exitPrice,
+                            closeQty,
+                            exitReason);
                         MainWindow.Instance?.AddLog($"✅ [DB] TradeHistory 부분청산 잔량 0 → 전량청산 update 처리: U{userId} {log.Symbol}");
                         return true;
                     }
@@ -647,12 +1445,26 @@ VALUES
                 }
 
                 await tx.CommitAsync();
+                await TryMirrorToTradeLogsAsync(
+                    log.Symbol,
+                    log.Side,
+                    TrimForDb($"PARTIAL:{exitReason}", 150),
+                    exitPrice,
+                    aiScore,
+                    exitTime,
+                    log.PnL,
+                    log.PnLPercent,
+                    resolvedEntryPrice,
+                    exitPrice,
+                    closeQty,
+                    exitReason);
                 MainWindow.Instance?.AddLog($"✅ [DB] TradeHistory 부분청산 기록 완료: U{userId} {log.Symbol} Qty={closeQty}");
                 return true;
             }
             catch (Exception ex)
             {
                 MainWindow.Instance?.AddLog($"❌ [DB 부분청산 저장 실패] {ex.GetType().Name}: {ex.Message}");
+                MainWindow.Instance?.AddAlert($"❌ [DB] 부분청산 저장 실패: {log?.Symbol ?? "Unknown"} | {ex.Message}");
                 return false;
             }
         }

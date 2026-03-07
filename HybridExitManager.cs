@@ -25,6 +25,8 @@ namespace TradingBot.Strategies
     /// </summary>
     public class HybridExitManager
     {
+        private const double MinFirstPartialRoePercent = 25.0;
+
         public event Action<string>? OnLog;
         public event Action<string>? OnAlert;
         public event Func<string, decimal, Task>? OnTrailingStopUpdate; // 스탑로스 갱신 이벤트
@@ -133,7 +135,7 @@ namespace TradingBot.Strategies
             }
 
             // ═══════════════════════════════════════════════
-            // 1. AI 기반 1차 익절: PredictedPrice 도달 → 50% 청산
+            // 1. AI 기반 1차 익절: PredictedPrice 도달 + ROE 25% 이상 → 50% 청산
             // ═══════════════════════════════════════════════
             if (state.Stage == ExitStage.Watching)
             {
@@ -141,19 +143,26 @@ namespace TradingBot.Strategies
                     ? currentPrice >= state.PredictedPrice
                     : currentPrice <= state.PredictedPrice;
 
-                if (reachedTarget)
+                bool passedMinRoe = currentROE >= MinFirstPartialRoePercent;
+
+                if (reachedTarget && passedMinRoe)
                 {
                     state.Stage = ExitStage.PartialTaken;
                     state.BreakevenPrice = state.EntryPrice; // 본절가 설정
                     if (emitAlerts)
-                        OnAlert?.Invoke($"💰 [Hybrid AI TP] {symbol} 1차 익절 시그널 | PredictedPrice({state.PredictedPrice:F8}) 도달 | ROE: {currentROE:F1}%");
+                        OnAlert?.Invoke($"💰 [Hybrid AI TP] {symbol} 1차 익절 시그널 | PredictedPrice({state.PredictedPrice:F8}) 도달 + ROE {MinFirstPartialRoePercent:F0}% 이상 ({currentROE:F1}%)");
                     return new ExitAction
                     {
                         Symbol = symbol,
                         ActionType = ExitActionType.PartialClose50Pct,
-                        Reason = $"AI PredictedPrice 도달 ({state.PredictedPrice:F8})",
+                        Reason = $"AI PredictedPrice 도달 + ROE {MinFirstPartialRoePercent:F0}% 이상 ({state.PredictedPrice:F8})",
                         ROE = currentROE,
                     };
+                }
+
+                if (reachedTarget && !passedMinRoe && emitAlerts)
+                {
+                    OnLog?.Invoke($"⏳ [Hybrid AI TP 보류] {symbol} PredictedPrice 도달했지만 ROE {currentROE:F1}% < {MinFirstPartialRoePercent:F0}%");
                 }
             }
 

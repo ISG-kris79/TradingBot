@@ -69,6 +69,74 @@ namespace TradingBot.Strategies
             // 승인 여부
             public bool IsApproved => FinalScore >= (Direction == "LONG" ? LONG_APPROVAL_THRESHOLD : SHORT_APPROVAL_THRESHOLD);
 
+            // ═══ 컴포넌트 최소점수 게이트 (Adaptive All-Gate) ═══
+            // 핵심 원칙: 합산 총점(ATR 동적 임계값 60~80)이 1차 관문, 개별 게이트는 2차 안전망.
+            // AI 극강(≥38) 시 EW/Vol/RSI/BB 게이트 전부 바이패스 — 모멘텀 우선.
+            // AI 강(≥35) 시 모든 임계값 대폭 완화 — 추세 초입도 허용.
+            // AI 미달(<35) 시 기본 임계값 적용 — 최소 안전망 유지.
+            //
+            // [Adaptive Gate Tiers]
+            //   AI ≥ 38  → 전체 컴포넌트 게이트 바이패스 (극강 모멘텀)
+            //   AI ≥ 35  → EW≥3, Vol≥2, RSI≥1, BB≥2 (완화)
+            //   AI < 35  → EW≥5, Vol≥5, RSI≥3, BB≥4 (기본)
+            public const double MIN_AI_SCORE = 30.0;
+            public const double AI_SCORE_FULL_BYPASS = 36.0;        // AI≥36 → 전체 게이트 바이패스
+
+            // 기본 임계값 (AI < 35)
+            public const double MIN_ELLIOTT_SCORE_DEFAULT = 5.0;
+            public const double MIN_VOLUME_SCORE_DEFAULT = 5.0;
+            public const double MIN_RSI_MACD_SCORE_DEFAULT = 3.0;
+            public const double MIN_BOLLINGER_SCORE_DEFAULT = 4.0;
+
+            // AI 강신호 임계값 (AI ≥ 35 & < 38)
+            public const double MIN_ELLIOTT_SCORE_RELAXED = 3.0;
+            public const double MIN_VOLUME_SCORE_RELAXED = 2.0;
+            public const double MIN_RSI_MACD_SCORE_RELAXED = 1.0;
+            public const double MIN_BOLLINGER_SCORE_RELAXED = 2.0;
+
+            /// <summary>
+            /// Adaptive 컴포넌트 게이트 (AI 점수 기반 3단계 적응형).
+            /// AI가 극강 신호(≥38)를 줄 때 → 개별 게이트 전부 바이패스 (총점만으로 판단)
+            /// AI가 강신호(≥35)를 줄 때 → 모든 임계값 대폭 완화 (모멘텀 추종 허용)
+            /// AI가 약신호(<35)일 때 → 기본 임계값 유지 (안전망)
+            /// </summary>
+            public bool PassesComponentGate(out string failReason)
+            {
+                failReason = "";
+
+                // 1. AI 점수 최소 기준 미달 → 무조건 기각
+                if (AiPredictionScore < MIN_AI_SCORE)
+                {
+                    failReason = $"AI:{AiPredictionScore:F0}<{MIN_AI_SCORE}";
+                    return false;
+                }
+
+                // 2. AI 극강 → 전체 컴포넌트 게이트 바이패스 (총점이 이미 동적 임계값 통과)
+                if (AiPredictionScore >= AI_SCORE_FULL_BYPASS)
+                {
+                    return true; // EW, Vol, RSI, BB 모두 무시
+                }
+
+                // 3. AI 강신호(≥35 & <38) → 완화된 임계값 적용
+                var failures = new List<string>();
+
+                if (ElliottWaveScore < MIN_ELLIOTT_SCORE_RELAXED)
+                    failures.Add($"EW:{ElliottWaveScore:F0}<{MIN_ELLIOTT_SCORE_RELAXED}(R)");
+                if (VolumeMomentumScore < MIN_VOLUME_SCORE_RELAXED)
+                    failures.Add($"Vol:{VolumeMomentumScore:F0}<{MIN_VOLUME_SCORE_RELAXED}(R)");
+                if (RsiMacdScore < MIN_RSI_MACD_SCORE_RELAXED)
+                    failures.Add($"RSI/M:{RsiMacdScore:F0}<{MIN_RSI_MACD_SCORE_RELAXED}(R)");
+                if (BollingerScore < MIN_BOLLINGER_SCORE_RELAXED)
+                    failures.Add($"BB:{BollingerScore:F0}<{MIN_BOLLINGER_SCORE_RELAXED}(R)");
+
+                if (failures.Count > 0)
+                {
+                    failReason = string.Join(", ", failures);
+                    return false;
+                }
+                return true;
+            }
+
             public override string ToString() =>
                 $"[{Direction}] {Symbol} | Score: {FinalScore:F1}/100 | AI:{AiPredictionScore:F1} EW:{ElliottWaveScore:F1} Vol:{VolumeMomentumScore:F1} RSI/MACD:{RsiMacdScore:F1} BB:{BollingerScore:F1} | {(IsApproved ? "✅ APPROVED" : "❌ REJECTED")}";
         }
@@ -295,10 +363,19 @@ namespace TradingBot.Strategies
         {
             double score = 0;
 
-            // RSI: 40~70 (과열 아닌 구간) → 정상 진입
-            if (ctx.RSI >= 40 && ctx.RSI <= 65) score += 5;
-            else if (ctx.RSI > 70) score -= 3;  // 과매수 → 감점
-            else if (ctx.RSI < 30) score += 2;  // 극도 과매도에서 반등 가능
+            // RSI 구간별 점수 (모든 구간 커버 → 데드존 제거)
+            if (ctx.RSI >= 40 && ctx.RSI <= 65) score += 5;       // 최적 진입 구간
+            else if (ctx.RSI > 70)
+            {
+                bool upTrend = ctx.IsElliottUptrend || ctx.Sma20 > ctx.Sma50;
+                if (upTrend)
+                    score += 1;  // 상승 추세 + 과매수 → 모멘텀 지속
+                else
+                    score -= 3;  // 비추세 + 과매수 → 고점 추격 위험
+            }
+            else if (ctx.RSI >= 65 && ctx.RSI <= 70) score += 3;  // 약간 과열이나 진입 가능
+            else if (ctx.RSI >= 30 && ctx.RSI < 40) score += 3;   // 30~40: 과매도 근접 반등 기대 (기존 데드존)
+            else if (ctx.RSI < 30) score += 2;                     // 극도 과매도 → 반등 가능하나 위험
 
             // MACD 히스토그램: 0선 위이거나, 음수 폭이 줄어드는 중
             if (ctx.MacdHist > 0) score += 5;
@@ -376,14 +453,23 @@ namespace TradingBot.Strategies
             // RSI 하락 다이버전스 발생 → 최대 점수
             if (ctx.RsiDivergence < 0) score += 5;
 
-            // RSI > 70 이후 하락 전환 → 숏 기회
-            if (ctx.RSI >= 70) score += 3;
-            else if (ctx.RSI >= 55 && ctx.RSI <= 70) score += 2;
-            // RSI < 35 → 이미 과매도, 숏 추격 위험
-            if (ctx.RSI < 35) score -= 5;
+            // RSI 구간별 점수 (모든 구간 커버 → 데드존 제거)
+            if (ctx.RSI >= 70) score += 3;           // 과매수 → 하락 전환 기대
+            else if (ctx.RSI >= 55) score += 2;      // 55~70: 중립~과매수
+            else if (ctx.RSI >= 45) score += 1;      // 45~55: 중립 (기존 데드존 → 기본점수 부여)
+            else if (ctx.RSI >= 35) score += 1;      // 35~45: 약세 진입 (기존 데드존 → 기본점수 부여)
+            else // RSI < 35: 추세 컨텍스트에 따라 판단
+            {
+                bool downTrend = !ctx.IsElliottUptrend || ctx.Sma20 < ctx.Sma50;
+                if (downTrend)
+                    score += 1;  // 하락 추세 + 과매도 → 추세 지속 확인
+                else
+                    score -= 3;  // 상승 추세 + 과매도 → 반등 위험
+            }
 
-            // MACD 하락
-            if (ctx.MacdHist < 0) score += 5;
+            // MACD 히스토그램
+            if (ctx.MacdHist < 0) score += 5;               // 음수 → 하락 모멘텀
+            else if (ctx.MacdHist <= 0.0005) score += 2;     // 0선 근접 → 전환 직전
 
             return Math.Clamp(score, 0, 10);
         }

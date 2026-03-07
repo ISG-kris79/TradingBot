@@ -23,6 +23,7 @@ namespace TradingBot.Models
     {
         public int DefaultLeverage { get; set; } = 20;
         public decimal DefaultMargin { get; set; } = 200.0m;
+        public decimal SidewaysTakeProfitRoe { get; set; } = 5.0m;
         public decimal TargetRoe { get; set; } = 20.0m;
         public decimal StopLossRoe { get; set; } = 15.0m;
         public decimal TrailingStartRoe { get; set; } = 20.0m;
@@ -33,11 +34,105 @@ namespace TradingBot.Models
         public int PumpLeverage { get; set; } = 20;
 
         // [PUMP 20x 수동 매뉴얼 튜닝값]
-        public decimal PumpTp1Roe { get; set; } = 20.0m;          // 1차 익절 ROE
+        public decimal PumpTp1Roe { get; set; } = 25.0m;          // 1차 익절 ROE
         public decimal PumpTp2Roe { get; set; } = 50.0m;          // 2차 익절 ROE
         public decimal PumpTimeStopMinutes { get; set; } = 15.0m; // 시간 손절(분)
         public decimal PumpStopDistanceWarnPct { get; set; } = 1.0m; // 손절거리 경고(비중축소)
         public decimal PumpStopDistanceBlockPct { get; set; } = 1.3m; // 손절거리 차단(진입취소)
+    }
+
+    public enum PerformanceTuningProfile
+    {
+        Default = 0,      // 기본 균형형 프로파일
+        Conservative = 1, // 안정형: AUTOTUNE 빈도↓, 변화폭↓
+        Aggressive = 2    // 공격형: AUTOTUNE 빈도↑, 변화폭↑
+    }
+
+    public class PerformanceMonitoringSettings
+    {
+        public bool EnableMetrics { get; set; } = true;
+        public bool EnableAutoTune { get; set; } = true;
+        public PerformanceTuningProfile Profile { get; set; } = PerformanceTuningProfile.Default;
+
+        public int LiveLogFlushWarnMs { get; set; } = 40;
+        public int LiveLogPerfLogIntervalSec { get; set; } = 10;
+        public int MainLoopWarnMs { get; set; } = 1500;
+        public int MainLoopPerfLogIntervalSec { get; set; } = 20;
+
+        public int AutoTuneSampleWindow { get; set; } = 60;
+        public int AutoTuneMinIntervalSec { get; set; } = 30;
+
+        public int LiveLogFlushWarnMinMs { get; set; } = 20;
+        public int LiveLogFlushWarnMaxMs { get; set; } = 250;
+        public int MainLoopWarnMinMs { get; set; } = 700;
+        public int MainLoopWarnMaxMs { get; set; } = 8000;
+        public int PerfLogIntervalMinSec { get; set; } = 5;
+        public int PerfLogIntervalMaxSec { get; set; } = 60;
+
+        // 프로파일에 따른 multiplier 반환 (LiveLog용)
+        public double GetLiveLogMultiplier()
+        {
+            return Profile switch
+            {
+                PerformanceTuningProfile.Conservative => 1.5,  // 안정형: 변화폭 낮음
+                PerformanceTuningProfile.Aggressive => 1.2,     // 공격형: 변화폭 높음
+                _ => 1.35                                        // 기본
+            };
+        }
+
+        // 프로파일에 따른 multiplier 반환 (MainLoop용)
+        public double GetMainLoopMultiplier()
+        {
+            return Profile switch
+            {
+                PerformanceTuningProfile.Conservative => 1.45,  // 안정형: 변화폭 낮음
+                PerformanceTuningProfile.Aggressive => 1.15,    // 공격형: 변화폭 높음
+                _ => 1.30                                        // 기본
+            };
+        }
+
+        // 프로파일 적용 (사전정의 프리셋)
+        public void ApplyProfile()
+        {
+            switch (Profile)
+            {
+                case PerformanceTuningProfile.Conservative:
+                    // 안정형: AUTOTUNE 빈도 낮음, 변화폭 낮음
+                    AutoTuneSampleWindow = 120;      // 샘플 더 많이 수집
+                    AutoTuneMinIntervalSec = 60;     // 1분마다 튜닝
+                    LiveLogFlushWarnMs = 50;         // 초기값 더 보수적
+                    MainLoopWarnMs = 1800;           // 초기값 더 보수적
+                    LiveLogPerfLogIntervalSec = 15;  // 로그 빈도 낮춤
+                    MainLoopPerfLogIntervalSec = 30; // 로그 빈도 낮춤
+                    break;
+
+                case PerformanceTuningProfile.Aggressive:
+                    // 공격형: AUTOTUNE 빈도 높음, 변화폭 높음
+                    AutoTuneSampleWindow = 30;       // 빠르게 반응
+                    AutoTuneMinIntervalSec = 20;     // 20초마다 튜닝
+                    LiveLogFlushWarnMs = 30;         // 초기값 더 공격적
+                    MainLoopWarnMs = 1200;           // 초기값 더 공격적
+                    LiveLogPerfLogIntervalSec = 8;   // 로그 빈도 높임
+                    MainLoopPerfLogIntervalSec = 15; // 로그 빈도 높임
+                    break;
+
+                default:
+                    // 기본 프로파일 (이미 설정된 기본값 유지)
+                    break;
+            }
+        }
+    }
+
+    public class DualAIPredictorSettings
+    {
+        public bool EnableDualAI { get; set; } = true;
+        public int MinCandleCount { get; set; } = 60;
+        public int TransformerSeqLen { get; set; } = 50;
+        public float MLNetWeight { get; set; } = 0.4f;
+        public float TransformerWeight { get; set; } = 0.6f;
+        public float StrongSignalThreshold { get; set; } = 70f;
+        public int RetrainIntervalMinutes { get; set; } = 180;
+        public bool AutoRetrainEnabled { get; set; } = false; // 기본값 false (수동 제어)
     }
 
     public class GridStrategySettings
@@ -538,13 +633,20 @@ namespace TradingBot.Models
             }
         }
 
-        public string CloseStatusText => HasCloseIncomplete && IsPositionActive ? "청산미완료" : "-";
+        private bool HasDbSyncFailure =>
+            string.Equals(ExternalSyncStatus, "DB실패", StringComparison.OrdinalIgnoreCase);
 
-        public Brush CloseStatusBackground => HasCloseIncomplete && IsPositionActive
+        public string CloseStatusText => HasDbSyncFailure
+            ? "DB불일치"
+            : (HasCloseIncomplete && IsPositionActive ? "청산미완료" : "-");
+
+        public Brush CloseStatusBackground => HasDbSyncFailure
             ? new SolidColorBrush(Color.FromRgb(185, 28, 28))
-            : new SolidColorBrush(Color.FromRgb(51, 65, 85));
+            : (HasCloseIncomplete && IsPositionActive
+                ? new SolidColorBrush(Color.FromRgb(185, 28, 28))
+                : new SolidColorBrush(Color.FromRgb(51, 65, 85)));
 
-        public Brush CloseStatusForeground => HasCloseIncomplete && IsPositionActive
+        public Brush CloseStatusForeground => (HasDbSyncFailure || (HasCloseIncomplete && IsPositionActive))
             ? Brushes.White
             : Brushes.LightGray;
 
@@ -561,6 +663,9 @@ namespace TradingBot.Models
                     OnPropertyChanged(nameof(SyncStatusText));
                     OnPropertyChanged(nameof(SyncStatusBackground));
                     OnPropertyChanged(nameof(SyncStatusForeground));
+                    OnPropertyChanged(nameof(CloseStatusText));
+                    OnPropertyChanged(nameof(CloseStatusBackground));
+                    OnPropertyChanged(nameof(CloseStatusForeground));
                 }
             }
         }
@@ -587,6 +692,7 @@ namespace TradingBot.Models
             {
                 return ExternalSyncStatus switch
                 {
+                    "DB실패" => new SolidColorBrush(Color.FromRgb(185, 28, 28)),
                     "외부청산" => new SolidColorBrush(Color.FromRgb(30, 64, 175)),
                     "외부부분" => new SolidColorBrush(Color.FromRgb(180, 83, 9)),
                     "외부증가" => new SolidColorBrush(Color.FromRgb(22, 101, 52)),

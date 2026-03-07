@@ -95,14 +95,44 @@ namespace TradingBot.Services
             if (_scalpingEngine != null)
             {
                 var sp = _scalpingEngine.Predict(data);
+                float normalizedProbability = NormalizeProbability(sp.Probability, sp.Score);
                 return new PredictionResult
                 {
                     Prediction = sp.PredictedLabel,
-                    Probability = sp.Probability,
+                    Probability = normalizedProbability,
                     Score = sp.Score
                 };
             }
-            return _legacyEngine?.Predict(data) ?? new PredictionResult { Prediction = false, Probability = 0.5f };
+
+            if (_legacyEngine != null)
+            {
+                var legacy = _legacyEngine.Predict(data);
+                legacy.Probability = NormalizeProbability(legacy.Probability, legacy.Score);
+                return legacy;
+            }
+
+            return new PredictionResult { Prediction = false, Probability = 0.5f };
+        }
+
+        private static float NormalizeProbability(float probability, float score)
+        {
+            bool probabilityLooksValid =
+                !float.IsNaN(probability) &&
+                !float.IsInfinity(probability) &&
+                probability > 0f &&
+                probability < 1f;
+
+            if (probabilityLooksValid)
+                return probability;
+
+            if (!float.IsNaN(score) && !float.IsInfinity(score))
+            {
+                float boundedScore = Math.Clamp(score, -12f, 12f);
+                float inferredProbability = 1f / (1f + (float)Math.Exp(-boundedScore));
+                return Math.Clamp(inferredProbability, 0.001f, 0.999f);
+            }
+
+            return 0.5f;
         }
 
         public bool IsModelLoaded => _scalpingEngine != null || _legacyEngine != null;

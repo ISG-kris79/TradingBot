@@ -41,12 +41,14 @@ namespace TradingBot.Shared.Models
         public object? Side { get; set; }
         public decimal EntryPrice { get; set; }
         public decimal Quantity { get; set; }
+        public decimal InitialQuantity { get; set; }
         public decimal Leverage { get; set; }
         public decimal UnrealizedPnL { get; set; }
         public decimal Roe { get; set; }
         public DateTime EntryTime { get; set; }
 
         public decimal HighestPrice { get; set; }
+        public decimal LowestPrice { get; set; }
         public decimal TakeProfit { get; set; }
         public decimal StopLoss { get; set; }
         public string StopOrderId { get; set; } = string.Empty;
@@ -60,8 +62,12 @@ namespace TradingBot.Shared.Models
         public float AiScore { get; set; }
         public int TakeProfitStep { get; set; }
         public bool IsAveragedDown { get; set; }
+        public bool IsPyramided { get; set; }
+        public int PyramidCount { get; set; }
+        public bool IsProfitRunHoldActive { get; set; }
+    public decimal AggressiveMultiplier { get; set; } = 1.0m;  // 공격형 진입 배수 (1.0~2.0)
 
-        // [엘리엇 파동 기반 익절/손절]
+    // [엘리엇 파동 기반 익절/손절]
         public decimal Wave1LowPrice { get; set; }      // 1파의 저점 (절대 손절선)
         public decimal Wave1HighPrice { get; set; }     // 1파의 고점 (1차 익절)
         public decimal Fib0618Level { get; set; }       // 피보나치 0.618 지지

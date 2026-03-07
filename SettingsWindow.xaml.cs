@@ -137,7 +137,7 @@ namespace TradingBot
                             txtTargetRoe.Text = generalNode["TargetRoe"]?.ToString() ?? "20.0";
                             txtStopLossRoe.Text = generalNode["StopLossRoe"]?.ToString() ?? "15.0";
                             SelectMajorTrendProfile(generalNode["MajorTrendProfile"]?.ToString());
-                            txtPumpTp1Roe.Text = generalNode["PumpTp1Roe"]?.ToString() ?? "20.0";
+                            txtPumpTp1Roe.Text = generalNode["PumpTp1Roe"]?.ToString() ?? "25.0";
                             txtPumpTp2Roe.Text = generalNode["PumpTp2Roe"]?.ToString() ?? "50.0";
                             txtPumpTimeStopMinutes.Text = generalNode["PumpTimeStopMinutes"]?.ToString() ?? "15.0";
                             txtPumpStopWarnPct.Text = generalNode["PumpStopDistanceWarnPct"]?.ToString() ?? "1.0";

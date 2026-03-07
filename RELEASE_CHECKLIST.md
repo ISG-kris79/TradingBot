@@ -289,6 +289,31 @@ Remove-Item -Recurse -Force Releases
 .\publish-and-release.ps1 -PublishPath "bin\publish\win-x64" -Version "X.X.X"
 ```
 
+### 문제: "TradingBot.exe / ucrtbase.dll / 0xc0000409" 크래시 재발
+
+1) **관리자 PowerShell**에서 LocalDumps 활성화
+```powershell
+.\enable-crash-dumps.ps1 -Mode Enable
+```
+
+2) 앱 재실행 후 크래시 재현
+
+3) 생성된 덤프 확인
+```powershell
+.\enable-crash-dumps.ps1 -Mode Status
+```
+
+4) 덤프 파일 전달 경로
+- 기본 경로: `%LOCALAPPDATA%\TradingBot\CrashDumps`
+- 파일 예시: `TradingBot.exe.<pid>.dmp`
+
+5) 수집 종료 후(선택) 비활성화
+```powershell
+.\enable-crash-dumps.ps1 -Mode Disable
+```
+
+> 참고: `DumpType=2`(Full dump)로 설정되므로 파일 크기가 클 수 있습니다.
+
 ---
 
 ## 📚 참고 문서

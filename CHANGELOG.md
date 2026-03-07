@@ -7,6 +7,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- 크래시 덤프 수집 유틸리티 스크립트 `enable-crash-dumps.ps1` 추가
+  - `-Mode Enable|Status|Disable` 지원
+  - WER LocalDumps 레지스트리 자동 설정/해제
+  - 기본 덤프 경로: `%LOCALAPPDATA%\\TradingBot\\CrashDumps`
+
+### Changed
+
+- `RELEASE_CHECKLIST.md` 트러블슈팅에 `0xc0000409/ucrtbase.dll` 재발 시 덤프 수집 절차 추가
+
+### Fixed
+
+- `FlashWindowEx` 호출용 `FLASHWINFO` 구조체를 x64 호환 레이아웃으로 수정
+  - `Size=20` 강제 지정 제거 (`x64`에서 `32`바이트, `x86`에서 `20`바이트 자동 매핑)
+  - 구조체 크기 검증을 아키텍처 기준(`x64=32`, `x86=20`)으로 보정
+
 ## [2.2.7] - 2026-03-06
 
 ### Fixed

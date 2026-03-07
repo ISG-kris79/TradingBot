@@ -23,8 +23,8 @@ namespace TradingBot
     public partial class MainWindow : Window
     {
         // --- Windows API 호출을 위한 구조체 및 메서드 정의 ---
-        // [FIX] 스택 버퍼 오버런 방지: Pack=4 명시 및 크기 검증
-        [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 20)]
+        // x86/x64 아키텍처별 기본 레이아웃을 사용해야 FLASHWINFO 크기가 올바르게 매핑됩니다.
+        [StructLayout(LayoutKind.Sequential)]
         public struct FLASHWINFO
         {
             public uint cbSize;
@@ -63,11 +63,12 @@ namespace TradingBot
 
             try
             {
-                // [FIX] 안전한 크기 계산 및 검증
+                // 아키텍처별 구조체 크기 검증 (x86:20, x64:32)
                 int structSize = Marshal.SizeOf(typeof(FLASHWINFO));
-                if (structSize != 20)
+                int expectedSize = IntPtr.Size == 8 ? 32 : 20;
+                if (structSize != expectedSize)
                 {
-                    System.Diagnostics.Debug.WriteLine($"[FlashWindow] 경고: 구조체 크기 불일치 ({structSize} != 20)");
+                    System.Diagnostics.Debug.WriteLine($"[FlashWindow] 경고: 구조체 크기 불일치 ({structSize} != {expectedSize})");
                     return;
                 }
 
@@ -133,13 +134,14 @@ namespace TradingBot
 
             Instance?.ViewModel?.UpdateMajorProfileStatus(CurrentGeneralSettings.MajorTrendProfile);
 
-            Instance?.AddLog($"[GeneralSettings] ✅ 런타임 적용 완료 (Leverage: {CurrentGeneralSettings.DefaultLeverage}x, TP: {CurrentGeneralSettings.TargetRoe:F2}%, SL: {CurrentGeneralSettings.StopLossRoe:F2}%, MajorProfile: {CurrentGeneralSettings.MajorTrendProfile})");
+            Instance?.AddLog($"[GeneralSettings] ✅ 런타임 적용 완료 (Leverage: {CurrentGeneralSettings.DefaultLeverage}x, SidewaysTP: {CurrentGeneralSettings.SidewaysTakeProfitRoe:F2}%, TP: {CurrentGeneralSettings.TargetRoe:F2}%, SL: {CurrentGeneralSettings.StopLossRoe:F2}%, MajorProfile: {CurrentGeneralSettings.MajorTrendProfile})");
         }
 
         private static void CopyTradingSettings(TradingSettings target, TradingSettings source)
         {
             target.DefaultLeverage = source.DefaultLeverage;
             target.DefaultMargin = source.DefaultMargin;
+            target.SidewaysTakeProfitRoe = source.SidewaysTakeProfitRoe;
             target.TargetRoe = source.TargetRoe;
             target.StopLossRoe = source.StopLossRoe;
             target.TrailingStartRoe = source.TrailingStartRoe;
@@ -537,7 +539,11 @@ namespace TradingBot
         // 1. 단순 활동 기록 (스캔 중..., 대기 중...)
         public void AddLiveLog(string msg)
         {
-            if (!CheckAccess()) { Dispatcher.Invoke(() => AddLiveLog(msg)); return; }
+            if (!CheckAccess())
+            {
+                _ = Dispatcher.BeginInvoke(new Action(() => AddLiveLog(msg)), DispatcherPriority.Background);
+                return;
+            }
             ViewModel.LiveLogs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] {msg}");
             if (ViewModel.LiveLogs.Count > 50) ViewModel.LiveLogs.RemoveAt(50);
         }
@@ -545,7 +551,11 @@ namespace TradingBot
         // 2. 중요 매매 알림 (매수 완료!, 손절!, 급등 포착!)
         public void AddAlert(string msg)
         {
-            if (!CheckAccess()) { Dispatcher.Invoke(() => AddAlert(msg)); return; }
+            if (!CheckAccess())
+            {
+                _ = Dispatcher.BeginInvoke(new Action(() => AddAlert(msg)), DispatcherPriority.Background);
+                return;
+            }
             ViewModel.Alerts.Insert(0, $"▶ {DateTime.Now:HH:mm:ss} | {msg}");
             if (ViewModel.Alerts.Count > 100) ViewModel.Alerts.RemoveAt(100);
         }
@@ -555,7 +565,7 @@ namespace TradingBot
         {
             if (!CheckAccess()) // UI 쓰레드 체크
             {
-                Dispatcher.Invoke(() => AddLog(msg));
+                _ = Dispatcher.BeginInvoke(new Action(() => AddLog(msg)), DispatcherPriority.Background);
                 return;
             }
             if (ViewModel != null)
