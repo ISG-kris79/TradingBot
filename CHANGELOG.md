@@ -7,22 +7,29 @@
 
 ## [Unreleased]
 
-### Added
-
-- 크래시 덤프 수집 유틸리티 스크립트 `enable-crash-dumps.ps1` 추가
-  - `-Mode Enable|Status|Disable` 지원
-  - WER LocalDumps 레지스트리 자동 설정/해제
-  - 기본 덤프 경로: `%LOCALAPPDATA%\\TradingBot\\CrashDumps`
-
-### Changed
-
-- `RELEASE_CHECKLIST.md` 트러블슈팅에 `0xc0000409/ucrtbase.dll` 재발 시 덤프 수집 절차 추가
+## [2.2.10] - 2026-03-07
 
 ### Fixed
 
-- `FlashWindowEx` 호출용 `FLASHWINFO` 구조체를 x64 호환 레이아웃으로 수정
-  - `Size=20` 강제 지정 제거 (`x64`에서 `32`바이트, `x86`에서 `20`바이트 자동 매핑)
-  - 구조체 크기 검증을 아키텍처 기준(`x64=32`, `x86=20`)으로 보정
+- UI 멈춤 증상 해결: Transformer/ML.NET 예측 검증(5분 후) 타이머 폭주 방지
+  - 심볼+모델 단일 키 기반 중복 스케줄링 방지
+  - 동시성 3개 제한 (`SemaphoreSlim`)
+  - 최신 예측만 덮어쓰기 방식으로 변경
+
+### Added
+
+- Entry Gate 대시보드 UI (15분봉 진입 게이트 PASS/BLOCK 집계)
+- 라이브 로그 3분할 구조 (GATE / MAJOR / PUMP)
+- 크래시 덤프 수집 유틸리티 스크립트 `enable-crash-dumps.ps1`
+- DualAI 통합 예측기 (`DualAI_EntryPredictor.cs`)
+- 15분봉 캔들 매니저 (`FifteenMinCandleManager.cs`)
+- 하이브리드 전략 백테스터 (`HybridStrategyBacktester.cs`)
+- 주문 로직 및 게이트 자동튜닝 문서 (`ORDER_LOGIC_AND_GATE_AUTOTUNE.md`)
+
+### Changed
+
+- 태그 소스와 배포 바이너리 정합성 확보 (v2.2.9 → v2.2.10 재배포)
+- 모든 병행 작업 파일 통합 커밋 (클린 빌드 보장)
 
 ## [2.2.7] - 2026-03-06
 
