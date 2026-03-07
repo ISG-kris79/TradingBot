@@ -6,14 +6,19 @@ using LiveCharts;
 using LiveCharts.Defaults;
 using LiveCharts.Wpf;
 using Microsoft.Data.SqlClient;
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Windows;
 using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using TradingBot.Models;
 using TradingBot.Services;
 using TradingBot.Services.BacktestStrategies;
@@ -30,6 +35,43 @@ namespace TradingBot.ViewModels
 
         private TradingEngine? _engine;
         private DatabaseService? _dbService;
+        private static readonly Regex SymbolRegex = new(@"\b([A-Z]+USDT)\b", RegexOptions.Compiled);
+        private static readonly Regex GateThresholdRegex = new(@"mlTh=(?<ml>\d+(?:\.\d+)?)%\s+tfTh=(?<tf>\d+(?:\.\d+)?)%", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex GateAutoTuneRegex = new(@"mlThr=(?<oldMl>\d+(?:\.\d+)?)%->(?<newMl>\d+(?:\.\d+)?)%.*tfThr=(?<oldTf>\d+(?:\.\d+)?)%->(?<newTf>\d+(?:\.\d+)?)%", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private readonly ConcurrentQueue<BufferedLiveLog> _pendingLiveLogs = new();
+        private readonly ConcurrentQueue<(string Category, string Message, string? Symbol)> _pendingLiveLogDbWrites = new();
+        private readonly ConcurrentDictionary<string, (decimal Price, double? Pnl)> _pendingTickerUpdates = new(StringComparer.OrdinalIgnoreCase);
+        private DispatcherTimer? _liveLogFlushTimer;
+        private DispatcherTimer? _tickerFlushTimer;
+        private int _liveLogDbDrainRunning;
+        private const int MaxBufferedLiveLogs = 1200;
+        private const int MaxUiLiveLogCount = 200;
+        private const int MaxLiveLogBatchPerTick = 48;
+        private const int MaxTickerBatchPerTick = 180;
+        private const int MaxDbWritesPerDrain = 80;
+        private bool _liveLogPerfEnabled = true;
+        private bool _liveLogAutoTuneEnabled = true;
+        private int _liveLogBaseWarnMs = 40;
+        private int _liveLogBasePerfLogIntervalSec = 10;
+        private int _liveLogFlushWarnMs = 40;
+        private int _liveLogPerfLogIntervalSec = 10;
+        private int _liveLogWarnMinMs = 20;
+        private int _liveLogWarnMaxMs = 250;
+        private int _liveLogPerfLogIntervalMinSec = 5;
+        private int _liveLogPerfLogIntervalMaxSec = 60;
+        private int _liveLogTuneSampleWindow = 60;
+        private int _liveLogTuneMinIntervalSec = 30;
+        private readonly Queue<int> _liveLogRecentFlushSamples = new();
+        private DateTime _nextLiveLogPerfLogTime = DateTime.UtcNow.AddSeconds(10);
+        private DateTime _nextLiveLogTuneTime = DateTime.UtcNow.AddSeconds(30);
+        private DateTime _nextLiveLogWarnLogTime = DateTime.MinValue;
+        private long _liveLogFlushTotalMs;
+        private int _liveLogFlushSamples;
+        private int _liveLogFlushMaxMs;
+        private int _liveLogQueueHighWater;
+        private int _liveLogDbQueueHighWater;
+
+        private readonly record struct BufferedLiveLog(DateTime Timestamp, string Message, string RawMessage, string Category, bool IsMajor, string? Symbol);
 
         // TradingEngine 속성 노출
         public decimal InitialBalance => _engine?.InitialBalance ?? 0;
@@ -39,8 +81,45 @@ namespace TradingBot.ViewModels
         public ObservableCollection<string> LiveLogs { get; set; } = new ObservableCollection<string>();
         public ObservableCollection<string> MajorLogs { get; set; } = new ObservableCollection<string>();
         public ObservableCollection<string> PumpLogs { get; set; } = new ObservableCollection<string>();
+        public ObservableCollection<string> GateLogs { get; set; } = new ObservableCollection<string>();
         public ObservableCollection<string> Alerts { get; set; } = new ObservableCollection<string>();
+        public ObservableCollection<string> DbFailureAlerts { get; } = new ObservableCollection<string>();
         public ObservableCollection<TradeLog> TradeHistory { get; set; } = new ObservableCollection<TradeLog>();
+
+        private int _gatePassCount;
+        public int GatePassCount
+        {
+            get => _gatePassCount;
+            set { _gatePassCount = value; OnPropertyChanged(); }
+        }
+
+        private int _gateBlockCount;
+        public int GateBlockCount
+        {
+            get => _gateBlockCount;
+            set { _gateBlockCount = value; OnPropertyChanged(); }
+        }
+
+        private string _gateThresholdSummaryText = "ML 55.0% / TF 52.0%";
+        public string GateThresholdSummaryText
+        {
+            get => _gateThresholdSummaryText;
+            set { _gateThresholdSummaryText = value; OnPropertyChanged(); }
+        }
+
+        private string _gateAutoTuneStatusText = "AUTO_TUNE 대기";
+        public string GateAutoTuneStatusText
+        {
+            get => _gateAutoTuneStatusText;
+            set { _gateAutoTuneStatusText = value; OnPropertyChanged(); }
+        }
+
+        private int _dbFailureAlertCount;
+        public int DbFailureAlertCount
+        {
+            get => _dbFailureAlertCount;
+            set { _dbFailureAlertCount = value; OnPropertyChanged(); }
+        }
 
         // 대시보드 상태
         private string _totalEquity = "$0.00";
@@ -250,6 +329,9 @@ namespace TradingBot.ViewModels
         public MainViewModel()
         {
             UpdateMajorProfileStatus(AppConfig.Current?.Trading?.GeneralSettings?.MajorTrendProfile);
+            ApplyLiveLogPerformanceSettings();
+            InitializeLiveLogPipeline();
+            InitializeTickerUpdatePipeline();
 
             // Initialize services
             if (!DesignerProperties.GetIsInDesignMode(new DependencyObject()))
@@ -910,9 +992,14 @@ namespace TradingBot.ViewModels
             BindingOperations.EnableCollectionSynchronization(LiveLogs, new object());
             BindingOperations.EnableCollectionSynchronization(MajorLogs, new object());
             BindingOperations.EnableCollectionSynchronization(PumpLogs, new object());
+            BindingOperations.EnableCollectionSynchronization(GateLogs, new object());
             BindingOperations.EnableCollectionSynchronization(Alerts, new object());
+            BindingOperations.EnableCollectionSynchronization(DbFailureAlerts, new object());
             BindingOperations.EnableCollectionSynchronization(TradeHistory, new object());
             BacktestFormatter = value => value.ToString("C0"); // 통화 형식 포맷터
+
+            Alerts.CollectionChanged += Alerts_CollectionChanged;
+            RefreshDbFailureAlertMetrics();
 
             LiveChartXFormatter = val => new DateTime((long)val).ToString("HH:mm");
             LiveChartYFormatter = val => val.ToString("N4");
@@ -1036,6 +1123,8 @@ namespace TradingBot.ViewModels
         {
             RunOnUI(() =>
             {
+                string normalizedModelName = NormalizeModelName(record.ModelName);
+
                 // 예측 vs 실제 차트 업데이트 (최근 20개만 유지)
                 // IndexOutOfRangeException 방지: Count 체크 추가
                 if (PredictionComparisonSeries.Count < 2)
@@ -1076,9 +1165,13 @@ namespace TradingBot.ViewModels
                 }
 
                 // 모델 성능 업데이트
-                var model = ModelPerformances.FirstOrDefault(m => m.ModelName == record.ModelName);
+                var model = ModelPerformances.FirstOrDefault(m => m.ModelName == normalizedModelName);
                 if (model != null)
                 {
+                    int previousTotal = model.TotalPredictions;
+                    double previousConfidenceSum = model.AvgConfidence * previousTotal;
+                    double confidencePercent = Math.Clamp((double)record.Confidence, 0.0, 1.0) * 100.0;
+
                     model.TotalPredictions++;
                     if (record.IsCorrect) model.CorrectPredictions++;
 
@@ -1086,13 +1179,17 @@ namespace TradingBot.ViewModels
                         ? (double)model.CorrectPredictions / model.TotalPredictions * 100
                         : 0;
 
+                    model.AvgConfidence = model.TotalPredictions > 0
+                        ? (previousConfidenceSum + confidencePercent) / model.TotalPredictions
+                        : confidencePercent;
+
                     // 색상 업데이트
                     if (model.Accuracy >= 60) model.StatusColor = Brushes.LimeGreen;
                     else if (model.Accuracy >= 50) model.StatusColor = Brushes.Orange;
                     else model.StatusColor = Brushes.Tomato;
 
                     // 실시간 정확도 업데이트
-                    switch (record.ModelName)
+                    switch (normalizedModelName)
                     {
                         case "ML.NET":
                             MLNetAccuracy = model.Accuracy;
@@ -1103,6 +1200,20 @@ namespace TradingBot.ViewModels
                     }
                 }
             });
+        }
+
+        private static string NormalizeModelName(string modelName)
+        {
+            if (string.Equals(modelName, "MLNET", StringComparison.OrdinalIgnoreCase))
+                return "ML.NET";
+
+            if (string.Equals(modelName, "ML.NET", StringComparison.OrdinalIgnoreCase))
+                return "ML.NET";
+
+            if (string.Equals(modelName, "Transformer", StringComparison.OrdinalIgnoreCase))
+                return "Transformer";
+
+            return modelName;
         }
 
         // [AI 모니터링] RL 보상 업데이트
@@ -1225,43 +1336,427 @@ namespace TradingBot.ViewModels
 
         private void AddLiveLog(string msg)
         {
+            if (string.IsNullOrWhiteSpace(msg))
+                return;
+
+            int pendingBefore = _pendingLiveLogs.Count;
+            if (pendingBefore >= (int)(MaxBufferedLiveLogs * 0.8) && IsLiveLogNoise(msg))
+                return;
+
+            var localizedMessage = LocalizeLiveLogMessage(msg);
+            var isMajor = IsMajorSymbolLog(msg);
+            var category = DetermineLiveLogCategory(msg, isMajor);
+            var symbolMatch = SymbolRegex.Match(msg);
+            var symbol = symbolMatch.Success ? symbolMatch.Groups[1].Value : null;
+
+            _pendingLiveLogs.Enqueue(new BufferedLiveLog(DateTime.Now, localizedMessage, msg, category, isMajor, symbol));
+            int pendingQueue = _pendingLiveLogs.Count;
+            if (pendingQueue > _liveLogQueueHighWater)
+                _liveLogQueueHighWater = pendingQueue;
+
+            while (_pendingLiveLogs.Count > MaxBufferedLiveLogs)
+            {
+                _pendingLiveLogs.TryDequeue(out _);
+            }
+        }
+
+        private void InitializeLiveLogPipeline()
+        {
             RunOnUI(() =>
             {
-                var line = $"[{DateTime.Now:HH:mm:ss}] {msg}";
-                LiveLogs.Insert(0, line);
-                if (LiveLogs.Count > 200) LiveLogs.RemoveAt(200);
+                if (_liveLogFlushTimer != null)
+                    return;
 
-                var isMajor = IsMajorSymbolLog(msg);
-                var category = isMajor ? "MAJOR" : "PUMP";
-
-                if (isMajor)
+                _liveLogFlushTimer = new DispatcherTimer(DispatcherPriority.Background)
                 {
-                    MajorLogs.Insert(0, line);
-                    if (MajorLogs.Count > 200) MajorLogs.RemoveAt(200);
-                }
-                else
-                {
-                    PumpLogs.Insert(0, line);
-                    if (PumpLogs.Count > 200) PumpLogs.RemoveAt(200);
-                }
-
-                // DB에 비동기로 저장 (Fire-and-Forget)
-                if (_dbService != null)
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            // 심볼 추출 (XXXUSDT 패턴)
-                            var symbolMatch = System.Text.RegularExpressions.Regex.Match(msg, @"\b([A-Z]+USDT)\b");
-                            var symbol = symbolMatch.Success ? symbolMatch.Groups[1].Value : null;
-
-                            await _dbService.SaveLiveLogAsync(category, msg, symbol);
-                        }
-                        catch { /* 로그 저장 실패 시 무시 */ }
-                    });
-                }
+                    Interval = TimeSpan.FromMilliseconds(120)
+                };
+                _liveLogFlushTimer.Tick += (_, _) => FlushPendingLiveLogsToUi();
+                _liveLogFlushTimer.Start();
             });
+        }
+
+        private void InitializeTickerUpdatePipeline()
+        {
+            RunOnUI(() =>
+            {
+                if (_tickerFlushTimer != null)
+                    return;
+
+                _tickerFlushTimer = new DispatcherTimer(DispatcherPriority.Render)
+                {
+                    Interval = TimeSpan.FromMilliseconds(120)
+                };
+                _tickerFlushTimer.Tick += (_, _) => FlushPendingTickerUpdatesToUi();
+                _tickerFlushTimer.Start();
+            });
+        }
+
+        private void FlushPendingTickerUpdatesToUi()
+        {
+            if (_pendingTickerUpdates.IsEmpty)
+                return;
+
+            int processed = 0;
+            foreach (var kvp in _pendingTickerUpdates.ToArray())
+            {
+                if (processed >= MaxTickerBatchPerTick)
+                    break;
+
+                if (!_pendingTickerUpdates.TryRemove(kvp.Key, out var payload))
+                    continue;
+
+                var existing = MarketDataList.FirstOrDefault(x => x.Symbol == kvp.Key);
+                if (existing == null)
+                {
+                    existing = new MultiTimeframeViewModel { Symbol = kvp.Key };
+                    MarketDataList.Add(existing);
+                }
+
+                if (payload.Price > 0)
+                    existing.LastPrice = payload.Price;
+
+                if (payload.Pnl.HasValue)
+                {
+                    var safePnl = ToFinite(payload.Pnl.Value, existing.ProfitPercent);
+                    existing.ProfitPercent = safePnl;
+                }
+
+                processed++;
+            }
+        }
+
+        private void FlushPendingLiveLogsToUi()
+        {
+            try
+            {
+                Stopwatch? flushWatch = _liveLogPerfEnabled ? Stopwatch.StartNew() : null;
+                int pendingBefore = _pendingLiveLogs.Count;
+                int dbQueueBefore = _pendingLiveLogDbWrites.Count;
+
+                int processed = 0;
+                while (processed < MaxLiveLogBatchPerTick && _pendingLiveLogs.TryDequeue(out var item))
+                {
+                    var line = $"[{item.Timestamp:HH:mm:ss}] {item.Message}";
+                    LiveLogs.Insert(0, line);
+                    if (LiveLogs.Count > MaxUiLiveLogCount) LiveLogs.RemoveAt(MaxUiLiveLogCount);
+
+                    if (string.Equals(item.Category, "GATE", StringComparison.OrdinalIgnoreCase))
+                    {
+                        GateLogs.Insert(0, line);
+                        if (GateLogs.Count > MaxUiLiveLogCount) GateLogs.RemoveAt(MaxUiLiveLogCount);
+                        UpdateGateDashboardFromLog(item.RawMessage, line);
+                    }
+                    else if (item.IsMajor)
+                    {
+                        MajorLogs.Insert(0, line);
+                        if (MajorLogs.Count > MaxUiLiveLogCount) MajorLogs.RemoveAt(MaxUiLiveLogCount);
+                    }
+                    else
+                    {
+                        PumpLogs.Insert(0, line);
+                        if (PumpLogs.Count > MaxUiLiveLogCount) PumpLogs.RemoveAt(MaxUiLiveLogCount);
+                    }
+
+                    if (_dbService != null && ShouldPersistLiveLog(item.Message))
+                    {
+                        _pendingLiveLogDbWrites.Enqueue((item.Category, item.Message, item.Symbol));
+                        int dbQueueLength = _pendingLiveLogDbWrites.Count;
+                        if (dbQueueLength > _liveLogDbQueueHighWater)
+                            _liveLogDbQueueHighWater = dbQueueLength;
+                    }
+
+                    processed++;
+                }
+
+                if (processed > 0 && _dbService != null && !_pendingLiveLogDbWrites.IsEmpty)
+                {
+                    _ = DrainLiveLogDbQueueAsync();
+                }
+
+                if (_liveLogPerfEnabled && flushWatch != null)
+                {
+                    flushWatch.Stop();
+                    RecordLiveLogPerfMetrics(
+                        processed,
+                        pendingBefore,
+                        _pendingLiveLogs.Count,
+                        dbQueueBefore,
+                        _pendingLiveLogDbWrites.Count,
+                        (int)flushWatch.ElapsedMilliseconds);
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggerService.Error("LiveLog flush 오류", ex);
+            }
+        }
+
+        private void RecordLiveLogPerfMetrics(
+            int processed,
+            int pendingBefore,
+            int pendingAfter,
+            int dbQueueBefore,
+            int dbQueueAfter,
+            int flushMs)
+        {
+            if (!_liveLogPerfEnabled)
+                return;
+
+            if (pendingBefore > _liveLogQueueHighWater) _liveLogQueueHighWater = pendingBefore;
+            if (pendingAfter > _liveLogQueueHighWater) _liveLogQueueHighWater = pendingAfter;
+            if (dbQueueBefore > _liveLogDbQueueHighWater) _liveLogDbQueueHighWater = dbQueueBefore;
+            if (dbQueueAfter > _liveLogDbQueueHighWater) _liveLogDbQueueHighWater = dbQueueAfter;
+
+            AutoTuneLiveLogPerfThresholds(flushMs);
+
+            _liveLogFlushTotalMs += flushMs;
+            _liveLogFlushSamples++;
+            if (flushMs > _liveLogFlushMaxMs)
+                _liveLogFlushMaxMs = flushMs;
+
+            bool isWarn = flushMs >= _liveLogFlushWarnMs;
+            bool isPeriodic = DateTime.UtcNow >= _nextLiveLogPerfLogTime;
+            if (!isWarn && !isPeriodic)
+                return;
+
+            double avgMs = _liveLogFlushSamples > 0
+                ? (double)_liveLogFlushTotalMs / _liveLogFlushSamples
+                : 0;
+
+            string level = isWarn ? "WARN" : "INFO";
+            string perfMessage =
+                $"[PERF][LIVELOG][{level}] flushMs={flushMs} avgMs={avgMs:F1} maxMs={_liveLogFlushMaxMs} " +
+                $"processed={processed} queue={pendingBefore}->{pendingAfter} dbQueue={dbQueueBefore}->{dbQueueAfter} " +
+                $"queueHwm={_liveLogQueueHighWater} dbQueueHwm={_liveLogDbQueueHighWater} " +
+                $"warnMs={_liveLogFlushWarnMs} intervalSec={_liveLogPerfLogIntervalSec} autoTune={_liveLogAutoTuneEnabled}";
+
+            LoggerService.Info(perfMessage);
+
+            if (isWarn && DateTime.UtcNow >= _nextLiveLogWarnLogTime)
+            {
+                _nextLiveLogWarnLogTime = DateTime.UtcNow.AddSeconds(10);
+                AddLog($"⚠️ [PERF][LIVELOG] flush {flushMs}ms, queue {pendingBefore}->{pendingAfter}");
+            }
+
+            if (isPeriodic)
+            {
+                _nextLiveLogPerfLogTime = DateTime.UtcNow.AddSeconds(_liveLogPerfLogIntervalSec);
+                _liveLogFlushTotalMs = 0;
+                _liveLogFlushSamples = 0;
+                _liveLogFlushMaxMs = 0;
+                _liveLogQueueHighWater = pendingAfter;
+                _liveLogDbQueueHighWater = dbQueueAfter;
+            }
+        }
+
+        private void ApplyLiveLogPerformanceSettings()
+        {
+            var settings = AppConfig.Current?.Trading?.PerformanceMonitoring;
+            if (settings == null)
+            {
+                _nextLiveLogPerfLogTime = DateTime.UtcNow.AddSeconds(_liveLogPerfLogIntervalSec);
+                _nextLiveLogTuneTime = DateTime.UtcNow.AddSeconds(_liveLogTuneMinIntervalSec);
+                return;
+            }
+
+            // 프로파일 기반 프리셋 적용
+            settings.ApplyProfile();
+
+            _liveLogPerfEnabled = settings.EnableMetrics;
+            _liveLogAutoTuneEnabled = settings.EnableAutoTune;
+
+            _liveLogBaseWarnMs = Math.Max(1, settings.LiveLogFlushWarnMs);
+            _liveLogBasePerfLogIntervalSec = Math.Max(1, settings.LiveLogPerfLogIntervalSec);
+
+            _liveLogWarnMinMs = Math.Max(1, settings.LiveLogFlushWarnMinMs);
+            _liveLogWarnMaxMs = Math.Max(_liveLogWarnMinMs, settings.LiveLogFlushWarnMaxMs);
+            _liveLogPerfLogIntervalMinSec = Math.Max(1, settings.PerfLogIntervalMinSec);
+            _liveLogPerfLogIntervalMaxSec = Math.Max(_liveLogPerfLogIntervalMinSec, settings.PerfLogIntervalMaxSec);
+
+            _liveLogTuneSampleWindow = Math.Clamp(settings.AutoTuneSampleWindow, 20, 240);
+            _liveLogTuneMinIntervalSec = Math.Clamp(settings.AutoTuneMinIntervalSec, 10, 300);
+
+            _liveLogFlushWarnMs = Math.Clamp(_liveLogBaseWarnMs, _liveLogWarnMinMs, _liveLogWarnMaxMs);
+            _liveLogPerfLogIntervalSec = Math.Clamp(_liveLogBasePerfLogIntervalSec, _liveLogPerfLogIntervalMinSec, _liveLogPerfLogIntervalMaxSec);
+
+            DateTime now = DateTime.UtcNow;
+            _nextLiveLogPerfLogTime = now.AddSeconds(_liveLogPerfLogIntervalSec);
+            _nextLiveLogTuneTime = now.AddSeconds(_liveLogTuneMinIntervalSec);
+        }
+
+        private void AutoTuneLiveLogPerfThresholds(int flushMs)
+        {
+            if (!_liveLogAutoTuneEnabled)
+                return;
+
+            _liveLogRecentFlushSamples.Enqueue(flushMs);
+            while (_liveLogRecentFlushSamples.Count > _liveLogTuneSampleWindow)
+            {
+                _liveLogRecentFlushSamples.Dequeue();
+            }
+
+            DateTime now = DateTime.UtcNow;
+            if (now < _nextLiveLogTuneTime)
+                return;
+
+            int minSampleCount = Math.Min(20, Math.Max(10, _liveLogTuneSampleWindow / 2));
+            if (_liveLogRecentFlushSamples.Count < minSampleCount)
+                return;
+
+            var ordered = _liveLogRecentFlushSamples.OrderBy(v => v).ToArray();
+            int p50 = GetPercentileValue(ordered, 0.50);
+            int p90 = GetPercentileValue(ordered, 0.90);
+
+            var settings = AppConfig.Current?.Trading?.PerformanceMonitoring;
+            double multiplier = settings?.GetLiveLogMultiplier() ?? 1.35;
+
+            int targetWarnMs = Math.Clamp(
+                Math.Max(_liveLogBaseWarnMs, (int)Math.Ceiling(p90 * multiplier)),
+                _liveLogWarnMinMs,
+                _liveLogWarnMaxMs);
+
+            int targetIntervalSec = _liveLogBasePerfLogIntervalSec;
+            if (p90 >= targetWarnMs * 0.90 || p50 >= targetWarnMs * 0.60)
+            {
+                targetIntervalSec = Math.Max(_liveLogPerfLogIntervalMinSec, _liveLogBasePerfLogIntervalSec / 2);
+            }
+            else if (p90 <= targetWarnMs * 0.40)
+            {
+                targetIntervalSec = Math.Min(_liveLogPerfLogIntervalMaxSec, _liveLogBasePerfLogIntervalSec + 5);
+            }
+
+            targetIntervalSec = Math.Clamp(targetIntervalSec, _liveLogPerfLogIntervalMinSec, _liveLogPerfLogIntervalMaxSec);
+
+            bool warnChanged = targetWarnMs != _liveLogFlushWarnMs;
+            bool intervalChanged = targetIntervalSec != _liveLogPerfLogIntervalSec;
+
+            if (warnChanged || intervalChanged)
+            {
+                LoggerService.Info(
+                    $"[PERF][LIVELOG][AUTOTUNE] sample={ordered.Length} p50={p50}ms p90={p90}ms " +
+                    $"warnMs={_liveLogFlushWarnMs}->{targetWarnMs} intervalSec={_liveLogPerfLogIntervalSec}->{targetIntervalSec}");
+
+                _liveLogFlushWarnMs = targetWarnMs;
+                _liveLogPerfLogIntervalSec = targetIntervalSec;
+                _nextLiveLogPerfLogTime = now.AddSeconds(_liveLogPerfLogIntervalSec);
+            }
+
+            _nextLiveLogTuneTime = now.AddSeconds(_liveLogTuneMinIntervalSec);
+        }
+
+        private static int GetPercentileValue(int[] ordered, double percentile)
+        {
+            if (ordered.Length == 0)
+                return 0;
+
+            double clamped = Math.Clamp(percentile, 0, 1);
+            int index = (int)Math.Ceiling(clamped * ordered.Length) - 1;
+            index = Math.Clamp(index, 0, ordered.Length - 1);
+            return ordered[index];
+        }
+
+        private static bool ShouldPersistLiveLog(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return false;
+
+            return !message.Contains("[DB]", StringComparison.OrdinalIgnoreCase)
+                && !message.Contains("DB ", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsLiveLogNoise(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return false;
+
+            return message.Contains("[SIGNAL][PUMP][CHECK_1M]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[PERF][LIVELOG]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[PERF][MAIN_LOOP]", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private async Task DrainLiveLogDbQueueAsync()
+        {
+            if (_dbService == null)
+                return;
+
+            if (Interlocked.Exchange(ref _liveLogDbDrainRunning, 1) == 1)
+                return;
+
+            try
+            {
+                int processed = 0;
+                while (processed < MaxDbWritesPerDrain && _pendingLiveLogDbWrites.TryDequeue(out var logItem))
+                {
+                    try
+                    {
+                        await _dbService.SaveLiveLogAsync(logItem.Category, logItem.Message, logItem.Symbol);
+                    }
+                    catch
+                    {
+                    }
+
+                    processed++;
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _liveLogDbDrainRunning, 0);
+
+                if (!_pendingLiveLogDbWrites.IsEmpty)
+                {
+                    _ = DrainLiveLogDbQueueAsync();
+                }
+            }
+        }
+
+        private static string LocalizeLiveLogMessage(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return "로그 메시지가 비어 있습니다.";
+
+            string localized = message;
+
+            localized = ReplaceInsensitive(localized, "[SIGNAL]", "[신호]");
+            localized = ReplaceInsensitive(localized, "[ENTRY]", "[진입]");
+            localized = ReplaceInsensitive(localized, "[TRACE]", "[추적]");
+            localized = ReplaceInsensitive(localized, "[ERROR]", "[오류]");
+            localized = ReplaceInsensitive(localized, "[SCAN]", "[스캔]");
+            localized = ReplaceInsensitive(localized, "[PROFILE]", "[프로필]");
+            localized = ReplaceInsensitive(localized, "[CANDIDATE]", "[후보]");
+            localized = ReplaceInsensitive(localized, "[CHECK_1M]", "[1분검증]");
+            localized = ReplaceInsensitive(localized, "[REJECT]", "[제외]");
+            localized = ReplaceInsensitive(localized, "[EMIT]", "[신호발생]");
+            localized = ReplaceInsensitive(localized, "[ANALYZE]", "[분석]");
+            localized = ReplaceInsensitive(localized, "[BLOCK]", "[차단]");
+            localized = ReplaceInsensitive(localized, "[WARN]", "[경고]");
+            localized = ReplaceInsensitive(localized, "[PASS]", "[통과]");
+            localized = ReplaceInsensitive(localized, "[SKIP]", "[건너뜀]");
+
+            localized = ReplaceInsensitive(localized, "source=", "원인=");
+            localized = ReplaceInsensitive(localized, "detail=", "상세=");
+            localized = ReplaceInsensitive(localized, "src=", "전략=");
+            localized = ReplaceInsensitive(localized, "sym=", "심볼=");
+            localized = ReplaceInsensitive(localized, "side=", "방향=");
+            localized = ReplaceInsensitive(localized, "reason=", "사유=");
+            localized = ReplaceInsensitive(localized, "decision=", "판정=");
+            localized = ReplaceInsensitive(localized, "warmupRemainingSec=", "워밍업남은초=");
+            localized = ReplaceInsensitive(localized, "pumpSlots=", "펌프슬롯=");
+            localized = ReplaceInsensitive(localized, "entryNotFilled=", "진입미체결=");
+
+            localized = ReplaceInsensitive(localized, "reason=threshold", "사유=임계치미달");
+
+            return localized;
+        }
+
+        private static string ReplaceInsensitive(string source, string oldValue, string newValue)
+        {
+            if (string.IsNullOrEmpty(source) || string.IsNullOrEmpty(oldValue))
+                return source;
+
+            return source.Contains(oldValue, StringComparison.OrdinalIgnoreCase)
+                ? source.Replace(oldValue, newValue, StringComparison.OrdinalIgnoreCase)
+                : source;
         }
 
         private static bool IsMajorSymbolLog(string msg)
@@ -1278,6 +1773,58 @@ namespace TradingBot.ViewModels
                    msgUpper.Contains("XRPUSDT");
         }
 
+        private static string DetermineLiveLogCategory(string msg, bool isMajor)
+        {
+            if (IsGateLog(msg))
+                return "GATE";
+
+            return isMajor ? "MAJOR" : "PUMP";
+        }
+
+        private static bool IsGateLog(string msg)
+        {
+            if (string.IsNullOrWhiteSpace(msg))
+                return false;
+
+            return msg.Contains("[ENTRY][15M_GATE]", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("[15M Gate]", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("[GATE][AUTO_TUNE]", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void UpdateGateDashboardFromLog(string rawMessage, string displayLine)
+        {
+            if (rawMessage.Contains("[ENTRY][15M_GATE][PASS]", StringComparison.OrdinalIgnoreCase))
+            {
+                GatePassCount++;
+            }
+            else if (rawMessage.Contains("[ENTRY][15M_GATE][BLOCK]", StringComparison.OrdinalIgnoreCase)
+                || rawMessage.Contains("[15M Gate]", StringComparison.OrdinalIgnoreCase))
+            {
+                GateBlockCount++;
+            }
+
+            var gateThresholdMatch = GateThresholdRegex.Match(rawMessage);
+            if (gateThresholdMatch.Success
+                && float.TryParse(gateThresholdMatch.Groups["ml"].Value, out float mlThreshold)
+                && float.TryParse(gateThresholdMatch.Groups["tf"].Value, out float tfThreshold))
+            {
+                GateThresholdSummaryText = $"ML {mlThreshold:F1}% / TF {tfThreshold:F1}%";
+            }
+
+            var autoTuneMatch = GateAutoTuneRegex.Match(rawMessage);
+            if (autoTuneMatch.Success
+                && float.TryParse(autoTuneMatch.Groups["newMl"].Value, out float tunedMl)
+                && float.TryParse(autoTuneMatch.Groups["newTf"].Value, out float tunedTf))
+            {
+                GateThresholdSummaryText = $"ML {tunedMl:F1}% / TF {tunedTf:F1}%";
+            }
+
+            if (rawMessage.Contains("[GATE][AUTO_TUNE]", StringComparison.OrdinalIgnoreCase))
+            {
+                GateAutoTuneStatusText = displayLine;
+            }
+        }
+
         private void AddAlert(string msg)
         {
             RunOnUI(() =>
@@ -1285,6 +1832,87 @@ namespace TradingBot.ViewModels
                 Alerts.Insert(0, $"▶ {DateTime.Now:HH:mm:ss} | {msg}");
                 if (Alerts.Count > 100) Alerts.RemoveAt(100);
             });
+        }
+
+        private void Alerts_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+        {
+            if (e.NewItems != null)
+            {
+                foreach (var item in e.NewItems)
+                {
+                    if (item is string alertLine)
+                        ProcessDbFailureAlert(alertLine);
+                }
+            }
+
+            RefreshDbFailureAlertMetrics();
+        }
+
+        private void ProcessDbFailureAlert(string alertLine)
+        {
+            if (!IsDbFailureAlertMessage(alertLine))
+                return;
+
+            string symbol = ExtractSymbolFromAlert(alertLine);
+            if (string.IsNullOrWhiteSpace(symbol))
+                return;
+
+            string detail = ExtractAlertMessageBody(alertLine);
+            UpdateExternalSyncStatus(symbol, "DB실패", detail);
+        }
+
+        private void RefreshDbFailureAlertMetrics()
+        {
+            var filtered = Alerts
+                .Where(IsDbFailureAlertMessage)
+                .ToList();
+
+            DbFailureAlertCount = filtered.Count;
+
+            DbFailureAlerts.Clear();
+            foreach (var line in filtered)
+                DbFailureAlerts.Add(line);
+        }
+
+        private static bool IsDbFailureAlertMessage(string? alertLine)
+        {
+            if (string.IsNullOrWhiteSpace(alertLine))
+                return false;
+
+            bool hasDbToken = alertLine.Contains("[DB", StringComparison.OrdinalIgnoreCase)
+                || alertLine.Contains(" DB", StringComparison.OrdinalIgnoreCase)
+                || alertLine.Contains("DB ", StringComparison.OrdinalIgnoreCase)
+                || alertLine.Contains("DB저장", StringComparison.OrdinalIgnoreCase)
+                || alertLine.Contains("DB 저장", StringComparison.OrdinalIgnoreCase);
+
+            if (!hasDbToken)
+                return false;
+
+            return alertLine.Contains("실패", StringComparison.OrdinalIgnoreCase)
+                || alertLine.Contains("오류", StringComparison.OrdinalIgnoreCase)
+                || alertLine.Contains("error", StringComparison.OrdinalIgnoreCase)
+                || alertLine.Contains("fail", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string ExtractSymbolFromAlert(string alertLine)
+        {
+            if (string.IsNullOrWhiteSpace(alertLine))
+                return string.Empty;
+
+            var symbolMatch = Regex.Match(alertLine, @"\b([A-Z0-9]+USDT)\b");
+            return symbolMatch.Success ? symbolMatch.Groups[1].Value : string.Empty;
+        }
+
+        private static string ExtractAlertMessageBody(string alertLine)
+        {
+            if (string.IsNullOrWhiteSpace(alertLine))
+                return string.Empty;
+
+            int sepIndex = alertLine.IndexOf("| ", StringComparison.Ordinal);
+            if (sepIndex >= 0 && sepIndex + 2 < alertLine.Length)
+                return alertLine.Substring(sepIndex + 2).Trim();
+
+            return alertLine.Trim();
         }
 
         private void AddLog(string msg)
@@ -1457,21 +2085,10 @@ namespace TradingBot.ViewModels
 
         private void UpdateTicker(string symbol, decimal price, double? pnl)
         {
-            RunOnUI(() =>
-            {
-                var existing = MarketDataList.FirstOrDefault(x => x.Symbol == symbol);
-                if (existing == null)
-                {
-                    existing = new MultiTimeframeViewModel { Symbol = symbol };
-                    MarketDataList.Add(existing);
-                }
-                if (price > 0) existing.LastPrice = price;
-                if (pnl.HasValue)
-                {
-                    var safePnl = ToFinite(pnl.Value, existing.ProfitPercent);
-                    existing.ProfitPercent = safePnl;
-                }
-            });
+            if (string.IsNullOrWhiteSpace(symbol))
+                return;
+
+            _pendingTickerUpdates[symbol] = (price, pnl);
         }
 
         private void EnsureSymbolInList(string symbol)
@@ -1848,7 +2465,20 @@ namespace TradingBot.ViewModels
             if (app == null) return;
             var dispatcher = app.Dispatcher;
             if (dispatcher == null || dispatcher.HasShutdownStarted) return;
-            dispatcher.Invoke(action);
+            try
+            {
+                if (dispatcher.CheckAccess())
+                {
+                    action();
+                    return;
+                }
+
+                _ = dispatcher.BeginInvoke(action, DispatcherPriority.Background);
+            }
+            catch
+            {
+                // UI 종료/Dispatcher 중단 구간 예외는 무시
+            }
         }
 
         private static bool IsFinite(double value)
