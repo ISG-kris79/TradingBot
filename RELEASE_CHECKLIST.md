@@ -291,6 +291,15 @@ Remove-Item -Recurse -Force Releases
 
 ### 문제: "TradingBot.exe / ucrtbase.dll / 0xc0000409" 크래시 재발
 
+**근본 원인:** TorchSharp Tensor 메모리 누수로 인한 네이티브 스택 버퍼 오버런
+
+**수정 완료 (v2.2.8):**
+- ✅ `TimeSeriesTransformer.cs` - PositionalEncoding 및 forward() 메서드의 모든 중간 Tensor에 using 추가
+- ✅ `TransformerTrainer.cs` - 배치 학습 시 Tensor 자동 해제 확인
+- ✅ 스레드 안전성 검증 (ReaderWriterLockSlim 사용)
+
+**디버깅 절차 (재발 시):**
+
 1) **관리자 PowerShell**에서 LocalDumps 활성화
 ```powershell
 .\enable-crash-dumps.ps1 -Mode Enable

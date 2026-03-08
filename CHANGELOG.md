@@ -7,6 +7,35 @@
 
 ## [Unreleased]
 
+## [2.2.11] - 2026-03-08
+
+### Fixed
+
+- **TorchSharp Tensor 메모리 누수 수정**:
+  - `TimeSeriesTransformer.cs`의 `PositionalEncoding.forward()` - 중간 텐서 자동 해제 추가
+  - `TimeSeriesTransformer.forward()` - 모든 중간 텐서(`embedded`, `scaled`, `positional`, `permuted`, `encoded` 등)에 `using` 블록 적용
+  - 네이티브 스택 버퍼 오버런(`0xc0000409` / `ucrtbase.dll`) 크래시 원인 제거
+
+### Changed
+
+- **펌프 스캔 전략을 밈코인 활용 전략으로 완전 재작성**:
+  - 기존 엄격한 7개 조건 펌프 필터 제거
+  - 밈코인/고베타 정적 유니버스 사용 (DOGE, SHIB, PEPE, FLOKI, BONK, WIF, MEME, TURBO, POPCAT, NEIRO, MOG, BRETT, PNUT, ACT, BABYDOGE, STEEM, POWR, OM, ACX, AKT, SUI, FARTCOIN, GOAT, MOODENG)
+  - 메이저코인과 동일한 5분봉 스코어링 및 의사결정 로직 재사용
+  - 거래량 상위 10개 후보만 선정
+  - 혼합 랭킹 스코어 (거래량 50% + 변동성 20% + 모멘텀 30%)
+  - 시그널 소스를 `MAJOR_MEME`로 변경하여 메이저 스타일 진입 경로 사용
+
+- **TradingEngine 시그널 라우팅 개선**:
+  - 밈코인/고베타 시그널을 `ExecuteAutoOrder(..., "MAJOR_MEME")`로 라우팅
+  - ATR 기반 동적 스탑/리스크를 `MAJOR_`로 시작하는 모든 시그널에 적용
+  - EMA20 리테스트 및 숏스퀴즈 보너스 로직에서 심볼 제한 제거 (밈코인도 사용 가능)
+  - 펌프 슬롯 카운팅 로직 유지 (`IsPumpStrategy = signalSource == "PUMP" || signalSource == "MAJOR_MEME"`, 최대 2개)
+
+### Added
+
+- **3개월 히스토리컬 검증 러너**: `Tools/BacktestRunner/` - `HybridStrategyBacktester`를 이용한 90일 검증 실행 프로젝트 추가
+
 ## [2.2.10] - 2026-03-07
 
 ### Fixed

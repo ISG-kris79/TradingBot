@@ -1,4 +1,5 @@
 using Binance.Net.Enums;
+using Binance.Net.Interfaces;
 using Binance.Net.Interfaces.Clients;
 using System.Collections.Concurrent;
 using TradingBot.Models;
@@ -9,33 +10,45 @@ namespace TradingBot.Strategies
     public class PumpScanStrategy : ITradingStrategy
     {
         private static readonly TimeZoneInfo SeoulTimeZone = GetSeoulTimeZone();
+        private const int PumpCandidateCount = 10;
+        private const decimal VolumeWeight = 0.50m;
+        private const decimal VolatilityWeight = 0.20m;
+        private const decimal MomentumWeight = 0.30m;
+        private static readonly HashSet<string> MemeSymbols = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "DOGEUSDT", "SHIBUSDT", "PEPEUSDT", "FLOKIUSDT", "BONKUSDT", "WIFUSDT",
+            "MEMEUSDT", "TURBOUSDT", "POPCATUSDT", "NEIROUSDT", "MOGUSDT", "BRETTUSDT",
+            "PNUTUSDT", "ACTUSDT", "BABYDOGEUSDT",
+            "STEEMUSDT", "POWRUSDT", "OMUSDT", "ACXUSDT", "AKTUSDT", "SUIUSDT",
+            "FARTCOINUSDT", "GOATUSDT", "MOODENGUSDT"
+        };
+
         private readonly IBinanceRestClient _client;
-        private readonly List<string> _majorSymbols;
         private readonly PumpScanSettings _settings;
         private DateTime _lastProfileLogTime = DateTime.MinValue;
 
-        // 이벤트: 분석 결과 알림
         public event Action<MultiTimeframeViewModel>? OnSignalAnalyzed;
-        public event Action<string, decimal, string, double, double>? OnPumpDetected; // symbol, price, decision, rsi, atr
-        public event Action<string>? OnLog; // [추가] 로그 이벤트
+        public event Action<string, string, decimal>? OnTradeSignal;
+        public event Action<string, decimal, string, double, double>? OnPumpDetected;
+        public event Action<string>? OnLog;
 
         private void PumpSignalLog(string stage, string detail)
         {
             OnLog?.Invoke($"📡 [SIGNAL][PUMP][{stage}] {detail}");
         }
 
-        public PumpScanStrategy(IBinanceRestClient client, List<string> majorSymbols, PumpScanSettings settings)
+        public PumpScanStrategy(IBinanceRestClient client, List<string> watchSymbols, PumpScanSettings settings)
         {
             _client = client;
-            _majorSymbols = majorSymbols;
             _settings = settings ?? new PumpScanSettings();
         }
 
-        // [Agent 1] ITradingStrategy 구현: 단일 심볼 분석 인터페이스
         public async Task AnalyzeAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
-            var profile = GetScanProfile();
-            // 단일 분석 요청 시 블랙리스트 체크 없이(또는 빈 목록으로) 즉시 분석 수행
+            if (!IsEligibleMemeSymbol(symbol))
+                return;
+
+            MajorProfile profile = ResolveProfile();
             await AnalyzeSymbolAsync(symbol, new ConcurrentDictionary<string, DateTime>(), token, profile);
         }
 
@@ -44,180 +57,249 @@ namespace TradingBot.Strategies
             ConcurrentDictionary<string, DateTime> blacklistedSymbols,
             CancellationToken token)
         {
-            var profile = GetScanProfile();
+            MajorProfile profile = ResolveProfile();
+            int candidateCount = GetCandidateCount();
 
-            // 1. 스캔 대상 필터링 (로컬 캐시 사용)
-            var allTickers = tickerCache.Values
-                .Where(t => !string.IsNullOrEmpty(t.Symbol) && t.Symbol.EndsWith("USDT") && !_majorSymbols.Contains(t.Symbol))
+            var eligibleTickers = tickerCache.Values
+                .Where(t => !string.IsNullOrWhiteSpace(t.Symbol) && IsEligibleMemeSymbol(t.Symbol))
                 .ToList();
 
-            var afterHighPriceFilter = allTickers
-                .Where(t => t.HighPrice > 0 && t.LastPrice >= t.HighPrice * 0.7m) // 고점 대비 30% 이상 하락 제외
+            decimal maxQuoteVolume = eligibleTickers.Count > 0 ? eligibleTickers.Max(t => t.QuoteVolume) : 0m;
+            decimal maxVolatility = eligibleTickers.Count > 0 ? eligibleTickers.Max(CalculateIntradayVolatility) : 0m;
+            decimal maxMomentum = eligibleTickers.Count > 0 ? eligibleTickers.Max(CalculateMomentumScore) : 0m;
+
+            var candidates = eligibleTickers
+                .Select(t => new CandidateScore(
+                    t,
+                    CalculateMixedRankScore(t, maxQuoteVolume, maxVolatility, maxMomentum),
+                    CalculateIntradayVolatility(t),
+                    CalculateMomentumScore(t)))
+                .OrderByDescending(t => t.Score)
+                .ThenByDescending(t => t.Ticker.QuoteVolume)
+                .Take(candidateCount)
                 .ToList();
 
-            var afterCandleFilter = afterHighPriceFilter
-                .Where(t => t.LastPrice >= t.OpenPrice) // 음봉 제외
-                .ToList();
-
-            var topTickers = afterCandleFilter
-                .OrderByDescending(t => t.QuoteVolume)
-                .Take(profile.CandidateCount)
-                .ToList();
-
-            // 디버깅 로그
-            PumpSignalLog("SCAN", $"total={allTickers.Count} highPriceFilter={afterHighPriceFilter.Count} bullishFilter={afterCandleFilter.Count} top={topTickers.Count} candidateCap={profile.CandidateCount}");
+            PumpSignalLog("SCAN", $"universe={MemeSymbols.Count} tracked={candidates.Count} profile={profile.Name} theme=meme+highbeta rank=mixed(volume50+volatility20+momentum30)Top{candidateCount}");
 
             if ((DateTime.Now - _lastProfileLogTime).TotalMinutes >= 5)
             {
-                PumpSignalLog("PROFILE", $"name={profile.Name} minChangePct={profile.MinPriceChangePercentage:F2} minVolRatio={profile.MinVolumeRatio:F2} minVolRatio5m={profile.MinVolumeRatio5m:F2} minOrderBook={profile.MinOrderBookRatio:F2} minTakerBuy={profile.MinTakerBuyRatio:F2}");
+                PumpSignalLog("PROFILE", $"name={profile.Name} candidateCap={candidateCount} customMinVol={_settings.MinVolumeRatio:F2} selection=mixed(volume50+volatility20+momentum30)");
                 _lastProfileLogTime = DateTime.Now;
             }
 
-            if (topTickers.Count > 0)
+            if (candidates.Count > 0)
             {
-                var symbols = string.Join(", ", topTickers.Take(5).Select(t => t.Symbol));
-                PumpSignalLog("CANDIDATE", $"symbols={symbols}");
+                string rankedSymbols = string.Join(", ", candidates.Select((t, index) =>
+                    $"{index + 1}:{t.Ticker.Symbol}(score={t.Score:F3},vol={t.Ticker.QuoteVolume:N0},var={t.Volatility:P1},mom={t.Momentum:P1})"));
+                PumpSignalLog("CANDIDATE", $"top{candidates.Count}={rankedSymbols}");
             }
 
-            // 2. 병렬 분석 실행
-            var tasks = topTickers.Select(async ticker =>
+            var tasks = candidates.Select(async candidate =>
             {
                 try
                 {
-                    if (!string.IsNullOrEmpty(ticker.Symbol))
+                    var ticker = candidate.Ticker;
+                    if (!string.IsNullOrWhiteSpace(ticker.Symbol))
                         await AnalyzeSymbolAsync(ticker.Symbol, blacklistedSymbols, token, profile);
                 }
                 catch (Exception ex)
                 {
-                    PumpSignalLog("ERROR", $"sym={ticker.Symbol} source=parallelScan detail={ex.Message}");
+                    PumpSignalLog("ERROR", $"sym={candidate.Ticker.Symbol} source=parallelScan detail={ex.Message}");
                 }
             });
 
             await Task.WhenAll(tasks);
         }
 
-        private async Task AnalyzeSymbolAsync(string symbol, ConcurrentDictionary<string, DateTime> blacklist, CancellationToken token, ScanProfile profile)
+        private async Task AnalyzeSymbolAsync(string symbol, ConcurrentDictionary<string, DateTime> blacklist, CancellationToken token, MajorProfile profile)
         {
             try
             {
-                // 블랙리스트 확인
                 if (blacklist.TryGetValue(symbol, out var expiry))
                 {
                     if (DateTime.Now < expiry) return;
                     blacklist.TryRemove(symbol, out _);
                 }
 
-                // [1단계] 1분봉 조회 (빠른 필터링)
-                var k1mRes = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.OneMinute, limit: 30, ct: token);
-                if (!k1mRes.Success || k1mRes.Data == null) return;
-                var data1m = k1mRes.Data.ToList();
-                if (data1m.Count < 20) return;
-
-                var last1m = data1m[data1m.Count - 1];
-                double rangePercent = (double)((last1m.HighPrice - last1m.LowPrice) / last1m.OpenPrice * 100);
-                double avgVol1m = data1m.Take(20).Average(c => (double)c.Volume);
-                double volRatio = avgVol1m > 0 ? (double)last1m.Volume / avgVol1m : 0;
-
-                // 디버깅 로그
-                PumpSignalLog("CHECK_1M", $"sym={symbol} rangePct={rangePercent:F2} volRatio={volRatio:F2}");
-
-                if (rangePercent < profile.MinPriceChangePercentage || volRatio < profile.MinVolumeRatio)
+                var k5mRes = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, limit: 150, ct: token);
+                if (!k5mRes.Success || k5mRes.Data == null)
                 {
-                    PumpSignalLog("REJECT", $"sym={symbol} reason=threshold rangePct={rangePercent:F2}/{profile.MinPriceChangePercentage:F2} volRatio={volRatio:F2}/{profile.MinVolumeRatio:F2}");
+                    PumpSignalLog("REJECT", $"sym={symbol} reason=klineFetchFailed");
                     return;
                 }
 
-                // [2단계] 정밀 데이터 조회
-                var k5mTask = _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, limit: 30, ct: token);
-                var k15mTask = _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, limit: 30, ct: token);
-                var k1hTask = _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.OneHour, limit: 100, ct: token);
-                var depthTask = _client.UsdFuturesApi.ExchangeData.GetOrderBookAsync(symbol, limit: 20, ct: token);
+                var list = k5mRes.Data.ToList();
+                if (list.Count < 120)
+                {
+                    PumpSignalLog("REJECT", $"sym={symbol} reason=insufficientCandles count={list.Count}");
+                    return;
+                }
 
-                await Task.WhenAll(k5mTask, k15mTask, k1hTask, depthTask);
-                if (!k5mTask.Result.Success || !k15mTask.Result.Success || !k1hTask.Result.Success || !depthTask.Result.Success) return;
-                if (k5mTask.Result.Data == null || k15mTask.Result.Data == null || k1hTask.Result.Data == null || depthTask.Result.Data == null) return;
+                decimal currentPrice = list[list.Count - 1].ClosePrice;
+                double rsi = IndicatorCalculator.CalculateRSI(list, 14);
+                var bb = IndicatorCalculator.CalculateBB(list, 20, 2);
+                bool isUptrend = IndicatorCalculator.AnalyzeElliottWave(list);
+                var macd = IndicatorCalculator.CalculateMACD(list);
+                var fib = IndicatorCalculator.CalculateFibonacci(list, 100);
+                double sma20 = IndicatorCalculator.CalculateSMA(list, 20);
+                double sma50 = IndicatorCalculator.CalculateSMA(list, 50);
+                double sma60 = IndicatorCalculator.CalculateSMA(list, 60);
+                double sma120 = IndicatorCalculator.CalculateSMA(list, 120);
+                double atr = IndicatorCalculator.CalculateATR(list, 14);
 
-                var data5m = k5mTask.Result.Data.ToList();
-                var data15m = k15mTask.Result.Data.ToList();
-                var data1h = k1hTask.Result.Data.ToList();
-                if (data5m.Count < 20 || data15m.Count < 20 || data1h.Count < 99) return;
+                string maState = sma20 > sma60 && sma60 > sma120 ? "BULL" : (sma20 < sma60 && sma60 < sma120 ? "BEAR" : "MIX");
+                string fibPos = currentPrice >= (decimal)fib.Level382 ? "ABOVE382" : (currentPrice <= (decimal)fib.Level618 ? "BELOW618" : "MID");
 
-                decimal currentPrice = last1m.ClosePrice;
+                var recent20 = list.TakeLast(20).ToList();
+                double avgVolume20 = recent20.Any() ? recent20.Average(k => (double)k.Volume) : 0;
+                double currentVolume = recent20.Count > 0 ? (double)recent20[recent20.Count - 1].Volume : 0;
+                double volumeRatio = avgVolume20 > 0 ? currentVolume / avgVolume20 : 1;
 
-                // 지표 계산
-                double ma99 = IndicatorCalculator.CalculateSMA(data1h, 99);
-                bool isAboveMA99 = (double)currentPrice > ma99;
-                bool isElliottUptrend = IndicatorCalculator.AnalyzeElliottWave(data1m);
-                var bb15m = IndicatorCalculator.CalculateBB(data15m, 20, 2);
-                double rsi15m = IndicatorCalculator.CalculateRSI(data15m, 14);
-                double atr15m = IndicatorCalculator.CalculateATR(data15m, 14);
+                var recent3 = list.TakeLast(3).ToList();
+                var previous10 = list.Skip(Math.Max(0, list.Count - 13)).Take(10).ToList();
+                double avgVolume3 = recent3.Any() ? recent3.Average(k => (double)k.Volume) : 0;
+                double avgVolumePrev10 = previous10.Any() ? previous10.Average(k => (double)k.Volume) : 0;
+                double volumeMomentum = avgVolumePrev10 > 0 ? avgVolume3 / avgVolumePrev10 : 1;
 
-                // 호가창 분석
-                var depth = depthTask.Result.Data;
-                decimal totalBids = depth.Bids.Sum(b => b.Quantity);
-                decimal totalAsks = depth.Asks.Sum(a => a.Quantity);
-                bool isOrderBookBullish = totalAsks > 0 && (double)(totalBids / totalAsks) >= profile.MinOrderBookRatio;
+                bool isMakingHigherLows = IsMakingHigherLows(list, profile.HigherLowSegmentSize, profile.HigherLowMinRiseRatio);
+                bool isTrendHealthyOnLowVolume = currentPrice > (decimal)sma20 && sma20 > sma50 && rsi > 50;
+                bool allowLowVolumeTrendBypass = volumeMomentum < profile.LongConfirmVolumeMin &&
+                                                 (isTrendHealthyOnLowVolume || (isMakingHigherLows && currentPrice > (decimal)sma20));
 
-                // 점수 산출
-                int aiScore = CalculateScore(rsi15m, bb15m, currentPrice, isElliottUptrend);
-                if ((double)currentPrice > bb15m.Upper) aiScore += 15;
-                if (rsi15m >= 85) aiScore -= 40;
+                int aiScore = CalculateScore(
+                    rsi,
+                    bb,
+                    currentPrice,
+                    isUptrend,
+                    macd,
+                    fib,
+                    sma20,
+                    sma50,
+                    sma60,
+                    sma120,
+                    volumeMomentum,
+                    isMakingHigherLows,
+                    allowLowVolumeTrendBypass,
+                    profile);
 
-                // Decision Logic
+                var nowSeoul = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, SeoulTimeZone);
+                bool isKstDaytime = nowSeoul.Hour >= 10 && nowSeoul.Hour < 19;
+                int longThreshold = CalculateDynamicThreshold(isKstDaytime, volumeMomentum, isMakingHigherLows, profile);
+                int shortThreshold = isKstDaytime ? 30 : 25;
+
                 string decision = "WAIT";
-                var last5m = data5m[data5m.Count - 1];
-                double avgVol5m = data5m.Take(20).Average(c => (double)c.Volume);
-                double volRatio5m = avgVol5m > 0 ? (double)last5m.Volume / avgVol5m : 0;
-                bool is5mBullish = last5m.ClosePrice >= last5m.OpenPrice;
+                if (aiScore >= longThreshold)
+                {
+                    bool bullishStructure = isUptrend || (isMakingHigherLows && currentPrice > (decimal)sma20);
+                    bool longConfirm = bullishStructure && macd.Hist >= -0.001 &&
+                                       (volumeMomentum >= profile.LongConfirmVolumeMin || allowLowVolumeTrendBypass);
+                    if (longConfirm) decision = "LONG";
+                }
+                else if (aiScore <= shortThreshold)
+                {
+                    bool isStrongBearish =
+                        !isUptrend &&
+                        macd.Hist < 0 &&
+                        currentPrice < (decimal)sma20 &&
+                        volumeRatio >= 1.10 &&
+                        currentPrice < (decimal)fib.Level618;
 
-                // 체결강도
-                var recentCandles = data1m.TakeLast(3).ToList();
-                if (recentCandles.Count == 0) return;
-                decimal sumBuyVol = recentCandles.Sum(k => k.TakerBuyBaseVolume);
-                decimal sumSellVol = recentCandles.Sum(k => k.Volume) - sumBuyVol;
-                bool isTakerStrong = sumSellVol > 0 && (double)(sumBuyVol / sumSellVol) >= profile.MinTakerBuyRatio;
+                    if (isStrongBearish)
+                        decision = "SHORT";
+                }
 
-                if (aiScore >= profile.PumpScoreThreshold && volRatio >= profile.PumpVolumeRatio && volRatio5m >= profile.MinVolumeRatio5m && is5mBullish && isOrderBookBullish && isTakerStrong && isAboveMA99) decision = "🚀 PUMP";
-                else if (aiScore >= profile.MomentumScoreThreshold) decision = "MOMENTUM";
+                try
+                {
+                    OnSignalAnalyzed?.Invoke(new MultiTimeframeViewModel
+                    {
+                        Symbol = symbol,
+                        LastPrice = currentPrice,
+                        RSI_1H = rsi,
+                        AIScore = aiScore,
+                        Decision = decision,
+                        StrategyName = $"Meme/HighBeta Scalping(5m) [{profile.Name}]",
+                        SignalSource = "MAJOR_MEME",
+                        ShortLongScore = aiScore,
+                        ShortShortScore = 100 - aiScore,
+                        MacdHist = macd.Hist,
+                        ElliottTrend = isUptrend ? "UP" : "DOWN",
+                        MAState = maState,
+                        FibPosition = fibPos,
+                        VolumeRatioValue = volumeMomentum,
+                        VolumeRatio = $"{volumeMomentum:F2}x",
+                        BBPosition = currentPrice >= (decimal)bb.Upper ? "Upper" : (currentPrice <= (decimal)bb.Lower ? "Lower" : "Mid")
+                    });
+                }
+                catch (Exception eventEx)
+                {
+                    PumpSignalLog("ERROR", $"sym={symbol} source=signalEvent detail={eventEx.Message}");
+                }
 
-                // 결과 알림 (의미있는 결과만 UI에 전송)
-                if (decision != "WAIT" || aiScore >= 60)
+                if (!isUptrend && isMakingHigherLows && currentPrice > (decimal)sma20)
+                {
+                    PumpSignalLog("INFO", $"sym={symbol} higherLows=true trendAssist=on");
+                }
+
+                if (allowLowVolumeTrendBypass)
+                {
+                    PumpSignalLog("INFO", $"sym={symbol} lowVolumeBypass=on volumeMomentum={volumeMomentum:F2}");
+                }
+
+                string decisionKr = decision switch
+                {
+                    "LONG" => "LONG",
+                    "SHORT" => "SHORT",
+                    _ => "WAIT"
+                };
+
+                string aiFilterInfo = string.Empty;
+                if (decision == "LONG" || decision == "SHORT")
+                {
+                    var filterHints = new List<string>();
+
+                    if (volumeMomentum < 1.0)
+                        filterHints.Add($"거래량{volumeMomentum:F2}x");
+
+                    if (rsi < 40)
+                        filterHints.Add($"RSI{rsi:F0}↓");
+
+                    if (!isUptrend && !(sma20 > sma60))
+                        filterHints.Add("정배열✗");
+
+                    string hintText = filterHints.Count > 0 ? $" [{string.Join(", ", filterHints)}]" : string.Empty;
+                    aiFilterInfo = filterHints.Count > 0
+                        ? $"prefilter=need-ai-check{hintText}"
+                        : "prefilter=need-ai-check";
+                }
+
+                string reason = string.Empty;
+                if (decision == "WAIT")
+                {
+                    var reasons = new List<string>();
+                    if (volumeMomentum < 1.00 && !allowLowVolumeTrendBypass) reasons.Add("거래량 부족");
+                    if (!isUptrend && !isMakingHigherLows) reasons.Add("2파 횡보장 인식");
+                    if (aiScore < longThreshold && aiScore > shortThreshold) reasons.Add("스코어 불충분");
+
+                    if (reasons.Any())
+                        reason = $"holdReason={string.Join("/", reasons)}";
+                }
+
+                PumpSignalLog(
+                    "CANDIDATE",
+                    $"sym={symbol} side={decisionKr} px={currentPrice:F4} {aiFilterInfo}{(string.IsNullOrWhiteSpace(reason) ? string.Empty : " | " + reason)}");
+
+                if (decision != "WAIT")
                 {
                     try
                     {
-                        OnSignalAnalyzed?.Invoke(new MultiTimeframeViewModel
-                        {
-                            Symbol = symbol,
-                            LastPrice = currentPrice,
-                            RSI_1H = rsi15m,
-                            AIScore = aiScore,
-                            Decision = decision,
-                            StrategyName = "Pump Scan"
-                        });
+                        PumpSignalLog("EMIT", $"sym={symbol} side={decisionKr} px={currentPrice:F4} src=MAJOR_MEME score={aiScore} atr={atr:F4}");
+                        OnTradeSignal?.Invoke(symbol, decision, currentPrice);
+                        OnPumpDetected?.Invoke(symbol, currentPrice, decision, rsi, atr);
                     }
                     catch (Exception eventEx)
                     {
-                        PumpSignalLog("ERROR", $"sym={symbol} source=signalEvent detail={eventEx.Message}");
+                        PumpSignalLog("ERROR", $"sym={symbol} source=tradeEvent detail={eventEx.Message}");
                     }
-                }
-
-                if (decision == "🚀 PUMP")
-                {
-                    try
-                    {
-                        PumpSignalLog("EMIT", $"sym={symbol} side=LONG decision=PUMP score={aiScore} rsi={rsi15m:F1} price={currentPrice:F4}");
-                        OnPumpDetected?.Invoke(symbol, currentPrice, decision, rsi15m, atr15m);
-                    }
-                    catch (Exception eventEx)
-                    {
-                        PumpSignalLog("ERROR", $"sym={symbol} source=pumpEvent detail={eventEx.Message}");
-                    }
-                }
-
-                // [추가] 분석 결과 로그 출력 (동작 확인용)
-                if (aiScore >= 60 || decision != "WAIT")
-                {
-                    PumpSignalLog("ANALYZE", $"sym={symbol} score={aiScore} rsi={rsi15m:F1} decision={decision}");
                 }
             }
             catch (Exception ex)
@@ -226,51 +308,164 @@ namespace TradingBot.Strategies
             }
         }
 
-        private int CalculateScore(double rsi, BBResult bb, decimal currentPrice, bool isElliottUptrend)
+        private bool IsEligibleMemeSymbol(string symbol)
+        {
+            if (string.IsNullOrWhiteSpace(symbol) || !symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            return MemeSymbols.Contains(symbol);
+        }
+
+        private int GetCandidateCount()
+        {
+            return PumpCandidateCount;
+        }
+
+        private static decimal CalculateIntradayVolatility(TickerCacheItem ticker)
+        {
+            if (ticker.OpenPrice <= 0)
+                return 0m;
+
+            decimal highMove = ticker.HighPrice > 0 ? (ticker.HighPrice - ticker.OpenPrice) / ticker.OpenPrice : 0m;
+            decimal closeMove = (ticker.LastPrice - ticker.OpenPrice) / ticker.OpenPrice;
+            return Math.Max(Math.Abs(highMove), Math.Abs(closeMove));
+        }
+
+        private static decimal CalculateMomentumScore(TickerCacheItem ticker)
+        {
+            if (ticker.OpenPrice <= 0)
+                return 0m;
+
+            decimal change = (ticker.LastPrice - ticker.OpenPrice) / ticker.OpenPrice;
+            return Math.Max(0m, change);
+        }
+
+        private static decimal CalculateMixedRankScore(TickerCacheItem ticker, decimal maxQuoteVolume, decimal maxVolatility, decimal maxMomentum)
+        {
+            decimal volumeScore = maxQuoteVolume > 0 ? ticker.QuoteVolume / maxQuoteVolume : 0m;
+            decimal volatility = CalculateIntradayVolatility(ticker);
+            decimal volatilityScore = maxVolatility > 0 ? volatility / maxVolatility : 0m;
+            decimal momentum = CalculateMomentumScore(ticker);
+            decimal momentumScore = maxMomentum > 0 ? momentum / maxMomentum : 0m;
+
+            return (volumeScore * VolumeWeight) + (volatilityScore * VolatilityWeight) + (momentumScore * MomentumWeight);
+        }
+
+        private readonly record struct CandidateScore(TickerCacheItem Ticker, decimal Score, decimal Volatility, decimal Momentum);
+
+        private static int CalculateScore(
+            double rsi,
+            BBResult bb,
+            decimal currentPrice,
+            bool isUptrend,
+            (double Macd, double Signal, double Hist) macd,
+            (double Level236, double Level382, double Level500, double Level618) fib,
+            double sma20,
+            double sma50,
+            double sma60,
+            double sma120,
+            double volumeMomentum,
+            bool isMakingHigherLows,
+            bool allowLowVolumeTrendBypass,
+            MajorProfile profile)
         {
             int score = 50;
-            if (isElliottUptrend) score += 20; else score -= 10;
-            if (rsi >= 70) score += 15;
-            else if (rsi <= 30) score -= 20;
+
+            if (isUptrend) score += 12;
+            else score -= 12;
+
+            if (sma20 > sma60) score += 10;
+            else score -= 10;
+
+            if (sma60 > sma120) score += 8;
+            else score -= 8;
+
+            if (currentPrice > (decimal)sma20 && sma20 > sma50) score += 10;
+
+            if (rsi >= 45 && rsi <= 68) score += 10;
+            else if (rsi > 75) score -= 10;
+            else if (rsi < 35) score -= 6;
+
+            if (macd.Hist > 0) score += 10;
+            else score -= 10;
+
+            if (currentPrice >= (decimal)fib.Level382) score += 6;
+            if (currentPrice < (decimal)fib.Level618) score -= 10;
 
             double price = (double)currentPrice;
-            if (price >= bb.Upper) score += 15;
-            else if (price <= bb.Lower) score -= 30;
+            if (price >= bb.Mid) score += 6;
+            else score -= 6;
+
+            if (price > bb.Upper && rsi > 72) score -= 8;
+            else if (price < bb.Lower && rsi < 30) score += 6;
+
+            if (volumeMomentum >= 1.10) score += 10;
+            else if (volumeMomentum >= 1.00) score += 5;
+            else if (allowLowVolumeTrendBypass) score += 15;
+
+            if (isMakingHigherLows && currentPrice > (decimal)sma20) score += profile.HigherLowBonus;
 
             return Math.Clamp(score, 0, 100);
         }
 
-        private ScanProfile GetScanProfile()
+        private static int CalculateDynamicThreshold(bool isKstDaytime, double volumeMomentum, bool isMakingHigherLows, MajorProfile profile)
         {
-            var nowSeoul = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, SeoulTimeZone);
-            bool isKstDaytime = nowSeoul.Hour >= 10 && nowSeoul.Hour < 19;
+            int threshold = isKstDaytime ? 60 : 65;
 
-            if (!isKstDaytime)
-            {
-                return new ScanProfile(
-                    Name: "DEFAULT",
-                    MinPriceChangePercentage: (double)_settings.MinPriceChangePercentage,
-                    MinVolumeRatio: _settings.MinVolumeRatio,
-                    MinVolumeRatio5m: _settings.MinVolumeRatio5m,
-                    MinOrderBookRatio: _settings.MinOrderBookRatio,
-                    MinTakerBuyRatio: _settings.MinTakerBuyRatio,
-                    PumpScoreThreshold: 85,
-                    MomentumScoreThreshold: 70,
-                    PumpVolumeRatio: 3.5,
-                    CandidateCount: 10);
-            }
+            if (volumeMomentum >= 1.10) threshold -= 3;
+            if (isMakingHigherLows) threshold -= profile.HigherLowThresholdDiscount;
 
-            return new ScanProfile(
-                Name: "KST_DAY_10_19",
-                MinPriceChangePercentage: Math.Max(0.20, (double)_settings.MinPriceChangePercentage * 0.65),
-                MinVolumeRatio: Math.Max(1.20, _settings.MinVolumeRatio * 0.70),
-                MinVolumeRatio5m: Math.Max(1.20, _settings.MinVolumeRatio5m * 0.70),
-                MinOrderBookRatio: Math.Max(1.10, _settings.MinOrderBookRatio * 0.70),
-                MinTakerBuyRatio: Math.Max(1.05, _settings.MinTakerBuyRatio * 0.85),
-                PumpScoreThreshold: 78,
-                MomentumScoreThreshold: 65,
-                PumpVolumeRatio: 2.6,
-                CandidateCount: 20);
+            return Math.Max(55, threshold);
+        }
+
+        private static bool IsMakingHigherLows(List<IBinanceKline> candles, int segmentSize, decimal minRiseRatio)
+        {
+            const int requiredSegments = 3;
+            int requiredCandles = segmentSize * requiredSegments;
+            if (candles.Count < requiredCandles) return false;
+
+            var window = candles.TakeLast(requiredCandles).ToList();
+
+            decimal low1 = window.Take(segmentSize).Min(c => c.LowPrice);
+            decimal low2 = window.Skip(segmentSize).Take(segmentSize).Min(c => c.LowPrice);
+            decimal low3 = window.Skip(segmentSize * 2).Take(segmentSize).Min(c => c.LowPrice);
+
+            return low2 >= low1 * minRiseRatio && low3 >= low2 * minRiseRatio;
+        }
+
+        private MajorProfile ResolveProfile()
+        {
+            string? configuredProfile = AppConfig.Current?.Trading?.GeneralSettings?.MajorTrendProfile;
+
+            if (string.Equals(configuredProfile, "Aggressive", StringComparison.OrdinalIgnoreCase))
+                return MajorProfile.Aggressive;
+
+            return MajorProfile.Balanced;
+        }
+
+        private readonly record struct MajorProfile(
+            string Name,
+            double LongConfirmVolumeMin,
+            int HigherLowBonus,
+            int HigherLowThresholdDiscount,
+            int HigherLowSegmentSize,
+            decimal HigherLowMinRiseRatio)
+        {
+            public static MajorProfile Balanced { get; } = new(
+                "Balanced",
+                1.02,
+                12,
+                1,
+                5,
+                1.001m);
+
+            public static MajorProfile Aggressive { get; } = new(
+                "Aggressive",
+                1.00,
+                15,
+                2,
+                4,
+                1.000m);
         }
 
         private static TimeZoneInfo GetSeoulTimeZone()
@@ -284,17 +479,5 @@ namespace TradingBot.Strategies
                 return TimeZoneInfo.CreateCustomTimeZone("KST", TimeSpan.FromHours(9), "KST", "KST");
             }
         }
-
-        private readonly record struct ScanProfile(
-            string Name,
-            double MinPriceChangePercentage,
-            double MinVolumeRatio,
-            double MinVolumeRatio5m,
-            double MinOrderBookRatio,
-            double MinTakerBuyRatio,
-            int PumpScoreThreshold,
-            int MomentumScoreThreshold,
-            double PumpVolumeRatio,
-            int CandidateCount);
     }
 }

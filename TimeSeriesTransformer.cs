@@ -55,25 +55,25 @@ namespace TradingBot.Services.AI
             // input: [batch_size, seq_len, input_dim]
 
             // 1. Embedding
-            var x = _inputEmbedding.forward(input); // -> [batch_size, seq_len, d_model]
+            using var embedded = _inputEmbedding.forward(input); // -> [batch_size, seq_len, d_model]
             
             // Scaling (Attention is All You Need 논문 참조)
-            x *= Math.Sqrt(_dModel);
+            using var scaled = embedded * Math.Sqrt(_dModel);
 
             // 2. Positional Encoding
-            x = _positionalEncoding.forward(x);
+            using var withPe = _positionalEncoding.forward(scaled);
 
             // 3. Transformer Encoder
             // TorchSharp Transformer는 [seq_len, batch_size, feature] 입력을 기대함
-            x = x.permute(1, 0, 2); // -> [seq_len, batch_size, d_model]
+            using var permuted1 = withPe.permute(1, 0, 2); // -> [seq_len, batch_size, d_model]
             
-            x = _transformerEncoder.forward(x, null, null);
+            using var encoded = _transformerEncoder.forward(permuted1, null, null);
             
-            x = x.permute(1, 0, 2); // -> [batch_size, seq_len, d_model]
+            using var permuted2 = encoded.permute(1, 0, 2); // -> [batch_size, seq_len, d_model]
 
             // 4. Output
             // Many-to-One: 마지막 시점(t)의 hidden state만 사용하여 예측
-            using var lastStep = x.index(TensorIndex.Colon, TensorIndex.Single(-1), TensorIndex.Colon); // -> [batch_size, d_model]
+            using var lastStep = permuted2.index(TensorIndex.Colon, TensorIndex.Single(-1), TensorIndex.Colon); // -> [batch_size, d_model]
             
             var output = _outputLayer.forward(lastStep); // -> [batch_size, output_dim]
 
@@ -143,9 +143,10 @@ namespace TradingBot.Services.AI
             
             // 입력 길이에 맞춰 PE 자르기 및 디바이스 이동
             using var peSlice = _pe.index(TensorIndex.Colon, TensorIndex.Slice(0, seqLen), TensorIndex.Colon);
-            var peOnDevice = peSlice.to(x.device);
+            using var peOnDevice = peSlice.to(x.device);
+            using var xWithPe = x + peOnDevice;
 
-            return _dropout.forward(x + peOnDevice);
+            return _dropout.forward(xWithPe);
         }
 
         protected override void Dispose(bool disposing)

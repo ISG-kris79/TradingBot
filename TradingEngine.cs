@@ -431,15 +431,15 @@ namespace TradingBot
                 try { OnSignalUpdate?.Invoke(vm); }
                 catch (Exception ex) { OnLiveLog?.Invoke($"📡 [SIGNAL][PUMP][ERROR] source=uiBinding detail={ex.Message}"); }
             };
-            _pumpStrategy.OnPumpDetected += async (symbol, price, decision, rsi, atr) =>
+            _pumpStrategy.OnTradeSignal += async (symbol, decision, price) =>
             {
                 try
                 {
-                    await HandlePumpEntry(symbol, price, decision, rsi, atr, _cts.Token);
+                    await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR_MEME");
                 }
                 catch (Exception ex)
                 {
-                    OnLiveLog?.Invoke($"🧭 [ENTRY][ORDER][ERROR] src=PUMP sym={symbol} side=LONG | detail={ex.Message}");
+                    OnLiveLog?.Invoke($"🧭 [ENTRY][ORDER][ERROR] src=MAJOR_MEME sym={symbol} side={decision} | detail={ex.Message}");
                 }
             };
 
@@ -3753,7 +3753,9 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"🧭 {symbol} {decision} 하이브리드 진입 승인 | Zone={entryZoneTag}, %B={entryBbPosition:P0}, src={signalSource}");
             }
 
-            if (signalSource == "MAJOR" && customStopLossPrice <= 0)
+            bool isMajorLikeSignal = signalSource == "MAJOR" || signalSource.StartsWith("MAJOR_");
+
+            if (isMajorLikeSignal && customStopLossPrice <= 0)
             {
                 majorAtrPreview = await TryCalculateMajorAtrHybridStopLossAsync(symbol, currentPrice, decision == "LONG", token);
                 if (majorAtrPreview.StopLossPrice <= 0)
@@ -4086,7 +4088,7 @@ namespace TradingBot
                         EntryPrice = currentPrice,
                         IsLong = (decision == "LONG"),
                         Side = (decision == "LONG") ? OrderSide.Buy : OrderSide.Sell,
-                        IsPumpStrategy = false,
+                        IsPumpStrategy = signalSource == "PUMP" || signalSource == "MAJOR_MEME",
                         AiScore = aiScore,
                         AiConfidencePercent = aiProbability > 0
                             ? aiProbability * 100f
@@ -4213,7 +4215,7 @@ namespace TradingBot
 
                     var actualEntryPrice = avgPrice > 0 ? avgPrice : limitPrice;
 
-                    if (signalSource == "MAJOR")
+                    if (isMajorLikeSignal)
                     {
                         var filledMajorStop = await TryCalculateMajorAtrHybridStopLossAsync(symbol, actualEntryPrice, decision == "LONG", token);
                         if (filledMajorStop.StopLossPrice > 0)
@@ -6166,12 +6168,7 @@ namespace TradingBot
         {
             try
             {
-                // 1) 메이저 코인 확인 (BTC, ETH, SOL, XRP만 적용)
-                var majorCoins = new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
-                if (!majorCoins.Contains(symbol))
-                    return false;
-                
-                // 2) 5분봉 EMA 20 계산
+                // 1) 5분봉 EMA 20 계산
                 var k5m = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(
                     symbol, KlineInterval.FiveMinutes, limit: 50, ct: token);
                 if (!k5m.Success || k5m.Data == null || k5m.Data.Length < 30)
@@ -6241,12 +6238,7 @@ namespace TradingBot
         {
             try
             {
-                // 1) 메이저 코인 확인
-                var majorCoins = new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
-                if (!majorCoins.Contains(symbol))
-                    return false;
-                
-                // 2) 5분봉 가격 변화 확인
+                // 1) 5분봉 가격 변화 확인
                 var k5m = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(
                     symbol, KlineInterval.FiveMinutes, limit: 10, ct: token);
                 if (!k5m.Success || k5m.Data == null || k5m.Data.Length < 2)
