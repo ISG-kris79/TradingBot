@@ -37,6 +37,7 @@ namespace TradingBot.Services
         public event Action<string, bool, decimal>? OnPositionStatusUpdate = delegate { };
         public event Action<string, bool, string?>? OnCloseIncompleteStatusChanged = delegate { };
         public event Action? OnTradeHistoryUpdated = delegate { };
+        public event Action<string, DateTime, decimal, bool, decimal, string>? OnPositionClosedForAiLabel = delegate { };
 
         public PositionMonitorService(
             IBinanceRestClient client,
@@ -1727,6 +1728,22 @@ namespace TradingBot.Services
                             ? $"📝 {symbol} 거래소상 이미 종료된 포지션을 TradeHistory에 보정 반영했습니다."
                             : $"⚠️ {symbol} 거래소상 이미 종료된 포지션이었지만 TradeHistory 보정 반영에 실패했습니다.");
 
+                        decimal fallbackPriceMovePct = 0m;
+                        if (localTrackedPosition.EntryPrice > 0m)
+                        {
+                            fallbackPriceMovePct = localTrackedPosition.IsLong
+                                ? ((fallbackExitPrice - localTrackedPosition.EntryPrice) / localTrackedPosition.EntryPrice) * 100m
+                                : ((localTrackedPosition.EntryPrice - fallbackExitPrice) / localTrackedPosition.EntryPrice) * 100m;
+                        }
+
+                        OnPositionClosedForAiLabel?.Invoke(
+                            symbol,
+                            alreadyClosedLog.EntryTime,
+                            localTrackedPosition.EntryPrice,
+                            localTrackedPosition.IsLong,
+                            fallbackPriceMovePct,
+                            alreadyClosedLog.ExitReason ?? "ALREADY_CLOSED_SYNC");
+
                         // [FIX] 청산 이력 갱신 이벤트
                         if (dbSaved) OnTradeHistoryUpdated?.Invoke();
                     }
@@ -2030,6 +2047,14 @@ namespace TradingBot.Services
                     pnlPercent = (pnl / (position.EntryPrice * absQty)) * 100 * positionLeverage;
                 }
 
+                decimal priceMovePct = 0m;
+                if (position.EntryPrice > 0m)
+                {
+                    priceMovePct = isLongPosition
+                        ? ((exitPrice - position.EntryPrice) / position.EntryPrice) * 100m
+                        : ((position.EntryPrice - exitPrice) / position.EntryPrice) * 100m;
+                }
+
                 // [디버깅] 상세 내역 로그
                 OnLog?.Invoke($"[PnL 계산] {symbol} | 순수: {rawPnl:F2} | 수수료: -{totalFee:F2} | 슬리피지: -{estimatedSlippage:F2} | 최종: {pnl:F2} ({pnlPercent:F2}%)");
 
@@ -2071,6 +2096,18 @@ namespace TradingBot.Services
 
                 // 청산 완료 이벤트 발생 (UI 자동 갱신 트리거)
                 OnTradeHistoryUpdated?.Invoke();
+
+                // AI 라벨링 이벤트 (부분체결은 제외)
+                if (!reason.Contains("부분체결", StringComparison.OrdinalIgnoreCase))
+                {
+                    OnPositionClosedForAiLabel?.Invoke(
+                        symbol,
+                        entryTimeForHistory,
+                        position.EntryPrice,
+                        isLongPosition,
+                        priceMovePct,
+                        reason);
+                }
             }
             catch (Exception dbEx)
             {

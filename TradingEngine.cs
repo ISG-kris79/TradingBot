@@ -7,6 +7,7 @@ using Binance.Net.Objects.Models.Futures.Socket;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO; // [FIX] Path, File 사용을 위해 추가
+using System.Text.Json;
 using TradingBot.Models;
 using TradingBot.Services;
 using TradingBot.Strategies;
@@ -141,6 +142,7 @@ namespace TradingBot
         private readonly MarketDataManager _marketDataManager;
         private readonly RiskManager _riskManager;
         private AIPredictor? _aiPredictor;
+        private AIDoubleCheckEntryGate? _aiDoubleCheckEntryGate;
         private MultiAgentManager _multiAgentManager;
         private MarketHistoryService? _marketHistoryService;
         private OiDataCollector? _oiCollector;
@@ -150,10 +152,19 @@ namespace TradingBot
             = new ConcurrentDictionary<string, (DateTime, decimal, decimal, bool, string, float)>();
         private readonly ConcurrentDictionary<string, DateTime> _lastMlMonitorRecordTimes = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, byte> _scheduledPredictionValidations = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, ActiveDecisionIdState> _activeAiDecisionIds = new(StringComparer.OrdinalIgnoreCase);
+        private readonly string _activeAiDecisionIdsPath = Path.Combine("TrainingData", "EntryDecisions", "ActiveDecisionIds.json");
+        private const int ActiveDecisionIdRetentionHours = 48;
         private readonly SemaphoreSlim _predictionValidationLimiter = new SemaphoreSlim(3, 3);
         private static readonly TimeSpan MlMonitorRecordInterval = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan PredictionValidationDelay = TimeSpan.FromMinutes(5);
         private const decimal PredictionValidationNeutralMovePct = 0.0015m;
+
+        private sealed class ActiveDecisionIdState
+        {
+            public string DecisionId { get; set; } = string.Empty;
+            public DateTime SavedAtUtc { get; set; } = DateTime.UtcNow;
+        }
 
         private sealed class GateThresholdState
         {
@@ -391,6 +402,10 @@ namespace TradingBot
                 OnCloseIncompleteStatusChanged?.Invoke(s, isIncomplete, detail);
             };
             _positionMonitor.OnTradeHistoryUpdated += () => OnTradeHistoryUpdated?.Invoke();
+            _positionMonitor.OnPositionClosedForAiLabel += (symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason) =>
+            {
+                _ = HandleAiCloseLabelingAsync(symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason);
+            };
 
             // [Agent 3] 멀티 에이전트 매니저 초기화 (상태 차원: 3 [RSI, MACD, BB], 행동 차원: 3 [Hold, Buy, Sell])
             _multiAgentManager = new MultiAgentManager(3, 3);
@@ -422,6 +437,37 @@ namespace TradingBot
                 _positionMonitor.UpdateAiPredictor(null);
                 OnStatusLog?.Invoke($"⚠️ AI 모델 로드 실패: {ex.Message}");
             }
+
+            // [AI 더블체크 게이트 초기화]
+            try
+            {
+                var doubleCheckConfig = new DoubleCheckConfig
+                {
+                    MinMLConfidence = Math.Clamp(_fifteenMinuteMlMinConfidence, 0f, 1f),
+                    MinTransformerConfidence = Math.Clamp(_fifteenMinuteTransformerMinConfidence, 0f, 1f),
+                    MinMLConfidenceMajor = Math.Clamp(_fifteenMinuteMlMinConfidence + 0.08f, 0f, 1f),
+                    MinTransformerConfidenceMajor = Math.Clamp(_fifteenMinuteTransformerMinConfidence + 0.08f, 0f, 1f),
+                    MinMLConfidencePumping = Math.Clamp(_fifteenMinuteMlMinConfidence - 0.05f, 0f, 1f)
+                };
+
+                _aiDoubleCheckEntryGate = new AIDoubleCheckEntryGate(_exchangeService, doubleCheckConfig);
+                if (_aiDoubleCheckEntryGate.IsReady)
+                {
+                    OnStatusLog?.Invoke(
+                        $"✅ AI 더블체크 게이트 활성화 | ML>={doubleCheckConfig.MinMLConfidence:P0}, TF>={doubleCheckConfig.MinTransformerConfidence:P0}");
+                }
+                else
+                {
+                    OnStatusLog?.Invoke("⚠️ AI 더블체크 모델 미준비 (기존 15분 WaveGate로 자동 폴백)");
+                }
+            }
+            catch (Exception ex)
+            {
+                _aiDoubleCheckEntryGate = null;
+                OnStatusLog?.Invoke($"⚠️ AI 더블체크 게이트 초기화 실패: {ex.Message}");
+            }
+
+            LoadActiveAiDecisionIds();
 
             _pumpStrategy = new PumpScanStrategy(_client, _symbols, AppConfig.Current?.Trading?.PumpSettings ?? new PumpScanSettings());
             _majorStrategy = new MajorCoinStrategy(
@@ -3519,6 +3565,7 @@ namespace TradingBot
 
             bool positionReserved = false;
             bool orderPlaced = false;
+            string? aiGateDecisionId = null;
 
             void CleanupReservedPosition(string reason)
             {
@@ -3805,34 +3852,58 @@ namespace TradingBot
 
             if (latestCandle != null && ShouldApplyFifteenMinuteWaveGate(signalSource))
             {
-                var (mlThreshold, transformerThreshold) = GetSymbolGateThresholds(symbol);
-                var gateResult = await EvaluateFifteenMinuteWaveGateAsync(symbol, decision, currentPrice, latestCandle, mlThreshold, transformerThreshold, token);
-
-                RecordGateDecisionAndAutoTune(
-                    symbol,
-                    gateResult.allowEntry,
-                    mlThreshold,
-                    transformerThreshold,
-                    gateResult.mlConfidence,
-                    gateResult.transformerConfidence);
-
-                if (!gateResult.allowEntry)
+                if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate.IsReady)
                 {
-                    OnStatusLog?.Invoke($"⛔ [15M Gate] {symbol} {decision} 차단 | {gateResult.reason} | mlTh={mlThreshold:P1} tfTh={transformerThreshold:P1}");
-                    EntryLog("15M_GATE", "BLOCK", gateResult.reason);
-                    return;
+                    CoinType coinType = ResolveCoinType(symbol, signalSource);
+                    var aiGate = await _aiDoubleCheckEntryGate.EvaluateEntryWithCoinTypeAsync(symbol, decision, currentPrice, coinType, token);
+
+                    if (!aiGate.allowEntry)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [AI DoubleCheck] {symbol} {decision} 차단 | reason={aiGate.reason} | coin={coinType} | ml={aiGate.detail.ML_Confidence:P1} tf={aiGate.detail.TF_Confidence:P1}");
+                        EntryLog("15M_GATE", "BLOCK", $"aiDoubleCheck reason={aiGate.reason} coin={coinType} ml={aiGate.detail.ML_Confidence:P1} tf={aiGate.detail.TF_Confidence:P1}");
+                        return;
+                    }
+
+                    EntryLog(
+                        "15M_GATE",
+                        "PASS",
+                        $"aiDoubleCheck reason={aiGate.reason} coin={coinType} ml={aiGate.detail.ML_Confidence:P1} tf={aiGate.detail.TF_Confidence:P1}");
+
+                    if (!string.IsNullOrWhiteSpace(aiGate.detail.DecisionId))
+                        aiGateDecisionId = aiGate.detail.DecisionId;
                 }
+                else
+                {
+                    // 폴백: 기존 15분 Wave Gate
+                    var (mlThreshold, transformerThreshold) = GetSymbolGateThresholds(symbol);
+                    var gateResult = await EvaluateFifteenMinuteWaveGateAsync(symbol, decision, currentPrice, latestCandle, mlThreshold, transformerThreshold, token);
 
-                if (customTakeProfitPrice <= 0 && gateResult.takeProfitPrice > 0)
-                    customTakeProfitPrice = gateResult.takeProfitPrice;
+                    RecordGateDecisionAndAutoTune(
+                        symbol,
+                        gateResult.allowEntry,
+                        mlThreshold,
+                        transformerThreshold,
+                        gateResult.mlConfidence,
+                        gateResult.transformerConfidence);
 
-                if (customStopLossPrice <= 0 && gateResult.stopLossPrice > 0)
-                    customStopLossPrice = gateResult.stopLossPrice;
+                    if (!gateResult.allowEntry)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [15M WaveGate] {symbol} {decision} 차단 | {gateResult.reason} | mlTh={mlThreshold:P1} tfTh={transformerThreshold:P1}");
+                        EntryLog("15M_GATE", "BLOCK", gateResult.reason);
+                        return;
+                    }
 
-                EntryLog(
-                    "15M_GATE",
-                    "PASS",
-                    $"scenario={gateResult.scenario} ml={gateResult.mlConfidence:P1} tf={gateResult.transformerConfidence:P1} mlTh={mlThreshold:P1} tfTh={transformerThreshold:P1} tp={customTakeProfitPrice:F8} sl={customStopLossPrice:F8}");
+                    if (customTakeProfitPrice <= 0 && gateResult.takeProfitPrice > 0)
+                        customTakeProfitPrice = gateResult.takeProfitPrice;
+
+                    if (customStopLossPrice <= 0 && gateResult.stopLossPrice > 0)
+                        customStopLossPrice = gateResult.stopLossPrice;
+
+                    EntryLog(
+                        "15M_GATE",
+                        "PASS",
+                        $"scenario={gateResult.scenario} ml={gateResult.mlConfidence:P1} tf={gateResult.transformerConfidence:P1} mlTh={mlThreshold:P1} tfTh={transformerThreshold:P1} tp={customTakeProfitPrice:F8} sl={customStopLossPrice:F8}");
+                }
             }
 
             if (_aiPredictor != null)
@@ -4242,6 +4313,17 @@ namespace TradingBot
 
                     EntryLog("ORDER", "FILLED", $"entryPrice={actualEntryPrice:F4} qty={filledQty}");
 
+                    if (!string.IsNullOrWhiteSpace(aiGateDecisionId))
+                    {
+                        SetActiveAiDecisionId(symbol, aiGateDecisionId);
+                    }
+                    else
+                    {
+                        RemoveActiveAiDecisionId(symbol);
+                    }
+
+                    ScheduleAiDoubleCheckLabeling(symbol, actualEntryPrice, decision == "LONG", aiGateDecisionId, token);
+
                     OnTradeExecuted?.Invoke(symbol, decision, actualEntryPrice, filledQty);
                     OnAlert?.Invoke($"🤖 자동 매매 진입: {symbol} [{decision}] | 증거금: {marginUsdt}U");
                     _soundService.PlaySuccess();
@@ -4471,6 +4553,210 @@ namespace TradingBot
 
             return string.Equals(signalSource, "MAJOR", StringComparison.OrdinalIgnoreCase)
                 || signalSource.StartsWith("TRANSFORMER_", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static CoinType ResolveCoinType(string symbol, string signalSource)
+        {
+            if (!string.IsNullOrWhiteSpace(symbol) && MajorSymbols.Contains(symbol))
+                return CoinType.Major;
+
+            if (!string.IsNullOrWhiteSpace(signalSource)
+                && (signalSource.Contains("PUMP", StringComparison.OrdinalIgnoreCase)
+                    || signalSource.Contains("MEME", StringComparison.OrdinalIgnoreCase)))
+            {
+                return CoinType.Pumping;
+            }
+
+            return CoinType.Normal;
+        }
+
+        private void ScheduleAiDoubleCheckLabeling(string symbol, decimal entryPrice, bool isLong, string? decisionId, CancellationToken token)
+        {
+            if (_aiDoubleCheckEntryGate == null)
+                return;
+
+            DateTime entryTimeUtc = DateTime.UtcNow;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(15), token);
+                    if (token.IsCancellationRequested)
+                        return;
+
+                    await _aiDoubleCheckEntryGate.LabelActualProfitAsync(symbol, entryTimeUtc, entryPrice, isLong, decisionId, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    // 정상 취소
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [AI DoubleCheck] 레이블링 스케줄 실패: {symbol} - {ex.Message}");
+                }
+            }, CancellationToken.None);
+        }
+
+        private async Task HandleAiCloseLabelingAsync(
+            string symbol,
+            DateTime entryTime,
+            decimal entryPrice,
+            bool isLong,
+            decimal actualProfitPct,
+            string closeReason)
+        {
+            if (_aiDoubleCheckEntryGate == null)
+                return;
+
+            try
+            {
+                _activeAiDecisionIds.TryGetValue(symbol, out var decisionState);
+                string? decisionId = decisionState?.DecisionId;
+                RemoveActiveAiDecisionId(symbol);
+
+                await _aiDoubleCheckEntryGate.LabelActualProfitByCloseAsync(
+                    symbol,
+                    entryTime,
+                    entryPrice,
+                    (float)actualProfitPct,
+                    closeReason,
+                    decisionId,
+                    CancellationToken.None);
+
+                string side = isLong ? "LONG" : "SHORT";
+                OnStatusLog?.Invoke($"🧠 [AI DoubleCheck] 실손익 라벨 반영 | {symbol} {side} pnl={actualProfitPct:F2}% reason={closeReason}");
+
+                var stats = _aiDoubleCheckEntryGate.GetRecentLabelStats(10);
+                OnStatusLog?.Invoke($"📊 [AI DoubleCheck] 라벨 통계 | total={stats.total} labeled={stats.labeled} mtm15m={stats.markToMarket} close={stats.tradeClose}");
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [AI DoubleCheck] 청산 라벨 반영 실패: {symbol} - {ex.Message}");
+            }
+        }
+
+        private void SetActiveAiDecisionId(string symbol, string decisionId)
+        {
+            if (string.IsNullOrWhiteSpace(symbol) || string.IsNullOrWhiteSpace(decisionId))
+                return;
+
+            _activeAiDecisionIds[symbol] = new ActiveDecisionIdState
+            {
+                DecisionId = decisionId,
+                SavedAtUtc = DateTime.UtcNow
+            };
+            PersistActiveAiDecisionIds();
+        }
+
+        private void RemoveActiveAiDecisionId(string symbol)
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+                return;
+
+            _activeAiDecisionIds.TryRemove(symbol, out _);
+            PersistActiveAiDecisionIds();
+        }
+
+        private void LoadActiveAiDecisionIds()
+        {
+            try
+            {
+                if (!File.Exists(_activeAiDecisionIdsPath))
+                    return;
+
+                string json = File.ReadAllText(_activeAiDecisionIdsPath);
+                var loaded = JsonSerializer.Deserialize<Dictionary<string, ActiveDecisionIdState>>(json);
+
+                if (loaded == null || loaded.Count == 0)
+                {
+                    // 레거시 포맷 호환: symbol -> decisionId
+                    var legacy = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+                    if (legacy != null && legacy.Count > 0)
+                    {
+                        loaded = legacy.ToDictionary(
+                            k => k.Key,
+                            v => new ActiveDecisionIdState
+                            {
+                                DecisionId = v.Value,
+                                SavedAtUtc = DateTime.UtcNow
+                            },
+                            StringComparer.OrdinalIgnoreCase);
+                    }
+                }
+
+                if (loaded == null || loaded.Count == 0)
+                    return;
+
+                foreach (var pair in loaded)
+                {
+                    if (string.IsNullOrWhiteSpace(pair.Key)
+                        || pair.Value == null
+                        || string.IsNullOrWhiteSpace(pair.Value.DecisionId))
+                    {
+                        continue;
+                    }
+
+                    if (pair.Value.SavedAtUtc == default)
+                        pair.Value.SavedAtUtc = DateTime.UtcNow;
+
+                    _activeAiDecisionIds[pair.Key] = pair.Value;
+                }
+
+                int pruned = PruneExpiredActiveAiDecisionIdsCore();
+                if (pruned > 0)
+                {
+                    PersistActiveAiDecisionIds();
+                    OnStatusLog?.Invoke($"🧹 [AI DoubleCheck] 만료 ActiveDecisionId 정리: {pruned}개");
+                }
+
+                OnStatusLog?.Invoke($"🧠 [AI DoubleCheck] ActiveDecisionId 복원: {_activeAiDecisionIds.Count}개");
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [AI DoubleCheck] ActiveDecisionId 복원 실패: {ex.Message}");
+            }
+        }
+
+        private void PersistActiveAiDecisionIds()
+        {
+            try
+            {
+                PruneExpiredActiveAiDecisionIdsCore();
+
+                string? dir = Path.GetDirectoryName(_activeAiDecisionIdsPath);
+                if (!string.IsNullOrWhiteSpace(dir))
+                    Directory.CreateDirectory(dir);
+
+                var snapshot = _activeAiDecisionIds.ToDictionary(k => k.Key, v => v.Value, StringComparer.OrdinalIgnoreCase);
+                string json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                });
+                File.WriteAllText(_activeAiDecisionIdsPath, json);
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [AI DoubleCheck] ActiveDecisionId 저장 실패: {ex.Message}");
+            }
+        }
+
+        private int PruneExpiredActiveAiDecisionIdsCore()
+        {
+            DateTime cutoffUtc = DateTime.UtcNow.AddHours(-ActiveDecisionIdRetentionHours);
+            int removed = 0;
+
+            foreach (var pair in _activeAiDecisionIds)
+            {
+                DateTime savedAt = pair.Value?.SavedAtUtc ?? DateTime.MinValue;
+                if (savedAt != DateTime.MinValue && savedAt < cutoffUtc)
+                {
+                    if (_activeAiDecisionIds.TryRemove(pair.Key, out _))
+                        removed++;
+                }
+            }
+
+            return removed;
         }
 
         private bool ShouldApplyFifteenMinuteWaveGate(string signalSource)
@@ -6270,6 +6556,7 @@ namespace TradingBot
         {
             int activeCount = 0;
             string positionsStr = "";
+            string aiLabelingStr = "AI 게이트 비활성";
 
             lock (_posLock)
             {
@@ -6308,11 +6595,26 @@ namespace TradingBot
             var upTime = DateTime.Now - _engineStartTime;
             string timeStr = $"{(int)upTime.TotalDays}일 {upTime.Hours}시간 {upTime.Minutes}분";
 
+            if (_aiDoubleCheckEntryGate != null)
+            {
+                var stats = _aiDoubleCheckEntryGate.GetRecentLabelStats(10);
+                int activeDecisionCount = _activeAiDecisionIds.Count;
+                double labeledRate = stats.total > 0 ? (double)stats.labeled / stats.total * 100.0 : 0.0;
+
+                aiLabelingStr = $"🧠 *[AI 라벨링 상태]*\n" +
+                                $"   • 전체 결정: {stats.total}건\n" +
+                                $"   • 라벨링 완료: {stats.labeled}건 ({labeledRate:F1}%)\n" +
+                                $"   • Mark-to-Market: {stats.markToMarket}건\n" +
+                                $"   • 실거래 종료: {stats.tradeClose}건\n" +
+                                $"   • 진행 중 결정: {activeDecisionCount}건";
+            }
+
             return $"🤖 *[시스템 상태]*\n" +
                    $"⏱ 가동 시간: {timeStr}\n" +
                    $"💰 금일 실현 손익: ${_riskManager.DailyRealizedPnl:N2}\n\n" +
-                   $"📊 *보유 포지션 ({activeCount}개)*\n" +
+                   $"📊 *[보유 포지션: {activeCount}개]*\n" +
                    positionsStr +
+                   $"\n{aiLabelingStr}\n" +
                    $"\n_Updated: {DateTime.Now:HH:mm:ss}_";
         }
 
@@ -6321,13 +6623,36 @@ namespace TradingBot
             int activeCount = 0;
             lock (_posLock) activeCount = _activePositions.Count;
 
+            int aiLabelTotal = 0;
+            int aiLabelLabeled = 0;
+            int aiLabelMarkToMarket = 0;
+            int aiLabelClose = 0;
+            int activeDecisionCount = _activeAiDecisionIds.Count;
+
+            if (_aiDoubleCheckEntryGate != null)
+            {
+                var stats = _aiDoubleCheckEntryGate.GetRecentLabelStats(10);
+                aiLabelTotal = stats.total;
+                aiLabelLabeled = stats.labeled;
+                aiLabelMarkToMarket = stats.markToMarket;
+                aiLabelClose = stats.tradeClose;
+            }
+
+            double aiLabelRate = aiLabelTotal > 0 ? (double)aiLabelLabeled / aiLabelTotal * 100.0 : 0.0;
+
             // 간단한 JSON 생성 (Newtonsoft.Json 없이 문자열 보간 사용)
             return $@"{{
                 ""status"": ""{(IsBotRunning ? "Running" : "Stopped")}"",
                 ""uptime"": ""{(DateTime.Now - _engineStartTime).ToString(@"dd\.hh\:mm\:ss")}"",
                 ""balance"": {InitialBalance},
                 ""pnl"": {_riskManager.DailyRealizedPnl},
-                ""active_positions"": {activeCount}
+                ""active_positions"": {activeCount},
+                ""ai_label_total"": {aiLabelTotal},
+                ""ai_label_labeled"": {aiLabelLabeled},
+                ""ai_label_rate"": {aiLabelRate:F2},
+                ""ai_label_mark_to_market"": {aiLabelMarkToMarket},
+                ""ai_label_close"": {aiLabelClose},
+                ""ai_active_decisions"": {activeDecisionCount}
             }}";
         }
 
@@ -6413,6 +6738,8 @@ namespace TradingBot
             
             try
             {
+                PersistActiveAiDecisionIds();
+
                 // CancellationTokenSource 정리
                 _cts?.Cancel();
                 _cts?.Dispose();
@@ -6429,6 +6756,7 @@ namespace TradingBot
                 
                 // AI 서비스 정리
                 _aiPredictor?.Dispose();
+                _aiDoubleCheckEntryGate?.Dispose();
                 _transformerTrainer?.Dispose();
                 
                 // 데이터베이스 연결 정리

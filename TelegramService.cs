@@ -233,14 +233,38 @@ namespace TradingBot
             await Task.Delay(10);
         }
 
-        public async Task SendReportAsync(decimal totalBalance, decimal dailyPnl, double dailyPnlPercent, decimal tradePnl, int activeTrades)
+        public async Task SendReportAsync(
+            decimal totalBalance,
+            decimal dailyPnl,
+            double dailyPnlPercent,
+            decimal tradePnl,
+            int activeTrades,
+            int? aiLabelTotal = null,
+            int? aiLabelLabeled = null,
+            double? aiLabelRate = null,
+            int? aiLabelMarkToMarket = null,
+            int? aiLabelClose = null,
+            int? aiActiveDecision = null)
         {
             string icon = tradePnl >= 0 ? "📈" : "📉";
             string report = $"{icon} *실시간 수익 보고서*\n\n" +
                            $"⚡ *이번 매매*: ${tradePnl:N2}\n" +
                            $"💰 *총 자산*: ${totalBalance:N2}\n" +
                            $"💵 *당일 손익*: ${dailyPnl:N2} ({dailyPnlPercent:F2}%)\n" +
-                           $"📊 *운영 중인 포지션*: {activeTrades}개\n\n" +
+                           $"📊 *운영 중인 포지션*: {activeTrades}개\n";
+
+            if (aiLabelTotal.HasValue)
+            {
+                string rateText = aiLabelRate.HasValue ? $"{aiLabelRate.Value:F1}%" : "0.0%";
+                int labeled = aiLabelLabeled ?? 0;
+                int markToMarket = aiLabelMarkToMarket ?? 0;
+                int close = aiLabelClose ?? 0;
+                int activeDecision = aiActiveDecision ?? 0;
+
+                report += $"🧠 *AI 라벨링*: total={aiLabelTotal.Value}, labeled={labeled} ({rateText}), m2m={markToMarket}, close={close}, activeDecision={activeDecision}\n";
+            }
+
+            report += "\n" +
                            $"🕒 _기준 시간: {DateTime.Now:HH:mm:ss}_";
 
             await SendMessageAsync(report);
