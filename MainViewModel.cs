@@ -1447,40 +1447,43 @@ namespace TradingBot.ViewModels
                 int processed = 0;
                 while (processed < MaxLiveLogBatchPerTick && _pendingLiveLogs.TryDequeue(out var item))
                 {
-                    string displayMessage = SimplifyLiveLogMessage(item.Message);
-                    var line = $"[{item.Timestamp:HH:mm:ss}] {displayMessage}";
-                    LiveLogs.Insert(0, line);
-                    if (LiveLogs.Count > MaxUiLiveLogCount) LiveLogs.RemoveAt(MaxUiLiveLogCount);
-
-                    if (string.Equals(item.Category, "GATE", StringComparison.OrdinalIgnoreCase))
-                    {
-                        GateLogs.Insert(0, line);
-                        if (GateLogs.Count > MaxUiLiveLogCount) GateLogs.RemoveAt(MaxUiLiveLogCount);
-                        UpdateGateDashboardFromLog(item.RawMessage, line);
-                    }
-                    else
-                    {
-                        TradeLogs.Insert(0, line);
-                        if (TradeLogs.Count > MaxUiLiveLogCount) TradeLogs.RemoveAt(MaxUiLiveLogCount);
-
-                        if (item.IsMajor)
-                        {
-                            MajorLogs.Insert(0, line);
-                            if (MajorLogs.Count > MaxUiLiveLogCount) MajorLogs.RemoveAt(MaxUiLiveLogCount);
-                        }
-                        else
-                        {
-                            PumpLogs.Insert(0, line);
-                            if (PumpLogs.Count > MaxUiLiveLogCount) PumpLogs.RemoveAt(MaxUiLiveLogCount);
-                        }
-                    }
-
                     if (_dbService != null && ShouldPersistLiveLog(item.Message))
                     {
                         _pendingLiveLogDbWrites.Enqueue((item.Category, item.Message, item.Symbol));
                         int dbQueueLength = _pendingLiveLogDbWrites.Count;
                         if (dbQueueLength > _liveLogDbQueueHighWater)
                             _liveLogDbQueueHighWater = dbQueueLength;
+                    }
+
+                    if (ShouldDisplayLiveLogOnUi(item.Category, item.RawMessage))
+                    {
+                        string displayMessage = SimplifyLiveLogMessage(item.Message);
+                        var line = $"[{item.Timestamp:HH:mm:ss}] {displayMessage}";
+                        LiveLogs.Insert(0, line);
+                        if (LiveLogs.Count > MaxUiLiveLogCount) LiveLogs.RemoveAt(MaxUiLiveLogCount);
+
+                        if (string.Equals(item.Category, "GATE", StringComparison.OrdinalIgnoreCase))
+                        {
+                            GateLogs.Insert(0, line);
+                            if (GateLogs.Count > MaxUiLiveLogCount) GateLogs.RemoveAt(MaxUiLiveLogCount);
+                            UpdateGateDashboardFromLog(item.RawMessage, line);
+                        }
+                        else
+                        {
+                            TradeLogs.Insert(0, line);
+                            if (TradeLogs.Count > MaxUiLiveLogCount) TradeLogs.RemoveAt(MaxUiLiveLogCount);
+
+                            if (item.IsMajor)
+                            {
+                                MajorLogs.Insert(0, line);
+                                if (MajorLogs.Count > MaxUiLiveLogCount) MajorLogs.RemoveAt(MaxUiLiveLogCount);
+                            }
+                            else
+                            {
+                                PumpLogs.Insert(0, line);
+                                if (PumpLogs.Count > MaxUiLiveLogCount) PumpLogs.RemoveAt(MaxUiLiveLogCount);
+                            }
+                        }
                     }
 
                     processed++;
@@ -1692,35 +1695,120 @@ namespace TradingBot.ViewModels
                 || message.Contains("[PERF][MAIN_LOOP]", StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool ShouldDisplayLiveLogOnUi(string category, string rawMessage)
+        {
+            if (string.Equals(category, "GATE", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return IsOrderErrorLog(rawMessage);
+        }
+
+        private static bool IsOrderErrorLog(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return false;
+
+            return message.Contains("[ENTRY][ORDER][ERROR]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[진입][ORDER][오류]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("주문 처리 오류", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("주문 오류", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static string SimplifyLiveLogMessage(string message)
         {
             if (string.IsNullOrWhiteSpace(message))
                 return "로그 메시지가 비어 있습니다.";
 
-            string simplified = message.Trim();
+            string normalized = Regex.Replace(message.Trim(), @"\s+", " ");
 
-            simplified = ReplaceInsensitive(simplified, "[SIGNAL][PUMP][TRACE]", "[펌프 신호]");
-            simplified = ReplaceInsensitive(simplified, "[신호][PUMP][추적]", "[펌프 신호]");
-            simplified = ReplaceInsensitive(simplified, "[SIGNAL][TRANSFORMER][TRACE]", "[TF 신호]");
-            simplified = ReplaceInsensitive(simplified, "[신호][TRANSFORMER][추적]", "[TF 신호]");
-            simplified = ReplaceInsensitive(simplified, "[ENTRY][ORDER][ERROR]", "[주문 오류]");
-            simplified = ReplaceInsensitive(simplified, "[진입][ORDER][오류]", "[주문 오류]");
-            simplified = ReplaceInsensitive(simplified, "[ENTRY][15M_GATE][PASS]", "[15M 게이트 통과]");
-            simplified = ReplaceInsensitive(simplified, "[ENTRY][15M_GATE][BLOCK]", "[15M 게이트 차단]");
-            simplified = ReplaceInsensitive(simplified, "[GATE][AUTO_TUNE]", "[게이트 자동튜닝]");
-            simplified = ReplaceInsensitive(simplified, "[신호][MAJOR][신호발생]", "[메이저 신호]");
+            string label = "라이브";
+            if (normalized.Contains("[15M_GATE]", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("15M 게이트", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("[GATE]", StringComparison.OrdinalIgnoreCase))
+            {
+                label = "게이트";
+            }
+            else if (normalized.Contains("[ENTRY][ORDER][ERROR]", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("[진입][ORDER][오류]", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("주문 처리 오류", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("주문 오류", StringComparison.OrdinalIgnoreCase))
+            {
+                label = "주문오류";
+            }
+            else if (normalized.Contains("[SIGNAL][PUMP]", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("[신호][PUMP]", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("펌프", StringComparison.OrdinalIgnoreCase))
+            {
+                label = "펌프신호";
+            }
+            else if (normalized.Contains("TRANSFORMER", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("[TF", StringComparison.OrdinalIgnoreCase))
+            {
+                label = "TF신호";
+            }
+            else if (normalized.Contains("[신호][MAJOR]", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("Major", StringComparison.OrdinalIgnoreCase))
+            {
+                label = "메이저신호";
+            }
+            else if (normalized.Contains("[ENTRY]", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("[진입]", StringComparison.OrdinalIgnoreCase))
+            {
+                label = "진입";
+            }
 
-            simplified = ReplaceInsensitive(simplified, "전략=", "");
-            simplified = ReplaceInsensitive(simplified, "심볼=", "");
-            simplified = ReplaceInsensitive(simplified, "방향=", "");
-            simplified = ReplaceInsensitive(simplified, "원인=", "");
-            simplified = ReplaceInsensitive(simplified, "사유=", "");
-            simplified = ReplaceInsensitive(simplified, "판정=", "");
+            string symbol = string.Empty;
+            var symbolMatch = SymbolRegex.Match(normalized);
+            if (symbolMatch.Success)
+                symbol = symbolMatch.Groups[1].Value;
 
-            simplified = simplified.Replace(" | ", " · ");
-            simplified = Regex.Replace(simplified, @"\s+", " ").Trim();
+            string side = string.Empty;
+            if (normalized.Contains("LONG", StringComparison.OrdinalIgnoreCase))
+                side = "LONG";
+            else if (normalized.Contains("SHORT", StringComparison.OrdinalIgnoreCase))
+                side = "SHORT";
 
-            return simplified;
+            string status = string.Empty;
+            if (normalized.Contains("차단", StringComparison.OrdinalIgnoreCase) || normalized.Contains("BLOCK", StringComparison.OrdinalIgnoreCase))
+                status = "차단";
+            else if (normalized.Contains("통과", StringComparison.OrdinalIgnoreCase) || normalized.Contains("PASS", StringComparison.OrdinalIgnoreCase))
+                status = "통과";
+            else if (normalized.Contains("대기", StringComparison.OrdinalIgnoreCase) || normalized.Contains("HOLD", StringComparison.OrdinalIgnoreCase))
+                status = "대기";
+            else if (normalized.Contains("오류", StringComparison.OrdinalIgnoreCase) || normalized.Contains("ERROR", StringComparison.OrdinalIgnoreCase))
+                status = "오류";
+
+            string detail = string.Empty;
+            int detailIdx = normalized.IndexOf("상세=", StringComparison.OrdinalIgnoreCase);
+            if (detailIdx >= 0)
+            {
+                detail = normalized.Substring(detailIdx + 3).Trim();
+            }
+            else
+            {
+                int reasonIdx = normalized.IndexOf("사유=", StringComparison.OrdinalIgnoreCase);
+                if (reasonIdx >= 0)
+                {
+                    detail = normalized.Substring(reasonIdx + 3).Trim();
+                }
+                else
+                {
+                    int pipeIdx = normalized.IndexOf('|');
+                    if (pipeIdx >= 0 && pipeIdx + 1 < normalized.Length)
+                        detail = normalized.Substring(pipeIdx + 1).Trim();
+                }
+            }
+
+            if (detail.Length > 70)
+                detail = detail.Substring(0, 70) + "…";
+
+            var compact = label;
+            if (!string.IsNullOrWhiteSpace(symbol)) compact += $" · {symbol}";
+            if (!string.IsNullOrWhiteSpace(side)) compact += $" · {side}";
+            if (!string.IsNullOrWhiteSpace(status)) compact += $" · {status}";
+            if (!string.IsNullOrWhiteSpace(detail)) compact += $" · {detail}";
+
+            return compact;
         }
 
         private async Task DrainLiveLogDbQueueAsync()

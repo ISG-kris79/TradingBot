@@ -12,9 +12,9 @@ using System.Windows;
 [assembly: AssemblyCulture("")]
 
 // Version information
-[assembly: AssemblyVersion("2.2.11.0")]
-[assembly: AssemblyFileVersion("2.2.11.0")]
-[assembly: AssemblyInformationalVersion("2.2.11")]
+[assembly: AssemblyVersion("2.2.12.0")]
+[assembly: AssemblyFileVersion("2.2.12.0")]
+[assembly: AssemblyInformationalVersion("2.2.12")]
 
 [assembly: ThemeInfo(
     ResourceDictionaryLocation.None,            //where theme specific resource dictionaries are located
