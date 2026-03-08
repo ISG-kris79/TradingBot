@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-03-09
+
+### Fixed
+
+- 로그인 후 메인 윈도우 로딩 시 `StaticResource` 선참조로 발생하던 XAML 파싱 예외 수정
+  - DataGrid 템플릿 내부 `MinimalScrollViewer` / `MinimalScrollBar` 참조를 `DynamicResource`로 변경
+
 ## [2.3.0] - 2026-03-08
 
 ### Removed
