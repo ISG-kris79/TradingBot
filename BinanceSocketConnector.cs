@@ -32,15 +32,12 @@ namespace TradingBot
                 // 바이낸스 선물(Futures) 실시간 가격 구독 예시
                 var subscribeResult = await _socketClient.UsdFuturesApi.ExchangeData.SubscribeToTickerUpdatesAsync(symbol, data =>
                 {
-                    // UI 업데이트를 위해 메인 윈도우 인스턴스에 전달
-                    MainWindow.Instance?.Dispatcher.Invoke(() =>
+                    // RefreshSignalUI는 내부 큐를 사용하므로 UI 스레드 동기 점유 없이 전달
+                    MainWindow.Instance?.RefreshSignalUI(
+                        new MultiTimeframeViewModel
                     {
-                        var viewModel = new MultiTimeframeViewModel
-                        {
-                            Symbol = data.Data.Symbol,
-                            LastPrice = data.Data.LastPrice
-                        };
-                        MainWindow.Instance.RefreshSignalUI(viewModel);
+                        Symbol = data.Data.Symbol,
+                        LastPrice = data.Data.LastPrice
                     });
                 });
 

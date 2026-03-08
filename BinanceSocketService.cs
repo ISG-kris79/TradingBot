@@ -14,14 +14,11 @@ public class BinanceSocketService : IDisposable
         {
             await _socketClient.UsdFuturesApi.ExchangeData.SubscribeToTickerUpdatesAsync(symbol, data =>
             {
-                MainWindow.Instance?.Dispatcher.Invoke(() =>
+                // RefreshSignalUI는 내부 큐를 사용하므로 UI 스레드 동기 점유 없이 전달
+                MainWindow.Instance?.RefreshSignalUI(new MultiTimeframeViewModel
                 {
-                    // 수신된 가격 데이터로 UI 업데이트
-                    MainWindow.Instance.RefreshSignalUI(new MultiTimeframeViewModel
-                    {
-                        Symbol = data.Data.Symbol,
-                        LastPrice = data.Data.LastPrice
-                    });
+                    Symbol = data.Data.Symbol,
+                    LastPrice = data.Data.LastPrice
                 });
             });
         }

@@ -49,6 +49,7 @@ namespace TradingBot
         private const int MAX_PUMP_SLOTS = 2;  // 실시간 급등주 전용
         private const int PUMP_MANUAL_LEVERAGE = 20; // 20배 롱 전용 대응 매뉴얼
         private const int SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 1000;
+        private const int MAJOR_SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 180;
         private static readonly TimeSpan MainLoopInterval = TimeSpan.FromSeconds(1);
         private static readonly TimeSpan FastEntrySlippageCheckInterval = TimeSpan.FromMilliseconds(250);
         private static readonly TimeSpan FastEntrySlippageMonitorDuration = TimeSpan.FromSeconds(25);
@@ -1147,19 +1148,6 @@ namespace TradingBot
                         if (_pumpStrategy != null)
                             await _pumpStrategy.ExecuteScanAsync(_marketDataManager.TickerCache, _blacklistedSymbols, token);
 
-                        // [B] 메이저 코인 분석 (BTC, ETH, SOL, XRP)
-                        if (_majorStrategy != null)
-                        {
-                            var majorSymbols = new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
-                            foreach (var symbol in majorSymbols)
-                            {
-                                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var ticker))
-                                {
-                                    await _majorStrategy.AnalyzeAsync(symbol, ticker.LastPrice, token);
-                                }
-                            }
-                        }
-
                         if ((DateTime.Now - _lastHeartbeatTime).TotalHours >= 1)
                         {
                             string heartbeatMsg = $"💓 [Heartbeat] Bot is alive.\nActive Positions: {_activePositions.Count}\nUptime: {(DateTime.Now - _engineStartTime):dd\\.hh\\:mm}";
@@ -1988,9 +1976,14 @@ namespace TradingBot
                 }
 
                 var now = DateTime.Now;
+                bool isMajorSymbol = MajorSymbols.Contains(symbol);
+                int minAnalysisIntervalMs = isMajorSymbol
+                    ? MAJOR_SYMBOL_ANALYSIS_MIN_INTERVAL_MS
+                    : SYMBOL_ANALYSIS_MIN_INTERVAL_MS;
+
                 if (_lastAnalysisTimes.TryGetValue(symbol, out var lastTime))
                 {
-                    if ((now - lastTime).TotalMilliseconds < SYMBOL_ANALYSIS_MIN_INTERVAL_MS) return;
+                    if ((now - lastTime).TotalMilliseconds < minAnalysisIntervalMs) return;
                 }
                 _lastAnalysisTimes[symbol] = now;
 
@@ -2007,7 +2000,7 @@ namespace TradingBot
                 {
                     majorCount = _activePositions.Values.Count(p => !p.IsPumpStrategy);
                 }
-                if (majorCount < MAX_MAJOR_SLOTS)
+                if (isMajorSymbol && majorCount < MAX_MAJOR_SLOTS)
                 {
                     if (_majorStrategy != null)
                         await _majorStrategy.AnalyzeAsync(symbol, currentPrice, token);

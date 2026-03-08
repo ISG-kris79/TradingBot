@@ -48,7 +48,7 @@ namespace TradingBot
             { 
                 try 
                 { 
-                    Dispatcher.Invoke(() => FlashWindow()); 
+                    _ = Dispatcher.BeginInvoke(new Action(FlashWindow), DispatcherPriority.Background);
                 } 
                 catch 
                 { 
@@ -105,7 +105,9 @@ namespace TradingBot
         private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
 
         // [병목 해결] 배치 UI 업데이트 메커니즘
-        private readonly Queue<MultiTimeframeViewModel> _uiUpdateQueue = new Queue<MultiTimeframeViewModel>();
+        private const int MaxSignalUpdatesPerBatch = 120;
+        private readonly Dictionary<string, MultiTimeframeViewModel> _latestSignalUpdates = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Queue<MultiTimeframeViewModel> _fallbackSignalQueue = new Queue<MultiTimeframeViewModel>();
         private readonly DispatcherTimer _uiBatchTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
         private readonly object _uiQueueLock = new object();
 
@@ -427,7 +429,7 @@ namespace TradingBot
         // 엔진에서 호출할 수익률 업데이트 메서드
         public void UpdateProfitChart(double currentEquity)
         {
-            Dispatcher.Invoke(() =>
+            void UpdateChart()
             {
                 // NaN/Infinity 검증 추가 (LiveCharts Y1 축 오류 방지)
                 if (!double.IsNaN(currentEquity) && !double.IsInfinity(currentEquity) && currentEquity >= 0)
@@ -437,15 +439,33 @@ namespace TradingBot
                     if (ViewModel.ProfitHistory.Count > 50) ViewModel.ProfitHistory.RemoveAt(0);
                 }
                 // else: 무효한 값은 무시 (이전 차트 유지)
-            });
+            }
+
+            if (Dispatcher.CheckAccess())
+            {
+                UpdateChart();
+            }
+            else
+            {
+                _ = Dispatcher.BeginInvoke(new Action(UpdateChart), DispatcherPriority.Background);
+            }
         }
 
         public void RefreshSignalUI(MultiTimeframeViewModel signal)
         {
-            // [병목 해결] 동기 호출 대신 비동기 큐에 추가
+            if (signal == null)
+                return;
+
             lock (_uiQueueLock)
             {
-                _uiUpdateQueue.Enqueue(signal);
+                if (string.IsNullOrWhiteSpace(signal.Symbol))
+                {
+                    _fallbackSignalQueue.Enqueue(signal);
+                }
+                else
+                {
+                    _latestSignalUpdates[signal.Symbol] = signal;
+                }
             }
         }
 
@@ -454,25 +474,36 @@ namespace TradingBot
         /// </summary>
         private void ProcessUIBatchQueue()
         {
+            if (!CheckAccess())
+            {
+                _ = Dispatcher.BeginInvoke(new Action(ProcessUIBatchQueue), DispatcherPriority.Background);
+                return;
+            }
+
             List<MultiTimeframeViewModel> signals = new();
             lock (_uiQueueLock)
             {
-                while (_uiUpdateQueue.Count > 0)
+                foreach (var key in _latestSignalUpdates.Keys.Take(MaxSignalUpdatesPerBatch).ToList())
                 {
-                    signals.Add(_uiUpdateQueue.Dequeue());
+                    if (_latestSignalUpdates.TryGetValue(key, out var signal))
+                    {
+                        signals.Add(signal);
+                    }
+                    _latestSignalUpdates.Remove(key);
+                }
+
+                while (_fallbackSignalQueue.Count > 0 && signals.Count < MaxSignalUpdatesPerBatch)
+                {
+                    signals.Add(_fallbackSignalQueue.Dequeue());
                 }
             }
 
             if (signals.Count == 0) return;
 
-            // UI 스레드에서 배치 처리 (우선순위 낮음)
-            _ = Dispatcher.BeginInvoke(new Action(() =>
+            foreach (var signal in signals)
             {
-                foreach (var signal in signals)
-                {
-                    ProcessSignalUpdate(signal);
-                }
-            }), DispatcherPriority.Background);
+                ProcessSignalUpdate(signal);
+            }
         }
 
         /// <summary>
@@ -547,7 +578,7 @@ namespace TradingBot
 
         public void RefreshTradeGrid()
         {
-            Dispatcher.Invoke(() =>
+            void Refresh()
             {
                 var view = CollectionViewSource.GetDefaultView(dgMultiTimeframe.ItemsSource);
                 if (view != null)
@@ -560,7 +591,16 @@ namespace TradingBot
 
                     view.Refresh();
                 }
-            });
+            }
+
+            if (Dispatcher.CheckAccess())
+            {
+                Refresh();
+            }
+            else
+            {
+                _ = Dispatcher.BeginInvoke(new Action(Refresh), DispatcherPriority.Background);
+            }
         }
         private void TriggerPriceAnimation(string symbol, bool isUp)
         {
@@ -638,7 +678,7 @@ namespace TradingBot
         {
             if (!CheckAccess())
             {
-                Dispatcher.Invoke(() => UpdateProgress(current, total));
+                _ = Dispatcher.BeginInvoke(new Action(() => UpdateProgress(current, total)), DispatcherPriority.Background);
                 return;
             }
 
@@ -728,84 +768,95 @@ namespace TradingBot
 
         public void UpdateProfitDashboardUI(double equity, double available, int totalPosCount)
         {
-            Dispatcher.Invoke(() =>
+            if (!CheckAccess())
             {
-                // 1. 기본 값 표시
-                ViewModel.TotalEquity = $"${equity:N2}";
-                ViewModel.AvailableBalance = $"${available:N2}";
+                _ = Dispatcher.BeginInvoke(new Action(() => UpdateProfitDashboardUI(equity, available, totalPosCount)), DispatcherPriority.Background);
+                return;
+            }
 
-                // 2. 총 수익률(ROI %) 계산
-                double roi = 0;
-                decimal initialBalance = ViewModel.InitialBalance;
-                if (initialBalance > 0)
-                {
-                    roi = (equity - (double)initialBalance) / (double)initialBalance * 100;
-                }
-                ViewModel.AverageRoe = roi;
+            // 1. 기본 값 표시
+            ViewModel.TotalEquity = $"${equity:N2}";
+            ViewModel.AvailableBalance = $"${available:N2}";
 
-                // 3. 색상 분기 로직 적용
-                if (roi > 0)
-                {
-                    ViewModel.EquityColor = Brushes.LimeGreen;
-                }
-                else if (roi < 0)
-                {
-                    ViewModel.EquityColor = Brushes.Tomato;
-                }
-                else
-                {
-                    ViewModel.EquityColor = Brushes.White;
-                }
-            });
+            // 2. 총 수익률(ROI %) 계산
+            double roi = 0;
+            decimal initialBalance = ViewModel.InitialBalance;
+            if (initialBalance > 0)
+            {
+                roi = (equity - (double)initialBalance) / (double)initialBalance * 100;
+            }
+            ViewModel.AverageRoe = roi;
+
+            // 3. 색상 분기 로직 적용
+            if (roi > 0)
+            {
+                ViewModel.EquityColor = Brushes.LimeGreen;
+            }
+            else if (roi < 0)
+            {
+                ViewModel.EquityColor = Brushes.Tomato;
+            }
+            else
+            {
+                ViewModel.EquityColor = Brushes.White;
+            }
         }
 
         public void UpdateTelegramStatus(bool isConnected, string text)
         {
-            Dispatcher.Invoke(() =>
+            if (!CheckAccess())
             {
-                ViewModel.TelegramStatus = text;
-                ViewModel.TelegramStatusColor = isConnected ? Brushes.DeepSkyBlue : Brushes.Gray;
-            });
+                _ = Dispatcher.BeginInvoke(new Action(() => UpdateTelegramStatus(isConnected, text)), DispatcherPriority.Background);
+                return;
+            }
+
+            ViewModel.TelegramStatus = text;
+            ViewModel.TelegramStatusColor = isConnected ? Brushes.DeepSkyBlue : Brushes.Gray;
         }
 
         public void UpdateSlotStatusUI(int majorCount, int majorMax, int pumpCount, int pumpMax)
         {
-            Dispatcher.Invoke(() =>
+            if (!CheckAccess())
             {
-                // 메이저 슬롯 UI 업데이트 (예: "메이저: 1 / 2")
-                ViewModel.MajorSlotText = $"{majorCount} / {majorMax}";
-                ViewModel.MajorSlotColor = majorCount >= majorMax ? Brushes.Orange : Brushes.White;
+                _ = Dispatcher.BeginInvoke(new Action(() => UpdateSlotStatusUI(majorCount, majorMax, pumpCount, pumpMax)), DispatcherPriority.Background);
+                return;
+            }
 
-                // 급등주 슬롯 UI 업데이트 (예: "급등주: 0 / 2")
-                ViewModel.PumpSlotText = $"{pumpCount} / {pumpMax}";
-                ViewModel.PumpSlotColor = pumpCount >= pumpMax ? Brushes.Orange : Brushes.White;
+            // 메이저 슬롯 UI 업데이트 (예: "메이저: 1 / 2")
+            ViewModel.MajorSlotText = $"{majorCount} / {majorMax}";
+            ViewModel.MajorSlotColor = majorCount >= majorMax ? Brushes.Orange : Brushes.White;
 
-                // 전체 포지션 요약 정보(메인 UI 통합 표시)
-                ViewModel.TotalPositionInfo = $"Active: {majorCount + pumpCount} / {majorMax + pumpMax}";
-            });
+            // 급등주 슬롯 UI 업데이트 (예: "급등주: 0 / 2")
+            ViewModel.PumpSlotText = $"{pumpCount} / {pumpMax}";
+            ViewModel.PumpSlotColor = pumpCount >= pumpMax ? Brushes.Orange : Brushes.White;
+
+            // 전체 포지션 요약 정보(메인 UI 통합 표시)
+            ViewModel.TotalPositionInfo = $"Active: {majorCount + pumpCount} / {majorMax + pumpMax}";
         }
         public void OnPositionEntered()
         {
-            // UI 스레드 안전하게 호출
-            Dispatcher.Invoke(() =>
+            if (!CheckAccess())
             {
-                var view = CollectionViewSource.GetDefaultView(dgMultiTimeframe.ItemsSource);
-                if (view != null)
-                {
-                    view.SortDescriptions.Clear();
+                _ = Dispatcher.BeginInvoke(new Action(OnPositionEntered), DispatcherPriority.Background);
+                return;
+            }
 
-                    // 1순위: 포지션 있는 종목 상단 (IsPositionActive: True -> False 순)
-                    view.SortDescriptions.Add(new SortDescription("IsPositionActive", ListSortDirection.Descending));
+            var view = CollectionViewSource.GetDefaultView(dgMultiTimeframe.ItemsSource);
+            if (view != null)
+            {
+                view.SortDescriptions.Clear();
 
-                    // 2순위: 수익률 높은 순 (포지션끼리 비교)
-                    view.SortDescriptions.Add(new SortDescription("ProfitRate", ListSortDirection.Descending));
+                // 1순위: 포지션 있는 종목 상단 (IsPositionActive: True -> False 순)
+                view.SortDescriptions.Add(new SortDescription("IsPositionActive", ListSortDirection.Descending));
 
-                    // 3순위: AI 점수 높은 순 (나머지 대기 종목들)
-                    view.SortDescriptions.Add(new SortDescription("AIScore", ListSortDirection.Descending));
+                // 2순위: 수익률 높은 순 (포지션끼리 비교)
+                view.SortDescriptions.Add(new SortDescription("ProfitRate", ListSortDirection.Descending));
 
-                    view.Refresh(); // 정렬 즉시 적용
-                }
-            });
+                // 3순위: AI 점수 높은 순 (나머지 대기 종목들)
+                view.SortDescriptions.Add(new SortDescription("AIScore", ListSortDirection.Descending));
+
+                view.Refresh(); // 정렬 즉시 적용
+            }
         }
         public void ApplyCustomSort()
         {

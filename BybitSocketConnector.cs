@@ -77,15 +77,12 @@ namespace TradingBot
                             var lastPrice = ticker.LastPrice ?? 0;
                             OnTickerUpdate?.Invoke(symbol, lastPrice);
 
-                            // UI 업데이트 (MainWindow 인스턴스 사용)
-                            MainWindow.Instance?.Dispatcher.Invoke(() =>
+                            // RefreshSignalUI는 내부 큐를 사용하므로 UI 스레드 동기 점유 없이 전달
+                            MainWindow.Instance?.RefreshSignalUI(
+                                new MultiTimeframeViewModel
                             {
-                                var viewModel = new MultiTimeframeViewModel
-                                {
-                                    Symbol = symbol,
-                                    LastPrice = lastPrice
-                                };
-                                MainWindow.Instance.RefreshSignalUI(viewModel);
+                                Symbol = symbol,
+                                LastPrice = lastPrice
                             });
                         }
                         catch (Exception ex)

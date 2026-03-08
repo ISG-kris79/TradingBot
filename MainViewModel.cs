@@ -62,6 +62,9 @@ namespace TradingBot.ViewModels
         private int _liveLogTuneSampleWindow = 60;
         private int _liveLogTuneMinIntervalSec = 30;
         private readonly Queue<int> _liveLogRecentFlushSamples = new();
+        private readonly ConcurrentDictionary<string, DateTime> _liveLogMirrorThrottleMap = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan HighFrequencyMirrorInterval = TimeSpan.FromSeconds(2);
+        private static readonly TimeSpan MirrorThrottleRetention = TimeSpan.FromMinutes(5);
         private DateTime _nextLiveLogPerfLogTime = DateTime.UtcNow.AddSeconds(10);
         private DateTime _nextLiveLogTuneTime = DateTime.UtcNow.AddSeconds(30);
         private DateTime _nextLiveLogWarnLogTime = DateTime.MinValue;
@@ -1268,7 +1271,7 @@ namespace TradingBot.ViewModels
             UnsubscribeFromEngineEvents();
             _engine.OnLiveLog += msg => AddLiveLog(msg);
             _engine.OnAlert += msg => AddAlert(msg);
-            _engine.OnStatusLog += msg => AddLog(msg);
+            _engine.OnStatusLog += msg => HandleStatusLog(msg);
             _engine.OnProgress += (current, total) => UpdateProgress(current, total);
             _engine.OnDashboardUpdate += (equity, available, posCount) => UpdateProfitDashboard(equity, available, posCount);
             _engine.OnSlotStatusUpdate += (major, majorMax, pump, pumpMax) => UpdateSlotStatus(major, majorMax, pump, pumpMax);
@@ -1303,6 +1306,99 @@ namespace TradingBot.ViewModels
         private void UnsubscribeFromEngineEvents()
         {
             _engine?.ClearEventSubscriptions();
+        }
+
+        private void HandleStatusLog(string msg)
+        {
+            AddLog(msg);
+
+            if (ShouldMirrorStatusToLiveLog(msg))
+            {
+                AddLiveLog(msg);
+            }
+        }
+
+        private bool ShouldMirrorStatusToLiveLog(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return false;
+
+            if (IsGateLog(message) || IsOrderErrorLog(message))
+                return true;
+
+            if (!IsEssentialTradeFlowLog(message))
+                return false;
+
+            if (!IsHighFrequencyMirrorTarget(message))
+                return true;
+
+            return TryAcquireMirrorSlot(message);
+        }
+
+        private bool TryAcquireMirrorSlot(string message)
+        {
+            string key = BuildMirrorThrottleKey(message);
+            var nowUtc = DateTime.UtcNow;
+
+            if (_liveLogMirrorThrottleMap.TryGetValue(key, out var lastSeenUtc)
+                && nowUtc - lastSeenUtc < HighFrequencyMirrorInterval)
+            {
+                return false;
+            }
+
+            _liveLogMirrorThrottleMap[key] = nowUtc;
+            CleanupMirrorThrottleCache(nowUtc);
+            return true;
+        }
+
+        private void CleanupMirrorThrottleCache(DateTime nowUtc)
+        {
+            if (_liveLogMirrorThrottleMap.Count < 512)
+                return;
+
+            foreach (var item in _liveLogMirrorThrottleMap)
+            {
+                if (nowUtc - item.Value > MirrorThrottleRetention)
+                {
+                    _liveLogMirrorThrottleMap.TryRemove(item.Key, out _);
+                }
+            }
+        }
+
+        private static bool IsHighFrequencyMirrorTarget(string message)
+        {
+            return message.Contains("진입대기", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[캔들 확인 대기]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("트레일링갱신", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("트레일링 갱신", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("지표모니터링", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string BuildMirrorThrottleKey(string message)
+        {
+            string tag;
+            if (message.Contains("진입대기", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[캔들 확인 대기]", StringComparison.OrdinalIgnoreCase))
+            {
+                tag = "ENTRY_WAIT";
+            }
+            else if (message.Contains("트레일링갱신", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("트레일링 갱신", StringComparison.OrdinalIgnoreCase))
+            {
+                tag = "TRAIL_UPDATE";
+            }
+            else if (message.Contains("지표모니터링", StringComparison.OrdinalIgnoreCase))
+            {
+                tag = "INDICATOR_MONITOR";
+            }
+            else
+            {
+                tag = "ESSENTIAL";
+            }
+
+            var symbolMatch = SymbolRegex.Match(message);
+            var symbol = symbolMatch.Success ? symbolMatch.Groups[1].Value : "GLOBAL";
+            return $"{tag}:{symbol}";
         }
 
         private void HandleTradeExecuted(string symbol, string side, decimal price, decimal qty)
@@ -1379,7 +1475,7 @@ namespace TradingBot.ViewModels
 
                 _liveLogFlushTimer = new DispatcherTimer(DispatcherPriority.Background)
                 {
-                    Interval = TimeSpan.FromMilliseconds(120)
+                    Interval = TimeSpan.FromSeconds(1)
                 };
                 _liveLogFlushTimer.Tick += (_, _) => FlushPendingLiveLogsToUi();
                 _liveLogFlushTimer.Start();
@@ -1700,7 +1796,8 @@ namespace TradingBot.ViewModels
             if (string.Equals(category, "GATE", StringComparison.OrdinalIgnoreCase))
                 return true;
 
-            return IsOrderErrorLog(rawMessage);
+            return IsOrderErrorLog(rawMessage)
+                || IsEssentialTradeFlowLog(rawMessage);
         }
 
         private static bool IsOrderErrorLog(string message)
@@ -1712,6 +1809,28 @@ namespace TradingBot.ViewModels
                 || message.Contains("[진입][ORDER][오류]", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("주문 처리 오류", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("주문 오류", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsEssentialTradeFlowLog(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return false;
+
+            return message.Contains("진입대기", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("진입 시작", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("진입시작", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[ENTRY][START]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[캔들 확인 대기]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("트레일링스탑시작", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("트레일링 갱신", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("트레일링갱신", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("지표모니터링", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("손절시작", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("손절실행", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("익절실행", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("익절시작", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[SLIPPAGE][FAST][WARN]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[SLIPPAGE][FAST][EXIT]", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string SimplifyLiveLogMessage(string message)
@@ -1734,6 +1853,34 @@ namespace TradingBot.ViewModels
                 || normalized.Contains("주문 오류", StringComparison.OrdinalIgnoreCase))
             {
                 label = "주문오류";
+            }
+            else if (normalized.Contains("진입대기", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("[캔들 확인 대기]", StringComparison.OrdinalIgnoreCase))
+            {
+                label = "진입대기";
+            }
+            else if (normalized.Contains("[ENTRY][START]", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("진입 시작", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("진입시작", StringComparison.OrdinalIgnoreCase))
+            {
+                label = "진입시작";
+            }
+            else if (normalized.Contains("트레일링스탑시작", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("트레일링갱신", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("트레일링 갱신", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("지표모니터링", StringComparison.OrdinalIgnoreCase))
+            {
+                label = "트레일링";
+            }
+            else if (normalized.Contains("손절시작", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("손절실행", StringComparison.OrdinalIgnoreCase))
+            {
+                label = "손절";
+            }
+            else if (normalized.Contains("익절시작", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("익절실행", StringComparison.OrdinalIgnoreCase))
+            {
+                label = "익절";
             }
             else if (normalized.Contains("[SIGNAL][PUMP]", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("[신호][PUMP]", StringComparison.OrdinalIgnoreCase)
