@@ -2998,6 +2998,23 @@ namespace TradingBot
                 // UI 업데이트 및 DataGrid 정렬 유지
                 OnDashboardUpdate?.Invoke(equity2, available2, currentMajor2 + currentPump2);
                 OnSlotStatusUpdate?.Invoke(currentMajor2, MAX_MAJOR_SLOTS, currentPump2, MAX_PUMP_SLOTS);
+
+                // [AI 학습 상태 업데이트]
+                if (_aiDoubleCheckEntryGate != null)
+                {
+                    var stats = _aiDoubleCheckEntryGate.GetRecentLabelStats(10);
+                    int activeDecisionCount = _activeAiDecisionIds.Count;
+                    bool modelsReady = _aiDoubleCheckEntryGate.IsReady;
+
+                    MainWindow.Instance?.UpdateAiLearningStatusUI(
+                        stats.total,
+                        stats.labeled,
+                        stats.markToMarket,
+                        stats.tradeClose,
+                        activeDecisionCount,
+                        modelsReady
+                    );
+                }
             }
             catch (Exception ex)
             {

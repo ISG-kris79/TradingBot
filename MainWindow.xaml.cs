@@ -686,6 +686,23 @@ namespace TradingBot
             // 전체 포지션 요약 정보(메인 UI 통합 표시)
             ViewModel.TotalPositionInfo = $"Active: {majorCount + pumpCount} / {majorMax + pumpMax}";
         }
+
+        public void UpdateAiLearningStatusUI(int totalDecisions, int labeledCount, int markToMarketCount, int tradeCloseCount, int activeDecisions, bool modelsLoaded)
+        {
+            if (!CheckAccess())
+            {
+                _ = Dispatcher.BeginInvoke(new Action(() => UpdateAiLearningStatusUI(totalDecisions, labeledCount, markToMarketCount, tradeCloseCount, activeDecisions, modelsLoaded)), DispatcherPriority.Background);
+                return;
+            }
+
+            ViewModel.AiTotalDecisions = totalDecisions;
+            ViewModel.AiLabeledCount = labeledCount;
+            ViewModel.AiMarkToMarketCount = markToMarketCount;
+            ViewModel.AiTradeCloseCount = tradeCloseCount;
+            ViewModel.AiActiveDecisions = activeDecisions;
+            ViewModel.AiModelsLoaded = modelsLoaded;
+        }
+
         public void OnPositionEntered()
         {
             if (!CheckAccess())

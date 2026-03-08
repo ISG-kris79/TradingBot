@@ -136,6 +136,63 @@ namespace TradingBot.ViewModels
             set { _gateAutoTuneStatusText = value; OnPropertyChanged(); }
         }
 
+        // AI 라벨링 상태
+        private int _aiTotalDecisions;
+        public int AiTotalDecisions
+        {
+            get => _aiTotalDecisions;
+            set { _aiTotalDecisions = value; OnPropertyChanged(); OnPropertyChanged(nameof(AiLabelingRateText)); }
+        }
+
+        private int _aiLabeledCount;
+        public int AiLabeledCount
+        {
+            get => _aiLabeledCount;
+            set { _aiLabeledCount = value; OnPropertyChanged(); OnPropertyChanged(nameof(AiLabelingRateText)); }
+        }
+
+        private int _aiMarkToMarketCount;
+        public int AiMarkToMarketCount
+        {
+            get => _aiMarkToMarketCount;
+            set { _aiMarkToMarketCount = value; OnPropertyChanged(); }
+        }
+
+        private int _aiTradeCloseCount;
+        public int AiTradeCloseCount
+        {
+            get => _aiTradeCloseCount;
+            set { _aiTradeCloseCount = value; OnPropertyChanged(); }
+        }
+
+        private int _aiActiveDecisions;
+        public int AiActiveDecisions
+        {
+            get => _aiActiveDecisions;
+            set { _aiActiveDecisions = value; OnPropertyChanged(); }
+        }
+
+        private bool _aiModelsLoaded;
+        public bool AiModelsLoaded
+        {
+            get => _aiModelsLoaded;
+            set { _aiModelsLoaded = value; OnPropertyChanged(); OnPropertyChanged(nameof(AiModelStatusText)); OnPropertyChanged(nameof(AiModelStatusColor)); }
+        }
+
+        public string AiLabelingRateText
+        {
+            get
+            {
+                if (AiTotalDecisions == 0) return "0.0%";
+                double rate = (double)AiLabeledCount / AiTotalDecisions * 100.0;
+                return $"{rate:F1}%";
+            }
+        }
+
+        public string AiModelStatusText => AiModelsLoaded ? "✅ MODELS READY" : "⏳ LOADING...";
+        
+        public string AiModelStatusColor => AiModelsLoaded ? "#00E676" : "#FFB300";
+
         private int _dbFailureAlertCount;
         public int DbFailureAlertCount
         {

@@ -898,6 +898,121 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- AI Learning Status Card -->
+                            <Border Style="{StaticResource StatCardStyle}"
+                                    Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="🤖 AI LEARNING STATUS"
+                                               FontSize="12"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource PrimaryBrush}"
+                                               Margin="0,0,0,12"/>
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <!-- Model Status -->
+                                        <TextBlock Grid.Row="0"
+                                                   Grid.ColumnSpan="2"
+                                                   Text="{Binding AiModelStatusText}"
+                                                   Foreground="{Binding AiModelStatusColor}"
+                                                   FontSize="11"
+                                                   FontWeight="Bold"
+                                                   Margin="0,0,0,10"/>
+
+                                        <!-- Total Decisions -->
+                                        <TextBlock Grid.Row="1"
+                                                   Text="총 결정"
+                                                   Foreground="#9CA3AF"
+                                                   FontSize="11"/>
+                                        <TextBlock Grid.Row="1"
+                                                   Grid.Column="1"
+                                                   Text="{Binding AiTotalDecisions}"
+                                                   Foreground="#E0E7FF"
+                                                   FontSize="14"
+                                                   FontWeight="SemiBold"/>
+
+                                        <!-- Labeled Count & Rate -->
+                                        <TextBlock Grid.Row="2"
+                                                   Text="라벨링 완료"
+                                                   Foreground="#9CA3AF"
+                                                   FontSize="11"
+                                                   Margin="0,6,0,0"/>
+                                        <StackPanel Grid.Row="2"
+                                                    Grid.Column="1"
+                                                    Orientation="Horizontal"
+                                                    Margin="0,6,0,0">
+                                            <TextBlock Text="{Binding AiLabeledCount}"
+                                                       Foreground="{StaticResource AccentBrush}"
+                                                       FontSize="14"
+                                                       FontWeight="SemiBold"/>
+                                            <TextBlock Text=" ("
+                                                       Foreground="#9CA3AF"
+                                                       FontSize="11"
+                                                       Margin="2,0,0,0"/>
+                                            <TextBlock Text="{Binding AiLabelingRateText}"
+                                                       Foreground="{StaticResource AccentBrush}"
+                                                       FontSize="11"/>
+                                            <TextBlock Text=")"
+                                                       Foreground="#9CA3AF"
+                                                       FontSize="11"/>
+                                        </StackPanel>
+
+                                        <!-- Mark-to-Market -->
+                                        <TextBlock Grid.Row="3"
+                                                   Text="├ M2M"
+                                                   Foreground="#6B7280"
+                                                   FontSize="10"
+                                                   FontFamily="Consolas"
+                                                   Margin="10,4,0,0"/>
+                                        <TextBlock Grid.Row="3"
+                                                   Grid.Column="1"
+                                                   Text="{Binding AiMarkToMarketCount}"
+                                                   Foreground="{StaticResource WarningBrush}"
+                                                   FontSize="12"
+                                                   Margin="0,4,0,0"/>
+
+                                        <!-- Trade Close -->
+                                        <TextBlock Grid.Row="4"
+                                                   Text="└ Close"
+                                                   Foreground="#6B7280"
+                                                   FontSize="10"
+                                                   FontFamily="Consolas"
+                                                   Margin="10,2,0,0"/>
+                                        <TextBlock Grid.Row="4"
+                                                   Grid.Column="1"
+                                                   Text="{Binding AiTradeCloseCount}"
+                                                   Foreground="{StaticResource PrimaryBrush}"
+                                                   FontSize="12"
+                                                   Margin="0,2,0,0"/>
+
+                                        <!-- Active Decisions -->
+                                        <TextBlock Grid.Row="5"
+                                                   Text="진행 중"
+                                                   Foreground="#9CA3AF"
+                                                   FontSize="11"
+                                                   Margin="0,6,0,0"/>
+                                        <TextBlock Grid.Row="5"
+                                                   Grid.Column="1"
+                                                   Text="{Binding AiActiveDecisions}"
+                                                   Foreground="{StaticResource SecondaryBrush}"
+                                                   FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   Margin="0,6,0,0"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
                             <!-- Alerts Card -->
                             <Border Style="{StaticResource CardStyle}"
                                     Height="300">
