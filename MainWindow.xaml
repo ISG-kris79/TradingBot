@@ -371,6 +371,80 @@
                              AutoReverse="True"
                              RepeatBehavior="Forever"/>
         </Storyboard>
+
+        <!-- Minimal ScrollBar Style -->
+        <Style x:Key="MinimalScrollBar" TargetType="ScrollBar">
+            <Setter Property="Width" Value="6"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid>
+                            <Border Background="Transparent" CornerRadius="3"/>
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Template>
+                                            <ControlTemplate>
+                                                <Border x:Name="ThumbBorder"
+                                                        Background="#33FFFFFF"
+                                                        CornerRadius="3"
+                                                        Opacity="0.3">
+                                                    <Border.Triggers>
+                                                        <EventTrigger RoutedEvent="MouseEnter">
+                                                            <BeginStoryboard>
+                                                                <Storyboard>
+                                                                    <DoubleAnimation Storyboard.TargetName="ThumbBorder"
+                                                                                     Storyboard.TargetProperty="Opacity"
+                                                                                     To="0.7"
+                                                                                     Duration="0:0:0.2"/>
+                                                                </Storyboard>
+                                                            </BeginStoryboard>
+                                                        </EventTrigger>
+                                                        <EventTrigger RoutedEvent="MouseLeave">
+                                                            <BeginStoryboard>
+                                                                <Storyboard>
+                                                                    <DoubleAnimation Storyboard.TargetName="ThumbBorder"
+                                                                                     Storyboard.TargetProperty="Opacity"
+                                                                                     To="0.3"
+                                                                                     Duration="0:0:0.2"/>
+                                                                </Storyboard>
+                                                            </BeginStoryboard>
+                                                        </EventTrigger>
+                                                    </Border.Triggers>
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Minimal ScrollViewer Style -->
+        <Style x:Key="MinimalScrollViewer" TargetType="ScrollViewer">
+            <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
+            <Setter Property="HorizontalScrollBarVisibility" Value="Disabled"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollViewer">
+                        <Grid>
+                            <ScrollContentPresenter/>
+                            <ScrollBar x:Name="PART_VerticalScrollBar"
+                                       Style="{StaticResource MinimalScrollBar}"
+                                       HorizontalAlignment="Right"
+                                       Value="{TemplateBinding VerticalOffset}"
+                                       Maximum="{TemplateBinding ScrollableHeight}"
+                                       ViewportSize="{TemplateBinding ViewportHeight}"
+                                       Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}"/>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <!-- Main Container with Rounded Corners -->
@@ -726,9 +800,8 @@
 
                         <!-- Left Sidebar -->
                         <ScrollViewer Grid.Column="0"
-                                      Margin="0,0,16,0"
-                                      VerticalScrollBarVisibility="Auto"
-                                      HorizontalScrollBarVisibility="Disabled">
+                                      Style="{StaticResource MinimalScrollViewer}"
+                                      Margin="0,0,16,0">
                             <StackPanel>
                             <Border Style="{StaticResource CardStyle}"
                                     Padding="16"
