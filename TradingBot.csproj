@@ -81,7 +81,6 @@
 
   <ItemGroup>
     <PackageReference Include="Binance.Net" Version="12.8.1" />
-    <PackageReference Include="Bybit.Net" Version="6.7.0" />
     <PackageReference Include="CryptoExchange.Net" Version="10.7.1" />
     <PackageReference Include="CsvHelper" Version="33.1.0" />
     <PackageReference Include="Dapper" Version="2.1.66" />

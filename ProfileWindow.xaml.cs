@@ -60,12 +60,6 @@ namespace TradingBot
 
                     string binanceSecret = SecurityService.DecryptString(user.BinanceApiSecret);
                     txtBinanceSecret.Password = !string.IsNullOrEmpty(binanceSecret) ? binanceSecret : user.BinanceApiSecret;
-
-                    string bybitKey = SecurityService.DecryptString(user.BybitApiKey);
-                    txtBybitKey.Password = !string.IsNullOrEmpty(bybitKey) ? bybitKey : user.BybitApiKey;
-
-                    string bybitSecret = SecurityService.DecryptString(user.BybitApiSecret);
-                    txtBybitSecret.Password = !string.IsNullOrEmpty(bybitSecret) ? bybitSecret : user.BybitApiSecret;
                 }
             }
             catch (System.Exception ex)
@@ -82,8 +76,6 @@ namespace TradingBot
                 Username = AppConfig.CurrentUsername,
                 BinanceApiKey = SecurityService.EncryptString(txtBinanceKey.Password),
                 BinanceApiSecret = SecurityService.EncryptString(txtBinanceSecret.Password),
-                BybitApiKey = SecurityService.EncryptString(txtBybitKey.Password),
-                BybitApiSecret = SecurityService.EncryptString(txtBybitSecret.Password),
                 TelegramBotToken = SecurityService.EncryptString(txtBotToken.Text),
                 TelegramChatId = SecurityService.EncryptString(txtChatId.Text)
             };

@@ -137,14 +137,41 @@ namespace TradingBot.Services
 
         public async Task<bool> CancelOrderAsync(string symbol, string orderId, CancellationToken ct = default)
         {
-            if (!long.TryParse(orderId, out long id)) return false;
+            if (!long.TryParse(orderId, out long id))
+            {
+                Console.WriteLine($"❌ [Binance] 주문 취소 실패 - 잘못된 OrderId 형식: {orderId}");
+                return false;
+            }
+
             var result = await _client.UsdFuturesApi.Trading.CancelOrderAsync(symbol, id, ct: ct);
+
+            if (result.Success)
+            {
+                Console.WriteLine($"✅ [Binance] 주문 취소 성공 - {symbol} OrderId={orderId}");
+            }
+            else
+            {
+                Console.WriteLine($"❌ [Binance] 주문 취소 실패 - {symbol} OrderId={orderId}");
+                Console.WriteLine($"   에러: {result.Error?.Message}");
+            }
+
             return result.Success;
         }
 
         public async Task<bool> SetLeverageAsync(string symbol, int leverage, CancellationToken ct = default)
         {
             var result = await _client.UsdFuturesApi.Account.ChangeInitialLeverageAsync(symbol, leverage, ct: ct);
+
+            if (result.Success)
+            {
+                Console.WriteLine($"✅ [Binance] 레버리지 설정 성공 - {symbol} Leverage={leverage}x");
+            }
+            else
+            {
+                Console.WriteLine($"❌ [Binance] 레버리지 설정 실패 - {symbol} Leverage={leverage}x");
+                Console.WriteLine($"   에러: {result.Error?.Message}");
+            }
+
             return result.Success;
         }
 
@@ -269,14 +296,18 @@ namespace TradingBot.Services
 
                 if (result.Success && result.Data != null)
                 {
+                    Console.WriteLine($"✅ [Binance] 지정가 주문 성공 - {symbol} {side} {quantity}@{price} (OrderId: {result.Data.Id})");
                     return (true, result.Data.Id.ToString());
                 }
 
+                Console.WriteLine($"❌ [Binance] 지정가 주문 실패 - {symbol} {side} {quantity}@{price}");
+                Console.WriteLine($"   에러 코드: {result.Error?.Code} | 메시지: {result.Error?.Message}");
                 return (false, string.Empty);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[Binance] PlaceLimitOrder 실패: {ex.Message}");
+                Console.WriteLine($"❌ [Binance] PlaceLimitOrder 예외 - {symbol} {side} {quantity}@{price}");
+                Console.WriteLine($"   예외: {ex.Message}");
                 return (false, string.Empty);
             }
         }
@@ -298,6 +329,8 @@ namespace TradingBot.Services
 
                 if (!result.Success || result.Data == null)
                 {
+                    Console.WriteLine($"❌ [Binance] 주문 상태 조회 실패 - {symbol} OrderId={orderId}");
+                    Console.WriteLine($"   에러: {result.Error?.Message}");
                     return (false, 0, 0);
                 }
 
@@ -308,11 +341,92 @@ namespace TradingBot.Services
                 decimal filledQty = order.QuantityFilled;
                 decimal avgPrice = order.AveragePrice > 0 ? order.AveragePrice : order.Price;
 
+                Console.WriteLine($"📊 [Binance] 주문 상태: {symbol} OrderId={orderId} | Status={order.Status} | Filled={filledQty}/{order.Quantity} | AvgPrice={avgPrice}");
+
                 return (isFilled || isPartiallyFilled, filledQty, avgPrice);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[Binance] GetOrderStatus 실패: {ex.Message}");
+                Console.WriteLine($"❌ [Binance] GetOrderStatus 예외 - {symbol} OrderId={orderId}");
+                Console.WriteLine($"   예외: {ex.Message}");
+                return (false, 0, 0);
+            }
+        }
+
+        // [시장가 주문] 즉시 체결 + 체결 정보 반환 (지정가 3초 대기 제거)
+        public async Task<(bool Success, decimal FilledQuantity, decimal AveragePrice)> PlaceMarketOrderAsync(
+            string symbol,
+            string side,
+            decimal quantity,
+            CancellationToken ct = default)
+        {
+            try
+            {
+                // 1. 수량 정밀도 보정
+                var exchangeInfo = await _client.UsdFuturesApi.ExchangeData.GetExchangeInfoAsync(ct: ct);
+                if (exchangeInfo.Success)
+                {
+                    var symbolData = exchangeInfo.Data.Symbols.FirstOrDefault(s => s.Name == symbol);
+                    if (symbolData != null)
+                    {
+                        decimal stepSize = symbolData.LotSizeFilter?.StepSize ?? 0.001m;
+                        quantity = Math.Floor(quantity / stepSize) * stepSize;
+                    }
+                }
+
+                if (quantity <= 0)
+                {
+                    Console.WriteLine($"❌ [Binance] 시장가 주문 실패 - 수량 0: {symbol}");
+                    return (false, 0, 0);
+                }
+
+                OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
+
+                // 2. 시장가 주문 실행
+                Console.WriteLine($"📤 [Binance] 시장가 주문 전송 - {symbol} {side} {quantity}");
+                var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                    symbol,
+                    orderSide,
+                    FuturesOrderType.Market,
+                    quantity,
+                    ct: ct);
+
+                if (!result.Success || result.Data == null)
+                {
+                    Console.WriteLine($"❌ [Binance] 시장가 주문 실패 - {symbol} {side} {quantity}");
+                    Console.WriteLine($"   에러: {result.Error?.Message}");
+                    return (false, 0, 0);
+                }
+
+                var orderId = result.Data.Id.ToString();
+                Console.WriteLine($"✅ [Binance] 시장가 주문 접수 - OrderId={orderId}");
+
+                // 3. 짧은 대기 (시장가는 500ms 내 체결)
+                await Task.Delay(500, ct);
+
+                // 4. 체결 확인
+                var statusResult = await _client.UsdFuturesApi.Trading.GetOrderAsync(symbol, result.Data.Id, ct: ct);
+
+                if (!statusResult.Success || statusResult.Data == null)
+                {
+                    Console.WriteLine($"⚠️ [Binance] 체결 확인 실패 (주문은 성공) - OrderId={orderId}");
+                    // 주문은 성공했으므로 포지션 조회로 복구 가능
+                    return (true, quantity, 0);
+                }
+
+                var order = statusResult.Data;
+                bool isFilled = order.Status == OrderStatus.Filled || order.Status == OrderStatus.PartiallyFilled;
+                decimal filledQty = order.QuantityFilled;
+                decimal avgPrice = order.AveragePrice > 0 ? order.AveragePrice : order.Price;
+
+                Console.WriteLine($"✅ [Binance] 시장가 체결 완료 - {symbol} | Filled={filledQty} | AvgPrice={avgPrice:F4}");
+
+                return (isFilled, filledQty, avgPrice);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ [Binance] PlaceMarketOrder 예외 - {symbol} {side} {quantity}");
+                Console.WriteLine($"   예외: {ex.Message}");
                 return (false, 0, 0);
             }
         }

@@ -466,7 +466,7 @@
                                 HorizontalAlignment="Center"
                                 VerticalAlignment="Center"
                                 WindowChrome.IsHitTestVisibleInChrome="True">
-                        <!-- Exchange Selector -->
+                        <!-- Exchange Selector - Hidden (Fixed to Binance) -->
                         <ComboBox x:Name="cmbExchange"
                                   Width="130"
                                   Height="34"
@@ -477,7 +477,9 @@
                                   BorderBrush="{StaticResource PrimaryBrush}"
                                   FontWeight="SemiBold"
                                   WindowChrome.IsHitTestVisibleInChrome="True"
-                                  FontSize="18">
+                                  FontSize="18"
+                                  Visibility="Collapsed"
+                                  IsEnabled="False">
                             <ComboBox.ItemContainerStyle>
                                 <Style TargetType="ComboBoxItem">
                                     <Setter Property="Foreground"
@@ -509,7 +511,6 @@
                                 </Style>
                             </ComboBox.ItemContainerStyle>
                             <ComboBoxItem Content="🟡 Binance"/>
-                            <ComboBoxItem Content="🟣 Bybit"/>
                         </ComboBox>
 
                         <!-- Main Actions -->
@@ -943,6 +944,8 @@
                                              Foreground="#E0E7FF"
                                              FontFamily="Consolas"
                                              FontSize="12"
+                                             VirtualizingStackPanel.IsVirtualizing="True"
+                                             VirtualizingStackPanel.VirtualizationMode="Recycling"
                                              ScrollViewer.VerticalScrollBarVisibility="Auto">
                                         <ListBox.ItemContainerStyle>
                                             <Style TargetType="ListBoxItem">
@@ -974,6 +977,10 @@
                                           ColumnHeaderStyle="{StaticResource ModernColumnHeaderStyle}"
                                           RowHeight="48"
                                           MaxHeight="380"
+                                          EnableRowVirtualization="True"
+                                          EnableColumnVirtualization="True"
+                                          VirtualizingStackPanel.IsVirtualizing="True"
+                                          VirtualizingStackPanel.VirtualizationMode="Recycling"
                                           ScrollViewer.HorizontalScrollBarVisibility="Auto"
                                           SelectedItem="{Binding SelectedSymbol, Mode=TwoWay}"
                                           MouseDoubleClick="dgMultiTimeframe_MouseDoubleClick">
@@ -1227,6 +1234,8 @@
                                                          Foreground="#E0E7FF"
                                                          FontFamily="Consolas"
                                                          FontSize="10"
+                                                         VirtualizingStackPanel.IsVirtualizing="True"
+                                                         VirtualizingStackPanel.VirtualizationMode="Recycling"
                                                          ScrollViewer.VerticalScrollBarVisibility="Auto"/>
                                             </DockPanel>
                                         </Border>
@@ -1245,6 +1254,8 @@
                                                          Foreground="#E0E7FF"
                                                          FontFamily="Consolas"
                                                          FontSize="10"
+                                                         VirtualizingStackPanel.IsVirtualizing="True"
+                                                         VirtualizingStackPanel.VirtualizationMode="Recycling"
                                                          ScrollViewer.VerticalScrollBarVisibility="Auto"/>
                                             </DockPanel>
                                         </Border>

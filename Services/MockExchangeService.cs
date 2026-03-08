@@ -258,6 +258,58 @@ namespace TradingBot.Services
             }
         }
 
+        /// <summary>
+        /// [시장가 주문] 즉시 체결 (Mock: 100% 성공)
+        /// </summary>
+        public Task<(bool Success, decimal FilledQuantity, decimal AveragePrice)> PlaceMarketOrderAsync(
+            string symbol,
+            string side,
+            decimal quantity,
+            CancellationToken ct = default)
+        {
+            lock (_syncLock)
+            {
+                decimal currentPrice = _currentPrices.ContainsKey(symbol) ? _currentPrices[symbol] : 50000m;
+
+                // 시뮬레이션: 0.1% 슬리피지 적용
+                decimal slippage = side.ToUpper() == "BUY" ? 1.001m : 0.999m;
+                decimal avgPrice = currentPrice * slippage;
+
+                _balance += side.ToUpper() == "BUY" ? -(quantity * avgPrice) : (quantity * avgPrice);
+
+                if (_positions.TryGetValue(symbol, out var position))
+                {
+                    if ((side.ToUpper() == "BUY" && position.IsLong) || (side.ToUpper() == "SELL" && !position.IsLong))
+                    {
+                        position.Quantity += quantity;
+                    }
+                    else
+                    {
+                        position.Quantity -= quantity;
+                        if (position.Quantity <= 0)
+                        {
+                            _positions.Remove(symbol);
+                        }
+                    }
+                }
+                else if (side.ToUpper() == "BUY")
+                {
+                    _positions.Add(symbol, new PositionInfo
+                    {
+                        Symbol = symbol,
+                        Quantity = quantity,
+                        EntryPrice = avgPrice,
+                        IsLong = true,
+                        Side = Binance.Net.Enums.OrderSide.Buy,
+                        Leverage = 20
+                    });
+                }
+
+                Console.WriteLine($"✅ [Mock] 시장가 체결 완료 - {symbol} {side} {quantity} @ {avgPrice:F4}");
+                return Task.FromResult((true, quantity, avgPrice));
+            }
+        }
+
         private PositionInfo ClonePosition(PositionInfo pos)
         {
             return new PositionInfo

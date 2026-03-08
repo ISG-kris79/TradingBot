@@ -6,14 +6,11 @@ using Binance.Net.Clients;
 using Binance.Net.Interfaces;
 using Binance.Net.Interfaces.Clients;
 using Binance.Net.Objects.Models.Futures.Socket;
-using Bybit.Net.Clients;
-using Bybit.Net.Objects.Models.V5;
 using CryptoExchange.Net.Authentication;
 using CryptoExchange.Net.Interfaces;
 using System.Collections.Concurrent;
 using TradingBot.Models;
 using BinanceEnums = Binance.Net.Enums;
-using BybitEnums = Bybit.Net.Enums;
 using ExchangeType = TradingBot.Shared.Models.ExchangeType;
 
 namespace TradingBot.Services
@@ -23,8 +20,6 @@ namespace TradingBot.Services
         private bool _disposed = false;
         private readonly IBinanceRestClient _restClient;
         private readonly BinanceSocketClient _socketClient = null!;
-        private readonly BybitSocketClient? _bybitSocketClient;
-        private readonly BybitRestClient? _bybitRestClient;
         private readonly List<string> _majorSymbols;
         private CancellationTokenSource? _cts;
 
@@ -57,25 +52,6 @@ namespace TradingBot.Services
                     options.ReconnectInterval = TimeSpan.FromSeconds(10);
                 });
             }
-            else if (exchange == ExchangeType.Bybit)
-            {
-                _bybitRestClient = new BybitRestClient(options =>
-                {
-                    if (!string.IsNullOrWhiteSpace(AppConfig.BybitApiKey) && !string.IsNullOrWhiteSpace(AppConfig.BybitApiSecret))
-                    {
-                        options.ApiCredentials = new ApiCredentials(AppConfig.BybitApiKey, AppConfig.BybitApiSecret);
-                    }
-                });
-
-                _bybitSocketClient = new BybitSocketClient(options =>
-                {
-                    if (!string.IsNullOrWhiteSpace(AppConfig.BybitApiKey) && !string.IsNullOrWhiteSpace(AppConfig.BybitApiSecret))
-                    {
-                        options.ApiCredentials = new ApiCredentials(AppConfig.BybitApiKey, AppConfig.BybitApiSecret);
-                    }
-                    options.ReconnectInterval = TimeSpan.FromSeconds(10);
-                });
-            }
         }
 
         public async Task StartAsync(CancellationToken token)
@@ -85,19 +61,11 @@ namespace TradingBot.Services
 
             var exchange = (AppConfig.Current?.Trading?.SelectedExchange).GetValueOrDefault(ExchangeType.Binance);
 
-            if (exchange == ExchangeType.Binance)
-            {
-                // Start Binance streams
-                _ = StartUserDataStreamAsync(internalToken);
-                _ = StartAllMarketTickerStreamAsync(internalToken);
-                _ = StartPriceWebSocketAsync(internalToken);
-                _ = StartKlineStreamAsync(internalToken);
-            }
-            else if (exchange == ExchangeType.Bybit)
-            {
-                // Start Bybit streams
-                await StartBybitStreamsAsync(internalToken);
-            }
+            // Start Binance streams
+            _ = StartUserDataStreamAsync(internalToken);
+            _ = StartAllMarketTickerStreamAsync(internalToken);
+            _ = StartPriceWebSocketAsync(internalToken);
+            _ = StartKlineStreamAsync(internalToken);
         }
 
         public async Task PreloadRecentKlinesAsync(int limit, CancellationToken token)
@@ -127,39 +95,12 @@ namespace TradingBot.Services
                 OnLog?.Invoke($"📥 Binance 5분봉 선로딩 완료 (symbol={_majorSymbols.Count}, limit={limit})");
                 return;
             }
-
-            if (exchange == ExchangeType.Bybit && _bybitRestClient != null)
-            {
-                foreach (var symbol in _majorSymbols)
-                {
-                    try
-                    {
-                        var result = await _bybitRestClient.V5Api.ExchangeData.GetKlinesAsync(BybitEnums.Category.Linear, symbol, BybitEnums.KlineInterval.FiveMinutes, limit: limit, ct: token);
-                        if (result.Success && result.Data?.List != null && result.Data.List.Any())
-                        {
-                            var list = result.Data.List
-                                .OrderBy(k => k.StartTime)
-                                .Select(k => (IBinanceKline)new BybitRestKlineAdapter(k, BinanceEnums.KlineInterval.FiveMinutes))
-                                .ToList();
-
-                            KlineCache[symbol] = list;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        OnLog?.Invoke($"⚠️ [{symbol}] Bybit 캔들 선로딩 실패: {ex.Message}");
-                    }
-                }
-
-                OnLog?.Invoke($"📥 Bybit 5분봉 선로딩 완료 (symbol={_majorSymbols.Count}, limit={limit})");
-            }
         }
 
         public void Stop()
         {
             _cts?.Cancel();
             _socketClient?.UnsubscribeAllAsync();
-            _bybitSocketClient?.UnsubscribeAllAsync();
         }
 
         private async Task StartUserDataStreamAsync(CancellationToken token)
@@ -322,146 +263,6 @@ namespace TradingBot.Services
             }
         }
 
-        private async Task StartBybitStreamsAsync(CancellationToken token)
-        {
-            if (_bybitSocketClient == null) return;
-
-            OnLog?.Invoke("🚀 Bybit 실시간 스트림 시작...");
-
-            // 1. Ticker Stream (Linear)
-            // Bybit는 전체 심볼 구독이 제한적일 수 있으므로 주요 심볼 위주로 구독하거나 필요한 심볼만 구독
-            // 여기서는 _majorSymbols를 구독합니다.
-            foreach (var symbol in _majorSymbols)
-            {
-                var subResult = await _bybitSocketClient.V5LinearApi.SubscribeToTickerUpdatesAsync(symbol, data =>
-                {
-                    var t = data.Data;
-
-                    // TickerCache 업데이트
-                    TickerCache.AddOrUpdate(symbol,
-                        k => new TickerCacheItem
-                        {
-                            Symbol = symbol,
-                            LastPrice = t.LastPrice ?? 0,
-                            HighPrice = t.HighPrice24h ?? 0,
-                            OpenPrice = t.LastPrice ?? 0, // v6.x: OpenPrice 속성 없음, LastPrice 사용
-                            QuoteVolume = t.Volume24h ?? 0
-                        },
-                        (k, v) =>
-                        {
-                            v.LastPrice = t.LastPrice ?? v.LastPrice;
-                            v.HighPrice = t.HighPrice24h ?? v.HighPrice;
-                            v.OpenPrice = t.LastPrice ?? v.OpenPrice; // v6.x: OpenPrice 속성 없음
-                            v.QuoteVolume = t.Volume24h ?? v.QuoteVolume;
-                            return v;
-                        });
-
-                    // UI 업데이트용 이벤트 (Binance 타입으로 변환 필요 시 어댑터 사용, 여기서는 생략하거나 별도 처리)
-                    // OnTickerUpdate?.Invoke(...); 
-                }, ct: token);
-
-                if (!subResult.Success)
-                {
-                    OnLog?.Invoke($"❌ Bybit Ticker 구독 실패 ({symbol}): {subResult.Error}");
-                }
-            }
-
-            // 2. Kline Stream (Linear, 5m)
-            foreach (var symbol in _majorSymbols)
-            {
-                var subResult = await _bybitSocketClient.V5LinearApi.SubscribeToKlineUpdatesAsync(symbol, BybitEnums.KlineInterval.FiveMinutes, data =>
-                {
-                    foreach (var k in data.Data)
-                    {
-                        // Bybit Kline -> IBinanceKline Adapter
-                        var kline = new BybitKlineAdapter(k, BinanceEnums.KlineInterval.FiveMinutes);
-                        bool isNewCandle = false;
-
-                        KlineCache.AddOrUpdate(symbol,
-                            key => new List<IBinanceKline> { kline },
-                            (key, list) =>
-                            {
-                                lock (list)
-                                {
-                                    var last = list.LastOrDefault();
-                                    if (last != null && last.OpenTime == kline.OpenTime)
-                                        list[list.Count - 1] = kline; // Update
-                                    else
-                                    {
-                                        list.Add(kline);
-                                        if (list.Count > 120) list.RemoveAt(0);
-                                        isNewCandle = true;
-                                    }
-                                }
-                                return list;
-                            });
-
-                        if (isNewCandle)
-                        {
-                            OnNewKlineAdded?.Invoke(symbol, kline);
-                        }
-                    }
-                }, ct: token);
-
-                if (!subResult.Success)
-                {
-                    OnLog?.Invoke($"❌ Bybit Kline 구독 실패 ({symbol}): {subResult.Error}");
-                }
-            }
-
-            // 3. Private Stream (Optional: Position/Order)
-            // API Key가 있을 때만 시도
-            if (!string.IsNullOrWhiteSpace(AppConfig.BybitApiKey))
-            {
-                // Position Updates
-                var posSub = await _bybitSocketClient.V5PrivateApi.SubscribeToPositionUpdatesAsync(data =>
-                {
-                    foreach (var p in data.Data)
-                    {
-                        // Bybit 수량은 항상 양수, Side로 방향 구분
-                        // Binance PositionAmount는 롱(+), 숏(-)
-                        decimal amount = p.Quantity;
-                        if (p.Side == BybitEnums.PositionSide.Sell) amount = -amount;
-
-                        // Bybit Position 업데이트를 별도로 처리 (Binance 타입 변환 불가)
-                        OnLog?.Invoke($"📊 Bybit Position: {p.Symbol} Amount:{amount:F4} Entry:{p.AveragePrice:F2} PnL:{p.UnrealizedPnl ?? 0:F2}");
-                    }
-                }, ct: token);
-
-                if (!posSub.Success) OnLog?.Invoke($"❌ Bybit Position 구독 실패: {posSub.Error}");
-
-                // Order Updates
-                var orderSub = await _bybitSocketClient.V5PrivateApi.SubscribeToOrderUpdatesAsync(data =>
-                {
-                    foreach (var o in data.Data)
-                    {
-                        // Bybit Order 업데이트를 별도로 처리 (Binance 타입 변환 불가)
-                        OnLog?.Invoke($"📝 Bybit Order: {o.Symbol} {o.Side} {o.OrderType} Status:{o.Status} Filled:{o.QuantityFilled ?? 0:FPRIVATE}/{o.Quantity:F4}");
-                    }
-                }, ct: token);
-
-                if (!orderSub.Success) OnLog?.Invoke($"❌ Bybit Order 구독 실패: {orderSub.Error}");
-
-                OnLog?.Invoke("📡 Bybit Private Stream (Position/Order) 가동");
-            }
-
-            OnLog?.Invoke("📡 Bybit 실시간 시세 스트림 가동 완료");
-        }
-
-        private BinanceEnums.FuturesOrderType ConvertBybitOrderType(BybitEnums.OrderType type)
-        {
-            return type == BybitEnums.OrderType.Limit ? BinanceEnums.FuturesOrderType.Limit : BinanceEnums.FuturesOrderType.Market;
-        }
-
-        private BinanceEnums.OrderStatus ConvertBybitOrderStatus(BybitEnums.OrderStatus status)
-        {
-            if (status == BybitEnums.OrderStatus.Filled) return BinanceEnums.OrderStatus.Filled;
-            if (status == BybitEnums.OrderStatus.PartiallyFilled) return BinanceEnums.OrderStatus.PartiallyFilled;
-            if (status == BybitEnums.OrderStatus.Cancelled) return BinanceEnums.OrderStatus.Canceled;
-            if (status == BybitEnums.OrderStatus.New) return BinanceEnums.OrderStatus.New;
-            return BinanceEnums.OrderStatus.Rejected;
-        }
-
         public void UpdateCandle(string symbol, CandleData candle)
         {
             // 외부에서 수신한 캔들 데이터를 캐시에 업데이트하는 로직
@@ -484,87 +285,6 @@ namespace TradingBot.Services
                 });
         }
 
-        // Bybit Kline을 IBinanceKline으로 변환하는 어댑터
-        private class BybitKlineAdapter : IBinanceKline
-        {
-            private readonly Bybit.Net.Objects.Models.V5.BybitKlineUpdate _kline;
-            private readonly BinanceEnums.KlineInterval _interval;
-
-            public BybitKlineAdapter(Bybit.Net.Objects.Models.V5.BybitKlineUpdate kline, BinanceEnums.KlineInterval interval)
-            {
-                _kline = kline;
-                _interval = interval;
-            }
-
-            public decimal OpenPrice { get => _kline.OpenPrice; set { } }
-            public decimal HighPrice { get => _kline.HighPrice; set { } }
-            public decimal LowPrice { get => _kline.LowPrice; set { } }
-            public decimal ClosePrice { get => _kline.ClosePrice; set { } }
-            public decimal Volume { get => _kline.Volume; set { } }
-            public DateTime OpenTime { get => _kline.StartTime; set { } }
-            public DateTime CloseTime
-            {
-                get
-                {
-                    // Bybit v6.x: EndTime 속성 없음, StartTime + interval로 계산
-                    int seconds = _interval switch
-                    {
-                        BinanceEnums.KlineInterval.OneMinute => 60,
-                        BinanceEnums.KlineInterval.FiveMinutes => 300,
-                        BinanceEnums.KlineInterval.FifteenMinutes => 900,
-                        BinanceEnums.KlineInterval.OneHour => 3600,
-                        _ => 3600
-                    };
-                    return _kline.StartTime.AddSeconds(seconds);
-                }
-                set { }
-            }
-            public decimal QuoteVolume { get => _kline.Volume * _kline.ClosePrice; set { } } // Turnover 대체
-            public int TradeCount { get; set; }
-            public decimal TakerBuyBaseVolume { get; set; }
-            public decimal TakerBuyQuoteVolume { get; set; }
-        }
-
-        // Bybit REST Kline을 IBinanceKline으로 변환하는 어댑터
-        private class BybitRestKlineAdapter : IBinanceKline
-        {
-            private readonly Bybit.Net.Objects.Models.V5.BybitKline _kline;
-            private readonly BinanceEnums.KlineInterval _interval;
-
-            public BybitRestKlineAdapter(Bybit.Net.Objects.Models.V5.BybitKline kline, BinanceEnums.KlineInterval interval)
-            {
-                _kline = kline;
-                _interval = interval;
-            }
-
-            public decimal OpenPrice { get => _kline.OpenPrice; set { } }
-            public decimal HighPrice { get => _kline.HighPrice; set { } }
-            public decimal LowPrice { get => _kline.LowPrice; set { } }
-            public decimal ClosePrice { get => _kline.ClosePrice; set { } }
-            public decimal Volume { get => _kline.Volume; set { } }
-            public DateTime OpenTime { get => _kline.StartTime; set { } }
-            public DateTime CloseTime
-            {
-                get
-                {
-                    int seconds = _interval switch
-                    {
-                        BinanceEnums.KlineInterval.OneMinute => 60,
-                        BinanceEnums.KlineInterval.FiveMinutes => 300,
-                        BinanceEnums.KlineInterval.FifteenMinutes => 900,
-                        BinanceEnums.KlineInterval.OneHour => 3600,
-                        _ => 3600
-                    };
-                    return _kline.StartTime.AddSeconds(seconds);
-                }
-                set { }
-            }
-            public decimal QuoteVolume { get => _kline.Volume * _kline.ClosePrice; set { } }
-            public int TradeCount { get; set; }
-            public decimal TakerBuyBaseVolume { get; set; }
-            public decimal TakerBuyQuoteVolume { get; set; }
-        }
-
         public void Dispose()
         {
             if (_disposed) return;
@@ -576,11 +296,6 @@ namespace TradingBot.Services
                 
                 _socketClient?.UnsubscribeAllAsync().Wait(TimeSpan.FromSeconds(5));
                 _socketClient?.Dispose();
-                
-                _bybitSocketClient?.UnsubscribeAllAsync().Wait(TimeSpan.FromSeconds(5));
-                _bybitSocketClient?.Dispose();
-                
-                _bybitRestClient?.Dispose();
             }
             catch (Exception ex)
             {

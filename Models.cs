@@ -425,6 +425,29 @@ namespace TradingBot.Models
 
     public class MultiTimeframeViewModel : INotifyPropertyChanged
     {
+        // [병목 해결] Brush 정적 캐시 — PropertyChanged("") 에서 매번 new SolidColorBrush 생성 방지
+        private static readonly Brush s_closeStatusBgRed = Freeze(new SolidColorBrush(Color.FromRgb(185, 28, 28)));
+        private static readonly Brush s_closeStatusBgSlate = Freeze(new SolidColorBrush(Color.FromRgb(51, 65, 85)));
+        private static readonly Brush s_syncBgDbFail = s_closeStatusBgRed;
+        private static readonly Brush s_syncBgExternalClose = Freeze(new SolidColorBrush(Color.FromRgb(30, 64, 175)));
+        private static readonly Brush s_syncBgExternalPartial = Freeze(new SolidColorBrush(Color.FromRgb(180, 83, 9)));
+        private static readonly Brush s_syncBgExternalIncrease = Freeze(new SolidColorBrush(Color.FromRgb(22, 101, 52)));
+        private static readonly Brush s_syncBgExternalRestore = Freeze(new SolidColorBrush(Color.FromRgb(109, 40, 217)));
+        private static readonly Brush s_syncBgDefault = s_closeStatusBgSlate;
+        private static readonly Brush s_chartStrokeGreen = Freeze(new SolidColorBrush(Color.FromRgb(0, 230, 118)));
+        private static readonly Brush s_chartStrokeRed = Freeze(new SolidColorBrush(Color.FromRgb(255, 82, 82)));
+        private static readonly Brush s_chartFillGreen = Freeze(new SolidColorBrush(Color.FromArgb(30, 0, 230, 118)));
+        private static readonly Brush s_chartFillRed = Freeze(new SolidColorBrush(Color.FromArgb(30, 255, 82, 82)));
+        private static readonly Brush s_symbolColorGreen = Freeze(new SolidColorBrush(Color.FromRgb(0, 230, 118)));
+        private static readonly Brush s_strategyBgBlue = Freeze(new SolidColorBrush(Color.FromRgb(37, 99, 235)));
+        private static readonly Brush s_strategyBgRed = Freeze(new SolidColorBrush(Color.FromRgb(220, 38, 38)));
+        private static readonly Brush s_decisionBgLong = s_strategyBgBlue;
+        private static readonly Brush s_decisionBgShort = s_strategyBgRed;
+        private static readonly Brush s_decisionBgWait = s_closeStatusBgSlate;
+        private static readonly Brush s_rowBackground = Freeze(new SolidColorBrush(Color.FromRgb(22, 25, 37)));
+
+        private static Brush Freeze(SolidColorBrush b) { b.Freeze(); return b; }
+
         private decimal _entryPrice;
         public decimal EntryPrice
         {
@@ -641,10 +664,10 @@ namespace TradingBot.Models
             : (HasCloseIncomplete && IsPositionActive ? "청산미완료" : "-");
 
         public Brush CloseStatusBackground => HasDbSyncFailure
-            ? new SolidColorBrush(Color.FromRgb(185, 28, 28))
+            ? s_closeStatusBgRed
             : (HasCloseIncomplete && IsPositionActive
-                ? new SolidColorBrush(Color.FromRgb(185, 28, 28))
-                : new SolidColorBrush(Color.FromRgb(51, 65, 85)));
+                ? s_closeStatusBgRed
+                : s_closeStatusBgSlate);
 
         public Brush CloseStatusForeground => (HasDbSyncFailure || (HasCloseIncomplete && IsPositionActive))
             ? Brushes.White
@@ -692,12 +715,12 @@ namespace TradingBot.Models
             {
                 return ExternalSyncStatus switch
                 {
-                    "DB실패" => new SolidColorBrush(Color.FromRgb(185, 28, 28)),
-                    "외부청산" => new SolidColorBrush(Color.FromRgb(30, 64, 175)),
-                    "외부부분" => new SolidColorBrush(Color.FromRgb(180, 83, 9)),
-                    "외부증가" => new SolidColorBrush(Color.FromRgb(22, 101, 52)),
-                    "외부복원" => new SolidColorBrush(Color.FromRgb(109, 40, 217)),
-                    _ => new SolidColorBrush(Color.FromRgb(51, 65, 85))
+                    "DB실패" => s_syncBgDbFail,
+                    "외부청산" => s_syncBgExternalClose,
+                    "외부부분" => s_syncBgExternalPartial,
+                    "외부증가" => s_syncBgExternalIncrease,
+                    "외부복원" => s_syncBgExternalRestore,
+                    _ => s_syncBgDefault
                 };
             }
         }
@@ -724,18 +747,14 @@ namespace TradingBot.Models
         public Brush TransformerChangeColor => TransformerChange > 0 ? Brushes.LimeGreen : (TransformerChange < 0 ? Brushes.Tomato : Brushes.Gray);
 
         // 5. 차트 색상 (ProfitPercent 기준)
-        public Brush ChartStroke => ProfitPercent >= 0
-            ? new SolidColorBrush(Color.FromRgb(0, 230, 118)) // Green
-            : new SolidColorBrush(Color.FromRgb(255, 82, 82)); // Red
+        public Brush ChartStroke => ProfitPercent >= 0 ? s_chartStrokeGreen : s_chartStrokeRed;
 
-        public Brush ChartFill => ProfitPercent >= 0
-            ? new SolidColorBrush(Color.FromArgb(30, 0, 230, 118))
-            : new SolidColorBrush(Color.FromArgb(30, 255, 82, 82));
+        public Brush ChartFill => ProfitPercent >= 0 ? s_chartFillGreen : s_chartFillRed;
 
         // 6. 상태 아이콘 (ProfitPercent 기준)
 
         // 포지션 보유 중이면 심볼 색상을 다르게 표시 (예: 금색)
-        public Brush SymbolColor => IsInPosition ? Brushes.Gold : new SolidColorBrush(Color.FromRgb(0, 230, 118)); // 형광 초록
+        public Brush SymbolColor => IsInPosition ? Brushes.Gold : s_symbolColorGreen; // 형광 초록
         public string? Symbol { get; set; }
         private decimal _lastPrice;
         public decimal LastPrice
@@ -746,12 +765,16 @@ namespace TradingBot.Models
                 if (_lastPrice != value)
                 {
                     _lastPrice = value;
+                    if (_updateSuspendCount > 0) { _hasPendingRefresh = true; return; }
                     OnPropertyChanged(nameof(LastPrice));
-                    // 가격이 변하면 수익률과 관련 UI 요소들도 함께 갱신되어야 함
-                    OnPropertyChanged(nameof(ProfitRate));
-                    OnPropertyChanged(nameof(ProfitColor));
-                    OnPropertyChanged(nameof(Status)); // 상태 아이콘(Danger 등) 갱신
-                    OnPropertyChanged(nameof(PriceColor)); // [추가] 가격 색상 갱신
+                    // [병목 해결] 포지션 활성 시에만 파생 속성 갱신 (비활성 시 불필요)
+                    if (IsPositionActive)
+                    {
+                        OnPropertyChanged(nameof(ProfitRate));
+                        OnPropertyChanged(nameof(ProfitColor));
+                        OnPropertyChanged(nameof(Status));
+                        OnPropertyChanged(nameof(PriceColor));
+                    }
                 }
             }
         }
@@ -829,8 +852,8 @@ namespace TradingBot.Models
         {
             get
             {
-                if (StrategyName == "Major Scalp") return new SolidColorBrush(Color.FromRgb(37, 99, 235)); // 진한 파랑
-                if (StrategyName == "Pump Breakout") return new SolidColorBrush(Color.FromRgb(220, 38, 38)); // 진한 빨강
+                if (StrategyName == "Major Scalp") return s_strategyBgBlue; // 진한 파랑
+                if (StrategyName == "Pump Breakout") return s_strategyBgRed; // 진한 빨강
                 return Brushes.Gray;
             }
         }
@@ -914,23 +937,45 @@ namespace TradingBot.Models
                 if (string.IsNullOrEmpty(Decision)) return Brushes.Transparent;
 
                 if (Decision.Contains("LONG"))
-                    return new SolidColorBrush(Color.FromRgb(37, 99, 235)); // 진한 블루 (Royal Blue)
+                    return s_decisionBgLong; // 진한 블루 (Royal Blue)
 
                 if (Decision.Contains("SHORT"))
-                    return new SolidColorBrush(Color.FromRgb(220, 38, 38)); // 진한 레드 (Crimson Red)
+                    return s_decisionBgShort; // 진한 레드 (Crimson Red)
 
-                return new SolidColorBrush(Color.FromRgb(51, 65, 85)); // WAIT 상태 (슬레이트 그레이)
+                return s_decisionBgWait; // WAIT 상태 (슬레이트 그레이)
             }
         }
 
         // Display용 Decision (포지션 활성화 시 "진행중" 표시)
         public string DisplayDecision => IsPositionActive ? "진행중" : (Decision ?? "-");
 
+        // [병목 해결] 배치 업데이트 지원 - BeginUpdate() / EndUpdate() 사이에서는 PropertyChanged 억제
+        private int _updateSuspendCount;
+        private bool _hasPendingRefresh;
+
+        /// <summary>배치 업데이트 시작. PropertyChanged 이벤트가 억제됩니다.</summary>
+        public void BeginUpdate() { _updateSuspendCount++; }
+
+        /// <summary>배치 업데이트 종료. 보류 중인 변경이 있으면 한 번에 전체 Refresh를 발생시킵니다.</summary>
+        public void EndUpdate()
+        {
+            if (_updateSuspendCount > 0) _updateSuspendCount--;
+            if (_updateSuspendCount == 0 && _hasPendingRefresh)
+            {
+                _hasPendingRefresh = false;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(string.Empty)); // 전체 Refresh
+            }
+        }
+
         public event PropertyChangedEventHandler? PropertyChanged;
-        protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        protected void OnPropertyChanged(string name)
+        {
+            if (_updateSuspendCount > 0) { _hasPendingRefresh = true; return; }
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
 
         // 전체 행의 기본 배경색 (매우 어두운 네이비/블랙)
-        public Brush RowBackground => new SolidColorBrush(Color.FromRgb(22, 25, 37));
+        public Brush RowBackground => s_rowBackground;
         private decimal _targetPrice;
         public decimal TargetPrice
         {

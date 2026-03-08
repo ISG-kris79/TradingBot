@@ -1,8 +1,10 @@
 ﻿using System.ComponentModel;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Windows.Data;
 using System.IO;
 using System.Runtime.InteropServices; // 추가 필요
+using System.Diagnostics;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -104,12 +106,8 @@ namespace TradingBot
         private SymbolChartWindow? _symbolChartWindow;
         private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
 
-        // [병목 해결] 배치 UI 업데이트 메커니즘
-        private const int MaxSignalUpdatesPerBatch = 120;
-        private readonly Dictionary<string, MultiTimeframeViewModel> _latestSignalUpdates = new(StringComparer.OrdinalIgnoreCase);
-        private readonly Queue<MultiTimeframeViewModel> _fallbackSignalQueue = new Queue<MultiTimeframeViewModel>();
+        // [LEGACY] 배치 UI 업데이트 타이머 (신호/티커 처리는 ViewModel에서 담당, 이 타이머는 NO-OP)
         private readonly DispatcherTimer _uiBatchTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
-        private readonly object _uiQueueLock = new object();
 
         // [Phase 14] 고급 기능 서비스
         private ArbitrageExecutionService? _arbitrageService;
@@ -218,10 +216,12 @@ namespace TradingBot
             this.Closing += MainWindow_Closing;
 
             // [Phase 14] Loaded 이벤트에서 고급 기능 서비스 초기화
+            // [병목 해결] 독립 작업을 병렬 실행 (순차→병렬) — 초기 로딩 지연 감소
             this.Loaded += async (s, e) =>
             {
-                await App.EnsureUpdateCheckAsync();
-                await InitializeGeneralSettingsAsync();
+                var updateTask = App.EnsureUpdateCheckAsync();
+                var settingsTask = InitializeGeneralSettingsAsync();
+                await Task.WhenAll(updateTask, settingsTask);
                 await InitializeAdvancedFeaturesAsync();
             };
         }
@@ -451,129 +451,26 @@ namespace TradingBot
             }
         }
 
+        /// <summary>
+        /// [큐 분리] WebSocket 티커 신호를 ViewModel 큐에 전달 (UI 스레드 직접 접근 X)
+        /// </summary>
         public void RefreshSignalUI(MultiTimeframeViewModel signal)
         {
-            if (signal == null)
+            if (signal == null || ViewModel == null)
                 return;
 
-            lock (_uiQueueLock)
-            {
-                if (string.IsNullOrWhiteSpace(signal.Symbol))
-                {
-                    _fallbackSignalQueue.Enqueue(signal);
-                }
-                else
-                {
-                    _latestSignalUpdates[signal.Symbol] = signal;
-                }
-            }
+            // 가격 전용 티커 업데이트는 ViewModel의 ConcurrentDictionary 큐로 직접 라우팅
+            ViewModel.EnqueueTickerUpdate(signal.Symbol ?? "", signal.LastPrice, null);
         }
 
         /// <summary>
-        /// [병목 해결] 배치 큐의 모든 신호를 한번에 처리 (100ms 주기)
+        /// [DISABLED] ProcessUIBatchQueue는 ViewModel의 FlushPendingSignalUpdatesToUi/FlushPendingTickerUpdatesToUi로 대체됨.
+        /// 타이머 유지하되 처리 내용 없음 (NO-OP).
         /// </summary>
         private void ProcessUIBatchQueue()
         {
-            if (!CheckAccess())
-            {
-                _ = Dispatcher.BeginInvoke(new Action(ProcessUIBatchQueue), DispatcherPriority.Background);
-                return;
-            }
-
-            List<MultiTimeframeViewModel> signals = new();
-            lock (_uiQueueLock)
-            {
-                foreach (var key in _latestSignalUpdates.Keys.Take(MaxSignalUpdatesPerBatch).ToList())
-                {
-                    if (_latestSignalUpdates.TryGetValue(key, out var signal))
-                    {
-                        signals.Add(signal);
-                    }
-                    _latestSignalUpdates.Remove(key);
-                }
-
-                while (_fallbackSignalQueue.Count > 0 && signals.Count < MaxSignalUpdatesPerBatch)
-                {
-                    signals.Add(_fallbackSignalQueue.Dequeue());
-                }
-            }
-
-            if (signals.Count == 0) return;
-
-            foreach (var signal in signals)
-            {
-                ProcessSignalUpdate(signal);
-            }
-        }
-
-        /// <summary>
-        /// 단일 신호 처리 (UI 스레드에서만 호출)
-        /// </summary>
-        private void ProcessSignalUpdate(MultiTimeframeViewModel signal)
-        {
-            var existingItem = ViewModel.MarketDataList.FirstOrDefault(x => x.Symbol == signal.Symbol);
-
-            if (existingItem != null)
-            {
-                // 1. 가격 변동 방향 확인
-                bool isPriceUp = signal.LastPrice > existingItem.LastPrice;
-                bool isPriceDown = signal.LastPrice < existingItem.LastPrice;
-
-                // 2. 데이터 업데이트 (값이 유효할 때만 업데이트)
-                existingItem.LastPrice = signal.LastPrice;
-
-                // RSI, AIScore 등은 0이 아닐 때만 업데이트 (WebSocket 티커는 가격만 전송)
-                if (signal.RSI_1H != 0)
-                    existingItem.RSI_1H = signal.RSI_1H;
-                if (signal.AIScore != 0)
-                {
-                    existingItem.AIScore = signal.AIScore;
-                    existingItem.TouchAIScoreUpdatedAt();
-                }
-                if (!string.IsNullOrEmpty(signal.Decision))
-                    existingItem.Decision = signal.Decision;
-                if (!string.IsNullOrEmpty(signal.BBPosition))
-                    existingItem.BBPosition = signal.BBPosition;
-                if (!string.IsNullOrEmpty(signal.StrategyName))
-                    existingItem.StrategyName = signal.StrategyName;
-                if (!string.IsNullOrEmpty(signal.SignalSource))
-                    existingItem.SignalSource = signal.SignalSource;
-                if (!string.IsNullOrEmpty(signal.VolumeRatio))
-                    existingItem.VolumeRatio = signal.VolumeRatio;
-
-                if (signal.ShortLongScore != 0)
-                    existingItem.ShortLongScore = signal.ShortLongScore;
-                if (signal.ShortShortScore != 0)
-                    existingItem.ShortShortScore = signal.ShortShortScore;
-                if (signal.MacdHist != 0)
-                    existingItem.MacdHist = signal.MacdHist;
-                if (signal.VolumeRatioValue != 0)
-                    existingItem.VolumeRatioValue = signal.VolumeRatioValue;
-                if (!string.IsNullOrEmpty(signal.ElliottTrend))
-                    existingItem.ElliottTrend = signal.ElliottTrend;
-                if (!string.IsNullOrEmpty(signal.MAState))
-                    existingItem.MAState = signal.MAState;
-                if (!string.IsNullOrEmpty(signal.FibPosition))
-                    existingItem.FibPosition = signal.FibPosition;
-
-                if (signal.TransformerPrice != 0)
-                    existingItem.TransformerPrice = signal.TransformerPrice;
-                if (signal.TransformerChange != 0)
-                    existingItem.TransformerChange = signal.TransformerChange;
-
-                // 3. 애니메이션 실행 (DataGrid의 특정 셀 찾기)
-                if (isPriceUp || isPriceDown)
-                {
-                    TriggerPriceAnimation(signal.Symbol ?? "", isPriceUp);
-                }
-            }
-            else
-            {
-                if (signal.AIScore != 0)
-                    signal.TouchAIScoreUpdatedAt();
-
-                ViewModel.MarketDataList.Add(signal);
-            }
+            // ViewModel의 큐에서 일괄 처리하므로, 이 경로는 더 이상 사용하지 않음.
+            // 애니메이션도 DataGrid 멈춤의 원인이었으므로 제거.
         }
 
         public void RefreshTradeGrid()
@@ -602,76 +499,32 @@ namespace TradingBot
                 _ = Dispatcher.BeginInvoke(new Action(Refresh), DispatcherPriority.Background);
             }
         }
-        private void TriggerPriceAnimation(string symbol, bool isUp)
-        {
-            // [병목 해결] 애니메이션을 백그라운드에서 비동기로 처리 (UI 스레드 블로킹 최소화)
-            _ = Dispatcher.BeginInvoke(new Action(() =>
-            {
-                try
-                {
-                    // DataGrid에서 해당 심볼의 행과 가격 컬럼(보통 index 1)을 찾아 애니메이션 적용
-                    var item = ViewModel.MarketDataList.FirstOrDefault(x => x.Symbol == symbol);
-                    if (item == null) return;
-
-                    var row = dgMultiTimeframe.ItemContainerGenerator.ContainerFromItem(item) as DataGridRow;
-                    if (row != null && dgMultiTimeframe.Columns.Count > 1)
-                    {
-                        // 가격 컬럼(Index 1)의 시각적 요소 가져오기
-                        var cell = dgMultiTimeframe.Columns[1].GetCellContent(row) as TextBlock;
-                        if (cell != null)
-                        {
-                            // 리소스에서 스토리보드 찾아서 실행
-                            try
-                            {
-                                var sb = (Storyboard)this.Resources[isUp ? "FlashGreen" : "FlashRed"];
-                                if (sb != null)
-                                    sb.Begin(cell, true); // isControllable=true로 중복 애니메이션 방지
-                            }
-                            catch { /* 리소스 미존재 시 무시 */ }
-                        }
-                    }
-                }
-                catch { /* 애니메이션 실패해도 무시 (필수 기능 아님) */ }
-            }), DispatcherPriority.Background);
-        }
 
         // 1. 단순 활동 기록 (스캔 중..., 대기 중...)
+        // [큐 분리] ViewModel의 버퍼 큐로 라우팅 (Dispatcher.BeginInvoke 제거)
         public void AddLiveLog(string msg)
         {
-            if (!CheckAccess())
-            {
-                _ = Dispatcher.BeginInvoke(new Action(() => AddLiveLog(msg)), DispatcherPriority.Background);
-                return;
-            }
-            ViewModel.LiveLogs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] {msg}");
-            if (ViewModel.LiveLogs.Count > 50) ViewModel.LiveLogs.RemoveAt(50);
+            ViewModel?.EnqueueLiveLog(msg);
         }
 
         // 2. 중요 매매 알림 (매수 완료!, 손절!, 급등 포착!)
+        // [큐 분리] ViewModel의 Alert 큐로 라우팅 (Dispatcher.BeginInvoke 제거)
         public void AddAlert(string msg)
         {
-            if (!CheckAccess())
-            {
-                _ = Dispatcher.BeginInvoke(new Action(() => AddAlert(msg)), DispatcherPriority.Background);
-                return;
-            }
-            ViewModel.Alerts.Insert(0, $"▶ {DateTime.Now:HH:mm:ss} | {msg}");
-            if (ViewModel.Alerts.Count > 100) ViewModel.Alerts.RemoveAt(100);
+            ViewModel?.EnqueueAlert(msg);
         }
 
         // 하단 상태바 메시지 업데이트
+        // [큐 분리] ViewModel의 Footer 큐로 라우팅 (Dispatcher.BeginInvoke 제거)
         public void AddLog(string msg)
         {
-            if (!CheckAccess()) // UI 쓰레드 체크
-            {
-                _ = Dispatcher.BeginInvoke(new Action(() => AddLog(msg)), DispatcherPriority.Background);
-                return;
-            }
-            if (ViewModel != null)
-            {
-                ViewModel.FooterText = $"[{DateTime.Now:HH:mm:ss}] {msg}";
-            }
+            ViewModel?.EnqueueFooterLog(msg);
         }
+
+        // [병목 해결] 스캔 진행색 정적 캐시 (ColorConverter.ConvertFromString 반복 호출 방지)
+        private static readonly SolidColorBrush s_scanCompleteColor = FreezeB(new SolidColorBrush(Color.FromRgb(0x21, 0x96, 0xF3)));
+        private static readonly SolidColorBrush s_scanProgressColor = FreezeB(new SolidColorBrush(Color.FromRgb(0x00, 0xE6, 0x76)));
+        private static SolidColorBrush FreezeB(SolidColorBrush b) { b.Freeze(); return b; }
 
         // 스캔 진행률 업데이트 (ProgressBar 및 텍스트)
         public void UpdateProgress(int current, int total)
@@ -690,14 +543,14 @@ namespace TradingBot
                 if (current >= total)
                 {
                     // 스캔 완료 시 파란색으로 변경 (대기 상태)
-                    ViewModel.ScanProgressColor = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#2196F3"));
+                    ViewModel.ScanProgressColor = s_scanCompleteColor;
                     ViewModel.FooterText = $"모든 종목 스캔 완료. 다음 주기 대기 중...";
                     AddLog("전체 스캔 완료. 다음 주기 대기 중...");
                 }
                 else
                 {
                     // 스캔 중에는 다시 초록색으로 유지
-                    ViewModel.ScanProgressColor = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#00E676"));
+                    ViewModel.ScanProgressColor = s_scanProgressColor;
                     ViewModel.FooterText = $"스캔 진행 중: {current}/{total} ({percentage:F0}%)";
                     AddLog($"스캔 진행 중: {current}/{total} ({percentage:F0}%)");
                 }
@@ -1167,12 +1020,6 @@ namespace TradingBot
                 };
 
                 AddLog("[Advanced Features] ✅ 리밸런싱 서비스 준비 완료");
-
-                // 거래소 서비스 연결 (TradingEngine에서 사용 가능할 때)
-                // TODO: TradingEngine의 거래소 서비스들을 여기에 연결
-                // _arbitrageService.AddExchange(ExchangeType.Binance, binanceService);
-                // _arbitrageService.AddExchange(ExchangeType.Bybit, bybitService);
-                // 동일하게 _fundTransferService, _rebalancingService도 설정
 
                 AddLog("[Advanced Features] ✅ 모든 고급 기능 서비스 초기화 완료");
             }

@@ -257,13 +257,6 @@ namespace TradingBot
             switch (selectedExchange)
             {
                 case ExchangeType.Binance:
-                    apiKey = AppConfig.BinanceApiKey;
-                    apiSecret = AppConfig.BinanceApiSecret;
-                    break;
-                case ExchangeType.Bybit:
-                    apiKey = AppConfig.BybitApiKey;
-                    apiSecret = AppConfig.BybitApiSecret;
-                    break;
                 default:
                     apiKey = AppConfig.BinanceApiKey;
                     apiSecret = AppConfig.BinanceApiSecret;
@@ -295,19 +288,9 @@ namespace TradingBot
             }
             else
             {
-                // 이미 위에서 선언한 selectedExchange 변수 재사용
-                switch (selectedExchange)
-                {
-                    case ExchangeType.Bybit:
-                        _exchangeService = new BybitExchangeService(AppConfig.BybitApiKey, AppConfig.BybitApiSecret);
-                        OnStatusLog?.Invoke("🔗 바이비트 거래소 연결 완료");
-                        break;
-                    case ExchangeType.Binance:
-                    default:
-                        _exchangeService = new BinanceExchangeService(AppConfig.BinanceApiKey, AppConfig.BinanceApiSecret);
-                        OnStatusLog?.Invoke("🔗 바이낸스 거래소 연결");
-                        break;
-                }
+                // 바이낸스 거래소로 고정
+                _exchangeService = new BinanceExchangeService(AppConfig.BinanceApiKey, AppConfig.BinanceApiSecret);
+                OnStatusLog?.Invoke("🔗 바이낸스 거래소 연결");
             }
 
             _orderService = new BinanceOrderService(_client);
@@ -2815,35 +2798,17 @@ namespace TradingBot
                     return false;
                 }
 
-                PumpTradeLog("ORDER", "SUBMIT", $"type=LIMIT qty={quantity} price={limitPrice:F4} margin={marginUsdt:F2} leverage={leverage}");
+                PumpTradeLog("ORDER", "SUBMIT", $"type=MARKET qty={quantity} margin={marginUsdt:F2} leverage={leverage}");
 
-                // 5. 지정가 매수 주문 실행 (IExchangeService 사용)
-                var (success, orderId) = await _exchangeService.PlaceLimitOrderAsync(
+                // 5. 시장가 매수 주문 실행 (즉시 체결)
+                var (success, filledQty, avgPrice) = await _exchangeService.PlaceMarketOrderAsync(
                     symbol,
                     "BUY",
                     quantity,
-                    limitPrice,
                     token);
 
-                if (success && !string.IsNullOrEmpty(orderId))
+                if (success && filledQty > 0)
                 {
-                    PumpTradeLog("ORDER", "PENDING", $"orderId={orderId} waitSec=3 price={limitPrice:F4}");
-
-                    // 6. 3초 대기 (최적화: 5초 → 3초)
-                    await Task.Delay(3000, token);
-
-                    // 7. 주문 상태 확인 (IExchangeService 사용)
-                    var (filled, filledQty, avgPrice) = await _exchangeService.GetOrderStatusAsync(symbol, orderId, token);
-
-                    if (filled && filledQty > 0)
-                    {
-                        // 부분 체결 감지 (filledQty < quantity)
-                        if (filledQty < quantity)
-                        {
-                            // 잔량 취소 (IExchangeService 사용)
-                            await _exchangeService.CancelOrderAsync(symbol, orderId, token);
-                            PumpTradeLog("ORDER", "PARTIAL", $"orderId={orderId} filled={filledQty}/{quantity}");
-                        }
 
                         lock (_posLock)
                         {
@@ -2874,12 +2839,12 @@ namespace TradingBot
                             };
                         }
 
-                        decimal actualEntryPrice = avgPrice > 0 ? avgPrice : limitPrice;
+                        decimal actualEntryPrice = avgPrice > 0 ? avgPrice : currentPrice;
                         DateTime pumpEntryTime = DateTime.Now;
 
-                        OnTradeExecuted?.Invoke(symbol, "BUY", avgPrice > 0 ? avgPrice : limitPrice, filledQty);
+                        OnTradeExecuted?.Invoke(symbol, "BUY", actualEntryPrice, filledQty);
 
-                        PumpTradeLog("ORDER", "FILLED", $"orderId={orderId} qty={filledQty} entry={((avgPrice > 0 ? avgPrice : limitPrice)):F4}");
+                        PumpTradeLog("ORDER", "FILLED", $"qty={filledQty} entry={actualEntryPrice:F4}");
 
                         OnAlert?.Invoke($"🚀 {symbol} PUMP 진입 성공 (20x) | 수량: {filledQty} | SL:{stopLossPrice:F8} TP1:{fib1000Target:F8} TP2:{fib1618Target:F8}");
 
@@ -2913,18 +2878,10 @@ namespace TradingBot
                         TryStartFastEntrySlippageMonitor(symbol, actualEntryPrice, true, token, "PUMP");
 
                         return true;
-                    }
-                    else
-                    {
-                        // 미체결 시 취소 (IExchangeService 사용)
-                        await _exchangeService.CancelOrderAsync(symbol, orderId, token);
-                        PumpTradeLog("ORDER", "CANCEL", $"orderId={orderId} reason=notFilled");
-                        return false;
-                    }
                 }
                 else
                 {
-                    PumpTradeLog("ORDER", "FAIL", "submitFailed=true");
+                    PumpTradeLog("ORDER", "FAIL", $"success={success} filledQty={filledQty}");
                     return false;
                 }
             }
@@ -4225,75 +4182,25 @@ namespace TradingBot
                     return;
                 }
 
-                // [긴급 방어 2] 슬리피지 검증 (호가창 확인)
-                var orderBook = await _exchangeService.GetOrderBookAsync(symbol, token);
-                if (orderBook.HasValue)
-                {
-                    decimal bestBid = orderBook.Value.bestBid;
-                    decimal bestAsk = orderBook.Value.bestAsk;
-
-                    // LONG 진입 시: bestAsk가 현재가보다 0.05% 이상 비싸면 진입 포기
-                    if (decision == "LONG" && bestAsk > currentPrice * 1.0005m)
-                    {
-                        OnStatusLog?.Invoke($"❌ {symbol} 슬리피지 과다 (BestAsk={bestAsk:F4} > Target={currentPrice * 1.0005m:F4}, +{((bestAsk - currentPrice) / currentPrice * 100):F3}%) → 진입 취소");
-                        lock (_posLock) { _activePositions.Remove(symbol); }
-                        return;
-                    }
-
-                    // SHORT 진입 시: bestBid가 현재가보다 0.05% 이상 낮으면 진입 포기
-                    if (decision == "SHORT" && bestBid < currentPrice * 0.9995m)
-                    {
-                        OnStatusLog?.Invoke($"❌ {symbol} 슬리피지 과다 (BestBid={bestBid:F4} < Target={currentPrice * 0.9995m:F4}, {((bestBid - currentPrice) / currentPrice * 100):F3}%) → 진입 취소");
-                        lock (_posLock) { _activePositions.Remove(symbol); }
-                        return;
-                    }
-
-                    OnStatusLog?.Invoke($"✅ {symbol} 슬리피지 검증 통과 | BestBid={bestBid:F4} / Ask={bestAsk:F4} / Mid={(bestBid + bestAsk) / 2:F4}");
-                }
-
-                // 7. 주문 실행 (지정가 주문으로 변경하여 슬리피지 방어)
+                // 7. 주문 실행 (시장가 주문으로 즉시 체결 - 슬리피지 검증 불필요)
                 var side = (decision == "LONG") ? "BUY" : "SELL";
-                
-                // [긴급 방어 3] 시장가 대신 '최우선 호가' 지정가 사용
-                decimal limitPrice = currentPrice;
-                if (orderBook.HasValue)
-                {
-                    // LONG: 현재 최우선 매도호가(bestAsk)에 지정가 주문
-                    // SHORT: 현재 최우선 매수호가(bestBid)에 지정가 주문
-                    limitPrice = (decision == "LONG") ? orderBook.Value.bestAsk : orderBook.Value.bestBid;
-                }
 
-                EntryLog("ORDER", "SUBMIT", $"type=LIMIT orderSide={side} qty={quantity} price={limitPrice:F4}");
+                EntryLog("ORDER", "SUBMIT", $"type=MARKET orderSide={side} qty={quantity}");
                 
-                var (success, orderId) = await _exchangeService.PlaceLimitOrderAsync(
+                var (success, filledQty, avgPrice) = await _exchangeService.PlaceMarketOrderAsync(
                     symbol,
                     side,
                     quantity,
-                    limitPrice,
                     token);
 
-                if (success && !string.IsNullOrWhiteSpace(orderId))
+                if (!success || filledQty <= 0)
                 {
-                    EntryLog("ORDER", "PENDING", $"orderId={orderId} waitSec=3");
-                    await Task.Delay(3000, token);
+                    CleanupReservedPosition("시장가 주문 실패");
+                    EntryLog("ORDER", "FAILED", $"reason=marketOrderFailed");
+                    return;
+                }
 
-                    var (filled, filledQty, avgPrice) = await _exchangeService.GetOrderStatusAsync(symbol, orderId, token);
-
-                    if (!filled || filledQty <= 0)
-                    {
-                        await _exchangeService.CancelOrderAsync(symbol, orderId, token);
-                        CleanupReservedPosition("자동매매 지정가 미체결 취소");
-                        EntryLog("ORDER", "CANCEL", $"orderId={orderId} reason=notFilled");
-                        return;
-                    }
-
-                    if (filledQty < quantity)
-                    {
-                        await _exchangeService.CancelOrderAsync(symbol, orderId, token);
-                        EntryLog("ORDER", "PARTIAL", $"orderId={orderId} filled={filledQty}/{quantity}");
-                    }
-
-                    var actualEntryPrice = avgPrice > 0 ? avgPrice : limitPrice;
+                var actualEntryPrice = avgPrice > 0 ? avgPrice : currentPrice;
 
                     if (isMajorAtrEnforcedSignal)
                     {
@@ -4333,7 +4240,7 @@ namespace TradingBot
                         EntryLog("POSITION", "WARN", "postFillReservedPositionMissing=true");
                     }
 
-                    EntryLog("ORDER", "FILLED", $"orderId={orderId} entryPrice={actualEntryPrice:F4} qty={filledQty}");
+                    EntryLog("ORDER", "FILLED", $"entryPrice={actualEntryPrice:F4} qty={filledQty}");
 
                     OnTradeExecuted?.Invoke(symbol, decision, actualEntryPrice, filledQty);
                     OnAlert?.Invoke($"🤖 자동 매매 진입: {symbol} [{decision}] | 증거금: {marginUsdt}U");
@@ -4387,13 +4294,6 @@ namespace TradingBot
                     // 🔥 [핵심] 감시 루프 시작
                     TryStartStandardMonitor(symbol, actualEntryPrice, decision == "LONG", mode, customTakeProfitPrice, customStopLossPrice, token, "new-entry");
                     TryStartFastEntrySlippageMonitor(symbol, actualEntryPrice, decision == "LONG", token, signalSource);
-
-                }
-                else
-                {
-                    EntryLog("ORDER", "FAIL", "submitFailed=true");
-                    CleanupReservedPosition("주문 실패");
-                }
             }
             catch (Exception ex)
             {

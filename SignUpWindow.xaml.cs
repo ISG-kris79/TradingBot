@@ -175,10 +175,7 @@ namespace TradingBot
                 BinanceApiKey = SecurityService.EncryptString(txtApiKey.Password),
                 BinanceApiSecret = SecurityService.EncryptString(txtSecretKey.Password),
                 TelegramBotToken = SecurityService.EncryptString(txtBotToken.Text),
-                TelegramChatId = SecurityService.EncryptString(txtChatId.Text),
-
-                BybitApiKey = SecurityService.EncryptString(txtBybitKey.Password),
-                BybitApiSecret = SecurityService.EncryptString(txtBybitSecret.Password)
+                TelegramChatId = SecurityService.EncryptString(txtChatId.Text)
             };
 
             btnRegister.IsEnabled = false;

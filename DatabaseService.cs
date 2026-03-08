@@ -392,8 +392,8 @@ namespace TradingBot.Services
                 // 회원가입 시 미승인 상태(IsApproved = 0)로 저장
                 // 단, 첫 번째 사용자는 자동 승인 및 관리자 권한 부여
                 string sql = @"
-                    INSERT INTO Users (Username, Email, PasswordHash, BinanceApiKey, BinanceApiSecret, TelegramBotToken, TelegramChatId, BybitApiKey, BybitApiSecret, IsApproved, IsAdmin, ApprovedBy, ApprovedAt)
-                    VALUES (@Username, @Email, @PasswordHash, @BinanceApiKey, @BinanceApiSecret, @TelegramBotToken, @TelegramChatId, @BybitApiKey, @BybitApiSecret, @IsApproved, @IsAdmin, @ApprovedBy, @ApprovedAt)";
+                    INSERT INTO Users (Username, Email, PasswordHash, BinanceApiKey, BinanceApiSecret, TelegramBotToken, TelegramChatId, IsApproved, IsAdmin, ApprovedBy, ApprovedAt)
+                    VALUES (@Username, @Email, @PasswordHash, @BinanceApiKey, @BinanceApiSecret, @TelegramBotToken, @TelegramChatId, @IsApproved, @IsAdmin, @ApprovedBy, @ApprovedAt)";
 
                 var parameters = new
                 {
@@ -404,8 +404,6 @@ namespace TradingBot.Services
                     user.BinanceApiSecret,
                     user.TelegramBotToken,
                     user.TelegramChatId,
-                    user.BybitApiKey,
-                    user.BybitApiSecret,
                     IsApproved = isFirstUser ? 1 : 0, // 첫 사용자는 자동 승인
                     IsAdmin = isFirstUser ? 1 : 0,     // 첫 사용자는 관리자 권한
                     ApprovedBy = isFirstUser ? "SYSTEM" : (string?)null,

@@ -209,84 +209,14 @@
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <!-- 거래소 선택 -->
-                                    <TextBlock Text="거래소 선택:"
+                                    <!-- 기본 마진 -->
+                                    <TextBlock Text="기본 마진 (USDT):"
                                                VerticalAlignment="Center"
                                                Grid.Row="0"
                                                Foreground="#94A3B8"
                                                Margin="0,0,0,15"/>
-                                    <ComboBox x:Name="cboExchange"
-                                              Grid.Row="0"
-                                              Grid.Column="1"
-                                              Margin="0,0,0,15"
-                                              Height="35"
-                                              Padding="8"
-                                              Background="#1E2235"
-                                              Foreground="White"
-                                              BorderBrush="#2D3142"
-                                              BorderThickness="1"
-                                              SelectionChanged="cboExchange_SelectionChanged">
-                                        <ComboBox.Resources>
-                                            <Style TargetType="ComboBoxItem">
-                                                <Setter Property="Background"
-                                                        Value="#1E2235"/>
-                                                <Setter Property="Foreground"
-                                                        Value="White"/>
-                                                <Setter Property="Padding"
-                                                        Value="8"/>
-                                                <Setter Property="Height"
-                                                        Value="35"/>
-                                                <Style.Triggers>
-                                                    <Trigger Property="IsMouseOver"
-                                                             Value="True">
-                                                        <Setter Property="Background"
-                                                                Value="#2D3142"/>
-                                                    </Trigger>
-                                                    <Trigger Property="IsSelected"
-                                                             Value="True">
-                                                        <Setter Property="Background"
-                                                                Value="#00E676"/>
-                                                        <Setter Property="Foreground"
-                                                                Value="Black"/>
-                                                        <Setter Property="FontWeight"
-                                                                Value="Bold"/>
-                                                    </Trigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </ComboBox.Resources>
-                                        <ComboBoxItem Content="Binance"
-                                                      Tag="Binance"/>
-                                        <ComboBoxItem Content="Bybit"
-                                                      Tag="Bybit"/>
-                                    </ComboBox>
-
-                                    <!-- API Key 안내 -->
-                                    <StackPanel x:Name="pnlApiKeys"
-                                                Grid.Row="1"
-                                                Grid.Column="1"
-                                                Margin="0,0,0,15">
-                                        <StackPanel x:Name="pnlBinance"
-                                                    Visibility="Collapsed">
-                                            <TextBlock Text="Binance API Key (설정 파일)"
-                                                       Foreground="#64748B"
-                                                       FontSize="10"/>
-                                        </StackPanel>
-                                        <StackPanel x:Name="pnlBybit"
-                                                    Visibility="Collapsed">
-                                            <TextBlock Text="Bybit API Key (설정 파일)"
-                                                       Foreground="#64748B"
-                                                       FontSize="10"/>
-                                        </StackPanel>
-                                    </StackPanel>
-
-                                    <!-- 기본 마진 -->
-                                    <TextBlock Text="기본 마진 (USDT):"
-                                               VerticalAlignment="Center"
-                                               Grid.Row="2"
-                                               Foreground="#94A3B8"
-                                               Margin="0,0,0,15"/>
                                     <TextBox x:Name="txtDefaultMargin"
-                                             Grid.Row="2"
+                                             Grid.Row="0"
                                              Grid.Column="1"
                                              Margin="0,0,0,15"
                                              Padding="8"
@@ -297,11 +227,11 @@
                                     <!-- 레버리지 -->
                                     <TextBlock Text="레버리지 (x):"
                                                VerticalAlignment="Center"
-                                               Grid.Row="3"
+                                               Grid.Row="1"
                                                Foreground="#94A3B8"
                                                Margin="0,0,0,15"/>
                                     <TextBox x:Name="txtLeverage"
-                                             Grid.Row="3"
+                                             Grid.Row="1"
                                              Grid.Column="1"
                                              Margin="0,0,0,15"
                                              Padding="8"

@@ -19,9 +19,6 @@ namespace TradingBot
         public static string ConnectionString => Current?.ConnectionStrings?.DefaultConnection ?? string.Empty;
         public static string CryptoPanicApiKey => Current?.ExternalApi?.CryptoPanicApiKey ?? string.Empty;
 
-        public static string BybitApiKey => Current?.Bybit?.ApiKey ?? string.Empty;
-        public static string BybitApiSecret => Current?.Bybit?.ApiSecret ?? string.Empty;
-
         public static string CurrentUsername { get; private set; } = string.Empty;
 
         /// <summary>
@@ -30,7 +27,6 @@ namespace TradingBot
         public static User? CurrentUser { get; private set; }
 
         public BinanceSettings Binance { get; set; } = new();
-        public BybitSettings Bybit { get; set; } = new();
         public TelegramSettings Telegram { get; set; } = new();
         public ConnectionStringsSettings ConnectionStrings { get; set; } = new();
         public TradingConfig Trading { get; set; } = new();
@@ -142,15 +138,11 @@ namespace TradingBot
                 // 암호화된 키들을 복호화 (실패 시 평문으로 간주)
                 string binanceKey = DecryptOrUseRaw(user.BinanceApiKey);
                 string binanceSecret = DecryptOrUseRaw(user.BinanceApiSecret);
-                string bybitKey = DecryptOrUseRaw(user.BybitApiKey);
-                string bybitSecret = DecryptOrUseRaw(user.BybitApiSecret);
                 string telegramToken = DecryptOrUseRaw(user.TelegramBotToken);
                 string telegramChatId = DecryptOrUseRaw(user.TelegramChatId);
 
                 Current.Binance.ApiKey = binanceKey;
                 Current.Binance.ApiSecret = binanceSecret;
-                Current.Bybit.ApiKey = bybitKey;
-                Current.Bybit.ApiSecret = bybitSecret;
                 Current.Telegram.BotToken = telegramToken;
                 Current.Telegram.ChatId = telegramChatId;
 
@@ -202,12 +194,6 @@ namespace TradingBot
     }
 
     public class BinanceSettings
-    {
-        public string ApiKey { get; set; } = string.Empty;
-        public string ApiSecret { get; set; } = string.Empty;
-    }
-
-    public class BybitSettings
     {
         public string ApiKey { get; set; } = string.Empty;
         public string ApiSecret { get; set; } = string.Empty;

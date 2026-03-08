@@ -41,14 +41,32 @@ namespace TradingBot.ViewModels
         private readonly ConcurrentQueue<BufferedLiveLog> _pendingLiveLogs = new();
         private readonly ConcurrentQueue<(string Category, string Message, string? Symbol)> _pendingLiveLogDbWrites = new();
         private readonly ConcurrentDictionary<string, (decimal Price, double? Pnl)> _pendingTickerUpdates = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, MultiTimeframeViewModel> _pendingSignalUpdates = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, MultiTimeframeViewModel> _marketDataIndex = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _footerLogLock = new();
+        // [병목 해결] LoadTradeHistory 디바운싱 — 연속 이벤트로 인한 중복 DB 쿼리 + UI 큐 폭주 방지
+        private CancellationTokenSource? _tradeHistoryDebounceCts;
+        private readonly object _tradeHistoryDebounceLock = new();
+        // [병목 해결] LoadLiveChartDataAsync 취소 토큰 — SelectedSymbol 빠른 변경 시 이전 API 호출 취소
+        private CancellationTokenSource? _liveChartCts;
         private DispatcherTimer? _liveLogFlushTimer;
         private DispatcherTimer? _tickerFlushTimer;
+        private DispatcherTimer? _footerLogFlushTimer;
+        private string? _pendingFooterLogMessage;
         private int _liveLogDbDrainRunning;
         private const int MaxBufferedLiveLogs = 1200;
         private const int MaxUiLiveLogCount = 200;
-        private const int MaxLiveLogBatchPerTick = 48;
-        private const int MaxTickerBatchPerTick = 180;
+        private const int MaxLiveLogBatchPerTick = 24;       // [병목 해결] 48→24 (단위 Tick당 UI 부하 절감)
+        private const int MaxTickerBatchPerTick = 80;        // [병목 해결] 180→80 (PropertyChanged 폭주 방지)
+        private const int MaxSignalBatchPerTick = 40;        // [병목 해결] 120→40 (BeginUpdate로 보완)
         private const int MaxDbWritesPerDrain = 80;
+        private const int FooterLogFlushIntervalMs = 200;
+        private const int MaxUiWorkBudgetMsPerTick = 6;      // [병목 해결] 8→6ms (UI 스레드 여유 확보)
+        private const int MaxAlertBatchPerTick = 20;
+        private const int MaxUiAlertCount = 100;
+        private static readonly TimeSpan ActivePnlChartRefreshInterval = TimeSpan.FromSeconds(5); // [병목 해결] 3초→5초
+        private DateTime _lastActivePnlChartRefresh = DateTime.MinValue;
+        private readonly ConcurrentQueue<string> _pendingAlerts = new();
         private bool _liveLogPerfEnabled = true;
         private bool _liveLogAutoTuneEnabled = true;
         private int _liveLogBaseWarnMs = 40;
@@ -294,7 +312,10 @@ namespace TradingBot.ViewModels
                 {
                     _selectedSymbol = value;
                     OnPropertyChanged();
-                    _ = LoadLiveChartDataAsync();
+                    // [병목 해결] 이전 API 호출 취소 후 새 호출 시작
+                    _liveChartCts?.Cancel();
+                    _liveChartCts = new CancellationTokenSource();
+                    _ = LoadLiveChartDataAsync(_liveChartCts.Token);
                 }
             }
         }
@@ -339,6 +360,7 @@ namespace TradingBot.ViewModels
             ApplyLiveLogPerformanceSettings();
             InitializeLiveLogPipeline();
             InitializeTickerUpdatePipeline();
+            InitializeFooterLogPipeline();
 
             // Initialize services
             if (!DesignerProperties.GetIsInDesignMode(new DependencyObject()))
@@ -1043,6 +1065,27 @@ namespace TradingBot.ViewModels
             MajorProfileStatusColor = isAggressive ? Brushes.Orange : Brushes.LightGray;
         }
 
+        /// <summary>[병목 해결] 연속 이벤트를 2초 디바운싱하여 DB 쿼리 중복 방지</summary>
+        private void ScheduleLoadTradeHistory()
+        {
+            lock (_tradeHistoryDebounceLock)
+            {
+                _tradeHistoryDebounceCts?.Cancel();
+                _tradeHistoryDebounceCts = new CancellationTokenSource();
+                var token = _tradeHistoryDebounceCts.Token;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(2000, token);
+                        if (!token.IsCancellationRequested)
+                            await LoadTradeHistory();
+                    }
+                    catch (OperationCanceledException) { }
+                });
+            }
+        }
+
         public async Task LoadTradeHistory()
         {
             try
@@ -1061,11 +1104,12 @@ namespace TradingBot.ViewModels
 
                 RunOnUI(() =>
                 {
-                    TradeHistory.Clear();
-                    foreach (var model in historyModels)
-                    {
-                        TradeHistory.Add(model);
-                    }
+                    // [병목 해결] Clear() + N x Add() → 단일 Reset으로 대체
+                    // 기존: 5001개의 CollectionChanged 이벤트 → 변경 후: 1개의 Reset 이벤트
+                    var newCollection = new ObservableCollection<TradeLog>(historyModels);
+                    BindingOperations.EnableCollectionSynchronization(newCollection, new object());
+                    TradeHistory = newCollection;
+                    OnPropertyChanged(nameof(TradeHistory));
 
                     // 통계 계산
                     CalculateTradeStatistics();
@@ -1296,10 +1340,10 @@ namespace TradingBot.ViewModels
                 AddPredictionRecord(record);
             };
 
-            // [FIX] 청산 시 TradeHistory 자동 갱신
+            // [FIX] 청산 시 TradeHistory 자동 갱신 — 디바운싱 적용
             _engine.OnTradeHistoryUpdated += () =>
             {
-                _ = LoadTradeHistory();
+                ScheduleLoadTradeHistory();
             };
         }
 
@@ -1489,13 +1533,161 @@ namespace TradingBot.ViewModels
                 if (_tickerFlushTimer != null)
                     return;
 
-                _tickerFlushTimer = new DispatcherTimer(DispatcherPriority.Render)
+                _tickerFlushTimer = new DispatcherTimer(DispatcherPriority.Background)
                 {
-                    Interval = TimeSpan.FromMilliseconds(120)
+                    Interval = TimeSpan.FromMilliseconds(200)  // [병목 해결] 120ms→200ms (UI 스레드 호흡 공간 확보)
                 };
-                _tickerFlushTimer.Tick += (_, _) => FlushPendingTickerUpdatesToUi();
+                _tickerFlushTimer.Tick += (_, _) =>
+                {
+                    FlushPendingSignalUpdatesToUi();
+                    FlushPendingTickerUpdatesToUi();
+                };
                 _tickerFlushTimer.Start();
             });
+        }
+
+        private void InitializeFooterLogPipeline()
+        {
+            RunOnUI(() =>
+            {
+                if (_footerLogFlushTimer != null)
+                    return;
+
+                _footerLogFlushTimer = new DispatcherTimer(DispatcherPriority.Background)
+                {
+                    Interval = TimeSpan.FromMilliseconds(FooterLogFlushIntervalMs)
+                };
+                _footerLogFlushTimer.Tick += (_, _) =>
+                {
+                    FlushPendingFooterLogToUi();
+                    FlushPendingAlertsToUi();
+                };
+                _footerLogFlushTimer.Start();
+            });
+        }
+
+        private void FlushPendingFooterLogToUi()
+        {
+            string? latestMessage;
+            lock (_footerLogLock)
+            {
+                latestMessage = _pendingFooterLogMessage;
+                _pendingFooterLogMessage = null;
+            }
+
+            if (string.IsNullOrWhiteSpace(latestMessage))
+                return;
+
+            FooterText = $"[{DateTime.Now:HH:mm:ss}] {latestMessage}";
+        }
+
+        private void QueueFooterLog(string msg)
+        {
+            if (string.IsNullOrWhiteSpace(msg))
+                return;
+
+            lock (_footerLogLock)
+            {
+                _pendingFooterLogMessage = msg;
+            }
+        }
+
+        private void FlushPendingSignalUpdatesToUi()
+        {
+            if (_pendingSignalUpdates.IsEmpty)
+                return;
+
+            var watch = Stopwatch.StartNew();
+            int processed = 0;
+            // [병목 해결] ToArray() → Keys 스냅샷 사용 (전체 딕셔너리 lock+copy 방지)
+            foreach (var key in _pendingSignalUpdates.Keys)
+            {
+                if (processed >= MaxSignalBatchPerTick || watch.ElapsedMilliseconds >= MaxUiWorkBudgetMsPerTick)
+                    break;
+
+                if (!_pendingSignalUpdates.TryRemove(key, out var signal))
+                    continue;
+
+                ApplySignalUpdate(signal);
+                processed++;
+            }
+        }
+
+        private MultiTimeframeViewModel GetOrCreateMarketDataItem(string symbol)
+        {
+            if (_marketDataIndex.TryGetValue(symbol, out var cached))
+                return cached;
+
+            var existing = MarketDataList.FirstOrDefault(x => x.Symbol == symbol);
+            if (existing != null)
+            {
+                _marketDataIndex[symbol] = existing;
+                return existing;
+            }
+
+            var created = new MultiTimeframeViewModel { Symbol = symbol };
+            MarketDataList.Add(created);
+            _marketDataIndex[symbol] = created;
+            return created;
+        }
+
+        private void ApplySignalUpdate(MultiTimeframeViewModel signal)
+        {
+            if (signal == null || string.IsNullOrWhiteSpace(signal.Symbol))
+                return;
+
+            var symbol = signal.Symbol;
+            if (!_marketDataIndex.TryGetValue(symbol, out var existing))
+            {
+                existing = MarketDataList.FirstOrDefault(x => x.Symbol == symbol);
+                if (existing == null)
+                {
+                    if (signal.AIScore > 0)
+                        signal.TouchAIScoreUpdatedAt();
+
+                    MarketDataList.Add(signal);
+                    _marketDataIndex[symbol] = signal;
+                    return;
+                }
+
+                _marketDataIndex[symbol] = existing;
+            }
+
+            // [병목 해결] BeginUpdate/EndUpdate로 PropertyChanged 폭주 방지
+            existing.BeginUpdate();
+            try
+            {
+                if (signal.LastPrice > 0) existing.LastPrice = signal.LastPrice;
+                if (signal.RSI_1H > 0) existing.RSI_1H = signal.RSI_1H;
+                if (signal.AIScore > 0)
+                {
+                    existing.AIScore = signal.AIScore;
+                    existing.TouchAIScoreUpdatedAt();
+                }
+                if (!string.IsNullOrEmpty(signal.Decision)) existing.Decision = signal.Decision;
+                if (!string.IsNullOrEmpty(signal.BBPosition)) existing.BBPosition = signal.BBPosition;
+                if (!string.IsNullOrEmpty(signal.SignalSource)) existing.SignalSource = signal.SignalSource;
+                existing.ShortLongScore = signal.ShortLongScore;
+                existing.ShortShortScore = signal.ShortShortScore;
+                existing.MacdHist = signal.MacdHist;
+                if (!string.IsNullOrEmpty(signal.ElliottTrend)) existing.ElliottTrend = signal.ElliottTrend;
+                if (!string.IsNullOrEmpty(signal.MAState)) existing.MAState = signal.MAState;
+                if (!string.IsNullOrEmpty(signal.FibPosition)) existing.FibPosition = signal.FibPosition;
+                existing.VolumeRatioValue = signal.VolumeRatioValue;
+                if (!string.IsNullOrEmpty(signal.VolumeRatio)) existing.VolumeRatio = signal.VolumeRatio;
+                if (signal.IsPositionActive) existing.IsPositionActive = true;
+                if (signal.EntryPrice > 0) existing.EntryPrice = signal.EntryPrice;
+                if (!string.IsNullOrEmpty(signal.PositionSide)) existing.PositionSide = signal.PositionSide;
+                if (signal.Quantity > 0) existing.Quantity = signal.Quantity;
+                if (signal.Leverage > 0) existing.Leverage = signal.Leverage;
+
+                if (signal.TransformerPrice > 0) existing.TransformerPrice = signal.TransformerPrice;
+                if (signal.TransformerChange != 0) existing.TransformerChange = signal.TransformerChange;
+            }
+            finally
+            {
+                existing.EndUpdate(); // 모든 변경을 하나의 PropertyChanged("") 으로 통합
+            }
         }
 
         private void FlushPendingTickerUpdatesToUi()
@@ -1503,29 +1695,35 @@ namespace TradingBot.ViewModels
             if (_pendingTickerUpdates.IsEmpty)
                 return;
 
+            var watch = Stopwatch.StartNew();
             int processed = 0;
-            foreach (var kvp in _pendingTickerUpdates.ToArray())
+            // [병목 해결] ToArray() → Keys 스냅샷 사용 (전체 딕셔너리 lock+copy 방지)
+            foreach (var key in _pendingTickerUpdates.Keys)
             {
-                if (processed >= MaxTickerBatchPerTick)
+                if (processed >= MaxTickerBatchPerTick || watch.ElapsedMilliseconds >= MaxUiWorkBudgetMsPerTick)
                     break;
 
-                if (!_pendingTickerUpdates.TryRemove(kvp.Key, out var payload))
+                if (!_pendingTickerUpdates.TryRemove(key, out var payload))
                     continue;
 
-                var existing = MarketDataList.FirstOrDefault(x => x.Symbol == kvp.Key);
-                if (existing == null)
+                var existing = GetOrCreateMarketDataItem(key);
+
+                // [병목 해결] BeginUpdate/EndUpdate로 PropertyChanged 폭주 방지
+                existing.BeginUpdate();
+                try
                 {
-                    existing = new MultiTimeframeViewModel { Symbol = kvp.Key };
-                    MarketDataList.Add(existing);
+                    if (payload.Price > 0)
+                        existing.LastPrice = payload.Price;
+
+                    if (payload.Pnl.HasValue)
+                    {
+                        var safePnl = ToFinite(payload.Pnl.Value, existing.ProfitPercent);
+                        existing.ProfitPercent = safePnl;
+                    }
                 }
-
-                if (payload.Price > 0)
-                    existing.LastPrice = payload.Price;
-
-                if (payload.Pnl.HasValue)
+                finally
                 {
-                    var safePnl = ToFinite(payload.Pnl.Value, existing.ProfitPercent);
-                    existing.ProfitPercent = safePnl;
+                    existing.EndUpdate();
                 }
 
                 processed++;
@@ -1539,6 +1737,15 @@ namespace TradingBot.ViewModels
                 Stopwatch? flushWatch = _liveLogPerfEnabled ? Stopwatch.StartNew() : null;
                 int pendingBefore = _pendingLiveLogs.Count;
                 int dbQueueBefore = _pendingLiveLogDbWrites.Count;
+
+                // [병목 해결] Insert(0) 대신 미리 수집 후 일괄 삽입 패턴으로 변경
+                // Insert(0)는 O(n) 배열 이동 + CollectionChanged → 매 항목 전체 ListView 재렌더
+                List<string>? liveLogBatch = null;
+                List<string>? gateLogBatch = null;
+                List<string>? tradeLogBatch = null;
+                List<string>? majorLogBatch = null;
+                List<string>? pumpLogBatch = null;
+                List<(string Raw, string Line)>? gateUpdateBatch = null;
 
                 int processed = 0;
                 while (processed < MaxLiveLogBatchPerTick && _pendingLiveLogs.TryDequeue(out var item))
@@ -1555,34 +1762,62 @@ namespace TradingBot.ViewModels
                     {
                         string displayMessage = SimplifyLiveLogMessage(item.Message);
                         var line = $"[{item.Timestamp:HH:mm:ss}] {displayMessage}";
-                        LiveLogs.Insert(0, line);
-                        if (LiveLogs.Count > MaxUiLiveLogCount) LiveLogs.RemoveAt(MaxUiLiveLogCount);
+                        (liveLogBatch ??= new()).Add(line);
 
                         if (string.Equals(item.Category, "GATE", StringComparison.OrdinalIgnoreCase))
                         {
-                            GateLogs.Insert(0, line);
-                            if (GateLogs.Count > MaxUiLiveLogCount) GateLogs.RemoveAt(MaxUiLiveLogCount);
-                            UpdateGateDashboardFromLog(item.RawMessage, line);
+                            (gateLogBatch ??= new()).Add(line);
+                            (gateUpdateBatch ??= new()).Add((item.RawMessage, line));
                         }
                         else
                         {
-                            TradeLogs.Insert(0, line);
-                            if (TradeLogs.Count > MaxUiLiveLogCount) TradeLogs.RemoveAt(MaxUiLiveLogCount);
+                            (tradeLogBatch ??= new()).Add(line);
 
                             if (item.IsMajor)
-                            {
-                                MajorLogs.Insert(0, line);
-                                if (MajorLogs.Count > MaxUiLiveLogCount) MajorLogs.RemoveAt(MaxUiLiveLogCount);
-                            }
+                                (majorLogBatch ??= new()).Add(line);
                             else
-                            {
-                                PumpLogs.Insert(0, line);
-                                if (PumpLogs.Count > MaxUiLiveLogCount) PumpLogs.RemoveAt(MaxUiLiveLogCount);
-                            }
+                                (pumpLogBatch ??= new()).Add(line);
                         }
                     }
 
                     processed++;
+                }
+
+                // [병목 해결] 수집된 로그를 역순으로 한 번에 삽입
+                if (liveLogBatch != null)
+                {
+                    for (int i = liveLogBatch.Count - 1; i >= 0; i--)
+                        LiveLogs.Insert(0, liveLogBatch[i]);
+                    while (LiveLogs.Count > MaxUiLiveLogCount) LiveLogs.RemoveAt(LiveLogs.Count - 1);
+                }
+                if (gateLogBatch != null)
+                {
+                    for (int i = gateLogBatch.Count - 1; i >= 0; i--)
+                        GateLogs.Insert(0, gateLogBatch[i]);
+                    while (GateLogs.Count > MaxUiLiveLogCount) GateLogs.RemoveAt(GateLogs.Count - 1);
+                }
+                if (gateUpdateBatch != null)
+                {
+                    foreach (var (raw, line) in gateUpdateBatch)
+                        UpdateGateDashboardFromLog(raw, line);
+                }
+                if (tradeLogBatch != null)
+                {
+                    for (int i = tradeLogBatch.Count - 1; i >= 0; i--)
+                        TradeLogs.Insert(0, tradeLogBatch[i]);
+                    while (TradeLogs.Count > MaxUiLiveLogCount) TradeLogs.RemoveAt(TradeLogs.Count - 1);
+                }
+                if (majorLogBatch != null)
+                {
+                    for (int i = majorLogBatch.Count - 1; i >= 0; i--)
+                        MajorLogs.Insert(0, majorLogBatch[i]);
+                    while (MajorLogs.Count > MaxUiLiveLogCount) MajorLogs.RemoveAt(MajorLogs.Count - 1);
+                }
+                if (pumpLogBatch != null)
+                {
+                    for (int i = pumpLogBatch.Count - 1; i >= 0; i--)
+                        PumpLogs.Insert(0, pumpLogBatch[i]);
+                    while (PumpLogs.Count > MaxUiLiveLogCount) PumpLogs.RemoveAt(PumpLogs.Count - 1);
                 }
 
                 if (processed > 0 && _dbService != null && !_pendingLiveLogDbWrites.IsEmpty)
@@ -2108,13 +2343,39 @@ namespace TradingBot.ViewModels
             }
         }
 
-        private void AddAlert(string msg)
+        private void AddAlert(string msg) => EnqueueAlert(msg);
+
+        /// <summary>
+        /// [큐 분리] Alert를 큐에 넣고 타이머로 일괄 플러시 (UI 스레드 직접 접근 제거)
+        /// </summary>
+        public void EnqueueAlert(string msg)
         {
-            RunOnUI(() =>
+            if (string.IsNullOrWhiteSpace(msg))
+                return;
+            _pendingAlerts.Enqueue($"▶ {DateTime.Now:HH:mm:ss} | {msg}");
+            // overflow 방지
+            while (_pendingAlerts.Count > MaxUiAlertCount * 2)
+                _pendingAlerts.TryDequeue(out _);
+        }
+
+        private void FlushPendingAlertsToUi()
+        {
+            if (_pendingAlerts.IsEmpty)
+                return;
+
+            // [병목 해결] 일괄 수집 후 역순 삽입
+            var batch = new List<string>();
+            while (batch.Count < MaxAlertBatchPerTick && _pendingAlerts.TryDequeue(out var alertLine))
             {
-                Alerts.Insert(0, $"▶ {DateTime.Now:HH:mm:ss} | {msg}");
-                if (Alerts.Count > 100) Alerts.RemoveAt(100);
-            });
+                batch.Add(alertLine);
+            }
+
+            if (batch.Count > 0)
+            {
+                for (int i = batch.Count - 1; i >= 0; i--)
+                    Alerts.Insert(0, batch[i]);
+                while (Alerts.Count > MaxUiAlertCount) Alerts.RemoveAt(Alerts.Count - 1);
+            }
         }
 
         private void Alerts_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -2198,9 +2459,26 @@ namespace TradingBot.ViewModels
             return alertLine.Trim();
         }
 
-        private void AddLog(string msg)
+        private void AddLog(string msg) => EnqueueFooterLog(msg);
+
+        /// <summary>
+        /// [큐 분리] 푸터 로그를 큐에 넣고 타이머로 플러시 (외부에서도 호출 가능)
+        /// </summary>
+        public void EnqueueFooterLog(string msg) => QueueFooterLog(msg);
+
+        /// <summary>
+        /// [큐 분리] 라이브 로그를 큐에 넣기 (외부에서도 호출 가능, UI 스레드 직접 접근 제거)
+        /// </summary>
+        public void EnqueueLiveLog(string msg) => AddLiveLog(msg);
+
+        /// <summary>
+        /// [큐 분리] 틱 데이터를 큐에 넣기 (소켓 서비스에서 호출, UI 스레드 접근 X)
+        /// </summary>
+        public void EnqueueTickerUpdate(string symbol, decimal price, double? pnl)
         {
-            RunOnUI(() => FooterText = $"[{DateTime.Now:HH:mm:ss}] {msg}");
+            if (string.IsNullOrWhiteSpace(symbol))
+                return;
+            _pendingTickerUpdates[symbol] = (price, pnl);
         }
 
         private void UpdateProgress(int current, int total)
@@ -2243,8 +2521,13 @@ namespace TradingBot.ViewModels
                 ProfitHistory.Add(equity);
                 if (ProfitHistory.Count > 50) ProfitHistory.RemoveAt(0);
 
-                // [추가] 실시간 포지션 수익률 차트 업데이트
-                UpdateActivePnLChart();
+                // [추가] 실시간 포지션 수익률 차트 업데이트 (스로틀)
+                var nowUtc = DateTime.UtcNow;
+                if (nowUtc - _lastActivePnlChartRefresh >= ActivePnlChartRefreshInterval)
+                {
+                    _lastActivePnlChartRefresh = nowUtc;
+                    UpdateActivePnLChart();
+                }
             });
         }
 
@@ -2262,34 +2545,64 @@ namespace TradingBot.ViewModels
                     .Where(x => IsFinite(x.ProfitPercent))
                     .ToList();
 
-                if (activePositions.Any())
+                if (activePositions.Count > 0)
                 {
-                    var values = new ChartValues<double>(activePositions.Select(x => x.ProfitPercent));
+                    var labels = activePositions.Select(x => x.Symbol).ToArray();
+
+                    // [병목 해결] 기존 Series + ChartValues 재사용 (새 객체 생성 최소화)
+                    if (ActivePnLSeries != null && ActivePnLSeries.Count > 0 && ActivePnLSeries[0] is ColumnSeries existingCol
+                        && existingCol.Values is ChartValues<double> existingValues)
+                    {
+                        // in-place 업데이트: 개수가 같으면 값만 교체, 다르면 Clear+AddRange
+                        if (existingValues.Count == activePositions.Count)
+                        {
+                            for (int i = 0; i < activePositions.Count; i++)
+                                existingValues[i] = activePositions[i].ProfitPercent;
+                        }
+                        else
+                        {
+                            existingValues.Clear();
+                            existingValues.AddRange(activePositions.Select(x => x.ProfitPercent));
+                        }
+                    }
+                    else
+                    {
+                        ActivePnLSeries = new SeriesCollection
+                        {
+                            new ColumnSeries
+                            {
+                                Title = "PnL %",
+                                Values = new ChartValues<double>(activePositions.Select(x => x.ProfitPercent)),
+                                Fill = Brushes.DeepSkyBlue,
+                                DataLabels = true
+                            }
+                        };
+                    }
 
                     UpdateAxisRange(
-                        values,
+                        ActivePnLSeries[0].Values as ChartValues<double> ?? new ChartValues<double>(),
                         min => ActivePnLAxisMin = min,
                         max => ActivePnLAxisMax = max,
                         defaultMin: -1d,
                         defaultMax: 1d,
                         requirePositive: false);
 
-                    ActivePnLSeries = new SeriesCollection
+                    if (!labels.SequenceEqual(ActivePnLLabels ?? Array.Empty<string>()))
                     {
-                        new ColumnSeries
-                        {
-                            Title = "PnL %",
-                            Values = values,
-                            Fill = Brushes.DeepSkyBlue,
-                            DataLabels = true
-                        }
-                    };
-                    ActivePnLLabels = activePositions.Select(x => x.Symbol).ToArray();
-                    OnPropertyChanged(nameof(ActivePnLLabels));
+                        ActivePnLLabels = labels;
+                        OnPropertyChanged(nameof(ActivePnLLabels));
+                    }
                 }
                 else
                 {
-                    ActivePnLSeries = new SeriesCollection();
+                    if (ActivePnLSeries != null && ActivePnLSeries.Count > 0)
+                    {
+                        // 빈 상태: 기존 values만 제거
+                        if (ActivePnLSeries[0] is ColumnSeries col && col.Values is ChartValues<double> cv && cv.Count > 0)
+                            cv.Clear();
+                        else
+                            ActivePnLSeries = new SeriesCollection();
+                    }
                     ActivePnLAxisMin = -1d;
                     ActivePnLAxisMax = 1d;
                 }
@@ -2319,51 +2632,10 @@ namespace TradingBot.ViewModels
 
         private void UpdateSignal(MultiTimeframeViewModel signal)
         {
-            RunOnUI(() =>
-            {
-                var existing = MarketDataList.FirstOrDefault(x => x.Symbol == signal.Symbol);
-                if (existing != null)
-                {
-                    // Update properties
-                    if (signal.LastPrice > 0) existing.LastPrice = signal.LastPrice;
-                    if (signal.RSI_1H > 0) existing.RSI_1H = signal.RSI_1H;
-                    if (signal.AIScore > 0)
-                    {
-                        existing.AIScore = signal.AIScore;
-                        existing.TouchAIScoreUpdatedAt();
-                    }
-                    if (!string.IsNullOrEmpty(signal.Decision)) existing.Decision = signal.Decision;
-                    if (!string.IsNullOrEmpty(signal.BBPosition)) existing.BBPosition = signal.BBPosition;
-                    if (!string.IsNullOrEmpty(signal.SignalSource)) existing.SignalSource = signal.SignalSource;
-                    existing.ShortLongScore = signal.ShortLongScore;
-                    existing.ShortShortScore = signal.ShortShortScore;
-                    existing.MacdHist = signal.MacdHist;
-                    if (!string.IsNullOrEmpty(signal.ElliottTrend)) existing.ElliottTrend = signal.ElliottTrend;
-                    if (!string.IsNullOrEmpty(signal.MAState)) existing.MAState = signal.MAState;
-                    if (!string.IsNullOrEmpty(signal.FibPosition)) existing.FibPosition = signal.FibPosition;
-                    existing.VolumeRatioValue = signal.VolumeRatioValue;
-                    if (!string.IsNullOrEmpty(signal.VolumeRatio)) existing.VolumeRatio = signal.VolumeRatio;
-                    if (signal.IsPositionActive) existing.IsPositionActive = true;
-                    if (signal.EntryPrice > 0) existing.EntryPrice = signal.EntryPrice;
-                    if (!string.IsNullOrEmpty(signal.PositionSide)) existing.PositionSide = signal.PositionSide;
-                    if (signal.Quantity > 0) existing.Quantity = signal.Quantity;
-                    if (signal.Leverage > 0) existing.Leverage = signal.Leverage;
+            if (signal == null || string.IsNullOrWhiteSpace(signal.Symbol))
+                return;
 
-                    // [Phase 7] Transformer 예측값 업데이트
-                    if (signal.TransformerPrice > 0) existing.TransformerPrice = signal.TransformerPrice;
-                    if (signal.TransformerChange != 0) existing.TransformerChange = signal.TransformerChange;
-
-                    // Trigger animation via event or property if needed. 
-                    // For now, we rely on property changes.
-                }
-                else
-                {
-                    if (signal.AIScore > 0)
-                        signal.TouchAIScoreUpdatedAt();
-
-                    MarketDataList.Add(signal);
-                }
-            });
+            _pendingSignalUpdates[signal.Symbol] = signal;
         }
 
         private void UpdateTicker(string symbol, decimal price, double? pnl)
@@ -2378,11 +2650,20 @@ namespace TradingBot.ViewModels
         {
             RunOnUI(() =>
             {
-                if (!MarketDataList.Any(x => x.Symbol == symbol))
+                if (string.IsNullOrWhiteSpace(symbol))
+                    return;
+
+                if (_marketDataIndex.ContainsKey(symbol) || MarketDataList.Any(x => x.Symbol == symbol))
                 {
-                    MarketDataList.Add(new MultiTimeframeViewModel { Symbol = symbol });
-                    AddLog($"🔍 신규 급등주 감시 리스트 추가: {symbol}");
+                    if (!_marketDataIndex.ContainsKey(symbol))
+                        _marketDataIndex[symbol] = MarketDataList.First(x => x.Symbol == symbol);
+                    return;
                 }
+
+                var created = new MultiTimeframeViewModel { Symbol = symbol };
+                MarketDataList.Add(created);
+                _marketDataIndex[symbol] = created;
+                AddLog($"🔍 신규 급등주 감시 리스트 추가: {symbol}");
             });
         }
 
@@ -2390,23 +2671,23 @@ namespace TradingBot.ViewModels
         {
             RunOnUI(() =>
             {
-                var existing = MarketDataList.FirstOrDefault(x => x.Symbol == symbol);
-                if (existing != null)
+                if (string.IsNullOrWhiteSpace(symbol))
+                    return;
+
+                var existing = GetOrCreateMarketDataItem(symbol);
+                existing.IsPositionActive = isActive;
+                existing.EntryPrice = entryPrice;
+                existing.HasCloseIncomplete = false;
+                existing.CloseIncompleteDetail = null;
+                if (isActive)
                 {
-                    existing.IsPositionActive = isActive;
-                    existing.EntryPrice = entryPrice;
-                    existing.HasCloseIncomplete = false;
-                    existing.CloseIncompleteDetail = null;
-                    if (isActive)
-                    {
-                        existing.TargetPrice = entryPrice * 1.03m;
-                        existing.StopLossPrice = entryPrice * 0.985m;
-                    }
-                    else
-                    {
-                        existing.Decision = "WAIT";
-                        existing.ProfitPercent = 0;
-                    }
+                    existing.TargetPrice = entryPrice * 1.03m;
+                    existing.StopLossPrice = entryPrice * 0.985m;
+                }
+                else
+                {
+                    existing.Decision = "WAIT";
+                    existing.ProfitPercent = 0;
                 }
             });
         }
@@ -2415,12 +2696,10 @@ namespace TradingBot.ViewModels
         {
             RunOnUI(() =>
             {
-                var existing = MarketDataList.FirstOrDefault(x => x.Symbol == symbol);
-                if (existing == null)
-                {
-                    existing = new MultiTimeframeViewModel { Symbol = symbol };
-                    MarketDataList.Add(existing);
-                }
+                if (string.IsNullOrWhiteSpace(symbol))
+                    return;
+
+                var existing = GetOrCreateMarketDataItem(symbol);
 
                 existing.HasCloseIncomplete = isIncomplete;
                 existing.CloseIncompleteDetail = detail;
@@ -2431,19 +2710,17 @@ namespace TradingBot.ViewModels
         {
             RunOnUI(() =>
             {
-                var existing = MarketDataList.FirstOrDefault(x => x.Symbol == symbol);
-                if (existing == null)
-                {
-                    existing = new MultiTimeframeViewModel { Symbol = symbol };
-                    MarketDataList.Add(existing);
-                }
+                if (string.IsNullOrWhiteSpace(symbol))
+                    return;
+
+                var existing = GetOrCreateMarketDataItem(symbol);
 
                 existing.ExternalSyncStatus = status;
                 existing.ExternalSyncDetail = detail;
             });
         }
 
-        private async Task LoadLiveChartDataAsync()
+        private async Task LoadLiveChartDataAsync(CancellationToken ct = default)
         {
             if (SelectedSymbol == null)
             {
@@ -2470,7 +2747,8 @@ namespace TradingBot.ViewModels
                 var klinesResult = await client.UsdFuturesApi.ExchangeData.GetKlinesAsync(
                     symbol,
                     KlineInterval.FiveMinutes,
-                    limit: 20 // 최근 20개 캔들 (요청사항)
+                    limit: 20, // 최근 20개 캔들 (요청사항)
+                    ct: ct
                 );
 
                 if (!klinesResult.Success)
@@ -2556,6 +2834,10 @@ namespace TradingBot.ViewModels
                 OnPropertyChanged(nameof(LiveChartXFormatter));
                 OnPropertyChanged(nameof(LiveChartYFormatter));
                 OnPropertyChanged(nameof(IsLiveChartEmpty));
+            }
+            catch (OperationCanceledException)
+            {
+                // [병목 해결] SelectedSymbol 빈번 변경 시 이전 요청이 취소된 경우 무시
             }
             catch (Exception ex)
             {

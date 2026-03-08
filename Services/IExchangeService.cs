@@ -58,5 +58,12 @@ namespace TradingBot.Services
             string symbol,
             string orderId,
             CancellationToken ct = default);
+
+        // [시장가 주문] 즉시 체결 + 체결 정보 반환 (지정가 3초 대기 제거)
+        Task<(bool Success, decimal FilledQuantity, decimal AveragePrice)> PlaceMarketOrderAsync(
+            string symbol,
+            string side,
+            decimal quantity,
+            CancellationToken ct = default);
     }
 }

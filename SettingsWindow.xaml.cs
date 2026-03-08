@@ -17,7 +17,6 @@ namespace TradingBot
         private const string SettingsFileName = "appsettings.json";
         private JsonNode? _rootNode;
         private DbManager? _dbManager;
-        private int _initialExchangeIndex = 0;
         private bool _initialSimulationMode = false;
         private decimal _initialSimulationBalance = 10000m;
 
@@ -120,14 +119,6 @@ namespace TradingBot
                     var tradingNode = _rootNode["Trading"];
                     if (tradingNode != null)
                     {
-                        // 거래소 선택 로드
-                        int selectedExchange = tradingNode["SelectedExchange"]?.GetValue<int>() ?? 0;
-                        _initialExchangeIndex = selectedExchange;
-                        cboExchange.SelectedIndex = selectedExchange;
-
-                        // UI 업데이트
-                        UpdateExchangeVisibility(selectedExchange);
-
                         // GeneralSettings 섹션에서 로드
                         var generalNode = tradingNode["GeneralSettings"];
                         if (generalNode != null)
@@ -253,15 +244,13 @@ namespace TradingBot
                 var tradingNode = (_rootNode["Trading"] as JsonObject) ?? new JsonObject();
                 _rootNode["Trading"] = tradingNode;
 
-                // 거래소 선택 저장
-                int newExchangeIndex = cboExchange.SelectedIndex;
-                tradingNode["SelectedExchange"] = newExchangeIndex;
-                bool exchangeChanged = (_initialExchangeIndex != newExchangeIndex);
+                // 거래소는 바이낸스로 고정
+                tradingNode["SelectedExchange"] = 0;
 
                 // AppConfig에 즉시 반영 (재시작 없이 적용 가능하도록)
-                if (exchangeChanged && AppConfig.Current?.Trading != null)
+                if (AppConfig.Current?.Trading != null)
                 {
-                    AppConfig.Current.Trading.SelectedExchange = (ExchangeType)newExchangeIndex;
+                    AppConfig.Current.Trading.SelectedExchange = ExchangeType.Binance;
                 }
 
                 // GeneralSettings 섹션
@@ -476,11 +465,6 @@ namespace TradingBot
 
                     string message = $"✅ [{AppConfig.CurrentUser.Username}]의 설정이 저장되었습니다.";
                     
-                    if (exchangeChanged)
-                    {
-                        message += "\n\n⚠️ 거래소 변경이 감지되었습니다.\n거래를 중지하고 다시 시작하면 새 거래소가 적용됩니다.\n(또는 앱을 재시작하세요)";
-                    }
-                    
                     if (simulationModeChanged || simulationBalanceChanged)
                     {
                         message += "\n\n⚠️ 시뮬레이션 설정이 변경되었습니다.\n거래를 중지하고 다시 시작하면 새 설정이 적용됩니다.";
@@ -510,25 +494,6 @@ namespace TradingBot
         private void btnCancel_Click(object sender, RoutedEventArgs e)
         {
             this.Close();
-        }
-
-        private void cboExchange_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            UpdateExchangeVisibility(cboExchange.SelectedIndex);
-        }
-
-        private void UpdateExchangeVisibility(int index)
-        {
-            if (pnlBinance == null || pnlBybit == null) return;
-
-            pnlBinance.Visibility = Visibility.Collapsed;
-            pnlBybit.Visibility = Visibility.Collapsed;
-
-            switch (index)
-            {
-                case 0: pnlBinance.Visibility = Visibility.Visible; break; // Binance
-                case 1: pnlBybit.Visibility = Visibility.Visible; break;   // Bybit
-            }
         }
 
         private bool ValidateTransformerInputs(out string errorMessage)
