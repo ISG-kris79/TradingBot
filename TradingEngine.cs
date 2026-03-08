@@ -1099,6 +1099,19 @@ namespace TradingBot
                 _ = ProcessAccountChannelAsync(token); // [Agent 2] 계좌 업데이트 처리 시작
                 _ = ProcessOrderChannelAsync(token);   // [Agent 2] 주문 업데이트 처리 시작
 
+                // [AI 학습 상태 초기화]
+                if (_aiDoubleCheckEntryGate != null)
+                {
+                    var stats = _aiDoubleCheckEntryGate.GetRecentLabelStats(10);
+                    MainWindow.Instance?.UpdateAiLearningStatusUI(
+                        stats.total, stats.labeled, stats.markToMarket, 
+                        stats.tradeClose, _activeAiDecisionIds.Count, _aiDoubleCheckEntryGate.IsReady);
+                }
+                else
+                {
+                    MainWindow.Instance?.UpdateAiLearningStatusUI(0, 0, 0, 0, 0, false);
+                }
+
                 // 2. 실시간 감시 시작 (Non-blocking)
                 await _marketDataManager.StartAsync(token);
 
@@ -3014,6 +3027,11 @@ namespace TradingBot
                         activeDecisionCount,
                         modelsReady
                     );
+                }
+                else
+                {
+                    // AI 게이트가 없을 때 기본값 표시
+                    MainWindow.Instance?.UpdateAiLearningStatusUI(0, 0, 0, 0, 0, false);
                 }
             }
             catch (Exception ex)

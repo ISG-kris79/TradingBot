@@ -1162,14 +1162,26 @@
                             <!-- Market Grid -->
                             <Border Grid.Row="0"
                                     Style="{StaticResource CardStyle}"
-                                    Padding="0"
+                                    Padding="20"
                                     Margin="0,0,0,16">
-                                <DataGrid x:Name="dgMultiTimeframe"
-                                          Style="{StaticResource ModernDataGridStyle}"
-                                          ColumnHeaderStyle="{StaticResource ModernColumnHeaderStyle}"
-                                          RowHeight="48"
-                                          MaxHeight="300"
-                                          EnableRowVirtualization="True"
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0"
+                                               Text="📊 MARKET SIGNALS (REALTIME)"
+                                               FontSize="12"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource PrimaryBrush}"
+                                               Margin="0,0,0,12"/>
+                                    <Border Grid.Row="1"
+                                            Padding="0">
+                                        <DataGrid x:Name="dgMultiTimeframe"
+                                                  Style="{StaticResource ModernDataGridStyle}"
+                                                  ColumnHeaderStyle="{StaticResource ModernColumnHeaderStyle}"
+                                                  RowHeight="48"
+                                                  EnableRowVirtualization="True"
                                           EnableColumnVirtualization="True"
                                           VirtualizingStackPanel.IsVirtualizing="True"
                                           VirtualizingStackPanel.VirtualizationMode="Recycling"
@@ -1385,7 +1397,9 @@
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
                                     </DataGrid.Columns>
-                                </DataGrid>
+                                        </DataGrid>
+                                    </Border>
+                                </Grid>
                             </Border>
 
                             <!-- Log Panel -->
