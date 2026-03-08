@@ -725,8 +725,11 @@
                         </Grid.ColumnDefinitions>
 
                         <!-- Left Sidebar -->
-                        <StackPanel Grid.Column="0"
-                                    Margin="0,0,16,0">
+                        <ScrollViewer Grid.Column="0"
+                                      Margin="0,0,16,0"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel>
                             <Border Style="{StaticResource CardStyle}"
                                     Padding="16"
                                     Margin="0,0,0,16">
@@ -1073,13 +1076,14 @@
                                     </ListBox>
                                 </Grid>
                             </Border>
-                        </StackPanel>
+                            </StackPanel>
+                        </ScrollViewer>
 
                         <!-- Main Content Area -->
                         <Grid Grid.Column="1">
                             <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="11*"/>
+                                <RowDefinition Height="9*"/>
                             </Grid.RowDefinitions>
 
                             <!-- Market Grid -->
@@ -1091,7 +1095,7 @@
                                           Style="{StaticResource ModernDataGridStyle}"
                                           ColumnHeaderStyle="{StaticResource ModernColumnHeaderStyle}"
                                           RowHeight="48"
-                                          MaxHeight="380"
+                                          MaxHeight="300"
                                           EnableRowVirtualization="True"
                                           EnableColumnVirtualization="True"
                                           VirtualizingStackPanel.IsVirtualizing="True"
@@ -1314,8 +1318,7 @@
                             <!-- Log Panel -->
                             <Border Grid.Row="1"
                                     Style="{StaticResource CardStyle}"
-                                    Margin="0"
-                                    MaxHeight="220">
+                                    Margin="0">
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>
@@ -1326,8 +1329,7 @@
                                                FontWeight="Bold"
                                                Foreground="{StaticResource PrimaryBrush}"
                                                Margin="0,0,0,8"/>
-                                    <Grid Grid.Row="1"
-                                          MaxHeight="250">
+                                    <Grid Grid.Row="1">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="*"/>
