@@ -104,6 +104,11 @@ namespace TradingBot
         private SymbolChartWindow? _symbolChartWindow;
         private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
 
+        // [병목 해결] 배치 UI 업데이트 메커니즘
+        private readonly Queue<MultiTimeframeViewModel> _uiUpdateQueue = new Queue<MultiTimeframeViewModel>();
+        private readonly DispatcherTimer _uiBatchTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
+        private readonly object _uiQueueLock = new object();
+
         // [Phase 14] 고급 기능 서비스
         private ArbitrageExecutionService? _arbitrageService;
         private FundTransferService? _fundTransferService;
@@ -198,6 +203,10 @@ namespace TradingBot
             _clockTimer.Tick += (_, __) => UpdateDateTimeDisplay();
             _clockTimer.Start();
             UpdateDateTimeDisplay();
+
+            // [병목 해결] 배치 UI 업데이트 타이머 초기화
+            _uiBatchTimer.Tick += (_, __) => ProcessUIBatchQueue();
+            _uiBatchTimer.Start();
 
             // 관리자 메뉴 표시 여부 설정
             CheckAdminMenu();
@@ -433,73 +442,109 @@ namespace TradingBot
 
         public void RefreshSignalUI(MultiTimeframeViewModel signal)
         {
-            Application.Current.Dispatcher.Invoke(() =>
+            // [병목 해결] 동기 호출 대신 비동기 큐에 추가
+            lock (_uiQueueLock)
             {
-                var existingItem = ViewModel.MarketDataList.FirstOrDefault(x => x.Symbol == signal.Symbol);
-
-                if (existingItem != null)
-                {
-                    // 1. 가격 변동 방향 확인
-                    bool isPriceUp = signal.LastPrice > existingItem.LastPrice;
-                    bool isPriceDown = signal.LastPrice < existingItem.LastPrice;
-
-                    // 2. 데이터 업데이트 (값이 유효할 때만 업데이트)
-                    existingItem.LastPrice = signal.LastPrice;
-
-                    // RSI, AIScore 등은 0이 아닐 때만 업데이트 (WebSocket 티커는 가격만 전송)
-                    if (signal.RSI_1H != 0)
-                        existingItem.RSI_1H = signal.RSI_1H;
-                    if (signal.AIScore != 0)
-                    {
-                        existingItem.AIScore = signal.AIScore;
-                        existingItem.TouchAIScoreUpdatedAt();
-                    }
-                    if (!string.IsNullOrEmpty(signal.Decision))
-                        existingItem.Decision = signal.Decision;
-                    if (!string.IsNullOrEmpty(signal.BBPosition))
-                        existingItem.BBPosition = signal.BBPosition;
-                    if (!string.IsNullOrEmpty(signal.StrategyName))
-                        existingItem.StrategyName = signal.StrategyName;
-                    if (!string.IsNullOrEmpty(signal.SignalSource))
-                        existingItem.SignalSource = signal.SignalSource;
-                    if (!string.IsNullOrEmpty(signal.VolumeRatio))
-                        existingItem.VolumeRatio = signal.VolumeRatio;
-
-                    if (signal.ShortLongScore != 0)
-                        existingItem.ShortLongScore = signal.ShortLongScore;
-                    if (signal.ShortShortScore != 0)
-                        existingItem.ShortShortScore = signal.ShortShortScore;
-                    if (signal.MacdHist != 0)
-                        existingItem.MacdHist = signal.MacdHist;
-                    if (signal.VolumeRatioValue != 0)
-                        existingItem.VolumeRatioValue = signal.VolumeRatioValue;
-                    if (!string.IsNullOrEmpty(signal.ElliottTrend))
-                        existingItem.ElliottTrend = signal.ElliottTrend;
-                    if (!string.IsNullOrEmpty(signal.MAState))
-                        existingItem.MAState = signal.MAState;
-                    if (!string.IsNullOrEmpty(signal.FibPosition))
-                        existingItem.FibPosition = signal.FibPosition;
-
-                    if (signal.TransformerPrice != 0)
-                        existingItem.TransformerPrice = signal.TransformerPrice;
-                    if (signal.TransformerChange != 0)
-                        existingItem.TransformerChange = signal.TransformerChange;
-
-                    // 3. 애니메이션 실행 (DataGrid의 특정 셀 찾기)
-                    if (isPriceUp || isPriceDown)
-                    {
-                        TriggerPriceAnimation(signal.Symbol ?? "", isPriceUp);
-                    }
-                }
-                else
-                {
-                    if (signal.AIScore != 0)
-                        signal.TouchAIScoreUpdatedAt();
-
-                    ViewModel.MarketDataList.Add(signal);
-                }
-            });
+                _uiUpdateQueue.Enqueue(signal);
+            }
         }
+
+        /// <summary>
+        /// [병목 해결] 배치 큐의 모든 신호를 한번에 처리 (100ms 주기)
+        /// </summary>
+        private void ProcessUIBatchQueue()
+        {
+            List<MultiTimeframeViewModel> signals = new();
+            lock (_uiQueueLock)
+            {
+                while (_uiUpdateQueue.Count > 0)
+                {
+                    signals.Add(_uiUpdateQueue.Dequeue());
+                }
+            }
+
+            if (signals.Count == 0) return;
+
+            // UI 스레드에서 배치 처리 (우선순위 낮음)
+            _ = Dispatcher.BeginInvoke(new Action(() =>
+            {
+                foreach (var signal in signals)
+                {
+                    ProcessSignalUpdate(signal);
+                }
+            }), DispatcherPriority.Background);
+        }
+
+        /// <summary>
+        /// 단일 신호 처리 (UI 스레드에서만 호출)
+        /// </summary>
+        private void ProcessSignalUpdate(MultiTimeframeViewModel signal)
+        {
+            var existingItem = ViewModel.MarketDataList.FirstOrDefault(x => x.Symbol == signal.Symbol);
+
+            if (existingItem != null)
+            {
+                // 1. 가격 변동 방향 확인
+                bool isPriceUp = signal.LastPrice > existingItem.LastPrice;
+                bool isPriceDown = signal.LastPrice < existingItem.LastPrice;
+
+                // 2. 데이터 업데이트 (값이 유효할 때만 업데이트)
+                existingItem.LastPrice = signal.LastPrice;
+
+                // RSI, AIScore 등은 0이 아닐 때만 업데이트 (WebSocket 티커는 가격만 전송)
+                if (signal.RSI_1H != 0)
+                    existingItem.RSI_1H = signal.RSI_1H;
+                if (signal.AIScore != 0)
+                {
+                    existingItem.AIScore = signal.AIScore;
+                    existingItem.TouchAIScoreUpdatedAt();
+                }
+                if (!string.IsNullOrEmpty(signal.Decision))
+                    existingItem.Decision = signal.Decision;
+                if (!string.IsNullOrEmpty(signal.BBPosition))
+                    existingItem.BBPosition = signal.BBPosition;
+                if (!string.IsNullOrEmpty(signal.StrategyName))
+                    existingItem.StrategyName = signal.StrategyName;
+                if (!string.IsNullOrEmpty(signal.SignalSource))
+                    existingItem.SignalSource = signal.SignalSource;
+                if (!string.IsNullOrEmpty(signal.VolumeRatio))
+                    existingItem.VolumeRatio = signal.VolumeRatio;
+
+                if (signal.ShortLongScore != 0)
+                    existingItem.ShortLongScore = signal.ShortLongScore;
+                if (signal.ShortShortScore != 0)
+                    existingItem.ShortShortScore = signal.ShortShortScore;
+                if (signal.MacdHist != 0)
+                    existingItem.MacdHist = signal.MacdHist;
+                if (signal.VolumeRatioValue != 0)
+                    existingItem.VolumeRatioValue = signal.VolumeRatioValue;
+                if (!string.IsNullOrEmpty(signal.ElliottTrend))
+                    existingItem.ElliottTrend = signal.ElliottTrend;
+                if (!string.IsNullOrEmpty(signal.MAState))
+                    existingItem.MAState = signal.MAState;
+                if (!string.IsNullOrEmpty(signal.FibPosition))
+                    existingItem.FibPosition = signal.FibPosition;
+
+                if (signal.TransformerPrice != 0)
+                    existingItem.TransformerPrice = signal.TransformerPrice;
+                if (signal.TransformerChange != 0)
+                    existingItem.TransformerChange = signal.TransformerChange;
+
+                // 3. 애니메이션 실행 (DataGrid의 특정 셀 찾기)
+                if (isPriceUp || isPriceDown)
+                {
+                    TriggerPriceAnimation(signal.Symbol ?? "", isPriceUp);
+                }
+            }
+            else
+            {
+                if (signal.AIScore != 0)
+                    signal.TouchAIScoreUpdatedAt();
+
+                ViewModel.MarketDataList.Add(signal);
+            }
+        }
+
         public void RefreshTradeGrid()
         {
             Dispatcher.Invoke(() =>
@@ -519,21 +564,35 @@ namespace TradingBot
         }
         private void TriggerPriceAnimation(string symbol, bool isUp)
         {
-            // DataGrid에서 해당 심볼의 행과 가격 컬럼(보통 index 1)을 찾아 애니메이션 적용
-            var row = dgMultiTimeframe.ItemContainerGenerator.ContainerFromItem(
-                ViewModel.MarketDataList.FirstOrDefault(x => x.Symbol == symbol)) as DataGridRow;
-
-            if (row != null && dgMultiTimeframe.Columns.Count > 1)
+            // [병목 해결] 애니메이션을 백그라운드에서 비동기로 처리 (UI 스레드 블로킹 최소화)
+            _ = Dispatcher.BeginInvoke(new Action(() =>
             {
-                // 가격 컬럼(Index 1)의 시각적 요소 가져오기
-                var cell = dgMultiTimeframe.Columns[1].GetCellContent(row) as TextBlock;
-                if (cell != null)
+                try
                 {
-                    // 리소스에서 스토리보드 찾아서 실행
-                    var sb = (Storyboard)this.Resources[isUp ? "FlashGreen" : "FlashRed"];
-                    sb.Begin(cell);
+                    // DataGrid에서 해당 심볼의 행과 가격 컬럼(보통 index 1)을 찾아 애니메이션 적용
+                    var item = ViewModel.MarketDataList.FirstOrDefault(x => x.Symbol == symbol);
+                    if (item == null) return;
+
+                    var row = dgMultiTimeframe.ItemContainerGenerator.ContainerFromItem(item) as DataGridRow;
+                    if (row != null && dgMultiTimeframe.Columns.Count > 1)
+                    {
+                        // 가격 컬럼(Index 1)의 시각적 요소 가져오기
+                        var cell = dgMultiTimeframe.Columns[1].GetCellContent(row) as TextBlock;
+                        if (cell != null)
+                        {
+                            // 리소스에서 스토리보드 찾아서 실행
+                            try
+                            {
+                                var sb = (Storyboard)this.Resources[isUp ? "FlashGreen" : "FlashRed"];
+                                if (sb != null)
+                                    sb.Begin(cell, true); // isControllable=true로 중복 애니메이션 방지
+                            }
+                            catch { /* 리소스 미존재 시 무시 */ }
+                        }
+                    }
                 }
-            }
+                catch { /* 애니메이션 실패해도 무시 (필수 기능 아님) */ }
+            }), DispatcherPriority.Background);
         }
 
         // 1. 단순 활동 기록 (스캔 중..., 대기 중...)
@@ -721,8 +780,8 @@ namespace TradingBot
                 ViewModel.PumpSlotText = $"{pumpCount} / {pumpMax}";
                 ViewModel.PumpSlotColor = pumpCount >= pumpMax ? Brushes.Orange : Brushes.White;
 
-                // 전체 포지션 요약 정보
-                ViewModel.TotalPositionInfo = $"Active: {majorCount + pumpCount} 명";
+                // 전체 포지션 요약 정보(메인 UI 통합 표시)
+                ViewModel.TotalPositionInfo = $"Active: {majorCount + pumpCount} / {majorMax + pumpMax}";
             });
         }
         public void OnPositionEntered()

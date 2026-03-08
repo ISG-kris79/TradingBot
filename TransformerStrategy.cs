@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -29,6 +30,7 @@ namespace TradingBot.Strategies
         private bool _modelNotReadyLogged;
         private readonly object _signalHistoryLock = new object();
         private readonly List<string> _recentSignalDirections = new List<string>();
+        private readonly ConcurrentDictionary<string, DateTime> _lastAnalyzeTimes = new(StringComparer.OrdinalIgnoreCase);
 
         // 이벤트 정의
         public event Action<string, string, decimal, decimal, string, decimal, decimal, PatternSnapshotInput?>? OnTradeSignal;
@@ -40,6 +42,8 @@ namespace TradingBot.Strategies
         private const int RequiredHistory = 240;
         private const int SignalHistoryLimit = 100;
         private const double TargetShortRatio = 0.30;
+        private static readonly TimeSpan AnalyzeMinInterval = TimeSpan.FromSeconds(3);
+        private const int IndicatorLookbackWindow = 80;
 
         // [상위 타임프레임 페널티 캐시] — 15분봉/1시간봉 조회 빈도 제한
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime timestamp, double penalty, string reason)> _htfPenaltyCache
@@ -66,6 +70,29 @@ namespace TradingBot.Strategies
         {
             try
             {
+                var nowUtc = DateTime.UtcNow;
+                var shouldAnalyze = false;
+                _lastAnalyzeTimes.AddOrUpdate(
+                    symbol,
+                    _ =>
+                    {
+                        shouldAnalyze = true;
+                        return nowUtc;
+                    },
+                    (_, previousUtc) =>
+                    {
+                        if ((nowUtc - previousUtc) >= AnalyzeMinInterval)
+                        {
+                            shouldAnalyze = true;
+                            return nowUtc;
+                        }
+
+                        return previousUtc;
+                    });
+
+                if (!shouldAnalyze)
+                    return;
+
                 // 1. ═══ [메인 분석] 15분봉 기반으로 전체 방향성/AI 예측 수행 ═══
                 // 15분봉은 노이즈가 적고 추세가 견고하며, 20배 레버리지에서 수수료 대비 수익 극대화
                 var klinesResult = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, limit: RequiredHistory, ct: token);
@@ -74,7 +101,7 @@ namespace TradingBot.Strategies
                 var klines = klinesResult.Data.ToList();
 
                 // 2. 데이터 전처리
-                var candleDataList = await ConvertToCandleDataAsync(klines, symbol);
+                var candleDataList = await ConvertToCandleDataAsync(klines, symbol, token);
                 if (candleDataList.Count == 0) return;
 
                 // 2.5. 변동성 체크 (15분봉 ATR 기반 동적 임계값)
@@ -958,17 +985,22 @@ namespace TradingBot.Strategies
             }
         }
 
-        private async Task<List<CandleData>> ConvertToCandleDataAsync(List<Binance.Net.Interfaces.IBinanceKline> klines, string symbol)
+        private async Task<List<CandleData>> ConvertToCandleDataAsync(List<Binance.Net.Interfaces.IBinanceKline> klines, string symbol, CancellationToken token)
         {
             var result = new List<CandleData>();
             double sentiment = await _newsService.GetMarketSentimentAsync();
 
             for (int i = 50; i < klines.Count; i++)
             {
-                // 대량 데이터 처리 시 100건마다 Task.Yield로 봐주기
-                if ((i - 50) % 100 == 0)
+                // 대량 데이터 처리 시 주기적으로 양보 + 취소 반응성 확보
+                if ((i - 50) % 32 == 0)
+                {
+                    token.ThrowIfCancellationRequested();
                     await Task.Yield();
-                var subset = klines.GetRange(0, i + 1);
+                }
+
+                int startIndex = Math.Max(0, i - IndicatorLookbackWindow);
+                var subset = klines.GetRange(startIndex, i - startIndex + 1);
                 var current = klines[i];
                 var rsi = IndicatorCalculator.CalculateRSI(subset, 14);
                 var bb = IndicatorCalculator.CalculateBB(subset, 20, 2);

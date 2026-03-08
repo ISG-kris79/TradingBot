@@ -54,9 +54,13 @@ namespace TradingBot
         private static readonly TimeSpan FastEntrySlippageMonitorDuration = TimeSpan.FromSeconds(25);
         private const decimal FastEntrySlippageWarnPct = 0.0010m;
         private const decimal FastEntrySlippageExitPct = 0.0018m;
-        private const decimal MinEntryRiskRewardRatio = 1.40m;
-        private const float FifteenMinuteMlMinConfidence = 0.55f;
-        private const float FifteenMinuteTransformerMinConfidence = 0.52f;
+        private decimal _minEntryRiskRewardRatio = 1.40m; // 설정에서 로드
+        private float _fifteenMinuteMlMinConfidence = 0.55f; // 설정에서 로드
+        private float _fifteenMinuteTransformerMinConfidence = 0.52f; // 설정에서 로드
+        private float _aiScoreThresholdMajor = 65.0f; // 설정에서 로드
+        private float _aiScoreThresholdNormal = 75.0f; // 설정에서 로드
+        private bool _enableAiScoreFilter = true; // 설정에서 로드
+        private bool _enableFifteenMinWaveGate = true; // 설정에서 로드
         private const float GateMlThresholdMin = 0.48f;
         private const float GateMlThresholdMax = 0.72f;
         private const float GateTransformerThresholdMin = 0.47f;
@@ -148,15 +152,22 @@ namespace TradingBot
         private readonly SemaphoreSlim _predictionValidationLimiter = new SemaphoreSlim(3, 3);
         private static readonly TimeSpan MlMonitorRecordInterval = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan PredictionValidationDelay = TimeSpan.FromMinutes(5);
+        private const decimal PredictionValidationNeutralMovePct = 0.0015m;
 
         private sealed class GateThresholdState
         {
             public readonly object SyncRoot = new object();
-            public float MlThreshold = FifteenMinuteMlMinConfidence;
-            public float TransformerThreshold = FifteenMinuteTransformerMinConfidence;
+            public float MlThreshold;
+            public float TransformerThreshold;
             public int SampleCount;
             public int PassCount;
             public int BlockCount;
+
+            public GateThresholdState(float mlThreshold, float transformerThreshold)
+            {
+                MlThreshold = mlThreshold;
+                TransformerThreshold = transformerThreshold;
+            }
         }
 
         private readonly ConcurrentDictionary<string, GateThresholdState> _symbolGateThresholds = new(StringComparer.OrdinalIgnoreCase);
@@ -220,12 +231,20 @@ namespace TradingBot
         private DateTime _lastHeartbeatTime = DateTime.MinValue;
         private DateTime _lastPositionSyncTime = DateTime.MinValue; // [FIX] 마지막 포지션 동기화 시간
         private bool _initialTransformerTrainingTriggered = false;
-        private readonly TimeSpan _entryWarmupDuration = TimeSpan.FromSeconds(30); // 워밍업 30초로 단축 (2025-03-04)
+        private TimeSpan _entryWarmupDuration = TimeSpan.FromSeconds(30); // 설정에서 로드
         private DateTime _lastEntryWarmupLogTime = DateTime.MinValue;
+
+        // [병목 해결] RefreshProfitDashboard API 호출 캐싱
+        private decimal _cachedUsdtBalance = 0m;
+        private DateTime _lastBalanceCacheTime = DateTime.MinValue;
+        private const int BALANCE_CACHE_INTERVAL_MS = 5000; // 5초마다 업데이트
 
         public TradingEngine()
         {
             _cts = new CancellationTokenSource();
+
+            // [진입 필터 설정 로드]
+            LoadEntryFilterSettings();
 
             // [추가] 로그 버퍼링 (최근 100개 유지)
             this.OnLiveLog += (msg) => AddToLogBuffer($"[LIVE] {msg}");
@@ -1253,6 +1272,38 @@ namespace TradingBot
                 _mainLoopSamples = 0;
                 _mainLoopMaxMs = 0;
             }
+        }
+
+        /// <summary>
+        /// 진입 필터 설정을 appsettings.json에서 로드합니다.
+        /// </summary>
+        private void LoadEntryFilterSettings()
+        {
+            var settings = AppConfig.Current?.Trading?.EntryFilterSettings;
+            if (settings == null)
+            {
+                OnStatusLog?.Invoke("⚠️ EntryFilterSettings 미설정 (기본값 사용)");
+                return;
+            }
+
+            _entryWarmupDuration = TimeSpan.FromSeconds(Math.Max(0, settings.EntryWarmupSeconds));
+            _minEntryRiskRewardRatio = Math.Max(1.0m, settings.MinRiskRewardRatio);
+            _enableFifteenMinWaveGate = settings.EnableFifteenMinWaveGate;
+            _fifteenMinuteMlMinConfidence = Math.Clamp(settings.FifteenMinMlConfidence, 0f, 1f);
+            _fifteenMinuteTransformerMinConfidence = Math.Clamp(settings.FifteenMinTransformerConfidence, 0f, 1f);
+            _aiScoreThresholdMajor = Math.Max(0f, settings.AiScoreThresholdMajor);
+            _aiScoreThresholdNormal = Math.Max(0f, settings.AiScoreThresholdNormal);
+            _enableAiScoreFilter = settings.EnableAiScoreFilter;
+
+            OnStatusLog?.Invoke(
+                $"✅ 진입 필터 설정 로드 완료: " +
+                $"워밍업={_entryWarmupDuration.TotalSeconds}초, " +
+                $"RR>={_minEntryRiskRewardRatio:F2}, " +
+                $"15분Gate={(_enableFifteenMinWaveGate ? "ON" : "OFF")}, " +
+                $"ML>={_fifteenMinuteMlMinConfidence:P0}, " +
+                $"TF>={_fifteenMinuteTransformerMinConfidence:P0}, " +
+                $"AI(메이저>={_aiScoreThresholdMajor}, 일반>={_aiScoreThresholdNormal})"
+            );
         }
 
         private void ApplyMainLoopPerformanceSettings()
@@ -2902,17 +2953,42 @@ namespace TradingBot
         {
             try
             {
-                decimal balance = await _exchangeService.GetBalanceAsync("USDT", token);
-                double equity = (double)balance;
-                double available = (double)balance;
+                // [병목 해결] 캐시된 잔고 사용 (5초마다만 API 호출)
+                if ((DateTime.Now - _lastBalanceCacheTime).TotalMilliseconds < BALANCE_CACHE_INTERVAL_MS)
+                {
+                    // 캐시된 값 사용
+                    double equity = (double)_cachedUsdtBalance;
+                    double available = (double)_cachedUsdtBalance;
 
-                int currentMajor = 0;
-                int currentPump = 0;
+                    int currentMajor = 0;
+                    int currentPump = 0;
+
+                    lock (_posLock)
+                    {
+                        currentMajor = _activePositions.Values.Count(p => !p.IsPumpStrategy);
+                        currentPump = _activePositions.Values.Count(p => p.IsPumpStrategy);
+                    }
+
+                    OnDashboardUpdate?.Invoke(equity, available, currentMajor + currentPump);
+                    OnSlotStatusUpdate?.Invoke(currentMajor, MAX_MAJOR_SLOTS, currentPump, MAX_PUMP_SLOTS);
+                    return;
+                }
+
+                // 캐시 갱신 시점 - API 호출
+                decimal balance = await _exchangeService.GetBalanceAsync("USDT", token);
+                _cachedUsdtBalance = balance;
+                _lastBalanceCacheTime = DateTime.Now;
+
+                double equity2 = (double)balance;
+                double available2 = (double)balance;
+
+                int currentMajor2 = 0;
+                int currentPump2 = 0;
 
                 lock (_posLock)
                 {
-                    currentMajor = _activePositions.Values.Count(p => !p.IsPumpStrategy);
-                    currentPump = _activePositions.Values.Count(p => p.IsPumpStrategy);
+                    currentMajor2 = _activePositions.Values.Count(p => !p.IsPumpStrategy);
+                    currentPump2 = _activePositions.Values.Count(p => p.IsPumpStrategy);
                 }
 
                 // [디버그] 서비스 타입 확인 (처음 한번만)
@@ -2924,8 +3000,8 @@ namespace TradingBot
                 }
 
                 // UI 업데이트 및 DataGrid 정렬 유지
-                OnDashboardUpdate?.Invoke(equity, available, currentMajor + currentPump);
-                OnSlotStatusUpdate?.Invoke(currentMajor, MAX_MAJOR_SLOTS, currentPump, MAX_PUMP_SLOTS);
+                OnDashboardUpdate?.Invoke(equity2, available2, currentMajor2 + currentPump2);
+                OnSlotStatusUpdate?.Invoke(currentMajor2, MAX_MAJOR_SLOTS, currentPump2, MAX_PUMP_SLOTS);
             }
             catch (Exception ex)
             {
@@ -3754,8 +3830,9 @@ namespace TradingBot
             }
 
             bool isMajorLikeSignal = signalSource == "MAJOR" || signalSource.StartsWith("MAJOR_");
+            bool isMajorAtrEnforcedSignal = isMajorLikeSignal && MajorSymbols.Contains(symbol);
 
-            if (isMajorLikeSignal && customStopLossPrice <= 0)
+            if (isMajorAtrEnforcedSignal && customStopLossPrice <= 0)
             {
                 majorAtrPreview = await TryCalculateMajorAtrHybridStopLossAsync(symbol, currentPrice, decision == "LONG", token);
                 if (majorAtrPreview.StopLossPrice <= 0)
@@ -3864,49 +3941,59 @@ namespace TradingBot
                     float finalAiScore = baseAiScore + bonusPoints;
                     convictionScore = Math.Max(convictionScore, (decimal)finalAiScore);
                     
-                    // 조정된 임계값: MAJOR 65점, 기타 75점
-                    float adjustedThreshold = isMajorCoin ? 65f : 75f;
-                    if (majorLowVolumePrivilege)
+                    // AI 점수 필터 체크
+                    if (_enableAiScoreFilter)
                     {
-                        adjustedThreshold = Math.Min(adjustedThreshold, 65f);
+                        // 설정 파일에서 읽은 임계값 사용
+                        float adjustedThreshold = isMajorCoin ? _aiScoreThresholdMajor : _aiScoreThresholdNormal;
+                        if (majorLowVolumePrivilege)
+                        {
+                            adjustedThreshold = Math.Min(adjustedThreshold, _aiScoreThresholdMajor);
+                        }
+                        
+                        if (decision == "LONG" && finalAiScore < adjustedThreshold && !majorLowVolumePrivilege)
+                        {
+                            // [개선] 구체적인 필터 실패 이유 표시
+                            var failReasons = new List<string>();
+                            
+                            if (baseAiScore < adjustedThreshold)
+                                failReasons.Add($"AI 확률 부족({baseAiScore:F1}<{adjustedThreshold})");
+                            
+                            if (!isMajorCoin && latestCandle.Volume_Ratio < 1.0f)
+                                failReasons.Add($"거래량 부족({latestCandle.Volume_Ratio:F2}x)");
+                            
+                            if (latestCandle.RSI < 40f)
+                                failReasons.Add($"RSI 과매도({latestCandle.RSI:F1})");
+                            
+                            if (latestCandle.MACD < 0)
+                                failReasons.Add($"MACD 음수({latestCandle.MACD:F4})");
+                            
+                            if (!(latestCandle.SMA_20 > latestCandle.SMA_60))
+                                failReasons.Add("중기 정배열 실패(MA20<MA60)");
+                            
+                            if (latestCandle.OI_Change_Pct < 0)
+                                failReasons.Add($"OI 감소({latestCandle.OI_Change_Pct:F2}%)");
+                            
+                            string reasonText = failReasons.Count > 0 ? string.Join(", ", failReasons) : "복합 조건 미달";
+                            OnStatusLog?.Invoke($"🤖 {symbol} AI 필터 차단 | 점수: {baseAiScore:F1}+{bonusPoints:F0}={finalAiScore:F1}<{adjustedThreshold} | 사유: {reasonText}");
+                            EntryLog("AI", "BLOCK", $"score={finalAiScore:F1} threshold={adjustedThreshold:F1} reason={reasonText}");
+                            return;
+                        }
+                        
+                        // 진입 승인 로그
+                        if (decision == "LONG")
+                        {
+                            if (majorLowVolumePrivilege && finalAiScore < adjustedThreshold)
+                                EntryLog("AI", "PASS", $"lowVolumePrivilege=true score={finalAiScore:F1} threshold={adjustedThreshold:F1}");
+                            else
+                                EntryLog("AI", "PASS", $"score={finalAiScore:F1} threshold={adjustedThreshold:F1}");
+                        }
                     }
-                    
-                    if (decision == "LONG" && finalAiScore < adjustedThreshold && !majorLowVolumePrivilege)
+                    else
                     {
-                        // [개선] 구체적인 필터 실패 이유 표시
-                        var failReasons = new List<string>();
-                        
-                        if (baseAiScore < adjustedThreshold)
-                            failReasons.Add($"AI 확률 부족({baseAiScore:F1}<{adjustedThreshold})");
-                        
-                        if (!isMajorCoin && latestCandle.Volume_Ratio < 1.0f)
-                            failReasons.Add($"거래량 부족({latestCandle.Volume_Ratio:F2}x)");
-                        
-                        if (latestCandle.RSI < 40f)
-                            failReasons.Add($"RSI 과매도({latestCandle.RSI:F1})");
-                        
-                        if (latestCandle.MACD < 0)
-                            failReasons.Add($"MACD 음수({latestCandle.MACD:F4})");
-                        
-                        if (!(latestCandle.SMA_20 > latestCandle.SMA_60))
-                            failReasons.Add("중기 정배열 실패(MA20<MA60)");
-                        
-                        if (latestCandle.OI_Change_Pct < 0)
-                            failReasons.Add($"OI 감소({latestCandle.OI_Change_Pct:F2}%)");
-                        
-                        string reasonText = failReasons.Count > 0 ? string.Join(", ", failReasons) : "복합 조건 미달";
-                        OnStatusLog?.Invoke($"🤖 {symbol} AI 필터 차단 | 점수: {baseAiScore:F1}+{bonusPoints:F0}={finalAiScore:F1}<{adjustedThreshold} | 사유: {reasonText}");
-                        EntryLog("AI", "BLOCK", $"score={finalAiScore:F1} threshold={adjustedThreshold:F1} reason={reasonText}");
-                        return;
-                    }
-                    
-                    // 진입 승인 로그
-                    if (decision == "LONG")
-                    {
-                        if (majorLowVolumePrivilege && finalAiScore < adjustedThreshold)
-                            EntryLog("AI", "PASS", $"lowVolumePrivilege=true score={finalAiScore:F1} threshold={adjustedThreshold:F1}");
-                        else
-                            EntryLog("AI", "PASS", $"score={finalAiScore:F1} threshold={adjustedThreshold:F1}");
+                        // AI 점수 필터 비활성화 시 통과 로그
+                        if (decision == "LONG")
+                            EntryLog("AI", "PASS", $"filterDisabled=true score={finalAiScore:F1}");
                     }
 
                     // 숏 진입은 더 엄격하게 필터링 (하락 예측 + 충분한 확률 + 과매도 추격 방지)
@@ -4031,11 +4118,11 @@ namespace TradingBot
                         return;
                     }
 
-                    if (riskRewardRatio < MinEntryRiskRewardRatio)
+                    if (riskRewardRatio < _minEntryRiskRewardRatio)
                     {
                         OnStatusLog?.Invoke(
-                            $"⛔ {symbol} 공통 손익비 부족으로 진입 차단 | RR={riskRewardRatio:F2}<{MinEntryRiskRewardRatio:F2} | TP={evaluatedTakeProfit:F8}, SL={evaluatedStopLoss:F8}");
-                        EntryLog("RR", "BLOCK", $"rr={riskRewardRatio:F2}<{MinEntryRiskRewardRatio:F2}");
+                            $"⛔ {symbol} 공통 손익비 부족으로 진입 차단 | RR={riskRewardRatio:F2}<{_minEntryRiskRewardRatio:F2} | TP={evaluatedTakeProfit:F8}, SL={evaluatedStopLoss:F8}");
+                        EntryLog("RR", "BLOCK", $"rr={riskRewardRatio:F2}<{_minEntryRiskRewardRatio:F2}");
                         return;
                     }
 
@@ -4215,7 +4302,7 @@ namespace TradingBot
 
                     var actualEntryPrice = avgPrice > 0 ? avgPrice : limitPrice;
 
-                    if (isMajorLikeSignal)
+                    if (isMajorAtrEnforcedSignal)
                     {
                         var filledMajorStop = await TryCalculateMajorAtrHybridStopLossAsync(symbol, actualEntryPrice, decision == "LONG", token);
                         if (filledMajorStop.StopLossPrice > 0)
@@ -4493,8 +4580,11 @@ namespace TradingBot
                 || signalSource.StartsWith("TRANSFORMER_", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static bool ShouldApplyFifteenMinuteWaveGate(string signalSource)
+        private bool ShouldApplyFifteenMinuteWaveGate(string signalSource)
         {
+            if (!_enableFifteenMinWaveGate)
+                return false;
+
             if (string.IsNullOrWhiteSpace(signalSource))
                 return false;
 
@@ -4510,7 +4600,7 @@ namespace TradingBot
                 ? "UNKNOWN"
                 : symbol.ToUpperInvariant();
 
-            var state = _symbolGateThresholds.GetOrAdd(key, _ => new GateThresholdState());
+            var state = _symbolGateThresholds.GetOrAdd(key, _ => new GateThresholdState(_fifteenMinuteMlMinConfidence, _fifteenMinuteTransformerMinConfidence));
             lock (state.SyncRoot)
             {
                 return (state.MlThreshold, state.TransformerThreshold);
@@ -4529,11 +4619,7 @@ namespace TradingBot
                 ? "UNKNOWN"
                 : symbol.ToUpperInvariant();
 
-            var state = _symbolGateThresholds.GetOrAdd(key, _ => new GateThresholdState
-            {
-                MlThreshold = mlThreshold,
-                TransformerThreshold = transformerThreshold
-            });
+            var state = _symbolGateThresholds.GetOrAdd(key, _ => new GateThresholdState(mlThreshold, transformerThreshold));
 
             float beforeMl;
             float beforeTf;
@@ -6375,6 +6461,19 @@ namespace TradingBot
                 }
 
                 decimal actualPrice = tickerResult.Data.LastPrice;
+
+                if (entryPrice <= 0m)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [{modelName}] {symbol} 예측 검증 스킵: entryPrice 비정상 ({entryPrice:F8})");
+                    return;
+                }
+
+                decimal moveRatio = Math.Abs((actualPrice - entryPrice) / entryPrice);
+                if (moveRatio < PredictionValidationNeutralMovePct)
+                {
+                    OnStatusLog?.Invoke($"⏭️ [{modelName}] {symbol} 예측 검증 스킵: 미세변동 {moveRatio:P2} < {PredictionValidationNeutralMovePct:P2}");
+                    return;
+                }
 
                 // 실제 방향 계산 (저장된 진입 가격 기준)
                 bool actualDirection = actualPrice > entryPrice;

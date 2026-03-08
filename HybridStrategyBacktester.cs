@@ -514,7 +514,19 @@ namespace TradingBot.Services.Backtest
             var all = new List<IBinanceKline>();
             var cursor = startUtc;
 
-            for (int chunk = 0; chunk < 20 && cursor < endUtc; chunk++)
+            int minutes = interval switch
+            {
+                KlineInterval.FiveMinutes => 5,
+                KlineInterval.FifteenMinutes => 15,
+                KlineInterval.OneHour => 60,
+                _ => 5
+            };
+
+            double totalMinutes = Math.Max(minutes, (endUtc - startUtc).TotalMinutes);
+            int expectedCandles = (int)Math.Ceiling(totalMinutes / minutes) + 10;
+            int maxChunks = Math.Clamp((int)Math.Ceiling(expectedCandles / 1500.0) + 2, 1, 200);
+
+            for (int chunk = 0; chunk < maxChunks && cursor < endUtc; chunk++)
             {
                 var response = await client.UsdFuturesApi.ExchangeData.GetKlinesAsync(
                     symbol, interval, startTime: cursor, endTime: endUtc, limit: 1500);
@@ -524,14 +536,6 @@ namespace TradingBot.Services.Backtest
                 if (batch == null || batch.Count == 0) break;
 
                 all.AddRange(batch);
-
-                int minutes = interval switch
-                {
-                    KlineInterval.FiveMinutes => 5,
-                    KlineInterval.FifteenMinutes => 15,
-                    KlineInterval.OneHour => 60,
-                    _ => 5
-                };
 
                 var nextCursor = batch.Last().OpenTime.AddMinutes(minutes);
                 if (nextCursor <= cursor || batch.Count < 1500) break;

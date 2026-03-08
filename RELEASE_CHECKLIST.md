@@ -106,13 +106,13 @@ dotnet publish TradingBot.csproj -c Release -r win-x64 --self-contained -p:Publi
 
 **생성되는 파일 (Releases 폴더):**
 - `TradingBot-win-Setup.exe` (~159MB)
-- `TradingBot-2.X.X-full.nupkg` (~156MB)
+- `TradingBot-X.X.X-full.nupkg` (~156MB)
 - `TradingBot-win-Portable.zip` (~156MB)
 - `RELEASES` (메타데이터)
 - `releases.win.json` (자동 업데이트용)
 - `assets.win.json` (자동 업데이트용)
 
-**✅ 체크포인트**: Releases 폴더에 7개 파일이 생성되었는가?
+**✅ 체크포인트**: Releases 폴더에 필수 6개 파일이 생성되었는가?
 
 ---
 
@@ -127,6 +127,8 @@ git tag -a vX.X.X -m "Release vX.X.X - 주요 변경사항 요약"
 ```powershell
 git push Tradingbot vX.X.X
 ```
+
+> 참고: pre-push hook 정책이 활성화된 경우, **5단계(릴리스 파일 업로드) 완료 후** 태그 푸시가 통과됩니다.
 
 ### 4-3. (선택) GPG 서명된 태그 생성 (Verified 표시용)
 ```powershell
@@ -166,7 +168,7 @@ gh release edit vX.X.X --latest
 
 **✅ 체크포인트**: GitHub 릴리스 페이지에서 다음을 확인:
 - [ ] Latest 배지가 표시되는가?
-- [ ] 7개 파일이 모두 업로드되었는가?
+- [ ] 필수 6개 파일이 모두 업로드되었는가?
 - [ ] Setup.exe 파일 크기가 ~159MB인가?
 
 ---
@@ -177,10 +179,9 @@ gh release edit vX.X.X --latest
 
 - [ ] GitHub 릴리스 페이지에서 **Latest** 배지 확인
 - [ ] 릴리스 노트가 올바르게 표시되는가?
-- [ ] 다운로드 가능한 에셋이 7개인가?
+- [ ] 다운로드 가능한 필수 에셋이 6개인가?
   - [ ] TradingBot-win-Setup.exe
   - [ ] TradingBot-X.X.X-full.nupkg
-  - [ ] TradingBot-vX.X.X-win-x64.zip
   - [ ] TradingBot-win-Portable.zip
   - [ ] RELEASES
   - [ ] releases.win.json
@@ -293,7 +294,7 @@ Remove-Item -Recurse -Force Releases
 
 **근본 원인:** TorchSharp Tensor 메모리 누수로 인한 네이티브 스택 버퍼 오버런
 
-**수정 완료 (v2.2.8):**
+**수정 반영 버전: v2.2.11**
 - ✅ `TimeSeriesTransformer.cs` - PositionalEncoding 및 forward() 메서드의 모든 중간 Tensor에 using 추가
 - ✅ `TransformerTrainer.cs` - 배치 학습 시 Tensor 자동 해제 확인
 - ✅ 스레드 안전성 검증 (ReaderWriterLockSlim 사용)
@@ -340,7 +341,7 @@ Remove-Item -Recurse -Force Releases
 
 ```powershell
 # 1. 버전 변수 설정
-$version = "2.2.2"
+$version = "X.X.X"
 
 # 2. 버전 업데이트는 수동으로!
 # TradingBot.csproj, CHANGELOG.md 수정
@@ -350,15 +351,11 @@ git add .
 git commit -m "Release v$version - 변경사항 요약"
 git push Tradingbot main
 
-# 4. 태그 생성 및 푸시
-git tag -a v$version -m "Release v$version"
-git push Tradingbot v$version
-
-# 5. Publish 및 Velopack 패키징
+# 4. Publish 및 Velopack 패키징
 dotnet publish TradingBot.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=false -o "bin\publish\win-x64"
 .\publish-and-release.ps1 -PublishPath "bin\publish\win-x64" -Version $version
 
-# 6. GitHub 릴리스 파일 업로드
+# 5. GitHub 릴리스 파일 업로드
 gh release upload v$version `
   "Releases\TradingBot-win-Setup.exe" `
   "Releases\TradingBot-$version-full.nupkg" `
@@ -368,8 +365,12 @@ gh release upload v$version `
   "Releases\assets.win.json" `
   --clobber
 
-# 7. Latest로 설정
+# 6. Latest로 설정
 gh release edit v$version --latest
+
+# 7. 태그 생성 및 푸시 (pre-push hook 통과를 위해 마지막에 실행 권장)
+git tag -a v$version -m "Release v$version"
+git push Tradingbot v$version
 ```
 
 ---
@@ -377,7 +378,7 @@ gh release edit v$version --latest
 ## ⚡ 원라인 배포 (버전 업데이트 후)
 
 ```powershell
-$v="2.2.2"; dotnet publish TradingBot.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=false -o "bin\publish\win-x64"; .\publish-and-release.ps1 -PublishPath "bin\publish\win-x64" -Version $v; gh release upload v$v "Releases\TradingBot-win-Setup.exe" "Releases\TradingBot-$v-full.nupkg" "Releases\TradingBot-win-Portable.zip" "Releases\RELEASES" "Releases\releases.win.json" "Releases\assets.win.json" --clobber; gh release edit v$v --latest
+$v="X.X.X"; dotnet publish TradingBot.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=false -o "bin\publish\win-x64"; .\publish-and-release.ps1 -PublishPath "bin\publish\win-x64" -Version $v; gh release upload v$v "Releases\TradingBot-win-Setup.exe" "Releases\TradingBot-$v-full.nupkg" "Releases\TradingBot-win-Portable.zip" "Releases\RELEASES" "Releases\releases.win.json" "Releases\assets.win.json" --clobber; gh release edit v$v --latest; git tag -a v$v -m "Release v$v"; git push Tradingbot v$v
 ```
 
 ---

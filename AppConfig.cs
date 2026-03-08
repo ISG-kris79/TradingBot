@@ -240,6 +240,7 @@ namespace TradingBot
         public DcaSettings DcaSettings { get; set; } = new(); // [Agent 2] 추가
         public FundTransferSettings FundTransferSettings { get; set; } = new(); // [Phase 13] 추가
         public PortfolioRebalancingSettings PortfolioRebalancingSettings { get; set; } = new(); // [Phase 13] 추가
+        public EntryFilterSettings EntryFilterSettings { get; set; } = new(); // [진입 필터 설정]
         public bool IsSimulationMode { get; set; } = false;
         public decimal SimulationInitialBalance { get; set; } = 10000m;
     }
@@ -336,4 +337,33 @@ namespace TradingBot
             { "BNB", 10m }    // 10% 바이낸스코인
         };
     }
-}
+
+    /// <summary>
+    /// 진입 필터 설정 - 백테스트와 실전 트레이딩 차이 조정용
+    /// </summary>
+    public class EntryFilterSettings
+    {
+        /// <summary>엔진 시작 후 진입 대기 시간 (초)</summary>
+        public int EntryWarmupSeconds { get; set; } = 30;
+        
+        /// <summary>최소 리스크/리워드 비율 (예: 1.4 = 손절 1% 익절 1.4%)</summary>
+        public decimal MinRiskRewardRatio { get; set; } = 1.40m;
+        
+        /// <summary>15분 웨이브 게이트 활성화 여부 (false시 Gate 완전 건너뜀)</summary>
+        public bool EnableFifteenMinWaveGate { get; set; } = true;
+        
+        /// <summary>15분 ML.NET 최소 신뢰도 (0~1, 높을수록 엄격)</summary>
+        public float FifteenMinMlConfidence { get; set; } = 0.55f;
+        
+        /// <summary>15분 Transformer 최소 신뢰도 (0~1, 높을수록 엄격)</summary>
+        public float FifteenMinTransformerConfidence { get; set; } = 0.52f;
+        
+        /// <summary>AI 점수 임계값 - 메이저 코인 (BTC/ETH/SOL/XRP)</summary>
+        public float AiScoreThresholdMajor { get; set; } = 65.0f;
+        
+        /// <summary>AI 점수 임계값 - 일반 코인 (펌프 등)</summary>
+        public float AiScoreThresholdNormal { get; set; } = 75.0f;
+        
+        /// <summary>AI 점수 필터 활성화 여부</summary>
+        public bool EnableAiScoreFilter { get; set; } = true;
+    }}

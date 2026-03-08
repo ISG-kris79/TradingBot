@@ -548,14 +548,6 @@
                                 WindowChrome.IsHitTestVisibleInChrome="True"
                             ToolTip="시장 그리드에서 종목을 더블클릭으로 선택한 후 클릭&#x0a;다양한 전략과 기간으로 최적화 테스트"
                             Margin="0,0,8,0"/>
-                        <Button x:Name="btnRecollect"
-                            Content="🔄 RECOLLECT"
-                            Width="145"
-                            Height="36"
-                            Style="{StaticResource ModernButtonStyle}"
-                            Click="btnRecollect_Click"
-                            WindowChrome.IsHitTestVisibleInChrome="True"
-                            ToolTip="선택한 종목의 최근 30일 5분봉 데이터를 재수집&#x0a;BACKTEST/OPTIMIZE 실패 시 먼저 실행"/>
                     </StackPanel>
 
                     <!-- Right Controls -->
@@ -563,26 +555,6 @@
                                 Orientation="Horizontal"
                                 VerticalAlignment="Center"
                                 WindowChrome.IsHitTestVisibleInChrome="True">
-                        <!-- View Menu -->
-                        <Menu Background="Transparent"
-                              VerticalAlignment="Center"
-                              Margin="0,0,12,0">
-                            <MenuItem Header="👁 VIEW"
-                                      Foreground="#9CA3AF"
-                                      FontWeight="SemiBold"
-                                      FontSize="12">
-                                <MenuItem Header="Account Summary"
-                                          IsCheckable="True"
-                                          IsChecked="{Binding IsAccountSummaryVisible}"/>
-                                <MenuItem Header="Live Log"
-                                          IsCheckable="True"
-                                          IsChecked="{Binding IsLiveLogVisible}"/>
-                                <MenuItem Header="Charts"
-                                          IsCheckable="True"
-                                          IsChecked="{Binding IsChartVisible}"/>
-                            </MenuItem>
-                        </Menu>
-
                         <!-- Admin Menu -->
                         <Menu x:Name="mnuAdmin"
                               Background="Transparent"
@@ -1227,7 +1199,7 @@
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="*"/>
                                     </Grid.RowDefinitions>
-                                    <TextBlock Text="📝 LIVE LOG (MAJOR / PUMP / GATE)"
+                                    <TextBlock Text="📝 LIVE LOG (TRADE / GATE)"
                                                FontSize="12"
                                                FontWeight="Bold"
                                                Foreground="{StaticResource PrimaryBrush}"
@@ -1237,7 +1209,6 @@
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="*"/>
-                                                                                        <ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
                                         <Border Grid.Column="0"
                                                 BorderBrush="#2D3454"
@@ -1245,12 +1216,12 @@
                                                 Padding="0,0,8,0">
                                             <DockPanel>
                                                 <TextBlock DockPanel.Dock="Top"
-                                                           Text="MAJOR"
+                                                           Text="TRADE"
                                                            Foreground="#9CA3AF"
                                                            FontSize="10"
                                                            FontWeight="SemiBold"
                                                            Margin="0,0,0,4"/>
-                                                <ListBox ItemsSource="{Binding MajorLogs}"
+                                                <ListBox ItemsSource="{Binding TradeLogs}"
                                                          Background="Transparent"
                                                          BorderThickness="0"
                                                          Foreground="#E0E7FF"
@@ -1260,26 +1231,6 @@
                                             </DockPanel>
                                         </Border>
                                         <Border Grid.Column="1"
-                                                BorderBrush="#2D3454"
-                                                BorderThickness="0,0,1,0"
-                                                Padding="8,0,8,0">
-                                            <DockPanel>
-                                                <TextBlock DockPanel.Dock="Top"
-                                                           Text="PUMP"
-                                                           Foreground="#9CA3AF"
-                                                           FontSize="10"
-                                                           FontWeight="SemiBold"
-                                                           Margin="0,0,0,4"/>
-                                                <ListBox ItemsSource="{Binding PumpLogs}"
-                                                         Background="Transparent"
-                                                         BorderThickness="0"
-                                                         Foreground="#E0E7FF"
-                                                         FontFamily="Consolas"
-                                                         FontSize="10"
-                                                         ScrollViewer.VerticalScrollBarVisibility="Auto"/>
-                                            </DockPanel>
-                                        </Border>
-                                        <Border Grid.Column="2"
                                                 Padding="8,0,0,0">
                                             <DockPanel>
                                                 <TextBlock DockPanel.Dock="Top"
@@ -1620,6 +1571,10 @@
                                                FontWeight="Bold"
                                                Foreground="White"
                                                Margin="0,0,0,16"/>
+                                    <TextBlock Text="기준: Confidence 60% 이상 샘플 기준 / 목표 정확도 65% 이상"
+                                               FontSize="11"
+                                               Foreground="#9CA3AF"
+                                               Margin="0,0,0,12"/>
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
@@ -1679,7 +1634,7 @@
                                             <DataGridTextColumn Header="MODEL"
                                                                 Binding="{Binding ModelName}"
                                                                 Width="*"/>
-                                            <DataGridTextColumn Header="ACCURACY"
+                                            <DataGridTextColumn Header="ACCURACY (C≥60%)"
                                                                 Binding="{Binding Accuracy, StringFormat={}{0:F2}%}"
                                                                 Width="120">
                                                 <DataGridTextColumn.ElementStyle>

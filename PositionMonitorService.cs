@@ -172,7 +172,7 @@ namespace TradingBot.Services
                 }
             }
 
-            OnLog?.Invoke($"🔍 {symbol} 감시 시작 (진입가: {entryPrice}) | mode={(isSidewaysMode ? "SIDEWAYS" : "TREND")}");
+            OnLog?.Invoke($"⏳ [{(isSidewaysMode ? "S" : "T")}] {symbol} 진입대기");
 
             // [3단계 본절 보호 & 수익 잠금] 스마트 방어 시스템
             decimal highestROE = -999m;            // 최고 ROE 추적
@@ -229,7 +229,7 @@ namespace TradingBot.Services
                             if (_activePositions.TryGetValue(symbol, out var p))
                                 p.StopOrderId = orderId;
                         }
-                        OnLog?.Invoke($"🛡️ {symbol} 서버 손절 주문 설정 완료 (가: {stopPrice:F4})");
+                        OnLog?.Invoke($"🛡️ {symbol} 손절시작");
                     }
                 }
             }
@@ -358,7 +358,7 @@ namespace TradingBot.Services
                             ? entryPrice * 1.0005m
                             : entryPrice * 0.9995m;
                         
-                        OnLog?.Invoke($"🛡️ {symbol} [1단계] 빠른 본절 보호 활성화! ROE {highestROE:F1}% 도달 | 스탑={protectiveStopPrice:F8} (본절가 + 0.05%)");
+                        OnLog?.Invoke($"🛡️ {symbol} 손절대기 (ROE {highestROE:F1}%)");
                     }
 
                     // ═══════════════════════════════════════════════
@@ -373,7 +373,7 @@ namespace TradingBot.Services
                             ? entryPrice * 1.0025m
                             : entryPrice * 0.9975m;
                         
-                        OnLog?.Invoke($"💰 {symbol} [2단계] 수익 잠금 활성화! ROE {highestROE:F1}% 도달 | 스탑={protectiveStopPrice:F8} (최소 ROE 5% 확보)");
+                        OnLog?.Invoke($"💰 {symbol} 익절대기 (ROE {highestROE:F1}%)");
                     }
 
                     // ═══════════════════════════════════════════════
@@ -389,10 +389,10 @@ namespace TradingBot.Services
                             ? entryPrice * (1 + minLockPriceChange)
                             : entryPrice * (1 - minLockPriceChange);
                         
-                        OnLog?.Invoke($"🎯 {symbol} [3단계] 타이트 트레일링 활성화! ROE {highestROE:F1}% 돌파 | 스탑={protectiveStopPrice:F8} (최소 ROE 15%)");
+                        OnLog?.Invoke($"🚀 {symbol} 트레일링스탑시작 (ROE {highestROE:F1}%)");
 
                         // [v2.1.18] 지표 기반 익절 준비: ROE 20% 도달 시 지표 모니터링 시작
-                        OnLog?.Invoke($"🔍 {symbol} 지표 기반 익절 시스템 활성화 [3단계 타이트 트레일링과 병행]");
+                        OnLog?.Invoke($"� {symbol} 지표모니터링");
                     }
 
                     // ═══════════════════════════════════════════════
@@ -417,7 +417,7 @@ namespace TradingBot.Services
                             {
                                 decimal oldStop = protectiveStopPrice;
                                 protectiveStopPrice = newStopPrice;
-                                OnLog?.Invoke($"📈 {symbol} 트레일링 스톱 갱신: {oldStop:F8} → {protectiveStopPrice:F8} (현재가: {currentPriceForTrailing:F8})");
+                                OnLog?.Invoke($"📈 {symbol} 트레일링갱신 ▲");
                             }
                         }
                         else // 숏 포지션
@@ -436,7 +436,7 @@ namespace TradingBot.Services
                                 decimal oldStop = protectiveStopPrice;
                                 protectiveStopPrice = newStopPrice;
                                 if (oldStop > 0)
-                                    OnLog?.Invoke($"📉 {symbol} 트레일링 스톱 갱신: {oldStop:F8} → {protectiveStopPrice:F8} (현재가: {currentPriceForTrailing:F8})");
+                                    OnLog?.Invoke($"📉 {symbol} 트레일링갱신 ▼");
                             }
                         }
 
@@ -457,7 +457,7 @@ namespace TradingBot.Services
                                 // [즉시 익절 1] BB 회귀 신호
                                 if (exitSignal.ShouldTakeProfitNow)
                                 {
-                                    OnLog?.Invoke($"⚠️ {symbol} [지표 익절] {exitSignal.SignalSummary}");
+                                    OnLog?.Invoke($"🟢 {symbol} 익절시작 [{exitSignal.SignalSummary}]");
                                     decimal exitROE = isLong
                                         ? ((currentPrice - entryPrice) / entryPrice) * leverage * 100
                                         : ((entryPrice - currentPrice) / entryPrice) * leverage * 100;
@@ -471,7 +471,7 @@ namespace TradingBot.Services
                                 // [즉시 익절 2] 여러 신호 동시 발생 (3개 이상)
                                 if (_advancedExitCalculator.ShouldExecuteImmediateExit(tech, exitSignal))
                                 {
-                                    OnLog?.Invoke($"🚨 {symbol} [다중 지표 신호] {exitSignal.SignalSummary} - 즉시 익절 실행!");
+                                    OnLog?.Invoke($"🚨 {symbol} 익절시작 [다중신호]");
                                     decimal exitROE = isLong
                                         ? ((currentPrice - entryPrice) / entryPrice) * leverage * 100
                                         : ((entryPrice - currentPrice) / entryPrice) * leverage * 100;
@@ -516,7 +516,7 @@ namespace TradingBot.Services
                                          : profitLockActivated ? "2단계 수익 잠금" 
                                          : "1단계 본절 보호";
                             
-                            OnLog?.Invoke($"[청산 트리거] {symbol} {stage} 스톱 발동! | 현재가={currentPrice:F8}, 스탑={protectiveStopPrice:F8} | 최종ROE={finalROE:F1}%");
+                            OnLog?.Invoke($"🟢 {symbol} 익절실행 (ROE {finalROE:F1}%)");
                             await ExecuteMarketClose(symbol, $"Smart Protective Stop [{stage}] (ROE {finalROE:F1}%)", token);
                             break;
                         }
@@ -527,7 +527,7 @@ namespace TradingBot.Services
                         bool customStopHit = (isLong && currentPrice <= customStopLossPrice) || (!isLong && currentPrice >= customStopLossPrice);
                         if (customStopHit)
                         {
-                            OnLog?.Invoke($"[청산 트리거] {symbol} ATR 하이브리드 손절 | 현재가={currentPrice:F8}, SL={customStopLossPrice:F8}");
+                            OnLog?.Invoke($"🔴 {symbol} 손절실행 [ATR]");
                             await ExecuteMarketClose(symbol, $"ATR 2.5x Hybrid Stop ({currentPrice:F8})", token);
                             break;
                         }
@@ -537,7 +537,7 @@ namespace TradingBot.Services
                     {
                         if (currentROE >= _settings.SidewaysTakeProfitRoe)
                         {
-                            OnLog?.Invoke($"[청산 트리거] {symbol} SIDEWAYS ROE 익절 조건 충족 | 현재ROE={currentROE:F2}%, 목표ROE={_settings.SidewaysTakeProfitRoe:F2}%");
+                            OnLog?.Invoke($"🟢 {symbol} 익절실행 [ROE]");
                             await ExecuteMarketClose(symbol, $"SIDEWAYS ROE 익절 달성 ({currentROE:F2}%)", token);
                             break;
                         }
@@ -547,7 +547,7 @@ namespace TradingBot.Services
 
                         if (customStopHit)
                         {
-                            OnLog?.Invoke($"[청산 트리거] {symbol} SIDEWAYS 커스텀 손절 | 현재가={currentPrice:F8}, SL={customStopLossPrice:F8}");
+                            OnLog?.Invoke($"🔴 {symbol} 손절실행 [SL]");
                             await ExecuteMarketClose(symbol, $"SIDEWAYS 커스텀 손절 ({currentPrice:F8})", token);
                             break;
                         }
@@ -570,7 +570,7 @@ namespace TradingBot.Services
                                 }
                             }
 
-                            OnLog?.Invoke($"💰 {symbol} SIDEWAYS 중단선 도달: 50% 부분익절, 잔여는 본절가({entryPrice:F8}) 보호");
+                            OnLog?.Invoke($"💰 {symbol} 익절실행 [부분]");
                         }
 
                         if (partialTaken)

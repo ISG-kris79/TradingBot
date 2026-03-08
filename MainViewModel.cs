@@ -79,6 +79,7 @@ namespace TradingBot.ViewModels
         public ObservableCollection<MultiTimeframeViewModel> MarketDataList { get; set; } = new ObservableCollection<MultiTimeframeViewModel>();
         public ChartValues<double> ProfitHistory { get; set; } = new ChartValues<double>();
         public ObservableCollection<string> LiveLogs { get; set; } = new ObservableCollection<string>();
+        public ObservableCollection<string> TradeLogs { get; set; } = new ObservableCollection<string>();
         public ObservableCollection<string> MajorLogs { get; set; } = new ObservableCollection<string>();
         public ObservableCollection<string> PumpLogs { get; set; } = new ObservableCollection<string>();
         public ObservableCollection<string> GateLogs { get; set; } = new ObservableCollection<string>();
@@ -151,7 +152,7 @@ namespace TradingBot.ViewModels
         private Brush _pumpSlotColor = Brushes.White;
         public Brush PumpSlotColor { get => _pumpSlotColor; set { _pumpSlotColor = value; OnPropertyChanged(); } }
 
-        private string _totalPositionInfo = "Active: 0 명";
+        private string _totalPositionInfo = "Active: 0 / 0";
         public string TotalPositionInfo { get => _totalPositionInfo; set { _totalPositionInfo = value; OnPropertyChanged(); } }
 
         // 하단 상태바 및 진행률
@@ -253,6 +254,9 @@ namespace TradingBot.ViewModels
 
         // [AI 모니터링] 예측 정확도 추적
         public ObservableCollection<AIModelPerformance> ModelPerformances { get; set; } = new ObservableCollection<AIModelPerformance>();
+        private const double AccuracyTargetPercent = 65.0;
+        private const double AccuracyWarnPercent = 55.0;
+        private const float AccuracyConfidenceFloor = 0.60f;
 
         // [AI 모니터링] 예측 vs 실제 비교 차트
         private SeriesCollection _predictionComparisonSeries = new SeriesCollection();
@@ -990,6 +994,7 @@ namespace TradingBot.ViewModels
             // Enable collection synchronization for cross-thread updates
             BindingOperations.EnableCollectionSynchronization(MarketDataList, new object());
             BindingOperations.EnableCollectionSynchronization(LiveLogs, new object());
+            BindingOperations.EnableCollectionSynchronization(TradeLogs, new object());
             BindingOperations.EnableCollectionSynchronization(MajorLogs, new object());
             BindingOperations.EnableCollectionSynchronization(PumpLogs, new object());
             BindingOperations.EnableCollectionSynchronization(GateLogs, new object());
@@ -1133,13 +1138,13 @@ namespace TradingBot.ViewModels
                     return;
                 }
 
-                var predictedValues = PredictionComparisonSeries[0].Values as ChartValues<decimal>;
-                var actualValues = PredictionComparisonSeries[1].Values as ChartValues<decimal>;
+                var predictedValues = PredictionComparisonSeries[0].Values as ChartValues<double>;
+                var actualValues = PredictionComparisonSeries[1].Values as ChartValues<double>;
 
                 if (predictedValues != null && actualValues != null)
                 {
-                    var previousPredicted = predictedValues.Count > 0 ? predictedValues[^1] : (decimal?)null;
-                    var previousActual = actualValues.Count > 0 ? actualValues[^1] : (decimal?)null;
+                    decimal? previousPredicted = predictedValues.Count > 0 ? (decimal)predictedValues[^1] : null;
+                    decimal? previousActual = actualValues.Count > 0 ? (decimal)actualValues[^1] : null;
                     var safePredicted = SanitizeChartPrice(record.PredictedPrice, previousPredicted);
                     var safeActual = SanitizeChartPrice(record.ActualPrice, previousActual);
 
@@ -1149,14 +1154,14 @@ namespace TradingBot.ViewModels
                         return;
                     }
 
-                    predictedValues.Add(safePredicted.Value);
-                    actualValues.Add(safeActual.Value);
+                    predictedValues.Add((double)safePredicted.Value);
+                    actualValues.Add((double)safeActual.Value);
 
                     if (predictedValues.Count > 20) predictedValues.RemoveAt(0);
                     if (actualValues.Count > 20) actualValues.RemoveAt(0);
 
                     UpdateAxisRange(
-                        predictedValues.Select(v => (double)v).Concat(actualValues.Select(v => (double)v)),
+                        predictedValues.Concat(actualValues),
                         min => PredictionChartAxisMin = min,
                         max => PredictionChartAxisMax = max,
                         defaultMin: 0d,
@@ -1168,6 +1173,11 @@ namespace TradingBot.ViewModels
                 var model = ModelPerformances.FirstOrDefault(m => m.ModelName == normalizedModelName);
                 if (model != null)
                 {
+                    if (record.Confidence < AccuracyConfidenceFloor)
+                    {
+                        return;
+                    }
+
                     int previousTotal = model.TotalPredictions;
                     double previousConfidenceSum = model.AvgConfidence * previousTotal;
                     double confidencePercent = Math.Clamp((double)record.Confidence, 0.0, 1.0) * 100.0;
@@ -1184,8 +1194,8 @@ namespace TradingBot.ViewModels
                         : confidencePercent;
 
                     // 색상 업데이트
-                    if (model.Accuracy >= 60) model.StatusColor = Brushes.LimeGreen;
-                    else if (model.Accuracy >= 50) model.StatusColor = Brushes.Orange;
+                    if (model.Accuracy >= AccuracyTargetPercent) model.StatusColor = Brushes.LimeGreen;
+                    else if (model.Accuracy >= AccuracyWarnPercent) model.StatusColor = Brushes.Orange;
                     else model.StatusColor = Brushes.Tomato;
 
                     // 실시간 정확도 업데이트
@@ -1437,7 +1447,8 @@ namespace TradingBot.ViewModels
                 int processed = 0;
                 while (processed < MaxLiveLogBatchPerTick && _pendingLiveLogs.TryDequeue(out var item))
                 {
-                    var line = $"[{item.Timestamp:HH:mm:ss}] {item.Message}";
+                    string displayMessage = SimplifyLiveLogMessage(item.Message);
+                    var line = $"[{item.Timestamp:HH:mm:ss}] {displayMessage}";
                     LiveLogs.Insert(0, line);
                     if (LiveLogs.Count > MaxUiLiveLogCount) LiveLogs.RemoveAt(MaxUiLiveLogCount);
 
@@ -1447,15 +1458,21 @@ namespace TradingBot.ViewModels
                         if (GateLogs.Count > MaxUiLiveLogCount) GateLogs.RemoveAt(MaxUiLiveLogCount);
                         UpdateGateDashboardFromLog(item.RawMessage, line);
                     }
-                    else if (item.IsMajor)
-                    {
-                        MajorLogs.Insert(0, line);
-                        if (MajorLogs.Count > MaxUiLiveLogCount) MajorLogs.RemoveAt(MaxUiLiveLogCount);
-                    }
                     else
                     {
-                        PumpLogs.Insert(0, line);
-                        if (PumpLogs.Count > MaxUiLiveLogCount) PumpLogs.RemoveAt(MaxUiLiveLogCount);
+                        TradeLogs.Insert(0, line);
+                        if (TradeLogs.Count > MaxUiLiveLogCount) TradeLogs.RemoveAt(MaxUiLiveLogCount);
+
+                        if (item.IsMajor)
+                        {
+                            MajorLogs.Insert(0, line);
+                            if (MajorLogs.Count > MaxUiLiveLogCount) MajorLogs.RemoveAt(MaxUiLiveLogCount);
+                        }
+                        else
+                        {
+                            PumpLogs.Insert(0, line);
+                            if (PumpLogs.Count > MaxUiLiveLogCount) PumpLogs.RemoveAt(MaxUiLiveLogCount);
+                        }
                     }
 
                     if (_dbService != null && ShouldPersistLiveLog(item.Message))
@@ -1673,6 +1690,37 @@ namespace TradingBot.ViewModels
             return message.Contains("[SIGNAL][PUMP][CHECK_1M]", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("[PERF][LIVELOG]", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("[PERF][MAIN_LOOP]", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string SimplifyLiveLogMessage(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return "로그 메시지가 비어 있습니다.";
+
+            string simplified = message.Trim();
+
+            simplified = ReplaceInsensitive(simplified, "[SIGNAL][PUMP][TRACE]", "[펌프 신호]");
+            simplified = ReplaceInsensitive(simplified, "[신호][PUMP][추적]", "[펌프 신호]");
+            simplified = ReplaceInsensitive(simplified, "[SIGNAL][TRANSFORMER][TRACE]", "[TF 신호]");
+            simplified = ReplaceInsensitive(simplified, "[신호][TRANSFORMER][추적]", "[TF 신호]");
+            simplified = ReplaceInsensitive(simplified, "[ENTRY][ORDER][ERROR]", "[주문 오류]");
+            simplified = ReplaceInsensitive(simplified, "[진입][ORDER][오류]", "[주문 오류]");
+            simplified = ReplaceInsensitive(simplified, "[ENTRY][15M_GATE][PASS]", "[15M 게이트 통과]");
+            simplified = ReplaceInsensitive(simplified, "[ENTRY][15M_GATE][BLOCK]", "[15M 게이트 차단]");
+            simplified = ReplaceInsensitive(simplified, "[GATE][AUTO_TUNE]", "[게이트 자동튜닝]");
+            simplified = ReplaceInsensitive(simplified, "[신호][MAJOR][신호발생]", "[메이저 신호]");
+
+            simplified = ReplaceInsensitive(simplified, "전략=", "");
+            simplified = ReplaceInsensitive(simplified, "심볼=", "");
+            simplified = ReplaceInsensitive(simplified, "방향=", "");
+            simplified = ReplaceInsensitive(simplified, "원인=", "");
+            simplified = ReplaceInsensitive(simplified, "사유=", "");
+            simplified = ReplaceInsensitive(simplified, "판정=", "");
+
+            simplified = simplified.Replace(" | ", " · ");
+            simplified = Regex.Replace(simplified, @"\s+", " ").Trim();
+
+            return simplified;
         }
 
         private async Task DrainLiveLogDbQueueAsync()
@@ -2021,7 +2069,7 @@ namespace TradingBot.ViewModels
                 MajorSlotColor = major >= majorMax ? Brushes.Orange : Brushes.White;
                 PumpSlotText = $"{pump} / {pumpMax}";
                 PumpSlotColor = pump >= pumpMax ? Brushes.Orange : Brushes.White;
-                TotalPositionInfo = $"Active: {major + pump} 명";
+                TotalPositionInfo = $"Active: {major + pump} / {majorMax + pumpMax}";
             });
         }
 
@@ -2512,7 +2560,7 @@ namespace TradingBot.ViewModels
                 new LineSeries
                 {
                     Title = "Predicted Price",
-                    Values = new ChartValues<decimal>(),
+                    Values = new ChartValues<double>(),
                     PointGeometry = DefaultGeometries.Circle,
                     PointGeometrySize = 8,
                     Stroke = Brushes.Cyan,
@@ -2521,7 +2569,7 @@ namespace TradingBot.ViewModels
                 new LineSeries
                 {
                     Title = "Actual Price",
-                    Values = new ChartValues<decimal>(),
+                    Values = new ChartValues<double>(),
                     PointGeometry = DefaultGeometries.Diamond,
                     PointGeometrySize = 8,
                     Stroke = Brushes.LimeGreen,

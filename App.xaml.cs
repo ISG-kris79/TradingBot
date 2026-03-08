@@ -4,7 +4,9 @@ using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Linq;
+using System.Text.Json;
 using TradingBot.Services;
+using TradingBot.Services.Backtest;
 using TradingBot.Models;
 
 namespace TradingBot
@@ -166,6 +168,13 @@ namespace TradingBot
             // ── TorchSharp 서브프로세스 프로브 모드 ──
             // --torch-probe 인수로 실행된 경우, TorchSharp 호환성만 테스트하고 즉시 종료
             if (TorchInitializer.HandleProbeIfRequested(Environment.GetCommandLineArgs()))
+            {
+                this.Shutdown();
+                return;
+            }
+
+            // ── Hybrid 주문 로직 백테스트 CLI 모드 ──
+            if (HandleHybridBacktestCliIfRequested(e.Args))
             {
                 this.Shutdown();
                 return;
@@ -635,6 +644,83 @@ namespace TradingBot
 
             Debug.WriteLine("[App] 애플리케이션 종료 - Mutex 해제됨");
             base.OnExit(e);
+        }
+
+        private bool HandleHybridBacktestCliIfRequested(string[] args)
+        {
+            if (args == null || args.Length == 0 || !args.Contains("--hybrid-backtest", StringComparer.OrdinalIgnoreCase))
+                return false;
+
+            try
+            {
+                int days = 365;
+                string[] symbols = new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+                bool perfectAi = !args.Contains("--noise-ai", StringComparer.OrdinalIgnoreCase);
+                bool enableGate = !args.Contains("--no-gate", StringComparer.OrdinalIgnoreCase);
+
+                for (int i = 0; i < args.Length; i++)
+                {
+                    if (string.Equals(args[i], "--days", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length && int.TryParse(args[i + 1], out int parsedDays))
+                    {
+                        days = Math.Max(1, parsedDays);
+                    }
+
+                    if (string.Equals(args[i], "--symbols", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                    {
+                        symbols = args[i + 1]
+                            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                            .Where(x => !string.IsNullOrWhiteSpace(x))
+                            .ToArray();
+                    }
+                }
+
+                Console.WriteLine("═══════════ Hybrid 주문 로직 백테스트 시작 ═══════════");
+                Console.WriteLine($"Days={days} | Symbols={string.Join(",", symbols)} | PerfectAI={perfectAi} | Gate={enableGate}");
+
+                var backtester = new HybridStrategyBacktester
+                {
+                    PerfectAI = perfectAi,
+                    EnableComponentGate = enableGate
+                };
+
+                var results = backtester
+                    .RunMultiAsync(symbols, days, null)
+                    .GetAwaiter()
+                    .GetResult();
+
+                foreach (var result in results.OrderByDescending(r => r.TotalPnL))
+                {
+                    Console.WriteLine(
+                        $"{result.Symbol} | Trades={result.TotalTrades} | WinRate={result.WinRate:F1}% | PnL={result.TotalPnL:F2} USDT | Return={result.TotalPnLPercent:F2}% | PF={result.ProfitFactor:F2} | MDD={result.MaxDrawdownPercent:F2}% | Signals={result.TotalSignals} | GateReject={result.GateRejections}");
+                }
+
+                var output = new
+                {
+                    GeneratedAtUtc = DateTime.UtcNow,
+                    Days = days,
+                    Symbols = symbols,
+                    PerfectAI = perfectAi,
+                    EnableGate = enableGate,
+                    TotalTrades = results.Sum(r => r.TotalTrades),
+                    TotalPnL = results.Sum(r => r.TotalPnL),
+                    AverageWinRate = results.Count > 0 ? results.Average(r => r.WinRate) : 0,
+                    Results = results
+                };
+
+                string outputPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "hybrid_backtest_result.json");
+                string json = JsonSerializer.Serialize(output, new JsonSerializerOptions { WriteIndented = true });
+                System.IO.File.WriteAllText(outputPath, json);
+
+                Console.WriteLine($"RESULT_JSON={outputPath}");
+                Console.WriteLine("═══════════ Hybrid 주문 로직 백테스트 종료 ═══════════");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"HYBRID_BACKTEST_ERROR: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+            }
+
+            return true;
         }
     }
 }
