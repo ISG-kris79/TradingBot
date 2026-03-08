@@ -283,6 +283,65 @@
                     Value="True"/>
             <Setter Property="HeadersVisibility"
                     Value="Column"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGrid">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ScrollViewer x:Name="DG_ScrollViewer"
+                                          Style="{StaticResource MinimalScrollViewer}"
+                                          Focusable="false">
+                                <ScrollViewer.Template>
+                                    <ControlTemplate TargetType="ScrollViewer">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="*"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+
+                                            <DataGridColumnHeadersPresenter Grid.Column="0" Grid.Row="0"
+                                                                            x:Name="PART_ColumnHeadersPresenter"
+                                                                            Visibility="{Binding HeadersVisibility, 
+                                                                                       ConverterParameter={x:Static DataGridHeadersVisibility.Column}, 
+                                                                                       Converter={x:Static DataGrid.HeadersVisibilityConverter}, 
+                                                                                       RelativeSource={RelativeSource AncestorType={x:Type DataGrid}}}"/>
+
+                                            <ScrollContentPresenter Grid.Column="0" Grid.Row="1"
+                                                                    x:Name="PART_ScrollContentPresenter"
+                                                                    CanContentScroll="{TemplateBinding CanContentScroll}"/>
+
+                                            <ScrollBar Grid.Column="1" Grid.Row="1"
+                                                       x:Name="PART_VerticalScrollBar"
+                                                       Style="{StaticResource MinimalScrollBar}"
+                                                       Orientation="Vertical"
+                                                       Maximum="{TemplateBinding ScrollableHeight}"
+                                                       ViewportSize="{TemplateBinding ViewportHeight}"
+                                                       Value="{Binding VerticalOffset, Mode=OneWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                                       Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}"/>
+
+                                            <ScrollBar Grid.Column="0" Grid.Row="2"
+                                                       x:Name="PART_HorizontalScrollBar"
+                                                       Style="{StaticResource MinimalScrollBar}"
+                                                       Orientation="Horizontal"
+                                                       Maximum="{TemplateBinding ScrollableWidth}"
+                                                       ViewportSize="{TemplateBinding ViewportWidth}"
+                                                       Value="{Binding HorizontalOffset, Mode=OneWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                                       Visibility="{TemplateBinding ComputedHorizontalScrollBarVisibility}"/>
+                                        </Grid>
+                                    </ControlTemplate>
+                                </ScrollViewer.Template>
+                                <ItemsPresenter SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                            </ScrollViewer>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <!-- DataGrid Column Header Style -->
@@ -374,12 +433,14 @@
 
         <!-- Minimal ScrollBar Style -->
         <Style x:Key="MinimalScrollBar" TargetType="ScrollBar">
-            <Setter Property="Width" Value="6"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ScrollBar">
-                        <Grid>
+                        <Grid x:Name="GridRoot">
+                            <Grid.LayoutTransform>
+                                <RotateTransform x:Name="RotateTransform" Angle="0"/>
+                            </Grid.LayoutTransform>
                             <Border Background="Transparent" CornerRadius="3"/>
                             <Track x:Name="PART_Track" IsDirectionReversed="True">
                                 <Track.Thumb>
@@ -419,6 +480,22 @@
                                 </Track.Thumb>
                             </Track>
                         </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="Orientation" Value="Horizontal">
+                                <Setter TargetName="GridRoot" Property="LayoutTransform">
+                                    <Setter.Value>
+                                        <RotateTransform Angle="-90"/>
+                                    </Setter.Value>
+                                </Setter>
+                                <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False"/>
+                            </Trigger>
+                            <Trigger Property="Orientation" Value="Vertical">
+                                <Setter Property="Width" Value="6"/>
+                            </Trigger>
+                            <Trigger Property="Orientation" Value="Horizontal">
+                                <Setter Property="Height" Value="6"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
