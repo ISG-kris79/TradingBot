@@ -7,6 +7,27 @@
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-03-08
+
+### Removed
+
+- **Bybit 거래소 지원 완전 제거**:
+  - `BybitExchangeService.cs` 및 `BybitSocketConnector.cs` 파일 삭제
+  - Bybit.Net NuGet 패키지 제거
+  - User 모델에서 BybitApiKey/BybitApiSecret 속성 제거
+  - AppConfig에서 Bybit 설정 클래스 제거
+  - MainWindow 거래소 선택 드롭다운 숨김 처리 (Binance로 고정)
+  - SettingsWindow에서 거래소 선택 UI 완전 제거
+  - ExchangeDataModels에서 BybitExchangeAdapter 제거
+  - MarketDataManager에서 Bybit 스트리밍 메서드 및 어댑터 제거
+  - DatabaseService, ProfileWindow, SignUpWindow에서 Bybit 관련 코드 제거
+
+### Changed
+
+- **Binance 전용 거래소로 전환**:
+  - TradingEngine이 Binance 또는 Mock 거래소만 지원하도록 변경
+  - UI에서 거래소 선택 옵션 제거, Binance로 고정
+
 ## [2.2.12] - 2026-03-08
 
 ### Changed
