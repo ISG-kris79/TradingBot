@@ -1191,7 +1191,8 @@ namespace TradingBot
                                     await _positionMonitor.ExecuteMarketClose(symbol, "서킷 브레이커 해제 후 리스크 관리(강제 청산)", token);
                                     closedCount++;
                                 }
-                                string resumeMsg = $"♻️ [서킷 브레이커 해제] 1시간 대기 종료. 매매를 재개합니다.\n(금일 손익 초기화, 잔여 포지션 {closedCount}개 청산 완료)";
+                                
+                                string resumeMsg = TradingStateLogger.CircuitBreakerReleased(closedCount);
                                 await NotificationService.Instance.NotifyAsync(resumeMsg, NotificationChannel.Alert);
                                 OnAlert?.Invoke(resumeMsg);
                                 OnStatusLog?.Invoke("서킷 브레이커 자동 해제됨.");
@@ -1201,7 +1202,7 @@ namespace TradingBot
                                 if (!isCircuitBreakerNotificationSent)
                                 {
                                     isCircuitBreakerNotificationSent = true;
-                                    string msg = $"⛔ [서킷 브레이커 발동]\n{_riskManager.GetTripDetails()}\n\n모든 매매를 일시 중단합니다.";
+                                    string msg = TradingStateLogger.CircuitBreakerTripped(_riskManager.GetTripDetails(), 1);
                                     await NotificationService.Instance.NotifyAsync(msg, NotificationChannel.Alert);
                                     OnAlert?.Invoke(msg);
                                 }
@@ -2094,7 +2095,7 @@ namespace TradingBot
                     if ((DateTime.Now - _lastEntryWarmupLogTime).TotalSeconds >= 10)
                     {
                         _lastEntryWarmupLogTime = DateTime.Now;
-                        OnStatusLog?.Invoke($"⏳ 진입 워밍업 중: {remaining.TotalSeconds:F0}초 남음");
+                        OnStatusLog?.Invoke(TradingStateLogger.EntryWarmupActive((int)remaining.TotalSeconds));
                     }
                     return;
                 }
@@ -3707,18 +3708,21 @@ namespace TradingBot
                 string deferReason = string.IsNullOrWhiteSpace(patternSnapshot.Match.DeferReason)
                     ? "loss-pattern"
                     : patternSnapshot.Match.DeferReason;
+                OnStatusLog?.Invoke(TradingStateLogger.RejectedByPatternFilter(symbol, decision, deferReason));
                 EntryLog("GUARD", "BLOCK", $"patternHold={deferReason}");
                 return;
             }
 
             if (IsEntryWarmupActive(out var remaining))
             {
+                OnStatusLog?.Invoke(TradingStateLogger.RejectedByRiskManagement(symbol, decision, $"진입 워밍업 활성화 ({remaining.TotalSeconds:F0}초 남음)"));
                 EntryLog("GUARD", "BLOCK", $"warmupRemainingSec={remaining.TotalSeconds:F0}");
                 return;
             }
 
             if (_riskManager.IsTripped)
             {
+                OnStatusLog?.Invoke(TradingStateLogger.RejectedByRiskManagement(symbol, decision, "서킷 브레이커 발동 중"));
                 EntryLog("RISK", "BLOCK", "circuitBreaker=on");
                 return;
             }
@@ -3849,7 +3853,7 @@ namespace TradingBot
                         CustomStopLossPrice = customStopLossPrice
                     };
 
-                    OnStatusLog?.Invoke($"⏳ [캔들 확인 대기] {symbol} {decision} 신호 등록 | 가격=${currentPrice:F2} | 다음 캔들 확인 후 진입 (Fakeout 방지)");
+                    OnStatusLog?.Invoke(TradingStateLogger.WaitingForCandleConfirmation(symbol, decision, 1));
                     return;
                 }
             }
@@ -3876,13 +3880,15 @@ namespace TradingBot
 
                             if (decision == "LONG" && !upTrend15m)
                             {
-                                OnStatusLog?.Invoke($"⛔ [15분봉 추세 필터] {symbol} LONG 차단 | 15m SMA20({sma20_15m:F2}) < SMA60({sma60_15m:F2}) → 상위 추세 역행");
+                                string reason = $"15m SMA20({sma20_15m:F2}) < SMA60({sma60_15m:F2}) → 상위 추세 역행";
+                                OnStatusLog?.Invoke(TradingStateLogger.RejectedBy15MinTrendFilter(symbol, decision, reason));
                                 return;
                             }
 
                             if (decision == "SHORT" && !downTrend15m)
                             {
-                                OnStatusLog?.Invoke($"⛔ [15분봉 추세 필터] {symbol} SHORT 차단 | 15m SMA20({sma20_15m:F2}) > SMA60({sma60_15m:F2}) → 상위 추세 역행");
+                                string reason = $"15m SMA20({sma20_15m:F2}) > SMA60({sma60_15m:F2}) → 상위 추세 역행";
+                                OnStatusLog?.Invoke(TradingStateLogger.RejectedBy15MinTrendFilter(symbol, decision, reason));
                                 return;
                             }
 
@@ -3921,7 +3927,8 @@ namespace TradingBot
                     double atrRatio = currentAtr / averageAtr;
                     if (atrRatio > 2.0)
                     {
-                        OnStatusLog?.Invoke($"⚠️ {symbol} 변동성 과다(흔들기 구간) | ATR비율={atrRatio:F2}x > 2.0x → 진입 금지");
+                        string reason = $"ATR비율={atrRatio:F2}x > 2.0x 흔들기 구간";
+                        OnStatusLog?.Invoke(TradingStateLogger.RejectedByRiskManagement(symbol, decision, reason));
                         return;
                     }
                     else if (atrRatio > 1.5)
@@ -3963,7 +3970,7 @@ namespace TradingBot
             if (latestCandle != null &&
                 ShouldBlockChasingEntry(symbol, decision, currentPrice, latestCandle, recentEntryKlines, mode, out string chaseReason))
             {
-                OnStatusLog?.Invoke($"⛔ {symbol} {decision} 추격 방지 필터: {chaseReason} | src={signalSource}");
+                OnStatusLog?.Invoke(TradingStateLogger.RejectedByChaseFilter(symbol, decision, chaseReason));
                 return;
             }
 
@@ -3976,11 +3983,16 @@ namespace TradingBot
 
                     if (!aiGate.allowEntry)
                     {
-                        OnStatusLog?.Invoke($"⛔ [AI DoubleCheck] {symbol} {decision} 차단 | reason={aiGate.reason} | coin={coinType} | ml={aiGate.detail.ML_Confidence:P1} tf={aiGate.detail.TF_Confidence:P1}");
+                        OnStatusLog?.Invoke(TradingStateLogger.RejectedByAIGate(
+                            symbol, decision, aiGate.reason, 
+                            aiGate.detail.ML_Confidence, aiGate.detail.TF_Confidence));
                         EntryLog("15M_GATE", "BLOCK", $"aiDoubleCheck reason={aiGate.reason} coin={coinType} ml={aiGate.detail.ML_Confidence:P1} tf={aiGate.detail.TF_Confidence:P1}");
                         return;
                     }
 
+                    OnStatusLog?.Invoke(TradingStateLogger.EvaluatingMLSniper(
+                        symbol, decision, 
+                        aiGate.detail.ML_Confidence, aiGate.detail.TF_Confidence));
                     EntryLog(
                         "15M_GATE",
                         "PASS",
@@ -4005,10 +4017,13 @@ namespace TradingBot
 
                     if (!gateResult.allowEntry)
                     {
-                        OnStatusLog?.Invoke($"⛔ [15M WaveGate] {symbol} {decision} 차단 | {gateResult.reason} | mlTh={mlThreshold:P1} tfTh={transformerThreshold:P1}");
+                        OnStatusLog?.Invoke(TradingStateLogger.RejectedBy15MinWaveGate(
+                            symbol, decision, $"{gateResult.reason} | mlTh={mlThreshold:P1} tfTh={transformerThreshold:P1}"));
                         EntryLog("15M_GATE", "BLOCK", gateResult.reason);
                         return;
                     }
+
+                    OnStatusLog?.Invoke($"✅ [15분 WaveGate] {symbol} {decision} 통과 | ml={gateResult.mlConfidence:P1} tf={gateResult.transformerConfidence:P1}");
 
                     if (customTakeProfitPrice <= 0 && gateResult.takeProfitPrice > 0)
                         customTakeProfitPrice = gateResult.takeProfitPrice;
@@ -4373,6 +4388,7 @@ namespace TradingBot
                 // 7. 주문 실행 (시장가 주문으로 즉시 체결 - 슬리피지 검증 불필요)
                 var side = (decision == "LONG") ? "BUY" : "SELL";
 
+                OnStatusLog?.Invoke(TradingStateLogger.PlacingOrder(symbol, decision, currentPrice, quantity));
                 EntryLog("ORDER", "SUBMIT", $"type=MARKET orderSide={side} qty={quantity}");
                 
                 var (success, filledQty, avgPrice) = await _exchangeService.PlaceMarketOrderAsync(
@@ -4384,6 +4400,7 @@ namespace TradingBot
                 if (!success || filledQty <= 0)
                 {
                     CleanupReservedPosition("시장가 주문 실패");
+                    OnStatusLog?.Invoke($"❌ [{symbol}] {decision} 주문 실패");
                     EntryLog("ORDER", "FAILED", $"reason=marketOrderFailed");
                     return;
                 }
@@ -4442,6 +4459,14 @@ namespace TradingBot
                     ScheduleAiDoubleCheckLabeling(symbol, actualEntryPrice, decision == "LONG", aiGateDecisionId, token);
 
                     OnTradeExecuted?.Invoke(symbol, decision, actualEntryPrice, filledQty);
+                    
+                    // [NEW] 직관적인 진입 완료 로그
+                    decimal finalStopLoss = customStopLossPrice > 0 ? customStopLossPrice : 0;
+                    decimal finalTakeProfit = customTakeProfitPrice > 0 ? customTakeProfitPrice : 0;
+                    OnStatusLog?.Invoke(TradingStateLogger.EntrySuccess(
+                        symbol, decision, actualEntryPrice, 
+                        finalStopLoss, finalTakeProfit, signalSource));
+                    
                     OnAlert?.Invoke($"🤖 자동 매매 진입: {symbol} [{decision}] | 증거금: {marginUsdt}U");
                     _soundService.PlaySuccess();
 

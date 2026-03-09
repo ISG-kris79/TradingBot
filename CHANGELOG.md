@@ -7,6 +7,42 @@
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-03-09
+
+### Added
+
+- **TradingStateLogger.cs**: 직관적인 라이브 트레이딩 로그 시스템
+  - 상태별 전문 로그 메서드: 횡보 중, 진입 대기(ETA 표시), AI 평가 중, 주문 요청 중, 진입 완료, 거부 사유 등
+  - 예시: `⏳ [BTCUSDT] LONG 진입 대기 (ETA: 14:30, 25분 후) | AI 신뢰도 85%`
+  - 예시: `✅ [BTCUSDT] LONG 진입 완료! | 진입가 $67,234.50, 손절 $66,500.00, 익절 $68,800.00 | R:R 2.1x | 전략=MAJOR`
+
+- **HistoricalDataLabeler.cs**: 히스토리컬 데이터 자동 라벨링 스크립트 (베타)
+  - Time-to-Target 및 ML.NET 진입 성공 라벨을 동시 생성
+  - 현재 제약: API 한계로 최근 1000 캔들(약 10일치)만 조회 가능
+  - 향후 확장 예정: startTime/endTime 지원하는 IExchangeService 메서드 추가 필요
+
+### Changed
+
+- **TradingEngine.cs 로그 가독성 대폭 개선**:
+  - 진입 워밍업: `⏳ [진입 워밍업] 신규 진입 제한 중 | 120초 남음`
+  - 패턴 필터: `🔍 [BTCUSDT] LONG 패턴 필터 차단 | loss-pattern`
+  - 캔들 확인 대기: `⏸️ [BTCUSDT] LONG 캔들 확인 대기 (1캔들 남음) | Fakeout 방지 모드`
+  - 추격 방지: `🏃 [BTCUSDT] LONG 추격 방지 차단 | 이미 상승 완료`
+  - AI 게이트: `🤖 [BTCUSDT] LONG ML 스나이퍼 평가 중 | ML신뢰도 85%, TF신뢰도 72%`
+  - 주문 완료: `✅ [BTCUSDT] LONG 진입 완료! | 손절 $66,500 | 익절 $68,800 | R:R 2.1x`
+  - 서킷 브레이커: `⛔ [서킷 브레이커 발동] 일일 손실 -5% 초과 | 1시간 동안 모든 진입 차단`
+
+- **AIDoubleCheckEntryGate.cs 상세 로그 추가**:
+  - Feature 추출 실패/성공 상세 표시
+  - Time-to-Target 예측: `🎯 [BTCUSDT] AI 타점 예측: 8.3캔들 (125분) 후, ETA 14:30 | ML=85%, TF=72%`
+  - ML.NET / Transformer 거부 이유 상세: 신뢰도 부족 vs 타점 범위 외 구분
+  - 규칙 위반: `❌ [BTCUSDT] 규칙 위반 거부: Fib 0.618 이탈`
+  - 최종 승인: `✅ [BTCUSDT] AI 더블체크 승인! ML=85%, TF=72%`
+
+### Fixed
+
+- HistoricalDataLabeler.cs: IExchangeService API 호환성 수정 (using TradingBot.Services 추가)
+
 ## [2.4.0] - 2026-03-09
 
 ### Changed - ⚠️ **파괴적 변경 (Breaking Change)**

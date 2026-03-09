@@ -81,12 +81,18 @@ namespace TradingBot
                 // 1. Multi-Timeframe Feature 추출
                 var feature = await _featureExtractor.ExtractRealtimeFeatureAsync(symbol, DateTime.UtcNow, token);
                 if (feature == null)
+                {
+                    OnLog?.Invoke($"⚠️ [{symbol}] Feature 추출 실패 (데이터 부족)");
                     return (false, "Feature_Extraction_Failed", new AIEntryDetail());
+                }
 
                 // 2. ML.NET 예측
                 var mlPrediction = _mlTrainer.Predict(feature);
                 if (mlPrediction == null)
+                {
+                    OnLog?.Invoke($"⚠️ [{symbol}] ML.NET 예측 실패");
                     return (false, "MLNET_Prediction_Failed", new AIEntryDetail());
+                }
 
                 bool mlApprove = mlPrediction.ShouldEnter;
                 float mlConfidence = mlPrediction.Probability;
@@ -97,6 +103,14 @@ namespace TradingBot
 
                 // Transformer 승인 기준: 유효한 Time-to-Target 예측 (1~32캔들 범위)
                 bool tfApprove = candlesToTarget >= 1f && candlesToTarget <= 32f;
+
+                // [NEW] 평가 진행 상황 로그
+                if (candlesToTarget >= 1f && candlesToTarget <= 32f)
+                {
+                    int minutesToTarget = (int)Math.Round(candlesToTarget * 15);
+                    DateTime eta = DateTime.Now.AddMinutes(minutesToTarget);
+                    OnLog?.Invoke($"🎯 [{symbol}] AI 타점 예측: {candlesToTarget:F1}캔들 ({minutesToTarget}분) 후, ETA {eta:HH:mm} | ML={mlConfidence:P0}, TF={tfConfidence:P0}");
+                }
 
                 // 4. 더블체크 판정
                 bool mlPass = mlApprove && mlConfidence >= _config.MinMLConfidence;
@@ -116,10 +130,19 @@ namespace TradingBot
                 detail.DecisionId = decisionId;
 
                 if (!mlPass)
+                {
+                    OnLog?.Invoke($"❌ [{symbol}] ML.NET 거부: {(mlApprove ? $"신뢰도 부족 ({mlConfidence:P0} < {_config.MinMLConfidence:P0})" : $"진입 비승인 ({mlConfidence:P0})")}");
                     return (false, $"MLNET_Reject_Conf={mlConfidence:P1}", detail);
+                }
 
                 if (!tfPass)
+                {
+                    string tfReason = tfApprove 
+                        ? $"신뢰도 부족 ({tfConfidence:P0} < {_config.MinTransformerConfidence:P0})"
+                        : $"타점 범위 외 ({candlesToTarget:F1}캔들, 유효 범위 1-32)";
+                    OnLog?.Invoke($"❌ [{symbol}] Transformer 거부: {tfReason}");
                     return (false, $"Transformer_Reject_Conf={tfConfidence:P1}", detail);
+                }
 
                 // 6. **엘리엇 파동 + 피보나치 규칙 검증** (거부 필터)
                 // AI가 승인해도 규칙 위배 시 진입 거부
@@ -137,6 +160,7 @@ namespace TradingBot
                     if (!ruleCheck.passed)
                     {
                         detail.DoubleCheckPassed = false;
+                        OnLog?.Invoke($"❌ [{symbol}] 규칙 위반 거부: {ruleCheck.reason}");
                         return (false, $"Rule_Violation_{ruleCheck.reason}", detail);
                     }
 
@@ -146,6 +170,7 @@ namespace TradingBot
                 }
 
                 // 7. **최종 승인** (AI + 규칙 모두 통과)
+                OnLog?.Invoke($"✅ [{symbol}] AI 더블체크 승인! ML={mlConfidence:P0}, TF={tfConfidence:P0}");
                 return (true, $"DoubleCheck_PASS_ML={mlConfidence:P1}_TF={tfConfidence:P1}", detail);
             }
             catch (Exception ex)
@@ -733,7 +758,9 @@ namespace TradingBot
 
             try
             {
-                OnAlert?.Invoke("🔄 [AI 학습] 초기 학습 시작: 히스토리컬 데이터 수집 중...");
+                // [병목 해결] AI 초기 학습 중 UI 시그널 업데이트 일시 중단
+                UISuspensionManager.SuspendSignalUpdates(true);
+                OnAlert?.Invoke("🔄 [AI 학습] 초기 학습 시작: 히스토리컬 데이터 수집 중... (UI 업데이트 일시 중단)");
 
                 // 1. 히스토리컬 데이터로 대량 Feature 생성 (심볼당 수십 개)
                 var trainingFeatures = new List<MultiTimeframeEntryFeature>();
@@ -832,6 +859,9 @@ namespace TradingBot
                     string msg = $"✅ [AI 학습] 초기 학습 완료! ML Ready: {_mlTrainer.IsModelLoaded}, TF Ready: {_transformerTrainer.IsModelReady}";
                     OnAlert?.Invoke(msg);
                     OnLog?.Invoke(msg);
+                    
+                    // [병목 해결] UI 업데이트 재개
+                    UISuspensionManager.SuspendSignalUpdates(false);
                     return (true, msg);
                 }
                 else
@@ -845,7 +875,10 @@ namespace TradingBot
             {
                 string errorMsg = $"❌ [AI 학습] 초기 학습 실패: {ex.Message}";
                 OnAlert?.Invoke(errorMsg);
-                OnLog?.Invoke($"[AIDoubleCheck] {errorMsg}");
+                OnLog?.Invoke($"[AIDoubleCheck] 초기 학습 오류 스택:\n{ex}");
+                
+                // [병목 해결] 예외 발생 시에도 UI 업데이트 재개
+                UISuspensionManager.SuspendSignalUpdates(false);
                 return (false, errorMsg);
             }
         }

@@ -1662,6 +1662,10 @@ namespace TradingBot.ViewModels
             if (_pendingSignalUpdates.IsEmpty)
                 return;
 
+            // [병목 해결] AI 초기 학습 중에는 시그널 UI 업데이트 스킵
+            if (UISuspensionManager.IsSignalUpdateSuspended)
+                return;
+
             var watch = Stopwatch.StartNew();
             int processed = 0;
             // [병목 해결] ToArray() → Keys 스냅샷 사용 (전체 딕셔너리 lock+copy 방지)
