@@ -200,14 +200,20 @@ namespace TradingBot.Strategies
                         reason = $"holdReason={string.Join("/", reasons)}";
                 }
 
-                string logMsg = $"📡 [SIGNAL][MAJOR][CANDIDATE] sym={symbol} side={decisionKr} px={currentPrice:F4} {aiFilterInfo}{(string.IsNullOrWhiteSpace(reason) ? string.Empty : " | " + reason)}";
-                OnLog?.Invoke(logMsg);
-
-                if (decision != "WAIT")
+                // [v2.4.2] 세련된 로그 형식
+                if (decision == "WAIT")
                 {
+                    // WAIT는 조용히 건너뜀 (너무 많은 로그 방지)
+                }
+                else
+                {
+                    // 신호 감지 로그 (간결하게)
+                    string holdReasonStr = string.IsNullOrWhiteSpace(reason) ? "" : $" | {reason}";
+                    OnLog?.Invoke($"📊 [{symbol}] {decisionKr} 신호 감지 | 가격 ${currentPrice:F2}{aiFilterInfo}{holdReasonStr}");
+                    
                     try
                     {
-                        OnLog?.Invoke($"📨 [SIGNAL][MAJOR][EMIT] sym={symbol} side={decisionKr} px={currentPrice:F4}");
+                        OnLog?.Invoke($"🎯 [{symbol}] {decision} 신호 발생 | 가격 ${currentPrice:F2}");
                         OnTradeSignal?.Invoke(symbol, decision, currentPrice);
                     }
                     catch (Exception eventEx)
