@@ -611,7 +611,36 @@ namespace TradingBot
                 });
             }
 
-            return SelectBestForecast(candidates);
+            var best = SelectBestForecast(candidates);
+
+            // 관망 구간(저확률)일 때는 4시간까지 예측 범위를 확장해서 ETA를 제시
+            if (best.AverageProbability < _config.EntryForecastWatchThreshold
+                && _config.EntryForecastWatchSteps > _config.EntryForecastSteps)
+            {
+                for (int step = _config.EntryForecastSteps + 1; step <= _config.EntryForecastWatchSteps; step++)
+                {
+                    var forecastUtc = nextQuarterUtc.AddMinutes((step - 1) * 15);
+                    var shiftedFeature = feature.CloneWithTimestamp(forecastUtc);
+                    var shiftedSequence = ReplaceLastSequenceFeature(baseSequence, shiftedFeature);
+                    var (mlProb, tfProb, avgProb) = PredictEntryProbabilities(shiftedFeature, shiftedSequence);
+
+                    candidates.Add(new AIEntryForecastResult
+                    {
+                        Symbol = symbol,
+                        MLProbability = mlProb,
+                        TFProbability = tfProb,
+                        AverageProbability = avgProb,
+                        ForecastTimeUtc = forecastUtc,
+                        ForecastTimeLocal = forecastUtc.ToLocalTime(),
+                        ForecastOffsetMinutes = Math.Max(1, (int)Math.Round((forecastUtc - referenceUtc).TotalMinutes)),
+                        GeneratedAtLocal = referenceLocal
+                    });
+                }
+
+                best = SelectBestForecast(candidates);
+            }
+
+            return best;
         }
 
         private (float mlProb, float tfProb, float avgProb) PredictEntryProbabilities(
@@ -666,11 +695,6 @@ namespace TradingBot
                 current.AverageProbability + _config.EntryForecastImmediateTolerance >= best.AverageProbability)
             {
                 return current;
-            }
-
-            if (best.AverageProbability < _config.EntryForecastMinCandidateProbability)
-            {
-                return current.AverageProbability >= best.AverageProbability ? current : best;
             }
 
             return best;
@@ -904,14 +928,16 @@ namespace TradingBot
     /// </summary>
     public class DoubleCheckConfig
     {
-        public float MinMLConfidence { get; set; } = 0.65f;
-        public float MinTransformerConfidence { get; set; } = 0.60f;
-        public float MinMLConfidenceMajor { get; set; } = 0.75f; // 메이저 코인은 더 보수적
-        public float MinTransformerConfidenceMajor { get; set; } = 0.70f;
-        public float MinMLConfidencePumping { get; set; } = 0.58f; // 펌핑 코인은 약간 완화
+        public float MinMLConfidence { get; set; } = 0.50f;
+        public float MinTransformerConfidence { get; set; } = 0.45f;
+        public float MinMLConfidenceMajor { get; set; } = 0.60f; // 메이저 코인은 더 보수적
+        public float MinTransformerConfidenceMajor { get; set; } = 0.55f;
+        public float MinMLConfidencePumping { get; set; } = 0.48f; // 펌핑 코인은 약간 완화
         public int EntryForecastSteps { get; set; } = 8; // 다음 2시간(15분 x 8)
+        public int EntryForecastWatchSteps { get; set; } = 16; // 관망 시 4시간(15분 x 16)
         public float EntryForecastImmediateThreshold { get; set; } = 0.62f;
         public float EntryForecastImmediateTolerance { get; set; } = 0.03f;
+        public float EntryForecastWatchThreshold { get; set; } = 0.35f;
         public float EntryForecastMinCandidateProbability { get; set; } = 0.35f;
         public float EntryForecastTimePenaltyPerStep { get; set; } = 0.01f;
     }

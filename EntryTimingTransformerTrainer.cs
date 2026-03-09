@@ -192,10 +192,14 @@ namespace TradingBot
 
                 using (torch.no_grad())
                 {
-                    var output = _model.forward(inputTensor); // [1, seqLen, 1]
-                    var lastPred = output[0, -1, 0]; // 마지막 시점 예측
-                    float logit = lastPred.item<float>();
+                    var output = _model.forward(inputTensor); // [1, 1]
+                    float logit = output[0, 0].item<float>();
                     float prob = (float)(1.0 / (1.0 + Math.Exp(-logit))); // Sigmoid
+
+                    if (float.IsNaN(prob) || float.IsInfinity(prob))
+                        prob = 0f;
+
+                    prob = Math.Clamp(prob, 0f, 1f);
 
                     inputTensor.Dispose();
                     output.Dispose();

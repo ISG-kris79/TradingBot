@@ -983,7 +983,6 @@ namespace TradingBot.Models
             get
             {
                 if (_aiEntryProb < 0) return "-";
-                if (_aiEntryProb < 0.35f) return "관망";
                 if (!_aiEntryForecastTime.HasValue) return "대기";
                 if (!_aiEntryForecastOffsetMinutes.HasValue || _aiEntryForecastOffsetMinutes.Value <= 1) return "지금";
                 return _aiEntryForecastTime.Value.ToString("HH:mm");
@@ -995,16 +994,14 @@ namespace TradingBot.Models
             get
             {
                 if (_aiEntryProb < 0) return string.Empty;
+                if (!_aiEntryForecastTime.HasValue) return $"{_aiEntryProb:P0} · 대기";
 
                 if (_aiEntryProb < 0.35f)
                 {
-                    if (_aiEntryForecastTime.HasValue && _aiEntryForecastOffsetMinutes.GetValueOrDefault() > 1)
-                        return $"최적 {_aiEntryForecastTime.Value:HH:mm} · {_aiEntryProb:P0}";
-
-                    return $"{_aiEntryProb:P0} · 대기";
+                    if (!_aiEntryForecastOffsetMinutes.HasValue || _aiEntryForecastOffsetMinutes.Value <= 1) return $"관망 · {_aiEntryProb:P0}";
+                    return $"관망 · {_aiEntryProb:P0} · +{_aiEntryForecastOffsetMinutes.Value}m";
                 }
 
-                if (!_aiEntryForecastTime.HasValue) return $"{_aiEntryProb:P0} · 대기";
                 if (!_aiEntryForecastOffsetMinutes.HasValue || _aiEntryForecastOffsetMinutes.Value <= 1) return $"{_aiEntryProb:P0} · 즉시";
                 return $"{_aiEntryProb:P0} · +{_aiEntryForecastOffsetMinutes.Value}m";
             }
