@@ -28,6 +28,15 @@ namespace TradingBot.Services
         // [추가] 캔들 데이터 조회
         Task<List<IBinanceKline>> GetKlinesAsync(string symbol, KlineInterval interval, int limit, CancellationToken ct = default);
 
+        // [v2.4.2 HistoricalDataLabeler] 날짜 범위 기반 캔들 조회 (6개월 데이터 수집용)
+        Task<List<IBinanceKline>> GetKlinesAsync(
+            string symbol,
+            KlineInterval interval,
+            DateTime? startTime = null,
+            DateTime? endTime = null,
+            int limit = 1000,
+            CancellationToken ct = default);
+
         // [추가] 거래소 정보 조회 (심볼 필터 등)
         Task<ExchangeInfo?> GetExchangeInfoAsync(CancellationToken ct = default);
 

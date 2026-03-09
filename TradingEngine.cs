@@ -143,6 +143,7 @@ namespace TradingBot
         private readonly RiskManager _riskManager;
         private AIPredictor? _aiPredictor;
         private AIDoubleCheckEntryGate? _aiDoubleCheckEntryGate;
+        private HybridNavigatorSniper? _hybridNavigatorSniper; // [v2.4.2] Navigator-Sniper 매복 아키텍처
         private MultiAgentManager _multiAgentManager;
         private MarketHistoryService? _marketHistoryService;
         private OiDataCollector? _oiCollector;
@@ -484,6 +485,24 @@ namespace TradingBot
             {
                 _aiDoubleCheckEntryGate = null;
                 OnStatusLog?.Invoke($"⚠️ AI 더블체크 게이트 초기화 실패: {ex.Message}");
+            }
+
+            // [v2.4.2] Navigator-Sniper 하이브리드 아키텍처 초기화
+            if (_aiDoubleCheckEntryGate != null)
+            {
+                try
+                {
+                    _hybridNavigatorSniper = new HybridNavigatorSniper(_aiDoubleCheckEntryGate);
+                    _hybridNavigatorSniper.OnNavigatorLog += msg => OnStatusLog?.Invoke(msg);
+                    _hybridNavigatorSniper.OnSniperLog += msg => OnStatusLog?.Invoke(msg);
+                    _hybridNavigatorSniper.OnAmbushWindowChanged += msg => OnAlert?.Invoke(msg);
+                    OnStatusLog?.Invoke("🎯 [v2.4.2] Navigator-Sniper 하이브리드 아키텍처 활성화");
+                }
+                catch (Exception ex)
+                {
+                    _hybridNavigatorSniper = null;
+                    OnStatusLog?.Invoke($"⚠️ Navigator-Sniper 초기화 실패: {ex.Message}");
+                }
             }
 
             LoadActiveAiDecisionIds();

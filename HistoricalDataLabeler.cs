@@ -207,8 +207,8 @@ namespace TradingBot
         }
 
         /// <summary>
-        /// 히스토리컬 캔들 데이터 수집 (단순 버전 - limit=1000까지만)
-        /// 향후 개선: startTime/endTime 파라미터를 지원하는 IExchangeService 메서드 추가 필요
+        /// 히스토리컬 캔들 데이터 수집
+        /// [v2.4.2] 현재는 최근 1000개 캔들만 조회 (향후 API 확장 시 6개월 지원)
         /// </summary>
         private async Task<List<IBinanceKline>> FetchAllCandlesAsync(
             string symbol,
@@ -217,17 +217,31 @@ namespace TradingBot
             DateTime endTime,
             CancellationToken token)
         {
-            // [현재 제약] IExchangeService.GetKlinesAsync에는 startTime/endTime 파라미터가 없음
-            // 최대 1000개까지만 가져옴 (15분봉 기준 약 10.4일치)
-            OnLog?.Invoke($"[{symbol}] ⚠️ API 제약으로 최근 1000개 캔들만 조회 (약 10일치)");
-            
-            var candles = await _exchangeService.GetKlinesAsync(
-                symbol, 
-                interval, 
-                limit: 1000,
-                token);
+            try
+            {
+                // 이 메서드는 현재 기본 GetKlinesAsync만 사용 가능
+                // TODO: IExchangeService에 startTime/endTime 파라미터가 추가되면 6개월 데이터 지원 가능
+                OnLog?.Invoke($"[{symbol}] 캔들 데이터 조회 중... (최근 1000개)");
+                var candles = await _exchangeService.GetKlinesAsync(
+                    symbol,
+                    interval,
+                    limit: 1000,
+                    token);
 
-            return candles?.OrderBy(c => c.OpenTime).ToList() ?? new List<IBinanceKline>();
+                if (candles != null && candles.Count > 0)
+                {
+                    OnLog?.Invoke($"[{symbol}] ✅ {candles.Count:N0}개 캔들 수집 완료");
+                    return candles.OrderBy(c => c.OpenTime).ToList();
+                }
+
+                OnLog?.Invoke($"[{symbol}] ⚠️ 캔들 데이터 없음");
+                return new List<IBinanceKline>();
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"[{symbol}] ❌ 캔들 조회 실패: {ex.Message}");
+                return new List<IBinanceKline>();
+            }
         }
 
         private void SaveSummary(LabelingSummary summary)

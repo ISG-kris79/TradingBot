@@ -128,6 +128,19 @@ namespace TradingBot.Services
             return Task.FromResult(new List<IBinanceKline>());
         }
 
+        // [v2.4.2] 날짜 범위 기반 캔들 조회 (시뮬레이션용)
+        public Task<List<IBinanceKline>> GetKlinesAsync(
+            string symbol,
+            KlineInterval interval,
+            DateTime? startTime = null,
+            DateTime? endTime = null,
+            int limit = 1000,
+            CancellationToken ct = default)
+        {
+            // 백테스팅용 빈 리스트 반환
+            return Task.FromResult(new List<IBinanceKline>());
+        }
+
         public Task<ExchangeInfo?> GetExchangeInfoAsync(CancellationToken ct = default)
         {
             // 백테스팅용 기본 ExchangeInfo 반환

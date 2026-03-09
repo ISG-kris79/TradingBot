@@ -202,6 +202,48 @@ namespace TradingBot.Services
             return result.Data.Cast<IBinanceKline>().ToList();
         }
 
+        /// <summary>
+        /// [v2.4.2] 날짜 범위 기반 캔들 조회 (HistoricalDataLabeler용 6개월 데이터 수집)
+        /// 현재는 최근 데이터만 반환하며, 향후 pagination 추가
+        /// </summary>
+        public async Task<List<IBinanceKline>> GetKlinesAsync(
+            string symbol,
+            KlineInterval interval,
+            DateTime? startTime = null,
+            DateTime? endTime = null,
+            int limit = 1000,
+            CancellationToken ct = default)
+        {
+            try
+            {
+                // 간단한 구현: Binance API에서 최근 limit개 캔들 조회
+                // TODO: startTime/endTime 파라미터로 진정한 범위 조회 구현 (pagination 필요)
+                var result = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(
+                    symbol,
+                    interval,
+                    startTime: startTime,
+                    endTime: endTime,
+                    limit: limit,
+                    ct: ct);
+
+                if (!result.Success)
+                    return new List<IBinanceKline>();
+
+                var allKlines = result.Data.Cast<IBinanceKline>().ToList();
+                
+                // 중복 제거 및 정렬
+                return allKlines
+                    .GroupBy(k => k.CloseTime)
+                    .Select(g => g.First())
+                    .OrderBy(k => k.CloseTime)
+                    .ToList();
+            }
+            catch
+            {
+                return new List<IBinanceKline>();
+            }
+        }
+
         public async Task<ExchangeInfo?> GetExchangeInfoAsync(CancellationToken ct = default)
         {
             var result = await _client.UsdFuturesApi.ExchangeData.GetExchangeInfoAsync(ct: ct);

@@ -220,6 +220,27 @@ namespace TradingBot
         /// <summary>
         /// 진입 결정 기록 (학습 데이터 수집)
         /// </summary>
+        /// <summary>
+        /// Navigator 전용: Transformer Time-to-Target 예측만 수행
+        /// (ML.NET 없이 경량 계산)
+        /// </summary>
+        public (float candlesToTarget, float confidence) GetTransformerPrediction(
+            List<MultiTimeframeEntryFeature> recentFeatures)
+        {
+            try
+            {
+                if (!IsReady || recentFeatures == null || recentFeatures.Count == 0)
+                    return (-1f, 0f);
+
+                return _transformerTrainer.Predict(recentFeatures);
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ Transformer 예측 오류: {ex.Message}");
+                return (-1f, 0f);
+            }
+        }
+
         private string RecordEntryDecision(
             MultiTimeframeEntryFeature feature,
             EntryTimingPrediction mlPred,
