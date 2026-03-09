@@ -2212,6 +2212,28 @@ namespace TradingBot.ViewModels
 
             string normalized = Regex.Replace(message.Trim(), @"\s+", " ");
 
+            if (normalized.Contains("신호 감지", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("신호 발생", StringComparison.OrdinalIgnoreCase)
+                || normalized.StartsWith("📊 [", StringComparison.Ordinal)
+                || normalized.StartsWith("🎯 [", StringComparison.Ordinal)
+                || normalized.StartsWith("📤 [", StringComparison.Ordinal)
+                || normalized.StartsWith("🤖 [", StringComparison.Ordinal)
+                || normalized.StartsWith("✅ [", StringComparison.Ordinal)
+                || normalized.StartsWith("⛔ [", StringComparison.Ordinal)
+                || normalized.StartsWith("🛡️ [", StringComparison.Ordinal)
+                || normalized.StartsWith("🔍 [", StringComparison.Ordinal)
+                || normalized.StartsWith("📈 [", StringComparison.Ordinal)
+                || normalized.StartsWith("📉 [", StringComparison.Ordinal)
+                || normalized.StartsWith("⏳ [", StringComparison.Ordinal)
+                || normalized.StartsWith("⏸️ [", StringComparison.Ordinal)
+                || normalized.StartsWith("🌊 [", StringComparison.Ordinal)
+                || normalized.StartsWith("❌ [", StringComparison.Ordinal)
+                || normalized.StartsWith("💰 [", StringComparison.Ordinal)
+                || normalized.StartsWith("🏃 [", StringComparison.Ordinal))
+            {
+                return normalized;
+            }
+
             string label = "라이브";
             if (normalized.Contains("[15M_GATE]", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("15M 게이트", StringComparison.OrdinalIgnoreCase)
@@ -2266,7 +2288,7 @@ namespace TradingBot.ViewModels
                 label = "TF신호";
             }
             else if (normalized.Contains("[신호][MAJOR]", StringComparison.OrdinalIgnoreCase)
-                || normalized.Contains("Major", StringComparison.OrdinalIgnoreCase))
+                || normalized.Contains("[SIGNAL][MAJOR]", StringComparison.OrdinalIgnoreCase))
             {
                 label = "메이저신호";
             }

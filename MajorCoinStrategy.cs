@@ -156,7 +156,7 @@ namespace TradingBot.Strategies
                     _ => "WAIT"
                 };
 
-                // AI 필터는 엔진(ExecuteAutoOrder)에서 최종 판정되므로, 여기서는 사전신호 안내만 표시
+                // AI 필터는 엔진(ExecuteAutoOrder)에서 최종 판정되므로, 여기서는 사전 체크포인트만 안내
                 string aiFilterInfo = "";
                 if (decision == "LONG" || decision == "SHORT")
                 {
@@ -176,15 +176,17 @@ namespace TradingBot.Strategies
                         if (!isUptrend && !(sma20 > sma60))
                             filterHints.Add("정배열✗");
                         
-                        string hintText = filterHints.Count > 0 ? $" [{string.Join(", ", filterHints)}]" : "";
+                        _ = settings;
+
+                        string hintText = filterHints.Count > 0 ? string.Join(", ", filterHints) : "없음";
                         aiFilterInfo = filterHints.Count > 0
-                            ? $"prefilter=need-ai-check{hintText}"
-                            : "prefilter=need-ai-check";
+                            ? $"AI 사전체크: {hintText}"
+                            : "AI 사전체크: 기본조건 통과";
                     }
                     catch (Exception ex)
                     {
                         System.Diagnostics.Debug.WriteLine($"[MajorCoinStrategy] Settings access failed: {ex.Message}");
-                        aiFilterInfo = "prefilter=need-ai-check";
+                        aiFilterInfo = "AI 사전체크: 평가 예정";
                     }
                 }
 
@@ -207,13 +209,13 @@ namespace TradingBot.Strategies
                 }
                 else
                 {
-                    // 신호 감지 로그 (간결하게)
+                    int targetThreshold = decision == "LONG" ? longThreshold : shortThreshold;
                     string holdReasonStr = string.IsNullOrWhiteSpace(reason) ? "" : $" | {reason}";
-                    OnLog?.Invoke($"📊 [{symbol}] {decisionKr} 신호 감지 | 가격 ${currentPrice:F2}{aiFilterInfo}{holdReasonStr}");
+                    OnLog?.Invoke($"📊 [{symbol}] {decisionKr} 진입 후보 포착 | 가격 ${currentPrice:F2} | 점수 {aiScore}/{targetThreshold} | RSI {rsi:F1} | Vol {volumeMomentum:F2}x | {aiFilterInfo}{holdReasonStr}");
                     
                     try
                     {
-                        OnLog?.Invoke($"🎯 [{symbol}] {decision} 신호 발생 | 가격 ${currentPrice:F2}");
+                        OnLog?.Invoke(TradingStateLogger.EvaluatingAIGate(symbol, decision, currentPrice));
                         OnTradeSignal?.Invoke(symbol, decision, currentPrice);
                     }
                     catch (Exception eventEx)
