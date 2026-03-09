@@ -37,8 +37,8 @@ namespace TradingBot
             List<MultiTimeframeEntryFeature> trainingData,
             string? validationDataPath = null)
         {
-            if (trainingData == null || trainingData.Count < 100)
-                throw new ArgumentException("학습 데이터가 부족합니다 (최소 100개 필요)");
+            if (trainingData == null || trainingData.Count < 10)
+                throw new ArgumentException($"학습 데이터가 부족합니다 (현재 {trainingData?.Count ?? 0}개, 최소 10개 필요)");
 
             return await Task.Run(() =>
             {
@@ -86,8 +86,11 @@ namespace TradingBot
             });
         }
 
+        // 현재 파이프라인이 기대하는 Feature 수 (BuildPipeline의 featureColumns 길이)
+        private const int ExpectedFeatureCount = 49;
+
         /// <summary>
-        /// 저장된 모델 로드
+        /// 저장된 모델 로드 (스키마 호환성 검증 포함)
         /// </summary>
         public bool LoadModel()
         {
@@ -100,6 +103,45 @@ namespace TradingBot
                 }
 
                 _model = _mlContext.Model.Load(_modelPath, out _modelSchema);
+
+                // 스키마 호환성 검증: Feature 수 확인
+                if (_modelSchema != null)
+                {
+                    int schemaColumnCount = 0;
+                    foreach (var col in _modelSchema)
+                    {
+                        // NoColumn이나 메타 컬럼 제외, 실제 Feature 컬럼만 카운트
+                        if (col.Type is Microsoft.ML.Data.NumberDataViewType)
+                            schemaColumnCount++;
+                    }
+                    // Label(Boolean)은 제외하고 Feature만 비교
+                    // 스키마에 "Label" + N float columns가 있어야 함
+                    if (schemaColumnCount != ExpectedFeatureCount)
+                    {
+                        Console.WriteLine($"[EntryTimingML] ⚠️ 모델 스키마 불일치: {schemaColumnCount}개 Feature (기대: {ExpectedFeatureCount}개). 모델 삭제 후 재학습 필요.");
+                        _model = null;
+                        _isModelLoaded = false;
+                        // 호환되지 않는 모델 파일 삭제
+                        try { File.Delete(_modelPath); } catch { }
+                        return false;
+                    }
+                }
+
+                // 예측 엔진 생성 테스트 (스키마 타입 호환성 최종 검증)
+                try
+                {
+                    var testEngine = _mlContext.Model.CreatePredictionEngine<MultiTimeframeEntryFeature, EntryTimingPrediction>(_model);
+                    testEngine.Dispose();
+                }
+                catch (Exception schemaEx)
+                {
+                    Console.WriteLine($"[EntryTimingML] ⚠️ 모델 스키마 타입 불일치: {schemaEx.Message}. 모델 삭제 후 재학습 필요.");
+                    _model = null;
+                    _isModelLoaded = false;
+                    try { File.Delete(_modelPath); } catch { }
+                    return false;
+                }
+
                 _isModelLoaded = true;
                 Console.WriteLine($"[EntryTimingML] 모델 로드 성공: {_modelPath}");
                 return true;
@@ -107,6 +149,10 @@ namespace TradingBot
             catch (Exception ex)
             {
                 Console.WriteLine($"[EntryTimingML] 모델 로드 실패: {ex.Message}");
+                // 손상된 모델 파일 삭제
+                try { File.Delete(_modelPath); } catch { }
+                _model = null;
+                _isModelLoaded = false;
                 return false;
             }
         }
@@ -166,7 +212,8 @@ namespace TradingBot
                 "M15_RSI", "M15_MACD", "M15_Signal", "M15_BBPosition", "M15_Volume_Ratio",
                 "M15_PriceVsSMA20", "M15_PriceVsSMA60", "M15_ADX", "M15_PlusDI", "M15_MinusDI",
                 "M15_ATR", "M15_OI_Change_Pct",
-                "HourOfDay", "DayOfWeek", "IsAsianSession", "IsEuropeSession", "IsUSSession"
+                "HourOfDay", "DayOfWeek", "IsAsianSession", "IsEuropeSession", "IsUSSession",
+                "Fib_DistanceTo0382_Pct", "Fib_DistanceTo0618_Pct", "Fib_DistanceTo0786_Pct", "Fib_InEntryZone"
             };
 
             // 전처리 및 학습 파이프라인

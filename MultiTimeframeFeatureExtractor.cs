@@ -50,11 +50,12 @@ namespace TradingBot
                 var h1Klines = tasks[3].Result?.ToList();
                 var m15Klines = tasks[4].Result?.ToList();
 
-                if (d1Klines == null || d1Klines.Count < 30 ||
-                    h4Klines == null || h4Klines.Count < 60 ||
-                    h2Klines == null || h2Klines.Count < 60 ||
-                    h1Klines == null || h1Klines.Count < 100 ||
-                    m15Klines == null || m15Klines.Count < 130)
+                // 요구 사항 완화: 초기 학습용으로 최소 데이터만 확보
+                if (d1Klines == null || d1Klines.Count < 20 ||      // 1일봉 20개
+                    h4Klines == null || h4Klines.Count < 40 ||      // 4시간봉 40개 (1주일)
+                    h2Klines == null || h2Klines.Count < 40 ||      // 2시간봉 40개
+                    h1Klines == null || h1Klines.Count < 50 ||      // 1시간봉 50개 (2일)
+                    m15Klines == null || m15Klines.Count < 100)     // 15분봉 100개 (1일)
                 {
                     return null;
                 }

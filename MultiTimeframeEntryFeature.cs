@@ -6,100 +6,117 @@ namespace TradingBot
     /// <summary>
     /// Multi-Timeframe Entry Timing 예측을 위한 Feature Set
     /// 목표: 지금 진입하면 수익날까? (Binary Classification: 1=진입, 0=대기)
+    /// 주의: LoadFromEnumerable 사용 시 [LoadColumn] 불필요 (프로퍼티 이름 기반)
     /// </summary>
     public class MultiTimeframeEntryFeature
     {
         // ═══════════════════════════════════════════════════════════════
         // 1일봉 (Daily) - 대세 추세
         // ═══════════════════════════════════════════════════════════════
-        [LoadColumn(0)] public float D1_Trend { get; set; }              // 1=상승, -1=하락, 0=중립
-        [LoadColumn(1)] public float D1_RSI { get; set; }
-        [LoadColumn(2)] public float D1_MACD { get; set; }
-        [LoadColumn(3)] public float D1_Signal { get; set; }
-        [LoadColumn(4)] public float D1_BBPosition { get; set; }         // 볼린저밴드 상 위치 (0~1)
-        [LoadColumn(5)] public float D1_Volume_Ratio { get; set; }       // 거래량 비율
+        public float D1_Trend { get; set; }              // 1=상승, -1=하락, 0=중립
+        public float D1_RSI { get; set; }
+        public float D1_MACD { get; set; }
+        public float D1_Signal { get; set; }
+        public float D1_BBPosition { get; set; }         // 볼린저밴드 상 위치 (0~1)
+        public float D1_Volume_Ratio { get; set; }       // 거래량 비율
 
         // ═══════════════════════════════════════════════════════════════
         // 4시간봉 (4H) - 중기 추세 + 주요 지지/저항
         // ═══════════════════════════════════════════════════════════════
-        [LoadColumn(6)] public float H4_Trend { get; set; }
-        [LoadColumn(7)] public float H4_RSI { get; set; }
-        [LoadColumn(8)] public float H4_MACD { get; set; }
-        [LoadColumn(9)] public float H4_Signal { get; set; }
-        [LoadColumn(10)] public float H4_BBPosition { get; set; }
-        [LoadColumn(11)] public float H4_Volume_Ratio { get; set; }
-        [LoadColumn(12)] public float H4_DistanceToSupport { get; set; }  // 지지선까지 거리 (%)
-        [LoadColumn(13)] public float H4_DistanceToResist { get; set; }   // 저항선까지 거리 (%)
+        public float H4_Trend { get; set; }
+        public float H4_RSI { get; set; }
+        public float H4_MACD { get; set; }
+        public float H4_Signal { get; set; }
+        public float H4_BBPosition { get; set; }
+        public float H4_Volume_Ratio { get; set; }
+        public float H4_DistanceToSupport { get; set; }  // 지지선까지 거리 (%)
+        public float H4_DistanceToResist { get; set; }   // 저항선까지 거리 (%)
 
         // ═══════════════════════════════════════════════════════════════
         // 2시간봉 (2H) - 파동 단계
         // ═══════════════════════════════════════════════════════════════
-        [LoadColumn(14)] public float H2_Trend { get; set; }
-        [LoadColumn(15)] public float H2_RSI { get; set; }
-        [LoadColumn(16)] public float H2_MACD { get; set; }
-        [LoadColumn(17)] public float H2_Signal { get; set; }
-        [LoadColumn(18)] public float H2_BBPosition { get; set; }
-        [LoadColumn(19)] public float H2_Volume_Ratio { get; set; }
-        [LoadColumn(20)] public float H2_WavePosition { get; set; }       // 파동 위치 (1~5)
+        public float H2_Trend { get; set; }
+        public float H2_RSI { get; set; }
+        public float H2_MACD { get; set; }
+        public float H2_Signal { get; set; }
+        public float H2_BBPosition { get; set; }
+        public float H2_Volume_Ratio { get; set; }
+        public float H2_WavePosition { get; set; }       // 파동 위치 (1~5)
 
         // ═══════════════════════════════════════════════════════════════
         // 1시간봉 (1H) - 단기 모멘텀
         // ═══════════════════════════════════════════════════════════════
-        [LoadColumn(21)] public float H1_Trend { get; set; }
-        [LoadColumn(22)] public float H1_RSI { get; set; }
-        [LoadColumn(23)] public float H1_MACD { get; set; }
-        [LoadColumn(24)] public float H1_Signal { get; set; }
-        [LoadColumn(25)] public float H1_BBPosition { get; set; }
-        [LoadColumn(26)] public float H1_Volume_Ratio { get; set; }
-        [LoadColumn(27)] public float H1_MomentumStrength { get; set; }   // 모멘텀 강도 (0~1)
+        public float H1_Trend { get; set; }
+        public float H1_RSI { get; set; }
+        public float H1_MACD { get; set; }
+        public float H1_Signal { get; set; }
+        public float H1_BBPosition { get; set; }
+        public float H1_Volume_Ratio { get; set; }
+        public float H1_MomentumStrength { get; set; }   // 모멘텀 강도 (0~1)
 
         // ═══════════════════════════════════════════════════════════════
         // 15분봉 (15M) - 현재 진입 시점 상태
         // ═══════════════════════════════════════════════════════════════
-        [LoadColumn(28)] public float M15_RSI { get; set; }
-        [LoadColumn(29)] public float M15_MACD { get; set; }
-        [LoadColumn(30)] public float M15_Signal { get; set; }
-        [LoadColumn(31)] public float M15_BBPosition { get; set; }
-        [LoadColumn(32)] public float M15_Volume_Ratio { get; set; }
-        [LoadColumn(33)] public float M15_PriceVsSMA20 { get; set; }      // 현재가 vs SMA20 (%)
-        [LoadColumn(34)] public float M15_PriceVsSMA60 { get; set; }      // 현재가 vs SMA60 (%)
-        [LoadColumn(35)] public float M15_ADX { get; set; }                // 추세 강도
-        [LoadColumn(36)] public float M15_PlusDI { get; set; }
-        [LoadColumn(37)] public float M15_MinusDI { get; set; }
-        [LoadColumn(38)] public float M15_ATR { get; set; }                // 변동성
-        [LoadColumn(39)] public float M15_OI_Change_Pct { get; set; }     // 미결제약정 변화
+        public float M15_RSI { get; set; }
+        public float M15_MACD { get; set; }
+        public float M15_Signal { get; set; }
+        public float M15_BBPosition { get; set; }
+        public float M15_Volume_Ratio { get; set; }
+        public float M15_PriceVsSMA20 { get; set; }      // 현재가 vs SMA20 (%)
+        public float M15_PriceVsSMA60 { get; set; }      // 현재가 vs SMA60 (%)
+        public float M15_ADX { get; set; }                // 추세 강도
+        public float M15_PlusDI { get; set; }
+        public float M15_MinusDI { get; set; }
+        public float M15_ATR { get; set; }                // 변동성
+        public float M15_OI_Change_Pct { get; set; }     // 미결제약정 변화
 
         // ═══════════════════════════════════════════════════════════════
         // 시간 컨텍스트 (시간대별 패턴)
         // ═══════════════════════════════════════════════════════════════
-        [LoadColumn(40)] public float HourOfDay { get; set; }             // 0~23
-        [LoadColumn(41)] public float DayOfWeek { get; set; }             // 0~6 (월~일)
-        [LoadColumn(42)] public float IsAsianSession { get; set; }        // 1=아시아, 0=기타
-        [LoadColumn(43)] public float IsEuropeSession { get; set; }       // 1=유럽, 0=기타
-        [LoadColumn(44)] public float IsUSSession { get; set; }           // 1=미국, 0=기타
+        public float HourOfDay { get; set; }             // 0~23
+        public float DayOfWeek { get; set; }             // 0~6 (월~일)
+        public float IsAsianSession { get; set; }        // 1=아시아, 0=기타
+        public float IsEuropeSession { get; set; }       // 1=유럽, 0=기타
+        public float IsUSSession { get; set; }           // 1=미국, 0=기타
 
         // ═══════════════════════════════════════════════════════════════
         // 피보나치 되돌림 레벨 (객관적 수치로 AI 특징 사용)
         // ═══════════════════════════════════════════════════════════════
-        [LoadColumn(45)] public float Fib_DistanceTo0382_Pct { get; set; }    // 현재가에서 0.382 레벨까지 거리 (%)
-        [LoadColumn(46)] public float Fib_DistanceTo0618_Pct { get; set; }    // 현재가에서 0.618 레벨까지 거리 (%)
-        [LoadColumn(47)] public float Fib_DistanceTo0786_Pct { get; set; }    // 현재가에서 0.786 레벨까지 거리 (%)
-        [LoadColumn(48)] public float Fib_InEntryZone { get; set; }           // 진입 구간(0.382~0.618) 내 여부 (1=예, 0=아니오)
+        public float Fib_DistanceTo0382_Pct { get; set; }    // 현재가에서 0.382 레벨까지 거리 (%)
+        public float Fib_DistanceTo0618_Pct { get; set; }    // 현재가에서 0.618 레벨까지 거리 (%)
+        public float Fib_DistanceTo0786_Pct { get; set; }    // 현재가에서 0.786 레벨까지 거리 (%)
+        public float Fib_InEntryZone { get; set; }           // 진입 구간(0.382~0.618) 내 여부 (1=예, 0=아니오)
 
         // ═══════════════════════════════════════════════════════════════
         // 타겟 레이블 (학습용)
         // ═══════════════════════════════════════════════════════════════
-        [LoadColumn(49)]
         [ColumnName("Label")]
         public bool ShouldEnter { get; set; }                             // true=진입, false=대기
 
         // ═══════════════════════════════════════════════════════════════
         // 메타 정보 (예측 시 참고용, 학습에는 미사용)
+        // ML.NET IDataView에서 제외 ([NoColumn])
         // ═══════════════════════════════════════════════════════════════
-        public string Symbol { get; set; } = string.Empty;
-        public DateTime Timestamp { get; set; }
-        public decimal EntryPrice { get; set; }
-        public float ActualProfitPct { get; set; }                        // 실제 수익률 (백테스트 결과)
+        [NoColumn] public string Symbol { get; set; } = string.Empty;
+        [NoColumn] public DateTime Timestamp { get; set; }
+        [NoColumn] public decimal EntryPrice { get; set; }
+        [NoColumn] public float ActualProfitPct { get; set; }             // 실제 수익률 (백테스트 결과)
+
+        /// <summary>
+        /// 현재 Feature를 복제하고 미래 시각 기준의 시간 컨텍스트만 갱신합니다.
+        /// 시장 상태값은 유지하고, AI가 학습한 시간대 패턴으로 다음 진입 시점을 추정할 때 사용합니다.
+        /// </summary>
+        public MultiTimeframeEntryFeature CloneWithTimestamp(DateTime timestamp)
+        {
+            var clone = (MultiTimeframeEntryFeature)MemberwiseClone();
+            clone.Timestamp = timestamp;
+            clone.HourOfDay = timestamp.Hour;
+            clone.DayOfWeek = (float)timestamp.DayOfWeek;
+            clone.IsAsianSession = (timestamp.Hour >= 0 && timestamp.Hour < 9) ? 1f : 0f;
+            clone.IsEuropeSession = (timestamp.Hour >= 7 && timestamp.Hour < 16) ? 1f : 0f;
+            clone.IsUSSession = (timestamp.Hour >= 13 && timestamp.Hour < 22) ? 1f : 0f;
+            return clone;
+        }
     }
 
     /// <summary>
@@ -115,6 +132,22 @@ namespace TradingBot
 
         [ColumnName("Score")]
         public float Score { get; set; }                                  // 원시 점수
+    }
+
+    /// <summary>
+    /// AI ENTRY 컬럼 표시용 미래 진입 예측 결과
+    /// </summary>
+    public class AIEntryForecastResult
+    {
+        public string Symbol { get; set; } = string.Empty;
+        public float MLProbability { get; set; }
+        public float TFProbability { get; set; }
+        public float AverageProbability { get; set; }
+        public DateTime ForecastTimeUtc { get; set; }
+        public DateTime ForecastTimeLocal { get; set; }
+        public int ForecastOffsetMinutes { get; set; }
+        public DateTime GeneratedAtLocal { get; set; }
+        public bool IsImmediate => ForecastOffsetMinutes <= 1;
     }
 
     /// <summary>

@@ -42,6 +42,7 @@ namespace TradingBot.ViewModels
         private readonly ConcurrentQueue<(string Category, string Message, string? Symbol)> _pendingLiveLogDbWrites = new();
         private readonly ConcurrentDictionary<string, (decimal Price, double? Pnl)> _pendingTickerUpdates = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, MultiTimeframeViewModel> _pendingSignalUpdates = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, AIEntryForecastResult> _pendingAiEntryProbUpdates = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, MultiTimeframeViewModel> _marketDataIndex = new(StringComparer.OrdinalIgnoreCase);
         private readonly object _footerLogLock = new();
         // [병목 해결] LoadTradeHistory 디바운싱 — 연속 이벤트로 인한 중복 DB 쿼리 + UI 큐 폭주 방지
@@ -1402,6 +1403,12 @@ namespace TradingBot.ViewModels
             {
                 ScheduleLoadTradeHistory();
             };
+
+            // [AI 진입 예측] 확률 업데이트 구독
+            _engine.OnAiEntryProbUpdate += (symbol, forecast) =>
+            {
+                UpdateAiEntryProb(symbol, forecast);
+            };
         }
 
         private void UnsubscribeFromEngineEvents()
@@ -1597,6 +1604,7 @@ namespace TradingBot.ViewModels
                 _tickerFlushTimer.Tick += (_, _) =>
                 {
                     FlushPendingSignalUpdatesToUi();
+                    FlushPendingAiEntryProbUpdatesToUi();
                     FlushPendingTickerUpdatesToUi();
                 };
                 _tickerFlushTimer.Start();
@@ -1670,6 +1678,54 @@ namespace TradingBot.ViewModels
             }
         }
 
+        private void FlushPendingAiEntryProbUpdatesToUi()
+        {
+            if (_pendingAiEntryProbUpdates.IsEmpty)
+                return;
+
+            var watch = Stopwatch.StartNew();
+            int processed = 0;
+            foreach (var key in _pendingAiEntryProbUpdates.Keys)
+            {
+                if (processed >= MaxSignalBatchPerTick || watch.ElapsedMilliseconds >= MaxUiWorkBudgetMsPerTick)
+                    break;
+
+                if (!_pendingAiEntryProbUpdates.TryRemove(key, out var payload))
+                    continue;
+
+                var existing = GetOrCreateMarketDataItem(key);
+                bool probChanged = Math.Abs(existing.AiEntryProb - payload.AverageProbability) > 0.001f;
+                bool forecastTimeChanged = existing.AiEntryForecastTime != payload.ForecastTimeLocal;
+                bool forecastOffsetChanged = existing.AiEntryForecastOffsetMinutes != payload.ForecastOffsetMinutes;
+                bool timestampChanged = existing.AiEntryProbUpdatedAt != payload.GeneratedAtLocal;
+
+                if (!probChanged && !forecastTimeChanged && !forecastOffsetChanged && !timestampChanged)
+                    continue;
+
+                existing.BeginUpdate();
+                try
+                {
+                    if (probChanged)
+                        existing.AiEntryProb = payload.AverageProbability;
+
+                    if (forecastTimeChanged)
+                        existing.AiEntryForecastTime = payload.ForecastTimeLocal;
+
+                    if (forecastOffsetChanged)
+                        existing.AiEntryForecastOffsetMinutes = payload.ForecastOffsetMinutes;
+
+                    if (probChanged || timestampChanged)
+                        existing.AiEntryProbUpdatedAt = payload.GeneratedAtLocal;
+                }
+                finally
+                {
+                    existing.EndUpdate();
+                }
+
+                processed++;
+            }
+        }
+
         private MultiTimeframeViewModel GetOrCreateMarketDataItem(string symbol)
         {
             if (_marketDataIndex.TryGetValue(symbol, out var cached))
@@ -1716,30 +1772,50 @@ namespace TradingBot.ViewModels
             {
                 if (signal.LastPrice > 0) existing.LastPrice = signal.LastPrice;
                 if (signal.RSI_1H > 0) existing.RSI_1H = signal.RSI_1H;
-                if (signal.AIScore > 0)
+                if (signal.AIScore > 0 && Math.Abs(existing.AIScore - signal.AIScore) > 0.001f)
                 {
                     existing.AIScore = signal.AIScore;
                     existing.TouchAIScoreUpdatedAt();
                 }
-                if (!string.IsNullOrEmpty(signal.Decision)) existing.Decision = signal.Decision;
-                if (!string.IsNullOrEmpty(signal.BBPosition)) existing.BBPosition = signal.BBPosition;
-                if (!string.IsNullOrEmpty(signal.SignalSource)) existing.SignalSource = signal.SignalSource;
-                existing.ShortLongScore = signal.ShortLongScore;
-                existing.ShortShortScore = signal.ShortShortScore;
-                existing.MacdHist = signal.MacdHist;
-                if (!string.IsNullOrEmpty(signal.ElliottTrend)) existing.ElliottTrend = signal.ElliottTrend;
-                if (!string.IsNullOrEmpty(signal.MAState)) existing.MAState = signal.MAState;
-                if (!string.IsNullOrEmpty(signal.FibPosition)) existing.FibPosition = signal.FibPosition;
-                existing.VolumeRatioValue = signal.VolumeRatioValue;
-                if (!string.IsNullOrEmpty(signal.VolumeRatio)) existing.VolumeRatio = signal.VolumeRatio;
+                if (!string.IsNullOrEmpty(signal.Decision) && !string.Equals(existing.Decision, signal.Decision, StringComparison.Ordinal)) existing.Decision = signal.Decision;
+                if (!string.IsNullOrEmpty(signal.BBPosition) && !string.Equals(existing.BBPosition, signal.BBPosition, StringComparison.Ordinal)) existing.BBPosition = signal.BBPosition;
+                if (!string.IsNullOrEmpty(signal.SignalSource) && !string.Equals(existing.SignalSource, signal.SignalSource, StringComparison.Ordinal)) existing.SignalSource = signal.SignalSource;
+                if (Math.Abs(existing.ShortLongScore - signal.ShortLongScore) > 0.001) existing.ShortLongScore = signal.ShortLongScore;
+                if (Math.Abs(existing.ShortShortScore - signal.ShortShortScore) > 0.001) existing.ShortShortScore = signal.ShortShortScore;
+                if (Math.Abs(existing.MacdHist - signal.MacdHist) > 0.0001) existing.MacdHist = signal.MacdHist;
+                if (!string.IsNullOrEmpty(signal.ElliottTrend) && !string.Equals(existing.ElliottTrend, signal.ElliottTrend, StringComparison.Ordinal)) existing.ElliottTrend = signal.ElliottTrend;
+                if (!string.IsNullOrEmpty(signal.MAState) && !string.Equals(existing.MAState, signal.MAState, StringComparison.Ordinal)) existing.MAState = signal.MAState;
+                if (!string.IsNullOrEmpty(signal.FibPosition) && !string.Equals(existing.FibPosition, signal.FibPosition, StringComparison.Ordinal)) existing.FibPosition = signal.FibPosition;
+                if (Math.Abs(existing.VolumeRatioValue - signal.VolumeRatioValue) > 0.001) existing.VolumeRatioValue = signal.VolumeRatioValue;
+                if (!string.IsNullOrEmpty(signal.VolumeRatio) && !string.Equals(existing.VolumeRatio, signal.VolumeRatio, StringComparison.Ordinal)) existing.VolumeRatio = signal.VolumeRatio;
                 if (signal.IsPositionActive) existing.IsPositionActive = true;
                 if (signal.EntryPrice > 0) existing.EntryPrice = signal.EntryPrice;
-                if (!string.IsNullOrEmpty(signal.PositionSide)) existing.PositionSide = signal.PositionSide;
+                if (!string.IsNullOrEmpty(signal.PositionSide) && !string.Equals(existing.PositionSide, signal.PositionSide, StringComparison.Ordinal)) existing.PositionSide = signal.PositionSide;
                 if (signal.Quantity > 0) existing.Quantity = signal.Quantity;
                 if (signal.Leverage > 0) existing.Leverage = signal.Leverage;
 
-                if (signal.TransformerPrice > 0) existing.TransformerPrice = signal.TransformerPrice;
-                if (signal.TransformerChange != 0) existing.TransformerChange = signal.TransformerChange;
+                if (signal.TransformerPrice > 0 && existing.TransformerPrice != signal.TransformerPrice) existing.TransformerPrice = signal.TransformerPrice;
+                if (Math.Abs(existing.TransformerChange - signal.TransformerChange) > 0.001) existing.TransformerChange = signal.TransformerChange;
+                if (signal.AiEntryProb >= 0)
+                {
+                    bool probChanged = Math.Abs(existing.AiEntryProb - signal.AiEntryProb) > 0.001f;
+                    bool forecastTimeChanged = signal.AiEntryForecastTime.HasValue && existing.AiEntryForecastTime != signal.AiEntryForecastTime;
+                    bool forecastOffsetChanged = signal.AiEntryForecastOffsetMinutes.HasValue && existing.AiEntryForecastOffsetMinutes != signal.AiEntryForecastOffsetMinutes;
+                    var effectiveUpdatedAt = signal.AiEntryProbUpdatedAt ?? DateTime.Now;
+                    bool timestampChanged = signal.AiEntryProbUpdatedAt.HasValue && existing.AiEntryProbUpdatedAt != signal.AiEntryProbUpdatedAt;
+
+                    if (probChanged)
+                        existing.AiEntryProb = signal.AiEntryProb;
+
+                    if (forecastTimeChanged)
+                        existing.AiEntryForecastTime = signal.AiEntryForecastTime;
+
+                    if (forecastOffsetChanged)
+                        existing.AiEntryForecastOffsetMinutes = signal.AiEntryForecastOffsetMinutes;
+
+                    if (probChanged || forecastTimeChanged || forecastOffsetChanged || timestampChanged)
+                        existing.AiEntryProbUpdatedAt = effectiveUpdatedAt;
+                }
             }
             finally
             {
@@ -2536,6 +2612,20 @@ namespace TradingBot.ViewModels
             if (string.IsNullOrWhiteSpace(symbol))
                 return;
             _pendingTickerUpdates[symbol] = (price, pnl);
+        }
+
+        /// <summary>
+        /// AI 진입 확률을 해당 심볼의 MarketDataList 행에 업데이트
+        /// </summary>
+        private void UpdateAiEntryProb(string symbol, AIEntryForecastResult? forecast)
+        {
+            if (string.IsNullOrWhiteSpace(symbol) || forecast == null)
+                return;
+
+            if (string.IsNullOrWhiteSpace(forecast.Symbol))
+                forecast.Symbol = symbol;
+
+            _pendingAiEntryProbUpdates[symbol] = forecast;
         }
 
         private void UpdateProgress(int current, int total)

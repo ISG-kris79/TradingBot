@@ -16,7 +16,7 @@ namespace TradingBot
     public class EntryTimingTransformerTrainer
     {
         private readonly int _seqLen = 60; // 15분봉 60개 = 15시간 히스토리
-        private readonly int _featureDim = 45; // Feature 개수
+        private readonly int _featureDim = 49; // Feature 개수 (45 base + 4 Fib)
         private readonly int _hiddenDim = 128;
         private readonly int _numLayers = 4;
         private readonly int _numHeads = 8;
@@ -109,7 +109,7 @@ namespace TradingBot
 
                         // 정확도 계산
                         var predictions = torch.sigmoid(outputs) > 0.5f;
-                        trainCorrect += predictions.eq(labels).sum().item<int>();
+                        trainCorrect += (int)predictions.eq(labels).sum().item<long>();
 
                         inputs.Dispose();
                         labels.Dispose();
@@ -118,7 +118,7 @@ namespace TradingBot
                         predictions.Dispose();
                     }
 
-                    float trainAcc = (float)trainCorrect / (trainSeq.Count * _seqLen);
+                    float trainAcc = (float)trainCorrect / trainSeq.Count;
 
                     // Validation
                     _model.eval();
@@ -133,7 +133,7 @@ namespace TradingBot
 
                             var outputs = _model.forward(inputs);
                             var predictions = torch.sigmoid(outputs) > 0.5f;
-                            valCorrect += predictions.eq(labels).sum().item<int>();
+                            valCorrect += (int)predictions.eq(labels).sum().item<long>();
 
                             inputs.Dispose();
                             labels.Dispose();
@@ -142,7 +142,7 @@ namespace TradingBot
                         }
                     }
 
-                    float valAcc = (float)valCorrect / (valSeq.Count * _seqLen);
+                    float valAcc = valSeq.Count > 0 ? (float)valCorrect / valSeq.Count : 0f;
 
                     if ((epoch + 1) % 5 == 0 || epoch == 0)
                     {
@@ -231,10 +231,12 @@ namespace TradingBot
         {
             int batchSize = batch.Count;
             float[,,] inputArray = new float[batchSize, _seqLen, _featureDim];
-            float[,,] labelArray = new float[batchSize, _seqLen, 1];
+            float[,] labelArray = new float[batchSize, 1]; // 모델 출력 shape [batch, 1]과 일치
 
             for (int b = 0; b < batchSize; b++)
             {
+                labelArray[b, 0] = batch[b].Label ? 1f : 0f;
+
                 for (int t = 0; t < _seqLen; t++)
                 {
                     var feature = batch[b].Features[t];
@@ -283,8 +285,10 @@ namespace TradingBot
                     inputArray[b, t, 42] = feature.IsAsianSession;
                     inputArray[b, t, 43] = feature.IsEuropeSession;
                     inputArray[b, t, 44] = feature.IsUSSession;
-
-                    labelArray[b, t, 0] = batch[b].Label ? 1f : 0f;
+                    inputArray[b, t, 45] = feature.Fib_DistanceTo0382_Pct;
+                    inputArray[b, t, 46] = feature.Fib_DistanceTo0618_Pct;
+                    inputArray[b, t, 47] = feature.Fib_DistanceTo0786_Pct;
+                    inputArray[b, t, 48] = feature.Fib_InEntryZone;
                 }
             }
 
@@ -302,8 +306,53 @@ namespace TradingBot
                 var f = features[i];
                 array[i, 0] = f.D1_Trend;
                 array[i, 1] = f.D1_RSI;
-                // ... (위와 동일한 매핑)
+                array[i, 2] = f.D1_MACD;
+                array[i, 3] = f.D1_Signal;
+                array[i, 4] = f.D1_BBPosition;
+                array[i, 5] = f.D1_Volume_Ratio;
+                array[i, 6] = f.H4_Trend;
+                array[i, 7] = f.H4_RSI;
+                array[i, 8] = f.H4_MACD;
+                array[i, 9] = f.H4_Signal;
+                array[i, 10] = f.H4_BBPosition;
+                array[i, 11] = f.H4_Volume_Ratio;
+                array[i, 12] = f.H4_DistanceToSupport;
+                array[i, 13] = f.H4_DistanceToResist;
+                array[i, 14] = f.H2_Trend;
+                array[i, 15] = f.H2_RSI;
+                array[i, 16] = f.H2_MACD;
+                array[i, 17] = f.H2_Signal;
+                array[i, 18] = f.H2_BBPosition;
+                array[i, 19] = f.H2_Volume_Ratio;
+                array[i, 20] = f.H2_WavePosition;
+                array[i, 21] = f.H1_Trend;
+                array[i, 22] = f.H1_RSI;
+                array[i, 23] = f.H1_MACD;
+                array[i, 24] = f.H1_Signal;
+                array[i, 25] = f.H1_BBPosition;
+                array[i, 26] = f.H1_Volume_Ratio;
+                array[i, 27] = f.H1_MomentumStrength;
+                array[i, 28] = f.M15_RSI;
+                array[i, 29] = f.M15_MACD;
+                array[i, 30] = f.M15_Signal;
+                array[i, 31] = f.M15_BBPosition;
+                array[i, 32] = f.M15_Volume_Ratio;
+                array[i, 33] = f.M15_PriceVsSMA20;
+                array[i, 34] = f.M15_PriceVsSMA60;
+                array[i, 35] = f.M15_ADX;
+                array[i, 36] = f.M15_PlusDI;
+                array[i, 37] = f.M15_MinusDI;
+                array[i, 38] = f.M15_ATR;
+                array[i, 39] = f.M15_OI_Change_Pct;
+                array[i, 40] = f.HourOfDay / 24f;
+                array[i, 41] = f.DayOfWeek / 7f;
+                array[i, 42] = f.IsAsianSession;
+                array[i, 43] = f.IsEuropeSession;
                 array[i, 44] = f.IsUSSession;
+                array[i, 45] = f.Fib_DistanceTo0382_Pct;
+                array[i, 46] = f.Fib_DistanceTo0618_Pct;
+                array[i, 47] = f.Fib_DistanceTo0786_Pct;
+                array[i, 48] = f.Fib_InEntryZone;
             }
             return tensor(array);
         }

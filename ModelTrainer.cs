@@ -21,30 +21,13 @@ namespace TradingBot.Services
         {
             try
             {
-                // 1. 데이터 로드
-                IDataView trainingData = _mlContext.Data.LoadFromEnumerable(data);
+                // 1. 데이터 로드 (SchemaDefinition으로 [NoColumn] 명시적 반영)
+                var schemaDef = Microsoft.ML.Data.SchemaDefinition.Create(typeof(CandleData));
+                IDataView trainingData = _mlContext.Data.LoadFromEnumerable(data, schemaDef);
 
                 // 2. 파이프라인 구성
-                // Features 컬럼 생성 (여러 특성을 하나로 병합)
-                var pipeline = _mlContext.Transforms.Concatenate("Features",
-                        nameof(CandleData.Open),
-                        nameof(CandleData.High),
-                        nameof(CandleData.Low),
-                        nameof(CandleData.Close),
-                        nameof(CandleData.Volume),
-                        nameof(CandleData.RSI),
-                        nameof(CandleData.BollingerUpper),
-                        nameof(CandleData.BollingerLower),
-                        nameof(CandleData.ElliottWaveState),
-                        nameof(CandleData.MACD),
-                        nameof(CandleData.MACD_Signal),
-                        nameof(CandleData.MACD_Hist),
-                        nameof(CandleData.ATR),
-                        nameof(CandleData.Fib_236),
-                        nameof(CandleData.Fib_382),
-                        nameof(CandleData.Fib_500),
-                        nameof(CandleData.Fib_618),
-                        nameof(CandleData.SentimentScore)) // [Agent 2] Feature 추가
+                // MLService.FeatureColumns 사용 (float 피처만 포함)
+                var pipeline = _mlContext.Transforms.Concatenate("Features", MLService.FeatureColumns)
                     .Append(_mlContext.Transforms.NormalizeMinMax("Features")) // 정규화
                     .Append(_mlContext.BinaryClassification.Trainers.FastTree(labelColumnName: "Label", featureColumnName: "Features")); // FastTree 알고리즘
 

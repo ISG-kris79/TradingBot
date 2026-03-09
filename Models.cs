@@ -220,21 +220,22 @@ namespace TradingBot.Models
 
     public class CandleData
     {
-        public string? Symbol { get; set; }
-        public decimal Open { get; set; }
-        public decimal High { get; set; }
-        public decimal Low { get; set; }
-        public decimal Close { get; set; }
+        // ML.NET LoadFromEnumerable 비호환 타입 → [NoColumn] 처리
+        [NoColumn] public string? Symbol { get; set; }
+        [NoColumn] public decimal Open { get; set; }
+        [NoColumn] public decimal High { get; set; }
+        [NoColumn] public decimal Low { get; set; }
+        [NoColumn] public decimal Close { get; set; }
         public float Volume { get; set; }
-        public string? Interval { get; set; } // 1m, 5m, 15m, 1h, 2h, 4h, 1d
-        public DateTime OpenTime { get; set; }
-        public DateTime CloseTime { get; set; }
+        [NoColumn] public string? Interval { get; set; } // 1m, 5m, 15m, 1h, 2h, 4h, 1d
+        [NoColumn] public DateTime OpenTime { get; set; }
+        [NoColumn] public DateTime CloseTime { get; set; }
 
         // OI / Funding / Squeeze (통합 호환 필드)
         public float OpenInterest { get; set; }
         public float OI_Change_Pct { get; set; }
         public float FundingRate { get; set; }
-        public int SqueezeLabel { get; set; }
+        [NoColumn] public int SqueezeLabel { get; set; }
 
         // ──────────────────── 보조지표 Features ────────────────────
         // 1. 기본 보조지표
@@ -254,7 +255,7 @@ namespace TradingBot.Models
 
         // 3. 엘리엇 파동
         public float ElliottWaveState { get; set; } // 1~5파동 상태 수치화
-        public int ElliottWaveStep { get; set; } // 1, 2, 3, 4, 5 파동 번호
+        [NoColumn] public int ElliottWaveStep { get; set; } // 1, 2, 3, 4, 5 파동 번호
 
         // 4. 이동평균 정렬 상태
         public float SMA_20 { get; set; }
@@ -295,9 +296,9 @@ namespace TradingBot.Models
         public float LabelShort { get; set; }                // SHORT 성공 확률 (0 or 1)
         public float LabelHold { get; set; }                 // HOLD (진입하지 않는 게 나은 구간, 1 or 0)
 
-        // 기존 호환
-        public double BB_Upper { get; set; }
-        public double BB_Lower { get; set; }
+        // 기존 호환 (ML.NET에서 double은 Concatenate와 타입 충돌 가능 → [NoColumn])
+        [NoColumn] public double BB_Upper { get; set; }
+        [NoColumn] public double BB_Lower { get; set; }
     }
 
     public class ElliottPoints
@@ -765,7 +766,6 @@ namespace TradingBot.Models
                 if (_lastPrice != value)
                 {
                     _lastPrice = value;
-                    if (_updateSuspendCount > 0) { _hasPendingRefresh = true; return; }
                     OnPropertyChanged(nameof(LastPrice));
                     // [병목 해결] 포지션 활성 시에만 파생 속성 갱신 (비활성 시 불필요)
                     if (IsPositionActive)
@@ -919,6 +919,118 @@ namespace TradingBot.Models
         // AIScore는 이미 0-100 스케일이므로 *100 제거
         public string AIScoreText => $"{AIScore:F1}%";
 
+        // ═══ AI 진입 예측 확률 (DoubleCheck Gate) ═══
+        private float _aiEntryProb = -1f; // -1 = 미계산
+        public float AiEntryProb
+        {
+            get => _aiEntryProb;
+            set
+            {
+                if (Math.Abs(_aiEntryProb - value) > 0.001f)
+                {
+                    _aiEntryProb = value;
+                    OnPropertyChanged(nameof(AiEntryProb));
+                    OnPropertyChanged(nameof(AiEntryProbText));
+                    OnPropertyChanged(nameof(AiEntryProbColor));
+                }
+            }
+        }
+
+        /// <summary>진입 확률 표시 텍스트 (ML+TF 평균)</summary>
+        public string AiEntryProbText
+        {
+            get
+            {
+                if (_aiEntryProb < 0) return "-";
+                return $"{_aiEntryProb:P0}";
+            }
+        }
+
+        private DateTime? _aiEntryForecastTime;
+        public DateTime? AiEntryForecastTime
+        {
+            get => _aiEntryForecastTime;
+            set
+            {
+                if (_aiEntryForecastTime != value)
+                {
+                    _aiEntryForecastTime = value;
+                    OnPropertyChanged(nameof(AiEntryForecastTime));
+                    OnPropertyChanged(nameof(AiEntryForecastTimeText));
+                    OnPropertyChanged(nameof(AiEntryForecastDetailText));
+                }
+            }
+        }
+
+        private int? _aiEntryForecastOffsetMinutes;
+        public int? AiEntryForecastOffsetMinutes
+        {
+            get => _aiEntryForecastOffsetMinutes;
+            set
+            {
+                if (_aiEntryForecastOffsetMinutes != value)
+                {
+                    _aiEntryForecastOffsetMinutes = value;
+                    OnPropertyChanged(nameof(AiEntryForecastOffsetMinutes));
+                    OnPropertyChanged(nameof(AiEntryForecastTimeText));
+                    OnPropertyChanged(nameof(AiEntryForecastDetailText));
+                }
+            }
+        }
+
+        public string AiEntryForecastTimeText
+        {
+            get
+            {
+                if (_aiEntryProb < 0) return "-";
+                if (_aiEntryProb < 0.35f) return "관망";
+                if (!_aiEntryForecastTime.HasValue) return "대기";
+                if (!_aiEntryForecastOffsetMinutes.HasValue || _aiEntryForecastOffsetMinutes.Value <= 1) return "지금";
+                return _aiEntryForecastTime.Value.ToString("HH:mm");
+            }
+        }
+
+        public string AiEntryForecastDetailText
+        {
+            get
+            {
+                if (_aiEntryProb < 0) return string.Empty;
+
+                if (_aiEntryProb < 0.35f)
+                {
+                    if (_aiEntryForecastTime.HasValue && _aiEntryForecastOffsetMinutes.GetValueOrDefault() > 1)
+                        return $"최적 {_aiEntryForecastTime.Value:HH:mm} · {_aiEntryProb:P0}";
+
+                    return $"{_aiEntryProb:P0} · 대기";
+                }
+
+                if (!_aiEntryForecastTime.HasValue) return $"{_aiEntryProb:P0} · 대기";
+                if (!_aiEntryForecastOffsetMinutes.HasValue || _aiEntryForecastOffsetMinutes.Value <= 1) return $"{_aiEntryProb:P0} · 즉시";
+                return $"{_aiEntryProb:P0} · +{_aiEntryForecastOffsetMinutes.Value}m";
+            }
+        }
+
+        /// <summary>진입 확률에 따른 색상 (높을수록 녹색)</summary>
+        public Brush AiEntryProbColor
+        {
+            get
+            {
+                if (_aiEntryProb < 0) return Brushes.Gray;
+                if (_aiEntryProb >= 0.7f) return Brushes.LimeGreen;
+                if (_aiEntryProb >= 0.5f) return Brushes.Gold;
+                if (_aiEntryProb >= 0.3f) return Brushes.Orange;
+                return Brushes.OrangeRed;
+            }
+        }
+
+        private DateTime? _aiEntryProbUpdatedAt;
+        public DateTime? AiEntryProbUpdatedAt
+        {
+            get => _aiEntryProbUpdatedAt;
+            set { _aiEntryProbUpdatedAt = value; OnPropertyChanged(nameof(AiEntryProbUpdatedAt)); OnPropertyChanged(nameof(AiEntryProbUpdatedText)); }
+        }
+        public string AiEntryProbUpdatedText => AiEntryProbUpdatedAt?.ToString("HH:mm") ?? "";
+
         private string? _decision;
         public string? Decision
         {
@@ -951,7 +1063,7 @@ namespace TradingBot.Models
 
         // [병목 해결] 배치 업데이트 지원 - BeginUpdate() / EndUpdate() 사이에서는 PropertyChanged 억제
         private int _updateSuspendCount;
-        private bool _hasPendingRefresh;
+        private readonly HashSet<string> _pendingPropertyChanges = new(StringComparer.Ordinal);
 
         /// <summary>배치 업데이트 시작. PropertyChanged 이벤트가 억제됩니다.</summary>
         public void BeginUpdate() { _updateSuspendCount++; }
@@ -960,17 +1072,25 @@ namespace TradingBot.Models
         public void EndUpdate()
         {
             if (_updateSuspendCount > 0) _updateSuspendCount--;
-            if (_updateSuspendCount == 0 && _hasPendingRefresh)
+            if (_updateSuspendCount == 0 && _pendingPropertyChanges.Count > 0)
             {
-                _hasPendingRefresh = false;
-                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(string.Empty)); // 전체 Refresh
+                var pendingNames = new List<string>(_pendingPropertyChanges);
+                _pendingPropertyChanges.Clear();
+
+                foreach (var propertyName in pendingNames)
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
             }
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name)
         {
-            if (_updateSuspendCount > 0) { _hasPendingRefresh = true; return; }
+            if (_updateSuspendCount > 0)
+            {
+                if (!string.IsNullOrWhiteSpace(name))
+                    _pendingPropertyChanges.Add(name);
+                return;
+            }
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
         }
 

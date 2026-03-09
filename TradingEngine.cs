@@ -215,6 +215,7 @@ namespace TradingBot
         public event Action<string, float, float>? OnRLStatsUpdate; // [추가] RL 학습 상태 업데이트
         public event Action<AIPredictionRecord>? OnAIPrediction; // [AI 모니터링] 예측 기록 이벤트
         public event Action? OnTradeHistoryUpdated; // [FIX] 청산 시 TradeHistory 자동 갱신 트리거
+        public event Action<string, AIEntryForecastResult>? OnAiEntryProbUpdate; // [AI 진입 예측] symbol, forecast
 
         /// <summary>
         /// 외부에서 모든 이벤트 구독을 해제합니다 (event 키워드로 인해 내부에서만 초기화 가능)
@@ -238,6 +239,7 @@ namespace TradingBot
             OnRLStatsUpdate = null;
             OnAIPrediction = null;
             OnTradeHistoryUpdated = null;
+            OnAiEntryProbUpdate = null;
         }
 
         private DateTime _lastHeartbeatTime = DateTime.MinValue;
@@ -315,7 +317,22 @@ namespace TradingBot
             _symbols = AppConfig.Current?.Trading?.Symbols ?? new List<string>();
             if (_symbols.Count == 0)
             {
-                _symbols.AddRange(new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" });
+                _symbols.AddRange(new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "ADAUSDT", "DOGEUSDT", "DOTUSDT", "MATICUSDT", "LINKUSDT" });
+                OnStatusLog?.Invoke($"⚠️ 설정에 심볼이 없어 기본 10개 추가: {string.Join(", ", _symbols)}");
+            }
+            else if (_symbols.Count < 10)
+            {
+                // AI 초기 학습을 위해 최소 10개 확보
+                var additionalSymbols = new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "ADAUSDT", "DOGEUSDT", "DOTUSDT", "MATICUSDT", "LINKUSDT" }
+                    .Where(s => !_symbols.Contains(s, StringComparer.OrdinalIgnoreCase))
+                    .Take(10 - _symbols.Count)
+                    .ToList();
+                
+                if (additionalSymbols.Any())
+                {
+                    _symbols.AddRange(additionalSymbols);
+                    OnStatusLog?.Invoke($"⚠️ AI 학습을 위해 추가 심볼 포함: {string.Join(", ", additionalSymbols)} (총 {_symbols.Count}개)");
+                }
             }
 
             _soundService = new SoundService();
@@ -451,6 +468,8 @@ namespace TradingBot
                 };
 
                 _aiDoubleCheckEntryGate = new AIDoubleCheckEntryGate(_exchangeService, doubleCheckConfig);
+                _aiDoubleCheckEntryGate.OnLog += msg => OnStatusLog?.Invoke(msg);
+                _aiDoubleCheckEntryGate.OnAlert += msg => OnAlert?.Invoke(msg);
                 if (_aiDoubleCheckEntryGate.IsReady)
                 {
                     OnStatusLog?.Invoke(
@@ -1080,6 +1099,13 @@ namespace TradingBot
                 // [추가] 엔진 시작 시 Transformer 초기 학습 1회 자동 실행 (모델 미준비 시)
                 await TriggerInitialTransformerTrainingIfNeededAsync(token);
 
+                // [추가] AI 더블체크 게이트 초기 학습 (모델 미준비 시)
+                if (_aiDoubleCheckEntryGate != null && !_aiDoubleCheckEntryGate.IsReady)
+                {
+                    var (success, message) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, _symbols, token);
+                    // 결과 메시지는 이미 AIDoubleCheckEntryGate.OnAlert에서 출력됨
+                }
+
                 // 텔레그램 시작 알림 전송
                 string startMessage = $"🚀 *[봇 시작]*\n\n" +
                                      $"모드: {(AppConfig.Current?.Trading?.IsSimulationMode == true ? "시뮬레이션" : "실거래")}\n" +
@@ -1124,6 +1150,7 @@ namespace TradingBot
                 }
 
                 _ = StartPeriodicTrainingAsync(token);
+                _ = StartPeriodicAiEntryProbScanAsync(token);
 
                 await PreloadInitialAiScoresAsync(token);
 
@@ -1508,6 +1535,20 @@ namespace TradingBot
                             OnStatusLog?.Invoke("⚠️ Transformer가 비활성화되어 Transformer 재학습은 건너뜁니다.");
                         }
 
+                        // [추가] AI 더블체크 게이트 재학습
+                        if (_aiDoubleCheckEntryGate != null)
+                        {
+                            try
+                            {
+                                var (success, message) = await _aiDoubleCheckEntryGate.RetrainModelsAsync(token);
+                                // 결과 메시지는 이미 AIDoubleCheckEntryGate.OnAlert에서 출력됨
+                            }
+                            catch (Exception ex)
+                            {
+                                OnAlert?.Invoke($"❌ [AI 재학습] 오류: {ex.Message}");
+                            }
+                        }
+
                         OnStatusLog?.Invoke($"✅ 정기 이중 모델 재학습 완료 (데이터: {trainingData.Count}건)");
                     }
                     else
@@ -1520,6 +1561,47 @@ namespace TradingBot
                 {
                     OnStatusLog?.Invoke($"❌ 재학습 중 오류: {ex.Message}");
                 }
+            }
+        }
+
+        /// <summary>
+        /// 주기적으로 메이저 코인의 AI 진입 확률을 스캔하여 UI에 표시
+        /// </summary>
+        private async Task StartPeriodicAiEntryProbScanAsync(CancellationToken token)
+        {
+            // 엔진 안정화 대기 (초기 학습 완료 후 시작)
+            await Task.Delay(TimeSpan.FromMinutes(3), token);
+
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate.IsReady)
+                    {
+                        var scanSymbols = _symbols.Take(20).ToList();
+                        var forecasts = await _aiDoubleCheckEntryGate.ScanEntryProbabilitiesAsync(scanSymbols, token);
+
+                        foreach (var (symbol, forecast) in forecasts)
+                        {
+                            OnAiEntryProbUpdate?.Invoke(symbol, forecast);
+
+                            // 높은 확률 코인 알림 (70% 이상)
+                            if (forecast.AverageProbability >= 0.70f)
+                            {
+                                string etaText = forecast.IsImmediate ? "지금" : forecast.ForecastTimeLocal.ToString("HH:mm");
+                                OnStatusLog?.Invoke($"🎯 [AI 진입예측] {symbol} 예상 진입 {etaText} | {forecast.AverageProbability:P0} (ML={forecast.MLProbability:P0}, TF={forecast.TFProbability:P0})");
+                            }
+                        }
+                    }
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ AI 진입 확률 스캔 오류: {ex.Message}");
+                }
+
+                // 5분마다 스캔
+                await Task.Delay(TimeSpan.FromMinutes(5), token);
             }
         }
 

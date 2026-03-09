@@ -34,6 +34,10 @@ namespace TradingBot
         // 설정
         private readonly DoubleCheckConfig _config;
         
+        // 로깅 이벤트
+        public event Action<string>? OnLog;
+        public event Action<string>? OnAlert;
+        
         public bool IsReady => _mlTrainer.IsModelLoaded && _transformerTrainer.IsModelReady;
 
         public AIDoubleCheckEntryGate(
@@ -520,9 +524,382 @@ namespace TradingBot
                 return sequence;
             }
         }
-    }
 
-    /// <summary>
+        /// <summary>
+        /// 심볼 목록에 대해 AI 진입 확률과 미래 진입 ETA를 배치 스캔합니다.
+        /// 현재 시장 상태를 기준으로 다음 15분 슬롯들의 시간 컨텍스트를 시뮬레이션하여
+        /// "언제가 가장 유리한 진입 시점인지"를 반환합니다.
+        /// </summary>
+        public async Task<Dictionary<string, AIEntryForecastResult>> ScanEntryProbabilitiesAsync(
+            List<string> symbols,
+            CancellationToken token = default)
+        {
+            var results = new Dictionary<string, AIEntryForecastResult>(StringComparer.OrdinalIgnoreCase);
+
+            if (!IsReady)
+                return results;
+
+            DateTime referenceUtc = DateTime.UtcNow;
+            DateTime referenceLocal = referenceUtc.ToLocalTime();
+
+            foreach (var symbol in symbols)
+            {
+                if (token.IsCancellationRequested)
+                    break;
+
+                try
+                {
+                    var forecast = await ForecastEntryTimingAsync(symbol, referenceUtc, referenceLocal, token);
+                    if (forecast != null)
+                        results[symbol] = forecast;
+                }
+                catch
+                {
+                    // 개별 심볼 실패 무시
+                }
+
+                await Task.Delay(100, token); // API 부하 방지
+            }
+
+            return results;
+        }
+
+        private async Task<AIEntryForecastResult?> ForecastEntryTimingAsync(
+            string symbol,
+            DateTime referenceUtc,
+            DateTime referenceLocal,
+            CancellationToken token)
+        {
+            var feature = await _featureExtractor.ExtractRealtimeFeatureAsync(symbol, referenceUtc, token);
+            if (feature == null)
+                return null;
+
+            var baseSequence = BuildTransformerSequence(symbol, feature);
+            var candidates = new List<AIEntryForecastResult>(_config.EntryForecastSteps + 1);
+
+            var (currentMlProb, currentTfProb, currentAvgProb) = PredictEntryProbabilities(feature, baseSequence);
+            candidates.Add(new AIEntryForecastResult
+            {
+                Symbol = symbol,
+                MLProbability = currentMlProb,
+                TFProbability = currentTfProb,
+                AverageProbability = currentAvgProb,
+                ForecastTimeUtc = referenceUtc,
+                ForecastTimeLocal = referenceLocal,
+                ForecastOffsetMinutes = 0,
+                GeneratedAtLocal = referenceLocal
+            });
+
+            var nextQuarterUtc = AlignToNextQuarterHourUtc(referenceUtc);
+            for (int step = 1; step <= _config.EntryForecastSteps; step++)
+            {
+                var forecastUtc = nextQuarterUtc.AddMinutes((step - 1) * 15);
+                var shiftedFeature = feature.CloneWithTimestamp(forecastUtc);
+                var shiftedSequence = ReplaceLastSequenceFeature(baseSequence, shiftedFeature);
+                var (mlProb, tfProb, avgProb) = PredictEntryProbabilities(shiftedFeature, shiftedSequence);
+
+                candidates.Add(new AIEntryForecastResult
+                {
+                    Symbol = symbol,
+                    MLProbability = mlProb,
+                    TFProbability = tfProb,
+                    AverageProbability = avgProb,
+                    ForecastTimeUtc = forecastUtc,
+                    ForecastTimeLocal = forecastUtc.ToLocalTime(),
+                    ForecastOffsetMinutes = Math.Max(1, (int)Math.Round((forecastUtc - referenceUtc).TotalMinutes)),
+                    GeneratedAtLocal = referenceLocal
+                });
+            }
+
+            return SelectBestForecast(candidates);
+        }
+
+        private (float mlProb, float tfProb, float avgProb) PredictEntryProbabilities(
+            MultiTimeframeEntryFeature feature,
+            List<MultiTimeframeEntryFeature> transformerSequence)
+        {
+            float mlProb = 0f;
+            var mlPrediction = _mlTrainer.Predict(feature);
+            if (mlPrediction != null)
+                mlProb = mlPrediction.Probability;
+
+            var (_, tfProb) = _transformerTrainer.Predict(transformerSequence);
+            float avgProb = (mlProb + tfProb) / 2f;
+
+            return (mlProb, tfProb, avgProb);
+        }
+
+        private List<MultiTimeframeEntryFeature> ReplaceLastSequenceFeature(
+            List<MultiTimeframeEntryFeature> baseSequence,
+            MultiTimeframeEntryFeature latestFeature)
+        {
+            var sequence = new List<MultiTimeframeEntryFeature>(baseSequence.Count);
+            for (int i = 0; i < baseSequence.Count; i++)
+            {
+                sequence.Add(i == baseSequence.Count - 1 ? latestFeature : baseSequence[i]);
+            }
+
+            return sequence;
+        }
+
+        private AIEntryForecastResult SelectBestForecast(List<AIEntryForecastResult> candidates)
+        {
+            if (candidates.Count == 0)
+                return new AIEntryForecastResult();
+
+            var current = candidates[0];
+            var best = current;
+            double bestScore = GetForecastScore(best);
+
+            foreach (var candidate in candidates.Skip(1))
+            {
+                double score = GetForecastScore(candidate);
+                if (score > bestScore ||
+                    (Math.Abs(score - bestScore) < 0.0001 && candidate.ForecastOffsetMinutes < best.ForecastOffsetMinutes))
+                {
+                    best = candidate;
+                    bestScore = score;
+                }
+            }
+
+            if (current.AverageProbability >= _config.EntryForecastImmediateThreshold &&
+                current.AverageProbability + _config.EntryForecastImmediateTolerance >= best.AverageProbability)
+            {
+                return current;
+            }
+
+            if (best.AverageProbability < _config.EntryForecastMinCandidateProbability)
+            {
+                return current.AverageProbability >= best.AverageProbability ? current : best;
+            }
+
+            return best;
+        }
+
+        private double GetForecastScore(AIEntryForecastResult candidate)
+        {
+            double stepPenalty = (candidate.ForecastOffsetMinutes / 15.0) * _config.EntryForecastTimePenaltyPerStep;
+            return candidate.AverageProbability - stepPenalty;
+        }
+
+        private static DateTime AlignToNextQuarterHourUtc(DateTime utcTime)
+        {
+            int remainder = utcTime.Minute % 15;
+            if (remainder == 0 && utcTime.Second == 0 && utcTime.Millisecond == 0)
+                return utcTime;
+
+            int addMinutes = remainder == 0 ? 15 : 15 - remainder;
+            var truncated = new DateTime(utcTime.Year, utcTime.Month, utcTime.Day, utcTime.Hour, utcTime.Minute, 0, DateTimeKind.Utc);
+            return truncated.AddMinutes(addMinutes);
+        }
+
+        /// <summary>
+        /// 초기 학습 트리거 (모델 파일이 없을 때 기본 데이터로 빠르게 학습)
+        /// </summary>
+        public async Task<(bool success, string message)> TriggerInitialTrainingAsync(
+            IExchangeService exchangeService,
+            List<string> symbols,
+            CancellationToken token = default)
+        {
+            if (IsReady)
+                return (true, "모델이 이미 준비되었습니다.");
+
+            try
+            {
+                OnAlert?.Invoke("🔄 [AI 학습] 초기 학습 시작: 히스토리컬 데이터 수집 중...");
+
+                // 1. 히스토리컬 데이터로 대량 Feature 생성 (심볼당 수십 개)
+                var trainingFeatures = new List<MultiTimeframeEntryFeature>();
+                int maxSymbols = Math.Min(symbols.Count, 20);
+                
+                foreach (var symbol in symbols.Take(maxSymbols))
+                {
+                    try
+                    {
+                        OnLog?.Invoke($"  - {symbol} 히스토리컬 데이터 수집 중...");
+                        
+                        // 각 타임프레임 캔들 수집
+                        var d1Task = exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.OneDay, 50, token);
+                        var h4Task = exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.FourHour, 120, token);
+                        var h2Task = exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.TwoHour, 120, token);
+                        var h1Task = exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.OneHour, 200, token);
+                        var m15Task = exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.FifteenMinutes, 260, token);
+                        
+                        await Task.WhenAll(d1Task, h4Task, h2Task, h1Task, m15Task);
+                        
+                        var d1 = d1Task.Result?.ToList();
+                        var h4 = h4Task.Result?.ToList();
+                        var h2 = h2Task.Result?.ToList();
+                        var h1 = h1Task.Result?.ToList();
+                        var m15 = m15Task.Result?.ToList();
+                        
+                        if (d1 != null && d1.Count >= 20 &&
+                            h4 != null && h4.Count >= 40 &&
+                            h2 != null && h2.Count >= 40 &&
+                            h1 != null && h1.Count >= 50 &&
+                            m15 != null && m15.Count >= 100)
+                        {
+                            // 히스토리컬 Feature 대량 생성 (슬라이딩 윈도우)
+                            var historicalFeatures = _featureExtractor.ExtractHistoricalFeatures(
+                                symbol, d1, h4, h2, h1, m15, _labeler, isLongStrategy: true);
+                            
+                            trainingFeatures.AddRange(historicalFeatures);
+                            OnLog?.Invoke($"  ✓ {symbol} 완료 ({historicalFeatures.Count}개 Feature, 총 {trainingFeatures.Count}개)");
+                        }
+                        else
+                        {
+                            OnLog?.Invoke($"  ⚠ {symbol} 데이터 부족 스킵");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLog?.Invoke($"  ⚠ {symbol} 실패: {ex.Message}");
+                    }
+                    
+                    await Task.Delay(300, token); // API 제한 방지
+                }
+
+                OnAlert?.Invoke($"📊 [AI 학습] 데이터 수집 완료: {trainingFeatures.Count}개 Feature");
+
+                if (trainingFeatures.Count < 10)
+                {
+                    string errMsg = $"❌ [AI 학습] 히스토리컬 데이터 부족 ({trainingFeatures.Count}개) - 기존 WaveGate로 동작합니다";
+                    OnAlert?.Invoke(errMsg);
+                    return (false, errMsg);
+                }
+
+                // 2. ML.NET 모델 학습
+                OnAlert?.Invoke($"🧠 [AI 학습] ML.NET 모델 학습 중... (샘플: {trainingFeatures.Count}개)");
+                try
+                {
+                    var mlMetrics = await _mlTrainer.TrainAndSaveAsync(trainingFeatures);
+                    OnLog?.Invoke($"[AIDoubleCheck] ML.NET 학습 완료 - Accuracy: {mlMetrics.Accuracy:P2}, F1: {mlMetrics.F1Score:P2}");
+                }
+                catch (Exception mlEx)
+                {
+                    OnAlert?.Invoke($"❌ [AI 학습] ML.NET 학습 실패: {mlEx.Message}");
+                    OnLog?.Invoke($"[AIDoubleCheck] ML.NET 학습 상세 오류:\n{mlEx}");
+                }
+
+                // 3. Transformer 모델 학습 (빠른 초기화: 1 epoch)
+                OnAlert?.Invoke("🧠 [AI 학습] Transformer 모델 학습 중... (1-2분 소요)");
+                try
+                {
+                    _transformerTrainer.InitializeModel();
+                    var tfMetrics = await _transformerTrainer.TrainAsync(trainingFeatures, epochs: 1, batchSize: 16);
+                    _transformerTrainer.SaveModel();
+                    OnLog?.Invoke($"[AIDoubleCheck] Transformer 학습 완료 - Accuracy: {tfMetrics.BestValidationAccuracy:P2}");
+                }
+                catch (Exception tfEx)
+                {
+                    OnAlert?.Invoke($"❌ [AI 학습] Transformer 학습 실패: {tfEx.Message}");
+                    OnLog?.Invoke($"[AIDoubleCheck] Transformer 학습 상세 오류:\n{tfEx}");
+                }
+
+                // 4. 모델 리로드 및 상태 확인
+                _mlTrainer.LoadModel();
+                _transformerTrainer.LoadModel();
+
+                if (IsReady)
+                {
+                    string msg = $"✅ [AI 학습] 초기 학습 완료! ML Ready: {_mlTrainer.IsModelLoaded}, TF Ready: {_transformerTrainer.IsModelReady}";
+                    OnAlert?.Invoke(msg);
+                    OnLog?.Invoke(msg);
+                    return (true, msg);
+                }
+                else
+                {
+                    string errMsg = $"⚠️ [AI 학습] 학습 후 모델 상태 - ML: {(_mlTrainer.IsModelLoaded ? "OK" : "FAIL")}, TF: {(_transformerTrainer.IsModelReady ? "OK" : "FAIL")}";
+                    OnAlert?.Invoke(errMsg);
+                    return (false, errMsg);
+                }
+            }
+            catch (Exception ex)
+            {
+                string errorMsg = $"❌ [AI 학습] 초기 학습 실패: {ex.Message}";
+                OnAlert?.Invoke(errorMsg);
+                OnLog?.Invoke($"[AIDoubleCheck] {errorMsg}");
+                return (false, errorMsg);
+            }
+        }
+
+        /// <summary>
+        /// 정기 재학습 (수집된 라벨링 데이터 활용)
+        /// </summary>
+        public async Task<(bool success, string message)> RetrainModelsAsync(CancellationToken token = default)
+        {
+            try
+            {
+                // 1. 저장된 라벨링 데이터 로드
+                var labeledData = LoadLabeledDataFromFiles();
+                if (labeledData.Count < 100)
+                {
+                    return (false, $"재학습 데이터 부족 ({labeledData.Count}/100)");
+                }
+
+                OnAlert?.Invoke($"🔄 [AI 재학습] 시작: {labeledData.Count}개 라벨링 데이터");
+
+                // 2. ML.NET 재학습
+                var mlMetrics = await _mlTrainer.TrainAndSaveAsync(labeledData);
+                _mlTrainer.LoadModel();
+
+                // 3. Transformer 재학습 (2 epochs)
+                var tfMetrics = await _transformerTrainer.TrainAsync(labeledData, epochs: 2, batchSize: 32);
+                _transformerTrainer.SaveModel();
+                _transformerTrainer.LoadModel();
+
+                string msg = $"✅ [AI 재학습] 완료 - ML: {mlMetrics.Accuracy:P1}, TF: {tfMetrics.BestValidationAccuracy:P1} (샘플: {labeledData.Count}개)";
+                OnAlert?.Invoke(msg);
+                OnLog?.Invoke(msg);
+                return (true, msg);
+            }
+            catch (Exception ex)
+            {
+                string errorMsg = $"❌ [AI 재학습] 실패: {ex.Message}";
+                OnAlert?.Invoke(errorMsg);
+                OnLog?.Invoke($"[AIDoubleCheck] {errorMsg}");
+                return (false, errorMsg);
+            }
+        }
+
+        private List<MultiTimeframeEntryFeature> LoadLabeledDataFromFiles()
+        {
+            var result = new List<MultiTimeframeEntryFeature>();
+
+            try
+            {
+                if (!Directory.Exists(_dataCollectionPath))
+                    return result;
+
+                var files = Directory.GetFiles(_dataCollectionPath, "EntryDecisions_*.json");
+                foreach (var file in files)
+                {
+                    try
+                    {
+                        var json = File.ReadAllText(file);
+                        var records = JsonSerializer.Deserialize<List<EntryDecisionRecord>>(json);
+                        if (records != null)
+                        {
+                            foreach (var record in records.Where(r => r.Labeled && r.Feature != null))
+                            {
+                                result.Add(record.Feature!);
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // 개별 파일 오류 무시
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AIDoubleCheck] 라벨링 데이터 로드 실패: {ex.Message}");
+            }
+
+            return result;
+        }
+    }
     /// 더블체크 설정
     /// </summary>
     public class DoubleCheckConfig
@@ -532,6 +909,11 @@ namespace TradingBot
         public float MinMLConfidenceMajor { get; set; } = 0.75f; // 메이저 코인은 더 보수적
         public float MinTransformerConfidenceMajor { get; set; } = 0.70f;
         public float MinMLConfidencePumping { get; set; } = 0.58f; // 펌핑 코인은 약간 완화
+        public int EntryForecastSteps { get; set; } = 8; // 다음 2시간(15분 x 8)
+        public float EntryForecastImmediateThreshold { get; set; } = 0.62f;
+        public float EntryForecastImmediateTolerance { get; set; } = 0.03f;
+        public float EntryForecastMinCandidateProbability { get; set; } = 0.35f;
+        public float EntryForecastTimePenaltyPerStep { get; set; } = 0.01f;
     }
 
     /// <summary>

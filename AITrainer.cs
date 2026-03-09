@@ -23,9 +23,11 @@ public class AITrainer
 
         // 시간순 분할 (80% 학습 / 20% 검증)
         int trainCount = (int)(data.Count * 0.8);
-        var trainData = _mlContext.Data.LoadFromEnumerable(data.Take(trainCount));
-        var testData = _mlContext.Data.LoadFromEnumerable(data.Skip(trainCount));
-        var fullData = _mlContext.Data.LoadFromEnumerable(data);
+        // SchemaDefinition을 사용하여 타입 호환성 보장
+        var schemaDefinition = Microsoft.ML.Data.SchemaDefinition.Create(typeof(CandleData));
+        var trainData = _mlContext.Data.LoadFromEnumerable(data.Take(trainCount), schemaDefinition);
+        var testData = _mlContext.Data.LoadFromEnumerable(data.Skip(trainCount), schemaDefinition);
+        var fullData = _mlContext.Data.LoadFromEnumerable(data, schemaDefinition);
 
         var pipeline = _mlContext.Transforms.Concatenate("Features", MLService.FeatureColumns)
             .Append(_mlContext.Transforms.NormalizeMinMax("Features"))
@@ -51,14 +53,12 @@ public class AITrainer
         Console.WriteLine($"✅ 모델 저장 완료: {_modelPath}");
     }
 
-    /// <summary>이전 호환용: OHLCV + FastTree</summary>
+    /// <summary>이전 호환용: LightGBM + MLService.FeatureColumns</summary>
     public void TrainAndSaveLegacy(List<CandleData> data)
     {
-        IDataView trainingData = _mlContext.Data.LoadFromEnumerable(data);
-        var pipeline = _mlContext.Transforms.Concatenate("Features",
-                nameof(CandleData.Open), nameof(CandleData.High),
-                nameof(CandleData.Low), nameof(CandleData.Close),
-                nameof(CandleData.Volume))
+        var schemaDefinition = Microsoft.ML.Data.SchemaDefinition.Create(typeof(CandleData));
+        IDataView trainingData = _mlContext.Data.LoadFromEnumerable(data, schemaDefinition);
+        var pipeline = _mlContext.Transforms.Concatenate("Features", MLService.FeatureColumns)
             .Append(_mlContext.Transforms.NormalizeMinMax("Features"))
             .Append(_mlContext.BinaryClassification.Trainers.FastTree(labelColumnName: "Label", featureColumnName: "Features"));
 

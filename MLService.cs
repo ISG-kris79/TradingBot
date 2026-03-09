@@ -72,12 +72,14 @@ public class MLService : IDisposable
             return new TrainingMetrics();
         }
 
-        var dataView = _mlContext.Data.LoadFromEnumerable(trainingData);
+        // SchemaDefinition을 사용하여 타입 호환성 보장
+        var schemaDefinition = Microsoft.ML.Data.SchemaDefinition.Create(typeof(CandleData));
+        var dataView = _mlContext.Data.LoadFromEnumerable(trainingData, schemaDefinition);
 
         // 시간순 분할 (80% 학습 / 20% 검증) ── 데이터 누수 방지!
         int trainCount = (int)(trainingData.Count * 0.8);
-        var trainData = _mlContext.Data.LoadFromEnumerable(trainingData.Take(trainCount));
-        var testData = _mlContext.Data.LoadFromEnumerable(trainingData.Skip(trainCount));
+        var trainData = _mlContext.Data.LoadFromEnumerable(trainingData.Take(trainCount), schemaDefinition);
+        var testData = _mlContext.Data.LoadFromEnumerable(trainingData.Skip(trainCount), schemaDefinition);
 
         // 파이프라인 구성
         var pipeline = _mlContext.Transforms.Concatenate("Features", FeatureColumns)
@@ -120,15 +122,13 @@ public class MLService : IDisposable
     }
 
     /// <summary>
-    /// 이전 호환용: 기존 Train(List) 시그니처 유지 (OHLCV→FastTree)
+    /// 이전 호환용: 기존 Train(List) 시그니처 유지 (FeatureColumns→FastTree)
     /// </summary>
     public void TrainLegacy(List<CandleData> trainingData)
     {
-        var dataView = _mlContext.Data.LoadFromEnumerable(trainingData);
-        var pipeline = _mlContext.Transforms.Concatenate("Features",
-                nameof(CandleData.Open), nameof(CandleData.High),
-                nameof(CandleData.Low), nameof(CandleData.Close),
-                nameof(CandleData.Volume))
+        var schemaDef = Microsoft.ML.Data.SchemaDefinition.Create(typeof(CandleData));
+        var dataView = _mlContext.Data.LoadFromEnumerable(trainingData, schemaDef);
+        var pipeline = _mlContext.Transforms.Concatenate("Features", FeatureColumns)
             .Append(_mlContext.Transforms.NormalizeMinMax("Features"))
             .Append(_mlContext.BinaryClassification.Trainers.FastTree(labelColumnName: "Label", featureColumnName: "Features"));
 
