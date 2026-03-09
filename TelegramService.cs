@@ -120,8 +120,15 @@ namespace TradingBot
             if (update.Message is not { } message) return;
             if (message.Text is not { } messageText) return;
 
+            // [FIX] 공백 제거 및 빈 메시지 체크
+            messageText = messageText.Trim();
+            if (string.IsNullOrEmpty(messageText)) return;
+
             // 커맨드 패턴 적용
-            var commandName = messageText.Split(' ')[0].ToLower();
+            var parts = messageText.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return;
+
+            var commandName = parts[0].ToLower();
             if (_commands.TryGetValue(commandName, out var command))
             {
                 await command.ExecuteAsync(botClient, message, cancellationToken);

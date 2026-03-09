@@ -115,6 +115,9 @@ namespace TradingBot
         private PortfolioRebalancingService? _rebalancingService;
         private CancellationTokenSource? _advancedFeaturesCts;
 
+        // [WaveAI] 엘리엇 파동 AI 시스템
+        private WaveAIManager? _waveAIManager;
+
         // GeneralSettings 캐시 (앱 전체에서 사용)
         public static TradingSettings? CurrentGeneralSettings { get; private set; }
 
@@ -223,6 +226,9 @@ namespace TradingBot
                 var settingsTask = InitializeGeneralSettingsAsync();
                 await Task.WhenAll(updateTask, settingsTask);
                 await InitializeAdvancedFeaturesAsync();
+                
+                // [WaveAI] 엘리엇 파동 AI 시스템 자동 초기화
+                await InitializeWaveAIAsync();
             };
         }
 
@@ -1046,6 +1052,49 @@ namespace TradingBot
             }
 
             return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// [WaveAI] 엘리엇 파동 AI 시스템 초기화 (자동 학습+로드)
+        /// </summary>
+        private async Task InitializeWaveAIAsync()
+        {
+            try
+            {
+                AddLog("[WaveAI] 🌊 엘리엇 파동 AI 시스템 초기화 중...");
+
+                // IExchangeService 생성 (Simulation 또는 실제 Binance)
+                bool isSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false;
+                IExchangeService exchangeService;
+
+                if (isSimulation)
+                {
+                    decimal simulationBalance = AppConfig.Current?.Trading?.SimulationInitialBalance ?? 10000m;
+                    exchangeService = new MockExchangeService(simulationBalance);
+                    AddLog("[WaveAI] 🎮 가상 거래소 모드");
+                }
+                else
+                {
+                    exchangeService = new BinanceExchangeService(
+                        AppConfig.BinanceApiKey,
+                        AppConfig.BinanceApiSecret
+                    );
+                    AddLog("[WaveAI] 🔗 바이낸스 연결");
+                }
+
+                // WaveAIManager 초기화 (모델 없으면 자동 학습)
+                _waveAIManager = new WaveAIManager(exchangeService);
+                await _waveAIManager.InitializeAsync(CancellationToken.None);
+
+                // TradingEngine에 WaveEngine 전달 (ViewModel._engine이 private이므로 공개 메서드 필요)
+                ViewModel?.SetWaveEngine(_waveAIManager.WaveEngine);
+
+                AddLog("[WaveAI] ✅ 엘리엇 파동 AI 시스템 초기화 완료");
+            }
+            catch (Exception ex)
+            {
+                AddAlert($"❌ WaveAI 초기화 실패: {ex.Message}");
+            }
         }
 
         /// <summary>

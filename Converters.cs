@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.Windows.Data;
+using System.Windows.Media;
 using TradingBot.Models;
 
 namespace TradingBot
@@ -106,6 +107,56 @@ namespace TradingBot
         }
 
         public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    /// <summary>
+    /// 로그 텍스트의 색상 접두사(🔴, 🟢, 🟡, ⭐, 💎)를 파싱하여 적절한 색상 반환
+    /// </summary>
+    public class LogTextToColorConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value == null)
+                return Brushes.White;
+
+            string text = value.ToString()!;
+            
+            if (string.IsNullOrWhiteSpace(text))
+                return Brushes.White;
+
+            // 상태 색상 접두사
+            if (text.Contains("🔴"))
+                return new SolidColorBrush(Color.FromRgb(255, 83, 112)); // #FF5370 - 빨간색 (차단/오류)
+            
+            if (text.Contains("🟢"))
+                return new SolidColorBrush(Color.FromRgb(0, 230, 118)); // #00E676 - 초록색 (통과)
+            
+            if (text.Contains("🟡"))
+                return new SolidColorBrush(Color.FromRgb(255, 179, 0)); // #FFB300 - 노란색 (대기)
+
+            // 심볼 강조 색상
+            if (text.Contains("⭐"))
+                return new SolidColorBrush(Color.FromRgb(255, 215, 0)); // #FFD700 - 금색 (메이저 코인)
+            
+            if (text.Contains("💎"))
+                return new SolidColorBrush(Color.FromRgb(0, 229, 255)); // #00E5FF - 청록색 (알트코인)
+
+            // 특정 키워드 색상
+            if (text.Contains("진입실행") || text.Contains("🚀"))
+                return new SolidColorBrush(Color.FromRgb(124, 77, 255)); // #7C4DFF - 보라색
+            
+            if (text.Contains("손절실행") || text.Contains("🛑"))
+                return new SolidColorBrush(Color.FromRgb(244, 67, 54)); // #F44336 - 진한 빨강
+            
+            if (text.Contains("익절실행") || text.Contains("💰"))
+                return new SolidColorBrush(Color.FromRgb(76, 175, 80)); // #4CAF50 - 진한 초록
+
+            // 기본 색상
+            return new SolidColorBrush(Color.FromRgb(224, 231, 255)); // #E0E7FF - 밝은 청백색
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
             => throw new NotImplementedException();
     }
 }

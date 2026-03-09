@@ -270,6 +270,36 @@ IF NOT EXISTS (
 BEGIN
     CREATE INDEX IX_TradeHistory_UserId_IsClosed_Symbol_EntryTime
     ON dbo.TradeHistory(UserId, IsClosed, Symbol, EntryTime DESC);
+END
+
+-- [FIX] holdingMinutes 계산 열 안전 재생성 (ExitTime NULL 허용)
+-- 1단계: 기존 계산 열 제거 (있다면)
+IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'holdingMinutes' AND is_computed = 1)
+BEGIN
+    ALTER TABLE dbo.TradeHistory DROP COLUMN holdingMinutes;
+    PRINT '✅ holdingMinutes 계산 열 제거 완료';
+END
+-- 2단계: 일반 열 제거 (혹시 수동 변경된 경우 대비)
+ELSE IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'holdingMinutes')
+BEGIN
+    ALTER TABLE dbo.TradeHistory DROP COLUMN holdingMinutes;
+    PRINT '✅ holdingMinutes 일반 열 제거 완료';
+END
+-- 3단계: HoldingMinutes (대문자) 변형도 확인
+IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'HoldingMinutes')
+BEGIN
+    ALTER TABLE dbo.TradeHistory DROP COLUMN HoldingMinutes;
+    PRINT '✅ HoldingMinutes 열 제거 완료';
+END
+-- 4단계: NULL 안전 계산 열 재생성
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'holdingMinutes')
+BEGIN
+    ALTER TABLE dbo.TradeHistory ADD holdingMinutes AS 
+        CASE WHEN ExitTime IS NOT NULL 
+             THEN DATEDIFF(MINUTE, EntryTime, ExitTime) 
+             ELSE NULL 
+        END;
+    PRINT '✅ holdingMinutes 계산 열 생성 완료 (NULL 안전)';
 END";
 
             await db.ExecuteAsync(sql, transaction: tx);
@@ -1118,6 +1148,21 @@ VALUES
                 MainWindow.Instance?.AddLog($"⚠️ [DB][TradeHistory][CloseInserted] user={userId} sym={symbolValue} reason={exitReason}");
                 return true;
             }
+            catch (SqlException sqlEx)
+            {
+                MainWindow.Instance?.AddLog($"❌ [DB 청산 저장 실패] SQL 오류: {sqlEx.Message}");
+                MainWindow.Instance?.AddLog($"   - SQL 오류 번호: {sqlEx.Number}, 상태: {sqlEx.State}, 라인: {sqlEx.LineNumber}");
+                MainWindow.Instance?.AddLog($"   - Symbol: {log?.Symbol}, ExitReason: {log?.ExitReason}, PnL: {log?.PnL ?? 0}");
+                if (sqlEx.Message.Contains("holdingMinutes") || sqlEx.Message.Contains("HoldingMinutes"))
+                {
+                    MainWindow.Instance?.AddAlert($"⚠️ [DB] holdingMinutes 계산 열 문제 감지! 봇을 재시작하거나 fix-db-manual.sql을 실행하세요.");
+                }
+                else
+                {
+                    MainWindow.Instance?.AddAlert($"❌ [DB] 청산 저장 실패: {log?.Symbol ?? "Unknown"} | {sqlEx.Message}");
+                }
+                return false;
+            }
             catch (Exception ex)
             {
                 string detailMsg = $"Type={ex.GetType().Name}, Msg={ex.Message}";
@@ -1257,6 +1302,20 @@ WHERE Id = @Id;",
                     exitReason);
                 MainWindow.Instance?.AddLog($"✅ [DB] 외부 청산 동기화 완료: U{userId} {log.Symbol} Exit={exitPrice:F4}");
                 return true;
+            }
+            catch (SqlException sqlEx)
+            {
+                MainWindow.Instance?.AddLog($"❌ [DB 외부 청산 동기화 실패] SQL 오류: {sqlEx.Message}");
+                MainWindow.Instance?.AddLog($"   - SQL 오류 번호: {sqlEx.Number}, 상태: {sqlEx.State}, 라인: {sqlEx.LineNumber}");
+                if (sqlEx.Message.Contains("holdingMinutes") || sqlEx.Message.Contains("HoldingMinutes"))
+                {
+                    MainWindow.Instance?.AddAlert($"⚠️ [DB] holdingMinutes 계산 열 문제 감지! 봇을 재시작하거나 fix-db-manual.sql을 실행하세요.");
+                }
+                else
+                {
+                    MainWindow.Instance?.AddAlert($"❌ [DB] 외부 청산 동기화 실패: {log?.Symbol ?? "Unknown"} | {sqlEx.Message}");
+                }
+                return false;
             }
             catch (Exception ex)
             {

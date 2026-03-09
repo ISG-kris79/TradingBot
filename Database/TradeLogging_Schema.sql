@@ -45,8 +45,8 @@ BEGIN
         PnLPercent DECIMAL(18, 4) NOT NULL,             -- 수익률 (ROE %)
         ExitReason NVARCHAR(100),                       -- 청산 사유
         EntryTime DATETIME2 NOT NULL,                   -- 진입 시각
-        ExitTime DATETIME2 NOT NULL DEFAULT GETDATE(),  -- 청산 시각
-        HoldingMinutes AS DATEDIFF(MINUTE, EntryTime, ExitTime), -- 보유 시간 (계산 컬럼)
+        ExitTime DATETIME2 NULL,                        -- 청산 시각 (진입 시 NULL 허용)
+        holdingMinutes AS CASE WHEN ExitTime IS NOT NULL THEN DATEDIFF(MINUTE, EntryTime, ExitTime) ELSE NULL END, -- 보유 시간 (계산 컬럼, NULL 안전)
         
         INDEX IX_TradeHistory_Symbol (Symbol),
         INDEX IX_TradeHistory_ExitTime (ExitTime DESC),

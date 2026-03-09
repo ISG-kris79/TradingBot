@@ -116,11 +116,12 @@ namespace TradingBot.Services
 
         private static float NormalizeProbability(float probability, float score)
         {
+            // [FIX] 0.0과 1.0도 유효한 확률값으로 인정
             bool probabilityLooksValid =
                 !float.IsNaN(probability) &&
                 !float.IsInfinity(probability) &&
-                probability > 0f &&
-                probability < 1f;
+                probability >= 0f &&
+                probability <= 1f;
 
             if (probabilityLooksValid)
                 return probability;

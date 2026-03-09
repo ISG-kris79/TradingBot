@@ -14,6 +14,7 @@ namespace TradingBot
     /// AI 더블체크 진입 시스템
     /// ML.NET + Transformer 둘 다 승인해야 진입 허가
     /// + 실시간 데이터 수집 (지속적 학습용)
+    /// + 온라인 학습 (적응형 학습 및 Concept Drift 감지)
     /// </summary>
     public class AIDoubleCheckEntryGate
     {
@@ -31,6 +32,9 @@ namespace TradingBot
         private readonly string _dataCollectionPath = "TrainingData/EntryDecisions";
         private readonly Timer? _dataFlushTimer;
         
+        // 온라인 학습 서비스
+        private readonly AdaptiveOnlineLearningService? _onlineLearning;
+        
         // 설정
         private readonly DoubleCheckConfig _config;
         
@@ -42,7 +46,8 @@ namespace TradingBot
 
         public AIDoubleCheckEntryGate(
             IExchangeService exchangeService,
-            DoubleCheckConfig? config = null)
+            DoubleCheckConfig? config = null,
+            bool enableOnlineLearning = true)
         {
             _config = config ?? new DoubleCheckConfig();
             _exchangeService = exchangeService;
@@ -59,6 +64,37 @@ namespace TradingBot
 
             // 데이터 수집 폴더 생성
             Directory.CreateDirectory(_dataCollectionPath);
+
+            // 온라인 학습 서비스 초기화
+            if (enableOnlineLearning)
+            {
+                _onlineLearning = new AdaptiveOnlineLearningService(
+                    _mlTrainer,
+                    _transformerTrainer,
+                    new OnlineLearningConfig
+                    {
+                        SlidingWindowSize = 1000,
+                        MinSamplesForTraining = 200,
+                        TriggerEveryNSamples = 100,
+                        RetrainingIntervalHours = 1.0,
+                        EnablePeriodicRetraining = true,
+                        EnableConceptDriftDetection = true,
+                        TransformerFastEpochs = 5
+                    });
+
+                _onlineLearning.OnLog += msg => OnLog?.Invoke(msg);
+                _onlineLearning.OnPerformanceUpdate += (reason, acc, mlThresh, tfThresh) =>
+                {
+                    OnAlert?.Invoke($"🧠 온라인 학습: {reason} | 정확도={acc:P1}, ML={mlThresh:P0}, TF={tfThresh:P0}");
+                };
+
+                // 초기 윈도우 로드 (비동기 실행)
+                _ = Task.Run(async () =>
+                {
+                    await _onlineLearning.LoadInitialWindowAsync(_dataCollectionPath);
+                    OnLog?.Invoke($"[OnlineLearning] 초기화 완료: 윈도우 크기={_onlineLearning.WindowSize}");
+                });
+            }
 
             // 데이터 자동 저장 타이머 (5분마다)
             _dataFlushTimer = new Timer(_ => FlushCollectedData(), null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
@@ -112,9 +148,12 @@ namespace TradingBot
                     OnLog?.Invoke($"🎯 [{symbol}] AI 타점 예측: {candlesToTarget:F1}캔들 ({minutesToTarget}분) 후, ETA {eta:HH:mm} | ML={mlConfidence:P0}, TF={tfConfidence:P0}");
                 }
 
-                // 4. 더블체크 판정
-                bool mlPass = mlApprove && mlConfidence >= _config.MinMLConfidence;
-                bool tfPass = tfApprove && tfConfidence >= _config.MinTransformerConfidence;
+                // 4. 더블체크 판정 (적응형 Threshold 사용)
+                float effectiveMLThreshold = _onlineLearning?.CurrentMLThreshold ?? _config.MinMLConfidence;
+                float effectiveTFThreshold = _onlineLearning?.CurrentTFThreshold ?? _config.MinTransformerConfidence;
+                
+                bool mlPass = mlApprove && mlConfidence >= effectiveMLThreshold;
+                bool tfPass = tfApprove && tfConfidence >= effectiveTFThreshold;
                 
                 var detail = new AIEntryDetail
                 {
@@ -131,14 +170,14 @@ namespace TradingBot
 
                 if (!mlPass)
                 {
-                    OnLog?.Invoke($"❌ [{symbol}] ML.NET 거부: {(mlApprove ? $"신뢰도 부족 ({mlConfidence:P0} < {_config.MinMLConfidence:P0})" : $"진입 비승인 ({mlConfidence:P0})")}");
+                    OnLog?.Invoke($"❌ [{symbol}] ML.NET 거부: {(mlApprove ? $"신뢰도 부족 ({mlConfidence:P0} < {effectiveMLThreshold:P0})" : $"진입 비승인 ({mlConfidence:P0})")}");
                     return (false, $"MLNET_Reject_Conf={mlConfidence:P1}", detail);
                 }
 
                 if (!tfPass)
                 {
                     string tfReason = tfApprove 
-                        ? $"신뢰도 부족 ({tfConfidence:P0} < {_config.MinTransformerConfidence:P0})"
+                        ? $"신뢰도 부족 ({tfConfidence:P0} < {effectiveTFThreshold:P0})"
                         : $"타점 범위 외 ({candlesToTarget:F1}캔들, 유효 범위 1-32)";
                     OnLog?.Invoke($"❌ [{symbol}] Transformer 거부: {tfReason}");
                     return (false, $"Transformer_Reject_Conf={tfConfidence:P1}", detail);
@@ -359,6 +398,9 @@ namespace TradingBot
                 if (updated)
                 {
                     Console.WriteLine($"[AIDoubleCheck] 15분 라벨 업데이트: {symbol} pnl={markToMarketPct:F2}%");
+                    
+                    // 온라인 학습: 라벨링된 샘플 추가
+                    await AddLabeledSampleToOnlineLearningAsync(symbol, entryTime, entryPrice, markToMarketPct, token);
                 }
             }
             catch (Exception ex)
@@ -394,6 +436,9 @@ namespace TradingBot
                 if (updated)
                 {
                     Console.WriteLine($"[AIDoubleCheck] 청산 라벨 반영: {symbol} pnl={actualProfitPct:F2}%");
+                    
+                    // 온라인 학습: 청산 결과로 라벨 업데이트
+                    await AddLabeledSampleToOnlineLearningAsync(symbol, entryTime, entryPrice, actualProfitPct, token);
                 }
             }
             catch (Exception ex)
@@ -486,7 +531,43 @@ namespace TradingBot
         public void Dispose()
         {
             _dataFlushTimer?.Dispose();
+            _onlineLearning?.Dispose();
             FlushCollectedData(); // 종료 시 마지막 저장
+        }
+
+        /// <summary>
+        /// 온라인 학습에 라벨링된 샘플 추가
+        /// </summary>
+        private async Task AddLabeledSampleToOnlineLearningAsync(
+            string symbol,
+            DateTime entryTime,
+            decimal entryPrice,
+            float actualProfitPct,
+            CancellationToken token = default)
+        {
+            if (_onlineLearning == null)
+                return;
+
+            try
+            {
+                // Feature 재추출 (진입 시점 기준)
+                var feature = await _featureExtractor.ExtractRealtimeFeatureAsync(symbol, entryTime, token);
+                if (feature == null)
+                    return;
+
+                // 라벨 설정 (목표 +2%, 손절 -1% 기준)
+                bool shouldEnter = actualProfitPct >= 2.0f; // 수익 2% 이상이면 진입 성공
+                feature.ShouldEnter = shouldEnter;
+
+                // 온라인 학습 서비스에 추가
+                await _onlineLearning.AddLabeledSampleAsync(feature);
+                
+                OnLog?.Invoke($"[OnlineLearning] 샘플 추가: {symbol} PnL={actualProfitPct:F2}% → Label={shouldEnter} | 윈도우={_onlineLearning.WindowSize}");
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ [OnlineLearning] 샘플 추가 실패: {ex.Message}");
+            }
         }
 
         public (int total, int labeled, int markToMarket, int tradeClose) GetRecentLabelStats(int maxFiles = 10)

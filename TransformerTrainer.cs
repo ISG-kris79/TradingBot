@@ -295,10 +295,15 @@ namespace TradingBot.Services.AI
                     using var inputTensor = _dataLoader.CreateInferenceTensor(recentSequence);
                     using var output = _model.forward(inputTensor);
 
-                    float normalizedPrediction = output[0, 0].item<float>();
-                    float denormalizedPrice = _dataLoader.DenormalizeTarget(normalizedPrediction);
+                    float predictedPriceChangeRate = output[0, 0].item<float>();
+                    // [FIX] DenormalizeTarget은 변화율을 그대로 반환
+                    float denormalizedChangeRate = _dataLoader.DenormalizeTarget(predictedPriceChangeRate);
+                    
+                    // [FIX] 변화율을 실제 가격으로 변환: 현재가 * (1 + 변화율)
+                    float currentPrice = (float)recentSequence[^1].Close;
+                    float predictedPrice = currentPrice * (1f + denormalizedChangeRate);
 
-                    return denormalizedPrice;
+                    return predictedPrice;
                 }
             }
             finally
@@ -327,8 +332,16 @@ namespace TradingBot.Services.AI
                     rawFeatures[i, j] = features[j];
                 }
 
-                // Target: 다음 봉의 종가 (Close)
-                rawTargets[i] = (float)c.Close;
+                // [FIX] Target: 가격 변화율 (레거시 호환)
+                if (i < count - 1)
+                {
+                    decimal priceChange = (data[i + 1].Close - c.Close) / c.Close;
+                    rawTargets[i] = (float)priceChange;
+                }
+                else
+                {
+                    rawTargets[i] = 0f;
+                }
             }
 
             // 2. 정규화 (Standardization) 계산 및 적용
@@ -352,27 +365,7 @@ namespace TradingBot.Services.AI
                 }
             }
 
-            // Target 정규화 (Close Price 인덱스 3 사용)
-            // [FIX] 배열 인덱스 범위 체크 추가
-            if (_means == null || _stds == null || _means.Length < 4 || _stds.Length < 4)
-            {
-                OnLog?.Invoke($"[TransformerTrainer] 오류: 정규화 파라미터 배열 크기 부족 (means: {_means?.Length ?? 0}, stds: {_stds?.Length ?? 0}, 필요: 4)");
-                return (torch.empty(0), torch.empty(0));
-            }
-            
-            float targetMean = _means[3];
-            float targetStd = _stds[3];
-            
-            if (Math.Abs(targetStd) < 1e-8f)
-            {
-                OnLog?.Invoke("[TransformerTrainer] 경고: Target 표준편차가 0에 가까워 정규화를 건너뜁니다.");
-                targetStd = 1.0f;
-            }
-            
-            for (int i = 0; i < count; i++)
-            {
-                rawTargets[i] = (rawTargets[i] - targetMean) / targetStd;
-            }
+            // [FIX] Target은 가격 변화율이므로 정규화하지 않음 (이미 작은 범위 -1~1)
 
             // 3. 슬라이딩 윈도우 생성
             int samples = count - _seqLen;

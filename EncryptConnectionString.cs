@@ -12,7 +12,7 @@ namespace TradingBot
         public static void RunInteractive()
         {
             Console.WriteLine("=== ConnectionString 암호화 도구 (AES256) ===\n");
-            Console.WriteLine("예시: Server=localhost;Database=TradingBotDB;Integrated Security=True;TrustServerCertificate=True;\n");
+            Console.WriteLine("예시: Server=localhost;Database=TradingDB;Integrated Security=True;TrustServerCertificate=True;\n");
             Console.Write("암호화할 ConnectionString을 입력하세요: ");
             
             string? input = Console.ReadLine();

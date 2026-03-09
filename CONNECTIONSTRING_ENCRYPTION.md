@@ -27,7 +27,7 @@ TradingBot.exe --encrypt-connection
 
 2. 프롬프트에 연결 문자열 입력:
 ```
-Server=localhost;Database=TradingBotDB;User Id=sa;Password=1234;TrustServerCertificate=True;
+Server=localhost;Database=TradingDB;User Id=sa;Password=1234;TrustServerCertificate=True;
 ```
 
 3. 출력된 암호화된 값을 복사

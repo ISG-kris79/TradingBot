@@ -292,10 +292,23 @@ namespace TradingBot.Services
 
         public async Task<decimal> GetFundingRateAsync(string symbol, CancellationToken token = default)
         {
-            var result = await _client.UsdFuturesApi.ExchangeData.GetFundingRatesAsync(symbol, limit: 1, ct: token);
-            if (!result.Success || result.Data == null || !result.Data.Any()) return 0;
+            try
+            {
+                var result = await _client.UsdFuturesApi.ExchangeData.GetFundingRatesAsync(symbol, limit: 1, ct: token);
+                if (!result.Success || result.Data == null || !result.Data.Any()) 
+                    return 0;
 
-            return result.Data.First().FundingRate;
+                var fundingData = result.Data.FirstOrDefault();
+                if (fundingData == null)
+                    return 0;
+
+                return fundingData.FundingRate;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ [Binance] GetFundingRate 예외 - {symbol}: {ex.Message}");
+                return 0;
+            }
         }
 
         // [Phase 12: PUMP 전략 지원] 지정가 주문

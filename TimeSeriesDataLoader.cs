@@ -94,8 +94,17 @@ namespace TradingBot.Services.AI
                     _rawFeatures[i, j] = features[j];
                 }
 
-                // Target: Close Price
-                _rawTargets[i] = (float)c.Close;
+                // [FIX] Target: 가격 변화율 예측 (더 의미있는 예측)
+                // 마지막 캔들은 다음 데이터가 없으므로 0%로 설정
+                if (i < count - 1)
+                {
+                    decimal priceChange = (data[i + 1].Close - c.Close) / c.Close;
+                    _rawTargets[i] = (float)priceChange; // -1.0 ~ 1.0 범위
+                }
+                else
+                {
+                    _rawTargets[i] = 0f; // 마지막 데이터
+                }
             }
 
             // 2. Normalization (Z-Score)
@@ -157,11 +166,8 @@ namespace TradingBot.Services.AI
                         _rawFeatures[i, j] = (_rawFeatures[i, j] - Means[j]) / Stds[j];
                     }
                 }
-                // Target 정규화 (Close Price index = 3)
-                if (Math.Abs(Stds[3]) > 1e-8f)
-                {
-                    _rawTargets[i] = (_rawTargets[i] - Means[3]) / Stds[3];
-                }
+                // [FIX] Target은 가격 변화율(-1~1)이므로 정규화하지 않음 (이미 작은 범위)
+                // 기존: Close Price 정규화 → 변경: 변화율은 그대로 사용
             }
         }
 
@@ -241,17 +247,8 @@ namespace TradingBot.Services.AI
 
         public float DenormalizeTarget(float value)
         {
-            // [FIX] 배열 인덱스 범위 체크 추가
-            if (Means == null || Stds == null)
-                throw new InvalidOperationException("정규화 파라미터가 없습니다.");
-            
-            if (Means.Length < 4 || Stds.Length < 4)
-                throw new InvalidOperationException($"정규화 파라미터 배열 크기 부족 (means: {Means.Length}, stds: {Stds.Length}, 필요: 4)");
-            
-            if (Math.Abs(Stds[3]) < 1e-8f)
-                return value; // 표준편차가 0이면 원본 반환
-            
-            return (value * Stds[3]) + Means[3];
+            // [FIX] Target이 가격 변화율이므로 그대로 반환 (정규화하지 않았으므로)
+            return value;
         }
 
         public void Dispose()

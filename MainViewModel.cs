@@ -137,6 +137,28 @@ namespace TradingBot.ViewModels
             set { _gateAutoTuneStatusText = value; OnPropertyChanged(); }
         }
 
+        // [WaveAI] 실시간 ML/TF 점수
+        private string _waveMLScoreText = "ML: --%";
+        public string WaveMLScoreText
+        {
+            get => _waveMLScoreText;
+            set { _waveMLScoreText = value; OnPropertyChanged(); }
+        }
+
+        private string _waveTFScoreText = "TF: --%";
+        public string WaveTFScoreText
+        {
+            get => _waveTFScoreText;
+            set { _waveTFScoreText = value; OnPropertyChanged(); }
+        }
+
+        private string _waveStatusText = "대기 중";
+        public string WaveStatusText
+        {
+            get => _waveStatusText;
+            set { _waveStatusText = value; OnPropertyChanged(); }
+        }
+
         // AI 라벨링 상태
         private int _aiTotalDecisions;
         public int AiTotalDecisions
@@ -1208,6 +1230,14 @@ namespace TradingBot.ViewModels
             AverageRoe = (double)closedTrades.Average(t => t.PnLPercent);
         }
 
+        /// <summary>
+        /// [WaveAI] 엘리엇 파동 이중 검증 엔진 설정
+        /// </summary>
+        public void SetWaveEngine(DoubleCheckEntryEngine? waveEngine)
+        {
+            _engine?.SetWaveEngine(waveEngine);
+        }
+
         private void ApplyTheme()
         {
             if (_isDarkTheme)
@@ -1408,6 +1438,17 @@ namespace TradingBot.ViewModels
             _engine.OnAiEntryProbUpdate += (symbol, forecast) =>
             {
                 UpdateAiEntryProb(symbol, forecast);
+            };
+
+            // [WaveAI] ML/TF 점수 업데이트 구독
+            _engine.OnWaveAIScoreUpdate += (symbol, mlScore, tfScore, status) =>
+            {
+                RunOnUI(() =>
+                {
+                    WaveMLScoreText = $"ML: {mlScore:P0}";
+                    WaveTFScoreText = $"TF: {tfScore:P0}";
+                    WaveStatusText = status;
+                });
             };
         }
 
@@ -2234,68 +2275,81 @@ namespace TradingBot.ViewModels
                 return normalized;
             }
 
+            string emoji = "";
             string label = "라이브";
+            
             if (normalized.Contains("[15M_GATE]", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("15M 게이트", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("[GATE]", StringComparison.OrdinalIgnoreCase))
             {
-                label = "게이트";
+                emoji = "🛡️";
+                label = "AI게이트";
             }
             else if (normalized.Contains("[ENTRY][ORDER][ERROR]", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("[진입][ORDER][오류]", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("주문 처리 오류", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("주문 오류", StringComparison.OrdinalIgnoreCase))
             {
-                label = "주문오류";
+                emoji = "❌";
+                label = "주문실패";
             }
             else if (normalized.Contains("진입대기", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("[캔들 확인 대기]", StringComparison.OrdinalIgnoreCase))
             {
-                label = "진입대기";
+                emoji = "⏸️";
+                label = "진입대기중";
             }
             else if (normalized.Contains("[ENTRY][START]", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("진입 시작", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("진입시작", StringComparison.OrdinalIgnoreCase))
             {
-                label = "진입시작";
+                emoji = "🚀";
+                label = "진입실행";
             }
             else if (normalized.Contains("트레일링스탑시작", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("트레일링갱신", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("트레일링 갱신", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("지표모니터링", StringComparison.OrdinalIgnoreCase))
             {
-                label = "트레일링";
+                emoji = "📊";
+                label = "트레일링중";
             }
             else if (normalized.Contains("손절시작", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("손절실행", StringComparison.OrdinalIgnoreCase))
             {
-                label = "손절";
+                emoji = "🛑";
+                label = "손절실행";
             }
             else if (normalized.Contains("익절시작", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("익절실행", StringComparison.OrdinalIgnoreCase))
             {
-                label = "익절";
+                emoji = "💰";
+                label = "익절실행";
             }
             else if (normalized.Contains("[SIGNAL][PUMP]", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("[신호][PUMP]", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("펌프", StringComparison.OrdinalIgnoreCase))
             {
-                label = "펌프신호";
+                emoji = "🚨";
+                label = "펌프감지";
             }
             else if (normalized.Contains("TRANSFORMER", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("[TF", StringComparison.OrdinalIgnoreCase))
             {
-                label = "TF신호";
+                emoji = "🤖";
+                label = "AI예측";
             }
             else if (normalized.Contains("[신호][MAJOR]", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("[SIGNAL][MAJOR]", StringComparison.OrdinalIgnoreCase))
             {
+                emoji = "⭐";
                 label = "메이저신호";
             }
             else if (normalized.Contains("[ENTRY]", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("[진입]", StringComparison.OrdinalIgnoreCase))
             {
-                label = "진입";
+                emoji = "▶️";
+                label = "진입신호";
             }
 
             string symbol = string.Empty;
@@ -2305,19 +2359,19 @@ namespace TradingBot.ViewModels
 
             string side = string.Empty;
             if (normalized.Contains("LONG", StringComparison.OrdinalIgnoreCase))
-                side = "LONG";
+                side = "🟢LONG";
             else if (normalized.Contains("SHORT", StringComparison.OrdinalIgnoreCase))
-                side = "SHORT";
+                side = "🔴SHORT";
 
             string status = string.Empty;
             if (normalized.Contains("차단", StringComparison.OrdinalIgnoreCase) || normalized.Contains("BLOCK", StringComparison.OrdinalIgnoreCase))
-                status = "차단";
+                status = "⛔차단";
             else if (normalized.Contains("통과", StringComparison.OrdinalIgnoreCase) || normalized.Contains("PASS", StringComparison.OrdinalIgnoreCase))
-                status = "통과";
+                status = "✅통과";
             else if (normalized.Contains("대기", StringComparison.OrdinalIgnoreCase) || normalized.Contains("HOLD", StringComparison.OrdinalIgnoreCase))
-                status = "대기";
+                status = "⏳대기";
             else if (normalized.Contains("오류", StringComparison.OrdinalIgnoreCase) || normalized.Contains("ERROR", StringComparison.OrdinalIgnoreCase))
-                status = "오류";
+                status = "❗오류";
 
             string detail = string.Empty;
             int detailIdx = normalized.IndexOf("상세=", StringComparison.OrdinalIgnoreCase);
@@ -2340,14 +2394,111 @@ namespace TradingBot.ViewModels
                 }
             }
 
-            if (detail.Length > 70)
-                detail = detail.Substring(0, 70) + "…";
+            // [GATE 전용] 차단 이유 간소화
+            if (label == "AI게이트" && !string.IsNullOrWhiteSpace(detail))
+            {
+                // ML.NET 신뢰도 부족
+                if (detail.Contains("ML.NET 불일치", StringComparison.OrdinalIgnoreCase) || 
+                    detail.Contains("ML.NET", StringComparison.OrdinalIgnoreCase) && detail.Contains("conf=", StringComparison.OrdinalIgnoreCase))
+                {
+                    var confMatch = Regex.Match(detail, @"conf=([0-9.]+)%", RegexOptions.IgnoreCase);
+                    var thMatch = Regex.Match(detail, @"<([0-9.]+)%", RegexOptions.IgnoreCase);
+                    if (confMatch.Success && thMatch.Success)
+                        detail = $"ML 부족 {confMatch.Groups[1].Value}% < {thMatch.Groups[1].Value}%";
+                    else if (confMatch.Success)
+                        detail = $"ML 신뢰도 {confMatch.Groups[1].Value}%";
+                    else
+                        detail = "ML 모델 불일치";
+                }
+                // Transformer 신뢰도 부족
+                else if (detail.Contains("Transformer 불일치", StringComparison.OrdinalIgnoreCase) || 
+                         detail.Contains("Transformer", StringComparison.OrdinalIgnoreCase) && detail.Contains("conf=", StringComparison.OrdinalIgnoreCase))
+                {
+                    var confMatch = Regex.Match(detail, @"conf=([0-9.]+)%", RegexOptions.IgnoreCase);
+                    var thMatch = Regex.Match(detail, @"<([0-9.]+)%", RegexOptions.IgnoreCase);
+                    if (confMatch.Success && thMatch.Success)
+                        detail = $"TF 부족 {confMatch.Groups[1].Value}% < {thMatch.Groups[1].Value}%";
+                    else if (confMatch.Success)
+                        detail = $"TF 신뢰도 {confMatch.Groups[1].Value}%";
+                    else
+                        detail = "TF 모델 불일치";
+                }
+                // 모델 미준비
+                else if (detail.Contains("ML.NET 모델 미준비", StringComparison.OrdinalIgnoreCase))
+                    detail = "❌ ML 모델 없음";
+                else if (detail.Contains("Transformer 모델 미준비", StringComparison.OrdinalIgnoreCase))
+                    detail = "❌ TF 모델 없음";
+                // 구조 실패
+                else if (detail.Contains("structureFail", StringComparison.OrdinalIgnoreCase))
+                {
+                    var topdownMatch = Regex.Match(detail, @"topdown=1h:(-?\d+),4h:(-?\d+)", RegexOptions.IgnoreCase);
+                    if (topdownMatch.Success)
+                        detail = $"엘리엇 구조실패 (1h:{topdownMatch.Groups[1].Value} 4h:{topdownMatch.Groups[2].Value})";
+                    else
+                        detail = "엘리엇 웨이브 구조 불일치";
+                }
+                // 캔들/시퀀스 부족
+                else if (detail.Contains("15m캔들 부족", StringComparison.OrdinalIgnoreCase))
+                {
+                    var countMatch = Regex.Match(detail, @"<(\d+)", RegexOptions.IgnoreCase);
+                    if (countMatch.Success)
+                        detail = $"15분봉 부족 (< {countMatch.Groups[1].Value}개)";
+                    else
+                        detail = "15분봉 데이터 부족";
+                }
+                else if (detail.Contains("Transformer 시퀀스 부족", StringComparison.OrdinalIgnoreCase))
+                    detail = "TF 시퀀스 데이터 부족";
+                else if (detail.Contains("decision!=LONG/SHORT", StringComparison.OrdinalIgnoreCase))
+                    detail = "방향 오류 (LONG/SHORT 아님)";
+                
+                // ML/TF 임계값 표시 간소화
+                detail = Regex.Replace(detail, @"mlTh=([0-9.]+)%", "ML≥$1%", RegexOptions.IgnoreCase);
+                detail = Regex.Replace(detail, @"tfTh=([0-9.]+)%", "TF≥$1%", RegexOptions.IgnoreCase);
+            }
+            else
+            {
+                // 일반 로그: price= 패턴을 "현재가"로 변경
+                detail = Regex.Replace(detail, @"\bprice\s*=\s*([0-9.]+)", "현재가 $$$1", RegexOptions.IgnoreCase);
+                
+                // qty= 패턴을 "수량"으로 변경
+                detail = Regex.Replace(detail, @"\bqty\s*=\s*([0-9.]+)", "수량 $1", RegexOptions.IgnoreCase);
+                
+                // ML/TF 퍼센트는 그대로 유지
+                detail = Regex.Replace(detail, @"\bML\s+([0-9.]+)%", "ML $1%", RegexOptions.IgnoreCase);
+                detail = Regex.Replace(detail, @"\bTF\s+([0-9.]+)%", "TF $1%", RegexOptions.IgnoreCase);
+            }
 
-            var compact = label;
-            if (!string.IsNullOrWhiteSpace(symbol)) compact += $" · {symbol}";
-            if (!string.IsNullOrWhiteSpace(side)) compact += $" · {side}";
-            if (!string.IsNullOrWhiteSpace(status)) compact += $" · {status}";
-            if (!string.IsNullOrWhiteSpace(detail)) compact += $" · {detail}";
+            if (detail.Length > 90)
+                detail = detail.Substring(0, 90) + "…";
+
+            // [색상 코딩] 상태별 시각적 구분
+            string statusPrefix = "";
+            if (status.Contains("차단") || status.Contains("오류"))
+                statusPrefix = "🔴"; // 빨강 - 차단/오류
+            else if (status.Contains("통과"))
+                statusPrefix = "🟢"; // 초록 - 통과
+            else if (status.Contains("대기"))
+                statusPrefix = "🟡"; // 노랑 - 대기
+
+            // [심볼 강조] 메이저 코인 구분
+            string symbolDisplay = symbol;
+            if (!string.IsNullOrWhiteSpace(symbol))
+            {
+                bool isMajor = symbol.StartsWith("BTC", StringComparison.OrdinalIgnoreCase) ||
+                               symbol.StartsWith("ETH", StringComparison.OrdinalIgnoreCase) ||
+                               symbol.StartsWith("SOL", StringComparison.OrdinalIgnoreCase) ||
+                               symbol.StartsWith("XRP", StringComparison.OrdinalIgnoreCase);
+                symbolDisplay = isMajor ? $"⭐{symbol}" : $"💎{symbol}";
+            }
+
+            // [조립] 색상 프리픽스 + 라벨 + 내용
+            var compact = !string.IsNullOrWhiteSpace(statusPrefix)
+                ? $"{statusPrefix} {emoji} {label}"
+                : $"{emoji} {label}";
+
+            if (!string.IsNullOrWhiteSpace(symbolDisplay)) compact += $" │ {symbolDisplay}";
+            if (!string.IsNullOrWhiteSpace(side)) compact += $" │ {side}";
+            if (!string.IsNullOrWhiteSpace(detail)) compact += $" │ {detail}";
 
             return compact;
         }

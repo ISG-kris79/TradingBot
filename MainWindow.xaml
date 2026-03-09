@@ -30,6 +30,7 @@
         <local:LessThanConverter x:Key="LessThanConverter"/>
         <local:InvertBooleanConverter x:Key="InvertBooleanConverter"/>
         <local:PriceFormattingConverter x:Key="PriceFormattingConverter"/>
+        <local:LogTextToColorConverter x:Key="LogTextToColorConverter"/>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
         <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
 
@@ -1051,6 +1052,63 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- WaveAI Status Card -->
+                            <Border Style="{StaticResource StatCardStyle}"
+                                    Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="🌊 WAVE AI SCORES"
+                                               FontSize="12"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource PrimaryBrush}"
+                                               Margin="0,0,0,12"/>
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <TextBlock Grid.Row="0"
+                                                   Text="ML.NET"
+                                                   Foreground="#9CA3AF"
+                                                   FontSize="11"/>
+                                        <TextBlock Grid.Row="0"
+                                                   Grid.Column="1"
+                                                   Text="{Binding WaveMLScoreText}"
+                                                   Foreground="#10B981"
+                                                   FontSize="14"
+                                                   FontWeight="Bold"
+                                                   FontFamily="Consolas"/>
+
+                                        <TextBlock Grid.Row="1"
+                                                   Text="Transformer"
+                                                   Foreground="#9CA3AF"
+                                                   FontSize="11"
+                                                   Margin="0,8,0,0"/>
+                                        <TextBlock Grid.Row="1"
+                                                   Grid.Column="1"
+                                                   Text="{Binding WaveTFScoreText}"
+                                                   Foreground="#3B82F6"
+                                                   FontSize="14"
+                                                   FontWeight="Bold"
+                                                   FontFamily="Consolas"
+                                                   Margin="0,8,0,0"/>
+
+                                        <TextBlock Grid.Row="2"
+                                                   Grid.ColumnSpan="2"
+                                                   Text="{Binding WaveStatusText}"
+                                                   Foreground="#6B7280"
+                                                   FontSize="10"
+                                                   FontStyle="Italic"
+                                                   Margin="0,10,0,0"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
                             <!-- AI Learning Status Card -->
                             <Border Style="{StaticResource StatCardStyle}"
                                     Margin="0,0,0,16">
@@ -1517,12 +1575,19 @@
                                                 <ListBox ItemsSource="{Binding TradeLogs}"
                                                          Background="Transparent"
                                                          BorderThickness="0"
-                                                         Foreground="#E0E7FF"
                                                          FontFamily="Consolas"
                                                          FontSize="10"
                                                          VirtualizingStackPanel.IsVirtualizing="True"
                                                          VirtualizingStackPanel.VirtualizationMode="Recycling"
-                                                         ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                                                         ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                                    <ListBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding}"
+                                                                       Foreground="{Binding Converter={StaticResource LogTextToColorConverter}}"
+                                                                       TextWrapping="NoWrap"/>
+                                                        </DataTemplate>
+                                                    </ListBox.ItemTemplate>
+                                                </ListBox>
                                             </DockPanel>
                                         </Border>
                                         <Border Grid.Column="1"
@@ -1537,12 +1602,19 @@
                                                 <ListBox ItemsSource="{Binding GateLogs}"
                                                          Background="Transparent"
                                                          BorderThickness="0"
-                                                         Foreground="#E0E7FF"
                                                          FontFamily="Consolas"
                                                          FontSize="10"
                                                          VirtualizingStackPanel.IsVirtualizing="True"
                                                          VirtualizingStackPanel.VirtualizationMode="Recycling"
-                                                         ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                                                         ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                                    <ListBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding}"
+                                                                       Foreground="{Binding Converter={StaticResource LogTextToColorConverter}}"
+                                                                       TextWrapping="NoWrap"/>
+                                                        </DataTemplate>
+                                                    </ListBox.ItemTemplate>
+                                                </ListBox>
                                             </DockPanel>
                                         </Border>
                                     </Grid>

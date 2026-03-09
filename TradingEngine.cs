@@ -46,8 +46,8 @@ namespace TradingBot
         // 블랙리스트 (심볼, 해제시간) - 지루함 청산 종목 재진입 방지
         private ConcurrentDictionary<string, DateTime> _blacklistedSymbols = new ConcurrentDictionary<string, DateTime>();
         // 슬롯 설정
-        private const int MAX_MAJOR_SLOTS = 4; // BTC, ETH, SOL, XRP 전용
-        private const int MAX_PUMP_SLOTS = 2;  // 실시간 급등주 전용
+        private const int MAX_MAJOR_SLOTS = 3; // BTC, ETH, SOL, XRP 전용
+        private const int MAX_PUMP_SLOTS = 3;  // 실시간 급등주 전용
         private const int PUMP_MANUAL_LEVERAGE = 20; // 20배 롱 전용 대응 매뉴얼
         private const int SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 1000;
         private const int MAJOR_SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 180;
@@ -67,10 +67,10 @@ namespace TradingBot
         private const float GateMlThresholdMax = 0.72f;
         private const float GateTransformerThresholdMin = 0.47f;
         private const float GateTransformerThresholdMax = 0.70f;
-        private const float GateThresholdAdjustStep = 0.01f;
-        private const int GateAutoTuneSampleSize = 24;
-        private const float GateTightenPassRate = 0.62f;
-        private const float GateLoosenPassRate = 0.20f;
+        private const float GateThresholdAdjustStep = 0.015f;  // [동적 최적화] 1.0% → 1.5% (더 공격적 조정)
+        private const int GateAutoTuneSampleSize = 16;         // [동적 최적화] 24 → 16 (더 빠른 적응)
+        private const float GateTightenPassRate = 0.55f;       // [동적 최적화] 62% → 55% (더 엄격한 기준)
+        private const float GateLoosenPassRate = 0.30f;        // [동적 최적화] 20% → 30% (더 빠른 완화)
         private bool _mainLoopPerfEnabled = true;
         private bool _mainLoopAutoTuneEnabled = true;
         private int _mainLoopBaseWarnMs = 1500;
@@ -144,6 +144,7 @@ namespace TradingBot
         private AIPredictor? _aiPredictor;
         private AIDoubleCheckEntryGate? _aiDoubleCheckEntryGate;
         private HybridNavigatorSniper? _hybridNavigatorSniper; // [v2.4.2] Navigator-Sniper 매복 아키텍처
+        private DoubleCheckEntryEngine? _waveEntryEngine; // [WaveAI] 엘리엇 파동 이중 검증 진입 엔진
         private MultiAgentManager _multiAgentManager;
         private MarketHistoryService? _marketHistoryService;
         private OiDataCollector? _oiCollector;
@@ -189,6 +190,10 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, DelayedEntrySignal> _pendingDelayedEntries
             = new ConcurrentDictionary<string, DelayedEntrySignal>();
 
+        // [ETA 자동 재평가 스케줄] AI 예측이 미래 시점 고확률 진입을 제안한 경우, 해당 시점에 자동 재평가
+        private readonly ConcurrentDictionary<string, DateTime> _scheduledEtaReEvaluations
+            = new ConcurrentDictionary<string, DateTime>();
+
         private static readonly HashSet<string> MajorSymbols = new(StringComparer.OrdinalIgnoreCase)
         {
             "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"
@@ -217,6 +222,7 @@ namespace TradingBot
         public event Action<AIPredictionRecord>? OnAIPrediction; // [AI 모니터링] 예측 기록 이벤트
         public event Action? OnTradeHistoryUpdated; // [FIX] 청산 시 TradeHistory 자동 갱신 트리거
         public event Action<string, AIEntryForecastResult>? OnAiEntryProbUpdate; // [AI 진입 예측] symbol, forecast
+        public event Action<string, float, float, string>? OnWaveAIScoreUpdate; // [WaveAI] symbol, mlScore, tfScore, status
 
         /// <summary>
         /// 외부에서 모든 이벤트 구독을 해제합니다 (event 키워드로 인해 내부에서만 초기화 가능)
@@ -241,6 +247,7 @@ namespace TradingBot
             OnAIPrediction = null;
             OnTradeHistoryUpdated = null;
             OnAiEntryProbUpdate = null;
+            OnWaveAIScoreUpdate = null;
         }
 
         private DateTime _lastHeartbeatTime = DateTime.MinValue;
@@ -1102,6 +1109,18 @@ namespace TradingBot
             }
         }
 
+        /// <summary>
+        /// [WaveAI] 엘리엇 파동 이중 검증 엔진 설정
+        /// </summary>
+        public void SetWaveEngine(DoubleCheckEntryEngine? waveEngine)
+        {
+            _waveEntryEngine = waveEngine;
+            if (_waveEntryEngine != null)
+            {
+                OnStatusLog?.Invoke("🌊 [WaveAI] 엘리엇 파동 이중 검증 엔진 통합 완료");
+            }
+        }
+
         public async Task StartScanningOptimizedAsync()
         {
             if (IsBotRunning) return;
@@ -1521,7 +1540,7 @@ namespace TradingBot
                     // 1시간마다 학습 (테스트를 위해 짧게 설정 가능하지만 실사용은 1시간 권장)
                     await Task.Delay(TimeSpan.FromHours(1), token);
 
-                    OnStatusLog?.Invoke("🔄 정기 AI 모델 재학습 프로세스 시작...");
+                    OnAlert?.Invoke("🔄 정기 AI 모델 재학습 프로세스 시작...");
 
                     // 1. 학습 데이터 수집 (주요 심볼 대상)
                     var trainingData = new List<CandleData>();
@@ -1555,27 +1574,27 @@ namespace TradingBot
                                     }
                                     catch (Exception ex)
                                     {
-                                        OnStatusLog?.Invoke($"❌ Transformer 학습 내부 오류: {ex.Message}");
-                                        OnStatusLog?.Invoke($"상세: {ex.StackTrace}");
+                                        OnAlert?.Invoke($"❌ Transformer 학습 내부 오류: {ex.Message}");
+                                        OnAlert?.Invoke($"상세: {ex.StackTrace}");
                                         throw;
                                     }
                                 }, token);
 
-                                OnStatusLog?.Invoke($"✅ Transformer 재학습 완료 (데이터: {trainingData.Count}건)");
+                                OnAlert?.Invoke($"✅ Transformer 재학습 완료 (데이터: {trainingData.Count}건)");
                             }
                             catch (OperationCanceledException)
                             {
-                                OnStatusLog?.Invoke("⚠️ Transformer 학습이 취소되었습니다.");
+                                OnAlert?.Invoke("⚠️ Transformer 학습이 취소되었습니다.");
                                 throw;
                             }
                             catch (Exception ex)
                             {
-                                OnStatusLog?.Invoke($"❌ Transformer 학습 Task 실행 오류: {ex.Message}");
+                                OnAlert?.Invoke($"❌ Transformer 학습 Task 실행 오류: {ex.Message}");
                             }
                         }
                         else
                         {
-                            OnStatusLog?.Invoke("⚠️ Transformer가 비활성화되어 Transformer 재학습은 건너뜁니다.");
+                            OnAlert?.Invoke("⚠️ Transformer가 비활성화되어 Transformer 재학습은 건너뜁니다.");
                         }
 
                         // [추가] AI 더블체크 게이트 재학습
@@ -1592,17 +1611,17 @@ namespace TradingBot
                             }
                         }
 
-                        OnStatusLog?.Invoke($"✅ 정기 이중 모델 재학습 완료 (데이터: {trainingData.Count}건)");
+                        OnAlert?.Invoke($"✅ 정기 이중 모델 재학습 완료 (데이터: {trainingData.Count}건)");
                     }
                     else
                     {
-                        OnStatusLog?.Invoke("⚠️ 학습 데이터 부족으로 재학습 건너뜀.");
+                        OnAlert?.Invoke("⚠️ 학습 데이터 부족으로 재학습 건너뜀.");
                     }
                 }
                 catch (OperationCanceledException) { break; }
                 catch (Exception ex)
                 {
-                    OnStatusLog?.Invoke($"❌ 재학습 중 오류: {ex.Message}");
+                    OnAlert?.Invoke($"❌ 재학습 중 오류: {ex.Message}");
                 }
             }
         }
@@ -1633,6 +1652,14 @@ namespace TradingBot
                             {
                                 string etaText = forecast.IsImmediate ? "지금" : forecast.ForecastTimeLocal.ToString("HH:mm");
                                 OnStatusLog?.Invoke($"🎯 [AI 진입예측] {symbol} 예상 진입 {etaText} | {forecast.AverageProbability:P0} (ML={forecast.MLProbability:P0}, TF={forecast.TFProbability:P0})");
+
+                                // [ETA 자동 트리거] 미래 시점 예측인 경우 자동 재평가 스케줄링
+                                if (!forecast.IsImmediate && forecast.ForecastOffsetMinutes > 0)
+                                {
+                                    var targetTime = forecast.ForecastTimeLocal;
+                                    _scheduledEtaReEvaluations[symbol] = targetTime;
+                                    OnStatusLog?.Invoke($"⏰ [ETA_TRIGGER] {symbol} {etaText} 자동 재평가 예약 (확률 {forecast.AverageProbability:P0})");
+                                }
                             }
                         }
                     }
@@ -1671,9 +1698,9 @@ namespace TradingBot
                 }
 
                 if (_aiPredictor.IsModelLoaded)
-                    OnStatusLog?.Invoke("✅ ML.NET 모델 재학습 및 리로드 완료");
+                    OnAlert?.Invoke("✅ ML.NET 모델 재학습 및 리로드 완료");
                 else
-                    OnStatusLog?.Invoke("⚠️ ML.NET 재학습은 완료됐지만 모델 리로드 확인 실패");
+                    OnAlert?.Invoke("⚠️ ML.NET 재학습은 완료됐지만 모델 리로드 확인 실패");
             }
             catch (OperationCanceledException)
             {
@@ -1681,7 +1708,7 @@ namespace TradingBot
             }
             catch (Exception ex)
             {
-                OnStatusLog?.Invoke($"❌ ML.NET 재학습 오류: {ex.Message}");
+                OnAlert?.Invoke($"❌ ML.NET 재학습 오류: {ex.Message}");
             }
         }
 
@@ -1695,7 +1722,7 @@ namespace TradingBot
             // [FIX] TorchSharp null 체크 추가
             if (_transformerTrainer == null)
             {
-                OnStatusLog?.Invoke("⚠️ Transformer가 비활성화되어 있어 초기 학습을 건너뜁니다.");
+                OnAlert?.Invoke("⚠️ Transformer가 비활성화되어 있어 초기 학습을 건너뜁니다.");
                 return;
             }
 
@@ -1703,11 +1730,11 @@ namespace TradingBot
             {
                 if (_transformerTrainer.IsModelReady)
                 {
-                    OnStatusLog?.Invoke("✅ Transformer 모델이 이미 준비되어 초기 학습을 건너뜁니다.");
+                    OnAlert?.Invoke("✅ Transformer 모델이 이미 준비되어 초기 학습을 건너뜁니다.");
                     return;
                 }
 
-                OnStatusLog?.Invoke("🧠 Transformer 초기 학습 시작 (엔진 시작 1회 )...");
+                OnAlert?.Invoke("🧠 Transformer 초기 학습 시작 (엔진 시작 1회 )...");
 
                 var trainingData = new List<CandleData>();
                 foreach (var symbol in _symbols)
@@ -1725,7 +1752,7 @@ namespace TradingBot
 
                 if (trainingData.Count <= _transformerTrainer.SeqLen + 20)
                 {
-                    OnStatusLog?.Invoke($"⚠️ Transformer 초기 학습 데이터 부족 (수집: {trainingData.Count}건)");
+                    OnAlert?.Invoke($"⚠️ Transformer 초기 학습 데이터 부족 (수집: {trainingData.Count}건)");
                     return;
                 }
 
@@ -1740,8 +1767,8 @@ namespace TradingBot
                         }
                         catch (Exception ex)
                         {
-                            OnStatusLog?.Invoke($"❌ Transformer 초기 학습 내부 오류: {ex.Message}");
-                            OnStatusLog?.Invoke($"상세: {ex.StackTrace}");
+                            OnAlert?.Invoke($"❌ Transformer 초기 학습 내부 오류: {ex.Message}");
+                            OnAlert?.Invoke($"상세: {ex.StackTrace}");
                             throw;
                         }
                     }, token);
@@ -1750,32 +1777,32 @@ namespace TradingBot
 
                     if (_transformerTrainer.IsModelReady)
                     {
-                        OnStatusLog?.Invoke($"✅ Transformer 초기 학습 완료 및 모델 생성 성공 (데이터: {trainingData.Count}건)");
+                        OnAlert?.Invoke($"✅ Transformer 초기 학습 완료 및 모델 생성 성공 (데이터: {trainingData.Count}건)");
                     }
                     else
                     {
-                        OnStatusLog?.Invoke("⚠️ Transformer 초기 학습 후에도 모델 준비 상태가 아닙니다. 모델 파일 저장 경로를 확인하세요.");
+                        OnAlert?.Invoke("⚠️ Transformer 초기 학습 후에도 모델 준비 상태가 아닙니다. 모델 파일 저장 경로를 확인하세요.");
                     }
                 }
                 catch (OperationCanceledException)
                 {
-                    OnStatusLog?.Invoke("⚠️ Transformer 초기 학습이 취소되었습니다.");
+                    OnAlert?.Invoke("⚠️ Transformer 초기 학습이 취소되었습니다.");
                     throw;
                 }
                 catch (Exception ex)
                 {
-                    OnStatusLog?.Invoke($"❌ Transformer 초기 학습 Task 실행 오류: {ex.Message}");
+                    OnAlert?.Invoke($"❌ Transformer 초기 학습 Task 실행 오류: {ex.Message}");
                     OnAlert?.Invoke($"⚠️ AI 모델 초기화 실패. 기본 전략으로 진행합니다.");
                     // 학습 실패해도 엔진은 계속 실행 (Transformer 없이 동작)
                 }
             }
             catch (OperationCanceledException)
             {
-                OnStatusLog?.Invoke("ℹ️ Transformer 초기 학습이 취소되었습니다.");
+                OnAlert?.Invoke("ℹ️ Transformer 초기 학습이 취소되었습니다.");
             }
             catch (Exception ex)
             {
-                OnStatusLog?.Invoke($"❌ Transformer 초기 학습 실패: {ex.Message}");
+                OnAlert?.Invoke($"❌ Transformer 초기 학습 실패: {ex.Message}");
             }
         }
 
@@ -2153,6 +2180,38 @@ namespace TradingBot
                     if ((now - lastTime).TotalMilliseconds < minAnalysisIntervalMs) return;
                 }
                 _lastAnalysisTimes[symbol] = now;
+
+                // [ETA 자동 트리거] 스케줄된 진입 재평가 시간 도래 확인
+                if (_scheduledEtaReEvaluations.TryGetValue(symbol, out var scheduledTime))
+                {
+                    if (now >= scheduledTime)
+                    {
+                        _scheduledEtaReEvaluations.TryRemove(symbol, out _);
+                        OnStatusLog?.Invoke($"🎯 [ETA_TRIGGER] {symbol} 예약된 진입 시간 도달 → 재평가 시작 ({scheduledTime:HH:mm})");
+                        
+                        // AI Gate가 준비되어 있으면 즉시 재평가 (기존 전략 분석과 병행)
+                        if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate.IsReady)
+                        {
+                            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    var forecast = await _aiDoubleCheckEntryGate.ScanEntryProbabilitiesAsync(
+                                        new List<string> { symbol }, token);
+                                    
+                                    if (forecast.TryGetValue(symbol, out var result) && result.AverageProbability >= 0.65f)
+                                    {
+                                        OnStatusLog?.Invoke($"✅ [ETA_TRIGGER] {symbol} 재평가 결과 진입 가능 ({result.AverageProbability:P0}) - 전략 분석 진행");
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    OnStatusLog?.Invoke($"⚠️ [ETA_TRIGGER] {symbol} 재평가 오류: {ex.Message}");
+                                }
+                            }, token);
+                        }
+                    }
+                }
 
                 // [AI 모니터링] 공통 스캔 경로에서 ML.NET 예측을 주기적으로 기록(심볼당 5분 1회)
                 _ = TryRecordMlNetPredictionFromCommonScanAsync(symbol, currentPrice, token);
@@ -3723,9 +3782,9 @@ namespace TradingBot
 
             // [v2.4.2] 세련된 로그 형식
             string decisionKr = decision == "LONG" ? "LONG" : "SHORT";
-            OnLiveLog?.Invoke($"📤 [{symbol}] {decisionKr} 주문 요청 중 | 가격 ${currentPrice:F2}");
+            OnLiveLog?.Invoke($"📤 [{symbol}] {decisionKr} 주문 요청 중 | 가격 ${currentPrice:F2} | 소스: {signalSource}");
             
-            EntryLog("START", "INFO", $"price={currentPrice:F4}");
+            EntryLog("START", "INFO", $"price={currentPrice:F4} source={signalSource}");
 
             bool positionReserved = false;
             bool orderPlaced = false;
@@ -3748,6 +3807,45 @@ namespace TradingBot
 
             // 1. 진입 신호가 아니면 즉시 종료
             if (decision != "LONG" && decision != "SHORT") return;
+
+            // ═══════════════════════════════════════════════════════════════
+            // [슬롯 제한 검증] MAJOR 4개 + PUMP 2개 = 총 6개 제한
+            // ═══════════════════════════════════════════════════════════════
+            lock (_posLock)
+            {
+                bool isMajorSymbol = MajorSymbols.Contains(symbol);
+                bool isPumpSignal = signalSource == "PUMP" || signalSource == "MAJOR_MEME";
+
+                int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
+                int pumpCount = _activePositions.Count(p => p.Value.IsPumpStrategy);
+
+                if (isMajorSymbol && majorCount >= MAX_MAJOR_SLOTS)
+                {
+                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} MAJOR 슬롯 포화 ({majorCount}/{MAX_MAJOR_SLOTS}) → 진입 차단");
+                    EntryLog("SLOT", "BLOCK", $"major={majorCount}/{MAX_MAJOR_SLOTS}");
+                    return;
+                }
+
+                if (isPumpSignal && pumpCount >= MAX_PUMP_SLOTS)
+                {
+                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} PUMP 슬롯 포화 ({pumpCount}/{MAX_PUMP_SLOTS}) → 진입 차단");
+                    EntryLog("SLOT", "BLOCK", $"pump={pumpCount}/{MAX_PUMP_SLOTS}");
+                    return;
+                }
+
+                // 일반 진입(MAJOR도 PUMP도 아닌 경우)은 슬롯 제한 없음
+                if (!isMajorSymbol && !isPumpSignal)
+                {
+                    int totalPositions = _activePositions.Count;
+                    const int MAX_TOTAL_SLOTS = 10; // 전체 최대 10개로 제한
+                    if (totalPositions >= MAX_TOTAL_SLOTS)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 전체 슬롯 포화 ({totalPositions}/{MAX_TOTAL_SLOTS}) → 진입 차단");
+                        EntryLog("SLOT", "BLOCK", $"total={totalPositions}/{MAX_TOTAL_SLOTS}");
+                        return;
+                    }
+                }
+            }
 
             if (patternSnapshot?.Match?.ShouldDeferEntry == true)
             {
@@ -3789,11 +3887,11 @@ namespace TradingBot
                 // 기존 대기 신호가 있는지 확인
                 if (_pendingDelayedEntries.TryGetValue(symbol, out var pending))
                 {
-                    // 대기 신호 만료 체크 (2캔들 = 10분 이내만 유효)
-                    if ((DateTime.Now - pending.SignalTime).TotalMinutes > 10)
+                    // 대기 신호 만료 체크 (20분 이내만 유효 - 15분봉 간격 고려하여 연장)
+                    if ((DateTime.Now - pending.SignalTime).TotalMinutes > 20)
                     {
                         _pendingDelayedEntries.TryRemove(symbol, out _);
-                        OnStatusLog?.Invoke($"⏰ {symbol} 지연 진입 신호 만료 (10분 초과) → 대기 해제");
+                        OnStatusLog?.Invoke($"⏰ {symbol} 지연 진입 신호 만료 (20분 초과) → 대기 해제");
                     }
                     else
                     {
@@ -4020,67 +4118,123 @@ namespace TradingBot
                 return;
             }
 
-            if (latestCandle != null && ShouldApplyFifteenMinuteWaveGate(signalSource))
+            // [GATE 영구 제거] 15분 WaveGate AI 검증 제거됨 (재설계 예정)
+            // TODO: 신호 품질 기반 GATE 재설계 후 복원
+
+            // ═══════════════════════════════════════════════════════════════
+            // [WaveAI] 엘리엇 파동 이중 검증 시스템 (Nuclear Launch Key)
+            // - Transformer Navigator (70%+): 시계열 패턴 분석 (우뇌)
+            // - ML.NET Sniper (75%+): 스냅샷 조건 검증 (좌뇌)
+            // - 두 AI가 모두 승인해야 진입 (핵미사일 발사 키 2개)
+            // ═══════════════════════════════════════════════════════════════
+            if (_waveEntryEngine != null && _waveEntryEngine.IsReady && decision == "LONG" && isMajorLikeSignal)
             {
-                if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate.IsReady)
+                try
                 {
-                    CoinType coinType = ResolveCoinType(symbol, signalSource);
-                    var aiGate = await _aiDoubleCheckEntryGate.EvaluateEntryWithCoinTypeAsync(symbol, decision, currentPrice, coinType, token);
-
-                    if (!aiGate.allowEntry)
+                    // 15분봉 데이터 수집 (100개 권장)
+                    var klines15m = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 120, token);
+                    if (klines15m != null && klines15m.Count >= 60)
                     {
-                        OnStatusLog?.Invoke(TradingStateLogger.RejectedByAIGate(
-                            symbol, decision, aiGate.reason, 
-                            aiGate.detail.ML_Confidence, aiGate.detail.TF_Confidence));
-                        EntryLog("15M_GATE", "BLOCK", $"aiDoubleCheck reason={aiGate.reason} coin={coinType} ml={aiGate.detail.ML_Confidence:P1} tf={aiGate.detail.TF_Confidence:P1}");
-                        return;
+                        // Binance Kline → CandleData 변환
+                        var candleList = klines15m.Select(k => new CandleData
+                        {
+                            OpenTime = k.OpenTime,
+                            Open = k.OpenPrice,
+                            High = k.HighPrice,
+                            Low = k.LowPrice,
+                            Close = k.ClosePrice,
+                            Volume = (float)k.Volume,
+                            RSI = 0f,  // 필요시 계산
+                            MACD = 0f,
+                            SMA_20 = 0,
+                            SMA_60 = 0
+                        }).ToList();
+
+                        // IndicatorCalculator로 지표 계산
+                        var klinesForIndicators = klines15m.ToList();
+                        if (klinesForIndicators.Count >= 60)
+                        {
+                            double rsi = IndicatorCalculator.CalculateRSI(klinesForIndicators, 14);
+                            var (macd, signal, histogram) = IndicatorCalculator.CalculateMACD(klinesForIndicators);
+                            double sma20 = IndicatorCalculator.CalculateSMA(klinesForIndicators, 20);
+                            double sma60 = IndicatorCalculator.CalculateSMA(klinesForIndicators, 60);
+
+                            // 마지막 캔들에 지표 할당
+                            var lastCandle = candleList[^1];
+                            lastCandle.RSI = (float)rsi;
+                            lastCandle.MACD = (float)macd;
+                            lastCandle.SMA_20 = (float)sma20;
+                            lastCandle.SMA_60 = (float)sma60;
+                        }
+
+                        // Transformer 시퀀스 준비 (60개 캔들, 18개 특성)
+                        var transformerSeq = candleList.TakeLast(60).Select(c => new float[]
+                        {
+                            (float)c.Close, (float)c.High, (float)c.Low, (float)c.Open, c.Volume,
+                            c.RSI, c.MACD, (float)c.SMA_20, (float)c.SMA_60,
+                            0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f  // 나머지 특성 (필요시 계산)
+                        }).ToList();
+
+                        // 추세 정보 (간단히 SMA 비교로 판단)
+                        int trend1H = latestCandle != null && latestCandle.SMA_20 > latestCandle.SMA_60 ? 1 : -1;
+                        int trend4H = trend1H; // 간단히 동일 추세로 가정
+
+                        // WaveAI 진입 검증
+                        var waveDecision = _waveEntryEngine.EvaluateEntry(
+                            symbol,
+                            candleList[^1],
+                            candleList,
+                            transformerSeq,
+                            currentPrice,
+                            trend1H,
+                            trend4H);
+
+                        if (!waveDecision.AllowEntry)
+                        {
+                            // WaveAI 차단
+                            OnStatusLog?.Invoke($"🌊 [WaveAI] {symbol} 진입 차단 | {waveDecision.Reason}");
+                            EntryLog("WAVEAI", "BLOCK", waveDecision.Reason);
+                            
+                            // UI 점수 업데이트
+                            OnWaveAIScoreUpdate?.Invoke(symbol, waveDecision.MLNetProbability, waveDecision.TransformerConfidence, "❌ 차단");
+                            return;
+                        }
+
+                        // WaveAI 승인
+                        OnStatusLog?.Invoke(_waveEntryEngine.FormatDecisionLog(waveDecision));
+                        
+                        // UI 점수 업데이트
+                        OnWaveAIScoreUpdate?.Invoke(symbol, waveDecision.MLNetProbability, waveDecision.TransformerConfidence, $"✅ 승인 ({waveDecision.WavePhase})");
+
+                        // WaveAI 권장가 반영 (손절/익절)
+                        if (waveDecision.RecommendedEntry.HasValue && waveDecision.RecommendedEntry.Value > 0)
+                        {
+                            OnStatusLog?.Invoke($"🎯 [WaveAI] 권장 진입가: {waveDecision.RecommendedEntry:F8} (현재가: {currentPrice:F8})");
+                        }
+                        if (waveDecision.RecommendedStopLoss.HasValue && waveDecision.RecommendedStopLoss.Value > 0 && customStopLossPrice <= 0)
+                        {
+                            customStopLossPrice = waveDecision.RecommendedStopLoss.Value;
+                            OnStatusLog?.Invoke($"🛡️ [WaveAI] 손절가 적용: {customStopLossPrice:F8}");
+                        }
+                        if (waveDecision.RecommendedTakeProfit.HasValue && waveDecision.RecommendedTakeProfit.Value > 0 && customTakeProfitPrice <= 0)
+                        {
+                            customTakeProfitPrice = waveDecision.RecommendedTakeProfit.Value;
+                            OnStatusLog?.Invoke($"🎯 [WaveAI] 익절가 적용: {customTakeProfitPrice:F8}");
+                        }
+
+                        EntryLog("WAVEAI", "PASS",
+                            $"wave={waveDecision.WavePhase} tf={waveDecision.TransformerConfidence:P0} ml={waveDecision.MLNetProbability:P0}");
                     }
-
-                    OnStatusLog?.Invoke(TradingStateLogger.EvaluatingMLSniper(
-                        symbol, decision, 
-                        aiGate.detail.ML_Confidence, aiGate.detail.TF_Confidence));
-                    EntryLog(
-                        "15M_GATE",
-                        "PASS",
-                        $"aiDoubleCheck reason={aiGate.reason} coin={coinType} ml={aiGate.detail.ML_Confidence:P1} tf={aiGate.detail.TF_Confidence:P1}");
-
-                    if (!string.IsNullOrWhiteSpace(aiGate.detail.DecisionId))
-                        aiGateDecisionId = aiGate.detail.DecisionId;
+                    else
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [WaveAI] {symbol} 15분봉 데이터 부족 (필요: 60개, 실제: {klines15m?.Count ?? 0}개) → WaveAI 건너뜀");
+                    }
                 }
-                else
+                catch (Exception waveEx)
                 {
-                    // 폴백: 기존 15분 Wave Gate
-                    var (mlThreshold, transformerThreshold) = GetSymbolGateThresholds(symbol);
-                    var gateResult = await EvaluateFifteenMinuteWaveGateAsync(symbol, decision, currentPrice, latestCandle, mlThreshold, transformerThreshold, token);
-
-                    RecordGateDecisionAndAutoTune(
-                        symbol,
-                        gateResult.allowEntry,
-                        mlThreshold,
-                        transformerThreshold,
-                        gateResult.mlConfidence,
-                        gateResult.transformerConfidence);
-
-                    if (!gateResult.allowEntry)
-                    {
-                        OnStatusLog?.Invoke(TradingStateLogger.RejectedBy15MinWaveGate(
-                            symbol, decision, $"{gateResult.reason} | mlTh={mlThreshold:P1} tfTh={transformerThreshold:P1}"));
-                        EntryLog("15M_GATE", "BLOCK", gateResult.reason);
-                        return;
-                    }
-
-                    OnStatusLog?.Invoke($"✅ [15분 WaveGate] {symbol} {decision} 통과 | ml={gateResult.mlConfidence:P1} tf={gateResult.transformerConfidence:P1}");
-
-                    if (customTakeProfitPrice <= 0 && gateResult.takeProfitPrice > 0)
-                        customTakeProfitPrice = gateResult.takeProfitPrice;
-
-                    if (customStopLossPrice <= 0 && gateResult.stopLossPrice > 0)
-                        customStopLossPrice = gateResult.stopLossPrice;
-
-                    EntryLog(
-                        "15M_GATE",
-                        "PASS",
-                        $"scenario={gateResult.scenario} ml={gateResult.mlConfidence:P1} tf={gateResult.transformerConfidence:P1} mlTh={mlThreshold:P1} tfTh={transformerThreshold:P1} tp={customTakeProfitPrice:F8} sl={customStopLossPrice:F8}");
+                    OnStatusLog?.Invoke($"⚠️ [WaveAI] {symbol} 검증 오류: {waveEx.Message} → 진입 차단");
+                    EntryLog("WAVEAI", "ERROR", waveEx.Message);
+                    return;
                 }
             }
 
@@ -4947,7 +5101,14 @@ namespace TradingBot
             return removed;
         }
 
+        // [GATE 제거] 재설계 예정
         private bool ShouldApplyFifteenMinuteWaveGate(string signalSource)
+        {
+            return false; // GATE 영구 비활성화
+        }
+
+        /* [GATE 재설계 전까지 보관]
+        private bool ShouldApplyFifteenMinuteWaveGate_Original(string signalSource)
         {
             if (!_enableFifteenMinWaveGate)
                 return false;
@@ -4960,6 +5121,7 @@ namespace TradingBot
                 || signalSource.StartsWith("TRANSFORMER_", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(signalSource, "ElliottWave3Wave", StringComparison.OrdinalIgnoreCase);
         }
+        */
 
         private (float mlThreshold, float transformerThreshold) GetSymbolGateThresholds(string symbol)
         {
@@ -4974,6 +5136,7 @@ namespace TradingBot
             }
         }
 
+        // [GATE 제거] 재설계 전까지 사용되지 않음
         private void RecordGateDecisionAndAutoTune(
             string symbol,
             bool allowEntry,
@@ -5020,21 +5183,32 @@ namespace TradingBot
                 beforeMl = state.MlThreshold;
                 beforeTf = state.TransformerThreshold;
 
+                // [동적 최적화] 3단계 조정 시스템
                 if (passRate >= GateTightenPassRate)
                 {
+                    // 통과율 높음 (≥55%) → 기준 강화
                     state.MlThreshold = Math.Clamp(state.MlThreshold + GateThresholdAdjustStep, GateMlThresholdMin, GateMlThresholdMax);
                     state.TransformerThreshold = Math.Clamp(state.TransformerThreshold + GateThresholdAdjustStep, GateTransformerThresholdMin, GateTransformerThresholdMax);
                 }
                 else if (passRate <= GateLoosenPassRate)
                 {
+                    // 통과율 낮음 (≤30%) → 기준 대폭 완화
                     state.MlThreshold = Math.Clamp(state.MlThreshold - GateThresholdAdjustStep, GateMlThresholdMin, GateMlThresholdMax);
                     state.TransformerThreshold = Math.Clamp(state.TransformerThreshold - GateThresholdAdjustStep, GateTransformerThresholdMin, GateTransformerThresholdMax);
 
+                    // [추가 완화] 거의 통과할 뻔한 경우 (95% 이상) 추가 조정
                     if (!allowEntry && mlConfidence > 0f && mlConfidence >= state.MlThreshold * 0.95f)
                         state.MlThreshold = Math.Clamp(state.MlThreshold - GateThresholdAdjustStep / 2f, GateMlThresholdMin, GateMlThresholdMax);
 
                     if (!allowEntry && transformerConfidence > 0f && transformerConfidence >= state.TransformerThreshold * 0.95f)
                         state.TransformerThreshold = Math.Clamp(state.TransformerThreshold - GateThresholdAdjustStep / 2f, GateTransformerThresholdMin, GateTransformerThresholdMax);
+                }
+                else if (passRate >= 0.40f && passRate < 0.50f)
+                {
+                    // [동적 최적화] 중간 범위(40-50%) → 약간 완화하여 최적점 탐색
+                    float subtleAdjust = GateThresholdAdjustStep * 0.5f;
+                    state.MlThreshold = Math.Clamp(state.MlThreshold - subtleAdjust, GateMlThresholdMin, GateMlThresholdMax);
+                    state.TransformerThreshold = Math.Clamp(state.TransformerThreshold - subtleAdjust, GateTransformerThresholdMin, GateTransformerThresholdMax);
                 }
 
                 afterMl = state.MlThreshold;
@@ -5051,6 +5225,7 @@ namespace TradingBot
                 $"📈 [GATE][AUTO_TUNE] sym={key} action={action} sample={sampled} pass={passCount} block={blockCount} passRate={passRate:P1} mlThr={beforeMl:P1}->{afterMl:P1} tfThr={beforeTf:P1}->{afterTf:P1}");
         }
 
+        // [GATE 제거] 재설계 전까지 사용되지 않음
         private async Task<(bool allowEntry, string reason, decimal takeProfitPrice, decimal stopLossPrice, string scenario, float mlConfidence, float transformerConfidence)> EvaluateFifteenMinuteWaveGateAsync(
             string symbol,
             string decision,
@@ -5140,16 +5315,30 @@ namespace TradingBot
                 return (false, "ML.NET 모델 미준비", finalTp, finalSl, scenario, 0f, 0f);
 
             var mlPrediction = _aiPredictor.Predict(latestCandle);
+            
+            // [GATE 제거] 디버그 로그 제거
+            // TODO: 재설계 시 AI 예측 로그 복원
+            
             bool mlAligned = string.Equals(decision, "LONG", StringComparison.OrdinalIgnoreCase)
                 ? mlPrediction.Prediction
                 : !mlPrediction.Prediction;
             float mlDirectionalProb = string.Equals(decision, "LONG", StringComparison.OrdinalIgnoreCase)
                 ? NormalizeProbability01(mlPrediction.Probability)
                 : NormalizeProbability01(1f - mlPrediction.Probability);
-            if (!mlAligned || mlDirectionalProb < mlThreshold)
+            
+            // [GATE 제거] 하이브리드 모드 및 DEBUG 로그 제거
+            // TODO: 재설계 시 복원
+            
+            // 하이브리드: 신뢰도 60% 이상이면 방향 무시, 미만은 방향 일치 필요
+            const float highConfThreshold = 0.60f;
+            bool mlPass = mlDirectionalProb >= mlThreshold && (mlAligned || mlDirectionalProb >= highConfThreshold);
+            if (!mlPass)
             {
+                string mlRejectReason = mlDirectionalProb < mlThreshold
+                    ? $"ML.NET 신뢰도부족 conf={mlDirectionalProb:P1}<{mlThreshold:P1}"
+                    : $"ML.NET 방향불일치 aligned={mlAligned} conf={mlDirectionalProb:P1}<{highConfThreshold:P1}";
                 return (false,
-                    $"ML.NET 불일치/aligned={mlAligned} conf={mlDirectionalProb:P1}<{mlThreshold:P1}",
+                    mlRejectReason,
                     finalTp,
                     finalSl,
                     scenario,
@@ -5175,13 +5364,24 @@ namespace TradingBot
             if (currentPrice > 0)
             {
                 decimal movePct = Math.Abs((predictedPriceDecimal - currentPrice) / currentPrice) * 100m;
-                transformerConfidence = NormalizeProbability01((float)Math.Min(1m, movePct / 0.35m), 0.5f);
+                // [FIX] 기준값 0.35% → 2.0%로 완화 (더 넓은 범위)
+                decimal rawConfidence = Math.Min(1m, movePct / 2.0m);
+                transformerConfidence = NormalizeProbability01((float)rawConfidence, 0.5f);
+                
+                // [GATE 제거] TF_DEBUG 로그 제거
+                // TODO: 재설계 시 복원
             }
 
-            if (!transformerAligned || transformerConfidence < transformerThreshold)
+            // 하이브리드: 신뢰도 60% 이상이면 방향 무시, 미만은 방향 일치 필요
+            const float transformerHighConfThreshold = 0.60f;
+            bool transformerPass = transformerConfidence >= transformerThreshold && (transformerAligned || transformerConfidence >= transformerHighConfThreshold);
+            if (!transformerPass)
             {
+                string transRejectReason = transformerConfidence < transformerThreshold
+                    ? $"Transformer 신뢰도부족 conf={transformerConfidence:P1}<{transformerThreshold:P1}"
+                    : $"Transformer 방향불일치 aligned={transformerAligned} conf={transformerConfidence:P1}<{transformerHighConfThreshold:P1}";
                 return (false,
-                    $"Transformer 불일치/aligned={transformerAligned} conf={transformerConfidence:P1}<{transformerThreshold:P1}",
+                    transRejectReason,
                     finalTp,
                     finalSl,
                     scenario,
