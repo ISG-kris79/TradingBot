@@ -543,6 +543,29 @@ namespace TradingBot
                 {
                     try
                     {
+                        // [v2.4.2] Navigator-Sniper 평가
+                        if (_aiDoubleCheckEntryGate != null)
+                        {
+                            var gateResult = await _aiDoubleCheckEntryGate.EvaluateEntryAsync(symbol, decision, (decimal)price, _cts.Token);
+                            string decisionKr = decision == "LONG" ? "롱" : "숏";
+                            
+                            OnLiveLog?.Invoke(
+                                $"🤖 [{symbol}] {decisionKr} ML 스나이퍼 평가 중 | " +
+                                $"ML신뢰도 {gateResult.detail.ML_Confidence:P0}, TF신뢰도 {gateResult.detail.TF_Confidence:P0}");
+
+                            if (!gateResult.allowEntry)
+                            {
+                                OnLiveLog?.Invoke(
+                                    $"❌ [{symbol}] {decisionKr} Sniper 거부: {gateResult.reason} | " +
+                                    $"ML={gateResult.detail.ML_Confidence:P0}, TF={gateResult.detail.TF_Confidence:P0}");
+                                return;
+                            }
+
+                            OnLiveLog?.Invoke(
+                                $"✅ [{symbol}] {decisionKr} Sniper 승인! | " +
+                                $"ML={gateResult.detail.ML_Confidence:P0}, TF={gateResult.detail.TF_Confidence:P0}");
+                        }
+
                         await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR");
                     }
                     catch (Exception ex)
@@ -3698,6 +3721,10 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"🧭 [ENTRY][{stage}][{status}] {flowTag} | {detail}");
             }
 
+            // [v2.4.2] 세련된 로그 형식
+            string decisionKr = decision == "LONG" ? "LONG" : "SHORT";
+            OnLiveLog?.Invoke($"📤 [{symbol}] {decisionKr} 주문 요청 중 | 가격 ${currentPrice:F2}");
+            
             EntryLog("START", "INFO", $"price={currentPrice:F4}");
 
             bool positionReserved = false;
