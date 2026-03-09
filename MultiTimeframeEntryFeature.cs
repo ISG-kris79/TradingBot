@@ -93,6 +93,15 @@ namespace TradingBot
         [ColumnName("Label")]
         public bool ShouldEnter { get; set; }                             // true=진입, false=대기
 
+        /// <summary>
+        /// Transformer 회귀 라벨: 현재 시점부터 목표가(피보나치 0.618) 도달까지의 캔들 개수
+        /// - 예: 12.0 → 12개 캔들(3시간) 후 목표가 도달 예상
+        /// - 예측 범위(32캔들=8시간) 내 도달 안 하면 학습 샘플에서 제외
+        /// - ML.NET은 ShouldEnter 사용, Transformer는 CandlesToTarget 사용
+        /// </summary>
+        [NoColumn]
+        public float CandlesToTarget { get; set; } = -1f;                  // -1=미계산 또는 범위 외
+
         // ═══════════════════════════════════════════════════════════════
         // 메타 정보 (예측 시 참고용, 학습에는 미사용)
         // ML.NET IDataView에서 제외 ([NoColumn])

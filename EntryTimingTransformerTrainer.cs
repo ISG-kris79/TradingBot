@@ -81,18 +81,18 @@ namespace TradingBot
                 var trainSeq = sequences.Take(trainSize).ToList();
                 var valSeq = sequences.Skip(trainSize).ToList();
 
-                // Optimizer & Loss
+                // Optimizer & Loss (회귀 모델: Time-to-Target 예측)
                 var optimizer = optim.Adam(_model!.parameters(), lr: learningRate);
-                var criterion = nn.BCEWithLogitsLoss(); // Binary Cross Entropy
+                var criterion = nn.MSELoss(); // Mean Squared Error for regression
 
-                float bestValAcc = 0f;
+                float bestValLoss = float.MaxValue;
 
                 for (int epoch = 0; epoch < epochs; epoch++)
                 {
                     // Training
                     _model.train();
                     float trainLoss = 0f;
-                    int trainCorrect = 0;
+                    float trainMAE = 0f; // Mean Absolute Error
 
                     for (int i = 0; i < trainSeq.Count; i += batchSize)
                     {
@@ -107,22 +107,23 @@ namespace TradingBot
 
                         trainLoss += loss.item<float>();
 
-                        // 정확도 계산
-                        var predictions = torch.sigmoid(outputs) > 0.5f;
-                        trainCorrect += (int)predictions.eq(labels).sum().item<long>();
+                        // MAE 계산 (예측 - 실제의 절대값 평균)
+                        using var absDiff = torch.abs(outputs - labels);
+                        trainMAE += absDiff.mean().item<float>() * batch.Count;
 
                         inputs.Dispose();
                         labels.Dispose();
                         outputs.Dispose();
                         loss.Dispose();
-                        predictions.Dispose();
                     }
 
-                    float trainAcc = (float)trainCorrect / trainSeq.Count;
+                    float avgTrainLoss = trainLoss / (trainSeq.Count / batchSize);
+                    float avgTrainMAE = trainMAE / trainSeq.Count;
 
                     // Validation
                     _model.eval();
-                    int valCorrect = 0;
+                    float valLoss = 0f;
+                    float valMAE = 0f;
 
                     using (torch.no_grad())
                     {
@@ -132,28 +133,33 @@ namespace TradingBot
                             var (inputs, labels) = PrepareBatch(batch);
 
                             var outputs = _model.forward(inputs);
-                            var predictions = torch.sigmoid(outputs) > 0.5f;
-                            valCorrect += (int)predictions.eq(labels).sum().item<long>();
+                            var loss = criterion.forward(outputs, labels);
+                            valLoss += loss.item<float>();
+
+                            using var absDiff = torch.abs(outputs - labels);
+                            valMAE += absDiff.mean().item<float>() * batch.Count;
 
                             inputs.Dispose();
                             labels.Dispose();
                             outputs.Dispose();
-                            predictions.Dispose();
+                            loss.Dispose();
                         }
                     }
 
-                    float valAcc = valSeq.Count > 0 ? (float)valCorrect / valSeq.Count : 0f;
+                    float avgValLoss = valSeq.Count > 0 ? valLoss / (valSeq.Count / batchSize) : 0f;
+                    float avgValMAE = valSeq.Count > 0 ? valMAE / valSeq.Count : 0f;
 
                     if ((epoch + 1) % 5 == 0 || epoch == 0)
                     {
-                        Console.WriteLine($"[TransformerBinary] Epoch {epoch + 1}/{epochs} | " +
-                            $"Train Loss: {trainLoss / trainSeq.Count:F4}, Acc: {trainAcc:P2} | " +
-                            $"Val Acc: {valAcc:P2}");
+                        Console.WriteLine($"[TransformerRegression] Epoch {epoch + 1}/{epochs} | " +
+                            $"Train Loss: {avgTrainLoss:F4}, MAE: {avgTrainMAE:F2} candles | " +
+                            $"Val Loss: {avgValLoss:F4}, MAE: {avgValMAE:F2} candles");
                     }
 
-                    if (valAcc > bestValAcc)
+                    // 검증 손실이 개선되면 모델 저장
+                    if (avgValLoss < bestValLoss)
                     {
-                        bestValAcc = valAcc;
+                        bestValLoss = avgValLoss;
                         SaveModel();
                     }
                 }
@@ -161,11 +167,11 @@ namespace TradingBot
                 watch.Stop();
                 criterion.Dispose();
 
-                Console.WriteLine($"[TransformerBinary] 학습 완료: {watch.Elapsed.TotalSeconds:F1}초, Best Val Acc: {bestValAcc:P2}");
+                Console.WriteLine($"[TransformerRegression] 학습 완료: {watch.Elapsed.TotalSeconds:F1}초, Best Val Loss: {bestValLoss:F4}");
 
                 return new TransformerMetrics
                 {
-                    BestValidationAccuracy = bestValAcc,
+                    BestValidationLoss = bestValLoss,
                     Epochs = epochs,
                     TrainingTimeSeconds = watch.Elapsed.TotalSeconds
                 };
@@ -173,15 +179,16 @@ namespace TradingBot
         }
 
         /// <summary>
-        /// 실시간 예측
+        /// 실시간 예측: Time-to-Target 회귀 (목표가 도달까지 몇 개의 캔들?)
         /// </summary>
-        public (bool shouldEnter, float confidence) Predict(List<MultiTimeframeEntryFeature> recentFeatures)
+        /// <returns>(목표가 도달까지 캔들 개수, 신뢰도 점수 0~1)</returns>
+        public (float candlesToTarget, float confidence) Predict(List<MultiTimeframeEntryFeature> recentFeatures)
         {
             if (!_isModelReady || _model == null)
-                return (false, 0f);
+                return (-1f, 0f);
 
             if (recentFeatures == null || recentFeatures.Count < _seqLen)
-                return (false, 0f);
+                return (-1f, 0f);
 
             try
             {
@@ -193,24 +200,29 @@ namespace TradingBot
                 using (torch.no_grad())
                 {
                     var output = _model.forward(inputTensor); // [1, 1]
-                    float logit = output[0, 0].item<float>();
-                    float prob = (float)(1.0 / (1.0 + Math.Exp(-logit))); // Sigmoid
+                    float rawPrediction = output[0, 0].item<float>();
 
-                    if (float.IsNaN(prob) || float.IsInfinity(prob))
-                        prob = 0f;
+                    // NaN/Infinity 방어
+                    if (float.IsNaN(rawPrediction) || float.IsInfinity(rawPrediction))
+                        rawPrediction = -1f;
 
-                    prob = Math.Clamp(prob, 0f, 1f);
+                    // 예측값 클램핑 (0~32 캔들 범위)
+                    float clampedCandles = Math.Clamp(rawPrediction, 0f, 32f);
+
+                    // 신뢰도 계산: 예측이 유효 범위 내에 있으면 높은 점수
+                    // 1~32 범위 내면 confidence=1.0, 범위 밖이면 감소
+                    float confidence = (rawPrediction >= 1f && rawPrediction <= 32f) ? 1.0f : 0.5f;
 
                     inputTensor.Dispose();
                     output.Dispose();
 
-                    return (prob > 0.5f, prob);
+                    return (clampedCandles, confidence);
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[TransformerBinary] 예측 실패: {ex.Message}");
-                return (false, 0f);
+                Console.WriteLine($"[TransformerRegression] 예측 실패: {ex.Message}");
+                return (-1f, 0f);
             }
         }
 
@@ -221,11 +233,18 @@ namespace TradingBot
             for (int i = _seqLen; i < data.Count; i++)
             {
                 var seq = data.Skip(i - _seqLen).Take(_seqLen).ToList();
-                sequences.Add(new SequenceData
+                float candlesLabel = data[i].CandlesToTarget;
+
+                // Time-to-Target 라벨이 유효한 경우만 학습 샘플로 추가
+                // -1은 "32캔들 내 목표가 미도달"을 의미하므로 제외
+                if (candlesLabel >= 0f)
                 {
-                    Features = seq,
-                    Label = data[i].ShouldEnter
-                });
+                    sequences.Add(new SequenceData
+                    {
+                        Features = seq,
+                        CandlesToTargetLabel = candlesLabel
+                    });
+                }
             }
 
             return sequences;
@@ -239,7 +258,8 @@ namespace TradingBot
 
             for (int b = 0; b < batchSize; b++)
             {
-                labelArray[b, 0] = batch[b].Label ? 1f : 0f;
+                // Time-to-Target 회귀 라벨 (캔들 개수)
+                labelArray[b, 0] = batch[b].CandlesToTargetLabel;
 
                 for (int t = 0; t < _seqLen; t++)
                 {
@@ -405,13 +425,19 @@ namespace TradingBot
         private class SequenceData
         {
             public List<MultiTimeframeEntryFeature> Features { get; set; } = new();
-            public bool Label { get; set; }
+            /// <summary>
+            /// Time-to-Target 회귀 라벨: 목표가 도달까지의 캔들 개수 (예: 12.0 = 3시간 후)
+            /// </summary>
+            public float CandlesToTargetLabel { get; set; }
         }
     }
 
     public class TransformerMetrics
     {
-        public float BestValidationAccuracy { get; set; }
+        /// <summary>
+        /// 최적 검증 손실 (회귀 모델이므로 MAE 또는 MSE)
+        /// </summary>
+        public float BestValidationLoss { get; set; }
         public int Epochs { get; set; }
         public double TrainingTimeSeconds { get; set; }
     }

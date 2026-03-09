@@ -91,9 +91,12 @@ namespace TradingBot
                 bool mlApprove = mlPrediction.ShouldEnter;
                 float mlConfidence = mlPrediction.Probability;
 
-                // 3. Transformer 예측 (심볼별 최근 시퀀스 버퍼 사용)
+                // 3. Transformer 예측 (Time-to-Target 회귀)
                 var recentFeatures = BuildTransformerSequence(symbol, feature);
-                var (tfApprove, tfConfidence) = _transformerTrainer.Predict(recentFeatures);
+                var (candlesToTarget, tfConfidence) = _transformerTrainer.Predict(recentFeatures);
+
+                // Transformer 승인 기준: 유효한 Time-to-Target 예측 (1~32캔들 범위)
+                bool tfApprove = candlesToTarget >= 1f && candlesToTarget <= 32f;
 
                 // 4. 더블체크 판정
                 bool mlPass = mlApprove && mlConfidence >= _config.MinMLConfidence;
@@ -577,72 +580,70 @@ namespace TradingBot
             var baseSequence = BuildTransformerSequence(symbol, feature);
             var candidates = new List<AIEntryForecastResult>(_config.EntryForecastSteps + 1);
 
-            var (currentMlProb, currentTfProb, currentAvgProb) = PredictEntryProbabilities(feature, baseSequence);
-            candidates.Add(new AIEntryForecastResult
-            {
-                Symbol = symbol,
-                MLProbability = currentMlProb,
-                TFProbability = currentTfProb,
-                AverageProbability = currentAvgProb,
-                ForecastTimeUtc = referenceUtc,
-                ForecastTimeLocal = referenceLocal,
-                ForecastOffsetMinutes = 0,
-                GeneratedAtLocal = referenceLocal
-            });
+            // [Time-to-Target 회귀 기반 ETA 예측]
+            // Transformer가 "목표가 도달까지 몇 캔들 후인지" 직접 예측
+            var (candlesToTarget, tfConfidence) = _transformerTrainer.Predict(baseSequence);
 
-            var nextQuarterUtc = AlignToNextQuarterHourUtc(referenceUtc);
-            for (int step = 1; step <= _config.EntryForecastSteps; step++)
-            {
-                var forecastUtc = nextQuarterUtc.AddMinutes((step - 1) * 15);
-                var shiftedFeature = feature.CloneWithTimestamp(forecastUtc);
-                var shiftedSequence = ReplaceLastSequenceFeature(baseSequence, shiftedFeature);
-                var (mlProb, tfProb, avgProb) = PredictEntryProbabilities(shiftedFeature, shiftedSequence);
+            // 현재 시점 ML 확률 계산
+            float currentMlProb = 0f;
+            var mlPrediction = _mlTrainer.Predict(feature);
+            if (mlPrediction != null)
+                currentMlProb = mlPrediction.Probability;
 
-                candidates.Add(new AIEntryForecastResult
+            AIEntryForecastResult best;
+
+            // Time-to-Target이 유효한 경우 (1~32캔들 범위)
+            if (candlesToTarget >= 1f && candlesToTarget <= 32f)
+            {
+                // 예측된 시간 계산
+                int minutesToTarget = (int)Math.Round(candlesToTarget * 15); // 15분봉 기준
+                var forecastUtc = referenceUtc.AddMinutes(minutesToTarget);
+                
+                // 해당 시점의 ML 확률 예측 (미래 시점 피처 생성)
+                var futureFeature = feature.CloneWithTimestamp(forecastUtc);
+                float futureMlProb = 0f;
+                var futureMlPrediction = _mlTrainer.Predict(futureFeature);
+                if (futureMlPrediction != null)
+                    futureMlProb = futureMlPrediction.Probability;
+
+                // 평균 확률 계산 (ML 스나이퍼 + TF 네비게이터)
+                float avgProb = (futureMlProb + tfConfidence) / 2f;
+
+                best = new AIEntryForecastResult
                 {
                     Symbol = symbol,
-                    MLProbability = mlProb,
-                    TFProbability = tfProb,
+                    MLProbability = futureMlProb,
+                    TFProbability = tfConfidence,
                     AverageProbability = avgProb,
                     ForecastTimeUtc = forecastUtc,
                     ForecastTimeLocal = forecastUtc.ToLocalTime(),
-                    ForecastOffsetMinutes = Math.Max(1, (int)Math.Round((forecastUtc - referenceUtc).TotalMinutes)),
+                    ForecastOffsetMinutes = Math.Max(1, minutesToTarget),
                     GeneratedAtLocal = referenceLocal
-                });
+                };
             }
-
-            var best = SelectBestForecast(candidates);
-
-            // 관망 구간(저확률)일 때는 4시간까지 예측 범위를 확장해서 ETA를 제시
-            if (best.AverageProbability < _config.EntryForecastWatchThreshold
-                && _config.EntryForecastWatchSteps > _config.EntryForecastSteps)
+            else
             {
-                for (int step = _config.EntryForecastSteps + 1; step <= _config.EntryForecastWatchSteps; step++)
+                // Time-to-Target 예측 실패 또는 범위 외 → 현재 시점 기준 반환
+                float avgProb = (currentMlProb + tfConfidence) / 2f;
+                best = new AIEntryForecastResult
                 {
-                    var forecastUtc = nextQuarterUtc.AddMinutes((step - 1) * 15);
-                    var shiftedFeature = feature.CloneWithTimestamp(forecastUtc);
-                    var shiftedSequence = ReplaceLastSequenceFeature(baseSequence, shiftedFeature);
-                    var (mlProb, tfProb, avgProb) = PredictEntryProbabilities(shiftedFeature, shiftedSequence);
-
-                    candidates.Add(new AIEntryForecastResult
-                    {
-                        Symbol = symbol,
-                        MLProbability = mlProb,
-                        TFProbability = tfProb,
-                        AverageProbability = avgProb,
-                        ForecastTimeUtc = forecastUtc,
-                        ForecastTimeLocal = forecastUtc.ToLocalTime(),
-                        ForecastOffsetMinutes = Math.Max(1, (int)Math.Round((forecastUtc - referenceUtc).TotalMinutes)),
-                        GeneratedAtLocal = referenceLocal
-                    });
-                }
-
-                best = SelectBestForecast(candidates);
+                    Symbol = symbol,
+                    MLProbability = currentMlProb,
+                    TFProbability = tfConfidence,
+                    AverageProbability = avgProb,
+                    ForecastTimeUtc = referenceUtc,
+                    ForecastTimeLocal = referenceLocal,
+                    ForecastOffsetMinutes = 0,
+                    GeneratedAtLocal = referenceLocal
+                };
             }
 
             return best;
         }
 
+        /// <summary>
+        /// [DEPRECATED] 이진 분류 기반 확률 예측 (회귀 모델 전환으로 미사용)
+        /// </summary>
         private (float mlProb, float tfProb, float avgProb) PredictEntryProbabilities(
             MultiTimeframeEntryFeature feature,
             List<MultiTimeframeEntryFeature> transformerSequence)
@@ -652,7 +653,9 @@ namespace TradingBot
             if (mlPrediction != null)
                 mlProb = mlPrediction.Probability;
 
-            var (_, tfProb) = _transformerTrainer.Predict(transformerSequence);
+            // Transformer는 이제 Time-to-Target 회귀 모델이므로 확률 반환 불가
+            // 호환성을 위해 0 반환
+            float tfProb = 0f;
             float avgProb = (mlProb + tfProb) / 2f;
 
             return (mlProb, tfProb, avgProb);
@@ -812,7 +815,7 @@ namespace TradingBot
                     _transformerTrainer.InitializeModel();
                     var tfMetrics = await _transformerTrainer.TrainAsync(trainingFeatures, epochs: 1, batchSize: 16);
                     _transformerTrainer.SaveModel();
-                    OnLog?.Invoke($"[AIDoubleCheck] Transformer 학습 완료 - Accuracy: {tfMetrics.BestValidationAccuracy:P2}");
+                    OnLog?.Invoke($"[AIDoubleCheck] Transformer 학습 완료 - Val Loss: {tfMetrics.BestValidationLoss:F4}");
                 }
                 catch (Exception tfEx)
                 {
@@ -872,7 +875,7 @@ namespace TradingBot
                 _transformerTrainer.SaveModel();
                 _transformerTrainer.LoadModel();
 
-                string msg = $"✅ [AI 재학습] 완료 - ML: {mlMetrics.Accuracy:P1}, TF: {tfMetrics.BestValidationAccuracy:P1} (샘플: {labeledData.Count}개)";
+                string msg = $"✅ [AI 재학습] 완료 - ML: {mlMetrics.Accuracy:P1}, TF Loss: {tfMetrics.BestValidationLoss:F3} (샘플: {labeledData.Count}개)";
                 OnAlert?.Invoke(msg);
                 OnLog?.Invoke(msg);
                 return (true, msg);

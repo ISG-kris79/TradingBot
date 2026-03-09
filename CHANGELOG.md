@@ -7,6 +7,50 @@
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-03-09
+
+### Changed - ⚠️ **파괴적 변경 (Breaking Change)**
+
+- **AI 아키텍처 전환: "네비게이터-스나이퍼" 2단계 시스템**
+  - **Transformer 역할 변경**: 이진 분류(Binary Classification) → **Time-to-Target 회귀(Regression)**
+    - 기존: "현재 진입할까?" (0/1 확률) → 노이즈에 취약
+    - 신규: "피보나치 0.618 목표가까지 몇 개의 캔들이 필요한가?" (1~32 캔들 예측)
+  - **ML.NET 역할 유지**: 실시간 최종 진입 승인 ("스나이퍼" 역할)
+  - **학습 파이프라인 변경**:
+    - Loss: `BCEWithLogitsLoss` → `MSELoss` (Mean Squared Error)
+    - Label: `bool ShouldEnter` → `float CandlesToTarget` (캔들 개수)
+    - Metric: Accuracy → MAE (Mean Absolute Error, 캔들 단위)
+  - **예측 거동**: Transformer가 "오후 2시 30분경 진입 타점" 예보 → ML.NET이 해당 시간대에서 초 단위 정밀 판단
+
+### Added
+
+- `MultiTimeframeEntryFeature.CandlesToTarget` 필드 추가 (Transformer 회귀 라벨용)
+- `BacktestEntryLabeler.CalculateCandlesToFibonacciTarget()` 메서드 추가
+  - 목표가 정의: 최근 고점에서 피보나치 0.618 되돌림
+  - 도달 조건: 캔들 종가가 목표가 ±0.5% 범위 진입
+  - 예측 범위: 32캔들(8시간), 미도달 시 학습에서 제외
+
+### Fixed
+
+- AI ENTRY 관망(8%) 교착 상태 근본 해결
+  - 문제: 이진 분류는 모든 시점의 확률이 낮으면 영원히 대기
+  - 해결: Time-to-Target 회귀로 "언제 기회가 오는지" 예측 → 해당 시점까지 대기 후 정밀 판단
+
+### Deprecated
+
+- `AIDoubleCheckEntryGate.PredictEntryProbabilities()`: 이진 분류 기반 확률 예측 메서드 (호환성 유지용으로 보존되나 0 반환)
+
+### ⚠️ **업그레이드 주의사항**
+
+1. **기존 Transformer 모델 무효화**: 이전 v2.3.x 모델(`.zip`, `.pt`)은 **호환 불가**
+   - v2.4.0 최초 실행 시 자동으로 신규 라벨링 학습 수행 권장
+   - 기존 ML.NET 모델(`TradingModel.zip`)은 동일하게 사용 가능
+
+2. **라벨링 데이터 재생성 필요**: `TrainingData/EntryDecisions/*.json` 파일에 `CandlesToTarget` 필드가 없으면 학습 실패
+   - `BacktestEntryLabeler.CalculateCandlesToFibonacciTarget()`로 재라벨링
+
+3. **ETA 표시 변경**: AI ENTRY 패널에서 "관망 8%" 대신 "지금" / "14:30" / "관망 · 8% · +150m" 형식으로 표시
+
 ## [2.3.2] - 2026-03-09
 
 ### Fixed
