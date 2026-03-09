@@ -16,8 +16,8 @@
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
     <LangVersion>latest</LangVersion>
-      <Version>2.4.1</Version>
-      <AssemblyVersion>2.4.1.0</AssemblyVersion>
+      <Version>2.4.3</Version>
+      <AssemblyVersion>2.4.3.0</AssemblyVersion>
       <FileVersion>2.4.1.0</FileVersion>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
     <Company>TradingBot</Company>

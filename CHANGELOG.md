@@ -7,6 +7,22 @@
 
 ## [Unreleased]
 
+## [2.4.3] - 2026-03-09
+
+### Fixed
+
+- **로그 포맷 개선**: 세련된 진입 신호 출력
+  - MajorCoinStrategy: `📊 [XRPUSDT] 롱 신호 감지 | 가격 $1.95`
+  - NavigatorSniper 평가: `🤖 [XRPUSDT] 롱 ML 스나이퍼 평가 중 | ML신뢰도 85%, TF신뢰도 72%`
+  - Sniper 승인: `✅ [XRPUSDT] 롱 Sniper 승인! | ML=85%, TF=72%`
+  - 주문 요청: `📤 [XRPUSDT] LONG 주문 요청 중 | 가격 $1.95`
+  - 기존 `📡 [SIGNAL][MAJOR][CANDIDATE]` 형식 제거로 가독성 향상
+
+- **Navigator-Sniper 통합 누락 수정**:
+  - TradingEngine에서 MajorCoinStrategy 신호 발생 시 AIDoubleCheckEntryGate 평가 로직 추가
+  - 주문 실행 전 ML.NET 신뢰도 체크 및 로그 출력 구현
+  - WAIT 신호는 로그 출력 생략 (노이즈 감소)
+
 ## [2.4.1] - 2026-03-09
 
 ### Added
