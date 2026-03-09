@@ -7,6 +7,20 @@
 
 ## [Unreleased]
 
+## [2.4.4] - 2026-03-09
+
+### Fixed
+
+- **AssemblyVersion 형식 오류 해결**: 
+  - TradingBot.csproj에서 AssemblyVersion을 4자리 형식(2.4.4.0)으로 수정
+  - GenerateAssemblyInfo를 true로 변경하여 .csproj 버전 정보 사용
+  - AssemblyInfo.cs 파일 제거 (중복 방지)
+  - FileNotFoundException 오류 완전 해결
+
+- **빌드 시스템 개선**:
+  - SDK 자동 AssemblyInfo 생성 활성화로 버전 관리 단순화
+  - .csproj 파일에서 버전 정보 일원화 관리
+
 ## [2.4.3] - 2026-03-09
 
 ### Fixed
