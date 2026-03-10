@@ -21,6 +21,9 @@ namespace TradingBot.Services
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TradingBot", ".torch_probe_result");
         private static readonly string _torchInitLogPath =
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TradingBot", "torch_init.log");
+        private static readonly string _runStatePath =
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TradingBot", ".run_state");
+        private static bool _crashSafeMode = false;
 
         /// <summary>
         /// TorchSharp가 사용 가능한지 확인
@@ -31,6 +34,51 @@ namespace TradingBot.Services
         /// 초기화 오류 메시지 (있는 경우)
         /// </summary>
         public static string? ErrorMessage => _errorMessage;
+
+        /// <summary>
+        /// 이전 실행이 비정상 종료되어 Torch 안전모드가 강제되었는지 여부
+        /// </summary>
+        public static bool IsCrashSafeMode => _crashSafeMode;
+
+        /// <summary>
+        /// 앱 시작 시 실행 상태를 기록하고, 이전 비정상 종료를 감지하면 Torch 안전모드를 활성화합니다.
+        /// </summary>
+        public static void RegisterStartupRunState()
+        {
+            try
+            {
+                EnsureDirectoryExists(_runStatePath);
+                if (File.Exists(_runStatePath))
+                {
+                    _crashSafeMode = true;
+                    _errorMessage = "이전 실행이 비정상 종료되어 TorchSharp 기능을 안전모드로 비활성화했습니다.";
+                    TryLog("[RunState] previous unclean shutdown detected -> crashSafeMode=ON");
+                }
+
+                File.WriteAllText(_runStatePath, $"RUNNING|{DateTime.UtcNow:O}");
+            }
+            catch (Exception ex)
+            {
+                TryLog($"[RunState] startup mark failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 정상 종료 시 실행 상태 파일을 정리합니다.
+        /// </summary>
+        public static void RegisterCleanShutdown()
+        {
+            try
+            {
+                if (File.Exists(_runStatePath))
+                    File.Delete(_runStatePath);
+                TryLog("[RunState] clean shutdown");
+            }
+            catch (Exception ex)
+            {
+                TryLog($"[RunState] clean shutdown mark failed: {ex.Message}");
+            }
+        }
 
         /// <summary>
         /// 서브프로세스 프로브 전용 진입점.
@@ -93,6 +141,27 @@ namespace TradingBot.Services
 
             _initialized = true;
             TryLog("[Init] TryInitialize start");
+
+            if (_crashSafeMode)
+            {
+                _errorMessage ??= "이전 비정상 종료 감지로 TorchSharp 안전모드가 활성화되었습니다.";
+                _available = false;
+                TrySaveProbeFail();
+                TryLog("[Init] disabled by crash-safe mode");
+                return false;
+            }
+
+            // [안정성 기본값] 명시적으로 켠 경우에만 Torch 활성화
+            string? enableExperimentalTorch = Environment.GetEnvironmentVariable("TRADINGBOT_ENABLE_TORCH_EXPERIMENTAL");
+            if (!string.Equals(enableExperimentalTorch, "1", StringComparison.OrdinalIgnoreCase))
+            {
+                _errorMessage = "TorchSharp 기능은 기본 안정 모드에서 비활성화됩니다. " +
+                               "필요 시 환경 변수 TRADINGBOT_ENABLE_TORCH_EXPERIMENTAL=1 로 명시적으로 활성화하세요.";
+                _available = false;
+                TrySaveProbeFail();
+                TryLog("[Init] disabled by default safe mode (TRADINGBOT_ENABLE_TORCH_EXPERIMENTAL!=1)");
+                return false;
+            }
 
             string? disableTorch = Environment.GetEnvironmentVariable("TRADINGBOT_DISABLE_TORCH");
             if (string.Equals(disableTorch, "1", StringComparison.OrdinalIgnoreCase))

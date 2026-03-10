@@ -34,7 +34,18 @@ namespace TradingBot.Services.AI
                 c.ElliottWaveState,
                 c.SMA_20,
                 c.SMA_60,
-                c.SMA_120
+                c.SMA_120,
+                c.ADX,
+                c.PlusDI,
+                c.MinusDI,
+                c.Stoch_K,
+                c.Stoch_D,
+                c.Price_Change_Pct,
+                c.Volume_Ratio,
+                (float)Math.Sin(c.OpenTime.Hour * 2 * Math.PI / 24),
+                (float)Math.Cos(c.OpenTime.Hour * 2 * Math.PI / 24),
+                (float)Math.Sin((int)c.OpenTime.DayOfWeek * 2 * Math.PI / 7),
+                (float)Math.Cos((int)c.OpenTime.DayOfWeek * 2 * Math.PI / 7)
             };
 
             var features = new float[Math.Max(0, inputDim)];

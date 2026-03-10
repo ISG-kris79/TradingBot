@@ -22,7 +22,6 @@ namespace TradingBot.Strategies
     {
         private readonly IBinanceRestClient _client;
         private readonly TransformerTrainer _trainer;
-        private readonly NewsSentimentService _newsService;
         private readonly ElliottWave3WaveStrategy? _elliotWave3Strategy;
         private readonly PatternMemoryService? _patternMemoryService;
         private readonly TransformerSettings _settings;
@@ -53,14 +52,12 @@ namespace TradingBot.Strategies
         public TransformerStrategy(
             IBinanceRestClient client,
             TransformerTrainer trainer,
-            NewsSentimentService newsService,
             ElliottWave3WaveStrategy? elliotWave3Strategy = null,
             TransformerSettings? settings = null,
             PatternMemoryService? patternMemoryService = null)
         {
             _client = client;
             _trainer = trainer;
-            _newsService = newsService;
             _elliotWave3Strategy = elliotWave3Strategy;
             _settings = settings ?? new TransformerSettings();
             _patternMemoryService = patternMemoryService;
@@ -988,7 +985,7 @@ namespace TradingBot.Strategies
         private async Task<List<CandleData>> ConvertToCandleDataAsync(List<Binance.Net.Interfaces.IBinanceKline> klines, string symbol, CancellationToken token)
         {
             var result = new List<CandleData>();
-            double sentiment = await _newsService.GetMarketSentimentAsync();
+            const float sentimentScore = 0f;
 
             for (int i = 50; i < klines.Count; i++)
             {
@@ -1005,12 +1002,23 @@ namespace TradingBot.Strategies
                 var rsi = IndicatorCalculator.CalculateRSI(subset, 14);
                 var bb = IndicatorCalculator.CalculateBB(subset, 20, 2);
                 var macd = IndicatorCalculator.CalculateMACD(subset);
-                var fib = IndicatorCalculator.CalculateFibonacci(subset, 50);
+                var fib = IndicatorCalculator.CalculateFibonacci(subset, 100);
                 var atr = IndicatorCalculator.CalculateATR(subset, 14); // ATR 추가
+                var adxData = IndicatorCalculator.CalculateADX(subset, 14);
+                var stochData = IndicatorCalculator.CalculateStochastic(subset, 14, 3, 3);
+                
+                double sma20 = IndicatorCalculator.CalculateSMA(subset, 20);
+                double sma60 = IndicatorCalculator.CalculateSMA(subset, 60);
+                double sma120 = IndicatorCalculator.CalculateSMA(subset, 120);
+                bool isElliottUp = IndicatorCalculator.AnalyzeElliottWave(subset);
+
+                var volRecent20 = subset.TakeLast(20).ToList();
+                double avgVol = volRecent20.Average(k => (double)k.Volume);
 
                 result.Add(new CandleData
                 {
                     Symbol = symbol,
+                    OpenTime = current.OpenTime,
                     Open = (decimal)current.OpenPrice,
                     High = (decimal)current.HighPrice,
                     Low = (decimal)current.LowPrice,
@@ -1019,10 +1027,26 @@ namespace TradingBot.Strategies
                     RSI = (float)rsi,
                     BollingerUpper = (float)bb.Upper,
                     BollingerLower = (float)bb.Lower,
+                    MACD = (float)macd.Macd,
+                    MACD_Signal = (float)macd.Signal,
                     MACD_Hist = (float)macd.Hist,
+                    Fib_236 = (float)fib.Level236,
+                    Fib_382 = (float)fib.Level382,
+                    Fib_500 = (float)fib.Level500,
                     Fib_618 = (float)fib.Level618,
-                    SentimentScore = (float)sentiment,
-                    ATR = (float)atr  // ATR 필드 추가 (float 형변환)
+                    SentimentScore = sentimentScore,
+                    ATR = (float)atr,
+                    ADX = (float)adxData.Adx,
+                    PlusDI = (float)adxData.PlusDi,
+                    MinusDI = (float)adxData.MinusDi,
+                    Stoch_K = (float)adxData.PlusDi, // IndicatorCalculator에 맞게 수정 필요
+                    Stoch_D = (float)adxData.MinusDi,
+                    SMA_20 = (float)sma20,
+                    SMA_60 = (float)sma60,
+                    SMA_120 = (float)sma120,
+                    ElliottWaveState = isElliottUp ? 1f : 0f,
+                    Price_Change_Pct = (float)((current.ClosePrice - current.OpenPrice) / current.OpenPrice * 100),
+                    Volume_Ratio = avgVol > 0 ? (float)((double)current.Volume / avgVol) : 1f
                 });
             }
             return result;

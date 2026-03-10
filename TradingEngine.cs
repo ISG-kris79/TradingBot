@@ -95,7 +95,6 @@ namespace TradingBot
         private MajorCoinStrategy? _majorStrategy;
         private GridStrategy _gridStrategy;
         private ArbitrageStrategy _arbitrageStrategy;
-        private NewsSentimentService _newsService;
         private TransformerStrategy? _transformerStrategy;
         private TransformerTrainer? _transformerTrainer;
         private ElliottWave3WaveStrategy _elliotWave3Strategy; // [3파 확정형 단타]
@@ -348,7 +347,6 @@ namespace TradingBot
 
             _soundService = new SoundService();
 
-            _newsService = new NewsSentimentService();
             _arbitrageStrategy = new ArbitrageStrategy(_client);
 
             _notificationService = new NotificationService(); // \ub9e4\uac1c\ubcc0\uc218 \uc5c6\ub294 \uc0dd\uc131\uc790
@@ -436,6 +434,11 @@ namespace TradingBot
             };
 
             bool torchFeaturesEnabled = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
+            if (torchFeaturesEnabled && !TorchInitializer.IsAvailable && !TorchInitializer.TryInitialize())
+            {
+                OnStatusLog?.Invoke($"🛡️ Torch 안전모드 적용: Transformer 계열 기능 비활성화 ({TorchInitializer.ErrorMessage})");
+                torchFeaturesEnabled = false;
+            }
 
             // [Agent 3] 멀티 에이전트 매니저 초기화 (상태 차원: 3 [RSI, MACD, BB], 행동 차원: 3 [Hold, Buy, Sell])
             _multiAgentManager = new MultiAgentManager(3, 3);
@@ -725,7 +728,7 @@ namespace TradingBot
             // [FIX] Transformer 초기화 실패 시 null 전달하여 안전하게 비활성화
             if (transformerInitSuccess && _transformerTrainer != null)
             {
-                _transformerStrategy = new TransformerStrategy(_client, _transformerTrainer, _newsService, _elliotWave3Strategy, tfSettings, _patternMemoryService);
+                _transformerStrategy = new TransformerStrategy(_client, _transformerTrainer, _elliotWave3Strategy, tfSettings, _patternMemoryService);
                 _transformerStrategy.OnLog += msg => OnStatusLog?.Invoke(NormalizeTransformerSignalLog(msg));
                 _transformerStrategy.OnSignalAnalyzed += vm =>
                 {
@@ -6812,10 +6815,8 @@ namespace TradingBot
                 bool elliottBullish = IndicatorCalculator.AnalyzeElliottWave(subset);
                 float elliottState = elliottBullish ? 1.0f : -1.0f;
 
-                // ── 뉴스 감성 ──
-                double sentiment = await _newsService.GetMarketSentimentAsync();
-                if (emitStatusLog)
-                    OnStatusLog?.Invoke($"📰 뉴스 감성 점수: {sentiment:F2}");
+                // ── 뉴스 감성 점수 제거: 전략 입력에서 고정 0 사용 ──
+                const float sentimentScore = 0f;
 
                 return new CandleData
                 {
@@ -6862,7 +6863,7 @@ namespace TradingBot
                     Trend_Strength = trendStrength,
                     RSI_Divergence = rsiDivergence,
                     ElliottWaveState = elliottState,
-                    SentimentScore = (float)sentiment,
+                    SentimentScore = sentimentScore,
                 };
             }
             catch (Exception ex)

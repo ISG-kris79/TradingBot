@@ -7,6 +7,27 @@
 
 ## [Unreleased]
 
+## [2.4.22] - 2026-03-10
+
+### Removed
+
+- **뉴스 감성 점수 제거**:
+  - `TradingEngine`: `NewsSentimentService` 필드/생성/호출 완전 제거
+  - `TransformerStrategy`: `NewsSentimentService` 의존성 제거
+  - `SentimentScore` 항상 0으로 고정 (진입 판단에 영향 없음)
+  - Binance 뉴스 API 의존성 제거로 안정성 향상
+
+### Fixed
+
+- **BEX64 크래시(ucrtbase.dll c0000409) 재발 완전 차단 - 4중 안전장치**:
+  - **Layer 1 (비정상 종료 감지)**: `TorchInitializer.RegisterStartupRunState()` — run-state 파일로 이전 크래시 감지 시 다음 실행에서 Torch 자동 차단
+  - **Layer 2 (기본 안전모드)**: `TRADINGBOT_ENABLE_TORCH_EXPERIMENTAL=1` 환경 변수 명시적 설정 필요 (옵트인 방식) — 기본값은 Torch 비활성
+  - **Layer 3 (엔진 시작 게이팅)**: `TradingEngine` 초기화 시 `TorchInitializer.TryInitialize()` 실패 시 안전모드 전환
+  - **Layer 4 (UI 자동 초기화 차단)**: `MainWindow.InitializeWaveAIAsync()` 시작 전 Torch 가용성 사전 체크
+  - `App.xaml.cs`: 시작 시 `RegisterStartupRunState()`, 종료 시 `RegisterCleanShutdown()` 호출
+  - 근본 원인: MainWindow.Loaded에서 WaveAIManager 자동 초기화가 엔진 설정과 무관하게 실행되던 문제 해결
+  - Defense in depth 전략: 어느 경로로든 Torch 접근 시 사전 차단
+
 ## [2.4.21] - 2026-03-10
 
 ### Fixed

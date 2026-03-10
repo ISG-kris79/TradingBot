@@ -1068,6 +1068,12 @@ namespace TradingBot
                     return;
                 }
 
+                if (!TorchInitializer.IsAvailable && !TorchInitializer.TryInitialize())
+                {
+                    AddLog($"[WaveAI] 🛡️ Torch 안전모드로 WaveAI 자동 초기화를 건너뜁니다. ({TorchInitializer.ErrorMessage})");
+                    return;
+                }
+
                 AddLog("[WaveAI] 🌊 엘리엇 파동 AI 시스템 초기화 중...");
 
                 // IExchangeService 생성 (Simulation 또는 실제 Binance)

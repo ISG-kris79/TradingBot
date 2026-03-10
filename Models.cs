@@ -247,6 +247,13 @@ namespace TradingBot.Models
         public float MACD_Hist { get; set; }
         public float ATR { get; set; }
 
+        // 추가 지표
+        public float ADX { get; set; }
+        public float PlusDI { get; set; }
+        public float MinusDI { get; set; }
+        public float Stoch_K { get; set; }
+        public float Stoch_D { get; set; }
+
         // 2. 피보나치 레벨
         public float Fib_236 { get; set; }
         public float Fib_382 { get; set; }

@@ -174,6 +174,9 @@ namespace TradingBot
                 return;
             }
 
+            // ── [v2.4.22] 비정상 종료 감지 기반 Torch 안전모드 run-state 등록 ──
+            TorchInitializer.RegisterStartupRunState();
+
             // ── [v2.4.21] 앱 버전 변경 시 기존 Transformer 모델 파일 자동 정리 ──
             // 이전 버전의 모델이 현재 아키텍처와 불일치하면 C++ abort(BEX64) 크래시 발생
             TorchInitializer.InvalidateModelsIfVersionChanged();
@@ -716,6 +719,9 @@ namespace TradingBot
             _mutex?.Dispose();
             _mutex = null;
             _ownsMutex = false;
+
+            // Torch run-state 정리 (정상 종료 마킹)
+            TorchInitializer.RegisterCleanShutdown();
 
             Debug.WriteLine("[App] 애플리케이션 종료 - Mutex 해제됨");
             base.OnExit(e);
