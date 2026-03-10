@@ -4923,9 +4923,10 @@ namespace TradingBot
                     return true;
                 }
 
-                if (bbPosition >= 0.85m)
+                // v2.4.12: 상단 추격 제한 완화 — RSI < 70이면 추세로 진입 허용
+                if (bbPosition >= 0.85m && latestCandle.RSI >= 70f)
                 {
-                    reason = $"%B {bbPosition:P0} 상단 추격 구간에서는 롱 금지";
+                    reason = $"%B {bbPosition:P0} 상단 + RSI {latestCandle.RSI:F1} ≥ 70 과열 구간에서는 롱 금지";
                     return true;
                 }
 
@@ -6189,34 +6190,41 @@ namespace TradingBot
                 bool rsiHot = latestCandle.RSI >= 64f;
                 bool touchingUpperBand = bbUpper > 0 && currentPrice >= bbUpper * 0.998m;
                 bool upperShadowWarning = latestCandle.Upper_Shadow_Ratio >= 0.35f;
-                bool overheatedUpperZone = bbRange > 0m && bbPosition >= 0.85m;
-                bool upperZoneWithHighRsi = bbRange > 0m && bbPosition >= 0.80m && latestCandle.RSI >= 70f;
-                bool narrowBandUpperChase = bbRange > 0m
-                    && bbPosition >= 0.80m
-                    && averageBbWidthPct > 0m
+                // ── 볼린저 밴드 추세/과열 구분 로직 (v2.4.12) ──
+                bool inUpperZone = bbRange > 0m && bbPosition >= 0.85m;
+                // 밴드 폭 확산(Squeeze→Expansion): 현재 폭이 평균 대비 10% 이상 넓어지는 중
+                bool isBbExpansion = averageBbWidthPct > 0m
                     && currentBbWidthPct > 0m
-                    && currentBbWidthPct <= averageBbWidthPct;
+                    && currentBbWidthPct > averageBbWidthPct * 1.10m;
 
                 bool strongBreakoutException = latestCandle.Volume_Ratio >= 1.8f
                     && latestCandle.OI_Change_Pct >= 0.8f
                     && latestCandle.Upper_Shadow_Ratio < 0.20f
                     && latestCandle.RSI < 70f;
 
-                if (upperZoneWithHighRsi)
+                // ① 초과열(RSI ≥ 80): 상단 구간에서 RSI 80 이상은 상투 가능성 → 차단
+                if (inUpperZone && latestCandle.RSI >= 80f)
                 {
-                    reason = $"BB 상단 과열+RSI 과매수 (BB위치 {bbPosition:P0}, RSI {latestCandle.RSI:F1})";
+                    reason = $"BB 상단 초과열 차단 (BB위치 {bbPosition:P0}, RSI {latestCandle.RSI:F1} ≥ 80)";
                     return true;
                 }
 
-                if (overheatedUpperZone && !strongBreakoutException)
+                // ② 상단 구간 + 밴드 확산 중(Squeeze 탈출) → 강력한 발산 신호, 진입 승인
+                if (inUpperZone && isBbExpansion)
                 {
-                    reason = $"BB 상단 85% 이상 추격 구간 (BB위치 {bbPosition:P0}, 상단={bbUpper:F4})";
-                    return true;
+                    OnStatusLog?.Invoke($"🚀 [BB 필터 통과] {symbol} 상단 {bbPosition:P0}이지만 밴드 확산 중 (현재폭 {currentBbWidthPct:F2}% > 평균폭 {averageBbWidthPct:F2}% ×1.1) → 추세 발산 진입 승인");
+                    // 차단하지 않음 — 아래 riskScore 로직으로 진행
                 }
-
-                if (narrowBandUpperChase && !strongBreakoutException)
+                // ③ 상단 구간이지만 RSI < 70(미과열) → 추세의 시작으로 판단, 진입 승인
+                else if (inUpperZone && latestCandle.RSI < 70f)
                 {
-                    reason = $"BB 상단 근접 + 밴드폭 미확장 (현재폭 {currentBbWidthPct:F2}% <= 평균폭 {averageBbWidthPct:F2}%)";
+                    OnStatusLog?.Invoke($"🚀 [BB 필터 통과] {symbol} 상단 {bbPosition:P0}이지만 RSI {latestCandle.RSI:F1} < 70 → 추세 시작 진입 승인");
+                    // 차단하지 않음 — 아래 riskScore 로직으로 진행
+                }
+                // ④ 상단 구간 + RSI 70~80 + 밴드 미확산 → 과열 추격 차단
+                else if (inUpperZone && !strongBreakoutException)
+                {
+                    reason = $"BB 상단 과열 (BB위치 {bbPosition:P0}, RSI {latestCandle.RSI:F1}, 밴드 미확산) → 차단";
                     return true;
                 }
 
@@ -6266,34 +6274,40 @@ namespace TradingBot
                 bool rsiCold = latestCandle.RSI <= 36f;
                 bool touchingLowerBand = bbLower > 0 && currentPrice <= bbLower * 1.002m;
                 bool lowerShadowWarning = latestCandle.Lower_Shadow_Ratio >= 0.35f;
-                bool oversoldLowerZone = bbRange > 0m && bbPosition <= 0.15m;
-                bool lowerZoneWithLowRsi = bbRange > 0m && bbPosition <= 0.20m && latestCandle.RSI <= 30f;
-                bool narrowBandLowerChase = bbRange > 0m
-                    && bbPosition <= 0.20m
-                    && averageBbWidthPct > 0m
+                // ── 볼린저 밴드 추세/과냉 구분 로직 (v2.4.12, SHORT 대칭) ──
+                bool inLowerZone = bbRange > 0m && bbPosition <= 0.15m;
+                bool isBbExpansionShort = averageBbWidthPct > 0m
                     && currentBbWidthPct > 0m
-                    && currentBbWidthPct <= averageBbWidthPct;
+                    && currentBbWidthPct > averageBbWidthPct * 1.10m;
 
                 bool strongBreakdownException = latestCandle.Volume_Ratio >= 1.8f
                     && latestCandle.OI_Change_Pct >= 0.8f
                     && latestCandle.Lower_Shadow_Ratio < 0.20f
                     && latestCandle.RSI > 30f;
 
-                if (lowerZoneWithLowRsi)
+                // ① 초과냉(RSI ≤ 20): 하단 구간에서 RSI 20 이하는 과매도 반등 위험 → 차단
+                if (inLowerZone && latestCandle.RSI <= 20f)
                 {
-                    reason = $"BB 하단 과열+RSI 과매도 (BB위치 {bbPosition:P0}, RSI {latestCandle.RSI:F1})";
+                    reason = $"BB 하단 초과냉 차단 (BB위치 {bbPosition:P0}, RSI {latestCandle.RSI:F1} ≤ 20)";
                     return true;
                 }
 
-                if (oversoldLowerZone && !strongBreakdownException)
+                // ② 하단 구간 + 밴드 확산 중(Squeeze 탈출) → 강력한 하락 발산 신호, 진입 승인
+                if (inLowerZone && isBbExpansionShort)
                 {
-                    reason = $"BB 하단 15% 이하 추격 구간 (BB위치 {bbPosition:P0}, 하단={bbLower:F4})";
-                    return true;
+                    OnStatusLog?.Invoke($"🚀 [BB 필터 통과] {symbol} 하단 {bbPosition:P0}이지만 밴드 확산 중 (현재폭 {currentBbWidthPct:F2}% > 평균폭 {averageBbWidthPct:F2}% ×1.1) → 추세 발산 진입 승인");
+                    // 차단하지 않음
                 }
-
-                if (narrowBandLowerChase && !strongBreakdownException)
+                // ③ 하단 구간이지만 RSI > 30(미과매도) → 하락 추세 시작으로 판단, 진입 승인
+                else if (inLowerZone && latestCandle.RSI > 30f)
                 {
-                    reason = $"BB 하단 근접 + 밴드폭 미확장 (현재폭 {currentBbWidthPct:F2}% <= 평균폭 {averageBbWidthPct:F2}%)";
+                    OnStatusLog?.Invoke($"🚀 [BB 필터 통과] {symbol} 하단 {bbPosition:P0}이지만 RSI {latestCandle.RSI:F1} > 30 → 추세 시작 진입 승인");
+                    // 차단하지 않음
+                }
+                // ④ 하단 구간 + RSI 20~30 + 밴드 미확산 → 과매도 추격 차단
+                else if (inLowerZone && !strongBreakdownException)
+                {
+                    reason = $"BB 하단 과매도 (BB위치 {bbPosition:P0}, RSI {latestCandle.RSI:F1}, 밴드 미확산) → 차단";
                     return true;
                 }
 
