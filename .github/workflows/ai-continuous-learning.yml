@@ -11,9 +11,17 @@ on:
         required: false
         default: 'false'
 
+permissions:
+  contents: write
+
 jobs:
   collect-and-train:
     runs-on: windows-latest
+    env:
+      PROJECT_FILE: TradingBot.csproj
+      TRAINING_DATA_DIR: TrainingData/EntryDecisions
+      TEST_DATA_DIR: TrainingData/TestSet
+      OUTPUT_DIR: bin/Release/net9.0-windows/win-x64
     
     steps:
       - name: Checkout Repository
@@ -25,7 +33,7 @@ jobs:
           dotnet-version: '9.0.x'
 
       - name: Restore Dependencies
-        run: dotnet restore TradingBot/TradingBot.csproj
+        run: dotnet restore ${{ env.PROJECT_FILE }}
 
       - name: Download Training Data from Server
         run: |
@@ -38,7 +46,7 @@ jobs:
           # az storage blob download-batch -d ./TrainingData -s entry-decisions --account-name tradingbotdata
           
           # 임시: 로컬 데이터 복사 (테스트용)
-          if (Test-Path "TradingBot/TrainingData/EntryDecisions") {
+          if (Test-Path $env:TRAINING_DATA_DIR) {
             Write-Host "✅ 로컬 학습 데이터 확인됨"
           } else {
             Write-Host "⚠️ 학습 데이터 없음"
@@ -48,16 +56,51 @@ jobs:
       - name: Count New Training Samples
         id: count_samples
         run: |
-          $jsonFiles = Get-ChildItem -Path "TradingBot/TrainingData/EntryDecisions" -Filter "*.json" -File
+          if (-not (Test-Path $env:TRAINING_DATA_DIR)) {
+            Write-Host "⚠️ 학습 데이터 디렉터리가 없어 학습을 스킵합니다: $env:TRAINING_DATA_DIR"
+            echo "SAMPLE_COUNT=0" >> $ENV:GITHUB_OUTPUT
+            echo "SKIP_TRAINING=true" >> $ENV:GITHUB_OUTPUT
+            exit 0
+          }
+
+          $jsonFiles = Get-ChildItem -Path $env:TRAINING_DATA_DIR -Filter "*.json" -File -ErrorAction SilentlyContinue
+          if (-not $jsonFiles -or $jsonFiles.Count -eq 0) {
+            Write-Host "⚠️ 학습 데이터 파일(.json)이 없어 학습을 스킵합니다"
+            echo "SAMPLE_COUNT=0" >> $ENV:GITHUB_OUTPUT
+            echo "SKIP_TRAINING=true" >> $ENV:GITHUB_OUTPUT
+            exit 0
+          }
+
           $totalSamples = 0
           
           foreach ($file in $jsonFiles) {
-            $content = Get-Content $file.FullName | ConvertFrom-Json
-            $totalSamples += $content.Count
+            try {
+              $content = Get-Content $file.FullName -Raw | ConvertFrom-Json
+              if ($content -is [System.Array]) {
+                $totalSamples += $content.Count
+              } elseif ($null -ne $content) {
+                $totalSamples += 1
+              }
+            }
+            catch {
+              Write-Host "⚠️ 파싱 실패 파일 스킵: $($file.Name)"
+            }
           }
           
           Write-Host "📊 수집된 샘플 수: $totalSamples"
           echo "SAMPLE_COUNT=$totalSamples" >> $ENV:GITHUB_OUTPUT
+
+          $hasTrainingCli = $false
+          if (Test-Path "App.xaml.cs") {
+            $appSource = Get-Content "App.xaml.cs" -Raw
+            $hasTrainingCli = $appSource.Contains("--train-mlnet") -and $appSource.Contains("--train-transformer") -and $appSource.Contains("--validate-models")
+          }
+
+          if (-not $hasTrainingCli) {
+            Write-Host "⚠️ 학습 CLI(--train-mlnet/--train-transformer/--validate-models)가 구현되어 있지 않아 학습을 스킵합니다"
+            echo "SKIP_TRAINING=true" >> $ENV:GITHUB_OUTPUT
+            exit 0
+          }
           
           if ($totalSamples -lt 100) {
             Write-Host "⚠️ 샘플 부족 (최소 100개 필요), 학습 스킵"
@@ -70,7 +113,7 @@ jobs:
         if: steps.count_samples.outputs.SKIP_TRAINING == 'false'
         run: |
           Write-Host "🔨 학습 도구 빌드 중..."
-          dotnet build TradingBot/TradingBot.csproj -c Release
+          dotnet build ${{ env.PROJECT_FILE }} -c Release
 
       - name: Run ML.NET Model Retraining
         if: steps.count_samples.outputs.SKIP_TRAINING == 'false'
@@ -78,9 +121,9 @@ jobs:
           Write-Host "🤖 ML.NET 모델 재학습 시작..."
           
           # 학습 스크립트 실행 (별도 CLI 도구 또는 직접 호출)
-          dotnet run --project TradingBot/TradingBot.csproj -- train-mlnet `
-            --data-path "TradingBot/TrainingData/EntryDecisions" `
-            --output-model "TradingBot/bin/Release/net9.0-windows/win-x64/EntryTimingModel.zip" `
+          dotnet run --project ${{ env.PROJECT_FILE }} -- train-mlnet `
+            --data-path "$env:TRAINING_DATA_DIR" `
+            --output-model "$env:OUTPUT_DIR/EntryTimingModel.zip" `
             --epochs 50
           
           Write-Host "✅ ML.NET 학습 완료"
@@ -90,9 +133,9 @@ jobs:
         run: |
           Write-Host "🧠 Transformer 모델 재학습 시작..."
           
-          dotnet run --project TradingBot/TradingBot.csproj -- train-transformer `
-            --data-path "TradingBot/TrainingData/EntryDecisions" `
-            --output-model "TradingBot/bin/Release/net9.0-windows/win-x64/EntryTimingTransformer.pt" `
+          dotnet run --project ${{ env.PROJECT_FILE }} -- train-transformer `
+            --data-path "$env:TRAINING_DATA_DIR" `
+            --output-model "$env:OUTPUT_DIR/EntryTimingTransformer.pt" `
             --epochs 30
           
           Write-Host "✅ Transformer 학습 완료"
@@ -104,10 +147,10 @@ jobs:
           Write-Host "🔍 새 모델 검증 중..."
           
           # 모델 정확도 검증 (테스트 데이터로)
-          dotnet run --project TradingBot/TradingBot.csproj -- validate-models `
-            --ml-model "TradingBot/bin/Release/net9.0-windows/win-x64/EntryTimingModel.zip" `
-            --tf-model "TradingBot/bin/Release/net9.0-windows/win-x64/EntryTimingTransformer.pt" `
-            --test-data "TradingBot/TrainingData/TestSet"
+          dotnet run --project ${{ env.PROJECT_FILE }} -- validate-models `
+            --ml-model "$env:OUTPUT_DIR/EntryTimingModel.zip" `
+            --tf-model "$env:OUTPUT_DIR/EntryTimingTransformer.pt" `
+            --test-data "$env:TEST_DATA_DIR"
             
           # TODO: 최소 정확도 체크 (예: 65% 이상)
           $mlAccuracy = 0.72  # 임시 하드코딩
@@ -157,8 +200,8 @@ jobs:
         with:
           name: ai-models-${{ github.run_number }}
           path: |
-            TradingBot/bin/Release/net9.0-windows/win-x64/EntryTimingModel.zip
-            TradingBot/bin/Release/net9.0-windows/win-x64/EntryTimingTransformer.pt
+            ${{ env.OUTPUT_DIR }}/EntryTimingModel.zip
+            ${{ env.OUTPUT_DIR }}/EntryTimingTransformer.pt
           retention-days: 90
 
       - name: Deploy to Production Server
@@ -216,10 +259,10 @@ jobs:
           Write-Host "📦 학습 데이터 아카이브 중..."
           
           $archiveDate = Get-Date -Format "yyyyMMdd_HHmmss"
-          $archivePath = "TradingBot/TrainingData/Archive/$archiveDate"
+          $archivePath = "TrainingData/Archive/$archiveDate"
           
           New-Item -ItemType Directory -Path $archivePath -Force
-          Move-Item -Path "TradingBot/TrainingData/EntryDecisions/*.json" -Destination $archivePath
+          Move-Item -Path "$env:TRAINING_DATA_DIR/*.json" -Destination $archivePath
           
           Write-Host "✅ 아카이브 완료: $archivePath"
 
