@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using TorchSharp;
+using TradingBot.Services;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 using static TorchSharp.torch.optim;
@@ -30,7 +31,7 @@ namespace TradingBot.Services.AI.RL
             _gamma = gamma;
             _epsClip = epsClip;
             _kEpochs = kEpochs;
-            _device = torch.cuda.is_available() ? torch.CUDA : torch.CPU;
+            _device = TorchInitializer.ResolveDevice();
 
             _model = new ActorCritic(stateDim, actionDim);
             _model.to(_device);

@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using TorchSharp;
+using TradingBot.Services;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 
@@ -31,7 +32,7 @@ namespace TradingBot
         public EntryTimingTransformerTrainer(string modelPath = "EntryTimingTransformer.pt")
         {
             _modelPath = modelPath;
-            _device = cuda.is_available() ? CUDA : CPU;
+            _device = TorchInitializer.ResolveDevice();
             Console.WriteLine($"[TransformerBinary] Device: {_device.type}");
         }
 

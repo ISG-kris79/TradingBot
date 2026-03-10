@@ -12,11 +12,12 @@ namespace TradingBot.Services
     /// </summary>
     public static class TorchInitializer
     {
+        private const string ProbePathEnvVar = "TRADINGBOT_TORCH_PROBE_PATH";
         private static bool _initialized = false;
         private static bool _available = false;
         private static string? _errorMessage = null;
         private static readonly string _probeCachePath =
-            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".torch_probe_result");
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TradingBot", ".torch_probe_result");
 
         /// <summary>
         /// TorchSharp가 사용 가능한지 확인
@@ -48,8 +49,7 @@ namespace TradingBot.Services
 
             try
             {
-                // 프로브 결과 파일 경로 (부모 프로세스와 동일 디렉토리)
-                string probeResultPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".torch_probe_result");
+                string probeResultPath = GetProbeResultPath();
 
                 // TorchSharp의 static 초기화 트리거 — 네이티브 크래시 시 이 프로세스만 종료됨
                 var device = TorchSharp.torch.CPU;
@@ -60,7 +60,7 @@ namespace TradingBot.Services
             {
                 try
                 {
-                    string probeResultPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".torch_probe_result");
+                    string probeResultPath = GetProbeResultPath();
                     File.WriteAllText(probeResultPath, "FAIL");
                 }
                 catch { /* 파일 쓰기 실패 시 무시 */ }
@@ -79,6 +79,15 @@ namespace TradingBot.Services
 
             _initialized = true;
 
+            string? disableTorch = Environment.GetEnvironmentVariable("TRADINGBOT_DISABLE_TORCH");
+            if (string.Equals(disableTorch, "1", StringComparison.OrdinalIgnoreCase))
+            {
+                _errorMessage = "환경 변수(TRADINGBOT_DISABLE_TORCH=1)에 의해 TorchSharp 기능이 비활성화되었습니다.";
+                _available = false;
+                TrySaveProbeFail();
+                return false;
+            }
+
             // ── 1단계: 캐시된 프로브 결과 확인 ──
             if (File.Exists(_probeCachePath))
             {
@@ -92,12 +101,20 @@ namespace TradingBot.Services
                                         "해결 방법:\n" +
                                         "1. Visual C++ Redistributable 2015-2022 x64 설치\n" +
                                         "   다운로드: https://aka.ms/vs/17/release/vc_redist.x64.exe\n" +
-                                        "2. .torch_probe_result 파일 삭제 후 앱 재시작";
+                                        $"2. 프로브 캐시 파일 삭제 후 앱 재시작: {_probeCachePath}";
                         Debug.WriteLine($"[TorchInitializer] 캐시된 프로브 결과: FAIL — 초기화 건너뜀");
                         _available = false;
                         return false;
                     }
                     // cached == "OK" → 프로브 성공 캐시, 아래로 계속 진행
+                    if (string.IsNullOrWhiteSpace(cached))
+                    {
+                        _errorMessage = "TorchSharp 프로브 캐시가 비정상(빈 값)입니다. 안전 모드로 Transformer 기능을 비활성화합니다.";
+                        Debug.WriteLine($"[TorchInitializer] {_errorMessage}");
+                        _available = false;
+                        TrySaveProbeResult("FAIL");
+                        return false;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -120,15 +137,7 @@ namespace TradingBot.Services
                 var device = TorchSharp.torch.CPU;
                 Debug.WriteLine($"[TorchInitializer] TorchSharp 초기화 성공 - Device: {device}");
 
-                try
-                {
-                    bool cudaAvailable = TorchSharp.torch.cuda.is_available();
-                    Debug.WriteLine($"[TorchInitializer] CUDA Available: {cudaAvailable}");
-                }
-                catch (Exception cudaEx)
-                {
-                    Debug.WriteLine($"[TorchInitializer] CUDA 체크 실패 (정상 - CPU만 사용): {cudaEx.Message}");
-                }
+                Debug.WriteLine("[TorchInitializer] CUDA 체크 생략 (안전 모드: CPU 기본)");
 
                 _available = true;
                 return true;
@@ -201,6 +210,7 @@ namespace TradingBot.Services
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
                 };
+                process.StartInfo.EnvironmentVariables[ProbePathEnvVar] = _probeCachePath;
 
                 // 프로브 전에 이전 캐시 파일 삭제 (프로브 프로세스가 새로 작성하도록)
                 if (File.Exists(_probeCachePath))
@@ -246,7 +256,7 @@ namespace TradingBot.Services
                                     "해결 방법:\n" +
                                     "1. Visual C++ Redistributable 2015-2022 x64 설치\n" +
                                     "   다운로드: https://aka.ms/vs/17/release/vc_redist.x64.exe\n" +
-                                    "2. .torch_probe_result 파일 삭제 후 앱 재시작";
+                                    $"2. 프로브 캐시 파일 삭제 후 앱 재시작: {_probeCachePath}";
                     Debug.WriteLine($"[TorchInitializer] 프로브 실패 — {detail}");
                     TrySaveProbeResult("FAIL");
                     return false;
@@ -299,13 +309,33 @@ namespace TradingBot.Services
 
         private static void TrySaveProbeResult(string result)
         {
-            try { File.WriteAllText(_probeCachePath, result); }
+            try
+            {
+                string? dir = Path.GetDirectoryName(_probeCachePath);
+                if (!string.IsNullOrWhiteSpace(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                File.WriteAllText(_probeCachePath, result);
+            }
             catch (Exception ex) { Debug.WriteLine($"[TorchInitializer] 프로브 결과 저장 실패: {ex.Message}"); }
         }
 
         private static void TrySaveProbeFail()
         {
             TrySaveProbeResult("FAIL");
+        }
+
+        private static string GetProbeResultPath()
+        {
+            string? envPath = Environment.GetEnvironmentVariable(ProbePathEnvVar);
+            if (!string.IsNullOrWhiteSpace(envPath))
+            {
+                return envPath;
+            }
+
+            return _probeCachePath;
         }
 
         /// <summary>
@@ -358,6 +388,35 @@ namespace TradingBot.Services
                 error = $"TorchSharp 실행 중 오류: {ex.Message}";
                 Debug.WriteLine($"[TorchInitializer] {error}");
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Torch 디바이스 선택 (기본: CPU)
+        /// TRADINGBOT_ENABLE_CUDA=1 일 때만 CUDA 확인을 시도합니다.
+        /// </summary>
+        public static TorchSharp.torch.Device ResolveDevice()
+        {
+            if (!TryInitialize())
+            {
+                return TorchSharp.torch.CPU;
+            }
+
+            string? envValue = Environment.GetEnvironmentVariable("TRADINGBOT_ENABLE_CUDA");
+            bool allowCuda = string.Equals(envValue, "1", StringComparison.OrdinalIgnoreCase);
+            if (!allowCuda)
+            {
+                return TorchSharp.torch.CPU;
+            }
+
+            try
+            {
+                return TorchSharp.torch.cuda.is_available() ? TorchSharp.torch.CUDA : TorchSharp.torch.CPU;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[TorchInitializer] CUDA 디바이스 확인 실패, CPU로 폴백: {ex.Message}");
+                return TorchSharp.torch.CPU;
             }
         }
     }

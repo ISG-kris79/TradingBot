@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading;
 using TorchSharp;
 using TradingBot.Models;
+using TradingBot.Services;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 using static TorchSharp.torch.optim;
@@ -69,8 +70,7 @@ namespace TradingBot.Services.AI
 
             try
             {
-                // CUDA 사용 가능 시 GPU 사용
-                _device = torch.cuda.is_available() ? torch.CUDA : torch.CPU;
+                _device = TorchInitializer.ResolveDevice();
                 Console.WriteLine($"[TransformerTrainer] Device: {_device}");
             }
             catch (Exception ex)
