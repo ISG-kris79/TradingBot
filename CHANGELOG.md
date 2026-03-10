@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+## [2.4.24] - 2026-03-10
+
+### Fixed
+
+- **TorchSharp BEX64 핫픽스 (엔진 경로 누락 보완)**:
+  - `TradingEngine`에 Transformer 옵트인 미설정 시 Torch 초기화/학습 경로를 강제 스킵하는 가드를 반영
+  - 엔진 자동 초기 학습에서 Transformer 런타임 미준비 시 호출 자체를 생략하도록 수정
+  - 수동 초기 학습도 Transformer 비활성 상태를 분기 처리하여 `TF=DISABLED`로 명확히 보고
+  - Torch 미사용 환경에서 불필요한 Transformer 실패 경로 진입을 차단해 BEX64 노출면을 추가 축소
+
 ## [2.4.23] - 2026-03-10
 
 ### Fixed

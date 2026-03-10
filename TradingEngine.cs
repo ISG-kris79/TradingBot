@@ -433,8 +433,15 @@ namespace TradingBot
                 _ = HandleAiCloseLabelingAsync(symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason);
             };
 
-            bool torchFeaturesEnabled = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
-            if (torchFeaturesEnabled && !TorchInitializer.IsAvailable && !TorchInitializer.TryInitialize())
+            bool transformerRequestedByConfig = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
+            bool torchFeaturesEnabled = transformerRequestedByConfig;
+
+            if (transformerRequestedByConfig && !TorchInitializer.IsExperimentalOptInEnabled)
+            {
+                OnStatusLog?.Invoke("🛡️ 안전모드: Transformer 설정은 켜져 있지만 실험 기능 옵트인이 없어 비활성화합니다. (환경 변수 TRADINGBOT_ENABLE_TORCH_EXPERIMENTAL=1 필요)");
+                torchFeaturesEnabled = false;
+            }
+            else if (torchFeaturesEnabled && !TorchInitializer.IsAvailable && !TorchInitializer.TryInitialize())
             {
                 OnStatusLog?.Invoke($"🛡️ Torch 안전모드 적용: Transformer 계열 기능 비활성화 ({TorchInitializer.ErrorMessage})");
                 torchFeaturesEnabled = false;
@@ -604,7 +611,16 @@ namespace TradingBot
             // [v2.4.13] TorchSharp는 기본 비활성화 (BEX64 크래시 방지)
             var tfSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
             bool transformerInitSuccess = false;
-            if (tfSettings.Enabled)
+            bool transformerEnabledByConfig = tfSettings.Enabled;
+            bool transformerExperimentalOptIn = TorchInitializer.IsExperimentalOptInEnabled;
+
+            if (transformerEnabledByConfig && !transformerExperimentalOptIn)
+            {
+                OnStatusLog?.Invoke("🛡️ 안전모드: Transformer 초기화/학습은 건너뜁니다. (실험 기능 옵트인 미설정)");
+                OnStatusLog?.Invoke("ℹ️ ML.NET 기반 AI와 지표 전략만으로 엔진을 계속 실행합니다.");
+                _transformerTrainer = null;
+            }
+            else if (transformerEnabledByConfig)
             {
                 OnStatusLog?.Invoke("⚠️ TorchSharp/Transformer 기능은 현재 개발 및 테스트 중입니다. 활성화 시 BEX64 크래시 위험이 있습니다.");
                 OnStatusLog?.Invoke("🔍 설정에서 Transformer.Enabled=true로 확인됨 — TorchSharp 환경 호환성 검증 중...");
@@ -615,7 +631,7 @@ namespace TradingBot
                     {
                         string errMsg = TorchInitializer.ErrorMessage ?? "알 수 없는 오류";
                         OnStatusLog?.Invoke($"⚠️ TorchSharp 초기화 실패로 Transformer 기능이 비활성화됩니다. ({errMsg})");
-                        OnAlert?.Invoke("⚠️ Transformer AI 비활성 — TorchSharp 환경 비호환. MajorCoinStrategy(지표 기반)만 동작합니다.");
+                        OnStatusLog?.Invoke("🛡️ 안전모드: Transformer 기능은 비활성화되어 있습니다. (ML.NET 기반 AI는 정상 작동)");
                     }
                     else
                     {
@@ -1201,7 +1217,14 @@ namespace TradingBot
                 await TriggerInitialMLNetTrainingIfNeededAsync(token);
 
                 // [추가] 엔진 시작 시 Transformer 초기 학습 1회 자동 실행 (모델 미준비 시)
-                await TriggerInitialTransformerTrainingIfNeededAsync(token);
+                if (_transformerTrainer != null)
+                {
+                    await TriggerInitialTransformerTrainingIfNeededAsync(token);
+                }
+                else
+                {
+                    OnStatusLog?.Invoke("ℹ️ Transformer 초기 학습 건너뜀: Transformer 런타임 비활성/미준비");
+                }
 
                 // [추가] AI 더블체크 게이트 초기 학습 (모델 미준비 시)
                 if (_aiDoubleCheckEntryGate != null && !_aiDoubleCheckEntryGate.IsReady)
@@ -1234,13 +1257,16 @@ namespace TradingBot
                 if (_aiDoubleCheckEntryGate != null)
                 {
                     var stats = _aiDoubleCheckEntryGate.GetRecentLabelStats(10);
+                    bool coreModelReady = _aiPredictor?.IsModelLoaded ?? false;
+                    bool modelsReady = coreModelReady && _aiDoubleCheckEntryGate.IsReady;
                     MainWindow.Instance?.UpdateAiLearningStatusUI(
                         stats.total, stats.labeled, stats.markToMarket, 
-                        stats.tradeClose, _activeAiDecisionIds.Count, _aiDoubleCheckEntryGate.IsReady);
+                        stats.tradeClose, _activeAiDecisionIds.Count, modelsReady);
                 }
                 else
                 {
-                    MainWindow.Instance?.UpdateAiLearningStatusUI(0, 0, 0, 0, 0, false);
+                    bool coreModelReady = _aiPredictor?.IsModelLoaded ?? false;
+                    MainWindow.Instance?.UpdateAiLearningStatusUI(0, 0, 0, 0, _activeAiDecisionIds.Count, coreModelReady);
                 }
 
                 // 2. 실시간 감시 시작 (Non-blocking)
@@ -1646,7 +1672,7 @@ namespace TradingBot
                         }
                         else
                         {
-                            OnAlert?.Invoke("⚠️ Transformer가 비활성화되어 Transformer 재학습은 건너뜁니다.");
+                            OnStatusLog?.Invoke("ℹ️ Transformer가 비활성화되어 있어 재학습을 건너뜁니다.");
                         }
 
                         // [추가] AI 더블체크 게이트 재학습
@@ -1873,11 +1899,11 @@ namespace TradingBot
             {
                 if (!transformerEnabled)
                 {
-                    OnAlert?.Invoke("⚠️ TransformerSettings.Enabled=false 상태라 Transformer 초기 학습을 건너뜁니다. appsettings.json에서 Enabled=true로 변경 후 재시작하세요.");
+                    OnStatusLog?.Invoke("ℹ️ 안전모드: Transformer 기능이 비활성화되어 있습니다. (설정: TransformerSettings.Enabled=false)");
                 }
                 else
                 {
-                    OnAlert?.Invoke("⚠️ Transformer 초기화 실패로 초기 학습을 건너뜁니다. TorchSharp/VC++ 런타임 환경을 점검하세요.");
+                    OnStatusLog?.Invoke("🛡️ 안전모드: Transformer 초기화가 건너뛰어졌습니다. (ML.NET 기반 AI는 정상 작동)");
                 }
                 return;
             }
@@ -1980,13 +2006,23 @@ namespace TradingBot
 
             try
             {
-                OnAlert?.Invoke("🧠 수동 초기 학습 시작: ML.NET + Transformer + AI 더블체크 순차 실행");
+                bool canTrainTransformer = _transformerTrainer != null;
+                OnAlert?.Invoke(canTrainTransformer
+                    ? "🧠 수동 초기 학습 시작: ML.NET + Transformer + AI 더블체크 순차 실행"
+                    : "🧠 수동 초기 학습 시작: ML.NET + AI 더블체크 순차 실행 (Transformer 비활성화)");
 
                 _initialMLNetTrainingTriggered = false;
                 _initialTransformerTrainingTriggered = false;
 
                 await TriggerInitialMLNetTrainingIfNeededAsync(token, force: true);
-                await TriggerInitialTransformerTrainingIfNeededAsync(token, force: true);
+                if (canTrainTransformer)
+                {
+                    await TriggerInitialTransformerTrainingIfNeededAsync(token, force: true);
+                }
+                else
+                {
+                    OnStatusLog?.Invoke("ℹ️ 수동 학습: Transformer 단계는 비활성화되어 건너뜁니다.");
+                }
 
                 string doubleCheckStatus;
                 if (_aiDoubleCheckEntryGate == null)
@@ -2005,7 +2041,9 @@ namespace TradingBot
                 }
 
                 string mlStatus = _aiPredictor != null && _aiPredictor.IsModelLoaded ? "READY" : "NOT_READY";
-                string tfStatus = _transformerTrainer != null && _transformerTrainer.IsModelReady ? "READY" : "NOT_READY";
+                string tfStatus = _transformerTrainer == null
+                    ? "DISABLED"
+                    : (_transformerTrainer.IsModelReady ? "READY" : "NOT_READY");
 
                 string summary = $"🧠 수동 학습 완료 | ML={mlStatus}, TF={tfStatus}, DOUBLE_CHECK={doubleCheckStatus}";
                 OnAlert?.Invoke(summary);
@@ -3423,7 +3461,8 @@ namespace TradingBot
                 {
                     var stats = _aiDoubleCheckEntryGate.GetRecentLabelStats(10);
                     int activeDecisionCount = _activeAiDecisionIds.Count;
-                    bool modelsReady = _aiDoubleCheckEntryGate.IsReady;
+                    bool coreModelReady = _aiPredictor?.IsModelLoaded ?? false;
+                    bool modelsReady = coreModelReady && _aiDoubleCheckEntryGate.IsReady;
 
                     MainWindow.Instance?.UpdateAiLearningStatusUI(
                         stats.total,
@@ -3437,7 +3476,8 @@ namespace TradingBot
                 else
                 {
                     // AI 게이트가 없을 때 기본값 표시
-                    MainWindow.Instance?.UpdateAiLearningStatusUI(0, 0, 0, 0, 0, false);
+                    bool coreModelReady = _aiPredictor?.IsModelLoaded ?? false;
+                    MainWindow.Instance?.UpdateAiLearningStatusUI(0, 0, 0, 0, _activeAiDecisionIds.Count, coreModelReady);
                 }
             }
             catch (Exception ex)
