@@ -864,10 +864,12 @@ namespace TradingBot
             if (IsReady)
                 return (true, "모델이 이미 준비되었습니다.");
 
+            bool signalUiSuspended = false;
             try
             {
                 // [병목 해결] AI 초기 학습 중 UI 시그널 업데이트 일시 중단
                 UISuspensionManager.SuspendSignalUpdates(true);
+                signalUiSuspended = true;
                 OnAlert?.Invoke("🔄 [AI 학습] 초기 학습 시작: 히스토리컬 데이터 수집 중... (UI 업데이트 일시 중단)");
 
                 // 1. 히스토리컬 데이터로 대량 Feature 생성 (심볼당 수십 개)
@@ -967,9 +969,6 @@ namespace TradingBot
                     string msg = $"✅ [AI 학습] 초기 학습 완료! ML Ready: {_mlTrainer.IsModelLoaded}, TF Ready: {_transformerTrainer.IsModelReady}";
                     OnAlert?.Invoke(msg);
                     OnLog?.Invoke(msg);
-                    
-                    // [병목 해결] UI 업데이트 재개
-                    UISuspensionManager.SuspendSignalUpdates(false);
                     return (true, msg);
                 }
                 else
@@ -984,10 +983,14 @@ namespace TradingBot
                 string errorMsg = $"❌ [AI 학습] 초기 학습 실패: {ex.Message}";
                 OnAlert?.Invoke(errorMsg);
                 OnLog?.Invoke($"[AIDoubleCheck] 초기 학습 오류 스택:\n{ex}");
-                
-                // [병목 해결] 예외 발생 시에도 UI 업데이트 재개
-                UISuspensionManager.SuspendSignalUpdates(false);
                 return (false, errorMsg);
+            }
+            finally
+            {
+                if (signalUiSuspended)
+                {
+                    UISuspensionManager.SuspendSignalUpdates(false);
+                }
             }
         }
 

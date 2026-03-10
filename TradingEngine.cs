@@ -255,6 +255,7 @@ namespace TradingBot
         private DateTime _lastPositionSyncTime = DateTime.MinValue; // [FIX] 마지막 포지션 동기화 시간
         private bool _initialTransformerTrainingTriggered = false;
         private bool _initialMLNetTrainingTriggered = false;
+        private int _manualInitialTrainingRunning = 0;
         private TimeSpan _entryWarmupDuration = TimeSpan.FromSeconds(30); // 설정에서 로드
         private DateTime _lastEntryWarmupLogTime = DateTime.MinValue;
 
@@ -1217,6 +1218,7 @@ namespace TradingBot
                 TelegramService.Instance.Initialize();
                 TelegramService.Instance.OnRequestStatus = GetEngineStatusReport;
                 TelegramService.Instance.OnRequestStop = StopEngine;
+                TelegramService.Instance.OnRequestTrain = ForceInitialAiTrainingAsync;
                 TelegramService.Instance.StartReceiving();
                 OnTelegramStatusUpdate?.Invoke(true, "Telegram: Connected");
 
@@ -1758,15 +1760,15 @@ namespace TradingBot
             }
         }
 
-        private async Task TriggerInitialMLNetTrainingIfNeededAsync(CancellationToken token)
+        private async Task TriggerInitialMLNetTrainingIfNeededAsync(CancellationToken token, bool force = false)
         {
-            if (_initialMLNetTrainingTriggered)
+            if (_initialMLNetTrainingTriggered && !force)
                 return;
 
             _initialMLNetTrainingTriggered = true;
 
             // ML.NET 모델이 이미 로드되어 있으면 건너뜀
-            if (_aiPredictor != null && _aiPredictor.IsModelLoaded)
+            if (!force && _aiPredictor != null && _aiPredictor.IsModelLoaded)
             {
                 OnAlert?.Invoke("✅ ML.NET 모델이 이미 준비되어 초기 학습을 건너뜁니다.");
                 return;
@@ -1853,23 +1855,32 @@ namespace TradingBot
             }
         }
 
-        private async Task TriggerInitialTransformerTrainingIfNeededAsync(CancellationToken token)
+        private async Task TriggerInitialTransformerTrainingIfNeededAsync(CancellationToken token, bool force = false)
         {
-            if (_initialTransformerTrainingTriggered)
+            if (_initialTransformerTrainingTriggered && !force)
                 return;
 
             _initialTransformerTrainingTriggered = true;
 
+            bool transformerEnabled = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
+
             // [FIX] TorchSharp null 체크 추가
             if (_transformerTrainer == null)
             {
-                OnAlert?.Invoke("⚠️ Transformer가 비활성화되어 있어 초기 학습을 건너뜁니다.");
+                if (!transformerEnabled)
+                {
+                    OnAlert?.Invoke("⚠️ TransformerSettings.Enabled=false 상태라 Transformer 초기 학습을 건너뜁니다. appsettings.json에서 Enabled=true로 변경 후 재시작하세요.");
+                }
+                else
+                {
+                    OnAlert?.Invoke("⚠️ Transformer 초기화 실패로 초기 학습을 건너뜁니다. TorchSharp/VC++ 런타임 환경을 점검하세요.");
+                }
                 return;
             }
 
             try
             {
-                if (_transformerTrainer.IsModelReady)
+                if (!force && _transformerTrainer.IsModelReady)
                 {
                     OnAlert?.Invoke("✅ Transformer 모델이 이미 준비되어 초기 학습을 건너뜁니다.");
                     return;
@@ -1944,6 +1955,73 @@ namespace TradingBot
             catch (Exception ex)
             {
                 OnAlert?.Invoke($"❌ Transformer 초기 학습 실패: {ex.Message}");
+            }
+        }
+
+        public async Task<string> ForceInitialAiTrainingAsync(CancellationToken token = default)
+        {
+            if (!IsBotRunning)
+            {
+                const string stoppedMessage = "⚠️ 엔진이 정지 상태라 수동 초기 학습을 실행할 수 없습니다. 봇 시작 후 다시 시도하세요.";
+                OnAlert?.Invoke(stoppedMessage);
+                return stoppedMessage;
+            }
+
+            if (Interlocked.CompareExchange(ref _manualInitialTrainingRunning, 1, 0) != 0)
+            {
+                const string busyMessage = "⚠️ 수동 초기 학습이 이미 실행 중입니다. 잠시 후 다시 시도하세요.";
+                OnAlert?.Invoke(busyMessage);
+                return busyMessage;
+            }
+
+            try
+            {
+                OnAlert?.Invoke("🧠 수동 초기 학습 시작: ML.NET + Transformer + AI 더블체크 순차 실행");
+
+                _initialMLNetTrainingTriggered = false;
+                _initialTransformerTrainingTriggered = false;
+
+                await TriggerInitialMLNetTrainingIfNeededAsync(token, force: true);
+                await TriggerInitialTransformerTrainingIfNeededAsync(token, force: true);
+
+                string doubleCheckStatus;
+                if (_aiDoubleCheckEntryGate == null)
+                {
+                    doubleCheckStatus = "DISABLED";
+                }
+                else if (!_aiDoubleCheckEntryGate.IsReady)
+                {
+                    var (success, _) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, _symbols, token);
+                    doubleCheckStatus = success ? "READY" : "NOT_READY";
+                }
+                else
+                {
+                    var (success, _) = await _aiDoubleCheckEntryGate.RetrainModelsAsync(token);
+                    doubleCheckStatus = success ? "RETRAINED" : "RETRAIN_FAILED";
+                }
+
+                string mlStatus = _aiPredictor != null && _aiPredictor.IsModelLoaded ? "READY" : "NOT_READY";
+                string tfStatus = _transformerTrainer != null && _transformerTrainer.IsModelReady ? "READY" : "NOT_READY";
+
+                string summary = $"🧠 수동 학습 완료 | ML={mlStatus}, TF={tfStatus}, DOUBLE_CHECK={doubleCheckStatus}";
+                OnAlert?.Invoke(summary);
+                return summary;
+            }
+            catch (OperationCanceledException)
+            {
+                const string cancelMessage = "⚠️ 수동 초기 학습이 취소되었습니다.";
+                OnAlert?.Invoke(cancelMessage);
+                return cancelMessage;
+            }
+            catch (Exception ex)
+            {
+                string errorMessage = $"❌ 수동 초기 학습 실패: {ex.Message}";
+                OnAlert?.Invoke(errorMessage);
+                return errorMessage;
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _manualInitialTrainingRunning, 0);
             }
         }
 
@@ -2697,6 +2775,7 @@ namespace TradingBot
             _cts = null;
             TelegramService.Instance.OnRequestStatus = null!;
             TelegramService.Instance.OnRequestStop = null!;
+            TelegramService.Instance.OnRequestTrain = null!;
             OnTelegramStatusUpdate?.Invoke(false, "Telegram: Disconnected");
             IsBotRunning = false;
             OnStatusLog?.Invoke("엔진 정지");

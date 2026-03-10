@@ -7,6 +7,29 @@
 
 ## [Unreleased]
 
+## [2.4.17] - 2026-03-10
+
+### Added
+
+- **원격 수동 학습 명령 추가**:
+  - Telegram 명령어 `/train` 추가
+  - 실행 중인 엔진에서 ML.NET + Transformer + AI 더블체크 학습을 순차 강제 실행 가능
+  - 중복 실행 방지(동시 학습 요청 차단) 및 완료 요약 메시지 제공
+
+### Fixed
+
+- **SIGNAL 무반응 이슈 수정**:
+  - AI 더블체크 초기 학습 중 UI Signal 업데이트 중단 후 일부 조기 종료 경로에서 재개 누락되던 문제 수정
+  - `finally`에서 `SuspendSignalUpdates(false)`를 보장해 시그널 큐 정지 상태가 남지 않도록 개선
+
+- **Transformer 초기 학습 스킵 원인 메시지 개선**:
+  - `TransformerSettings.Enabled=false`와 Torch/초기화 실패 케이스를 구분해 안내
+  - 운영 중 원인 진단 속도 개선
+
+### Changed
+
+- `appsettings.json`의 `TransformerSettings.Enabled`를 `true`로 변경 (초기 학습 및 Transformer 경로 활성화)
+
 ## [2.4.16] - 2026-03-10
 
 ### Fixed

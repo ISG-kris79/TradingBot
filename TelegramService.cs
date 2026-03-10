@@ -18,6 +18,7 @@ namespace TradingBot
         private CancellationTokenSource? _recvCts;
         public Func<string>? OnRequestStatus { get; set; } // 상태 요청 시 호출될 콜백
         public Action? OnRequestStop { get; set; } // [추가] 정지 요청 시 호출될 콜백
+        public Func<CancellationToken, Task<string>>? OnRequestTrain { get; set; } // [추가] 수동 학습 요청 콜백
         private Dictionary<string, ITelegramCommand> _commands = new Dictionary<string, ITelegramCommand>();
 
         public void Initialize()
@@ -55,8 +56,10 @@ namespace TradingBot
             _commands = new Dictionary<string, ITelegramCommand>();
             var statusCmd = new StatusCommand();
             var stopCmd = new StopCommand();
+            var trainCmd = new TrainCommand();
             _commands[statusCmd.Name] = statusCmd;
             _commands[stopCmd.Name] = stopCmd;
+            _commands[trainCmd.Name] = trainCmd;
             _commands["/help"] = new HelpCommand(_commands.Values);
         }
 
