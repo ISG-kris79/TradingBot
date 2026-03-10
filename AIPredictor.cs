@@ -12,8 +12,8 @@ namespace TradingBot.Services
         private ITransformer? _model;
         private PredictionEngine<CandleData, ScalpingPrediction>? _scalpingEngine;
         private PredictionEngine<CandleData, PredictionResult>? _legacyEngine;
-        private readonly MLServiceClient? _mlServiceClient;
-        private readonly bool _useExternalMlService;
+        private MLServiceClient? _mlServiceClient;
+        private bool _useExternalMlService;
         private readonly string _modelPath;
         private readonly string _baseDir;
         private bool _disposed = false;
@@ -24,30 +24,43 @@ namespace TradingBot.Services
             _baseDir = AppDomain.CurrentDomain.BaseDirectory;
             _modelPath = Path.Combine(_baseDir, "scalping_model.zip");
 
+            // [FIX] 즉시 로컬 모델로드 (UI 스레드 블로킹 방지)
+            LoadLocalModel();
+
+            // [비동기] 백그라운드에서 외부 ML 서비스 연결 시도
             if (preferExternalMlService)
             {
-                try
+                _ = Task.Run(async () =>
                 {
-                    _mlServiceClient = new MLServiceClient();
-                    _mlServiceClient.OnLog += msg => System.Diagnostics.Debug.WriteLine($"[AIPredictor][MLService] {msg}");
-
-                    bool started = _mlServiceClient.StartAsync().GetAwaiter().GetResult();
-                    if (started)
+                    try
                     {
-                        _useExternalMlService = true;
-                        System.Diagnostics.Debug.WriteLine("[AIPredictor] MLService 프로세스 연결 성공 (외부 프로세스 모드)");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[AIPredictor] MLService 연결 실패 - 로컬 ML.NET 폴백: {ex.Message}");
-                }
-            }
+                        _mlServiceClient = new MLServiceClient();
+                        _mlServiceClient.OnLog += msg => System.Diagnostics.Debug.WriteLine($"[AIPredictor][MLService] {msg}");
 
-            // 외부 서비스 실패/미사용 시 로컬 모델 fallback
-            if (!_useExternalMlService)
-            {
-                LoadLocalModel();
+                        // 최대 5초 타임아웃으로 외부 서비스 연결 시도
+                        using (var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5)))
+                        {
+                            bool started = await _mlServiceClient.StartAsync();
+                            if (started)
+                            {
+                                _useExternalMlService = true;
+                                System.Diagnostics.Debug.WriteLine("[AIPredictor] MLService 프로세스 연결 성공 (외부 프로세스 모드)");
+                            }
+                            else
+                            {
+                                System.Diagnostics.Debug.WriteLine("[AIPredictor] MLService 시작 실패 - 로컬 모델 사용");
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        System.Diagnostics.Debug.WriteLine("[AIPredictor] MLService 연결 타임아웃 (5초) - 로컬 모델 사용");
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[AIPredictor] MLService 연결 실패 - 로컬 ML.NET 폴백: {ex.Message}");
+                    }
+                });
             }
         }
 
