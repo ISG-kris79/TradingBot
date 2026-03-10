@@ -25,7 +25,7 @@ namespace TradingBot.Services
 
         // 피보나치 레벨 (표준)
         public const decimal FIB_ENTRY_MIN = 0.382m;   // 진입 최소
-        public const decimal FIB_ENTRY_MAX = 0.618m;   // 진입 최대
+        public const decimal FIB_ENTRY_MAX = 0.786m;   // 진입 최대 (확장됨: 0.618→0.786, 약한 타점도 포함)
         public const decimal FIB_STOP_LOSS = 0.786m;   // 손절
         public const decimal FIB_TAKE_PROFIT = 1.618m; // 익절 (확장)
 

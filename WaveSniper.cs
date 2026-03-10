@@ -187,9 +187,9 @@ namespace TradingBot
 
             // 다이버전스 조건:
             // 1. 가격은 더 낮아짐 (또는 비슷)
-            // 2. RSI는 더 높아짐 (최소 3포인트 이상)
+            // 2. RSI는 더 높아짐 (최소 0.5포인트 이상, 감도 강화됨: 3.0→0.5)
             bool priceLower = secondLowPrice <= firstLowPrice * 1.002m; // 0.2% 오차 허용
-            bool rsiHigher = secondLowRsi > firstLowRsi + 3f;
+            bool rsiHigher = secondLowRsi > firstLowRsi + 0.5f;
 
             if (priceLower && rsiHigher)
             {

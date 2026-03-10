@@ -7,6 +7,32 @@
 
 ## [Unreleased]
 
+## [2.4.10] - 2026-03-10
+
+### Enhanced
+
+- **약한 타점 진입 신호 감도 강화 (약 20배 레버리지용)**:
+  - 피보나치 진입 구간 확장: 0.618 → 0.786 (덜 눌려도 진입, Golden Zone 확대)
+  - RSI 다이버전스 감도 강화: ±3.0 포인트 → ±0.5 포인트 (미세한 신호 포착)
+  - ML 신뢰도 기준 하향: 55% / 48% → **50% / 40%** (70%대 신뢰도에서도 진입)
+
+### Fixed
+
+- **10시~11시 약한 반등 미진입 현상 개선**:
+  - 가격은 0.382 지점에 머물렀으나 진입 범위(0.618)를 초과로 거부 → 0.786까지 허용
+  - RSI는 미세하게만 올랐으나(0.5 포인트) 다이버전스 조건 미충족 → 감도 강화
+  - 신뢰도 62%는 "전교 1등 기준"에 미달 → "우등생 기준"으로 하향 조정
+
+### Technical Details
+
+- **FibonacciRiskRewardCalculator.cs**: `FIB_ENTRY_MAX = 0.786m` (Line 28)
+- **WaveSniper.cs**: `rsiHigher = secondLowRsi > firstLowRsi + 0.5f` (Line 192)
+- **TradingEngine.cs**: 
+  - `_fifteenMinuteMlMinConfidence = 0.50f` (Line 60)
+  - `_fifteenMinuteTransformerMinConfidence = 0.47f` (Line 61)
+  - `GateMlThresholdMin = 0.40f` (Line 66)
+  - `GateTransformerThresholdMin = 0.40f` (Line 68)
+
 ## [2.4.9] - 2026-03-10
 
 ### Fixed
