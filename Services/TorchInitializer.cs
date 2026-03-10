@@ -41,6 +41,12 @@ namespace TradingBot.Services
         public static bool IsCrashSafeMode => _crashSafeMode;
 
         /// <summary>
+        /// Torch 실험 기능이 명시적으로 활성화되었는지 여부
+        /// </summary>
+        public static bool IsExperimentalOptInEnabled =>
+            string.Equals(Environment.GetEnvironmentVariable("TRADINGBOT_ENABLE_TORCH_EXPERIMENTAL"), "1", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
         /// 앱 시작 시 실행 상태를 기록하고, 이전 비정상 종료를 감지하면 Torch 안전모드를 활성화합니다.
         /// </summary>
         public static void RegisterStartupRunState()

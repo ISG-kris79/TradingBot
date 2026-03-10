@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+## [2.4.23] - 2026-03-10
+
+### Fixed
+
+- **TorchSharp BEX64 재발 방지 게이팅 강화**:
+  - `TorchInitializer`: `IsExperimentalOptInEnabled` 추가로 실험 기능 옵트인(`TRADINGBOT_ENABLE_TORCH_EXPERIMENTAL=1`) 상태를 일관되게 판별
+  - `TradingEngine`: `TransformerSettings.Enabled=true`여도 옵트인 미설정이면 Torch/Transformer 초기화 경로를 즉시 비활성화
+  - 엔진 시작 시 Transformer 초기 학습 호출을 런타임 준비 상태에서만 수행하도록 수정
+  - 수동 초기 학습에서도 Transformer 비활성 상태를 명시적으로 건너뛰고 `TF=DISABLED` 상태를 반환
+  - 결과적으로 Torch 미사용 환경에서 불필요한 Transformer 초기화 실패 경로를 제거하여 BEX64 크래시 노출면을 축소
+
 ## [2.4.22] - 2026-03-10
 
 ### Removed
