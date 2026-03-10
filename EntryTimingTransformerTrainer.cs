@@ -418,19 +418,9 @@ namespace TradingBot
 
                 try
                 {
+                    // [v2.4.21] 더미 forward 제거 — C++ abort(BEX64) 위험
+                    // 버전 변경 시 모델 파일은 TorchInitializer.InvalidateModelsIfVersionChanged()에서 일괄 삭제됨
                     _model!.load(_modelPath);
-
-                    // [v2.4.19] 로드된 모델 무결성 검증 — 더미 forward 테스트
-                    using (TorchSharp.torch.no_grad())
-                    {
-                        using var dummy = TorchSharp.torch.zeros(1, _seqLen, _featureDim, device: _device);
-                        using var testOutput = _model.forward(dummy);
-                        if (testOutput.shape.Length < 2 || testOutput.shape[1] != 1)
-                        {
-                            throw new InvalidOperationException(
-                                $"모델 출력 차원 불일치: 예상 [1, 1], 실제 [{string.Join(", ", testOutput.shape)}]");
-                        }
-                    }
                 }
                 catch (Exception loadEx)
                 {

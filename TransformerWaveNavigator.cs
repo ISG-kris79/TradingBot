@@ -277,11 +277,23 @@ namespace TradingBot
                 return;
             }
 
-            _model = new WaveTransformerModel(_featureCount, HiddenSize, NumLayers, NumHeads, Dropout);
-            _model.load(_modelPath);
-            _model.to(_device);
-            _model.eval();
-            _isReady = true;
+            try
+            {
+                _model = new WaveTransformerModel(_featureCount, HiddenSize, NumLayers, NumHeads, Dropout);
+                _model.load(_modelPath);
+                _model.to(_device);
+                _model.eval();
+                _isReady = true;
+            }
+            catch (Exception ex)
+            {
+                // [v2.4.21] 호환 불가 모델 파일 → 삭제 후 재학습 대기 (forward 호출 금지 — BEX64 위험)
+                Console.WriteLine($"[WaveNavigator] 모델 로드 실패 — 파일 삭제: {ex.Message}");
+                try { System.IO.File.Delete(_modelPath); } catch { }
+                _model?.Dispose();
+                _model = null!;
+                _isReady = false;
+            }
         }
 
         public void Dispose()

@@ -192,6 +192,89 @@ namespace TradingBot.Services
         }
 
         /// <summary>
+        /// [v2.4.21] 앱 버전 변경 시 기존 Transformer 모델 파일을 자동 삭제합니다.
+        /// 이전 버전에서 학습된 모델의 아키텍처가 현재 코드와 달라지면
+        /// _model.load() 또는 forward()에서 C++ abort(BEX64) 크래시가 발생하기 때문입니다.
+        /// C++ abort는 try-catch로 잡을 수 없으므로 사전에 예방합니다.
+        /// </summary>
+        public static void InvalidateModelsIfVersionChanged()
+        {
+            try
+            {
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                string versionFile = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "TradingBot", ".model_version");
+
+                string currentVersion = System.Reflection.Assembly.GetExecutingAssembly()
+                    .GetName().Version?.ToString() ?? "0.0.0.0";
+
+                string? savedVersion = null;
+                if (File.Exists(versionFile))
+                {
+                    try { savedVersion = File.ReadAllText(versionFile).Trim(); } catch { }
+                }
+
+                if (savedVersion == currentVersion)
+                    return; // 버전 동일 → 모델 유지
+
+                TryLog($"[ModelInvalidation] version changed: {savedVersion ?? "(none)"} → {currentVersion}");
+
+                // 삭제 대상 모델 파일 목록
+                string[] modelFiles = new[]
+                {
+                    // TransformerTrainer
+                    Path.Combine(baseDir, "transformer_model.dat"),
+                    Path.Combine(baseDir, "transformer_model.stats.json"),
+                    // EntryTimingTransformerTrainer
+                    Path.Combine(baseDir, "EntryTimingTransformer.pt"),
+                    // TransformerWaveNavigator
+                    Path.Combine(baseDir, "transformer_wave_navigator.dat"),
+                    // DualAI_EntryPredictor
+                    Path.Combine(baseDir, "transformer_entry_model.dat"),
+                    Path.Combine(baseDir, "transformer_entry_model.stats.json"),
+                    // WaveAIManager 경로
+                    Path.Combine(baseDir, "TrainingData", "Models", "transformer_wave_navigator.dat"),
+                    Path.Combine(baseDir, "TrainingData", "Models", "mlnet_wave_sniper.zip"),
+                };
+
+                int deleted = 0;
+                foreach (var path in modelFiles)
+                {
+                    if (File.Exists(path))
+                    {
+                        try
+                        {
+                            File.Delete(path);
+                            deleted++;
+                            TryLog($"[ModelInvalidation] deleted: {Path.GetFileName(path)}");
+                        }
+                        catch (Exception ex)
+                        {
+                            TryLog($"[ModelInvalidation] failed to delete {Path.GetFileName(path)}: {ex.Message}");
+                        }
+                    }
+                }
+
+                if (deleted > 0)
+                    Debug.WriteLine($"[TorchInitializer] 버전 변경으로 {deleted}개 모델 파일 삭제 (재학습 예정)");
+
+                // 현재 버전 기록
+                try
+                {
+                    string? dir = Path.GetDirectoryName(versionFile);
+                    if (!string.IsNullOrWhiteSpace(dir)) Directory.CreateDirectory(dir);
+                    File.WriteAllText(versionFile, currentVersion);
+                }
+                catch { }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[TorchInitializer] 모델 버전 체크 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// 서브프로세스로 TorchSharp 호환성 프로브 실행.
         /// 네이티브 크래시(0xc0000005)가 발생해도 부모 프로세스는 안전합니다.
         /// </summary>

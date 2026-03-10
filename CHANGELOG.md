@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+## [2.4.21] - 2026-03-10
+
+### Fixed
+
+- **BEX64 크래시 완전 수정 (ucrtbase.dll c0000409 — C++ abort)**:
+  - **근본 원인**: v2.4.19에서 추가한 `LoadModel()` 더미 forward 테스트가 C++ 네이티브 abort를 유발 — C# try-catch로 잡을 수 없어 프로세스 종료
+  - `TransformerTrainer.LoadModel()`: 더미 forward 제거 → stats 파일 기반 아키텍처 검증으로 대체
+  - `EntryTimingTransformerTrainer.LoadModel()`: 더미 forward 제거 → 안전한 load + 예외 시 삭제
+  - `TransformerWaveNavigator.LoadModel()`: 예외 처리 추가 — 호환 불가 모델 자동 삭제
+  - `TorchInitializer.InvalidateModelsIfVersionChanged()`: 앱 버전 변경 시 모든 모델 파일 일괄 삭제 (교차 버전 호환성 문제 원천 차단)
+  - `App.xaml.cs`: 시작 시 모델 무효화 호출 추가
+
 ## [2.4.20] - 2026-03-10
 
 ### Fixed

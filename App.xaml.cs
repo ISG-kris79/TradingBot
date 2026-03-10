@@ -174,6 +174,10 @@ namespace TradingBot
                 return;
             }
 
+            // ── [v2.4.21] 앱 버전 변경 시 기존 Transformer 모델 파일 자동 정리 ──
+            // 이전 버전의 모델이 현재 아키텍처와 불일치하면 C++ abort(BEX64) 크래시 발생
+            TorchInitializer.InvalidateModelsIfVersionChanged();
+
             // ── Hybrid 주문 로직 백테스트 CLI 모드 ──
             if (HandleHybridBacktestCliIfRequested(e.Args))
             {

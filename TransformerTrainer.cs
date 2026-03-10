@@ -436,57 +436,28 @@ namespace TradingBot.Services.AI
                     return;
                 }
 
-                // [v2.4.19] 모델 로드 전 검증용 forward 테스트를 위해 try-catch 분리
-                try
-                {
-                    _model.load(_modelPath);
-
-                    // 로드된 모델 무결성 검증 — 더미 입력으로 forward 테스트
-                    using (torch.no_grad())
-                    {
-                        using var dummy = torch.zeros(1, _seqLen, _inputDim, device: _device);
-                        using var testOutput = _model.forward(dummy);
-                        // 출력 차원 검증
-                        if (testOutput.shape[0] != 1 || testOutput.shape[1] != _outputDim)
-                        {
-                            throw new InvalidOperationException(
-                                $"모델 출력 차원 불일치: 예상 [1, {_outputDim}], 실제 [{string.Join(", ", testOutput.shape)}]");
-                        }
-                    }
-                }
-                catch (Exception loadEx)
-                {
-                    OnLog?.Invoke($"⚠️ [TransformerTrainer] 기존 모델 파일이 현재 아키텍처와 호환되지 않습니다: {loadEx.Message}");
-                    OnLog?.Invoke("🔄 [TransformerTrainer] 모델을 새로 초기화합니다 (기존 파일 삭제)...");
-
-                    // 호환 불가 모델 파일 삭제
-                    try { File.Delete(_modelPath); } catch { }
-                    try { File.Delete(_statsPath); } catch { }
-
-                    // 모델 재초기화 (새 가중치)
-                    InitializeModel();
-                    return;
-                }
-
-                _model.eval();
-
+                // [v2.4.21 FIX] 통계 파일로 아키텍처 호환성 사전 검증
+                // (더미 forward 테스트 제거 — C++ abort(BEX64) 유발 가능)
                 var statsJson = File.ReadAllText(_statsPath);
                 var stats = JsonSerializer.Deserialize<ModelStats>(statsJson);
-                _means = stats?.Means ?? Array.Empty<float>();
-                _stds = stats?.Stds ?? Array.Empty<float>();
+                var means = stats?.Means ?? Array.Empty<float>();
+                var stds = stats?.Stds ?? Array.Empty<float>();
 
-                if (_means.Length != _inputDim || _stds.Length != _inputDim)
+                if (means.Length != _inputDim || stds.Length != _inputDim)
                 {
-                    OnLog?.Invoke($"⚠️ [TransformerTrainer] 통계 파라미터 길이 불일치 (Means: {_means.Length}, Stds: {_stds.Length}, Expected: {_inputDim})");
-                    OnLog?.Invoke("🔄 [TransformerTrainer] 모델을 새로 초기화합니다...");
+                    OnLog?.Invoke($"⚠️ [TransformerTrainer] 모델-코드 아키텍처 불일치 (stats InputDim: {means.Length}, 현재: {_inputDim})");
+                    OnLog?.Invoke("🔄 [TransformerTrainer] 호환 불가 모델 삭제 후 재초기화...");
                     try { File.Delete(_modelPath); } catch { }
                     try { File.Delete(_statsPath); } catch { }
                     InitializeModel();
-                    _means = Array.Empty<float>();
-                    _stds = Array.Empty<float>();
-                    _dataLoader = null;
                     return;
                 }
+
+                _model.load(_modelPath);
+                _model.eval();
+
+                _means = means;
+                _stds = stds;
 
                 // DataLoader 초기화 (추론용)
                 _dataLoader = new TimeSeriesDataLoader(
@@ -502,7 +473,7 @@ namespace TradingBot.Services.AI
                 _dataLoader.Means = _means;
                 _dataLoader.Stds = _stds;
 
-                OnLog?.Invoke($"📂 [TransformerTrainer] 모델 로드 완료 (무결성 검증 통과): {_modelPath}");
+                OnLog?.Invoke($"📂 [TransformerTrainer] 모델 로드 완료: {_modelPath}");
             }
             catch (Exception ex)
             {
@@ -510,7 +481,7 @@ namespace TradingBot.Services.AI
                 _means = Array.Empty<float>();
                 _stds = Array.Empty<float>();
                 OnLog?.Invoke($"❌ [TransformerTrainer] 모델 로드 실패: {ex.Message}");
-                OnLog?.Invoke("🔄 [TransformerTrainer] 모델을 새로 초기화합니다...");
+                OnLog?.Invoke("🔄 [TransformerTrainer] 호환 불가 모델 삭제 후 재초기화...");
                 try { File.Delete(_modelPath); } catch { }
                 try { File.Delete(_statsPath); } catch { }
                 InitializeModel();
