@@ -159,237 +159,6 @@ ORDER BY EntryTime DESC, Id DESC;",
                 || text.Contains("profit run");
         }
 
-        private async Task EnsureTradeHistorySchemaAsync(SqlConnection db, SqlTransaction? tx = null)
-        {
-            string sql = @"
-IF OBJECT_ID('dbo.TradeHistory', 'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.TradeHistory (
-        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-        UserId INT NOT NULL CONSTRAINT DF_TradeHistory_UserId DEFAULT 0,
-        Symbol NVARCHAR(50) NOT NULL,
-        Side NVARCHAR(10) NOT NULL,
-        Strategy NVARCHAR(150) NULL,
-        EntryPrice DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradeHistory_EntryPrice DEFAULT 0,
-        ExitPrice DECIMAL(18,8) NULL,
-        Quantity DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradeHistory_Quantity DEFAULT 0,
-        AiScore REAL NOT NULL CONSTRAINT DF_TradeHistory_AiScore DEFAULT 0,
-        PnL DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradeHistory_PnL DEFAULT 0,
-        PnLPercent DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradeHistory_PnLPercent DEFAULT 0,
-        ExitReason NVARCHAR(255) NULL,
-        EntryTime DATETIME2 NOT NULL CONSTRAINT DF_TradeHistory_EntryTime DEFAULT GETDATE(),
-        ExitTime DATETIME2 NULL,
-        IsClosed BIT NOT NULL CONSTRAINT DF_TradeHistory_IsClosed DEFAULT 1,
-        CloseVerified BIT NOT NULL CONSTRAINT DF_TradeHistory_CloseVerified DEFAULT 1,
-        LastUpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_TradeHistory_LastUpdatedAt DEFAULT GETDATE()
-    );
-END
-
-IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'UserId')
-    ALTER TABLE dbo.TradeHistory ADD UserId INT NOT NULL CONSTRAINT DF_TradeHistory_UserId_Legacy DEFAULT 0;
-
-IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'Strategy')
-    ALTER TABLE dbo.TradeHistory ADD Strategy NVARCHAR(150) NULL;
-
-IF EXISTS (
-    SELECT 1 FROM sys.columns
-    WHERE object_id = OBJECT_ID('dbo.TradeHistory')
-      AND name = 'Symbol'
-      AND max_length <> -1
-      AND max_length < 100)
-BEGIN
-    ALTER TABLE dbo.TradeHistory ALTER COLUMN Symbol NVARCHAR(50) NOT NULL;
-END
-
-IF EXISTS (
-    SELECT 1 FROM sys.columns
-    WHERE object_id = OBJECT_ID('dbo.TradeHistory')
-      AND name = 'Side'
-      AND max_length <> -1
-      AND max_length < 20)
-BEGIN
-    ALTER TABLE dbo.TradeHistory ALTER COLUMN Side NVARCHAR(10) NOT NULL;
-END
-
-IF EXISTS (
-    SELECT 1 FROM sys.columns
-    WHERE object_id = OBJECT_ID('dbo.TradeHistory')
-      AND name = 'Strategy'
-      AND max_length <> -1
-      AND max_length < 300)
-BEGIN
-    ALTER TABLE dbo.TradeHistory ALTER COLUMN Strategy NVARCHAR(150) NULL;
-END
-
-IF EXISTS (
-    SELECT 1 FROM sys.columns
-    WHERE object_id = OBJECT_ID('dbo.TradeHistory')
-      AND name = 'ExitReason'
-      AND max_length <> -1
-      AND max_length < 510)
-BEGIN
-    ALTER TABLE dbo.TradeHistory ALTER COLUMN ExitReason NVARCHAR(255) NULL;
-END
-
-IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'AiScore')
-    ALTER TABLE dbo.TradeHistory ADD AiScore REAL NOT NULL CONSTRAINT DF_TradeHistory_AiScore_Legacy DEFAULT 0;
-
-IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'IsClosed')
-    ALTER TABLE dbo.TradeHistory ADD IsClosed BIT NOT NULL CONSTRAINT DF_TradeHistory_IsClosed_Legacy DEFAULT 1;
-
-IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'CloseVerified')
-    ALTER TABLE dbo.TradeHistory ADD CloseVerified BIT NOT NULL CONSTRAINT DF_TradeHistory_CloseVerified_Legacy DEFAULT 1;
-
-IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'LastUpdatedAt')
-    ALTER TABLE dbo.TradeHistory ADD LastUpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_TradeHistory_LastUpdatedAt_Legacy DEFAULT GETDATE();
-
-IF EXISTS (
-    SELECT 1
-    FROM sys.columns
-    WHERE object_id = OBJECT_ID('dbo.TradeHistory')
-      AND name = 'ExitPrice'
-      AND is_nullable = 0)
-BEGIN
-    ALTER TABLE dbo.TradeHistory ALTER COLUMN ExitPrice DECIMAL(18,8) NULL;
-END
-
-IF EXISTS (
-    SELECT 1
-    FROM sys.columns
-    WHERE object_id = OBJECT_ID('dbo.TradeHistory')
-      AND name = 'ExitTime'
-      AND is_nullable = 0)
-BEGIN
-    ALTER TABLE dbo.TradeHistory ALTER COLUMN ExitTime DATETIME2 NULL;
-END
-
-IF NOT EXISTS (
-    SELECT 1 FROM sys.indexes
-    WHERE object_id = OBJECT_ID('dbo.TradeHistory')
-      AND name = 'IX_TradeHistory_UserId_IsClosed_Symbol_EntryTime')
-BEGIN
-    CREATE INDEX IX_TradeHistory_UserId_IsClosed_Symbol_EntryTime
-    ON dbo.TradeHistory(UserId, IsClosed, Symbol, EntryTime DESC);
-END
-
--- [FIX] holdingMinutes 계산 열 안전 재생성 (ExitTime NULL 허용)
--- 1단계: 기존 계산 열 제거 (있다면)
-IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'holdingMinutes' AND is_computed = 1)
-BEGIN
-    ALTER TABLE dbo.TradeHistory DROP COLUMN holdingMinutes;
-    PRINT '✅ holdingMinutes 계산 열 제거 완료';
-END
--- 2단계: 일반 열 제거 (혹시 수동 변경된 경우 대비)
-ELSE IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'holdingMinutes')
-BEGIN
-    ALTER TABLE dbo.TradeHistory DROP COLUMN holdingMinutes;
-    PRINT '✅ holdingMinutes 일반 열 제거 완료';
-END
--- 3단계: HoldingMinutes (대문자) 변형도 확인
-IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'HoldingMinutes')
-BEGIN
-    ALTER TABLE dbo.TradeHistory DROP COLUMN HoldingMinutes;
-    PRINT '✅ HoldingMinutes 열 제거 완료';
-END
--- 4단계: NULL 안전 계산 열 재생성
-IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'holdingMinutes')
-BEGIN
-    ALTER TABLE dbo.TradeHistory ADD holdingMinutes AS 
-        CASE WHEN ExitTime IS NOT NULL 
-             THEN DATEDIFF(MINUTE, EntryTime, ExitTime) 
-             ELSE NULL 
-        END;
-    PRINT '✅ holdingMinutes 계산 열 생성 완료 (NULL 안전)';
-END";
-
-            await db.ExecuteAsync(sql, transaction: tx);
-        }
-
-        private async Task EnsureTradeLogsSchemaAsync(SqlConnection db, SqlTransaction? tx = null)
-        {
-            string sql = @"
-IF OBJECT_ID('dbo.TradeLogs', 'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.TradeLogs (
-        Id BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-        Symbol NVARCHAR(50) NOT NULL,
-        Side NVARCHAR(10) NOT NULL,
-        Strategy NVARCHAR(150) NULL,
-        Price DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradeLogs_Price DEFAULT 0,
-        AiScore FLOAT NOT NULL CONSTRAINT DF_TradeLogs_AiScore DEFAULT 0,
-        [Time] DATETIME2 NOT NULL CONSTRAINT DF_TradeLogs_Time DEFAULT GETDATE(),
-        PnL DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradeLogs_PnL DEFAULT 0,
-        PnLPercent DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradeLogs_PnLPercent DEFAULT 0,
-        EntryPrice DECIMAL(18,8) NULL,
-        ExitPrice DECIMAL(18,8) NULL,
-        Quantity DECIMAL(18,8) NULL,
-        ExitReason NVARCHAR(255) NULL
-    );
-END
-
-IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeLogs') AND name = 'EntryPrice')
-    ALTER TABLE dbo.TradeLogs ADD EntryPrice DECIMAL(18,8) NULL;
-
-IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeLogs') AND name = 'ExitPrice')
-    ALTER TABLE dbo.TradeLogs ADD ExitPrice DECIMAL(18,8) NULL;
-
-IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeLogs') AND name = 'Quantity')
-    ALTER TABLE dbo.TradeLogs ADD Quantity DECIMAL(18,8) NULL;
-
-IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeLogs') AND name = 'ExitReason')
-    ALTER TABLE dbo.TradeLogs ADD ExitReason NVARCHAR(255) NULL;
-
-IF EXISTS (
-    SELECT 1 FROM sys.columns
-    WHERE object_id = OBJECT_ID('dbo.TradeLogs')
-      AND name = 'Symbol'
-      AND max_length <> -1
-      AND max_length < 100)
-BEGIN
-    ALTER TABLE dbo.TradeLogs ALTER COLUMN Symbol NVARCHAR(50) NOT NULL;
-END
-
-IF EXISTS (
-    SELECT 1 FROM sys.columns
-    WHERE object_id = OBJECT_ID('dbo.TradeLogs')
-      AND name = 'Side'
-      AND max_length <> -1
-      AND max_length < 20)
-BEGIN
-    ALTER TABLE dbo.TradeLogs ALTER COLUMN Side NVARCHAR(10) NOT NULL;
-END
-
-IF EXISTS (
-    SELECT 1 FROM sys.columns
-    WHERE object_id = OBJECT_ID('dbo.TradeLogs')
-      AND name = 'Strategy'
-      AND max_length <> -1
-      AND max_length < 300)
-BEGIN
-    ALTER TABLE dbo.TradeLogs ALTER COLUMN Strategy NVARCHAR(150) NULL;
-END
-
-IF EXISTS (
-    SELECT 1 FROM sys.columns
-    WHERE object_id = OBJECT_ID('dbo.TradeLogs')
-      AND name = 'ExitReason'
-      AND max_length <> -1
-      AND max_length < 510)
-BEGIN
-    ALTER TABLE dbo.TradeLogs ALTER COLUMN ExitReason NVARCHAR(255) NULL;
-END
-
-IF NOT EXISTS (
-    SELECT 1 FROM sys.indexes
-    WHERE object_id = OBJECT_ID('dbo.TradeLogs')
-      AND name = 'IX_TradeLogs_Symbol_Time')
-BEGIN
-    CREATE INDEX IX_TradeLogs_Symbol_Time
-    ON dbo.TradeLogs(Symbol, [Time] DESC);
-END";
-
-            await db.ExecuteAsync(sql, transaction: tx);
-        }
 
         private async Task TryMirrorToTradeLogsAsync(
             string? symbol,
@@ -419,7 +188,7 @@ END";
 
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
-                await EnsureTradeLogsSchemaAsync(db);
+                
 
                 string sql = @"
 IF NOT EXISTS (
@@ -462,92 +231,6 @@ END";
             }
         }
 
-        private async Task EnsureTradePatternSchemaAsync(SqlConnection db, SqlTransaction? tx = null)
-        {
-            string sql = @"
-IF OBJECT_ID('dbo.TradePatternSnapshots', 'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.TradePatternSnapshots (
-        Id BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-        UserId INT NOT NULL CONSTRAINT DF_TradePatternSnapshots_UserId DEFAULT 0,
-        Symbol NVARCHAR(30) NOT NULL,
-        Side NVARCHAR(10) NOT NULL,
-        Strategy NVARCHAR(120) NULL,
-        Mode NVARCHAR(20) NULL,
-        EntryTime DATETIME2 NOT NULL,
-        ExitTime DATETIME2 NULL,
-        EntryPrice DECIMAL(18,8) NOT NULL CONSTRAINT DF_TradePatternSnapshots_EntryPrice DEFAULT 0,
-
-        FinalScore FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_FinalScore DEFAULT 0,
-        AiScore FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_AiScore DEFAULT 0,
-        ElliottScore FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_ElliottScore DEFAULT 0,
-        VolumeScore FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_VolumeScore DEFAULT 0,
-        RsiMacdScore FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_RsiMacdScore DEFAULT 0,
-        BollingerScore FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_BollingerScore DEFAULT 0,
-        PredictedChangePct FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_PredictedChangePct DEFAULT 0,
-        ScoreGap FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_ScoreGap DEFAULT 0,
-
-        AtrPercent FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_AtrPercent DEFAULT 0,
-        HtfPenalty FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_HtfPenalty DEFAULT 0,
-        Adx FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_Adx DEFAULT 0,
-        PlusDi FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_PlusDi DEFAULT 0,
-        MinusDi FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_MinusDi DEFAULT 0,
-        Rsi FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_Rsi DEFAULT 0,
-        MacdHist FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_MacdHist DEFAULT 0,
-        BbPosition FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_BbPosition DEFAULT 0,
-        VolumeRatio FLOAT NOT NULL CONSTRAINT DF_TradePatternSnapshots_VolumeRatio DEFAULT 0,
-
-        SimilarityScore FLOAT NULL,
-        EuclideanSimilarity FLOAT NULL,
-        CosineSimilarity FLOAT NULL,
-        MatchProbability FLOAT NULL,
-        MatchedPatternId BIGINT NULL,
-        IsSuperEntry BIT NOT NULL CONSTRAINT DF_TradePatternSnapshots_IsSuperEntry DEFAULT 0,
-        PositionSizeMultiplier DECIMAL(10,4) NOT NULL CONSTRAINT DF_TradePatternSnapshots_PositionSizeMultiplier DEFAULT 1.0,
-        TakeProfitMultiplier DECIMAL(10,4) NOT NULL CONSTRAINT DF_TradePatternSnapshots_TakeProfitMultiplier DEFAULT 1.0,
-
-        Label TINYINT NULL,
-        PnL DECIMAL(18,8) NULL,
-        PnLPercent DECIMAL(18,8) NULL,
-        ExitReason NVARCHAR(255) NULL,
-        ExitType NVARCHAR(20) NULL,
-
-        ComponentMix NVARCHAR(500) NULL,
-        ContextJson NVARCHAR(MAX) NULL,
-
-        CreatedAt DATETIME2 NOT NULL CONSTRAINT DF_TradePatternSnapshots_CreatedAt DEFAULT SYSUTCDATETIME(),
-        UpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_TradePatternSnapshots_UpdatedAt DEFAULT SYSUTCDATETIME()
-    );
-END
-
-IF NOT EXISTS (
-    SELECT 1 FROM sys.indexes
-    WHERE object_id = OBJECT_ID('dbo.TradePatternSnapshots')
-      AND name = 'IX_TradePatternSnapshots_User_Symbol_Side_Label_Entry')
-BEGIN
-    CREATE INDEX IX_TradePatternSnapshots_User_Symbol_Side_Label_Entry
-    ON dbo.TradePatternSnapshots(UserId, Symbol, Side, Label, EntryTime DESC);
-END
-
-IF NOT EXISTS (
-    SELECT 1 FROM sys.indexes
-    WHERE object_id = OBJECT_ID('dbo.TradePatternSnapshots')
-      AND name = 'IX_TradePatternSnapshots_User_Symbol_Entry')
-BEGIN
-    CREATE INDEX IX_TradePatternSnapshots_User_Symbol_Entry
-    ON dbo.TradePatternSnapshots(UserId, Symbol, EntryTime DESC);
-END
-
-IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradePatternSnapshots') AND name = 'ExitReason')
-    ALTER TABLE dbo.TradePatternSnapshots ADD ExitReason NVARCHAR(255) NULL;
-
-IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradePatternSnapshots') AND name = 'ExitType')
-    ALTER TABLE dbo.TradePatternSnapshots ADD ExitType NVARCHAR(20) NULL;
-";
-
-            await db.ExecuteAsync(sql, transaction: tx);
-        }
-
         public async Task<long?> SaveTradePatternSnapshotAsync(TradePatternSnapshotRecord snapshot)
         {
             try
@@ -561,9 +244,7 @@ IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeP
 
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
-                using var tx = db.BeginTransaction();
-
-                await EnsureTradePatternSchemaAsync(db, tx);
+                using var tx = db.BeginTransaction();                
 
                 string sql = @"
 INSERT INTO dbo.TradePatternSnapshots
@@ -651,7 +332,7 @@ VALUES
                 await db.OpenAsync();
                 using var tx = db.BeginTransaction();
 
-                await EnsureTradePatternSchemaAsync(db, tx);
+                
 
                 string normalizedExitReason = TrimForDb(exitReason, 255);
                 bool isStopLoss = IsStopLossReason(normalizedExitReason);
@@ -727,8 +408,6 @@ INNER JOIN TargetRow x ON x.Id = t.Id;";
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
 
-                await EnsureTradePatternSchemaAsync(db);
-
                 string sql = @"
 SELECT TOP (@MaxRows)
     Id, UserId, Symbol, Side, Strategy, Mode, EntryTime, ExitTime, EntryPrice,
@@ -776,7 +455,6 @@ ORDER BY EntryTime DESC;";
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
 
-                await EnsureTradeHistorySchemaAsync(db);
 
                 string sql = @"
 SELECT Symbol, Side, EntryPrice, Quantity, EntryTime
@@ -833,7 +511,6 @@ ORDER BY EntryTime DESC;";
                 await db.OpenAsync();
                 using var tx = db.BeginTransaction();
 
-                await EnsureTradeHistorySchemaAsync(db, tx);
 
                 string updateSql = @"
 ;WITH LatestOpen AS (
@@ -936,7 +613,6 @@ VALUES
                 await db.OpenAsync();
                 using var tx = db.BeginTransaction();
 
-                await EnsureTradeHistorySchemaAsync(db, tx);
 
                 var openTrade = await db.QueryFirstOrDefaultAsync<TradeHistoryOpenRow>(@"
 SELECT TOP (1) Id, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime
@@ -1038,8 +714,6 @@ VALUES
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
                 using var tx = db.BeginTransaction();
-
-                await EnsureTradeHistorySchemaAsync(db, tx);
 
                 string symbolValue = await ResolveCloseSymbolAsync(db, tx, userId, log, sideValue);
                 if (string.IsNullOrWhiteSpace(symbolValue))
@@ -1202,8 +876,6 @@ VALUES
                 await db.OpenAsync();
                 using var tx = db.BeginTransaction();
 
-                await EnsureTradeHistorySchemaAsync(db, tx);
-
                 var openTrade = await db.QueryFirstOrDefaultAsync<TradeHistoryOpenRow>(@"
 SELECT TOP (1) Id, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime
 FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
@@ -1352,8 +1024,6 @@ WHERE Id = @Id;",
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
                 using var tx = db.BeginTransaction();
-
-                await EnsureTradeHistorySchemaAsync(db, tx);
 
                 var duplicatedPartial = await db.ExecuteScalarAsync<int?>(@"
 SELECT TOP (1) Id
@@ -1615,7 +1285,6 @@ VALUES
             {
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
-                await EnsureTradeHistorySchemaAsync(db);
 
                 string sql = @"
 SELECT TOP (@Limit)

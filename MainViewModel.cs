@@ -40,6 +40,7 @@ namespace TradingBot.ViewModels
         private static readonly Regex GateAutoTuneRegex = new(@"mlThr=(?<oldMl>\d+(?:\.\d+)?)%->(?<newMl>\d+(?:\.\d+)?)%.*tfThr=(?<oldTf>\d+(?:\.\d+)?)%->(?<newTf>\d+(?:\.\d+)?)%", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private readonly ConcurrentQueue<BufferedLiveLog> _pendingLiveLogs = new();
         private readonly ConcurrentQueue<(string Category, string Message, string? Symbol)> _pendingLiveLogDbWrites = new();
+        private readonly ConcurrentQueue<(DateTime Timestamp, string Message)> _pendingFooterLogDbWrites = new();
         private readonly ConcurrentDictionary<string, (decimal Price, double? Pnl)> _pendingTickerUpdates = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, MultiTimeframeViewModel> _pendingSignalUpdates = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, AIEntryForecastResult> _pendingAiEntryProbUpdates = new(StringComparer.OrdinalIgnoreCase);
@@ -55,9 +56,11 @@ namespace TradingBot.ViewModels
         private DispatcherTimer? _footerLogFlushTimer;
         private string? _pendingFooterLogMessage;
         private int _liveLogDbDrainRunning;
+        private int _footerLogDbDrainRunning;
         private const int MaxBufferedLiveLogs = 1200;
         private const int MaxUiLiveLogCount = 200;
-        private const int MaxLiveLogBatchPerTick = 24;       // [병목 해결] 48→24 (단위 Tick당 UI 부하 절감)
+        private const int MaxLiveLogBatchPerTick = 80;       // [병목 해결] 24→80 (1초 딜레이 해결)
+        private const int MaxLiveLogUiWorkBudgetMsPerTick = 12;
         private const int MaxTickerBatchPerTick = 80;        // [병목 해결] 180→80 (PropertyChanged 폭주 방지)
         private const int MaxSignalBatchPerTick = 40;        // [병목 해결] 120→40 (BeginUpdate로 보완)
         private const int MaxDbWritesPerDrain = 80;
@@ -93,7 +96,16 @@ namespace TradingBot.ViewModels
         private int _liveLogQueueHighWater;
         private int _liveLogDbQueueHighWater;
 
-        private readonly record struct BufferedLiveLog(DateTime Timestamp, string Message, string RawMessage, string Category, bool IsMajor, string? Symbol);
+        private readonly record struct BufferedLiveLog(
+            DateTime Timestamp,
+            string Message,
+            string RawMessage,
+            string Category,
+            bool IsMajor,
+            string? Symbol,
+            bool PersistToDb,
+            bool DisplayOnUi,
+            string? DisplayMessage);
 
         // TradingEngine 속성 노출
         public decimal InitialBalance => _engine?.InitialBalance ?? 0;
@@ -1445,9 +1457,18 @@ namespace TradingBot.ViewModels
             {
                 RunOnUI(() =>
                 {
-                    WaveMLScoreText = $"ML: {mlScore:P0}";
-                    WaveTFScoreText = $"TF: {tfScore:P0}";
+                    // [FIX] ML/TF가 0이면 "대기" 표시 (0%가 아니라 아직 실행 안 됨을 의미)
+                    WaveMLScoreText = mlScore <= 0 ? "ML: 대기" : $"ML: {mlScore:P0}";
+                    WaveTFScoreText = tfScore <= 0 ? "TF: 대기" : $"TF: {tfScore:P0}";
                     WaveStatusText = status;
+                    
+                    // [NEW] 해당 심볼의 ViewModel에도 ML/TF 확률 업데이트
+                    var symbolVm = MarketDataList.FirstOrDefault(x => x.Symbol == symbol);
+                    if (symbolVm != null)
+                    {
+                        symbolVm.MLProbability = mlScore;
+                        symbolVm.TFConfidence = tfScore;
+                    }
                 });
             };
         }
@@ -1594,24 +1615,26 @@ namespace TradingBot.ViewModels
             if (string.IsNullOrWhiteSpace(msg))
                 return;
 
-            int pendingBefore = _pendingLiveLogs.Count;
-            if (pendingBefore >= (int)(MaxBufferedLiveLogs * 0.8) && IsLiveLogNoise(msg))
-                return;
-
             var localizedMessage = LocalizeLiveLogMessage(msg);
             var isMajor = IsMajorSymbolLog(msg);
             var category = DetermineLiveLogCategory(msg, isMajor);
             var symbolMatch = SymbolRegex.Match(msg);
             var symbol = symbolMatch.Success ? symbolMatch.Groups[1].Value : null;
+            bool persistToDb = ShouldPersistLiveLog(localizedMessage);
 
-            _pendingLiveLogs.Enqueue(new BufferedLiveLog(DateTime.Now, localizedMessage, msg, category, isMajor, symbol));
-            int pendingQueue = _pendingLiveLogs.Count;
-            if (pendingQueue > _liveLogQueueHighWater)
-                _liveLogQueueHighWater = pendingQueue;
-
-            while (_pendingLiveLogs.Count > MaxBufferedLiveLogs)
+            if (persistToDb && _dbService != null)
             {
-                _pendingLiveLogs.TryDequeue(out _);
+                _pendingLiveLogDbWrites.Enqueue((category, localizedMessage, symbol));
+                int dbQueueLength = _pendingLiveLogDbWrites.Count;
+                if (dbQueueLength > _liveLogDbQueueHighWater)
+                    _liveLogDbQueueHighWater = dbQueueLength;
+
+                _ = DrainLiveLogDbQueueAsync();
+            }
+
+            if (string.Equals(category, "GATE", StringComparison.OrdinalIgnoreCase))
+            {
+                RunOnUI(() => UpdateGateDashboardFromLog(msg, string.Empty));
             }
         }
 
@@ -1620,14 +1643,16 @@ namespace TradingBot.ViewModels
             RunOnUI(() =>
             {
                 if (_liveLogFlushTimer != null)
-                    return;
-
-                _liveLogFlushTimer = new DispatcherTimer(DispatcherPriority.Background)
                 {
-                    Interval = TimeSpan.FromSeconds(1)
-                };
-                _liveLogFlushTimer.Tick += (_, _) => FlushPendingLiveLogsToUi();
-                _liveLogFlushTimer.Start();
+                    _liveLogFlushTimer.Stop();
+                    _liveLogFlushTimer = null;
+                }
+
+                TradeLogs.Clear();
+                GateLogs.Clear();
+                LiveLogs.Clear();
+                MajorLogs.Clear();
+                PumpLogs.Clear();
             });
         }
 
@@ -1695,6 +1720,12 @@ namespace TradingBot.ViewModels
             lock (_footerLogLock)
             {
                 _pendingFooterLogMessage = msg;
+            }
+
+            if (_dbService != null)
+            {
+                _pendingFooterLogDbWrites.Enqueue((DateTime.Now, msg));
+                _ = DrainFooterLogDbQueueAsync();
             }
         }
 
@@ -1913,22 +1944,26 @@ namespace TradingBot.ViewModels
             try
             {
                 Stopwatch? flushWatch = _liveLogPerfEnabled ? Stopwatch.StartNew() : null;
+                var uiBudgetWatch = Stopwatch.StartNew();
                 int pendingBefore = _pendingLiveLogs.Count;
                 int dbQueueBefore = _pendingLiveLogDbWrites.Count;
 
                 // [병목 해결] Insert(0) 대신 미리 수집 후 일괄 삽입 패턴으로 변경
                 // Insert(0)는 O(n) 배열 이동 + CollectionChanged → 매 항목 전체 ListView 재렌더
-                List<string>? liveLogBatch = null;
                 List<string>? gateLogBatch = null;
                 List<string>? tradeLogBatch = null;
-                List<string>? majorLogBatch = null;
-                List<string>? pumpLogBatch = null;
                 List<(string Raw, string Line)>? gateUpdateBatch = null;
 
                 int processed = 0;
-                while (processed < MaxLiveLogBatchPerTick && _pendingLiveLogs.TryDequeue(out var item))
+                while (processed < MaxLiveLogBatchPerTick)
                 {
-                    if (_dbService != null && ShouldPersistLiveLog(item.Message))
+                    if (uiBudgetWatch.ElapsedMilliseconds >= MaxLiveLogUiWorkBudgetMsPerTick)
+                        break;
+
+                    if (!_pendingLiveLogs.TryDequeue(out var item))
+                        break;
+
+                    if (_dbService != null && item.PersistToDb)
                     {
                         _pendingLiveLogDbWrites.Enqueue((item.Category, item.Message, item.Symbol));
                         int dbQueueLength = _pendingLiveLogDbWrites.Count;
@@ -1936,11 +1971,9 @@ namespace TradingBot.ViewModels
                             _liveLogDbQueueHighWater = dbQueueLength;
                     }
 
-                    if (ShouldDisplayLiveLogOnUi(item.Category, item.RawMessage))
+                    if (item.DisplayOnUi && !string.IsNullOrWhiteSpace(item.DisplayMessage))
                     {
-                        string displayMessage = SimplifyLiveLogMessage(item.Message);
-                        var line = $"[{item.Timestamp:HH:mm:ss}] {displayMessage}";
-                        (liveLogBatch ??= new()).Add(line);
+                        var line = $"[{item.Timestamp:HH:mm:ss}] {item.DisplayMessage}";
 
                         if (string.Equals(item.Category, "GATE", StringComparison.OrdinalIgnoreCase))
                         {
@@ -1950,11 +1983,6 @@ namespace TradingBot.ViewModels
                         else
                         {
                             (tradeLogBatch ??= new()).Add(line);
-
-                            if (item.IsMajor)
-                                (majorLogBatch ??= new()).Add(line);
-                            else
-                                (pumpLogBatch ??= new()).Add(line);
                         }
                     }
 
@@ -1962,12 +1990,6 @@ namespace TradingBot.ViewModels
                 }
 
                 // [병목 해결] 수집된 로그를 역순으로 한 번에 삽입
-                if (liveLogBatch != null)
-                {
-                    for (int i = liveLogBatch.Count - 1; i >= 0; i--)
-                        LiveLogs.Insert(0, liveLogBatch[i]);
-                    while (LiveLogs.Count > MaxUiLiveLogCount) LiveLogs.RemoveAt(LiveLogs.Count - 1);
-                }
                 if (gateLogBatch != null)
                 {
                     for (int i = gateLogBatch.Count - 1; i >= 0; i--)
@@ -1984,18 +2006,6 @@ namespace TradingBot.ViewModels
                     for (int i = tradeLogBatch.Count - 1; i >= 0; i--)
                         TradeLogs.Insert(0, tradeLogBatch[i]);
                     while (TradeLogs.Count > MaxUiLiveLogCount) TradeLogs.RemoveAt(TradeLogs.Count - 1);
-                }
-                if (majorLogBatch != null)
-                {
-                    for (int i = majorLogBatch.Count - 1; i >= 0; i--)
-                        MajorLogs.Insert(0, majorLogBatch[i]);
-                    while (MajorLogs.Count > MaxUiLiveLogCount) MajorLogs.RemoveAt(MajorLogs.Count - 1);
-                }
-                if (pumpLogBatch != null)
-                {
-                    for (int i = pumpLogBatch.Count - 1; i >= 0; i--)
-                        PumpLogs.Insert(0, pumpLogBatch[i]);
-                    while (PumpLogs.Count > MaxUiLiveLogCount) PumpLogs.RemoveAt(PumpLogs.Count - 1);
                 }
 
                 if (processed > 0 && _dbService != null && !_pendingLiveLogDbWrites.IsEmpty)
@@ -2191,7 +2201,12 @@ namespace TradingBot.ViewModels
                 return false;
 
             return !message.Contains("[DB]", StringComparison.OrdinalIgnoreCase)
-                && !message.Contains("DB ", StringComparison.OrdinalIgnoreCase);
+                && !message.Contains("DB ", StringComparison.OrdinalIgnoreCase)
+                && !message.Contains("주문 요청 중", StringComparison.OrdinalIgnoreCase)
+                && !message.Contains("[ENTRY][START]", StringComparison.OrdinalIgnoreCase)
+                && !message.Contains("[ENTRY][RR][PASS]", StringComparison.OrdinalIgnoreCase)
+                && !message.Contains("[ENTRY][RR][BLOCK]", StringComparison.OrdinalIgnoreCase)
+                && !message.Contains("[SIGNAL][PUMP][EMIT]", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsLiveLogNoise(string message)
@@ -2200,8 +2215,25 @@ namespace TradingBot.ViewModels
                 return false;
 
             return message.Contains("[SIGNAL][PUMP][CHECK_1M]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[SIGNAL][PUMP][SCAN]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[SIGNAL][PUMP][CANDIDATE]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[SIGNAL][PUMP][PROFILE]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[SIGNAL][PUMP][INFO]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[SIGNAL][PUMP][REJECT]", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("[PERF][LIVELOG]", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("[PERF][MAIN_LOOP]", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsHighFrequencyIngressLog(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return false;
+
+            return message.Contains("[SIGNAL][PUMP][EMIT]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("주문 요청 중", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[ENTRY][START]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[ENTRY][RR][PASS]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[ENTRY][RR][BLOCK]", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool ShouldDisplayLiveLogOnUi(string category, string rawMessage)
@@ -2232,7 +2264,10 @@ namespace TradingBot.ViewModels
             return message.Contains("진입대기", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("진입 시작", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("진입시작", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("진입 차단", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("[ENTRY][START]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[SLOT]", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("[WaveAI]", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("[캔들 확인 대기]", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("트레일링스탑시작", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("트레일링 갱신", StringComparison.OrdinalIgnoreCase)
@@ -2242,6 +2277,7 @@ namespace TradingBot.ViewModels
                 || message.Contains("손절실행", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("익절실행", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("익절시작", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("손익비", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("[SLIPPAGE][FAST][WARN]", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("[SLIPPAGE][FAST][EXIT]", StringComparison.OrdinalIgnoreCase);
         }
@@ -2313,6 +2349,14 @@ namespace TradingBot.ViewModels
             {
                 emoji = "📊";
                 label = "트레일링중";
+            }
+            else if (normalized.Contains("[ENTRY][RR][BLOCK]", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("손익비 부족", StringComparison.OrdinalIgnoreCase)
+                || (normalized.Contains("RR=", StringComparison.OrdinalIgnoreCase)
+                    && normalized.Contains("<", StringComparison.OrdinalIgnoreCase)))
+            {
+                emoji = "📉";
+                label = "손익비 차단";
             }
             else if (normalized.Contains("손절시작", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("손절실행", StringComparison.OrdinalIgnoreCase))
@@ -2534,6 +2578,41 @@ namespace TradingBot.ViewModels
                 if (!_pendingLiveLogDbWrites.IsEmpty)
                 {
                     _ = DrainLiveLogDbQueueAsync();
+                }
+            }
+        }
+
+        private async Task DrainFooterLogDbQueueAsync()
+        {
+            if (_dbService == null)
+                return;
+
+            if (Interlocked.Exchange(ref _footerLogDbDrainRunning, 1) == 1)
+                return;
+
+            try
+            {
+                int processed = 0;
+                while (processed < MaxDbWritesPerDrain && _pendingFooterLogDbWrites.TryDequeue(out var logItem))
+                {
+                    try
+                    {
+                        await _dbService.SaveFooterLogAsync(logItem.Timestamp, logItem.Message);
+                    }
+                    catch
+                    {
+                    }
+
+                    processed++;
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _footerLogDbDrainRunning, 0);
+
+                if (!_pendingFooterLogDbWrites.IsEmpty)
+                {
+                    _ = DrainFooterLogDbQueueAsync();
                 }
             }
         }
@@ -2933,15 +3012,15 @@ namespace TradingBot.ViewModels
             });
         }
 
-        private void UpdateSlotStatus(int major, int majorMax, int pump, int pumpMax)
+        private void UpdateSlotStatus(int totalCount, int maxSlots, int majorCount, int unused)
         {
             RunOnUI(() =>
             {
-                MajorSlotText = $"{major} / {majorMax}";
-                MajorSlotColor = major >= majorMax ? Brushes.Orange : Brushes.White;
-                PumpSlotText = $"{pump} / {pumpMax}";
-                PumpSlotColor = pump >= pumpMax ? Brushes.Orange : Brushes.White;
-                TotalPositionInfo = $"Active: {major + pump} / {majorMax + pumpMax}";
+                MajorSlotText = $"Total: {totalCount} / {maxSlots}";
+                MajorSlotColor = totalCount >= maxSlots ? Brushes.Orange : Brushes.White;
+                PumpSlotText = $"Major: {majorCount}";
+                PumpSlotColor = majorCount > 0 ? Brushes.DeepSkyBlue : Brushes.Gray;
+                TotalPositionInfo = $"Active: {totalCount} (Major: {majorCount})";
             });
         }
 

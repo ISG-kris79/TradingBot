@@ -7,6 +7,45 @@
 
 ## [Unreleased]
 
+## [2.4.7] - 2026-03-10
+
+### Added
+
+- **SimpleDoubleCheckEngine 전략 통합**:
+  - 매복 모드 기반 더블 체크 진입 시스템 (Transformer → ML.NET 순차 검증)
+  - 매복 시간대 외에는 ML.NET 실행 안 함으로 CPU 절약
+  - HybridExitManager 통합으로 ATR 기반 동적 트레일링 스톱 적용
+
+- **DB 스냅샷 저장 로직 검증**:
+  - TradePatternSnapshots 테이블 저장 흐름 확인 완료
+  - 진입 시 패턴 데이터 저장 (Label=NULL)
+  - 청산 시 자동 라벨링 (Label=0 실패, Label=1 성공)
+  - 학습 데이터 조회 API 검증 (GetLabeledTradePatternSnapshotsAsync)
+
+- **거래 테이블 검증 스크립트**:
+  - quick-test-trades.ps1: TradeHistory/TradeLogs 간단 체크
+  - quick-check-snapshots.ps1: TradePatternSnapshots 검증
+  - 실시간 데이터 수집 상태 모니터링 가능
+
+### Changed
+
+- **Entry Gate Status UI 개선**:
+  - ML=0%, TF=75% 표시 → "ML: 대기", "TF: 75%"로 변경
+  - 0%는 "나쁜 예측"이 아니라 "아직 실행 안 함"을 명확히 표현
+  - 매복 모드가 아닐 때 ML.NET 비실행 상태 직관적으로 표시
+
+- **Market Signals UI 명확화**:
+  - MLTFSummary 로직 개선: ML=0일 때 TF 점수만 표시
+  - 상태 메시지 체계화: "✅ 진입 승인", "💁 매복 대기", "⏳ TF 대기 중"
+  - 매복 만료 시 마지막 TF 점수 유지로 일관성 확보
+
+### Fixed
+
+- **UI 표시 혼란 해소**:
+  - ML.NET 미실행 시 "0%" 표시로 인한 사용자 오해 제거
+  - 매복 모드 동작 원리 명확화 (CPU 절약 전략)
+  - Entry Gate와 Market Signals 표시 일관성 확보
+
 ## [2.4.6] - 2026-03-09
 
 ### Fixed

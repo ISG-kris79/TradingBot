@@ -173,15 +173,23 @@ namespace TradingBot
             }
 
             // ============================================
-            // 최종 판정: 두 AI 모두 승인해야 진입
+            // 최종 판정: 스나이퍼 필터 + (Transformer OR ML.NET)
+            // [정합성 개선] Transformer, ML.NET 둘 다 필요 없음 (하나만)
             // ============================================
-            decision.AllowEntry = decision.TransformerApproved && decision.MLNetApproved;
+            // 원본: decision.AllowEntry = decision.TransformerApproved && decision.MLNetApproved;
+            // 개선: Sniper 신호가 이미 5개 조건 중 3개를 검증했으므로
+            //       Transformer OR ML.NET 중 하나만 승인하면 진입 가능
+            decision.AllowEntry = (decision.TransformerApproved || decision.MLNetApproved);
 
             if (decision.AllowEntry)
             {
-                decision.Reason = $"✅ 더블 체크 통과 | " +
+                string aiApproval = decision.TransformerApproved && decision.MLNetApproved 
+                    ? "양쪽 다 승인!" 
+                    : (decision.TransformerApproved ? "TF만 승인" : "ML만 승인");
+
+                decision.Reason = $"✅ 진입 승인 ({aiApproval}) | " +
                     $"TF={transformerConfidence:P0} ML={mlnetProbability:P0} | " +
-                    $"Fib={decision.FibonacciLevel:P1} 조건={decision.SniperConditionsMet}/5";
+                    $"Fib={decision.FibonacciLevel:P1} 스나이퍼={decision.SniperConditionsMet}/5";
 
                 // 추천 가격 계산
                 decision.RecommendedEntry = currentPrice;
@@ -192,11 +200,11 @@ namespace TradingBot
             {
                 var reasons = new List<string>();
                 if (!decision.TransformerApproved)
-                    reasons.Add($"Transformer={transformerConfidence:P0}<{TransformerConfidenceThreshold:P0}");
+                    reasons.Add($"TF={transformerConfidence:P0}<{TransformerConfidenceThreshold:P0}");
                 if (!decision.MLNetApproved)
-                    reasons.Add($"MLNet={mlnetProbability:P0}<{MLNetProbabilityThreshold:P0}");
+                    reasons.Add($"ML={mlnetProbability:P0}<{MLNetProbabilityThreshold:P0}");
 
-                decision.Reason = $"❌ 더블 체크 실패 | {string.Join(", ", reasons)}";
+                decision.Reason = $"❌ 차단 | {string.Join(" AND ", reasons)}";
             }
 
             return decision;

@@ -649,6 +649,32 @@ namespace TradingBot.Services
         }
 
         /// <summary>
+        /// Footer 로그 저장
+        /// </summary>
+        public async Task SaveFooterLogAsync(DateTime timestamp, string message)
+        {
+            try
+            {
+                using var conn = new SqlConnection(_connStr);
+                await conn.OpenAsync();
+
+                string insertSql = @"
+                INSERT INTO FooterLogs (Timestamp, Message)
+                VALUES (@Timestamp, @Message)";
+
+                await conn.ExecuteAsync(insertSql, new
+                {
+                    Timestamp = timestamp,
+                    Message = message
+                }, commandTimeout: QueryTimeout);
+            }
+            catch (Exception ex)
+            {
+                Log($"❌ [DB] Footer 로그 저장 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// 라이브 로그 조회
         /// </summary>
         public async Task<List<(DateTime Timestamp, string Category, string? Symbol, string Message)>> GetLiveLogsAsync(

@@ -1125,6 +1125,116 @@ namespace TradingBot.Models
         }
 
         // TargetPrice, StopLossPrice 등 값이 바뀔 때 OnPropertyChanged("ExitStrategySummary") 호출 필요
+        
+        // [NEW] 진입 상태 표시
+        private string _entryStatus = "대기";
+        public string EntryStatus
+        {
+            get => _entryStatus;
+            set
+            {
+                if (_entryStatus != value)
+                {
+                    _entryStatus = value;
+                    OnPropertyChanged(nameof(EntryStatus));
+                    OnPropertyChanged(nameof(EntryStatusColor));
+                    OnPropertyChanged(nameof(EntryStatusIcon));
+                }
+            }
+        }
+
+        // 진입 상태에 따른 색상
+        public Brush EntryStatusColor
+        {
+            get
+            {
+                if (IsPositionActive) return Brushes.Gold;  // 진입 중
+                if (_entryStatus.Contains("RSI")) return Brushes.Orange;  // RSI 부족
+                if (_entryStatus.Contains("AI")) return Brushes.OrangeRed;  // AI 부족
+                if (_entryStatus.Contains("박스권")) return Brushes.SkyBlue;  // 박스권 대기
+                if (_entryStatus.Contains("게이트")) return Brushes.Red;  // 게이트 차단
+                if (_entryStatus.Contains("볼륨")) return Brushes.Yellow;  // 볼륨 부족
+                if (_entryStatus.Contains("대기")) return Brushes.LightGray;  // 일반 대기
+                return Brushes.White;
+            }
+        }
+
+        // 상태 아이콘
+        public string EntryStatusIcon
+        {
+            get
+            {
+                if (IsPositionActive) return "🟢";  // 진녹색 원 - 진입 중
+                if (_entryStatus.Contains("RSI")) return "🟡";  // 노란색 원 - RSI 부족
+                if (_entryStatus.Contains("AI")) return "🔴";  // 빨간색 원 - AI 부족
+                if (_entryStatus.Contains("박스권")) return "🔵";  // 파란색 원 - 박스권
+                if (_entryStatus.Contains("게이트")) return "⛔";  // 진입 금지
+                if (_entryStatus.Contains("볼륨")) return "🟠";  // 주황색 원
+                return "⏸️";  // 일시정지 - 대기
+            }
+        }
+
+        // 리스크 요약 (SL/TP 가격)
+        public string RiskSummary
+        {
+            get
+            {
+                if (!IsPositionActive) return "-";
+                if (StopLossPrice > 0 && TargetPrice > 0)
+                {
+                    return $"SL: {StopLossPrice:F2} | TP: {TargetPrice:F2}";
+                }
+                return "-";
+            }
+        }
+
+        // [NEW] ML/TF 확률 표시
+        private float _mlProbability = -1f;
+        public float MLProbability
+        {
+            get => _mlProbability;
+            set
+            {
+                if (Math.Abs(_mlProbability - value) > 0.001f)
+                {
+                    _mlProbability = value;
+                    OnPropertyChanged(nameof(MLProbability));
+                    OnPropertyChanged(nameof(MLProbabilityText));
+                }
+            }
+        }
+
+        public string MLProbabilityText => _mlProbability > 0 ? $"ML: {_mlProbability:P0}" : "ML: 대기";
+
+        private float _tfConfidence = -1f;
+        public float TFConfidence
+        {
+            get => _tfConfidence;
+            set
+            {
+                if (Math.Abs(_tfConfidence - value) > 0.001f)
+                {
+                    _tfConfidence = value;
+                    OnPropertyChanged(nameof(TFConfidence));
+                    OnPropertyChanged(nameof(TFConfidenceText));
+                }
+            }
+        }
+
+        public string TFConfidenceText => _tfConfidence > 0 ? $"TF: {_tfConfidence:P0}" : "TF: 대기";
+
+        // ML/TF 확률 평균
+        public string MLTFSummary
+        {
+            get
+            {
+                // [FIX] ML=0은 매복 모드 외 상태이므로 TF만 표시
+                if (_mlProbability <= 0 && _tfConfidence < 0) return "-";
+                if (_mlProbability <= 0 && _tfConfidence >= 0) return $"TF: {_tfConfidence:P0}";
+                if (_tfConfidence < 0) return $"ML: {_mlProbability:P0}";
+                return $"ML: {_mlProbability:P0} | TF: {_tfConfidence:P0}";
+            }
+        }
     }
 
 

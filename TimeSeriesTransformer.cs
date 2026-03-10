@@ -11,7 +11,6 @@ namespace TradingBot.Services.AI
     /// </summary>
     public class TimeSeriesTransformer : Module<Tensor, Tensor>
     {
-        private bool _disposed = false;
         private readonly int _dModel;
         private readonly Module<Tensor, Tensor> _inputEmbedding;
         private readonly PositionalEncoding _positionalEncoding;
@@ -55,47 +54,29 @@ namespace TradingBot.Services.AI
             // input: [batch_size, seq_len, input_dim]
 
             // 1. Embedding
-            using var embedded = _inputEmbedding.forward(input); // -> [batch_size, seq_len, d_model]
+            var embedded = _inputEmbedding.forward(input); // -> [batch_size, seq_len, d_model]
             
             // Scaling (Attention is All You Need 논문 참조)
-            using var scaled = embedded * Math.Sqrt(_dModel);
+            var scaled = embedded * Math.Sqrt(_dModel);
 
             // 2. Positional Encoding
-            using var withPe = _positionalEncoding.forward(scaled);
+            var withPe = _positionalEncoding.forward(scaled);
 
             // 3. Transformer Encoder
             // TorchSharp Transformer는 [seq_len, batch_size, feature] 입력을 기대함
-            using var permuted1 = withPe.permute(1, 0, 2); // -> [seq_len, batch_size, d_model]
+            var permuted1 = withPe.permute(1, 0, 2); // -> [seq_len, batch_size, d_model]
             
-            using var encoded = _transformerEncoder.forward(permuted1, null, null);
+            var encoded = _transformerEncoder.forward(permuted1, null, null);
             
-            using var permuted2 = encoded.permute(1, 0, 2); // -> [batch_size, seq_len, d_model]
+            var permuted2 = encoded.permute(1, 0, 2); // -> [batch_size, seq_len, d_model]
 
             // 4. Output
             // Many-to-One: 마지막 시점(t)의 hidden state만 사용하여 예측
-            using var lastStep = permuted2.index(TensorIndex.Colon, TensorIndex.Single(-1), TensorIndex.Colon); // -> [batch_size, d_model]
+            var lastStep = permuted2.index(TensorIndex.Colon, TensorIndex.Single(-1), TensorIndex.Colon); // -> [batch_size, d_model]
             
             var output = _outputLayer.forward(lastStep); // -> [batch_size, output_dim]
 
             return output;
-        }
-
-        protected override void Dispose(bool disposing)
-        {
-            if (!_disposed)
-            {
-                if (disposing)
-                {
-                    try
-                    {
-                        // Module의 Dispose가 자동으로 하위 레이어 정리
-                        // 추가 정리가 필요한 리소스만 여기서 처리
-                    }
-                    catch { }
-                }
-                _disposed = true;
-            }
-            base.Dispose(disposing);
         }
     }
 
@@ -104,7 +85,6 @@ namespace TradingBot.Services.AI
     /// </summary>
     public class PositionalEncoding : Module<Tensor, Tensor>
     {
-        private bool _peDisposed = false;
         private readonly Tensor _pe;
         private readonly Module<Tensor, Tensor> _dropout;
 
@@ -142,26 +122,11 @@ namespace TradingBot.Services.AI
             var seqLen = x.shape[1];
             
             // 입력 길이에 맞춰 PE 자르기 및 디바이스 이동
-            using var peSlice = _pe.index(TensorIndex.Colon, TensorIndex.Slice(0, seqLen), TensorIndex.Colon);
-            using var peOnDevice = peSlice.to(x.device);
-            using var xWithPe = x + peOnDevice;
+            var peSlice = _pe.index(TensorIndex.Colon, TensorIndex.Slice(0, seqLen), TensorIndex.Colon);
+            var peOnDevice = peSlice.to(x.device);
+            var xWithPe = x + peOnDevice;
 
             return _dropout.forward(xWithPe);
-        }
-
-        protected override void Dispose(bool disposing)
-        {
-            if (!_peDisposed && disposing)
-            {
-                try
-                {
-                    // _pe는 register_buffer로 등록되어 Module.Dispose가 자동 처리
-                    // 추가 정리 불필요
-                }
-                catch { }
-                _peDisposed = true;
-            }
-            base.Dispose(disposing);
         }
     }
 }

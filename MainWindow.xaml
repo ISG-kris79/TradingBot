@@ -544,6 +544,7 @@
                 <RowDefinition Height="64"/>
                 <RowDefinition Height="3"/>
                 <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="32"/>
             </Grid.RowDefinitions>
 
@@ -1009,71 +1010,7 @@
                                         </Grid.ColumnDefinitions>
 
                                         <TextBlock Grid.Row="0"
-                                                   Text="PASS"
-                                                   Foreground="#9CA3AF"
-                                                   FontSize="12"/>
-                                        <TextBlock Grid.Row="0"
-                                                   Grid.Column="1"
-                                                   Text="{Binding GatePassCount}"
-                                                   Foreground="{StaticResource AccentBrush}"
-                                                   FontSize="16"
-                                                   FontWeight="Bold"/>
-
-                                        <TextBlock Grid.Row="1"
-                                                   Text="BLOCK"
-                                                   Foreground="#9CA3AF"
-                                                   FontSize="12"
-                                                   Margin="0,8,0,0"/>
-                                        <TextBlock Grid.Row="1"
-                                                   Grid.Column="1"
-                                                   Text="{Binding GateBlockCount}"
-                                                   Foreground="{StaticResource ErrorBrush}"
-                                                   FontSize="16"
-                                                   FontWeight="Bold"
-                                                   Margin="0,8,0,0"/>
-
-                                        <TextBlock Grid.Row="2"
-                                                   Grid.ColumnSpan="2"
-                                                   Text="{Binding GateThresholdSummaryText}"
-                                                   Foreground="{StaticResource PrimaryBrush}"
-                                                   FontSize="12"
-                                                   FontWeight="SemiBold"
-                                                   Margin="0,10,0,0"/>
-
-                                        <TextBlock Grid.Row="3"
-                                                   Grid.ColumnSpan="2"
-                                                   Text="{Binding GateAutoTuneStatusText}"
-                                                   Foreground="#9CA3AF"
-                                                   FontSize="10"
-                                                   FontFamily="Consolas"
-                                                   Margin="0,8,0,0"
-                                                   TextWrapping="Wrap"/>
-                                    </Grid>
-                                </StackPanel>
-                            </Border>
-
-                            <!-- WaveAI Status Card -->
-                            <Border Style="{StaticResource StatCardStyle}"
-                                    Margin="0,0,0,16">
-                                <StackPanel>
-                                    <TextBlock Text="🌊 WAVE AI SCORES"
-                                               FontSize="12"
-                                               FontWeight="Bold"
-                                               Foreground="{StaticResource PrimaryBrush}"
-                                               Margin="0,0,0,12"/>
-                                    <Grid>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto"/>
-                                            <RowDefinition Height="Auto"/>
-                                            <RowDefinition Height="Auto"/>
-                                        </Grid.RowDefinitions>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-
-                                        <TextBlock Grid.Row="0"
-                                                   Text="ML.NET"
+                                                   Text="📊 ML 예측"
                                                    Foreground="#9CA3AF"
                                                    FontSize="11"/>
                                         <TextBlock Grid.Row="0"
@@ -1085,7 +1022,7 @@
                                                    FontFamily="Consolas"/>
 
                                         <TextBlock Grid.Row="1"
-                                                   Text="Transformer"
+                                                   Text="📊 TF 예측"
                                                    Foreground="#9CA3AF"
                                                    FontSize="11"
                                                    Margin="0,8,0,0"/>
@@ -1098,13 +1035,30 @@
                                                    FontFamily="Consolas"
                                                    Margin="0,8,0,0"/>
 
-                                        <TextBlock Grid.Row="2"
+                                        <StackPanel Grid.Row="2"
+                                                    Grid.ColumnSpan="2"
+                                                    Orientation="Horizontal"
+                                                    Margin="0,12,0,0">
+                                            <TextBlock Text="🎯 통과 기준: "
+                                                       Foreground="#9CA3AF"
+                                                       FontSize="10"
+                                                       VerticalAlignment="Center"
+                                                       Margin="0,0,4,0"/>
+                                            <TextBlock Text="{Binding GateThresholdSummaryText}"
+                                                       Foreground="{StaticResource PrimaryBrush}"
+                                                       FontSize="11"
+                                                       FontWeight="Bold"
+                                                       VerticalAlignment="Center"/>
+                                        </StackPanel>
+
+                                        <TextBlock Grid.Row="3"
                                                    Grid.ColumnSpan="2"
-                                                   Text="{Binding WaveStatusText}"
-                                                   Foreground="#6B7280"
+                                                   Text="{Binding GateAutoTuneStatusText}"
+                                                   Foreground="#9CA3AF"
                                                    FontSize="10"
-                                                   FontStyle="Italic"
-                                                   Margin="0,10,0,0"/>
+                                                   FontFamily="Consolas"
+                                                   Margin="0,8,0,0"
+                                                   TextWrapping="Wrap"/>
                                     </Grid>
                                 </StackPanel>
                             </Border>
@@ -1224,76 +1178,16 @@
                                 </StackPanel>
                             </Border>
 
-                            <!-- Alerts Card -->
-                            <Border Style="{StaticResource CardStyle}"
-                                    Height="300">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="*"/>
-                                    </Grid.RowDefinitions>
-                                    <Grid Margin="0,0,0,12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-
-                                        <TextBlock Text="⚠ CRITICAL ALERTS"
-                                                   FontSize="12"
-                                                   FontWeight="Bold"
-                                                   Foreground="{StaticResource ErrorBrush}"
-                                                   VerticalAlignment="Center"/>
-
-                                        <Border Grid.Column="1"
-                                                Background="{StaticResource ErrorBrush}"
-                                                CornerRadius="10"
-                                                Padding="8,2"
-                                                ToolTip="DB 실패 알림 카운트">
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="DB"
-                                                           Foreground="White"
-                                                           FontSize="10"
-                                                           FontWeight="Bold"
-                                                           Margin="0,0,4,0"/>
-                                                <TextBlock Text="{Binding DbFailureAlertCount}"
-                                                           Foreground="White"
-                                                           FontSize="10"
-                                                           FontWeight="Bold"/>
-                                            </StackPanel>
-                                        </Border>
-                                    </Grid>
-                                    <ListBox x:Name="lstAlerts"
-                                             Grid.Row="1"
-                                             ItemsSource="{Binding Alerts}"
-                                             Background="Transparent"
-                                             BorderThickness="0"
-                                             Foreground="#E0E7FF"
-                                             FontFamily="Consolas"
-                                             FontSize="12"
-                                             VirtualizingStackPanel.IsVirtualizing="True"
-                                             VirtualizingStackPanel.VirtualizationMode="Recycling"
-                                             ScrollViewer.VerticalScrollBarVisibility="Auto">
-                                        <ListBox.ItemContainerStyle>
-                                            <Style TargetType="ListBoxItem">
-                                                <Setter Property="Padding"
-                                                        Value="4,6"/>
-                                                <Setter Property="Background"
-                                                        Value="Transparent"/>
-                                            </Style>
-                                        </ListBox.ItemContainerStyle>
-                                    </ListBox>
-                                </Grid>
-                            </Border>
                             </StackPanel>
                         </ScrollViewer>
 
                         <!-- Main Content Area -->
                         <Grid Grid.Column="1">
                             <Grid.RowDefinitions>
-                                <RowDefinition Height="11*"/>
-                                <RowDefinition Height="9*"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
-
+                            
                             <!-- Market Grid -->
                             <Border Grid.Row="0"
                                     Style="{StaticResource CardStyle}"
@@ -1432,24 +1326,58 @@
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
 
-                                        <DataGridTextColumn Header="L/S"
-                                                            Binding="{Binding LsScoreText}"
-                                                            Width="140">
-                                            <DataGridTextColumn.ElementStyle>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="FontFamily"
-                                                            Value="Consolas"/>
-                                                    <Setter Property="FontWeight"
-                                                            Value="Bold"/>
-                                                    <Setter Property="HorizontalAlignment"
-                                                            Value="Center"/>
-                                                    <Setter Property="VerticalAlignment"
-                                                            Value="Center"/>
-                                                    <Setter Property="Foreground"
-                                                            Value="#E0E7FF"/>
-                                                </Style>
-                                            </DataGridTextColumn.ElementStyle>
-                                        </DataGridTextColumn>
+                                        <DataGridTemplateColumn Header="ML/TF PROB"
+                                                                Width="140">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel Margin="4,0" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding MLTFSummary}"
+                                                                   Foreground="#E0E7FF"
+                                                                   FontFamily="Consolas"
+                                                                   FontSize="11"
+                                                                   FontWeight="SemiBold"
+                                                                   HorizontalAlignment="Center"
+                                                                   TextWrapping="NoWrap"/>
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+
+                                        <DataGridTemplateColumn Header="ENTRY STATUS"
+                                                                Width="140">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel Margin="4,0" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                            <TextBlock Text="{Binding EntryStatusIcon}"
+                                                                       FontSize="14"
+                                                                       Margin="0,0,4,0"
+                                                                       VerticalAlignment="Center"/>
+                                                            <TextBlock Text="{Binding EntryStatus}"
+                                                                       Foreground="{Binding EntryStatusColor}"
+                                                                       FontSize="11"
+                                                                       FontWeight="Bold"
+                                                                       VerticalAlignment="Center"/>
+                                                        </StackPanel>
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+
+                                        <DataGridTemplateColumn Header="RISK (SL/TP)"
+                                                                Width="180">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding RiskSummary}"
+                                                               Foreground="#E0E7FF"
+                                                               FontFamily="Consolas"
+                                                               FontSize="10"
+                                                               HorizontalAlignment="Center"
+                                                               VerticalAlignment="Center"
+                                                               TextWrapping="NoWrap"/>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
 
                                         <DataGridTemplateColumn Header="SIGNAL"
                                                                 Width="130">
@@ -1507,21 +1435,6 @@
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
 
-                                        <DataGridTextColumn Header="SOURCE"
-                                                            Binding="{Binding SignalSource, TargetNullValue=-, FallbackValue=-}"
-                                                            Width="85">
-                                            <DataGridTextColumn.ElementStyle>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="HorizontalAlignment"
-                                                            Value="Center"/>
-                                                    <Setter Property="Foreground"
-                                                            Value="{StaticResource PrimaryBrush}"/>
-                                                    <Setter Property="FontWeight"
-                                                            Value="SemiBold"/>
-                                                </Style>
-                                            </DataGridTextColumn.ElementStyle>
-                                        </DataGridTextColumn>
-
                                         <DataGridTemplateColumn Header="ACTION"
                                                                 Width="80">
                                             <DataGridTemplateColumn.CellTemplate>
@@ -1541,83 +1454,66 @@
                                     </Border>
                                 </Grid>
                             </Border>
-
-                            <!-- Log Panel -->
+                            
+                            <!-- Critical Alerts -->
                             <Border Grid.Row="1"
                                     Style="{StaticResource CardStyle}"
                                     Margin="0">
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="*"/>
+                                        <RowDefinition Height="200"/>
                                     </Grid.RowDefinitions>
-                                    <TextBlock Text="📝 LIVE LOG (TRADE / GATE)"
-                                               FontSize="12"
-                                               FontWeight="Bold"
-                                               Foreground="{StaticResource PrimaryBrush}"
-                                               Margin="0,0,0,8"/>
-                                    <Grid Grid.Row="1">
+                                    <Grid Margin="0,0,0,12">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <Border Grid.Column="0"
-                                                BorderBrush="#2D3454"
-                                                BorderThickness="0,0,1,0"
-                                                Padding="0,0,8,0">
-                                            <DockPanel>
-                                                <TextBlock DockPanel.Dock="Top"
-                                                           Text="TRADE"
-                                                           Foreground="#9CA3AF"
-                                                           FontSize="10"
-                                                           FontWeight="SemiBold"
-                                                           Margin="0,0,0,4"/>
-                                                <ListBox ItemsSource="{Binding TradeLogs}"
-                                                         Background="Transparent"
-                                                         BorderThickness="0"
-                                                         FontFamily="Consolas"
-                                                         FontSize="10"
-                                                         VirtualizingStackPanel.IsVirtualizing="True"
-                                                         VirtualizingStackPanel.VirtualizationMode="Recycling"
-                                                         ScrollViewer.VerticalScrollBarVisibility="Auto">
-                                                    <ListBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding}"
-                                                                       Foreground="{Binding Converter={StaticResource LogTextToColorConverter}}"
-                                                                       TextWrapping="NoWrap"/>
-                                                        </DataTemplate>
-                                                    </ListBox.ItemTemplate>
-                                                </ListBox>
-                                            </DockPanel>
-                                        </Border>
+
+                                        <TextBlock Text="⚠ CRITICAL ALERTS"
+                                                   FontSize="12"
+                                                   FontWeight="Bold"
+                                                   Foreground="{StaticResource ErrorBrush}"
+                                                   VerticalAlignment="Center"/>
+
                                         <Border Grid.Column="1"
-                                                Padding="8,0,0,0">
-                                            <DockPanel>
-                                                <TextBlock DockPanel.Dock="Top"
-                                                           Text="GATE"
-                                                           Foreground="#9CA3AF"
+                                                Background="{StaticResource ErrorBrush}"
+                                                CornerRadius="10"
+                                                Padding="8,2"
+                                                ToolTip="DB 실패 알림 카운트">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="DB"
+                                                           Foreground="White"
                                                            FontSize="10"
-                                                           FontWeight="SemiBold"
-                                                           Margin="0,0,0,4"/>
-                                                <ListBox ItemsSource="{Binding GateLogs}"
-                                                         Background="Transparent"
-                                                         BorderThickness="0"
-                                                         FontFamily="Consolas"
-                                                         FontSize="10"
-                                                         VirtualizingStackPanel.IsVirtualizing="True"
-                                                         VirtualizingStackPanel.VirtualizationMode="Recycling"
-                                                         ScrollViewer.VerticalScrollBarVisibility="Auto">
-                                                    <ListBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding}"
-                                                                       Foreground="{Binding Converter={StaticResource LogTextToColorConverter}}"
-                                                                       TextWrapping="NoWrap"/>
-                                                        </DataTemplate>
-                                                    </ListBox.ItemTemplate>
-                                                </ListBox>
-                                            </DockPanel>
+                                                           FontWeight="Bold"
+                                                           Margin="0,0,4,0"/>
+                                                <TextBlock Text="{Binding DbFailureAlertCount}"
+                                                           Foreground="White"
+                                                           FontSize="10"
+                                                           FontWeight="Bold"/>
+                                            </StackPanel>
                                         </Border>
                                     </Grid>
+                                    <ListBox x:Name="lstAlerts"
+                                             Grid.Row="1"
+                                             ItemsSource="{Binding Alerts}"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             Foreground="#E0E7FF"
+                                             FontFamily="Consolas"
+                                             FontSize="12"
+                                             VirtualizingStackPanel.IsVirtualizing="True"
+                                             VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                        <ListBox.ItemContainerStyle>
+                                            <Style TargetType="ListBoxItem">
+                                                <Setter Property="Padding"
+                                                        Value="4,6"/>
+                                                <Setter Property="Background"
+                                                        Value="Transparent"/>
+                                            </Style>
+                                        </ListBox.ItemContainerStyle>
+                                    </ListBox>
                                 </Grid>
                             </Border>
                         </Grid>
@@ -2300,19 +2196,66 @@
                 </TabItem>
             </TabControl>
 
-            <!-- STATUS BAR -->
+            <!-- NOTIFICATION BAR (Footer Messages) -->
             <Border Grid.Row="3"
+                    Background="#1A1F3A"
+                    BorderThickness="0,2,0,0"
+                    BorderBrush="{StaticResource PrimaryBrush}"
+                    Padding="0">
+                <Border.Effect>
+                    <DropShadowEffect Color="{StaticResource PrimaryColor}"
+                                      BlurRadius="8"
+                                      ShadowDepth="0"
+                                      Opacity="0.3"/>
+                </Border.Effect>
+                <Grid Height="48">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    
+                    <!-- Status Icon -->
+                    <Border Grid.Column="0"
+                            Background="{StaticResource PrimaryBrush}"
+                            Width="48"
+                            Height="48">
+                        <TextBlock Text="🔔"
+                                   FontSize="24"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+                    </Border>
+                    
+                    <!-- Footer Message -->
+                    <Border Grid.Column="1"
+                            Background="Transparent">
+                        <TextBlock x:Name="lblFooter"
+                                   Text="SYSTEM READY  •  WAITING FOR COMMAND"
+                                   Foreground="#E0E7FF"
+                                   FontSize="14"
+                                   FontWeight="Bold"
+                                   VerticalAlignment="Center"
+                                   HorizontalAlignment="Center"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   Margin="20,0">
+                            <TextBlock.Effect>
+                                <DropShadowEffect Color="{StaticResource PrimaryColor}"
+                                                  BlurRadius="4"
+                                                  ShadowDepth="0"
+                                                  Opacity="0.4"/>
+                            </TextBlock.Effect>
+                        </TextBlock>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <!-- STATUS BAR -->
+            <Border Grid.Row="4"
                     Background="{StaticResource BackgroundMediumBrush}"
                     BorderThickness="0,1,0,0"
                     BorderBrush="#2D3454"
                     CornerRadius="0,0,12,12">
                 <Grid Margin="20,0">
-                    <TextBlock x:Name="lblFooter"
-                               Text="SYSTEM READY  •  WAITING FOR COMMAND"
-                               Foreground="#6B7280"
-                               FontSize="11"
-                               FontWeight="SemiBold"
-                               VerticalAlignment="Center"/>
                     <StackPanel Orientation="Horizontal"
                                 HorizontalAlignment="Right"
                                 VerticalAlignment="Center">
