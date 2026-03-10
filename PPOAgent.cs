@@ -28,11 +28,15 @@ namespace TradingBot.Services.AI.RL
 
         public PPOAgent(int stateDim, int actionDim, double lr = 0.0003, double gamma = 0.99, double epsClip = 0.2, int kEpochs = 4)
         {
+            if (!TorchInitializer.IsAvailable)
+                throw new InvalidOperationException(
+                    $"TorchSharp를 사용할 수 없습니다.\n{TorchInitializer.ErrorMessage}");
+
             _gamma = gamma;
             _epsClip = epsClip;
             _kEpochs = kEpochs;
             var resolved = TorchInitializer.ResolveDevice();
-            _device = resolved ?? throw new InvalidOperationException("TorchSharp 초기화 실패");
+            _device = resolved ?? throw new InvalidOperationException("TorchSharp 디바이스 확인 실패");
 
             _model = new ActorCritic(stateDim, actionDim);
             _model.to(_device);

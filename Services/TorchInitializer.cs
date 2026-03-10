@@ -109,27 +109,38 @@ namespace TradingBot.Services
             {
                 try
                 {
-                    string cached = File.ReadAllText(_probeCachePath).Trim();
-                    if (cached == "FAIL")
+                    // 프로브 캐시가 7일 이상 지난 경우 재검증 (환경 변경 가능)
+                    var cacheAge = DateTime.Now - File.GetLastWriteTime(_probeCachePath);
+                    if (cacheAge.TotalDays > 7)
                     {
-                        _errorMessage = "이전 프로브에서 TorchSharp 환경 비호환이 감지되었습니다.\n" +
-                                        "Transformer 기능이 비활성화됩니다.\n\n" +
-                                        "해결 방법:\n" +
-                                        "1. Visual C++ Redistributable 2015-2022 x64 설치\n" +
-                                        "   다운로드: https://aka.ms/vs/17/release/vc_redist.x64.exe\n" +
-                                        $"2. 프로브 캐시 파일 삭제 후 앱 재시작: {_probeCachePath}";
-                        Debug.WriteLine($"[TorchInitializer] 캐시된 프로브 결과: FAIL — 초기화 건너뜀");
-                        _available = false;
-                        return false;
+                        TryLog("[Init] probe cache expired (>7 days) — re-probing");
+                        try { File.Delete(_probeCachePath); } catch { }
                     }
-                    // cached == "OK" → 프로브 성공 캐시, 아래로 계속 진행
-                    if (string.IsNullOrWhiteSpace(cached))
+                    else
                     {
-                        _errorMessage = "TorchSharp 프로브 캐시가 비정상(빈 값)입니다. 안전 모드로 Transformer 기능을 비활성화합니다.";
-                        Debug.WriteLine($"[TorchInitializer] {_errorMessage}");
-                        _available = false;
-                        TrySaveProbeResult("FAIL");
-                        return false;
+                        string cached = File.ReadAllText(_probeCachePath).Trim();
+                        if (cached == "FAIL")
+                        {
+                            _errorMessage = "이전 프로브에서 TorchSharp 환경 비호환이 감지되었습니다.\n" +
+                                            "Transformer 기능이 비활성화됩니다.\n\n" +
+                                            "해결 방법:\n" +
+                                            "1. Visual C++ Redistributable 2015-2022 x64 설치\n" +
+                                            "   다운로드: https://aka.ms/vs/17/release/vc_redist.x64.exe\n" +
+                                            $"2. 프로브 캐시 파일 삭제 후 앱 재시작: {_probeCachePath}\n" +
+                                            $"   또는 7일 후 자동으로 재검증됩니다.";
+                            Debug.WriteLine($"[TorchInitializer] 캐시된 프로브 결과: FAIL — 초기화 건너뜀");
+                            _available = false;
+                            return false;
+                        }
+                        // cached == "OK" → 프로브 성공 캐시, 아래로 계속 진행
+                        if (string.IsNullOrWhiteSpace(cached))
+                        {
+                            _errorMessage = "TorchSharp 프로브 캐시가 비정상(빈 값)입니다. 안전 모드로 Transformer 기능을 비활성화합니다.";
+                            Debug.WriteLine($"[TorchInitializer] {_errorMessage}");
+                            _available = false;
+                            TrySaveProbeResult("FAIL");
+                            return false;
+                        }
                     }
                 }
                 catch (Exception ex)

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using TorchSharp;
 using TradingBot.Models;
+using TradingBot.Services;
 using static TorchSharp.torch;
 
 namespace TradingBot.Services.AI
@@ -67,12 +68,17 @@ namespace TradingBot.Services.AI
 
         public TimeSeriesDataLoader(int sequenceLength, int inputDim, int batchSize, bool shuffle = true, bool useCache = false, Device? device = null)
         {
+            if (!TorchInitializer.IsAvailable)
+                throw new InvalidOperationException(
+                    $"TorchSharp를 사용할 수 없습니다.\n{TorchInitializer.ErrorMessage}");
+
             _seqLen = sequenceLength;
             _inputDim = inputDim;
             _batchSize = batchSize;
             _shuffle = shuffle;
             _useCache = useCache;
-            _device = device ?? CPU;
+            _device = device ?? (TorchInitializer.ResolveDevice()
+                ?? throw new InvalidOperationException("TorchSharp 디바이스 확인 실패"));
         }
 
         public void LoadData(List<CandleData> data)

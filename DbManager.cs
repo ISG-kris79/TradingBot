@@ -3,6 +3,7 @@ using Microsoft.Data.SqlClient;
 using System.Data;
 using System.Globalization;
 using System.IO;
+using System.Text.Json;
 using TradingBot.Models;
 using TradingBot; // [수정] MainWindow 접근을 위해 추가
 using TradingBot.Shared.Models;
@@ -442,6 +443,106 @@ ORDER BY EntryTime DESC;";
             {
                 MainWindow.Instance?.AddLog($"⚠️ [DB] 패턴 학습 조회 실패: {ex.Message}");
                 return new List<TradePatternSnapshotRecord>();
+            }
+        }
+
+        public async Task<bool> SaveAiTrainingDataAsync(AiLabeledSample sample)
+        {
+            try
+            {
+                if (sample == null)
+                    return false;
+
+                int userId = GetCurrentUserId();
+                if (userId <= 0)
+                {
+                    userId = 1;
+                    MainWindow.Instance?.AddLog("⚠️ [AI][DB] 로그인 사용자 없음 → 기본 UserId=1로 라벨 샘플 저장");
+                }
+
+                string symbol = TrimForDb(sample.Symbol, 50);
+                if (string.IsNullOrWhiteSpace(symbol))
+                    return false;
+
+                DateTime entryTimeUtc = sample.EntryTimeUtc == default ? DateTime.UtcNow : sample.EntryTimeUtc;
+                decimal entryPrice = sample.EntryPrice < 0 ? 0m : sample.EntryPrice;
+                float actualProfitPct = SanitizeFloatForDb(sample.ActualProfitPct);
+                string labelSource = TrimForDb(sample.LabelSource, 120);
+                if (string.IsNullOrWhiteSpace(labelSource))
+                    labelSource = "unknown";
+
+                bool shouldEnter = sample.Feature?.ShouldEnter ?? sample.IsSuccess;
+                string featureJson = JsonSerializer.Serialize(sample.Feature ?? new MultiTimeframeEntryFeature());
+
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                string sql = @"
+IF OBJECT_ID(N'dbo.AiLabeledSamples', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.AiLabeledSamples
+    (
+        Id BIGINT IDENTITY(1,1) PRIMARY KEY,
+        UserId INT NOT NULL,
+        Symbol NVARCHAR(50) NOT NULL,
+        EntryTimeUtc DATETIME2 NOT NULL,
+        EntryPrice DECIMAL(18,8) NOT NULL,
+        ActualProfitPct FLOAT NOT NULL,
+        IsSuccess BIT NOT NULL,
+        ShouldEnter BIT NOT NULL,
+        LabelSource NVARCHAR(120) NOT NULL,
+        FeatureJson NVARCHAR(MAX) NULL,
+        CreatedAt DATETIME2 NOT NULL CONSTRAINT DF_AiLabeledSamples_CreatedAt DEFAULT SYSUTCDATETIME()
+    );
+
+    CREATE INDEX IX_AiLabeledSamples_UserSymbolTime
+        ON dbo.AiLabeledSamples(UserId, Symbol, EntryTimeUtc DESC);
+END
+
+INSERT INTO dbo.AiLabeledSamples
+(
+    UserId,
+    Symbol,
+    EntryTimeUtc,
+    EntryPrice,
+    ActualProfitPct,
+    IsSuccess,
+    ShouldEnter,
+    LabelSource,
+    FeatureJson
+)
+VALUES
+(
+    @UserId,
+    @Symbol,
+    @EntryTimeUtc,
+    @EntryPrice,
+    @ActualProfitPct,
+    @IsSuccess,
+    @ShouldEnter,
+    @LabelSource,
+    @FeatureJson
+);";
+
+                await db.ExecuteAsync(sql, new
+                {
+                    UserId = userId,
+                    Symbol = symbol,
+                    EntryTimeUtc = entryTimeUtc,
+                    EntryPrice = entryPrice,
+                    ActualProfitPct = actualProfitPct,
+                    IsSuccess = sample.IsSuccess,
+                    ShouldEnter = shouldEnter,
+                    LabelSource = labelSource,
+                    FeatureJson = featureJson
+                });
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [AI][DB] 라벨 샘플 저장 실패: {ex.Message}");
+                return false;
             }
         }
 

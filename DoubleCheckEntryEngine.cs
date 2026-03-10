@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using TradingBot.Models;
+using TradingBot.Services;
 
 namespace TradingBot
 {
@@ -38,6 +39,12 @@ namespace TradingBot
             if (!torchFeaturesEnabled)
             {
                 throw new InvalidOperationException("TransformerSettings.Enabled=false 상태에서는 DoubleCheckEntryEngine을 초기화할 수 없습니다.");
+            }
+
+            if (!TorchInitializer.IsAvailable)
+            {
+                throw new InvalidOperationException(
+                    $"TorchSharp 런타임을 사용할 수 없습니다.\n{TorchInitializer.ErrorMessage}");
             }
 
             _waveDetector = new ElliottWaveDetector();

@@ -41,6 +41,7 @@ namespace TradingBot
         // 로깅 이벤트
         public event Action<string>? OnLog;
         public event Action<string>? OnAlert;
+        public event Action<AiLabeledSample>? OnLabeledSample;
         
         public bool IsReady => _mlTrainer.IsModelLoaded && _transformerTrainer.IsModelReady;
 
@@ -53,6 +54,12 @@ namespace TradingBot
             if (!torchFeaturesEnabled)
             {
                 throw new InvalidOperationException("TransformerSettings.Enabled=false 상태에서는 AI 더블체크 게이트를 초기화할 수 없습니다.");
+            }
+
+            if (!TorchInitializer.IsAvailable)
+            {
+                throw new InvalidOperationException(
+                    $"TorchSharp 런타임을 사용할 수 없습니다. Transformer 기능이 비활성화됩니다.\n{TorchInitializer.ErrorMessage}");
             }
 
             _config = config ?? new DoubleCheckConfig();
@@ -405,8 +412,8 @@ namespace TradingBot
                 {
                     Console.WriteLine($"[AIDoubleCheck] 15분 라벨 업데이트: {symbol} pnl={markToMarketPct:F2}%");
                     
-                    // 온라인 학습: 라벨링된 샘플 추가
-                    await AddLabeledSampleToOnlineLearningAsync(symbol, entryTime, entryPrice, markToMarketPct, token);
+                    // 온라인 학습 + 외부 저장용 샘플 이벤트
+                    await AddLabeledSampleToOnlineLearningAsync(symbol, entryTime, entryPrice, markToMarketPct, "mark_to_market_15m", token);
                 }
             }
             catch (Exception ex)
@@ -443,8 +450,14 @@ namespace TradingBot
                 {
                     Console.WriteLine($"[AIDoubleCheck] 청산 라벨 반영: {symbol} pnl={actualProfitPct:F2}%");
                     
-                    // 온라인 학습: 청산 결과로 라벨 업데이트
-                    await AddLabeledSampleToOnlineLearningAsync(symbol, entryTime, entryPrice, actualProfitPct, token);
+                    // 온라인 학습 + 외부 저장용 샘플 이벤트
+                    await AddLabeledSampleToOnlineLearningAsync(
+                        symbol,
+                        entryTime,
+                        entryPrice,
+                        actualProfitPct,
+                        string.IsNullOrWhiteSpace(closeReason) ? "trade_close" : $"trade_close:{closeReason}",
+                        token);
                 }
             }
             catch (Exception ex)
@@ -549,11 +562,9 @@ namespace TradingBot
             DateTime entryTime,
             decimal entryPrice,
             float actualProfitPct,
+            string labelSource,
             CancellationToken token = default)
         {
-            if (_onlineLearning == null)
-                return;
-
             try
             {
                 // Feature 재추출 (진입 시점 기준)
@@ -562,13 +573,30 @@ namespace TradingBot
                     return;
 
                 // 라벨 설정 (목표 +2%, 손절 -1% 기준)
-                bool shouldEnter = actualProfitPct >= 2.0f; // 수익 2% 이상이면 진입 성공
+                bool shouldEnter = actualProfitPct >= 2.0f;
                 feature.ShouldEnter = shouldEnter;
+                feature.ActualProfitPct = actualProfitPct;
+                feature.Timestamp = entryTime;
+                feature.EntryPrice = entryPrice;
 
                 // 온라인 학습 서비스에 추가
-                await _onlineLearning.AddLabeledSampleAsync(feature);
-                
-                OnLog?.Invoke($"[OnlineLearning] 샘플 추가: {symbol} PnL={actualProfitPct:F2}% → Label={shouldEnter} | 윈도우={_onlineLearning.WindowSize}");
+                if (_onlineLearning != null)
+                {
+                    await _onlineLearning.AddLabeledSampleAsync(feature);
+                    OnLog?.Invoke($"[OnlineLearning] 샘플 추가: {symbol} PnL={actualProfitPct:F2}% → Label={shouldEnter} | 윈도우={_onlineLearning.WindowSize}");
+                }
+
+                // 외부(DB) 적재용 이벤트 발행
+                OnLabeledSample?.Invoke(new AiLabeledSample
+                {
+                    Symbol = symbol,
+                    EntryTimeUtc = entryTime.Kind == DateTimeKind.Utc ? entryTime : entryTime.ToUniversalTime(),
+                    EntryPrice = entryPrice,
+                    ActualProfitPct = actualProfitPct,
+                    IsSuccess = shouldEnter,
+                    LabelSource = string.IsNullOrWhiteSpace(labelSource) ? "unknown" : labelSource,
+                    Feature = feature
+                });
             }
             catch (Exception ex)
             {
@@ -1125,6 +1153,17 @@ namespace TradingBot
         public bool Labeled { get; set; }
         public string? LabelSource { get; set; }
         public DateTime? LabeledAt { get; set; }
+    }
+
+    public class AiLabeledSample
+    {
+        public string Symbol { get; set; } = string.Empty;
+        public DateTime EntryTimeUtc { get; set; }
+        public decimal EntryPrice { get; set; }
+        public float ActualProfitPct { get; set; }
+        public bool IsSuccess { get; set; }
+        public string LabelSource { get; set; } = "unknown";
+        public MultiTimeframeEntryFeature Feature { get; set; } = new MultiTimeframeEntryFeature();
     }
 
     public enum CoinType

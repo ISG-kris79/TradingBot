@@ -7,6 +7,23 @@
 
 ## [Unreleased]
 
+## [2.4.18] - 2026-03-10
+
+### Fixed
+
+- **TorchSharp 안전성 전수 감사 및 수정**:
+  - `TimeSeriesDataLoader`: `torch.CPU` 직접 접근 → `IsAvailable` 가드 + `ResolveDevice()` 폴백 (BEX64 크래시 원인 차단)
+  - `EntryTimingTransformerTrainer`, `TransformerWaveNavigator`, `PPOAgent`: `IsAvailable` 사전 체크 추가
+  - `AIDoubleCheckEntryGate`, `DoubleCheckEntryEngine`: Transformer 인스턴스 생성 전 `IsAvailable` 가드 추가
+  - `TorchInitializer`: 프로브 캐시 7일 자동 만료 — FAIL 캐시 영구 고착으로 인한 Transformer 영구 비활성화 방지
+
+### Added
+
+- **자기진화형 AI 학습 데이터 파이프라인**:
+  - `AIDoubleCheckEntryGate`에 `OnLabeledSample` 이벤트 추가
+  - `TradingEngine`에서 이벤트 구독 → `DbManager.SaveAiTrainingDataAsync()`로 DB 자동 적재
+  - `AiLabeledSamples` 테이블 자동 생성 및 라벨 데이터 영속화
+
 ## [2.4.17] - 2026-03-10
 
 ### Added

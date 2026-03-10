@@ -485,6 +485,7 @@ namespace TradingBot
                     _aiDoubleCheckEntryGate = new AIDoubleCheckEntryGate(_exchangeService, doubleCheckConfig);
                     _aiDoubleCheckEntryGate.OnLog += msg => OnStatusLog?.Invoke(msg);
                     _aiDoubleCheckEntryGate.OnAlert += msg => OnAlert?.Invoke(msg);
+                    _aiDoubleCheckEntryGate.OnLabeledSample += sample => _ = PersistAiLabeledSampleToDbAsync(sample);
                     if (_aiDoubleCheckEntryGate.IsReady)
                     {
                         OnStatusLog?.Invoke(
@@ -5151,6 +5152,19 @@ namespace TradingBot
             catch (Exception ex)
             {
                 OnStatusLog?.Invoke($"⚠️ [AI DoubleCheck] 청산 라벨 반영 실패: {symbol} - {ex.Message}");
+            }
+        }
+
+        private async Task PersistAiLabeledSampleToDbAsync(AiLabeledSample sample)
+        {
+            try
+            {
+                await _dbManager.SaveAiTrainingDataAsync(sample);
+                OnStatusLog?.Invoke($"🗄️ [AI][DB] 라벨 샘플 저장 완료 | sym={sample.Symbol} pnl={sample.ActualProfitPct:F2}% success={sample.IsSuccess}");
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [AI][DB] 라벨 샘플 저장 실패 | sym={sample.Symbol} detail={ex.Message}");
             }
         }
 
