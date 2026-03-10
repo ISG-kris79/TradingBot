@@ -7,6 +7,36 @@
 
 ## [Unreleased]
 
+## [2.4.27] - 2026-03-10
+
+### Added
+
+- **AI 서비스 프로세스 분리**:
+  - ML.NET 예측 모델을 외부 프로세스(TradingBot.MLService.exe)로 실행
+  - AIPredictor: MLServiceClient를 통한 외부 ML 예측(우선) + 로컬 폴백
+  - AIDoubleCheckEntryGate: TorchServiceClient를 통한 외부 Transformer 예측
+  - Named Pipe 기반 IPC(Inter-Process Communication) 구현으로 프로세스 간 격리
+
+- **AI 알림 통일**:
+  - Transformer 주기 재학습 CRITICAL 알림 추가
+  - 외부/로컬 모드 모두 동일하게 "[CRITICAL][AI][Transformer]" 형식으로 표준화
+  - NormalizeCriticalProjectName()으로 "TorchService" → "Transformer"로 통일
+
+- **빌드 자동화 개선**:
+  - MSBuild 타겟: CopyExternalAiServicesToOutput, CopyExternalAiServicesToPublish
+  - 빌드/배포 시 MLService, TorchService 실행파일 자동 복사 to Services/ 폴더
+  - 배포 후 외부 AI 프로세스 즉시 사용 가능
+
+- **관리자 문서화**:
+  - PROCESS_AI_ARCHITECTURE.md: 외부 AI 서비스 아키텍처 상세 설명
+  - setup-ai-services.ps1: AI 서비스 프로세스 수동 검증/디버그 스크립트
+
+### Changed
+
+- **AI 예측 경로 대칭화**:
+  - ML.NET과 Transformer 모두 (외부 프로세스 우선 + 로컬 폴백) 동일한 패턴으로 동작
+  - 상태 모니터링 획일화: Both use AIServiceProcessManager health-check (30s interval, auto-restart)
+
 ## [2.4.26] - 2026-03-10
 
 ### Changed
