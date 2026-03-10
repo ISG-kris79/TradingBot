@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using TorchSharp;
+using TradingBot.Services;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 
@@ -38,7 +39,7 @@ namespace TradingBot
         public TransformerWaveNavigator(string modelPath = "transformer_wave_navigator.dat")
         {
             _modelPath = modelPath;
-            _device = cuda.is_available() ? torch.device("cuda") : torch.device("cpu");
+            _device = TorchInitializer.ResolveDevice();
             
             try
             {

@@ -18,6 +18,8 @@ namespace TradingBot.Services
         private static string? _errorMessage = null;
         private static readonly string _probeCachePath =
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TradingBot", ".torch_probe_result");
+        private static readonly string _torchInitLogPath =
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TradingBot", "torch_init.log");
 
         /// <summary>
         /// TorchSharp가 사용 가능한지 확인
@@ -50,10 +52,13 @@ namespace TradingBot.Services
             try
             {
                 string probeResultPath = GetProbeResultPath();
+                EnsureDirectoryExists(probeResultPath);
+                TryLog($"[ProbeChild] start path={probeResultPath}");
 
                 // TorchSharp의 static 초기화 트리거 — 네이티브 크래시 시 이 프로세스만 종료됨
                 var device = TorchSharp.torch.CPU;
                 File.WriteAllText(probeResultPath, "OK");
+                TryLog("[ProbeChild] result=OK");
                 Environment.Exit(0);
             }
             catch (Exception)
@@ -61,7 +66,9 @@ namespace TradingBot.Services
                 try
                 {
                     string probeResultPath = GetProbeResultPath();
+                    EnsureDirectoryExists(probeResultPath);
                     File.WriteAllText(probeResultPath, "FAIL");
+                    TryLog("[ProbeChild] result=FAIL");
                 }
                 catch { /* 파일 쓰기 실패 시 무시 */ }
                 Environment.Exit(1);
@@ -78,6 +85,7 @@ namespace TradingBot.Services
                 return _available;
 
             _initialized = true;
+            TryLog("[Init] TryInitialize start");
 
             string? disableTorch = Environment.GetEnvironmentVariable("TRADINGBOT_DISABLE_TORCH");
             if (string.Equals(disableTorch, "1", StringComparison.OrdinalIgnoreCase))
@@ -85,6 +93,7 @@ namespace TradingBot.Services
                 _errorMessage = "환경 변수(TRADINGBOT_DISABLE_TORCH=1)에 의해 TorchSharp 기능이 비활성화되었습니다.";
                 _available = false;
                 TrySaveProbeFail();
+                TryLog("[Init] disabled by env TRADINGBOT_DISABLE_TORCH=1");
                 return false;
             }
 
@@ -196,9 +205,11 @@ namespace TradingBot.Services
 
                 if (!File.Exists(exePath))
                 {
-                    Debug.WriteLine($"[TorchInitializer] 프로브 실행 파일 없음: {exePath} — 직접 초기화 시도");
-                    TrySaveProbeResult("OK"); // 개발 환경에서는 OK 가정
-                    return true;
+                    _errorMessage = $"프로브 실행 파일을 찾을 수 없습니다: {exePath}";
+                    Debug.WriteLine($"[TorchInitializer] {_errorMessage}");
+                    TrySaveProbeResult("FAIL");
+                    TryLog($"[ProbeParent] exe missing: {exePath}");
+                    return false;
                 }
 
                 using var process = new Process();
@@ -211,6 +222,7 @@ namespace TradingBot.Services
                     WindowStyle = ProcessWindowStyle.Hidden
                 };
                 process.StartInfo.EnvironmentVariables[ProbePathEnvVar] = _probeCachePath;
+                TryLog($"[ProbeParent] start child exe={exePath} cache={_probeCachePath}");
 
                 // 프로브 전에 이전 캐시 파일 삭제 (프로브 프로세스가 새로 작성하도록)
                 if (File.Exists(_probeCachePath))
@@ -240,6 +252,7 @@ namespace TradingBot.Services
                 if (process.ExitCode == 0 && probeFileResult == "OK")
                 {
                     Debug.WriteLine("[TorchInitializer] 서브프로세스 프로브 성공 — TorchSharp 사용 가능");
+                    TryLog("[ProbeParent] child success result=OK");
                     return true;
                 }
                 else
@@ -259,14 +272,17 @@ namespace TradingBot.Services
                                     $"2. 프로브 캐시 파일 삭제 후 앱 재시작: {_probeCachePath}";
                     Debug.WriteLine($"[TorchInitializer] 프로브 실패 — {detail}");
                     TrySaveProbeResult("FAIL");
+                    TryLog($"[ProbeParent] child failed detail={detail} probeFile='{probeFileResult}'");
                     return false;
                 }
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[TorchInitializer] 프로브 실행 예외: {ex.Message} — 직접 초기화 시도");
-                // 프로브 자체가 실행 불가능하면 직접 초기화 시도 (위험하지만 fallback)
-                return true;
+                _errorMessage = $"TorchSharp 프로브 실행 예외: {ex.Message}";
+                Debug.WriteLine($"[TorchInitializer] {_errorMessage} — 안전 모드로 비활성화");
+                TrySaveProbeResult("FAIL");
+                TryLog($"[ProbeParent] exception={ex.Message}");
+                return false;
             }
         }
 
@@ -318,6 +334,7 @@ namespace TradingBot.Services
                 }
 
                 File.WriteAllText(_probeCachePath, result);
+                TryLog($"[ProbeCache] write {result}");
             }
             catch (Exception ex) { Debug.WriteLine($"[TorchInitializer] 프로브 결과 저장 실패: {ex.Message}"); }
         }
@@ -336,6 +353,28 @@ namespace TradingBot.Services
             }
 
             return _probeCachePath;
+        }
+
+        private static void EnsureDirectoryExists(string filePath)
+        {
+            string? dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrWhiteSpace(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+        }
+
+        private static void TryLog(string message)
+        {
+            try
+            {
+                EnsureDirectoryExists(_torchInitLogPath);
+                string line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}{Environment.NewLine}";
+                File.AppendAllText(_torchInitLogPath, line);
+            }
+            catch
+            {
+            }
         }
 
         /// <summary>

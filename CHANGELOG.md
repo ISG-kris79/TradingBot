@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+## [2.4.9] - 2026-03-10
+
+### Fixed
+
+- **BEX64 재발 대응(2차 안정화)**:
+  - Torch 프로브 실행 예외 시 위험한 "직접 초기화" 폴백 제거 (fail-closed)
+  - 프로브 실행 파일 미존재 시 FAIL 처리로 안전 비활성화
+  - Torch 초기화 진단 로그 추가: `%LocalAppData%/TradingBot/torch_init.log`
+  - 프로브 자식/부모/캐시 기록을 로그로 남겨 재현 시 원인 추적 강화
+
 ## [2.4.8] - 2026-03-10
 
 ### Fixed
