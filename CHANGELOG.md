@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+## [2.4.15] - 2026-03-10
+
+### Fixed
+
+- **자동 업데이트 다운로드 후 적용 안 되는 문제 수정**:
+  - 업데이트 체크 URL을 `latest/download` 디렉터리에서 `releases.win.json` 직접 경로로 변경
+  - Velopack 설치 경로(`current`, `Update.exe`) 여부를 먼저 검사하도록 개선
+  - Setup.exe로 설치되지 않은 경우 자동 업데이트 불가 안내창 표시
+  - `ApplyUpdatesAndRestart()` 호출 후 명시적으로 앱 종료를 수행하도록 보강
+
 ## [2.4.14] - 2026-03-10
 
 ### Critical Fix

@@ -413,6 +413,7 @@ namespace TradingBot
                 {
                     Debug.WriteLine("[Update] 업데이트 적용 및 재시작...");
                     mgr.ApplyUpdatesAndRestart(updateInfo);
+                    Current?.Shutdown();
                 }
             }
             catch (Exception ex)
@@ -439,6 +440,40 @@ namespace TradingBot
             }
         }
 
+        private static bool IsInstalledViaVelopack(out string reason)
+        {
+            reason = string.Empty;
+
+            try
+            {
+                string baseDir = AppContext.BaseDirectory.TrimEnd(
+                    System.IO.Path.DirectorySeparatorChar,
+                    System.IO.Path.AltDirectorySeparatorChar);
+
+                string currentDirName = new System.IO.DirectoryInfo(baseDir).Name;
+                string? parentDir = System.IO.Directory.GetParent(baseDir)?.FullName;
+                string updateExeInBase = System.IO.Path.Combine(baseDir, "Update.exe");
+                string updateExeInParent = parentDir != null
+                    ? System.IO.Path.Combine(parentDir, "Update.exe")
+                    : string.Empty;
+
+                bool looksInstalled = string.Equals(currentDirName, "current", StringComparison.OrdinalIgnoreCase)
+                    || System.IO.File.Exists(updateExeInBase)
+                    || (!string.IsNullOrEmpty(updateExeInParent) && System.IO.File.Exists(updateExeInParent));
+
+                if (looksInstalled)
+                    return true;
+
+                reason = $"Velopack 설치 경로가 아닙니다. 현재 경로: {baseDir}";
+                return false;
+            }
+            catch (Exception ex)
+            {
+                reason = $"설치 경로 확인 실패: {ex.Message}";
+                return false;
+            }
+        }
+
         private async System.Threading.Tasks.Task<bool> CheckForUpdatesCoreAsync(string phase)
         {
             try
@@ -448,7 +483,37 @@ namespace TradingBot
                 await System.Threading.Tasks.Task.CompletedTask;
                 return false;
 #else
-                var updateUrl = "https://github.com/ISG-kris79/TradingBot/releases/latest/download";
+                if (!IsInstalledViaVelopack(out string installReason))
+                {
+                    Debug.WriteLine($"[Update] 자동 업데이트 비활성: {installReason}");
+
+                    if (!_updateErrorShown)
+                    {
+                        _updateErrorShown = true;
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            var infoDialog = new UpdateDialogWindow(
+                                "자동 업데이트 안내",
+                                "자동 업데이트를 사용할 수 없습니다",
+                                "현재 실행 파일은 Setup.exe로 설치된 Velopack 경로가 아닙니다.\n\n" +
+                                "GitHub Releases의 TradingBot-win-Setup.exe로 설치한 버전에서만 자동 업데이트가 동작합니다.\n\n" +
+                                installReason,
+                                primaryButtonText: "확인",
+                                showSecondaryButton: false);
+
+                            if (Current?.MainWindow != null)
+                            {
+                                infoDialog.Owner = Current.MainWindow;
+                            }
+
+                            infoDialog.ShowDialog();
+                        });
+                    }
+
+                    return false;
+                }
+
+                var updateUrl = "https://github.com/ISG-kris79/TradingBot/releases/latest/download/releases.win.json";
                 var mgr = new UpdateManager(updateUrl);
 
                 Debug.WriteLine($"[Update] {phase} 업데이트 확인: {updateUrl}");
@@ -558,6 +623,7 @@ namespace TradingBot
                 if (restartNow)
                 {
                     mgr.ApplyUpdatesAndRestart(updateInfo);
+                    Current?.Shutdown();
                     return true;
                 }
 
