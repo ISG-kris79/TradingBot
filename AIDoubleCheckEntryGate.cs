@@ -56,7 +56,7 @@ namespace TradingBot
                 throw new InvalidOperationException("TransformerSettings.Enabled=false 상태에서는 AI 더블체크 게이트를 초기화할 수 없습니다.");
             }
 
-            if (!TorchInitializer.IsAvailable)
+            if (!TorchInitializer.IsAvailable && !TorchInitializer.TryInitialize())
             {
                 throw new InvalidOperationException(
                     $"TorchSharp 런타임을 사용할 수 없습니다. Transformer 기능이 비활성화됩니다.\n{TorchInitializer.ErrorMessage}");

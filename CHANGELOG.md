@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+## [2.4.20] - 2026-03-10
+
+### Fixed
+
+- **WaveAI 초기화 실패 수정 (TorchSharp 런타임 사용할 수 없습니다)**:
+  - `DoubleCheckEntryEngine`, `AIDoubleCheckEntryGate`: `IsAvailable`만 체크하던 것을 `TryInitialize()` 호출로 변경
+  - WaveAI가 TradingEngine보다 먼저 초기화될 때 TorchSharp가 아직 쳐크되지 않아 실패하던 타이밍 문제 해결
+
 ## [2.4.19] - 2026-03-10
 
 ### Fixed

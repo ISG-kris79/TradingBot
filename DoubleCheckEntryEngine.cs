@@ -41,7 +41,9 @@ namespace TradingBot
                 throw new InvalidOperationException("TransformerSettings.Enabled=false 상태에서는 DoubleCheckEntryEngine을 초기화할 수 없습니다.");
             }
 
-            if (!TorchInitializer.IsAvailable)
+            // [v2.4.20 FIX] IsAvailable만 체크하면 아직 TryInitialize()가 호출되지 않은 시점에서 실패함
+            // WaveAI가 TradingEngine보다 먼저 초기화될 수 있으므로 직접 TryInitialize() 호출
+            if (!TorchInitializer.IsAvailable && !TorchInitializer.TryInitialize())
             {
                 throw new InvalidOperationException(
                     $"TorchSharp 런타임을 사용할 수 없습니다.\n{TorchInitializer.ErrorMessage}");
