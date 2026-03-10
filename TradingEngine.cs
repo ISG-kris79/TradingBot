@@ -1265,8 +1265,12 @@ namespace TradingBot
                 }
                 else
                 {
+                    // AI 게이트가 없어도 라벨링 통계는 파일에서 직접 조회
+                    var stats = GetRecentLabelStatsFromFiles(10);
                     bool coreModelReady = _aiPredictor?.IsModelLoaded ?? false;
-                    MainWindow.Instance?.UpdateAiLearningStatusUI(0, 0, 0, 0, _activeAiDecisionIds.Count, coreModelReady);
+                    MainWindow.Instance?.UpdateAiLearningStatusUI(
+                        stats.total, stats.labeled, stats.markToMarket,
+                        stats.tradeClose, _activeAiDecisionIds.Count, coreModelReady);
                 }
 
                 // 2. 실시간 감시 시작 (Non-blocking)
@@ -3475,9 +3479,12 @@ namespace TradingBot
                 }
                 else
                 {
-                    // AI 게이트가 없을 때 기본값 표시
+                    // AI 게이트가 없어도 라벨링 통계는 파일에서 직접 조회
+                    var stats = GetRecentLabelStatsFromFiles(10);
                     bool coreModelReady = _aiPredictor?.IsModelLoaded ?? false;
-                    MainWindow.Instance?.UpdateAiLearningStatusUI(0, 0, 0, 0, _activeAiDecisionIds.Count, coreModelReady);
+                    MainWindow.Instance?.UpdateAiLearningStatusUI(
+                        stats.total, stats.labeled, stats.markToMarket,
+                        stats.tradeClose, _activeAiDecisionIds.Count, coreModelReady);
                 }
             }
             catch (Exception ex)
@@ -5332,6 +5339,62 @@ namespace TradingBot
             }
 
             return removed;
+        }
+
+        /// <summary>
+        /// AI 게이트가 없을 때도 라벨링 통계를 직접 파일에서 조회
+        /// </summary>
+        private (int total, int labeled, int markToMarket, int tradeClose) GetRecentLabelStatsFromFiles(int maxFiles = 10)
+        {
+            try
+            {
+                string dataCollectionPath = Path.Combine("TrainingData", "EntryDecisions");
+                if (!Directory.Exists(dataCollectionPath))
+                    return (0, 0, 0, 0);
+
+                int safeMaxFiles = Math.Max(1, maxFiles);
+                var files = Directory.GetFiles(dataCollectionPath, "EntryDecisions_*.json")
+                    .OrderByDescending(f => f)
+                    .Take(safeMaxFiles);
+
+                int total = 0;
+                int labeled = 0;
+                int markToMarket = 0;
+                int tradeClose = 0;
+
+                foreach (var file in files)
+                {
+                    var json = File.ReadAllText(file);
+                    var records = JsonSerializer.Deserialize<List<EntryDecisionRecord>>(json);
+                    if (records == null)
+                        continue;
+
+                    total += records.Count;
+
+                    foreach (var record in records)
+                    {
+                        if (!record.Labeled)
+                            continue;
+
+                        labeled++;
+
+                        if (string.Equals(record.LabelSource, "mark_to_market_15m", StringComparison.OrdinalIgnoreCase))
+                            markToMarket++;
+
+                        if (!string.IsNullOrWhiteSpace(record.LabelSource)
+                            && record.LabelSource.StartsWith("trade_close", StringComparison.OrdinalIgnoreCase))
+                        {
+                            tradeClose++;
+                        }
+                    }
+                }
+
+                return (total, labeled, markToMarket, tradeClose);
+            }
+            catch
+            {
+                return (0, 0, 0, 0);
+            }
         }
 
         // [GATE 제거] 재설계 예정

@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+## [2.4.25] - 2026-03-10
+
+### Fixed
+
+- **AI Learning Status 총 결정 수 표시 오류 수정**:
+  - Torch 안전모드에서 `AIDoubleCheckEntryGate`가 null일 때도 라벨링 통계를 조회할 수 있도록 개선
+  - `GetRecentLabelStatsFromFiles` 메서드 추가로 Gate 없이도 파일에서 직접 통계 조회
+  - 결과적으로 Transformer 비활성 환경에서도 실제 누적된 라벨링 데이터가 UI에 정상 표시됨
+  - 초기화 시점과 대시보드 갱신 시점 두 곳 모두 반영
+
 ## [2.4.24] - 2026-03-10
 
 ### Fixed
