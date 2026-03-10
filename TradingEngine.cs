@@ -36,7 +36,7 @@ namespace TradingBot
         private readonly List<string> _symbols;
 
         public decimal InitialBalance { get; private set; } = 0; // 프로그램 시작 시점의 자산
-        private DateTime _engineStartTime = DateTime.Now;
+        private DateTime _engineStartTime = DateTime.MinValue; // [수정] 엔진 시작 시에만 설정
         private DateTime _lastReportTime = DateTime.MinValue;
         private decimal _periodicReportBaselineEquity = 0m;
 
@@ -46,8 +46,10 @@ namespace TradingBot
         // 블랙리스트 (심볼, 해제시간) - 지루함 청산 종목 재진입 방지
         private ConcurrentDictionary<string, DateTime> _blacklistedSymbols = new ConcurrentDictionary<string, DateTime>();
         // 슬롯 설정
-        private const int MAX_TOTAL_SLOTS = 6; // 기본 최대 6개 진입
-        private const int MAX_SLOTS_WITH_MAJOR_BOOST = 7; // 메이저 없을 때 메이저 1개 추가 허용
+        // [수정] 슬롯 제한: 메이저 최대 4개, PUMP 최대 2개 = 총 6개
+        private const int MAX_TOTAL_SLOTS = 6;        // 총 최대 6개
+        private const int MAX_MAJOR_SLOTS = 4;        // 메이저 최대 4개
+        private const int MAX_PUMP_SLOTS = 2;         // PUMP(밈) 최대 2개
         private const int PUMP_MANUAL_LEVERAGE = 20; // 20배 롱 전용 대응 매뉴얼
         private const int SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 1000;
         private const int MAJOR_SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 180;
@@ -57,10 +59,11 @@ namespace TradingBot
         private const decimal FastEntrySlippageWarnPct = 0.0010m;
         private const decimal FastEntrySlippageExitPct = 0.0018m;
         private decimal _minEntryRiskRewardRatio = 1.40m; // 설정에서 로드
+        private bool _rrConfigMismatchWarned = false;
         private float _fifteenMinuteMlMinConfidence = 0.50f; // 설정에서 로드 (하향: 0.55→0.50, 신뢰도 기준 완화)
         private float _fifteenMinuteTransformerMinConfidence = 0.47f; // 설정에서 로드 (하향: 0.52→0.47)
-        private float _aiScoreThresholdMajor = 65.0f; // 설정에서 로드
-        private float _aiScoreThresholdNormal = 75.0f; // 설정에서 로드
+        private float _aiScoreThresholdMajor = 70.0f; // 설정에서 로드 (최소 70 보장)
+        private float _aiScoreThresholdNormal = 70.0f; // 설정에서 로드 (최소 70 보장)
         private bool _enableAiScoreFilter = true; // 설정에서 로드
         private bool _enableFifteenMinWaveGate = true; // 설정에서 로드
         private const float GateMlThresholdMin = 0.40f;  // 하향: 0.48→0.40 (약한 타점 70% 신뢰도에서도 진입)
@@ -313,6 +316,14 @@ namespace TradingBot
             {
                 // 바이낸스 거래소로 고정
                 _exchangeService = new BinanceExchangeService(AppConfig.BinanceApiKey, AppConfig.BinanceApiSecret);
+                
+                // [추가] BinanceExchangeService 로그 이벤트 구독
+                if (_exchangeService is BinanceExchangeService binanceService)
+                {
+                    binanceService.OnLog += msg => OnStatusLog?.Invoke(msg);
+                    binanceService.OnAlert += msg => OnAlert?.Invoke(msg);
+                }
+                
                 OnStatusLog?.Invoke("🔗 바이낸스 거래소 연결");
             }
 
@@ -553,11 +564,34 @@ namespace TradingBot
             {
                 try
                 {
-                    await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR_MEME");
+                    // [통합] PUMP 코인도 MAJOR와 동일한 AI 더블체크 게이트 통과
+                    if (_aiDoubleCheckEntryGate != null)
+                    {
+                        var gateResult = await _aiDoubleCheckEntryGate.EvaluateEntryAsync(symbol, decision, (decimal)price, _cts.Token);
+                        string decisionKr = decision == "LONG" ? "롱" : "숏";
+
+                        OnLiveLog?.Invoke(
+                            $"🤖 [{symbol}] {decisionKr} ML 스나이퍼 평가 중 | " +
+                            $"ML신뢰도 {gateResult.detail.ML_Confidence:P0}, TF신뢰도 {gateResult.detail.TF_Confidence:P0}");
+
+                        if (!gateResult.allowEntry)
+                        {
+                            OnLiveLog?.Invoke(
+                                $"❌ [{symbol}] {decisionKr} Sniper 거부: {gateResult.reason} | " +
+                                $"ML={gateResult.detail.ML_Confidence:P0}, TF={gateResult.detail.TF_Confidence:P0}");
+                            return;
+                        }
+
+                        OnLiveLog?.Invoke(
+                            $"✅ [{symbol}] {decisionKr} Sniper 승인! | " +
+                            $"ML={gateResult.detail.ML_Confidence:P0}, TF={gateResult.detail.TF_Confidence:P0}");
+                    }
+
+                    await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR");
                 }
                 catch (Exception ex)
                 {
-                    OnLiveLog?.Invoke($"🧭 [ENTRY][ORDER][ERROR] src=MAJOR_MEME sym={symbol} side={decision} | detail={ex.Message}");
+                    OnLiveLog?.Invoke($"🧭 [ENTRY][ORDER][ERROR] src=MAJOR sym={symbol} side={decision} | detail={ex.Message}");
                 }
             };
 
@@ -1113,6 +1147,52 @@ namespace TradingBot
             }
         }
 
+        /// <summary>
+        /// [블랙리스트 복구] DB의 TradeHistory에서 최근 1시간 이내 종료된 포지션을 조회
+        /// 메모리 _blacklistedSymbols에 로드하여 프로그램 재시작 후에도 재진입 방지
+        /// </summary>
+        private async Task RestoreBlacklistFromDatabaseAsync(CancellationToken token)
+        {
+            try
+            {
+                const int withinMinutes = 60; // 1시간 이내
+                var recentlyClosed = await _dbManager.GetRecentlyClosedPositionsAsync(withinMinutes);
+
+                if (recentlyClosed.Count == 0)
+                {
+                    OnStatusLog?.Invoke($"✅ [블랙리스트 복구] 최근 1시간 이내 종료된 포지션 없음");
+                    return;
+                }
+
+                DateTime now = DateTime.Now;
+                int loadedCount = 0;
+
+                foreach (var (symbol, lastExitTime) in recentlyClosed)
+                {
+                    // ExitTime에서 1시간 추가
+                    DateTime blacklistExpiry = lastExitTime.AddMinutes(withinMinutes);
+                    
+                    // 아직 블랙리스트 기간 내면 로드
+                    if (now < blacklistExpiry)
+                    {
+                        _blacklistedSymbols[symbol] = blacklistExpiry;
+                        loadedCount++;
+                        TimeSpan remaining = blacklistExpiry - now;
+                        OnStatusLog?.Invoke($"🔒 [블랙리스트 복구] {symbol} 로드 (종료: {lastExitTime:HH:mm:ss}, 남은 시간: {remaining.TotalMinutes:F0}분)");
+                    }
+                }
+
+                if (loadedCount > 0)
+                {
+                    OnStatusLog?.Invoke($"✅ [블랙리스트 복구 완료] 총 {loadedCount}개 심볼 블랙리스트 로드");
+                }
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [블랙리스트 복구] 오류 발생: {ex.Message}");
+            }
+        }
+
         private async Task<(decimal StopLossPrice, decimal AtrDistance, decimal StructureStopPrice)> TryCalculateMajorAtrHybridStopLossAsync(
             string symbol,
             decimal referencePrice,
@@ -1202,6 +1282,8 @@ namespace TradingBot
                 await InitializeSeedAsync(token); // InitialBalance 설정
                 _riskManager.Initialize((decimal)InitialBalance); // RiskManager 초기화
 
+                OnStatusLog?.Invoke($"🔧 엔진 초기화 중...");
+
                 // 시뮬레이션 모드일 경우 초기 잔고 로그 출력
                 if (AppConfig.Current?.Trading?.IsSimulationMode == true)
                 {
@@ -1213,10 +1295,13 @@ namespace TradingBot
                 // [추가] DB 오픈 포지션과 거래소 포지션 불일치 자동 정리 (봇 중단 중 외부 청산)
                 await ReconcileDbWithExchangePositionsAsync(token);
 
-                // [추가] ML.NET 초기 학습 1회 자동 실행 (모델 미준비 시)
+                // [블랙리스트 복구] DB에서 최근 1시간 이내 종료된 포지션 로드
+                await RestoreBlacklistFromDatabaseAsync(token);
+
+                // [추가] ML.NET 초기 학습 1회 자동 실행 (모델 미준비 시) - 워밍업 후 실행
                 await TriggerInitialMLNetTrainingIfNeededAsync(token);
 
-                // [추가] 엔진 시작 시 Transformer 초기 학습 1회 자동 실행 (모델 미준비 시)
+                // [추가] 엔진 시작 시 Transformer 초기 학습 1회 자동 실행 (모델 미준비 시) - 워밍업 후 실행
                 if (_transformerTrainer != null)
                 {
                     await TriggerInitialTransformerTrainingIfNeededAsync(token);
@@ -1287,17 +1372,17 @@ namespace TradingBot
                 _ = StartPeriodicTrainingAsync(token);
                 _ = StartPeriodicAiEntryProbScanAsync(token);
 
-                await PreloadInitialAiScoresAsync(token);
-
                 // 엔진 가동 시간 기록 및 주기 타이머 초기화
+                // [수정] 모든 초기화 작업 완료 후 메인 루프 시작 직전에 워밍업 타이머 설정
                 _engineStartTime = DateTime.Now;
+                OnStatusLog?.Invoke($"⏳ 진입 워밍업 시작: {_entryWarmupDuration.TotalSeconds:F0}초 동안 신규 진입 제한");
+                
                 _lastHeartbeatTime = DateTime.Now; // 시작 시점 기록 (1시간 후 첫 알림)
                 _lastReportTime = DateTime.Now;    // 시작 시점 기록 (1시간 후 첫 보고)
                 _lastPositionSyncTime = DateTime.Now; // [FIX] 시작 시점 기록 (30분 후 첫 동기화)
                 _periodicReportBaselineEquity = await GetEstimatedAccountEquityUsdtAsync(token);
                 if (_periodicReportBaselineEquity <= 0)
                     _periodicReportBaselineEquity = InitialBalance;
-                OnStatusLog?.Invoke($"⏳ 진입 워밍업 시작: {_entryWarmupDuration.TotalSeconds:F0}초 동안 신규 진입 제한");
 
                 // 3. 메인 관리 루프 (REST API 호출 최소화)
                 OnStatusLog?.Invoke("🔄 메인 스캔 루프 시작...");
@@ -1484,8 +1569,8 @@ namespace TradingBot
             _enableFifteenMinWaveGate = settings.EnableFifteenMinWaveGate;
             _fifteenMinuteMlMinConfidence = Math.Clamp(settings.FifteenMinMlConfidence, 0f, 1f);
             _fifteenMinuteTransformerMinConfidence = Math.Clamp(settings.FifteenMinTransformerConfidence, 0f, 1f);
-            _aiScoreThresholdMajor = Math.Max(0f, settings.AiScoreThresholdMajor);
-            _aiScoreThresholdNormal = Math.Max(0f, settings.AiScoreThresholdNormal);
+            _aiScoreThresholdMajor = Math.Max(70f, settings.AiScoreThresholdMajor);
+            _aiScoreThresholdNormal = Math.Max(70f, settings.AiScoreThresholdNormal);
             _enableAiScoreFilter = settings.EnableAiScoreFilter;
 
             OnStatusLog?.Invoke(
@@ -2869,17 +2954,40 @@ namespace TradingBot
                 currentTotalCount = _activePositions.Count;
             }
 
-            // 이미 보유 중이거나 심볼 수가 6개 이상이면 진입 안 함
+            // 이미 보유 중이면 진입 안 함
             if (isHolding)
             {
                 PumpEntryLog("POSITION", "SKIP", "activePosition=exists");
                 return;
             }
 
-            if (currentTotalCount >= MAX_TOTAL_SLOTS)
+            // [수정] 슬롯 제한 체크: 메이저 최대 4개, PUMP 최대 2개, 총 6개
+            lock (_posLock)
             {
-                PumpEntryLog("SLOT", "BLOCK", $"totalSlots={currentTotalCount}/{MAX_TOTAL_SLOTS}");
-                return;
+                bool isMajorSymbol = MajorSymbols.Contains(symbol);
+                int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
+                int pumpCount = currentTotalCount - majorCount;  // PUMP 코인 수
+                
+                // 메이저 이미 3개
+                if (isMajorSymbol && majorCount >= MAX_MAJOR_SLOTS)
+                {
+                    PumpEntryLog("SLOT", "BLOCK", $"메이저 포화 ({majorCount}/{MAX_MAJOR_SLOTS})");
+                    return;
+                }
+                
+                // PUMP 이미 3개
+                if (!isMajorSymbol && pumpCount >= MAX_PUMP_SLOTS)
+                {
+                    PumpEntryLog("SLOT", "BLOCK", $"PUMP 포화 ({pumpCount}/{MAX_PUMP_SLOTS})");
+                    return;
+                }
+                
+                // 총 6개 포화
+                if (currentTotalCount >= MAX_TOTAL_SLOTS)
+                {
+                    PumpEntryLog("SLOT", "BLOCK", $"총 포화 ({currentTotalCount}/{MAX_TOTAL_SLOTS})");
+                    return;
+                }
             }
 
             decimal baseEntryMarginUsdt = await GetAdaptiveEntryMarginUsdtAsync(token);
@@ -3293,7 +3401,7 @@ namespace TradingBot
                     decimal stepSize = symbolData.LotSizeFilter?.StepSize ?? 0.001m;
                     quantity = Math.Floor(quantity / stepSize) * stepSize;
 
-                    decimal tickSize = symbolData.PriceFilter?.TickSize ?? 0.01m;
+                    decimal tickSize = symbolData.PriceFilter?.TickSize ?? 0.0000001m;
                     limitPrice = Math.Floor(limitPrice / tickSize) * tickSize;
                 }
 
@@ -3301,6 +3409,33 @@ namespace TradingBot
                 {
                     PumpTradeLog("ORDER", "BLOCK", "quantity=0");
                     return false;
+                }
+
+                // [동시성 보호] 주문 직전 슬롯 재체크 (다른 신호 동시 진입 방지)
+                lock (_posLock)
+                {
+                    bool isMajorSymbol = MajorSymbols.Contains(symbol);
+                    int currentTotal = _activePositions.Count;
+                    int currentMajorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
+                    int currentPumpCount = currentTotal - currentMajorCount;
+                    
+                    if (isMajorSymbol && currentMajorCount >= MAX_MAJOR_SLOTS)
+                    {
+                        PumpTradeLog("ORDER", "BLOCK_RECHECK", $"메이저 포화 {currentMajorCount}/{MAX_MAJOR_SLOTS}");
+                        return false;
+                    }
+                    
+                    if (!isMajorSymbol && currentPumpCount >= MAX_PUMP_SLOTS)
+                    {
+                        PumpTradeLog("ORDER", "BLOCK_RECHECK", $"PUMP 포화 {currentPumpCount}/{MAX_PUMP_SLOTS}");
+                        return false;
+                    }
+                    
+                    if (currentTotal >= MAX_TOTAL_SLOTS)
+                    {
+                        PumpTradeLog("ORDER", "BLOCK_RECHECK", $"총 포화 {currentTotal}/{MAX_TOTAL_SLOTS}");
+                        return false;
+                    }
                 }
 
                 PumpTradeLog("ORDER", "SUBMIT", $"type=MARKET qty={quantity} margin={marginUsdt:F2} leverage={leverage}");
@@ -3424,7 +3559,8 @@ namespace TradingBot
                         majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
                     }
 
-                    int maxSlots = (majorCount == 0) ? MAX_SLOTS_WITH_MAJOR_BOOST : MAX_TOTAL_SLOTS;
+                    // [수정] 메이저 최대 4개, PUMP 최대 2개 = 총 6개
+                    int maxSlots = MAX_TOTAL_SLOTS;
                     OnDashboardUpdate?.Invoke(equity, available, totalCount);
                     OnSlotStatusUpdate?.Invoke(totalCount, maxSlots, majorCount, 0);
                     return;
@@ -3456,7 +3592,8 @@ namespace TradingBot
                 }
 
                 // UI 업데이트 및 DataGrid 정렬 유지
-                int maxSlots2 = (majorCount2 == 0) ? MAX_SLOTS_WITH_MAJOR_BOOST : MAX_TOTAL_SLOTS;
+                // [수정] 메이저 최대 4개, PUMP 최대 2개 = 총 6개
+                int maxSlots2 = MAX_TOTAL_SLOTS;
                 OnDashboardUpdate?.Invoke(equity2, available2, totalCount2);
                 OnSlotStatusUpdate?.Invoke(totalCount2, maxSlots2, majorCount2, 0);
 
@@ -3592,6 +3729,10 @@ namespace TradingBot
                         {
                             OnStatusLog?.Invoke($"📝 {pos.Symbol} 외부 청산 감지 → TradeHistory 반영 완료");
                             OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부청산", "거래소 계좌 업데이트 기준 외부 청산을 감지하여 TradeHistory에 반영했습니다.");
+                            
+                            // [수정] 외부 청산도 30분 블랙리스트 등록 (즉시 재진입 방지)
+                            _blacklistedSymbols[pos.Symbol] = DateTime.Now.AddMinutes(30);
+                            OnStatusLog?.Invoke($"🚫 {pos.Symbol} 30분간 블랙리스트 등록 (외부 청산 후 재진입 금지)");
                         }
                     }
 
@@ -3688,6 +3829,10 @@ namespace TradingBot
                         pos.Symbol,
                         "외부전환",
                         $"방향 전환 감지: {(existing.IsLong ? "LONG" : "SHORT")} → {(isLong ? "LONG" : "SHORT")}");
+
+                    // [수정] 방향 전환 시 30분 블랙리스트 등록 (반대 방향 자동 진입 방지)
+                    _blacklistedSymbols[pos.Symbol] = DateTime.Now.AddMinutes(30);
+                    OnStatusLog?.Invoke($"🚫 {pos.Symbol} 30분간 블랙리스트 등록 (방향 전환 감지 후 재진입 금지)");
 
                     wasTracked = false;
                     existing = null;
@@ -4077,6 +4222,23 @@ namespace TradingBot
             // 1. 진입 신호가 아니면 즉시 종료
             if (decision != "LONG" && decision != "SHORT") return;
 
+            // [수정] 블랙리스트 체크: 익절 후 즉시 재진입 방지 (30분)
+            if (_blacklistedSymbols.TryGetValue(symbol, out var blacklistExpiry))
+            {
+                if (DateTime.Now < blacklistExpiry)
+                {
+                    OnStatusLog?.Invoke($"⛔ [BLACKLIST] {symbol} 블랙리스트 기간 중 ({(blacklistExpiry - DateTime.Now).TotalMinutes:F0}분 남음) → 진입 차단");
+                    EntryLog("BLACKLIST", "BLOCK", $"expiresIn={(blacklistExpiry - DateTime.Now).TotalMinutes:F1}min");
+                    return;
+                }
+                else
+                {
+                    // 만료된 블랙리스트 제거
+                    _blacklistedSymbols.TryRemove(symbol, out _);
+                    OnStatusLog?.Invoke($"✅ [BLACKLIST] {symbol} 블랙리스트 해제");
+                }
+            }
+
             // ═══════════════════════════════════════════════════════════════
             // [슬롯 제한 검증] 기본 6개, 메이저 없으면 메이저 1개 추가 허용 (최대 7개)
             // ═══════════════════════════════════════════════════════════════
@@ -4086,22 +4248,28 @@ namespace TradingBot
                 int totalPositions = _activePositions.Count;
                 int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
 
-                // 기본 6개 슬롯 체크
+                // [수정] 메이저 최대 4개, PUMP 최대 2개, 총 6개 체크
+                int pumpCount = totalPositions - majorCount;
+                
+                if (isMajorSymbol && majorCount >= MAX_MAJOR_SLOTS)
+                {
+                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 메이저 포화 ({majorCount}/{MAX_MAJOR_SLOTS}) → 진입 차단");
+                    EntryLog("SLOT", "BLOCK", $"major={majorCount}/{MAX_MAJOR_SLOTS}");
+                    return;
+                }
+                
+                if (!isMajorSymbol && pumpCount >= MAX_PUMP_SLOTS)
+                {
+                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} PUMP 포화 ({pumpCount}/{MAX_PUMP_SLOTS}) → 진입 차단");
+                    EntryLog("SLOT", "BLOCK", $"pump={pumpCount}/{MAX_PUMP_SLOTS}");
+                    return;
+                }
+                
                 if (totalPositions >= MAX_TOTAL_SLOTS)
                 {
-                    // 예외: 6개가 모두 펌프/밈코인(메이저 0개)이고, 지금 들어오는게 메이저면 7개까지 허용
-                    if (majorCount == 0 && isMajorSymbol && totalPositions < MAX_SLOTS_WITH_MAJOR_BOOST)
-                    {
-                        OnStatusLog?.Invoke($"✅ [SLOT] {symbol} 메이저 부스트 허용 ({totalPositions + 1}/{MAX_SLOTS_WITH_MAJOR_BOOST}) - 메이저 없어서 추가 진입");
-                        EntryLog("SLOT", "MAJOR_BOOST", $"total={totalPositions}+1 major=0→1");
-                    }
-                    else
-                    {
-                        string reason = majorCount > 0 ? "메이저 있음" : "이미 7개";
-                        OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 슬롯 포화 ({totalPositions}/{MAX_TOTAL_SLOTS}) → 진입 차단 ({reason})");
-                        EntryLog("SLOT", "BLOCK", $"total={totalPositions} major={majorCount} reason={reason}");
-                        return;
-                    }
+                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 총 포화 ({totalPositions}/{MAX_TOTAL_SLOTS}) → 진입 차단");
+                    EntryLog("SLOT", "BLOCK", $"total={totalPositions}/{MAX_TOTAL_SLOTS}");
+                    return;
                 }
             }
 
@@ -4145,11 +4313,12 @@ namespace TradingBot
                 // 기존 대기 신호가 있는지 확인
                 if (_pendingDelayedEntries.TryGetValue(symbol, out var pending))
                 {
-                    // 대기 신호 만료 체크 (20분 이내만 유효 - 15분봉 간격 고려하여 연장)
+                    // 대우 신호 만료 체크 (20분 이내만 유효 - 15분봉 간격 고려하여 연장)
                     if ((DateTime.Now - pending.SignalTime).TotalMinutes > 20)
                     {
                         _pendingDelayedEntries.TryRemove(symbol, out _);
-                        OnStatusLog?.Invoke($"⏰ {symbol} 지연 진입 신호 만료 (20분 초과) → 대기 해제");
+                        OnStatusLog?.Invoke($"⏰ {symbol} 지연 진입 신호 만료 (20분 초과) → 신호 폐기 및 대기 해제");
+                        return; // ← 만료된 신호는 진입하지 않음
                     }
                     else
                     {
@@ -4181,7 +4350,7 @@ namespace TradingBot
                             // 확인 완료 → 대기 해제 후 진입 계속
                             _pendingDelayedEntries.TryRemove(symbol, out _);
                             decision = pending.Direction; // 확인된 방향으로 진입
-                            OnStatusLog?.Invoke($"✅ [캔들 확인] {symbol} {decision} 지연 진입 확인 완료 → 진입 진행 | {confirmReason}");
+                            OnStatusLog?.Invoke($"✅ [캔들 확인] {symbol} {decision} 지연 진입 확인 완료 → 다음 필터 검증 진행 | {confirmReason}");
                         }
                         else
                         {
@@ -4674,6 +4843,24 @@ namespace TradingBot
                 // [공통 손익비 필터] 저기대값 진입 차단 (SIDEWAYS 제외)
                 if (!string.Equals(mode, "SIDEWAYS", StringComparison.OrdinalIgnoreCase))
                 {
+                    decimal effectiveMinRiskRewardRatio = _minEntryRiskRewardRatio;
+                    bool usingDefaultTargetAndStop = customTakeProfitPrice <= 0m && customStopLossPrice <= 0m;
+                    if (usingDefaultTargetAndStop && _settings.StopLossRoe > 0m && _settings.TargetRoe > 0m)
+                    {
+                        decimal defaultRrFromSettings = _settings.TargetRoe / _settings.StopLossRoe;
+                        if (defaultRrFromSettings < effectiveMinRiskRewardRatio)
+                        {
+                            effectiveMinRiskRewardRatio = Math.Max(1.0m, defaultRrFromSettings);
+
+                            if (!_rrConfigMismatchWarned)
+                            {
+                                _rrConfigMismatchWarned = true;
+                                OnStatusLog?.Invoke(
+                                    $"⚠️ [RR 설정 보정] 기본 Target/Stop 비율({defaultRrFromSettings:F2})이 최소 RR({_minEntryRiskRewardRatio:F2})보다 낮아 기본 진입은 과차단됩니다. 이번 진입부터 유효 RR 기준을 {effectiveMinRiskRewardRatio:F2}로 적용합니다.");
+                            }
+                        }
+                    }
+
                     if (!TryEvaluateEntryRiskReward(
                         decision,
                         currentPrice,
@@ -4690,11 +4877,11 @@ namespace TradingBot
                         return;
                     }
 
-                    if (riskRewardRatio < _minEntryRiskRewardRatio)
+                    if (riskRewardRatio < effectiveMinRiskRewardRatio)
                     {
                         OnStatusLog?.Invoke(
-                            $"⛔ {symbol} 공통 손익비 부족으로 진입 차단 | RR={riskRewardRatio:F2}<{_minEntryRiskRewardRatio:F2} | TP={evaluatedTakeProfit:F8}, SL={evaluatedStopLoss:F8}");
-                        EntryLog("RR", "BLOCK", $"rr={riskRewardRatio:F2}<{_minEntryRiskRewardRatio:F2}");
+                            $"⛔ {symbol} 공통 손익비 부족으로 진입 차단 | RR={riskRewardRatio:F2}<{effectiveMinRiskRewardRatio:F2} | TP={evaluatedTakeProfit:F8}, SL={evaluatedStopLoss:F8}");
+                        EntryLog("RR", "BLOCK", $"rr={riskRewardRatio:F2}<{effectiveMinRiskRewardRatio:F2}");
                         return;
                     }
 
@@ -4739,6 +4926,33 @@ namespace TradingBot
                         return;
                     }
 
+                    // [동시성 보호] 포지션 추가 직전 슬롯 최종 재체크
+                    bool isMajorSymbol = MajorSymbols.Contains(symbol);
+                    int finalTotal = _activePositions.Count;
+                    int finalMajorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
+                    int finalPumpCount = finalTotal - finalMajorCount;
+                    
+                    if (isMajorSymbol && finalMajorCount >= MAX_MAJOR_SLOTS)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [슬롯 최종 재확인] {symbol} 메이저 포화 ({finalMajorCount}/{MAX_MAJOR_SLOTS}) → 진입 차단");
+                        EntryLog("SLOT", "FINAL_RECHECK_FAIL", $"major={finalMajorCount}/{MAX_MAJOR_SLOTS}");
+                        return;
+                    }
+                    
+                    if (!isMajorSymbol && finalPumpCount >= MAX_PUMP_SLOTS)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [슬롯 최종 재확인] {symbol} PUMP 포화 ({finalPumpCount}/{MAX_PUMP_SLOTS}) → 진입 차단");
+                        EntryLog("SLOT", "FINAL_RECHECK_FAIL", $"pump={finalPumpCount}/{MAX_PUMP_SLOTS}");
+                        return;
+                    }
+                    
+                    if (finalTotal >= MAX_TOTAL_SLOTS)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [슬롯 최종 재확인] {symbol} 총 포화 ({finalTotal}/{MAX_TOTAL_SLOTS}) → 진입 차단");
+                        EntryLog("SLOT", "FINAL_RECHECK_FAIL", $"total={finalTotal}/{MAX_TOTAL_SLOTS}");
+                        return;
+                    }
+
                     // [3파 기반 익절/손절] ElliottWave 정보 적용
                     // 임시 등록 (주문 실패 시 제거)
                     _activePositions[symbol] = new PositionInfo
@@ -4747,7 +4961,7 @@ namespace TradingBot
                         EntryPrice = currentPrice,
                         IsLong = (decision == "LONG"),
                         Side = (decision == "LONG") ? OrderSide.Buy : OrderSide.Sell,
-                        IsPumpStrategy = signalSource == "PUMP" || signalSource == "MAJOR_MEME",
+                        IsPumpStrategy = !MajorSymbols.Contains(symbol), // 메이저가 아니면 PUMP 슬롯
                         AiScore = aiScore,
                         AiConfidencePercent = aiProbability > 0
                             ? aiProbability * 100f
@@ -4945,13 +5159,39 @@ namespace TradingBot
                     TryStartStandardMonitor(symbol, actualEntryPrice, decision == "LONG", mode, customTakeProfitPrice, customStopLossPrice, token, "new-entry");
                     TryStartFastEntrySlippageMonitor(symbol, actualEntryPrice, decision == "LONG", token, signalSource);
             }
+            catch (TaskCanceledException tcEx)
+            {
+                // 타임아웃 발생 (TaskCanceledException은 OperationCanceledException의 상위 클래스)
+                CleanupReservedPosition($"진입 작업 타임아웃");
+                OnStatusLog?.Invoke($"⏱️ {symbol} 진입 작업 타임아웃 (30초 초과) → 작업 취소");
+                OnLiveLog?.Invoke($"🧭 [ENTRY][TIMEOUT] sym={symbol} side={decision} | timeout=30s | detail={tcEx.Message}");
+                EntryLog("ENTRY", "TIMEOUT", "timeout-30s");
+            }
+            catch (OperationCanceledException)
+            {
+                // 봇 정지 신호로 인한 캔슬 (정상 종료)
+                CleanupReservedPosition($"봇 정지 신호로 인해 진입 캔슬됨");
+                OnStatusLog?.Invoke($"⏹️ {symbol} 진입 진행 중 봇 정지 신호 수신 → 작업 취소");
+                EntryLog("ENTRY", "CANCELED", "bot-stop-signal");
+            }
+            catch (Exception ex) when (ex.GetType().Name == "HttpRequestException")
+            {
+                // 거래소 API 연결 오류
+                CleanupReservedPosition($"거래소 API 연결 오류");
+                OnStatusLog?.Invoke($"🌐 {symbol} 거래소 API 연결 오류 → 재시도 예정");
+                OnLiveLog?.Invoke($"🧭 [ENTRY][API_ERROR] sym={symbol} side={decision} | detail={ex.Message}");
+                EntryLog("ENTRY", "API_ERROR", ex.Message);
+            }
             catch (Exception ex)
             {
                 CleanupReservedPosition($"예외 발생: {ex.GetType().Name}");
-                OnStatusLog?.Invoke($"⚠️ ExecuteAutoOrder 에러: {ex.Message}");
+                OnStatusLog?.Invoke($"❌ {symbol} 진입 중 예외 발생: {ex.GetType().Name} - {ex.Message}");
+                OnLiveLog?.Invoke($"🧭 [ENTRY][ERROR] sym={symbol} side={decision} | type={ex.GetType().Name} | detail={ex.Message}");
+                EntryLog("ENTRY", "ERROR", $"{ex.GetType().Name}: {ex.Message}");
+                
                 try
                 {
-                    await TelegramService.Instance.SendMessageAsync($"⚠️ *[자동 매매 오류]*\n{symbol} 진입 중 예외 발생:\n{ex.Message}");
+                    await TelegramService.Instance.SendMessageAsync($"⚠️ *[자동 매매 오류]*\n{symbol} 진입 중 예외 발생:\n{ex.GetType().Name}\n{ex.Message}");
                 }
                 catch (Exception tgEx)
                 {
@@ -6389,6 +6629,7 @@ namespace TradingBot
 
             int riskScore = 0;
             var flags = new List<string>();
+            bool bbFilterPassed = false;  // ← BB 필터 통과 여부 추적
 
             if (decision == "LONG")
             {
@@ -6424,13 +6665,13 @@ namespace TradingBot
                 if (inUpperZone && isBbExpansion)
                 {
                     OnStatusLog?.Invoke($"🚀 [BB 필터 통과] {symbol} 상단 {bbPosition:P0}이지만 밴드 확산 중 (현재폭 {currentBbWidthPct:F2}% > 평균폭 {averageBbWidthPct:F2}% ×1.1) → 추세 발산 진입 승인");
-                    // 차단하지 않음 — 아래 riskScore 로직으로 진행
+                    bbFilterPassed = true;  // ← riskScore 무시
                 }
                 // ③ 상단 구간이지만 RSI < 70(미과열) → 추세의 시작으로 판단, 진입 승인
                 else if (inUpperZone && latestCandle.RSI < 70f)
                 {
                     OnStatusLog?.Invoke($"🚀 [BB 필터 통과] {symbol} 상단 {bbPosition:P0}이지만 RSI {latestCandle.RSI:F1} < 70 → 추세 시작 진입 승인");
-                    // 차단하지 않음 — 아래 riskScore 로직으로 진행
+                    bbFilterPassed = true;  // ← riskScore 무시
                 }
                 // ④ 상단 구간 + RSI 70~80 + 밴드 미확산 → 과열 추격 차단
                 else if (inUpperZone && !strongBreakoutException)
@@ -6439,39 +6680,37 @@ namespace TradingBot
                     return true;
                 }
 
-                if (nearRecentHigh)
+                if (!bbFilterPassed)  // ← BB 필터 미통과일 때만 riskScore 계산
                 {
-                    riskScore += 2;
-                    flags.Add($"최근고점 근접({recentHigh:F4}, 되돌림 {pullbackFromHighPct:F2}%)");
-                }
+                    if (nearRecentHigh)
+                    {
+                        riskScore += 2;
+                        flags.Add($"최근고점 근접({recentHigh:F4}, 되돌림 {pullbackFromHighPct:F2}%)");
+                    }
 
-                if (stretchedAboveSma20)
-                {
-                    riskScore += 1;
-                    flags.Add($"SMA20 이격 +{priceToSma20Pct:F2}%");
-                }
+                    if (stretchedAboveSma20)
+                    {
+                        riskScore += 1;
+                        flags.Add($"SMA20 이격 +{priceToSma20Pct:F2}%");
+                    }
 
-                if (rsiHot)
-                {
-                    riskScore += 1;
-                    flags.Add($"RSI {latestCandle.RSI:F1}");
-                }
+                    if (rsiHot)
+                    {
+                        riskScore += 1;
+                        flags.Add($"RSI {latestCandle.RSI:F1}");
+                    }
 
-                if (touchingUpperBand)
-                {
-                    riskScore += 1;
-                    flags.Add("BB 상단 근접");
-                }
+                    if (touchingUpperBand)
+                    {
+                        riskScore += 1;
+                        flags.Add("BB 상단 근접");
+                    }
 
-                if (upperShadowWarning)
-                {
-                    riskScore += 1;
-                    flags.Add($"윗꼬리 {latestCandle.Upper_Shadow_Ratio * 100f:F0}%");
-                }
-
-                if (strongBreakoutException)
-                {
-                    return false;
+                    if (upperShadowWarning)
+                    {
+                        riskScore += 1;
+                        flags.Add($"윗꼬리 {latestCandle.Upper_Shadow_Ratio * 100f:F0}%");
+                    }
                 }
             }
             else
@@ -6507,13 +6746,13 @@ namespace TradingBot
                 if (inLowerZone && isBbExpansionShort)
                 {
                     OnStatusLog?.Invoke($"🚀 [BB 필터 통과] {symbol} 하단 {bbPosition:P0}이지만 밴드 확산 중 (현재폭 {currentBbWidthPct:F2}% > 평균폭 {averageBbWidthPct:F2}% ×1.1) → 추세 발산 진입 승인");
-                    // 차단하지 않음
+                    bbFilterPassed = true;  // ← riskScore 무시
                 }
                 // ③ 하단 구간이지만 RSI > 30(미과매도) → 하락 추세 시작으로 판단, 진입 승인
                 else if (inLowerZone && latestCandle.RSI > 30f)
                 {
                     OnStatusLog?.Invoke($"🚀 [BB 필터 통과] {symbol} 하단 {bbPosition:P0}이지만 RSI {latestCandle.RSI:F1} > 30 → 추세 시작 진입 승인");
-                    // 차단하지 않음
+                    bbFilterPassed = true;  // ← riskScore 무시
                 }
                 // ④ 하단 구간 + RSI 20~30 + 밴드 미확산 → 과매도 추격 차단
                 else if (inLowerZone && !strongBreakdownException)
@@ -6522,43 +6761,42 @@ namespace TradingBot
                     return true;
                 }
 
-                if (nearRecentLow)
+                if (!bbFilterPassed)  // ← BB 필터 미통과일 때만 riskScore 계산
                 {
-                    riskScore += 2;
-                    flags.Add($"최근저점 근접({recentLow:F4}, 반등 {bounceFromLowPct:F2}%)");
-                }
+                    if (nearRecentLow)
+                    {
+                        riskScore += 2;
+                        flags.Add($"최근저점 근접({recentLow:F4}, 반등 {bounceFromLowPct:F2}%)");
+                    }
 
-                if (stretchedBelowSma20)
-                {
-                    riskScore += 1;
-                    flags.Add($"SMA20 이격 {priceToSma20Pct:F2}%");
-                }
+                    if (stretchedBelowSma20)
+                    {
+                        riskScore += 1;
+                        flags.Add($"SMA20 이격 {priceToSma20Pct:F2}%");
+                    }
 
-                if (rsiCold)
-                {
-                    riskScore += 1;
-                    flags.Add($"RSI {latestCandle.RSI:F1}");
-                }
+                    if (rsiCold)
+                    {
+                        riskScore += 1;
+                        flags.Add($"RSI {latestCandle.RSI:F1}");
+                    }
 
-                if (touchingLowerBand)
-                {
-                    riskScore += 1;
-                    flags.Add("BB 하단 근접");
-                }
+                    if (touchingLowerBand)
+                    {
+                        riskScore += 1;
+                        flags.Add("BB 하단 근접");
+                    }
 
-                if (lowerShadowWarning)
-                {
-                    riskScore += 1;
-                    flags.Add($"아랫꼬리 {latestCandle.Lower_Shadow_Ratio * 100f:F0}%");
-                }
-
-                if (strongBreakdownException)
-                {
-                    return false;
+                    if (lowerShadowWarning)
+                    {
+                        riskScore += 1;
+                        flags.Add($"아랫꼬리 {latestCandle.Lower_Shadow_Ratio * 100f:F0}%");
+                    }
                 }
             }
 
-            if (riskScore >= 4)
+            // [수정] BB 필터 미통과한 경우에만 riskScore로 차단
+            if (!bbFilterPassed && riskScore >= 4)
             {
                 reason = string.Join(", ", flags);
                 return true;
@@ -6616,6 +6854,13 @@ namespace TradingBot
 
         private bool IsEntryWarmupActive(out TimeSpan remaining)
         {
+            // [수정] _engineStartTime이 MinValue인 경우 (엔진 미초기화) 워밍업 활성화
+            if (_engineStartTime == DateTime.MinValue)
+            {
+                remaining = _entryWarmupDuration;
+                return true;  // 미초기화 상태면 워밍업 중으로 간주
+            }
+
             var elapsed = DateTime.Now - _engineStartTime;
             remaining = _entryWarmupDuration - elapsed;
             return remaining > TimeSpan.Zero;

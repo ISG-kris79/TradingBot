@@ -774,7 +774,7 @@ namespace TradingBot.Services
 
                     if (currentROE >= profitRunTriggerRoe)
                     {
-                        if (TryShouldHoldForProfitRun(symbol, currentPrice, isLong, out string profitRunReason))
+                        if (TryShouldHoldForProfitRun(symbol, currentPrice, isLong, out string profitRunReason, ignoreAiFloor: tightTrailingActivated))
                         {
                             if (!profitRunHoldActive || DateTime.Now >= nextProfitRunHoldLogTime)
                             {
@@ -1555,7 +1555,7 @@ namespace TradingBot.Services
             }
         }
 
-        private bool TryShouldHoldForProfitRun(string symbol, decimal currentPrice, bool isLong, out string reason)
+        private bool TryShouldHoldForProfitRun(string symbol, decimal currentPrice, bool isLong, out string reason, bool ignoreAiFloor = false)
         {
             reason = "추세 데이터 부족";
 
@@ -1574,7 +1574,9 @@ namespace TradingBot.Services
                     confidenceScore = NormalizeAiConfidence(localPosition.AiScore);
             }
 
-            if (confidenceScore < 60m)
+            bool aiFloorIgnored = ignoreAiFloor && confidenceScore < 60m;
+
+            if (!ignoreAiFloor && confidenceScore < 60m)
             {
                 reason = $"AI 점수 부족({confidenceScore:F1}<60)";
                 return false;
@@ -1613,13 +1615,15 @@ namespace TradingBot.Services
             bool isMidBandHealthy = isLong ? currentPrice >= bbMid : currentPrice <= bbMid;
             bool hasVolumeSupport = volumeRatio >= 1.0m;
 
+            string aiFloorNote = aiFloorIgnored ? " (트레일링 활성으로 AI 하한 무시)" : string.Empty;
+
             if (isMidBandHealthy && hasVolumeSupport)
             {
-                reason = $"BB 중단 유지 + 거래량 {volumeRatio:F2}x + AI {confidenceScore:F1}";
+                reason = $"BB 중단 유지 + 거래량 {volumeRatio:F2}x + AI {confidenceScore:F1}{aiFloorNote}";
                 return true;
             }
 
-            reason = $"추세 약화(BB중단={(isMidBandHealthy ? "유지" : "이탈")}, 거래량={volumeRatio:F2}x)";
+            reason = $"추세 약화(BB중단={(isMidBandHealthy ? "유지" : "이탈")}, 거래량={volumeRatio:F2}x){aiFloorNote}";
             return false;
         }
 
@@ -1891,13 +1895,37 @@ namespace TradingBot.Services
                 }
 
                 OnLog?.Invoke($"[청산 검증] {symbol} 포지션={positionDirection}, 진입가={position.EntryPrice:F4}, 수량={absQty}, 청산주문={expectedCloseDirection}");
-                OnLog?.Invoke($"[청산 시도] {symbol} {side} {absQty} - 사유: {reason}");
-                bool success = await _exchangeService.PlaceOrderAsync(symbol, side, absQty, null, token, reduceOnly: true);
+                
+                // [개선] 청산 주문 재시도 로직 (최대 3회)
+                bool success = false;
+                int maxRetries = 3;
+                for (int retry = 1; retry <= maxRetries; retry++)
+                {
+                    OnLog?.Invoke($"[청산 시도] {symbol} {side} {absQty} ({retry}/{maxRetries}) - 사유: {reason}");
+                    success = await _exchangeService.PlaceOrderAsync(symbol, side, absQty, null, token, reduceOnly: true);
+
+                    if (success)
+                    {
+                        if (retry > 1)
+                        {
+                            OnLog?.Invoke($"✅ [{symbol}] 청산 주문 성공 ({retry}회차 재시도에서 성공)");
+                        }
+                        break;
+                    }
+
+                    if (retry < maxRetries)
+                    {
+                        int delayMs = retry * 1000; // 1초, 2초, 3초 지연
+                        OnLog?.Invoke($"⚠️ [{symbol}] 청산 주문 실패 ({retry}/{maxRetries}) - {delayMs}ms 후 재시도...");
+                        await Task.Delay(delayMs, token);
+                    }
+                }
 
                 if (!success)
                 {
-                    OnAlert?.Invoke($"❌ {symbol} 청산 실패! 거래소 API 오류 - 수동 확인 필요");
-                    OnLog?.Invoke($"❌ [청산 실패] {symbol} - 거래소 주문 실행 실패. 실제 포지션 확인 필요!");
+                    OnAlert?.Invoke($"❌ {symbol} 청산 실패! 거래소 API 오류 ({maxRetries}회 재시도 실패) - 수동 확인 필요");
+                    OnLog?.Invoke($"❌ [청산 실패] {symbol} - 거래소 주문 {maxRetries}회 모두 실패. 실제 포지션 확인 필요!");
+                    OnLog?.Invoke($"💡 [수동 대응 필요] {symbol} - 거래소 웹/앱에서 수동 청산 또는 네트워크 상태 확인");
                     await LogExchangePositionSnapshotAsync("청산실패후재조회");
                     return; // 실패 시 포지션 데이터 유지
                 }
@@ -1965,11 +1993,10 @@ namespace TradingBot.Services
 
                 OnAlert?.Invoke($"✅ {symbol} 청산 완료(검증됨): {reason}");
 
-                if (reason.Contains("지루함") || reason.Contains("Boredom"))
-                {
-                    _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
-                    OnLog?.Invoke($"🚫 {symbol} 30분간 블랙리스트 등록 (재진입 금지)");
-                }
+                // [수정] 모든 청산(손절/익절/지루함)에 30분 블랙리스트 적용
+                // 프로그램 재시작 전에 재신호 방지 + 재시작 후 DB에서 복구
+                _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
+                OnLog?.Invoke($"🚫 {symbol} 30분간 블랙리스트 등록 (청산 사유: {reason})");
 
                 CleanupPositionData(symbol);
             }

@@ -45,7 +45,7 @@ namespace TradingBot.Strategies
                     return;
                 }
 
-                decimal priceTick = symbolInfo.PriceFilter?.TickSize ?? 0.01m;
+                decimal priceTick = symbolInfo.PriceFilter?.TickSize ?? 0.0000001m;
                 decimal quantityStep = symbolInfo.LotSizeFilter?.StepSize ?? 0.001m;
 
                 // 최소 주문 수량 (실제 운영 시 계좌 잔고/리스크 기반 계산 필요)

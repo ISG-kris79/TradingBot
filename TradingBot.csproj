@@ -16,9 +16,9 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
     <LangVersion>latest</LangVersion>
-      <Version>2.4.25</Version>
-      <AssemblyVersion>2.4.25.0</AssemblyVersion>
-      <FileVersion>2.4.25.0</FileVersion>
+      <Version>2.4.26</Version>
+      <AssemblyVersion>2.4.26.0</AssemblyVersion>
+      <FileVersion>2.4.26.0</FileVersion>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
     <Company>TradingBot</Company>
     <Product>CoinFF TradingBot</Product>
@@ -77,6 +77,9 @@
     <Compile Remove="WebServerService.cs" />
     <Compile Remove="NotificationService.cs" />
     <Compile Remove="IconGenerator.cs" />
+    <!-- 별도 프로세스용 Program.cs 파일 제외 -->
+    <Compile Remove="Services/ProcessAI/MLService_Program.cs" />
+    <Compile Remove="Services/ProcessAI/TorchService_Program.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -345,10 +345,10 @@ namespace TradingBot
         public float FifteenMinTransformerConfidence { get; set; } = 0.52f;
         
         /// <summary>AI 점수 임계값 - 메이저 코인 (BTC/ETH/SOL/XRP)</summary>
-        public float AiScoreThresholdMajor { get; set; } = 65.0f;
+        public float AiScoreThresholdMajor { get; set; } = 70.0f;
         
         /// <summary>AI 점수 임계값 - 일반 코인 (펌프 등)</summary>
-        public float AiScoreThresholdNormal { get; set; } = 75.0f;
+        public float AiScoreThresholdNormal { get; set; } = 70.0f;
         
         /// <summary>AI 점수 필터 활성화 여부</summary>
         public bool EnableAiScoreFilter { get; set; } = true;

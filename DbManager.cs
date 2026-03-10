@@ -546,6 +546,151 @@ VALUES
             }
         }
 
+        public async Task<bool> UpsertAiTrainingRunAsync(
+            string projectName,
+            string runId,
+            string stage,
+            bool success,
+            int sampleCount,
+            int epochs,
+            double? accuracy = null,
+            double? f1Score = null,
+            double? auc = null,
+            float? bestValidationLoss = null,
+            float? finalTrainLoss = null,
+            string? detail = null)
+        {
+            try
+            {
+                string normalizedProject = TrimForDb(projectName, 50);
+                if (string.IsNullOrWhiteSpace(normalizedProject))
+                    return false;
+
+                string normalizedRunId = TrimForDb(runId, 80);
+                if (string.IsNullOrWhiteSpace(normalizedRunId))
+                    normalizedRunId = Guid.NewGuid().ToString("N");
+
+                string normalizedStage = TrimForDb(stage, 50);
+                if (string.IsNullOrWhiteSpace(normalizedStage))
+                    normalizedStage = "unknown";
+
+                int userId = GetCurrentUserId();
+                if (userId <= 0)
+                {
+                    userId = 1;
+                    MainWindow.Instance?.AddLog("⚠️ [AI][DB] 로그인 사용자 없음 → 기본 UserId=1로 학습 이력 저장");
+                }
+
+                double? accValue = accuracy.HasValue && !double.IsNaN(accuracy.Value) && !double.IsInfinity(accuracy.Value)
+                    ? accuracy.Value
+                    : null;
+                double? f1Value = f1Score.HasValue && !double.IsNaN(f1Score.Value) && !double.IsInfinity(f1Score.Value)
+                    ? f1Score.Value
+                    : null;
+                double? aucValue = auc.HasValue && !double.IsNaN(auc.Value) && !double.IsInfinity(auc.Value)
+                    ? auc.Value
+                    : null;
+                float? bestLossValue = bestValidationLoss.HasValue && !float.IsNaN(bestValidationLoss.Value) && !float.IsInfinity(bestValidationLoss.Value)
+                    ? bestValidationLoss.Value
+                    : null;
+                float? finalLossValue = finalTrainLoss.HasValue && !float.IsNaN(finalTrainLoss.Value) && !float.IsInfinity(finalTrainLoss.Value)
+                    ? finalTrainLoss.Value
+                    : null;
+
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                string sql = @"
+
+MERGE dbo.AiTrainingRuns AS target
+USING
+(
+    SELECT
+        @UserId AS UserId,
+        @ProjectName AS ProjectName,
+        @RunId AS RunId
+) AS source
+ON target.UserId = source.UserId
+   AND target.ProjectName = source.ProjectName
+   AND target.RunId = source.RunId
+WHEN MATCHED THEN
+    UPDATE SET
+        Stage = @Stage,
+        Success = @Success,
+        SampleCount = @SampleCount,
+        Epochs = @Epochs,
+        Accuracy = @Accuracy,
+        F1Score = @F1Score,
+        AUC = @AUC,
+        BestValidationLoss = @BestValidationLoss,
+        FinalTrainLoss = @FinalTrainLoss,
+        Detail = @Detail,
+        CompletedAtUtc = SYSUTCDATETIME(),
+        UpdatedAtUtc = SYSUTCDATETIME()
+WHEN NOT MATCHED THEN
+    INSERT
+    (
+        UserId,
+        ProjectName,
+        RunId,
+        Stage,
+        Success,
+        SampleCount,
+        Epochs,
+        Accuracy,
+        F1Score,
+        AUC,
+        BestValidationLoss,
+        FinalTrainLoss,
+        Detail,
+        CompletedAtUtc,
+        UpdatedAtUtc
+    )
+    VALUES
+    (
+        @UserId,
+        @ProjectName,
+        @RunId,
+        @Stage,
+        @Success,
+        @SampleCount,
+        @Epochs,
+        @Accuracy,
+        @F1Score,
+        @AUC,
+        @BestValidationLoss,
+        @FinalTrainLoss,
+        @Detail,
+        SYSUTCDATETIME(),
+        SYSUTCDATETIME()
+    );";
+
+                await db.ExecuteAsync(sql, new
+                {
+                    UserId = userId,
+                    ProjectName = normalizedProject,
+                    RunId = normalizedRunId,
+                    Stage = normalizedStage,
+                    Success = success,
+                    SampleCount = Math.Max(0, sampleCount),
+                    Epochs = Math.Max(0, epochs),
+                    Accuracy = accValue,
+                    F1Score = f1Value,
+                    AUC = aucValue,
+                    BestValidationLoss = bestLossValue,
+                    FinalTrainLoss = finalLossValue,
+                    Detail = TrimForDb(detail, 500)
+                });
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [AI][DB] 학습 이력 저장 실패: {ex.Message}");
+                return false;
+            }
+        }
+
         /// <summary>
         /// DB에서 IsClosed=0인 모든 오픈 포지션 조회 (봇 시작 시 거래소와 비교용)
         /// </summary>
@@ -1724,6 +1869,34 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
             {
                 MainWindow.Instance?.AddLog($"⚠️ [DB] 리밸런싱 로그 조회 실패: {ex.Message}");
                 return new List<dynamic>();
+            }
+        }
+
+        /// <summary>
+        /// [블랙리스트 복구] 최근 1시간 이내에 종료된 포지션 조회
+        /// 엔진 시작 시 메모리 블랙리스트를 DB에서 복구하기 위함
+        /// </summary>
+        public async Task<List<(string Symbol, DateTime LastExitTime)>> GetRecentlyClosedPositionsAsync(int withinMinutes = 60)
+        {
+            try
+            {
+                using (IDbConnection db = new SqlConnection(_connectionString))
+                {
+                    string sql = @"
+                        SELECT DISTINCT Symbol, MAX(ExitTime) AS LastExitTime
+                        FROM dbo.TradeHistory
+                        WHERE ExitTime IS NOT NULL
+                          AND ExitTime > DATEADD(MINUTE, -@WithinMinutes, GETDATE())
+                        GROUP BY Symbol";
+
+                    var result = await db.QueryAsync<(string Symbol, DateTime LastExitTime)>(sql, new { WithinMinutes = withinMinutes });
+                    return result.ToList();
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] 최근 종료 포지션 조회 실패: {ex.Message}");
+                return new List<(string, DateTime)>();
             }
         }
 

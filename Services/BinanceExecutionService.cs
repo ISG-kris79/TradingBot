@@ -281,7 +281,7 @@ namespace TradingBot.Services
                 var precision = new SymbolPrecision
                 {
                     Symbol = symbol,
-                    PricePrecision = symbolData.PriceFilter?.TickSize ?? 0.01m,
+                    PricePrecision = symbolData.PriceFilter?.TickSize ?? 0.0000001m,
                     QuantityPrecision = symbolData.LotSizeFilter?.StepSize ?? 0.001m,
                 };
 

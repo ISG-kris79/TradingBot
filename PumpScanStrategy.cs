@@ -218,7 +218,7 @@ namespace TradingBot.Strategies
                         AIScore = aiScore,
                         Decision = decision,
                         StrategyName = $"Meme/HighBeta Scalping(5m) [{profile.Name}]",
-                        SignalSource = "MAJOR_MEME",
+                        SignalSource = "MAJOR",
                         ShortLongScore = aiScore,
                         ShortShortScore = 100 - aiScore,
                         MacdHist = macd.Hist,
@@ -292,7 +292,7 @@ namespace TradingBot.Strategies
                 {
                     try
                     {
-                        PumpSignalLog("EMIT", $"sym={symbol} side={decisionKr} px={currentPrice:F4} src=MAJOR_MEME score={aiScore} atr={atr:F4}");
+                        PumpSignalLog("EMIT", $"sym={symbol} side={decisionKr} px={currentPrice:F4} src=MAJOR score={aiScore} atr={atr:F4}");
                         OnTradeSignal?.Invoke(symbol, decision, currentPrice);
                         OnPumpDetected?.Invoke(symbol, currentPrice, decision, rsi, atr);
                     }

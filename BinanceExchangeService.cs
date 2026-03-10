@@ -19,6 +19,10 @@ namespace TradingBot.Services
 
         public string ExchangeName => "Binance";
 
+        // [추가] 로그 이벤트 (상위 레이어로 전달)
+        public event Action<string>? OnLog;
+        public event Action<string>? OnAlert;
+
         public BinanceExchangeService(string apiKey, string apiSecret)
         {
             _client = new BinanceRestClient(options =>
@@ -52,7 +56,7 @@ namespace TradingBot.Services
             // [추가] 시뮬레이션 모드 체크
             if (AppConfig.Current?.Trading?.IsSimulationMode == true)
             {
-                Console.WriteLine($"[시뮬레이션] {symbol} {side} 주문 (수량: {quantity}, 가격: {price?.ToString() ?? "시장가"}, ReduceOnly: {reduceOnly})");
+                OnLog?.Invoke($"[시뮬레이션] {symbol} {side} 주문 (수량: {quantity}, 가격: {price?.ToString() ?? "시장가"}, ReduceOnly: {reduceOnly})");
                 return true; // 시뮬레이션 모드에서는 항상 성공
             }
 
@@ -68,19 +72,19 @@ namespace TradingBot.Services
 
                     if (price.HasValue)
                     {
-                        decimal tickSize = symbolData.PriceFilter?.TickSize ?? 0.01m;
+                        decimal tickSize = symbolData.PriceFilter?.TickSize ?? 0.0000001m;
                         price = Math.Floor(price.Value / tickSize) * tickSize;
                     }
                 }
             }
             else
             {
-                Console.WriteLine($"❌ [Binance] ExchangeInfo 조회 실패: {exchangeInfo.Error?.Message}");
+                OnLog?.Invoke($"⚠️ [Binance] ExchangeInfo 조회 실패: {exchangeInfo.Error?.Message}");
             }
 
             if (quantity <= 0)
             {
-                Console.WriteLine($"❌ [Binance] 주문 수량이 0 이하입니다: {quantity}");
+                OnLog?.Invoke($"❌ [Binance] 주문 수량이 0 이하입니다: {quantity}");
                 return false;
             }
 
@@ -101,20 +105,34 @@ namespace TradingBot.Services
 
                 if (!result.Success)
                 {
-                    Console.WriteLine($"❌ [Binance] 주문 실패 - {symbol} {side} {quantity}");
-                    Console.WriteLine($"   에러 코드: {result.Error?.Code}");
-                    Console.WriteLine($"   에러 메시지: {result.Error?.Message}");
+                    string errorDetail = $"Code={result.Error?.Code}, Msg={result.Error?.Message}";
+                    OnLog?.Invoke($"❌ [Binance API] 주문 실패 - {symbol} {side} {quantity}");
+                    OnLog?.Invoke($"   📋 오류 상세: {errorDetail}");
+                    
+                    // 특정 오류 코드에 대한 안내
+                    if (result.Error?.Code == -2019)
+                    {
+                        OnAlert?.Invoke($"⚠️ [{symbol}] 잔고 부족 오류 - 사용 가능한 마진 확인 필요");
+                    }
+                    else if (result.Error?.Code == -1021)
+                    {
+                        OnAlert?.Invoke($"⚠️ [{symbol}] 타임스탬프 오류 - 시스템 시간 동기화 확인 필요");
+                    }
+                    
                     return false;
                 }
 
-                Console.WriteLine($"✅ [Binance] 주문 성공 - {symbol} {side} {quantity} (OrderId: {result.Data?.Id})");
+                OnLog?.Invoke($"✅ [Binance] 주문 성공 - {symbol} {side} {quantity} (OrderId: {result.Data?.Id})");
                 return true;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ [Binance] 주문 예외 발생 - {symbol} {side} {quantity}");
-                Console.WriteLine($"   예외: {ex.Message}");
-                Console.WriteLine($"   StackTrace: {ex.StackTrace}");
+                OnLog?.Invoke($"❌ [Binance 예외] 주문 중 예외 발생 - {symbol} {side} {quantity}");
+                OnLog?.Invoke($"   🔥 예외: {ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    OnLog?.Invoke($"   🔍 내부 예외: {ex.InnerException.Message}");
+                }
                 return false;
             }
         }
@@ -331,7 +349,7 @@ namespace TradingBot.Services
                         decimal stepSize = symbolData.LotSizeFilter?.StepSize ?? 0.001m;
                         quantity = Math.Floor(quantity / stepSize) * stepSize;
 
-                        decimal tickSize = symbolData.PriceFilter?.TickSize ?? 0.01m;
+                        decimal tickSize = symbolData.PriceFilter?.TickSize ?? 0.0000001m;
                         price = Math.Floor(price / tickSize) * tickSize;
                     }
                 }

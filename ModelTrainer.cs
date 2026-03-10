@@ -26,8 +26,16 @@ namespace TradingBot.Services
                 IDataView trainingData = _mlContext.Data.LoadFromEnumerable(data, schemaDef);
 
                 // 2. 파이프라인 구성
-                // MLService.FeatureColumns 사용 (float 피처만 포함)
-                var pipeline = _mlContext.Transforms.Concatenate("Features", MLService.FeatureColumns)
+                // Feature 컬럼 목록 직접 정의
+                string[] featureColumns = new[]
+                {
+                    nameof(CandleData.Volume), nameof(CandleData.RSI),
+                    nameof(CandleData.MACD), nameof(CandleData.MACD_Signal), 
+                    nameof(CandleData.BollingerUpper), nameof(CandleData.BollingerLower),
+                    nameof(CandleData.ATR), nameof(CandleData.Price_Change_Pct)
+                };
+                
+                var pipeline = _mlContext.Transforms.Concatenate("Features", featureColumns)
                     .Append(_mlContext.Transforms.NormalizeMinMax("Features")) // 정규화
                     .Append(_mlContext.BinaryClassification.Trainers.FastTree(labelColumnName: "Label", featureColumnName: "Features")); // FastTree 알고리즘
 
