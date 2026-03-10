@@ -31,7 +31,8 @@ namespace TradingBot.Services.AI.RL
             _gamma = gamma;
             _epsClip = epsClip;
             _kEpochs = kEpochs;
-            _device = TorchInitializer.ResolveDevice();
+            var resolved = TorchInitializer.ResolveDevice();
+            _device = resolved ?? throw new InvalidOperationException("TorchSharp 초기화 실패");
 
             _model = new ActorCritic(stateDim, actionDim);
             _model.to(_device);

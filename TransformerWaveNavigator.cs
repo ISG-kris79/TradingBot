@@ -39,7 +39,8 @@ namespace TradingBot
         public TransformerWaveNavigator(string modelPath = "transformer_wave_navigator.dat")
         {
             _modelPath = modelPath;
-            _device = TorchInitializer.ResolveDevice();
+            var resolved = TorchInitializer.ResolveDevice();
+            _device = resolved ?? throw new InvalidOperationException("TorchSharp 초기화 실패: 디바이스를 확인할 수 없습니다.");
             
             try
             {

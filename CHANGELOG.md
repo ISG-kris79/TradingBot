@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+## [2.4.11] - 2026-03-10
+
+### Critical Fix
+
+- **BEX64 크래시 근본 원인 제거 (3차 최종 안정화)**:
+  - **Root Cause**: `ResolveDevice()` 및 `TryInitialize()`에서 init 실패 시에도 `TorchSharp.torch.CPU` 접근 → torch static ctor 트리거 → 네이티브 DLL 로드 → ucrtbase.dll 크래시
+  - **Fix**: TorchSharp 타입 접근을 `[MethodImpl(NoInlining)]` 메서드로 완전 격리
+  - **Fix**: `ResolveDevice()` init 실패 시 `null` 반환 (TorchSharp 타입 절대 접근 안함)
+  - **Fix**: 프로브 자식이 크래시 시 FAIL 미리 기록 (네이티브 크래시로 체크포인트 유실 방지)
+  - **Fix**: 모든 Torch 사용 클래스(TransformerTrainer, PPOAgent 등) null 체크 추가
+
 ## [2.4.10] - 2026-03-10
 
 ### Enhanced

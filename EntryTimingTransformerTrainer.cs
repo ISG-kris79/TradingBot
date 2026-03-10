@@ -32,7 +32,8 @@ namespace TradingBot
         public EntryTimingTransformerTrainer(string modelPath = "EntryTimingTransformer.pt")
         {
             _modelPath = modelPath;
-            _device = TorchInitializer.ResolveDevice();
+            var resolved = TorchInitializer.ResolveDevice();
+            _device = resolved ?? throw new InvalidOperationException("TorchSharp 초기화 실패");
             Console.WriteLine($"[TransformerBinary] Device: {_device.type}");
         }
 

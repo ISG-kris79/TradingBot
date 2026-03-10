@@ -70,13 +70,15 @@ namespace TradingBot.Services.AI
 
             try
             {
-                _device = TorchInitializer.ResolveDevice();
+                var resolved = TorchInitializer.ResolveDevice();
+                if (resolved == null)
+                    throw new InvalidOperationException("TorchSharp 디바이스를 확인할 수 없습니다.");
+                _device = resolved;
                 Console.WriteLine($"[TransformerTrainer] Device: {_device}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[TransformerTrainer] CUDA 체크 실패, CPU 사용: {ex.Message}");
-                _device = torch.CPU;
+                throw new InvalidOperationException($"[TransformerTrainer] TorchSharp 초기화 실패: {ex.Message}", ex);
             }
 
             InitializeModel();

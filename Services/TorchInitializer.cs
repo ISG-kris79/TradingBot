@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace TradingBot.Services
@@ -55,8 +56,14 @@ namespace TradingBot.Services
                 EnsureDirectoryExists(probeResultPath);
                 TryLog($"[ProbeChild] start path={probeResultPath}");
 
+                // [BEX64 FIX] 먼저 FAIL을 미리 기록 → 네이티브 크래시 시에도 FAIL이 남음
+                File.WriteAllText(probeResultPath, "FAIL");
+
                 // TorchSharp의 static 초기화 트리거 — 네이티브 크래시 시 이 프로세스만 종료됨
-                var device = TorchSharp.torch.CPU;
+                // NoInlining으로 격리: 이 메서드가 JIT되어야만 torch 어셈블리 로드
+                ProbeTouchTorch();
+
+                // 크래시 없이 여기까지 도달 → 성공
                 File.WriteAllText(probeResultPath, "OK");
                 TryLog("[ProbeChild] result=OK");
                 Environment.Exit(0);
@@ -141,34 +148,23 @@ namespace TradingBot.Services
             }
 
             // ── 3단계: 프로브 통과 후 실제 초기화 ──
+            // [BEX64 FIX] TorchSharp 타입 접근을 별도 NoInlining 메서드로 격리
+            // torch 클래스의 static ctor가 네이티브 DLL을 로드하므로,
+            // JIT가 이 메서드를 인라인하여 불필요하게 torch 타입을 resolve하는 것을 방지
             try
             {
-                var device = TorchSharp.torch.CPU;
-                Debug.WriteLine($"[TorchInitializer] TorchSharp 초기화 성공 - Device: {device}");
-
-                Debug.WriteLine("[TorchInitializer] CUDA 체크 생략 (안전 모드: CPU 기본)");
-
+                ActuallyInitializeTorch();
                 _available = true;
+                TryLog("[Init] TorchSharp init success");
                 return true;
-            }
-            catch (TypeInitializationException ex)
-            {
-                _errorMessage = $"TorchSharp 초기화 실패: {ex.InnerException?.Message ?? ex.Message}\n\n" +
-                               "해결 방법:\n" +
-                               "1. Visual C++ Redistributable 2015-2022 x64 설치\n" +
-                               "   다운로드: https://aka.ms/vs/17/release/vc_redist.x64.exe\n" +
-                               "2. 앱 재시작\n\n" +
-                               "TorchSharp 기능(PPO 에이전트, Transformer)은 비활성화됩니다.\n" +
-                               "ML.NET 기반 예측은 정상 작동합니다.";
-                Debug.WriteLine($"[TorchInitializer] {_errorMessage}");
-                _available = false;
-                TrySaveProbeFail(); // 다음 실행 시 바로 건너뛰도록 캐시
-                return false;
             }
             catch (Exception ex)
             {
-                _errorMessage = $"TorchSharp 초기화 중 예외 발생: {ex.Message}";
+                _errorMessage = $"TorchSharp 초기화 실패: {ex.InnerException?.Message ?? ex.Message}\n\n" +
+                               "TorchSharp 기능(PPO 에이전트, Transformer)은 비활성화됩니다.\n" +
+                               "ML.NET 기반 예측은 정상 작동합니다.";
                 Debug.WriteLine($"[TorchInitializer] {_errorMessage}");
+                TryLog($"[Init] init exception: {ex.Message}");
                 _available = false;
                 TrySaveProbeFail();
                 return false;
@@ -431,16 +427,63 @@ namespace TradingBot.Services
         }
 
         /// <summary>
-        /// Torch 디바이스 선택 (기본: CPU)
-        /// TRADINGBOT_ENABLE_CUDA=1 일 때만 CUDA 확인을 시도합니다.
+        /// [BEX64 FIX] TorchSharp 타입을 격리된 NoInlining 메서드에서만 접근.
+        /// JIT가 이 메서드를 인라인하면 TorchSharp 어셈블리가 조기 로드되어
+        /// torch static ctor → 네이티브 DLL 로드 → BEX64 크래시가 발생합니다.
         /// </summary>
-        public static TorchSharp.torch.Device ResolveDevice()
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static void ActuallyInitializeTorch()
+        {
+            var device = TorchSharp.torch.CPU;
+            Debug.WriteLine($"[TorchInitializer] TorchSharp 초기화 성공 - Device: {device}");
+        }
+
+        /// <summary>
+        /// [BEX64 FIX] 프로브 자식에서 TorchSharp 접근을 격리.
+        /// 네이티브 크래시 시 이 프로세스(자식)만 종료되며,
+        /// 부모 프로세스에서 미리 기록한 FAIL이 유지됨.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static void ProbeTouchTorch()
+        {
+            var device = TorchSharp.torch.CPU;
+            _ = device.type.ToString();
+        }
+
+        /// <summary>
+        /// Torch 디바이스 선택 (기본: CPU)
+        /// [BEX64 FIX] init 실패 시 null 반환 — TorchSharp 타입에 절대 접근하지 않음.
+        /// 호출자는 반드시 null 체크 필수.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public static TorchSharp.torch.Device? ResolveDevice()
         {
             if (!TryInitialize())
             {
-                return TorchSharp.torch.CPU;
+                // [BEX64 FIX] TorchSharp.torch.CPU 접근 금지!
+                // torch static ctor가 네이티브 DLL 로드 → 크래시
+                return null;
             }
 
+            try
+            {
+                return GetDeviceInternal();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[TorchInitializer] 디바이스 확인 실패: {ex.Message}");
+                TrySaveProbeFail();
+                _available = false;
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// [BEX64 FIX] TorchSharp 타입 접근을 격리된 NoInlining 메서드로 분리.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static TorchSharp.torch.Device GetDeviceInternal()
+        {
             string? envValue = Environment.GetEnvironmentVariable("TRADINGBOT_ENABLE_CUDA");
             bool allowCuda = string.Equals(envValue, "1", StringComparison.OrdinalIgnoreCase);
             if (!allowCuda)
@@ -448,15 +491,7 @@ namespace TradingBot.Services
                 return TorchSharp.torch.CPU;
             }
 
-            try
-            {
-                return TorchSharp.torch.cuda.is_available() ? TorchSharp.torch.CUDA : TorchSharp.torch.CPU;
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[TorchInitializer] CUDA 디바이스 확인 실패, CPU로 폴백: {ex.Message}");
-                return TorchSharp.torch.CPU;
-            }
+            return TorchSharp.torch.cuda.is_available() ? TorchSharp.torch.CUDA : TorchSharp.torch.CPU;
         }
     }
 }
