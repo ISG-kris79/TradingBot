@@ -1357,8 +1357,21 @@ namespace TradingBot
             }
         }
 
+        private static string NormalizeCriticalProjectName(string projectName)
+        {
+            if (string.Equals(projectName, "TorchService", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(projectName, "TransformerLocal", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(projectName, "Transformer", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Transformer";
+            }
+
+            return projectName;
+        }
+
         private void RaiseCriticalTrainingAlert(string projectName, string stage, bool success, string detail)
         {
+            projectName = NormalizeCriticalProjectName(projectName);
             string status = success ? "완료" : "실패";
             string message = $"🚨 [CRITICAL][AI][{projectName}] {stage} {status} | {detail}";
             

@@ -2,6 +2,7 @@
 using System.IO;
 using System.Linq;
 using TradingBot.Models;
+using TradingBot.Services.ProcessAI;
 
 namespace TradingBot.Services
 {
@@ -11,16 +12,47 @@ namespace TradingBot.Services
         private ITransformer? _model;
         private PredictionEngine<CandleData, ScalpingPrediction>? _scalpingEngine;
         private PredictionEngine<CandleData, PredictionResult>? _legacyEngine;
+        private readonly MLServiceClient? _mlServiceClient;
+        private readonly bool _useExternalMlService;
         private readonly string _modelPath;
         private readonly string _baseDir;
         private bool _disposed = false;
 
-        public AIPredictor()
+        public AIPredictor(bool preferExternalMlService = true)
         {
             _mlContext = new MLContext(seed: 42);
             _baseDir = AppDomain.CurrentDomain.BaseDirectory;
             _modelPath = Path.Combine(_baseDir, "scalping_model.zip");
 
+            if (preferExternalMlService)
+            {
+                try
+                {
+                    _mlServiceClient = new MLServiceClient();
+                    _mlServiceClient.OnLog += msg => System.Diagnostics.Debug.WriteLine($"[AIPredictor][MLService] {msg}");
+
+                    bool started = _mlServiceClient.StartAsync().GetAwaiter().GetResult();
+                    if (started)
+                    {
+                        _useExternalMlService = true;
+                        System.Diagnostics.Debug.WriteLine("[AIPredictor] MLService 프로세스 연결 성공 (외부 프로세스 모드)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[AIPredictor] MLService 연결 실패 - 로컬 ML.NET 폴백: {ex.Message}");
+                }
+            }
+
+            // 외부 서비스 실패/미사용 시 로컬 모델 fallback
+            if (!_useExternalMlService)
+            {
+                LoadLocalModel();
+            }
+        }
+
+        private void LoadLocalModel()
+        {
             // 가장 성능이 좋은 모델 찾기 (F1 기준)
             string bestModelPath = GetBestModelPath();
             string loadPath = bestModelPath;
@@ -86,12 +118,36 @@ namespace TradingBot.Services
         /// <summary>스캘핑 모델 예측 (LightGBM)</summary>
         public ScalpingPrediction? PredictScalping(CandleData data)
         {
+            if (_useExternalMlService && _mlServiceClient != null)
+            {
+                var external = _mlServiceClient.PredictAsync(data).GetAwaiter().GetResult();
+                if (external != null)
+                {
+                    return new ScalpingPrediction
+                    {
+                        PredictedLabel = external.Prediction,
+                        Probability = external.Probability,
+                        Score = external.Score
+                    };
+                }
+            }
+
             return _scalpingEngine?.Predict(data);
         }
 
         /// <summary>기존 호환용 예측</summary>
         public PredictionResult Predict(CandleData data)
         {
+            if (_useExternalMlService && _mlServiceClient != null)
+            {
+                var external = _mlServiceClient.PredictAsync(data).GetAwaiter().GetResult();
+                if (external != null)
+                {
+                    external.Probability = NormalizeProbability(external.Probability, external.Score);
+                    return external;
+                }
+            }
+
             if (_scalpingEngine != null)
             {
                 var sp = _scalpingEngine.Predict(data);
@@ -136,7 +192,7 @@ namespace TradingBot.Services
             return 0.5f;
         }
 
-        public bool IsModelLoaded => _scalpingEngine != null || _legacyEngine != null;
+        public bool IsModelLoaded => (_useExternalMlService && (_mlServiceClient?.IsModelLoaded ?? false)) || _scalpingEngine != null || _legacyEngine != null;
 
         public void Dispose()
         {
@@ -144,6 +200,7 @@ namespace TradingBot.Services
             
             try
             {
+                _mlServiceClient?.Dispose();
                 _scalpingEngine?.Dispose();
                 _legacyEngine?.Dispose();
                 _model = null;

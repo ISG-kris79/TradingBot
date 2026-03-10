@@ -1692,6 +1692,22 @@ namespace TradingBot
 
         private async Task StartPeriodicTrainingAsync(CancellationToken token)
         {
+            void RaisePeriodicTransformerCriticalAlert(string stage, bool success, string detail)
+            {
+                string status = success ? "완료" : "실패";
+                string message = $"🚨 [CRITICAL][AI][Transformer] {stage} {status} | {detail}";
+                OnAlert?.Invoke(message);
+
+                try
+                {
+                    MainWindow.Instance?.AddAlert(message);
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ Transformer 크리티컬 알럿 UI 전달 실패: {ex.Message}");
+                }
+            }
+
             while (!token.IsCancellationRequested)
             {
                 try
@@ -1740,6 +1756,7 @@ namespace TradingBot
                                 }, token);
 
                                 OnAlert?.Invoke($"✅ Transformer 재학습 완료 (데이터: {trainingData.Count}건)");
+                                RaisePeriodicTransformerCriticalAlert("정기재학습", true, $"샘플={trainingData.Count}");
                             }
                             catch (OperationCanceledException)
                             {
@@ -1757,6 +1774,8 @@ namespace TradingBot
                                 {
                                     OnAlert?.Invoke($"   ↳ Stack: {ex.StackTrace}");
                                 }
+
+                                RaisePeriodicTransformerCriticalAlert("정기재학습", false, ex.InnerException?.Message ?? ex.Message);
                             }
                         }
                         else

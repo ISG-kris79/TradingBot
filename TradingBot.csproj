@@ -116,6 +116,28 @@
     </None>
   </ItemGroup>
 
+  <Target Name="CopyExternalAiServicesToOutput" AfterTargets="Build">
+    <ItemGroup>
+      <MLServiceFiles Include="..\TradingBot.MLService\bin\$(Configuration)\net9.0\**\*.*" />
+      <TorchServiceFiles Include="..\TradingBot.TorchService\bin\$(Configuration)\net9.0\**\*.*" />
+    </ItemGroup>
+
+    <MakeDir Directories="$(OutDir)Services" />
+    <Copy SourceFiles="@(MLServiceFiles)" DestinationFiles="@(MLServiceFiles->'$(OutDir)Services\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" Condition="'@(MLServiceFiles)' != ''" />
+    <Copy SourceFiles="@(TorchServiceFiles)" DestinationFiles="@(TorchServiceFiles->'$(OutDir)Services\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" Condition="'@(TorchServiceFiles)' != ''" />
+  </Target>
+
+  <Target Name="CopyExternalAiServicesToPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <MLServicePublishFiles Include="..\TradingBot.MLService\bin\$(Configuration)\net9.0\**\*.*" />
+      <TorchServicePublishFiles Include="..\TradingBot.TorchService\bin\$(Configuration)\net9.0\**\*.*" />
+    </ItemGroup>
+
+    <MakeDir Directories="$(PublishDir)Services" />
+    <Copy SourceFiles="@(MLServicePublishFiles)" DestinationFiles="@(MLServicePublishFiles->'$(PublishDir)Services\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" Condition="'@(MLServicePublishFiles)' != ''" />
+    <Copy SourceFiles="@(TorchServicePublishFiles)" DestinationFiles="@(TorchServicePublishFiles->'$(PublishDir)Services\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" Condition="'@(TorchServicePublishFiles)' != ''" />
+  </Target>
+
   <!-- 외부 중복 링크/삭제된 프로젝트 참조 제거 -->
 
 </Project>
