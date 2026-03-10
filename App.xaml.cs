@@ -1,5 +1,6 @@
 using System.Windows;
 using Velopack;
+using Velopack.Sources;
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using System.Threading;
@@ -513,10 +514,14 @@ namespace TradingBot
                     return false;
                 }
 
-                var updateUrl = "https://github.com/ISG-kris79/TradingBot/releases/latest/download/releases.win.json";
-                var mgr = new UpdateManager(updateUrl);
+                var githubSource = new GithubSource(
+                    "https://github.com/ISG-kris79/TradingBot",
+                    null,  // 인증 토큰 없음 (공개 저장소)
+                    false  // 프리릴리스 제외
+                );
+                var mgr = new UpdateManager(githubSource);
 
-                Debug.WriteLine($"[Update] {phase} 업데이트 확인: {updateUrl}");
+                Debug.WriteLine($"[Update] {phase} 업데이트 확인: GitHub Releases API");
                 var updateInfo = await mgr.CheckForUpdatesAsync();
 
                 if (updateInfo == null)

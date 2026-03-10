@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+## [2.4.16] - 2026-03-10
+
+### Fixed
+
+- **업데이트 확인 실패 문제 해결**:
+  - GitHub Releases 메타데이터 직접 접근 방식에서 Velopack GitHub 통합 API로 전환
+  - `UpdateManager` 생성자를 `GithubSource` 사용으로 변경하여 GitHub Releases API와 직접 통합
+  - `releases.win.json` 파일 형식 문제 우회 (GitHub의 에셋 다운로드 구조 변경으로 인한 호환성 문제)
+
 ## [2.4.15] - 2026-03-10
 
 ### Fixed
