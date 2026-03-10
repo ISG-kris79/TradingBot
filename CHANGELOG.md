@@ -7,6 +7,25 @@
 
 ## [Unreleased]
 
+## [2.4.14] - 2026-03-10
+
+### Critical Fix
+
+- **BEX64 크래시 실제 시작 경로 차단 (5차 최종 안정화)**:
+  - **실제 누락 지점 발견**: 이전 수정은 `TransformerTrainer` 경로만 막았고, 앱 시작 시 별도 경로가 여전히 TorchSharp 생성자를 직접 호출하고 있었음
+  - **TradingEngine 생성자**: `AIDoubleCheckEntryGate`를 항상 생성했고, 내부에서 `new EntryTimingTransformerTrainer()`가 실행됨
+  - **MainWindow Loaded 경로**: `InitializeWaveAIAsync()`가 항상 실행되며 `WaveAIManager → DoubleCheckEntryEngine → TransformerWaveNavigator` 생성으로 이어짐
+  - **추가 안전장치**: `MultiAgentManager`, `AIDoubleCheckEntryGate`, `DoubleCheckEntryEngine` 모두 설정 기반 게이트 추가
+  - **최종 결과**: `TransformerSettings.Enabled=false`이면 앱 시작 시 TorchSharp 생성자 경로 자체를 타지 않음
+
+### Changed
+
+- `TradingEngine.cs`: Torch 비활성 시 AI 더블체크 게이트 초기화 자체를 건너뜀
+- `MainWindow.xaml.cs`: Torch 비활성 시 WaveAI 자동 초기화 자체를 건너뜀
+- `MultiAgentManager.cs`: Torch 비활성 시 PPO 에이전트 생성 완전 차단
+- `AIDoubleCheckEntryGate.cs`: Torch 비활성 상태에서 생성자 즉시 차단
+- `DoubleCheckEntryEngine.cs`: Torch 비활성 상태에서 생성자 즉시 차단
+
 ## [2.4.13] - 2026-03-10
 
 ### Critical Fix

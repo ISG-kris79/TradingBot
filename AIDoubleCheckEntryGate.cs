@@ -49,6 +49,12 @@ namespace TradingBot
             DoubleCheckConfig? config = null,
             bool enableOnlineLearning = true)
         {
+            bool torchFeaturesEnabled = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
+            if (!torchFeaturesEnabled)
+            {
+                throw new InvalidOperationException("TransformerSettings.Enabled=false 상태에서는 AI 더블체크 게이트를 초기화할 수 없습니다.");
+            }
+
             _config = config ?? new DoubleCheckConfig();
             _exchangeService = exchangeService;
             

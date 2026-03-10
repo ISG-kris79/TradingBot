@@ -16,7 +16,15 @@ namespace TradingBot.Services.AI.RL
         public MultiAgentManager(int stateDim, int actionDim)
         {
             _agents = new Dictionary<string, PPOAgent>();
-            
+
+            bool torchFeaturesEnabled = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
+            if (!torchFeaturesEnabled)
+            {
+                _torchAvailable = false;
+                Debug.WriteLine("[MultiAgentManager] Torch/Transformer 설정 비활성화 - PPO 에이전트 비활성화");
+                return;
+            }
+
             // TorchSharp 사용 가능 여부 확인
             _torchAvailable = Services.TorchInitializer.IsAvailable;
             

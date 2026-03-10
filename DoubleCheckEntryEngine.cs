@@ -34,6 +34,12 @@ namespace TradingBot
             string transformerModelPath = "transformer_wave_navigator.dat",
             string mlnetModelPath = "mlnet_wave_sniper.zip")
         {
+            bool torchFeaturesEnabled = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
+            if (!torchFeaturesEnabled)
+            {
+                throw new InvalidOperationException("TransformerSettings.Enabled=false 상태에서는 DoubleCheckEntryEngine을 초기화할 수 없습니다.");
+            }
+
             _waveDetector = new ElliottWaveDetector();
             _waveSniper = new WaveSniper();
             _transformerNavigator = new TransformerWaveNavigator(transformerModelPath);

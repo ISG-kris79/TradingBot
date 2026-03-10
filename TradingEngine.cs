@@ -434,6 +434,8 @@ namespace TradingBot
                 _ = HandleAiCloseLabelingAsync(symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason);
             };
 
+            bool torchFeaturesEnabled = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
+
             // [Agent 3] 멀티 에이전트 매니저 초기화 (상태 차원: 3 [RSI, MACD, BB], 행동 차원: 3 [Hold, Buy, Sell])
             _multiAgentManager = new MultiAgentManager(3, 3);
             _multiAgentManager.OnAgentTrainingStats += (name, loss, reward) =>
@@ -466,34 +468,42 @@ namespace TradingBot
             }
 
             // [AI 더블체크 게이트 초기화]
-            try
+            if (torchFeaturesEnabled)
             {
-                var doubleCheckConfig = new DoubleCheckConfig
+                try
                 {
-                    MinMLConfidence = Math.Clamp(_fifteenMinuteMlMinConfidence, 0f, 1f),
-                    MinTransformerConfidence = Math.Clamp(_fifteenMinuteTransformerMinConfidence, 0f, 1f),
-                    MinMLConfidenceMajor = Math.Clamp(_fifteenMinuteMlMinConfidence + 0.08f, 0f, 1f),
-                    MinTransformerConfidenceMajor = Math.Clamp(_fifteenMinuteTransformerMinConfidence + 0.08f, 0f, 1f),
-                    MinMLConfidencePumping = Math.Clamp(_fifteenMinuteMlMinConfidence - 0.05f, 0f, 1f)
-                };
+                    var doubleCheckConfig = new DoubleCheckConfig
+                    {
+                        MinMLConfidence = Math.Clamp(_fifteenMinuteMlMinConfidence, 0f, 1f),
+                        MinTransformerConfidence = Math.Clamp(_fifteenMinuteTransformerMinConfidence, 0f, 1f),
+                        MinMLConfidenceMajor = Math.Clamp(_fifteenMinuteMlMinConfidence + 0.08f, 0f, 1f),
+                        MinTransformerConfidenceMajor = Math.Clamp(_fifteenMinuteTransformerMinConfidence + 0.08f, 0f, 1f),
+                        MinMLConfidencePumping = Math.Clamp(_fifteenMinuteMlMinConfidence - 0.05f, 0f, 1f)
+                    };
 
-                _aiDoubleCheckEntryGate = new AIDoubleCheckEntryGate(_exchangeService, doubleCheckConfig);
-                _aiDoubleCheckEntryGate.OnLog += msg => OnStatusLog?.Invoke(msg);
-                _aiDoubleCheckEntryGate.OnAlert += msg => OnAlert?.Invoke(msg);
-                if (_aiDoubleCheckEntryGate.IsReady)
-                {
-                    OnStatusLog?.Invoke(
-                        $"✅ AI 더블체크 게이트 활성화 | ML>={doubleCheckConfig.MinMLConfidence:P0}, TF>={doubleCheckConfig.MinTransformerConfidence:P0}");
+                    _aiDoubleCheckEntryGate = new AIDoubleCheckEntryGate(_exchangeService, doubleCheckConfig);
+                    _aiDoubleCheckEntryGate.OnLog += msg => OnStatusLog?.Invoke(msg);
+                    _aiDoubleCheckEntryGate.OnAlert += msg => OnAlert?.Invoke(msg);
+                    if (_aiDoubleCheckEntryGate.IsReady)
+                    {
+                        OnStatusLog?.Invoke(
+                            $"✅ AI 더블체크 게이트 활성화 | ML>={doubleCheckConfig.MinMLConfidence:P0}, TF>={doubleCheckConfig.MinTransformerConfidence:P0}");
+                    }
+                    else
+                    {
+                        OnStatusLog?.Invoke("⚠️ AI 더블체크 모델 미준비 (기존 15분 WaveGate로 자동 폴백)");
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    OnStatusLog?.Invoke("⚠️ AI 더블체크 모델 미준비 (기존 15분 WaveGate로 자동 폴백)");
+                    _aiDoubleCheckEntryGate = null;
+                    OnStatusLog?.Invoke($"⚠️ AI 더블체크 게이트 초기화 실패: {ex.Message}");
                 }
             }
-            catch (Exception ex)
+            else
             {
                 _aiDoubleCheckEntryGate = null;
-                OnStatusLog?.Invoke($"⚠️ AI 더블체크 게이트 초기화 실패: {ex.Message}");
+                OnStatusLog?.Invoke("🛡️ AI 더블체크 게이트 비활성화: Torch/Transformer 설정이 꺼져 있어 15분 WaveGate 폴백만 사용합니다.");
             }
 
             // [v2.4.2] Navigator-Sniper 하이브리드 아키텍처 초기화

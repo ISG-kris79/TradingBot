@@ -226,7 +226,7 @@ namespace TradingBot
                 var settingsTask = InitializeGeneralSettingsAsync();
                 await Task.WhenAll(updateTask, settingsTask);
                 await InitializeAdvancedFeaturesAsync();
-                
+
                 // [WaveAI] 엘리엇 파동 AI 시스템 자동 초기화
                 await InitializeWaveAIAsync();
             };
@@ -1061,6 +1061,13 @@ namespace TradingBot
         {
             try
             {
+                bool torchFeaturesEnabled = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
+                if (!torchFeaturesEnabled)
+                {
+                    AddLog("[WaveAI] 🛡️ Torch/Transformer 비활성화 상태라 WaveAI 자동 초기화를 건너뜁니다.");
+                    return;
+                }
+
                 AddLog("[WaveAI] 🌊 엘리엇 파동 AI 시스템 초기화 중...");
 
                 // IExchangeService 생성 (Simulation 또는 실제 Binance)
