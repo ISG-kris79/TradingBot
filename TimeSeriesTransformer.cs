@@ -39,7 +39,8 @@ namespace TradingBot.Services.AI
             _positionalEncoding = new PositionalEncoding(dModel, maxSeqLen, dropout);
 
             // 3. Transformer Encoder
-            // batch_first=false가 기본값이므로 forward에서 차원 변경 필요 (SeqLen, Batch, Feature)
+            if (dModel % nHeads != 0)
+                throw new ArgumentException($"dModel({dModel})은 nHeads({nHeads})의 배수여야 합니다. head_dim = dModel/nHeads 이 정수여야 합니다.");
             var encoderLayer = TransformerEncoderLayer(dModel, nHeads, dim_feedforward: dModel * 4, dropout: dropout);
             _transformerEncoder = TransformerEncoder(encoderLayer, nLayers);
 
@@ -62,8 +63,7 @@ namespace TradingBot.Services.AI
             // 2. Positional Encoding
             var withPe = _positionalEncoding.forward(scaled);
 
-            // 3. Transformer Encoder
-            // TorchSharp Transformer는 [seq_len, batch_size, feature] 입력을 기대함
+            // 3. Transformer Encoder (batch_first=false → [seq, batch, d_model] 형식 필요)
             var permuted1 = withPe.permute(1, 0, 2); // -> [seq_len, batch_size, d_model]
             
             var encoded = _transformerEncoder.forward(permuted1, null, null);

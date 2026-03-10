@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+## [2.4.19] - 2026-03-10
+
+### Fixed
+
+- **Transformer 초기 학습 내부 오류 수정 (attn_output 차원 불일치)**:
+  - `TimeSeriesTransformer`, `TransformerClassifierModel`: `dModel % nHeads` 검증 추가
+  - `TransformerTrainer.LoadModel()`: 로드 후 더미 forward 테스트로 모델 무결성 검증, 불일치 시 자동 삭제 + 재초기화
+  - `EntryTimingTransformerTrainer.LoadModel()`: 동일 패턴 적용
+  - 기존 모델 파일이 현재 아키텍처와 호환되지 않을 때 자동 복구
+
 ## [2.4.18] - 2026-03-10
 
 ### Fixed

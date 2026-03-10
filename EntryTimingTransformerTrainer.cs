@@ -416,14 +416,40 @@ namespace TradingBot
                 if (_model == null)
                     InitializeModel();
 
-                _model!.load(_modelPath);
+                try
+                {
+                    _model!.load(_modelPath);
+
+                    // [v2.4.19] 로드된 모델 무결성 검증 — 더미 forward 테스트
+                    using (TorchSharp.torch.no_grad())
+                    {
+                        using var dummy = TorchSharp.torch.zeros(1, _seqLen, _featureDim, device: _device);
+                        using var testOutput = _model.forward(dummy);
+                        if (testOutput.shape.Length < 2 || testOutput.shape[1] != 1)
+                        {
+                            throw new InvalidOperationException(
+                                $"모델 출력 차원 불일치: 예상 [1, 1], 실제 [{string.Join(", ", testOutput.shape)}]");
+                        }
+                    }
+                }
+                catch (Exception loadEx)
+                {
+                    Console.WriteLine($"[TransformerBinary] 기존 모델 호환 불가 — 재초기화: {loadEx.Message}");
+                    try { File.Delete(_modelPath); } catch { }
+                    InitializeModel();
+                    _isModelReady = false;
+                    return false;
+                }
+
                 _isModelReady = true;
-                Console.WriteLine($"[TransformerBinary] 모델 로드 성공: {_modelPath}");
+                Console.WriteLine($"[TransformerBinary] 모델 로드 성공 (무결성 검증 통과): {_modelPath}");
                 return true;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[TransformerBinary] 로드 실패: {ex.Message}");
+                try { File.Delete(_modelPath); } catch { }
+                InitializeModel();
                 return false;
             }
         }
@@ -472,6 +498,8 @@ namespace TradingBot
             _inputEmbedding = Linear(featureDim, hiddenDim);
 
             // 2. Transformer Encoder
+            if (hiddenDim % numHeads != 0)
+                throw new ArgumentException($"hiddenDim({hiddenDim})은 numHeads({numHeads})의 배수여야 합니다.");
             var encoderLayer = TransformerEncoderLayer(hiddenDim, numHeads, dim_feedforward: hiddenDim * 4, dropout: dropoutRate);
             _encoder = TransformerEncoder(encoderLayer, numLayers);
 
@@ -492,7 +520,7 @@ namespace TradingBot
             using var embedded = _inputEmbedding.forward(input); // [batch, seq, hiddenDim]
             using var scaled = embedded * Math.Sqrt(_hiddenDim);
 
-            // 2. Transformer Encoder (requires [seq, batch, hiddenDim])
+            // 2. Transformer Encoder (batch_first=false → [seq, batch, hiddenDim])
             using var permuted1 = scaled.permute(1, 0, 2); // [seq, batch, hiddenDim]
             using var encoded = _encoder.forward(permuted1, null, null);
             using var permuted2 = encoded.permute(1, 0, 2); // [batch, seq, hiddenDim]
