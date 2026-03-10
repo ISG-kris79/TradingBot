@@ -7,6 +7,24 @@
 
 ## [Unreleased]
 
+## [2.4.13] - 2026-03-10
+
+### Critical Fix
+
+- **BEX64 크래시 근본 원인 재분석 및 안전 모드 적용 (4차 최종 안정화)**:
+  - **Root Cause (v2.4.11 본석 개선)**: `TransformerTrainer.cs`의 `using static TorchSharp.torch` 구문이 클래스 로드 시점에 torch static constructor를 트리기 → 네이티브 DLL 로드 → BEX64 크래시
+  - **v2.4.11의 NoInlining 패턴만으로는 불충분**: JIT 컴파일러가 `new TransformerTrainer(...)`를 컴파일하려고 하는 순간 using static으로 인해 TorchSharp 어셈블리 로드
+  - **최종 해결책**: TorchSharp/Transformer 기능을 **기본 비활성화** (appsettings.json `"Enabled": false`)
+  - **사용자 선택**: `appsettings.json`에서 `TransformerSettings.Enabled = true`로 변경 후 재시작하면 Transformer AI 활성화 (프로브 검증 후 사용)
+  - **기본 모드**: ML.NET AI + MajorCoinStrategy(지표 기반)만 동작 → **BEX64 크래시 완전 차단**
+  - **메시지 개선**: 설정 확인 메시지 및 경고 추가
+
+### Changed
+
+- `AppConfig.cs`: `TransformerSettings.Enabled` 기본값 `true` → **`false`**
+- `appsettings.json`: `TransformerSettings.Enabled = false` + 경고 주석 추가
+- `TradingEngine.cs`: Transformer 초기화 메시지 강화 (안정 모드 안내)
+
 ## [2.4.12] - 2026-03-10
 
 ### Enhanced

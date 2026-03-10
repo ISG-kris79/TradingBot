@@ -238,7 +238,7 @@ namespace TradingBot
 
     public class TransformerSettings
     {
-        public bool Enabled { get; set; } = true;
+        public bool Enabled { get; set; } = false; // [v2.4.13] 기본 비활성화 (BEX64 크래시 방지)
         public int InputDim { get; set; } = 21;
         public int DModel { get; set; } = 128;
         public int NHeads { get; set; } = 8;

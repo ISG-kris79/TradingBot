@@ -586,14 +586,15 @@ namespace TradingBot
             }
 
             // [Phase 7] Transformer 모델 및 전략 초기화 (설정 파일 로드)
-            // [FIX] 서브프로세스 프로브로 TorchSharp 호환성 사전 검증 후 초기화
+            // [v2.4.13] TorchSharp는 기본 비활성화 (BEX64 크래시 방지)
             var tfSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
             bool transformerInitSuccess = false;
             if (tfSettings.Enabled)
             {
+                OnStatusLog?.Invoke("⚠️ TorchSharp/Transformer 기능은 현재 개발 및 테스트 중입니다. 활성화 시 BEX64 크래시 위험이 있습니다.");
+                OnStatusLog?.Invoke("🔍 설정에서 Transformer.Enabled=true로 확인됨 — TorchSharp 환경 호환성 검증 중...");
                 try
                 {
-                    OnStatusLog?.Invoke("🔍 TorchSharp 환경 호환성 검증 중...");
                     bool torchReady = TorchInitializer.IsAvailable || TorchInitializer.TryInitialize();
                     if (!torchReady)
                     {
@@ -676,7 +677,8 @@ namespace TradingBot
             }
             else
             {
-                OnStatusLog?.Invoke("ℹ️ Transformer/TorchSharp 기능이 설정에서 비활성화되어 있습니다.");
+                OnStatusLog?.Invoke("✅ Transformer/TorchSharp 기능이 설정에서 비활성화되어 있습니다 (기본 안정 모드).");
+                OnStatusLog?.Invoke("🛡️ ML.NET 기반 AI와 MajorCoinStrategy(지표 기반) 전략으로 안전하게 동작합니다.");
                 _transformerTrainer = null;
             }
 
