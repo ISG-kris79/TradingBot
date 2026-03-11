@@ -166,6 +166,7 @@ namespace TradingBot
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            /* TensorFlow 전환 중 비활성화 - TorchSharp Probe
             // ── TorchSharp 서브프로세스 프로브 모드 ──
             // --torch-probe 인수로 실행된 경우, TorchSharp 호환성만 테스트하고 즉시 종료
             if (TorchInitializer.HandleProbeIfRequested(Environment.GetCommandLineArgs()))
@@ -180,6 +181,7 @@ namespace TradingBot
             // ── [v2.4.21] 앱 버전 변경 시 기존 Transformer 모델 파일 자동 정리 ──
             // 이전 버전의 모델이 현재 아키텍처와 불일치하면 C++ abort(BEX64) 크래시 발생
             TorchInitializer.InvalidateModelsIfVersionChanged();
+            */
 
             // ── Hybrid 주문 로직 백테스트 CLI 모드 ──
             if (HandleHybridBacktestCliIfRequested(e.Args))
@@ -720,8 +722,10 @@ namespace TradingBot
             _mutex = null;
             _ownsMutex = false;
 
+            /* TensorFlow 전환 중 비활성화
             // Torch run-state 정리 (정상 종료 마킹)
             TorchInitializer.RegisterCleanShutdown();
+            */
 
             Debug.WriteLine("[App] 애플리케이션 종료 - Mutex 해제됨");
             base.OnExit(e);

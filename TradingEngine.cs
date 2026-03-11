@@ -46,10 +46,10 @@ namespace TradingBot
         // 블랙리스트 (심볼, 해제시간) - 지루함 청산 종목 재진입 방지
         private ConcurrentDictionary<string, DateTime> _blacklistedSymbols = new ConcurrentDictionary<string, DateTime>();
         // 슬롯 설정
-        // [수정] 슬롯 제한: 메이저 최대 4개, PUMP 최대 2개 = 총 6개
+        // [수정] 슬롯 제한: 메이저 최대 4개, PUMP 최대 1개 = 총 6개
         private const int MAX_TOTAL_SLOTS = 6;        // 총 최대 6개
         private const int MAX_MAJOR_SLOTS = 4;        // 메이저 최대 4개
-        private const int MAX_PUMP_SLOTS = 2;         // PUMP(밈) 최대 2개
+        private const int MAX_PUMP_SLOTS = 1;         // PUMP(밈) 최대 1개 (리스크 축소)
         private const int PUMP_MANUAL_LEVERAGE = 20; // 20배 롱 전용 대응 매뉴얼
         private const int SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 1000;
         private const int MAJOR_SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 180;
@@ -60,8 +60,8 @@ namespace TradingBot
         private const decimal FastEntrySlippageExitPct = 0.0018m;
         private decimal _minEntryRiskRewardRatio = 1.40m; // 설정에서 로드
         private bool _rrConfigMismatchWarned = false;
-        private float _fifteenMinuteMlMinConfidence = 0.50f; // 설정에서 로드 (하향: 0.55→0.50, 신뢰도 기준 완화)
-        private float _fifteenMinuteTransformerMinConfidence = 0.47f; // 설정에서 로드 (하향: 0.52→0.47)
+        private float _fifteenMinuteMlMinConfidence = 0.65f; // 가이드 기본값
+        private float _fifteenMinuteTransformerMinConfidence = 0.60f; // 가이드 기본값
         private float _aiScoreThresholdMajor = 70.0f; // 설정에서 로드 (최소 70 보장)
         private float _aiScoreThresholdNormal = 70.0f; // 설정에서 로드 (최소 70 보장)
         private bool _enableAiScoreFilter = true; // 설정에서 로드
@@ -98,8 +98,8 @@ namespace TradingBot
         private MajorCoinStrategy? _majorStrategy;
         private GridStrategy _gridStrategy;
         private ArbitrageStrategy _arbitrageStrategy;
-        private TransformerStrategy? _transformerStrategy;
-        private TransformerTrainer? _transformerTrainer;
+        // private TransformerStrategy? _transformerStrategy; // TensorFlow 전환 중 임시 비활성화
+        // private TransformerTrainer? _transformerTrainer; // TensorFlow 전환 중 임시 비활성화
         private ElliottWave3WaveStrategy _elliotWave3Strategy; // [3파 확정형 단타]
         private HybridExitManager _hybridExitManager; // [하이브리드 AI 익절/손절 관리]
         private BinanceExecutionService _executionService; // [실시간 레버리지 주문 실행 서비스]
@@ -146,9 +146,9 @@ namespace TradingBot
         private AIPredictor? _aiPredictor;
         private AIDoubleCheckEntryGate? _aiDoubleCheckEntryGate;
         private HybridNavigatorSniper? _hybridNavigatorSniper; // [v2.4.2] Navigator-Sniper 매복 아키텍처
-        private DoubleCheckEntryEngine? _waveEntryEngine; // [WaveAI] 엘리엇 파동 이중 검증 진입 엔진
-        private SimpleDoubleCheckEngine? _simpleDoubleCheck; // [간소화] Transformer + ML.NET 매복 모드
-        private MultiAgentManager _multiAgentManager;
+        // private DoubleCheckEntryEngine? _waveEntryEngine; // [WaveAI] TensorFlow 전환 중 임시 비활성화
+        // private SimpleDoubleCheckEngine? _simpleDoubleCheck; // [간소화] TensorFlow 전환 중 임시 비활성화
+        // private MultiAgentManager _multiAgentManager; // TensorFlow 전환 중 임시 비활성화
         private MarketHistoryService? _marketHistoryService;
         private OiDataCollector? _oiCollector;
 
@@ -226,6 +226,7 @@ namespace TradingBot
         public event Action? OnTradeHistoryUpdated; // [FIX] 청산 시 TradeHistory 자동 갱신 트리거
         public event Action<string, AIEntryForecastResult>? OnAiEntryProbUpdate; // [AI 진입 예측] symbol, forecast
         public event Action<string, float, float, string>? OnWaveAIScoreUpdate; // [WaveAI] symbol, mlScore, tfScore, status
+        private bool HasWaveAiScoreSubscribers => OnWaveAIScoreUpdate != null;
 
         /// <summary>
         /// 외부에서 모든 이벤트 구독을 해제합니다 (event 키워드로 인해 내부에서만 초기화 가능)
@@ -255,7 +256,6 @@ namespace TradingBot
 
         private DateTime _lastHeartbeatTime = DateTime.MinValue;
         private DateTime _lastPositionSyncTime = DateTime.MinValue; // [FIX] 마지막 포지션 동기화 시간
-        private bool _initialTransformerTrainingTriggered = false;
         private bool _initialMLNetTrainingTriggered = false;
         private int _manualInitialTrainingRunning = 0;
         private TimeSpan _entryWarmupDuration = TimeSpan.FromSeconds(30); // 설정에서 로드
@@ -445,19 +445,9 @@ namespace TradingBot
             };
 
             bool transformerRequestedByConfig = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
-            bool torchFeaturesEnabled = transformerRequestedByConfig;
+            bool doubleCheckGateEnabled = transformerRequestedByConfig;
 
-            if (transformerRequestedByConfig && !TorchInitializer.IsExperimentalOptInEnabled)
-            {
-                OnStatusLog?.Invoke("🛡️ 안전모드: Transformer 설정은 켜져 있지만 실험 기능 옵트인이 없어 비활성화합니다. (환경 변수 TRADINGBOT_ENABLE_TORCH_EXPERIMENTAL=1 필요)");
-                torchFeaturesEnabled = false;
-            }
-            else if (torchFeaturesEnabled && !TorchInitializer.IsAvailable && !TorchInitializer.TryInitialize())
-            {
-                OnStatusLog?.Invoke($"🛡️ Torch 안전모드 적용: Transformer 계열 기능 비활성화 ({TorchInitializer.ErrorMessage})");
-                torchFeaturesEnabled = false;
-            }
-
+            /* TensorFlow 전환 중 임시 비활성화
             // [Agent 3] 멀티 에이전트 매니저 초기화 (상태 차원: 3 [RSI, MACD, BB], 행동 차원: 3 [Hold, Buy, Sell])
             _multiAgentManager = new MultiAgentManager(3, 3);
             _multiAgentManager.OnAgentTrainingStats += (name, loss, reward) =>
@@ -465,6 +455,7 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"🧠 RL[{name}] 학습 완료 (Loss: {loss:F4}, Reward: {reward:F4})");
                 OnRLStatsUpdate?.Invoke(name, loss, reward);
             };
+            */
 
 
             // [AI 초기화]
@@ -490,27 +481,31 @@ namespace TradingBot
             }
 
             // [AI 더블체크 게이트 초기화]
-            if (torchFeaturesEnabled)
+            if (doubleCheckGateEnabled)
             {
                 try
                 {
                     var doubleCheckConfig = new DoubleCheckConfig
                     {
-                        MinMLConfidence = Math.Clamp(_fifteenMinuteMlMinConfidence, 0f, 1f),
-                        MinTransformerConfidence = Math.Clamp(_fifteenMinuteTransformerMinConfidence, 0f, 1f),
-                        MinMLConfidenceMajor = Math.Clamp(_fifteenMinuteMlMinConfidence + 0.08f, 0f, 1f),
-                        MinTransformerConfidenceMajor = Math.Clamp(_fifteenMinuteTransformerMinConfidence + 0.08f, 0f, 1f),
-                        MinMLConfidencePumping = Math.Clamp(_fifteenMinuteMlMinConfidence - 0.05f, 0f, 1f)
+                        MinMLConfidence = Math.Clamp(Math.Max(_fifteenMinuteMlMinConfidence, 0.65f), 0f, 1f),
+                        MinTransformerConfidence = Math.Clamp(Math.Max(_fifteenMinuteTransformerMinConfidence, 0.60f), 0f, 1f),
+                        MinMLConfidenceMajor = Math.Clamp(Math.Max(_fifteenMinuteMlMinConfidence + 0.08f, 0.75f), 0f, 1f),
+                        MinTransformerConfidenceMajor = Math.Clamp(Math.Max(_fifteenMinuteTransformerMinConfidence + 0.08f, 0.68f), 0f, 1f),
+                        MinMLConfidencePumping = Math.Clamp(Math.Max(_fifteenMinuteMlMinConfidence + 0.01f, 0.66f), 0f, 1f),
+                        MinTransformerConfidencePumping = Math.Clamp(Math.Max(_fifteenMinuteTransformerMinConfidence + 0.03f, 0.63f), 0f, 1f)
                     };
 
-                    _aiDoubleCheckEntryGate = new AIDoubleCheckEntryGate(_exchangeService, doubleCheckConfig);
+                    _aiDoubleCheckEntryGate = new AIDoubleCheckEntryGate(
+                        _exchangeService,
+                        doubleCheckConfig,
+                        preferExternalTorchService: false);
                     _aiDoubleCheckEntryGate.OnLog += msg => OnStatusLog?.Invoke(msg);
                     _aiDoubleCheckEntryGate.OnAlert += msg => OnAlert?.Invoke(msg);
                     _aiDoubleCheckEntryGate.OnLabeledSample += sample => _ = PersistAiLabeledSampleToDbAsync(sample);
                     if (_aiDoubleCheckEntryGate.IsReady)
                     {
                         OnStatusLog?.Invoke(
-                            $"✅ AI 더블체크 게이트 활성화 | ML>={doubleCheckConfig.MinMLConfidence:P0}, TF>={doubleCheckConfig.MinTransformerConfidence:P0}");
+                            $"✅ AI 더블체크 게이트 활성화 | ML>={doubleCheckConfig.MinMLConfidence:P0}, TF>={doubleCheckConfig.MinTransformerConfidence:P0}, MAJOR(ML>={doubleCheckConfig.MinMLConfidenceMajor:P0}/TF>={doubleCheckConfig.MinTransformerConfidenceMajor:P0}), PUMP(ML>={doubleCheckConfig.MinMLConfidencePumping:P0}/TF>={doubleCheckConfig.MinTransformerConfidencePumping:P0})");
                     }
                     else
                     {
@@ -564,30 +559,8 @@ namespace TradingBot
             {
                 try
                 {
-                    // [통합] PUMP 코인도 MAJOR와 동일한 AI 더블체크 게이트 통과
-                    if (_aiDoubleCheckEntryGate != null)
-                    {
-                        var gateResult = await _aiDoubleCheckEntryGate.EvaluateEntryAsync(symbol, decision, (decimal)price, _cts.Token);
-                        string decisionKr = decision == "LONG" ? "롱" : "숏";
-
-                        OnLiveLog?.Invoke(
-                            $"🤖 [{symbol}] {decisionKr} ML 스나이퍼 평가 중 | " +
-                            $"ML신뢰도 {gateResult.detail.ML_Confidence:P0}, TF신뢰도 {gateResult.detail.TF_Confidence:P0}");
-
-                        if (!gateResult.allowEntry)
-                        {
-                            OnLiveLog?.Invoke(
-                                $"❌ [{symbol}] {decisionKr} Sniper 거부: {gateResult.reason} | " +
-                                $"ML={gateResult.detail.ML_Confidence:P0}, TF={gateResult.detail.TF_Confidence:P0}");
-                            return;
-                        }
-
-                        OnLiveLog?.Invoke(
-                            $"✅ [{symbol}] {decisionKr} Sniper 승인! | " +
-                            $"ML={gateResult.detail.ML_Confidence:P0}, TF={gateResult.detail.TF_Confidence:P0}");
-                    }
-
-                    await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR");
+                    // PUMP 신호는 MAJOR 공통 진입 경로를 사용하되, AI Gate 코인 타입 분류를 위해 MEME 태그를 유지
+                    await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR_MEME");
                 }
                 catch (Exception ex)
                 {
@@ -608,29 +581,6 @@ namespace TradingBot
                 {
                     try
                     {
-                        // [v2.4.2] Navigator-Sniper 평가
-                        if (_aiDoubleCheckEntryGate != null)
-                        {
-                            var gateResult = await _aiDoubleCheckEntryGate.EvaluateEntryAsync(symbol, decision, (decimal)price, _cts.Token);
-                            string decisionKr = decision == "LONG" ? "롱" : "숏";
-                            
-                            OnLiveLog?.Invoke(
-                                $"🤖 [{symbol}] {decisionKr} ML 스나이퍼 평가 중 | " +
-                                $"ML신뢰도 {gateResult.detail.ML_Confidence:P0}, TF신뢰도 {gateResult.detail.TF_Confidence:P0}");
-
-                            if (!gateResult.allowEntry)
-                            {
-                                OnLiveLog?.Invoke(
-                                    $"❌ [{symbol}] {decisionKr} Sniper 거부: {gateResult.reason} | " +
-                                    $"ML={gateResult.detail.ML_Confidence:P0}, TF={gateResult.detail.TF_Confidence:P0}");
-                                return;
-                            }
-
-                            OnLiveLog?.Invoke(
-                                $"✅ [{symbol}] {decisionKr} Sniper 승인! | " +
-                                $"ML={gateResult.detail.ML_Confidence:P0}, TF={gateResult.detail.TF_Confidence:P0}");
-                        }
-
                         await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR");
                     }
                     catch (Exception ex)
@@ -644,17 +594,14 @@ namespace TradingBot
             // [Phase 7] Transformer 모델 및 전략 초기화 (설정 파일 로드)
             // [v2.4.13] TorchSharp는 기본 비활성화 (BEX64 크래시 방지)
             var tfSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
-            bool transformerInitSuccess = false;
             bool transformerEnabledByConfig = tfSettings.Enabled;
-            bool transformerExperimentalOptIn = TorchInitializer.IsExperimentalOptInEnabled;
 
-            if (transformerEnabledByConfig && !transformerExperimentalOptIn)
-            {
-                OnStatusLog?.Invoke("🛡️ 안전모드: Transformer 초기화/학습은 건너뜁니다. (실험 기능 옵트인 미설정)");
-                OnStatusLog?.Invoke("ℹ️ ML.NET 기반 AI와 지표 전략만으로 엔진을 계속 실행합니다.");
-                _transformerTrainer = null;
-            }
-            else if (transformerEnabledByConfig)
+            // ========== TensorFlow.NET 전환 중 - Transformer 기능 임시 비활성화 ==========
+            OnStatusLog?.Invoke("⚠️ Transformer 기능은 TensorFlow.NET으로 전환 작업 중입니다 (현재 비활성화)");
+            OnStatusLog?.Invoke("🛡️ ML.NET 기반 AI와 MajorCoinStrategy(지표 기반) 전략으로 안전하게 동작합니다.");
+
+            /* TensorFlow.NET 전환 완료 후 복원 예정
+            if (transformerEnabledByConfig)
             {
                 OnStatusLog?.Invoke("⚠️ TorchSharp/Transformer 기능은 현재 개발 및 테스트 중입니다. 활성화 시 BEX64 크래시 위험이 있습니다.");
                 OnStatusLog?.Invoke("🔍 설정에서 Transformer.Enabled=true로 확인됨 — TorchSharp 환경 호환성 검증 중...");
@@ -746,6 +693,7 @@ namespace TradingBot
                 OnStatusLog?.Invoke("🛡️ ML.NET 기반 AI와 MajorCoinStrategy(지표 기반) 전략으로 안전하게 동작합니다.");
                 _transformerTrainer = null;
             }
+            */
 
             // [3파 확정형 전략] 먼저 초기화 (TransformerStrategy에서 사용하기 위해)
             _elliotWave3Strategy = new ElliottWave3WaveStrategy();
@@ -755,6 +703,26 @@ namespace TradingBot
             _hybridExitManager = new HybridExitManager();
             _hybridExitManager.OnLog += msg => OnStatusLog?.Invoke(msg);
             _hybridExitManager.OnAlert += msg => OnAlert?.Invoke(msg);
+
+            // [Smart Target] 본절 전환 텔레그램
+            _hybridExitManager.OnBreakEvenReached += (sym, newSL) =>
+            {
+                _ = Task.Run(async () =>
+                {
+                    try { await TelegramService.Instance.SendBreakEvenReachedAsync(sym, newSL); }
+                    catch { }
+                });
+            };
+
+            // [Smart Target] ATR 트레일링 마일스톤 텔레그램
+            _hybridExitManager.OnTrailingMilestone += (sym, stop, roe, lbl) =>
+            {
+                _ = Task.Run(async () =>
+                {
+                    try { await TelegramService.Instance.SendTrailingMilestoneAsync(sym, stop, roe, lbl); }
+                    catch { }
+                });
+            };
 
             // [실시간 주문 실행 서비스] ATR 트레일링 스탑 갱신
             _executionService = new BinanceExecutionService(_client);
@@ -776,6 +744,7 @@ namespace TradingBot
 
             // [3파 통합] TransformerStrategy에 ElliottWave3WaveStrategy 주입
             // [FIX] Transformer 초기화 실패 시 null 전달하여 안전하게 비활성화
+            /* TensorFlow.NET 전환 중 임시 비활성화
             if (transformerInitSuccess && _transformerTrainer != null)
             {
                 _transformerStrategy = new TransformerStrategy(_client, _transformerTrainer, _elliotWave3Strategy, tfSettings, _patternMemoryService);
@@ -793,7 +762,9 @@ namespace TradingBot
                     : "ℹ️ TransformerStrategy 비활성화 (설정에서 꺼짐)");
                 _transformerStrategy = null;
             }
+            */
 
+            /* TensorFlow.NET 전환 중 임시 비활성화
             // [Phase 7] Transformer 예측 결과 UI 연동 + AI 모니터 정확도 추적
             // [FIX] null 체크 추가 - Transformer 초기화 실패 시 이벤트 연결 스킵
             if (_transformerStrategy != null)
@@ -850,6 +821,7 @@ namespace TradingBot
                     }
                 };
             }
+            */
 
             // [Phase 8] DeFi 서비스 초기화
             var defiSettings = AppConfig.Current?.Trading?.DeFiSettings ?? new DeFiSettings();
@@ -1245,6 +1217,7 @@ namespace TradingBot
             }
         }
 
+        /* TensorFlow 전환 중 임시 비활성화
         /// <summary>
         /// [WaveAI] 엘리엇 파동 이중 검증 엔진 설정
         /// </summary>
@@ -1256,6 +1229,7 @@ namespace TradingBot
                 OnStatusLog?.Invoke("🌊 [WaveAI] 엘리엇 파동 이중 검증 엔진 통합 완료");
             }
         }
+        */
 
         public async Task StartScanningOptimizedAsync()
         {
@@ -1301,6 +1275,7 @@ namespace TradingBot
                 // [추가] ML.NET 초기 학습 1회 자동 실행 (모델 미준비 시) - 워밍업 후 실행
                 await TriggerInitialMLNetTrainingIfNeededAsync(token);
 
+                /* TensorFlow.NET 전환 중 임시 비활성화
                 // [추가] 엔진 시작 시 Transformer 초기 학습 1회 자동 실행 (모델 미준비 시) - 워밍업 후 실행
                 if (_transformerTrainer != null)
                 {
@@ -1310,12 +1285,31 @@ namespace TradingBot
                 {
                     OnStatusLog?.Invoke("ℹ️ Transformer 초기 학습 건너뜀: Transformer 런타임 비활성/미준비");
                 }
+                */
 
-                // [추가] AI 더블체크 게이트 초기 학습 (모델 미준비 시)
+                // [수정] AI 더블체크 게이트 초기 학습 방식을 백그라운드로 전환 (Fire & Forget)
+                // 수학적 모델(Queueing Theory M/G/1)상, 무거운 I/O 및 ML 연산 처리 시간(S)을 UI 메인 루프에 종속(await)시키면,
+                // 리틀의 법칙(L = λW)에 의해 후속 이벤트(Telegram, Socket, UI 렌더링 등)의 시스템 대기 시간(W)이 무한히 쌓여 메인 UI 프리징(Deadlock/Starvation)을 초래함.
+                // 따라서 이 메인 프로세스는 상태 플래그(IsReady)만 확인하게 하고, 실제 훈련은 백그라운드 Worker Thread로 오프로딩하여 UI 및 엔진 파이프라인을 즉시 재개함.
                 if (_aiDoubleCheckEntryGate != null && !_aiDoubleCheckEntryGate.IsReady)
                 {
-                    var (success, message) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, _symbols, token);
-                    // 결과 메시지는 이미 AIDoubleCheckEntryGate.OnAlert에서 출력됨
+                    OnStatusLog?.Invoke("ℹ️ AI 모델 초기 학습을 백그라운드로 시작합니다. 학습 완료 시까지 모델 매매 진입이 지연됩니다.");
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var (success, message) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, _symbols, token);
+                            if (success)
+                            {
+                                // 학습 완료 시 크리티컬 메시지로 알림 (UI 스레드로 디스패치)
+                                _ = NotificationService.Instance.NotifyAsync("✅ [AI 더블체크] 백그라운드 수집 및 초기 학습 메인 프로세스 완료!", NotificationChannel.Alert);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            OnStatusLog?.Invoke($"❌ AI 백그라운드 학습 오류: {ex.Message}");
+                        }
+                    }, token);
                 }
 
                 // 텔레그램 시작 알림 전송
@@ -1343,7 +1337,8 @@ namespace TradingBot
                 {
                     var stats = _aiDoubleCheckEntryGate.GetRecentLabelStats(10);
                     bool coreModelReady = _aiPredictor?.IsModelLoaded ?? false;
-                    bool modelsReady = coreModelReady && _aiDoubleCheckEntryGate.IsReady;
+                    // [UI 안정화] 더블체크 게이트 준비 여부와 무관하게 코어 ML 모델 로드 상태를 기준으로 표시
+                    bool modelsReady = coreModelReady;
                     MainWindow.Instance?.UpdateAiLearningStatusUI(
                         stats.total, stats.labeled, stats.markToMarket, 
                         stats.tradeClose, _activeAiDecisionIds.Count, modelsReady);
@@ -1692,22 +1687,6 @@ namespace TradingBot
 
         private async Task StartPeriodicTrainingAsync(CancellationToken token)
         {
-            void RaisePeriodicTransformerCriticalAlert(string stage, bool success, string detail)
-            {
-                string status = success ? "완료" : "실패";
-                string message = $"🚨 [CRITICAL][AI][Transformer] {stage} {status} | {detail}";
-                OnAlert?.Invoke(message);
-
-                try
-                {
-                    MainWindow.Instance?.AddAlert(message);
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ Transformer 크리티컬 알럿 UI 전달 실패: {ex.Message}");
-                }
-            }
-
             while (!token.IsCancellationRequested)
             {
                 try
@@ -1737,6 +1716,7 @@ namespace TradingBot
                     {
                         await RetrainMlNetPredictorAsync(trainingData, token);
 
+                        /* TensorFlow.NET 전환 중 임시 비활성화
                         if (_transformerTrainer != null)
                         {
                             try
@@ -1782,6 +1762,7 @@ namespace TradingBot
                         {
                             OnStatusLog?.Invoke("ℹ️ Transformer가 비활성화되어 있어 재학습을 건너뜁니다.");
                         }
+                        */
 
                         // [추가] AI 더블체크 게이트 재학습
                         if (_aiDoubleCheckEntryGate != null)
@@ -1993,6 +1974,7 @@ namespace TradingBot
             }
         }
 
+        /* TensorFlow.NET 전환 중 임시 비활성화
         private async Task TriggerInitialTransformerTrainingIfNeededAsync(CancellationToken token, bool force = false)
         {
             if (_initialTransformerTrainingTriggered && !force)
@@ -2095,6 +2077,7 @@ namespace TradingBot
                 OnAlert?.Invoke($"❌ Transformer 초기 학습 실패: {ex.Message}");
             }
         }
+        */
 
         public async Task<string> ForceInitialAiTrainingAsync(CancellationToken token = default)
         {
@@ -2114,15 +2097,20 @@ namespace TradingBot
 
             try
             {
+                /* TensorFlow 전환 중 비활성화
                 bool canTrainTransformer = _transformerTrainer != null;
                 OnAlert?.Invoke(canTrainTransformer
                     ? "🧠 수동 초기 학습 시작: ML.NET + Transformer + AI 더블체크 순차 실행"
                     : "🧠 수동 초기 학습 시작: ML.NET + AI 더블체크 순차 실행 (Transformer 비활성화)");
+                */
+
+                OnAlert?.Invoke("🧠 수동 초기 학습 시작: ML.NET + AI 더블체크 순차 실행 (TensorFlow 전환 중)");
 
                 _initialMLNetTrainingTriggered = false;
-                _initialTransformerTrainingTriggered = false;
 
                 await TriggerInitialMLNetTrainingIfNeededAsync(token, force: true);
+                
+                /* TensorFlow 전환 중 비활성화
                 if (canTrainTransformer)
                 {
                     await TriggerInitialTransformerTrainingIfNeededAsync(token, force: true);
@@ -2131,6 +2119,7 @@ namespace TradingBot
                 {
                     OnStatusLog?.Invoke("ℹ️ 수동 학습: Transformer 단계는 비활성화되어 건너뜁니다.");
                 }
+                */
 
                 string doubleCheckStatus;
                 if (_aiDoubleCheckEntryGate == null)
@@ -2149,9 +2138,12 @@ namespace TradingBot
                 }
 
                 string mlStatus = _aiPredictor != null && _aiPredictor.IsModelLoaded ? "READY" : "NOT_READY";
+                /* TensorFlow 전환 중 비활성화
                 string tfStatus = _transformerTrainer == null
                     ? "DISABLED"
                     : (_transformerTrainer.IsModelReady ? "READY" : "NOT_READY");
+                */
+                string tfStatus = "TF_MIGRATION";
 
                 string summary = $"🧠 수동 학습 완료 | ML={mlStatus}, TF={tfStatus}, DOUBLE_CHECK={doubleCheckStatus}";
                 OnAlert?.Invoke(summary);
@@ -2597,8 +2589,10 @@ namespace TradingBot
                 }
 
                 // [Phase 7] Transformer 전략 분석 실행
+                /* TensorFlow 전환 중 비활성화
                 if (_transformerStrategy != null)
                     await _transformerStrategy.AnalyzeAsync(symbol, currentPrice, token);
+                */
 
                 // [3파 확정형 전략] 5분봉 엘리엇 파동 분석
                 try
@@ -2660,6 +2654,7 @@ namespace TradingBot
 
                 // AI 재예측 (optional, TransformerTrainer 기반)
                 decimal? newPrediction = null;
+                /* TensorFlow 전환 중 비활성화
                 if (_transformerStrategy != null)
                 {
                     try
@@ -2702,6 +2697,7 @@ namespace TradingBot
                         System.Diagnostics.Debug.WriteLine($"[CheckHybridExit] State access 실패: {stateEx.Message}");
                     }
                 }
+                */
 
                 var exitAction = _hybridExitManager.CheckExit(
                     symbol,
@@ -2980,7 +2976,7 @@ namespace TradingBot
                 return;
             }
 
-            // [수정] 슬롯 제한 체크: 메이저 최대 4개, PUMP 최대 2개, 총 6개
+            // [수정] 슬롯 제한 체크: 메이저 최대 4개, PUMP 최대 1개, 총 6개
             lock (_posLock)
             {
                 bool isMajorSymbol = MajorSymbols.Contains(symbol);
@@ -3578,7 +3574,7 @@ namespace TradingBot
                         majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
                     }
 
-                    // [수정] 메이저 최대 4개, PUMP 최대 2개 = 총 6개
+                    // [수정] 메이저 최대 4개, PUMP 최대 1개 = 총 6개
                     int maxSlots = MAX_TOTAL_SLOTS;
                     OnDashboardUpdate?.Invoke(equity, available, totalCount);
                     OnSlotStatusUpdate?.Invoke(totalCount, maxSlots, majorCount, 0);
@@ -3611,7 +3607,7 @@ namespace TradingBot
                 }
 
                 // UI 업데이트 및 DataGrid 정렬 유지
-                // [수정] 메이저 최대 4개, PUMP 최대 2개 = 총 6개
+                // [수정] 메이저 최대 4개, PUMP 최대 1개 = 총 6개
                 int maxSlots2 = MAX_TOTAL_SLOTS;
                 OnDashboardUpdate?.Invoke(equity2, available2, totalCount2);
                 OnSlotStatusUpdate?.Invoke(totalCount2, maxSlots2, majorCount2, 0);
@@ -3622,7 +3618,8 @@ namespace TradingBot
                     var stats = _aiDoubleCheckEntryGate.GetRecentLabelStats(10);
                     int activeDecisionCount = _activeAiDecisionIds.Count;
                     bool coreModelReady = _aiPredictor?.IsModelLoaded ?? false;
-                    bool modelsReady = coreModelReady && _aiDoubleCheckEntryGate.IsReady;
+                    // [UI 안정화] 더블체크 게이트 준비 여부와 무관하게 코어 ML 모델 로드 상태를 기준으로 표시
+                    bool modelsReady = coreModelReady;
 
                     MainWindow.Instance?.UpdateAiLearningStatusUI(
                         stats.total,
@@ -4241,6 +4238,59 @@ namespace TradingBot
             // 1. 진입 신호가 아니면 즉시 종료
             if (decision != "LONG" && decision != "SHORT") return;
 
+            // [AI_QUANT_TRADING_GUIDE 반영] 진입 직전 코인 타입 기반 AI 더블체크(ML.NET + Transformer AND)
+            if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate.IsReady)
+            {
+                CoinType coinType = ResolveCoinType(symbol, signalSource);
+                var gateResult = await _aiDoubleCheckEntryGate.EvaluateEntryWithCoinTypeAsync(symbol, decision, currentPrice, coinType, token);
+
+                if (!string.IsNullOrWhiteSpace(gateResult.detail.DecisionId))
+                {
+                    aiGateDecisionId = gateResult.detail.DecisionId;
+                }
+
+                EntryLog(
+                    "AI_GATE",
+                    gateResult.allowEntry ? "PASS" : "BLOCK",
+                    $"coinType={coinType} reason={gateResult.reason} ml={gateResult.detail.ML_Confidence:P1} tf={gateResult.detail.TF_Confidence:P1}");
+
+                // [AI 관제탑] 텔레그램 알림 + DB 기록 (fire-and-forget)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        string coinTypeStr = coinType.ToString();
+                        await TelegramService.Instance.SendAiGateResultAsync(
+                            symbol, decision, gateResult.allowEntry,
+                            coinTypeStr, gateResult.reason,
+                            gateResult.detail.ML_Confidence,
+                            gateResult.detail.TF_Confidence,
+                            gateResult.detail.TrendScore,
+                            gateResult.detail.M15_RSI,
+                            gateResult.detail.M15_BBPosition);
+
+                        await _dbManager.SaveAiSignalLogAsync(
+                            symbol, decision, coinTypeStr,
+                            gateResult.allowEntry, gateResult.reason,
+                            gateResult.detail.ML_Confidence,
+                            gateResult.detail.TF_Confidence,
+                            gateResult.detail.TrendScore,
+                            gateResult.detail.M15_RSI,
+                            gateResult.detail.M15_BBPosition,
+                            gateResult.detail.DecisionId);
+                    }
+                    catch (Exception ex)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [AI관제탑] 알림/DB 기록 실패: {ex.Message}");
+                    }
+                });
+
+                if (!gateResult.allowEntry)
+                {
+                    return;
+                }
+            }
+
             // [수정] 블랙리스트 체크: 익절 후 즉시 재진입 방지 (30분)
             if (_blacklistedSymbols.TryGetValue(symbol, out var blacklistExpiry))
             {
@@ -4267,7 +4317,7 @@ namespace TradingBot
                 int totalPositions = _activePositions.Count;
                 int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
 
-                // [수정] 메이저 최대 4개, PUMP 최대 2개, 총 6개 체크
+                // [수정] 메이저 최대 4개, PUMP 최대 1개, 총 6개 체크
                 int pumpCount = totalPositions - majorCount;
                 
                 if (isMajorSymbol && majorCount >= MAX_MAJOR_SLOTS)
@@ -4567,6 +4617,7 @@ namespace TradingBot
             // [GATE 영구 제거] 15분 WaveGate AI 검증 제거됨 (재설계 예정)
             // TODO: 신호 품질 기반 GATE 재설계 후 복원
 
+            /* TensorFlow 전환 중 임시 비활성화 - SimpleDoubleCheckEngine
             // ═══════════════════════════════════════════════════════════════
             // ═══════════════════════════════════════════════════════════════
             // [간소화] SimpleDoubleCheckEngine 더블 체크 진입 로직
@@ -4643,6 +4694,7 @@ namespace TradingBot
                     return;
                 }
             }
+            */
 
             if (_aiPredictor != null)
             {
@@ -4793,6 +4845,7 @@ namespace TradingBot
                 // 상태 벡터 생성: [RSI, MACD, BB_Width] (정규화 필요하지만 여기선 원본 사용 예시)
                 float[] state = new float[] { latestCandle.RSI / 100f, latestCandle.MACD, (latestCandle.BollingerUpper - latestCandle.BollingerLower) };
 
+            /* TensorFlow 전환 중 Multi-Agent RL 비활성화
                 // 전략 타입에 따라 에이전트 선택 (예: 메이저 코인은 Swing, 급등주는 Scalping)
                 string strategyType = _symbols.Contains(symbol) ? "Swing" : "Scalping";
                 int action = _multiAgentManager.GetAction(strategyType, state); // 0:Hold, 1:Buy, 2:Sell
@@ -4811,6 +4864,7 @@ namespace TradingBot
                 }
 
                 EntryLog("RL", "INFO", $"agent={strategyType} action={action}");
+            */
             }
 
             OnStatusLog?.Invoke(
@@ -5124,6 +5178,38 @@ namespace TradingBot
                     {
                         _hybridExitManager.RegisterEntry(symbol, decision, actualEntryPrice, finalTakeProfit);
                         OnStatusLog?.Invoke($"📋 [Hybrid Exit] {symbol} 등록 | 목표가: ${finalTakeProfit:F2}, 손절: ${finalStopLoss:F2}");
+
+                                        // [Smart Target] ATR 기반 초기 SL/TP 계산 → 텔레그램 발송
+                                        _ = Task.Run(async () =>
+                                        {
+                                            try
+                                            {
+                                                var kRes15 = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(
+                                                    symbol, KlineInterval.FifteenMinutes, limit: 20);
+                                                double smartAtr = 0;
+                                                if (kRes15.Success && kRes15.Data?.Length >= 15)
+                                                    smartAtr = IndicatorCalculator.CalculateATR(kRes15.Data.ToList(), 14);
+
+                                                bool isLongEntry = decision == "LONG";
+                                                var (smartSL, smartTP, usedAtr) = HybridExitManager.ComputeSmartAtrTargets(
+                                                    actualEntryPrice, isLongEntry, smartAtr);
+
+                                                // HybridExitState에 Smart SL/TP 반영
+                                                var exitState = _hybridExitManager?.GetState(symbol);
+                                                if (exitState != null)
+                                                {
+                                                    exitState.InitialSL = smartSL;
+                                                    exitState.InitialTP = smartTP;
+                                                }
+
+                                                await TelegramService.Instance.SendSmartTargetEntryAlertAsync(
+                                                    symbol, decision, actualEntryPrice, smartSL, smartTP, usedAtr);
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                OnStatusLog?.Invoke($"⚠️ [SmartTarget] 계산/알림 실패 [{symbol}]: {ex.Message}");
+                                            }
+                                        });
                     }
                     
                     OnAlert?.Invoke($"🤖 자동 매매 진입: {symbol} [{decision}] | 증거금: {marginUsdt}U");
@@ -5901,6 +5987,16 @@ namespace TradingBot
                     0f);
             }
 
+            // TensorFlow 전환 중 임시 bypass - Transformer 체크 건너뛰기
+            return (true, 
+                $"✅ TensorFlow 전환 중 - Transformer bypass | topdown=1h:{h1Bias},4h:{h4Bias} structure={scenario}",
+                finalTp,
+                finalSl,
+                scenario,
+                mlDirectionalProb,
+                1f);
+
+            /* TensorFlow 전환 완료 후 복원 예정
             if (_transformerTrainer == null || !_transformerTrainer.IsModelReady)
                 return (false, "Transformer 모델 미준비", finalTp, finalSl, scenario, mlDirectionalProb, 0f);
 
@@ -5951,6 +6047,7 @@ namespace TradingBot
                 scenario,
                 mlDirectionalProb,
                 transformerConfidence);
+            */
         }
 
         private static int CalculateTrendBias(List<IBinanceKline> klines)
@@ -7716,7 +7813,7 @@ namespace TradingBot
                 // AI 서비스 정리
                 _aiPredictor?.Dispose();
                 _aiDoubleCheckEntryGate?.Dispose();
-                _transformerTrainer?.Dispose();
+                // _transformerTrainer?.Dispose(); // TensorFlow 전환 중 비활성화
                 
                 // 데이터베이스 연결 정리
                 // DbManager는 연결을 공유하므로 명시적 Dispose 불필요

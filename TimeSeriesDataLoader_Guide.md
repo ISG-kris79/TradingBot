@@ -1,5 +1,9 @@
 # TimeSeriesDataLoader 사용 가이드
 
+> ⚠️ 레거시 설계 문서
+> 본 문서는 과거 Transformer 데이터 파이프라인 기준 설명을 포함할 수 있습니다.
+> 현재 운영 아키텍처/절차의 기준은 `README.md`와 `CHANGELOG.md`의 `Unreleased` 섹션입니다.
+
 ## 개요
 
 `TimeSeriesDataLoader`는 Transformer 모델을 위한 최적화된 데이터 전처리 파이프라인입니다.

@@ -6,24 +6,23 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Binance.Net.Interfaces;
 using TradingBot.Services;
-using TradingBot.Services.ProcessAI;
 
 namespace TradingBot
 {
     /// <summary>
     /// AI 더블체크 진입 시스템
-    /// ML.NET + Transformer 둘 다 승인해야 진입 허가
+    /// ML.NET + TensorFlow Transformer 둘 다 승인해야 진입 허가
     /// + 실시간 데이터 수집 (지속적 학습용)
     /// + 온라인 학습 (적응형 학습 및 Concept Drift 감지)
+    /// [v2.4.27] TorchSharp 완전 제거, TensorFlow.NET으로 전환
     /// </summary>
     public class AIDoubleCheckEntryGate
     {
         private readonly IExchangeService _exchangeService;
         private readonly EntryTimingMLTrainer _mlTrainer;
-        private readonly EntryTimingTransformerTrainer? _transformerTrainer;
-        private readonly TorchServiceClient? _torchServiceClient;
-        private readonly bool _useExternalTorchService;
+        private readonly TensorFlowEntryTimingTrainer _transformerTrainer;
         private readonly MultiTimeframeFeatureExtractor _featureExtractor;
         private readonly BacktestEntryLabeler _labeler;
         private readonly EntryRuleValidator _ruleValidator;
@@ -47,22 +46,14 @@ namespace TradingBot
         public event Action<string>? OnAlert;
         public event Action<AiLabeledSample>? OnLabeledSample;
         
-        public bool IsReady => _mlTrainer.IsModelLoaded && (_useExternalTorchService
-            ? (_torchServiceClient?.IsModelReady ?? false)
-            : (_transformerTrainer?.IsModelReady ?? false));
+        public bool IsReady => _mlTrainer.IsModelLoaded && _transformerTrainer.IsModelReady;
 
         public AIDoubleCheckEntryGate(
             IExchangeService exchangeService,
             DoubleCheckConfig? config = null,
             bool enableOnlineLearning = true,
-            bool preferExternalTorchService = true)
+            bool preferExternalTorchService = false) // 파라미터 유지하되 더 이상 사용 안 함
         {
-            bool torchFeaturesEnabled = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
-            if (!torchFeaturesEnabled)
-            {
-                throw new InvalidOperationException("TransformerSettings.Enabled=false 상태에서는 AI 더블체크 게이트를 초기화할 수 없습니다.");
-            }
-
             _config = config ?? new DoubleCheckConfig();
             _exchangeService = exchangeService;
             if (!string.IsNullOrWhiteSpace(AppConfig.ConnectionString))
@@ -78,48 +69,17 @@ namespace TradingBot
             // ML 모델 로드
             _mlTrainer.LoadModel();
 
-            // Transformer 실행 경로 선택: 외부 TorchService 우선, 실패 시 로컬 TorchSharp fallback
-            if (preferExternalTorchService)
-            {
-                try
-                {
-                    _torchServiceClient = new TorchServiceClient();
-                    _torchServiceClient.OnLog += msg => OnLog?.Invoke($"[TorchService] {msg}");
-
-                    bool started = _torchServiceClient.StartAsync().GetAwaiter().GetResult();
-                    if (started)
-                    {
-                        _useExternalTorchService = true;
-                        OnLog?.Invoke("[AIDoubleCheck] TorchService 프로세스 연결 성공 (외부 프로세스 모드)");
-                    }
-                    else
-                    {
-                        OnAlert?.Invoke("⚠️ TorchService 시작 실패 - 로컬 TorchSharp 모드로 폴백합니다.");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    OnAlert?.Invoke($"⚠️ TorchService 연결 실패 - 로컬 TorchSharp 모드로 폴백합니다: {ex.Message}");
-                }
-            }
-
-            if (!_useExternalTorchService)
-            {
-                if (!TorchInitializer.IsAvailable && !TorchInitializer.TryInitialize())
-                {
-                    throw new InvalidOperationException(
-                        $"TorchSharp 런타임을 사용할 수 없습니다. Transformer 기능이 비활성화됩니다.\n{TorchInitializer.ErrorMessage}");
-                }
-
-                _transformerTrainer = new EntryTimingTransformerTrainer();
-                _transformerTrainer.LoadModel();
-            }
+            // TensorFlow Transformer 초기화 (통합 모델, 외부 프로세스 불필요)
+            OnLog?.Invoke("[AIDoubleCheck] TensorFlow.NET Transformer 초기화 중...");
+            _transformerTrainer = new TensorFlowEntryTimingTrainer();
+            _transformerTrainer.OnLog += msg => OnLog?.Invoke(msg);
+            _transformerTrainer.LoadModel();
 
             // 데이터 수집 폴더 생성
             Directory.CreateDirectory(_dataCollectionPath);
 
             // 온라인 학습 서비스 초기화
-            if (enableOnlineLearning && _transformerTrainer != null)
+            if (enableOnlineLearning)
             {
                 _onlineLearning = new AdaptiveOnlineLearningService(
                     _mlTrainer,
@@ -148,10 +108,6 @@ namespace TradingBot
                     OnLog?.Invoke($"[OnlineLearning] 초기화 완료: 윈도우 크기={_onlineLearning.WindowSize}");
                 });
             }
-            else if (enableOnlineLearning && _useExternalTorchService)
-            {
-                OnLog?.Invoke("[AIDoubleCheck] 외부 TorchService 모드에서는 온라인 학습을 비활성화합니다.");
-            }
 
             // 데이터 자동 저장 타이머 (5분마다)
             _dataFlushTimer = new Timer(_ => FlushCollectedData(), null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
@@ -179,7 +135,23 @@ namespace TradingBot
                     return (false, "Feature_Extraction_Failed", new AIEntryDetail());
                 }
 
-                // 2. ML.NET 예측
+                // 2. [The Brain] Transformer 흐름/타점 평가
+                var recentFeatures = BuildTransformerSequence(symbol, feature);
+                var (candlesToTarget, tfConfidence) = _transformerTrainer.Predict(recentFeatures);
+
+                // Transformer 승인 기준: 유효한 Time-to-Target 예측 (1~32캔들 범위)
+                bool tfApprove = candlesToTarget >= 1f && candlesToTarget <= 32f;
+                float effectiveTFThreshold = _onlineLearning?.CurrentTFThreshold ?? _config.MinTransformerConfidence;
+                bool tfPass = tfApprove && tfConfidence >= effectiveTFThreshold;
+
+                if (tfApprove)
+                {
+                    int minutesToTarget = (int)Math.Round(candlesToTarget * 15);
+                    DateTime eta = DateTime.Now.AddMinutes(minutesToTarget);
+                    OnLog?.Invoke($"🧠 [{symbol}] [BRAIN] TF 타점: {candlesToTarget:F1}캔들 ({minutesToTarget}분) 후, ETA {eta:HH:mm} | TrendScore={tfConfidence:P0}");
+                }
+
+                // 3. [The Filter] ML.NET 최종 판정
                 var mlPrediction = _mlTrainer.Predict(feature);
                 if (mlPrediction == null)
                 {
@@ -189,67 +161,60 @@ namespace TradingBot
 
                 bool mlApprove = mlPrediction.ShouldEnter;
                 float mlConfidence = mlPrediction.Probability;
-
-                // 3. Transformer 예측 (Time-to-Target 회귀)
-                var recentFeatures = BuildTransformerSequence(symbol, feature);
-                var (candlesToTarget, tfConfidence) = _useExternalTorchService && _torchServiceClient != null
-                    ? await _torchServiceClient.PredictAsync(recentFeatures, token)
-                    : (_transformerTrainer?.Predict(recentFeatures) ?? (-1f, 0f));
-
-                // Transformer 승인 기준: 유효한 Time-to-Target 예측 (1~32캔들 범위)
-                bool tfApprove = candlesToTarget >= 1f && candlesToTarget <= 32f;
-
-                // [NEW] 평가 진행 상황 로그
-                if (candlesToTarget >= 1f && candlesToTarget <= 32f)
-                {
-                    int minutesToTarget = (int)Math.Round(candlesToTarget * 15);
-                    DateTime eta = DateTime.Now.AddMinutes(minutesToTarget);
-                    OnLog?.Invoke($"🎯 [{symbol}] AI 타점 예측: {candlesToTarget:F1}캔들 ({minutesToTarget}분) 후, ETA {eta:HH:mm} | ML={mlConfidence:P0}, TF={tfConfidence:P0}");
-                }
-
-                // 4. 더블체크 판정 (적응형 Threshold 사용)
                 float effectiveMLThreshold = _onlineLearning?.CurrentMLThreshold ?? _config.MinMLConfidence;
-                float effectiveTFThreshold = _onlineLearning?.CurrentTFThreshold ?? _config.MinTransformerConfidence;
-                
                 bool mlPass = mlApprove && mlConfidence >= effectiveMLThreshold;
-                bool tfPass = tfApprove && tfConfidence >= effectiveTFThreshold;
-                
+
                 var detail = new AIEntryDetail
                 {
                     ML_Approve = mlApprove,
                     ML_Confidence = mlConfidence,
                     TF_Approve = tfApprove,
                     TF_Confidence = tfConfidence,
-                    DoubleCheckPassed = mlPass && tfPass
+                    TrendScore = tfConfidence,
+                    DoubleCheckPassed = mlPass && tfPass,
+                    M15_RSI = feature?.M15_RSI ?? 0f,
+                    M15_BBPosition = feature?.M15_BBPosition ?? 0f
                 };
 
-                // 5. 데이터 수집 (실시간 학습용)
+                // 4. 데이터 수집 (실시간 학습용)
                 string decisionId = RecordEntryDecision(feature, mlPrediction, tfApprove, tfConfidence, detail.DoubleCheckPassed);
                 detail.DecisionId = decisionId;
 
-                if (!mlPass)
-                {
-                    OnLog?.Invoke($"❌ [{symbol}] ML.NET 거부: {(mlApprove ? $"신뢰도 부족 ({mlConfidence:P0} < {effectiveMLThreshold:P0})" : $"진입 비승인 ({mlConfidence:P0})")}");
-                    return (false, $"MLNET_Reject_Conf={mlConfidence:P1}", detail);
-                }
-
                 if (!tfPass)
                 {
-                    string tfReason = tfApprove 
+                    string tfReason = tfApprove
                         ? $"신뢰도 부족 ({tfConfidence:P0} < {effectiveTFThreshold:P0})"
                         : $"타점 범위 외 ({candlesToTarget:F1}캔들, 유효 범위 1-32)";
-                    OnLog?.Invoke($"❌ [{symbol}] Transformer 거부: {tfReason}");
+                    OnLog?.Invoke($"❌ [{symbol}] [BRAIN_BLOCK] Transformer 거부: {tfReason}");
                     return (false, $"Transformer_Reject_Conf={tfConfidence:P1}", detail);
                 }
 
-                // 6. **엘리엇 파동 + 피보나치 규칙 검증** (거부 필터)
-                // AI가 승인해도 규칙 위배 시 진입 거부
+                if (!mlPass)
+                {
+                    OnLog?.Invoke($"❌ [{symbol}] [FILTER_BLOCK] ML.NET 거부: {(mlApprove ? $"신뢰도 부족 ({mlConfidence:P0} < {effectiveMLThreshold:P0})" : $"진입 비승인 ({mlConfidence:P0})")}");
+                    return (false, $"MLNET_Reject_Conf={mlConfidence:P1}", detail);
+                }
+
+                // 5. ML 필터 보강: 과열/꼬리/추격 리스크 차단
                 var m15Candles = await _exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.FifteenMinutes, 100, token);
-                if (m15Candles != null)
+                var m15List = m15Candles?.ToList();
+                if (m15List != null && m15List.Count > 0)
+                {
+                    var sanityFilter = EvaluateDualGateRiskFilter(decision, currentPrice, feature, tfConfidence, m15List);
+                    if (!sanityFilter.passed)
+                    {
+                        detail.DoubleCheckPassed = false;
+                        OnLog?.Invoke($"❌ [{symbol}] [FILTER_BLOCK] {sanityFilter.reason}");
+                        return (false, $"Sanity_Filter_{sanityFilter.reason}", detail);
+                    }
+                }
+
+                // 6. 엘리엇 파동 + 피보나치 규칙 검증 (거부 필터)
+                if (m15List != null)
                 {
                     bool isLong = decision.Contains("LONG", StringComparison.OrdinalIgnoreCase);
                     var ruleCheck = _ruleValidator.ValidateEntryRules(
-                        m15Candles.ToList(),
+                        m15List,
                         currentPrice,
                         isLong,
                         out var waveState,
@@ -262,14 +227,13 @@ namespace TradingBot
                         return (false, $"Rule_Violation_{ruleCheck.reason}", detail);
                     }
 
-                    // 규칙 통과 정보 상세에 추가 (옵션)
                     detail.ElliottValid = waveState.IsValid;
                     detail.FibInEntryZone = fibLevels.InEntryZone;
                 }
 
-                // 7. **최종 승인** (AI + 규칙 모두 통과)
-                OnLog?.Invoke($"✅ [{symbol}] AI 더블체크 승인! ML={mlConfidence:P0}, TF={tfConfidence:P0}");
-                return (true, $"DoubleCheck_PASS_ML={mlConfidence:P1}_TF={tfConfidence:P1}", detail);
+                // 7. 최종 승인 (Transformer + ML + 리스크 필터 + 규칙 필터)
+                OnLog?.Invoke($"✅ [{symbol}] AI 더블체크 승인! Trend={tfConfidence:P0}, ML={mlConfidence:P0}, TF={tfConfidence:P0}");
+                return (true, $"DoubleCheck_PASS_Trend={tfConfidence:P1}_ML={mlConfidence:P1}_TF={tfConfidence:P1}", detail);
             }
             catch (Exception ex)
             {
@@ -304,15 +268,90 @@ namespace TradingBot
             // 펌핑 코인: 별도 모델 (TODO: 펌핑 전용 모델 학습)
             else if (coinType == CoinType.Pumping)
             {
-                // 펌핑 코인은 거래량 패턴이 다르므로 별도 모델 필요
-                // 현재는 기본 모델 + 약간 낮은 threshold
-                if (detail.ML_Confidence < _config.MinMLConfidencePumping)
+                // 펌핑 코인은 변동성 리스크가 높아 별도 강화 threshold 적용
+                float pumpMlThreshold = Math.Max(_config.MinMLConfidencePumping, _config.MinMLConfidence);
+                float pumpTfThreshold = Math.Max(_config.MinTransformerConfidencePumping, _config.MinTransformerConfidence);
+
+                if (detail.ML_Confidence < pumpMlThreshold ||
+                    detail.TF_Confidence < pumpTfThreshold)
                 {
-                    return (false, $"Pumping_Threshold_Not_Met_ML={detail.ML_Confidence:P1}", detail);
+                    return (false, $"Pumping_Threshold_Not_Met_ML={detail.ML_Confidence:P1}_TF={detail.TF_Confidence:P1}", detail);
                 }
             }
 
             return (allow, reason, detail);
+        }
+
+        private (bool passed, string reason) EvaluateDualGateRiskFilter(
+            string decision,
+            decimal currentPrice,
+            MultiTimeframeEntryFeature feature,
+            float trendScore,
+            List<IBinanceKline> m15Candles)
+        {
+            if (!decision.Contains("LONG", StringComparison.OrdinalIgnoreCase))
+                return (true, "Not_Long_Direction");
+
+            float rsi = feature.M15_RSI;
+            float bbPosition = feature.M15_BBPosition;
+            float upperWickRatio = CalculateUpperWickRatio(m15Candles[^1]);
+            decimal pullbackFromRecentHighPct = CalculatePullbackFromRecentHighPct(currentPrice, m15Candles, 20);
+
+            if (rsi >= _config.RsiOverheatHardCap)
+                return (false, $"RSI_Overheat_{rsi:F1}_GE_{_config.RsiOverheatHardCap:F1}");
+
+            if (upperWickRatio >= _config.UpperWickRiskThreshold)
+                return (false, $"UpperWick_Risk_{upperWickRatio:P0}_GE_{_config.UpperWickRiskThreshold:P0}");
+
+            bool strongTrend = trendScore >= _config.StrongTrendBypassThreshold;
+
+            if (!strongTrend &&
+                bbPosition >= _config.BbUpperRiskThreshold &&
+                rsi >= _config.RsiCautionThreshold)
+            {
+                return (false, $"UpperBand_Overheat_BB={bbPosition:P0}_RSI={rsi:F1}");
+            }
+
+            if (!strongTrend &&
+                pullbackFromRecentHighPct >= 0m &&
+                pullbackFromRecentHighPct <= (decimal)_config.RecentHighChaseThresholdPct)
+            {
+                return (false, $"Chasing_Risk_Pullback={pullbackFromRecentHighPct:F2}%");
+            }
+
+            return (true, "Risk_Filter_Passed");
+        }
+
+        private static float CalculateUpperWickRatio(IBinanceKline candle)
+        {
+            decimal range = candle.HighPrice - candle.LowPrice;
+            if (range <= 0m)
+                return 0f;
+
+            decimal bodyTop = Math.Max(candle.OpenPrice, candle.ClosePrice);
+            decimal upperWick = candle.HighPrice - bodyTop;
+            if (upperWick <= 0m)
+                return 0f;
+
+            decimal ratio = upperWick / range;
+            return (float)Math.Clamp(ratio, 0m, 1m);
+        }
+
+        private static decimal CalculatePullbackFromRecentHighPct(
+            decimal currentPrice,
+            List<IBinanceKline> candles,
+            int lookback)
+        {
+            if (candles == null || candles.Count == 0)
+                return -1m;
+
+            var recent = candles.TakeLast(Math.Max(1, lookback)).ToList();
+            decimal recentHigh = recent.Max(c => c.HighPrice);
+            if (recentHigh <= 0m || currentPrice <= 0m)
+                return -1m;
+
+            decimal pullback = (recentHigh - currentPrice) / recentHigh * 100m;
+            return pullback < 0m ? 0m : pullback;
         }
 
         /// <summary>
@@ -322,7 +361,7 @@ namespace TradingBot
         /// Navigator 전용: Transformer Time-to-Target 예측만 수행
         /// (ML.NET 없이 경량 계산)
         /// </summary>
-        public (float candlesToTarget, float confidence) GetTransformerPrediction(
+        public async Task<(float candlesToTarget, float confidence)> GetTransformerPredictionAsync(
             List<MultiTimeframeEntryFeature> recentFeatures)
         {
             try
@@ -330,12 +369,7 @@ namespace TradingBot
                 if (!IsReady || recentFeatures == null || recentFeatures.Count == 0)
                     return (-1f, 0f);
 
-                if (_useExternalTorchService && _torchServiceClient != null)
-                {
-                    return _torchServiceClient.PredictAsync(recentFeatures).GetAwaiter().GetResult();
-                }
-
-                return _transformerTrainer?.Predict(recentFeatures) ?? (-1f, 0f);
+                return await Task.Run(() => _transformerTrainer.Predict(recentFeatures));
             }
             catch (Exception ex)
             {
@@ -707,9 +741,7 @@ namespace TradingBot
         private List<MultiTimeframeEntryFeature> BuildTransformerSequence(string symbol, MultiTimeframeEntryFeature latestFeature)
         {
             string key = string.IsNullOrWhiteSpace(symbol) ? "UNKNOWN" : symbol;
-            int requiredSeqLen = _useExternalTorchService
-                ? (_torchServiceClient?.SeqLen ?? 8)
-                : (_transformerTrainer?.SeqLen ?? 60);
+            int requiredSeqLen = _transformerTrainer?.SeqLen ?? 8;
 
             var buffer = _recentFeatureBuffers.GetOrAdd(key, _ => new Queue<MultiTimeframeEntryFeature>(requiredSeqLen));
 
@@ -796,9 +828,7 @@ namespace TradingBot
 
             // [Time-to-Target 회귀 기반 ETA 예측]
             // Transformer가 "목표가 도달까지 몇 캔들 후인지" 직접 예측
-            var (candlesToTarget, tfConfidence) = _useExternalTorchService && _torchServiceClient != null
-                ? await _torchServiceClient.PredictAsync(baseSequence, token)
-                : (_transformerTrainer?.Predict(baseSequence) ?? (-1f, 0f));
+            var (candlesToTarget, tfConfidence) = _transformerTrainer?.Predict(baseSequence) ?? (-1f, 0f);
 
             // 현재 시점 ML 확률 계산
             float currentMlProb = 0f;
@@ -1067,66 +1097,40 @@ namespace TradingBot
                 string tfInitRunId = $"INIT_TF_{DateTime.UtcNow:yyyyMMddHHmmssfff}";
                 try
                 {
-                    if (_useExternalTorchService && _torchServiceClient != null)
-                    {
-                        var tfMetrics = await _torchServiceClient.TrainAsync(trainingFeatures, epochs: 1, batchSize: 16, token: token);
-                        OnLog?.Invoke($"[AIDoubleCheck] Transformer(TorchService) 학습 완료 - Val Loss: {tfMetrics?.BestValidationLoss:F4}");
+                    OnLog?.Invoke($"[AIDoubleCheck] TensorFlow 초기학습 시작");
 
-                        bool tfSuccess = tfMetrics != null;
-                        await PersistTrainingRunAsync(
-                            projectName: "TorchService",
-                            runId: tfInitRunId,
-                            stage: "Initial",
-                            success: tfSuccess,
-                            sampleCount: trainingFeatures.Count,
-                            epochs: 1,
-                            bestValidationLoss: tfMetrics?.BestValidationLoss,
-                            finalTrainLoss: tfMetrics?.FinalTrainLoss,
-                            detail: tfSuccess ? "TorchService 초기 학습 완료" : "TorchService 학습 응답이 null입니다.");
+                    using var tfTrainTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    tfTrainTimeout.CancelAfter(TimeSpan.FromMinutes(4));
 
-                        RaiseCriticalTrainingAlert(
-                            projectName: "TorchService",
-                            stage: "초기학습",
-                            success: tfSuccess,
-                            detail: tfSuccess
-                                ? $"BestLoss={tfMetrics!.BestValidationLoss:F4}, 샘플={trainingFeatures.Count}"
-                                : "학습 응답이 null입니다.");
-                    }
-                    else if (_transformerTrainer != null)
-                    {
-                        _transformerTrainer.InitializeModel();
-                        var tfMetrics = await _transformerTrainer.TrainAsync(trainingFeatures, epochs: 1, batchSize: 16);
-                        _transformerTrainer.SaveModel();
-                        OnLog?.Invoke($"[AIDoubleCheck] Transformer 학습 완료 - Val Loss: {tfMetrics.BestValidationLoss:F4}");
+                    var tfMetrics = await _transformerTrainer.TrainAsync(trainingFeatures, epochs: 1, batchSize: 16, token: tfTrainTimeout.Token);
+                    OnLog?.Invoke($"[AIDoubleCheck] TensorFlow Transformer 학습 완료 - Val Loss: {tfMetrics.BestValidationLoss:F4}");
 
-                        await PersistTrainingRunAsync(
-                            projectName: "TransformerLocal",
-                            runId: tfInitRunId,
-                            stage: "Initial",
-                            success: true,
-                            sampleCount: trainingFeatures.Count,
-                            epochs: 1,
-                            bestValidationLoss: tfMetrics.BestValidationLoss,
-                            detail: "로컬 Transformer 초기 학습 완료");
+                    await PersistTrainingRunAsync(
+                        projectName: "TensorFlow",
+                        runId: tfInitRunId,
+                        stage: "Initial",
+                        success: true,
+                        sampleCount: trainingFeatures.Count,
+                        epochs: 1,
+                        bestValidationLoss: tfMetrics.BestValidationLoss,
+                        finalTrainLoss: tfMetrics.FinalTrainLoss,
+                        detail: "TensorFlow 초기 학습 완료");
 
-                        RaiseCriticalTrainingAlert(
-                            projectName: "Transformer",
-                            stage: "초기학습",
-                            success: true,
-                            detail: $"BestLoss={tfMetrics.BestValidationLoss:F4}, 샘플={trainingFeatures.Count}");
-                    }
+                    RaiseCriticalTrainingAlert(
+                        projectName: "TensorFlow",
+                        stage: "초기학습",
+                        success: true,
+                        detail: $"BestLoss={tfMetrics.BestValidationLoss:F4}, 샘플={trainingFeatures.Count}");
+
+                    OnAlert?.Invoke($"✅ [AI 학습] Transformer 모델 학습 완료 (BestLoss={tfMetrics.BestValidationLoss:F4})");
                 }
                 catch (Exception tfEx)
                 {
                     OnAlert?.Invoke($"❌ [AI 학습] Transformer 학습 실패: {tfEx.Message}");
                     OnLog?.Invoke($"[AIDoubleCheck] Transformer 학습 상세 오류:\n{tfEx}");
 
-                    string tfProject = _useExternalTorchService && _torchServiceClient != null
-                        ? "TorchService"
-                        : "TransformerLocal";
-
                     await PersistTrainingRunAsync(
-                        projectName: tfProject,
+                        projectName: "TensorFlow",
                         runId: tfInitRunId,
                         stage: "Initial",
                         success: false,
@@ -1135,7 +1139,7 @@ namespace TradingBot
                         detail: tfEx.Message);
 
                     RaiseCriticalTrainingAlert(
-                        projectName: tfProject,
+                        projectName: "TensorFlow",
                         stage: "초기학습",
                         success: false,
                         detail: tfEx.Message);
@@ -1143,18 +1147,9 @@ namespace TradingBot
 
                 // 4. 모델 리로드 및 상태 확인
                 _mlTrainer.LoadModel();
-                if (_useExternalTorchService && _torchServiceClient != null)
-                {
-                    await _torchServiceClient.StartAsync();
-                }
-                else
-                {
-                    _transformerTrainer?.LoadModel();
-                }
+                _transformerTrainer?.LoadModel();
 
-                bool tfReady = _useExternalTorchService
-                    ? (_torchServiceClient?.IsModelReady ?? false)
-                    : (_transformerTrainer?.IsModelReady ?? false);
+                bool tfReady = _transformerTrainer?.IsModelReady ?? false;
 
                 if (IsReady)
                 {
@@ -1251,59 +1246,33 @@ namespace TradingBot
                 // 3. Transformer 재학습 (2 epochs)
                 float tfLoss;
                 string tfRetrainRunId = $"RETRAIN_TF_{DateTime.UtcNow:yyyyMMddHHmmssfff}";
-                if (_useExternalTorchService && _torchServiceClient != null)
-                {
-                    var tfMetrics = await _torchServiceClient.TrainAsync(labeledData, epochs: 2, batchSize: 32, token: token);
-                    tfLoss = tfMetrics?.BestValidationLoss ?? float.NaN;
-                    await _torchServiceClient.StartAsync();
+                
+                OnLog?.Invoke($"[AIDoubleCheck] TensorFlow 재학습 시작");
 
-                    bool tfSuccess = tfMetrics != null;
-                    await PersistTrainingRunAsync(
-                        projectName: "TorchService",
-                        runId: tfRetrainRunId,
-                        stage: "Retrain",
-                        success: tfSuccess,
-                        sampleCount: labeledData.Count,
-                        epochs: 2,
-                        bestValidationLoss: tfMetrics?.BestValidationLoss,
-                        finalTrainLoss: tfMetrics?.FinalTrainLoss,
-                        detail: tfSuccess ? "TorchService 재학습 완료" : "TorchService 재학습 응답이 null입니다.");
+                using var tfRetrainTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+                tfRetrainTimeout.CancelAfter(TimeSpan.FromMinutes(4));
 
-                    RaiseCriticalTrainingAlert(
-                        projectName: "TorchService",
-                        stage: "재학습",
-                        success: tfSuccess,
-                        detail: tfSuccess
-                            ? $"BestLoss={tfMetrics!.BestValidationLoss:F4}, 샘플={labeledData.Count}"
-                            : "학습 응답이 null입니다.");
-                }
-                else if (_transformerTrainer != null)
-                {
-                    var tfMetrics = await _transformerTrainer.TrainAsync(labeledData, epochs: 2, batchSize: 32);
-                    _transformerTrainer.SaveModel();
-                    _transformerTrainer.LoadModel();
-                    tfLoss = tfMetrics.BestValidationLoss;
+                var tfMetrics = await _transformerTrainer.TrainAsync(labeledData, epochs: 2, batchSize: 32, token: tfRetrainTimeout.Token);
+                tfLoss = tfMetrics.BestValidationLoss;
 
-                    await PersistTrainingRunAsync(
-                        projectName: "TransformerLocal",
-                        runId: tfRetrainRunId,
-                        stage: "Retrain",
-                        success: true,
-                        sampleCount: labeledData.Count,
-                        epochs: 2,
-                        bestValidationLoss: tfMetrics.BestValidationLoss,
-                        detail: "로컬 Transformer 재학습 완료");
+                OnAlert?.Invoke($"✅ [AI 재학습] Transformer 재학습 완료 (BestLoss={tfMetrics.BestValidationLoss:F4})");
 
-                    RaiseCriticalTrainingAlert(
-                        projectName: "Transformer",
-                        stage: "재학습",
-                        success: true,
-                        detail: $"BestLoss={tfMetrics.BestValidationLoss:F4}, 샘플={labeledData.Count}");
-                }
-                else
-                {
-                    tfLoss = float.NaN;
-                }
+                await PersistTrainingRunAsync(
+                    projectName: "TensorFlow",
+                    runId: tfRetrainRunId,
+                    stage: "Retrain",
+                    success: true,
+                    sampleCount: labeledData.Count,
+                    epochs: 2,
+                    bestValidationLoss: tfMetrics.BestValidationLoss,
+                    finalTrainLoss: tfMetrics.FinalTrainLoss,
+                    detail: "TensorFlow 재학습 완료");
+
+                RaiseCriticalTrainingAlert(
+                    projectName: "TensorFlow",
+                    stage: "재학습",
+                    success: true,
+                    detail: $"BestLoss={tfMetrics.BestValidationLoss:F4}, 샘플={labeledData.Count}");
 
                 string msg = $"✅ [AI 재학습] 완료 - ML: {mlMetrics.Accuracy:P1}, TF Loss: {tfLoss:F3} (샘플: {labeledData.Count}개)";
                 OnAlert?.Invoke(msg);
@@ -1312,7 +1281,9 @@ namespace TradingBot
             }
             catch (Exception ex)
             {
+                /* TensorFlow 전환 중 비활성화
                 _torchServiceClient?.Dispose();
+                */
                 string errorMsg = $"❌ [AI 재학습] 실패: {ex.Message}";
                 OnAlert?.Invoke(errorMsg);
                 OnLog?.Invoke($"[AIDoubleCheck] {errorMsg}");
@@ -1337,7 +1308,9 @@ namespace TradingBot
             if (_dbManager == null)
                 return;
 
-            bool saved = await _dbManager.UpsertAiTrainingRunAsync(
+            OnLog?.Invoke($"ℹ️ [AI][DB] 학습 이력 저장 시작: {projectName}/{stage}");
+
+            var saveTask = _dbManager.UpsertAiTrainingRunAsync(
                 projectName: projectName,
                 runId: runId,
                 stage: stage,
@@ -1351,10 +1324,30 @@ namespace TradingBot
                 finalTrainLoss: finalTrainLoss,
                 detail: detail);
 
+            var completed = await Task.WhenAny(saveTask, Task.Delay(TimeSpan.FromSeconds(5)));
+            if (completed != saveTask)
+            {
+                _ = saveTask.ContinueWith(t =>
+                {
+                    if (t.IsFaulted)
+                    {
+                        OnLog?.Invoke($"⚠️ [AI][DB] 백그라운드 저장 예외: {t.Exception?.GetBaseException().Message}");
+                    }
+                }, TaskScheduler.Default);
+
+                OnLog?.Invoke($"⚠️ [AI][DB] 학습 이력 저장 타임아웃(5s): {projectName}/{stage} — 학습 흐름은 계속 진행합니다.");
+                return;
+            }
+
+            bool saved = await saveTask;
+
             if (!saved)
             {
                 OnLog?.Invoke($"⚠️ [AI][DB] 학습 이력 저장 실패: {projectName}/{stage}");
+                return;
             }
+
+            OnLog?.Invoke($"✅ [AI][DB] 학습 이력 저장 완료: {projectName}/{stage}");
         }
 
         private static string NormalizeCriticalProjectName(string projectName)
@@ -1369,24 +1362,97 @@ namespace TradingBot
             return projectName;
         }
 
+        /// <summary>
+        /// 학습 실행 중 주기적으로 진행상황을 footer 알람으로 표시.
+        /// trainFunc 완료 또는 취소 시 자동 중단.
+        /// </summary>
+        private async Task<TransformerTrainingMetrics?> RunTrainWithProgressAlertsAsync(
+            Func<Task<TransformerTrainingMetrics?>> trainFunc,
+            string label,
+            int intervalSeconds = 20)
+        {
+            var startTime = DateTime.Now;
+            using var progressCts = new CancellationTokenSource();
+
+            var progressTask = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!progressCts.Token.IsCancellationRequested)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(intervalSeconds), progressCts.Token);
+                        if (!progressCts.Token.IsCancellationRequested)
+                        {
+                            int elapsed = (int)(DateTime.Now - startTime).TotalSeconds;
+                            OnLog?.Invoke($"⏳ [AI 학습] {label} 진행중... ({elapsed}초 경과, 최대 4분)");
+                        }
+                    }
+                }
+                catch (OperationCanceledException) { }
+            });
+
+            try
+            {
+                return await trainFunc();
+            }
+            finally
+            {
+                progressCts.Cancel();
+                try { await progressTask; } catch { }
+            }
+        }
+
         private void RaiseCriticalTrainingAlert(string projectName, string stage, bool success, string detail)
         {
             projectName = NormalizeCriticalProjectName(projectName);
             string status = success ? "완료" : "실패";
             string message = $"🚨 [CRITICAL][AI][{projectName}] {stage} {status} | {detail}";
             
-            // 이벤트 경로로 전달
+            // 이벤트 경로로 전달 (MainViewModel에서 AddAlert 처리)
             OnAlert?.Invoke(message);
-            
-            // MainWindow에 직접 전달하여 누락 방지
-            try
+        }
+
+        private void HandleTorchServiceLog(string msg)
+        {
+            string uiMessage = $"[TorchService] {msg}";
+
+            if (ShouldSuppressTorchServiceUiLog(msg))
             {
-                MainWindow.Instance?.AddAlert(message);
+                LoggerService.Info(uiMessage);
+                return;
             }
-            catch (Exception ex)
+
+            OnLog?.Invoke(uiMessage);
+        }
+
+        private static bool ShouldSuppressTorchServiceUiLog(string? msg)
+        {
+            if (string.IsNullOrWhiteSpace(msg))
+                return true;
+
+            // 에러/타임아웃/실패는 UI에 그대로 노출
+            if (msg.Contains("ERROR", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("❌", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("failed", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("fatal", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("실패", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("오류", StringComparison.OrdinalIgnoreCase))
             {
-                OnLog?.Invoke($"[AIDoubleCheck] 크리티컬 알럿 UI 전달 실패: {ex.Message}");
+                return false;
             }
+
+            return msg.Contains("[NamedPipeClient]", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("[NamedPipeServer]", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("Starting process", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("Process started", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("Running startup health check", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("Service is healthy and ready", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("Background health monitoring disabled", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("Process already running - skip startup health probe", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("ModelLoaded=", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("Terminating stale process", StringComparison.OrdinalIgnoreCase);
         }
 
         private List<MultiTimeframeEntryFeature> LoadLabeledDataFromFiles()
@@ -1431,11 +1497,20 @@ namespace TradingBot
     /// </summary>
     public class DoubleCheckConfig
     {
-        public float MinMLConfidence { get; set; } = 0.50f;
-        public float MinTransformerConfidence { get; set; } = 0.45f;
-        public float MinMLConfidenceMajor { get; set; } = 0.60f; // 메이저 코인은 더 보수적
-        public float MinTransformerConfidenceMajor { get; set; } = 0.55f;
-        public float MinMLConfidencePumping { get; set; } = 0.48f; // 펌핑 코인은 약간 완화
+        public float MinMLConfidence { get; set; } = 0.65f;
+        public float MinTransformerConfidence { get; set; } = 0.60f;
+        public float MinMLConfidenceMajor { get; set; } = 0.75f; // 메이저 코인은 더 보수적
+        public float MinTransformerConfidenceMajor { get; set; } = 0.68f;
+        public float MinMLConfidencePumping { get; set; } = 0.66f; // 펌핑 손실 구간 대응: 보수 강화
+        public float MinTransformerConfidencePumping { get; set; } = 0.63f;
+
+        public float StrongTrendBypassThreshold { get; set; } = 0.80f;
+        public float RsiOverheatHardCap { get; set; } = 80f;
+        public float RsiCautionThreshold { get; set; } = 70f;
+        public float BbUpperRiskThreshold { get; set; } = 0.90f;
+        public float UpperWickRiskThreshold { get; set; } = 0.70f;
+        public float RecentHighChaseThresholdPct { get; set; } = 0.20f;
+
         public int EntryForecastSteps { get; set; } = 8; // 다음 2시간(15분 x 8)
         public int EntryForecastWatchSteps { get; set; } = 16; // 관망 시 4시간(15분 x 16)
         public float EntryForecastImmediateThreshold { get; set; } = 0.62f;
@@ -1455,8 +1530,13 @@ namespace TradingBot
         public float ML_Confidence { get; set; }
         public bool TF_Approve { get; set; }
         public float TF_Confidence { get; set; }
+        public float TrendScore { get; set; }
         public bool DoubleCheckPassed { get; set; }
-        
+
+        // 진입 시점 M15 핵심 지표 (텔레그램·DB 로그용)
+        public float M15_RSI { get; set; }
+        public float M15_BBPosition { get; set; }
+
         // 엘리엇 파동 & 피보나치 규칙 검증 결과
         public bool ElliottValid { get; set; }
         public bool FibInEntryZone { get; set; }
@@ -1500,4 +1580,10 @@ namespace TradingBot
         Pumping,    // 급등주 (STEEM, MANTRA 등)
         Normal      // 일반 알트코인
     }
+    
+    /// <summary>
+    /// Transformer 학습 평가 지표 (TensorFlow 전환 중 더미 타입)
+    /// </summary>
+    public record TransformerTrainingMetrics(float BestValidationLoss, float FinalTrainLoss, int TrainedEpochs);
 }
+

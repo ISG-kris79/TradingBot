@@ -2023,5 +2023,75 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                 return null;
             }
         }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // [AI 관제탑] Bot_Log — AI 게이트 시그널 기록
+        // ─────────────────────────────────────────────────────────────────────
+        // DDL (최초 1회 실행):
+        // CREATE TABLE dbo.Bot_Log (
+        //     Id          BIGINT         IDENTITY(1,1) PRIMARY KEY,
+        //     UserId      INT            NOT NULL DEFAULT 0,
+        //     EventTime   DATETIME2      NOT NULL DEFAULT SYSDATETIME(),
+        //     Symbol      NVARCHAR(20)   NOT NULL,
+        //     Direction   NVARCHAR(10)   NOT NULL,   -- LONG / SHORT
+        //     CoinType    NVARCHAR(20)   NOT NULL,
+        //     Allowed     BIT            NOT NULL,
+        //     Reason      NVARCHAR(200)  NOT NULL,
+        //     ML_Conf     REAL           NOT NULL DEFAULT 0,
+        //     TF_Conf     REAL           NOT NULL DEFAULT 0,
+        //     TrendScore  REAL           NOT NULL DEFAULT 0,
+        //     RSI         REAL           NULL,
+        //     BBPosition  REAL           NULL,
+        //     DecisionId  NVARCHAR(50)   NULL
+        // );
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// AI 게이트 결과를 dbo.Bot_Log 테이블에 저장합니다.
+        /// 테이블이 없으면 자동 생성 후 삽입합니다.
+        /// </summary>
+        public async Task SaveAiSignalLogAsync(
+            string symbol, string direction, string coinType,
+            bool allowed, string reason,
+            float mlConf, float tfConf, float trendScore,
+            float rsi = 0f, float bbPos = 0f,
+            string? decisionId = null)
+        {
+          
+
+            const string insertSql = @"
+INSERT INTO dbo.Bot_Log
+    (UserId, Symbol, Direction, CoinType, Allowed, Reason,
+     ML_Conf, TF_Conf, TrendScore, RSI, BBPosition, DecisionId)
+VALUES
+    (@UserId, @Symbol, @Direction, @CoinType, @Allowed, @Reason,
+     @ML_Conf, @TF_Conf, @TrendScore, @RSI, @BBPosition, @DecisionId)";
+
+            try
+            {
+                int userId = GetCurrentUserId();
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await db.ExecuteAsync(insertSql, new
+                {
+                    UserId    = userId,
+                    Symbol    = TrimForDb(symbol, 20),
+                    Direction = TrimForDb(direction, 10),
+                    CoinType  = TrimForDb(coinType, 20),
+                    Allowed   = allowed,
+                    Reason    = TrimForDb(reason, 200),
+                    ML_Conf   = SanitizeFloatForDb(mlConf),
+                    TF_Conf   = SanitizeFloatForDb(tfConf),
+                    TrendScore= SanitizeFloatForDb(trendScore),
+                    RSI       = (object?)SanitizeFloatForDb(rsi) ?? DBNull.Value,
+                    BBPosition= (object?)SanitizeFloatForDb(bbPos) ?? DBNull.Value,
+                    DecisionId= string.IsNullOrWhiteSpace(decisionId) ? (object)DBNull.Value : decisionId
+                });
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB][Bot_Log] 저장 실패: {ex.Message}");
+            }
+        }
     }
 }

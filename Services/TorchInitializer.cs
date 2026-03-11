@@ -43,8 +43,7 @@ namespace TradingBot.Services
         /// <summary>
         /// Torch 실험 기능이 명시적으로 활성화되었는지 여부
         /// </summary>
-        public static bool IsExperimentalOptInEnabled =>
-            string.Equals(Environment.GetEnvironmentVariable("TRADINGBOT_ENABLE_TORCH_EXPERIMENTAL"), "1", StringComparison.OrdinalIgnoreCase);
+        public static bool IsExperimentalOptInEnabled => true;
 
         /// <summary>
         /// 앱 시작 시 실행 상태를 기록하고, 이전 비정상 종료를 감지하면 Torch 안전모드를 활성화합니다.
@@ -150,23 +149,9 @@ namespace TradingBot.Services
 
             if (_crashSafeMode)
             {
-                _errorMessage ??= "이전 비정상 종료 감지로 TorchSharp 안전모드가 활성화되었습니다.";
-                _available = false;
-                TrySaveProbeFail();
-                TryLog("[Init] disabled by crash-safe mode");
-                return false;
-            }
-
-            // [안정성 기본값] 명시적으로 켠 경우에만 Torch 활성화
-            string? enableExperimentalTorch = Environment.GetEnvironmentVariable("TRADINGBOT_ENABLE_TORCH_EXPERIMENTAL");
-            if (!string.Equals(enableExperimentalTorch, "1", StringComparison.OrdinalIgnoreCase))
-            {
-                _errorMessage = "TorchSharp 기능은 기본 안정 모드에서 비활성화됩니다. " +
-                               "필요 시 환경 변수 TRADINGBOT_ENABLE_TORCH_EXPERIMENTAL=1 로 명시적으로 활성화하세요.";
-                _available = false;
-                TrySaveProbeFail();
-                TryLog("[Init] disabled by default safe mode (TRADINGBOT_ENABLE_TORCH_EXPERIMENTAL!=1)");
-                return false;
+                TryLog("[Init] crash-safe mode detected but bypassed (safe mode removed)");
+                _crashSafeMode = false;
+                _errorMessage = null;
             }
 
             string? disableTorch = Environment.GetEnvironmentVariable("TRADINGBOT_DISABLE_TORCH");

@@ -341,6 +341,197 @@ namespace TradingBot
             await SendMessageAsync(message);
         }
 
+        // ─────────────────────────────────────────────────────────────────────
+        // [AI 관제탑] AI Gate PASS/BLOCK 실시간 텔레그램 알림
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// AI 이중 게이트(TF Brain + ML Filter) 결과를 텔레그램으로 발송합니다.
+        /// - PASS + ML≥0.80: 🔥 확신 타점 → 소리 알림
+        /// - PASS + ML 0.65~0.79: ✅ 진입 승인 → 무음 알림
+        /// - BLOCK + ML≥0.50: ⚠️ 차단 사유 모니터링 → 무음 알림
+        /// - BLOCK + ML 0.50 미만: 스팸 방지 목적으로 전송 생략
+        /// </summary>
+        public async Task SendAiGateResultAsync(
+            string symbol, string decision, bool allowed,
+            string coinType, string reason,
+            float mlConf, float tfConf, float trendScore,
+            float rsi = 0f, float bbPos = 0f)
+        {
+            // 저급 차단(ML<0.50)은 전송 안 함
+            if (!allowed && mlConf < 0.50f) return;
+
+            bool isSoundAlert = allowed && mlConf >= 0.80f;
+            bool disableNotification = !isSoundAlert;
+
+            string dirEmoji = decision == "LONG" ? "🟢" : "🔴";
+            string statusEmoji = allowed ? "✅" : "⛔";
+            string coinTag = coinType switch
+            {
+                "Major" => "🏆 메이저",
+                "Pumping" => "🚀 펌핑",
+                _ => "📊 일반"
+            };
+
+            string body;
+            if (allowed)
+            {
+                string powerTag = mlConf >= 0.80f ? "🔥 *확신 타점*" : "✅ 진입 승인";
+                string trendBar = trendScore >= 0.80f ? "████████ 강" : trendScore >= 0.60f ? "█████░░░ 중" : "██░░░░░░ 약";
+                body = $"{powerTag} {dirEmoji} `{symbol}`\n" +
+                       $"━━━━━━━━━━━━━━━\n" +
+                       $"🪙 유형: {coinTag}\n" +
+                       $"🤖 ML 신뢰도: `{mlConf:P1}`\n" +
+                       $"🧠 TF 흐름: {trendBar} `{trendScore:F2}` (TF={tfConf:P1})\n" +
+                       $"📊 RSI: `{rsi:F1}` │ BB: `{bbPos:P0}`\n" +
+                       $"━━━━━━━━━━━━━━━\n" +
+                       $"💰 20배 레버리지 대기 중!\n" +
+                       $"⏰ {DateTime.Now:HH:mm:ss}";
+            }
+            else
+            {
+                string blockDetail = reason switch
+                {
+                    var r when r.Contains("RSI_Overheat") => "🌡️ RSI 과열 하드차단",
+                    var r when r.Contains("UpperWick") => "🕯️ 윗꼬리 위험",
+                    var r when r.Contains("UpperBand") => "📈 BB 상단 과열 차단",
+                    var r when r.Contains("Chasing") => "🏃 추격 진입 차단",
+                    var r when r.Contains("MLNET") || r.Contains("MLNET_Reject") => "🤖 ML 신뢰도 미달",
+                    var r when r.Contains("Transformer") => "🧠 TF 흐름 미달",
+                    var r when r.Contains("Pumping_Threshold") => "🚀 PUMP 임계치 미달",
+                    var r when r.Contains("Major_Threshold") => "🏆 메이저 임계치 미달",
+                    var r when r.Contains("Elliott") || r.Contains("Rule_Violation") => "🌊 규칙 위반(엘리엇/피보)",
+                    _ => $"🚫 {reason[..Math.Min(reason.Length, 40)]}"
+                };
+                body = $"⚠️ 차단 {dirEmoji} `{symbol}`\n" +
+                       $"━━━━━━━━━━━━━━━\n" +
+                       $"📌 {blockDetail}\n" +
+                       $"🤖 ML: `{mlConf:P1}` │ 🧠 TF흐름: `{trendScore:F2}`\n" +
+                       $"📊 RSI: `{rsi:F1}` │ BB: `{bbPos:P0}`\n" +
+                       $"⏰ {DateTime.Now:HH:mm:ss}";
+            }
+
+            await SendAiGateMessageInternalAsync($"[AI 관제탑] {statusEmoji}", body, disableNotification);
+        }
+
+        private async Task SendAiGateMessageInternalAsync(string title, string body, bool disableNotification)
+        {
+            try
+            {
+                if (_botClient == null || BotToken != AppConfig.TelegramBotToken)
+                    Initialize();
+                if (_botClient == null || string.IsNullOrWhiteSpace(ChatId)) return;
+
+                await _botClient.SendMessage(
+                    chatId: ChatId,
+                    text: $"[TradingBot]\n*{title}*\n\n{body}",
+                    parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
+                    disableNotification: disableNotification
+                );
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($" [Telegram][AI관제탑] 발송 실패: {ex.Message}");
+            }
+        }
+
+        // 
+        // [Smart Target] 진입 / 본절 / 트레일링 마일스톤 텔레그램 알림
+        // 
+
+        /// <summary>
+        /// 진입 직후 ATR 기반 Smart TP/SL 요약 발송
+        /// </summary>
+        public async Task SendSmartTargetEntryAlertAsync(
+            string symbol, string direction, decimal entryPrice,
+            decimal sl, decimal tp, double atr)
+        {
+            try
+            {
+                string dir = direction == "LONG" ? " LONG" : " SHORT";
+                double slPct = entryPrice > 0 ? (double)Math.Abs(sl - entryPrice) / (double)entryPrice * 100 : 0;
+                double tpPct = entryPrice > 0 ? (double)Math.Abs(tp - entryPrice) / (double)entryPrice * 100 : 0;
+                double slRoe = slPct * 20;
+                double tpRoe = tpPct * 20;
+
+                string body =
+                    $" *[스마트 타겟 설정]* {dir} `{symbol}`\n" +
+                    $"\n" +
+                    $" 진입가: `{entryPrice:F4}`\n" +
+                    $" SL: `{sl:F4}` ({slPct:F2}% | ROE -{slRoe:F0}%)\n" +
+                    $" TP: `{tp:F4}` ({tpPct:F2}% | ROE +{tpRoe:F0}%)\n" +
+                    $" ATR(14): `{atr:F4}` | 레버리지: 20\n" +
+                    $"\n" +
+                    $" 손익비 1:2 | 본절 전환: ROE 10%\n" +
+                    $" {DateTime.Now:HH:mm:ss}";
+
+                await SendMessageAsync(body);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($" [Telegram][SmartTarget] 발송 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// ROE 10% 본절 전환 발생 시 알림 (무음)
+        /// </summary>
+        public async Task SendBreakEvenReachedAsync(string symbol, decimal newSL)
+        {
+            try
+            {
+                string msg =
+                    $" *[본절 전환]* `{symbol}`\n" +
+                    $"\n" +
+                    $" ROE 10% 돌파! 손절선을 본절가로 이동\n" +
+                    $" 새 SL: `{newSL:F4}`\n" +
+                    $" 이제부터는 무적 매매! 져도 본전\n" +
+                    $" {DateTime.Now:HH:mm:ss}";
+
+                if (_botClient == null || BotToken != AppConfig.TelegramBotToken) Initialize();
+                if (_botClient == null || string.IsNullOrWhiteSpace(ChatId)) return;
+                await _botClient.SendMessage(chatId: ChatId,
+                    text: $"[TradingBot]\n{msg}",
+                    parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
+                    disableNotification: true);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($" [Telegram][BreakEven] 발송 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 트레일링 스탑 ROE 마일스톤 도달 알림
+        /// ROE 20%+는 소리 알림, 그 미만은 무음
+        /// </summary>
+        public async Task SendTrailingMilestoneAsync(
+            string symbol, decimal newStop, double roe, string label)
+        {
+            try
+            {
+                bool isSound = roe >= 20;
+                string msg =
+                    $"{label} `{symbol}`\n" +
+                    $"\n" +
+                    $" 현재 ROE: `{roe:F1}%` (레버리지 20)\n" +
+                    $" 방어선(ATR 트레일): `{newStop:F4}`\n" +
+                    $" {DateTime.Now:HH:mm:ss}";
+
+                if (_botClient == null || BotToken != AppConfig.TelegramBotToken) Initialize();
+                if (_botClient == null || string.IsNullOrWhiteSpace(ChatId)) return;
+                await _botClient.SendMessage(chatId: ChatId,
+                    text: $"[TradingBot]\n*[ATR 트레일링 마일스톤]*\n\n{msg}",
+                    parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
+                    disableNotification: !isSound);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($" [Telegram][Trailing] 발송 실패: {ex.Message}");
+            }
+        }
+
+
         // [Phase 14] 포트폴리오 리밸런싱 알림
         public async Task SendRebalancingNotificationAsync(decimal totalPortfolioValue, int actionCount,
             decimal totalCost, bool success, List<string>? actions = null)
@@ -355,7 +546,7 @@ namespace TradingBot
             if (success && actions != null && actions.Any())
             {
                 message += $"\n📋 *실행된 액션*:\n";
-                foreach (var action in actions.Take(5)) // 최대 5개만 표시
+                foreach (var action in actions.Take(5))
                 {
                     message += $"  • {action}\n";
                 }
@@ -370,3 +561,5 @@ namespace TradingBot
         }
     }
 }
+
+

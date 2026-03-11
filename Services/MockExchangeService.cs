@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Binance.Net.Clients;
 using TradingBot.Models;
 using TradingBot.Shared.Models;
 using Binance.Net.Enums;
@@ -40,6 +41,7 @@ namespace TradingBot.Services
         private decimal _takerFeeRate = 0.0005m; // 0.05%
         private readonly Random _random = new Random();
         private readonly object _syncLock = new object();
+        private readonly BinanceRestClient _marketDataClient = new BinanceRestClient();
 
         public string ExchangeName => "MockExchange";
 
@@ -67,8 +69,13 @@ namespace TradingBot.Services
         {
             lock (_syncLock)
             {
-                return Task.FromResult(_currentPrices.ContainsKey(symbol) ? _currentPrices[symbol] : 0m);
+                if (_currentPrices.TryGetValue(symbol, out var cachedPrice) && cachedPrice > 0)
+                {
+                    return Task.FromResult(cachedPrice);
+                }
             }
+
+            return GetPublicPriceAsync(symbol, token);
         }
 
         public Task<List<PositionInfo>> GetPositionsAsync(CancellationToken token = default)
@@ -124,8 +131,7 @@ namespace TradingBot.Services
 
         public Task<List<IBinanceKline>> GetKlinesAsync(string symbol, KlineInterval interval, int limit, CancellationToken ct = default)
         {
-            // 백테스팅 엔진에서 직접 캔들 데이터를 제공하므로 빈 리스트 반환
-            return Task.FromResult(new List<IBinanceKline>());
+            return GetPublicKlinesAsync(symbol, interval, limit, ct);
         }
 
         // [v2.4.2] 날짜 범위 기반 캔들 조회 (시뮬레이션용)
@@ -137,14 +143,12 @@ namespace TradingBot.Services
             int limit = 1000,
             CancellationToken ct = default)
         {
-            // 백테스팅용 빈 리스트 반환
-            return Task.FromResult(new List<IBinanceKline>());
+            return GetPublicKlinesAsync(symbol, interval, startTime, endTime, limit, ct);
         }
 
         public Task<ExchangeInfo?> GetExchangeInfoAsync(CancellationToken ct = default)
         {
-            // 백테스팅용 기본 ExchangeInfo 반환
-            return Task.FromResult<ExchangeInfo?>(new ExchangeInfo());
+            return GetPublicExchangeInfoAsync(ct);
         }
 
         public Task<decimal> GetFundingRateAsync(string symbol, CancellationToken token = default)
@@ -161,7 +165,8 @@ namespace TradingBot.Services
                 decimal bestAsk = price * 1.0001m;
                 return Task.FromResult<(decimal, decimal)?>((bestBid, bestAsk));
             }
-            return Task.FromResult<(decimal, decimal)?>(null);
+
+            return GetPublicOrderBookAsync(symbol, ct);
         }
 
         public async Task<BatchOrderResult> PlaceBatchOrdersAsync(List<BatchOrderRequest> orders, CancellationToken ct = default)
@@ -317,9 +322,157 @@ namespace TradingBot.Services
                         Leverage = 20
                     });
                 }
+                else
+                {
+                    _positions.Add(symbol, new PositionInfo
+                    {
+                        Symbol = symbol,
+                        Quantity = quantity,
+                        EntryPrice = avgPrice,
+                        IsLong = false,
+                        Side = Binance.Net.Enums.OrderSide.Sell,
+                        Leverage = 20
+                    });
+                }
 
                 Console.WriteLine($"✅ [Mock] 시장가 체결 완료 - {symbol} {side} {quantity} @ {avgPrice:F4}");
                 return Task.FromResult((true, quantity, avgPrice));
+            }
+        }
+
+        private async Task<decimal> GetPublicPriceAsync(string symbol, CancellationToken token)
+        {
+            try
+            {
+                var result = await _marketDataClient.UsdFuturesApi.ExchangeData.GetPriceAsync(symbol, token);
+                if (!result.Success)
+                    return 0m;
+
+                lock (_syncLock)
+                {
+                    _currentPrices[symbol] = result.Data.Price;
+                }
+
+                return result.Data.Price;
+            }
+            catch
+            {
+                return 0m;
+            }
+        }
+
+        private async Task<List<IBinanceKline>> GetPublicKlinesAsync(string symbol, KlineInterval interval, int limit, CancellationToken ct)
+        {
+            try
+            {
+                var result = await _marketDataClient.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, interval, limit: limit, ct: ct);
+                if (!result.Success || result.Data == null)
+                    return new List<IBinanceKline>();
+
+                return result.Data.Cast<IBinanceKline>().ToList();
+            }
+            catch
+            {
+                return new List<IBinanceKline>();
+            }
+        }
+
+        private async Task<List<IBinanceKline>> GetPublicKlinesAsync(
+            string symbol,
+            KlineInterval interval,
+            DateTime? startTime,
+            DateTime? endTime,
+            int limit,
+            CancellationToken ct)
+        {
+            try
+            {
+                var result = await _marketDataClient.UsdFuturesApi.ExchangeData.GetKlinesAsync(
+                    symbol,
+                    interval,
+                    startTime: startTime,
+                    endTime: endTime,
+                    limit: limit,
+                    ct: ct);
+
+                if (!result.Success || result.Data == null)
+                    return new List<IBinanceKline>();
+
+                return result.Data
+                    .Cast<IBinanceKline>()
+                    .GroupBy(k => k.CloseTime)
+                    .Select(g => g.First())
+                    .OrderBy(k => k.CloseTime)
+                    .ToList();
+            }
+            catch
+            {
+                return new List<IBinanceKline>();
+            }
+        }
+
+        private async Task<ExchangeInfo?> GetPublicExchangeInfoAsync(CancellationToken ct)
+        {
+            try
+            {
+                var result = await _marketDataClient.UsdFuturesApi.ExchangeData.GetExchangeInfoAsync(ct: ct);
+                if (!result.Success || result.Data == null)
+                    return new ExchangeInfo();
+
+                var exchangeInfo = new ExchangeInfo();
+                foreach (var s in result.Data.Symbols)
+                {
+                    exchangeInfo.Symbols.Add(new SymbolInfo
+                    {
+                        Name = s.Name,
+                        LotSizeFilter = s.LotSizeFilter != null
+                            ? new SymbolFilter
+                            {
+                                StepSize = s.LotSizeFilter.StepSize,
+                                TickSize = 0
+                            }
+                            : null,
+                        PriceFilter = s.PriceFilter != null
+                            ? new SymbolFilter
+                            {
+                                StepSize = 0,
+                                TickSize = s.PriceFilter.TickSize
+                            }
+                            : null
+                    });
+                }
+
+                return exchangeInfo;
+            }
+            catch
+            {
+                return new ExchangeInfo();
+            }
+        }
+
+        private async Task<(decimal bestBid, decimal bestAsk)?> GetPublicOrderBookAsync(string symbol, CancellationToken ct)
+        {
+            try
+            {
+                var result = await _marketDataClient.UsdFuturesApi.ExchangeData.GetOrderBookAsync(symbol, 5, ct);
+                if (!result.Success || result.Data == null)
+                    return null;
+
+                var bestBidEntry = result.Data.Bids.FirstOrDefault();
+                var bestAskEntry = result.Data.Asks.FirstOrDefault();
+                if (bestBidEntry == null || bestAskEntry == null)
+                    return null;
+
+                var bestBid = bestBidEntry.Price;
+                var bestAsk = bestAskEntry.Price;
+                if (bestBid <= 0 || bestAsk <= 0)
+                    return null;
+
+                return (bestBid, bestAsk);
+            }
+            catch
+            {
+                return null;
             }
         }
 

@@ -20,7 +20,7 @@ namespace TradingBot
     public class AdaptiveOnlineLearningService : IDisposable
     {
         private readonly EntryTimingMLTrainer _mlTrainer;
-        private readonly EntryTimingTransformerTrainer _transformerTrainer;
+        private readonly TensorFlowEntryTimingTrainer _transformerTrainer;
         
         // 슬라이딩 윈도우 버퍼 (최근 N건)
         private readonly ConcurrentQueue<MultiTimeframeEntryFeature> _slidingWindow = new();
@@ -58,7 +58,7 @@ namespace TradingBot
 
         public AdaptiveOnlineLearningService(
             EntryTimingMLTrainer mlTrainer,
-            EntryTimingTransformerTrainer transformerTrainer,
+            TensorFlowEntryTimingTrainer transformerTrainer,
             OnlineLearningConfig? config = null)
         {
             _mlTrainer = mlTrainer ?? throw new ArgumentNullException(nameof(mlTrainer));

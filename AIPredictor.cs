@@ -2,7 +2,6 @@
 using System.IO;
 using System.Linq;
 using TradingBot.Models;
-using TradingBot.Services.ProcessAI;
 
 namespace TradingBot.Services
 {
@@ -12,8 +11,7 @@ namespace TradingBot.Services
         private ITransformer? _model;
         private PredictionEngine<CandleData, ScalpingPrediction>? _scalpingEngine;
         private PredictionEngine<CandleData, PredictionResult>? _legacyEngine;
-        private MLServiceClient? _mlServiceClient;
-        private bool _useExternalMlService;
+        // private MLServiceClient? _mlServiceClient; // TensorFlow 전환 중 임시 비활성화
         private readonly string _modelPath;
         private readonly string _baseDir;
         private bool _disposed = false;
@@ -27,6 +25,7 @@ namespace TradingBot.Services
             // [FIX] 즉시 로컬 모델로드 (UI 스레드 블로킹 방지)
             LoadLocalModel();
 
+            /* TensorFlow 전환 중 외부 ML 서비스 비활성화
             // [비동기] 백그라운드에서 외부 ML 서비스 연결 시도
             if (preferExternalMlService)
             {
@@ -62,6 +61,7 @@ namespace TradingBot.Services
                     }
                 });
             }
+            */
         }
 
         private void LoadLocalModel()
@@ -131,6 +131,7 @@ namespace TradingBot.Services
         /// <summary>스캘핑 모델 예측 (LightGBM)</summary>
         public ScalpingPrediction? PredictScalping(CandleData data)
         {
+            /* TensorFlow 전환 중 외부 서비스 비활성화
             if (_useExternalMlService && _mlServiceClient != null)
             {
                 var external = _mlServiceClient.PredictAsync(data).GetAwaiter().GetResult();
@@ -144,6 +145,7 @@ namespace TradingBot.Services
                     };
                 }
             }
+            */
 
             return _scalpingEngine?.Predict(data);
         }
@@ -151,6 +153,7 @@ namespace TradingBot.Services
         /// <summary>기존 호환용 예측</summary>
         public PredictionResult Predict(CandleData data)
         {
+            /* TensorFlow 전환 중 외부 서비스 비활성화
             if (_useExternalMlService && _mlServiceClient != null)
             {
                 var external = _mlServiceClient.PredictAsync(data).GetAwaiter().GetResult();
@@ -160,6 +163,7 @@ namespace TradingBot.Services
                     return external;
                 }
             }
+            */
 
             if (_scalpingEngine != null)
             {
@@ -205,7 +209,7 @@ namespace TradingBot.Services
             return 0.5f;
         }
 
-        public bool IsModelLoaded => (_useExternalMlService && (_mlServiceClient?.IsModelLoaded ?? false)) || _scalpingEngine != null || _legacyEngine != null;
+        public bool IsModelLoaded => _scalpingEngine != null || _legacyEngine != null; // TensorFlow 전환 중 외부 서비스 제거
 
         public void Dispose()
         {
@@ -213,7 +217,7 @@ namespace TradingBot.Services
             
             try
             {
-                _mlServiceClient?.Dispose();
+                // _mlServiceClient?.Dispose(); // TensorFlow 전환 중 비활성화
                 _scalpingEngine?.Dispose();
                 _legacyEngine?.Dispose();
                 _model = null;

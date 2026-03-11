@@ -1,5 +1,9 @@
 # ✅ CryptoExchange.Net 업데이트 작업 결과
 
+> ⚠️ 레거시 히스토리 문서
+> 이 문서는 과거 작업 기록/백업입니다.
+> 현재 운영 아키텍처 및 절차는 `README.md`와 `CHANGELOG.md`의 `Unreleased` 섹션을 기준으로 합니다.
+
 **작업 날짜**: 2026년 2월 27일  
 **작업 범위**: CryptoExchange.Net 최신 버전 업데이트 시도 및 Bitget 호환성 확인  
 **결과**: CryptoExchange.Net v10.7.1 (최신 안정 버전), Bitget API 호환성 문제 지속

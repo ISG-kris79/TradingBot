@@ -24,6 +24,10 @@ namespace TradingBot.Shared.Models
 
     public record TradeLog(string? Symbol, string? Side, string? Strategy, decimal Price, float AiScore, DateTime Time, decimal PnL = 0, decimal PnLPercent = 0)
     {
+        public TradeLog() : this(default, default, default, 0, 0, default, 0, 0)
+        {
+        }
+
         public int Id { get; set; }
         public decimal EntryPrice { get; set; }
         public decimal ExitPrice { get; set; }

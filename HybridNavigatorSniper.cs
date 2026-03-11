@@ -58,7 +58,7 @@ namespace TradingBot
                 }
 
                 // 1. Transformer Time-to-Target 예측
-                var (candlesToTarget, confidence) = _aiGate.GetTransformerPrediction(recentFeatures);
+                var (candlesToTarget, confidence) = await _aiGate.GetTransformerPredictionAsync(recentFeatures);
 
                 // 2. 예측값 유효성 검사 (1-32캔들, 신뢰도 70% 이상)
                 if (candlesToTarget < 1f || candlesToTarget > 32f || confidence < 0.7f)
@@ -275,7 +275,8 @@ namespace TradingBot
             {
                 var expiredKeys = _ambushWindows
                     .Where(kvp => 
-                        kvp.Value.Status == AmbushStatus.Expired && 
+                        kvp.Value.Status == AmbushStatus.Expired &&
+                        kvp.Value.ExpireTime.HasValue &&
                         (DateTime.Now - kvp.Value.ExpireTime.Value).TotalHours > 1)
                     .Select(kvp => kvp.Key)
                     .ToList();
@@ -309,7 +310,11 @@ namespace TradingBot
                 return new HybridStatus
                 {
                     ActiveAmbushCount = active.Count,
-                    ActiveSymbols = active.Select(w => w.Symbol).ToList(),
+                    ActiveSymbols = active
+                        .Select(w => w.Symbol)
+                        .Where(symbol => !string.IsNullOrWhiteSpace(symbol))
+                        .Select(symbol => symbol!)
+                        .ToList(),
                     ExecutedCount = executed.Count,
                     ExpiredCount = expired.Count,
                     NextETA = active.OrderBy(w => w.ETA).FirstOrDefault()?.ETA,

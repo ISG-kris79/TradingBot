@@ -16,9 +16,9 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
     <LangVersion>latest</LangVersion>
-      <Version>2.4.27</Version>
-      <AssemblyVersion>2.4.27.0</AssemblyVersion>
-      <FileVersion>2.4.27.0</FileVersion>
+      <Version>2.4.29</Version>
+      <AssemblyVersion>2.4.29.0</AssemblyVersion>
+      <FileVersion>2.4.29.0</FileVersion>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
     <Company>TradingBot</Company>
     <Product>CoinFF TradingBot</Product>
@@ -71,15 +71,37 @@
     <Compile Remove="TradingBot.Tests/**/*.cs" />
     <Compile Remove="TradingBot.Shared/**/*.cs" />
     
+    <!-- 레거시 Transformer/Torch 경로 파일 제외 (현재는 TensorFlow.NET 인프로세스 사용) -->
+    <Compile Remove="TransformerTrainer.cs" />
+    <Compile Remove="TimeSeriesTransformer.cs" />
+    <Compile Remove="EntryTimingTransformerTrainer.cs" />
+    <Compile Remove="TimeSeriesDataLoader.cs" />
+    <Compile Remove="PPOAgent.cs" />
+    <Compile Remove="TransformerWaveNavigator.cs" />
+    <Compile Remove="Services\TorchInitializer.cs" />
+    
+    <!-- 레거시 AI 의존 파일들 추가 제외 -->
+    <Compile Remove="CoinSpecialistLearningSystem.cs" />
+    <Compile Remove="DoubleCheckEntryEngine.cs" />
+    <Compile Remove="WaveAIManager.cs" />
+    <Compile Remove="WaveDatasetGenerator.cs" />
+    <Compile Remove="SimpleDoubleCheckEngine.cs" />
+    <Compile Remove="MultiAgentManager.cs" />
+    <Compile Remove="TransformerStrategy.cs" />
+    <Compile Remove="DualAI_EntryPredictor.cs" />
+    
+    <!-- 기타 의존 파일 제외 -->
+    <Compile Remove="DualAI_IntegrationGuide.cs" />
+    <Compile Remove="CheckpointManager.cs" />
+    <Compile Remove="TimeBasedLearningSystem.cs" />
+    <Compile Remove="ReinforcementLearningFramework.cs" />
+    
     <!-- 루트에 있는 중복 파일 제외 (Services 폴더 사용) -->
     <Compile Remove="IExchangeService.cs" />
     <Compile Remove="BinanceOrderService.cs" />
     <Compile Remove="WebServerService.cs" />
     <Compile Remove="NotificationService.cs" />
     <Compile Remove="IconGenerator.cs" />
-    <!-- 별도 프로세스용 Program.cs 파일 제외 -->
-    <Compile Remove="Services/ProcessAI/MLService_Program.cs" />
-    <Compile Remove="Services/ProcessAI/TorchService_Program.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -102,8 +124,7 @@
     <PackageReference Include="Serilog.Sinks.Console" Version="5.0.1" />
     <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
     <PackageReference Include="Telegram.Bot" Version="22.9.0" />
-    <PackageReference Include="TorchSharp" Version="0.104.0" />
-    <PackageReference Include="TorchSharp-cpu" Version="0.104.0" />
+    <PackageReference Include="TensorFlow.NET" Version="0.150.0" />
     <PackageReference Include="Velopack" Version="0.0.1298" />
   </ItemGroup>
 
@@ -115,28 +136,6 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
   </ItemGroup>
-
-  <Target Name="CopyExternalAiServicesToOutput" AfterTargets="Build">
-    <ItemGroup>
-      <MLServiceFiles Include="..\TradingBot.MLService\bin\$(Configuration)\net9.0\**\*.*" />
-      <TorchServiceFiles Include="..\TradingBot.TorchService\bin\$(Configuration)\net9.0\**\*.*" />
-    </ItemGroup>
-
-    <MakeDir Directories="$(OutDir)Services" />
-    <Copy SourceFiles="@(MLServiceFiles)" DestinationFiles="@(MLServiceFiles->'$(OutDir)Services\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" Condition="'@(MLServiceFiles)' != ''" />
-    <Copy SourceFiles="@(TorchServiceFiles)" DestinationFiles="@(TorchServiceFiles->'$(OutDir)Services\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" Condition="'@(TorchServiceFiles)' != ''" />
-  </Target>
-
-  <Target Name="CopyExternalAiServicesToPublish" AfterTargets="Publish">
-    <ItemGroup>
-      <MLServicePublishFiles Include="..\TradingBot.MLService\bin\$(Configuration)\net9.0\**\*.*" />
-      <TorchServicePublishFiles Include="..\TradingBot.TorchService\bin\$(Configuration)\net9.0\**\*.*" />
-    </ItemGroup>
-
-    <MakeDir Directories="$(PublishDir)Services" />
-    <Copy SourceFiles="@(MLServicePublishFiles)" DestinationFiles="@(MLServicePublishFiles->'$(PublishDir)Services\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" Condition="'@(MLServicePublishFiles)' != ''" />
-    <Copy SourceFiles="@(TorchServicePublishFiles)" DestinationFiles="@(TorchServicePublishFiles->'$(PublishDir)Services\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" Condition="'@(TorchServicePublishFiles)' != ''" />
-  </Target>
 
   <!-- 외부 중복 링크/삭제된 프로젝트 참조 제거 -->
 

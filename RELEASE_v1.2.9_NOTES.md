@@ -1,5 +1,9 @@
 # TradingBot v1.2.9 릴리스 노트
 
+> ⚠️ 레거시 이력 문서
+> 본 문서는 해당 버전 시점의 릴리스 기록입니다.
+> 현재 운영 아키텍처/절차의 기준은 `README.md`와 `CHANGELOG.md`의 `Unreleased` 섹션입니다.
+
 ## 🐛 버그 수정
 
 ### StaticResourceHolder XAML 오류 해결

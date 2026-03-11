@@ -7,7 +7,7 @@ CoinFF TradingBot은 C# WPF 기반의 암호화폐 자동 매매 프로그램입
 ## ✨ 주요 기능
 
 * **다중 거래소 지원**: Binance, Bybit (API 연동)
-* **AI 기반 예측**: TorchSharp(LSTM) 및 강화학습(RL) 에이전트를 활용한 시장 분석
+* **AI 기반 예측**: ML.NET + TensorFlow.NET 기반 인프로세스(내부 백그라운드) 시장 분석
 * **다양한 전략**:
   * **Pump Scan**: 실시간 급등주 포착 및 스캘핑
   * **Grid Strategy**: 횡보장 수익 극대화를 위한 그리드 매매
@@ -81,7 +81,7 @@ await GeneralSettingsProvider.Instance.RefreshSettingsAsync();
 ### AI/ML & 데이터 분석
 
 * **Machine Learning**: [ML.NET 5.0.0](https://dotnet.microsoft.com/apps/machinelearning-ai/ml-dotnet) + FastTree 5.0.0
-* **Deep Learning**: [TorchSharp 0.104.0](https://github.com/dotnet/TorchSharp) - Transformer 기반 시계열 예측 모델
+* **Deep Learning**: [TensorFlow.NET 0.150.0](https://github.com/SciSharp/TensorFlow.NET) - Transformer 대체 시계열 예측 경로
 * **Technical Indicators**: [Skender.Stock.Indicators 2.7.1](https://github.com/DaveSkender/Stock.Indicators)
 * **Data Pipeline**: TimeSeriesDataLoader - 최적화된 배치 처리 및 정규화
 

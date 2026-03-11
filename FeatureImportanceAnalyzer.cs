@@ -35,8 +35,12 @@ namespace TradingBot.Services.AI
                 var featureValues = new List<double>();
                 for (int i = 0; i < data.Count - 1; i++)
                 {
+                    /* TensorFlow 전환 중 비활성화
                     var vector = TransformerFeatureMapper.CreateFeatureVector(data[i], FeatureNames.Length);
                     featureValues.Add(vector[f]);
+                    */
+                    // 임시 폴백: 0.0으로 채우기
+                    featureValues.Add(0.0);
                 }
 
                 double correlation = CalculateCorrelation(featureValues, targets);

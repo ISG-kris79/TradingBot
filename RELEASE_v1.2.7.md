@@ -1,5 +1,9 @@
 # 🚀 TradingBot v1.2.7 Release Notes
 
+> ⚠️ Legacy History Document
+> This file records release details at that specific version point in time.
+> For current runtime architecture/procedures, use `README.md` and the `Unreleased` section of `CHANGELOG.md`.
+
 ## ✨ 새로운 기능
 
 ### 🔽 트레이 숨기기 기능

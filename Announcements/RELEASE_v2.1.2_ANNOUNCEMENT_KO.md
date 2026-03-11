@@ -1,5 +1,9 @@
 # TradingBot v2.1.2 공지 (KR)
 
+> ⚠️ 레거시 이력 문서
+> 본 문서는 해당 버전 시점의 공지/배포 안내 기록입니다.
+> 현재 운영 아키텍처/절차의 기준은 `README.md`와 `CHANGELOG.md`의 `Unreleased` 섹션입니다.
+
 릴리스 링크:
 https://github.com/ISG-kris79/TradingBot/releases/tag/v2.1.2
 

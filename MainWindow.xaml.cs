@@ -115,8 +115,8 @@ namespace TradingBot
         private PortfolioRebalancingService? _rebalancingService;
         private CancellationTokenSource? _advancedFeaturesCts;
 
-        // [WaveAI] 엘리엇 파동 AI 시스템
-        private WaveAIManager? _waveAIManager;
+        // [WaveAI] TensorFlow 전환 중 임시 비활성화
+        // private WaveAIManager? _waveAIManager;
 
         // GeneralSettings 캐시 (앱 전체에서 사용)
         public static TradingSettings? CurrentGeneralSettings { get; private set; }
@@ -227,8 +227,7 @@ namespace TradingBot
                 await Task.WhenAll(updateTask, settingsTask);
                 await InitializeAdvancedFeaturesAsync();
 
-                // [WaveAI] 엘리엇 파동 AI 시스템 자동 초기화
-                await InitializeWaveAIAsync();
+                AddLog("[WaveAI] ℹ️ 앱 시작 시 MainWindow Torch 초기화는 비활성화되었습니다. (외부 AI 서비스 경로 사용)");
             };
         }
 
@@ -1057,7 +1056,7 @@ namespace TradingBot
         /// <summary>
         /// [WaveAI] 엘리엇 파동 AI 시스템 초기화 (자동 학습+로드)
         /// </summary>
-        private async Task InitializeWaveAIAsync()
+        private Task InitializeWaveAIAsync()
         {
             try
             {
@@ -1065,14 +1064,16 @@ namespace TradingBot
                 if (!torchFeaturesEnabled)
                 {
                     AddLog("[WaveAI] 🛡️ Torch/Transformer 비활성화 상태라 WaveAI 자동 초기화를 건너뜁니다.");
-                    return;
+                    return Task.CompletedTask;
                 }
 
+                /* TensorFlow 전환 중 비활성화
                 if (!TorchInitializer.IsAvailable && !TorchInitializer.TryInitialize())
                 {
                     AddLog($"[WaveAI] 🛡️ Torch 안전모드로 WaveAI 자동 초기화를 건너뜁니다. ({TorchInitializer.ErrorMessage})");
                     return;
                 }
+                */
 
                 AddLog("[WaveAI] 🌊 엘리엇 파동 AI 시스템 초기화 중...");
 
@@ -1095,6 +1096,7 @@ namespace TradingBot
                     AddLog("[WaveAI] 🔗 바이낸스 연결");
                 }
 
+                /* TensorFlow 전환 중 임시 비활성화
                 // WaveAIManager 초기화 (모델 없으면 자동 학습)
                 _waveAIManager = new WaveAIManager(exchangeService);
                 await _waveAIManager.InitializeAsync(CancellationToken.None);
@@ -1103,11 +1105,15 @@ namespace TradingBot
                 ViewModel?.SetWaveEngine(_waveAIManager.WaveEngine);
 
                 AddLog("[WaveAI] ✅ 엘리엇 파동 AI 시스템 초기화 완료");
+                */
+                AddLog("[WaveAI] ℹ️ 엘리엇 파동 AI 시스템은 TensorFlow.NET 전환 작업 중입니다 (임시 비활성화)");
             }
             catch (Exception ex)
             {
                 AddAlert($"❌ WaveAI 초기화 실패: {ex.Message}");
             }
+
+            return Task.CompletedTask;
         }
 
         /// <summary>

@@ -31,6 +31,13 @@ namespace TradingBot.Strategies
         public event Action<string>? OnAlert;
         public event Func<string, decimal, Task>? OnTrailingStopUpdate; // 스탑로스 갱신 이벤트
 
+    // ─── Smart Target 알림 이벤트 ─────────────────────────────────────────
+    /// <summary>추세 수익 ROE 10%(=가격 0.5%) 돌파 시 본절 전환 1회성 화력 (symbol, newSL)</summary>
+    public event Action<string, decimal>? OnBreakEvenReached;
+
+    /// <summary>ATR 트레일링 스탑 마일스톤 도달 (symbol, newStop, roe, label)</summary>
+    public event Action<string, decimal, double, string>? OnTrailingMilestone;
+
         // 포지션별 예측 가격 추적
         private readonly ConcurrentDictionary<string, HybridExitState> _exitStates = new();
 
@@ -38,6 +45,12 @@ namespace TradingBot.Strategies
         /// 포지션 진입 시 이탈 상태 등록
         /// </summary>
         public void RegisterEntry(string symbol, string direction, decimal entryPrice, decimal predictedPrice)
+        {
+            RegisterEntry(symbol, direction, entryPrice, predictedPrice, 0m, 0m);
+        }
+
+        public void RegisterEntry(string symbol, string direction, decimal entryPrice, decimal predictedPrice,
+                                   decimal initialSL, decimal initialTP)
         {
             _exitStates[symbol] = new HybridExitState
             {
@@ -48,9 +61,13 @@ namespace TradingBot.Strategies
                 EntryTime = DateTime.Now,
                 Stage = ExitStage.Watching,
                 HighestROE = 0,
-                HighestPriceSinceEntry = entryPrice,  // 롱 기준 최고가 초기화
-                LowestPriceSinceEntry = entryPrice,   // 숏 기준 최저가 초기화
-                CurrentTrailingStopPrice = 0,        // 트레일링 스톱 미설정
+                HighestPriceSinceEntry = entryPrice,
+                LowestPriceSinceEntry = entryPrice,
+                CurrentTrailingStopPrice = 0,
+                InitialSL = initialSL,
+                InitialTP = initialTP,
+                BreakEvenTriggered = false,
+                LastMilestoneROE = 0
             };
             OnLog?.Invoke($"📋 [Hybrid Exit] {symbol} {direction} 등록 | Entry: {entryPrice:F8} | Target: {predictedPrice:F8}");
         }
@@ -390,9 +407,9 @@ namespace TradingBot.Strategies
                 calculatedStopPrice = extremePriceSinceEntry - trailingDistance;
 
                 // [안전장치] ROE가 15%를 넘었다면, 스톱로스는 절대 본절가(EntryPrice) 아래로 내려가지 않음
-                if (roe >= 15 && calculatedStopPrice < entryPrice)
+                if (roe >= 10 && calculatedStopPrice < entryPrice)
                 {
-                    calculatedStopPrice = entryPrice + (entryPrice * 0.001m); // 수수료 포함 본절가
+                    calculatedStopPrice = entryPrice + (entryPrice * 0.001m); // 수수료 포함 본절가 (개선: 15 → 10)
                 }
             }
             else
@@ -400,9 +417,9 @@ namespace TradingBot.Strategies
                 // 숏 포지션 (가장 낮았던 가격 기준)
                 calculatedStopPrice = extremePriceSinceEntry + trailingDistance;
 
-                if (roe >= 15 && calculatedStopPrice > entryPrice)
+                if (roe >= 10 && calculatedStopPrice > entryPrice)
                 {
-                    calculatedStopPrice = entryPrice - (entryPrice * 0.001m);
+                    calculatedStopPrice = entryPrice - (entryPrice * 0.001m); // (개선: 15 → 10)
                 }
             }
 
@@ -497,6 +514,40 @@ namespace TradingBot.Strategies
                     }
                 });
             }
+            // ─── Smart Target 알림 이벤트 ─────────────────────────────────
+            if (stopPriceChanged && state.CurrentTrailingStopPrice > 0)
+            {
+                decimal pChg = isLong
+                    ? (state.HighestPriceSinceEntry - state.EntryPrice) / state.EntryPrice
+                    : (state.EntryPrice - state.LowestPriceSinceEntry) / state.EntryPrice;
+                double curRoe = (double)(pChg * 20 * 100);
+
+                // 본절 전환 1회성
+                if (!state.BreakEvenTriggered && curRoe >= 10)
+                {
+                    state.BreakEvenTriggered = true;
+                    OnBreakEvenReached?.Invoke(symbol, state.CurrentTrailingStopPrice);
+                }
+
+                // ROE 마일스톤 알림: 10 / 20 / 50 / 100 %
+                double[] milestones = { 10, 20, 50, 100 };
+                foreach (var ms in milestones)
+                {
+                    if (curRoe >= ms && state.LastMilestoneROE < ms)
+                    {
+                        state.LastMilestoneROE = ms;
+                        string lbl = ms switch
+                        {
+                            10  => "🟡 ROE 10% 돌파",
+                            20  => "🟠 ROE 20% 돌파",
+                            50  => "🟢 ROE 50% 돌파",
+                            _   => "🟣 ROE 100% 돌파"
+                        };
+                        OnTrailingMilestone?.Invoke(symbol, state.CurrentTrailingStopPrice, curRoe, lbl);
+                        break;
+                    }
+                }
+            }
         }
 
         /// <summary>포지션 청산 완료 시 상태 제거</summary>
@@ -512,6 +563,42 @@ namespace TradingBot.Strategies
         {
             _exitStates.TryGetValue(symbol, out var state);
             return state;
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Smart Target: ATR 기반 진입 시 초기 TP/SL 계산 (정적 유틸리티)
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// ATR 기반 스마트 손절/익절 계산 (20배 레버리지 최적화)
+        ///  SL = ATR × 1.5 (노이즈 회피, 최대 -3.5% 강제 캡)
+        ///  TP = ATR × 3.0 (손익비 1:2)
+        /// </summary>
+        public static (decimal StopLoss, decimal TakeProfit, double Atr)
+            ComputeSmartAtrTargets(decimal currentPrice, bool isLong, double atr, int leverage = 20)
+        {
+            if (atr <= 0 || currentPrice <= 0)
+                return FallbackSmartTargets(currentPrice, isLong);
+
+            const double slMult = 1.5;
+            const double tpMult = 3.0;
+
+            // 20배: 청산가 -5%, 안전마진 -3.5%
+            decimal maxSlDist = currentPrice * 0.035m;
+            decimal slDist = Math.Min((decimal)(atr * slMult), maxSlDist);
+            decimal tpDist = (decimal)(atr * tpMult);
+
+            decimal sl = isLong ? currentPrice - slDist : currentPrice + slDist;
+            decimal tp = isLong ? currentPrice + tpDist : currentPrice - tpDist;
+            return (sl, tp, atr);
+        }
+
+        private static (decimal StopLoss, decimal TakeProfit, double Atr) FallbackSmartTargets(decimal price, bool isLong)
+        {
+            // ATR 없을 때 3.5% / 7%로 폴백
+            decimal sl = isLong ? price * 0.965m : price * 1.035m;
+            decimal tp = isLong ? price * 1.070m : price * 0.930m;
+            return (sl, tp, 0);
         }
     }
 
@@ -556,6 +643,12 @@ namespace TradingBot.Strategies
         public decimal HighestPriceSinceEntry { get; set; }  // 롱 기준 최고가
         public decimal LowestPriceSinceEntry { get; set; }   // 숏 기준 최저가
         public decimal CurrentTrailingStopPrice { get; set; } // 현재 트레일링 스톱 가격
+
+    // Smart Target 신규 필드
+    public decimal InitialSL { get; set; }       // 진입 시 ATR 기반 초기 손절가
+    public decimal InitialTP { get; set; }       // 진입 시 ATR 기반 초기 익절가
+    public bool BreakEvenTriggered { get; set; } // 본절 전환 화력 여부 (1회성)
+    public double LastMilestoneROE { get; set; } // 마지막 알림 나간 ROE 마일스톤
 
         // 실시간 tick 처리를 위한 지표 캐시 (마지막 5분봉 기준 값)
         public double LastRSI { get; set; }

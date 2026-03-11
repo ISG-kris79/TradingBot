@@ -7,6 +7,83 @@
 
 ## [Unreleased]
 
+## [2.4.28] - 2026-03-11
+## [2.4.29] - 2026-03-11
+
+### Added
+
+- **Smart Target ATR TP/SL 시스템** (`HybridExitManager.cs`):
+  - `ComputeSmartAtrTargets(price, isLong, atr, leverage=20)` 정적 메서드 추가
+    - SL = ATR × 1.5 (최대 -3.5% 캡), TP = ATR × 3.0 (손익비 1:2)
+    - ATR 계산 불가 시 폴백: SL -3.5%, TP +7%
+  - `RegisterEntry` 오버로드 추가 (`initialSL`, `initialTP` 파라미터 지원)
+  - `HybridExitState` 신규 필드: `InitialSL`, `InitialTP`, `BreakEvenTriggered`, `LastMilestoneROE`
+  - 본절 전환 임계값 ROE 15% → **10%** 하향 조정 (20× 레버리지 0.5% 가격 이동 기준)
+  - `OnBreakEvenReached: Action<string, decimal>?` 이벤트 추가
+  - `OnTrailingMilestone: Action<string, decimal, double, string>?` 이벤트 추가
+  - 마일스톤 이벤트: ROE 10 / 20 / 50 / 100% 도달 시 발동 (중복 방지)
+
+- **Smart Target 텔레그램 알림** (`TelegramService.cs`):
+  - `SendSmartTargetEntryAlertAsync`: 진입 시 ATR 기반 SL/TP 요약 발송 (SL%, TP%, ROE 환산 포함)
+  - `SendBreakEvenReachedAsync`: 본절 전환 무음 알림
+  - `SendTrailingMilestoneAsync`: ROE 마일스톤 알림 (ROE ≥ 20% 소리, 미만 무음)
+
+- **TradingEngine 통합** (`TradingEngine.cs`):
+  - `OnBreakEvenReached` → `TelegramService.SendBreakEvenReachedAsync` 이벤트 연결
+  - `OnTrailingMilestone` → `TelegramService.SendTrailingMilestoneAsync` 이벤트 연결
+  - 진입 후 비동기 Task: 15분 캔들 20봉 조회 → ATR(14) 계산 → `ComputeSmartAtrTargets` → `exitState` 업데이트 → Telegram 발송
+
+## [2.4.28] - 2026-03-11
+
+### Added
+
+- **Dual-Gate 아키텍처 재설계 (Brain → Filter 순서 확립)**:
+  - `EvaluateEntryAsync` 흐름을 ML→TF(기존)에서 **TF(Brain) → ML(Filter)** 순서로 재정렬
+  - TensorFlow.NET(Transformer)이 1단계: 캔들 패턴/흐름 점수(TrendScore) 산출
+  - ML.NET(LightGBM)이 2단계: 지표 기반 최종 필터 승인
+  - 로그 태그: `[BRAIN]` (TF 승인), `[FILTER_BLOCK]` (ML/Sanity 거부)
+
+- **Sanity Risk Filter (`EvaluateDualGateRiskFilter`) 추가**:
+  - ML 통과 후 실행되는 하드코딩 규칙 기반 안전망
+  - RSI ≥ 80: 과열 하드차단 (`RSI_Overheat_HardBlock`)
+  - Upper Wick Ratio ≥ 70%: 윗꼬리 과다 차단 (`UpperWick_Risk`)
+  - BB 상단 ≥ 90% + RSI ≥ 70 + TrendScore < 0.80: 과열 상단 차단 (`UpperBand_Overheat`)
+  - 최근 고점 대비 하락폭 ≤ 0.20%: 추격 진입 차단 (`Chasing_Risk`)
+  - **StrongTrend 우선통과**: TrendScore ≥ 0.80이면 BB/RSI 주의 조건 바이패스
+
+- **`AIEntryDetail.TrendScore` 필드 추가**: Sanity 필터에서 TrendScore 전달 및 로그 기록
+
+- **`DoubleCheckConfig` 튜닝 파라미터 6종 추가**:
+  - `StrongTrendBypassThreshold = 0.80f`
+  - `RsiOverheatHardCap = 80f`
+  - `RsiCautionThreshold = 70f`
+  - `BbUpperRiskThreshold = 0.90f`
+  - `UpperWickRiskThreshold = 0.70f`
+  - `RecentHighChaseThresholdPct = 0.20f`
+
+### Changed
+
+- **PUMP 코인 진입 기준 강화 (손실 축소)**:
+  - `MAX_PUMP_SLOTS: 2 → 1` (동시 PUMP 포지션 최대 1개로 제한)
+  - `MinMLConfidencePumping: 0.58f → 0.66f` (ML 신뢰도 임계치 상향)
+  - `MinTransformerConfidencePumping: 0.63f` 신규 추가 (TF 신뢰도 임계치)
+  - PUMP CoinType에서 ML+TF 둘 다 기준 통과 필수 (기존 ML 단독 → 이중 게이트)
+
+- **AI 런타임 구조 단순화 (v2.4.27 Unreleased 내용 확정)**:
+  - 외부 서비스 프로젝트(`TradingBot.MLService`, `TradingBot.TorchService`) 제거
+  - Named Pipe IPC 기반 예측/학습 경로 제거
+  - ML.NET + TensorFlow.NET 인프로세스(내부 백그라운드) 처리로 통합
+
+### Documentation
+
+- `README.md`, `PROCESS_AI_ARCHITECTURE.md`, `RELEASE_CHECKLIST.md`, `run-ai-validation.ps1`를
+  현재 인프로세스 아키텍처 기준으로 일괄 업데이트
+
+### Note
+
+- 아래 버전 이력에는 당시 구조를 반영한 외부 서비스/Torch 관련 설명이 포함될 수 있으며,
+  이는 **히스토리 기록**입니다. 현재 운영 기준은 `Unreleased` 섹션 설명을 따릅니다.
+
 ## [2.4.27] - 2026-03-10
 
 ### Added

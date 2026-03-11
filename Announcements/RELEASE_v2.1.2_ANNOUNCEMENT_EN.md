@@ -1,5 +1,9 @@
 # TradingBot v2.1.2 Announcement (EN)
 
+> ⚠️ Legacy History Document
+> This file is a point-in-time release announcement record.
+> For current runtime architecture/procedures, use `README.md` and the `Unreleased` section of `CHANGELOG.md`.
+
 Release URL:
 https://github.com/ISG-kris79/TradingBot/releases/tag/v2.1.2
 

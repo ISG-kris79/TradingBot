@@ -292,12 +292,15 @@ Remove-Item -Recurse -Force Releases
 
 ### 문제: "TradingBot.exe / ucrtbase.dll / 0xc0000409" 크래시 재발
 
-**근본 원인:** TorchSharp Tensor 메모리 누수로 인한 네이티브 스택 버퍼 오버런
+**현재 구조 기준 메모:**
+- 외부 TorchService/MLService 프로세스 아키텍처는 제거되었습니다.
+- AI 경로는 ML.NET + TensorFlow.NET 인프로세스(내부 백그라운드)로 동작합니다.
+- 과거 TorchSharp 메모리 관련 이슈는 레거시 기록으로만 참고하세요.
 
-**수정 반영 버전: v2.2.11**
-- ✅ `TimeSeriesTransformer.cs` - PositionalEncoding 및 forward() 메서드의 모든 중간 Tensor에 using 추가
-- ✅ `TransformerTrainer.cs` - 배치 학습 시 Tensor 자동 해제 확인
-- ✅ 스레드 안전성 검증 (ReaderWriterLockSlim 사용)
+**우선 점검 항목:**
+- ✅ 최신 빌드 재검증: `dotnet build TradingBot.csproj -c Debug --no-incremental`
+- ✅ 배포 산출물에 레거시 `Services` 실행파일 포함 여부 확인
+- ✅ 사용자 환경의 VC++ 런타임/드라이버/보안솔루션 충돌 여부 확인
 
 **디버깅 절차 (재발 시):**
 

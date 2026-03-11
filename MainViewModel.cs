@@ -1242,6 +1242,7 @@ namespace TradingBot.ViewModels
             AverageRoe = (double)closedTrades.Average(t => t.PnLPercent);
         }
 
+        /* TensorFlow 전환 중 임시 비활성화
         /// <summary>
         /// [WaveAI] 엘리엇 파동 이중 검증 엔진 설정
         /// </summary>
@@ -1249,6 +1250,7 @@ namespace TradingBot.ViewModels
         {
             _engine?.SetWaveEngine(waveEngine);
         }
+        */
 
         private void ApplyTheme()
         {

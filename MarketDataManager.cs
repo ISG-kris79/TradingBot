@@ -54,7 +54,7 @@ namespace TradingBot.Services
             }
         }
 
-        public async Task StartAsync(CancellationToken token)
+        public Task StartAsync(CancellationToken token)
         {
             _cts = CancellationTokenSource.CreateLinkedTokenSource(token);
             var internalToken = _cts.Token;
@@ -66,6 +66,8 @@ namespace TradingBot.Services
             _ = StartAllMarketTickerStreamAsync(internalToken);
             _ = StartPriceWebSocketAsync(internalToken);
             _ = StartKlineStreamAsync(internalToken);
+
+            return Task.CompletedTask;
         }
 
         public async Task PreloadRecentKlinesAsync(int limit, CancellationToken token)
