@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Binance.Net.Enums;
 using Binance.Net.Interfaces;
 
 namespace TradingBot
@@ -30,7 +31,7 @@ namespace TradingBot
         public (bool passed, string reason) ValidateEntryRules(
             List<IBinanceKline> candles,
             decimal currentPrice,
-            bool isLong,
+            PositionSide side,
             float mlScore,
             float tfScore,
             float rsi,
@@ -47,7 +48,7 @@ namespace TradingBot
             try
             {
                 // 1. 엘리엇 파동 규칙 위배 체크 (거부 조건)
-                var elliottCheck = CheckElliottWaveRules(candles, currentPrice, isLong, out waveState);
+                var elliottCheck = CheckElliottWaveRules(candles, currentPrice, side, out waveState);
                 if (!elliottCheck.passed)
                     return elliottCheck;
 
@@ -62,7 +63,7 @@ namespace TradingBot
                 // 4. 최종 점수/방향별 피보나치 체크
                 var finalCheck = ApplyFinalDirectionalCheck(
                     currentPrice,
-                    isLong,
+                    side,
                     mlScore,
                     tfScore,
                     rsi,
@@ -86,7 +87,7 @@ namespace TradingBot
         private (bool passed, string reason) CheckElliottWaveRules(
             List<IBinanceKline> candles,
             decimal currentPrice,
-            bool isLong,
+            PositionSide side,
             out ElliottWaveState state)
         {
             state = new ElliottWaveState();
@@ -99,7 +100,7 @@ namespace TradingBot
                 return (true, "Elliott_Insufficient_Data"); // 데이터 부족은 거부 사유 아님
             }
 
-            if (isLong)
+            if (side == PositionSide.Long)
             {
                 // 롱 진입 시 엘리엇 규칙 위배 체크
                 // 가정: swings[0]=1파 시작, swings[1]=1파 고점, swings[2]=2파 저점
@@ -263,7 +264,7 @@ namespace TradingBot
         /// </summary>
         private (bool passed, string reason) ApplyFinalDirectionalCheck(
             decimal currentPrice,
-            bool isLong,
+            PositionSide side,
             float mlScore,
             float tfScore,
             float rsi,
@@ -289,14 +290,14 @@ namespace TradingBot
 
             if (!isSuperTrend)
             {
-                if (isLong && fibLevel >= _config.LongFibExtremeLevel)
+                if (side == PositionSide.Long && fibLevel >= _config.LongFibExtremeLevel)
                 {
-                    if (rsi <= _config.LongFibBlockRsi && bbPosition <= _config.LongFibBlockBbPosition)
+                    if (!(rsi <= _config.LongFibBlockRsi && bbPosition <= _config.LongFibBlockBbPosition))
                     {
-                        return (false, $"Fibonacci_Long_Extreme_Oversold_RSI={rsi:F1}_BB={bbPosition:P0}");
+                        return (false, $"Fibonacci_Long_FakeBottom_RSI={rsi:F1}_BB={bbPosition:P0}");
                     }
                 }
-                else if (!isLong && fibLevel <= _config.ShortFibExtremeLevel)
+                else if (side == PositionSide.Short && fibLevel <= _config.ShortFibExtremeLevel)
                 {
                     if (rsi >= _config.ShortFibBlockRsi && bbPosition >= _config.ShortFibBlockBbPosition)
                     {

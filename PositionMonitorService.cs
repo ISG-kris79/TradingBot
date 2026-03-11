@@ -25,6 +25,7 @@ namespace TradingBot.Services
         private readonly Dictionary<string, PositionInfo> _activePositions;
         private readonly object _posLock;
         private readonly TradingSettings _settings;
+        private readonly Func<TradingSettings?> _settingsProvider;
         private readonly ConcurrentDictionary<string, DateTime> _blacklistedSymbols;
         private readonly ConcurrentDictionary<string, int> _closingPositions = new();
         private readonly AdvancedExitStopCalculator _advancedExitCalculator;  // [v2.1.18] 지표 결합 익절
@@ -50,7 +51,8 @@ namespace TradingBot.Services
             ConcurrentDictionary<string, DateTime> blacklistedSymbols,
             TradingSettings settings,
             AIPredictor? aiPredictor = null,
-            AdvancedExitStopCalculator? advancedExitCalculator = null)  // [v2.1.18] 선택적
+            AdvancedExitStopCalculator? advancedExitCalculator = null,
+            Func<TradingSettings?>? settingsProvider = null)  // [v2.1.18] 선택적
         {
             _client = client;
             _exchangeService = exchangeService; // [변경]
@@ -61,8 +63,26 @@ namespace TradingBot.Services
             _posLock = posLock;
             _blacklistedSymbols = blacklistedSymbols;
             _settings = settings;
+            _settingsProvider = settingsProvider ?? (() => _settings);
             _aiPredictor = aiPredictor;
             _advancedExitCalculator = advancedExitCalculator ?? new AdvancedExitStopCalculator();  // [v2.1.18] 기본값 생성
+        }
+
+        private TradingSettings GetCurrentSettings()
+        {
+            return _settingsProvider.Invoke() ?? _settings;
+        }
+
+        private decimal GetCurrentStopLossRoe()
+        {
+            decimal stopLossRoe = GetCurrentSettings().StopLossRoe;
+            if (stopLossRoe > 0m)
+                return stopLossRoe;
+
+            if (_settings.StopLossRoe > 0m)
+                return _settings.StopLossRoe;
+
+            return 15.0m;
         }
 
         public void UpdateAiPredictor(AIPredictor? aiPredictor)
@@ -221,11 +241,12 @@ namespace TradingBot.Services
             // [추가] 안전장치: 서버사이드 손절 주문 설정 (Stop Market)
             try
             {
+                decimal currentStopLossRoe = GetCurrentStopLossRoe();
                 decimal stopPrice = customStopLossPrice > 0
                     ? customStopLossPrice
                     : (isLong
-                        ? entryPrice * (1 - _settings.StopLossRoe / leverage / 100)
-                        : entryPrice * (1 + _settings.StopLossRoe / leverage / 100));
+                        ? entryPrice * (1 - currentStopLossRoe / leverage / 100)
+                        : entryPrice * (1 + currentStopLossRoe / leverage / 100));
 
                 // 수량 조회 (락 필요)
                 decimal qty = 0;
@@ -843,10 +864,12 @@ namespace TradingBot.Services
                             nextProfitRunHoldLogTime = DateTime.Now.AddSeconds(30);
                         }
                     }
-                    else if (!hasCustomAbsoluteStop && currentROE <= -_settings.StopLossRoe)
+                    decimal currentStopLossRoe = GetCurrentStopLossRoe();
+
+                    if (!hasCustomAbsoluteStop && currentROE <= -currentStopLossRoe)
                     {
-                        OnLog?.Invoke($"[청산 트리거] {symbol} 메이저 손절 조건 충족 | 방향={(isLong ? "LONG" : "SHORT")}, 현재ROE={currentROE:F2}%, 손절ROE=-{_settings.StopLossRoe:F2}%");
-                        await ExecuteMarketClose(symbol, $"메이저 손절 실행 (현재 {currentROE:F2}%, 기준 -{_settings.StopLossRoe:F2}%)", token);
+                        OnLog?.Invoke($"[청산 트리거] {symbol} 메이저 손절 조건 충족 | 방향={(isLong ? "LONG" : "SHORT")}, 현재ROE={currentROE:F2}%, 손절ROE=-{currentStopLossRoe:F2}%");
+                        await ExecuteMarketClose(symbol, $"메이저 손절 실행 (현재 {currentROE:F2}%, 기준 -{currentStopLossRoe:F2}%)", token);
                         break;
                     }
 
@@ -914,7 +937,7 @@ namespace TradingBot.Services
                 }
             }
 
-            decimal stopLossROE = _settings.StopLossRoe;
+            decimal stopLossROE = GetCurrentStopLossRoe();
             decimal trailingStartROE = _settings.TrailingStartRoe;
             decimal trailingDropROE = _settings.TrailingDropRoe;
             decimal averageDownROE = -5.0m;

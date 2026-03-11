@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Binance.Net.Enums;
 using Binance.Net.Interfaces;
 using TradingBot.Services;
 
@@ -212,11 +213,14 @@ namespace TradingBot
                 // 6. 엘리엇 파동 + 피보나치 규칙 검증 (거부 필터)
                 if (m15List != null)
                 {
-                    bool isLong = decision.Contains("LONG", StringComparison.OrdinalIgnoreCase);
+                    PositionSide side = decision.Contains("SHORT", StringComparison.OrdinalIgnoreCase)
+                        ? PositionSide.Short
+                        : PositionSide.Long;
+
                     var ruleCheck = _ruleValidator.ValidateEntryRules(
                         m15List,
                         currentPrice,
-                        isLong,
+                        side,
                         mlConfidence,
                         tfConfidence,
                         detail.M15_RSI,

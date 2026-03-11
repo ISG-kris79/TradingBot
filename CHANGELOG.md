@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+## [2.4.36] - 2026-03-11
+
+### Changed
+
+- **AI 진입 최종 필터 4단계 고도화** (`EntryRuleValidator.cs`, `AIDoubleCheckEntryGate.cs`):
+  - 최종 방향 필터 입력을 `bool isLong`에서 `PositionSide`로 변경해 LONG/SHORT 분기 명확화
+  - LONG 구간에서 `Fib >= 0.786`일 때, `RSI <= 25 && BB <= 0.05`가 아니면 가짜 바닥으로 차단
+  - SHORT 구간에서 `Fib <= 0.236 && RSI >= 75 && BB >= 0.95`일 때 과열 반등 위험으로 차단
+  - Rule1/Rule2 즉시 차단, Rule3 감점(0.15), SuperTrend 우회(ML/TF) 및 최종점수 임계(0.65) 체계 유지
+
+- **손절 ROE 설정값 실시간 반영 경로 보강** (`PositionMonitorService.cs`, `TradingEngine.cs`):
+  - 포지션 모니터가 시작 시 스냅샷 `_settings` 고정값이 아닌 현재 사용자 설정 공급 경로를 통해 손절 ROE를 조회
+  - 서버사이드 스탑 계산/메이저 손절 트리거/로그 및 PUMP 손절 초기값에 동일한 동적 손절값을 적용
+  - `TradingEngine`에서 `PositionMonitorService` 생성 시 런타임 설정 provider delegate를 주입
+
 ## [2.4.35] - 2026-03-11
 
 ### Changed
