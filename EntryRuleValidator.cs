@@ -17,6 +17,13 @@ namespace TradingBot
     /// </summary>
     public class EntryRuleValidator
     {
+        private readonly DoubleCheckConfig _config;
+
+        public EntryRuleValidator(DoubleCheckConfig? config = null)
+        {
+            _config = config ?? new DoubleCheckConfig();
+        }
+
         /// <summary>
         /// 진입 규칙 검증 (거부 필터)
         /// </summary>
@@ -24,6 +31,10 @@ namespace TradingBot
             List<IBinanceKline> candles,
             decimal currentPrice,
             bool isLong,
+            float mlScore,
+            float tfScore,
+            float rsi,
+            float bbPosition,
             out ElliottWaveState waveState,
             out FibonacciLevels fibLevels)
         {
@@ -45,11 +56,21 @@ namespace TradingBot
                 if (!volumeCheck.passed)
                     return volumeCheck;
 
-                // 3. 피보나치 레벨 계산 (거부 조건은 아니지만 극단적인 경우 필터)
+                // 3. 피보나치 레벨 계산
                 fibLevels = CalculateFibonacciLevels(candles, currentPrice);
-                var fibCheck = CheckFibonacciExtreme(fibLevels, currentPrice);
-                if (!fibCheck.passed)
-                    return fibCheck;
+
+                // 4. 최종 점수/방향별 피보나치 체크
+                var finalCheck = ApplyFinalDirectionalCheck(
+                    currentPrice,
+                    isLong,
+                    mlScore,
+                    tfScore,
+                    rsi,
+                    bbPosition,
+                    waveState,
+                    fibLevels);
+                if (!finalCheck.passed)
+                    return finalCheck;
 
                 return (true, "All_Rules_Passed");
             }
@@ -94,6 +115,7 @@ namespace TradingBot
                     if (wave2Low <= wave1Start)
                     {
                         state.IsValid = false;
+                        state.Rule1Violated = true;
                         state.RejectReason = "Wave2_Below_Wave1_Start";
                         return (false, "Elliott_Rule1_Violation_Wave2_Below_Wave1");
                     }
@@ -105,6 +127,7 @@ namespace TradingBot
                         if (wave4Low <= wave1High)
                         {
                             state.IsValid = false;
+                            state.Rule2Violated = true;
                             state.RejectReason = "Wave4_Overlap_Wave1";
                             return (false, "Elliott_Rule2_Violation_Wave4_Overlap");
                         }
@@ -116,9 +139,8 @@ namespace TradingBot
 
                     if (wave3Length < wave1Length * 0.8m) // 3파가 1파의 80% 미만
                     {
-                        state.IsValid = false;
+                        state.Rule3Violated = true;
                         state.RejectReason = "Wave3_Too_Short";
-                        return (false, "Elliott_Rule3_Warning_Wave3_Shortest");
                     }
 
                     state.IsValid = true;
@@ -140,6 +162,7 @@ namespace TradingBot
                     if (wave2High >= wave1Start)
                     {
                         state.IsValid = false;
+                        state.Rule1Violated = true;
                         state.RejectReason = "Wave2_Above_Wave1_Start_Short";
                         return (false, "Elliott_Rule1_Violation_Short_Wave2");
                     }
@@ -236,23 +259,77 @@ namespace TradingBot
         }
 
         /// <summary>
-        /// 피보나치 극단 체크 (거부 조건)
+        /// Rule3 감점 + 방향별 피보나치 극단 체크
         /// </summary>
-        private (bool passed, string reason) CheckFibonacciExtreme(FibonacciLevels levels, decimal currentPrice)
+        private (bool passed, string reason) ApplyFinalDirectionalCheck(
+            decimal currentPrice,
+            bool isLong,
+            float mlScore,
+            float tfScore,
+            float rsi,
+            float bbPosition,
+            ElliottWaveState waveState,
+            FibonacciLevels levels)
         {
-            // **규칙: 0.786 이하(과매도) 또는 0.0 이상(과매수)이면 진입 금지**
-            // 이 부분은 전략에 따라 조정 가능
-            if (currentPrice < levels.Fib0786)
+            float finalScore = SanitizeScore(mlScore);
+            if (waveState.Rule3Violated)
             {
-                return (false, "Fibonacci_Extreme_Oversold");
+                finalScore -= _config.ElliottRule3Penalty;
             }
 
-            if (currentPrice > levels.Fib0000)
+            finalScore = Math.Clamp(finalScore, 0f, 1f);
+            waveState.FinalScore = finalScore;
+
+            bool isSuperTrend = SanitizeScore(tfScore) >= _config.SuperTrendTfThreshold
+                && SanitizeScore(mlScore) >= _config.SuperTrendMlThreshold;
+            waveState.IsSuperTrend = isSuperTrend;
+
+            float fibLevel = CalculateFibLevel(levels, currentPrice);
+            waveState.FibLevel = fibLevel;
+
+            if (!isSuperTrend)
             {
-                return (false, "Fibonacci_Extreme_Overbought_Above_High");
+                if (isLong && fibLevel >= _config.LongFibExtremeLevel)
+                {
+                    if (rsi <= _config.LongFibBlockRsi && bbPosition <= _config.LongFibBlockBbPosition)
+                    {
+                        return (false, $"Fibonacci_Long_Extreme_Oversold_RSI={rsi:F1}_BB={bbPosition:P0}");
+                    }
+                }
+                else if (!isLong && fibLevel <= _config.ShortFibExtremeLevel)
+                {
+                    if (rsi >= _config.ShortFibBlockRsi && bbPosition >= _config.ShortFibBlockBbPosition)
+                    {
+                        return (false, $"Fibonacci_Short_Extreme_Overbought_RSI={rsi:F1}_BB={bbPosition:P0}");
+                    }
+                }
             }
 
-            return (true, "Fibonacci_Level_OK");
+            if (finalScore < _config.RuleFilterFinalScoreThreshold)
+            {
+                return (false, waveState.Rule3Violated
+                    ? $"Elliott_Rule3_Penalized_FinalScore={finalScore:F2}"
+                    : $"FinalScore_Below_Threshold={finalScore:F2}");
+            }
+
+            return (true, "Final_Check_Passed");
+        }
+
+        private static float CalculateFibLevel(FibonacciLevels levels, decimal currentPrice)
+        {
+            if (levels.Range <= 0)
+                return 0.5f;
+
+            decimal fibLevel = (levels.High - currentPrice) / levels.Range;
+            return (float)fibLevel;
+        }
+
+        private static float SanitizeScore(float score)
+        {
+            if (float.IsNaN(score) || float.IsInfinity(score))
+                return 0f;
+
+            return Math.Clamp(score, 0f, 1f);
         }
 
         /// <summary>
@@ -322,6 +399,12 @@ namespace TradingBot
     {
         public bool IsValid { get; set; }
         public string RejectReason { get; set; } = "";
+        public bool Rule1Violated { get; set; }
+        public bool Rule2Violated { get; set; }
+        public bool Rule3Violated { get; set; }
+        public bool IsSuperTrend { get; set; }
+        public float FinalScore { get; set; }
+        public float FibLevel { get; set; }
         public double Wave1Length { get; set; }
         public double Wave2RetracePct { get; set; }
         public double Wave3Length { get; set; }

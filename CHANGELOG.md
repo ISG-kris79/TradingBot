@@ -7,6 +7,32 @@
 
 ## [Unreleased]
 
+## [2.4.34] - 2026-03-11
+
+### Changed
+
+- **Elliott Wave Rule3 감점제 전환** (`EntryRuleValidator.cs`, `AIDoubleCheckEntryGate.cs`):
+  - Rule3 위반을 하드 차단에서 `-0.15` 감점 방식으로 변경 — 위반 시에도 최종 점수가 임계값(0.65) 이상이면 진입 허용
+  - 강추세 우회 조건 추가: TF ≥ 0.84 AND ML ≥ 0.85 시 Rule3 감점 및 Fibonacci 극단 차단 무시
+  - 방향별 Fibonacci 극단 필터 구현 (Long: Fib ≥ 0.786 + RSI < 25 + BB < 0.05 차단 / Short: Fib ≤ 0.236 + RSI > 75 + BB > 0.95 차단)
+  - 모든 튜닝 임계값을 `DoubleCheckConfig` 프로퍼티로 외재화 (`ElliottRule3Penalty`, `RuleFilterFinalScoreThreshold`, `SuperTrendTfThreshold` 등)
+
+- **텔레그램 AI 관제탑 15분 집계 요약 전환** (`TelegramService.cs`, `TradingEngine.cs`):
+  - AI 관제탑 판정을 실시간 개별 전송 → 15분 집계 배치 요약으로 전환하여 텔레그램 스팸 감소
+  - `AiGateSummaryWindow` 내부 클래스로 승인/차단/강추세/방향/타입별 카운터 및 ML/TF 평균 누적
+  - `FlushAiGateSummaryAsync()` 추가 — 15분마다 요약 메시지 전송, 판정 0건이면 생략
+  - TradingEngine 메인 루프에 15분 타이머 연결 (`_lastAiGateSummaryTime`)
+  - 심볼별 1분 중복 집계 방지는 유지 (ML < 0.50 저신뢰 차단 건 집계 생략 포함)
+
+### Improved
+
+- **메인 UI 레이아웃 개선** (`MainWindow.xaml`):
+  - 좌측 사이드바 너비 320 → 340px, 각 카드 헤더에 컬러 세로 강조선 추가
+  - 시계 카드를 컴팩트 가로 레이아웃으로 변경 (32pt → 24pt, 공간 절약)
+  - Entry Gate 카드 리디자인: ML.NET / Transformer 각각 다크 배경 박스 + 컬러 바 시각 구분
+  - 마켓 그리드 `AI시각` 컬럼 제거, 컬럼 너비 최적화 (총 ~150px 절약), 행 높이 48 → 44px
+  - Critical Alerts 패널 높이 200 → 120px (마켓 그리드 공간 확보)
+
 ## [2.4.33] - 2026-03-11
 
 ### Fixed

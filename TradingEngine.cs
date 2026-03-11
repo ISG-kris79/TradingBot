@@ -38,6 +38,7 @@ namespace TradingBot
         public decimal InitialBalance { get; private set; } = 0; // 프로그램 시작 시점의 자산
         private DateTime _engineStartTime = DateTime.MinValue; // [수정] 엔진 시작 시에만 설정
         private DateTime _lastReportTime = DateTime.MinValue;
+        private DateTime _lastAiGateSummaryTime = DateTime.MinValue;
         private decimal _periodicReportBaselineEquity = 0m;
 
         // 현재 보유 중인 포지션 정보 (심볼, 진입가)
@@ -1380,6 +1381,7 @@ namespace TradingBot
                 
                 _lastHeartbeatTime = DateTime.Now; // 시작 시점 기록 (1시간 후 첫 알림)
                 _lastReportTime = DateTime.Now;    // 시작 시점 기록 (1시간 후 첫 보고)
+                _lastAiGateSummaryTime = DateTime.Now; // [AI 관제탑] 시작 시점 기록 (15분 후 첫 요약)
                 _lastPositionSyncTime = DateTime.Now; // [FIX] 시작 시점 기록 (30분 후 첫 동기화)
                 _periodicReportBaselineEquity = await GetEstimatedAccountEquityUsdtAsync(token);
                 if (_periodicReportBaselineEquity <= 0)
@@ -1455,7 +1457,14 @@ namespace TradingBot
                             _lastPositionSyncTime = DateTime.Now;
                         }
 
-                        // [B] 텔레그램 정기 수익 보고 (1시간 주기)
+                        // [B] AI 관제탑 15분 요약 전송
+                        if ((DateTime.Now - _lastAiGateSummaryTime).TotalMinutes >= 15)
+                        {
+                            await TelegramService.Instance.FlushAiGateSummaryAsync();
+                            _lastAiGateSummaryTime = DateTime.Now;
+                        }
+
+                        // [C] 텔레그램 정기 수익 보고 (1시간 주기)
                         if ((DateTime.Now - _lastReportTime).TotalHours >= 1)
                         {
                             await SendDetailedPeriodicReport(token);

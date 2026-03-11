@@ -873,7 +873,7 @@
                 <TabItem Header="📊  DASHBOARD">
                     <Grid Margin="8">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="320"/>
+                            <ColumnDefinition Width="340"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
@@ -883,24 +883,38 @@
                                       Margin="0,0,16,0">
                             <StackPanel>
                             <Border Style="{StaticResource CardStyle}"
-                                    Padding="16"
-                                    Margin="0,0,0,16">
-                                <StackPanel VerticalAlignment="Center">
-                                    <TextBlock x:Name="txtDateDisplay"
-                                               Text="----/--/--"
-                                               Foreground="#4B5563"
-                                               FontSize="10"
-                                               FontWeight="SemiBold"
-                                               TextAlignment="Center"/>
-                                    <TextBlock x:Name="txtTimeDisplay"
+                                    Padding="12,8"
+                                    Margin="0,0,0,12">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock x:Name="txtDateDisplay"
+                                                   Text="----/--/--"
+                                                   Foreground="#4B5563"
+                                                   FontSize="10"
+                                                   FontWeight="SemiBold"/>
+                                        <TextBlock Text="LIVE CLOCK"
+                                                   Foreground="#374151"
+                                                   FontSize="8"
+                                                   FontWeight="Bold"
+                                                   Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="1"
+                                               x:Name="txtTimeDisplay"
                                                Text="--:--:--"
                                                Foreground="#00E5FF"
-                                               FontSize="32"
+                                               FontSize="24"
                                                FontWeight="Light"
-                                               TextAlignment="Center"
-                                               Margin="0,6,0,0"
-                                               FontFamily="Consolas"/>
-                                </StackPanel>
+                                               VerticalAlignment="Center"
+                                               FontFamily="Consolas">
+                                        <TextBlock.Effect>
+                                            <DropShadowEffect Color="#00E5FF" BlurRadius="8" ShadowDepth="0" Opacity="0.4"/>
+                                        </TextBlock.Effect>
+                                    </TextBlock>
+                                </Grid>
                             </Border>
 
                             <!-- Account Card -->
@@ -908,10 +922,12 @@
                                     Margin="0,0,0,16">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-                                        <TextBlock Text="💰 ACCOUNT OVERVIEW"
+                                        <Border Width="3" CornerRadius="2" Background="{StaticResource PrimaryBrush}" Margin="0,0,8,0" VerticalAlignment="Stretch"/>
+                                        <TextBlock Text="💰 ACCOUNT"
                                                    FontSize="12"
                                                    FontWeight="Bold"
-                                                   Foreground="{StaticResource PrimaryBrush}"/>
+                                                   Foreground="{StaticResource PrimaryBrush}"
+                                                   VerticalAlignment="Center"/>
                                         <TextBlock x:Name="txtAccountMode"
                                                    Text=""
                                                    FontSize="10"
@@ -935,14 +951,18 @@
                                         <TextBlock Grid.Row="0"
                                                    Text="Total Equity"
                                                    Foreground="#9CA3AF"
-                                                   FontSize="12"/>
+                                                   FontSize="11"/>
                                         <TextBlock Grid.Row="0"
                                                    Grid.Column="1"
                                                    x:Name="txtTotalEquity"
                                                    Text="$0.00"
-                                                   Foreground="White"
-                                                   FontSize="20"
-                                                   FontWeight="Bold"/>
+                                                   Foreground="{StaticResource PrimaryBrush}"
+                                                   FontSize="18"
+                                                   FontWeight="Bold">
+                                            <TextBlock.Effect>
+                                                <DropShadowEffect Color="#00E5FF" BlurRadius="6" ShadowDepth="0" Opacity="0.3"/>
+                                            </TextBlock.Effect>
+                                        </TextBlock>
 
                                         <TextBlock Grid.Row="1"
                                                    Text="Available"
@@ -992,74 +1012,80 @@
                             <Border Style="{StaticResource StatCardStyle}"
                                     Margin="0,0,0,16">
                                 <StackPanel>
-                                    <TextBlock Text="🧠 ENTRY GATE STATUS"
-                                               FontSize="12"
-                                               FontWeight="Bold"
-                                               Foreground="{StaticResource SecondaryBrush}"
-                                               Margin="0,0,0,12"/>
-                                    <Grid>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto"/>
-                                            <RowDefinition Height="Auto"/>
-                                            <RowDefinition Height="Auto"/>
-                                            <RowDefinition Height="Auto"/>
-                                        </Grid.RowDefinitions>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-
-                                        <TextBlock Grid.Row="0"
-                                                   Text="📊 ML 예측"
-                                                   Foreground="#9CA3AF"
-                                                   FontSize="11"/>
-                                        <TextBlock Grid.Row="0"
-                                                   Grid.Column="1"
-                                                   Text="{Binding WaveMLScoreText}"
-                                                   Foreground="#10B981"
-                                                   FontSize="14"
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                        <Border Width="3" CornerRadius="2" Background="{StaticResource SecondaryBrush}" Margin="0,0,8,0" VerticalAlignment="Stretch"/>
+                                        <TextBlock Text="🧠 ENTRY GATE"
+                                                   FontSize="12"
                                                    FontWeight="Bold"
-                                                   FontFamily="Consolas"/>
+                                                   Foreground="{StaticResource SecondaryBrush}"
+                                                   VerticalAlignment="Center"/>
+                                    </StackPanel>
 
-                                        <TextBlock Grid.Row="1"
-                                                   Text="📊 TF 예측"
-                                                   Foreground="#9CA3AF"
-                                                   FontSize="11"
-                                                   Margin="0,8,0,0"/>
-                                        <TextBlock Grid.Row="1"
-                                                   Grid.Column="1"
-                                                   Text="{Binding WaveTFScoreText}"
-                                                   Foreground="#3B82F6"
-                                                   FontSize="14"
-                                                   FontWeight="Bold"
-                                                   FontFamily="Consolas"
-                                                   Margin="0,8,0,0"/>
-
-                                        <StackPanel Grid.Row="2"
-                                                    Grid.ColumnSpan="2"
-                                                    Orientation="Horizontal"
-                                                    Margin="0,12,0,0">
-                                            <TextBlock Text="🎯 통과 기준: "
-                                                       Foreground="#9CA3AF"
-                                                       FontSize="10"
-                                                       VerticalAlignment="Center"
-                                                       Margin="0,0,4,0"/>
-                                            <TextBlock Text="{Binding GateThresholdSummaryText}"
-                                                       Foreground="{StaticResource PrimaryBrush}"
-                                                       FontSize="11"
-                                                       FontWeight="Bold"
+                                    <!-- ML Score Row -->
+                                    <Border Background="#0A1628" CornerRadius="6" Padding="10,7" Margin="0,0,0,5">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Border Grid.Column="0" Width="3" Height="14" CornerRadius="2"
+                                                    Background="#10B981" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="ML.NET 예측"
+                                                       Foreground="#6B7280" FontSize="11" FontWeight="SemiBold"
                                                        VerticalAlignment="Center"/>
-                                        </StackPanel>
+                                            <TextBlock Grid.Column="2"
+                                                       Text="{Binding WaveMLScoreText}"
+                                                       Foreground="#10B981"
+                                                       FontSize="15" FontWeight="Bold" FontFamily="Consolas"/>
+                                        </Grid>
+                                    </Border>
 
-                                        <TextBlock Grid.Row="3"
-                                                   Grid.ColumnSpan="2"
-                                                   Text="{Binding GateAutoTuneStatusText}"
-                                                   Foreground="#9CA3AF"
-                                                   FontSize="10"
-                                                   FontFamily="Consolas"
-                                                   Margin="0,8,0,0"
-                                                   TextWrapping="Wrap"/>
-                                    </Grid>
+                                    <!-- TF Score Row -->
+                                    <Border Background="#0A1628" CornerRadius="6" Padding="10,7" Margin="0,0,0,10">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Border Grid.Column="0" Width="3" Height="14" CornerRadius="2"
+                                                    Background="#3B82F6" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="Transformer"
+                                                       Foreground="#6B7280" FontSize="11" FontWeight="SemiBold"
+                                                       VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="2"
+                                                       Text="{Binding WaveTFScoreText}"
+                                                       Foreground="#3B82F6"
+                                                       FontSize="15" FontWeight="Bold" FontFamily="Consolas"/>
+                                        </Grid>
+                                    </Border>
+
+                                    <!-- Threshold Row -->
+                                    <Border Background="#071A10" CornerRadius="6" Padding="10,6" Margin="0,0,0,5">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="🎯 통과 기준"
+                                                       Foreground="#4B5563" FontSize="10"
+                                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                            <TextBlock Grid.Column="1"
+                                                       Text="{Binding GateThresholdSummaryText}"
+                                                       Foreground="{StaticResource AccentBrush}"
+                                                       FontSize="12" FontWeight="Bold"
+                                                       VerticalAlignment="Center"/>
+                                        </Grid>
+                                    </Border>
+
+                                    <!-- AutoTune Status -->
+                                    <TextBlock Text="{Binding GateAutoTuneStatusText}"
+                                               Foreground="#374151"
+                                               FontSize="9"
+                                               FontFamily="Consolas"
+                                               TextWrapping="Wrap"
+                                               Margin="2,4,0,0"/>
                                 </StackPanel>
                             </Border>
 
@@ -1067,11 +1093,14 @@
                             <Border Style="{StaticResource StatCardStyle}"
                                     Margin="0,0,0,16">
                                 <StackPanel>
-                                    <TextBlock Text="🤖 AI LEARNING STATUS"
-                                               FontSize="12"
-                                               FontWeight="Bold"
-                                               Foreground="{StaticResource PrimaryBrush}"
-                                               Margin="0,0,0,12"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                        <Border Width="3" CornerRadius="2" Background="{StaticResource PrimaryBrush}" Margin="0,0,8,0" VerticalAlignment="Stretch"/>
+                                        <TextBlock Text="🤖 AI LEARNING"
+                                                   FontSize="12"
+                                                   FontWeight="Bold"
+                                                   Foreground="{StaticResource PrimaryBrush}"
+                                                   VerticalAlignment="Center"/>
+                                    </StackPanel>
                                     <Grid>
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>
@@ -1219,7 +1248,7 @@
                                           MouseDoubleClick="dgMultiTimeframe_MouseDoubleClick">
                                     <DataGrid.Columns>
                                         <DataGridTemplateColumn Header="SYMBOL"
-                                                                Width="130">
+                                                                Width="145">
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate>
                                                     <StackPanel Margin="8,0">
@@ -1289,25 +1318,12 @@
 
                                         <DataGridTextColumn Header="AI"
                                                             Binding="{Binding AIScore, StringFormat=F1}"
-                                                            Width="70"/>
+                                                            Width="62"/>
 
-                                        <DataGridTextColumn Header="AI시각"
-                                                    Binding="{Binding AIScoreUpdatedText}"
-                                                    Width="78">
-                                            <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="FontFamily"
-                                                    Value="Consolas"/>
-                                                <Setter Property="HorizontalAlignment"
-                                                    Value="Center"/>
-                                                <Setter Property="Foreground"
-                                                    Value="#9CA3AF"/>
-                                            </Style>
-                                            </DataGridTextColumn.ElementStyle>
-                                        </DataGridTextColumn>
 
-                                        <DataGridTemplateColumn Header="AI ENTRY"
-                                                                Width="110">
+
+                                        <DataGridTemplateColumn Header="ENTRY ⏰"
+                                                                Width="100">
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate>
                                                     <StackPanel Margin="4,0" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -1326,8 +1342,8 @@
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
 
-                                        <DataGridTemplateColumn Header="ML/TF PROB"
-                                                                Width="140">
+                                        <DataGridTemplateColumn Header="ML │ TF"
+                                                                Width="130">
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate>
                                                     <StackPanel Margin="4,0" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -1344,7 +1360,7 @@
                                         </DataGridTemplateColumn>
 
                                         <DataGridTemplateColumn Header="ENTRY STATUS"
-                                                                Width="140">
+                                                                Width="122">
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate>
                                                     <StackPanel Margin="4,0" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -1365,7 +1381,7 @@
                                         </DataGridTemplateColumn>
 
                                         <DataGridTemplateColumn Header="RISK (SL/TP)"
-                                                                Width="180">
+                                                                Width="158">
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate>
                                                     <TextBlock Text="{Binding RiskSummary}"
@@ -1380,7 +1396,7 @@
                                         </DataGridTemplateColumn>
 
                                         <DataGridTemplateColumn Header="SIGNAL"
-                                                                Width="130">
+                                                                Width="118">
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate>
                                                     <Border Background="{Binding DecisionBg}"
@@ -1398,7 +1414,7 @@
                                         </DataGridTemplateColumn>
 
                                         <DataGridTemplateColumn Header="EXIT"
-                                                                Width="110">
+                                                                Width="95">
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate>
                                                     <Border Background="{Binding CloseStatusBackground}"
@@ -1417,7 +1433,7 @@
                                         </DataGridTemplateColumn>
 
                                         <DataGridTemplateColumn Header="SYNC"
-                                                                Width="100">
+                                                                Width="88">
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate>
                                                     <Border Background="{Binding SyncStatusBackground}"
@@ -1462,7 +1478,7 @@
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="200"/>
+                                        <RowDefinition Height="120"/>
                                     </Grid.RowDefinitions>
                                     <Grid Margin="0,0,0,12">
                                         <Grid.ColumnDefinitions>
@@ -1470,8 +1486,8 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
 
-                                        <TextBlock Text="⚠ CRITICAL ALERTS"
-                                                   FontSize="12"
+                                        <TextBlock Text="⚠  CRITICAL ALERTS"
+                                                   FontSize="11"
                                                    FontWeight="Bold"
                                                    Foreground="{StaticResource ErrorBrush}"
                                                    VerticalAlignment="Center"/>

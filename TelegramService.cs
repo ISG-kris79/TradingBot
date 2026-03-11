@@ -20,10 +20,29 @@ namespace TradingBot
         private CancellationTokenSource? _recvCts;
         private readonly ConcurrentDictionary<string, DateTime> _aiGateLastSentAtUtc = new(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan AiGatePerSymbolCooldown = TimeSpan.FromMinutes(1);
+        private readonly object _aiGateSummaryLock = new();
+        private AiGateSummaryWindow _aiGateSummaryWindow = new();
         public Func<string>? OnRequestStatus { get; set; } // 상태 요청 시 호출될 콜백
         public Action? OnRequestStop { get; set; } // [추가] 정지 요청 시 호출될 콜백
         public Func<CancellationToken, Task<string>>? OnRequestTrain { get; set; } // [추가] 수동 학습 요청 콜백
         private Dictionary<string, ITelegramCommand> _commands = new Dictionary<string, ITelegramCommand>();
+
+        private sealed class AiGateSummaryWindow
+        {
+            public DateTime WindowStartLocal { get; set; } = DateTime.Now;
+            public int TotalCount { get; set; }
+            public int AllowedCount { get; set; }
+            public int BlockedCount { get; set; }
+            public int StrongAllowedCount { get; set; }
+            public int LongCount { get; set; }
+            public int ShortCount { get; set; }
+            public int MajorCount { get; set; }
+            public int PumpingCount { get; set; }
+            public int NormalCount { get; set; }
+            public float MlConfidenceSum { get; set; }
+            public float TfConfidenceSum { get; set; }
+            public Dictionary<string, int> BlockReasons { get; } = new(StringComparer.OrdinalIgnoreCase);
+        }
 
         public void Initialize()
         {
@@ -388,26 +407,23 @@ namespace TradingBot
         }
 
         // ─────────────────────────────────────────────────────────────────────
-        // [AI 관제탑] AI Gate PASS/BLOCK 실시간 텔레그램 알림
+        // [AI 관제탑] AI Gate PASS/BLOCK 15분 집계 텔레그램 알림
         // ─────────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// AI 이중 게이트(TF Brain + ML Filter) 결과를 텔레그램으로 발송합니다.
-        /// - PASS + ML≥0.80: 🔥 확신 타점 → 소리 알림
-        /// - PASS + ML 0.65~0.79: ✅ 진입 승인 → 무음 알림
-        /// - BLOCK + ML≥0.50: ⚠️ 차단 사유 모니터링 → 무음 알림
-        /// - BLOCK + ML 0.50 미만: 스팸 방지 목적으로 전송 생략
+        /// AI 이중 게이트(TF Brain + ML Filter) 결과를 15분 요약용으로 집계합니다.
+        /// - BLOCK + ML 0.50 미만은 기존과 동일하게 집계 생략
+        /// - 같은 코인은 1분 내 중복 집계를 막아 요약 스팸을 줄임
         /// </summary>
-        public async Task SendAiGateResultAsync(
+        public Task SendAiGateResultAsync(
             string symbol, string decision, bool allowed,
             string coinType, string reason,
             float mlConf, float tfConf, float trendScore,
             float rsi = 0f, float bbPos = 0f)
         {
-            // 저급 차단(ML<0.50)은 전송 안 함
-            if (!allowed && mlConf < 0.50f) return;
+            if (!allowed && mlConf < 0.50f)
+                return Task.CompletedTask;
 
-            // 코인별 1분 쿨다운: 같은 코인은 AI관제탑 알림을 1분에 1회만 전송
             string symbolKey = string.IsNullOrWhiteSpace(symbol)
                 ? string.Empty
                 : symbol.Trim().ToUpperInvariant();
@@ -422,69 +438,122 @@ namespace TradingBot
                         (nowUtc - previousUtc) >= AiGatePerSymbolCooldown ? nowUtc : previousUtc);
 
                 if (applied != nowUtc)
+                    return Task.CompletedTask;
+            }
+
+            lock (_aiGateSummaryLock)
+            {
+                var summary = _aiGateSummaryWindow;
+                summary.TotalCount++;
+                summary.MlConfidenceSum += SanitizeFinite(mlConf);
+                summary.TfConfidenceSum += SanitizeFinite(tfConf);
+
+                if (string.Equals(decision, "LONG", StringComparison.OrdinalIgnoreCase))
+                    summary.LongCount++;
+                else if (string.Equals(decision, "SHORT", StringComparison.OrdinalIgnoreCase))
+                    summary.ShortCount++;
+
+                switch (coinType)
                 {
-                    return;
+                    case "Major":
+                        summary.MajorCount++;
+                        break;
+                    case "Pumping":
+                        summary.PumpingCount++;
+                        break;
+                    default:
+                        summary.NormalCount++;
+                        break;
+                }
+
+                if (allowed)
+                {
+                    summary.AllowedCount++;
+                    if (mlConf >= 0.80f)
+                        summary.StrongAllowedCount++;
+                }
+                else
+                {
+                    summary.BlockedCount++;
+                    string blockReason = NormalizeAiGateBlockReason(reason);
+                    if (summary.BlockReasons.TryGetValue(blockReason, out int currentCount))
+                        summary.BlockReasons[blockReason] = currentCount + 1;
+                    else
+                        summary.BlockReasons[blockReason] = 1;
                 }
             }
 
-            bool isSoundAlert = allowed && mlConf >= 0.80f;
-            bool disableNotification = !isSoundAlert;
+            return Task.CompletedTask;
+        }
 
-            string dirEmoji = decision == "LONG" ? "🟢" : "🔴";
-            string statusEmoji = allowed ? "✅" : "⛔";
-            string coinTag = coinType switch
+        public async Task FlushAiGateSummaryAsync(bool forceSendEmpty = false)
+        {
+            AiGateSummaryWindow snapshot;
+            DateTime windowEndLocal = DateTime.Now;
+
+            lock (_aiGateSummaryLock)
             {
-                "Major" => "🏆 메이저",
-                "Pumping" => "🚀 펌핑",
-                _ => "📊 일반"
-            };
+                if (_aiGateSummaryWindow.TotalCount == 0 && !forceSendEmpty)
+                    return;
+
+                snapshot = _aiGateSummaryWindow;
+                _aiGateSummaryWindow = new AiGateSummaryWindow
+                {
+                    WindowStartLocal = windowEndLocal
+                };
+            }
 
             string body;
-            float rsiDisplay = (rsi >= 0f && rsi <= 1f) ? rsi * 100f : rsi;
-            float tfFlowDisplay = (trendScore >= 0f && trendScore <= 1f) ? trendScore * 100f : trendScore;
-            if (allowed)
+            if (snapshot.TotalCount == 0)
             {
-                string powerTag = mlConf >= 0.80f ? "🔥 *확신 타점*" : "✅ 진입 승인";
-                string trendBar = trendScore >= 0.80f ? "████████ 강" : trendScore >= 0.60f ? "█████░░░ 중" : "██░░░░░░ 약";
-                body = $"{powerTag} {dirEmoji} `{symbol}`\n" +
-                       $"━━━━━━━━━━━━━━━\n" +
-                       $"🪙 유형: {coinTag}\n" +
-                       $"🤖 ML 신뢰도: `{mlConf:P1}`\n" +
-                       $"🧠 TF 흐름: {trendBar} `{tfFlowDisplay:F1}%`\n" +
-                       $"📊 RSI: `{rsiDisplay:F1}` │ BB: `{bbPos:P0}`\n" +
-                       $"━━━━━━━━━━━━━━━\n" +
-                       $"💰 20배 레버리지 대기 중!\n" +
-                       $"⏰ {DateTime.Now:HH:mm:ss}";
+                body = $"🕒 구간: {snapshot.WindowStartLocal:HH:mm} ~ {windowEndLocal:HH:mm}\n" +
+                       "📭 최근 15분 동안 AI 게이트 판정이 없었습니다.";
             }
             else
             {
-                string blockDetail = reason switch
-                {
-                    var r when r.Contains("RSI_Overheat") => "🌡️ RSI 과열 하드차단",
-                    var r when r.Contains("UpperWick") => "🕯️ 윗꼬리 위험",
-                    var r when r.Contains("UpperBand") => "📈 BB 상단 과열 차단",
-                    var r when r.Contains("Chasing") => "🏃 추격 진입 차단",
-                    var r when r.Contains("MLNET") || r.Contains("MLNET_Reject") => "🤖 ML 신뢰도 미달",
-                    var r when r.Contains("Transformer") => "🧠 TF 흐름 미달",
-                    var r when r.Contains("Pumping_Threshold") => "🚀 PUMP 임계치 미달",
-                    var r when r.Contains("Major_Threshold") => "🏆 메이저 임계치 미달",
-                    var r when r.Contains("Elliott") || r.Contains("Rule_Violation") => "🌊 규칙 위반(엘리엇/피보)",
-                    _ => $"🚫 {reason[..Math.Min(reason.Length, 40)]}"
-                };
-                body = $"⚠️ 차단 {dirEmoji} `{symbol}`\n" +
-                       $"━━━━━━━━━━━━━━━\n" +
-                       $"📌 {blockDetail}\n" +
-                      $"🤖 ML: `{mlConf:P1}` │ 🧠 TF흐름: `{tfFlowDisplay:F1}%`\n" +
-                      $"📊 RSI: `{rsiDisplay:F1}` │ BB: `{bbPos:P0}`\n" +
-                       $"⏰ {DateTime.Now:HH:mm:ss}";
+                float avgMl = snapshot.TotalCount > 0 ? snapshot.MlConfidenceSum / snapshot.TotalCount : 0f;
+                float avgTf = snapshot.TotalCount > 0 ? snapshot.TfConfidenceSum / snapshot.TotalCount : 0f;
+                string topReasons = snapshot.BlockReasons.Count == 0
+                    ? "없음"
+                    : string.Join("\n", snapshot.BlockReasons
+                        .OrderByDescending(kv => kv.Value)
+                        .Take(3)
+                        .Select((kv, index) => $"{index + 1}. {kv.Key}: {kv.Value}건"));
+
+                body = $"🕒 구간: {snapshot.WindowStartLocal:HH:mm} ~ {windowEndLocal:HH:mm}\n" +
+                       $"📊 총 판정: {snapshot.TotalCount}건\n" +
+                       $"✅ 승인: {snapshot.AllowedCount}건 (확신 {snapshot.StrongAllowedCount}건)\n" +
+                       $"⛔ 차단: {snapshot.BlockedCount}건\n" +
+                       $"🟢 LONG: {snapshot.LongCount}건 │ 🔴 SHORT: {snapshot.ShortCount}건\n" +
+                       $"🏆 메이저: {snapshot.MajorCount} │ 🚀 펌핑: {snapshot.PumpingCount} │ 📊 일반: {snapshot.NormalCount}\n" +
+                       $"🤖 평균 ML: {avgMl:P1} │ 🧠 평균 TF: {avgTf:P1}\n\n" +
+                       $"📌 차단 TOP\n{topReasons}";
             }
 
-            await SendAiGateMessageInternalAsync($"[AI 관제탑] {statusEmoji}", body, disableNotification);
+            await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 15분 요약]*\n\n{body}", true, "AI관제탑");
         }
 
-        private async Task SendAiGateMessageInternalAsync(string title, string body, bool disableNotification)
+        private static float SanitizeFinite(float value)
         {
-            await SendInternalAsync($"[TradingBot]\n*{title}*\n\n{body}", disableNotification, "AI관제탑");
+            return float.IsNaN(value) || float.IsInfinity(value) ? 0f : value;
+        }
+
+        private static string NormalizeAiGateBlockReason(string reason)
+        {
+            string text = reason ?? string.Empty;
+            return text switch
+            {
+                var r when r.Contains("RSI_Overheat", StringComparison.OrdinalIgnoreCase) => "RSI 과열 하드차단",
+                var r when r.Contains("UpperWick", StringComparison.OrdinalIgnoreCase) => "윗꼬리 위험",
+                var r when r.Contains("UpperBand", StringComparison.OrdinalIgnoreCase) => "BB 상단 과열",
+                var r when r.Contains("Chasing", StringComparison.OrdinalIgnoreCase) => "추격 진입 차단",
+                var r when r.Contains("MLNET", StringComparison.OrdinalIgnoreCase) || r.Contains("MLNET_Reject", StringComparison.OrdinalIgnoreCase) => "ML 신뢰도 미달",
+                var r when r.Contains("Transformer", StringComparison.OrdinalIgnoreCase) => "TF 흐름 미달",
+                var r when r.Contains("Pumping_Threshold", StringComparison.OrdinalIgnoreCase) => "PUMP 임계치 미달",
+                var r when r.Contains("Major_Threshold", StringComparison.OrdinalIgnoreCase) => "메이저 임계치 미달",
+                var r when r.Contains("Elliott", StringComparison.OrdinalIgnoreCase) || r.Contains("Rule_Violation", StringComparison.OrdinalIgnoreCase) => "규칙 위반(엘리엇/피보)",
+                _ => string.IsNullOrWhiteSpace(text) ? "기타" : text[..Math.Min(text.Length, 40)]
+            };
         }
 
         // 

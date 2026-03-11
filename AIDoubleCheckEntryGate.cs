@@ -64,7 +64,7 @@ namespace TradingBot
             _mlTrainer = new EntryTimingMLTrainer();
             _featureExtractor = new MultiTimeframeFeatureExtractor(exchangeService);
             _labeler = new BacktestEntryLabeler();
-            _ruleValidator = new EntryRuleValidator();
+            _ruleValidator = new EntryRuleValidator(_config);
 
             // ML 모델 로드
             _mlTrainer.LoadModel();
@@ -217,6 +217,10 @@ namespace TradingBot
                         m15List,
                         currentPrice,
                         isLong,
+                        mlConfidence,
+                        tfConfidence,
+                        detail.M15_RSI,
+                        detail.M15_BBPosition,
                         out var waveState,
                         out var fibLevels);
 
@@ -1505,6 +1509,16 @@ namespace TradingBot
         public float MinTransformerConfidencePumping { get; set; } = 0.63f;
 
         public float StrongTrendBypassThreshold { get; set; } = 0.80f;
+        public float ElliottRule3Penalty { get; set; } = 0.15f;
+        public float RuleFilterFinalScoreThreshold { get; set; } = 0.65f;
+        public float SuperTrendTfThreshold { get; set; } = 0.84f;
+        public float SuperTrendMlThreshold { get; set; } = 0.85f;
+        public float LongFibExtremeLevel { get; set; } = 0.786f;
+        public float LongFibBlockRsi { get; set; } = 25f;
+        public float LongFibBlockBbPosition { get; set; } = 0.05f;
+        public float ShortFibExtremeLevel { get; set; } = 0.236f;
+        public float ShortFibBlockRsi { get; set; } = 75f;
+        public float ShortFibBlockBbPosition { get; set; } = 0.95f;
         public float RsiOverheatHardCap { get; set; } = 80f;
         public float RsiCautionThreshold { get; set; } = 70f;
         public float BbUpperRiskThreshold { get; set; } = 0.90f;

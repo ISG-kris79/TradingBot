@@ -31,7 +31,53 @@ namespace TradingBot.Services
             _connectionString = connectionString;
         }
 
-        private static int GetCurrentUserId() => AppConfig.CurrentUser?.Id ?? 0;
+        private int GetCurrentUserId()
+        {
+            int currentUserId = AppConfig.CurrentUser?.Id ?? 0;
+            if (currentUserId > 0)
+                return currentUserId;
+
+            string? username = AppConfig.CurrentUser?.Username;
+            if (string.IsNullOrWhiteSpace(username))
+                username = AppConfig.CurrentUsername;
+
+            if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(_connectionString))
+                return 0;
+
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                db.Open();
+
+                int? resolvedUserId = db.ExecuteScalar<int?>(
+                    "SELECT TOP (1) Id FROM dbo.Users WHERE Username = @Username",
+                    new { Username = username.Trim() });
+
+                if (resolvedUserId is > 0)
+                {
+                    if (AppConfig.CurrentUser != null && AppConfig.CurrentUser.Id <= 0)
+                        AppConfig.CurrentUser.Id = resolvedUserId.Value;
+
+                    return resolvedUserId.Value;
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] Users 기준 UserId 조회 실패: {ex.Message}");
+            }
+
+            return 0;
+        }
+
+        private bool TryGetCurrentUserIdForSave(string operation, out int userId)
+        {
+            userId = GetCurrentUserId();
+            if (userId > 0)
+                return true;
+
+            MainWindow.Instance?.AddLog($"⚠️ [{operation}] Users 기준 UserId 확인 실패로 DB 저장을 건너뜁니다.");
+            return false;
+        }
 
         private static string TrimForDb(string? value, int maxLength)
         {
@@ -236,12 +282,8 @@ END";
         {
             try
             {
-                int userId = GetCurrentUserId();
-                if (userId <= 0)
-                {
-                    userId = 1; // [개발용] 기본 사용자 ID 할당
-                    MainWindow.Instance?.AddLog($"⚠️ 패턴 저장: 로그인 사용자 없음 → 기본 UserId=1로 저장 (개발 모드)");
-                }
+                if (!TryGetCurrentUserIdForSave("패턴 저장", out int userId))
+                    return null;
 
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
@@ -322,12 +364,8 @@ VALUES
         {
             try
             {
-                int userId = GetCurrentUserId();
-                if (userId <= 0)
-                {
-                    userId = 1; // [개발용] 기본 사용자 ID 할당
-                    MainWindow.Instance?.AddLog($"⚠️ 패턴 완성: 로그인 사용자 없음 → 기본 UserId=1로 저장 (개발 모드)");
-                }
+                if (!TryGetCurrentUserIdForSave("패턴 완성", out int userId))
+                    return false;
 
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
@@ -453,12 +491,8 @@ ORDER BY EntryTime DESC;";
                 if (sample == null)
                     return false;
 
-                int userId = GetCurrentUserId();
-                if (userId <= 0)
-                {
-                    userId = 1;
-                    MainWindow.Instance?.AddLog("⚠️ [AI][DB] 로그인 사용자 없음 → 기본 UserId=1로 라벨 샘플 저장");
-                }
+                if (!TryGetCurrentUserIdForSave("AI 라벨 샘플 저장", out int userId))
+                    return false;
 
                 string symbol = TrimForDb(sample.Symbol, 50);
                 if (string.IsNullOrWhiteSpace(symbol))
@@ -574,12 +608,8 @@ VALUES
                 if (string.IsNullOrWhiteSpace(normalizedStage))
                     normalizedStage = "unknown";
 
-                int userId = GetCurrentUserId();
-                if (userId <= 0)
-                {
-                    userId = 1;
-                    MainWindow.Instance?.AddLog("⚠️ [AI][DB] 로그인 사용자 없음 → 기본 UserId=1로 학습 이력 저장");
-                }
+                if (!TryGetCurrentUserIdForSave("AI 학습 이력 저장", out int userId))
+                    return false;
 
                 double? accValue = accuracy.HasValue && !double.IsNaN(accuracy.Value) && !double.IsInfinity(accuracy.Value)
                     ? accuracy.Value
@@ -741,12 +771,8 @@ ORDER BY EntryTime DESC;";
                     return false;
                 }
 
-                int userId = GetCurrentUserId();
-                if (userId <= 0)
-                {
-                    userId = 1; // [개발용] 기본 사용자 ID 할당
-                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 진입 이력: 로그인 사용자 없음 → 기본 UserId=1로 저장 (개발 모드)");
-                }
+                if (!TryGetCurrentUserIdForSave($"{log.Symbol} 진입 이력", out int userId))
+                    return false;
 
                 decimal entryPrice = log.EntryPrice > 0 ? log.EntryPrice : log.Price;
                 decimal quantity = Math.Abs(log.Quantity);
@@ -840,11 +866,10 @@ VALUES
                 if (position == null || string.IsNullOrWhiteSpace(position.Symbol))
                     return (false, DateTime.Now, 0f, false);
 
-                int userId = GetCurrentUserId();
-                if (userId <= 0)
+                if (!TryGetCurrentUserIdForSave($"{position.Symbol} 시작 포지션 보정", out int userId))
                 {
-                    userId = 1; // [개발용] 기본 사용자 ID 할당
-                    MainWindow.Instance?.AddLog($"⚠️ [{position.Symbol}] 시작 포지션 보정: 로그인 사용자 없음 → 기본 UserId=1로 저장 (개발 모드)");
+                    DateTime fallbackEntryTime = position.EntryTime == default ? DateTime.Now : position.EntryTime;
+                    return (false, fallbackEntryTime, position.AiScore, false);
                 }
 
                 string side = position.Side?.ToString()?.ToUpperInvariant() ?? string.Empty;
@@ -935,12 +960,8 @@ VALUES
                     return false;
                 }
 
-                int userId = GetCurrentUserId();
-                if (userId <= 0)
-                {
-                    userId = 1; // [개발용] 기본 사용자 ID 할당
-                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 로그인 사용자 없음 → 기본 UserId=1로 저장 (개발 모드)");
-                }
+                if (!TryGetCurrentUserIdForSave($"{log.Symbol} 청산 이력", out int userId))
+                    return false;
 
                 decimal exitPrice = log.ExitPrice > 0 ? log.ExitPrice : log.Price;
                 decimal entryPrice = log.EntryPrice > 0 ? log.EntryPrice : 0m;
@@ -1106,12 +1127,8 @@ VALUES
                     return false;
                 }
 
-                int userId = GetCurrentUserId();
-                if (userId <= 0)
-                {
-                    userId = 1; // [개발용] 기본 사용자 ID 할당
-                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 외부 청산 동기화: 로그인 사용자 없음 → 기본 UserId=1로 저장 (개발 모드)");
-                }
+                if (!TryGetCurrentUserIdForSave($"{log.Symbol} 외부 청산 동기화", out int userId))
+                    return false;
 
                 decimal exitPrice = log.ExitPrice > 0 ? log.ExitPrice : log.Price;
                 decimal quantity = Math.Abs(log.Quantity);
@@ -1253,12 +1270,8 @@ WHERE Id = @Id;",
                     return false;
                 }
 
-                int userId = GetCurrentUserId();
-                if (userId <= 0)
-                {
-                    userId = 1; // [개발용] 기본 사용자 ID 할당
-                    MainWindow.Instance?.AddLog($"⚠️ [{log.Symbol}] 로그인 사용자 없음 → 기본 UserId=1로 저장 (개발 모드)");
-                }
+                if (!TryGetCurrentUserIdForSave($"{log.Symbol} 부분청산", out int userId))
+                    return false;
 
                 decimal exitPrice = log.ExitPrice > 0 ? log.ExitPrice : log.Price;
                 decimal entryPrice = log.EntryPrice > 0 ? log.EntryPrice : 0m;
@@ -2069,7 +2082,9 @@ VALUES
 
             try
             {
-                int userId = GetCurrentUserId();
+                if (!TryGetCurrentUserIdForSave($"{symbol} AI 게이트 로그", out int userId))
+                    return;
+
                 await using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
                 await db.ExecuteAsync(insertSql, new
