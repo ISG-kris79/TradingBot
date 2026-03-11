@@ -42,6 +42,15 @@ namespace TradingBot
             public float MlConfidenceSum { get; set; }
             public float TfConfidenceSum { get; set; }
             public Dictionary<string, int> BlockReasons { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, int> BlockReasonsLong { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, int> BlockReasonsShort { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, int> BlockReasonsOther { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, string> AllowedLongSymbolReasons { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, string> AllowedShortSymbolReasons { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, string> AllowedOtherSymbolReasons { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, string> BlockedLongSymbolReasons { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, string> BlockedShortSymbolReasons { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, string> BlockedOtherSymbolReasons { get; } = new(StringComparer.OrdinalIgnoreCase);
         }
 
         public void Initialize()
@@ -471,15 +480,63 @@ namespace TradingBot
                     summary.AllowedCount++;
                     if (mlConf >= 0.80f)
                         summary.StrongAllowedCount++;
+
+                    if (!string.IsNullOrWhiteSpace(symbolKey))
+                    {
+                        string allowReason = NormalizeAiGateAllowedReason(reason);
+                        string bucket = NormalizeDecisionBucket(decision);
+                        switch (bucket)
+                        {
+                            case "LONG":
+                                summary.AllowedLongSymbolReasons[symbolKey] = allowReason;
+                                break;
+                            case "SHORT":
+                                summary.AllowedShortSymbolReasons[symbolKey] = allowReason;
+                                break;
+                            default:
+                                summary.AllowedOtherSymbolReasons[symbolKey] = allowReason;
+                                break;
+                        }
+                    }
                 }
                 else
                 {
                     summary.BlockedCount++;
                     string blockReason = NormalizeAiGateBlockReason(reason);
+                    string bucket = NormalizeDecisionBucket(decision);
+
+                    if (!string.IsNullOrWhiteSpace(symbolKey))
+                    {
+                        switch (bucket)
+                        {
+                            case "LONG":
+                                summary.BlockedLongSymbolReasons[symbolKey] = blockReason;
+                                break;
+                            case "SHORT":
+                                summary.BlockedShortSymbolReasons[symbolKey] = blockReason;
+                                break;
+                            default:
+                                summary.BlockedOtherSymbolReasons[symbolKey] = blockReason;
+                                break;
+                        }
+                    }
+
                     if (summary.BlockReasons.TryGetValue(blockReason, out int currentCount))
                         summary.BlockReasons[blockReason] = currentCount + 1;
                     else
                         summary.BlockReasons[blockReason] = 1;
+
+                    var directionalReasons = bucket switch
+                    {
+                        "LONG" => summary.BlockReasonsLong,
+                        "SHORT" => summary.BlockReasonsShort,
+                        _ => summary.BlockReasonsOther
+                    };
+
+                    if (directionalReasons.TryGetValue(blockReason, out int directionalCount))
+                        directionalReasons[blockReason] = directionalCount + 1;
+                    else
+                        directionalReasons[blockReason] = 1;
                 }
             }
 
@@ -519,6 +576,30 @@ namespace TradingBot
                         .OrderByDescending(kv => kv.Value)
                         .Take(3)
                         .Select((kv, index) => $"{index + 1}. {kv.Key}: {kv.Value}건"));
+                string topReasonsLong = FormatTopReasons(snapshot.BlockReasonsLong, 3);
+                string topReasonsShort = FormatTopReasons(snapshot.BlockReasonsShort, 3);
+                string topReasonsOther = FormatTopReasons(snapshot.BlockReasonsOther, 2);
+
+                string allowedLongCoins = FormatCoinReasonList(snapshot.AllowedLongSymbolReasons, 8);
+                string allowedShortCoins = FormatCoinReasonList(snapshot.AllowedShortSymbolReasons, 8);
+                string blockedLongCoins = FormatCoinReasonList(snapshot.BlockedLongSymbolReasons, 8);
+                string blockedShortCoins = FormatCoinReasonList(snapshot.BlockedShortSymbolReasons, 8);
+
+                string allowedSection = $"• LONG: {allowedLongCoins}\n" +
+                                       $"• SHORT: {allowedShortCoins}";
+                if (snapshot.AllowedOtherSymbolReasons.Count > 0)
+                {
+                    string allowedOtherCoins = FormatCoinReasonList(snapshot.AllowedOtherSymbolReasons, 8);
+                    allowedSection += $"\n• 기타: {allowedOtherCoins}";
+                }
+
+                string blockedSection = $"• LONG: {blockedLongCoins}\n" +
+                                       $"• SHORT: {blockedShortCoins}";
+                if (snapshot.BlockedOtherSymbolReasons.Count > 0)
+                {
+                    string blockedOtherCoins = FormatCoinReasonList(snapshot.BlockedOtherSymbolReasons, 8);
+                    blockedSection += $"\n• 기타: {blockedOtherCoins}";
+                }
 
                 body = $"🕒 구간: {snapshot.WindowStartLocal:HH:mm} ~ {windowEndLocal:HH:mm}\n" +
                        $"📊 총 판정: {snapshot.TotalCount}건\n" +
@@ -526,11 +607,16 @@ namespace TradingBot
                        $"⛔ 차단: {snapshot.BlockedCount}건\n" +
                        $"🟢 LONG: {snapshot.LongCount}건 │ 🔴 SHORT: {snapshot.ShortCount}건\n" +
                        $"🏆 메이저: {snapshot.MajorCount} │ 🚀 펌핑: {snapshot.PumpingCount} │ 📊 일반: {snapshot.NormalCount}\n" +
-                       $"🤖 평균 ML: {avgMl:P1} │ 🧠 평균 TF: {avgTf:P1}\n\n" +
-                       $"📌 차단 TOP\n{topReasons}";
+                      $"🤖 평균 ML: {avgMl:P1} │ 🧠 평균 TF: {avgTf:P1}\n\n" +
+                       $"✅ 승인 코인(사유)\n{allowedSection}\n\n" +
+                       $"⛔ 차단 코인(사유)\n{blockedSection}\n\n" +
+                      $"📌 차단 TOP(전체)\n{topReasons}\n\n" +
+                      $"📌 차단 TOP(LONG)\n{topReasonsLong}\n\n" +
+                      $"📌 차단 TOP(SHORT)\n{topReasonsShort}" +
+                      (snapshot.BlockReasonsOther.Count > 0 ? $"\n\n📌 차단 TOP(기타)\n{topReasonsOther}" : string.Empty);
             }
 
-            await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 15분 요약]*\n\n{body}", true, "AI관제탑");
+                 await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 15분 요약]*\n\n{body}", true, "AI관제탑");
         }
 
         private static float SanitizeFinite(float value)
@@ -554,6 +640,69 @@ namespace TradingBot
                 var r when r.Contains("Elliott", StringComparison.OrdinalIgnoreCase) || r.Contains("Rule_Violation", StringComparison.OrdinalIgnoreCase) => "규칙 위반(엘리엇/피보)",
                 _ => string.IsNullOrWhiteSpace(text) ? "기타" : text[..Math.Min(text.Length, 40)]
             };
+        }
+
+        private static string NormalizeAiGateAllowedReason(string reason)
+        {
+            string text = reason ?? string.Empty;
+            return text switch
+            {
+                var r when r.Contains("SuperTrend", StringComparison.OrdinalIgnoreCase) => "강추세 통과",
+                var r when r.Contains("Major", StringComparison.OrdinalIgnoreCase) => "메이저 임계 통과",
+                var r when r.Contains("Pumping", StringComparison.OrdinalIgnoreCase) => "펌핑 임계 통과",
+                var r when r.Contains("Transformer", StringComparison.OrdinalIgnoreCase) => "TF 흐름 통과",
+                var r when r.Contains("MLNET", StringComparison.OrdinalIgnoreCase) => "ML 신뢰 통과",
+                _ => "게이트 통과"
+            };
+        }
+
+        private static string NormalizeDecisionBucket(string decision)
+        {
+            if (string.Equals(decision, "LONG", StringComparison.OrdinalIgnoreCase))
+                return "LONG";
+
+            if (string.Equals(decision, "SHORT", StringComparison.OrdinalIgnoreCase))
+                return "SHORT";
+
+            return "OTHER";
+        }
+
+        private static string FormatCoinReasonList(IReadOnlyDictionary<string, string> symbolReasons, int maxCount)
+        {
+            var normalized = symbolReasons
+                .Where(kv => !string.IsNullOrWhiteSpace(kv.Key))
+                .Select(kv => new
+                {
+                    Symbol = kv.Key.Trim().ToUpperInvariant(),
+                    Reason = string.IsNullOrWhiteSpace(kv.Value) ? "기타" : kv.Value.Trim()
+                })
+                .OrderBy(x => x.Symbol)
+                .ToList();
+
+            if (normalized.Count == 0)
+                return "없음";
+
+            int takeCount = Math.Max(1, maxCount);
+            string listText = string.Join(", ", normalized
+                .Take(takeCount)
+                .Select(x => $"{x.Symbol}({x.Reason})"));
+            int remain = normalized.Count - takeCount;
+
+            return remain > 0
+                ? $"{listText} 외 {remain}개"
+                : listText;
+        }
+
+        private static string FormatTopReasons(IReadOnlyDictionary<string, int> reasons, int takeCount)
+        {
+            if (reasons.Count == 0)
+                return "없음";
+
+            return string.Join("\n", reasons
+                .OrderByDescending(kv => kv.Value)
+                .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .Take(Math.Max(1, takeCount))
+                .Select((kv, index) => $"{index + 1}. {kv.Key}: {kv.Value}건"));
         }
 
         // 
