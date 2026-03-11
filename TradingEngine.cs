@@ -260,6 +260,7 @@ namespace TradingBot
         private int _manualInitialTrainingRunning = 0;
         private TimeSpan _entryWarmupDuration = TimeSpan.FromSeconds(30); // 설정에서 로드
         private DateTime _lastEntryWarmupLogTime = DateTime.MinValue;
+        private DateTime _lastAiGateNotReadyTelegramTime = DateTime.MinValue;
 
         // [병목 해결] RefreshProfitDashboard API 호출 캐싱
         private decimal _cachedUsdtBalance = 0m;
@@ -445,7 +446,12 @@ namespace TradingBot
             };
 
             bool transformerRequestedByConfig = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
-            bool doubleCheckGateEnabled = transformerRequestedByConfig;
+            bool doubleCheckGateEnabled = transformerRequestedByConfig || _enableFifteenMinWaveGate;
+
+            if (!transformerRequestedByConfig && _enableFifteenMinWaveGate)
+            {
+                OnStatusLog?.Invoke("ℹ️ AI 관제탑 자동 활성화: TransformerSettings.Enabled=false 이지만 15분 Gate가 ON이라 더블체크 게이트를 유지합니다.");
+            }
 
             /* TensorFlow 전환 중 임시 비활성화
             // [Agent 3] 멀티 에이전트 매니저 초기화 (상태 차원: 3 [RSI, MACD, BB], 행동 차원: 3 [Hold, Buy, Sell])
@@ -4288,6 +4294,30 @@ namespace TradingBot
                 if (!gateResult.allowEntry)
                 {
                     return;
+                }
+            }
+            else if (_aiDoubleCheckEntryGate != null)
+            {
+                EntryLog("AI_GATE", "NOT_READY", "fallback=waveGate reason=models-not-ready");
+
+                if ((DateTime.UtcNow - _lastAiGateNotReadyTelegramTime).TotalMinutes >= 15)
+                {
+                    _lastAiGateNotReadyTelegramTime = DateTime.UtcNow;
+
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await TelegramService.Instance.SendMessageAsync(
+                                "⚠️ *[AI 관제탑 대기]*\n" +
+                                "AI 더블체크 모델이 아직 준비되지 않아 PASS/BLOCK 알림이 일시 지연됩니다.\n" +
+                                "(신규 설치 PC에서는 초기 학습 완료 후 자동 복구됩니다.)");
+                        }
+                        catch (Exception ex)
+                        {
+                            OnStatusLog?.Invoke($"⚠️ [AI관제탑] 모델 미준비 안내 발송 실패: {ex.Message}");
+                        }
+                    });
                 }
             }
 

@@ -1067,7 +1067,7 @@ namespace TradingBot.ViewModels
                         if (_engine != null)
                         {
                             await _engine.ClosePositionAsync(symbol);
-                            AddLog($"⚡ {symbol} 수동 청산 명령 전송됨");
+                            AddLog($"⚡ {symbol} 수동 청산 요청 처리됨 (실패 시 로그 확인 후 [동기화] 버튼 실행)");
                             // [FIX] 청산 후 TradeHistory 즉시 갱신
                             await LoadTradeHistory();
                         }

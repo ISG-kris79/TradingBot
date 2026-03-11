@@ -3,6 +3,7 @@ using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using System.IO;
+using System.Collections.Concurrent;
 using TradingBot.TelegramCommands;
 
 namespace TradingBot
@@ -17,6 +18,8 @@ namespace TradingBot
         private string ChatId = string.Empty;
         private ITelegramBotClient? _botClient;
         private CancellationTokenSource? _recvCts;
+        private readonly ConcurrentDictionary<string, DateTime> _aiGateLastSentAtUtc = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan AiGatePerSymbolCooldown = TimeSpan.FromMinutes(1);
         public Func<string>? OnRequestStatus { get; set; } // 상태 요청 시 호출될 콜백
         public Action? OnRequestStop { get; set; } // [추가] 정지 요청 시 호출될 콜백
         public Func<CancellationToken, Task<string>>? OnRequestTrain { get; set; } // [추가] 수동 학습 요청 콜백
@@ -403,6 +406,26 @@ namespace TradingBot
         {
             // 저급 차단(ML<0.50)은 전송 안 함
             if (!allowed && mlConf < 0.50f) return;
+
+            // 코인별 1분 쿨다운: 같은 코인은 AI관제탑 알림을 1분에 1회만 전송
+            string symbolKey = string.IsNullOrWhiteSpace(symbol)
+                ? string.Empty
+                : symbol.Trim().ToUpperInvariant();
+
+            if (!string.IsNullOrEmpty(symbolKey))
+            {
+                DateTime nowUtc = DateTime.UtcNow;
+                DateTime applied = _aiGateLastSentAtUtc.AddOrUpdate(
+                    symbolKey,
+                    nowUtc,
+                    (_, previousUtc) =>
+                        (nowUtc - previousUtc) >= AiGatePerSymbolCooldown ? nowUtc : previousUtc);
+
+                if (applied != nowUtc)
+                {
+                    return;
+                }
+            }
 
             bool isSoundAlert = allowed && mlConf >= 0.80f;
             bool disableNotification = !isSoundAlert;
