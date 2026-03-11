@@ -195,12 +195,23 @@ namespace TradingBot.Services
             decimal tightTrailingROE = 22.0m;      // 3단계: 타이트 트레일링 (22% ROE)
             decimal minLockROE = 18.0m;            // 3단계 최소 수익 (ROE 18%)
             decimal tightGapPercent = 0.0020m;     // 3단계 간격 (0.20%)
+            decimal estimatedRoundTripCostPct = 0.0013m; // 수수료(0.08%) + 슬리피지(0.05%)
+            decimal breakEvenBufferPct = estimatedRoundTripCostPct + (aggressiveMultiplier >= 1.5m ? 0.0002m : 0.0001m);
+            decimal minBreakEvenRoe = breakEvenBufferPct * leverage * 100m;
+            if (breakEvenROE < minBreakEvenRoe + 1.0m)
+            {
+                breakEvenROE = Math.Round(minBreakEvenRoe + 1.0m, 1);
+            }
+            double breakEvenMinHoldSeconds = aggressiveMultiplier >= 1.5m ? 90.0 : 45.0;
+            bool breakEvenDeferredLogged = false;
             bool hasCustomAbsoluteStop = customStopLossPrice > 0;
             
             if (aggressiveMultiplier >= 1.5m)
             {
                 OnLog?.Invoke($"🎯 {symbol} 공격형 진입 배수 {aggressiveMultiplier:F2}x 감지 → 손절 타이트 조정 (ROE {breakEvenROE:F1}%)");
             }
+
+            OnLog?.Invoke($"🛡️ {symbol} 1단계 보호 조건: ROE {breakEvenROE:F1}% + 보유 {breakEvenMinHoldSeconds:F0}초, 본절 버퍼 {breakEvenBufferPct * 100m:F2}%");
 
             if (hasCustomAbsoluteStop && !isSidewaysMode)
             {
@@ -348,18 +359,31 @@ namespace TradingBot.Services
                     }
 
                     // ═══════════════════════════════════════════════
-                    // 1단계: ROE 5% 도달 → 빠른 본절 보호 (20x에서 0.25% 가격변동)
+                    // 1단계: ROE + 최소 보유시간 충족 시 본절 보호 활성화
                     // ═══════════════════════════════════════════════
-                    if (!breakEvenActivated && highestROE >= breakEvenROE)
+                    bool breakEvenRoeReached = highestROE >= breakEvenROE;
+                    bool breakEvenHoldSatisfied = holdingTime.TotalSeconds >= breakEvenMinHoldSeconds;
+
+                    if (!breakEvenActivated && breakEvenRoeReached && !breakEvenHoldSatisfied)
+                    {
+                        if (!breakEvenDeferredLogged)
+                        {
+                            OnLog?.Invoke($"⏳ {symbol} 1단계 보호 대기 | ROE {highestROE:F1}% 달성, 보유시간 {holdingTime.TotalSeconds:F0}/{breakEvenMinHoldSeconds:F0}초");
+                            breakEvenDeferredLogged = true;
+                        }
+                    }
+
+                    if (!breakEvenActivated && breakEvenRoeReached && breakEvenHoldSatisfied)
                     {
                         breakEvenActivated = true;
+                        breakEvenDeferredLogged = false;
                         
-                        // 진입가 + 0.05% (수수료 방어 + 본절 확보)
+                        // 진입가 + 비용버퍼(수수료+슬리피지) + 안전마진
                         protectiveStopPrice = isLong 
-                            ? entryPrice * 1.0005m
-                            : entryPrice * 0.9995m;
+                            ? entryPrice * (1 + breakEvenBufferPct)
+                            : entryPrice * (1 - breakEvenBufferPct);
                         
-                        OnLog?.Invoke($"🛡️ {symbol} 손절대기 (ROE {highestROE:F1}%)");
+                        OnLog?.Invoke($"🛡️ {symbol} 손절대기 (ROE {highestROE:F1}%, 스탑 {protectiveStopPrice:F8})");
                     }
 
                     // ═══════════════════════════════════════════════
@@ -1902,7 +1926,15 @@ namespace TradingBot.Services
                 for (int retry = 1; retry <= maxRetries; retry++)
                 {
                     OnLog?.Invoke($"[청산 시도] {symbol} {side} {absQty} ({retry}/{maxRetries}) - 사유: {reason}");
-                    success = await _exchangeService.PlaceOrderAsync(symbol, side, absQty, null, token, reduceOnly: true);
+                    try
+                    {
+                        success = await _exchangeService.PlaceOrderAsync(symbol, side, absQty, null, token, reduceOnly: true);
+                    }
+                    catch (Exception retryEx)
+                    {
+                        success = false;
+                        OnLog?.Invoke($"⚠️ [{symbol}] 청산 주문 예외 ({retry}/{maxRetries}): {retryEx.Message}");
+                    }
 
                     if (success)
                     {
@@ -1923,11 +1955,77 @@ namespace TradingBot.Services
 
                 if (!success)
                 {
-                    OnAlert?.Invoke($"❌ {symbol} 청산 실패! 거래소 API 오류 ({maxRetries}회 재시도 실패) - 수동 확인 필요");
-                    OnLog?.Invoke($"❌ [청산 실패] {symbol} - 거래소 주문 {maxRetries}회 모두 실패. 실제 포지션 확인 필요!");
-                    OnLog?.Invoke($"💡 [수동 대응 필요] {symbol} - 거래소 웹/앱에서 수동 청산 또는 네트워크 상태 확인");
-                    await LogExchangePositionSnapshotAsync("청산실패후재조회");
-                    return; // 실패 시 포지션 데이터 유지
+                    OnLog?.Invoke($"⚠️ [청산 폴백] {symbol} reduceOnly 청산 {maxRetries}회 실패 → 3초 주기 무한 재시도 모드 진입");
+                    OnCloseIncompleteStatusChanged?.Invoke(symbol, true, $"API 오류 청산 재시도 중 (3초 주기, 0회)");
+                    OnAlert?.Invoke($"❌ {symbol} 청산 API 오류. 3초 주기 자동 재시도를 시작합니다.");
+
+                    try
+                    {
+                        await TelegramService.Instance.SendMessageAsync(
+                            $"🚨 *[청산 API 오류]*\n" +
+                            $"심볼: `{symbol}`\n" +
+                            $"사유: {reason}\n" +
+                            $"상태: 3초 주기 자동 재시도 시작 (초기 실패 {maxRetries}회)");
+                    }
+                    catch (Exception tgEx)
+                    {
+                        OnLog?.Invoke($"⚠️ [Telegram] 청산 API 오류 알림 전송 실패: {tgEx.Message}");
+                    }
+
+                    int continuousRetryCount = 0;
+                    bool closeRecovered = false;
+
+                    while (!closeRecovered)
+                    {
+                        continuousRetryCount++;
+
+                        OnLog?.Invoke($"🔁 [청산 재시도 루프] {symbol} {continuousRetryCount}회차 | 3초 주기");
+
+                        try
+                        {
+                            bool reduceRetrySuccess = await _exchangeService.PlaceOrderAsync(symbol, side, absQty, null, CancellationToken.None, reduceOnly: true);
+                            if (reduceRetrySuccess)
+                            {
+                                OnLog?.Invoke($"✅ [청산 재시도 성공] {symbol} reduceOnly 재시도 주문 성공 ({continuousRetryCount}회차)");
+                                closeRecovered = true;
+                            }
+                            else
+                            {
+                                bool emergencyCloseSuccess = await TryEmergencyCloseAfterRetryFailureAsync(symbol, CancellationToken.None);
+                                if (emergencyCloseSuccess)
+                                {
+                                    OnLog?.Invoke($"✅ [청산 재시도 성공] {symbol} 긴급 폴백 청산 성공 ({continuousRetryCount}회차)");
+                                    closeRecovered = true;
+                                }
+                            }
+                        }
+                        catch (Exception loopEx)
+                        {
+                            OnLog?.Invoke($"⚠️ [청산 재시도 루프 예외] {symbol} {continuousRetryCount}회차: {loopEx.Message}");
+                        }
+
+                        if (!closeRecovered)
+                        {
+                            OnCloseIncompleteStatusChanged?.Invoke(symbol, true, $"API 오류 청산 재시도 중 (3초 주기, {continuousRetryCount}회)");
+                            await LogExchangePositionSnapshotAsync($"청산재시도중_{continuousRetryCount}");
+                            await Task.Delay(TimeSpan.FromSeconds(3), CancellationToken.None);
+                        }
+                    }
+
+                    OnAlert?.Invoke($"✅ {symbol} API 오류 청산 재시도 루프에서 복구되었습니다. 최종 청산 검증을 진행합니다.");
+
+                    try
+                    {
+                        await TelegramService.Instance.SendMessageAsync(
+                            $"✅ *[청산 복구 완료]*\n" +
+                            $"심볼: `{symbol}`\n" +
+                            $"결과: API 오류 재시도 루프에서 복구\n" +
+                            $"재시도 횟수: {continuousRetryCount}회");
+                    }
+                    catch (Exception tgEx)
+                    {
+                        OnLog?.Invoke($"⚠️ [Telegram] 청산 복구 알림 전송 실패: {tgEx.Message}");
+                    }
                 }
 
                 // [엄격모드] 주문 성공만으로는 청산 완료로 간주하지 않음 (거래소 포지션 0 확인 필수)
@@ -2004,6 +2102,100 @@ namespace TradingBot.Services
             finally
             {
                 MarkCloseFinished(symbol);
+            }
+        }
+
+        private async Task<bool> TryEmergencyCloseAfterRetryFailureAsync(string symbol, CancellationToken token)
+        {
+            try
+            {
+                var positionResult = await _client.UsdFuturesApi.Account.GetPositionInformationAsync(ct: token);
+                if (!positionResult.Success || positionResult.Data == null)
+                {
+                    OnLog?.Invoke($"⚠️ [긴급 청산] {symbol} 포지션 재조회 실패: {positionResult.Error?.Message}");
+                    return false;
+                }
+
+                var exchangePos = positionResult.Data.FirstOrDefault(p =>
+                    string.Equals(p.Symbol, symbol, StringComparison.OrdinalIgnoreCase) && Math.Abs(p.Quantity) > 0);
+
+                if (exchangePos == null)
+                {
+                    OnLog?.Invoke($"ℹ️ [긴급 청산] {symbol} 거래소 재조회 결과 이미 포지션이 없습니다.");
+                    return true;
+                }
+
+                decimal closeQty = Math.Abs(exchangePos.Quantity);
+                if (closeQty <= 0)
+                {
+                    OnLog?.Invoke($"ℹ️ [긴급 청산] {symbol} 청산 수량이 0으로 확인되었습니다.");
+                    return true;
+                }
+
+                try
+                {
+                    var exchangeInfo = await _client.UsdFuturesApi.ExchangeData.GetExchangeInfoAsync(ct: token);
+                    if (exchangeInfo.Success && exchangeInfo.Data != null)
+                    {
+                        var symbolData = exchangeInfo.Data.Symbols.FirstOrDefault(s => s.Name == symbol);
+                        if (symbolData?.LotSizeFilter?.StepSize is decimal stepSize && stepSize > 0)
+                        {
+                            closeQty = Math.Floor(closeQty / stepSize) * stepSize;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    OnLog?.Invoke($"⚠️ [긴급 청산] {symbol} 수량 정밀도 보정 중 예외: {ex.Message}");
+                }
+
+                if (closeQty <= 0)
+                {
+                    OnLog?.Invoke($"⚠️ [긴급 청산] {symbol} 스텝 보정 후 청산 수량이 0입니다.");
+                    return false;
+                }
+
+                bool isHedgeMode = false;
+                try
+                {
+                    var positionModeResult = await _client.UsdFuturesApi.Account.GetPositionModeAsync(ct: token);
+                    isHedgeMode = positionModeResult.Success && positionModeResult.Data.IsHedgeMode;
+                }
+                catch (Exception ex)
+                {
+                    OnLog?.Invoke($"⚠️ [긴급 청산] {symbol} 포지션 모드 조회 실패: {ex.Message}");
+                }
+
+                OrderSide closeSide = exchangePos.Quantity > 0 ? OrderSide.Sell : OrderSide.Buy;
+                PositionSide? hedgePositionSide = null;
+                if (isHedgeMode)
+                {
+                    hedgePositionSide = exchangePos.Quantity > 0 ? PositionSide.Long : PositionSide.Short;
+                }
+
+                OnLog?.Invoke($"🚨 [긴급 청산 시도] {symbol} side={closeSide} qty={closeQty} hedge={isHedgeMode}");
+                var closeResult = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                    symbol,
+                    closeSide,
+                    FuturesOrderType.Market,
+                    closeQty,
+                    reduceOnly: !isHedgeMode,
+                    positionSide: hedgePositionSide,
+                    ct: token);
+
+                if (closeResult.Success)
+                {
+                    OnLog?.Invoke($"✅ [긴급 청산 성공] {symbol} 시장가 폴백 주문 접수 완료 (OrderId={closeResult.Data?.Id})");
+                    return true;
+                }
+
+                OnLog?.Invoke($"❌ [긴급 청산 실패] {symbol} Code={closeResult.Error?.Code}, Msg={closeResult.Error?.Message}");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"❌ [긴급 청산 예외] {symbol} {ex.Message}");
+                return false;
             }
         }
 
