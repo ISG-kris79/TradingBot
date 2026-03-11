@@ -2,6 +2,7 @@
 using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using System.IO;
 using TradingBot.TelegramCommands;
 
 namespace TradingBot
@@ -156,71 +157,113 @@ namespace TradingBot
             return Task.CompletedTask;
         }
 
-        public async Task SendMessageAsync(string message)
+        private void LogTelegramFailure(string scope, string message, Exception? ex = null)
+        {
+            string logMessage = string.IsNullOrWhiteSpace(scope)
+                ? $"⚠️ [Telegram] {message}"
+                : $"⚠️ [Telegram][{scope}] {message}";
+
+            MainWindow.Instance?.AddLog(logMessage);
+
+            try
+            {
+                string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "telegram_error.log");
+                string detail = ex == null ? string.Empty : $" | {ex.GetType().Name}: {ex.Message}";
+                File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {logMessage}{detail}{Environment.NewLine}");
+            }
+            catch
+            {
+                // 파일 로깅 실패는 무시
+            }
+        }
+
+        private void LogTelegramInfo(string scope, string message)
+        {
+            string logMessage = string.IsNullOrWhiteSpace(scope)
+                ? $"ℹ️ [Telegram] {message}"
+                : $"ℹ️ [Telegram][{scope}] {message}";
+
+            MainWindow.Instance?.AddLog(logMessage);
+        }
+
+        private bool EnsureTelegramClientReady(string scope)
+        {
+            if (_botClient == null || BotToken != AppConfig.TelegramBotToken || ChatId != AppConfig.TelegramChatId)
+            {
+                Initialize();
+            }
+
+            if (_botClient == null)
+            {
+                LogTelegramFailure(scope, "봇 클라이언트 미초기화 상태로 전송이 건너뛰어졌습니다.");
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(ChatId))
+            {
+                LogTelegramFailure(scope, "ChatId가 비어 있어 메시지를 보낼 수 없습니다.");
+                return false;
+            }
+
+            return true;
+        }
+
+        private async Task SendInternalAsync(string text, bool disableNotification = false, string scope = "General")
         {
             try
             {
-                // [수정] 전송 시점에 초기화 누락/설정 변경이 있어도 자동 복구
-                if (_botClient == null || BotToken != AppConfig.TelegramBotToken || ChatId != AppConfig.TelegramChatId)
+                if (!EnsureTelegramClientReady(scope))
                 {
-                    Initialize();
-                }
-
-                if (_botClient == null)
-                {
-                    MainWindow.Instance?.AddLog("⚠️ [Telegram] 봇 클라이언트 미초기화 상태로 전송이 건너뛰어졌습니다.");
                     return;
                 }
 
-                if (string.IsNullOrWhiteSpace(ChatId))
-                {
-                    MainWindow.Instance?.AddLog("⚠️ [Telegram] ChatId가 비어 있어 메시지를 보낼 수 없습니다.");
-                    return;
-                }
-
-                // 최신 버전에서는 첫 번째 인자로 ChatId 객체를 넘깁니다.
-                // ParseMode를 마크다운으로 설정하면 *굵게*, _기울임_ 등이 적용됩니다.
-                await _botClient.SendMessage(
+                await _botClient!.SendMessage(
                     chatId: ChatId,
-                    text: $"[TradingBot]\n{message}",
-                    parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown
+                    text: text,
+                    parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
+                    disableNotification: disableNotification
                 );
             }
             catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.ErrorCode == 401)
             {
-                MainWindow.Instance?.AddLog("❌ 텔레그램 전송 실패: 봇 토큰이 유효하지 않습니다.");
+                LogTelegramFailure(scope, "봇 토큰이 유효하지 않습니다.", ex);
             }
             catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.ErrorCode == 400 && ex.Message.Contains("parse entities"))
             {
-                // [수정] 마크다운 파싱 오류 시 plain text로 재시도
                 try
                 {
-                    if (_botClient == null)
+                    if (!EnsureTelegramClientReady(scope))
                     {
-                        MainWindow.Instance?.AddLog("⚠️ [Telegram] 재전송 실패: 봇 클라이언트가 초기화되지 않았습니다.");
                         return;
                     }
 
-                    await _botClient.SendMessage(
+                    await _botClient!.SendMessage(
                         chatId: ChatId,
-                        text: $"[TradingBot]\n{message}"
+                        text: text,
+                        disableNotification: disableNotification
                     );
-                    MainWindow.Instance?.AddLog("ℹ️ [Telegram] Markdown 파싱 오류로 plain text 전송으로 대체했습니다.");
+
+                    LogTelegramInfo(scope, "Markdown 파싱 오류로 plain text 전송으로 대체했습니다.");
                 }
                 catch (Exception retryEx)
                 {
-                    MainWindow.Instance?.AddLog($"⚠️ 텔레그램 재전송 실패: {retryEx.Message}");
+                    LogTelegramFailure(scope, "plain text 재전송도 실패했습니다.", retryEx);
                 }
             }
             catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.ErrorCode == 400)
             {
                 string maskedChatId = ChatId.Length > 4 ? $"***{ChatId[^4..]}" : "***";
-                MainWindow.Instance?.AddLog($"⚠️ 텔레그램 전송 실패(400): {ex.Message} | ChatId: {maskedChatId}");
+                LogTelegramFailure(scope, $"전송 실패(400): {ex.Message} | ChatId: {maskedChatId}", ex);
             }
             catch (Exception ex)
             {
-                MainWindow.Instance?.AddLog($"⚠️ 텔레그램 발송 실패: {ex.Message}");
+                LogTelegramFailure(scope, "발송 실패", ex);
             }
+        }
+
+        public async Task SendMessageAsync(string message)
+        {
+            await SendInternalAsync($"[TradingBot]\n{message}", false, "General");
         }
         // TradingEngine 내에서 호출 예시
         private async Task ExecutePumpTradeDetailed(string symbol, decimal quantity, decimal entryPrice)
@@ -417,23 +460,7 @@ namespace TradingBot
 
         private async Task SendAiGateMessageInternalAsync(string title, string body, bool disableNotification)
         {
-            try
-            {
-                if (_botClient == null || BotToken != AppConfig.TelegramBotToken)
-                    Initialize();
-                if (_botClient == null || string.IsNullOrWhiteSpace(ChatId)) return;
-
-                await _botClient.SendMessage(
-                    chatId: ChatId,
-                    text: $"[TradingBot]\n*{title}*\n\n{body}",
-                    parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-                    disableNotification: disableNotification
-                );
-            }
-            catch (Exception ex)
-            {
-                MainWindow.Instance?.AddLog($" [Telegram][AI관제탑] 발송 실패: {ex.Message}");
-            }
+            await SendInternalAsync($"[TradingBot]\n*{title}*\n\n{body}", disableNotification, "AI관제탑");
         }
 
         // 
@@ -489,12 +516,7 @@ namespace TradingBot
                     $" 이제부터는 무적 매매! 져도 본전\n" +
                     $" {DateTime.Now:HH:mm:ss}";
 
-                if (_botClient == null || BotToken != AppConfig.TelegramBotToken) Initialize();
-                if (_botClient == null || string.IsNullOrWhiteSpace(ChatId)) return;
-                await _botClient.SendMessage(chatId: ChatId,
-                    text: $"[TradingBot]\n{msg}",
-                    parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-                    disableNotification: true);
+                await SendInternalAsync($"[TradingBot]\n{msg}", true, "BreakEven");
             }
             catch (Exception ex)
             {
@@ -519,12 +541,7 @@ namespace TradingBot
                     $" 방어선(ATR 트레일): `{newStop:F4}`\n" +
                     $" {DateTime.Now:HH:mm:ss}";
 
-                if (_botClient == null || BotToken != AppConfig.TelegramBotToken) Initialize();
-                if (_botClient == null || string.IsNullOrWhiteSpace(ChatId)) return;
-                await _botClient.SendMessage(chatId: ChatId,
-                    text: $"[TradingBot]\n*[ATR 트레일링 마일스톤]*\n\n{msg}",
-                    parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-                    disableNotification: !isSound);
+                await SendInternalAsync($"[TradingBot]\n*[ATR 트레일링 마일스톤]*\n\n{msg}", !isSound, "Trailing");
             }
             catch (Exception ex)
             {
