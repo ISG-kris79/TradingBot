@@ -20,14 +20,70 @@ namespace TradingBot
         private ITransformer? _model;
         private DataViewSchema? _modelSchema;
         private readonly string _modelPath;
+        private readonly string _legacyModelPath;
         private bool _isModelLoaded = false;
 
         public bool IsModelLoaded => _isModelLoaded;
 
-        public EntryTimingMLTrainer(string modelPath = "EntryTimingModel.zip")
+        public EntryTimingMLTrainer(string? modelPath = null)
         {
             _mlContext = new MLContext(seed: 42);
-            _modelPath = modelPath;
+            _legacyModelPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "EntryTimingModel.zip");
+            _modelPath = string.IsNullOrWhiteSpace(modelPath)
+                ? GetDefaultModelPath()
+                : modelPath;
+
+            EnsureModelDirectoryExists();
+        }
+
+        private static string GetDefaultModelPath()
+        {
+            string modelDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "TradingBot",
+                "Models");
+
+            return Path.Combine(modelDir, "EntryTimingModel.zip");
+        }
+
+        private void EnsureModelDirectoryExists()
+        {
+            try
+            {
+                string? dir = Path.GetDirectoryName(_modelPath);
+                if (!string.IsNullOrWhiteSpace(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[EntryTimingML] 모델 디렉터리 생성 실패: {ex.Message}");
+            }
+        }
+
+        private string ResolveLoadPath()
+        {
+            if (File.Exists(_modelPath))
+                return _modelPath;
+
+            if (File.Exists(_legacyModelPath))
+            {
+                try
+                {
+                    EnsureModelDirectoryExists();
+                    File.Copy(_legacyModelPath, _modelPath, overwrite: true);
+                    Console.WriteLine($"[EntryTimingML] 레거시 모델을 사용자 경로로 마이그레이션: {_modelPath}");
+                    return _modelPath;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[EntryTimingML] 레거시 모델 마이그레이션 실패: {ex.Message}");
+                    return _legacyModelPath;
+                }
+            }
+
+            return _modelPath;
         }
 
         /// <summary>
@@ -67,6 +123,7 @@ namespace TradingBot
                 PrintMetrics(metrics);
 
                 // 모델 저장
+                EnsureModelDirectoryExists();
                 _mlContext.Model.Save(_model, dataView.Schema, _modelPath);
                 Console.WriteLine($"[EntryTimingML] 모델 저장: {_modelPath}");
 
@@ -96,13 +153,15 @@ namespace TradingBot
         {
             try
             {
-                if (!File.Exists(_modelPath))
+                string loadPath = ResolveLoadPath();
+
+                if (!File.Exists(loadPath))
                 {
                     Console.WriteLine($"[EntryTimingML] 모델 파일 없음: {_modelPath}");
                     return false;
                 }
 
-                _model = _mlContext.Model.Load(_modelPath, out _modelSchema);
+                _model = _mlContext.Model.Load(loadPath, out _modelSchema);
 
                 // 스키마 호환성 검증: Feature 수 확인
                 if (_modelSchema != null)
@@ -143,7 +202,7 @@ namespace TradingBot
                 }
 
                 _isModelLoaded = true;
-                Console.WriteLine($"[EntryTimingML] 모델 로드 성공: {_modelPath}");
+                Console.WriteLine($"[EntryTimingML] 모델 로드 성공: {loadPath}");
                 return true;
             }
             catch (Exception ex)

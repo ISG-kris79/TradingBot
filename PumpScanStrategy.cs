@@ -10,18 +10,10 @@ namespace TradingBot.Strategies
     public class PumpScanStrategy : ITradingStrategy
     {
         private static readonly TimeZoneInfo SeoulTimeZone = GetSeoulTimeZone();
-        private const int PumpCandidateCount = 10;
+        private const int PumpCandidateCount = 20;
         private const decimal VolumeWeight = 0.50m;
         private const decimal VolatilityWeight = 0.20m;
         private const decimal MomentumWeight = 0.30m;
-        private static readonly HashSet<string> MemeSymbols = new(StringComparer.OrdinalIgnoreCase)
-        {
-            "DOGEUSDT", "SHIBUSDT", "PEPEUSDT", "FLOKIUSDT", "BONKUSDT", "WIFUSDT",
-            "MEMEUSDT", "TURBOUSDT", "POPCATUSDT", "NEIROUSDT", "MOGUSDT", "BRETTUSDT",
-            "PNUTUSDT", "ACTUSDT", "BABYDOGEUSDT",
-            "STEEMUSDT", "POWRUSDT", "OMUSDT", "ACXUSDT", "AKTUSDT", "SUIUSDT",
-            "FARTCOINUSDT", "GOATUSDT", "MOODENGUSDT"
-        };
 
         private readonly IBinanceRestClient _client;
         private readonly PumpScanSettings _settings;
@@ -45,7 +37,7 @@ namespace TradingBot.Strategies
 
         public async Task AnalyzeAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
-            if (!IsEligibleMemeSymbol(symbol))
+            if (!IsEligiblePumpSymbol(symbol))
                 return;
 
             MajorProfile profile = ResolveProfile();
@@ -61,7 +53,7 @@ namespace TradingBot.Strategies
             int candidateCount = GetCandidateCount();
 
             var eligibleTickers = tickerCache.Values
-                .Where(t => !string.IsNullOrWhiteSpace(t.Symbol) && IsEligibleMemeSymbol(t.Symbol))
+                .Where(t => !string.IsNullOrWhiteSpace(t.Symbol) && IsEligiblePumpSymbol(t.Symbol))
                 .ToList();
 
             decimal maxQuoteVolume = eligibleTickers.Count > 0 ? eligibleTickers.Max(t => t.QuoteVolume) : 0m;
@@ -79,11 +71,11 @@ namespace TradingBot.Strategies
                 .Take(candidateCount)
                 .ToList();
 
-            PumpSignalLog("SCAN", $"universe={MemeSymbols.Count} tracked={candidates.Count} profile={profile.Name} theme=meme+highbeta rank=mixed(volume50+volatility20+momentum30)Top{candidateCount}");
+            PumpSignalLog("SCAN", $"universe=USDT_FUTURES_ALL eligible={eligibleTickers.Count} tracked={candidates.Count} profile={profile.Name} theme=market-wide rank=mixed(volume50+volatility20+momentum30)Top{candidateCount}");
 
             if ((DateTime.Now - _lastProfileLogTime).TotalMinutes >= 5)
             {
-                PumpSignalLog("PROFILE", $"name={profile.Name} candidateCap={candidateCount} customMinVol={_settings.MinVolumeRatio:F2} selection=mixed(volume50+volatility20+momentum30)");
+                PumpSignalLog("PROFILE", $"name={profile.Name} candidateCap={candidateCount} customMinVol={_settings.MinVolumeRatio:F2} selection=market-wide-mixed(volume50+volatility20+momentum30)");
                 _lastProfileLogTime = DateTime.Now;
             }
 
@@ -217,7 +209,7 @@ namespace TradingBot.Strategies
                         RSI_1H = rsi,
                         AIScore = aiScore,
                         Decision = decision,
-                        StrategyName = $"Meme/HighBeta Scalping(5m) [{profile.Name}]",
+                        StrategyName = $"Top Volume Momentum Scalping(5m) [{profile.Name}]",
                         SignalSource = "MAJOR",
                         ShortLongScore = aiScore,
                         ShortShortScore = 100 - aiScore,
@@ -308,12 +300,12 @@ namespace TradingBot.Strategies
             }
         }
 
-        private bool IsEligibleMemeSymbol(string symbol)
+        private bool IsEligiblePumpSymbol(string symbol)
         {
             if (string.IsNullOrWhiteSpace(symbol) || !symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase))
                 return false;
 
-            return MemeSymbols.Contains(symbol);
+            return true;
         }
 
         private int GetCandidateCount()

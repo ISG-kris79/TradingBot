@@ -418,6 +418,7 @@ namespace TradingBot
 
             string body;
             float rsiDisplay = (rsi >= 0f && rsi <= 1f) ? rsi * 100f : rsi;
+            float tfFlowDisplay = (trendScore >= 0f && trendScore <= 1f) ? trendScore * 100f : trendScore;
             if (allowed)
             {
                 string powerTag = mlConf >= 0.80f ? "🔥 *확신 타점*" : "✅ 진입 승인";
@@ -426,7 +427,7 @@ namespace TradingBot
                        $"━━━━━━━━━━━━━━━\n" +
                        $"🪙 유형: {coinTag}\n" +
                        $"🤖 ML 신뢰도: `{mlConf:P1}`\n" +
-                       $"🧠 TF 흐름: {trendBar} `{trendScore:F2}` (TF={tfConf:P1})\n" +
+                       $"🧠 TF 흐름: {trendBar} `{tfFlowDisplay:F1}%`\n" +
                        $"📊 RSI: `{rsiDisplay:F1}` │ BB: `{bbPos:P0}`\n" +
                        $"━━━━━━━━━━━━━━━\n" +
                        $"💰 20배 레버리지 대기 중!\n" +
@@ -450,7 +451,7 @@ namespace TradingBot
                 body = $"⚠️ 차단 {dirEmoji} `{symbol}`\n" +
                        $"━━━━━━━━━━━━━━━\n" +
                        $"📌 {blockDetail}\n" +
-                       $"🤖 ML: `{mlConf:P1}` │ 🧠 TF흐름: `{trendScore:F2}`\n" +
+                      $"🤖 ML: `{mlConf:P1}` │ 🧠 TF흐름: `{tfFlowDisplay:F1}%`\n" +
                       $"📊 RSI: `{rsiDisplay:F1}` │ BB: `{bbPos:P0}`\n" +
                        $"⏰ {DateTime.Now:HH:mm:ss}";
             }
