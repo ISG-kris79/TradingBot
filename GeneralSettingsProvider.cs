@@ -128,5 +128,10 @@ namespace TradingBot
         public decimal StopLossRoe => GetSettings().StopLossRoe;
         public decimal TrailingStartRoe => GetSettings().TrailingStartRoe;
         public decimal TrailingDropRoe => GetSettings().TrailingDropRoe;
+
+        // [Meme Coin Mode] PUMP 전용
+        public decimal PumpBreakEvenRoe => GetSettings().PumpBreakEvenRoe;
+        public decimal PumpTrailingStartRoe => GetSettings().PumpTrailingStartRoe;
+        public decimal PumpTrailingGapRoe => GetSettings().PumpTrailingGapRoe;
     }
 }

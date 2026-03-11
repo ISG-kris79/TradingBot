@@ -937,9 +937,14 @@ namespace TradingBot.Services
                 }
             }
 
-            decimal stopLossROE = GetCurrentStopLossRoe();
-            decimal trailingStartROE = _settings.TrailingStartRoe;
-            decimal trailingDropROE = _settings.TrailingDropRoe;
+            decimal stopLossROE = GetCurrentStopLossRoe();  // PUMP: ROI -60% (StopLossRoe=60.0 기본값)
+            // ── [Meme Coin Mode] PUMP 전용 트레일링/본절 ──────────────────────────────
+            decimal pumpBreakEvenRoe    = _settings.PumpBreakEvenRoe    > 0 ? _settings.PumpBreakEvenRoe    : 20.0m; // ROI +20% 시 본절
+            decimal pumpTrailingStartRoe = _settings.PumpTrailingStartRoe > 0 ? _settings.PumpTrailingStartRoe : 40.0m; // ROI +40% 시 트레일링 시작
+            decimal pumpTrailingGapRoe  = _settings.PumpTrailingGapRoe  > 0 ? _settings.PumpTrailingGapRoe  : 20.0m; // 최고점 대비 ROI 20% 하락 시 청산
+            // ──────────────────────────────────────────────────────────────────────────
+            decimal trailingStartROE = pumpTrailingStartRoe;
+            decimal trailingDropROE  = pumpTrailingGapRoe;
             decimal averageDownROE = -5.0m;
             bool isBreakEvenTriggered = false;
             decimal partialTakeProfitROE = 25.0m;
@@ -959,15 +964,12 @@ namespace TradingBot.Services
             {
                 decimal targetPriceMove = (decimal)atr * 3.0m;
                 decimal dynamicROE = (targetPriceMove / entryPrice) * leverage * 100;
-                trailingStartROE = Math.Clamp(dynamicROE, 15.0m, 60.0m);
-                OnLog?.Invoke($"🎯 {symbol} 목표가 동적 설정 (ATR:{atr:F2}): ROE {trailingStartROE:F1}%");
+                // [Meme Coin Mode] ATR 동적 값이 PumpTrailingStartRoe(40%) 아래로 내려가지 않도록 보정
+                trailingStartROE = Math.Clamp(dynamicROE, pumpTrailingStartRoe, pumpTrailingStartRoe + 30.0m);
+                OnLog?.Invoke($"🎯 {symbol} 목표가 동적 설정 (ATR:{atr:F2}): ROE {trailingStartROE:F1}% [PUMP floor={pumpTrailingStartRoe:F0}%]");
             }
 
-            if (strategyName == "📈 RSI REBOUND" || strategyName == "🔄 BB RETURN")
-            {
-                trailingStartROE = Math.Min(trailingStartROE, 15.0m);
-                stopLossROE = 10.0m;
-            }
+            OnLog?.Invoke($"📋 {symbol} [Meme Coin Mode] SL={stopLossROE:F0}% BreakEven={pumpBreakEvenRoe:F0}% TrailStart={trailingStartROE:F0}% TrailGap={trailingDropROE:F0}%");
 
             while (!token.IsCancellationRequested)
             {
@@ -1283,10 +1285,11 @@ namespace TradingBot.Services
                     }
                 }
 
-                if (!isBreakEvenTriggered && currentROE >= 3.0m)
+                if (!isBreakEvenTriggered && currentROE >= pumpBreakEvenRoe)
                 {
                     isBreakEvenTriggered = true;
-                    OnAlert?.Invoke($"🛡️ {symbol} Break Even 발동! (ROE 3% 도달 -> 손절라인 본절 이동)");
+                    OnAlert?.Invoke($"🛡️ {symbol} Break Even 발동! (ROI {pumpBreakEvenRoe:F0}% 도달 → 손절라인 진입가로 이동, 절대 손실 없음)");
+                    await TelegramService.Instance.SendBreakEvenReachedAsync(symbol, entryPrice);
                 }
 
                 if (isBreakEvenTriggered) stopLossROE = 0.0m;
@@ -1320,18 +1323,11 @@ namespace TradingBot.Services
 
                 if (currentROE > highestROE) highestROE = currentROE;
 
-                if (highestROE >= 10.0m && highestROE < 15.0m && trailingDropROE > 4.0m)
-                {
-                    trailingDropROE = 4.0m;
-                    if (trailingStartROE > 10.0m) trailingStartROE = 10.0m;
-                    OnAlert?.Invoke($"🏃 {symbol} Dynamic Trailing 가동 (ROE 10%↑ -> 간격 4%로 설정)");
-                }
-                else if (highestROE >= 15.0m && trailingDropROE != 5.0m)
-                {
-                    trailingDropROE = 5.0m;
-                    if (trailingStartROE > 10.0m) trailingStartROE = 10.0m;
-                    OnAlert?.Invoke($"🚀 {symbol} 슈퍼 트레일링 가동 (ROE 15%↑ -> 간격 5%로 설정)");
-                }
+                // ── [Meme Coin Mode] PUMP 트레일링: 고정 간격 pumpTrailingGapRoe 유지 ──────
+                // 기존의 10%→4%, 15%→5% 동적 압축은 밈코인 변동성에 적합하지 않아 제거
+                // 최고 ROI 대비 pumpTrailingGapRoe(20%) 이상 하락 시에만 청산
+                // 예시: ROI 100% → 80%로 하락(20% drop) → 청산, 어깨에서 팔고 나옴
+                // ──────────────────────────────────────────────────────────────────
 
                 if (highestROE >= trailingStartROE)
                 {

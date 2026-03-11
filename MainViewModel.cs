@@ -449,6 +449,7 @@ namespace TradingBot.ViewModels
         public MainViewModel()
         {
             UpdateMajorProfileStatus(AppConfig.Current?.Trading?.GeneralSettings?.MajorTrendProfile);
+            ConfigureMarketDataSorting(refresh: false);
             ApplyLiveLogPerformanceSettings();
             InitializeLiveLogPipeline();
             InitializeTickerUpdatePipeline();
@@ -1742,6 +1743,7 @@ namespace TradingBot.ViewModels
 
             var watch = Stopwatch.StartNew();
             int processed = 0;
+            bool requiresResort = false;
             // [병목 해결] ToArray() → Keys 스냅샷 사용 (전체 딕셔너리 lock+copy 방지)
             foreach (var key in _pendingSignalUpdates.Keys)
             {
@@ -1751,9 +1753,12 @@ namespace TradingBot.ViewModels
                 if (!_pendingSignalUpdates.TryRemove(key, out var signal))
                     continue;
 
-                ApplySignalUpdate(signal);
+                requiresResort |= ApplySignalUpdate(signal);
                 processed++;
             }
+
+            if (requiresResort)
+                ConfigureMarketDataSorting();
         }
 
         private void FlushPendingAiEntryProbUpdatesToUi()
@@ -1817,15 +1822,47 @@ namespace TradingBot.ViewModels
             }
 
             var created = new MultiTimeframeViewModel { Symbol = symbol };
+            created.EntryStatus = ResolveEntryStatus(created.SignalSource, created.Decision, created.IsPositionActive);
             MarketDataList.Add(created);
             _marketDataIndex[symbol] = created;
             return created;
         }
 
-        private void ApplySignalUpdate(MultiTimeframeViewModel signal)
+        private static string ResolveEntryStatus(string? signalSource, string? decision, bool isPositionActive)
+        {
+            if (isPositionActive)
+                return "진입중";
+
+            if (string.Equals(decision, "LONG", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(decision, "SHORT", StringComparison.OrdinalIgnoreCase))
+            {
+                return "평가중";
+            }
+
+            if (!string.IsNullOrWhiteSpace(signalSource) && signalSource != "-")
+            {
+                if (signalSource.Contains("MEME", StringComparison.OrdinalIgnoreCase)
+                    || signalSource.Contains("PUMP", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "펌프 감시";
+                }
+
+                if (signalSource.Contains("TRANSFORMER", StringComparison.OrdinalIgnoreCase))
+                    return "TF 감시";
+
+                if (signalSource.Contains("MAJOR", StringComparison.OrdinalIgnoreCase))
+                    return "메이저 감시";
+
+                return "신호 감시";
+            }
+
+            return "대기";
+        }
+
+        private bool ApplySignalUpdate(MultiTimeframeViewModel signal)
         {
             if (signal == null || string.IsNullOrWhiteSpace(signal.Symbol))
-                return;
+                return false;
 
             var symbol = signal.Symbol;
             if (!_marketDataIndex.TryGetValue(symbol, out var existing))
@@ -1836,15 +1873,18 @@ namespace TradingBot.ViewModels
                     if (signal.AIScore > 0)
                         signal.TouchAIScoreUpdatedAt();
 
+                    signal.EntryStatus = ResolveEntryStatus(signal.SignalSource, signal.Decision, signal.IsPositionActive);
+
                     MarketDataList.Add(signal);
                     _marketDataIndex[symbol] = signal;
-                    return;
+                    return signal.IsPositionActive;
                 }
 
                 _marketDataIndex[symbol] = existing;
             }
 
             // [병목 해결] BeginUpdate/EndUpdate로 PropertyChanged 폭주 방지
+            bool requiresResort = false;
             existing.BeginUpdate();
             try
             {
@@ -1866,7 +1906,11 @@ namespace TradingBot.ViewModels
                 if (!string.IsNullOrEmpty(signal.FibPosition) && !string.Equals(existing.FibPosition, signal.FibPosition, StringComparison.Ordinal)) existing.FibPosition = signal.FibPosition;
                 if (Math.Abs(existing.VolumeRatioValue - signal.VolumeRatioValue) > 0.001) existing.VolumeRatioValue = signal.VolumeRatioValue;
                 if (!string.IsNullOrEmpty(signal.VolumeRatio) && !string.Equals(existing.VolumeRatio, signal.VolumeRatio, StringComparison.Ordinal)) existing.VolumeRatio = signal.VolumeRatio;
-                if (signal.IsPositionActive) existing.IsPositionActive = true;
+                if (signal.IsPositionActive && !existing.IsPositionActive)
+                {
+                    existing.IsPositionActive = true;
+                    requiresResort = true;
+                }
                 if (signal.EntryPrice > 0) existing.EntryPrice = signal.EntryPrice;
                 if (!string.IsNullOrEmpty(signal.PositionSide) && !string.Equals(existing.PositionSide, signal.PositionSide, StringComparison.Ordinal)) existing.PositionSide = signal.PositionSide;
                 if (signal.Quantity > 0) existing.Quantity = signal.Quantity;
@@ -1894,11 +1938,44 @@ namespace TradingBot.ViewModels
                     if (probChanged || forecastTimeChanged || forecastOffsetChanged || timestampChanged)
                         existing.AiEntryProbUpdatedAt = effectiveUpdatedAt;
                 }
+
+                string resolvedEntryStatus = ResolveEntryStatus(existing.SignalSource, existing.Decision, existing.IsPositionActive);
+                if (!string.Equals(existing.EntryStatus, resolvedEntryStatus, StringComparison.Ordinal))
+                    existing.EntryStatus = resolvedEntryStatus;
             }
             finally
             {
                 existing.EndUpdate(); // 모든 변경을 하나의 PropertyChanged("") 으로 통합
             }
+
+            return requiresResort;
+        }
+
+        private void ConfigureMarketDataSorting(bool refresh = true)
+        {
+            var view = CollectionViewSource.GetDefaultView(MarketDataList);
+            if (view == null)
+                return;
+
+            using (view.DeferRefresh())
+            {
+                view.SortDescriptions.Clear();
+                view.SortDescriptions.Add(new SortDescription(nameof(MultiTimeframeViewModel.IsPositionActive), ListSortDirection.Descending));
+                view.SortDescriptions.Add(new SortDescription(nameof(MultiTimeframeViewModel.ProfitRate), ListSortDirection.Descending));
+                view.SortDescriptions.Add(new SortDescription(nameof(MultiTimeframeViewModel.AIScore), ListSortDirection.Descending));
+            }
+
+            if (view is ICollectionViewLiveShaping liveView && liveView.CanChangeLiveSorting)
+            {
+                liveView.LiveSortingProperties.Clear();
+                liveView.LiveSortingProperties.Add(nameof(MultiTimeframeViewModel.IsPositionActive));
+                liveView.LiveSortingProperties.Add(nameof(MultiTimeframeViewModel.ProfitRate));
+                liveView.LiveSortingProperties.Add(nameof(MultiTimeframeViewModel.AIScore));
+                liveView.IsLiveSorting = true;
+            }
+
+            if (refresh)
+                view.Refresh();
         }
 
         private void FlushPendingTickerUpdatesToUi()
@@ -3080,6 +3157,7 @@ namespace TradingBot.ViewModels
                     return;
 
                 var existing = GetOrCreateMarketDataItem(symbol);
+                bool activeChanged = existing.IsPositionActive != isActive;
                 existing.IsPositionActive = isActive;
                 existing.EntryPrice = entryPrice;
                 existing.HasCloseIncomplete = false;
@@ -3094,6 +3172,13 @@ namespace TradingBot.ViewModels
                     existing.Decision = "WAIT";
                     existing.ProfitPercent = 0;
                 }
+
+                string resolvedEntryStatus = ResolveEntryStatus(existing.SignalSource, existing.Decision, existing.IsPositionActive);
+                if (!string.Equals(existing.EntryStatus, resolvedEntryStatus, StringComparison.Ordinal))
+                    existing.EntryStatus = resolvedEntryStatus;
+
+                if (activeChanged)
+                    ConfigureMarketDataSorting();
             });
         }
 

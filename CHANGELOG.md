@@ -7,6 +7,40 @@
 
 ## [Unreleased]
 
+## [2.4.37] - 2026-03-11
+
+### Added
+
+- **[Meme Coin Mode] PUMP 전용 포지션 관리 전략 추가** (`Models.cs`, `PositionMonitorService.cs`, `GeneralSettingsProvider.cs`, `DbManager.cs`):
+  - `TradingSettings`에 PUMP 전용 3개 파라미터 추가:
+    - `PumpBreakEvenRoe` (기본 20%) — ROI +20% 도달 시 손절가를 진입가로 이동, 절대 손실 방지
+    - `PumpTrailingStartRoe` (기본 40%) — ROI +40% 돌파 시 트레일링 스탑 감시 시작
+    - `PumpTrailingGapRoe` (기본 20%) — 최고점 대비 ROI 20% 하락 시 전량 청산 (어깨 매도)
+  - 본절 트리거 조건을 하드코딩 3%에서 `PumpBreakEvenRoe` 설정값으로 변경
+  - 기존 10%→4%, 15%→5% 동적 트레일링 압축 제거 — 밈코인 변동성에 비해 너무 좁아 조기 청산 유발
+  - ATR 동적 계산 시 `PumpTrailingStartRoe` 이하로 내려가지 않도록 하한선 적용
+  - `GeneralSettingsProvider`에 3개 프로퍼티 노출, `DbManager` MERGE SQL에 신규 컬럼 포함
+  - Break-Even 발동 시 텔레그램 알림 자동 발송
+
+- **진입 코인 그리드 상단 자동 정렬** (`MainViewModel.cs`):
+  - 포지션 진입 시 해당 코인이 그리드 맨 위로 자동 이동
+  - `ICollectionViewLiveShaping.IsLiveSorting` 적용으로 상태 변경 시 실시간 재정렬
+
+- **ENTRY STATUS 컬럼 실시간 갱신** (`Models.cs`, `MainViewModel.cs`):
+  - `ResolveEntryStatus()` 로직 추가 — 진입중/평가중/펌핑감시/TF감시/메이저감시/신호감시/대기 상태 표시
+  - `IsPositionActive` 변경 시 `EntryStatus`, `EntryStatusColor`, `EntryStatusIcon` 연계 갱신
+
+### Changed
+
+- **AI 관제탑 요약 주기 15분 → 5분** (`TradingEngine.cs`, `TelegramService.cs`):
+  - 타이머 조건 `TotalMinutes >= 15` → `>= 5`로 단축
+  - 관련 주석 및 description 4곳 동기화
+
+- **진입 텔레그램 알림 통합** (`TelegramService.cs`, `TradingEngine.cs`):
+  - `SendSmartTargetEntryAlertAsync` 제거, `SendEntrySuccessAlertAsync` 단일 메서드로 통합
+  - Smart SL/TP/ATR 정보 유무에 관계없이 1건만 발송 (중복 제거)
+  - Smart Target 계산 실패 시에도 기본 진입 알림 발송 보장
+
 ## [2.4.36] - 2026-03-11
 
 ### Changed

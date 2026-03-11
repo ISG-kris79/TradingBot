@@ -1382,7 +1382,7 @@ namespace TradingBot
                 
                 _lastHeartbeatTime = DateTime.Now; // 시작 시점 기록 (1시간 후 첫 알림)
                 _lastReportTime = DateTime.Now;    // 시작 시점 기록 (1시간 후 첫 보고)
-                _lastAiGateSummaryTime = DateTime.Now; // [AI 관제탑] 시작 시점 기록 (15분 후 첫 요약)
+                _lastAiGateSummaryTime = DateTime.Now; // [AI 관제탑] 시작 시점 기록 (5분 후 첫 요약)
                 _lastPositionSyncTime = DateTime.Now; // [FIX] 시작 시점 기록 (30분 후 첫 동기화)
                 _periodicReportBaselineEquity = await GetEstimatedAccountEquityUsdtAsync(token);
                 if (_periodicReportBaselineEquity <= 0)
@@ -1458,8 +1458,8 @@ namespace TradingBot
                             _lastPositionSyncTime = DateTime.Now;
                         }
 
-                        // [B] AI 관제탑 15분 요약 전송
-                        if ((DateTime.Now - _lastAiGateSummaryTime).TotalMinutes >= 15)
+                        // [B] AI 관제탑 5분 요약 전송
+                        if ((DateTime.Now - _lastAiGateSummaryTime).TotalMinutes >= 5)
                         {
                             await TelegramService.Instance.FlushAiGateSummaryAsync();
                             _lastAiGateSummaryTime = DateTime.Now;
@@ -4592,6 +4592,15 @@ namespace TradingBot
                 return;
             }
 
+            // [요청 반영] 1분봉 윗꼬리(고점 대비 -0.3%) 발생 시 LONG 추격 진입 차단
+            var m1UpperWickFilter = await EvaluateOneMinuteUpperWickBlockAsync(symbol, decision, currentPrice, token);
+            if (m1UpperWickFilter.blocked)
+            {
+                OnStatusLog?.Invoke("🚫 [Block] 1분봉 윗꼬리 발생: 추격 매수 위험 차단");
+                EntryLog("M1_WICK", "BLOCK", m1UpperWickFilter.reason);
+                return;
+            }
+
             // [긴급 방어 1] ATR 변동성 필터 (흔들기 구간 진입 금지)
             // 5분봉 기준 ATR이 평소(20봉 평균)보다 2배 이상이면 '변동성 폭발' 구간으로 판단
             var klines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 40, token);
@@ -5209,9 +5218,10 @@ namespace TradingBot
                     // [NEW] 직관적인 진입 완료 로그
                     decimal finalStopLoss = customStopLossPrice > 0 ? customStopLossPrice : 0;
                     decimal finalTakeProfit = customTakeProfitPrice > 0 ? customTakeProfitPrice : 0;
-                    OnStatusLog?.Invoke(TradingStateLogger.EntrySuccess(
-                        symbol, decision, actualEntryPrice, 
-                        finalStopLoss, finalTakeProfit, signalSource));
+                    string entrySuccessMessage = TradingStateLogger.EntrySuccess(
+                        symbol, decision, actualEntryPrice,
+                        finalStopLoss, finalTakeProfit, signalSource);
+                    OnStatusLog?.Invoke(entrySuccessMessage);
                     
                     // [HybridExitManager 등록] AI 예측가 기반 익절 관리 시작
                     if (finalTakeProfit > 0 && _hybridExitManager != null)
@@ -5219,37 +5229,51 @@ namespace TradingBot
                         _hybridExitManager.RegisterEntry(symbol, decision, actualEntryPrice, finalTakeProfit);
                         OnStatusLog?.Invoke($"📋 [Hybrid Exit] {symbol} 등록 | 목표가: ${finalTakeProfit:F2}, 손절: ${finalStopLoss:F2}");
 
-                                        // [Smart Target] ATR 기반 초기 SL/TP 계산 → 텔레그램 발송
-                                        _ = Task.Run(async () =>
-                                        {
-                                            try
-                                            {
-                                                var kRes15 = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(
-                                                    symbol, KlineInterval.FifteenMinutes, limit: 20);
-                                                double smartAtr = 0;
-                                                if (kRes15.Success && kRes15.Data?.Length >= 15)
-                                                    smartAtr = IndicatorCalculator.CalculateATR(kRes15.Data.ToList(), 14);
+                        // [Smart Target + 진입 완료] 텔레그램 1건으로 통합 발송
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var kRes15 = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(
+                                    symbol, KlineInterval.FifteenMinutes, limit: 20);
+                                double smartAtr = 0;
+                                if (kRes15.Success && kRes15.Data?.Length >= 15)
+                                    smartAtr = IndicatorCalculator.CalculateATR(kRes15.Data.ToList(), 14);
 
-                                                bool isLongEntry = decision == "LONG";
-                                                var (smartSL, smartTP, usedAtr) = HybridExitManager.ComputeSmartAtrTargets(
-                                                    actualEntryPrice, isLongEntry, smartAtr);
+                                bool isLongEntry = decision == "LONG";
+                                var (smartSL, smartTP, usedAtr) = HybridExitManager.ComputeSmartAtrTargets(
+                                    actualEntryPrice, isLongEntry, smartAtr);
 
-                                                // HybridExitState에 Smart SL/TP 반영
-                                                var exitState = _hybridExitManager?.GetState(symbol);
-                                                if (exitState != null)
-                                                {
-                                                    exitState.InitialSL = smartSL;
-                                                    exitState.InitialTP = smartTP;
-                                                }
+                                // HybridExitState에 Smart SL/TP 반영
+                                var exitState = _hybridExitManager?.GetState(symbol);
+                                if (exitState != null)
+                                {
+                                    exitState.InitialSL = smartSL;
+                                    exitState.InitialTP = smartTP;
+                                }
 
-                                                await TelegramService.Instance.SendSmartTargetEntryAlertAsync(
-                                                    symbol, decision, actualEntryPrice, smartSL, smartTP, usedAtr);
-                                            }
-                                            catch (Exception ex)
-                                            {
-                                                OnStatusLog?.Invoke($"⚠️ [SmartTarget] 계산/알림 실패 [{symbol}]: {ex.Message}");
-                                            }
-                                        });
+                                await TelegramService.Instance.SendEntrySuccessAlertAsync(
+                                    symbol, decision, actualEntryPrice,
+                                    finalStopLoss, finalTakeProfit, signalSource,
+                                    marginUsdt, leverage,
+                                    smartSL, smartTP, usedAtr);
+                            }
+                            catch (Exception ex)
+                            {
+                                OnStatusLog?.Invoke($"⚠️ [SmartTarget] 계산 실패 [{symbol}]: {ex.Message} | 기본 진입 알림으로 대체");
+                                await TelegramService.Instance.SendEntrySuccessAlertAsync(
+                                    symbol, decision, actualEntryPrice,
+                                    finalStopLoss, finalTakeProfit, signalSource,
+                                    marginUsdt, leverage);
+                            }
+                        });
+                    }
+                    else
+                    {
+                        await TelegramService.Instance.SendEntrySuccessAlertAsync(
+                            symbol, decision, actualEntryPrice,
+                            finalStopLoss, finalTakeProfit, signalSource,
+                            marginUsdt, leverage);
                     }
                     
                     OnAlert?.Invoke($"🤖 자동 매매 진입: {symbol} [{decision}] | 증거금: {marginUsdt}U");
@@ -6959,6 +6983,43 @@ namespace TradingBot
             }
 
             return false;
+        }
+
+        private async Task<(bool blocked, string reason)> EvaluateOneMinuteUpperWickBlockAsync(
+            string symbol,
+            string decision,
+            decimal currentPrice,
+            CancellationToken token)
+        {
+            if (!string.Equals(decision, "LONG", StringComparison.OrdinalIgnoreCase))
+                return (false, string.Empty);
+
+            if (currentPrice <= 0m)
+                return (false, string.Empty);
+
+            try
+            {
+                var oneMinuteCandles = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneMinute, 3, token);
+                var latestOneMinute = oneMinuteCandles?.LastOrDefault();
+                if (latestOneMinute == null || latestOneMinute.HighPrice <= 0m)
+                    return (false, string.Empty);
+
+                decimal highPrice = latestOneMinute.HighPrice;
+                decimal blockThresholdPrice = highPrice * 0.997m;
+
+                if (currentPrice < blockThresholdPrice)
+                {
+                    decimal pullbackPct = ((highPrice - currentPrice) / highPrice) * 100m;
+                    return (true, $"1m high={highPrice:F8}, current={currentPrice:F8}, pullback={pullbackPct:F2}% (threshold=0.30%)");
+                }
+
+                return (false, string.Empty);
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ {symbol} 1분봉 윗꼬리 필터 조회 실패: {ex.Message}");
+                return (false, string.Empty);
+            }
         }
 
         private decimal CalculateAverageBollingerWidthPct(List<IBinanceKline> recentKlines, int period = 20, int sampleCount = 10)

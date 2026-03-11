@@ -416,11 +416,11 @@ namespace TradingBot
         }
 
         // ─────────────────────────────────────────────────────────────────────
-        // [AI 관제탑] AI Gate PASS/BLOCK 15분 집계 텔레그램 알림
+        // [AI 관제탑] AI Gate PASS/BLOCK 5분 집계 텔레그램 알림
         // ─────────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// AI 이중 게이트(TF Brain + ML Filter) 결과를 15분 요약용으로 집계합니다.
+        /// AI 이중 게이트(TF Brain + ML Filter) 결과를 5분 요약용으로 집계합니다.
         /// - BLOCK + ML 0.50 미만은 기존과 동일하게 집계 생략
         /// - 같은 코인은 1분 내 중복 집계를 막아 요약 스팸을 줄임
         /// </summary>
@@ -564,7 +564,7 @@ namespace TradingBot
             if (snapshot.TotalCount == 0)
             {
                 body = $"🕒 구간: {snapshot.WindowStartLocal:HH:mm} ~ {windowEndLocal:HH:mm}\n" +
-                       "📭 최근 15분 동안 AI 게이트 판정이 없었습니다.";
+                       "📭 최근 5분 동안 AI 게이트 판정이 없었습니다.";
             }
             else
             {
@@ -616,7 +616,7 @@ namespace TradingBot
                       (snapshot.BlockReasonsOther.Count > 0 ? $"\n\n📌 차단 TOP(기타)\n{topReasonsOther}" : string.Empty);
             }
 
-                 await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 15분 요약]*\n\n{body}", true, "AI관제탑");
+                 await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 5분 요약]*\n\n{body}", true, "AI관제탑");
         }
 
         private static float SanitizeFinite(float value)
@@ -710,36 +710,55 @@ namespace TradingBot
         // 
 
         /// <summary>
-        /// 진입 직후 ATR 기반 Smart TP/SL 요약 발송
+        /// 진입 성공 시 공통 텔레그램 1건 발송 (Smart TP/SL 포함 가능)
         /// </summary>
-        public async Task SendSmartTargetEntryAlertAsync(
+        public async Task SendEntrySuccessAlertAsync(
             string symbol, string direction, decimal entryPrice,
-            decimal sl, decimal tp, double atr)
+            decimal stopLoss, decimal takeProfit, string source,
+            decimal marginUsdt, int leverage,
+            decimal? smartSl = null, decimal? smartTp = null, double? atr = null)
         {
             try
             {
-                string dir = direction == "LONG" ? " LONG" : " SHORT";
-                double slPct = entryPrice > 0 ? (double)Math.Abs(sl - entryPrice) / (double)entryPrice * 100 : 0;
-                double tpPct = entryPrice > 0 ? (double)Math.Abs(tp - entryPrice) / (double)entryPrice * 100 : 0;
-                double slRoe = slPct * 20;
-                double tpRoe = tpPct * 20;
+                string dir = string.Equals(direction, "LONG", StringComparison.OrdinalIgnoreCase) ? "LONG" : "SHORT";
+                var lines = new List<string>
+                {
+                    $"✅ *[진입 완료]* `{symbol}` {dir}",
+                    string.Empty,
+                    $"진입가: `{entryPrice:F4}`",
+                    $"전략: `{source}`",
+                    $"증거금: `{marginUsdt:F2} USDT` | 레버리지: `{leverage}x`"
+                };
 
-                string body =
-                    $" *[스마트 타겟 설정]* {dir} `{symbol}`\n" +
-                    $"\n" +
-                    $" 진입가: `{entryPrice:F4}`\n" +
-                    $" SL: `{sl:F4}` ({slPct:F2}% | ROE -{slRoe:F0}%)\n" +
-                    $" TP: `{tp:F4}` ({tpPct:F2}% | ROE +{tpRoe:F0}%)\n" +
-                    $" ATR(14): `{atr:F4}` | 레버리지: 20\n" +
-                    $"\n" +
-                    $" 손익비 1:2 | 본절 전환: ROE 10%\n" +
-                    $" {DateTime.Now:HH:mm:ss}";
+                if (stopLoss > 0)
+                    lines.Add($"기본 SL: `{stopLoss:F4}`");
 
-                await SendMessageAsync(body);
+                if (takeProfit > 0)
+                    lines.Add($"기본 TP: `{takeProfit:F4}`");
+
+                if (smartSl.HasValue && smartTp.HasValue && smartSl.Value > 0 && smartTp.Value > 0)
+                {
+                    double slPct = entryPrice > 0 ? (double)Math.Abs(smartSl.Value - entryPrice) / (double)entryPrice * 100 : 0;
+                    double tpPct = entryPrice > 0 ? (double)Math.Abs(smartTp.Value - entryPrice) / (double)entryPrice * 100 : 0;
+                    double slRoe = slPct * leverage;
+                    double tpRoe = tpPct * leverage;
+
+                    lines.Add(string.Empty);
+                    lines.Add("📐 *Smart Target*");
+                    lines.Add($"SL: `{smartSl.Value:F4}` ({slPct:F2}% | ROE -{slRoe:F0}%)");
+                    lines.Add($"TP: `{smartTp.Value:F4}` ({tpPct:F2}% | ROE +{tpRoe:F0}%)");
+                    if (atr.HasValue && atr.Value > 0)
+                        lines.Add($"ATR(14): `{atr.Value:F4}`");
+                }
+
+                lines.Add(string.Empty);
+                lines.Add($"시각: {DateTime.Now:HH:mm:ss}");
+
+                await SendMessageAsync(string.Join("\n", lines));
             }
             catch (Exception ex)
             {
-                MainWindow.Instance?.AddLog($" [Telegram][SmartTarget] 발송 실패: {ex.Message}");
+                MainWindow.Instance?.AddLog($" [Telegram][Entry] 발송 실패: {ex.Message}");
             }
         }
 

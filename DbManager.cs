@@ -1929,9 +1929,11 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                     string sql = @"
                         MERGE dbo.GeneralSettings AS target
                         USING (SELECT @UserId AS Id, @DefaultLeverage, @DefaultMargin, @TargetRoe, @StopLossRoe, @TrailingStartRoe, @TrailingDropRoe,
-                                      @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile) 
+                                      @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile,
+                                      @PumpBreakEvenRoe, @PumpTrailingStartRoe, @PumpTrailingGapRoe) 
                             AS source (Id, DefaultLeverage, DefaultMargin, TargetRoe, StopLossRoe, TrailingStartRoe, TrailingDropRoe,
-                                      PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct, MajorTrendProfile)
+                                      PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct, MajorTrendProfile,
+                                      PumpBreakEvenRoe, PumpTrailingStartRoe, PumpTrailingGapRoe)
                         ON target.Id = source.Id
                         WHEN MATCHED THEN
                             UPDATE SET 
@@ -1947,12 +1949,17 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                                 target.PumpStopDistanceWarnPct = source.PumpStopDistanceWarnPct,
                                 target.PumpStopDistanceBlockPct = source.PumpStopDistanceBlockPct,
                                 target.MajorTrendProfile = source.MajorTrendProfile,
+                                target.PumpBreakEvenRoe = source.PumpBreakEvenRoe,
+                                target.PumpTrailingStartRoe = source.PumpTrailingStartRoe,
+                                target.PumpTrailingGapRoe = source.PumpTrailingGapRoe,
                                 target.UpdatedAt = GETUTCDATE()
                         WHEN NOT MATCHED THEN
                             INSERT (Id, DefaultLeverage, DefaultMargin, TargetRoe, StopLossRoe, TrailingStartRoe, TrailingDropRoe,
-                                    PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct, MajorTrendProfile)
+                                    PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct, MajorTrendProfile,
+                                    PumpBreakEvenRoe, PumpTrailingStartRoe, PumpTrailingGapRoe)
                             VALUES (@UserId, @DefaultLeverage, @DefaultMargin, @TargetRoe, @StopLossRoe, @TrailingStartRoe, @TrailingDropRoe,
-                                    @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile);";
+                                    @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile,
+                                    @PumpBreakEvenRoe, @PumpTrailingStartRoe, @PumpTrailingGapRoe);";
 
                     var parameters = new DynamicParameters();
                     parameters.Add("@UserId", userId);
@@ -1968,12 +1975,15 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                     parameters.Add("@PumpStopDistanceWarnPct", settings.PumpStopDistanceWarnPct);
                     parameters.Add("@PumpStopDistanceBlockPct", settings.PumpStopDistanceBlockPct);
                     parameters.Add("@MajorTrendProfile", settings.MajorTrendProfile);
+                    parameters.Add("@PumpBreakEvenRoe", settings.PumpBreakEvenRoe);
+                    parameters.Add("@PumpTrailingStartRoe", settings.PumpTrailingStartRoe);
+                    parameters.Add("@PumpTrailingGapRoe", settings.PumpTrailingGapRoe);
 
                     try
                     {
                         await db.ExecuteAsync(sql, parameters);
                     }
-                    catch (SqlException ex) when (ex.Message.Contains("PumpTp1Roe") || ex.Message.Contains("PumpTp2Roe") || ex.Message.Contains("PumpTimeStopMinutes") || ex.Message.Contains("PumpStopDistanceWarnPct") || ex.Message.Contains("PumpStopDistanceBlockPct") || ex.Message.Contains("MajorTrendProfile"))
+                    catch (SqlException ex) when (ex.Message.Contains("PumpTp1Roe") || ex.Message.Contains("PumpTp2Roe") || ex.Message.Contains("PumpTimeStopMinutes") || ex.Message.Contains("PumpStopDistanceWarnPct") || ex.Message.Contains("PumpStopDistanceBlockPct") || ex.Message.Contains("MajorTrendProfile") || ex.Message.Contains("PumpBreakEvenRoe") || ex.Message.Contains("PumpTrailingStartRoe") || ex.Message.Contains("PumpTrailingGapRoe"))
                     {
                         // 하위 호환: 구 스키마(펌프 컬럼 없음)에서는 기본 필드만 저장
                         string fallbackSql = @"

@@ -1,0 +1,470 @@
+<Project>
+  <PropertyGroup>
+    <AssemblyName>TradingBot</AssemblyName>
+    <IntermediateOutputPath>obj\x64\Debug\</IntermediateOutputPath>
+    <BaseIntermediateOutputPath>obj\</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\</MSBuildProjectExtensionsPath>
+    <_TargetAssemblyProjectName>TradingBot</_TargetAssemblyProjectName>
+    <RootNamespace>TradingBot</RootNamespace>
+  </PropertyGroup>
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <Platforms>AnyCPU;x64</Platforms>
+    <ApplicationIcon>trading_bot.ico</ApplicationIcon>
+    <!-- WPF MarkupCompile 임시 어셈블리 생성 비활성화 -->
+    <GenerateTemporaryTargetAssembly>false</GenerateTemporaryTargetAssembly>
+    <!-- WPF 디자인타임 빌드 무시 -->
+    <DesignTimeBuild>false</DesignTimeBuild>
+    <!-- SDK 자동 AssemblyInfo 생성 활성화 (.csproj 버전 정보 사용) -->
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
+    <LangVersion>latest</LangVersion>
+    <Version>2.4.37</Version>
+    <AssemblyVersion>2.4.37.0</AssemblyVersion>
+    <FileVersion>2.4.37.0</FileVersion>
+    <NoWarn>$(NoWarn);NU1701</NoWarn>
+    <Company>TradingBot</Company>
+    <Product>CoinFF TradingBot</Product>
+    <Description>Cryptocurrency Trading Bot with AI/ML capabilities</Description>
+    <!-- ko 언어 리소스만 포함 -->
+    <SatelliteResourceLanguages>ko</SatelliteResourceLanguages>
+    <!-- app.manifest 포함 -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- [Phase 16] 자체 포함 배포 설정 - Windows Desktop Runtime 포함 -->
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <UseAppHost>true</UseAppHost>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <PublishSingleFile>false</PublishSingleFile>
+    <DebugType>pdbonly</DebugType>
+    <!-- Velopack용 임시 디렉터리 -->
+    <VelopackRid>win-x64</VelopackRid>
+    <!-- ucrtbase.dll 호환성 개선 -->
+    <EnableIncludeSourceLink>false</EnableIncludeSourceLink>
+    <DebugSymbols>true</DebugSymbols>
+    <TieredCompilation>true</TieredCompilation>
+    <TieredCompilationQuickJit>true</TieredCompilationQuickJit>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- WPF Window Icon용 (어셈블리에 임베드) -->
+    <!-- 시스템 트레이 및 출력 폴더용 -->
+    <Content Include="trading_bot.ico">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Mobile MAUI 파일 제외 -->
+    <None Remove="Mobile/**/*" />
+    <None Remove="Releases\**" />
+    <None Remove="TradingBot.Web/**/*" />
+    <None Remove="TradingBot.Tests/**/*" />
+    <None Remove="TradingBot.Shared/**/*" />
+    <Compile Remove="Mobile/**/*.cs" />
+    <Compile Remove="Releases\**" />
+    <Compile Remove="TradingBot.Web/**/*.cs" />
+    <Compile Remove="TradingBot.Tests/**/*.cs" />
+    <Compile Remove="TradingBot.Shared/**/*.cs" />
+    <EmbeddedResource Remove="Releases\**" />
+    <!-- 레거시 Transformer/Torch 경로 파일 제외 (현재는 TensorFlow.NET 인프로세스 사용) -->
+    <Compile Remove="TransformerTrainer.cs" />
+    <Compile Remove="TimeSeriesTransformer.cs" />
+    <Compile Remove="EntryTimingTransformerTrainer.cs" />
+    <Compile Remove="TimeSeriesDataLoader.cs" />
+    <Compile Remove="PPOAgent.cs" />
+    <Compile Remove="TransformerWaveNavigator.cs" />
+    <Compile Remove="Services\TorchInitializer.cs" />
+    <!-- 레거시 AI 의존 파일들 추가 제외 -->
+    <Compile Remove="CoinSpecialistLearningSystem.cs" />
+    <Compile Remove="DoubleCheckEntryEngine.cs" />
+    <Compile Remove="WaveAIManager.cs" />
+    <Compile Remove="WaveDatasetGenerator.cs" />
+    <Compile Remove="SimpleDoubleCheckEngine.cs" />
+    <Compile Remove="MultiAgentManager.cs" />
+    <Compile Remove="TransformerStrategy.cs" />
+    <Compile Remove="DualAI_EntryPredictor.cs" />
+    <!-- 기타 의존 파일 제외 -->
+    <Compile Remove="DualAI_IntegrationGuide.cs" />
+    <Compile Remove="CheckpointManager.cs" />
+    <Compile Remove="TimeBasedLearningSystem.cs" />
+    <Compile Remove="ReinforcementLearningFramework.cs" />
+    <!-- 루트에 있는 중복 파일 제외 (Services 폴더 사용) -->
+    <Compile Remove="IExchangeService.cs" />
+    <Compile Remove="BinanceOrderService.cs" />
+    <Compile Remove="WebServerService.cs" />
+    <Compile Remove="NotificationService.cs" />
+    <Compile Remove="IconGenerator.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Binance.Net" Version="12.8.1" />
+    <PackageReference Include="CryptoExchange.Net" Version="10.7.1" />
+    <PackageReference Include="CsvHelper" Version="33.1.0" />
+    <PackageReference Include="Dapper" Version="2.1.66" />
+    <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.0" />
+    <PackageReference Include="LiveCharts.Wpf" Version="0.9.7" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.4" />
+    <PackageReference Include="Microsoft.ML" Version="5.0.0" />
+    <PackageReference Include="Microsoft.ML.FastTree" Version="5.0.0" />
+    <PackageReference Include="Microsoft.ML.LightGbm" Version="5.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.0" />
+    <PackageReference Include="ReactiveUI.WPF" Version="23.1.1" />
+    <PackageReference Include="Skender.Stock.Indicators" Version="2.7.1" />
+    <PackageReference Include="Serilog" Version="3.1.1" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="5.0.1" />
+    <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
+    <PackageReference Include="Telegram.Bot" Version="22.9.0" />
+    <PackageReference Include="TensorFlow.NET" Version="0.150.0" />
+    <PackageReference Include="Velopack" Version="0.0.1298" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="model.zip">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+  <!-- 외부 중복 링크/삭제된 프로젝트 참조 제거 -->
+  <ItemGroup>
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\Accessibility.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\azure.core\1.50.0\lib\net8.0\Azure.Core.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\azure.identity\1.17.1\lib\net8.0\Azure.Identity.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\binance.net\12.8.1\lib\net9.0\Binance.Net.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\cryptoexchange.net\10.7.1\lib\net9.0\CryptoExchange.Net.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\csvhelper\33.1.0\lib\net9.0\CsvHelper.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\dapper\2.1.66\lib\net8.0\Dapper.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\dynamicdata\9.4.1\lib\net9.0\DynamicData.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\google.protobuf\3.21.12\lib\net5.0\Google.Protobuf.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\hardcodet.notifyicon.wpf\2.0.0\lib\net8.0-windows7.0\Hardcodet.NotifyIcon.Wpf.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\livecharts\0.9.7\lib\net45\LiveCharts.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\livecharts.wpf\0.9.7\lib\net45\LiveCharts.Wpf.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\methodboundaryaspect.fody\2.0.149\lib\netstandard2.1\MethodBoundaryAspect.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.bcl.asyncinterfaces\9.0.4\lib\netstandard2.1\Microsoft.Bcl.AsyncInterfaces.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\Microsoft.CSharp.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.data.sqlclient\6.1.4\ref\net9.0\Microsoft.Data.SqlClient.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.configuration.abstractions\10.0.1\lib\net9.0\Microsoft.Extensions.Configuration.Abstractions.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.configuration.binder\10.0.1\lib\net9.0\Microsoft.Extensions.Configuration.Binder.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.configuration.commandline\9.0.0\lib\net9.0\Microsoft.Extensions.Configuration.CommandLine.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.configuration\10.0.1\lib\net9.0\Microsoft.Extensions.Configuration.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.configuration.environmentvariables\9.0.0\lib\net9.0\Microsoft.Extensions.Configuration.EnvironmentVariables.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.configuration.fileextensions\9.0.0\lib\net9.0\Microsoft.Extensions.Configuration.FileExtensions.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.configuration.json\9.0.0\lib\net9.0\Microsoft.Extensions.Configuration.Json.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.configuration.usersecrets\9.0.0\lib\net9.0\Microsoft.Extensions.Configuration.UserSecrets.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.dependencyinjection.abstractions\10.0.1\lib\net9.0\Microsoft.Extensions.DependencyInjection.Abstractions.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.dependencyinjection\10.0.1\lib\net9.0\Microsoft.Extensions.DependencyInjection.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.diagnostics.abstractions\10.0.1\lib\net9.0\Microsoft.Extensions.Diagnostics.Abstractions.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.diagnostics\10.0.1\lib\net9.0\Microsoft.Extensions.Diagnostics.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.fileproviders.abstractions\9.0.0\lib\net9.0\Microsoft.Extensions.FileProviders.Abstractions.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.fileproviders.physical\9.0.0\lib\net9.0\Microsoft.Extensions.FileProviders.Physical.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.filesystemglobbing\9.0.0\lib\net9.0\Microsoft.Extensions.FileSystemGlobbing.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.hosting.abstractions\9.0.0\lib\net9.0\Microsoft.Extensions.Hosting.Abstractions.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.hosting\9.0.0\lib\net9.0\Microsoft.Extensions.Hosting.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.http\10.0.1\lib\net9.0\Microsoft.Extensions.Http.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.logging.abstractions\10.0.1\lib\net9.0\Microsoft.Extensions.Logging.Abstractions.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.logging.configuration\9.0.0\lib\net9.0\Microsoft.Extensions.Logging.Configuration.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.logging.console\9.0.0\lib\net9.0\Microsoft.Extensions.Logging.Console.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.logging.debug\9.0.0\lib\net9.0\Microsoft.Extensions.Logging.Debug.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.logging\10.0.1\lib\net9.0\Microsoft.Extensions.Logging.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.logging.eventlog\9.0.0\lib\net9.0\Microsoft.Extensions.Logging.EventLog.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.logging.eventsource\9.0.0\lib\net9.0\Microsoft.Extensions.Logging.EventSource.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.options.configurationextensions\10.0.1\lib\net9.0\Microsoft.Extensions.Options.ConfigurationExtensions.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.options\10.0.1\lib\net9.0\Microsoft.Extensions.Options.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.primitives\10.0.1\lib\net9.0\Microsoft.Extensions.Primitives.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.identity.client\4.80.0\lib\net8.0\Microsoft.Identity.Client.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.identity.client.extensions.msal\4.78.0\lib\net8.0\Microsoft.Identity.Client.Extensions.Msal.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.identitymodel.abstractions\8.14.0\lib\net9.0\Microsoft.IdentityModel.Abstractions.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.identitymodel.jsonwebtokens\7.7.1\lib\net8.0\Microsoft.IdentityModel.JsonWebTokens.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.identitymodel.logging\7.7.1\lib\net8.0\Microsoft.IdentityModel.Logging.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.identitymodel.protocols\7.7.1\lib\net8.0\Microsoft.IdentityModel.Protocols.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.identitymodel.protocols.openidconnect\7.7.1\lib\net8.0\Microsoft.IdentityModel.Protocols.OpenIdConnect.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.identitymodel.tokens\7.7.1\lib\net8.0\Microsoft.IdentityModel.Tokens.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.ml\5.0.0\lib\netstandard2.0\Microsoft.ML.Core.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.ml.cpumath\5.0.0\lib\net8.0\Microsoft.ML.CpuMath.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.ml\5.0.0\lib\netstandard2.0\Microsoft.ML.Data.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.ml.dataview\5.0.0\lib\netstandard2.0\Microsoft.ML.DataView.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.ml.fasttree\5.0.0\lib\netstandard2.0\Microsoft.ML.FastTree.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.ml\5.0.0\lib\netstandard2.0\Microsoft.ML.KMeansClustering.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.ml.lightgbm\5.0.0\lib\netstandard2.0\Microsoft.ML.LightGbm.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.ml\5.0.0\lib\netstandard2.0\Microsoft.ML.PCA.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.ml\5.0.0\lib\netstandard2.0\Microsoft.ML.StandardTrainers.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.ml\5.0.0\lib\netstandard2.0\Microsoft.ML.Transforms.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\microsoft.sqlserver.server\1.0.0\lib\netstandard2.0\Microsoft.SqlServer.Server.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\Microsoft.VisualBasic.Core.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\Microsoft.VisualBasic.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\Microsoft.VisualBasic.Forms.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\Microsoft.Win32.Primitives.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\Microsoft.Win32.Registry.AccessControl.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\Microsoft.Win32.Registry.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\Microsoft.Win32.SystemEvents.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\mscorlib.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\netstandard.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\newtonsoft.json\13.0.3\lib\net6.0\Newtonsoft.Json.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\nsec.cryptography\25.4.0\lib\net8.0\NSec.Cryptography.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\nuget.versioning\6.14.0\lib\netstandard2.0\NuGet.Versioning.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\oneof\3.0.263\lib\netstandard2.0\OneOf.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\PresentationCore.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\PresentationFramework.Aero.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\PresentationFramework.Aero2.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\PresentationFramework.AeroLite.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\PresentationFramework.Classic.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\PresentationFramework.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\PresentationFramework.Luna.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\PresentationFramework.Royale.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\PresentationUI.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\protobuf.text\0.7.2\lib\net6.0\Protobuf.Text.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\razorvine.pickle\1.4.0\lib\netstandard2.0\Razorvine.Pickle.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\ReachFramework.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\reactiveui\23.1.1\lib\net9.0\ReactiveUI.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\reactiveui.wpf\23.1.1\lib\net462\ReactiveUI.Wpf.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\serilog\3.1.1\lib\net7.0\Serilog.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\serilog.sinks.console\5.0.1\lib\net7.0\Serilog.Sinks.Console.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\serilog.sinks.file\5.0.0\lib\net5.0\Serilog.Sinks.File.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\skender.stock.indicators\2.7.1\lib\net9.0\Skender.Stock.Indicators.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\splat.builder\19.2.1\lib\net9.0\Splat.Builder.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\splat.core\19.2.1\lib\net9.0\Splat.Core.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\splat\19.2.1\lib\net9.0\Splat.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\splat.logging\19.2.1\lib\net9.0\Splat.Logging.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.AppContext.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Buffers.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\system.clientmodel\1.8.0\lib\net9.0\System.ClientModel.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.CodeDom.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Collections.Concurrent.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Collections.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Collections.Immutable.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Collections.NonGeneric.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Collections.Specialized.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.ComponentModel.Annotations.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.ComponentModel.DataAnnotations.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.ComponentModel.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.ComponentModel.EventBasedAsync.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.ComponentModel.Primitives.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.ComponentModel.TypeConverter.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Configuration.ConfigurationManager.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Configuration.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Console.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Core.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Data.Common.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Data.DataSetExtensions.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Data.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Design.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Diagnostics.Contracts.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Diagnostics.Debug.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\system.diagnostics.diagnosticsource\10.0.1\lib\net9.0\System.Diagnostics.DiagnosticSource.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Diagnostics.EventLog.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Diagnostics.FileVersionInfo.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Diagnostics.PerformanceCounter.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Diagnostics.Process.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Diagnostics.StackTrace.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Diagnostics.TextWriterTraceListener.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Diagnostics.Tools.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Diagnostics.TraceSource.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Diagnostics.Tracing.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.DirectoryServices.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Drawing.Common.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Drawing.Design.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Drawing.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Drawing.Primitives.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Dynamic.Runtime.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Formats.Asn1.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Formats.Nrbf.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Formats.Tar.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Globalization.Calendars.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Globalization.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Globalization.Extensions.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\system.identitymodel.tokens.jwt\7.7.1\lib\net8.0\System.IdentityModel.Tokens.Jwt.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.Compression.Brotli.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.Compression.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.Compression.FileSystem.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.Compression.ZipFile.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.FileSystem.AccessControl.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.FileSystem.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.FileSystem.DriveInfo.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.FileSystem.Primitives.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.FileSystem.Watcher.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.IsolatedStorage.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.MemoryMappedFiles.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.IO.Packaging.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\system.io.pipelines\10.0.2\lib\net9.0\System.IO.Pipelines.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.Pipes.AccessControl.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.Pipes.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.IO.UnmanagedMemoryStream.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Linq.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Linq.Expressions.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Linq.Parallel.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Linq.Queryable.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\system.memory.data\8.0.1\lib\net8.0\System.Memory.Data.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Memory.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.Http.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.Http.Json.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.HttpListener.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.Mail.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.NameResolution.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.NetworkInformation.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.Ping.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.Primitives.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.Quic.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.Requests.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.Security.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.ServicePoint.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.Sockets.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.WebClient.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.WebHeaderCollection.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.WebProxy.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.WebSockets.Client.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Net.WebSockets.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Numerics.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\system.numerics.tensors\9.0.4\lib\net9.0\System.Numerics.Tensors.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Numerics.Vectors.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.ObjectModel.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Printing.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Private.Windows.Core.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\system.reactive\6.1.0\lib\net6.0\System.Reactive.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Reflection.DispatchProxy.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Reflection.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Reflection.Emit.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Reflection.Emit.ILGeneration.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Reflection.Emit.Lightweight.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Reflection.Extensions.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Reflection.Metadata.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Reflection.Primitives.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Reflection.TypeExtensions.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Resources.Extensions.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Resources.Reader.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Resources.ResourceManager.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Resources.Writer.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.CompilerServices.Unsafe.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.CompilerServices.VisualC.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.Extensions.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.Handles.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.InteropServices.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.InteropServices.JavaScript.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.InteropServices.RuntimeInformation.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.Intrinsics.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.Loader.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.Numerics.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.Serialization.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.Serialization.Formatters.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.Serialization.Json.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.Serialization.Primitives.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Runtime.Serialization.Xml.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Security.AccessControl.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Security.Claims.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Security.Cryptography.Algorithms.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Security.Cryptography.Cng.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Security.Cryptography.Csp.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Security.Cryptography.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Security.Cryptography.Encoding.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Security.Cryptography.OpenSsl.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Security.Cryptography.Pkcs.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Security.Cryptography.Primitives.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Security.Cryptography.ProtectedData.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Security.Cryptography.X509Certificates.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Security.Cryptography.Xml.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Security.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Security.Permissions.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Security.Principal.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Security.Principal.Windows.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Security.SecureString.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.ServiceModel.Web.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.ServiceProcess.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Text.Encoding.CodePages.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Text.Encoding.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Text.Encoding.Extensions.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\system.text.encodings.web\10.0.2\lib\net9.0\System.Text.Encodings.Web.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\system.text.json\10.0.2\lib\net9.0\System.Text.Json.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Text.RegularExpressions.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Threading.AccessControl.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\system.threading.channels\10.0.1\lib\net9.0\System.Threading.Channels.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Threading.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Threading.Overlapped.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Threading.Tasks.Dataflow.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Threading.Tasks.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Threading.Tasks.Extensions.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Threading.Tasks.Parallel.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Threading.Thread.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Threading.ThreadPool.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Threading.Timer.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Transactions.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Transactions.Local.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.ValueTuple.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Web.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Web.HttpUtility.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Windows.Controls.Ribbon.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Windows.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Windows.Extensions.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Windows.Forms.Design.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Windows.Forms.Design.Editors.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Windows.Forms.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Windows.Forms.Primitives.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Windows.Input.Manipulations.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Windows.Presentation.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\System.Xaml.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Xml.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Xml.Linq.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Xml.ReaderWriter.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Xml.Serialization.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Xml.XDocument.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Xml.XmlDocument.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Xml.XmlSerializer.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Xml.XPath.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\ref\net9.0\System.Xml.XPath.XDocument.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\telegram.bot\22.9.0\lib\net6.0\Telegram.Bot.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\tensorflow.net\0.150.0\lib\net6.0\Tensorflow.Binding.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\UIAutomationClient.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\UIAutomationClientSideProviders.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\UIAutomationProvider.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\UIAutomationTypes.dll" />
+    <ReferencePath Include="C:\Users\COFFE\.nuget\packages\velopack\0.0.1298\lib\net9.0\Velopack.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\WindowsBase.dll" />
+    <ReferencePath Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\ref\net9.0\WindowsFormsIntegration.dll" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\ActivePnLWindow.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\BacktestOptionsDialog.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\BacktestWindow.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\ForgotPasswordWindow.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\LoginWindow.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\MainWindow.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\OptimizeOptionsDialog.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\ProfileWindow.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\SettingsWindow.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\SignUpWindow.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\SymbolChartWindow.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\TradeStatisticsWindow.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\UpdateDialogWindow.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\UserManagementWindow.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\App.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\TradingBot_Content.g.cs" />
+    <Compile Include="E:\PROJECT\CoinFF\TradingBot\TradingBot\obj\x64\Debug\net9.0-windows\win-x64\GeneratedInternalTypeHelper.g.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Analyzer Include="C:\Program Files\dotnet\sdk\9.0.308\Sdks\Microsoft.NET.Sdk\targets\..\analyzers\Microsoft.CodeAnalysis.CSharp.NetAnalyzers.dll" />
+    <Analyzer Include="C:\Program Files\dotnet\sdk\9.0.308\Sdks\Microsoft.NET.Sdk\targets\..\analyzers\Microsoft.CodeAnalysis.NetAnalyzers.dll" />
+    <Analyzer Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.logging.abstractions\10.0.1\analyzers\dotnet\roslyn4.4\cs\Microsoft.Extensions.Logging.Generators.dll" />
+    <Analyzer Include="C:\Users\COFFE\.nuget\packages\microsoft.extensions.options\10.0.1\analyzers\dotnet\roslyn4.4\cs\Microsoft.Extensions.Options.SourceGeneration.dll" />
+    <Analyzer Include="C:\Users\COFFE\.nuget\packages\system.clientmodel\1.8.0\analyzers\dotnet\cs\System.ClientModel.SourceGeneration.dll" />
+    <Analyzer Include="C:\Users\COFFE\.nuget\packages\system.text.json\10.0.2\analyzers\dotnet\roslyn4.4\cs\System.Text.Json.SourceGeneration.dll" />
+    <Analyzer Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\analyzers/dotnet/cs/Microsoft.Interop.ComInterfaceGenerator.dll" />
+    <Analyzer Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\analyzers/dotnet/cs/Microsoft.Interop.JavaScript.JSImportGenerator.dll" />
+    <Analyzer Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\analyzers/dotnet/cs/Microsoft.Interop.LibraryImportGenerator.dll" />
+    <Analyzer Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\analyzers/dotnet/cs/Microsoft.Interop.SourceGeneration.dll" />
+    <Analyzer Include="C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\9.0.11\analyzers/dotnet/cs/System.Text.RegularExpressions.Generator.dll" />
+    <Analyzer Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\analyzers/dotnet/System.Windows.Forms.Analyzers.dll" />
+    <Analyzer Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\analyzers/dotnet/cs/System.Windows.Forms.Analyzers.CSharp.dll" />
+    <Analyzer Include="C:\Program Files\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\9.0.11\analyzers/dotnet/cs/System.Windows.Forms.Analyzers.CodeFixes.CSharp.dll" />
+  </ItemGroup>
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+</Project>

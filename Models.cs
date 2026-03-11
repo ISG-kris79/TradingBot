@@ -24,8 +24,8 @@ namespace TradingBot.Models
         public int DefaultLeverage { get; set; } = 20;
         public decimal DefaultMargin { get; set; } = 200.0m;
         public decimal SidewaysTakeProfitRoe { get; set; } = 5.0m;
-        public decimal TargetRoe { get; set; } = 20.0m;
-        public decimal StopLossRoe { get; set; } = 15.0m;
+        public decimal TargetRoe { get; set; } = 40.0m;
+        public decimal StopLossRoe { get; set; } = 60.0m;
         public decimal TrailingStartRoe { get; set; } = 20.0m;
         public decimal TrailingDropRoe { get; set; } = 5.0m;
         public string MajorTrendProfile { get; set; } = string.Empty;
@@ -34,11 +34,19 @@ namespace TradingBot.Models
         public int PumpLeverage { get; set; } = 20;
 
         // [PUMP 20x 수동 매뉴얼 튜닝값]
-        public decimal PumpTp1Roe { get; set; } = 25.0m;          // 1차 익절 ROE
-        public decimal PumpTp2Roe { get; set; } = 50.0m;          // 2차 익절 ROE
-        public decimal PumpTimeStopMinutes { get; set; } = 15.0m; // 시간 손절(분)
+        public decimal PumpTp1Roe { get; set; } = 40.0m;          // 1차 익절 ROE
+        public decimal PumpTp2Roe { get; set; } = 100.0m;          // 2차 익절 ROE
+        public decimal PumpTimeStopMinutes { get; set; } = 30.0m; // 시간 손절(분)
         public decimal PumpStopDistanceWarnPct { get; set; } = 1.0m; // 손절거리 경고(비중축소)
         public decimal PumpStopDistanceBlockPct { get; set; } = 1.3m; // 손절거리 차단(진입취소)
+
+        // ─── [Meme Coin Mode] PUMP 전용 포지션 관리 ───────────────────────────
+        // StopLoss   : ROI -60% (가격 -3%, 20x) → StopLossRoe = 60.0 (공통설정 재사용)
+        // BreakEven  : ROI +20% 도달 시 손절가를 진입가로 이동 (절대 마이너스 불가)
+        // Trailing   : ROI +40% 돌파 시 감시 시작, 최고점 대비 ROI 20% 하락 시 익절
+        public decimal PumpBreakEvenRoe { get; set; } = 20.0m;     // ROI +20% 시 본절 이동
+        public decimal PumpTrailingStartRoe { get; set; } = 40.0m; // ROI +40% 시 트레일링 가동
+        public decimal PumpTrailingGapRoe { get; set; } = 20.0m;   // 최고점 대비 ROI 20% 하락 시 청산
     }
 
     public enum PerformanceTuningProfile
@@ -466,7 +474,17 @@ namespace TradingBot.Models
         public bool IsPositionActive
         {
             get => _isPositionActive;
-            set { _isPositionActive = value; OnPropertyChanged(nameof(IsPositionActive)); OnPropertyChanged(nameof(PriceColor)); OnPropertyChanged(nameof(Status)); OnPropertyChanged(nameof(DisplayDecision)); }
+            set
+            {
+                _isPositionActive = value;
+                OnPropertyChanged(nameof(IsPositionActive));
+                OnPropertyChanged(nameof(PriceColor));
+                OnPropertyChanged(nameof(Status));
+                OnPropertyChanged(nameof(DisplayDecision));
+                OnPropertyChanged(nameof(EntryStatus));
+                OnPropertyChanged(nameof(EntryStatusColor));
+                OnPropertyChanged(nameof(EntryStatusIcon));
+            }
         }
 
         private bool _isInPosition;
@@ -1156,6 +1174,8 @@ namespace TradingBot.Models
             get
             {
                 if (IsPositionActive) return Brushes.Gold;  // 진입 중
+                if (_entryStatus.Contains("평가")) return Brushes.DeepSkyBlue;  // 진입 평가 중
+                if (_entryStatus.Contains("감시")) return Brushes.LightSteelBlue; // 감시 중
                 if (_entryStatus.Contains("RSI")) return Brushes.Orange;  // RSI 부족
                 if (_entryStatus.Contains("AI")) return Brushes.OrangeRed;  // AI 부족
                 if (_entryStatus.Contains("박스권")) return Brushes.SkyBlue;  // 박스권 대기
@@ -1172,6 +1192,8 @@ namespace TradingBot.Models
             get
             {
                 if (IsPositionActive) return "🟢";  // 진녹색 원 - 진입 중
+                if (_entryStatus.Contains("평가")) return "🔍";  // 진입 평가 중
+                if (_entryStatus.Contains("감시")) return "📡";  // 감시 중
                 if (_entryStatus.Contains("RSI")) return "🟡";  // 노란색 원 - RSI 부족
                 if (_entryStatus.Contains("AI")) return "🔴";  // 빨간색 원 - AI 부족
                 if (_entryStatus.Contains("박스권")) return "🔵";  // 파란색 원 - 박스권
