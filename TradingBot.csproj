@@ -61,15 +61,19 @@
   <ItemGroup>
     <!-- Mobile MAUI 파일 제외 -->
     <Page Remove="Mobile/**/*.xaml" />
+    <Page Remove="Releases\**" />
     <Page Remove="TradingBot.Web/**/*.razor" />
     <None Remove="Mobile/**/*" />
+    <None Remove="Releases\**" />
     <None Remove="TradingBot.Web/**/*" />
     <None Remove="TradingBot.Tests/**/*" />
     <None Remove="TradingBot.Shared/**/*" />
     <Compile Remove="Mobile/**/*.cs" />
+    <Compile Remove="Releases\**" />
     <Compile Remove="TradingBot.Web/**/*.cs" />
     <Compile Remove="TradingBot.Tests/**/*.cs" />
     <Compile Remove="TradingBot.Shared/**/*.cs" />
+    <EmbeddedResource Remove="Releases\**" />
     
     <!-- 레거시 Transformer/Torch 경로 파일 제외 (현재는 TensorFlow.NET 인프로세스 사용) -->
     <Compile Remove="TransformerTrainer.cs" />

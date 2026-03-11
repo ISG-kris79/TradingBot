@@ -401,7 +401,8 @@ namespace TradingBot
                 _posLock,
                 _blacklistedSymbols,
                 _settings,
-                _aiPredictor
+                _aiPredictor,
+                settingsProvider: () => MainWindow.CurrentGeneralSettings ?? AppConfig.Current?.Trading?.GeneralSettings ?? _settings
             );
 
 
