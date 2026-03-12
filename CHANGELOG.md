@@ -7,6 +7,27 @@
 
 ## [Unreleased]
 
+## [2.4.38] - 2026-03-12
+
+### Added
+
+- **심볼 라이브 차트 고도화** (`MainViewModel.cs`, `SymbolChartWindow.xaml`, `SymbolChartWindow.xaml.cs`, `MainWindow.xaml.cs`):
+  - 차트 창 로드/재오픈 시 `RefreshLiveChart()` 자동 호출로 즉시 최신 데이터 갱신
+  - 5분봉 기반 선형 회귀 `1H 예측` 라인(12개 캔들) 추가
+  - LONG/SHORT 진입, 익절, 청산 가격 수평선 오버레이 추가
+  - AI 진입예상 시각/확률을 다이아몬드 마커로 차트에 표시
+  - 차트 범례(`ChartLegend`) 추가로 시리즈 식별성 개선
+
+### Changed
+
+- **하이브리드 진입 캔들 확인 우회 조건 추가** (`TradingEngine.cs`):
+  - 심볼별 최신 AI 예측 캐시(`_latestAiForecasts`)를 유지
+  - AI 확률 `80% 이상` + `즉시/5분 이내` 예측일 때 캔들 확인 지연 진입을 스킵하고 즉시 진입
+  - 조기진입 시 기존 pending delayed entry를 정리하고 EARLY/BYPASS 로그를 남기도록 개선
+
+- **WPF 임시 프로젝트 파일 정리** (`TradingBot_2pdrx2mn_wpftmp.csproj`):
+  - 빌드 산출 과정에서 생성된 임시 `.wpftmp.csproj` 파일 삭제
+
 ## [2.4.37] - 2026-03-11
 
 ### Added

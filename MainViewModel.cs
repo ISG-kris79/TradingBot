@@ -3210,6 +3210,13 @@ namespace TradingBot.ViewModels
             });
         }
 
+        public void RefreshLiveChart()
+        {
+            _liveChartCts?.Cancel();
+            _liveChartCts = new CancellationTokenSource();
+            _ = LoadLiveChartDataAsync(_liveChartCts.Token);
+        }
+
         private async Task LoadLiveChartDataAsync(CancellationToken ct = default)
         {
             if (SelectedSymbol == null)
@@ -3253,6 +3260,7 @@ namespace TradingBot.ViewModels
                 var closeValues = new ChartValues<double>();
                 var xLabels = new List<string>();
                 double? lastValidClose = null;
+                DateTime lastKlineTime = DateTime.Now;
                 foreach (var kline in klinesResult.Data)
                 {
                     var close = ToFinite((double)kline.ClosePrice, lastValidClose ?? double.NaN);
@@ -3261,6 +3269,7 @@ namespace TradingBot.ViewModels
 
                     lastValidClose = close;
                     closeValues.Add(close);
+                    lastKlineTime = kline.OpenTime.ToLocalTime();
                     xLabels.Add(kline.OpenTime.ToLocalTime().ToString("HH:mm"));
                 }
 
@@ -3273,8 +3282,56 @@ namespace TradingBot.ViewModels
                     return;
                 }
 
+                // ── 1H 예측: 선형 회귀로 12개 5분봉(=1시간) 추가 ────────────────
+                int nPts = closeValues.Count;
+                double sx = 0, sy = 0, sxy = 0, sx2 = 0;
+                for (int i = 0; i < nPts; i++)
+                {
+                    double ci = closeValues[i];
+                    sx += i; sy += ci; sxy += i * ci; sx2 += i * i;
+                }
+                double denom = nPts * sx2 - sx * sx;
+                double linSlope = denom != 0 ? (nPts * sxy - sx * sy) / denom : 0;
+                double linBase  = (sy / nPts) - linSlope * (sx / nPts);
+
+                // NaN 패딩으로 역사 구간 건너뜀, 마지막 종가에서 이어지는 선으로 표시
+                var forecastValues = new ChartValues<double>();
+                for (int i = 0; i < nPts - 1; i++) forecastValues.Add(double.NaN);
+                forecastValues.Add(closeValues[nPts - 1]); // anchor
+                for (int i = 1; i <= 12; i++)
+                {
+                    double fp = ToFinite(linBase + linSlope * (nPts - 1 + i), closeValues[nPts - 1]);
+                    fp = Math.Max(fp, 0);
+                    forecastValues.Add(fp);
+                    xLabels.Add(lastKlineTime.AddMinutes(i * 5).ToString("HH:mm"));
+                }
+
+                // ── 포지션 방향 및 가격 감지 ─────────────────────────────────────
+                var sym = SelectedSymbol;
+                string positionSide = sym?.PositionSide ?? "";
+                if (string.IsNullOrEmpty(positionSide))
+                    positionSide = sym?.Decision ?? "";
+                bool isLong  = positionSide.Contains("LONG",  StringComparison.OrdinalIgnoreCase);
+                bool isShort = positionSide.Contains("SHORT", StringComparison.OrdinalIgnoreCase);
+                double entryP = (sym != null && (isLong || isShort)) ? ToFinite((double)sym.EntryPrice)   : double.NaN;
+                double tpP    = (sym != null && (isLong || isShort)) ? ToFinite((double)sym.TargetPrice)  : double.NaN;
+                double slP    = (sym != null && (isLong || isShort)) ? ToFinite((double)sym.StopLossPrice): double.NaN;
+
+                // ── 진입타점 by SELL: Decision==SHORT 이면 마지막 봉 가격에 마커 ──
+                var sellEntryValues = new ChartValues<ScatterPoint>();
+                string? currentDecision = sym?.Decision;
+                if (currentDecision?.Contains("SHORT", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    double ep = closeValues[nPts - 1];
+                    if (IsFinite(ep) && ep > 0)
+                        sellEntryValues.Add(new ScatterPoint(nPts - 1, ep, 12));
+                }
+
+                // 예측값 + 포지션 가격들 포함하여 Y 축 범위 계산
+                var forecastFinite = forecastValues.Where(v => IsFinite(v) && v > 0);
+                var positionPrices = new[] { entryP, tpP, slP }.Where(p => IsFinite(p) && p > 0);
                 UpdateAxisRange(
-                    closeValues,
+                    closeValues.Concat(forecastFinite).Concat(positionPrices),
                     min => LiveChartAxisMin = min,
                     max => LiveChartAxisMax = max,
                     defaultMin: 0d,
@@ -3289,7 +3346,11 @@ namespace TradingBot.ViewModels
 
                 LiveChartYFormatter = val => val.ToString("N2");
 
-                LiveChartSeries = new SeriesCollection
+                string dirLabel  = isLong ? "LONG" : "SHORT";
+                var entryBrush   = isLong ? Brushes.LimeGreen : Brushes.OrangeRed;
+                int totalPts     = nPts + 13;
+
+                var series = new SeriesCollection
                 {
                     new LineSeries
                     {
@@ -3300,25 +3361,126 @@ namespace TradingBot.ViewModels
                         Stroke = Brushes.DeepSkyBlue,
                         Fill = Brushes.Transparent
                     },
-                    new ScatterSeries 
-                    { 
-                        Title = "Buy", 
-                        Values = new ChartValues<ScatterPoint>(), 
-                        PointGeometry = DefaultGeometries.Triangle, 
-                        Fill = Brushes.LimeGreen, 
-                        MinPointShapeDiameter = 15, 
-                        DataLabels = false 
+                    new ScatterSeries
+                    {
+                        Title = "▲ LONG 진입",
+                        Values = new ChartValues<ScatterPoint>(),
+                        PointGeometry = DefaultGeometries.Triangle,
+                        Fill = Brushes.LimeGreen,
+                        MinPointShapeDiameter = 15,
+                        DataLabels = false
                     },
-                    new ScatterSeries 
-                    { 
-                        Title = "Sell", 
-                        Values = new ChartValues<ScatterPoint>(), 
-                        PointGeometry = DefaultGeometries.Triangle, 
-                        Fill = Brushes.Red, 
-                        MinPointShapeDiameter = 15, 
-                        DataLabels = false 
+                    new ScatterSeries
+                    {
+                        Title = "▼ SHORT 진입",
+                        Values = sellEntryValues,
+                        PointGeometry = DefaultGeometries.Triangle,
+                        Fill = Brushes.OrangeRed,
+                        MinPointShapeDiameter = 18,
+                        DataLabels = false
+                    },
+                    new LineSeries
+                    {
+                        Title = "1H 예측",
+                        Values = forecastValues,
+                        PointGeometry = null,
+                        LineSmoothness = 0.3,
+                        StrokeThickness = 1.5,
+                        Stroke = Brushes.Orange,
+                        Fill = Brushes.Transparent
                     }
                 };
+
+                // ── 진입가 / 익절가 / 청산가 수평선 ──────────────────────────────
+                if (sym != null && (isLong || isShort))
+                {
+                    if (IsFinite(entryP) && entryP > 0)
+                    {
+                        var line = new ChartValues<double>();
+                        for (int i = 0; i < totalPts; i++) line.Add(entryP);
+                        series.Add(new LineSeries
+                        {
+                            Title = $"▶ {dirLabel} 진입  {entryP:N4}",
+                            Values = line,
+                            PointGeometry = null,
+                            LineSmoothness = 0,
+                            StrokeThickness = 1.2,
+                            Stroke = entryBrush,
+                            Fill = Brushes.Transparent
+                        });
+                    }
+
+                    if (IsFinite(tpP) && tpP > 0)
+                    {
+                        var line = new ChartValues<double>();
+                        for (int i = 0; i < totalPts; i++) line.Add(tpP);
+                        series.Add(new LineSeries
+                        {
+                            Title = $"💰 {dirLabel} 익절  {tpP:N4}",
+                            Values = line,
+                            PointGeometry = null,
+                            LineSmoothness = 0,
+                            StrokeThickness = 1.2,
+                            Stroke = Brushes.Cyan,
+                            Fill = Brushes.Transparent
+                        });
+                    }
+
+                    if (IsFinite(slP) && slP > 0)
+                    {
+                        var line = new ChartValues<double>();
+                        for (int i = 0; i < totalPts; i++) line.Add(slP);
+                        series.Add(new LineSeries
+                        {
+                            Title = $"✕ {dirLabel} 청산  {slP:N4}",
+                            Values = line,
+                            PointGeometry = null,
+                            LineSmoothness = 0,
+                            StrokeThickness = 1.2,
+                            Stroke = Brushes.Tomato,
+                            Fill = Brushes.Transparent
+                        });
+                    }
+                }
+
+                // ── AI 진입 예상 지점 마커 ────────────────────────────────────────
+                if (sym != null && sym.AiEntryProb >= 0)
+                {
+                    int offsetMin = sym.AiEntryForecastOffsetMinutes ?? 0;
+                    // 5분봉 기준 x 인덱스: 즉시(0~1분)는 마지막 봉, 이후는 예측 구간
+                    double forecastXd = offsetMin <= 1
+                        ? nPts - 1
+                        : nPts - 1 + offsetMin / 5.0;
+                    int forecastXi = (int)Math.Round(forecastXd);
+                    forecastXi = Math.Max(0, Math.Min(forecastXi, nPts + 12));
+
+                    // 해당 위치의 예측 가격 (선형 회귀)
+                    double forecastY = ToFinite(linBase + linSlope * forecastXd, closeValues[nPts - 1]);
+                    forecastY = Math.Max(forecastY, 0);
+
+                    if (IsFinite(forecastY) && forecastY > 0)
+                    {
+                        string timeLabel = offsetMin <= 1
+                            ? "즉시"
+                            : (sym.AiEntryForecastTime.HasValue
+                                ? sym.AiEntryForecastTime.Value.ToString("HH:mm")
+                                : $"+{offsetMin}m");
+
+                        series.Add(new ScatterSeries
+                        {
+                            Title = $"🎯 AI 진입예상  {timeLabel}  ({sym.AiEntryProb:P0})",
+                            Values = new ChartValues<ScatterPoint>
+                            {
+                                new ScatterPoint(forecastXi, forecastY, 14)
+                            },
+                            PointGeometry = DefaultGeometries.Diamond,
+                            Fill = Brushes.Gold,
+                            DataLabels = false
+                        });
+                    }
+                }
+
+                LiveChartSeries = series;
                 
                 OnPropertyChanged(nameof(LiveChartSeries));
                 OnPropertyChanged(nameof(LiveChartXFormatter));

@@ -610,6 +610,7 @@ namespace TradingBot
                     _symbolChartWindow.WindowState = WindowState.Normal;
                 }
 
+                ViewModel.RefreshLiveChart();
                 _symbolChartWindow.Activate();
                 _symbolChartWindow.Focus();
             }

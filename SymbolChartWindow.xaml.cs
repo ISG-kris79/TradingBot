@@ -9,6 +9,7 @@ namespace TradingBot
         {
             InitializeComponent();
             DataContext = viewModel;
+            Loaded += (_, _) => viewModel.RefreshLiveChart();
         }
     }
 }

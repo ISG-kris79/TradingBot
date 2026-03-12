@@ -44,6 +44,11 @@
                                     Hoverable="False"
                                     DataTooltip="{x:Null}"
                                     Visibility="{Binding IsLiveChartEmpty, Converter={StaticResource InvertBooleanConverter}}">
+                    <lvc:CartesianChart.ChartLegend>
+                        <lvc:DefaultLegend Foreground="#E2E8F0"
+                                           Background="#111827"
+                                           FontSize="11"/>
+                    </lvc:CartesianChart.ChartLegend>
                     <lvc:CartesianChart.AxisX>
                         <lvc:Axis LabelsRotation="-15"
                                   ShowLabels="True"

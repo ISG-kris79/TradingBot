@@ -198,6 +198,10 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, DateTime> _scheduledEtaReEvaluations
             = new ConcurrentDictionary<string, DateTime>();
 
+        // [A안 조기진입] 최신 AI 예측 캐시 — 캔들 확인 bypass 판단용 (80% 이상 시 즉시 진입)
+        private readonly ConcurrentDictionary<string, AIEntryForecastResult> _latestAiForecasts
+            = new ConcurrentDictionary<string, AIEntryForecastResult>(StringComparer.OrdinalIgnoreCase);
+
         private static readonly HashSet<string> MajorSymbols = new(StringComparer.OrdinalIgnoreCase)
         {
             "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"
@@ -1829,6 +1833,7 @@ namespace TradingBot
                         foreach (var (symbol, forecast) in forecasts)
                         {
                             OnAiEntryProbUpdate?.Invoke(symbol, forecast);
+                            _latestAiForecasts[symbol] = forecast; // [A안] 캐시 갱신
 
                             // 높은 확률 코인 알림 (70% 이상)
                             if (forecast.AverageProbability >= 0.70f)
@@ -4414,10 +4419,28 @@ namespace TradingBot
             bool isHybridMidBandLongEntry = false;
 
             // ═══════════════════════════════════════════════════════════════
+            // [A안 조기진입] AI 확률 ≥ 80% + 즉시 예측이면 캔들 확인 스킵
+            // ═══════════════════════════════════════════════════════════════
+            bool skipCandleConfirm = false;
+            if (_latestAiForecasts.TryGetValue(symbol, out var latestForecast))
+            {
+                bool highConfidence = latestForecast.AverageProbability >= 0.80f;
+                bool isImmediateOrSoon = latestForecast.IsImmediate || latestForecast.ForecastOffsetMinutes <= 5;
+                if (highConfidence && isImmediateOrSoon)
+                {
+                    skipCandleConfirm = true;
+                    _pendingDelayedEntries.TryRemove(symbol, out _); // 기존 pending 제거
+                    OnStatusLog?.Invoke(
+                        $"⚡ [조기진입] {symbol} {decision} | AI확률 {latestForecast.AverageProbability:P0} ≥ 80% + 즉시예측 → 캔들 확인 스킵, 즉시 진입");
+                    EntryLog("EARLY", "BYPASS", $"aiProb={latestForecast.AverageProbability:P0} offset={latestForecast.ForecastOffsetMinutes}m");
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════
             // [캔들 확인 지연 진입 시스템] Candle Confirmation
             // 가짜 돌파(Fakeout) 방지: 신호 발생 → 다음 캔들 확인 후 진입
             // ═══════════════════════════════════════════════════════════════
-            if (IsHybridBbSignalSource(signalSource) && latestCandle != null)
+            if (IsHybridBbSignalSource(signalSource) && latestCandle != null && !skipCandleConfirm)
             {
                 // 기존 대기 신호가 있는지 확인
                 if (_pendingDelayedEntries.TryGetValue(symbol, out var pending))
