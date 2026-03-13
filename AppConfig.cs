@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Configuration;
+﻿using Microsoft.Extensions.Configuration;
 using TradingBot.Models;
 using TradingBot.Shared.Services;
 using SecurityService = TradingBot.Shared.Services.SecurityService;
@@ -349,7 +349,8 @@ namespace TradingBot
         
         /// <summary>AI 점수 임계값 - 일반 코인 (펌프 등)</summary>
         public float AiScoreThresholdNormal { get; set; } = 70.0f;
-        
+
         /// <summary>AI 점수 필터 활성화 여부</summary>
         public bool EnableAiScoreFilter { get; set; } = true;
+        
     }}

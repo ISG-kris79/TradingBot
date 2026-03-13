@@ -14,7 +14,7 @@ namespace TradingBot
 {
     /// <summary>
     /// AI 더블체크 진입 시스템
-    /// ML.NET + TensorFlow Transformer 둘 다 승인해야 진입 허가
+    /// ML.NET + TensorFlow Transformer 중 하나 이상 통과 시 진입 후보 허가
     /// + 실시간 데이터 수집 (지속적 학습용)
     /// + 온라인 학습 (적응형 학습 및 Concept Drift 감지)
     /// [v2.4.27] TorchSharp 완전 제거, TensorFlow.NET으로 전환
@@ -143,7 +143,6 @@ namespace TradingBot
                 // Transformer 승인 기준: 유효한 Time-to-Target 예측 (1~32캔들 범위)
                 bool tfApprove = candlesToTarget >= 1f && candlesToTarget <= 32f;
                 float effectiveTFThreshold = _onlineLearning?.CurrentTFThreshold ?? _config.MinTransformerConfidence;
-                bool tfPass = tfApprove && tfConfidence >= effectiveTFThreshold;
 
                 if (tfApprove)
                 {
@@ -163,7 +162,25 @@ namespace TradingBot
                 bool mlApprove = mlPrediction.ShouldEnter;
                 float mlConfidence = mlPrediction.Probability;
                 float effectiveMLThreshold = _onlineLearning?.CurrentMLThreshold ?? _config.MinMLConfidence;
-                bool mlPass = mlApprove && mlConfidence >= effectiveMLThreshold;
+
+                // 4. M15/M1 캔들 수집 (Fib 보너스 + 리스크/규칙 필터 공용)
+                var m15List = (await _exchangeService
+                    .GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.FifteenMinutes, 100, token))?
+                    .ToList() ?? new List<IBinanceKline>();
+
+                List<IBinanceKline> m1List = new();
+                if (IsMajorSymbol(symbol) && decision.Contains("LONG", StringComparison.OrdinalIgnoreCase))
+                {
+                    m1List = (await _exchangeService
+                        .GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.OneMinute, 5, token))?
+                        .ToList() ?? new List<IBinanceKline>();
+                }
+
+                var fibSignal = EvaluateFibonacciSupportSignal(symbol, decision, currentPrice, m15List, m1List);
+                float fibConfidenceBonus = (float)(fibSignal.BonusScore / 100.0);
+
+                bool tfPass = tfApprove && (tfConfidence + fibConfidenceBonus) >= effectiveTFThreshold;
+                bool mlPass = mlApprove && (mlConfidence + fibConfidenceBonus) >= effectiveMLThreshold;
 
                 var detail = new AIEntryDetail
                 {
@@ -171,37 +188,59 @@ namespace TradingBot
                     ML_Confidence = mlConfidence,
                     TF_Approve = tfApprove,
                     TF_Confidence = tfConfidence,
-                    TrendScore = tfConfidence,
-                    DoubleCheckPassed = mlPass && tfPass,
+                    TrendScore = Math.Min(1f, tfConfidence + fibConfidenceBonus),
+                    DoubleCheckPassed = mlPass || tfPass,
                     M15_RSI = feature?.M15_RSI ?? 0f,
-                    M15_BBPosition = feature?.M15_BBPosition ?? 0f
+                    M15_BBPosition = feature?.M15_BBPosition ?? 0f,
+                    FibonacciBonusScore = (float)fibSignal.BonusScore,
+                    Fib618 = (double)fibSignal.Fib618,
+                    Fib786 = (double)fibSignal.Fib786,
+                    FibReversalConfirmed = fibSignal.ReversalConfirmed,
+                    FibDeadCatBlocked = fibSignal.DeadCatBlocked
                 };
 
-                // 4. 데이터 수집 (실시간 학습용)
+                // 5. 데이터 수집 (실시간 학습용)
                 string decisionId = RecordEntryDecision(feature, mlPrediction, tfApprove, tfConfidence, detail.DoubleCheckPassed);
                 detail.DecisionId = decisionId;
 
-                if (!tfPass)
+                if (fibSignal.DeadCatBlocked)
+                {
+                    detail.DoubleCheckPassed = false;
+                    OnLog?.Invoke($"❌ [{symbol}] [DEADCAT_BLOCK] {fibSignal.Reason} | Trend={detail.TrendScore:P0}");
+                    return (false, $"DeadCat_Block_{fibSignal.Reason}_Trend={detail.TrendScore:P1}_FibBonus={fibSignal.BonusScore:F0}", detail);
+                }
+
+                if (fibSignal.BonusScore > 0)
+                {
+                    OnLog?.Invoke($"🎯 [{symbol}] [FIB_SUPPORT_BONUS] 0.618~0.786 지지+1m 리버설 확인, +{fibSignal.BonusScore:F0}점");
+                }
+
+                if (!tfPass && !mlPass)
                 {
                     string tfReason = tfApprove
-                        ? $"신뢰도 부족 ({tfConfidence:P0} < {effectiveTFThreshold:P0})"
-                        : $"타점 범위 외 ({candlesToTarget:F1}캔들, 유효 범위 1-32)";
-                    OnLog?.Invoke($"❌ [{symbol}] [BRAIN_BLOCK] Transformer 거부: {tfReason}");
-                    return (false, $"Transformer_Reject_Conf={tfConfidence:P1}", detail);
+                        ? $"TF 신뢰도 부족 ({tfConfidence + fibConfidenceBonus:P0} < {effectiveTFThreshold:P0})"
+                        : $"TF 타점 범위 외 ({candlesToTarget:F1}캔들, 유효 범위 1-32)";
+                    string mlReason = mlApprove
+                        ? $"ML 신뢰도 부족 ({mlConfidence + fibConfidenceBonus:P0} < {effectiveMLThreshold:P0})"
+                        : $"ML 진입 비승인 ({mlConfidence:P0})";
+                    OnLog?.Invoke($"❌ [{symbol}] [DUAL_BLOCK] ML/TF 동시 미달: {mlReason}, {tfReason}");
+                    return (false, $"Dual_Reject_ML={mlConfidence:P1}_TF={tfConfidence:P1}_Trend={detail.TrendScore:P1}_FibBonus={fibSignal.BonusScore:F0}", detail);
+                }
+
+                if (!tfPass)
+                {
+                    OnLog?.Invoke($"⚠️ [{symbol}] [BRAIN_SOFT_PASS] TF 미달이지만 ML 통과로 진입 유지 | ML={mlConfidence:P0}, TF={tfConfidence:P0}, Fib+={fibSignal.BonusScore:F0}");
                 }
 
                 if (!mlPass)
                 {
-                    OnLog?.Invoke($"❌ [{symbol}] [FILTER_BLOCK] ML.NET 거부: {(mlApprove ? $"신뢰도 부족 ({mlConfidence:P0} < {effectiveMLThreshold:P0})" : $"진입 비승인 ({mlConfidence:P0})")}");
-                    return (false, $"MLNET_Reject_Conf={mlConfidence:P1}", detail);
+                    OnLog?.Invoke($"⚠️ [{symbol}] [FILTER_SOFT_PASS] ML 미달이지만 TF 통과로 진입 유지 | ML={mlConfidence:P0}, TF={tfConfidence:P0}, Fib+={fibSignal.BonusScore:F0}");
                 }
 
-                // 5. ML 필터 보강: 과열/꼬리/추격 리스크 차단
-                var m15Candles = await _exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.FifteenMinutes, 100, token);
-                var m15List = m15Candles?.ToList();
-                if (m15List != null && m15List.Count > 0)
+                // 6. ML 필터 보강: 과열/꼬리/추격 리스크 차단
+                if (m15List.Count > 0)
                 {
-                    var sanityFilter = EvaluateDualGateRiskFilter(decision, currentPrice, feature, tfConfidence, m15List);
+                    var sanityFilter = EvaluateDualGateRiskFilter(symbol, decision, currentPrice, feature!, tfConfidence, m15List);
                     if (!sanityFilter.passed)
                     {
                         detail.DoubleCheckPassed = false;
@@ -210,8 +249,8 @@ namespace TradingBot
                     }
                 }
 
-                // 6. 엘리엇 파동 + 피보나치 규칙 검증 (거부 필터)
-                if (m15List != null)
+                // 7. 엘리엇 파동 + 피보나치 규칙 검증 (거부 필터)
+                if (m15List.Count > 0)
                 {
                     PositionSide side = decision.Contains("SHORT", StringComparison.OrdinalIgnoreCase)
                         ? PositionSide.Short
@@ -239,9 +278,9 @@ namespace TradingBot
                     detail.FibInEntryZone = fibLevels.InEntryZone;
                 }
 
-                // 7. 최종 승인 (Transformer + ML + 리스크 필터 + 규칙 필터)
-                OnLog?.Invoke($"✅ [{symbol}] AI 더블체크 승인! Trend={tfConfidence:P0}, ML={mlConfidence:P0}, TF={tfConfidence:P0}");
-                return (true, $"DoubleCheck_PASS_Trend={tfConfidence:P1}_ML={mlConfidence:P1}_TF={tfConfidence:P1}", detail);
+                // 8. 최종 승인 (ML 또는 TF + Fib 보너스 + 리스크 필터 + 규칙 필터)
+                OnLog?.Invoke($"✅ [{symbol}] AI 더블체크 승인! Trend={detail.TrendScore:P0}, ML={mlConfidence:P0}, TF={tfConfidence:P0}, Fib+={fibSignal.BonusScore:F0}");
+                return (true, $"DoubleCheck_PASS_Trend={detail.TrendScore:P1}_ML={mlConfidence:P1}_TF={tfConfidence:P1}_FibBonus={fibSignal.BonusScore:F0}", detail);
             }
             catch (Exception ex)
             {
@@ -260,28 +299,34 @@ namespace TradingBot
             CancellationToken token = default)
         {
             var (allow, reason, detail) = await EvaluateEntryAsync(symbol, decision, currentPrice, token);
+            var symbolThreshold = _config.GetThresholdBySymbol(symbol);
 
             if (!allow)
                 return (allow, reason, detail);
 
-            // 메이저 코인: 더 보수적 (높은 threshold)
+            float fibBonusConfidence = detail.FibonacciBonusScore / 100f;
+
+            // 메이저 코인: 고신뢰 임계값 적용 (ML/TF 중 하나만 충족해도 통과)
             if (coinType == CoinType.Major)
             {
-                if (detail.ML_Confidence < _config.MinMLConfidenceMajor ||
-                    detail.TF_Confidence < _config.MinTransformerConfidenceMajor)
+                float majorMinConf = Math.Max(_config.MinMLConfidenceMajor, symbolThreshold.AiConfidenceMin);
+                bool majorMlPass = detail.ML_Approve && (detail.ML_Confidence + fibBonusConfidence) >= majorMinConf;
+                bool majorTfPass = detail.TF_Approve && (detail.TF_Confidence + fibBonusConfidence) >= Math.Max(_config.MinTransformerConfidenceMajor, symbolThreshold.AiConfidenceMin);
+                if (!majorMlPass && !majorTfPass)
                 {
-                    return (false, $"Major_Threshold_Not_Met_ML={detail.ML_Confidence:P1}", detail);
+                    return (false, $"Major_Threshold_Not_Met_ML={detail.ML_Confidence:P1}_TF={detail.TF_Confidence:P1}", detail);
                 }
             }
             // 펌핑 코인: 별도 모델 (TODO: 펌핑 전용 모델 학습)
             else if (coinType == CoinType.Pumping)
             {
                 // 펌핑 코인은 변동성 리스크가 높아 별도 강화 threshold 적용
-                float pumpMlThreshold = Math.Max(_config.MinMLConfidencePumping, _config.MinMLConfidence);
-                float pumpTfThreshold = Math.Max(_config.MinTransformerConfidencePumping, _config.MinTransformerConfidence);
+                float pumpMlThreshold = Math.Max(Math.Max(_config.MinMLConfidencePumping, _config.MinMLConfidence), symbolThreshold.AiConfidenceMin);
+                float pumpTfThreshold = Math.Max(Math.Max(_config.MinTransformerConfidencePumping, _config.MinTransformerConfidence), symbolThreshold.AiConfidenceMin);
 
-                if (detail.ML_Confidence < pumpMlThreshold ||
-                    detail.TF_Confidence < pumpTfThreshold)
+                bool pumpMlPass = detail.ML_Approve && (detail.ML_Confidence + fibBonusConfidence) >= pumpMlThreshold;
+                bool pumpTfPass = detail.TF_Approve && (detail.TF_Confidence + fibBonusConfidence) >= pumpTfThreshold;
+                if (!pumpMlPass && !pumpTfPass)
                 {
                     return (false, $"Pumping_Threshold_Not_Met_ML={detail.ML_Confidence:P1}_TF={detail.TF_Confidence:P1}", detail);
                 }
@@ -291,6 +336,7 @@ namespace TradingBot
         }
 
         private (bool passed, string reason) EvaluateDualGateRiskFilter(
+            string symbol,
             string decision,
             decimal currentPrice,
             MultiTimeframeEntryFeature feature,
@@ -302,11 +348,13 @@ namespace TradingBot
 
             float rsi = feature.M15_RSI;
             float bbPosition = feature.M15_BBPosition;
+            var symbolThreshold = _config.GetThresholdBySymbol(symbol);
+            float rsiHardCap = Math.Min(_config.RsiOverheatHardCap, symbolThreshold.MaxRsiLimit);
             float upperWickRatio = CalculateUpperWickRatio(m15Candles[^1]);
             decimal pullbackFromRecentHighPct = CalculatePullbackFromRecentHighPct(currentPrice, m15Candles, 20);
 
-            if (rsi >= _config.RsiOverheatHardCap)
-                return (false, $"RSI_Overheat_{rsi:F1}_GE_{_config.RsiOverheatHardCap:F1}");
+            if (rsi >= rsiHardCap)
+                return (false, $"RSI_Overheat_{rsi:F1}_GE_{rsiHardCap:F1}");
 
             if (upperWickRatio >= _config.UpperWickRiskThreshold)
                 return (false, $"UpperWick_Risk_{upperWickRatio:P0}_GE_{_config.UpperWickRiskThreshold:P0}");
@@ -328,6 +376,114 @@ namespace TradingBot
             }
 
             return (true, "Risk_Filter_Passed");
+        }
+
+        private (double BonusScore, bool DeadCatBlocked, string Reason, decimal Fib618, decimal Fib786, bool ReversalConfirmed)
+            EvaluateFibonacciSupportSignal(
+                string symbol,
+                string decision,
+                decimal currentPrice,
+                List<IBinanceKline> m15Candles,
+                List<IBinanceKline> m1Candles)
+        {
+            if (!IsMajorSymbol(symbol) ||
+                !decision.Contains("LONG", StringComparison.OrdinalIgnoreCase))
+            {
+                return (0d, false, "Fib_Not_Applicable", 0m, 0m, false);
+            }
+
+            if (m15Candles == null || m15Candles.Count < Math.Max(8, _config.FibonacciWaveLookbackCandles / 2))
+            {
+                return (0d, false, "Fib_M15_Data_Insufficient", 0m, 0m, false);
+            }
+
+            var waveCandles = m15Candles.TakeLast(Math.Max(8, _config.FibonacciWaveLookbackCandles)).ToList();
+            decimal waveHigh = waveCandles.Max(c => c.HighPrice);
+            decimal waveLow = waveCandles.Min(c => c.LowPrice);
+            decimal range = waveHigh - waveLow;
+            if (range <= 0m)
+            {
+                return (0d, false, "Fib_Range_Invalid", 0m, 0m, false);
+            }
+
+            decimal fib618 = waveHigh - (range * (decimal)_config.FibonacciSupportUpper);
+            decimal fib786 = waveHigh - (range * (decimal)_config.FibonacciSupportLower);
+
+            if (m1Candles == null || m1Candles.Count < 2)
+            {
+                return (0d, false, "Fib_M1_Data_Insufficient", fib618, fib786, false);
+            }
+
+            var prev = m1Candles[^2];
+            var last = m1Candles[^1];
+
+            if (IsStrongDeadCatBreakdown(last, fib786, _config.DeadCatBodyBreakRatio))
+            {
+                return (0d, true,
+                    $"Fib786_BodyBreak_Close={last.ClosePrice:F6}_Fib786={fib786:F6}",
+                    fib618, fib786, false);
+            }
+
+            bool inSupportZone = currentPrice <= fib618 && currentPrice >= fib786;
+            bool bullishReversal = IsBullishReversal(prev, last, _config.ReversalBodyRatioThreshold);
+
+            if (inSupportZone && bullishReversal)
+            {
+                return (_config.FibonacciSupportBonusScore, false, "Fib_Support_Reversal", fib618, fib786, true);
+            }
+
+            return (0d, false, "Fib_No_Bonus", fib618, fib786, bullishReversal);
+        }
+
+        private static bool IsBullishReversal(IBinanceKline previous, IBinanceKline current, float minBodyRatio)
+        {
+            bool prevBearish = previous.ClosePrice < previous.OpenPrice;
+            bool currentBullish = current.ClosePrice > current.OpenPrice;
+            if (!prevBearish || !currentBullish)
+                return false;
+
+            decimal currentRange = current.HighPrice - current.LowPrice;
+            if (currentRange <= 0m)
+                return false;
+
+            decimal currentBody = Math.Abs(current.ClosePrice - current.OpenPrice);
+            decimal bodyRatio = currentBody / currentRange;
+            bool bodyStrong = bodyRatio >= (decimal)minBodyRatio;
+
+            bool closeRecovered = current.ClosePrice >= previous.OpenPrice
+                                 || current.ClosePrice > previous.ClosePrice;
+
+            return bodyStrong && closeRecovered;
+        }
+
+        private static bool IsStrongDeadCatBreakdown(IBinanceKline candle, decimal fib786, float minBodyRatio)
+        {
+            bool bearish = candle.ClosePrice < candle.OpenPrice;
+            if (!bearish)
+                return false;
+
+            bool bodyBreak = candle.OpenPrice >= fib786 && candle.ClosePrice < fib786;
+            if (!bodyBreak)
+                return false;
+
+            decimal range = candle.HighPrice - candle.LowPrice;
+            if (range <= 0m)
+                return false;
+
+            decimal body = Math.Abs(candle.OpenPrice - candle.ClosePrice);
+            decimal bodyRatio = body / range;
+            return bodyRatio >= (decimal)minBodyRatio;
+        }
+
+        private static bool IsMajorSymbol(string symbol)
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+                return false;
+
+            return symbol.StartsWith("BTC", StringComparison.OrdinalIgnoreCase)
+                || symbol.StartsWith("ETH", StringComparison.OrdinalIgnoreCase)
+                || symbol.StartsWith("SOL", StringComparison.OrdinalIgnoreCase)
+                || symbol.StartsWith("XRP", StringComparison.OrdinalIgnoreCase);
         }
 
         private static float CalculateUpperWickRatio(IBinanceKline candle)
@@ -387,7 +543,7 @@ namespace TradingBot
         }
 
         private string RecordEntryDecision(
-            MultiTimeframeEntryFeature feature,
+            MultiTimeframeEntryFeature? feature,
             EntryTimingPrediction mlPred,
             bool tfApprove,
             float tfConf,
@@ -395,18 +551,25 @@ namespace TradingBot
         {
             string decisionId = Guid.NewGuid().ToString("N");
 
+            var safeFeature = feature ?? new MultiTimeframeEntryFeature
+            {
+                Symbol = string.Empty,
+                EntryPrice = 0m,
+                Timestamp = DateTime.UtcNow
+            };
+
             var record = new EntryDecisionRecord
             {
                 DecisionId = decisionId,
                 Timestamp = DateTime.UtcNow,
-                Symbol = feature.Symbol,
-                EntryPrice = feature.EntryPrice,
+                Symbol = safeFeature.Symbol,
+                EntryPrice = safeFeature.EntryPrice,
                 ML_Approve = mlPred.ShouldEnter,
                 ML_Confidence = mlPred.Probability,
                 TF_Approve = tfApprove,
                 TF_Confidence = tfConf,
                 FinalDecision = finalDecision,
-                Feature = feature,
+                Feature = safeFeature,
                 // ActualProfit는 15분 후 별도 업데이트
                 ActualProfitPct = null,
                 Labeled = false
@@ -1505,6 +1668,8 @@ namespace TradingBot
     /// </summary>
     public class DoubleCheckConfig
     {
+        public readonly record struct SymbolThreshold(double EntryScoreCut, float MaxRsiLimit, float AiConfidenceMin);
+
         public float MinMLConfidence { get; set; } = 0.65f;
         public float MinTransformerConfidence { get; set; } = 0.60f;
         public float MinMLConfidenceMajor { get; set; } = 0.75f; // 메이저 코인은 더 보수적
@@ -1529,6 +1694,13 @@ namespace TradingBot
         public float UpperWickRiskThreshold { get; set; } = 0.70f;
         public float RecentHighChaseThresholdPct { get; set; } = 0.20f;
 
+        public int FibonacciWaveLookbackCandles { get; set; } = 32;
+        public float FibonacciSupportUpper { get; set; } = 0.618f;
+        public float FibonacciSupportLower { get; set; } = 0.786f;
+        public double FibonacciSupportBonusScore { get; set; } = 20.0;
+        public float ReversalBodyRatioThreshold { get; set; } = 0.35f;
+        public float DeadCatBodyBreakRatio { get; set; } = 0.55f;
+
         public int EntryForecastSteps { get; set; } = 8; // 다음 2시간(15분 x 8)
         public int EntryForecastWatchSteps { get; set; } = 16; // 관망 시 4시간(15분 x 16)
         public float EntryForecastImmediateThreshold { get; set; } = 0.62f;
@@ -1536,6 +1708,37 @@ namespace TradingBot
         public float EntryForecastWatchThreshold { get; set; } = 0.35f;
         public float EntryForecastMinCandidateProbability { get; set; } = 0.35f;
         public float EntryForecastTimePenaltyPerStep { get; set; } = 0.01f;
+
+        public SymbolThreshold GetThresholdBySymbol(string symbol)
+        {
+            bool isMajor = IsMajorCoin(symbol); // BTC, ETH, SOL, XRP
+
+            if (isMajor)
+            {
+                // [메이저 전용 완화 세팅]
+                return new SymbolThreshold(
+                    EntryScoreCut: 70.0,
+                    MaxRsiLimit: 75f,
+                    AiConfidenceMin: 0.7f);
+            }
+
+            // [밈코인용 엄격 세팅]
+            return new SymbolThreshold(
+                EntryScoreCut: 80.0,
+                MaxRsiLimit: 65f,
+                AiConfidenceMin: 0.9f);
+        }
+
+        private static bool IsMajorCoin(string symbol)
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+                return false;
+
+            return symbol.StartsWith("BTC", StringComparison.OrdinalIgnoreCase)
+                || symbol.StartsWith("ETH", StringComparison.OrdinalIgnoreCase)
+                || symbol.StartsWith("SOL", StringComparison.OrdinalIgnoreCase)
+                || symbol.StartsWith("XRP", StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     /// <summary>
@@ -1558,6 +1761,13 @@ namespace TradingBot
         // 엘리엇 파동 & 피보나치 규칙 검증 결과
         public bool ElliottValid { get; set; }
         public bool FibInEntryZone { get; set; }
+
+        // 메이저 코인 Fib 전술 신호
+        public float FibonacciBonusScore { get; set; }
+        public double Fib618 { get; set; }
+        public double Fib786 { get; set; }
+        public bool FibReversalConfirmed { get; set; }
+        public bool FibDeadCatBlocked { get; set; }
     }
 
     /// <summary>

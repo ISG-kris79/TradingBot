@@ -1915,6 +1915,8 @@ namespace TradingBot.ViewModels
                 if (!string.IsNullOrEmpty(signal.PositionSide) && !string.Equals(existing.PositionSide, signal.PositionSide, StringComparison.Ordinal)) existing.PositionSide = signal.PositionSide;
                 if (signal.Quantity > 0) existing.Quantity = signal.Quantity;
                 if (signal.Leverage > 0) existing.Leverage = signal.Leverage;
+                if (signal.TargetPrice > 0) existing.TargetPrice = signal.TargetPrice;
+                if (signal.StopLossPrice > 0) existing.StopLossPrice = signal.StopLossPrice;
 
                 if (signal.TransformerPrice > 0 && existing.TransformerPrice != signal.TransformerPrice) existing.TransformerPrice = signal.TransformerPrice;
                 if (Math.Abs(existing.TransformerChange - signal.TransformerChange) > 0.001) existing.TransformerChange = signal.TransformerChange;
@@ -1960,6 +1962,7 @@ namespace TradingBot.ViewModels
             using (view.DeferRefresh())
             {
                 view.SortDescriptions.Clear();
+                view.SortDescriptions.Add(new SortDescription(nameof(MultiTimeframeViewModel.SortPriority), ListSortDirection.Ascending));
                 view.SortDescriptions.Add(new SortDescription(nameof(MultiTimeframeViewModel.IsPositionActive), ListSortDirection.Descending));
                 view.SortDescriptions.Add(new SortDescription(nameof(MultiTimeframeViewModel.ProfitRate), ListSortDirection.Descending));
                 view.SortDescriptions.Add(new SortDescription(nameof(MultiTimeframeViewModel.AIScore), ListSortDirection.Descending));
@@ -1968,6 +1971,7 @@ namespace TradingBot.ViewModels
             if (view is ICollectionViewLiveShaping liveView && liveView.CanChangeLiveSorting)
             {
                 liveView.LiveSortingProperties.Clear();
+                liveView.LiveSortingProperties.Add(nameof(MultiTimeframeViewModel.SortPriority));
                 liveView.LiveSortingProperties.Add(nameof(MultiTimeframeViewModel.IsPositionActive));
                 liveView.LiveSortingProperties.Add(nameof(MultiTimeframeViewModel.ProfitRate));
                 liveView.LiveSortingProperties.Add(nameof(MultiTimeframeViewModel.AIScore));
@@ -3164,13 +3168,22 @@ namespace TradingBot.ViewModels
                 existing.CloseIncompleteDetail = null;
                 if (isActive)
                 {
-                    existing.TargetPrice = entryPrice * 1.03m;
-                    existing.StopLossPrice = entryPrice * 0.985m;
+                    existing.ProfitPercent = 0;
+                    if (entryPrice > 0)
+                    {
+                        existing.LastPrice = entryPrice;
+                        if (existing.TargetPrice <= 0)
+                            existing.TargetPrice = entryPrice * 1.03m;
+                        if (existing.StopLossPrice <= 0)
+                            existing.StopLossPrice = entryPrice * 0.985m;
+                    }
                 }
                 else
                 {
                     existing.Decision = "WAIT";
                     existing.ProfitPercent = 0;
+                    existing.TargetPrice = 0;
+                    existing.StopLossPrice = 0;
                 }
 
                 string resolvedEntryStatus = ResolveEntryStatus(existing.SignalSource, existing.Decision, existing.IsPositionActive);

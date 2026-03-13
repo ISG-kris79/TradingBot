@@ -11,9 +11,28 @@ namespace TradingBot.Strategies
     /// 전략 B (지표 검증 - Technical):
     ///   - 엘리엇 3파동 단계 (25점) - 선취매 관점 재배분
     ///   - 거래량 모멘텀 (15점) - 1.3배부터 점진적 점수
-    ///   - RSI & MACD 위치 (10점)
+    ///   - RSI & MACD "기울기(Slope)" (10점) *** v2.5 변경: 수치→변화율 ***
     ///   - 볼린저 밴드 위치 (10점)
     /// ─────────────────────────────────────────
+    /// 
+    /// 🆕 [v2.5] RSI/MACD 기울기 기반 점수 변경
+    /// ────────────────────────────────────────
+    /// 기존(v2.4): RSI 수치 자체 평가 (예: RSI>50 = 강세)
+    /// 변경(v2.5): RSI 변화율(기울기) 평가 (예: RSI 20→30 급상승 = 강세 신호)
+    /// 
+    /// • GetRsiSlope() = 최근 4개 봉 간 누적 변화율
+    ///   - slope ≥ +10: 급상승 (8점) → 추세 전환 신호, ~15초 앞당김
+    ///   - slope 5~10: 중간 상승 (6점)
+    ///   - slope 0~5:  약한 상승 (3점)
+    ///   - slope -5~0: 약한 하강 (1점)
+    ///   - slope < -5:  하락 (0점)
+    /// 
+    /// 효과: 절대값이 아닌 "방향의 전환"을 감지해 15~30초 조기 진입
+    /// 예시:
+    ///   - RSI 20→25→30→35 = slope +15 ✅ 강한 상승 (8점)
+    ///   - RSI 50→50→51→49 = slope ~0 ❌ 중립 (1점)
+    ///   - RSI 35→30→25→20 = slope -15 ❌ 급락 (0점)
+    /// 
     /// FinalScore ≥ 65 (기본값, ATR 기반 동적 조정: 60~75)
     /// - 수렴장(ATR<0.15%): 60점 → 3파 선취매
     /// - 일반장(0.15~0.3%): 65점 → 표준 진입
@@ -34,8 +53,11 @@ namespace TradingBot.Strategies
         private const decimal SHORT_PREDICTED_CHANGE_MIN = -0.0060m; // -0.60% (숏 조건 완화)
 
         // ════════════════ 최종 승인 임계값 (기본) ════════════════
-        public const double LONG_APPROVAL_THRESHOLD = 65.0;  // 75→65 하향 (진입 빈도 증가)
-        public const double SHORT_APPROVAL_THRESHOLD = 65.0;
+        // LONG 진입 기본값: 80점 (스나이퍼 모드)
+        // AI(27) + 기술(45) + 보너스(8) 등의 중첩 필요
+        // 노이즈 진입 원천 차단 → 종목당 일일 1~2회 '결정적 순간'만 포착
+        public const double LONG_APPROVAL_THRESHOLD = 80.0;  // 70→80 상향 (스나이퍼 모드 활성화)
+        public const double SHORT_APPROVAL_THRESHOLD = 80.0; // LONG과 대칭 기준
 
         /// <summary>
         /// 하이브리드 스코어 평가 결과
@@ -155,11 +177,28 @@ namespace TradingBot.Strategies
             public double BbLower { get; set; }
             public double BbWidth { get; set; }
 
-            // RSI
-            public double RSI { get; set; }
+            // 캔들 구조 (바닥/고점 가점 계산용)
+            public double UpperWick { get; set; } = 0;  // 윗꼬리 (=High - max(Open,Close))
+            public double LowerWick { get; set; } = 0;  // 아랫꼬리 (=min(Open,Close) - Low)
+            public double Body { get; set; } = 0;       // 몸통 크기 (=|Close - Open|)
 
-            // MACD
+            // 거래량 (바닥 강기 가점 계산용)
+            public double Volume { get; set; } = 0;     // 현재 캔들 거래량
+            public double AvgVolume { get; set; } = 0;  // 20봉 평균 거래량
+
+            // RSI - 현재값 + 최근 4개 봉 (기울기 계산용)
+            public double RSI { get; set; }
+            public double RSI_Prev1 { get; set; } = 0;  // 1봉 전
+            public double RSI_Prev2 { get; set; } = 0;  // 2봉 전
+            public double RSI_Prev3 { get; set; } = 0;  // 3봉 전
+            public double RSI_Prev4 { get; set; } = 0;  // 4봉 전
+
+            // MACD - 현재값 + 최근 4개 봉 (기울기 계산용)
             public double MacdHist { get; set; }
+            public double MacdHist_Prev1 { get; set; } = 0;
+            public double MacdHist_Prev2 { get; set; } = 0;
+            public double MacdHist_Prev3 { get; set; } = 0;
+            public double MacdHist_Prev4 { get; set; } = 0;
             public double MacdLine { get; set; }
             public double MacdSignal { get; set; }
 
@@ -183,6 +222,25 @@ namespace TradingBot.Strategies
 
             // RSI 다이버전스 (-1: 약세, 0: 없음, 1: 강세)
             public double RsiDivergence { get; set; }
+
+            /// <summary>
+            /// RSI 기울기(Slope) 계산: 최근 4개 봉 간의 변화율
+            /// 양수 = 상승, 음수 = 하락, 절대값이 클수록 급변
+            /// </summary>
+            public double GetRsiSlope()
+            {
+                // 최근 4개 봉의 RSI 변화 합계 (급상승 감지)
+                return (RSI - RSI_Prev1) + (RSI_Prev1 - RSI_Prev2) + (RSI_Prev2 - RSI_Prev3) + (RSI_Prev3 - RSI_Prev4);
+                // 또는 선형 회귀로 더 정교하게: slope = (4*RSI + 3*RSI_Prev1 + 2*RSI_Prev2 + RSI_Prev3 - 10*RSI_Prev4) / 10
+            }
+
+            /// <summary>
+            /// MACD 기울기(Slope) 계산: 최근 4개 봉 간의 변화율
+            /// </summary>
+            public double GetMacdSlope()
+            {
+                return (MacdHist - MacdHist_Prev1) + (MacdHist_Prev1 - MacdHist_Prev2) + (MacdHist_Prev2 - MacdHist_Prev3) + (MacdHist_Prev3 - MacdHist_Prev4);
+            }
         }
 
         /// <summary>
@@ -241,12 +299,16 @@ namespace TradingBot.Strategies
             result.BollingerScore = ScoreBollingerForLong(ctx);
             result.BBPosition = GetBBPosition(ctx);
 
+            // ── 6. 과매도 바닥 낚시 보너스 (새로운 신호) ──
+            double overSoldBonus = GetOverSoldBonus(ctx);
+
             result.FinalScore = Math.Clamp(
                 result.AiPredictionScore +
                 result.ElliottWaveScore +
                 result.VolumeMomentumScore +
                 result.RsiMacdScore +
-                result.BollingerScore,
+                result.BollingerScore +
+                overSoldBonus,
                 0, 100);
 
             return result;
@@ -305,12 +367,16 @@ namespace TradingBot.Strategies
             result.BollingerScore = ScoreBollingerForShort(ctx);
             result.BBPosition = GetBBPosition(ctx);
 
+            // ── 6. 과매수 고점 낚시 보너스 (새로운 신호) ──
+            double overBoughtBonus = GetOverBoughtShortBonus(ctx);
+
             result.FinalScore = Math.Clamp(
                 result.AiPredictionScore +
                 result.ElliottWaveScore +
                 result.VolumeMomentumScore +
                 result.RsiMacdScore +
-                result.BollingerScore,
+                result.BollingerScore +
+                overBoughtBonus,
                 0, 100);
 
             return result;
@@ -324,19 +390,29 @@ namespace TradingBot.Strategies
         {
             double score = 0;
 
-            // [선취매 관점] Wave3Entry는 이미 가격 상승 후 → 점수 하향
-            // Setup/Wave2 단계에서 미리 잡는 것이 20배 레버리지에 유리
-            if (ctx.ElliottPhase == "Wave3Entry") score = 15;      // 25→15 하향 (늦은 진입)
-            else if (ctx.ElliottPhase == "Wave3Setup") score = 20; // 18→20 상향 (준비 단계)
-            else if (ctx.ElliottPhase == "Wave3Active") score = 15;
-            else if (ctx.ElliottPhase == "Wave2Started") score = 15; // 10→15 상향 (눌림목)
-            else if (ctx.IsElliottUptrend) score = 8;
+            // ─── 변경 [v2.5]: 엘리엇 3파 "확인" → 역추세 "낚시" 가점 ───
+            // 기존: Wave3Entry 확정 후 진입 (늦음)
+            // 변경: 바닥 신호(RSI≤20 + BB하단) 감지 시 미리 25점 부여 (빠름)
+            //
+            // 역추세 가점: RSI 극도 과매도 + BB 하단 이탈
+            // "지옥 구경하고 왔다"는 기술 지표 신호 → 3파동 점수를 당겨주기
+            if (ctx.RSI <= 20 && (double)ctx.CurrentPrice <= ctx.BbLower)
+            {
+                score = 25; // ⭐ "바닥"이다! 즉시 반등 기대 → 풀 점수
+            }
+            // Wave3 단계별 보조 점수 (이제는 참고일만 함)
+            else if (ctx.ElliottPhase == "Wave3Entry") score = 10;      
+            else if (ctx.ElliottPhase == "Wave3Setup") score = 15; 
+            else if (ctx.ElliottPhase == "Wave3Active") score = 10;
+            else if (ctx.ElliottPhase == "Wave2Started") score = 15; // Wave2 눌림목은 여전히 우호
+            else if (ctx.IsElliottUptrend) score = 5; // 상승 추세 기본점
 
-            // RSI 다이버전스 보너스 (Wave2 눌림목에서 강세 다이버전스)
-            if (ctx.RsiDivergence > 0 && ctx.ElliottPhase == "Wave2Started") score += 10;
+            // RSI 강세 다이버전스 보너스
+            if (ctx.RsiDivergence > 0 && (ctx.RSI <= 30 || ctx.ElliottPhase == "Wave2Started"))
+                score += 5; // 갭 메꾸기 보너스
 
-            // SMA 정배열 보너스 (엘리엇 방향 확인)
-            if (ctx.Sma20 > ctx.Sma50 && ctx.Sma50 > ctx.Sma200) score = Math.Min(score + 5, 25);
+            // SMA 정배열 보너스
+            if (ctx.Sma20 > ctx.Sma50 && ctx.Sma50 > ctx.Sma200) score = Math.Min(score + 3, 25);
 
             return score;
         }
@@ -363,23 +439,25 @@ namespace TradingBot.Strategies
         {
             double score = 0;
 
-            // RSI 구간별 점수 (모든 구간 커버 → 데드존 제거)
-            if (ctx.RSI >= 40 && ctx.RSI <= 65) score += 5;       // 최적 진입 구간
-            else if (ctx.RSI > 70)
-            {
-                bool upTrend = ctx.IsElliottUptrend || ctx.Sma20 > ctx.Sma50;
-                if (upTrend)
-                    score += 1;  // 상승 추세 + 과매수 → 모멘텀 지속
-                else
-                    score -= 3;  // 비추세 + 과매수 → 고점 추격 위험
-            }
-            else if (ctx.RSI >= 65 && ctx.RSI <= 70) score += 3;  // 약간 과열이나 진입 가능
-            else if (ctx.RSI >= 30 && ctx.RSI < 40) score += 3;   // 30~40: 과매도 근접 반등 기대 (기존 데드존)
-            else if (ctx.RSI < 30) score += 2;                     // 극도 과매도 → 반등 가능하나 위험
+            // ═══ 변경: RSI 수치 → RSI 기울기(Slope) 기반 ═══
+            // 기울기는 최근 4개 봉에서 RSI가 얼마나 급상승했는지를 나타냄
+            // 예: RSI 20→25→30→35 = slope +15 (좋음!, 강한 상승 신호)
+            // 예: RSI 50에 머물러있음 = slope ~0 (중립)
+            // 예: RSI 35→30→25→20 = slope -15 (하락, 피함)
+            
+            double rsiSlope = ctx.GetRsiSlope();
+            
+            if (rsiSlope >= 10)  score += 8;    // 강한 상승 각도 (15초 앞당김 효과)
+            else if (rsiSlope >= 5) score += 6; // 중간 상승
+            else if (rsiSlope >= 0) score += 3; // 약한 상승
+            else if (rsiSlope >= -5) score += 1; // 약간 하락
+            else score = 0;                      // 강한 하락
 
-            // MACD 히스토그램: 0선 위이거나, 음수 폭이 줄어드는 중
-            if (ctx.MacdHist > 0) score += 5;
-            else if (ctx.MacdHist >= -0.0005) score += 3; // 0선 근접 (반전 직전)
+            // ═══ MACD 기울기도 유사하게 평가 ═══
+            double macdSlope = ctx.GetMacdSlope();
+            
+            if (macdSlope > 0.001) score += 2;     // MACD도 상승
+            else if (macdSlope < -0.001) score -= 1; // MACD 하락
 
             return Math.Clamp(score, 0, 10);
         }
@@ -450,26 +528,22 @@ namespace TradingBot.Strategies
         {
             double score = 0;
 
-            // RSI 하락 다이버전스 발생 → 최대 점수
-            if (ctx.RsiDivergence < 0) score += 5;
+            // ═══ 변경: RSI 수치 → RSI 기울기(Slope) 기반 ═══
+            // SHORT: RSI가 급하락할 때 ('70→60→50→40' 같은 가파른 하강)
+            
+            double rsiSlope = ctx.GetRsiSlope();
+            
+            if (rsiSlope <= -10)  score += 8;    // 강한 하락 각도 (SHORT 최적)
+            else if (rsiSlope <= -5) score += 6; // 중간 하락
+            else if (rsiSlope <= 0)  score += 3; // 약한 하락
+            else if (rsiSlope <= 5)   score += 1; // 약간 상승
+            else score = 0;                       // 강한 상승
 
-            // RSI 구간별 점수 (모든 구간 커버 → 데드존 제거)
-            if (ctx.RSI >= 70) score += 3;           // 과매수 → 하락 전환 기대
-            else if (ctx.RSI >= 55) score += 2;      // 55~70: 중립~과매수
-            else if (ctx.RSI >= 45) score += 1;      // 45~55: 중립 (기존 데드존 → 기본점수 부여)
-            else if (ctx.RSI >= 35) score += 1;      // 35~45: 약세 진입 (기존 데드존 → 기본점수 부여)
-            else // RSI < 35: 추세 컨텍스트에 따라 판단
-            {
-                bool downTrend = !ctx.IsElliottUptrend || ctx.Sma20 < ctx.Sma50;
-                if (downTrend)
-                    score += 1;  // 하락 추세 + 과매도 → 추세 지속 확인
-                else
-                    score -= 3;  // 상승 추세 + 과매도 → 반등 위험
-            }
-
-            // MACD 히스토그램
-            if (ctx.MacdHist < 0) score += 5;               // 음수 → 하락 모멘텀
-            else if (ctx.MacdHist <= 0.0005) score += 2;     // 0선 근접 → 전환 직전
+            // ═══ MACD 기울기 ═══
+            double macdSlope = ctx.GetMacdSlope();
+            
+            if (macdSlope < -0.001) score += 2;    // MACD도 하락
+            else if (macdSlope > 0.001) score -= 1; // MACD 상승
 
             return Math.Clamp(score, 0, 10);
         }
@@ -498,6 +572,64 @@ namespace TradingBot.Strategies
             }
 
             return Math.Clamp(score, 0, 10);
+        }
+
+        // ══════════════════════════════════════════════════════════
+        //  과매도/과매수 "긴급 신호" 보너스 점수
+        //  ("지옥 구경" 바닥/고점 낚시 전용)
+        // ══════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// 롱 진입용 바닥 포착 보너스
+        /// 조건: RSI "투매" 25이하 AND 볼린저 밴드 하단 이탈 
+        /// → 즉시 30점 부여 (지표 점수의 절반 점령)
+        /// + 거래량이 평소의 1.5배 터지면 추가 5점
+        /// </summary>
+        public double GetOverSoldBonus(TechnicalContext ctx)
+        {
+            double bonusScore = 0;
+
+            // [조건] RSI 25 이하 AND 볼린저 밴드 하단 이탈
+            // 밈코인이 미쳐서 투매가 나올 때 봇이 눈을 뜨게 만듭니다.
+            if (ctx.RSI <= 25 && (double)ctx.CurrentPrice <= ctx.BbLower) 
+            {
+                bonusScore = 30.0; // 즉시 30점 부여 (지표 점수의 절반 점령)
+
+                // [추가 가속] 만약 여기서 거래량까지 평소보다 터지면? +5점 더!
+                if (ctx.AvgVolume > 0 && ctx.Volume > ctx.AvgVolume * 1.5) 
+                {
+                    bonusScore += 5.0;
+                }
+            }
+
+            return bonusScore;
+        }
+
+        /// <summary>
+        /// 숏 진입용 고점 포착 보너스
+        /// 조건: RSI "과매수" 75이상 AND 볼린저 밴드 상단 돌파
+        /// → 즉시 30점 부여 (숏 진입의 결정적 근거)
+        /// + 길게 달린 윗꼬리(Upper Wick)가 경고 신호면 추가 10점
+        /// </summary>
+        public double GetOverBoughtShortBonus(TechnicalContext ctx)
+        {
+            double shortBonusScore = 0;
+
+            // [조건] RSI 75 이상 AND 볼린저 밴드 상단 돌파 (Overbought)
+            // 밈코인이 미친듯이 쏴서 개미들이 달려들 때, 우리는 숏 칠 준비를 합니다.
+            if (ctx.RSI >= 75 && (double)ctx.CurrentPrice >= ctx.BbUpper) 
+            {
+                shortBonusScore = 30.0; // 즉시 30점 부여 (숏 진입의 결정적 근거)
+
+                // [추가 가속] 만약 여기서 윗꼬리(Upper Wick)가 길게 달리면? +10점 더!
+                // 윗꼬리는 세력이 던지기 시작했다는 가장 강력한 신호입니다.
+                if (ctx.Body > 0 && ctx.UpperWick > ctx.Body * 1.2) 
+                {
+                    shortBonusScore += 10.0;
+                }
+            }
+
+            return shortBonusScore;
         }
 
         // ══════════════════════════════════════════════════════════

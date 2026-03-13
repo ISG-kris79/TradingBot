@@ -75,14 +75,23 @@ namespace TradingBot.Services
 
         private decimal GetCurrentStopLossRoe()
         {
-            decimal stopLossRoe = GetCurrentSettings().StopLossRoe;
+            // [메이저/PUMP 완전 분리] 메이저 전용 손절 ROE 우선 사용
+            var current = GetCurrentSettings();
+            if (current.MajorStopLossRoe > 0m)
+                return current.MajorStopLossRoe;
+
+            if (_settings.MajorStopLossRoe > 0m)
+                return _settings.MajorStopLossRoe;
+
+            // 하위 호환 fallback
+            decimal stopLossRoe = current.StopLossRoe;
             if (stopLossRoe > 0m)
                 return stopLossRoe;
 
             if (_settings.StopLossRoe > 0m)
                 return _settings.StopLossRoe;
 
-            return 15.0m;
+            return 60.0m;
         }
 
         public void UpdateAiPredictor(AIPredictor? aiPredictor)
@@ -136,7 +145,8 @@ namespace TradingBot.Services
             bool partialTaken = false;
             bool hybridDcaTaken = false;
             bool hybridDcaDeferredLogged = false;
-            decimal leverage = _settings.DefaultLeverage;
+            // [메이저/PUMP 완전 분리] 메이저 전용 레버리지 사용
+            decimal leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
             decimal hybridDcaTriggerRoe = -5.0m;
             DateTime positionEntryTime = DateTime.Now;
             bool timeDecayBreakevenApplied = false;
@@ -148,7 +158,9 @@ namespace TradingBot.Services
             double squeezeDefenseMinutes = 90.0;
             decimal squeezeDefenseMaxRoe = 8.0m;
             decimal squeezeDefenseBbWidthThreshold = 0.60m;
-            decimal profitRunTriggerRoe = Math.Max(_settings.TargetRoe, 25.0m);
+            // [메이저/PUMP 완전 분리] 메이저 전용 최종 목표익절 ROE 사용
+            decimal majorTp2Roe = _settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : Math.Max(_settings.TargetRoe, 25.0m);
+            decimal profitRunTriggerRoe = majorTp2Roe;
             bool profitRunHoldActive = false;
             DateTime nextProfitRunHoldLogTime = DateTime.MinValue;
             int pyramidingCount = 0;
@@ -210,11 +222,15 @@ namespace TradingBot.Services
                     aggressiveMultiplier = posInfo.AggressiveMultiplier;
             }
             
-            decimal breakEvenROE = aggressiveMultiplier >= 1.5m ? 3.0m : 7.0m;   // 1단계: 가변 비중 시 타이트 손절 (3% ROE), 일반 7%
-            decimal profitLockROE = 15.0m;         // 2단계: 수익 잠금 (15% ROE)
-            decimal tightTrailingROE = 22.0m;      // 3단계: 타이트 트레일링 (22% ROE)
-            decimal minLockROE = 18.0m;            // 3단계 최소 수익 (ROE 18%)
-            decimal tightGapPercent = 0.0020m;     // 3단계 간격 (0.20%)
+            // [메이저/PUMP 완전 분리] 메이저 전용 설정값 사용 (하드코딩 제거)
+            decimal majorBreakEvenBase = _settings.MajorBreakEvenRoe > 0 ? _settings.MajorBreakEvenRoe : 7.0m;
+            decimal breakEvenROE = aggressiveMultiplier >= 1.5m ? Math.Max(3.0m, majorBreakEvenBase * 0.5m) : majorBreakEvenBase;  // 1단계: 공격형 시 절반, 일반 설정값
+            decimal profitLockROE = _settings.MajorTp1Roe > 0 ? _settings.MajorTp1Roe : 15.0m;   // 2단계: 1차 부분익절 ROE
+            decimal tightTrailingROE = _settings.MajorTrailingStartRoe > 0 ? _settings.MajorTrailingStartRoe : 22.0m;  // 3단계: 타이트 트레일링 시작 ROE
+            decimal minLockROE = profitLockROE + 3.0m;  // 3단계 최소 수익 (1차익절+3%)
+            // TrailingGapRoe를 가격% 간격으로 변환 (예: 4% ROE / 20배 / 100 = 0.20% 가격)
+            decimal majorTrailingGap = _settings.MajorTrailingGapRoe > 0 ? _settings.MajorTrailingGapRoe : 4.0m;
+            decimal tightGapPercent = majorTrailingGap / leverage / 100m;  // 3단계 간격 (ROE% → 가격%)
             decimal estimatedRoundTripCostPct = 0.0013m; // 수수료(0.08%) + 슬리피지(0.05%)
             decimal breakEvenBufferPct = estimatedRoundTripCostPct + (aggressiveMultiplier >= 1.5m ? 0.0002m : 0.0001m);
             decimal minBreakEvenRoe = breakEvenBufferPct * leverage * 100m;
@@ -231,7 +247,8 @@ namespace TradingBot.Services
                 OnLog?.Invoke($"🎯 {symbol} 공격형 진입 배수 {aggressiveMultiplier:F2}x 감지 → 손절 타이트 조정 (ROE {breakEvenROE:F1}%)");
             }
 
-            OnLog?.Invoke($"🛡️ {symbol} 1단계 보호 조건: ROE {breakEvenROE:F1}% + 보유 {breakEvenMinHoldSeconds:F0}초, 본절 버퍼 {breakEvenBufferPct * 100m:F2}%");
+            OnLog?.Invoke($"� {symbol} [Major Coin Mode] SL={GetCurrentStopLossRoe():F0}% BreakEven={breakEvenROE:F1}% Tp1={profitLockROE:F0}% TrailStart={tightTrailingROE:F0}% TrailGap={majorTrailingGap:F1}% TP2={majorTp2Roe:F0}%");
+            OnLog?.Invoke($"�🛡️ {symbol} 1단계 보호 조건: ROE {breakEvenROE:F1}% + 보유 {breakEvenMinHoldSeconds:F0}초, 본절 버퍼 {breakEvenBufferPct * 100m:F2}%");
 
             if (hasCustomAbsoluteStop && !isSidewaysMode)
             {
@@ -267,6 +284,17 @@ namespace TradingBot.Services
                 }
             }
             catch (Exception ex) { OnLog?.Invoke($"⚠️ 손절 주문 설정 실패: {ex.Message}"); }
+
+            // [방어 가드] PUMP 포지션은 MonitorPumpPositionShortTerm에서 전용 관리
+            // Smart Protective Stop(breakEvenROE=7%)이 PUMP 전용 기준(20%)보다 낮아 조기 청산 유발
+            lock (_posLock)
+            {
+                if (_activePositions.TryGetValue(symbol, out var pCheck) && pCheck.IsPumpStrategy)
+                {
+                    OnLog?.Invoke($"⚠️ [{symbol}] PUMP 포지션 감지 → MonitorPositionStandard 종료 (Smart Protective Stop 미적용)");
+                    return;
+                }
+            }
 
             while (!token.IsCancellationRequested)
             {
@@ -937,7 +965,7 @@ namespace TradingBot.Services
                 }
             }
 
-            decimal stopLossROE = GetCurrentStopLossRoe();  // PUMP: ROI -60% (StopLossRoe=60.0 기본값)
+            decimal stopLossROE = _settings.PumpStopLossRoe > 0 ? _settings.PumpStopLossRoe : GetCurrentStopLossRoe();  // PUMP 전용 손절 ROE (메이저 StopLossRoe와 독립)
             // ── [Meme Coin Mode] PUMP 전용 트레일링/본절 ──────────────────────────────
             decimal pumpBreakEvenRoe    = _settings.PumpBreakEvenRoe    > 0 ? _settings.PumpBreakEvenRoe    : 20.0m; // ROI +20% 시 본절
             decimal pumpTrailingStartRoe = _settings.PumpTrailingStartRoe > 0 ? _settings.PumpTrailingStartRoe : 40.0m; // ROI +40% 시 트레일링 시작
@@ -1044,11 +1072,13 @@ namespace TradingBot.Services
                             if (_activePositions.TryGetValue(symbol, out var p))
                             {
                                 p.PartialProfitStage = 1;
-                                p.BreakevenPrice = entryPrice; // 본절가 설정
+                                // [PUMP 본절 버퍼] 정확히 진입가에 스탑 걸면 눌림에 즉시 청산됨
+                                // → 진입가 0.5% 아래(= ROE -10%)로 설정해 되돌림 여유 확보
+                                p.BreakevenPrice = entryPrice * 0.995m;
                             }
                         }
                         string tp1Trigger = currentPrice >= wave1HighPrice ? $"Fib1.0(전고점) {wave1HighPrice:F8}" : $"ROE {pumpTp1Roe:F1}% 달성 ({currentROE:F1}%)";
-                        OnAlert?.Invoke($"💰 {symbol} 1차 익절 (50%) | 트리거: {tp1Trigger} | 본절가 설정: {entryPrice:F8}");
+                        OnAlert?.Invoke($"💰 {symbol} 1차 익절 (50%) | 트리거: {tp1Trigger} | 본절가 설정: {entryPrice * 0.995m:F8} (버퍼 0.5%)");
                         OnLog?.Invoke($"✅ {symbol} 1차 익절 완료(Stage=1), 다음 목표: Fib1.618 {fib1618Target:F8} 또는 ROE {pumpTp2Roe:F1}%");
                     }
 
@@ -1292,7 +1322,9 @@ namespace TradingBot.Services
                     await TelegramService.Instance.SendBreakEvenReachedAsync(symbol, entryPrice);
                 }
 
-                if (isBreakEvenTriggered) stopLossROE = 0.0m;
+                // [PUMP 본절 버퍼] 진입가 정확히 0%에서 청산하면 되돌림에 바로 털림
+                // → -10% ROE (0x20 기준 0.5% 가격) 여유를 줘서 PUMP 특유의 눌림을 버팀
+                if (isBreakEvenTriggered) stopLossROE = -10.0m;
 
                 int currentTpStep = 0;
                 lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) currentTpStep = p.TakeProfitStep; }
@@ -1301,7 +1333,7 @@ namespace TradingBot.Services
                 {
                     await ExecutePartialClose(symbol, 0.5m, token);
                     lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.TakeProfitStep = 1; }
-                    if (!isBreakEvenTriggered) { isBreakEvenTriggered = true; stopLossROE = 0.0m; }
+                    if (!isBreakEvenTriggered) { isBreakEvenTriggered = true; stopLossROE = -10.0m; }
                     OnAlert?.Invoke($"💰 {symbol} 1차 익절 (50%) & 본절 확정 (ROE: {currentROE:F2}%)");
                 }
 
@@ -1799,13 +1831,39 @@ namespace TradingBot.Services
                     return;
                 }
 
-                // [추가] 포지션 종료 전, 걸어둔 서버사이드 손절 주문 취소
+                // [수정] 포지션 종료 전, 서버사이드 손절 주문 취소 + 실패 시 포지션 재확인
                 string stopOrderId = string.Empty;
                 lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) stopOrderId = p.StopOrderId; }
 
                 if (!string.IsNullOrWhiteSpace(stopOrderId))
                 {
-                    await _exchangeService.CancelOrderAsync(symbol, stopOrderId, token);
+                    bool cancelOk = false;
+                    try { cancelOk = await _exchangeService.CancelOrderAsync(symbol, stopOrderId, token); }
+                    catch (Exception cancelEx) { OnLog?.Invoke($"⚠️ [{symbol}] 손절 주문 취소 예외: {cancelEx.Message}"); }
+
+                    if (!cancelOk)
+                    {
+                        // Cancel 실패 = Stop이 이미 체결됐을 가능성 → 포지션 재확인 후 청산 불필요 시 early return
+                        OnLog?.Invoke($"⚠️ [{symbol}] 서버사이드 손절 주문 취소 실패 (StopOrderId={stopOrderId}) - 포지션 재확인 중");
+                        try
+                        {
+                            var recheckList = await _exchangeService.GetPositionsAsync(ct: token);
+                            var recheckPos = recheckList.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.Quantity) > 0);
+                            if (recheckPos == null)
+                            {
+                                OnLog?.Invoke($"[청산 스킵] {symbol} 서버사이드 Stop이 이미 체결되어 포지션 없음 - 청산 불필요");
+                                CleanupPositionData(symbol);
+                                return;
+                            }
+                            OnLog?.Invoke($"[청산 계속] {symbol} 포지션 잔존 확인 (수량={Math.Abs(recheckPos.Quantity)}) - 청산 주문 진행");
+                            // position 갱신 (최신 수량으로)
+                            position = recheckPos;
+                        }
+                        catch (Exception recheckEx)
+                        {
+                            OnLog?.Invoke($"⚠️ [{symbol}] 재확인 실패: {recheckEx.Message} - 원래 수량으로 청산 시도");
+                        }
+                    }
                 }
 
                 bool isLongPosition = position.IsLong;

@@ -3,6 +3,7 @@ using Binance.Net.Enums;
 using Binance.Net.Interfaces;
 using CryptoExchange.Net.Authentication;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -16,6 +17,10 @@ namespace TradingBot.Services
     {
         private readonly BinanceRestClient _client;
         private bool _disposed = false;
+
+        // [캐시] 심볼별 스텝사이즈/틱사이즈 - GetExchangeInfo 반복 호출 방지 (TTL 1시간)
+        private static readonly ConcurrentDictionary<string, (decimal stepSize, decimal tickSize, DateTime cachedAt)> _symbolInfoCache = new();
+        private static readonly TimeSpan _symbolInfoCacheTtl = TimeSpan.FromHours(1);
 
         public string ExchangeName => "Binance";
 
@@ -60,26 +65,15 @@ namespace TradingBot.Services
                 return true; // 시뮬레이션 모드에서는 항상 성공
             }
 
-            // [추가] 주문 전 정밀도 보정
-            var exchangeInfo = await _client.UsdFuturesApi.ExchangeData.GetExchangeInfoAsync(ct: ct);
-            if (exchangeInfo.Success)
+            // [수정] 정밀도 보정: reduceOnly(청산) 시 거래소 반환 수량이 이미 유효하므로 스킵
+            // 진입 주문 또는 지정가 청산 시에만 캐시 기반 보정 수행
+            if (!reduceOnly || price.HasValue)
             {
-                var symbolData = exchangeInfo.Data.Symbols.FirstOrDefault(s => s.Name == symbol);
-                if (symbolData != null)
-                {
-                    decimal stepSize = symbolData.LotSizeFilter?.StepSize ?? 0.001m;
+                (decimal stepSize, decimal tickSize) = await GetSymbolPrecisionAsync(symbol, ct);
+                if (stepSize > 0)
                     quantity = Math.Floor(quantity / stepSize) * stepSize;
-
-                    if (price.HasValue)
-                    {
-                        decimal tickSize = symbolData.PriceFilter?.TickSize ?? 0.0000001m;
-                        price = Math.Floor(price.Value / tickSize) * tickSize;
-                    }
-                }
-            }
-            else
-            {
-                OnLog?.Invoke($"⚠️ [Binance] ExchangeInfo 조회 실패: {exchangeInfo.Error?.Message}");
+                if (price.HasValue && tickSize > 0)
+                    price = Math.Floor(price.Value / tickSize) * tickSize;
             }
 
             if (quantity <= 0)
@@ -108,17 +102,19 @@ namespace TradingBot.Services
                     string errorDetail = $"Code={result.Error?.Code}, Msg={result.Error?.Message}";
                     OnLog?.Invoke($"❌ [Binance API] 주문 실패 - {symbol} {side} {quantity}");
                     OnLog?.Invoke($"   📋 오류 상세: {errorDetail}");
-                    
-                    // 특정 오류 코드에 대한 안내
-                    if (result.Error?.Code == -2019)
-                    {
+
+                    int? errCode = result.Error?.Code;
+                    if (errCode == -2019)
                         OnAlert?.Invoke($"⚠️ [{symbol}] 잔고 부족 오류 - 사용 가능한 마진 확인 필요");
-                    }
-                    else if (result.Error?.Code == -1021)
-                    {
+                    else if (errCode == -1021)
                         OnAlert?.Invoke($"⚠️ [{symbol}] 타임스탬프 오류 - 시스템 시간 동기화 확인 필요");
-                    }
-                    
+                    else if (errCode == -2022)
+                        OnLog?.Invoke($"⚠️ [{symbol}] ReduceOnly 주문 거부 (-2022) - 서버사이드 Stop이 이미 체결됐을 가능성 있음");
+                    else if (errCode == -4061)
+                        OnLog?.Invoke($"⚠️ [{symbol}] positionSide 불일치 (-4061) - Hedge Mode 설정 확인 필요");
+                    else if (errCode == -1003)
+                        OnLog?.Invoke($"⚠️ [{symbol}] API Rate Limit 초과 (-1003)");
+
                     return false;
                 }
 
@@ -130,10 +126,41 @@ namespace TradingBot.Services
                 OnLog?.Invoke($"❌ [Binance 예외] 주문 중 예외 발생 - {symbol} {side} {quantity}");
                 OnLog?.Invoke($"   🔥 예외: {ex.Message}");
                 if (ex.InnerException != null)
-                {
                     OnLog?.Invoke($"   🔍 내부 예외: {ex.InnerException.Message}");
-                }
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// 심볼 정밀도 정보 조회 (캐시 우선, TTL 1시간)
+        /// </summary>
+        private async Task<(decimal stepSize, decimal tickSize)> GetSymbolPrecisionAsync(string symbol, CancellationToken ct)
+        {
+            if (_symbolInfoCache.TryGetValue(symbol, out var cached) && (DateTime.UtcNow - cached.cachedAt) < _symbolInfoCacheTtl)
+                return (cached.stepSize, cached.tickSize);
+
+            try
+            {
+                var exchangeInfo = await _client.UsdFuturesApi.ExchangeData.GetExchangeInfoAsync(ct: ct);
+                if (!exchangeInfo.Success)
+                {
+                    OnLog?.Invoke($"⚠️ [Binance] ExchangeInfo 조회 실패: {exchangeInfo.Error?.Message}");
+                    return (0, 0);
+                }
+
+                var symbolData = exchangeInfo.Data.Symbols.FirstOrDefault(s => s.Name == symbol);
+                if (symbolData == null) return (0, 0);
+
+                decimal stepSize = symbolData.LotSizeFilter?.StepSize ?? 0;
+                decimal tickSize = symbolData.PriceFilter?.TickSize ?? 0;
+
+                _symbolInfoCache[symbol] = (stepSize, tickSize, DateTime.UtcNow);
+                return (stepSize, tickSize);
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ [Binance] 심볼 정밀도 조회 예외: {ex.Message}");
+                return (0, 0);
             }
         }
 

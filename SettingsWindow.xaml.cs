@@ -90,6 +90,22 @@ namespace TradingBot
                     txtPumpTimeStopMinutes.Text = dbSettings.PumpTimeStopMinutes.ToString("F2");
                     txtPumpStopWarnPct.Text = dbSettings.PumpStopDistanceWarnPct.ToString("F3");
                     txtPumpStopBlockPct.Text = dbSettings.PumpStopDistanceBlockPct.ToString("F3");
+                    // [메이저/PUMP 완전 분리] PUMP 추가 설정
+                    txtPumpLeverage.Text = dbSettings.PumpLeverage.ToString();
+                    txtPumpMargin.Text = dbSettings.PumpMargin.ToString("F2");
+                    txtPumpBreakEvenRoe.Text = dbSettings.PumpBreakEvenRoe.ToString("F2");
+                    txtPumpTrailingStartRoe.Text = dbSettings.PumpTrailingStartRoe.ToString("F2");
+                    txtPumpTrailingGapRoe.Text = dbSettings.PumpTrailingGapRoe.ToString("F2");
+                    txtPumpStopLossRoe.Text = dbSettings.PumpStopLossRoe.ToString("F2");
+                    // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정
+                    txtMajorLeverage.Text = dbSettings.MajorLeverage.ToString();
+                    txtMajorMargin.Text = dbSettings.MajorMargin.ToString("F2");
+                    txtMajorBreakEvenRoe.Text = dbSettings.MajorBreakEvenRoe.ToString("F2");
+                    txtMajorTp1Roe.Text = dbSettings.MajorTp1Roe.ToString("F2");
+                    txtMajorTp2Roe.Text = dbSettings.MajorTp2Roe.ToString("F2");
+                    txtMajorTrailingStartRoe.Text = dbSettings.MajorTrailingStartRoe.ToString("F2");
+                    txtMajorTrailingGapRoe.Text = dbSettings.MajorTrailingGapRoe.ToString("F2");
+                    txtMajorStopLossRoe.Text = dbSettings.MajorStopLossRoe.ToString("F2");
 
                     if (!string.IsNullOrWhiteSpace(dbSettings.MajorTrendProfile))
                     {
@@ -133,6 +149,22 @@ namespace TradingBot
                             txtPumpTimeStopMinutes.Text = generalNode["PumpTimeStopMinutes"]?.ToString() ?? "15.0";
                             txtPumpStopWarnPct.Text = generalNode["PumpStopDistanceWarnPct"]?.ToString() ?? "1.0";
                             txtPumpStopBlockPct.Text = generalNode["PumpStopDistanceBlockPct"]?.ToString() ?? "1.3";
+                            // [메이저/PUMP 완전 분리] PUMP 추가 설정
+                            txtPumpLeverage.Text = generalNode["PumpLeverage"]?.ToString() ?? "20";
+                            txtPumpMargin.Text = generalNode["PumpMargin"]?.ToString() ?? "200.0";
+                            txtPumpBreakEvenRoe.Text = generalNode["PumpBreakEvenRoe"]?.ToString() ?? "20.0";
+                            txtPumpTrailingStartRoe.Text = generalNode["PumpTrailingStartRoe"]?.ToString() ?? "40.0";
+                            txtPumpTrailingGapRoe.Text = generalNode["PumpTrailingGapRoe"]?.ToString() ?? "20.0";
+                            txtPumpStopLossRoe.Text = generalNode["PumpStopLossRoe"]?.ToString() ?? "60.0";
+                            // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정
+                            txtMajorLeverage.Text = generalNode["MajorLeverage"]?.ToString() ?? "20";
+                            txtMajorMargin.Text = generalNode["MajorMargin"]?.ToString() ?? "200.0";
+                            txtMajorBreakEvenRoe.Text = generalNode["MajorBreakEvenRoe"]?.ToString() ?? "7.0";
+                            txtMajorTp1Roe.Text = generalNode["MajorTp1Roe"]?.ToString() ?? "15.0";
+                            txtMajorTp2Roe.Text = generalNode["MajorTp2Roe"]?.ToString() ?? "25.0";
+                            txtMajorTrailingStartRoe.Text = generalNode["MajorTrailingStartRoe"]?.ToString() ?? "22.0";
+                            txtMajorTrailingGapRoe.Text = generalNode["MajorTrailingGapRoe"]?.ToString() ?? "4.0";
+                            txtMajorStopLossRoe.Text = generalNode["MajorStopLossRoe"]?.ToString() ?? "60.0";
                         }
 
                         txtRisk.Text = tradingNode["RiskPercentage"]?.ToString() ?? "1.0";
@@ -310,6 +342,92 @@ namespace TradingBot
                 {
                     generalNode["PumpStopDistanceBlockPct"] = pumpStopBlockPct;
                     generalSettings.PumpStopDistanceBlockPct = pumpStopBlockPct;
+                }
+
+                // [메이저/PUMP 완전 분리] PUMP 추가 설정 저장
+                if (int.TryParse(txtPumpLeverage.Text, out int pumpLeverage))
+                {
+                    generalNode["PumpLeverage"] = pumpLeverage;
+                    generalSettings.PumpLeverage = pumpLeverage;
+                }
+
+                if (decimal.TryParse(txtPumpMargin.Text, out decimal pumpMargin))
+                {
+                    generalNode["PumpMargin"] = pumpMargin;
+                    generalSettings.PumpMargin = pumpMargin;
+                }
+
+                if (decimal.TryParse(txtPumpBreakEvenRoe.Text, out decimal pumpBreakEvenRoe))
+                {
+                    generalNode["PumpBreakEvenRoe"] = pumpBreakEvenRoe;
+                    generalSettings.PumpBreakEvenRoe = pumpBreakEvenRoe;
+                }
+
+                if (decimal.TryParse(txtPumpTrailingStartRoe.Text, out decimal pumpTrailingStartRoe))
+                {
+                    generalNode["PumpTrailingStartRoe"] = pumpTrailingStartRoe;
+                    generalSettings.PumpTrailingStartRoe = pumpTrailingStartRoe;
+                }
+
+                if (decimal.TryParse(txtPumpTrailingGapRoe.Text, out decimal pumpTrailingGapRoe))
+                {
+                    generalNode["PumpTrailingGapRoe"] = pumpTrailingGapRoe;
+                    generalSettings.PumpTrailingGapRoe = pumpTrailingGapRoe;
+                }
+
+                if (decimal.TryParse(txtPumpStopLossRoe.Text, out decimal pumpStopLossRoe))
+                {
+                    generalNode["PumpStopLossRoe"] = pumpStopLossRoe;
+                    generalSettings.PumpStopLossRoe = pumpStopLossRoe;
+                }
+
+                // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정 저장
+                if (int.TryParse(txtMajorLeverage.Text, out int majorLeverage))
+                {
+                    generalNode["MajorLeverage"] = majorLeverage;
+                    generalSettings.MajorLeverage = majorLeverage;
+                }
+
+                if (decimal.TryParse(txtMajorMargin.Text, out decimal majorMargin))
+                {
+                    generalNode["MajorMargin"] = majorMargin;
+                    generalSettings.MajorMargin = majorMargin;
+                }
+
+                if (decimal.TryParse(txtMajorBreakEvenRoe.Text, out decimal majorBreakEvenRoe))
+                {
+                    generalNode["MajorBreakEvenRoe"] = majorBreakEvenRoe;
+                    generalSettings.MajorBreakEvenRoe = majorBreakEvenRoe;
+                }
+
+                if (decimal.TryParse(txtMajorTp1Roe.Text, out decimal majorTp1Roe))
+                {
+                    generalNode["MajorTp1Roe"] = majorTp1Roe;
+                    generalSettings.MajorTp1Roe = majorTp1Roe;
+                }
+
+                if (decimal.TryParse(txtMajorTp2Roe.Text, out decimal majorTp2Roe))
+                {
+                    generalNode["MajorTp2Roe"] = majorTp2Roe;
+                    generalSettings.MajorTp2Roe = majorTp2Roe;
+                }
+
+                if (decimal.TryParse(txtMajorTrailingStartRoe.Text, out decimal majorTrailingStartRoe))
+                {
+                    generalNode["MajorTrailingStartRoe"] = majorTrailingStartRoe;
+                    generalSettings.MajorTrailingStartRoe = majorTrailingStartRoe;
+                }
+
+                if (decimal.TryParse(txtMajorTrailingGapRoe.Text, out decimal majorTrailingGapRoe))
+                {
+                    generalNode["MajorTrailingGapRoe"] = majorTrailingGapRoe;
+                    generalSettings.MajorTrailingGapRoe = majorTrailingGapRoe;
+                }
+
+                if (decimal.TryParse(txtMajorStopLossRoe.Text, out decimal majorStopLossRoe))
+                {
+                    generalNode["MajorStopLossRoe"] = majorStopLossRoe;
+                    generalSettings.MajorStopLossRoe = majorStopLossRoe;
                 }
 
                 // DefaultMargin 저장 (UI에서 입력받지 않으면 기본값 사용)

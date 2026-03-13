@@ -346,6 +346,19 @@ namespace TradingBot.Strategies
                     bool safeToLong = plusDi >= minusDi || longStrongOverride || xrpTrendLongOverride || longPatternBypass;
                     bool safeToShort = minusDi > plusDi || shortStrongOverride || shortPatternBypass;
 
+                    // [완화] 기울기 우선 승인: 총점이 약간 부족해도 RSI/MACD 기울기가 강하면 진입 허용
+                    bool longSlopeMomentumOverride =
+                        longResult.RsiMacdScore >= 7.0 &&
+                        longResult.AiPredictionScore >= 27.0 &&
+                        predictedChange >= 0.0015m &&
+                        longResult.FinalScore >= (dynamicThreshold - 5.0);
+
+                    bool shortSlopeMomentumOverride =
+                        shortResult.RsiMacdScore >= 7.0 &&
+                        shortResult.AiPredictionScore >= 27.0 &&
+                        predictedChange <= -0.0015m &&
+                        shortResult.FinalScore >= (dynamicThreshold - 5.0);
+
                     if (longStrongOverride && plusDi < minusDi)
                     {
                         OnLog?.Invoke($"⚠️ [LONG 예외허용] {symbol} 강신호로 ADX 방향 불일치 1회 허용 | Score:{longResult.FinalScore:F1} Pred:{predictedChange * 100:F2}%");
@@ -359,7 +372,7 @@ namespace TradingBot.Strategies
                         OnLog?.Invoke($"⚠️ [SHORT 예외허용] {symbol} 강신호로 ADX 방향 불일치 1회 허용 | Score:{shortResult.FinalScore:F1} Pred:{predictedChange * 100:F2}%");
                     }
 
-                    bool longThresholdPassed = longResult.FinalScore >= dynamicThreshold || xrpTrendLongOverride || longPatternBypass;
+                    bool longThresholdPassed = longResult.FinalScore >= dynamicThreshold || xrpTrendLongOverride || longPatternBypass || longSlopeMomentumOverride;
                     if (longThresholdPassed && longResult.FinalScore > shortResult.FinalScore && safeToLong && !longPatternDecision.ShouldDeferEntry)
                     {
                         // ── 컴포넌트 최소점수 게이트 검증 ──
@@ -373,6 +386,10 @@ namespace TradingBot.Strategies
                             else if (!longGatePassed && longPatternBypass)
                             {
                                 OnLog?.Invoke($"⚡ [Pattern LONG 게이트 우회] {symbol} | sim:{longPatternDecision.TopSimilarity:P1} prob:{longPatternDecision.MatchProbability:P1}");
+                            }
+                            if (longSlopeMomentumOverride && longResult.FinalScore < dynamicThreshold)
+                            {
+                                OnLog?.Invoke($"⚡ [Slope LONG 완화승인] {symbol} Score:{longResult.FinalScore:F1}/{dynamicThreshold:F0} | AI:{longResult.AiPredictionScore:F0} RSI/M:{longResult.RsiMacdScore:F0} Pred:{predictedChange * 100:F2}%");
                             }
                             longCondition = true;
                             decisionForUi = "LONG";
@@ -408,7 +425,7 @@ namespace TradingBot.Strategies
                         OnLog?.Invoke($"⚠️ [LONG 진입 거부] {symbol} | 이유: {failReason} | 현재가:{currentPrice:F2}");
                     }
 
-                    bool shortThresholdPassed = shortResult.FinalScore >= dynamicThreshold || shortPatternBypass;
+                    bool shortThresholdPassed = shortResult.FinalScore >= dynamicThreshold || shortPatternBypass || shortSlopeMomentumOverride;
                     if (shortThresholdPassed && shortResult.FinalScore > longResult.FinalScore && safeToShort && !shortPatternDecision.ShouldDeferEntry)
                     {
                         if (CanEmitShortSignal(shortResult.FinalScore, predictedChange))
@@ -420,6 +437,10 @@ namespace TradingBot.Strategies
                                 if (!shortGatePassed && shortPatternBypass)
                                 {
                                     OnLog?.Invoke($"⚡ [Pattern SHORT 게이트 우회] {symbol} | sim:{shortPatternDecision.TopSimilarity:P1} prob:{shortPatternDecision.MatchProbability:P1}");
+                                }
+                                if (shortSlopeMomentumOverride && shortResult.FinalScore < dynamicThreshold)
+                                {
+                                    OnLog?.Invoke($"⚡ [Slope SHORT 완화승인] {symbol} Score:{shortResult.FinalScore:F1}/{dynamicThreshold:F0} | AI:{shortResult.AiPredictionScore:F0} RSI/M:{shortResult.RsiMacdScore:F0} Pred:{predictedChange * 100:F2}%");
                                 }
                                 shortCondition = true;
                                 decisionForUi = "SHORT";

@@ -1,4 +1,4 @@
-﻿using Dapper;
+using Dapper;
 using Microsoft.Data.SqlClient;
 using System.Data;
 using System.Globalization;
@@ -512,26 +512,7 @@ ORDER BY EntryTime DESC;";
                 await db.OpenAsync();
 
                 string sql = @"
-IF OBJECT_ID(N'dbo.AiLabeledSamples', N'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.AiLabeledSamples
-    (
-        Id BIGINT IDENTITY(1,1) PRIMARY KEY,
-        UserId INT NOT NULL,
-        Symbol NVARCHAR(50) NOT NULL,
-        EntryTimeUtc DATETIME2 NOT NULL,
-        EntryPrice DECIMAL(18,8) NOT NULL,
-        ActualProfitPct FLOAT NOT NULL,
-        IsSuccess BIT NOT NULL,
-        ShouldEnter BIT NOT NULL,
-        LabelSource NVARCHAR(120) NOT NULL,
-        FeatureJson NVARCHAR(MAX) NULL,
-        CreatedAt DATETIME2 NOT NULL CONSTRAINT DF_AiLabeledSamples_CreatedAt DEFAULT SYSUTCDATETIME()
-    );
 
-    CREATE INDEX IX_AiLabeledSamples_UserSymbolTime
-        ON dbo.AiLabeledSamples(UserId, Symbol, EntryTimeUtc DESC);
-END
 
 INSERT INTO dbo.AiLabeledSamples
 (
@@ -1930,10 +1911,16 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                         MERGE dbo.GeneralSettings AS target
                         USING (SELECT @UserId AS Id, @DefaultLeverage, @DefaultMargin, @TargetRoe, @StopLossRoe, @TrailingStartRoe, @TrailingDropRoe,
                                       @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile,
-                                      @PumpBreakEvenRoe, @PumpTrailingStartRoe, @PumpTrailingGapRoe) 
+                                      @PumpBreakEvenRoe, @PumpTrailingStartRoe, @PumpTrailingGapRoe,
+                                      @PumpStopLossRoe, @PumpMargin, @PumpLeverage,
+                                      @MajorLeverage, @MajorMargin, @MajorBreakEvenRoe, @MajorTp1Roe, @MajorTp2Roe,
+                                      @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe)
                             AS source (Id, DefaultLeverage, DefaultMargin, TargetRoe, StopLossRoe, TrailingStartRoe, TrailingDropRoe,
                                       PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct, MajorTrendProfile,
-                                      PumpBreakEvenRoe, PumpTrailingStartRoe, PumpTrailingGapRoe)
+                                      PumpBreakEvenRoe, PumpTrailingStartRoe, PumpTrailingGapRoe,
+                                      PumpStopLossRoe, PumpMargin, PumpLeverage,
+                                      MajorLeverage, MajorMargin, MajorBreakEvenRoe, MajorTp1Roe, MajorTp2Roe,
+                                      MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe)
                         ON target.Id = source.Id
                         WHEN MATCHED THEN
                             UPDATE SET 
@@ -1952,14 +1939,31 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                                 target.PumpBreakEvenRoe = source.PumpBreakEvenRoe,
                                 target.PumpTrailingStartRoe = source.PumpTrailingStartRoe,
                                 target.PumpTrailingGapRoe = source.PumpTrailingGapRoe,
+                                target.PumpStopLossRoe = source.PumpStopLossRoe,
+                                target.PumpMargin = source.PumpMargin,
+                                target.PumpLeverage = source.PumpLeverage,
+                                target.MajorLeverage = source.MajorLeverage,
+                                target.MajorMargin = source.MajorMargin,
+                                target.MajorBreakEvenRoe = source.MajorBreakEvenRoe,
+                                target.MajorTp1Roe = source.MajorTp1Roe,
+                                target.MajorTp2Roe = source.MajorTp2Roe,
+                                target.MajorTrailingStartRoe = source.MajorTrailingStartRoe,
+                                target.MajorTrailingGapRoe = source.MajorTrailingGapRoe,
+                                target.MajorStopLossRoe = source.MajorStopLossRoe,
                                 target.UpdatedAt = GETUTCDATE()
                         WHEN NOT MATCHED THEN
                             INSERT (Id, DefaultLeverage, DefaultMargin, TargetRoe, StopLossRoe, TrailingStartRoe, TrailingDropRoe,
                                     PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct, MajorTrendProfile,
-                                    PumpBreakEvenRoe, PumpTrailingStartRoe, PumpTrailingGapRoe)
+                                    PumpBreakEvenRoe, PumpTrailingStartRoe, PumpTrailingGapRoe,
+                                    PumpStopLossRoe, PumpMargin, PumpLeverage,
+                                    MajorLeverage, MajorMargin, MajorBreakEvenRoe, MajorTp1Roe, MajorTp2Roe,
+                                    MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe)
                             VALUES (@UserId, @DefaultLeverage, @DefaultMargin, @TargetRoe, @StopLossRoe, @TrailingStartRoe, @TrailingDropRoe,
                                     @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile,
-                                    @PumpBreakEvenRoe, @PumpTrailingStartRoe, @PumpTrailingGapRoe);";
+                                    @PumpBreakEvenRoe, @PumpTrailingStartRoe, @PumpTrailingGapRoe,
+                                    @PumpStopLossRoe, @PumpMargin, @PumpLeverage,
+                                    @MajorLeverage, @MajorMargin, @MajorBreakEvenRoe, @MajorTp1Roe, @MajorTp2Roe,
+                                    @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe);";
 
                     var parameters = new DynamicParameters();
                     parameters.Add("@UserId", userId);
@@ -1978,12 +1982,23 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                     parameters.Add("@PumpBreakEvenRoe", settings.PumpBreakEvenRoe);
                     parameters.Add("@PumpTrailingStartRoe", settings.PumpTrailingStartRoe);
                     parameters.Add("@PumpTrailingGapRoe", settings.PumpTrailingGapRoe);
+                    parameters.Add("@PumpStopLossRoe", settings.PumpStopLossRoe);
+                    parameters.Add("@PumpMargin", settings.PumpMargin);
+                    parameters.Add("@PumpLeverage", settings.PumpLeverage);
+                    parameters.Add("@MajorLeverage", settings.MajorLeverage);
+                    parameters.Add("@MajorMargin", settings.MajorMargin);
+                    parameters.Add("@MajorBreakEvenRoe", settings.MajorBreakEvenRoe);
+                    parameters.Add("@MajorTp1Roe", settings.MajorTp1Roe);
+                    parameters.Add("@MajorTp2Roe", settings.MajorTp2Roe);
+                    parameters.Add("@MajorTrailingStartRoe", settings.MajorTrailingStartRoe);
+                    parameters.Add("@MajorTrailingGapRoe", settings.MajorTrailingGapRoe);
+                    parameters.Add("@MajorStopLossRoe", settings.MajorStopLossRoe);
 
                     try
                     {
                         await db.ExecuteAsync(sql, parameters);
                     }
-                    catch (SqlException ex) when (ex.Message.Contains("PumpTp1Roe") || ex.Message.Contains("PumpTp2Roe") || ex.Message.Contains("PumpTimeStopMinutes") || ex.Message.Contains("PumpStopDistanceWarnPct") || ex.Message.Contains("PumpStopDistanceBlockPct") || ex.Message.Contains("MajorTrendProfile") || ex.Message.Contains("PumpBreakEvenRoe") || ex.Message.Contains("PumpTrailingStartRoe") || ex.Message.Contains("PumpTrailingGapRoe"))
+                    catch (SqlException ex) when (ex.Message.Contains("PumpTp1Roe") || ex.Message.Contains("PumpTp2Roe") || ex.Message.Contains("PumpTimeStopMinutes") || ex.Message.Contains("PumpStopDistanceWarnPct") || ex.Message.Contains("PumpStopDistanceBlockPct") || ex.Message.Contains("MajorTrendProfile") || ex.Message.Contains("PumpBreakEvenRoe") || ex.Message.Contains("PumpTrailingStartRoe") || ex.Message.Contains("PumpTrailingGapRoe") || ex.Message.Contains("PumpStopLossRoe") || ex.Message.Contains("PumpMargin") || ex.Message.Contains("PumpLeverage") || ex.Message.Contains("MajorLeverage") || ex.Message.Contains("MajorMargin") || ex.Message.Contains("MajorBreakEvenRoe") || ex.Message.Contains("MajorTp1Roe") || ex.Message.Contains("MajorTp2Roe") || ex.Message.Contains("MajorTrailingStartRoe") || ex.Message.Contains("MajorTrailingGapRoe") || ex.Message.Contains("MajorStopLossRoe"))
                     {
                         // 하위 호환: 구 스키마(펌프 컬럼 없음)에서는 기본 필드만 저장
                         string fallbackSql = @"

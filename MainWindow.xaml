@@ -1316,32 +1316,6 @@
                                             </DataGridTextColumn.ElementStyle>
                                         </DataGridTextColumn>
 
-                                        <DataGridTextColumn Header="AI"
-                                                            Binding="{Binding AIScore, StringFormat=F1}"
-                                                            Width="62"/>
-
-
-
-                                        <DataGridTemplateColumn Header="ENTRY ⏰"
-                                                                Width="100">
-                                            <DataGridTemplateColumn.CellTemplate>
-                                                <DataTemplate>
-                                                    <StackPanel Margin="4,0" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                                        <TextBlock Text="{Binding AiEntryForecastTimeText}"
-                                                                   Foreground="{Binding AiEntryProbColor}"
-                                                                   FontFamily="Consolas"
-                                                                   FontSize="14"
-                                                                   FontWeight="Bold"
-                                                                   HorizontalAlignment="Center"/>
-                                                        <TextBlock Text="{Binding AiEntryForecastDetailText}"
-                                                                   Foreground="#6B7280"
-                                                                   FontSize="9"
-                                                                   HorizontalAlignment="Center"/>
-                                                    </StackPanel>
-                                                </DataTemplate>
-                                            </DataGridTemplateColumn.CellTemplate>
-                                        </DataGridTemplateColumn>
-
                                         <DataGridTemplateColumn Header="ML │ TF"
                                                                 Width="130">
                                             <DataGridTemplateColumn.CellTemplate>

@@ -3,6 +3,7 @@ using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using System.IO;
+using System.Globalization;
 using System.Collections.Concurrent;
 using TradingBot.TelegramCommands;
 
@@ -41,6 +42,7 @@ namespace TradingBot
             public int NormalCount { get; set; }
             public float MlConfidenceSum { get; set; }
             public float TfConfidenceSum { get; set; }
+            public float TrendScoreSum { get; set; }
             public Dictionary<string, int> BlockReasons { get; } = new(StringComparer.OrdinalIgnoreCase);
             public Dictionary<string, int> BlockReasonsLong { get; } = new(StringComparer.OrdinalIgnoreCase);
             public Dictionary<string, int> BlockReasonsShort { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -456,6 +458,7 @@ namespace TradingBot
                 summary.TotalCount++;
                 summary.MlConfidenceSum += SanitizeFinite(mlConf);
                 summary.TfConfidenceSum += SanitizeFinite(tfConf);
+                summary.TrendScoreSum += SanitizeFinite(trendScore);
 
                 if (string.Equals(decision, "LONG", StringComparison.OrdinalIgnoreCase))
                     summary.LongCount++;
@@ -561,15 +564,20 @@ namespace TradingBot
             }
 
             string body;
+            string approvedOnlyBody;
             if (snapshot.TotalCount == 0)
             {
                 body = $"🕒 구간: {snapshot.WindowStartLocal:HH:mm} ~ {windowEndLocal:HH:mm}\n" +
                        "📭 최근 5분 동안 AI 게이트 판정이 없었습니다.";
+
+                approvedOnlyBody = $"🕒 구간: {snapshot.WindowStartLocal:HH:mm} ~ {windowEndLocal:HH:mm}\n" +
+                                   "📭 최근 5분 동안 승인된 코인이 없습니다.";
             }
             else
             {
                 float avgMl = snapshot.TotalCount > 0 ? snapshot.MlConfidenceSum / snapshot.TotalCount : 0f;
                 float avgTf = snapshot.TotalCount > 0 ? snapshot.TfConfidenceSum / snapshot.TotalCount : 0f;
+                float avgTrend = snapshot.TotalCount > 0 ? snapshot.TrendScoreSum / snapshot.TotalCount : 0f;
                 string topReasons = snapshot.BlockReasons.Count == 0
                     ? "없음"
                     : string.Join("\n", snapshot.BlockReasons
@@ -585,11 +593,18 @@ namespace TradingBot
                 string blockedLongCoins = FormatCoinReasonList(snapshot.BlockedLongSymbolReasons, 8);
                 string blockedShortCoins = FormatCoinReasonList(snapshot.BlockedShortSymbolReasons, 8);
 
+                string allowedOtherCoins = snapshot.AllowedOtherSymbolReasons.Count > 0
+                    ? FormatCoinReasonList(snapshot.AllowedOtherSymbolReasons, 8)
+                    : "없음";
+
+                string blockedOtherCoins = snapshot.BlockedOtherSymbolReasons.Count > 0
+                    ? FormatCoinReasonList(snapshot.BlockedOtherSymbolReasons, 8)
+                    : "없음";
+
                 string allowedSection = $"• LONG: {allowedLongCoins}\n" +
                                        $"• SHORT: {allowedShortCoins}";
                 if (snapshot.AllowedOtherSymbolReasons.Count > 0)
                 {
-                    string allowedOtherCoins = FormatCoinReasonList(snapshot.AllowedOtherSymbolReasons, 8);
                     allowedSection += $"\n• 기타: {allowedOtherCoins}";
                 }
 
@@ -597,9 +612,17 @@ namespace TradingBot
                                        $"• SHORT: {blockedShortCoins}";
                 if (snapshot.BlockedOtherSymbolReasons.Count > 0)
                 {
-                    string blockedOtherCoins = FormatCoinReasonList(snapshot.BlockedOtherSymbolReasons, 8);
                     blockedSection += $"\n• 기타: {blockedOtherCoins}";
                 }
+
+                approvedOnlyBody = $"🕒 구간: {snapshot.WindowStartLocal:HH:mm} ~ {windowEndLocal:HH:mm}\n" +
+                                   $"✅ 승인: {snapshot.AllowedCount}건 (확신 {snapshot.StrongAllowedCount}건)\n" +
+                                   $"🟢 LONG 승인: {snapshot.AllowedLongSymbolReasons.Count}개 │ 🔴 SHORT 승인: {snapshot.AllowedShortSymbolReasons.Count}개\n" +
+                                   $"🤖 평균 ML: {avgMl:P1} │ 🧠 평균 TF: {avgTf:P1} │ 📈 평균 Trend(피보반영): {avgTrend:P1}\n\n" +
+                                   $"✅ 승인 코인(사유)\n" +
+                                   $"• LONG: {allowedLongCoins}\n" +
+                                   $"• SHORT: {allowedShortCoins}\n" +
+                                   $"• 기타: {allowedOtherCoins}";
 
                 body = $"🕒 구간: {snapshot.WindowStartLocal:HH:mm} ~ {windowEndLocal:HH:mm}\n" +
                        $"📊 총 판정: {snapshot.TotalCount}건\n" +
@@ -607,7 +630,7 @@ namespace TradingBot
                        $"⛔ 차단: {snapshot.BlockedCount}건\n" +
                        $"🟢 LONG: {snapshot.LongCount}건 │ 🔴 SHORT: {snapshot.ShortCount}건\n" +
                        $"🏆 메이저: {snapshot.MajorCount} │ 🚀 펌핑: {snapshot.PumpingCount} │ 📊 일반: {snapshot.NormalCount}\n" +
-                      $"🤖 평균 ML: {avgMl:P1} │ 🧠 평균 TF: {avgTf:P1}\n\n" +
+                      $"🤖 평균 ML: {avgMl:P1} │ 🧠 평균 TF: {avgTf:P1} │ 📈 평균 Trend(피보반영): {avgTrend:P1}\n\n" +
                        $"✅ 승인 코인(사유)\n{allowedSection}\n\n" +
                        $"⛔ 차단 코인(사유)\n{blockedSection}\n\n" +
                       $"📌 차단 TOP(전체)\n{topReasons}\n\n" +
@@ -617,6 +640,10 @@ namespace TradingBot
             }
 
                  await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 5분 요약]*\n\n{body}", true, "AI관제탑");
+                 if (snapshot.AllowedCount > 0)
+                 {
+                     await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 승인코인 5분 브리핑]*\n\n{approvedOnlyBody}", true, "AI관제탑-승인코인");
+                 }
         }
 
         private static float SanitizeFinite(float value)
@@ -627,8 +654,13 @@ namespace TradingBot
         private static string NormalizeAiGateBlockReason(string reason)
         {
             string text = reason ?? string.Empty;
+
+            if (HasPositiveFibBonus(text) && text.Contains("Dual_Reject", StringComparison.OrdinalIgnoreCase))
+                return "피보 가점 반영 후 ML/TF 미달";
+
             return text switch
             {
+                var r when r.Contains("DeadCat_Block", StringComparison.OrdinalIgnoreCase) => "데드캣 붕괴 차단",
                 var r when r.Contains("RSI_Overheat", StringComparison.OrdinalIgnoreCase) => "RSI 과열 하드차단",
                 var r when r.Contains("UpperWick", StringComparison.OrdinalIgnoreCase) => "윗꼬리 위험",
                 var r when r.Contains("UpperBand", StringComparison.OrdinalIgnoreCase) => "BB 상단 과열",
@@ -645,6 +677,10 @@ namespace TradingBot
         private static string NormalizeAiGateAllowedReason(string reason)
         {
             string text = reason ?? string.Empty;
+
+            if (HasPositiveFibBonus(text))
+                return "피보 지지+리버설 가점 통과";
+
             return text switch
             {
                 var r when r.Contains("SuperTrend", StringComparison.OrdinalIgnoreCase) => "강추세 통과",
@@ -654,6 +690,36 @@ namespace TradingBot
                 var r when r.Contains("MLNET", StringComparison.OrdinalIgnoreCase) => "ML 신뢰 통과",
                 _ => "게이트 통과"
             };
+        }
+
+        private static bool HasPositiveFibBonus(string reason)
+        {
+            if (string.IsNullOrWhiteSpace(reason))
+                return false;
+
+            const string token = "FibBonus=";
+            int start = reason.IndexOf(token, StringComparison.OrdinalIgnoreCase);
+            if (start < 0)
+                return false;
+
+            start += token.Length;
+            if (start >= reason.Length)
+                return false;
+
+            int end = start;
+            while (end < reason.Length)
+            {
+                char ch = reason[end];
+                if (!char.IsDigit(ch) && ch != '.' && ch != '-')
+                    break;
+                end++;
+            }
+
+            if (end <= start)
+                return false;
+
+            string num = reason[start..end];
+            return float.TryParse(num, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) && parsed > 0f;
         }
 
         private static string NormalizeDecisionBucket(string decision)

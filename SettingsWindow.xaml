@@ -203,6 +203,25 @@
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
+                                        <!-- ─── PUMP 추가 설정 (rows 15-20) ─── -->
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <!-- ─── 메이저 코인 전략 구분선 (row 21) ─── -->
+                                        <RowDefinition Height="Auto"/>
+                                        <!-- ─── 메이저 코인 설정 (rows 22-30) ─── -->
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="150"/>
@@ -440,6 +459,238 @@
                                         <ComboBoxItem Content="균형형 (Balanced)" Tag="Balanced"/>
                                         <ComboBoxItem Content="공격형 (Aggressive)" Tag="Aggressive"/>
                                     </ComboBox>
+
+                                    <!-- ══════════════════════════════════════════════════════ -->
+                                    <!-- PUMP 코인 추가 설정 (완전 분리) - rows 15~20           -->
+                                    <!-- ══════════════════════════════════════════════════════ -->
+                                    <TextBlock Text="── PUMP 전략 전용 ──"
+                                               Grid.Row="15"
+                                               Grid.ColumnSpan="2"
+                                               Foreground="#FF6B35"
+                                               FontWeight="Bold"
+                                               FontSize="12"
+                                               Margin="0,10,0,10"/>
+
+                                    <!-- PUMP 레버리지 -->
+                                    <TextBlock Text="PUMP 레버리지 (x):"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="16"
+                                               Foreground="#FF9966"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtPumpLeverage"
+                                             Grid.Row="16"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <!-- PUMP 증거금 -->
+                                    <TextBlock Text="PUMP 증거금 (USDT):"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="17"
+                                               Foreground="#FF9966"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtPumpMargin"
+                                             Grid.Row="17"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <!-- PUMP 본절 ROE -->
+                                    <TextBlock Text="PUMP 본절 ROE (%):"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="18"
+                                               Foreground="#FF9966"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtPumpBreakEvenRoe"
+                                             Grid.Row="18"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <!-- PUMP 트레일링 시작 ROE -->
+                                    <TextBlock Text="PUMP 트레일링시작 ROE:"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="19"
+                                               Foreground="#FF9966"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtPumpTrailingStartRoe"
+                                             Grid.Row="19"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <!-- PUMP 트레일링 갭 ROE -->
+                                    <TextBlock Text="PUMP 트레일링갭 ROE (%):"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="20"
+                                               Foreground="#FF9966"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtPumpTrailingGapRoe"
+                                             Grid.Row="20"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <!-- PUMP 손절 ROE -->
+                                    <TextBlock Text="PUMP 손절 ROE (%):"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="21"
+                                               Foreground="#FF9966"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtPumpStopLossRoe"
+                                             Grid.Row="21"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <!-- ══════════════════════════════════════════════════════ -->
+                                    <!-- 메이저 코인 전략 전용 설정 (완전 분리) - rows 22~29    -->
+                                    <!-- ══════════════════════════════════════════════════════ -->
+                                    <TextBlock Text="── 메이저 코인 전략 전용 ──"
+                                               Grid.Row="22"
+                                               Grid.ColumnSpan="2"
+                                               Foreground="#00E676"
+                                               FontWeight="Bold"
+                                               FontSize="12"
+                                               Margin="0,10,0,10"/>
+
+                                    <!-- 메이저 레버리지 -->
+                                    <TextBlock Text="메이저 레버리지 (x):"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="23"
+                                               Foreground="#66FF99"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtMajorLeverage"
+                                             Grid.Row="23"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <!-- 메이저 증거금 -->
+                                    <TextBlock Text="메이저 증거금 (USDT):"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="24"
+                                               Foreground="#66FF99"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtMajorMargin"
+                                             Grid.Row="24"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <!-- 메이저 본절 ROE -->
+                                    <TextBlock Text="메이저 본절 ROE (%):"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="25"
+                                               Foreground="#66FF99"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtMajorBreakEvenRoe"
+                                             Grid.Row="25"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <!-- 메이저 1차 부분익절 ROE -->
+                                    <TextBlock Text="메이저 Tp1 ROE (%):"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="26"
+                                               Foreground="#66FF99"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtMajorTp1Roe"
+                                             Grid.Row="26"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <!-- 메이저 최종 목표익절 ROE -->
+                                    <TextBlock Text="메이저 목표익절 ROE (%):"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="27"
+                                               Foreground="#66FF99"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtMajorTp2Roe"
+                                             Grid.Row="27"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <!-- 메이저 트레일링 시작 ROE -->
+                                    <TextBlock Text="메이저 트레일링시작 ROE:"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="28"
+                                               Foreground="#66FF99"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtMajorTrailingStartRoe"
+                                             Grid.Row="28"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <!-- 메이저 트레일링 갭 ROE -->
+                                    <TextBlock Text="메이저 트레일링갭 ROE (%):"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="29"
+                                               Foreground="#66FF99"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtMajorTrailingGapRoe"
+                                             Grid.Row="29"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <!-- 메이저 손절 ROE -->
+                                    <TextBlock Text="메이저 손절 ROE (%):"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="30"
+                                               Foreground="#66FF99"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtMajorStopLossRoe"
+                                             Grid.Row="30"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
                                 </Grid>
                             </Border>
                         </ScrollViewer>

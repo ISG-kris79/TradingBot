@@ -34,19 +34,45 @@ namespace TradingBot.Models
         public int PumpLeverage { get; set; } = 20;
 
         // [PUMP 20x 수동 매뉴얼 튜닝값]
-        public decimal PumpTp1Roe { get; set; } = 40.0m;          // 1차 익절 ROE
-        public decimal PumpTp2Roe { get; set; } = 100.0m;          // 2차 익절 ROE
-        public decimal PumpTimeStopMinutes { get; set; } = 30.0m; // 시간 손절(분)
+        public decimal PumpTp1Roe { get; set; } = 20.0m;          // 1차 부분익절 ROI 기준 (포지션 30% 청산)
+        public decimal PumpTp2Roe { get; set; } = 100.0m;          // 2차 익절 ROE (미사용, 레거시)
+        public decimal PumpTimeStopMinutes { get; set; } = 120.0m; // 시간 손절(분)
         public decimal PumpStopDistanceWarnPct { get; set; } = 1.0m; // 손절거리 경고(비중축소)
         public decimal PumpStopDistanceBlockPct { get; set; } = 1.3m; // 손절거리 차단(진입취소)
 
         // ─── [Meme Coin Mode] PUMP 전용 포지션 관리 ───────────────────────────
-        // StopLoss   : ROI -60% (가격 -3%, 20x) → StopLossRoe = 60.0 (공통설정 재사용)
-        // BreakEven  : ROI +20% 도달 시 손절가를 진입가로 이동 (절대 마이너스 불가)
-        // Trailing   : ROI +40% 돌파 시 감시 시작, 최고점 대비 ROI 20% 하락 시 익절
-        public decimal PumpBreakEvenRoe { get; set; } = 20.0m;     // ROI +20% 시 본절 이동
-        public decimal PumpTrailingStartRoe { get; set; } = 40.0m; // ROI +40% 시 트레일링 가동
-        public decimal PumpTrailingGapRoe { get; set; } = 20.0m;   // 최고점 대비 ROI 20% 하락 시 청산
+        // 1차 부분익절: ROI +20% → 포지션 30% 청산
+        // 2차 트레일링: ROI +40% 시작 → 최고점 대비 ROI 5% 하락 시 50% 청산
+        // 3차 나머지: 2차에서 +5% 내려가면 스탑로스
+        // 초기 손절: ROI -60% (가격 -3%, 20x)
+        public decimal PumpStopLossRoe { get; set; } = 60.0m;      // 초기 손절 ROI -60% (변경 없음)
+        public decimal PumpMargin { get; set; } = 200.0m;           // PUMP 전용 기본 진입 증거금 (메이저 DefaultMargin과 독립)
+        public decimal PumpBreakEvenRoe { get; set; } = 25.0m;     // ROI +25% 시 본절 이동 (슬리피지 대응)
+        // 주의: 0.15% 오프셋(슬리피지 방어)이 적용되어 실제 손절은 진입가 + 0.15% 근처로 설정됨
+        public decimal PumpTrailingStartRoe { get; set; } = 40.0m; // 2차 트레일링 시작 ROI +40% (변경 없음)
+        public decimal PumpTrailingGapRoe { get; set; } = 20.0m;    // 2차에서 최고점 대비 ROI 20% 하락 시 청산
+
+        // ─── [Major Coin Mode] 메이저 전용 포지션 관리 ────────────────────────────
+        // 1차 부분익절: ROI +20% → 포지션 30% 청산
+        // 2차 트레일링: ROI +20% 시작 → 최고점 대비 ROI 5% 하락 시 50% 청산
+        // 3차 나머지: 2차에서 +5% 내려가면 스탑로스
+        // 초기 손절: ROI -20%
+        public int    MajorLeverage          { get; set; } = 20;       // 메이저 전용 레버리지 (DefaultLeverage와 독립)
+        public decimal MajorMargin           { get; set; } = 200.0m;   // 메이저 전용 진입 증거금 (DefaultMargin과 독립)
+        public decimal MajorBreakEvenRoe     { get; set; } = 7.0m;    // 1단계: 본절 이동 기준 ROE (변경 없음)
+        public decimal MajorTp1Roe           { get; set; } = 20.0m;   // 1차 부분익절 ROI +20% (15%→20% 상향)
+        public decimal MajorTp2Roe           { get; set; } = 25.0m;   // 최종 목표익절 ROE (미사용)
+        public decimal MajorTrailingStartRoe { get; set; } = 20.0m;   // 2차 트레일링 시작 ROI +20% (22%→20% 하향)
+        public decimal MajorTrailingGapRoe   { get; set; } = 5.0m;    // 2차에서 최고점 대비 ROI 5% 하락 시 청산 (4%→5% 상향)
+        public decimal MajorStopLossRoe      { get; set; } = 20.0m;   // 초기 손절 ROE -20%
+
+        // ─── [Sniper Mode] 스나이퍼 모드 설정 (v2.5) ────────────────────────────
+        // 종목당 일일 1~2회 진입으로 정조준하는 모드
+        public bool IsSniperModeEnabled { get; set; } = true;         // 스나이퍼 모드 활성화 여부
+        public double MinimumEntryScore { get; set; } = 80.0;         // 최소 진입 점수 (노이즈 차단)
+        public int MaxTradesPerSymbolPerDay { get; set; } = 2;        // 심볼당 하루 최대 진입 횟수
+        public int MaxActivePositions { get; set; } = 5;             // 최대 활성 포지션 수 (메이저 4 + 밈 1)
+        public int EntryCooldownMinutes { get; set; } = 120;          // 진입 쿨다운 (분, 한 파동 먹고 2시간 휴식)
     }
 
     public enum PerformanceTuningProfile
@@ -60,7 +86,7 @@ namespace TradingBot.Models
     {
         public bool EnableMetrics { get; set; } = true;
         public bool EnableAutoTune { get; set; } = true;
-        public PerformanceTuningProfile Profile { get; set; } = PerformanceTuningProfile.Default;
+        public PerformanceTuningProfile Profile { get; set; } = PerformanceTuningProfile.Aggressive;
 
         public int LiveLogFlushWarnMs { get; set; } = 40;
         public int LiveLogPerfLogIntervalSec { get; set; } = 10;
@@ -461,6 +487,10 @@ namespace TradingBot.Models
         private static readonly Brush s_decisionBgShort = s_strategyBgRed;
         private static readonly Brush s_decisionBgWait = s_closeStatusBgSlate;
         private static readonly Brush s_rowBackground = Freeze(new SolidColorBrush(Color.FromRgb(22, 25, 37)));
+        private static readonly HashSet<string> s_majorSymbols = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"
+        };
 
         private static Brush Freeze(SolidColorBrush b) { b.Freeze(); return b; }
 
@@ -478,8 +508,10 @@ namespace TradingBot.Models
             {
                 _isPositionActive = value;
                 OnPropertyChanged(nameof(IsPositionActive));
+                OnPropertyChanged(nameof(SortPriority));
                 OnPropertyChanged(nameof(PriceColor));
                 OnPropertyChanged(nameof(Status));
+                OnPropertyChanged(nameof(RiskSummary));
                 OnPropertyChanged(nameof(DisplayDecision));
                 OnPropertyChanged(nameof(EntryStatus));
                 OnPropertyChanged(nameof(EntryStatusColor));
@@ -781,7 +813,32 @@ namespace TradingBot.Models
 
         // 포지션 보유 중이면 심볼 색상을 다르게 표시 (예: 금색)
         public Brush SymbolColor => IsInPosition ? Brushes.Gold : s_symbolColorGreen; // 형광 초록
-        public string? Symbol { get; set; }
+        private string? _symbol;
+        public string? Symbol
+        {
+            get => _symbol;
+            set
+            {
+                if (_symbol != value)
+                {
+                    _symbol = value;
+                    OnPropertyChanged(nameof(Symbol));
+                    OnPropertyChanged(nameof(SortPriority));
+                }
+            }
+        }
+
+        public int SortPriority
+        {
+            get
+            {
+                if (!string.IsNullOrWhiteSpace(Symbol) && s_majorSymbols.Contains(Symbol))
+                    return 0;
+                if (IsPositionActive)
+                    return 1;
+                return 2;
+            }
+        }
         private decimal _lastPrice;
         public decimal LastPrice
         {
@@ -1122,14 +1179,26 @@ namespace TradingBot.Models
         public decimal TargetPrice
         {
             get => _targetPrice;
-            set { _targetPrice = value; OnPropertyChanged(nameof(TargetPrice)); OnPropertyChanged(nameof(ExitStrategySummary)); }
+            set
+            {
+                _targetPrice = value;
+                OnPropertyChanged(nameof(TargetPrice));
+                OnPropertyChanged(nameof(ExitStrategySummary));
+                OnPropertyChanged(nameof(RiskSummary));
+            }
         }
 
         private decimal _stopLossPrice;
         public decimal StopLossPrice
         {
             get => _stopLossPrice;
-            set { _stopLossPrice = value; OnPropertyChanged(nameof(StopLossPrice)); OnPropertyChanged(nameof(ExitStrategySummary)); }
+            set
+            {
+                _stopLossPrice = value;
+                OnPropertyChanged(nameof(StopLossPrice));
+                OnPropertyChanged(nameof(ExitStrategySummary));
+                OnPropertyChanged(nameof(RiskSummary));
+            }
         }
         // 1. 감시 가격 요약 (예: "TP: 2.5% | SL: -1.5%")
         public string ExitStrategySummary => IsPositionActive
@@ -1213,6 +1282,10 @@ namespace TradingBot.Models
                 {
                     return $"SL: {StopLossPrice:F2} | TP: {TargetPrice:F2}";
                 }
+                if (StopLossPrice > 0)
+                    return $"SL: {StopLossPrice:F2}";
+                if (TargetPrice > 0)
+                    return $"TP: {TargetPrice:F2}";
                 return "-";
             }
         }

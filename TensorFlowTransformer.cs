@@ -31,7 +31,7 @@ namespace TradingBot
         public event Action<int, int, float>? OnEpochCompleted;
 
         public TensorFlowTransformer(
-            int seqLen = 8,
+            int seqLen = 3,
             int featureDim = 20,
             int dModel = 64,
             int nHeads = 4,

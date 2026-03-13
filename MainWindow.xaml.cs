@@ -142,7 +142,7 @@ namespace TradingBot
 
             Instance?.ViewModel?.UpdateMajorProfileStatus(CurrentGeneralSettings.MajorTrendProfile);
 
-            Instance?.AddLog($"[GeneralSettings] ✅ 런타임 적용 완료 (Leverage: {CurrentGeneralSettings.DefaultLeverage}x, SidewaysTP: {CurrentGeneralSettings.SidewaysTakeProfitRoe:F2}%, TP: {CurrentGeneralSettings.TargetRoe:F2}%, SL: {CurrentGeneralSettings.StopLossRoe:F2}%, MajorProfile: {CurrentGeneralSettings.MajorTrendProfile})");
+            Instance?.AddLog($"[GeneralSettings] ✅ 런타임 적용 완료 | [MAJOR] Leverage:{CurrentGeneralSettings.MajorLeverage}x Margin:{CurrentGeneralSettings.MajorMargin:F0} SL:{CurrentGeneralSettings.MajorStopLossRoe:F0}% BE:{CurrentGeneralSettings.MajorBreakEvenRoe:F1}% Tp1:{CurrentGeneralSettings.MajorTp1Roe:F0}% Tp2:{CurrentGeneralSettings.MajorTp2Roe:F0}% Trail:{CurrentGeneralSettings.MajorTrailingStartRoe:F0}%/{CurrentGeneralSettings.MajorTrailingGapRoe:F1}% | [PUMP] SL:{CurrentGeneralSettings.PumpStopLossRoe:F0}% BE:{CurrentGeneralSettings.PumpBreakEvenRoe:F0}% Tp1:{CurrentGeneralSettings.PumpTp1Roe:F0}% Tp2:{CurrentGeneralSettings.PumpTp2Roe:F0}% Trail:{CurrentGeneralSettings.PumpTrailingStartRoe:F0}%/{CurrentGeneralSettings.PumpTrailingGapRoe:F0}%");
         }
 
         private static void CopyTradingSettings(TradingSettings target, TradingSettings source)
@@ -155,12 +155,27 @@ namespace TradingBot
             target.TrailingStartRoe = source.TrailingStartRoe;
             target.TrailingDropRoe = source.TrailingDropRoe;
             target.MajorTrendProfile = source.MajorTrendProfile;
+            // PUMP 전용 설정
             target.PumpLeverage = source.PumpLeverage;
             target.PumpTp1Roe = source.PumpTp1Roe;
             target.PumpTp2Roe = source.PumpTp2Roe;
             target.PumpTimeStopMinutes = source.PumpTimeStopMinutes;
             target.PumpStopDistanceWarnPct = source.PumpStopDistanceWarnPct;
             target.PumpStopDistanceBlockPct = source.PumpStopDistanceBlockPct;
+            target.PumpBreakEvenRoe = source.PumpBreakEvenRoe;
+            target.PumpTrailingStartRoe = source.PumpTrailingStartRoe;
+            target.PumpTrailingGapRoe = source.PumpTrailingGapRoe;
+            target.PumpStopLossRoe = source.PumpStopLossRoe;
+            target.PumpMargin = source.PumpMargin;
+            // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정
+            target.MajorLeverage = source.MajorLeverage;
+            target.MajorMargin = source.MajorMargin;
+            target.MajorBreakEvenRoe = source.MajorBreakEvenRoe;
+            target.MajorTp1Roe = source.MajorTp1Roe;
+            target.MajorTp2Roe = source.MajorTp2Roe;
+            target.MajorTrailingStartRoe = source.MajorTrailingStartRoe;
+            target.MajorTrailingGapRoe = source.MajorTrailingGapRoe;
+            target.MajorStopLossRoe = source.MajorStopLossRoe;
         }
 
         public MainWindow()

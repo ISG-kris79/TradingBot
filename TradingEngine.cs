@@ -1016,6 +1016,12 @@ namespace TradingBot
                     foreach (var synced in syncedPositions)
                     {
                         var pos = synced.Pos;
+                        decimal uiSafeLeverage = pos.Leverage > 0
+                            ? pos.Leverage
+                            : _settings.DefaultLeverage;
+                        if (uiSafeLeverage <= 0)
+                            uiSafeLeverage = 1m;
+
                         OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
                         {
                             Symbol = pos.Symbol,
@@ -1023,19 +1029,27 @@ namespace TradingBot
                             EntryPrice = pos.EntryPrice,
                             PositionSide = pos.IsLong ? "LONG" : "SHORT",
                             Quantity = Math.Abs(pos.Quantity),
-                            Leverage = (int)pos.Leverage
+                            Leverage = (int)Math.Max(1m, Math.Round(uiSafeLeverage, MidpointRounding.AwayFromZero))
                         });
 
                         string sideStr = pos.IsLong ? "LONG" : "SHORT";
                         OnStatusLog?.Invoke($"[동기화] {pos.Symbol} {sideStr} | 평단: {pos.EntryPrice}");
                         decimal syncedStopLoss = 0m;
+                        bool isSyncPump = false;
                         lock (_posLock)
                         {
-                            if (_activePositions.TryGetValue(pos.Symbol, out var active) && active.StopLoss > 0)
-                                syncedStopLoss = active.StopLoss;
+                            if (_activePositions.TryGetValue(pos.Symbol, out var active))
+                            {
+                                if (active.StopLoss > 0) syncedStopLoss = active.StopLoss;
+                                isSyncPump = active.IsPumpStrategy; // [버그수정] PUMP 포지션 확인
+                            }
                         }
 
-                        TryStartStandardMonitor(pos.Symbol, pos.EntryPrice, pos.IsLong, "TREND", 0m, syncedStopLoss, token, "sync");
+                        // [버그수정] PUMP 포지션에 Standard Monitor 시작하면 breakEvenROE=7%로 조기 청산됨
+                        if (!isSyncPump)
+                            TryStartStandardMonitor(pos.Symbol, pos.EntryPrice, pos.IsLong, "TREND", 0m, syncedStopLoss, token, "sync");
+                        else
+                            OnStatusLog?.Invoke($"⚠️ [동기화] {pos.Symbol} PUMP 포지션 감지 → 표준 모니터 스킵 (PUMP Smart Protective Stop 비적용)");
                     }
                     OnStatusLog?.Invoke("✅ 현재 보유 포지션 동기화 완료");
                 }
@@ -3026,9 +3040,10 @@ namespace TradingBot
                 }
             }
 
-            decimal baseEntryMarginUsdt = await GetAdaptiveEntryMarginUsdtAsync(token);
+            decimal pumpBaseMargin = _settings.PumpMargin > 0 ? _settings.PumpMargin : 0;
+            decimal baseEntryMarginUsdt = await GetAdaptiveEntryMarginUsdtAsync(token, pumpBaseMargin);
             decimal marginUsdt = CalculateDynamicPositionSize(atr, currentPrice, baseEntryMarginUsdt);
-            PumpEntryLog("SIZE", "BASE", $"baseMargin={baseEntryMarginUsdt:F0} dynamicMargin={marginUsdt:F0}");
+            PumpEntryLog("SIZE", "BASE", $"baseMargin={baseEntryMarginUsdt:F0} dynamicMargin={marginUsdt:F0} pumpMarginSetting={_settings.PumpMargin:F0}");
 
             if (_riskManager.IsTripped)
             {
@@ -3237,9 +3252,12 @@ namespace TradingBot
             return Math.Round(marginUsdt, 0);
         }
 
-        private async Task<decimal> GetAdaptiveEntryMarginUsdtAsync(CancellationToken token)
+        private async Task<decimal> GetAdaptiveEntryMarginUsdtAsync(CancellationToken token, decimal overrideBaseMargin = 0)
         {
-            decimal baseMargin = _settings.DefaultMargin > 0 ? _settings.DefaultMargin : 200.0m;
+            // [메이저/PUMP 완전 분리] override 없으면 메이저 전용 증거금 사용
+            decimal baseMargin = overrideBaseMargin > 0 ? overrideBaseMargin
+                               : (_settings.MajorMargin > 0 ? _settings.MajorMargin
+                                 : (_settings.DefaultMargin > 0 ? _settings.DefaultMargin : 200.0m));
             decimal equity = await GetEstimatedAccountEquityUsdtAsync(token);
 
             if (equity <= 0)
@@ -3671,6 +3689,8 @@ namespace TradingBot
 
         private async Task HandleAccountUpdate(BinanceFuturesStreamAccountUpdate accountUpdate)
         {
+            Dictionary<string, decimal>? leverageBySymbol = null;
+
             foreach (var pos in accountUpdate.UpdateData.Positions)
             {
                 if (pos.Quantity == 0)
@@ -3968,6 +3988,35 @@ namespace TradingBot
                 DateTime savedEntryTime = DateTime.Now;
                 float savedAiScore = 0;
 
+                decimal safeLeverage = existing?.Leverage ?? 0m;
+
+                if (safeLeverage <= 0)
+                {
+                    if (leverageBySymbol == null)
+                    {
+                        try
+                        {
+                            var latestPositions = await _exchangeService.GetPositionsAsync(_cts?.Token ?? CancellationToken.None);
+                            leverageBySymbol = latestPositions
+                                .Where(p => !string.IsNullOrWhiteSpace(p.Symbol))
+                                .GroupBy(p => p.Symbol, StringComparer.OrdinalIgnoreCase)
+                                .ToDictionary(g => g.Key, g => g.First().Leverage, StringComparer.OrdinalIgnoreCase);
+                        }
+                        catch
+                        {
+                            leverageBySymbol = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+                        }
+                    }
+
+                    if (leverageBySymbol.TryGetValue(pos.Symbol, out var exchangeLeverage) && exchangeLeverage > 0)
+                        safeLeverage = exchangeLeverage;
+                }
+
+                if (safeLeverage <= 0)
+                    safeLeverage = _settings.DefaultLeverage > 0 ? _settings.DefaultLeverage : 1m;
+
+                int uiLeverage = (int)Math.Max(1m, Math.Round(safeLeverage, MidpointRounding.AwayFromZero));
+
                 if (wasTracked && existing != null)
                 {
                     savedStep = existing.TakeProfitStep;
@@ -4005,7 +4054,7 @@ namespace TradingBot
                         IsLong = isLong,
                         Side = isLong ? OrderSide.Buy : OrderSide.Sell,
                         Quantity = Math.Abs(pos.Quantity),
-                        Leverage = _settings.DefaultLeverage,
+                        Leverage = safeLeverage,
                         EntryTime = DateTime.Now
                     }, "ACCOUNT_UPDATE_RESTORED");
 
@@ -4035,7 +4084,7 @@ namespace TradingBot
                         IsPumpStrategy = savedPump,
                         IsAveragedDown = savedAvg,
                         AiScore = savedAiScore,
-                        Leverage = existing?.Leverage ?? _settings.DefaultLeverage,
+                        Leverage = safeLeverage,
                         Quantity = Math.Abs(pos.Quantity), // Set quantity from account update
                         InitialQuantity = wasTracked && existing != null && existing.InitialQuantity > 0
                             ? existing.InitialQuantity
@@ -4068,7 +4117,7 @@ namespace TradingBot
                     EntryPrice = pos.EntryPrice,
                     PositionSide = isLong ? "LONG" : "SHORT",  // [FIX] PositionSide 설정 추가
                     Quantity = Math.Abs(pos.Quantity),
-                    Leverage = (int)(existing?.Leverage ?? _settings.DefaultLeverage)
+                    Leverage = uiLeverage
                 });
             }
         }
@@ -4259,7 +4308,7 @@ namespace TradingBot
             // 1. 진입 신호가 아니면 즉시 종료
             if (decision != "LONG" && decision != "SHORT") return;
 
-            // [AI_QUANT_TRADING_GUIDE 반영] 진입 직전 코인 타입 기반 AI 더블체크(ML.NET + Transformer AND)
+            // [AI_QUANT_TRADING_GUIDE 반영] 진입 직전 코인 타입 기반 AI 더블체크(ML.NET 또는 Transformer 통과)
             if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate.IsReady)
             {
                 CoinType coinType = ResolveCoinType(symbol, signalSource);
@@ -4273,7 +4322,7 @@ namespace TradingBot
                 EntryLog(
                     "AI_GATE",
                     gateResult.allowEntry ? "PASS" : "BLOCK",
-                    $"coinType={coinType} reason={gateResult.reason} ml={gateResult.detail.ML_Confidence:P1} tf={gateResult.detail.TF_Confidence:P1}");
+                    $"coinType={coinType} reason={gateResult.reason} ml={gateResult.detail.ML_Confidence:P1} tf={gateResult.detail.TF_Confidence:P1} trend={gateResult.detail.TrendScore:P1} fibBonus={gateResult.detail.FibonacciBonusScore:F0}");
 
                 // [AI 관제탑] 텔레그램 알림 + DB 기록 (fire-and-forget)
                 _ = Task.Run(async () =>
@@ -4422,6 +4471,7 @@ namespace TradingBot
             // [A안 조기진입] AI 확률 ≥ 80% + 즉시 예측이면 캔들 확인 스킵
             // ═══════════════════════════════════════════════════════════════
             bool skipCandleConfirm = false;
+            bool isExhaustionReversal = false;
             if (_latestAiForecasts.TryGetValue(symbol, out var latestForecast))
             {
                 bool highConfidence = latestForecast.AverageProbability >= 0.80f;
@@ -4479,6 +4529,39 @@ namespace TradingBot
 
                         if (confirmed)
                         {
+                            // [가격 괴리율 체크] 신호 발생 이후 이미 너무 많이 움직였으면 진입 기회 소멸
+                            const decimal MAX_PRICE_DRIFT_PCT = 1.5m;
+                            if (pending.SignalPrice > 0)
+                            {
+                                decimal driftPct = pending.Direction == "SHORT"
+                                    ? (pending.SignalPrice - currentPrice) / pending.SignalPrice * 100   // SHORT: 하락폭
+                                    : (currentPrice - pending.SignalPrice) / pending.SignalPrice * 100;  // LONG: 상승폭
+
+                                if (driftPct >= MAX_PRICE_DRIFT_PCT)
+                                {
+                                    _pendingDelayedEntries.TryRemove(symbol, out _);
+                                    OnStatusLog?.Invoke($"⛔ [진입 기회 소멸] {symbol} {pending.Direction} | 신호가 {pending.SignalPrice:F4} 대비 {driftPct:F2}% 이미 이동 (한계 {MAX_PRICE_DRIFT_PCT}%) → 폐기");
+                                    EntryLog("DRIFT_BLOCK", "BLOCK", $"dir={pending.Direction} signalPrice={pending.SignalPrice:F4} currentPrice={currentPrice:F4} drift={driftPct:F2}%");
+                                    return;
+                                }
+                            }
+
+                            // [RSI 과확장 체크] SHORT 진입 시 RSI 과매도(≤35), LONG 진입 시 심볼별 RSI 제한 초과 → 이미 모멘텀 소진
+                            float rsiNow = latestCandle.RSI;
+                            if (rsiNow > 0)
+                            {
+                                var threshold = GetThresholdBySymbol(symbol);
+                                bool rsiExhausted = (pending.Direction == "SHORT" && rsiNow <= 35f)
+                                                 || (pending.Direction == "LONG"  && rsiNow >= threshold.MaxRsiLimit);
+                                if (rsiExhausted)
+                                {
+                                    _pendingDelayedEntries.TryRemove(symbol, out _);
+                                    OnStatusLog?.Invoke($"⛔ [RSI 과확장 차단] {symbol} {pending.Direction} | RSI={rsiNow:F1} (limit={threshold.MaxRsiLimit:F0}) → 모멘텀 소진, 진입 폐기");
+                                    EntryLog("RSI_EXHAUSTED", "BLOCK", $"dir={pending.Direction} rsi={rsiNow:F1} limit={threshold.MaxRsiLimit:F0}");
+                                    return;
+                                }
+                            }
+
                             // 확인 완료 → 대기 해제 후 진입 계속
                             _pendingDelayedEntries.TryRemove(symbol, out _);
                             decision = pending.Direction; // 확인된 방향으로 진입
@@ -4537,35 +4620,106 @@ namespace TradingBot
                 }
                 else
                 {
-                    // 신규 신호 → 대기 등록 (즉시 진입하지 않음)
-                    var klines5m = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 5, token);
+                    // 신규 신호 → 소진 반전 감지 우선, 아니면 대기 등록
+                    var klines5m = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 12, token);
                     var prevCandle = klines5m != null && klines5m.Count >= 2 ? klines5m.ElementAt(klines5m.Count - 2) : null;
 
-                    _pendingDelayedEntries[symbol] = new DelayedEntrySignal
+                    // ═══════════════════════════════════════════════════════════
+                    // [소진 반전 감지] 45분+ 단방향 추세 후 RSI 과확장 → 반대 방향 직진입
+                    // SHORT 신호 발생이지만 이미 과매도 + 연속 음봉 + 낙폭 과다 → LONG 리버설
+                    // LONG  신호 발생이지만 이미 과매수 + 연속 양봉 + 상승폭 과다 → SHORT 리버설
+                    // ═══════════════════════════════════════════════════════════
+                    if (klines5m != null && klines5m.Count >= 9)
                     {
-                        Symbol = symbol,
-                        Direction = decision,
-                        SignalPrice = currentPrice,
-                        SignalTime = DateTime.Now,
-                        SignalCandleHigh = prevCandle?.HighPrice ?? latestCandle.High,
-                        SignalCandleLow = prevCandle?.LowPrice ?? latestCandle.Low,
-                        SignalCandleClose = prevCandle?.ClosePrice ?? latestCandle.Close,
-                        SignalSource = signalSource,
-                        Mode = mode,
-                        CustomTakeProfitPrice = customTakeProfitPrice,
-                        CustomStopLossPrice = customStopLossPrice
-                    };
+                        var kList = klines5m.ToList();
+                        double rsiRev = IndicatorCalculator.CalculateRSI(kList, 14);
 
-                    OnStatusLog?.Invoke(TradingStateLogger.WaitingForCandleConfirmation(symbol, decision, 1));
-                    return;
+                        // 연속 음봉/양봉 카운트 (최근 6봉)
+                        int consecBearish = 0, consecBullish = 0;
+                        for (int i = kList.Count - 1; i >= Math.Max(0, kList.Count - 6); i--)
+                        {
+                            if (kList[i].ClosePrice < kList[i].OpenPrice) consecBearish++;
+                            else break;
+                        }
+                        for (int i = kList.Count - 1; i >= Math.Max(0, kList.Count - 6); i--)
+                        {
+                            if (kList[i].ClosePrice > kList[i].OpenPrice) consecBullish++;
+                            else break;
+                        }
+
+                        // 최근 9봉 고점/저점 대비 이동폭
+                        var priorCandles = kList.Take(kList.Count - 1).ToList();
+                        decimal recentHigh = priorCandles.Count > 0 ? priorCandles.Max(k => k.HighPrice) : currentPrice;
+                        decimal recentLow  = priorCandles.Count > 0 ? priorCandles.Min(k => k.LowPrice)  : currentPrice;
+                        decimal dropPct    = recentHigh > 0 ? (recentHigh - currentPrice) / recentHigh * 100 : 0;
+                        decimal risePct    = recentLow  > 0 ? (currentPrice - recentLow)  / recentLow  * 100 : 0;
+
+                        const decimal REVERSAL_MIN_MOVE_PCT    = 2.5m;
+                        const int     REVERSAL_MIN_CONSEC      = 5;
+                        const double  REVERSAL_RSI_OVERSOLD    = 30.0;
+                        const double  REVERSAL_RSI_OVERBOUGHT  = 70.0;
+
+                        if (decision == "SHORT"
+                            && rsiRev <= REVERSAL_RSI_OVERSOLD
+                            && consecBearish >= REVERSAL_MIN_CONSEC
+                            && dropPct >= REVERSAL_MIN_MOVE_PCT)
+                        {
+                            decision = "LONG";
+                            isExhaustionReversal = true;
+                            OnStatusLog?.Invoke(
+                                $"🔄 [소진 반전] {symbol} SHORT→LONG | RSI={rsiRev:F1}(과매도) " +
+                                $"{consecBearish}연속음봉 낙폭={dropPct:F2}% → 롱 리버설 직진입");
+                            EntryLog("EXHAUSTION_REVERSAL", "LONG",
+                                $"rsi={rsiRev:F1} consec={consecBearish} drop={dropPct:F2}%");
+                        }
+                        else if (decision == "LONG"
+                            && rsiRev >= REVERSAL_RSI_OVERBOUGHT
+                            && consecBullish >= REVERSAL_MIN_CONSEC
+                            && risePct >= REVERSAL_MIN_MOVE_PCT)
+                        {
+                            decision = "SHORT";
+                            isExhaustionReversal = true;
+                            OnStatusLog?.Invoke(
+                                $"🔄 [소진 반전] {symbol} LONG→SHORT | RSI={rsiRev:F1}(과매수) " +
+                                $"{consecBullish}연속양봉 상승폭={risePct:F2}% → 숏 리버설 직진입");
+                            EntryLog("EXHAUSTION_REVERSAL", "SHORT",
+                                $"rsi={rsiRev:F1} consec={consecBullish} rise={risePct:F2}%");
+                        }
+                    }
+
+                    if (isExhaustionReversal)
+                    {
+                        // pending 등록 없이 즉시 진입 흐름으로 계속 (15분봉 필터 스킵됨)
+                    }
+                    else
+                    {
+                        _pendingDelayedEntries[symbol] = new DelayedEntrySignal
+                        {
+                            Symbol = symbol,
+                            Direction = decision,
+                            SignalPrice = currentPrice,
+                            SignalTime = DateTime.Now,
+                            SignalCandleHigh = prevCandle?.HighPrice ?? latestCandle.High,
+                            SignalCandleLow = prevCandle?.LowPrice ?? latestCandle.Low,
+                            SignalCandleClose = prevCandle?.ClosePrice ?? latestCandle.Close,
+                            SignalSource = signalSource,
+                            Mode = mode,
+                            CustomTakeProfitPrice = customTakeProfitPrice,
+                            CustomStopLossPrice = customStopLossPrice
+                        };
+
+                        OnStatusLog?.Invoke(TradingStateLogger.WaitingForCandleConfirmation(symbol, decision, 1));
+                        return;
+                    }
                 }
             }
 
             // ═══════════════════════════════════════════════════════════════
             // [15분봉 이평선 정배열 필터] 상위 시간대 추세 동조
             // LONG: 15분봉 SMA20 > SMA60 필수 / SHORT: 15분봉 SMA20 < SMA60 필수
+            // ※ 소진 반전 진입(isExhaustionReversal)은 추세 역행이 의도이므로 스킵
             // ═══════════════════════════════════════════════════════════════
-            if (IsHybridBbSignalSource(signalSource))
+            if (IsHybridBbSignalSource(signalSource) && !isExhaustionReversal)
             {
                 try
                 {
@@ -4613,6 +4767,25 @@ namespace TradingBot
             {
                 EntryLog("DATA", "BLOCK", "latestCandle=missing");
                 return;
+            }
+
+            // [RSI 과확장 최종 방어] 캔들 확인 bypass 경로 포함 모든 진입에 적용
+            // SHORT 진입 시 RSI ≤ 35 → 이미 과매도, 모멘텀 소진 → 진입 차단
+            // LONG  진입 시 RSI ≥ 심볼별 제한(메이저 75, 밈/일반 65) → 진입 차단
+            {
+                float rsiCheck = latestCandle.RSI;
+                if (rsiCheck > 0)
+                {
+                    var threshold = GetThresholdBySymbol(symbol);
+                    bool rsiExhausted = (decision == "SHORT" && rsiCheck <= 35f)
+                                     || (decision == "LONG"  && rsiCheck >= threshold.MaxRsiLimit);
+                    if (rsiExhausted)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [RSI 과확장 차단] {symbol} {decision} | RSI={rsiCheck:F1} (limit={threshold.MaxRsiLimit:F0}) → 모멘텀 소진, 진입 차단");
+                        EntryLog("RSI_EXHAUSTED", "BLOCK", $"dir={decision} rsi={rsiCheck:F1} limit={threshold.MaxRsiLimit:F0}");
+                        return;
+                    }
+                }
             }
 
             // [요청 반영] 1분봉 윗꼬리(고점 대비 -0.3%) 발생 시 LONG 추격 진입 차단
@@ -4779,6 +4952,7 @@ namespace TradingBot
                     aiPredictUp = prediction.Prediction;
                     convictionScore = Math.Max(convictionScore, (decimal)(prediction.Probability * 100f));
                     bool isMajorCoin = signalSource == "MAJOR" || signalSource.StartsWith("MAJOR_");
+                    var symbolThreshold = GetThresholdBySymbol(symbol);
                     bool isLowVolume = latestCandle.Volume_Ratio > 0f && latestCandle.Volume_Ratio < 1.0f;
                     bool isTrendHealthy = latestCandle.Close > (decimal)latestCandle.SMA_20 && latestCandle.RSI > 50f;
                     bool isPerfectAlignment = latestCandle.SMA_20 > latestCandle.SMA_60 && latestCandle.SMA_60 > latestCandle.SMA_120;
@@ -4824,15 +4998,38 @@ namespace TradingBot
                     
                     float finalAiScore = Math.Max(0f, baseAiScore + bonusPoints); // 음수 방지
                     convictionScore = Math.Max(convictionScore, (decimal)finalAiScore);
+
+                    // [메이저 전용] 15분봉 기울기(상승 전환) + 1분봉 정밀 타격(70점)
+                    if (decision == "LONG" && isMajorCoin)
+                    {
+                        var (isPositiveSlope, slope) = await EvaluateFifteenMinuteSlopeAsync(symbol, token);
+                        if (!isPositiveSlope)
+                        {
+                            OnStatusLog?.Invoke($"⛔ [M15 추세 기울기 차단] {symbol} LONG | slope={slope:F4} <= 0");
+                            EntryLog("M15_SLOPE", "BLOCK", $"slope={slope:F4}");
+                            return;
+                        }
+
+                        if (finalAiScore < symbolThreshold.EntryScoreCut)
+                        {
+                            OnStatusLog?.Invoke($"⛔ [MAJOR 1분 타격 차단] {symbol} LONG | score={finalAiScore:F1}<{symbolThreshold.EntryScoreCut:F0} (m15Slope={slope:F4})");
+                            EntryLog("MAJOR_SNIPER", "BLOCK", $"score={finalAiScore:F1} threshold={symbolThreshold.EntryScoreCut:F0} m15Slope={slope:F4}");
+                            return;
+                        }
+
+                        EntryLog("MAJOR_SNIPER", "PASS", $"score={finalAiScore:F1}>={symbolThreshold.EntryScoreCut:F0} m15Slope={slope:F4}");
+                    }
                     
                     // AI 점수 필터 체크
                     if (_enableAiScoreFilter)
                     {
                         // 설정 파일에서 읽은 임계값 사용
                         float adjustedThreshold = isMajorCoin ? _aiScoreThresholdMajor : _aiScoreThresholdNormal;
+                        adjustedThreshold = Math.Max(adjustedThreshold, symbolThreshold.EntryScoreCut);
+                        adjustedThreshold = Math.Max(adjustedThreshold, symbolThreshold.AiConfidenceMin * 100f);
                         if (majorLowVolumePrivilege)
                         {
-                            adjustedThreshold = Math.Min(adjustedThreshold, _aiScoreThresholdMajor);
+                            adjustedThreshold = Math.Min(adjustedThreshold, Math.Max(_aiScoreThresholdMajor, symbolThreshold.EntryScoreCut));
                         }
                         
                         if (decision == "LONG" && finalAiScore < adjustedThreshold && !majorLowVolumePrivilege)
@@ -4944,12 +5141,12 @@ namespace TradingBot
 
             try
             {
-                // 2. 설정값: 증거금 200 USDT, 레버리지 20배
-                int leverage = _settings.DefaultLeverage;
+                // 2. [메이저/PUMP 완전 분리] 메이저 전용 레버리지/증거금 사용
+                int leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
                 decimal marginUsdt = await GetAdaptiveEntryMarginUsdtAsync(token);
                 decimal positionSizeMultiplier = 1.0m;
 
-                EntryLog("SIZE", "BASE", $"margin={marginUsdt:F2} sizingRule=max(default={_settings.DefaultMargin:F0}, equity*10%)");
+                EntryLog("SIZE", "BASE", $"margin={marginUsdt:F2} leverage={leverage}x sizingRule=max(majorMargin={_settings.MajorMargin:F0}, equity*10%)");
 
                 if (patternSnapshot != null)
                 {
@@ -4990,9 +5187,12 @@ namespace TradingBot
                 {
                     decimal effectiveMinRiskRewardRatio = _minEntryRiskRewardRatio;
                     bool usingDefaultTargetAndStop = customTakeProfitPrice <= 0m && customStopLossPrice <= 0m;
-                    if (usingDefaultTargetAndStop && _settings.StopLossRoe > 0m && _settings.TargetRoe > 0m)
+                    // [메이저/PUMP 완전 분리] 메이저 전용 TargetRoe/StopLossRoe 사용
+                    decimal majorTp2 = _settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : _settings.TargetRoe;
+                    decimal majorSl = _settings.MajorStopLossRoe > 0 ? _settings.MajorStopLossRoe : _settings.StopLossRoe;
+                    if (usingDefaultTargetAndStop && majorSl > 0m && majorTp2 > 0m)
                     {
-                        decimal defaultRrFromSettings = _settings.TargetRoe / _settings.StopLossRoe;
+                        decimal defaultRrFromSettings = majorTp2 / majorSl;
                         if (defaultRrFromSettings < effectiveMinRiskRewardRatio)
                         {
                             effectiveMinRiskRewardRatio = Math.Max(1.0m, defaultRrFromSettings);
@@ -5414,9 +5614,12 @@ namespace TradingBot
                 return false;
             }
 
-            int safeLeverage = leverage > 0 ? leverage : Math.Max(1, _settings.DefaultLeverage);
-            decimal targetPriceMove = _settings.TargetRoe > 0 ? (_settings.TargetRoe / safeLeverage / 100m) : 0.01m;
-            decimal stopPriceMove = _settings.StopLossRoe > 0 ? (_settings.StopLossRoe / safeLeverage / 100m) : 0.0075m;
+            int safeLeverage = leverage > 0 ? leverage : Math.Max(1, _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage);
+            // [메이저/PUMP 완전 분리] 메이저 전용 ROE로 TP/SL 바능가 계산
+            decimal majorTp2Roe  = _settings.MajorTp2Roe  > 0 ? _settings.MajorTp2Roe  : (_settings.TargetRoe  > 0 ? _settings.TargetRoe  : 25.0m);
+            decimal majorSlRoe   = _settings.MajorStopLossRoe > 0 ? _settings.MajorStopLossRoe : (_settings.StopLossRoe > 0 ? _settings.StopLossRoe : 60.0m);
+            decimal targetPriceMove = majorTp2Roe / safeLeverage / 100m;
+            decimal stopPriceMove   = majorSlRoe  / safeLeverage / 100m;
 
             bool isLong = string.Equals(decision, "LONG", StringComparison.OrdinalIgnoreCase);
             bool isShort = string.Equals(decision, "SHORT", StringComparison.OrdinalIgnoreCase);
@@ -5569,6 +5772,48 @@ namespace TradingBot
             }
 
             return CoinType.Normal;
+        }
+
+        private readonly record struct SymbolThresholdProfile(float EntryScoreCut, float AiConfidenceMin, float MaxRsiLimit);
+
+        private static SymbolThresholdProfile GetThresholdBySymbol(string symbol)
+        {
+            bool isMajor = !string.IsNullOrWhiteSpace(symbol) && MajorSymbols.Contains(symbol);
+
+            if (isMajor)
+            {
+                // [메이저 전용 완화 세팅]
+                // RSI 75까지 추격 허용, AI 최소 신뢰도 70%, 진입 점수 70
+                return new SymbolThresholdProfile(70.0f, 0.70f, 75.0f);
+            }
+
+            // [밈/일반 엄격 세팅]
+            // RSI 65 제한, AI 최소 신뢰도 90%, 진입 점수 80
+            return new SymbolThresholdProfile(80.0f, 0.90f, 65.0f);
+        }
+
+        private async Task<(bool isPositiveSlope, double slope)> EvaluateFifteenMinuteSlopeAsync(string symbol, CancellationToken token)
+        {
+            try
+            {
+                var klines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 30, token);
+                if (klines == null || klines.Count < 21)
+                    return (false, 0d);
+
+                var candles = klines.ToList();
+                double sma20Now = IndicatorCalculator.CalculateSMA(candles, 20);
+                double sma20Prev = IndicatorCalculator.CalculateSMA(candles.Take(candles.Count - 1).ToList(), 20);
+
+                if (sma20Now <= 0 || sma20Prev <= 0)
+                    return (false, 0d);
+
+                double slope = sma20Now - sma20Prev;
+                return (slope > 0d, slope);
+            }
+            catch
+            {
+                return (false, 0d);
+            }
         }
 
         private void ScheduleAiDoubleCheckLabeling(string symbol, decimal entryPrice, bool isLong, string? decisionId, CancellationToken token)

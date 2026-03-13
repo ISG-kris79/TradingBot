@@ -83,6 +83,13 @@ namespace TradingBot.Strategies
                     allowLowVolumeTrendBypass,
                     profile);
 
+                // [야수 모드] 피보나치 0.618~0.786 황금 반등 구간 가점
+                double fibBonus = CalculateFibScore(list, currentPrice);
+                if (fibBonus > 0)
+                {
+                    aiScore = Math.Clamp(aiScore + (int)fibBonus, 0, 100);
+                }
+
                 var nowSeoul = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, SeoulTimeZone);
                 bool isKstDaytime = nowSeoul.Hour >= 10 && nowSeoul.Hour < 19;
                 int longThreshold = CalculateDynamicThreshold(isKstDaytime, volumeMomentum, isMakingHigherLows, profile);
@@ -313,6 +320,30 @@ namespace TradingBot.Strategies
             decimal low3 = window.Skip(segmentSize * 2).Take(segmentSize).Min(c => c.LowPrice);
 
             return low2 >= low1 * minRiseRatio && low3 >= low2 * minRiseRatio;
+        }
+
+        private double CalculateFibScore(List<IBinanceKline> candles, decimal currentPrice)
+        {
+            if (candles == null || candles.Count < 30)
+                return 0;
+
+            var recent = candles.TakeLast(100).ToList();
+            decimal high = recent.Max(c => c.HighPrice);
+            decimal low = recent.Min(c => c.LowPrice);
+            decimal range = high - low;
+            if (range <= 0m)
+                return 0;
+
+            decimal fib618 = high - (range * 0.618m);
+            decimal fib786 = high - (range * 0.786m);
+
+            if (currentPrice <= fib618 && currentPrice >= fib786)
+            {
+                OnLog?.Invoke("🎯 [피보나치 타점] 황금 반등 구간 진입! 가점 +20점");
+                return 20.0;
+            }
+
+            return 0;
         }
 
         private MajorProfile ResolveProfile()
