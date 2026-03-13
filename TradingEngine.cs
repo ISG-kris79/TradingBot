@@ -1065,7 +1065,13 @@ namespace TradingBot
         {
             try
             {
-                int userId = AppConfig.CurrentUser?.Id ?? 1;
+                int userId = AppConfig.CurrentUser?.Id ?? 0;
+                if (userId <= 0)
+                {
+                    OnStatusLog?.Invoke("⚠️ [DB 정리] 현재 로그인 사용자 ID를 확인할 수 없어 사용자별 오픈 포지션 정리를 건너뜁니다.");
+                    return;
+                }
+
                 var dbOpenTrades = await _dbManager.GetOpenTradesAsync(userId);
 
                 if (dbOpenTrades.Count == 0)
@@ -1154,7 +1160,10 @@ namespace TradingBot
             try
             {
                 const int withinMinutes = 60; // 1시간 이내
-                var recentlyClosed = await _dbManager.GetRecentlyClosedPositionsAsync(withinMinutes);
+                int currentUserId = AppConfig.CurrentUser?.Id ?? 0;
+                var recentlyClosed = await _dbManager.GetRecentlyClosedPositionsAsync(
+                    withinMinutes,
+                    currentUserId > 0 ? currentUserId : null);
 
                 if (recentlyClosed.Count == 0)
                 {
@@ -1479,7 +1488,7 @@ namespace TradingBot
                         // [B] AI 관제탑 5분 요약 전송
                         if ((DateTime.Now - _lastAiGateSummaryTime).TotalMinutes >= 5)
                         {
-                            await TelegramService.Instance.FlushAiGateSummaryAsync();
+                            await TelegramService.Instance.FlushAiGateSummaryAsync(forceSendEmpty: true);
                             _lastAiGateSummaryTime = DateTime.Now;
                         }
 
@@ -2527,6 +2536,12 @@ namespace TradingBot
             if (_uiTrackedSymbols.TryAdd(symbol, 0))
                 OnSymbolTracking?.Invoke(symbol);
 
+            if (currentPrice <= 0)
+            {
+                OnTickerUpdate?.Invoke(symbol, currentPrice, null);
+                return;
+            }
+
             PositionInfo? pos = null;
             bool isHolding = false;
 
@@ -2544,8 +2559,11 @@ namespace TradingBot
                 {
                     priceChangePercent = (pos.EntryPrice - currentPrice) / pos.EntryPrice * 100;
                 }
+                decimal safeLeverage = pos.Leverage > 0
+                    ? pos.Leverage
+                    : (_settings.DefaultLeverage > 0 ? _settings.DefaultLeverage : 1m);
                 // ROE = 가격변동률 × 레버리지
-                decimal calculatedROE = priceChangePercent * pos.Leverage;
+                decimal calculatedROE = priceChangePercent * safeLeverage;
                 pnl = (double)Math.Round(calculatedROE, 2);
             }
 

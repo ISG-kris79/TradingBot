@@ -640,7 +640,12 @@ namespace TradingBot
             }
 
                  await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 5분 요약]*\n\n{body}", true, "AI관제탑");
-                 if (snapshot.AllowedCount > 0)
+
+                 bool hasApprovedTargets = snapshot.AllowedLongSymbolReasons.Count > 0
+                    || snapshot.AllowedShortSymbolReasons.Count > 0
+                    || snapshot.AllowedOtherSymbolReasons.Count > 0;
+
+                 if (hasApprovedTargets)
                  {
                      await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 승인코인 5분 브리핑]*\n\n{approvedOnlyBody}", true, "AI관제탑-승인코인");
                  }

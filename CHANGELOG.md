@@ -9,137 +9,54 @@
 
 ### Added
 
-- **스나이퍼 모드 (Sniper Mode): 종목당 일일 1~2회 정조준 진입** (`SniperManager.cs`, `HybridStrategyScorer.cs`, `Models.cs`):
-  
-  **[핵심 원칙]**:
-    - **진입 문턱 80점**: AI(27) + 기술(45) + 보너스(8) 등 다중 신호 중첩 필요
-    - **종목당 일일 2회**: 24시간 중 가장 큰 추세 1~2개에 집중
-    - **최대 5개 포지션**: 메이저 4(BTC/ETH/SOL/XRP) + 밈 1(PUMP) 분산 운영
-    - **120분 냉각 사이클**: 한 파동 먹고 다음까지 2시간 휴식
-  
-  **[SniperManager.cs]** - 새 클래스 추가:
-    - `CanEnter()`: 5단계 진입 게이트 (점수 → 횟수 → 쿨다운 → 포지션 → 추세 필터)
-    - `OnPositionClosed()`: 포지션 종료 시 활성 수 감소
-    - `GetTodayTradeCount()`: 심볼별 오늘 진입 횟수 확인
-    - `IsEnoughCooldown()`: 120분 쿨다운 검증
-    - `IsTrendMatched()`: 메이저 전용 1H/1분 추세 일치 필터
-    - `ResetDailyLog()`: 자정마다 일일 기록 초기화
-  
-  **[설정값 추가]** (TradingSettings in Models.cs):
-    - `IsSniperModeEnabled`: 스나이퍼 모드 활성화 여부 (true)
-    - `MinimumEntryScore`: 최소 진입 점수 (80.0)
-    - `MaxTradesPerSymbolPerDay`: 심볼당 일일 최대 횟수 (2)
-    - `MaxActivePositions`: 최대 활성 포지션 수 (5)
-    - `EntryCooldownMinutes`: 진입 쿨다운 (120분)
-  
-  **[효과]**:
-    - 노이즈 진입 완벽 차단 → 어설픈 반등/눌림목은 점수 미달로 자동 필터
-    - 손절 빈도 감소 → 큰 추세만 집중하므로 위험 최소화
-    - 수익률 향상 → "확률 80% 이상 A급 자리"에서만 진입
+ - 없음
 
 ### Changed
 
-- **진입 문턱 상향** (`HybridStrategyScorer.cs`):
-  - `LONG_APPROVAL_THRESHOLD`: 70.0 → **80.0** (스나이퍼 모드 활성화)
-  - `SHORT_APPROVAL_THRESHOLD`: 70.0 → **80.0** (대칭 기준)
-  - 효과: 노이즈 진입 원천 차단
+ - 없음
 
-- **PUMP 2차 트레일링 갭 하향** (`Models.cs`):
-  - `PumpTrailingGapRoe`: 20.0% → **5.0%** (2차에서 최고점 대비 5% 하락 시 청산)
-  - 효과: 이전 요청 미반영분 보정
+## [2.4.40] - 2026-03-13
+
+### Added
+
+- **사용자별 DB 스코프 마이그레이션 체크리스트 추가** (`USER_SCOPE_DB_MIGRATION_CHECKLIST.md`):
+  - 운영 적용 전/후 검증 쿼리, 스모크 테스트, 롤백 절차를 문서화
 
 ### Changed
 
-- **익절·트레일링·손절 로직 통합 재정의** (`Models.cs`):
-  
-  **[메이저코인 (BTC/ETH/SOL/XRP)]:**
-    - **1차 부분익절**: ROI +**20%** (포지션 30% 청산) - MajorTp1Roe 15% → 20% 상향
-    - **2차 트레일링**: ROI +**20%** 시작 (최고점 대비 5% 하락 시 50% 청산) - MajorTrailingStartRoe 22% → 20% 하향, MajorTrailingGapRoe 4% → 5% 상향
-    - **3차 나머지**: 2차에서 +5% 내려가면 스탑로스
-    - **초기 손절**: ROI -**20%** - MajorStopLossRoe 60% → 20% 대폭 하향
-    - 효과: 메이저는 보수적·단계적 익절 + 타이트한 손절 조합
-  
-  **[밈코인 (PUMP)]:**
-    - **1차 부분익절**: ROI +**20%** (포지션 30% 청산) - PumpTp1Roe 40% → 20% 하향
-    - **2차 트레일링**: ROI +**40%** 시작 (최고점 대비 5% 하락 시 50% 청산) - PumpTrailingStartRoe 40% (유지), PumpTrailingGapRoe 20% → 5% 하향
-    - **3차 나머지**: 2차에서 +5% 내려가면 스탑로스
-    - **초기 손절**: ROI -**60%** (변경 없음) - PumpStopLossRoe 60% 유지
-    - 효과: PUMP는 공격적·빠른 초기익절 + 탄력적 트레일링 조합
+- **AI 관제탑 5분 요약 전송 규칙 보강** (`TradingEngine.cs`, `TelegramService.cs`):
+  - 대상 코인 결정이 없어도 5분 요약은 고정 주기로 발송되도록 강제
+  - 승인코인 5분 브리핑은 실제 승인 대상 심볼이 있을 때만 발송
 
-  **통합 로직 설명:**
-    - 1차: 초기 수익(20%)에서 부분청산(30%) → 수익 확정 + 리스크 감소
-    - 2차: 추가 수익 대기 중 트레일링 시작 → 최고점 기준 5% 손실 시 추가 청산(50%)
-    - 3차: 남은 포지션 보호 → 스탑로스 트리거 시 나머지 모두 청산
+- **사용자 스코프 기반 DB 읽기/쓰기 경로 강화** (`DbManager.cs`, `DatabaseService.cs`, `Database/TradeLogging_Schema.sql`, `Database/GeneralSettings_Schema.sql`):
+  - `TradeLogs`/`TradeHistory` 및 고급 로그 경로에 `UserId` 기반 필터/저장 보강
+  - 스키마 호환 체크(`HasColumnAsync`)와 인덱스/뷰 정합성 보완
 
-- **진입 문턱 조정 및 슬리피지 대응** (`HybridStrategyScorer.cs`, `Models.cs`):
-  
-  **[진입 기준]** LONG_APPROVAL_THRESHOLD 상향:
-    - 기존: 60점 (공격적)
-    - 변경: **70점** (기본, 안정적 진입)
-    - 튜닝: 진입이 너무 잦으면 → 75점 (보수적), 늦으면 → 65점 (공격적) 체감 속도 조절 가능
-    - SHORT_APPROVAL_THRESHOLD도 70점으로 LONG과 대칭 기준 적용
-
-  **[슬리피지 대응]** 본절 방어 ROI 상향:
-    - 기존: PumpBreakEvenRoe = 20% (진입 후 ROI +20% 시 본절 이동)
-    - 변경: PumpBreakEvenRoe = **25%** (ROI +25% 시 본절 이동)
-    - 슬리피지 허용: 0.15% 오프셋 적용 (진입가 + 0.15% → 본절 방어 스탑)
-    - 효과: 진입 타이밍 앞당겨진 만큼 본절 보호도 조기 활성화로 손절 리스크 완화
-
-- **과매도/과매수 "긴급 신호" 보너스 시스템** (`HybridStrategyScorer.cs`):
-  
-  **[롱 진입]** `GetOverSoldBonus()` - 바닥 낚시 신호:
-    - 조건: RSI ≤25 + BB 하단 이탈 → **즉시 30점** 부여
-    - 추가: 거래량이 평소 1.5배 초과 시 **+5점**
-    - 영향: 투매 캔들에서 빠르게 반등 기대
-    - 시뮬레이션: AI(12) + 바닥가점(30) + 기타(15) = 57점 → 진입
-  
-  **[숏 진입]** `GetOverBoughtShortBonus()` - 고점 낚시 신호:
-    - 조건: RSI ≥75 + BB 상단 돌파 → **즉시 30점** 부여
-    - 추가: 윗꼬리(Upper Wick) > 몸통 × 1.2 시 **+10점**
-    - 영향: 과열 반전 신호에서 즉시 숏 포지션 개설
-    - 시뮬레이션: AI(12) + 고점가점(30) + 윗꼬리(10) + 기타(5) = 57점 → 진입
-
-  **통합**: EvaluateLong/EvaluateShort에서 개별 항목 점수 뒤 보너스 추가
-    - 기존: AI + Elliott + Volume + RSI/MACD + BB = 100점 만점
-    - 변경: 위 항목들 + OverSoldBonus (롱) 또는 OverBoughtBonus (숏) 추가
-
-- **롱 타점 30분 앞당기기 - "긴급 수술"** (`HybridStrategyScorer.cs`, `TensorFlowTransformer.cs`):
-  
-  **[수정 1] 역추세 가점 도입** (`ScoreElliottForLong` 메서드):
-    - 기존: 엘리엇 Wave3Entry 15점 (늦는 타점, 확정 대기)
-    - 변경: RSI ≤20 + BB 하단 이탈 시 **25점 부여** (즉시 진입)
-    - 효과: 3파동 확정 재우기 대신 \"지옥 구경\" 신호에서 초기 진입 가능
-    - 로직: `if (ctx.RSI <= 20 && (double)ctx.CurrentPrice <= ctx.BbLower) score = 25;`
-  
-  **[수정 2] TensorFlow 예측 캔들 단축** (`TensorFlowTransformer` 생성자):
-    - 기존: `seqLen = 8` (8분 후 가격 예측)
-    - 변경: `seqLen = 3` (3분 후 가격 예측)
-    - 이유: \"1분봉 밈코인에서 8분 뒤는 영겁의 시간\" → 타이밍 손실 최소화
-    - 효과: PUMP 스캘핑에서 예측 스테일함 완화
-  
-  **[수정 3] 점수 임계값 하향** (`LONG_APPROVAL_THRESHOLD` 상수):
-    - 기존: 70점 이상 진입
-    - 변경: 60점 이상 진입
-    - 효과: AI(27점) 약신호 + 기술(45점) 강신호 = 60~65점 조합 즉시 진입 가능
-
-- **RSI/MACD 기울기(Slope) 기반 점수 시스템** (`HybridStrategyScorer.cs`):
-  - [기존] RSI 수치 자체 평가: RSI > 50 = 강세 신호 → 고점에서도 진입 가능
-  - [변경] RSI 변화율(기울기) 평가: RSI 20→30 급상승 = 강세 신호 → 추세 전환 즉시 감지
-  - 모든 TechnicalContext에 `RSI_Prev1~4`, `MacdHist_Prev1~4` 필드 추가
-  - `GetRsiSlope()`, `GetMacdSlope()` 메서드 추가로 기울기 계산
-  - 기울기 ≥ +10: 8점 (급상승), 기울기 < -5: 0점 (급락)
-  - **효과**: 절대 수치가 아닌 '방향 전환'을 감지해 진입 타이밍 15~30초 앞당김
-  - 예: RSI 20→25→30→35 = slope +15 → 8점 부여 (기존: RSI 35 = 3점)
+- **엔진 사용자 컨텍스트/ROI 안전성 개선** (`TradingEngine.cs`):
+  - DB 정리/블랙리스트 복구 시 현재 로그인 사용자 기준으로만 조회
+  - 실시간 ROI 계산에서 무효 가격 및 레버리지 값에 대한 안전 가드 적용
 
 ## [2.4.39] - 2026-03-13
 
 ### Added
+
+- **스나이퍼 모드 도입** (`SniperManager.cs`, `HybridStrategyScorer.cs`, `Models.cs`):
+  - 종목별 일일 진입 횟수/쿨다운/최대 포지션/추세 일치 검증 기반의 진입 게이트 추가
+  - `TradingSettings`에 스나이퍼 설정값(`MinimumEntryScore`, `MaxTradesPerSymbolPerDay`, `EntryCooldownMinutes` 등) 확장
 
 - **AI 관제탑 승인코인 5분 브리핑 분리 발송** (`TelegramService.cs`):
   - 기존 5분 요약과 별도로 승인 코인만 모아 `[AI 관제탑 승인코인 5분 브리핑]` 메시지 발송
   - 승인 코인/사유를 LONG·SHORT·기타 버킷으로 분리해 운영 가독성 강화
 
 ### Changed
+
+- **메이저/PUMP 설정 분리 및 저장 경로 확장** (`Models.cs`, `SettingsWindow.xaml`, `SettingsWindow.xaml.cs`, `DbManager.cs`, `Database/GeneralSettings_Schema.sql`, `GeneralSettingsProvider.cs`):
+  - 메이저/펌프 전용 레버리지·증거금·본절·트레일링·손절 항목을 UI/모델/DB 스키마에 반영
+  - `GeneralSettings` 저장/로딩 경로를 신규 필드까지 일관되게 확장
+
+- **진입/스코어링 로직 보강** (`AIDoubleCheckEntryGate.cs`, `TradingEngine.cs`, `HybridStrategyScorer.cs`, `TransformerStrategy.cs`, `PumpScanStrategy.cs`, `MajorCoinStrategy.cs`):
+  - Fib 보너스/데드캣 차단, RSI/MACD 기울기 가점, 메이저 스코어 임계값 보강 등 진입 필터 강화
+  - 메이저 코인 진입 시 상위 타임프레임 기울기 확인 및 심볼별 임계 프로파일 적용
 
 - **Fib 가점 반영 TrendScore를 관제탑 가시화에 직접 반영** (`AIDoubleCheckEntryGate.cs`, `TradingEngine.cs`, `TelegramService.cs`):
   - AI 게이트 PASS/BLOCK reason에 `Trend`/`FibBonus` 메타데이터 포함
@@ -153,6 +70,10 @@
 
 - **승인코인 5분 브리핑 노이즈 감소** (`TelegramService.cs`):
   - 승인 건수 0건일 때 승인코인 별도 브리핑 전송을 자동 스킵
+
+- **포지션/UI 동기화 안정화** (`MainViewModel.cs`, `MainWindow.xaml`, `MainWindow.xaml.cs`, `PositionMonitorService.cs`, `BinanceExchangeService.cs`):
+  - 리스크 표시 및 정렬 우선순위 반영 강화, 동기화 시 레버리지/모니터 분기 안전성 보강
+  - 거래소 정밀도 캐시 및 종료/취소 예외 처리 개선
 
 ## [2.4.38] - 2026-03-12
 

@@ -1,5 +1,6 @@
 using Dapper;
 using Microsoft.Data.SqlClient;
+using System.Collections.Concurrent;
 using System.Data;
 using System.Globalization;
 using System.IO;
@@ -13,6 +14,7 @@ namespace TradingBot.Services
     public class DbManager
     {
         private readonly string _connectionString;
+        private static readonly ConcurrentDictionary<string, bool> _columnExistsCache = new(StringComparer.OrdinalIgnoreCase);
 
         private sealed class TradeHistoryOpenRow
         {
@@ -77,6 +79,31 @@ namespace TradingBot.Services
 
             MainWindow.Instance?.AddLog($"⚠️ [{operation}] Users 기준 UserId 확인 실패로 DB 저장을 건너뜁니다.");
             return false;
+        }
+
+        private async Task<bool> HasColumnAsync(SqlConnection db, string tableName, string columnName)
+        {
+            string cacheKey = $"{tableName}.{columnName}";
+            if (_columnExistsCache.TryGetValue(cacheKey, out bool cached))
+                return cached;
+
+            const string sql = @"
+SELECT CASE WHEN EXISTS (
+    SELECT 1
+    FROM sys.columns
+    WHERE object_id = OBJECT_ID(@FullTableName)
+      AND name = @ColumnName
+) THEN 1 ELSE 0 END";
+
+            int exists = await db.ExecuteScalarAsync<int>(sql, new
+            {
+                FullTableName = $"dbo.{tableName}",
+                ColumnName = columnName
+            });
+
+            bool result = exists == 1;
+            _columnExistsCache[cacheKey] = result;
+            return result;
         }
 
         private static string TrimForDb(string? value, int maxLength)
@@ -235,9 +262,36 @@ ORDER BY EntryTime DESC, Id DESC;",
 
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
-                
+                bool hasTradeLogsUserId = await HasColumnAsync(db, "TradeLogs", "UserId");
+                int userId = GetCurrentUserId();
 
-                string sql = @"
+                if (hasTradeLogsUserId && userId <= 0)
+                {
+                    MainWindow.Instance?.AddLog("⚠️ [TradeLogs 미러링] UserId 확인 실패로 사용자별 로그 저장을 건너뜁니다.");
+                    return;
+                }
+
+                string sql = hasTradeLogsUserId
+                    ? @"
+IF NOT EXISTS (
+    SELECT 1
+    FROM dbo.TradeLogs
+    WHERE UserId = @UserId
+      AND Symbol = @Symbol
+      AND Side = @Side
+      AND ISNULL(Strategy, '') = ISNULL(@Strategy, '')
+      AND ABS(CAST(Price AS FLOAT) - CAST(@Price AS FLOAT)) < 0.0000001
+      AND ABS(CAST(PnL AS FLOAT) - CAST(@PnL AS FLOAT)) < 0.0000001
+      AND [Time] >= DATEADD(SECOND, -3, @Time)
+      AND [Time] <= DATEADD(SECOND, 3, @Time)
+)
+BEGIN
+    INSERT INTO dbo.TradeLogs
+        (UserId, Symbol, Side, Strategy, Price, AiScore, [Time], PnL, PnLPercent, EntryPrice, ExitPrice, Quantity, ExitReason)
+    VALUES
+        (@UserId, @Symbol, @Side, @Strategy, @Price, @AiScore, @Time, @PnL, @PnLPercent, @EntryPrice, @ExitPrice, @Quantity, @ExitReason);
+END"
+                    : @"
 IF NOT EXISTS (
     SELECT 1
     FROM dbo.TradeLogs
@@ -258,6 +312,7 @@ END";
 
                 await db.ExecuteAsync(sql, new
                 {
+                    UserId = userId,
                     Symbol = symbolValue,
                     Side = sideValue,
                     Strategy = strategyValue,
@@ -1490,31 +1545,45 @@ VALUES
         {
             try
             {
-                using (IDbConnection db = new SqlConnection(_connectionString))
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                var p = new DynamicParameters();
+                p.Add("@Limit", limit);
+
+                string sql = "SELECT TOP (@Limit) * FROM dbo.TradeLogs WHERE 1=1";
+                bool hasTradeLogsUserId = await HasColumnAsync(db, "TradeLogs", "UserId");
+                if (hasTradeLogsUserId)
                 {
-                    var p = new DynamicParameters();
-                    p.Add("@Limit", limit);
-
-                    string sql = "SELECT TOP (@Limit) * FROM TradeLogs WHERE 1=1";
-
-                    if (startDate.HasValue)
+                    int userId = GetCurrentUserId();
+                    if (userId <= 0)
                     {
-                        sql += " AND Time >= @StartDate";
-                        p.Add("@StartDate", startDate.Value);
-                    }
-                    if (endDate.HasValue)
-                    {
-                        sql += " AND Time <= @EndDate";
-                        p.Add("@EndDate", endDate.Value);
+                        MainWindow.Instance?.AddLog("⚠️ [TradeLogs 조회] UserId 확인 실패로 사용자별 조회를 건너뜁니다.");
+                        return new List<TradeLog>();
                     }
 
-                    sql += " ORDER BY Time DESC";
-                    var result = await db.QueryAsync<TradeLog>(sql, p);
-                    return result.ToList();
+                    sql += " AND UserId = @UserId";
+                    p.Add("@UserId", userId);
                 }
+
+                if (startDate.HasValue)
+                {
+                    sql += " AND Time >= @StartDate";
+                    p.Add("@StartDate", startDate.Value);
+                }
+                if (endDate.HasValue)
+                {
+                    sql += " AND Time <= @EndDate";
+                    p.Add("@EndDate", endDate.Value);
+                }
+
+                sql += " ORDER BY Time DESC";
+                var result = await db.QueryAsync<TradeLog>(sql, p);
+                return result.ToList();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                MainWindow.Instance?.AddLog($"⚠️ [TradeLogs 조회] 실패: {ex.Message}");
                 return new List<TradeLog>();
             }
         }
@@ -1620,9 +1689,28 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
         {
             try
             {
-                using (IDbConnection db = new SqlConnection(_connectionString))
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                bool hasUserId = await HasColumnAsync(db, "ArbitrageExecutionLog", "UserId");
+                int userId = GetCurrentUserId();
+                if (hasUserId && userId <= 0)
                 {
-                    string sql = @"
+                    MainWindow.Instance?.AddLog("⚠️ [차익거래 로그] UserId 확인 실패로 사용자별 저장을 건너뜁니다.");
+                    return;
+                }
+
+                string sql = hasUserId
+                    ? @"
+                        INSERT INTO ArbitrageExecutionLog 
+                        (UserId, Symbol, BuyExchange, SellExchange, BuyPrice, SellPrice, Quantity, 
+                         ProfitPercent, BuyOrderId, SellOrderId, BuySuccess, SellSuccess, 
+                         Success, ErrorMessage, StartTime, EndTime)
+                        VALUES 
+                        (@UserId, @Symbol, @BuyExchange, @SellExchange, @BuyPrice, @SellPrice, @Quantity, 
+                         @ProfitPercent, @BuyOrderId, @SellOrderId, @BuySuccess, @SellSuccess, 
+                         @Success, @ErrorMessage, @StartTime, @EndTime)"
+                    : @"
                         INSERT INTO ArbitrageExecutionLog 
                         (Symbol, BuyExchange, SellExchange, BuyPrice, SellPrice, Quantity, 
                          ProfitPercent, BuyOrderId, SellOrderId, BuySuccess, SellSuccess, 
@@ -1632,25 +1720,25 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                          @ProfitPercent, @BuyOrderId, @SellOrderId, @BuySuccess, @SellSuccess, 
                          @Success, @ErrorMessage, @StartTime, @EndTime)";
 
-                    await db.ExecuteAsync(sql, new
-                    {
-                        execution.Opportunity.Symbol,
-                        BuyExchange = execution.Opportunity.BuyExchange.ToString(),
-                        SellExchange = execution.Opportunity.SellExchange.ToString(),
-                        execution.Opportunity.BuyPrice,
-                        execution.Opportunity.SellPrice,
-                        execution.Quantity,
-                        execution.Opportunity.ProfitPercent,
-                        execution.BuyOrderId,
-                        execution.SellOrderId,
-                        execution.BuySuccess,
-                        execution.SellSuccess,
-                        execution.Success,
-                        execution.ErrorMessage,
-                        execution.StartTime,
-                        execution.EndTime
-                    });
-                }
+                await db.ExecuteAsync(sql, new
+                {
+                    UserId = userId,
+                    execution.Opportunity.Symbol,
+                    BuyExchange = execution.Opportunity.BuyExchange.ToString(),
+                    SellExchange = execution.Opportunity.SellExchange.ToString(),
+                    execution.Opportunity.BuyPrice,
+                    execution.Opportunity.SellPrice,
+                    execution.Quantity,
+                    execution.Opportunity.ProfitPercent,
+                    execution.BuyOrderId,
+                    execution.SellOrderId,
+                    execution.BuySuccess,
+                    execution.SellSuccess,
+                    execution.Success,
+                    execution.ErrorMessage,
+                    execution.StartTime,
+                    execution.EndTime
+                });
             }
             catch (Exception ex)
             {
@@ -1665,9 +1753,26 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
         {
             try
             {
-                using (IDbConnection db = new SqlConnection(_connectionString))
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                bool hasUserId = await HasColumnAsync(db, "FundTransferLog", "UserId");
+                int userId = GetCurrentUserId();
+                if (hasUserId && userId <= 0)
                 {
-                    string sql = @"
+                    MainWindow.Instance?.AddLog("⚠️ [자금 이동 로그] UserId 확인 실패로 사용자별 저장을 건너뜁니다.");
+                    return;
+                }
+
+                string sql = hasUserId
+                    ? @"
+                        INSERT INTO FundTransferLog 
+                        (UserId, FromExchange, ToExchange, Asset, Amount, WithdrawSuccess, DepositSuccess, 
+                         Success, ErrorMessage, RequestTime, StartTime, EndTime)
+                        VALUES 
+                        (@UserId, @FromExchange, @ToExchange, @Asset, @Amount, @WithdrawSuccess, @DepositSuccess, 
+                         @Success, @ErrorMessage, @RequestTime, @StartTime, @EndTime)"
+                    : @"
                         INSERT INTO FundTransferLog 
                         (FromExchange, ToExchange, Asset, Amount, WithdrawSuccess, DepositSuccess, 
                          Success, ErrorMessage, RequestTime, StartTime, EndTime)
@@ -1675,21 +1780,21 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                         (@FromExchange, @ToExchange, @Asset, @Amount, @WithdrawSuccess, @DepositSuccess, 
                          @Success, @ErrorMessage, @RequestTime, @StartTime, @EndTime)";
 
-                    await db.ExecuteAsync(sql, new
-                    {
-                        FromExchange = result.Request.FromExchange.ToString(),
-                        ToExchange = result.Request.ToExchange.ToString(),
-                        result.Request.Asset,
-                        result.Request.Amount,
-                        result.WithdrawSuccess,
-                        result.DepositSuccess,
-                        result.Success,
-                        result.ErrorMessage,
-                        RequestTime = result.Request.Timestamp,
-                        result.StartTime,
-                        result.EndTime
-                    });
-                }
+                await db.ExecuteAsync(sql, new
+                {
+                    UserId = userId,
+                    FromExchange = result.Request.FromExchange.ToString(),
+                    ToExchange = result.Request.ToExchange.ToString(),
+                    result.Request.Asset,
+                    result.Request.Amount,
+                    result.WithdrawSuccess,
+                    result.DepositSuccess,
+                    result.Success,
+                    result.ErrorMessage,
+                    RequestTime = result.Request.Timestamp,
+                    result.StartTime,
+                    result.EndTime
+                });
             }
             catch (Exception ex)
             {
@@ -1704,30 +1809,56 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
         {
             try
             {
-                using (IDbConnection db = new SqlConnection(_connectionString))
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                bool hasParentUserId = await HasColumnAsync(db, "PortfolioRebalancingLog", "UserId");
+                bool hasActionUserId = await HasColumnAsync(db, "RebalancingAction", "UserId");
+                int userId = GetCurrentUserId();
+                if ((hasParentUserId || hasActionUserId) && userId <= 0)
                 {
-                    // 부모 로그 저장
-                    string insertLogSql = @"
+                    MainWindow.Instance?.AddLog("⚠️ [리밸런싱 로그] UserId 확인 실패로 사용자별 저장을 건너뜁니다.");
+                    return;
+                }
+
+                // 부모 로그 저장
+                string insertLogSql = hasParentUserId
+                    ? @"
+                        INSERT INTO PortfolioRebalancingLog 
+                        (UserId, TotalValue, ActionCount, Success, ErrorMessage, StartTime, EndTime)
+                        OUTPUT INSERTED.Id
+                        VALUES 
+                        (@UserId, @TotalValue, @ActionCount, @Success, @ErrorMessage, @StartTime, @EndTime)"
+                    : @"
                         INSERT INTO PortfolioRebalancingLog 
                         (TotalValue, ActionCount, Success, ErrorMessage, StartTime, EndTime)
                         OUTPUT INSERTED.Id
                         VALUES 
                         (@TotalValue, @ActionCount, @Success, @ErrorMessage, @StartTime, @EndTime)";
 
-                    long logId = await db.ExecuteScalarAsync<long>(insertLogSql, new
-                    {
-                        report.TotalValue,
-                        ActionCount = report.ExecutedActions.Count,
-                        report.Success,
-                        report.ErrorMessage,
-                        report.StartTime,
-                        report.EndTime
-                    });
+                long logId = await db.ExecuteScalarAsync<long>(insertLogSql, new
+                {
+                    UserId = userId,
+                    report.TotalValue,
+                    ActionCount = report.ExecutedActions.Count,
+                    report.Success,
+                    report.ErrorMessage,
+                    report.StartTime,
+                    report.EndTime
+                });
 
-                    // 자식 액션 저장
-                    if (report.ExecutedActions.Any())
-                    {
-                        string insertActionSql = @"
+                // 자식 액션 저장
+                if (report.ExecutedActions.Any())
+                {
+                    string insertActionSql = hasActionUserId
+                        ? @"
+                            INSERT INTO RebalancingAction 
+                            (RebalancingLogId, UserId, Asset, CurrentPercentage, TargetPercentage, 
+                             Deviation, Action, TargetValue, Executed)
+                            VALUES 
+                            (@RebalancingLogId, @UserId, @Asset, @CurrentPercentage, @TargetPercentage, 
+                             @Deviation, @Action, @TargetValue, @Executed)"
+                        : @"
                             INSERT INTO RebalancingAction 
                             (RebalancingLogId, Asset, CurrentPercentage, TargetPercentage, 
                              Deviation, Action, TargetValue, Executed)
@@ -1735,20 +1866,20 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                             (@RebalancingLogId, @Asset, @CurrentPercentage, @TargetPercentage, 
                              @Deviation, @Action, @TargetValue, @Executed)";
 
-                        foreach (var action in report.ExecutedActions)
+                    foreach (var action in report.ExecutedActions)
+                    {
+                        await db.ExecuteAsync(insertActionSql, new
                         {
-                            await db.ExecuteAsync(insertActionSql, new
-                            {
-                                RebalancingLogId = logId,
-                                action.Asset,
-                                action.CurrentPercentage,
-                                action.TargetPercentage,
-                                action.Deviation,
-                                action.Action,
-                                action.TargetValue,
-                                Executed = true
-                            });
-                        }
+                            RebalancingLogId = logId,
+                            UserId = userId,
+                            action.Asset,
+                            action.CurrentPercentage,
+                            action.TargetPercentage,
+                            action.Deviation,
+                            action.Action,
+                            action.TargetValue,
+                            Executed = true
+                        });
                     }
                 }
             }
@@ -1765,20 +1896,31 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
         {
             try
             {
-                using (IDbConnection db = new SqlConnection(_connectionString))
-                {
-                    string sql = "SELECT * FROM vw_ArbitrageStatistics";
-                    var result = await db.QueryFirstOrDefaultAsync<dynamic>(sql);
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
 
-                    if (result != null)
+                bool hasUserId = await HasColumnAsync(db, "vw_ArbitrageStatistics", "UserId");
+                int userId = GetCurrentUserId();
+                if (hasUserId && userId <= 0)
+                {
+                    MainWindow.Instance?.AddLog("⚠️ [차익거래 통계] UserId 확인 실패로 사용자별 조회를 건너뜁니다.");
+                    return null;
+                }
+
+                string sql = hasUserId
+                    ? "SELECT * FROM vw_ArbitrageStatistics WHERE UserId = @UserId"
+                    : "SELECT * FROM vw_ArbitrageStatistics";
+
+                var result = await db.QueryFirstOrDefaultAsync<dynamic>(sql, new { UserId = userId });
+
+                if (result != null)
+                {
+                    var dict = new Dictionary<string, object>();
+                    foreach (var prop in result)
                     {
-                        var dict = new Dictionary<string, object>();
-                        foreach (var prop in result)
-                        {
-                            dict[prop.Key] = prop.Value;
-                        }
-                        return dict;
+                        dict[prop.Key] = prop.Value;
                     }
+                    return dict;
                 }
             }
             catch (Exception ex)
@@ -1796,16 +1938,28 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
         {
             try
             {
-                using (IDbConnection db = new SqlConnection(_connectionString))
-                {
-                    string sql = @"
-                        SELECT TOP (@Limit) *
-                        FROM ArbitrageExecutionLog
-                        ORDER BY CreatedAt DESC";
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
 
-                    var result = await db.QueryAsync<dynamic>(sql, new { Limit = limit });
-                    return result.ToList();
+                bool hasUserId = await HasColumnAsync(db, "ArbitrageExecutionLog", "UserId");
+                int userId = GetCurrentUserId();
+                if (hasUserId && userId <= 0)
+                {
+                    MainWindow.Instance?.AddLog("⚠️ [차익거래 로그 조회] UserId 확인 실패로 사용자별 조회를 건너뜁니다.");
+                    return new List<dynamic>();
                 }
+
+                string sql = @"
+                        SELECT TOP (@Limit) *
+                        FROM ArbitrageExecutionLog";
+
+                if (hasUserId)
+                    sql += " WHERE UserId = @UserId";
+
+                sql += " ORDER BY CreatedAt DESC";
+
+                var result = await db.QueryAsync<dynamic>(sql, new { Limit = limit, UserId = userId });
+                return result.ToList();
             }
             catch (Exception ex)
             {
@@ -1821,16 +1975,28 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
         {
             try
             {
-                using (IDbConnection db = new SqlConnection(_connectionString))
-                {
-                    string sql = @"
-                        SELECT TOP (@Limit) *
-                        FROM FundTransferLog
-                        ORDER BY CreatedAt DESC";
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
 
-                    var result = await db.QueryAsync<dynamic>(sql, new { Limit = limit });
-                    return result.ToList();
+                bool hasUserId = await HasColumnAsync(db, "FundTransferLog", "UserId");
+                int userId = GetCurrentUserId();
+                if (hasUserId && userId <= 0)
+                {
+                    MainWindow.Instance?.AddLog("⚠️ [자금 이동 로그 조회] UserId 확인 실패로 사용자별 조회를 건너뜁니다.");
+                    return new List<dynamic>();
                 }
+
+                string sql = @"
+                        SELECT TOP (@Limit) *
+                        FROM FundTransferLog";
+
+                if (hasUserId)
+                    sql += " WHERE UserId = @UserId";
+
+                sql += " ORDER BY CreatedAt DESC";
+
+                var result = await db.QueryAsync<dynamic>(sql, new { Limit = limit, UserId = userId });
+                return result.ToList();
             }
             catch (Exception ex)
             {
@@ -1846,18 +2012,30 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
         {
             try
             {
-                using (IDbConnection db = new SqlConnection(_connectionString))
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                bool hasUserId = await HasColumnAsync(db, "PortfolioRebalancingLog", "UserId");
+                int userId = GetCurrentUserId();
+                if (hasUserId && userId <= 0)
                 {
-                    string sql = @"
+                    MainWindow.Instance?.AddLog("⚠️ [리밸런싱 로그 조회] UserId 확인 실패로 사용자별 조회를 건너뜁니다.");
+                    return new List<dynamic>();
+                }
+
+                string sql = @"
                         SELECT TOP (@Limit) 
                             l.*, 
                             (SELECT COUNT(*) FROM RebalancingAction WHERE RebalancingLogId = l.Id) AS ActionCount
-                        FROM PortfolioRebalancingLog l
-                        ORDER BY l.CreatedAt DESC";
+                        FROM PortfolioRebalancingLog l";
 
-                    var result = await db.QueryAsync<dynamic>(sql, new { Limit = limit });
-                    return result.ToList();
-                }
+                if (hasUserId)
+                    sql += " WHERE l.UserId = @UserId";
+
+                sql += " ORDER BY l.CreatedAt DESC";
+
+                var result = await db.QueryAsync<dynamic>(sql, new { Limit = limit, UserId = userId });
+                return result.ToList();
             }
             catch (Exception ex)
             {
@@ -1870,22 +2048,42 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
         /// [블랙리스트 복구] 최근 1시간 이내에 종료된 포지션 조회
         /// 엔진 시작 시 메모리 블랙리스트를 DB에서 복구하기 위함
         /// </summary>
-        public async Task<List<(string Symbol, DateTime LastExitTime)>> GetRecentlyClosedPositionsAsync(int withinMinutes = 60)
+        public async Task<List<(string Symbol, DateTime LastExitTime)>> GetRecentlyClosedPositionsAsync(int withinMinutes = 60, int? userId = null)
         {
             try
             {
-                using (IDbConnection db = new SqlConnection(_connectionString))
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                bool hasTradeHistoryUserId = await HasColumnAsync(db, "TradeHistory", "UserId");
+                int resolvedUserId = userId.GetValueOrDefault();
+                if (resolvedUserId <= 0)
+                    resolvedUserId = GetCurrentUserId();
+
+                if (hasTradeHistoryUserId && resolvedUserId <= 0)
                 {
-                    string sql = @"
+                    MainWindow.Instance?.AddLog("⚠️ [최근 종료 포지션 조회] UserId 확인 실패로 사용자별 조회를 건너뜁니다.");
+                    return new List<(string, DateTime)>();
+                }
+
+                string sql = @"
                         SELECT DISTINCT Symbol, MAX(ExitTime) AS LastExitTime
                         FROM dbo.TradeHistory
                         WHERE ExitTime IS NOT NULL
-                          AND ExitTime > DATEADD(MINUTE, -@WithinMinutes, GETDATE())
+                          AND ExitTime > DATEADD(MINUTE, -@WithinMinutes, GETDATE())";
+
+                if (hasTradeHistoryUserId)
+                    sql += " AND UserId = @UserId";
+
+                sql += @"
                         GROUP BY Symbol";
 
-                    var result = await db.QueryAsync<(string Symbol, DateTime LastExitTime)>(sql, new { WithinMinutes = withinMinutes });
-                    return result.ToList();
-                }
+                var result = await db.QueryAsync<(string Symbol, DateTime LastExitTime)>(sql, new
+                {
+                    WithinMinutes = withinMinutes,
+                    UserId = resolvedUserId
+                });
+                return result.ToList();
             }
             catch (Exception ex)
             {

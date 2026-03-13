@@ -9,6 +9,7 @@ IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'TradeLogs')
 BEGIN
     CREATE TABLE TradeLogs (
         Id BIGINT IDENTITY(1,1) PRIMARY KEY,
+        UserId INT NULL,                                -- 사용자 ID (Users.Id)
         Symbol NVARCHAR(20) NOT NULL,                   -- 거래 심볼 (BTCUSDT, ETHUSDT...)
         Side NVARCHAR(10) NOT NULL,                     -- 거래 방향 (BUY, SELL)
         Strategy NVARCHAR(50) NOT NULL,                 -- 전략 이름 (MAJOR, PUMP, ElliottWave...)
@@ -18,6 +19,7 @@ BEGIN
         PnL DECIMAL(18, 4) NOT NULL DEFAULT 0,          -- 실현 손익 (USDT)
         PnLPercent DECIMAL(18, 4) NOT NULL DEFAULT 0,   -- 수익률 (ROE %)
         
+        INDEX IX_TradeLogs_UserId_Time (UserId, Time DESC),
         INDEX IX_TradeLogs_Symbol (Symbol),
         INDEX IX_TradeLogs_Time (Time DESC),
         INDEX IX_TradeLogs_Strategy (Strategy)
@@ -31,11 +33,27 @@ BEGIN
 END
 GO
 
+-- 기존 TradeLogs 스키마 마이그레이션 (UserId 컬럼 보정)
+IF COL_LENGTH('dbo.TradeLogs', 'UserId') IS NULL
+BEGIN
+    ALTER TABLE dbo.TradeLogs ADD UserId INT NULL;
+    PRINT '✅ TradeLogs.UserId 컬럼 추가 완료';
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_TradeLogs_UserId_Time' AND object_id = OBJECT_ID('dbo.TradeLogs'))
+BEGIN
+    CREATE INDEX IX_TradeLogs_UserId_Time ON dbo.TradeLogs(UserId, Time DESC);
+    PRINT '✅ IX_TradeLogs_UserId_Time 인덱스 생성 완료';
+END
+GO
+
 -- 2. TradeHistory 테이블 (진입~청산 쌍 기록)
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'TradeHistory')
 BEGIN
     CREATE TABLE TradeHistory (
         Id BIGINT IDENTITY(1,1) PRIMARY KEY,
+        UserId INT NULL,                                -- 사용자 ID (Users.Id)
         Symbol NVARCHAR(20) NOT NULL,                   -- 거래 심볼
         Side NVARCHAR(10) NOT NULL,                     -- 포지션 방향 (BUY, SELL)
         EntryPrice DECIMAL(18, 8) NOT NULL,             -- 진입 가격
@@ -48,6 +66,8 @@ BEGIN
         ExitTime DATETIME2 NULL,                        -- 청산 시각 (진입 시 NULL 허용)
         holdingMinutes AS CASE WHEN ExitTime IS NOT NULL THEN DATEDIFF(MINUTE, EntryTime, ExitTime) ELSE NULL END, -- 보유 시간 (계산 컬럼, NULL 안전)
         
+        INDEX IX_TradeHistory_UserId_ExitTime (UserId, ExitTime DESC),
+        INDEX IX_TradeHistory_UserId_EntryTime (UserId, EntryTime DESC),
         INDEX IX_TradeHistory_Symbol (Symbol),
         INDEX IX_TradeHistory_ExitTime (ExitTime DESC),
         INDEX IX_TradeHistory_EntryTime (EntryTime DESC)
@@ -61,6 +81,28 @@ BEGIN
 END
 GO
 
+-- 기존 TradeHistory 스키마 마이그레이션 (UserId 컬럼 보정)
+IF COL_LENGTH('dbo.TradeHistory', 'UserId') IS NULL
+BEGIN
+    ALTER TABLE dbo.TradeHistory ADD UserId INT NULL;
+    PRINT '✅ TradeHistory.UserId 컬럼 추가 완료';
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_TradeHistory_UserId_ExitTime' AND object_id = OBJECT_ID('dbo.TradeHistory'))
+BEGIN
+    CREATE INDEX IX_TradeHistory_UserId_ExitTime ON dbo.TradeHistory(UserId, ExitTime DESC);
+    PRINT '✅ IX_TradeHistory_UserId_ExitTime 인덱스 생성 완료';
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_TradeHistory_UserId_EntryTime' AND object_id = OBJECT_ID('dbo.TradeHistory'))
+BEGIN
+    CREATE INDEX IX_TradeHistory_UserId_EntryTime ON dbo.TradeHistory(UserId, EntryTime DESC);
+    PRINT '✅ IX_TradeHistory_UserId_EntryTime 인덱스 생성 완료';
+END
+GO
+
 -- 3. 통계 뷰: 심볼별 거래 성적
 IF EXISTS (SELECT * FROM sys.views WHERE name = 'vw_TradeStatisticsBySymbol')
     DROP VIEW vw_TradeStatisticsBySymbol;
@@ -68,6 +110,7 @@ GO
 
 CREATE VIEW vw_TradeStatisticsBySymbol AS
 SELECT 
+    UserId,
     Symbol,
     COUNT(*) AS TotalTrades,
     SUM(CASE WHEN PnL > 0 THEN 1 ELSE 0 END) AS WinTrades,
@@ -80,7 +123,7 @@ SELECT
     MIN(EntryTime) AS FirstTradeTime,
     MAX(ExitTime) AS LastTradeTime
 FROM TradeHistory
-GROUP BY Symbol;
+GROUP BY UserId, Symbol;
 GO
 
 PRINT '✅ vw_TradeStatisticsBySymbol 뷰 생성 완료';
@@ -93,6 +136,7 @@ GO
 
 CREATE VIEW vw_DailyTradeStatistics AS
 SELECT 
+    UserId,
     CAST(ExitTime AS DATE) AS TradeDate,
     COUNT(*) AS TotalTrades,
     SUM(CASE WHEN PnL > 0 THEN 1 ELSE 0 END) AS WinTrades,
@@ -102,7 +146,7 @@ SELECT
     MAX(PnL) AS BestTrade,
     MIN(PnL) AS WorstTrade
 FROM TradeHistory
-GROUP BY CAST(ExitTime AS DATE);
+GROUP BY UserId, CAST(ExitTime AS DATE);
 GO
 
 PRINT '✅ vw_DailyTradeStatistics 뷰 생성 완료';
@@ -122,8 +166,8 @@ PRINT '  2. vw_DailyTradeStatistics - 일별 통계';
 PRINT '';
 PRINT '사용법:';
 PRINT '  -- 최근 거래 조회';
-PRINT '  SELECT TOP 20 * FROM TradeLogs ORDER BY Time DESC;';
-PRINT '  SELECT TOP 20 * FROM TradeHistory ORDER BY ExitTime DESC;';
+PRINT '  SELECT TOP 20 * FROM TradeLogs WHERE UserId = @UserId ORDER BY Time DESC;';
+PRINT '  SELECT TOP 20 * FROM TradeHistory WHERE UserId = @UserId ORDER BY ExitTime DESC;';
 PRINT '';
 PRINT '  -- 통계 조회';
 PRINT '  SELECT * FROM vw_TradeStatisticsBySymbol;';

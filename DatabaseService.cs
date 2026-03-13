@@ -45,6 +45,53 @@ namespace TradingBot.Services
             _logger?.Invoke(msg); // MainWindow의 Log 메소드를 대신 실행
         }
 
+        private static async Task<bool> HasColumnAsync(SqlConnection conn, string tableName, string columnName)
+        {
+            const string sql = @"
+SELECT CASE WHEN EXISTS (
+    SELECT 1
+    FROM sys.columns
+    WHERE object_id = OBJECT_ID(@FullTableName)
+      AND name = @ColumnName
+) THEN 1 ELSE 0 END";
+
+            int exists = await conn.ExecuteScalarAsync<int>(sql, new
+            {
+                FullTableName = $"dbo.{tableName}",
+                ColumnName = columnName
+            });
+
+            return exists == 1;
+        }
+
+        private static async Task<int> ResolveCurrentUserIdAsync(SqlConnection conn)
+        {
+            int currentUserId = TradingBot.AppConfig.CurrentUser?.Id ?? 0;
+            if (currentUserId > 0)
+                return currentUserId;
+
+            string? username = TradingBot.AppConfig.CurrentUser?.Username;
+            if (string.IsNullOrWhiteSpace(username))
+                username = TradingBot.AppConfig.CurrentUsername;
+
+            if (string.IsNullOrWhiteSpace(username))
+                return 0;
+
+            int? resolvedUserId = await conn.ExecuteScalarAsync<int?>(
+                "SELECT TOP (1) Id FROM dbo.Users WHERE Username = @Username",
+                new { Username = username.Trim() });
+
+            if (resolvedUserId is > 0)
+            {
+                if (TradingBot.AppConfig.CurrentUser != null && TradingBot.AppConfig.CurrentUser.Id <= 0)
+                    TradingBot.AppConfig.CurrentUser.Id = resolvedUserId.Value;
+
+                return resolvedUserId.Value;
+            }
+
+            return 0;
+        }
+
         private static TradeHistoryModel ToTradeHistoryModel(TradeLog row)
         {
             return new TradeHistoryModel
@@ -234,6 +281,16 @@ namespace TradingBot.Services
 
             using (var conn = new SqlConnection(_connStr))
             {
+                await conn.OpenAsync();
+
+                bool hasTradeHistoryUserId = await HasColumnAsync(conn, "TradeHistory", "UserId");
+                int userId = await ResolveCurrentUserIdAsync(conn);
+                if (hasTradeHistoryUserId && userId <= 0)
+                {
+                    Log("⚠️ ExportDataForTraining: UserId 확인 실패로 사용자별 학습 데이터 추출을 건너뜁니다.");
+                    return;
+                }
+
                 string sql = @"
             SELECT 
                 CAST(EntryPrice AS REAL) AS ClosePrice, -- ML.NET은 float(REAL) 선호
@@ -242,9 +299,16 @@ namespace TradingBot.Services
                 CAST(BollingerLower AS REAL) AS BollingerLower, 
                 CAST(ElliottWaveState AS REAL) AS ElliottWaveState,
                 CAST(CASE WHEN PnL > 0 THEN 1 ELSE 0 END AS BIT) AS Label -- 1:상승(Win), 0:하락(Loss)
-            FROM TradeHistory";
+            FROM TradeHistory
+            WHERE 1=1";
 
-                var data = await conn.QueryAsync<CandleData>(sql, commandTimeout: 120); // 대량 데이터 조회는 시간을 넉넉히 설정
+                if (hasTradeHistoryUserId)
+                    sql += " AND UserId = @UserId";
+
+                var data = await conn.QueryAsync<CandleData>(
+                    sql,
+                    new { UserId = userId },
+                    commandTimeout: 120); // 대량 데이터 조회는 시간을 넉넉히 설정
                 var list = data.ToList();
 
                 if (list.Count == 0)
