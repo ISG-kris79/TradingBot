@@ -42,6 +42,7 @@ namespace TradingBot.Strategies
             public float Phase2Volume { get; set; }
 
             // 피보나치 레벨
+            public decimal Fib500Level { get; set; }
             public decimal Fib0618Level { get; set; }
             public decimal Fib786Level { get; set; }
             public decimal Fib1618Target { get; set; }
@@ -65,6 +66,14 @@ namespace TradingBot.Strategies
         private const decimal MIN_WAVE1_PERCENT = 0.8m;  // 1파: 최소 0.8% 이상 상승
         private const float MIN_VOLUME_RATIO = 1.5f;     // 1파의 거래량이 이전의 1.5배 이상
         private const decimal DIVERGENCE_THRESHOLD = 5;  // RSI 다이버전스: 최소 5 포인트 이상
+        private const int WAVE1_SWING_LOOKBACK = 18;
+        private const int WAVE1_MIN_CANDLES = 3;
+        private const int BASELINE_VOLUME_LOOKBACK = 6;
+        private const decimal WAVE2_MIN_RETRACE = 0.50m;
+        private const decimal WAVE2_MAX_RETRACE = 0.786m;
+        private const decimal WAVE2_REBOUND_CONFIRM_PCT = 0.0010m;
+        private const decimal WAVE2_INVALIDATION_BUFFER = 0.998m;
+        private const decimal FIB_ENTRY_TOLERANCE_PCT = 0.0015m;
 
         public WaveState GetOrCreateState(string symbol)
         {
@@ -86,27 +95,53 @@ namespace TradingBot.Strategies
             List<CandleData> candles,
             int wave1CandleIndex)
         {
-            if (wave1CandleIndex < 1) return false;
+            if (wave1CandleIndex < 5 || candles.Count < 6)
+                return false;
 
             var state = GetOrCreateState(symbol);
-            var currentCandle = candles[wave1CandleIndex];
-            var prevCandle = candles[wave1CandleIndex - 1];
+
+            int windowStart = Math.Max(0, wave1CandleIndex - WAVE1_SWING_LOOKBACK);
+            int swingStartIdx = FindLowestLowIndex(candles, windowStart, wave1CandleIndex - 2);
+            if (swingStartIdx < 0)
+                return false;
+
+            int swingPeakIdx = FindHighestHighIndex(candles, swingStartIdx + 1, wave1CandleIndex);
+            if (swingPeakIdx < 0)
+                return false;
+
+            if (wave1CandleIndex - swingPeakIdx > 1)
+                return false;
+
+            decimal wave1Start = candles[swingStartIdx].Low;
+            decimal wave1Peak = candles[swingPeakIdx].High;
+            if (wave1Start <= 0 || wave1Peak <= wave1Start)
+                return false;
+
+            int wave1Candles = swingPeakIdx - swingStartIdx + 1;
+            if (wave1Candles < WAVE1_MIN_CANDLES)
+                return false;
 
             // 상승폭 확인
-            decimal upPercent = ((currentCandle.Close - prevCandle.Close) / prevCandle.Close) * 100;
+            decimal upPercent = ((wave1Peak - wave1Start) / wave1Start) * 100;
             if (upPercent < MIN_WAVE1_PERCENT)
                 return false;
 
-            // 거래량 확인
-            if (currentCandle.Volume < prevCandle.Volume * MIN_VOLUME_RATIO)
+            // 거래량 확인 (1파 구간 평균 거래량 vs 직전 베이스 구간)
+            decimal wave1AvgVolume = CalculateAverageVolume(candles, swingStartIdx, swingPeakIdx);
+            int baselineStart = Math.Max(windowStart, swingStartIdx - BASELINE_VOLUME_LOOKBACK);
+            int baselineEnd = swingStartIdx - 1;
+            decimal baselineAvgVolume = CalculateAverageVolume(candles, baselineStart, baselineEnd);
+            if (baselineAvgVolume > 0 && wave1AvgVolume < baselineAvgVolume * (decimal)MIN_VOLUME_RATIO)
                 return false;
+
+            ResetStateInternal(state);
 
             // 1파 상태 업데이트
             state.CurrentPhase = WavePhaseType.Wave1Started;
-            state.Phase1StartTime = currentCandle.OpenTime;
-            state.Phase1LowPrice = currentCandle.Low;
-            state.Phase1HighPrice = currentCandle.High;
-            state.Phase1Volume = currentCandle.Volume;
+            state.Phase1StartTime = candles[swingStartIdx].OpenTime;
+            state.Phase1LowPrice = wave1Start;
+            state.Phase1HighPrice = wave1Peak;
+            state.Phase1Volume = (float)wave1AvgVolume;
 
             return true;
         }
@@ -125,32 +160,57 @@ namespace TradingBot.Strategies
             if (wave2CandleIndex < 1) return false;
 
             var state = GetOrCreateState(symbol);
-            if (state.CurrentPhase != WavePhaseType.Wave1Started)
+            if (state.CurrentPhase != WavePhaseType.Wave1Started && state.CurrentPhase != WavePhaseType.Wave2Started)
                 return false;
 
             var currentCandle = candles[wave2CandleIndex];
             var prevCandle = candles[wave2CandleIndex - 1];
-
-            // 하락 확인 (1파 고점에서 하락 시작)
-            if (currentCandle.Close >= prevCandle.Close)
+            decimal wave1Range = state.Phase1HighPrice - state.Phase1LowPrice;
+            if (wave1Range <= 0)
                 return false;
 
-            // 거래량 감소 확인 (매도세 소진)
-            if (currentCandle.Volume >= prevCandle.Volume)
-                return false; // 거래량이 줄어야 함
+            decimal candidateWave2Low = state.Phase2LowPrice > 0
+                ? Math.Min(state.Phase2LowPrice, currentCandle.Low)
+                : currentCandle.Low;
+
+            // 엘리엇 규칙 위반: 2파 저점이 1파 시작점 하향 이탈
+            if (candidateWave2Low <= state.Phase1LowPrice * WAVE2_INVALIDATION_BUFFER)
+            {
+                ResetState(symbol);
+                return false;
+            }
+
+            // 하락 확인 (1파 고점에서 하락 시작)
+            if (currentCandle.Close >= prevCandle.Close && candidateWave2Low >= state.Fib500Level)
+                return false;
+
+            decimal retraceRatio = (state.Phase1HighPrice - candidateWave2Low) / wave1Range;
+            bool retraceInRange = retraceRatio >= WAVE2_MIN_RETRACE && retraceRatio <= WAVE2_MAX_RETRACE;
+            if (!retraceInRange)
+                return false;
+
+            // 거래량 감소(매도세 소진) + 반등 시작 확인
+            bool volumeContracting = state.Phase1Volume <= 0
+                || currentCandle.Volume <= state.Phase1Volume * 0.90f;
+            bool reboundStarted = currentCandle.Close >= candidateWave2Low * (1m + WAVE2_REBOUND_CONFIRM_PCT)
+                || currentCandle.Close > prevCandle.Close;
+            if (!volumeContracting || !reboundStarted)
+                return false;
 
             // 2파 상태 업데이트
             state.CurrentPhase = WavePhaseType.Wave2Started;
             state.Phase2StartTime = currentCandle.OpenTime;
-            state.Phase2LowPrice = currentCandle.Low;
+            state.Phase2LowPrice = candidateWave2Low;
             state.Phase2HighPrice = currentCandle.High;
             state.Phase2Volume = currentCandle.Volume;
 
             // 피보나치 레벨 계산
-            decimal wave1Range = state.Phase1HighPrice - state.Phase1LowPrice;
+            state.Fib500Level = state.Phase1HighPrice - (wave1Range * 0.500m);
             state.Fib0618Level = state.Phase1HighPrice - (wave1Range * 0.618m);
             state.Fib786Level = state.Phase1HighPrice - (wave1Range * 0.786m);
             state.Fib1618Target = state.Phase1HighPrice + (wave1Range * 1.618m);
+            state.PriceLows.Clear();
+            state.RsiLows.Clear();
 
             return true;
         }
@@ -173,7 +233,6 @@ namespace TradingBot.Strategies
                 return false;
 
             // 2파 진행 중 가격과 RSI 저점 추적
-            int recentCount = Math.Min(5, candles.Count);
             decimal currentPrice = candles[^1].Low;
             decimal currentRsi = rsiValues[^1];
 
@@ -240,35 +299,64 @@ namespace TradingBot.Strategies
             if (state.CurrentPhase != WavePhaseType.Wave3Setup)
                 return false;
 
+            if (state.Phase1HighPrice <= state.Phase1LowPrice || state.Fib0618Level <= 0 || state.Fib786Level <= 0)
+                return false;
+
             // 볼린저 밴드 상태 업데이트
             state.BollingerMiddle = bollingerMiddle;
             state.BollingerLower = bollingerLower;
             state.BollingerUpper = bollingerUpper;
 
-            // 피보나치 0.618 지지선 근처 확인 (±0.1%)
-            decimal priceTolerance = state.Fib0618Level * 0.001m;
-            bool atFibSupport = (currentCandle.Low >= state.Fib0618Level - priceTolerance) &&
-                               (currentCandle.Close >= state.Fib0618Level - priceTolerance);
+            // 엘리엇 규칙 위반 시 상태 초기화
+            if (currentCandle.Low <= state.Phase1LowPrice * WAVE2_INVALIDATION_BUFFER)
+            {
+                ResetState(symbol);
+                return false;
+            }
+
+            decimal fib50 = state.Fib500Level > 0
+                ? state.Fib500Level
+                : state.Phase1HighPrice - ((state.Phase1HighPrice - state.Phase1LowPrice) * 0.500m);
+            decimal zoneTolerance = state.Fib0618Level * FIB_ENTRY_TOLERANCE_PCT;
+
+            // 피보나치 구간(0.5~0.786) 터치 + 0.618 재돌파 확인
+            bool touchedFibZone = currentCandle.Low <= fib50 + zoneTolerance
+                && currentCandle.Low >= state.Fib786Level - zoneTolerance;
+            bool reclaimedFib618 = currentCandle.Close >= state.Fib0618Level - zoneTolerance
+                && currentCandle.Open <= state.Fib0618Level + zoneTolerance;
+            bool closeNotOverExtended = currentCandle.Close <= fib50 * 1.015m;
 
             // 볼린저 밴드 중단 위로 안착 확인
-            bool cannonAboveMiddle = currentCandle.Close > bollingerMiddle &&
-                                     currentCandle.Open < bollingerMiddle;
+            bool candleAboveMiddle = currentCandle.Close > bollingerMiddle &&
+                                     currentCandle.Low <= bollingerMiddle;
 
             // RSI 상승 다이버전스 + MACD 골든크로스 확인
-            bool macDCross = DetectMACDGoldenCross(currentMacd, currentSignal,
+            bool hasMacdHistory = state.LastMacDValue != 0m || state.LastSignalValue != 0m;
+            bool macDCross = hasMacdHistory && DetectMACDGoldenCross(currentMacd, currentSignal,
                                                     currentMacd - currentSignal,
                                                     state.LastMacDValue,
                                                     state.LastSignalValue);
 
-            if (atFibSupport && cannonAboveMiddle && macDCross && currentRsi < 70)
+            state.LastMacDValue = currentMacd;
+            state.LastSignalValue = currentSignal;
+            state.LastHistogram = currentMacd - currentSignal;
+
+            if (touchedFibZone && reclaimedFib618 && closeNotOverExtended && candleAboveMiddle && macDCross && currentRsi < 70)
             {
                 state.CurrentPhase = WavePhaseType.Wave3Entry;
-                state.LastMacDValue = currentMacd;
-                state.LastSignalValue = currentSignal;
                 return true;
             }
 
             return false;
+        }
+
+        public void MarkWave3Active(string symbol)
+        {
+            var state = GetOrCreateState(symbol);
+            if (state.CurrentPhase == WavePhaseType.Wave3Entry || state.CurrentPhase == WavePhaseType.Wave3Setup)
+            {
+                state.CurrentPhase = WavePhaseType.Wave3Active;
+            }
         }
 
         /// <summary>
@@ -326,6 +414,103 @@ namespace TradingBot.Strategies
             {
                 _waveStates[symbol] = new WaveState();
             }
+        }
+
+        private static int FindLowestLowIndex(List<CandleData> candles, int start, int end)
+        {
+            if (candles == null || candles.Count == 0)
+                return -1;
+
+            int safeStart = Math.Max(0, start);
+            int safeEnd = Math.Min(end, candles.Count - 1);
+            if (safeStart > safeEnd)
+                return -1;
+
+            int bestIndex = safeStart;
+            decimal bestValue = candles[safeStart].Low;
+
+            for (int index = safeStart + 1; index <= safeEnd; index++)
+            {
+                if (candles[index].Low < bestValue)
+                {
+                    bestValue = candles[index].Low;
+                    bestIndex = index;
+                }
+            }
+
+            return bestIndex;
+        }
+
+        private static int FindHighestHighIndex(List<CandleData> candles, int start, int end)
+        {
+            if (candles == null || candles.Count == 0)
+                return -1;
+
+            int safeStart = Math.Max(0, start);
+            int safeEnd = Math.Min(end, candles.Count - 1);
+            if (safeStart > safeEnd)
+                return -1;
+
+            int bestIndex = safeStart;
+            decimal bestValue = candles[safeStart].High;
+
+            for (int index = safeStart + 1; index <= safeEnd; index++)
+            {
+                if (candles[index].High > bestValue)
+                {
+                    bestValue = candles[index].High;
+                    bestIndex = index;
+                }
+            }
+
+            return bestIndex;
+        }
+
+        private static decimal CalculateAverageVolume(List<CandleData> candles, int start, int end)
+        {
+            if (candles == null || candles.Count == 0)
+                return 0m;
+
+            int safeStart = Math.Max(0, start);
+            int safeEnd = Math.Min(end, candles.Count - 1);
+            if (safeStart > safeEnd)
+                return 0m;
+
+            decimal volumeSum = 0m;
+            int count = 0;
+
+            for (int index = safeStart; index <= safeEnd; index++)
+            {
+                volumeSum += (decimal)candles[index].Volume;
+                count++;
+            }
+
+            return count > 0 ? volumeSum / count : 0m;
+        }
+
+        private static void ResetStateInternal(WaveState state)
+        {
+            state.CurrentPhase = WavePhaseType.Idle;
+            state.Phase1StartTime = default;
+            state.Phase1LowPrice = 0m;
+            state.Phase1HighPrice = 0m;
+            state.Phase1Volume = 0f;
+            state.Phase2StartTime = default;
+            state.Phase2LowPrice = 0m;
+            state.Phase2HighPrice = 0m;
+            state.Phase2Volume = 0f;
+            state.Fib500Level = 0m;
+            state.Fib0618Level = 0m;
+            state.Fib786Level = 0m;
+            state.Fib1618Target = 0m;
+            state.PriceLows.Clear();
+            state.RsiLows.Clear();
+            state.LastMacDValue = 0m;
+            state.LastSignalValue = 0m;
+            state.LastHistogram = 0m;
+            state.BollingerMiddle = 0m;
+            state.BollingerLower = 0m;
+            state.BollingerUpper = 0m;
         }
 
         /// <summary>

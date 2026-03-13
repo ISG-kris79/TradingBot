@@ -4,8 +4,10 @@ using Binance.Net.Enums;
 using Binance.Net.Interfaces;
 using Microsoft.Data.SqlClient;
 using TradingBot.Models;
+using TradingBot.Services.Backtest;
 using TradingBot.Services.BacktestStrategies;
 using TradingBot.Services.Optimization; // [Agent 1] 추가
+using TradeLog = TradingBot.Shared.Models.TradeLog;
 
 namespace TradingBot.Services
 {
@@ -14,7 +16,8 @@ namespace TradingBot.Services
         RSI,
         MA_Cross,
         BollingerBand,
-        ElliottWave // [추가]
+        ElliottWave, // [추가]
+        LiveEntryParity
     }
 
     public class BacktestService
@@ -265,6 +268,11 @@ namespace TradingBot.Services
             decimal initialBalance = 1000,
             BacktestMetricOptions? metricOptions = null)
         {
+            if (strategyType == BacktestStrategyType.LiveEntryParity)
+            {
+                return await RunLiveEntryParityBacktestAsync(symbol, startDate, endDate, initialBalance, metricOptions);
+            }
+
             IBacktestStrategy strategy = strategyType switch
             {
                 BacktestStrategyType.RSI => new RsiBacktestStrategy(),
@@ -275,6 +283,151 @@ namespace TradingBot.Services
             };
 
             return await RunBacktestAsync(symbol, startDate, endDate, strategy, initialBalance, metricOptions);
+        }
+
+        private async Task<BacktestResult> RunLiveEntryParityBacktestAsync(
+            string symbol,
+            DateTime startDate,
+            DateTime endDate,
+            decimal initialBalance,
+            BacktestMetricOptions? metricOptions)
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+            {
+                return new BacktestResult
+                {
+                    Symbol = symbol,
+                    InitialBalance = initialBalance,
+                    FinalBalance = initialBalance,
+                    StrategyConfiguration = "LiveEntryParity",
+                    Message = "심볼이 비어 있어 백테스트를 실행할 수 없습니다."
+                };
+            }
+
+            DateTime startUtc = startDate.Kind == DateTimeKind.Utc ? startDate : startDate.ToUniversalTime();
+            DateTime endUtc = endDate.Kind == DateTimeKind.Utc ? endDate : endDate.ToUniversalTime();
+
+            if (endUtc <= startUtc)
+            {
+                return new BacktestResult
+                {
+                    Symbol = symbol,
+                    InitialBalance = initialBalance,
+                    FinalBalance = initialBalance,
+                    StrategyConfiguration = "LiveEntryParity",
+                    Message = $"기간 오류: {startDate:yyyy-MM-dd HH:mm} ~ {endDate:yyyy-MM-dd HH:mm}"
+                };
+            }
+
+            var parityBacktester = new HybridStrategyBacktester
+            {
+                InitialBalance = initialBalance,
+                PerfectAI = false,
+                EnableComponentGate = true
+            };
+
+            var summary = await parityBacktester.RunRangeAsync(symbol, startUtc, endUtc);
+
+            var parityEquityCurve = summary.EquityCurve != null && summary.EquityCurve.Count > 0
+                ? new List<decimal>(summary.EquityCurve)
+                : new List<decimal>();
+
+            if (parityEquityCurve.Count == 0 || parityEquityCurve[0] != initialBalance)
+            {
+                parityEquityCurve.Insert(0, initialBalance);
+            }
+
+            var result = new BacktestResult
+            {
+                Symbol = summary.Symbol,
+                InitialBalance = summary.InitialBalance > 0 ? summary.InitialBalance : initialBalance,
+                FinalBalance = summary.FinalBalance > 0 ? summary.FinalBalance : initialBalance,
+                TotalTrades = summary.TotalTrades,
+                WinCount = summary.WinCount,
+                LossCount = summary.LossCount,
+                MaxDrawdown = summary.MaxDrawdownPercent,
+                StrategyConfiguration = "LiveEntryParity (TradingEngine 유사 게이트)",
+                Candles = summary.Candles ?? new List<CandleData>(),
+                EquityCurve = parityEquityCurve
+            };
+
+            foreach (var trade in summary.Trades)
+            {
+                string entrySide = trade.Direction == "LONG" ? "BUY" : "SELL";
+                string exitSide = trade.Direction == "LONG" ? "SELL" : "BUY";
+
+                var entryLog = new TradeLog(symbol, entrySide, "LiveParity_ENTRY", trade.EntryPrice, 0, trade.EntryTime)
+                {
+                    EntryPrice = trade.EntryPrice,
+                    EntryTime = trade.EntryTime,
+                    Quantity = 0
+                };
+
+                var exitLog = new TradeLog(symbol, exitSide, $"LiveParity_{trade.ExitReason}", trade.ExitPrice, 0, trade.ExitTime, trade.PnL, trade.PnLPercent)
+                {
+                    EntryPrice = trade.EntryPrice,
+                    ExitPrice = trade.ExitPrice,
+                    EntryTime = trade.EntryTime,
+                    ExitTime = trade.ExitTime,
+                    ExitReason = trade.ExitReason,
+                    Quantity = 0
+                };
+
+                result.TradeHistory.Add(entryLog);
+                result.TradeHistory.Add(exitLog);
+            }
+
+            result.TradeDates = summary.Trades
+                .Select(t => t.ExitTime.ToString("MM/dd HH:mm"))
+                .ToList();
+
+            if (result.TradeDates.Count < result.EquityCurve.Count)
+            {
+                result.TradeDates.Insert(0, startDate.ToString("MM/dd HH:mm"));
+            }
+
+            if (result.TradeDates.Count != result.EquityCurve.Count)
+            {
+                if (result.Candles.Count >= result.EquityCurve.Count)
+                {
+                    result.TradeDates = result.Candles
+                        .Take(result.EquityCurve.Count)
+                        .Select(c => c.OpenTime.ToString("MM/dd HH:mm"))
+                        .ToList();
+                }
+                else
+                {
+                    result.TradeDates = Enumerable.Range(0, result.EquityCurve.Count)
+                        .Select(i => startDate.AddMinutes(i * 5).ToString("MM/dd HH:mm"))
+                        .ToList();
+                }
+            }
+
+            result.Message =
+                $"전략: LiveEntryParity | 기간: {startDate:yyyy-MM-dd} ~ {endDate:yyyy-MM-dd} | " +
+                $"신호:{summary.TotalSignals} / 거래:{summary.TotalTrades} / 게이트기각:{summary.GateRejections} / HTF기각:{summary.HtfRejections} | " +
+                $"AI모드=노이즈(PerfectAI OFF), 수수료 반영";
+
+            var effectiveMetricOptions = metricOptions ?? new BacktestMetricOptions();
+            if (effectiveMetricOptions.AnnualizationMode == BacktestAnnualizationMode.Auto
+                || effectiveMetricOptions.AnnualizationMode == BacktestAnnualizationMode.Crypto5m)
+            {
+                effectiveMetricOptions = new BacktestMetricOptions
+                {
+                    RiskFreeRateAnnualPct = effectiveMetricOptions.RiskFreeRateAnnualPct,
+                    AnnualizationMode = BacktestAnnualizationMode.None
+                };
+                result.Message += " | 지표연율화=None(실전형 trade-point 기준 과대 방지)";
+            }
+
+            CalculateMetrics(result, effectiveMetricOptions);
+
+            if (result.TotalTrades == 0)
+            {
+                result.Message += " | 체결 0회: 실전형 게이트가 엄격하여 필터 차단이 많을 수 있습니다.";
+            }
+
+            return result;
         }
 
         private void CalculateMetrics(BacktestResult result, BacktestMetricOptions? metricOptions)

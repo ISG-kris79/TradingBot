@@ -126,11 +126,16 @@
                                        FontWeight="SemiBold"
                                        Foreground="#E0E7FF"
                                        Margin="0,0,0,12"/>
+
+                            <RadioButton x:Name="rbLiveEntryParity"
+                                         Content="🔵 Live Entry Parity (실전 진입 게이트 반영)"
+                                         GroupName="Strategy"
+                                         IsChecked="True"
+                                         Style="{StaticResource ModernRadioButton}"/>
                             
                             <RadioButton x:Name="rbElliottWave"
                                          Content="🟢 ElliottWave (90% 실전 복제 - 추천)"
                                          GroupName="Strategy"
-                                         IsChecked="True"
                                          Style="{StaticResource ModernRadioButton}"/>
                             
                             <RadioButton x:Name="rbBollingerBand"

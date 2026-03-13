@@ -1670,12 +1670,12 @@ namespace TradingBot
     {
         public readonly record struct SymbolThreshold(double EntryScoreCut, float MaxRsiLimit, float AiConfidenceMin);
 
-        public float MinMLConfidence { get; set; } = 0.65f;
-        public float MinTransformerConfidence { get; set; } = 0.60f;
+        public float MinMLConfidence { get; set; } = 0.56f;
+        public float MinTransformerConfidence { get; set; } = 0.52f;
         public float MinMLConfidenceMajor { get; set; } = 0.75f; // 메이저 코인은 더 보수적
         public float MinTransformerConfidenceMajor { get; set; } = 0.68f;
-        public float MinMLConfidencePumping { get; set; } = 0.66f; // 펌핑 손실 구간 대응: 보수 강화
-        public float MinTransformerConfidencePumping { get; set; } = 0.63f;
+        public float MinMLConfidencePumping { get; set; } = 0.56f; // 펌핑 손실 구간 대응: 보수 강화
+        public float MinTransformerConfidencePumping { get; set; } = 0.54f;
 
         public float StrongTrendBypassThreshold { get; set; } = 0.80f;
         public float ElliottRule3Penalty { get; set; } = 0.15f;
@@ -1722,11 +1722,11 @@ namespace TradingBot
                     AiConfidenceMin: 0.7f);
             }
 
-            // [밈코인용 엄격 세팅]
+            // [밈코인용 2차 완화 세팅]
             return new SymbolThreshold(
-                EntryScoreCut: 80.0,
-                MaxRsiLimit: 65f,
-                AiConfidenceMin: 0.9f);
+                EntryScoreCut: 72.0,
+                MaxRsiLimit: 70f,
+                AiConfidenceMin: 0.72f);
         }
 
         private static bool IsMajorCoin(string symbol)

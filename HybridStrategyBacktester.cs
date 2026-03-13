@@ -67,6 +67,7 @@ namespace TradingBot.Services.Backtest
             public DateTime StartDate { get; set; }
             public DateTime EndDate { get; set; }
             public int TotalCandles { get; set; }
+            public List<CandleData> Candles { get; set; } = new();
             public int TotalSignals { get; set; }
             public int GateRejections { get; set; }
             public int HtfRejections { get; set; }
@@ -91,14 +92,24 @@ namespace TradingBot.Services.Backtest
 
         public async Task<BacktestSummary> RunAsync(string symbol, int days = 3, Action<string>? onLog = null)
         {
+            var endUtc = DateTime.UtcNow;
+            var startUtc = endUtc.AddDays(-Math.Max(1, days));
+            return await RunRangeAsync(symbol, startUtc, endUtc, onLog);
+        }
+
+        public async Task<BacktestSummary> RunRangeAsync(string symbol, DateTime startUtc, DateTime endUtc, Action<string>? onLog = null)
+        {
             onLog?.Invoke($"═══════════ 하이브리드 전략 백테스트 시작 ═══════════");
-            onLog?.Invoke($"심볼: {symbol} | 기간: 최근 {days}일 | 초기자본: {InitialBalance} USDT");
+            onLog?.Invoke($"심볼: {symbol} | 기간: {startUtc:yyyy-MM-dd HH:mm} ~ {endUtc:yyyy-MM-dd HH:mm} | 초기자본: {InitialBalance} USDT");
             onLog?.Invoke($"레버리지: {Leverage}x | TP: {TakeProfitPct * 100:F1}% | SL: {StopLossPct * 100:F1}%");
             onLog?.Invoke($"AI 모드: {(PerfectAI ? "완벽한 AI (실제 미래값)" : "노이즈 AI")} | 게이트: {(EnableComponentGate ? "ON" : "OFF")}");
             onLog?.Invoke("");
 
-            var endUtc = DateTime.UtcNow;
-            var startUtc = endUtc.AddDays(-days);
+            if (endUtc <= startUtc)
+            {
+                onLog?.Invoke("❌ 기간 설정 오류: 종료시각이 시작시각보다 빠릅니다.");
+                return new BacktestSummary { Symbol = symbol, StartDate = startUtc, EndDate = endUtc, InitialBalance = InitialBalance, FinalBalance = InitialBalance };
+            }
 
             // 1. 데이터 수집 (5분봉, 15분봉, 1시간봉)
             onLog?.Invoke("📡 데이터 수집 중...");
@@ -124,7 +135,19 @@ namespace TradingBot.Services.Backtest
                 StartDate = klines5m.First().OpenTime,
                 EndDate = klines5m.Last().OpenTime,
                 TotalCandles = klines5m.Count,
-                InitialBalance = InitialBalance
+                InitialBalance = InitialBalance,
+                Candles = klines5m.Select(k => new CandleData
+                {
+                    Symbol = symbol,
+                    Interval = "5m",
+                    OpenTime = k.OpenTime,
+                    CloseTime = k.CloseTime,
+                    Open = k.OpenPrice,
+                    High = k.HighPrice,
+                    Low = k.LowPrice,
+                    Close = k.ClosePrice,
+                    Volume = (float)k.Volume
+                }).ToList()
             };
 
             decimal balance = InitialBalance;
@@ -161,19 +184,18 @@ namespace TradingBot.Services.Backtest
                 // 2.3. 기술적 컨텍스트 구성
                 var ctx = BuildContext(currentKlines, currentPrice);
 
-                // 2.4. AI 예측값 결정 (미래 N봉 가격변화율 사용)
+                // 2.4. AI 예측값 결정
                 decimal futurePrice = klines5m[i + FutureLookAhead].ClosePrice;
                 decimal predictedChange;
                 if (PerfectAI)
                 {
+                    // 연구용 모드: 미래값 사용 (룩어헤드)
                     predictedChange = currentPrice > 0 ? (futurePrice - currentPrice) / currentPrice : 0;
                 }
                 else
                 {
-                    // 노이즈 AI: 실제 방향에 ±랜덤 오프셋
-                    var rng = new Random(i); // 재현성 보장
-                    double noise = (rng.NextDouble() - 0.5) * 0.02; // ±1%
-                    predictedChange = currentPrice > 0 ? (futurePrice - currentPrice) / currentPrice + (decimal)noise : 0;
+                    // 실전 근사 모드: 현재 시점 지표만으로 방향/강도 추정 (룩어헤드 제거)
+                    predictedChange = EstimatePredictedChangeNoLookahead(ctx, currentPrice, plusDi, minusDi, adx, i);
                 }
                 decimal predictedPrice = currentPrice * (1 + predictedChange);
 
@@ -676,6 +698,47 @@ namespace TradingBot.Services.Backtest
             else if (atrPercentage < 0.30) return 63.0;
             else if (atrPercentage < 0.50) return 68.0;
             else return 75.0;
+        }
+
+        private decimal EstimatePredictedChangeNoLookahead(
+            HybridStrategyScorer.TechnicalContext ctx,
+            decimal currentPrice,
+            double plusDi,
+            double minusDi,
+            double adx,
+            int seed)
+        {
+            if (currentPrice <= 0)
+                return 0m;
+
+            decimal estimatedChange = 0m;
+
+            if (ctx.Sma20 > 0 && ctx.Sma50 > 0)
+            {
+                decimal movingAverageGap = (decimal)((ctx.Sma20 - ctx.Sma50) / ctx.Sma50);
+                estimatedChange += movingAverageGap * 0.80m;
+            }
+
+            if (ctx.MacdHist > 0)
+                estimatedChange += 0.0012m;
+            else if (ctx.MacdHist < 0)
+                estimatedChange -= 0.0012m;
+
+            estimatedChange += (decimal)((ctx.RSI - 50.0) / 5000.0);
+
+            if (plusDi > minusDi)
+                estimatedChange += 0.0008m;
+            else if (minusDi > plusDi)
+                estimatedChange -= 0.0008m;
+
+            if (adx < AdxSidewaysThreshold)
+                estimatedChange *= 0.60m;
+
+            var random = new Random(seed * 7919 + 17);
+            decimal noise = (decimal)((random.NextDouble() - 0.5) * 0.006); // ±0.3%
+
+            decimal finalEstimated = estimatedChange + noise;
+            return Math.Clamp(finalEstimated, -0.012m, 0.012m);
         }
     }
 }

@@ -12,6 +12,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows;
@@ -35,7 +36,7 @@ namespace TradingBot.ViewModels
 
         private TradingEngine? _engine;
         private DatabaseService? _dbService;
-        private static readonly Regex SymbolRegex = new(@"\b([A-Z]+USDT)\b", RegexOptions.Compiled);
+        private static readonly Regex SymbolRegex = new(@"\b([A-Z0-9]+USDT)\b", RegexOptions.Compiled);
         private static readonly Regex GateThresholdRegex = new(@"mlTh=(?<ml>\d+(?:\.\d+)?)%\s+tfTh=(?<tf>\d+(?:\.\d+)?)%", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex GateAutoTuneRegex = new(@"mlThr=(?<oldMl>\d+(?:\.\d+)?)%->(?<newMl>\d+(?:\.\d+)?)%.*tfThr=(?<oldTf>\d+(?:\.\d+)?)%->(?<newTf>\d+(?:\.\d+)?)%", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private readonly ConcurrentQueue<BufferedLiveLog> _pendingLiveLogs = new();
@@ -651,7 +652,9 @@ namespace TradingBot.ViewModels
 
                         BacktestResult result = await service.RunBacktestAsync(symbol, startDate, endDate, selectedStrategy, 1000m, selectedMetricOptions);
 
-                        if ((result?.Candles?.Count ?? 0) > 0 && (result?.TotalTrades ?? 0) == 0)
+                        if (selectedStrategy != BacktestStrategyType.LiveEntryParity
+                            && (result?.Candles?.Count ?? 0) > 0
+                            && (result?.TotalTrades ?? 0) == 0)
                         {
                             RunOnUI(() => AddLog("ℹ️ 체결 0회로 RSI(40/60) 대체 백테스트를 자동 시도합니다."));
                             var fallbackStrategy = new RsiBacktestStrategy
@@ -1460,13 +1463,16 @@ namespace TradingBot.ViewModels
             {
                 RunOnUI(() =>
                 {
+                    if (!TryNormalizeTradingSymbol(symbol, out var normalizedSymbol))
+                        return;
+
                     // [FIX] ML/TF가 0이면 "대기" 표시 (0%가 아니라 아직 실행 안 됨을 의미)
                     WaveMLScoreText = mlScore <= 0 ? "ML: 대기" : $"ML: {mlScore:P0}";
                     WaveTFScoreText = tfScore <= 0 ? "TF: 대기" : $"TF: {tfScore:P0}";
                     WaveStatusText = status;
                     
                     // [NEW] 해당 심볼의 ViewModel에도 ML/TF 확률 업데이트
-                    var symbolVm = MarketDataList.FirstOrDefault(x => x.Symbol == symbol);
+                    var symbolVm = MarketDataList.FirstOrDefault(x => string.Equals(x.Symbol, normalizedSymbol, StringComparison.OrdinalIgnoreCase));
                     if (symbolVm != null)
                     {
                         symbolVm.MLProbability = mlScore;
@@ -1776,7 +1782,12 @@ namespace TradingBot.ViewModels
                 if (!_pendingAiEntryProbUpdates.TryRemove(key, out var payload))
                     continue;
 
-                var existing = GetOrCreateMarketDataItem(key);
+                if (!TryNormalizeTradingSymbol(key, out var normalizedSymbol))
+                    continue;
+
+                var existing = GetOrCreateMarketDataItem(normalizedSymbol);
+                if (existing == null)
+                    continue;
                 bool probChanged = Math.Abs(existing.AiEntryProb - payload.AverageProbability) > 0.001f;
                 bool forecastTimeChanged = existing.AiEntryForecastTime != payload.ForecastTimeLocal;
                 bool forecastOffsetChanged = existing.AiEntryForecastOffsetMinutes != payload.ForecastOffsetMinutes;
@@ -1809,22 +1820,25 @@ namespace TradingBot.ViewModels
             }
         }
 
-        private MultiTimeframeViewModel GetOrCreateMarketDataItem(string symbol)
+        private MultiTimeframeViewModel? GetOrCreateMarketDataItem(string symbol)
         {
-            if (_marketDataIndex.TryGetValue(symbol, out var cached))
+            if (!TryNormalizeTradingSymbol(symbol, out var normalizedSymbol))
+                return null;
+
+            if (_marketDataIndex.TryGetValue(normalizedSymbol, out var cached))
                 return cached;
 
-            var existing = MarketDataList.FirstOrDefault(x => x.Symbol == symbol);
+            var existing = MarketDataList.FirstOrDefault(x => string.Equals(x.Symbol, normalizedSymbol, StringComparison.OrdinalIgnoreCase));
             if (existing != null)
             {
-                _marketDataIndex[symbol] = existing;
+                _marketDataIndex[normalizedSymbol] = existing;
                 return existing;
             }
 
-            var created = new MultiTimeframeViewModel { Symbol = symbol };
+            var created = new MultiTimeframeViewModel { Symbol = normalizedSymbol };
             created.EntryStatus = ResolveEntryStatus(created.SignalSource, created.Decision, created.IsPositionActive);
             MarketDataList.Add(created);
-            _marketDataIndex[symbol] = created;
+            _marketDataIndex[normalizedSymbol] = created;
             return created;
         }
 
@@ -1861,13 +1875,15 @@ namespace TradingBot.ViewModels
 
         private bool ApplySignalUpdate(MultiTimeframeViewModel signal)
         {
-            if (signal == null || string.IsNullOrWhiteSpace(signal.Symbol))
+            if (signal == null || !TryNormalizeTradingSymbol(signal.Symbol, out var symbol))
                 return false;
 
-            var symbol = signal.Symbol;
+            if (!string.Equals(signal.Symbol, symbol, StringComparison.Ordinal))
+                signal.Symbol = symbol;
+
             if (!_marketDataIndex.TryGetValue(symbol, out var existing))
             {
-                existing = MarketDataList.FirstOrDefault(x => x.Symbol == symbol);
+                existing = MarketDataList.FirstOrDefault(x => string.Equals(x.Symbol, symbol, StringComparison.OrdinalIgnoreCase));
                 if (existing == null)
                 {
                     if (signal.AIScore > 0)
@@ -1998,7 +2014,12 @@ namespace TradingBot.ViewModels
                 if (!_pendingTickerUpdates.TryRemove(key, out var payload))
                     continue;
 
-                var existing = GetOrCreateMarketDataItem(key);
+                if (!TryNormalizeTradingSymbol(key, out var normalizedSymbol))
+                    continue;
+
+                var existing = GetOrCreateMarketDataItem(normalizedSymbol);
+                if (existing == null)
+                    continue;
 
                 // [병목 해결] BeginUpdate/EndUpdate로 PropertyChanged 폭주 방지
                 existing.BeginUpdate();
@@ -2363,6 +2384,32 @@ namespace TradingBot.ViewModels
                 || message.Contains("손익비", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("[SLIPPAGE][FAST][WARN]", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("[SLIPPAGE][FAST][EXIT]", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryNormalizeTradingSymbol(string? rawSymbol, out string normalizedSymbol)
+        {
+            normalizedSymbol = string.Empty;
+            if (string.IsNullOrWhiteSpace(rawSymbol))
+                return false;
+
+            string upper = rawSymbol.Trim().ToUpperInvariant();
+            var buffer = new StringBuilder(upper.Length);
+
+            foreach (char ch in upper)
+            {
+                if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))
+                    buffer.Append(ch);
+            }
+
+            if (buffer.Length < 6)
+                return false;
+
+            string candidate = buffer.ToString();
+            if (!candidate.EndsWith("USDT", StringComparison.Ordinal))
+                return false;
+
+            normalizedSymbol = candidate;
+            return true;
         }
 
         private static string SimplifyLiveLogMessage(string message)
@@ -2948,9 +2995,9 @@ namespace TradingBot.ViewModels
         /// </summary>
         public void EnqueueTickerUpdate(string symbol, decimal price, double? pnl)
         {
-            if (string.IsNullOrWhiteSpace(symbol))
+            if (!TryNormalizeTradingSymbol(symbol, out var normalizedSymbol))
                 return;
-            _pendingTickerUpdates[symbol] = (price, pnl);
+            _pendingTickerUpdates[normalizedSymbol] = (price, pnl);
         }
 
         /// <summary>
@@ -2958,13 +3005,15 @@ namespace TradingBot.ViewModels
         /// </summary>
         private void UpdateAiEntryProb(string symbol, AIEntryForecastResult? forecast)
         {
-            if (string.IsNullOrWhiteSpace(symbol) || forecast == null)
+            if (!TryNormalizeTradingSymbol(symbol, out var normalizedSymbol) || forecast == null)
                 return;
 
-            if (string.IsNullOrWhiteSpace(forecast.Symbol))
-                forecast.Symbol = symbol;
+            if (TryNormalizeTradingSymbol(forecast.Symbol, out var normalizedForecastSymbol))
+                forecast.Symbol = normalizedForecastSymbol;
+            else
+                forecast.Symbol = normalizedSymbol;
 
-            _pendingAiEntryProbUpdates[symbol] = forecast;
+            _pendingAiEntryProbUpdates[normalizedSymbol] = forecast;
         }
 
         private void UpdateProgress(int current, int total)
@@ -3118,38 +3167,41 @@ namespace TradingBot.ViewModels
 
         private void UpdateSignal(MultiTimeframeViewModel signal)
         {
-            if (signal == null || string.IsNullOrWhiteSpace(signal.Symbol))
+            if (signal == null || !TryNormalizeTradingSymbol(signal.Symbol, out var normalizedSymbol))
                 return;
 
-            _pendingSignalUpdates[signal.Symbol] = signal;
+            if (!string.Equals(signal.Symbol, normalizedSymbol, StringComparison.Ordinal))
+                signal.Symbol = normalizedSymbol;
+
+            _pendingSignalUpdates[normalizedSymbol] = signal;
         }
 
         private void UpdateTicker(string symbol, decimal price, double? pnl)
         {
-            if (string.IsNullOrWhiteSpace(symbol))
+            if (!TryNormalizeTradingSymbol(symbol, out var normalizedSymbol))
                 return;
 
-            _pendingTickerUpdates[symbol] = (price, pnl);
+            _pendingTickerUpdates[normalizedSymbol] = (price, pnl);
         }
 
         private void EnsureSymbolInList(string symbol)
         {
             RunOnUI(() =>
             {
-                if (string.IsNullOrWhiteSpace(symbol))
+                if (!TryNormalizeTradingSymbol(symbol, out var normalizedSymbol))
                     return;
 
-                if (_marketDataIndex.ContainsKey(symbol) || MarketDataList.Any(x => x.Symbol == symbol))
+                if (_marketDataIndex.ContainsKey(normalizedSymbol) || MarketDataList.Any(x => string.Equals(x.Symbol, normalizedSymbol, StringComparison.OrdinalIgnoreCase)))
                 {
-                    if (!_marketDataIndex.ContainsKey(symbol))
-                        _marketDataIndex[symbol] = MarketDataList.First(x => x.Symbol == symbol);
+                    if (!_marketDataIndex.ContainsKey(normalizedSymbol))
+                        _marketDataIndex[normalizedSymbol] = MarketDataList.First(x => string.Equals(x.Symbol, normalizedSymbol, StringComparison.OrdinalIgnoreCase));
                     return;
                 }
 
-                var created = new MultiTimeframeViewModel { Symbol = symbol };
+                var created = new MultiTimeframeViewModel { Symbol = normalizedSymbol };
                 MarketDataList.Add(created);
-                _marketDataIndex[symbol] = created;
-                AddLog($"🔍 신규 급등주 감시 리스트 추가: {symbol}");
+                _marketDataIndex[normalizedSymbol] = created;
+                AddLog($"🔍 신규 급등주 감시 리스트 추가: {normalizedSymbol}");
             });
         }
 
@@ -3157,10 +3209,12 @@ namespace TradingBot.ViewModels
         {
             RunOnUI(() =>
             {
-                if (string.IsNullOrWhiteSpace(symbol))
+                if (!TryNormalizeTradingSymbol(symbol, out var normalizedSymbol))
                     return;
 
-                var existing = GetOrCreateMarketDataItem(symbol);
+                var existing = GetOrCreateMarketDataItem(normalizedSymbol);
+                if (existing == null)
+                    return;
                 bool activeChanged = existing.IsPositionActive != isActive;
                 existing.IsPositionActive = isActive;
                 existing.EntryPrice = entryPrice;
@@ -3199,10 +3253,12 @@ namespace TradingBot.ViewModels
         {
             RunOnUI(() =>
             {
-                if (string.IsNullOrWhiteSpace(symbol))
+                if (!TryNormalizeTradingSymbol(symbol, out var normalizedSymbol))
                     return;
 
-                var existing = GetOrCreateMarketDataItem(symbol);
+                var existing = GetOrCreateMarketDataItem(normalizedSymbol);
+                if (existing == null)
+                    return;
 
                 existing.HasCloseIncomplete = isIncomplete;
                 existing.CloseIncompleteDetail = detail;
@@ -3213,10 +3269,12 @@ namespace TradingBot.ViewModels
         {
             RunOnUI(() =>
             {
-                if (string.IsNullOrWhiteSpace(symbol))
+                if (!TryNormalizeTradingSymbol(symbol, out var normalizedSymbol))
                     return;
 
-                var existing = GetOrCreateMarketDataItem(symbol);
+                var existing = GetOrCreateMarketDataItem(normalizedSymbol);
+                if (existing == null)
+                    return;
 
                 existing.ExternalSyncStatus = status;
                 existing.ExternalSyncDetail = detail;

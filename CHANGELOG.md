@@ -15,6 +15,62 @@
 
  - 없음
 
+## [2.4.42] - 2026-03-14
+
+### Added
+
+- **실전 유사 백테스트 모드 `LiveEntryParity` 추가** (`BacktestService.cs`, `HybridStrategyBacktester.cs`, `BacktestOptionsDialog.xaml(.cs)`):
+  - 백테스트 전략 선택에 `LiveEntryParity` 옵션을 추가하고 기본 선택으로 변경
+  - `HybridStrategyBacktester.RunRangeAsync`와 `BacktestResult.Candles` 연계로 기간 지정 실전형 시뮬레이션 지원
+  - `PerfectAI=false` 경로에서 룩어헤드 제거형 예측 추정(`EstimatePredictedChangeNoLookahead`) 적용
+
+### Changed
+
+- **엘리엇 3파 진입 기준 재설계** (`ElliottWave3WaveStrategy.cs`, `TradingEngine.cs`):
+  - 1파 감지를 단일 캔들 기반에서 스윙 저점/고점 기반으로 전환
+  - 2파 확정에 되돌림 비율(0.50~0.786), 거래량 수축, 반등 확인 조건을 결합
+  - 피보 진입 판정을 `Fib 구간 터치 + 0.618 재돌파` 중심으로 정밀화하고 무효화 시 상태 리셋
+  - 주문 체결 후 실제 포지션 확인 시 `Wave3Active`로 상태 승격
+
+- **드라이스펠 자동 복구 진입/차단 관제 강화** (`TradingEngine.cs`):
+  - 장시간 무진입 시 전 심볼 진단 후 `PASS` 후보 자동진입, 근접 후보 시험진입 경로 보강
+  - 드라이스펠 전용 소스(`DROUGHT_RECOVERY*`)에 한해 사전평가 결과를 재사용하도록 AI 게이트 재검사 우회
+  - 10분 단위 진입 차단 사유 집계 및 튜닝 힌트 로그 추가
+
+- **심볼 정규화 및 UI 동기화 안정화** (`TradingEngine.cs`, `MainViewModel.cs`):
+  - 영숫자+`USDT` 형식 정규화를 티커/시그널/포지션 업데이트 경로에 통합
+  - 비정상 심볼 유입 시 UI 인덱스 오염/갱신 누락 가능성을 축소
+
+- **AI 임계값/진입필터 공격형 튜닝 반영** (`AIDoubleCheckEntryGate.cs`, `TradingEngine.cs`, `appsettings.json`):
+  - 일반/펌핑 코인 ML·TF 임계값 완화 및 엔트리 점수/RSI 기준 조정
+  - EntryFilter 워밍업, RR, 15분 게이트 기본값을 실전 진입 빈도 중심으로 재조정
+
+## [2.4.41] - 2026-03-13
+
+### Added
+
+- **드라이스펠 자동 복구 진입 추가** (`TradingEngine.cs`):
+  - 무진입 구간 진단 결과에서 `Gate PASS` 상위 후보를 자동 진입 대상으로 연결
+  - `PASS` 후보가 없을 때 임계값 근접 후보를 소액 시험 진입으로 시도하는 폴백 경로 추가
+  - 드라이스펠 복구 진입 소스 태그(`DROUGHT_RECOVERY`, `DROUGHT_RECOVERY_NEAR`) 반영
+
+### Changed
+
+- **드라이스펠 감지/재진단 파라미터 공격형 튜닝** (`TradingEngine.cs`):
+  - 감지 임계 `1시간` → `30분`, 재진단 주기 `15분` → `10분`
+  - 근접 후보 판정 기준 `95%` → `90%`, 시험 진입 비중 `40%` → `70%`
+  - `Gate PASS` 자동진입 시도 개수 `Top 1` → `Top 2`로 확장
+
+- **자동진입 수량 제어 훅 추가** (`TradingEngine.cs`):
+  - `ExecuteAutoOrder`에 수동 배수 인자(`manualSizeMultiplier`)를 추가해 진입 비중을 동적으로 제어
+  - 배수 안전 범위 클램프(0.10~2.00) 및 사이징 로그 강화
+
+### Fixed
+
+- **심볼 깨짐/오염 입력 정규화 보강** (`TradingEngine.cs`, `MainViewModel.cs`):
+  - 실시간 심볼 유입 경로 전반에서 영숫자+`USDT` 형식 정규화를 적용해 UI 깨짐 심볼 노출 완화
+  - 숫자 접두 심볼(`1000PEPEUSDT` 등) 수용을 위한 패턴 정합성 개선
+
 ## [2.4.40] - 2026-03-13
 
 ### Added

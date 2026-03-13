@@ -17,7 +17,7 @@ namespace TradingBot
             InitializeComponent();
             
             // 기본값
-            SelectedStrategy = BacktestStrategyType.ElliottWave;
+            SelectedStrategy = BacktestStrategyType.LiveEntryParity;
             SelectedDays = 30;
             SelectedMetricOptions = new BacktestMetricOptions
             {
@@ -30,7 +30,9 @@ namespace TradingBot
         private void Start_Click(object sender, RoutedEventArgs e)
         {
             // 전략 선택
-            if (rbElliottWave.IsChecked == true)
+            if (rbLiveEntryParity.IsChecked == true)
+                SelectedStrategy = BacktestStrategyType.LiveEntryParity;
+            else if (rbElliottWave.IsChecked == true)
                 SelectedStrategy = BacktestStrategyType.ElliottWave;
             else if (rbBollingerBand.IsChecked == true)
                 SelectedStrategy = BacktestStrategyType.BollingerBand;
