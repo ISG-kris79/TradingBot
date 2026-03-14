@@ -107,6 +107,7 @@ namespace TradingBot
         // private TransformerStrategy? _transformerStrategy; // TensorFlow 전환 중 임시 비활성화
         // private TransformerTrainer? _transformerTrainer; // TensorFlow 전환 중 임시 비활성화
         private ElliottWave3WaveStrategy _elliotWave3Strategy; // [3파 확정형 단타]
+        private FifteenMinBBSqueezeBreakoutStrategy _fifteenMinBBSqueezeStrategy; // [15분봉 BB 스퀴즈 돌파]
         private HybridExitManager _hybridExitManager; // [하이브리드 AI 익절/손절 관리]
         private BinanceExecutionService _executionService; // [실시간 레버리지 주문 실행 서비스]
 
@@ -719,6 +720,10 @@ namespace TradingBot
             // [3파 확정형 전략] 먼저 초기화 (TransformerStrategy에서 사용하기 위해)
             _elliotWave3Strategy = new ElliottWave3WaveStrategy();
             OnStatusLog?.Invoke("🌊 엘리엇 3파 확정형 전략 준비 완료");
+
+            // [15분봉 BB 스퀴즈 돌파 전략]
+            _fifteenMinBBSqueezeStrategy = new FifteenMinBBSqueezeBreakoutStrategy();
+            OnStatusLog?.Invoke("📉 15분봉 BB 스퀴즈 돌파 전략 준비 완료");
 
             // [하이브리드 AI 익절/손절 관리]
             _hybridExitManager = new HybridExitManager();
@@ -1406,6 +1411,9 @@ namespace TradingBot
                 // [블랙리스트 복구] DB에서 최근 1시간 이내 종료된 포지션 로드
                 await RestoreBlacklistFromDatabaseAsync(token);
 
+                // [Elliott 앵커 복원] 재시작 후에도 파동 기준점 유지
+                await RestoreElliottWaveAnchorsFromDatabaseAsync(token);
+
                 // [추가] ML.NET 초기 학습 1회 자동 실행 (모델 미준비 시) - 워밍업 후 실행
                 await TriggerInitialMLNetTrainingIfNeededAsync(token);
 
@@ -1724,7 +1732,7 @@ namespace TradingBot
             _enableFifteenMinWaveGate = settings.EnableFifteenMinWaveGate;
             _fifteenMinuteMlMinConfidence = Math.Clamp(settings.FifteenMinMlConfidence, 0f, 1f);
             _fifteenMinuteTransformerMinConfidence = Math.Clamp(settings.FifteenMinTransformerConfidence, 0f, 1f);
-            _aiScoreThresholdMajor = Math.Max(70f, settings.AiScoreThresholdMajor);
+            _aiScoreThresholdMajor = Math.Max(56f, settings.AiScoreThresholdMajor); // [메이저 고속도로] 0.8배 하향
             _aiScoreThresholdNormal = Math.Max(70f, settings.AiScoreThresholdNormal);
             _enableAiScoreFilter = settings.EnableAiScoreFilter;
 
@@ -2466,6 +2474,38 @@ namespace TradingBot
             const decimal FEE_PCT = 0.0008m;   // 왕복 수수료 0.08%
             const float BB_WIDTH_HOLD = 0.5f;  // BB폭 < 0.5% 이면 횡보 → HOLD
 
+            static (bool success, decimal fib236, decimal fib382, decimal fib500, decimal fib618) CalculateConfirmedFibLevels(
+                List<IBinanceKline> source,
+                int lookback = 50,
+                int confirmationBars = 3)
+            {
+                if (source == null || source.Count < lookback)
+                    return (false, 0m, 0m, 0m, 0m);
+
+                var recent = source.TakeLast(lookback).ToList();
+                int maxConfirmedIndex = recent.Count - 1 - confirmationBars;
+                if (maxConfirmedIndex <= confirmationBars)
+                    return (false, 0m, 0m, 0m, 0m);
+
+                var confirmed = recent.Take(maxConfirmedIndex + 1).ToList();
+                if (confirmed.Count < 10)
+                    return (false, 0m, 0m, 0m, 0m);
+
+                decimal high = confirmed.Max(k => k.HighPrice);
+                decimal low = confirmed.Min(k => k.LowPrice);
+                decimal range = high - low;
+                if (range <= 0m)
+                    return (false, 0m, 0m, 0m, 0m);
+
+                return (
+                    true,
+                    high - range * 0.236m,
+                    high - range * 0.382m,
+                    high - range * 0.500m,
+                    high - range * 0.618m
+                );
+            }
+
             var result = new List<CandleData>();
             // SMA120 계산에 최소 120봉 필요, Lookahead 10봉 제외
             if (klines.Count < 130 + LOOKAHEAD) return result;
@@ -2485,6 +2525,12 @@ namespace TradingBot
                 var atr = IndicatorCalculator.CalculateATR(subset, 14);
                 var macd = IndicatorCalculator.CalculateMACD(subset);
                 var fib = IndicatorCalculator.CalculateFibonacci(subset, 50);
+                var confirmedFib = CalculateConfirmedFibLevels(subset, 50, 3);
+
+                decimal fib236 = confirmedFib.success ? confirmedFib.fib236 : (decimal)fib.Level236;
+                decimal fib382 = confirmedFib.success ? confirmedFib.fib382 : (decimal)fib.Level382;
+                decimal fib500 = confirmedFib.success ? confirmedFib.fib500 : (decimal)fib.Level500;
+                decimal fib618 = confirmedFib.success ? confirmedFib.fib618 : (decimal)fib.Level618;
 
                 // ── SMA ──
                 double sma20 = IndicatorCalculator.CalculateSMA(subset, 20);
@@ -2524,8 +2570,8 @@ namespace TradingBot
 
                 // ── 피보나치 포지션 (0~1) ──
                 float fibPosition = 0;
-                if (fib.Level236 != fib.Level618 && fib.Level618 > 0)
-                    fibPosition = (float)(((double)entryPrice - fib.Level236) / (fib.Level618 - fib.Level236));
+                if (fib236 != fib618 && fib618 > 0)
+                    fibPosition = (float)((entryPrice - fib236) / (fib618 - fib236));
                 fibPosition = Math.Clamp(fibPosition, 0, 1);
 
                 // ── 추세 강도 (-1 ~ +1) ──
@@ -2606,10 +2652,10 @@ namespace TradingBot
                     MACD_Signal = (float)macd.Signal,
                     MACD_Hist = (float)macd.Hist,
                     ATR = (float)atr,
-                    Fib_236 = (float)fib.Level236,
-                    Fib_382 = (float)fib.Level382,
-                    Fib_500 = (float)fib.Level500,
-                    Fib_618 = (float)fib.Level618,
+                    Fib_236 = (float)fib236,
+                    Fib_382 = (float)fib382,
+                    Fib_500 = (float)fib500,
+                    Fib_618 = (float)fib618,
                     BB_Upper = bb.Upper,
                     BB_Lower = bb.Lower,
 
@@ -2778,6 +2824,16 @@ namespace TradingBot
                 catch (Exception ex)
                 {
                     OnStatusLog?.Invoke($"⚠️ Elliott Wave 분석 오류: {ex.Message}");
+                }
+
+                // [15분봉 BB 스퀴즈 돌파 전략]
+                try
+                {
+                    await AnalyzeFifteenMinBBSqueezeBreakoutAsync(symbol, currentPrice, token);
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ BB 스퀴즈 분석 오류: {ex.Message}");
                 }
 
                 // ═══════════════════════════
@@ -3010,6 +3066,7 @@ namespace TradingBot
                 }
 
                 var state = _elliotWave3Strategy.GetCurrentState(symbol);
+                string stateSignatureBefore = BuildElliottWavePersistenceSignature(state);
 
                 // [1단계] 1파 상승 감지
                 if (state.CurrentPhase == ElliottWave3WaveStrategy.WavePhaseType.Idle && candleDataList.Count >= 3)
@@ -3092,10 +3149,168 @@ namespace TradingBot
                         OnAlert?.Invoke($"⚠️ {symbol} [조기 익절 경고] RSI 또는 BB 반전 신호!");
                     }
                 }
+
+                string stateSignatureAfter = BuildElliottWavePersistenceSignature(state);
+                if (!string.Equals(stateSignatureBefore, stateSignatureAfter, StringComparison.Ordinal))
+                {
+                    await PersistElliottWaveAnchorStateAsync(symbol);
+                }
             }
             catch (Exception ex)
             {
                 OnStatusLog?.Invoke($"⚠️ {symbol} ElliottWave3Wave 분석 오류: {ex.Message}");
+            }
+        }
+
+        private async Task RestoreElliottWaveAnchorsFromDatabaseAsync(CancellationToken token)
+        {
+            try
+            {
+                token.ThrowIfCancellationRequested();
+
+                if (_elliotWave3Strategy == null || _dbManager == null)
+                    return;
+
+                var snapshots = await _dbManager.LoadElliottWaveAnchorStatesAsync(_symbols);
+                if (snapshots == null || snapshots.Count == 0)
+                {
+                    OnStatusLog?.Invoke("ℹ️ [ElliottAnchor] 복원할 앵커가 없습니다.");
+                    return;
+                }
+
+                int restored = 0;
+                foreach (var snapshot in snapshots)
+                {
+                    token.ThrowIfCancellationRequested();
+
+                    if (_elliotWave3Strategy.RestorePersistentState(snapshot))
+                        restored++;
+                }
+
+                OnStatusLog?.Invoke($"✅ [ElliottAnchor] DB에서 {restored}개 심볼 앵커 복원 완료");
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [ElliottAnchor] 복원 실패: {ex.Message}");
+            }
+        }
+
+        private async Task PersistElliottWaveAnchorStateAsync(string symbol)
+        {
+            try
+            {
+                if (_elliotWave3Strategy == null || _dbManager == null || string.IsNullOrWhiteSpace(symbol))
+                    return;
+
+                var snapshot = _elliotWave3Strategy.BuildPersistentState(symbol);
+                if (snapshot == null)
+                {
+                    await _dbManager.DeleteElliottWaveAnchorStateAsync(symbol);
+                    return;
+                }
+
+                snapshot.Symbol = symbol;
+                await _dbManager.UpsertElliottWaveAnchorStateAsync(snapshot);
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [ElliottAnchor] 저장 실패: {symbol} | {ex.Message}");
+            }
+        }
+
+        private static string BuildElliottWavePersistenceSignature(ElliottWave3WaveStrategy.WaveState state)
+        {
+            if (state == null)
+                return "null";
+
+            string phase1Start = state.Phase1StartTime == default
+                ? "-"
+                : state.Phase1StartTime.ToUniversalTime().Ticks.ToString();
+
+            string phase2Start = state.Phase2StartTime == default
+                ? "-"
+                : state.Phase2StartTime.ToUniversalTime().Ticks.ToString();
+
+            string anchorConfirmedAt = state.Anchor.ConfirmedAtUtc == default
+                ? "-"
+                : state.Anchor.ConfirmedAtUtc.ToUniversalTime().Ticks.ToString();
+
+            return string.Join("|",
+                (int)state.CurrentPhase,
+                phase1Start,
+                state.Phase1LowPrice,
+                state.Phase1HighPrice,
+                state.Phase1Volume,
+                phase2Start,
+                state.Phase2LowPrice,
+                state.Phase2HighPrice,
+                state.Phase2Volume,
+                state.Fib500Level,
+                state.Fib0618Level,
+                state.Fib786Level,
+                state.Fib1618Target,
+                state.Anchor.LowPoint,
+                state.Anchor.HighPoint,
+                state.Anchor.IsConfirmed,
+                state.Anchor.IsLocked,
+                anchorConfirmedAt,
+                state.Anchor.LowPivotStrength,
+                state.Anchor.HighPivotStrength);
+        }
+
+        /// <summary>
+        /// 15분봉 BB 스퀴즈 → 중심선 상향 돌파 전략 분석
+        /// ─────────────────────────────────────────────
+        /// 1) BB 폭이 수축(스퀴즈)된 상태에서
+        /// 2) 종가가 BB 중심선을 아래→위로 돌파할 때
+        /// 3) 거래량 & RSI 조건 충족 시 LONG 진입
+        /// </summary>
+        private async Task AnalyzeFifteenMinBBSqueezeBreakoutAsync(
+            string symbol, decimal currentPrice, CancellationToken token)
+        {
+            try
+            {
+                // 포지션 이미 보유 중이면 스킵
+                lock (_posLock)
+                {
+                    if (_activePositions.ContainsKey(symbol)) return;
+                }
+
+                var klines15m = await _exchangeService.GetKlinesAsync(
+                    symbol, KlineInterval.FifteenMinutes, 80, token);
+
+                if (klines15m == null || klines15m.Count < 60) return;
+
+                bool hasSignal = _fifteenMinBBSqueezeStrategy.Evaluate(
+                    symbol, klines15m.ToList(), out var sig);
+
+                if (!hasSignal || sig == null) return;
+
+                OnAlert?.Invoke(
+                    $"📉→📈 [{symbol}] 15분봉 BB 스퀴즈 돌파 감지! " +
+                    $"BBW={sig.BbWidth:F2}% (평균 {sig.AvgBbWidth:F2}%) " +
+                    $"RSI={sig.Rsi:F1} Vol={sig.VolumeMultiple:F1}x RR={sig.RrRatio:F1}:1");
+
+                OnStatusLog?.Invoke(
+                    $"🎯 [BB_SQUEEZE_15M] {symbol} LONG | " +
+                    $"entry={sig.EntryPrice:F4} TP={sig.TakeProfit:F4} SL={sig.StopLoss:F4}");
+
+                await ExecuteAutoOrder(
+                    symbol,
+                    "LONG",
+                    currentPrice,
+                    token,
+                    signalSource: "BB_SQUEEZE_15M",
+                    mode: "TREND",
+                    customTakeProfitPrice: sig.TakeProfit,
+                    customStopLossPrice: sig.StopLoss);
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ {symbol} BB 스퀴즈 분석 오류: {ex.Message}");
             }
         }
 
@@ -6177,14 +6392,33 @@ namespace TradingBot
                 // v2.4.12: 상단 추격 제한 완화 — RSI < 70이면 추세로 진입 허용
                 if (bbPosition >= 0.85m && latestCandle.RSI >= 70f)
                 {
-                    reason = $"%B {bbPosition:P0} 상단 + RSI {latestCandle.RSI:F1} ≥ 70 과열 구간에서는 롱 금지";
-                    return true;
+                    // [메이저 고속도로] 정배열 추세 강세(TrendScore≥60 대리 조건) 시 BB 상단 저항 바이패스
+                    bool isPerfectAlignmentUb = latestCandle.SMA_20 > latestCandle.SMA_60
+                                             && latestCandle.SMA_60 > latestCandle.SMA_120;
+                    if (MajorSymbols.Contains(symbol) && isPerfectAlignmentUb)
+                    {
+                        OnStatusLog?.Invoke($"⚡ [{symbol}] 정배열 추세 강세 → BB 상단 저항 바이패스 (%B={bbPosition:P0}, RSI={latestCandle.RSI:F1})");
+                    }
+                    else
+                    {
+                        reason = $"%B {bbPosition:P0} 상단 + RSI {latestCandle.RSI:F1} ≥ 70 과열 구간에서는 롱 금지";
+                        return true;
+                    }
                 }
 
                 if (bbPosition < 0.45m || bbPosition > 0.55m)
                 {
-                    reason = $"LONG 기본 진입 구간은 중단 눌림목(45~55%)만 허용 (%B {bbPosition:P0})";
-                    return true;
+                    // [메이저 고속도로] 정배열 추세 시 진입 허용 구간 45~85%로 확장
+                    bool isPerfectAlignmentMid = latestCandle.SMA_20 > latestCandle.SMA_60
+                                              && latestCandle.SMA_60 > latestCandle.SMA_120;
+                    bool majorTrendExpand = MajorSymbols.Contains(symbol) && isPerfectAlignmentMid
+                                        && bbPosition >= 0.45m && bbPosition <= 0.85m;
+                    if (!majorTrendExpand)
+                    {
+                        reason = $"LONG 기본 진입 구간은 중단 눌림목(45~55%)만 허용 (%B {bbPosition:P0})";
+                        return true;
+                    }
+                    OnStatusLog?.Invoke($"⚡ [{symbol}] 정배열 추세 → 진입 구간 45~85% 확장 적용 (%B={bbPosition:P0})");
                 }
 
                 if (!bullishCandle)
@@ -6256,9 +6490,10 @@ namespace TradingBot
 
             if (isMajor)
             {
-                // [메이저 전용 완화 세팅]
-                // RSI 75까지 추격 허용, AI 최소 신뢰도 70%, 진입 점수 70
-                return new SymbolThresholdProfile(70.0f, 0.70f, 75.0f);
+                // [메이저 고속도로 Fast-Pass]
+                // AI 임계값 기존 대비 0.8배 하향 (신뢰도 32~56% 수준 승인)
+                // RSI 80까지 추세 추격 허용 (정배열 추세 시 BB 상단도 통과)
+                return new SymbolThresholdProfile(56.0f, 0.56f, 80.0f);
             }
 
             // [밈/일반 2차 완화 세팅]

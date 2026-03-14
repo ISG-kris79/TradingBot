@@ -39,6 +39,7 @@ namespace TradingBot.ViewModels
         private static readonly Regex SymbolRegex = new(@"\b([A-Z0-9]+USDT)\b", RegexOptions.Compiled);
         private static readonly Regex GateThresholdRegex = new(@"mlTh=(?<ml>\d+(?:\.\d+)?)%\s+tfTh=(?<tf>\d+(?:\.\d+)?)%", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex GateAutoTuneRegex = new(@"mlThr=(?<oldMl>\d+(?:\.\d+)?)%->(?<newMl>\d+(?:\.\d+)?)%.*tfThr=(?<oldTf>\d+(?:\.\d+)?)%->(?<newTf>\d+(?:\.\d+)?)%", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex FibNumericRegex = new(@"(\d+(?:\.\d+)?)", RegexOptions.Compiled);
         private readonly ConcurrentQueue<BufferedLiveLog> _pendingLiveLogs = new();
         private readonly ConcurrentQueue<(string Category, string Message, string? Symbol)> _pendingLiveLogDbWrites = new();
         private readonly ConcurrentQueue<(DateTime Timestamp, string Message)> _pendingFooterLogDbWrites = new();
@@ -96,6 +97,11 @@ namespace TradingBot.ViewModels
         private int _liveLogFlushMaxMs;
         private int _liveLogQueueHighWater;
         private int _liveLogDbQueueHighWater;
+        private MultiTimeframeViewModel? _observedBattleSymbol;
+        private decimal _battleLastObservedPrice;
+        private bool _battleHasLastPrice;
+        private DateTime _battleFlashUntilUtc = DateTime.MinValue;
+        private DateTime _battleLastFastLogUtc = DateTime.MinValue;
 
         private readonly record struct BufferedLiveLog(
             DateTime Timestamp,
@@ -170,6 +176,181 @@ namespace TradingBot.ViewModels
         {
             get => _waveStatusText;
             set { _waveStatusText = value; OnPropertyChanged(); }
+        }
+
+        private string _battleFocusSymbol = "-";
+        public string BattleFocusSymbol
+        {
+            get => _battleFocusSymbol;
+            set { _battleFocusSymbol = value; OnPropertyChanged(); }
+        }
+
+        private double _battlePulseScore;
+        public double BattlePulseScore
+        {
+            get => _battlePulseScore;
+            set { _battlePulseScore = value; OnPropertyChanged(); }
+        }
+
+        private string _battlePulseScoreText = "0.0";
+        public string BattlePulseScoreText
+        {
+            get => _battlePulseScoreText;
+            set { _battlePulseScoreText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _battlePulseBrush = Brushes.DeepSkyBlue;
+        public Brush BattlePulseBrush
+        {
+            get => _battlePulseBrush;
+            set { _battlePulseBrush = value; OnPropertyChanged(); }
+        }
+
+        private string _battleConfidenceText = "신뢰도: 대기";
+        public string BattleConfidenceText
+        {
+            get => _battleConfidenceText;
+            set { _battleConfidenceText = value; OnPropertyChanged(); }
+        }
+
+        private string _battleThresholdText = "기준: -";
+        public string BattleThresholdText
+        {
+            get => _battleThresholdText;
+            set { _battleThresholdText = value; OnPropertyChanged(); }
+        }
+
+        private string _battleLivePriceText = "-";
+        public string BattleLivePriceText
+        {
+            get => _battleLivePriceText;
+            set { _battleLivePriceText = value; OnPropertyChanged(); }
+        }
+
+        private string _battlePriceDirectionText = "• FLAT";
+        public string BattlePriceDirectionText
+        {
+            get => _battlePriceDirectionText;
+            set { _battlePriceDirectionText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _battlePriceBrush = Brushes.White;
+        public Brush BattlePriceBrush
+        {
+            get => _battlePriceBrush;
+            set { _battlePriceBrush = value; OnPropertyChanged(); }
+        }
+
+        private string _battleEtaText = "ETA: -";
+        public string BattleEtaText
+        {
+            get => _battleEtaText;
+            set { _battleEtaText = value; OnPropertyChanged(); }
+        }
+
+        private string _battleFibCountdownText = "Fib 카운트다운: -";
+        public string BattleFibCountdownText
+        {
+            get => _battleFibCountdownText;
+            set { _battleFibCountdownText = value; OnPropertyChanged(); }
+        }
+
+        private string _battleRsiCountdownText = "RSI 카운트다운: -";
+        public string BattleRsiCountdownText
+        {
+            get => _battleRsiCountdownText;
+            set { _battleRsiCountdownText = value; OnPropertyChanged(); }
+        }
+
+        private string _battleFastLog1 = "로그 대기 중";
+        public string BattleFastLog1
+        {
+            get => _battleFastLog1;
+            set { _battleFastLog1 = value; OnPropertyChanged(); }
+        }
+
+        private string _battleFastLog2 = "";
+        public string BattleFastLog2
+        {
+            get => _battleFastLog2;
+            set { _battleFastLog2 = value; OnPropertyChanged(); }
+        }
+
+        private string _battleFastLog3 = "";
+        public string BattleFastLog3
+        {
+            get => _battleFastLog3;
+            set { _battleFastLog3 = value; OnPropertyChanged(); }
+        }
+
+        private string _battleMajorBtcText = "BTC: 대기";
+        public string BattleMajorBtcText
+        {
+            get => _battleMajorBtcText;
+            set { _battleMajorBtcText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _battleMajorBtcBrush = Brushes.LightGray;
+        public Brush BattleMajorBtcBrush
+        {
+            get => _battleMajorBtcBrush;
+            set { _battleMajorBtcBrush = value; OnPropertyChanged(); }
+        }
+
+        private string _battleMajorEthText = "ETH: 대기";
+        public string BattleMajorEthText
+        {
+            get => _battleMajorEthText;
+            set { _battleMajorEthText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _battleMajorEthBrush = Brushes.LightGray;
+        public Brush BattleMajorEthBrush
+        {
+            get => _battleMajorEthBrush;
+            set { _battleMajorEthBrush = value; OnPropertyChanged(); }
+        }
+
+        private string _battleMajorSolText = "SOL: 대기";
+        public string BattleMajorSolText
+        {
+            get => _battleMajorSolText;
+            set { _battleMajorSolText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _battleMajorSolBrush = Brushes.LightGray;
+        public Brush BattleMajorSolBrush
+        {
+            get => _battleMajorSolBrush;
+            set { _battleMajorSolBrush = value; OnPropertyChanged(); }
+        }
+
+        private string _battleMajorXrpText = "XRP: 대기";
+        public string BattleMajorXrpText
+        {
+            get => _battleMajorXrpText;
+            set { _battleMajorXrpText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _battleMajorXrpBrush = Brushes.LightGray;
+        public Brush BattleMajorXrpBrush
+        {
+            get => _battleMajorXrpBrush;
+            set { _battleMajorXrpBrush = value; OnPropertyChanged(); }
+        }
+
+        private string _battleXrpScenarioText = "XRP 시나리오: 데이터 대기";
+        public string BattleXrpScenarioText
+        {
+            get => _battleXrpScenarioText;
+            set { _battleXrpScenarioText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _battleXrpScenarioBrush = Brushes.LightGray;
+        public Brush BattleXrpScenarioBrush
+        {
+            get => _battleXrpScenarioBrush;
+            set { _battleXrpScenarioBrush = value; OnPropertyChanged(); }
         }
 
         // AI 라벨링 상태
@@ -403,8 +584,13 @@ namespace TradingBot.ViewModels
             {
                 if (_selectedSymbol != value)
                 {
+                    DetachBattleSymbolObserver();
                     _selectedSymbol = value;
+                    _battleHasLastPrice = false;
                     OnPropertyChanged();
+                    AttachBattleSymbolObserver(_selectedSymbol);
+                    RefreshBattleDashboardForSelectedSymbol();
+                    RefreshMajorBattlePanel();
                     // [병목 해결] 이전 API 호출 취소 후 새 호출 시작
                     _liveChartCts?.Cancel();
                     _liveChartCts = new CancellationTokenSource();
@@ -1625,11 +1811,14 @@ namespace TradingBot.ViewModels
                 return;
 
             var localizedMessage = LocalizeLiveLogMessage(msg);
+            var compactMessage = SimplifyLiveLogMessage(localizedMessage);
             var isMajor = IsMajorSymbolLog(msg);
             var category = DetermineLiveLogCategory(msg, isMajor);
             var symbolMatch = SymbolRegex.Match(msg);
             var symbol = symbolMatch.Success ? symbolMatch.Groups[1].Value : null;
             bool persistToDb = ShouldPersistLiveLog(localizedMessage);
+
+            RunOnUI(() => PushBattleFastLog(compactMessage));
 
             if (persistToDb && _dbService != null)
             {
@@ -1681,6 +1870,8 @@ namespace TradingBot.ViewModels
                     FlushPendingSignalUpdatesToUi();
                     FlushPendingAiEntryProbUpdatesToUi();
                     FlushPendingTickerUpdatesToUi();
+                    RefreshBattleDashboardForSelectedSymbol();
+                    RefreshMajorBattlePanel();
                 };
                 _tickerFlushTimer.Start();
             });
@@ -1704,6 +1895,339 @@ namespace TradingBot.ViewModels
                 };
                 _footerLogFlushTimer.Start();
             });
+        }
+
+        private void AttachBattleSymbolObserver(MultiTimeframeViewModel? symbolVm)
+        {
+            if (symbolVm == null)
+                return;
+
+            _observedBattleSymbol = symbolVm;
+            _observedBattleSymbol.PropertyChanged += ObservedBattleSymbolOnPropertyChanged;
+        }
+
+        private void DetachBattleSymbolObserver()
+        {
+            if (_observedBattleSymbol == null)
+                return;
+
+            _observedBattleSymbol.PropertyChanged -= ObservedBattleSymbolOnPropertyChanged;
+            _observedBattleSymbol = null;
+        }
+
+        private void ObservedBattleSymbolOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            RefreshBattleDashboardForSelectedSymbol();
+        }
+
+        private void RefreshBattleDashboardForSelectedSymbol()
+        {
+            RunOnUI(() =>
+            {
+                var symbolVm = SelectedSymbol;
+                if (symbolVm == null)
+                {
+                    BattleFocusSymbol = "-";
+                    BattlePulseScore = 0;
+                    BattlePulseScoreText = "0.0";
+                    BattleConfidenceText = "신뢰도: 대기";
+                    BattleThresholdText = string.IsNullOrWhiteSpace(GateThresholdSummaryText) ? "기준: -" : $"기준: {GateThresholdSummaryText}";
+                    BattleLivePriceText = "-";
+                    BattlePriceDirectionText = "• FLAT";
+                    BattlePriceBrush = Brushes.LightGray;
+                    BattleEtaText = "ETA: -";
+                    BattleFibCountdownText = "Fib 카운트다운: -";
+                    BattleRsiCountdownText = "RSI 카운트다운: -";
+                    _battleHasLastPrice = false;
+                    return;
+                }
+
+                BattleFocusSymbol = symbolVm.Symbol ?? "-";
+
+                double score = Math.Clamp(symbolVm.AIScore, 0f, 100f);
+                BattlePulseScore = score;
+                BattlePulseScoreText = $"{score:F1}";
+                BattlePulseBrush = score switch
+                {
+                    >= 80 => Brushes.LimeGreen,
+                    >= 65 => Brushes.Gold,
+                    >= 45 => Brushes.Orange,
+                    _ => Brushes.OrangeRed
+                };
+
+                float confidenceRatio = ResolveBattleConfidence(symbolVm, score);
+                BattleConfidenceText = $"신뢰도: {confidenceRatio * 100f:F1}%";
+                BattleThresholdText = string.IsNullOrWhiteSpace(GateThresholdSummaryText)
+                    ? "기준: -"
+                    : $"기준: {GateThresholdSummaryText}";
+
+                decimal livePrice = symbolVm.LastPrice;
+                BattleLivePriceText = FormatBattlePrice(livePrice);
+
+                var nowUtc = DateTime.UtcNow;
+                if (livePrice > 0)
+                {
+                    if (_battleHasLastPrice)
+                    {
+                        if (livePrice > _battleLastObservedPrice)
+                        {
+                            BattlePriceDirectionText = "▲ UP";
+                            BattlePriceBrush = Brushes.LimeGreen;
+                            _battleFlashUntilUtc = nowUtc.AddMilliseconds(500);
+                        }
+                        else if (livePrice < _battleLastObservedPrice)
+                        {
+                            BattlePriceDirectionText = "▼ DOWN";
+                            BattlePriceBrush = Brushes.Tomato;
+                            _battleFlashUntilUtc = nowUtc.AddMilliseconds(500);
+                        }
+                        else if (nowUtc > _battleFlashUntilUtc)
+                        {
+                            BattlePriceDirectionText = "• FLAT";
+                            BattlePriceBrush = Brushes.LightGray;
+                        }
+                    }
+                    else
+                    {
+                        BattlePriceDirectionText = "• LIVE";
+                        BattlePriceBrush = Brushes.White;
+                    }
+
+                    _battleLastObservedPrice = livePrice;
+                    _battleHasLastPrice = true;
+                }
+                else
+                {
+                    BattlePriceDirectionText = "• FLAT";
+                    BattlePriceBrush = Brushes.LightGray;
+                }
+
+                BattleFibCountdownText = BuildFibCountdownText(symbolVm.FibPosition);
+                BattleRsiCountdownText = BuildRsiCountdownText(symbolVm.RSI_1H, symbolVm.Decision);
+
+                if (symbolVm.AiEntryForecastOffsetMinutes.HasValue && symbolVm.AiEntryForecastOffsetMinutes.Value > 1)
+                {
+                    string etaTime = symbolVm.AiEntryForecastTime?.ToString("HH:mm") ?? "--:--";
+                    BattleEtaText = $"ETA: +{symbolVm.AiEntryForecastOffsetMinutes.Value}m ({etaTime})";
+                }
+                else if (symbolVm.AiEntryProb >= 0.35f)
+                {
+                    BattleEtaText = "ETA: NOW";
+                }
+                else if (symbolVm.AiEntryProb >= 0)
+                {
+                    BattleEtaText = "ETA: 관망";
+                }
+                else
+                {
+                    BattleEtaText = "ETA: 대기";
+                }
+            });
+        }
+
+        private static float ResolveBattleConfidence(MultiTimeframeViewModel symbolVm, double fallbackScore)
+        {
+            if (symbolVm.AiEntryProb >= 0)
+                return Math.Clamp(symbolVm.AiEntryProb, 0f, 1f);
+
+            var candidates = new List<float>();
+            if (symbolVm.MLProbability > 0)
+                candidates.Add(Math.Clamp(symbolVm.MLProbability, 0f, 1f));
+            if (symbolVm.TFConfidence >= 0)
+                candidates.Add(Math.Clamp(symbolVm.TFConfidence, 0f, 1f));
+
+            if (candidates.Count > 0)
+                return candidates.Average();
+
+            return (float)Math.Clamp(fallbackScore / 100d, 0d, 1d);
+        }
+
+        private static string FormatBattlePrice(decimal price)
+        {
+            if (price <= 0)
+                return "-";
+
+            if (price >= 1000m)
+                return price.ToString("N2");
+            if (price >= 1m)
+                return price.ToString("N4");
+            return price.ToString("N6");
+        }
+
+        private static string BuildRsiCountdownText(double rsi, string? decision)
+        {
+            if (!IsFinite(rsi) || rsi <= 0)
+                return "RSI 카운트다운: -";
+
+            string side = decision?.ToUpperInvariant() ?? string.Empty;
+            if (side.Contains("LONG", StringComparison.Ordinal))
+            {
+                double gap = Math.Max(0d, rsi - 40d);
+                return $"RSI 카운트다운: LONG 기준까지 {gap:F1}pt";
+            }
+
+            if (side.Contains("SHORT", StringComparison.Ordinal))
+            {
+                double gap = Math.Max(0d, 60d - rsi);
+                return $"RSI 카운트다운: SHORT 기준까지 {gap:F1}pt";
+            }
+
+            double neutralGap = Math.Min(Math.Abs(rsi - 40d), Math.Abs(60d - rsi));
+            return $"RSI 카운트다운: 트리거까지 {neutralGap:F1}pt";
+        }
+
+        private static string BuildFibCountdownText(string? fibPosition)
+        {
+            if (string.IsNullOrWhiteSpace(fibPosition) || fibPosition == "-")
+                return "Fib 카운트다운: -";
+
+            string normalized = fibPosition.Trim().ToUpperInvariant();
+            if (normalized.Contains("BELOW618", StringComparison.Ordinal))
+                return "Fib 카운트다운: 0.618 하단 진입";
+            if (normalized.Contains("ABOVE618", StringComparison.Ordinal))
+                return "Fib 카운트다운: 0.618 상단 유지";
+            if (normalized.Contains("ABOVE382", StringComparison.Ordinal))
+                return "Fib 카운트다운: 0.618까지 2스텝";
+            if (normalized.Contains("MID", StringComparison.Ordinal))
+                return "Fib 카운트다운: 0.618 근접 1스텝";
+
+            if (TryExtractFibRatio(normalized, out double fibRatio))
+            {
+                double distance = Math.Abs(fibRatio - 0.618d) * 100d;
+                return $"Fib 카운트다운: 0.618까지 {distance:F1}%p";
+            }
+
+            return $"Fib 카운트다운: {normalized}";
+        }
+
+        private static bool TryExtractFibRatio(string value, out double ratio)
+        {
+            ratio = 0d;
+            var match = FibNumericRegex.Match(value);
+            if (!match.Success || !double.TryParse(match.Groups[1].Value, out double parsed))
+                return false;
+
+            if (parsed >= 100d)
+                parsed /= 1000d;
+            else if (parsed > 10d)
+                parsed /= 100d;
+
+            ratio = Math.Clamp(parsed, 0d, 2d);
+            return true;
+        }
+
+        private void RefreshMajorBattlePanel()
+        {
+            RunOnUI(() =>
+            {
+                ApplyMajorBattleStatus("BTCUSDT", "BTC", text => BattleMajorBtcText = text, brush => BattleMajorBtcBrush = brush);
+                ApplyMajorBattleStatus("ETHUSDT", "ETH", text => BattleMajorEthText = text, brush => BattleMajorEthBrush = brush);
+                ApplyMajorBattleStatus("SOLUSDT", "SOL", text => BattleMajorSolText = text, brush => BattleMajorSolBrush = brush);
+                ApplyMajorBattleStatus("XRPUSDT", "XRP", text => BattleMajorXrpText = text, brush => BattleMajorXrpBrush = brush);
+
+                var xrpVm = FindMarketDataItem("XRPUSDT");
+                if (xrpVm == null)
+                {
+                    BattleXrpScenarioText = "XRP 시나리오: 데이터 대기";
+                    BattleXrpScenarioBrush = Brushes.LightGray;
+                    return;
+                }
+
+                if (xrpVm.IsPositionActive)
+                {
+                    BattleXrpScenarioText = $"XRP 시나리오: {xrpVm.PositionSide} 보유 {xrpVm.ProfitRate:+0.0;-0.0;0.0}%";
+                    BattleXrpScenarioBrush = xrpVm.ProfitRate >= 0 ? Brushes.LimeGreen : Brushes.Tomato;
+                    return;
+                }
+
+                string decision = (xrpVm.Decision ?? "WAIT").ToUpperInvariant();
+                string rsiText = xrpVm.RSI_1H > 0 ? $"RSI {xrpVm.RSI_1H:F1}" : "RSI 대기";
+                string aiText = xrpVm.AIScore > 0 ? $"AI {xrpVm.AIScore:F1}" : "AI 대기";
+
+                if (decision.Contains("LONG", StringComparison.Ordinal))
+                {
+                    BattleXrpScenarioText = $"XRP 시나리오: LONG 준비 · {aiText} · {rsiText}";
+                    BattleXrpScenarioBrush = Brushes.DeepSkyBlue;
+                }
+                else if (decision.Contains("SHORT", StringComparison.Ordinal))
+                {
+                    BattleXrpScenarioText = $"XRP 시나리오: SHORT 준비 · {aiText} · {rsiText}";
+                    BattleXrpScenarioBrush = Brushes.OrangeRed;
+                }
+                else
+                {
+                    BattleXrpScenarioText = $"XRP 시나리오: 대기 · {aiText} · {rsiText}";
+                    BattleXrpScenarioBrush = Brushes.LightGray;
+                }
+            });
+        }
+
+        private void ApplyMajorBattleStatus(string symbol, string label, Action<string> textSetter, Action<Brush> brushSetter)
+        {
+            var vm = FindMarketDataItem(symbol);
+            if (vm == null)
+            {
+                textSetter($"{label}: 대기");
+                brushSetter(Brushes.LightGray);
+                return;
+            }
+
+            if (vm.IsPositionActive)
+            {
+                textSetter($"{label} {vm.PositionSide} {vm.ProfitRate:+0.0;-0.0;0.0}%");
+                brushSetter(vm.ProfitRate >= 0 ? Brushes.LimeGreen : Brushes.Tomato);
+                return;
+            }
+
+            string decision = (vm.Decision ?? "WAIT").ToUpperInvariant();
+            if (decision.Contains("LONG", StringComparison.Ordinal))
+            {
+                textSetter($"{label} LONG 감시");
+                brushSetter(Brushes.DeepSkyBlue);
+                return;
+            }
+
+            if (decision.Contains("SHORT", StringComparison.Ordinal))
+            {
+                textSetter($"{label} SHORT 감시");
+                brushSetter(Brushes.OrangeRed);
+                return;
+            }
+
+            textSetter($"{label}: 대기");
+            brushSetter(Brushes.LightGray);
+        }
+
+        private MultiTimeframeViewModel? FindMarketDataItem(string symbol)
+        {
+            if (!TryNormalizeTradingSymbol(symbol, out var normalizedSymbol))
+                return null;
+
+            if (_marketDataIndex.TryGetValue(normalizedSymbol, out var cached))
+                return cached;
+
+            var existing = MarketDataList.FirstOrDefault(x => string.Equals(x.Symbol, normalizedSymbol, StringComparison.OrdinalIgnoreCase));
+            if (existing != null)
+                _marketDataIndex[normalizedSymbol] = existing;
+
+            return existing;
+        }
+
+        private void PushBattleFastLog(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return;
+
+            var nowUtc = DateTime.UtcNow;
+            if (nowUtc - _battleLastFastLogUtc < TimeSpan.FromMilliseconds(250))
+                return;
+
+            _battleLastFastLogUtc = nowUtc;
+            string line = $"[{DateTime.Now:HH:mm:ss}] {message}";
+
+            BattleFastLog3 = BattleFastLog2;
+            BattleFastLog2 = BattleFastLog1;
+            BattleFastLog1 = line;
         }
 
         private void FlushPendingFooterLogToUi()

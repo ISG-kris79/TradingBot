@@ -24,6 +24,23 @@
   - `HybridStrategyBacktester.RunRangeAsync`와 `BacktestResult.Candles` 연계로 기간 지정 실전형 시뮬레이션 지원
   - `PerfectAI=false` 경로에서 룩어헤드 제거형 예측 추정(`EstimatePredictedChangeNoLookahead`) 적용
 
+- **15분봉 BB 스퀴즈 → 중심선 돌파 전략 추가** (`FifteenMinBBSqueezeBreakoutStrategy.cs`, `TradingEngine.cs`):
+  - BB 폭 수축(스퀴즈) 후 중심선 상향 돌파 시 LONG 진입하는 독립 전략 클래스 신설
+  - 진입 조건: BB 폭 < 평균×0.80, 양봉, 거래량 1.2배 이상, RSI 40~65, RR ≥ 1.5
+  - TP = BB Upper, SL = BB Lower 또는 ATR×1.5 중 낮은 값, 쿨다운 4시간
+  - `TradingEngine.AnalyzeFifteenMinBBSqueezeBreakoutAsync`를 심볼 분석 루프에 연동
+
+- **Elliott Wave 앵커 DB 영속화** (`ElliottWaveAnchorState.cs`, `WaveAnchor.cs`, `DbManager.cs`, `TradingEngine.cs`):
+  - 앱 재시작 후에도 1·2파 기준점(`WaveAnchor`)을 DB에서 복원하는 영속화 레이어 추가
+  - `TradingEngine.RestoreElliottWaveAnchorsFromDatabaseAsync` / `PersistElliottWaveAnchorStateAsync`로 상태 변경 시 자동 저장
+  - 파동 phase 서명 비교(`BuildElliottWavePersistenceSignature`)로 실제 변경된 경우에만 DB 기록
+
+- **PUMP 추세홀딩 튜닝 설정 추가** (`SettingsWindow.xaml(.cs)`, `DbManager.cs`, `Database/GeneralSettings_AddPumpStairAndTpRatioColumns.sql`):
+  - `PumpFirstTakeProfitRatioPct` (1차 익절 비중%), `PumpStairStep1/2/3Roe` (계단식 트레일 ROE) 4개 설정 신설
+  - 설정창 General 탭에 PUMP 추세홀딩 튜닝 섹션 UI 추가 및 DB 로드/저장 연동
+  - 운영 DB 마이그레이션 스크립트(`GeneralSettings_AddPumpStairAndTpRatioColumns.sql`) 및 메이저 레거시 값 보정 스크립트(`GeneralSettings_NormalizeMajorDefaults_20260314.sql`) 제공
+  - 자동 마이그레이션 실행 스크립트(`run-user-scope-db-migration.ps1`) 포함
+
 ### Changed
 
 - **엘리엇 3파 진입 기준 재설계** (`ElliottWave3WaveStrategy.cs`, `TradingEngine.cs`):
@@ -44,6 +61,15 @@
 - **AI 임계값/진입필터 공격형 튜닝 반영** (`AIDoubleCheckEntryGate.cs`, `TradingEngine.cs`, `appsettings.json`):
   - 일반/펌핑 코인 ML·TF 임계값 완화 및 엔트리 점수/RSI 기준 조정
   - EntryFilter 워밍업, RR, 15분 게이트 기본값을 실전 진입 빈도 중심으로 재조정
+
+- **메이저 고속도로 Fast-Pass 적용** (`TradingEngine.cs`):
+  - 메이저 코인(BTC/ETH/SOL/XRP) AI 점수 임계 56%, 신뢰도 0.56로 하향(기존 70/0.70 대비 0.8배)
+  - 정배열(SMA20>60>120) 추세 시 BB 상단 저항·진입 구간(45~85%) 바이패스 허용
+  - RSI 추격 한도 75 → 80으로 확장 및 진입 로그에 바이패스 경로 명시
+
+- **확정 피보나치 레벨 계산 추가** (`TradingEngine.cs`):
+  - `CalculateConfirmedFibLevels`: 최근 3캔들 미포함 확정 고·저점 기반 Fib 수준 계산
+  - 피보 레벨 산출 실패 시 기존 `IndicatorCalculator.CalculateFibonacci` 결과로 폴백
 
 ## [2.4.41] - 2026-03-13
 

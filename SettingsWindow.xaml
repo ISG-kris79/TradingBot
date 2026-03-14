@@ -222,6 +222,10 @@
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="150"/>
@@ -691,6 +695,63 @@
                                              Background="#1E2235"
                                              Foreground="White"
                                              BorderBrush="#2D3142"/>
+
+                                    <!-- ─── PUMP 추세홀딩 튜닝 (rows 31~34) ─── -->
+                                    <TextBlock Text="── PUMP 추세홀딩 튜닝 ──"
+                                               Grid.Row="31"
+                                               Grid.ColumnSpan="2"
+                                               Foreground="#FFB86C"
+                                               FontWeight="Bold"
+                                               FontSize="12"
+                                               Margin="0,10,0,10"/>
+
+                                    <TextBlock Text="PUMP 1차 익절 비중 (%):"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="32"
+                                               Foreground="#FFB86C"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtPumpFirstTakeProfitRatioPct"
+                                             Grid.Row="32"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="PUMP 계단식 구간1 ROE (%):"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="33"
+                                               Foreground="#FFB86C"
+                                               Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtPumpStairStep1Roe"
+                                             Grid.Row="33"
+                                             Grid.Column="1"
+                                             Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <StackPanel Grid.Row="34" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,0,0,15">
+                                        <TextBlock Text="구간2/구간3 ROE (%): "
+                                                   VerticalAlignment="Center"
+                                                   Foreground="#FFB86C"
+                                                   Margin="0,0,8,0"/>
+                                        <TextBox x:Name="txtPumpStairStep2Roe"
+                                                 Width="120"
+                                                 Padding="8"
+                                                 Background="#1E2235"
+                                                 Foreground="White"
+                                                 BorderBrush="#2D3142"
+                                                 Margin="0,0,8,0"/>
+                                        <TextBox x:Name="txtPumpStairStep3Roe"
+                                                 Width="120"
+                                                 Padding="8"
+                                                 Background="#1E2235"
+                                                 Foreground="White"
+                                                 BorderBrush="#2D3142"/>
+                                    </StackPanel>
                                 </Grid>
                             </Border>
                         </ScrollViewer>

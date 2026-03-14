@@ -1213,12 +1213,207 @@
                         <!-- Main Content Area -->
                         <Grid Grid.Column="1">
                             <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="*"/>
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
+
+                            <Border Grid.Row="0"
+                                    Style="{StaticResource CardStyle}"
+                                    Padding="16"
+                                    Margin="0,0,0,16">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="1.2*"/>
+                                        <ColumnDefinition Width="1.1*"/>
+                                        <ColumnDefinition Width="1.1*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,16,0">
+                                        <TextBlock Text="⚔ LIVE BATTLE DASHBOARD"
+                                                   Foreground="{StaticResource SecondaryBrush}"
+                                                   FontSize="12"
+                                                   FontWeight="Bold"
+                                                   Margin="0,0,0,8"/>
+                                        <TextBlock Text="{Binding BattleFocusSymbol}"
+                                                   Foreground="White"
+                                                   FontSize="26"
+                                                   FontWeight="Black"
+                                                   FontFamily="Consolas"/>
+                                        <TextBlock Text="{Binding BattleLivePriceText}"
+                                                   Foreground="{Binding BattlePriceBrush}"
+                                                   FontSize="34"
+                                                   FontWeight="Bold"
+                                                   FontFamily="Consolas"
+                                                   Margin="0,4,0,0"/>
+                                        <TextBlock Text="{Binding BattlePriceDirectionText}"
+                                                   Foreground="{Binding BattlePriceBrush}"
+                                                   FontSize="12"
+                                                   FontWeight="SemiBold"
+                                                   FontFamily="Consolas"
+                                                   Margin="0,4,0,0"/>
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Row="0" Grid.Column="1" Margin="0,0,16,0">
+                                        <TextBlock Text="THE PULSE"
+                                                   Foreground="{StaticResource PrimaryBrush}"
+                                                   FontSize="11"
+                                                   FontWeight="Bold"
+                                                   Margin="0,0,0,8"/>
+                                        <ProgressBar Value="{Binding BattlePulseScore}"
+                                                     Minimum="0"
+                                                     Maximum="100"
+                                                     Height="16"
+                                                     Foreground="{Binding BattlePulseBrush}"
+                                                     Background="#22314A"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                            <TextBlock Text="SCORE "
+                                                       Foreground="#9CA3AF"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"/>
+                                            <TextBlock Text="{Binding BattlePulseScoreText}"
+                                                       Foreground="{Binding BattlePulseBrush}"
+                                                       FontSize="16"
+                                                       FontWeight="Bold"
+                                                       FontFamily="Consolas"/>
+                                        </StackPanel>
+                                        <TextBlock Text="{Binding BattleConfidenceText}"
+                                                   Foreground="#C7D2FE"
+                                                   FontSize="11"
+                                                   Margin="0,4,0,0"/>
+                                        <TextBlock Text="{Binding BattleThresholdText}"
+                                                   Foreground="#6B7280"
+                                                   FontSize="10"
+                                                   Margin="0,2,0,0"/>
+                                    </StackPanel>
+
+                                    <Border Grid.Row="0"
+                                            Grid.Column="2"
+                                            Background="#101B2F"
+                                            CornerRadius="10"
+                                            Padding="12">
+                                        <StackPanel>
+                                            <TextBlock Text="⏱ ENTRY ETA"
+                                                       Foreground="{StaticResource AccentBrush}"
+                                                       FontSize="11"
+                                                       FontWeight="Bold"/>
+                                            <TextBlock Text="{Binding BattleEtaText}"
+                                                       Foreground="White"
+                                                       FontSize="18"
+                                                       FontWeight="Bold"
+                                                       FontFamily="Consolas"
+                                                       Margin="0,4,0,8"/>
+                                            <TextBlock Text="{Binding BattleFibCountdownText}"
+                                                       Foreground="#CBD5E1"
+                                                       FontSize="11"
+                                                       Margin="0,2,0,0"/>
+                                            <TextBlock Text="{Binding BattleRsiCountdownText}"
+                                                       Foreground="#CBD5E1"
+                                                       FontSize="11"
+                                                       Margin="0,2,0,0"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Grid Grid.Row="1" Grid.ColumnSpan="3" Margin="0,14,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="1.6*"/>
+                                            <ColumnDefinition Width="1.2*"/>
+                                            <ColumnDefinition Width="1.6*"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <UniformGrid Grid.Column="0" Columns="4" Margin="0,0,12,0">
+                                            <Border Background="#111C30" CornerRadius="8" Padding="8" Margin="0,0,6,0">
+                                                <TextBlock Text="{Binding BattleMajorBtcText}"
+                                                           Foreground="{Binding BattleMajorBtcBrush}"
+                                                           FontSize="10"
+                                                           FontWeight="Bold"
+                                                           FontFamily="Consolas"
+                                                           HorizontalAlignment="Center"/>
+                                            </Border>
+                                            <Border Background="#111C30" CornerRadius="8" Padding="8" Margin="0,0,6,0">
+                                                <TextBlock Text="{Binding BattleMajorEthText}"
+                                                           Foreground="{Binding BattleMajorEthBrush}"
+                                                           FontSize="10"
+                                                           FontWeight="Bold"
+                                                           FontFamily="Consolas"
+                                                           HorizontalAlignment="Center"/>
+                                            </Border>
+                                            <Border Background="#111C30" CornerRadius="8" Padding="8" Margin="0,0,6,0">
+                                                <TextBlock Text="{Binding BattleMajorSolText}"
+                                                           Foreground="{Binding BattleMajorSolBrush}"
+                                                           FontSize="10"
+                                                           FontWeight="Bold"
+                                                           FontFamily="Consolas"
+                                                           HorizontalAlignment="Center"/>
+                                            </Border>
+                                            <Border Background="#111C30" CornerRadius="8" Padding="8">
+                                                <TextBlock Text="{Binding BattleMajorXrpText}"
+                                                           Foreground="{Binding BattleMajorXrpBrush}"
+                                                           FontSize="10"
+                                                           FontWeight="Bold"
+                                                           FontFamily="Consolas"
+                                                           HorizontalAlignment="Center"/>
+                                            </Border>
+                                        </UniformGrid>
+
+                                        <Border Grid.Column="1"
+                                                Background="#111C30"
+                                                CornerRadius="8"
+                                                Padding="10"
+                                                Margin="0,0,12,0">
+                                            <StackPanel>
+                                                <TextBlock Text="🛰 XRP SCENARIO"
+                                                           Foreground="{StaticResource WarningBrush}"
+                                                           FontSize="10"
+                                                           FontWeight="Bold"/>
+                                                <TextBlock Text="{Binding BattleXrpScenarioText}"
+                                                           Foreground="{Binding BattleXrpScenarioBrush}"
+                                                           FontSize="11"
+                                                           FontWeight="SemiBold"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,4,0,0"/>
+                                            </StackPanel>
+                                        </Border>
+
+                                        <Border Grid.Column="2"
+                                                Background="#0C1424"
+                                                CornerRadius="8"
+                                                Padding="10">
+                                            <StackPanel>
+                                                <TextBlock Text="⚡ FAST LOG"
+                                                           Foreground="{StaticResource PrimaryBrush}"
+                                                           FontSize="10"
+                                                           FontWeight="Bold"/>
+                                                <TextBlock Text="{Binding BattleFastLog1}"
+                                                           Foreground="#E2E8F0"
+                                                           FontSize="10"
+                                                           FontFamily="Consolas"
+                                                           TextWrapping="NoWrap"
+                                                           Margin="0,4,0,0"/>
+                                                <TextBlock Text="{Binding BattleFastLog2}"
+                                                           Foreground="#94A3B8"
+                                                           FontSize="10"
+                                                           FontFamily="Consolas"
+                                                           TextWrapping="NoWrap"
+                                                           Margin="0,2,0,0"/>
+                                                <TextBlock Text="{Binding BattleFastLog3}"
+                                                           Foreground="#64748B"
+                                                           FontSize="10"
+                                                           FontFamily="Consolas"
+                                                           TextWrapping="NoWrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+                                </Grid>
+                            </Border>
                             
                             <!-- Market Grid -->
-                            <Border Grid.Row="0"
+                            <Border Grid.Row="1"
                                     Style="{StaticResource CardStyle}"
                                     Padding="20"
                                     Margin="0,0,0,16">
@@ -1446,7 +1641,7 @@
                             </Border>
                             
                             <!-- Critical Alerts -->
-                            <Border Grid.Row="1"
+                                <Border Grid.Row="2"
                                     Style="{StaticResource CardStyle}"
                                     Margin="0">
                                 <Grid>

@@ -25,6 +25,46 @@ CREATE TABLE dbo.GeneralSettings (
 
 **⚠️ 필수 단계: SQL Server Management Studio에서 위 스크립트를 실행하여 테이블을 생성하세요.**
 
+### 2026-03-14 증분 마이그레이션 (PUMP 추세홀딩 튜닝)
+
+운영 DB가 이미 존재하는 경우 아래 증분 스크립트만 추가 실행하면 됩니다.
+
+- [Database/GeneralSettings_AddPumpStairAndTpRatioColumns.sql](Database/GeneralSettings_AddPumpStairAndTpRatioColumns.sql)
+
+추가 컬럼(기본값):
+
+- `PumpFirstTakeProfitRatioPct` (15.0)
+- `PumpStairStep1Roe` (50.0)
+- `PumpStairStep2Roe` (100.0)
+- `PumpStairStep3Roe` (200.0)
+
+검증 쿼리:
+
+```sql
+SELECT c.name AS ColumnName, t.name AS DataType, c.precision, c.scale, c.is_nullable
+FROM sys.columns c
+JOIN sys.types t ON c.user_type_id = t.user_type_id
+WHERE c.object_id = OBJECT_ID('dbo.GeneralSettings')
+    AND c.name IN ('PumpFirstTakeProfitRatioPct', 'PumpStairStep1Roe', 'PumpStairStep2Roe', 'PumpStairStep3Roe')
+ORDER BY c.column_id;
+```
+
+### 2026-03-14 운영값 보정 (메이저 레거시 기본값 정규화)
+
+운영 DB에 과거 기본값이 남아 있으면 아래 스크립트를 추가 실행하세요.
+
+- [Database/GeneralSettings_NormalizeMajorDefaults_20260314.sql](Database/GeneralSettings_NormalizeMajorDefaults_20260314.sql)
+
+보정 규칙:
+
+- `MajorTp1Roe`: `15` → `20`
+- `MajorTp2Roe`: `25` → `40`
+- `MajorTrailingStartRoe`: `20/22` → `40`
+- `MajorTrailingGapRoe`: `4` → `5`
+- `MajorStopLossRoe`: `60` → `20`
+
+※ 사용자 커스텀 값은 유지하고, 레거시 기본값/비정상값만 업데이트합니다.
+
 ## 📝 2. DbManager.cs 변경 사항
 
 [TradingBot/DbManager.cs](TradingBot/DbManager.cs#L339-L414)에 2개 메서드가 추가되었습니다:
@@ -169,6 +209,15 @@ TradingEngine._settings 초기화
 | TrailingStartRoe | decimal | 20.0 |
 | TrailingDropRoe | decimal | 5.0 |
 
+### PUMP 추세홀딩 튜닝 항목 (추가)
+
+| 항목 | 타입 | 기본값 |
+|------|------|--------|
+| PumpFirstTakeProfitRatioPct | decimal | 15.0 |
+| PumpStairStep1Roe | decimal | 50.0 |
+| PumpStairStep2Roe | decimal | 100.0 |
+| PumpStairStep3Roe | decimal | 200.0 |
+
 ## ✅ 빌드 결과
 
 ```
@@ -240,10 +289,12 @@ Debug.WriteLine($"[Engine] DefaultLeverage: {_settings.DefaultLeverage}");
 ## 📂 수정된 파일 목록
 
 1. ✅ [Database/GeneralSettings_Schema.sql](Database/GeneralSettings_Schema.sql) - **새로 생성**
-2. ✅ [TradingBot/DbManager.cs](TradingBot/DbManager.cs) - SaveGeneralSettingsAsync, LoadGeneralSettingsAsync 메서드 추가
-3. ✅ [TradingBot/SettingsWindow.xaml](TradingBot/SettingsWindow.xaml) - txtDefaultMargin 필드 추가
-4. ✅ [TradingBot/SettingsWindow.xaml.cs](TradingBot/SettingsWindow.xaml.cs) - DbManager 통합, 저장 로직 개선
-5. ✅ [TradingBot/App.xaml.cs](TradingBot/App.xaml.cs) - LoadGeneralSettingsFromDbAsync 메서드, 시작 시 DB 로드
+2. ✅ [Database/GeneralSettings_AddPumpStairAndTpRatioColumns.sql](Database/GeneralSettings_AddPumpStairAndTpRatioColumns.sql) - **증분 마이그레이션 추가**
+3. ✅ [Database/GeneralSettings_NormalizeMajorDefaults_20260314.sql](Database/GeneralSettings_NormalizeMajorDefaults_20260314.sql) - **메이저 운영값 보정 스크립트 추가**
+4. ✅ [TradingBot/DbManager.cs](TradingBot/DbManager.cs) - SaveGeneralSettingsAsync, LoadGeneralSettingsAsync 메서드 추가
+5. ✅ [TradingBot/SettingsWindow.xaml](TradingBot/SettingsWindow.xaml) - txtDefaultMargin 필드 추가
+6. ✅ [TradingBot/SettingsWindow.xaml.cs](TradingBot/SettingsWindow.xaml.cs) - DbManager 통합, 저장 로직 개선
+7. ✅ [TradingBot/App.xaml.cs](TradingBot/App.xaml.cs) - LoadGeneralSettingsFromDbAsync 메서드, 시작 시 DB 로드
 
 ## 🎯 다음 단계
 
@@ -257,5 +308,6 @@ Debug.WriteLine($"[Engine] DefaultLeverage: {_settings.DefaultLeverage}");
 ---
 
 **작업 날짜**: 2026년 2월 28일  
+**문서 업데이트**: 2026년 3월 14일 (PUMP 추세홀딩 튜닝 마이그레이션 반영)  
 **빌드 상태**: ✅ 성공  
 **테스트 필요**: SQL Server MSSQL 2019에서 테이블 생성 후 전체 테스트

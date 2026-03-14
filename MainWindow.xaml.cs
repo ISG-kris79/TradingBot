@@ -142,7 +142,7 @@ namespace TradingBot
 
             Instance?.ViewModel?.UpdateMajorProfileStatus(CurrentGeneralSettings.MajorTrendProfile);
 
-            Instance?.AddLog($"[GeneralSettings] ✅ 런타임 적용 완료 | [MAJOR] Leverage:{CurrentGeneralSettings.MajorLeverage}x Margin:{CurrentGeneralSettings.MajorMargin:F0} SL:{CurrentGeneralSettings.MajorStopLossRoe:F0}% BE:{CurrentGeneralSettings.MajorBreakEvenRoe:F1}% Tp1:{CurrentGeneralSettings.MajorTp1Roe:F0}% Tp2:{CurrentGeneralSettings.MajorTp2Roe:F0}% Trail:{CurrentGeneralSettings.MajorTrailingStartRoe:F0}%/{CurrentGeneralSettings.MajorTrailingGapRoe:F1}% | [PUMP] SL:{CurrentGeneralSettings.PumpStopLossRoe:F0}% BE:{CurrentGeneralSettings.PumpBreakEvenRoe:F0}% Tp1:{CurrentGeneralSettings.PumpTp1Roe:F0}% Tp2:{CurrentGeneralSettings.PumpTp2Roe:F0}% Trail:{CurrentGeneralSettings.PumpTrailingStartRoe:F0}%/{CurrentGeneralSettings.PumpTrailingGapRoe:F0}%");
+            Instance?.AddLog($"[GeneralSettings] ✅ 런타임 적용 완료 | [MAJOR] Leverage:{CurrentGeneralSettings.MajorLeverage}x Margin:{CurrentGeneralSettings.MajorMargin:F0} SL:{CurrentGeneralSettings.MajorStopLossRoe:F0}% BE:{CurrentGeneralSettings.MajorBreakEvenRoe:F1}% Tp1:{CurrentGeneralSettings.MajorTp1Roe:F0}% Tp2:{CurrentGeneralSettings.MajorTp2Roe:F0}% Trail:{CurrentGeneralSettings.MajorTrailingStartRoe:F0}%/{CurrentGeneralSettings.MajorTrailingGapRoe:F1}% | [PUMP] SL:{CurrentGeneralSettings.PumpStopLossRoe:F0}% BE:{CurrentGeneralSettings.PumpBreakEvenRoe:F0}% Tp1:{CurrentGeneralSettings.PumpTp1Roe:F0}% Tp2:{CurrentGeneralSettings.PumpTp2Roe:F0}% Trail:{CurrentGeneralSettings.PumpTrailingStartRoe:F0}%/{CurrentGeneralSettings.PumpTrailingGapRoe:F0}% 1차익절비중:{CurrentGeneralSettings.PumpFirstTakeProfitRatioPct:F1}% 계단:{CurrentGeneralSettings.PumpStairStep1Roe:F0}/{CurrentGeneralSettings.PumpStairStep2Roe:F0}/{CurrentGeneralSettings.PumpStairStep3Roe:F0}%");
         }
 
         private static void CopyTradingSettings(TradingSettings target, TradingSettings source)
@@ -167,6 +167,10 @@ namespace TradingBot
             target.PumpTrailingGapRoe = source.PumpTrailingGapRoe;
             target.PumpStopLossRoe = source.PumpStopLossRoe;
             target.PumpMargin = source.PumpMargin;
+            target.PumpFirstTakeProfitRatioPct = source.PumpFirstTakeProfitRatioPct;
+            target.PumpStairStep1Roe = source.PumpStairStep1Roe;
+            target.PumpStairStep2Roe = source.PumpStairStep2Roe;
+            target.PumpStairStep3Roe = source.PumpStairStep3Roe;
             // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정
             target.MajorLeverage = source.MajorLeverage;
             target.MajorMargin = source.MajorMargin;

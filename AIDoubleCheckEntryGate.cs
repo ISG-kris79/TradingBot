@@ -112,6 +112,27 @@ namespace TradingBot
 
             // 데이터 자동 저장 타이머 (5분마다)
             _dataFlushTimer = new Timer(_ => FlushCollectedData(), null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+
+            // [Look-ahead Shield] 기동 시 기존 EntryDecisions 오염 데이터 1회 정화
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var stats = await SanitizeEntryDecisionFilesAsync(CancellationToken.None);
+                    if (stats.removedRecords > 0)
+                    {
+                        OnAlert?.Invoke($"🧹 [LookAhead Shield] 초기 정화 완료: {stats.filesScanned}개 파일, {stats.removedRecords}/{stats.totalRecords}건 제거");
+                    }
+                    else
+                    {
+                        OnLog?.Invoke($"🛡️ [LookAhead Shield] 초기 점검 완료: {stats.filesScanned}개 파일, 제거 0건");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    OnLog?.Invoke($"⚠️ [LookAhead Shield] 초기 정화 실패: {ex.Message}");
+                }
+            });
         }
 
         /// <summary>
@@ -1359,6 +1380,10 @@ namespace TradingBot
         {
             try
             {
+                // 0. 재학습 전 기존 파일 전면 재검수/정화
+                var sanitizeStats = await SanitizeEntryDecisionFilesAsync(token);
+                OnLog?.Invoke($"🧹 [LookAhead Shield] 재학습 전 정화: 파일 {sanitizeStats.filesScanned}개, 제거 {sanitizeStats.removedRecords}/{sanitizeStats.totalRecords}건");
+
                 // 1. 저장된 라벨링 데이터 로드
                 var labeledData = LoadLabeledDataFromFiles();
                 if (labeledData.Count < 100)
@@ -1629,6 +1654,7 @@ namespace TradingBot
         private List<MultiTimeframeEntryFeature> LoadLabeledDataFromFiles()
         {
             var result = new List<MultiTimeframeEntryFeature>();
+            int skippedContaminated = 0;
 
             try
             {
@@ -1646,7 +1672,14 @@ namespace TradingBot
                         {
                             foreach (var record in records.Where(r => r.Labeled && r.Feature != null))
                             {
-                                result.Add(record.Feature!);
+                                if (IsRecordCausalitySafe(record, out _))
+                                {
+                                    result.Add(record.Feature!);
+                                }
+                                else
+                                {
+                                    skippedContaminated++;
+                                }
                             }
                         }
                     }
@@ -1661,7 +1694,215 @@ namespace TradingBot
                 Console.WriteLine($"[AIDoubleCheck] 라벨링 데이터 로드 실패: {ex.Message}");
             }
 
+            if (skippedContaminated > 0)
+            {
+                OnLog?.Invoke($"🛡️ [LookAhead Shield] 오염 의심 라벨 {skippedContaminated}건을 학습에서 제외했습니다.");
+            }
+
             return result;
+        }
+
+        public async Task<(int filesScanned, int totalRecords, int wouldRemoveRecords)> PreviewSanitizeEntryDecisionFilesAsync(CancellationToken token = default)
+        {
+            var stats = await SanitizeEntryDecisionFilesAsync(token, previewOnly: true);
+            OnLog?.Invoke($"🔎 [LookAhead Shield][Preview] 파일 {stats.filesScanned}개, 제거예정 {stats.removedRecords}/{stats.totalRecords}건");
+            return (stats.filesScanned, stats.totalRecords, stats.removedRecords);
+        }
+
+        private async Task<(int filesScanned, int totalRecords, int removedRecords)> SanitizeEntryDecisionFilesAsync(CancellationToken token = default, bool previewOnly = false)
+        {
+            int filesScanned = 0;
+            int totalRecords = 0;
+            int removedRecords = 0;
+
+            try
+            {
+                if (!Directory.Exists(_dataCollectionPath))
+                    return (0, 0, 0);
+
+                FlushCollectedData(); // 큐 적재분 반영 후 검사
+
+                var files = Directory.GetFiles(_dataCollectionPath, "EntryDecisions_*.json")
+                    .OrderBy(f => f)
+                    .ToList();
+
+                if (files.Count == 0)
+                    return (0, 0, 0);
+
+                string backupDir = Path.Combine(_dataCollectionPath, "SanitizedBackup");
+
+                foreach (var file in files)
+                {
+                    token.ThrowIfCancellationRequested();
+                    filesScanned++;
+
+                    List<EntryDecisionRecord>? records;
+                    try
+                    {
+                        var json = await File.ReadAllTextAsync(file, token);
+                        records = JsonSerializer.Deserialize<List<EntryDecisionRecord>>(json);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+
+                    if (records == null || records.Count == 0)
+                        continue;
+
+                    totalRecords += records.Count;
+
+                    var valid = new List<EntryDecisionRecord>(records.Count);
+                    int removedInFile = 0;
+
+                    foreach (var record in records)
+                    {
+                        if (IsRecordCausalitySafe(record, out _))
+                        {
+                            valid.Add(record);
+                        }
+                        else
+                        {
+                            removedInFile++;
+                        }
+                    }
+
+                    if (removedInFile <= 0)
+                        continue;
+
+                    removedRecords += removedInFile;
+
+                    if (previewOnly)
+                        continue;
+
+                    Directory.CreateDirectory(backupDir);
+                    string backupName = $"{Path.GetFileNameWithoutExtension(file)}_pre_sanitize_{DateTime.UtcNow:yyyyMMddHHmmssfff}.json";
+                    string backupPath = Path.Combine(backupDir, backupName);
+                    File.Copy(file, backupPath, overwrite: true);
+
+                    string updatedJson = JsonSerializer.Serialize(valid, new JsonSerializerOptions
+                    {
+                        WriteIndented = true
+                    });
+                    await File.WriteAllTextAsync(file, updatedJson, token);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ [LookAhead Shield] 정화 중 오류: {ex.Message}");
+            }
+
+            return (filesScanned, totalRecords, removedRecords);
+        }
+
+        private bool IsRecordCausalitySafe(EntryDecisionRecord record, out string reason)
+        {
+            if (record == null)
+            {
+                reason = "record_null";
+                return false;
+            }
+
+            if (record.Feature == null)
+            {
+                reason = "feature_null";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(record.Symbol))
+            {
+                reason = "symbol_empty";
+                return false;
+            }
+
+            if (record.EntryPrice <= 0m || record.Feature.EntryPrice <= 0m)
+            {
+                reason = "entry_price_invalid";
+                return false;
+            }
+
+            if (!float.IsFinite(record.ML_Confidence) || !float.IsFinite(record.TF_Confidence))
+            {
+                reason = "confidence_not_finite";
+                return false;
+            }
+
+            // 피처-기록 심볼/가격 불일치 검사
+            if (!string.IsNullOrWhiteSpace(record.Feature.Symbol) &&
+                !string.Equals(record.Feature.Symbol, record.Symbol, StringComparison.OrdinalIgnoreCase))
+            {
+                reason = "feature_symbol_mismatch";
+                return false;
+            }
+
+            decimal priceDiffPct = Math.Abs(record.Feature.EntryPrice - record.EntryPrice) / Math.Max(record.EntryPrice, 0.00000001m);
+            if (priceDiffPct > 0.03m) // 3% 이상 차이면 시점 불일치 의심
+            {
+                reason = "feature_entry_price_mismatch";
+                return false;
+            }
+
+            DateTime recordTs = ToUtcSafe(record.Timestamp);
+            DateTime featureTs = ToUtcSafe(record.Feature.Timestamp);
+
+            // 핵심: feature timestamp가 record timestamp보다 미래면 look-ahead 오염
+            if (featureTs > recordTs.AddMinutes(1))
+            {
+                reason = "feature_timestamp_in_future";
+                return false;
+            }
+
+            if (recordTs > DateTime.UtcNow.AddMinutes(5))
+            {
+                reason = "record_timestamp_future";
+                return false;
+            }
+
+            if (record.Labeled)
+            {
+                if (!record.ActualProfitPct.HasValue || !float.IsFinite(record.ActualProfitPct.Value))
+                {
+                    reason = "labeled_without_valid_profit";
+                    return false;
+                }
+
+                if (record.LabeledAt.HasValue && ToUtcSafe(record.LabeledAt.Value) < recordTs)
+                {
+                    reason = "labeled_before_entry";
+                    return false;
+                }
+            }
+
+            if (!float.IsFinite(record.Feature.Fib_DistanceTo0382_Pct)
+                || !float.IsFinite(record.Feature.Fib_DistanceTo0618_Pct)
+                || !float.IsFinite(record.Feature.Fib_DistanceTo0786_Pct))
+            {
+                reason = "fib_feature_not_finite";
+                return false;
+            }
+
+            if (record.Feature.CandlesToTarget < -1f || record.Feature.CandlesToTarget > 256f)
+            {
+                reason = "candles_to_target_out_of_range";
+                return false;
+            }
+
+            reason = string.Empty;
+            return true;
+        }
+
+        private static DateTime ToUtcSafe(DateTime dt)
+        {
+            return dt.Kind switch
+            {
+                DateTimeKind.Utc => dt,
+                DateTimeKind.Local => dt.ToUniversalTime(),
+                _ => DateTime.SpecifyKind(dt, DateTimeKind.Utc)
+            };
         }
     }
     /// 더블체크 설정

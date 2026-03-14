@@ -51,6 +51,10 @@ namespace TradingBot.Models
         // 주의: 0.15% 오프셋(슬리피지 방어)이 적용되어 실제 손절은 진입가 + 0.15% 근처로 설정됨
         public decimal PumpTrailingStartRoe { get; set; } = 40.0m; // 2차 트레일링 시작 ROI +40% (변경 없음)
         public decimal PumpTrailingGapRoe { get; set; } = 20.0m;    // 2차에서 최고점 대비 ROI 20% 하락 시 청산
+        public decimal PumpFirstTakeProfitRatioPct { get; set; } = 15.0m; // 1차 부분익절 비중(%)
+        public decimal PumpStairStep1Roe { get; set; } = 50.0m;     // 계단식 1단계 트리거 ROE
+        public decimal PumpStairStep2Roe { get; set; } = 100.0m;    // 계단식 2단계 트리거 ROE
+        public decimal PumpStairStep3Roe { get; set; } = 200.0m;    // 계단식 3단계 트리거 ROE
 
         // ─── [Major Coin Mode] 메이저 전용 포지션 관리 ────────────────────────────
         // 1차 부분익절: ROI +20% → 포지션 30% 청산
@@ -60,10 +64,10 @@ namespace TradingBot.Models
         public int    MajorLeverage          { get; set; } = 20;       // 메이저 전용 레버리지 (DefaultLeverage와 독립)
         public decimal MajorMargin           { get; set; } = 200.0m;   // 메이저 전용 진입 증거금 (DefaultMargin과 독립)
         public decimal MajorBreakEvenRoe     { get; set; } = 7.0m;    // 1단계: 본절 이동 기준 ROE (변경 없음)
-        public decimal MajorTp1Roe           { get; set; } = 20.0m;   // 1차 부분익절 ROI +20% (15%→20% 상향)
-        public decimal MajorTp2Roe           { get; set; } = 25.0m;   // 최종 목표익절 ROE (미사용)
-        public decimal MajorTrailingStartRoe { get; set; } = 20.0m;   // 2차 트레일링 시작 ROI +20% (22%→20% 하향)
-        public decimal MajorTrailingGapRoe   { get; set; } = 5.0m;    // 2차에서 최고점 대비 ROI 5% 하락 시 청산 (4%→5% 상향)
+        public decimal MajorTp1Roe           { get; set; } = 20.0m;   // 1차 부분익절 ROI +20%
+        public decimal MajorTp2Roe           { get; set; } = 40.0m;   // 2차 수익 확정 구간 ROI +40%
+        public decimal MajorTrailingStartRoe { get; set; } = 40.0m;   // 타이트 트레일링 시작 ROI +40%
+        public decimal MajorTrailingGapRoe   { get; set; } = 5.0m;    // 트레일링 간격(메이저 기본 5%, 운용 범위 5~10%)
         public decimal MajorStopLossRoe      { get; set; } = 20.0m;   // 초기 손절 ROE -20%
 
         // ─── [Sniper Mode] 스나이퍼 모드 설정 (v2.5) ────────────────────────────

@@ -97,6 +97,10 @@ namespace TradingBot
                     txtPumpTrailingStartRoe.Text = dbSettings.PumpTrailingStartRoe.ToString("F2");
                     txtPumpTrailingGapRoe.Text = dbSettings.PumpTrailingGapRoe.ToString("F2");
                     txtPumpStopLossRoe.Text = dbSettings.PumpStopLossRoe.ToString("F2");
+                    txtPumpFirstTakeProfitRatioPct.Text = dbSettings.PumpFirstTakeProfitRatioPct.ToString("F2");
+                    txtPumpStairStep1Roe.Text = dbSettings.PumpStairStep1Roe.ToString("F2");
+                    txtPumpStairStep2Roe.Text = dbSettings.PumpStairStep2Roe.ToString("F2");
+                    txtPumpStairStep3Roe.Text = dbSettings.PumpStairStep3Roe.ToString("F2");
                     // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정
                     txtMajorLeverage.Text = dbSettings.MajorLeverage.ToString();
                     txtMajorMargin.Text = dbSettings.MajorMargin.ToString("F2");
@@ -156,15 +160,19 @@ namespace TradingBot
                             txtPumpTrailingStartRoe.Text = generalNode["PumpTrailingStartRoe"]?.ToString() ?? "40.0";
                             txtPumpTrailingGapRoe.Text = generalNode["PumpTrailingGapRoe"]?.ToString() ?? "20.0";
                             txtPumpStopLossRoe.Text = generalNode["PumpStopLossRoe"]?.ToString() ?? "60.0";
+                            txtPumpFirstTakeProfitRatioPct.Text = generalNode["PumpFirstTakeProfitRatioPct"]?.ToString() ?? "15.0";
+                            txtPumpStairStep1Roe.Text = generalNode["PumpStairStep1Roe"]?.ToString() ?? "50.0";
+                            txtPumpStairStep2Roe.Text = generalNode["PumpStairStep2Roe"]?.ToString() ?? "100.0";
+                            txtPumpStairStep3Roe.Text = generalNode["PumpStairStep3Roe"]?.ToString() ?? "200.0";
                             // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정
                             txtMajorLeverage.Text = generalNode["MajorLeverage"]?.ToString() ?? "20";
                             txtMajorMargin.Text = generalNode["MajorMargin"]?.ToString() ?? "200.0";
                             txtMajorBreakEvenRoe.Text = generalNode["MajorBreakEvenRoe"]?.ToString() ?? "7.0";
-                            txtMajorTp1Roe.Text = generalNode["MajorTp1Roe"]?.ToString() ?? "15.0";
-                            txtMajorTp2Roe.Text = generalNode["MajorTp2Roe"]?.ToString() ?? "25.0";
-                            txtMajorTrailingStartRoe.Text = generalNode["MajorTrailingStartRoe"]?.ToString() ?? "22.0";
-                            txtMajorTrailingGapRoe.Text = generalNode["MajorTrailingGapRoe"]?.ToString() ?? "4.0";
-                            txtMajorStopLossRoe.Text = generalNode["MajorStopLossRoe"]?.ToString() ?? "60.0";
+                            txtMajorTp1Roe.Text = generalNode["MajorTp1Roe"]?.ToString() ?? "20.0";
+                            txtMajorTp2Roe.Text = generalNode["MajorTp2Roe"]?.ToString() ?? "40.0";
+                            txtMajorTrailingStartRoe.Text = generalNode["MajorTrailingStartRoe"]?.ToString() ?? "40.0";
+                            txtMajorTrailingGapRoe.Text = generalNode["MajorTrailingGapRoe"]?.ToString() ?? "5.0";
+                            txtMajorStopLossRoe.Text = generalNode["MajorStopLossRoe"]?.ToString() ?? "20.0";
                         }
 
                         txtRisk.Text = tradingNode["RiskPercentage"]?.ToString() ?? "1.0";
@@ -379,6 +387,30 @@ namespace TradingBot
                 {
                     generalNode["PumpStopLossRoe"] = pumpStopLossRoe;
                     generalSettings.PumpStopLossRoe = pumpStopLossRoe;
+                }
+
+                if (decimal.TryParse(txtPumpFirstTakeProfitRatioPct.Text, out decimal pumpFirstTakeProfitRatioPct))
+                {
+                    generalNode["PumpFirstTakeProfitRatioPct"] = pumpFirstTakeProfitRatioPct;
+                    generalSettings.PumpFirstTakeProfitRatioPct = pumpFirstTakeProfitRatioPct;
+                }
+
+                if (decimal.TryParse(txtPumpStairStep1Roe.Text, out decimal pumpStairStep1Roe))
+                {
+                    generalNode["PumpStairStep1Roe"] = pumpStairStep1Roe;
+                    generalSettings.PumpStairStep1Roe = pumpStairStep1Roe;
+                }
+
+                if (decimal.TryParse(txtPumpStairStep2Roe.Text, out decimal pumpStairStep2Roe))
+                {
+                    generalNode["PumpStairStep2Roe"] = pumpStairStep2Roe;
+                    generalSettings.PumpStairStep2Roe = pumpStairStep2Roe;
+                }
+
+                if (decimal.TryParse(txtPumpStairStep3Roe.Text, out decimal pumpStairStep3Roe))
+                {
+                    generalNode["PumpStairStep3Roe"] = pumpStairStep3Roe;
+                    generalSettings.PumpStairStep3Roe = pumpStairStep3Roe;
                 }
 
                 // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정 저장
@@ -688,6 +720,26 @@ namespace TradingBot
 
             if (!TryParseDecimalInRange(txtPumpTimeStopMinutes, "PUMP 시간손절(분)", 1m, 1440m, out _, out errorMessage))
                 return false;
+
+            if (!TryParseDecimalInRange(txtPumpFirstTakeProfitRatioPct, "PUMP 1차 익절 비중(%)", 1m, 95m, out _, out errorMessage))
+                return false;
+
+            if (!TryParseDecimalInRange(txtPumpStairStep1Roe, "PUMP 계단식 구간1 ROE", 1m, 2000m, out decimal pumpStep1, out errorMessage))
+                return false;
+
+            if (!TryParseDecimalInRange(txtPumpStairStep2Roe, "PUMP 계단식 구간2 ROE", 1m, 2000m, out decimal pumpStep2, out errorMessage))
+                return false;
+
+            if (!TryParseDecimalInRange(txtPumpStairStep3Roe, "PUMP 계단식 구간3 ROE", 1m, 2000m, out decimal pumpStep3, out errorMessage))
+                return false;
+
+            if (!(pumpStep1 < pumpStep2 && pumpStep2 < pumpStep3))
+            {
+                txtPumpStairStep2Roe.Focus();
+                txtPumpStairStep2Roe.SelectAll();
+                errorMessage = "PUMP 계단식 ROE는 구간1 < 구간2 < 구간3 순서여야 합니다.";
+                return false;
+            }
 
             if (!TryParseDecimalInRange(txtPumpStopWarnPct, "PUMP 손절거리 경고(%)", 0.01m, 50m, out decimal warnPct, out errorMessage))
                 return false;

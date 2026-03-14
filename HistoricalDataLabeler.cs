@@ -123,11 +123,12 @@ namespace TradingBot
                     var historicalCandles = candles.Take(i).ToList();
                     var futureCandles = candles.Skip(i + 1).Take(32).ToList();
 
-                    // 2-1. Multi-Timeframe Feature 추출
-                    var feature = await _featureExtractor.ExtractRealtimeFeatureAsync(
-                        symbol, 
-                        currentCandle.OpenTime, 
-                        token);
+                    // 2-1. Multi-Timeframe Feature 추출 (Point-in-Time 고정)
+                    // 중요: i 시점 학습 샘플은 i 이후 캔들을 절대 참조하면 안 됨
+                    var feature = _featureExtractor.ExtractPointInTimeFeatureFromM15(
+                        symbol,
+                        candles,
+                        i);
 
                     if (feature == null)
                         continue;

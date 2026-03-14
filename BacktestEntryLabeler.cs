@@ -235,19 +235,21 @@ namespace TradingBot
             if (futureCandles == null || futureCandles.Count == 0)
                 return -1f; // 미래 데이터 없음
 
-            // 1. 최근 고점 탐색 (24시간 = 96개 캔들, 또는 가능한 모두)
+            // 1. 최근 스윙(확정 피벗) 탐색
             int lookBackPeriod = Math.Min(96, historicalCandles.Count);
-            decimal recentHighPrice = historicalCandles
-                .TakeLast(lookBackPeriod)
-                .Max(k => k.HighPrice);
+            var pivotWindow = historicalCandles.TakeLast(lookBackPeriod).ToList();
+            var (hasPivotRange, confirmedHighPrice, confirmedLowPrice) = TryGetConfirmedPivotRange(pivotWindow, confirmationBars: 5);
+
+            if (!hasPivotRange)
+                return -1f;
 
             // 2. 피보나치 0.618 되돌림 목표가 계산
-            // 목표가 = 고점 - (고점 - 현재가) * 0.618
-            decimal priceRange = recentHighPrice - currentPrice;
+            // 중요: 현재 시점에서 확정된 스윙(high/low)만 사용 (미래 고점 참조 금지)
+            decimal priceRange = confirmedHighPrice - confirmedLowPrice;
             if (priceRange <= 0)
-                return -1f; // 상승 중이거나 고점이 현재가보다 낮음 → 하락 되돌림 시나리오 아님
+                return -1f;
 
-            decimal fibTarget = recentHighPrice - (priceRange * 0.618m);
+            decimal fibTarget = confirmedHighPrice - (priceRange * 0.618m);
 
             // 3. 허용 범위 계산 (목표가 ±0.5%)
             decimal tolerance = fibTarget * (decimal)(tolerancePct / 100f);
@@ -273,6 +275,60 @@ namespace TradingBot
 
             // 5. 범위 내 미도달
             return -1f;
+        }
+
+        private (bool success, decimal high, decimal low) TryGetConfirmedPivotRange(
+            List<IBinanceKline> candles,
+            int confirmationBars)
+        {
+            if (candles == null || candles.Count < confirmationBars * 2 + 5)
+                return (false, 0m, 0m);
+
+            int maxConfirmedIndex = candles.Count - 1 - confirmationBars;
+            if (maxConfirmedIndex <= confirmationBars)
+                return (false, 0m, 0m);
+
+            int lastHighIndex = -1;
+            int lastLowIndex = -1;
+
+            for (int i = confirmationBars; i <= maxConfirmedIndex; i++)
+            {
+                bool isHigh = true;
+                bool isLow = true;
+
+                decimal currentHigh = candles[i].HighPrice;
+                decimal currentLow = candles[i].LowPrice;
+
+                for (int j = 1; j <= confirmationBars; j++)
+                {
+                    if (currentHigh <= candles[i - j].HighPrice || currentHigh < candles[i + j].HighPrice)
+                        isHigh = false;
+
+                    if (currentLow >= candles[i - j].LowPrice || currentLow > candles[i + j].LowPrice)
+                        isLow = false;
+
+                    if (!isHigh && !isLow)
+                        break;
+                }
+
+                if (isHigh)
+                    lastHighIndex = i;
+
+                if (isLow)
+                    lastLowIndex = i;
+            }
+
+            var confirmedSlice = candles.Take(maxConfirmedIndex + 1).ToList();
+            if (confirmedSlice.Count == 0)
+                return (false, 0m, 0m);
+
+            decimal high = lastHighIndex >= 0 ? candles[lastHighIndex].HighPrice : confirmedSlice.Max(c => c.HighPrice);
+            decimal low = lastLowIndex >= 0 ? candles[lastLowIndex].LowPrice : confirmedSlice.Min(c => c.LowPrice);
+
+            if (high <= low)
+                return (false, 0m, 0m);
+
+            return (true, high, low);
         }
     }
 }

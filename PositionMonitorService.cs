@@ -158,8 +158,9 @@ namespace TradingBot.Services
             double squeezeDefenseMinutes = 90.0;
             decimal squeezeDefenseMaxRoe = 8.0m;
             decimal squeezeDefenseBbWidthThreshold = 0.60m;
+            bool isBtcSymbol = string.Equals(symbol, "BTCUSDT", StringComparison.OrdinalIgnoreCase);
             // [메이저/PUMP 완전 분리] 메이저 전용 최종 목표익절 ROE 사용
-            decimal majorTp2Roe = _settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : Math.Max(_settings.TargetRoe, 25.0m);
+            decimal majorTp2Roe = _settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : Math.Max(_settings.TargetRoe, 40.0m);
             decimal profitRunTriggerRoe = majorTp2Roe;
             bool profitRunHoldActive = false;
             DateTime nextProfitRunHoldLogTime = DateTime.MinValue;
@@ -225,11 +226,43 @@ namespace TradingBot.Services
             // [메이저/PUMP 완전 분리] 메이저 전용 설정값 사용 (하드코딩 제거)
             decimal majorBreakEvenBase = _settings.MajorBreakEvenRoe > 0 ? _settings.MajorBreakEvenRoe : 7.0m;
             decimal breakEvenROE = aggressiveMultiplier >= 1.5m ? Math.Max(3.0m, majorBreakEvenBase * 0.5m) : majorBreakEvenBase;  // 1단계: 공격형 시 절반, 일반 설정값
-            decimal profitLockROE = _settings.MajorTp1Roe > 0 ? _settings.MajorTp1Roe : 15.0m;   // 2단계: 1차 부분익절 ROE
-            decimal tightTrailingROE = _settings.MajorTrailingStartRoe > 0 ? _settings.MajorTrailingStartRoe : 22.0m;  // 3단계: 타이트 트레일링 시작 ROE
-            decimal minLockROE = profitLockROE + 3.0m;  // 3단계 최소 수익 (1차익절+3%)
-            // TrailingGapRoe를 가격% 간격으로 변환 (예: 4% ROE / 20배 / 100 = 0.20% 가격)
-            decimal majorTrailingGap = _settings.MajorTrailingGapRoe > 0 ? _settings.MajorTrailingGapRoe : 4.0m;
+            decimal profitLockROE = _settings.MajorTp1Roe > 0 ? _settings.MajorTp1Roe : 20.0m;   // 2단계: 1차 부분익절 ROE
+            decimal tightTrailingROE = _settings.MajorTrailingStartRoe > 0 ? _settings.MajorTrailingStartRoe : 40.0m;  // 3단계: 타이트 트레일링 시작 ROE
+            decimal minLockROE = 5.0m;  // 3단계 최소 보장 수익 ROE (+5%)
+            // TrailingGapRoe를 가격% 간격으로 변환
+            decimal majorTrailingGap = _settings.MajorTrailingGapRoe > 0 ? _settings.MajorTrailingGapRoe : 5.0m;
+
+            // 메이저 기본 운영값 강제: TP1=20, TP2/트레일링 시작=40, SL=-20, Gap=5~10
+            profitLockROE = Math.Max(profitLockROE, 20.0m);
+            tightTrailingROE = Math.Max(tightTrailingROE, 40.0m);
+            majorTp2Roe = Math.Max(majorTp2Roe, 40.0m);
+            majorTrailingGap = Math.Clamp(majorTrailingGap, 5.0m, 10.0m);
+
+            // BTC 전용 슬림/초밀착 오버라이드: TP1=15, TP2/트레일링 시작=30, SL=-15, Gap=3
+            if (isBtcSymbol)
+            {
+                profitLockROE = 15.0m;
+                tightTrailingROE = 30.0m;
+                majorTp2Roe = 30.0m;
+                majorTrailingGap = 3.0m;
+            }
+
+            if (tightTrailingROE <= profitLockROE)
+            {
+                tightTrailingROE = profitLockROE + (isBtcSymbol ? 15.0m : 20.0m);
+            }
+
+            profitRunTriggerRoe = majorTp2Roe;
+
+            decimal configuredMajorStopLossRoe = GetCurrentStopLossRoe();
+            if (configuredMajorStopLossRoe <= 0m)
+                configuredMajorStopLossRoe = 20.0m;
+
+            decimal effectiveMajorStopLossRoe = isBtcSymbol
+                ? Math.Min(configuredMajorStopLossRoe, 15.0m)
+                : Math.Min(configuredMajorStopLossRoe, 20.0m);
+
+            decimal tp1SafetyRoe = 2.0m;
             decimal tightGapPercent = majorTrailingGap / leverage / 100m;  // 3단계 간격 (ROE% → 가격%)
             decimal estimatedRoundTripCostPct = 0.0013m; // 수수료(0.08%) + 슬리피지(0.05%)
             decimal breakEvenBufferPct = estimatedRoundTripCostPct + (aggressiveMultiplier >= 1.5m ? 0.0002m : 0.0001m);
@@ -247,7 +280,7 @@ namespace TradingBot.Services
                 OnLog?.Invoke($"🎯 {symbol} 공격형 진입 배수 {aggressiveMultiplier:F2}x 감지 → 손절 타이트 조정 (ROE {breakEvenROE:F1}%)");
             }
 
-            OnLog?.Invoke($"� {symbol} [Major Coin Mode] SL={GetCurrentStopLossRoe():F0}% BreakEven={breakEvenROE:F1}% Tp1={profitLockROE:F0}% TrailStart={tightTrailingROE:F0}% TrailGap={majorTrailingGap:F1}% TP2={majorTp2Roe:F0}%");
+            OnLog?.Invoke($"📋 {symbol} [{(isBtcSymbol ? "BTC Specialist" : "Major Coin Mode")}] SL={effectiveMajorStopLossRoe:F0}% BreakEven={breakEvenROE:F1}% Tp1={profitLockROE:F0}% TrailStart={tightTrailingROE:F0}% TrailGap={majorTrailingGap:F1}% TP2={majorTp2Roe:F0}%");
             OnLog?.Invoke($"�🛡️ {symbol} 1단계 보호 조건: ROE {breakEvenROE:F1}% + 보유 {breakEvenMinHoldSeconds:F0}초, 본절 버퍼 {breakEvenBufferPct * 100m:F2}%");
 
             if (hasCustomAbsoluteStop && !isSidewaysMode)
@@ -258,7 +291,7 @@ namespace TradingBot.Services
             // [추가] 안전장치: 서버사이드 손절 주문 설정 (Stop Market)
             try
             {
-                decimal currentStopLossRoe = GetCurrentStopLossRoe();
+                decimal currentStopLossRoe = effectiveMajorStopLossRoe;
                 decimal stopPrice = customStopLossPrice > 0
                     ? customStopLossPrice
                     : (isLong
@@ -436,22 +469,43 @@ namespace TradingBot.Services
                     }
 
                     // ═══════════════════════════════════════════════
-                    // 2단계: ROE 12% 도달 → 수익 잠금 (최소 ROE ~5%)
+                    // 2단계: TP1 도달 시 30% 부분익절 + +2% 본절 방어
                     // ═══════════════════════════════════════════════
                     if (breakEvenActivated && !profitLockActivated && highestROE >= profitLockROE)
                     {
                         profitLockActivated = true;
+
+                        if (!partialTaken)
+                        {
+                            await ExecutePartialClose(symbol, 0.30m, token);
+                            partialTaken = true;
+
+                            lock (_posLock)
+                            {
+                                if (_activePositions.TryGetValue(symbol, out var p))
+                                {
+                                    p.TakeProfitStep = Math.Max(p.TakeProfitStep, 1);
+                                }
+                            }
+
+                            OnAlert?.Invoke($"💰 {symbol} {(isBtcSymbol ? "BTC" : "메이저")} 1차 익절 30% 완료 (ROE {highestROE:F1}%)");
+                        }
                         
-                        // 진입가 + 0.25% (ROE 약 5% 지점)
-                        protectiveStopPrice = isLong 
-                            ? entryPrice * 1.0025m
-                            : entryPrice * 0.9975m;
+                        // TP1 이후 손절선을 +2% ROE로 상향
+                        decimal tp1SafetyPrice = isLong
+                            ? entryPrice * (1m + tp1SafetyRoe / leverage / 100m)
+                            : entryPrice * (1m - tp1SafetyRoe / leverage / 100m);
+
+                        if (isLong)
+                            protectiveStopPrice = protectiveStopPrice > 0m ? Math.Max(protectiveStopPrice, tp1SafetyPrice) : tp1SafetyPrice;
+                        else
+                            protectiveStopPrice = protectiveStopPrice > 0m ? Math.Min(protectiveStopPrice, tp1SafetyPrice) : tp1SafetyPrice;
                         
-                        OnLog?.Invoke($"💰 {symbol} 익절대기 (ROE {highestROE:F1}%)");
+                        OnLog?.Invoke($"💰 {symbol} 1차 구간 방어 가동: TP30% + SL 상향(ROE +{tp1SafetyRoe:F1}%)");
                     }
 
                     // ═══════════════════════════════════════════════
-                    // 3단계: ROE 18% 도달 → 타이트한 트레일링 (최소 ROE 15%)
+                    // 3단계: TP2 구간 진입 시 +5% 수익 확정 + 타이트 트레일링
                     // ═══════════════════════════════════════════════
                     if (profitLockActivated && !tightTrailingActivated && highestROE >= tightTrailingROE)
                     {
@@ -463,7 +517,7 @@ namespace TradingBot.Services
                             ? entryPrice * (1 + minLockPriceChange)
                             : entryPrice * (1 - minLockPriceChange);
                         
-                        OnLog?.Invoke($"🚀 {symbol} 트레일링스탑시작 (ROE {highestROE:F1}%)");
+                        OnLog?.Invoke($"🚀 {symbol} 2차 구간 진입: SL +5% 고정 후 트레일링 시작 (ROE {highestROE:F1}%)");
 
                         // [v2.1.18] 지표 기반 익절 준비: ROE 20% 도달 시 지표 모니터링 시작
                         OnLog?.Invoke($"� {symbol} 지표모니터링");
@@ -892,7 +946,7 @@ namespace TradingBot.Services
                             nextProfitRunHoldLogTime = DateTime.Now.AddSeconds(30);
                         }
                     }
-                    decimal currentStopLossRoe = GetCurrentStopLossRoe();
+                    decimal currentStopLossRoe = effectiveMajorStopLossRoe;
 
                     if (!hasCustomAbsoluteStop && currentROE <= -currentStopLossRoe)
                     {
@@ -979,6 +1033,24 @@ namespace TradingBot.Services
             decimal pumpTp1Roe = _settings.PumpTp1Roe > 0 ? _settings.PumpTp1Roe : 25.0m;
             decimal pumpTp2Roe = _settings.PumpTp2Roe > 0 ? _settings.PumpTp2Roe : 50.0m;
             decimal pumpTimeStopMinutes = _settings.PumpTimeStopMinutes > 0 ? _settings.PumpTimeStopMinutes : 15.0m;
+            decimal firstPartialCloseRatioPct = _settings.PumpFirstTakeProfitRatioPct > 0 ? _settings.PumpFirstTakeProfitRatioPct : 15.0m;
+            decimal firstPartialCloseRatio = Math.Clamp(firstPartialCloseRatioPct / 100.0m, 0.05m, 0.95m);
+
+            const decimal MemeBreathingRoe = 40.0m;
+            decimal stairStep1TriggerRoe = _settings.PumpStairStep1Roe > 0 ? _settings.PumpStairStep1Roe : 50.0m;
+            decimal stairStep2TriggerRoe = _settings.PumpStairStep2Roe > 0 ? _settings.PumpStairStep2Roe : 100.0m;
+            decimal stairStep3TriggerRoe = _settings.PumpStairStep3Roe > 0 ? _settings.PumpStairStep3Roe : 200.0m;
+            const decimal StairStep1FloorRoe = 10.0m;
+            const decimal StairStep2FloorRoe = 50.0m;
+
+            if (stairStep2TriggerRoe <= stairStep1TriggerRoe)
+                stairStep2TriggerRoe = stairStep1TriggerRoe + 10.0m;
+            if (stairStep3TriggerRoe <= stairStep2TriggerRoe)
+                stairStep3TriggerRoe = stairStep2TriggerRoe + 20.0m;
+
+            int stairStep = 0;
+            decimal lockedProfitFloorRoe = decimal.MinValue;
+            decimal dynamicStopLossRoe = stopLossROE;
 
             if (pumpTp1Roe < 25.0m)
             {
@@ -987,6 +1059,35 @@ namespace TradingBot.Services
             }
 
             partialTakeProfitROE = pumpTp1Roe;
+
+            // [PUMP 변동성 방어] 고정 -60% 외에 구조/ATR 기반 느슨한 손절 ROE를 준비
+            if (isLongPosition && entryPrice > 0)
+            {
+                decimal structureStop = 0m;
+                if (wave1LowPrice > 0m)
+                    structureStop = wave1LowPrice;
+                if (fib0786Level > 0m)
+                    structureStop = structureStop > 0m ? Math.Min(structureStop, fib0786Level) : fib0786Level;
+
+                decimal atrStop = atr > 0 ? entryPrice - ((decimal)atr * 1.8m) : 0m;
+                decimal chosenStop = 0m;
+                if (structureStop > 0m && atrStop > 0m)
+                    chosenStop = Math.Min(structureStop, atrStop);
+                else if (structureStop > 0m)
+                    chosenStop = structureStop;
+                else if (atrStop > 0m)
+                    chosenStop = atrStop;
+
+                if (chosenStop > 0m && chosenStop < entryPrice)
+                {
+                    decimal lossPct = ((entryPrice - chosenStop) / entryPrice) * 100m;
+                    decimal candidateRoe = lossPct * leverage;
+                    if (candidateRoe > 0m)
+                        dynamicStopLossRoe = Math.Max(stopLossROE, candidateRoe);
+
+                    OnLog?.Invoke($"🛡️ {symbol} [PUMP 가변SL] 고정={stopLossROE:F1}% 동적={dynamicStopLossRoe:F1}% stop={chosenStop:F8}");
+                }
+            }
 
             if (atr > 0)
             {
@@ -1023,6 +1124,13 @@ namespace TradingBot.Services
 
                 bool isAveraged = false;
                 lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) isAveraged = p.IsAveragedDown; }
+
+                bool firstTpDone = false;
+                lock (_posLock)
+                {
+                    if (_activePositions.TryGetValue(symbol, out var p))
+                        firstTpDone = p.PartialProfitStage >= 1 || p.TakeProfitStep >= 1;
+                }
 
                 // [20배 PUMP 즉시 손절] 진입 후 다음 5분봉이 BB중단을 음봉으로 하향 돌파 마감 시 즉시 청산
                 if (isPumpPosition && (DateTime.Now - startTime).TotalMinutes >= 5)
@@ -1062,23 +1170,23 @@ namespace TradingBot.Services
                 if (elliotWavePos != null && isLongPosition &&
                     wave1HighPrice > 0 && fib1618Target > 0)
                 {
-                    // 1차 익절: 전고점(1.0) 도달 OR 설정 ROE 달성 시 50% 매도
+                    // 1차 익절: 전고점(1.0) 도달 OR 설정 ROE 달성 시 15% 매도
                     bool tp1Condition = currentPrice >= wave1HighPrice || currentROE >= pumpTp1Roe;
                     if (elliotWavePos.PartialProfitStage == 0 && tp1Condition)
                     {
-                        await ExecutePartialClose(symbol, 0.50m, token); // 50% 매도
+                        await ExecutePartialClose(symbol, firstPartialCloseRatio, token); // 15% 매도
                         lock (_posLock)
                         {
                             if (_activePositions.TryGetValue(symbol, out var p))
                             {
                                 p.PartialProfitStage = 1;
-                                // [PUMP 본절 버퍼] 정확히 진입가에 스탑 걸면 눌림에 즉시 청산됨
-                                // → 진입가 0.5% 아래(= ROE -10%)로 설정해 되돌림 여유 확보
-                                p.BreakevenPrice = entryPrice * 0.995m;
+                                // [PUMP 추세홀딩] 1차 후 최소 수익선(ROE +5%) 확보
+                                decimal lockRoe = 5.0m;
+                                p.BreakevenPrice = entryPrice * (1m + (lockRoe / (leverage * 100m)));
                             }
                         }
                         string tp1Trigger = currentPrice >= wave1HighPrice ? $"Fib1.0(전고점) {wave1HighPrice:F8}" : $"ROE {pumpTp1Roe:F1}% 달성 ({currentROE:F1}%)";
-                        OnAlert?.Invoke($"💰 {symbol} 1차 익절 (50%) | 트리거: {tp1Trigger} | 본절가 설정: {entryPrice * 0.995m:F8} (버퍼 0.5%)");
+                        OnAlert?.Invoke($"💰 {symbol} 1차 익절 ({firstPartialCloseRatio * 100m:F0}%) | 트리거: {tp1Trigger} | 생존선(ROE+5%) 설정");
                         OnLog?.Invoke($"✅ {symbol} 1차 익절 완료(Stage=1), 다음 목표: Fib1.618 {fib1618Target:F8} 또는 ROE {pumpTp2Roe:F1}%");
                     }
 
@@ -1300,7 +1408,9 @@ namespace TradingBot.Services
                     }
                 }
 
-                if (isAveraged) stopLossROE = 12.0m;
+                decimal effectiveStopLossRoe = dynamicStopLossRoe;
+                if (isAveraged && firstTpDone)
+                    effectiveStopLossRoe = Math.Min(effectiveStopLossRoe, 12.0m);
 
                 // ============================================================
                 // [본절가 스탑] ElliottWave 1차 익절 후 진입가로 손절 상향
@@ -1315,7 +1425,8 @@ namespace TradingBot.Services
                     }
                 }
 
-                if (!isBreakEvenTriggered && currentROE >= pumpBreakEvenRoe)
+                // [PUMP 추세홀딩] 1차 익절 전에는 본절 이동 금지
+                if (!isBreakEvenTriggered && firstTpDone && currentROE >= pumpBreakEvenRoe)
                 {
                     isBreakEvenTriggered = true;
                     OnAlert?.Invoke($"🛡️ {symbol} Break Even 발동! (ROI {pumpBreakEvenRoe:F0}% 도달 → 손절라인 진입가로 이동, 절대 손실 없음)");
@@ -1324,17 +1435,21 @@ namespace TradingBot.Services
 
                 // [PUMP 본절 버퍼] 진입가 정확히 0%에서 청산하면 되돌림에 바로 털림
                 // → -10% ROE (0x20 기준 0.5% 가격) 여유를 줘서 PUMP 특유의 눌림을 버팀
-                if (isBreakEvenTriggered) stopLossROE = -10.0m;
+                if (isBreakEvenTriggered)
+                    effectiveStopLossRoe = Math.Min(effectiveStopLossRoe, 10.0m);
+
+                // [초기 맷집] 1차 익절 전 + ROE 40% 미만은 느슨한 손절 유지
+                if (!firstTpDone && currentROE < MemeBreathingRoe)
+                    effectiveStopLossRoe = Math.Max(effectiveStopLossRoe, dynamicStopLossRoe);
 
                 int currentTpStep = 0;
                 lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) currentTpStep = p.TakeProfitStep; }
 
                 if (currentTpStep == 0 && currentROE >= partialTakeProfitROE)
                 {
-                    await ExecutePartialClose(symbol, 0.5m, token);
+                    await ExecutePartialClose(symbol, firstPartialCloseRatio, token);
                     lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.TakeProfitStep = 1; }
-                    if (!isBreakEvenTriggered) { isBreakEvenTriggered = true; stopLossROE = -10.0m; }
-                    OnAlert?.Invoke($"💰 {symbol} 1차 익절 (50%) & 본절 확정 (ROE: {currentROE:F2}%)");
+                    OnAlert?.Invoke($"💰 {symbol} 1차 익절 ({firstPartialCloseRatio * 100m:F0}%) & 생존선 확보 (ROE: {currentROE:F2}%)");
                 }
 
                 if (!isAveraged && !isBreakEvenTriggered && currentROE <= averageDownROE)
@@ -1345,10 +1460,39 @@ namespace TradingBot.Services
                     continue;
                 }
 
-                if (currentROE <= -stopLossROE)
+                // [계단식 보호선] 50%/100% 구간에서 고정 수익선 확보
+                if (currentROE >= stairStep1TriggerRoe && stairStep < 1)
                 {
-                    string exitReason = isBreakEvenTriggered ? "🛡️ Break Even (본절)" : $"ROE 손절 (-{stopLossROE}%)";
-                    OnLog?.Invoke($"[청산 트리거] {symbol} 손절 조건 충족 | 방향={(isLongPosition ? "LONG" : "SHORT")}, 현재ROE={currentROE:F2}%, 기준ROE=-{stopLossROE:F2}%, BreakEven={(isBreakEvenTriggered ? "ON" : "OFF")}");
+                    stairStep = 1;
+                    lockedProfitFloorRoe = Math.Max(lockedProfitFloorRoe, StairStep1FloorRoe);
+                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 1단계 | ROI {stairStep1TriggerRoe:F0}% → 보호선 ROE +{StairStep1FloorRoe:F0}%");
+                }
+
+                if (currentROE >= stairStep2TriggerRoe && stairStep < 2)
+                {
+                    stairStep = 2;
+                    lockedProfitFloorRoe = Math.Max(lockedProfitFloorRoe, StairStep2FloorRoe);
+                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 2단계 | ROI {stairStep2TriggerRoe:F0}% → 보호선 ROE +{StairStep2FloorRoe:F0}%");
+                }
+
+                if (currentROE >= stairStep3TriggerRoe && stairStep < 3)
+                {
+                    stairStep = 3;
+                    trailingDropROE = Math.Clamp(pumpTrailingGapRoe, 20.0m, 30.0m);
+                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 3단계 | ROI {stairStep3TriggerRoe:F0}% → Wide Trailing Gap {trailingDropROE:F0}%");
+                }
+
+                if (lockedProfitFloorRoe > decimal.MinValue && currentROE <= lockedProfitFloorRoe)
+                {
+                    OnLog?.Invoke($"[청산 트리거] {symbol} 계단식 보호선 이탈 | 현재ROE={currentROE:F2}% <= 보호선={lockedProfitFloorRoe:F2}%");
+                    await ExecuteMarketClose(symbol, $"🪜 계단식 스탑 발동 (ROE {lockedProfitFloorRoe:F1}% 보호선)", token);
+                    break;
+                }
+
+                if (currentROE <= -effectiveStopLossRoe)
+                {
+                    string exitReason = isBreakEvenTriggered ? "🛡️ Break Even (본절)" : $"ROE 손절 (-{effectiveStopLossRoe}%)";
+                    OnLog?.Invoke($"[청산 트리거] {symbol} 손절 조건 충족 | 방향={(isLongPosition ? "LONG" : "SHORT")}, 현재ROE={currentROE:F2}%, 기준ROE=-{effectiveStopLossRoe:F2}%, BreakEven={(isBreakEvenTriggered ? "ON" : "OFF")}");
                     await ExecuteMarketClose(symbol, exitReason, token);
                     break;
                 }
@@ -1361,7 +1505,8 @@ namespace TradingBot.Services
                 // 예시: ROI 100% → 80%로 하락(20% drop) → 청산, 어깨에서 팔고 나옴
                 // ──────────────────────────────────────────────────────────────────
 
-                if (highestROE >= trailingStartROE)
+                decimal effectiveTrailingStartRoe = Math.Max(trailingStartROE, stairStep3TriggerRoe);
+                if (highestROE >= effectiveTrailingStartRoe)
                 {
                     if (highestROE - currentROE >= trailingDropROE)
                     {
@@ -1370,9 +1515,9 @@ namespace TradingBot.Services
 
                         if (pos != null && pos.TakeProfitStep == 0)
                         {
-                            await ExecutePartialClose(symbol, 0.5m, token);
+                            await ExecutePartialClose(symbol, firstPartialCloseRatio, token);
                             lock (_posLock) { if (_activePositions.ContainsKey(symbol)) _activePositions[symbol].TakeProfitStep = 1; }
-                            OnAlert?.Invoke($"💰 {symbol} 1차 트레일링 익절 (50%) | ROE: {currentROE:F1}%");
+                            OnAlert?.Invoke($"💰 {symbol} 1차 트레일링 익절 ({firstPartialCloseRatio * 100m:F0}%) | ROE: {currentROE:F1}%");
                             // [수정] highestROE 리셋 제거 - 남은 50%도 원래 최고가 기준으로 추적
                         }
                         else

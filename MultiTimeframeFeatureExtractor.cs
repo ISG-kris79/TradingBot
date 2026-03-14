@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Binance.Net.Interfaces;
 using Binance.Net.Enums;
+using TradingBot.Models;
 using TradingBot.Services;
 
 namespace TradingBot
@@ -140,6 +141,72 @@ namespace TradingBot
                 Console.WriteLine($"[FeatureExtractor] Error: {ex.Message}");
                 return null;
             }
+        }
+
+        /// <summary>
+        /// 학습/재검수용 Point-in-Time 피처 추출.
+        /// candleIndex 시점까지의 M15 데이터만 사용하며, 이후 캔들은 절대 참조하지 않습니다.
+        /// </summary>
+        public MultiTimeframeEntryFeature? ExtractPointInTimeFeatureFromM15(
+            string symbol,
+            List<IBinanceKline> orderedM15Candles,
+            int candleIndex)
+        {
+            if (orderedM15Candles == null || orderedM15Candles.Count == 0)
+                return null;
+
+            if (candleIndex < 0 || candleIndex >= orderedM15Candles.Count)
+                return null;
+
+            // 지표 계산 안정성을 위한 최소 길이 확보
+            if (candleIndex < 60)
+                return null;
+
+            var m15Slice = orderedM15Candles
+                .Take(candleIndex + 1)
+                .OrderBy(k => k.OpenTime)
+                .ToList();
+
+            if (m15Slice.Count < 60)
+                return null;
+
+            var current = m15Slice[^1];
+            var timestamp = current.OpenTime;
+
+            var feature = new MultiTimeframeEntryFeature
+            {
+                Symbol = symbol,
+                Timestamp = timestamp,
+                EntryPrice = current.ClosePrice
+            };
+
+            // M15만으로 상위 타임프레임 재구성 (미래 캔들 미참조)
+            var h1Klines = AggregateCandlesFromM15(m15Slice, TimeSpan.FromHours(1), KlineInterval.OneHour);
+            var h2Klines = AggregateCandlesFromM15(m15Slice, TimeSpan.FromHours(2), KlineInterval.TwoHour);
+            var h4Klines = AggregateCandlesFromM15(m15Slice, TimeSpan.FromHours(4), KlineInterval.FourHour);
+            var d1Klines = AggregateCandlesFromM15(m15Slice, TimeSpan.FromDays(1), KlineInterval.OneDay);
+
+            ExtractTimeframeFeatures(d1Klines, out var d1Features);
+            ExtractTimeframeFeatures(h4Klines, out var h4Features);
+            ExtractTimeframeFeatures(h2Klines, out var h2Features);
+            ExtractTimeframeFeatures(h1Klines, out var h1Features);
+            ExtractTimeframeFeatures(m15Slice, out var m15Features);
+
+            AssignFeatures(
+                feature,
+                d1Features,
+                h4Features,
+                h2Features,
+                h1Features,
+                m15Features,
+                d1Klines,
+                h4Klines,
+                h2Klines,
+                h1Klines,
+                m15Slice);
+
+            ExtractTimeContext(timestamp, feature);
+            return feature;
         }
 
         /// <summary>
@@ -424,6 +491,57 @@ namespace TradingBot
             return klines.Count - 1;
         }
 
+        private List<IBinanceKline> AggregateCandlesFromM15(
+            List<IBinanceKline> m15Candles,
+            TimeSpan bucket,
+            KlineInterval interval)
+        {
+            var result = new List<IBinanceKline>();
+
+            if (m15Candles == null || m15Candles.Count == 0)
+                return result;
+
+            var grouped = m15Candles
+                .OrderBy(k => k.OpenTime)
+                .GroupBy(k => TruncateToBucketUtc(k.OpenTime, bucket))
+                .OrderBy(g => g.Key);
+
+            foreach (var group in grouped)
+            {
+                var ordered = group.OrderBy(k => k.OpenTime).ToList();
+                if (ordered.Count == 0)
+                    continue;
+
+                decimal open = ordered[0].OpenPrice;
+                decimal close = ordered[^1].ClosePrice;
+                decimal high = ordered.Max(k => k.HighPrice);
+                decimal low = ordered.Min(k => k.LowPrice);
+                decimal volume = ordered.Sum(k => k.Volume);
+
+                var candle = new CandleData
+                {
+                    OpenTime = group.Key,
+                    CloseTime = ordered[^1].CloseTime,
+                    Open = open,
+                    High = high,
+                    Low = low,
+                    Close = close,
+                    Volume = (float)volume
+                };
+
+                result.Add(new BinanceKlineAdapter(candle, interval));
+            }
+
+            return result;
+        }
+
+        private static DateTime TruncateToBucketUtc(DateTime time, TimeSpan bucket)
+        {
+            DateTime utc = time.Kind == DateTimeKind.Utc ? time : time.ToUniversalTime();
+            long ticks = utc.Ticks / bucket.Ticks * bucket.Ticks;
+            return new DateTime(ticks, DateTimeKind.Utc);
+        }
+
         /// <summary>
         /// 피보나치 되돌림 레벨 계산 (AI 특징으로 사용)
         /// </summary>
@@ -434,8 +552,11 @@ namespace TradingBot
                 return (0f, 0f, 0f, 0f);
 
             var recent50 = klines.TakeLast(50).ToList();
-            decimal high = recent50.Max(k => k.HighPrice);
-            decimal low = recent50.Min(k => k.LowPrice);
+
+            var (hasConfirmedPivotRange, high, low) = TryGetConfirmedPivotRange(recent50, confirmationBars: 3);
+            if (!hasConfirmedPivotRange)
+                return (0f, 0f, 0f, 0f);
+
             decimal range = high - low;
 
             if (range == 0 || currentPrice == 0)
@@ -456,6 +577,61 @@ namespace TradingBot
             float inEntryZone = inZone ? 1f : 0f;
 
             return (distTo0382, distTo0618, distTo0786, inEntryZone);
+        }
+
+        private (bool success, decimal high, decimal low) TryGetConfirmedPivotRange(
+            List<IBinanceKline> klines,
+            int confirmationBars)
+        {
+            if (klines == null || klines.Count < confirmationBars * 2 + 5)
+                return (false, 0m, 0m);
+
+            int maxConfirmedIndex = klines.Count - 1 - confirmationBars;
+            if (maxConfirmedIndex <= confirmationBars)
+                return (false, 0m, 0m);
+
+            int lastPivotHighIndex = -1;
+            int lastPivotLowIndex = -1;
+
+            for (int i = confirmationBars; i <= maxConfirmedIndex; i++)
+            {
+                bool isPivotHigh = true;
+                bool isPivotLow = true;
+
+                decimal currentHigh = klines[i].HighPrice;
+                decimal currentLow = klines[i].LowPrice;
+
+                for (int j = 1; j <= confirmationBars; j++)
+                {
+                    if (currentHigh <= klines[i - j].HighPrice || currentHigh < klines[i + j].HighPrice)
+                        isPivotHigh = false;
+
+                    if (currentLow >= klines[i - j].LowPrice || currentLow > klines[i + j].LowPrice)
+                        isPivotLow = false;
+
+                    if (!isPivotHigh && !isPivotLow)
+                        break;
+                }
+
+                if (isPivotHigh)
+                    lastPivotHighIndex = i;
+
+                if (isPivotLow)
+                    lastPivotLowIndex = i;
+            }
+
+            // 피벗 탐지 실패 시에도 tail(미확정 구간)을 제외한 확정 구간으로 안전 fallback
+            var confirmedSlice = klines.Take(maxConfirmedIndex + 1).ToList();
+            if (confirmedSlice.Count == 0)
+                return (false, 0m, 0m);
+
+            decimal high = lastPivotHighIndex >= 0 ? klines[lastPivotHighIndex].HighPrice : confirmedSlice.Max(k => k.HighPrice);
+            decimal low = lastPivotLowIndex >= 0 ? klines[lastPivotLowIndex].LowPrice : confirmedSlice.Min(k => k.LowPrice);
+
+            if (high <= low)
+                return (false, 0m, 0m);
+
+            return (true, high, low);
         }
     }
 }

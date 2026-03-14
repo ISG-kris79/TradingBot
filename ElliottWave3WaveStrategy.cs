@@ -35,6 +35,7 @@ namespace TradingBot.Strategies
             public decimal Phase1LowPrice { get; set; }
             public decimal Phase1HighPrice { get; set; }
             public float Phase1Volume { get; set; }
+            public WaveAnchor Anchor { get; set; } = new WaveAnchor();
 
             public DateTime Phase2StartTime { get; set; }
             public decimal Phase2LowPrice { get; set; }
@@ -69,6 +70,10 @@ namespace TradingBot.Strategies
         private const int WAVE1_SWING_LOOKBACK = 18;
         private const int WAVE1_MIN_CANDLES = 3;
         private const int BASELINE_VOLUME_LOOKBACK = 6;
+        private const int FRACTAL_MIN_BARS = 2;
+        private const int FRACTAL_MAX_BARS = 5;
+        private const int ATR_PERIOD = 14;
+        private const decimal WAVE1_MIN_ATR_MULTIPLIER = 1.20m;
         private const decimal WAVE2_MIN_RETRACE = 0.50m;
         private const decimal WAVE2_MAX_RETRACE = 0.786m;
         private const decimal WAVE2_REBOUND_CONFIRM_PCT = 0.0010m;
@@ -95,21 +100,26 @@ namespace TradingBot.Strategies
             List<CandleData> candles,
             int wave1CandleIndex)
         {
-            if (wave1CandleIndex < 5 || candles.Count < 6)
+            if (wave1CandleIndex < (FRACTAL_MIN_BARS * 2 + 5) || candles.Count < 20)
                 return false;
 
             var state = GetOrCreateState(symbol);
 
-            int windowStart = Math.Max(0, wave1CandleIndex - WAVE1_SWING_LOOKBACK);
-            int swingStartIdx = FindLowestLowIndex(candles, windowStart, wave1CandleIndex - 2);
-            if (swingStartIdx < 0)
-                return false;
+            // 프랙탈 피벗 확정: 좌우 최소 2봉이 필요하므로 최신 2봉은 피벗 판정에서 제외
+            int pivotSearchEnd = wave1CandleIndex - FRACTAL_MIN_BARS;
+            int windowStart = Math.Max(0, pivotSearchEnd - WAVE1_SWING_LOOKBACK);
 
-            int swingPeakIdx = FindHighestHighIndex(candles, swingStartIdx + 1, wave1CandleIndex);
+            int swingPeakPivotStrength;
+            int swingPeakIdx = FindLatestConfirmedPivotHighIndex(candles, windowStart, pivotSearchEnd, out swingPeakPivotStrength);
             if (swingPeakIdx < 0)
                 return false;
 
-            if (wave1CandleIndex - swingPeakIdx > 1)
+            int swingLowPivotStrength;
+            int swingStartIdx = FindLatestConfirmedPivotLowIndex(candles, windowStart, swingPeakIdx - FRACTAL_MIN_BARS, out swingLowPivotStrength);
+            if (swingStartIdx < 0)
+                return false;
+
+            if (swingStartIdx >= swingPeakIdx)
                 return false;
 
             decimal wave1Start = candles[swingStartIdx].Low;
@@ -124,6 +134,12 @@ namespace TradingBot.Strategies
             // 상승폭 확인
             decimal upPercent = ((wave1Peak - wave1Start) / wave1Start) * 100;
             if (upPercent < MIN_WAVE1_PERCENT)
+                return false;
+
+            // ATR 기반 최소 파동 필터: 잔파동/노이즈 제거
+            decimal waveHeight = wave1Peak - wave1Start;
+            decimal atr = CalculateAverageTrueRange(candles, ATR_PERIOD, swingPeakIdx);
+            if (atr > 0 && waveHeight < atr * WAVE1_MIN_ATR_MULTIPLIER)
                 return false;
 
             // 거래량 확인 (1파 구간 평균 거래량 vs 직전 베이스 구간)
@@ -142,6 +158,7 @@ namespace TradingBot.Strategies
             state.Phase1LowPrice = wave1Start;
             state.Phase1HighPrice = wave1Peak;
             state.Phase1Volume = (float)wave1AvgVolume;
+            state.Anchor.Confirm(wave1Start, wave1Peak, swingLowPivotStrength, swingPeakPivotStrength);
 
             return true;
         }
@@ -163,18 +180,36 @@ namespace TradingBot.Strategies
             if (state.CurrentPhase != WavePhaseType.Wave1Started && state.CurrentPhase != WavePhaseType.Wave2Started)
                 return false;
 
+            if (!state.Anchor.IsConfirmed || state.Anchor.LowPoint <= 0m || state.Anchor.HighPoint <= state.Anchor.LowPoint)
+                return false;
+
             var currentCandle = candles[wave2CandleIndex];
             var prevCandle = candles[wave2CandleIndex - 1];
-            decimal wave1Range = state.Phase1HighPrice - state.Phase1LowPrice;
+            decimal wave1Range = state.Anchor.HighPoint - state.Anchor.LowPoint;
             if (wave1Range <= 0)
                 return false;
+
+            // 앵커 잠금: 확정된 1파 기준점은 무효화 전까지 갱신 금지
+            state.Phase1LowPrice = state.Anchor.LowPoint;
+            state.Phase1HighPrice = state.Anchor.HighPoint;
+
+            // 0.786 하향 돌파 시에만 파동 실패로 판정 후 리셋
+            decimal fib786Level = state.Fib786Level > 0m
+                ? state.Fib786Level
+                : state.Anchor.HighPoint - (wave1Range * 0.786m);
+
+            if (state.Anchor.IsInvalidated(currentCandle.Low, fib786Level, WAVE2_INVALIDATION_BUFFER))
+            {
+                ResetState(symbol);
+                return false;
+            }
 
             decimal candidateWave2Low = state.Phase2LowPrice > 0
                 ? Math.Min(state.Phase2LowPrice, currentCandle.Low)
                 : currentCandle.Low;
 
             // 엘리엇 규칙 위반: 2파 저점이 1파 시작점 하향 이탈
-            if (candidateWave2Low <= state.Phase1LowPrice * WAVE2_INVALIDATION_BUFFER)
+            if (candidateWave2Low <= state.Anchor.LowPoint * WAVE2_INVALIDATION_BUFFER)
             {
                 ResetState(symbol);
                 return false;
@@ -184,7 +219,7 @@ namespace TradingBot.Strategies
             if (currentCandle.Close >= prevCandle.Close && candidateWave2Low >= state.Fib500Level)
                 return false;
 
-            decimal retraceRatio = (state.Phase1HighPrice - candidateWave2Low) / wave1Range;
+            decimal retraceRatio = (state.Anchor.HighPoint - candidateWave2Low) / wave1Range;
             bool retraceInRange = retraceRatio >= WAVE2_MIN_RETRACE && retraceRatio <= WAVE2_MAX_RETRACE;
             if (!retraceInRange)
                 return false;
@@ -205,10 +240,10 @@ namespace TradingBot.Strategies
             state.Phase2Volume = currentCandle.Volume;
 
             // 피보나치 레벨 계산
-            state.Fib500Level = state.Phase1HighPrice - (wave1Range * 0.500m);
-            state.Fib0618Level = state.Phase1HighPrice - (wave1Range * 0.618m);
-            state.Fib786Level = state.Phase1HighPrice - (wave1Range * 0.786m);
-            state.Fib1618Target = state.Phase1HighPrice + (wave1Range * 1.618m);
+            state.Fib500Level = state.Anchor.HighPoint - (wave1Range * 0.500m);
+            state.Fib0618Level = state.Anchor.HighPoint - (wave1Range * 0.618m);
+            state.Fib786Level = state.Anchor.HighPoint - (wave1Range * 0.786m);
+            state.Fib1618Target = state.Anchor.HighPoint + (wave1Range * 1.618m);
             state.PriceLows.Clear();
             state.RsiLows.Clear();
 
@@ -231,6 +266,13 @@ namespace TradingBot.Strategies
 
             if (candles.Count < 5 || rsiValues.Count < 5)
                 return false;
+
+            // 앵커 무효화: 0.786 하향 돌파 시 파동 실패
+            if (state.Fib786Level > 0m && candles[^1].Low < state.Fib786Level * WAVE2_INVALIDATION_BUFFER)
+            {
+                ResetState(symbol);
+                return false;
+            }
 
             // 2파 진행 중 가격과 RSI 저점 추적
             decimal currentPrice = candles[^1].Low;
@@ -308,7 +350,7 @@ namespace TradingBot.Strategies
             state.BollingerUpper = bollingerUpper;
 
             // 엘리엇 규칙 위반 시 상태 초기화
-            if (currentCandle.Low <= state.Phase1LowPrice * WAVE2_INVALIDATION_BUFFER)
+            if (state.Fib786Level > 0m && currentCandle.Low < state.Fib786Level * WAVE2_INVALIDATION_BUFFER)
             {
                 ResetState(symbol);
                 return false;
@@ -416,6 +458,84 @@ namespace TradingBot.Strategies
             }
         }
 
+        public ElliottWaveAnchorState? BuildPersistentState(string symbol)
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+                return null;
+
+            if (!_waveStates.TryGetValue(symbol, out var state) || state == null)
+                return null;
+
+            bool hasMeaningfulState = state.CurrentPhase != WavePhaseType.Idle
+                || state.Anchor.IsConfirmed
+                || state.Fib786Level > 0m;
+
+            if (!hasMeaningfulState)
+                return null;
+
+            return new ElliottWaveAnchorState
+            {
+                Symbol = symbol,
+                CurrentPhase = (int)state.CurrentPhase,
+                Phase1StartTime = state.Phase1StartTime == default ? null : state.Phase1StartTime,
+                Phase1LowPrice = state.Phase1LowPrice,
+                Phase1HighPrice = state.Phase1HighPrice,
+                Phase1Volume = state.Phase1Volume,
+                Phase2StartTime = state.Phase2StartTime == default ? null : state.Phase2StartTime,
+                Phase2LowPrice = state.Phase2LowPrice,
+                Phase2HighPrice = state.Phase2HighPrice,
+                Phase2Volume = state.Phase2Volume,
+                Fib500Level = state.Fib500Level,
+                Fib0618Level = state.Fib0618Level,
+                Fib786Level = state.Fib786Level,
+                Fib1618Target = state.Fib1618Target,
+                AnchorLowPoint = state.Anchor.LowPoint,
+                AnchorHighPoint = state.Anchor.HighPoint,
+                AnchorIsConfirmed = state.Anchor.IsConfirmed,
+                AnchorIsLocked = state.Anchor.IsLocked,
+                AnchorConfirmedAtUtc = state.Anchor.ConfirmedAtUtc == default ? null : state.Anchor.ConfirmedAtUtc,
+                LowPivotStrength = state.Anchor.LowPivotStrength,
+                HighPivotStrength = state.Anchor.HighPivotStrength,
+                UpdatedAtUtc = DateTime.UtcNow
+            };
+        }
+
+        public bool RestorePersistentState(ElliottWaveAnchorState persisted)
+        {
+            if (persisted == null || string.IsNullOrWhiteSpace(persisted.Symbol))
+                return false;
+
+            var state = GetOrCreateState(persisted.Symbol);
+            ResetStateInternal(state);
+
+            state.CurrentPhase = Enum.IsDefined(typeof(WavePhaseType), persisted.CurrentPhase)
+                ? (WavePhaseType)persisted.CurrentPhase
+                : WavePhaseType.Idle;
+
+            state.Phase1StartTime = persisted.Phase1StartTime ?? default;
+            state.Phase1LowPrice = persisted.Phase1LowPrice;
+            state.Phase1HighPrice = persisted.Phase1HighPrice;
+            state.Phase1Volume = persisted.Phase1Volume;
+            state.Phase2StartTime = persisted.Phase2StartTime ?? default;
+            state.Phase2LowPrice = persisted.Phase2LowPrice;
+            state.Phase2HighPrice = persisted.Phase2HighPrice;
+            state.Phase2Volume = persisted.Phase2Volume;
+            state.Fib500Level = persisted.Fib500Level;
+            state.Fib0618Level = persisted.Fib0618Level;
+            state.Fib786Level = persisted.Fib786Level;
+            state.Fib1618Target = persisted.Fib1618Target;
+
+            state.Anchor.LowPoint = persisted.AnchorLowPoint;
+            state.Anchor.HighPoint = persisted.AnchorHighPoint;
+            state.Anchor.IsConfirmed = persisted.AnchorIsConfirmed;
+            state.Anchor.IsLocked = persisted.AnchorIsLocked;
+            state.Anchor.ConfirmedAtUtc = persisted.AnchorConfirmedAtUtc ?? default;
+            state.Anchor.LowPivotStrength = persisted.LowPivotStrength;
+            state.Anchor.HighPivotStrength = persisted.HighPivotStrength;
+
+            return true;
+        }
+
         private static int FindLowestLowIndex(List<CandleData> candles, int start, int end)
         {
             if (candles == null || candles.Count == 0)
@@ -511,6 +631,132 @@ namespace TradingBot.Strategies
             state.BollingerMiddle = 0m;
             state.BollingerLower = 0m;
             state.BollingerUpper = 0m;
+            state.Anchor.Reset();
+        }
+
+        private static int FindLatestConfirmedPivotLowIndex(List<CandleData> candles, int start, int end, out int pivotStrength)
+        {
+            pivotStrength = 0;
+            if (candles == null || candles.Count == 0)
+                return -1;
+
+            int safeStart = Math.Max(start, FRACTAL_MIN_BARS);
+            int safeEnd = Math.Min(end, candles.Count - 1 - FRACTAL_MIN_BARS);
+            if (safeStart > safeEnd)
+                return -1;
+
+            for (int index = safeEnd; index >= safeStart; index--)
+            {
+                int strength = GetPivotLowStrength(candles, index);
+                if (strength >= FRACTAL_MIN_BARS)
+                {
+                    pivotStrength = strength;
+                    return index;
+                }
+            }
+
+            return -1;
+        }
+
+        private static int FindLatestConfirmedPivotHighIndex(List<CandleData> candles, int start, int end, out int pivotStrength)
+        {
+            pivotStrength = 0;
+            if (candles == null || candles.Count == 0)
+                return -1;
+
+            int safeStart = Math.Max(start, FRACTAL_MIN_BARS);
+            int safeEnd = Math.Min(end, candles.Count - 1 - FRACTAL_MIN_BARS);
+            if (safeStart > safeEnd)
+                return -1;
+
+            for (int index = safeEnd; index >= safeStart; index--)
+            {
+                int strength = GetPivotHighStrength(candles, index);
+                if (strength >= FRACTAL_MIN_BARS)
+                {
+                    pivotStrength = strength;
+                    return index;
+                }
+            }
+
+            return -1;
+        }
+
+        private static int GetPivotLowStrength(List<CandleData> candles, int index)
+        {
+            int maxPossible = Math.Min(FRACTAL_MAX_BARS, Math.Min(index, candles.Count - 1 - index));
+            for (int bars = maxPossible; bars >= FRACTAL_MIN_BARS; bars--)
+            {
+                bool isPivot = true;
+                for (int offset = 1; offset <= bars; offset++)
+                {
+                    if (candles[index].Low >= candles[index - offset].Low || candles[index].Low >= candles[index + offset].Low)
+                    {
+                        isPivot = false;
+                        break;
+                    }
+                }
+
+                if (isPivot)
+                    return bars;
+            }
+
+            return 0;
+        }
+
+        private static int GetPivotHighStrength(List<CandleData> candles, int index)
+        {
+            int maxPossible = Math.Min(FRACTAL_MAX_BARS, Math.Min(index, candles.Count - 1 - index));
+            for (int bars = maxPossible; bars >= FRACTAL_MIN_BARS; bars--)
+            {
+                bool isPivot = true;
+                for (int offset = 1; offset <= bars; offset++)
+                {
+                    if (candles[index].High <= candles[index - offset].High || candles[index].High <= candles[index + offset].High)
+                    {
+                        isPivot = false;
+                        break;
+                    }
+                }
+
+                if (isPivot)
+                    return bars;
+            }
+
+            return 0;
+        }
+
+        private static decimal CalculateAverageTrueRange(List<CandleData> candles, int period, int endIndex)
+        {
+            if (candles == null || candles.Count < 2 || period <= 0)
+                return 0m;
+
+            int safeEnd = Math.Min(endIndex, candles.Count - 1);
+            int start = Math.Max(1, safeEnd - period + 1);
+            if (start > safeEnd)
+                return 0m;
+
+            decimal trSum = 0m;
+            int count = 0;
+
+            for (int index = start; index <= safeEnd; index++)
+            {
+                var current = candles[index];
+                decimal prevClose = candles[index - 1].Close;
+
+                decimal tr1 = current.High - current.Low;
+                decimal tr2 = Math.Abs(current.High - prevClose);
+                decimal tr3 = Math.Abs(current.Low - prevClose);
+                decimal trueRange = Math.Max(tr1, Math.Max(tr2, tr3));
+
+                if (trueRange > 0m)
+                {
+                    trSum += trueRange;
+                    count++;
+                }
+            }
+
+            return count > 0 ? trSum / count : 0m;
         }
 
         /// <summary>

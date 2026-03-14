@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Data;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using TradingBot.Models;
 using TradingBot; // [수정] MainWindow 접근을 위해 추가
@@ -2111,12 +2112,14 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                                       @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile,
                                       @PumpBreakEvenRoe, @PumpTrailingStartRoe, @PumpTrailingGapRoe,
                                       @PumpStopLossRoe, @PumpMargin, @PumpLeverage,
+                                      @PumpFirstTakeProfitRatioPct, @PumpStairStep1Roe, @PumpStairStep2Roe, @PumpStairStep3Roe,
                                       @MajorLeverage, @MajorMargin, @MajorBreakEvenRoe, @MajorTp1Roe, @MajorTp2Roe,
                                       @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe)
                             AS source (Id, DefaultLeverage, DefaultMargin, TargetRoe, StopLossRoe, TrailingStartRoe, TrailingDropRoe,
                                       PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct, MajorTrendProfile,
                                       PumpBreakEvenRoe, PumpTrailingStartRoe, PumpTrailingGapRoe,
                                       PumpStopLossRoe, PumpMargin, PumpLeverage,
+                                      PumpFirstTakeProfitRatioPct, PumpStairStep1Roe, PumpStairStep2Roe, PumpStairStep3Roe,
                                       MajorLeverage, MajorMargin, MajorBreakEvenRoe, MajorTp1Roe, MajorTp2Roe,
                                       MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe)
                         ON target.Id = source.Id
@@ -2140,6 +2143,10 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                                 target.PumpStopLossRoe = source.PumpStopLossRoe,
                                 target.PumpMargin = source.PumpMargin,
                                 target.PumpLeverage = source.PumpLeverage,
+                                target.PumpFirstTakeProfitRatioPct = source.PumpFirstTakeProfitRatioPct,
+                                target.PumpStairStep1Roe = source.PumpStairStep1Roe,
+                                target.PumpStairStep2Roe = source.PumpStairStep2Roe,
+                                target.PumpStairStep3Roe = source.PumpStairStep3Roe,
                                 target.MajorLeverage = source.MajorLeverage,
                                 target.MajorMargin = source.MajorMargin,
                                 target.MajorBreakEvenRoe = source.MajorBreakEvenRoe,
@@ -2154,12 +2161,14 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                                     PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct, MajorTrendProfile,
                                     PumpBreakEvenRoe, PumpTrailingStartRoe, PumpTrailingGapRoe,
                                     PumpStopLossRoe, PumpMargin, PumpLeverage,
+                                        PumpFirstTakeProfitRatioPct, PumpStairStep1Roe, PumpStairStep2Roe, PumpStairStep3Roe,
                                     MajorLeverage, MajorMargin, MajorBreakEvenRoe, MajorTp1Roe, MajorTp2Roe,
                                     MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe)
                             VALUES (@UserId, @DefaultLeverage, @DefaultMargin, @TargetRoe, @StopLossRoe, @TrailingStartRoe, @TrailingDropRoe,
                                     @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile,
                                     @PumpBreakEvenRoe, @PumpTrailingStartRoe, @PumpTrailingGapRoe,
                                     @PumpStopLossRoe, @PumpMargin, @PumpLeverage,
+                                        @PumpFirstTakeProfitRatioPct, @PumpStairStep1Roe, @PumpStairStep2Roe, @PumpStairStep3Roe,
                                     @MajorLeverage, @MajorMargin, @MajorBreakEvenRoe, @MajorTp1Roe, @MajorTp2Roe,
                                     @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe);";
 
@@ -2183,6 +2192,10 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                     parameters.Add("@PumpStopLossRoe", settings.PumpStopLossRoe);
                     parameters.Add("@PumpMargin", settings.PumpMargin);
                     parameters.Add("@PumpLeverage", settings.PumpLeverage);
+                    parameters.Add("@PumpFirstTakeProfitRatioPct", settings.PumpFirstTakeProfitRatioPct);
+                    parameters.Add("@PumpStairStep1Roe", settings.PumpStairStep1Roe);
+                    parameters.Add("@PumpStairStep2Roe", settings.PumpStairStep2Roe);
+                    parameters.Add("@PumpStairStep3Roe", settings.PumpStairStep3Roe);
                     parameters.Add("@MajorLeverage", settings.MajorLeverage);
                     parameters.Add("@MajorMargin", settings.MajorMargin);
                     parameters.Add("@MajorBreakEvenRoe", settings.MajorBreakEvenRoe);
@@ -2196,7 +2209,7 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
                     {
                         await db.ExecuteAsync(sql, parameters);
                     }
-                    catch (SqlException ex) when (ex.Message.Contains("PumpTp1Roe") || ex.Message.Contains("PumpTp2Roe") || ex.Message.Contains("PumpTimeStopMinutes") || ex.Message.Contains("PumpStopDistanceWarnPct") || ex.Message.Contains("PumpStopDistanceBlockPct") || ex.Message.Contains("MajorTrendProfile") || ex.Message.Contains("PumpBreakEvenRoe") || ex.Message.Contains("PumpTrailingStartRoe") || ex.Message.Contains("PumpTrailingGapRoe") || ex.Message.Contains("PumpStopLossRoe") || ex.Message.Contains("PumpMargin") || ex.Message.Contains("PumpLeverage") || ex.Message.Contains("MajorLeverage") || ex.Message.Contains("MajorMargin") || ex.Message.Contains("MajorBreakEvenRoe") || ex.Message.Contains("MajorTp1Roe") || ex.Message.Contains("MajorTp2Roe") || ex.Message.Contains("MajorTrailingStartRoe") || ex.Message.Contains("MajorTrailingGapRoe") || ex.Message.Contains("MajorStopLossRoe"))
+                    catch (SqlException ex) when (ex.Message.Contains("PumpTp1Roe") || ex.Message.Contains("PumpTp2Roe") || ex.Message.Contains("PumpTimeStopMinutes") || ex.Message.Contains("PumpStopDistanceWarnPct") || ex.Message.Contains("PumpStopDistanceBlockPct") || ex.Message.Contains("MajorTrendProfile") || ex.Message.Contains("PumpBreakEvenRoe") || ex.Message.Contains("PumpTrailingStartRoe") || ex.Message.Contains("PumpTrailingGapRoe") || ex.Message.Contains("PumpStopLossRoe") || ex.Message.Contains("PumpMargin") || ex.Message.Contains("PumpLeverage") || ex.Message.Contains("PumpFirstTakeProfitRatioPct") || ex.Message.Contains("PumpStairStep1Roe") || ex.Message.Contains("PumpStairStep2Roe") || ex.Message.Contains("PumpStairStep3Roe") || ex.Message.Contains("MajorLeverage") || ex.Message.Contains("MajorMargin") || ex.Message.Contains("MajorBreakEvenRoe") || ex.Message.Contains("MajorTp1Roe") || ex.Message.Contains("MajorTp2Roe") || ex.Message.Contains("MajorTrailingStartRoe") || ex.Message.Contains("MajorTrailingGapRoe") || ex.Message.Contains("MajorStopLossRoe"))
                     {
                         // 하위 호환: 구 스키마(펌프 컬럼 없음)에서는 기본 필드만 저장
                         string fallbackSql = @"
@@ -2257,6 +2270,212 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
             {
                 MainWindow.Instance?.AddLog($"⚠️ GeneralSettings 로드 실패: {ex.Message}");
                 return null;
+            }
+        }
+
+       
+        public async Task<bool> UpsertElliottWaveAnchorStateAsync(ElliottWaveAnchorState state)
+        {
+            if (state == null || string.IsNullOrWhiteSpace(state.Symbol))
+                return false;
+
+            try
+            {
+                if (!TryGetCurrentUserIdForSave($"{state.Symbol} ElliottAnchor 저장", out int userId))
+                    return false;
+
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                const string mergeSql = @"
+MERGE dbo.ElliottWaveAnchors AS target
+USING (
+    SELECT
+        @UserId AS UserId,
+        @Symbol AS Symbol,
+        @CurrentPhase AS CurrentPhase,
+        @Phase1StartTime AS Phase1StartTime,
+        @Phase1LowPrice AS Phase1LowPrice,
+        @Phase1HighPrice AS Phase1HighPrice,
+        @Phase1Volume AS Phase1Volume,
+        @Phase2StartTime AS Phase2StartTime,
+        @Phase2LowPrice AS Phase2LowPrice,
+        @Phase2HighPrice AS Phase2HighPrice,
+        @Phase2Volume AS Phase2Volume,
+        @Fib500Level AS Fib500Level,
+        @Fib0618Level AS Fib0618Level,
+        @Fib786Level AS Fib786Level,
+        @Fib1618Target AS Fib1618Target,
+        @AnchorLowPoint AS AnchorLowPoint,
+        @AnchorHighPoint AS AnchorHighPoint,
+        @AnchorIsConfirmed AS AnchorIsConfirmed,
+        @AnchorIsLocked AS AnchorIsLocked,
+        @AnchorConfirmedAtUtc AS AnchorConfirmedAtUtc,
+        @LowPivotStrength AS LowPivotStrength,
+        @HighPivotStrength AS HighPivotStrength,
+        @UpdatedAtUtc AS UpdatedAtUtc
+) AS source
+ON target.UserId = source.UserId AND target.Symbol = source.Symbol
+WHEN MATCHED THEN
+    UPDATE SET
+        CurrentPhase = source.CurrentPhase,
+        Phase1StartTime = source.Phase1StartTime,
+        Phase1LowPrice = source.Phase1LowPrice,
+        Phase1HighPrice = source.Phase1HighPrice,
+        Phase1Volume = source.Phase1Volume,
+        Phase2StartTime = source.Phase2StartTime,
+        Phase2LowPrice = source.Phase2LowPrice,
+        Phase2HighPrice = source.Phase2HighPrice,
+        Phase2Volume = source.Phase2Volume,
+        Fib500Level = source.Fib500Level,
+        Fib0618Level = source.Fib0618Level,
+        Fib786Level = source.Fib786Level,
+        Fib1618Target = source.Fib1618Target,
+        AnchorLowPoint = source.AnchorLowPoint,
+        AnchorHighPoint = source.AnchorHighPoint,
+        AnchorIsConfirmed = source.AnchorIsConfirmed,
+        AnchorIsLocked = source.AnchorIsLocked,
+        AnchorConfirmedAtUtc = source.AnchorConfirmedAtUtc,
+        LowPivotStrength = source.LowPivotStrength,
+        HighPivotStrength = source.HighPivotStrength,
+        UpdatedAtUtc = source.UpdatedAtUtc
+WHEN NOT MATCHED THEN
+    INSERT
+    (
+        UserId, Symbol, CurrentPhase, Phase1StartTime, Phase1LowPrice, Phase1HighPrice, Phase1Volume,
+        Phase2StartTime, Phase2LowPrice, Phase2HighPrice, Phase2Volume,
+        Fib500Level, Fib0618Level, Fib786Level, Fib1618Target,
+        AnchorLowPoint, AnchorHighPoint, AnchorIsConfirmed, AnchorIsLocked, AnchorConfirmedAtUtc,
+        LowPivotStrength, HighPivotStrength, UpdatedAtUtc
+    )
+    VALUES
+    (
+        source.UserId, source.Symbol, source.CurrentPhase, source.Phase1StartTime, source.Phase1LowPrice, source.Phase1HighPrice, source.Phase1Volume,
+        source.Phase2StartTime, source.Phase2LowPrice, source.Phase2HighPrice, source.Phase2Volume,
+        source.Fib500Level, source.Fib0618Level, source.Fib786Level, source.Fib1618Target,
+        source.AnchorLowPoint, source.AnchorHighPoint, source.AnchorIsConfirmed, source.AnchorIsLocked, source.AnchorConfirmedAtUtc,
+        source.LowPivotStrength, source.HighPivotStrength, source.UpdatedAtUtc
+    );";
+
+                await db.ExecuteAsync(mergeSql, new
+                {
+                    UserId = userId,
+                    Symbol = TrimForDb(state.Symbol, 50),
+                    state.CurrentPhase,
+                    Phase1StartTime = state.Phase1StartTime,
+                    state.Phase1LowPrice,
+                    state.Phase1HighPrice,
+                    Phase1Volume = SanitizeFloatForDb(state.Phase1Volume),
+                    Phase2StartTime = state.Phase2StartTime,
+                    state.Phase2LowPrice,
+                    state.Phase2HighPrice,
+                    Phase2Volume = SanitizeFloatForDb(state.Phase2Volume),
+                    state.Fib500Level,
+                    state.Fib0618Level,
+                    state.Fib786Level,
+                    state.Fib1618Target,
+                    state.AnchorLowPoint,
+                    state.AnchorHighPoint,
+                    state.AnchorIsConfirmed,
+                    state.AnchorIsLocked,
+                    AnchorConfirmedAtUtc = state.AnchorConfirmedAtUtc,
+                    state.LowPivotStrength,
+                    state.HighPivotStrength,
+                    UpdatedAtUtc = DateTime.UtcNow
+                });
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB][ElliottAnchor] 저장 실패: {state.Symbol} | {ex.Message}");
+                return false;
+            }
+        }
+
+        public async Task<List<ElliottWaveAnchorState>> LoadElliottWaveAnchorStatesAsync(IEnumerable<string>? symbols = null)
+        {
+            try
+            {
+                int userId = GetCurrentUserId();
+                if (userId <= 0)
+                    return new List<ElliottWaveAnchorState>();
+
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                var symbolList = symbols?
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Select(s => TrimForDb(s, 50))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList() ?? new List<string>();
+
+                if (symbolList.Count == 0)
+                {
+                    const string sqlAll = @"
+SELECT UserId, Symbol, CurrentPhase,
+       Phase1StartTime, Phase1LowPrice, Phase1HighPrice, Phase1Volume,
+       Phase2StartTime, Phase2LowPrice, Phase2HighPrice, Phase2Volume,
+       Fib500Level, Fib0618Level, Fib786Level, Fib1618Target,
+       AnchorLowPoint, AnchorHighPoint, AnchorIsConfirmed, AnchorIsLocked,
+       AnchorConfirmedAtUtc, LowPivotStrength, HighPivotStrength, UpdatedAtUtc
+FROM dbo.ElliottWaveAnchors
+WHERE UserId = @UserId";
+
+                    return (await db.QueryAsync<ElliottWaveAnchorState>(sqlAll, new { UserId = userId })).ToList();
+                }
+
+                const string sqlBySymbols = @"
+SELECT UserId, Symbol, CurrentPhase,
+       Phase1StartTime, Phase1LowPrice, Phase1HighPrice, Phase1Volume,
+       Phase2StartTime, Phase2LowPrice, Phase2HighPrice, Phase2Volume,
+       Fib500Level, Fib0618Level, Fib786Level, Fib1618Target,
+       AnchorLowPoint, AnchorHighPoint, AnchorIsConfirmed, AnchorIsLocked,
+       AnchorConfirmedAtUtc, LowPivotStrength, HighPivotStrength, UpdatedAtUtc
+FROM dbo.ElliottWaveAnchors
+WHERE UserId = @UserId
+  AND Symbol IN @Symbols";
+
+                return (await db.QueryAsync<ElliottWaveAnchorState>(sqlBySymbols, new { UserId = userId, Symbols = symbolList })).ToList();
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB][ElliottAnchor] 로드 실패: {ex.Message}");
+                return new List<ElliottWaveAnchorState>();
+            }
+        }
+
+        public async Task<bool> DeleteElliottWaveAnchorStateAsync(string symbol)
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+                return false;
+
+            try
+            {
+                int userId = GetCurrentUserId();
+                if (userId <= 0)
+                    return false;
+
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                const string deleteSql = @"
+DELETE FROM dbo.ElliottWaveAnchors
+WHERE UserId = @UserId
+  AND Symbol = @Symbol";
+
+                await db.ExecuteAsync(deleteSql, new
+                {
+                    UserId = userId,
+                    Symbol = TrimForDb(symbol, 50)
+                });
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB][ElliottAnchor] 삭제 실패: {symbol} | {ex.Message}");
+                return false;
             }
         }
 

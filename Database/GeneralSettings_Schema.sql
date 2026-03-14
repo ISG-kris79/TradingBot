@@ -48,6 +48,19 @@ IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Genera
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpLeverage')
     ALTER TABLE dbo.GeneralSettings ADD PumpLeverage INT NOT NULL DEFAULT 20;
 
+-- ─── 마이그레이션: PUMP 추세홀딩 튜닝 컬럼 (1차 익절 비중/계단식 ROE) ─────────────
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpFirstTakeProfitRatioPct')
+    ALTER TABLE dbo.GeneralSettings ADD PumpFirstTakeProfitRatioPct DECIMAL(18, 4) NOT NULL DEFAULT 15.0;
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpStairStep1Roe')
+    ALTER TABLE dbo.GeneralSettings ADD PumpStairStep1Roe DECIMAL(18, 4) NOT NULL DEFAULT 50.0;
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpStairStep2Roe')
+    ALTER TABLE dbo.GeneralSettings ADD PumpStairStep2Roe DECIMAL(18, 4) NOT NULL DEFAULT 100.0;
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpStairStep3Roe')
+    ALTER TABLE dbo.GeneralSettings ADD PumpStairStep3Roe DECIMAL(18, 4) NOT NULL DEFAULT 200.0;
+
 -- ─── 마이그레이션: 메이저 코인 완전 분리 (v2.5+) ────────────────────────────────────────
 -- 메이저 전용 레버리지/증거금/ROE 5단계 전부 독립 관리
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorLeverage')
@@ -60,19 +73,19 @@ IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Genera
     ALTER TABLE dbo.GeneralSettings ADD MajorBreakEvenRoe DECIMAL(18, 4) NOT NULL DEFAULT 7.0;
 
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorTp1Roe')
-    ALTER TABLE dbo.GeneralSettings ADD MajorTp1Roe DECIMAL(18, 4) NOT NULL DEFAULT 15.0;
+    ALTER TABLE dbo.GeneralSettings ADD MajorTp1Roe DECIMAL(18, 4) NOT NULL DEFAULT 20.0;
 
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorTp2Roe')
-    ALTER TABLE dbo.GeneralSettings ADD MajorTp2Roe DECIMAL(18, 4) NOT NULL DEFAULT 25.0;
+    ALTER TABLE dbo.GeneralSettings ADD MajorTp2Roe DECIMAL(18, 4) NOT NULL DEFAULT 40.0;
 
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorTrailingStartRoe')
-    ALTER TABLE dbo.GeneralSettings ADD MajorTrailingStartRoe DECIMAL(18, 4) NOT NULL DEFAULT 22.0;
+    ALTER TABLE dbo.GeneralSettings ADD MajorTrailingStartRoe DECIMAL(18, 4) NOT NULL DEFAULT 40.0;
 
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorTrailingGapRoe')
-    ALTER TABLE dbo.GeneralSettings ADD MajorTrailingGapRoe DECIMAL(18, 4) NOT NULL DEFAULT 4.0;
+    ALTER TABLE dbo.GeneralSettings ADD MajorTrailingGapRoe DECIMAL(18, 4) NOT NULL DEFAULT 5.0;
 
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorStopLossRoe')
-    ALTER TABLE dbo.GeneralSettings ADD MajorStopLossRoe DECIMAL(18, 4) NOT NULL DEFAULT 60.0;
+    ALTER TABLE dbo.GeneralSettings ADD MajorStopLossRoe DECIMAL(18, 4) NOT NULL DEFAULT 20.0;
 
 -- 확인
 SELECT * FROM dbo.GeneralSettings;
