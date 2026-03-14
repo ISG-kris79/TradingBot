@@ -274,8 +274,24 @@ namespace TradingBot.Services
             double breakEvenMinHoldSeconds = aggressiveMultiplier >= 1.5m ? 90.0 : 45.0;
             bool breakEvenDeferredLogged = false;
             bool hasCustomAbsoluteStop = customStopLossPrice > 0;
-            
-            if (aggressiveMultiplier >= 1.5m)
+            // [ATR 스탑 진입 직후 wick-out 방지] 진입 후 5분간 ATR 스탑 발동 차단
+            DateTime atrStopMinFireTime = positionEntryTime.AddMinutes(5.0);
+
+                        // ═══════════════════════════════════════════════════════════════
+                        // [하이브리드 듀얼 스탑] 상태 변수
+                        //   1차 방어선: ATR 2.5x  → 터치 시 WHIPSAW 모드 (최대 3분 버팀)
+                        //   2차 방어선: Fractal Low (직전 5캔들 최저점 × 0.999)
+                        //   V-Stop 필터: 거래량 < AvgVolume×1.5 → Fake-out, 추가 1분 대기
+                        // ═══════════════════════════════════════════════════════════════
+                        List<IBinanceKline>? dualStopCandles  = null;
+                        DateTime  nextDualStopCandleRefresh   = DateTime.MinValue;
+                        DateTime? atrFirstHitTime             = null;   // ATR 첫 터치 시각
+                        DateTime? fractalBrokenTime           = null;   // Fractal도 깨진 시각
+                        bool      whipsawLoggedOnce           = false;
+                        const double atrWhipsawMaxMinutes     = 3.0;    // ATR만 터치: 최대 3분 버팀
+                        const double fractalVolumeMaxMinutes  = 1.0;    // Fractal 돌파 후 V-Stop: 최대 1분 대기
+
+                        if (aggressiveMultiplier >= 1.5m)
             {
                 OnLog?.Invoke($"🎯 {symbol} 공격형 진입 배수 {aggressiveMultiplier:F2}x 감지 → 손절 타이트 조정 (ROE {breakEvenROE:F1}%)");
             }
@@ -338,6 +354,19 @@ namespace TradingBot.Services
                         currentPrice = ticker.LastPrice;
 
                     if (currentPrice == 0) { await Task.Delay(2000, token); continue; }
+
+                    // [듀얼 스탑] 15분봉 캔들 30초마다 갱신 (Fractal Low + 거래량 계산용)
+                    if (hasCustomAbsoluteStop && !isSidewaysMode && DateTime.Now >= nextDualStopCandleRefresh)
+                    {
+                        try
+                        {
+                            var fetched = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 30, token);
+                            if (fetched != null && fetched.Count >= 10)
+                                dualStopCandles = fetched.ToList();
+                        }
+                        catch { /* 캔들 갱신 실패 시 이전 캐시 유지 */ }
+                        nextDualStopCandleRefresh = DateTime.Now.AddSeconds(30);
+                    }
 
                     lock (_posLock)
                     {
@@ -464,7 +493,26 @@ namespace TradingBot.Services
                         protectiveStopPrice = isLong 
                             ? entryPrice * (1 + breakEvenBufferPct)
                             : entryPrice * (1 - breakEvenBufferPct);
-                        
+
+                        // [ATR 스탑 본절 동기화] 본절 보호 활성화 시 ATR 스탑을 최소 진입가 수준으로 올려
+                        // SmartProtectiveStop이 이미 본절을 지키므로 ATR 스탑도 동기화 필요
+                        if (hasCustomAbsoluteStop)
+                        {
+                            decimal atrBreakevenSync = isLong
+                                ? entryPrice * (1 - breakEvenBufferPct)   // 진입가 - 버퍼 (LONG: 최소한 원금 근처)
+                                : entryPrice * (1 + breakEvenBufferPct);
+                            if (isLong && customStopLossPrice < atrBreakevenSync)
+                            {
+                                customStopLossPrice = atrBreakevenSync;
+                                OnLog?.Invoke($"🔗 {symbol} ATR스탑 ↑ 본절 동기화: {customStopLossPrice:F8} (진입가={entryPrice:F8})");
+                            }
+                            else if (!isLong && customStopLossPrice > atrBreakevenSync)
+                            {
+                                customStopLossPrice = atrBreakevenSync;
+                                OnLog?.Invoke($"🔗 {symbol} ATR스탑 ↓ 본절 동기화: {customStopLossPrice:F8} (진입가={entryPrice:F8})");
+                            }
+                        }
+
                         OnLog?.Invoke($"🛡️ {symbol} 손절대기 (ROE {highestROE:F1}%, 스탑 {protectiveStopPrice:F8})");
                     }
 
@@ -652,12 +700,124 @@ namespace TradingBot.Services
 
                     if (hasCustomAbsoluteStop && !isSidewaysMode)
                     {
-                        bool customStopHit = (isLong && currentPrice <= customStopLossPrice) || (!isLong && currentPrice >= customStopLossPrice);
-                        if (customStopHit)
+                        bool atrStopGateOpen = DateTime.Now >= atrStopMinFireTime;
+                        if (atrStopGateOpen)
                         {
-                            OnLog?.Invoke($"🔴 {symbol} 손절실행 [ATR]");
-                            await ExecuteMarketClose(symbol, $"ATR 2.5x Hybrid Stop ({currentPrice:F8})", token);
-                            break;
+                            bool atrHit = (isLong  && currentPrice <= customStopLossPrice)
+                                       || (!isLong && currentPrice >= customStopLossPrice);
+
+                            if (!atrHit)
+                            {
+                                // 가격 회복 → 모든 경보 상태 초기화
+                                if (atrFirstHitTime.HasValue)
+                                {
+                                    double recoveredSec = (DateTime.Now - atrFirstHitTime.Value).TotalSeconds;
+                                    OnLog?.Invoke($"✅ [ATR 회복] {symbol} ATR 라인 복귀 ({recoveredSec:F0}초 버팀 성공)");
+                                }
+                                atrFirstHitTime   = null;
+                                fractalBrokenTime = null;
+                                whipsawLoggedOnce = false;
+                            }
+                            else
+                            {
+                                // ─── ATR 터치 ────────────────────────────────────────────
+                                if (!atrFirstHitTime.HasValue)
+                                    atrFirstHitTime = DateTime.Now;
+
+                                double atrHeldSec = (DateTime.Now - atrFirstHitTime.Value).TotalSeconds;
+
+                                // 1차 방어선: Fractal Low 계산 (직전 5캔들)
+                                decimal fractalStop = 0m;
+                                if (dualStopCandles != null && dualStopCandles.Count >= 5)
+                                {
+                                    var last5 = dualStopCandles.TakeLast(5).ToList();
+                                    fractalStop = isLong
+                                        ? last5.Min(c => c.LowPrice)  * 0.999m
+                                        : last5.Max(c => c.HighPrice) * 1.001m;
+                                }
+
+                                bool fractalBroken = fractalStop > 0m
+                                    && ((isLong  && currentPrice <= fractalStop)
+                                    ||  (!isLong && currentPrice >= fractalStop));
+
+                                if (!fractalBroken)
+                                {
+                                    // ── Fractal 지지 중: WHIPSAW 버팀 (최대 3분) ──────────
+                                    if (!whipsawLoggedOnce)
+                                    {
+                                        OnLog?.Invoke(
+                                            $"⚠️ [WHIPSAW DETECTED - HOLDING] {symbol} " +
+                                            $"ATR=({customStopLossPrice:F8}) 터치, " +
+                                            $"Fractal 지지선=({(fractalStop > 0 ? fractalStop.ToString("F8") : "N/A")}) 생존 → 버팀 시작");
+                                        whipsawLoggedOnce = true;
+                                    }
+
+                                    if (atrHeldSec >= atrWhipsawMaxMinutes * 60)
+                                    {
+                                        decimal roeTmo = isLong
+                                            ? ((currentPrice - entryPrice) / entryPrice) * leverage * 100m
+                                            : ((entryPrice - currentPrice) / entryPrice) * leverage * 100m;
+                                        OnLog?.Invoke($"🔴 [ATR 버팀 한도초과] {symbol} {atrWhipsawMaxMinutes:F0}분 경과 → 최종 손절 (ROE={roeTmo:F1}%)");
+                                        await ExecuteMarketClose(symbol,
+                                            $"ATR Dual-Stop [WhipsawTimeout {atrWhipsawMaxMinutes:F0}min] ROE={roeTmo:F1}% ({currentPrice:F8})",
+                                            token);
+                                        break;
+                                    }
+                                    // 아직 버팀 가능 → 이번 루프 손절 생략
+                                }
+                                else
+                                {
+                                    // ── 2차 방어선 돌파: Fractal 도 깨짐 → V-Stop 거래량 필터 ──
+                                    if (!fractalBrokenTime.HasValue)
+                                    {
+                                        fractalBrokenTime = DateTime.Now;
+                                        OnLog?.Invoke(
+                                            $"🚨 [FRACTAL BROKEN] {symbol} " +
+                                            $"Fractal Low=({fractalStop:F8}) 돌파 → 거래량 필터 진입");
+                                    }
+
+                                    double fractalHeldSec = (DateTime.Now - fractalBrokenTime.Value).TotalSeconds;
+
+                                    // 거래량 필터
+                                    decimal currentVol = dualStopCandles?.LastOrDefault()?.Volume ?? 0m;
+                                    decimal avgVol     = (dualStopCandles != null && dualStopCandles.Count >= 20)
+                                        ? (decimal)dualStopCandles.TakeLast(20).Average(c => (double)c.Volume)
+                                        : 0m;
+                                    bool volumeConfirmed = avgVol <= 0m || currentVol >= avgVol * 1.5m;
+
+                                    decimal fireROE = isLong
+                                        ? ((currentPrice - entryPrice) / entryPrice) * leverage * 100m
+                                        : ((entryPrice - currentPrice) / entryPrice) * leverage * 100m;
+
+                                    if (volumeConfirmed)
+                                    {
+                                        OnLog?.Invoke(
+                                            $"🔴 [Dual-Stop 확정] {symbol} ATR+Fractal+Volume 트리플 확인 " +
+                                            $"(ROE={fireROE:F1}%, Vol={currentVol:F2} ≥ Avg×1.5={avgVol * 1.5m:F2})");
+                                        await ExecuteMarketClose(symbol,
+                                            $"ATR 2.5x Dual-Stop [Confirmed] ROE={fireROE:F1}% ({currentPrice:F8})",
+                                            token);
+                                        break;
+                                    }
+                                    else if (fractalHeldSec >= fractalVolumeMaxMinutes * 60)
+                                    {
+                                        OnLog?.Invoke(
+                                            $"🔴 [FakeOut 한도초과] {symbol} 거래량 미확인이나 " +
+                                            $"{fractalVolumeMaxMinutes:F0}분 경과 → 손절 (ROE={fireROE:F1}%)");
+                                        await ExecuteMarketClose(symbol,
+                                            $"ATR 2.5x Dual-Stop [FakeOutTimeout] ROE={fireROE:F1}% ({currentPrice:F8})",
+                                            token);
+                                        break;
+                                    }
+                                    else
+                                    {
+                                        OnLog?.Invoke(
+                                            $"⚠️ [FAKE-OUT FILTER] {symbol} Fractal 돌파했으나 거래량 미확인 " +
+                                            $"({currentVol:F2} < {avgVol * 1.5m:F2}) → 대기 " +
+                                            $"({fractalHeldSec:F0}s / {fractalVolumeMaxMinutes * 60:F0}s)");
+                                    }
+                                }
+                            }
                         }
                     }
 
