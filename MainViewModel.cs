@@ -118,6 +118,7 @@ namespace TradingBot.ViewModels
         public decimal InitialBalance => _engine?.InitialBalance ?? 0;
         // 데이터 컬렉션
         public ObservableCollection<MultiTimeframeViewModel> MarketDataList { get; set; } = new ObservableCollection<MultiTimeframeViewModel>();
+        public ObservableCollection<BattleExecutionStep> BattleExecutionSteps { get; } = new ObservableCollection<BattleExecutionStep>();
         public ChartValues<double> ProfitHistory { get; set; } = new ChartValues<double>();
         public ObservableCollection<string> LiveLogs { get; set; } = new ObservableCollection<string>();
         public ObservableCollection<string> TradeLogs { get; set; } = new ObservableCollection<string>();
@@ -260,6 +261,41 @@ namespace TradingBot.ViewModels
         {
             get => _battleRsiCountdownText;
             set { _battleRsiCountdownText = value; OnPropertyChanged(); }
+        }
+
+        private string _battleGoldenZoneText = "0.618 GOLDEN ZONE: 대기";
+        public string BattleGoldenZoneText
+        {
+            get => _battleGoldenZoneText;
+            set { _battleGoldenZoneText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _battleGoldenZoneBrush = Brushes.LightGray;
+        public Brush BattleGoldenZoneBrush
+        {
+            get => _battleGoldenZoneBrush;
+            set { _battleGoldenZoneBrush = value; OnPropertyChanged(); }
+        }
+
+        private string _battleAtrCloudText = "ATR STOP CLOUD: 대기";
+        public string BattleAtrCloudText
+        {
+            get => _battleAtrCloudText;
+            set { _battleAtrCloudText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _battleAtrCloudBrush = Brushes.LightGray;
+        public Brush BattleAtrCloudBrush
+        {
+            get => _battleAtrCloudBrush;
+            set { _battleAtrCloudBrush = value; OnPropertyChanged(); }
+        }
+
+        private bool _battleStopPulseActive;
+        public bool BattleStopPulseActive
+        {
+            get => _battleStopPulseActive;
+            set { _battleStopPulseActive = value; OnPropertyChanged(); }
         }
 
         private string _battleFastLog1 = "로그 대기 중";
@@ -638,6 +674,7 @@ namespace TradingBot.ViewModels
             UpdateMajorProfileStatus(AppConfig.Current?.Trading?.GeneralSettings?.MajorTrendProfile);
             ConfigureMarketDataSorting(refresh: false);
             ApplyLiveLogPerformanceSettings();
+            InitializeBattleExecutionSteps();
             InitializeLiveLogPipeline();
             InitializeTickerUpdatePipeline();
             InitializeFooterLogPipeline();
@@ -1897,6 +1934,127 @@ namespace TradingBot.ViewModels
             });
         }
 
+        private void InitializeBattleExecutionSteps()
+        {
+            BattleExecutionSteps.Clear();
+            BattleExecutionSteps.Add(new BattleExecutionStep("01", "Market Sync"));
+            BattleExecutionSteps.Add(new BattleExecutionStep("02", "Wave AI Gate"));
+            BattleExecutionSteps.Add(new BattleExecutionStep("03", "0.618 Golden Zone"));
+            BattleExecutionSteps.Add(new BattleExecutionStep("04", "ATR Close-Only"));
+            UpdateBattleExecutionSteps(null, false, false, false);
+        }
+
+        private void UpdateBattleExecutionSteps(
+            MultiTimeframeViewModel? symbolVm,
+            bool aiPassed,
+            bool goldenZoneReady,
+            bool atrArmed)
+        {
+            if (BattleExecutionSteps.Count < 4)
+                return;
+
+            bool hasSymbol = symbolVm != null;
+            bool syncReady = hasSymbol && symbolVm!.LastPrice > 0;
+            bool aiReady = syncReady && aiPassed;
+            bool fibReady = aiReady && goldenZoneReady;
+            bool atrReady = fibReady && atrArmed;
+
+            int activeIndex = -1;
+            if (hasSymbol)
+            {
+                if (!syncReady) activeIndex = 0;
+                else if (!aiReady) activeIndex = 1;
+                else if (!fibReady) activeIndex = 2;
+                else if (!atrReady) activeIndex = 3;
+            }
+
+            SetBattleStep(0,
+                hasSymbol ? $"Stream {FormatBattlePrice(symbolVm!.LastPrice)}" : "종목 선택 대기",
+                syncReady,
+                activeIndex == 0);
+
+            SetBattleStep(1,
+                hasSymbol ? $"Pulse {BattlePulseScoreText} · {BattleThresholdText}" : "AI 대기",
+                aiReady,
+                activeIndex == 1);
+
+            SetBattleStep(2,
+                BattleGoldenZoneText,
+                fibReady,
+                activeIndex == 2);
+
+            SetBattleStep(3,
+                BattleAtrCloudText,
+                atrReady,
+                activeIndex == 3);
+        }
+
+        private void SetBattleStep(int index, string detail, bool completed, bool active)
+        {
+            if (index < 0 || index >= BattleExecutionSteps.Count)
+                return;
+
+            var step = BattleExecutionSteps[index];
+            step.Detail = detail;
+            step.IsActive = active;
+            step.StateText = completed ? "완료" : active ? "진행" : "대기";
+            step.StateBrush = completed
+                ? Brushes.LimeGreen
+                : active
+                    ? Brushes.Gold
+                    : Brushes.LightGray;
+        }
+
+        private double ResolveBattleGateThresholdValue()
+        {
+            if (string.IsNullOrWhiteSpace(GateThresholdSummaryText))
+                return 55d;
+
+            var match = GateThresholdRegex.Match(GateThresholdSummaryText);
+            if (!match.Success)
+                return 55d;
+
+            var mlThreshold = 55d;
+            var tfThreshold = 52d;
+
+            if (double.TryParse(match.Groups["ml"].Value, out var parsedMl))
+                mlThreshold = parsedMl;
+
+            if (double.TryParse(match.Groups["tf"].Value, out var parsedTf))
+                tfThreshold = parsedTf;
+
+            return Math.Max(mlThreshold, tfThreshold);
+        }
+
+        private static bool ResolveGoldenZoneState(string? fibPosition, out string label)
+        {
+            if (string.IsNullOrWhiteSpace(fibPosition) || fibPosition == "-")
+            {
+                label = "대기";
+                return false;
+            }
+
+            string normalized = fibPosition.Trim().ToUpperInvariant();
+
+            if (normalized.Contains("MID", StringComparison.Ordinal) ||
+                normalized.Contains("ABOVE618", StringComparison.Ordinal) ||
+                normalized.Contains("BELOW618", StringComparison.Ordinal))
+            {
+                label = normalized;
+                return true;
+            }
+
+            if (TryExtractFibRatio(normalized, out double fibRatio))
+            {
+                double distance = Math.Abs(fibRatio - 0.618d) * 100d;
+                label = $"{fibRatio:0.000} ({distance:F1}%p)";
+                return distance <= 6d;
+            }
+
+            label = normalized;
+            return false;
+        }
+
         private void AttachBattleSymbolObserver(MultiTimeframeViewModel? symbolVm)
         {
             if (symbolVm == null)
@@ -1938,6 +2096,12 @@ namespace TradingBot.ViewModels
                     BattleEtaText = "ETA: -";
                     BattleFibCountdownText = "Fib 카운트다운: -";
                     BattleRsiCountdownText = "RSI 카운트다운: -";
+                    BattleGoldenZoneText = "0.618 GOLDEN ZONE: 대기";
+                    BattleGoldenZoneBrush = Brushes.LightGray;
+                    BattleAtrCloudText = "ATR STOP CLOUD: 대기";
+                    BattleAtrCloudBrush = Brushes.LightGray;
+                    BattleStopPulseActive = false;
+                    UpdateBattleExecutionSteps(null, false, false, false);
                     _battleHasLastPrice = false;
                     return;
                 }
@@ -2005,6 +2169,38 @@ namespace TradingBot.ViewModels
                 BattleFibCountdownText = BuildFibCountdownText(symbolVm.FibPosition);
                 BattleRsiCountdownText = BuildRsiCountdownText(symbolVm.RSI_1H, symbolVm.Decision);
 
+                bool goldenZoneReady = ResolveGoldenZoneState(symbolVm.FibPosition, out var goldenZoneLabel);
+                BattleGoldenZoneText = $"0.618 GOLDEN ZONE: {goldenZoneLabel}";
+                BattleGoldenZoneBrush = goldenZoneReady
+                    ? Brushes.LimeGreen
+                    : Brushes.Gold;
+
+                bool atrArmed = symbolVm.IsPositionActive && symbolVm.StopLossPrice > 0m;
+                double stopDistancePct = 0d;
+                if (atrArmed && symbolVm.LastPrice > 0m)
+                {
+                    stopDistancePct = Math.Abs((double)((symbolVm.LastPrice - symbolVm.StopLossPrice) / symbolVm.LastPrice)) * 100d;
+                }
+
+                if (atrArmed)
+                {
+                    BattleAtrCloudText = $"ATR STOP CLOUD: {FormatBattlePrice(symbolVm.StopLossPrice)} | 거리 {stopDistancePct:F2}% | Close-Only";
+                    BattleStopPulseActive = stopDistancePct <= 0.7d;
+                    BattleAtrCloudBrush = BattleStopPulseActive
+                        ? Brushes.OrangeRed
+                        : stopDistancePct <= 1.5d
+                            ? Brushes.Gold
+                            : Brushes.DeepSkyBlue;
+                }
+                else
+                {
+                    BattleAtrCloudText = symbolVm.IsPositionActive
+                        ? "ATR STOP CLOUD: 계산 대기 (Close-Only)"
+                        : "ATR STOP CLOUD: 포지션 없음 (Close-Only)";
+                    BattleAtrCloudBrush = Brushes.LightGray;
+                    BattleStopPulseActive = false;
+                }
+
                 if (symbolVm.AiEntryForecastOffsetMinutes.HasValue && symbolVm.AiEntryForecastOffsetMinutes.Value > 1)
                 {
                     string etaTime = symbolVm.AiEntryForecastTime?.ToString("HH:mm") ?? "--:--";
@@ -2022,6 +2218,10 @@ namespace TradingBot.ViewModels
                 {
                     BattleEtaText = "ETA: 대기";
                 }
+
+                double gateThreshold = ResolveBattleGateThresholdValue();
+                bool aiPassed = score >= gateThreshold || confidenceRatio >= 0.35f;
+                UpdateBattleExecutionSteps(symbolVm, aiPassed, goldenZoneReady, atrArmed);
             });
         }
 
@@ -4424,6 +4624,70 @@ namespace TradingBot.ViewModels
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged([CallerMemberName] string? name = null) =>
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
+
+    public class BattleExecutionStep : INotifyPropertyChanged
+    {
+        public BattleExecutionStep(string order, string title)
+        {
+            Order = order;
+            Title = title;
+        }
+
+        public string Order { get; }
+        public string Title { get; }
+
+        private string _detail = "대기";
+        public string Detail
+        {
+            get => _detail;
+            set
+            {
+                if (_detail == value) return;
+                _detail = value;
+                OnPropertyChanged();
+            }
+        }
+
+        private string _stateText = "대기";
+        public string StateText
+        {
+            get => _stateText;
+            set
+            {
+                if (_stateText == value) return;
+                _stateText = value;
+                OnPropertyChanged();
+            }
+        }
+
+        private Brush _stateBrush = Brushes.LightGray;
+        public Brush StateBrush
+        {
+            get => _stateBrush;
+            set
+            {
+                if (_stateBrush == value) return;
+                _stateBrush = value;
+                OnPropertyChanged();
+            }
+        }
+
+        private bool _isActive;
+        public bool IsActive
+        {
+            get => _isActive;
+            set
+            {
+                if (_isActive == value) return;
+                _isActive = value;
+                OnPropertyChanged();
+            }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+        private void OnPropertyChanged([CallerMemberName] string? name = null) =>
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 }

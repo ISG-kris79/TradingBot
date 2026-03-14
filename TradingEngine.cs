@@ -1085,7 +1085,7 @@ namespace TradingBot
                             majorHybridStopLoss = majorStop.StopLossPrice;
                             if (majorHybridStopLoss > 0)
                             {
-                                OnStatusLog?.Invoke($"🛡️ [MAJOR ATR] {pos.Symbol} 시작 복원 포지션 손절 재계산 | SL={majorHybridStopLoss:F8}, ATRx2.5={majorStop.AtrDistance:F8}, 구조선={majorStop.StructureStopPrice:F8}");
+                                OnStatusLog?.Invoke($"🛡️ [MAJOR ATR] {pos.Symbol} 시작 복원 포지션 손절 재계산 | SL={majorHybridStopLoss:F8}, ATRdist={majorStop.AtrDistance:F8}, 구조선={majorStop.StructureStopPrice:F8}");
                             }
                         }
 
@@ -1323,7 +1323,10 @@ namespace TradingBot
                 if (candles == null || candles.Count < 15)
                     return (0m, 0m, 0m);
 
-                const decimal atrMultiplier = 2.5m;
+                decimal atrMultiplier = string.Equals(symbol, "XRPUSDT", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(symbol, "SOLUSDT", StringComparison.OrdinalIgnoreCase)
+                    ? 4.0m
+                    : 3.5m;
                 double atr = IndicatorCalculator.CalculateATR(candles, 14);
                 if (atr <= 0)
                     return (0m, 0m, 0m);
@@ -1333,14 +1336,14 @@ namespace TradingBot
                     ? referencePrice - atrDistance
                     : referencePrice + atrDistance;
 
-                var swingCandles = candles.TakeLast(Math.Min(12, candles.Count)).ToList();
+                var swingCandles = candles.TakeLast(Math.Min(10, candles.Count)).ToList();
                 decimal structureStopPrice = isLong
                     ? swingCandles.Min(c => c.LowPrice) * 0.999m
                     : swingCandles.Max(c => c.HighPrice) * 1.001m;
 
                 decimal hybridStopPrice = isLong
-                    ? Math.Max(atrStopPrice, structureStopPrice)
-                    : Math.Min(atrStopPrice, structureStopPrice);
+                    ? Math.Min(atrStopPrice, structureStopPrice)
+                    : Math.Max(atrStopPrice, structureStopPrice);
 
                 if (isLong && hybridStopPrice >= referencePrice)
                     hybridStopPrice = atrStopPrice;
@@ -4657,7 +4660,7 @@ namespace TradingBot
                         restoredMajorStopLoss = majorStop.StopLossPrice;
                         if (restoredMajorStopLoss > 0)
                         {
-                            OnStatusLog?.Invoke($"🛡️ [MAJOR ATR] {pos.Symbol} 외부 포지션 복원 손절 계산 | SL={restoredMajorStopLoss:F8}, ATRx2.5={majorStop.AtrDistance:F8}, 구조선={majorStop.StructureStopPrice:F8}");
+                            OnStatusLog?.Invoke($"🛡️ [MAJOR ATR] {pos.Symbol} 외부 포지션 복원 손절 계산 | SL={restoredMajorStopLoss:F8}, ATRdist={majorStop.AtrDistance:F8}, 구조선={majorStop.StructureStopPrice:F8}");
                         }
                     }
 
@@ -5511,14 +5514,14 @@ namespace TradingBot
                 majorAtrPreview = await TryCalculateMajorAtrHybridStopLossAsync(symbol, currentPrice, decision == "LONG", token);
                 if (majorAtrPreview.StopLossPrice <= 0)
                 {
-                    OnStatusLog?.Invoke($"⛔ [MAJOR ATR] {symbol} ATR 2.5배 하이브리드 손절 계산 실패로 진입 차단");
+                    OnStatusLog?.Invoke($"⛔ [MAJOR ATR] {symbol} ATR 2.0 하이브리드 손절 계산 실패로 진입 차단");
                     EntryLog("MAJOR_ATR", "BLOCK", "stopCalcFailed");
                     return;
                 }
 
                 customStopLossPrice = majorAtrPreview.StopLossPrice;
                 OnStatusLog?.Invoke(
-                    $"🛡️ [MAJOR ATR] {symbol} 하이브리드 손절 적용 | Entry={currentPrice:F8}, SL={customStopLossPrice:F8}, ATRx2.5={majorAtrPreview.AtrDistance:F8}, 구조선={majorAtrPreview.StructureStopPrice:F8}");
+                    $"🛡️ [MAJOR ATR] {symbol} 하이브리드 손절 적용 | Entry={currentPrice:F8}, SL={customStopLossPrice:F8}, ATRdist={majorAtrPreview.AtrDistance:F8}, 구조선={majorAtrPreview.StructureStopPrice:F8}");
             }
 
             if (latestCandle != null &&
@@ -6080,7 +6083,7 @@ namespace TradingBot
                         {
                             customStopLossPrice = filledMajorStop.StopLossPrice;
                             OnStatusLog?.Invoke(
-                                $"🛡️ [MAJOR ATR] {symbol} 체결가 기준 손절 재보정 | Entry={actualEntryPrice:F8}, SL={customStopLossPrice:F8}, ATRx2.5={filledMajorStop.AtrDistance:F8}, 구조선={filledMajorStop.StructureStopPrice:F8}");
+                                $"🛡️ [MAJOR ATR] {symbol} 체결가 기준 손절 재보정 | Entry={actualEntryPrice:F8}, SL={customStopLossPrice:F8}, ATRdist={filledMajorStop.AtrDistance:F8}, 구조선={filledMajorStop.StructureStopPrice:F8}");
                         }
                         else if (majorAtrPreview.StopLossPrice > 0)
                         {

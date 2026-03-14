@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.Windows;
 using System.Windows.Data;
 using System.Windows.Media;
 using TradingBot.Models;
@@ -154,6 +155,74 @@ namespace TradingBot
 
             // 기본 색상
             return new SolidColorBrush(Color.FromRgb(224, 231, 255)); // #E0E7FF - 밝은 청백색
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    public class ScoreToArcGeometryConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (!double.TryParse(value?.ToString(), out var score))
+                score = 0;
+
+            score = Math.Clamp(score, 0d, 100d);
+            if (score <= 0d)
+                return Geometry.Empty;
+
+            double centerX = 85d;
+            double centerY = 85d;
+            double radius = 62d;
+
+            if (parameter is string paramText && !string.IsNullOrWhiteSpace(paramText))
+            {
+                var parts = paramText.Split([',', '|'], StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 3 &&
+                    double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedCenterX) &&
+                    double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedCenterY) &&
+                    double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedRadius))
+                {
+                    centerX = parsedCenterX;
+                    centerY = parsedCenterY;
+                    radius = Math.Max(1d, parsedRadius);
+                }
+            }
+
+            var sweepAngle = Math.Min(359.99d, (score / 100d) * 360d);
+
+            Point PointAt(double angleDeg)
+            {
+                double rad = angleDeg * Math.PI / 180d;
+                return new Point(
+                    centerX + radius * Math.Cos(rad),
+                    centerY + radius * Math.Sin(rad));
+            }
+
+            const double startAngle = -90d;
+            var startPoint = PointAt(startAngle);
+            var endPoint = PointAt(startAngle + sweepAngle);
+
+            var figure = new PathFigure
+            {
+                StartPoint = startPoint,
+                IsClosed = false,
+                IsFilled = false
+            };
+
+            figure.Segments.Add(new ArcSegment
+            {
+                Point = endPoint,
+                Size = new Size(radius, radius),
+                IsLargeArc = sweepAngle >= 180d,
+                SweepDirection = SweepDirection.Clockwise
+            });
+
+            var geometry = new PathGeometry();
+            geometry.Figures.Add(figure);
+            geometry.Freeze();
+            return geometry;
         }
 
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)

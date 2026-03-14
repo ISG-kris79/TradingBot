@@ -15,6 +15,39 @@
 
  - 없음
 
+## [2.4.44] - 2026-03-14
+
+### Added
+
+- **HelloQuant 스타일 배틀 대시보드 3열 레이아웃** (`MainWindow.xaml`, `MainViewModel.cs`, `Converters.cs`):
+  - 기존 단일 패널 `⚔ LIVE BATTLE DASHBOARD`를 Market Monitor / Main Scene / Execution Stepper 3열 구조로 전면 교체
+  - 좌열: AI Confirm 상태 + 4코인 모니터(BTC/ETH/SOL/XRP) + XRP 시나리오 라벨
+  - 중앙열: 실시간 가격 롤링 애니메이션(TargetUpdated EventTrigger) + 도넛형 Pulse 게이지(Canvas/Path Arc) + 0.618 Golden Zone 카드 + ATR Stop Cloud 카드 + 패스트 로그
+  - 우열: 4단계 Execution Stepper(ItemsControl) — Market Sync → Wave AI Gate → 0.618 Golden Zone → ATR Close-Only
+
+- **ScoreToArcGeometryConverter** (`Converters.cs`):
+  - 0~100 Pulse 점수를 도넛 게이지 SVG 호(Arc) Path Data로 변환하는 IValueConverter 추가
+  - ConverterParameter 구분자를 `|`(파이프)로 변경하여 XAML MarkupExtension 파싱 충돌 방지
+
+- **BattleExecutionStep 모델 및 ViewModel 바인딩** (`MainViewModel.cs`):
+  - `BattleExecutionStep : INotifyPropertyChanged` 모델 클래스 추가 (Order, Title, Detail, StateText, StateBrush, IsActive)
+  - `BattleExecutionSteps` ObservableCollection과 `InitializeBattleExecutionSteps` / `UpdateBattleExecutionSteps` / `SetBattleStep` 로직 추가
+  - `BattleGoldenZoneText/Brush`, `BattleAtrCloudText/Brush`, `BattleStopPulseActive` 프로퍼티 신설
+  - ATR Stop 거리 ≤ 0.7% 진입 시 OrangeRed 펄스 경보, ≤ 1.5% Gold 중간 경고, 초과 시 DeepSkyBlue
+
+### Changed
+
+- **ATR 펄스 경보 임계값 확대** (`MainViewModel.cs`):
+  - 빨강 펄스 발동 기준: 스탑까지 거리 0.35% → **0.7%** (넉넉한 사전 경보)
+  - Gold 중간 경고 기준: 0.9% → **1.5%**
+
+- **메이저 ATR 2.0 Close-Only 심볼 로직 강화** (`PositionMonitorService.cs`, `TradingEngine.cs`):
+  - ETH/XRP/SOL에 `isAtr20MajorSymbol` 플래그를 적용, `useMajorAtr20=true` 경로로 손절 계산
+  - TP1/TrailStart/Gap 파라미터 완화: ETH/XRP/SOL 40%/60%/10%, BTC 15%/30%/3%
+  - `minLockROE`: ATR2.0 메이저 +2%, 일반 +5%
+  - TradingEngine ATR 멀티플라이어 BTC 2.5→3.5, XRP/SOL 4.0, swingCandles 12→10봉
+  - `hybridStopPrice` 롱/숏 방향 버그 수정 (Max↔Min 반전)
+
 ## [2.4.43] - 2026-03-14
 
 ### Changed

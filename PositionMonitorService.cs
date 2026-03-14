@@ -159,6 +159,10 @@ namespace TradingBot.Services
             decimal squeezeDefenseMaxRoe = 8.0m;
             decimal squeezeDefenseBbWidthThreshold = 0.60m;
             bool isBtcSymbol = string.Equals(symbol, "BTCUSDT", StringComparison.OrdinalIgnoreCase);
+            bool isAtr20MajorSymbol =
+                string.Equals(symbol, "ETHUSDT", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(symbol, "XRPUSDT", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(symbol, "SOLUSDT", StringComparison.OrdinalIgnoreCase);
             // [메이저/PUMP 완전 분리] 메이저 전용 최종 목표익절 ROE 사용
             decimal majorTp2Roe = _settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : Math.Max(_settings.TargetRoe, 40.0m);
             decimal profitRunTriggerRoe = majorTp2Roe;
@@ -228,7 +232,7 @@ namespace TradingBot.Services
             decimal breakEvenROE = aggressiveMultiplier >= 1.5m ? Math.Max(3.0m, majorBreakEvenBase * 0.5m) : majorBreakEvenBase;  // 1단계: 공격형 시 절반, 일반 설정값
             decimal profitLockROE = _settings.MajorTp1Roe > 0 ? _settings.MajorTp1Roe : 20.0m;   // 2단계: 1차 부분익절 ROE
             decimal tightTrailingROE = _settings.MajorTrailingStartRoe > 0 ? _settings.MajorTrailingStartRoe : 40.0m;  // 3단계: 타이트 트레일링 시작 ROE
-            decimal minLockROE = 5.0m;  // 3단계 최소 보장 수익 ROE (+5%)
+            decimal minLockROE = isAtr20MajorSymbol ? 2.0m : 5.0m;  // ATR2.0 메이저는 +2% 유지, 일반은 +5%
             // TrailingGapRoe를 가격% 간격으로 변환
             decimal majorTrailingGap = _settings.MajorTrailingGapRoe > 0 ? _settings.MajorTrailingGapRoe : 5.0m;
 
@@ -245,6 +249,15 @@ namespace TradingBot.Services
                 tightTrailingROE = 30.0m;
                 majorTp2Roe = 30.0m;
                 majorTrailingGap = 3.0m;
+            }
+
+            // [ATR 2.0] ETH/XRP/SOL은 2차=40%, 3차=60%, Gap=10%로 완화
+            if (isAtr20MajorSymbol)
+            {
+                profitLockROE = Math.Max(profitLockROE, 40.0m);
+                tightTrailingROE = Math.Max(tightTrailingROE, 60.0m);
+                majorTp2Roe = Math.Max(majorTp2Roe, 60.0m);
+                majorTrailingGap = Math.Max(majorTrailingGap, 10.0m);
             }
 
             if (tightTrailingROE <= profitLockROE)
@@ -274,24 +287,26 @@ namespace TradingBot.Services
             double breakEvenMinHoldSeconds = aggressiveMultiplier >= 1.5m ? 90.0 : 45.0;
             bool breakEvenDeferredLogged = false;
             bool hasCustomAbsoluteStop = customStopLossPrice > 0;
+            bool useMajorAtr20 = hasCustomAbsoluteStop && !isSidewaysMode && isAtr20MajorSymbol;
             // [ATR 스탑 진입 직후 wick-out 방지] 진입 후 5분간 ATR 스탑 발동 차단
             DateTime atrStopMinFireTime = positionEntryTime.AddMinutes(5.0);
 
-                        // ═══════════════════════════════════════════════════════════════
-                        // [하이브리드 듀얼 스탑] 상태 변수
-                        //   1차 방어선: ATR 2.5x  → 터치 시 WHIPSAW 모드 (최대 3분 버팀)
-                        //   2차 방어선: Fractal Low (직전 5캔들 최저점 × 0.999)
-                        //   V-Stop 필터: 거래량 < AvgVolume×1.5 → Fake-out, 추가 1분 대기
-                        // ═══════════════════════════════════════════════════════════════
-                        List<IBinanceKline>? dualStopCandles  = null;
-                        DateTime  nextDualStopCandleRefresh   = DateTime.MinValue;
-                        DateTime? atrFirstHitTime             = null;   // ATR 첫 터치 시각
-                        DateTime? fractalBrokenTime           = null;   // Fractal도 깨진 시각
-                        bool      whipsawLoggedOnce           = false;
-                        const double atrWhipsawMaxMinutes     = 3.0;    // ATR만 터치: 최대 3분 버팀
-                        const double fractalVolumeMaxMinutes  = 1.0;    // Fractal 돌파 후 V-Stop: 최대 1분 대기
+            // ═══════════════════════════════════════════════════════════════
+            // [하이브리드 듀얼 스탑 / ATR 2.0] 상태 변수
+            //   - 기본 듀얼 스탑: ATR + Fractal + V-Stop
+            //   - ATR 2.0 (ETH/XRP/SOL): 15분봉 Close-Only + 10캔들 Swing + 3.5~4.5x
+            // ═══════════════════════════════════════════════════════════════
+            List<IBinanceKline>? dualStopCandles = null;
+            DateTime nextDualStopCandleRefresh = DateTime.MinValue;
+            DateTime? atrFirstHitTime = null;
+            DateTime? fractalBrokenTime = null;
+            DateTime? closeOnlyWaitLoggedForCandle = null;
+            bool whipsawLoggedOnce = false;
+            bool atr20ActivationLogged = false;
+            const double atrWhipsawMaxMinutes = 3.0;
+            const double fractalVolumeMaxMinutes = 1.0;
 
-                        if (aggressiveMultiplier >= 1.5m)
+            if (aggressiveMultiplier >= 1.5m)
             {
                 OnLog?.Invoke($"🎯 {symbol} 공격형 진입 배수 {aggressiveMultiplier:F2}x 감지 → 손절 타이트 조정 (ROE {breakEvenROE:F1}%)");
             }
@@ -320,15 +335,22 @@ namespace TradingBot.Services
 
                 if (qty > 0)
                 {
-                    var (success, orderId) = await _exchangeService.PlaceStopOrderAsync(symbol, isLong ? "SELL" : "BUY", qty, stopPrice, token);
-                    if (success)
+                    if (useMajorAtr20)
                     {
-                        lock (_posLock)
+                        OnLog?.Invoke($"🛡️ [ATR 2.0] {symbol} Close-Only 전략 적용 → 서버사이드 STOP_MARKET 생략");
+                    }
+                    else
+                    {
+                        var (success, orderId) = await _exchangeService.PlaceStopOrderAsync(symbol, isLong ? "SELL" : "BUY", qty, stopPrice, token);
+                        if (success)
                         {
-                            if (_activePositions.TryGetValue(symbol, out var p))
-                                p.StopOrderId = orderId;
+                            lock (_posLock)
+                            {
+                                if (_activePositions.TryGetValue(symbol, out var p))
+                                    p.StopOrderId = orderId;
+                            }
+                            OnLog?.Invoke($"🛡️ {symbol} 손절시작");
                         }
-                        OnLog?.Invoke($"🛡️ {symbol} 손절시작");
                     }
                 }
             }
@@ -517,7 +539,7 @@ namespace TradingBot.Services
                     }
 
                     // ═══════════════════════════════════════════════
-                    // 2단계: TP1 도달 시 30% 부분익절 + +2% 본절 방어
+                    // 2단계: 메이저 2차 구간 진입 시 부분익절 + +2% 본절 방어
                     // ═══════════════════════════════════════════════
                     if (breakEvenActivated && !profitLockActivated && highestROE >= profitLockROE)
                     {
@@ -549,11 +571,11 @@ namespace TradingBot.Services
                         else
                             protectiveStopPrice = protectiveStopPrice > 0m ? Math.Min(protectiveStopPrice, tp1SafetyPrice) : tp1SafetyPrice;
                         
-                        OnLog?.Invoke($"💰 {symbol} 1차 구간 방어 가동: TP30% + SL 상향(ROE +{tp1SafetyRoe:F1}%)");
+                        OnLog?.Invoke($"💰 {symbol} 2차 구간 방어 가동: TP30% + SL 상향(ROE +{tp1SafetyRoe:F1}%)");
                     }
 
                     // ═══════════════════════════════════════════════
-                    // 3단계: TP2 구간 진입 시 +5% 수익 확정 + 타이트 트레일링
+                    // 3단계: 메이저 3차 구간 진입 시 넉넉한 트레일링 시작
                     // ═══════════════════════════════════════════════
                     if (profitLockActivated && !tightTrailingActivated && highestROE >= tightTrailingROE)
                     {
@@ -564,8 +586,8 @@ namespace TradingBot.Services
                         protectiveStopPrice = isLong 
                             ? entryPrice * (1 + minLockPriceChange)
                             : entryPrice * (1 - minLockPriceChange);
-                        
-                        OnLog?.Invoke($"🚀 {symbol} 2차 구간 진입: SL +5% 고정 후 트레일링 시작 (ROE {highestROE:F1}%)");
+
+                        OnLog?.Invoke($"🚀 {symbol} 3차 구간 진입: SL +{minLockROE:F0}% 유지 + Wide Trailing {majorTrailingGap:F0}% 시작 (ROE {highestROE:F1}%)");
 
                         // [v2.1.18] 지표 기반 익절 준비: ROE 20% 도달 시 지표 모니터링 시작
                         OnLog?.Invoke($"� {symbol} 지표모니터링");
@@ -701,7 +723,102 @@ namespace TradingBot.Services
                     if (hasCustomAbsoluteStop && !isSidewaysMode)
                     {
                         bool atrStopGateOpen = DateTime.Now >= atrStopMinFireTime;
-                        if (atrStopGateOpen)
+                        if (useMajorAtr20)
+                        {
+                            if (atrStopGateOpen && dualStopCandles != null && dualStopCandles.Count >= 15)
+                            {
+                                var nowUtc = DateTime.UtcNow;
+                                var latestRestCandle = dualStopCandles.LastOrDefault();
+                                bool lastCandleStillOpen = latestRestCandle != null && latestRestCandle.CloseTime > nowUtc;
+                                var closedCandles = lastCandleStillOpen
+                                    ? dualStopCandles.Take(Math.Max(0, dualStopCandles.Count - 1)).ToList()
+                                    : dualStopCandles.ToList();
+
+                                if (closedCandles.Count >= 15)
+                                {
+                                    decimal atrMultiplier = holdingTime.TotalMinutes < 30.0
+                                        ? 4.5m
+                                        : (string.Equals(symbol, "XRPUSDT", StringComparison.OrdinalIgnoreCase)
+                                            || string.Equals(symbol, "SOLUSDT", StringComparison.OrdinalIgnoreCase) ? 4.0m : 3.5m);
+
+                                    double atrValue = IndicatorCalculator.CalculateATR(closedCandles, 14);
+                                    if (atrValue > 0)
+                                    {
+                                        if (!atr20ActivationLogged)
+                                        {
+                                            OnLog?.Invoke($"🛡️ [ATR 2.0] {symbol} 15분봉 Close-Only 활성화 | ATRx{atrMultiplier:F1}, Swing=10캔들, 초기30분=4.5x");
+                                            atr20ActivationLogged = true;
+                                        }
+
+                                        decimal atrDistance20 = (decimal)atrValue * atrMultiplier;
+                                        decimal atrStopPrice20 = isLong
+                                            ? entryPrice - atrDistance20
+                                            : entryPrice + atrDistance20;
+
+                                        var swingCandles20 = closedCandles.TakeLast(Math.Min(10, closedCandles.Count)).ToList();
+                                        decimal swingStop20 = isLong
+                                            ? swingCandles20.Min(c => c.LowPrice) * 0.999m
+                                            : swingCandles20.Max(c => c.HighPrice) * 1.001m;
+
+                                        decimal finalDeadLine = isLong
+                                            ? Math.Min(atrStopPrice20, swingStop20)
+                                            : Math.Max(atrStopPrice20, swingStop20);
+
+                                        customStopLossPrice = finalDeadLine;
+                                        lock (_posLock)
+                                        {
+                                            if (_activePositions.TryGetValue(symbol, out var p))
+                                                p.StopLoss = finalDeadLine;
+                                        }
+
+                                        var latestClosedCandle = closedCandles.Last();
+                                        decimal latestClosedPrice = latestClosedCandle.ClosePrice;
+                                        bool liveTouch = isLong
+                                            ? currentPrice <= finalDeadLine
+                                            : currentPrice >= finalDeadLine;
+                                        bool closeBroken = isLong
+                                            ? latestClosedPrice <= finalDeadLine
+                                            : latestClosedPrice >= finalDeadLine;
+
+                                        if (liveTouch && !closeBroken)
+                                        {
+                                            if (closeOnlyWaitLoggedForCandle != latestClosedCandle.CloseTime)
+                                            {
+                                                TimeSpan remain = latestRestCandle != null && latestRestCandle.CloseTime > nowUtc
+                                                    ? latestRestCandle.CloseTime - nowUtc
+                                                    : TimeSpan.Zero;
+                                                if (remain < TimeSpan.Zero)
+                                                    remain = TimeSpan.Zero;
+
+                                                OnLog?.Invoke(
+                                                    $"🛡️ [WHIPSAW PROTECTION ACTIVE] {symbol} 종가 대기중 | " +
+                                                    $"현재가={currentPrice:F8}, 방어선={finalDeadLine:F8}, ATRx{atrMultiplier:F1}, " +
+                                                    $"Swing10={swingStop20:F8}, 남은 {remain.Minutes:D2}:{remain.Seconds:D2}");
+                                                closeOnlyWaitLoggedForCandle = latestClosedCandle.CloseTime;
+                                            }
+                                        }
+                                        else if (closeBroken)
+                                        {
+                                            decimal closeOnlyRoe = isLong
+                                                ? ((latestClosedPrice - entryPrice) / entryPrice) * leverage * 100m
+                                                : ((entryPrice - latestClosedPrice) / entryPrice) * leverage * 100m;
+                                            OnLog?.Invoke(
+                                                $"🔴 [ATR 2.0 CLOSE CONFIRMED] {symbol} 15분봉 종가 이탈 확정 | " +
+                                                $"Close={latestClosedPrice:F8}, DeadLine={finalDeadLine:F8}, ROE={closeOnlyRoe:F1}%");
+                                            await ExecuteMarketClose(symbol,
+                                                $"ATR 2.0 Close-Only [{symbol}] ROE={closeOnlyRoe:F1}% (Close={latestClosedPrice:F8})",
+                                                token);
+                                            break;
+                                        }
+                                        else
+                                        {
+                                            closeOnlyWaitLoggedForCandle = null;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        else if (atrStopGateOpen)
                         {
                             bool atrHit = (isLong  && currentPrice <= customStopLossPrice)
                                        || (!isLong && currentPrice >= customStopLossPrice);
@@ -742,7 +859,6 @@ namespace TradingBot.Services
 
                                 if (!fractalBroken)
                                 {
-                                    // ── Fractal 지지 중: WHIPSAW 버팀 (최대 3분) ──────────
                                     if (!whipsawLoggedOnce)
                                     {
                                         OnLog?.Invoke(
@@ -763,11 +879,9 @@ namespace TradingBot.Services
                                             token);
                                         break;
                                     }
-                                    // 아직 버팀 가능 → 이번 루프 손절 생략
                                 }
                                 else
                                 {
-                                    // ── 2차 방어선 돌파: Fractal 도 깨짐 → V-Stop 거래량 필터 ──
                                     if (!fractalBrokenTime.HasValue)
                                     {
                                         fractalBrokenTime = DateTime.Now;
@@ -778,9 +892,8 @@ namespace TradingBot.Services
 
                                     double fractalHeldSec = (DateTime.Now - fractalBrokenTime.Value).TotalSeconds;
 
-                                    // 거래량 필터
                                     decimal currentVol = dualStopCandles?.LastOrDefault()?.Volume ?? 0m;
-                                    decimal avgVol     = (dualStopCandles != null && dualStopCandles.Count >= 20)
+                                    decimal avgVol = (dualStopCandles != null && dualStopCandles.Count >= 20)
                                         ? (decimal)dualStopCandles.TakeLast(20).Average(c => (double)c.Volume)
                                         : 0m;
                                     bool volumeConfirmed = avgVol <= 0m || currentVol >= avgVol * 1.5m;
@@ -1632,14 +1745,14 @@ namespace TradingBot.Services
                 {
                     stairStep = 2;
                     lockedProfitFloorRoe = Math.Max(lockedProfitFloorRoe, StairStep2FloorRoe);
-                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 2단계 | ROI {stairStep2TriggerRoe:F0}% → 보호선 ROE +{StairStep2FloorRoe:F0}%");
+                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 2단계 | ROI {stairStep2TriggerRoe:F0}% → 보호선 ROE +{StairStep2FloorRoe:F0}% (100% 먹고 50% 보존)");
                 }
 
                 if (currentROE >= stairStep3TriggerRoe && stairStep < 3)
                 {
                     stairStep = 3;
-                    trailingDropROE = Math.Clamp(pumpTrailingGapRoe, 20.0m, 30.0m);
-                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 3단계 | ROI {stairStep3TriggerRoe:F0}% → Wide Trailing Gap {trailingDropROE:F0}%");
+                    trailingDropROE = 30.0m;
+                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 3단계 | ROI {stairStep3TriggerRoe:F0}% → Moonshot Trailing Gap {trailingDropROE:F0}%");
                 }
 
                 if (lockedProfitFloorRoe > decimal.MinValue && currentROE <= lockedProfitFloorRoe)
