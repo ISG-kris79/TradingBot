@@ -68,6 +68,26 @@ function Invoke-SqlQuery {
     }
 }
 
+function Test-GeneralSettingsTableExists {
+    $query = "SET NOCOUNT ON; SELECT CASE WHEN OBJECT_ID('dbo.GeneralSettings', 'U') IS NULL THEN 0 ELSE 1 END;"
+
+    $args = @('-S', $ServerInstance, '-d', $Database, '-h', '-1', '-W', '-b', '-Q', $query)
+    if ($UseSqlAuth) {
+        $args += @('-U', $SqlUser, '-P', $SqlPassword)
+    }
+    else {
+        $args += '-E'
+    }
+
+    $result = & sqlcmd @args
+    if ($LASTEXITCODE -ne 0) {
+        throw "GeneralSettings 존재 확인 실패 (exit=$LASTEXITCODE)"
+    }
+
+    $joined = (($result | ForEach-Object { $_.ToString().Trim() }) -join "")
+    return $joined -eq '1'
+}
+
 if (-not (Get-Command sqlcmd -ErrorAction SilentlyContinue)) {
     throw 'sqlcmd가 설치되어 있지 않습니다. SQL Server Command Line Utilities를 설치 후 다시 실행하세요.'
 }
@@ -85,6 +105,12 @@ Write-Host "서버: $ServerInstance"
 Write-Host "DB: $Database"
 
 foreach ($script in $scripts) {
+    $scriptName = [System.IO.Path]::GetFileName($script)
+    if ($scriptName -eq 'GeneralSettings_Schema.sql' -and (Test-GeneralSettingsTableExists)) {
+        Write-Host "\n⏭️  스킵: $script (dbo.GeneralSettings 이미 존재)" -ForegroundColor Yellow
+        continue
+    }
+
     Invoke-SqlScript -FilePath $script
 }
 

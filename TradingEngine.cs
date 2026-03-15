@@ -207,6 +207,8 @@ namespace TradingBot
         // [A안 조기진입] 최신 AI 예측 캐시 — 캔들 확인 bypass 판단용 (80% 이상 시 즉시 진입)
         private readonly ConcurrentDictionary<string, AIEntryForecastResult> _latestAiForecasts
             = new ConcurrentDictionary<string, AIEntryForecastResult>(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, DateTime> _scoutAddOnPendingSymbols
+            = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
         private static readonly HashSet<string> MajorSymbols = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -4916,6 +4918,9 @@ namespace TradingBot
             bool positionReserved = false;
             bool orderPlaced = false;
             string? aiGateDecisionId = null;
+            bool scoutModeActivated = false;
+            bool scoutAddOnEligible = false;
+            bool isScoutAddOnOrder = false;
 
             void CleanupReservedPosition(string reason)
             {
@@ -4964,6 +4969,12 @@ namespace TradingBot
                 CoinType coinType = ResolveCoinType(symbol, signalSource);
                 var gateResult = await _aiDoubleCheckEntryGate.EvaluateEntryWithCoinTypeAsync(symbol, decision, currentPrice, coinType, token);
 
+                bool isBbCenterSupport = IsBbCenterSupport(gateResult.detail.M15_BBPosition, decision);
+                float blendedMlTfScore = CalculateMlTfBlendScore(
+                    gateResult.detail.ML_Confidence,
+                    gateResult.detail.TF_Confidence,
+                    isBbCenterSupport);
+
                 if (!string.IsNullOrWhiteSpace(gateResult.detail.DecisionId))
                 {
                     aiGateDecisionId = gateResult.detail.DecisionId;
@@ -4973,6 +4984,10 @@ namespace TradingBot
                     "AI_GATE",
                     gateResult.allowEntry ? "PASS" : "BLOCK",
                     $"coinType={coinType} reason={gateResult.reason} ml={gateResult.detail.ML_Confidence:P1} tf={gateResult.detail.TF_Confidence:P1} trend={gateResult.detail.TrendScore:P1} fibBonus={gateResult.detail.FibonacciBonusScore:F0}");
+                EntryLog(
+                    "AI_BLEND",
+                    "INFO",
+                    $"bbSupport={isBbCenterSupport} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.TF_Confidence:P0} blended={blendedMlTfScore:P0} weights={(isBbCenterSupport ? "ML30_TF70" : "ML50_TF50")}");
 
                 // [AI 관제탑] 텔레그램 알림 + DB 기록 (fire-and-forget)
                 _ = Task.Run(async () =>
@@ -5007,7 +5022,58 @@ namespace TradingBot
 
                 if (!gateResult.allowEntry)
                 {
-                    return;
+                    bool isLowVolumeViolation = gateResult.reason.Contains("Rule_Violation_Low_Volume_Ratio", StringComparison.OrdinalIgnoreCase)
+                        || gateResult.reason.Contains("RuleViolationLowVolumeRatio", StringComparison.OrdinalIgnoreCase)
+                        || gateResult.reason.Contains("Low_Volume_Ratio", StringComparison.OrdinalIgnoreCase);
+
+                    bool canScoutBypass = coinType == CoinType.Major
+                        && decision == "LONG"
+                        && isLowVolumeViolation
+                        && gateResult.detail.TF_Confidence >= 0.90f
+                        && isBbCenterSupport
+                        && blendedMlTfScore >= 0.80f;
+
+                    if (!canScoutBypass)
+                    {
+                        return;
+                    }
+
+                    scoutModeActivated = true;
+                    decimal scoutMultiplier = 0.30m;
+                    manualSizeMultiplier = Math.Min(manualSizeMultiplier, scoutMultiplier);
+                    signalSource = $"{signalSource}_SCOUT";
+                    flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
+
+                    EntryLog(
+                        "SCOUT",
+                        "DEPLOY",
+                        $"reason=TF90+_BBMidSupport_LowVolumeBypass tf={gateResult.detail.TF_Confidence:P0} ml={gateResult.detail.ML_Confidence:P0} blended={blendedMlTfScore:P0} size={scoutMultiplier:P0}");
+                    OnAlert?.Invoke($"🛰️ SCOUT UNIT DEPLOYED ({symbol} {decision}) TF {gateResult.detail.TF_Confidence:P0} · size {scoutMultiplier:P0}");
+                }
+
+                if (!scoutModeActivated
+                    && gateResult.allowEntry
+                    && coinType == CoinType.Major
+                    && decision == "LONG"
+                    && _scoutAddOnPendingSymbols.ContainsKey(symbol))
+                {
+                    bool volumeRecovered = latestCandle?.Volume_Ratio >= 1.0f;
+                    bool mlRecovered = gateResult.detail.ML_Confidence >= 0.50f;
+                    bool tfSustained = gateResult.detail.TF_Confidence >= 0.70f;
+
+                    if (volumeRecovered && mlRecovered && tfSustained)
+                    {
+                        scoutAddOnEligible = true;
+                        decimal addOnMultiplier = 0.70m;
+                        manualSizeMultiplier = Math.Min(manualSizeMultiplier, addOnMultiplier);
+                        signalSource = $"{signalSource}_SCOUT_ADDON";
+                        flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
+
+                        EntryLog(
+                            "SCOUT",
+                            "ADDON_READY",
+                            $"reason=volume_ml_recovered ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.TF_Confidence:P0} vol={latestCandle?.Volume_Ratio:F2}x size={addOnMultiplier:P0}");
+                    }
                 }
             }
             else if (_aiDoubleCheckEntryGate != null)
@@ -5508,20 +5574,22 @@ namespace TradingBot
 
             bool isMajorLikeSignal = signalSource == "MAJOR" || signalSource.StartsWith("MAJOR_");
             bool isMajorAtrEnforcedSignal = isMajorLikeSignal && MajorSymbols.Contains(symbol);
+            bool isScoutAtrEnforcedSignal = scoutModeActivated && MajorSymbols.Contains(symbol);
 
-            if (isMajorAtrEnforcedSignal && customStopLossPrice <= 0)
+            if ((isMajorAtrEnforcedSignal || isScoutAtrEnforcedSignal) && customStopLossPrice <= 0)
             {
                 majorAtrPreview = await TryCalculateMajorAtrHybridStopLossAsync(symbol, currentPrice, decision == "LONG", token);
                 if (majorAtrPreview.StopLossPrice <= 0)
                 {
-                    OnStatusLog?.Invoke($"⛔ [MAJOR ATR] {symbol} ATR 2.0 하이브리드 손절 계산 실패로 진입 차단");
-                    EntryLog("MAJOR_ATR", "BLOCK", "stopCalcFailed");
+                    string stopTag = isScoutAtrEnforcedSignal ? "SCOUT_ATR" : "MAJOR_ATR";
+                    OnStatusLog?.Invoke($"⛔ [{(isScoutAtrEnforcedSignal ? "SCOUT ATR" : "MAJOR ATR")}] {symbol} ATR 2.0 하이브리드 손절 계산 실패로 진입 차단");
+                    EntryLog(stopTag, "BLOCK", "stopCalcFailed");
                     return;
                 }
 
                 customStopLossPrice = majorAtrPreview.StopLossPrice;
                 OnStatusLog?.Invoke(
-                    $"🛡️ [MAJOR ATR] {symbol} 하이브리드 손절 적용 | Entry={currentPrice:F8}, SL={customStopLossPrice:F8}, ATRdist={majorAtrPreview.AtrDistance:F8}, 구조선={majorAtrPreview.StructureStopPrice:F8}");
+                    $"🛡️ [{(isScoutAtrEnforcedSignal ? "SCOUT ATR" : "MAJOR ATR")}] {symbol} 하이브리드 손절 적용 | Entry={currentPrice:F8}, SL={customStopLossPrice:F8}, ATRdist={majorAtrPreview.AtrDistance:F8}, 구조선={majorAtrPreview.StructureStopPrice:F8}");
             }
 
             if (latestCandle != null &&
@@ -5870,6 +5938,11 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"💼 [Position Sizing] {symbol} 최종 증거금 {marginUsdt:F2} USDT (배수 x{positionSizeMultiplier:F2})");
                 }
 
+                if (scoutModeActivated)
+                {
+                    OnStatusLog?.Invoke($"🛰️ [SCOUT MODE] {symbol} 정찰 진입 체결 후 ML/거래량 회복 시 추가 진입 검토 대상입니다.");
+                }
+
                 // [공통 손익비 필터] 저기대값 진입 차단 (SIDEWAYS 제외)
                 if (!string.Equals(mode, "SIDEWAYS", StringComparison.OrdinalIgnoreCase))
                 {
@@ -5956,73 +6029,84 @@ namespace TradingBot
                 {
                     if (_activePositions.ContainsKey(symbol))
                     {
-                        EntryLog("POSITION", "SKIP", "activePosition=exists");
-                        return;
+                        if (scoutAddOnEligible)
+                        {
+                            isScoutAddOnOrder = true;
+                            EntryLog("POSITION", "ADDON", "activePosition=scoutAddOn");
+                        }
+                        else
+                        {
+                            EntryLog("POSITION", "SKIP", "activePosition=exists");
+                            return;
+                        }
                     }
 
-                    // [동시성 보호] 포지션 추가 직전 슬롯 최종 재체크
-                    bool isMajorSymbol = MajorSymbols.Contains(symbol);
-                    int finalTotal = _activePositions.Count;
-                    int finalMajorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
-                    int finalPumpCount = finalTotal - finalMajorCount;
-                    
-                    if (isMajorSymbol && finalMajorCount >= MAX_MAJOR_SLOTS)
+                    if (!isScoutAddOnOrder)
                     {
-                        OnStatusLog?.Invoke($"⛔ [슬롯 최종 재확인] {symbol} 메이저 포화 ({finalMajorCount}/{MAX_MAJOR_SLOTS}) → 진입 차단");
-                        EntryLog("SLOT", "FINAL_RECHECK_FAIL", $"major={finalMajorCount}/{MAX_MAJOR_SLOTS}");
-                        return;
-                    }
-                    
-                    if (!isMajorSymbol && finalPumpCount >= MAX_PUMP_SLOTS)
-                    {
-                        OnStatusLog?.Invoke($"⛔ [슬롯 최종 재확인] {symbol} PUMP 포화 ({finalPumpCount}/{MAX_PUMP_SLOTS}) → 진입 차단");
-                        EntryLog("SLOT", "FINAL_RECHECK_FAIL", $"pump={finalPumpCount}/{MAX_PUMP_SLOTS}");
-                        return;
-                    }
-                    
-                    if (finalTotal >= MAX_TOTAL_SLOTS)
-                    {
-                        OnStatusLog?.Invoke($"⛔ [슬롯 최종 재확인] {symbol} 총 포화 ({finalTotal}/{MAX_TOTAL_SLOTS}) → 진입 차단");
-                        EntryLog("SLOT", "FINAL_RECHECK_FAIL", $"total={finalTotal}/{MAX_TOTAL_SLOTS}");
-                        return;
-                    }
+                        // [동시성 보호] 포지션 추가 직전 슬롯 최종 재체크
+                        bool isMajorSymbol = MajorSymbols.Contains(symbol);
+                        int finalTotal = _activePositions.Count;
+                        int finalMajorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
+                        int finalPumpCount = finalTotal - finalMajorCount;
 
-                    // [3파 기반 익절/손절] ElliottWave 정보 적용
-                    // 임시 등록 (주문 실패 시 제거)
-                    _activePositions[symbol] = new PositionInfo
-                    {
-                        Symbol = symbol,
-                        EntryPrice = currentPrice,
-                        IsLong = (decision == "LONG"),
-                        Side = (decision == "LONG") ? OrderSide.Buy : OrderSide.Sell,
-                        IsPumpStrategy = !MajorSymbols.Contains(symbol), // 메이저가 아니면 PUMP 슬롯
-                        AiScore = aiScore,
-                        AiConfidencePercent = aiProbability > 0
-                            ? aiProbability * 100f
-                            : (aiScore > 0f && aiScore <= 1f ? aiScore * 100f : aiScore),
-                        Leverage = leverage,
-                        Quantity = 0,  // 주문 성공 후 업데이트
-                        InitialQuantity = 0,
-                        EntryTime = DateTime.Now,
-                        HighestPrice = currentPrice,
-                        LowestPrice = currentPrice,
-                        EntryBbPosition = entryBbPosition,
-                        EntryZoneTag = entryZoneTag,
-                        IsHybridMidBandLongEntry = isHybridMidBandLongEntry,
-                                                AggressiveMultiplier = positionSizeMultiplier,
-                        // [3파 기반 익절/손절]
-                        Wave1LowPrice = waveState?.Phase1LowPrice ?? 0,
-                        Wave1HighPrice = waveState?.Phase1HighPrice ?? 0,
-                        Fib0618Level = waveState?.Fib0618Level ?? 0,
-                        Fib0786Level = waveState?.Fib786Level ?? 0,
-                        Fib1618Target = waveState?.Fib1618Target ?? 0,
-                        PartialProfitStage = 0,
-                        BreakevenPrice = 0,
-                        TakeProfit = customTakeProfitPrice > 0 ? customTakeProfitPrice : 0,
-                        StopLoss = customStopLossPrice > 0 ? customStopLossPrice : 0
-                    };
+                        if (isMajorSymbol && finalMajorCount >= MAX_MAJOR_SLOTS)
+                        {
+                            OnStatusLog?.Invoke($"⛔ [슬롯 최종 재확인] {symbol} 메이저 포화 ({finalMajorCount}/{MAX_MAJOR_SLOTS}) → 진입 차단");
+                            EntryLog("SLOT", "FINAL_RECHECK_FAIL", $"major={finalMajorCount}/{MAX_MAJOR_SLOTS}");
+                            return;
+                        }
+
+                        if (!isMajorSymbol && finalPumpCount >= MAX_PUMP_SLOTS)
+                        {
+                            OnStatusLog?.Invoke($"⛔ [슬롯 최종 재확인] {symbol} PUMP 포화 ({finalPumpCount}/{MAX_PUMP_SLOTS}) → 진입 차단");
+                            EntryLog("SLOT", "FINAL_RECHECK_FAIL", $"pump={finalPumpCount}/{MAX_PUMP_SLOTS}");
+                            return;
+                        }
+
+                        if (finalTotal >= MAX_TOTAL_SLOTS)
+                        {
+                            OnStatusLog?.Invoke($"⛔ [슬롯 최종 재확인] {symbol} 총 포화 ({finalTotal}/{MAX_TOTAL_SLOTS}) → 진입 차단");
+                            EntryLog("SLOT", "FINAL_RECHECK_FAIL", $"total={finalTotal}/{MAX_TOTAL_SLOTS}");
+                            return;
+                        }
+
+                        // [3파 기반 익절/손절] ElliottWave 정보 적용
+                        // 임시 등록 (주문 실패 시 제거)
+                        _activePositions[symbol] = new PositionInfo
+                        {
+                            Symbol = symbol,
+                            EntryPrice = currentPrice,
+                            IsLong = (decision == "LONG"),
+                            Side = (decision == "LONG") ? OrderSide.Buy : OrderSide.Sell,
+                            IsPumpStrategy = !MajorSymbols.Contains(symbol), // 메이저가 아니면 PUMP 슬롯
+                            AiScore = aiScore,
+                            AiConfidencePercent = aiProbability > 0
+                                ? aiProbability * 100f
+                                : (aiScore > 0f && aiScore <= 1f ? aiScore * 100f : aiScore),
+                            Leverage = leverage,
+                            Quantity = 0,  // 주문 성공 후 업데이트
+                            InitialQuantity = 0,
+                            EntryTime = DateTime.Now,
+                            HighestPrice = currentPrice,
+                            LowestPrice = currentPrice,
+                            EntryBbPosition = entryBbPosition,
+                            EntryZoneTag = entryZoneTag,
+                            IsHybridMidBandLongEntry = isHybridMidBandLongEntry,
+                            AggressiveMultiplier = positionSizeMultiplier,
+                            // [3파 기반 익절/손절]
+                            Wave1LowPrice = waveState?.Phase1LowPrice ?? 0,
+                            Wave1HighPrice = waveState?.Phase1HighPrice ?? 0,
+                            Fib0618Level = waveState?.Fib0618Level ?? 0,
+                            Fib0786Level = waveState?.Fib786Level ?? 0,
+                            Fib1618Target = waveState?.Fib1618Target ?? 0,
+                            PartialProfitStage = 0,
+                            BreakevenPrice = 0,
+                            TakeProfit = customTakeProfitPrice > 0 ? customTakeProfitPrice : 0,
+                            StopLoss = customStopLossPrice > 0 ? customStopLossPrice : 0
+                        };
+                    }
                 }
-                positionReserved = true;
+                positionReserved = !isScoutAddOnOrder;
 
                 // 4. 레버리지 및 마진 모드(격리) 설정
                 bool leverageSet = await _exchangeService.SetLeverageAsync(symbol, leverage, token);
@@ -6096,13 +6180,38 @@ namespace TradingBot
                     {
                         if (_activePositions.TryGetValue(symbol, out var pos))
                         {
-                            pos.Quantity = filledQty;
+                            if (isScoutAddOnOrder)
+                            {
+                                decimal previousQty = pos.Quantity;
+                                decimal mergedQty = previousQty + filledQty;
+
+                                if (mergedQty > 0m && previousQty > 0m)
+                                {
+                                    pos.EntryPrice = ((pos.EntryPrice * previousQty) + (actualEntryPrice * filledQty)) / mergedQty;
+                                }
+                                else
+                                {
+                                    pos.EntryPrice = actualEntryPrice;
+                                }
+
+                                pos.Quantity = mergedQty;
+                                pos.InitialQuantity = pos.InitialQuantity > 0 ? pos.InitialQuantity : previousQty;
+                                pos.HighestPrice = Math.Max(pos.HighestPrice, actualEntryPrice);
+                                pos.LowestPrice = pos.LowestPrice > 0 ? Math.Min(pos.LowestPrice, actualEntryPrice) : actualEntryPrice;
+                                pos.PyramidCount = Math.Max(1, pos.PyramidCount + 1);
+                                pos.IsPyramided = true;
+                            }
+                            else
+                            {
+                                pos.Quantity = filledQty;
                                 pos.InitialQuantity = pos.InitialQuantity > 0 ? pos.InitialQuantity : filledQty;
-                            pos.EntryPrice = actualEntryPrice;
+                                pos.EntryPrice = actualEntryPrice;
                                 pos.HighestPrice = actualEntryPrice;
                                 pos.LowestPrice = actualEntryPrice;
                                 pos.PyramidCount = 0;
                                 pos.IsPyramided = false;
+                            }
+
                             if (customStopLossPrice > 0)
                                 pos.StopLoss = customStopLossPrice;
                             orderPlaced = true;
@@ -6116,6 +6225,15 @@ namespace TradingBot
 
                     EntryLog("ORDER", "FILLED", $"entryPrice={actualEntryPrice:F4} qty={filledQty}");
                     _lastSuccessfulEntryTime = DateTime.Now; // [드라이스펠] 마지막 진입 성공 시각 갱신
+
+                    if (scoutModeActivated)
+                    {
+                        _scoutAddOnPendingSymbols[symbol] = DateTime.UtcNow;
+                    }
+                    else if (isScoutAddOnOrder)
+                    {
+                        _scoutAddOnPendingSymbols.TryRemove(symbol, out _);
+                    }
 
                     if (!string.IsNullOrWhiteSpace(aiGateDecisionId))
                     {
@@ -6483,6 +6601,33 @@ namespace TradingBot
             }
 
             return CoinType.Normal;
+        }
+
+        private static bool IsBbCenterSupport(float bbPosition, string decision)
+        {
+            if (!string.Equals(decision, "LONG", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (float.IsNaN(bbPosition) || float.IsInfinity(bbPosition))
+                return false;
+
+            float normalized = Math.Clamp(bbPosition, 0f, 1f);
+            return normalized >= 0.40f && normalized <= 0.60f;
+        }
+
+        private static float CalculateMlTfBlendScore(float mlConfidence, float tfConfidence, bool tfPriority)
+        {
+            float safeMl = float.IsNaN(mlConfidence) || float.IsInfinity(mlConfidence)
+                ? 0f
+                : Math.Clamp(mlConfidence, 0f, 1f);
+            float safeTf = float.IsNaN(tfConfidence) || float.IsInfinity(tfConfidence)
+                ? 0f
+                : Math.Clamp(tfConfidence, 0f, 1f);
+
+            if (tfPriority)
+                return safeMl * 0.30f + safeTf * 0.70f;
+
+            return safeMl * 0.50f + safeTf * 0.50f;
         }
 
         private readonly record struct SymbolThresholdProfile(float EntryScoreCut, float AiConfidenceMin, float MaxRsiLimit);

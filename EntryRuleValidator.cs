@@ -30,6 +30,7 @@ namespace TradingBot
         /// </summary>
         public (bool passed, string reason) ValidateEntryRules(
             List<IBinanceKline> candles,
+            string symbol,
             decimal currentPrice,
             PositionSide side,
             float mlScore,
@@ -53,7 +54,7 @@ namespace TradingBot
                     return elliottCheck;
 
                 // 2. 거래량 기반 캔들 패턴 검증
-                var volumeCheck = CheckVolumePattern(candles);
+                var volumeCheck = CheckVolumePattern(candles, symbol, side, tfScore, bbPosition);
                 if (!volumeCheck.passed)
                     return volumeCheck;
 
@@ -178,7 +179,12 @@ namespace TradingBot
         /// <summary>
         /// 거래량 기반 캔들 패턴 검증
         /// </summary>
-        private (bool passed, string reason) CheckVolumePattern(List<IBinanceKline> candles)
+        private (bool passed, string reason) CheckVolumePattern(
+            List<IBinanceKline> candles,
+            string symbol,
+            PositionSide side,
+            float tfScore,
+            float bbPosition)
         {
             if (candles.Count < 5)
                 return (true, "Volume_Check_Skipped");
@@ -195,9 +201,15 @@ namespace TradingBot
             decimal volumeRatio = currentVolume / avgVolume;
 
             // **규칙: 거래량이 평균의 70% 미만이면 신뢰도 낮음 (거부)**
-            if (volumeRatio < 0.7m)
+            if (volumeRatio < (decimal)_config.LowVolumeRejectRatio)
             {
-                return (false, $"Low_Volume_Ratio={volumeRatio:F2}");
+                var lowVolumeBypass = ShouldAllowLowVolumeBypass(symbol, side, tfScore, bbPosition, volumeRatio, currentCandle);
+                if (!lowVolumeBypass.allowed)
+                {
+                    return (false, $"Low_Volume_Ratio={volumeRatio:F2}");
+                }
+
+                return (true, lowVolumeBypass.reason);
             }
 
             // **추가 규칙: 피보나치 진입 구간에서는 거래량이 실려야 함 (1.5배 이상)**
@@ -214,6 +226,62 @@ namespace TradingBot
             }
 
             return (true, "Volume_Check_Passed");
+        }
+
+        private (bool allowed, string reason) ShouldAllowLowVolumeBypass(
+            string symbol,
+            PositionSide side,
+            float tfScore,
+            float bbPosition,
+            decimal volumeRatio,
+            IBinanceKline currentCandle)
+        {
+            if (side != PositionSide.Long)
+                return (false, "LowVolume_Bypass_Not_Long");
+
+            if (!IsMajorSymbol(symbol))
+                return (false, "LowVolume_Bypass_Not_Major");
+
+            if (volumeRatio < (decimal)_config.LowVolumeBypassMinRatio)
+                return (false, "LowVolume_Bypass_TooLowVolume");
+
+            if (SanitizeScore(tfScore) < _config.LowVolumeBypassTfThreshold)
+                return (false, "LowVolume_Bypass_WeakTF");
+
+            float normalizedBb = Math.Clamp(bbPosition, 0f, 1f);
+            if (normalizedBb < _config.LowVolumeBypassBbLower || normalizedBb > _config.LowVolumeBypassBbUpper)
+                return (false, "LowVolume_Bypass_NotMidBand");
+
+            decimal candleRange = currentCandle.HighPrice - currentCandle.LowPrice;
+            if (candleRange <= 0)
+                return (false, "LowVolume_Bypass_InvalidRange");
+
+            decimal body = Math.Abs(currentCandle.ClosePrice - currentCandle.OpenPrice);
+            decimal effectiveBody = body > 0m ? body : candleRange * 0.1m;
+            decimal lowerWick = Math.Min(currentCandle.OpenPrice, currentCandle.ClosePrice) - currentCandle.LowPrice;
+
+            bool bullishOrDoji = currentCandle.ClosePrice >= currentCandle.OpenPrice;
+            bool hasSupportTail = lowerWick >= effectiveBody * (decimal)_config.LowVolumeBypassLowerWickBodyRatio;
+            bool isHammerPattern = DetectHammerPattern(currentCandle);
+
+            if (!bullishOrDoji)
+                return (false, "LowVolume_Bypass_NotBullish");
+
+            if (!hasSupportTail && !isHammerPattern)
+                return (false, "LowVolume_Bypass_WeakSupportTail");
+
+            return (true, $"LowVolume_Bypass_MajorMidBand_Ratio={volumeRatio:F2}");
+        }
+
+        private static bool IsMajorSymbol(string symbol)
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+                return false;
+
+            return symbol.StartsWith("BTC", StringComparison.OrdinalIgnoreCase)
+                || symbol.StartsWith("ETH", StringComparison.OrdinalIgnoreCase)
+                || symbol.StartsWith("SOL", StringComparison.OrdinalIgnoreCase)
+                || symbol.StartsWith("XRP", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>

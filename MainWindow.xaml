@@ -1359,6 +1359,78 @@
                                                            FontWeight="Bold"
                                                            FontFamily="Consolas"
                                                            Margin="0,6,0,0"/>
+
+                                                <Border Background="{StaticResource BackgroundMediumBrush}"
+                                                        BorderBrush="{Binding BattleTfHighlightBrush}"
+                                                        BorderThickness="1"
+                                                        CornerRadius="8"
+                                                        Padding="8"
+                                                        Margin="0,8,0,0">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Opacity" Value="1"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding BattleBbSupportActive}" Value="True">
+                                                                    <DataTrigger.EnterActions>
+                                                                        <BeginStoryboard x:Name="BbSupportWaveStoryboard">
+                                                                            <Storyboard AutoReverse="True" RepeatBehavior="Forever">
+                                                                                <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                                                 To="0.72"
+                                                                                                 Duration="0:0:0.65"/>
+                                                                            </Storyboard>
+                                                                        </BeginStoryboard>
+                                                                    </DataTrigger.EnterActions>
+                                                                    <DataTrigger.ExitActions>
+                                                                        <StopStoryboard BeginStoryboardName="BbSupportWaveStoryboard"/>
+                                                                    </DataTrigger.ExitActions>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <StackPanel>
+                                                        <TextBlock Text="XRP PATTERN DETECTED"
+                                                                   Foreground="{Binding BattleTfHighlightBrush}"
+                                                                   FontSize="10"
+                                                                   FontWeight="Bold"
+                                                                   FontFamily="Consolas"/>
+                                                        <ProgressBar Value="{Binding BattleTfConfidencePercent}"
+                                                                     Maximum="100"
+                                                                     Height="8"
+                                                                     Margin="0,5,0,0"
+                                                                     Foreground="{Binding BattleTfHighlightBrush}"
+                                                                     Background="{StaticResource BackgroundDarkBrush}"/>
+                                                        <TextBlock Text="{Binding BattleTfConfidenceText}"
+                                                                   Foreground="White"
+                                                                   FontSize="11"
+                                                                   FontFamily="Consolas"
+                                                                   HorizontalAlignment="Right"
+                                                                   Margin="0,4,0,0"/>
+                                                        <TextBlock Text="{Binding BattleTfHighlightText}"
+                                                                   Foreground="{Binding BattleTfHighlightBrush}"
+                                                                   FontSize="10"
+                                                                   FontWeight="SemiBold"
+                                                                   FontFamily="Consolas"
+                                                                   Visibility="{Binding BattleTfHighlightActive, Converter={StaticResource BoolToVisibilityConverter}}"
+                                                                   Margin="0,3,0,0"/>
+                                                        <Canvas Height="22" Margin="0,5,0,0">
+                                                            <Line X1="0" Y1="11" X2="250" Y2="11" Stroke="#64748B" Opacity="0.55" StrokeThickness="1"/>
+                                                            <TextBlock Text="BB Middle Line" Canvas.Top="0" Foreground="#94A3B8" FontSize="9" FontFamily="Consolas"/>
+                                                            <Ellipse Width="10" Height="10" Fill="{Binding BattleBbSupportBrush}" Canvas.Left="124" Canvas.Top="6"/>
+                                                        </Canvas>
+                                                        <TextBlock Text="{Binding BattleBbSupportText}"
+                                                                   Foreground="{Binding BattleBbSupportBrush}"
+                                                                   FontSize="10"
+                                                                   FontWeight="SemiBold"
+                                                                   FontFamily="Consolas"
+                                                                   Margin="0,2,0,0"/>
+                                                        <TextBlock Text="{Binding BattleWeightingText}"
+                                                                   Foreground="#CBD5E1"
+                                                                   FontSize="10"
+                                                                   FontWeight="SemiBold"
+                                                                   FontFamily="Consolas"
+                                                                   Margin="0,2,0,0"/>
+                                                    </StackPanel>
+                                                </Border>
                                             </StackPanel>
 
                                             <Grid Grid.Row="0" Grid.Column="1" Grid.RowSpan="2" Width="176" Height="176" HorizontalAlignment="Right" Margin="0,0,0,8">
@@ -1498,17 +1570,65 @@
                                         <Grid>
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
                                                 <RowDefinition Height="*"/>
                                             </Grid.RowDefinitions>
 
-                                            <TextBlock Grid.Row="0"
+                                            <Border Grid.Row="0"
+                                                    Background="{StaticResource BackgroundMediumBrush}"
+                                                    BorderBrush="{StaticResource BackgroundLightBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="10"
+                                                    Padding="10"
+                                                    Margin="0,0,0,10">
+                                                <StackPanel>
+                                                    <TextBlock Text="🎯 PROFIT GOAL TRACKER"
+                                                               Foreground="{StaticResource PrimaryBrush}"
+                                                               FontSize="10"
+                                                               FontWeight="Bold"
+                                                               FontFamily="Consolas"/>
+                                                    <TextBlock Text="{Binding MonthlyGoalTargetText}"
+                                                               Foreground="White"
+                                                               FontSize="12"
+                                                               FontWeight="Bold"
+                                                               FontFamily="Consolas"
+                                                               Margin="0,4,0,0"/>
+                                                    <ProgressBar Value="{Binding MonthlyGoalProgressPercent}"
+                                                                 Maximum="100"
+                                                                 Height="8"
+                                                                 Margin="0,6,0,0"
+                                                                 Foreground="{StaticResource AccentBrush}"
+                                                                 Background="{StaticResource BackgroundDarkBrush}"/>
+                                                    <TextBlock Text="{Binding MonthlyGoalCurrentText}"
+                                                               Foreground="#E2E8F0"
+                                                               FontSize="11"
+                                                               FontWeight="SemiBold"
+                                                               FontFamily="Consolas"
+                                                               Margin="0,6,0,0"/>
+                                                    <TextBlock Text="{Binding MonthlyGoalPaceText}"
+                                                               Foreground="{Binding MonthlyGoalPaceBrush}"
+                                                               FontSize="10"
+                                                               FontWeight="Bold"
+                                                               FontFamily="Consolas"
+                                                               Margin="0,3,0,0"/>
+                                                    <TextBlock Text="{Binding MonthlyGoalXrpBonusText}"
+                                                               Foreground="{Binding MonthlyGoalXrpBonusBrush}"
+                                                               FontSize="10"
+                                                               FontWeight="SemiBold"
+                                                               FontFamily="Consolas"
+                                                               TextWrapping="Wrap"
+                                                               Margin="0,3,0,0"/>
+                                                </StackPanel>
+                                            </Border>
+
+                                            <TextBlock Grid.Row="1"
                                                        Text="🧩 EXECUTION STEPPER"
                                                        Foreground="{StaticResource AccentBrush}"
                                                        FontSize="11"
                                                        FontWeight="Bold"
                                                        Margin="0,0,0,8"/>
 
-                                            <ItemsControl Grid.Row="1"
+                                            <ItemsControl Grid.Row="2"
                                                           ItemsSource="{Binding BattleExecutionSteps}">
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate>

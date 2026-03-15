@@ -389,6 +389,127 @@ namespace TradingBot.ViewModels
             set { _battleXrpScenarioBrush = value; OnPropertyChanged(); }
         }
 
+        private double _battleTfConfidencePercent;
+        public double BattleTfConfidencePercent
+        {
+            get => _battleTfConfidencePercent;
+            set { _battleTfConfidencePercent = value; OnPropertyChanged(); }
+        }
+
+        private string _battleTfConfidenceText = "TF Confidence: -";
+        public string BattleTfConfidenceText
+        {
+            get => _battleTfConfidenceText;
+            set { _battleTfConfidenceText = value; OnPropertyChanged(); }
+        }
+
+        private bool _battleTfHighlightActive;
+        public bool BattleTfHighlightActive
+        {
+            get => _battleTfHighlightActive;
+            set { _battleTfHighlightActive = value; OnPropertyChanged(); }
+        }
+
+        private string _battleTfHighlightText = "High Probability Pattern: 대기";
+        public string BattleTfHighlightText
+        {
+            get => _battleTfHighlightText;
+            set { _battleTfHighlightText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _battleTfHighlightBrush = Brushes.LightGray;
+        public Brush BattleTfHighlightBrush
+        {
+            get => _battleTfHighlightBrush;
+            set { _battleTfHighlightBrush = value; OnPropertyChanged(); }
+        }
+
+        private bool _battleBbSupportActive;
+        public bool BattleBbSupportActive
+        {
+            get => _battleBbSupportActive;
+            set { _battleBbSupportActive = value; OnPropertyChanged(); }
+        }
+
+        private string _battleBbSupportText = "BB Mid Support: 대기";
+        public string BattleBbSupportText
+        {
+            get => _battleBbSupportText;
+            set { _battleBbSupportText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _battleBbSupportBrush = Brushes.LightGray;
+        public Brush BattleBbSupportBrush
+        {
+            get => _battleBbSupportBrush;
+            set { _battleBbSupportBrush = value; OnPropertyChanged(); }
+        }
+
+        private string _battleWeightingText = "가중치: ML 50 | TF 50";
+        public string BattleWeightingText
+        {
+            get => _battleWeightingText;
+            set { _battleWeightingText = value; OnPropertyChanged(); }
+        }
+
+        private const double MonthlyGoalTargetUsd = 10000d;
+
+        public string MonthlyGoalTargetText => $"MONTHLY GOAL: ${MonthlyGoalTargetUsd:N0}";
+
+        private double _monthlyGoalCurrentUsd;
+        public double MonthlyGoalCurrentUsd
+        {
+            get => _monthlyGoalCurrentUsd;
+            set
+            {
+                _monthlyGoalCurrentUsd = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(MonthlyGoalCurrentText));
+            }
+        }
+
+        private double _monthlyGoalProgressPercent;
+        public double MonthlyGoalProgressPercent
+        {
+            get => _monthlyGoalProgressPercent;
+            set
+            {
+                _monthlyGoalProgressPercent = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(MonthlyGoalCurrentText));
+            }
+        }
+
+        public string MonthlyGoalCurrentText => $"Current: ${MonthlyGoalCurrentUsd:N0} ({MonthlyGoalProgressPercent:F1}%)";
+
+        private string _monthlyGoalPaceText = "Daily Pace: 대기";
+        public string MonthlyGoalPaceText
+        {
+            get => _monthlyGoalPaceText;
+            set { _monthlyGoalPaceText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _monthlyGoalPaceBrush = Brushes.LightGray;
+        public Brush MonthlyGoalPaceBrush
+        {
+            get => _monthlyGoalPaceBrush;
+            set { _monthlyGoalPaceBrush = value; OnPropertyChanged(); }
+        }
+
+        private string _monthlyGoalXrpBonusText = "XRP Scenario Bonus: 계산 대기";
+        public string MonthlyGoalXrpBonusText
+        {
+            get => _monthlyGoalXrpBonusText;
+            set { _monthlyGoalXrpBonusText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _monthlyGoalXrpBonusBrush = Brushes.LightGray;
+        public Brush MonthlyGoalXrpBonusBrush
+        {
+            get => _monthlyGoalXrpBonusBrush;
+            set { _monthlyGoalXrpBonusBrush = value; OnPropertyChanged(); }
+        }
+
         // AI 라벨링 상태
         private int _aiTotalDecisions;
         public int AiTotalDecisions
@@ -1448,6 +1569,7 @@ namespace TradingBot.ViewModels
                 WinRate = 0;
                 TotalProfit = 0;
                 AverageRoe = 0;
+                UpdateMonthlyGoalTracker(0d);
                 return;
             }
 
@@ -1460,6 +1582,7 @@ namespace TradingBot.ViewModels
                 WinRate = 0;
                 TotalProfit = 0;
                 AverageRoe = 0;
+                UpdateMonthlyGoalTracker(0d);
                 return;
             }
 
@@ -1467,6 +1590,82 @@ namespace TradingBot.ViewModels
             WinRate = (double)profitableTrades.Count / closedTrades.Count * 100;
             TotalProfit = (double)closedTrades.Sum(t => t.PnL);
             AverageRoe = (double)closedTrades.Average(t => t.PnLPercent);
+
+            DateTime now = DateTime.Now;
+            DateTime monthStart = new DateTime(now.Year, now.Month, 1);
+            double monthlyClosedProfit = (double)closedTrades
+                .Where(t =>
+                {
+                    DateTime refTime = ResolveTradeReferenceTime(t);
+                    return refTime >= monthStart && refTime <= now;
+                })
+                .Sum(t => t.PnL);
+
+            UpdateMonthlyGoalTracker(monthlyClosedProfit);
+        }
+
+        private static DateTime ResolveTradeReferenceTime(TradeLog trade)
+        {
+            if (trade.ExitTime > DateTime.MinValue)
+                return trade.ExitTime;
+            if (trade.Time > DateTime.MinValue)
+                return trade.Time;
+            if (trade.EntryTime > DateTime.MinValue)
+                return trade.EntryTime;
+            return DateTime.MinValue;
+        }
+
+        private void UpdateMonthlyGoalTracker(double? monthlyClosedProfit = null)
+        {
+            if (monthlyClosedProfit.HasValue)
+            {
+                MonthlyGoalCurrentUsd = monthlyClosedProfit.Value;
+            }
+
+            double progress = MonthlyGoalTargetUsd <= 0d
+                ? 0d
+                : Math.Clamp((MonthlyGoalCurrentUsd / MonthlyGoalTargetUsd) * 100d, 0d, 999d);
+            MonthlyGoalProgressPercent = progress;
+
+            int daysInMonth = DateTime.DaysInMonth(DateTime.Now.Year, DateTime.Now.Month);
+            double expectedProfitByToday = MonthlyGoalTargetUsd * DateTime.Now.Day / daysInMonth;
+
+            bool onTrack = MonthlyGoalCurrentUsd >= expectedProfitByToday;
+            MonthlyGoalPaceText = $"Daily Pace: {(onTrack ? "On Track" : "Below Pace")}";
+            MonthlyGoalPaceBrush = onTrack ? Brushes.LimeGreen : Brushes.Gold;
+
+            UpdateMonthlyGoalXrpScenarioBonus();
+        }
+
+        private void UpdateMonthlyGoalXrpScenarioBonus()
+        {
+            var xrpVm = FindMarketDataItem("XRPUSDT");
+            if (xrpVm == null ||
+                !xrpVm.IsPositionActive ||
+                xrpVm.LastPrice <= 0m ||
+                xrpVm.TargetPrice <= 0m ||
+                xrpVm.Quantity <= 0m)
+            {
+                MonthlyGoalXrpBonusText = "XRP Scenario Bonus: 계산 대기";
+                MonthlyGoalXrpBonusBrush = Brushes.LightGray;
+                return;
+            }
+
+            bool isShort = string.Equals(xrpVm.PositionSide, "SHORT", StringComparison.OrdinalIgnoreCase);
+            decimal remainingMove = isShort
+                ? xrpVm.LastPrice - xrpVm.TargetPrice
+                : xrpVm.TargetPrice - xrpVm.LastPrice;
+            decimal expectedBonus = remainingMove * xrpVm.Quantity;
+
+            if (expectedBonus > 0m)
+            {
+                MonthlyGoalXrpBonusText = $"XRP Scenario Bonus: +${expectedBonus:N2} (TP 기준)";
+                MonthlyGoalXrpBonusBrush = Brushes.DeepSkyBlue;
+                return;
+            }
+
+            MonthlyGoalXrpBonusText = "XRP Scenario Bonus: 목표가 재확인 필요";
+            MonthlyGoalXrpBonusBrush = Brushes.Gold;
         }
 
         /* TensorFlow 전환 중 임시 비활성화
@@ -2101,6 +2300,15 @@ namespace TradingBot.ViewModels
                     BattleAtrCloudText = "ATR STOP CLOUD: 대기";
                     BattleAtrCloudBrush = Brushes.LightGray;
                     BattleStopPulseActive = false;
+                    BattleTfConfidencePercent = 0;
+                    BattleTfConfidenceText = "TF Confidence: -";
+                    BattleTfHighlightActive = false;
+                    BattleTfHighlightText = "High Probability Pattern: 대기";
+                    BattleTfHighlightBrush = Brushes.LightGray;
+                    BattleBbSupportActive = false;
+                    BattleBbSupportText = "BB Mid Support: 대기";
+                    BattleBbSupportBrush = Brushes.LightGray;
+                    BattleWeightingText = "가중치: ML 50 | TF 50";
                     UpdateBattleExecutionSteps(null, false, false, false);
                     _battleHasLastPrice = false;
                     return;
@@ -2219,10 +2427,67 @@ namespace TradingBot.ViewModels
                     BattleEtaText = "ETA: 대기";
                 }
 
+                float mlProbability = symbolVm.MLProbability > 0
+                    ? Math.Clamp(symbolVm.MLProbability, 0f, 1f)
+                    : 0f;
+                float tfConfidence = symbolVm.TFConfidence >= 0
+                    ? Math.Clamp(symbolVm.TFConfidence, 0f, 1f)
+                    : 0f;
+
+                bool tfHighProbability = tfConfidence >= 0.90f;
+                bool mlWeakSignal = symbolVm.MLProbability <= 0.20f;
+                bool bbMidSupport = IsBattleBbMidSupport(symbolVm.BBPosition, symbolVm.Decision);
+
+                BattleTfConfidencePercent = Math.Round(tfConfidence * 100d, 1);
+                BattleTfConfidenceText = symbolVm.TFConfidence >= 0
+                    ? $"TF Confidence: {tfConfidence:P0}"
+                    : "TF Confidence: 대기";
+
+                BattleBbSupportActive = bbMidSupport;
+                BattleBbSupportText = bbMidSupport
+                    ? "SUPPORT CONFIRMED · BB Middle Line"
+                    : "BB Mid Support: 대기";
+                BattleBbSupportBrush = bbMidSupport
+                    ? Brushes.DeepSkyBlue
+                    : Brushes.LightGray;
+
+                BattleTfHighlightActive = tfHighProbability;
+                if (tfHighProbability && mlWeakSignal)
+                {
+                    BattleTfHighlightText = "High Probability Pattern · TF 우세";
+                    BattleTfHighlightBrush = Brushes.LimeGreen;
+                }
+                else if (tfHighProbability)
+                {
+                    BattleTfHighlightText = "TF Confidence Strong";
+                    BattleTfHighlightBrush = Brushes.Gold;
+                }
+                else
+                {
+                    BattleTfHighlightText = "High Probability Pattern: 대기";
+                    BattleTfHighlightBrush = Brushes.LightGray;
+                }
+
+                BattleWeightingText = bbMidSupport
+                    ? "가중치: ML 30 | TF 70"
+                    : "가중치: ML 50 | TF 50";
+
                 double gateThreshold = ResolveBattleGateThresholdValue();
                 bool aiPassed = score >= gateThreshold || confidenceRatio >= 0.35f;
                 UpdateBattleExecutionSteps(symbolVm, aiPassed, goldenZoneReady, atrArmed);
             });
+        }
+
+        private static bool IsBattleBbMidSupport(string? bbPosition, string? decision)
+        {
+            if (string.IsNullOrWhiteSpace(bbPosition))
+                return false;
+
+            string normalizedDecision = decision?.ToUpperInvariant() ?? string.Empty;
+            if (!normalizedDecision.Contains("LONG", StringComparison.Ordinal))
+                return false;
+
+            return bbPosition.Contains("MID", StringComparison.OrdinalIgnoreCase);
         }
 
         private static float ResolveBattleConfidence(MultiTimeframeViewModel symbolVm, double fallbackScore)
@@ -2330,6 +2595,7 @@ namespace TradingBot.ViewModels
                 {
                     BattleXrpScenarioText = "XRP 시나리오: 데이터 대기";
                     BattleXrpScenarioBrush = Brushes.LightGray;
+                    UpdateMonthlyGoalTracker();
                     return;
                 }
 
@@ -2337,6 +2603,7 @@ namespace TradingBot.ViewModels
                 {
                     BattleXrpScenarioText = $"XRP 시나리오: {xrpVm.PositionSide} 보유 {xrpVm.ProfitRate:+0.0;-0.0;0.0}%";
                     BattleXrpScenarioBrush = xrpVm.ProfitRate >= 0 ? Brushes.LimeGreen : Brushes.Tomato;
+                    UpdateMonthlyGoalTracker();
                     return;
                 }
 
@@ -2359,6 +2626,8 @@ namespace TradingBot.ViewModels
                     BattleXrpScenarioText = $"XRP 시나리오: 대기 · {aiText} · {rsiText}";
                     BattleXrpScenarioBrush = Brushes.LightGray;
                 }
+
+                UpdateMonthlyGoalTracker();
             });
         }
 

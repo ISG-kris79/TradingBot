@@ -15,6 +15,32 @@
 
  - 없음
 
+## [2.4.46] - 2026-03-15
+
+### Added
+
+- **저거래량 메이저 롱 정찰/증원 진입 시퀀스 추가** (`TradingEngine.cs`, `EntryRuleValidator.cs`, `AIDoubleCheckEntryGate.cs`):
+  - `RuleViolationLowVolumeRatio` 차단 상황에서도 TF 강세 + BB 중심선 지지 패턴일 때 30% 정찰 진입(`_SCOUT`) 허용
+  - 정찰 체결 후 거래량/ML/TF 회복 시 70% 추가 진입(`_SCOUT_ADDON`) 1회 트리거
+  - 저거래량 예외 파라미터(`LowVolumeBypass*`)를 설정 모델에 반영해 우회 조건을 일관되게 관리
+
+- **월 목표 추적 위젯(Profit Goal Tracker) 추가** (`MainWindow.xaml`, `MainViewModel.cs`):
+  - 우측 상단 대시보드에 `MONTHLY GOAL`, `Current(금액/달성률)`, `Daily Pace`, `XRP Scenario Bonus` 표시
+  - 당월 누적 실현손익 기반 달성률/일일 페이스 계산 및 XRP 활성 포지션 TP 기준 보너스 수익 표시
+
+### Changed
+
+- **정찰 진입 리스크 관리 강화** (`TradingEngine.cs`):
+  - 정찰 진입(`SCOUT`)에도 메이저 ATR 하이브리드 손절 계산을 강제 적용
+  - 손절 계산 실패 시 정찰 진입 자체를 차단하여 무손절 진입 가능성 제거
+
+- **사용자 스코프 DB 마이그레이션 멱등성 보강** (`run-user-scope-db-migration.ps1`):
+  - `GeneralSettings` 테이블이 이미 존재하는 환경에서 `GeneralSettings_Schema.sql`을 자동 스킵하도록 개선
+  - 운영 DB 재실행 시 “이미 개체 존재” 오류를 줄여 배포 안정성 향상
+
+- **HelloQuant 패턴 카드 가시성 강화** (`MainWindow.xaml`, `MainViewModel.cs`):
+  - BB 중심선 지지 활성 시 펄스 애니메이션, TF Confidence 진행바, ML/TF 가중치(50:50 ↔ 30:70) 실시간 반영
+
 ## [2.4.45] - 2026-03-15
 
 ### Changed

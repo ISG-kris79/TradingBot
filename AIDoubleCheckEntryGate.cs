@@ -279,6 +279,7 @@ namespace TradingBot
 
                     var ruleCheck = _ruleValidator.ValidateEntryRules(
                         m15List,
+                        symbol,
                         currentPrice,
                         side,
                         mlConfidence,
@@ -1934,6 +1935,12 @@ namespace TradingBot
         public float BbUpperRiskThreshold { get; set; } = 0.90f;
         public float UpperWickRiskThreshold { get; set; } = 0.70f;
         public float RecentHighChaseThresholdPct { get; set; } = 0.20f;
+        public float LowVolumeRejectRatio { get; set; } = 0.70f;
+        public float LowVolumeBypassMinRatio { get; set; } = 0.30f;
+        public float LowVolumeBypassTfThreshold { get; set; } = 0.90f;
+        public float LowVolumeBypassBbLower { get; set; } = 0.40f;
+        public float LowVolumeBypassBbUpper { get; set; } = 0.60f;
+        public float LowVolumeBypassLowerWickBodyRatio { get; set; } = 1.20f;
 
         public int FibonacciWaveLookbackCandles { get; set; } = 32;
         public float FibonacciSupportUpper { get; set; } = 0.618f;
