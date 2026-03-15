@@ -15,6 +15,14 @@
 
  - 없음
 
+## [2.4.47] - 2026-03-15
+
+### Changed
+
+- **CRITICAL ALERTS 패널 배치 조정으로 Market Signals 가시성 개선** (`MainWindow.xaml`):
+  - 하단 메인 영역의 `CRITICAL ALERTS` 패널을 좌측 사이드바 카드 영역으로 이동
+  - 메인 하단 row 점유를 제거해 `MARKET SIGNALS` 리스트 표시 공간을 복원
+
 ## [2.4.46] - 2026-03-15
 
 ### Added
