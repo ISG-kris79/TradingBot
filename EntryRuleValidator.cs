@@ -176,6 +176,17 @@ namespace TradingBot
             return (true, "Elliott_Rules_OK");
         }
 
+        // ── [Staircase Uptrend 헬퍼] ─────────────────────────────────────────────────
+        /// <summary>최근 n+1개 봉에서 연속 저점 상승(Higher Lows) 여부 판단</summary>
+        private static bool HasSuccessiveHigherLows(List<IBinanceKline>? candles, int count = 3)
+        {
+            if (candles == null || candles.Count < count + 1) return false;
+            var recent = candles.TakeLast(count + 1).ToList();
+            for (int i = 1; i < recent.Count; i++)
+                if (recent[i].LowPrice <= recent[i - 1].LowPrice) return false;
+            return true;
+        }
+
         /// <summary>
         /// 거래량 기반 캔들 패턴 검증
         /// </summary>
@@ -203,7 +214,8 @@ namespace TradingBot
             // **규칙: 거래량이 평균의 70% 미만이면 신뢰도 낮음 (거부)**
             if (volumeRatio < (decimal)_config.LowVolumeRejectRatio)
             {
-                var lowVolumeBypass = ShouldAllowLowVolumeBypass(symbol, side, tfScore, bbPosition, volumeRatio, currentCandle);
+                // recentCandles를 함께 전달 → 계단식 상승 바이패스 판단에 사용
+                var lowVolumeBypass = ShouldAllowLowVolumeBypass(symbol, side, tfScore, bbPosition, volumeRatio, currentCandle, recentCandles);
                 if (!lowVolumeBypass.allowed)
                 {
                     return (false, $"Low_Volume_Ratio={volumeRatio:F2}");
@@ -234,8 +246,20 @@ namespace TradingBot
             float tfScore,
             float bbPosition,
             decimal volumeRatio,
-            IBinanceKline currentCandle)
+            IBinanceKline currentCandle,
+            List<IBinanceKline>? recentCandles = null)
         {
+            // ── [Staircase Pursuit 바이패스] ────────────────────────────────────────────
+            // 조건: LONG + BB 중단 위(>50%) + 3연속 Higher Lows + TF 기준 85%+ + 최소 거래량
+            bool isStaircaseUptrend = side == PositionSide.Long
+                && bbPosition > 0.5f
+                && HasSuccessiveHigherLows(recentCandles, 3)
+                && SanitizeScore(tfScore) >= _config.LowVolumeBypassTfThreshold * 0.94f  // ~85%
+                && volumeRatio >= (decimal)_config.LowVolumeBypassMinRatio;
+
+            if (isStaircaseUptrend)
+                return (true, $"Staircase_Uptrend_Bypass_Vol={volumeRatio:F2}_BB={bbPosition:P0}");
+
             if (side != PositionSide.Long)
                 return (false, "LowVolume_Bypass_Not_Long");
 

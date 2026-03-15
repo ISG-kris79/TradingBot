@@ -445,6 +445,35 @@ namespace TradingBot.ViewModels
             set { _battleBbSupportBrush = value; OnPropertyChanged(); }
         }
 
+        // ── [Trend-Rider] 계단식 추세 지속 위젯 ────────────────────────────────
+        private bool _battleTrendRiderActive;
+        public bool BattleTrendRiderActive
+        {
+            get => _battleTrendRiderActive;
+            set { _battleTrendRiderActive = value; OnPropertyChanged(); }
+        }
+
+        private string _battleTrendRiderText = "TREND: 대기";
+        public string BattleTrendRiderText
+        {
+            get => _battleTrendRiderText;
+            set { _battleTrendRiderText = value; OnPropertyChanged(); }
+        }
+
+        private Brush _battleTrendRiderBrush = Brushes.LightGray;
+        public Brush BattleTrendRiderBrush
+        {
+            get => _battleTrendRiderBrush;
+            set { _battleTrendRiderBrush = value; OnPropertyChanged(); }
+        }
+
+        private string _battleTrendRiderActionText = "Action: 대기 중";
+        public string BattleTrendRiderActionText
+        {
+            get => _battleTrendRiderActionText;
+            set { _battleTrendRiderActionText = value; OnPropertyChanged(); }
+        }
+
         private string _battleWeightingText = "가중치: ML 50 | TF 50";
         public string BattleWeightingText
         {
@@ -2309,6 +2338,10 @@ namespace TradingBot.ViewModels
                     BattleBbSupportText = "BB Mid Support: 대기";
                     BattleBbSupportBrush = Brushes.LightGray;
                     BattleWeightingText = "가중치: ML 50 | TF 50";
+                    BattleTrendRiderActive = false;
+                    BattleTrendRiderText = "TREND: 대기";
+                    BattleTrendRiderBrush = Brushes.LightGray;
+                    BattleTrendRiderActionText = "Action: 대기 중";
                     UpdateBattleExecutionSteps(null, false, false, false);
                     _battleHasLastPrice = false;
                     return;
@@ -2471,6 +2504,35 @@ namespace TradingBot.ViewModels
                 BattleWeightingText = bbMidSupport
                     ? "가중치: ML 30 | TF 70"
                     : "가중치: ML 50 | TF 50";
+
+                // ── [Trend-Rider] 계단식 추세 지속 감지 ────────────────────────────────
+                bool bbAboveMid = symbolVm.BBPosition?.Contains("Upper", StringComparison.OrdinalIgnoreCase) == true
+                    || symbolVm.BBPosition?.Contains("Mid", StringComparison.OrdinalIgnoreCase) == true;
+                float tfConf = symbolVm.TFConfidence >= 0 ? symbolVm.TFConfidence : 0f;
+                bool stairTfReady   = tfConf >= 0.65f;
+                bool stairPursuit   = tfConf >= 0.85f;
+
+                bool stairActive = bbAboveMid && stairTfReady;
+                BattleTrendRiderActive = stairActive;
+
+                if (stairPursuit && bbAboveMid)
+                {
+                    BattleTrendRiderText = "TREND: STAIRCASE UPTREND (활성)";
+                    BattleTrendRiderBrush = Brushes.Gold;
+                    BattleTrendRiderActionText = "Action: Pursuit Ready — 정찰대 20% 대기 휴";
+                }
+                else if (stairActive)
+                {
+                    BattleTrendRiderText = "TREND: STAIRCASE MONITORING";
+                    BattleTrendRiderBrush = Brushes.DeepSkyBlue;
+                    BattleTrendRiderActionText = "Status: Low Volume Persistence — Adjusting Filters";
+                }
+                else
+                {
+                    BattleTrendRiderText = "한산드 대기";
+                    BattleTrendRiderBrush = Brushes.LightGray;
+                    BattleTrendRiderActionText = "Action: 조건 비충 중";
+                }
 
                 double gateThreshold = ResolveBattleGateThresholdValue();
                 bool aiPassed = score >= gateThreshold || confidenceRatio >= 0.35f;

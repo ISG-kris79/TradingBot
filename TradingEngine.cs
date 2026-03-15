@@ -5063,16 +5063,50 @@ namespace TradingBot
 
                     if (volumeRecovered && mlRecovered && tfSustained)
                     {
+                        // [불타기 Add-on] 가격이 최근 5봉 고점 돌파 시 20%, 아니면 70%
+                        bool stairBreakout = recentEntryKlines != null && recentEntryKlines.Count >= 5
+                            && currentPrice >= recentEntryKlines.TakeLast(5).Max(k => k.HighPrice);
                         scoutAddOnEligible = true;
-                        decimal addOnMultiplier = 0.70m;
+                        decimal addOnMultiplier = stairBreakout ? 0.20m : 0.70m;
                         manualSizeMultiplier = Math.Min(manualSizeMultiplier, addOnMultiplier);
-                        signalSource = $"{signalSource}_SCOUT_ADDON";
+                        string addOnTag = stairBreakout ? "STAIRCASE_ADDON" : "SCOUT_ADDON";
+                        signalSource = $"{signalSource}_{addOnTag}";
                         flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
 
                         EntryLog(
                             "SCOUT",
                             "ADDON_READY",
-                            $"reason=volume_ml_recovered ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.TF_Confidence:P0} vol={latestCandle?.Volume_Ratio:F2}x size={addOnMultiplier:P0}");
+                            $"reason=volume_ml_recovered stairBreakout={stairBreakout} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.TF_Confidence:P0} vol={latestCandle?.Volume_Ratio:F2}x size={addOnMultiplier:P0}");
+
+                        if (stairBreakout)
+                            OnStatusLog?.Invoke($"🔥 [불타기 Add-on] {symbol} 최근 5봉 고점 돌파 → 계단식 불타기 {addOnMultiplier:P0}");
+                    }
+                }
+
+                // [Staircase Pursuit] TF≥85% + 3연속 Higher Lows + BB중단 위 → 20% 정찰대 즉시 투입
+                if (!scoutModeActivated && !scoutAddOnEligible
+                    && gateResult.allowEntry
+                    && decision == "LONG"
+                    && gateResult.detail.TF_Confidence >= 0.85f
+                    && latestCandle != null
+                    && recentEntryKlines != null && recentEntryKlines.Count >= 4)
+                {
+                    decimal bbPos = latestCandle.BollingerUpper > 0 && latestCandle.BollingerLower > 0
+                        ? (currentPrice - (decimal)latestCandle.BollingerLower)
+                          / ((decimal)latestCandle.BollingerUpper - (decimal)latestCandle.BollingerLower)
+                        : 0.5m;
+
+                    if (IsStaircaseUptrendPattern(recentEntryKlines, bbPos, latestCandle))
+                    {
+                        decimal stairMultiplier = 0.20m;
+                        manualSizeMultiplier = Math.Min(manualSizeMultiplier, stairMultiplier);
+                        signalSource = $"{signalSource}_STAIRCASE";
+                        flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
+                        // 불타기 대기열 등록
+                        _scoutAddOnPendingSymbols[symbol] = DateTime.UtcNow;
+                        EntryLog("STAIRCASE", "PURSUIT",
+                            $"reason=HigherLows_BBMid tf={gateResult.detail.TF_Confidence:P0} bb={bbPos:P0} size={stairMultiplier:P0}");
+                        OnAlert?.Invoke($"🪜 STAIRCASE PURSUIT ({symbol} LONG) TF {gateResult.detail.TF_Confidence:P0} · 정찰대 {stairMultiplier:P0} — ATR 3.5x 하이브리드 손절 대기");
                     }
                 }
             }
@@ -8114,6 +8148,14 @@ namespace TradingBot
                     && latestCandle.Upper_Shadow_Ratio < 0.20f
                     && latestCandle.RSI < 70f;
 
+                // ⑤ [Staircase Pursuit] 계단식 상승 감지: Higher Lows(3봉) + BB 중단 위 + RSI<80 → nearRecentHigh 차단 면제
+                bool isStaircasePursuit = IsStaircaseUptrendPattern(recent20, bbPosition, latestCandle);
+                if (isStaircasePursuit && latestCandle.RSI < 80f)
+                {
+                    OnStatusLog?.Invoke($"🪜 [Staircase Pursuit] {symbol} 계단식 상승 패턴 → 고점 추격 필터 우회 (%B={bbPosition:P0}, RSI={latestCandle.RSI:F1})");
+                    bbFilterPassed = true;
+                }
+
                 // ① 초과열(RSI ≥ 80): 상단 구간에서 RSI 80 이상은 상투 가능성 → 차단
                 if (inUpperZone && latestCandle.RSI >= 80f)
                 {
@@ -8263,6 +8305,24 @@ namespace TradingBot
             }
 
             return false;
+        }
+
+        /// <summary>[Staircase Pursuit] recent 봉 리스트 기준으로 3연속 저점 상승 + BB 중단 이상 여부를 판단합니다.</summary>
+        private static bool IsStaircaseUptrendPattern(
+            List<IBinanceKline> recentKlines,
+            decimal bbPosition,
+            CandleData latestCandle)
+        {
+            if (recentKlines == null || recentKlines.Count < 4) return false;
+            // BB 중단 위에 있어야 함 (%B > 0.45)
+            if (bbPosition < 0.45m) return false;
+            // RSI 과열(≥80) 제외
+            if (latestCandle.RSI >= 80f) return false;
+            // 최근 4봉에서 3연속 Higher Lows 확인
+            var tail = recentKlines.TakeLast(4).ToList();
+            for (int i = 1; i < tail.Count; i++)
+                if (tail[i].LowPrice <= tail[i - 1].LowPrice) return false;
+            return true;
         }
 
         private async Task<(bool blocked, string reason)> EvaluateOneMinuteUpperWickBlockAsync(

@@ -1383,6 +1383,7 @@
                                                 <RowDefinition Height="Auto"/>
                                                 <RowDefinition Height="Auto"/>
                                                 <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
                                             </Grid.RowDefinitions>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="1.2*"/>
@@ -1619,6 +1620,93 @@
                                                     <TextBlock Text="{Binding BattleFastLog2}" Foreground="#94A3B8" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0"/>
                                                     <TextBlock Text="{Binding BattleFastLog3}" Foreground="#64748B" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0"/>
                                                 </StackPanel>
+                                            </Border>
+
+                                            <!-- [Trend-Rider] 계단식 추세 지속 위젯 -->
+                                            <Border Grid.Row="3"
+                                                    Grid.ColumnSpan="2"
+                                                    Background="{StaticResource BackgroundMediumBrush}"
+                                                    BorderBrush="{Binding BattleTrendRiderBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="10"
+                                                    Padding="10"
+                                                    Margin="0,8,0,0">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Opacity" Value="0.7"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding BattleTrendRiderActive}" Value="True">
+                                                                <Setter Property="Opacity" Value="1"/>
+                                                                <DataTrigger.EnterActions>
+                                                                    <BeginStoryboard x:Name="TrendRiderPulseStoryboard">
+                                                                        <Storyboard AutoReverse="True" RepeatBehavior="3x">
+                                                                            <DoubleAnimation Storyboard.TargetProperty="Opacity" To="0.6" Duration="0:0:0.5"/>
+                                                                        </Storyboard>
+                                                                    </BeginStoryboard>
+                                                                </DataTrigger.EnterActions>
+                                                                <DataTrigger.ExitActions>
+                                                                    <StopStoryboard BeginStoryboardName="TrendRiderPulseStoryboard"/>
+                                                                </DataTrigger.ExitActions>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="🪜 TREND-RIDER"
+                                                                       Foreground="{Binding BattleTrendRiderBrush}"
+                                                                       FontSize="10"
+                                                                       FontWeight="Bold"
+                                                                       VerticalAlignment="Center"/>
+                                                            <Border Background="{Binding BattleTrendRiderBrush}"
+                                                                    CornerRadius="4"
+                                                                    Padding="5,1"
+                                                                    Margin="6,0,0,0"
+                                                                    Visibility="{Binding BattleTrendRiderActive, Converter={StaticResource BoolToVisibilityConverter}}">
+                                                                <TextBlock Text="ACTIVE"
+                                                                           Foreground="#0F172A"
+                                                                           FontSize="9"
+                                                                           FontWeight="Bold"/>
+                                                            </Border>
+                                                        </StackPanel>
+                                                        <TextBlock Text="{Binding BattleTrendRiderText}"
+                                                                   Foreground="{Binding BattleTrendRiderBrush}"
+                                                                   FontSize="11"
+                                                                   FontWeight="SemiBold"
+                                                                   FontFamily="Consolas"
+                                                                   Margin="0,4,0,0"/>
+                                                        <TextBlock Text="{Binding BattleTrendRiderActionText}"
+                                                                   Foreground="#94A3B8"
+                                                                   FontSize="10"
+                                                                   FontFamily="Consolas"
+                                                                   Margin="0,2,0,0"/>
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="8,0,0,0">
+                                                        <TextBlock Text="🔺"
+                                                                   FontSize="22"
+                                                                   HorizontalAlignment="Center"
+                                                                   Visibility="{Binding BattleTrendRiderActive, Converter={StaticResource BoolToVisibilityConverter}}"/>
+                                                        <TextBlock Text="🔲"
+                                                                   FontSize="22"
+                                                                   HorizontalAlignment="Center">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding BattleTrendRiderActive}" Value="True">
+                                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </StackPanel>
+                                                </Grid>
                                             </Border>
                                         </Grid>
                                     </Border>

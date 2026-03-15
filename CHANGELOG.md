@@ -15,6 +15,29 @@
 
  - 없음
 
+## [2.4.48] - 2026-03-15
+
+### Added
+
+- **Staircase Pursuit (계단식 추격) 로직 신규 추가** (`TradingEngine.cs`, `AIDoubleCheckEntryGate.cs`, `EntryRuleValidator.cs`):
+  - `IsStaircaseUptrendPattern()`: 15봄봉 3연속 Higher Lows + BB %B > 45% + RSI<80 조건으로 계단식 상승 패턴 자동 감지
+  - `ShouldBlockChasingEntry`: 계단식 감지 시 `nearRecentHigh` riskScore 차단 면제 → 고점 추격 필터 우회
+  - `AIDoubleCheckEntryGate.DetectStaircaseUptrend()`: BB %B > 50% + 3연속 Higher Lows 감지 시 `Chasing_Risk_Pullback` 필터 바이패스
+  - `EntryRuleValidator.HasSuccessiveHigherLows()`: 점자 거래량 코인의 저점 상승을 신뢰할 수 있는 추세로 인정, `LowVolumeRejectRatio` 필터 바이패스
+
+- **계단식 정찰대 20% 즉시 투입** (`TradingEngine.cs`):
+  - TF≥85% + 계단식 상승 감지 시 눈맼목을 기다리지 않고 성리의 **20%** 시장가 진입 (`_STAIRCASE` 태그)
+  - ATR 3.5x 하이브리드 손절 대기열 자동 등록
+
+- **불타기 Add-on 개선** (`TradingEngine.cs`):
+  - 계단식 상승 중 최근 5봉 고점 돌파 시 기존 70% 대신 **20% 추가 진입** (`STAIRCASE_ADDON`) 적용
+
+- **Trend-Rider 위젯 첨가** (`MainWindow.xaml`, `MainViewModel.cs`):
+  - LIVE BATTLE DASHBOARD 하단에 `🪜 TREND-RIDER` 위젯 신규 삽입
+  - TF≥85% + BB중단 이상: 구뚤금세 `STAIRCASE UPTREND (활성)` + `ACTIVE` 배지 + 폄스 애니메이션
+  - TF≥65%~85%: `STAIRCASE MONITORING` (하늘색)
+  - 비활성: 회색 `한산드 대기`
+
 ## [2.4.47] - 2026-03-15
 
 ### Changed

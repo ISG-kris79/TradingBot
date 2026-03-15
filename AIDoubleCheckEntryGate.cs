@@ -383,6 +383,17 @@ namespace TradingBot
 
             bool strongTrend = trendScore >= _config.StrongTrendBypassThreshold;
 
+            // ── [Staircase Pursuit] 연속 Higher Lows + BB 중단 지지 감지 ────────────────────────────
+            // 벼린저 중단 위 + 3연속 저점 상승(계단식) + TF 기준치 측 충족 시 추격 리스크 필터 무시
+            bool isStaircaseUptrend = trendScore >= _config.StaircaseTfMinThreshold
+                && DetectStaircaseUptrend(currentPrice, feature.M15_BBPosition, m15Candles);
+
+            if (isStaircaseUptrend)
+            {
+                OnLog?.Invoke($"🪜 [{symbol}] [STAIRCASE_PURSUIT] 계단식 상승 감지: HigherLows + BB중단 지지 → Chasing 필터 바이패스 (TF={trendScore:P0})");
+                return (true, $"Staircase_Pursuit_Bypass_TF={trendScore:P0}_BB={feature.M15_BBPosition:P0}");
+            }
+
             if (!strongTrend &&
                 bbPosition >= _config.BbUpperRiskThreshold &&
                 rsi >= _config.RsiCautionThreshold)
@@ -394,10 +405,27 @@ namespace TradingBot
                 pullbackFromRecentHighPct >= 0m &&
                 pullbackFromRecentHighPct <= (decimal)_config.RecentHighChaseThresholdPct)
             {
+                // [Staircase Pursuit] 계단식 상승의 경우 pullback 조건도 스통 (위에서 이미 처리되지만 안전 문구)
                 return (false, $"Chasing_Risk_Pullback={pullbackFromRecentHighPct:F2}%");
             }
 
             return (true, "Risk_Filter_Passed");
+        }
+
+        /// <summary>[Staircase Pursuit] 연속 Higher Lows(3봉) + 가격이 BB 중단 위인지 판단</summary>
+        private static bool DetectStaircaseUptrend(
+            decimal currentPrice,
+            float bbPosition,
+            List<IBinanceKline> m15Candles)
+        {
+            if (m15Candles == null || m15Candles.Count < 4) return false;
+            // BB 중단 위(좌표 50% 초과)
+            if (bbPosition <= 0.50f) return false;
+            // 연속 3봉 Higher Lows
+            var recent = m15Candles.TakeLast(4).ToList();
+            for (int i = 1; i < recent.Count; i++)
+                if (recent[i].LowPrice <= recent[i - 1].LowPrice) return false;
+            return true;
         }
 
         private (double BonusScore, bool DeadCatBlocked, string Reason, decimal Fib618, decimal Fib786, bool ReversalConfirmed)
@@ -1932,6 +1960,10 @@ namespace TradingBot
         public float ShortFibBlockBbPosition { get; set; } = 0.95f;
         public float RsiOverheatHardCap { get; set; } = 80f;
         public float RsiCautionThreshold { get; set; } = 70f;
+
+        /// <summary>[Staircase Pursuit] 계단식 상승 감지 시 Chasing 필터 바이패스에 필요한 최소 TF 점수 (0~1)</summary>
+        public float StaircaseTfMinThreshold { get; set; } = 0.65f;
+        public float StaircaseHigherLowsCount { get; set; } = 3f;
         public float BbUpperRiskThreshold { get; set; } = 0.90f;
         public float UpperWickRiskThreshold { get; set; } = 0.70f;
         public float RecentHighChaseThresholdPct { get; set; } = 0.20f;
