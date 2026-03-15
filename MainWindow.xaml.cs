@@ -692,6 +692,102 @@ namespace TradingBot
             ViewModel.TelegramStatusColor = isConnected ? Brushes.DeepSkyBlue : Brushes.Gray;
         }
 
+        /// <summary>
+        /// [TimeOut Probability Entry] AI MONITOR 탭 위젯 갱신.
+        /// 60분 공백 시 과거 패턴 코사인 유사도 기반 승률 게이지/상태를 실시간으로 표시합니다.
+        /// </summary>
+        /// <param name="scanStatus">스캔 상태 메시지 (예: "DEEP SCANNING...", "STANDBY")</param>
+        /// <param name="matchSymbol">매칭 심볼 (예: "ETHUSDT", "—")</param>
+        /// <param name="winRate">승률 0.0~1.0</param>
+        /// <param name="activated">70%+ 임계 돌파 여부 (보라색 Glow 활성화)</param>
+        public void UpdateTimeOutProbWidgetUI(
+            string scanStatus, string matchSymbol, double winRate, bool activated)
+        {
+            if (!CheckAccess())
+            {
+                _ = Dispatcher.BeginInvoke(new Action(() =>
+                    UpdateTimeOutProbWidgetUI(scanStatus, matchSymbol, winRate, activated)),
+                    DispatcherPriority.Background);
+                return;
+            }
+
+            try
+            {
+                double pct = Math.Clamp(winRate * 100.0, 0, 100);
+
+                // 스캔 상태 텍스트
+                TxtTimeOutScanStatus.Text     = scanStatus ?? "STANDBY";
+                TxtTimeOutScanStatus.Foreground = activated
+                    ? new System.Windows.Media.SolidColorBrush(
+                          System.Windows.Media.Color.FromRgb(168, 85, 247))  // 보라
+                    : new System.Windows.Media.SolidColorBrush(
+                          System.Windows.Media.Color.FromRgb(0, 229, 255));  // 청록
+
+                // 매칭 심볼
+                TxtTimeOutMatchSymbol.Text      = string.IsNullOrEmpty(matchSymbol) ? "—" : matchSymbol;
+                TxtTimeOutMatchSymbol.Foreground = activated
+                    ? new System.Windows.Media.SolidColorBrush(
+                          System.Windows.Media.Color.FromRgb(167, 139, 250))
+                    : System.Windows.Media.Brushes.White;
+
+                // 승률 수치 + 진행 바
+                TxtTimeOutWinRate.Text       = $"{pct:F1}%";
+                TxtTimeOutWinRate.Foreground  = activated
+                    ? new System.Windows.Media.SolidColorBrush(
+                          System.Windows.Media.Color.FromRgb(167, 139, 250))
+                    : new System.Windows.Media.SolidColorBrush(
+                          System.Windows.Media.Color.FromRgb(124, 58, 237));
+                PbTimeOutWinProb.Value        = pct;
+                PbTimeOutWinProb.Foreground   = activated
+                    ? new System.Windows.Media.SolidColorBrush(
+                          System.Windows.Media.Color.FromRgb(167, 139, 250))  // 밝은 보라
+                    : new System.Windows.Media.SolidColorBrush(
+                          System.Windows.Media.Color.FromRgb(124, 58, 237));  // 기본 보라
+
+                // 신호 레이블
+                if (activated)
+                {
+                    TxtTimeOutSignalLabel.Text       = $"🎯 HIGH PROBABILITY ENTRY IMMINENT — {matchSymbol} {pct:F1}% — FIRING...";
+                    TxtTimeOutSignalLabel.Foreground  = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromRgb(167, 139, 250));
+                    BorderTimeOutSignal.Background   = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromArgb(40, 124, 58, 237));
+                }
+                else if (pct > 0)
+                {
+                    TxtTimeOutSignalLabel.Text       = $"⚡ {matchSymbol} Prediction: {pct:F1}% Similarity Match";
+                    TxtTimeOutSignalLabel.Foreground  = System.Windows.Media.Brushes.Gray;
+                    BorderTimeOutSignal.Background    = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromRgb(10, 15, 30));
+                }
+                else
+                {
+                    TxtTimeOutSignalLabel.Text       = "⌛ IDLE — WAITING FOR 60M DROUGHT...";
+                    TxtTimeOutSignalLabel.Foreground  = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromRgb(55, 65, 81));
+                    BorderTimeOutSignal.Background    = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromRgb(10, 15, 30));
+                }
+
+                // 위젯 테두리 Glow — 70%+ 시 보라색으로 번쩍임
+                BorderTimeOutProbWidget.BorderBrush = activated
+                    ? new System.Windows.Media.SolidColorBrush(
+                          System.Windows.Media.Color.FromRgb(124, 58, 237))
+                    : new System.Windows.Media.SolidColorBrush(
+                          System.Windows.Media.Color.FromRgb(30, 58, 95));
+
+                GlowTimeOut.Color   = activated
+                    ? System.Windows.Media.Color.FromRgb(124, 58, 237)
+                    : System.Windows.Media.Color.FromRgb(30, 58, 95);
+                GlowTimeOut.BlurRadius = activated ? 20 : 8;
+                GlowTimeOut.Opacity    = activated ? 0.8 : 0.4;
+            }
+            catch (Exception ex)
+            {
+                AddLog($"⚠️ [UI] TimeOut 위젯 갱신 오류: {ex.Message}");
+            }
+        }
+
         public void UpdateSlotStatusUI(int majorCount, int majorMax, int pumpCount, int pumpMax)
         {
             if (!CheckAccess())

@@ -273,6 +273,12 @@ namespace TradingBot
         private DateTime _lastDroughtScanTime = DateTime.MinValue;     // [드라이스펠] 마지막 진단 스캔 시각
         private static readonly TimeSpan DroughtScanThreshold = TimeSpan.FromMinutes(30);  // 30분 진입 없으면 진단
         private static readonly TimeSpan DroughtScanInterval   = TimeSpan.FromMinutes(10);  // 진단은 10분에 1회까지
+
+        // [TimeOut Probability Entry] 60분 공백 확률 베팅 엔진
+        private TimeOutProbabilityEngine? _timeoutProbEngine;
+        private DateTime _lastTimeOutProbScanTime = DateTime.MinValue; // 마지막 TimeOut 스캔 시각
+        private static readonly TimeSpan TimeOutProbScanThreshold = TimeSpan.FromHours(1);   // 60분 공백 시 가동
+        private static readonly TimeSpan TimeOutProbScanInterval  = TimeSpan.FromMinutes(20); // 스캔은 20분에 1회 재시도 제한
         private bool _initialMLNetTrainingTriggered = false;
         private int _manualInitialTrainingRunning = 0;
         private TimeSpan _entryWarmupDuration = TimeSpan.FromSeconds(30); // 설정에서 로드
@@ -573,6 +579,51 @@ namespace TradingBot
                 _marketDataManager,
                 () => MainWindow.CurrentGeneralSettings ?? AppConfig.Current?.Trading?.GeneralSettings);
             _gridStrategy = new GridStrategy(_exchangeService);
+
+            // [TimeOut Probability Entry] 초기화
+            try
+            {
+                _timeoutProbEngine = new TimeOutProbabilityEngine(
+                    _exchangeService,
+                    _dbManager,
+                    msg => OnStatusLog?.Invoke(msg));
+
+                // UI 갱신 이벤트 → MainWindow 업데이트
+                _timeoutProbEngine.OnUIUpdated += (status, symbol, winRate, activated) =>
+                {
+                    MainWindow.Instance?.UpdateTimeOutProbWidgetUI(status, symbol, winRate, activated);
+                };
+
+                // 진입 요청 이벤트 → ExecuteAutoOrder 콜백 연결
+                _timeoutProbEngine.OnEntryRequested += async (symbol, direction, signalSrc, sizeMultiplier, ct) =>
+                {
+                    try
+                    {
+                        decimal price = 0;
+                        if (_marketDataManager.TickerCache.TryGetValue(symbol, out var tick))
+                            price = tick.LastPrice;
+                        if (price > 0)
+                        {
+                            await ExecuteAutoOrder(
+                                symbol, direction, price, ct,
+                                signalSource: signalSrc,
+                                manualSizeMultiplier: sizeMultiplier,
+                                skipAiGateCheck: true);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [TimeOut-Prob] 진입 실행 오류: {ex.Message}");
+                    }
+                };
+
+                OnStatusLog?.Invoke("⏳ [TimeOut-Prob] 확률 베팅 엔진 초기화 완료");
+            }
+            catch (Exception ex)
+            {
+                _timeoutProbEngine = null;
+                OnStatusLog?.Invoke($"⚠️ [TimeOut-Prob] 엔진 초기화 실패: {ex.Message}");
+            }
 
             _pumpStrategy.OnSignalAnalyzed += vm =>
             {
@@ -1525,6 +1576,7 @@ namespace TradingBot
                 _lastEntryBlockSummaryTime = DateTime.Now;
                 _lastSuccessfulEntryTime = DateTime.Now; // [드라이스펠] 엔진 기동을 기준으로 카운트 시작
                 _lastDroughtScanTime = DateTime.MinValue;
+                _lastTimeOutProbScanTime = DateTime.MinValue;
                 _lastPositionSyncTime = DateTime.Now; // [FIX] 시작 시점 기록 (30분 후 첫 동기화)
                 _periodicReportBaselineEquity = await GetEstimatedAccountEquityUsdtAsync(token);
                 if (_periodicReportBaselineEquity <= 0)
@@ -1620,13 +1672,24 @@ namespace TradingBot
                             _lastReportTime = DateTime.Now;
                         }
 
-                        // [D] 드라이스펠 감지: 1시간 진입 없으면 진입 가능 심볼 진단
+                        // [D] 드라이스펠 감지: 30분 진입 없으면 진입 가능 심볼 진단
                         if (_lastSuccessfulEntryTime != DateTime.MinValue
                             && (DateTime.Now - _lastSuccessfulEntryTime) >= DroughtScanThreshold
                             && (DateTime.Now - _lastDroughtScanTime) >= DroughtScanInterval)
                         {
                             _lastDroughtScanTime = DateTime.Now;
                             _ = Task.Run(() => RunDroughtDiagnosticScanAsync(token));
+                        }
+
+                        // [D2] TimeOut Probability Entry: 60분 공백 시 과거 패턴 유사도 기반 확률 베팅
+                        if (_timeoutProbEngine != null
+                            && _lastSuccessfulEntryTime != DateTime.MinValue
+                            && (DateTime.Now - _lastSuccessfulEntryTime) >= TimeOutProbScanThreshold
+                            && (DateTime.Now - _lastTimeOutProbScanTime) >= TimeOutProbScanInterval)
+                        {
+                            _lastTimeOutProbScanTime = DateTime.Now;
+                            OnStatusLog?.Invoke("⏳ [TimeOut-Prob] 60분 공백 — 확률 베팅 스캔 시작...");
+                            _ = Task.Run(() => _timeoutProbEngine.RunTimeOutScanAsync(token));
                         }
 
                         // [Agent 3] 지능형 메모리 관리 (주기적 체크)
@@ -3995,7 +4058,8 @@ namespace TradingBot
         private static bool IsDroughtRecoverySignalSource(string signalSource)
         {
             return string.Equals(signalSource, "DROUGHT_RECOVERY", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(signalSource, "DROUGHT_RECOVERY_NEAR", StringComparison.OrdinalIgnoreCase);
+                || string.Equals(signalSource, "DROUGHT_RECOVERY_NEAR", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(signalSource, "TIMEOUT_PROB_ENTRY", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>

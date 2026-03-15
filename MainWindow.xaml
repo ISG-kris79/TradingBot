@@ -1208,6 +1208,135 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- ═══════════════════════════════════════════════════════════
+                                 TimeOut Probability Entry — AI 확률 진입 대기열
+                                 ─ 60분 공백 시 과거 패턴 코사인 유사도 기반 승률 게이지
+                                 ═══════════════════════════════════════════════════════════ -->
+                            <Border x:Name="BorderTimeOutProbWidget"
+                                    Background="#0D1B2A"
+                                    BorderBrush="#1E3A5F"
+                                    BorderThickness="1"
+                                    CornerRadius="10"
+                                    Padding="14,12"
+                                    Margin="0,0,0,16">
+                                <Border.Effect>
+                                    <DropShadowEffect x:Name="GlowTimeOut"
+                                                      Color="#1E3A5F"
+                                                      BlurRadius="8"
+                                                      ShadowDepth="0"
+                                                      Opacity="0.4"/>
+                                </Border.Effect>
+                                <StackPanel>
+                                    <!-- 헤더 -->
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                        <Border Width="3" CornerRadius="2"
+                                                Background="#7C3AED"
+                                                Margin="0,0,8,0"
+                                                VerticalAlignment="Stretch"/>
+                                        <TextBlock Text="⏳ AI PREDICTIVE"
+                                                   FontSize="12"
+                                                   FontWeight="Bold"
+                                                   Foreground="#7C3AED"
+                                                   VerticalAlignment="Center"/>
+                                        <TextBlock Text=" TIME-OUT PROB"
+                                                   FontSize="10"
+                                                   Foreground="#4B5563"
+                                                   VerticalAlignment="Center"/>
+                                    </StackPanel>
+
+                                    <!-- 스캔 상태 행 -->
+                                    <Border Background="#071226"
+                                            CornerRadius="5"
+                                            Padding="8,6"
+                                            Margin="0,0,0,5">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="68"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0"
+                                                       Text="STATUS"
+                                                       Foreground="#4B5563"
+                                                       FontSize="9"
+                                                       FontWeight="Bold"
+                                                       VerticalAlignment="Center"/>
+                                            <TextBlock x:Name="TxtTimeOutScanStatus"
+                                                       Grid.Column="1"
+                                                       Text="STANDBY"
+                                                       Foreground="#00E5FF"
+                                                       FontSize="10"
+                                                       FontFamily="Consolas"
+                                                       FontWeight="SemiBold"
+                                                       VerticalAlignment="Center"
+                                                       TextWrapping="Wrap"/>
+                                        </Grid>
+                                    </Border>
+
+                                    <!-- 심볼 + 승률 한 줄 -->
+                                    <Grid Margin="0,0,0,5">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock x:Name="TxtTimeOutMatchSymbol"
+                                                   Grid.Column="0"
+                                                   Text="—"
+                                                   Foreground="#E0E7FF"
+                                                   FontSize="13"
+                                                   FontWeight="Bold"
+                                                   VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="TxtTimeOutWinRate"
+                                                   Grid.Column="1"
+                                                   Text="0.0%"
+                                                   Foreground="#7C3AED"
+                                                   FontSize="15"
+                                                   FontWeight="Bold"
+                                                   FontFamily="Consolas"/>
+                                    </Grid>
+
+                                    <!-- 승률 진행 바 -->
+                                    <ProgressBar x:Name="PbTimeOutWinProb"
+                                                 Minimum="0"
+                                                 Maximum="100"
+                                                 Value="0"
+                                                 Height="8"
+                                                 Background="#1C1F33"
+                                                 Foreground="#7C3AED"
+                                                 BorderThickness="0"
+                                                 Margin="0,0,0,3"/>
+                                    <Grid Margin="0,0,0,6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="0%"
+                                                   Foreground="#374151" FontSize="8"/>
+                                        <TextBlock Grid.Column="1" Text="── 70% ──"
+                                                   Foreground="#7C3AED" FontSize="8"
+                                                   HorizontalAlignment="Center"/>
+                                        <TextBlock Grid.Column="2" Text="100%"
+                                                   Foreground="#374151" FontSize="8"
+                                                   HorizontalAlignment="Right"/>
+                                    </Grid>
+
+                                    <!-- 신호 레이블 -->
+                                    <Border x:Name="BorderTimeOutSignal"
+                                            Background="#0A0F1E"
+                                            CornerRadius="5"
+                                            Padding="8,5">
+                                        <TextBlock x:Name="TxtTimeOutSignalLabel"
+                                                   Text="⌛ IDLE — 60M DROUGHT WAITING..."
+                                                   Foreground="#374151"
+                                                   FontSize="9"
+                                                   FontFamily="Consolas"
+                                                   TextWrapping="Wrap"
+                                                   HorizontalAlignment="Center"/>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+                            <!-- ═══ END TimeOut Probability Entry Widget ═══ -->
+
                             <!-- Critical Alerts Card (moved from main bottom) -->
                             <Border Style="{StaticResource StatCardStyle}"
                                     Margin="0,0,0,16">
@@ -1369,6 +1498,23 @@
                                                            Margin="0,4,0,0"/>
                                             </StackPanel>
                                         </Border>
+
+                                        <Border Background="{StaticResource BackgroundDarkBrush}"
+                                                BorderBrush="{StaticResource BackgroundLightBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="10"
+                                                Padding="12"
+                                                Margin="0,8,0,0" Height="179">
+                                            <StackPanel>
+                                                <TextBlock Text="⚡ FAST LOG"
+                                                           Foreground="{StaticResource PrimaryBrush}"
+                                                           FontSize="10"
+                                                           FontWeight="Bold"/>
+                                                <TextBlock Text="{Binding BattleFastLog1}" Foreground="#E2E8F0" FontSize="10" FontFamily="Consolas" Margin="0,4,0,0"/>
+                                                <TextBlock Text="{Binding BattleFastLog2}" Foreground="#94A3B8" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0"/>
+                                                <TextBlock Text="{Binding BattleFastLog3}" Foreground="#64748B" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </Border>
                                     </StackPanel>
 
                                     <Border Grid.Column="1"
@@ -1380,7 +1526,6 @@
                                             Margin="0,0,16,0">
                                         <Grid>
                                             <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto"/>
                                                 <RowDefinition Height="Auto"/>
                                                 <RowDefinition Height="Auto"/>
                                                 <RowDefinition Height="Auto"/>
@@ -1603,27 +1748,8 @@
                                                 </Border>
                                             </Grid>
 
-                                            <Border Grid.Row="2"
-                                                    Grid.ColumnSpan="2"
-                                                    Background="{StaticResource BackgroundMediumBrush}"
-                                                    BorderBrush="{StaticResource BackgroundLightBrush}"
-                                                    BorderThickness="1"
-                                                    CornerRadius="10"
-                                                    Padding="10"
-                                                    Margin="0,12,0,0">
-                                                <StackPanel>
-                                                    <TextBlock Text="⚡ FAST LOG"
-                                                               Foreground="{StaticResource PrimaryBrush}"
-                                                               FontSize="10"
-                                                               FontWeight="Bold"/>
-                                                    <TextBlock Text="{Binding BattleFastLog1}" Foreground="#E2E8F0" FontSize="10" FontFamily="Consolas" Margin="0,4,0,0"/>
-                                                    <TextBlock Text="{Binding BattleFastLog2}" Foreground="#94A3B8" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0"/>
-                                                    <TextBlock Text="{Binding BattleFastLog3}" Foreground="#64748B" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0"/>
-                                                </StackPanel>
-                                            </Border>
-
                                             <!-- [Trend-Rider] 계단식 추세 지속 위젯 -->
-                                            <Border Grid.Row="3"
+                                            <Border Grid.Row="2"
                                                     Grid.ColumnSpan="2"
                                                     Background="{StaticResource BackgroundMediumBrush}"
                                                     BorderBrush="{Binding BattleTrendRiderBrush}"
@@ -2362,6 +2488,7 @@
                 <TabItem Header="🤖  AI MONITOR">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="16">
+
                             <!-- Model Accuracy Cards -->
                             <Border Style="{StaticResource CardStyle}">
                                 <StackPanel>

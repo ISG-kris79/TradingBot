@@ -15,6 +15,28 @@
 
  - 없음
 
+## [2.4.49] - 2026-03-15
+
+### Added
+
+- **[Time-Out Probability Entry] 신규 추가** (`TimeOutProbabilityEngine.cs`, `TradingEngine.cs`):
+  - 60분간 진입 공백 발생 시 과거 DB 패턴과 **코사인 유사도** 비교로 승률 70%+ 메이저 코인 자동 확률 베팅 진입
+  - 피처 벡터: [RSI/100, BB위치, MACD히스토(정규화), 거래량비율] 4차원 추출 → `GetLabeledTradePatternSnapshotsAsync` 최근 180일 최대 500건 조회
+  - 유사도 ≥65% 필터 후 상위 1,000건 PnL%≥+3% 승률 계산 — 70%+ 시 시드 40% 비중 진입 (`TIMEOUT_PROB_ENTRY` 신호소스)
+  - 스캔 순서: ETH → XRP → SOL, 최초 조건 충족 종목만 진입 후 즉시 종결
+  - `IsDroughtRecoverySignalSource`에 `TIMEOUT_PROB_ENTRY` 추가 → AI 게이트 바이패스 적용
+  - 타이머: 60분 공백 감지 / 20분 재시도 제한 (`TimeOutProbScanThreshold`, `TimeOutProbScanInterval`)
+
+### Changed
+
+- **[UI] TimeOut Probability Entry 위젯 위치** (`MainWindow.xaml`):
+  - AI MONITOR 탭 → **Dashboard 좌측 사이드바** (AI LEARNING 카드 아래, CRITICAL ALERTS 위)로 이동
+  - 항시 가시 영역에 배치: 스캔 상태, 매칭 심볼, 승률 ProgressBar, 70%+ 시 보라색 Glow 애니메이션
+
+- **[UI] FAST LOG 위치 조정** (`MainWindow.xaml`):
+  - 중앙 LIVE BATTLE 패널 Grid.Row=2 → **좌측 XRP SCENARIO 카드 바로 아래**로 이동
+  - 중앙 패널 RowDefinitions 4→3, Trend-Rider Grid.Row 3→2 자동 조정
+
 ## [2.4.48] - 2026-03-15
 
 ### Added
