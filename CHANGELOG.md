@@ -15,6 +15,14 @@
 
  - 없음
 
+## [2.4.45] - 2026-03-15
+
+### Changed
+
+- **LIVE BATTLE DASHBOARD 가격 텍스트 깜빡임 제거** (`MainWindow.xaml`):
+  - `BattleLivePriceText` 바인딩의 `TargetUpdated` 이벤트 트리거 애니메이션(Opacity/Translate)을 제거해 틱 단위 가격 갱신 시 시각적 깜빡임을 해소
+  - 실시간 가격/방향(`BattlePriceBrush`, `BattlePriceDirectionText`) 갱신 로직은 유지하여 정보 전달은 동일하게 보장
+
 ## [2.4.44] - 2026-03-14
 
 ### Added

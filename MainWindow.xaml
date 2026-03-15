@@ -1344,28 +1344,8 @@
                                                            FontFamily="Consolas"
                                                            Margin="0,4,0,0">
                                                     <TextBlock.Text>
-                                                        <Binding Path="BattleLivePriceText"
-                                                                 NotifyOnTargetUpdated="True"/>
+                                                        <Binding Path="BattleLivePriceText"/>
                                                     </TextBlock.Text>
-                                                    <TextBlock.RenderTransform>
-                                                        <TranslateTransform Y="0"/>
-                                                    </TextBlock.RenderTransform>
-                                                    <TextBlock.Triggers>
-                                                        <EventTrigger RoutedEvent="Binding.TargetUpdated">
-                                                            <BeginStoryboard>
-                                                                <Storyboard>
-                                                                    <DoubleAnimation Storyboard.TargetProperty="Opacity"
-                                                                                     From="0.35"
-                                                                                     To="1"
-                                                                                     Duration="0:0:0.18"/>
-                                                                    <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)"
-                                                                                     From="10"
-                                                                                     To="0"
-                                                                                     Duration="0:0:0.18"/>
-                                                                </Storyboard>
-                                                            </BeginStoryboard>
-                                                        </EventTrigger>
-                                                    </TextBlock.Triggers>
                                                 </TextBlock>
                                                 <TextBlock Text="{Binding BattlePriceDirectionText}"
                                                            Foreground="{Binding BattlePriceBrush}"
