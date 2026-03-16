@@ -6058,7 +6058,7 @@ namespace TradingBot
             }
 
             // [요청 반영] 1분봉 윗꼬리(고점 대비 -0.3%) 발생 시 LONG 추격 진입 차단
-            var m1UpperWickFilter = await EvaluateOneMinuteUpperWickBlockAsync(symbol, decision, currentPrice, token);
+            var m1UpperWickFilter = await EvaluateOneMinuteUpperWickBlockAsync(symbol, decision, currentPrice, signalSource, latestCandle, token);
             if (m1UpperWickFilter.blocked)
             {
                 OnStatusLog?.Invoke("🚫 [Block] 1분봉 윗꼬리 발생: 추격 매수 위험 차단");
@@ -6232,7 +6232,8 @@ namespace TradingBot
                     aiProbability = prediction.Probability;
                     aiPredictUp = prediction.Prediction;
                     convictionScore = Math.Max(convictionScore, (decimal)(prediction.Probability * 100f));
-                    bool isMajorCoin = signalSource == "MAJOR" || signalSource.StartsWith("MAJOR_");
+                    CoinType entryCoinType = ResolveCoinType(symbol, signalSource);
+                    bool isMajorCoin = entryCoinType == CoinType.Major;
                     var symbolThreshold = GetThresholdBySymbol(symbol);
                     bool isLowVolume = latestCandle.Volume_Ratio > 0f && latestCandle.Volume_Ratio < 1.0f;
                     bool isTrendHealthy = latestCandle.Close > (decimal)latestCandle.SMA_20 && latestCandle.RSI > 50f;
@@ -8869,6 +8870,8 @@ namespace TradingBot
             string symbol,
             string decision,
             decimal currentPrice,
+            string signalSource,
+            CandleData? latestCandle,
             CancellationToken token)
         {
             if (!string.Equals(decision, "LONG", StringComparison.OrdinalIgnoreCase))
@@ -8877,20 +8880,47 @@ namespace TradingBot
             if (currentPrice <= 0m)
                 return (false, string.Empty);
 
+            if (signalSource.Contains("PUMP", StringComparison.OrdinalIgnoreCase)
+                || signalSource.Contains("MEME", StringComparison.OrdinalIgnoreCase))
+            {
+                return (false, string.Empty);
+            }
+
+            if (latestCandle != null && latestCandle.RSI > 0f && latestCandle.RSI < 62f)
+                return (false, string.Empty);
+
             try
             {
-                var oneMinuteCandles = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneMinute, 3, token);
-                var latestOneMinute = oneMinuteCandles?.LastOrDefault();
-                if (latestOneMinute == null || latestOneMinute.HighPrice <= 0m)
+                var oneMinuteCandles = (await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneMinute, 4, token))?.ToList();
+                if (oneMinuteCandles == null || oneMinuteCandles.Count == 0)
                     return (false, string.Empty);
 
-                decimal highPrice = latestOneMinute.HighPrice;
-                decimal blockThresholdPrice = highPrice * 0.997m;
+                int closedIndex = oneMinuteCandles.Count >= 2 ? oneMinuteCandles.Count - 2 : oneMinuteCandles.Count - 1;
+                var closedCandle = oneMinuteCandles[closedIndex];
+                decimal highPrice = closedCandle.HighPrice;
+                decimal lowPrice = closedCandle.LowPrice;
+                decimal openPrice = closedCandle.OpenPrice;
+                decimal closePrice = closedCandle.ClosePrice;
 
-                if (currentPrice < blockThresholdPrice)
+                if (highPrice <= 0m || lowPrice <= 0m || closePrice <= 0m || highPrice <= lowPrice)
+                    return (false, string.Empty);
+
+                decimal range = highPrice - lowPrice;
+                decimal upperWick = highPrice - Math.Max(openPrice, closePrice);
+                decimal upperWickRatio = range > 0m ? upperWick / range : 0m;
+                decimal candleRangePct = closePrice > 0m ? (range / closePrice) * 100m : 0m;
+                decimal pullbackPct = ((highPrice - currentPrice) / highPrice) * 100m;
+
+                bool hasMeaningfulUpperWick = upperWickRatio >= 0.45m;
+                bool hasMeaningfulRange = candleRangePct >= 0.12m;
+                bool hasRejectionPullback = pullbackPct >= 0.30m;
+                bool bearishOrWeakClose = closePrice <= openPrice;
+
+                if (hasMeaningfulUpperWick && hasMeaningfulRange && hasRejectionPullback && bearishOrWeakClose)
                 {
-                    decimal pullbackPct = ((highPrice - currentPrice) / highPrice) * 100m;
-                    return (true, $"1m high={highPrice:F8}, current={currentPrice:F8}, pullback={pullbackPct:F2}% (threshold=0.30%)");
+                    return (true,
+                        $"1m reject high={highPrice:F8} open={openPrice:F8} close={closePrice:F8} current={currentPrice:F8} " +
+                        $"wick={upperWickRatio:P0} range={candleRangePct:F2}% pullback={pullbackPct:F2}%");
                 }
 
                 return (false, string.Empty);
