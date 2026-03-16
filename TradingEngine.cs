@@ -273,6 +273,14 @@ namespace TradingBot
         private DateTime _lastDroughtScanTime = DateTime.MinValue;     // [드라이스펠] 마지막 진단 스캔 시각
         private static readonly TimeSpan DroughtScanThreshold = TimeSpan.FromMinutes(30);  // 30분 진입 없으면 진단
         private static readonly TimeSpan DroughtScanInterval   = TimeSpan.FromMinutes(10);  // 진단은 10분에 1회까지
+        private const int DroughtRecoveryForecastHorizonMinutes = 120; // 2시간 이내 진입 가능 후보 우선
+        private const float DroughtRecoveryForecastMinProbability = 0.60f;
+        private const string HistoricalAuditSampleSymbol = "XRPUSDT";
+        private static readonly DateTime HistoricalAuditStartUtc = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        private const int HistoricalAuditBatchLimit = 1000;
+        private decimal _atrVolatilityBlockRatio = 2.0m;
+        private float _shortRsiExhaustionFloor = 35f;
+        private int _historicalEntryAuditStarted = 0;
 
         // [TimeOut Probability Entry] 60분 공백 확률 베팅 엔진
         private TimeOutProbabilityEngine? _timeoutProbEngine;
@@ -1523,6 +1531,7 @@ namespace TradingBot
                 TelegramService.Instance.OnRequestStatus = GetEngineStatusReport;
                 TelegramService.Instance.OnRequestStop = StopEngine;
                 TelegramService.Instance.OnRequestTrain = ForceInitialAiTrainingAsync;
+                TelegramService.Instance.OnRequestDroughtScan = ForceDroughtDiagnosticAsync;
                 TelegramService.Instance.StartReceiving();
                 OnTelegramStatusUpdate?.Invoke(true, "Telegram: Connected");
 
@@ -1564,6 +1573,7 @@ namespace TradingBot
 
                 _ = StartPeriodicTrainingAsync(token);
                 _ = StartPeriodicAiEntryProbScanAsync(token);
+                TryStartHistoricalEntryAudit(token);
 
                 // 엔진 가동 시간 기록 및 주기 타이머 초기화
                 // [수정] 모든 초기화 작업 완료 후 메인 루프 시작 직전에 워밍업 타이머 설정
@@ -1678,7 +1688,10 @@ namespace TradingBot
                             && (DateTime.Now - _lastDroughtScanTime) >= DroughtScanInterval)
                         {
                             _lastDroughtScanTime = DateTime.Now;
-                            _ = Task.Run(() => RunDroughtDiagnosticScanAsync(token));
+                            _ = Task.Run(async () =>
+                            {
+                                _ = await RunDroughtDiagnosticScanAsync(token);
+                            }, CancellationToken.None);
                         }
 
                         // [D2] TimeOut Probability Entry: 60분 공백 시 과거 패턴 유사도 기반 확률 베팅
@@ -2402,6 +2415,20 @@ namespace TradingBot
             {
                 Interlocked.Exchange(ref _manualInitialTrainingRunning, 0);
             }
+        }
+
+        public async Task<string> ForceDroughtDiagnosticAsync(CancellationToken token = default)
+        {
+            if (!IsBotRunning || _cts == null || _cts.IsCancellationRequested)
+            {
+                return "⚠️ 엔진이 정지 상태라 드라이스펠 진단을 실행할 수 없습니다. 봇 시작 후 다시 시도하세요.";
+            }
+
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, token);
+            _lastDroughtScanTime = DateTime.Now;
+            string summary = await RunDroughtDiagnosticScanAsync(linkedCts.Token);
+
+            return $"🔎 드라이스펠 진단 완료 | {summary}";
         }
 
         private async Task ProcessTickerChannelAsync(CancellationToken token)
@@ -4059,14 +4086,31 @@ namespace TradingBot
         {
             return string.Equals(signalSource, "DROUGHT_RECOVERY", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(signalSource, "DROUGHT_RECOVERY_NEAR", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(signalSource, "DROUGHT_RECOVERY_2H", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(signalSource, "DROUGHT_RECOVERY_NEAR_2H", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(signalSource, "DROUGHT_RECOVERY_PUMP", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(signalSource, "TIMEOUT_PROB_ENTRY", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
         /// [드라이스펠 진단] 1시간 진입 없을 때 전 심볼 진입 가능성 스캔 + 상위 후보 리포트 + 자동 진입 시도
         /// </summary>
-        private async Task RunDroughtDiagnosticScanAsync(CancellationToken token)
+        private static string BuildDroughtScanSummaryLine(
+            int eta2hCandidateCount,
+            int near2hCandidateCount,
+            string pumpFallbackResult,
+            string action)
         {
+            return $"ETA2h={eta2hCandidateCount} | Near2h={near2hCandidateCount} | PumpFallback={pumpFallbackResult} | Action={action}";
+        }
+
+        private async Task<string> RunDroughtDiagnosticScanAsync(CancellationToken token)
+        {
+            int eta2hCandidateCount = 0;
+            int near2hCandidateCount = 0;
+            string pumpFallbackResult = "NOT_USED";
+            string action = "NONE";
+
             try
             {
                 double droughtHours = (DateTime.Now - _lastSuccessfulEntryTime).TotalHours;
@@ -4075,12 +4119,22 @@ namespace TradingBot
                 if (_aiDoubleCheckEntryGate == null || !_aiDoubleCheckEntryGate.IsReady)
                 {
                     OnStatusLog?.Invoke("⚠️ [드라이스펠] AI 게이트 미준비 상태 — 진단 생략");
-                    return;
+                    action = "AI_GATE_NOT_READY";
+                    string skippedSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
+                    OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {skippedSummary}");
+                    return skippedSummary;
                 }
 
-                var results = new List<(string Symbol, string Direction, decimal Price, float ML, float TF, float BandwidthPct, bool GatePass, string Reason)>();
+                var scanUniverse = _symbols
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
 
-                foreach (var symbol in _symbols)
+                var forecastBySymbol = await _aiDoubleCheckEntryGate.ScanEntryProbabilitiesAsync(scanUniverse, token);
+
+                var results = new List<(string Symbol, string Direction, decimal Price, float ML, float TF, float BandwidthPct, bool GatePass, string Reason, float ForecastProbability, int ForecastOffsetMinutes)>();
+
+                foreach (var symbol in scanUniverse)
                 {
                     if (token.IsCancellationRequested) break;
 
@@ -4123,9 +4177,14 @@ namespace TradingBot
 
                         if (bestCombo < 0 || bestGate.detail == null) continue;
 
+                        forecastBySymbol.TryGetValue(symbol, out var forecast);
+                        float forecastProbability = forecast?.AverageProbability ?? 0f;
+                        int forecastOffsetMinutes = forecast?.ForecastOffsetMinutes ?? int.MaxValue;
+
                         results.Add((symbol, bestDir, currentPrice,
                             bestGate.detail.ML_Confidence, bestGate.detail.TF_Confidence,
-                            bwPct, bestGate.allowEntry, bestGate.reason ?? string.Empty));
+                            bwPct, bestGate.allowEntry, bestGate.reason ?? string.Empty,
+                            forecastProbability, forecastOffsetMinutes));
 
                         await Task.Delay(250, token); // API 스로틀
                     }
@@ -4139,12 +4198,17 @@ namespace TradingBot
                 if (results.Count == 0)
                 {
                     OnStatusLog?.Invoke("🔎 [드라이스펠] 스캔 가능한 심볼 없음 (전부 포지션 보유 또는 데이터 없음)");
-                    return;
+                    action = "NO_SCANNABLE_SYMBOL";
+                    string emptySummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
+                    OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {emptySummary}");
+                    return emptySummary;
                 }
 
                 // 정렬: AI 게이트 통과 우선, 이후 ML+TF 합산 내림차순
                 var top5 = results
                     .OrderByDescending(r => r.GatePass ? 1 : 0)
+                    .ThenBy(r => r.ForecastOffsetMinutes <= DroughtRecoveryForecastHorizonMinutes ? 0 : 1)
+                    .ThenByDescending(r => r.ForecastProbability)
                     .ThenByDescending(r => r.ML + r.TF)
                     .Take(5)
                     .ToList();
@@ -4157,14 +4221,17 @@ namespace TradingBot
                 float mlTh = _fifteenMinuteMlMinConfidence;
                 float tfTh = _fifteenMinuteTransformerMinConfidence;
 
-                foreach (var (sym, dir, _, ml, tf, bw, gatePass, reason) in top5)
+                foreach (var (sym, dir, _, ml, tf, bw, gatePass, reason, forecastProb, forecastOffset) in top5)
                 {
                     string passIcon = gatePass ? "✅" : "⛔";
                     float mlGap = ml - mlTh;
                     float tfGap = tf - tfTh;
                     string mlGapStr = mlGap >= 0 ? $"+{mlGap:P0}" : $"{mlGap:P0}";
                     string tfGapStr = tfGap >= 0 ? $"+{tfGap:P0}" : $"{tfGap:P0}";
-                    sb.AppendLine($"{passIcon} {sym} [{dir}] | ML:{ml:P0}({mlGapStr}) TF:{tf:P0}({tfGapStr}) BW:{bw:F2}%");
+                    string etaText = forecastOffset == int.MaxValue
+                        ? "ETA:N/A"
+                        : (forecastOffset <= 1 ? "ETA:지금" : $"ETA:+{forecastOffset}m");
+                    sb.AppendLine($"{passIcon} {sym} [{dir}] | ML:{ml:P0}({mlGapStr}) TF:{tf:P0}({tfGapStr}) AI:{forecastProb:P0} {etaText} BW:{bw:F2}%");
                     sb.AppendLine($"   └ {reason}");
                 }
 
@@ -4179,7 +4246,10 @@ namespace TradingBot
                     float  tfGapV  = r.TF - tfTh;
                     string mlGapS  = mlGapV >= 0 ? $"+{mlGapV:P0}" : $"{mlGapV:P0}";
                     string tfGapS  = tfGapV >= 0 ? $"+{tfGapV:P0}" : $"{tfGapV:P0}";
-                    return $"{icon} `{r.Symbol}` [{r.Direction}] | ML:{r.ML:P0}({mlGapS}) TF:{r.TF:P0}({tfGapS})\n└ {r.Reason}";
+                    string etaText = r.ForecastOffsetMinutes == int.MaxValue
+                        ? "ETA:N/A"
+                        : (r.ForecastOffsetMinutes <= 1 ? "ETA:지금" : $"ETA:+{r.ForecastOffsetMinutes}m");
+                    return $"{icon} `{r.Symbol}` [{r.Direction}] | ML:{r.ML:P0}({mlGapS}) TF:{r.TF:P0}({tfGapS}) AI:{r.ForecastProbability:P0} {etaText}\n└ {r.Reason}";
                 });
 
                 _ = TelegramService.Instance.SendMessageAsync(
@@ -4187,90 +4257,405 @@ namespace TradingBot
                     $"임계: ML≥{mlTh:P0} / TF≥{tfTh:P0}\n\n" +
                     string.Join("\n\n", lines));
 
-                // ── 자동 복구 진입(Top PASS 최대 2개) ───────────────────
-                var autoEntryCandidates = results
-                    .Where(r => r.GatePass)
-                    .OrderByDescending(r => r.ML + r.TF)
+                // ── 자동 복구 진입: 2시간 이내 ETA 코인 1개 우선 ───────────────────
+                var autoEntryCandidates2h = results
+                    .Where(r => r.GatePass
+                        && r.ForecastOffsetMinutes <= DroughtRecoveryForecastHorizonMinutes
+                        && r.ForecastProbability >= DroughtRecoveryForecastMinProbability)
+                    .OrderByDescending(r => r.ForecastProbability)
+                    .ThenBy(r => r.ForecastOffsetMinutes)
+                    .ThenByDescending(r => r.ML + r.TF)
                     .ToList();
+                eta2hCandidateCount = autoEntryCandidates2h.Count;
 
-                int passEntryAttempts = 0;
-                const int maxPassAutoEntries = 2;
+                var pick2h = autoEntryCandidates2h.FirstOrDefault();
 
-                if (autoEntryCandidates.Count > 0)
+                if (!string.IsNullOrWhiteSpace(pick2h.Symbol))
                 {
-                    foreach (var pick in autoEntryCandidates.Take(maxPassAutoEntries))
+                    bool alreadyHolding;
+                    lock (_posLock)
                     {
-                        bool alreadyHolding;
-                        lock (_posLock)
-                        {
-                            alreadyHolding = _activePositions.ContainsKey(pick.Symbol);
-                        }
+                        alreadyHolding = _activePositions.ContainsKey(pick2h.Symbol);
+                    }
 
-                        if (alreadyHolding)
-                            continue;
-
-                        passEntryAttempts++;
+                    if (!alreadyHolding)
+                    {
+                        string etaText = pick2h.ForecastOffsetMinutes <= 1 ? "지금" : $"+{pick2h.ForecastOffsetMinutes}분";
                         OnStatusLog?.Invoke(
-                            $"🚀 [드라이스펠 자동진입] ({passEntryAttempts}/{maxPassAutoEntries}) {pick.Symbol} {pick.Direction} 시도 | ML:{pick.ML:P0} TF:{pick.TF:P0} price={pick.Price:F4}");
+                            $"🚀 [드라이스펠 2시간 복구진입] {pick2h.Symbol} {pick2h.Direction} 시도 | ETA={etaText} AI:{pick2h.ForecastProbability:P0} ML:{pick2h.ML:P0} TF:{pick2h.TF:P0} price={pick2h.Price:F4}");
 
                         await ExecuteAutoOrder(
-                            pick.Symbol,
-                            pick.Direction,
-                            pick.Price,
+                            pick2h.Symbol,
+                            pick2h.Direction,
+                            pick2h.Price,
                             token,
-                            "DROUGHT_RECOVERY",
+                            "DROUGHT_RECOVERY_2H",
                             skipAiGateCheck: true);
 
                         await Task.Delay(120, token);
+                        action = "ETA_2H_ORDER_ATTEMPT";
+                        string etaSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
+                        OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {etaSummary}");
+                        return etaSummary;
                     }
+
+                    action = "ETA_2H_HOLDING_SKIP";
+                    OnStatusLog?.Invoke($"ℹ️ [드라이스펠] ETA 2시간 최우선 후보 {pick2h.Symbol}은 이미 보유 중이라 스킵합니다.");
                 }
 
-                if (passEntryAttempts == 0)
+                const float nearThresholdFactor = 0.90f;
+                const decimal trialSizeMultiplier = 0.70m;
+
+                var nearCandidates2h = results
+                    .Where(r => !r.GatePass
+                        && r.ForecastOffsetMinutes <= DroughtRecoveryForecastHorizonMinutes
+                        && r.ML >= mlTh * nearThresholdFactor
+                        && r.TF >= tfTh * nearThresholdFactor)
+                    .OrderByDescending(r => r.ForecastProbability)
+                    .ThenBy(r => r.ForecastOffsetMinutes)
+                    .ThenByDescending(r => r.ML + r.TF)
+                    .ToList();
+                near2hCandidateCount = nearCandidates2h.Count;
+
+                var nearPick2h = nearCandidates2h.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(nearPick2h.Symbol))
                 {
-                    const float nearThresholdFactor = 0.90f;      // 임계값의 90% 이상이면 근접 후보로 간주(공격형)
-                    const decimal trialSizeMultiplier = 0.70m;    // 시험 진입은 70% 수량(공격형)
-
-                    var nearCandidates = results
-                        .Where(r => !r.GatePass && r.ML >= mlTh * nearThresholdFactor && r.TF >= tfTh * nearThresholdFactor)
-                        .OrderByDescending(r => r.ML + r.TF)
-                        .ToList();
-
-                    if (nearCandidates.Count > 0)
+                    bool alreadyHolding;
+                    lock (_posLock)
                     {
-                        var pick = nearCandidates[0];
+                        alreadyHolding = _activePositions.ContainsKey(nearPick2h.Symbol);
+                    }
+
+                    if (!alreadyHolding)
+                    {
+                        string etaText = nearPick2h.ForecastOffsetMinutes <= 1 ? "지금" : $"+{nearPick2h.ForecastOffsetMinutes}분";
+                        OnStatusLog?.Invoke(
+                            $"🧪 [드라이스펠 2시간 근접진입] {nearPick2h.Symbol} {nearPick2h.Direction} 시도 | ETA={etaText} AI:{nearPick2h.ForecastProbability:P0} ML:{nearPick2h.ML:P0} TF:{nearPick2h.TF:P0} | 비중 x{trialSizeMultiplier:F2}");
+
+                        await ExecuteAutoOrder(
+                            nearPick2h.Symbol,
+                            nearPick2h.Direction,
+                            nearPick2h.Price,
+                            token,
+                            signalSource: "DROUGHT_RECOVERY_NEAR_2H",
+                            manualSizeMultiplier: trialSizeMultiplier,
+                            skipAiGateCheck: true);
+                        action = "NEAR_2H_ORDER_ATTEMPT";
+                        string nearSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
+                        OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {nearSummary}");
+                        return nearSummary;
+                    }
+
+                    action = "NEAR_2H_HOLDING_SKIP";
+                    OnStatusLog?.Invoke($"ℹ️ [드라이스펠] 2시간 근접 후보 {nearPick2h.Symbol}은 이미 보유 중이라 스킵합니다.");
+                }
+
+                OnStatusLog?.Invoke($"⛔ [드라이스펠 자동진입] 2시간 이내 ETA 조건 충족 후보 없음 (기준: ETA≤{DroughtRecoveryForecastHorizonMinutes}m, AI≥{DroughtRecoveryForecastMinProbability:P0})");
+
+                if (_pumpStrategy != null)
+                {
+                    var recoveryBlacklist = new ConcurrentDictionary<string, DateTime>(_blacklistedSymbols, StringComparer.OrdinalIgnoreCase);
+                    List<string> activeSymbols;
+                    lock (_posLock)
+                    {
+                        activeSymbols = _activePositions.Keys.ToList();
+                    }
+
+                    DateTime holdSkipExpiry = DateTime.Now.AddHours(6);
+                    foreach (var activeSymbol in activeSymbols)
+                    {
+                        recoveryBlacklist[activeSymbol] = holdSkipExpiry;
+                    }
+
+                    OnStatusLog?.Invoke("🔁 [드라이스펠 복구] ETA 2시간 후보 없음 → PUMP 확장 스캔(Top60, first-hit) 연계 시작");
+                    var pumpRecoverySignal = await _pumpStrategy.ExecuteRecoveryScanAsync(
+                        _marketDataManager.TickerCache,
+                        recoveryBlacklist,
+                        token,
+                        candidateCount: 60);
+
+                    if (pumpRecoverySignal.HasValue)
+                    {
+                        const decimal pumpRecoverySizeMultiplier = 0.70m;
+                        var signal = pumpRecoverySignal.Value;
+                        pumpFallbackResult = $"HIT:{signal.Symbol}:{signal.Decision}";
 
                         bool alreadyHolding;
                         lock (_posLock)
                         {
-                            alreadyHolding = _activePositions.ContainsKey(pick.Symbol);
+                            alreadyHolding = _activePositions.ContainsKey(signal.Symbol);
                         }
 
-                        if (!alreadyHolding)
+                        if (alreadyHolding)
                         {
-                            OnStatusLog?.Invoke(
-                                $"🧪 [드라이스펠 시험진입] PASS 없음 → 임계근접 {pick.Symbol} {pick.Direction} 시도 | ML:{pick.ML:P0} TF:{pick.TF:P0} | 비중 x{trialSizeMultiplier:F2}");
-
-                            await ExecuteAutoOrder(
-                                pick.Symbol,
-                                pick.Direction,
-                                pick.Price,
-                                token,
-                                signalSource: "DROUGHT_RECOVERY_NEAR",
-                                manualSizeMultiplier: trialSizeMultiplier,
-                                skipAiGateCheck: true);
+                            pumpFallbackResult = $"HOLDING_SKIP:{signal.Symbol}";
+                            action = "PUMP_FALLBACK_HOLDING_SKIP";
+                            OnStatusLog?.Invoke($"ℹ️ [드라이스펠] PUMP fallback 후보 {signal.Symbol}은 이미 보유 중이라 스킵합니다.");
+                            string holdingSkipSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
+                            OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {holdingSkipSummary}");
+                            return holdingSkipSummary;
                         }
+
+                        OnStatusLog?.Invoke(
+                            $"🚀 [드라이스펠 PUMP 복구진입] {signal.Symbol} {signal.Decision} 시도 | price={signal.Price:F4} | 비중 x{pumpRecoverySizeMultiplier:F2}");
+
+                        await ExecuteAutoOrder(
+                            signal.Symbol,
+                            signal.Decision,
+                            signal.Price,
+                            token,
+                            signalSource: "DROUGHT_RECOVERY_PUMP",
+                            manualSizeMultiplier: pumpRecoverySizeMultiplier,
+                            skipAiGateCheck: true);
+                        action = "PUMP_FALLBACK_ORDER_ATTEMPT";
+                        string pumpSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
+                        OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {pumpSummary}");
+                        return pumpSummary;
                     }
-                    else
-                    {
-                        OnStatusLog?.Invoke("⛔ [드라이스펠 자동진입] 실행 가능한 PASS/근접 후보 없음 — 자동 진입 생략");
-                    }
+
+                    pumpFallbackResult = "MISS";
+                    OnStatusLog?.Invoke("⛔ [드라이스펠 복구] PUMP 확장 스캔에서도 진입 가능 신호를 찾지 못했습니다.");
                 }
+                else
+                {
+                    pumpFallbackResult = "DISABLED";
+                }
+
+                action = "NO_ENTRY";
+                string finalSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
+                OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {finalSummary}");
+                return finalSummary;
+            }
+            catch (OperationCanceledException)
+            {
+                action = "CANCELLED";
+                string canceledSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
+                OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {canceledSummary}");
+                return canceledSummary;
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [드라이스펠] 진단 오류: {ex.Message}");
+                action = "ERROR";
+                string errorSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
+                OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {errorSummary}");
+                return errorSummary;
+            }
+        }
+
+        private sealed class HistoricalEntryAuditResult
+        {
+            public int SampleCount { get; init; }
+            public double AtrRatioP95 { get; init; }
+            public double ShortRsiP10 { get; init; }
+            public decimal TunedAtrRatioLimit { get; init; }
+            public float TunedShortRsiFloor { get; init; }
+        }
+
+        private void TryStartHistoricalEntryAudit(CancellationToken token)
+        {
+            if (Interlocked.Exchange(ref _historicalEntryAuditStarted, 1) == 1)
+                return;
+
+            _ = Task.Run(() => RunHistoricalEntryAuditAndTuneAsync(token), token);
+        }
+
+        private async Task RunHistoricalEntryAuditAndTuneAsync(CancellationToken token)
+        {
+            try
+            {
+                DateTime endUtc = DateTime.UtcNow;
+                if (endUtc <= HistoricalAuditStartUtc.AddDays(7))
+                    return;
+
+                OnStatusLog?.Invoke($"🧪 [샘플 점검] {HistoricalAuditSampleSymbol} {HistoricalAuditStartUtc:yyyy-MM-dd}~현재 데이터 기반 진입 파라미터 점검 시작...");
+
+                var candles = await LoadHistoricalKlinesAsync(
+                    HistoricalAuditSampleSymbol,
+                    KlineInterval.FifteenMinutes,
+                    HistoricalAuditStartUtc,
+                    endUtc,
+                    token);
+
+                if (candles.Count < 600)
+                {
+                    OnStatusLog?.Invoke($"ℹ️ [샘플 점검] 데이터 부족({candles.Count}개)으로 동적 튜닝을 건너뜁니다.");
+                    return;
+                }
+
+                var audit = AnalyzeHistoricalEntrySample(candles, token);
+                if (audit.SampleCount < 120)
+                {
+                    OnStatusLog?.Invoke($"ℹ️ [샘플 점검] 유효 샘플 부족({audit.SampleCount}개)으로 동적 튜닝을 건너뜁니다.");
+                    return;
+                }
+
+                _atrVolatilityBlockRatio = audit.TunedAtrRatioLimit;
+                _shortRsiExhaustionFloor = audit.TunedShortRsiFloor;
+
+                OnStatusLog?.Invoke(
+                    $"✅ [샘플 점검 반영] ATR차단>{_atrVolatilityBlockRatio:F2}x (p95={audit.AtrRatioP95:F2}) | SHORT RSI floor≤{_shortRsiExhaustionFloor:F1} (p10={audit.ShortRsiP10:F1}) | sample={audit.SampleCount}");
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                OnStatusLog?.Invoke($"⚠️ [드라이스펠] 진단 오류: {ex.Message}");
+                OnStatusLog?.Invoke($"⚠️ [샘플 점검] 동적 튜닝 실패: {ex.Message}");
             }
+        }
+
+        private async Task<List<IBinanceKline>> LoadHistoricalKlinesAsync(
+            string symbol,
+            KlineInterval interval,
+            DateTime startUtc,
+            DateTime endUtc,
+            CancellationToken token)
+        {
+            var all = new List<IBinanceKline>();
+            DateTime cursor = startUtc;
+            DateTime? lastOpenTime = null;
+            TimeSpan intervalStep = GetIntervalTimeSpan(interval);
+
+            while (!token.IsCancellationRequested && cursor < endUtc)
+            {
+                var batchResult = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(
+                    symbol,
+                    interval,
+                    startTime: cursor,
+                    endTime: endUtc,
+                    limit: HistoricalAuditBatchLimit,
+                    ct: token);
+
+                if (!batchResult.Success || batchResult.Data == null)
+                    break;
+
+                var batch = batchResult.Data.ToList();
+                if (batch == null || batch.Count == 0)
+                    break;
+
+                var ordered = batch.OrderBy(k => k.OpenTime).ToList();
+                foreach (var candle in ordered)
+                {
+                    if (lastOpenTime.HasValue && candle.OpenTime <= lastOpenTime.Value)
+                        continue;
+
+                    all.Add(candle);
+                    lastOpenTime = candle.OpenTime;
+                }
+
+                DateTime nextCursor = ordered.Last().OpenTime.Add(intervalStep);
+                if (nextCursor <= cursor)
+                    break;
+
+                cursor = nextCursor;
+
+                if (batch.Count < HistoricalAuditBatchLimit)
+                    break;
+
+                await Task.Delay(35, token);
+            }
+
+            return all;
+        }
+
+        private static TimeSpan GetIntervalTimeSpan(KlineInterval interval)
+        {
+            return interval switch
+            {
+                KlineInterval.OneMinute => TimeSpan.FromMinutes(1),
+                KlineInterval.ThreeMinutes => TimeSpan.FromMinutes(3),
+                KlineInterval.FiveMinutes => TimeSpan.FromMinutes(5),
+                KlineInterval.FifteenMinutes => TimeSpan.FromMinutes(15),
+                KlineInterval.ThirtyMinutes => TimeSpan.FromMinutes(30),
+                KlineInterval.OneHour => TimeSpan.FromHours(1),
+                KlineInterval.TwoHour => TimeSpan.FromHours(2),
+                KlineInterval.FourHour => TimeSpan.FromHours(4),
+                KlineInterval.SixHour => TimeSpan.FromHours(6),
+                KlineInterval.EightHour => TimeSpan.FromHours(8),
+                KlineInterval.TwelveHour => TimeSpan.FromHours(12),
+                KlineInterval.OneDay => TimeSpan.FromDays(1),
+                _ => TimeSpan.FromMinutes(1)
+            };
+        }
+
+        private HistoricalEntryAuditResult AnalyzeHistoricalEntrySample(List<IBinanceKline> candles, CancellationToken token)
+        {
+            var atrRatios = new List<double>();
+            var shortRsiValues = new List<double>();
+
+            for (int i = 80; i < candles.Count; i += 2)
+            {
+                if (token.IsCancellationRequested)
+                    break;
+
+                var atrWindow = candles.Skip(i - 40).Take(40).ToList();
+                if (atrWindow.Count < 40)
+                    continue;
+
+                double currentAtr = IndicatorCalculator.CalculateATR(atrWindow.TakeLast(20).ToList(), 14);
+                double averageAtr = IndicatorCalculator.CalculateATR(atrWindow.Take(20).ToList(), 14);
+                if (currentAtr > 0 && averageAtr > 0)
+                {
+                    atrRatios.Add(currentAtr / averageAtr);
+                }
+
+                int rsiWindowSize = 120;
+                int rsiStartIndex = Math.Max(0, i - rsiWindowSize + 1);
+                var rsiWindow = candles.Skip(rsiStartIndex).Take(i - rsiStartIndex + 1).ToList();
+                if (rsiWindow.Count >= 20)
+                {
+                    float rsi = (float)IndicatorCalculator.CalculateRSI(rsiWindow, 14);
+                    if (rsi > 0 && rsi <= 100)
+                    {
+                        shortRsiValues.Add(rsi);
+                    }
+                }
+            }
+
+            int sampleCount = Math.Min(atrRatios.Count, shortRsiValues.Count);
+            if (sampleCount == 0)
+            {
+                return new HistoricalEntryAuditResult
+                {
+                    SampleCount = 0,
+                    AtrRatioP95 = 0,
+                    ShortRsiP10 = 0,
+                    TunedAtrRatioLimit = _atrVolatilityBlockRatio,
+                    TunedShortRsiFloor = _shortRsiExhaustionFloor
+                };
+            }
+
+            double atrP95 = CalculatePercentile(atrRatios, 0.95);
+            double rsiP10 = CalculatePercentile(shortRsiValues, 0.10);
+
+            decimal tunedAtrLimit = Math.Clamp((decimal)Math.Round(atrP95 + 0.05, 2), 1.80m, 2.80m);
+            float tunedShortRsiFloor = (float)Math.Clamp(Math.Round(rsiP10 + 2.0, 1), 28.0, 35.0);
+
+            return new HistoricalEntryAuditResult
+            {
+                SampleCount = sampleCount,
+                AtrRatioP95 = atrP95,
+                ShortRsiP10 = rsiP10,
+                TunedAtrRatioLimit = tunedAtrLimit,
+                TunedShortRsiFloor = tunedShortRsiFloor
+            };
+        }
+
+        private static double CalculatePercentile(IReadOnlyList<double> values, double percentile)
+        {
+            if (values == null || values.Count == 0)
+                return 0;
+
+            var ordered = values.OrderBy(v => v).ToList();
+            double clamped = Math.Clamp(percentile, 0d, 1d);
+            double rawIndex = (ordered.Count - 1) * clamped;
+            int lowerIndex = (int)Math.Floor(rawIndex);
+            int upperIndex = (int)Math.Ceiling(rawIndex);
+
+            if (lowerIndex == upperIndex)
+                return ordered[lowerIndex];
+
+            double weight = rawIndex - lowerIndex;
+            return ordered[lowerIndex] + (ordered[upperIndex] - ordered[lowerIndex]) * weight;
         }
 
         /// <summary>
@@ -5393,13 +5778,16 @@ namespace TradingBot
                             if (rsiNow > 0)
                             {
                                 var threshold = GetThresholdBySymbol(symbol);
-                                bool rsiExhausted = (pending.Direction == "SHORT" && rsiNow <= 35f)
+                                bool rsiExhausted = (pending.Direction == "SHORT" && rsiNow <= _shortRsiExhaustionFloor)
                                                  || (pending.Direction == "LONG"  && rsiNow >= threshold.MaxRsiLimit);
                                 if (rsiExhausted)
                                 {
+                                    string limitText = pending.Direction == "SHORT"
+                                        ? $"shortFloor={_shortRsiExhaustionFloor:F1}"
+                                        : $"longLimit={threshold.MaxRsiLimit:F0}";
                                     _pendingDelayedEntries.TryRemove(symbol, out _);
-                                    OnStatusLog?.Invoke($"⛔ [RSI 과확장 차단] {symbol} {pending.Direction} | RSI={rsiNow:F1} (limit={threshold.MaxRsiLimit:F0}) → 모멘텀 소진, 진입 폐기");
-                                    EntryLog("RSI_EXHAUSTED", "BLOCK", $"dir={pending.Direction} rsi={rsiNow:F1} limit={threshold.MaxRsiLimit:F0}");
+                                    OnStatusLog?.Invoke($"⛔ [RSI 과확장 차단] {symbol} {pending.Direction} | RSI={rsiNow:F1} ({limitText}) → 모멘텀 소진, 진입 폐기");
+                                    EntryLog("RSI_EXHAUSTED", "BLOCK", $"dir={pending.Direction} rsi={rsiNow:F1} limit={limitText}");
                                     return;
                                 }
                             }
@@ -5623,12 +6011,15 @@ namespace TradingBot
                 if (rsiCheck > 0)
                 {
                     var threshold = GetThresholdBySymbol(symbol);
-                    bool rsiExhausted = (decision == "SHORT" && rsiCheck <= 35f)
+                    bool rsiExhausted = (decision == "SHORT" && rsiCheck <= _shortRsiExhaustionFloor)
                                      || (decision == "LONG"  && rsiCheck >= threshold.MaxRsiLimit);
                     if (rsiExhausted)
                     {
-                        OnStatusLog?.Invoke($"⛔ [RSI 과확장 차단] {symbol} {decision} | RSI={rsiCheck:F1} (limit={threshold.MaxRsiLimit:F0}) → 모멘텀 소진, 진입 차단");
-                        EntryLog("RSI_EXHAUSTED", "BLOCK", $"dir={decision} rsi={rsiCheck:F1} limit={threshold.MaxRsiLimit:F0}");
+                        string limitText = decision == "SHORT"
+                            ? $"shortFloor={_shortRsiExhaustionFloor:F1}"
+                            : $"longLimit={threshold.MaxRsiLimit:F0}";
+                        OnStatusLog?.Invoke($"⛔ [RSI 과확장 차단] {symbol} {decision} | RSI={rsiCheck:F1} ({limitText}) → 모멘텀 소진, 진입 차단");
+                        EntryLog("RSI_EXHAUSTED", "BLOCK", $"dir={decision} rsi={rsiCheck:F1} limit={limitText}");
                         return;
                     }
                 }
@@ -5662,9 +6053,9 @@ namespace TradingBot
                 if (averageAtr > 0)
                 {
                     double atrRatio = currentAtr / averageAtr;
-                    if (atrRatio > 2.0)
+                    if (atrRatio > (double)_atrVolatilityBlockRatio)
                     {
-                        string reason = $"ATR비율={atrRatio:F2}x > 2.0x 흔들기 구간";
+                        string reason = $"ATR비율={atrRatio:F2}x > {_atrVolatilityBlockRatio:F2}x 흔들기 구간";
                         OnStatusLog?.Invoke(TradingStateLogger.RejectedByRiskManagement(symbol, decision, reason));
                         EntryLog("ATR_VOL", "BLOCK", reason);
                         return;
@@ -5954,8 +6345,8 @@ namespace TradingBot
                         if (prediction.Probability < 0.60f)
                             shortFailReasons.Add($"하락 확률 부족({prediction.Probability:P1}<60%)");
                         
-                        if (latestCandle.RSI <= 35f)
-                            shortFailReasons.Add($"RSI 과매도({latestCandle.RSI:F1}≤35)");
+                        if (latestCandle.RSI <= _shortRsiExhaustionFloor)
+                            shortFailReasons.Add($"RSI 과매도({latestCandle.RSI:F1}≤{_shortRsiExhaustionFloor:F1})");
                         
                         if (latestCandle.MACD > 0)
                             shortFailReasons.Add($"MACD 양수({latestCandle.MACD:F4})");

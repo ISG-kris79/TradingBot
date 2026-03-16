@@ -11,6 +11,7 @@ namespace TradingBot.Strategies
     {
         private static readonly TimeZoneInfo SeoulTimeZone = GetSeoulTimeZone();
         private const int PumpCandidateCount = 20;
+        private const int PumpRecoveryCandidateCount = 60;
         private const decimal VolumeWeight = 0.50m;
         private const decimal VolatilityWeight = 0.20m;
         private const decimal MomentumWeight = 0.30m;
@@ -41,7 +42,7 @@ namespace TradingBot.Strategies
                 return;
 
             MajorProfile profile = ResolveProfile();
-            await AnalyzeSymbolAsync(symbol, new ConcurrentDictionary<string, DateTime>(), token, profile);
+            _ = await AnalyzeSymbolAsync(symbol, new ConcurrentDictionary<string, DateTime>(), token, profile);
         }
 
         public async Task ExecuteScanAsync(
@@ -51,27 +52,11 @@ namespace TradingBot.Strategies
         {
             MajorProfile profile = ResolveProfile();
             int candidateCount = GetCandidateCount();
+            int eligibleCount = tickerCache.Values.Count(t => !string.IsNullOrWhiteSpace(t.Symbol) && IsEligiblePumpSymbol(t.Symbol));
 
-            var eligibleTickers = tickerCache.Values
-                .Where(t => !string.IsNullOrWhiteSpace(t.Symbol) && IsEligiblePumpSymbol(t.Symbol))
-                .ToList();
+            var candidates = BuildCandidates(tickerCache, candidateCount);
 
-            decimal maxQuoteVolume = eligibleTickers.Count > 0 ? eligibleTickers.Max(t => t.QuoteVolume) : 0m;
-            decimal maxVolatility = eligibleTickers.Count > 0 ? eligibleTickers.Max(CalculateIntradayVolatility) : 0m;
-            decimal maxMomentum = eligibleTickers.Count > 0 ? eligibleTickers.Max(CalculateMomentumScore) : 0m;
-
-            var candidates = eligibleTickers
-                .Select(t => new CandidateScore(
-                    t,
-                    CalculateMixedRankScore(t, maxQuoteVolume, maxVolatility, maxMomentum),
-                    CalculateIntradayVolatility(t),
-                    CalculateMomentumScore(t)))
-                .OrderByDescending(t => t.Score)
-                .ThenByDescending(t => t.Ticker.QuoteVolume)
-                .Take(candidateCount)
-                .ToList();
-
-            PumpSignalLog("SCAN", $"universe=USDT_FUTURES_ALL eligible={eligibleTickers.Count} tracked={candidates.Count} profile={profile.Name} theme=market-wide rank=mixed(volume50+volatility20+momentum30)Top{candidateCount}");
+            PumpSignalLog("SCAN", $"universe=USDT_FUTURES_ALL eligible={eligibleCount} tracked={candidates.Count} profile={profile.Name} theme=market-wide rank=mixed(volume50+volatility20+momentum30)Top{candidateCount}");
 
             if ((DateTime.Now - _lastProfileLogTime).TotalMinutes >= 5)
             {
@@ -92,7 +77,7 @@ namespace TradingBot.Strategies
                 {
                     var ticker = candidate.Ticker;
                     if (!string.IsNullOrWhiteSpace(ticker.Symbol))
-                        await AnalyzeSymbolAsync(ticker.Symbol, blacklistedSymbols, token, profile);
+                        _ = await AnalyzeSymbolAsync(ticker.Symbol, blacklistedSymbols, token, profile);
                 }
                 catch (Exception ex)
                 {
@@ -103,13 +88,97 @@ namespace TradingBot.Strategies
             await Task.WhenAll(tasks);
         }
 
-        private async Task AnalyzeSymbolAsync(string symbol, ConcurrentDictionary<string, DateTime> blacklist, CancellationToken token, MajorProfile profile)
+        public async Task<(string Symbol, string Decision, decimal Price)?> ExecuteRecoveryScanAsync(
+            ConcurrentDictionary<string, TickerCacheItem> tickerCache,
+            ConcurrentDictionary<string, DateTime> blacklistedSymbols,
+            CancellationToken token,
+            int candidateCount = PumpRecoveryCandidateCount)
+        {
+            MajorProfile profile = ResolveProfile();
+            int cappedCount = Math.Clamp(candidateCount, PumpCandidateCount, PumpRecoveryCandidateCount);
+            var candidates = BuildCandidates(tickerCache, cappedCount);
+
+            PumpSignalLog("SCAN", $"mode=recovery-first-hit candidateCap={cappedCount} tracked={candidates.Count} profile={profile.Name}");
+
+            foreach (var candidate in candidates)
+            {
+                if (token.IsCancellationRequested)
+                    break;
+
+                try
+                {
+                    var ticker = candidate.Ticker;
+                    if (string.IsNullOrWhiteSpace(ticker.Symbol))
+                        continue;
+
+                    string? pickedDecision = null;
+                    decimal pickedPrice = 0m;
+
+                    bool matched = await AnalyzeSymbolAsync(
+                        ticker.Symbol,
+                        blacklistedSymbols,
+                        token,
+                        profile,
+                        emitSignal: false,
+                        signalCapture: (_, decision, price) =>
+                        {
+                            pickedDecision = decision;
+                            pickedPrice = price;
+                        });
+
+                    if (matched && !string.IsNullOrWhiteSpace(pickedDecision) && pickedPrice > 0)
+                    {
+                        PumpSignalLog("SCAN", $"mode=recovery-first-hit selected={ticker.Symbol} side={pickedDecision} px={pickedPrice:F4}");
+                        return (ticker.Symbol, pickedDecision!, pickedPrice);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    PumpSignalLog("ERROR", $"sym={candidate.Ticker.Symbol} source=recoveryScan detail={ex.Message}");
+                }
+            }
+
+            PumpSignalLog("SCAN", "mode=recovery-first-hit selected=none");
+            return null;
+        }
+
+        private List<CandidateScore> BuildCandidates(
+            ConcurrentDictionary<string, TickerCacheItem> tickerCache,
+            int candidateCount)
+        {
+            var eligibleTickers = tickerCache.Values
+                .Where(t => !string.IsNullOrWhiteSpace(t.Symbol) && IsEligiblePumpSymbol(t.Symbol))
+                .ToList();
+
+            decimal maxQuoteVolume = eligibleTickers.Count > 0 ? eligibleTickers.Max(t => t.QuoteVolume) : 0m;
+            decimal maxVolatility = eligibleTickers.Count > 0 ? eligibleTickers.Max(CalculateIntradayVolatility) : 0m;
+            decimal maxMomentum = eligibleTickers.Count > 0 ? eligibleTickers.Max(CalculateMomentumScore) : 0m;
+
+            return eligibleTickers
+                .Select(t => new CandidateScore(
+                    t,
+                    CalculateMixedRankScore(t, maxQuoteVolume, maxVolatility, maxMomentum),
+                    CalculateIntradayVolatility(t),
+                    CalculateMomentumScore(t)))
+                .OrderByDescending(t => t.Score)
+                .ThenByDescending(t => t.Ticker.QuoteVolume)
+                .Take(Math.Max(1, candidateCount))
+                .ToList();
+        }
+
+        private async Task<bool> AnalyzeSymbolAsync(
+            string symbol,
+            ConcurrentDictionary<string, DateTime> blacklist,
+            CancellationToken token,
+            MajorProfile profile,
+            bool emitSignal = true,
+            Action<string, string, decimal>? signalCapture = null)
         {
             try
             {
                 if (blacklist.TryGetValue(symbol, out var expiry))
                 {
-                    if (DateTime.Now < expiry) return;
+                    if (DateTime.Now < expiry) return false;
                     blacklist.TryRemove(symbol, out _);
                 }
 
@@ -117,14 +186,14 @@ namespace TradingBot.Strategies
                 if (!k5mRes.Success || k5mRes.Data == null)
                 {
                     PumpSignalLog("REJECT", $"sym={symbol} reason=klineFetchFailed");
-                    return;
+                    return false;
                 }
 
                 var list = k5mRes.Data.ToList();
                 if (list.Count < 120)
                 {
                     PumpSignalLog("REJECT", $"sym={symbol} reason=insufficientCandles count={list.Count}");
-                    return;
+                    return false;
                 }
 
                 decimal currentPrice = list[list.Count - 1].ClosePrice;
@@ -287,23 +356,36 @@ namespace TradingBot.Strategies
                     "CANDIDATE",
                     $"sym={symbol} side={decisionKr} px={currentPrice:F4} {aiFilterInfo}{(string.IsNullOrWhiteSpace(reason) ? string.Empty : " | " + reason)}");
 
+                bool tradeSignalEmitted = false;
                 if (decision != "WAIT")
                 {
-                    try
+                    if (emitSignal)
                     {
-                        PumpSignalLog("EMIT", $"sym={symbol} side={decisionKr} px={currentPrice:F4} src=MAJOR score={aiScore} atr={atr:F4}");
-                        OnTradeSignal?.Invoke(symbol, decision, currentPrice);
-                        OnPumpDetected?.Invoke(symbol, currentPrice, decision, rsi, atr);
+                        try
+                        {
+                            PumpSignalLog("EMIT", $"sym={symbol} side={decisionKr} px={currentPrice:F4} src=MAJOR score={aiScore} atr={atr:F4}");
+                            OnTradeSignal?.Invoke(symbol, decision, currentPrice);
+                            OnPumpDetected?.Invoke(symbol, currentPrice, decision, rsi, atr);
+                            tradeSignalEmitted = true;
+                        }
+                        catch (Exception eventEx)
+                        {
+                            PumpSignalLog("ERROR", $"sym={symbol} source=tradeEvent detail={eventEx.Message}");
+                        }
                     }
-                    catch (Exception eventEx)
+                    else
                     {
-                        PumpSignalLog("ERROR", $"sym={symbol} source=tradeEvent detail={eventEx.Message}");
+                        signalCapture?.Invoke(symbol, decision, currentPrice);
+                        tradeSignalEmitted = true;
                     }
                 }
+
+                return tradeSignalEmitted;
             }
             catch (Exception ex)
             {
                 PumpSignalLog("ERROR", $"sym={symbol} source=analyze detail={ex.Message}");
+                return false;
             }
         }
 

@@ -15,6 +15,34 @@
 
  - 없음
 
+## [2.4.51] - 2026-03-16
+
+### Added
+
+- **드라이스펠 수동 진단 텔레그램 명령 `/drought` 추가** (`DroughtScanCommand.cs`, `TelegramService.cs`, `TradingEngine.cs`):
+  - 텔레그램에서 즉시 드라이스펠 진단/복구 스캔 1회 실행 가능
+  - 엔진 실행 상태 검증 후 결과 요약 문자열을 명령 응답으로 반환
+
+- **드라이스펠 자동 복구 체인 강화** (`TradingEngine.cs`, `PumpScanStrategy.cs`):
+  - 2시간 이내 ETA 고확률 후보 우선 진입(`DROUGHT_RECOVERY_2H`)
+  - PASS 미충족 시 근접 후보 시험 진입(`DROUGHT_RECOVERY_NEAR_2H`, 비중 70%)
+  - 그래도 후보 없으면 PUMP 확장 스캔 Top60 first-hit 연계(`DROUGHT_RECOVERY_PUMP`)
+
+### Changed
+
+- **드라이스펠 진단 결과 요약/액션 코드 고도화** (`TradingEngine.cs`):
+  - `RunDroughtDiagnosticScanAsync`가 요약 문자열을 반환하도록 변경
+  - `ETA2h / Near2h / PumpFallback / Action` 형식으로 상태를 일관 출력
+  - `*_HOLDING_SKIP`, `NO_ENTRY`, `ERROR`, `CANCELLED` 등 액션 상태를 세분화
+
+- **PUMP 복구 스캔 블랙리스트 안전성 개선** (`TradingEngine.cs`, `PumpScanStrategy.cs`):
+  - 활성 보유 심볼을 복구 스캔 블랙리스트에 주입해 중복 진입을 방지
+  - 복구 스캔 시 이벤트 emit 없이 first-hit 신호를 반환해 엔진이 직접 주문 경로를 제어
+
+- **XRP 장기 샘플 기반 공통 필터 동적 튜닝 반영** (`TradingEngine.cs`):
+  - 2025-01-01~현재 XRP 15분봉 샘플 점검으로 ATR 변동성 차단 배율/SHORT RSI floor 자동 보정
+  - 특정 심볼 분기 없이 공통 파라미터에 적용
+
 ## [2.4.50] - 2026-03-16
 
 ### Added
