@@ -15,6 +15,26 @@
 
  - 없음
 
+## [2.4.52] - 2026-03-16
+
+### Fixed
+
+- **밈/알트 실시간 UI 미갱신 경로 보완** (`TradingEngine.cs`):
+  - `OnAllTickerUpdate` 스트림을 엔진에 연결하고, 활성 포지션/추적 심볼만 필터링해 `HandleTickerUpdate`로 전달
+  - 메이저 목록 외 심볼(밈/펌프)에서도 UI 가격/시그널 갱신 누락을 줄임
+
+- **PUMP 포지션 감시 누락으로 인한 익절/손절 미동작 문제 수정** (`TradingEngine.cs`):
+  - 신규 진입/동기화/계좌복원 경로에서 PUMP 포지션은 표준 모니터 대신 PUMP 모니터를 일관 시작
+  - `_runningPumpMonitors` 및 `TryStartPumpMonitor`로 중복 감시를 방지하고 종료 시 상태 정리
+
+- **PUMP/밈 진입 증거금 100 USDT 고정 적용** (`TradingEngine.cs`):
+  - `PUMP_FIXED_MARGIN_USDT` 상수 도입 및 공통/펌프 진입 경로 모두 고정 증거금 적용
+  - 패턴/수동/RSI 기반 배수로 증거금이 변동되던 경로를 PUMP 코인에서 우회
+
+- **드라이스펠 PUMP fallback 추격 진입 방어 추가** (`TradingEngine.cs`):
+  - `DROUGHT_RECOVERY_PUMP` LONG 진입 시 15분봉 BB 상단 돌파 및 상단 과열(%B/RSI) 구간을 차단
+  - `DROUGHT_CHASE` 로그 태그로 차단 원인 추적 가능
+
 ## [2.4.51] - 2026-03-16
 
 ### Added

@@ -56,6 +56,7 @@ namespace TradingBot
         private const int MAX_TOTAL_SLOTS = 6;        // 총 최대 6개
         private const int MAX_MAJOR_SLOTS = 4;        // 메이저 최대 4개
         private const int MAX_PUMP_SLOTS = 1;         // PUMP(밈) 최대 1개 (리스크 축소)
+        private const decimal PUMP_FIXED_MARGIN_USDT = 100m; // PUMP/밈 코인 고정 증거금
         private const int PUMP_MANUAL_LEVERAGE = 20; // 20배 롱 전용 대응 매뉴얼
         private const int SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 1000;
         private const int MAJOR_SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 180;
@@ -129,6 +130,7 @@ namespace TradingBot
         private readonly PatternMemoryService _patternMemoryService;
 
         private readonly ConcurrentDictionary<string, byte> _runningStandardMonitors = new ConcurrentDictionary<string, byte>();
+        private readonly ConcurrentDictionary<string, byte> _runningPumpMonitors = new ConcurrentDictionary<string, byte>();
         private readonly ConcurrentDictionary<string, byte> _runningFastEntrySlippageMonitors = new ConcurrentDictionary<string, byte>();
         private readonly ConcurrentDictionary<string, byte> _uiTrackedSymbols = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
@@ -452,6 +454,7 @@ namespace TradingBot
             _marketDataManager.OnAccountUpdate += (data) => _accountChannel.Writer.TryWrite(data);
             _marketDataManager.OnOrderUpdate += (data) => _orderChannel.Writer.TryWrite(data);
 
+            _marketDataManager.OnAllTickerUpdate += HandleAllTickerUpdate;
             _marketDataManager.OnTickerUpdate += HandleTickerUpdate;
 
             _positionMonitor.OnLog += msg => OnStatusLog?.Invoke(msg);
@@ -466,6 +469,7 @@ namespace TradingBot
                 // 포지션 종료 시 HybridExitManager 상태 정리
                 if (!a) _hybridExitManager?.RemoveState(s);
                 if (!a) _runningStandardMonitors.TryRemove(s, out _);
+                if (!a) _runningPumpMonitors.TryRemove(s, out _);
             };
             _positionMonitor.OnCloseIncompleteStatusChanged += (s, isIncomplete, detail) =>
             {
@@ -1165,6 +1169,7 @@ namespace TradingBot
                                 EntryPrice = pos.EntryPrice,
                                 IsLong = pos.IsLong,
                                 Side = pos.Side,
+                                IsPumpStrategy = !MajorSymbols.Contains(pos.Symbol),
                                 AiScore = synced.AiScore,
                                 Leverage = pos.Leverage > 0 ? pos.Leverage : _settings.DefaultLeverage,
                                 Quantity = Math.Abs(pos.Quantity),
@@ -1214,7 +1219,7 @@ namespace TradingBot
                         if (!isSyncPump)
                             TryStartStandardMonitor(pos.Symbol, pos.EntryPrice, pos.IsLong, "TREND", 0m, syncedStopLoss, token, "sync");
                         else
-                            OnStatusLog?.Invoke($"⚠️ [동기화] {pos.Symbol} PUMP 포지션 감지 → 표준 모니터 스킵 (PUMP Smart Protective Stop 비적용)");
+                            TryStartPumpMonitor(pos.Symbol, pos.EntryPrice, "SYNC_PUMP", 0d, token, "sync");
                     }
                     OnStatusLog?.Invoke("✅ 현재 보유 포지션 동기화 완료");
                 }
@@ -3503,10 +3508,8 @@ namespace TradingBot
                 }
             }
 
-            decimal pumpBaseMargin = _settings.PumpMargin > 0 ? _settings.PumpMargin : 0;
-            decimal baseEntryMarginUsdt = await GetAdaptiveEntryMarginUsdtAsync(token, pumpBaseMargin);
-            decimal marginUsdt = CalculateDynamicPositionSize(atr, currentPrice, baseEntryMarginUsdt);
-            PumpEntryLog("SIZE", "BASE", $"baseMargin={baseEntryMarginUsdt:F0} dynamicMargin={marginUsdt:F0} pumpMarginSetting={_settings.PumpMargin:F0}");
+            decimal marginUsdt = PUMP_FIXED_MARGIN_USDT;
+            PumpEntryLog("SIZE", "FIXED", $"pumpMargin={marginUsdt:F0}usdt");
 
             if (_riskManager.IsTripped)
             {
@@ -3611,8 +3614,7 @@ namespace TradingBot
 
             if (stopDistancePercent > pumpStopWarnPct)
             {
-                marginUsdt *= 0.6m;
-                PumpEntryLog("RISK", "WARN", $"stopDistancePct={stopDistancePercent:F2} warnPct={pumpStopWarnPct:F2} marginScale=0.60");
+                PumpEntryLog("RISK", "WARN", $"stopDistancePct={stopDistancePercent:F2} warnPct={pumpStopWarnPct:F2} marginFixed={marginUsdt:F0}");
             }
 
             if (stopDistancePercent > pumpStopBlockPct)
@@ -3663,13 +3665,11 @@ namespace TradingBot
             }
             else if (rsi5m >= 70)
             {
-                marginUsdt *= 0.5m; // 과매수 구간에서는 절반으로 축소
-                PumpEntryLog("RSI", "WARN", $"rsi={rsi5m:F1} marginScale=0.50");
+                PumpEntryLog("RSI", "WARN", $"rsi={rsi5m:F1} marginFixed={marginUsdt:F0}");
             }
             else if (rsi5m <= 30)
             {
-                marginUsdt *= 2.0m; // 과매도 구간(저점 매수)에서는 2배로 확대
-                PumpEntryLog("RSI", "BOOST", $"rsi={rsi5m:F1} marginScale=2.00");
+                PumpEntryLog("RSI", "BOOST", $"rsi={rsi5m:F1} marginFixed={marginUsdt:F0}");
             }
 
             // 매수 집행
@@ -3678,7 +3678,7 @@ namespace TradingBot
             // [중요] 진입 성공 시에만 별도의 모니터링 태스크 시작 (1분봉 기반 짧은 대응)
             if (pumpEntered)
             {
-                _ = Task.Run(async () => await _positionMonitor.MonitorPumpPositionShortTerm(symbol, currentPrice, strategyName, atr, token), token);
+                TryStartPumpMonitor(symbol, currentPrice, strategyName, atr, token, "pump-entry");
             }
             else
             {
@@ -4090,6 +4090,11 @@ namespace TradingBot
                 || string.Equals(signalSource, "DROUGHT_RECOVERY_NEAR_2H", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(signalSource, "DROUGHT_RECOVERY_PUMP", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(signalSource, "TIMEOUT_PROB_ENTRY", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsDroughtRecoveryPumpSignalSource(string signalSource)
+        {
+            return string.Equals(signalSource, "DROUGHT_RECOVERY_PUMP", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
@@ -5177,6 +5182,10 @@ namespace TradingBot
                 {
                     TryStartStandardMonitor(pos.Symbol, pos.EntryPrice, isLong, "TREND", savedTakeProfit, savedStopLoss, _cts?.Token ?? CancellationToken.None, wasTracked ? "account-update" : "external-position");
                 }
+                else
+                {
+                    TryStartPumpMonitor(pos.Symbol, pos.EntryPrice, "ACCOUNT_PUMP", 0d, _cts?.Token ?? CancellationToken.None, wasTracked ? "account-update" : "external-position");
+                }
 
                 OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
                 {
@@ -5187,6 +5196,50 @@ namespace TradingBot
                     Quantity = Math.Abs(pos.Quantity),
                     Leverage = uiLeverage
                 });
+            }
+        }
+
+        private void HandleAllTickerUpdate(IEnumerable<IBinance24HPrice> ticks)
+        {
+            try
+            {
+                if (ticks == null)
+                    return;
+
+                var trackedSymbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                lock (_posLock)
+                {
+                    foreach (var symbol in _activePositions.Keys)
+                    {
+                        if (TryNormalizeTradingSymbol(symbol, out var normalizedSymbol))
+                            trackedSymbols.Add(normalizedSymbol);
+                    }
+                }
+
+                foreach (var symbol in _uiTrackedSymbols.Keys)
+                {
+                    if (TryNormalizeTradingSymbol(symbol, out var normalizedSymbol))
+                        trackedSymbols.Add(normalizedSymbol);
+                }
+
+                if (trackedSymbols.Count == 0)
+                    return;
+
+                foreach (var tick in ticks)
+                {
+                    if (tick == null || !TryNormalizeTradingSymbol(tick.Symbol, out var symbol))
+                        continue;
+
+                    if (!trackedSymbols.Contains(symbol))
+                        continue;
+
+                    HandleTickerUpdate(tick);
+                }
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [AllTickerCallback] 처리 오류: {ex.Message}");
             }
         }
 
@@ -5255,6 +5308,35 @@ namespace TradingBot
                 finally
                 {
                     _runningStandardMonitors.TryRemove(symbol, out _);
+                }
+            }, token);
+        }
+
+        private void TryStartPumpMonitor(
+            string symbol,
+            decimal entryPrice,
+            string strategyName,
+            double atr,
+            CancellationToken token,
+            string source)
+        {
+            if (token.IsCancellationRequested)
+                return;
+
+            if (!_runningPumpMonitors.TryAdd(symbol, 0))
+                return;
+
+            OnStatusLog?.Invoke($"🚨 {symbol} PUMP 포지션 감시 연결 ({source})");
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _positionMonitor.MonitorPumpPositionShortTerm(symbol, entryPrice, strategyName, atr, token);
+                }
+                finally
+                {
+                    _runningPumpMonitors.TryRemove(symbol, out _);
                 }
             }, token);
         }
@@ -6025,6 +6107,32 @@ namespace TradingBot
                 }
             }
 
+            // [드라이스펠 PUMP 안전장치] 15분봉 BB 상단 돌파 추격 LONG 차단
+            if (decision == "LONG" && IsDroughtRecoveryPumpSignalSource(signalSource))
+            {
+                decimal bbUpper = latestCandle.BollingerUpper > 0 ? (decimal)latestCandle.BollingerUpper : 0m;
+                decimal bbLower = latestCandle.BollingerLower > 0 ? (decimal)latestCandle.BollingerLower : 0m;
+
+                if (bbUpper > 0m && currentPrice >= bbUpper)
+                {
+                    OnStatusLog?.Invoke($"⛔ [드라이스펠 추격 차단] {symbol} LONG | 15m BB 상단 돌파 구간 진입 금지 (price={currentPrice:F8}, bbUpper={bbUpper:F8})");
+                    EntryLog("DROUGHT_CHASE", "BLOCK", $"reason=bbUpperBreakout price={currentPrice:F8} bbUpper={bbUpper:F8}");
+                    return;
+                }
+
+                decimal bbRange = bbUpper - bbLower;
+                if (bbRange > 0m)
+                {
+                    decimal bbPosition = (currentPrice - bbLower) / bbRange;
+                    if (bbPosition >= 0.90m && latestCandle.RSI >= 60f)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [드라이스펠 추격 차단] {symbol} LONG | %B={bbPosition:P0}, RSI={latestCandle.RSI:F1} 과열 상단 구간");
+                        EntryLog("DROUGHT_CHASE", "BLOCK", $"reason=bbUpperHeat bbPos={bbPosition:P2} rsi={latestCandle.RSI:F1}");
+                        return;
+                    }
+                }
+            }
+
             // [요청 반영] 1분봉 윗꼬리(고점 대비 -0.3%) 발생 시 LONG 추격 진입 차단
             var m1UpperWickFilter = await EvaluateOneMinuteUpperWickBlockAsync(symbol, decision, currentPrice, token);
             if (m1UpperWickFilter.blocked)
@@ -6400,50 +6508,70 @@ namespace TradingBot
             {
                 // 2. [메이저/PUMP 완전 분리] 메이저 전용 레버리지/증거금 사용
                 int leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
-                decimal marginUsdt = await GetAdaptiveEntryMarginUsdtAsync(token);
+                CoinType sizeCoinType = ResolveCoinType(symbol, signalSource);
+                bool useFixedPumpMargin = sizeCoinType == CoinType.Pumping;
+                decimal marginUsdt = useFixedPumpMargin
+                    ? PUMP_FIXED_MARGIN_USDT
+                    : await GetAdaptiveEntryMarginUsdtAsync(token);
                 decimal positionSizeMultiplier = 1.0m;
                 decimal effectiveManualSizeMultiplier = Math.Clamp(manualSizeMultiplier, 0.10m, 2.00m);
 
-                EntryLog("SIZE", "BASE", $"margin={marginUsdt:F2} leverage={leverage}x sizingRule=max(majorMargin={_settings.MajorMargin:F0}, equity*10%)");
+                if (useFixedPumpMargin)
+                {
+                    EntryLog("SIZE", "BASE", $"margin={marginUsdt:F2} leverage={leverage}x coinType={sizeCoinType} fixed=true");
+                }
+                else
+                {
+                    EntryLog("SIZE", "BASE", $"margin={marginUsdt:F2} leverage={leverage}x sizingRule=max(majorMargin={_settings.MajorMargin:F0}, equity*10%)");
+                }
 
                 if (patternSnapshot != null)
                 {
                     convictionScore = Math.Max(convictionScore, (decimal)patternSnapshot.FinalScore);
                 }
 
-                if (patternSnapshot != null)
+                if (!useFixedPumpMargin)
                 {
-                    decimal patternSizeMultiplier = patternSnapshot.Match?.PositionSizeMultiplier ?? 1.0m;
-                    bool hasStrongPatternMatch =
-                        patternSnapshot.Match?.IsSuperEntry == true ||
-                        (patternSnapshot.Match?.TopSimilarity ?? 0d) >= 0.80d ||
-                        (patternSnapshot.Match?.MatchProbability ?? 0d) >= 0.70d;
-
-                    if (convictionScore >= 85.0m && hasStrongPatternMatch)
+                    if (patternSnapshot != null)
                     {
-                        decimal aggressiveMultiplier = patternSizeMultiplier > 1.0m
-                            ? patternSizeMultiplier
-                            : 1.5m;
+                        decimal patternSizeMultiplier = patternSnapshot.Match?.PositionSizeMultiplier ?? 1.0m;
+                        bool hasStrongPatternMatch =
+                            patternSnapshot.Match?.IsSuperEntry == true ||
+                            (patternSnapshot.Match?.TopSimilarity ?? 0d) >= 0.80d ||
+                            (patternSnapshot.Match?.MatchProbability ?? 0d) >= 0.70d;
 
-                        positionSizeMultiplier = Math.Clamp(aggressiveMultiplier, 1.5m, 2.0m);
-                        OnStatusLog?.Invoke($"🚀 [Aggressive Entry] {symbol} 고신뢰 진입 감지 | Score={convictionScore:F1}, PatternStrong={hasStrongPatternMatch} → 비중 x{positionSizeMultiplier:F2}");
+                        if (convictionScore >= 85.0m && hasStrongPatternMatch)
+                        {
+                            decimal aggressiveMultiplier = patternSizeMultiplier > 1.0m
+                                ? patternSizeMultiplier
+                                : 1.5m;
+
+                            positionSizeMultiplier = Math.Clamp(aggressiveMultiplier, 1.5m, 2.0m);
+                            OnStatusLog?.Invoke($"🚀 [Aggressive Entry] {symbol} 고신뢰 진입 감지 | Score={convictionScore:F1}, PatternStrong={hasStrongPatternMatch} → 비중 x{positionSizeMultiplier:F2}");
+                        }
+                        else if (patternSizeMultiplier > 1.0m)
+                        {
+                            OnStatusLog?.Invoke($"🧮 [Pattern Size] {symbol} 패턴 배수 제안 x{patternSizeMultiplier:F2} 감지, 하지만 Score={convictionScore:F1} < 85 또는 강매치 미충족으로 기본 비중 유지");
+                        }
                     }
-                    else if (patternSizeMultiplier > 1.0m)
+
+                    if (effectiveManualSizeMultiplier != 1.0m)
                     {
-                        OnStatusLog?.Invoke($"🧮 [Pattern Size] {symbol} 패턴 배수 제안 x{patternSizeMultiplier:F2} 감지, 하지만 Score={convictionScore:F1} < 85 또는 강매치 미충족으로 기본 비중 유지");
+                        positionSizeMultiplier *= effectiveManualSizeMultiplier;
+                        EntryLog("SIZE", "ADJUST", $"manualMultiplier={effectiveManualSizeMultiplier:F2} finalMultiplier={positionSizeMultiplier:F2}");
+                    }
+
+                    marginUsdt *= positionSizeMultiplier;
+                    if (positionSizeMultiplier != 1.0m)
+                    {
+                        OnStatusLog?.Invoke($"💼 [Position Sizing] {symbol} 최종 증거금 {marginUsdt:F2} USDT (배수 x{positionSizeMultiplier:F2})");
                     }
                 }
-
-                if (effectiveManualSizeMultiplier != 1.0m)
+                else
                 {
-                    positionSizeMultiplier *= effectiveManualSizeMultiplier;
-                    EntryLog("SIZE", "ADJUST", $"manualMultiplier={effectiveManualSizeMultiplier:F2} finalMultiplier={positionSizeMultiplier:F2}");
-                }
-
-                marginUsdt *= positionSizeMultiplier;
-                if (positionSizeMultiplier != 1.0m)
-                {
-                    OnStatusLog?.Invoke($"💼 [Position Sizing] {symbol} 최종 증거금 {marginUsdt:F2} USDT (배수 x{positionSizeMultiplier:F2})");
+                    positionSizeMultiplier = 1.0m;
+                    marginUsdt = PUMP_FIXED_MARGIN_USDT;
+                    EntryLog("SIZE", "FIXED", $"coinType={sizeCoinType} margin={marginUsdt:F2}USDT");
                 }
 
                 if (scoutModeActivated)
@@ -6865,8 +6993,24 @@ namespace TradingBot
                         }
                     }
 
-                    // 🔥 [핵심] 감시 루프 시작
-                    TryStartStandardMonitor(symbol, actualEntryPrice, decision == "LONG", mode, customTakeProfitPrice, customStopLossPrice, token, "new-entry");
+                    // 🔥 [핵심] 감시 루프 시작 (PUMP/표준 분기)
+                    bool isPumpPosition = false;
+                    lock (_posLock)
+                    {
+                        if (_activePositions.TryGetValue(symbol, out var activePos))
+                            isPumpPosition = activePos.IsPumpStrategy;
+                    }
+
+                    if (isPumpPosition)
+                    {
+                        double pumpAtr = latestCandle != null ? Math.Max(0d, latestCandle.ATR) : 0d;
+                        TryStartPumpMonitor(symbol, actualEntryPrice, signalSource, pumpAtr, token, "new-entry");
+                    }
+                    else
+                    {
+                        TryStartStandardMonitor(symbol, actualEntryPrice, decision == "LONG", mode, customTakeProfitPrice, customStopLossPrice, token, "new-entry");
+                    }
+
                     TryStartFastEntrySlippageMonitor(symbol, actualEntryPrice, decision == "LONG", token, signalSource);
             }
             catch (TaskCanceledException tcEx)
