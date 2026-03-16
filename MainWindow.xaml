@@ -1512,7 +1512,7 @@
                                                            FontWeight="Bold"/>
                                                 <TextBlock Text="{Binding BattleFastLog1}" Foreground="#E2E8F0" FontSize="10" FontFamily="Consolas" Margin="0,4,0,0"/>
                                                 <TextBlock Text="{Binding BattleFastLog2}" Foreground="#94A3B8" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0"/>
-                                                <TextBlock Text="{Binding BattleFastLog3}" Foreground="#64748B" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0"/>
+                                                <TextBlock Text="{Binding BattleFastLog3}" Foreground="#64748B" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" Height="96"/>
                                             </StackPanel>
                                         </Border>
                                     </StackPanel>

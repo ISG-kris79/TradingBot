@@ -61,10 +61,6 @@ namespace TradingBot
         private const int SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 1000;
         private const int MAJOR_SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 180;
         private static readonly TimeSpan MainLoopInterval = TimeSpan.FromSeconds(1);
-        private static readonly TimeSpan FastEntrySlippageCheckInterval = TimeSpan.FromMilliseconds(250);
-        private static readonly TimeSpan FastEntrySlippageMonitorDuration = TimeSpan.FromSeconds(25);
-        private const decimal FastEntrySlippageWarnPct = 0.0010m;
-        private const decimal FastEntrySlippageExitPct = 0.0018m;
         private decimal _minEntryRiskRewardRatio = 1.40m; // 설정에서 로드
         private bool _rrConfigMismatchWarned = false;
         private float _fifteenMinuteMlMinConfidence = 0.65f; // 가이드 기본값
@@ -131,7 +127,6 @@ namespace TradingBot
 
         private readonly ConcurrentDictionary<string, byte> _runningStandardMonitors = new ConcurrentDictionary<string, byte>();
         private readonly ConcurrentDictionary<string, byte> _runningPumpMonitors = new ConcurrentDictionary<string, byte>();
-        private readonly ConcurrentDictionary<string, byte> _runningFastEntrySlippageMonitors = new ConcurrentDictionary<string, byte>();
         private readonly ConcurrentDictionary<string, byte> _uiTrackedSymbols = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
         private ConcurrentDictionary<string, DateTime> _lastTickerUpdateTimes = new ConcurrentDictionary<string, DateTime>();
@@ -4032,8 +4027,6 @@ namespace TradingBot
                             OnStatusLog?.Invoke($"⚠️ {symbol} PUMP 진입 로그 DB 저장 예외: {dbEx.Message}");
                         }
 
-                        TryStartFastEntrySlippageMonitor(symbol, actualEntryPrice, true, token, "PUMP");
-
                         return true;
                 }
                 else
@@ -5337,75 +5330,6 @@ namespace TradingBot
                 finally
                 {
                     _runningPumpMonitors.TryRemove(symbol, out _);
-                }
-            }, token);
-        }
-
-        private void TryStartFastEntrySlippageMonitor(
-            string symbol,
-            decimal entryPrice,
-            bool isLong,
-            CancellationToken token,
-            string source)
-        {
-            if (token.IsCancellationRequested || entryPrice <= 0 || string.IsNullOrWhiteSpace(symbol))
-                return;
-
-            if (!_runningFastEntrySlippageMonitors.TryAdd(symbol, 0))
-                return;
-
-            _ = Task.Run(async () =>
-            {
-                DateTime startedAt = DateTime.UtcNow;
-                bool warnLogged = false;
-
-                try
-                {
-                    while (!token.IsCancellationRequested)
-                    {
-                        if (DateTime.UtcNow - startedAt >= FastEntrySlippageMonitorDuration)
-                            break;
-
-                        decimal currentPrice = await _exchangeService.GetPriceAsync(symbol, token);
-                        if (currentPrice <= 0 && _marketDataManager.TickerCache.TryGetValue(symbol, out var ticker))
-                        {
-                            currentPrice = ticker.LastPrice;
-                        }
-
-                        if (currentPrice > 0)
-                        {
-                            decimal adverseMovePct = isLong
-                                ? (entryPrice - currentPrice) / entryPrice
-                                : (currentPrice - entryPrice) / entryPrice;
-
-                            if (!warnLogged && adverseMovePct >= FastEntrySlippageWarnPct)
-                            {
-                                warnLogged = true;
-                                OnStatusLog?.Invoke($"⚠️ [SLIPPAGE][FAST][WARN] src={source} sym={symbol} side={(isLong ? "LONG" : "SHORT")} adverse={adverseMovePct:P2} threshold={FastEntrySlippageWarnPct:P2}");
-                            }
-
-                            if (adverseMovePct >= FastEntrySlippageExitPct)
-                            {
-                                OnStatusLog?.Invoke($"🛑 [SLIPPAGE][FAST][EXIT] src={source} sym={symbol} side={(isLong ? "LONG" : "SHORT")} adverse={adverseMovePct:P2} threshold={FastEntrySlippageExitPct:P2}");
-                                OnAlert?.Invoke($"🛑 {symbol} 초기 슬리피지 급변 보호 청산 실행 ({adverseMovePct:P2})");
-                                await _positionMonitor.ExecuteMarketClose(symbol, $"초기 슬리피지 보호 ({adverseMovePct:P2})", token);
-                                break;
-                            }
-                        }
-
-                        await Task.Delay(FastEntrySlippageCheckInterval, token);
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ [SLIPPAGE][FAST][ERROR] src={source} sym={symbol} detail={ex.Message}");
-                }
-                finally
-                {
-                    _runningFastEntrySlippageMonitors.TryRemove(symbol, out _);
                 }
             }, token);
         }
@@ -7010,8 +6934,6 @@ namespace TradingBot
                     {
                         TryStartStandardMonitor(symbol, actualEntryPrice, decision == "LONG", mode, customTakeProfitPrice, customStopLossPrice, token, "new-entry");
                     }
-
-                    TryStartFastEntrySlippageMonitor(symbol, actualEntryPrice, decision == "LONG", token, signalSource);
             }
             catch (TaskCanceledException tcEx)
             {
@@ -7042,7 +6964,7 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"❌ {symbol} 진입 중 예외 발생: {ex.GetType().Name} - {ex.Message}");
                 OnLiveLog?.Invoke($"🧭 [ENTRY][ERROR] sym={symbol} side={decision} | type={ex.GetType().Name} | detail={ex.Message}");
                 EntryLog("ENTRY", "ERROR", $"{ex.GetType().Name}: {ex.Message}");
-                
+
                 try
                 {
                     await TelegramService.Instance.SendMessageAsync($"⚠️ *[자동 매매 오류]*\n{symbol} 진입 중 예외 발생:\n{ex.GetType().Name}\n{ex.Message}");
@@ -7078,10 +7000,10 @@ namespace TradingBot
 
             int safeLeverage = leverage > 0 ? leverage : Math.Max(1, _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage);
             // [메이저/PUMP 완전 분리] 메이저 전용 ROE로 TP/SL 바능가 계산
-            decimal majorTp2Roe  = _settings.MajorTp2Roe  > 0 ? _settings.MajorTp2Roe  : (_settings.TargetRoe  > 0 ? _settings.TargetRoe  : 25.0m);
-            decimal majorSlRoe   = _settings.MajorStopLossRoe > 0 ? _settings.MajorStopLossRoe : (_settings.StopLossRoe > 0 ? _settings.StopLossRoe : 60.0m);
+            decimal majorTp2Roe = _settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : (_settings.TargetRoe > 0 ? _settings.TargetRoe : 25.0m);
+            decimal majorSlRoe = _settings.MajorStopLossRoe > 0 ? _settings.MajorStopLossRoe : (_settings.StopLossRoe > 0 ? _settings.StopLossRoe : 60.0m);
             decimal targetPriceMove = majorTp2Roe / safeLeverage / 100m;
-            decimal stopPriceMove   = majorSlRoe  / safeLeverage / 100m;
+            decimal stopPriceMove = majorSlRoe / safeLeverage / 100m;
 
             bool isLong = string.Equals(decision, "LONG", StringComparison.OrdinalIgnoreCase);
             bool isShort = string.Equals(decision, "SHORT", StringComparison.OrdinalIgnoreCase);
