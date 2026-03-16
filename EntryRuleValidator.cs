@@ -255,10 +255,19 @@ namespace TradingBot
                 && bbPosition > 0.5f
                 && HasSuccessiveHigherLows(recentCandles, 3)
                 && SanitizeScore(tfScore) >= _config.LowVolumeBypassTfThreshold * 0.94f  // ~85%
-                && volumeRatio >= (decimal)_config.LowVolumeBypassMinRatio;
+                && volumeRatio >= 0.1m; // 형님 요청: 계단식 상승 중 중심선 위면 LowVolumeRatio 0.1로 완화
 
             if (isStaircaseUptrend)
                 return (true, $"Staircase_Uptrend_Bypass_Vol={volumeRatio:F2}_BB={bbPosition:P0}");
+
+            // [V-Turn & Squeeze 가속 로직 - 모멘텀 우선주의] 볼륨 0.15 극단적 완화
+            bool isSqueezeBreakout = side == PositionSide.Long
+                && bbPosition >= 0.5f && bbPosition <= 1.05f 
+                && SanitizeScore(tfScore) >= 0.85f 
+                && volumeRatio >= 0.15m; // Pre-Breakout 모드 인정 20% 내외
+
+            if (isSqueezeBreakout)
+                return (true, $"V_Turn_Squeeze_Bypass_Vol={volumeRatio:F2}_BB={bbPosition:P0}");
 
             if (side != PositionSide.Long)
                 return (false, "LowVolume_Bypass_Not_Long");

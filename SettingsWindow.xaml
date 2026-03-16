@@ -924,6 +924,66 @@
                         </ScrollViewer>
                     </TabItem>
 
+                    <TabItem Header="Telegram Messages">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <Border Background="#161925"
+                                    CornerRadius="10"
+                                    Padding="20"
+                                    Margin="10">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Grid.Row="0"
+                                               Text="📨 텔레그램 메시지 타입 허용/차단"
+                                               FontSize="16"
+                                               FontWeight="Bold"
+                                               Foreground="#00E676"
+                                               Margin="0,0,0,15"/>
+
+                                    <StackPanel Grid.Row="1" Margin="0,0,0,10">
+                                        <CheckBox x:Name="chkTelegramAlert"
+                                                  Content="시스템 경보/중요 알림 허용"
+                                                  Foreground="#E2E8F0"
+                                                  IsChecked="True"
+                                                  Margin="0,0,0,8"/>
+                                        <CheckBox x:Name="chkTelegramProfit"
+                                                  Content="익절/손절/정기 수익 보고 허용"
+                                                  Foreground="#E2E8F0"
+                                                  IsChecked="True"
+                                                  Margin="0,0,0,8"/>
+                                        <CheckBox x:Name="chkTelegramEntry"
+                                                  Content="진입/본절/트레일링 마일스톤 허용"
+                                                  Foreground="#E2E8F0"
+                                                  IsChecked="True"
+                                                  Margin="0,0,0,8"/>
+                                        <CheckBox x:Name="chkTelegramAiGate"
+                                                  Content="AI 관제탑(게이트 요약) 허용"
+                                                  Foreground="#E2E8F0"
+                                                  IsChecked="True"
+                                                  Margin="0,0,0,8"/>
+                                        <CheckBox x:Name="chkTelegramLog"
+                                                  Content="저중요 로그/하트비트 허용"
+                                                  Foreground="#E2E8F0"
+                                                  IsChecked="True"/>
+                                    </StackPanel>
+
+                                    <TextBlock Grid.Row="2"
+                                               Text="※ 저장 즉시 적용됩니다. 차단된 타입은 Telegram 전송 단계에서 무시됩니다."
+                                               Foreground="#94A3B8"
+                                               TextWrapping="Wrap"
+                                               Margin="0,10,0,0"/>
+                                </Grid>
+                            </Border>
+                        </ScrollViewer>
+                    </TabItem>
+
                     <TabItem Header="Grid Strategy">
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <Border Background="#161925"

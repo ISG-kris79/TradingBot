@@ -123,6 +123,7 @@ namespace TradingBot
         {
             try
             {
+                ApplyTelegramUiFromNode(null);
                 SelectMajorTrendProfile("Balanced");
 
                 string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, SettingsFileName);
@@ -133,6 +134,11 @@ namespace TradingBot
                     if (_rootNode == null)
                     {
                         _rootNode = new JsonObject();
+                    }
+
+                    if (_rootNode["Telegram"] is JsonObject telegramNode)
+                    {
+                        ApplyTelegramUiFromNode(telegramNode);
                     }
 
                     // Trading Settings
@@ -592,6 +598,25 @@ namespace TradingBot
                     AppConfig.Current.Trading.TransformerSettings = tfSettings;
                 }
 
+                // Telegram 메시지 타입 필터 저장
+                var telegramNode = (_rootNode["Telegram"] as JsonObject) ?? new JsonObject();
+                _rootNode["Telegram"] = telegramNode;
+
+                telegramNode["EnableAlertMessages"] = chkTelegramAlert.IsChecked == true;
+                telegramNode["EnableProfitMessages"] = chkTelegramProfit.IsChecked == true;
+                telegramNode["EnableEntryMessages"] = chkTelegramEntry.IsChecked == true;
+                telegramNode["EnableAiGateMessages"] = chkTelegramAiGate.IsChecked == true;
+                telegramNode["EnableLogMessages"] = chkTelegramLog.IsChecked == true;
+
+                if (AppConfig.Current?.Telegram != null)
+                {
+                    AppConfig.Current.Telegram.EnableAlertMessages = chkTelegramAlert.IsChecked == true;
+                    AppConfig.Current.Telegram.EnableProfitMessages = chkTelegramProfit.IsChecked == true;
+                    AppConfig.Current.Telegram.EnableEntryMessages = chkTelegramEntry.IsChecked == true;
+                    AppConfig.Current.Telegram.EnableAiGateMessages = chkTelegramAiGate.IsChecked == true;
+                    AppConfig.Current.Telegram.EnableLogMessages = chkTelegramLog.IsChecked == true;
+                }
+
 
                 // 3. 파일 저장
                 string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, SettingsFileName);
@@ -792,6 +817,15 @@ namespace TradingBot
             }
 
             return true;
+        }
+
+        private void ApplyTelegramUiFromNode(JsonObject? telegramNode)
+        {
+            chkTelegramAlert.IsChecked = telegramNode?["EnableAlertMessages"]?.GetValue<bool?>() ?? true;
+            chkTelegramProfit.IsChecked = telegramNode?["EnableProfitMessages"]?.GetValue<bool?>() ?? true;
+            chkTelegramEntry.IsChecked = telegramNode?["EnableEntryMessages"]?.GetValue<bool?>() ?? true;
+            chkTelegramAiGate.IsChecked = telegramNode?["EnableAiGateMessages"]?.GetValue<bool?>() ?? true;
+            chkTelegramLog.IsChecked = telegramNode?["EnableLogMessages"]?.GetValue<bool?>() ?? true;
         }
 
         private void SelectMajorTrendProfile(string? profile)

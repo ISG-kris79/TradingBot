@@ -9,6 +9,15 @@ using TradingBot.TelegramCommands;
 
 namespace TradingBot
 {
+    public enum TelegramMessageType
+    {
+        Alert,
+        Profit,
+        Entry,
+        AiGate,
+        Log
+    }
+
     public class TelegramService
     {
         // Singleton Instance
@@ -241,10 +250,36 @@ namespace TradingBot
             return true;
         }
 
-        private async Task SendInternalAsync(string text, bool disableNotification = false, string scope = "General")
+        private static bool IsMessageTypeEnabled(TelegramMessageType messageType)
+        {
+            var telegram = AppConfig.Current?.Telegram;
+            if (telegram == null)
+                return true;
+
+            return messageType switch
+            {
+                TelegramMessageType.Alert => telegram.EnableAlertMessages,
+                TelegramMessageType.Profit => telegram.EnableProfitMessages,
+                TelegramMessageType.Entry => telegram.EnableEntryMessages,
+                TelegramMessageType.AiGate => telegram.EnableAiGateMessages,
+                TelegramMessageType.Log => telegram.EnableLogMessages,
+                _ => true
+            };
+        }
+
+        private async Task SendInternalAsync(
+            string text,
+            bool disableNotification = false,
+            string scope = "General",
+            TelegramMessageType messageType = TelegramMessageType.Alert)
         {
             try
             {
+                if (!IsMessageTypeEnabled(messageType))
+                {
+                    return;
+                }
+
                 if (!EnsureTelegramClientReady(scope))
                 {
                     return;
@@ -294,9 +329,9 @@ namespace TradingBot
             }
         }
 
-        public async Task SendMessageAsync(string message)
+        public async Task SendMessageAsync(string message, TelegramMessageType messageType = TelegramMessageType.Alert)
         {
-            await SendInternalAsync($"[TradingBot]\n{message}", false, "General");
+            await SendInternalAsync($"[TradingBot]\n{message}", false, "General", messageType);
         }
         // TradingEngine 내에서 호출 예시
         private async Task ExecutePumpTradeDetailed(string symbol, decimal quantity, decimal entryPrice)
@@ -315,7 +350,7 @@ namespace TradingBot
             string emoji = title.Contains("진입") ? "🚀" : title.Contains("종료") ? "💰" : "📊";
             string message = $"{emoji} *[{title}]*\n\n{body}\n\n⏰ 시각: {DateTime.Now:HH:mm:ss}";
 
-            await SendMessageAsync(message);
+            await SendMessageAsync(message, TelegramMessageType.Alert);
             await Task.Delay(10);
         }
 
@@ -353,7 +388,7 @@ namespace TradingBot
             report += "\n" +
                            $"🕒 _기준 시간: {DateTime.Now:HH:mm:ss}_";
 
-            await SendMessageAsync(report);
+            await SendMessageAsync(report, TelegramMessageType.Profit);
         }
 
         // [추가] 봇 시작 알림
@@ -362,7 +397,7 @@ namespace TradingBot
             string message = $"🤖 *[시스템 알림]*\n\n✅ **트레이딩 봇이 시작되었습니다.**\n" +
                              $"💰 초기 자산: `${initialBalance:N2}`\n" +
                              $"⏰ 시작 시간: {DateTime.Now:yyyy-MM-dd HH:mm:ss}";
-            await SendMessageAsync(message);
+            await SendMessageAsync(message, TelegramMessageType.Alert);
         }
 
         // [Phase 14] 차익거래 기회 알림
@@ -377,7 +412,7 @@ namespace TradingBot
                            $"💵 *수익률*: {profitPercent:F2}%\n" +
                            $"💰 *예상 수익*: ${estimatedProfit:N2}\n\n" +
                            $"⏰ 감지 시간: {DateTime.Now:HH:mm:ss}";
-            await SendMessageAsync(message);
+            await SendMessageAsync(message, TelegramMessageType.Alert);
         }
 
         // [Phase 14] 차익거래 실행 결과 알림
@@ -393,7 +428,7 @@ namespace TradingBot
                   $"🪙 *종목*: {symbol}\n" +
                   $"⚠️ *에러*: {errorMessage}\n" +
                   $"⏰ 실패 시간: {DateTime.Now:HH:mm:ss}";
-            await SendMessageAsync(message);
+            await SendMessageAsync(message, TelegramMessageType.Profit);
         }
 
         // [Phase 14] 자금 이동 알림
@@ -414,7 +449,7 @@ namespace TradingBot
             }
 
             message += $"⏰ 시간: {DateTime.Now:HH:mm:ss}";
-            await SendMessageAsync(message);
+            await SendMessageAsync(message, TelegramMessageType.Alert);
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -639,7 +674,7 @@ namespace TradingBot
                       (snapshot.BlockReasonsOther.Count > 0 ? $"\n\n📌 차단 TOP(기타)\n{topReasonsOther}" : string.Empty);
             }
 
-                 await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 5분 요약]*\n\n{body}", true, "AI관제탑");
+                 await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 5분 요약]*\n\n{body}", true, "AI관제탑", TelegramMessageType.AiGate);
 
                  bool hasApprovedTargets = snapshot.AllowedLongSymbolReasons.Count > 0
                     || snapshot.AllowedShortSymbolReasons.Count > 0
@@ -647,7 +682,7 @@ namespace TradingBot
 
                  if (hasApprovedTargets)
                  {
-                     await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 승인코인 5분 브리핑]*\n\n{approvedOnlyBody}", true, "AI관제탑-승인코인");
+                     await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 승인코인 5분 브리핑]*\n\n{approvedOnlyBody}", true, "AI관제탑-승인코인", TelegramMessageType.AiGate);
                  }
         }
 
@@ -825,7 +860,7 @@ namespace TradingBot
                 lines.Add(string.Empty);
                 lines.Add($"시각: {DateTime.Now:HH:mm:ss}");
 
-                await SendMessageAsync(string.Join("\n", lines));
+                await SendMessageAsync(string.Join("\n", lines), TelegramMessageType.Entry);
             }
             catch (Exception ex)
             {
@@ -848,7 +883,7 @@ namespace TradingBot
                     $" 이제부터는 무적 매매! 져도 본전\n" +
                     $" {DateTime.Now:HH:mm:ss}";
 
-                await SendInternalAsync($"[TradingBot]\n{msg}", true, "BreakEven");
+                await SendInternalAsync($"[TradingBot]\n{msg}", true, "BreakEven", TelegramMessageType.Entry);
             }
             catch (Exception ex)
             {
@@ -873,7 +908,7 @@ namespace TradingBot
                     $" 방어선(ATR 트레일): `{newStop:F4}`\n" +
                     $" {DateTime.Now:HH:mm:ss}";
 
-                await SendInternalAsync($"[TradingBot]\n*[ATR 트레일링 마일스톤]*\n\n{msg}", !isSound, "Trailing");
+                await SendInternalAsync($"[TradingBot]\n*[ATR 트레일링 마일스톤]*\n\n{msg}", !isSound, "Trailing", TelegramMessageType.Entry);
             }
             catch (Exception ex)
             {
@@ -907,7 +942,7 @@ namespace TradingBot
             }
 
             message += $"\n⏰ 완료 시간: {DateTime.Now:HH:mm:ss}";
-            await SendMessageAsync(message);
+            await SendMessageAsync(message, TelegramMessageType.Alert);
         }
     }
 }

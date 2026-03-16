@@ -203,6 +203,11 @@ namespace TradingBot
     {
         public string BotToken { get; set; } = string.Empty;
         public string ChatId { get; set; } = string.Empty;
+        public bool EnableAlertMessages { get; set; } = true;
+        public bool EnableProfitMessages { get; set; } = true;
+        public bool EnableEntryMessages { get; set; } = true;
+        public bool EnableAiGateMessages { get; set; } = true;
+        public bool EnableLogMessages { get; set; } = true;
     }
 
     public class ConnectionStringsSettings

@@ -15,6 +15,22 @@
 
  - 없음
 
+## [2.4.50] - 2026-03-16
+
+### Added
+
+- **텔레그램 메시지 타입별 허용/차단 설정 추가** (`AppConfig.cs`, `SettingsWindow.xaml`, `SettingsWindow.xaml.cs`, `Services/NotificationService.cs`, `TelegramService.cs`, `appsettings.json`):
+  - Settings의 `Telegram Messages` 탭에서 Alert / Profit / Entry / AI Gate / Log 채널별 on/off 제어 지원
+  - 알림 채널을 `TelegramMessageType`으로 매핑해 송신 직전 중앙 필터링 적용
+  - 설정 저장 즉시 런타임(`AppConfig.Current.Telegram`)에 반영되어 재시작 없이 적용
+
+### Changed
+
+- **FAST LOG 백프레셔 가드 추가** (`MainViewModel.cs`):
+  - 라이브 로그 입력 시 DB/라이브 큐 길이 임계치(soft: 700, hard: 1200) 초과를 감지
+  - 주문 오류·게이트·핵심 체결 흐름 로그는 보호하고, 저우선/고빈도 로그만 자동 드롭
+  - 드롭 발생 시 `[PERF][LIVELOG][BACKPRESSURE]` 경고를 주기적으로 남겨 과부하 상태 추적 가능
+
 ## [2.4.49] - 2026-03-15
 
 ### Added

@@ -1,4 +1,4 @@
-using Binance.Net.Clients;
+﻿using Binance.Net.Clients;
 using Binance.Net.Enums;
 using Binance.Net.Interfaces;
 using Binance.Net.Interfaces.Clients;
@@ -5012,6 +5012,9 @@ namespace TradingBot
             List<IBinanceKline>? recentEntryKlines =
                 (await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 140, token))?.ToList();
 
+            var hsKlines = (await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 80, token))?.ToList();
+            var hsResult = HeadAndShouldersDetector.DetectPattern(hsKlines ?? new List<IBinanceKline>(), 70);
+
             var bandwidthGate = EvaluateBandwidthGate(symbol, decision, signalSource, currentPrice, latestCandle, recentEntryKlines);
             if (bandwidthGate.Blocked)
             {
@@ -5097,15 +5100,31 @@ namespace TradingBot
                         && isBbCenterSupport
                         && blendedMlTfScore >= 0.80f;
 
-                    if (!canScoutBypass)
+                    bool isHSPatternBypass = false;
+                    string hsBypassReason = "";
+
+                    if (decision == "SHORT" && hsResult.IsDetected && hsResult.PatternType == "H&S" && gateResult.detail.TF_Confidence >= 0.90f)
+                    {
+                        isHSPatternBypass = true;
+                        hsBypassReason = "HSPattern_Short_TF90";
+                    }
+                    else if (decision == "LONG" && hsResult.IsDetected && hsResult.PatternType == "InverseH&S")
+                    {
+                        isHSPatternBypass = true;
+                        hsBypassReason = "InverseHSPattern_Long";
+                    }
+
+                    if (!canScoutBypass && !isHSPatternBypass)
                     {
                         return;
                     }
 
                     scoutModeActivated = true;
-                    decimal scoutMultiplier = 0.30m;
+                    decimal scoutMultiplier = isHSPatternBypass ? 1.0m : 0.30m;
                     manualSizeMultiplier = Math.Min(manualSizeMultiplier, scoutMultiplier);
-                    signalSource = $"{signalSource}_SCOUT";
+                    signalSource = isHSPatternBypass
+                        ? $"{signalSource}_SCOUT_{hsBypassReason}"
+                        : $"{signalSource}_SCOUT";
                     flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
 
                     EntryLog(

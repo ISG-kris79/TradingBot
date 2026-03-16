@@ -24,7 +24,7 @@ namespace TradingBot.Services
         public async Task NotifyAsync(string message, NotificationChannel channel = NotificationChannel.Log, bool includePush = false)
         {
             // 1. Telegram (기본 채널)
-            await TelegramService.Instance.SendMessageAsync(message);
+            await TelegramService.Instance.SendMessageAsync(message, MapChannel(channel));
 
             // 2. FCM Push (선택적)
             if (includePush)
@@ -47,11 +47,21 @@ namespace TradingBot.Services
                            $"⏰ *시각*: {DateTime.Now:yyyy-MM-dd HH:mm:ss}";
             
             // Telegram 전송
-            await TelegramService.Instance.SendMessageAsync(message);
+            await TelegramService.Instance.SendMessageAsync(message, TelegramMessageType.Profit);
 
             // Push 전송
             string pushTitle = pnl >= 0 ? "💰 익절 완료!" : "📉 손절 완료";
             await SendPushNotificationAsync(pushTitle, $"{symbol}: {pnl:F2} USDT ({pnlPercent:F2}%)");
+        }
+
+        private static TelegramMessageType MapChannel(NotificationChannel channel)
+        {
+            return channel switch
+            {
+                NotificationChannel.Profit => TelegramMessageType.Profit,
+                NotificationChannel.Log => TelegramMessageType.Log,
+                _ => TelegramMessageType.Alert
+            };
         }
 
         public async Task SendPushNotificationAsync(string title, string body, string topic = "all")

@@ -70,6 +70,9 @@ namespace TradingBot.ViewModels
         private const int MaxUiWorkBudgetMsPerTick = 6;      // [병목 해결] 8→6ms (UI 스레드 여유 확보)
         private const int MaxAlertBatchPerTick = 20;
         private const int MaxUiAlertCount = 100;
+        private const int LiveLogBackpressureSoftThreshold = 700;
+        private const int LiveLogBackpressureHardThreshold = 1200;
+        private const int LiveLogBackpressureNoticeIntervalSec = 10;
         private static readonly TimeSpan ActivePnlChartRefreshInterval = TimeSpan.FromSeconds(5); // [병목 해결] 3초→5초
         private DateTime _lastActivePnlChartRefresh = DateTime.MinValue;
         private readonly ConcurrentQueue<string> _pendingAlerts = new();
@@ -97,6 +100,8 @@ namespace TradingBot.ViewModels
         private int _liveLogFlushMaxMs;
         private int _liveLogQueueHighWater;
         private int _liveLogDbQueueHighWater;
+        private int _liveLogBackpressureDropped;
+        private DateTime _nextLiveLogBackpressureNoticeUtc = DateTime.MinValue;
         private MultiTimeframeViewModel? _observedBattleSymbol;
         private decimal _battleLastObservedPrice;
         private bool _battleHasLastPrice;
@@ -2083,6 +2088,9 @@ namespace TradingBot.ViewModels
             var symbol = symbolMatch.Success ? symbolMatch.Groups[1].Value : null;
             bool persistToDb = ShouldPersistLiveLog(localizedMessage);
 
+            if (TryDropLowPriorityLiveLogByBackpressure(msg, localizedMessage, category, persistToDb))
+                return;
+
             RunOnUI(() => PushBattleFastLog(compactMessage));
 
             if (persistToDb && _dbService != null)
@@ -2099,6 +2107,54 @@ namespace TradingBot.ViewModels
             {
                 RunOnUI(() => UpdateGateDashboardFromLog(msg, string.Empty));
             }
+        }
+
+        private bool TryDropLowPriorityLiveLogByBackpressure(
+            string rawMessage,
+            string localizedMessage,
+            string category,
+            bool persistToDb)
+        {
+            int queueDepth = Math.Max(_pendingLiveLogDbWrites.Count, _pendingLiveLogs.Count);
+            if (queueDepth < LiveLogBackpressureSoftThreshold)
+                return false;
+
+            if (IsGateLog(rawMessage) || IsOrderErrorLog(rawMessage) || IsEssentialTradeFlowLog(rawMessage))
+                return false;
+
+            bool isNoise = IsLiveLogNoise(localizedMessage);
+            bool isHighFrequency = IsHighFrequencyIngressLog(localizedMessage);
+            bool isPumpCategory = string.Equals(category, "PUMP", StringComparison.OrdinalIgnoreCase);
+
+            if (queueDepth >= LiveLogBackpressureHardThreshold)
+            {
+                if (isNoise || isHighFrequency || isPumpCategory || !persistToDb)
+                {
+                    RecordLiveLogBackpressureDrop(queueDepth, "hard");
+                    return true;
+                }
+
+                return false;
+            }
+
+            if (isNoise || (isHighFrequency && !persistToDb))
+            {
+                RecordLiveLogBackpressureDrop(queueDepth, "soft");
+                return true;
+            }
+
+            return false;
+        }
+
+        private void RecordLiveLogBackpressureDrop(int queueDepth, string mode)
+        {
+            int dropped = Interlocked.Increment(ref _liveLogBackpressureDropped);
+            var nowUtc = DateTime.UtcNow;
+            if (nowUtc < _nextLiveLogBackpressureNoticeUtc)
+                return;
+
+            _nextLiveLogBackpressureNoticeUtc = nowUtc.AddSeconds(LiveLogBackpressureNoticeIntervalSec);
+            LoggerService.Warning($"[PERF][LIVELOG][BACKPRESSURE] mode={mode} queueDepth={queueDepth} dropped={dropped}");
         }
 
         private void InitializeLiveLogPipeline()

@@ -154,6 +154,7 @@ namespace TradingBot.Services
             double maxHoldingMinutes = 120.0;
             decimal timeoutExitRoeThreshold = 10.0m;
             DateTime nextAiRecheckTime = DateTime.Now.AddMinutes(60);
+            DateTime nextHSCheckTime = DateTime.Now.AddMinutes(1);
             bool squeezeDefenseReduced = false;
             double squeezeDefenseMinutes = 90.0;
             decimal squeezeDefenseMaxRoe = 8.0m;
@@ -428,6 +429,39 @@ namespace TradingBot.Services
 
                         OnLog?.Invoke($"🧠 [AI 재검증 유지] {symbol} {aiRecheckReason}");
                         nextAiRecheckTime = DateTime.Now.AddMinutes(60);
+                    }
+
+                    if (DateTime.Now >= nextHSCheckTime)
+                    {
+                        try
+                        {
+                            var hsKlines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 80, token);
+                            if (hsKlines != null && hsKlines.Count >= 70)
+                            {
+                                var hsResult = HeadAndShouldersDetector.DetectPattern(hsKlines.ToList(), 70);
+                                if (hsResult.IsDetected)
+                                {
+                                    if (isLong && hsResult.PatternType == "H&S")
+                                    {
+                                        OnLog?.Invoke($"🚨 [패턴 손절] {symbol} {hsResult.Message} -> 롱 포지션 즉시 청산");
+                                        await ExecuteMarketClose(symbol, "H&S Pattern Panic Exit", token);
+                                        break;
+                                    }
+
+                                    if (!isLong && hsResult.PatternType == "InverseH&S")
+                                    {
+                                        OnLog?.Invoke($"🔥 [패턴 손절] {symbol} {hsResult.Message} -> 숏 포지션 즉시 청산");
+                                        await ExecuteMarketClose(symbol, "Inverse H&S Pattern Panic Exit", token);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        catch
+                        {
+                        }
+
+                        nextHSCheckTime = DateTime.Now.AddMinutes(1);
                     }
 
                     if (!timeDecayBreakevenApplied && holdingTime.TotalMinutes >= timeDecayBreakevenMinutes)
