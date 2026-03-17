@@ -58,6 +58,12 @@ namespace TradingBot
         private const int MAX_PUMP_SLOTS = 1;         // PUMP(밈) 최대 1개 (리스크 축소)
         private const decimal PUMP_FIXED_MARGIN_USDT = 100m; // PUMP/밈 코인 고정 증거금
         private const int PUMP_MANUAL_LEVERAGE = 20; // 20배 롱 전용 대응 매뉴얼
+        
+        // [NEW 개선안 2] SLOT 쿨다운 추적: SLOT 차단된 심볼의 재시도 시간제한
+        private readonly ConcurrentDictionary<string, DateTime> _slotBlockedSymbols = 
+            new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        private int _slotCooldownMinutes = 10; // 설정값: 5~15분 권장, 표준 10분
+        
         private const int SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 1000;
         private const int MAJOR_SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 180;
         private static readonly TimeSpan MainLoopInterval = TimeSpan.FromSeconds(1);
@@ -5334,6 +5340,125 @@ namespace TradingBot
             }, token);
         }
 
+        // ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+        // [개선안 1~3] SLOT 최적화 헬퍼 메서드들
+        // ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+        
+        /// <summary>
+        /// [개선안 2] SLOT 쿨다운 체크: 최근 SLOT 차단된 심볼은 재시도 금지
+        /// </summary>
+        private bool IsSymbolInSlotCooldown(string symbol, out int remainingSeconds)
+        {
+            remainingSeconds = 0;
+            
+            if (_slotBlockedSymbols.TryGetValue(symbol, out var blockTime))
+            {
+                var elapsed = DateTime.Now - blockTime;
+                if (elapsed.TotalMinutes < _slotCooldownMinutes)
+                {
+                    remainingSeconds = (int)((_slotCooldownMinutes * 60) - elapsed.TotalSeconds);
+                    return true;
+                }
+                else
+                {
+                    // 쿨다운 만료 → 제거
+                    _slotBlockedSymbols.TryRemove(symbol, out _);
+                }
+            }
+            
+            return false;
+        }
+        
+        /// <summary>
+        /// [개선안 2] SLOT 차단 기록: 향후 쿨다운 적용
+        /// </summary>
+        private void RecordSlotBlockage(string symbol)
+        {
+            _slotBlockedSymbols[symbol] = DateTime.Now;
+        }
+        
+        /// <summary>
+        /// [개선안 3] 동적 슬롯: 시간대별 신호 빈도에 맞춰 총 슬롯 탄력 조정
+        /// 예: 18시~04시 UTC (멤풀 활동 저조) → 4 슬롯
+        ///     04시~10시 UTC (아시아 시장) → 5 슬롯  
+        ///     10시~18시 UTC (유럽/미국 고빈도) → 6 슬롯 (표준)
+        /// </summary>
+        private int GetDynamicMaxTotalSlots()
+        {
+            var nowUtc = DateTime.UtcNow;
+            int hourUtc = nowUtc.Hour;
+
+            if (hourUtc >= 18 || hourUtc < 4)  // 18시~04시 UTC: 저활동
+                return (int)(MAX_TOTAL_SLOTS * 0.67); // 6 → 4 슬롯
+
+            if (hourUtc >= 4 && hourUtc < 10)  // 04시~10시 UTC: 중간 활동
+                return (int)(MAX_TOTAL_SLOTS * 0.83); // 6 → 5 슬롯
+
+            return MAX_TOTAL_SLOTS; // 10시~18시: 최대 6 슬롯
+        }
+        
+        /// <summary>
+        /// [개선안 3] 동적 PUMP 슬롯: 시간대별로 PUMP 신호 허용 여부 조정
+        /// PUMP는 보수적: 18시~06시 UTC는 0으로 축소 (PUMP 신호 거의 없음)
+        /// </summary>
+        private int GetDynamicMaxPumpSlots()
+        {
+            var nowUtc = DateTime.UtcNow;
+            int hourUtc = nowUtc.Hour;
+
+            // PUMP는 보수적: 18시~06시는 0으로 축소
+            if (hourUtc >= 18 || hourUtc < 6)
+                return 0; // PUMP 신호 금지 시간대
+
+            return MAX_PUMP_SLOTS; // 06시~18시만 1개 허용
+        }
+        
+        /// <summary>
+        /// [개선안 1] 현재 SLOT 여유도 및 심볼별 진입 가능 여부 판단
+        /// </summary>
+        private (bool canEnter, string reason) CanAcceptNewEntry(string symbol)
+        {
+            lock (_posLock)
+            {
+                bool isMajorSymbol = MajorSymbols.Contains(symbol);
+                int totalPositions = _activePositions.Count;
+                int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
+                int pumpCount = totalPositions - majorCount;
+
+                // [동적 슬롯 적용] 시간대별 탄력 조정
+                int maxTotal = GetDynamicMaxTotalSlots();
+                int maxPump = GetDynamicMaxPumpSlots();
+                int maxMajor = MAX_MAJOR_SLOTS; // 메이저는 시간대 무관
+
+                // [1] 총 포화 체크 (최우선)
+                if (totalPositions >= maxTotal)
+                    return (false, $"total={totalPositions}/{maxTotal}(dynamic)");
+
+                // [2] 메이저/PUMP 분리 체크
+                if (isMajorSymbol && majorCount >= maxMajor)
+                    return (false, $"major={majorCount}/{maxMajor}");
+
+                if (!isMajorSymbol && pumpCount >= maxPump)
+                    return (false, $"pump={pumpCount}/{maxPump}(dynamic h={DateTime.UtcNow.Hour})");
+
+                return (true, "OK");
+            }
+        }
+        
+        /// <summary>
+        /// [개선안 1] Scan 단계 스킵 판정: SLOT이 거의 찬 상태면 신호 생성 자체 스킵
+        /// </summary>
+        private bool ShouldSkipScanDueToSlotPressure()
+        {
+            lock (_posLock)
+            {
+                int totalPositions = _activePositions.Count;
+                int maxTotal = GetDynamicMaxTotalSlots();
+                // 동적 TOTAL의 80% 이상이면 스캔 스킵
+                return totalPositions >= (int)(maxTotal * 0.83);
+            }
+        }
+
         /// <summary>
         /// 자동 매매 실행 메인 메서드
         /// </summary>
@@ -5626,36 +5751,56 @@ namespace TradingBot
                 }
             }
 
-            // ═══════════════════════════════════════════════════════════════
-            // [슬롯 제한 검증] 기본 5개 (메이저 최대 4개 + PUMP 최대 1개) → 메이저 우선 배분
-            // ═══════════════════════════════════════════════════════════════
+            // ═══════════════════════════════════════════════════════════════════════════════
+            // [개선안 2] SLOT 쿨다운 체크: 최근 차단된 심볼은 재시도 금지
+            // ═══════════════════════════════════════════════════════════════════════════════
+            if (IsSymbolInSlotCooldown(symbol, out int slotCooldownRemaining))
+            {
+                OnStatusLog?.Invoke($"⏳ [SLOT_COOLDOWN] {symbol} 재시도 쿨다운 중 ({slotCooldownRemaining}초 남음) → 진입 차단");
+                EntryLog("SLOT_COOLDOWN", "BLOCK", $"cooldownRemain={slotCooldownRemaining}s");
+                return;
+            }
+
+            // ═══════════════════════════════════════════════════════════════════════════════
+            // [개선안 3 + 기본] SLOT 제한 검증: 동적 슬롯 적용 (시간대별 탄력)
+            // [메이저 최대 4개 + PUMP 최대 1개(또는 동적 0) = 총 6개(또는 동적 4~5)] → 메이저 우선 배분
+            // ═══════════════════════════════════════════════════════════════════════════════
             lock (_posLock)
             {
                 bool isMajorSymbol = MajorSymbols.Contains(symbol);
                 int totalPositions = _activePositions.Count;
                 int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
-
-                // [수정] 메이저 최대 4개, PUMP 최대 1개, 총 5개 체크
                 int pumpCount = totalPositions - majorCount;
+
+                // [동적 슬롯 적용]
+                int maxTotal = GetDynamicMaxTotalSlots();
+                int maxPump = GetDynamicMaxPumpSlots();
+                int maxMajor = MAX_MAJOR_SLOTS; // 메이저는 시간대 무관
                 
-                if (isMajorSymbol && majorCount >= MAX_MAJOR_SLOTS)
+                if (isMajorSymbol && majorCount >= maxMajor)
                 {
-                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 메이저 포화 ({majorCount}/{MAX_MAJOR_SLOTS}) → 진입 차단");
-                    EntryLog("SLOT", "BLOCK", $"major={majorCount}/{MAX_MAJOR_SLOTS}");
+                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 메이저 포화 ({majorCount}/{maxMajor}) → 진입 차단");
+                    EntryLog("SLOT", "BLOCK", $"major={majorCount}/{maxMajor}");
+                    RecordSlotBlockage(symbol);
                     return;
                 }
                 
-                if (!isMajorSymbol && pumpCount >= MAX_PUMP_SLOTS)
+                if (!isMajorSymbol && pumpCount >= maxPump)
                 {
-                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} PUMP 포화 ({pumpCount}/{MAX_PUMP_SLOTS}) → 진입 차단");
-                    EntryLog("SLOT", "BLOCK", $"pump={pumpCount}/{MAX_PUMP_SLOTS}");
+                    string pumpStatus = maxPump == 0 
+                        ? $"PUMP 금지시간대 (UTC={DateTime.UtcNow.Hour}h)" 
+                        : $"PUMP 포화 ({pumpCount}/{maxPump})";
+                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} {pumpStatus} → 진입 차단");
+                    EntryLog("SLOT", "BLOCK", $"pump={pumpCount}/{maxPump} utc_hour={DateTime.UtcNow.Hour}");
+                    RecordSlotBlockage(symbol);
                     return;
                 }
                 
-                if (totalPositions >= MAX_TOTAL_SLOTS)
+                if (totalPositions >= maxTotal)
                 {
-                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 총 포화 ({totalPositions}/{MAX_TOTAL_SLOTS}) → 진입 차단");
-                    EntryLog("SLOT", "BLOCK", $"total={totalPositions}/{MAX_TOTAL_SLOTS}");
+                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 총 포화 ({totalPositions}/{maxTotal}) → 진입 차단");
+                    EntryLog("SLOT", "BLOCK", $"total={totalPositions}/{maxTotal}");
+                    RecordSlotBlockage(symbol);
                     return;
                 }
             }

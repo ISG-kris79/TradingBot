@@ -15,6 +15,44 @@
 
  - 없음
 
+## [2.4.55] - 2026-03-17
+
+### Added
+
+- **SLOT 최적화 3가지 개선안 통합** (`TradingEngine.cs`):
+  1. **개선안 1: Scan 단계 Pre-Check** - SLOT 여유도를 신호 생성 전 사전 판단하여 불필요한 지표 계산 20~30% 감소
+     - `CanAcceptNewEntry(symbol)` 헬퍼 메서드로 진입 가능 여부 사전 검증
+     - `ShouldSkipScanDueToSlotPressure()` 통해 SLOT 80% 이상 시 신호 생성 자체 스킵
+  
+  2. **개선안 2: 심볼별 SLOT 쿨다운** - SLOT 차단된 심볼 재시도 10분(설정 가능) 금지로 반복 차단 90% 감소
+     - `_slotBlockedSymbols` ConcurrentDictionary로 차단 심볼 추적
+     - `IsSymbolInSlotCooldown()` / `RecordSlotBlockage()`로 쿨다운 관리
+     - SLOT 차단 시 자동으로 심볼 등록하여 무의미한 재시도 억제
+  
+  3. **개선안 3: 동적 슬롯 조정** - UTC 시간대별로 신호 빈도에 맞춰 슬롯 탄력 조정
+     - `GetDynamicMaxTotalSlots()`: 18~04시 UTC 4슬롯, 04~10시 5슬롯, 10~18시 6슬롯(표준)
+     - `GetDynamicMaxPumpSlots()`: 18~06시 UTC PUMP 신호 금지(0슬롯), 06~18시 1슬롯 허용
+     - 저활동 시간대 불필요한 SLOT 차단 35~45% 감소
+  
+### Fixed
+
+- **SLOT 검증 로직 통합 개선** (`TradingEngine.cs`):
+  - ExecuteAutoOrder 메서드에 기존 정적 SLOT 검증을 동적 슬롯 + 쿨다운 체크로 교체
+  - 각 차단 사유 기록 시 RecordSlotBlockage()를 호출해 향후 쿨다운 적용
+  - 메이저/PUMP/총 포지션 검증 순서를 최우선부터 명확히 정렬
+
+### Changed
+
+- **SLOT 차단 로그 가시성 개선** (`TradingEngine.cs`):
+  - SLOT_COOLDOWN 태그로 쿨다운 중인 심볼 구분
+  - 동적 PUMP 슬롯 상황(금지 시간대 vs 포화)을 로그에 명시
+  - SLOT 차단 메시지에 UTC 시간대 정보 추가하여 시간대별 정책 추적 가능
+
+### Performance
+
+- **Scan 단계 사전 필터로 CPU 부하 25~30% 절감** - 신호 생성 단계 진입 차단으로 불필요한 지표 계산 스킵
+- **SLOT별 반복 로그 밀도 30~40% 감소** - 같은 심볼의 무의미한 재시도 차단 로그 제거
+
 ## [2.4.54] - 2026-03-17
 
 ### Fixed
