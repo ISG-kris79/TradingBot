@@ -55,6 +55,17 @@ namespace TradingBot
             => throw new NotImplementedException();
     }
 
+    /// <summary>
+    /// null 또는 빈 문자열이면 Collapsed, 값이 있으면 Visible 반환
+    /// </summary>
+    public class NullToCollapsedConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+            => string.IsNullOrWhiteSpace(value?.ToString()) ? Visibility.Collapsed : Visibility.Visible;
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
     public class InvertBooleanConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
@@ -226,6 +237,23 @@ namespace TradingBot
         }
 
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    /// <summary>
+    /// Bull/Bear 파워 게이지 바 너비 계산: percent(0~100) × containerWidth / 100
+    /// </summary>
+    public class PercentageWidthConverter : IMultiValueConverter
+    {
+        public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (values.Length < 2) return 0d;
+            if (!double.TryParse(values[0]?.ToString(), out double pct)) pct = 0;
+            if (!double.TryParse(values[1]?.ToString(), out double totalWidth)) totalWidth = 0;
+            return Math.Max(0, totalWidth * pct / 100.0);
+        }
+
+        public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture)
             => throw new NotImplementedException();
     }
 }

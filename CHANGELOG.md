@@ -15,6 +15,40 @@
 
  - 없음
 
+## [2.4.56] - 2026-03-19
+
+### Added
+
+- **펀딩비 누적 모니터링** (`PositionMonitorService.cs`):
+  - 2시간 초과 보유 포지션에 대해 펀딩비 자동 추정 및 실질ROE 계산
+  - 추정 누적 펀딩비 = (보유시간h / 8h) × 0.01%/8h × 레버리지 × 100
+  - 트레일링 미진입 상태에서 실질ROE < 3% 시 자동 청산 (`FundingCost Exit`)
+  - 30분마다 `💸 펀딩비 추적` 로그 출력으로 현황 모니터링 가능
+
+### Changed
+
+- **메인 UI 중앙 패널 전면 개편** (`MainWindow.xaml`):
+  - 기존 3컬럼 배틀패널 → 코인 진입/포지션 중심 레이아웃으로 재설계
+  - 콕핏 스트립 (76px): AI STATUS | THE PULSE | GOLDEN ZONE | ATR STOP | TREND-RIDER 5개 섹션 가로 배치
+  - 메인 영역 좌우 분할: 데이터그리드(좌, *) + 이벤트/익절/스텝퍼 패널(우, 260px)
+  - 데이터그리드 진입중 행 초록 배경 (`#081A0F`) 강조 표시 추가
+
+- **데이터그리드 컬럼 개편** (`MainWindow.xaml`):
+  - SYMBOL: 전략 배지(`Major Scalp` / `Pump Breakout`) + LONG/SHORT 컬러 pill 추가
+  - `ML│TF` → `AI SCORE`: AIScore 대형 표시 + ML%/TF% 소형 표시로 가독성 향상
+  - ROI: `+/-` 부호 명시 포맷 (`+12.50%` / `-3.20%`)으로 변경
+  - STATUS: AI 점수 업데이트 시각(HH:mm:ss) 하단 표시 추가
+  - `RISK (SL/TP)` → `SL / TP` 헤더 단축
+
+- **트레일링 Floor ROE 강화** (`PositionMonitorService.cs`):
+  - 일반 메이저 (BTC 포함): 트레일링 최소 ROE 유지선 +8% → **+12%**
+  - ETH/XRP/SOL (ATR 2.0): +4% → **+6%**
+  - 트레일링 구간 역전 시 수익 반납 최소화
+
+- **Stage 2 부분익절 비율 상향** (`PositionMonitorService.cs`):
+  - 1차 확정 익절 비율 30% → **40%**
+  - ROE +20% (BTC/메이저) / +30% (ETH/XRP/SOL) 도달 시 포지션 40% 즉시 확정
+
 ## [2.4.55] - 2026-03-17
 
 ### Added
