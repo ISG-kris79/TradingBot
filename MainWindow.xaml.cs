@@ -142,7 +142,7 @@ namespace TradingBot
 
             Instance?.ViewModel?.UpdateMajorProfileStatus(CurrentGeneralSettings.MajorTrendProfile);
 
-            Instance?.AddLog($"[GeneralSettings] ✅ 런타임 적용 완료 | [MAJOR] Leverage:{CurrentGeneralSettings.MajorLeverage}x Margin:{CurrentGeneralSettings.MajorMargin:F0} SL:{CurrentGeneralSettings.MajorStopLossRoe:F0}% BE:{CurrentGeneralSettings.MajorBreakEvenRoe:F1}% Tp1:{CurrentGeneralSettings.MajorTp1Roe:F0}% Tp2:{CurrentGeneralSettings.MajorTp2Roe:F0}% Trail:{CurrentGeneralSettings.MajorTrailingStartRoe:F0}%/{CurrentGeneralSettings.MajorTrailingGapRoe:F1}% | [PUMP] SL:{CurrentGeneralSettings.PumpStopLossRoe:F0}% BE:{CurrentGeneralSettings.PumpBreakEvenRoe:F0}% Tp1:{CurrentGeneralSettings.PumpTp1Roe:F0}% Tp2:{CurrentGeneralSettings.PumpTp2Roe:F0}% Trail:{CurrentGeneralSettings.PumpTrailingStartRoe:F0}%/{CurrentGeneralSettings.PumpTrailingGapRoe:F0}% 1차익절비중:{CurrentGeneralSettings.PumpFirstTakeProfitRatioPct:F1}% 계단:{CurrentGeneralSettings.PumpStairStep1Roe:F0}/{CurrentGeneralSettings.PumpStairStep2Roe:F0}/{CurrentGeneralSettings.PumpStairStep3Roe:F0}%");
+            Instance?.AddLog($"[GeneralSettings] ✅ 런타임 적용 완료 | [MAJOR] Leverage:{CurrentGeneralSettings.MajorLeverage}x MarginPct:{CurrentGeneralSettings.MajorMarginPercent:F1}% SL:{CurrentGeneralSettings.MajorStopLossRoe:F0}% BE:{CurrentGeneralSettings.MajorBreakEvenRoe:F1}% Tp1:{CurrentGeneralSettings.MajorTp1Roe:F0}% Tp2:{CurrentGeneralSettings.MajorTp2Roe:F0}% Trail:{CurrentGeneralSettings.MajorTrailingStartRoe:F0}%/{CurrentGeneralSettings.MajorTrailingGapRoe:F1}% | [PUMP] Margin:{CurrentGeneralSettings.PumpMargin:F0} SL:{CurrentGeneralSettings.PumpStopLossRoe:F0}% BE:{CurrentGeneralSettings.PumpBreakEvenRoe:F0}% Tp1:{CurrentGeneralSettings.PumpTp1Roe:F0}% Tp2:{CurrentGeneralSettings.PumpTp2Roe:F0}% Trail:{CurrentGeneralSettings.PumpTrailingStartRoe:F0}%/{CurrentGeneralSettings.PumpTrailingGapRoe:F0}% 1차익절비중:{CurrentGeneralSettings.PumpFirstTakeProfitRatioPct:F1}% 계단:{CurrentGeneralSettings.PumpStairStep1Roe:F0}/{CurrentGeneralSettings.PumpStairStep2Roe:F0}/{CurrentGeneralSettings.PumpStairStep3Roe:F0}%");
         }
 
         private static void CopyTradingSettings(TradingSettings target, TradingSettings source)
@@ -174,6 +174,7 @@ namespace TradingBot
             // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정
             target.MajorLeverage = source.MajorLeverage;
             target.MajorMargin = source.MajorMargin;
+            target.MajorMarginPercent = source.MajorMarginPercent;
             target.MajorBreakEvenRoe = source.MajorBreakEvenRoe;
             target.MajorTp1Roe = source.MajorTp1Roe;
             target.MajorTp2Roe = source.MajorTp2Roe;
@@ -196,6 +197,17 @@ namespace TradingBot
             // ViewModel 먼저 초기화 (AddLog에서 사용되므로)
             ViewModel = new MainViewModel();
             this.DataContext = ViewModel;
+
+            // [AI Command Center] 게이지 갱신 구독
+            ViewModel.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName is nameof(ViewModel.AiCmdConfidence)
+                                    or nameof(ViewModel.AiCmdDirection)
+                                    or nameof(ViewModel.Tf15mStatus))
+                {
+                    RefreshAiCommandCenter();
+                }
+            };
 
             // 트레이 아이콘 초기화 (ViewModel 이후에 호출)
             InitializeTrayIcon();
@@ -1430,5 +1442,131 @@ namespace TradingBot
         }
 
         #endregion
+
+        // ══════════════════════════════════════════════════════════
+        // [AI Command Center] 원형 게이지 + 애니메이션 코드비하인드
+        // ══════════════════════════════════════════════════════════
+
+        private bool _sniperBlinkRunning;
+        private bool _cyanGlowRunning;
+        private bool _redNeonRunning;
+
+        /// <summary>
+        /// ViewModel이 UpdateAiCommandState를 호출한 뒤 UI를 갱신합니다.
+        /// MainViewModel에서 DataContext 바인딩 후 PropertyChanged 이벤트로 호출되거나
+        /// ViewModel.AiCmdConfidence setter에서 직접 호출합니다.
+        /// </summary>
+        private void RefreshAiCommandCenter()
+        {
+            if (!CheckAccess())
+            {
+                Dispatcher.BeginInvoke(RefreshAiCommandCenter);
+                return;
+            }
+
+            var vm = ViewModel;
+            if (vm == null) return;
+
+            // 1. 원형 게이지 Arc 업데이트
+            if (pathConfidenceArc != null)
+            {
+                double score = vm.AiCmdConfidence;
+                pathConfidenceArc.Data = BuildArcGeometry(score, 85.0, 85.0, 71.0);
+
+                var arcColor = score >= 85 ? Color.FromRgb(0, 229, 255)
+                             : score >= 65 ? Color.FromRgb(255, 179, 0)
+                             :               Color.FromRgb(68, 68, 68);
+                pathConfidenceArc.Stroke = new SolidColorBrush(arcColor);
+
+                if (arcGlowEffect != null)
+                {
+                    arcGlowEffect.Color   = arcColor;
+                    arcGlowEffect.Opacity = score >= 65 ? 0.8 : 0.2;
+                }
+            }
+
+            // 2. FIRE 표시 토글
+            if (txtSniperFire != null)
+                txtSniperFire.Visibility = vm.Tf15mStatus == "FIRE" ? Visibility.Visible : Visibility.Collapsed;
+
+            // 2b. READY TO SHOOT 점멸 애니메이션
+            bool shouldBlink = vm.IsSniperReady;
+            if (shouldBlink && !_sniperBlinkRunning)
+            {
+                _sniperBlinkRunning = true;
+                var sb = (Storyboard?)TryFindResource("SniperBlinkStoryboard");
+                sb?.Begin(this, true);
+            }
+            else if (!shouldBlink && _sniperBlinkRunning)
+            {
+                _sniperBlinkRunning = false;
+                var sb = (Storyboard?)TryFindResource("SniperBlinkStoryboard");
+                sb?.Stop(this);
+                if (txtSniperReady != null) txtSniperReady.Opacity = 1.0;
+            }
+
+            // 3. Cyan Glow 애니메이션 (고신뢰도)
+            bool shouldCyan = vm.AiCmdIsHighConfidence;
+            if (shouldCyan && !_cyanGlowRunning)
+            {
+                _cyanGlowRunning = true;
+                var sb = (Storyboard?)TryFindResource("CyanGlowPulse");
+                sb?.Begin(this, true);
+            }
+            else if (!shouldCyan && _cyanGlowRunning)
+            {
+                _cyanGlowRunning = false;
+                var sb = (Storyboard?)TryFindResource("CyanGlowPulse");
+                sb?.Stop(this);
+            }
+
+            // 4. Red Neon border 애니메이션 (SHORT 포착)
+            bool shouldRed = vm.IsShortOpportunity;
+            if (shouldRed && !_redNeonRunning)
+            {
+                _redNeonRunning = true;
+                var sb = (Storyboard?)TryFindResource("RedNeonStoryboard");
+                sb?.Begin(this, true);
+            }
+            else if (!shouldRed && _redNeonRunning)
+            {
+                _redNeonRunning = false;
+                var sb = (Storyboard?)TryFindResource("RedNeonStoryboard");
+                sb?.Stop(this);
+            }
+        }
+
+        /// <summary>원형 Arc PathGeometry 생성 (ScoreToArcGeometryConverter와 동일 로직)</summary>
+        private static Geometry BuildArcGeometry(double score, double cx, double cy, double r)
+        {
+            score = Math.Clamp(score, 0, 100);
+            if (score <= 0) return Geometry.Empty;
+
+            double sweepAngle = Math.Min(359.99, score / 100.0 * 360.0);
+            Point PointAt(double deg)
+            {
+                double rad = deg * Math.PI / 180.0;
+                return new Point(cx + r * Math.Cos(rad), cy + r * Math.Sin(rad));
+            }
+
+            const double start = -90.0;
+            var figure = new PathFigure
+            {
+                StartPoint = PointAt(start),
+                IsClosed   = false,
+                IsFilled   = false
+            };
+            figure.Segments.Add(new ArcSegment
+            {
+                Point          = PointAt(start + sweepAngle),
+                Size           = new Size(r, r),
+                IsLargeArc     = sweepAngle >= 180.0,
+                SweepDirection = SweepDirection.Clockwise
+            });
+            var geo = new PathGeometry();
+            geo.Figures.Add(figure);
+            geo.Freeze();
+            return geo;
+        }
     }
 }

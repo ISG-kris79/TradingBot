@@ -15,6 +15,37 @@
 
  - 없음
 
+## [2.5.1] - 2026-03-20
+
+### Added
+
+- **AI Sniper Exit -> PositionMonitorService 실시간 연결**:
+  - 30초 주기로 SniperExit ML 모델 호출하여 구조적 손절 판단
+  - 개미 털기 감지: 볼륨 없는 하락 -> HOLD (고정 손절 방지)
+  - 매도압력 급증 감지: 체결 강도 비정상 -> 긴급 청산
+  - 추세 강세/약화 판단: 트레일링 갭 자동 확대/축소
+  - 부분익절 자동 실행 (ML 확신도 65%+ 시)
+
+- **백그라운드 자동 AI 학습**:
+  - 엔진 시작시 AI 의사결정 모델 미준비 감지 -> 자동 학습 트리거
+  - AIBacktestEngine 백그라운드 실행 (UI 블로킹 없음)
+  - 학습 완료 후 모델 자동 재로드
+
+- **Entry Pipeline UI 패널** (AI Command Center 탭):
+  - Block Reason: 진입 차단 사유 빨간 글씨 실시간 표시
+  - 1M Volume Gauge: 1분봉 거래량 진행바 (진입 조건 시각화)
+  - Daily Profit Target: 일일 목표 $250 대비 현재 수익 진행바
+
+### Changed
+
+- **시뮬레이션 모드 UX 개선**:
+  - 설정 저장시 "앱 재시작 불필요" 안내 메시지로 변경
+  - Stop -> Start만으로 시뮬레이션/실거래 전환 가능
+
+### Fixed
+
+- EntryLog에서 BLOCK/PASS 상태에 따라 UI Block Reason 실시간 업데이트
+
 ## [2.5.0] - 2026-03-20
 
 ### Added

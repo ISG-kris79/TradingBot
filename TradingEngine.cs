@@ -248,6 +248,9 @@ namespace TradingBot
         public event Action<string, AIEntryForecastResult>? OnAiEntryProbUpdate; // [AI 진입 예측] symbol, forecast
         public event Action<string, float, float, string>? OnWaveAIScoreUpdate; // [WaveAI] symbol, mlScore, tfScore, status
         private bool HasWaveAiScoreSubscribers => OnWaveAIScoreUpdate != null;
+        public event Action<string>? OnBlockReasonUpdate; // [Entry Pipeline] 진입 차단 사유 실시간 업데이트
+        public event Action<double>? OnVolumeGaugeUpdate; // [Entry Pipeline] 1분봉 볼륨 게이지 (0~100)
+        public event Action<decimal>? OnDailyProfitUpdate; // [Entry Pipeline] 오늘 수익 실시간 업데이트
 
         /// <summary>
         /// [AI Command Center] 심볼, AI신뢰도(0~1), 방향(LONG/SHORT/NONE), H4/H1/15M 상태 문자열, bullPower(0~100), bearPower(0~100)
@@ -278,6 +281,9 @@ namespace TradingBot
             OnTradeHistoryUpdated = null;
             OnAiEntryProbUpdate = null;
             OnWaveAIScoreUpdate = null;
+            OnBlockReasonUpdate = null;
+            OnVolumeGaugeUpdate = null;
+            OnDailyProfitUpdate = null;
         }
 
         private DateTime _lastHeartbeatTime = DateTime.MinValue;
@@ -1534,7 +1540,26 @@ namespace TradingBot
                     }
                     else
                     {
-                        OnStatusLog?.Invoke("ℹ️ AI 의사결정 모델 미준비 — 설정 > AI 학습 버튼으로 학습 후 사용 가능");
+                        // [자동 백그라운드 학습] 모델 미준비시 자동으로 학습 시작
+                        OnStatusLog?.Invoke("🤖 AI 의사결정 모델 미준비 — 백그라운드 자동 학습 시작...");
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var engine = new Services.AIBacktestEngine();
+                                var result = await engine.RunAsync();
+                                if (result != null && result.TotalTrades > 0)
+                                {
+                                    OnStatusLog?.Invoke($"✅ AI 자동 학습 완료 | 승률: {result.WinRate:P1} | 거래: {result.TotalTrades}건");
+                                    // 학습 완료 후 모델 재로드
+                                    aiDecision.TryLoadModels();
+                                }
+                            }
+                            catch (Exception ex2)
+                            {
+                                OnStatusLog?.Invoke($"⚠️ AI 자동 학습 실패: {ex2.Message}");
+                            }
+                        }, token);
                     }
                 }
                 catch (Exception ex)
@@ -5624,6 +5649,12 @@ namespace TradingBot
                 if (shouldCount)
                 {
                     RecordEntryBlockReason(stage);
+                    // [Entry Pipeline] 차단 사유를 UI에 실시간 표시
+                    OnBlockReasonUpdate?.Invoke($"[{stage}] {detail}");
+                }
+                else if (status.IndexOf("PASS", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    OnBlockReasonUpdate?.Invoke(""); // 통과 시 클리어
                 }
             }
 

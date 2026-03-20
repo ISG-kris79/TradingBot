@@ -44,9 +44,9 @@ namespace TradingBot.Models
         // 1차 부분익절: ROI +20% → 포지션 30% 청산
         // 2차 트레일링: ROI +40% 시작 → 최고점 대비 ROI 5% 하락 시 50% 청산
         // 3차 나머지: 2차에서 +5% 내려가면 스탑로스
-        // 초기 손절: ROI -60% (가격 -3%, 20x)
-        public decimal PumpStopLossRoe { get; set; } = 60.0m;      // 초기 손절 ROI -60% (변경 없음)
-        public decimal PumpMargin { get; set; } = 200.0m;           // PUMP 전용 기본 진입 증거금 (메이저 DefaultMargin과 독립)
+        // 초기 손절: ROI -40% (가격 -2%, 20x) — -60%에서 축소, SL 손실 $120→$80
+        public decimal PumpStopLossRoe { get; set; } = 40.0m;      // 초기 손절 ROI -40% (-60%→-40%: 손실 축소)
+        public decimal PumpMargin { get; set; } = 150.0m;           // PUMP 전용 기본 진입 증거금 ($200→$150: SL 축소와 함께 리스크 조정)
         public decimal PumpBreakEvenRoe { get; set; } = 25.0m;     // ROI +25% 시 본절 이동 (슬리피지 대응)
         // 주의: 0.15% 오프셋(슬리피지 방어)이 적용되어 실제 손절은 진입가 + 0.15% 근처로 설정됨
         public decimal PumpTrailingStartRoe { get; set; } = 40.0m; // 2차 트레일링 시작 ROI +40% (변경 없음)
@@ -62,7 +62,8 @@ namespace TradingBot.Models
         // 3차 나머지: 2차에서 +5% 내려가면 스탑로스
         // 초기 손절: ROI -20%
         public int    MajorLeverage          { get; set; } = 20;       // 메이저 전용 레버리지 (DefaultLeverage와 독립)
-        public decimal MajorMargin           { get; set; } = 200.0m;   // 메이저 전용 진입 증거금 (DefaultMargin과 독립)
+        public decimal MajorMargin           { get; set; } = 200.0m;   // (레거시) 메이저 고정 증거금
+        public decimal MajorMarginPercent    { get; set; } = 10.0m;    // 메이저 진입 시 계좌 Equity 대비 증거금 비율(%)
         public decimal MajorBreakEvenRoe     { get; set; } = 7.0m;    // 1단계: 본절 이동 기준 ROE (변경 없음)
         public decimal MajorTp1Roe           { get; set; } = 20.0m;   // 1차 부분익절 ROI +20%
         public decimal MajorTp2Roe           { get; set; } = 40.0m;   // 2차 수익 확정 구간 ROI +40%
@@ -75,8 +76,9 @@ namespace TradingBot.Models
         public bool IsSniperModeEnabled { get; set; } = true;         // 스나이퍼 모드 활성화 여부
         public double MinimumEntryScore { get; set; } = 80.0;         // 최소 진입 점수 (노이즈 차단)
         public int MaxTradesPerSymbolPerDay { get; set; } = 2;        // 심볼당 하루 최대 진입 횟수
-        public int MaxActivePositions { get; set; } = 5;             // 최대 활성 포지션 수 (메이저 4 + 밈 1)
+        public int MaxActivePositions { get; set; } = 5;             // 최대 활성 포지션 수 (메이저 3 + 밈 2)
         public int EntryCooldownMinutes { get; set; } = 120;          // 진입 쿨다운 (분, 한 파동 먹고 2시간 휴식)
+
     }
 
     public enum PerformanceTuningProfile

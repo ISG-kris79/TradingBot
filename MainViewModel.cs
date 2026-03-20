@@ -1942,6 +1942,11 @@ namespace TradingBot.ViewModels
                 RunOnUI(() => UpdateAiCommandState(symbol, confidence, direction, h4, h1, m15, bull, bear));
             };
 
+            // [Entry Pipeline] Block Reason / Volume Gauge / Daily Profit
+            _engine.OnBlockReasonUpdate += reason => RunOnUI(() => UpdateBlockReason(reason));
+            _engine.OnVolumeGaugeUpdate += pct => RunOnUI(() => UpdateVolumeGauge(pct));
+            _engine.OnDailyProfitUpdate += profit => RunOnUI(() => UpdateDailyProfit(profit));
+
             // [WaveAI] ML/TF 점수 업데이트 구독
             _engine.OnWaveAIScoreUpdate += (symbol, mlScore, tfScore, status) =>
             {
@@ -5137,6 +5142,62 @@ namespace TradingBot.ViewModels
             TfH1Status  = h1;
             Tf15mStatus = m15;
             BullPower   = bullPower;
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // [Entry Pipeline] Block Reason + Volume Gauge + Profit Target
+        // ═══════════════════════════════════════════════════════════════
+
+        private string _blockReason = "";
+        public string BlockReason
+        {
+            get => _blockReason;
+            set { _blockReason = value; OnPropertyChanged(); OnPropertyChanged(nameof(HasBlockReason)); }
+        }
+        public bool HasBlockReason => !string.IsNullOrEmpty(_blockReason);
+
+        private double _volumeGauge;
+        public double VolumeGauge
+        {
+            get => _volumeGauge;
+            set { _volumeGauge = Math.Clamp(value, 0, 100); OnPropertyChanged(); OnPropertyChanged(nameof(VolumeGaugeText)); OnPropertyChanged(nameof(VolumeGaugeColor)); }
+        }
+        public string VolumeGaugeText => $"{_volumeGauge:F0}%";
+        public Brush VolumeGaugeColor => _volumeGauge >= 80
+            ? new SolidColorBrush(Color.FromRgb(0, 230, 118))
+            : _volumeGauge >= 50
+                ? new SolidColorBrush(Color.FromRgb(255, 179, 0))
+                : new SolidColorBrush(Color.FromRgb(107, 114, 128));
+
+        private decimal _dailyProfitTarget = 250m;
+        private decimal _dailyProfitCurrent = 0m;
+        public decimal DailyProfitTarget { get => _dailyProfitTarget; set { _dailyProfitTarget = value; OnPropertyChanged(); OnPropertyChanged(nameof(DailyProfitText)); OnPropertyChanged(nameof(DailyProfitProgress)); } }
+        public decimal DailyProfitCurrent
+        {
+            get => _dailyProfitCurrent;
+            set { _dailyProfitCurrent = value; OnPropertyChanged(); OnPropertyChanged(nameof(DailyProfitText)); OnPropertyChanged(nameof(DailyProfitProgress)); OnPropertyChanged(nameof(DailyProfitColor)); }
+        }
+        public string DailyProfitText => $"${_dailyProfitCurrent:N2} / ${_dailyProfitTarget:N2}";
+        public double DailyProfitProgress => _dailyProfitTarget > 0 ? (double)Math.Clamp(_dailyProfitCurrent / _dailyProfitTarget * 100, 0, 100) : 0;
+        public Brush DailyProfitColor => _dailyProfitCurrent >= _dailyProfitTarget
+            ? new SolidColorBrush(Color.FromRgb(0, 230, 118))
+            : _dailyProfitCurrent > 0
+                ? new SolidColorBrush(Color.FromRgb(0, 229, 255))
+                : new SolidColorBrush(Color.FromRgb(255, 83, 112));
+
+        public void UpdateBlockReason(string reason)
+        {
+            BlockReason = reason;
+        }
+
+        public void UpdateVolumeGauge(double pct)
+        {
+            VolumeGauge = pct;
+        }
+
+        public void UpdateDailyProfit(decimal current)
+        {
+            DailyProfitCurrent = current;
         }
 
         private static Brush TfStatusToBrush(string status) => status switch

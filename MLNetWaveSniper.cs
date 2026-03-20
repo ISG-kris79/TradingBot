@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Microsoft.ML;
 using Microsoft.ML.Data;
+using Microsoft.ML.Trainers.LightGbm;
 using TradingBot.Models;
 
 namespace TradingBot
@@ -129,12 +130,15 @@ namespace TradingBot
                     nameof(SniperInput.PriceReversalStrength),
                     nameof(SniperInput.CandleBodyRatio))
                 .Append(_mlContext.Transforms.NormalizeMinMax("Features"))
-                .Append(_mlContext.BinaryClassification.Trainers.LightGbm(
-                    labelColumnName: nameof(SniperInput.LabelSuccess),
-                    featureColumnName: "Features",
-                    numberOfIterations: 200,
-                    learningRate: 0.05,
-                    numberOfLeaves: 50));
+                .Append(_mlContext.BinaryClassification.Trainers.LightGbm(new LightGbmBinaryTrainer.Options
+                {
+                    LabelColumnName = nameof(SniperInput.LabelSuccess),
+                    FeatureColumnName = "Features",
+                    NumberOfIterations = 200,
+                    LearningRate = 0.05,
+                    NumberOfLeaves = 50,
+                    NumberOfThreads = Math.Max(2, Environment.ProcessorCount - 2)
+                }));
 
             // 학습
             Console.WriteLine("[MLNetSniper] 학습 시작...");

@@ -161,10 +161,26 @@ namespace TradingBot.Services
         public static (double Level236, double Level382, double Level500, double Level618) CalculateFibonacci(List<IBinanceKline> candles, int lookback)
         {
             if (candles.Count < lookback) return (0, 0, 0, 0);
+            // [기준점 안정화] 최근 N개 TakeLast 대신 스윙 고점/저점 기반으로 계산
+            // 슬라이딩 윈도우로 인해 매 캔들마다 피보 레벨이 흔들리는 문제 해결:
+            // → lookback 전체 범위에서 명확한 스윙 고점/저점을 찾아 고정 기준으로 사용
             var subset = candles.TakeLast(lookback).ToList();
+
+            // 전체 구간 절대 고점/저점
             decimal high = subset.Max(c => c.HighPrice);
-            decimal low = subset.Min(c => c.LowPrice);
+            decimal low  = subset.Min(c => c.LowPrice);
+
+            // 안정화: 최근 20% 구간(노이즈)을 제외한 초반 80% 기준 스윙 확인
+            int stableCount = Math.Max(10, (int)(subset.Count * 0.80));
+            decimal stableHigh = subset.Take(stableCount).Max(c => c.HighPrice);
+            decimal stableLow  = subset.Take(stableCount).Min(c => c.LowPrice);
+
+            // 최근 구간에서 신고점/신저점이 나오면 기존 기준 유지 (노이즈 필터)
+            if (high > stableHigh * 1.005m) high = stableHigh; // 신고점이 0.5% 이상이면 안정 기준 사용
+            if (low  < stableLow  * 0.995m) low  = stableLow;  // 신저점이 0.5% 이상이면 안정 기준 사용
+
             decimal diff = high - low;
+            if (diff <= 0) return (0, 0, 0, 0);
 
             return (
                 (double)(low + diff * 0.236m),

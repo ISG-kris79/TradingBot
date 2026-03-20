@@ -75,7 +75,7 @@ namespace TradingBot.Services
 
             if (tech.IsWave5 || tech.IsRsiExtreme)
             {
-                tightModifier *= 0.4;  // 스탑 간격을 60% 좁힘
+                tightModifier *= 0.55;  // 스탑 간격을 45% 좁힘 (0.4→0.55: 수익 더 확보)
                 signal.ActiveSignals.Add(isLong ? "🔥 엘리엇 5파동 + 극단 과매수" : "🔥 엘리엇 5파동 + 극단 과매도");
                 LogSignal("🔥 [과열 감지] 엘리엇 5파동 또는 극단적 RSI 신호. 스탑 라인을 가격에 초밀착.", isLong);
             }
@@ -83,7 +83,7 @@ namespace TradingBot.Services
             // [2단계] MACD 모멘텀 약화 (히스토그램 감소 + 데드크로스 임박)
             if (tech.IsMacdHistogramDecreasing || tech.IsMacdDeadCross)
             {
-                tightModifier *= 0.7;  // 추격 간격을 30% 더 축소
+                tightModifier *= 0.82;  // 추격 간격을 18% 더 축소 (0.7→0.82: MACD 한 틱으로 조기청산 방지)
                 signal.ActiveSignals.Add("📉 MACD 히스토그램 감소");
                 LogSignal("📉 [모멘텀 약화] MACD 히스토그램이 감소 중. 상승 힘이 빠지는 신호.", isLong);
             }
@@ -112,7 +112,7 @@ namespace TradingBot.Services
             // [5단계] RSI 과매수 상태 (극단은 아니지만 70 초과)
             if (tech.IsRsiOverbought && !tech.IsRsiExtreme)
             {
-                tightModifier *= 0.85;  // 약간만 좁힘 (15%)
+                tightModifier *= 0.93;  // 약간만 좁힘 (7%, 0.85→0.93: RSI 과매수로 너무 일찍 청산 방지)
                 signal.ActiveSignals.Add("🔴 RSI 과매수");
                 LogSignal($"🔴 [과매수] RSI {tech.Rsi:F2}. 이미 과매수 구간.", isLong);
             }
@@ -187,7 +187,7 @@ namespace TradingBot.Services
             // 다음 조건 중 하나라도 만족하면 즉시 익절
             return signal.ShouldTakeProfitNow ||                    // BB 회귀
                    (tech.IsReturningToMidBand) ||                  // BB 명시적 회귀
-                   (signal.ActiveSignals.Count >= 3);              // 3개 이상 신호 동시발생
+                   (signal.ActiveSignals.Count >= 4);              // 4개 이상 신호 동시발생 (3→4: 과조기청산 방지)
         }
 
         private void LogSignal(string message, bool isLong)

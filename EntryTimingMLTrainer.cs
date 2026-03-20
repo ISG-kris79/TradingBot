@@ -1,6 +1,7 @@
 using Microsoft.ML;
 using Microsoft.ML.Data;
 using Microsoft.ML.Trainers;
+using Microsoft.ML.Trainers.LightGbm;
 using Microsoft.ML.Transforms;
 using System;
 using System.Collections.Generic;
@@ -278,13 +279,16 @@ namespace TradingBot
             // 전처리 및 학습 파이프라인
             var pipeline = _mlContext.Transforms.Concatenate("Features", featureColumns)
                 .Append(_mlContext.Transforms.NormalizeMinMax("Features")) // Feature 정규화
-                .Append(_mlContext.BinaryClassification.Trainers.LightGbm(
-                    labelColumnName: "Label",
-                    featureColumnName: "Features",
-                    numberOfLeaves: 31,
-                    minimumExampleCountPerLeaf: 10,
-                    learningRate: 0.1,
-                    numberOfIterations: 300)); // LightGBM: 빠르고 정확한 트리 기반 모델
+                .Append(_mlContext.BinaryClassification.Trainers.LightGbm(new LightGbmBinaryTrainer.Options
+                {
+                    LabelColumnName = "Label",
+                    FeatureColumnName = "Features",
+                    NumberOfLeaves = 31,
+                    MinimumExampleCountPerLeaf = 10,
+                    LearningRate = 0.1,
+                    NumberOfIterations = 300,
+                    NumberOfThreads = Math.Max(2, Environment.ProcessorCount - 2)
+                })); // LightGBM: 빠르고 정확한 트리 기반 모델
 
             return pipeline;
         }

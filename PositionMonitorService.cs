@@ -220,6 +220,11 @@ namespace TradingBot.Services
 
             OnLog?.Invoke($"⏳ [{(isSidewaysMode ? "S" : "T")}] {symbol} 진입대기");
 
+            // [AI Sniper Exit] 구조적 손절 체크 (30초 주기)
+            DateTime nextSniperExitCheck = DateTime.Now.AddSeconds(15);
+            float entryAiConfidence = 0.50f;
+            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var pc)) entryAiConfidence = pc.AiConfidencePercent / 100f; }
+
             // [3단계 본절 보호 & 수익 잠금] 스마트 방어 시스템
             decimal highestROE = -999m;            // 최고 ROE 추적
             decimal protectiveStopPrice = 0m;      // 방어적 스탑 가격
@@ -439,6 +444,132 @@ namespace TradingBot.Services
 
                         OnLog?.Invoke($"🧠 [AI 재검증 유지] {symbol} {aiRecheckReason}");
                         nextAiRecheckTime = DateTime.Now.AddMinutes(60);
+                    }
+
+                    // ═══════════════════════════════════════════════
+                    // [AI Sniper Exit] 구조적 손절 — ML 기반 유연한 맷집
+                    // - 개미 털기 의심: 볼륨 없는 하락 → 버텨라
+                    // - 매도압력 급증: 가격 유지 + 매도 체결 강도↑ → 즉시 던져라
+                    // - 파동 인식: 3파 진행중 → 트레일링 갭 확대
+                    // ═══════════════════════════════════════════════
+                    if (DateTime.Now >= nextSniperExitCheck)
+                    {
+                        try
+                        {
+                            var aiDecision = AIDecisionService.Instance;
+                            if (aiDecision.IsExitModelReady)
+                            {
+                                // 5분봉 최근 데이터로 시장 상태 피처 구성
+                                var exitKlines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 30, token);
+                                if (exitKlines != null && exitKlines.Count >= 20)
+                                {
+                                    var kList = exitKlines.ToList();
+                                    var latest = kList[^1];
+                                    var prev = kList[^2];
+
+                                    // 볼륨 밀도: 최근 3봉 합 / 20봉 평균
+                                    double avgVol = kList.TakeLast(20).Average(k => (double)k.Volume);
+                                    double vol3Sum = kList.TakeLast(3).Sum(k => (double)k.Volume);
+                                    float volDensity = avgVol > 0 ? (float)(vol3Sum / (avgVol * 3)) : 1.0f;
+                                    float volRatio = avgVol > 0 ? (float)((double)latest.Volume / avgVol) : 1.0f;
+
+                                    // 매도 체결 강도 추정 (음봉 비율 기반)
+                                    int bearCandles = kList.TakeLast(5).Count(k => k.ClosePrice < k.OpenPrice);
+                                    float sellPressure = bearCandles / 5.0f;
+
+                                    // RSI 간이 계산
+                                    double gain = 0, loss = 0;
+                                    for (int ri = kList.Count - 14; ri < kList.Count; ri++)
+                                    {
+                                        if (ri <= 0) continue;
+                                        double diff = (double)(kList[ri].ClosePrice - kList[ri - 1].ClosePrice);
+                                        if (diff > 0) gain += diff; else loss -= diff;
+                                    }
+                                    float rsi = loss > 0 ? (float)(100.0 - 100.0 / (1.0 + gain / loss)) : 50f;
+
+                                    var exitInput = new AIDecisionService.SniperExitInput
+                                    {
+                                        UnrealizedRoePct = (float)currentROE,
+                                        MaxRoePct = (float)highestROE,
+                                        DrawdownFromPeak = (float)(currentROE - highestROE),
+                                        HoldMinutes = (float)(holdingTime.TotalMinutes / 60.0), // 정규화
+                                        EntryConfidence = entryAiConfidence,
+                                        IsLong = isLong ? 1f : 0f,
+                                        PartialExitDone = partialTaken ? 1f : 0f,
+                                        TrailingActive = tightTrailingActivated ? 1f : 0f,
+                                        RSI = rsi / 100f,
+                                        MACD_Rising = latest.ClosePrice > prev.ClosePrice ? 1f : 0f,
+                                        BB_Position = 0.5f,
+                                        ATR_Pct = 0.01f,
+                                        Volume_Ratio = volRatio,
+                                        Volume_Density = volDensity,
+                                        SellPressure = sellPressure,
+                                        EMA_Alignment = isLong ? 1f : -1f,
+                                        Price_Change_3Bar = (float)((double)(latest.ClosePrice - kList[^4].ClosePrice) / (double)kList[^4].ClosePrice * 100),
+                                        Momentum_Score = 0.5f,
+                                    };
+
+                                    var decision = aiDecision.SniperExit(exitInput);
+
+                                    switch (decision.Action)
+                                    {
+                                        case AIDecisionService.ExitAction.EmergencyCut:
+                                            OnLog?.Invoke($"🚨 [AI Sniper] {symbol} 긴급 손절 | {decision.Reason}");
+                                            await ExecuteMarketClose(symbol, $"AI_Emergency ({decision.Reason})", token);
+                                            break; // inner switch
+
+                                        case AIDecisionService.ExitAction.FullClose:
+                                            OnLog?.Invoke($"🔴 [AI Sniper] {symbol} 전량 청산 | {decision.Reason}");
+                                            await ExecuteMarketClose(symbol, $"AI_FullClose ({decision.Reason})", token);
+                                            break;
+
+                                        case AIDecisionService.ExitAction.PartialClose:
+                                            if (!partialTaken)
+                                            {
+                                                OnLog?.Invoke($"💰 [AI Sniper] {symbol} 부분익절 | {decision.Reason}");
+                                                await ExecutePartialClose(symbol, 0.40m, token);
+                                                partialTaken = true;
+                                            }
+                                            break;
+
+                                        case AIDecisionService.ExitAction.TightenTrail:
+                                            if (decision.SuggestedTrailGap > 0 && tightTrailingActivated)
+                                            {
+                                                decimal newGap = majorTrailingGap * decision.SuggestedTrailGap;
+                                                if (newGap < majorTrailingGap)
+                                                {
+                                                    majorTrailingGap = Math.Max(newGap, 2.0m);
+                                                    OnLog?.Invoke($"📉 [AI Sniper] {symbol} 트레일링 갭 축소 → {majorTrailingGap:F1}%");
+                                                }
+                                            }
+                                            break;
+
+                                        case AIDecisionService.ExitAction.WidenTrail:
+                                            if (decision.SuggestedTrailGap > 0 && tightTrailingActivated)
+                                            {
+                                                decimal newGap = majorTrailingGap * decision.SuggestedTrailGap;
+                                                majorTrailingGap = Math.Min(newGap, 10.0m);
+                                                OnLog?.Invoke($"📈 [AI Sniper] {symbol} 트레일링 갭 확대 → {majorTrailingGap:F1}%");
+                                            }
+                                            break;
+
+                                        case AIDecisionService.ExitAction.Hold:
+                                            // 홀드 — 아무것도 안 함 (개미 털기 등)
+                                            break;
+                                    }
+
+                                    // EmergencyCut / FullClose 시 루프 탈출
+                                    if (decision.Action == AIDecisionService.ExitAction.EmergencyCut
+                                        || decision.Action == AIDecisionService.ExitAction.FullClose)
+                                        break;
+                                }
+                            }
+                        }
+                        catch (Exception sniperEx)
+                        {
+                            OnLog?.Invoke($"⚠️ [AI Sniper] {symbol} 청산 판단 오류: {sniperEx.Message}");
+                        }
+                        nextSniperExitCheck = DateTime.Now.AddSeconds(30);
                     }
 
                     if (DateTime.Now >= nextHSCheckTime)

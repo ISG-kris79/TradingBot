@@ -897,7 +897,7 @@ namespace TradingBot
                     
                     if (simulationModeChanged || simulationBalanceChanged)
                     {
-                        message += "\n\n⚠️ 시뮬레이션 설정이 변경되었습니다.\n거래를 중지하고 다시 시작하면 새 설정이 적용됩니다.";
+                        message += "\n\n⚠️ 시뮬레이션 설정이 변경되었습니다.\nStop 후 Start를 누르면 새 설정이 즉시 적용됩니다. (앱 재시작 불필요)";
                     }
 
                     MessageBox.Show(message, "저장 완료", MessageBoxButton.OK, MessageBoxImage.Information);

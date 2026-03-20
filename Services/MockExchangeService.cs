@@ -81,6 +81,19 @@ namespace TradingBot.Services
             return Task.FromResult(_balance);
         }
 
+        /// <summary>
+        /// 시뮬레이션 전용: 가용잔고 + 예약증거금 합산 = 선물 지갑잔고 (WalletBalance)
+        /// GetBalanceAsync는 가용잔고(증거금 차감 후)만 반환하기 때문에
+        /// Equity 계산 시 이 메서드를 사용해야 정확한 자산이 나온다.
+        /// </summary>
+        public decimal GetWalletBalance()
+        {
+            lock (_syncLock)
+            {
+                return _balance + _reservedMargins.Values.Sum();
+            }
+        }
+
         public Task<decimal> GetPriceAsync(string symbol, CancellationToken token = default)
         {
             lock (_syncLock)

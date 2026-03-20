@@ -1,5 +1,6 @@
 ﻿using Microsoft.ML;
 using Microsoft.ML.Data;
+using Microsoft.ML.Trainers.LightGbm;
 using System.IO;
 using TradingBot;
 using TradingBot.Models;
@@ -85,13 +86,16 @@ public class MLService : IDisposable
         var pipeline = _mlContext.Transforms.Concatenate("Features", FeatureColumns)
             .Append(_mlContext.Transforms.NormalizeMinMax("Features"))
             .Append(_mlContext.Transforms.Conversion.ConvertType("Label", nameof(CandleData.LabelLong), DataKind.Boolean))
-            .Append(_mlContext.BinaryClassification.Trainers.LightGbm(
-                labelColumnName: "Label",
-                featureColumnName: "Features",
-                numberOfLeaves: 31,
-                minimumExampleCountPerLeaf: 20,
-                learningRate: 0.05,
-                numberOfIterations: 300));
+            .Append(_mlContext.BinaryClassification.Trainers.LightGbm(new LightGbmBinaryTrainer.Options
+            {
+                LabelColumnName = "Label",
+                FeatureColumnName = "Features",
+                NumberOfLeaves = 31,
+                MinimumExampleCountPerLeaf = 20,
+                LearningRate = 0.05,
+                NumberOfIterations = 300,
+                NumberOfThreads = Math.Max(2, Environment.ProcessorCount - 2)
+            }));
 
         MainWindow.Instance?.AddLog($"🚀 ML.NET LightGBM 학습 시작 (Train: {trainCount}, Test: {trainingData.Count - trainCount})");
 

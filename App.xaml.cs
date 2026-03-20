@@ -190,6 +190,13 @@ namespace TradingBot
                 return;
             }
 
+            // ── 워크포워드 최적화 백테스트 CLI 모드 ──
+            if (HandleWalkForwardOptimizeCliIfRequested(e.Args))
+            {
+                this.Shutdown();
+                return;
+            }
+
             // 중복 실행 방지 (전역 Mutex 사용)
             const string mutexName = @"Global\TradingBot_SingleInstance_8F9A2B3C";
 
@@ -729,6 +736,45 @@ namespace TradingBot
 
             Debug.WriteLine("[App] 애플리케이션 종료 - Mutex 해제됨");
             base.OnExit(e);
+        }
+
+        private bool HandleWalkForwardOptimizeCliIfRequested(string[] args)
+        {
+            if (args == null || !args.Contains("--optimize-backtest", StringComparer.OrdinalIgnoreCase))
+                return false;
+
+            try
+            {
+                decimal balance = 2500m;
+                int years = 3;
+                for (int i = 0; i < args.Length - 1; i++)
+                {
+                    if (args[i].Equals("--balance", StringComparison.OrdinalIgnoreCase) && decimal.TryParse(args[i + 1], out decimal b)) balance = b;
+                    if (args[i].Equals("--years",   StringComparison.OrdinalIgnoreCase) && int.TryParse(args[i + 1], out int y))   years   = y;
+                }
+
+                Console.OutputEncoding = System.Text.Encoding.UTF8;
+                Console.WriteLine($"[워크포워드 최적화] 시작 — 초기잔고: ${balance:N0} | {years}년");
+
+                var runner = new TradingBot.Services.ThreeYearBacktestRunner();
+                var report = runner.RunOptimizedAsync(
+                    initialBalance: balance,
+                    years: years,
+                    onLog: msg => Console.WriteLine(msg)
+                ).GetAwaiter().GetResult();
+
+                string formatted = runner.FormatReport(report);
+                Console.WriteLine(formatted);
+
+                string path = runner.SaveReportToFile(report);
+                Console.WriteLine($"\n✅ 결과 저장: {path}");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"ERROR: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+            }
+            return true;
         }
 
         private bool HandleHybridBacktestCliIfRequested(string[] args)
