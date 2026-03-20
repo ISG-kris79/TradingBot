@@ -234,6 +234,8 @@ namespace TradingBot
         public EntryFilterSettings EntryFilterSettings { get; set; } = new(); // [진입 필터 설정]
         public bool IsSimulationMode { get; set; } = false;
         public decimal SimulationInitialBalance { get; set; } = 10000m;
+        public string TestnetApiKey { get; set; } = string.Empty;
+        public string TestnetApiSecret { get; set; } = string.Empty;
     }
 
     public class ExternalApiSettings
@@ -354,6 +356,9 @@ namespace TradingBot
         
         /// <summary>AI 점수 임계값 - 일반 코인 (펌프 등)</summary>
         public float AiScoreThresholdNormal { get; set; } = 70.0f;
+
+        /// <summary>AI 점수 임계값 - PUMP/밈 코인</summary>
+        public float AiScoreThresholdPump { get; set; } = 66.0f;
 
         /// <summary>AI 점수 필터 활성화 여부</summary>
         public bool EnableAiScoreFilter { get; set; } = true;

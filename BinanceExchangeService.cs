@@ -1,3 +1,4 @@
+using Binance.Net;
 using Binance.Net.Clients;
 using Binance.Net.Enums;
 using Binance.Net.Interfaces;
@@ -28,16 +29,22 @@ namespace TradingBot.Services
         public event Action<string>? OnLog;
         public event Action<string>? OnAlert;
 
-        public BinanceExchangeService(string apiKey, string apiSecret)
+        public bool IsTestnet { get; }
+
+        public BinanceExchangeService(string apiKey, string apiSecret, bool useTestnet = false)
         {
+            IsTestnet = useTestnet;
             _client = new BinanceRestClient(options =>
             {
-                // API Key가 설정되어 있을 때만 자격 증명 추가
                 if (!string.IsNullOrWhiteSpace(apiKey) && !string.IsNullOrWhiteSpace(apiSecret))
                 {
                     options.ApiCredentials = new ApiCredentials(apiKey, apiSecret);
                 }
-                // API Key가 없으면 공개 API만 사용 가능
+
+                if (useTestnet)
+                {
+                    options.Environment = BinanceEnvironment.Testnet;
+                }
             });
         }
 

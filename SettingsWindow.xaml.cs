@@ -62,6 +62,256 @@ namespace TradingBot
             this.Close();
         }
 
+        private async void btnRunBacktest3Y_Click(object sender, RoutedEventArgs e)
+        {
+            // Shift 누르면 워크포워드 최적화 모드, 일반 클릭은 기본 백테스트
+            bool optimizeMode = System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.LeftShift)
+                             || System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.RightShift);
+
+            btnRunBacktest3Y.IsEnabled = false;
+            btnRunBacktest3Y.Content   = optimizeMode ? "최적화 중..." : "실행 중...";
+
+            var logLines = new System.Collections.Generic.List<string>();
+
+            try
+            {
+                var runner = new TradingBot.Services.ThreeYearBacktestRunner();
+                decimal balance = 2500m;
+
+                var report = await Task.Run(async () => optimizeMode
+                    ? await runner.RunOptimizedAsync(
+                        initialBalance: balance,
+                        years: 3,
+                        onLog: msg => { logLines.Add(msg); })
+                    : await runner.RunAsync(
+                        initialBalance: balance,
+                        years: 3,
+                        onLog: msg => { logLines.Add(msg); }));
+
+                string formatted = runner.FormatReport(report);
+                logLines.Add(formatted);
+
+                // 파일 저장
+                string path = runner.SaveReportToFile(report);
+                logLines.Add($"\n✅ 결과 파일 저장: {path}");
+
+                // 결과창 표시
+                var resultWin = new Window
+                {
+                    Title           = "3년 백테스트 결과",
+                    Width           = 820,
+                    Height          = 700,
+                    Background      = new System.Windows.Media.SolidColorBrush(
+                                          System.Windows.Media.Color.FromRgb(0x12,0x12,0x12)),
+                    WindowStartupLocation = WindowStartupLocation.CenterScreen,
+                    Owner           = this
+                };
+                var tb = new System.Windows.Controls.TextBox
+                {
+                    Text            = string.Join("\n", logLines),
+                    IsReadOnly      = true,
+                    FontFamily      = new System.Windows.Media.FontFamily("Consolas"),
+                    FontSize        = 11,
+                    Foreground      = System.Windows.Media.Brushes.White,
+                    Background      = System.Windows.Media.Brushes.Transparent,
+                    BorderThickness = new Thickness(0),
+                    AcceptsReturn   = true,
+                    TextWrapping    = System.Windows.TextWrapping.NoWrap,
+                    VerticalScrollBarVisibility   = System.Windows.Controls.ScrollBarVisibility.Auto,
+                    HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto
+                };
+                resultWin.Content = tb;
+                resultWin.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"백테스트 실행 오류:\n{ex.Message}", "오류",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                btnRunBacktest3Y.IsEnabled = true;
+                btnRunBacktest3Y.Content   = "3년 백테스트 (Shift=최적화)";
+            }
+        }
+
+        private async void btnRunAI_Click(object sender, RoutedEventArgs e)
+        {
+            btnRunAI.IsEnabled = false;
+            btnRunAI.Content = "AI 학습 중...";
+
+            var logLines = new System.Collections.Generic.List<string>();
+
+            try
+            {
+                var engine = new AIBacktestEngine();
+                var result = await Task.Run(async () =>
+                    await engine.RunAsync(
+                        initialBalance: 2500m, months: 36,
+                        onLog: msg => { logLines.Add(msg); }));
+
+                var resultWin = new Window
+                {
+                    Title = $"AI 학습 백테스트 3년 (승률 {result.WinRate:F0}% | 일 {result.AvgDailyPct:+0.0;-0.0}%)",
+                    Width = 900, Height = 750,
+                    Background = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromRgb(0x12, 0x12, 0x12)),
+                    WindowStartupLocation = WindowStartupLocation.CenterScreen,
+                    Owner = this
+                };
+                var tb = new System.Windows.Controls.TextBox
+                {
+                    Text = string.Join("\n", logLines),
+                    IsReadOnly = true,
+                    FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+                    FontSize = 11,
+                    Foreground = System.Windows.Media.Brushes.White,
+                    Background = System.Windows.Media.Brushes.Transparent,
+                    BorderThickness = new Thickness(0),
+                    AcceptsReturn = true,
+                    TextWrapping = System.Windows.TextWrapping.NoWrap,
+                    VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
+                    HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto
+                };
+                resultWin.Content = tb;
+                resultWin.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"AI 백테스트 오류:\n{ex.Message}\n\n{ex.StackTrace}", "오류",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                btnRunAI.IsEnabled = true;
+                btnRunAI.Content = "AI 학습";
+            }
+        }
+
+        private async void btnRunMtf_Click(object sender, RoutedEventArgs e)
+        {
+            // Shift 누르면 자동 최적화, 일반 클릭은 기본 실행
+            bool optimizeMode = System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.LeftShift)
+                             || System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.RightShift);
+
+            btnRunMtf.IsEnabled = false;
+            btnRunMtf.Content = optimizeMode ? "최적화 중..." : "실행 중...";
+
+            var logLines = new System.Collections.Generic.List<string>();
+
+            try
+            {
+                var tester = new MultiTimeframeBacktester();
+
+                var result = await Task.Run(async () => optimizeMode
+                    ? await tester.RunOptimizeAsync(
+                        initialBalance: 2500m, months: 6,
+                        onLog: msg => { logLines.Add(msg); })
+                    : await tester.RunAsync(
+                        initialBalance: 2500m, months: 6,
+                        onLog: msg => { logLines.Add(msg); }));
+
+                var resultWin = new Window
+                {
+                    Title = $"5분봉 백테스트 (일 {result.AvgDailyPct:+0.0;-0.0}% | 승률 {result.WinRate:F0}%)",
+                    Width = 900, Height = 750,
+                    Background = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromRgb(0x12, 0x12, 0x12)),
+                    WindowStartupLocation = WindowStartupLocation.CenterScreen,
+                    Owner = this
+                };
+                var tb = new System.Windows.Controls.TextBox
+                {
+                    Text = string.Join("\n", logLines),
+                    IsReadOnly = true,
+                    FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+                    FontSize = 11,
+                    Foreground = System.Windows.Media.Brushes.White,
+                    Background = System.Windows.Media.Brushes.Transparent,
+                    BorderThickness = new Thickness(0),
+                    AcceptsReturn = true,
+                    TextWrapping = System.Windows.TextWrapping.NoWrap,
+                    VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
+                    HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto
+                };
+                resultWin.Content = tb;
+                resultWin.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"5분봉 백테스트 오류:\n{ex.Message}", "오류",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                btnRunMtf.IsEnabled = true;
+                btnRunMtf.Content = "5분봉 최적화";
+            }
+        }
+
+        private async void btnRunWfo_Click(object sender, RoutedEventArgs e)
+        {
+            btnRunWfo.IsEnabled = false;
+            btnRunWfo.Content = "WFO 실행 중...";
+
+            var logLines = new System.Collections.Generic.List<string>();
+
+            try
+            {
+                var optimizer = new WalkForwardOptimizer(
+                    isMonths: 12, oosMonths: 4, stepMonths: 4,
+                    totalYears: 3, initialBalance: 2500m);
+
+                var report = await Task.Run(async () =>
+                    await optimizer.RunAsync(
+                        onLog: msg => { logLines.Add(msg); }));
+
+                string formatted = optimizer.FormatReport(report);
+                logLines.Add(formatted);
+
+                string path = optimizer.SaveReportToFile(report);
+                logLines.Add($"\n결과 파일 저장: {path}");
+
+                // 결과창 표시
+                var resultWin = new Window
+                {
+                    Title = $"워크포워드 최적화 결과 (OOS 승률: {report.OosWinRate:F1}%)",
+                    Width = 900,
+                    Height = 750,
+                    Background = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromRgb(0x12, 0x12, 0x12)),
+                    WindowStartupLocation = WindowStartupLocation.CenterScreen,
+                    Owner = this
+                };
+                var tb = new System.Windows.Controls.TextBox
+                {
+                    Text = string.Join("\n", logLines),
+                    IsReadOnly = true,
+                    FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+                    FontSize = 11,
+                    Foreground = System.Windows.Media.Brushes.White,
+                    Background = System.Windows.Media.Brushes.Transparent,
+                    BorderThickness = new Thickness(0),
+                    AcceptsReturn = true,
+                    TextWrapping = System.Windows.TextWrapping.NoWrap,
+                    VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
+                    HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto
+                };
+                resultWin.Content = tb;
+                resultWin.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"워크포워드 최적화 실행 오류:\n{ex.Message}", "오류",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                btnRunWfo.IsEnabled = true;
+                btnRunWfo.Content = "WFO 최적화";
+            }
+        }
+
         private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
             if (e.LeftButton == MouseButtonState.Pressed)
@@ -103,7 +353,9 @@ namespace TradingBot
                     txtPumpStairStep3Roe.Text = dbSettings.PumpStairStep3Roe.ToString("F2");
                     // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정
                     txtMajorLeverage.Text = dbSettings.MajorLeverage.ToString();
-                    txtMajorMargin.Text = dbSettings.MajorMargin.ToString("F2");
+                    txtMajorMargin.Text = dbSettings.MajorMarginPercent > 0
+                        ? dbSettings.MajorMarginPercent.ToString("F2")
+                        : "10.00";
                     txtMajorBreakEvenRoe.Text = dbSettings.MajorBreakEvenRoe.ToString("F2");
                     txtMajorTp1Roe.Text = dbSettings.MajorTp1Roe.ToString("F2");
                     txtMajorTp2Roe.Text = dbSettings.MajorTp2Roe.ToString("F2");
@@ -172,7 +424,9 @@ namespace TradingBot
                             txtPumpStairStep3Roe.Text = generalNode["PumpStairStep3Roe"]?.ToString() ?? "200.0";
                             // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정
                             txtMajorLeverage.Text = generalNode["MajorLeverage"]?.ToString() ?? "20";
-                            txtMajorMargin.Text = generalNode["MajorMargin"]?.ToString() ?? "200.0";
+                            txtMajorMargin.Text = generalNode["MajorMarginPercent"]?.ToString()
+                                ?? generalNode["MajorMargin"]?.ToString()
+                                ?? "10.0";
                             txtMajorBreakEvenRoe.Text = generalNode["MajorBreakEvenRoe"]?.ToString() ?? "7.0";
                             txtMajorTp1Roe.Text = generalNode["MajorTp1Roe"]?.ToString() ?? "20.0";
                             txtMajorTp2Roe.Text = generalNode["MajorTp2Roe"]?.ToString() ?? "40.0";
@@ -426,10 +680,11 @@ namespace TradingBot
                     generalSettings.MajorLeverage = majorLeverage;
                 }
 
-                if (decimal.TryParse(txtMajorMargin.Text, out decimal majorMargin))
+                if (decimal.TryParse(txtMajorMargin.Text, out decimal majorMarginPercent))
                 {
-                    generalNode["MajorMargin"] = majorMargin;
-                    generalSettings.MajorMargin = majorMargin;
+                    majorMarginPercent = Math.Clamp(majorMarginPercent, 1.0m, 50.0m);
+                    generalNode["MajorMarginPercent"] = majorMarginPercent;
+                    generalSettings.MajorMarginPercent = majorMarginPercent;
                 }
 
                 if (decimal.TryParse(txtMajorBreakEvenRoe.Text, out decimal majorBreakEvenRoe))

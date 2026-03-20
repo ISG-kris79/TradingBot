@@ -880,28 +880,50 @@ namespace TradingBot.ViewModels
                 // 시뮬레이션 모드 표시 및 확인
                 bool isSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false;
                 decimal simBalance = AppConfig.Current?.Trading?.SimulationInitialBalance ?? 10000m;
-                
-                RunOnUI(() =>
+                bool hasTestnetKey = !string.IsNullOrWhiteSpace(AppConfig.Current?.Trading?.TestnetApiKey);
+                bool startCancelled = false;
+
+                if (MainWindow.Instance != null)
                 {
-                    if (MainWindow.Instance != null)
+                    var txtAccountMode = MainWindow.Instance.FindName("txtAccountMode") as System.Windows.Controls.TextBlock;
+                    if (txtAccountMode != null)
+                        txtAccountMode.Text = isSimulation ? "🎮 SIMULATION" : "";
+                }
+
+                if (isSimulation)
+                {
+                    string mode = hasTestnetKey ? "바이낸스 테스트넷" : "MockExchange";
+                    var result = System.Windows.MessageBox.Show(
+                        $"🎮 시뮬레이션 모드로 시작합니다.\n\n" +
+                        $"모드: {mode}\n" +
+                        $"초기 잔고: ${simBalance:N2}\n" +
+                        $"실제 자금 사용: 없음\n\n" +
+                        (hasTestnetKey
+                            ? "테스트넷 연결 — 실거래와 동일한 체결/DB저장"
+                            : "MockExchange — 가상 체결") +
+                        "\n\n계속 진행하시겠습니까?",
+                        "시뮬레이션 모드 확인",
+                        System.Windows.MessageBoxButton.YesNo,
+                        System.Windows.MessageBoxImage.Information);
+
+                    if (result == System.Windows.MessageBoxResult.No)
                     {
-                        var txtAccountMode = MainWindow.Instance.FindName("txtAccountMode") as System.Windows.Controls.TextBlock;
-                        if (txtAccountMode != null)
-                        {
-                            txtAccountMode.Text = isSimulation ? "🎮 SIMULATION" : "";
-                        }
-                    }
-                    
-                    // 시작 시 현재 모드 로그 출력
-                    if (isSimulation)
-                    {
-                        AddLog($"🎮 [Start] 시뮬레이션 모드로 시작합니다. 초기 잔고: ${simBalance:N2}");
+                        IsStartEnabled = true;
+                        IsStopEnabled = false;
+                        AddLog("시뮬레이션 시작 취소됨");
+                        startCancelled = true;
                     }
                     else
                     {
-                        AddLog($"💰 [Start] 실거래 모드로 시작합니다.");
+                        AddLog($"🎮 [Start] 시뮬레이션 모드 ({mode}) | 잔고: ${simBalance:N2}");
                     }
-                });
+                }
+                else
+                {
+                    AddLog($"💰 [Start] 실거래 모드로 시작합니다.");
+                }
+
+                if (startCancelled) return;
 
                 _ = Task.Run(async () =>
                 {
@@ -1912,6 +1934,12 @@ namespace TradingBot.ViewModels
             _engine.OnAiEntryProbUpdate += (symbol, forecast) =>
             {
                 UpdateAiEntryProb(symbol, forecast);
+            };
+
+            // [AI Command Center] 상태 업데이트
+            _engine.OnAiCommandUpdate += (symbol, confidence, direction, h4, h1, m15, bull, bear) =>
+            {
+                RunOnUI(() => UpdateAiCommandState(symbol, confidence, direction, h4, h1, m15, bull, bear));
             };
 
             // [WaveAI] ML/TF 점수 업데이트 구독
@@ -5008,6 +5036,123 @@ namespace TradingBot.ViewModels
             setMin(min);
             setMax(max);
         }
+
+        // ═══════════════════════════════════════════════════════════════
+        // [AI Command Center] HelloQuant UI 프로퍼티
+        // ═══════════════════════════════════════════════════════════════
+
+        private string _aiCmdSymbol = "-";
+        public string AiCmdSymbol { get => _aiCmdSymbol; set { _aiCmdSymbol = value; OnPropertyChanged(); } }
+
+        private double _aiCmdConfidence;
+        public double AiCmdConfidence
+        {
+            get => _aiCmdConfidence;
+            set
+            {
+                _aiCmdConfidence = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(AiCmdConfidenceText));
+                OnPropertyChanged(nameof(AiCmdGaugeColor));
+                OnPropertyChanged(nameof(AiCmdGaugeGlowColor));
+                OnPropertyChanged(nameof(AiCmdIsHighConfidence));
+            }
+        }
+        public string AiCmdConfidenceText => $"{AiCmdConfidence:F0}%";
+        public bool AiCmdIsHighConfidence => AiCmdConfidence >= 85.0;
+
+        public Brush AiCmdGaugeColor => AiCmdConfidence >= 85
+            ? new SolidColorBrush(Color.FromRgb(0, 229, 255))
+            : AiCmdConfidence >= 65
+                ? new SolidColorBrush(Color.FromRgb(255, 179, 0))
+                : new SolidColorBrush(Color.FromRgb(107, 114, 128));
+
+        public string AiCmdGaugeGlowColor => AiCmdConfidence >= 85 ? "#00E5FF" : AiCmdConfidence >= 65 ? "#FFB300" : "#444";
+
+        private string _aiCmdDirection = "NONE";
+        public string AiCmdDirection
+        {
+            get => _aiCmdDirection;
+            set
+            {
+                _aiCmdDirection = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(IsShortOpportunity));
+                OnPropertyChanged(nameof(IsLongScanning));
+                OnPropertyChanged(nameof(AiCmdBiasColor));
+            }
+        }
+
+        public bool IsShortOpportunity => _aiCmdDirection == "SHORT" && AiCmdConfidence >= 65;
+        public bool IsLongScanning     => _aiCmdDirection == "LONG"  && AiCmdConfidence >= 55;
+
+        private string _tfH4Status = "NEUTRAL";
+        public string TfH4Status { get => _tfH4Status; set { _tfH4Status = value; OnPropertyChanged(); OnPropertyChanged(nameof(TfH4Color)); } }
+
+        private string _tfH1Status = "NEUTRAL";
+        public string TfH1Status { get => _tfH1Status; set { _tfH1Status = value; OnPropertyChanged(); OnPropertyChanged(nameof(TfH1Color)); } }
+
+        private string _tf15mStatus = "SCANNING";
+        public string Tf15mStatus { get => _tf15mStatus; set { _tf15mStatus = value; OnPropertyChanged(); OnPropertyChanged(nameof(Tf15mColor)); OnPropertyChanged(nameof(IsSniperReady)); } }
+
+        public Brush TfH4Color  => TfStatusToBrush(_tfH4Status);
+        public Brush TfH1Color  => TfStatusToBrush(_tfH1Status);
+        public Brush Tf15mColor => Tf15mStatusToBrush(_tf15mStatus);
+
+        private double _bullPower = 50;
+        public double BullPower
+        {
+            get => _bullPower;
+            set { _bullPower = Math.Max(0, Math.Min(100, value)); OnPropertyChanged(); OnPropertyChanged(nameof(BearPower)); OnPropertyChanged(nameof(CurrentBias)); OnPropertyChanged(nameof(AiCmdBiasColor)); }
+        }
+        public double BearPower => 100.0 - _bullPower;
+
+        public string CurrentBias => _bullPower >= 70 ? "STRONGLY BULLISH"
+            : _bullPower >= 55 ? "BULLISH"
+            : _bullPower >= 45 ? "NEUTRAL"
+            : _bullPower >= 30 ? "BEARISH"
+            : "STRONGLY BEARISH";
+
+        public Brush AiCmdBiasColor => _bullPower >= 55
+            ? new SolidColorBrush(Color.FromRgb(0, 230, 118))
+            : _bullPower >= 45
+                ? new SolidColorBrush(Color.FromRgb(224, 231, 255))
+                : new SolidColorBrush(Color.FromRgb(255, 83, 112));
+
+        public bool IsSniperReady => _tf15mStatus is "READY TO SHOOT" or "FIRE";
+
+        private int _sniperCountdown;
+        public int SniperCountdown { get => _sniperCountdown; set { _sniperCountdown = value; OnPropertyChanged(); OnPropertyChanged(nameof(SniperCountdownText)); } }
+        public string SniperCountdownText => _sniperCountdown > 0 ? $"진입 {_sniperCountdown}초 전" : string.Empty;
+
+        public void UpdateAiCommandState(
+            string symbol, float confidence, string direction,
+            string h4, string h1, string m15,
+            double bullPower, double bearPower)
+        {
+            AiCmdSymbol     = symbol;
+            AiCmdConfidence = Math.Round(confidence * 100, 1);
+            AiCmdDirection  = direction;
+            TfH4Status  = h4;
+            TfH1Status  = h1;
+            Tf15mStatus = m15;
+            BullPower   = bullPower;
+        }
+
+        private static Brush TfStatusToBrush(string status) => status switch
+        {
+            "TRENDING UP"   => new SolidColorBrush(Color.FromRgb(0, 230, 118)),
+            "STRENGTHENING" => new SolidColorBrush(Color.FromRgb(0, 230, 118)),
+            "WATCHING"      => new SolidColorBrush(Color.FromRgb(255, 179, 0)),
+            _               => new SolidColorBrush(Color.FromRgb(107, 114, 128)),
+        };
+
+        private static Brush Tf15mStatusToBrush(string status) => status switch
+        {
+            "FIRE"           => new SolidColorBrush(Color.FromRgb(255, 83, 112)),
+            "READY TO SHOOT" => new SolidColorBrush(Color.FromRgb(255, 179, 0)),
+            _                => new SolidColorBrush(Color.FromRgb(107, 114, 128)),
+        };
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged([CallerMemberName] string? name = null) =>
