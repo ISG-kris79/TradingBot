@@ -2502,7 +2502,7 @@
                                 <!-- Volume Gauge -->
                                 <StackPanel Grid.Column="1" Margin="16,0" MinWidth="100" VerticalAlignment="Center">
                                     <TextBlock Text="1M VOLUME" FontSize="10" Foreground="#6B7280" FontWeight="Bold" HorizontalAlignment="Center"/>
-                                    <ProgressBar Value="{Binding VolumeGauge}" Maximum="100" Height="8"
+                                    <ProgressBar Value="{Binding VolumeGauge, Mode=OneWay}" Maximum="100" Height="8"
                                                  Background="#252B48" Margin="0,5,0,0">
                                         <ProgressBar.Foreground>
                                             <SolidColorBrush Color="#00E5FF"/>
@@ -2515,7 +2515,7 @@
                                 <!-- Daily Profit Target -->
                                 <StackPanel Grid.Column="2" MinWidth="130" VerticalAlignment="Center">
                                     <TextBlock Text="DAILY TARGET" FontSize="10" Foreground="#6B7280" FontWeight="Bold" HorizontalAlignment="Center"/>
-                                    <ProgressBar Value="{Binding DailyProfitProgress}" Maximum="100" Height="8"
+                                    <ProgressBar Value="{Binding DailyProfitProgress, Mode=OneWay}" Maximum="100" Height="8"
                                                  Background="#252B48" Margin="0,5,0,0">
                                         <ProgressBar.Foreground>
                                             <SolidColorBrush Color="#00E676"/>
