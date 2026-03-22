@@ -15,6 +15,12 @@
 
  - 없음
 
+## [2.5.2] - 2026-03-22
+
+### Fixed
+
+- ProgressBar `DailyProfitProgress` / `VolumeGauge` TwoWay 바인딩 오류 수정 (Mode=OneWay)
+
 ## [2.5.1] - 2026-03-20
 
 ### Added
