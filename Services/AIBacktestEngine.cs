@@ -34,10 +34,12 @@ namespace TradingBot.Services
         private const decimal FEE_RATE       = 0.0004m;
         private const int     COOLDOWN_BARS  = 12;   // 5분봉 12개 = 1시간
 
-        // 라벨링 파라미터: 미래 N봉 내에서 TP 먼저 도달 → 승리(1), SL 먼저 도달 → 패배(0)
-        private const int     LABEL_LOOKAHEAD  = 60;  // 5분 × 60 = 5시간
-        private const double  LABEL_TP_PCT     = 1.5; // 가격 +1.5% = ROE +30%
-        private const double  LABEL_SL_PCT     = 0.8; // 가격 -0.8% = ROE -16%
+        // 라벨링 파라미터: '빠른 파동' 학습용
+        // 단순 '가격 상승'이 아닌 '진입 후 15분 내 +1% 도달 여부'를 학습
+        // → AI가 느린 추세가 아닌 빠른 모멘텀 파동을 찾게 됨
+        private const int     LABEL_LOOKAHEAD  = 15;  // 5분 × 15 = 75분 (빠른 파동 감지)
+        private const double  LABEL_TP_PCT     = 1.0; // 가격 +1.0% = ROE +20% (빠른 달성)
+        private const double  LABEL_SL_PCT     = 0.5; // 가격 -0.5% = ROE -10% (타이트 손절)
 
         // ═══ ML 특성 정의 (40개: 5분봉 25 + 15분봉 5 + 1시간봉 5 + 4시간봉 5) ═══
         public class EntryFeature
@@ -93,6 +95,13 @@ namespace TradingBot.Services
             public float M15_MACD_Rising { get; set; }
             public float M15_Volume_Ratio { get; set; }
 
+            // ── 선행성·정규화 강화 피처 (5개) ──
+            public float VWAP_Position { get; set; }      // (Price-VWAP)/Price
+            public float Price_To_EMA200 { get; set; }    // (Price-EMA200)/Price
+            public float RSI_Divergence { get; set; }     // 5분봉 다이버전스
+            public float OBV_Slope { get; set; }          // OBV 변화율
+            public float Pivot_Position { get; set; }     // (Price-Pivot)/(R1-S1)
+
             // ── 1시간봉 피처 (5개) ── 실제 1시간봉 데이터에서 추출
             public float H1_RSI { get; set; }
             public float H1_MACD_Rising { get; set; }
@@ -135,9 +144,13 @@ namespace TradingBot.Services
             public DateTime Time;
             public double O, H, L, C, Vol;
             // 지표
-            public double RSI, RSIPrev, EMA9, EMA21, EMA50, EMA9Prev, EMA21Prev;
+            public double RSI, RSIPrev, EMA9, EMA21, EMA50, EMA200, EMA9Prev, EMA21Prev;
             public double MACD, MACDPrev, ATR, BBUpper, BBLower, BBMid;
             public double VolMA, VolRatio;
+            // 선행성·정규화 강화
+            public double VWAP;        // 거래량 가중 평균 가격
+            public double OBV;         // On-Balance Volume
+            public double OBVPrev;     // 이전 OBV (기울기 계산용)
         }
 
         // ═══ 결과 ═══
@@ -361,6 +374,8 @@ namespace TradingBot.Services
                 "M15_EMA_Trend", "M15_EMA_Cross", "M15_EMA_Gap", "M15_Price_Above_EMA20",
                 "M15_Fib_Position", "M15_Fib_AtGoldenZone", "M15_Fib_Bounce",
                 "M15_MACD_Rising", "M15_Volume_Ratio",
+                // 선행성·정규화 강화 5개
+                "VWAP_Position", "Price_To_EMA200", "RSI_Divergence", "OBV_Slope", "Pivot_Position",
                 // 1시간봉 5개
                 "H1_RSI", "H1_MACD_Rising", "H1_BB_Position", "H1_EMA_Trend", "H1_Volume_Ratio",
                 // 4시간봉 5개
@@ -680,8 +695,47 @@ namespace TradingBot.Services
                 Low_Break = b.L < low12 ? 1f : 0f,
                 Momentum_Score = (float)Math.Clamp(momentum / 5.0, -1.0, 1.0),
                 HourOfDay = b.Time.Hour / 24f,
-                DayOfWeek = (int)b.Time.DayOfWeek / 7f
+                DayOfWeek = (int)b.Time.DayOfWeek / 7f,
+
+                // ── 선행성·정규화 강화 5피처 ──
+                // [①] VWAP: (Price - VWAP) / Price
+                VWAP_Position = (float)(b.C > 0 && b.VWAP > 0 ? (b.C - b.VWAP) / b.C : 0),
+                // [②] EMA200 이격도
+                Price_To_EMA200 = (float)(b.EMA200 > 0 ? (b.C - b.EMA200) / b.C : 0),
+                // [③] RSI 다이버전스 (5분봉): 가격↓+RSI↑ = +1(상승시그널)
+                RSI_Divergence = (float)(
+                    b.C < b3.C && b.RSI > b3.RSI ?  1.0 * dirMult : // 가격↓ RSI↑ = 상승 다이버전스
+                    b.C > b3.C && b.RSI < b3.RSI ? -1.0 * dirMult : // 가격↑ RSI↓ = 하락 다이버전스
+                    0),
+                // [④] OBV 기울기 (5봉 변화율, 정규화)
+                OBV_Slope = (float)(b.OBVPrev != 0 ? Math.Clamp((b.OBV - b.OBVPrev) / Math.Abs(b.OBVPrev), -1.0, 1.0) : 0),
+                // [⑤] 피보나치 피봇: (Price - Pivot) / (R1 - S1)
+                Pivot_Position = (float)ComputePivotPosition(bars, idx)
             };
+        }
+
+        private static double ComputePivotPosition(List<Bar> bars, int idx)
+        {
+            // 전일 고가/저가/종가로 피봇 계산
+            var today = bars[idx].Time.Date;
+            double prevH = 0, prevL = double.MaxValue, prevC = 0;
+            bool found = false;
+            for (int j = idx - 1; j >= 0; j--)
+            {
+                if (bars[j].Time.Date < today)
+                {
+                    if (!found) { prevC = bars[j].C; found = true; }
+                    if (bars[j].Time.Date < today.AddDays(-1)) break;
+                    prevH = Math.Max(prevH, bars[j].H);
+                    prevL = Math.Min(prevL, bars[j].L);
+                }
+            }
+            if (!found || prevH <= prevL) return 0;
+            double pivot = (prevH + prevL + prevC) / 3.0;
+            double r1 = 2.0 * pivot - prevL;
+            double s1 = 2.0 * pivot - prevH;
+            double span = r1 - s1;
+            return span > 0 ? Math.Clamp((bars[idx].C - pivot) / span, -2.0, 2.0) : 0;
         }
 
         // ═══ 패턴 벡터 변환 (40차원) ═══
@@ -700,6 +754,8 @@ namespace TradingBot.Services
                 f.M15_EMA_Trend, f.M15_EMA_Cross, f.M15_EMA_Gap, f.M15_Price_Above_EMA20,
                 f.M15_Fib_Position, f.M15_Fib_AtGoldenZone, f.M15_Fib_Bounce,
                 f.M15_MACD_Rising, f.M15_Volume_Ratio,
+                // 선행성·정규화 강화
+                f.VWAP_Position, f.Price_To_EMA200, f.RSI_Divergence, f.OBV_Slope, f.Pivot_Position,
                 f.H1_RSI, f.H1_MACD_Rising, f.H1_BB_Position, f.H1_EMA_Trend, f.H1_Volume_Ratio,
                 f.H4_RSI, f.H4_MACD_Rising, f.H4_BB_Position, f.H4_EMA_Trend, f.H4_Volume_Ratio
             };
@@ -932,6 +988,39 @@ namespace TradingBot.Services
             {
                 bars[i].MACD = bars[i].EMA9 - bars[i].EMA21;
                 bars[i].MACDPrev = bars[i - 1].EMA9 - bars[i - 1].EMA21;
+            }
+
+            // EMA200 — 장기추세 기준점
+            ComputeEma(bars, 200, b => b.C, (b, v) => b.EMA200 = v);
+
+            // VWAP — 거래량 가중 평균 가격 (당일 기준 리셋)
+            {
+                double cumVP = 0, cumVol = 0;
+                DateTime lastDate = DateTime.MinValue;
+                for (int i = 0; i < bars.Count; i++)
+                {
+                    // 날짜 변경시 리셋 (당일 VWAP)
+                    if (bars[i].Time.Date != lastDate)
+                    {
+                        cumVP = 0; cumVol = 0;
+                        lastDate = bars[i].Time.Date;
+                    }
+                    double typicalPrice = (bars[i].H + bars[i].L + bars[i].C) / 3.0;
+                    cumVP += typicalPrice * bars[i].Vol;
+                    cumVol += bars[i].Vol;
+                    bars[i].VWAP = cumVol > 0 ? cumVP / cumVol : bars[i].C;
+                }
+            }
+
+            // OBV — On-Balance Volume (가짜 상승 감지)
+            for (int i = 0; i < bars.Count; i++)
+            {
+                if (i == 0) { bars[i].OBV = bars[i].Vol; continue; }
+                double delta = bars[i].C > bars[i - 1].C ? bars[i].Vol
+                             : bars[i].C < bars[i - 1].C ? -bars[i].Vol
+                             : 0;
+                bars[i].OBV = bars[i - 1].OBV + delta;
+                bars[i].OBVPrev = bars[i - 1].OBV;
             }
 
             return bars;

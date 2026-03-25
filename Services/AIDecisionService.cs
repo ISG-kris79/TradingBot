@@ -122,6 +122,23 @@ namespace TradingBot.Services
             public float M15_MACD_Rising { get; set; }      // MACD 방향
             public float M15_Volume_Ratio { get; set; }     // 볼륨 비율
 
+            // ── 선행성·정규화 강화 피처 (5개) ══════════════════════
+            //
+            // [①] VWAP — 기관/세력 평균 단가. 가격이 VWAP 위=상승추세
+            public float VWAP_Position { get; set; }         // (Price - VWAP) / Price (정규화)
+            //
+            // [②] EMA200 이격도 — 장기추세 기준점
+            public float Price_To_EMA200 { get; set; }       // (Price - EMA200) / Price (정규화)
+            //
+            // [③] RSI 다이버전스 (5분봉) — 5파 끝단 가짜 상승 감지
+            public float RSI_Divergence { get; set; }        // 가격↓+RSI↑=+1 (상승), 가격↑+RSI↓=-1 (하락)
+            //
+            // [④] OBV 흐름 — 가격은 오르는데 자금 빠지는 '가짜 상승' 감지
+            public float OBV_Slope { get; set; }             // OBV 5봉 변화율 (정규화)
+            //
+            // [⑤] 피보나치 피봇 포인트 — 당일 지지/저항 좌표
+            public float Pivot_Position { get; set; }        // (Price - Pivot) / (R1 - S1) (정규화)
+
             // ── 상위 타임프레임 (10개) — 1H/4H ──
             public float H1_RSI { get; set; }
             public float H1_MACD_Rising { get; set; }
@@ -230,6 +247,21 @@ namespace TradingBot.Services
         {
             if (_entryPredictor == null)
                 return (false, 0, "AI 모델 미준비 — 설정>AI학습 실행 필요", 0);
+
+            // ═══ [이격도 과열 필터] ═══
+            // 가격이 VWAP/EMA에서 너무 멀어지면(과열) → AI 확인 전 차단
+            // → "늦은 진입" 방지: 이미 급등한 뒤에 쫓아가지 않음
+            float absVwapDisp = Math.Abs(input.VWAP_Position);
+            float absEma200Disp = Math.Abs(input.Price_To_EMA200);
+            if (absVwapDisp > 0.02f) // VWAP 대비 2%+ 이격 = 과열
+                return (false, 0, $"VWAP 과열 (이격:{input.VWAP_Position:P1})", 0);
+            if (absEma200Disp > 0.15f) // EMA200 대비 15%+ 이격 = 극단적 과열
+                return (false, 0, $"EMA200 과열 (이격:{input.Price_To_EMA200:P1})", 0);
+
+            // ═══ [OBV 가짜 상승 필터] ═══
+            // 가격↑ + OBV↓ = 자금 유출 중인 가짜 상승 → 차단
+            if (input.OBV_Slope < -0.3f && input.Price_Change_3Bar > 0.5f)
+                return (false, 0, $"가짜 상승 (가격↑{input.Price_Change_3Bar:F1}% + OBV↓{input.OBV_Slope:F2})", 0);
 
             var pred = _entryPredictor.Predict(input);
 
@@ -392,15 +424,29 @@ namespace TradingBot.Services
         // ═══════════════════════════════════════════════════════════
         private SniperDecision FallbackExitDecision(SniperExitInput input)
         {
-            // 긴급: ROE -25% 이하
-            if (input.UnrealizedRoePct <= -25f)
-                return new SniperDecision { Action = ExitAction.FullClose, Confidence = 0.95f,
-                    Reason = $"폴백 손절 (ROE:{input.UnrealizedRoePct:F1}%)" };
+            // ═══ [ATR 동적 손절] ═══
+            // 변동성이 클 때(ATR↑) → 손절가 넓게 (세력 털기 방어)
+            // 변동성이 작을 때(ATR↓) → 손절가 타이트 (빠른 손절)
+            // 기준: ATR 1% 이하 = 저변동 → SL -15%, ATR 2%+ = 고변동 → SL -35%
+            float atrPct = input.ATR_Pct * 100f; // 정규화 해제
+            float dynamicSL = atrPct < 1.0f ? -15f
+                            : atrPct < 2.0f ? -15f - (atrPct - 1.0f) * 20f // -15 ~ -35 선형
+                            : -35f;
 
-            // 매도압력 급증
+            // 동적 SL 도달 시 손절 (고정 -25% 대신)
+            if (input.UnrealizedRoePct <= dynamicSL)
+                return new SniperDecision { Action = ExitAction.FullClose, Confidence = 0.95f,
+                    Reason = $"ATR동적손절 (ROE:{input.UnrealizedRoePct:F1}% ≤ SL:{dynamicSL:F0}% ATR:{atrPct:F2}%)" };
+
+            // 매도압력 급증 + 볼륨 밀도↑ → 긴급 청산
             if (input.SellPressure > 0.70f && input.Volume_Density > 1.8f)
                 return new SniperDecision { Action = ExitAction.EmergencyCut, Confidence = 0.85f,
                     Reason = "폴백 긴급청산 (매도압력)" };
+
+            // 개미 털기 감지: 하락 + 볼륨 없음 → HOLD
+            if (input.UnrealizedRoePct < -5f && input.Volume_Ratio < 0.5f && input.SellPressure < 0.40f)
+                return new SniperDecision { Action = ExitAction.Hold, Confidence = 0.75f,
+                    Reason = $"개미 털기 의심 (ROE:{input.UnrealizedRoePct:F1}% 볼륨:{input.Volume_Ratio:F2}x)" };
 
             // ROE +30% 이상 + 부분익절 안했으면
             if (input.UnrealizedRoePct >= 30f && input.PartialExitDone < 0.5f)
@@ -426,6 +472,8 @@ namespace TradingBot.Services
             "M15_EMA_Trend", "M15_EMA_Cross", "M15_EMA_Gap", "M15_Price_Above_EMA20",
             "M15_Fib_Position", "M15_Fib_AtGoldenZone", "M15_Fib_Bounce",
             "M15_MACD_Rising", "M15_Volume_Ratio",
+            // 선행성·정규화 강화 (5개)
+            "VWAP_Position", "Price_To_EMA200", "RSI_Divergence", "OBV_Slope", "Pivot_Position",
             // 1H/4H (10개)
             "H1_RSI", "H1_MACD_Rising", "H1_BB_Position", "H1_EMA_Trend", "H1_Volume_Ratio",
             "H4_RSI", "H4_MACD_Rising", "H4_BB_Position", "H4_EMA_Trend", "H4_Volume_Ratio",
