@@ -102,6 +102,12 @@ namespace TradingBot.Services
             public float OBV_Slope { get; set; }          // OBV 변화율
             public float Pivot_Position { get; set; }     // (Price-Pivot)/(R1-S1)
 
+            // ── 추세 강도·국면 분류 (4개) ──
+            public float ADX { get; set; }                  // ADX 14 / 100
+            public float Ichimoku_Above_Kijun { get; set; } // 가격 > 기준선(26)
+            public float FundingRate { get; set; }          // 펀딩비 (정규화)
+            public float SymbolCategory { get; set; }       // 종목 카테고리
+
             // ── 1시간봉 피처 (5개) ── 실제 1시간봉 데이터에서 추출
             public float H1_RSI { get; set; }
             public float H1_MACD_Rising { get; set; }
@@ -151,6 +157,9 @@ namespace TradingBot.Services
             public double VWAP;        // 거래량 가중 평균 가격
             public double OBV;         // On-Balance Volume
             public double OBVPrev;     // 이전 OBV (기울기 계산용)
+            // 추세 강도·국면
+            public double ADX;         // Average Directional Index
+            public double KijunSen;    // 이치모쿠 기준선 (26봉)
         }
 
         // ═══ 결과 ═══
@@ -287,6 +296,16 @@ namespace TradingBot.Services
                 var bars1h  = allBars1h.GetValueOrDefault(sym) ?? new List<Bar>();
                 var bars4h  = allBars4h.GetValueOrDefault(sym) ?? new List<Bar>();
 
+                // 종목 카테고리: 종목마다 파동 성격(기울기, 눌림 깊이)이 다름
+                float symCat = sym switch
+                {
+                    "BTCUSDT" => 0f,
+                    "ETHUSDT" => 0.25f,
+                    "SOLUSDT" or "XRPUSDT" => 0.50f,
+                    "DOGEUSDT" or "PEPEUSDT" => 0.75f,
+                    _ => 1.0f // WIFUSDT, BONKUSDT 등 MicroCap
+                };
+
                 int warmup = 55;
                 for (int i = warmup; i < bars.Count - LABEL_LOOKAHEAD; i++)
                 {
@@ -302,7 +321,7 @@ namespace TradingBot.Services
                     var longLabel = LabelEntry(bars, i, true);
                     if (longLabel.HasValue)
                     {
-                        var feat = ExtractFeatures(bars, i, true);
+                        var feat = ExtractFeatures(bars, i, true, symCat);
                         AttachHTFFeatures(feat, htf15m, htf1h, htf4h);
                         feat.Label = longLabel.Value;
                         allFeatures.Add((feat, sym, "LONG", i));
@@ -322,7 +341,7 @@ namespace TradingBot.Services
                     var shortLabel = LabelEntry(bars, i, false);
                     if (shortLabel.HasValue)
                     {
-                        var feat = ExtractFeatures(bars, i, false);
+                        var feat = ExtractFeatures(bars, i, false, symCat);
                         AttachHTFFeatures(feat, htf15m, htf1h, htf4h);
                         feat.Label = shortLabel.Value;
                         allFeatures.Add((feat, sym, "SHORT", i));
@@ -376,6 +395,8 @@ namespace TradingBot.Services
                 "M15_MACD_Rising", "M15_Volume_Ratio",
                 // 선행성·정규화 강화 5개
                 "VWAP_Position", "Price_To_EMA200", "RSI_Divergence", "OBV_Slope", "Pivot_Position",
+                // 추세 강도·국면 분류 4개
+                "ADX", "Ichimoku_Above_Kijun", "FundingRate", "SymbolCategory",
                 // 1시간봉 5개
                 "H1_RSI", "H1_MACD_Rising", "H1_BB_Position", "H1_EMA_Trend", "H1_Volume_Ratio",
                 // 4시간봉 5개
@@ -637,7 +658,7 @@ namespace TradingBot.Services
         }
 
         // ═══ 특성 추출 ═══
-        private EntryFeature ExtractFeatures(List<Bar> bars, int idx, bool isLong)
+        private EntryFeature ExtractFeatures(List<Bar> bars, int idx, bool isLong, float symbolCategory = 0.5f)
         {
             var b = bars[idx];
             var b1 = bars[idx - 1];
@@ -710,7 +731,17 @@ namespace TradingBot.Services
                 // [④] OBV 기울기 (5봉 변화율, 정규화)
                 OBV_Slope = (float)(b.OBVPrev != 0 ? Math.Clamp((b.OBV - b.OBVPrev) / Math.Abs(b.OBVPrev), -1.0, 1.0) : 0),
                 // [⑤] 피보나치 피봇: (Price - Pivot) / (R1 - S1)
-                Pivot_Position = (float)ComputePivotPosition(bars, idx)
+                Pivot_Position = (float)ComputePivotPosition(bars, idx),
+
+                // ── 추세 강도·국면 분류 ──
+                // [⑥] ADX: 추세 강도 (>25 = 강한 추세, <20 = 횡보)
+                ADX = (float)(b.ADX / 100.0),
+                // [⑦] 이치모쿠: 가격 > 기준선(26) = 상승국면
+                Ichimoku_Above_Kijun = b.KijunSen > 0 && b.C > b.KijunSen ? 1f : 0f,
+                // [⑧] 펀딩비: 백테스트에서는 0 (실시간에서만 사용)
+                FundingRate = 0f,
+                // [⑨] 종목 카테고리: 호출 시 설정
+                SymbolCategory = symbolCategory
             };
         }
 
@@ -756,6 +787,7 @@ namespace TradingBot.Services
                 f.M15_MACD_Rising, f.M15_Volume_Ratio,
                 // 선행성·정규화 강화
                 f.VWAP_Position, f.Price_To_EMA200, f.RSI_Divergence, f.OBV_Slope, f.Pivot_Position,
+                f.ADX, f.Ichimoku_Above_Kijun, f.FundingRate, f.SymbolCategory,
                 f.H1_RSI, f.H1_MACD_Rising, f.H1_BB_Position, f.H1_EMA_Trend, f.H1_Volume_Ratio,
                 f.H4_RSI, f.H4_MACD_Rising, f.H4_BB_Position, f.H4_EMA_Trend, f.H4_Volume_Ratio
             };
@@ -1021,6 +1053,54 @@ namespace TradingBot.Services
                              : 0;
                 bars[i].OBV = bars[i - 1].OBV + delta;
                 bars[i].OBVPrev = bars[i - 1].OBV;
+            }
+
+            // ADX (Average Directional Index) — 추세 강도 판별
+            {
+                double prevPlusDM = 0, prevMinusDM = 0, prevTR = 0, prevADX = 0;
+                for (int i = 1; i < bars.Count; i++)
+                {
+                    double hi = bars[i].H, lo = bars[i].L, prevC = bars[i - 1].C;
+                    double prevHi = bars[i - 1].H, prevLo = bars[i - 1].L;
+                    double tr = Math.Max(hi - lo, Math.Max(Math.Abs(hi - prevC), Math.Abs(lo - prevC)));
+                    double plusDM = hi - prevHi > prevLo - lo && hi - prevHi > 0 ? hi - prevHi : 0;
+                    double minusDM = prevLo - lo > hi - prevHi && prevLo - lo > 0 ? prevLo - lo : 0;
+
+                    if (i <= 14)
+                    {
+                        prevPlusDM += plusDM; prevMinusDM += minusDM; prevTR += tr;
+                        if (i == 14)
+                        {
+                            double plusDI = prevTR > 0 ? prevPlusDM / prevTR * 100 : 0;
+                            double minusDI = prevTR > 0 ? prevMinusDM / prevTR * 100 : 0;
+                            double dx = (plusDI + minusDI) > 0 ? Math.Abs(plusDI - minusDI) / (plusDI + minusDI) * 100 : 0;
+                            prevADX = dx;
+                        }
+                    }
+                    else
+                    {
+                        prevPlusDM = prevPlusDM - prevPlusDM / 14.0 + plusDM;
+                        prevMinusDM = prevMinusDM - prevMinusDM / 14.0 + minusDM;
+                        prevTR = prevTR - prevTR / 14.0 + tr;
+                        double plusDI = prevTR > 0 ? prevPlusDM / prevTR * 100 : 0;
+                        double minusDI = prevTR > 0 ? prevMinusDM / prevTR * 100 : 0;
+                        double dx = (plusDI + minusDI) > 0 ? Math.Abs(plusDI - minusDI) / (plusDI + minusDI) * 100 : 0;
+                        prevADX = (prevADX * 13 + dx) / 14.0;
+                    }
+                    bars[i].ADX = prevADX;
+                }
+            }
+
+            // 이치모쿠 기준선 (Kijun-sen = 26봉 최고+최저 / 2)
+            for (int i = 26; i < bars.Count; i++)
+            {
+                double hi26 = 0, lo26 = double.MaxValue;
+                for (int j = i - 25; j <= i; j++)
+                {
+                    hi26 = Math.Max(hi26, bars[j].H);
+                    lo26 = Math.Min(lo26, bars[j].L);
+                }
+                bars[i].KijunSen = (hi26 + lo26) / 2.0;
             }
 
             return bars;

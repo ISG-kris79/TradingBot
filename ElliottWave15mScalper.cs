@@ -33,6 +33,11 @@ namespace TradingBot.Strategies
         private const double INITIAL_ENTRY_PCT = 0.40;   // 초기 진입 비율
         private const double ADDON_ENTRY_PCT   = 0.60;   // 불타기 비율
 
+        // ═══ [1분봉 기울기 + 볼륨 폭발] 빠른 진입 파라미터 ═══
+        // 3파는 1파보다 기울기가 가파름 → 1분봉 최근 3~5개 캔들 기울기 급격화 시 즉시 진입
+        private const double M1_SLOPE_MIN       = 0.3;    // 1분봉 3봉 기울기 최소 (%)
+        private const double M1_VOL_SPIKE_RATIO = 3.0;    // 1분봉 거래량 20MA 대비 3배
+
         // ═══ 파동 상태 ═══
         public enum Phase
         {
@@ -75,6 +80,30 @@ namespace TradingBot.Strategies
         }
 
         private readonly Dictionary<string, ScalperState> _states = new();
+
+        // 1분봉 기울기/볼륨 캐시 (외부에서 업데이트)
+        private double _lastM1Slope = 0;     // 최근 3봉 기울기 (%)
+        private double _lastM1VolSpike = 0;  // 현재봉 볼륨 / 20MA
+
+        /// <summary>
+        /// 1분봉 데이터로 기울기 + 볼륨 스파이크 업데이트.
+        /// TradingEngine에서 1분봉 수신 시 호출.
+        /// </summary>
+        public void UpdateM1Data(List<IBinanceKline> m1Candles)
+        {
+            if (m1Candles == null || m1Candles.Count < 21) return;
+            int n = m1Candles.Count;
+
+            // 기울기: 최근 3봉 가격 변화율
+            double priceNow = (double)m1Candles[n - 1].ClosePrice;
+            double price3Ago = (double)m1Candles[n - 4].ClosePrice;
+            _lastM1Slope = price3Ago > 0 ? (priceNow - price3Ago) / price3Ago * 100 : 0;
+
+            // 볼륨 스파이크: 현재봉 / 20봉 평균
+            double volNow = (double)m1Candles[n - 1].Volume;
+            double volAvg = m1Candles.Skip(n - 21).Take(20).Average(k => (double)k.Volume);
+            _lastM1VolSpike = volAvg > 0 ? volNow / volAvg : 0;
+        }
 
         public ScalperState GetOrCreate(string symbol)
         {
@@ -152,7 +181,11 @@ namespace TradingBot.Strategies
                             && currentRsi > prevRsi + VTURN_RSI_DELTA
                             && price > ema20;
 
-                if (inGoldenZone && isVTurn)
+                // [1분봉 빠른 트리거] 기울기 급격화 + 볼륨 3x → V-Turn 확인 없이 즉시 진입
+                // 3파는 1파보다 기울기가 가파름 → 15분봉 확인 매매로 늦어지는 문제 해결
+                bool m1FastTrigger = _lastM1Slope >= M1_SLOPE_MIN && _lastM1VolSpike >= M1_VOL_SPIKE_RATIO;
+
+                if (inGoldenZone && (isVTurn || m1FastTrigger))
                 {
                     state.CurrentPhase = Phase.Wave2Entry;
                     return new ScalperSignal
@@ -164,7 +197,9 @@ namespace TradingBot.Strategies
                         StopLoss       = state.StopLoss,
                         TakeProfit1    = state.Wave1High,
                         TakeProfit2    = state.Fib1618,
-                        Reason         = $"황금존({state.Fib618:F4}~{state.Fib786:F4}) + V-Turn (RSI:{prevRsi:F1}→{currentRsi:F1})"
+                        Reason         = m1FastTrigger
+                            ? $"황금존 + 1M 빠른진입 (기울기:{_lastM1Slope:F2}% 볼륨:{_lastM1VolSpike:F1}x)"
+                            : $"황금존({state.Fib618:F4}~{state.Fib786:F4}) + V-Turn (RSI:{prevRsi:F1}→{currentRsi:F1})"
                     };
                 }
                 return null;

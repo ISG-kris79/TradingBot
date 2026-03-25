@@ -139,6 +139,20 @@ namespace TradingBot.Services
             // [⑤] 피보나치 피봇 포인트 — 당일 지지/저항 좌표
             public float Pivot_Position { get; set; }        // (Price - Pivot) / (R1 - S1) (정규화)
 
+            // ── 추세 강도·국면 분류 (4개) ══════════════════════
+            //
+            // [⑥] ADX — 추세 강도 (3파 '진짜' 추세 vs 횡보 '가짜' 추세 판별)
+            public float ADX { get; set; }                   // ADX 14 / 100 (0~1)
+            //
+            // [⑦] 이치모쿠 기준선 돌파 — 1분봉 기준선 위=상승, 아래=하락
+            public float Ichimoku_Above_Kijun { get; set; }  // 가격 > 기준선(26) = 1, 아래 = 0
+            //
+            // [⑧] 펀딩비 — 숏스퀴즈/롱스퀴즈 가능성 (밈코인 필수)
+            public float FundingRate { get; set; }           // 펀딩비 × 10000 (정규화)
+            //
+            // [⑨] 종목 카테고리 — 종목별 파동 성격(기울기, 눌림 깊이) 구분
+            public float SymbolCategory { get; set; }        // 0=BTC, 0.25=ETH, 0.5=Major, 0.75=Meme, 1=MicroCap
+
             // ── 상위 타임프레임 (10개) — 1H/4H ──
             public float H1_RSI { get; set; }
             public float H1_MACD_Rising { get; set; }
@@ -464,6 +478,8 @@ namespace TradingBot.Services
             "M15_MACD_Rising", "M15_Volume_Ratio",
             // 선행성·정규화 강화 (5개)
             "VWAP_Position", "Price_To_EMA200", "RSI_Divergence", "OBV_Slope", "Pivot_Position",
+            // 추세 강도·국면 분류 (4개)
+            "ADX", "Ichimoku_Above_Kijun", "FundingRate", "SymbolCategory",
             // 1H/4H (10개)
             "H1_RSI", "H1_MACD_Rising", "H1_BB_Position", "H1_EMA_Trend", "H1_Volume_Ratio",
             "H4_RSI", "H4_MACD_Rising", "H4_BB_Position", "H4_EMA_Trend", "H4_Volume_Ratio",
