@@ -5827,23 +5827,33 @@ namespace TradingBot
                         && !canScoutBypass   // 이미 canScoutBypass 처리된 경우 중복 방지
                         && !isHSPatternBypass;
 
-                    if (!canScoutBypass && !isHSPatternBypass && !isTf90Override)
+                    // [정찰대 v2] AI 신뢰도 70%+면 무조건 정찰대 투입
+                    // 100% 완벽한 타점은 지나고 나서야 보임 → 일단 발 담가야 3파를 놓치지 않음
+                    bool isScoutConfidenceBypass = blendedMlTfScore >= 0.70f
+                        && !canScoutBypass && !isHSPatternBypass && !isTf90Override;
+
+                    if (!canScoutBypass && !isHSPatternBypass && !isTf90Override && !isScoutConfidenceBypass)
                     {
                         return;
                     }
 
                     scoutModeActivated = true;
-                    decimal scoutMultiplier = isHSPatternBypass ? 1.0m
-                                           : isTf90Override    ? 0.20m
-                                           :                     0.30m;
+                    // [정찰대 v2] 시드 10~20% 투입 (AI 신뢰도별 동적 배분)
+                    decimal scoutMultiplier = isHSPatternBypass      ? 1.0m
+                                           : isTf90Override          ? 0.20m
+                                           : isScoutConfidenceBypass ? (blendedMlTfScore >= 0.80f ? 0.20m : 0.10m)
+                                           :                           0.30m;
                     manualSizeMultiplier = Math.Min(manualSizeMultiplier, scoutMultiplier);
-                    string scoutTag = isHSPatternBypass ? $"SCOUT_{hsBypassReason}"
-                                    : isTf90Override   ? "SCOUT_TF90"
-                                    :                    "SCOUT";
+                    string scoutTag = isHSPatternBypass      ? $"SCOUT_{hsBypassReason}"
+                                    : isTf90Override         ? "SCOUT_TF90"
+                                    : isScoutConfidenceBypass ? "SCOUT_AI70"
+                                    :                          "SCOUT";
                     signalSource = $"{signalSource}_{scoutTag}";
                     flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
 
-                    string deployReason = isTf90Override
+                    string deployReason = isScoutConfidenceBypass
+                        ? $"reason=AI70_ScoutDeploy blended={blendedMlTfScore:P0} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.TF_Confidence:P0} size={scoutMultiplier:P0} gate={gateResult.reason}"
+                        : isTf90Override
                         ? $"reason=TF90_Override tf={gateResult.detail.TF_Confidence:P0} ml={gateResult.detail.ML_Confidence:P0} blended={blendedMlTfScore:P0} size={scoutMultiplier:P0} gate={gateResult.reason}"
                         : $"reason=TF90+_BBMidSupport_LowVolumeBypass tf={gateResult.detail.TF_Confidence:P0} ml={gateResult.detail.ML_Confidence:P0} blended={blendedMlTfScore:P0} size={scoutMultiplier:P0}";
 
@@ -5863,13 +5873,28 @@ namespace TradingBot
 
                     if (volumeRecovered && mlRecovered && tfSustained)
                     {
-                        // [불타기 Add-on] 가격이 최근 5봉 고점 돌파 시 20%, 아니면 70%
+                        // [불타기 v2] 3파 확정 판단:
+                        // 1) Fib 0.382 돌파 (2파 조정 끝 → 3파 진입) → 40% 투입
+                        // 2) 최근 5봉 고점 돌파 (계단식) → 20% 투입
+                        // 3) 둘 다 아님 → 70% 투입 (보수적)
                         bool stairBreakout = recentEntryKlines != null && recentEntryKlines.Count >= 5
                             && currentPrice >= recentEntryKlines.TakeLast(5).Max(k => k.HighPrice);
+
+                        // Fib 0.382 돌파 확인: 최근 20봉 저점→고점의 38.2% 되돌림 레벨 위에 가격
+                        bool fibBreakout = false;
+                        if (recentEntryKlines != null && recentEntryKlines.Count >= 20)
+                        {
+                            var last20 = recentEntryKlines.TakeLast(20).ToList();
+                            decimal recentLow = last20.Min(k => k.LowPrice);
+                            decimal recentHigh = last20.Max(k => k.HighPrice);
+                            decimal fib382Level = recentHigh - (recentHigh - recentLow) * 0.382m;
+                            fibBreakout = currentPrice > fib382Level && recentHigh > recentLow * 1.01m; // 최소 1% 구간 필요
+                        }
+
                         scoutAddOnEligible = true;
-                        decimal addOnMultiplier = stairBreakout ? 0.20m : 0.70m;
+                        decimal addOnMultiplier = fibBreakout ? 0.40m : stairBreakout ? 0.20m : 0.70m;
                         manualSizeMultiplier = Math.Min(manualSizeMultiplier, addOnMultiplier);
-                        string addOnTag = stairBreakout ? "STAIRCASE_ADDON" : "SCOUT_ADDON";
+                        string addOnTag = fibBreakout ? "FIB382_WAVE3_ADDON" : stairBreakout ? "STAIRCASE_ADDON" : "SCOUT_ADDON";
                         signalSource = $"{signalSource}_{addOnTag}";
                         flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
 
@@ -5938,10 +5963,11 @@ namespace TradingBot
             // ═══════════════════════════════════════════════════════════════
             // [AI Intelligence + 1min Execution Hub]
             // 상위 TF AI가 진입 허가를 내리면 → 1분봉에서 최적 타점을 잡습니다.
-            // 조건: AI 게이트가 통과됐고 스카우트 모드가 아닌 정규 진입일 때만 적용
-            // (스카우트/불타기는 속도가 생명이므로 허브 대기 생략)
+            // [v2.5.3] 정찰대/불타기도 1분봉 스나이핑 적용 (대기 60초)
+            //   → 15분봉 '흐름' 확인 후 1분봉 '채찍'(거래량 실린 양봉)으로 즉시 진입
+            //   → 진입 지연 30분 → 1분 이내로 단축
             // ═══════════════════════════════════════════════════════════════
-            if (_executionHub != null && !scoutModeActivated && !scoutAddOnEligible)
+            if (_executionHub != null)
             {
                 float hubConfidence = _capturedBlendedScore; // AI 게이트에서 캡처한 블렌디드 점수
 
@@ -5965,9 +5991,11 @@ namespace TradingBot
                     }
                 }
 
+                // 정찰대/불타기: 속도 우선 → 60초 대기 | 정규 진입: 180초 대기
+                int hubMaxWait = (scoutModeActivated || scoutAddOnEligible) ? 60 : 180;
                 var (hubTriggered, hubReason) = await _executionHub.WaitForTriggerAsync(
                     symbol, decision, hubConfidence,
-                    maxWaitSeconds: 180,
+                    maxWaitSeconds: hubMaxWait,
                     scenarioCtx: scenarioCtx,
                     token: token);
 

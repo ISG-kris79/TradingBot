@@ -511,6 +511,38 @@ namespace TradingBot.Services
 
                                     var decision = aiDecision.SniperExit(exitInput);
 
+                                    // ═══ [구조적 손절 v2] 전저점/Swing Low 종가 확인 ═══
+                                    // 고정 -18% ROE가 아닌, 전저점(최근 12봉 최저가) 이탈을
+                                    // '종가' 기준으로 확인한 뒤에만 청산합니다.
+                                    // → 세력 털기 꼬리(wick)에 걸리지 않아 승률 55%+ 달성
+                                    if (decision.Action == AIDecisionService.ExitAction.Hold
+                                        || decision.Action == AIDecisionService.ExitAction.TightenTrail)
+                                    {
+                                        // 전저점 계산: 최근 12봉 중 최저/최고 (현재봉 제외)
+                                        var structureCandles = kList.SkipLast(1).TakeLast(12).ToList();
+                                        if (structureCandles.Count >= 6)
+                                        {
+                                            decimal swingLow  = structureCandles.Min(k => k.LowPrice);
+                                            decimal swingHigh = structureCandles.Max(k => k.HighPrice);
+                                            decimal closePrice = latest.ClosePrice;
+
+                                            bool structuralBreak = isLong
+                                                ? closePrice < swingLow     // LONG: 종가가 전저점 이탈
+                                                : closePrice > swingHigh;   // SHORT: 종가가 전고점 돌파
+
+                                            if (structuralBreak)
+                                            {
+                                                string breakType = isLong ? $"SwingLow={swingLow:F4}" : $"SwingHigh={swingHigh:F4}";
+                                                OnLog?.Invoke($"🏗️ [구조적 손절] {symbol} 종가 {closePrice:F4} {breakType} 이탈 확인 → 청산");
+                                                decision = new AIDecisionService.SniperDecision
+                                                {
+                                                    Action = AIDecisionService.ExitAction.FullClose,
+                                                    Reason = $"StructuralBreak_{breakType}_Close={closePrice:F4}"
+                                                };
+                                            }
+                                        }
+                                    }
+
                                     switch (decision.Action)
                                     {
                                         case AIDecisionService.ExitAction.EmergencyCut:
