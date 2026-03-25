@@ -248,20 +248,10 @@ namespace TradingBot.Services
             if (_entryPredictor == null)
                 return (false, 0, "AI 모델 미준비 — 설정>AI학습 실행 필요", 0);
 
-            // ═══ [이격도 과열 필터] ═══
-            // 가격이 VWAP/EMA에서 너무 멀어지면(과열) → AI 확인 전 차단
-            // → "늦은 진입" 방지: 이미 급등한 뒤에 쫓아가지 않음
-            float absVwapDisp = Math.Abs(input.VWAP_Position);
-            float absEma200Disp = Math.Abs(input.Price_To_EMA200);
-            if (absVwapDisp > 0.02f) // VWAP 대비 2%+ 이격 = 과열
-                return (false, 0, $"VWAP 과열 (이격:{input.VWAP_Position:P1})", 0);
-            if (absEma200Disp > 0.15f) // EMA200 대비 15%+ 이격 = 극단적 과열
-                return (false, 0, $"EMA200 과열 (이격:{input.Price_To_EMA200:P1})", 0);
-
-            // ═══ [OBV 가짜 상승 필터] ═══
-            // 가격↑ + OBV↓ = 자금 유출 중인 가짜 상승 → 차단
-            if (input.OBV_Slope < -0.3f && input.Price_Change_3Bar > 0.5f)
-                return (false, 0, $"가짜 상승 (가격↑{input.Price_Change_3Bar:F1}% + OBV↓{input.OBV_Slope:F2})", 0);
+            // ═══ [이격도/OBV 필터] ═══
+            // 하드 블록 제거 → AI 피처로만 학습에 반영
+            // VWAP_Position, Price_To_EMA200, OBV_Slope 은 ML이 자체 판단
+            // (하드 필터는 크립토 특성상 정상 이격을 과열로 오판하여 진입 차단)
 
             var pred = _entryPredictor.Predict(input);
 
