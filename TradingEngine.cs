@@ -9670,6 +9670,64 @@ namespace TradingBot
 
         public async Task ClosePositionAsync(string symbol)
         {
+            bool isSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false;
+
+            // [FIX] 시뮬레이션 모드: 거래소 API 없이 로컬 포지션 직접 제거
+            if (isSimulation)
+            {
+                PositionInfo? pos = null;
+                lock (_posLock)
+                {
+                    _activePositions.TryGetValue(symbol, out pos);
+                    _activePositions.Remove(symbol);
+                }
+
+                if (pos != null)
+                {
+                    try
+                    {
+                        // 현재가 조회 시도 (실패 시 진입가 사용)
+                        decimal exitPrice = pos.EntryPrice;
+                        try { exitPrice = await _exchangeService.GetPriceAsync(symbol, CancellationToken.None); }
+                        catch { /* 시뮬레이션이므로 진입가로 폴백 */ }
+
+                        decimal pnl = pos.IsLong
+                            ? (exitPrice - pos.EntryPrice) * Math.Abs(pos.Quantity)
+                            : (pos.EntryPrice - exitPrice) * Math.Abs(pos.Quantity);
+                        decimal pnlPct = pos.EntryPrice > 0
+                            ? (pnl / (pos.EntryPrice * Math.Abs(pos.Quantity))) * 100m * pos.Leverage
+                            : 0m;
+
+                        var tradeLog = new TradeLog(
+                            symbol, pos.IsLong ? "SELL" : "BUY", "MANUAL_CLOSE_SIM",
+                            exitPrice, pos.AiScore, DateTime.Now, pnl, pnlPct)
+                        {
+                            EntryPrice = pos.EntryPrice,
+                            ExitPrice = exitPrice,
+                            Quantity = Math.Abs(pos.Quantity),
+                            EntryTime = pos.EntryTime,
+                            ExitTime = DateTime.Now,
+                            ExitReason = "사용자 수동 청산 (시뮬레이션)"
+                        };
+                        await _dbManager.SaveTradeLogAsync(tradeLog);
+                    }
+                    catch (Exception dbEx)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [시뮬레이션 청산] {symbol} DB 기록 실패: {dbEx.Message}");
+                    }
+
+                    OnPositionStatusUpdate?.Invoke(symbol, false, 0);
+                    OnTradeHistoryUpdated?.Invoke();
+                    OnAlert?.Invoke($"✅ [시뮬레이션] {symbol} 수동 청산 완료");
+                }
+                else
+                {
+                    OnStatusLog?.Invoke($"⚠️ {symbol} 청산 대상 포지션이 없습니다.");
+                }
+                return;
+            }
+
+            // 실전 모드: PositionMonitor를 통한 거래소 청산
             if (_positionMonitor != null)
             {
                 await _positionMonitor.ExecuteMarketClose(symbol, "사용자 수동 청산", _cts?.Token ?? CancellationToken.None);

@@ -1318,68 +1318,7 @@
                             </Border>
                             <!-- ═══ END TimeOut Probability Entry Widget ═══ -->
 
-                            <!-- Critical Alerts Card -->
-                            <Border Style="{StaticResource StatCardStyle}"
-                                    Margin="0,0,0,16">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="150"/>
-                                    </Grid.RowDefinitions>
-
-                                    <Grid Margin="0,0,0,12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-
-                                        <TextBlock Text="⚠  CRITICAL ALERTS"
-                                                   FontSize="11"
-                                                   FontWeight="Bold"
-                                                   Foreground="{StaticResource ErrorBrush}"
-                                                   VerticalAlignment="Center"/>
-
-                                        <Border Grid.Column="1"
-                                                Background="{StaticResource ErrorBrush}"
-                                                CornerRadius="10"
-                                                Padding="8,2"
-                                                ToolTip="DB 실패 알림 카운트">
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="DB"
-                                                           Foreground="White"
-                                                           FontSize="10"
-                                                           FontWeight="Bold"
-                                                           Margin="0,0,4,0"/>
-                                                <TextBlock Text="{Binding DbFailureAlertCount}"
-                                                           Foreground="White"
-                                                           FontSize="10"
-                                                           FontWeight="Bold"/>
-                                            </StackPanel>
-                                        </Border>
-                                    </Grid>
-
-                                    <ListBox x:Name="lstAlerts"
-                                             Grid.Row="1"
-                                             ItemsSource="{Binding Alerts}"
-                                             Background="Transparent"
-                                             BorderThickness="0"
-                                             Foreground="#E0E7FF"
-                                             FontFamily="Consolas"
-                                             FontSize="11"
-                                             VirtualizingStackPanel.IsVirtualizing="True"
-                                             VirtualizingStackPanel.VirtualizationMode="Recycling"
-                                             ScrollViewer.VerticalScrollBarVisibility="Auto">
-                                        <ListBox.ItemContainerStyle>
-                                            <Style TargetType="ListBoxItem">
-                                                <Setter Property="Padding"
-                                                        Value="4,5"/>
-                                                <Setter Property="Background"
-                                                        Value="Transparent"/>
-                                            </Style>
-                                        </ListBox.ItemContainerStyle>
-                                    </ListBox>
-                                </Grid>
-                            </Border>
+                            <!-- Critical Alerts Card: DataGrid 아래로 이동됨 -->
 
                             </StackPanel>
                         </ScrollViewer>
@@ -1545,6 +1484,7 @@
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="*"/>
+                                            <RowDefinition Height="120"/>
                                         </Grid.RowDefinitions>
                                         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
                                             <TextBlock Text="📊 LIVE MARKET SIGNALS" FontSize="12" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}" VerticalAlignment="Center"/>
@@ -1736,6 +1676,58 @@
 
                                                 </DataGrid.Columns>
                                             </DataGrid>
+                                        </Border>
+
+                                        <!-- Critical Alerts (DataGrid 아래, 5줄) -->
+                                        <Border Grid.Row="2"
+                                                Background="{StaticResource BackgroundMediumBrush}"
+                                                BorderBrush="{StaticResource BackgroundLightBrush}"
+                                                BorderThickness="0,1,0,0"
+                                                Padding="8,4"
+                                                Margin="0,4,0,0">
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="*"/>
+                                                </Grid.RowDefinitions>
+                                                <Grid Margin="0,0,0,4">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="⚠  CRITICAL ALERTS"
+                                                               FontSize="10" FontWeight="Bold"
+                                                               Foreground="{StaticResource ErrorBrush}"
+                                                               VerticalAlignment="Center"/>
+                                                    <Border Grid.Column="1"
+                                                            Background="{StaticResource ErrorBrush}"
+                                                            CornerRadius="8" Padding="6,1"
+                                                            ToolTip="DB 실패 알림 카운트">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="DB " Foreground="White" FontSize="9" FontWeight="Bold"/>
+                                                            <TextBlock Text="{Binding DbFailureAlertCount}" Foreground="White" FontSize="9" FontWeight="Bold"/>
+                                                        </StackPanel>
+                                                    </Border>
+                                                </Grid>
+                                                <ListBox x:Name="lstAlerts"
+                                                         Grid.Row="1"
+                                                         ItemsSource="{Binding Alerts}"
+                                                         Background="Transparent"
+                                                         BorderThickness="0"
+                                                         Foreground="#E0E7FF"
+                                                         FontFamily="Consolas"
+                                                         FontSize="10"
+                                                         VirtualizingStackPanel.IsVirtualizing="True"
+                                                         VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                                         ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                                    <ListBox.ItemContainerStyle>
+                                                        <Style TargetType="ListBoxItem">
+                                                            <Setter Property="Padding" Value="2,3"/>
+                                                            <Setter Property="Background" Value="Transparent"/>
+                                                        </Style>
+                                                    </ListBox.ItemContainerStyle>
+                                                </ListBox>
+                                            </Grid>
                                         </Border>
                                     </Grid>
                                 </Border>
