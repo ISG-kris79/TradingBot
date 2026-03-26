@@ -47,7 +47,10 @@ namespace TradingBot
         public event Action<string>? OnAlert;
         public event Action<AiLabeledSample>? OnLabeledSample;
         
-        public bool IsReady => _mlTrainer.IsModelLoaded && _transformerTrainer.IsModelReady;
+        // [핫픽스] ML 모델 없어도 TF만으로 게이트 통과 가능하도록 변경
+        // ML 모델은 첫 학습 전까지 없을 수 있음 → TF만 준비되면 IsReady = true
+        // ML 0%일 때는 EntryRuleValidator에서 TF 점수로 FinalScore 보정
+        public bool IsReady => _transformerTrainer.IsModelReady;
 
         public AIDoubleCheckEntryGate(
             IExchangeService exchangeService,
@@ -173,16 +176,27 @@ namespace TradingBot
                 }
 
                 // 3. [The Filter] ML.NET 최종 판정
-                var mlPrediction = _mlTrainer.Predict(feature);
-                if (mlPrediction == null)
-                {
-                    OnLog?.Invoke($"⚠️ [{symbol}] ML.NET 예측 실패");
-                    return (false, "MLNET_Prediction_Failed", new AIEntryDetail());
-                }
+                // [핫픽스] ML 모델 미로드 시 TF 단독 진행 (하드 블록 제거)
+                var mlPrediction = _mlTrainer.IsModelLoaded ? _mlTrainer.Predict(feature) : null;
 
-                bool mlApprove = mlPrediction.ShouldEnter;
-                float mlConfidence = mlPrediction.Probability;
-                float effectiveMLThreshold = _onlineLearning?.CurrentMLThreshold ?? _config.MinMLConfidence;
+                bool mlApprove;
+                float mlConfidence;
+                float effectiveMLThreshold;
+
+                if (mlPrediction != null)
+                {
+                    mlApprove = mlPrediction.ShouldEnter;
+                    mlConfidence = mlPrediction.Probability;
+                    effectiveMLThreshold = _onlineLearning?.CurrentMLThreshold ?? _config.MinMLConfidence;
+                }
+                else
+                {
+                    // ML 미가용: TF 단독 모드 — ML 조건 자동 통과
+                    mlApprove = tfApprove;  // TF 판단에 따름
+                    mlConfidence = 0f;
+                    effectiveMLThreshold = 0f;
+                    OnLog?.Invoke($"⚠️ [{symbol}] ML.NET 미가용 → TF 단독 모드 (TF={tfConfidence:P0})");
+                }
 
                 // 4. M15/M1 캔들 수집 (Fib 보너스 + 리스크/규칙 필터 공용)
                 var m15List = (await _exchangeService
