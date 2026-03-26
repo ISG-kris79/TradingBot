@@ -4,10 +4,11 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:lvc="clr-namespace:LiveCharts.Wpf;assembly=LiveCharts.Wpf"
+        xmlns:ctrl="clr-namespace:TradingBot.Controls"
         mc:Ignorable="d"
         Title="심볼 차트"
-        Height="640"
-        Width="980"
+        Height="720"
+        Width="1080"
         MinWidth="760"
         MinHeight="460"
         WindowStartupLocation="CenterOwner"
@@ -15,60 +16,85 @@
     <Grid Margin="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0"
-                   Foreground="#E2E8F0"
-                   FontSize="16"
-                   FontWeight="Bold"
-                   Margin="0,0,0,8">
-            <Run Text="SYMBOL: "/>
-            <Run Text="{Binding SelectedSymbol.Symbol}"/>
-        </TextBlock>
+        <!-- 헤더: 심볼명 + AI 상태 -->
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Foreground="#E2E8F0" FontSize="16" FontWeight="Bold">
+                <Run Text="SYMBOL: "/>
+                <Run Text="{Binding SelectedSymbol.Symbol}"/>
+            </TextBlock>
+            <TextBlock Grid.Column="2" Foreground="#94A3B8" FontSize="11"
+                       Text="{Binding DynamicStopPriceText}" VerticalAlignment="Center"/>
+        </Grid>
 
-        <Border Grid.Row="1"
-                Background="#111827"
-                BorderBrush="#2D3142"
-                BorderThickness="1"
-                CornerRadius="10"
-                Padding="8">
+        <!-- AI 에너지 ProgressBar + Exit Score -->
+        <Grid Grid.Row="1" Margin="0,0,0,6">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="10"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Price Energy Bar -->
+            <Border Grid.Column="0" Background="#111827" CornerRadius="5" Padding="8,4">
+                <Grid>
+                    <ProgressBar Value="{Binding PriceProgress, Mode=OneWay}" Maximum="100" Height="18"
+                                 Background="#252B48" Foreground="{Binding PriceProgressColor}" BorderThickness="0"/>
+                    <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="10" FontWeight="Bold">
+                        <Run Text="ENERGY " Foreground="#6B7280"/>
+                        <Run Text="{Binding PriceProgressText}" Foreground="{Binding PriceProgressColor}"/>
+                    </TextBlock>
+                </Grid>
+            </Border>
+
+            <!-- Exit Score Bar -->
+            <Border Grid.Column="2" Background="#111827" CornerRadius="5" Padding="8,4">
+                <Grid>
+                    <ProgressBar Value="{Binding ExitScore, Mode=OneWay}" Maximum="100" Height="18"
+                                 Background="#252B48" Foreground="{Binding ExitScoreColor}" BorderThickness="0"/>
+                    <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="10" FontWeight="Bold">
+                        <Run Text="EXIT " Foreground="#6B7280"/>
+                        <Run Text="{Binding ExitScoreText}" Foreground="{Binding ExitScoreColor}"/>
+                    </TextBlock>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- 차트 영역: SkiaCandleChart (고성능) + LiveCharts (폴백) -->
+        <Border Grid.Row="2" Background="#111827" BorderBrush="#2D3142" BorderThickness="1"
+                CornerRadius="10" Padding="4">
             <Grid>
-                <TextBlock Text="심볼을 선택하면 차트가 표시됩니다."
-                           Foreground="#94A3B8"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"
-                           Visibility="{Binding IsLiveChartEmpty, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                <!-- SkiaSharp 고성능 차트 (AI 손절선 + 예측 밴드 포함) -->
+                <ctrl:SkiaCandleChart x:Name="SkiaCandleChartControl"/>
+
+                <!-- LiveCharts 폴백 (SkiaSharp에 데이터 없을 때) -->
                 <lvc:CartesianChart Series="{Binding LiveChartSeries}"
                                     LegendLocation="Right"
                                     Hoverable="False"
                                     DataTooltip="{x:Null}"
                                     Visibility="{Binding IsLiveChartEmpty, Converter={StaticResource InvertBooleanConverter}}">
                     <lvc:CartesianChart.ChartLegend>
-                        <lvc:DefaultLegend Foreground="#E2E8F0"
-                                           Background="#111827"
-                                           FontSize="11"/>
+                        <lvc:DefaultLegend Foreground="#E2E8F0" Background="#111827" FontSize="11"/>
                     </lvc:CartesianChart.ChartLegend>
                     <lvc:CartesianChart.AxisX>
-                        <lvc:Axis LabelsRotation="-15"
-                                  ShowLabels="True"
-                                  Foreground="#94A3B8"
-                                  MinValue="0"
-                                  LabelFormatter="{Binding LiveChartXFormatter}">
-                            <lvc:Axis.Separator>
-                                <lvc:Separator Stroke="#2D3142"/>
-                            </lvc:Axis.Separator>
+                        <lvc:Axis LabelsRotation="-15" ShowLabels="True" Foreground="#94A3B8"
+                                  MinValue="0" LabelFormatter="{Binding LiveChartXFormatter}">
+                            <lvc:Axis.Separator><lvc:Separator Stroke="#2D3142"/></lvc:Axis.Separator>
                         </lvc:Axis>
                     </lvc:CartesianChart.AxisX>
                     <lvc:CartesianChart.AxisY>
-                        <lvc:Axis ShowLabels="True"
-                                  MinValue="{Binding LiveChartAxisMin}"
-                                  MaxValue="{Binding LiveChartAxisMax}"
-                                  Foreground="#94A3B8"
+                        <lvc:Axis ShowLabels="True" MinValue="{Binding LiveChartAxisMin}"
+                                  MaxValue="{Binding LiveChartAxisMax}" Foreground="#94A3B8"
                                   LabelFormatter="{Binding LiveChartYFormatter}">
-                            <lvc:Axis.Separator>
-                                <lvc:Separator Stroke="#2D3142"/>
-                            </lvc:Axis.Separator>
+                            <lvc:Axis.Separator><lvc:Separator Stroke="#2D3142"/></lvc:Axis.Separator>
                         </lvc:Axis>
                     </lvc:CartesianChart.AxisY>
                 </lvc:CartesianChart>

@@ -16,9 +16,9 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
     <LangVersion>latest</LangVersion>
-      <Version>2.5.6</Version>
-      <AssemblyVersion>2.5.6.0</AssemblyVersion>
-      <FileVersion>2.5.6.0</FileVersion>
+      <Version>2.6.0</Version>
+      <AssemblyVersion>2.6.0.0</AssemblyVersion>
+      <FileVersion>2.6.0.0</FileVersion>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
     <Company>TradingBot</Company>
     <Product>CoinFF TradingBot</Product>
@@ -109,6 +109,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.ML" Version="5.0.0" />
+    <PackageReference Include="SkiaSharp" Version="3.116.1" />
+    <PackageReference Include="SkiaSharp.Views.WPF" Version="3.116.1" />
+    <PackageReference Include="System.Threading.Tasks.Dataflow" Version="9.0.1" />
     <PackageReference Include="Binance.Net" Version="12.8.1" />
     <PackageReference Include="CryptoExchange.Net" Version="10.7.1" />
     <PackageReference Include="CsvHelper" Version="33.1.0" />

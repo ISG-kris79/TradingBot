@@ -15,6 +15,70 @@
 
  - 없음
 
+## [2.6.0] - 2026-03-26
+
+### Added
+
+- **AI 추론 파이프라인 전면 최적화**:
+  - `PredictionEnginePool` (Microsoft.Extensions.ML): Thread-safe 풀링, lock 없이 다중 스레드 동시 ML.NET 추론
+  - `ArrayPool<float>` 기반 Feature 벡터 할당: TensorFlowTransformer에서 GC 압박 제거
+  - `EntryTimingMLTrainer.Predict()` 핵심 병목 해결: 매 호출 CreatePredictionEngine → 캐싱+풀 전환
+
+- **TPL Dataflow AI 파이프라인** (`AIDataflowPipeline`):
+  - `BufferBlock → TransformBlock → ActionBlock` 3단 비동기 파이프라인
+  - 심볼별 500ms 디바운싱, 백프레셔 자동 관리 (버퍼 100 초과 시 드랍)
+  - ML.NET + TF 추론 → `Dispatcher.InvokeAsync(Background)`로 UI 전달
+
+- **AI 전용 워커 스레드** (`AIDedicatedWorkerThread`):
+  - `ThreadPriority.AboveNormal`: UI 스레드(Normal)보다 높은 우선순위
+  - `BlockingCollection` Producer-Consumer 패턴, 주문 조건 충족 시 UI 거치지 않고 즉시 실행
+  - UI 차트 1초 늦어도 주문은 실시간 시세에 정밀 실행
+
+- **Named Pipes IPC 프로세스 분리 인프라**:
+  - `AIPipelineIpcService` (클라이언트) + `AIPipelineServer` (서버): Named Pipe 비동기 통신
+  - `HybridAIPredictionService`: IPC 우선 → 인프로세스 폴백 (무중단 전환)
+  - 향후 AI 엔진을 별도 콘솔 앱으로 분리 가능
+
+- **SkiaSharp 고성능 캔들 차트** (`SkiaCandleChart`):
+  - LiveCharts Shape 객체 대신 비트맵 직접 렌더링 (GC 할당 0)
+  - 18개 SKPaint + 3개 SKFont 필드 캐싱 (프레임당 객체 생성 0)
+  - AI 오버레이 5개 레이어: 예측 밴드, 트레일링 히스토리, 동적 손절선, 현재가 마커, STOP-EXIT 경고
+  - `Interlocked` 기반 AI↔렌더 스레드 원자적 데이터 공유 (lock-free)
+  - DispatcherTimer 4fps 프레임 제한 + `_needsRedraw` 플래그 최적화
+
+- **상승 에너지 잔량 ProgressBar** (`PRICE ENERGY`):
+  - ML.NET Fib 0.382~0.5 눌림목에서만 초록색 (ENTRY ZONE)
+  - TF 수렴 후 발산 패턴 감지 → 금색 테두리 + ProgressBar 깜빡임 (SQUEEZE FIRE)
+  - `OnPriceProgressUpdate(bbPos, mlConf, tfConvDiv)` 3파라미터 이벤트
+
+- **AI 동적 트레일링 스탑 엔진** (`DynamicTrailingStopEngine`):
+  - 추세 반전 확률 계산: 5파 완성(+35%), RSI 다이버전스(+25%), 상위 꼬리(+15%), RSI 80+(+20%)
+  - ATR 멀티플라이어 AI 보정: 반전확률 70%+ → ×0.3, 변동성 폭발 → ×0.5
+  - 반전 80%+ 극한 타이트: 0.2% 이내 트레일링
+  - Exit Score 게이지 (0~100): HOLD / PREPARE EXIT / EXIT NOW / EMERGENCY
+
+- **Exit Score UI 게이지** (`EXIT SCORE`):
+  - 80%+ 시 빨간 테두리 깜빡임 애니메이션
+  - 반전 확률 + 동적 손절가 동시 표시
+
+- **SymbolChartWindow 리뉴얼**:
+  - SkiaCandleChart + LiveCharts 이중 구조 (고성능 + 폴백)
+  - PRICE ENERGY + EXIT SCORE 바 상단 배치
+  - AI 손절가 실시간 연동 (`OnAIStopPriceChanged` 이벤트)
+
+### Changed
+
+- `AIPredictor`, `MLService`: `_predictLock`으로 PredictionEngine Thread-safety 보장
+- `MainViewModel`: 적응형 ticker flush 간격 (100~500ms 자동 조절) + 재진입 방지 (`_tickerFlushRunning`)
+- `TradingEngine`: `OnPriceProgressUpdate` 3파라미터 확장, `OnExitScoreUpdate` 이벤트 추가, AI 워커 + 동적 트레일링 엔진 자동 초기화
+
+### Dependencies
+
+- `System.Threading.Tasks.Dataflow` 9.0.1
+- `Microsoft.Extensions.ML` 5.0.0
+- `SkiaSharp` 3.116.1
+- `SkiaSharp.Views.WPF` 3.116.1
+
 ## [2.5.6] - 2026-03-26
 
 ### Added

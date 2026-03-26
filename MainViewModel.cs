@@ -57,6 +57,15 @@ namespace TradingBot.ViewModels
         private DispatcherTimer? _tickerFlushTimer;
         private DispatcherTimer? _footerLogFlushTimer;
         private string? _pendingFooterLogMessage;
+        // [데이터 컨플레이션] Dispatcher 처리 중 재진입 방지 플래그
+        private int _tickerFlushRunning;
+        // [Stage2] 적응형 타이머 간격 — 부하에 따라 ticker flush 주기 자동 조절
+        private int _tickerFlushIntervalMs = 200;
+        private const int TickerFlushMinMs = 100;
+        private const int TickerFlushMaxMs = 500;
+        private readonly Queue<int> _tickerFlushDurationSamples = new();
+        private const int TickerFlushSampleWindow = 30;
+        private DateTime _nextTickerTuneTime = DateTime.UtcNow.AddSeconds(15);
         private int _liveLogDbDrainRunning;
         private int _footerLogDbDrainRunning;
         private const int MaxBufferedLiveLogs = 1200;
@@ -1942,10 +1951,12 @@ namespace TradingBot.ViewModels
                 RunOnUI(() => UpdateAiCommandState(symbol, confidence, direction, h4, h1, m15, bull, bear));
             };
 
-            // [Entry Pipeline] Block Reason / Volume Gauge / Daily Profit
+            // [Entry Pipeline] Block Reason / Volume Gauge / Daily Profit / Price Energy
             _engine.OnBlockReasonUpdate += reason => RunOnUI(() => UpdateBlockReason(reason));
             _engine.OnVolumeGaugeUpdate += pct => RunOnUI(() => UpdateVolumeGauge(pct));
             _engine.OnDailyProfitUpdate += profit => RunOnUI(() => UpdateDailyProfit(profit));
+            _engine.OnPriceProgressUpdate += (bbPos, mlConf, tfConvDiv) => RunOnUI(() => UpdatePriceProgress(bbPos, mlConf, tfConvDiv));
+            _engine.OnExitScoreUpdate += (sym, score, prob, stop) => RunOnUI(() => UpdateExitScore(sym, score, prob, stop));
 
             // [WaveAI] ML/TF 점수 업데이트 구독
             _engine.OnWaveAIScoreUpdate += (symbol, mlScore, tfScore, status) =>
@@ -2217,18 +2228,67 @@ namespace TradingBot.ViewModels
 
                 _tickerFlushTimer = new DispatcherTimer(DispatcherPriority.Background)
                 {
-                    Interval = TimeSpan.FromMilliseconds(200)  // [병목 해결] 120ms→200ms (UI 스레드 호흡 공간 확보)
+                    Interval = TimeSpan.FromMilliseconds(_tickerFlushIntervalMs)
                 };
                 _tickerFlushTimer.Tick += (_, _) =>
                 {
-                    FlushPendingSignalUpdatesToUi();
-                    FlushPendingAiEntryProbUpdatesToUi();
-                    FlushPendingTickerUpdatesToUi();
-                    RefreshBattleDashboardForSelectedSymbol();
-                    RefreshMajorBattlePanel();
+                    // [데이터 컨플레이션] 이전 tick 처리가 아직 끝나지 않았으면 스킵
+                    if (Interlocked.CompareExchange(ref _tickerFlushRunning, 1, 0) != 0)
+                        return;
+
+                    try
+                    {
+                        var sw = Stopwatch.StartNew();
+                        FlushPendingSignalUpdatesToUi();
+                        FlushPendingAiEntryProbUpdatesToUi();
+                        FlushPendingTickerUpdatesToUi();
+                        RefreshBattleDashboardForSelectedSymbol();
+                        RefreshMajorBattlePanel();
+                        sw.Stop();
+
+                        // [Stage2] 적응형 타이머 간격 조정
+                        AdaptTickerFlushInterval((int)sw.ElapsedMilliseconds);
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref _tickerFlushRunning, 0);
+                    }
                 };
                 _tickerFlushTimer.Start();
             });
+        }
+
+        /// <summary>
+        /// [Stage2] ticker flush 실행 시간에 따라 타이머 간격을 자동 조절
+        /// 실행 시간이 길면 간격을 늘려 UI 스레드 부하를 줄이고,
+        /// 실행 시간이 짧으면 간격을 줄여 반응성을 높입니다.
+        /// </summary>
+        private void AdaptTickerFlushInterval(int elapsedMs)
+        {
+            _tickerFlushDurationSamples.Enqueue(elapsedMs);
+            while (_tickerFlushDurationSamples.Count > TickerFlushSampleWindow)
+                _tickerFlushDurationSamples.Dequeue();
+
+            var now = DateTime.UtcNow;
+            if (now < _nextTickerTuneTime || _tickerFlushDurationSamples.Count < 10)
+                return;
+            _nextTickerTuneTime = now.AddSeconds(10);
+
+            double avgMs = _tickerFlushDurationSamples.Average();
+            int newInterval = _tickerFlushIntervalMs;
+
+            // flush가 간격의 50% 이상 차지하면 → 간격 늘림
+            if (avgMs > _tickerFlushIntervalMs * 0.5)
+                newInterval = Math.Min(TickerFlushMaxMs, _tickerFlushIntervalMs + 50);
+            // flush가 간격의 10% 미만이면 → 간격 줄임
+            else if (avgMs < _tickerFlushIntervalMs * 0.1)
+                newInterval = Math.Max(TickerFlushMinMs, _tickerFlushIntervalMs - 25);
+
+            if (newInterval != _tickerFlushIntervalMs)
+            {
+                _tickerFlushIntervalMs = newInterval;
+                _tickerFlushTimer!.Interval = TimeSpan.FromMilliseconds(newInterval);
+            }
         }
 
         private void InitializeFooterLogPipeline()
@@ -5168,6 +5228,167 @@ namespace TradingBot.ViewModels
             : _volumeGauge >= 50
                 ? new SolidColorBrush(Color.FromRgb(255, 179, 0))
                 : new SolidColorBrush(Color.FromRgb(107, 114, 128));
+
+        // ─── [상승 에너지 잔량] Price Position in Forecast Band ──────────────────
+        // ML.NET이 0.382~0.5 피보나치 눌림목을 가리킬 때만 초록색 진입 허용
+        // TF가 수렴 후 발산 패턴을 감지하면 깜빡임으로 시각적 경고
+        private double _priceProgress;
+        private float _currentMLConfidence;
+        private bool _tfConvergenceDivergence;
+
+        public double PriceProgress
+        {
+            get => _priceProgress;
+            set
+            {
+                _priceProgress = Math.Clamp(value, 0, 100);
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(PriceProgressText));
+                OnPropertyChanged(nameof(PriceProgressColor));
+                OnPropertyChanged(nameof(PriceProgressZone));
+                OnPropertyChanged(nameof(PriceEnergyPulseActive));
+            }
+        }
+        public string PriceProgressText => $"{_priceProgress:F1}% (ML:{_currentMLConfidence:P0})";
+
+        /// <summary>
+        /// 구간 판정:
+        /// ML 예측이 Fib 0.382~0.5 눌림목(bbPos 38.2~50%)을 가리킬 때만 ENTRY ZONE
+        /// 그 외에는 bbPos에 따라 CAUTION / OVERHEATED
+        /// </summary>
+        public string PriceProgressZone
+        {
+            get
+            {
+                bool isFibPullback = IsFibonacciPullbackZone(_priceProgress, _currentMLConfidence);
+                if (_tfConvergenceDivergence)
+                    return "SQUEEZE FIRE";     // 수렴 후 발산 임박
+                if (isFibPullback)
+                    return "ENTRY ZONE";       // Fib 0.382~0.5 눌림목
+                return _priceProgress switch
+                {
+                    <= 50 => "ACCUMULATE",     // 하단 축적 (아직 진입 신호 아님)
+                    <= 70 => "CAUTION",        // 중간: 추격 주의
+                    _     => "OVERHEATED"      // 과열: 진입 금지
+                };
+            }
+        }
+
+        /// <summary>
+        /// 색상 로직:
+        /// 1. ML이 Fib 눌림목(0.382~0.5) 가리킬 때만 초록색
+        /// 2. TF 수렴 후 발산 → 금색 (SQUEEZE FIRE)
+        /// 3. 그 외 → bbPos 기반 점진적 색상
+        /// </summary>
+        public Brush PriceProgressColor
+        {
+            get
+            {
+                // TF 수렴 후 발산 패턴 → 금색
+                if (_tfConvergenceDivergence)
+                    return new SolidColorBrush(Color.FromRgb(255, 215, 0));    // Gold
+
+                // ML이 Fib 0.382~0.5 눌림목을 가리키는지 확인
+                bool isFibPullback = IsFibonacciPullbackZone(_priceProgress, _currentMLConfidence);
+
+                if (isFibPullback)
+                    return new SolidColorBrush(Color.FromRgb(0, 230, 118));    // 초록 (ENTRY ZONE)
+
+                // 그 외: bbPos 기반 단계적 색상 (진입 금지 방향)
+                return _priceProgress switch
+                {
+                    <= 30 => new SolidColorBrush(Color.FromRgb(107, 114, 128)),  // 회색 (신호 없음)
+                    <= 50 => new SolidColorBrush(Color.FromRgb(0, 229, 255)),    // 시안 (축적 중)
+                    <= 70 => new SolidColorBrush(Color.FromRgb(255, 179, 0)),    // 주황 (CAUTION)
+                    <= 85 => new SolidColorBrush(Color.FromRgb(255, 83, 112)),   // 빨강 (위험)
+                    _     => new SolidColorBrush(Color.FromRgb(213, 0, 0))       // 진홍 (OVERHEATED)
+                };
+            }
+        }
+
+        /// <summary>
+        /// TF 수렴 후 발산 감지 시 깜빡임 활성화
+        /// XAML에서 이 프로퍼티가 true이면 Storyboard 깜빡임 트리거
+        /// </summary>
+        public bool PriceEnergyPulseActive => _tfConvergenceDivergence;
+
+        /// <summary>
+        /// Fibonacci 0.382~0.5 눌림목 판정
+        /// bbPos가 38.2~50% 구간이고, ML 확률이 40% 이상이면 유효한 눌림목
+        /// </summary>
+        private static bool IsFibonacciPullbackZone(double bbPositionPct, float mlConfidence)
+        {
+            // BB 밴드 내 위치가 Fib 0.382~0.5 구간 (38.2%~50%)
+            bool inFibZone = bbPositionPct >= 38.2 && bbPositionPct <= 50.0;
+            // ML.NET이 진입 신호를 줄 정도의 확률 (40% 이상)
+            bool mlSignal = mlConfidence >= 0.40f;
+            return inFibZone && mlSignal;
+        }
+
+        /// <summary>
+        /// 에너지 잔량 업데이트 (bbPos + ML확률 + TF수렴발산)
+        /// </summary>
+        public void UpdatePriceProgress(double bbPosition, float mlConfidence, bool tfConvergenceDivergence)
+        {
+            _currentMLConfidence = mlConfidence;
+            _tfConvergenceDivergence = tfConvergenceDivergence;
+            // bbPosition: 0.0 (하단밴드) ~ 1.0 (상단밴드) → 0~100%
+            PriceProgress = bbPosition * 100.0;
+        }
+
+        // ─── [동적 트레일링] Exit Score 게이지 + 동적 손절가 ────────────────────
+        private double _exitScore;
+        private float _trendReversalProb;
+        private decimal _dynamicStopPrice;
+        private string _exitScoreSymbol = "";
+
+        public double ExitScore
+        {
+            get => _exitScore;
+            set
+            {
+                _exitScore = Math.Clamp(value, 0, 100);
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(ExitScoreText));
+                OnPropertyChanged(nameof(ExitScoreColor));
+                OnPropertyChanged(nameof(ExitScoreZone));
+                OnPropertyChanged(nameof(ExitScorePulseActive));
+            }
+        }
+        public string ExitScoreText => $"{_exitScore:F0}% ({_trendReversalProb:P0} 반전)";
+        public string ExitScoreZone => _exitScore switch
+        {
+            <= 30 => "HOLD",           // 홀딩 유지
+            <= 60 => "PREPARE EXIT",   // 익절 준비
+            <= 80 => "EXIT NOW",       // 익절 권장
+            _     => "EMERGENCY"       // 즉시 탈출
+        };
+        public Brush ExitScoreColor => _exitScore switch
+        {
+            <= 30 => new SolidColorBrush(Color.FromRgb(0, 230, 118)),     // 초록 (안전)
+            <= 50 => new SolidColorBrush(Color.FromRgb(0, 229, 255)),     // 시안
+            <= 70 => new SolidColorBrush(Color.FromRgb(255, 179, 0)),     // 주황
+            <= 85 => new SolidColorBrush(Color.FromRgb(255, 83, 112)),    // 빨강
+            _     => new SolidColorBrush(Color.FromRgb(213, 0, 0))        // 진홍 (긴급)
+        };
+        /// <summary>Exit Score 80+ 시 깜빡임</summary>
+        public bool ExitScorePulseActive => _exitScore >= 80;
+        public string DynamicStopPriceText => _dynamicStopPrice > 0 ? $"SL: {_dynamicStopPrice:F4}" : "SL: --";
+
+        /// <summary>SkiaCandleChart 등 외부 컨트롤이 구독하여 실시간 손절가 반영</summary>
+        public event Action<double, double, double>? OnAIStopPriceChanged; // (stopPrice, currentPrice, exitScore)
+
+        public void UpdateExitScore(string symbol, double exitScore, float reversalProb, decimal stopPrice)
+        {
+            _exitScoreSymbol = symbol;
+            _trendReversalProb = reversalProb;
+            _dynamicStopPrice = stopPrice;
+            ExitScore = exitScore;
+            OnPropertyChanged(nameof(DynamicStopPriceText));
+
+            // SkiaCandleChart 등 차트 컨트롤에 실시간 전달
+            OnAIStopPriceChanged?.Invoke((double)stopPrice, (double)_dynamicStopPrice, exitScore);
+        }
 
         private decimal _dailyProfitTarget = 250m;
         private decimal _dailyProfitCurrent = 0m;

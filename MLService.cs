@@ -20,6 +20,8 @@ public class MLService : IDisposable
     private readonly string _modelPath;
     private readonly string _modelDir;
     private bool _disposed = false;
+    // [Stage1] PredictionEngine Thread-safety 보호
+    private readonly object _predictLock = new();
 
     // 학습에 사용할 전체 피처 목록 (정규화된 파생 지표 중심)
     public static readonly string[] FeatureColumns = new[]
@@ -201,10 +203,14 @@ public class MLService : IDisposable
         }
     }
 
+    /// <summary>[Stage1] Thread-safe 예측</summary>
     public ScalpingPrediction? Predict(CandleData current)
     {
         if (_predictionEngine == null) return null;
-        return _predictionEngine.Predict(current);
+        lock (_predictLock)
+        {
+            return _predictionEngine.Predict(current);
+        }
     }
 
     /// <summary>이전 호환용 PredictionResult 반환</summary>

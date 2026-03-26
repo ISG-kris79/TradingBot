@@ -147,6 +147,11 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, byte> _analysisWorkers = new ConcurrentDictionary<string, byte>();
         private readonly SemaphoreSlim _analysisConcurrencyLimiter = new SemaphoreSlim(8, 8);
 
+        // [우선순위 격리] AI 추론 + 주문 전용 워커 스레드 (UI보다 높은 우선순위)
+        private TradingBot.Services.AIDedicatedWorkerThread? _aiWorkerThread;
+        // [동적 트레일링] AI 기반 동적 익절/손절 엔진
+        private TradingBot.Services.DynamicTrailingStopEngine? _dynamicTrailingEngine;
+
         private DateTime _lastCleanupTime = DateTime.Now;
 
         private Channel<IBinance24HPrice> _tickerChannel;
@@ -251,6 +256,13 @@ namespace TradingBot
         public event Action<string>? OnBlockReasonUpdate; // [Entry Pipeline] 진입 차단 사유 실시간 업데이트
         public event Action<double>? OnVolumeGaugeUpdate; // [Entry Pipeline] 1분봉 볼륨 게이지 (0~100)
         public event Action<decimal>? OnDailyProfitUpdate; // [Entry Pipeline] 오늘 수익 실시간 업데이트
+        /// <summary>[동적 트레일링] Exit Score + 반전확률 + 동적손절가 (symbol, exitScore 0~100, reversalProb 0~1, stopPrice)</summary>
+        public event Action<string, double, float, decimal>? OnExitScoreUpdate;
+        /// <summary>
+        /// [상승 에너지] BB 밴드 내 가격 위치 + ML/TF 컨텍스트
+        /// (bbPos 0.0~1.0, mlConfidence 0.0~1.0, tfConvergenceDivergence bool)
+        /// </summary>
+        public event Action<double, float, bool>? OnPriceProgressUpdate;
 
         /// <summary>
         /// [AI Command Center] 심볼, AI신뢰도(0~1), 방향(LONG/SHORT/NONE), H4/H1/15M 상태 문자열, bullPower(0~100), bearPower(0~100)
@@ -284,6 +296,9 @@ namespace TradingBot
             OnBlockReasonUpdate = null;
             OnVolumeGaugeUpdate = null;
             OnDailyProfitUpdate = null;
+            OnPriceProgressUpdate = null;
+            OnExitScoreUpdate = null;
+            OnAiCommandUpdate = null;
         }
 
         private DateTime _lastHeartbeatTime = DateTime.MinValue;
@@ -594,6 +609,34 @@ namespace TradingBot
             {
                 _aiDoubleCheckEntryGate = null;
                 OnStatusLog?.Invoke("🛡️ AI 더블체크 게이트 비활성화: Torch/Transformer 설정이 꺼져 있어 15분 WaveGate 폴백만 사용합니다.");
+            }
+
+            // [동적 트레일링] AI 기반 동적 익절/손절 엔진 초기화
+            _dynamicTrailingEngine = new TradingBot.Services.DynamicTrailingStopEngine();
+            _dynamicTrailingEngine.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _dynamicTrailingEngine.OnAlert += msg => OnAlert?.Invoke(msg);
+            _dynamicTrailingEngine.OnExitScoreUpdate += (sym, score, prob, stop) =>
+                OnExitScoreUpdate?.Invoke(sym, score, prob, stop);
+
+            // [우선순위 격리] AI 추론 + 주문 전용 워커 스레드 시작
+            // UI 스레드(Normal)보다 높은 AboveNormal 우선순위로 실행
+            // UI가 밀려도 주문은 실시간 시세에 맞춰 정밀하게 나감
+            try
+            {
+                _aiWorkerThread = new TradingBot.Services.AIDedicatedWorkerThread();
+                _aiWorkerThread.OnLog += msg => OnStatusLog?.Invoke(msg);
+                _aiWorkerThread.OnResultReady += result =>
+                {
+                    if (result.Success && result.MLProbability > 0)
+                    {
+                        OnStatusLog?.Invoke($"[AIWorker] {result.Symbol} ML={result.MLProbability:P0} TF={result.TFConfidence:P0} latency={result.LatencyMs}ms");
+                    }
+                };
+                _aiWorkerThread.Start();
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ AI 워커 스레드 시작 실패: {ex.Message}");
             }
 
             // [v2.4.2] Navigator-Sniper 하이브리드 아키텍처 초기화
@@ -5730,6 +5773,17 @@ namespace TradingBot
                     isBbCenterSupport);
                 _capturedBlendedScore = blendedMlTfScore; // [1M Hub] 캡처
 
+                // [상승 에너지] 메인 진입 흐름에서도 항상 에너지 잔량 업데이트
+                if (OnPriceProgressUpdate != null)
+                {
+                    float bbPosMain = gateResult.detail.M15_BBPosition; // 0.0~1.0
+                    float mlConfMain = gateResult.detail.ML_Confidence;
+                    float tfConfMain = gateResult.detail.TF_Confidence;
+                    // 수렴 후 발산: BB 밴드 내 위치 0.4~0.6 (밀집) + TF 신뢰도 높음
+                    bool tfConvergDiv = (bbPosMain >= 0.35f && bbPosMain <= 0.65f) && (tfConfMain >= 0.70f);
+                    OnPriceProgressUpdate.Invoke(Math.Clamp(bbPosMain, 0f, 1f), mlConfMain, tfConvergDiv);
+                }
+
                 // [AI Command Center] 상태 업데이트
                 if (OnAiCommandUpdate != null)
                 {
@@ -5920,6 +5974,14 @@ namespace TradingBot
                         ? (currentPrice - (decimal)latestCandle.BollingerLower)
                           / ((decimal)latestCandle.BollingerUpper - (decimal)latestCandle.BollingerLower)
                         : 0.5m;
+
+                    // [상승 에너지] UI 프로그레스바 업데이트
+                    // ML 확률 + BB위치 + TF 수렴후발산 감지
+                    float mlConf = gateResult.detail.ML_Confidence;
+                    float tfConf = gateResult.detail.TF_Confidence;
+                    // 수렴 후 발산 패턴: BB 폭이 좁고(BB_Width < 2%) TF 확신이 높음(>70%)
+                    bool tfConvergenceDivergence = (latestCandle.BB_Width < 2.0f) && (tfConf >= 0.70f);
+                    OnPriceProgressUpdate?.Invoke((double)Math.Clamp(bbPos, 0m, 1m), mlConf, tfConvergenceDivergence);
 
                     if (IsStaircaseUptrendPattern(recentEntryKlines, bbPos, latestCandle))
                     {

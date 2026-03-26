@@ -1,3 +1,6 @@
+using Microsoft.Extensions.ML;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.ObjectPool;
 using Microsoft.ML;
 using Microsoft.ML.Data;
 using Microsoft.ML.Trainers;
@@ -23,6 +26,13 @@ namespace TradingBot
         private readonly string _modelPath;
         private readonly string _legacyModelPath;
         private bool _isModelLoaded = false;
+
+        // [WPF최적화 2] PredictionEnginePool — Thread-safe 풀링, lock 제거
+        // Microsoft.Extensions.ML 공식 풀: 스레드별 인스턴스 자동 관리
+        private PredictionEnginePool<MultiTimeframeEntryFeature, EntryTimingPrediction>? _enginePool;
+        // fallback: 풀 생성 실패 시 수동 캐싱
+        private PredictionEngine<MultiTimeframeEntryFeature, EntryTimingPrediction>? _cachedEngine;
+        private readonly object _engineLock = new();
 
         public bool IsModelLoaded => _isModelLoaded;
 
@@ -112,6 +122,8 @@ namespace TradingBot
 
                 // 모델 학습
                 var watch = System.Diagnostics.Stopwatch.StartNew();
+                // [Stage1] 학습 전 캐시된 엔진 무효화
+                lock (_engineLock) { _cachedEngine?.Dispose(); _cachedEngine = null; }
                 _model = pipeline.Fit(split.TrainSet);
                 watch.Stop();
 
@@ -162,6 +174,9 @@ namespace TradingBot
                     return false;
                 }
 
+                // [Stage1] 모델 재로드 시 캐시된 엔진 무효화
+                lock (_engineLock) { _cachedEngine?.Dispose(); _cachedEngine = null; }
+
                 _model = _mlContext.Model.Load(loadPath, out _modelSchema);
 
                 // 스키마 호환성 검증: Feature 수 확인
@@ -204,6 +219,10 @@ namespace TradingBot
 
                 _isModelLoaded = true;
                 Console.WriteLine($"[EntryTimingML] 모델 로드 성공: {loadPath}");
+
+                // [WPF최적화 2] PredictionEnginePool 초기화
+                InitializeEnginePool();
+
                 return true;
             }
             catch (Exception ex)
@@ -219,22 +238,74 @@ namespace TradingBot
 
         /// <summary>
         /// 실시간 예측: 지금 진입할지 말지 판단
+        /// [WPF최적화 2] PredictionEnginePool 우선 → 수동 캐싱 폴백
+        /// 풀 사용 시 lock 불필요 (Thread-safe), 다중 스레드 동시 추론 가능
         /// </summary>
         public EntryTimingPrediction? Predict(MultiTimeframeEntryFeature feature)
         {
             if (!_isModelLoaded || _model == null)
                 return null;
 
+            // 1순위: PredictionEnginePool (Thread-safe, 풀링)
+            if (_enginePool != null)
+            {
+                try
+                {
+                    return _enginePool.Predict(feature);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[EntryTimingML] 풀 예측 실패, 캐시 폴백: {ex.Message}");
+                    _enginePool = null; // 풀 오류 시 폴백으로 전환
+                }
+            }
+
+            // 2순위: 수동 캐싱 (lock 기반 폴백)
             try
             {
-                var predictionEngine = _mlContext.Model.CreatePredictionEngine<MultiTimeframeEntryFeature, EntryTimingPrediction>(_model);
-                var prediction = predictionEngine.Predict(feature);
-                return prediction;
+                lock (_engineLock)
+                {
+                    if (_cachedEngine == null)
+                        _cachedEngine = _mlContext.Model.CreatePredictionEngine<MultiTimeframeEntryFeature, EntryTimingPrediction>(_model);
+
+                    return _cachedEngine.Predict(feature);
+                }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[EntryTimingML] 예측 실패: {ex.Message}");
+                lock (_engineLock) { _cachedEngine?.Dispose(); _cachedEngine = null; }
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// [WPF최적화 2] PredictionEnginePool 초기화
+        /// 모델 로드 후 호출하면 다중 스레드에서 lock 없이 예측 가능
+        /// </summary>
+        private void InitializeEnginePool()
+        {
+            if (_model == null || _modelSchema == null)
+                return;
+
+            try
+            {
+                // ServiceCollection으로 PredictionEnginePool 생성
+                var services = new ServiceCollection();
+                services.AddPredictionEnginePool<MultiTimeframeEntryFeature, EntryTimingPrediction>()
+                    .FromUri(
+                        modelName: "EntryTiming",
+                        uri: _modelPath,
+                        period: TimeSpan.FromMinutes(30)); // 30분마다 모델 파일 변경 감지
+
+                var provider = services.BuildServiceProvider();
+                _enginePool = provider.GetRequiredService<PredictionEnginePool<MultiTimeframeEntryFeature, EntryTimingPrediction>>();
+                Console.WriteLine("[EntryTimingML] PredictionEnginePool 초기화 완료");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[EntryTimingML] PredictionEnginePool 초기화 실패 (캐시 폴백 사용): {ex.Message}");
+                _enginePool = null;
             }
         }
 

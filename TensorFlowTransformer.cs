@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
 using Tensorflow;
@@ -151,6 +152,9 @@ namespace TradingBot
             return (rawPrediction, confidence);
         }
 
+        /// <summary>
+        /// [Stage1] ArrayPool 기반 정규화 — 대량 학습 데이터에서 GC 압박 제거
+        /// </summary>
         private void NormalizeFeatures(List<MultiTimeframeEntryFeature> data)
         {
             if (_featureMeans != null && _featureStds != null)
@@ -162,28 +166,26 @@ namespace TradingBot
 
             foreach (var sample in data)
             {
-                var features = ExtractFeatureVector(sample);
+                var features = RentFeatureVector(sample);
                 for (int i = 0; i < _featureDim; i++)
-                {
                     _featureMeans[i] += features[i];
-                }
+                ArrayPool<float>.Shared.Return(features);
             }
-            
+
             for (int i = 0; i < _featureDim; i++)
-            {
                 _featureMeans[i] /= n;
-            }
 
             foreach (var sample in data)
             {
-                var features = ExtractFeatureVector(sample);
+                var features = RentFeatureVector(sample);
                 for (int i = 0; i < _featureDim; i++)
                 {
                     float diff = features[i] - _featureMeans[i];
                     _featureStds[i] += diff * diff;
                 }
+                ArrayPool<float>.Shared.Return(features);
             }
-            
+
             for (int i = 0; i < _featureDim; i++)
             {
                 _featureStds[i] = MathF.Sqrt(_featureStds[i] / n);
@@ -191,6 +193,24 @@ namespace TradingBot
             }
         }
 
+        /// <summary>
+        /// [Stage1] ArrayPool 기반 Feature 벡터 추출 — GC 압박 최소화
+        /// 반환된 배열은 반드시 ArrayPool&lt;float&gt;.Shared.Return()으로 반환해야 합니다.
+        /// </summary>
+        private float[] RentFeatureVector(MultiTimeframeEntryFeature feature)
+        {
+            var buf = ArrayPool<float>.Shared.Rent(_featureDim);
+            buf[0] = feature.D1_Trend; buf[1] = feature.D1_RSI; buf[2] = feature.D1_MACD; buf[3] = feature.D1_Signal; buf[4] = feature.D1_BBPosition;
+            buf[5] = feature.H4_Trend; buf[6] = feature.H4_RSI; buf[7] = feature.H4_MACD; buf[8] = feature.H4_Signal; buf[9] = feature.H4_BBPosition;
+            buf[10] = feature.H2_Trend; buf[11] = feature.H2_RSI; buf[12] = feature.H2_MACD; buf[13] = feature.H2_Signal; buf[14] = feature.H2_BBPosition;
+            buf[15] = feature.H1_Trend; buf[16] = feature.H1_RSI; buf[17] = feature.H1_MACD; buf[18] = feature.H1_Signal; buf[19] = feature.H1_BBPosition;
+            buf[20] = feature.M15_RSI; buf[21] = feature.M15_MACD; buf[22] = feature.M15_Signal; buf[23] = feature.M15_BBPosition;
+            // _featureDim이 25보다 크면 나머지는 0으로 초기화
+            if (_featureDim > 24) buf[24] = feature.M15_ADX;
+            return buf;
+        }
+
+        /// <summary>레거시 호환용 — 새 코드에서는 RentFeatureVector 사용</summary>
         private float[] ExtractFeatureVector(MultiTimeframeEntryFeature feature)
         {
             return new float[]

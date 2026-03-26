@@ -15,6 +15,8 @@ namespace TradingBot.Services
         private readonly string _modelPath;
         private readonly string _baseDir;
         private bool _disposed = false;
+        // [Stage1] PredictionEngine Thread-safety를 위한 lock
+        private readonly object _predictLock = new();
 
         public AIPredictor(bool preferExternalMlService = true)
         {
@@ -128,63 +130,47 @@ namespace TradingBot.Services
             return _modelPath;
         }
 
-        /// <summary>스캘핑 모델 예측 (LightGBM)</summary>
+        /// <summary>
+        /// 스캘핑 모델 예측 (LightGBM)
+        /// [Stage1] PredictionEngine은 Thread-safe하지 않으므로 lock으로 보호
+        /// </summary>
         public ScalpingPrediction? PredictScalping(CandleData data)
         {
-            /* TensorFlow 전환 중 외부 서비스 비활성화
-            if (_useExternalMlService && _mlServiceClient != null)
+            lock (_predictLock)
             {
-                var external = _mlServiceClient.PredictAsync(data).GetAwaiter().GetResult();
-                if (external != null)
-                {
-                    return new ScalpingPrediction
-                    {
-                        PredictedLabel = external.Prediction,
-                        Probability = external.Probability,
-                        Score = external.Score
-                    };
-                }
+                return _scalpingEngine?.Predict(data);
             }
-            */
-
-            return _scalpingEngine?.Predict(data);
         }
 
-        /// <summary>기존 호환용 예측</summary>
+        /// <summary>
+        /// 기존 호환용 예측
+        /// [Stage1] lock으로 Thread-safety 보장
+        /// </summary>
         public PredictionResult Predict(CandleData data)
         {
-            /* TensorFlow 전환 중 외부 서비스 비활성화
-            if (_useExternalMlService && _mlServiceClient != null)
+            lock (_predictLock)
             {
-                var external = _mlServiceClient.PredictAsync(data).GetAwaiter().GetResult();
-                if (external != null)
+                if (_scalpingEngine != null)
                 {
-                    external.Probability = NormalizeProbability(external.Probability, external.Score);
-                    return external;
+                    var sp = _scalpingEngine.Predict(data);
+                    float normalizedProbability = NormalizeProbability(sp.Probability, sp.Score);
+                    return new PredictionResult
+                    {
+                        Prediction = sp.PredictedLabel,
+                        Probability = normalizedProbability,
+                        Score = sp.Score
+                    };
                 }
-            }
-            */
 
-            if (_scalpingEngine != null)
-            {
-                var sp = _scalpingEngine.Predict(data);
-                float normalizedProbability = NormalizeProbability(sp.Probability, sp.Score);
-                return new PredictionResult
+                if (_legacyEngine != null)
                 {
-                    Prediction = sp.PredictedLabel,
-                    Probability = normalizedProbability,
-                    Score = sp.Score
-                };
-            }
+                    var legacy = _legacyEngine.Predict(data);
+                    legacy.Probability = NormalizeProbability(legacy.Probability, legacy.Score);
+                    return legacy;
+                }
 
-            if (_legacyEngine != null)
-            {
-                var legacy = _legacyEngine.Predict(data);
-                legacy.Probability = NormalizeProbability(legacy.Probability, legacy.Score);
-                return legacy;
+                return new PredictionResult { Prediction = false, Probability = 0.5f };
             }
-
-            return new PredictionResult { Prediction = false, Probability = 0.5f };
         }
 
         private static float NormalizeProbability(float probability, float score)
