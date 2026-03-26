@@ -9738,7 +9738,100 @@ namespace TradingBot
             }
             else
             {
-                OnStatusLog?.Invoke($"⚠️ {symbol} 수동 청산 실패: 엔진이 초기화되지 않았습니다. 스캔을 먼저 시작해주세요.");
+                // [FIX] _positionMonitor 미초기화 시 _exchangeService로 직접 청산
+                OnStatusLog?.Invoke($"⚠️ {symbol} PositionMonitor 미초기화 — 직접 거래소 API 청산 시도");
+                await DirectClosePositionAsync(symbol);
+            }
+        }
+
+        /// <summary>
+        /// [FIX] _positionMonitor 없이 _exchangeService로 직접 청산 (수동 진입 후 스캔 미시작 시)
+        /// </summary>
+        private async Task DirectClosePositionAsync(string symbol)
+        {
+            try
+            {
+                PositionInfo? pos = null;
+                lock (_posLock) { _activePositions.TryGetValue(symbol, out pos); }
+
+                if (pos == null)
+                {
+                    OnStatusLog?.Invoke($"⚠️ {symbol} 로컬 포지션 없음 — 거래소 직접 조회");
+                }
+
+                decimal quantity = pos != null ? Math.Abs(pos.Quantity) : 0m;
+                bool isLong = pos?.IsLong ?? true;
+
+                // 거래소에서 실제 포지션 확인
+                if (quantity <= 0)
+                {
+                    var positions = await _exchangeService.GetPositionsAsync(ct: CancellationToken.None);
+                    var exchPos = positions.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.Quantity) > 0);
+                    if (exchPos != null)
+                    {
+                        quantity = Math.Abs(exchPos.Quantity);
+                        isLong = exchPos.IsLong;
+                    }
+                }
+
+                if (quantity <= 0)
+                {
+                    OnStatusLog?.Invoke($"⚠️ {symbol} 거래소에도 포지션 없음");
+                    // 로컬만 정리
+                    lock (_posLock) { _activePositions.Remove(symbol); }
+                    OnPositionStatusUpdate?.Invoke(symbol, false, 0);
+                    return;
+                }
+
+                // 반대 방향 시장가 주문으로 청산
+                string closeSide = isLong ? "SELL" : "BUY";
+                var (success, filledQty, avgPrice) = await _exchangeService.PlaceMarketOrderAsync(symbol, closeSide, quantity, CancellationToken.None);
+
+                if (success && filledQty > 0)
+                {
+                    decimal entryPrice = pos?.EntryPrice ?? avgPrice;
+                    decimal pnl = isLong
+                        ? (avgPrice - entryPrice) * filledQty
+                        : (entryPrice - avgPrice) * filledQty;
+                    decimal leverage = pos?.Leverage ?? 1m;
+                    decimal pnlPct = entryPrice > 0 ? (pnl / (entryPrice * filledQty)) * 100m * leverage : 0m;
+
+                    try
+                    {
+                        var tradeLog = new TradeLog(symbol, closeSide, "MANUAL_CLOSE_DIRECT",
+                            avgPrice, pos?.AiScore ?? 0f, DateTime.Now, pnl, pnlPct)
+                        {
+                            EntryPrice = entryPrice,
+                            ExitPrice = avgPrice,
+                            Quantity = filledQty,
+                            EntryTime = pos?.EntryTime ?? DateTime.Now,
+                            ExitTime = DateTime.Now,
+                            ExitReason = "사용자 수동 청산 (직접)"
+                        };
+                        await _dbManager.SaveTradeLogAsync(tradeLog);
+                    }
+                    catch (Exception dbEx)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ {symbol} DB 기록 실패: {dbEx.Message}");
+                    }
+
+                    lock (_posLock) { _activePositions.Remove(symbol); }
+                    OnCloseIncompleteStatusChanged?.Invoke(symbol, false, null);
+                    OnPositionStatusUpdate?.Invoke(symbol, false, 0);
+                    OnTickerUpdate?.Invoke(symbol, 0m, 0d);
+                    _hybridExitManager?.RemoveState(symbol);
+                    OnTradeHistoryUpdated?.Invoke();
+                    OnAlert?.Invoke($"✅ {symbol} 직접 청산 완료 | 가격={avgPrice:F8} PnL={pnl:F4}");
+                }
+                else
+                {
+                    OnStatusLog?.Invoke($"❌ {symbol} 직접 청산 주문 실패");
+                    OnCloseIncompleteStatusChanged?.Invoke(symbol, true, "직접 청산 주문 실패");
+                }
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"❌ {symbol} 직접 청산 오류: {ex.Message}");
             }
         }
 

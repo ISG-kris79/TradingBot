@@ -15,6 +15,13 @@
 
  - 없음
 
+## [2.6.8] - 2026-03-26
+
+### Fixed
+
+- **테스트넷 CLOSE 완전 해결**: `_positionMonitor` 미초기화(스캔 미시작) 시 `_exchangeService`로 직접 청산
+  - `DirectClosePositionAsync`: 거래소 포지션 조회 → 반대 방향 시장가 주문 → DB 기록 → UI 정리
+
 ## [2.6.7] - 2026-03-26
 
 ### Fixed
