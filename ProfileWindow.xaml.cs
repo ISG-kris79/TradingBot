@@ -60,6 +60,12 @@ namespace TradingBot
 
                     string binanceSecret = SecurityService.DecryptString(user.BinanceApiSecret);
                     txtBinanceSecret.Password = !string.IsNullOrEmpty(binanceSecret) ? binanceSecret : user.BinanceApiSecret;
+
+                    string testnetKey = SecurityService.DecryptString(user.TestnetApiKey);
+                    txtTestnetKey.Password = !string.IsNullOrEmpty(testnetKey) ? testnetKey : user.TestnetApiKey;
+
+                    string testnetSecret = SecurityService.DecryptString(user.TestnetApiSecret);
+                    txtTestnetSecret.Password = !string.IsNullOrEmpty(testnetSecret) ? testnetSecret : user.TestnetApiSecret;
                 }
             }
             catch (System.Exception ex)
@@ -76,6 +82,8 @@ namespace TradingBot
                 Username = AppConfig.CurrentUsername,
                 BinanceApiKey = SecurityService.EncryptString(txtBinanceKey.Password),
                 BinanceApiSecret = SecurityService.EncryptString(txtBinanceSecret.Password),
+                TestnetApiKey = SecurityService.EncryptString(txtTestnetKey.Password),
+                TestnetApiSecret = SecurityService.EncryptString(txtTestnetSecret.Password),
                 TelegramBotToken = SecurityService.EncryptString(txtBotToken.Text),
                 TelegramChatId = SecurityService.EncryptString(txtChatId.Text)
             };
@@ -84,8 +92,13 @@ namespace TradingBot
             if (success)
             {
                 MessageBox.Show("정보가 수정되었습니다.\n변경 사항을 적용하려면 앱을 재시작해주세요.");
-                // 메모리 상의 설정도 업데이트
+                // 메모리 상의 설정도 업데이트 (테스트넷 키 포함)
                 AppConfig.SetUserCredentials(txtBinanceKey.Password, txtBinanceSecret.Password, txtBotToken.Text, txtChatId.Text, AppConfig.CurrentUsername);
+                if (AppConfig.Current?.Trading != null)
+                {
+                    AppConfig.Current.Trading.TestnetApiKey = txtTestnetKey.Password;
+                    AppConfig.Current.Trading.TestnetApiSecret = txtTestnetSecret.Password;
+                }
                 this.Close();
             }
             else

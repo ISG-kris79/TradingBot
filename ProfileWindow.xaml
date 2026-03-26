@@ -156,6 +156,36 @@
                                         <Separator Background="#2D3142"
                                                    Margin="0,15"/>
 
+                                        <TextBlock Text="🎮 시뮬레이션 (Binance Testnet)"
+                                                   FontSize="14" FontWeight="Bold"
+                                                   Foreground="#FFC107" Margin="0,0,0,5"/>
+                                        <TextBlock Text="demo.binancefuture.com에서 API 키를 발급받으세요"
+                                                   FontSize="10" Foreground="#94A3B8" Margin="0,0,0,8"/>
+
+                                        <TextBlock Text="Testnet API Key"
+                                                   Margin="0,5"/>
+                                        <PasswordBox x:Name="txtTestnetKey"
+                                                     Height="30"
+                                                     Background="#1E2235"
+                                                     Foreground="White"
+                                                     BorderBrush="#2D3142"
+                                                        BorderThickness="0"
+                                                        VerticalContentAlignment="Center"
+                                                        Padding="10,0"/>
+                                        <TextBlock Text="Testnet Secret Key"
+                                                   Margin="0,5"/>
+                                        <PasswordBox x:Name="txtTestnetSecret"
+                                                     Height="30"
+                                                     Background="#1E2235"
+                                                     Foreground="White"
+                                                     BorderBrush="#2D3142"
+                                                        BorderThickness="0"
+                                                        VerticalContentAlignment="Center"
+                                                        Padding="10,0"/>
+
+                                        <Separator Background="#2D3142"
+                                                   Margin="0,15"/>
+
                                         <TextBlock Text="Telegram Bot Token"
                                                    Margin="0,5"/>
                                         <TextBox x:Name="txtBotToken"

@@ -10,6 +10,8 @@ namespace TradingBot.Models
         public string BinanceApiSecret { get; set; } = string.Empty;
         public string TelegramBotToken { get; set; } = string.Empty;
         public string TelegramChatId { get; set; } = string.Empty;
+        public string TestnetApiKey { get; set; } = string.Empty;
+        public string TestnetApiSecret { get; set; } = string.Empty;
 
         /// <summary>
         /// 관리자 승인 여부 (false: 승인대기, true: 승인완료)

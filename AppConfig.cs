@@ -146,6 +146,15 @@ namespace TradingBot
                 Current.Telegram.BotToken = telegramToken;
                 Current.Telegram.ChatId = telegramChatId;
 
+                // 테스트넷 키 로드 (유저별 시뮬레이션)
+                string testnetKey = DecryptOrUseRaw(user.TestnetApiKey);
+                string testnetSecret = DecryptOrUseRaw(user.TestnetApiSecret);
+                if (Current.Trading != null)
+                {
+                    Current.Trading.TestnetApiKey = testnetKey;
+                    Current.Trading.TestnetApiSecret = testnetSecret;
+                }
+
                 CurrentUsername = user.Username;
                 CurrentUser = user; // 현재 사용자 정보 저장
 

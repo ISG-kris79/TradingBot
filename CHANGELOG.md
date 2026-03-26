@@ -15,6 +15,15 @@
 
  - 없음
 
+## [2.6.5] - 2026-03-26
+
+### Added
+
+- **유저별 시뮬레이션 테스트넷 API 키 관리**: ProfileWindow에 Binance Testnet API Key/Secret 입력 필드 추가
+  - DB `Users` 테이블에 `TestnetApiKey`/`TestnetApiSecret` 컬럼 자동 추가
+  - 로그인 시 유저별 테스트넷 키 자동 로드 → 시뮬레이션 모드에서 개인 키 사용
+  - AES256 암호화 저장/복호화 로드
+
 ## [2.6.4] - 2026-03-26
 
 ### Fixed

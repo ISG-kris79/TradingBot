@@ -547,9 +547,18 @@ SELECT CASE WHEN EXISTS (
             {
                 using var conn = new SqlConnection(_connStr);
 
+                // 테스트넷 키 컬럼이 없으면 자동 추가
+                string alterSql = @"
+                    IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('Users') AND name = 'TestnetApiKey')
+                    BEGIN
+                        ALTER TABLE Users ADD TestnetApiKey NVARCHAR(MAX) NULL, TestnetApiSecret NVARCHAR(MAX) NULL;
+                    END";
+                await conn.ExecuteAsync(alterSql);
+
                 string sql = @"
                     UPDATE Users SET
                         BinanceApiKey = @BinanceApiKey, BinanceApiSecret = @BinanceApiSecret,
+                        TestnetApiKey = @TestnetApiKey, TestnetApiSecret = @TestnetApiSecret,
                         TelegramBotToken = @TelegramBotToken, TelegramChatId = @TelegramChatId
                     WHERE Username = @Username";
 
