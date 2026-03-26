@@ -9671,9 +9671,10 @@ namespace TradingBot
         public async Task ClosePositionAsync(string symbol)
         {
             bool isSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false;
+            bool isMockExchange = _exchangeService is MockExchangeService;
 
-            // [FIX] 시뮬레이션 모드: 거래소 API 없이 로컬 포지션 직접 제거
-            if (isSimulation)
+            // [FIX] MockExchange(가상 거래소)만 로컬 제거, 테스트넷은 실제 API 청산
+            if (isSimulation && isMockExchange)
             {
                 PositionInfo? pos = null;
                 lock (_posLock)
@@ -9686,10 +9687,9 @@ namespace TradingBot
                 {
                     try
                     {
-                        // 현재가 조회 시도 (실패 시 진입가 사용)
                         decimal exitPrice = pos.EntryPrice;
                         try { exitPrice = await _exchangeService.GetPriceAsync(symbol, CancellationToken.None); }
-                        catch { /* 시뮬레이션이므로 진입가로 폴백 */ }
+                        catch { /* MockExchange이므로 진입가로 폴백 */ }
 
                         decimal pnl = pos.IsLong
                             ? (exitPrice - pos.EntryPrice) * Math.Abs(pos.Quantity)
@@ -9707,23 +9707,22 @@ namespace TradingBot
                             Quantity = Math.Abs(pos.Quantity),
                             EntryTime = pos.EntryTime,
                             ExitTime = DateTime.Now,
-                            ExitReason = "사용자 수동 청산 (시뮬레이션)"
+                            ExitReason = "사용자 수동 청산 (MockExchange)"
                         };
                         await _dbManager.SaveTradeLogAsync(tradeLog);
                     }
                     catch (Exception dbEx)
                     {
-                        OnStatusLog?.Invoke($"⚠️ [시뮬레이션 청산] {symbol} DB 기록 실패: {dbEx.Message}");
+                        OnStatusLog?.Invoke($"⚠️ [Mock 청산] {symbol} DB 기록 실패: {dbEx.Message}");
                     }
 
-                    // UI 상태 전체 정리 (CleanupPositionData와 동일)
                     OnCloseIncompleteStatusChanged?.Invoke(symbol, false, null);
                     OnPositionStatusUpdate?.Invoke(symbol, false, 0);
                     OnTickerUpdate?.Invoke(symbol, 0m, 0d);
                     _hybridExitManager?.RemoveState(symbol);
                     _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
                     OnTradeHistoryUpdated?.Invoke();
-                    OnAlert?.Invoke($"✅ [시뮬레이션] {symbol} 수동 청산 완료");
+                    OnAlert?.Invoke($"✅ [Mock] {symbol} 수동 청산 완료");
                 }
                 else
                 {
@@ -9732,7 +9731,7 @@ namespace TradingBot
                 return;
             }
 
-            // 실전 모드: PositionMonitor를 통한 거래소 청산
+            // 실전 모드 + 테스트넷 모드: PositionMonitor를 통한 거래소 API 청산
             if (_positionMonitor != null)
             {
                 await _positionMonitor.ExecuteMarketClose(symbol, "사용자 수동 청산", _cts?.Token ?? CancellationToken.None);

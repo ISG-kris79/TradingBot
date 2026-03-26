@@ -15,6 +15,13 @@
 
  - 없음
 
+## [2.6.7] - 2026-03-26
+
+### Fixed
+
+- **테스트넷 시뮬레이션 CLOSE 안 됨 해결**: 테스트넷(demo.binancefuture.com) 모드에서는 실제 거래소 API로 청산 주문 전송하도록 수정
+  - MockExchange(가상)일 때만 로컬 제거, 테스트넷은 `PositionMonitor.ExecuteMarketClose` 경유
+
 ## [2.6.6] - 2026-03-26
 
 ### Fixed
