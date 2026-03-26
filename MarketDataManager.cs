@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Binance.Net;
 using Binance.Net.Clients;
 using Binance.Net.Interfaces;
 using Binance.Net.Interfaces.Clients;
@@ -43,9 +44,20 @@ namespace TradingBot.Services
 
             if (exchange == ExchangeType.Binance)
             {
+                // [FIX] 시뮬레이션 모드면 테스트넷 WebSocket 사용
+                bool isSim = AppConfig.Current?.Trading?.IsSimulationMode ?? false;
+                var tKey = AppConfig.Current?.Trading?.TestnetApiKey ?? "";
+                var tSecret = AppConfig.Current?.Trading?.TestnetApiSecret ?? "";
+                bool useTestnet = isSim && !string.IsNullOrWhiteSpace(tKey) && !string.IsNullOrWhiteSpace(tSecret);
+
                 _socketClient = new BinanceSocketClient(options =>
                 {
-                    if (!string.IsNullOrWhiteSpace(AppConfig.BinanceApiKey) && !string.IsNullOrWhiteSpace(AppConfig.BinanceApiSecret))
+                    if (useTestnet)
+                    {
+                        options.ApiCredentials = new ApiCredentials(tKey, tSecret);
+                        options.Environment = BinanceEnvironment.Testnet;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(AppConfig.BinanceApiKey) && !string.IsNullOrWhiteSpace(AppConfig.BinanceApiSecret))
                     {
                         options.ApiCredentials = new ApiCredentials(AppConfig.BinanceApiKey, AppConfig.BinanceApiSecret);
                     }

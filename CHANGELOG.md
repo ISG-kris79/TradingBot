@@ -15,6 +15,16 @@
 
  - 없음
 
+## [2.6.9] - 2026-03-26
+
+### Fixed
+
+- **시뮬레이션/실거래 혼선 근본 해결**: 테스트넷 모드에서 실거래 API로 호출되는 6개 경로 수정
+  - `_client` (BinanceRestClient): 테스트넷 키 + `BinanceEnvironment.Testnet` 설정 → ExecutionService, PositionMonitor, OrderService 모두 테스트넷으로 통일
+  - `MarketDataManager` WebSocket: 테스트넷 키 + 테스트넷 환경 설정
+  - `BinanceSocketConnector` WebSocket: 동일 수정
+  - `DirectClosePositionAsync`: `_positionMonitor` 미초기화 시 직접 거래소 API 청산
+
 ## [2.6.8] - 2026-03-26
 
 ### Fixed

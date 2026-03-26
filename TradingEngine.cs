@@ -1,3 +1,4 @@
+using Binance.Net;
 using Binance.Net.Clients;
 using Binance.Net.Enums;
 using Binance.Net.Interfaces;
@@ -366,28 +367,32 @@ namespace TradingBot
 
             // 실제 사용 시 API Key와 Secret을 입력하세요. 조회 전용은 Key 없이도 일부 가능합니다.
             // v12.x 초기화 방식 (Binance Client는 바이낸스 전용이므로 바이낸스 키 사용)
+            bool isSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false;
+            var testnetKey = AppConfig.Current?.Trading?.TestnetApiKey ?? "";
+            var testnetSecret = AppConfig.Current?.Trading?.TestnetApiSecret ?? "";
+            bool useTestnet = isSimulation && !string.IsNullOrWhiteSpace(testnetKey) && !string.IsNullOrWhiteSpace(testnetSecret);
+
+            // [FIX] _client도 시뮬레이션 모드면 테스트넷으로 초기화
+            // _client는 BinanceExecutionService, PositionMonitorService 등에 전달됨
             _client = new BinanceRestClient(options =>
             {
-                // 바이낸스 API Key가 설정되어 있을 때만 자격 증명 추가
-                if (!string.IsNullOrWhiteSpace(AppConfig.BinanceApiKey) && !string.IsNullOrWhiteSpace(AppConfig.BinanceApiSecret))
+                if (useTestnet)
+                {
+                    options.ApiCredentials = new ApiCredentials(testnetKey, testnetSecret);
+                    options.Environment = BinanceEnvironment.Testnet;
+                }
+                else if (!string.IsNullOrWhiteSpace(AppConfig.BinanceApiKey) && !string.IsNullOrWhiteSpace(AppConfig.BinanceApiSecret))
                 {
                     options.ApiCredentials = new ApiCredentials(AppConfig.BinanceApiKey, AppConfig.BinanceApiSecret);
                 }
-                // API Key가 없으면 공개 API만 사용 가능 (시세 조회 등)
             });
-
-            bool isSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false;
 
             if (isSimulation)
             {
-                // ★ 바이낸스 테스트넷 API 사용 (실거래와 동일한 체결/잔고/DB 저장)
-                var testnetKey = AppConfig.Current?.Trading?.TestnetApiKey ?? "";
-                var testnetSecret = AppConfig.Current?.Trading?.TestnetApiSecret ?? "";
-                // 테스트넷 키가 있으면 테스트넷, 없으면 MockExchange 폴백
-                if (!string.IsNullOrWhiteSpace(testnetKey) && !string.IsNullOrWhiteSpace(testnetSecret))
+                if (useTestnet)
                 {
                     _exchangeService = new BinanceExchangeService(testnetKey, testnetSecret, useTestnet: true);
-                    OnStatusLog?.Invoke($"🎮 [Simulation] 바이낸스 테스트넷 연결 (실거래와 동일, DB 저장 O)");
+                    OnStatusLog?.Invoke($"🎮 [Simulation] 바이낸스 테스트넷 연결 — REST+WebSocket 모두 테스트넷");
                 }
                 else
                 {

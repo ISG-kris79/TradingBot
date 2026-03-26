@@ -1,4 +1,5 @@
-﻿using Binance.Net.Clients;
+﻿using Binance.Net;
+using Binance.Net.Clients;
 using CryptoExchange.Net.Authentication;
 using TradingBot.Models;
 
@@ -11,9 +12,19 @@ namespace TradingBot
 
         public BinanceSocketConnector()
         {
+            bool isSim = AppConfig.Current?.Trading?.IsSimulationMode ?? false;
+            var tKey = AppConfig.Current?.Trading?.TestnetApiKey ?? "";
+            var tSecret = AppConfig.Current?.Trading?.TestnetApiSecret ?? "";
+            bool useTestnet = isSim && !string.IsNullOrWhiteSpace(tKey) && !string.IsNullOrWhiteSpace(tSecret);
+
             _socketClient = new BinanceSocketClient(options =>
             {
-                if (!string.IsNullOrEmpty(AppConfig.BinanceApiKey) && !string.IsNullOrEmpty(AppConfig.BinanceApiSecret))
+                if (useTestnet)
+                {
+                    options.ApiCredentials = new ApiCredentials(tKey, tSecret);
+                    options.Environment = BinanceEnvironment.Testnet;
+                }
+                else if (!string.IsNullOrEmpty(AppConfig.BinanceApiKey) && !string.IsNullOrEmpty(AppConfig.BinanceApiSecret))
                 {
                     options.ApiCredentials = new ApiCredentials(AppConfig.BinanceApiKey, AppConfig.BinanceApiSecret);
                 }
