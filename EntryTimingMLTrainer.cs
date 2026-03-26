@@ -220,8 +220,13 @@ namespace TradingBot
                 _isModelLoaded = true;
                 Console.WriteLine($"[EntryTimingML] 모델 로드 성공: {loadPath}");
 
-                // [WPF최적화 2] PredictionEnginePool 초기화
-                InitializeEnginePool();
+                // [WPF최적화 2] PredictionEnginePool 초기화 (실패해도 진입에 영향 없음)
+                try { InitializeEnginePool(); }
+                catch (Exception poolEx)
+                {
+                    Console.WriteLine($"[EntryTimingML] PredictionEnginePool 초기화 예외 무시: {poolEx.Message}");
+                    _enginePool = null;
+                }
 
                 return true;
             }
@@ -247,16 +252,18 @@ namespace TradingBot
                 return null;
 
             // 1순위: PredictionEnginePool (Thread-safe, 풀링)
-            if (_enginePool != null)
+            // 풀 실패 시 즉시 캐시 폴백 — 진입 로직 절대 차단 안 함
+            var pool = _enginePool;
+            if (pool != null)
             {
                 try
                 {
-                    return _enginePool.Predict(feature);
+                    return pool.Predict(feature);
                 }
-                catch (Exception ex)
+                catch
                 {
-                    Console.WriteLine($"[EntryTimingML] 풀 예측 실패, 캐시 폴백: {ex.Message}");
-                    _enginePool = null; // 풀 오류 시 폴백으로 전환
+                    // 풀 오류(모델 미로드 등) → 조용히 캐시 폴백
+                    _enginePool = null;
                 }
             }
 
@@ -282,6 +289,7 @@ namespace TradingBot
         /// <summary>
         /// [WPF최적화 2] PredictionEnginePool 초기화
         /// 모델 로드 후 호출하면 다중 스레드에서 lock 없이 예측 가능
+        /// 초기화 실패해도 진입 로직에 절대 영향 없음 (캐시 폴백)
         /// </summary>
         private void InitializeEnginePool()
         {
@@ -290,13 +298,13 @@ namespace TradingBot
 
             try
             {
-                // ServiceCollection으로 PredictionEnginePool 생성
+                // FromFile: 로컬 파일 경로에서 모델 로드 (FromUri는 HTTP 전용)
                 var services = new ServiceCollection();
                 services.AddPredictionEnginePool<MultiTimeframeEntryFeature, EntryTimingPrediction>()
-                    .FromUri(
+                    .FromFile(
                         modelName: "EntryTiming",
-                        uri: _modelPath,
-                        period: TimeSpan.FromMinutes(30)); // 30분마다 모델 파일 변경 감지
+                        filePath: _modelPath,
+                        watchForChanges: true); // 파일 변경 시 자동 리로드
 
                 var provider = services.BuildServiceProvider();
                 _enginePool = provider.GetRequiredService<PredictionEnginePool<MultiTimeframeEntryFeature, EntryTimingPrediction>>();
@@ -306,6 +314,7 @@ namespace TradingBot
             {
                 Console.WriteLine($"[EntryTimingML] PredictionEnginePool 초기화 실패 (캐시 폴백 사용): {ex.Message}");
                 _enginePool = null;
+                // 폴백: 캐시 엔진이 Predict에서 자동 생성됨 — 진입 영향 없음
             }
         }
 
