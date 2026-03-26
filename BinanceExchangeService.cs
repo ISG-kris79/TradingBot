@@ -65,12 +65,8 @@ namespace TradingBot.Services
 
         public async Task<bool> PlaceOrderAsync(string symbol, string side, decimal quantity, decimal? price = null, CancellationToken ct = default, bool reduceOnly = false)
         {
-            // [추가] 시뮬레이션 모드 체크
-            if (AppConfig.Current?.Trading?.IsSimulationMode == true)
-            {
-                OnLog?.Invoke($"[시뮬레이션] {symbol} {side} 주문 (수량: {quantity}, 가격: {price?.ToString() ?? "시장가"}, ReduceOnly: {reduceOnly})");
-                return true; // 시뮬레이션 모드에서는 항상 성공
-            }
+            // [FIX] 시뮬레이션 체크 제거 — 테스트넷 모드에서도 실제 API 호출 필요
+            // 테스트넷 키로 초기화된 경우 _client가 테스트넷을 가리키므로 안전
 
             // [수정] 정밀도 보정: reduceOnly(청산) 시 거래소 반환 수량이 이미 유효하므로 스킵
             // 진입 주문 또는 지정가 청산 시에만 캐시 기반 보정 수행

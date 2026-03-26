@@ -15,6 +15,13 @@
 
  - 없음
 
+## [2.6.11] - 2026-03-26
+
+### Fixed
+
+- **테스트넷 청산 안 되는 근본 원인**: `PlaceOrderAsync`에 시뮬레이션 모드 체크(`IsSimulationMode == true → return true`)가 있어 테스트넷에서도 실제 주문을 보내지 않고 가짜 성공 반환하던 문제 제거
+  - 진입(`PlaceMarketOrderAsync`)은 이 체크가 없어 정상 작동했지만, 청산(`PlaceOrderAsync reduceOnly`)은 차단됨
+
 ## [2.6.10] - 2026-03-26
 
 ### Fixed
