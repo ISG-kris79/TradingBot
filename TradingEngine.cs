@@ -9631,6 +9631,34 @@ namespace TradingBot
                 OnTradeExecuted?.Invoke(symbol, direction, avgPrice, filledQty);
                 OnAlert?.Invoke($"⚡ [수동진입] {symbol} {direction} 체결 | 가격={avgPrice:F8} 수량={filledQty} 레버={leverage}x");
 
+                // [FIX] UI 포지션 상태 업데이트 (Close 버튼 표시)
+                OnPositionStatusUpdate?.Invoke(symbol, true, avgPrice);
+
+                // [FIX] DB TradeHistory에 진입 기록 저장
+                try
+                {
+                    var tradeLog = new TradeLog(
+                        symbol,
+                        direction == "LONG" ? "BUY" : "SELL",
+                        "MANUAL",
+                        avgPrice,
+                        0f,
+                        DateTime.Now,
+                        0m,
+                        0m)
+                    {
+                        EntryPrice = avgPrice,
+                        Quantity = filledQty,
+                        EntryTime = DateTime.Now
+                    };
+                    await _dbManager.SaveTradeLogAsync(tradeLog);
+                    OnTradeHistoryUpdated?.Invoke();
+                }
+                catch (Exception dbEx)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [수동진입] {symbol} DB 기록 실패 (포지션은 정상): {dbEx.Message}");
+                }
+
                 return (true, $"{symbol} {direction} 체결 완료 | 가격={avgPrice:F8} 수량={filledQty}");
             }
             catch (Exception ex)
