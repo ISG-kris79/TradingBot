@@ -156,30 +156,6 @@
                                         <Separator Background="#2D3142"
                                                    Margin="0,15"/>
 
-                                        <TextBlock Text="Bybit API Key"
-                                                   Margin="0,5"/>
-                                        <PasswordBox x:Name="txtBybitKey"
-                                                     Height="30"
-                                                     Background="#1E2235"
-                                                     Foreground="White"
-                                                     BorderBrush="#2D3142"
-                                                        BorderThickness="0"
-                                                        VerticalContentAlignment="Center"
-                                                        Padding="10,0"/>
-                                        <TextBlock Text="Bybit Secret Key"
-                                                   Margin="0,5"/>
-                                        <PasswordBox x:Name="txtBybitSecret"
-                                                     Height="30"
-                                                     Background="#1E2235"
-                                                     Foreground="White"
-                                                     BorderBrush="#2D3142"
-                                                        BorderThickness="0"
-                                                        VerticalContentAlignment="Center"
-                                                        Padding="10,0"/>
-
-                                        <Separator Background="#2D3142"
-                                                   Margin="0,15"/>
-
                                         <TextBlock Text="Telegram Bot Token"
                                                    Margin="0,5"/>
                                         <TextBox x:Name="txtBotToken"

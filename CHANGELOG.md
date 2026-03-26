@@ -15,6 +15,14 @@
 
  - 없음
 
+## [2.6.4] - 2026-03-26
+
+### Fixed
+
+- **API 키 수정 실패 해결**: `UpdateUserAsync` SQL에서 `BybitApiKey`/`BybitApiSecret` 파라미터 참조 → `User` 클래스에 해당 프로퍼티 없어 Dapper 에러 발생
+- **Bybit 섹션 제거**: ProfileWindow에서 미사용 Bybit API Key 입력 필드 삭제
+- **불필요한 ALTER TABLE 제거**: Bybit 컬럼 자동 추가 SQL 삭제
+
 ## [2.6.3] - 2026-03-26
 
 ### Changed

@@ -547,19 +547,9 @@ SELECT CASE WHEN EXISTS (
             {
                 using var conn = new SqlConnection(_connStr);
 
-                // 기존 DB 호환성을 위해 Bitget 컬럼 유지 (코드에서는 사용 안 함)
-                string alterSql = @"
-                    IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('Users') AND name = 'BybitApiKey')
-                    BEGIN
-                        ALTER TABLE Users ADD BybitApiKey NVARCHAR(MAX) NULL, BybitApiSecret NVARCHAR(MAX) NULL;
-                    END
-                    -- BitgetApiKey, BitgetApiSecret, BitgetPassphrase 컬럼도 기존 DB에 유지 (사용 안 함)";
-                await conn.ExecuteAsync(alterSql);
-
                 string sql = @"
-                    UPDATE Users SET 
+                    UPDATE Users SET
                         BinanceApiKey = @BinanceApiKey, BinanceApiSecret = @BinanceApiSecret,
-                        BybitApiKey = @BybitApiKey, BybitApiSecret = @BybitApiSecret,
                         TelegramBotToken = @TelegramBotToken, TelegramChatId = @TelegramChatId
                     WHERE Username = @Username";
 
