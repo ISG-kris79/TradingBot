@@ -373,7 +373,23 @@ namespace TradingBot
             ElliottWaveState waveState,
             FibonacciLevels levels)
         {
-            float finalScore = SanitizeScore(mlScore);
+            float safeML = SanitizeScore(mlScore);
+            float safeTF = SanitizeScore(tfScore);
+
+            // [핫픽스] ML이 0%일 때 TF 점수로 보정 (ML 모델 미로드 대응)
+            // ML 모델이 없어도 TF가 충분히 높으면 진입 가능하도록
+            float finalScore;
+            if (safeML < 0.01f && safeTF >= 0.50f)
+            {
+                // ML 미가용: TF 점수를 finalScore로 사용
+                finalScore = safeTF;
+            }
+            else
+            {
+                // 정상: ML 기반 (기존 로직)
+                finalScore = safeML;
+            }
+
             if (waveState.Rule3Violated)
             {
                 finalScore -= _config.ElliottRule3Penalty;

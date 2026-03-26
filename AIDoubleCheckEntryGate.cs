@@ -291,9 +291,22 @@ namespace TradingBot
 
                     if (!ruleCheck.passed)
                     {
-                        detail.DoubleCheckPassed = false;
-                        OnLog?.Invoke($"❌ [{symbol}] 규칙 위반 거부: {ruleCheck.reason}");
-                        return (false, $"Rule_Violation_{ruleCheck.reason}", detail);
+                        // [핫픽스] TF 80%+ 고신뢰 시 엘리엇 규칙 1/2 위반을 경고로 다운그레이드
+                        // 엘리엇 파동은 주관적 해석이므로 TF가 강하게 확신하면 진입 허용
+                        bool isElliottRuleBlock = ruleCheck.reason.Contains("Elliott_Rule1") || ruleCheck.reason.Contains("Elliott_Rule2");
+                        bool tfHighConfidence = tfConfidence >= 0.80f;
+
+                        if (isElliottRuleBlock && tfHighConfidence)
+                        {
+                            OnLog?.Invoke($"⚠️ [{symbol}] 엘리엇 규칙 위반이나 TF={tfConfidence:P0} 고신뢰로 바이패스: {ruleCheck.reason}");
+                            // 바이패스: 진입은 허용하되 기록 남김
+                        }
+                        else
+                        {
+                            detail.DoubleCheckPassed = false;
+                            OnLog?.Invoke($"❌ [{symbol}] 규칙 위반 거부: {ruleCheck.reason}");
+                            return (false, $"Rule_Violation_{ruleCheck.reason}", detail);
+                        }
                     }
 
                     detail.ElliottValid = waveState.IsValid;
