@@ -822,6 +822,8 @@ namespace TradingBot.ViewModels
         public ICommand ToggleThemeCommand { get; private set; }
         public ICommand LoadHistoryCommand { get; private set; }
         public ICommand ClosePositionCommand { get; private set; }
+        public ICommand ManualLongCommand { get; private set; }
+        public ICommand ManualShortCommand { get; private set; }
         public ICommand ToggleWidgetCommand { get; private set; }
         public ICommand ExportHistoryCommand { get; private set; } // [Agent 3] 추가
         public ICommand SyncPositionsCommand { get; private set; } // [FIX] 거래소 포지션 동기화
@@ -1506,6 +1508,17 @@ namespace TradingBot.ViewModels
                 {
                     AddLog("⚠️ 거래소 동기화 실패: 엔진이 실행 중이 아닙니다.");
                 }
+            });
+
+            // [수동 진입] LONG/SHORT 버튼 커맨드
+            ManualLongCommand = new RelayCommand(async _ =>
+            {
+                await ExecuteManualEntry("LONG");
+            });
+
+            ManualShortCommand = new RelayCommand(async _ =>
+            {
+                await ExecuteManualEntry("SHORT");
             });
 
             ToggleWidgetCommand = new RelayCommand(param =>
@@ -5405,6 +5418,43 @@ namespace TradingBot.ViewModels
             : _dailyProfitCurrent > 0
                 ? new SolidColorBrush(Color.FromRgb(0, 229, 255))
                 : new SolidColorBrush(Color.FromRgb(255, 83, 112));
+
+        /// <summary>수동 진입 실행 (LONG/SHORT)</summary>
+        private async Task ExecuteManualEntry(string direction)
+        {
+            var sym = SelectedSymbol;
+            if (sym == null || string.IsNullOrWhiteSpace(sym.Symbol))
+            {
+                AddLog("⚠️ 수동 진입 실패: 심볼을 먼저 선택하세요.");
+                return;
+            }
+
+            if (_engine == null || !_engine.IsBotRunning)
+            {
+                AddLog("⚠️ 수동 진입 실패: 봇이 실행 중이어야 합니다. START를 먼저 누르세요.");
+                return;
+            }
+
+            string symbol = sym.Symbol;
+            var result = MessageBox.Show(
+                $"{symbol} {direction} 수동 진입하시겠습니까?\n\n" +
+                $"현재가: {sym.LastPrice}\n" +
+                $"AI 게이트를 우회하여 즉시 시장가 주문합니다.",
+                $"수동 {direction} 진입",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (result != MessageBoxResult.Yes)
+                return;
+
+            AddLog($"⚡ [{symbol}] 수동 {direction} 진입 요청 중...");
+
+            var (success, message) = await _engine.ManualEntryAsync(symbol, direction);
+            AddLog(success ? $"✅ {message}" : $"❌ {message}");
+
+            if (success)
+                await LoadTradeHistory();
+        }
 
         public void UpdateBlockReason(string reason)
         {

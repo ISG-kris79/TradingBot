@@ -9564,6 +9564,82 @@ namespace TradingBot
             OnStatusLog?.Invoke($"🧠 초기 AI 점수 생성 완료: {preparedCount}/{_symbols.Count}개 심볼");
         }
 
+        /// <summary>
+        /// 수동 진입: 사용자가 직접 심볼/방향을 지정하여 시장가 진입
+        /// AI 게이트를 우회하고 즉시 주문 실행
+        /// </summary>
+        public async Task<(bool success, string message)> ManualEntryAsync(
+            string symbol, string direction, CancellationToken token = default)
+        {
+            if (_exchangeService == null)
+                return (false, "거래소 서비스가 초기화되지 않았습니다.");
+
+            try
+            {
+                var settings = MainWindow.CurrentGeneralSettings ?? AppConfig.Current?.Trading?.GeneralSettings ?? _settings;
+                int leverage = settings.DefaultLeverage;
+                decimal marginUsdt = settings.DefaultMargin;
+
+                // 1. 현재가 조회
+                decimal currentPrice = await _exchangeService.GetPriceAsync(symbol, token);
+                if (currentPrice <= 0)
+                    return (false, $"{symbol} 현재가 조회 실패");
+
+                // 2. 레버리지 설정
+                await _exchangeService.SetLeverageAsync(symbol, leverage, token);
+
+                // 3. 수량 계산
+                decimal quantity = (marginUsdt * leverage) / currentPrice;
+
+                var exchangeInfo = await _exchangeService.GetExchangeInfoAsync(token);
+                var symbolData = exchangeInfo?.Symbols.FirstOrDefault(s => s.Name == symbol);
+                if (symbolData != null)
+                {
+                    decimal stepSize = symbolData.LotSizeFilter?.StepSize ?? 0.001m;
+                    quantity = Math.Floor(quantity / stepSize) * stepSize;
+                }
+
+                if (quantity <= 0)
+                    return (false, $"{symbol} 수량 계산 결과 0 (증거금={marginUsdt:F0} USDT, 레버리지={leverage}x)");
+
+                // 4. 시장가 주문
+                string side = direction == "LONG" ? "BUY" : "SELL";
+                OnStatusLog?.Invoke($"⚡ [수동진입] {symbol} {direction} 주문 실행 | 수량={quantity} 레버={leverage}x 증거금=${marginUsdt:N0}");
+
+                var (success, filledQty, avgPrice) = await _exchangeService.PlaceMarketOrderAsync(symbol, side, quantity, token);
+
+                if (!success || filledQty <= 0)
+                    return (false, $"{symbol} 주문 실패 (거래소 응답 확인)");
+
+                // 5. 포지션 등록
+                lock (_posLock)
+                {
+                    _activePositions[symbol] = new PositionInfo
+                    {
+                        Symbol = symbol,
+                        Side = direction,
+                        IsLong = direction == "LONG",
+                        EntryPrice = avgPrice,
+                        Quantity = filledQty,
+                        InitialQuantity = filledQty,
+                        EntryTime = DateTime.Now,
+                        Leverage = leverage,
+                        EntryZoneTag = "MANUAL"
+                    };
+                }
+
+                OnTradeExecuted?.Invoke(symbol, direction, avgPrice, filledQty);
+                OnAlert?.Invoke($"⚡ [수동진입] {symbol} {direction} 체결 | 가격={avgPrice:F8} 수량={filledQty} 레버={leverage}x");
+
+                return (true, $"{symbol} {direction} 체결 완료 | 가격={avgPrice:F8} 수량={filledQty}");
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"❌ [수동진입] {symbol} 오류: {ex.Message}");
+                return (false, $"{symbol} 수동 진입 오류: {ex.Message}");
+            }
+        }
+
         public async Task ClosePositionAsync(string symbol)
         {
             if (_positionMonitor != null)
