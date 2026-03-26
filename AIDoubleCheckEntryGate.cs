@@ -214,6 +214,16 @@ namespace TradingBot
                 var fibSignal = EvaluateFibonacciSupportSignal(symbol, decision, currentPrice, m15List, m1List);
                 float fibConfidenceBonus = (float)(fibSignal.BonusScore / 100.0);
 
+                // [ML 0% 대응] ML 결과가 0이면 TF 단독 판단으로 전환
+                // ML 모델이 로드됐지만 0을 반환하는 경우 (데이터 정규화 이슈 등)
+                bool mlReturnsZero = _mlTrainer.IsModelLoaded && mlConfidence < 0.01f;
+                if (mlReturnsZero && tfConfidence >= 0.50f)
+                {
+                    mlApprove = tfApprove;
+                    effectiveMLThreshold = 0f;
+                    OnLog?.Invoke($"⚠️ [{symbol}] ML 결과 0% → TF 단독 판단 전환 (TF={tfConfidence:P0})");
+                }
+
                 bool tfPass = tfApprove && (tfConfidence + fibConfidenceBonus) >= effectiveTFThreshold;
                 bool mlPass = mlApprove && (mlConfidence + fibConfidenceBonus) >= effectiveMLThreshold;
 

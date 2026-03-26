@@ -203,13 +203,22 @@ public class MLService : IDisposable
         }
     }
 
-    /// <summary>[Stage1] Thread-safe 예측</summary>
+    /// <summary>[Stage1] Thread-safe 예측 + NaN/0 보정</summary>
     public ScalpingPrediction? Predict(CandleData current)
     {
         if (_predictionEngine == null) return null;
         lock (_predictLock)
         {
-            return _predictionEngine.Predict(current);
+            var result = _predictionEngine.Predict(current);
+            if (result != null)
+            {
+                // NaN/Infinity 보정 — ML.NET이 부동소수점 오류로 0/NaN 반환 시
+                if (float.IsNaN(result.Probability) || float.IsInfinity(result.Probability))
+                    result.Probability = 0.5f;
+                if (float.IsNaN(result.Score) || float.IsInfinity(result.Score))
+                    result.Score = 0f;
+            }
+            return result;
         }
     }
 

@@ -251,40 +251,97 @@ namespace TradingBot
             if (!_isModelLoaded || _model == null)
                 return null;
 
+            // 입력 피처 유효성 검사 (NaN/Infinity가 있으면 ML.NET이 0 반환)
+            SanitizeFeature(feature);
+
+            EntryTimingPrediction? result = null;
+
             // 1순위: PredictionEnginePool (Thread-safe, 풀링)
-            // 풀 실패 시 즉시 캐시 폴백 — 진입 로직 절대 차단 안 함
             var pool = _enginePool;
             if (pool != null)
             {
-                try
-                {
-                    return pool.Predict(feature);
-                }
-                catch
-                {
-                    // 풀 오류(모델 미로드 등) → 조용히 캐시 폴백
-                    _enginePool = null;
-                }
+                try { result = pool.Predict(feature); }
+                catch { _enginePool = null; }
             }
 
             // 2순위: 수동 캐싱 (lock 기반 폴백)
-            try
+            if (result == null)
             {
-                lock (_engineLock)
+                try
                 {
-                    if (_cachedEngine == null)
-                        _cachedEngine = _mlContext.Model.CreatePredictionEngine<MultiTimeframeEntryFeature, EntryTimingPrediction>(_model);
-
-                    return _cachedEngine.Predict(feature);
+                    lock (_engineLock)
+                    {
+                        if (_cachedEngine == null)
+                            _cachedEngine = _mlContext.Model.CreatePredictionEngine<MultiTimeframeEntryFeature, EntryTimingPrediction>(_model);
+                        result = _cachedEngine.Predict(feature);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[EntryTimingML] 예측 실패: {ex.Message}");
+                    lock (_engineLock) { _cachedEngine?.Dispose(); _cachedEngine = null; }
+                    return null;
                 }
             }
-            catch (Exception ex)
+
+            // 결과값 0/NaN 보정: ML.NET이 0을 뱉으면 무효 처리
+            if (result != null)
             {
-                Console.WriteLine($"[EntryTimingML] 예측 실패: {ex.Message}");
-                lock (_engineLock) { _cachedEngine?.Dispose(); _cachedEngine = null; }
-                return null;
+                if (float.IsNaN(result.Probability) || float.IsInfinity(result.Probability))
+                    result.Probability = 0f;
+                if (float.IsNaN(result.Score) || float.IsInfinity(result.Score))
+                    result.Score = 0f;
             }
+
+            return result;
         }
+
+        /// <summary>
+        /// 입력 피처의 NaN/Infinity를 0으로 치환
+        /// ML.NET은 NaN 입력 시 0 또는 비정상 결과를 반환하므로 사전 제거
+        /// </summary>
+        private static void SanitizeFeature(MultiTimeframeEntryFeature f)
+        {
+            // 리플렉션 대신 주요 피처 직접 체크 (성능 우선)
+            f.D1_Trend = SanitizeFloat(f.D1_Trend);
+            f.D1_RSI = SanitizeFloat(f.D1_RSI);
+            f.D1_MACD = SanitizeFloat(f.D1_MACD);
+            f.D1_Signal = SanitizeFloat(f.D1_Signal);
+            f.D1_BBPosition = SanitizeFloat(f.D1_BBPosition);
+            f.D1_Volume_Ratio = SanitizeFloat(f.D1_Volume_Ratio);
+            f.H4_Trend = SanitizeFloat(f.H4_Trend);
+            f.H4_RSI = SanitizeFloat(f.H4_RSI);
+            f.H4_MACD = SanitizeFloat(f.H4_MACD);
+            f.H4_Signal = SanitizeFloat(f.H4_Signal);
+            f.H4_BBPosition = SanitizeFloat(f.H4_BBPosition);
+            f.H4_Volume_Ratio = SanitizeFloat(f.H4_Volume_Ratio);
+            f.H4_DistanceToSupport = SanitizeFloat(f.H4_DistanceToSupport);
+            f.H4_DistanceToResist = SanitizeFloat(f.H4_DistanceToResist);
+            f.H2_Trend = SanitizeFloat(f.H2_Trend);
+            f.H2_RSI = SanitizeFloat(f.H2_RSI);
+            f.H2_MACD = SanitizeFloat(f.H2_MACD);
+            f.H2_Signal = SanitizeFloat(f.H2_Signal);
+            f.H2_BBPosition = SanitizeFloat(f.H2_BBPosition);
+            f.H2_Volume_Ratio = SanitizeFloat(f.H2_Volume_Ratio);
+            f.H2_WavePosition = SanitizeFloat(f.H2_WavePosition);
+            f.H1_Trend = SanitizeFloat(f.H1_Trend);
+            f.H1_RSI = SanitizeFloat(f.H1_RSI);
+            f.H1_MACD = SanitizeFloat(f.H1_MACD);
+            f.H1_Signal = SanitizeFloat(f.H1_Signal);
+            f.H1_BBPosition = SanitizeFloat(f.H1_BBPosition);
+            f.H1_Volume_Ratio = SanitizeFloat(f.H1_Volume_Ratio);
+            f.H1_MomentumStrength = SanitizeFloat(f.H1_MomentumStrength);
+            f.M15_RSI = SanitizeFloat(f.M15_RSI);
+            f.M15_MACD = SanitizeFloat(f.M15_MACD);
+            f.M15_Signal = SanitizeFloat(f.M15_Signal);
+            f.M15_BBPosition = SanitizeFloat(f.M15_BBPosition);
+            f.M15_Volume_Ratio = SanitizeFloat(f.M15_Volume_Ratio);
+            f.M15_ATR = SanitizeFloat(f.M15_ATR);
+            f.M15_ADX = SanitizeFloat(f.M15_ADX);
+        }
+
+        private static float SanitizeFloat(float v)
+            => float.IsNaN(v) || float.IsInfinity(v) ? 0f : v;
 
         /// <summary>
         /// [WPF최적화 2] PredictionEnginePool 초기화
