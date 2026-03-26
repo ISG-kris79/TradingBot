@@ -9639,6 +9639,18 @@ namespace TradingBot
                 // [FIX] UI 포지션 상태 업데이트 (Close 버튼 표시)
                 OnPositionStatusUpdate?.Invoke(symbol, true, avgPrice);
 
+                // [FIX] PositionSide + Leverage를 UI에 전달 (ROI 계산에 필수)
+                OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
+                {
+                    Symbol = symbol,
+                    IsPositionActive = true,
+                    PositionSide = direction,
+                    EntryPrice = avgPrice,
+                    Quantity = filledQty,
+                    Leverage = leverage,
+                    LastPrice = avgPrice
+                });
+
                 // [FIX] DB TradeHistory에 진입 기록 저장
                 try
                 {

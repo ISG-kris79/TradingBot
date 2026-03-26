@@ -15,6 +15,12 @@
 
  - 없음
 
+## [2.6.10] - 2026-03-26
+
+### Fixed
+
+- **SHORT 진입 시 ROI 부호 반대 표시**: 수동 진입 후 `PositionSide`가 설정되지 않아 LONG으로 간주됨 → `OnSignalUpdate`로 `PositionSide`/`Leverage` 전달 추가
+
 ## [2.6.9] - 2026-03-26
 
 ### Fixed
