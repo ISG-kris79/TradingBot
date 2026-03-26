@@ -15,6 +15,14 @@
 
  - 없음
 
+## [2.6.2] - 2026-03-26
+
+### Fixed
+
+- **수동 진입 후 Close 버튼 미표시**: `OnPositionStatusUpdate` 호출 누락 → `IsPositionActive=true` 설정되어 Close 버튼 정상 표시
+- **수동 진입 히스토리 미기록**: DB `TradeHistory`에 진입 레코드 저장 추가 (`SaveTradeLogAsync` → `UpsertTradeEntryAsync`)
+- **수동 진입 후 UI 자동 갱신 안 됨**: `OnTradeHistoryUpdated` 이벤트 발생 추가
+
 ## [2.6.1] - 2026-03-26
 
 ### Added

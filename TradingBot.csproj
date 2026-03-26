@@ -16,9 +16,9 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
     <LangVersion>latest</LangVersion>
-      <Version>2.6.1</Version>
-      <AssemblyVersion>2.6.1.0</AssemblyVersion>
-      <FileVersion>2.6.1.0</FileVersion>
+      <Version>2.6.2</Version>
+      <AssemblyVersion>2.6.2.0</AssemblyVersion>
+      <FileVersion>2.6.2.0</FileVersion>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
     <Company>TradingBot</Company>
     <Product>CoinFF TradingBot</Product>
