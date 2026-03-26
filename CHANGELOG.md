@@ -15,6 +15,27 @@
 
  - 없음
 
+## [2.6.1] - 2026-03-26
+
+### Added
+
+- **수동 LONG/SHORT 진입 버튼**: START/STOP 옆에 배치, AI 게이트 우회 시장가 즉시 진입
+  - 선택된 심볼 + 현재가 확인 팝업 → DefaultLeverage/DefaultMargin 사용
+  - `TradingEngine.ManualEntryAsync()` 신규 메서드
+
+### Fixed
+
+- **2시간+ 미진입 근본 해결 (3건)**:
+  - `IsReady` 조건 완화: ML+TF 동시 필요 → TF만 준비되면 게이트 개방
+  - ML.NET 미가용/0% 시 `EvaluateEntryAsync` 하드 블록 제거 → TF 단독 모드 자동 전환
+  - 엘리엇 규칙 1/2 위반 하드 블록 → TF 80%+ 시 경고로 다운그레이드
+
+- **ML.NET 0% 수렴 근본 방어**:
+  - `SanitizeFeature()`: Predict 전 34개 피처 NaN/Infinity→0 치환
+  - Predict 결과 Probability/Score NaN 보정 (MLService 포함)
+  - ML 0% && TF>=50% 자동 감지 → TF 단독 판단 전환
+  - `EntryRuleValidator.FinalScore`: ML<1% 시 TF 점수로 대체
+
 ## [2.6.0] - 2026-03-26
 
 ### Added
