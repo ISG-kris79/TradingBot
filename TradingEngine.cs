@@ -9716,7 +9716,12 @@ namespace TradingBot
                         OnStatusLog?.Invoke($"⚠️ [시뮬레이션 청산] {symbol} DB 기록 실패: {dbEx.Message}");
                     }
 
+                    // UI 상태 전체 정리 (CleanupPositionData와 동일)
+                    OnCloseIncompleteStatusChanged?.Invoke(symbol, false, null);
                     OnPositionStatusUpdate?.Invoke(symbol, false, 0);
+                    OnTickerUpdate?.Invoke(symbol, 0m, 0d);
+                    _hybridExitManager?.RemoveState(symbol);
+                    _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
                     OnTradeHistoryUpdated?.Invoke();
                     OnAlert?.Invoke($"✅ [시뮬레이션] {symbol} 수동 청산 완료");
                 }
