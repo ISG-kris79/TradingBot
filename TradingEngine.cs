@@ -6122,26 +6122,24 @@ namespace TradingBot
                 
                 if (isMajorSymbol && majorCount >= maxMajor)
                 {
-                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 메이저 포화 ({majorCount}/{maxMajor}) → 진입 차단");
-                    EntryLog("SLOT", "BLOCK", $"major={majorCount}/{maxMajor}");
-                    RecordSlotBlockage(symbol);
-                    return;
+                    // [정찰대] 슬롯 포화지만 AI 게이트 통과 → 30% 정찰대 진입
+                    OnStatusLog?.Invoke($"🔍 [SLOT→정찰대] {symbol} 메이저 포화 ({majorCount}/{maxMajor}) → 30% 정찰대 진입");
+                    scoutModeActivated = true;
+                    manualSizeMultiplier = Math.Min(manualSizeMultiplier, 0.30m);
                 }
-                
+
                 if (!isMajorSymbol && pumpCount >= maxPump)
                 {
-                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} PUMP 포화 ({pumpCount}/{maxPump}) → 진입 차단");
-                    EntryLog("SLOT", "BLOCK", $"pump={pumpCount}/{maxPump}");
-                    RecordSlotBlockage(symbol);
-                    return;
+                    OnStatusLog?.Invoke($"🔍 [SLOT→정찰대] {symbol} PUMP 포화 ({pumpCount}/{maxPump}) → 30% 정찰대 진입");
+                    scoutModeActivated = true;
+                    manualSizeMultiplier = Math.Min(manualSizeMultiplier, 0.30m);
                 }
-                
+
                 if (totalPositions >= maxTotal)
                 {
-                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 총 포화 ({totalPositions}/{maxTotal}) → 진입 차단");
-                    EntryLog("SLOT", "BLOCK", $"total={totalPositions}/{maxTotal}");
-                    RecordSlotBlockage(symbol);
-                    return;
+                    OnStatusLog?.Invoke($"🔍 [SLOT→정찰대] {symbol} 총 포화 ({totalPositions}/{maxTotal}) → 30% 정찰대 진입");
+                    scoutModeActivated = true;
+                    manualSizeMultiplier = Math.Min(manualSizeMultiplier, 0.30m);
                 }
             }
 
@@ -9636,6 +9634,21 @@ namespace TradingBot
                 OnTradeExecuted?.Invoke(symbol, direction, avgPrice, filledQty);
                 OnAlert?.Invoke($"⚡ [수동진입] {symbol} {direction} 체결 | 가격={avgPrice:F8} 수량={filledQty} 레버={leverage}x");
 
+                // [텔레그램] 수동 진입 알림
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await TelegramService.Instance.SendMessageAsync(
+                            $"⚡ *[수동 진입]*\n" +
+                            $"`{symbol}` {direction} | 가격: `{avgPrice:F4}`\n" +
+                            $"수량: `{filledQty}` | 레버: `{leverage}x` | 증거금: `${marginUsdt:N0}`\n" +
+                            $"⏰ {DateTime.Now:HH:mm:ss}",
+                            TelegramMessageType.Entry);
+                    }
+                    catch { }
+                });
+
                 // [FIX] UI 포지션 상태 업데이트 (Close 버튼 표시)
                 OnPositionStatusUpdate?.Invoke(symbol, true, avgPrice);
 
@@ -9702,16 +9715,19 @@ namespace TradingBot
 
                 if (pos != null)
                 {
+                    decimal exitPrice = pos.EntryPrice;
+                    decimal pnl = 0m;
+                    decimal pnlPct = 0m;
+
                     try
                     {
-                        decimal exitPrice = pos.EntryPrice;
                         try { exitPrice = await _exchangeService.GetPriceAsync(symbol, CancellationToken.None); }
                         catch { /* MockExchange이므로 진입가로 폴백 */ }
 
-                        decimal pnl = pos.IsLong
+                        pnl = pos.IsLong
                             ? (exitPrice - pos.EntryPrice) * Math.Abs(pos.Quantity)
                             : (pos.EntryPrice - exitPrice) * Math.Abs(pos.Quantity);
-                        decimal pnlPct = pos.EntryPrice > 0
+                        pnlPct = pos.EntryPrice > 0
                             ? (pnl / (pos.EntryPrice * Math.Abs(pos.Quantity))) * 100m * pos.Leverage
                             : 0m;
 
@@ -9740,6 +9756,22 @@ namespace TradingBot
                     _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
                     OnTradeHistoryUpdated?.Invoke();
                     OnAlert?.Invoke($"✅ [Mock] {symbol} 수동 청산 완료");
+
+                    // [텔레그램] Mock 청산 알림
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            string pnlEmoji = pnl >= 0 ? "💰" : "📉";
+                            await TelegramService.Instance.SendMessageAsync(
+                                $"{pnlEmoji} *[Mock 청산]*\n" +
+                                $"`{symbol}` | 청산가: `{exitPrice:F4}`\n" +
+                                $"PnL: `{pnl:F2}` USDT ({pnlPct:+0.0;-0.0}%)\n" +
+                                $"⏰ {DateTime.Now:HH:mm:ss}",
+                                TelegramMessageType.Profit);
+                        }
+                        catch { }
+                    });
                 }
                 else
                 {
@@ -9839,6 +9871,22 @@ namespace TradingBot
                     _hybridExitManager?.RemoveState(symbol);
                     OnTradeHistoryUpdated?.Invoke();
                     OnAlert?.Invoke($"✅ {symbol} 직접 청산 완료 | 가격={avgPrice:F8} PnL={pnl:F4}");
+
+                    // [텔레그램] 수동 청산 알림
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            string pnlEmoji = pnl >= 0 ? "💰" : "📉";
+                            await TelegramService.Instance.SendMessageAsync(
+                                $"{pnlEmoji} *[수동 청산]*\n" +
+                                $"`{symbol}` {closeSide} | 청산가: `{avgPrice:F4}`\n" +
+                                $"PnL: `{pnl:F2}` USDT ({pnlPct:+0.0;-0.0}%)\n" +
+                                $"⏰ {DateTime.Now:HH:mm:ss}",
+                                TelegramMessageType.Profit);
+                        }
+                        catch { }
+                    });
                 }
                 else
                 {

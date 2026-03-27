@@ -637,49 +637,8 @@ namespace TradingBot.Services
                         nextHSCheckTime = DateTime.Now.AddMinutes(1);
                     }
 
-                    if (!timeDecayBreakevenApplied && holdingTime.TotalMinutes >= timeDecayBreakevenMinutes)
-                    {
-                        decimal breakevenStopPrice = entryPrice;
-                        bool stopTightened = false;
-                        decimal previousStop = 0m;
-
-                        if (hasCustomAbsoluteStop)
-                        {
-                            previousStop = customStopLossPrice;
-                            if ((isLong && customStopLossPrice < breakevenStopPrice) || (!isLong && customStopLossPrice > breakevenStopPrice))
-                            {
-                                customStopLossPrice = breakevenStopPrice;
-                                stopTightened = true;
-                            }
-                        }
-                        else
-                        {
-                            previousStop = protectiveStopPrice;
-                            if (protectiveStopPrice <= 0m || (isLong && protectiveStopPrice < breakevenStopPrice) || (!isLong && protectiveStopPrice > breakevenStopPrice))
-                            {
-                                protectiveStopPrice = breakevenStopPrice;
-                                stopTightened = true;
-                            }
-                        }
-
-                        lock (_posLock)
-                        {
-                            if (_activePositions.TryGetValue(symbol, out var p))
-                            {
-                                decimal storedStop = p.StopLoss;
-                                if (storedStop <= 0m || (isLong && storedStop < breakevenStopPrice) || (!isLong && storedStop > breakevenStopPrice))
-                                {
-                                    p.StopLoss = breakevenStopPrice;
-                                }
-                            }
-                        }
-
-                        OnLog?.Invoke(stopTightened
-                            ? $"🛡️ [시간 기반 보호] {symbol} {holdingTime.TotalMinutes:F0}분 경과 → 손절가를 본절({breakevenStopPrice:F8})로 상향 조정 (이전={previousStop:F8})"
-                            : $"🛡️ [시간 기반 보호] {symbol} {holdingTime.TotalMinutes:F0}분 경과 → 기존 스탑이 본절 이상으로 유지 중입니다.");
-
-                        timeDecayBreakevenApplied = true;
-                    }
+                    // [시간 기반 본절 전환 — 제거됨] 본절 청산이 수익 기회를 제한하므로 비활성화
+                    // 기존 ATR 손절만으로 리스크 관리
 
                     // [3단계 스마트 방어 시스템] 수익 보존 로직
                     
@@ -699,54 +658,16 @@ namespace TradingBot.Services
                     }
 
                     // ═══════════════════════════════════════════════
-                    // 1단계: ROE + 최소 보유시간 충족 시 본절 보호 활성화
+                    // 1단계: 본절 보호 — 제거됨 (리스크 관리 본절 청산이 오히려 수익 기회 제한)
+                    // breakEvenActivated는 항상 true 처리하여 2단계 부분익절이 바로 동작하도록
                     // ═══════════════════════════════════════════════
-                    bool breakEvenRoeReached = highestROE >= breakEvenROE;
-                    bool breakEvenHoldSatisfied = holdingTime.TotalSeconds >= breakEvenMinHoldSeconds;
-
-                    if (!breakEvenActivated && breakEvenRoeReached && !breakEvenHoldSatisfied)
+                    if (!breakEvenActivated && highestROE >= breakEvenROE)
                     {
-                        if (!breakEvenDeferredLogged)
-                        {
-                            OnLog?.Invoke($"⏳ {symbol} 1단계 보호 대기 | ROE {highestROE:F1}% 달성, 보유시간 {holdingTime.TotalSeconds:F0}/{breakEvenMinHoldSeconds:F0}초");
-                            breakEvenDeferredLogged = true;
-                        }
-                    }
-
-                    if (!breakEvenActivated && breakEvenRoeReached && breakEvenHoldSatisfied)
-                    {
-                        breakEvenActivated = true;
-                        breakEvenDeferredLogged = false;
-                        
-                        // 진입가 + 비용버퍼(수수료+슬리피지) + 안전마진
-                        protectiveStopPrice = isLong 
-                            ? entryPrice * (1 + breakEvenBufferPct)
-                            : entryPrice * (1 - breakEvenBufferPct);
-
-                        // [ATR 스탑 본절 동기화] 본절 보호 활성화 시 ATR 스탑을 최소 진입가 수준으로 올려
-                        // SmartProtectiveStop이 이미 본절을 지키므로 ATR 스탑도 동기화 필요
-                        if (hasCustomAbsoluteStop)
-                        {
-                            decimal atrBreakevenSync = isLong
-                                ? entryPrice * (1 - breakEvenBufferPct)   // 진입가 - 버퍼 (LONG: 최소한 원금 근처)
-                                : entryPrice * (1 + breakEvenBufferPct);
-                            if (isLong && customStopLossPrice < atrBreakevenSync)
-                            {
-                                customStopLossPrice = atrBreakevenSync;
-                                OnLog?.Invoke($"🔗 {symbol} ATR스탑 ↑ 본절 동기화: {customStopLossPrice:F8} (진입가={entryPrice:F8})");
-                            }
-                            else if (!isLong && customStopLossPrice > atrBreakevenSync)
-                            {
-                                customStopLossPrice = atrBreakevenSync;
-                                OnLog?.Invoke($"🔗 {symbol} ATR스탑 ↓ 본절 동기화: {customStopLossPrice:F8} (진입가={entryPrice:F8})");
-                            }
-                        }
-
-                        OnLog?.Invoke($"🛡️ {symbol} 손절대기 (ROE {highestROE:F1}%, 스탑 {protectiveStopPrice:F8})");
+                        breakEvenActivated = true; // 본절 스탑 없이 플래그만 설정 (2단계 트리거용)
                     }
 
                     // ═══════════════════════════════════════════════
-                    // 2단계: 메이저 2차 구간 진입 시 부분익절 + +2% 본절 방어
+                    // 2단계: 메이저 2차 구간 진입 시 부분익절 + 스탑 상향
                     // ═══════════════════════════════════════════════
                     if (breakEvenActivated && !profitLockActivated && highestROE >= profitLockROE)
                     {
