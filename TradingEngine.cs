@@ -5278,7 +5278,7 @@ namespace TradingBot
 
                 int savedStep = 0;
                 int savedPartialStage = 0;
-                bool savedPump = false;
+                bool savedPump = !MajorSymbols.Contains(pos.Symbol); // [FIX] 메이저 아니면 PUMP 기본값
                 bool savedAvg = false;
                 decimal savedWave1Low = 0;
                 decimal savedWave1High = 0;
@@ -7119,9 +7119,10 @@ namespace TradingBot
                         }
                     }
 
-                    if (!isScoutAddOnOrder)
+                    if (!isScoutAddOnOrder && !scoutModeActivated)
                     {
                         // [동시성 보호] 포지션 추가 직전 슬롯 최종 재체크
+                        // 정찰대 모드에서는 슬롯 초과를 허용하므로 스킵
                         bool isMajorSymbol = MajorSymbols.Contains(symbol);
                         int finalTotal = _activePositions.Count;
                         int finalMajorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
