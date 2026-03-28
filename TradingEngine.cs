@@ -152,6 +152,8 @@ namespace TradingBot
         private TradingBot.Services.AIDedicatedWorkerThread? _aiWorkerThread;
         // [동적 트레일링] AI 기반 동적 익절/손절 엔진
         private TradingBot.Services.DynamicTrailingStopEngine? _dynamicTrailingEngine;
+        // [Fail-safe] API 연결 끊김 + 슬리피지 감지 모듈
+        private TradingBot.Services.FailSafeGuardService? _failSafeGuard;
 
         private DateTime _lastCleanupTime = DateTime.Now;
 
@@ -615,6 +617,22 @@ namespace TradingBot
                 _aiDoubleCheckEntryGate = null;
                 OnStatusLog?.Invoke("🛡️ AI 더블체크 게이트 비활성화: Torch/Transformer 설정이 꺼져 있어 15분 WaveGate 폴백만 사용합니다.");
             }
+
+            // [Fail-safe] API 연결 끊김 + 슬리피지 감지 모듈
+            _failSafeGuard = new TradingBot.Services.FailSafeGuardService();
+            _failSafeGuard.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _failSafeGuard.OnAlert += msg => OnAlert?.Invoke(msg);
+            _failSafeGuard.OnEmergencyCloseAll += async () =>
+            {
+                OnAlert?.Invoke("🚨 [FAIL-SAFE] 전체 긴급 청산 시작!");
+                List<string> symbols;
+                lock (_posLock) { symbols = _activePositions.Keys.ToList(); }
+                foreach (var sym in symbols)
+                {
+                    try { await ClosePositionAsync(sym); }
+                    catch (Exception ex) { OnStatusLog?.Invoke($"❌ [FAIL-SAFE] {sym} 긴급 청산 실패: {ex.Message}"); }
+                }
+            };
 
             // [동적 트레일링] AI 기반 동적 익절/손절 엔진 초기화
             _dynamicTrailingEngine = new TradingBot.Services.DynamicTrailingStopEngine();

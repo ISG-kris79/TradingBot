@@ -15,6 +15,20 @@
 
  - 없음
 
+## [2.8.1] - 2026-03-27
+
+### Added
+
+- **SkiaSharp 고성능 렌더링 강화**:
+  - 가상화(Virtualization): 최근 100개 캔들만 렌더링, 나머지는 메모리 유지
+  - Buy/Sell 시그널 마커: 진입/청산 시점에 삼각형 마커 + 라벨 차트 오버레이
+  - `AddSignalMarker()` / `ClearSignalMarkers()` API
+- **Fail-safe 리스크 관리 모듈** (`FailSafeGuardService`):
+  - API 하트비트 모니터링 (30초 경고, 60초 긴급 전체 청산)
+  - 슬리피지 감지 (체결가 vs 요청가 1% 이상 차이 시 알림)
+  - 잔고 급감 감지 (50% 이상 감소 시 전체 포지션 긴급 청산)
+  - TradingEngine에 연동 (OnEmergencyCloseAll → 전체 ClosePositionAsync)
+
 ## [2.8.0] - 2026-03-27
 
 ### Added

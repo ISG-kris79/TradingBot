@@ -114,6 +114,25 @@ namespace TradingBot.Controls
         private readonly SKPaint _bbFillPaint = new() { Color = BBFillColor, Style = SKPaintStyle.Fill };
         private readonly SKPaint _bbBorderPaint = new() { Color = BBBorderColor, StrokeWidth = 0.8f, IsAntialias = true, Style = SKPaintStyle.Stroke, PathEffect = SKPathEffect.CreateDash(new[] { 4f, 3f }, 0) };
 
+        // ─── 레이어 캐싱 (Static/Dynamic 분리) ────────────
+        // Static Layer: 배경 그리드 + 축 → 데이터 변경 시만 재렌더링
+        private SKBitmap? _staticLayerCache;
+        private int _staticLayerCandleCount;  // 캐시 무효화 판정용
+        private int _staticLayerWidth;
+        private int _staticLayerHeight;
+
+        // ─── Buy/Sell 시그널 마커 ─────────────────────────
+        private readonly List<SignalMarker> _signalMarkers = new();
+        private readonly object _signalLock = new();
+        private static readonly SKColor BuySignalColor = new(0x00, 0xE6, 0x76, 0xCC);   // 초록
+        private static readonly SKColor SellSignalColor = new(0xFF, 0x53, 0x70, 0xCC);  // 빨강
+        private readonly SKPaint _buySignalPaint = new() { Color = BuySignalColor, IsAntialias = true, Style = SKPaintStyle.Fill };
+        private readonly SKPaint _sellSignalPaint = new() { Color = SellSignalColor, IsAntialias = true, Style = SKPaintStyle.Fill };
+
+        // ─── 가상화 (Viewport) ─────────────────────────────
+        private int _viewportStart;   // 보이는 영역의 시작 인덱스
+        private int _viewportCount = 100; // 화면에 표시할 최대 캔들 수
+
         // ─── Interlocked 데이터 무결성 ────────────────────
         // AI 스레드와 UI 스레드 간 데이터 공유 시 원자적 접근 보장
         private long _aiStopPriceBits;   // double → long (Interlocked 호환)
@@ -161,6 +180,24 @@ namespace TradingBot.Controls
         public void SetForecastPrices(List<double> forecast)
         {
             _forecastPrices = forecast ?? new();
+            _needsRedraw = true;
+        }
+
+        /// <summary>Buy/Sell 시그널 마커 추가</summary>
+        public void AddSignalMarker(DateTime time, double price, bool isBuy, string label = "")
+        {
+            lock (_signalLock)
+            {
+                _signalMarkers.Add(new SignalMarker { Time = time, Price = price, IsBuy = isBuy, Label = label });
+                if (_signalMarkers.Count > 200) _signalMarkers.RemoveAt(0);
+            }
+            _needsRedraw = true;
+        }
+
+        /// <summary>시그널 마커 초기화</summary>
+        public void ClearSignalMarkers()
+        {
+            lock (_signalLock) { _signalMarkers.Clear(); }
             _needsRedraw = true;
         }
 
@@ -252,6 +289,17 @@ namespace TradingBot.Controls
                 return;
             }
 
+            // ─── 가상화: 화면에 보이는 캔들만 렌더링 ───
+            if (candles.Count > _viewportCount)
+            {
+                _viewportStart = candles.Count - _viewportCount;
+                candles = candles.GetRange(_viewportStart, _viewportCount);
+            }
+            else
+            {
+                _viewportStart = 0;
+            }
+
             // 차트 영역 계산
             float chartLeft = PaddingLeft;
             float chartRight = info.Width - PaddingRight;
@@ -332,6 +380,9 @@ namespace TradingBot.Controls
 
             // 현재가 마커 (우측에 가격 표시)
             DrawCurrentPriceMarker(canvas, chartRight, chartTop, volumeTop, priceMin, priceMax);
+
+            // Buy/Sell 시그널 마커 (차트 위 삼각형)
+            DrawSignalMarkers(canvas, candles, chartLeft, candleWidth, chartTop, volumeTop, priceMin, priceMax);
 
             // STOP-EXIT 경고 오버레이
             if (_stopExitAlert)
@@ -526,6 +577,51 @@ namespace TradingBot.Controls
             canvas.DrawText("⚠ STOP-EXIT", info.Width / 2f, 36f, SKTextAlign.Center, _alertFont, _alertTextPaint);
         }
 
+        /// <summary>Buy/Sell 시그널 마커 렌더링</summary>
+        private void DrawSignalMarkers(SKCanvas canvas, List<CandleRenderData> candles, float chartLeft, float candleWidth, float top, float bottom, double priceMin, double priceMax)
+        {
+            List<SignalMarker> markers;
+            lock (_signalLock) { markers = _signalMarkers.ToList(); }
+            if (markers.Count == 0 || candles.Count == 0) return;
+
+            var startTime = candles[0].Time;
+            var endTime = candles[^1].Time;
+            var timeSpan = (endTime - startTime).TotalMilliseconds;
+            if (timeSpan <= 0) return;
+
+            foreach (var m in markers)
+            {
+                if (m.Time < startTime || m.Time > endTime) continue;
+                float ratio = (float)((m.Time - startTime).TotalMilliseconds / timeSpan);
+                float x = chartLeft + ratio * (candles.Count * candleWidth);
+                float y = PriceToY(m.Price, top, bottom, priceMin, priceMax);
+
+                var paint = m.IsBuy ? _buySignalPaint : _sellSignalPaint;
+                float size = 6f;
+
+                using var path = new SKPath();
+                if (m.IsBuy)
+                {
+                    // 상향 삼각형 (BUY)
+                    path.MoveTo(x, y - size);
+                    path.LineTo(x - size, y + size);
+                    path.LineTo(x + size, y + size);
+                }
+                else
+                {
+                    // 하향 삼각형 (SELL)
+                    path.MoveTo(x, y + size);
+                    path.LineTo(x - size, y - size);
+                    path.LineTo(x + size, y - size);
+                }
+                path.Close();
+                canvas.DrawPath(path, paint);
+
+                if (!string.IsNullOrEmpty(m.Label))
+                    canvas.DrawText(m.Label, x + 8, y + 3, SKTextAlign.Left, _smallFont, paint);
+            }
+        }
+
         /// <summary>기술적 지표 오버레이: SMA20/50 + Bollinger Bands</summary>
         private void DrawIndicatorOverlays(SKCanvas canvas, List<CandleRenderData> candles, float chartLeft, float candleWidth, float top, float bottom, double priceMin, double priceMax)
         {
@@ -616,5 +712,14 @@ namespace TradingBot.Controls
         public DateTime Time { get; set; }
         public double StopPrice { get; set; }
         public double LivePrice { get; set; }
+    }
+
+    /// <summary>Buy/Sell 시그널 마커</summary>
+    public class SignalMarker
+    {
+        public DateTime Time { get; set; }
+        public double Price { get; set; }
+        public bool IsBuy { get; set; }  // true=BUY, false=SELL
+        public string Label { get; set; } = "";
     }
 }
