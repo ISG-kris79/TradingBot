@@ -1043,148 +1043,73 @@
                 <TabItem Header="📊  DASHBOARD">
                     <Grid Margin="8">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="260"/>
+                            <ColumnDefinition Width="200"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
-                        <!-- Left Sidebar -->
+                        <!-- Left Sidebar (200px 컴팩트) -->
                         <ScrollViewer Grid.Column="0"
                                       Style="{StaticResource MinimalScrollViewer}"
                                       Margin="0,0,16,0">
                             <StackPanel>
 
-                            <!-- Entry Gate Card -->
-                            <Border Style="{StaticResource StatCardStyle}"
-                                    Margin="0,0,0,16">
+                            <!-- Entry Gate Card (컴팩트) -->
+                            <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
                                 <StackPanel>
-                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                                        <Border Width="3" CornerRadius="2" Background="{StaticResource SecondaryBrush}" Margin="0,0,8,0" VerticalAlignment="Stretch"/>
-                                        <TextBlock Text="🧠 ENTRY GATE"
-                                                   FontSize="12"
-                                                   FontWeight="Bold"
-                                                   Foreground="{StaticResource SecondaryBrush}"
-                                                   VerticalAlignment="Center"/>
-                                    </StackPanel>
+                                    <TextBlock Text="🧠 ENTRY GATE" FontSize="10" FontWeight="Bold"
+                                               Foreground="{StaticResource SecondaryBrush}" Margin="0,0,0,6"/>
 
-                                    <!-- ML Score Row -->
-                                    <Border Background="#0A1628" CornerRadius="6" Padding="10,7" Margin="0,0,0,5">
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="Auto"/>
-                                            </Grid.ColumnDefinitions>
-                                            <Border Grid.Column="0" Width="3" Height="14" CornerRadius="2"
-                                                    Background="#10B981" Margin="0,0,8,0" VerticalAlignment="Center"/>
-                                            <TextBlock Grid.Column="1" Text="ML.NET 예측"
-                                                       Foreground="#6B7280" FontSize="11" FontWeight="SemiBold"
-                                                       VerticalAlignment="Center"/>
-                                            <TextBlock Grid.Column="2"
-                                                       Text="{Binding WaveMLScoreText}"
-                                                       Foreground="#10B981"
-                                                       FontSize="15" FontWeight="Bold" FontFamily="Consolas"/>
-                                        </Grid>
-                                    </Border>
+                                    <Grid Margin="0,0,0,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="ML.NET 예측" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding WaveMLScoreText}"
+                                                   Foreground="#10B981" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
 
-                                    <!-- TF Score Row -->
-                                    <Border Background="#0A1628" CornerRadius="6" Padding="10,7" Margin="0,0,0,10">
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="Auto"/>
-                                            </Grid.ColumnDefinitions>
-                                            <Border Grid.Column="0" Width="3" Height="14" CornerRadius="2"
-                                                    Background="#3B82F6" Margin="0,0,8,0" VerticalAlignment="Center"/>
-                                            <TextBlock Grid.Column="1" Text="Transformer"
-                                                       Foreground="#6B7280" FontSize="11" FontWeight="SemiBold"
-                                                       VerticalAlignment="Center"/>
-                                            <TextBlock Grid.Column="2"
-                                                       Text="{Binding WaveTFScoreText}"
-                                                       Foreground="#3B82F6"
-                                                       FontSize="15" FontWeight="Bold" FontFamily="Consolas"/>
-                                        </Grid>
-                                    </Border>
+                                    <Grid Margin="0,0,0,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Transformer" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding WaveTFScoreText}"
+                                                   Foreground="#3B82F6" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
 
-                                    <!-- Threshold Row -->
-                                    <Border Background="#071A10" CornerRadius="6" Padding="10,6" Margin="0,0,0,5">
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/>
-                                                <ColumnDefinition Width="*"/>
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="🎯 통과 기준"
-                                                       Foreground="#4B5563" FontSize="10"
-                                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
-                                            <TextBlock Grid.Column="1"
-                                                       Text="{Binding GateThresholdSummaryText}"
-                                                       Foreground="{StaticResource AccentBrush}"
-                                                       FontSize="12" FontWeight="Bold"
-                                                       VerticalAlignment="Center"/>
-                                        </Grid>
-                                    </Border>
-
+                                    <TextBlock Text="{Binding GateThresholdSummaryText}"
+                                               Foreground="{StaticResource AccentBrush}" FontSize="10" FontWeight="Bold"/>
                                 </StackPanel>
                             </Border>
 
-                            <!-- AI Learning Status Card -->
-                            <Border Style="{StaticResource StatCardStyle}"
-                                    Margin="0,0,0,16">
+                            <!-- AI Learning (컴팩트) -->
+                            <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
                                 <StackPanel>
-                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-                                        <Border Width="3" CornerRadius="2" Background="{StaticResource PrimaryBrush}" Margin="0,0,8,0" VerticalAlignment="Stretch"/>
-                                        <TextBlock Text="🤖 AI LEARNING"
-                                                   FontSize="12"
-                                                   FontWeight="Bold"
-                                                   Foreground="{StaticResource PrimaryBrush}"
-                                                   VerticalAlignment="Center"/>
-                                    </StackPanel>
-                                    <!-- Model Status -->
-                                    <TextBlock Text="{Binding AiModelStatusText}"
-                                               Foreground="{Binding AiModelStatusColor}"
-                                               FontSize="11"
-                                               FontWeight="Bold"
-                                               Margin="0,0,0,8"
-                                               TextWrapping="Wrap"/>
+                                    <TextBlock Text="🤖 AI LEARNING" FontSize="10" FontWeight="Bold"
+                                               Foreground="{StaticResource PrimaryBrush}" Margin="0,0,0,4"/>
+                                    <TextBlock Text="{Binding AiModelStatusText}" Foreground="{Binding AiModelStatusColor}"
+                                               FontSize="10" FontWeight="Bold" TextWrapping="Wrap" Margin="0,0,0,4"/>
 
                                     <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-
-                                        <!-- Total Decisions -->
-                                        <TextBlock Grid.Row="0" Text="총 결정"
-                                                   Foreground="#9CA3AF" FontSize="11"/>
-                                        <TextBlock Grid.Row="0" Grid.Column="1"
-                                                   Text="{Binding AiTotalDecisions}"
-                                                   Foreground="#E0E7FF" FontSize="13" FontWeight="SemiBold"/>
-
-                                        <!-- Labeled Count & Rate -->
-                                        <TextBlock Grid.Row="1" Text="라벨링"
-                                                   Foreground="#9CA3AF" FontSize="11" Margin="0,5,0,0"/>
-                                        <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Margin="0,5,0,0">
-                                            <TextBlock Text="{Binding AiLabeledCount}"
-                                                       Foreground="{StaticResource AccentBrush}"
-                                                       FontSize="13" FontWeight="SemiBold"/>
-                                            <TextBlock Text=" (" Foreground="#9CA3AF" FontSize="10" Margin="1,0,0,0"/>
-                                            <TextBlock Text="{Binding AiLabelingRateText}"
-                                                       Foreground="{StaticResource AccentBrush}" FontSize="10"/>
-                                            <TextBlock Text=")" Foreground="#9CA3AF" FontSize="10"/>
-                                        </StackPanel>
-
-                                        <!-- Active Decisions -->
-                                        <TextBlock Grid.Row="2" Text="진행 중"
-                                                   Foreground="#9CA3AF" FontSize="11" Margin="0,5,0,0"/>
-                                        <TextBlock Grid.Row="2" Grid.Column="1"
-                                                   Text="{Binding AiActiveDecisions}"
-                                                   Foreground="{StaticResource SecondaryBrush}"
-                                                   FontSize="13" FontWeight="SemiBold" Margin="0,5,0,0"/>
+                                        <TextBlock Grid.Row="0" Text="총 결정" Foreground="#9CA3AF" FontSize="10"/>
+                                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding AiTotalDecisions}" Foreground="#E0E7FF" FontSize="11" FontWeight="SemiBold"/>
+                                        <TextBlock Grid.Row="1" Text="라벨링" Foreground="#9CA3AF" FontSize="10" Margin="0,2,0,0"/>
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="SemiBold" Margin="0,2,0,0">
+                                            <Run Text="{Binding AiLabeledCount}"/><Run Text=" ("/><Run Text="{Binding AiLabelingRateText}"/><Run Text=")"/>
+                                        </TextBlock>
+                                        <TextBlock Grid.Row="2" Text="진행 중" Foreground="#9CA3AF" FontSize="10" Margin="0,2,0,0"/>
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding AiActiveDecisions}" Foreground="{StaticResource SecondaryBrush}" FontSize="11" FontWeight="SemiBold" Margin="0,2,0,0"/>
                                     </Grid>
                                 </StackPanel>
                             </Border>
@@ -1197,9 +1122,9 @@
                                     Background="#0D1B2A"
                                     BorderBrush="#1E3A5F"
                                     BorderThickness="1"
-                                    CornerRadius="10"
-                                    Padding="14,12"
-                                    Margin="0,0,0,16">
+                                    CornerRadius="8"
+                                    Padding="8,6"
+                                    Margin="0,0,0,8">
                                 <Border.Effect>
                                     <DropShadowEffect x:Name="GlowTimeOut"
                                                       Color="#1E3A5F"
@@ -1209,21 +1134,8 @@
                                 </Border.Effect>
                                 <StackPanel>
                                     <!-- 헤더 -->
-                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                                        <Border Width="3" CornerRadius="2"
-                                                Background="#7C3AED"
-                                                Margin="0,0,8,0"
-                                                VerticalAlignment="Stretch"/>
-                                        <TextBlock Text="⏳ AI PREDICTIVE"
-                                                   FontSize="12"
-                                                   FontWeight="Bold"
-                                                   Foreground="#7C3AED"
-                                                   VerticalAlignment="Center"/>
-                                        <TextBlock Text=" TIME-OUT PROB"
-                                                   FontSize="10"
-                                                   Foreground="#4B5563"
-                                                   VerticalAlignment="Center"/>
-                                    </StackPanel>
+                                    <TextBlock Text="⏳ AI PREDICTIVE TIME-OUT PROB" FontSize="10" FontWeight="Bold"
+                                               Foreground="#7C3AED" Margin="0,0,0,4"/>
 
                                     <!-- 스캔 상태 행 -->
                                     <Border Background="#071226"
