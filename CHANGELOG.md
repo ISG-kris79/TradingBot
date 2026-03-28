@@ -15,6 +15,17 @@
 
  - 없음
 
+## [2.8.0] - 2026-03-27
+
+### Added
+
+- **핀테크 대시보드 v1**:
+  - SkiaSharp 차트에 SMA20(금색)/SMA50(파랑) 이동평균선 오버레이
+  - Bollinger Bands 밴드(보라) 영역 채우기 + 상/하 경계선
+  - `CandleRenderData`에 SMA20/SMA50/BB 데이터 필드 확장
+  - SymbolChartWindow: ML.NET / Transformer / AI Score / RSI / Signal 5카드 의사결정 패널
+  - MainWindow 우측 패널: AI PREDICTION 요약 카드 (ML/TF ProgressBar + BB Position 텍스트)
+
 ## [2.7.1] - 2026-03-27
 
 ### Fixed
