@@ -23,13 +23,26 @@ namespace TradingBot
 
             // AI 손절가 실시간 연동: ViewModel → SkiaCandleChart
             _viewModel.OnAIStopPriceChanged += OnAIStopPriceChanged;
+
+            // SSA 예측 밴드 연동
+            _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         }
 
         private void OnWindowClosed(object? sender, System.EventArgs e)
         {
             // 이벤트 구독 해제 (메모리 누수 방지)
             _viewModel.OnAIStopPriceChanged -= OnAIStopPriceChanged;
+            _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
             SkiaCandleChartControl.ClearTrailingHistory();
+        }
+
+        private void OnViewModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(MainViewModel.SsaUpperBound) ||
+                e.PropertyName == nameof(MainViewModel.SsaLowerBound))
+            {
+                SkiaCandleChartControl.SetPredictionBand(_viewModel.SsaUpperBound, _viewModel.SsaLowerBound);
+            }
         }
 
         /// <summary>

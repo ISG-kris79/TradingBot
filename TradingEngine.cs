@@ -154,6 +154,10 @@ namespace TradingBot
         private TradingBot.Services.DynamicTrailingStopEngine? _dynamicTrailingEngine;
         // [Fail-safe] API 연결 끊김 + 슬리피지 감지 모듈
         private TradingBot.Services.FailSafeGuardService? _failSafeGuard;
+        // [SSA] ML.NET 시계열 가격 범위 예측
+        private readonly TradingBot.Services.SsaPriceForecastService _ssaForecast = new();
+        private DateTime _lastSsaTrainTime = DateTime.MinValue;
+        private TradingBot.Services.SsaForecastResult? _latestSsaResult;
 
         private DateTime _lastCleanupTime = DateTime.Now;
 
@@ -266,6 +270,8 @@ namespace TradingBot
         /// (bbPos 0.0~1.0, mlConfidence 0.0~1.0, tfConvergenceDivergence bool)
         /// </summary>
         public event Action<double, float, bool>? OnPriceProgressUpdate;
+        /// <summary>[SSA] 시계열 예측 밴드 업데이트 (upperBound, lowerBound, forecastPrice)</summary>
+        public event Action<float, float, float>? OnSsaForecastUpdate;
 
         /// <summary>
         /// [AI Command Center] 심볼, AI신뢰도(0~1), 방향(LONG/SHORT/NONE), H4/H1/15M 상태 문자열, bullPower(0~100), bearPower(0~100)
@@ -617,6 +623,9 @@ namespace TradingBot
                 _aiDoubleCheckEntryGate = null;
                 OnStatusLog?.Invoke("🛡️ AI 더블체크 게이트 비활성화: Torch/Transformer 설정이 꺼져 있어 15분 WaveGate 폴백만 사용합니다.");
             }
+
+            // [SSA] 시계열 예측 로그 연결
+            _ssaForecast.OnLog += msg => OnStatusLog?.Invoke(msg);
 
             // [Fail-safe] API 연결 끊김 + 슬리피지 감지 모듈
             _failSafeGuard = new TradingBot.Services.FailSafeGuardService();
@@ -5805,6 +5814,33 @@ namespace TradingBot
                     // 수렴 후 발산: BB 밴드 내 위치 0.4~0.6 (밀집) + TF 신뢰도 높음
                     bool tfConvergDiv = (bbPosMain >= 0.35f && bbPosMain <= 0.65f) && (tfConfMain >= 0.70f);
                     OnPriceProgressUpdate.Invoke(Math.Clamp(bbPosMain, 0f, 1f), mlConfMain, tfConvergDiv);
+                }
+
+                // [SSA] 5분마다 시계열 예측 학습 + 매 분석 사이클에서 예측 결과 전달
+                if ((DateTime.Now - _lastSsaTrainTime).TotalMinutes >= 5)
+                {
+                    try
+                    {
+                        if (_marketDataManager.KlineCache.TryGetValue(symbol, out var klineList) && klineList.Count >= 100)
+                        {
+                            List<float> closePrices;
+                            lock (klineList) { closePrices = klineList.Select(k => (float)k.ClosePrice).ToList(); }
+                            if (_ssaForecast.Train(closePrices))
+                            {
+                                _lastSsaTrainTime = DateTime.Now;
+                                var result = _ssaForecast.Predict(closePrices[^1]);
+                                if (result != null)
+                                {
+                                    _latestSsaResult = result;
+                                    OnSsaForecastUpdate?.Invoke(result.LastUpperBound, result.LastLowerBound, result.LastForecast);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ssaEx)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [SSA] 예측 오류: {ssaEx.Message}");
+                    }
                 }
 
                 // [AI Command Center] 상태 업데이트

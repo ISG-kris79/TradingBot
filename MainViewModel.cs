@@ -236,6 +236,28 @@ namespace TradingBot.ViewModels
             set { _battleTFConfidence = value; OnPropertyChanged(); }
         }
 
+        // ─── SSA 시계열 예측 밴드 ──────────────────────────
+        private float _ssaUpperBound;
+        public float SsaUpperBound
+        {
+            get => _ssaUpperBound;
+            set { _ssaUpperBound = value; OnPropertyChanged(); }
+        }
+
+        private float _ssaLowerBound;
+        public float SsaLowerBound
+        {
+            get => _ssaLowerBound;
+            set { _ssaLowerBound = value; OnPropertyChanged(); }
+        }
+
+        private float _ssaForecastPrice;
+        public float SsaForecastPrice
+        {
+            get => _ssaForecastPrice;
+            set { _ssaForecastPrice = value; OnPropertyChanged(); }
+        }
+
         private string _battleBBPositionText = "Position: --";
         public string BattleBBPositionText
         {
@@ -1992,6 +2014,14 @@ namespace TradingBot.ViewModels
             _engine.OnDailyProfitUpdate += profit => RunOnUI(() => UpdateDailyProfit(profit));
             _engine.OnPriceProgressUpdate += (bbPos, mlConf, tfConvDiv) => RunOnUI(() => UpdatePriceProgress(bbPos, mlConf, tfConvDiv));
             _engine.OnExitScoreUpdate += (sym, score, prob, stop) => RunOnUI(() => UpdateExitScore(sym, score, prob, stop));
+
+            // [SSA] 시계열 예측 밴드 → SkiaSharp 차트 전달
+            _engine.OnSsaForecastUpdate += (upper, lower, forecast) => RunOnUI(() =>
+            {
+                SsaUpperBound = upper;
+                SsaLowerBound = lower;
+                SsaForecastPrice = forecast;
+            });
 
             // [WaveAI] ML/TF 점수 업데이트 구독
             _engine.OnWaveAIScoreUpdate += (symbol, mlScore, tfScore, status) =>

@@ -15,6 +15,15 @@
 
  - 없음
 
+## [2.9.1] - 2026-03-27
+
+### Added
+
+- **SSA 시계열 예측 → TradingEngine 메인 루프 연동**:
+  - 5분마다 KlineCache에서 종가 데이터로 SSA 학습 + 예측
+  - `OnSsaForecastUpdate` 이벤트 → ViewModel → SkiaCandleChart 자동 전달
+  - SymbolChartWindow: PropertyChanged 구독으로 예측 밴드 실시간 업데이트
+
 ## [2.9.0] - 2026-03-27
 
 ### Added
