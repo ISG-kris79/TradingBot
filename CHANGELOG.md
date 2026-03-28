@@ -15,6 +15,18 @@
 
  - 없음
 
+## [2.9.0] - 2026-03-27
+
+### Added
+
+- **RingBuffer\<T\>**: GC 부하 없는 고정 크기 순환 배열 — 캔들/틱 데이터 저장소
+- **ML.NET SSA 시계열 예측** (`SsaPriceForecastService`):
+  - ForecastBySsa 알고리즘: WindowSize=20, Horizon=5, Confidence=95%
+  - 데이터 정규화 (기준가 대비 bps 변환) → 0% 수렴 방지
+  - 예측값 + Upper/Lower Bound → SkiaSharp 차트 반투명 영역
+- **Microsoft.ML.TimeSeries** NuGet 패키지 추가
+- **Binance API Rate Limiter**: SemaphoreSlim(20) 동시 요청 제한
+
 ## [2.8.1] - 2026-03-27
 
 ### Added
