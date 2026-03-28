@@ -221,6 +221,28 @@ namespace TradingBot.ViewModels
             set { _battlePulseBrush = value; OnPropertyChanged(); }
         }
 
+        // ─── AI Prediction Summary 카드 ──────────────
+        private double _battleMLConfidence;
+        public double BattleMLConfidence
+        {
+            get => _battleMLConfidence;
+            set { _battleMLConfidence = value; OnPropertyChanged(); }
+        }
+
+        private double _battleTFConfidence;
+        public double BattleTFConfidence
+        {
+            get => _battleTFConfidence;
+            set { _battleTFConfidence = value; OnPropertyChanged(); }
+        }
+
+        private string _battleBBPositionText = "Position: --";
+        public string BattleBBPositionText
+        {
+            get => _battleBBPositionText;
+            set { _battleBBPositionText = value; OnPropertyChanged(); }
+        }
+
         private string _battleConfidenceText = "신뢰도: 대기";
         public string BattleConfidenceText
         {
@@ -1983,6 +2005,9 @@ namespace TradingBot.ViewModels
                     WaveMLScoreText = mlScore <= 0 ? "ML: 대기" : $"ML: {mlScore:P0}";
                     WaveTFScoreText = tfScore <= 0 ? "TF: 대기" : $"TF: {tfScore:P0}";
                     WaveStatusText = status;
+
+                    // [핀테크] AI Prediction 카드에 TF 신뢰도 반영
+                    if (tfScore > 0) BattleTFConfidence = tfScore * 100.0;
                     
                     // [NEW] 해당 심볼의 ViewModel에도 ML/TF 확률 업데이트
                     var symbolVm = MarketDataList.FirstOrDefault(x => string.Equals(x.Symbol, normalizedSymbol, StringComparison.OrdinalIgnoreCase));
@@ -5347,6 +5372,17 @@ namespace TradingBot.ViewModels
             _tfConvergenceDivergence = tfConvergenceDivergence;
             // bbPosition: 0.0 (하단밴드) ~ 1.0 (상단밴드) → 0~100%
             PriceProgress = bbPosition * 100.0;
+
+            // [핀테크] AI Prediction Summary 카드 업데이트
+            BattleMLConfidence = mlConfidence * 100.0;
+            string bbLabel = bbPosition switch
+            {
+                <= 0.30 => $"Position: {bbPosition:P0} (하단 진입구간)",
+                <= 0.50 => $"Position: {bbPosition:P0} (눌림목)",
+                <= 0.70 => $"Position: {bbPosition:P0} (중립)",
+                _ => $"Position: {bbPosition:P0} (과열 주의)"
+            };
+            BattleBBPositionText = bbLabel;
         }
 
         // ─── [동적 트레일링] Exit Score 게이지 + 동적 손절가 ────────────────────

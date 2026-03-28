@@ -104,6 +104,16 @@ namespace TradingBot.Controls
         private readonly SKFont _smallFont = new() { Size = 9f };
         private readonly SKFont _alertFont = new() { Size = 24f, Embolden = true };
 
+        // ─── 기술적 지표 오버레이 Paint ──────────────────
+        private static readonly SKColor SMA20Color = new(0xFF, 0xD7, 0x00, 0xCC);  // 금색
+        private static readonly SKColor SMA50Color = new(0x60, 0xA5, 0xFA, 0xCC);  // 파랑
+        private static readonly SKColor BBFillColor = new(0x7C, 0x4D, 0xFF, 0x15); // 보라 투명
+        private static readonly SKColor BBBorderColor = new(0x7C, 0x4D, 0xFF, 0x40);
+        private readonly SKPaint _sma20Paint = new() { Color = SMA20Color, StrokeWidth = 1.5f, IsAntialias = true, Style = SKPaintStyle.Stroke };
+        private readonly SKPaint _sma50Paint = new() { Color = SMA50Color, StrokeWidth = 1.5f, IsAntialias = true, Style = SKPaintStyle.Stroke };
+        private readonly SKPaint _bbFillPaint = new() { Color = BBFillColor, Style = SKPaintStyle.Fill };
+        private readonly SKPaint _bbBorderPaint = new() { Color = BBBorderColor, StrokeWidth = 0.8f, IsAntialias = true, Style = SKPaintStyle.Stroke, PathEffect = SKPathEffect.CreateDash(new[] { 4f, 3f }, 0) };
+
         // ─── Interlocked 데이터 무결성 ────────────────────
         // AI 스레드와 UI 스레드 간 데이터 공유 시 원자적 접근 보장
         private long _aiStopPriceBits;   // double → long (Interlocked 호환)
@@ -299,6 +309,9 @@ namespace TradingBot.Controls
                 _volPaint.Color = isBull ? BullColor.WithAlpha(0x60) : BearColor.WithAlpha(0x60);
                 canvas.DrawRect(x - bodyWidth / 2, chartBottom - volH, bodyWidth, volH, _volPaint);
             }
+
+            // ═══ 기술적 지표 오버레이 (SMA + BB) ═══
+            DrawIndicatorOverlays(canvas, candles, chartLeft, candleWidth, chartTop, volumeTop, priceMin, priceMax);
 
             // 예측선 (Forecast)
             if (_forecastPrices.Count > 0)
@@ -513,6 +526,64 @@ namespace TradingBot.Controls
             canvas.DrawText("⚠ STOP-EXIT", info.Width / 2f, 36f, SKTextAlign.Center, _alertFont, _alertTextPaint);
         }
 
+        /// <summary>기술적 지표 오버레이: SMA20/50 + Bollinger Bands</summary>
+        private void DrawIndicatorOverlays(SKCanvas canvas, List<CandleRenderData> candles, float chartLeft, float candleWidth, float top, float bottom, double priceMin, double priceMax)
+        {
+            if (candles.Count < 2) return;
+
+            // BB 밴드 영역 (Upper~Lower 사이 채우기)
+            bool hasBB = candles.Any(c => c.BollingerUpper > 0);
+            if (hasBB)
+            {
+                using var bbPath = new SKPath();
+                bool started = false;
+                var lowerPoints = new List<SKPoint>();
+                for (int i = 0; i < candles.Count; i++)
+                {
+                    if (candles[i].BollingerUpper <= 0) continue;
+                    float x = chartLeft + i * candleWidth + candleWidth / 2;
+                    float upperY = PriceToY(candles[i].BollingerUpper, top, bottom, priceMin, priceMax);
+                    float lowerY = PriceToY(candles[i].BollingerLower, top, bottom, priceMin, priceMax);
+                    if (!started) { bbPath.MoveTo(x, upperY); started = true; }
+                    else bbPath.LineTo(x, upperY);
+                    lowerPoints.Add(new SKPoint(x, lowerY));
+                }
+                for (int i = lowerPoints.Count - 1; i >= 0; i--)
+                    bbPath.LineTo(lowerPoints[i].X, lowerPoints[i].Y);
+                bbPath.Close();
+                canvas.DrawPath(bbPath, _bbFillPaint);
+
+                // BB 상/하 경계선
+                DrawLineSeries(canvas, candles, c => c.BollingerUpper, chartLeft, candleWidth, top, bottom, priceMin, priceMax, _bbBorderPaint);
+                DrawLineSeries(canvas, candles, c => c.BollingerLower, chartLeft, candleWidth, top, bottom, priceMin, priceMax, _bbBorderPaint);
+            }
+
+            // SMA20 (금색)
+            if (candles.Any(c => c.SMA20 > 0))
+                DrawLineSeries(canvas, candles, c => c.SMA20, chartLeft, candleWidth, top, bottom, priceMin, priceMax, _sma20Paint);
+
+            // SMA50 (파랑)
+            if (candles.Any(c => c.SMA50 > 0))
+                DrawLineSeries(canvas, candles, c => c.SMA50, chartLeft, candleWidth, top, bottom, priceMin, priceMax, _sma50Paint);
+        }
+
+        /// <summary>데이터 시리즈를 연결선으로 그리기</summary>
+        private void DrawLineSeries(SKCanvas canvas, List<CandleRenderData> candles, Func<CandleRenderData, double> selector, float chartLeft, float candleWidth, float top, float bottom, double priceMin, double priceMax, SKPaint paint)
+        {
+            using var path = new SKPath();
+            bool started = false;
+            for (int i = 0; i < candles.Count; i++)
+            {
+                double val = selector(candles[i]);
+                if (val <= 0) continue;
+                float x = chartLeft + i * candleWidth + candleWidth / 2;
+                float y = PriceToY(val, top, bottom, priceMin, priceMax);
+                if (!started) { path.MoveTo(x, y); started = true; }
+                else path.LineTo(x, y);
+            }
+            if (started) canvas.DrawPath(path, paint);
+        }
+
         private void DrawEmptyState(SKCanvas canvas, SKImageInfo info)
         {
             using var paint = new SKPaint { Color = TextColor, IsAntialias = true };
@@ -530,6 +601,13 @@ namespace TradingBot.Controls
         public double Low { get; set; }
         public double Close { get; set; }
         public double Volume { get; set; }
+
+        // ─── 기술적 지표 (차트 오버레이용) ───
+        public double SMA20 { get; set; }
+        public double SMA50 { get; set; }
+        public double BollingerUpper { get; set; }
+        public double BollingerMid { get; set; }
+        public double BollingerLower { get; set; }
     }
 
     /// <summary>트레일링 스탑 히스토리 포인트</summary>

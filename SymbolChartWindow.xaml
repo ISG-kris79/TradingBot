@@ -17,6 +17,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
@@ -68,8 +69,65 @@
             </Border>
         </Grid>
 
+        <!-- 의사결정 패널: ML/TF 신뢰도 + 진입/청산 추천 -->
+        <Grid Grid.Row="2" Margin="0,0,0,6">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- ML.NET 신뢰도 -->
+            <Border Grid.Column="0" Background="#111827" CornerRadius="6" Padding="8,6" Margin="0,0,4,0">
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="ML.NET" Foreground="#6B7280" FontSize="9" HorizontalAlignment="Center"/>
+                    <TextBlock Text="{Binding SelectedSymbol.MLProbabilityText, FallbackValue='--'}"
+                               Foreground="#FFD700" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Transformer 신뢰도 -->
+            <Border Grid.Column="1" Background="#111827" CornerRadius="6" Padding="8,6" Margin="2,0">
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="TRANSFORMER" Foreground="#6B7280" FontSize="9" HorizontalAlignment="Center"/>
+                    <TextBlock Text="{Binding SelectedSymbol.TFConfidenceText, FallbackValue='--'}"
+                               Foreground="#60A5FA" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center"/>
+                </StackPanel>
+            </Border>
+
+            <!-- AI Blended Score -->
+            <Border Grid.Column="2" Background="#111827" CornerRadius="6" Padding="8,6" Margin="2,0">
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="AI SCORE" Foreground="#6B7280" FontSize="9" HorizontalAlignment="Center"/>
+                    <TextBlock Text="{Binding SelectedSymbol.AIScore, StringFormat={}{0:F0}, FallbackValue='--'}"
+                               Foreground="#00E676" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center"/>
+                </StackPanel>
+            </Border>
+
+            <!-- RSI -->
+            <Border Grid.Column="3" Background="#111827" CornerRadius="6" Padding="8,6" Margin="2,0">
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="RSI" Foreground="#6B7280" FontSize="9" HorizontalAlignment="Center"/>
+                    <TextBlock Text="{Binding SelectedSymbol.RSI_1H, StringFormat={}{0:F1}, FallbackValue='--'}"
+                               Foreground="#E2E8F0" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center"/>
+                </StackPanel>
+            </Border>
+
+            <!-- 진입 추천 -->
+            <Border Grid.Column="4" Background="#111827" CornerRadius="6" Padding="8,6" Margin="4,0,0,0">
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="SIGNAL" Foreground="#6B7280" FontSize="9" HorizontalAlignment="Center"/>
+                    <TextBlock Text="{Binding SelectedSymbol.Decision, FallbackValue='WAIT'}"
+                               Foreground="{Binding SelectedSymbol.DecisionColor, FallbackValue=#6B7280}"
+                               FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
         <!-- 차트 영역: SkiaCandleChart (고성능) + LiveCharts (폴백) -->
-        <Border Grid.Row="2" Background="#111827" BorderBrush="#2D3142" BorderThickness="1"
+        <Border Grid.Row="3" Background="#111827" BorderBrush="#2D3142" BorderThickness="1"
                 CornerRadius="10" Padding="4">
             <Grid>
                 <!-- SkiaSharp 고성능 차트 (AI 손절선 + 예측 밴드 포함) -->

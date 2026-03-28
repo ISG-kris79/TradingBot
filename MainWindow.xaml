@@ -1818,6 +1818,33 @@
                                                     </DataTemplate>
                                                 </ItemsControl.ItemTemplate>
                                             </ItemsControl>
+
+                                            <!-- AI Prediction Summary Card -->
+                                            <Border Background="{StaticResource BackgroundMediumBrush}" CornerRadius="6" Padding="10,8" Margin="0,12,0,0">
+                                                <StackPanel>
+                                                    <TextBlock Text="📊 AI PREDICTION" Foreground="{StaticResource PrimaryBrush}" FontSize="11" FontWeight="Bold" Margin="0,0,0,6"/>
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                            <ColumnDefinition Width="*"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <Grid.RowDefinitions>
+                                                            <RowDefinition Height="Auto"/>
+                                                            <RowDefinition Height="Auto"/>
+                                                            <RowDefinition Height="Auto"/>
+                                                        </Grid.RowDefinitions>
+                                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="ML" Foreground="#FFD700" FontSize="10" FontWeight="Bold" Margin="0,0,8,2"/>
+                                                        <ProgressBar Grid.Row="0" Grid.Column="1" Value="{Binding BattleMLConfidence, FallbackValue=0}" Maximum="100" Height="10"
+                                                                     Background="#252B48" Foreground="#FFD700" BorderThickness="0"/>
+                                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="TF" Foreground="#60A5FA" FontSize="10" FontWeight="Bold" Margin="0,0,8,2"/>
+                                                        <ProgressBar Grid.Row="1" Grid.Column="1" Value="{Binding BattleTFConfidence, FallbackValue=0}" Maximum="100" Height="10"
+                                                                     Background="#252B48" Foreground="#60A5FA" BorderThickness="0"/>
+                                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="BB" Foreground="#7C4DFF" FontSize="10" FontWeight="Bold" Margin="0,4,8,0"/>
+                                                        <TextBlock Grid.Row="2" Grid.Column="1" Foreground="#94A3B8" FontSize="10" Margin="0,4,0,0"
+                                                                   Text="{Binding BattleBBPositionText, FallbackValue='Position: --'}"/>
+                                                    </Grid>
+                                                </StackPanel>
+                                            </Border>
                                         </StackPanel>
                                     </ScrollViewer>
                                 </Border>
