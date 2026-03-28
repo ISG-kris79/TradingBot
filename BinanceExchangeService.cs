@@ -23,6 +23,11 @@ namespace TradingBot.Services
         private static readonly ConcurrentDictionary<string, (decimal stepSize, decimal tickSize, DateTime cachedAt)> _symbolInfoCache = new();
         private static readonly TimeSpan _symbolInfoCacheTtl = TimeSpan.FromHours(1);
 
+        // [Rate Limiter] 바이낸스 API Weight 제한 준수 (분당 2400 Weight)
+        private static readonly SemaphoreSlim _apiThrottle = new(20, 20); // 동시 요청 20개 제한
+        private static int _apiWeightUsed;
+        private static DateTime _apiWeightResetTime = DateTime.UtcNow;
+
         public string ExchangeName => "Binance";
 
         // [추가] 로그 이벤트 (상위 레이어로 전달)
