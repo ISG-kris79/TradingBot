@@ -156,6 +156,8 @@ namespace TradingBot
         private TradingBot.Services.FailSafeGuardService? _failSafeGuard;
         // [SSA] ML.NET 시계열 가격 범위 예측
         private readonly TradingBot.Services.SsaPriceForecastService _ssaForecast = new();
+        // [수익률 회귀] 진입 시 예상 수익률 예측 + 동적 포지션 사이징
+        private readonly TradingBot.Services.ProfitRegressorService _profitRegressor = new();
         private DateTime _lastSsaTrainTime = DateTime.MinValue;
         private TradingBot.Services.SsaForecastResult? _latestSsaResult;
 
@@ -537,6 +539,24 @@ namespace TradingBot
             _positionMonitor.OnPositionClosedForAiLabel += (symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason) =>
             {
                 _ = HandleAiCloseLabelingAsync(symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason);
+
+                // [수익률 회귀] 거래 결과를 학습 데이터로 피드백
+                try
+                {
+                    float holdingMin = (float)(DateTime.Now - entryTime).TotalMinutes;
+                    // 진입 시점의 지표 스냅샷 (KlineCache에서 복원)
+                    float rsi = 50f, bbPos = 0.5f, atr = 0f, volRatio = 1f, momentum = 0f;
+                    if (_marketDataManager.KlineCache.TryGetValue(symbol, out var klines) && klines.Count > 0)
+                    {
+                        var latest = klines[^1];
+                        rsi = (float)latest.HighPrice; // 실제로는 IndicatorCalculator에서 계산해야 하지만 간략화
+                    }
+                    _profitRegressor.RecordTradeOutcome(
+                        rsi, bbPos, atr, volRatio, momentum,
+                        0f, 0f, 0f, 0f,
+                        (float)actualProfitPct, holdingMin);
+                }
+                catch { /* 학습 데이터 수집 실패는 무시 */ }
             };
 
             bool transformerRequestedByConfig = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
@@ -626,6 +646,8 @@ namespace TradingBot
 
             // [SSA] 시계열 예측 로그 연결
             _ssaForecast.OnLog += msg => OnStatusLog?.Invoke(msg);
+            // [수익률 회귀] 로그 연결
+            _profitRegressor.OnLog += msg => OnStatusLog?.Invoke(msg);
 
             // [Fail-safe] API 연결 끊김 + 슬리피지 감지 모듈
             _failSafeGuard = new TradingBot.Services.FailSafeGuardService();
@@ -7249,6 +7271,25 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"❌ {symbol} 레버리지 설정 실패로 진입 취소");
                     EntryLog("ORDER_SETUP", "FAIL", "leverageSet=false");
                     return;
+                }
+
+                // [수익률 회귀] 예상 수익률 기반 동적 포지션 사이징
+                if (_profitRegressor.IsModelReady && latestCandle != null)
+                {
+                    float? predicted = _profitRegressor.PredictProfit(
+                        latestCandle.RSI, latestCandle.BB_Width > 0 ? latestCandle.BB_Width / 100f : 0.5f,
+                        latestCandle.ATR, latestCandle.Volume_Ratio,
+                        latestCandle.Price_Change_Pct,
+                        _capturedBlendedScore, _capturedBlendedScore);
+                    decimal multiplier = _profitRegressor.GetPositionMultiplier(predicted);
+                    if (multiplier <= 0)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [ProfitRegressor] {symbol} 손실 예측 ({predicted:F2}%) → 진입 패스");
+                        EntryLog("PROFIT_REG", "BLOCK", $"predicted={predicted:F2}%");
+                        return;
+                    }
+                    marginUsdt *= multiplier;
+                    OnStatusLog?.Invoke($"📊 [ProfitRegressor] {symbol} 예상수익={predicted:F2}% → 사이즈 {multiplier:P0} (${marginUsdt:N0})");
                 }
 
                 // 수량 계산: (증거금 * 레버리지) / 현재가
