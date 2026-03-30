@@ -32,6 +32,27 @@ namespace TradingBot.Services
         public DbManager(string connectionString)
         {
             _connectionString = connectionString;
+            _ = EnsureIsSimulationColumnAsync();
+        }
+
+        private async Task EnsureIsSimulationColumnAsync()
+        {
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                await db.ExecuteAsync(@"
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'IsSimulation'
+)
+BEGIN
+    ALTER TABLE dbo.TradeHistory ADD IsSimulation BIT NOT NULL DEFAULT 0;
+END");
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] IsSimulation 컬럼 자동 추가 실패: {ex.Message}");
+            }
         }
 
         private int GetCurrentUserId()
@@ -854,9 +875,9 @@ SET Side = @Side,
                 {
                     string insertSql = @"
 INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime, ExitPrice, PnL, PnLPercent, ExitReason, IsClosed, CloseVerified, LastUpdatedAt)
+    (UserId, Symbol, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime, ExitPrice, PnL, PnLPercent, ExitReason, IsClosed, CloseVerified, IsSimulation, LastUpdatedAt)
 VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @Quantity, @AiScore, @EntryTime, NULL, 0, 0, NULL, 0, 0, GETDATE());";
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @Quantity, @AiScore, @EntryTime, NULL, 0, 0, NULL, 0, 0, @IsSimulation, GETDATE());";
 
                     await db.ExecuteAsync(insertSql, new
                     {
@@ -867,7 +888,8 @@ VALUES
                         EntryPrice = entryPrice,
                         Quantity = quantity,
                         log.AiScore,
-                        EntryTime = entryTime
+                        EntryTime = entryTime,
+                        log.IsSimulation
                     }, tx);
                 }
 
@@ -1050,6 +1072,7 @@ SET ExitPrice = @ExitPrice,
     ExitTime = @ExitTime,
     IsClosed = 1,
     CloseVerified = 1,
+    IsSimulation = @IsSimulation,
     LastUpdatedAt = GETDATE()
 WHERE Id = @Id;",
                         new
@@ -1061,7 +1084,8 @@ WHERE Id = @Id;",
                             log.PnL,
                             log.PnLPercent,
                             ExitReason = exitReason,
-                            ExitTime = exitTime
+                            ExitTime = exitTime,
+                            log.IsSimulation
                         }, tx);
 
                     await tx.CommitAsync();
@@ -1089,9 +1113,9 @@ WHERE Id = @Id;",
 
                 await db.ExecuteAsync(@"
 INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, LastUpdatedAt)
+    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, LastUpdatedAt)
 VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, GETDATE());",
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @IsSimulation, GETDATE());",
                     new
                     {
                         UserId = userId,
@@ -1106,7 +1130,8 @@ VALUES
                         log.PnLPercent,
                         ExitReason = exitReason,
                         EntryTime = entryTime,
-                        ExitTime = exitTime
+                        ExitTime = exitTime,
+                        log.IsSimulation
                     }, tx);
 
                 await tx.CommitAsync();
@@ -1381,6 +1406,7 @@ SET ExitPrice = @ExitPrice,
     ExitTime = @ExitTime,
     IsClosed = 1,
     CloseVerified = 1,
+    IsSimulation = @IsSimulation,
     LastUpdatedAt = GETDATE()
 WHERE Id = @Id;",
                             new
@@ -1392,7 +1418,8 @@ WHERE Id = @Id;",
                                 log.PnL,
                                 log.PnLPercent,
                                 ExitReason = exitReason,
-                                ExitTime = exitTime
+                                ExitTime = exitTime,
+                                log.IsSimulation
                             }, tx);
 
                         await tx.CommitAsync();
@@ -1415,9 +1442,9 @@ WHERE Id = @Id;",
 
                     await db.ExecuteAsync(@"
 INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, LastUpdatedAt)
+    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, LastUpdatedAt)
 VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, GETDATE());",
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @IsSimulation, GETDATE());",
                         new
                         {
                             UserId = userId,
@@ -1432,7 +1459,8 @@ VALUES
                             log.PnLPercent,
                             ExitReason = exitReason,
                             EntryTime = resolvedEntryTime,
-                            ExitTime = exitTime
+                            ExitTime = exitTime,
+                            log.IsSimulation
                         }, tx);
 
                     await db.ExecuteAsync(@"
@@ -1446,9 +1474,9 @@ WHERE Id = @Id;",
                 {
                     await db.ExecuteAsync(@"
 INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, LastUpdatedAt)
+    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, LastUpdatedAt)
 VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, GETDATE());",
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @IsSimulation, GETDATE());",
                         new
                         {
                             UserId = userId,
@@ -1463,7 +1491,8 @@ VALUES
                             log.PnLPercent,
                             ExitReason = exitReason,
                             EntryTime = resolvedEntryTime,
-                            ExitTime = exitTime
+                            ExitTime = exitTime,
+                            log.IsSimulation
                         }, tx);
 
                     MainWindow.Instance?.AddLog($"⚠️ [DB] 열린 진입건 없이 부분청산 이력만 보정 insert: U{userId} {log.Symbol}");

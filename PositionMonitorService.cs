@@ -2979,15 +2979,15 @@ namespace TradingBot.Services
                     Quantity = absQty,
                     ExitReason = reason,
                     EntryTime = entryTimeForHistory,
-                    ExitTime = DateTime.Now
+                    ExitTime = DateTime.Now,
+                    IsSimulation = _isSimulationMode
                 };
 
-                // [시뮬레이션 모드] DB 저장 스킵 — 가상 거래는 실제 이력에 누적되지 않아야 함
-                if (!_isSimulationMode)
                 {
                     bool dbSaved = await _dbManager.CompleteTradeAsync(log);
+                    string modeTag = _isSimulationMode ? "🎮 [Simulation]" : "✅ [DB 확인]";
                     OnLog?.Invoke(dbSaved
-                        ? $"✅ [DB 확인] {symbol} 청산 이력이 TradeHistory에 반영되었습니다. (PnL={pnl:F2}, ROE={pnlPercent:F2}%) | 사유: {reason}"
+                        ? $"{modeTag} {symbol} 청산 이력이 TradeHistory에 반영되었습니다. (PnL={pnl:F2}, ROE={pnlPercent:F2}%) | 사유: {reason}"
                         : $"⚠️ [DB 확인] {symbol} 청산은 완료됐지만 TradeHistory 반영에 실패했습니다. | 사유: {reason} | Side={side} | EntryTime={entryTimeForHistory:yyyy-MM-dd HH:mm:ss}");
 
                     if (!dbSaved)
@@ -3002,10 +3002,6 @@ namespace TradingBot.Services
                         string labelText = pnl > 0 ? "WIN" : "LOSS";
                         OnLog?.Invoke($"🧠 [Pattern] {symbol} 패턴 라벨 저장 완료: {labelText} | reason={reason}");
                     }
-                }
-                else
-                {
-                    OnLog?.Invoke($"🎮 [Simulation] {symbol} 청산 (PnL={pnl:F2}, ROE={pnlPercent:F2}%) | DB 저장 스킵");
                 }
 
                 OnLog?.Invoke($"[청산 확인] {symbol} 종료가={exitPrice:F4}, PnL={pnl:F2}, ROE={pnlPercent:F2}%");
@@ -3163,20 +3159,18 @@ namespace TradingBot.Services
                         Quantity = currentQty,
                         EntryTime = localPosition.EntryTime,
                         ExitTime = now,
-                        ExitReason = "PartialClose_FullClose"
+                        ExitReason = "PartialClose_FullClose",
+                        IsSimulation = _isSimulationMode
                     };
 
-                    if (!_isSimulationMode)
+                    try
                     {
-                        try
-                        {
-                            await _dbManager.CompleteTradeAsync(closeLog);
-                            OnTradeHistoryUpdated?.Invoke();
-                        }
-                        catch (Exception dbEx)
-                        {
-                            OnLog?.Invoke($"⚠️ {symbol} 부분청산→전량청산 DB 저장 실패: {dbEx.Message}");
-                        }
+                        await _dbManager.CompleteTradeAsync(closeLog);
+                        OnTradeHistoryUpdated?.Invoke();
+                    }
+                    catch (Exception dbEx)
+                    {
+                        OnLog?.Invoke($"⚠️ {symbol} 부분청산→전량청산 DB 저장 실패: {dbEx.Message}");
                     }
 
                     OnAlert?.Invoke($"ℹ️ {symbol} 부분청산 주문이 전량 체결되어 포지션 종료 처리됨");
@@ -3200,20 +3194,18 @@ namespace TradingBot.Services
                     Quantity = actualClosedQty,
                     EntryTime = localPosition.EntryTime,
                     ExitTime = now,
-                    ExitReason = "PartialClose"
+                    ExitReason = "PartialClose",
+                    IsSimulation = _isSimulationMode
                 };
 
-                if (!_isSimulationMode)
+                try
                 {
-                    try
-                    {
-                        await _dbManager.RecordPartialCloseAsync(partialLog);
-                        OnTradeHistoryUpdated?.Invoke();
-                    }
-                    catch (Exception dbEx)
-                    {
-                        OnLog?.Invoke($"⚠️ {symbol} 부분청산 DB 저장 실패: {dbEx.Message}");
-                    }
+                    await _dbManager.RecordPartialCloseAsync(partialLog);
+                    OnTradeHistoryUpdated?.Invoke();
+                }
+                catch (Exception dbEx)
+                {
+                    OnLog?.Invoke($"⚠️ {symbol} 부분청산 DB 저장 실패: {dbEx.Message}");
                 }
 
                 lock (_posLock)
@@ -3348,7 +3340,8 @@ namespace TradingBot.Services
                         {
                             EntryPrice = p.EntryPrice,
                             Quantity = Math.Abs(p.Quantity),
-                            EntryTime = p.EntryTime == default ? DateTime.Now : p.EntryTime
+                            EntryTime = p.EntryTime == default ? DateTime.Now : p.EntryTime,
+                            IsSimulation = _isSimulationMode
                         };
                     }
                 }
@@ -3592,7 +3585,8 @@ namespace TradingBot.Services
                         {
                             EntryPrice = p.EntryPrice,
                             Quantity = Math.Abs(p.Quantity),
-                            EntryTime = p.EntryTime == default ? DateTime.Now : p.EntryTime
+                            EntryTime = p.EntryTime == default ? DateTime.Now : p.EntryTime,
+                            IsSimulation = _isSimulationMode
                         };
                     }
                 }

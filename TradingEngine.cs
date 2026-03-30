@@ -4287,7 +4287,8 @@ namespace TradingBot
                             {
                                 EntryPrice = actualEntryPrice,
                                 Quantity = filledQty,
-                                EntryTime = pumpEntryTime
+                                EntryTime = pumpEntryTime,
+                                IsSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false
                             };
 
                             bool dbSaved = await _dbManager.UpsertTradeEntryAsync(pumpEntryDbLog);
@@ -5253,7 +5254,8 @@ namespace TradingBot
                     {
                         EntryPrice = newEntryPrice,
                         Quantity = updatedQtyAbs,
-                        EntryTime = flipNow
+                        EntryTime = flipNow,
+                        IsSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false
                     };
 
                     bool entrySynced = await _dbManager.UpsertTradeEntryAsync(flipEntryLog);
@@ -5342,7 +5344,8 @@ namespace TradingBot
                         {
                             EntryPrice = pos.EntryPrice,
                             Quantity = updatedQtyAbs,
-                            EntryTime = existing.EntryTime == default ? DateTime.Now : existing.EntryTime
+                            EntryTime = existing.EntryTime == default ? DateTime.Now : existing.EntryTime,
+                            IsSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false
                         };
 
                         bool synced = await _dbManager.UpsertTradeEntryAsync(externalIncreaseLog);
@@ -7536,7 +7539,8 @@ namespace TradingBot
                     {
                         EntryPrice = actualEntryPrice,
                         Quantity = filledQty,
-                        EntryTime = tradeEntryTime
+                        EntryTime = tradeEntryTime,
+                        IsSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false
                     };
                     try
                     {

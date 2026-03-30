@@ -35,6 +35,7 @@ namespace TradingBot.Shared.Models
         public string ExitReason { get; set; } = string.Empty;
         public DateTime EntryTime { get; set; }
         public DateTime ExitTime { get; set; }
+        public bool IsSimulation { get; set; }
         public bool IsOpenPosition => string.Equals(ExitReason, "OPEN_POSITION", StringComparison.OrdinalIgnoreCase);
         public string PositionStatus => IsOpenPosition ? "OPEN" : "CLOSED";
     }
