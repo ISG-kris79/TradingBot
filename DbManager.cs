@@ -1632,6 +1632,22 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
             }
         }
 
+        /// <summary>[ProfitRegressor] 진입 시점 캔들 지표 조회 (학습 데이터용)</summary>
+        public async Task<List<TradingBot.Models.CandleData>> GetRecentCandleDataAsync(string symbol, int limit = 30)
+        {
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                var sql = "SELECT TOP (@Limit) * FROM CandleData WHERE Symbol = @Symbol ORDER BY OpenTime DESC";
+                var result = await db.QueryAsync<TradingBot.Models.CandleData>(sql, new { Symbol = symbol, Limit = limit }, commandTimeout: 10);
+                return result.Reverse().ToList();
+            }
+            catch
+            {
+                return new List<TradingBot.Models.CandleData>();
+            }
+        }
+
         public async Task ExportTradeHistoryToCsvAsync(string filePath, int userId, DateTime startDate, DateTime endDate, int limit = 10000)
         {
             var rows = await GetTradeHistoryAsync(userId, startDate, endDate, limit);

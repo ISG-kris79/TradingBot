@@ -646,8 +646,27 @@ namespace TradingBot
 
             // [SSA] 시계열 예측 로그 연결
             _ssaForecast.OnLog += msg => OnStatusLog?.Invoke(msg);
-            // [수익률 회귀] 로그 연결
+            // [수익률 회귀] 로그 연결 + DB 과거 거래 학습
             _profitRegressor.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    int userId = AppConfig.CurrentUser?.Id ?? 0;
+                    if (userId > 0)
+                    {
+                        int loaded = await _profitRegressor.LoadFromTradeHistoryAsync(_dbManager, userId, days: 60);
+                        if (loaded >= 50)
+                        {
+                            await _profitRegressor.TrainAsync();
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [ProfitRegressor] 초기 학습 실패: {ex.Message}");
+                }
+            });
 
             // [Fail-safe] API 연결 끊김 + 슬리피지 감지 모듈
             _failSafeGuard = new TradingBot.Services.FailSafeGuardService();

@@ -68,6 +68,66 @@ namespace TradingBot.Services
                 _trainingBuffer.TryDequeue(out _);
         }
 
+        /// <summary>DB TradeHistory에서 과거 거래 내역을 학습 데이터로 로드</summary>
+        public async Task<int> LoadFromTradeHistoryAsync(DbManager dbManager, int userId, int days = 30)
+        {
+            try
+            {
+                var startDate = DateTime.Now.AddDays(-days);
+                var endDate = DateTime.Now;
+                var trades = await dbManager.GetTradeHistoryAsync(userId, startDate, endDate, limit: 2000);
+
+                int loaded = 0;
+                foreach (var trade in trades)
+                {
+                    // 청산 완료된 거래만 (PnL 있음)
+                    if (trade.EntryPrice <= 0 || trade.ExitPrice <= 0 || trade.ExitTime == default)
+                        continue;
+
+                    float holdingMin = (float)(trade.ExitTime - trade.EntryTime).TotalMinutes;
+                    if (holdingMin <= 0) continue;
+
+                    float pnlPct = (float)trade.PnLPercent;
+
+                    // 진입 시점 캔들 지표 조회 시도
+                    float rsi = 50f, bbPos = 0.5f, atr = 0f, volRatio = 1f, momentum = 0f;
+                    try
+                    {
+                        var candles = await dbManager.GetRecentCandleDataAsync(trade.Symbol, 30);
+                        if (candles != null && candles.Count > 0)
+                        {
+                            // 진입 시점에 가장 가까운 캔들 찾기
+                            var nearest = candles.OrderBy(c => Math.Abs((c.OpenTime - trade.EntryTime).TotalMinutes)).FirstOrDefault();
+                            if (nearest != null)
+                            {
+                                rsi = nearest.RSI > 0 ? nearest.RSI : 50f;
+                                bbPos = nearest.BB_Width > 0 ? Math.Clamp(nearest.BB_Width / 100f, 0f, 1f) : 0.5f;
+                                atr = nearest.ATR;
+                                volRatio = nearest.Volume_Ratio > 0 ? nearest.Volume_Ratio : 1f;
+                                momentum = nearest.Price_Change_Pct;
+                            }
+                        }
+                    }
+                    catch { /* 캔들 데이터 없으면 기본값 사용 */ }
+
+                    RecordTradeOutcome(
+                        rsi, bbPos, atr, volRatio, momentum,
+                        trade.AiScore > 0 && trade.AiScore <= 1 ? trade.AiScore : trade.AiScore / 100f,
+                        0f, 0f, 0f,
+                        pnlPct, holdingMin);
+                    loaded++;
+                }
+
+                OnLog?.Invoke($"[ProfitRegressor] DB에서 {loaded}건 거래 내역 로드 완료 (최근 {days}일, 총 버퍼: {_trainingBuffer.Count}건)");
+                return loaded;
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"[ProfitRegressor] DB 로드 실패: {ex.Message}");
+                return 0;
+            }
+        }
+
         /// <summary>축적된 거래 결과로 모델 학습 (비동기)</summary>
         public async Task<bool> TrainAsync()
         {

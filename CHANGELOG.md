@@ -15,6 +15,16 @@
 
  - 없음
 
+## [3.0.1] - 2026-03-30
+
+### Added
+
+- **DB TradeHistory 기반 수익률 학습**: 과거 60일 거래 내역을 ProfitRegressor 학습 데이터로 로드
+  - `LoadFromTradeHistoryAsync()`: DB에서 청산 완료된 거래 + 진입 시점 캔들 지표 조인
+  - 엔진 시작 시 자동 로드 → 50건 이상이면 즉시 학습
+  - 이익/손실 거래 모두 포함하여 수익 패턴과 손실 패턴 동시 학습
+- **DbManager.GetRecentCandleDataAsync()**: 심볼별 최근 캔들 지표 조회 (학습 데이터용)
+
 ## [3.0.0] - 2026-03-27
 
 ### Added
