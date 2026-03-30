@@ -3714,35 +3714,45 @@ namespace TradingBot
             }
 
             // 슬롯 제한 체크: 메이저 최대 3개, PUMP 최대 2개, 총 5개
+            bool pumpScoutMode = false;
+            decimal pumpScoutMultiplier = 1.0m;
+
             lock (_posLock)
             {
                 bool isMajorSymbol = MajorSymbols.Contains(symbol);
                 int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
                 int pumpCount = currentTotalCount - majorCount;  // PUMP 코인 수
-                
-                // 메이저 포화
+
                 if (isMajorSymbol && majorCount >= MAX_MAJOR_SLOTS)
                 {
-                    PumpEntryLog("SLOT", "BLOCK", $"메이저 포화 ({majorCount}/{MAX_MAJOR_SLOTS})");
-                    return;
+                    PumpEntryLog("SLOT", "SCOUT", $"메이저 포화 ({majorCount}/{MAX_MAJOR_SLOTS}) → 30% 정찰대");
+                    pumpScoutMode = true;
+                    pumpScoutMultiplier = 0.30m;
                 }
-                
-                // PUMP 포화
+
                 if (!isMajorSymbol && pumpCount >= MAX_PUMP_SLOTS)
                 {
-                    PumpEntryLog("SLOT", "BLOCK", $"PUMP 포화 ({pumpCount}/{MAX_PUMP_SLOTS})");
-                    return;
+                    PumpEntryLog("SLOT", "SCOUT", $"PUMP 포화 ({pumpCount}/{MAX_PUMP_SLOTS}) → 30% 정찰대");
+                    pumpScoutMode = true;
+                    pumpScoutMultiplier = 0.30m;
                 }
                 
                 // 총 포화
                 if (currentTotalCount >= MAX_TOTAL_SLOTS)
                 {
-                    PumpEntryLog("SLOT", "BLOCK", $"총 포화 ({currentTotalCount}/{MAX_TOTAL_SLOTS})");
-                    return;
+                    PumpEntryLog("SLOT", "SCOUT", $"총 포화 ({currentTotalCount}/{MAX_TOTAL_SLOTS}) → 30% 정찰대");
+                    pumpScoutMode = true;
+                    pumpScoutMultiplier = 0.30m;
                 }
             }
 
             decimal marginUsdt = GetConfiguredPumpMarginUsdt();
+            // [정찰대] 슬롯 포화 시 증거금 축소
+            if (pumpScoutMode)
+            {
+                marginUsdt *= pumpScoutMultiplier;
+                PumpEntryLog("SIZE", "SCOUT", $"정찰대 증거금={marginUsdt:F0}usdt ({pumpScoutMultiplier:P0})");
+            }
             PumpEntryLog("SIZE", "CONFIG", $"pumpMargin={marginUsdt:F0}usdt");
 
             if (_riskManager.IsTripped)
