@@ -5755,8 +5755,55 @@ namespace TradingBot
             }
         }
 
+        // ═══════════════════════════════════════════════════════════════════════════
+        // [EntryContext] 진입 파이프라인 데이터 전달 클래스
+        // ═══════════════════════════════════════════════════════════════════════════
+        private class EntryContext
+        {
+            // From router
+            public string Symbol = string.Empty;
+            public string Decision = string.Empty; // LONG or SHORT
+            public decimal CurrentPrice;
+            public CancellationToken Token;
+            public string SignalSource = "UNKNOWN";
+            public string Mode = "TREND";
+            public decimal CustomTakeProfitPrice;
+            public decimal CustomStopLossPrice;
+            public PatternSnapshotInput? PatternSnapshot;
+            public CandleData? LatestCandle;
+            public float AiScore;
+            public float AiProbability;
+            public bool? AiPredictUp;
+            public decimal ConvictionScore;
+            public float BlendedMlTfScore;
+            public bool ScoutModeActivated;
+            public bool ScoutAddOnEligible;
+            public bool IsScoutAddOnOrder;
+            public string? AiGateDecisionId;
+            public List<IBinanceKline>? RecentEntryKlines;
+            public BandwidthGateResult BandwidthGate;
+
+            // Set by typed entry method
+            public decimal MarginUsdt;
+            public int Leverage;
+            public decimal StopLossPrice;
+            public decimal TakeProfitPrice;
+            public decimal SizeMultiplier = 1.0m; // single, non-cascading
+            public bool IsPumpStrategy;
+            public bool IsMajorAtrEnforced;
+            public string EntryZoneTag = string.Empty;
+            public decimal EntryBbPosition;
+            public bool IsHybridMidBandLongEntry;
+            public (decimal StopLossPrice, decimal AtrDistance, decimal StructureStopPrice) MajorAtrPreview;
+
+            // Logging
+            public string FlowTag = string.Empty;
+            public Action<string, string, string> EntryLog = (_, _, _) => { };
+        }
+
         /// <summary>
-        /// 자동 매매 실행 메인 메서드
+        /// 자동 매매 실행 메인 메서드 — ROUTER
+        /// 공통 검증 후 Major/Pump x Long/Short 4개 메서드로 디스패치
         /// </summary>
         private async Task ExecuteAutoOrder(
             string symbol,
@@ -5782,50 +5829,30 @@ namespace TradingBot
                 if (shouldCount)
                 {
                     RecordEntryBlockReason(stage);
-                    // [Entry Pipeline] 차단 사유를 UI에 실시간 표시
                     OnBlockReasonUpdate?.Invoke($"[{stage}] {detail}");
                 }
                 else if (status.IndexOf("PASS", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
-                    OnBlockReasonUpdate?.Invoke(""); // 통과 시 클리어
+                    OnBlockReasonUpdate?.Invoke("");
                 }
             }
 
-            // [v2.4.2] 세련된 로그 형식
             string decisionKr = decision == "LONG" ? "LONG" : "SHORT";
             OnLiveLog?.Invoke($"📤 [{symbol}] {decisionKr} 주문 요청 중 | 가격 ${currentPrice:F2} | 소스: {signalSource}");
-            
             EntryLog("START", "INFO", $"price={currentPrice:F4} source={signalSource}");
 
-            bool positionReserved = false;
-            bool orderPlaced = false;
-            string? aiGateDecisionId = null;
-            bool scoutModeActivated = false;
-            bool scoutAddOnEligible = false;
-            bool isScoutAddOnOrder = false;
+            // ═══════════════════════════════════════════════════════════════
+            // [ROUTER] 1. 공통 검증
+            // ═══════════════════════════════════════════════════════════════
 
-            void CleanupReservedPosition(string reason)
-            {
-                if (!positionReserved || orderPlaced)
-                    return;
-
-                lock (_posLock)
-                {
-                    if (_activePositions.TryGetValue(symbol, out var reservedPos) && reservedPos.Quantity == 0)
-                    {
-                        _activePositions.Remove(symbol);
-                        EntryLog("RESERVE", "CLEANUP", $"reason={reason}");
-                    }
-                }
-            }
-
-            // 1. 진입 신호가 아니면 즉시 종료
+            // 1-1. 진입 신호 체크
             if (decision != "LONG" && decision != "SHORT")
             {
                 EntryLog("SIGNAL", "BLOCK", "decision!=LONG/SHORT");
                 return;
             }
 
+            // 1-2. 데이터 수집
             CandleData? latestCandle = await GetLatestCandleDataAsync(symbol, token);
             List<IBinanceKline>? recentEntryKlines =
                 (await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 140, token))?.ToList();
@@ -5834,18 +5861,112 @@ namespace TradingBot
             var hsResult = HeadAndShouldersDetector.DetectPattern(hsKlines ?? new List<IBinanceKline>(), 70);
 
             var bandwidthGate = EvaluateBandwidthGate(symbol, decision, signalSource, currentPrice, latestCandle, recentEntryKlines);
-            // [AI Hub] BW_GATE: 하드블록 제거 → AI 스코어 보정 피처로만 사용
             if (bandwidthGate.Blocked)
             {
                 OnStatusLog?.Invoke(
                     $"⚠️ [Bandwidth 참고] {symbol} {decision} | ratio={bandwidthGate.SqueezeRatio:P0}, " +
                     $"현재폭={bandwidthGate.CurrentBandwidthPct:F2}% 평균폭={bandwidthGate.AverageBandwidthPct:F2}% (AI 스코어 반영, 진입 계속)");
                 EntryLog("BW_GATE", "INFO", bandwidthGate.Reason);
-                // return; ← [AI Hub] 제거: 보조지표는 AI 피처로만 사용
             }
 
-            // [AI_QUANT_TRADING_GUIDE 반영] 진입 직전 코인 타입 기반 AI 더블체크(ML.NET 또는 Transformer 통과)
-            float _capturedBlendedScore = 0f; // [1M Hub] AI 게이트 블록 밖으로 신뢰도 전달
+            // 1-3. 블랙리스트 체크
+            if (_blacklistedSymbols.TryGetValue(symbol, out var blacklistExpiry))
+            {
+                if (DateTime.Now < blacklistExpiry)
+                {
+                    OnStatusLog?.Invoke($"⛔ [BLACKLIST] {symbol} 블랙리스트 기간 중 ({(blacklistExpiry - DateTime.Now).TotalMinutes:F0}분 남음) → 진입 차단");
+                    EntryLog("BLACKLIST", "BLOCK", $"expiresIn={(blacklistExpiry - DateTime.Now).TotalMinutes:F1}min");
+                    return;
+                }
+                else
+                {
+                    _blacklistedSymbols.TryRemove(symbol, out _);
+                    OnStatusLog?.Invoke($"✅ [BLACKLIST] {symbol} 블랙리스트 해제");
+                }
+            }
+
+            // 1-4. 쿨다운 체크
+            if (IsSymbolInSlotCooldown(symbol, out int slotCooldownRemaining))
+            {
+                OnStatusLog?.Invoke($"⏳ [SLOT_COOLDOWN] {symbol} 재시도 쿨다운 중 ({slotCooldownRemaining}초 남음) → 진입 차단");
+                EntryLog("SLOT_COOLDOWN", "BLOCK", $"cooldownRemain={slotCooldownRemaining}s");
+                return;
+            }
+
+            // 1-5. 워밍업 + 서킷브레이커
+            if (IsEntryWarmupActive(out var remaining))
+            {
+                OnStatusLog?.Invoke(TradingStateLogger.RejectedByRiskManagement(symbol, decision, $"진입 워밍업 활성화 ({remaining.TotalSeconds:F0}초 남음)"));
+                EntryLog("GUARD", "BLOCK", $"warmupRemainingSec={remaining.TotalSeconds:F0}");
+                return;
+            }
+
+            if (_riskManager.IsTripped)
+            {
+                OnStatusLog?.Invoke(TradingStateLogger.RejectedByRiskManagement(symbol, decision, "서킷 브레이커 발동 중"));
+                EntryLog("RISK", "BLOCK", "circuitBreaker=on");
+                return;
+            }
+
+            // 1-6. 패턴 홀드 참고 로그
+            if (patternSnapshot?.Match?.ShouldDeferEntry == true)
+            {
+                string deferReason = string.IsNullOrWhiteSpace(patternSnapshot.Match.DeferReason)
+                    ? "loss-pattern"
+                    : patternSnapshot.Match.DeferReason;
+                EntryLog("GUARD", "INFO", $"patternHold={deferReason} (not blocking)");
+            }
+
+            // 1-7. 데이터 유효성
+            if (latestCandle == null)
+            {
+                EntryLog("DATA", "BLOCK", "latestCandle=missing");
+                return;
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // [ROUTER] 2. 슬롯 검증 + 정찰대 전환
+            // ═══════════════════════════════════════════════════════════════
+            bool scoutModeActivated = false;
+            bool scoutAddOnEligible = false;
+
+            lock (_posLock)
+            {
+                bool isMajorSymbol = MajorSymbols.Contains(symbol);
+                int totalPositions = _activePositions.Count;
+                int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
+                int pumpCount = totalPositions - majorCount;
+
+                int maxTotal = GetDynamicMaxTotalSlots();
+                int maxPump = GetDynamicMaxPumpSlots();
+                int maxMajor = MAX_MAJOR_SLOTS;
+
+                if (isMajorSymbol && majorCount >= maxMajor)
+                {
+                    OnStatusLog?.Invoke($"🔍 [SLOT→정찰대] {symbol} 메이저 포화 ({majorCount}/{maxMajor}) → 30% 정찰대 진입");
+                    scoutModeActivated = true;
+                }
+
+                if (!isMajorSymbol && pumpCount >= maxPump)
+                {
+                    OnStatusLog?.Invoke($"🔍 [SLOT→정찰대] {symbol} PUMP 포화 ({pumpCount}/{maxPump}) → 30% 정찰대 진입");
+                    scoutModeActivated = true;
+                }
+
+                if (totalPositions >= maxTotal)
+                {
+                    OnStatusLog?.Invoke($"🔍 [SLOT→정찰대] {symbol} 총 포화 ({totalPositions}/{maxTotal}) → 30% 정찰대 진입");
+                    scoutModeActivated = true;
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // [ROUTER] 3. AI Gate 평가 (공통)
+            // ═══════════════════════════════════════════════════════════════
+            float capturedBlendedScore = 0f;
+            string? aiGateDecisionId = null;
+            decimal aiGateSizeMultiplier = 1.0m; // AI Gate에서 산출된 사이즈 배수
+
             bool shouldBypassAiGate = skipAiGateCheck && IsDroughtRecoverySignalSource(signalSource);
             if (shouldBypassAiGate)
             {
@@ -5861,20 +5982,19 @@ namespace TradingBot
                     gateResult.detail.ML_Confidence,
                     gateResult.detail.TF_Confidence,
                     isBbCenterSupport);
-                _capturedBlendedScore = blendedMlTfScore; // [1M Hub] 캡처
+                capturedBlendedScore = blendedMlTfScore;
 
-                // [상승 에너지] 메인 진입 흐름에서도 항상 에너지 잔량 업데이트
+                // [상승 에너지] 에너지 잔량 업데이트
                 if (OnPriceProgressUpdate != null)
                 {
-                    float bbPosMain = gateResult.detail.M15_BBPosition; // 0.0~1.0
+                    float bbPosMain = gateResult.detail.M15_BBPosition;
                     float mlConfMain = gateResult.detail.ML_Confidence;
                     float tfConfMain = gateResult.detail.TF_Confidence;
-                    // 수렴 후 발산: BB 밴드 내 위치 0.4~0.6 (밀집) + TF 신뢰도 높음
                     bool tfConvergDiv = (bbPosMain >= 0.35f && bbPosMain <= 0.65f) && (tfConfMain >= 0.70f);
                     OnPriceProgressUpdate.Invoke(Math.Clamp(bbPosMain, 0f, 1f), mlConfMain, tfConvergDiv);
                 }
 
-                // [SSA] 5분마다 시계열 예측 학습 + 매 분석 사이클에서 예측 결과 전달
+                // [SSA] 시계열 예측
                 if ((DateTime.Now - _lastSsaTrainTime).TotalMinutes >= 5)
                 {
                     try
@@ -5966,28 +6086,27 @@ namespace TradingBot
                     }
                 });
 
-                // [AI Advisor v1] 차단 없음 — blended score 기반 사이즈 동적 조절
+                // AI Advisor: 블렌디드 스코어 기반 사이즈 결정 (차단 없음)
                 if (!gateResult.allowEntry)
                 {
-                    // AI 거부 시: blended score에 비례하여 사이즈 축소 (차단 없음)
-                    decimal aiSizeMultiplier = blendedMlTfScore switch
+                    aiGateSizeMultiplier = blendedMlTfScore switch
                     {
-                        >= 0.90f => 1.00m,  // 90%+ : 풀 사이즈
-                        >= 0.80f => 0.50m,  // 80%+ : 50%
-                        >= 0.70f => 0.30m,  // 70%+ : 30%
-                        >= 0.50f => 0.20m,  // 50%+ : 20%
-                        _        => 0.10m   // 50% 미만: 최소 10% 정찰대
+                        >= 0.90f => 1.00m,
+                        >= 0.80f => 0.50m,
+                        >= 0.70f => 0.30m,
+                        >= 0.50f => 0.20m,
+                        _        => 0.10m
                     };
 
-                    manualSizeMultiplier = Math.Min(manualSizeMultiplier, aiSizeMultiplier);
-                    signalSource = $"{signalSource}_AI_ADVISOR_{aiSizeMultiplier:P0}";
+                    signalSource = $"{signalSource}_AI_ADVISOR_{aiGateSizeMultiplier:P0}";
                     flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
 
                     EntryLog("AI_GATE", "ADVISOR",
-                        $"notBlocking blended={blendedMlTfScore:P0} tf={gateResult.detail.TF_Confidence:P0} ml={gateResult.detail.ML_Confidence:P0} size={aiSizeMultiplier:P0} gate={gateResult.reason}");
-                    OnStatusLog?.Invoke($"🧠 [AI Advisor] {symbol} {decision} | blended={blendedMlTfScore:P0} → 사이즈 {aiSizeMultiplier:P0} | {gateResult.reason}");
+                        $"notBlocking blended={blendedMlTfScore:P0} tf={gateResult.detail.TF_Confidence:P0} ml={gateResult.detail.ML_Confidence:P0} size={aiGateSizeMultiplier:P0} gate={gateResult.reason}");
+                    OnStatusLog?.Invoke($"🧠 [AI Advisor] {symbol} {decision} | blended={blendedMlTfScore:P0} → 사이즈 {aiGateSizeMultiplier:P0} | {gateResult.reason}");
                 }
 
+                // Scout add-on 검토 (LONG + Major only)
                 if (!scoutModeActivated
                     && gateResult.allowEntry
                     && coinType == CoinType.Major
@@ -6000,14 +6119,9 @@ namespace TradingBot
 
                     if (volumeRecovered && mlRecovered && tfSustained)
                     {
-                        // [불타기 v2] 3파 확정 판단:
-                        // 1) Fib 0.382 돌파 (2파 조정 끝 → 3파 진입) → 40% 투입
-                        // 2) 최근 5봉 고점 돌파 (계단식) → 20% 투입
-                        // 3) 둘 다 아님 → 70% 투입 (보수적)
                         bool stairBreakout = recentEntryKlines != null && recentEntryKlines.Count >= 5
                             && currentPrice >= recentEntryKlines.TakeLast(5).Max(k => k.HighPrice);
 
-                        // Fib 0.382 돌파 확인: 최근 20봉 저점→고점의 38.2% 되돌림 레벨 위에 가격
                         bool fibBreakout = false;
                         if (recentEntryKlines != null && recentEntryKlines.Count >= 20)
                         {
@@ -6015,12 +6129,10 @@ namespace TradingBot
                             decimal recentLow = last20.Min(k => k.LowPrice);
                             decimal recentHigh = last20.Max(k => k.HighPrice);
                             decimal fib382Level = recentHigh - (recentHigh - recentLow) * 0.382m;
-                            fibBreakout = currentPrice > fib382Level && recentHigh > recentLow * 1.01m; // 최소 1% 구간 필요
+                            fibBreakout = currentPrice > fib382Level && recentHigh > recentLow * 1.01m;
                         }
 
                         scoutAddOnEligible = true;
-                        decimal addOnMultiplier = fibBreakout ? 0.40m : stairBreakout ? 0.20m : 0.70m;
-                        manualSizeMultiplier = Math.Min(manualSizeMultiplier, addOnMultiplier);
                         string addOnTag = fibBreakout ? "FIB382_WAVE3_ADDON" : stairBreakout ? "STAIRCASE_ADDON" : "SCOUT_ADDON";
                         signalSource = $"{signalSource}_{addOnTag}";
                         flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
@@ -6028,14 +6140,14 @@ namespace TradingBot
                         EntryLog(
                             "SCOUT",
                             "ADDON_READY",
-                            $"reason=volume_ml_recovered stairBreakout={stairBreakout} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.TF_Confidence:P0} vol={latestCandle?.Volume_Ratio:F2}x size={addOnMultiplier:P0}");
+                            $"reason=volume_ml_recovered stairBreakout={stairBreakout} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.TF_Confidence:P0} vol={latestCandle?.Volume_Ratio:F2}x");
 
                         if (stairBreakout)
-                            OnStatusLog?.Invoke($"🔥 [불타기 Add-on] {symbol} 최근 5봉 고점 돌파 → 계단식 불타기 {addOnMultiplier:P0}");
+                            OnStatusLog?.Invoke($"🔥 [불타기 Add-on] {symbol} 최근 5봉 고점 돌파 → 계단식 불타기");
                     }
                 }
 
-                // [Staircase Pursuit] TF≥85% + 3연속 Higher Lows + BB중단 위 → 20% 정찰대 즉시 투입
+                // [Staircase Pursuit] (LONG only)
                 if (!scoutModeActivated && !scoutAddOnEligible
                     && gateResult.allowEntry
                     && decision == "LONG"
@@ -6048,25 +6160,19 @@ namespace TradingBot
                           / ((decimal)latestCandle.BollingerUpper - (decimal)latestCandle.BollingerLower)
                         : 0.5m;
 
-                    // [상승 에너지] UI 프로그레스바 업데이트
-                    // ML 확률 + BB위치 + TF 수렴후발산 감지
                     float mlConf = gateResult.detail.ML_Confidence;
                     float tfConf = gateResult.detail.TF_Confidence;
-                    // 수렴 후 발산 패턴: BB 폭이 좁고(BB_Width < 2%) TF 확신이 높음(>70%)
                     bool tfConvergenceDivergence = (latestCandle.BB_Width < 2.0f) && (tfConf >= 0.70f);
                     OnPriceProgressUpdate?.Invoke((double)Math.Clamp(bbPos, 0m, 1m), mlConf, tfConvergenceDivergence);
 
                     if (IsStaircaseUptrendPattern(recentEntryKlines, bbPos, latestCandle))
                     {
-                        decimal stairMultiplier = 0.20m;
-                        manualSizeMultiplier = Math.Min(manualSizeMultiplier, stairMultiplier);
                         signalSource = $"{signalSource}_STAIRCASE";
                         flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
-                        // 불타기 대기열 등록
                         _scoutAddOnPendingSymbols[symbol] = DateTime.UtcNow;
                         EntryLog("STAIRCASE", "PURSUIT",
-                            $"reason=HigherLows_BBMid tf={gateResult.detail.TF_Confidence:P0} bb={bbPos:P0} size={stairMultiplier:P0}");
-                        OnAlert?.Invoke($"🪜 STAIRCASE PURSUIT ({symbol} LONG) TF {gateResult.detail.TF_Confidence:P0} · 정찰대 {stairMultiplier:P0} — ATR 3.5x 하이브리드 손절 대기");
+                            $"reason=HigherLows_BBMid tf={gateResult.detail.TF_Confidence:P0} bb={bbPos:P0}");
+                        OnAlert?.Invoke($"🪜 STAIRCASE PURSUIT ({symbol} LONG) TF {gateResult.detail.TF_Confidence:P0} — ATR 3.5x 하이브리드 손절 대기");
                     }
                 }
             }
@@ -6095,113 +6201,13 @@ namespace TradingBot
                 }
             }
 
-            // ═══════════════════════════════════════════════════════════════
-            // [AI Intelligence + 1min Execution Hub]
-            // 상위 TF AI가 진입 허가를 내리면 → 1분봉에서 최적 타점을 잡습니다.
-            // [v2.5.3] 정찰대/불타기도 1분봉 스나이핑 적용 (대기 60초)
-            //   → 15분봉 '흐름' 확인 후 1분봉 '채찍'(거래량 실린 양봉)으로 즉시 진입
-            //   → 진입 지연 30분 → 1분 이내로 단축
-            // ═══════════════════════════════════════════════════════════════
-            // [1M Hub] 스나이핑 허브 비활성화 — 대기 없이 즉시 진입
             EntryLog("1M_HUB", "SKIP", "disabled — immediate entry");
 
-            // [수정] 블랙리스트 체크: 익절 후 즉시 재진입 방지 (30분)
-            if (_blacklistedSymbols.TryGetValue(symbol, out var blacklistExpiry))
-            {
-                if (DateTime.Now < blacklistExpiry)
-                {
-                    OnStatusLog?.Invoke($"⛔ [BLACKLIST] {symbol} 블랙리스트 기간 중 ({(blacklistExpiry - DateTime.Now).TotalMinutes:F0}분 남음) → 진입 차단");
-                    EntryLog("BLACKLIST", "BLOCK", $"expiresIn={(blacklistExpiry - DateTime.Now).TotalMinutes:F1}min");
-                    return;
-                }
-                else
-                {
-                    // 만료된 블랙리스트 제거
-                    _blacklistedSymbols.TryRemove(symbol, out _);
-                    OnStatusLog?.Invoke($"✅ [BLACKLIST] {symbol} 블랙리스트 해제");
-                }
-            }
-
-            // ═══════════════════════════════════════════════════════════════════════════════
-            // [개선안 2] SLOT 쿨다운 체크: 최근 차단된 심볼은 재시도 금지
-            // ═══════════════════════════════════════════════════════════════════════════════
-            if (IsSymbolInSlotCooldown(symbol, out int slotCooldownRemaining))
-            {
-                OnStatusLog?.Invoke($"⏳ [SLOT_COOLDOWN] {symbol} 재시도 쿨다운 중 ({slotCooldownRemaining}초 남음) → 진입 차단");
-                EntryLog("SLOT_COOLDOWN", "BLOCK", $"cooldownRemain={slotCooldownRemaining}s");
-                return;
-            }
-
-            // ═══════════════════════════════════════════════════════════════════════════════
-            // SLOT 제한 검증: 고정 슬롯 적용
-            // [메이저 최대 3개 + PUMP 최대 2개 = 총 5개]
-            // ═══════════════════════════════════════════════════════════════════════════════
-            lock (_posLock)
-            {
-                bool isMajorSymbol = MajorSymbols.Contains(symbol);
-                int totalPositions = _activePositions.Count;
-                int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
-                int pumpCount = totalPositions - majorCount;
-
-                // [동적 슬롯 적용]
-                int maxTotal = GetDynamicMaxTotalSlots();
-                int maxPump = GetDynamicMaxPumpSlots();
-                int maxMajor = MAX_MAJOR_SLOTS; // 메이저는 시간대 무관
-                
-                if (isMajorSymbol && majorCount >= maxMajor)
-                {
-                    // [정찰대] 슬롯 포화지만 AI 게이트 통과 → 30% 정찰대 진입
-                    OnStatusLog?.Invoke($"🔍 [SLOT→정찰대] {symbol} 메이저 포화 ({majorCount}/{maxMajor}) → 30% 정찰대 진입");
-                    scoutModeActivated = true;
-                    manualSizeMultiplier = Math.Min(manualSizeMultiplier, 0.30m);
-                }
-
-                if (!isMajorSymbol && pumpCount >= maxPump)
-                {
-                    OnStatusLog?.Invoke($"🔍 [SLOT→정찰대] {symbol} PUMP 포화 ({pumpCount}/{maxPump}) → 30% 정찰대 진입");
-                    scoutModeActivated = true;
-                    manualSizeMultiplier = Math.Min(manualSizeMultiplier, 0.30m);
-                }
-
-                if (totalPositions >= maxTotal)
-                {
-                    OnStatusLog?.Invoke($"🔍 [SLOT→정찰대] {symbol} 총 포화 ({totalPositions}/{maxTotal}) → 30% 정찰대 진입");
-                    scoutModeActivated = true;
-                    manualSizeMultiplier = Math.Min(manualSizeMultiplier, 0.30m);
-                }
-            }
-
-            // [Pattern Hold] 비활성화 — 패턴 매칭은 AI 피처로만 활용, 차단 없음
-            if (patternSnapshot?.Match?.ShouldDeferEntry == true)
-            {
-                string deferReason = string.IsNullOrWhiteSpace(patternSnapshot.Match.DeferReason)
-                    ? "loss-pattern"
-                    : patternSnapshot.Match.DeferReason;
-                EntryLog("GUARD", "INFO", $"patternHold={deferReason} (not blocking)");
-            }
-
-            if (IsEntryWarmupActive(out var remaining))
-            {
-                OnStatusLog?.Invoke(TradingStateLogger.RejectedByRiskManagement(symbol, decision, $"진입 워밍업 활성화 ({remaining.TotalSeconds:F0}초 남음)"));
-                EntryLog("GUARD", "BLOCK", $"warmupRemainingSec={remaining.TotalSeconds:F0}");
-                return;
-            }
-
-            if (_riskManager.IsTripped)
-            {
-                OnStatusLog?.Invoke(TradingStateLogger.RejectedByRiskManagement(symbol, decision, "서킷 브레이커 발동 중"));
-                EntryLog("RISK", "BLOCK", "circuitBreaker=on");
-                return;
-            }
-
-            (decimal StopLossPrice, decimal AtrDistance, decimal StructureStopPrice) majorAtrPreview = (0m, 0m, 0m);
-            decimal entryBbPosition = 0m;
-            string entryZoneTag = string.Empty;
-            bool isHybridMidBandLongEntry = false;
-
-            // [소진 반전 감지] 캔들 확인 시스템 제거 — 소진 반전만 유지
+            // ═══════════════════════════════════════════════════════════════
+            // [ROUTER] 4. 소진 반전 감지 (공통)
+            // ═══════════════════════════════════════════════════════════════
             bool isExhaustionReversal = false;
-            _pendingDelayedEntries.TryRemove(symbol, out _); // 기존 pending 클리어
+            _pendingDelayedEntries.TryRemove(symbol, out _);
 
             if (IsHybridBbSignalSource(signalSource) && latestCandle != null)
             {
@@ -6264,9 +6270,7 @@ namespace TradingBot
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // [15분봉 이평선 정배열 필터] 상위 시간대 추세 동조
-            // LONG: 15분봉 SMA20 > SMA60 필수 / SHORT: 15분봉 SMA20 < SMA60 필수
-            // ※ 소진 반전 진입(isExhaustionReversal)은 추세 역행이 의도이므로 스킵
+            // [ROUTER] 5. 15분봉 추세 참고 (공통, 차단 없음)
             // ═══════════════════════════════════════════════════════════════
             if (_enableFifteenMinWaveGate && IsHybridBbSignalSource(signalSource) && !isExhaustionReversal)
             {
@@ -6284,20 +6288,17 @@ namespace TradingBot
                             bool upTrend15m = sma20_15m > sma60_15m;
                             bool downTrend15m = sma20_15m < sma60_15m;
 
-                            // [AI Hub] 15M 추세 게이트: 하드블록 제거 → AI 피처로 반영, 역추세는 1M 실행허브에서 정밀 타점 포착
                             if (decision == "LONG" && !upTrend15m)
                             {
                                 string reason = $"15m SMA20({sma20_15m:F2}) < SMA60({sma60_15m:F2}) → 역추세 (AI 스코어 반영, 진입 계속)";
                                 OnStatusLog?.Invoke($"⚠️ [15분봉 참고] {symbol} {decision} | {reason}");
                                 EntryLog("M15_TREND", "INFO", reason);
-                                // return; ← [AI Hub] 제거
                             }
                             else if (decision == "SHORT" && !downTrend15m)
                             {
                                 string reason = $"15m SMA20({sma20_15m:F2}) > SMA60({sma60_15m:F2}) → 역추세 (AI 스코어 반영, 진입 계속)";
                                 OnStatusLog?.Invoke($"⚠️ [15분봉 참고] {symbol} {decision} | {reason}");
                                 EntryLog("M15_TREND", "INFO", reason);
-                                // return; ← [AI Hub] 제거
                             }
                             else
                             {
@@ -6312,17 +6313,9 @@ namespace TradingBot
                 }
             }
 
-            float aiScore = 0;
-            float aiProbability = 0;
-            bool? aiPredictUp = null;
-            decimal convictionScore = 0m;
-            if (latestCandle == null)
-            {
-                EntryLog("DATA", "BLOCK", "latestCandle=missing");
-                return;
-            }
-
-            // [AI Hub] RSI: 극단값(≥88 / ≤12)만 하드블록, 나머지는 AI 피처 반영
+            // ═══════════════════════════════════════════════════════════════
+            // [ROUTER] 6. RSI 극단 차단 (공통)
+            // ═══════════════════════════════════════════════════════════════
             {
                 float rsiCheck = latestCandle.RSI;
                 if (rsiCheck > 0)
@@ -6337,7 +6330,6 @@ namespace TradingBot
                         return;
                     }
 
-                    // 일반 과확장은 로그만 (AI 스코어에 이미 반영됨)
                     var threshold = GetThresholdProfile(symbol, signalSource);
                     bool priceAboveMa20 = latestCandle.Close >= (decimal)latestCandle.SMA_20;
                     bool rsiWarn = (decision == "SHORT" && rsiCheck <= _shortRsiExhaustionFloor && priceAboveMa20)
@@ -6349,12 +6341,48 @@ namespace TradingBot
                             : $"longLimit={threshold.MaxRsiLimit:F0}";
                         OnStatusLog?.Invoke($"⚠️ [RSI 참고] {symbol} {decision} | RSI={rsiCheck:F1} ({limitText}) → AI 스코어 반영, 진입 계속");
                         EntryLog("RSI_EXHAUSTED", "INFO", $"dir={decision} rsi={rsiCheck:F1} limit={limitText}");
-                        // return; ← [AI Hub] 제거
                     }
                 }
             }
 
-            // [AI Hub] 드라이스펠 BB 추격: 하드블록 제거 → 1분봉 실행허브에서 최적 타점 포착
+            // ═══════════════════════════════════════════════════════════════
+            // [ROUTER] 7. 3분류 ML 신호 (공통) — 사이즈 조절만
+            // ═══════════════════════════════════════════════════════════════
+            decimal mlSignalSizeMultiplier = 1.0m;
+            if (_tradeSignalClassifier.IsModelLoaded && latestCandle != null)
+            {
+                var signalPred = _tradeSignalClassifier.Predict(latestCandle);
+                if (signalPred != null)
+                {
+                    var (signalDir, signalConf) = TradeSignalClassifier.InterpretPrediction(signalPred);
+
+                    if (decision == "LONG" && signalDir == "SHORT" && signalConf >= 0.60f)
+                    {
+                        mlSignalSizeMultiplier = 0.30m;
+                        EntryLog("SIGNAL_3C", "ADVISOR", $"entry=LONG but model=SHORT({signalConf:P0}) → size 30%");
+                    }
+                    else if (decision == "SHORT" && signalDir == "LONG" && signalConf >= 0.60f)
+                    {
+                        mlSignalSizeMultiplier = 0.30m;
+                        EntryLog("SIGNAL_3C", "ADVISOR", $"entry=SHORT but model=LONG({signalConf:P0}) → size 30%");
+                    }
+                    else if (signalDir == decision && signalConf >= 0.70f)
+                    {
+                        mlSignalSizeMultiplier = 1.3m;
+                        EntryLog("SIGNAL_3C", "BOOST", $"model={signalDir}({signalConf:P0}) matches entry → size boost");
+                    }
+                    else
+                    {
+                        EntryLog("SIGNAL_3C", "INFO", $"model={signalDir}({signalConf:P0}) label={signalPred.PredictedLabel}");
+                    }
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // [ROUTER] 8. 참고 정보 수집 (차단 없음)
+            // ═══════════════════════════════════════════════════════════════
+
+            // 드라이스펠 BB 참고
             if (decision == "LONG" && IsDroughtRecoveryPumpSignalSource(signalSource))
             {
                 decimal bbUpper = latestCandle.BollingerUpper > 0 ? (decimal)latestCandle.BollingerUpper : 0m;
@@ -6372,20 +6400,18 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⚠️ [드라이스펠 참고] {symbol} LONG | %B={bbPosition:P0} RSI={latestCandle.RSI:F1} 과열 (1M 허브 대기)");
                     EntryLog("DROUGHT_CHASE", "INFO", $"bbUpperHeat bbPos={bbPosition:P2} rsi={latestCandle.RSI:F1}");
                 }
-                // return; ← [AI Hub] 제거
             }
 
-            // [AI Hub] 1분봉 윗꼬리: 하드블록 제거 → ExecutionHub가 더 좋은 타점을 기다림
+            // 1분봉 윗꼬리 참고
             var m1UpperWickFilter = await EvaluateOneMinuteUpperWickBlockAsync(symbol, decision, currentPrice, signalSource, latestCandle, token);
             if (m1UpperWickFilter.blocked)
             {
                 OnStatusLog?.Invoke($"⚠️ [1M 윗꼬리 감지] {symbol} {decision} | {m1UpperWickFilter.reason} → 1M 실행허브에서 V-Turn/돌파 대기");
                 EntryLog("M1_WICK", "INFO", m1UpperWickFilter.reason);
-                // return; ← [AI Hub] 제거: ExecutionHub가 더 나은 타점 포착
             }
 
-            // [긴급 방어 1] ATR 변동성 필터 (흔들기 구간 진입 금지)
-            // 5분봉 기준 ATR이 평소(20봉 평균)보다 2배 이상이면 '변동성 폭발' 구간으로 판단
+            // ATR 변동성 참고 — 사이즈 조절용 멀티플라이어 산출
+            decimal atrSizeMultiplier = 1.0m;
             var atrSource = recentEntryKlines;
             if (atrSource == null || atrSource.Count < 30)
             {
@@ -6403,19 +6429,16 @@ namespace TradingBot
                 if (averageAtr > 0)
                 {
                     double atrRatio = currentAtr / averageAtr;
-                    // [AI Advisor] ATR 변동성 → 사이즈 축소 (차단 없음)
                     if (atrRatio > (double)_atrVolatilityBlockRatio)
                     {
-                        decimal atrMultiplier = 0.20m; // 극단 변동성: 20% 사이즈
-                        manualSizeMultiplier = Math.Min(manualSizeMultiplier, atrMultiplier);
-                        EntryLog("ATR_VOL", "ADVISOR", $"atrRatio={atrRatio:F2}x>{_atrVolatilityBlockRatio:F2}x size={atrMultiplier:P0}");
-                        OnStatusLog?.Invoke($"⚡ [ATR Advisor] {symbol} 변동성 폭발 (ATR={atrRatio:F2}x) → 사이즈 {atrMultiplier:P0}로 축소");
+                        atrSizeMultiplier = 0.20m;
+                        EntryLog("ATR_VOL", "ADVISOR", $"atrRatio={atrRatio:F2}x>{_atrVolatilityBlockRatio:F2}x size={atrSizeMultiplier:P0}");
+                        OnStatusLog?.Invoke($"⚡ [ATR Advisor] {symbol} 변동성 폭발 (ATR={atrRatio:F2}x) → 사이즈 {atrSizeMultiplier:P0}로 축소");
                     }
                     else if (atrRatio > 2.0)
                     {
-                        decimal atrMultiplier = 0.50m; // 높은 변동성: 50% 사이즈
-                        manualSizeMultiplier = Math.Min(manualSizeMultiplier, atrMultiplier);
-                        EntryLog("ATR_VOL", "ADVISOR", $"atrRatio={atrRatio:F2}x>2.0 size={atrMultiplier:P0}");
+                        atrSizeMultiplier = 0.50m;
+                        EntryLog("ATR_VOL", "ADVISOR", $"atrRatio={atrRatio:F2}x>2.0 size={atrSizeMultiplier:P0}");
                     }
                     else if (atrRatio > 1.5)
                     {
@@ -6424,13 +6447,16 @@ namespace TradingBot
                 }
             }
 
-            // [AI Hub] HYBRID_BB: 하드블록 제거 → BB 위치는 AI 피처로만 사용, 1M 실행허브가 타점 결정
+            // BB 하이브리드 참고
+            decimal entryBbPosition = 0m;
+            string entryZoneTag = string.Empty;
+            bool isHybridMidBandLongEntry = false;
+
             if (latestCandle != null &&
                 ShouldBlockHybridBbEntry(symbol, decision, currentPrice, latestCandle, signalSource, out string hybridEntryReason, out entryBbPosition, out entryZoneTag, out isHybridMidBandLongEntry))
             {
                 OnStatusLog?.Invoke($"⚠️ [BB 참고] {symbol} {decision} | {hybridEntryReason} → 1M 허브 타점 대기 (진입 계속)");
                 EntryLog("HYBRID_BB", "INFO", hybridEntryReason);
-                // return; ← [AI Hub] 제거
             }
 
             if (!string.IsNullOrWhiteSpace(entryZoneTag))
@@ -6438,372 +6464,554 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"🧭 {symbol} {decision} 하이브리드 진입 승인 | Zone={entryZoneTag}, %B={entryBbPosition:P0}, src={signalSource}");
             }
 
-            bool isMajorLikeSignal = signalSource == "MAJOR" || signalSource.StartsWith("MAJOR_");
-            bool isMajorAtrEnforcedSignal = isMajorLikeSignal && MajorSymbols.Contains(symbol);
-            bool isScoutAtrEnforcedSignal = scoutModeActivated && MajorSymbols.Contains(symbol);
-
-            if ((isMajorAtrEnforcedSignal || isScoutAtrEnforcedSignal) && customStopLossPrice <= 0)
-            {
-                majorAtrPreview = await TryCalculateMajorAtrHybridStopLossAsync(symbol, currentPrice, decision == "LONG", token);
-                if (majorAtrPreview.StopLossPrice <= 0)
-                {
-                    string stopTag = isScoutAtrEnforcedSignal ? "SCOUT_ATR" : "MAJOR_ATR";
-                    OnStatusLog?.Invoke($"⛔ [{(isScoutAtrEnforcedSignal ? "SCOUT ATR" : "MAJOR ATR")}] {symbol} ATR 2.0 하이브리드 손절 계산 실패로 진입 차단");
-                    EntryLog(stopTag, "BLOCK", "stopCalcFailed");
-                    return;
-                }
-
-                customStopLossPrice = majorAtrPreview.StopLossPrice;
-                OnStatusLog?.Invoke(
-                    $"🛡️ [{(isScoutAtrEnforcedSignal ? "SCOUT ATR" : "MAJOR ATR")}] {symbol} 하이브리드 손절 적용 | Entry={currentPrice:F8}, SL={customStopLossPrice:F8}, ATRdist={majorAtrPreview.AtrDistance:F8}, 구조선={majorAtrPreview.StructureStopPrice:F8}");
-            }
-
-            // [AI Hub] CHASE 필터: 하드블록 제거 → 1M 실행허브의 V-Turn/돌파 트리거가 추격 위험 자체를 해결
+            // 추격 필터 참고
             if (latestCandle != null &&
                 ShouldBlockChasingEntry(symbol, decision, currentPrice, latestCandle, recentEntryKlines, mode, out string chaseReason))
             {
                 OnStatusLog?.Invoke($"⚠️ [추격 참고] {symbol} {decision} | {chaseReason} → 1M 허브 V-Turn 대기");
                 EntryLog("CHASE", "INFO", chaseReason);
-                // return; ← [AI Hub] 제거
             }
 
-            // [GATE 영구 제거] 15분 WaveGate AI 검증 제거됨 (재설계 예정)
-            // TODO: 신호 품질 기반 GATE 재설계 후 복원
-
-            /* TensorFlow 전환 중 임시 비활성화 - SimpleDoubleCheckEngine
-            // ═══════════════════════════════════════════════════════════════
-            // ═══════════════════════════════════════════════════════════════
-            // [간소화] SimpleDoubleCheckEngine 더블 체크 진입 로직
-            // [1단계] Transformer: 타점까지 시간 예측 (1~4캔들 = 매복 시작)
-            // [2단계] ML.NET: 매복 시간대 내에서만 정밀 조건 검증 (신뢰도 85%)
-            // 효과: CPU 75% 절감 + 진입 빈도 증가
-            // ═══════════════════════════════════════════════════════════════
-            if (_simpleDoubleCheck != null && _simpleDoubleCheck.IsReady && decision == "LONG" && isMajorLikeSignal)
-            {
-                try
-                {
-                    // 15분봉 데이터 수집 (최소 30개)
-                    var klines15m = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 60, token);
-                    
-                    if (klines15m != null && klines15m.Count >= 30)
-                    {
-                        // Binance → CandleData 변환
-                        var candleList = klines15m.Select(k => new CandleData
-                        {
-                            OpenTime = k.OpenTime,
-                            Open = k.OpenPrice,
-                            High = k.HighPrice,
-                            Low = k.LowPrice,
-                            Close = k.ClosePrice,
-                            Volume = (float)k.Volume
-                        }).ToList();
-
-                        // 더블 체크 진입 검증 (Transformer → ML.NET)
-                        var checkDecision = _simpleDoubleCheck.EvaluateEntry(symbol, candleList, currentPrice);
-
-                        // [FIX] UI 점수 업데이트 (매복 모드 여부와 관계없이 항상 표시)
-                        string statusText = checkDecision.AllowEntry ? "✅ 진입 승인" 
-                            : checkDecision.IsInAmbushWindow ? "💁 매복 대기"
-                            : "⏳ TF 대기 중";
-                        
-                        OnWaveAIScoreUpdate?.Invoke(
-                            symbol, 
-                            checkDecision.MLNetConfidence, 
-                            checkDecision.TransformerConfidence, 
-                            statusText);
-
-                        if (!checkDecision.AllowEntry)
-                        {
-                            // 진입 차단 (매복 모드가 아니거나 ML.NET 조건 미달)
-                            if (checkDecision.IsInAmbushWindow)
-                            {
-                                OnStatusLog?.Invoke($"✋ [{symbol}] 매복 중 대기 | {checkDecision.Reason}");
-                            }
-                            // 매복 모드가 아니면 로그 스킵 (CPU 절약)
-                            return;
-                        }
-
-                        // [HybridExitManager 통합] 익절/손절가 적용
-                        if (checkDecision.RecommendedTakeProfit > 0)
-                            customTakeProfitPrice = checkDecision.RecommendedTakeProfit;
-                        
-                        if (checkDecision.RecommendedStopLoss > 0)
-                            customStopLossPrice = checkDecision.RecommendedStopLoss;
-
-                        // 최종 진입 승인!
-                        OnStatusLog?.Invoke($"🚀 [{symbol}] {checkDecision.Reason}");
-                        EntryLog("DOUBLE_CHECK", "PASS", checkDecision.Reason);
-                    }
-                    else
-                    {
-                        OnStatusLog?.Invoke($"⚠️ [{symbol}] 15분봉 데이터 부족 ({klines15m?.Count ?? 0}개) → 진입 건너뜀");
-                        return;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ [{symbol}] 더블 체크 오류: {ex.Message}");
-                    EntryLog("DOUBLE_CHECK", "ERROR", ex.Message);
-                    return;
-                }
-            }
-            */
-
-            // [3분류 매매 신호] ML.NET 3분류 모델로 방향 확인 + 사이즈 조절
-            if (_tradeSignalClassifier.IsModelLoaded && latestCandle != null)
-            {
-                var signalPred = _tradeSignalClassifier.Predict(latestCandle);
-                if (signalPred != null)
-                {
-                    var (signalDir, signalConf) = TradeSignalClassifier.InterpretPrediction(signalPred);
-
-                    // 3분류 모델이 반대 방향 예측 시 사이즈 축소 (차단 아님)
-                    if (decision == "LONG" && signalDir == "SHORT" && signalConf >= 0.60f)
-                    {
-                        manualSizeMultiplier = Math.Min(manualSizeMultiplier, 0.30m);
-                        EntryLog("SIGNAL_3C", "ADVISOR", $"entry=LONG but model=SHORT({signalConf:P0}) → size 30%");
-                    }
-                    else if (decision == "SHORT" && signalDir == "LONG" && signalConf >= 0.60f)
-                    {
-                        manualSizeMultiplier = Math.Min(manualSizeMultiplier, 0.30m);
-                        EntryLog("SIGNAL_3C", "ADVISOR", $"entry=SHORT but model=LONG({signalConf:P0}) → size 30%");
-                    }
-                    else if (signalDir == decision && signalConf >= 0.70f)
-                    {
-                        // 같은 방향 + 높은 신뢰도 → 사이즈 보너스
-                        manualSizeMultiplier = Math.Min(manualSizeMultiplier * 1.3m, 1.5m);
-                        EntryLog("SIGNAL_3C", "BOOST", $"model={signalDir}({signalConf:P0}) matches entry → size boost");
-                    }
-                    else
-                    {
-                        EntryLog("SIGNAL_3C", "INFO", $"model={signalDir}({signalConf:P0}) label={signalPred.PredictedLabel}");
-                    }
-                }
-            }
-
-            if (_aiPredictor != null)
-            {
-                if (latestCandle != null)
-                {
-                    var prediction = _aiPredictor.Predict(latestCandle);
-                    // [FIX] Score가 음수가 될 수 있으므로 0 이상으로 고정
-                    aiScore = Math.Max(0f, prediction.Score);
-                    aiProbability = prediction.Probability;
-                    aiPredictUp = prediction.Prediction;
-                    convictionScore = Math.Max(convictionScore, (decimal)(prediction.Probability * 100f));
-                    CoinType entryCoinType = ResolveCoinType(symbol, signalSource);
-                    bool isMajorCoin = entryCoinType == CoinType.Major;
-                    var symbolThreshold = GetThresholdByCoinType(entryCoinType);
-                    bool isLowVolume = latestCandle.Volume_Ratio > 0f && latestCandle.Volume_Ratio < 1.0f;
-                    bool isTrendHealthy = latestCandle.Close > (decimal)latestCandle.SMA_20 && latestCandle.RSI > 50f;
-                    bool isPerfectAlignment = latestCandle.SMA_20 > latestCandle.SMA_60 && latestCandle.SMA_60 > latestCandle.SMA_120;
-                    bool hasOiSupport = latestCandle.OI_Change_Pct > 0.5f;
-                    bool majorLowVolumePrivilege = isMajorCoin && decision == "LONG" && isLowVolume && (isTrendHealthy || isPerfectAlignment || hasOiSupport);
-                    
-                    // ═══════════════════════════════════════════════════════════════
-                    // [보너스 점수 시스템] AI 필터 개선 (2025-05-XX)
-                    // ═══════════════════════════════════════════════════════════════
-                    // 기본 AI 점수: Probability * 100 (0~100 스케일)
-                    // 메이저 코인 보너스:
-                    //   - EMA 20 눌림목 감지 시 +10점
-                    //   - 숏 스퀴즈 감지 시 +15점
-                    // 최종 임계값: MAJOR 75점, 기타 80점
-                    // ═══════════════════════════════════════════════════════════════
-                    
-                    float baseAiScore = Math.Max(0f, prediction.Probability * 100); // 0~100 스케일로 변환하고 음수 방지
-                    float bonusPoints = 0;
-
-                    if (bandwidthGate.AiBonusPoints > 0)
-                    {
-                        bonusPoints += (float)bandwidthGate.AiBonusPoints;
-                        OnStatusLog?.Invoke(
-                            $"➕ {symbol} Bandwidth 보너스 +{bandwidthGate.AiBonusPoints:F0}점 | " +
-                            $"ratio={bandwidthGate.SqueezeRatio:P0}, 현재폭={bandwidthGate.CurrentBandwidthPct:F2}%, 평균폭={bandwidthGate.AverageBandwidthPct:F2}%");
-                    }
-                    
-                    // 메이저 코인인 경우 보너스 체크
-                    if (isMajorCoin)
-                    {
-                        // 1) EMA 20 눌림목 감지 → +10점
-                        if (await CheckEMA20RetestAsync(symbol, latestCandle, token))
-                        {
-                            bonusPoints += 10;
-                            OnStatusLog?.Invoke($"➕ {symbol} EMA 20 눌림목 감지 → AI 보너스 +10점");
-                        }
-                        
-                        // 2) 숏 스퀴즈 감지 → +15점
-                        if (await CheckShortSqueezeAsync(symbol, latestCandle, token))
-                        {
-                            bonusPoints += 15;
-                            OnStatusLog?.Invoke($"➕ {symbol} 숏 스퀴즈 감지 → AI 보너스 +15점");
-                        }
-
-                        if (majorLowVolumePrivilege)
-                        {
-                            bonusPoints += 10;
-                            OnStatusLog?.Invoke($"🛡️ [Major 특권] {symbol} 거래량 부족보다 OI/이평선 추세를 우선합니다. (Vol={latestCandle.Volume_Ratio:F2}x, OI={latestCandle.OI_Change_Pct:F2}%)");
-                        }
-                    }
-                    
-                    float finalAiScore = Math.Max(0f, baseAiScore + bonusPoints); // 음수 방지
-                    convictionScore = Math.Max(convictionScore, (decimal)finalAiScore);
-
-                    // [메이저 전용] 15분봉 기울기 참고 로그 (차단 없이 정보만)
-                    if (decision == "LONG" && isMajorCoin)
-                    {
-                        var (isPositiveSlope, slope) = await EvaluateFifteenMinuteSlopeAsync(symbol, token);
-                        if (!isPositiveSlope)
-                        {
-                            OnStatusLog?.Invoke($"⚠️ [M15 기울기 참고] {symbol} LONG | slope={slope:F4} <= 0 (차단 없음, AI 스코어 보정용)");
-                            EntryLog("M15_SLOPE", "INFO", $"slope={slope:F4} negativeButNotBlocking");
-                        }
-
-                        EntryLog("MAJOR_SNIPER", "PASS", $"score={finalAiScore:F1} m15Slope={slope:F4}");
-                    }
-                    
-                    // [AI Advisor] AI 점수 기반 사이즈 동적 조절 (차단 없음)
-                    if (_enableAiScoreFilter)
-                    {
-                        var (adaptiveMajorThreshold, adaptiveNormalThreshold, adaptivePumpThreshold, adaptiveMode) = GetAdaptiveAiScoreThresholds(signalSource);
-                        float adjustedThreshold = entryCoinType switch
-                        {
-                            CoinType.Major => adaptiveMajorThreshold,
-                            CoinType.Pumping => adaptivePumpThreshold,
-                            _ => adaptiveNormalThreshold
-                        };
-                        adjustedThreshold = Math.Max(adjustedThreshold, symbolThreshold.EntryScoreCut);
-
-                        if (finalAiScore < adjustedThreshold)
-                        {
-                            // AI 스코어 부족 → 사이즈 축소 (차단 아님)
-                            float scoreRatio = adjustedThreshold > 0 ? finalAiScore / adjustedThreshold : 0.5f;
-                            decimal aiScoreMultiplier = scoreRatio switch
-                            {
-                                >= 0.90f => 0.80m,  // 거의 달성: 80%
-                                >= 0.70f => 0.50m,  // 근접: 50%
-                                >= 0.50f => 0.30m,  // 부족: 30%
-                                _        => 0.15m   // 매우 부족: 15%
-                            };
-                            manualSizeMultiplier = Math.Min(manualSizeMultiplier, aiScoreMultiplier);
-                            EntryLog("AI", "ADVISOR", $"score={finalAiScore:F1}<{adjustedThreshold:F1} ratio={scoreRatio:P0} size={aiScoreMultiplier:P0}");
-                            OnStatusLog?.Invoke($"🧠 [AI Advisor] {symbol} {decision} | score={finalAiScore:F1}/{adjustedThreshold:F1} → 사이즈 {aiScoreMultiplier:P0}");
-                        }
-                        else
-                        {
-                            EntryLog("AI", "PASS", $"score={finalAiScore:F1}>={adjustedThreshold:F1}");
-                        }
-                    }
-
-                    // 숏 진입: RSI 과매도 추격만 차단 (나머지는 AI 스코어에 위임)
-                    if (decision == "SHORT")
-                    {
-                        bool shortPriceAboveMa20 = latestCandle.Close >= (decimal)latestCandle.SMA_20;
-                        if (latestCandle.RSI <= _shortRsiExhaustionFloor && shortPriceAboveMa20)
-                        {
-                            EntryLog("AI", "BLOCK", $"shortFilter reason=RSI 과매도({latestCandle.RSI:F1}≤{_shortRsiExhaustionFloor:F1}) + 가격 MA20 위");
-                            return;
-                        }
-
-                        // 참고 로그만 (차단 없음)
-                        var shortInfos = new List<string>();
-                        if (prediction.Prediction)
-                            shortInfos.Add($"AI상승예측");
-                        if (latestCandle.MACD > 0)
-                            shortInfos.Add($"MACD양수({latestCandle.MACD:F4})");
-                        if (shortInfos.Count > 0)
-                            EntryLog("AI", "INFO", $"shortRef={string.Join(",", shortInfos)} (not blocking)");
-                    }
-                }
-            }
-
-            // 현재 상태(State) 구성: RSI, MACD 등
+            // RL 상태 구성 (비활성화)
             if (latestCandle != null)
             {
-                // [Agent 2, 3] PPO 에이전트 사용
-                // 상태 벡터 생성: [RSI, MACD, BB_Width] (정규화 필요하지만 여기선 원본 사용 예시)
                 float[] state = new float[] { latestCandle.RSI / 100f, latestCandle.MACD, (latestCandle.BollingerUpper - latestCandle.BollingerLower) };
+            }
 
-            /* TensorFlow 전환 중 Multi-Agent RL 비활성화
-                // 전략 타입에 따라 에이전트 선택 (예: 메이저 코인은 Swing, 급등주는 Scalping)
-                string strategyType = _symbols.Contains(symbol) ? "Swing" : "Scalping";
-                int action = _multiAgentManager.GetAction(strategyType, state); // 0:Hold, 1:Buy, 2:Sell
+            // ═══════════════════════════════════════════════════════════════
+            // [ROUTER] 9. EntryContext 구성 + 디스패치
+            // ═══════════════════════════════════════════════════════════════
+            var ctx = new EntryContext
+            {
+                Symbol = symbol,
+                Decision = decision,
+                CurrentPrice = currentPrice,
+                Token = token,
+                SignalSource = signalSource,
+                Mode = mode,
+                CustomTakeProfitPrice = customTakeProfitPrice,
+                CustomStopLossPrice = customStopLossPrice,
+                PatternSnapshot = patternSnapshot,
+                LatestCandle = latestCandle,
+                AiScore = 0,
+                AiProbability = 0,
+                AiPredictUp = null,
+                ConvictionScore = 0m,
+                BlendedMlTfScore = capturedBlendedScore,
+                ScoutModeActivated = scoutModeActivated,
+                ScoutAddOnEligible = scoutAddOnEligible,
+                IsScoutAddOnOrder = false,
+                AiGateDecisionId = aiGateDecisionId,
+                RecentEntryKlines = recentEntryKlines,
+                BandwidthGate = bandwidthGate,
+                EntryZoneTag = entryZoneTag,
+                EntryBbPosition = entryBbPosition,
+                IsHybridMidBandLongEntry = isHybridMidBandLongEntry,
+                FlowTag = flowTag,
+                EntryLog = EntryLog,
+            };
 
-                // RL이 반대 방향을 강력히 권장하면 진입 보류 (예: 롱 진입인데 Sell 액션)
-                if (decision == "LONG" && action == 2)
+            // ═══════════════════════════════════════════════════════════════
+            // [ROUTER] 사이즈 멀티플라이어: 각 소스에서 가장 낮은 값 하나를 선정
+            // 절대 Math.Min 체이닝으로 누적하지 않음 — 가장 보수적인 값 하나만 적용
+            // ═══════════════════════════════════════════════════════════════
+            decimal lowestSizeMultiplier = 1.0m;
+
+            // AI Gate advisor
+            if (aiGateSizeMultiplier < lowestSizeMultiplier)
+                lowestSizeMultiplier = aiGateSizeMultiplier;
+            // ML 3분류
+            if (mlSignalSizeMultiplier < lowestSizeMultiplier)
+                lowestSizeMultiplier = mlSignalSizeMultiplier;
+            // ATR 변동성
+            if (atrSizeMultiplier < lowestSizeMultiplier)
+                lowestSizeMultiplier = atrSizeMultiplier;
+            // 정찰대 모드
+            if (scoutModeActivated && 0.30m < lowestSizeMultiplier)
+                lowestSizeMultiplier = 0.30m;
+            // 외부 전달 manualSizeMultiplier (기본 1.0)
+            if (manualSizeMultiplier < lowestSizeMultiplier)
+                lowestSizeMultiplier = manualSizeMultiplier;
+            // ML boost: 1.3m은 다른 축소가 없을 때만 적용
+            if (mlSignalSizeMultiplier > 1.0m && lowestSizeMultiplier >= 1.0m)
+                lowestSizeMultiplier = mlSignalSizeMultiplier;
+
+            // 바닥: 최소 10%
+            ctx.SizeMultiplier = Math.Clamp(lowestSizeMultiplier, 0.10m, 2.00m);
+
+            // ═══════════════════════════════════════════════════════════════
+            // [DISPATCH] Major/Pump x Long/Short
+            // ═══════════════════════════════════════════════════════════════
+            bool isMajor = MajorSymbols.Contains(symbol);
+            if (isMajor && decision == "LONG")
+                await ExecuteMajorLongEntry(ctx);
+            else if (isMajor && decision == "SHORT")
+                await ExecuteMajorShortEntry(ctx);
+            else if (!isMajor && decision == "LONG")
+                await ExecutePumpLongEntry(ctx);
+            else
+                await ExecutePumpShortEntry(ctx);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // [Major LONG] 메이저 롱 진입
+        // ═══════════════════════════════════════════════════════════════════════════
+        private async Task ExecuteMajorLongEntry(EntryContext ctx)
+        {
+            var EntryLog = ctx.EntryLog;
+
+            // 1. AI Predictor + 보너스 점수 (Major LONG only: EMA retest +10, short squeeze +15, low-vol privilege +10)
+            await EvaluateAiPredictorForEntry(ctx, applyMajorBonuses: true);
+
+            // 2. AI Score 기반 사이즈 (이미 ctx.SizeMultiplier에 반영된 것과 별도로 AI Score 전용)
+            decimal aiScoreMultiplier = EvaluateAiScoreSizeMultiplier(ctx);
+            if (aiScoreMultiplier < ctx.SizeMultiplier)
+                ctx.SizeMultiplier = Math.Max(0.10m, aiScoreMultiplier);
+
+            // 3. Major ATR 하이브리드 손절
+            bool isMajorLikeSignal = ctx.SignalSource == "MAJOR" || ctx.SignalSource.StartsWith("MAJOR_");
+            ctx.IsMajorAtrEnforced = (isMajorLikeSignal || ctx.ScoutModeActivated) && MajorSymbols.Contains(ctx.Symbol);
+
+            if (ctx.IsMajorAtrEnforced && ctx.CustomStopLossPrice <= 0)
+            {
+                ctx.MajorAtrPreview = await TryCalculateMajorAtrHybridStopLossAsync(ctx.Symbol, ctx.CurrentPrice, true, ctx.Token);
+                if (ctx.MajorAtrPreview.StopLossPrice <= 0)
                 {
-                    EntryLog("RL", "BLOCK", $"agent={strategyType} action=SellAgainstLong");
+                    string stopTag = ctx.ScoutModeActivated ? "SCOUT_ATR" : "MAJOR_ATR";
+                    OnStatusLog?.Invoke($"⛔ [{stopTag}] {ctx.Symbol} ATR 2.0 하이브리드 손절 계산 실패로 진입 차단");
+                    EntryLog(stopTag, "BLOCK", "stopCalcFailed");
+                    return;
+                }
+                ctx.CustomStopLossPrice = ctx.MajorAtrPreview.StopLossPrice;
+                OnStatusLog?.Invoke(
+                    $"🛡️ [MAJOR ATR] {ctx.Symbol} 하이브리드 손절 적용 | Entry={ctx.CurrentPrice:F8}, SL={ctx.CustomStopLossPrice:F8}, ATRdist={ctx.MajorAtrPreview.AtrDistance:F8}, 구조선={ctx.MajorAtrPreview.StructureStopPrice:F8}");
+            }
+
+            // 4. M15 기울기 참고 (차단 없음)
+            {
+                var (isPositiveSlope, slope) = await EvaluateFifteenMinuteSlopeAsync(ctx.Symbol, ctx.Token);
+                if (!isPositiveSlope)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [M15 기울기 참고] {ctx.Symbol} LONG | slope={slope:F4} <= 0 (차단 없음, AI 스코어 보정용)");
+                    EntryLog("M15_SLOPE", "INFO", $"slope={slope:F4} negativeButNotBlocking");
+                }
+                EntryLog("MAJOR_SNIPER", "PASS", $"score={(ctx.AiScore > 0 ? ctx.AiScore : ctx.ConvictionScore):F1} m15Slope={slope:F4}");
+            }
+
+            // 5. 포지션 사이즈: adaptive equity
+            ctx.Leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
+            ctx.MarginUsdt = await GetAdaptiveEntryMarginUsdtAsync(ctx.Token);
+            ctx.IsPumpStrategy = false;
+
+            decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
+            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=equity*{majorMarginPercent:F1}%");
+
+            // 6. R:R 체크
+            if (!EvaluateRiskRewardForEntry(ctx))
+                return;
+
+            // 7. 주문 실행
+            await PlaceAndTrackEntryAsync(ctx);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // [Major SHORT] 메이저 숏 진입
+        // ═══════════════════════════════════════════════════════════════════════════
+        private async Task ExecuteMajorShortEntry(EntryContext ctx)
+        {
+            var EntryLog = ctx.EntryLog;
+
+            // 1. AI Predictor (보너스 없음 for SHORT)
+            await EvaluateAiPredictorForEntry(ctx, applyMajorBonuses: false);
+
+            // 2. SHORT 전용 차단: RSI 과매도 + 가격 MA20 위 — ONLY 이 조건만 차단
+            if (ctx.LatestCandle != null)
+            {
+                bool shortPriceAboveMa20 = ctx.LatestCandle.Close >= (decimal)ctx.LatestCandle.SMA_20;
+                if (ctx.LatestCandle.RSI <= _shortRsiExhaustionFloor && shortPriceAboveMa20)
+                {
+                    EntryLog("AI", "BLOCK", $"shortFilter reason=RSI 과매도({ctx.LatestCandle.RSI:F1}≤{_shortRsiExhaustionFloor:F1}) + 가격 MA20 위");
                     return;
                 }
 
-                if (decision == "SHORT" && action == 1)
+                // 참고 로그만 (차단 없음)
+                var shortInfos = new List<string>();
+                if (ctx.AiPredictUp == true)
+                    shortInfos.Add($"AI상승예측");
+                if (ctx.LatestCandle.MACD > 0)
+                    shortInfos.Add($"MACD양수({ctx.LatestCandle.MACD:F4})");
+                if (shortInfos.Count > 0)
+                    EntryLog("AI", "INFO", $"shortRef={string.Join(",", shortInfos)} (not blocking)");
+            }
+
+            // 3. AI Score 기반 사이즈
+            decimal aiScoreMultiplier = EvaluateAiScoreSizeMultiplier(ctx);
+            if (aiScoreMultiplier < ctx.SizeMultiplier)
+                ctx.SizeMultiplier = Math.Max(0.10m, aiScoreMultiplier);
+
+            // 4. Major ATR 하이브리드 손절
+            bool isMajorLikeSignal = ctx.SignalSource == "MAJOR" || ctx.SignalSource.StartsWith("MAJOR_");
+            ctx.IsMajorAtrEnforced = (isMajorLikeSignal || ctx.ScoutModeActivated) && MajorSymbols.Contains(ctx.Symbol);
+
+            if (ctx.IsMajorAtrEnforced && ctx.CustomStopLossPrice <= 0)
+            {
+                ctx.MajorAtrPreview = await TryCalculateMajorAtrHybridStopLossAsync(ctx.Symbol, ctx.CurrentPrice, false, ctx.Token);
+                if (ctx.MajorAtrPreview.StopLossPrice <= 0)
                 {
-                    EntryLog("RL", "BLOCK", $"agent={strategyType} action=BuyAgainstShort");
+                    string stopTag = ctx.ScoutModeActivated ? "SCOUT_ATR" : "MAJOR_ATR";
+                    OnStatusLog?.Invoke($"⛔ [{stopTag}] {ctx.Symbol} ATR 2.0 하이브리드 손절 계산 실패로 진입 차단");
+                    EntryLog(stopTag, "BLOCK", "stopCalcFailed");
+                    return;
+                }
+                ctx.CustomStopLossPrice = ctx.MajorAtrPreview.StopLossPrice;
+                OnStatusLog?.Invoke(
+                    $"🛡️ [MAJOR ATR] {ctx.Symbol} 하이브리드 손절 적용 | Entry={ctx.CurrentPrice:F8}, SL={ctx.CustomStopLossPrice:F8}, ATRdist={ctx.MajorAtrPreview.AtrDistance:F8}, 구조선={ctx.MajorAtrPreview.StructureStopPrice:F8}");
+            }
+
+            // 5. 포지션 사이즈: adaptive equity
+            ctx.Leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
+            ctx.MarginUsdt = await GetAdaptiveEntryMarginUsdtAsync(ctx.Token);
+            ctx.IsPumpStrategy = false;
+
+            decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
+            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=equity*{majorMarginPercent:F1}%");
+
+            // 6. R:R 체크
+            if (!EvaluateRiskRewardForEntry(ctx))
+                return;
+
+            // 7. 주문 실행
+            await PlaceAndTrackEntryAsync(ctx);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // [Pump LONG] 펌프 롱 진입
+        // ═══════════════════════════════════════════════════════════════════════════
+        private async Task ExecutePumpLongEntry(EntryContext ctx)
+        {
+            var EntryLog = ctx.EntryLog;
+
+            // 1. AI Predictor (보너스 없음)
+            await EvaluateAiPredictorForEntry(ctx, applyMajorBonuses: false);
+
+            // 2. AI Score 기반 사이즈
+            decimal aiScoreMultiplier = EvaluateAiScoreSizeMultiplier(ctx);
+            if (aiScoreMultiplier < ctx.SizeMultiplier)
+                ctx.SizeMultiplier = Math.Max(0.10m, aiScoreMultiplier);
+
+            // 3. 포지션 사이즈: 고정 펌프 마진
+            ctx.Leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
+            ctx.MarginUsdt = GetConfiguredPumpMarginUsdt();
+            ctx.IsPumpStrategy = true;
+
+            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x coinType=Pumping source=PumpMargin");
+
+            // 4. R:R 체크
+            if (!EvaluateRiskRewardForEntry(ctx))
+                return;
+
+            // 5. 주문 실행
+            await PlaceAndTrackEntryAsync(ctx);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // [Pump SHORT] 펌프 숏 진입
+        // ═══════════════════════════════════════════════════════════════════════════
+        private async Task ExecutePumpShortEntry(EntryContext ctx)
+        {
+            var EntryLog = ctx.EntryLog;
+
+            // 1. AI Predictor (보너스 없음)
+            await EvaluateAiPredictorForEntry(ctx, applyMajorBonuses: false);
+
+            // 2. SHORT 전용 차단: RSI 과매도 + 가격 MA20 위
+            if (ctx.LatestCandle != null)
+            {
+                bool shortPriceAboveMa20 = ctx.LatestCandle.Close >= (decimal)ctx.LatestCandle.SMA_20;
+                if (ctx.LatestCandle.RSI <= _shortRsiExhaustionFloor && shortPriceAboveMa20)
+                {
+                    EntryLog("AI", "BLOCK", $"shortFilter reason=RSI 과매도({ctx.LatestCandle.RSI:F1}≤{_shortRsiExhaustionFloor:F1}) + 가격 MA20 위");
                     return;
                 }
 
-                EntryLog("RL", "INFO", $"agent={strategyType} action={action}");
-            */
+                var shortInfos = new List<string>();
+                if (ctx.AiPredictUp == true)
+                    shortInfos.Add($"AI상승예측");
+                if (ctx.LatestCandle.MACD > 0)
+                    shortInfos.Add($"MACD양수({ctx.LatestCandle.MACD:F4})");
+                if (shortInfos.Count > 0)
+                    EntryLog("AI", "INFO", $"shortRef={string.Join(",", shortInfos)} (not blocking)");
+            }
+
+            // 3. AI Score 기반 사이즈
+            decimal aiScoreMultiplier = EvaluateAiScoreSizeMultiplier(ctx);
+            if (aiScoreMultiplier < ctx.SizeMultiplier)
+                ctx.SizeMultiplier = Math.Max(0.10m, aiScoreMultiplier);
+
+            // 4. 포지션 사이즈: 고정 펌프 마진
+            ctx.Leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
+            ctx.MarginUsdt = GetConfiguredPumpMarginUsdt();
+            ctx.IsPumpStrategy = true;
+
+            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x coinType=Pumping source=PumpMargin");
+
+            // 5. R:R 체크
+            if (!EvaluateRiskRewardForEntry(ctx))
+                return;
+
+            // 6. 주문 실행
+            await PlaceAndTrackEntryAsync(ctx);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // [공통] AI Predictor 평가 + 보너스 점수
+        // ═══════════════════════════════════════════════════════════════════════════
+        private async Task EvaluateAiPredictorForEntry(EntryContext ctx, bool applyMajorBonuses)
+        {
+            if (_aiPredictor == null || ctx.LatestCandle == null)
+                return;
+
+            var prediction = _aiPredictor.Predict(ctx.LatestCandle);
+            ctx.AiScore = Math.Max(0f, prediction.Score);
+            ctx.AiProbability = prediction.Probability;
+            ctx.AiPredictUp = prediction.Prediction;
+            ctx.ConvictionScore = Math.Max(ctx.ConvictionScore, (decimal)(prediction.Probability * 100f));
+
+            float baseAiScore = Math.Max(0f, prediction.Probability * 100);
+            float bonusPoints = 0;
+
+            if (ctx.BandwidthGate.AiBonusPoints > 0)
+            {
+                bonusPoints += (float)ctx.BandwidthGate.AiBonusPoints;
+                OnStatusLog?.Invoke(
+                    $"➕ {ctx.Symbol} Bandwidth 보너스 +{ctx.BandwidthGate.AiBonusPoints:F0}점 | " +
+                    $"ratio={ctx.BandwidthGate.SqueezeRatio:P0}, 현재폭={ctx.BandwidthGate.CurrentBandwidthPct:F2}%, 평균폭={ctx.BandwidthGate.AverageBandwidthPct:F2}%");
+            }
+
+            if (applyMajorBonuses)
+            {
+                CoinType entryCoinType = ResolveCoinType(ctx.Symbol, ctx.SignalSource);
+                bool isMajorCoin = entryCoinType == CoinType.Major;
+
+                if (isMajorCoin)
+                {
+                    bool isLowVolume = ctx.LatestCandle.Volume_Ratio > 0f && ctx.LatestCandle.Volume_Ratio < 1.0f;
+                    bool isTrendHealthy = ctx.LatestCandle.Close > (decimal)ctx.LatestCandle.SMA_20 && ctx.LatestCandle.RSI > 50f;
+                    bool isPerfectAlignment = ctx.LatestCandle.SMA_20 > ctx.LatestCandle.SMA_60 && ctx.LatestCandle.SMA_60 > ctx.LatestCandle.SMA_120;
+                    bool hasOiSupport = ctx.LatestCandle.OI_Change_Pct > 0.5f;
+                    bool majorLowVolumePrivilege = ctx.Decision == "LONG" && isLowVolume && (isTrendHealthy || isPerfectAlignment || hasOiSupport);
+
+                    if (await CheckEMA20RetestAsync(ctx.Symbol, ctx.LatestCandle, ctx.Token))
+                    {
+                        bonusPoints += 10;
+                        OnStatusLog?.Invoke($"➕ {ctx.Symbol} EMA 20 눌림목 감지 → AI 보너스 +10점");
+                    }
+
+                    if (await CheckShortSqueezeAsync(ctx.Symbol, ctx.LatestCandle, ctx.Token))
+                    {
+                        bonusPoints += 15;
+                        OnStatusLog?.Invoke($"➕ {ctx.Symbol} 숏 스퀴즈 감지 → AI 보너스 +15점");
+                    }
+
+                    if (majorLowVolumePrivilege)
+                    {
+                        bonusPoints += 10;
+                        OnStatusLog?.Invoke($"🛡️ [Major 특권] {ctx.Symbol} 거래량 부족보다 OI/이평선 추세를 우선합니다. (Vol={ctx.LatestCandle.Volume_Ratio:F2}x, OI={ctx.LatestCandle.OI_Change_Pct:F2}%)");
+                    }
+                }
+            }
+
+            float finalAiScore = Math.Max(0f, baseAiScore + bonusPoints);
+            ctx.ConvictionScore = Math.Max(ctx.ConvictionScore, (decimal)finalAiScore);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // [공통] AI Score 기반 사이즈 멀티플라이어 산출
+        // ═══════════════════════════════════════════════════════════════════════════
+        private decimal EvaluateAiScoreSizeMultiplier(EntryContext ctx)
+        {
+            if (!_enableAiScoreFilter || ctx.LatestCandle == null)
+                return 1.0m;
+
+            CoinType entryCoinType = ResolveCoinType(ctx.Symbol, ctx.SignalSource);
+            var symbolThreshold = GetThresholdByCoinType(entryCoinType);
+            var (adaptiveMajorThreshold, adaptiveNormalThreshold, adaptivePumpThreshold, adaptiveMode) = GetAdaptiveAiScoreThresholds(ctx.SignalSource);
+            float adjustedThreshold = entryCoinType switch
+            {
+                CoinType.Major => adaptiveMajorThreshold,
+                CoinType.Pumping => adaptivePumpThreshold,
+                _ => adaptiveNormalThreshold
+            };
+            adjustedThreshold = Math.Max(adjustedThreshold, symbolThreshold.EntryScoreCut);
+
+            float finalAiScore = Math.Max(0f, (float)ctx.ConvictionScore);
+            if (finalAiScore < adjustedThreshold)
+            {
+                float scoreRatio = adjustedThreshold > 0 ? finalAiScore / adjustedThreshold : 0.5f;
+                decimal aiScoreMultiplier = scoreRatio switch
+                {
+                    >= 0.90f => 0.80m,
+                    >= 0.70f => 0.50m,
+                    >= 0.50f => 0.30m,
+                    _        => 0.15m
+                };
+                ctx.EntryLog("AI", "ADVISOR", $"score={finalAiScore:F1}<{adjustedThreshold:F1} ratio={scoreRatio:P0} size={aiScoreMultiplier:P0}");
+                OnStatusLog?.Invoke($"🧠 [AI Advisor] {ctx.Symbol} {ctx.Decision} | score={finalAiScore:F1}/{adjustedThreshold:F1} → 사이즈 {aiScoreMultiplier:P0}");
+                return aiScoreMultiplier;
+            }
+            else
+            {
+                ctx.EntryLog("AI", "PASS", $"score={finalAiScore:F1}>={adjustedThreshold:F1}");
+                return 1.0m;
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // [공통] R:R 체크
+        // ═══════════════════════════════════════════════════════════════════════════
+        private bool EvaluateRiskRewardForEntry(EntryContext ctx)
+        {
+            var EntryLog = ctx.EntryLog;
+
+            if (string.Equals(ctx.Mode, "SIDEWAYS", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            decimal effectiveMinRiskRewardRatio = _minEntryRiskRewardRatio;
+            bool usingDefaultTargetAndStop = ctx.CustomTakeProfitPrice <= 0m && ctx.CustomStopLossPrice <= 0m;
+            decimal majorTp2 = _settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : _settings.TargetRoe;
+            decimal majorSl = _settings.MajorStopLossRoe > 0 ? _settings.MajorStopLossRoe : _settings.StopLossRoe;
+            if (usingDefaultTargetAndStop && majorSl > 0m && majorTp2 > 0m)
+            {
+                decimal defaultRrFromSettings = majorTp2 / majorSl;
+                if (defaultRrFromSettings < effectiveMinRiskRewardRatio)
+                {
+                    effectiveMinRiskRewardRatio = Math.Max(1.0m, defaultRrFromSettings);
+                    if (!_rrConfigMismatchWarned)
+                    {
+                        _rrConfigMismatchWarned = true;
+                        OnStatusLog?.Invoke(
+                            $"⚠️ [RR 설정 보정] 기본 Target/Stop 비율({defaultRrFromSettings:F2})이 최소 RR({_minEntryRiskRewardRatio:F2})보다 낮아 기본 진입은 과차단됩니다. 이번 진입부터 유효 RR 기준을 {effectiveMinRiskRewardRatio:F2}로 적용합니다.");
+                    }
+                }
+            }
+
+            if (!TryEvaluateEntryRiskReward(
+                ctx.Decision,
+                ctx.CurrentPrice,
+                ctx.Leverage,
+                ctx.CustomTakeProfitPrice,
+                ctx.CustomStopLossPrice,
+                out decimal evaluatedTakeProfit,
+                out decimal evaluatedStopLoss,
+                out decimal riskRewardRatio,
+                out string rrReason))
+            {
+                OnStatusLog?.Invoke($"⛔ {ctx.Symbol} 손익비 계산 실패로 진입 차단 | {rrReason}");
+                EntryLog("RR", "BLOCK", $"reason={rrReason}");
+                return false;
+            }
+
+            if (riskRewardRatio < effectiveMinRiskRewardRatio)
+            {
+                OnStatusLog?.Invoke(
+                    $"⛔ {ctx.Symbol} 공통 손익비 부족으로 진입 차단 | RR={riskRewardRatio:F2}<{effectiveMinRiskRewardRatio:F2} | TP={evaluatedTakeProfit:F8}, SL={evaluatedStopLoss:F8}");
+                EntryLog("RR", "BLOCK", $"rr={riskRewardRatio:F2}<{effectiveMinRiskRewardRatio:F2}");
+                return false;
+            }
+
+            EntryLog("RR", "PASS", $"rr={riskRewardRatio:F2} tp={evaluatedTakeProfit:F8} sl={evaluatedStopLoss:F8}");
+
+            // ElliottWave R:R 참고 로그
+            var waveState = _elliotWave3Strategy?.GetCurrentState(ctx.Symbol);
+            if (waveState != null && ctx.Decision == "LONG")
+            {
+                decimal stopLossPrice = waveState.Phase1LowPrice > 0 ? waveState.Phase1LowPrice : 0;
+                decimal takeProfitPrice = waveState.Phase1HighPrice > 0 ? waveState.Phase1HighPrice : 0;
+
+                if (stopLossPrice > 0 && takeProfitPrice > 0)
+                {
+                    decimal risk = ctx.CurrentPrice - stopLossPrice;
+                    decimal reward1 = takeProfitPrice - ctx.CurrentPrice;
+                    decimal ewRr = risk > 0 ? reward1 / risk : 0;
+                    EntryLog("EW_RR", "INFO", $"rr={ewRr:F2} (no block)");
+                }
+            }
+
+            return true;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // [공통] 주문 실행 + 포스트 필 처리
+        // ═══════════════════════════════════════════════════════════════════════════
+        private async Task PlaceAndTrackEntryAsync(EntryContext ctx)
+        {
+            var EntryLog = ctx.EntryLog;
+            bool positionReserved = false;
+            bool orderPlaced = false;
+            string symbol = ctx.Symbol;
+            string decision = ctx.Decision;
+
+            void CleanupReservedPosition(string reason)
+            {
+                if (!positionReserved || orderPlaced)
+                    return;
+
+                lock (_posLock)
+                {
+                    if (_activePositions.TryGetValue(symbol, out var reservedPos) && reservedPos.Quantity == 0)
+                    {
+                        _activePositions.Remove(symbol);
+                        EntryLog("RESERVE", "CLEANUP", $"reason={reason}");
+                    }
+                }
             }
 
             OnStatusLog?.Invoke(
-                $"🧾 [진입 검증] src={signalSource} | mode={mode} | {symbol} {decision} | AI.Score={aiScore:F3} | AI.Prob={aiProbability:P1} | AI.Dir={(aiPredictUp.HasValue ? (aiPredictUp.Value ? "UP" : "DOWN") : "N/A")} | RSI={(latestCandle != null ? latestCandle.RSI.ToString("F1") : "N/A")}");
+                $"🧾 [진입 검증] src={ctx.SignalSource} | mode={ctx.Mode} | {symbol} {decision} | AI.Score={ctx.AiScore:F3} | AI.Prob={ctx.AiProbability:P1} | AI.Dir={(ctx.AiPredictUp.HasValue ? (ctx.AiPredictUp.Value ? "UP" : "DOWN") : "N/A")} | RSI={(ctx.LatestCandle != null ? ctx.LatestCandle.RSI.ToString("F1") : "N/A")}");
 
             try
             {
-                // 2. [메이저/PUMP 완전 분리] 메이저 전용 레버리지/증거금 사용
-                int leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
-                CoinType sizeCoinType = ResolveCoinType(symbol, signalSource);
-                bool useFixedPumpMargin = sizeCoinType == CoinType.Pumping;
-                decimal marginUsdt = useFixedPumpMargin
-                    ? GetConfiguredPumpMarginUsdt()
-                    : await GetAdaptiveEntryMarginUsdtAsync(token);
+                // 포지션 사이즈 산출
+                decimal marginUsdt = ctx.MarginUsdt;
+                int leverage = ctx.Leverage;
                 decimal positionSizeMultiplier = 1.0m;
-                decimal effectiveManualSizeMultiplier = Math.Clamp(manualSizeMultiplier, 0.10m, 2.00m);
+                decimal effectiveSizeMultiplier = Math.Clamp(ctx.SizeMultiplier, 0.10m, 2.00m);
 
-                if (useFixedPumpMargin)
+                if (ctx.PatternSnapshot != null)
                 {
-                    EntryLog("SIZE", "BASE", $"margin={marginUsdt:F2} leverage={leverage}x coinType={sizeCoinType} source=PumpMargin");
-                }
-                else
-                {
-                    decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
-                    EntryLog("SIZE", "BASE", $"margin={marginUsdt:F2} leverage={leverage}x sizingRule=equity*{majorMarginPercent:F1}%");
+                    ctx.ConvictionScore = Math.Max(ctx.ConvictionScore, (decimal)ctx.PatternSnapshot.FinalScore);
                 }
 
-                if (patternSnapshot != null)
+                if (!ctx.IsPumpStrategy)
                 {
-                    convictionScore = Math.Max(convictionScore, (decimal)patternSnapshot.FinalScore);
-                }
-
-                if (!useFixedPumpMargin)
-                {
-                    if (patternSnapshot != null)
+                    // Major: 패턴 기반 어그레시브 멀티플라이어
+                    if (ctx.PatternSnapshot != null)
                     {
-                        decimal patternSizeMultiplier = patternSnapshot.Match?.PositionSizeMultiplier ?? 1.0m;
+                        decimal patternSizeMultiplier = ctx.PatternSnapshot.Match?.PositionSizeMultiplier ?? 1.0m;
                         bool hasStrongPatternMatch =
-                            patternSnapshot.Match?.IsSuperEntry == true ||
-                            (patternSnapshot.Match?.TopSimilarity ?? 0d) >= 0.80d ||
-                            (patternSnapshot.Match?.MatchProbability ?? 0d) >= 0.70d;
+                            ctx.PatternSnapshot.Match?.IsSuperEntry == true ||
+                            (ctx.PatternSnapshot.Match?.TopSimilarity ?? 0d) >= 0.80d ||
+                            (ctx.PatternSnapshot.Match?.MatchProbability ?? 0d) >= 0.70d;
 
-                        if (convictionScore >= 85.0m && hasStrongPatternMatch)
+                        if (ctx.ConvictionScore >= 85.0m && hasStrongPatternMatch)
                         {
                             decimal aggressiveMultiplier = patternSizeMultiplier > 1.0m
                                 ? patternSizeMultiplier
                                 : 1.5m;
 
                             positionSizeMultiplier = Math.Clamp(aggressiveMultiplier, 1.5m, 2.0m);
-                            OnStatusLog?.Invoke($"🚀 [Aggressive Entry] {symbol} 고신뢰 진입 감지 | Score={convictionScore:F1}, PatternStrong={hasStrongPatternMatch} → 비중 x{positionSizeMultiplier:F2}");
+                            OnStatusLog?.Invoke($"🚀 [Aggressive Entry] {symbol} 고신뢰 진입 감지 | Score={ctx.ConvictionScore:F1}, PatternStrong={hasStrongPatternMatch} → 비중 x{positionSizeMultiplier:F2}");
                         }
                         else if (patternSizeMultiplier > 1.0m)
                         {
-                            OnStatusLog?.Invoke($"🧮 [Pattern Size] {symbol} 패턴 배수 제안 x{patternSizeMultiplier:F2} 감지, 하지만 Score={convictionScore:F1} < 85 또는 강매치 미충족으로 기본 비중 유지");
+                            OnStatusLog?.Invoke($"🧮 [Pattern Size] {symbol} 패턴 배수 제안 x{patternSizeMultiplier:F2} 감지, 하지만 Score={ctx.ConvictionScore:F1} < 85 또는 강매치 미충족으로 기본 비중 유지");
                         }
                     }
 
-                    if (effectiveManualSizeMultiplier != 1.0m)
+                    if (effectiveSizeMultiplier != 1.0m)
                     {
-                        positionSizeMultiplier *= effectiveManualSizeMultiplier;
-                        EntryLog("SIZE", "ADJUST", $"manualMultiplier={effectiveManualSizeMultiplier:F2} finalMultiplier={positionSizeMultiplier:F2}");
+                        positionSizeMultiplier *= effectiveSizeMultiplier;
+                        EntryLog("SIZE", "ADJUST", $"sizeMultiplier={effectiveSizeMultiplier:F2} finalMultiplier={positionSizeMultiplier:F2}");
                     }
 
                     marginUsdt *= positionSizeMultiplier;
@@ -6814,91 +7022,35 @@ namespace TradingBot
                 }
                 else
                 {
-                    positionSizeMultiplier = 1.0m;
-                    marginUsdt = GetConfiguredPumpMarginUsdt();
-                    EntryLog("SIZE", "FIXED", $"coinType={sizeCoinType} margin={marginUsdt:F2}USDT source=PumpMargin");
+                    // Pump: 고정 마진, 사이즈 멀티플라이어 적용
+                    if (effectiveSizeMultiplier != 1.0m)
+                    {
+                        marginUsdt *= effectiveSizeMultiplier;
+                        positionSizeMultiplier = effectiveSizeMultiplier;
+                        EntryLog("SIZE", "ADJUST", $"pumpSizeMultiplier={effectiveSizeMultiplier:F2} margin={marginUsdt:F2}");
+                    }
+                    else
+                    {
+                        positionSizeMultiplier = 1.0m;
+                        EntryLog("SIZE", "FIXED", $"coinType=Pumping margin={marginUsdt:F2}USDT source=PumpMargin");
+                    }
                 }
 
-                if (scoutModeActivated)
+                if (ctx.ScoutModeActivated)
                 {
                     OnStatusLog?.Invoke($"🛰️ [SCOUT MODE] {symbol} 정찰 진입 체결 후 ML/거래량 회복 시 추가 진입 검토 대상입니다.");
                 }
 
-                // [공통 손익비 필터] 저기대값 진입 차단 (SIDEWAYS 제외)
-                if (!string.Equals(mode, "SIDEWAYS", StringComparison.OrdinalIgnoreCase))
-                {
-                    decimal effectiveMinRiskRewardRatio = _minEntryRiskRewardRatio;
-                    bool usingDefaultTargetAndStop = customTakeProfitPrice <= 0m && customStopLossPrice <= 0m;
-                    // [메이저/PUMP 완전 분리] 메이저 전용 TargetRoe/StopLossRoe 사용
-                    decimal majorTp2 = _settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : _settings.TargetRoe;
-                    decimal majorSl = _settings.MajorStopLossRoe > 0 ? _settings.MajorStopLossRoe : _settings.StopLossRoe;
-                    if (usingDefaultTargetAndStop && majorSl > 0m && majorTp2 > 0m)
-                    {
-                        decimal defaultRrFromSettings = majorTp2 / majorSl;
-                        if (defaultRrFromSettings < effectiveMinRiskRewardRatio)
-                        {
-                            effectiveMinRiskRewardRatio = Math.Max(1.0m, defaultRrFromSettings);
-
-                            if (!_rrConfigMismatchWarned)
-                            {
-                                _rrConfigMismatchWarned = true;
-                                OnStatusLog?.Invoke(
-                                    $"⚠️ [RR 설정 보정] 기본 Target/Stop 비율({defaultRrFromSettings:F2})이 최소 RR({_minEntryRiskRewardRatio:F2})보다 낮아 기본 진입은 과차단됩니다. 이번 진입부터 유효 RR 기준을 {effectiveMinRiskRewardRatio:F2}로 적용합니다.");
-                            }
-                        }
-                    }
-
-                    if (!TryEvaluateEntryRiskReward(
-                        decision,
-                        currentPrice,
-                        leverage,
-                        customTakeProfitPrice,
-                        customStopLossPrice,
-                        out decimal evaluatedTakeProfit,
-                        out decimal evaluatedStopLoss,
-                        out decimal riskRewardRatio,
-                        out string rrReason))
-                    {
-                        OnStatusLog?.Invoke($"⛔ {symbol} 손익비 계산 실패로 진입 차단 | {rrReason}");
-                        EntryLog("RR", "BLOCK", $"reason={rrReason}");
-                        return;
-                    }
-
-                    if (riskRewardRatio < effectiveMinRiskRewardRatio)
-                    {
-                        OnStatusLog?.Invoke(
-                            $"⛔ {symbol} 공통 손익비 부족으로 진입 차단 | RR={riskRewardRatio:F2}<{effectiveMinRiskRewardRatio:F2} | TP={evaluatedTakeProfit:F8}, SL={evaluatedStopLoss:F8}");
-                        EntryLog("RR", "BLOCK", $"rr={riskRewardRatio:F2}<{effectiveMinRiskRewardRatio:F2}");
-                        return;
-                    }
-
-                    EntryLog("RR", "PASS", $"rr={riskRewardRatio:F2} tp={evaluatedTakeProfit:F8} sl={evaluatedStopLoss:F8}");
-                }
-
-                // [ElliottWave 손익비] 참고 로그만 (RR 필터에서 통합 검증, 이중 차단 제거)
+                // 중복 진입 방지 + 슬롯 최종 재체크
                 var waveState = _elliotWave3Strategy?.GetCurrentState(symbol);
-                if (waveState != null && decision == "LONG")
-                {
-                    decimal stopLossPrice = waveState.Phase1LowPrice > 0 ? waveState.Phase1LowPrice : 0;
-                    decimal takeProfitPrice = waveState.Phase1HighPrice > 0 ? waveState.Phase1HighPrice : 0;
 
-                    if (stopLossPrice > 0 && takeProfitPrice > 0)
-                    {
-                        decimal risk = currentPrice - stopLossPrice;
-                        decimal reward1 = takeProfitPrice - currentPrice;
-                        decimal riskRewardRatio = risk > 0 ? reward1 / risk : 0;
-                        EntryLog("EW_RR", "INFO", $"rr={riskRewardRatio:F2} (no block)");
-                    }
-                }
-
-                // 3. 중복 진입 방지 (Race Condition 방지를 위해 즉시 등록)
                 lock (_posLock)
                 {
                     if (_activePositions.ContainsKey(symbol))
                     {
-                        if (scoutAddOnEligible)
+                        if (ctx.ScoutAddOnEligible)
                         {
-                            isScoutAddOnOrder = true;
+                            ctx.IsScoutAddOnOrder = true;
                             EntryLog("POSITION", "ADDON", "activePosition=scoutAddOn");
                         }
                         else
@@ -6908,10 +7060,8 @@ namespace TradingBot
                         }
                     }
 
-                    if (!isScoutAddOnOrder && !scoutModeActivated)
+                    if (!ctx.IsScoutAddOnOrder && !ctx.ScoutModeActivated)
                     {
-                        // [동시성 보호] 포지션 추가 직전 슬롯 최종 재체크
-                        // 정찰대 모드에서는 슬롯 초과를 허용하므로 스킵
                         bool isMajorSymbol = MajorSymbols.Contains(symbol);
                         int finalTotal = _activePositions.Count;
                         int finalMajorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
@@ -6938,30 +7088,27 @@ namespace TradingBot
                             return;
                         }
 
-                        // [3파 기반 익절/손절] ElliottWave 정보 적용
-                        // 임시 등록 (주문 실패 시 제거)
                         _activePositions[symbol] = new PositionInfo
                         {
                             Symbol = symbol,
-                            EntryPrice = currentPrice,
+                            EntryPrice = ctx.CurrentPrice,
                             IsLong = (decision == "LONG"),
                             Side = (decision == "LONG") ? OrderSide.Buy : OrderSide.Sell,
-                            IsPumpStrategy = !MajorSymbols.Contains(symbol), // 메이저가 아니면 PUMP 슬롯
-                            AiScore = aiScore,
-                            AiConfidencePercent = aiProbability > 0
-                                ? aiProbability * 100f
-                                : (aiScore > 0f && aiScore <= 1f ? aiScore * 100f : aiScore),
+                            IsPumpStrategy = ctx.IsPumpStrategy,
+                            AiScore = ctx.AiScore,
+                            AiConfidencePercent = ctx.AiProbability > 0
+                                ? ctx.AiProbability * 100f
+                                : (ctx.AiScore > 0f && ctx.AiScore <= 1f ? ctx.AiScore * 100f : ctx.AiScore),
                             Leverage = leverage,
-                            Quantity = 0,  // 주문 성공 후 업데이트
+                            Quantity = 0,
                             InitialQuantity = 0,
                             EntryTime = DateTime.Now,
-                            HighestPrice = currentPrice,
-                            LowestPrice = currentPrice,
-                            EntryBbPosition = entryBbPosition,
-                            EntryZoneTag = entryZoneTag,
-                            IsHybridMidBandLongEntry = isHybridMidBandLongEntry,
+                            HighestPrice = ctx.CurrentPrice,
+                            LowestPrice = ctx.CurrentPrice,
+                            EntryBbPosition = ctx.EntryBbPosition,
+                            EntryZoneTag = ctx.EntryZoneTag,
+                            IsHybridMidBandLongEntry = ctx.IsHybridMidBandLongEntry,
                             AggressiveMultiplier = positionSizeMultiplier,
-                            // [3파 기반 익절/손절]
                             Wave1LowPrice = waveState?.Phase1LowPrice ?? 0,
                             Wave1HighPrice = waveState?.Phase1HighPrice ?? 0,
                             Fib0618Level = waveState?.Fib0618Level ?? 0,
@@ -6969,15 +7116,15 @@ namespace TradingBot
                             Fib1618Target = waveState?.Fib1618Target ?? 0,
                             PartialProfitStage = 0,
                             BreakevenPrice = 0,
-                            TakeProfit = customTakeProfitPrice > 0 ? customTakeProfitPrice : 0,
-                            StopLoss = customStopLossPrice > 0 ? customStopLossPrice : 0
+                            TakeProfit = ctx.CustomTakeProfitPrice > 0 ? ctx.CustomTakeProfitPrice : 0,
+                            StopLoss = ctx.CustomStopLossPrice > 0 ? ctx.CustomStopLossPrice : 0
                         };
                     }
                 }
-                positionReserved = !isScoutAddOnOrder;
+                positionReserved = !ctx.IsScoutAddOnOrder;
 
-                // 4. 레버리지 및 마진 모드(격리) 설정
-                bool leverageSet = await _exchangeService.SetLeverageAsync(symbol, leverage, token);
+                // 레버리지 설정
+                bool leverageSet = await _exchangeService.SetLeverageAsync(symbol, leverage, token: ctx.Token);
                 if (!leverageSet)
                 {
                     CleanupReservedPosition("레버리지 설정 실패");
@@ -6986,18 +7133,18 @@ namespace TradingBot
                     return;
                 }
 
-                // [수익률 회귀] 예상 수익률 기반 동적 포지션 사이징 (차단 없이 사이즈 조절만)
-                if (_profitRegressor.IsModelReady && latestCandle != null)
+                // ProfitRegressor 사이징
+                if (_profitRegressor.IsModelReady && ctx.LatestCandle != null)
                 {
                     float? predicted = _profitRegressor.PredictProfit(
-                        latestCandle.RSI, latestCandle.BB_Width > 0 ? latestCandle.BB_Width / 100f : 0.5f,
-                        latestCandle.ATR, latestCandle.Volume_Ratio,
-                        latestCandle.Price_Change_Pct,
-                        _capturedBlendedScore, _capturedBlendedScore);
+                        ctx.LatestCandle.RSI, ctx.LatestCandle.BB_Width > 0 ? ctx.LatestCandle.BB_Width / 100f : 0.5f,
+                        ctx.LatestCandle.ATR, ctx.LatestCandle.Volume_Ratio,
+                        ctx.LatestCandle.Price_Change_Pct,
+                        ctx.BlendedMlTfScore, ctx.BlendedMlTfScore);
                     decimal multiplier = _profitRegressor.GetPositionMultiplier(predicted);
                     if (multiplier <= 0)
                     {
-                        multiplier = 0.5m; // 손실 예측이어도 최소 50% 사이즈로 진입 허용
+                        multiplier = 0.5m;
                         OnStatusLog?.Invoke($"⚠️ [ProfitRegressor] {symbol} 손실 예측 ({predicted:F2}%) → 50% 사이즈로 축소 진입");
                         EntryLog("PROFIT_REG", "WARN", $"predicted={predicted:F2}% reducedTo=50%");
                     }
@@ -7005,11 +7152,10 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"📊 [ProfitRegressor] {symbol} 예상수익={predicted:F2}% → 사이즈 {multiplier:P0} (${marginUsdt:N0})");
                 }
 
-                // 수량 계산: (증거금 * 레버리지) / 현재가
-                decimal quantity = (marginUsdt * leverage) / currentPrice;
+                // 수량 계산
+                decimal quantity = (marginUsdt * leverage) / ctx.CurrentPrice;
 
-                // 6. 거래소 규격(StepSize)에 맞게 수량 보정
-                var exchangeInfo = await _exchangeService.GetExchangeInfoAsync(token);
+                var exchangeInfo = await _exchangeService.GetExchangeInfoAsync(ctx.Token);
                 var symbolData = exchangeInfo?.Symbols.FirstOrDefault(s => s.Name == symbol);
                 if (symbolData != null)
                 {
@@ -7025,17 +7171,17 @@ namespace TradingBot
                     return;
                 }
 
-                // 7. 주문 실행 (시장가 주문으로 즉시 체결 - 슬리피지 검증 불필요)
+                // 주문 실행
                 var side = (decision == "LONG") ? "BUY" : "SELL";
 
-                OnStatusLog?.Invoke(TradingStateLogger.PlacingOrder(symbol, decision, currentPrice, quantity));
+                OnStatusLog?.Invoke(TradingStateLogger.PlacingOrder(symbol, decision, ctx.CurrentPrice, quantity));
                 EntryLog("ORDER", "SUBMIT", $"type=MARKET orderSide={side} qty={quantity}");
-                
+
                 var (success, filledQty, avgPrice) = await _exchangeService.PlaceMarketOrderAsync(
                     symbol,
                     side,
                     quantity,
-                    token);
+                    ctx.Token);
 
                 if (!success || filledQty <= 0)
                 {
@@ -7045,227 +7191,225 @@ namespace TradingBot
                     return;
                 }
 
-                var actualEntryPrice = avgPrice > 0 ? avgPrice : currentPrice;
+                var actualEntryPrice = avgPrice > 0 ? avgPrice : ctx.CurrentPrice;
 
-                    if (isMajorAtrEnforcedSignal)
+                // Major ATR 체결가 기준 손절 재보정
+                if (ctx.IsMajorAtrEnforced)
+                {
+                    var filledMajorStop = await TryCalculateMajorAtrHybridStopLossAsync(symbol, actualEntryPrice, decision == "LONG", ctx.Token);
+                    if (filledMajorStop.StopLossPrice > 0)
                     {
-                        var filledMajorStop = await TryCalculateMajorAtrHybridStopLossAsync(symbol, actualEntryPrice, decision == "LONG", token);
-                        if (filledMajorStop.StopLossPrice > 0)
-                        {
-                            customStopLossPrice = filledMajorStop.StopLossPrice;
-                            OnStatusLog?.Invoke(
-                                $"🛡️ [MAJOR ATR] {symbol} 체결가 기준 손절 재보정 | Entry={actualEntryPrice:F8}, SL={customStopLossPrice:F8}, ATRdist={filledMajorStop.AtrDistance:F8}, 구조선={filledMajorStop.StructureStopPrice:F8}");
-                        }
-                        else if (majorAtrPreview.StopLossPrice > 0)
-                        {
-                            customStopLossPrice = majorAtrPreview.StopLossPrice;
-                            OnStatusLog?.Invoke($"⚠️ [MAJOR ATR] {symbol} 체결가 기준 재계산 실패 → 진입 전 손절값 유지 | SL={customStopLossPrice:F8}");
-                        }
+                        ctx.CustomStopLossPrice = filledMajorStop.StopLossPrice;
+                        OnStatusLog?.Invoke(
+                            $"🛡️ [MAJOR ATR] {symbol} 체결가 기준 손절 재보정 | Entry={actualEntryPrice:F8}, SL={ctx.CustomStopLossPrice:F8}, ATRdist={filledMajorStop.AtrDistance:F8}, 구조선={filledMajorStop.StructureStopPrice:F8}");
                     }
-
-                    lock (_posLock)
+                    else if (ctx.MajorAtrPreview.StopLossPrice > 0)
                     {
-                        if (_activePositions.TryGetValue(symbol, out var pos))
+                        ctx.CustomStopLossPrice = ctx.MajorAtrPreview.StopLossPrice;
+                        OnStatusLog?.Invoke($"⚠️ [MAJOR ATR] {symbol} 체결가 기준 재계산 실패 → 진입 전 손절값 유지 | SL={ctx.CustomStopLossPrice:F8}");
+                    }
+                }
+
+                // 포지션 업데이트
+                lock (_posLock)
+                {
+                    if (_activePositions.TryGetValue(symbol, out var pos))
+                    {
+                        if (ctx.IsScoutAddOnOrder)
                         {
-                            if (isScoutAddOnOrder)
+                            decimal previousQty = pos.Quantity;
+                            decimal mergedQty = previousQty + filledQty;
+
+                            if (mergedQty > 0m && previousQty > 0m)
                             {
-                                decimal previousQty = pos.Quantity;
-                                decimal mergedQty = previousQty + filledQty;
-
-                                if (mergedQty > 0m && previousQty > 0m)
-                                {
-                                    pos.EntryPrice = ((pos.EntryPrice * previousQty) + (actualEntryPrice * filledQty)) / mergedQty;
-                                }
-                                else
-                                {
-                                    pos.EntryPrice = actualEntryPrice;
-                                }
-
-                                pos.Quantity = mergedQty;
-                                pos.InitialQuantity = pos.InitialQuantity > 0 ? pos.InitialQuantity : previousQty;
-                                pos.HighestPrice = Math.Max(pos.HighestPrice, actualEntryPrice);
-                                pos.LowestPrice = pos.LowestPrice > 0 ? Math.Min(pos.LowestPrice, actualEntryPrice) : actualEntryPrice;
-                                pos.PyramidCount = Math.Max(1, pos.PyramidCount + 1);
-                                pos.IsPyramided = true;
+                                pos.EntryPrice = ((pos.EntryPrice * previousQty) + (actualEntryPrice * filledQty)) / mergedQty;
                             }
                             else
                             {
-                                pos.Quantity = filledQty;
-                                pos.InitialQuantity = pos.InitialQuantity > 0 ? pos.InitialQuantity : filledQty;
                                 pos.EntryPrice = actualEntryPrice;
-                                pos.HighestPrice = actualEntryPrice;
-                                pos.LowestPrice = actualEntryPrice;
-                                pos.PyramidCount = 0;
-                                pos.IsPyramided = false;
                             }
 
-                            if (customStopLossPrice > 0)
-                                pos.StopLoss = customStopLossPrice;
-                            orderPlaced = true;
+                            pos.Quantity = mergedQty;
+                            pos.InitialQuantity = pos.InitialQuantity > 0 ? pos.InitialQuantity : previousQty;
+                            pos.HighestPrice = Math.Max(pos.HighestPrice, actualEntryPrice);
+                            pos.LowestPrice = pos.LowestPrice > 0 ? Math.Min(pos.LowestPrice, actualEntryPrice) : actualEntryPrice;
+                            pos.PyramidCount = Math.Max(1, pos.PyramidCount + 1);
+                            pos.IsPyramided = true;
                         }
-                    }
-
-                    if (!orderPlaced)
-                    {
-                        EntryLog("POSITION", "WARN", "postFillReservedPositionMissing=true");
-                    }
-
-                    EntryLog("ORDER", "FILLED", $"entryPrice={actualEntryPrice:F4} qty={filledQty}");
-                    _lastSuccessfulEntryTime = DateTime.Now; // [드라이스펠] 마지막 진입 성공 시각 갱신
-
-                    if (scoutModeActivated)
-                    {
-                        _scoutAddOnPendingSymbols[symbol] = DateTime.UtcNow;
-                    }
-                    else if (isScoutAddOnOrder)
-                    {
-                        _scoutAddOnPendingSymbols.TryRemove(symbol, out _);
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(aiGateDecisionId))
-                    {
-                        SetActiveAiDecisionId(symbol, aiGateDecisionId);
-                    }
-                    else
-                    {
-                        RemoveActiveAiDecisionId(symbol);
-                    }
-
-                    ScheduleAiDoubleCheckLabeling(symbol, actualEntryPrice, decision == "LONG", aiGateDecisionId, token);
-
-                    OnTradeExecuted?.Invoke(symbol, decision, actualEntryPrice, filledQty);
-                    
-                    // [NEW] 직관적인 진입 완료 로그
-                    decimal finalStopLoss = customStopLossPrice > 0 ? customStopLossPrice : 0;
-                    decimal finalTakeProfit = customTakeProfitPrice > 0 ? customTakeProfitPrice : 0;
-                    string entrySuccessMessage = TradingStateLogger.EntrySuccess(
-                        symbol, decision, actualEntryPrice,
-                        finalStopLoss, finalTakeProfit, signalSource);
-                    OnStatusLog?.Invoke(entrySuccessMessage);
-                    
-                    // [HybridExitManager 등록] AI 예측가 기반 익절 관리 시작
-                    if (finalTakeProfit > 0 && _hybridExitManager != null)
-                    {
-                        _hybridExitManager.RegisterEntry(symbol, decision, actualEntryPrice, finalTakeProfit);
-                        OnStatusLog?.Invoke($"📋 [Hybrid Exit] {symbol} 등록 | 목표가: ${finalTakeProfit:F2}, 손절: ${finalStopLoss:F2}");
-
-                        // [Smart Target + 진입 완료] 텔레그램 1건으로 통합 발송
-                        _ = Task.Run(async () =>
+                        else
                         {
-                            try
-                            {
-                                var kRes15 = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(
-                                    symbol, KlineInterval.FifteenMinutes, limit: 20);
-                                double smartAtr = 0;
-                                if (kRes15.Success && kRes15.Data?.Length >= 15)
-                                    smartAtr = IndicatorCalculator.CalculateATR(kRes15.Data.ToList(), 14);
+                            pos.Quantity = filledQty;
+                            pos.InitialQuantity = pos.InitialQuantity > 0 ? pos.InitialQuantity : filledQty;
+                            pos.EntryPrice = actualEntryPrice;
+                            pos.HighestPrice = actualEntryPrice;
+                            pos.LowestPrice = actualEntryPrice;
+                            pos.PyramidCount = 0;
+                            pos.IsPyramided = false;
+                        }
 
-                                bool isLongEntry = decision == "LONG";
-                                var (smartSL, smartTP, usedAtr) = HybridExitManager.ComputeSmartAtrTargets(
-                                    actualEntryPrice, isLongEntry, smartAtr);
-
-                                // HybridExitState에 Smart SL/TP 반영
-                                var exitState = _hybridExitManager?.GetState(symbol);
-                                if (exitState != null)
-                                {
-                                    exitState.InitialSL = smartSL;
-                                    exitState.InitialTP = smartTP;
-                                }
-
-                                await TelegramService.Instance.SendEntrySuccessAlertAsync(
-                                    symbol, decision, actualEntryPrice,
-                                    finalStopLoss, finalTakeProfit, signalSource,
-                                    marginUsdt, leverage,
-                                    smartSL, smartTP, usedAtr);
-                            }
-                            catch (Exception ex)
-                            {
-                                OnStatusLog?.Invoke($"⚠️ [SmartTarget] 계산 실패 [{symbol}]: {ex.Message} | 기본 진입 알림으로 대체");
-                                await TelegramService.Instance.SendEntrySuccessAlertAsync(
-                                    symbol, decision, actualEntryPrice,
-                                    finalStopLoss, finalTakeProfit, signalSource,
-                                    marginUsdt, leverage);
-                            }
-                        });
+                        if (ctx.CustomStopLossPrice > 0)
+                            pos.StopLoss = ctx.CustomStopLossPrice;
+                        orderPlaced = true;
                     }
-                    else
-                    {
-                        await TelegramService.Instance.SendEntrySuccessAlertAsync(
-                            symbol, decision, actualEntryPrice,
-                            finalStopLoss, finalTakeProfit, signalSource,
-                            marginUsdt, leverage);
-                    }
-                    
-                    OnAlert?.Invoke($"🤖 자동 매매 진입: {symbol} [{decision}] | 증거금: {marginUsdt}U");
-                    _soundService.PlaySuccess();
+                }
 
-                    // [추가] 진입 시 DB 로그 저장
-                    DateTime tradeEntryTime = DateTime.Now;
-                    lock (_posLock)
-                    {
-                        if (_activePositions.TryGetValue(symbol, out var trackedPos) && trackedPos.EntryTime != default)
-                            tradeEntryTime = trackedPos.EntryTime;
-                    }
+                if (!orderPlaced)
+                {
+                    EntryLog("POSITION", "WARN", "postFillReservedPositionMissing=true");
+                }
 
-                    var entryLog = new TradeLog(
-                        symbol, 
-                        side, 
-                        signalSource, 
-                        actualEntryPrice, 
-                        aiScore, 
-                        tradeEntryTime, 
-                        0,      // 진입 시점에는 손익 0
-                        0
-                    )
-                    {
-                        EntryPrice = actualEntryPrice,
-                        Quantity = filledQty,
-                        EntryTime = tradeEntryTime,
-                        IsSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false
-                    };
-                    try
-                    {
-                        await _dbManager.UpsertTradeEntryAsync(entryLog);
-                        OnStatusLog?.Invoke($"📝 {symbol} 진입 TradeHistory 저장 완료");
-                    }
-                    catch (Exception dbEx)
-                    {
-                        OnStatusLog?.Invoke($"⚠️ {symbol} 진입 로그 DB 저장 실패: {dbEx.Message}");
-                    }
+                EntryLog("ORDER", "FILLED", $"entryPrice={actualEntryPrice:F4} qty={filledQty}");
+                _lastSuccessfulEntryTime = DateTime.Now;
 
-                    if (patternSnapshot != null)
+                if (ctx.ScoutModeActivated)
+                {
+                    _scoutAddOnPendingSymbols[symbol] = DateTime.UtcNow;
+                }
+                else if (ctx.IsScoutAddOnOrder)
+                {
+                    _scoutAddOnPendingSymbols.TryRemove(symbol, out _);
+                }
+
+                if (!string.IsNullOrWhiteSpace(ctx.AiGateDecisionId))
+                {
+                    SetActiveAiDecisionId(symbol, ctx.AiGateDecisionId);
+                }
+                else
+                {
+                    RemoveActiveAiDecisionId(symbol);
+                }
+
+                ScheduleAiDoubleCheckLabeling(symbol, actualEntryPrice, decision == "LONG", ctx.AiGateDecisionId, ctx.Token);
+
+                OnTradeExecuted?.Invoke(symbol, decision, actualEntryPrice, filledQty);
+
+                decimal finalStopLoss = ctx.CustomStopLossPrice > 0 ? ctx.CustomStopLossPrice : 0;
+                decimal finalTakeProfit = ctx.CustomTakeProfitPrice > 0 ? ctx.CustomTakeProfitPrice : 0;
+                string entrySuccessMessage = TradingStateLogger.EntrySuccess(
+                    symbol, decision, actualEntryPrice,
+                    finalStopLoss, finalTakeProfit, ctx.SignalSource);
+                OnStatusLog?.Invoke(entrySuccessMessage);
+
+                // HybridExitManager 등록
+                if (finalTakeProfit > 0 && _hybridExitManager != null)
+                {
+                    _hybridExitManager.RegisterEntry(symbol, decision, actualEntryPrice, finalTakeProfit);
+                    OnStatusLog?.Invoke($"📋 [Hybrid Exit] {symbol} 등록 | 목표가: ${finalTakeProfit:F2}, 손절: ${finalStopLoss:F2}");
+
+                    _ = Task.Run(async () =>
                     {
                         try
                         {
-                            await _patternMemoryService.SaveEntrySnapshotAsync(patternSnapshot, actualEntryPrice, tradeEntryTime, signalSource);
+                            var kRes15 = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(
+                                symbol, KlineInterval.FifteenMinutes, limit: 20);
+                            double smartAtr = 0;
+                            if (kRes15.Success && kRes15.Data?.Length >= 15)
+                                smartAtr = IndicatorCalculator.CalculateATR(kRes15.Data.ToList(), 14);
+
+                            bool isLongEntry = decision == "LONG";
+                            var (smartSL, smartTP, usedAtr) = HybridExitManager.ComputeSmartAtrTargets(
+                                actualEntryPrice, isLongEntry, smartAtr);
+
+                            var exitState = _hybridExitManager?.GetState(symbol);
+                            if (exitState != null)
+                            {
+                                exitState.InitialSL = smartSL;
+                                exitState.InitialTP = smartTP;
+                            }
+
+                            await TelegramService.Instance.SendEntrySuccessAlertAsync(
+                                symbol, decision, actualEntryPrice,
+                                finalStopLoss, finalTakeProfit, ctx.SignalSource,
+                                marginUsdt, leverage,
+                                smartSL, smartTP, usedAtr);
                         }
-                        catch (Exception patternEx)
+                        catch (Exception ex)
                         {
-                            OnStatusLog?.Invoke($"⚠️ {symbol} 패턴 스냅샷 저장 실패: {patternEx.Message}");
+                            OnStatusLog?.Invoke($"⚠️ [SmartTarget] 계산 실패 [{symbol}]: {ex.Message} | 기본 진입 알림으로 대체");
+                            await TelegramService.Instance.SendEntrySuccessAlertAsync(
+                                symbol, decision, actualEntryPrice,
+                                finalStopLoss, finalTakeProfit, ctx.SignalSource,
+                                marginUsdt, leverage);
                         }
-                    }
+                    });
+                }
+                else
+                {
+                    await TelegramService.Instance.SendEntrySuccessAlertAsync(
+                        symbol, decision, actualEntryPrice,
+                        finalStopLoss, finalTakeProfit, ctx.SignalSource,
+                        marginUsdt, leverage);
+                }
 
-                    // 🔥 [핵심] 감시 루프 시작 (PUMP/표준 분기)
-                    bool isPumpPosition = false;
-                    lock (_posLock)
-                    {
-                        if (_activePositions.TryGetValue(symbol, out var activePos))
-                            isPumpPosition = activePos.IsPumpStrategy;
-                    }
+                OnAlert?.Invoke($"🤖 자동 매매 진입: {symbol} [{decision}] | 증거금: {marginUsdt}U");
+                _soundService.PlaySuccess();
 
-                    if (isPumpPosition)
+                // DB 로그 저장
+                DateTime tradeEntryTime = DateTime.Now;
+                lock (_posLock)
+                {
+                    if (_activePositions.TryGetValue(symbol, out var trackedPos) && trackedPos.EntryTime != default)
+                        tradeEntryTime = trackedPos.EntryTime;
+                }
+
+                var entryLog = new TradeLog(
+                    symbol,
+                    side,
+                    ctx.SignalSource,
+                    actualEntryPrice,
+                    ctx.AiScore,
+                    tradeEntryTime,
+                    0,
+                    0
+                )
+                {
+                    EntryPrice = actualEntryPrice,
+                    Quantity = filledQty,
+                    EntryTime = tradeEntryTime,
+                    IsSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false
+                };
+                try
+                {
+                    await _dbManager.UpsertTradeEntryAsync(entryLog);
+                    OnStatusLog?.Invoke($"📝 {symbol} 진입 TradeHistory 저장 완료");
+                }
+                catch (Exception dbEx)
+                {
+                    OnStatusLog?.Invoke($"⚠️ {symbol} 진입 로그 DB 저장 실패: {dbEx.Message}");
+                }
+
+                if (ctx.PatternSnapshot != null)
+                {
+                    try
                     {
-                        double pumpAtr = latestCandle != null ? Math.Max(0d, latestCandle.ATR) : 0d;
-                        TryStartPumpMonitor(symbol, actualEntryPrice, signalSource, pumpAtr, token, "new-entry");
+                        await _patternMemoryService.SaveEntrySnapshotAsync(ctx.PatternSnapshot, actualEntryPrice, tradeEntryTime, ctx.SignalSource);
                     }
-                    else
+                    catch (Exception patternEx)
                     {
-                        TryStartStandardMonitor(symbol, actualEntryPrice, decision == "LONG", mode, customTakeProfitPrice, customStopLossPrice, token, "new-entry");
+                        OnStatusLog?.Invoke($"⚠️ {symbol} 패턴 스냅샷 저장 실패: {patternEx.Message}");
                     }
+                }
+
+                // 감시 루프 시작
+                bool isPumpPosition = false;
+                lock (_posLock)
+                {
+                    if (_activePositions.TryGetValue(symbol, out var activePos))
+                        isPumpPosition = activePos.IsPumpStrategy;
+                }
+
+                if (isPumpPosition)
+                {
+                    double pumpAtr = ctx.LatestCandle != null ? Math.Max(0d, ctx.LatestCandle.ATR) : 0d;
+                    TryStartPumpMonitor(symbol, actualEntryPrice, ctx.SignalSource, pumpAtr, ctx.Token, "new-entry");
+                }
+                else
+                {
+                    TryStartStandardMonitor(symbol, actualEntryPrice, decision == "LONG", ctx.Mode, ctx.CustomTakeProfitPrice, ctx.CustomStopLossPrice, ctx.Token, "new-entry");
+                }
             }
             catch (TaskCanceledException tcEx)
             {
-                // 타임아웃 발생 (TaskCanceledException은 OperationCanceledException의 상위 클래스)
                 CleanupReservedPosition($"진입 작업 타임아웃");
                 OnStatusLog?.Invoke($"⏱️ {symbol} 진입 작업 타임아웃 (30초 초과) → 작업 취소");
                 OnLiveLog?.Invoke($"🧭 [ENTRY][TIMEOUT] sym={symbol} side={decision} | timeout=30s | detail={tcEx.Message}");
@@ -7273,14 +7417,12 @@ namespace TradingBot
             }
             catch (OperationCanceledException)
             {
-                // 봇 정지 신호로 인한 캔슬 (정상 종료)
                 CleanupReservedPosition($"봇 정지 신호로 인해 진입 캔슬됨");
                 OnStatusLog?.Invoke($"⏹️ {symbol} 진입 진행 중 봇 정지 신호 수신 → 작업 취소");
                 EntryLog("ENTRY", "CANCELED", "bot-stop-signal");
             }
             catch (Exception ex) when (ex.GetType().Name == "HttpRequestException")
             {
-                // 거래소 API 연결 오류
                 CleanupReservedPosition($"거래소 API 연결 오류");
                 OnStatusLog?.Invoke($"🌐 {symbol} 거래소 API 연결 오류 → 재시도 예정");
                 OnLiveLog?.Invoke($"🧭 [ENTRY][API_ERROR] sym={symbol} side={decision} | detail={ex.Message}");

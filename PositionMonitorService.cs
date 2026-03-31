@@ -1324,37 +1324,9 @@ namespace TradingBot.Services
                         }
                     }
 
-                    // ═══════════════════════════════════════════════
-                    // [펀딩비 누적 모니터링] 2시간 초과 포지션 실질ROE 계산
-                    // 펀딩비(ROE기준) = (보유시간/8h) × 기본비율(0.01%/8h) × 레버리지 × 100
-                    // ═══════════════════════════════════════════════
-                    if (holdingTime.TotalMinutes >= FundingMonitorStartMinutes)
-                    {
-                        decimal estimatedFundingROECost = (decimal)(holdingTime.TotalHours / 8.0) * FundingRatePer8H * leverage * 100m;
-                        decimal fundingAdjustedROE = currentROE - estimatedFundingROECost;
-
-                        // 트레일링 미진입 + 실질ROE < 3% → 펀딩비가 수익 잠식, 청산
-                        if (!tightTrailingActivated && fundingAdjustedROE < FundingExitAdjROEThreshold)
-                        {
-                            OnLog?.Invoke($"💸 [{symbol}] 펀딩비 누적 청산: 보유 {holdingTime.TotalMinutes:F0}분 | 추정누적={estimatedFundingROECost:F2}% | 현재ROE={currentROE:F2}% → 실질ROE={fundingAdjustedROE:F2}% < {FundingExitAdjROEThreshold}% → 청산");
-                            await ExecuteMarketClose(symbol, $"FundingCost Exit ({holdingTime.TotalMinutes:F0}m, adjROE={fundingAdjustedROE:F2}%)", token);
-                            break;
-                        }
-
-                        // 30분마다 펀딩비 현황 로그
-                        if (fundingCostLastLogTime == null || (DateTime.Now - fundingCostLastLogTime.Value).TotalMinutes >= 30)
-                        {
-                            OnLog?.Invoke($"💸 {symbol} 펀딩비 추적 | 보유 {holdingTime.TotalMinutes:F0}분 | 누적추정={estimatedFundingROECost:F2}% ROE | 실질ROE={fundingAdjustedROE:F2}%");
-                            fundingCostLastLogTime = DateTime.Now;
-                        }
-                    }
-
-                    if (holdingTime.TotalMinutes >= maxHoldingMinutes && currentROE < timeoutExitRoeThreshold)
-                    {
-                        OnLog?.Invoke($"⏳ [시간 초과 종료] {symbol} {holdingTime.TotalMinutes:F0}분 경과 | 현재ROE={currentROE:F2}% < {timeoutExitRoeThreshold:F2}% → 추세 소멸로 포지션 정리");
-                        await ExecuteMarketClose(symbol, $"TimeOut Exit ({holdingTime.TotalMinutes:F0}m, ROE {currentROE:F2}%)", token);
-                        break;
-                    }
+                    // [v3.0.7] FundingCost Exit / TimeOut Exit 제거
+                    // 단타에서 펀딩비(2시간)는 무의미, 메이저코인 시간초과 청산도 불필요
+                    // 손절/익절/트레일링 스탑이 포지션 관리를 담당
 
                     if (currentROE >= profitRunTriggerRoe)
                     {
@@ -3176,6 +3148,10 @@ namespace TradingBot.Services
                     OnAlert?.Invoke($"ℹ️ {symbol} 부분청산 주문이 전량 체결되어 포지션 종료 처리됨");
                     CleanupPositionData(symbol);
                     OnLog?.Invoke($"✅ {symbol} 부분청산 주문 전량 체결: 청산={currentQty}, 잔여=0, PnL={pnl:F2}, ROE={pnlPercent:F2}%");
+
+                    // [텔레그램] 부분청산→전량 체결 알림
+                    decimal totalPnlFull = _riskManager?.DailyRealizedPnl ?? 0m;
+                    _ = NotificationService.Instance.NotifyProfitAsync(symbol, pnl, pnlPercent, totalPnlFull);
                     return;
                 }
 
@@ -3218,6 +3194,26 @@ namespace TradingBot.Services
 
                 OnLog?.Invoke($"✅ {symbol} 부분청산 완료: 청산={actualClosedQty}, 잔여={remainingQty}, PnL={pnl:F2}, ROE={pnlPercent:F2}%");
                 OnPositionStatusUpdate?.Invoke(symbol, remainingQty > 0, 0);
+
+                // [텔레그램] 부분청산 알림
+                decimal totalPnlPartial = _riskManager?.DailyRealizedPnl ?? 0m;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        string pnlEmoji = pnl >= 0 ? "💰" : "📉";
+                        string direction = localPosition.IsLong ? "LONG" : "SHORT";
+                        await TelegramService.Instance.SendMessageAsync(
+                            $"{pnlEmoji} *[부분청산]*\n" +
+                            $"`{symbol}` {direction} | 청산 {ratio:P0}\n" +
+                            $"청산수량: `{actualClosedQty}` | 잔여: `{remainingQty}`\n" +
+                            $"PnL: `{pnl:F2}` USDT ({pnlPercent:+0.0;-0.0}%)\n" +
+                            $"일일 총 PnL: `{totalPnlPartial:F2}` USDT\n" +
+                            $"⏰ {DateTime.Now:HH:mm:ss}",
+                            TelegramMessageType.Profit);
+                    }
+                    catch { /* 텔레그램 실패 무시 */ }
+                });
             }
             catch (Exception ex)
             {

@@ -15,6 +15,21 @@
 
  - 없음
 
+## [3.0.8] - 2026-04-01
+
+### Changed
+
+- **ExecuteAutoOrder 리팩토링**: 1540줄 단일 메서드 → 6개 분리
+  - `ExecuteAutoOrder()`: 라우터 (공통 검증 → 4개 분기)
+  - `ExecuteMajorLongEntry()`: 메이저 롱 (ATR SL, EMA/스퀴즈 보너스)
+  - `ExecuteMajorShortEntry()`: 메이저 숏 (RSI 과매도만 차단)
+  - `ExecutePumpLongEntry()`: PUMP 롱 (고정 증거금)
+  - `ExecutePumpShortEntry()`: PUMP 숏 (RSI 과매도만 차단)
+  - `PlaceAndTrackEntryAsync()`: 공통 주문 실행 (레버리지/수량/주문/DB/텔레그램)
+- **사이즈 축소 중첩 제거**: 5개 AI Advisor가 Math.Min 연쇄 → 최저값 1개만 선택, 최소 10% 하한
+- **FundingCost Exit / TimeOut Exit 제거**: 단타에서 무의미한 청산 사유 삭제
+- **부분청산 텔레그램 알림 추가**: TP1/TP2 부분익절 시 텔레그램 전송
+
 ## [3.0.7] - 2026-03-31
 
 ### Added
