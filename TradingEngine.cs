@@ -5962,76 +5962,26 @@ namespace TradingBot
                     }
                 });
 
+                // [AI Advisor v1] 차단 없음 — blended score 기반 사이즈 동적 조절
                 if (!gateResult.allowEntry)
                 {
-                    bool isLowVolumeViolation = gateResult.reason.Contains("Rule_Violation_Low_Volume_Ratio", StringComparison.OrdinalIgnoreCase)
-                        || gateResult.reason.Contains("RuleViolationLowVolumeRatio", StringComparison.OrdinalIgnoreCase)
-                        || gateResult.reason.Contains("Low_Volume_Ratio", StringComparison.OrdinalIgnoreCase);
-
-                    bool canScoutBypass = coinType == CoinType.Major
-                        && decision == "LONG"
-                        && isLowVolumeViolation
-                        && gateResult.detail.TF_Confidence >= 0.90f
-                        && isBbCenterSupport
-                        && blendedMlTfScore >= 0.80f;
-
-                    bool isHSPatternBypass = false;
-                    string hsBypassReason = "";
-
-                    if (decision == "SHORT" && hsResult.IsDetected && hsResult.PatternType == "H&S" && gateResult.detail.TF_Confidence >= 0.90f)
+                    // AI 거부 시: blended score에 비례하여 사이즈 축소 (차단 없음)
+                    decimal aiSizeMultiplier = blendedMlTfScore switch
                     {
-                        isHSPatternBypass = true;
-                        hsBypassReason = "HSPattern_Short_TF90";
-                    }
-                    else if (decision == "LONG" && hsResult.IsDetected && hsResult.PatternType == "InverseH&S")
-                    {
-                        isHSPatternBypass = true;
-                        hsBypassReason = "InverseHSPattern_Long";
-                    }
+                        >= 0.90f => 1.00m,  // 90%+ : 풀 사이즈
+                        >= 0.80f => 0.50m,  // 80%+ : 50%
+                        >= 0.70f => 0.30m,  // 70%+ : 30%
+                        >= 0.50f => 0.20m,  // 50%+ : 20%
+                        _        => 0.10m   // 50% 미만: 최소 10% 정찰대
+                    };
 
-                    // TF 90% 전역 오버라이드: AI게이트 거부여도 TF≥90% → 20% 정찰 진입
-                    bool isTf90Override = gateResult.detail.TF_Confidence >= 0.90f
-                        && !canScoutBypass   // 이미 canScoutBypass 처리된 경우 중복 방지
-                        && !isHSPatternBypass;
-
-                    // [정찰대 v2] AI 신뢰도 70%+면 무조건 정찰대 투입
-                    // 100% 완벽한 타점은 지나고 나서야 보임 → 일단 발 담가야 3파를 놓치지 않음
-                    bool isScoutConfidenceBypass = blendedMlTfScore >= 0.70f
-                        && !canScoutBypass && !isHSPatternBypass && !isTf90Override;
-
-                    // [정찰대 v3] 시뮬레이션 모드: AI 게이트 거부 시에도 최소 정찰대 투입
-                    bool isSimulationScout = AppConfig.Current?.Trading?.IsSimulationMode == true
-                        && blendedMlTfScore >= 0.50f;
-
-                    if (!canScoutBypass && !isHSPatternBypass && !isTf90Override && !isScoutConfidenceBypass && !isSimulationScout)
-                    {
-                        EntryLog("AI_GATE", "BLOCK", $"allBypassFailed blended={blendedMlTfScore:P0} tf={gateResult.detail.TF_Confidence:P0} ml={gateResult.detail.ML_Confidence:P0}");
-                        return;
-                    }
-
-                    scoutModeActivated = true;
-                    // [정찰대 v3] 시드 10~20% 투입 (AI 신뢰도별 동적 배분)
-                    decimal scoutMultiplier = isHSPatternBypass      ? 1.0m
-                                           : isTf90Override          ? 0.20m
-                                           : isScoutConfidenceBypass ? (blendedMlTfScore >= 0.80f ? 0.20m : 0.10m)
-                                           : isSimulationScout      ? 0.10m
-                                           :                           0.30m;
-                    manualSizeMultiplier = Math.Min(manualSizeMultiplier, scoutMultiplier);
-                    string scoutTag = isHSPatternBypass      ? $"SCOUT_{hsBypassReason}"
-                                    : isTf90Override         ? "SCOUT_TF90"
-                                    : isScoutConfidenceBypass ? "SCOUT_AI70"
-                                    :                          "SCOUT";
-                    signalSource = $"{signalSource}_{scoutTag}";
+                    manualSizeMultiplier = Math.Min(manualSizeMultiplier, aiSizeMultiplier);
+                    signalSource = $"{signalSource}_AI_ADVISOR_{aiSizeMultiplier:P0}";
                     flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
 
-                    string deployReason = isScoutConfidenceBypass
-                        ? $"reason=AI70_ScoutDeploy blended={blendedMlTfScore:P0} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.TF_Confidence:P0} size={scoutMultiplier:P0} gate={gateResult.reason}"
-                        : isTf90Override
-                        ? $"reason=TF90_Override tf={gateResult.detail.TF_Confidence:P0} ml={gateResult.detail.ML_Confidence:P0} blended={blendedMlTfScore:P0} size={scoutMultiplier:P0} gate={gateResult.reason}"
-                        : $"reason=TF90+_BBMidSupport_LowVolumeBypass tf={gateResult.detail.TF_Confidence:P0} ml={gateResult.detail.ML_Confidence:P0} blended={blendedMlTfScore:P0} size={scoutMultiplier:P0}";
-
-                    EntryLog("SCOUT", "DEPLOY", deployReason);
-                    OnAlert?.Invoke($"🛰️ SCOUT UNIT DEPLOYED ({symbol} {decision}) TF {gateResult.detail.TF_Confidence:P0} · size {scoutMultiplier:P0}{(isTf90Override ? " [TF90 Override]" : "")}");
+                    EntryLog("AI_GATE", "ADVISOR",
+                        $"notBlocking blended={blendedMlTfScore:P0} tf={gateResult.detail.TF_Confidence:P0} ml={gateResult.detail.ML_Confidence:P0} size={aiSizeMultiplier:P0} gate={gateResult.reason}");
+                    OnStatusLog?.Invoke($"🧠 [AI Advisor] {symbol} {decision} | blended={blendedMlTfScore:P0} → 사이즈 {aiSizeMultiplier:P0} | {gateResult.reason}");
                 }
 
                 if (!scoutModeActivated
@@ -6449,12 +6399,19 @@ namespace TradingBot
                 if (averageAtr > 0)
                 {
                     double atrRatio = currentAtr / averageAtr;
+                    // [AI Advisor] ATR 변동성 → 사이즈 축소 (차단 없음)
                     if (atrRatio > (double)_atrVolatilityBlockRatio)
                     {
-                        string reason = $"ATR비율={atrRatio:F2}x > {_atrVolatilityBlockRatio:F2}x 흔들기 구간";
-                        OnStatusLog?.Invoke(TradingStateLogger.RejectedByRiskManagement(symbol, decision, reason));
-                        EntryLog("ATR_VOL", "BLOCK", reason);
-                        return;
+                        decimal atrMultiplier = 0.20m; // 극단 변동성: 20% 사이즈
+                        manualSizeMultiplier = Math.Min(manualSizeMultiplier, atrMultiplier);
+                        EntryLog("ATR_VOL", "ADVISOR", $"atrRatio={atrRatio:F2}x>{_atrVolatilityBlockRatio:F2}x size={atrMultiplier:P0}");
+                        OnStatusLog?.Invoke($"⚡ [ATR Advisor] {symbol} 변동성 폭발 (ATR={atrRatio:F2}x) → 사이즈 {atrMultiplier:P0}로 축소");
+                    }
+                    else if (atrRatio > 2.0)
+                    {
+                        decimal atrMultiplier = 0.50m; // 높은 변동성: 50% 사이즈
+                        manualSizeMultiplier = Math.Min(manualSizeMultiplier, atrMultiplier);
+                        EntryLog("ATR_VOL", "ADVISOR", $"atrRatio={atrRatio:F2}x>2.0 size={atrMultiplier:P0}");
                     }
                     else if (atrRatio > 1.5)
                     {
@@ -6668,7 +6625,7 @@ namespace TradingBot
                         EntryLog("MAJOR_SNIPER", "PASS", $"score={finalAiScore:F1} m15Slope={slope:F4}");
                     }
                     
-                    // AI 점수 필터 체크
+                    // [AI Advisor] AI 점수 기반 사이즈 동적 조절 (차단 없음)
                     if (_enableAiScoreFilter)
                     {
                         var (adaptiveMajorThreshold, adaptiveNormalThreshold, adaptivePumpThreshold, adaptiveMode) = GetAdaptiveAiScoreThresholds(signalSource);
@@ -6679,60 +6636,26 @@ namespace TradingBot
                             _ => adaptiveNormalThreshold
                         };
                         adjustedThreshold = Math.Max(adjustedThreshold, symbolThreshold.EntryScoreCut);
-                        adjustedThreshold = Math.Max(adjustedThreshold, symbolThreshold.AiConfidenceMin * 100f);
-                        if (majorLowVolumePrivilege)
-                        {
-                            adjustedThreshold = Math.Min(adjustedThreshold, Math.Max(adaptiveMajorThreshold, symbolThreshold.EntryScoreCut));
-                        }
 
-                        if (!string.Equals(adaptiveMode, "normal", StringComparison.OrdinalIgnoreCase))
+                        if (finalAiScore < adjustedThreshold)
                         {
-                            EntryLog("AI_TUNE", "INFO", $"mode={adaptiveMode} threshold={adjustedThreshold:F1}");
+                            // AI 스코어 부족 → 사이즈 축소 (차단 아님)
+                            float scoreRatio = adjustedThreshold > 0 ? finalAiScore / adjustedThreshold : 0.5f;
+                            decimal aiScoreMultiplier = scoreRatio switch
+                            {
+                                >= 0.90f => 0.80m,  // 거의 달성: 80%
+                                >= 0.70f => 0.50m,  // 근접: 50%
+                                >= 0.50f => 0.30m,  // 부족: 30%
+                                _        => 0.15m   // 매우 부족: 15%
+                            };
+                            manualSizeMultiplier = Math.Min(manualSizeMultiplier, aiScoreMultiplier);
+                            EntryLog("AI", "ADVISOR", $"score={finalAiScore:F1}<{adjustedThreshold:F1} ratio={scoreRatio:P0} size={aiScoreMultiplier:P0}");
+                            OnStatusLog?.Invoke($"🧠 [AI Advisor] {symbol} {decision} | score={finalAiScore:F1}/{adjustedThreshold:F1} → 사이즈 {aiScoreMultiplier:P0}");
                         }
-                        
-                        if (decision == "LONG" && finalAiScore < adjustedThreshold && !majorLowVolumePrivilege)
+                        else
                         {
-                            // [개선] 구체적인 필터 실패 이유 표시
-                            var failReasons = new List<string>();
-                            
-                            if (baseAiScore < adjustedThreshold)
-                                failReasons.Add($"AI 확률 부족({baseAiScore:F1}<{adjustedThreshold})");
-                            
-                            if (!isMajorCoin && latestCandle.Volume_Ratio < 1.0f)
-                                failReasons.Add($"거래량 부족({latestCandle.Volume_Ratio:F2}x)");
-                            
-                            if (latestCandle.RSI < 40f)
-                                failReasons.Add($"RSI 과매도({latestCandle.RSI:F1})");
-                            
-                            if (latestCandle.MACD < 0)
-                                failReasons.Add($"MACD 음수({latestCandle.MACD:F4})");
-                            
-                            if (!(latestCandle.SMA_20 > latestCandle.SMA_60))
-                                failReasons.Add("중기 정배열 실패(MA20<MA60)");
-                            
-                            if (latestCandle.OI_Change_Pct < 0)
-                                failReasons.Add($"OI 감소({latestCandle.OI_Change_Pct:F2}%)");
-                            
-                            string reasonText = failReasons.Count > 0 ? string.Join(", ", failReasons) : "복합 조건 미달";
-                            OnStatusLog?.Invoke($"🤖 {symbol} AI 필터 차단 | 점수: {baseAiScore:F1}+{bonusPoints:F0}={finalAiScore:F1}<{adjustedThreshold} | 사유: {reasonText}");
-                            EntryLog("AI", "BLOCK", $"score={finalAiScore:F1} threshold={adjustedThreshold:F1} reason={reasonText}");
-                            return;
+                            EntryLog("AI", "PASS", $"score={finalAiScore:F1}>={adjustedThreshold:F1}");
                         }
-                        
-                        // 진입 승인 로그
-                        if (decision == "LONG")
-                        {
-                            if (majorLowVolumePrivilege && finalAiScore < adjustedThreshold)
-                                EntryLog("AI", "PASS", $"lowVolumePrivilege=true score={finalAiScore:F1} threshold={adjustedThreshold:F1}");
-                            else
-                                EntryLog("AI", "PASS", $"score={finalAiScore:F1} threshold={adjustedThreshold:F1}");
-                        }
-                    }
-                    else
-                    {
-                        // AI 점수 필터 비활성화 시 통과 로그
-                        if (decision == "LONG")
-                            EntryLog("AI", "PASS", $"filterDisabled=true score={finalAiScore:F1}");
                     }
 
                     // 숏 진입: RSI 과매도 추격만 차단 (나머지는 AI 스코어에 위임)

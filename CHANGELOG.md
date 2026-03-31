@@ -15,6 +15,23 @@
 
  - 없음
 
+## [3.0.6] - 2026-03-31
+
+### Changed
+
+- **AI Advisor 전환**: AI를 게이트키퍼(차단자)에서 어드바이저(조언자)로 전면 리팩토링
+  - `AI_GATE`: 거부 시 차단 → blended score 기반 사이즈 동적 조절 (90%+→풀, 50%→20%, <50%→10%)
+  - `AI Score Filter`: 점수 미달 차단 → score/threshold 비율로 사이즈 축소 (70%+→50%, 50%+→30%)
+  - `ATR_VOL`: 변동성 폭발 차단 → 사이즈 축소 (극단→20%, 높음→50%)
+  - ProfitRegressor: 손실 예측 차단 → 50% 축소 진입 (v3.0.4에서 적용)
+- **하드 블록 추가 축소**: 17개 → 11개 (필수 안전장치만 유지)
+
+### Retained (필수 하드 블록)
+
+- Signal Validation, RSI Extreme (88/12), Circuit Breaker, R:R Ratio
+- Blacklist, Slot Cooldown, Duplicate Position, Slot Limit
+- Leverage/Size/Order Execution 실패
+
 ## [3.0.5] - 2026-03-31
 
 ### Fixed
