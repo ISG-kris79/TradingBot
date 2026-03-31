@@ -6735,35 +6735,24 @@ namespace TradingBot
                             EntryLog("AI", "PASS", $"filterDisabled=true score={finalAiScore:F1}");
                     }
 
-                    // 숏 진입은 더 엄격하게 필터링 (하락 예측 + 충분한 확률 + 과매도 추격 방지)
+                    // 숏 진입: RSI 과매도 추격만 차단 (나머지는 AI 스코어에 위임)
                     if (decision == "SHORT")
                     {
-                        var shortFailReasons = new List<string>();
-                        
-                        if (prediction.Prediction)
-                            shortFailReasons.Add("AI가 상승 예측");
-                        
-                        if (prediction.Probability < 0.60f)
-                            shortFailReasons.Add($"하락 확률 부족({prediction.Probability:P1}<60%)");
-                        
-                        // RSI 과매도 차단: 가격이 MA20 위일 때만 (추세 없는 역추세 매도 방지)
-                        // 가격이 MA20 아래 (하락 추세) + RSI 과매도는 추세 추종이므로 허용
                         bool shortPriceAboveMa20 = latestCandle.Close >= (decimal)latestCandle.SMA_20;
                         if (latestCandle.RSI <= _shortRsiExhaustionFloor && shortPriceAboveMa20)
-                            shortFailReasons.Add($"RSI 과매도({latestCandle.RSI:F1}≤{_shortRsiExhaustionFloor:F1}) + 가격 MA20 위 = 추세 없는 역매도");
-
-                        if (latestCandle.MACD > 0)
-                            shortFailReasons.Add($"MACD 양수({latestCandle.MACD:F4})");
-
-                        // 가격이 MA20 하회 = 하락 추세 확인 → SHORT에 유리, 차단 제거
-                        // (기존: "가격이 MA20 하회 → 추세 약세 추격 위험" 으로 차단 — 역방향 필터 오류)
-                        
-                        if (shortFailReasons.Count > 0)
                         {
-                            string shortReasonText = string.Join(", ", shortFailReasons);
-                            EntryLog("AI", "BLOCK", $"shortFilter reason={shortReasonText}");
+                            EntryLog("AI", "BLOCK", $"shortFilter reason=RSI 과매도({latestCandle.RSI:F1}≤{_shortRsiExhaustionFloor:F1}) + 가격 MA20 위");
                             return;
                         }
+
+                        // 참고 로그만 (차단 없음)
+                        var shortInfos = new List<string>();
+                        if (prediction.Prediction)
+                            shortInfos.Add($"AI상승예측");
+                        if (latestCandle.MACD > 0)
+                            shortInfos.Add($"MACD양수({latestCandle.MACD:F4})");
+                        if (shortInfos.Count > 0)
+                            EntryLog("AI", "INFO", $"shortRef={string.Join(",", shortInfos)} (not blocking)");
                     }
                 }
             }
