@@ -5999,16 +5999,22 @@ namespace TradingBot
                     bool isScoutConfidenceBypass = blendedMlTfScore >= 0.70f
                         && !canScoutBypass && !isHSPatternBypass && !isTf90Override;
 
-                    if (!canScoutBypass && !isHSPatternBypass && !isTf90Override && !isScoutConfidenceBypass)
+                    // [정찰대 v3] 시뮬레이션 모드: AI 게이트 거부 시에도 최소 정찰대 투입
+                    bool isSimulationScout = AppConfig.Current?.Trading?.IsSimulationMode == true
+                        && blendedMlTfScore >= 0.50f;
+
+                    if (!canScoutBypass && !isHSPatternBypass && !isTf90Override && !isScoutConfidenceBypass && !isSimulationScout)
                     {
+                        EntryLog("AI_GATE", "BLOCK", $"allBypassFailed blended={blendedMlTfScore:P0} tf={gateResult.detail.TF_Confidence:P0} ml={gateResult.detail.ML_Confidence:P0}");
                         return;
                     }
 
                     scoutModeActivated = true;
-                    // [정찰대 v2] 시드 10~20% 투입 (AI 신뢰도별 동적 배분)
+                    // [정찰대 v3] 시드 10~20% 투입 (AI 신뢰도별 동적 배분)
                     decimal scoutMultiplier = isHSPatternBypass      ? 1.0m
                                            : isTf90Override          ? 0.20m
                                            : isScoutConfidenceBypass ? (blendedMlTfScore >= 0.80f ? 0.20m : 0.10m)
+                                           : isSimulationScout      ? 0.10m
                                            :                           0.30m;
                     manualSizeMultiplier = Math.Min(manualSizeMultiplier, scoutMultiplier);
                     string scoutTag = isHSPatternBypass      ? $"SCOUT_{hsBypassReason}"
@@ -6142,48 +6148,8 @@ namespace TradingBot
             //   → 15분봉 '흐름' 확인 후 1분봉 '채찍'(거래량 실린 양봉)으로 즉시 진입
             //   → 진입 지연 30분 → 1분 이내로 단축
             // ═══════════════════════════════════════════════════════════════
-            if (_executionHub != null)
-            {
-                float hubConfidence = _capturedBlendedScore; // AI 게이트에서 캡처한 블렌디드 점수
-
-                // 시나리오 컨텍스트 평가 (양방향 AI 공략)
-                ScenarioContext? scenarioCtx = null;
-                if (_scenarioEngine != null)
-                {
-                    ScenarioResult scenarioResult = decision == "LONG"
-                        ? await _scenarioEngine.EvaluateLongScenarioAsync(symbol, token)
-                        : await _scenarioEngine.EvaluateShortScenarioAsync(symbol, token);
-
-                    if (scenarioResult.IsActive)
-                    {
-                        scenarioCtx = new ScenarioContext
-                        {
-                            Direction     = decision,
-                            NecklinePrice = scenarioResult.NecklinePrice,
-                            WaveTarget    = scenarioResult.WaveTarget
-                        };
-                        EntryLog("SCENARIO", "ACTIVE", scenarioResult.Reason);
-                    }
-                }
-
-                // 정찰대/불타기: 속도 우선 → 60초 대기 | 정규 진입: 180초 대기
-                int hubMaxWait = (scoutModeActivated || scoutAddOnEligible) ? 60 : 180;
-                var (hubTriggered, hubReason) = await _executionHub.WaitForTriggerAsync(
-                    symbol, decision, hubConfidence,
-                    maxWaitSeconds: hubMaxWait,
-                    scenarioCtx: scenarioCtx,
-                    token: token);
-
-                if (!hubTriggered)
-                {
-                    OnStatusLog?.Invoke($"⚠️ [1M Hub] {symbol} {decision} 취소됨 | {hubReason}");
-                    EntryLog("1M_HUB", "CANCEL", hubReason);
-                    return;
-                }
-
-                EntryLog("1M_HUB", "TRIGGER", hubReason);
-                OnStatusLog?.Invoke($"🎯 [1M Hub] {symbol} {decision} 트리거 확정 [{hubReason}] → 시장가 진입");
-            }
+            // [1M Hub] 스나이핑 허브 비활성화 — 대기 없이 즉시 진입
+            EntryLog("1M_HUB", "SKIP", "disabled — immediate entry");
 
             // [수정] 블랙리스트 체크: 익절 후 즉시 재진입 방지 (30분)
             if (_blacklistedSymbols.TryGetValue(symbol, out var blacklistExpiry))
@@ -6251,14 +6217,13 @@ namespace TradingBot
                 }
             }
 
+            // [Pattern Hold] 비활성화 — 패턴 매칭은 AI 피처로만 활용, 차단 없음
             if (patternSnapshot?.Match?.ShouldDeferEntry == true)
             {
                 string deferReason = string.IsNullOrWhiteSpace(patternSnapshot.Match.DeferReason)
                     ? "loss-pattern"
                     : patternSnapshot.Match.DeferReason;
-                OnStatusLog?.Invoke(TradingStateLogger.RejectedByPatternFilter(symbol, decision, deferReason));
-                EntryLog("GUARD", "BLOCK", $"patternHold={deferReason}");
-                return;
+                EntryLog("GUARD", "INFO", $"patternHold={deferReason} (not blocking)");
             }
 
             if (IsEntryWarmupActive(out var remaining))
@@ -6280,267 +6245,66 @@ namespace TradingBot
             string entryZoneTag = string.Empty;
             bool isHybridMidBandLongEntry = false;
 
-            // ═══════════════════════════════════════════════════════════════
-            // [A안 조기진입] AI 확률 ≥ 80% + 즉시 예측이면 캔들 확인 스킵
-            // ═══════════════════════════════════════════════════════════════
-            bool skipCandleConfirm = false;
+            // [소진 반전 감지] 캔들 확인 시스템 제거 — 소진 반전만 유지
             bool isExhaustionReversal = false;
-            if (_latestAiForecasts.TryGetValue(symbol, out var latestForecast))
+            _pendingDelayedEntries.TryRemove(symbol, out _); // 기존 pending 클리어
+
+            if (IsHybridBbSignalSource(signalSource) && latestCandle != null)
             {
-                bool highConfidence = latestForecast.AverageProbability >= 0.80f;
-                bool isImmediateOrSoon = latestForecast.IsImmediate || latestForecast.ForecastOffsetMinutes <= 5;
-
-                var earlyBypassReasons = new List<string>();
-                if (isImmediateOrSoon)
-                    earlyBypassReasons.Add("즉시예측");
-                if (bandwidthGate.IsSqueezeBreakout)
-                    earlyBypassReasons.Add("Bandwidth돌파");
-
-                if (highConfidence && earlyBypassReasons.Count > 0)
+                var klines5m = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 12, token);
+                if (klines5m != null && klines5m.Count >= 9)
                 {
-                    skipCandleConfirm = true;
-                    _pendingDelayedEntries.TryRemove(symbol, out _); // 기존 pending 제거
-                    OnStatusLog?.Invoke(
-                        $"⚡ [조기진입] {symbol} {decision} | AI확률 {latestForecast.AverageProbability:P0} ≥ 80% + {string.Join("+", earlyBypassReasons)} → 캔들 확인 스킵, 즉시 진입");
-                    EntryLog(
-                        "EARLY",
-                        "BYPASS",
-                        $"aiProb={latestForecast.AverageProbability:P0} offset={latestForecast.ForecastOffsetMinutes}m bwRatio={bandwidthGate.SqueezeRatio:P0} reason={string.Join("+", earlyBypassReasons)}");
-                }
-            }
+                    var kList = klines5m.ToList();
+                    double rsiRev = IndicatorCalculator.CalculateRSI(kList, 14);
 
-            // ═══════════════════════════════════════════════════════════════
-            // [캔들 확인 지연 진입 시스템] Candle Confirmation
-            // 가짜 돌파(Fakeout) 방지: 신호 발생 → 다음 캔들 확인 후 진입
-            // ═══════════════════════════════════════════════════════════════
-            if (IsHybridBbSignalSource(signalSource) && latestCandle != null && !skipCandleConfirm)
-            {
-                // 기존 대기 신호가 있는지 확인
-                if (_pendingDelayedEntries.TryGetValue(symbol, out var pending))
-                {
-                    // 대우 신호 만료 체크 (20분 이내만 유효 - 15분봉 간격 고려하여 연장)
-                    if ((DateTime.Now - pending.SignalTime).TotalMinutes > 20)
+                    int consecBearish = 0, consecBullish = 0;
+                    for (int i = kList.Count - 1; i >= Math.Max(0, kList.Count - 6); i--)
                     {
-                        _pendingDelayedEntries.TryRemove(symbol, out _);
-                        OnStatusLog?.Invoke($"⏰ {symbol} 지연 진입 신호 만료 (20분 초과) → 신호 폐기 및 대기 해제");
-                        EntryLog("CANDLE_DELAY", "BLOCK", "signalExpired>20m");
-                        return; // ← 만료된 신호는 진입하지 않음
+                        if (kList[i].ClosePrice < kList[i].OpenPrice) consecBearish++;
+                        else break;
                     }
-                    else
+                    for (int i = kList.Count - 1; i >= Math.Max(0, kList.Count - 6); i--)
                     {
-                        // [확인 캔들 검증] 이전 캔들 종가가 저항/지지를 확인하고, 현재 캔들이 추가 확인
-                        bool confirmed = false;
-                        string confirmReason = "";
-
-                        if (pending.Direction == "LONG")
-                        {
-                            // LONG 확인: 이전 캔들 종가가 EMA20 위 마감 + 현재 캔들 시가가 이전 고가 경신
-                            bool prevClosedAboveEma = latestCandle.Close > (decimal)latestCandle.SMA_20;
-                            bool currentOpenAbovePrevHigh = latestCandle.Open >= pending.SignalCandleHigh;
-                            bool bullishCandle = latestCandle.Close > latestCandle.Open;
-                            confirmed = prevClosedAboveEma && (currentOpenAbovePrevHigh || bullishCandle);
-                            confirmReason = $"종가>EMA20={prevClosedAboveEma}, 시가>이전고가={currentOpenAbovePrevHigh}, 양봉={bullishCandle}";
-                        }
-                        else if (pending.Direction == "SHORT")
-                        {
-                            // SHORT 확인: 이전 캔들 종가가 EMA20 아래 마감 + 현재 캔들 시가가 이전 저가 하회
-                            bool prevClosedBelowEma = latestCandle.Close < (decimal)latestCandle.SMA_20;
-                            bool currentOpenBelowPrevLow = latestCandle.Open <= pending.SignalCandleLow;
-                            bool bearishCandle = latestCandle.Close < latestCandle.Open;
-                            confirmed = prevClosedBelowEma && (currentOpenBelowPrevLow || bearishCandle);
-                            confirmReason = $"종가<EMA20={prevClosedBelowEma}, 시가<이전저가={currentOpenBelowPrevLow}, 음봉={bearishCandle}";
-                        }
-
-                        if (confirmed)
-                        {
-                            // [가격 괴리율 체크] 신호 발생 이후 이미 너무 많이 움직였으면 진입 기회 소멸
-                            const decimal MAX_PRICE_DRIFT_PCT = 1.5m;
-                            if (pending.SignalPrice > 0)
-                            {
-                                decimal driftPct = pending.Direction == "SHORT"
-                                    ? (pending.SignalPrice - currentPrice) / pending.SignalPrice * 100   // SHORT: 하락폭
-                                    : (currentPrice - pending.SignalPrice) / pending.SignalPrice * 100;  // LONG: 상승폭
-
-                                if (driftPct >= MAX_PRICE_DRIFT_PCT)
-                                {
-                                    _pendingDelayedEntries.TryRemove(symbol, out _);
-                                    OnStatusLog?.Invoke($"⛔ [진입 기회 소멸] {symbol} {pending.Direction} | 신호가 {pending.SignalPrice:F4} 대비 {driftPct:F2}% 이미 이동 (한계 {MAX_PRICE_DRIFT_PCT}%) → 폐기");
-                                    EntryLog("DRIFT_BLOCK", "BLOCK", $"dir={pending.Direction} signalPrice={pending.SignalPrice:F4} currentPrice={currentPrice:F4} drift={driftPct:F2}%");
-                                    return;
-                                }
-                            }
-
-                            // [RSI 과확장 체크] SHORT: RSI 과매도 + 가격이 MA20 위 = 추세 없는 역추세 매도 → 차단
-                            // 단, 가격이 MA20 아래 (하락 추세 확인) 시 RSI 과매도여도 SHORT 허용 (추세 추종)
-                            float rsiNow = latestCandle.RSI;
-                            if (rsiNow > 0)
-                            {
-                                var threshold = GetThresholdProfile(symbol, signalSource);
-                                bool priceAboveMa20 = latestCandle.Close >= (decimal)latestCandle.SMA_20;
-                                bool rsiExhausted = (pending.Direction == "SHORT" && rsiNow <= _shortRsiExhaustionFloor && priceAboveMa20)
-                                                 || (pending.Direction == "LONG"  && rsiNow >= threshold.MaxRsiLimit);
-                                if (rsiExhausted)
-                                {
-                                    string limitText = pending.Direction == "SHORT"
-                                        ? $"shortFloor={_shortRsiExhaustionFloor:F1}"
-                                        : $"longLimit={threshold.MaxRsiLimit:F0}";
-                                    _pendingDelayedEntries.TryRemove(symbol, out _);
-                                    OnStatusLog?.Invoke($"⛔ [RSI 과확장 차단] {symbol} {pending.Direction} | RSI={rsiNow:F1} ({limitText}) → 모멘텀 소진, 진입 폐기");
-                                    EntryLog("RSI_EXHAUSTED", "BLOCK", $"dir={pending.Direction} rsi={rsiNow:F1} limit={limitText}");
-                                    return;
-                                }
-                            }
-
-                            // 확인 완료 → 대기 해제 후 진입 계속
-                            _pendingDelayedEntries.TryRemove(symbol, out _);
-                            decision = pending.Direction; // 확인된 방향으로 진입
-                            OnStatusLog?.Invoke($"✅ [캔들 확인] {symbol} {decision} 지연 진입 확인 완료 → 다음 필터 검증 진행 | {confirmReason}");
-                        }
-                        else
-                        {
-                            // [추세 반전 스위칭] 롱 대기 중 밴드 중단 아래 마감 → 숏 전환
-                            bool reversalDetected = false;
-                            string reversalDirection = "";
-
-                            if (pending.Direction == "LONG" && latestCandle.Close < (decimal)latestCandle.SMA_20)
-                            {
-                                // 롱 대기 중 EMA20 아래로 몸통 마감 → 강력한 하락 반전
-                                bool bearishBody = latestCandle.Close < latestCandle.Open;
-                                decimal dropFromSignal = pending.SignalPrice > 0
-                                    ? ((pending.SignalPrice - currentPrice) / pending.SignalPrice * 100)
-                                    : 0;
-
-                                if (bearishBody || dropFromSignal >= 0.5m)
-                                {
-                                    reversalDetected = true;
-                                    reversalDirection = "SHORT";
-                                }
-                            }
-                            else if (pending.Direction == "SHORT" && latestCandle.Close > (decimal)latestCandle.SMA_20)
-                            {
-                                // 숏 대기 중 EMA20 위로 몸통 마감 → 강력한 상승 반전
-                                bool bullishBody = latestCandle.Close > latestCandle.Open;
-                                decimal riseFromSignal = pending.SignalPrice > 0
-                                    ? ((currentPrice - pending.SignalPrice) / pending.SignalPrice * 100)
-                                    : 0;
-
-                                if (bullishBody || riseFromSignal >= 0.5m)
-                                {
-                                    reversalDetected = true;
-                                    reversalDirection = "LONG";
-                                }
-                            }
-
-                            if (reversalDetected)
-                            {
-                                _pendingDelayedEntries.TryRemove(symbol, out _);
-                                decision = reversalDirection;
-                                OnStatusLog?.Invoke($"🔄 [추세 반전 스위칭] {symbol} {pending.Direction}→{reversalDirection} 전환! | EMA20 돌파 실패 + 반대 확인 → 즉시 {reversalDirection} 진입");
-                                // 반전 진입은 확인 완료 상태이므로 계속 진행
-                            }
-                            else
-                            {
-                                // 아직 확인 안됨 → 대기 유지
-                                OnStatusLog?.Invoke($"⏸️ [캔들 확인 대기] {symbol} {pending.Direction} 확인 미완료 | {confirmReason}");
-                                EntryLog("CANDLE_CONFIRM", "BLOCK", "pendingNotConfirmed");
-                                return;
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    // 신규 신호 → 소진 반전 감지 우선, 아니면 대기 등록
-                    var klines5m = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 12, token);
-                    var prevCandle = klines5m != null && klines5m.Count >= 2 ? klines5m.ElementAt(klines5m.Count - 2) : null;
-
-                    // ═══════════════════════════════════════════════════════════
-                    // [소진 반전 감지] 45분+ 단방향 추세 후 RSI 과확장 → 반대 방향 직진입
-                    // SHORT 신호 발생이지만 이미 과매도 + 연속 음봉 + 낙폭 과다 → LONG 리버설
-                    // LONG  신호 발생이지만 이미 과매수 + 연속 양봉 + 상승폭 과다 → SHORT 리버설
-                    // ═══════════════════════════════════════════════════════════
-                    if (klines5m != null && klines5m.Count >= 9)
-                    {
-                        var kList = klines5m.ToList();
-                        double rsiRev = IndicatorCalculator.CalculateRSI(kList, 14);
-
-                        // 연속 음봉/양봉 카운트 (최근 6봉)
-                        int consecBearish = 0, consecBullish = 0;
-                        for (int i = kList.Count - 1; i >= Math.Max(0, kList.Count - 6); i--)
-                        {
-                            if (kList[i].ClosePrice < kList[i].OpenPrice) consecBearish++;
-                            else break;
-                        }
-                        for (int i = kList.Count - 1; i >= Math.Max(0, kList.Count - 6); i--)
-                        {
-                            if (kList[i].ClosePrice > kList[i].OpenPrice) consecBullish++;
-                            else break;
-                        }
-
-                        // 최근 9봉 고점/저점 대비 이동폭
-                        var priorCandles = kList.Take(kList.Count - 1).ToList();
-                        decimal recentHigh = priorCandles.Count > 0 ? priorCandles.Max(k => k.HighPrice) : currentPrice;
-                        decimal recentLow  = priorCandles.Count > 0 ? priorCandles.Min(k => k.LowPrice)  : currentPrice;
-                        decimal dropPct    = recentHigh > 0 ? (recentHigh - currentPrice) / recentHigh * 100 : 0;
-                        decimal risePct    = recentLow  > 0 ? (currentPrice - recentLow)  / recentLow  * 100 : 0;
-
-                        const decimal REVERSAL_MIN_MOVE_PCT    = 2.5m;
-                        const int     REVERSAL_MIN_CONSEC      = 5;
-                        const double  REVERSAL_RSI_OVERSOLD    = 30.0;
-                        const double  REVERSAL_RSI_OVERBOUGHT  = 70.0;
-
-                        if (decision == "SHORT"
-                            && rsiRev <= REVERSAL_RSI_OVERSOLD
-                            && consecBearish >= REVERSAL_MIN_CONSEC
-                            && dropPct >= REVERSAL_MIN_MOVE_PCT)
-                        {
-                            decision = "LONG";
-                            isExhaustionReversal = true;
-                            OnStatusLog?.Invoke(
-                                $"🔄 [소진 반전] {symbol} SHORT→LONG | RSI={rsiRev:F1}(과매도) " +
-                                $"{consecBearish}연속음봉 낙폭={dropPct:F2}% → 롱 리버설 직진입");
-                            EntryLog("EXHAUSTION_REVERSAL", "LONG",
-                                $"rsi={rsiRev:F1} consec={consecBearish} drop={dropPct:F2}%");
-                        }
-                        else if (decision == "LONG"
-                            && rsiRev >= REVERSAL_RSI_OVERBOUGHT
-                            && consecBullish >= REVERSAL_MIN_CONSEC
-                            && risePct >= REVERSAL_MIN_MOVE_PCT)
-                        {
-                            decision = "SHORT";
-                            isExhaustionReversal = true;
-                            OnStatusLog?.Invoke(
-                                $"🔄 [소진 반전] {symbol} LONG→SHORT | RSI={rsiRev:F1}(과매수) " +
-                                $"{consecBullish}연속양봉 상승폭={risePct:F2}% → 숏 리버설 직진입");
-                            EntryLog("EXHAUSTION_REVERSAL", "SHORT",
-                                $"rsi={rsiRev:F1} consec={consecBullish} rise={risePct:F2}%");
-                        }
+                        if (kList[i].ClosePrice > kList[i].OpenPrice) consecBullish++;
+                        else break;
                     }
 
-                    if (isExhaustionReversal)
-                    {
-                        // pending 등록 없이 즉시 진입 흐름으로 계속 (15분봉 필터 스킵됨)
-                    }
-                    else
-                    {
-                        _pendingDelayedEntries[symbol] = new DelayedEntrySignal
-                        {
-                            Symbol = symbol,
-                            Direction = decision,
-                            SignalPrice = currentPrice,
-                            SignalTime = DateTime.Now,
-                            SignalCandleHigh = prevCandle?.HighPrice ?? latestCandle.High,
-                            SignalCandleLow = prevCandle?.LowPrice ?? latestCandle.Low,
-                            SignalCandleClose = prevCandle?.ClosePrice ?? latestCandle.Close,
-                            SignalSource = signalSource,
-                            Mode = mode,
-                            CustomTakeProfitPrice = customTakeProfitPrice,
-                            CustomStopLossPrice = customStopLossPrice
-                        };
+                    var priorCandles = kList.Take(kList.Count - 1).ToList();
+                    decimal recentHigh = priorCandles.Count > 0 ? priorCandles.Max(k => k.HighPrice) : currentPrice;
+                    decimal recentLow  = priorCandles.Count > 0 ? priorCandles.Min(k => k.LowPrice)  : currentPrice;
+                    decimal dropPct    = recentHigh > 0 ? (recentHigh - currentPrice) / recentHigh * 100 : 0;
+                    decimal risePct    = recentLow  > 0 ? (currentPrice - recentLow)  / recentLow  * 100 : 0;
 
-                        OnStatusLog?.Invoke(TradingStateLogger.WaitingForCandleConfirmation(symbol, decision, 1));
-                        EntryLog("CANDLE_DELAY", "BLOCK", "waitingForConfirmation");
-                        return;
+                    const decimal REVERSAL_MIN_MOVE_PCT    = 2.5m;
+                    const int     REVERSAL_MIN_CONSEC      = 5;
+                    const double  REVERSAL_RSI_OVERSOLD    = 30.0;
+                    const double  REVERSAL_RSI_OVERBOUGHT  = 70.0;
+
+                    if (decision == "SHORT"
+                        && rsiRev <= REVERSAL_RSI_OVERSOLD
+                        && consecBearish >= REVERSAL_MIN_CONSEC
+                        && dropPct >= REVERSAL_MIN_MOVE_PCT)
+                    {
+                        decision = "LONG";
+                        isExhaustionReversal = true;
+                        OnStatusLog?.Invoke(
+                            $"🔄 [소진 반전] {symbol} SHORT→LONG | RSI={rsiRev:F1}(과매도) " +
+                            $"{consecBearish}연속음봉 낙폭={dropPct:F2}% → 롱 리버설 직진입");
+                        EntryLog("EXHAUSTION_REVERSAL", "LONG",
+                            $"rsi={rsiRev:F1} consec={consecBearish} drop={dropPct:F2}%");
+                    }
+                    else if (decision == "LONG"
+                        && rsiRev >= REVERSAL_RSI_OVERBOUGHT
+                        && consecBullish >= REVERSAL_MIN_CONSEC
+                        && risePct >= REVERSAL_MIN_MOVE_PCT)
+                    {
+                        decision = "SHORT";
+                        isExhaustionReversal = true;
+                        OnStatusLog?.Invoke(
+                            $"🔄 [소진 반전] {symbol} LONG→SHORT | RSI={rsiRev:F1}(과매수) " +
+                            $"{consecBullish}연속양봉 상승폭={risePct:F2}% → 숏 리버설 직진입");
+                        EntryLog("EXHAUSTION_REVERSAL", "SHORT",
+                            $"rsi={rsiRev:F1} consec={consecBullish} rise={risePct:F2}%");
                     }
                 }
             }
@@ -6891,34 +6655,17 @@ namespace TradingBot
                     float finalAiScore = Math.Max(0f, baseAiScore + bonusPoints); // 음수 방지
                     convictionScore = Math.Max(convictionScore, (decimal)finalAiScore);
 
-                    // [메이저 전용] 15분봉 기울기(상승 전환) + 1분봉 정밀 타격(70점)
+                    // [메이저 전용] 15분봉 기울기 참고 로그 (차단 없이 정보만)
                     if (decision == "LONG" && isMajorCoin)
                     {
                         var (isPositiveSlope, slope) = await EvaluateFifteenMinuteSlopeAsync(symbol, token);
-                        bool slopeBypassForRecovery = IsDroughtRecoverySignalSource(signalSource);
                         if (!isPositiveSlope)
                         {
-                            if (slopeBypassForRecovery)
-                            {
-                                OnStatusLog?.Invoke($"⚠️ [M15 기울기 완화] {symbol} LONG | slope={slope:F4} <= 0 이지만 복구 소스({signalSource})로 제한적 진입 허용");
-                                EntryLog("M15_SLOPE", "BYPASS", $"slope={slope:F4} source={signalSource}");
-                            }
-                            else
-                            {
-                                OnStatusLog?.Invoke($"⛔ [M15 추세 기울기 차단] {symbol} LONG | slope={slope:F4} <= 0");
-                                EntryLog("M15_SLOPE", "BLOCK", $"slope={slope:F4}");
-                                return;
-                            }
+                            OnStatusLog?.Invoke($"⚠️ [M15 기울기 참고] {symbol} LONG | slope={slope:F4} <= 0 (차단 없음, AI 스코어 보정용)");
+                            EntryLog("M15_SLOPE", "INFO", $"slope={slope:F4} negativeButNotBlocking");
                         }
 
-                        if (finalAiScore < symbolThreshold.EntryScoreCut)
-                        {
-                            OnStatusLog?.Invoke($"⛔ [MAJOR 1분 타격 차단] {symbol} LONG | score={finalAiScore:F1}<{symbolThreshold.EntryScoreCut:F0} (m15Slope={slope:F4})");
-                            EntryLog("MAJOR_SNIPER", "BLOCK", $"score={finalAiScore:F1} threshold={symbolThreshold.EntryScoreCut:F0} m15Slope={slope:F4}");
-                            return;
-                        }
-
-                        EntryLog("MAJOR_SNIPER", "PASS", $"score={finalAiScore:F1}>={symbolThreshold.EntryScoreCut:F0} m15Slope={slope:F4}");
+                        EntryLog("MAJOR_SNIPER", "PASS", $"score={finalAiScore:F1} m15Slope={slope:F4}");
                     }
                     
                     // AI 점수 필터 체크
@@ -7180,33 +6927,19 @@ namespace TradingBot
                     EntryLog("RR", "PASS", $"rr={riskRewardRatio:F2} tp={evaluatedTakeProfit:F8} sl={evaluatedStopLoss:F8}");
                 }
 
-                // [ElliottWave 손익비 검증] 손익비 1:2 이상만 진입
+                // [ElliottWave 손익비] 참고 로그만 (RR 필터에서 통합 검증, 이중 차단 제거)
                 var waveState = _elliotWave3Strategy?.GetCurrentState(symbol);
                 if (waveState != null && decision == "LONG")
                 {
                     decimal stopLossPrice = waveState.Phase1LowPrice > 0 ? waveState.Phase1LowPrice : 0;
                     decimal takeProfitPrice = waveState.Phase1HighPrice > 0 ? waveState.Phase1HighPrice : 0;
-                    decimal fib1618Price = waveState.Fib1618Target > 0 ? waveState.Fib1618Target : 0;
 
                     if (stopLossPrice > 0 && takeProfitPrice > 0)
                     {
-                        decimal risk = currentPrice - stopLossPrice;      // 손실액 (1파 저점까지)
-                        decimal reward1 = takeProfitPrice - currentPrice; // 1차 익절 수익
-                        decimal reward2 = fib1618Price > 0 ? (fib1618Price - currentPrice) : reward1;
-
-                        // 손익비 검증: Risk/Reward >= 1:2
+                        decimal risk = currentPrice - stopLossPrice;
+                        decimal reward1 = takeProfitPrice - currentPrice;
                         decimal riskRewardRatio = risk > 0 ? reward1 / risk : 0;
-
-                        if (riskRewardRatio < 2.0m)
-                        {
-                            OnStatusLog?.Invoke(
-                                $"💼 {symbol} 손익비 부족으로 진입 차단 | Risk={risk:F8} vs Reward={reward1:F8} (비율={riskRewardRatio:F2}:1 < 2:1)");
-                            EntryLog("EW_RR", "BLOCK", $"rr={riskRewardRatio:F2}");
-                            return;
-                        }
-
-                        OnStatusLog?.Invoke(
-                            $"✅ {symbol} 손익비 검증 통과 | Risk={risk:F8} vs Reward={reward1:F8} (비율={riskRewardRatio:F2}:1)");
+                        EntryLog("EW_RR", "INFO", $"rr={riskRewardRatio:F2} (no block)");
                     }
                 }
 
@@ -7305,7 +7038,7 @@ namespace TradingBot
                     return;
                 }
 
-                // [수익률 회귀] 예상 수익률 기반 동적 포지션 사이징
+                // [수익률 회귀] 예상 수익률 기반 동적 포지션 사이징 (차단 없이 사이즈 조절만)
                 if (_profitRegressor.IsModelReady && latestCandle != null)
                 {
                     float? predicted = _profitRegressor.PredictProfit(
@@ -7316,9 +7049,9 @@ namespace TradingBot
                     decimal multiplier = _profitRegressor.GetPositionMultiplier(predicted);
                     if (multiplier <= 0)
                     {
-                        OnStatusLog?.Invoke($"⛔ [ProfitRegressor] {symbol} 손실 예측 ({predicted:F2}%) → 진입 패스");
-                        EntryLog("PROFIT_REG", "BLOCK", $"predicted={predicted:F2}%");
-                        return;
+                        multiplier = 0.5m; // 손실 예측이어도 최소 50% 사이즈로 진입 허용
+                        OnStatusLog?.Invoke($"⚠️ [ProfitRegressor] {symbol} 손실 예측 ({predicted:F2}%) → 50% 사이즈로 축소 진입");
+                        EntryLog("PROFIT_REG", "WARN", $"predicted={predicted:F2}% reducedTo=50%");
                     }
                     marginUsdt *= multiplier;
                     OnStatusLog?.Invoke($"📊 [ProfitRegressor] {symbol} 예상수익={predicted:F2}% → 사이즈 {multiplier:P0} (${marginUsdt:N0})");
