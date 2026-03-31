@@ -20,7 +20,6 @@ namespace TradingBot
     public class AdaptiveOnlineLearningService : IDisposable
     {
         private readonly EntryTimingMLTrainer _mlTrainer;
-        private readonly TensorFlowEntryTimingTrainer _transformerTrainer;
         
         // 슬라이딩 윈도우 버퍼 (최근 N건)
         private readonly ConcurrentQueue<MultiTimeframeEntryFeature> _slidingWindow = new();
@@ -58,11 +57,9 @@ namespace TradingBot
 
         public AdaptiveOnlineLearningService(
             EntryTimingMLTrainer mlTrainer,
-            TensorFlowEntryTimingTrainer transformerTrainer,
             OnlineLearningConfig? config = null)
         {
             _mlTrainer = mlTrainer ?? throw new ArgumentNullException(nameof(mlTrainer));
-            _transformerTrainer = transformerTrainer ?? throw new ArgumentNullException(nameof(transformerTrainer));
             _config = config ?? new OnlineLearningConfig();
             
             _maxWindowSize = _config.SlidingWindowSize;
@@ -166,21 +163,12 @@ namespace TradingBot
                 var mlMetrics = await _mlTrainer.TrainAndSaveAsync(trainingData);
                 OnLog?.Invoke($"✅ [OnlineLearning] ML.NET 재학습 완료: 정확도={mlMetrics.Accuracy:P2}, F1={mlMetrics.F1Score:F3}");
 
-                // 2. Transformer 재학습 (에포크 수 줄임 - 빠른 적응)
-                var tfMetrics = await _transformerTrainer.TrainAsync(
-                    trainingData,
-                    _config.TransformerFastEpochs,
-                    32,
-                    0.001f);
-                OnLog?.Invoke($"✅ [OnlineLearning] Transformer 재학습 완료: Loss={tfMetrics.BestValidationLoss:F4}");
-
-                // 3. 성능 업데이트
+                // 2. 성능 업데이트 (TF 제거, ML만)
                 _currentAccuracy = mlMetrics.Accuracy;
-                _baselineAccuracy = Math.Max(_baselineAccuracy * 0.95, mlMetrics.Accuracy); // 서서히 기준선 갱신
+                _baselineAccuracy = Math.Max(_baselineAccuracy * 0.95, mlMetrics.Accuracy);
 
-                // 4. Threshold 자동 조정 (Transformer의 경우 Loss 기반 정확도 추정: 1 - normalized loss)
-                double estimatedTFAccuracy = Math.Max(0.5, 1.0 - Math.Min(tfMetrics.BestValidationLoss, 0.5));
-                AdjustThresholds(mlMetrics.Accuracy, estimatedTFAccuracy);
+                // 3. Threshold 자동 조정 (ML 단독)
+                AdjustThresholds(mlMetrics.Accuracy, mlMetrics.Accuracy);
 
                 OnPerformanceUpdate?.Invoke(reason, _currentAccuracy, _currentMLThreshold, _currentTFThreshold);
             }

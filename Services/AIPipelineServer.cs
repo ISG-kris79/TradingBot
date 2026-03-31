@@ -22,17 +22,15 @@ namespace TradingBot.Services
     {
         private const string PipeName = "TradingBot_AI_Pipeline";
         private readonly EntryTimingMLTrainer _mlTrainer;
-        private readonly TensorFlowEntryTimingTrainer _tfTrainer;
         private CancellationTokenSource? _cts;
         private Task? _serverTask;
         private bool _disposed;
 
         public event Action<string>? OnLog;
 
-        public AIPipelineServer(EntryTimingMLTrainer mlTrainer, TensorFlowEntryTimingTrainer tfTrainer)
+        public AIPipelineServer(EntryTimingMLTrainer mlTrainer)
         {
             _mlTrainer = mlTrainer;
-            _tfTrainer = tfTrainer;
         }
 
         /// <summary>

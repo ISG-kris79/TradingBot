@@ -31,7 +31,6 @@ namespace TradingBot.Services
     public class AIDataflowPipeline : IDisposable
     {
         private readonly EntryTimingMLTrainer _mlTrainer;
-        private readonly TensorFlowEntryTimingTrainer _tfTrainer;
         private readonly BufferBlock<AIInferenceRequest> _inputBuffer;
         private readonly TransformBlock<AIInferenceRequest, AIInferenceResult> _inferenceBlock;
         private readonly ActionBlock<AIInferenceResult> _outputBlock;
@@ -55,12 +54,10 @@ namespace TradingBot.Services
 
         public AIDataflowPipeline(
             EntryTimingMLTrainer mlTrainer,
-            TensorFlowEntryTimingTrainer tfTrainer,
             int maxBufferSize = 100,
             int maxDegreeOfParallelism = 1)
         {
             _mlTrainer = mlTrainer;
-            _tfTrainer = tfTrainer;
 
             // 1. 입력 버퍼: 용량 초과 시 오래된 요청 무시
             _inputBuffer = new BufferBlock<AIInferenceRequest>(new DataflowBlockOptions
@@ -146,14 +143,9 @@ namespace TradingBot.Services
                     }
                 }
 
-                // TF 추론 (통계 기반이므로 빠름)
-                if (request.TransformerSequence != null && _tfTrainer.IsModelReady)
-                {
-                    var (candles, confidence) = await Task.Run(() =>
-                        _tfTrainer.Predict(request.TransformerSequence));
-                    result.TFCandlesToTarget = candles;
-                    result.TFConfidence = confidence;
-                }
+                // TF 제거 — ML 결과로 호환 필드 채움
+                result.TFCandlesToTarget = result.MLShouldEnter ? 8f : -1f;
+                result.TFConfidence = result.MLProbability;
 
                 result.Success = true;
             }

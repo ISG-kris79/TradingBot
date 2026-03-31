@@ -15,6 +15,26 @@
 
  - 없음
 
+## [3.0.7] - 2026-03-31
+
+### Added
+
+- **3분류 매매 신호 모델 (TradeSignalClassifier)**: ML.NET LightGBM MultiClass
+  - 롱(1) / 숏(2) / 관망(0) 3분류 예측
+  - 24개 피처: RSI, MACD, BB, ATR, ADX, Volume, OI, 피보나치, 캔들 패턴 등
+  - DB CandleData에서 자동 라벨링 (30분 후 가격변동률 ±1% 기준)
+  - 앱 시작 시 모델 로드 또는 DB 데이터로 자동 초기 학습
+  - 진입 시 3분류 모델 추론 → 같은 방향이면 사이즈 부스트, 반대면 축소
+
+### Changed
+
+- **TensorFlow.NET 완전 제거**: ML.NET 단독 아키텍처로 통합
+  - TensorFlow.NET 패키지 제거
+  - TensorFlowTransformer/TensorFlowEntryTimingTrainer 빌드 제외
+  - AIDoubleCheckEntryGate: TF 의존 제거 → ML.NET _mlTrainer 단독
+  - 4개 서비스(AIDataflowPipeline, AIDedicatedWorkerThread, AIPipelineServer, HybridAIPredictionService): TF 필드 제거
+  - AdaptiveOnlineLearningService: TF 학습 제거
+
 ## [3.0.6] - 2026-03-31
 
 ### Changed

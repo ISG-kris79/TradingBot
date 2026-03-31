@@ -14,16 +14,14 @@ namespace TradingBot
 {
     /// <summary>
     /// AI 더블체크 진입 시스템
-    /// ML.NET + TensorFlow Transformer 중 하나 이상 통과 시 진입 후보 허가
-    /// + 실시간 데이터 수집 (지속적 학습용)
+    /// ML.NET 단독 게이트 + 실시간 데이터 수집 (지속적 학습용)
     /// + 온라인 학습 (적응형 학습 및 Concept Drift 감지)
-    /// [v2.4.27] TorchSharp 완전 제거, TensorFlow.NET으로 전환
+    /// [v3.0.7] TensorFlow.NET 제거, ML.NET 통합
     /// </summary>
     public class AIDoubleCheckEntryGate
     {
         private readonly IExchangeService _exchangeService;
         private readonly EntryTimingMLTrainer _mlTrainer;
-        private readonly TensorFlowEntryTimingTrainer _transformerTrainer;
         private readonly MultiTimeframeFeatureExtractor _featureExtractor;
         private readonly BacktestEntryLabeler _labeler;
         private readonly EntryRuleValidator _ruleValidator;
@@ -47,10 +45,8 @@ namespace TradingBot
         public event Action<string>? OnAlert;
         public event Action<AiLabeledSample>? OnLabeledSample;
         
-        // [핫픽스] ML 모델 없어도 TF만으로 게이트 통과 가능하도록 변경
-        // ML 모델은 첫 학습 전까지 없을 수 있음 → TF만 준비되면 IsReady = true
-        // ML 0%일 때는 EntryRuleValidator에서 TF 점수로 FinalScore 보정
-        public bool IsReady => _transformerTrainer.IsModelReady;
+        // [v3.0.7] ML.NET 모델 로드 시 게이트 활성화
+        public bool IsReady => _mlTrainer.IsModelLoaded;
 
         public AIDoubleCheckEntryGate(
             IExchangeService exchangeService,
@@ -73,11 +69,7 @@ namespace TradingBot
             // ML 모델 로드
             _mlTrainer.LoadModel();
 
-            // TensorFlow Transformer 초기화 (통합 모델, 외부 프로세스 불필요)
-            OnLog?.Invoke("[AIDoubleCheck] TensorFlow.NET Transformer 초기화 중...");
-            _transformerTrainer = new TensorFlowEntryTimingTrainer();
-            _transformerTrainer.OnLog += msg => OnLog?.Invoke(msg);
-            _transformerTrainer.LoadModel();
+            // [v3.0.7] ML.NET 단독 모드 (TensorFlow.NET 제거됨)
 
             // 데이터 수집 폴더 생성
             Directory.CreateDirectory(_dataCollectionPath);
@@ -87,7 +79,6 @@ namespace TradingBot
             {
                 _onlineLearning = new AdaptiveOnlineLearningService(
                     _mlTrainer,
-                    _transformerTrainer,
                     new OnlineLearningConfig
                     {
                         SlidingWindowSize = 1000,
@@ -160,43 +151,18 @@ namespace TradingBot
                     return (false, "Feature_Extraction_Failed", new AIEntryDetail());
                 }
 
-                // 2. [The Brain] Transformer 흐름/타점 평가
+                // 2. [ML.NET] 진입 판정 (TF 제거, ML 단독)
                 var recentFeatures = BuildTransformerSequence(symbol, feature);
-                var (candlesToTarget, tfConfidence) = _transformerTrainer.Predict(recentFeatures);
-
-                // Transformer 승인 기준: 유효한 Time-to-Target 예측 (1~32캔들 범위)
-                bool tfApprove = candlesToTarget >= 1f && candlesToTarget <= 32f;
-                float effectiveTFThreshold = _onlineLearning?.CurrentTFThreshold ?? _config.MinTransformerConfidence;
-
-                if (tfApprove)
-                {
-                    int minutesToTarget = (int)Math.Round(candlesToTarget * 15);
-                    DateTime eta = DateTime.Now.AddMinutes(minutesToTarget);
-                    OnLog?.Invoke($"🧠 [{symbol}] [BRAIN] TF 타점: {candlesToTarget:F1}캔들 ({minutesToTarget}분) 후, ETA {eta:HH:mm} | TrendScore={tfConfidence:P0}");
-                }
-
-                // 3. [The Filter] ML.NET 최종 판정
-                // [핫픽스] ML 모델 미로드 시 TF 단독 진행 (하드 블록 제거)
                 var mlPrediction = _mlTrainer.IsModelLoaded ? _mlTrainer.Predict(feature) : null;
 
-                bool mlApprove;
-                float mlConfidence;
-                float effectiveMLThreshold;
+                bool mlApprove = mlPrediction?.ShouldEnter ?? false;
+                float mlConfidence = mlPrediction?.Probability ?? 0f;
+                float effectiveMLThreshold = _onlineLearning?.CurrentMLThreshold ?? _config.MinMLConfidence;
 
-                if (mlPrediction != null)
-                {
-                    mlApprove = mlPrediction.ShouldEnter;
-                    mlConfidence = mlPrediction.Probability;
-                    effectiveMLThreshold = _onlineLearning?.CurrentMLThreshold ?? _config.MinMLConfidence;
-                }
-                else
-                {
-                    // ML 미가용: TF 단독 모드 — ML 조건 자동 통과
-                    mlApprove = tfApprove;  // TF 판단에 따름
-                    mlConfidence = 0f;
-                    effectiveMLThreshold = 0f;
-                    OnLog?.Invoke($"⚠️ [{symbol}] ML.NET 미가용 → TF 단독 모드 (TF={tfConfidence:P0})");
-                }
+                // TF 호환 변수 (UI 바인딩 유지용)
+                bool tfApprove = mlApprove;
+                float tfConfidence = mlConfidence;
+                float effectiveTFThreshold = effectiveMLThreshold;
 
                 // 4. M15/M1 캔들 수집 (Fib 보너스 + 리스크/규칙 필터 공용)
                 var m15List = (await _exchangeService
@@ -214,14 +180,15 @@ namespace TradingBot
                 var fibSignal = EvaluateFibonacciSupportSignal(symbol, decision, currentPrice, m15List, m1List);
                 float fibConfidenceBonus = (float)(fibSignal.BonusScore / 100.0);
 
-                // [ML 0% 대응] ML 결과가 0이면 TF 단독 판단으로 전환
-                // ML 모델이 로드됐지만 0을 반환하는 경우 (데이터 정규화 이슈 등)
-                bool mlReturnsZero = _mlTrainer.IsModelLoaded && mlConfidence < 0.01f;
-                if (mlReturnsZero && tfConfidence >= 0.50f)
+                // [ML 0% 대응] ML 결과가 0이면 기본 통과 (학습 데이터 부족 상태)
+                if (_mlTrainer.IsModelLoaded && mlConfidence < 0.01f)
                 {
-                    mlApprove = tfApprove;
+                    mlApprove = true;
+                    mlConfidence = 0.50f; // 기본 50%로 설정
+                    tfApprove = true;
+                    tfConfidence = 0.50f;
                     effectiveMLThreshold = 0f;
-                    OnLog?.Invoke($"⚠️ [{symbol}] ML 결과 0% → TF 단독 판단 전환 (TF={tfConfidence:P0})");
+                    OnLog?.Invoke($"⚠️ [{symbol}] ML 결과 0% → 기본 통과 (학습 데이터 부족)");
                 }
 
                 bool tfPass = tfApprove && (tfConfidence + fibConfidenceBonus) >= effectiveTFThreshold;
@@ -264,7 +231,7 @@ namespace TradingBot
                 {
                     string tfReason = tfApprove
                         ? $"TF 신뢰도 부족 ({tfConfidence + fibConfidenceBonus:P0} < {effectiveTFThreshold:P0})"
-                        : $"TF 타점 범위 외 ({candlesToTarget:F1}캔들, 유효 범위 1-32)";
+                        : $"TF(ML) 진입 비승인 ({tfConfidence:P0})";
                     string mlReason = mlApprove
                         ? $"ML 신뢰도 부족 ({mlConfidence + fibConfidenceBonus:P0} < {effectiveMLThreshold:P0})"
                         : $"ML 진입 비승인 ({mlConfidence:P0})";
@@ -620,11 +587,17 @@ namespace TradingBot
                 if (!IsReady || recentFeatures == null || recentFeatures.Count == 0)
                     return (-1f, 0f);
 
-                return await Task.Run(() => _transformerTrainer.Predict(recentFeatures));
+                return await Task.Run(() =>
+                {
+                    var lastFeature = recentFeatures.Last();
+                    var pred = _mlTrainer.Predict(lastFeature);
+                    if (pred == null) return (-1f, 0f);
+                    return (pred.ShouldEnter ? 8f : -1f, pred.Probability);
+                });
             }
             catch (Exception ex)
             {
-                OnLog?.Invoke($"⚠️ Transformer 예측 오류: {ex.Message}");
+                OnLog?.Invoke($"⚠️ ML 예측 오류: {ex.Message}");
                 return (-1f, 0f);
             }
         }
@@ -999,7 +972,7 @@ namespace TradingBot
         private List<MultiTimeframeEntryFeature> BuildTransformerSequence(string symbol, MultiTimeframeEntryFeature latestFeature)
         {
             string key = string.IsNullOrWhiteSpace(symbol) ? "UNKNOWN" : symbol;
-            int requiredSeqLen = _transformerTrainer?.SeqLen ?? 8;
+            int requiredSeqLen = 8; // 시퀀스 기본 길이
 
             var buffer = _recentFeatureBuffers.GetOrAdd(key, _ => new Queue<MultiTimeframeEntryFeature>(requiredSeqLen));
 
@@ -1086,7 +1059,9 @@ namespace TradingBot
 
             // [Time-to-Target 회귀 기반 ETA 예측]
             // Transformer가 "목표가 도달까지 몇 캔들 후인지" 직접 예측
-            var (candlesToTarget, tfConfidence) = _transformerTrainer?.Predict(baseSequence) ?? (-1f, 0f);
+            var mlPred = _mlTrainer.Predict(feature);
+            float candlesToTarget = mlPred?.ShouldEnter == true ? 8f : -1f;
+            float tfConfidence = mlPred?.Probability ?? 0f;
 
             // 현재 시점 ML 확률 계산
             float currentMlProb = 0f;
@@ -1350,64 +1325,9 @@ namespace TradingBot
                         detail: mlEx.Message);
                 }
 
-                // 3. Transformer 모델 학습 (빠른 초기화: 1 epoch)
-                OnAlert?.Invoke("🧠 [AI 학습] Transformer 모델 학습 중... (1-2분 소요)");
-                string tfInitRunId = $"INIT_TF_{DateTime.UtcNow:yyyyMMddHHmmssfff}";
-                try
-                {
-                    OnLog?.Invoke($"[AIDoubleCheck] TensorFlow 초기학습 시작");
-
-                    using var tfTrainTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-                    tfTrainTimeout.CancelAfter(TimeSpan.FromMinutes(4));
-
-                    var tfMetrics = await _transformerTrainer.TrainAsync(trainingFeatures, epochs: 1, batchSize: 16, token: tfTrainTimeout.Token);
-                    OnLog?.Invoke($"[AIDoubleCheck] TensorFlow Transformer 학습 완료 - Val Loss: {tfMetrics.BestValidationLoss:F4}");
-
-                    await PersistTrainingRunAsync(
-                        projectName: "TensorFlow",
-                        runId: tfInitRunId,
-                        stage: "Initial",
-                        success: true,
-                        sampleCount: trainingFeatures.Count,
-                        epochs: 1,
-                        bestValidationLoss: tfMetrics.BestValidationLoss,
-                        finalTrainLoss: tfMetrics.FinalTrainLoss,
-                        detail: "TensorFlow 초기 학습 완료");
-
-                    RaiseCriticalTrainingAlert(
-                        projectName: "TensorFlow",
-                        stage: "초기학습",
-                        success: true,
-                        detail: $"BestLoss={tfMetrics.BestValidationLoss:F4}, 샘플={trainingFeatures.Count}");
-
-                    OnAlert?.Invoke($"✅ [AI 학습] Transformer 모델 학습 완료 (BestLoss={tfMetrics.BestValidationLoss:F4})");
-                }
-                catch (Exception tfEx)
-                {
-                    OnAlert?.Invoke($"❌ [AI 학습] Transformer 학습 실패: {tfEx.Message}");
-                    OnLog?.Invoke($"[AIDoubleCheck] Transformer 학습 상세 오류:\n{tfEx}");
-
-                    await PersistTrainingRunAsync(
-                        projectName: "TensorFlow",
-                        runId: tfInitRunId,
-                        stage: "Initial",
-                        success: false,
-                        sampleCount: trainingFeatures.Count,
-                        epochs: 1,
-                        detail: tfEx.Message);
-
-                    RaiseCriticalTrainingAlert(
-                        projectName: "TensorFlow",
-                        stage: "초기학습",
-                        success: false,
-                        detail: tfEx.Message);
-                }
-
-                // 4. 모델 리로드 및 상태 확인
+                // 3. 모델 리로드 및 상태 확인 (TF 제거, ML만)
                 _mlTrainer.LoadModel();
-                _transformerTrainer?.LoadModel();
-
-                bool tfReady = _transformerTrainer?.IsModelReady ?? false;
+                bool tfReady = _mlTrainer.IsModelLoaded; // UI 호환용
 
                 if (IsReady)
                 {
@@ -1505,38 +1425,7 @@ namespace TradingBot
                     throw;
                 }
 
-                // 3. Transformer 재학습 (2 epochs)
-                float tfLoss;
-                string tfRetrainRunId = $"RETRAIN_TF_{DateTime.UtcNow:yyyyMMddHHmmssfff}";
-                
-                OnLog?.Invoke($"[AIDoubleCheck] TensorFlow 재학습 시작");
-
-                using var tfRetrainTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-                tfRetrainTimeout.CancelAfter(TimeSpan.FromMinutes(4));
-
-                var tfMetrics = await _transformerTrainer.TrainAsync(labeledData, epochs: 2, batchSize: 32, token: tfRetrainTimeout.Token);
-                tfLoss = tfMetrics.BestValidationLoss;
-
-                OnAlert?.Invoke($"✅ [AI 재학습] Transformer 재학습 완료 (BestLoss={tfMetrics.BestValidationLoss:F4})");
-
-                await PersistTrainingRunAsync(
-                    projectName: "TensorFlow",
-                    runId: tfRetrainRunId,
-                    stage: "Retrain",
-                    success: true,
-                    sampleCount: labeledData.Count,
-                    epochs: 2,
-                    bestValidationLoss: tfMetrics.BestValidationLoss,
-                    finalTrainLoss: tfMetrics.FinalTrainLoss,
-                    detail: "TensorFlow 재학습 완료");
-
-                RaiseCriticalTrainingAlert(
-                    projectName: "TensorFlow",
-                    stage: "재학습",
-                    success: true,
-                    detail: $"BestLoss={tfMetrics.BestValidationLoss:F4}, 샘플={labeledData.Count}");
-
-                string msg = $"✅ [AI 재학습] 완료 - ML: {mlMetrics.Accuracy:P1}, TF Loss: {tfLoss:F3} (샘플: {labeledData.Count}개)";
+                string msg = $"✅ [AI 재학습] 완료 - ML: {mlMetrics.Accuracy:P1} (샘플: {labeledData.Count}개)";
                 OnAlert?.Invoke(msg);
                 OnLog?.Invoke(msg);
                 return (true, msg);

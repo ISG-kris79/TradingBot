@@ -20,7 +20,6 @@ namespace TradingBot.Services
     public class HybridAIPredictionService : IDisposable
     {
         private readonly EntryTimingMLTrainer _mlTrainer;
-        private readonly TensorFlowEntryTimingTrainer _tfTrainer;
         private readonly AIPipelineIpcService _ipcService;
         private readonly AIPipelineServer? _inProcessServer;
         private bool _useIpc;
@@ -40,11 +39,9 @@ namespace TradingBot.Services
 
         public HybridAIPredictionService(
             EntryTimingMLTrainer mlTrainer,
-            TensorFlowEntryTimingTrainer tfTrainer,
             bool enableInProcessServer = true)
         {
             _mlTrainer = mlTrainer;
-            _tfTrainer = tfTrainer;
             _ipcService = new AIPipelineIpcService();
             _ipcService.OnLog += msg => OnLog?.Invoke(msg);
             _ipcService.OnError += msg => OnLog?.Invoke(msg);
@@ -52,7 +49,7 @@ namespace TradingBot.Services
             // 같은 프로세스 내에서 서버도 시작 (별도 프로세스 전환 전 테스트용)
             if (enableInProcessServer)
             {
-                _inProcessServer = new AIPipelineServer(mlTrainer, tfTrainer);
+                _inProcessServer = new AIPipelineServer(mlTrainer);
                 _inProcessServer.OnLog += msg => OnLog?.Invoke(msg);
             }
         }
@@ -160,8 +157,12 @@ namespace TradingBot.Services
                 }
             }
 
-            // 인프로세스 폴백
-            return _tfTrainer.Predict(sequence);
+            // 인프로세스 폴백 (ML 기반)
+            if (sequence == null || sequence.Count == 0)
+                return (-1f, 0f);
+            var lastFeature = sequence.Last();
+            var pred = _mlTrainer.Predict(lastFeature);
+            return pred == null ? (-1f, 0f) : (pred.ShouldEnter ? 8f : -1f, pred.Probability);
         }
 
         /// <summary>헬스체크</summary>

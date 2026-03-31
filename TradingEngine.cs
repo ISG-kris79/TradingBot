@@ -158,6 +158,7 @@ namespace TradingBot
         private readonly TradingBot.Services.SsaPriceForecastService _ssaForecast = new();
         // [수익률 회귀] 진입 시 예상 수익률 예측 + 동적 포지션 사이징
         private readonly TradingBot.Services.ProfitRegressorService _profitRegressor = new();
+        private readonly TradingBot.Services.TradeSignalClassifier _tradeSignalClassifier = new();
         private DateTime _lastSsaTrainTime = DateTime.MinValue;
         private TradingBot.Services.SsaForecastResult? _latestSsaResult;
 
@@ -646,6 +647,9 @@ namespace TradingBot
 
             // [SSA] 시계열 예측 로그 연결
             _ssaForecast.OnLog += msg => OnStatusLog?.Invoke(msg);
+            // [3분류 매매 신호] 모델 로드 + DB 학습
+            _tradeSignalClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _ = InitTradeSignalClassifierAsync();
             // [수익률 회귀] 로그 연결 + DB 과거 거래 학습
             _profitRegressor.OnLog += msg => OnStatusLog?.Invoke(msg);
             _ = Task.Run(async () =>
@@ -6545,6 +6549,38 @@ namespace TradingBot
             }
             */
 
+            // [3분류 매매 신호] ML.NET 3분류 모델로 방향 확인 + 사이즈 조절
+            if (_tradeSignalClassifier.IsModelLoaded && latestCandle != null)
+            {
+                var signalPred = _tradeSignalClassifier.Predict(latestCandle);
+                if (signalPred != null)
+                {
+                    var (signalDir, signalConf) = TradeSignalClassifier.InterpretPrediction(signalPred);
+
+                    // 3분류 모델이 반대 방향 예측 시 사이즈 축소 (차단 아님)
+                    if (decision == "LONG" && signalDir == "SHORT" && signalConf >= 0.60f)
+                    {
+                        manualSizeMultiplier = Math.Min(manualSizeMultiplier, 0.30m);
+                        EntryLog("SIGNAL_3C", "ADVISOR", $"entry=LONG but model=SHORT({signalConf:P0}) → size 30%");
+                    }
+                    else if (decision == "SHORT" && signalDir == "LONG" && signalConf >= 0.60f)
+                    {
+                        manualSizeMultiplier = Math.Min(manualSizeMultiplier, 0.30m);
+                        EntryLog("SIGNAL_3C", "ADVISOR", $"entry=SHORT but model=LONG({signalConf:P0}) → size 30%");
+                    }
+                    else if (signalDir == decision && signalConf >= 0.70f)
+                    {
+                        // 같은 방향 + 높은 신뢰도 → 사이즈 보너스
+                        manualSizeMultiplier = Math.Min(manualSizeMultiplier * 1.3m, 1.5m);
+                        EntryLog("SIGNAL_3C", "BOOST", $"model={signalDir}({signalConf:P0}) matches entry → size boost");
+                    }
+                    else
+                    {
+                        EntryLog("SIGNAL_3C", "INFO", $"model={signalDir}({signalConf:P0}) label={signalPred.PredictedLabel}");
+                    }
+                }
+            }
+
             if (_aiPredictor != null)
             {
                 if (latestCandle != null)
@@ -9299,6 +9335,54 @@ namespace TradingBot
             var elapsed = DateTime.Now - _engineStartTime;
             remaining = _entryWarmupDuration - elapsed;
             return remaining > TimeSpan.Zero;
+        }
+
+        private async Task InitTradeSignalClassifierAsync()
+        {
+            try
+            {
+                // 1. 기존 모델 로드 시도
+                if (_tradeSignalClassifier.LoadModel())
+                {
+                    OnStatusLog?.Invoke("✅ [TradeSignal] 3분류 모델 로드 완료");
+                    return;
+                }
+
+                // 2. 모델 없으면 DB에서 캔들 데이터 로드 → 라벨링 → 학습
+                OnStatusLog?.Invoke("🧠 [TradeSignal] 모델 없음 → DB 캔들 데이터로 초기 학습 시작...");
+
+                if (_dbManager == null || string.IsNullOrWhiteSpace(AppConfig.ConnectionString))
+                {
+                    OnStatusLog?.Invoke("⚠️ [TradeSignal] DB 미연결 — 초기 학습 건너뜀");
+                    return;
+                }
+
+                var allFeatures = new List<TradeSignalFeature>();
+                foreach (var symbol in _symbols.Take(10)) // 상위 10개 심볼
+                {
+                    var candles = await _dbManager.GetRecentCandleDataAsync(symbol, limit: 5000);
+                    if (candles == null || candles.Count < 100)
+                        continue;
+
+                    // 시간순 정렬 (오래된 → 최신)
+                    candles.Reverse();
+                    var labeled = _tradeSignalClassifier.LabelCandleData(candles);
+                    allFeatures.AddRange(labeled);
+                }
+
+                if (allFeatures.Count < 50)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [TradeSignal] 학습 데이터 부족 ({allFeatures.Count}건) — 데이터 축적 후 자동 학습");
+                    return;
+                }
+
+                var metrics = await _tradeSignalClassifier.TrainAndSaveAsync(allFeatures);
+                OnStatusLog?.Invoke($"✅ [TradeSignal] 초기 학습 완료 | MicroAcc={metrics.MicroAccuracy:P2}, MacroAcc={metrics.MacroAccuracy:P2}, 샘플={metrics.SampleCount}");
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [TradeSignal] 초기화 실패: {ex.Message}");
+            }
         }
 
         private async Task PreloadInitialAiScoresAsync(CancellationToken token)

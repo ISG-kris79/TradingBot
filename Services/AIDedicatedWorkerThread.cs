@@ -31,7 +31,6 @@ namespace TradingBot.Services
 
         // AI 모델 참조 (워커 스레드에서 직접 호출)
         private readonly EntryTimingMLTrainer? _mlTrainer;
-        private readonly TensorFlowEntryTimingTrainer? _tfTrainer;
 
         // 성능 카운터
         private long _totalProcessed;
@@ -48,11 +47,9 @@ namespace TradingBot.Services
 
         public AIDedicatedWorkerThread(
             EntryTimingMLTrainer? mlTrainer = null,
-            TensorFlowEntryTimingTrainer? tfTrainer = null,
             int maxQueueSize = 200)
         {
             _mlTrainer = mlTrainer;
-            _tfTrainer = tfTrainer;
             _cts = new CancellationTokenSource();
             _workQueue = new BlockingCollection<AIWorkItem>(maxQueueSize);
 
@@ -121,13 +118,9 @@ namespace TradingBot.Services
                             }
                         }
 
-                        // 2. TensorFlow 추론
-                        if (item.TransformerSequence != null && _tfTrainer != null && _tfTrainer.IsModelReady)
-                        {
-                            var (candles, confidence) = _tfTrainer.Predict(item.TransformerSequence);
-                            result.TFCandlesToTarget = candles;
-                            result.TFConfidence = confidence;
-                        }
+                        // TF 제거 — ML 결과로 호환 필드 채움
+                        result.TFCandlesToTarget = result.MLShouldEnter ? 8f : -1f;
+                        result.TFConfidence = result.MLProbability;
 
                         // 3. 주문 조건 충족 시 즉시 실행 (UI 거치지 않음)
                         if (item.OrderAction != null && result.MLShouldEnter)

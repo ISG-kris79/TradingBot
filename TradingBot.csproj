@@ -16,9 +16,9 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
     <LangVersion>latest</LangVersion>
-      <Version>3.0.6</Version>
-      <AssemblyVersion>3.0.6.0</AssemblyVersion>
-      <FileVersion>3.0.6.0</FileVersion>
+      <Version>3.0.7</Version>
+      <AssemblyVersion>3.0.7.0</AssemblyVersion>
+      <FileVersion>3.0.7.0</FileVersion>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
     <Company>TradingBot</Company>
     <Product>CoinFF TradingBot</Product>
@@ -75,7 +75,7 @@
     <Compile Remove="TradingBot.Shared/**/*.cs" />
     <EmbeddedResource Remove="Releases\**" />
     
-    <!-- 레거시 Transformer/Torch 경로 파일 제외 (현재는 TensorFlow.NET 인프로세스 사용) -->
+    <!-- 레거시 Transformer/Torch/TensorFlow 파일 제외 (ML.NET 통합) -->
     <Compile Remove="TransformerTrainer.cs" />
     <Compile Remove="TimeSeriesTransformer.cs" />
     <Compile Remove="EntryTimingTransformerTrainer.cs" />
@@ -83,6 +83,8 @@
     <Compile Remove="PPOAgent.cs" />
     <Compile Remove="TransformerWaveNavigator.cs" />
     <Compile Remove="Services\TorchInitializer.cs" />
+    <Compile Remove="TensorFlowTransformer.cs" />
+    <Compile Remove="TensorFlowEntryTimingTrainer.cs" />
     
     <!-- 레거시 AI 의존 파일들 추가 제외 -->
     <Compile Remove="CoinSpecialistLearningSystem.cs" />
@@ -133,7 +135,7 @@
     <PackageReference Include="Serilog.Sinks.Console" Version="5.0.1" />
     <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
     <PackageReference Include="Telegram.Bot" Version="22.9.0" />
-    <PackageReference Include="TensorFlow.NET" Version="0.150.0" />
+    <!-- TensorFlow.NET 제거: ML.NET으로 통합 (v3.0.7) -->
     <PackageReference Include="Velopack" Version="0.0.1298" />
   </ItemGroup>
 
