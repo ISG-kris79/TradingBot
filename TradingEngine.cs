@@ -265,6 +265,7 @@ namespace TradingBot
         public event Action<string, float, float, string>? OnWaveAIScoreUpdate; // [WaveAI] symbol, mlScore, tfScore, status
         private bool HasWaveAiScoreSubscribers => OnWaveAIScoreUpdate != null;
         public event Action<string>? OnBlockReasonUpdate; // [Entry Pipeline] 진입 차단 사유 실시간 업데이트
+        public event Action<string, decimal>? OnTrailingStopPriceUpdate; // [UI] 트레일링스탑 가격 업데이트
         public event Action<double>? OnVolumeGaugeUpdate; // [Entry Pipeline] 1분봉 볼륨 게이지 (0~100)
         public event Action<decimal>? OnDailyProfitUpdate; // [Entry Pipeline] 오늘 수익 실시간 업데이트
         /// <summary>[동적 트레일링] Exit Score + 반전확률 + 동적손절가 (symbol, exitScore 0~100, reversalProb 0~1, stopPrice)</summary>
@@ -307,6 +308,7 @@ namespace TradingBot
             OnAiEntryProbUpdate = null;
             OnWaveAIScoreUpdate = null;
             OnBlockReasonUpdate = null;
+            OnTrailingStopPriceUpdate = null;
             OnVolumeGaugeUpdate = null;
             OnDailyProfitUpdate = null;
             OnPriceProgressUpdate = null;
@@ -985,6 +987,9 @@ namespace TradingBot
                 {
                     OnLiveLog?.Invoke($"⚠️ 트레일링 스탑 갱신 오류 [{symbol}]: {ex.Message}");
                 }
+
+                // UI에 트레일링스탑 가격 반영
+                OnTrailingStopPriceUpdate?.Invoke(symbol, newStopPrice);
             };
 
             // [3파 통합] TransformerStrategy에 ElliottWave3WaveStrategy 주입
@@ -3301,8 +3306,8 @@ namespace TradingBot
 
                     if (exitAction.ActionType == ExitActionType.PartialClose50Pct)
                     {
-                        await _positionMonitor.ExecutePartialClose(symbol, 0.5m, token);
-                        OnAlert?.Invoke($"💰 [Hybrid] {symbol} 50% 부분 익절 실행 | {exitAction.Reason} | ROE: {exitAction.ROE:F1}%");
+                        if (await _positionMonitor.ExecutePartialClose(symbol, 0.5m, token))
+                            OnAlert?.Invoke($"💰 [Hybrid] {symbol} 50% 부분 익절 실행 | {exitAction.Reason} | ROE: {exitAction.ROE:F1}%");
                     }
                     else if (exitAction.ActionType == ExitActionType.FullClose)
                     {
@@ -3683,8 +3688,8 @@ namespace TradingBot
             // 1단계 부분 익절: 수익률 1.25% 도달 시 보유 물량의 50% 매도 (20x 기준 ROE 약 25%)
             if (pos.TakeProfitStep == 0 && currentProfit >= 1.25)
             {
-                await _positionMonitor.ExecutePartialClose(symbol, 0.5m, token);
-                pos.TakeProfitStep = 1; // 단계 격상
+                if (await _positionMonitor.ExecutePartialClose(symbol, 0.5m, token))
+                    pos.TakeProfitStep = 1; // 단계 격상
             }
             // 2단계 부분 익절: 수익률 2.5% 도달 시 남은 물량 전량 매도 (또는 추가 분할)
             else if (pos.TakeProfitStep == 1 && currentProfit >= 2.5)

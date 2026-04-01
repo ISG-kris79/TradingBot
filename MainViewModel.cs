@@ -1977,6 +1977,7 @@ namespace TradingBot.ViewModels
             _engine.OnCloseIncompleteStatusChanged += (symbol, isIncomplete, detail) => UpdateCloseIncompleteStatus(symbol, isIncomplete, detail);
             _engine.OnExternalSyncStatusChanged += (symbol, status, detail) => UpdateExternalSyncStatus(symbol, status, detail);
             _engine.OnTradeExecuted += HandleTradeExecuted;
+            _engine.OnTrailingStopPriceUpdate += (symbol, price) => UpdateTrailingStopPrice(symbol, price);
 
             // [추가] RL 통계 구독
             _engine.OnRLStatsUpdate += (modelName, scalpingReward, swingReward) =>
@@ -4510,6 +4511,7 @@ namespace TradingBot.ViewModels
                     existing.ProfitPercent = 0;
                     existing.TargetPrice = 0;
                     existing.StopLossPrice = 0;
+                    existing.TrailingStopPrice = 0;
                 }
 
                 string resolvedEntryStatus = ResolveEntryStatus(existing.SignalSource, existing.Decision, existing.IsPositionActive);
@@ -4518,6 +4520,21 @@ namespace TradingBot.ViewModels
 
                 if (activeChanged)
                     ConfigureMarketDataSorting();
+            });
+        }
+
+        private void UpdateTrailingStopPrice(string symbol, decimal price)
+        {
+            RunOnUI(() =>
+            {
+                if (!TryNormalizeTradingSymbol(symbol, out var normalizedSymbol))
+                    return;
+
+                var existing = GetOrCreateMarketDataItem(normalizedSymbol);
+                if (existing == null || !existing.IsPositionActive)
+                    return;
+
+                existing.TrailingStopPrice = price;
             });
         }
 

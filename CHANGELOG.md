@@ -15,6 +15,18 @@
 
  - 없음
 
+## [3.0.12] - 2026-04-01
+
+### Fixed
+
+- **부분청산 실패해도 "완료" 표시되는 버그**: `ExecutePartialClose`를 `Task<bool>` 반환으로 변경, 12개 호출부 전부 성공 여부 확인 후에만 상태 변경 + 완료 메시지 발행
+- **트레일링스탑 가격 메인창 미표시**: `OnTrailingStopPriceUpdate` 이벤트 추가, SL/TP 컬럼에 `TS:가격` 실시간 표시
+
+### Added
+
+- **주문 오류 DB 기록 (`dbo.Order_Error`)**: 부분청산 실패 시 ErrorCode, ErrorMsg, RetryCount, Resolution 기록
+- **부분청산 실패 자동 분석 + 재시도**: 거래소 실제 포지션 확인 → 수량 불일치 보정 → 재시도, 이미 청산된 경우 내부 상태 자동 정리
+
 ## [3.0.11] - 2026-04-01
 
 ### Fixed

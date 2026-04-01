@@ -1206,6 +1206,18 @@ namespace TradingBot.Models
                 OnPropertyChanged(nameof(RiskSummary));
             }
         }
+
+        private decimal _trailingStopPrice;
+        public decimal TrailingStopPrice
+        {
+            get => _trailingStopPrice;
+            set
+            {
+                _trailingStopPrice = value;
+                OnPropertyChanged(nameof(TrailingStopPrice));
+                OnPropertyChanged(nameof(RiskSummary));
+            }
+        }
         // 1. 감시 가격 요약 (예: "TP: 2.5% | SL: -1.5%")
         public string ExitStrategySummary => IsPositionActive
             ? $"TP: {TargetPrice:F2} | SL: {StopLossPrice:F2}"
@@ -1278,20 +1290,27 @@ namespace TradingBot.Models
             }
         }
 
-        // 리스크 요약 (SL/TP 가격)
+        // 리스크 요약 (SL/TP/트레일링스탑 가격)
         public string RiskSummary
         {
             get
             {
                 if (!IsPositionActive) return "-";
-                if (StopLossPrice > 0 && TargetPrice > 0)
+
+                var sl = StopLossPrice > 0 ? $"SL:{StopLossPrice:F2}" : null;
+                var tp = TargetPrice > 0 ? $"TP:{TargetPrice:F2}" : null;
+                var ts = TrailingStopPrice > 0 ? $"TS:{TrailingStopPrice:F2}" : null;
+
+                // 트레일링스탑이 활성화되면 SL 대신 TS 표시 (TS가 실질적 손절가)
+                if (ts != null)
                 {
-                    return $"SL: {StopLossPrice:F2} | TP: {TargetPrice:F2}";
+                    return tp != null ? $"{ts} | {tp}" : ts;
                 }
-                if (StopLossPrice > 0)
-                    return $"SL: {StopLossPrice:F2}";
-                if (TargetPrice > 0)
-                    return $"TP: {TargetPrice:F2}";
+
+                if (sl != null && tp != null)
+                    return $"{sl} | {tp}";
+                if (sl != null) return sl;
+                if (tp != null) return tp;
                 return "-";
             }
         }

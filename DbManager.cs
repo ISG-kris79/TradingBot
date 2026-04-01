@@ -33,6 +33,7 @@ namespace TradingBot.Services
         {
             _connectionString = connectionString;
             _ = EnsureIsSimulationColumnAsync();
+            _ = EnsureOrderErrorTableAsync();
         }
 
         private async Task EnsureIsSimulationColumnAsync()
@@ -52,6 +53,38 @@ END");
             catch (Exception ex)
             {
                 MainWindow.Instance?.AddLog($"⚠️ [DB] IsSimulation 컬럼 자동 추가 실패: {ex.Message}");
+            }
+        }
+
+        private async Task EnsureOrderErrorTableAsync()
+        {
+            try
+            {
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await db.ExecuteAsync(@"
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Order_Error' AND schema_id = SCHEMA_ID('dbo'))
+BEGIN
+    CREATE TABLE dbo.Order_Error (
+        Id          BIGINT         IDENTITY(1,1) PRIMARY KEY,
+        UserId      INT            NOT NULL DEFAULT 0,
+        EventTime   DATETIME2      NOT NULL DEFAULT SYSDATETIME(),
+        Symbol      NVARCHAR(20)   NOT NULL,
+        Side        NVARCHAR(10)   NOT NULL,
+        OrderType   NVARCHAR(30)   NOT NULL,
+        Quantity    DECIMAL(18,8)  NOT NULL,
+        ErrorCode   INT            NULL,
+        ErrorMsg    NVARCHAR(500)  NOT NULL,
+        Resolved    BIT            NOT NULL DEFAULT 0,
+        RetryCount  INT            NOT NULL DEFAULT 0,
+        Resolution  NVARCHAR(200)  NULL
+    );
+END");
+                _orderErrorTableChecked = true;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] Order_Error 테이블 자동 생성 실패: {ex.Message}");
             }
         }
 
@@ -2593,6 +2626,66 @@ VALUES
             catch (Exception ex)
             {
                 MainWindow.Instance?.AddLog($"⚠️ [DB][Bot_Log] 저장 실패: {ex.Message}");
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // [주문 오류 기록] Order_Error — 부분청산/진입 주문 실패 기록
+        // ─────────────────────────────────────────────────────────────────────
+        // DDL (최초 1회 자동 생성):
+        // CREATE TABLE dbo.Order_Error (
+        //     Id          BIGINT         IDENTITY(1,1) PRIMARY KEY,
+        //     UserId      INT            NOT NULL DEFAULT 0,
+        //     EventTime   DATETIME2      NOT NULL DEFAULT SYSDATETIME(),
+        //     Symbol      NVARCHAR(20)   NOT NULL,
+        //     Side        NVARCHAR(10)   NOT NULL,
+        //     OrderType   NVARCHAR(30)   NOT NULL,
+        //     Quantity    DECIMAL(18,8)  NOT NULL,
+        //     ErrorCode   INT            NULL,
+        //     ErrorMsg    NVARCHAR(500)  NOT NULL,
+        //     Resolved    BIT            NOT NULL DEFAULT 0,
+        //     RetryCount  INT            NOT NULL DEFAULT 0,
+        //     Resolution  NVARCHAR(200)  NULL
+        // );
+        // ─────────────────────────────────────────────────────────────────────
+
+        private static bool _orderErrorTableChecked = false;
+
+        public async Task SaveOrderErrorAsync(
+            string symbol, string side, string orderType,
+            decimal quantity, int? errorCode, string errorMsg,
+            bool resolved = false, int retryCount = 0, string? resolution = null)
+        {
+            try
+            {
+                if (!TryGetCurrentUserIdForSave($"{symbol} 주문오류", out int userId))
+                    return;
+
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                await db.ExecuteAsync(@"
+INSERT INTO dbo.Order_Error
+    (UserId, Symbol, Side, OrderType, Quantity, ErrorCode, ErrorMsg, Resolved, RetryCount, Resolution)
+VALUES
+    (@UserId, @Symbol, @Side, @OrderType, @Quantity, @ErrorCode, @ErrorMsg, @Resolved, @RetryCount, @Resolution)",
+                    new
+                    {
+                        UserId = userId,
+                        Symbol = TrimForDb(symbol, 20),
+                        Side = TrimForDb(side, 10),
+                        OrderType = TrimForDb(orderType, 30),
+                        Quantity = quantity,
+                        ErrorCode = errorCode.HasValue ? (object)errorCode.Value : DBNull.Value,
+                        ErrorMsg = TrimForDb(errorMsg, 500),
+                        Resolved = resolved,
+                        RetryCount = retryCount,
+                        Resolution = string.IsNullOrWhiteSpace(resolution) ? (object)DBNull.Value : TrimForDb(resolution, 200)
+                    });
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB][Order_Error] 저장 실패: {ex.Message}");
             }
         }
     }

@@ -559,8 +559,8 @@ namespace TradingBot.Services
                                             if (!partialTaken)
                                             {
                                                 OnLog?.Invoke($"💰 [AI Sniper] {symbol} 부분익절 | {decision.Reason}");
-                                                await ExecutePartialClose(symbol, 0.40m, token);
-                                                partialTaken = true;
+                                                if (await ExecutePartialClose(symbol, 0.40m, token))
+                                                    partialTaken = true;
                                             }
                                             break;
 
@@ -675,18 +675,21 @@ namespace TradingBot.Services
 
                         if (!partialTaken)
                         {
-                            await ExecutePartialClose(symbol, 0.40m, token);
-                            partialTaken = true;
-
-                            lock (_posLock)
+                            bool closed = await ExecutePartialClose(symbol, 0.40m, token);
+                            if (closed)
                             {
-                                if (_activePositions.TryGetValue(symbol, out var p))
-                                {
-                                    p.TakeProfitStep = Math.Max(p.TakeProfitStep, 1);
-                                }
-                            }
+                                partialTaken = true;
 
-                            OnAlert?.Invoke($"💰 {symbol} {(isBtcSymbol ? "BTC" : "메이저")} 1차 익절 40% 완료 (ROE {highestROE:F1}%)");
+                                lock (_posLock)
+                                {
+                                    if (_activePositions.TryGetValue(symbol, out var p))
+                                    {
+                                        p.TakeProfitStep = Math.Max(p.TakeProfitStep, 1);
+                                    }
+                                }
+
+                                OnAlert?.Invoke($"💰 {symbol} {(isBtcSymbol ? "BTC" : "메이저")} 1차 익절 40% 완료 (ROE {highestROE:F1}%)");
+                            }
                         }
                         
                         // TP1 이후 손절선을 +2% ROE로 상향
@@ -1118,20 +1121,22 @@ namespace TradingBot.Services
 
                         if (!partialTaken && customTpHit)
                         {
-                            await ExecutePartialClose(symbol, 0.5m, token);
-                            partialTaken = true;
-
-                            lock (_posLock)
+                            if (await ExecutePartialClose(symbol, 0.5m, token))
                             {
-                                if (_activePositions.TryGetValue(symbol, out var p))
-                                {
-                                    p.TakeProfitStep = 1;
-                                    p.BreakevenPrice = entryPrice;
-                                    p.StopLoss = entryPrice;
-                                }
-                            }
+                                partialTaken = true;
 
-                            OnLog?.Invoke($"💰 {symbol} 익절실행 [부분]");
+                                lock (_posLock)
+                                {
+                                    if (_activePositions.TryGetValue(symbol, out var p))
+                                    {
+                                        p.TakeProfitStep = 1;
+                                        p.BreakevenPrice = entryPrice;
+                                        p.StopLoss = entryPrice;
+                                    }
+                                }
+
+                                OnLog?.Invoke($"💰 {symbol} 익절실행 [부분]");
+                            }
                         }
 
                         if (partialTaken)
@@ -1179,21 +1184,23 @@ namespace TradingBot.Services
                     {
                         if (TryGetCurrentBbWidthPct(symbol, out decimal currentBbWidthPct) && currentBbWidthPct > 0m && currentBbWidthPct <= squeezeDefenseBbWidthThreshold)
                         {
-                            await ExecutePartialClose(symbol, 0.5m, token);
-                            partialTaken = true;
-                            squeezeDefenseReduced = true;
-
-                            lock (_posLock)
+                            if (await ExecutePartialClose(symbol, 0.5m, token))
                             {
-                                if (_activePositions.TryGetValue(symbol, out var p))
-                                {
-                                    p.TakeProfitStep = Math.Max(p.TakeProfitStep, 1);
-                                    p.BreakevenPrice = entryPrice;
-                                    p.StopLoss = entryPrice;
-                                }
-                            }
+                                partialTaken = true;
+                                squeezeDefenseReduced = true;
 
-                            OnLog?.Invoke($"📦 [스퀴즈 방어 축소] {symbol} {holdingTime.TotalMinutes:F0}분 경과 + BB폭 {currentBbWidthPct:F2}% → 50% 축소 후 본절 보호 전환");
+                                lock (_posLock)
+                                {
+                                    if (_activePositions.TryGetValue(symbol, out var p))
+                                    {
+                                        p.TakeProfitStep = Math.Max(p.TakeProfitStep, 1);
+                                        p.BreakevenPrice = entryPrice;
+                                        p.StopLoss = entryPrice;
+                                    }
+                                }
+
+                                OnLog?.Invoke($"📦 [스퀴즈 방어 축소] {symbol} {holdingTime.TotalMinutes:F0}분 경과 + BB폭 {currentBbWidthPct:F2}% → 50% 축소 후 본절 보호 전환");
+                            }
                             continue;
                         }
                     }
@@ -1552,9 +1559,9 @@ namespace TradingBot.Services
                 if (!spikePartialTaken && prevCheckROE > -999m && currentROE > 0
                     && (currentROE - prevCheckROE) >= 15.0m && currentROE >= 20.0m)
                 {
-                    spikePartialTaken = true;
                     OnAlert?.Invoke($"⚡ {symbol} 급등 스파이크 감지! ROE {prevCheckROE:F1}%→{currentROE:F1}% (+{currentROE - prevCheckROE:F1}%) → 즉시 20% 부분익절");
-                    await ExecutePartialClose(symbol, 0.20m, token);
+                    if (await ExecutePartialClose(symbol, 0.20m, token))
+                        spikePartialTaken = true;
                 }
                 prevCheckROE = currentROE;
 
@@ -1619,20 +1626,22 @@ namespace TradingBot.Services
                     bool tp1Condition = currentPrice >= wave1HighPrice || currentROE >= pumpTp1Roe;
                     if (elliotWavePos.PartialProfitStage == 0 && tp1Condition)
                     {
-                        await ExecutePartialClose(symbol, firstPartialCloseRatio, token); // 15% 매도
-                        lock (_posLock)
+                        if (await ExecutePartialClose(symbol, firstPartialCloseRatio, token)) // 15% 매도
                         {
-                            if (_activePositions.TryGetValue(symbol, out var p))
+                            lock (_posLock)
                             {
-                                p.PartialProfitStage = 1;
-                                // [PUMP 추세홀딩] 1차 후 최소 수익선(ROE +5%) 확보
-                                decimal lockRoe = 5.0m;
-                                p.BreakevenPrice = entryPrice * (1m + (lockRoe / (leverage * 100m)));
+                                if (_activePositions.TryGetValue(symbol, out var p))
+                                {
+                                    p.PartialProfitStage = 1;
+                                    // [PUMP 추세홀딩] 1차 후 최소 수익선(ROE +5%) 확보
+                                    decimal lockRoe = 5.0m;
+                                    p.BreakevenPrice = entryPrice * (1m + (lockRoe / (leverage * 100m)));
+                                }
                             }
+                            string tp1Trigger = currentPrice >= wave1HighPrice ? $"Fib1.0(전고점) {wave1HighPrice:F8}" : $"ROE {pumpTp1Roe:F1}% 달성 ({currentROE:F1}%)";
+                            OnAlert?.Invoke($"💰 {symbol} 1차 익절 ({firstPartialCloseRatio * 100m:F0}%) | 트리거: {tp1Trigger} | 생존선(ROE+5%) 설정");
+                            OnLog?.Invoke($"✅ {symbol} 1차 익절 완료(Stage=1), 다음 목표: Fib1.618 {fib1618Target:F8} 또는 ROE {pumpTp2Roe:F1}%");
                         }
-                        string tp1Trigger = currentPrice >= wave1HighPrice ? $"Fib1.0(전고점) {wave1HighPrice:F8}" : $"ROE {pumpTp1Roe:F1}% 달성 ({currentROE:F1}%)";
-                        OnAlert?.Invoke($"💰 {symbol} 1차 익절 ({firstPartialCloseRatio * 100m:F0}%) | 트리거: {tp1Trigger} | 생존선(ROE+5%) 설정");
-                        OnLog?.Invoke($"✅ {symbol} 1차 익절 완료(Stage=1), 다음 목표: Fib1.618 {fib1618Target:F8} 또는 ROE {pumpTp2Roe:F1}%");
                     }
 
                     // 2차 익절: Fib1.618 도달 OR 설정 ROE 달성 시 30% 매도
@@ -1659,18 +1668,20 @@ namespace TradingBot.Services
                             OnLog?.Invoke($"⚠️ [{symbol}] ElliottWave 부분익절 RSI 계산 오류: {ex.Message}");
                         }
 
-                        await ExecutePartialClose(symbol, secondRatio, token);
-                        lock (_posLock)
+                        if (await ExecutePartialClose(symbol, secondRatio, token))
                         {
-                            if (_activePositions.TryGetValue(symbol, out var p))
+                            lock (_posLock)
                             {
-                                p.PartialProfitStage = 2;
-                                p.BreakevenPrice = wave1HighPrice > 0 ? wave1HighPrice : p.BreakevenPrice; // 마디가 추격 (Fib1.0로 상향)
+                                if (_activePositions.TryGetValue(symbol, out var p))
+                                {
+                                    p.PartialProfitStage = 2;
+                                    p.BreakevenPrice = wave1HighPrice > 0 ? wave1HighPrice : p.BreakevenPrice; // 마디가 추격 (Fib1.0로 상향)
+                                }
                             }
+                            string tp2Trigger = currentPrice >= fib1618Target ? $"Fib1.618 {fib1618Target:F8}" : $"ROE {pumpTp2Roe:F1}% 달성 ({currentROE:F1}%)";
+                            OnAlert?.Invoke($"💰 {symbol} 2차 익절 ({secondRatio * 100m:F0}%) | 트리거: {tp2Trigger} | 스탑 상향: Fib1.0");
+                            OnLog?.Invoke($"✅ {symbol} 2차 익절 완료(Stage=2), 잔량은 밴드라이딩/다이버전스 추격 관리");
                         }
-                        string tp2Trigger = currentPrice >= fib1618Target ? $"Fib1.618 {fib1618Target:F8}" : $"ROE {pumpTp2Roe:F1}% 달성 ({currentROE:F1}%)";
-                        OnAlert?.Invoke($"💰 {symbol} 2차 익절 ({secondRatio * 100m:F0}%) | 트리거: {tp2Trigger} | 스탑 상향: Fib1.0");
-                        OnLog?.Invoke($"✅ {symbol} 2차 익절 완료(Stage=2), 잔량은 밴드라이딩/다이버전스 추격 관리");
                     }
 
                     // 최종 익절: Fib2.618 도달 시 잔량 정리
@@ -1892,9 +1903,11 @@ namespace TradingBot.Services
 
                 if (currentTpStep == 0 && currentROE >= partialTakeProfitROE)
                 {
-                    await ExecutePartialClose(symbol, firstPartialCloseRatio, token);
-                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.TakeProfitStep = 1; }
-                    OnAlert?.Invoke($"💰 {symbol} 1차 익절 ({firstPartialCloseRatio * 100m:F0}%) & 생존선 확보 (ROE: {currentROE:F2}%)");
+                    if (await ExecutePartialClose(symbol, firstPartialCloseRatio, token))
+                    {
+                        lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.TakeProfitStep = 1; }
+                        OnAlert?.Invoke($"💰 {symbol} 1차 익절 ({firstPartialCloseRatio * 100m:F0}%) & 생존선 확보 (ROE: {currentROE:F2}%)");
+                    }
                 }
 
                 if (!isAveraged && !isBreakEvenTriggered && currentROE <= averageDownROE)
@@ -1960,9 +1973,11 @@ namespace TradingBot.Services
 
                         if (pos != null && pos.TakeProfitStep == 0)
                         {
-                            await ExecutePartialClose(symbol, firstPartialCloseRatio, token);
-                            lock (_posLock) { if (_activePositions.ContainsKey(symbol)) _activePositions[symbol].TakeProfitStep = 1; }
-                            OnAlert?.Invoke($"💰 {symbol} 1차 트레일링 익절 ({firstPartialCloseRatio * 100m:F0}%) | ROE: {currentROE:F1}%");
+                            if (await ExecutePartialClose(symbol, firstPartialCloseRatio, token))
+                            {
+                                lock (_posLock) { if (_activePositions.ContainsKey(symbol)) _activePositions[symbol].TakeProfitStep = 1; }
+                                OnAlert?.Invoke($"💰 {symbol} 1차 트레일링 익절 ({firstPartialCloseRatio * 100m:F0}%) | ROE: {currentROE:F1}%");
+                            }
                             // [수정] highestROE 리셋 제거 - 남은 50%도 원래 최고가 기준으로 추적
                         }
                         else
@@ -3005,7 +3020,7 @@ namespace TradingBot.Services
             }
         }
 
-        public async Task ExecutePartialClose(string symbol, decimal ratio, CancellationToken token)
+        public async Task<bool> ExecutePartialClose(string symbol, decimal ratio, CancellationToken token)
         {
             MarkCloseStarted(symbol);
             try
@@ -3013,7 +3028,7 @@ namespace TradingBot.Services
                 if (ratio <= 0 || ratio >= 1)
                 {
                     OnLog?.Invoke($"⚠️ {symbol} 부분청산 비율이 유효하지 않습니다: {ratio}");
-                    return;
+                    return false;
                 }
 
                 PositionInfo? localPosition;
@@ -3025,7 +3040,7 @@ namespace TradingBot.Services
                 if (localPosition == null)
                 {
                     OnLog?.Invoke($"⚠️ {symbol} 부분청산 실패: 내부 포지션 없음");
-                    return;
+                    return false;
                 }
 
                 var side = localPosition.IsLong ? "SELL" : "BUY";
@@ -3035,7 +3050,7 @@ namespace TradingBot.Services
                 if (closeQty <= 0)
                 {
                     OnLog?.Invoke($"⚠️ {symbol} 부분청산 수량 계산 실패: 현재={currentQty}, 비율={ratio}");
-                    return;
+                    return false;
                 }
 
                 OnLog?.Invoke($"[부분청산 시도] {symbol} {side} {closeQty} ({ratio:P0})");
@@ -3043,8 +3058,83 @@ namespace TradingBot.Services
 
                 if (!success)
                 {
-                    OnAlert?.Invoke($"❌ {symbol} 부분청산 실패 (거래소 주문 실패)");
-                    return;
+                    // [오류 분석 + 재시도] 거래소 실제 포지션 확인 후 수량 보정 재시도
+                    OnLog?.Invoke($"⚠️ {symbol} 부분청산 1차 실패 → 거래소 포지션 재확인 중...");
+
+                    string errorMsg = "거래소 주문 실패";
+                    int? errorCode = null;
+                    decimal retryQty = 0;
+                    string? resolution = null;
+
+                    try
+                    {
+                        var exchangePositions = await _exchangeService.GetPositionsAsync(ct: token);
+                        var realPos = exchangePositions.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.Quantity) > 0);
+
+                        if (realPos == null)
+                        {
+                            // 거래소에 포지션 없음 → 이미 청산됨
+                            errorMsg = "거래소에 포지션 없음 (이미 청산됨)";
+                            errorCode = -2022;
+                            resolution = "포지션 이미 청산 확인";
+                            OnLog?.Invoke($"ℹ️ {symbol} 거래소에 포지션 없음 - 이미 청산된 것으로 판단");
+
+                            // 내부 상태 정리
+                            CleanupPositionData(symbol);
+
+                            _ = _dbManager.SaveOrderErrorAsync(symbol, side, "PartialClose", closeQty, errorCode, errorMsg, true, 0, resolution);
+                            return false;
+                        }
+
+                        decimal realQty = Math.Abs(realPos.Quantity);
+                        retryQty = Math.Round(realQty * ratio, 6, MidpointRounding.AwayFromZero);
+
+                        if (retryQty <= 0)
+                        {
+                            errorMsg = $"재계산 수량 0 이하 (실제={realQty}, 비율={ratio})";
+                            OnLog?.Invoke($"⚠️ {symbol} {errorMsg}");
+                            _ = _dbManager.SaveOrderErrorAsync(symbol, side, "PartialClose", closeQty, null, errorMsg, false, 0, null);
+                            OnAlert?.Invoke($"❌ {symbol} 부분청산 실패 ({errorMsg})");
+                            return false;
+                        }
+
+                        // 내부 수량과 거래소 수량 불일치 시 내부 상태 보정
+                        if (Math.Abs(realQty - currentQty) > 0.000001m)
+                        {
+                            OnLog?.Invoke($"🔧 {symbol} 수량 불일치 보정: 내부={currentQty} → 거래소={realQty}");
+                            lock (_posLock)
+                            {
+                                if (_activePositions.TryGetValue(symbol, out var p))
+                                    p.Quantity = localPosition.IsLong ? realQty : -realQty;
+                            }
+                            currentQty = realQty;
+                        }
+
+                        OnLog?.Invoke($"[부분청산 재시도] {symbol} {side} {retryQty} (실제 포지션 기준)");
+                        success = await _exchangeService.PlaceOrderAsync(symbol, side, retryQty, null, token, reduceOnly: true);
+
+                        if (success)
+                        {
+                            resolution = $"수량 보정 재시도 성공 ({closeQty}→{retryQty})";
+                            closeQty = retryQty;
+                            OnLog?.Invoke($"✅ {symbol} 부분청산 재시도 성공");
+                            _ = _dbManager.SaveOrderErrorAsync(symbol, side, "PartialClose", retryQty, null, "1차 실패 후 수량 보정 재시도", true, 1, resolution);
+                        }
+                        else
+                        {
+                            errorMsg = $"수량 보정 재시도도 실패 (retryQty={retryQty})";
+                            _ = _dbManager.SaveOrderErrorAsync(symbol, side, "PartialClose", retryQty, null, errorMsg, false, 1, null);
+                            OnAlert?.Invoke($"❌ {symbol} 부분청산 실패 (재시도 후에도 실패)");
+                            return false;
+                        }
+                    }
+                    catch (Exception retryEx)
+                    {
+                        errorMsg = $"재시도 중 예외: {retryEx.Message}";
+                        _ = _dbManager.SaveOrderErrorAsync(symbol, side, "PartialClose", closeQty, null, errorMsg, false, 1, null);
+                        OnAlert?.Invoke($"❌ {symbol} 부분청산 실패 ({retryEx.Message})");
+                        return false;
+                    }
                 }
 
                 decimal remainingQty = Math.Max(0, currentQty - closeQty);
@@ -3153,7 +3243,7 @@ namespace TradingBot.Services
                     // [텔레그램] 부분청산→전량 체결 알림
                     decimal totalPnlFull = _riskManager?.DailyRealizedPnl ?? 0m;
                     _ = NotificationService.Instance.NotifyProfitAsync(symbol, pnl, pnlPercent, totalPnlFull);
-                    return;
+                    return true;
                 }
 
                 var partialLog = new TradeLog(
@@ -3215,10 +3305,13 @@ namespace TradingBot.Services
                     }
                     catch { /* 텔레그램 실패 무시 */ }
                 });
+
+                return true;
             }
             catch (Exception ex)
             {
                 OnLog?.Invoke($"⚠️ {symbol} 부분청산 예외: {ex.Message}");
+                return false;
             }
             finally
             {
