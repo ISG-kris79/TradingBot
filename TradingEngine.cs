@@ -6516,32 +6516,33 @@ namespace TradingBot
             };
 
             // ═══════════════════════════════════════════════════════════════
-            // [ROUTER] 사이즈 멀티플라이어: 각 소스에서 가장 낮은 값 하나를 선정
-            // 절대 Math.Min 체이닝으로 누적하지 않음 — 가장 보수적인 값 하나만 적용
+            // [ROUTER] 사이즈 결정: 정찰대 vs 메인 명확히 분리
             // ═══════════════════════════════════════════════════════════════
-            decimal lowestSizeMultiplier = 1.0m;
+            decimal finalSizeMultiplier;
 
-            // AI Gate advisor
-            if (aiGateSizeMultiplier < lowestSizeMultiplier)
-                lowestSizeMultiplier = aiGateSizeMultiplier;
-            // ML 3분류
-            if (mlSignalSizeMultiplier < lowestSizeMultiplier)
-                lowestSizeMultiplier = mlSignalSizeMultiplier;
-            // ATR 변동성
-            if (atrSizeMultiplier < lowestSizeMultiplier)
-                lowestSizeMultiplier = atrSizeMultiplier;
-            // 정찰대 모드
-            if (scoutModeActivated && 0.30m < lowestSizeMultiplier)
-                lowestSizeMultiplier = 0.30m;
-            // 외부 전달 manualSizeMultiplier (기본 1.0)
-            if (manualSizeMultiplier < lowestSizeMultiplier)
-                lowestSizeMultiplier = manualSizeMultiplier;
-            // ML boost: 1.3m은 다른 축소가 없을 때만 적용
-            if (mlSignalSizeMultiplier > 1.0m && lowestSizeMultiplier >= 1.0m)
-                lowestSizeMultiplier = mlSignalSizeMultiplier;
+            if (scoutModeActivated)
+            {
+                // [정찰대] 슬롯 포화 → 30% 고정, AI 축소 무시
+                finalSizeMultiplier = 0.30m;
+                EntryLog("SIZE", "SCOUT", $"slotFull=true → 30% 고정 (AI축소 무시)");
+            }
+            else
+            {
+                // [메인 진입] 100% 기본, 3분류 모델만 사이즈 조절
+                finalSizeMultiplier = 1.0m;
 
-            // 바닥: 최소 10%
-            ctx.SizeMultiplier = Math.Clamp(lowestSizeMultiplier, 0.10m, 2.00m);
+                // 3분류 모델: 같은 방향이면 부스트, 반대면 축소
+                if (mlSignalSizeMultiplier != 1.0m)
+                    finalSizeMultiplier = mlSignalSizeMultiplier;
+
+                // 외부 전달 manualSizeMultiplier (기본 1.0)
+                if (manualSizeMultiplier < finalSizeMultiplier)
+                    finalSizeMultiplier = manualSizeMultiplier;
+
+                EntryLog("SIZE", "MAIN", $"base=100% mlSignal={mlSignalSizeMultiplier:P0} manual={manualSizeMultiplier:P0} → {finalSizeMultiplier:P0}");
+            }
+
+            ctx.SizeMultiplier = Math.Clamp(finalSizeMultiplier, 0.10m, 2.00m);
 
             // ═══════════════════════════════════════════════════════════════
             // [DISPATCH] Major/Pump x Long/Short
@@ -7245,6 +7246,23 @@ namespace TradingBot
 
                         if (ctx.CustomStopLossPrice > 0)
                             pos.StopLoss = ctx.CustomStopLossPrice;
+
+                        // [v3.0.11] TP 가격 계산 — ROE% 기준 목표가 설정 (UI 표시용)
+                        if (ctx.CustomTakeProfitPrice > 0)
+                        {
+                            pos.TakeProfit = ctx.CustomTakeProfitPrice;
+                        }
+                        else if (pos.Leverage > 0 && pos.EntryPrice > 0)
+                        {
+                            // TP1 ROE%를 가격으로 변환: BTC=20%, ETH/SOL/XRP=30%, PUMP=25%
+                            decimal tp1Roe = pos.IsPumpStrategy ? 25.0m
+                                : (symbol.StartsWith("BTC", StringComparison.OrdinalIgnoreCase) ? 20.0m : 30.0m);
+                            decimal tpPriceDelta = pos.EntryPrice * (tp1Roe / pos.Leverage / 100m);
+                            pos.TakeProfit = pos.IsLong
+                                ? pos.EntryPrice + tpPriceDelta
+                                : pos.EntryPrice - tpPriceDelta;
+                        }
+
                         orderPlaced = true;
                     }
                 }
@@ -7402,6 +7420,16 @@ namespace TradingBot
                 else
                 {
                     TryStartStandardMonitor(symbol, actualEntryPrice, decision == "LONG", ctx.Mode, ctx.CustomTakeProfitPrice, ctx.CustomStopLossPrice, ctx.Token, "new-entry");
+                }
+
+                // [v3.0.11] 정찰대 진입 → ROE 기반 메인 전환 태스크
+                if (ctx.ScoutModeActivated && !ctx.IsScoutAddOnOrder)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try { await MonitorScoutToMainUpgradeAsync(symbol, decision, actualEntryPrice, leverage, ctx.Token); }
+                        catch (Exception scoutEx) { OnStatusLog?.Invoke($"⚠️ [Scout→Main] {symbol} 전환 모니터 오류: {scoutEx.Message}"); }
+                    }, ctx.Token);
                 }
             }
             catch (TaskCanceledException tcEx)
@@ -9520,6 +9548,117 @@ namespace TradingBot
             catch (Exception ex)
             {
                 OnStatusLog?.Invoke($"⚠️ [TradeSignal] 초기화 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// [v3.0.11] 정찰대(30%) 진입 후 ROE 기반으로 메인(70%) 추가 진입 모니터
+        /// ROE +5%: 즉시(2분 후), +2%: 5분 후, 0~2%: 10분 후, 음수: 추가 안 함, 15분 경과: 포기
+        /// </summary>
+        private async Task MonitorScoutToMainUpgradeAsync(string symbol, string decision, decimal scoutEntryPrice, decimal leverage, CancellationToken token)
+        {
+            const int CheckIntervalMs = 5000;  // 5초마다 체크
+            const int MaxWaitMinutes = 15;     // 최대 대기 15분
+            const int MinWaitSeconds = 120;    // 최소 대기 2분
+
+            DateTime scoutTime = DateTime.Now;
+            OnStatusLog?.Invoke($"🛰️ [Scout→Main] {symbol} {decision} 정찰대 진입 완료 → 메인 전환 모니터 시작 (최대 {MaxWaitMinutes}분)");
+
+            while (!token.IsCancellationRequested)
+            {
+                await Task.Delay(CheckIntervalMs, token);
+
+                var elapsed = DateTime.Now - scoutTime;
+                if (elapsed.TotalMinutes >= MaxWaitMinutes)
+                {
+                    OnStatusLog?.Invoke($"⏰ [Scout→Main] {symbol} {MaxWaitMinutes}분 경과 → 메인 전환 포기 (정찰대만 유지)");
+                    return;
+                }
+
+                // 포지션 확인
+                PositionInfo? pos;
+                lock (_posLock)
+                {
+                    _activePositions.TryGetValue(symbol, out pos);
+                }
+
+                if (pos == null || pos.Quantity <= 0)
+                {
+                    OnStatusLog?.Invoke($"ℹ️ [Scout→Main] {symbol} 포지션 없음 → 메인 전환 종료");
+                    return;
+                }
+
+                // 현재 ROE 계산
+                decimal currentPrice = 0m;
+                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var tick))
+                    currentPrice = tick.LastPrice;
+
+                if (currentPrice <= 0 || pos.EntryPrice <= 0)
+                    continue;
+
+                decimal priceDiff = pos.IsLong
+                    ? (currentPrice - pos.EntryPrice)
+                    : (pos.EntryPrice - currentPrice);
+                decimal currentROE = (priceDiff / pos.EntryPrice) * leverage * 100m;
+
+                // ROE 기반 메인 전환 판단
+                decimal mainSizeMultiplier;
+                int requiredWaitSeconds;
+
+                if (currentROE >= 5.0m)
+                {
+                    mainSizeMultiplier = 0.70m; // 70% 추가 (모멘텀 확인됨)
+                    requiredWaitSeconds = MinWaitSeconds;
+                }
+                else if (currentROE >= 2.0m)
+                {
+                    mainSizeMultiplier = 0.50m; // 50% 추가 (방향 확인)
+                    requiredWaitSeconds = 300; // 5분
+                }
+                else if (currentROE >= 0m)
+                {
+                    mainSizeMultiplier = 0.30m; // 30% 추가 (약한 방향)
+                    requiredWaitSeconds = 600; // 10분
+                }
+                else
+                {
+                    // ROE 음수: 추가하지 않음, 대기 계속
+                    continue;
+                }
+
+                if (elapsed.TotalSeconds < requiredWaitSeconds)
+                    continue;
+
+                // 슬롯 여유 확인
+                bool canAddMain;
+                lock (_posLock)
+                {
+                    int totalPositions = _activePositions.Count;
+                    canAddMain = totalPositions < MAX_TOTAL_SLOTS;
+                }
+
+                if (!canAddMain)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [Scout→Main] {symbol} 슬롯 포화 → 메인 추가 불가");
+                    return;
+                }
+
+                // 메인 진입 실행
+                OnStatusLog?.Invoke($"🚀 [Scout→Main] {symbol} {decision} 메인 전환! ROE={currentROE:F1}% 경과={elapsed.TotalMinutes:F1}분 → 사이즈 {mainSizeMultiplier:P0} 추가");
+
+                try
+                {
+                    await ExecuteAutoOrder(
+                        symbol, decision, currentPrice, token,
+                        signalSource: "SCOUT_TO_MAIN",
+                        manualSizeMultiplier: mainSizeMultiplier);
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [Scout→Main] {symbol} 메인 추가 실패: {ex.Message}");
+                }
+
+                return; // 1회만 실행
             }
         }
 

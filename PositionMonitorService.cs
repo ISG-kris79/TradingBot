@@ -743,26 +743,27 @@ namespace TradingBot.Services
                             {
                                 decimal oldStop = protectiveStopPrice;
                                 protectiveStopPrice = newStopPrice;
-                                OnLog?.Invoke($"📈 {symbol} 트레일링갱신 ▲");
+                                // [v3.0.11] PositionInfo에 트레일링 SL 실시간 반영 (UI 표시용)
+                                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopLoss = protectiveStopPrice; }
+                                OnLog?.Invoke($"📈 {symbol} 트레일링갱신 ▲ SL={protectiveStopPrice:F4}");
                             }
                         }
                         else // 숏 포지션
                         {
-                            // 숏: 최저가 + 0.15% 간격
                             decimal newStopPrice = currentPriceForTrailing * (1 + tightGapPercent);
-                            
-                            // ROE 18% 위로는 절대 올라가지 않음
+
                             decimal minLockPrice = entryPrice * (1 - minLockROE / leverage / 100);
                             if (newStopPrice > minLockPrice)
                                 newStopPrice = minLockPrice;
-                            
-                            // 스탑 가격 하락만 허용 (절대 뒤로 물러나지 않음)
+
                             if (protectiveStopPrice == 0m || newStopPrice < protectiveStopPrice)
                             {
                                 decimal oldStop = protectiveStopPrice;
                                 protectiveStopPrice = newStopPrice;
+                                // [v3.0.11] PositionInfo에 트레일링 SL 실시간 반영 (UI 표시용)
+                                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopLoss = protectiveStopPrice; }
                                 if (oldStop > 0)
-                                    OnLog?.Invoke($"📉 {symbol} 트레일링갱신 ▼");
+                                    OnLog?.Invoke($"📉 {symbol} 트레일링갱신 ▼ SL={protectiveStopPrice:F4}");
                             }
                         }
 

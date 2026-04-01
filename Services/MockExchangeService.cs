@@ -562,10 +562,7 @@ namespace TradingBot.Services
                 return (false, 0m, 0m);
             }
 
-            if (_random.NextDouble() < 0.01)
-            {
-                return (false, 0m, 0m);
-            }
+            // [v3.0.11] 시뮬레이션 랜덤 실패 제거 — 실거래에서만 발생하는 오류를 시뮬에서 재현할 필요 없음
 
             decimal slippage = (decimal)(_random.NextDouble() * 0.001);
             decimal execPrice = side.ToUpper() == "BUY"
