@@ -15,6 +15,27 @@
 
  - 없음
 
+## [3.0.9] - 2026-04-01
+
+### Added
+
+- **PUMP 전용 ML 모델 (PumpSignalClassifier)**: 급등 패턴 특화 이진 분류
+  - 18개 피처: 거래량 급증(3/5봉), 가격 변화율(3/5/10봉), RSI 변화량, BB 돌파 강도, MACD 가속도, ATR 비율, Higher Lows, 연속 양봉 등
+  - 라벨: 30분 내 +2% 이상 상승 → 진입(1), 그 외 → 관망(0)
+  - PumpScanStrategy에서 규칙 기반 + ML 결합 판단
+
+### Changed
+
+- **PUMP SHORT 제거**: 급등 코인은 LONG만 허용 (숏은 리스크만 큼)
+- **PUMP 신호 조건 완화**:
+  - 후보 20개 → **40개**로 확대
+  - longThreshold 55~65 → **40~55**로 하향
+  - RSI 75+ 감점 제거 → +3 보너스 (급등 모멘텀 유지)
+  - BB 상단 돌파: 감점 → +5 강세 신호 (RSI 85+만 감점)
+  - MACD Hist >= -0.001 → **>= -0.01** 완화
+  - bullishStructure: 엘리엇 OR Higher Lows OR **가격>SMA20** (OR 조건 확대)
+  - ML 모델 60%+ 확률이면 규칙 미통과여도 LONG 진입 가능
+
 ## [3.0.8] - 2026-04-01
 
 ### Changed

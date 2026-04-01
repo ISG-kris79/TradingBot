@@ -10,14 +10,15 @@ namespace TradingBot.Strategies
     public class PumpScanStrategy : ITradingStrategy
     {
         private static readonly TimeZoneInfo SeoulTimeZone = GetSeoulTimeZone();
-        private const int PumpCandidateCount = 20;
-        private const int PumpRecoveryCandidateCount = 60;
+        private const int PumpCandidateCount = 40;
+        private const int PumpRecoveryCandidateCount = 80;
         private const decimal VolumeWeight = 0.50m;
         private const decimal VolatilityWeight = 0.20m;
         private const decimal MomentumWeight = 0.30m;
 
         private readonly IBinanceRestClient _client;
         private readonly PumpScanSettings _settings;
+        private readonly TradingBot.Services.PumpSignalClassifier? _pumpML;
         private DateTime _lastProfileLogTime = DateTime.MinValue;
 
         public event Action<MultiTimeframeViewModel>? OnSignalAnalyzed;
@@ -30,10 +31,11 @@ namespace TradingBot.Strategies
             OnLog?.Invoke($"📡 [SIGNAL][PUMP][{stage}] {detail}");
         }
 
-        public PumpScanStrategy(IBinanceRestClient client, List<string> watchSymbols, PumpScanSettings settings)
+        public PumpScanStrategy(IBinanceRestClient client, List<string> watchSymbols, PumpScanSettings settings, TradingBot.Services.PumpSignalClassifier? pumpML = null)
         {
             _client = client;
             _settings = settings ?? new PumpScanSettings();
+            _pumpML = pumpML;
         }
 
         public async Task AnalyzeAsync(string symbol, decimal currentPrice, CancellationToken token)
@@ -255,25 +257,39 @@ namespace TradingBot.Strategies
                 int longThreshold = CalculateDynamicThreshold(isKstDaytime, volumeMomentum, isMakingHigherLows, profile);
                 int shortThreshold = isKstDaytime ? 30 : 25;
 
+                // [v3.0.9] PUMP은 LONG만 — SHORT 제거
                 string decision = "WAIT";
-                if (aiScore >= longThreshold)
-                {
-                    bool bullishStructure = isUptrend || (isMakingHigherLows && currentPrice > (decimal)sma20);
-                    bool longConfirm = bullishStructure && macd.Hist >= -0.001 &&
-                                       (volumeMomentum >= profile.LongConfirmVolumeMin || allowLowVolumeTrendBypass);
-                    if (longConfirm) decision = "LONG";
-                }
-                else if (aiScore <= shortThreshold)
-                {
-                    bool isStrongBearish =
-                        !isUptrend &&
-                        macd.Hist < 0 &&
-                        currentPrice < (decimal)sma20 &&
-                        volumeRatio >= 1.10 &&
-                        currentPrice < (decimal)fib.Level618;
 
-                    if (isStrongBearish)
-                        decision = "SHORT";
+                // ML 모델 예측 (있으면 우선)
+                bool mlSignal = false;
+                float mlProb = 0f;
+                if (_pumpML != null && _pumpML.IsModelLoaded)
+                {
+                    var mlFeature = TradingBot.Services.PumpSignalClassifier.ExtractFeature(list);
+                    if (mlFeature != null)
+                    {
+                        var pred = _pumpML.Predict(mlFeature);
+                        if (pred != null)
+                        {
+                            mlSignal = pred.ShouldEnter;
+                            mlProb = pred.Probability;
+                        }
+                    }
+                }
+
+                // 규칙 기반 + ML 결합
+                bool rulePass = aiScore >= longThreshold;
+                bool structureOk = isUptrend || isMakingHigherLows || currentPrice > (decimal)sma20;
+                bool momentumOk = macd.Hist >= -0.01 || volumeMomentum >= 1.0 || allowLowVolumeTrendBypass;
+
+                if (rulePass && structureOk && momentumOk)
+                {
+                    decision = "LONG"; // 규칙 기반 통과
+                }
+                else if (mlSignal && mlProb >= 0.60f)
+                {
+                    decision = "LONG"; // ML 모델이 60%+ 확률로 진입 권장
+                    PumpSignalLog("ML_ENTRY", $"sym={symbol} prob={mlProb:P0} ruleScore={aiScore} (규칙 미통과지만 ML 통과)");
                 }
 
                 try
@@ -463,8 +479,9 @@ namespace TradingBot.Strategies
 
             if (currentPrice > (decimal)sma20 && sma20 > sma50) score += 10;
 
-            if (rsi >= 45 && rsi <= 68) score += 10;
-            else if (rsi > 75) score -= 10;
+            // [v3.0.9] RSI 과매수 감점 완화 — 급등 코인은 RSI 높은 게 정상
+            if (rsi >= 45 && rsi <= 75) score += 10;
+            else if (rsi > 75) score += 3; // 급등 모멘텀 유지 (기존 -10 → +3)
             else if (rsi < 35) score -= 6;
 
             if (macd.Hist > 0) score += 10;
@@ -477,7 +494,9 @@ namespace TradingBot.Strategies
             if (price >= bb.Mid) score += 6;
             else score -= 6;
 
-            if (price > bb.Upper && rsi > 72) score -= 8;
+            // [v3.0.9] BB 상단 돌파 감점 완화 — 급등 시 BB 상단 돌파는 강세 신호
+            if (price > bb.Upper && rsi > 85) score -= 5; // 극단 과열만 감점 (기존 72 → 85)
+            else if (price > bb.Upper) score += 5; // BB 돌파 = 강세
             else if (price < bb.Lower && rsi < 30) score += 6;
 
             if (volumeMomentum >= 1.10) score += 10;
@@ -491,12 +510,13 @@ namespace TradingBot.Strategies
 
         private static int CalculateDynamicThreshold(bool isKstDaytime, double volumeMomentum, bool isMakingHigherLows, MajorProfile profile)
         {
-            int threshold = isKstDaytime ? 60 : 65;
+            // [v3.0.9] 진입 기준 완화: 60~65 → 50~55
+            int threshold = isKstDaytime ? 50 : 55;
 
-            if (volumeMomentum >= 1.10) threshold -= 3;
+            if (volumeMomentum >= 1.10) threshold -= 5;
             if (isMakingHigherLows) threshold -= profile.HigherLowThresholdDiscount;
 
-            return Math.Max(55, threshold);
+            return Math.Max(40, threshold); // 최소 40점 (기존 55)
         }
 
         private static bool IsMakingHigherLows(List<IBinanceKline> candles, int segmentSize, decimal minRiseRatio)

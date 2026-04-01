@@ -159,6 +159,7 @@ namespace TradingBot
         // [수익률 회귀] 진입 시 예상 수익률 예측 + 동적 포지션 사이징
         private readonly TradingBot.Services.ProfitRegressorService _profitRegressor = new();
         private readonly TradingBot.Services.TradeSignalClassifier _tradeSignalClassifier = new();
+        private readonly TradingBot.Services.PumpSignalClassifier _pumpSignalClassifier = new();
         private DateTime _lastSsaTrainTime = DateTime.MinValue;
         private TradingBot.Services.SsaForecastResult? _latestSsaResult;
 
@@ -650,6 +651,9 @@ namespace TradingBot
             // [3분류 매매 신호] 모델 로드 + DB 학습
             _tradeSignalClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
             _ = InitTradeSignalClassifierAsync();
+            // [PUMP ML] 초기화
+            _pumpSignalClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _pumpSignalClassifier.LoadModel();
             // [수익률 회귀] 로그 연결 + DB 과거 거래 학습
             _profitRegressor.OnLog += msg => OnStatusLog?.Invoke(msg);
             _ = Task.Run(async () =>
@@ -736,7 +740,7 @@ namespace TradingBot
 
             LoadActiveAiDecisionIds();
 
-            _pumpStrategy = new PumpScanStrategy(_client, _symbols, AppConfig.Current?.Trading?.PumpSettings ?? new PumpScanSettings());
+            _pumpStrategy = new PumpScanStrategy(_client, _symbols, AppConfig.Current?.Trading?.PumpSettings ?? new PumpScanSettings(), _pumpSignalClassifier);
             _majorStrategy = new MajorCoinStrategy(
                 _marketDataManager,
                 () => MainWindow.CurrentGeneralSettings ?? AppConfig.Current?.Trading?.GeneralSettings);
@@ -6550,7 +6554,11 @@ namespace TradingBot
             else if (!isMajor && decision == "LONG")
                 await ExecutePumpLongEntry(ctx);
             else
-                await ExecutePumpShortEntry(ctx);
+            {
+                // [v3.0.9] PUMP SHORT 제거 — 급등 코인 숏은 리스크만 큼
+                ctx.EntryLog("PUMP_SHORT", "BLOCK", "PUMP 코인은 LONG만 허용");
+                return;
+            }
         }
 
         // ═══════════════════════════════════════════════════════════════════════════
