@@ -73,9 +73,7 @@ namespace TradingBot.Services
             // [FIX] 시뮬레이션 체크 제거 — 테스트넷 모드에서도 실제 API 호출 필요
             // 테스트넷 키로 초기화된 경우 _client가 테스트넷을 가리키므로 안전
 
-            // [수정] 정밀도 보정: reduceOnly(청산) 시 거래소 반환 수량이 이미 유효하므로 스킵
-            // 진입 주문 또는 지정가 청산 시에만 캐시 기반 보정 수행
-            if (!reduceOnly || price.HasValue)
+            // [FIX] 부분청산도 ratio 계산 후 stepSize 안 맞을 수 있으므로 항상 보정
             {
                 (decimal stepSize, decimal tickSize) = await GetSymbolPrecisionAsync(symbol, ct);
                 if (stepSize > 0)
