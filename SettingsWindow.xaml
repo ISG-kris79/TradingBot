@@ -972,6 +972,11 @@
                                                   Content="저중요 로그/하트비트 허용"
                                                   Foreground="#E2E8F0"
                                                   IsChecked="True"/>
+                                        <CheckBox x:Name="chkTelegramCloseError"
+                                                  Content="청산오류/부분청산 실패 알림 허용"
+                                                  Foreground="#FF6B6B"
+                                                  IsChecked="True"
+                                                  Margin="0,4,0,0"/>
                                     </StackPanel>
 
                                     <TextBlock Grid.Row="2"

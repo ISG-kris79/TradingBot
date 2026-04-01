@@ -217,6 +217,7 @@ namespace TradingBot
         public bool EnableEntryMessages { get; set; } = true;
         public bool EnableAiGateMessages { get; set; } = true;
         public bool EnableLogMessages { get; set; } = true;
+        public bool EnableCloseErrorMessages { get; set; } = true;
     }
 
     public class ConnectionStringsSettings

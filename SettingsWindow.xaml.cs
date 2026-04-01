@@ -862,6 +862,7 @@ namespace TradingBot
                 telegramNode["EnableEntryMessages"] = chkTelegramEntry.IsChecked == true;
                 telegramNode["EnableAiGateMessages"] = chkTelegramAiGate.IsChecked == true;
                 telegramNode["EnableLogMessages"] = chkTelegramLog.IsChecked == true;
+                telegramNode["EnableCloseErrorMessages"] = chkTelegramCloseError.IsChecked == true;
 
                 if (AppConfig.Current?.Telegram != null)
                 {
@@ -870,6 +871,7 @@ namespace TradingBot
                     AppConfig.Current.Telegram.EnableEntryMessages = chkTelegramEntry.IsChecked == true;
                     AppConfig.Current.Telegram.EnableAiGateMessages = chkTelegramAiGate.IsChecked == true;
                     AppConfig.Current.Telegram.EnableLogMessages = chkTelegramLog.IsChecked == true;
+                    AppConfig.Current.Telegram.EnableCloseErrorMessages = chkTelegramCloseError.IsChecked == true;
                 }
 
 
@@ -1081,6 +1083,7 @@ namespace TradingBot
             chkTelegramEntry.IsChecked = telegramNode?["EnableEntryMessages"]?.GetValue<bool?>() ?? true;
             chkTelegramAiGate.IsChecked = telegramNode?["EnableAiGateMessages"]?.GetValue<bool?>() ?? true;
             chkTelegramLog.IsChecked = telegramNode?["EnableLogMessages"]?.GetValue<bool?>() ?? true;
+            chkTelegramCloseError.IsChecked = telegramNode?["EnableCloseErrorMessages"]?.GetValue<bool?>() ?? true;
         }
 
         private void SelectMajorTrendProfile(string? profile)

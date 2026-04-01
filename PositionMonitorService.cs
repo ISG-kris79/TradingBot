@@ -3053,86 +3053,83 @@ namespace TradingBot.Services
                     return false;
                 }
 
-                OnLog?.Invoke($"[부분청산 시도] {symbol} {side} {closeQty} ({ratio:P0})");
-                bool success = await _exchangeService.PlaceOrderAsync(symbol, side, closeQty, null, token, reduceOnly: true);
+                // [부분청산 반복 재시도] 최대 3회, 매회 거래소 포지션 재확인 + 수량 보정
+                const int maxRetries = 3;
+                bool success = false;
 
-                if (!success)
+                for (int attempt = 1; attempt <= maxRetries; attempt++)
                 {
-                    // [오류 분석 + 재시도] 거래소 실제 포지션 확인 후 수량 보정 재시도
-                    OnLog?.Invoke($"⚠️ {symbol} 부분청산 1차 실패 → 거래소 포지션 재확인 중...");
-
-                    string errorMsg = "거래소 주문 실패";
-                    int? errorCode = null;
-                    decimal retryQty = 0;
-                    string? resolution = null;
-
-                    try
+                    if (attempt > 1)
                     {
-                        var exchangePositions = await _exchangeService.GetPositionsAsync(ct: token);
-                        var realPos = exchangePositions.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.Quantity) > 0);
+                        // 재시도 전 거래소 포지션 재확인
+                        await Task.Delay(500 * attempt, token);
+                        OnLog?.Invoke($"🔄 {symbol} 부분청산 {attempt}차 재시도 → 거래소 포지션 재확인...");
 
-                        if (realPos == null)
+                        try
                         {
-                            // 거래소에 포지션 없음 → 이미 청산됨
-                            errorMsg = "거래소에 포지션 없음 (이미 청산됨)";
-                            errorCode = -2022;
-                            resolution = "포지션 이미 청산 확인";
-                            OnLog?.Invoke($"ℹ️ {symbol} 거래소에 포지션 없음 - 이미 청산된 것으로 판단");
+                            var exchangePositions = await _exchangeService.GetPositionsAsync(ct: token);
+                            var realPos = exchangePositions.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.Quantity) > 0);
 
-                            // 내부 상태 정리
-                            CleanupPositionData(symbol);
-
-                            _ = _dbManager.SaveOrderErrorAsync(symbol, side, "PartialClose", closeQty, errorCode, errorMsg, true, 0, resolution);
-                            return false;
-                        }
-
-                        decimal realQty = Math.Abs(realPos.Quantity);
-                        retryQty = Math.Round(realQty * ratio, 6, MidpointRounding.AwayFromZero);
-
-                        if (retryQty <= 0)
-                        {
-                            errorMsg = $"재계산 수량 0 이하 (실제={realQty}, 비율={ratio})";
-                            OnLog?.Invoke($"⚠️ {symbol} {errorMsg}");
-                            _ = _dbManager.SaveOrderErrorAsync(symbol, side, "PartialClose", closeQty, null, errorMsg, false, 0, null);
-                            OnAlert?.Invoke($"❌ {symbol} 부분청산 실패 ({errorMsg})");
-                            return false;
-                        }
-
-                        // 내부 수량과 거래소 수량 불일치 시 내부 상태 보정
-                        if (Math.Abs(realQty - currentQty) > 0.000001m)
-                        {
-                            OnLog?.Invoke($"🔧 {symbol} 수량 불일치 보정: 내부={currentQty} → 거래소={realQty}");
-                            lock (_posLock)
+                            if (realPos == null)
                             {
-                                if (_activePositions.TryGetValue(symbol, out var p))
-                                    p.Quantity = localPosition.IsLong ? realQty : -realQty;
+                                OnLog?.Invoke($"ℹ️ {symbol} 거래소에 포지션 없음 - 이미 청산됨");
+                                CleanupPositionData(symbol);
+                                _ = _dbManager.SaveOrderErrorAsync(symbol, side, "PartialClose", closeQty, -2022, "거래소에 포지션 없음 (이미 청산됨)", true, attempt, "포지션 이미 청산 확인");
+                                return false;
                             }
-                            currentQty = realQty;
-                        }
 
-                        OnLog?.Invoke($"[부분청산 재시도] {symbol} {side} {retryQty} (실제 포지션 기준)");
-                        success = await _exchangeService.PlaceOrderAsync(symbol, side, retryQty, null, token, reduceOnly: true);
+                            decimal realQty = Math.Abs(realPos.Quantity);
 
-                        if (success)
-                        {
-                            resolution = $"수량 보정 재시도 성공 ({closeQty}→{retryQty})";
-                            closeQty = retryQty;
-                            OnLog?.Invoke($"✅ {symbol} 부분청산 재시도 성공");
-                            _ = _dbManager.SaveOrderErrorAsync(symbol, side, "PartialClose", retryQty, null, "1차 실패 후 수량 보정 재시도", true, 1, resolution);
+                            // 내부 수량 보정
+                            if (Math.Abs(realQty - currentQty) > 0.000001m)
+                            {
+                                OnLog?.Invoke($"🔧 {symbol} 수량 보정: 내부={currentQty} → 거래소={realQty}");
+                                lock (_posLock)
+                                {
+                                    if (_activePositions.TryGetValue(symbol, out var p))
+                                        p.Quantity = localPosition.IsLong ? realQty : -realQty;
+                                }
+                                currentQty = realQty;
+                            }
+
+                            closeQty = Math.Round(realQty * ratio, 6, MidpointRounding.AwayFromZero);
+                            if (closeQty <= 0)
+                            {
+                                OnLog?.Invoke($"⚠️ {symbol} 재계산 수량 0 이하 (실제={realQty}, 비율={ratio})");
+                                _ = _dbManager.SaveOrderErrorAsync(symbol, side, "PartialClose", 0, null, $"재계산 수량 0 이하 (실제={realQty})", false, attempt, null);
+                                _ = SendPartialCloseErrorTelegramAsync(symbol, side, 0, attempt, "재계산 수량 0 이하");
+                                return false;
+                            }
                         }
-                        else
+                        catch (Exception posEx)
                         {
-                            errorMsg = $"수량 보정 재시도도 실패 (retryQty={retryQty})";
-                            _ = _dbManager.SaveOrderErrorAsync(symbol, side, "PartialClose", retryQty, null, errorMsg, false, 1, null);
-                            OnAlert?.Invoke($"❌ {symbol} 부분청산 실패 (재시도 후에도 실패)");
-                            return false;
+                            OnLog?.Invoke($"⚠️ {symbol} 포지션 재확인 실패: {posEx.Message}");
                         }
                     }
-                    catch (Exception retryEx)
+
+                    OnLog?.Invoke($"[부분청산 {attempt}차 시도] {symbol} {side} {closeQty} ({ratio:P0})");
+                    success = await _exchangeService.PlaceOrderAsync(symbol, side, closeQty, null, token, reduceOnly: true);
+
+                    if (success)
                     {
-                        errorMsg = $"재시도 중 예외: {retryEx.Message}";
-                        _ = _dbManager.SaveOrderErrorAsync(symbol, side, "PartialClose", closeQty, null, errorMsg, false, 1, null);
-                        OnAlert?.Invoke($"❌ {symbol} 부분청산 실패 ({retryEx.Message})");
+                        if (attempt > 1)
+                        {
+                            OnLog?.Invoke($"✅ {symbol} 부분청산 {attempt}차 재시도 성공");
+                            _ = _dbManager.SaveOrderErrorAsync(symbol, side, "PartialClose", closeQty, null, $"{attempt-1}회 실패 후 재시도 성공", true, attempt, $"{attempt}차 시도 성공");
+                        }
+                        break;
+                    }
+
+                    // 실패 기록
+                    string attemptMsg = $"{attempt}차 시도 실패 (qty={closeQty})";
+                    OnLog?.Invoke($"❌ {symbol} 부분청산 {attemptMsg}");
+                    _ = _dbManager.SaveOrderErrorAsync(symbol, side, "PartialClose", closeQty, null, attemptMsg, false, attempt, null);
+
+                    if (attempt == maxRetries)
+                    {
+                        // 최종 실패 → 텔레그램 알림
+                        OnAlert?.Invoke($"❌ {symbol} 부분청산 {maxRetries}회 재시도 모두 실패");
+                        _ = SendPartialCloseErrorTelegramAsync(symbol, side, closeQty, maxRetries, $"{maxRetries}회 재시도 모두 실패");
                         return false;
                     }
                 }
@@ -3317,6 +3314,25 @@ namespace TradingBot.Services
             {
                 MarkCloseFinished(symbol);
             }
+        }
+
+        private Task SendPartialCloseErrorTelegramAsync(string symbol, string side, decimal qty, int retryCount, string reason)
+        {
+            return Task.Run(async () =>
+            {
+                try
+                {
+                    await TelegramService.Instance.SendMessageAsync(
+                        $"🚨 *[부분청산 실패]*\n" +
+                        $"`{symbol}` {side}\n" +
+                        $"수량: `{qty}`\n" +
+                        $"재시도: {retryCount}회\n" +
+                        $"사유: {reason}\n" +
+                        $"⏰ {DateTime.Now:HH:mm:ss}",
+                        TelegramMessageType.CloseError);
+                }
+                catch { /* 텔레그램 실패 무시 */ }
+            });
         }
 
         /// <summary>

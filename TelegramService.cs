@@ -15,7 +15,8 @@ namespace TradingBot
         Profit,
         Entry,
         AiGate,
-        Log
+        Log,
+        CloseError
     }
 
     public class TelegramService
@@ -266,6 +267,7 @@ namespace TradingBot
                 TelegramMessageType.Entry => telegram.EnableEntryMessages,
                 TelegramMessageType.AiGate => telegram.EnableAiGateMessages,
                 TelegramMessageType.Log => telegram.EnableLogMessages,
+                TelegramMessageType.CloseError => telegram.EnableCloseErrorMessages,
                 _ => true
             };
         }
