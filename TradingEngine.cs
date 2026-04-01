@@ -6571,10 +6571,7 @@ namespace TradingBot
             // 1. AI Predictor + 보너스 점수 (Major LONG only: EMA retest +10, short squeeze +15, low-vol privilege +10)
             await EvaluateAiPredictorForEntry(ctx, applyMajorBonuses: true);
 
-            // 2. AI Score 기반 사이즈 (이미 ctx.SizeMultiplier에 반영된 것과 별도로 AI Score 전용)
-            decimal aiScoreMultiplier = EvaluateAiScoreSizeMultiplier(ctx);
-            if (aiScoreMultiplier < ctx.SizeMultiplier)
-                ctx.SizeMultiplier = Math.Max(0.10m, aiScoreMultiplier);
+            // 2. AI Score 사이즈 조절 제거 — 라우터 AI Gate Advisor에서 이미 적용됨
 
             // 3. Major ATR 하이브리드 손절
             bool isMajorLikeSignal = ctx.SignalSource == "MAJOR" || ctx.SignalSource.StartsWith("MAJOR_");
@@ -6652,10 +6649,7 @@ namespace TradingBot
                     EntryLog("AI", "INFO", $"shortRef={string.Join(",", shortInfos)} (not blocking)");
             }
 
-            // 3. AI Score 기반 사이즈
-            decimal aiScoreMultiplier = EvaluateAiScoreSizeMultiplier(ctx);
-            if (aiScoreMultiplier < ctx.SizeMultiplier)
-                ctx.SizeMultiplier = Math.Max(0.10m, aiScoreMultiplier);
+            // 3. AI Score 사이즈 조절 제거 — 라우터 AI Gate Advisor에서 이미 적용됨
 
             // 4. Major ATR 하이브리드 손절
             bool isMajorLikeSignal = ctx.SignalSource == "MAJOR" || ctx.SignalSource.StartsWith("MAJOR_");
@@ -6702,10 +6696,7 @@ namespace TradingBot
             // 1. AI Predictor (보너스 없음)
             await EvaluateAiPredictorForEntry(ctx, applyMajorBonuses: false);
 
-            // 2. AI Score 기반 사이즈
-            decimal aiScoreMultiplier = EvaluateAiScoreSizeMultiplier(ctx);
-            if (aiScoreMultiplier < ctx.SizeMultiplier)
-                ctx.SizeMultiplier = Math.Max(0.10m, aiScoreMultiplier);
+            // 2. AI Score 사이즈 조절 제거 — 라우터 AI Gate Advisor에서 이미 적용됨
 
             // 3. 포지션 사이즈: 고정 펌프 마진
             ctx.Leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
@@ -6751,10 +6742,7 @@ namespace TradingBot
                     EntryLog("AI", "INFO", $"shortRef={string.Join(",", shortInfos)} (not blocking)");
             }
 
-            // 3. AI Score 기반 사이즈
-            decimal aiScoreMultiplier = EvaluateAiScoreSizeMultiplier(ctx);
-            if (aiScoreMultiplier < ctx.SizeMultiplier)
-                ctx.SizeMultiplier = Math.Max(0.10m, aiScoreMultiplier);
+            // 3. AI Score 사이즈 조절 제거 — 라우터 AI Gate Advisor에서 이미 적용됨
 
             // 4. 포지션 사이즈: 고정 펌프 마진
             ctx.Leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
