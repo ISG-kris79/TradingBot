@@ -15,6 +15,14 @@
 
  - 없음
 
+## [3.0.15] - 2026-04-01
+
+### Fixed
+
+- **팬텀 EXTERNAL_PARTIAL_CLOSE_SYNC 중복 기록**: 전량 청산 후 WebSocket ACCOUNT_UPDATE 분할 도착 시 ACCOUNT_UPDATE_RESTORED → EXTERNAL_PARTIAL_CLOSE_SYNC로 팬텀 PnL 중복 기록되는 문제 수정
+  - 청산 완료 시 30초 쿨다운 등록, 쿨다운 중 해당 심볼 ACCOUNT_UPDATE 무시
+  - SOL 청산 시 실제 -125 PnL 외에 팬텀 -63 PnL이 추가 기록되던 문제 해결
+
 ## [3.0.14] - 2026-04-01
 
 ### Fixed

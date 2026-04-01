@@ -56,6 +56,8 @@ namespace TradingBot
         private readonly object _posLock = new object();
         // 블랙리스트 (심볼, 해제시간) - 지루함 청산 종목 재진입 방지
         private ConcurrentDictionary<string, DateTime> _blacklistedSymbols = new ConcurrentDictionary<string, DateTime>();
+        // [FIX] 최근 청산 쿨다운 — ACCOUNT_UPDATE 도착 시 팬텀 EXTERNAL_PARTIAL_CLOSE_SYNC 방지
+        private readonly ConcurrentDictionary<string, DateTime> _recentlyClosedCooldown = new();
         // 슬롯 설정
         // $250/일 목표: 메이저 4개(BTC/ETH/SOL/XRP) + PUMP 2개(상위20 동적스캔) = 총 6개
         private const int MAX_TOTAL_SLOTS = 6;        // 총 최대 6개
@@ -5117,6 +5119,9 @@ namespace TradingBot
                         OnPositionStatusUpdate?.Invoke(pos.Symbol, false, 0); // UI 및 데이터 정리
                     }
 
+                    // [FIX] 청산 쿨다운 등록 — 30초간 해당 심볼 ACCOUNT_UPDATE 무시 (팬텀 SYNC 방지)
+                    _recentlyClosedCooldown[pos.Symbol] = DateTime.Now.AddSeconds(30);
+
                     if (closedSnapshot != null && !_positionMonitor.IsCloseInProgress(pos.Symbol))
                     {
                         decimal exitPrice = 0m;
@@ -5189,6 +5194,17 @@ namespace TradingBot
                     }
 
                     continue;
+                }
+
+                // [FIX] 최근 청산된 심볼은 쿨다운 기간 동안 무시 (팬텀 EXTERNAL_PARTIAL_CLOSE_SYNC 방지)
+                if (_recentlyClosedCooldown.TryGetValue(pos.Symbol, out var cooldownUntil))
+                {
+                    if (DateTime.Now < cooldownUntil)
+                    {
+                        OnStatusLog?.Invoke($"⏳ {pos.Symbol} 청산 쿨다운 중 — ACCOUNT_UPDATE 무시 ({(cooldownUntil - DateTime.Now).TotalSeconds:F0}초 남음)");
+                        continue;
+                    }
+                    _recentlyClosedCooldown.TryRemove(pos.Symbol, out _);
                 }
 
                 bool isLong = pos.Quantity > 0;
