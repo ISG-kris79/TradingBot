@@ -140,6 +140,27 @@ namespace TradingBot.Services
         /// <summary>
         /// 심볼 정밀도 정보 조회 (캐시 우선, TTL 1시간)
         /// </summary>
+        // [안전장치] ExchangeInfo 실패 시 사용할 심볼별 기본 stepSize
+        private static readonly Dictionary<string, (decimal stepSize, decimal tickSize)> _fallbackPrecision = new()
+        {
+            ["BTCUSDT"]  = (0.001m,   0.10m),
+            ["ETHUSDT"]  = (0.001m,   0.01m),
+            ["XRPUSDT"]  = (0.1m,     0.0001m),
+            ["SOLUSDT"]  = (0.1m,     0.010m),
+            ["DOGEUSDT"] = (1m,       0.00001m),
+            ["ADAUSDT"]  = (1m,       0.0001m),
+            ["TRXUSDT"]  = (1m,       0.00001m),
+            ["AVAXUSDT"] = (0.1m,     0.010m),
+            ["LINKUSDT"] = (0.1m,     0.001m),
+            ["DOTUSDT"]  = (0.1m,     0.001m),
+            ["MATICUSDT"]= (1m,       0.0001m),
+            ["BNBUSDT"]  = (0.01m,    0.010m),
+            ["SUIUSDT"]  = (0.1m,     0.0001m),
+            ["PEPEUSDT"] = (100m,     0.0000001m),
+            ["SHIBUSDT"] = (1m,       0.000001m),
+        };
+        private static readonly (decimal stepSize, decimal tickSize) _defaultFallback = (0.001m, 0.01m);
+
         private async Task<(decimal stepSize, decimal tickSize)> GetSymbolPrecisionAsync(string symbol, CancellationToken ct)
         {
             if (_symbolInfoCache.TryGetValue(symbol, out var cached) && (DateTime.UtcNow - cached.cachedAt) < _symbolInfoCacheTtl)
@@ -151,14 +172,18 @@ namespace TradingBot.Services
                 if (!exchangeInfo.Success)
                 {
                     OnLog?.Invoke($"⚠️ [Binance] ExchangeInfo 조회 실패: {exchangeInfo.Error?.Message}");
-                    return (0, 0);
+                    return GetFallbackPrecision(symbol);
                 }
 
                 var symbolData = exchangeInfo.Data.Symbols.FirstOrDefault(s => s.Name == symbol);
-                if (symbolData == null) return (0, 0);
+                if (symbolData == null)
+                    return GetFallbackPrecision(symbol);
 
                 decimal stepSize = symbolData.LotSizeFilter?.StepSize ?? 0;
                 decimal tickSize = symbolData.PriceFilter?.TickSize ?? 0;
+
+                if (stepSize <= 0 || tickSize <= 0)
+                    return GetFallbackPrecision(symbol);
 
                 _symbolInfoCache[symbol] = (stepSize, tickSize, DateTime.UtcNow);
                 return (stepSize, tickSize);
@@ -166,12 +191,30 @@ namespace TradingBot.Services
             catch (Exception ex)
             {
                 OnLog?.Invoke($"⚠️ [Binance] 심볼 정밀도 조회 예외: {ex.Message}");
-                return (0, 0);
+                return GetFallbackPrecision(symbol);
             }
+        }
+
+        private (decimal stepSize, decimal tickSize) GetFallbackPrecision(string symbol)
+        {
+            if (_fallbackPrecision.TryGetValue(symbol, out var fb))
+            {
+                OnLog?.Invoke($"🔧 [{symbol}] 폴백 stepSize 사용: {fb.stepSize}");
+                return fb;
+            }
+            OnLog?.Invoke($"🔧 [{symbol}] 기본 폴백 stepSize 사용: {_defaultFallback.stepSize}");
+            return _defaultFallback;
         }
 
         public async Task<(bool Success, string OrderId)> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default)
         {
+            // stepSize/tickSize 보정
+            (decimal stepSize, decimal tickSize) = await GetSymbolPrecisionAsync(symbol, ct);
+            if (stepSize > 0)
+                quantity = Math.Floor(quantity / stepSize) * stepSize;
+            if (tickSize > 0)
+                stopPrice = Math.Floor(stopPrice / tickSize) * tickSize;
+
             OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
             var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
                 symbol,
@@ -372,20 +415,12 @@ namespace TradingBot.Services
         {
             try
             {
-                // 정밀도 보정
-                var exchangeInfo = await _client.UsdFuturesApi.ExchangeData.GetExchangeInfoAsync(ct: ct);
-                if (exchangeInfo.Success)
-                {
-                    var symbolData = exchangeInfo.Data.Symbols.FirstOrDefault(s => s.Name == symbol);
-                    if (symbolData != null)
-                    {
-                        decimal stepSize = symbolData.LotSizeFilter?.StepSize ?? 0.001m;
-                        quantity = Math.Floor(quantity / stepSize) * stepSize;
-
-                        decimal tickSize = symbolData.PriceFilter?.TickSize ?? 0.0000001m;
-                        price = Math.Floor(price / tickSize) * tickSize;
-                    }
-                }
+                // 정밀도 보정 (캐시 + 폴백 보장)
+                (decimal stepSize, decimal tickSize) = await GetSymbolPrecisionAsync(symbol, ct);
+                if (stepSize > 0)
+                    quantity = Math.Floor(quantity / stepSize) * stepSize;
+                if (tickSize > 0)
+                    price = Math.Floor(price / tickSize) * tickSize;
 
                 if (quantity <= 0) return (false, string.Empty);
 
@@ -468,17 +503,10 @@ namespace TradingBot.Services
         {
             try
             {
-                // 1. 수량 정밀도 보정
-                var exchangeInfo = await _client.UsdFuturesApi.ExchangeData.GetExchangeInfoAsync(ct: ct);
-                if (exchangeInfo.Success)
-                {
-                    var symbolData = exchangeInfo.Data.Symbols.FirstOrDefault(s => s.Name == symbol);
-                    if (symbolData != null)
-                    {
-                        decimal stepSize = symbolData.LotSizeFilter?.StepSize ?? 0.001m;
-                        quantity = Math.Floor(quantity / stepSize) * stepSize;
-                    }
-                }
+                // 1. 수량 정밀도 보정 (캐시 + 폴백 보장)
+                (decimal stepSize, _) = await GetSymbolPrecisionAsync(symbol, ct);
+                if (stepSize > 0)
+                    quantity = Math.Floor(quantity / stepSize) * stepSize;
 
                 if (quantity <= 0)
                 {

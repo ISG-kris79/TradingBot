@@ -15,6 +15,15 @@
 
  - 없음
 
+## [3.0.14] - 2026-04-01
+
+### Fixed
+
+- **모든 주문 경로 stepSize/tickSize 보정 보장**: ExchangeInfo API 실패 시에도 심볼별 폴백 테이블로 보정 (XRP 0.1, SOL 0.1, DOGE 1, PEPE 100 등 15종)
+- **PlaceMarketOrderAsync**: ExchangeInfo 직접 호출 → `GetSymbolPrecisionAsync` 캐시 재활용 (중복 API 호출 제거)
+- **PlaceStopOrderAsync**: stepSize/tickSize 보정 누락 → 추가
+- **PlaceLimitOrderAsync**: ExchangeInfo 실패 시 보정 스킵 → 폴백 보장
+
 ## [3.0.13] - 2026-04-01
 
 ### Fixed
