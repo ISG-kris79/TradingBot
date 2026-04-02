@@ -153,8 +153,6 @@ namespace TradingBot.Services
             DateTime positionEntryTime = DateTime.Now;
             bool timeDecayBreakevenApplied = false;
             double timeDecayBreakevenMinutes = 60.0;
-            double maxHoldingMinutes = 120.0;
-            decimal timeoutExitRoeThreshold = 10.0m;
             DateTime nextAiRecheckTime = DateTime.Now.AddMinutes(60);
             DateTime nextHSCheckTime = DateTime.Now.AddMinutes(1);
             bool squeezeDefenseReduced = false;
@@ -1469,7 +1467,7 @@ namespace TradingBot.Services
             decimal partialTakeProfitROE = 25.0m;
             decimal pumpTp1Roe = _settings.PumpTp1Roe > 0 ? _settings.PumpTp1Roe : 25.0m;
             decimal pumpTp2Roe = _settings.PumpTp2Roe > 0 ? _settings.PumpTp2Roe : 50.0m;
-            decimal pumpTimeStopMinutes = _settings.PumpTimeStopMinutes > 0 ? _settings.PumpTimeStopMinutes : 15.0m;
+
             decimal firstPartialCloseRatioPct = _settings.PumpFirstTakeProfitRatioPct > 0 ? _settings.PumpFirstTakeProfitRatioPct : 15.0m;
             decimal firstPartialCloseRatio = Math.Clamp(firstPartialCloseRatioPct / 100.0m, 0.05m, 0.95m);
 
@@ -1565,12 +1563,7 @@ namespace TradingBot.Services
                 }
                 prevCheckROE = currentROE;
 
-                if ((DateTime.Now - startTime).TotalMinutes >= (double)pumpTimeStopMinutes && currentROE >= -2.0m && currentROE <= 2.0m)
-                {
-                    OnLog?.Invoke($"[청산 트리거] {symbol} PUMP 타임스탑 발동 | 기준={pumpTimeStopMinutes:F1}분, 경과={(DateTime.Now - startTime).TotalMinutes:F1}분, 현재ROE={currentROE:F2}%");
-                    await ExecuteMarketClose(symbol, $"⏱️ 타임스탑 ({pumpTimeStopMinutes:F1}분 횡보)", token);
-                    break;
-                }
+                // [v3.0.15] PUMP 타임스탑 제거 — 손절/트레일링이 포지션 관리 담당
 
                 OnTickerUpdate?.Invoke(symbol, 0m, (double)currentROE);
 
@@ -1746,17 +1739,7 @@ namespace TradingBot.Services
                         catch { /* BB 계산 실패 무시 */ }
                     }
 
-                    // 4. 타임스탑: 15~25분 횡보 시 정리 (절대 손절선 4)
-                    if (!shouldAbsoluteStop)
-                    {
-                        double timeCutMinutes = 20; // 20분 횡보
-                        if ((DateTime.Now - startTime).TotalMinutes >= timeCutMinutes &&
-                            Math.Abs(currentROE) <= 2.0m) // 수익/손실이 ±2% 이내
-                        {
-                            shouldAbsoluteStop = true;
-                            stopReason = $"타임스탑 ({timeCutMinutes}분 횡보, ROE={currentROE:F2}%)";
-                        }
-                    }
+                    // [v3.0.15] ElliottWave 타임스탑 제거 — 손절/트레일링이 포지션 관리 담당
 
                     if (shouldAbsoluteStop && elliotWavePos.PartialProfitStage < 2)
                     {

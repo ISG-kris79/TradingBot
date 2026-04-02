@@ -15,6 +15,18 @@
 
  - 없음
 
+## [3.0.16] - 2026-04-02
+
+### Fixed
+
+- **유저 스트림 끊김 후 복구 안 되는 문제**: ListenKey KeepAlive 25분 주기 자동 갱신 + 끊김 감지 시 완전 재구독 워치독 추가
+
+### Removed
+
+- **PUMP 15분 타임스탑**: 횡보 시 자동 청산 제거 (손절/트레일링이 관리)
+- **PUMP ElliottWave 20분 타임스탑**: 횡보 시 절대 손절 제거
+- **메이저 120분 미사용 변수**: `maxHoldingMinutes`, `timeoutExitRoeThreshold` 죽은 코드 정리
+
 ## [3.0.15] - 2026-04-01
 
 ### Fixed

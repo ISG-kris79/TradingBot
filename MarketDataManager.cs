@@ -23,6 +23,8 @@ namespace TradingBot.Services
         private readonly BinanceSocketClient _socketClient = null!;
         private readonly List<string> _majorSymbols;
         private CancellationTokenSource? _cts;
+        private string? _currentListenKey;
+        private volatile bool _userStreamAlive = false;
 
         public ConcurrentDictionary<string, TickerCacheItem> TickerCache { get; } = new();
         public ConcurrentDictionary<string, List<IBinanceKline>> KlineCache { get; } = new();
@@ -75,6 +77,7 @@ namespace TradingBot.Services
 
             // Start Binance streams
             _ = StartUserDataStreamAsync(internalToken);
+            _ = RunUserStreamWatchdogAsync(internalToken);
             _ = StartAllMarketTickerStreamAsync(internalToken);
             _ = StartPriceWebSocketAsync(internalToken);
             _ = StartKlineStreamAsync(internalToken);
@@ -128,26 +131,81 @@ namespace TradingBot.Services
                     return;
                 }
 
+                _currentListenKey = startStream.Data;
+
                 var subResult = await _socketClient.UsdFuturesApi.Account.SubscribeToUserDataUpdatesAsync(
                     startStream.Data,
                     onAccountUpdate: data => OnAccountUpdate?.Invoke(data.Data),
-                    onOrderUpdate: data => OnOrderUpdate?.Invoke(data.Data), // [수정] 주문 업데이트 연결
+                    onOrderUpdate: data => OnOrderUpdate?.Invoke(data.Data),
                     onListenKeyExpired: async _ =>
                     {
-                        OnLog?.Invoke("⚠️ ListenKey 만료. 갱신 및 재구독을 시도합니다.");
-                        await StartUserDataStreamAsync(token); // Re-subscribe
+                        OnLog?.Invoke("⚠️ ListenKey 만료. 완전 재구독 시도...");
+                        _userStreamAlive = false;
+                        await StartUserDataStreamAsync(token);
                     },
                     ct: token);
 
                 if (subResult.Success)
                 {
-                    subResult.Data.ConnectionLost += () => OnLog?.Invoke("⚠️ 유저 스트림 연결 끊김. 재연결 시도...");
-                    subResult.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ 유저 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                    _userStreamAlive = true;
+                    subResult.Data.ConnectionLost += () =>
+                    {
+                        _userStreamAlive = false;
+                        OnLog?.Invoke("⚠️ 유저 스트림 연결 끊김. 재연결 시도...");
+                    };
+                    subResult.Data.ConnectionRestored += (ts) =>
+                    {
+                        _userStreamAlive = true;
+                        OnLog?.Invoke($"✅ 유저 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                    };
                     OnLog?.Invoke("📡 사용자 데이터 스트림(포지션 감시) 가동");
                 }
                 else OnLog?.Invoke($"❌ 유저 스트림 구독 실패: {subResult.Error}");
             }
             catch (Exception ex) { OnLog?.Invoke($"⚠️ 유저 스트림 에러: {ex.Message}"); }
+        }
+
+        /// <summary>
+        /// ListenKey KeepAlive (30분 주기) + 끊김 시 완전 재구독
+        /// Binance ListenKey는 60분 후 만료되므로 30분마다 갱신 필수
+        /// </summary>
+        private async Task RunUserStreamWatchdogAsync(CancellationToken token)
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(25), token);
+
+                    // KeepAlive 호출
+                    if (!string.IsNullOrWhiteSpace(_currentListenKey))
+                    {
+                        var keepAlive = await _restClient.UsdFuturesApi.Account.KeepAliveUserStreamAsync(_currentListenKey, ct: token);
+                        if (keepAlive.Success)
+                        {
+                            OnLog?.Invoke("🔄 유저 스트림 ListenKey 갱신 완료");
+                        }
+                        else
+                        {
+                            OnLog?.Invoke($"⚠️ ListenKey 갱신 실패: {keepAlive.Error?.Message} → 완전 재구독");
+                            _userStreamAlive = false;
+                        }
+                    }
+
+                    // 끊긴 상태면 완전 재구독
+                    if (!_userStreamAlive)
+                    {
+                        OnLog?.Invoke("🔧 유저 스트림 끊김 감지 → 완전 재구독 시도...");
+                        await StartUserDataStreamAsync(token);
+                    }
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    OnLog?.Invoke($"⚠️ 유저 스트림 워치독 에러: {ex.Message}");
+                    await Task.Delay(TimeSpan.FromSeconds(30), token);
+                }
+            }
         }
 
         private async Task StartAllMarketTickerStreamAsync(CancellationToken token)
