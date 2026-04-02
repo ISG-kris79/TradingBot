@@ -79,6 +79,14 @@ namespace TradingBot.Models
         public int MaxActivePositions { get; set; } = 5;             // 최대 활성 포지션 수 (메이저 3 + 밈 2)
         public int EntryCooldownMinutes { get; set; } = 120;          // 진입 쿨다운 (분, 한 파동 먹고 2시간 휴식)
 
+        // ─── [급변 감지] 시장 CRASH/PUMP 자동 대응 ───────────────────────
+        public bool CrashDetectorEnabled { get; set; } = true;
+        public decimal CrashThresholdPct { get; set; } = -1.5m;     // 1분 -1.5% → CRASH
+        public decimal PumpDetectThresholdPct { get; set; } = 1.5m;  // 1분 +1.5% → PUMP
+        public int CrashMinCoinCount { get; set; } = 2;              // 최소 동시 급변 코인 수
+        public decimal CrashReverseSizeRatio { get; set; } = 0.5m;   // 리버스 진입 사이즈 (50%)
+        public int CrashCooldownSeconds { get; set; } = 120;         // 발동 후 쿨다운 (초)
+
     }
 
     public enum PerformanceTuningProfile

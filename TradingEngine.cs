@@ -113,6 +113,7 @@ namespace TradingBot
         // 전략 인스턴스
         private PumpScanStrategy? _pumpStrategy;
         private MajorCoinStrategy? _majorStrategy;
+        private readonly MarketCrashDetector _crashDetector = new();
         private GridStrategy _gridStrategy;
         private ArbitrageStrategy _arbitrageStrategy;
         // private TransformerStrategy? _transformerStrategy; // TensorFlow 전환 중 임시 비활성화
@@ -521,6 +522,17 @@ namespace TradingBot
             _marketDataManager.OnOrderUpdate += (data) => _orderChannel.Writer.TryWrite(data);
 
             _marketDataManager.OnAllTickerUpdate += HandleAllTickerUpdate;
+
+            // [급변 감지] 설정 반영 + 이벤트 핸들러 연결
+            _crashDetector.Enabled = _settings.CrashDetectorEnabled;
+            _crashDetector.CrashThresholdPct = _settings.CrashThresholdPct != 0 ? _settings.CrashThresholdPct : -1.5m;
+            _crashDetector.PumpThresholdPct = _settings.PumpDetectThresholdPct != 0 ? _settings.PumpDetectThresholdPct : 1.5m;
+            _crashDetector.MinCoinCount = _settings.CrashMinCoinCount > 0 ? _settings.CrashMinCoinCount : 2;
+            _crashDetector.ReverseEntrySizeRatio = _settings.CrashReverseSizeRatio > 0 ? _settings.CrashReverseSizeRatio : 0.5m;
+            _crashDetector.CooldownSeconds = _settings.CrashCooldownSeconds > 0 ? _settings.CrashCooldownSeconds : 120;
+            _crashDetector.OnLog += msg => OnAlert?.Invoke(msg);
+            _crashDetector.OnCrashDetected += (coins, avgDrop) => _ = HandleCrashDetectedAsync(coins, avgDrop);
+            _crashDetector.OnPumpDetected += (coins, avgRise) => _ = HandlePumpDetectedAsync(coins, avgRise);
             _marketDataManager.OnTickerUpdate += HandleTickerUpdate;
 
             _positionMonitor.OnLog += msg => OnStatusLog?.Invoke(msg);
@@ -5539,12 +5551,165 @@ namespace TradingBot
             }
         }
 
+        // ═══════════════════════════════════════════════════════════════
+        // [급변 감지] CRASH/PUMP 자동 청산 + 리버스 진입
+        // ═══════════════════════════════════════════════════════════════
+
+        private async Task HandleCrashDetectedAsync(List<string> crashCoins, decimal avgDropPct)
+        {
+            var token = _cts?.Token ?? CancellationToken.None;
+
+            // 텔레그램 알림
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    string coinList = string.Join(", ", crashCoins);
+                    await TelegramService.Instance.SendMessageAsync(
+                        $"🔴 *[CRASH 감지]*\n" +
+                        $"코인: `{coinList}`\n" +
+                        $"평균 변동: `{avgDropPct:+0.00;-0.00}%` (1분)\n" +
+                        $"→ 보유 LONG 전량 청산 + SHORT 리버스\n" +
+                        $"⏰ {DateTime.Now:HH:mm:ss}",
+                        TelegramMessageType.Alert);
+                }
+                catch { }
+            });
+
+            // 1. 보유 LONG 포지션 전량 청산
+            List<(string symbol, decimal qty, decimal entryPrice)> closedLongs = new();
+            List<string> longSymbols;
+            lock (_posLock)
+            {
+                longSymbols = _activePositions
+                    .Where(p => p.Value.IsLong && Math.Abs(p.Value.Quantity) > 0)
+                    .Select(p => p.Key)
+                    .ToList();
+            }
+
+            foreach (var sym in longSymbols)
+            {
+                decimal qty, entry;
+                lock (_posLock)
+                {
+                    if (!_activePositions.TryGetValue(sym, out var pos)) continue;
+                    qty = Math.Abs(pos.Quantity);
+                    entry = pos.EntryPrice;
+                }
+
+                OnAlert?.Invoke($"🔴 [CRASH] {sym} LONG 긴급 청산 (시장 급락 {avgDropPct:0.00}%)");
+                await _positionMonitor.ExecuteMarketClose(sym, $"CRASH 감지 긴급 청산 (시장 {avgDropPct:0.00}%)", token);
+                closedLongs.Add((sym, qty, entry));
+            }
+
+            // 2. SHORT 리버스 진입 (청산한 심볼 중 주요 코인만)
+            if (_crashDetector.ReverseEntrySizeRatio > 0)
+            {
+                foreach (var (sym, qty, entry) in closedLongs)
+                {
+                    if (!MajorSymbols.Contains(sym)) continue;
+
+                    try
+                    {
+                        decimal currentPrice = 0;
+                        if (_marketDataManager.TickerCache.TryGetValue(sym, out var tick))
+                            currentPrice = tick.LastPrice;
+                        if (currentPrice <= 0) continue;
+
+                        OnAlert?.Invoke($"🔄 [CRASH→SHORT] {sym} 리버스 진입 시도 ({_crashDetector.ReverseEntrySizeRatio:P0} 사이즈)");
+                        await ExecuteAutoOrder(sym, "SHORT", currentPrice, token, "CRASH_REVERSE",
+                            manualSizeMultiplier: _crashDetector.ReverseEntrySizeRatio);
+                    }
+                    catch (Exception ex)
+                    {
+                        OnAlert?.Invoke($"⚠️ [CRASH→SHORT] {sym} 리버스 실패: {ex.Message}");
+                    }
+                }
+            }
+        }
+
+        private async Task HandlePumpDetectedAsync(List<string> pumpCoins, decimal avgRisePct)
+        {
+            var token = _cts?.Token ?? CancellationToken.None;
+
+            // 텔레그램 알림
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    string coinList = string.Join(", ", pumpCoins);
+                    await TelegramService.Instance.SendMessageAsync(
+                        $"🟢 *[PUMP 감지]*\n" +
+                        $"코인: `{coinList}`\n" +
+                        $"평균 변동: `{avgRisePct:+0.00;-0.00}%` (1분)\n" +
+                        $"→ 보유 SHORT 전량 청산 + LONG 리버스\n" +
+                        $"⏰ {DateTime.Now:HH:mm:ss}",
+                        TelegramMessageType.Alert);
+                }
+                catch { }
+            });
+
+            // 1. 보유 SHORT 포지션 전량 청산
+            List<(string symbol, decimal qty, decimal entryPrice)> closedShorts = new();
+            List<string> shortSymbols;
+            lock (_posLock)
+            {
+                shortSymbols = _activePositions
+                    .Where(p => !p.Value.IsLong && Math.Abs(p.Value.Quantity) > 0)
+                    .Select(p => p.Key)
+                    .ToList();
+            }
+
+            foreach (var sym in shortSymbols)
+            {
+                decimal qty, entry;
+                lock (_posLock)
+                {
+                    if (!_activePositions.TryGetValue(sym, out var pos)) continue;
+                    qty = Math.Abs(pos.Quantity);
+                    entry = pos.EntryPrice;
+                }
+
+                OnAlert?.Invoke($"🟢 [PUMP] {sym} SHORT 긴급 청산 (시장 급등 {avgRisePct:+0.00}%)");
+                await _positionMonitor.ExecuteMarketClose(sym, $"PUMP 감지 긴급 청산 (시장 {avgRisePct:+0.00}%)", token);
+                closedShorts.Add((sym, qty, entry));
+            }
+
+            // 2. LONG 리버스 진입 (청산한 심볼 중 주요 코인만)
+            if (_crashDetector.ReverseEntrySizeRatio > 0)
+            {
+                foreach (var (sym, qty, entry) in closedShorts)
+                {
+                    if (!MajorSymbols.Contains(sym)) continue;
+
+                    try
+                    {
+                        decimal currentPrice = 0;
+                        if (_marketDataManager.TickerCache.TryGetValue(sym, out var tick))
+                            currentPrice = tick.LastPrice;
+                        if (currentPrice <= 0) continue;
+
+                        OnAlert?.Invoke($"🔄 [PUMP→LONG] {sym} 리버스 진입 시도 ({_crashDetector.ReverseEntrySizeRatio:P0} 사이즈)");
+                        await ExecuteAutoOrder(sym, "LONG", currentPrice, token, "PUMP_REVERSE",
+                            manualSizeMultiplier: _crashDetector.ReverseEntrySizeRatio);
+                    }
+                    catch (Exception ex)
+                    {
+                        OnAlert?.Invoke($"⚠️ [PUMP→LONG] {sym} 리버스 실패: {ex.Message}");
+                    }
+                }
+            }
+        }
+
         private void HandleAllTickerUpdate(IEnumerable<IBinance24HPrice> ticks)
         {
             try
             {
                 if (ticks == null)
                     return;
+
+                // [급변 감지] 1분 가격 변동률 체크
+                _crashDetector.CheckPriceVelocity(_marketDataManager.TickerCache);
 
                 var trackedSymbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 

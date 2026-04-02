@@ -363,6 +363,14 @@ namespace TradingBot
                     txtMajorTrailingGapRoe.Text = dbSettings.MajorTrailingGapRoe.ToString("F2");
                     txtMajorStopLossRoe.Text = dbSettings.MajorStopLossRoe.ToString("F2");
 
+                    // 급변 감지 설정
+                    chkCrashDetectorEnabled.IsChecked = dbSettings.CrashDetectorEnabled;
+                    txtCrashThreshold.Text = dbSettings.CrashThresholdPct.ToString("F1");
+                    txtPumpDetectThreshold.Text = dbSettings.PumpDetectThresholdPct.ToString("F1");
+                    txtCrashMinCoinCount.Text = dbSettings.CrashMinCoinCount.ToString();
+                    txtCrashReverseSize.Text = (dbSettings.CrashReverseSizeRatio * 100).ToString("F0");
+                    txtCrashCooldown.Text = dbSettings.CrashCooldownSeconds.ToString();
+
                     if (!string.IsNullOrWhiteSpace(dbSettings.MajorTrendProfile))
                     {
                         SelectMajorTrendProfile(dbSettings.MajorTrendProfile);
@@ -433,6 +441,15 @@ namespace TradingBot
                             txtMajorTrailingStartRoe.Text = generalNode["MajorTrailingStartRoe"]?.ToString() ?? "40.0";
                             txtMajorTrailingGapRoe.Text = generalNode["MajorTrailingGapRoe"]?.ToString() ?? "5.0";
                             txtMajorStopLossRoe.Text = generalNode["MajorStopLossRoe"]?.ToString() ?? "20.0";
+
+                            // 급변 감지 설정
+                            chkCrashDetectorEnabled.IsChecked = generalNode["CrashDetectorEnabled"]?.GetValue<bool?>() ?? true;
+                            txtCrashThreshold.Text = generalNode["CrashThresholdPct"]?.ToString() ?? "-1.5";
+                            txtPumpDetectThreshold.Text = generalNode["PumpDetectThresholdPct"]?.ToString() ?? "1.5";
+                            txtCrashMinCoinCount.Text = generalNode["CrashMinCoinCount"]?.ToString() ?? "2";
+                            var reverseRatio = generalNode["CrashReverseSizeRatio"]?.GetValue<decimal?>() ?? 0.5m;
+                            txtCrashReverseSize.Text = (reverseRatio * 100).ToString("F0");
+                            txtCrashCooldown.Text = generalNode["CrashCooldownSeconds"]?.ToString() ?? "120";
                         }
 
                         txtRisk.Text = tradingNode["RiskPercentage"]?.ToString() ?? "1.0";
@@ -721,6 +738,36 @@ namespace TradingBot
                 {
                     generalNode["MajorStopLossRoe"] = majorStopLossRoe;
                     generalSettings.MajorStopLossRoe = majorStopLossRoe;
+                }
+
+                // 급변 감지 설정 저장
+                generalSettings.CrashDetectorEnabled = chkCrashDetectorEnabled.IsChecked == true;
+                generalNode["CrashDetectorEnabled"] = generalSettings.CrashDetectorEnabled;
+
+                if (decimal.TryParse(txtCrashThreshold.Text, out decimal crashThresh))
+                {
+                    generalNode["CrashThresholdPct"] = crashThresh;
+                    generalSettings.CrashThresholdPct = crashThresh;
+                }
+                if (decimal.TryParse(txtPumpDetectThreshold.Text, out decimal pumpThresh))
+                {
+                    generalNode["PumpDetectThresholdPct"] = pumpThresh;
+                    generalSettings.PumpDetectThresholdPct = pumpThresh;
+                }
+                if (int.TryParse(txtCrashMinCoinCount.Text, out int minCoin))
+                {
+                    generalNode["CrashMinCoinCount"] = minCoin;
+                    generalSettings.CrashMinCoinCount = minCoin;
+                }
+                if (decimal.TryParse(txtCrashReverseSize.Text, out decimal reverseSize))
+                {
+                    generalNode["CrashReverseSizeRatio"] = reverseSize / 100m;
+                    generalSettings.CrashReverseSizeRatio = reverseSize / 100m;
+                }
+                if (int.TryParse(txtCrashCooldown.Text, out int cooldown))
+                {
+                    generalNode["CrashCooldownSeconds"] = cooldown;
+                    generalSettings.CrashCooldownSeconds = cooldown;
                 }
 
                 // DefaultMargin 저장 (UI에서 입력받지 않으면 기본값 사용)

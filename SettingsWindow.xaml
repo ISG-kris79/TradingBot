@@ -226,6 +226,14 @@
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
+                                        <!-- ─── 급변 감지 (34~40) ─── -->
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="160"/>
@@ -762,6 +770,79 @@
                                              Grid.Row="33"
                                              Grid.Column="1"
                                              Margin="0,0,0,15"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <!-- ══════════════════════════════════════════════════════ -->
+                                    <!-- 급변 감지 (CRASH/PUMP) - rows 34~40                   -->
+                                    <!-- ══════════════════════════════════════════════════════ -->
+                                    <TextBlock Text="── 급변 감지 (CRASH/PUMP) ──"
+                                               Grid.Row="34"
+                                               Grid.ColumnSpan="2"
+                                               Foreground="#FF6B6B"
+                                               FontWeight="Bold"
+                                               Margin="0,10,0,8"/>
+
+                                    <CheckBox x:Name="chkCrashDetectorEnabled"
+                                              Grid.Row="35"
+                                              Grid.ColumnSpan="2"
+                                              Content="급변 감지 활성화 (CRASH 긴급 청산 + 리버스 진입)"
+                                              Foreground="#FF6B6B"
+                                              IsChecked="True"
+                                              Margin="0,0,0,8"/>
+
+                                    <TextBlock Text="CRASH 임계값 (%):"
+                                               Grid.Row="36"
+                                               Foreground="#E2E8F0"/>
+                                    <TextBox x:Name="txtCrashThreshold"
+                                             Grid.Row="36"
+                                             Grid.Column="1"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="PUMP 임계값 (%):"
+                                               Grid.Row="37"
+                                               Foreground="#E2E8F0"/>
+                                    <TextBox x:Name="txtPumpDetectThreshold"
+                                             Grid.Row="37"
+                                             Grid.Column="1"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="최소 동시 코인 수:"
+                                               Grid.Row="38"
+                                               Foreground="#E2E8F0"/>
+                                    <TextBox x:Name="txtCrashMinCoinCount"
+                                             Grid.Row="38"
+                                             Grid.Column="1"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="리버스 사이즈 (%):"
+                                               Grid.Row="39"
+                                               Foreground="#E2E8F0"/>
+                                    <TextBox x:Name="txtCrashReverseSize"
+                                             Grid.Row="39"
+                                             Grid.Column="1"
+                                             Padding="8"
+                                             Background="#1E2235"
+                                             Foreground="White"
+                                             BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="쿨다운 (초):"
+                                               Grid.Row="40"
+                                               Foreground="#E2E8F0"/>
+                                    <TextBox x:Name="txtCrashCooldown"
+                                             Grid.Row="40"
+                                             Grid.Column="1"
                                              Padding="8"
                                              Background="#1E2235"
                                              Foreground="White"
