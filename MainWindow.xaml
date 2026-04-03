@@ -703,6 +703,25 @@
                                            FontFamily="Consolas"/>
                             </StackPanel>
                         </Border>
+                        <!-- Transfer PnL Pill -->
+                        <Border Background="#0A1220"
+                                BorderBrush="#1E3A5F"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="12,6"
+                                Margin="0,0,6,0">
+                            <StackPanel>
+                                <TextBlock Text="TRANSFER PnL"
+                                           Foreground="#4B5563"
+                                           FontSize="8"
+                                           FontWeight="Bold"/>
+                                <TextBlock Text="{Binding NetTransferInfo}"
+                                           Foreground="{Binding NetTransferColor}"
+                                           FontSize="11"
+                                           FontWeight="Bold"
+                                           FontFamily="Consolas"/>
+                            </StackPanel>
+                        </Border>
                         <!-- ROI Pill -->
                         <Border Background="#0A1220"
                                 BorderBrush="#1E3A5F"

@@ -671,6 +671,12 @@ namespace TradingBot.ViewModels
         private string _availableBalance = "$0.00";
         public string AvailableBalance { get => _availableBalance; set { _availableBalance = value; OnPropertyChanged(); } }
 
+        private string _netTransferInfo = "";
+        public string NetTransferInfo { get => _netTransferInfo; set { _netTransferInfo = value; OnPropertyChanged(); } }
+
+        private Brush _netTransferColor = Brushes.White;
+        public Brush NetTransferColor { get => _netTransferColor; set { _netTransferColor = value; OnPropertyChanged(); } }
+
         // 텔레그램 상태
         private string _telegramStatus = "Telegram: Disconnected";
         public string TelegramStatus { get => _telegramStatus; set { _telegramStatus = value; OnPropertyChanged(); } }
@@ -4325,6 +4331,16 @@ namespace TradingBot.ViewModels
                 AvailableBalance = $"${available:N2}";
                 double pnl = equity - available;
                 EquityColor = pnl > 0 ? Brushes.LimeGreen : (pnl < 0 ? Brushes.Tomato : Brushes.White);
+
+                // 투입금 대비 수익률
+                double netTransfer = (double)(_engine?.NetTransferAmount ?? 0m);
+                if (netTransfer > 0)
+                {
+                    double profitFromTransfer = equity - netTransfer;
+                    double profitPct = profitFromTransfer / netTransfer * 100;
+                    NetTransferInfo = $"투입 ${netTransfer:N0} | PnL ${profitFromTransfer:+#,##0.00;-#,##0.00} ({profitPct:+0.0;-0.0}%)";
+                    NetTransferColor = profitFromTransfer >= 0 ? Brushes.LimeGreen : Brushes.Tomato;
+                }
 
                 ProfitHistory.Add(equity);
                 if (ProfitHistory.Count > 50) ProfitHistory.RemoveAt(0);

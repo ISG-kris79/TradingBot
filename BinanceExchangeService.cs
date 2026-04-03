@@ -53,6 +53,56 @@ namespace TradingBot.Services
             });
         }
 
+        /// <summary>
+        /// 선물 계좌 순 투입금 조회 (Transfer In - Transfer Out)
+        /// Binance Income History API에서 TRANSFER 타입 내역 합산
+        /// </summary>
+        public async Task<decimal> GetNetTransferAmountAsync(CancellationToken ct = default)
+        {
+            try
+            {
+                decimal totalIn = 0m;
+                decimal totalOut = 0m;
+                DateTime startTime = DateTime.UtcNow.AddDays(-365); // 최근 1년
+
+                // Income History에서 TRANSFER 타입 조회 (페이지네이션)
+                while (true)
+                {
+                    var result = await _client.UsdFuturesApi.Account.GetIncomeHistoryAsync(
+                        incomeType: "TRANSFER",
+                        startTime: startTime,
+                        limit: 1000,
+                        ct: ct);
+
+                    if (!result.Success || result.Data == null || !result.Data.Any())
+                        break;
+
+                    foreach (var income in result.Data)
+                    {
+                        if (income.Income > 0)
+                            totalIn += income.Income;
+                        else
+                            totalOut += Math.Abs(income.Income);
+                    }
+
+                    // 1000건 미만이면 마지막 페이지
+                    if (result.Data.Count() < 1000)
+                        break;
+
+                    // 다음 페이지: 마지막 건 이후부터
+                    startTime = result.Data.Last().Timestamp.AddMilliseconds(1);
+                }
+
+                OnLog?.Invoke($"💰 [Transfer] 입금 합계: ${totalIn:N2}, 출금 합계: ${totalOut:N2}, 순 투입금: ${totalIn - totalOut:N2}");
+                return totalIn - totalOut;
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ [Transfer] 순 투입금 조회 실패: {ex.Message}");
+                return 0m;
+            }
+        }
+
         public async Task<decimal> GetBalanceAsync(string asset, CancellationToken ct = default)
         {
             var result = await _client.UsdFuturesApi.Account.GetBalancesAsync(ct: ct);

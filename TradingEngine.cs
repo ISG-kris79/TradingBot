@@ -38,6 +38,7 @@ namespace TradingBot
         private readonly List<string> _symbols;
 
         public decimal InitialBalance { get; private set; } = 0; // 프로그램 시작 시점의 자산
+        public decimal NetTransferAmount { get; private set; } = 0; // 순 투입금 (Transfer In - Out)
         private DateTime _engineStartTime = DateTime.MinValue; // [수정] 엔진 시작 시에만 설정
         private DateTime _lastReportTime = DateTime.MinValue;
         private DateTime _lastAiGateSummaryTime = DateTime.MinValue;
@@ -1142,10 +1143,26 @@ namespace TradingBot
                     if (balance > 0)
                     {
                         InitialBalance = balance;
-                        OnLiveLog?.Invoke($"💰 [Real] 초기 시드: ${InitialBalance:N2}");
+                        OnLiveLog?.Invoke($"💰 [Real] 가용 잔고: ${InitialBalance:N2}");
+                    }
 
-                        // 텔레그램 및 디스코드 시작 알림
-                        await NotificationService.Instance.NotifyAsync($"봇 가동 시작\n초기 자산: ${InitialBalance:N2} USDT", NotificationChannel.Alert);
+                    // 순 투입금 조회 (Transfer In - Out)
+                    if (_exchangeService is BinanceExchangeService binanceSvc)
+                    {
+                        decimal netTransfer = await binanceSvc.GetNetTransferAmountAsync(token);
+                        if (netTransfer > 0)
+                        {
+                            NetTransferAmount = netTransfer;
+                            OnLiveLog?.Invoke($"💰 [Real] 순 투입금: ${NetTransferAmount:N2} | 가용 잔고: ${InitialBalance:N2}");
+                        }
+                    }
+
+                    decimal displayBase = NetTransferAmount > 0 ? NetTransferAmount : InitialBalance;
+                    if (displayBase > 0)
+                    {
+                        await NotificationService.Instance.NotifyAsync(
+                            $"봇 가동 시작\n투입금: ${NetTransferAmount:N2} USDT\n가용 잔고: ${InitialBalance:N2} USDT",
+                            NotificationChannel.Alert);
                     }
                 }
             }
