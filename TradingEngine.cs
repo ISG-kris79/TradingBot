@@ -114,6 +114,8 @@ namespace TradingBot
         private PumpScanStrategy? _pumpStrategy;
         private MajorCoinStrategy? _majorStrategy;
         private readonly MarketCrashDetector _crashDetector = new();
+        private readonly MarketRegimeClassifier _regimeClassifier = new();
+        private readonly ExitOptimizerService _exitOptimizer = new();
         private GridStrategy _gridStrategy;
         private ArbitrageStrategy _arbitrageStrategy;
         // private TransformerStrategy? _transformerStrategy; // TensorFlow 전환 중 임시 비활성화
@@ -504,6 +506,13 @@ namespace TradingBot
                 settingsProvider: () => MainWindow.CurrentGeneralSettings ?? AppConfig.Current?.Trading?.GeneralSettings ?? _settings
             );
 
+            // [AI Exit] 시장 상태 분류 + 최적 익절 모델 초기화
+            _regimeClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _exitOptimizer.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _regimeClassifier.TryLoadModel();
+            _exitOptimizer.TryLoadModel();
+            _positionMonitor.SetExitAIModels(_regimeClassifier, _exitOptimizer);
+            _ = TrainExitModelsAsync(_cts.Token);
 
             _riskManager.OnTripped += (reason) =>
             {
@@ -5548,6 +5557,99 @@ namespace TradingBot
                     Quantity = Math.Abs(pos.Quantity),
                     Leverage = uiLeverage
                 });
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // [AI Exit] 시장 상태 분류 + 최적 익절 모델 학습
+        // ═══════════════════════════════════════════════════════════════
+
+        private async Task TrainExitModelsAsync(CancellationToken token)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30), token); // 시작 직후 부하 방지
+
+                // 1. MarketRegimeClassifier 학습 (KlineCache에서)
+                OnStatusLog?.Invoke("[AI Exit] 시장 상태 분류 모델 학습 시작...");
+                var allRegimeData = new List<RegimeFeature>();
+                foreach (var kvp in _marketDataManager.KlineCache)
+                {
+                    if (token.IsCancellationRequested) break;
+                    List<Binance.Net.Interfaces.IBinanceKline> candles;
+                    lock (kvp.Value) { candles = kvp.Value.ToList(); }
+                    if (candles.Count >= 30)
+                        allRegimeData.AddRange(MarketRegimeClassifier.BuildTrainingData(candles));
+                }
+
+                if (allRegimeData.Count >= 100)
+                {
+                    bool regimeTrained = await _regimeClassifier.TrainAndSaveAsync(allRegimeData, token);
+                    if (regimeTrained)
+                        OnStatusLog?.Invoke($"[AI Exit] 시장 상태 모델 학습 완료 ({allRegimeData.Count}건)");
+                }
+                else
+                {
+                    OnStatusLog?.Invoke($"[AI Exit] 시장 상태 학습 데이터 부족 ({allRegimeData.Count}건 < 100)");
+                }
+
+                // 2. ExitOptimizer 학습 (TradeHistory에서)
+                OnStatusLog?.Invoke("[AI Exit] 최적 익절 모델 학습 시작...");
+                int userId = AppConfig.CurrentUser?.Id ?? 0;
+                var tradeHistory = userId > 0
+                    ? await _dbManager.GetTradeHistoryAsync(userId, DateTime.Now.AddDays(-90), DateTime.Now, 500)
+                    : null;
+
+                var closedTrades = tradeHistory?.Where(t =>
+                    t.EntryPrice > 0 && t.ExitPrice > 0 && t.PnLPercent != 0).ToList();
+
+                if (closedTrades != null && closedTrades.Count >= 30)
+                {
+                    var exitTrainingData = new List<ExitFeature>();
+                    foreach (var trade in closedTrades)
+                    {
+                        bool isLong = trade.Side == "BUY";
+                        int leverage = 20;
+
+                        // 최고가 추정: 익절이면 ExitPrice 근처, 손절이면 EntryPrice 근처
+                        decimal highestPrice = isLong
+                            ? Math.Max(trade.ExitPrice, trade.EntryPrice * 1.005m)
+                            : trade.EntryPrice;
+                        decimal lowestPrice = isLong
+                            ? trade.EntryPrice
+                            : Math.Min(trade.ExitPrice, trade.EntryPrice * 0.995m);
+
+                        double holdMinutes = trade.ExitTime > trade.EntryTime
+                            ? (trade.ExitTime - trade.EntryTime).TotalMinutes : 30;
+
+                        exitTrainingData.AddRange(ExitOptimizerService.BuildTrainingDataFromTrades(
+                            new() { (trade.EntryPrice, trade.ExitPrice, highestPrice, lowestPrice,
+                                     isLong, leverage, 2.0f, 25f, 50f, 0f, 0f, holdMinutes, 0) }));
+                    }
+
+                    if (exitTrainingData.Count >= 50)
+                    {
+                        bool exitTrained = await _exitOptimizer.TrainAndSaveAsync(exitTrainingData, token);
+                        if (exitTrained)
+                        {
+                            OnStatusLog?.Invoke($"[AI Exit] 최적 익절 모델 학습 완료 ({exitTrainingData.Count}건, 원본 {closedTrades.Count} 트레이드)");
+                            _positionMonitor.SetExitAIModels(_regimeClassifier, _exitOptimizer);
+                        }
+                    }
+                    else
+                    {
+                        OnStatusLog?.Invoke($"[AI Exit] 익절 학습 데이터 부족 ({exitTrainingData.Count}건 < 50)");
+                    }
+                }
+                else
+                {
+                    OnStatusLog?.Invoke($"[AI Exit] 트레이드 히스토리 부족 ({closedTrades?.Count ?? 0}건 < 30)");
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [AI Exit] 모델 학습 실패: {ex.Message}");
             }
         }
 

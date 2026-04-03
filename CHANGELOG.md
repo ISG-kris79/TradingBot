@@ -15,6 +15,21 @@
 
  - 없음
 
+## [3.1.1] - 2026-04-03
+
+### Added
+
+- **AI 시장 상태 분류기 (MarketRegimeClassifier)**: LightGBM 3분류 모델
+  - TRENDING / SIDEWAYS / VOLATILE 자동 판별
+  - 피처: BB_Width, ADX, ATR비율, RSI, MACD기울기, 거래량변화, SMA정배열, 캔들바디비율
+  - 5분봉 KlineCache에서 자동 라벨링 + 학습
+- **AI 최적 익절 모델 (ExitOptimizerService)**: LightGBM 이진분류
+  - EXIT_NOW / HOLD 판단 (ROE 10%+ 보유 중 5초 간격 질의)
+  - 피처: 현재ROE, 최고ROE, 되돌림크기, 시장상태, BB_Width, ADX, RSI, 보유시간
+  - 과거 트레이드 DB에서 자동 학습 (최고ROE 대비 수익 보존율로 라벨링)
+  - 횡보장에서 EXIT_NOW 70%+ → 즉시 익절 (수익 증발 방지)
+  - 추세장에서 HOLD → 기존 트레일링 유지 (상승 기회 보존)
+
 ## [3.1.0] - 2026-04-02
 
 ### Added

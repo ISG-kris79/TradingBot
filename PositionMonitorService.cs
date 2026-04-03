@@ -32,6 +32,16 @@ namespace TradingBot.Services
         private readonly AdvancedExitStopCalculator _advancedExitCalculator;  // [v2.1.18] 지표 결합 익절
         private AIPredictor? _aiPredictor;
 
+        // [AI Exit] 시장 상태 분류 + 최적 익절 모델
+        private MarketRegimeClassifier? _regimeClassifier;
+        private ExitOptimizerService? _exitOptimizer;
+
+        public void SetExitAIModels(MarketRegimeClassifier? regime, ExitOptimizerService? exitOpt)
+        {
+            _regimeClassifier = regime;
+            _exitOptimizer = exitOpt;
+        }
+
         // Events
         public event Action<string>? OnLog = delegate { };
         public event Action<string>? OnAlert = delegate { };
@@ -656,12 +666,61 @@ namespace TradingBot.Services
                     }
 
                     // ═══════════════════════════════════════════════
-                    // 1단계: 본절 보호 — 제거됨 (리스크 관리 본절 청산이 오히려 수익 기회 제한)
-                    // breakEvenActivated는 항상 true 처리하여 2단계 부분익절이 바로 동작하도록
+                    // 1단계: 본절 플래그 (2단계 트리거용) + AI Exit 판단
                     // ═══════════════════════════════════════════════
                     if (!breakEvenActivated && highestROE >= breakEvenROE)
                     {
-                        breakEvenActivated = true; // 본절 스탑 없이 플래그만 설정 (2단계 트리거용)
+                        breakEvenActivated = true;
+                    }
+
+                    // [AI Exit Optimizer] ROE 10% 이상일 때 5초마다 모델 질의
+                    if (breakEvenActivated && !profitLockActivated && currentROE >= 10.0m
+                        && _exitOptimizer != null && _exitOptimizer.IsModelLoaded
+                        && _regimeClassifier != null && _regimeClassifier.IsModelLoaded)
+                    {
+                        try
+                        {
+                            // 시장 상태 분류
+                            RegimeFeature? regimeInput = null;
+                            if (_marketDataManager.KlineCache.TryGetValue(symbol, out var klines) && klines.Count >= 21)
+                            {
+                                List<Binance.Net.Interfaces.IBinanceKline> snapshot;
+                                lock (klines) { snapshot = klines.TakeLast(21).ToList(); }
+                                regimeInput = MarketRegimeClassifier.ExtractFeature(snapshot);
+                            }
+
+                            var (regime, regimeConf) = regimeInput != null
+                                ? _regimeClassifier.Predict(regimeInput)
+                                : (MarketRegime.Unknown, 0f);
+
+                            // Exit 판단
+                            var exitFeature = new ExitFeature
+                            {
+                                CurrentROE = (float)currentROE,
+                                HighestROE = (float)highestROE,
+                                ROE_Drawdown = (float)(highestROE - currentROE),
+                                BB_Width = regimeInput?.BB_Width ?? 0f,
+                                ADX = regimeInput?.ADX ?? 0f,
+                                RSI = regimeInput?.RSI ?? 50f,
+                                MACD_Slope = regimeInput?.MACD_Slope ?? 0f,
+                                Volume_Change_Pct = regimeInput?.Volume_Change_Pct ?? 0f,
+                                HoldingMinutes = (float)(DateTime.Now - positionEntryTime).TotalMinutes,
+                                RegimeLabel = (int)regime
+                            };
+
+                            var (exitNow, exitProb) = _exitOptimizer.Predict(exitFeature);
+
+                            if (exitNow && exitProb >= 0.70f)
+                            {
+                                OnAlert?.Invoke($"🧠 [AI Exit] {symbol} EXIT_NOW ({exitProb:P0}) | regime={regime} ROE={currentROE:F1}% peak={highestROE:F1}%");
+                                await ExecuteMarketClose(symbol, $"AI Exit Optimizer (prob={exitProb:P0}, regime={regime}, ROE={currentROE:F1}%)", token);
+                                break;
+                            }
+                        }
+                        catch (Exception aiEx)
+                        {
+                            OnLog?.Invoke($"⚠️ [{symbol}] AI Exit 판단 오류: {aiEx.Message}");
+                        }
                     }
 
                     // ═══════════════════════════════════════════════
