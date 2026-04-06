@@ -63,6 +63,45 @@ namespace TradingBot.Services
         }
 
         /// <summary>
+        /// 상위봉 하락세 확인 (15m + 1H SMA20 < SMA60, 또는 RSI 과매수 꺾임)
+        /// </summary>
+        public async Task<(bool isBearish, string detail)> CheckHigherTimeframeBearishAsync(
+            string symbol, CancellationToken token)
+        {
+            try
+            {
+                var k15m = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 70, token);
+                if (k15m == null || k15m.Count < 60)
+                    return (false, "15m 데이터 부족");
+
+                var list15m = k15m.ToList();
+                double sma20_15m = list15m.TakeLast(20).Average(k => (double)k.ClosePrice);
+                double sma60_15m = list15m.TakeLast(60).Average(k => (double)k.ClosePrice);
+                bool bearish15m = sma20_15m < sma60_15m;
+
+                var k1h = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneHour, 70, token);
+                if (k1h == null || k1h.Count < 60)
+                    return (bearish15m, $"15m={bearish15m}, 1H=데이터부족");
+
+                var list1h = k1h.ToList();
+                double sma20_1h = list1h.TakeLast(20).Average(k => (double)k.ClosePrice);
+                double sma60_1h = list1h.TakeLast(60).Average(k => (double)k.ClosePrice);
+                bool bearish1h = sma20_1h < sma60_1h;
+
+                // RSI 과매수 꺾임 (1H RSI가 70 이상이었다가 내려오는 경우)
+                double rsi1h = CalculateRSI(list1h, 14);
+                bool overboughtReversal = rsi1h > 60 && rsi1h < 70 && sma20_1h > sma60_1h; // 아직 정배열이지만 꺾이는 중
+
+                bool isBearish = (bearish15m && bearish1h) || (bearish15m && overboughtReversal);
+                return (isBearish, $"15m={bearish15m}, 1H={bearish1h}, RSI1H={rsi1h:F1}, overboughtReversal={overboughtReversal}");
+            }
+            catch (Exception ex)
+            {
+                return (false, $"에러: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// 1분봉 MACD 골든크로스 감지
         /// </summary>
         /// <returns>(detected, caseType, macdLine, signalLine, histogram, rsi)</returns>
@@ -90,11 +129,12 @@ namespace TradingBot.Services
                 // 히스토그램 변화율 (ML 피처용)
                 double histChangeRate = prevHist != 0 ? (hist - prevHist) / Math.Abs(prevHist) : 0;
 
+                // DeadCrossAngle: (MACD-Signal)[t] - (MACD-Signal)[t-1]  음수일수록 급하락
+                double deadCrossAngle = (macd - signal) - (prevMacd - prevSignal);
+
                 if (goldenCross)
                 {
                     string caseType = macd > 0 ? "B" : "A";
-                    // Case B: 0선 위 골크 — 추세 가속 (RSI 65+ 무시하고 진입)
-                    // Case A: 0선 아래 골크 — 과매도 반등
                     return new MacdCrossResult
                     {
                         Detected = true,
@@ -104,6 +144,7 @@ namespace TradingBot.Services
                         SignalLine = signal,
                         Histogram = hist,
                         HistChangeRate = histChangeRate,
+                        DeadCrossAngle = deadCrossAngle,
                         RSI = rsi,
                         Detail = $"GoldenCross Case{caseType} MACD={macd:F6} Sig={signal:F6} Hist={hist:F6} RSI={rsi:F1}"
                     };
@@ -111,33 +152,54 @@ namespace TradingBot.Services
 
                 if (deadCross)
                 {
+                    // 숏 유형 A: 0선 근처/위에서 데드크로스 (추세 추종, 가장 안전)
+                    // 숏 유형 B: 0선 아래에서 히스토그램 급감 (변곡점 포착, 하이리스크)
+                    string shortCase = macd >= 0 || (macd > -0.0001 && prevMacd > 0) ? "A" : "B";
                     return new MacdCrossResult
                     {
                         Detected = true,
                         CrossType = MacdCrossType.Dead,
-                        CaseType = "",
+                        CaseType = shortCase,
                         MacdLine = macd,
                         SignalLine = signal,
                         Histogram = hist,
                         HistChangeRate = histChangeRate,
+                        DeadCrossAngle = deadCrossAngle,
                         RSI = rsi,
-                        Detail = $"DeadCross MACD={macd:F6} Sig={signal:F6} Hist={hist:F6} RSI={rsi:F1}"
+                        Detail = $"DeadCross Case{shortCase} MACD={macd:F6} Sig={signal:F6} Angle={deadCrossAngle:F6} RSI={rsi:F1}"
                     };
                 }
 
-                // 히스토그램 Peak Out 감지 (익절 신호)
+                // 히스토그램 Peak Out 감지 (롱 익절 신호)
                 bool histPeakOut = prevHist > 0 && hist > 0 && hist < prevHist && prevHist > 0.00001;
+
+                // 히스토그램 Bottom Out 감지 (숏 익절 신호: 음수 막대가 짧아지기 시작)
+                bool histBottomOut = prevHist < 0 && hist < 0 && hist > prevHist && prevHist < -0.00001;
+
+                MacdCrossType noCrossType = MacdCrossType.None;
+                string noCrossDetail = "NoCross";
+                if (histPeakOut)
+                {
+                    noCrossType = MacdCrossType.HistPeakOut;
+                    noCrossDetail = $"HistPeakOut hist={hist:F6} prev={prevHist:F6}";
+                }
+                else if (histBottomOut)
+                {
+                    noCrossType = MacdCrossType.HistBottomOut;
+                    noCrossDetail = $"HistBottomOut hist={hist:F6} prev={prevHist:F6}";
+                }
 
                 return new MacdCrossResult
                 {
                     Detected = false,
-                    CrossType = histPeakOut ? MacdCrossType.HistPeakOut : MacdCrossType.None,
+                    CrossType = noCrossType,
                     MacdLine = macd,
                     SignalLine = signal,
                     Histogram = hist,
                     HistChangeRate = histChangeRate,
+                    DeadCrossAngle = deadCrossAngle,
                     RSI = rsi,
-                    Detail = histPeakOut ? $"HistPeakOut hist={hist:F6} prev={prevHist:F6}" : "NoCross"
+                    Detail = noCrossDetail
                 };
             }
             catch (Exception ex)
@@ -194,7 +256,7 @@ namespace TradingBot.Services
         }
     }
 
-    public enum MacdCrossType { None, Golden, Dead, HistPeakOut }
+    public enum MacdCrossType { None, Golden, Dead, HistPeakOut, HistBottomOut }
 
     public class MacdCrossResult
     {
@@ -205,6 +267,7 @@ namespace TradingBot.Services
         public double SignalLine { get; set; }
         public double Histogram { get; set; }
         public double HistChangeRate { get; set; }
+        public double DeadCrossAngle { get; set; }  // (MACD-Sig)[t] - (MACD-Sig)[t-1] — 음수일수록 급하락
         public double RSI { get; set; }
         public string Detail { get; set; } = "";
 

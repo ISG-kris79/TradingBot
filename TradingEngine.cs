@@ -5615,50 +5615,78 @@ namespace TradingBot
                 try
                 {
                     var crossResult = await _macdCrossService.DetectGoldenCrossAsync(symbol, token);
-                    if (!crossResult.Detected || crossResult.CrossType != MacdCrossType.Golden)
-                        continue;
-
-                    // 상위봉 정배열 확인
-                    var (isBullish, htfDetail) = await _macdCrossService.CheckHigherTimeframeBullishAsync(symbol, token);
-                    if (!isBullish)
-                    {
-                        OnStatusLog?.Invoke($"📊 [MACD] {symbol} 골든크로스 감지 but 상위봉 비정배열 → 스킵 | {htfDetail}");
-                        continue;
-                    }
-
-                    // Case B (0선 위): RSI 65+ 무시하고 진입
-                    // Case A (0선 아래): RSI < 40 과매도 반등
-                    bool shouldEnter = crossResult.CaseType == "B"
-                        || (crossResult.CaseType == "A" && crossResult.RSI < 40);
-
-                    if (!shouldEnter)
-                    {
-                        OnStatusLog?.Invoke($"📊 [MACD] {symbol} Case{crossResult.CaseType} 조건 미충족 (RSI={crossResult.RSI:F1}) → 스킵");
-                        continue;
-                    }
+                    if (!crossResult.Detected) continue;
 
                     decimal currentPrice = 0;
                     if (_marketDataManager.TickerCache.TryGetValue(symbol, out var tick))
                         currentPrice = tick.LastPrice;
                     if (currentPrice <= 0) continue;
 
-                    string source = $"MACD_GOLDEN_CASE{crossResult.CaseType}";
-                    OnAlert?.Invoke($"📈 [MACD 골든크로스] {symbol} Case{crossResult.CaseType} | {crossResult.Detail} | 상위봉 정배열 ✓");
-
-                    _ = Task.Run(async () =>
+                    // ── 골든크로스 → LONG ──
+                    if (crossResult.CrossType == MacdCrossType.Golden)
                     {
-                        try
+                        var (isBullish, htfDetail) = await _macdCrossService.CheckHigherTimeframeBullishAsync(symbol, token);
+                        if (!isBullish)
                         {
-                            await TelegramService.Instance.SendMessageAsync(
-                                $"📈 *[MACD 골든크로스]*\n`{symbol}` Case {crossResult.CaseType}\n" +
-                                $"MACD: `{crossResult.MacdLine:F6}`\nRSI: `{crossResult.RSI:F1}`\n" +
-                                $"상위봉 정배열 ✓\n⏰ {DateTime.Now:HH:mm:ss}",
-                                TelegramMessageType.Entry);
+                            OnStatusLog?.Invoke($"📊 [MACD] {symbol} 골든크로스 but 상위봉 비정배열 → 스킵 | {htfDetail}");
+                            continue;
                         }
-                        catch { }
-                    });
 
-                    await ExecuteAutoOrder(symbol, "LONG", currentPrice, token, source);
+                        bool shouldLong = crossResult.CaseType == "B"
+                            || (crossResult.CaseType == "A" && crossResult.RSI < 40);
+
+                        if (!shouldLong)
+                        {
+                            OnStatusLog?.Invoke($"📊 [MACD] {symbol} LONG Case{crossResult.CaseType} 미충족 (RSI={crossResult.RSI:F1})");
+                            continue;
+                        }
+
+                        string source = $"MACD_GOLDEN_CASE{crossResult.CaseType}";
+                        OnAlert?.Invoke($"📈 [MACD 골든크로스] {symbol} Case{crossResult.CaseType} | {crossResult.Detail}");
+
+                        _ = Task.Run(async () =>
+                        {
+                            try { await TelegramService.Instance.SendMessageAsync(
+                                $"📈 *[MACD 골든크로스]*\n`{symbol}` Case {crossResult.CaseType}\nMACD: `{crossResult.MacdLine:F6}`\nRSI: `{crossResult.RSI:F1}`\n⏰ {DateTime.Now:HH:mm:ss}",
+                                TelegramMessageType.Entry); } catch { }
+                        });
+
+                        await ExecuteAutoOrder(symbol, "LONG", currentPrice, token, source);
+                    }
+
+                    // ── 데드크로스 → SHORT ──
+                    else if (crossResult.CrossType == MacdCrossType.Dead)
+                    {
+                        var (isBearish, htfDetail) = await _macdCrossService.CheckHigherTimeframeBearishAsync(symbol, token);
+                        if (!isBearish)
+                        {
+                            OnStatusLog?.Invoke($"📊 [MACD] {symbol} 데드크로스 but 상위봉 비하락 → 스킵 | {htfDetail}");
+                            continue;
+                        }
+
+                        // 숏 유형 A (추세추종): 0선 근처/위 데드크로스 — 가장 안전
+                        // 숏 유형 B (변곡점): 히스토그램 급감 + DeadCrossAngle 크기
+                        bool shouldShort = crossResult.CaseType == "A"
+                            || (crossResult.CaseType == "B" && crossResult.DeadCrossAngle < -0.00001);
+
+                        if (!shouldShort)
+                        {
+                            OnStatusLog?.Invoke($"📊 [MACD] {symbol} SHORT Case{crossResult.CaseType} 미충족 (Angle={crossResult.DeadCrossAngle:F6})");
+                            continue;
+                        }
+
+                        string source = $"MACD_DEAD_CASE{crossResult.CaseType}";
+                        OnAlert?.Invoke($"📉 [MACD 데드크로스] {symbol} Case{crossResult.CaseType} | {crossResult.Detail}");
+
+                        _ = Task.Run(async () =>
+                        {
+                            try { await TelegramService.Instance.SendMessageAsync(
+                                $"📉 *[MACD 데드크로스]*\n`{symbol}` Case {crossResult.CaseType}\nMACD: `{crossResult.MacdLine:F6}`\nAngle: `{crossResult.DeadCrossAngle:F6}`\nRSI: `{crossResult.RSI:F1}`\n⏰ {DateTime.Now:HH:mm:ss}",
+                                TelegramMessageType.Entry); } catch { }
+                        });
+
+                        await ExecuteAutoOrder(symbol, "SHORT", currentPrice, token, source);
+                    }
                 }
                 catch (Exception ex)
                 {

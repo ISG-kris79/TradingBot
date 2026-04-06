@@ -727,7 +727,7 @@ namespace TradingBot.Services
                     }
 
                     // ═══════════════════════════════════════════════
-                    // [MACD 데드크로스] 1분봉 MACD 감시 → 트레일링 조임 / 익절
+                    // [MACD 크로스] 1분봉 MACD 감시 → 트레일링 조임 / 익절
                     // ═══════════════════════════════════════════════
                     if (breakEvenActivated && currentROE >= 5.0m && _macdCrossService != null)
                     {
@@ -735,30 +735,56 @@ namespace TradingBot.Services
                         {
                             var macdResult = await _macdCrossService.DetectGoldenCrossAsync(symbol, token);
 
-                            // 데드크로스 확정 → 1분봉 파동 종료, 기계적 탈출
-                            if (macdResult.CrossType == MacdCrossType.Dead && currentROE >= 8.0m)
+                            if (isLong)
                             {
-                                OnAlert?.Invoke($"📉 [MACD 데드크로스] {symbol} 1분봉 파동 종료 | ROE={currentROE:F1}% | {macdResult.Detail}");
-                                await ExecuteMarketClose(symbol, $"MACD 데드크로스 익절 (ROE={currentROE:F1}%)", token);
-                                break;
-                            }
-
-                            // 히스토그램 PeakOut → 트레일링 스탑 바짝 조임
-                            if (macdResult.CrossType == MacdCrossType.HistPeakOut && protectiveStopPrice > 0)
-                            {
-                                decimal tightStop = isLong
-                                    ? currentPrice * (1m - 0.002m) // 현재가 -0.2%
-                                    : currentPrice * (1m + 0.002m);
-
-                                if (isLong && tightStop > protectiveStopPrice)
+                                // [롱] 데드크로스 확정 → 파동 종료, 익절
+                                if (macdResult.CrossType == MacdCrossType.Dead && currentROE >= 8.0m)
                                 {
-                                    protectiveStopPrice = tightStop;
-                                    OnLog?.Invoke($"📉 [MACD PeakOut] {symbol} 트레일링 조임 → 스탑 {tightStop:F4} (현재가 -0.2%)");
+                                    OnAlert?.Invoke($"📉 [MACD 데드크로스] {symbol} LONG 파동 종료 | ROE={currentROE:F1}%");
+                                    await ExecuteMarketClose(symbol, $"MACD 데드크로스 익절 (ROE={currentROE:F1}%)", token);
+                                    break;
                                 }
-                                else if (!isLong && tightStop < protectiveStopPrice)
+
+                                // [롱] HistPeakOut → 트레일링 바짝 조임
+                                if (macdResult.CrossType == MacdCrossType.HistPeakOut && protectiveStopPrice > 0)
                                 {
-                                    protectiveStopPrice = tightStop;
-                                    OnLog?.Invoke($"📉 [MACD PeakOut] {symbol} 트레일링 조임 → 스탑 {tightStop:F4} (현재가 +0.2%)");
+                                    decimal tightStop = currentPrice * (1m - 0.002m);
+                                    if (tightStop > protectiveStopPrice)
+                                    {
+                                        protectiveStopPrice = tightStop;
+                                        OnLog?.Invoke($"📉 [MACD PeakOut] {symbol} LONG 트레일링 조임 → {tightStop:F4}");
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                // [숏] 골든크로스 확정 → 전량 탈출
+                                if (macdResult.CrossType == MacdCrossType.Golden && currentROE >= 5.0m)
+                                {
+                                    OnAlert?.Invoke($"📈 [MACD 골든크로스] {symbol} SHORT 파동 종료 → 전량 탈출 | ROE={currentROE:F1}%");
+                                    await ExecuteMarketClose(symbol, $"MACD 골든크로스 숏 탈출 (ROE={currentROE:F1}%)", token);
+                                    break;
+                                }
+
+                                // [숏] RSI 과매도(30 이하) → 1차 긴장, 50% 익절
+                                if (macdResult.RSI <= 30 && currentROE >= 10.0m && !partialTaken)
+                                {
+                                    if (await ExecutePartialClose(symbol, 0.50m, token))
+                                    {
+                                        partialTaken = true;
+                                        OnAlert?.Invoke($"📉 [숏 RSI과매도] {symbol} RSI={macdResult.RSI:F1} → 50% 익절 (ROE={currentROE:F1}%)");
+                                    }
+                                }
+
+                                // [숏] HistBottomOut → 트레일링 바짝 조임
+                                if (macdResult.CrossType == MacdCrossType.HistBottomOut && protectiveStopPrice > 0)
+                                {
+                                    decimal tightStop = currentPrice * (1m + 0.002m);
+                                    if (tightStop < protectiveStopPrice)
+                                    {
+                                        protectiveStopPrice = tightStop;
+                                        OnLog?.Invoke($"📈 [MACD BottomOut] {symbol} SHORT 트레일링 조임 → {tightStop:F4}");
+                                    }
                                 }
                             }
                         }
