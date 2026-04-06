@@ -117,6 +117,7 @@ namespace TradingBot
         private readonly MarketCrashDetector _crashDetector = new();
         private readonly MarketRegimeClassifier _regimeClassifier = new();
         private readonly ExitOptimizerService _exitOptimizer = new();
+        private MacdCrossSignalService? _macdCrossService;
         private GridStrategy _gridStrategy;
         private ArbitrageStrategy _arbitrageStrategy;
         // private TransformerStrategy? _transformerStrategy; // TensorFlow 전환 중 임시 비활성화
@@ -456,6 +457,8 @@ namespace TradingBot
 
             // [AI Intelligence + 1min Execution Hub]
             _executionHub = new OneMinuteExecutionHub(_exchangeService);
+            _macdCrossService = new MacdCrossSignalService(_exchangeService);
+            _macdCrossService.OnLog += msg => OnStatusLog?.Invoke(msg);
             _executionHub.OnLog = msg => OnStatusLog?.Invoke(msg);
 
             // [양방향 AI 시나리오 엔진]
@@ -513,6 +516,7 @@ namespace TradingBot
             _regimeClassifier.TryLoadModel();
             _exitOptimizer.TryLoadModel();
             _positionMonitor.SetExitAIModels(_regimeClassifier, _exitOptimizer);
+            _positionMonitor.SetMacdCrossService(_macdCrossService);
             _ = TrainExitModelsAsync(_cts.Token);
 
             _riskManager.OnTripped += (reason) =>
@@ -1924,6 +1928,10 @@ namespace TradingBot
                         // [A] 급등주 스캔 (알트코인 전체 대상)
                         if (_pumpStrategy != null)
                             await _pumpStrategy.ExecuteScanAsync(_marketDataManager.TickerCache, _blacklistedSymbols, token);
+
+                        // [B] MACD 골든크로스 스캔 (메이저 코인 대상)
+                        if (_macdCrossService != null)
+                            await ScanMacdGoldenCrossAsync(token);
 
                         if ((DateTime.Now - _lastHeartbeatTime).TotalHours >= 1)
                         {
@@ -5581,6 +5589,83 @@ namespace TradingBot
         // ═══════════════════════════════════════════════════════════════
         // [AI Exit] 시장 상태 분류 + 최적 익절 모델 학습
         // ═══════════════════════════════════════════════════════════════
+
+        // ═══════════════════════════════════════════════════════════════
+        // [MACD 골든크로스] 메이저 코인 1분봉 MACD 스캔
+        // ═══════════════════════════════════════════════════════════════
+
+        private DateTime _lastMacdScanTime = DateTime.MinValue;
+
+        private async Task ScanMacdGoldenCrossAsync(CancellationToken token)
+        {
+            // 30초 간격 스캔
+            if ((DateTime.Now - _lastMacdScanTime).TotalSeconds < 30) return;
+            _lastMacdScanTime = DateTime.Now;
+
+            if (_macdCrossService == null) return;
+
+            foreach (var symbol in MajorSymbols)
+            {
+                if (token.IsCancellationRequested) break;
+
+                // 이미 보유 중이면 스킵
+                lock (_posLock) { if (_activePositions.ContainsKey(symbol)) continue; }
+                if (_blacklistedSymbols.TryGetValue(symbol, out var exp) && DateTime.Now < exp) continue;
+
+                try
+                {
+                    var crossResult = await _macdCrossService.DetectGoldenCrossAsync(symbol, token);
+                    if (!crossResult.Detected || crossResult.CrossType != MacdCrossType.Golden)
+                        continue;
+
+                    // 상위봉 정배열 확인
+                    var (isBullish, htfDetail) = await _macdCrossService.CheckHigherTimeframeBullishAsync(symbol, token);
+                    if (!isBullish)
+                    {
+                        OnStatusLog?.Invoke($"📊 [MACD] {symbol} 골든크로스 감지 but 상위봉 비정배열 → 스킵 | {htfDetail}");
+                        continue;
+                    }
+
+                    // Case B (0선 위): RSI 65+ 무시하고 진입
+                    // Case A (0선 아래): RSI < 40 과매도 반등
+                    bool shouldEnter = crossResult.CaseType == "B"
+                        || (crossResult.CaseType == "A" && crossResult.RSI < 40);
+
+                    if (!shouldEnter)
+                    {
+                        OnStatusLog?.Invoke($"📊 [MACD] {symbol} Case{crossResult.CaseType} 조건 미충족 (RSI={crossResult.RSI:F1}) → 스킵");
+                        continue;
+                    }
+
+                    decimal currentPrice = 0;
+                    if (_marketDataManager.TickerCache.TryGetValue(symbol, out var tick))
+                        currentPrice = tick.LastPrice;
+                    if (currentPrice <= 0) continue;
+
+                    string source = $"MACD_GOLDEN_CASE{crossResult.CaseType}";
+                    OnAlert?.Invoke($"📈 [MACD 골든크로스] {symbol} Case{crossResult.CaseType} | {crossResult.Detail} | 상위봉 정배열 ✓");
+
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await TelegramService.Instance.SendMessageAsync(
+                                $"📈 *[MACD 골든크로스]*\n`{symbol}` Case {crossResult.CaseType}\n" +
+                                $"MACD: `{crossResult.MacdLine:F6}`\nRSI: `{crossResult.RSI:F1}`\n" +
+                                $"상위봉 정배열 ✓\n⏰ {DateTime.Now:HH:mm:ss}",
+                                TelegramMessageType.Entry);
+                        }
+                        catch { }
+                    });
+
+                    await ExecuteAutoOrder(symbol, "LONG", currentPrice, token, source);
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [MACD] {symbol} 스캔 오류: {ex.Message}");
+                }
+            }
+        }
 
         private async Task TrainExitModelsAsync(CancellationToken token)
         {
@@ -10596,6 +10681,9 @@ namespace TradingBot
                 var bb = IndicatorCalculator.CalculateBB(subset, 20, 2);
                 var atr = IndicatorCalculator.CalculateATR(subset, 14);
                 var macd = IndicatorCalculator.CalculateMACD(subset);
+                var prevMacd = IndicatorCalculator.CalculateMACD(subset.Take(subset.Count - 1).ToList());
+                float macdHistChangeRate = Math.Abs(prevMacd.Hist) > 0.0000001
+                    ? (float)((macd.Hist - prevMacd.Hist) / Math.Abs(prevMacd.Hist)) : 0f;
                 var fib = IndicatorCalculator.CalculateFibonacci(subset, 50);
 
                 // ── SMA ──
@@ -10689,6 +10777,7 @@ namespace TradingBot
                     MACD = (float)macd.Macd,
                     MACD_Signal = (float)macd.Signal,
                     MACD_Hist = (float)macd.Hist,
+                    MACD_Hist_ChangeRate = macdHistChangeRate,
                     ATR = (float)atr,
                     Fib_236 = (float)fib.Level236,
                     Fib_382 = (float)fib.Level382,

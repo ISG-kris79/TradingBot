@@ -35,12 +35,15 @@ namespace TradingBot.Services
         // [AI Exit] 시장 상태 분류 + 최적 익절 모델
         private MarketRegimeClassifier? _regimeClassifier;
         private ExitOptimizerService? _exitOptimizer;
+        private MacdCrossSignalService? _macdCrossService;
 
         public void SetExitAIModels(MarketRegimeClassifier? regime, ExitOptimizerService? exitOpt)
         {
             _regimeClassifier = regime;
             _exitOptimizer = exitOpt;
         }
+
+        public void SetMacdCrossService(MacdCrossSignalService? svc) => _macdCrossService = svc;
 
         // Events
         public event Action<string>? OnLog = delegate { };
@@ -720,6 +723,48 @@ namespace TradingBot.Services
                         catch (Exception aiEx)
                         {
                             OnLog?.Invoke($"⚠️ [{symbol}] AI Exit 판단 오류: {aiEx.Message}");
+                        }
+                    }
+
+                    // ═══════════════════════════════════════════════
+                    // [MACD 데드크로스] 1분봉 MACD 감시 → 트레일링 조임 / 익절
+                    // ═══════════════════════════════════════════════
+                    if (breakEvenActivated && currentROE >= 5.0m && _macdCrossService != null)
+                    {
+                        try
+                        {
+                            var macdResult = await _macdCrossService.DetectGoldenCrossAsync(symbol, token);
+
+                            // 데드크로스 확정 → 1분봉 파동 종료, 기계적 탈출
+                            if (macdResult.CrossType == MacdCrossType.Dead && currentROE >= 8.0m)
+                            {
+                                OnAlert?.Invoke($"📉 [MACD 데드크로스] {symbol} 1분봉 파동 종료 | ROE={currentROE:F1}% | {macdResult.Detail}");
+                                await ExecuteMarketClose(symbol, $"MACD 데드크로스 익절 (ROE={currentROE:F1}%)", token);
+                                break;
+                            }
+
+                            // 히스토그램 PeakOut → 트레일링 스탑 바짝 조임
+                            if (macdResult.CrossType == MacdCrossType.HistPeakOut && protectiveStopPrice > 0)
+                            {
+                                decimal tightStop = isLong
+                                    ? currentPrice * (1m - 0.002m) // 현재가 -0.2%
+                                    : currentPrice * (1m + 0.002m);
+
+                                if (isLong && tightStop > protectiveStopPrice)
+                                {
+                                    protectiveStopPrice = tightStop;
+                                    OnLog?.Invoke($"📉 [MACD PeakOut] {symbol} 트레일링 조임 → 스탑 {tightStop:F4} (현재가 -0.2%)");
+                                }
+                                else if (!isLong && tightStop < protectiveStopPrice)
+                                {
+                                    protectiveStopPrice = tightStop;
+                                    OnLog?.Invoke($"📉 [MACD PeakOut] {symbol} 트레일링 조임 → 스탑 {tightStop:F4} (현재가 +0.2%)");
+                                }
+                            }
+                        }
+                        catch (Exception macdEx)
+                        {
+                            OnLog?.Invoke($"⚠️ [{symbol}] MACD 감시 오류: {macdEx.Message}");
                         }
                     }
 
