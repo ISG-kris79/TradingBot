@@ -6206,6 +6206,12 @@ namespace TradingBot
             List<IBinanceKline>? recentEntryKlines =
                 (await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 140, token))?.ToList();
 
+            // SPIKE_DETECT: 140봉 부족 시 30봉으로 재시도
+            if ((recentEntryKlines == null || recentEntryKlines.Count < 20) && signalSource == "SPIKE_DETECT")
+            {
+                recentEntryKlines = (await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 30, token))?.ToList();
+            }
+
             var hsKlines = (await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 80, token))?.ToList();
             var hsResult = HeadAndShouldersDetector.DetectPattern(hsKlines ?? new List<IBinanceKline>(), 70);
 
@@ -6266,7 +6272,43 @@ namespace TradingBot
                 EntryLog("GUARD", "INFO", $"patternHold={deferReason} (not blocking)");
             }
 
-            // 1-7. 데이터 유효성
+            // 1-7. 데이터 유효성 (SPIKE_DETECT는 캔들 부족 시 최소 데이터로 진행)
+            if (latestCandle == null && signalSource == "SPIKE_DETECT")
+            {
+                // 급등 감지는 TickerCache 가격만으로도 진입 가능하도록 최소 CandleData 생성
+                if (recentEntryKlines != null && recentEntryKlines.Count >= 20)
+                {
+                    var last = recentEntryKlines.Last();
+                    var bb = IndicatorCalculator.CalculateBB(recentEntryKlines, 20, 2);
+                    double rsiVal = IndicatorCalculator.CalculateRSI(recentEntryKlines, 14);
+                    double atrVal = IndicatorCalculator.CalculateATR(recentEntryKlines, 14);
+                    var macdVal = IndicatorCalculator.CalculateMACD(recentEntryKlines);
+                    double sma20Val = IndicatorCalculator.CalculateSMA(recentEntryKlines, 20);
+                    double bbMid = (bb.Upper + bb.Lower) / 2.0;
+
+                    latestCandle = new CandleData
+                    {
+                        Symbol = symbol,
+                        Close = last.ClosePrice,
+                        Open = last.OpenPrice,
+                        High = last.HighPrice,
+                        Low = last.LowPrice,
+                        Volume = (float)last.Volume,
+                        RSI = (float)rsiVal,
+                        ATR = (float)atrVal,
+                        MACD = (float)macdVal.Macd,
+                        MACD_Signal = (float)macdVal.Signal,
+                        MACD_Hist = (float)macdVal.Hist,
+                        BollingerUpper = (float)bb.Upper,
+                        BollingerLower = (float)bb.Lower,
+                        SMA_20 = (float)sma20Val,
+                        BB_Width = bbMid > 0 ? (float)((bb.Upper - bb.Lower) / bbMid * 100) : 0,
+                        Volume_Ratio = 1.0f,
+                    };
+                    EntryLog("DATA", "SPIKE_FALLBACK", $"candleCount={recentEntryKlines.Count} (130봉 미달, 최소 데이터로 진행)");
+                }
+            }
+
             if (latestCandle == null)
             {
                 EntryLog("DATA", "BLOCK", "latestCandle=missing");
@@ -6663,11 +6705,12 @@ namespace TradingBot
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // [ROUTER] 6. RSI 극단 차단 (공통)
+            // [ROUTER] 6. RSI 극단 차단 (공통, SPIKE_DETECT 예외)
             // ═══════════════════════════════════════════════════════════════
             {
                 float rsiCheck = latestCandle.RSI;
-                if (rsiCheck > 0)
+                bool isSpikeEntry = signalSource == "SPIKE_DETECT";
+                if (rsiCheck > 0 && !isSpikeEntry)
                 {
                     bool rsiExtreme = (decision == "LONG" && rsiCheck >= 88f)
                                    || (decision == "SHORT" && rsiCheck <= 12f);
