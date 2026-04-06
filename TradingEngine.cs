@@ -1593,32 +1593,48 @@ namespace TradingBot
                 if (candles == null || candles.Count < 15)
                     return (0m, 0m, 0m);
 
-                decimal atrMultiplier = string.Equals(symbol, "XRPUSDT", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(symbol, "SOLUSDT", StringComparison.OrdinalIgnoreCase)
-                    ? 4.0m
-                    : 3.5m;
+                // [v3.1.9] 구조 기반 손절: 15분봉 구조선(지지/저항) 우선, ATR은 최대 캡만
+                // 20배 레버리지에서 구조선까지의 거리가 ROE -40~50%가 될 수 있음
+                // → 사이즈를 줄여야지 손절선을 좁히면 안 됨
                 double atr = IndicatorCalculator.CalculateATR(candles, 14);
                 if (atr <= 0)
                     return (0m, 0m, 0m);
 
-                decimal atrDistance = (decimal)atr * atrMultiplier;
-                decimal atrStopPrice = isLong
-                    ? referencePrice - atrDistance
-                    : referencePrice + atrDistance;
-
-                var swingCandles = candles.TakeLast(Math.Min(10, candles.Count)).ToList();
+                // 구조선: 15분봉 최근 20봉의 실제 지지/저항선
+                var swingCandles = candles.TakeLast(Math.Min(20, candles.Count)).ToList();
                 decimal structureStopPrice = isLong
-                    ? swingCandles.Min(c => c.LowPrice) * 0.999m
-                    : swingCandles.Max(c => c.HighPrice) * 1.001m;
+                    ? swingCandles.Min(c => c.LowPrice) * 0.998m  // 스윙로우 -0.2%
+                    : swingCandles.Max(c => c.HighPrice) * 1.002m; // 스윙하이 +0.2%
 
-                decimal hybridStopPrice = isLong
-                    ? Math.Min(atrStopPrice, structureStopPrice)
-                    : Math.Max(atrStopPrice, structureStopPrice);
+                // ATR 최대 캡: 구조선이 너무 멀면 ATR x5로 제한
+                decimal atrMaxCap = (decimal)atr * 5.0m;
+                decimal maxStopDistance = isLong
+                    ? referencePrice - (referencePrice - atrMaxCap)
+                    : (referencePrice + atrMaxCap) - referencePrice;
+
+                decimal structureDistance = isLong
+                    ? referencePrice - structureStopPrice
+                    : structureStopPrice - referencePrice;
+
+                // 구조선이 ATR x5보다 멀면 ATR x5로 제한
+                decimal hybridStopPrice;
+                if (structureDistance > maxStopDistance)
+                {
+                    hybridStopPrice = isLong
+                        ? referencePrice - atrMaxCap
+                        : referencePrice + atrMaxCap;
+                }
+                else
+                {
+                    hybridStopPrice = structureStopPrice; // 구조선 우선 사용
+                }
+
+                decimal atrDistance = (decimal)atr * 3.5m;
 
                 if (isLong && hybridStopPrice >= referencePrice)
-                    hybridStopPrice = atrStopPrice;
+                    hybridStopPrice = referencePrice - atrDistance;
                 else if (!isLong && hybridStopPrice <= referencePrice)
-                    hybridStopPrice = atrStopPrice;
+                    hybridStopPrice = referencePrice + atrDistance;
 
                 return (hybridStopPrice, atrDistance, structureStopPrice);
             }
@@ -6503,6 +6519,17 @@ namespace TradingBot
                 return;
             }
 
+            // 1-8. 거래량 컨펌 필터: 5봉 평균 대비 거래량이 너무 적으면 차단
+            // 거래량 없는 무빙은 90%가 가짜 → 손절 직행
+            if (signalSource != "SPIKE_DETECT" && signalSource != "CRASH_REVERSE" && signalSource != "PUMP_REVERSE")
+            {
+                if (latestCandle.Volume_Ratio > 0 && latestCandle.Volume_Ratio < 0.5f)
+                {
+                    EntryLog("VOLUME", "BLOCK", $"volumeRatio={latestCandle.Volume_Ratio:F2} < 0.50 (5봉 평균의 절반 미만 → 가짜 무빙 가능성)");
+                    return;
+                }
+            }
+
             // ═══════════════════════════════════════════════════════════════
             // [ROUTER] 2. 슬롯 검증 + 정찰대 전환
             // ═══════════════════════════════════════════════════════════════
@@ -7098,18 +7125,20 @@ namespace TradingBot
 
             if (scoutModeActivated)
             {
-                // [정찰대] 슬롯 포화 → 30% 고정, AI 축소 무시
-                finalSizeMultiplier = 0.30m;
-                EntryLog("SIZE", "SCOUT", $"slotFull=true → 30% 고정 (AI축소 무시)");
+                // [정찰대] 슬롯 포화 → 25% 고정
+                finalSizeMultiplier = 0.25m;
+                EntryLog("SIZE", "SCOUT", $"slotFull=true → 25% 정찰대");
             }
             else
             {
-                // [메인 진입] 100% 기본, 3분류 모델만 사이즈 조절
-                finalSizeMultiplier = 1.0m;
+                // [v3.1.9] 분할 진입: 정찰대 25% 먼저, 확인 후 본대 75% 추가
+                // 정찰대에서 손절나도 타격 최소화, 방향 맞으면 본대 투입
+                finalSizeMultiplier = 0.25m; // 정찰대 25%
+                EntryLog("SIZE", "SCOUT_FIRST", $"분할 진입 정찰대 25% (본대 75%는 ROE +10% 확인 후 자동 추가)");
 
-                // 3분류 모델: 같은 방향이면 부스트, 반대면 축소
-                if (mlSignalSizeMultiplier != 1.0m)
-                    finalSizeMultiplier = mlSignalSizeMultiplier;
+                // 3분류 모델: 같은 방향이면 정찰대를 40%로 올림
+                if (mlSignalSizeMultiplier != 1.0m && mlSignalSizeMultiplier > 1.0m)
+                    finalSizeMultiplier = 0.40m;
 
                 // 외부 전달 manualSizeMultiplier (기본 1.0)
                 if (manualSizeMultiplier < finalSizeMultiplier)
@@ -10181,24 +10210,25 @@ namespace TradingBot
                 decimal mainSizeMultiplier;
                 int requiredWaitSeconds;
 
-                if (currentROE >= 5.0m)
+                // [v3.1.9] 분할 진입: ROE + 거래량 동반 확인 후 본대 투입
+                if (currentROE >= 10.0m)
                 {
-                    mainSizeMultiplier = 0.70m; // 70% 추가 (모멘텀 확인됨)
+                    mainSizeMultiplier = 0.75m; // 75% 추가 (확실한 발산)
                     requiredWaitSeconds = MinWaitSeconds;
+                }
+                else if (currentROE >= 5.0m)
+                {
+                    mainSizeMultiplier = 0.50m; // 50% 추가 (방향 확인)
+                    requiredWaitSeconds = 180; // 3분
                 }
                 else if (currentROE >= 2.0m)
                 {
-                    mainSizeMultiplier = 0.50m; // 50% 추가 (방향 확인)
-                    requiredWaitSeconds = 300; // 5분
-                }
-                else if (currentROE >= 0m)
-                {
                     mainSizeMultiplier = 0.30m; // 30% 추가 (약한 방향)
-                    requiredWaitSeconds = 600; // 10분
+                    requiredWaitSeconds = 300; // 5분
                 }
                 else
                 {
-                    // ROE 음수: 추가하지 않음, 대기 계속
+                    // ROE 2% 미만: 추가하지 않음, 대기 계속
                     continue;
                 }
 
