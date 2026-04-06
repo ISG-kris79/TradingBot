@@ -328,6 +328,8 @@ namespace TradingBot.Models
         public float Candle_Body_Ratio { get; set; }        // |Close - Open| / (High - Low) (캔들 실체 비율)
         public float Upper_Shadow_Ratio { get; set; }       // 윗꼬리 비율
         public float Lower_Shadow_Ratio { get; set; }       // 아랫꼬리 비율
+        public float Is15mBearishTail { get; set; }         // 15분봉 위꼬리 음봉 여부 (0 or 1)
+        public float TrendAlignment { get; set; }           // 상위봉 추세 정렬 (1=하락, 0=중립, -1=상승)
 
         // 6. 거래량 분석
         public float Volume_Ratio { get; set; }              // 현재 거래량 / 20봉 평균 거래량

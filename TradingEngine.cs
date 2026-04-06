@@ -1929,9 +1929,13 @@ namespace TradingBot
                         if (_pumpStrategy != null)
                             await _pumpStrategy.ExecuteScanAsync(_marketDataManager.TickerCache, _blacklistedSymbols, token);
 
-                        // [B] MACD 골든크로스 스캔 (메이저 코인 대상)
+                        // [B] MACD 골든크로스/데드크로스 스캔 (메이저 코인 대상)
                         if (_macdCrossService != null)
                             await ScanMacdGoldenCrossAsync(token);
+
+                        // [C] 15분봉 위꼬리 음봉 스캔 → 1분봉 리테스트 SHORT
+                        if (_macdCrossService != null)
+                            await Scan15mBearishTailAsync(token);
 
                         if ((DateTime.Now - _lastHeartbeatTime).TotalHours >= 1)
                         {
@@ -5691,6 +5695,77 @@ namespace TradingBot
                 catch (Exception ex)
                 {
                     OnStatusLog?.Invoke($"⚠️ [MACD] {symbol} 스캔 오류: {ex.Message}");
+                }
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // [15분봉 위꼬리] 음봉 감지 → 1분봉 리테스트 SHORT
+        // ═══════════════════════════════════════════════════════════════
+
+        private DateTime _last15mTailScanTime = DateTime.MinValue;
+
+        private async Task Scan15mBearishTailAsync(CancellationToken token)
+        {
+            // 1분 간격 스캔 (15분봉 완성 시점 근처)
+            if ((DateTime.Now - _last15mTailScanTime).TotalMinutes < 1) return;
+            _last15mTailScanTime = DateTime.Now;
+
+            if (_macdCrossService == null) return;
+
+            foreach (var symbol in MajorSymbols)
+            {
+                if (token.IsCancellationRequested) break;
+                lock (_posLock) { if (_activePositions.ContainsKey(symbol)) continue; }
+                if (_blacklistedSymbols.TryGetValue(symbol, out var exp) && DateTime.Now < exp) continue;
+
+                try
+                {
+                    var tailResult = await _macdCrossService.Detect15mBearishTailAsync(symbol, token);
+                    if (!tailResult.Detected) continue;
+
+                    // 최소 조건: 꼬리 50%+ & 거래량 1.5x+ & 15m MACD 약세
+                    if (tailResult.UpperShadowRatio < 0.50f || tailResult.RelativeVolume < 1.5f)
+                        continue;
+
+                    // 상위봉 하락세 확인 (불장에서는 짧은 단타만, 하락장에서는 풀베팅)
+                    var (isBearish, htfDetail) = await _macdCrossService.CheckHigherTimeframeBearishAsync(symbol, token);
+                    if (!isBearish)
+                    {
+                        OnStatusLog?.Invoke($"🕯️ [15m꼬리] {symbol} 감지 but 상위봉 상승세 → 스킵 | {htfDetail}");
+                        continue;
+                    }
+
+                    OnAlert?.Invoke($"🕯️ [15m 위꼬리 SHORT] {symbol} 꼬리={tailResult.UpperShadowRatio:P0} Vol={tailResult.RelativeVolume:F1}x | 1분봉 리테스트 대기...");
+
+                    _ = Task.Run(async () =>
+                    {
+                        try { await TelegramService.Instance.SendMessageAsync(
+                            $"🕯️ *[15m 위꼬리 SHORT]*\n`{symbol}` 꼬리 {tailResult.UpperShadowRatio:P0}\n" +
+                            $"거래량 {tailResult.RelativeVolume:F1}x\n리테스트 대기: {tailResult.RetestTarget50:F4}~{tailResult.RetestTarget618:F4}\n" +
+                            $"손절: {tailResult.CandleHigh:F4}\n⏰ {DateTime.Now:HH:mm:ss}",
+                            TelegramMessageType.Entry); } catch { }
+                    });
+
+                    // 1분봉 리테스트 대기 (최대 5분)
+                    decimal stopLoss = tailResult.CandleHigh * 1.001m; // 고점 +0.1%
+                    var (triggered, reason) = await _macdCrossService.WaitForRetestShortTriggerAsync(
+                        symbol, tailResult.RetestTarget50, tailResult.RetestTarget618, stopLoss, 300, token);
+
+                    if (triggered)
+                    {
+                        decimal currentPrice = 0;
+                        if (_marketDataManager.TickerCache.TryGetValue(symbol, out var tick))
+                            currentPrice = tick.LastPrice;
+                        if (currentPrice <= 0) continue;
+
+                        await ExecuteAutoOrder(symbol, "SHORT", currentPrice, token, "TAIL_RETEST_SHORT",
+                            customStopLossPrice: stopLoss);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [15m꼬리] {symbol} 오류: {ex.Message}");
                 }
             }
         }

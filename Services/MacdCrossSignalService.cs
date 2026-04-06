@@ -208,6 +208,151 @@ namespace TradingBot.Services
             }
         }
 
+        /// <summary>
+        /// 15분봉 위꼬리 음봉 감지 → 1분봉 리테스트 대기 → MACD 데크 진입 복합 신호
+        /// </summary>
+        public async Task<BearishTailResult> Detect15mBearishTailAsync(string symbol, CancellationToken token)
+        {
+            try
+            {
+                // 15분봉 최근 3봉 조회
+                var k15m = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 30, token);
+                if (k15m == null || k15m.Count < 20)
+                    return BearishTailResult.None("15m 데이터 부족");
+
+                var list15m = k15m.ToList();
+                var lastCandle = list15m[^2]; // 직전 완성봉 (현재봉은 미완성)
+
+                decimal high = lastCandle.HighPrice;
+                decimal low = lastCandle.LowPrice;
+                decimal open = lastCandle.OpenPrice;
+                decimal close = lastCandle.ClosePrice;
+                decimal totalRange = high - low;
+
+                if (totalRange <= 0)
+                    return BearishTailResult.None("범위 0");
+
+                // 음봉 여부
+                bool isBearish = close < open;
+                if (!isBearish)
+                    return BearishTailResult.None("양봉");
+
+                // 위꼬리 비율 계산: UpperShadowRatio = (High - Max(Open,Close)) / (High - Low)
+                decimal bodyMax = Math.Max(open, close);
+                decimal upperShadow = high - bodyMax;
+                float upperShadowRatio = (float)(upperShadow / totalRange);
+
+                if (upperShadowRatio < 0.50f) // 최소 50% 이상 꼬리
+                    return BearishTailResult.None($"꼬리 부족 ({upperShadowRatio:P0})");
+
+                // 거래량 비교 (직전 10봉 평균 대비)
+                var prev10 = list15m.Skip(Math.Max(0, list15m.Count - 12)).Take(10).ToList();
+                double avgVol = prev10.Any() ? prev10.Average(k => (double)k.Volume) : 0;
+                double lastVol = (double)lastCandle.Volume;
+                float relativeVolume = avgVol > 0 ? (float)(lastVol / avgVol) : 1f;
+
+                // 15분봉 MACD
+                var (macd15, signal15, hist15) = CalculateMACD(list15m);
+                bool macd15mBearish = macd15 < signal15 || hist15 < 0;
+
+                // 리테스트 목표가 (꼬리의 0.5~0.618 지점)
+                decimal retestTarget50 = close + (upperShadow * 0.50m);
+                decimal retestTarget618 = close + (upperShadow * 0.618m);
+
+                OnLog?.Invoke($"🕯️ [15m 꼬리] {symbol} UpperShadow={upperShadowRatio:P0} Vol={relativeVolume:F1}x MACD15m={(macd15mBearish ? "약세" : "강세")} | 리테스트 목표: {retestTarget50:F4}~{retestTarget618:F4}");
+
+                return new BearishTailResult
+                {
+                    Detected = true,
+                    UpperShadowRatio = upperShadowRatio,
+                    RelativeVolume = relativeVolume,
+                    Is15mMacdBearish = macd15mBearish,
+                    CandleHigh = high,
+                    CandleClose = close,
+                    RetestTarget50 = retestTarget50,
+                    RetestTarget618 = retestTarget618,
+                    Detail = $"15m꼬리 {upperShadowRatio:P0} Vol={relativeVolume:F1}x MACD={(macd15mBearish ? "약세" : "강세")}"
+                };
+            }
+            catch (Exception ex)
+            {
+                return BearishTailResult.None($"에러: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 1분봉 리테스트 대기: 가격이 15분봉 꼬리의 0.5~0.618 지점까지 올라왔을 때 MACD 데크 확인
+        /// </summary>
+        public async Task<(bool triggered, string reason)> WaitForRetestShortTriggerAsync(
+            string symbol, decimal retestLow, decimal retestHigh, decimal stopLoss,
+            int maxWaitSeconds = 300, CancellationToken token = default)
+        {
+            var deadline = DateTime.Now.AddSeconds(maxWaitSeconds);
+            bool retestZoneReached = false;
+
+            OnLog?.Invoke($"⏱️ [꼬리 리테스트] {symbol} SHORT 대기 | 리테스트 구간: {retestLow:F4}~{retestHigh:F4} | SL: {stopLoss:F4} | 최대 {maxWaitSeconds}s");
+
+            while (DateTime.Now < deadline && !token.IsCancellationRequested)
+            {
+                try
+                {
+                    var klines1m = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneMinute, 5, token);
+                    if (klines1m == null || klines1m.Count < 3)
+                    {
+                        await Task.Delay(3000, token);
+                        continue;
+                    }
+
+                    var list1m = klines1m.ToList();
+                    decimal currentPrice = list1m[^1].ClosePrice;
+
+                    // 리테스트 구간 도달 확인
+                    if (currentPrice >= retestLow && currentPrice <= retestHigh)
+                    {
+                        retestZoneReached = true;
+
+                        // 1분봉 MACD 데크 확인
+                        var crossResult = await DetectGoldenCrossAsync(symbol, token);
+                        if (crossResult.CrossType == MacdCrossType.Dead)
+                        {
+                            OnLog?.Invoke($"✅ [꼬리 리테스트] {symbol} 리테스트 구간({currentPrice:F4}) + MACD 데크 → SHORT 트리거!");
+                            return (true, $"RETEST_DEAD_CROSS price={currentPrice:F4} angle={crossResult.DeadCrossAngle:F6}");
+                        }
+
+                        // RSI가 반등 후 다시 꺾이는지
+                        if (crossResult.RSI < 45 && crossResult.HistChangeRate < -0.3)
+                        {
+                            OnLog?.Invoke($"✅ [꼬리 리테스트] {symbol} RSI꺾임({crossResult.RSI:F1}) + Hist감소 → SHORT 트리거!");
+                            return (true, $"RETEST_RSI_TURN price={currentPrice:F4} rsi={crossResult.RSI:F1}");
+                        }
+                    }
+
+                    // 리테스트 구간 지나서 SL 돌파하면 포기
+                    if (currentPrice > stopLoss)
+                    {
+                        OnLog?.Invoke($"❌ [꼬리 리테스트] {symbol} SL({stopLoss:F4}) 돌파 → SHORT 포기");
+                        return (false, "SL_BREACHED");
+                    }
+
+                    // 리테스트 없이 바로 하락 시작하면 진입
+                    if (retestZoneReached && currentPrice < retestLow * 0.998m)
+                    {
+                        OnLog?.Invoke($"✅ [꼬리 리테스트] {symbol} 리테스트 후 하락 재개({currentPrice:F4}) → SHORT 트리거!");
+                        return (true, $"RETEST_DROP price={currentPrice:F4}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    OnLog?.Invoke($"⚠️ [꼬리 리테스트] {symbol} 오류: {ex.Message}");
+                }
+
+                await Task.Delay(5000, token);
+            }
+
+            OnLog?.Invoke($"⏰ [꼬리 리테스트] {symbol} 시간 초과 ({maxWaitSeconds}s)");
+            return (false, "TIMEOUT");
+        }
+
         private static (double macd, double signal, double hist) CalculateMACD(
             List<IBinanceKline> candles, int fast = 12, int slow = 26, int signalPeriod = 9)
         {
@@ -272,5 +417,20 @@ namespace TradingBot.Services
         public string Detail { get; set; } = "";
 
         public static MacdCrossResult None(string detail) => new() { Detail = detail };
+    }
+
+    public class BearishTailResult
+    {
+        public bool Detected { get; set; }
+        public float UpperShadowRatio { get; set; }   // 0~1, 0.6+ = 강한 꼬리
+        public float RelativeVolume { get; set; }      // 평균 대비 거래량 배수
+        public bool Is15mMacdBearish { get; set; }
+        public decimal CandleHigh { get; set; }        // 손절선 = 이 값 바로 위
+        public decimal CandleClose { get; set; }
+        public decimal RetestTarget50 { get; set; }    // 꼬리 50% 리테스트 가격
+        public decimal RetestTarget618 { get; set; }   // 꼬리 61.8% 리테스트 가격
+        public string Detail { get; set; } = "";
+
+        public static BearishTailResult None(string detail) => new() { Detail = detail };
     }
 }
