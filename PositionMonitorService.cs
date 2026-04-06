@@ -263,28 +263,35 @@ namespace TradingBot.Services
             // TrailingGapRoe를 가격% 간격으로 변환
             decimal majorTrailingGap = _settings.MajorTrailingGapRoe > 0 ? _settings.MajorTrailingGapRoe : 5.0m;
 
-            // 메이저 기본 운영값 강제: TP1=20, TP2/트레일링 시작=40, SL=-20, Gap=5~10
-            profitLockROE = Math.Max(profitLockROE, 20.0m);
-            tightTrailingROE = Math.Max(tightTrailingROE, 40.0m);
-            majorTp2Roe = Math.Max(majorTp2Roe, 40.0m);
-            majorTrailingGap = Math.Clamp(majorTrailingGap, 4.0m, 8.0m); // $250/일 목표: 최소4%~최대8% (이전 5~10%)
+            // [v3.1.8] 20배 레버리지 최적화 — 노이즈에 안 털리는 넓은 트레일링
+            // ROE 20% = 가격 1% → 1분봉 노이즈 수준. 큰 추세를 먹으려면 여유 필요
+            // 1단계 본절: ROE 20% → 진입가로 스탑 이동 (절대 마이너스 방지)
+            // 2단계 부분익절: ROE 40% (가격 2%) → 40% 청산 + 스탑 +5% ROE
+            // 3단계 트레일링: ROE 50% (가격 2.5%) → 고점 대비 가격 1.5% 간격 추적
+            breakEvenROE = 20.0m;
+            profitLockROE = 40.0m;
+            tightTrailingROE = 50.0m;
+            majorTp2Roe = 50.0m;
+            majorTrailingGap = 30.0m; // ROE 30% = 가격 1.5% 간격 (이전 5% = 가격 0.25%)
 
-            // BTC 전용 슬림/초밀착 오버라이드: TP1=20, TP2/트레일링 시작=35, SL=-15, Gap=5
+            // BTC: 변동성 낮아 약간 타이트
             if (isBtcSymbol)
             {
-                profitLockROE = 20.0m;    // 15→20%: EV 개선 (50%WR 기준 +$4→+$16)
-                tightTrailingROE = 35.0m;
-                majorTp2Roe = 35.0m;
-                majorTrailingGap = 5.0m;
+                breakEvenROE = 15.0m;
+                profitLockROE = 30.0m;
+                tightTrailingROE = 40.0m;
+                majorTp2Roe = 40.0m;
+                majorTrailingGap = 20.0m; // ROE 20% = 가격 1%
             }
 
-            // [ATR 2.0] ETH/XRP/SOL은 2차=30%, 3차=50%, Gap=6%로 수익 극대화
+            // ETH/XRP/SOL: 변동성 높아 더 넓게
             if (isAtr20MajorSymbol)
             {
-                profitLockROE = Math.Max(profitLockROE, 30.0m);      // 40→30%: 더 빠른 1차 부분익절
-                tightTrailingROE = Math.Max(tightTrailingROE, 50.0m); // 60→50%: 트레일링 조기 시작
-                majorTp2Roe = Math.Max(majorTp2Roe, 50.0m);           // 60→50%: 수익확정 기준 낮춤
-                majorTrailingGap = Math.Max(majorTrailingGap, 6.0m);  // 10→6%: 수익 보호 강화
+                breakEvenROE = 20.0m;
+                profitLockROE = 40.0m;
+                tightTrailingROE = 60.0m;
+                majorTp2Roe = 60.0m;
+                majorTrailingGap = 30.0m; // ROE 30% = 가격 1.5%
             }
 
             if (tightTrailingROE <= profitLockROE)
@@ -639,11 +646,23 @@ namespace TradingBot.Services
                     }
 
                     // ═══════════════════════════════════════════════
-                    // 1단계: 본절 플래그 (2단계 트리거용) + AI Exit 판단
+                    // 1단계: 본절 보호 — ROE 도달 시 스탑을 진입가로 이동 (절대 마이너스 방지)
                     // ═══════════════════════════════════════════════
                     if (!breakEvenActivated && highestROE >= breakEvenROE)
                     {
                         breakEvenActivated = true;
+
+                        // 본절 + 수수료 보장 스탑
+                        decimal breakEvenPrice = isLong
+                            ? entryPrice * (1m + breakEvenBufferPct)
+                            : entryPrice * (1m - breakEvenBufferPct);
+
+                        if (isLong && (protectiveStopPrice <= 0m || breakEvenPrice > protectiveStopPrice))
+                            protectiveStopPrice = breakEvenPrice;
+                        else if (!isLong && (protectiveStopPrice <= 0m || breakEvenPrice < protectiveStopPrice))
+                            protectiveStopPrice = breakEvenPrice;
+
+                        OnAlert?.Invoke($"🛡️ {symbol} 본절 보호 (ROE {highestROE:F1}% → 스탑 {breakEvenPrice:F4})");
                     }
 
                     // [AI Exit Optimizer] ROE 10% 이상일 때 5초마다 모델 질의
@@ -1278,29 +1297,10 @@ namespace TradingBot.Services
                         hybridDcaDeferredLogged = false;
                     }
 
-                    if (!squeezeDefenseReduced && holdingTime.TotalMinutes >= squeezeDefenseMinutes && currentROE < squeezeDefenseMaxRoe)
+                    // [v3.1.8] 스퀴즈 방어 축소 비활성화 — 손실 중 50% 강제 청산은 손실만 확정
+                    // 차라리 손절되더라도 버티는 게 이득
+                    if (false) // 비활성화
                     {
-                        if (TryGetCurrentBbWidthPct(symbol, out decimal currentBbWidthPct) && currentBbWidthPct > 0m && currentBbWidthPct <= squeezeDefenseBbWidthThreshold)
-                        {
-                            if (await ExecutePartialClose(symbol, 0.5m, token))
-                            {
-                                partialTaken = true;
-                                squeezeDefenseReduced = true;
-
-                                lock (_posLock)
-                                {
-                                    if (_activePositions.TryGetValue(symbol, out var p))
-                                    {
-                                        p.TakeProfitStep = Math.Max(p.TakeProfitStep, 1);
-                                        p.BreakevenPrice = entryPrice;
-                                        p.StopLoss = entryPrice;
-                                    }
-                                }
-
-                                OnLog?.Invoke($"📦 [스퀴즈 방어 축소] {symbol} {holdingTime.TotalMinutes:F0}분 경과 + BB폭 {currentBbWidthPct:F2}% → 50% 축소 후 본절 보호 전환");
-                            }
-                            continue;
-                        }
                     }
 
                     if (!isSidewaysMode && pyramidingCount < maxPyramidingCount && DateTime.Now >= pyramidingCooldownUntil)
