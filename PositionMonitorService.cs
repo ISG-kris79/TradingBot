@@ -615,38 +615,8 @@ namespace TradingBot.Services
                         nextSniperExitCheck = DateTime.Now.AddSeconds(30);
                     }
 
-                    if (DateTime.Now >= nextHSCheckTime)
-                    {
-                        try
-                        {
-                            var hsKlines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 80, token);
-                            if (hsKlines != null && hsKlines.Count >= 70)
-                            {
-                                var hsResult = HeadAndShouldersDetector.DetectPattern(hsKlines.ToList(), 70);
-                                if (hsResult.IsDetected)
-                                {
-                                    if (isLong && hsResult.PatternType == "H&S")
-                                    {
-                                        OnLog?.Invoke($"🚨 [패턴 손절] {symbol} {hsResult.Message} -> 롱 포지션 즉시 청산");
-                                        await ExecuteMarketClose(symbol, "H&S Pattern Panic Exit", token);
-                                        break;
-                                    }
-
-                                    if (!isLong && hsResult.PatternType == "InverseH&S")
-                                    {
-                                        OnLog?.Invoke($"🔥 [패턴 손절] {symbol} {hsResult.Message} -> 숏 포지션 즉시 청산");
-                                        await ExecuteMarketClose(symbol, "Inverse H&S Pattern Panic Exit", token);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        catch
-                        {
-                        }
-
-                        nextHSCheckTime = DateTime.Now.AddMinutes(1);
-                    }
+                    // [v3.1.8] H&S 패턴 패닉 청산 비활성화 — 오탐지로 수익 기회 손실 다발
+                    // 넥라인 이탈 전 1.5% 여유만으로 청산 → 소폭 하락에서 패닉 손절 반복
 
                     // [시간 기반 본절 전환 — 제거됨] 본절 청산이 수익 기회를 제한하므로 비활성화
                     // 기존 ATR 손절만으로 리스크 관리
