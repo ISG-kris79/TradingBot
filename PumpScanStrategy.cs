@@ -10,11 +10,11 @@ namespace TradingBot.Strategies
     public class PumpScanStrategy : ITradingStrategy
     {
         private static readonly TimeZoneInfo SeoulTimeZone = GetSeoulTimeZone();
-        private const int PumpCandidateCount = 40;
-        private const int PumpRecoveryCandidateCount = 80;
-        private const decimal VolumeWeight = 0.50m;
-        private const decimal VolatilityWeight = 0.20m;
-        private const decimal MomentumWeight = 0.30m;
+        private const int PumpCandidateCount = 60;
+        private const int PumpRecoveryCandidateCount = 100;
+        private const decimal VolumeWeight = 0.25m;
+        private const decimal VolatilityWeight = 0.35m;
+        private const decimal MomentumWeight = 0.40m;
 
         private readonly IBinanceRestClient _client;
         private readonly PumpScanSettings _settings;
@@ -277,18 +277,18 @@ namespace TradingBot.Strategies
                     }
                 }
 
-                // 규칙 기반 + ML 결합
+                // 규칙 기반 + ML 결합 (완화: AND → OR)
                 bool rulePass = aiScore >= longThreshold;
                 bool structureOk = isUptrend || isMakingHigherLows || currentPrice > (decimal)sma20;
                 bool momentumOk = macd.Hist >= -0.01 || volumeMomentum >= 1.0 || allowLowVolumeTrendBypass;
 
-                if (rulePass && structureOk && momentumOk)
+                if (rulePass && (structureOk || momentumOk))
                 {
-                    decision = "LONG"; // 규칙 기반 통과
+                    decision = "LONG"; // 규칙 통과 + 구조/모멘텀 중 하나만 OK
                 }
-                else if (mlSignal && mlProb >= 0.60f)
+                else if (mlSignal && mlProb >= 0.55f)
                 {
-                    decision = "LONG"; // ML 모델이 60%+ 확률로 진입 권장
+                    decision = "LONG"; // ML 60%→55% 완화
                     PumpSignalLog("ML_ENTRY", $"sym={symbol} prob={mlProb:P0} ruleScore={aiScore} (규칙 미통과지만 ML 통과)");
                 }
 
@@ -410,6 +410,10 @@ namespace TradingBot.Strategies
             if (string.IsNullOrWhiteSpace(symbol) || !symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase))
                 return false;
 
+            // 메이저 코인은 MajorCoinStrategy에서 별도 스캔 → PUMP 후보에서 제외
+            if (IsMajorSymbol(symbol))
+                return false;
+
             return true;
         }
 
@@ -510,13 +514,13 @@ namespace TradingBot.Strategies
 
         private static int CalculateDynamicThreshold(bool isKstDaytime, double volumeMomentum, bool isMakingHigherLows, MajorProfile profile)
         {
-            // [v3.0.9] 진입 기준 완화: 60~65 → 50~55
-            int threshold = isKstDaytime ? 50 : 55;
+            // [v3.1.3] 진입 기준 추가 완화: 야간 45, 주간 50
+            int threshold = isKstDaytime ? 50 : 45;
 
             if (volumeMomentum >= 1.10) threshold -= 5;
             if (isMakingHigherLows) threshold -= profile.HigherLowThresholdDiscount;
 
-            return Math.Max(40, threshold); // 최소 40점 (기존 55)
+            return Math.Max(35, threshold); // 최소 40점 (기존 55)
         }
 
         private static bool IsMakingHigherLows(List<IBinanceKline> candles, int segmentSize, decimal minRiseRatio)
@@ -536,9 +540,6 @@ namespace TradingBot.Strategies
 
         private double CalculateFibScore(string symbol, List<IBinanceKline> candles, decimal currentPrice)
         {
-            if (!IsMajorSymbol(symbol))
-                return 0;
-
             if (candles == null || candles.Count < 30)
                 return 0;
 

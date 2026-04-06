@@ -543,6 +543,7 @@ namespace TradingBot
             _crashDetector.OnLog += msg => OnAlert?.Invoke(msg);
             _crashDetector.OnCrashDetected += (coins, avgDrop) => _ = HandleCrashDetectedAsync(coins, avgDrop);
             _crashDetector.OnPumpDetected += (coins, avgRise) => _ = HandlePumpDetectedAsync(coins, avgRise);
+            _crashDetector.OnSpikeDetected += (symbol, changePct, price) => _ = HandleSpikeDetectedAsync(symbol, changePct, price);
             _marketDataManager.OnTickerUpdate += HandleTickerUpdate;
 
             _positionMonitor.OnLog += msg => OnStatusLog?.Invoke(msg);
@@ -5820,6 +5821,44 @@ namespace TradingBot
             }
         }
 
+        /// <summary>개별 코인 급등 감지 → 즉시 PUMP 진입 시도 (PumpScan 스킵)</summary>
+        private async Task HandleSpikeDetectedAsync(string symbol, decimal changePct, decimal currentPrice)
+        {
+            var token = _cts?.Token ?? CancellationToken.None;
+
+            // 이미 보유 중이면 스킵
+            lock (_posLock)
+            {
+                if (_activePositions.ContainsKey(symbol)) return;
+            }
+
+            // 블랙리스트 체크
+            if (_blacklistedSymbols.TryGetValue(symbol, out var expiry) && DateTime.Now < expiry)
+                return;
+
+            OnAlert?.Invoke($"⚡ [급등 진입] {symbol} +{changePct:F1}% (5분) → PUMP LONG 시도");
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await TelegramService.Instance.SendMessageAsync(
+                        $"⚡ *[급등 감지 진입]*\n`{symbol}` +{changePct:F1}% (5분)\n가격: `{currentPrice}`\n⏰ {DateTime.Now:HH:mm:ss}",
+                        TelegramMessageType.Entry);
+                }
+                catch { }
+            });
+
+            try
+            {
+                await ExecuteAutoOrder(symbol, "LONG", currentPrice, token, "SPIKE_DETECT");
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [급등 진입] {symbol} 실패: {ex.Message}");
+            }
+        }
+
         private void HandleAllTickerUpdate(IEnumerable<IBinance24HPrice> ticks)
         {
             try
@@ -5829,6 +5868,7 @@ namespace TradingBot
 
                 // [급변 감지] 1분 가격 변동률 체크
                 _crashDetector.CheckPriceVelocity(_marketDataManager.TickerCache);
+                _crashDetector.CheckSpikeDetection(_marketDataManager.TickerCache);
 
                 var trackedSymbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 

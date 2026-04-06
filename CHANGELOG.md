@@ -15,6 +15,22 @@
 
  - 없음
 
+## [3.1.3] - 2026-04-05
+
+### Changed
+
+- **PUMP 후보 선정 개선 (방안A)**:
+  - Volume 가중치 50%→25%, Volatility 20%→35%, Momentum 30%→40%
+  - 후보 수 40→60개, 메이저(BTC/ETH/SOL/XRP) PUMP 스캔에서 제외
+- **PUMP 진입 조건 완화 (방안B)**:
+  - `rulePass AND structureOk AND momentumOk` → `rulePass AND (structureOk OR momentumOk)`
+  - FibScore +20점 PUMP 코인에도 적용 (기존 메이저만)
+  - ML 단독 진입 확률 60%→55%, 야간 threshold 40→35
+- **급등 실시간 감지 (방안C)**:
+  - 전 종목 5분 가격 변동률 스캔 (TickerCache 기반)
+  - +3% 급등 + 거래량 $1M+ → PumpScan 스킵 즉시 진입 (SPIKE_DETECT)
+  - 텔레그램 알림, 코인별 30분 쿨다운
+
 ## [3.1.2] - 2026-04-03
 
 ### Added
