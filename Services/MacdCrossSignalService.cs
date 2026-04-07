@@ -92,7 +92,8 @@ namespace TradingBot.Services
                 double rsi1h = CalculateRSI(list1h, 14);
                 bool overboughtReversal = rsi1h > 60 && rsi1h < 70 && sma20_1h > sma60_1h; // 아직 정배열이지만 꺾이는 중
 
-                bool isBearish = (bearish15m && bearish1h) || (bearish15m && overboughtReversal);
+                // [v3.2.1] 15분봉 하락이면 진입 허용 (1H는 참고만 — 급락 시 1H 전환 느림)
+                bool isBearish = bearish15m || (bearish1h && overboughtReversal);
                 return (isBearish, $"15m={bearish15m}, 1H={bearish1h}, RSI1H={rsi1h:F1}, overboughtReversal={overboughtReversal}");
             }
             catch (Exception ex)

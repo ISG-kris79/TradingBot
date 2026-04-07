@@ -105,14 +105,17 @@ namespace TradingBot.Strategies
                 }
                 else if (aiScore <= shortThreshold)
                 {
-                    bool isStrongBearish =
-                        !isUptrend &&
-                        macd.Hist < 0 &&
-                        currentPrice < (decimal)sma20 &&
-                        volumeRatio >= 1.10 &&
-                        currentPrice < (decimal)fib.Level618;
+                    // [v3.2.1] SHORT 조건 완화: 5개 AND → 핵심 3개 이상이면 진입
+                    int bearishCount = 0;
+                    if (!isUptrend) bearishCount++;
+                    if (macd.Hist < 0) bearishCount++;
+                    if (currentPrice < (decimal)sma20) bearishCount++;
+                    if (volumeRatio >= 1.10) bearishCount++;
+                    if (currentPrice < (decimal)fib.Level618) bearishCount++;
 
-                    if (isStrongBearish)
+                    // 필수: 가격 < SMA20 (최소한의 하락 확인)
+                    bool priceBelow = currentPrice < (decimal)sma20;
+                    if (priceBelow && bearishCount >= 3)
                     {
                         decision = "SHORT";
                     }

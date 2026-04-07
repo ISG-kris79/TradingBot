@@ -15,6 +15,19 @@
 
  - 없음
 
+## [3.2.2] - 2026-04-07
+
+### Fixed
+
+- **CRASH/PUMP 독립 진입**: LONG 없어도 CRASH 시 메이저 코인 SHORT 독립 진입, SHORT 없어도 PUMP 시 LONG 독립 진입 (기존: 보유 포지션 청산 후에만 리버스)
+
+### Changed
+
+- **SHORT 진입 조건 완화**: MajorCoinStrategy 5개 AND → 핵심 3개 + 가격<SMA20 필수
+  - 기존: !isUptrend AND MACD<0 AND price<SMA20 AND vol>=1.1 AND price<Fib618 (전부 충족)
+  - 변경: price<SMA20 필수 + 나머지 4개 중 2개 추가 충족 (총 3개)
+- **MACD 데드크로스 상위봉 확인 완화**: 15m AND 1H 하락 → 15m 하락이면 진입 허용 (급락 시 1H 전환 느림)
+
 ## [3.2.1] - 2026-04-07
 
 ### Removed

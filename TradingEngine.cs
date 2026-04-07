@@ -5926,12 +5926,18 @@ namespace TradingBot
                 closedLongs.Add((sym, qty, entry));
             }
 
-            // 2. SHORT 리버스 진입 (청산한 심볼 중 주요 코인만)
+            // 2. SHORT 독립 진입 (LONG 없어도 급락 코인에 SHORT)
             if (_crashDetector.ReverseEntrySizeRatio > 0)
             {
-                foreach (var (sym, qty, entry) in closedLongs)
+                // 청산한 심볼 + 급락 감지 심볼 합산 (중복 제거)
+                var shortTargets = new HashSet<string>(crashCoins, StringComparer.OrdinalIgnoreCase);
+                foreach (var (sym, _, _) in closedLongs)
+                    shortTargets.Add(sym);
+
+                foreach (var sym in shortTargets)
                 {
                     if (!MajorSymbols.Contains(sym)) continue;
+                    lock (_posLock) { if (_activePositions.ContainsKey(sym)) continue; } // 이미 보유 중 스킵
 
                     try
                     {
@@ -5940,13 +5946,13 @@ namespace TradingBot
                             currentPrice = tick.LastPrice;
                         if (currentPrice <= 0) continue;
 
-                        OnAlert?.Invoke($"🔄 [CRASH→SHORT] {sym} 리버스 진입 시도 ({_crashDetector.ReverseEntrySizeRatio:P0} 사이즈)");
+                        OnAlert?.Invoke($"🔄 [CRASH→SHORT] {sym} 독립 진입 시도 ({_crashDetector.ReverseEntrySizeRatio:P0} 사이즈)");
                         await ExecuteAutoOrder(sym, "SHORT", currentPrice, token, "CRASH_REVERSE",
                             manualSizeMultiplier: _crashDetector.ReverseEntrySizeRatio);
                     }
                     catch (Exception ex)
                     {
-                        OnAlert?.Invoke($"⚠️ [CRASH→SHORT] {sym} 리버스 실패: {ex.Message}");
+                        OnAlert?.Invoke($"⚠️ [CRASH→SHORT] {sym} 진입 실패: {ex.Message}");
                     }
                 }
             }
@@ -5999,12 +6005,17 @@ namespace TradingBot
                 closedShorts.Add((sym, qty, entry));
             }
 
-            // 2. LONG 리버스 진입 (청산한 심볼 중 주요 코인만)
+            // 2. LONG 독립 진입 (SHORT 없어도 급등 코인에 LONG)
             if (_crashDetector.ReverseEntrySizeRatio > 0)
             {
-                foreach (var (sym, qty, entry) in closedShorts)
+                var longTargets = new HashSet<string>(pumpCoins, StringComparer.OrdinalIgnoreCase);
+                foreach (var (sym, _, _) in closedShorts)
+                    longTargets.Add(sym);
+
+                foreach (var sym in longTargets)
                 {
                     if (!MajorSymbols.Contains(sym)) continue;
+                    lock (_posLock) { if (_activePositions.ContainsKey(sym)) continue; }
 
                     try
                     {
@@ -6013,7 +6024,7 @@ namespace TradingBot
                             currentPrice = tick.LastPrice;
                         if (currentPrice <= 0) continue;
 
-                        OnAlert?.Invoke($"🔄 [PUMP→LONG] {sym} 리버스 진입 시도 ({_crashDetector.ReverseEntrySizeRatio:P0} 사이즈)");
+                        OnAlert?.Invoke($"🔄 [PUMP→LONG] {sym} 독립 진입 시도 ({_crashDetector.ReverseEntrySizeRatio:P0} 사이즈)");
                         await ExecuteAutoOrder(sym, "LONG", currentPrice, token, "PUMP_REVERSE",
                             manualSizeMultiplier: _crashDetector.ReverseEntrySizeRatio);
                     }
