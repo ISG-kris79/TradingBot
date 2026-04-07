@@ -1098,14 +1098,15 @@ namespace TradingBot.Services
                                 }
                             }
                         }
-                        else if (atrStopGateOpen)
+                        // [v3.2.1] ATR Dual-Stop 비활성화 — WhipsawTimeout 3분이 너무 짧아 정상 횡보에서 손절
+                        // 구조 기반 손절(v3.2.0)이 대체
+                        else if (false && atrStopGateOpen)
                         {
                             bool atrHit = (isLong  && currentPrice <= customStopLossPrice)
                                        || (!isLong && currentPrice >= customStopLossPrice);
 
                             if (!atrHit)
                             {
-                                // 가격 회복 → 모든 경보 상태 초기화
                                 if (atrFirstHitTime.HasValue)
                                 {
                                     double recoveredSec = (DateTime.Now - atrFirstHitTime.Value).TotalSeconds;
@@ -1117,13 +1118,11 @@ namespace TradingBot.Services
                             }
                             else
                             {
-                                // ─── ATR 터치 ────────────────────────────────────────────
                                 if (!atrFirstHitTime.HasValue)
                                     atrFirstHitTime = DateTime.Now;
 
                                 double atrHeldSec = (DateTime.Now - atrFirstHitTime.Value).TotalSeconds;
 
-                                // 1차 방어선: Fractal Low 계산 (직전 5캔들)
                                 decimal fractalStop = 0m;
                                 if (dualStopCandles != null && dualStopCandles.Count >= 5)
                                 {
