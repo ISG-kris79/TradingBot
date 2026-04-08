@@ -6673,22 +6673,26 @@ namespace TradingBot
                 int maxPump = GetDynamicMaxPumpSlots();
                 int maxMajor = MAX_MAJOR_SLOTS;
 
+                // [v3.2.21] 슬롯 포화 시 차단 (정찰대 무제한 진입 방지)
                 if (isMajorSymbol && majorCount >= maxMajor)
                 {
-                    OnStatusLog?.Invoke($"🔍 [SLOT→정찰대] {symbol} 메이저 포화 ({majorCount}/{maxMajor}) → 30% 정찰대 진입");
-                    scoutModeActivated = true;
+                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 메이저 포화 ({majorCount}/{maxMajor}) → 진입 차단");
+                    EntryLog("SLOT", "BLOCK", $"major={majorCount}/{maxMajor}");
+                    return;
                 }
 
                 if (!isMajorSymbol && pumpCount >= maxPump)
                 {
-                    OnStatusLog?.Invoke($"🔍 [SLOT→정찰대] {symbol} PUMP 포화 ({pumpCount}/{maxPump}) → 30% 정찰대 진입");
-                    scoutModeActivated = true;
+                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} PUMP 포화 ({pumpCount}/{maxPump}) → 진입 차단");
+                    EntryLog("SLOT", "BLOCK", $"pump={pumpCount}/{maxPump}");
+                    return;
                 }
 
                 if (totalPositions >= maxTotal)
                 {
-                    OnStatusLog?.Invoke($"🔍 [SLOT→정찰대] {symbol} 총 포화 ({totalPositions}/{maxTotal}) → 30% 정찰대 진입");
-                    scoutModeActivated = true;
+                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 총 포화 ({totalPositions}/{maxTotal}) → 진입 차단");
+                    EntryLog("SLOT", "BLOCK", $"total={totalPositions}/{maxTotal}");
+                    return;
                 }
             }
 
@@ -7796,7 +7800,8 @@ namespace TradingBot
                         }
                     }
 
-                    if (!ctx.IsScoutAddOnOrder && !ctx.ScoutModeActivated)
+                    // [v3.2.21] ScoutMode여도 슬롯 제한 적용 (무제한 진입 방지)
+                    if (!ctx.IsScoutAddOnOrder)
                     {
                         bool isMajorSymbol = MajorSymbols.Contains(symbol);
                         int finalTotal = _activePositions.Count;
