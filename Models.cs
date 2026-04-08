@@ -342,6 +342,13 @@ namespace TradingBot.Models
         public float Trend_Strength { get; set; }            // SMA 정렬 상태 기반 (-1 ~ +1)
         public float RSI_Divergence { get; set; }           // RSI와 가격 방향 괴리
 
+        // 9. 계단식 패턴 + 모멘텀 (v3.2.5)
+        public float HigherLows_Count { get; set; }      // 연속 저점 상승 횟수 (0~5)
+        public float LowerHighs_Count { get; set; }      // 연속 고점 하락 횟수 (0~5)
+        public float Price_Momentum_30m { get; set; }    // 30분(6봉) 가격 변화율 %
+        public float Bounce_From_Low_Pct { get; set; }   // 1시간 저점 대비 반등률 %
+        public float Drop_From_High_Pct { get; set; }    // 1시간 고점 대비 하락률 %
+
         // 뉴스 감성
         public float SentimentScore { get; set; }
 

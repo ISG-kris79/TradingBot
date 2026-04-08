@@ -248,17 +248,30 @@ namespace TradingBot.Strategies
                         reason = $"holdReason={string.Join("/", reasons)}";
                 }
 
-                // [v2.4.2] 세련된 로그 형식
+                // [v3.2.5] AI 최우선 진입: 규칙 WAIT이어도 모멘텀이 강하면 AI에 위임
+                if (decision == "WAIT" && (isPriceRecovering || isStrongBounce))
+                {
+                    decision = "LONG";
+                    decisionKr = "LONG";
+                    OnLog?.Invoke($"🧠 [{symbol}] 규칙 WAIT이지만 모멘텀 반등 감지 → AI 위임 (30m={priceRecoveryPct:+0.0}%, bounce={bounceFromLowPct:+0.0}%)");
+                }
+                if (decision == "WAIT" && (isPriceDropping || isStrongDrop))
+                {
+                    decision = "SHORT";
+                    decisionKr = "SHORT";
+                    OnLog?.Invoke($"🧠 [{symbol}] 규칙 WAIT이지만 하락 모멘텀 감지 → AI 위임 (30m={priceDropPct:+0.0}%, drop={dropFromHighPct:+0.0}%)");
+                }
+
                 if (decision == "WAIT")
                 {
-                    // WAIT는 조용히 건너뜀 (너무 많은 로그 방지)
+                    // WAIT는 조용히 건너뜀
                 }
                 else
                 {
                     int targetThreshold = decision == "LONG" ? longThreshold : shortThreshold;
                     string holdReasonStr = string.IsNullOrWhiteSpace(reason) ? "" : $" | {reason}";
                     OnLog?.Invoke($"📊 [{symbol}] {decisionKr} 진입 후보 포착 | 가격 ${currentPrice:F2} | 점수 {aiScore}/{targetThreshold} | RSI {rsi:F1} | Vol {volumeMomentum:F2}x | {aiFilterInfo}{holdReasonStr}");
-                    
+
                     try
                     {
                         OnLog?.Invoke(TradingStateLogger.EvaluatingAIGate(symbol, decision, currentPrice));

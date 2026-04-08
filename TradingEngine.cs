@@ -10901,6 +10901,44 @@ namespace TradingBot
                 bool elliottBullish = IndicatorCalculator.AnalyzeElliottWave(subset);
                 float elliottState = elliottBullish ? 1.0f : -1.0f;
 
+                // ── 계단식 패턴 + 모멘텀 (v3.2.5) ──
+                int higherLowsCount = 0;
+                int lowerHighsCount = 0;
+                if (subset.Count >= 15)
+                {
+                    for (int seg = 5; seg >= 3; seg--)
+                    {
+                        int segs = subset.Count / seg;
+                        if (segs < 3) continue;
+                        var tail = subset.TakeLast(seg * 3).ToList();
+                        decimal l1 = tail.Take(seg).Min(k => k.LowPrice);
+                        decimal l2 = tail.Skip(seg).Take(seg).Min(k => k.LowPrice);
+                        decimal l3 = tail.Skip(seg * 2).Take(seg).Min(k => k.LowPrice);
+                        if (l2 > l1 && l3 > l2) higherLowsCount++;
+
+                        decimal h1 = tail.Take(seg).Max(k => k.HighPrice);
+                        decimal h2 = tail.Skip(seg).Take(seg).Max(k => k.HighPrice);
+                        decimal h3 = tail.Skip(seg * 2).Take(seg).Max(k => k.HighPrice);
+                        if (h2 < h1 && h3 < h2) lowerHighsCount++;
+                    }
+                }
+
+                float priceMomentum30m = 0f;
+                float bounceFromLow = 0f;
+                float dropFromHigh = 0f;
+                if (subset.Count >= 12)
+                {
+                    var r6 = subset.TakeLast(6).ToList();
+                    decimal p6ago = r6.First().ClosePrice;
+                    priceMomentum30m = p6ago > 0 ? (float)((entryPrice - p6ago) / p6ago * 100) : 0f;
+
+                    var r12 = subset.TakeLast(12).ToList();
+                    decimal rLow = r12.Min(k => k.LowPrice);
+                    decimal rHigh = r12.Max(k => k.HighPrice);
+                    bounceFromLow = rLow > 0 ? (float)((entryPrice - rLow) / rLow * 100) : 0f;
+                    dropFromHigh = rHigh > 0 ? (float)((rHigh - entryPrice) / rHigh * 100) : 0f;
+                }
+
                 // ── 뉴스 감성 점수 제거: 전략 입력에서 고정 0 사용 ──
                 const float sentimentScore = 0f;
 
@@ -10950,6 +10988,13 @@ namespace TradingBot
                     Trend_Strength = trendStrength,
                     RSI_Divergence = rsiDivergence,
                     ElliottWaveState = elliottState,
+                    // 계단식 패턴 + 모멘텀 (v3.2.5)
+                    HigherLows_Count = (float)higherLowsCount,
+                    LowerHighs_Count = (float)lowerHighsCount,
+                    Price_Momentum_30m = priceMomentum30m,
+                    Bounce_From_Low_Pct = bounceFromLow,
+                    Drop_From_High_Pct = dropFromHigh,
+
                     SentimentScore = sentimentScore,
                 };
             }

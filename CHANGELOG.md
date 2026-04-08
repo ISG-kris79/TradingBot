@@ -15,6 +15,24 @@
 
  - 없음
 
+## [3.2.6] - 2026-04-08
+
+### Added
+
+- **AI 학습 피처 5개 추가** (CandleData):
+  - `HigherLows_Count` — 연속 저점 상승 횟수 (계단식 상승)
+  - `LowerHighs_Count` — 연속 고점 하락 횟수 (계단식 하락)
+  - `Price_Momentum_30m` — 30분 가격 변화율 %
+  - `Bounce_From_Low_Pct` — 1시간 저점 대비 반등률 %
+  - `Drop_From_High_Pct` — 1시간 고점 대비 하락률 %
+
+### Changed
+
+- **AI 최우선 진입**: 규칙 기반 WAIT이어도 모멘텀 반등/하락 감지 시 AI에 위임
+  - 30분 +1.5% 반등 OR 1시간 저점 +3% → LONG으로 AI에 전달
+  - 30분 -1.5% 하락 OR 1시간 고점 -3% → SHORT으로 AI에 전달
+  - AI(TradeSignalClassifier + AIDoubleCheckGate)가 최종 판단
+
 ## [3.2.5] - 2026-04-08
 
 ### Added
