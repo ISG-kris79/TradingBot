@@ -60,10 +60,10 @@ namespace TradingBot
         // [FIX] 최근 청산 쿨다운 — ACCOUNT_UPDATE 도착 시 팬텀 EXTERNAL_PARTIAL_CLOSE_SYNC 방지
         private readonly ConcurrentDictionary<string, DateTime> _recentlyClosedCooldown = new();
         // 슬롯 설정
-        // $250/일 목표: 메이저 4개(BTC/ETH/SOL/XRP) + PUMP 2개(상위20 동적스캔) = 총 6개
+        // 메이저 4 + PUMP 2 = 총 6
         private const int MAX_TOTAL_SLOTS = 6;        // 총 최대 6개
         private const int MAX_MAJOR_SLOTS = 4;        // 메이저 최대 4개 (BTC/ETH/SOL/XRP)
-        private const int MAX_PUMP_SLOTS = 2;         // PUMP 최대 2개 (상위20 동적스캔)
+        private const int MAX_PUMP_SLOTS = 2;         // PUMP 최대 2개
         private const decimal PUMP_FIXED_MARGIN_USDT = 100m; // (레거시 fallback) PUMP 고정 증거금
         private const int PUMP_MANUAL_LEVERAGE = 20; // 20배 롱 전용 대응 매뉴얼
         

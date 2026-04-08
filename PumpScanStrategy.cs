@@ -192,7 +192,7 @@ namespace TradingBot.Strategies
                 }
 
                 var list = k5mRes.Data.ToList();
-                if (list.Count < 120)
+                if (list.Count < 30) // [v3.2.9] 120→30봉 완화 (신규/소형 코인 진입 기회 확보)
                 {
                     PumpSignalLog("REJECT", $"sym={symbol} reason=insufficientCandles count={list.Count}");
                     return false;
