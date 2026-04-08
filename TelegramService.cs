@@ -33,6 +33,9 @@ namespace TradingBot
         private static readonly TimeSpan AiGatePerSymbolCooldown = TimeSpan.FromMinutes(1);
         private readonly object _aiGateSummaryLock = new();
         private AiGateSummaryWindow _aiGateSummaryWindow = new();
+
+        /// <summary>[v3.2.10] 활성 포지션 심볼 조회 콜백 (진입 상태 표시용)</summary>
+        public Func<HashSet<string>>? GetActivePositionSymbols { get; set; }
         public Func<string>? OnRequestStatus { get; set; } // 상태 요청 시 호출될 콜백
         public Action? OnRequestStop { get; set; } // [추가] 정지 요청 시 호출될 콜백
         public Func<CancellationToken, Task<string>>? OnRequestTrain { get; set; } // [추가] 수동 학습 요청 콜백
@@ -659,7 +662,7 @@ namespace TradingBot
                                    $"✅ 승인: {snapshot.AllowedCount}건 (확신 {snapshot.StrongAllowedCount}건)\n" +
                                    $"🟢 LONG 승인: {snapshot.AllowedLongSymbolReasons.Count}개 │ 🔴 SHORT 승인: {snapshot.AllowedShortSymbolReasons.Count}개\n" +
                                    $"🤖 평균 ML: {avgMl:P1} │ 🧠 평균 TF: {avgTf:P1} │ 📈 평균 Trend(피보반영): {avgTrend:P1}\n\n" +
-                                   $"✅ 승인 코인(사유)\n" +
+                                   $"📋 AI 승인 코인 (진입 상태)\n" +
                                    $"• LONG: {allowedLongCoins}\n" +
                                    $"• SHORT: {allowedShortCoins}\n" +
                                    $"• 기타: {allowedOtherCoins}";
@@ -671,7 +674,7 @@ namespace TradingBot
                        $"🟢 LONG: {snapshot.LongCount}건 │ 🔴 SHORT: {snapshot.ShortCount}건\n" +
                        $"🏆 메이저: {snapshot.MajorCount} │ 🚀 펌핑: {snapshot.PumpingCount} │ 📊 일반: {snapshot.NormalCount}\n" +
                       $"🤖 평균 ML: {avgMl:P1} │ 🧠 평균 TF: {avgTf:P1} │ 📈 평균 Trend(피보반영): {avgTrend:P1}\n\n" +
-                       $"✅ 승인 코인(사유)\n{allowedSection}\n\n" +
+                       $"📋 AI 승인 코인 (진입 상태)\n{allowedSection}\n\n" +
                        $"⛔ 차단 코인(사유)\n{blockedSection}\n\n" +
                       $"📌 차단 TOP(전체)\n{topReasons}\n\n" +
                       $"📌 차단 TOP(LONG)\n{topReasonsLong}\n\n" +
@@ -778,16 +781,22 @@ namespace TradingBot
             return "OTHER";
         }
 
-        private static string FormatCoinReasonList(IReadOnlyDictionary<string, string> symbolReasons, int maxCount)
+        private string FormatCoinReasonList(IReadOnlyDictionary<string, string> symbolReasons, int maxCount)
         {
+            var activeSymbols = GetActivePositionSymbols?.Invoke() ?? new HashSet<string>();
+
             var normalized = symbolReasons
                 .Where(kv => !string.IsNullOrWhiteSpace(kv.Key))
-                .Select(kv => new
+                .Select(kv =>
                 {
-                    Symbol = kv.Key.Trim().ToUpperInvariant(),
-                    Reason = string.IsNullOrWhiteSpace(kv.Value) ? "기타" : kv.Value.Trim()
+                    string sym = kv.Key.Trim().ToUpperInvariant();
+                    string reason = string.IsNullOrWhiteSpace(kv.Value) ? "기타" : kv.Value.Trim();
+                    // [v3.2.10] 진입 상태 표시
+                    string status = activeSymbols.Contains(sym) ? "✅진입됨" : "⏳대기";
+                    return new { Symbol = sym, Reason = reason, Status = status };
                 })
-                .OrderBy(x => x.Symbol)
+                .OrderBy(x => x.Status) // 진입됨 먼저
+                .ThenBy(x => x.Symbol)
                 .ToList();
 
             if (normalized.Count == 0)
@@ -796,7 +805,7 @@ namespace TradingBot
             int takeCount = Math.Max(1, maxCount);
             string listText = string.Join(", ", normalized
                 .Take(takeCount)
-                .Select(x => $"{x.Symbol}({x.Reason})"));
+                .Select(x => $"{x.Symbol}[{x.Status}]"));
             int remain = normalized.Count - takeCount;
 
             return remain > 0

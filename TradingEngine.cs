@@ -1805,6 +1805,10 @@ namespace TradingBot
 
                 TelegramService.Instance.Initialize();
                 TelegramService.Instance.OnRequestStatus = GetEngineStatusReport;
+                TelegramService.Instance.GetActivePositionSymbols = () =>
+                {
+                    lock (_posLock) { return new HashSet<string>(_activePositions.Keys, StringComparer.OrdinalIgnoreCase); }
+                };
                 TelegramService.Instance.OnRequestStop = StopEngine;
                 TelegramService.Instance.OnRequestTrain = ForceInitialAiTrainingAsync;
                 TelegramService.Instance.OnRequestDroughtScan = ForceDroughtDiagnosticAsync;
