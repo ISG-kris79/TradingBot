@@ -6939,23 +6939,12 @@ namespace TradingBot
                     }
                 });
 
-                // AI Advisor: AI Gate 차단 시 사이즈 축소해서 정찰대 진입
+                // [v3.2.47] AI Gate 차단 → 완전 차단 (정찰대 손실 방지)
                 if (!gateResult.allowEntry)
                 {
-                    aiGateSizeMultiplier = blendedMlTfScore switch
-                    {
-                        >= 0.90f => 1.00m,
-                        >= 0.80f => 0.50m,
-                        >= 0.70f => 0.30m,
-                        >= 0.50f => 0.20m,
-                        _        => 0.10m
-                    };
-
-                    signalSource = $"{signalSource}_AI_ADVISOR_{aiGateSizeMultiplier:P0}";
-                    flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
-
-                    EntryLog("AI_GATE", "ADVISOR",
-                        $"notBlocking blended={blendedMlTfScore:P0} size={aiGateSizeMultiplier:P0} gate={gateResult.reason}");
+                    EntryLog("AI_GATE", "BLOCK",
+                        $"blended={blendedMlTfScore:P0} gate={gateResult.reason}");
+                    return;
                 }
 
                 // Scout add-on 검토 (LONG + Major only)
