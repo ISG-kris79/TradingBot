@@ -8279,8 +8279,9 @@ namespace TradingBot
                     TryStartStandardMonitor(symbol, actualEntryPrice, decision == "LONG", ctx.Mode, ctx.CustomTakeProfitPrice, ctx.CustomStopLossPrice, ctx.Token, "new-entry");
                 }
 
-                // [v3.0.11] 정찰대 진입 → ROE 기반 메인 전환 태스크
-                if (ctx.ScoutModeActivated && !ctx.IsScoutAddOnOrder)
+                // [v3.2.46] 정찰대/AI Advisor 진입 → ROE 기반 본진입 전환 태스크
+                bool isScoutEntry = ctx.ScoutModeActivated || ctx.SizeMultiplier < 1.0m;
+                if (isScoutEntry && !ctx.IsScoutAddOnOrder)
                 {
                     _ = Task.Run(async () =>
                     {
