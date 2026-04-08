@@ -1960,6 +1960,9 @@ namespace TradingBot
                         if (_macdCrossService != null && (DateTime.Now - _last15mTailScanTime).TotalMinutes >= 1)
                             _ = Task.Run(() => Scan15mBearishTailAsync(token));
 
+                        // [v3.2.44] AI Command Center 업데이트 (메인 루프에서 직접, 5초 간격)
+                        UpdateAiCommandFromTickerCache();
+
                         if ((DateTime.Now - _lastHeartbeatTime).TotalHours >= 1)
                         {
                             string heartbeatMsg = $"💓 [Heartbeat] Bot is alive.\nActive Positions: {_activePositions.Count}\nUptime: {(DateTime.Now - _engineStartTime):dd\\.hh\\:mm}";
@@ -5622,6 +5625,63 @@ namespace TradingBot
         // ═══════════════════════════════════════════════════════════════
 
         private DateTime _lastPumpScanTime = DateTime.MinValue;
+        private DateTime _lastAiCommandUpdateTime = DateTime.MinValue;
+
+        /// <summary>AI Command Center를 TickerCache + KlineCache에서 직접 업데이트 (5초 간격)</summary>
+        private void UpdateAiCommandFromTickerCache()
+        {
+            if (OnAiCommandUpdate == null) return;
+            if ((DateTime.Now - _lastAiCommandUpdateTime).TotalSeconds < 5) return;
+            _lastAiCommandUpdateTime = DateTime.Now;
+
+            // 첫 번째 활성 포지션 또는 첫 번째 메이저 심볼 기준
+            string targetSymbol = "";
+            string activeDecision = "WAIT";
+
+            lock (_posLock)
+            {
+                var activePos = _activePositions.Values.FirstOrDefault();
+                if (activePos != null)
+                {
+                    targetSymbol = activePos.Symbol;
+                    activeDecision = activePos.IsLong ? "LONG" : "SHORT";
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(targetSymbol))
+                targetSymbol = "BTCUSDT";
+
+            if (!_marketDataManager.TickerCache.TryGetValue(targetSymbol, out var tick))
+                return;
+
+            // KlineCache에서 지표 계산
+            float rsi = 50f, macdH = 0f, trend = 0f;
+            if (_marketDataManager.KlineCache.TryGetValue(targetSymbol, out var klines) && klines.Count >= 20)
+            {
+                List<Binance.Net.Interfaces.IBinanceKline> snapshot;
+                lock (klines) { snapshot = klines.TakeLast(30).ToList(); }
+
+                if (snapshot.Count >= 14)
+                {
+                    rsi = (float)IndicatorCalculator.CalculateRSI(snapshot, 14);
+                    var macd = IndicatorCalculator.CalculateMACD(snapshot);
+                    macdH = (float)macd.Hist;
+                    double sma20 = snapshot.TakeLast(20).Average(k => (double)k.ClosePrice);
+                    double sma60 = snapshot.Count >= 26 ? snapshot.Average(k => (double)k.ClosePrice) : sma20;
+                    trend = sma20 > sma60 ? 0.5f : sma20 < sma60 ? -0.5f : 0f;
+                }
+            }
+
+            string h4 = trend >= 0.3f ? "TRENDING UP" : trend <= -0.3f ? "TRENDING DOWN" : "NEUTRAL";
+            string h1 = rsi >= 60f ? "STRENGTHENING" : rsi >= 45f ? "WATCHING" : rsi <= 30f ? "OVERSOLD" : "NEUTRAL";
+            string m15 = macdH > 0 && rsi >= 55f ? "READY TO SHOOT" : macdH > 0 ? "SCANNING" : macdH < 0 ? "BEARISH" : "NEUTRAL";
+
+            double bull = activeDecision == "LONG" ? Math.Min(100, rsi + trend * 30) : Math.Max(0, 100 - rsi);
+            double bear = 100.0 - bull;
+
+            OnAiCommandUpdate.Invoke(targetSymbol, (float)(bull / 100.0), activeDecision, h4, h1, m15, bull, bear);
+        }
+
         private DateTime _lastMacdScanTime = DateTime.MinValue;
 
         private async Task ScanMacdGoldenCrossAsync(CancellationToken token)
@@ -6708,23 +6768,6 @@ namespace TradingBot
                     EntryLog("VOLUME", "BLOCK", $"volumeRatio={latestCandle.Volume_Ratio:F2} < 0.50 (5봉 평균의 절반 미만 → 가짜 무빙 가능성)");
                     return;
                 }
-            }
-
-            // [v3.2.37] AI Command Center 업데이트 (슬롯 차단 전에 실행)
-            if (OnAiCommandUpdate != null && latestCandle != null && MajorSymbols.Contains(symbol))
-            {
-                float rsi = latestCandle.RSI;
-                float macdH = latestCandle.MACD_Hist;
-                float trend = latestCandle.Trend_Strength;
-
-                string h4 = trend >= 0.5f ? "TRENDING UP" : trend >= 0f ? "STRENGTHENING" : "NEUTRAL";
-                string h1 = rsi >= 60f ? "STRENGTHENING" : rsi >= 45f ? "WATCHING" : "NEUTRAL";
-                string m15 = macdH > 0 && rsi >= 55f ? "READY TO SHOOT" : macdH > 0 ? "SCANNING" : "NEUTRAL";
-
-                double bull = decision == "LONG" ? Math.Min(100, rsi + trend * 30) : Math.Max(0, 100 - rsi);
-                double bear = 100.0 - bull;
-
-                OnAiCommandUpdate.Invoke(symbol, (float)(bull / 100.0), decision, h4, h1, m15, bull, bear);
             }
 
             // ═══════════════════════════════════════════════════════════════
