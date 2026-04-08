@@ -80,6 +80,14 @@ namespace TradingBot.Strategies
                 double bounceFromLowPct = recentLow > 0 ? (double)((currentPrice - recentLow) / recentLow * 100) : 0;
                 bool isStrongBounce = bounceFromLowPct >= 3.0; // 1시간 저점 대비 +3% 반등
 
+                // [v3.2.4] 하락 모멘텀 직접 감지 (SHORT 용)
+                bool isMakingLowerHighs = IsMakingLowerHighs(list, profile.HigherLowSegmentSize);
+                double priceDropPct = price6Ago > 0 ? (double)((price6Ago - currentPrice) / price6Ago * 100) : 0;
+                bool isPriceDropping = priceDropPct >= 1.5; // 30분간 -1.5% 하락
+                decimal recentHigh = recent12.Max(k => k.HighPrice);
+                double dropFromHighPct = recentHigh > 0 ? (double)((recentHigh - currentPrice) / recentHigh * 100) : 0;
+                bool isStrongDrop = dropFromHighPct >= 3.0; // 1시간 고점 대비 -3% 하락
+
                 int aiScore = CalculateScore(
                     rsi,
                     bb,
@@ -103,43 +111,50 @@ namespace TradingBot.Strategies
                     aiScore = Math.Clamp(aiScore + (int)fibBonus, 0, 100);
                 }
 
-                // [v3.2.3] 가격 모멘텀 가점 — SMA 역배열이어도 실제 반등 중이면 보정
+                // [v3.2.3] 가격 모멘텀 가점 — SMA 역배열이어도 실제 반등/하락 중이면 보정
                 if (isPriceRecovering) aiScore = Math.Clamp(aiScore + 15, 0, 100);
                 if (isStrongBounce) aiScore = Math.Clamp(aiScore + 10, 0, 100);
 
+                // [v3.2.4] 하락 모멘텀 감점 — SHORT 시그널 강화
+                int shortBearishScore = 50; // SHORT용 별도 점수 (50 기반)
+                if (!isUptrend) shortBearishScore += 10;
+                if (macd.Hist < 0) shortBearishScore += 10;
+                if (currentPrice < (decimal)sma20) shortBearishScore += 10;
+                if (currentPrice < (decimal)fib.Level618) shortBearishScore += 5;
+                if (isMakingLowerHighs) shortBearishScore += 15; // 계단식 하락 강한 가점
+                if (isPriceDropping) shortBearishScore += 15;    // 30분 -1.5% 하락 모멘텀
+                if (isStrongDrop) shortBearishScore += 10;       // 1시간 고점 -3%
+                if (volumeRatio >= 1.10) shortBearishScore += 5;
+
                 // [v3.2.3] 24시간 동일 기준
                 int longThreshold = CalculateDynamicThreshold(volumeMomentum, isMakingHigherLows, profile);
-                int shortThreshold = 30;
+                int shortThreshold = 60; // SHORT도 동일 기준 60점
 
                 string decision = "WAIT";
                 if (aiScore >= longThreshold)
                 {
-                    // [v3.2.3] bullishStructure 완화: SMA 상승추세 OR HigherLows OR 가격 모멘텀 반등
+                    // [v3.2.3] bullishStructure 완화
                     bool bullishStructure = isUptrend
                         || (isMakingHigherLows && currentPrice > (decimal)sma20)
                         || isPriceRecovering
                         || isStrongBounce;
                     bool longConfirm = bullishStructure &&
-                        (macd.Hist >= -0.01 || isPriceRecovering) && // MACD 조건도 완화 (반등 시)
+                        (macd.Hist >= -0.01 || isPriceRecovering) &&
                         (volumeMomentum >= profile.LongConfirmVolumeMin || allowLowVolumeTrendBypass || isPriceRecovering);
                     if (longConfirm) decision = "LONG";
                 }
-                else if (aiScore <= shortThreshold)
-                {
-                    // [v3.2.1] SHORT 조건 완화: 5개 AND → 핵심 3개 이상이면 진입
-                    int bearishCount = 0;
-                    if (!isUptrend) bearishCount++;
-                    if (macd.Hist < 0) bearishCount++;
-                    if (currentPrice < (decimal)sma20) bearishCount++;
-                    if (volumeRatio >= 1.10) bearishCount++;
-                    if (currentPrice < (decimal)fib.Level618) bearishCount++;
 
-                    // 필수: 가격 < SMA20 (최소한의 하락 확인)
-                    bool priceBelow = currentPrice < (decimal)sma20;
-                    if (priceBelow && bearishCount >= 3)
-                    {
-                        decision = "SHORT";
-                    }
+                // [v3.2.4] SHORT: 별도 점수 체계로 독립 판단 (LONG 판단과 else if 아님)
+                if (decision == "WAIT" && shortBearishScore >= shortThreshold)
+                {
+                    bool bearishStructure = !isUptrend
+                        || isMakingLowerHighs
+                        || isPriceDropping
+                        || isStrongDrop;
+                    bool shortConfirm = bearishStructure
+                        && currentPrice < (decimal)sma20 // 가격 < SMA20 필수
+                        && (macd.Hist <= 0.01 || isPriceDropping);
+                    if (shortConfirm) decision = "SHORT";
                 }
 
                 try
@@ -345,6 +360,22 @@ namespace TradingBot.Strategies
             decimal low3 = window.Skip(segmentSize * 2).Take(segmentSize).Min(c => c.LowPrice);
 
             return low2 >= low1 * minRiseRatio && low3 >= low2 * minRiseRatio;
+        }
+
+        /// <summary>[v3.2.4] 계단식 하락 감지: 3연속 고점 하락 (Lower Highs)</summary>
+        private static bool IsMakingLowerHighs(List<IBinanceKline> candles, int segmentSize)
+        {
+            const int requiredSegments = 3;
+            int requiredCandles = segmentSize * requiredSegments;
+            if (candles.Count < requiredCandles) return false;
+
+            var window = candles.TakeLast(requiredCandles).ToList();
+
+            decimal high1 = window.Take(segmentSize).Max(c => c.HighPrice);
+            decimal high2 = window.Skip(segmentSize).Take(segmentSize).Max(c => c.HighPrice);
+            decimal high3 = window.Skip(segmentSize * 2).Take(segmentSize).Max(c => c.HighPrice);
+
+            return high2 < high1 && high3 < high2;
         }
 
         private double CalculateFibScore(List<IBinanceKline> candles, decimal currentPrice)
