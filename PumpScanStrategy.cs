@@ -272,11 +272,12 @@ namespace TradingBot.Strategies
                 }
 
                 string decision = "WAIT";
-                // 모멘텀 3개+ → LONG (AI가 최종 판단)
-                if (bullishSignals >= 3)
+                // [v3.2.19] PUMP는 급등만: 가격 모멘텀 필수 + 신호 4개+
+                bool hasPriceMomentum = isPriceRecovering || isStrongBounce;
+                if (hasPriceMomentum && bullishSignals >= 4)
                     decision = "LONG";
-                // ML 모델이 55%+ → LONG
-                else if (mlSignal && mlProb >= 0.55f)
+                // ML 모델이 60%+ → LONG (55→60 강화)
+                else if (mlSignal && mlProb >= 0.60f && hasPriceMomentum)
                 {
                     decision = "LONG";
                     PumpSignalLog("ML_ENTRY", $"sym={symbol} prob={mlProb:P0} bull={bullishSignals}");

@@ -23,6 +23,7 @@ namespace TradingBot.Services
 
         // ─── 감시 대상 ──────────────────────────────────────
         private static readonly string[] WatchSymbols = { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+        private static readonly HashSet<string> MajorWatchSymbols = new(WatchSymbols, StringComparer.OrdinalIgnoreCase);
 
         // ─── 가격 히스토리 (1분 스냅샷) ─────────────────────
         private readonly ConcurrentDictionary<string, decimal> _priceSnapshot = new();
@@ -122,7 +123,7 @@ namespace TradingBot.Services
         // [개별 코인 급등 감지] 전 종목 5분 가격 변동률 스캔
         // ═══════════════════════════════════════════════════════════════
 
-        public decimal SpikeThresholdPct { get; set; } = 1.5m;    // [v3.2.15] 30초 ±1.5% → 급등/급락
+        public decimal SpikeThresholdPct { get; set; } = 3.0m;    // [v3.2.19] 30초 +3% → 진짜 급등만
         public decimal SpikeVolumeMinRatio { get; set; } = 2.0m;
 
         private readonly ConcurrentDictionary<string, decimal> _allPriceSnapshot = new();
@@ -161,13 +162,22 @@ namespace TradingBot.Services
 
                 decimal changePct = (kvp.Value.LastPrice - prevPrice) / prevPrice * 100m;
 
-                if (kvp.Value.QuoteVolume < 500_000m) continue; // [v3.2.7] $1M → $500K
+                if (kvp.Value.QuoteVolume < 1_000_000m) continue; // [v3.2.19] $500K → $1M 복원
 
-                if (changePct >= SpikeThresholdPct || changePct <= -SpikeThresholdPct)
+                bool isMajorCoin = MajorWatchSymbols.Contains(sym);
+
+                // [v3.2.19] PUMP 코인은 급등(+3%)만, 메이저는 급등/급락 둘 다
+                bool spikeDetected = false;
+                if (changePct >= SpikeThresholdPct)
+                    spikeDetected = true; // 급등 → 모든 코인
+                else if (changePct <= -SpikeThresholdPct && isMajorCoin)
+                    spikeDetected = true; // 급락 → 메이저만
+
+                if (spikeDetected)
                 {
-                    _spikeCooldown[sym] = now.AddMinutes(15); // [v3.2.7] 30분 → 15분
+                    _spikeCooldown[sym] = now.AddMinutes(15);
                     string direction = changePct > 0 ? "급등" : "급락";
-                    OnLog?.Invoke($"⚡ [{direction} 감지] {sym} {changePct:+0.00;-0.00}% (1분) | 가격: {kvp.Value.LastPrice}");
+                    OnLog?.Invoke($"⚡ [{direction} 감지] {sym} {changePct:+0.00;-0.00}% (30초) | 가격: {kvp.Value.LastPrice}");
                     OnSpikeDetected?.Invoke(sym, changePct, kvp.Value.LastPrice);
                 }
             }
