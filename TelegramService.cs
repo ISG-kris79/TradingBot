@@ -803,13 +803,14 @@ namespace TradingBot
                 return "없음";
 
             int takeCount = Math.Max(1, maxCount);
-            string listText = string.Join(", ", normalized
+            // [v3.2.13] 줄바꿈으로 가독성 개선
+            string listText = string.Join("\n", normalized
                 .Take(takeCount)
-                .Select(x => $"{x.Symbol}[{x.Status}]"));
+                .Select(x => $"  {x.Status} `{x.Symbol}`"));
             int remain = normalized.Count - takeCount;
 
             return remain > 0
-                ? $"{listText} 외 {remain}개"
+                ? $"{listText}\n  ... 외 {remain}개"
                 : listText;
         }
 

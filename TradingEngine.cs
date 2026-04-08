@@ -6605,7 +6605,10 @@ namespace TradingBot
             string? aiGateDecisionId = null;
             decimal aiGateSizeMultiplier = 1.0m; // AI Gate에서 산출된 사이즈 배수
 
-            bool shouldBypassAiGate = skipAiGateCheck && IsDroughtRecoverySignalSource(signalSource);
+            bool shouldBypassAiGate = (skipAiGateCheck && IsDroughtRecoverySignalSource(signalSource))
+                || signalSource == "SPIKE_DETECT"
+                || signalSource == "CRASH_REVERSE"
+                || signalSource == "PUMP_REVERSE";
             if (shouldBypassAiGate)
             {
                 EntryLog("AI_GATE", "BYPASS", $"reason=prechecked signalSource={signalSource}");
@@ -7509,6 +7512,10 @@ namespace TradingBot
             var EntryLog = ctx.EntryLog;
 
             if (string.Equals(ctx.Mode, "SIDEWAYS", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            // [v3.2.13] SPIKE/CRASH/PUMP 리버스는 R:R 스킵 (급변 시 진입 우선)
+            if (ctx.SignalSource == "SPIKE_DETECT" || ctx.SignalSource == "CRASH_REVERSE" || ctx.SignalSource == "PUMP_REVERSE")
                 return true;
 
             decimal effectiveMinRiskRewardRatio = _minEntryRiskRewardRatio;
