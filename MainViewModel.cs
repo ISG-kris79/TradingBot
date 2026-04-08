@@ -141,6 +141,7 @@ namespace TradingBot.ViewModels
         public ObservableCollection<string> GateLogs { get; set; } = new ObservableCollection<string>();
         public ObservableCollection<string> Alerts { get; set; } = new ObservableCollection<string>();
         public ObservableCollection<string> DbFailureAlerts { get; } = new ObservableCollection<string>();
+        public ObservableCollection<string> FastLogs { get; set; } = new ObservableCollection<string>();
         public ObservableCollection<TradeLog> TradeHistory { get; set; } = new ObservableCollection<TradeLog>();
 
         private int _gatePassCount;
@@ -3001,6 +3002,11 @@ namespace TradingBot.ViewModels
             _battleLastFastLogUtc = nowUtc;
             string line = $"[{DateTime.Now:HH:mm:ss}] {message}";
 
+            // [v3.2.27] ListBox 기반으로 변경
+            FastLogs.Insert(0, line);
+            if (FastLogs.Count > 50) FastLogs.RemoveAt(FastLogs.Count - 1);
+
+            // 기존 프로퍼티도 유지 (호환)
             BattleFastLog8 = BattleFastLog7;
             BattleFastLog7 = BattleFastLog6;
             BattleFastLog6 = BattleFastLog5;
