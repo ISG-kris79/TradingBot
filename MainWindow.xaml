@@ -1641,6 +1641,9 @@
                                                              VirtualizingStackPanel.IsVirtualizing="True"
                                                              ScrollViewer.VerticalScrollBarVisibility="Auto"
                                                              ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                                                        <ListBox.Resources>
+                                                            <Style TargetType="ScrollBar" BasedOn="{StaticResource MinimalScrollBar}"/>
+                                                        </ListBox.Resources>
                                                         <ListBox.ItemContainerStyle>
                                                             <Style TargetType="ListBoxItem">
                                                                 <Setter Property="Padding" Value="2,1"/>
@@ -1678,6 +1681,9 @@
                                                              VirtualizingStackPanel.IsVirtualizing="True"
                                                              ScrollViewer.VerticalScrollBarVisibility="Auto"
                                                              ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                                                        <ListBox.Resources>
+                                                            <Style TargetType="ScrollBar" BasedOn="{StaticResource MinimalScrollBar}"/>
+                                                        </ListBox.Resources>
                                                         <ListBox.ItemContainerStyle>
                                                             <Style TargetType="ListBoxItem">
                                                                 <Setter Property="Padding" Value="2,1"/>
