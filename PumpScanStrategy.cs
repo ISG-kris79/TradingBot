@@ -229,37 +229,36 @@ namespace TradingBot.Strategies
                 bool allowLowVolumeTrendBypass = volumeMomentum < profile.LongConfirmVolumeMin &&
                                                  (isTrendHealthyOnLowVolume || (isMakingHigherLows && currentPrice > (decimal)sma20));
 
-                int aiScore = CalculateScore(
-                    rsi,
-                    bb,
-                    currentPrice,
-                    isUptrend,
-                    macd,
-                    fib,
-                    sma20,
-                    sma50,
-                    sma60,
-                    sma120,
-                    volumeMomentum,
-                    isMakingHigherLows,
-                    allowLowVolumeTrendBypass,
-                    profile);
+                int aiScore = CalculateScore(rsi, bb, currentPrice, isUptrend, macd, fib,
+                    sma20, sma50, sma60, sma120, volumeMomentum, isMakingHigherLows,
+                    allowLowVolumeTrendBypass, profile);
 
-                // [야수 모드] 피보나치 0.618~0.786 황금 반등 구간 가점
                 double fibBonus = CalculateFibScore(symbol, list, currentPrice);
-                if (fibBonus > 0)
-                {
-                    aiScore = Math.Clamp(aiScore + (int)fibBonus, 0, 100);
-                }
+                if (fibBonus > 0) aiScore = Math.Clamp(aiScore + (int)fibBonus, 0, 100);
 
-                // [v3.2.3] 24시간 동일 기준
-                int longThreshold = CalculateDynamicThreshold(volumeMomentum, isMakingHigherLows, profile);
-                int shortThreshold = 30;
+                // [v3.2.7] AI 최우선 진입: 모멘텀 기반 방향 판단 → AI에 위임
+                // 가격 모멘텀 직접 감지
+                var recent6 = list.TakeLast(6).ToList();
+                decimal price6Ago = recent6.First().ClosePrice;
+                double priceRecoveryPct = price6Ago > 0 ? (double)((currentPrice - price6Ago) / price6Ago * 100) : 0;
+                bool isPriceRecovering = priceRecoveryPct >= 1.5;
 
-                // [v3.0.9] PUMP은 LONG만 — SHORT 제거
-                string decision = "WAIT";
+                var recent12 = list.TakeLast(12).ToList();
+                decimal recentLow = recent12.Min(k => k.LowPrice);
+                double bounceFromLowPct = recentLow > 0 ? (double)((currentPrice - recentLow) / recentLow * 100) : 0;
+                bool isStrongBounce = bounceFromLowPct >= 3.0;
 
-                // ML 모델 예측 (있으면 우선)
+                // 모멘텀 신호 카운팅
+                int bullishSignals = 0;
+                if (isPriceRecovering) bullishSignals += 2;
+                if (isStrongBounce) bullishSignals += 2;
+                if (isUptrend) bullishSignals++;
+                if (isMakingHigherLows) bullishSignals++;
+                if (currentPrice > (decimal)sma20) bullishSignals++;
+                if (macd.Hist > 0) bullishSignals++;
+                if (volumeMomentum >= 1.10) bullishSignals++;
+
+                // ML 모델 예측
                 bool mlSignal = false;
                 float mlProb = 0f;
                 if (_pumpML != null && _pumpML.IsModelLoaded)
@@ -268,27 +267,19 @@ namespace TradingBot.Strategies
                     if (mlFeature != null)
                     {
                         var pred = _pumpML.Predict(mlFeature);
-                        if (pred != null)
-                        {
-                            mlSignal = pred.ShouldEnter;
-                            mlProb = pred.Probability;
-                        }
+                        if (pred != null) { mlSignal = pred.ShouldEnter; mlProb = pred.Probability; }
                     }
                 }
 
-                // 규칙 기반 + ML 결합 (완화: AND → OR)
-                bool rulePass = aiScore >= longThreshold;
-                bool structureOk = isUptrend || isMakingHigherLows || currentPrice > (decimal)sma20;
-                bool momentumOk = macd.Hist >= -0.01 || volumeMomentum >= 1.0 || allowLowVolumeTrendBypass;
-
-                if (rulePass && (structureOk || momentumOk))
-                {
-                    decision = "LONG"; // 규칙 통과 + 구조/모멘텀 중 하나만 OK
-                }
+                string decision = "WAIT";
+                // 모멘텀 3개+ → LONG (AI가 최종 판단)
+                if (bullishSignals >= 3)
+                    decision = "LONG";
+                // ML 모델이 55%+ → LONG
                 else if (mlSignal && mlProb >= 0.55f)
                 {
-                    decision = "LONG"; // ML 60%→55% 완화
-                    PumpSignalLog("ML_ENTRY", $"sym={symbol} prob={mlProb:P0} ruleScore={aiScore} (규칙 미통과지만 ML 통과)");
+                    decision = "LONG";
+                    PumpSignalLog("ML_ENTRY", $"sym={symbol} prob={mlProb:P0} bull={bullishSignals}");
                 }
 
                 try
@@ -358,13 +349,7 @@ namespace TradingBot.Strategies
                 string reason = string.Empty;
                 if (decision == "WAIT")
                 {
-                    var reasons = new List<string>();
-                    if (volumeMomentum < 1.00 && !allowLowVolumeTrendBypass) reasons.Add("거래량 부족");
-                    if (!isUptrend && !isMakingHigherLows) reasons.Add("2파 횡보장 인식");
-                    if (aiScore < longThreshold && aiScore > shortThreshold) reasons.Add("스코어 불충분");
-
-                    if (reasons.Any())
-                        reason = $"holdReason={string.Join("/", reasons)}";
+                    reason = $"holdReason=bull{bullishSignals}(3개미만)";
                 }
 
                 PumpSignalLog(
