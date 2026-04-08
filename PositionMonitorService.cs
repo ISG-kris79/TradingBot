@@ -3530,7 +3530,13 @@ namespace TradingBot.Services
 
                     if (!success)
                     {
-                        OnLog?.Invoke($"⚠️ {symbol} 물타기 최종 실패 (마진 부족 또는 수량 오류)");
+                        OnLog?.Invoke($"⚠️ {symbol} 물타기 최종 실패 (마진 부족 또는 수량 오류) → 재시도 차단");
+                        // [v3.2.33] 실패해도 IsAveragedDown=true로 설정하여 무한 재시도 차단
+                        lock (_posLock)
+                        {
+                            if (_activePositions.TryGetValue(symbol, out var p))
+                                p.IsAveragedDown = true;
+                        }
                         return;
                     }
                 }

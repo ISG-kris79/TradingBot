@@ -6085,16 +6085,31 @@ namespace TradingBot
             string direction = changePct > 0 ? "LONG" : "SHORT";
             string label = changePct > 0 ? "급등" : "급락";
 
-            // 사이즈 계산 — API 호출 없이 바로
+            // 사이즈 계산 — 가용 잔고 체크 포함
             decimal leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : 20;
             decimal marginUsdt = isMajor
                 ? await GetAdaptiveEntryMarginUsdtAsync(token)
                 : GetConfiguredPumpMarginUsdt();
+
+            // [v3.2.33] 가용 잔고 체크 — 마진 부족 시 스킵
+            try
+            {
+                decimal available = await _exchangeService.GetBalanceAsync("USDT", token);
+                if (available < marginUsdt)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [{label}] {symbol} 마진 부족 (필요={marginUsdt:F0}, 가용={available:F0}) → 스킵");
+                    lock (_posLock) { _activePositions.Remove(symbol); }
+                    return;
+                }
+            }
+            catch { }
+
             decimal quantity = (marginUsdt * leverage) / currentPrice;
 
             if (quantity <= 0)
             {
                 OnStatusLog?.Invoke($"⚠️ [{label}] {symbol} 수량 0 → 스킵");
+                lock (_posLock) { _activePositions.Remove(symbol); }
                 return;
             }
 
