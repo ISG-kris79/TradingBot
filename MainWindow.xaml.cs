@@ -603,28 +603,14 @@ namespace TradingBot
 
         private async void dgMultiTimeframe_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
-            // 1. null 체크 추가
-            if (ViewModel == null)
-            {
-                AddLog("⚠️ ViewModel이 초기화되지 않았습니다.");
-                return;
-            }
-
-            // 2. SelectedItem null 체크 개선
-            if (dgMultiTimeframe.SelectedItem is not MultiTimeframeViewModel selectedItem)
-            {
-                return;
-            }
-
-            // 3. 선택된 종목을 ViewModel에 설정
-            ViewModel.SelectedSymbol = selectedItem;
-            
-            // 4. 차트 데이터 로드 대기 (LoadLiveChartData가 자동으로 호출됨)
-            await Task.Delay(500); // 차트 데이터 로드를 위한 짧은 대기
-
             try
             {
-                // 5. 차트 창 생성/표시
+                if (ViewModel == null) return;
+                if (dgMultiTimeframe.SelectedItem is not MultiTimeframeViewModel selectedItem) return;
+
+                ViewModel.SelectedSymbol = selectedItem;
+                await Task.Delay(500);
+
                 if (_symbolChartWindow == null || !_symbolChartWindow.IsVisible)
                 {
                     _symbolChartWindow = new SymbolChartWindow(ViewModel)

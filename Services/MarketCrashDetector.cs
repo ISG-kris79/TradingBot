@@ -122,7 +122,7 @@ namespace TradingBot.Services
         // [개별 코인 급등 감지] 전 종목 5분 가격 변동률 스캔
         // ═══════════════════════════════════════════════════════════════
 
-        public decimal SpikeThresholdPct { get; set; } = 2.0m;    // [v3.2.7] 1분 +2% → 급등
+        public decimal SpikeThresholdPct { get; set; } = 1.5m;    // [v3.2.15] 30초 ±1.5% → 급등/급락
         public decimal SpikeVolumeMinRatio { get; set; } = 2.0m;
 
         private readonly ConcurrentDictionary<string, decimal> _allPriceSnapshot = new();
@@ -145,8 +145,8 @@ namespace TradingBot.Services
                 return;
             }
 
-            // [v3.2.7] 5분 → 1분 간격
-            if ((now - _lastAllSnapshotTime).TotalSeconds < 60)
+            // [v3.2.15] 1분 → 30초 간격 (급등 빠른 감지)
+            if ((now - _lastAllSnapshotTime).TotalSeconds < 30)
                 return;
 
             foreach (var kvp in tickerCache)
