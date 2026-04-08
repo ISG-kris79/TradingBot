@@ -1046,30 +1046,7 @@ namespace TradingBot
                 // [removed] // [v3.2.14 removed] if (!TryParseDecimalInRange(txtPumpStairStep3Roe, "PUMP 계단식 구간3 ROE", 1m, 2000m, out decimal pumpStep3, out errorMessage))
                 // [removed] return false;
 
-                // [removed] if (!(pumpStep1 < pumpStep2 && pumpStep2 < pumpStep3))
-            {
-                // [v3.2.14 removed] txtPumpStairStep2Roe.Focus();
-                // [v3.2.14 removed] txtPumpStairStep2Roe.SelectAll();
-                // [removed] errorMessage = "PUMP 계단식 ROE는 구간1 < 구간2 < 구간3 순서여야 합니다.";
-                return false;
-            }
-
-                // [removed] // [v3.2.14 removed] if (!TryParseDecimalInRange(txtPumpStopWarnPct, "PUMP 손절거리 경고(%)", 0.01m, 50m, out decimal warnPct, out errorMessage))
-                // [removed] return false;
-
-                // [removed] // [v3.2.14 removed] if (!TryParseDecimalInRange(txtPumpStopBlockPct, "PUMP 손절거리 차단(%)", 0.01m, 50m, out decimal blockPct, out errorMessage))
-                // [removed] return false;
-
-                // [removed] if (blockPct <= warnPct)
-            {
-                // [v3.2.14 removed] txtPumpStopBlockPct.Focus();
-                // [v3.2.14 removed] txtPumpStopBlockPct.SelectAll();
-                // [removed] errorMessage = "PUMP 손절거리 차단값은 경고값보다 커야 합니다.";
-                return false;
-            }
-
-                // [v3.2.14 removed] if (!TryParseDecimalInRange(txtRisk, "리스크 비율(%)", 0.01m, 100m, out _, out errorMessage))
-                // [removed] return false;
+                // [v3.2.17] 제거된 검증 블록 정리 완료
 
             if (!TryParseIntInRange(txtGridLevels, "Grid Levels", 2, 200, out _, out errorMessage))
                 return false;
