@@ -72,8 +72,8 @@ namespace TradingBot
             new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private int _slotCooldownMinutes = 3; // $250/일 목표: 3분으로 단축 (빠른 재진입)
         
-        private const int SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 1000;
-        private const int MAJOR_SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 180;
+        private const int SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 2000;  // [v3.2.8] 1초→2초 (CPU 절감)
+        private const int MAJOR_SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 1000; // [v3.2.8] 180ms→1초
         private static readonly TimeSpan MainLoopInterval = TimeSpan.FromSeconds(1);
         private decimal _minEntryRiskRewardRatio = 1.20m; // [v3.2.3] 1.40→1.20: 폭락 후 반등 진입 기회 확보
         private bool _rrConfigMismatchWarned = false;
@@ -1941,17 +1941,20 @@ namespace TradingBot
                             OnStatusLog?.Invoke($"🎯 일일 $250 목표 달성! 금일 실현 손익: ${dailyPnl:N2}");
                         }
 
-                        // [A] 급등주 스캔 (알트코인 전체 대상)
-                        if (_pumpStrategy != null)
+                        // [A] 급등주 스캔 (10초 간격 — CPU 부하 절감)
+                        if (_pumpStrategy != null && (DateTime.Now - _lastPumpScanTime).TotalSeconds >= 10)
+                        {
+                            _lastPumpScanTime = DateTime.Now;
                             await _pumpStrategy.ExecuteScanAsync(_marketDataManager.TickerCache, _blacklistedSymbols, token);
+                        }
 
                         // [B] MACD 골든크로스/데드크로스 스캔 (메이저 코인 대상)
                         if (_macdCrossService != null)
                             await ScanMacdGoldenCrossAsync(token);
 
-                        // [C] 15분봉 위꼬리 음봉 스캔 → 1분봉 리테스트 SHORT
-                        if (_macdCrossService != null)
-                            await Scan15mBearishTailAsync(token);
+                        // [C] 15분봉 위꼬리 음봉 스캔 → 백그라운드 (블로킹 5분 방지)
+                        if (_macdCrossService != null && (DateTime.Now - _last15mTailScanTime).TotalMinutes >= 1)
+                            _ = Task.Run(() => Scan15mBearishTailAsync(token));
 
                         if ((DateTime.Now - _lastHeartbeatTime).TotalHours >= 1)
                         {
@@ -5614,6 +5617,7 @@ namespace TradingBot
         // [MACD 골든크로스] 메이저 코인 1분봉 MACD 스캔
         // ═══════════════════════════════════════════════════════════════
 
+        private DateTime _lastPumpScanTime = DateTime.MinValue;
         private DateTime _lastMacdScanTime = DateTime.MinValue;
 
         private async Task ScanMacdGoldenCrossAsync(CancellationToken token)
