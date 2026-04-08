@@ -122,58 +122,52 @@ namespace TradingBot.Services
         // [개별 코인 급등 감지] 전 종목 5분 가격 변동률 스캔
         // ═══════════════════════════════════════════════════════════════
 
-        public decimal SpikeThresholdPct { get; set; } = 3.0m;    // 5분 +3% → 급등
-        public decimal SpikeVolumeMinRatio { get; set; } = 2.0m;  // 거래량 2x 이상
+        public decimal SpikeThresholdPct { get; set; } = 2.0m;    // [v3.2.7] 1분 +2% → 급등
+        public decimal SpikeVolumeMinRatio { get; set; } = 2.0m;
 
         private readonly ConcurrentDictionary<string, decimal> _allPriceSnapshot = new();
         private DateTime _lastAllSnapshotTime = DateTime.MinValue;
         private readonly ConcurrentDictionary<string, DateTime> _spikeCooldown = new();
 
-        /// <summary>급등 코인 발견 이벤트: (symbol, changePct, currentPrice)</summary>
+        /// <summary>급등/급락 코인 발견 이벤트: (symbol, changePct, currentPrice)</summary>
         public event Action<string, decimal, decimal>? OnSpikeDetected;
 
-        private static readonly HashSet<string> MajorExclusion = new(StringComparer.OrdinalIgnoreCase)
-            { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
-
-        /// <summary>전 종목 5분 가격 변동률 스캔 (TickerCache 업데이트마다 호출)</summary>
+        /// <summary>[v3.2.7] 전 종목(메이저 포함) 1분 가격 변동률 스캔</summary>
         public void CheckSpikeDetection(ConcurrentDictionary<string, TickerCacheItem> tickerCache)
         {
             if (!Enabled) return;
 
             var now = DateTime.Now;
 
-            // 첫 스냅샷
             if (_lastAllSnapshotTime == DateTime.MinValue)
             {
                 TakeAllSnapshot(tickerCache);
                 return;
             }
 
-            // 5분 미만이면 스킵
-            if ((now - _lastAllSnapshotTime).TotalMinutes < 5)
+            // [v3.2.7] 5분 → 1분 간격
+            if ((now - _lastAllSnapshotTime).TotalSeconds < 60)
                 return;
 
             foreach (var kvp in tickerCache)
             {
                 string sym = kvp.Value.Symbol ?? kvp.Key;
                 if (string.IsNullOrWhiteSpace(sym) || !sym.EndsWith("USDT")) continue;
-                if (MajorExclusion.Contains(sym)) continue;
+                // [v3.2.7] 메이저 제외 제거 — 전 종목 대상
 
-                // 쿨다운 (같은 코인 30분간 중복 방지)
                 if (_spikeCooldown.TryGetValue(sym, out var cd) && now < cd) continue;
-
                 if (!_allPriceSnapshot.TryGetValue(sym, out var prevPrice) || prevPrice <= 0) continue;
                 if (kvp.Value.LastPrice <= 0) continue;
 
                 decimal changePct = (kvp.Value.LastPrice - prevPrice) / prevPrice * 100m;
 
-                // 거래량 체크: QuoteVolume이 일정 이상 (너무 소량 코인 제외)
-                if (kvp.Value.QuoteVolume < 1_000_000m) continue; // 최소 $1M 거래량
+                if (kvp.Value.QuoteVolume < 500_000m) continue; // [v3.2.7] $1M → $500K
 
-                if (changePct >= SpikeThresholdPct)
+                if (changePct >= SpikeThresholdPct || changePct <= -SpikeThresholdPct)
                 {
-                    _spikeCooldown[sym] = now.AddMinutes(30);
-                    OnLog?.Invoke($"⚡ [급등 감지] {sym} +{changePct:F2}% (5분) | 가격: {kvp.Value.LastPrice}");
+                    _spikeCooldown[sym] = now.AddMinutes(15); // [v3.2.7] 30분 → 15분
+                    string direction = changePct > 0 ? "급등" : "급락";
+                    OnLog?.Invoke($"⚡ [{direction} 감지] {sym} {changePct:+0.00;-0.00}% (1분) | 가격: {kvp.Value.LastPrice}");
                     OnSpikeDetected?.Invoke(sym, changePct, kvp.Value.LastPrice);
                 }
             }

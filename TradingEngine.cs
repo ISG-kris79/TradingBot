@@ -6037,28 +6037,30 @@ namespace TradingBot
         }
 
         /// <summary>개별 코인 급등 감지 → 즉시 PUMP 진입 시도 (PumpScan 스킵)</summary>
+        /// <summary>[v3.2.7] 급등/급락 감지 → AI 판단 후 진입</summary>
         private async Task HandleSpikeDetectedAsync(string symbol, decimal changePct, decimal currentPrice)
         {
             var token = _cts?.Token ?? CancellationToken.None;
 
-            // 이미 보유 중이면 스킵
             lock (_posLock)
             {
                 if (_activePositions.ContainsKey(symbol)) return;
             }
 
-            // 블랙리스트 체크
             if (_blacklistedSymbols.TryGetValue(symbol, out var expiry) && DateTime.Now < expiry)
                 return;
 
-            OnAlert?.Invoke($"⚡ [급등 진입] {symbol} +{changePct:F1}% (5분) → PUMP LONG 시도");
+            string direction = changePct > 0 ? "LONG" : "SHORT";
+            string label = changePct > 0 ? "급등" : "급락";
+
+            OnAlert?.Invoke($"⚡ [{label} 감지] {symbol} {changePct:+0.0;-0.0}% (1분) → {direction} 시도");
 
             _ = Task.Run(async () =>
             {
                 try
                 {
                     await TelegramService.Instance.SendMessageAsync(
-                        $"⚡ *[급등 감지 진입]*\n`{symbol}` +{changePct:F1}% (5분)\n가격: `{currentPrice}`\n⏰ {DateTime.Now:HH:mm:ss}",
+                        $"⚡ *[{label} 감지]*\n`{symbol}` {changePct:+0.0;-0.0}% (1분)\n가격: `{currentPrice}`\n⏰ {DateTime.Now:HH:mm:ss}",
                         TelegramMessageType.Entry);
                 }
                 catch { }
@@ -6066,11 +6068,11 @@ namespace TradingBot
 
             try
             {
-                await ExecuteAutoOrder(symbol, "LONG", currentPrice, token, "SPIKE_DETECT");
+                await ExecuteAutoOrder(symbol, direction, currentPrice, token, "SPIKE_DETECT");
             }
             catch (Exception ex)
             {
-                OnStatusLog?.Invoke($"⚠️ [급등 진입] {symbol} 실패: {ex.Message}");
+                OnStatusLog?.Invoke($"⚠️ [{label} 진입] {symbol} 실패: {ex.Message}");
             }
         }
 

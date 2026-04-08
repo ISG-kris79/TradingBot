@@ -88,74 +88,38 @@ namespace TradingBot.Strategies
                 double dropFromHighPct = recentHigh > 0 ? (double)((recentHigh - currentPrice) / recentHigh * 100) : 0;
                 bool isStrongDrop = dropFromHighPct >= 3.0; // 1시간 고점 대비 -3% 하락
 
-                int aiScore = CalculateScore(
-                    rsi,
-                    bb,
-                    currentPrice,
-                    isUptrend,
-                    macd,
-                    fib,
-                    sma20,
-                    sma50,
-                    sma60,
-                    sma120,
-                    volumeMomentum,
-                    isMakingHigherLows,
-                    allowLowVolumeTrendBypass,
-                    profile);
-
-                // [야수 모드] 피보나치 0.618~0.786 황금 반등 구간 가점
+                // [v3.2.7] AI 최우선 진입: 규칙 기반 점수는 참고용, 방향은 모멘텀으로 판단 → AI가 최종 결정
+                int aiScore = CalculateScore(rsi, bb, currentPrice, isUptrend, macd, fib,
+                    sma20, sma50, sma60, sma120, volumeMomentum, isMakingHigherLows,
+                    allowLowVolumeTrendBypass, profile);
                 double fibBonus = CalculateFibScore(list, currentPrice);
-                if (fibBonus > 0)
-                {
-                    aiScore = Math.Clamp(aiScore + (int)fibBonus, 0, 100);
-                }
+                if (fibBonus > 0) aiScore = Math.Clamp(aiScore + (int)fibBonus, 0, 100);
 
-                // [v3.2.3] 가격 모멘텀 가점 — SMA 역배열이어도 실제 반등/하락 중이면 보정
-                if (isPriceRecovering) aiScore = Math.Clamp(aiScore + 15, 0, 100);
-                if (isStrongBounce) aiScore = Math.Clamp(aiScore + 10, 0, 100);
+                // 방향 판단: 모멘텀 + 구조 종합 (AI에 위임할 방향 결정)
+                int bullishSignals = 0;
+                int bearishSignals = 0;
 
-                // [v3.2.4] 하락 모멘텀 감점 — SHORT 시그널 강화
-                int shortBearishScore = 50; // SHORT용 별도 점수 (50 기반)
-                if (!isUptrend) shortBearishScore += 10;
-                if (macd.Hist < 0) shortBearishScore += 10;
-                if (currentPrice < (decimal)sma20) shortBearishScore += 10;
-                if (currentPrice < (decimal)fib.Level618) shortBearishScore += 5;
-                if (isMakingLowerHighs) shortBearishScore += 15; // 계단식 하락 강한 가점
-                if (isPriceDropping) shortBearishScore += 15;    // 30분 -1.5% 하락 모멘텀
-                if (isStrongDrop) shortBearishScore += 10;       // 1시간 고점 -3%
-                if (volumeRatio >= 1.10) shortBearishScore += 5;
+                // 모멘텀 기반 (즉각 반응)
+                if (isPriceRecovering) bullishSignals += 2;
+                if (isStrongBounce) bullishSignals += 2;
+                if (isPriceDropping) bearishSignals += 2;
+                if (isStrongDrop) bearishSignals += 2;
 
-                // [v3.2.3] 24시간 동일 기준
-                int longThreshold = CalculateDynamicThreshold(volumeMomentum, isMakingHigherLows, profile);
-                int shortThreshold = 60; // SHORT도 동일 기준 60점
+                // 구조 기반 (추세 확인)
+                if (isUptrend) bullishSignals++;
+                if (isMakingHigherLows) bullishSignals++;
+                if (currentPrice > (decimal)sma20) bullishSignals++;
+                if (macd.Hist > 0) bullishSignals++;
+                if (!isUptrend) bearishSignals++;
+                if (isMakingLowerHighs) bearishSignals++;
+                if (currentPrice < (decimal)sma20) bearishSignals++;
+                if (macd.Hist < 0) bearishSignals++;
 
                 string decision = "WAIT";
-                if (aiScore >= longThreshold)
-                {
-                    // [v3.2.3] bullishStructure 완화
-                    bool bullishStructure = isUptrend
-                        || (isMakingHigherLows && currentPrice > (decimal)sma20)
-                        || isPriceRecovering
-                        || isStrongBounce;
-                    bool longConfirm = bullishStructure &&
-                        (macd.Hist >= -0.01 || isPriceRecovering) &&
-                        (volumeMomentum >= profile.LongConfirmVolumeMin || allowLowVolumeTrendBypass || isPriceRecovering);
-                    if (longConfirm) decision = "LONG";
-                }
-
-                // [v3.2.4] SHORT: 별도 점수 체계로 독립 판단 (LONG 판단과 else if 아님)
-                if (decision == "WAIT" && shortBearishScore >= shortThreshold)
-                {
-                    bool bearishStructure = !isUptrend
-                        || isMakingLowerHighs
-                        || isPriceDropping
-                        || isStrongDrop;
-                    bool shortConfirm = bearishStructure
-                        && currentPrice < (decimal)sma20 // 가격 < SMA20 필수
-                        && (macd.Hist <= 0.01 || isPriceDropping);
-                    if (shortConfirm) decision = "SHORT";
-                }
+                if (bullishSignals >= 3 && bullishSignals > bearishSignals)
+                    decision = "LONG";
+                else if (bearishSignals >= 3 && bearishSignals > bullishSignals)
+                    decision = "SHORT";
 
                 try
                 {
@@ -239,27 +203,7 @@ namespace TradingBot.Strategies
                 string reason = "";
                 if (decision == "WAIT")
                 {
-                    var reasons = new List<string>();
-                    if (volumeMomentum < 1.00 && !allowLowVolumeTrendBypass) reasons.Add("거래량 부족");
-                    if (!isUptrend && !isMakingHigherLows) reasons.Add("2파 횡보장 인식");
-                    if (aiScore < longThreshold && aiScore > shortThreshold) reasons.Add("스코어 불충분");
-
-                    if (reasons.Any())
-                        reason = $"holdReason={string.Join("/", reasons)}";
-                }
-
-                // [v3.2.5] AI 최우선 진입: 규칙 WAIT이어도 모멘텀이 강하면 AI에 위임
-                if (decision == "WAIT" && (isPriceRecovering || isStrongBounce))
-                {
-                    decision = "LONG";
-                    decisionKr = "LONG";
-                    OnLog?.Invoke($"🧠 [{symbol}] 규칙 WAIT이지만 모멘텀 반등 감지 → AI 위임 (30m={priceRecoveryPct:+0.0}%, bounce={bounceFromLowPct:+0.0}%)");
-                }
-                if (decision == "WAIT" && (isPriceDropping || isStrongDrop))
-                {
-                    decision = "SHORT";
-                    decisionKr = "SHORT";
-                    OnLog?.Invoke($"🧠 [{symbol}] 규칙 WAIT이지만 하락 모멘텀 감지 → AI 위임 (30m={priceDropPct:+0.0}%, drop={dropFromHighPct:+0.0}%)");
+                    reason = $"holdReason=bull{bullishSignals}/bear{bearishSignals}(3개미만)";
                 }
 
                 if (decision == "WAIT")
@@ -268,9 +212,8 @@ namespace TradingBot.Strategies
                 }
                 else
                 {
-                    int targetThreshold = decision == "LONG" ? longThreshold : shortThreshold;
                     string holdReasonStr = string.IsNullOrWhiteSpace(reason) ? "" : $" | {reason}";
-                    OnLog?.Invoke($"📊 [{symbol}] {decisionKr} 진입 후보 포착 | 가격 ${currentPrice:F2} | 점수 {aiScore}/{targetThreshold} | RSI {rsi:F1} | Vol {volumeMomentum:F2}x | {aiFilterInfo}{holdReasonStr}");
+                    OnLog?.Invoke($"📊 [{symbol}] {decisionKr} → AI 판단 요청 | 가격 ${currentPrice:F2} | bull={bullishSignals} bear={bearishSignals} | RSI {rsi:F1} | Vol {volumeMomentum:F2}x{holdReasonStr}");
 
                     try
                     {
