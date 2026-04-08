@@ -1616,7 +1616,7 @@
                                                 <ColumnDefinition Width="2*"/>
                                             </Grid.ColumnDefinitions>
 
-                                            <!-- FAST LOG (ListBox 스크롤) -->
+                                            <!-- FAST LOG (8줄 고정) -->
                                             <Border Grid.Column="0"
                                                     Background="#0D1117"
                                                     BorderBrush="#1E3A5F"
@@ -1624,7 +1624,7 @@
                                                     CornerRadius="6"
                                                     Padding="6,4"
                                                     Margin="0,0,4,0"
-                                                    MinHeight="120">
+                                                    Height="150">
                                                 <Grid>
                                                     <Grid.RowDefinitions>
                                                         <RowDefinition Height="Auto"/>
@@ -1652,7 +1652,7 @@
                                                 </Grid>
                                             </Border>
 
-                                            <!-- Critical Alerts (ListBox 스크롤 + 색상) -->
+                                            <!-- Critical Alerts (8줄 고정) -->
                                             <Border Grid.Column="1"
                                                     Background="#1A0A0A"
                                                     BorderBrush="#5F1E1E"
@@ -1660,7 +1660,7 @@
                                                     CornerRadius="6"
                                                     Padding="6,4"
                                                     Margin="4,0,0,0"
-                                                    MinHeight="120">
+                                                    Height="150">
                                                 <Grid>
                                                     <Grid.RowDefinitions>
                                                         <RowDefinition Height="Auto"/>
