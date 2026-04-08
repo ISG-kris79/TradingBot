@@ -1072,18 +1072,6 @@
                                       Margin="0,0,16,0">
                             <StackPanel>
 
-                            <!-- FAST LOG (좌측 상단, v3.2.12) -->
-                            <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8" MinHeight="100">
-                                <StackPanel>
-                                    <TextBlock Text="📡 FAST LOG (실시간)" Foreground="{StaticResource PrimaryBrush}" FontSize="10" FontWeight="Bold" Margin="0,0,0,4"/>
-                                    <TextBlock Text="{Binding BattleFastLog1}" Foreground="#E2E8F0" FontSize="10" FontFamily="Consolas" TextWrapping="Wrap"/>
-                                    <TextBlock Text="{Binding BattleFastLog2}" Foreground="#B0BEC5" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                    <TextBlock Text="{Binding BattleFastLog3}" Foreground="#78909C" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                    <TextBlock Text="{Binding BattleFastLog4}" Foreground="#546E7A" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                    <TextBlock Text="{Binding BattleFastLog5}" Foreground="#37474F" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                </StackPanel>
-                            </Border>
-
                             <!-- Entry Gate Card (컴팩트) -->
                             <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
                                 <StackPanel>
@@ -1673,6 +1661,24 @@
                                             </Grid>
                                         </Border>
                                     </Grid>
+                                </Border>
+
+                                <!-- FAST LOG (좌측 맨 아래, v3.2.14) -->
+                                <Border Background="{StaticResource BackgroundMediumBrush}"
+                                        BorderBrush="{StaticResource BackgroundLightBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        Padding="10"
+                                        Margin="0,8,16,0"
+                                        MinHeight="120">
+                                    <StackPanel>
+                                        <TextBlock Text="📡 FAST LOG (실시간)" Foreground="{StaticResource PrimaryBrush}" FontSize="10" FontWeight="Bold" Margin="0,0,0,4"/>
+                                        <TextBlock Text="{Binding BattleFastLog1}" Foreground="#E2E8F0" FontSize="10" FontFamily="Consolas" TextWrapping="Wrap"/>
+                                        <TextBlock Text="{Binding BattleFastLog2}" Foreground="#B0BEC5" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                        <TextBlock Text="{Binding BattleFastLog3}" Foreground="#78909C" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                        <TextBlock Text="{Binding BattleFastLog4}" Foreground="#546E7A" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                        <TextBlock Text="{Binding BattleFastLog5}" Foreground="#37474F" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                    </StackPanel>
                                 </Border>
 
                                 <!-- Right Panel: Live Events + Profit Goal + Execution Stepper -->

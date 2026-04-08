@@ -333,45 +333,41 @@ namespace TradingBot
                     // DB에서 로드한 설정으로 UI 업데이트
                     txtDefaultMargin.Text = dbSettings.DefaultMargin.ToString("F4");
                     txtLeverage.Text = dbSettings.DefaultLeverage.ToString();
-                    txtTargetRoe.Text = dbSettings.TargetRoe.ToString("F4");
-                    txtStopLossRoe.Text = dbSettings.StopLossRoe.ToString("F4");
-                    txtPumpTp1Roe.Text = dbSettings.PumpTp1Roe.ToString("F4");
-                    txtPumpTp2Roe.Text = dbSettings.PumpTp2Roe.ToString("F4");
-                    txtPumpTimeStopMinutes.Text = dbSettings.PumpTimeStopMinutes.ToString("F2");
-                    txtPumpStopWarnPct.Text = dbSettings.PumpStopDistanceWarnPct.ToString("F3");
-                    txtPumpStopBlockPct.Text = dbSettings.PumpStopDistanceBlockPct.ToString("F3");
+                // [v3.2.14 removed] txtTargetRoe.Text = dbSettings.TargetRoe.ToString("F4");
+                // [v3.2.14 removed] txtStopLossRoe.Text = dbSettings.StopLossRoe.ToString("F4");
+                // [v3.2.14 removed] txtPumpTp1Roe.Text = dbSettings.PumpTp1Roe.ToString("F4");
+                // [v3.2.14 removed] txtPumpTp2Roe.Text = dbSettings.PumpTp2Roe.ToString("F4");
+                // [v3.2.14 removed] txtPumpTimeStopMinutes.Text = dbSettings.PumpTimeStopMinutes.ToString("F2");
+                // [v3.2.14 removed] txtPumpStopWarnPct.Text = dbSettings.PumpStopDistanceWarnPct.ToString("F3");
+                // [v3.2.14 removed] txtPumpStopBlockPct.Text = dbSettings.PumpStopDistanceBlockPct.ToString("F3");
                     // [메이저/PUMP 완전 분리] PUMP 추가 설정
-                    txtPumpLeverage.Text = dbSettings.PumpLeverage.ToString();
-                    txtPumpMargin.Text = dbSettings.PumpMargin.ToString("F2");
-                    txtPumpBreakEvenRoe.Text = dbSettings.PumpBreakEvenRoe.ToString("F2");
-                    txtPumpTrailingStartRoe.Text = dbSettings.PumpTrailingStartRoe.ToString("F2");
-                    txtPumpTrailingGapRoe.Text = dbSettings.PumpTrailingGapRoe.ToString("F2");
-                    txtPumpStopLossRoe.Text = dbSettings.PumpStopLossRoe.ToString("F2");
-                    txtPumpFirstTakeProfitRatioPct.Text = dbSettings.PumpFirstTakeProfitRatioPct.ToString("F2");
-                    txtPumpStairStep1Roe.Text = dbSettings.PumpStairStep1Roe.ToString("F2");
-                    txtPumpStairStep2Roe.Text = dbSettings.PumpStairStep2Roe.ToString("F2");
-                    txtPumpStairStep3Roe.Text = dbSettings.PumpStairStep3Roe.ToString("F2");
+                // [v3.2.14 removed] txtPumpLeverage.Text = dbSettings.PumpLeverage.ToString();
+                // [v3.2.14 removed] txtPumpMargin.Text = dbSettings.PumpMargin.ToString("F2");
+                // [v3.2.14 removed] txtPumpBreakEvenRoe.Text = dbSettings.PumpBreakEvenRoe.ToString("F2");
+                // [v3.2.14 removed] txtPumpTrailingStartRoe.Text = dbSettings.PumpTrailingStartRoe.ToString("F2");
+                // [v3.2.14 removed] txtPumpTrailingGapRoe.Text = dbSettings.PumpTrailingGapRoe.ToString("F2");
+                // [v3.2.14 removed] txtPumpStopLossRoe.Text = dbSettings.PumpStopLossRoe.ToString("F2");
+                // [v3.2.14 removed] txtPumpFirstTakeProfitRatioPct.Text = dbSettings.PumpFirstTakeProfitRatioPct.ToString("F2");
+                // [v3.2.14 removed] txtPumpStairStep1Roe.Text = dbSettings.PumpStairStep1Roe.ToString("F2");
+                // [v3.2.14 removed] txtPumpStairStep2Roe.Text = dbSettings.PumpStairStep2Roe.ToString("F2");
+                // [v3.2.14 removed] txtPumpStairStep3Roe.Text = dbSettings.PumpStairStep3Roe.ToString("F2");
                     // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정
-                    txtMajorLeverage.Text = dbSettings.MajorLeverage.ToString();
-                    txtMajorMargin.Text = dbSettings.MajorMarginPercent > 0
-                        ? dbSettings.MajorMarginPercent.ToString("F2")
-                        : "10.00";
-                    txtMajorBreakEvenRoe.Text = dbSettings.MajorBreakEvenRoe.ToString("F2");
-                    txtMajorTp1Roe.Text = dbSettings.MajorTp1Roe.ToString("F2");
-                    txtMajorTp2Roe.Text = dbSettings.MajorTp2Roe.ToString("F2");
-                    txtMajorTrailingStartRoe.Text = dbSettings.MajorTrailingStartRoe.ToString("F2");
-                    txtMajorTrailingGapRoe.Text = dbSettings.MajorTrailingGapRoe.ToString("F2");
-                    txtMajorStopLossRoe.Text = dbSettings.MajorStopLossRoe.ToString("F2");
-
-                    // 급변 감지 설정
-                    chkCrashDetectorEnabled.IsChecked = dbSettings.CrashDetectorEnabled;
-                    txtCrashThreshold.Text = dbSettings.CrashThresholdPct.ToString("F1");
-                    txtPumpDetectThreshold.Text = dbSettings.PumpDetectThresholdPct.ToString("F1");
-                    txtCrashMinCoinCount.Text = dbSettings.CrashMinCoinCount.ToString();
-                    txtCrashReverseSize.Text = (dbSettings.CrashReverseSizeRatio * 100).ToString("F0");
-                    txtCrashCooldown.Text = dbSettings.CrashCooldownSeconds.ToString();
-
-                    if (!string.IsNullOrWhiteSpace(dbSettings.MajorTrendProfile))
+                // [v3.2.14 removed] txtMajorLeverage.Text = dbSettings.MajorLeverage.ToString();
+                // [v3.2.14 removed] txtMajorMargin — 제거됨
+                // [v3.2.14 removed] txtMajorBreakEvenRoe.Text = dbSettings.MajorBreakEvenRoe.ToString("F2");
+                // [v3.2.14 removed] txtMajorTp1Roe.Text = dbSettings.MajorTp1Roe.ToString("F2");
+                // [v3.2.14 removed] txtMajorTp2Roe.Text = dbSettings.MajorTp2Roe.ToString("F2");
+                // [v3.2.14 removed] txtMajorTrailingStartRoe.Text = dbSettings.MajorTrailingStartRoe.ToString("F2");
+                // [v3.2.14 removed] txtMajorTrailingGapRoe.Text = dbSettings.MajorTrailingGapRoe.ToString("F2");
+                // [v3.2.14 removed] txtMajorStopLossRoe.Text = dbSettings.MajorStopLossRoe.ToString("F2");
+                // [removed]                     // 급변 감지 설정
+                // [v3.2.14 removed] chkCrashDetectorEnabled.IsChecked = dbSettings.CrashDetectorEnabled;
+                // [v3.2.14 removed] txtCrashThreshold.Text = dbSettings.CrashThresholdPct.ToString("F1");
+                // [v3.2.14 removed] txtPumpDetectThreshold.Text = dbSettings.PumpDetectThresholdPct.ToString("F1");
+                // [v3.2.14 removed] txtCrashMinCoinCount.Text = dbSettings.CrashMinCoinCount.ToString();
+                // [v3.2.14 removed] txtCrashReverseSize.Text = (dbSettings.CrashReverseSizeRatio * 100).ToString("F0");
+                // [v3.2.14 removed] txtCrashCooldown.Text = dbSettings.CrashCooldownSeconds.ToString();
+                // [removed]                     if (!string.IsNullOrWhiteSpace(dbSettings.MajorTrendProfile))
                     {
                         SelectMajorTrendProfile(dbSettings.MajorTrendProfile);
                     }
@@ -411,48 +407,43 @@ namespace TradingBot
                         {
                             txtDefaultMargin.Text = generalNode["DefaultMargin"]?.ToString() ?? "200.0";
                             txtLeverage.Text = generalNode["DefaultLeverage"]?.ToString() ?? "10";
-                            txtTargetRoe.Text = generalNode["TargetRoe"]?.ToString() ?? "20.0";
-                            txtStopLossRoe.Text = generalNode["StopLossRoe"]?.ToString() ?? "15.0";
-                            SelectMajorTrendProfile(generalNode["MajorTrendProfile"]?.ToString());
-                            txtPumpTp1Roe.Text = generalNode["PumpTp1Roe"]?.ToString() ?? "25.0";
-                            txtPumpTp2Roe.Text = generalNode["PumpTp2Roe"]?.ToString() ?? "50.0";
-                            txtPumpTimeStopMinutes.Text = generalNode["PumpTimeStopMinutes"]?.ToString() ?? "15.0";
-                            txtPumpStopWarnPct.Text = generalNode["PumpStopDistanceWarnPct"]?.ToString() ?? "1.0";
-                            txtPumpStopBlockPct.Text = generalNode["PumpStopDistanceBlockPct"]?.ToString() ?? "1.3";
+                // [v3.2.14 removed] txtTargetRoe.Text = generalNode["TargetRoe"]?.ToString() ?? "20.0";
+                // [v3.2.14 removed] txtStopLossRoe.Text = generalNode["StopLossRoe"]?.ToString() ?? "15.0";
+                // [removed] SelectMajorTrendProfile(generalNode["MajorTrendProfile"]?.ToString());
+                // [v3.2.14 removed] txtPumpTp1Roe.Text = generalNode["PumpTp1Roe"]?.ToString() ?? "25.0";
+                // [v3.2.14 removed] txtPumpTp2Roe.Text = generalNode["PumpTp2Roe"]?.ToString() ?? "50.0";
+                // [v3.2.14 removed] txtPumpTimeStopMinutes.Text = generalNode["PumpTimeStopMinutes"]?.ToString() ?? "15.0";
+                // [v3.2.14 removed] txtPumpStopWarnPct.Text = generalNode["PumpStopDistanceWarnPct"]?.ToString() ?? "1.0";
+                // [v3.2.14 removed] txtPumpStopBlockPct.Text = generalNode["PumpStopDistanceBlockPct"]?.ToString() ?? "1.3";
                             // [메이저/PUMP 완전 분리] PUMP 추가 설정
-                            txtPumpLeverage.Text = generalNode["PumpLeverage"]?.ToString() ?? "20";
-                            txtPumpMargin.Text = generalNode["PumpMargin"]?.ToString() ?? "200.0";
-                            txtPumpBreakEvenRoe.Text = generalNode["PumpBreakEvenRoe"]?.ToString() ?? "20.0";
-                            txtPumpTrailingStartRoe.Text = generalNode["PumpTrailingStartRoe"]?.ToString() ?? "40.0";
-                            txtPumpTrailingGapRoe.Text = generalNode["PumpTrailingGapRoe"]?.ToString() ?? "20.0";
-                            txtPumpStopLossRoe.Text = generalNode["PumpStopLossRoe"]?.ToString() ?? "60.0";
-                            txtPumpFirstTakeProfitRatioPct.Text = generalNode["PumpFirstTakeProfitRatioPct"]?.ToString() ?? "15.0";
-                            txtPumpStairStep1Roe.Text = generalNode["PumpStairStep1Roe"]?.ToString() ?? "50.0";
-                            txtPumpStairStep2Roe.Text = generalNode["PumpStairStep2Roe"]?.ToString() ?? "100.0";
-                            txtPumpStairStep3Roe.Text = generalNode["PumpStairStep3Roe"]?.ToString() ?? "200.0";
+                // [v3.2.14 removed] txtPumpLeverage.Text = generalNode["PumpLeverage"]?.ToString() ?? "20";
+                // [v3.2.14 removed] txtPumpMargin.Text = generalNode["PumpMargin"]?.ToString() ?? "200.0";
+                // [v3.2.14 removed] txtPumpBreakEvenRoe.Text = generalNode["PumpBreakEvenRoe"]?.ToString() ?? "20.0";
+                // [v3.2.14 removed] txtPumpTrailingStartRoe.Text = generalNode["PumpTrailingStartRoe"]?.ToString() ?? "40.0";
+                // [v3.2.14 removed] txtPumpTrailingGapRoe.Text = generalNode["PumpTrailingGapRoe"]?.ToString() ?? "20.0";
+                // [v3.2.14 removed] txtPumpStopLossRoe.Text = generalNode["PumpStopLossRoe"]?.ToString() ?? "60.0";
+                // [v3.2.14 removed] txtPumpFirstTakeProfitRatioPct.Text = generalNode["PumpFirstTakeProfitRatioPct"]?.ToString() ?? "15.0";
+                // [v3.2.14 removed] txtPumpStairStep1Roe.Text = generalNode["PumpStairStep1Roe"]?.ToString() ?? "50.0";
+                // [v3.2.14 removed] txtPumpStairStep2Roe.Text = generalNode["PumpStairStep2Roe"]?.ToString() ?? "100.0";
+                // [v3.2.14 removed] txtPumpStairStep3Roe.Text = generalNode["PumpStairStep3Roe"]?.ToString() ?? "200.0";
                             // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정
-                            txtMajorLeverage.Text = generalNode["MajorLeverage"]?.ToString() ?? "20";
-                            txtMajorMargin.Text = generalNode["MajorMarginPercent"]?.ToString()
-                                ?? generalNode["MajorMargin"]?.ToString()
-                                ?? "10.0";
-                            txtMajorBreakEvenRoe.Text = generalNode["MajorBreakEvenRoe"]?.ToString() ?? "7.0";
-                            txtMajorTp1Roe.Text = generalNode["MajorTp1Roe"]?.ToString() ?? "20.0";
-                            txtMajorTp2Roe.Text = generalNode["MajorTp2Roe"]?.ToString() ?? "40.0";
-                            txtMajorTrailingStartRoe.Text = generalNode["MajorTrailingStartRoe"]?.ToString() ?? "40.0";
-                            txtMajorTrailingGapRoe.Text = generalNode["MajorTrailingGapRoe"]?.ToString() ?? "5.0";
-                            txtMajorStopLossRoe.Text = generalNode["MajorStopLossRoe"]?.ToString() ?? "20.0";
-
-                            // 급변 감지 설정
-                            chkCrashDetectorEnabled.IsChecked = generalNode["CrashDetectorEnabled"]?.GetValue<bool?>() ?? true;
-                            txtCrashThreshold.Text = generalNode["CrashThresholdPct"]?.ToString() ?? "-1.5";
-                            txtPumpDetectThreshold.Text = generalNode["PumpDetectThresholdPct"]?.ToString() ?? "1.5";
-                            txtCrashMinCoinCount.Text = generalNode["CrashMinCoinCount"]?.ToString() ?? "2";
-                            var reverseRatio = generalNode["CrashReverseSizeRatio"]?.GetValue<decimal?>() ?? 0.5m;
-                            txtCrashReverseSize.Text = (reverseRatio * 100).ToString("F0");
-                            txtCrashCooldown.Text = generalNode["CrashCooldownSeconds"]?.ToString() ?? "120";
+                // [v3.2.14 removed] txtMajorLeverage.Text = generalNode["MajorLeverage"]?.ToString() ?? "20";
+                // [v3.2.14 removed] txtMajorMargin — 제거됨
+                // [v3.2.14 removed] txtMajorBreakEvenRoe.Text = generalNode["MajorBreakEvenRoe"]?.ToString() ?? "7.0";
+                // [v3.2.14 removed] txtMajorTp1Roe.Text = generalNode["MajorTp1Roe"]?.ToString() ?? "20.0";
+                // [v3.2.14 removed] txtMajorTp2Roe.Text = generalNode["MajorTp2Roe"]?.ToString() ?? "40.0";
+                // [v3.2.14 removed] txtMajorTrailingStartRoe.Text = generalNode["MajorTrailingStartRoe"]?.ToString() ?? "40.0";
+                // [v3.2.14 removed] txtMajorTrailingGapRoe.Text = generalNode["MajorTrailingGapRoe"]?.ToString() ?? "5.0";
+                // [v3.2.14 removed] txtMajorStopLossRoe.Text = generalNode["MajorStopLossRoe"]?.ToString() ?? "20.0";
+                // [removed]                             // 급변 감지 설정
+                // [v3.2.14 removed] chkCrashDetectorEnabled.IsChecked = generalNode["CrashDetectorEnabled"]?.GetValue<bool?>() ?? true;
+                // [v3.2.14 removed] txtCrashThreshold.Text = generalNode["CrashThresholdPct"]?.ToString() ?? "-1.5";
+                // [v3.2.14 removed] txtPumpDetectThreshold.Text = generalNode["PumpDetectThresholdPct"]?.ToString() ?? "1.5";
+                // [v3.2.14 removed] txtCrashMinCoinCount.Text = generalNode["CrashMinCoinCount"]?.ToString() ?? "2";
+                // [removed] var reverseRatio = generalNode["CrashReverseSizeRatio"]?.GetValue<decimal?>() ?? 0.5m;
+                // [v3.2.14 removed] txtCrashReverseSize.Text = (reverseRatio * 100).ToString("F0");
+                // [v3.2.14 removed] txtCrashCooldown.Text = generalNode["CrashCooldownSeconds"]?.ToString() ?? "120";
                         }
-
-                        txtRisk.Text = tradingNode["RiskPercentage"]?.ToString() ?? "1.0";
 
                         // 시뮬레이션 모드 로드
                         bool isSimulation = tradingNode["IsSimulationMode"]?.GetValue<bool>() ?? false;
@@ -583,192 +574,191 @@ namespace TradingBot
                     generalSettings.DefaultLeverage = leverage;
                 }
 
-                if (decimal.TryParse(txtTargetRoe.Text, out decimal targetRoe))
-                {
-                    generalNode["TargetRoe"] = targetRoe;
-                    generalSettings.TargetRoe = targetRoe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtTargetRoe.Text, out decimal targetRoe))
+                // [removed] {
+                // [removed] generalNode["TargetRoe"] = targetRoe;
+                // [removed] generalSettings.TargetRoe = targetRoe;
+                // [removed] }
 
-                if (decimal.TryParse(txtStopLossRoe.Text, out decimal stopLossRoe))
-                {
-                    generalNode["StopLossRoe"] = stopLossRoe;
-                    generalSettings.StopLossRoe = stopLossRoe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtStopLossRoe.Text, out decimal stopLossRoe))
+                // [removed] {
+                // [removed] generalNode["StopLossRoe"] = stopLossRoe;
+                // [removed] generalSettings.StopLossRoe = stopLossRoe;
+                // [removed] }
 
-                string selectedProfile = ((cboMajorTrendProfile.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Balanced").Trim();
-                generalNode["MajorTrendProfile"] = selectedProfile;
-                generalSettings.MajorTrendProfile = selectedProfile;
+                // [v3.2.14 removed] MajorTrendProfile — 소스 하드코딩
+                generalSettings.MajorTrendProfile = "Balanced";
 
-                if (decimal.TryParse(txtPumpTp1Roe.Text, out decimal pumpTp1Roe))
-                {
-                    generalNode["PumpTp1Roe"] = pumpTp1Roe;
-                    generalSettings.PumpTp1Roe = pumpTp1Roe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpTp1Roe.Text, out decimal pumpTp1Roe))
+                // [removed] {
+                // [removed] generalNode["PumpTp1Roe"] = pumpTp1Roe;
+                // [removed] generalSettings.PumpTp1Roe = pumpTp1Roe;
+                // [removed] }
 
-                if (decimal.TryParse(txtPumpTp2Roe.Text, out decimal pumpTp2Roe))
-                {
-                    generalNode["PumpTp2Roe"] = pumpTp2Roe;
-                    generalSettings.PumpTp2Roe = pumpTp2Roe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpTp2Roe.Text, out decimal pumpTp2Roe))
+                // [removed] {
+                // [removed] generalNode["PumpTp2Roe"] = pumpTp2Roe;
+                // [removed] generalSettings.PumpTp2Roe = pumpTp2Roe;
+                // [removed] }
 
-                if (decimal.TryParse(txtPumpTimeStopMinutes.Text, out decimal pumpTimeStopMinutes))
-                {
-                    generalNode["PumpTimeStopMinutes"] = pumpTimeStopMinutes;
-                    generalSettings.PumpTimeStopMinutes = pumpTimeStopMinutes;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpTimeStopMinutes.Text, out decimal pumpTimeStopMinutes))
+                // [removed] {
+                // [removed] generalNode["PumpTimeStopMinutes"] = pumpTimeStopMinutes;
+                // [removed] generalSettings.PumpTimeStopMinutes = pumpTimeStopMinutes;
+                // [removed] }
 
-                if (decimal.TryParse(txtPumpStopWarnPct.Text, out decimal pumpStopWarnPct))
-                {
-                    generalNode["PumpStopDistanceWarnPct"] = pumpStopWarnPct;
-                    generalSettings.PumpStopDistanceWarnPct = pumpStopWarnPct;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpStopWarnPct.Text, out decimal pumpStopWarnPct))
+                // [removed] {
+                // [removed] generalNode["PumpStopDistanceWarnPct"] = pumpStopWarnPct;
+                // [removed] generalSettings.PumpStopDistanceWarnPct = pumpStopWarnPct;
+                // [removed] }
 
-                if (decimal.TryParse(txtPumpStopBlockPct.Text, out decimal pumpStopBlockPct))
-                {
-                    generalNode["PumpStopDistanceBlockPct"] = pumpStopBlockPct;
-                    generalSettings.PumpStopDistanceBlockPct = pumpStopBlockPct;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpStopBlockPct.Text, out decimal pumpStopBlockPct))
+                // [removed] {
+                // [removed] generalNode["PumpStopDistanceBlockPct"] = pumpStopBlockPct;
+                // [removed] generalSettings.PumpStopDistanceBlockPct = pumpStopBlockPct;
+                // [removed] }
 
                 // [메이저/PUMP 완전 분리] PUMP 추가 설정 저장
-                if (int.TryParse(txtPumpLeverage.Text, out int pumpLeverage))
-                {
-                    generalNode["PumpLeverage"] = pumpLeverage;
-                    generalSettings.PumpLeverage = pumpLeverage;
-                }
+                // [v3.2.14 removed] if (int.TryParse(txtPumpLeverage.Text, out int pumpLeverage))
+                // [removed] {
+                // [removed] generalNode["PumpLeverage"] = pumpLeverage;
+                // [removed] generalSettings.PumpLeverage = pumpLeverage;
+                // [removed] }
 
-                if (decimal.TryParse(txtPumpMargin.Text, out decimal pumpMargin))
-                {
-                    generalNode["PumpMargin"] = pumpMargin;
-                    generalSettings.PumpMargin = pumpMargin;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpMargin.Text, out decimal pumpMargin))
+                // [removed] {
+                // [removed] generalNode["PumpMargin"] = pumpMargin;
+                // [removed] generalSettings.PumpMargin = pumpMargin;
+                // [removed] }
 
-                if (decimal.TryParse(txtPumpBreakEvenRoe.Text, out decimal pumpBreakEvenRoe))
-                {
-                    generalNode["PumpBreakEvenRoe"] = pumpBreakEvenRoe;
-                    generalSettings.PumpBreakEvenRoe = pumpBreakEvenRoe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpBreakEvenRoe.Text, out decimal pumpBreakEvenRoe))
+                // [removed] {
+                // [removed] generalNode["PumpBreakEvenRoe"] = pumpBreakEvenRoe;
+                // [removed] generalSettings.PumpBreakEvenRoe = pumpBreakEvenRoe;
+                // [removed] }
 
-                if (decimal.TryParse(txtPumpTrailingStartRoe.Text, out decimal pumpTrailingStartRoe))
-                {
-                    generalNode["PumpTrailingStartRoe"] = pumpTrailingStartRoe;
-                    generalSettings.PumpTrailingStartRoe = pumpTrailingStartRoe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpTrailingStartRoe.Text, out decimal pumpTrailingStartRoe))
+                // [removed] {
+                // [removed] generalNode["PumpTrailingStartRoe"] = pumpTrailingStartRoe;
+                // [removed] generalSettings.PumpTrailingStartRoe = pumpTrailingStartRoe;
+                // [removed] }
 
-                if (decimal.TryParse(txtPumpTrailingGapRoe.Text, out decimal pumpTrailingGapRoe))
-                {
-                    generalNode["PumpTrailingGapRoe"] = pumpTrailingGapRoe;
-                    generalSettings.PumpTrailingGapRoe = pumpTrailingGapRoe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpTrailingGapRoe.Text, out decimal pumpTrailingGapRoe))
+                // [removed] {
+                // [removed] generalNode["PumpTrailingGapRoe"] = pumpTrailingGapRoe;
+                // [removed] generalSettings.PumpTrailingGapRoe = pumpTrailingGapRoe;
+                // [removed] }
 
-                if (decimal.TryParse(txtPumpStopLossRoe.Text, out decimal pumpStopLossRoe))
-                {
-                    generalNode["PumpStopLossRoe"] = pumpStopLossRoe;
-                    generalSettings.PumpStopLossRoe = pumpStopLossRoe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpStopLossRoe.Text, out decimal pumpStopLossRoe))
+                // [removed] {
+                // [removed] generalNode["PumpStopLossRoe"] = pumpStopLossRoe;
+                // [removed] generalSettings.PumpStopLossRoe = pumpStopLossRoe;
+                // [removed] }
 
-                if (decimal.TryParse(txtPumpFirstTakeProfitRatioPct.Text, out decimal pumpFirstTakeProfitRatioPct))
-                {
-                    generalNode["PumpFirstTakeProfitRatioPct"] = pumpFirstTakeProfitRatioPct;
-                    generalSettings.PumpFirstTakeProfitRatioPct = pumpFirstTakeProfitRatioPct;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpFirstTakeProfitRatioPct.Text, out decimal pumpFirstTakeProfitRatioPct))
+                // [removed] {
+                // [removed] generalNode["PumpFirstTakeProfitRatioPct"] = pumpFirstTakeProfitRatioPct;
+                // [removed] generalSettings.PumpFirstTakeProfitRatioPct = pumpFirstTakeProfitRatioPct;
+                // [removed] }
 
-                if (decimal.TryParse(txtPumpStairStep1Roe.Text, out decimal pumpStairStep1Roe))
-                {
-                    generalNode["PumpStairStep1Roe"] = pumpStairStep1Roe;
-                    generalSettings.PumpStairStep1Roe = pumpStairStep1Roe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpStairStep1Roe.Text, out decimal pumpStairStep1Roe))
+                // [removed] {
+                // [removed] generalNode["PumpStairStep1Roe"] = pumpStairStep1Roe;
+                // [removed] generalSettings.PumpStairStep1Roe = pumpStairStep1Roe;
+                // [removed] }
 
-                if (decimal.TryParse(txtPumpStairStep2Roe.Text, out decimal pumpStairStep2Roe))
-                {
-                    generalNode["PumpStairStep2Roe"] = pumpStairStep2Roe;
-                    generalSettings.PumpStairStep2Roe = pumpStairStep2Roe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpStairStep2Roe.Text, out decimal pumpStairStep2Roe))
+                // [removed] {
+                // [removed] generalNode["PumpStairStep2Roe"] = pumpStairStep2Roe;
+                // [removed] generalSettings.PumpStairStep2Roe = pumpStairStep2Roe;
+                // [removed] }
 
-                if (decimal.TryParse(txtPumpStairStep3Roe.Text, out decimal pumpStairStep3Roe))
-                {
-                    generalNode["PumpStairStep3Roe"] = pumpStairStep3Roe;
-                    generalSettings.PumpStairStep3Roe = pumpStairStep3Roe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpStairStep3Roe.Text, out decimal pumpStairStep3Roe))
+                // [removed] {
+                // [removed] generalNode["PumpStairStep3Roe"] = pumpStairStep3Roe;
+                // [removed] generalSettings.PumpStairStep3Roe = pumpStairStep3Roe;
+                // [removed] }
 
                 // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정 저장
-                if (int.TryParse(txtMajorLeverage.Text, out int majorLeverage))
-                {
-                    generalNode["MajorLeverage"] = majorLeverage;
-                    generalSettings.MajorLeverage = majorLeverage;
-                }
+                // [v3.2.14 removed] if (int.TryParse(txtMajorLeverage.Text, out int majorLeverage))
+                // [removed] {
+                // [removed] generalNode["MajorLeverage"] = majorLeverage;
+                // [removed] generalSettings.MajorLeverage = majorLeverage;
+                // [removed] }
 
-                if (decimal.TryParse(txtMajorMargin.Text, out decimal majorMarginPercent))
-                {
-                    majorMarginPercent = Math.Clamp(majorMarginPercent, 1.0m, 50.0m);
-                    generalNode["MajorMarginPercent"] = majorMarginPercent;
-                    generalSettings.MajorMarginPercent = majorMarginPercent;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtMajorMargin.Text, out decimal majorMarginPercent))
+                // [removed] {
+                // [removed] majorMarginPercent = Math.Clamp(majorMarginPercent, 1.0m, 50.0m);
+                // [removed] generalNode["MajorMarginPercent"] = majorMarginPercent;
+                // [removed] generalSettings.MajorMarginPercent = majorMarginPercent;
+                // [removed] }
 
-                if (decimal.TryParse(txtMajorBreakEvenRoe.Text, out decimal majorBreakEvenRoe))
-                {
-                    generalNode["MajorBreakEvenRoe"] = majorBreakEvenRoe;
-                    generalSettings.MajorBreakEvenRoe = majorBreakEvenRoe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtMajorBreakEvenRoe.Text, out decimal majorBreakEvenRoe))
+                // [removed] {
+                // [removed] generalNode["MajorBreakEvenRoe"] = majorBreakEvenRoe;
+                // [removed] generalSettings.MajorBreakEvenRoe = majorBreakEvenRoe;
+                // [removed] }
 
-                if (decimal.TryParse(txtMajorTp1Roe.Text, out decimal majorTp1Roe))
-                {
-                    generalNode["MajorTp1Roe"] = majorTp1Roe;
-                    generalSettings.MajorTp1Roe = majorTp1Roe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtMajorTp1Roe.Text, out decimal majorTp1Roe))
+                // [removed] {
+                // [removed] generalNode["MajorTp1Roe"] = majorTp1Roe;
+                // [removed] generalSettings.MajorTp1Roe = majorTp1Roe;
+                // [removed] }
 
-                if (decimal.TryParse(txtMajorTp2Roe.Text, out decimal majorTp2Roe))
-                {
-                    generalNode["MajorTp2Roe"] = majorTp2Roe;
-                    generalSettings.MajorTp2Roe = majorTp2Roe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtMajorTp2Roe.Text, out decimal majorTp2Roe))
+                // [removed] {
+                // [removed] generalNode["MajorTp2Roe"] = majorTp2Roe;
+                // [removed] generalSettings.MajorTp2Roe = majorTp2Roe;
+                // [removed] }
 
-                if (decimal.TryParse(txtMajorTrailingStartRoe.Text, out decimal majorTrailingStartRoe))
-                {
-                    generalNode["MajorTrailingStartRoe"] = majorTrailingStartRoe;
-                    generalSettings.MajorTrailingStartRoe = majorTrailingStartRoe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtMajorTrailingStartRoe.Text, out decimal majorTrailingStartRoe))
+                // [removed] {
+                // [removed] generalNode["MajorTrailingStartRoe"] = majorTrailingStartRoe;
+                // [removed] generalSettings.MajorTrailingStartRoe = majorTrailingStartRoe;
+                // [removed] }
 
-                if (decimal.TryParse(txtMajorTrailingGapRoe.Text, out decimal majorTrailingGapRoe))
-                {
-                    generalNode["MajorTrailingGapRoe"] = majorTrailingGapRoe;
-                    generalSettings.MajorTrailingGapRoe = majorTrailingGapRoe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtMajorTrailingGapRoe.Text, out decimal majorTrailingGapRoe))
+                // [removed] {
+                // [removed] generalNode["MajorTrailingGapRoe"] = majorTrailingGapRoe;
+                // [removed] generalSettings.MajorTrailingGapRoe = majorTrailingGapRoe;
+                // [removed] }
 
-                if (decimal.TryParse(txtMajorStopLossRoe.Text, out decimal majorStopLossRoe))
-                {
-                    generalNode["MajorStopLossRoe"] = majorStopLossRoe;
-                    generalSettings.MajorStopLossRoe = majorStopLossRoe;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtMajorStopLossRoe.Text, out decimal majorStopLossRoe))
+                // [removed] {
+                // [removed] generalNode["MajorStopLossRoe"] = majorStopLossRoe;
+                // [removed] generalSettings.MajorStopLossRoe = majorStopLossRoe;
+                // [removed] }
 
                 // 급변 감지 설정 저장
-                generalSettings.CrashDetectorEnabled = chkCrashDetectorEnabled.IsChecked == true;
-                generalNode["CrashDetectorEnabled"] = generalSettings.CrashDetectorEnabled;
+                // [v3.2.14 removed] generalSettings.CrashDetectorEnabled = chkCrashDetectorEnabled.IsChecked == true;
+                // [removed] generalNode["CrashDetectorEnabled"] = generalSettings.CrashDetectorEnabled;
 
-                if (decimal.TryParse(txtCrashThreshold.Text, out decimal crashThresh))
-                {
-                    generalNode["CrashThresholdPct"] = crashThresh;
-                    generalSettings.CrashThresholdPct = crashThresh;
-                }
-                if (decimal.TryParse(txtPumpDetectThreshold.Text, out decimal pumpThresh))
-                {
-                    generalNode["PumpDetectThresholdPct"] = pumpThresh;
-                    generalSettings.PumpDetectThresholdPct = pumpThresh;
-                }
-                if (int.TryParse(txtCrashMinCoinCount.Text, out int minCoin))
-                {
-                    generalNode["CrashMinCoinCount"] = minCoin;
-                    generalSettings.CrashMinCoinCount = minCoin;
-                }
-                if (decimal.TryParse(txtCrashReverseSize.Text, out decimal reverseSize))
-                {
-                    generalNode["CrashReverseSizeRatio"] = reverseSize / 100m;
-                    generalSettings.CrashReverseSizeRatio = reverseSize / 100m;
-                }
-                if (int.TryParse(txtCrashCooldown.Text, out int cooldown))
-                {
-                    generalNode["CrashCooldownSeconds"] = cooldown;
-                    generalSettings.CrashCooldownSeconds = cooldown;
-                }
+                // [v3.2.14 removed] if (decimal.TryParse(txtCrashThreshold.Text, out decimal crashThresh))
+                // [removed] {
+                // [removed] generalNode["CrashThresholdPct"] = crashThresh;
+                // [removed] generalSettings.CrashThresholdPct = crashThresh;
+                // [removed] }
+                // [v3.2.14 removed] if (decimal.TryParse(txtPumpDetectThreshold.Text, out decimal pumpThresh))
+                // [removed] {
+                // [removed] generalNode["PumpDetectThresholdPct"] = pumpThresh;
+                // [removed] generalSettings.PumpDetectThresholdPct = pumpThresh;
+                // [removed] }
+                // [v3.2.14 removed] if (int.TryParse(txtCrashMinCoinCount.Text, out int minCoin))
+                // [removed] {
+                // [removed] generalNode["CrashMinCoinCount"] = minCoin;
+                // [removed] generalSettings.CrashMinCoinCount = minCoin;
+                // [removed] }
+                // [v3.2.14 removed] if (decimal.TryParse(txtCrashReverseSize.Text, out decimal reverseSize))
+                // [removed] {
+                // [removed] generalNode["CrashReverseSizeRatio"] = reverseSize / 100m;
+                // [removed] generalSettings.CrashReverseSizeRatio = reverseSize / 100m;
+                // [removed] }
+                // [v3.2.14 removed] if (int.TryParse(txtCrashCooldown.Text, out int cooldown))
+                // [removed] {
+                // [removed] generalNode["CrashCooldownSeconds"] = cooldown;
+                // [removed] generalSettings.CrashCooldownSeconds = cooldown;
+                // [removed] }
 
                 // DefaultMargin 저장 (UI에서 입력받지 않으면 기본값 사용)
                 if (decimal.TryParse(txtDefaultMargin?.Text ?? "200.0", out decimal defaultMargin))
@@ -790,8 +780,8 @@ namespace TradingBot
                     generalSettings.TrailingDropRoe = trailingDrop;
                 }
 
-                if (decimal.TryParse(txtRisk.Text, out decimal risk))
-                    tradingNode["RiskPercentage"] = risk;
+                // [v3.2.14 removed] if (decimal.TryParse(txtRisk.Text, out decimal risk))
+                // [removed] tradingNode["RiskPercentage"] = risk;
 
                 // 시뮬레이션 모드 저장
                 tradingNode["IsSimulationMode"] = chkSimulationMode.IsChecked == true;
@@ -1027,65 +1017,59 @@ namespace TradingBot
             if (!TryParseIntInRange(txtLeverage, "레버리지", 1, 125, out _, out errorMessage))
                 return false;
 
-            if (!TryParseDecimalInRange(txtTargetRoe, "목표 ROE", 0.1m, 500m, out _, out errorMessage))
-                return false;
+                // [v3.2.14 removed] if (!TryParseDecimalInRange(txtTargetRoe, "목표 ROE", 0.1m, 500m, out _, out errorMessage))
+                // [removed] return false;
 
-            if (!TryParseDecimalInRange(txtStopLossRoe, "손절 ROE", 0.1m, 500m, out _, out errorMessage))
-                return false;
+                // [v3.2.14 removed] if (!TryParseDecimalInRange(txtStopLossRoe, "손절 ROE", 0.1m, 500m, out _, out errorMessage))
+                // [removed] return false;
 
-            if (!TryParseDecimalInRange(txtPumpTp1Roe, "PUMP 1차 익절 ROE", 0.1m, 1000m, out decimal pumpTp1, out errorMessage))
-                return false;
+                // [v3.2.14 removed] if (!TryParseDecimalInRange(txtPumpTp1Roe, "PUMP 1차 익절 ROE", 0.1m, 1000m, out decimal pumpTp1, out errorMessage))
+                // [removed] return false;
 
-            if (!TryParseDecimalInRange(txtPumpTp2Roe, "PUMP 2차 익절 ROE", 0.1m, 1000m, out decimal pumpTp2, out errorMessage))
-                return false;
+                // [v3.2.14 removed] if (!TryParseDecimalInRange(txtPumpTp2Roe, "PUMP 2차 익절 ROE", 0.1m, 1000m, out decimal pumpTp2, out errorMessage))
+                // [removed] return false;
 
-            if (pumpTp2 <= pumpTp1)
+            // [v3.2.14 removed] pumpTp1/pumpTp2 검증 — 소스 하드코딩
+
+                // [v3.2.14 removed] if (!TryParseDecimalInRange(txtPumpTimeStopMinutes, "PUMP 시간손절(분)", 1m, 1440m, out _, out errorMessage))
+                // [removed] return false;
+
+                // [v3.2.14 removed] if (!TryParseDecimalInRange(txtPumpFirstTakeProfitRatioPct, "PUMP 1차 익절 비중(%)", 1m, 95m, out _, out errorMessage))
+                // [removed] return false;
+
+                // [removed] // [v3.2.14 removed] if (!TryParseDecimalInRange(txtPumpStairStep1Roe, "PUMP 계단식 구간1 ROE", 1m, 2000m, out decimal pumpStep1, out errorMessage))
+                // [removed] return false;
+
+                // [removed] // [v3.2.14 removed] if (!TryParseDecimalInRange(txtPumpStairStep2Roe, "PUMP 계단식 구간2 ROE", 1m, 2000m, out decimal pumpStep2, out errorMessage))
+                // [removed] return false;
+
+                // [removed] // [v3.2.14 removed] if (!TryParseDecimalInRange(txtPumpStairStep3Roe, "PUMP 계단식 구간3 ROE", 1m, 2000m, out decimal pumpStep3, out errorMessage))
+                // [removed] return false;
+
+                // [removed] if (!(pumpStep1 < pumpStep2 && pumpStep2 < pumpStep3))
             {
-                txtPumpTp2Roe.Focus();
-                txtPumpTp2Roe.SelectAll();
-                errorMessage = "PUMP 2차 익절 ROE는 1차 익절 ROE보다 커야 합니다.";
+                // [v3.2.14 removed] txtPumpStairStep2Roe.Focus();
+                // [v3.2.14 removed] txtPumpStairStep2Roe.SelectAll();
+                // [removed] errorMessage = "PUMP 계단식 ROE는 구간1 < 구간2 < 구간3 순서여야 합니다.";
                 return false;
             }
 
-            if (!TryParseDecimalInRange(txtPumpTimeStopMinutes, "PUMP 시간손절(분)", 1m, 1440m, out _, out errorMessage))
-                return false;
+                // [removed] // [v3.2.14 removed] if (!TryParseDecimalInRange(txtPumpStopWarnPct, "PUMP 손절거리 경고(%)", 0.01m, 50m, out decimal warnPct, out errorMessage))
+                // [removed] return false;
 
-            if (!TryParseDecimalInRange(txtPumpFirstTakeProfitRatioPct, "PUMP 1차 익절 비중(%)", 1m, 95m, out _, out errorMessage))
-                return false;
+                // [removed] // [v3.2.14 removed] if (!TryParseDecimalInRange(txtPumpStopBlockPct, "PUMP 손절거리 차단(%)", 0.01m, 50m, out decimal blockPct, out errorMessage))
+                // [removed] return false;
 
-            if (!TryParseDecimalInRange(txtPumpStairStep1Roe, "PUMP 계단식 구간1 ROE", 1m, 2000m, out decimal pumpStep1, out errorMessage))
-                return false;
-
-            if (!TryParseDecimalInRange(txtPumpStairStep2Roe, "PUMP 계단식 구간2 ROE", 1m, 2000m, out decimal pumpStep2, out errorMessage))
-                return false;
-
-            if (!TryParseDecimalInRange(txtPumpStairStep3Roe, "PUMP 계단식 구간3 ROE", 1m, 2000m, out decimal pumpStep3, out errorMessage))
-                return false;
-
-            if (!(pumpStep1 < pumpStep2 && pumpStep2 < pumpStep3))
+                // [removed] if (blockPct <= warnPct)
             {
-                txtPumpStairStep2Roe.Focus();
-                txtPumpStairStep2Roe.SelectAll();
-                errorMessage = "PUMP 계단식 ROE는 구간1 < 구간2 < 구간3 순서여야 합니다.";
+                // [v3.2.14 removed] txtPumpStopBlockPct.Focus();
+                // [v3.2.14 removed] txtPumpStopBlockPct.SelectAll();
+                // [removed] errorMessage = "PUMP 손절거리 차단값은 경고값보다 커야 합니다.";
                 return false;
             }
 
-            if (!TryParseDecimalInRange(txtPumpStopWarnPct, "PUMP 손절거리 경고(%)", 0.01m, 50m, out decimal warnPct, out errorMessage))
-                return false;
-
-            if (!TryParseDecimalInRange(txtPumpStopBlockPct, "PUMP 손절거리 차단(%)", 0.01m, 50m, out decimal blockPct, out errorMessage))
-                return false;
-
-            if (blockPct <= warnPct)
-            {
-                txtPumpStopBlockPct.Focus();
-                txtPumpStopBlockPct.SelectAll();
-                errorMessage = "PUMP 손절거리 차단값은 경고값보다 커야 합니다.";
-                return false;
-            }
-
-            if (!TryParseDecimalInRange(txtRisk, "리스크 비율(%)", 0.01m, 100m, out _, out errorMessage))
-                return false;
+                // [v3.2.14 removed] if (!TryParseDecimalInRange(txtRisk, "리스크 비율(%)", 0.01m, 100m, out _, out errorMessage))
+                // [removed] return false;
 
             if (!TryParseIntInRange(txtGridLevels, "Grid Levels", 2, 200, out _, out errorMessage))
                 return false;
@@ -1135,15 +1119,7 @@ namespace TradingBot
 
         private void SelectMajorTrendProfile(string? profile)
         {
-            string normalized = (profile ?? string.Empty).Trim();
-
-            if (string.Equals(normalized, "Aggressive", StringComparison.OrdinalIgnoreCase))
-            {
-                cboMajorTrendProfile.SelectedIndex = 1;
-                return;
-            }
-
-            cboMajorTrendProfile.SelectedIndex = 0;
+            // [v3.2.14 removed] MajorTrendProfile UI — 소스 하드코딩
         }
 
         private static bool TryParseIntInRange(TextBox textBox, string fieldName, int min, int max, out int value, out string error)
