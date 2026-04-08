@@ -2618,7 +2618,7 @@
                             <Border.Style>
                                 <Style TargetType="Border">
                                     <Style.Triggers>
-                                        <DataTrigger Binding="{Binding ExitScorePulseActive}" Value="True">
+                                        <DataTrigger Binding="{Binding ExitScorePulseActive, Mode=OneWay}" Value="True">
                                             <DataTrigger.EnterActions>
                                                 <BeginStoryboard x:Name="ExitPulse">
                                                     <Storyboard RepeatBehavior="Forever">
@@ -2649,17 +2649,17 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="EXIT SCORE" FontSize="10"
                                                Foreground="#6B7280" FontWeight="Bold"/>
-                                    <TextBlock Grid.Column="1" Text="{Binding ExitScoreZone}" FontSize="10"
-                                               Foreground="{Binding ExitScoreColor}" FontWeight="Bold"
+                                    <TextBlock Grid.Column="1" Text="{Binding ExitScoreZone, Mode=OneWay}" FontSize="10"
+                                               Foreground="{Binding ExitScoreColor, Mode=OneWay}" FontWeight="Bold"
                                                Margin="0,0,10,0"/>
                                     <TextBlock Grid.Column="2" Text="{Binding DynamicStopPriceText}" FontSize="10"
                                                Foreground="#94A3B8"/>
                                 </Grid>
                                 <ProgressBar Value="{Binding ExitScore, Mode=OneWay}" Maximum="100" Height="10"
                                              Background="#252B48" Margin="0,6,0,0"
-                                             Foreground="{Binding ExitScoreColor}"/>
-                                <TextBlock Text="{Binding ExitScoreText}" FontSize="11"
-                                           Foreground="{Binding ExitScoreColor}" HorizontalAlignment="Center"
+                                             Foreground="{Binding ExitScoreColor, Mode=OneWay}"/>
+                                <TextBlock Text="{Binding ExitScoreText, Mode=OneWay}" FontSize="11"
+                                           Foreground="{Binding ExitScoreColor, Mode=OneWay}" HorizontalAlignment="Center"
                                            Margin="0,4,0,0"/>
                             </StackPanel>
                         </Border>
