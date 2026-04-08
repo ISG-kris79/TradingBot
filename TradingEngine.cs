@@ -6063,6 +6063,17 @@ namespace TradingBot
 
             OnAlert?.Invoke($"⚡ [{label} 감지] {symbol} {changePct:+0.0;-0.0}% (1분) → {direction} 시도");
 
+            // [v3.2.11] 메인창에 PUMP 코인 표시
+            OnSymbolTracking?.Invoke(symbol);
+            OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
+            {
+                Symbol = symbol,
+                LastPrice = currentPrice,
+                Decision = direction,
+                SignalSource = "SPIKE",
+                StrategyName = $"Spike {changePct:+0.0;-0.0}%"
+            });
+
             _ = Task.Run(async () =>
             {
                 try
@@ -10837,6 +10848,9 @@ namespace TradingBot
                 var atr = IndicatorCalculator.CalculateATR(subset, 14);
                 var macd = IndicatorCalculator.CalculateMACD(subset);
                 var prevMacd = IndicatorCalculator.CalculateMACD(subset.Take(subset.Count - 1).ToList());
+                // [v3.2.11] MACD 골크/데크 피처
+                float macdGoldenCross = (prevMacd.Macd < prevMacd.Signal && macd.Macd >= macd.Signal) ? 1f : 0f;
+                float macdDeadCross = (prevMacd.Macd > prevMacd.Signal && macd.Macd <= macd.Signal) ? 1f : 0f;
                 float macdHistChangeRate = Math.Abs(prevMacd.Hist) > 0.0000001
                     ? (float)((macd.Hist - prevMacd.Hist) / Math.Abs(prevMacd.Hist)) : 0f;
                 var fib = IndicatorCalculator.CalculateFibonacci(subset, 50);
@@ -10971,6 +10985,8 @@ namespace TradingBot
                     MACD_Signal = (float)macd.Signal,
                     MACD_Hist = (float)macd.Hist,
                     MACD_Hist_ChangeRate = macdHistChangeRate,
+                    MACD_GoldenCross = macdGoldenCross,
+                    MACD_DeadCross = macdDeadCross,
                     ATR = (float)atr,
                     Fib_236 = (float)fib.Level236,
                     Fib_382 = (float)fib.Level382,

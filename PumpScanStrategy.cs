@@ -291,8 +291,8 @@ namespace TradingBot.Strategies
                         RSI_1H = rsi,
                         AIScore = aiScore,
                         Decision = decision,
-                        StrategyName = $"Top Volume Momentum Scalping(5m) [{profile.Name}]",
-                        SignalSource = "MAJOR",
+                        StrategyName = $"PUMP Scan(5m) [{profile.Name}]",
+                        SignalSource = "PUMP",
                         ShortLongScore = aiScore,
                         ShortShortScore = 100 - aiScore,
                         MacdHist = macd.Hist,
@@ -534,13 +534,25 @@ namespace TradingBot.Strategies
             if (range <= 0m)
                 return 0;
 
+            decimal fib382 = high - (range * 0.382m);
+            decimal fib500 = high - (range * 0.500m);
             decimal fib618 = high - (range * 0.618m);
             decimal fib786 = high - (range * 0.786m);
 
             if (currentPrice <= fib618 && currentPrice >= fib786)
             {
-                PumpSignalLog("FIB", $"🎯 [피보나치 타점] 황금 반등 구간 진입! score+20 (px={currentPrice:F4}, 0.618={fib618:F4}, 0.786={fib786:F4})");
+                PumpSignalLog("FIB", $"🎯 [피보나치] 황금 구간 +20 (px={currentPrice:F4})");
                 return 20.0;
+            }
+            if (currentPrice <= fib500 && currentPrice > fib618)
+            {
+                PumpSignalLog("FIB", $"🎯 [피보나치] 중간 구간 +15 (px={currentPrice:F4})");
+                return 15.0;
+            }
+            if (currentPrice <= fib382 && currentPrice > fib500)
+            {
+                PumpSignalLog("FIB", $"🎯 [피보나치] 상단 구간 +10 (px={currentPrice:F4})");
+                return 10.0;
             }
 
             return 0;

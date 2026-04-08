@@ -295,6 +295,8 @@ namespace TradingBot.Models
         public float MACD_Hist { get; set; }
         public float MACD_Hist_ChangeRate { get; set; } // (현재Hist-이전Hist)/|이전Hist| — 골크 예측용
         public float MACD_DeadCrossAngle { get; set; } // (MACD-Sig)[t]-(MACD-Sig)[t-1] — 음수→급하락
+        public float MACD_GoldenCross { get; set; }   // 1=골든크로스 발생, 0=아님
+        public float MACD_DeadCross { get; set; }      // 1=데드크로스 발생, 0=아님
         public float ATR { get; set; }
 
         // 추가 지표

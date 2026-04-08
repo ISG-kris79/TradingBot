@@ -346,13 +346,26 @@ namespace TradingBot.Strategies
             if (range <= 0m)
                 return 0;
 
+            decimal fib382 = high - (range * 0.382m);
+            decimal fib500 = high - (range * 0.500m);
             decimal fib618 = high - (range * 0.618m);
             decimal fib786 = high - (range * 0.786m);
 
+            // [v3.2.11] 피보나치 확장: 0.382~0.786 단계별 가점
             if (currentPrice <= fib618 && currentPrice >= fib786)
             {
-                OnLog?.Invoke("🎯 [피보나치 타점] 황금 반등 구간 진입! 가점 +20점");
+                OnLog?.Invoke("🎯 [피보나치] 황금 구간 (0.618~0.786) +20점");
                 return 20.0;
+            }
+            if (currentPrice <= fib500 && currentPrice > fib618)
+            {
+                OnLog?.Invoke("🎯 [피보나치] 중간 구간 (0.500~0.618) +15점");
+                return 15.0;
+            }
+            if (currentPrice <= fib382 && currentPrice > fib500)
+            {
+                OnLog?.Invoke("🎯 [피보나치] 상단 구간 (0.382~0.500) +10점");
+                return 10.0;
             }
 
             return 0;
