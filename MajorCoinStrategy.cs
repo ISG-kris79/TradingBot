@@ -90,10 +90,9 @@ namespace TradingBot.Strategies
                     aiScore = Math.Clamp(aiScore + (int)fibBonus, 0, 100);
                 }
 
-                var nowSeoul = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, SeoulTimeZone);
-                bool isKstDaytime = nowSeoul.Hour >= 10 && nowSeoul.Hour < 19;
-                int longThreshold = CalculateDynamicThreshold(isKstDaytime, volumeMomentum, isMakingHigherLows, profile);
-                int shortThreshold = isKstDaytime ? 30 : 25;
+                // [v3.2.3] 24시간 동일 기준 (야간 개념 제거 — 코인 시장은 24시간)
+                int longThreshold = CalculateDynamicThreshold(volumeMomentum, isMakingHigherLows, profile);
+                int shortThreshold = 30;
 
                 string decision = "WAIT";
                 if (aiScore >= longThreshold)
@@ -300,9 +299,10 @@ namespace TradingBot.Strategies
             return Math.Clamp(score, 0, 100);
         }
 
-        private static int CalculateDynamicThreshold(bool isKstDaytime, double volumeMomentum, bool isMakingHigherLows, MajorProfile profile)
+        private static int CalculateDynamicThreshold(double volumeMomentum, bool isMakingHigherLows, MajorProfile profile)
         {
-            int threshold = isKstDaytime ? 60 : 65;
+            // [v3.2.3] 24시간 동일 기준 60점
+            int threshold = 60;
 
             if (volumeMomentum >= 1.10) threshold -= 3;
             if (isMakingHigherLows) threshold -= profile.HigherLowThresholdDiscount;

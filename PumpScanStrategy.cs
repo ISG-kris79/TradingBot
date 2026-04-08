@@ -252,10 +252,9 @@ namespace TradingBot.Strategies
                     aiScore = Math.Clamp(aiScore + (int)fibBonus, 0, 100);
                 }
 
-                var nowSeoul = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, SeoulTimeZone);
-                bool isKstDaytime = nowSeoul.Hour >= 10 && nowSeoul.Hour < 19;
-                int longThreshold = CalculateDynamicThreshold(isKstDaytime, volumeMomentum, isMakingHigherLows, profile);
-                int shortThreshold = isKstDaytime ? 30 : 25;
+                // [v3.2.3] 24시간 동일 기준
+                int longThreshold = CalculateDynamicThreshold(volumeMomentum, isMakingHigherLows, profile);
+                int shortThreshold = 30;
 
                 // [v3.0.9] PUMP은 LONG만 — SHORT 제거
                 string decision = "WAIT";
@@ -512,10 +511,10 @@ namespace TradingBot.Strategies
             return Math.Clamp(score, 0, 100);
         }
 
-        private static int CalculateDynamicThreshold(bool isKstDaytime, double volumeMomentum, bool isMakingHigherLows, MajorProfile profile)
+        private static int CalculateDynamicThreshold(double volumeMomentum, bool isMakingHigherLows, MajorProfile profile)
         {
-            // [v3.1.3] 진입 기준 추가 완화: 야간 45, 주간 50
-            int threshold = isKstDaytime ? 50 : 45;
+            // [v3.2.3] 24시간 동일 기준 50점
+            int threshold = 50;
 
             if (volumeMomentum >= 1.10) threshold -= 5;
             if (isMakingHigherLows) threshold -= profile.HigherLowThresholdDiscount;

@@ -7142,20 +7142,21 @@ namespace TradingBot
             }
             else
             {
-                // [v3.1.9] 분할 진입: 정찰대 25% 먼저, 확인 후 본대 75% 추가
-                // 정찰대에서 손절나도 타격 최소화, 방향 맞으면 본대 투입
-                finalSizeMultiplier = 0.25m; // 정찰대 25%
-                EntryLog("SIZE", "SCOUT_FIRST", $"분할 진입 정찰대 25% (본대 75%는 ROE +10% 확인 후 자동 추가)");
+                // [v3.2.3] AI Advisor 사이즈가 분할 진입 베이스를 대체 (이중 축소 방지)
+                // AI Gate 통과 (allowEntry=true): 100% 본진입
+                // AI Gate 차단 (Advisor): aiGateSizeMultiplier 그대로 사용 (20%~100%)
+                // → 분할 진입 25% × AI 20% = 5% 문제 해결
+                finalSizeMultiplier = aiGateSizeMultiplier; // AI Gate 결과가 곧 사이즈
 
-                // 3분류 모델: 같은 방향이면 정찰대를 40%로 올림
-                if (mlSignalSizeMultiplier != 1.0m && mlSignalSizeMultiplier > 1.0m)
-                    finalSizeMultiplier = 0.40m;
+                // 3분류 모델: 반대 방향이면 축소
+                if (mlSignalSizeMultiplier < 1.0m && mlSignalSizeMultiplier < finalSizeMultiplier)
+                    finalSizeMultiplier = mlSignalSizeMultiplier;
 
-                // 외부 전달 manualSizeMultiplier (기본 1.0)
-                if (manualSizeMultiplier < finalSizeMultiplier)
+                // 외부 전달 manualSizeMultiplier (CRASH_REVERSE 등)
+                if (manualSizeMultiplier < 1.0m && manualSizeMultiplier < finalSizeMultiplier)
                     finalSizeMultiplier = manualSizeMultiplier;
 
-                EntryLog("SIZE", "MAIN", $"base=100% mlSignal={mlSignalSizeMultiplier:P0} manual={manualSizeMultiplier:P0} → {finalSizeMultiplier:P0}");
+                EntryLog("SIZE", "MAIN", $"aiGate={aiGateSizeMultiplier:P0} mlSignal={mlSignalSizeMultiplier:P0} manual={manualSizeMultiplier:P0} → {finalSizeMultiplier:P0}");
             }
 
             ctx.SizeMultiplier = Math.Clamp(finalSizeMultiplier, 0.10m, 2.00m);
