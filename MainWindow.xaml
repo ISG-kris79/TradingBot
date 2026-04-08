@@ -1249,34 +1249,7 @@
                             </Border>
                             <!-- ═══ END TimeOut Probability Entry Widget ═══ -->
 
-                            <!-- Critical Alerts (좌측 AI Predictive 아래, v3.2.20) -->
-                            <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8" MaxHeight="150">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="*"/>
-                                    </Grid.RowDefinitions>
-                                    <TextBlock Text="⚠  CRITICAL ALERTS" FontSize="10" FontWeight="Bold"
-                                               Foreground="{StaticResource ErrorBrush}" Margin="0,0,0,4"/>
-                                    <ListBox x:Name="lstAlerts"
-                                             Grid.Row="1"
-                                             ItemsSource="{Binding Alerts}"
-                                             Background="Transparent"
-                                             BorderThickness="0"
-                                             Foreground="#E0E7FF"
-                                             FontFamily="Consolas"
-                                             FontSize="10"
-                                             VirtualizingStackPanel.IsVirtualizing="True"
-                                             ScrollViewer.VerticalScrollBarVisibility="Auto">
-                                        <ListBox.ItemContainerStyle>
-                                            <Style TargetType="ListBoxItem">
-                                                <Setter Property="Padding" Value="2,3"/>
-                                                <Setter Property="Background" Value="Transparent"/>
-                                            </Style>
-                                        </ListBox.ItemContainerStyle>
-                                    </ListBox>
-                                </Grid>
-                            </Border>
+                            <!-- Critical Alerts → DataGrid 아래 FAST LOG 옆으로 이동 (v3.2.24) -->
 
                             </StackPanel>
                         </ScrollViewer>
@@ -1636,25 +1609,69 @@
                                             </DataGrid>
                                         </Border>
 
-                                        <!-- Critical Alerts → 좌측 패널로 이동 (v3.2.20) -->
+                                        <!-- FAST LOG (3) + Critical Alerts (2) 나란히 (v3.2.24) -->
+                                        <Grid Grid.Row="2" Margin="0,4,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="3*"/>
+                                                <ColumnDefinition Width="2*"/>
+                                            </Grid.ColumnDefinitions>
 
-                                        <!-- FAST LOG (좌측 맨 아래, v3.2.20) -->
-                                        <Border Grid.Row="2"
-                                                Background="{StaticResource BackgroundMediumBrush}"
-                                                BorderBrush="{StaticResource BackgroundLightBrush}"
-                                                BorderThickness="0,1,0,0"
-                                                Padding="8,6"
-                                                Margin="0,4,0,0"
-                                                MinHeight="150">
-                                            <StackPanel>
-                                                <TextBlock Text="📡 FAST LOG (실시간)" Foreground="{StaticResource PrimaryBrush}" FontSize="10" FontWeight="Bold" Margin="0,0,0,4"/>
-                                                <TextBlock Text="{Binding BattleFastLog1}" Foreground="#E2E8F0" FontSize="10" FontFamily="Consolas" TextWrapping="Wrap"/>
-                                                <TextBlock Text="{Binding BattleFastLog2}" Foreground="#B0BEC5" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                                <TextBlock Text="{Binding BattleFastLog3}" Foreground="#78909C" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                                <TextBlock Text="{Binding BattleFastLog4}" Foreground="#546E7A" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                                <TextBlock Text="{Binding BattleFastLog5}" Foreground="#37474F" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                            </StackPanel>
-                                        </Border>
+                                            <!-- FAST LOG -->
+                                            <Border Grid.Column="0"
+                                                    Background="{StaticResource BackgroundMediumBrush}"
+                                                    BorderBrush="{StaticResource BackgroundLightBrush}"
+                                                    BorderThickness="0,1,0,0"
+                                                    Padding="8,6"
+                                                    Margin="0,0,4,0"
+                                                    MinHeight="130">
+                                                <StackPanel>
+                                                    <TextBlock Text="📡 FAST LOG (실시간)" Foreground="{StaticResource PrimaryBrush}" FontSize="10" FontWeight="Bold" Margin="0,0,0,4"/>
+                                                    <TextBlock Text="{Binding BattleFastLog1}" Foreground="#E2E8F0" FontSize="10" FontFamily="Consolas" TextWrapping="Wrap"/>
+                                                    <TextBlock Text="{Binding BattleFastLog2}" Foreground="#B0BEC5" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                                    <TextBlock Text="{Binding BattleFastLog3}" Foreground="#78909C" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                                    <TextBlock Text="{Binding BattleFastLog4}" Foreground="#546E7A" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                                    <TextBlock Text="{Binding BattleFastLog5}" Foreground="#37474F" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                                    <TextBlock Text="{Binding BattleFastLog6}" Foreground="#37474F" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                                    <TextBlock Text="{Binding BattleFastLog7}" Foreground="#37474F" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                                    <TextBlock Text="{Binding BattleFastLog8}" Foreground="#37474F" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                                </StackPanel>
+                                            </Border>
+
+                                            <!-- Critical Alerts -->
+                                            <Border Grid.Column="1"
+                                                    Background="{StaticResource BackgroundMediumBrush}"
+                                                    BorderBrush="{StaticResource BackgroundLightBrush}"
+                                                    BorderThickness="0,1,0,0"
+                                                    Padding="8,6"
+                                                    Margin="4,0,0,0"
+                                                    MinHeight="130">
+                                                <Grid>
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="*"/>
+                                                    </Grid.RowDefinitions>
+                                                    <TextBlock Text="⚠  CRITICAL ALERTS" FontSize="10" FontWeight="Bold"
+                                                               Foreground="{StaticResource ErrorBrush}" Margin="0,0,0,4"/>
+                                                    <ListBox x:Name="lstAlerts"
+                                                             Grid.Row="1"
+                                                             ItemsSource="{Binding Alerts}"
+                                                             Background="Transparent"
+                                                             BorderThickness="0"
+                                                             Foreground="#E0E7FF"
+                                                             FontFamily="Consolas"
+                                                             FontSize="10"
+                                                             VirtualizingStackPanel.IsVirtualizing="True"
+                                                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                                        <ListBox.ItemContainerStyle>
+                                                            <Style TargetType="ListBoxItem">
+                                                                <Setter Property="Padding" Value="2,2"/>
+                                                                <Setter Property="Background" Value="Transparent"/>
+                                                            </Style>
+                                                        </ListBox.ItemContainerStyle>
+                                                    </ListBox>
+                                                </Grid>
+                                            </Border>
+                                        </Grid>
                                     </Grid>
                                 </Border>
 

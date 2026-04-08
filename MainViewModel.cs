@@ -391,6 +391,13 @@ namespace TradingBot.ViewModels
             set { _battleFastLog5 = value; OnPropertyChanged(); }
         }
 
+        private string _battleFastLog6 = "";
+        public string BattleFastLog6 { get => _battleFastLog6; set { _battleFastLog6 = value; OnPropertyChanged(); } }
+        private string _battleFastLog7 = "";
+        public string BattleFastLog7 { get => _battleFastLog7; set { _battleFastLog7 = value; OnPropertyChanged(); } }
+        private string _battleFastLog8 = "";
+        public string BattleFastLog8 { get => _battleFastLog8; set { _battleFastLog8 = value; OnPropertyChanged(); } }
+
         private string _battleMajorBtcText = "BTC: 대기";
         public string BattleMajorBtcText
         {
@@ -2994,6 +3001,9 @@ namespace TradingBot.ViewModels
             _battleLastFastLogUtc = nowUtc;
             string line = $"[{DateTime.Now:HH:mm:ss}] {message}";
 
+            BattleFastLog8 = BattleFastLog7;
+            BattleFastLog7 = BattleFastLog6;
+            BattleFastLog6 = BattleFastLog5;
             BattleFastLog5 = BattleFastLog4;
             BattleFastLog4 = BattleFastLog3;
             BattleFastLog3 = BattleFastLog2;
