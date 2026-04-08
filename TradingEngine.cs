@@ -6046,6 +6046,7 @@ namespace TradingBot
 
         /// <summary>개별 코인 급등 감지 → 즉시 PUMP 진입 시도 (PumpScan 스킵)</summary>
         /// <summary>[v3.2.7] 급등/급락 감지 → AI 판단 후 진입</summary>
+        /// <summary>[v3.2.16] 급등/급락 즉시 주문 — ExecuteAutoOrder 스킵 (API 4분 지연 제거)</summary>
         private async Task HandleSpikeDetectedAsync(string symbol, decimal changePct, decimal currentPrice)
         {
             var token = _cts?.Token ?? CancellationToken.None;
@@ -6058,40 +6059,121 @@ namespace TradingBot
             if (_blacklistedSymbols.TryGetValue(symbol, out var expiry) && DateTime.Now < expiry)
                 return;
 
+            // 슬롯 체크
+            bool isMajor = MajorSymbols.Contains(symbol);
+            lock (_posLock)
+            {
+                int total = _activePositions.Count;
+                int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
+                int pumpCount = total - majorCount;
+                if (isMajor && majorCount >= MAX_MAJOR_SLOTS) return;
+                if (!isMajor && pumpCount >= MAX_PUMP_SLOTS) return;
+                if (total >= MAX_TOTAL_SLOTS) return;
+            }
+
+            string side = changePct > 0 ? "BUY" : "SELL";
             string direction = changePct > 0 ? "LONG" : "SHORT";
             string label = changePct > 0 ? "급등" : "급락";
 
-            OnAlert?.Invoke($"⚡ [{label} 감지] {symbol} {changePct:+0.0;-0.0}% (1분) → {direction} 시도");
+            // 사이즈 계산 — API 호출 없이 바로
+            decimal leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : 20;
+            decimal marginUsdt = isMajor
+                ? await GetAdaptiveEntryMarginUsdtAsync(token)
+                : GetConfiguredPumpMarginUsdt();
+            decimal quantity = (marginUsdt * leverage) / currentPrice;
 
-            // [v3.2.11] 메인창에 PUMP 코인 표시
+            if (quantity <= 0)
+            {
+                OnStatusLog?.Invoke($"⚠️ [{label}] {symbol} 수량 0 → 스킵");
+                return;
+            }
+
+            OnAlert?.Invoke($"⚡⚡ [{label} 즉시진입] {symbol} {changePct:+0.0;-0.0}% → {direction} qty={quantity:F4}");
+
+            // 메인창 표시
             OnSymbolTracking?.Invoke(symbol);
             OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
             {
                 Symbol = symbol,
                 LastPrice = currentPrice,
                 Decision = direction,
-                SignalSource = "SPIKE",
-                StrategyName = $"Spike {changePct:+0.0;-0.0}%"
+                SignalSource = "SPIKE_FAST",
+                StrategyName = $"⚡Spike {changePct:+0.0;-0.0}%"
             });
 
+            // 텔레그램 (비동기, 주문 안 기다림)
             _ = Task.Run(async () =>
             {
-                try
-                {
-                    await TelegramService.Instance.SendMessageAsync(
-                        $"⚡ *[{label} 감지]*\n`{symbol}` {changePct:+0.0;-0.0}% (1분)\n가격: `{currentPrice}`\n⏰ {DateTime.Now:HH:mm:ss}",
-                        TelegramMessageType.Entry);
-                }
-                catch { }
+                try { await TelegramService.Instance.SendMessageAsync(
+                    $"⚡⚡ *[{label} 즉시진입]*\n`{symbol}` {changePct:+0.0;-0.0}%\n방향: {direction}\n가격: `{currentPrice}`\n⏰ {DateTime.Now:HH:mm:ss}",
+                    TelegramMessageType.Entry); } catch { }
             });
 
             try
             {
-                await ExecuteAutoOrder(symbol, direction, currentPrice, token, "SPIKE_DETECT");
+                // 즉시 시장가 주문 — AI Gate/R:R/CandleData 전부 스킵
+                bool success = await _exchangeService.PlaceOrderAsync(symbol, side, quantity, null, token, reduceOnly: false);
+
+                if (success)
+                {
+                    decimal entryPrice = currentPrice;
+                    try
+                    {
+                        var fillPrice = await _exchangeService.GetPriceAsync(symbol, ct: token);
+                        if (fillPrice > 0) entryPrice = fillPrice;
+                    }
+                    catch { }
+
+                    // 내부 포지션 등록
+                    lock (_posLock)
+                    {
+                        _activePositions[symbol] = new PositionInfo
+                        {
+                            Symbol = symbol,
+                            EntryPrice = entryPrice,
+                            IsLong = (direction == "LONG"),
+                            Side = (direction == "LONG") ? Binance.Net.Enums.OrderSide.Buy : Binance.Net.Enums.OrderSide.Sell,
+                            Quantity = direction == "LONG" ? quantity : -quantity,
+                            Leverage = (int)leverage,
+                            IsPumpStrategy = !isMajor,
+                            EntryTime = DateTime.Now
+                        };
+                    }
+
+                    OnPositionStatusUpdate?.Invoke(symbol, true, entryPrice);
+                    OnAlert?.Invoke($"✅ [{label} 즉시진입 성공] {symbol} {direction} @ {entryPrice:F8} qty={quantity:F4}");
+
+                    // 포지션 감시 시작
+                    bool isLong = direction == "LONG";
+                    if (isMajor)
+                        _ = _positionMonitor.MonitorPositionStandard(symbol, entryPrice, isLong, token);
+                    else
+                        _ = _positionMonitor.MonitorPumpPositionShortTerm(symbol, entryPrice, $"SPIKE_FAST_{label}", 0, token);
+
+                    // DB 기록 (비동기)
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await _dbManager.UpsertTradeEntryAsync(new TradeLog(
+                                symbol, side, $"SPIKE_FAST_{label}", entryPrice, 0, DateTime.Now, 0, 0)
+                            {
+                                EntryPrice = entryPrice,
+                                Quantity = Math.Abs(quantity),
+                                EntryTime = DateTime.Now
+                            });
+                        }
+                        catch { }
+                    });
+                }
+                else
+                {
+                    OnAlert?.Invoke($"❌ [{label} 즉시진입 실패] {symbol} 주문 거부");
+                }
             }
             catch (Exception ex)
             {
-                OnStatusLog?.Invoke($"⚠️ [{label} 진입] {symbol} 실패: {ex.Message}");
+                OnStatusLog?.Invoke($"⚠️ [{label} 즉시진입] {symbol} 오류: {ex.Message}");
             }
         }
 
