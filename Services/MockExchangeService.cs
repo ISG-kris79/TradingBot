@@ -152,6 +152,16 @@ namespace TradingBot.Services
             }
         }
 
+        public Task<(bool Success, string OrderId)> PlaceTrailingStopOrderAsync(
+            string symbol, string side, decimal quantity,
+            decimal callbackRate, decimal? activationPrice = null,
+            CancellationToken ct = default)
+        {
+            string orderId = Guid.NewGuid().ToString();
+            Console.WriteLine($"[MOCK] TRAILING_STOP_MARKET {symbol} callback={callbackRate}%");
+            return Task.FromResult((true, orderId));
+        }
+
         public Task<bool> CancelOrderAsync(string symbol, string orderId, CancellationToken ct = default)
         {
             lock (_syncLock)

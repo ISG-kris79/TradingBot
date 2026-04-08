@@ -31,6 +31,12 @@ namespace TradingBot.Services
         Task<(bool Success, string OrderId)> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default);
         Task<bool> CancelOrderAsync(string symbol, string orderId, CancellationToken ct = default);
 
+        // [v3.3.8] 서버사이드 트레일링 스탑 (바이낸스 TRAILING_STOP_MARKET)
+        Task<(bool Success, string OrderId)> PlaceTrailingStopOrderAsync(
+            string symbol, string side, decimal quantity,
+            decimal callbackRate, decimal? activationPrice = null,
+            CancellationToken ct = default);
+
         // [Phase 11] Batch Order for Grid Strategy
         Task<BatchOrderResult> PlaceBatchOrdersAsync(List<BatchOrderRequest> orders, CancellationToken ct = default);
 

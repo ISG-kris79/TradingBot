@@ -15,16 +15,23 @@
 
  - 없음
 
-## [3.3.8] - 2026-04-08
+## [3.3.9] - 2026-04-08
+
+### Added
+
+- **바이낸스 서버사이드 TRAILING_STOP_MARKET**: PUMP 코인 수익 보호 강화
+  - ROE +25% 달성 시 바이낸스에 TRAILING_STOP_MARKET 주문 자동 등록
+  - 바이낸스 서버가 실시간 고점 추적 → callbackRate% 하락 시 시장가 청산
+  - 1초 급락에도 고점 대비 1% 내에서 자동 청산 (봇 CPU/폴링 무관)
+  - Step1 (ROE +25%): callback 1.0% (고점 대비 1% 하락 시 청산)
+  - Step2 (ROE +80%): callback 0.5% (더 타이트하게 수익 보호)
+  - TRAILING_STOP 실패 시 STOP_MARKET 폴백 (기존 보호선 유지)
+  - PlaceTrailingStopOrderAsync 메서드 추가 (IExchangeService + BinanceExchangeService)
 
 ### Fixed
 
 - **PUMP 67% ROE → 본절 손절 방지**: 계단식 보호선 체크를 본절/BB 체크보다 우선 실행
   - 계단식 보호선 활성화 시 본절가 스탑 무시 (보호선이 더 높으므로)
-  - 계단식 보호선 발동 시 **서버사이드 STOP_MARKET** 주문을 보호선 가격으로 이동
-  - 1초 급락에도 바이낸스 서버에서 보호선 가격에 자동 청산 (봇 폴링 무관)
-  - Step1: ROE +25% 달성 → 서버 스탑을 ROE +10% 가격으로
-  - Step2: ROE +80% 달성 → 서버 스탑을 ROE +40% 가격으로
 
 ## [3.3.7] - 2026-04-08
 

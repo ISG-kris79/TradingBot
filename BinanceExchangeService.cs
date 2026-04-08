@@ -279,6 +279,47 @@ namespace TradingBot.Services
                 : (false, string.Empty);
         }
 
+        /// <summary>
+        /// [v3.3.8] 바이낸스 서버사이드 TRAILING_STOP_MARKET 주문
+        /// 거래소가 자동으로 고점 추적 → callbackRate% 하락 시 시장가 청산
+        /// </summary>
+        /// <param name="callbackRate">콜백 비율 (%) — 0.1~5.0, 예: 1.0 = 고점 대비 1% 하락 시 발동</param>
+        /// <param name="activationPrice">활성화 가격 — 이 가격 도달 후부터 트레일링 시작 (null이면 즉시)</param>
+        public async Task<(bool Success, string OrderId)> PlaceTrailingStopOrderAsync(
+            string symbol, string side, decimal quantity,
+            decimal callbackRate, decimal? activationPrice = null,
+            CancellationToken ct = default)
+        {
+            (decimal stepSize, decimal tickSize) = await GetSymbolPrecisionAsync(symbol, ct);
+            if (stepSize > 0)
+                quantity = Math.Floor(quantity / stepSize) * stepSize;
+            if (activationPrice.HasValue && tickSize > 0)
+                activationPrice = Math.Floor(activationPrice.Value / tickSize) * tickSize;
+
+            // callbackRate: 바이낸스 허용 범위 0.1% ~ 5.0%
+            callbackRate = Math.Clamp(callbackRate, 0.1m, 5.0m);
+
+            OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
+            var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                symbol,
+                orderSide,
+                FuturesOrderType.TrailingStopMarket,
+                quantity,
+                activationPrice: activationPrice,
+                callbackRate: callbackRate,
+                reduceOnly: true,
+                ct: ct);
+
+            if (result.Success && result.Data != null)
+            {
+                Console.WriteLine($"✅ [Binance] TRAILING_STOP_MARKET 설정 성공 - {symbol} callback={callbackRate}% activation={activationPrice?.ToString("F4") ?? "즉시"}");
+                return (true, result.Data.Id.ToString());
+            }
+
+            Console.WriteLine($"❌ [Binance] TRAILING_STOP_MARKET 실패 - {symbol}: {result.Error?.Message}");
+            return (false, string.Empty);
+        }
+
         public async Task<bool> CancelOrderAsync(string symbol, string orderId, CancellationToken ct = default)
         {
             if (!long.TryParse(orderId, out long id))
