@@ -6271,7 +6271,61 @@ namespace TradingBot
 
             try
             {
-                // 즉시 시장가 주문 — AI Gate/R:R/CandleData 전부 스킵
+                // [v3.3.2] RSI 과열 체크 + 눌림 대기 (고점 매수 방지)
+                if (direction == "LONG")
+                {
+                    try
+                    {
+                        var klines = await _exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.OneMinute, 20, token);
+                        if (klines != null && klines.Count >= 14)
+                        {
+                            double rsi = IndicatorCalculator.CalculateRSI(klines.ToList(), 14);
+                            if (rsi >= 80)
+                            {
+                                OnStatusLog?.Invoke($"⚠️ [SPIKE_FAST] {symbol} RSI={rsi:F1} ≥ 80 과열 → 스킵");
+                                lock (_posLock) { _activePositions.Remove(symbol); }
+                                return;
+                            }
+
+                            // 눌림 대기: 최대 60초, 고점 대비 -1% 눌리면 진입
+                            decimal spikeHigh = currentPrice;
+                            var deadline = DateTime.Now.AddSeconds(60);
+                            bool pullbackFound = false;
+
+                            while (DateTime.Now < deadline && !token.IsCancellationRequested)
+                            {
+                                await Task.Delay(5000, token);
+                                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var latestTick))
+                                {
+                                    decimal nowPrice = latestTick.LastPrice;
+                                    if (nowPrice > spikeHigh) spikeHigh = nowPrice;
+
+                                    decimal pullbackPct = (spikeHigh - nowPrice) / spikeHigh * 100;
+                                    if (pullbackPct >= 1.0m)
+                                    {
+                                        currentPrice = nowPrice;
+                                        quantity = currentPrice < 0.01m ? Math.Floor((marginUsdt * leverage) / currentPrice) : Math.Round((marginUsdt * leverage) / currentPrice, 2, MidpointRounding.ToZero);
+                                        pullbackFound = true;
+                                        OnStatusLog?.Invoke($"✅ [SPIKE_FAST] {symbol} 눌림 감지 ({pullbackPct:F1}%) → 진입 px={currentPrice}");
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (!pullbackFound)
+                            {
+                                OnStatusLog?.Invoke($"⚠️ [SPIKE_FAST] {symbol} 60초 내 눌림 없음 → 스킵 (고점 매수 방지)");
+                                lock (_posLock) { _activePositions.Remove(symbol); }
+                                return;
+                            }
+                        }
+                    }
+                    catch (Exception rsiEx)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [SPIKE_FAST] {symbol} RSI 체크 실패: {rsiEx.Message} → 진입 계속");
+                    }
+                }
+
                 OnStatusLog?.Invoke($"[SPIKE_FAST] {symbol} {side} qty={quantity:F2} margin={marginUsdt:F0} lev={leverage} px={currentPrice}");
                 bool success = await _exchangeService.PlaceOrderAsync(symbol, side, quantity, null, token, reduceOnly: false);
 
