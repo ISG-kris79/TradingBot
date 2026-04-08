@@ -2719,6 +2719,70 @@
                     </Grid>
                 </TabItem>
 
+                <!-- PERFORMANCE TAB (v3.2.49) -->
+                <TabItem Header="📊  PERFORMANCE">
+                    <Grid Background="#0A0E27" Margin="16">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- 헤더: 기간 선택 + 요약 -->
+                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,12">
+                            <TextBlock Text="📊 PERFORMANCE" FontSize="16" FontWeight="Bold" Foreground="White" VerticalAlignment="Center" Margin="0,0,20,0"/>
+                            <RadioButton Content="일별" GroupName="PerfPeriod" IsChecked="True" Foreground="White" FontSize="12" Margin="0,0,10,0"
+                                         Checked="PerfDaily_Checked"/>
+                            <RadioButton Content="주별" GroupName="PerfPeriod" Foreground="White" FontSize="12" Margin="0,0,10,0"
+                                         Checked="PerfWeekly_Checked"/>
+                            <RadioButton Content="월별" GroupName="PerfPeriod" Foreground="White" FontSize="12"
+                                         Checked="PerfMonthly_Checked"/>
+                            <TextBlock Text="{Binding PerformanceSummary}" Foreground="#94A3B8" FontSize="12" VerticalAlignment="Center" Margin="30,0,0,0"/>
+                        </StackPanel>
+
+                        <!-- PnL 차트 -->
+                        <Border Grid.Row="2" Background="#111827" CornerRadius="8" Padding="12">
+                            <lvc:CartesianChart Series="{Binding PerformanceSeries}" LegendLocation="None"
+                                               xmlns:lvc="clr-namespace:LiveCharts.Wpf;assembly=LiveCharts.Wpf">
+                                <lvc:CartesianChart.AxisX>
+                                    <lvc:Axis Labels="{Binding PerformanceLabels}" Foreground="#6B7280" FontSize="9">
+                                        <lvc:Axis.Separator>
+                                            <lvc:Separator StrokeThickness="0"/>
+                                        </lvc:Axis.Separator>
+                                    </lvc:Axis>
+                                </lvc:CartesianChart.AxisX>
+                                <lvc:CartesianChart.AxisY>
+                                    <lvc:Axis Foreground="#6B7280" FontSize="10" LabelFormatter="{Binding YFormatter}">
+                                        <lvc:Axis.Separator>
+                                            <lvc:Separator Stroke="#1E293B" StrokeThickness="0.5"/>
+                                        </lvc:Axis.Separator>
+                                    </lvc:Axis>
+                                </lvc:CartesianChart.AxisY>
+                            </lvc:CartesianChart>
+                        </Border>
+
+                        <!-- 달력 뷰 (일별 PnL) -->
+                        <Border Grid.Row="3" Background="#111827" CornerRadius="8" Padding="8" Margin="0,8,0,0" MaxHeight="200">
+                            <ItemsControl ItemsSource="{Binding CalendarEntries}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="#1E293B" CornerRadius="4" Padding="6,4" Margin="2" MinWidth="80">
+                                            <TextBlock Text="{Binding Display}" Foreground="{Binding PnlColor}"
+                                                       FontFamily="Consolas" FontSize="10" TextAlignment="Center"/>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Border>
+                    </Grid>
+                </TabItem>
+
                 <!-- AI MONITOR TAB -->
                 <TabItem Header="🤖  AI MONITOR">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">

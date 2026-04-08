@@ -1527,4 +1527,17 @@ namespace TradingBot.Models
         protected void OnPropertyChanged([CallerMemberName] string? name = null)
             => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name ?? string.Empty));
     }
+
+    /// <summary>[v3.2.49] Performance 달력 일별 PnL 엔트리</summary>
+    public class DayPnlEntry
+    {
+        public string Label { get; set; } = "";
+        public decimal PnlUsdt { get; set; }
+        public int TradeCount { get; set; }
+        public bool IsProfit { get; set; }
+        public string Display => $"{Label}\n${PnlUsdt:+#,##0.00;-#,##0.00}\n{TradeCount}건";
+        public System.Windows.Media.Brush PnlColor => IsProfit
+            ? System.Windows.Media.Brushes.LimeGreen
+            : System.Windows.Media.Brushes.Tomato;
+    }
 }

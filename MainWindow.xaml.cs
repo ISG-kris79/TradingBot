@@ -601,6 +601,10 @@ namespace TradingBot
             }
         }
 
+        private void PerfDaily_Checked(object sender, RoutedEventArgs e) { if (ViewModel != null) ViewModel.PerformancePeriod = "일별"; }
+        private void PerfWeekly_Checked(object sender, RoutedEventArgs e) { if (ViewModel != null) ViewModel.PerformancePeriod = "주별"; }
+        private void PerfMonthly_Checked(object sender, RoutedEventArgs e) { if (ViewModel != null) ViewModel.PerformancePeriod = "월별"; }
+
         private async void dgMultiTimeframe_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
             try

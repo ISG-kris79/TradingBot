@@ -144,6 +144,16 @@ namespace TradingBot.ViewModels
         public ObservableCollection<string> FastLogs { get; set; } = new ObservableCollection<string>();
         public ObservableCollection<TradeLog> TradeHistory { get; set; } = new ObservableCollection<TradeLog>();
 
+        // [v3.2.49] Performance 탭
+        public SeriesCollection PerformanceSeries { get; set; } = new SeriesCollection();
+        public string[] PerformanceLabels { get; set; } = Array.Empty<string>();
+        public ObservableCollection<DayPnlEntry> CalendarEntries { get; set; } = new ObservableCollection<DayPnlEntry>();
+        private string _performancePeriod = "일별";
+        public string PerformancePeriod { get => _performancePeriod; set { _performancePeriod = value; OnPropertyChanged(); _ = LoadPerformanceDataAsync(); } }
+        private string _performanceSummary = "";
+        public string PerformanceSummary { get => _performanceSummary; set { _performanceSummary = value; OnPropertyChanged(); } }
+        public Func<double, string> YFormatter { get; set; } = val => $"${val:N0}";
+
         private int _gatePassCount;
         public int GatePassCount
         {
@@ -1709,6 +1719,96 @@ namespace TradingBot.ViewModels
             catch (Exception ex)
             {
                 AddLog($"❌ 이력 로드 실패: {ex.Message}");
+            }
+        }
+
+        public async Task LoadPerformanceDataAsync()
+        {
+            try
+            {
+                int userId = AppConfig.CurrentUser?.Id ?? 0;
+                if (userId <= 0) return;
+
+                var db = new DbManager(AppConfig.ConnectionString);
+                DateTime start, end = DateTime.Now;
+
+                if (_performancePeriod == "월별")
+                    start = end.AddMonths(-12);
+                else if (_performancePeriod == "주별")
+                    start = end.AddMonths(-3);
+                else
+                    start = end.AddDays(-30);
+
+                var trades = await db.GetTradeHistoryAsync(userId, start, end, 5000);
+                var closed = trades.Where(t => t.PnL != 0 && t.ExitTime > DateTime.MinValue).ToList();
+
+                // 일별/주별/월별 집계
+                var grouped = _performancePeriod switch
+                {
+                    "월별" => closed.GroupBy(t => t.ExitTime.ToString("yyyy-MM")).OrderBy(g => g.Key),
+                    "주별" => closed.GroupBy(t =>
+                    {
+                        var cal = System.Globalization.CultureInfo.CurrentCulture.Calendar;
+                        int week = cal.GetWeekOfYear(t.ExitTime, System.Globalization.CalendarWeekRule.FirstDay, DayOfWeek.Monday);
+                        return $"{t.ExitTime:yyyy}-W{week:D2}";
+                    }).OrderBy(g => g.Key),
+                    _ => closed.GroupBy(t => t.ExitTime.ToString("MM/dd")).OrderBy(g => g.Key)
+                };
+
+                var labels = new List<string>();
+                var pnlValues = new ChartValues<double>();
+                var calEntries = new List<DayPnlEntry>();
+                decimal totalPnl = 0, totalWin = 0;
+                int winCount = 0, totalCount = 0;
+
+                foreach (var g in grouped)
+                {
+                    decimal dayPnl = g.Sum(t => t.PnL);
+                    totalPnl += dayPnl;
+                    totalCount += g.Count();
+                    if (dayPnl > 0) { winCount++; totalWin += dayPnl; }
+
+                    labels.Add(g.Key);
+                    pnlValues.Add((double)dayPnl);
+
+                    calEntries.Add(new DayPnlEntry
+                    {
+                        Label = g.Key,
+                        PnlUsdt = dayPnl,
+                        TradeCount = g.Count(),
+                        IsProfit = dayPnl >= 0
+                    });
+                }
+
+                double winRate = totalCount > 0 ? (double)winCount / labels.Count * 100 : 0;
+
+                RunOnUI(() =>
+                {
+                    PerformanceSeries = new SeriesCollection
+                    {
+                        new ColumnSeries
+                        {
+                            Title = "PnL",
+                            Values = pnlValues,
+                            Fill = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x00, 0xE6, 0x76)),
+                            StrokeThickness = 0,
+                            ColumnPadding = 2
+                        }
+                    };
+                    OnPropertyChanged(nameof(PerformanceSeries));
+
+                    PerformanceLabels = labels.ToArray();
+                    OnPropertyChanged(nameof(PerformanceLabels));
+
+                    CalendarEntries = new ObservableCollection<DayPnlEntry>(calEntries);
+                    OnPropertyChanged(nameof(CalendarEntries));
+
+                    PerformanceSummary = $"총 PnL: ${totalPnl:+#,##0.00;-#,##0.00} | 승률: {winRate:F0}% ({winCount}/{labels.Count}) | 거래: {totalCount}건";
+                });
+            }
+            catch (Exception ex)
+            {
+                AddLog($"⚠️ Performance 로드 실패: {ex.Message}");
             }
         }
 
