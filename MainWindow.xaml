@@ -1609,22 +1609,21 @@
                                             </DataGrid>
                                         </Border>
 
-                                        <!-- FAST LOG (3) + Critical Alerts (2) 나란히 (v3.2.27) -->
-                                        <Grid Grid.Row="2" Margin="0,4,0,0">
+                                        <!-- FAST LOG (3) + Critical Alerts (2) 나란히 (v3.2.32) -->
+                                        <Grid Grid.Row="2" Margin="0,8,0,6">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="3*"/>
                                                 <ColumnDefinition Width="2*"/>
                                             </Grid.ColumnDefinitions>
 
-                                            <!-- FAST LOG (8줄 고정) -->
+                                            <!-- FAST LOG -->
                                             <Border Grid.Column="0"
                                                     Background="#0D1117"
                                                     BorderBrush="#1E3A5F"
                                                     BorderThickness="1"
                                                     CornerRadius="6"
-                                                    Padding="6,4"
-                                                    Margin="0,0,4,0"
-                                                    Height="150">
+                                                    Padding="6,4,6,6"
+                                                    Margin="0,0,4,0">
                                                 <Grid>
                                                     <Grid.RowDefinitions>
                                                         <RowDefinition Height="Auto"/>
@@ -1653,15 +1652,14 @@
                                                 </Grid>
                                             </Border>
 
-                                            <!-- Critical Alerts (8줄 고정) -->
+                                            <!-- Critical Alerts -->
                                             <Border Grid.Column="1"
                                                     Background="#1A0A0A"
                                                     BorderBrush="#5F1E1E"
                                                     BorderThickness="1"
                                                     CornerRadius="6"
-                                                    Padding="6,4"
-                                                    Margin="4,0,0,0"
-                                                    Height="150">
+                                                    Padding="6,4,6,6"
+                                                    Margin="4,0,0,0">
                                                 <Grid>
                                                     <Grid.RowDefinitions>
                                                         <RowDefinition Height="Auto"/>
@@ -1678,8 +1676,11 @@
                                                              FontSize="10"
                                                              VirtualizingStackPanel.IsVirtualizing="True"
                                                              ScrollViewer.VerticalScrollBarVisibility="Hidden"
-                                                             ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+                                                             ScrollViewer.HorizontalScrollBarVisibility="Auto"
                                                              ScrollViewer.CanContentScroll="True">
+                                                        <ListBox.Resources>
+                                                            <Style TargetType="ScrollBar" BasedOn="{StaticResource MinimalScrollBar}"/>
+                                                        </ListBox.Resources>
                                                         <ListBox.ItemContainerStyle>
                                                             <Style TargetType="ListBoxItem">
                                                                 <Setter Property="Padding" Value="2,1"/>
