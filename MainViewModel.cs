@@ -4557,6 +4557,8 @@ namespace TradingBot.ViewModels
                 {
                     existing.Decision = "WAIT";
                     existing.ProfitPercent = 0;
+                    existing.EntryPrice = 0;
+                    existing.Quantity = 0;
                     existing.TargetPrice = 0;
                     existing.StopLossPrice = 0;
                     existing.TrailingStopPrice = 0;

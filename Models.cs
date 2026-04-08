@@ -601,9 +601,9 @@ namespace TradingBot.Models
                 {
                     _profitPercent = value;
                     OnPropertyChanged(nameof(ProfitPercent));
-                    OnPropertyChanged(nameof(ProfitRate)); // ProfitRate와 동기화
+                    OnPropertyChanged(nameof(ProfitRate));
+                    OnPropertyChanged(nameof(ProfitUsdt));
 
-                    // ProfitPercent가 변할 때 연관된 UI 속성들도 같이 새로고침
                     OnPropertyChanged(nameof(ProfitColor));
                     OnPropertyChanged(nameof(ChartStroke));
                     OnPropertyChanged(nameof(ChartFill));
@@ -656,6 +656,20 @@ namespace TradingBot.Models
                 return SanitizeProfitPercent(roi);
             }
             set => ProfitPercent = value;
+        }
+
+        /// <summary>[v3.2.45] ROI 금액 (USDT) — 진입가 × 수량 × ROI%</summary>
+        public string ProfitUsdt
+        {
+            get
+            {
+                if (!IsPositionActive || EntryPrice == 0 || Quantity == 0)
+                    return "";
+                decimal margin = EntryPrice * Math.Abs(Quantity) / Math.Max(1, Leverage);
+                double pnl = (double)margin * ProfitRate / 100.0;
+                if (double.IsNaN(pnl) || double.IsInfinity(pnl)) return "";
+                return $"{pnl:+0.00;-0.00} USDT";
+            }
         }
 
         private static double SanitizeProfitPercent(double value)

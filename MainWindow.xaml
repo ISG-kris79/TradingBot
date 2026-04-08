@@ -1507,14 +1507,20 @@
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
 
-                                                    <!-- ③ ROI: 수익률 (진입중 강조) -->
-                                                    <DataGridTemplateColumn Header="ROI" Width="76">
+                                                    <!-- ③ ROI: 수익률 + USDT 금액 -->
+                                                    <DataGridTemplateColumn Header="ROI" Width="100">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
-                                                                <TextBlock Text="{Binding ProfitRate, StringFormat={}{0:+0.00;-0.00;0.00}%}"
-                                                                           Foreground="{Binding ProfitColor}"
-                                                                           FontFamily="Consolas" FontSize="13" FontWeight="Bold"
-                                                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                                    <TextBlock Text="{Binding ProfitRate, StringFormat={}{0:+0.00;-0.00;0.00}%}"
+                                                                               Foreground="{Binding ProfitColor}"
+                                                                               FontFamily="Consolas" FontSize="13" FontWeight="Bold"
+                                                                               HorizontalAlignment="Center"/>
+                                                                    <TextBlock Text="{Binding ProfitUsdt, Mode=OneWay}"
+                                                                               Foreground="{Binding ProfitColor}"
+                                                                               FontFamily="Consolas" FontSize="9"
+                                                                               HorizontalAlignment="Center" Opacity="0.7"/>
+                                                                </StackPanel>
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
