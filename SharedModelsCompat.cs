@@ -70,6 +70,8 @@ namespace TradingBot.Shared.Models
         public bool IsPyramided { get; set; }
         public int PyramidCount { get; set; }
         public bool IsProfitRunHoldActive { get; set; }
+        public bool IsVolatilityRecovery { get; set; }     // [v3.3.6] 급변동 후 회복 진입 (넓은 손절)
+        public decimal RecoveryExtremePrice { get; set; }  // [v3.3.6] 급변동 극단가 (CRASH low / PUMP high)
     public decimal AggressiveMultiplier { get; set; } = 1.0m;  // 공격형 진입 배수 (1.0~2.0)
 
     // [엘리엇 파동 기반 익절/손절]

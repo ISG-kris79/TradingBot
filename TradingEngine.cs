@@ -115,6 +115,10 @@ namespace TradingBot
         private PumpScanStrategy? _pumpStrategy;
         private MajorCoinStrategy? _majorStrategy;
         private readonly MarketCrashDetector _crashDetector = new();
+        // [v3.3.6] 급변동 회복 구간 추적: symbol → (extremePrice, isUpwardSpike, eventTime)
+        private readonly ConcurrentDictionary<string, (decimal ExtremePrice, bool IsUpwardSpike, DateTime EventTime)>
+            _volatilityRecoveryZone = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan VolatilityRecoveryDuration = TimeSpan.FromHours(4);
         private readonly MarketRegimeClassifier _regimeClassifier = new();
         private readonly ExitOptimizerService _exitOptimizer = new();
         private MacdCrossSignalService? _macdCrossService;
@@ -5944,6 +5948,39 @@ namespace TradingBot
         }
 
         // ═══════════════════════════════════════════════════════════════
+        // [v3.3.6] Volatility Recovery Zone — 급변동 후 회복 구간 추적
+        // 메이저 코인 5%+ 급등/급락 후 반등 시 넓은 손절 적용
+        // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>급변동 이벤트 기록 (CRASH/PUMP/SPIKE 핸들러에서 호출)</summary>
+        private void RecordVolatilityEvent(string symbol, decimal extremePrice, bool isUpwardSpike)
+        {
+            if (!MajorSymbols.Contains(symbol)) return;
+            _volatilityRecoveryZone[symbol] = (extremePrice, isUpwardSpike, DateTime.Now);
+            OnStatusLog?.Invoke($"🌊 [회복구간] {symbol} 등록 | 극단가={extremePrice:F4} 방향={(isUpwardSpike ? "급등↑" : "급락↓")} | 4시간간 넓은 손절 적용");
+        }
+
+        /// <summary>심볼이 현재 급변동 회복 구간인지 확인</summary>
+        private bool TryGetVolatilityRecoveryInfo(string symbol, out decimal extremePrice, out bool isUpwardSpike)
+        {
+            extremePrice = 0;
+            isUpwardSpike = false;
+            if (!_volatilityRecoveryZone.TryGetValue(symbol, out var info))
+                return false;
+
+            // 4시간 만료
+            if (DateTime.Now - info.EventTime > VolatilityRecoveryDuration)
+            {
+                _volatilityRecoveryZone.TryRemove(symbol, out _);
+                return false;
+            }
+
+            extremePrice = info.ExtremePrice;
+            isUpwardSpike = info.IsUpwardSpike;
+            return true;
+        }
+
+        // ═══════════════════════════════════════════════════════════════
         // [급변 감지] CRASH/PUMP 자동 청산 + 리버스 진입
         // ═══════════════════════════════════════════════════════════════
 
@@ -5992,6 +6029,13 @@ namespace TradingBot
                 OnAlert?.Invoke($"🔴 [CRASH] {sym} LONG 긴급 청산 (시장 급락 {avgDropPct:0.00}%)");
                 await _positionMonitor.ExecuteMarketClose(sym, $"CRASH 감지 긴급 청산 (시장 {avgDropPct:0.00}%)", token);
                 closedLongs.Add((sym, qty, entry));
+            }
+
+            // [v3.3.6] 급변동 회복 구간 등록 — CRASH 저점 기록
+            foreach (var sym in crashCoins)
+            {
+                if (_marketDataManager.TickerCache.TryGetValue(sym, out var crashTick) && crashTick.LastPrice > 0)
+                    RecordVolatilityEvent(sym, crashTick.LastPrice, isUpwardSpike: false);
             }
 
             // 2. SHORT 독립 진입 (LONG 없어도 급락 코인에 SHORT)
@@ -6073,6 +6117,13 @@ namespace TradingBot
                 closedShorts.Add((sym, qty, entry));
             }
 
+            // [v3.3.6] 급변동 회복 구간 등록 — PUMP 고점 기록
+            foreach (var sym in pumpCoins)
+            {
+                if (_marketDataManager.TickerCache.TryGetValue(sym, out var pumpTick) && pumpTick.LastPrice > 0)
+                    RecordVolatilityEvent(sym, pumpTick.LastPrice, isUpwardSpike: true);
+            }
+
             // 2. LONG 독립 진입 (SHORT 없어도 급등 코인에 LONG)
             if (_crashDetector.ReverseEntrySizeRatio > 0)
             {
@@ -6112,6 +6163,10 @@ namespace TradingBot
             var token = _cts?.Token ?? CancellationToken.None;
 
             bool isMajor = MajorSymbols.Contains(symbol);
+
+            // [v3.3.6] 메이저 코인 급변동 → 회복 구간 등록
+            if (isMajor && Math.Abs(changePct) >= 3.0m)
+                RecordVolatilityEvent(symbol, currentPrice, isUpwardSpike: changePct > 0);
 
             // [v3.2.38] 슬롯 체크 + 리버스 처리
             bool needsReverse = false;
@@ -6362,6 +6417,14 @@ namespace TradingBot
                     catch { }
 
                     // 내부 포지션 등록 (거래소 실제 수량)
+                    // [v3.3.6] SPIKE 진입 시 회복 구간 체크
+                    bool spikeRecovery = false;
+                    decimal spikeRecoveryExtreme = 0;
+                    if (isMajor && TryGetVolatilityRecoveryInfo(symbol, out var spkExtreme, out _))
+                    {
+                        spikeRecovery = true;
+                        spikeRecoveryExtreme = spkExtreme;
+                    }
                     lock (_posLock)
                     {
                         _activePositions[symbol] = new PositionInfo
@@ -6373,6 +6436,8 @@ namespace TradingBot
                             Quantity = direction == "LONG" ? actualQty : -actualQty,
                             Leverage = (int)leverage,
                             IsPumpStrategy = !isMajor,
+                            IsVolatilityRecovery = spikeRecovery,
+                            RecoveryExtremePrice = spikeRecoveryExtreme,
                             EntryTime = DateTime.Now
                         };
                     }
@@ -6697,6 +6762,8 @@ namespace TradingBot
             public decimal SizeMultiplier = 1.0m; // single, non-cascading
             public bool IsPumpStrategy;
             public bool IsMajorAtrEnforced;
+            public bool IsVolatilityRecovery;
+            public decimal RecoveryExtremePrice;
             public string EntryZoneTag = string.Empty;
             public decimal EntryBbPosition;
             public bool IsHybridMidBandLongEntry;
@@ -7571,19 +7638,41 @@ namespace TradingBot
                 EntryLog("MAJOR_SNIPER", "PASS", $"score={(ctx.AiScore > 0 ? ctx.AiScore : ctx.ConvictionScore):F1} m15Slope={slope:F4}");
             }
 
-            // 5. 포지션 사이즈: adaptive equity
+            // 5. [v3.3.6] 급변동 회복 구간 체크 — 마진 축소 + 넓은 손절 적용
+            if (TryGetVolatilityRecoveryInfo(ctx.Symbol, out var recoveryExtreme, out var recoveryIsUp))
+            {
+                ctx.IsVolatilityRecovery = true;
+                ctx.RecoveryExtremePrice = recoveryExtreme;
+                // CRASH 후 LONG 진입: crash low가 구조적 손절선
+                // PUMP 후 LONG 진입: pump high 위로 진입 중이므로 기본 손절 유지
+                if (!recoveryIsUp && recoveryExtreme > 0 && recoveryExtreme < ctx.CurrentPrice)
+                {
+                    // crash low를 구조적 손절선으로 사용 (기존 ATR 손절보다 넓을 수 있음)
+                    decimal recoveryStopBuffer = recoveryExtreme * 0.997m; // -0.3% 버퍼
+                    if (ctx.CustomStopLossPrice <= 0 || recoveryStopBuffer < ctx.CustomStopLossPrice)
+                        ctx.CustomStopLossPrice = recoveryStopBuffer;
+                }
+                EntryLog("RECOVERY", "ACTIVE", $"extreme={recoveryExtreme:F4} dir={(recoveryIsUp ? "UP" : "DOWN")} marginReduction=60%");
+                OnStatusLog?.Invoke($"🌊 [회복구간] {ctx.Symbol} LONG 진입 | 급변동 후 회복 모드 → 마진 60%, 넓은 손절");
+            }
+
+            // 6. 포지션 사이즈: adaptive equity
             ctx.Leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
             ctx.MarginUsdt = await GetAdaptiveEntryMarginUsdtAsync(ctx.Token);
             ctx.IsPumpStrategy = false;
 
-            decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
-            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=equity*{majorMarginPercent:F1}%");
+            // [v3.3.6] 회복 모드 마진 축소 (60%): 넓은 손절 대비 리스크 일정 유지
+            if (ctx.IsVolatilityRecovery)
+                ctx.MarginUsdt = Math.Round(ctx.MarginUsdt * 0.6m, 2);
 
-            // 6. R:R 체크
+            decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
+            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=equity*{majorMarginPercent:F1}%{(ctx.IsVolatilityRecovery ? " [RECOVERY 60%]" : "")}");
+
+            // 7. R:R 체크
             if (!EvaluateRiskRewardForEntry(ctx))
                 return;
 
-            // 7. 주문 실행
+            // 8. 주문 실행
             await PlaceAndTrackEntryAsync(ctx);
         }
 
@@ -7638,15 +7727,35 @@ namespace TradingBot
                     $"🛡️ [MAJOR ATR] {ctx.Symbol} 하이브리드 손절 적용 | Entry={ctx.CurrentPrice:F8}, SL={ctx.CustomStopLossPrice:F8}, ATRdist={ctx.MajorAtrPreview.AtrDistance:F8}, 구조선={ctx.MajorAtrPreview.StructureStopPrice:F8}");
             }
 
-            // 5. 포지션 사이즈: adaptive equity
+            // 5. [v3.3.6] 급변동 회복 구간 체크
+            if (TryGetVolatilityRecoveryInfo(ctx.Symbol, out var recoveryExtremeS, out var recoveryIsUpS))
+            {
+                ctx.IsVolatilityRecovery = true;
+                ctx.RecoveryExtremePrice = recoveryExtremeS;
+                // PUMP 후 SHORT 진입: pump high가 구조적 손절선
+                if (recoveryIsUpS && recoveryExtremeS > 0 && recoveryExtremeS > ctx.CurrentPrice)
+                {
+                    decimal recoveryStopBuffer = recoveryExtremeS * 1.003m; // +0.3% 버퍼
+                    if (ctx.CustomStopLossPrice <= 0 || recoveryStopBuffer > ctx.CustomStopLossPrice)
+                        ctx.CustomStopLossPrice = recoveryStopBuffer;
+                }
+                EntryLog("RECOVERY", "ACTIVE", $"extreme={recoveryExtremeS:F4} dir={(recoveryIsUpS ? "UP" : "DOWN")} marginReduction=60%");
+                OnStatusLog?.Invoke($"🌊 [회복구간] {ctx.Symbol} SHORT 진입 | 급변동 후 회복 모드 → 마진 60%, 넓은 손절");
+            }
+
+            // 6. 포지션 사이즈: adaptive equity
             ctx.Leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
             ctx.MarginUsdt = await GetAdaptiveEntryMarginUsdtAsync(ctx.Token);
             ctx.IsPumpStrategy = false;
 
-            decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
-            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=equity*{majorMarginPercent:F1}%");
+            // [v3.3.6] 회복 모드 마진 축소 (60%)
+            if (ctx.IsVolatilityRecovery)
+                ctx.MarginUsdt = Math.Round(ctx.MarginUsdt * 0.6m, 2);
 
-            // 6. R:R 체크
+            decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
+            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=equity*{majorMarginPercent:F1}%{(ctx.IsVolatilityRecovery ? " [RECOVERY 60%]" : "")}");
+
+            // 7. R:R 체크
             if (!EvaluateRiskRewardForEntry(ctx))
                 return;
 
@@ -8086,7 +8195,9 @@ namespace TradingBot
                             PartialProfitStage = 0,
                             BreakevenPrice = 0,
                             TakeProfit = ctx.CustomTakeProfitPrice > 0 ? ctx.CustomTakeProfitPrice : 0,
-                            StopLoss = ctx.CustomStopLossPrice > 0 ? ctx.CustomStopLossPrice : 0
+                            StopLoss = ctx.CustomStopLossPrice > 0 ? ctx.CustomStopLossPrice : 0,
+                            IsVolatilityRecovery = ctx.IsVolatilityRecovery,
+                            RecoveryExtremePrice = ctx.RecoveryExtremePrice
                         };
                     }
                 }
@@ -8269,8 +8380,27 @@ namespace TradingBot
 
                 OnTradeExecuted?.Invoke(symbol, decision, actualEntryPrice, filledQty);
 
+                // [v3.3.6] 체결 후 SL/TP를 UI에 전달 (자동진입에서도 DataGrid에 표시)
                 decimal finalStopLoss = ctx.CustomStopLossPrice > 0 ? ctx.CustomStopLossPrice : 0;
                 decimal finalTakeProfit = ctx.CustomTakeProfitPrice > 0 ? ctx.CustomTakeProfitPrice : 0;
+                // PositionInfo에서 계산된 TP도 반영
+                lock (_posLock)
+                {
+                    if (_activePositions.TryGetValue(symbol, out var filledPos))
+                    {
+                        if (finalStopLoss <= 0 && filledPos.StopLoss > 0) finalStopLoss = filledPos.StopLoss;
+                        if (finalTakeProfit <= 0 && filledPos.TakeProfit > 0) finalTakeProfit = filledPos.TakeProfit;
+                    }
+                }
+                if (finalStopLoss > 0 || finalTakeProfit > 0)
+                {
+                    OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
+                    {
+                        Symbol = symbol,
+                        StopLossPrice = finalStopLoss,
+                        TargetPrice = finalTakeProfit,
+                    });
+                }
                 string entrySuccessMessage = TradingStateLogger.EntrySuccess(
                     symbol, decision, actualEntryPrice,
                     finalStopLoss, finalTakeProfit, ctx.SignalSource);
@@ -8375,6 +8505,9 @@ namespace TradingBot
                         OnStatusLog?.Invoke($"⚠️ {symbol} 패턴 스냅샷 저장 실패: {patternEx.Message}");
                     }
                 }
+
+                // [v3.3.6] UI 포지션 상태 활성화 (수동진입과 동일하게)
+                OnPositionStatusUpdate?.Invoke(symbol, true, actualEntryPrice);
 
                 // 감시 루프 시작
                 bool isPumpPosition = false;

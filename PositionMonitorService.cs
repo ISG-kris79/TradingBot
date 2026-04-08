@@ -182,6 +182,17 @@ namespace TradingBot.Services
                 string.Equals(symbol, "ETHUSDT", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(symbol, "XRPUSDT", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(symbol, "SOLUSDT", StringComparison.OrdinalIgnoreCase);
+            // [v3.3.6] 급변동 회복 모드 확인
+            bool isVolatilityRecovery = false;
+            decimal recoveryExtremePrice = 0;
+            lock (_posLock)
+            {
+                if (_activePositions.TryGetValue(symbol, out var recPos))
+                {
+                    isVolatilityRecovery = recPos.IsVolatilityRecovery;
+                    recoveryExtremePrice = recPos.RecoveryExtremePrice;
+                }
+            }
             // [메이저/PUMP 완전 분리] 메이저 전용 최종 목표익절 ROE 사용
             decimal majorTp2Roe = _settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : Math.Max(_settings.TargetRoe, 40.0m);
             decimal profitRunTriggerRoe = majorTp2Roe;
@@ -294,6 +305,14 @@ namespace TradingBot.Services
                 majorTrailingGap = 30.0m; // ROE 30% = 가격 1.5%
             }
 
+            // [v3.3.6] 급변동 회복 모드: 넓은 손절 + 조기 본절
+            if (isVolatilityRecovery && isAtr20MajorSymbol)
+            {
+                breakEvenROE = 15.0m;           // 조기 본절: 20% → 15% (빠른 보호)
+                majorTrailingGap = 40.0m;       // 넓은 트레일링: 30% → 40% ROE (2% 가격)
+                OnLog?.Invoke($"🌊 [회복모드] {symbol} 급변동 후 진입 | 손절=-80% ROE, 본절=15%, 트레일링갭=40%");
+            }
+
             if (tightTrailingROE <= profitLockROE)
             {
                 tightTrailingROE = profitLockROE + (isBtcSymbol ? 15.0m : 20.0m);
@@ -307,9 +326,11 @@ namespace TradingBot.Services
 
             // [v3.3.4] 하이브리드 손절: 구조 기반 우선 + 고정 ROE 최후 안전망
             // BTC -50%, 메이저 -50%, PUMP -60%
+            // [v3.3.6] 회복 모드: -80% ROE (넓은 안전망, 마진 60%로 리스크 동일)
             bool isPump = false;
             lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) isPump = p.IsPumpStrategy; }
-            decimal effectiveMajorStopLossRoe = isPump ? 60.0m : 50.0m;
+            decimal effectiveMajorStopLossRoe = isPump ? 60.0m
+                : (isVolatilityRecovery ? 80.0m : 50.0m);
 
             decimal tp1SafetyRoe = 5.0m; // 2→5%: TP1 이후 스탑을 +5% ROE로 상향 (본절 터치 후 날라가는 현상 방지)
             decimal tightGapPercent = majorTrailingGap / leverage / 100m;  // 3단계 간격 (ROE% → 가격%)
@@ -347,7 +368,8 @@ namespace TradingBot.Services
                 OnLog?.Invoke($"🎯 {symbol} 공격형 진입 배수 {aggressiveMultiplier:F2}x 감지 → 손절 타이트 조정 (ROE {breakEvenROE:F1}%)");
             }
 
-            OnLog?.Invoke($"📋 {symbol} [{(isBtcSymbol ? "BTC Specialist" : "Major Coin Mode")}] SL={effectiveMajorStopLossRoe:F0}% BreakEven={breakEvenROE:F1}% Tp1={profitLockROE:F0}% TrailStart={tightTrailingROE:F0}% TrailGap={majorTrailingGap:F1}% TP2={majorTp2Roe:F0}%");
+            string modeTag = isVolatilityRecovery ? "Recovery Mode" : (isBtcSymbol ? "BTC Specialist" : "Major Coin Mode");
+            OnLog?.Invoke($"📋 {symbol} [{modeTag}] SL={effectiveMajorStopLossRoe:F0}% BreakEven={breakEvenROE:F1}% Tp1={profitLockROE:F0}% TrailStart={tightTrailingROE:F0}% TrailGap={majorTrailingGap:F1}% TP2={majorTp2Roe:F0}%");
             OnLog?.Invoke($"�🛡️ {symbol} 1단계 보호 조건: ROE {breakEvenROE:F1}% + 보유 {breakEvenMinHoldSeconds:F0}초, 본절 버퍼 {breakEvenBufferPct * 100m:F2}%");
 
             if (hasCustomAbsoluteStop && !isSidewaysMode)
@@ -653,6 +675,15 @@ namespace TradingBot.Services
                     if (!breakEvenActivated && highestROE >= breakEvenROE)
                     {
                         breakEvenActivated = true;
+
+                        // [v3.3.6] 회복 모드 졸업: 본절 도달 → 넓은 손절(-80%) 정상화(-50%)
+                        if (isVolatilityRecovery)
+                        {
+                            effectiveMajorStopLossRoe = 50.0m;
+                            majorTrailingGap = 30.0m; // 트레일링 갭도 정상화
+                            tightGapPercent = majorTrailingGap / leverage / 100m;
+                            OnLog?.Invoke($"🌊→📋 {symbol} 회복 모드 졸업 | 본절 도달 → 손절 -80%→-50%, 트레일링갭 40%→30%");
+                        }
 
                         // 본절 + 수수료 보장 스탑
                         decimal breakEvenPrice = isLong
