@@ -6896,7 +6896,7 @@ namespace TradingBot
                     }
                 });
 
-                // AI Advisor: 블렌디드 스코어 기반 사이즈 결정 (차단 없음)
+                // AI Advisor: AI Gate 차단 시 사이즈 축소해서 정찰대 진입
                 if (!gateResult.allowEntry)
                 {
                     aiGateSizeMultiplier = blendedMlTfScore switch
@@ -6912,8 +6912,7 @@ namespace TradingBot
                     flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
 
                     EntryLog("AI_GATE", "ADVISOR",
-                        $"notBlocking blended={blendedMlTfScore:P0} tf={gateResult.detail.TF_Confidence:P0} ml={gateResult.detail.ML_Confidence:P0} size={aiGateSizeMultiplier:P0} gate={gateResult.reason}");
-                    OnStatusLog?.Invoke($"🧠 [AI Advisor] {symbol} {decision} | blended={blendedMlTfScore:P0} → 사이즈 {aiGateSizeMultiplier:P0} | {gateResult.reason}");
+                        $"notBlocking blended={blendedMlTfScore:P0} size={aiGateSizeMultiplier:P0} gate={gateResult.reason}");
                 }
 
                 // Scout add-on 검토 (LONG + Major only)

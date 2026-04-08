@@ -670,16 +670,16 @@ namespace TradingBot
                 body = $"🕒 구간: {snapshot.WindowStartLocal:HH:mm} ~ {windowEndLocal:HH:mm}\n" +
                        $"📊 총 판정: {snapshot.TotalCount}건\n" +
                        $"✅ 승인: {snapshot.AllowedCount}건 (확신 {snapshot.StrongAllowedCount}건)\n" +
-                       $"⛔ 차단: {snapshot.BlockedCount}건\n" +
+                       $"🛰️ 정찰대: {snapshot.BlockedCount}건\n" +
                        $"🟢 LONG: {snapshot.LongCount}건 │ 🔴 SHORT: {snapshot.ShortCount}건\n" +
                        $"🏆 메이저: {snapshot.MajorCount} │ 🚀 펌핑: {snapshot.PumpingCount} │ 📊 일반: {snapshot.NormalCount}\n" +
                       $"🤖 평균 ML: {avgMl:P1} │ 🧠 평균 TF: {avgTf:P1} │ 📈 평균 Trend(피보반영): {avgTrend:P1}\n\n" +
                        $"📋 AI 승인 코인 (진입 상태)\n{allowedSection}\n\n" +
-                       $"⛔ 차단 코인(사유)\n{blockedSection}\n\n" +
-                      $"📌 차단 TOP(전체)\n{topReasons}\n\n" +
-                      $"📌 차단 TOP(LONG)\n{topReasonsLong}\n\n" +
-                      $"📌 차단 TOP(SHORT)\n{topReasonsShort}" +
-                      (snapshot.BlockReasonsOther.Count > 0 ? $"\n\n📌 차단 TOP(기타)\n{topReasonsOther}" : string.Empty);
+                       $"🛰️ 정찰대 코인 (축소 진입)\n{blockedSection}\n\n" +
+                      $"📌 정찰대 사유(전체)\n{topReasons}\n\n" +
+                      $"📌 정찰대 사유(LONG)\n{topReasonsLong}\n\n" +
+                      $"📌 정찰대 사유(SHORT)\n{topReasonsShort}" +
+                      (snapshot.BlockReasonsOther.Count > 0 ? $"\n\n📌 정찰대 사유(기타)\n{topReasonsOther}" : string.Empty);
             }
 
                  await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 5분 요약]*\n\n{body}", true, "AI관제탑", TelegramMessageType.AiGate);
