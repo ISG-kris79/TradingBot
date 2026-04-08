@@ -3142,7 +3142,35 @@ namespace TradingBot.Services
                 }
 
                 var side = localPosition.IsLong ? "SELL" : "BUY";
-                var currentQty = Math.Abs(localPosition.Quantity);
+
+                // [v3.2.35] 첫 시도부터 거래소 실제 수량으로 계산 (stepSize 불일치 방지)
+                decimal currentQty = Math.Abs(localPosition.Quantity);
+                try
+                {
+                    var positions = await _exchangeService.GetPositionsAsync(ct: token);
+                    var realPos = positions?.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.Quantity) > 0);
+                    if (realPos != null)
+                    {
+                        currentQty = Math.Abs(realPos.Quantity);
+                        // 내부 수량 동기화
+                        lock (_posLock)
+                        {
+                            if (_activePositions.TryGetValue(symbol, out var p))
+                                p.Quantity = localPosition.IsLong ? currentQty : -currentQty;
+                        }
+                    }
+                    else
+                    {
+                        OnLog?.Invoke($"ℹ️ {symbol} 거래소에 포지션 없음 → 부분청산 스킵");
+                        CleanupPositionData(symbol);
+                        return false;
+                    }
+                }
+                catch (Exception posEx)
+                {
+                    OnLog?.Invoke($"⚠️ {symbol} 거래소 수량 확인 실패: {posEx.Message} → 내부 수량 사용");
+                }
+
                 var closeQty = Math.Round(currentQty * ratio, 6, MidpointRounding.AwayFromZero);
 
                 if (closeQty <= 0)
@@ -3151,7 +3179,7 @@ namespace TradingBot.Services
                     return false;
                 }
 
-                // [부분청산 반복 재시도] 최대 3회, 매회 거래소 포지션 재확인 + 수량 보정
+                // [부분청산 반복 재시도] 최대 3회
                 const int maxRetries = 3;
                 bool success = false;
 
