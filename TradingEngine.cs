@@ -61,7 +61,7 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, DateTime> _recentlyClosedCooldown = new();
         // 슬롯 설정
         // 메이저 4 + PUMP 2 = 총 6
-        private const int MAX_TOTAL_SLOTS = 6;        // 총 최대 6개
+        private const int MAX_TOTAL_SLOTS = 7;        // 총 최대 7개 (메이저4 + PUMP3)
         private const int MAX_MAJOR_SLOTS = 4;        // 메이저 최대 4개 (BTC/ETH/SOL/XRP)
         private const int MAX_PUMP_SLOTS = 3;         // PUMP 최대 3개
         private const decimal PUMP_FIXED_MARGIN_USDT = 100m; // (레거시 fallback) PUMP 고정 증거금
