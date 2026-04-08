@@ -6115,6 +6115,7 @@ namespace TradingBot
 
             // [v3.2.38] 슬롯 체크 + 리버스 처리
             bool needsReverse = false;
+            string? evictSymbol = null;
             lock (_posLock)
             {
                 if (_activePositions.TryGetValue(symbol, out var existingPos))
@@ -6131,9 +6132,38 @@ namespace TradingBot
                 int total = _activePositions.Count;
                 int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
                 int pumpCount = total - majorCount;
+
                 if (isMajor && majorCount >= MAX_MAJOR_SLOTS) return;
-                if (!isMajor && pumpCount >= MAX_PUMP_SLOTS) return;
-                if (total >= MAX_TOTAL_SLOTS) return;
+                if (total >= MAX_TOTAL_SLOTS && pumpCount == 0) return;
+
+                // [v3.3.0] PUMP 슬롯 포화 시 → 수익 10%+ 코인 익절해서 슬롯 확보
+                if (!isMajor && pumpCount >= MAX_PUMP_SLOTS)
+                {
+                    // 수익 10%+ PUMP 코인 찾기
+                    foreach (var kvp in _activePositions)
+                    {
+                        if (MajorSymbols.Contains(kvp.Key)) continue;
+                        if (kvp.Value.EntryPrice <= 0) continue;
+
+                        decimal curPrice = 0;
+                        if (_marketDataManager.TickerCache.TryGetValue(kvp.Key, out var t))
+                            curPrice = t.LastPrice;
+                        if (curPrice <= 0) continue;
+
+                        decimal priceDiff = kvp.Value.IsLong
+                            ? (curPrice - kvp.Value.EntryPrice)
+                            : (kvp.Value.EntryPrice - curPrice);
+                        decimal roe = (priceDiff / kvp.Value.EntryPrice) * kvp.Value.Leverage * 100;
+
+                        if (roe >= 10m)
+                        {
+                            evictSymbol = kvp.Key;
+                            break;
+                        }
+                    }
+
+                    if (evictSymbol == null) return; // 익절 가능한 코인 없으면 차단
+                }
 
                 // 즉시 예약 등록 (중복 진입 차단)
                 _activePositions[symbol] = new PositionInfo
@@ -6143,6 +6173,21 @@ namespace TradingBot
                     IsLong = changePct > 0,
                     EntryTime = DateTime.Now
                 };
+            }
+
+            // [v3.3.0] 수익 10%+ 코인 익절 (lock 밖에서 실행)
+            if (evictSymbol != null)
+            {
+                OnAlert?.Invoke($"🔄 [슬롯 확보] {evictSymbol} ROE 10%+ 익절 → {symbol} 진입 슬롯 확보");
+                try
+                {
+                    await _positionMonitor.ExecuteMarketClose(evictSymbol, $"급등 코인 슬롯 확보 익절 ({symbol} 진입)", token);
+                    await Task.Delay(300, token);
+                }
+                catch (Exception evictEx)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [{evictSymbol}] 슬롯 확보 익절 실패: {evictEx.Message}");
+                }
             }
 
             // [v3.2.38] 리버스: 기존 반대 포지션 청산
