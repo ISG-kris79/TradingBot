@@ -1148,19 +1148,25 @@ namespace TradingBot.Models
         public Brush RSI_Color_4H => RSI_4H <= 30 ? Brushes.SkyBlue : (RSI_4H >= 70 ? Brushes.OrangeRed : Brushes.LightGray);
 
         // 결정 사항에 따른 배경색 (BUY=초록, SELL=빨강)
+        private static readonly SolidColorBrush s_decisionBgActive = new(Color.FromRgb(0x1B, 0x5E, 0x20)); // 진한 초록 (진행중)
+
         public Brush DecisionBg
         {
             get
             {
+                // [v3.2.37] 포지션 활성 시 진한 초록 배경
+                if (IsPositionActive)
+                    return s_decisionBgActive;
+
                 if (string.IsNullOrEmpty(Decision)) return Brushes.Transparent;
 
                 if (Decision.Contains("LONG"))
-                    return s_decisionBgLong; // 진한 블루 (Royal Blue)
+                    return s_decisionBgLong;
 
                 if (Decision.Contains("SHORT"))
-                    return s_decisionBgShort; // 진한 레드 (Crimson Red)
+                    return s_decisionBgShort;
 
-                return s_decisionBgWait; // WAIT 상태 (슬레이트 그레이)
+                return s_decisionBgWait;
             }
         }
 

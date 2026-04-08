@@ -6680,6 +6680,23 @@ namespace TradingBot
                 }
             }
 
+            // [v3.2.37] AI Command Center 업데이트 (슬롯 차단 전에 실행)
+            if (OnAiCommandUpdate != null && latestCandle != null && MajorSymbols.Contains(symbol))
+            {
+                float rsi = latestCandle.RSI;
+                float macdH = latestCandle.MACD_Hist;
+                float trend = latestCandle.Trend_Strength;
+
+                string h4 = trend >= 0.5f ? "TRENDING UP" : trend >= 0f ? "STRENGTHENING" : "NEUTRAL";
+                string h1 = rsi >= 60f ? "STRENGTHENING" : rsi >= 45f ? "WATCHING" : "NEUTRAL";
+                string m15 = macdH > 0 && rsi >= 55f ? "READY TO SHOOT" : macdH > 0 ? "SCANNING" : "NEUTRAL";
+
+                double bull = decision == "LONG" ? Math.Min(100, rsi + trend * 30) : Math.Max(0, 100 - rsi);
+                double bear = 100.0 - bull;
+
+                OnAiCommandUpdate.Invoke(symbol, (float)(bull / 100.0), decision, h4, h1, m15, bull, bear);
+            }
+
             // ═══════════════════════════════════════════════════════════════
             // [ROUTER] 2. 슬롯 검증 + 정찰대 전환
             // ═══════════════════════════════════════════════════════════════

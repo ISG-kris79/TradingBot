@@ -613,10 +613,7 @@ namespace TradingBot
 
                 if (_symbolChartWindow == null || !_symbolChartWindow.IsVisible)
                 {
-                    _symbolChartWindow = new SymbolChartWindow(ViewModel)
-                    {
-                        Owner = this
-                    };
+                    _symbolChartWindow = new SymbolChartWindow(ViewModel);
                     _symbolChartWindow.Closed += (_, _) => _symbolChartWindow = null;
                     _symbolChartWindow.Show();
                     return;
