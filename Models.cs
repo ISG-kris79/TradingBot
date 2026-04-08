@@ -1535,9 +1535,20 @@ namespace TradingBot.Models
         public decimal PnlUsdt { get; set; }
         public int TradeCount { get; set; }
         public bool IsProfit { get; set; }
-        public string Display => $"{Label}\n${PnlUsdt:+#,##0.00;-#,##0.00}\n{TradeCount}건";
-        public System.Windows.Media.Brush PnlColor => IsProfit
+        public DateTime Date { get; set; }
+
+        public string DayLabel => Date != default ? Date.ToString("M/d (ddd)") : Label;
+        public string PnlDisplay => PnlUsdt == 0 ? "$0" : $"${PnlUsdt:+#,##0.00;-#,##0.00}";
+        public string TradeCountDisplay => TradeCount > 0 ? $"{TradeCount}건" : "-";
+
+        public System.Windows.Media.Brush PnlColor => PnlUsdt > 0
             ? System.Windows.Media.Brushes.LimeGreen
-            : System.Windows.Media.Brushes.Tomato;
+            : PnlUsdt < 0 ? System.Windows.Media.Brushes.Tomato
+            : System.Windows.Media.Brushes.Gray;
+
+        public System.Windows.Media.Brush CellBackground => PnlUsdt > 0
+            ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(30, 0, 230, 118))
+            : PnlUsdt < 0 ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(30, 255, 83, 112))
+            : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(15, 148, 163, 184));
     }
 }

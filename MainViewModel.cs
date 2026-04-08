@@ -1755,32 +1755,49 @@ namespace TradingBot.ViewModels
                     _ => closed.GroupBy(t => t.ExitTime.ToString("MM/dd")).OrderBy(g => g.Key)
                 };
 
+                // 일별 그룹 데이터를 Dictionary로
+                var dailyPnl = new Dictionary<string, (decimal pnl, int count)>();
+                foreach (var g in grouped)
+                {
+                    dailyPnl[g.Key] = (g.Sum(t => t.PnL), g.Count());
+                }
+
+                // [v3.3.1] 빈 날짜 0원으로 채우기 (달력 형태)
                 var labels = new List<string>();
                 var pnlValues = new ChartValues<double>();
                 var calEntries = new List<DayPnlEntry>();
-                decimal totalPnl = 0, totalWin = 0;
-                int winCount = 0, totalCount = 0;
+                decimal totalPnl = 0;
+                int winCount = 0, totalCount = 0, dayCount = 0;
 
-                foreach (var g in grouped)
+                if (_performancePeriod == "일별")
                 {
-                    decimal dayPnl = g.Sum(t => t.PnL);
-                    totalPnl += dayPnl;
-                    totalCount += g.Count();
-                    if (dayPnl > 0) { winCount++; totalWin += dayPnl; }
-
-                    labels.Add(g.Key);
-                    pnlValues.Add((double)dayPnl);
-
-                    calEntries.Add(new DayPnlEntry
+                    for (var d = start.Date; d <= end.Date; d = d.AddDays(1))
                     {
-                        Label = g.Key,
-                        PnlUsdt = dayPnl,
-                        TradeCount = g.Count(),
-                        IsProfit = dayPnl >= 0
-                    });
+                        string key = d.ToString("MM/dd");
+                        decimal pnl = 0; int cnt = 0;
+                        if (dailyPnl.TryGetValue(key, out var data)) { pnl = data.pnl; cnt = data.count; }
+
+                        totalPnl += pnl; totalCount += cnt; dayCount++;
+                        if (pnl > 0) winCount++;
+
+                        labels.Add(key);
+                        pnlValues.Add((double)pnl);
+                        calEntries.Add(new DayPnlEntry { Label = key, Date = d, PnlUsdt = pnl, TradeCount = cnt, IsProfit = pnl >= 0 });
+                    }
+                }
+                else
+                {
+                    foreach (var kvp in dailyPnl.OrderBy(k => k.Key))
+                    {
+                        totalPnl += kvp.Value.pnl; totalCount += kvp.Value.count; dayCount++;
+                        if (kvp.Value.pnl > 0) winCount++;
+                        labels.Add(kvp.Key);
+                        pnlValues.Add((double)kvp.Value.pnl);
+                        calEntries.Add(new DayPnlEntry { Label = kvp.Key, PnlUsdt = kvp.Value.pnl, TradeCount = kvp.Value.count, IsProfit = kvp.Value.pnl >= 0 });
+                    }
                 }
 
-                double winRate = totalCount > 0 ? (double)winCount / labels.Count * 100 : 0;
+                double winRate = dayCount > 0 ? (double)winCount / dayCount * 100 : 0;
 
                 RunOnUI(() =>
                 {
