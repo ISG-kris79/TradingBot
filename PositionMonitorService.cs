@@ -2689,6 +2689,24 @@ namespace TradingBot.Services
                 int maxRetries = 3;
                 for (int retry = 1; retry <= maxRetries; retry++)
                 {
+                    // [v3.2.23] 거래소 실제 수량으로 청산 (내부 수량 불일치 방지)
+                    if (retry > 1)
+                    {
+                        try
+                        {
+                            var refreshed = await _exchangeService.GetPositionsAsync(ct: token);
+                            var freshPos = refreshed?.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.Quantity) > 0);
+                            if (freshPos == null)
+                            {
+                                OnLog?.Invoke($"✅ [{symbol}] 재확인 결과 포지션 없음 → 이미 청산됨");
+                                success = true;
+                                break;
+                            }
+                            absQty = Math.Abs(freshPos.Quantity);
+                        }
+                        catch { }
+                    }
+
                     OnLog?.Invoke($"[청산 시도] {symbol} {side} {absQty} ({retry}/{maxRetries}) - 사유: {reason}");
                     try
                     {
@@ -2703,16 +2721,14 @@ namespace TradingBot.Services
                     if (success)
                     {
                         if (retry > 1)
-                        {
-                            OnLog?.Invoke($"✅ [{symbol}] 청산 주문 성공 ({retry}회차 재시도에서 성공)");
-                        }
+                            OnLog?.Invoke($"✅ [{symbol}] 청산 주문 성공 ({retry}회차)");
                         break;
                     }
 
                     if (retry < maxRetries)
                     {
-                        int delayMs = retry * 1000; // 1초, 2초, 3초 지연
-                        OnLog?.Invoke($"⚠️ [{symbol}] 청산 주문 실패 ({retry}/{maxRetries}) - {delayMs}ms 후 재시도...");
+                        int delayMs = retry * 1000;
+                        OnLog?.Invoke($"⚠️ [{symbol}] 청산 실패 ({retry}/{maxRetries}) - {delayMs}ms 후 거래소 수량 재확인...");
                         await Task.Delay(delayMs, token);
                     }
                 }
