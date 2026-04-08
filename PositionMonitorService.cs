@@ -1979,14 +1979,117 @@ namespace TradingBot.Services
                     }
                 }
 
+                // ============================================================
+                // [v3.3.7] 계단식 보호선 우선 처리 — 본절/BB보다 먼저 체크
+                // 67% ROE 달성 후 급락 시 본절(-0.08%)이 아닌 보호선(+10%)에서 청산
+                // ============================================================
+                if (currentROE >= stairStep1TriggerRoe && stairStep < 1)
+                {
+                    stairStep = 1;
+                    lockedProfitFloorRoe = Math.Max(lockedProfitFloorRoe, StairStep1FloorRoe);
+                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 1단계 | ROI {stairStep1TriggerRoe:F0}% → 보호선 ROE +{StairStep1FloorRoe:F0}%");
+
+                    // [v3.3.7] 서버사이드 STOP_MARKET을 보호선 가격으로 이동 (1초 급락 대비)
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            decimal floorPrice = isLongPosition
+                                ? entryPrice * (1m + StairStep1FloorRoe / leverage / 100m)
+                                : entryPrice * (1m - StairStep1FloorRoe / leverage / 100m);
+                            string stopSide = isLongPosition ? "SELL" : "BUY";
+                            decimal qty = 0;
+                            string? oldOrderId = null;
+                            lock (_posLock)
+                            {
+                                if (_activePositions.TryGetValue(symbol, out var p))
+                                {
+                                    qty = Math.Abs(p.Quantity);
+                                    oldOrderId = p.StopOrderId;
+                                }
+                            }
+                            if (qty <= 0) return;
+                            // 기존 손절 주문 취소
+                            if (!string.IsNullOrEmpty(oldOrderId))
+                                await _exchangeService.CancelOrderAsync(symbol, oldOrderId, token);
+                            // 보호선 가격으로 새 STOP_MARKET 설정
+                            var (ok, newId) = await _exchangeService.PlaceStopOrderAsync(symbol, stopSide, qty, floorPrice, token);
+                            if (ok)
+                            {
+                                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId; }
+                                OnLog?.Invoke($"🪜🛡️ {symbol} 서버사이드 STOP_MARKET → 보호선 {floorPrice:F8} (ROE +{StairStep1FloorRoe:F0}%)");
+                            }
+                        }
+                        catch (Exception ex) { OnLog?.Invoke($"⚠️ {symbol} 계단식 서버 스탑 이동 실패: {ex.Message}"); }
+                    });
+                }
+
+                if (currentROE >= stairStep2TriggerRoe && stairStep < 2)
+                {
+                    stairStep = 2;
+                    lockedProfitFloorRoe = Math.Max(lockedProfitFloorRoe, StairStep2FloorRoe);
+                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 2단계 | ROI {stairStep2TriggerRoe:F0}% → 보호선 ROE +{StairStep2FloorRoe:F0}% (100% 먹고 50% 보존)");
+
+                    // [v3.3.7] 서버사이드 STOP_MARKET을 2단계 보호선으로 이동
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            decimal floorPrice = isLongPosition
+                                ? entryPrice * (1m + StairStep2FloorRoe / leverage / 100m)
+                                : entryPrice * (1m - StairStep2FloorRoe / leverage / 100m);
+                            string stopSide = isLongPosition ? "SELL" : "BUY";
+                            decimal qty = 0;
+                            string? oldOrderId = null;
+                            lock (_posLock)
+                            {
+                                if (_activePositions.TryGetValue(symbol, out var p))
+                                {
+                                    qty = Math.Abs(p.Quantity);
+                                    oldOrderId = p.StopOrderId;
+                                }
+                            }
+                            if (qty <= 0) return;
+                            if (!string.IsNullOrEmpty(oldOrderId))
+                                await _exchangeService.CancelOrderAsync(symbol, oldOrderId, token);
+                            var (ok, newId) = await _exchangeService.PlaceStopOrderAsync(symbol, stopSide, qty, floorPrice, token);
+                            if (ok)
+                            {
+                                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId; }
+                                OnLog?.Invoke($"🪜🛡️ {symbol} 서버사이드 STOP_MARKET → 보호선 {floorPrice:F8} (ROE +{StairStep2FloorRoe:F0}%)");
+                            }
+                        }
+                        catch (Exception ex) { OnLog?.Invoke($"⚠️ {symbol} 계단식 서버 스탑 이동 실패: {ex.Message}"); }
+                    });
+                }
+
+                if (currentROE >= stairStep3TriggerRoe && stairStep < 3)
+                {
+                    stairStep = 3;
+                    trailingDropROE = 30.0m;
+                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 3단계 | ROI {stairStep3TriggerRoe:F0}% → Moonshot Trailing Gap {trailingDropROE:F0}%");
+                }
+
+                // [v3.3.7] 계단식 보호선 발동 — 다른 모든 청산 로직보다 우선
+                if (lockedProfitFloorRoe > decimal.MinValue && currentROE <= lockedProfitFloorRoe)
+                {
+                    OnLog?.Invoke($"[청산 트리거] {symbol} 계단식 보호선 이탈 | 현재ROE={currentROE:F2}% <= 보호선={lockedProfitFloorRoe:F2}%");
+                    await ExecuteMarketClose(symbol, $"🪜 계단식 스탑 발동 (ROE {lockedProfitFloorRoe:F1}% 보호선)", token);
+                    break;
+                }
+
+                // highestROE 업데이트 — 계단식 보호선 후에 위치해야 현재 사이클 ROE 반영
+                if (currentROE > highestROE) highestROE = currentROE;
+
                 decimal effectiveStopLossRoe = dynamicStopLossRoe;
                 if (isAveraged && firstTpDone)
                     effectiveStopLossRoe = Math.Min(effectiveStopLossRoe, 12.0m);
 
                 // ============================================================
                 // [본절가 스탑] ElliottWave 1차 익절 후 진입가로 손절 상향
+                // [v3.3.7] 계단식 보호선 활성 시 본절가 스탑 무시 (보호선이 더 높음)
                 // ============================================================
-                if (elliotWavePos?.BreakevenPrice > 0 && isLongPosition)
+                if (elliotWavePos?.BreakevenPrice > 0 && isLongPosition && stairStep == 0)
                 {
                     if (currentPrice <= elliotWavePos.BreakevenPrice)
                     {
@@ -2006,7 +2109,8 @@ namespace TradingBot.Services
 
                 // [PUMP 본절 버퍼] 진입가 정확히 0%에서 청산하면 되돌림에 바로 털림
                 // → -10% ROE (0x20 기준 0.5% 가격) 여유를 줘서 PUMP 특유의 눌림을 버팀
-                if (isBreakEvenTriggered)
+                // [v3.3.7] 계단식 보호선 활성 시 본절 스탑 무시
+                if (isBreakEvenTriggered && stairStep == 0)
                     effectiveStopLossRoe = Math.Min(effectiveStopLossRoe, 10.0m);
 
                 // [초기 맷집] 1차 익절 전 + ROE 40% 미만은 느슨한 손절 유지
@@ -2033,35 +2137,6 @@ namespace TradingBot.Services
                     continue;
                 }
 
-                // [계단식 보호선] 50%/100% 구간에서 고정 수익선 확보
-                if (currentROE >= stairStep1TriggerRoe && stairStep < 1)
-                {
-                    stairStep = 1;
-                    lockedProfitFloorRoe = Math.Max(lockedProfitFloorRoe, StairStep1FloorRoe);
-                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 1단계 | ROI {stairStep1TriggerRoe:F0}% → 보호선 ROE +{StairStep1FloorRoe:F0}%");
-                }
-
-                if (currentROE >= stairStep2TriggerRoe && stairStep < 2)
-                {
-                    stairStep = 2;
-                    lockedProfitFloorRoe = Math.Max(lockedProfitFloorRoe, StairStep2FloorRoe);
-                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 2단계 | ROI {stairStep2TriggerRoe:F0}% → 보호선 ROE +{StairStep2FloorRoe:F0}% (100% 먹고 50% 보존)");
-                }
-
-                if (currentROE >= stairStep3TriggerRoe && stairStep < 3)
-                {
-                    stairStep = 3;
-                    trailingDropROE = 30.0m;
-                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 3단계 | ROI {stairStep3TriggerRoe:F0}% → Moonshot Trailing Gap {trailingDropROE:F0}%");
-                }
-
-                if (lockedProfitFloorRoe > decimal.MinValue && currentROE <= lockedProfitFloorRoe)
-                {
-                    OnLog?.Invoke($"[청산 트리거] {symbol} 계단식 보호선 이탈 | 현재ROE={currentROE:F2}% <= 보호선={lockedProfitFloorRoe:F2}%");
-                    await ExecuteMarketClose(symbol, $"🪜 계단식 스탑 발동 (ROE {lockedProfitFloorRoe:F1}% 보호선)", token);
-                    break;
-                }
-
                 if (currentROE <= -effectiveStopLossRoe)
                 {
                     string exitReason = isBreakEvenTriggered ? "🛡️ Break Even (본절)" : $"ROE 손절 (-{effectiveStopLossRoe}%)";
@@ -2069,8 +2144,6 @@ namespace TradingBot.Services
                     await ExecuteMarketClose(symbol, exitReason, token);
                     break;
                 }
-
-                if (currentROE > highestROE) highestROE = currentROE;
 
                 // ── [Meme Coin Mode] PUMP 트레일링: 고정 간격 pumpTrailingGapRoe 유지 ──────
                 // 기존의 10%→4%, 15%→5% 동적 압축은 밈코인 변동성에 적합하지 않아 제거
