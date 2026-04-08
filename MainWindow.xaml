@@ -1639,11 +1639,9 @@
                                                              FontFamily="Consolas"
                                                              FontSize="10"
                                                              VirtualizingStackPanel.IsVirtualizing="True"
-                                                             ScrollViewer.VerticalScrollBarVisibility="Auto"
-                                                             ScrollViewer.HorizontalScrollBarVisibility="Auto">
-                                                        <ListBox.Resources>
-                                                            <Style TargetType="ScrollBar" BasedOn="{StaticResource MinimalScrollBar}"/>
-                                                        </ListBox.Resources>
+                                                             ScrollViewer.VerticalScrollBarVisibility="Hidden"
+                                                             ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+                                                             ScrollViewer.CanContentScroll="True">
                                                         <ListBox.ItemContainerStyle>
                                                             <Style TargetType="ListBoxItem">
                                                                 <Setter Property="Padding" Value="2,1"/>
@@ -1679,11 +1677,9 @@
                                                              FontFamily="Consolas"
                                                              FontSize="10"
                                                              VirtualizingStackPanel.IsVirtualizing="True"
-                                                             ScrollViewer.VerticalScrollBarVisibility="Auto"
-                                                             ScrollViewer.HorizontalScrollBarVisibility="Auto">
-                                                        <ListBox.Resources>
-                                                            <Style TargetType="ScrollBar" BasedOn="{StaticResource MinimalScrollBar}"/>
-                                                        </ListBox.Resources>
+                                                             ScrollViewer.VerticalScrollBarVisibility="Hidden"
+                                                             ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+                                                             ScrollViewer.CanContentScroll="True">
                                                         <ListBox.ItemContainerStyle>
                                                             <Style TargetType="ListBoxItem">
                                                                 <Setter Property="Padding" Value="2,1"/>
