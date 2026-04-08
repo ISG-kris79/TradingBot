@@ -6142,15 +6142,23 @@ namespace TradingBot
 
                 if (success)
                 {
+                    // [v3.2.36] 거래소에서 실제 체결 수량/진입가 확인
                     decimal entryPrice = currentPrice;
+                    decimal actualQty = quantity;
                     try
                     {
-                        var fillPrice = await _exchangeService.GetPriceAsync(symbol, ct: token);
-                        if (fillPrice > 0) entryPrice = fillPrice;
+                        await Task.Delay(300, token); // 체결 대기
+                        var positions = await _exchangeService.GetPositionsAsync(ct: token);
+                        var realPos = positions?.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.Quantity) > 0);
+                        if (realPos != null)
+                        {
+                            actualQty = Math.Abs(realPos.Quantity);
+                            if (realPos.EntryPrice > 0) entryPrice = realPos.EntryPrice;
+                        }
                     }
                     catch { }
 
-                    // 내부 포지션 등록
+                    // 내부 포지션 등록 (거래소 실제 수량)
                     lock (_posLock)
                     {
                         _activePositions[symbol] = new PositionInfo
@@ -6159,7 +6167,7 @@ namespace TradingBot
                             EntryPrice = entryPrice,
                             IsLong = (direction == "LONG"),
                             Side = (direction == "LONG") ? Binance.Net.Enums.OrderSide.Buy : Binance.Net.Enums.OrderSide.Sell,
-                            Quantity = direction == "LONG" ? quantity : -quantity,
+                            Quantity = direction == "LONG" ? actualQty : -actualQty,
                             Leverage = (int)leverage,
                             IsPumpStrategy = !isMajor,
                             EntryTime = DateTime.Now
@@ -6167,7 +6175,7 @@ namespace TradingBot
                     }
 
                     OnPositionStatusUpdate?.Invoke(symbol, true, entryPrice);
-                    OnAlert?.Invoke($"✅ [{label} 즉시진입 성공] {symbol} {direction} @ {entryPrice:F8} qty={quantity:F4}");
+                    OnAlert?.Invoke($"✅ [{label} 즉시진입 성공] {symbol} {direction} @ {entryPrice:F8} qty={actualQty:F4}");
 
                     // 포지션 감시 시작
                     bool isLong = direction == "LONG";
