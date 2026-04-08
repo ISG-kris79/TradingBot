@@ -6122,6 +6122,7 @@ namespace TradingBot
             try
             {
                 // 즉시 시장가 주문 — AI Gate/R:R/CandleData 전부 스킵
+                OnStatusLog?.Invoke($"[SPIKE_FAST] {symbol} {side} qty={quantity:F2} margin={marginUsdt:F0} lev={leverage} px={currentPrice}");
                 bool success = await _exchangeService.PlaceOrderAsync(symbol, side, quantity, null, token, reduceOnly: false);
 
                 if (success)
@@ -6178,7 +6179,7 @@ namespace TradingBot
                 }
                 else
                 {
-                    OnAlert?.Invoke($"❌ [{label} 즉시진입 실패] {symbol} 주문 거부");
+                    OnAlert?.Invoke($"❌ [{label} 즉시진입 실패] {symbol} {side} qty={quantity:F2} px={currentPrice} margin={marginUsdt:F0}");
                     lock (_posLock) { _activePositions.Remove(symbol); } // 예약 해제
                 }
             }
