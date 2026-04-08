@@ -305,13 +305,11 @@ namespace TradingBot.Services
             if (configuredMajorStopLossRoe <= 0m)
                 configuredMajorStopLossRoe = 20.0m;
 
-            // [v3.3.3] BTC -15%, 메이저 -20%, PUMP -60%
+            // [v3.3.4] 하이브리드 손절: 구조 기반 우선 + 고정 ROE 최후 안전망
+            // BTC -50%, 메이저 -50%, PUMP -60%
             bool isPump = false;
             lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) isPump = p.IsPumpStrategy; }
-            decimal effectiveMajorStopLossRoe = isBtcSymbol
-                ? Math.Min(configuredMajorStopLossRoe, 15.0m)
-                : isPump ? 60.0m
-                : Math.Min(configuredMajorStopLossRoe, 20.0m);
+            decimal effectiveMajorStopLossRoe = isPump ? 60.0m : 50.0m;
 
             decimal tp1SafetyRoe = 5.0m; // 2→5%: TP1 이후 스탑을 +5% ROE로 상향 (본절 터치 후 날라가는 현상 방지)
             decimal tightGapPercent = majorTrailingGap / leverage / 100m;  // 3단계 간격 (ROE% → 가격%)

@@ -6271,6 +6271,20 @@ namespace TradingBot
 
             try
             {
+                // [v3.3.4] 급등 타이밍 체크 — 감지 시점 대비 +5% 이상 올랐으면 진입 취소
+                decimal detectPrice = currentPrice; // 감지 시점 가격
+                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var nowTick) && nowTick.LastPrice > 0)
+                {
+                    decimal priceGain = (nowTick.LastPrice - detectPrice) / detectPrice * 100;
+                    if (priceGain >= 5m)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [SPIKE_FAST] {symbol} 감지 후 +{priceGain:F1}% 추가 상승 → 타이밍 지남, 진입 취소");
+                        lock (_posLock) { _activePositions.Remove(symbol); }
+                        return;
+                    }
+                    currentPrice = nowTick.LastPrice; // 최신 가격으로 갱신
+                }
+
                 // [v3.3.2] RSI 과열 체크 + 눌림 대기 (고점 매수 방지)
                 if (direction == "LONG")
                 {
