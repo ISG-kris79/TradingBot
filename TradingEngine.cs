@@ -75,7 +75,7 @@ namespace TradingBot
         private const int SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 1000;
         private const int MAJOR_SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 180;
         private static readonly TimeSpan MainLoopInterval = TimeSpan.FromSeconds(1);
-        private decimal _minEntryRiskRewardRatio = 1.40m; // 설정에서 로드
+        private decimal _minEntryRiskRewardRatio = 1.20m; // [v3.2.3] 1.40→1.20: 폭락 후 반등 진입 기회 확보
         private bool _rrConfigMismatchWarned = false;
         private float _fifteenMinuteMlMinConfidence = 0.65f; // 가이드 기본값
         private float _fifteenMinuteTransformerMinConfidence = 0.60f; // 가이드 기본값

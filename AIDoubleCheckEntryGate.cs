@@ -1868,8 +1868,8 @@ namespace TradingBot
 
         public float MinMLConfidence { get; set; } = 0.56f;
         public float MinTransformerConfidence { get; set; } = 0.52f;
-        public float MinMLConfidenceMajor { get; set; } = 0.75f; // 메이저 코인은 더 보수적
-        public float MinTransformerConfidenceMajor { get; set; } = 0.68f;
+        public float MinMLConfidenceMajor { get; set; } = 0.60f; // [v3.2.3] 75→60%: 폭락 후 반등 진입 기회 확보
+        public float MinTransformerConfidenceMajor { get; set; } = 0.55f; // [v3.2.3] 68→55%
         public float MinMLConfidencePumping { get; set; } = 0.56f; // 펌핑 손실 구간 대응: 보수 강화
         public float MinTransformerConfidencePumping { get; set; } = 0.54f;
 

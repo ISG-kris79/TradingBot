@@ -67,6 +67,19 @@ namespace TradingBot.Strategies
                 bool allowLowVolumeTrendBypass = volumeMomentum < profile.LongConfirmVolumeMin &&
                                                  (isTrendHealthyOnLowVolume || (isMakingHigherLows && currentPrice > (decimal)sma20));
 
+                // [v3.2.3] 가격 모멘텀 직접 감지 — SMA 지연 보완
+                // 최근 6봉(30분) 가격 변화율로 실시간 상승 판단
+                var recent6 = list.TakeLast(6).ToList();
+                decimal price6Ago = recent6.First().ClosePrice;
+                double priceRecoveryPct = price6Ago > 0 ? (double)((currentPrice - price6Ago) / price6Ago * 100) : 0;
+                bool isPriceRecovering = priceRecoveryPct >= 1.5; // 30분간 +1.5% 이상 상승 (20배 = ROE 30%)
+
+                // 최근 12봉(1시간) 저점 대비 상승
+                var recent12 = list.TakeLast(12).ToList();
+                decimal recentLow = recent12.Min(k => k.LowPrice);
+                double bounceFromLowPct = recentLow > 0 ? (double)((currentPrice - recentLow) / recentLow * 100) : 0;
+                bool isStrongBounce = bounceFromLowPct >= 3.0; // 1시간 저점 대비 +3% 반등
+
                 int aiScore = CalculateScore(
                     rsi,
                     bb,
@@ -90,16 +103,25 @@ namespace TradingBot.Strategies
                     aiScore = Math.Clamp(aiScore + (int)fibBonus, 0, 100);
                 }
 
-                // [v3.2.3] 24시간 동일 기준 (야간 개념 제거 — 코인 시장은 24시간)
+                // [v3.2.3] 가격 모멘텀 가점 — SMA 역배열이어도 실제 반등 중이면 보정
+                if (isPriceRecovering) aiScore = Math.Clamp(aiScore + 15, 0, 100);
+                if (isStrongBounce) aiScore = Math.Clamp(aiScore + 10, 0, 100);
+
+                // [v3.2.3] 24시간 동일 기준
                 int longThreshold = CalculateDynamicThreshold(volumeMomentum, isMakingHigherLows, profile);
                 int shortThreshold = 30;
 
                 string decision = "WAIT";
                 if (aiScore >= longThreshold)
                 {
-                    bool bullishStructure = isUptrend || (isMakingHigherLows && currentPrice > (decimal)sma20);
-                    bool longConfirm = bullishStructure && macd.Hist >= -0.001 &&
-                                       (volumeMomentum >= profile.LongConfirmVolumeMin || allowLowVolumeTrendBypass);
+                    // [v3.2.3] bullishStructure 완화: SMA 상승추세 OR HigherLows OR 가격 모멘텀 반등
+                    bool bullishStructure = isUptrend
+                        || (isMakingHigherLows && currentPrice > (decimal)sma20)
+                        || isPriceRecovering
+                        || isStrongBounce;
+                    bool longConfirm = bullishStructure &&
+                        (macd.Hist >= -0.01 || isPriceRecovering) && // MACD 조건도 완화 (반등 시)
+                        (volumeMomentum >= profile.LongConfirmVolumeMin || allowLowVolumeTrendBypass || isPriceRecovering);
                     if (longConfirm) decision = "LONG";
                 }
                 else if (aiScore <= shortThreshold)
