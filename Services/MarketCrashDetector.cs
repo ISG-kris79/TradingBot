@@ -163,6 +163,7 @@ namespace TradingBot.Services
                 decimal changePct = (kvp.Value.LastPrice - prevPrice) / prevPrice * 100m;
 
                 if (kvp.Value.QuoteVolume < 1_000_000m) continue; // [v3.2.19] $500K → $1M 복원
+                if (kvp.Value.LastPrice < 0.001m) continue; // [v3.2.40] 초저가 밈코인 제외
 
                 bool isMajorCoin = MajorWatchSymbols.Contains(sym);
 

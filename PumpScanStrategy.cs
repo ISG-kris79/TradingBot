@@ -199,6 +199,11 @@ namespace TradingBot.Strategies
                 }
 
                 decimal currentPrice = list[list.Count - 1].ClosePrice;
+                if (currentPrice < 0.001m) // [v3.2.40] 초저가 밈코인 제외
+                {
+                    PumpSignalLog("REJECT", $"sym={symbol} reason=price<0.001 ({currentPrice})");
+                    return false;
+                }
                 double rsi = IndicatorCalculator.CalculateRSI(list, 14);
                 var bb = IndicatorCalculator.CalculateBB(list, 20, 2);
                 bool isUptrend = IndicatorCalculator.AnalyzeElliottWave(list);
