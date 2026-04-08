@@ -1324,9 +1324,12 @@ namespace TradingBot.Models
             {
                 if (!IsPositionActive) return "-";
 
-                var sl = StopLossPrice > 0 ? $"SL:{StopLossPrice:F2}" : null;
-                var tp = TargetPrice > 0 ? $"TP:{TargetPrice:F2}" : null;
-                var ts = TrailingStopPrice > 0 ? $"TS:{TrailingStopPrice:F2}" : null;
+                // [v3.2.39] 가격 기반 소수점 자동 결정
+                string FmtPrice(decimal p) => p >= 100 ? p.ToString("F2") : p >= 1 ? p.ToString("F4") : p >= 0.01m ? p.ToString("F6") : p.ToString("F8");
+
+                var sl = StopLossPrice > 0 ? $"SL:{FmtPrice(StopLossPrice)}" : null;
+                var tp = TargetPrice > 0 ? $"TP:{FmtPrice(TargetPrice)}" : null;
+                var ts = TrailingStopPrice > 0 ? $"TS:{FmtPrice(TrailingStopPrice)}" : null;
 
                 // 트레일링스탑이 활성화되면 SL 대신 TS 표시 (TS가 실질적 손절가)
                 if (ts != null)

@@ -107,13 +107,12 @@ namespace TradingBot
                 price = (decimal)dPrice;
             }
 
-            // 저가 코인 목록 (4자리)
-            var lowPriceSymbols = new[] { "XRP", "DOGE", "SHIB", "PEPE", "DENT", "SHFT", "ALGO", "AVAX", "ADA" };
-
-            // 심볼에서 "USDT" 제거 (예: "XRPUSDT" → "XRP")
-            string baseSymbol = symbol.Replace("USDT", "").Replace("BUSD", "").Replace("USDC", "");
-
-            int decimalPlaces = lowPriceSymbols.Contains(baseSymbol) ? 4 : 2;
+            // [v3.2.39] 가격 기반 자동 소수점 결정 (PUMP 코인 8자리 대응)
+            int decimalPlaces;
+            if (price >= 100m)       decimalPlaces = 2;  // BTC 등
+            else if (price >= 1m)    decimalPlaces = 4;  // ETH, SOL, XRP 등
+            else if (price >= 0.01m) decimalPlaces = 6;  // 중저가
+            else                     decimalPlaces = 8;  // 초저가 밈코인
 
             return price.ToString($"F{decimalPlaces}", culture);
         }
