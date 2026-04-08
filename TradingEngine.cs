@@ -7366,11 +7366,24 @@ namespace TradingBot
             }
             else
             {
-                // [v3.2.3] AI Advisor 사이즈가 분할 진입 베이스를 대체 (이중 축소 방지)
-                // AI Gate 통과 (allowEntry=true): 100% 본진입
-                // AI Gate 차단 (Advisor): aiGateSizeMultiplier 그대로 사용 (20%~100%)
-                // → 분할 진입 25% × AI 20% = 5% 문제 해결
-                finalSizeMultiplier = aiGateSizeMultiplier; // AI Gate 결과가 곧 사이즈
+                // [v3.2.48] 승인 코인 확신도 기반 사이즈 결정
+                // blended 80%+ → 본진입 100%
+                // blended 70~80% → 정찰대 25% (ROE 확인 후 본대 추가)
+                if (capturedBlendedScore >= 0.80f)
+                {
+                    finalSizeMultiplier = 1.0m;
+                    EntryLog("SIZE", "FULL", $"blended={capturedBlendedScore:P0}≥80% → 100% 본진입");
+                }
+                else if (capturedBlendedScore >= 0.70f)
+                {
+                    finalSizeMultiplier = 0.25m;
+                    EntryLog("SIZE", "SCOUT", $"blended={capturedBlendedScore:P0} 70~80% → 25% 정찰대");
+                }
+                else
+                {
+                    finalSizeMultiplier = 1.0m; // AI Gate 승인했으면 기본 100%
+                    EntryLog("SIZE", "DEFAULT", $"blended={capturedBlendedScore:P0} → 100%");
+                }
 
                 // 3분류 모델: 반대 방향이면 축소
                 if (mlSignalSizeMultiplier < 1.0m && mlSignalSizeMultiplier < finalSizeMultiplier)
@@ -7380,7 +7393,7 @@ namespace TradingBot
                 if (manualSizeMultiplier < 1.0m && manualSizeMultiplier < finalSizeMultiplier)
                     finalSizeMultiplier = manualSizeMultiplier;
 
-                EntryLog("SIZE", "MAIN", $"aiGate={aiGateSizeMultiplier:P0} mlSignal={mlSignalSizeMultiplier:P0} manual={manualSizeMultiplier:P0} → {finalSizeMultiplier:P0}");
+                EntryLog("SIZE", "FINAL", $"blended={capturedBlendedScore:P0} mlSignal={mlSignalSizeMultiplier:P0} manual={manualSizeMultiplier:P0} → {finalSizeMultiplier:P0}");
             }
 
             ctx.SizeMultiplier = Math.Clamp(finalSizeMultiplier, 0.10m, 2.00m);
