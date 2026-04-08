@@ -6053,10 +6053,20 @@ namespace TradingBot
 
             bool isMajor = MajorSymbols.Contains(symbol);
 
-            // [v3.2.19] 슬롯 체크 + 포지션 예약을 단일 lock으로 (중복 진입 방지)
+            // [v3.2.38] 슬롯 체크 + 리버스 처리
+            bool needsReverse = false;
             lock (_posLock)
             {
-                if (_activePositions.ContainsKey(symbol)) return;
+                if (_activePositions.TryGetValue(symbol, out var existingPos))
+                {
+                    // 같은 방향이면 스킵
+                    bool existingIsLong = existingPos.IsLong;
+                    bool newIsLong = changePct > 0;
+                    if (existingIsLong == newIsLong) return;
+
+                    // 반대 방향 → 리버스 (기존 청산 후 신규 진입)
+                    needsReverse = true;
+                }
 
                 int total = _activePositions.Count;
                 int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
@@ -6073,6 +6083,24 @@ namespace TradingBot
                     IsLong = changePct > 0,
                     EntryTime = DateTime.Now
                 };
+            }
+
+            // [v3.2.38] 리버스: 기존 반대 포지션 청산
+            if (needsReverse)
+            {
+                string reverseLabel = changePct > 0 ? "숏→롱" : "롱→숏";
+                OnAlert?.Invoke($"🔄 [{reverseLabel} 리버스] {symbol} 기존 포지션 청산 중...");
+                try
+                {
+                    await _positionMonitor.ExecuteMarketClose(symbol, $"SPIKE 리버스 ({reverseLabel})", token);
+                    await Task.Delay(500, token);
+                }
+                catch (Exception revEx)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [{symbol}] 리버스 청산 실패: {revEx.Message}");
+                    lock (_posLock) { _activePositions.Remove(symbol); }
+                    return;
+                }
             }
 
             if (_blacklistedSymbols.TryGetValue(symbol, out var expiry) && DateTime.Now < expiry)
@@ -6104,7 +6132,9 @@ namespace TradingBot
             }
             catch { }
 
-            decimal quantity = (marginUsdt * leverage) / currentPrice;
+            decimal rawQty = (marginUsdt * leverage) / currentPrice;
+            // [v3.2.38] 소수점 제거 — 대부분 PUMP 코인 stepSize는 1 이상
+            decimal quantity = currentPrice < 0.01m ? Math.Floor(rawQty) : Math.Round(rawQty, 2, MidpointRounding.ToZero);
 
             if (quantity <= 0)
             {
