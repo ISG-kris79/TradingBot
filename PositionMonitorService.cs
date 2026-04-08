@@ -3491,8 +3491,32 @@ namespace TradingBot.Services
                 bool success = await _exchangeService.PlaceOrderAsync(symbol, side, addQty, null, token, reduceOnly: false);
                 if (!success)
                 {
-                    OnAlert?.Invoke($"❌ {symbol} 물타기 실패 (거래소 주문 실패)");
-                    return;
+                    // 수량 보정 재시도: 거래소 실제 포지션 확인
+                    try
+                    {
+                        var positions = await _exchangeService.GetPositionsAsync(ct: token);
+                        var realPos = positions?.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.Quantity) > 0);
+                        if (realPos != null)
+                        {
+                            decimal realQty = Math.Abs(realPos.Quantity);
+                            addQty = Math.Round(realQty * 0.5m, 6, MidpointRounding.AwayFromZero);
+                            if (addQty > 0)
+                            {
+                                OnLog?.Invoke($"🔧 {symbol} 물타기 수량 보정: {addQty} (거래소 실제 기준)");
+                                success = await _exchangeService.PlaceOrderAsync(symbol, side, addQty, null, token, reduceOnly: false);
+                            }
+                        }
+                    }
+                    catch (Exception retryEx)
+                    {
+                        OnLog?.Invoke($"⚠️ {symbol} 물타기 재시도 실패: {retryEx.Message}");
+                    }
+
+                    if (!success)
+                    {
+                        OnLog?.Invoke($"⚠️ {symbol} 물타기 최종 실패 (마진 부족 또는 수량 오류)");
+                        return;
+                    }
                 }
 
                 var marketPrice = await _exchangeService.GetPriceAsync(symbol, ct: token);
