@@ -1416,6 +1416,7 @@
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="*"/>
                                             <RowDefinition Height="120"/>
+                                            <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
                                         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
                                             <TextBlock Text="📊 LIVE MARKET SIGNALS" FontSize="12" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}" VerticalAlignment="Center"/>
@@ -1660,25 +1661,24 @@
                                                 </ListBox>
                                             </Grid>
                                         </Border>
-                                    </Grid>
-                                </Border>
 
-                                <!-- FAST LOG (좌측 맨 아래, v3.2.14) -->
-                                <Border Background="{StaticResource BackgroundMediumBrush}"
-                                        BorderBrush="{StaticResource BackgroundLightBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="8"
-                                        Padding="10"
-                                        Margin="0,8,16,0"
-                                        MinHeight="120">
-                                    <StackPanel>
-                                        <TextBlock Text="📡 FAST LOG (실시간)" Foreground="{StaticResource PrimaryBrush}" FontSize="10" FontWeight="Bold" Margin="0,0,0,4"/>
-                                        <TextBlock Text="{Binding BattleFastLog1}" Foreground="#E2E8F0" FontSize="10" FontFamily="Consolas" TextWrapping="Wrap"/>
-                                        <TextBlock Text="{Binding BattleFastLog2}" Foreground="#B0BEC5" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                        <TextBlock Text="{Binding BattleFastLog3}" Foreground="#78909C" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                        <TextBlock Text="{Binding BattleFastLog4}" Foreground="#546E7A" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                        <TextBlock Text="{Binding BattleFastLog5}" Foreground="#37474F" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                    </StackPanel>
+                                        <!-- FAST LOG (좌측 맨 아래, v3.2.18) -->
+                                        <Border Grid.Row="3"
+                                                Background="{StaticResource BackgroundMediumBrush}"
+                                                BorderBrush="{StaticResource BackgroundLightBrush}"
+                                                BorderThickness="0,1,0,0"
+                                                Padding="8,4"
+                                                Margin="0,4,0,0">
+                                            <StackPanel>
+                                                <TextBlock Text="📡 FAST LOG (실시간)" Foreground="{StaticResource PrimaryBrush}" FontSize="10" FontWeight="Bold" Margin="0,0,0,4"/>
+                                                <TextBlock Text="{Binding BattleFastLog1}" Foreground="#E2E8F0" FontSize="10" FontFamily="Consolas" TextWrapping="Wrap"/>
+                                                <TextBlock Text="{Binding BattleFastLog2}" Foreground="#B0BEC5" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                                <TextBlock Text="{Binding BattleFastLog3}" Foreground="#78909C" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                                <TextBlock Text="{Binding BattleFastLog4}" Foreground="#546E7A" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                                <TextBlock Text="{Binding BattleFastLog5}" Foreground="#37474F" FontSize="10" FontFamily="Consolas" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
                                 </Border>
 
                                 <!-- Right Panel: Live Events + Profit Goal + Execution Stepper -->

@@ -63,7 +63,7 @@ namespace TradingBot
         // 메이저 4 + PUMP 2 = 총 6
         private const int MAX_TOTAL_SLOTS = 6;        // 총 최대 6개
         private const int MAX_MAJOR_SLOTS = 4;        // 메이저 최대 4개 (BTC/ETH/SOL/XRP)
-        private const int MAX_PUMP_SLOTS = 2;         // PUMP 최대 2개
+        private const int MAX_PUMP_SLOTS = 3;         // PUMP 최대 3개
         private const decimal PUMP_FIXED_MARGIN_USDT = 100m; // (레거시 fallback) PUMP 고정 증거금
         private const int PUMP_MANUAL_LEVERAGE = 20; // 20배 롱 전용 대응 매뉴얼
         
@@ -6051,24 +6051,34 @@ namespace TradingBot
         {
             var token = _cts?.Token ?? CancellationToken.None;
 
+            bool isMajor = MajorSymbols.Contains(symbol);
+
+            // [v3.2.19] 슬롯 체크 + 포지션 예약을 단일 lock으로 (중복 진입 방지)
             lock (_posLock)
             {
                 if (_activePositions.ContainsKey(symbol)) return;
-            }
 
-            if (_blacklistedSymbols.TryGetValue(symbol, out var expiry) && DateTime.Now < expiry)
-                return;
-
-            // 슬롯 체크
-            bool isMajor = MajorSymbols.Contains(symbol);
-            lock (_posLock)
-            {
                 int total = _activePositions.Count;
                 int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
                 int pumpCount = total - majorCount;
                 if (isMajor && majorCount >= MAX_MAJOR_SLOTS) return;
                 if (!isMajor && pumpCount >= MAX_PUMP_SLOTS) return;
                 if (total >= MAX_TOTAL_SLOTS) return;
+
+                // 즉시 예약 등록 (중복 진입 차단)
+                _activePositions[symbol] = new PositionInfo
+                {
+                    Symbol = symbol,
+                    EntryPrice = currentPrice,
+                    IsLong = changePct > 0,
+                    EntryTime = DateTime.Now
+                };
+            }
+
+            if (_blacklistedSymbols.TryGetValue(symbol, out var expiry) && DateTime.Now < expiry)
+            {
+                lock (_posLock) { _activePositions.Remove(symbol); } // 예약 취소
+                return;
             }
 
             string side = changePct > 0 ? "BUY" : "SELL";
@@ -6169,11 +6179,13 @@ namespace TradingBot
                 else
                 {
                     OnAlert?.Invoke($"❌ [{label} 즉시진입 실패] {symbol} 주문 거부");
+                    lock (_posLock) { _activePositions.Remove(symbol); } // 예약 해제
                 }
             }
             catch (Exception ex)
             {
                 OnStatusLog?.Invoke($"⚠️ [{label} 즉시진입] {symbol} 오류: {ex.Message}");
+                lock (_posLock) { _activePositions.Remove(symbol); } // 예약 해제
             }
         }
 
