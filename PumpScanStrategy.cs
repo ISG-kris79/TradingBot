@@ -283,40 +283,16 @@ namespace TradingBot.Strategies
                 var recent12 = list.TakeLast(12).ToList();
                 decimal recentLow = recent12.Min(k => k.LowPrice);
                 double bounceFromLowPct = recentLow > 0 ? (double)((currentPrice - recentLow) / recentLow * 100) : 0;
-                bool isStrongBounce = bounceFromLowPct >= 3.0;
 
-                // [v3.7.6] 모멘텀 +2점 → +1점, 추세 확인 가중치 강화
-                // 모멘텀만으로 진입하면 꼭대기 매수 → 추세+구조 확인 필수
-                int bullishSignals = 0;
-                if (isPriceRecovering) bullishSignals += 1;  // 2→1: 모멘텀만으론 부족
-                if (isStrongBounce) bullishSignals += 1;     // 2→1: 바운스만으론 부족
-                if (isUptrend) bullishSignals += 2;          // 1→2: 엘리엇 상승추세 = 핵심
-                if (isMakingHigherLows) bullishSignals += 2; // 1→2: 구조적 상승 = 핵심
-                if (currentPrice > (decimal)sma20) bullishSignals++;
-                if (macd.Hist > 0) bullishSignals++;
-                if (volumeMomentum >= 1.10) bullishSignals++;
-                // SMA 정렬 (20>50>60) = 강한 상승추세
-                if (sma20 > sma50 && sma50 > sma60) bullishSignals++;
-                // [v4.0.1] 1분봉 거래량 체크: bullish 4점+일 때만 API 호출 (분당 360회 → ~10회)
-                if (bullishSignals >= 4)
-                {
-                    try
-                    {
-                        var k1mRes = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.OneMinute, limit: 20, ct: token);
-                        if (k1mRes.Success && k1mRes.Data != null && k1mRes.Data.Length >= 10)
-                        {
-                            var m1List = k1mRes.Data.ToList();
-                            double m1AvgVol = m1List.Take(m1List.Count - 1).Average(k => (double)k.Volume);
-                            double m1LastVol = (double)m1List[^1].Volume;
-                            m1VolumeRatio = m1AvgVol > 0 ? m1LastVol / m1AvgVol : 0;
-                            hasM1VolumeSurge = m1VolumeRatio >= 3.0;
-                        }
-                    }
-                    catch { }
-                }
-                if (hasM1VolumeSurge) bullishSignals += 2;
+                // ═══════════════════════════════════════════════════════════
+                // [v4.1.1] AI 전용 진입 판단 — 하드코딩 조건 전부 제거
+                // PumpSignalClassifier ML 모델이 직접 "진입할까?" 판단
+                // ExecuteAutoOrder에서 AI Gate + Survival + Direction 추가 검증
+                // ═══════════════════════════════════════════════════════════
+                string decision = "WAIT";
+                int bullishSignals = 0; // 로그용
 
-                // ML 모델 예측
+                // ML 모델 예측 (PumpSignalClassifier)
                 bool mlSignal = false;
                 float mlProb = 0f;
                 if (_pumpML != null && _pumpML.IsModelLoaded)
@@ -329,50 +305,23 @@ namespace TradingBot.Strategies
                     }
                 }
 
-                string decision = "WAIT";
-
-                // [v3.6.2] 꼭대기 진입 방지 — 고점 대비 위치 + RSI + BB 체크
-                var topCheck20 = list.TakeLast(20).ToList();
-                decimal recentHigh20 = topCheck20.Max(k => k.HighPrice);
-                double dropFromHighPct = recentHigh20 > 0 ? (double)((recentHigh20 - currentPrice) / recentHigh20 * 100) : 0;
-                bool isNearTop = dropFromHighPct < 2.0; // [v3.7.5] 0.5→2%: 고점 대비 2% 이내 = 꼭대기
-                bool isRsiOverbought = rsi >= 65;       // [v3.7.5] 75→65: 과매수 기준 강화
-                bool isAboveBBUpper = (double)currentPrice > bb.Upper; // BB 상단 돌파 = 과열
-
-                // PUMP는 급등만: 가격 모멘텀 필수
-                bool hasPriceMomentum = isPriceRecovering || isStrongBounce;
-
-                // [v4.0.2] 마지막 2봉 연속 음봉 = 하락 시작 → 진입 금지
-                var lastBars = list.TakeLast(3).ToList();
-                int bearishBars = lastBars.Count(k => k.ClosePrice < k.OpenPrice);
-                if (bearishBars >= 2)
-                {
-                    PumpSignalLog("REJECT", $"sym={symbol} reason=bearishBars={bearishBars}/3 (하락 시작)");
-                    decision = "WAIT";
-                    return false;
-                }
-
-                // 꼭대기 진입 차단: 고점 2% 이내 + RSI 65+
-                if (hasPriceMomentum && isRsiOverbought && (isNearTop || isAboveBBUpper))
-                {
-                    PumpSignalLog("TOP_BLOCK", $"sym={symbol} dropFromHigh={dropFromHighPct:F2}% rsi={rsi:F0} aboveBB={isAboveBBUpper} → 꼭대기 진입 차단");
-                    decision = "WAIT";
-                }
-                else if (hasPriceMomentum && isAboveBBUpper && isRsiOverbought)
-                {
-                    PumpSignalLog("OVERHEAT_BLOCK", $"sym={symbol} rsi={rsi:F0} aboveBBUpper → 과열 진입 차단");
-                    decision = "WAIT";
-                }
-                // [v3.7.4] 강화 진입 조건: bullish 6개+ AND RSI 40~75 AND 가격 > SMA20
-                else if (hasPriceMomentum && bullishSignals >= 6
-                    && rsi >= 40 && rsi <= 75
-                    && currentPrice > (decimal)sma20 && sma20 > 0)
-                    decision = "LONG";
-                // [v3.7.3] ML도 bullishSignals 5개+ 필수 (60%로 아무거나 진입 방지)
-                else if (mlSignal && mlProb >= 0.65f && hasPriceMomentum && !isNearTop && bullishSignals >= 5)
+                // AI가 진입 승인 (65%+ 확신) → LONG
+                // 나머지 판단은 ExecuteAutoOrder의 AI Gate + Survival + Direction이 처리
+                if (mlSignal && mlProb >= 0.65f)
                 {
                     decision = "LONG";
-                    PumpSignalLog("ML_ENTRY", $"sym={symbol} prob={mlProb:P0} bull={bullishSignals}");
+                    PumpSignalLog("AI_ENTRY", $"sym={symbol} prob={mlProb:P0} rsi={rsi:F0} vol={volumeMomentum:F2}");
+                }
+                // ML 모델 미로드 시 기본 조건 (최소한의 안전장치)
+                else if (!(_pumpML?.IsModelLoaded ?? false))
+                {
+                    bool hasMomentum = priceRecoveryPct >= 1.5 || bounceFromLowPct >= 3.0;
+                    bool hasStructure = isUptrend && isMakingHigherLows && currentPrice > (decimal)sma20;
+                    if (hasMomentum && hasStructure && rsi >= 40 && rsi <= 70 && volumeMomentum >= 1.1)
+                    {
+                        decision = "LONG";
+                        PumpSignalLog("FALLBACK_ENTRY", $"sym={symbol} rsi={rsi:F0} noML=true");
+                    }
                 }
 
                 try
