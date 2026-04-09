@@ -2024,7 +2024,7 @@ namespace TradingBot
                             OnStatusLog?.Invoke($"🎯 일일 $250 목표 달성! 금일 실현 손익: ${dailyPnl:N2}");
                         }
 
-                        // [A] 급등주 스캔 (10초 간격 — CPU 부하 절감)
+                        // [A] 급등주 스캔 (10초 간격)
                         if (_pumpStrategy != null && (DateTime.Now - _lastPumpScanTime).TotalSeconds >= 10)
                         {
                             _lastPumpScanTime = DateTime.Now;
@@ -7016,13 +7016,7 @@ namespace TradingBot
                 return;
             }
 
-            // [v3.7.1] 승률 서킷브레이커 — 최근 10건 승률 40% 미만이면 30분 진입 중단
-            if (DateTime.Now < _winRatePauseUntil
-                && signalSource != "CRASH_REVERSE" && signalSource != "PUMP_REVERSE")
-            {
-                EntryLog("WINRATE", "BLOCK", $"pauseUntil={_winRatePauseUntil:HH:mm} recentWinRate<{WIN_RATE_MIN:P0}");
-                return;
-            }
+            // 승률 서킷브레이커: 시간 차단 제거 — 진입 품질로 제어
 
             // BTC 하락장 필터 제거 — 메이저도 BTC와 독립적으로 움직일 수 있음
             if (false && decision == "LONG")

@@ -265,15 +265,18 @@ namespace TradingBot.Strategies
                 double bounceFromLowPct = recentLow > 0 ? (double)((currentPrice - recentLow) / recentLow * 100) : 0;
                 bool isStrongBounce = bounceFromLowPct >= 3.0;
 
-                // 모멘텀 신호 카운팅
+                // [v3.7.6] 모멘텀 +2점 → +1점, 추세 확인 가중치 강화
+                // 모멘텀만으로 진입하면 꼭대기 매수 → 추세+구조 확인 필수
                 int bullishSignals = 0;
-                if (isPriceRecovering) bullishSignals += 2;
-                if (isStrongBounce) bullishSignals += 2;
-                if (isUptrend) bullishSignals++;
-                if (isMakingHigherLows) bullishSignals++;
+                if (isPriceRecovering) bullishSignals += 1;  // 2→1: 모멘텀만으론 부족
+                if (isStrongBounce) bullishSignals += 1;     // 2→1: 바운스만으론 부족
+                if (isUptrend) bullishSignals += 2;          // 1→2: 엘리엇 상승추세 = 핵심
+                if (isMakingHigherLows) bullishSignals += 2; // 1→2: 구조적 상승 = 핵심
                 if (currentPrice > (decimal)sma20) bullishSignals++;
                 if (macd.Hist > 0) bullishSignals++;
                 if (volumeMomentum >= 1.10) bullishSignals++;
+                // SMA 정렬 (20>50>60) = 강한 상승추세
+                if (sma20 > sma50 && sma50 > sma60) bullishSignals++;
 
                 // ML 모델 예측
                 bool mlSignal = false;
