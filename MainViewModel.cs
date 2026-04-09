@@ -1801,15 +1801,33 @@ namespace TradingBot.ViewModels
 
                 RunOnUI(() =>
                 {
+                    // [v3.7.0] 수익/손실 각각 다른 색 + 그라데이션
+                    var profitValues = new LiveCharts.ChartValues<double>();
+                    var lossValues = new LiveCharts.ChartValues<double>();
+                    foreach (var v in pnlValues)
+                    {
+                        profitValues.Add(v > 0 ? v : 0);
+                        lossValues.Add(v < 0 ? v : 0);
+                    }
                     PerformanceSeries = new SeriesCollection
                     {
                         new ColumnSeries
                         {
-                            Title = "PnL",
-                            Values = pnlValues,
+                            Title = "Profit",
+                            Values = profitValues,
                             Fill = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x00, 0xE6, 0x76)),
                             StrokeThickness = 0,
-                            ColumnPadding = 2
+                            ColumnPadding = 2,
+                            MaxColumnWidth = 40
+                        },
+                        new ColumnSeries
+                        {
+                            Title = "Loss",
+                            Values = lossValues,
+                            Fill = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0x53, 0x70)),
+                            StrokeThickness = 0,
+                            ColumnPadding = 2,
+                            MaxColumnWidth = 40
                         }
                     };
                     OnPropertyChanged(nameof(PerformanceSeries));

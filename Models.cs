@@ -1541,14 +1541,15 @@ namespace TradingBot.Models
         public string PnlDisplay => PnlUsdt == 0 ? "$0" : $"${PnlUsdt:+#,##0.00;-#,##0.00}";
         public string TradeCountDisplay => TradeCount > 0 ? $"{TradeCount}건" : "-";
 
+        // [v3.7.0] 다크 테마 최적화 색상
         public System.Windows.Media.Brush PnlColor => PnlUsdt > 0
-            ? System.Windows.Media.Brushes.LimeGreen
-            : PnlUsdt < 0 ? System.Windows.Media.Brushes.Tomato
-            : System.Windows.Media.Brushes.Gray;
+            ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x7E, 0xE7, 0x87)) // GitHub green
+            : PnlUsdt < 0 ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0x7B, 0x72)) // GitHub red
+            : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x48, 0x4F, 0x58));
 
         public System.Windows.Media.Brush CellBackground => PnlUsdt > 0
-            ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(30, 0, 230, 118))
-            : PnlUsdt < 0 ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(30, 255, 83, 112))
-            : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(15, 148, 163, 184));
+            ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(40, 0x7E, 0xE7, 0x87))
+            : PnlUsdt < 0 ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(40, 0xFF, 0x7B, 0x72))
+            : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(15, 0x8B, 0x94, 0x9E));
     }
 }
