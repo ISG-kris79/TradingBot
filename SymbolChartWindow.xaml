@@ -30,7 +30,7 @@
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" Foreground="#E2E8F0" FontSize="16" FontWeight="Bold">
                 <Run Text="SYMBOL: "/>
-                <Run Text="{Binding SelectedSymbol.Symbol}"/>
+                <Run Text="{Binding SelectedSymbol.Symbol, Mode=OneWay}"/>
             </TextBlock>
             <TextBlock Grid.Column="2" Foreground="#94A3B8" FontSize="11"
                        Text="{Binding DynamicStopPriceText}" VerticalAlignment="Center"/>
@@ -51,7 +51,7 @@
                                  Background="#252B48" Foreground="{Binding PriceProgressColor}" BorderThickness="0"/>
                     <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="10" FontWeight="Bold">
                         <Run Text="ENERGY " Foreground="#6B7280"/>
-                        <Run Text="{Binding PriceProgressText}" Foreground="{Binding PriceProgressColor}"/>
+                        <Run Text="{Binding PriceProgressText, Mode=OneWay}" Foreground="{Binding PriceProgressColor, Mode=OneWay}"/>
                     </TextBlock>
                 </Grid>
             </Border>
