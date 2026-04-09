@@ -571,15 +571,13 @@ namespace TradingBot
             _crashDetector.OnLog += msg => OnAlert?.Invoke(msg);
             _crashDetector.OnCrashDetected += (coins, avgDrop) => _ = HandleCrashDetectedAsync(coins, avgDrop);
             _crashDetector.OnPumpDetected += (coins, avgRise) => _ = HandlePumpDetectedAsync(coins, avgRise);
-            // [v4.0.9] SPIKE_FAST 비활성화 — AI 학습 완료까지 중단
-            // _crashDetector.OnSpikeDetected += (symbol, changePct, price) => _ = HandleSpikeDetectedAsync(symbol, changePct, price);
+            _crashDetector.OnSpikeDetected += (symbol, changePct, price) => _ = HandleSpikeDetectedAsync(symbol, changePct, price);
 
-            // [v4.0.9] 감시 풀 비활성화 — AI 학습 완료까지 중단
-            // _crashDetector.OnVolumeSurgeDetected += (symbol, volRatio, price) =>
-            // {
-            //     _pumpWatchPool[symbol] = (price, DateTime.Now, volRatio);
-            //     OnStatusLog?.Invoke($"🔥 [감시등록] {symbol} vol={volRatio:F1}x price={price:F6} → 상승 확인 대기");
-            // };
+            _crashDetector.OnVolumeSurgeDetected += (symbol, volRatio, price) =>
+            {
+                _pumpWatchPool[symbol] = (price, DateTime.Now, volRatio);
+                OnStatusLog?.Invoke($"🔥 [감시등록] {symbol} vol={volRatio:F1}x price={price:F6} → 상승 확인 대기");
+            };
 
             _marketDataManager.OnTickerUpdate += HandleTickerUpdate;
 
@@ -885,13 +883,10 @@ namespace TradingBot
                 try { OnSignalUpdate?.Invoke(vm); }
                 catch (Exception ex) { OnLiveLog?.Invoke($"📡 [SIGNAL][PUMP][ERROR] source=uiBinding detail={ex.Message}"); }
             };
-            // [v4.0.9] PUMP 진입 전체 비활성화 — AI Survival 모델 학습 완료까지
             _pumpStrategy.OnTradeSignal += async (symbol, decision, price) =>
             {
                 try
                 {
-                    // PUMP 진입 중단 — 메이저만 운영
-                    return;
                     await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR_MEME");
                 }
                 catch (Exception ex)
@@ -2036,8 +2031,8 @@ namespace TradingBot
                             OnStatusLog?.Invoke($"🎯 일일 $250 목표 달성! 금일 실현 손익: ${dailyPnl:N2}");
                         }
 
-                        // [v4.0.9] PUMP 스캔 비활성화 — AI Survival 모델 학습 완료까지 중단
-                        if (false && _pumpStrategy != null && (DateTime.Now - _lastPumpScanTime).TotalSeconds >= 10)
+                        // [A] 급등주 스캔 (10초 간격)
+                        if (_pumpStrategy != null && (DateTime.Now - _lastPumpScanTime).TotalSeconds >= 10)
                         {
                             _lastPumpScanTime = DateTime.Now;
                             await _pumpStrategy.ExecuteScanAsync(_marketDataManager.TickerCache, _blacklistedSymbols, token);
@@ -2086,7 +2081,7 @@ namespace TradingBot
                                         {
                                             await ExecuteAutoOrder(kvp.Key, "LONG", nowPrice,
                                                 _cts?.Token ?? CancellationToken.None,
-                                                "PUMP_WATCH_CONFIRMED", manualSizeMultiplier: 0.7m);
+                                                "PUMP_WATCH_CONFIRMED", manualSizeMultiplier: 1.0m);
                                         }
                                         catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [감시진입] {kvp.Key} 실패: {ex.Message}"); }
                                     });
