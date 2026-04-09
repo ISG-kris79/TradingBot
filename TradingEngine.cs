@@ -61,6 +61,11 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, DateTime> _recentlyClosedCooldown = new();
         // [v3.4.0] 부분청산 쿨다운 — 봇 자체 부분청산 후 ACCOUNT_UPDATE 이중 기록 방지
         private readonly ConcurrentDictionary<string, DateTime> _recentPartialCloseCooldown = new();
+        // [v3.7.1] 실시간 승률 서킷브레이커 — 최근 N건 승률 < 40%면 진입 일시 중단
+        private readonly Queue<bool> _recentTradeResults = new();
+        private DateTime _winRatePauseUntil = DateTime.MinValue;
+        private const int WIN_RATE_WINDOW = 10;
+        private const double WIN_RATE_MIN = 0.40;
         // 슬롯 설정
         // 메이저 4 + PUMP 2 = 총 6
         private const int MAX_TOTAL_SLOTS = 7;        // 총 최대 7개 (메이저4 + PUMP3)
@@ -599,6 +604,22 @@ namespace TradingBot
             _positionMonitor.OnPositionClosedForAiLabel += (symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason) =>
             {
                 _ = HandleAiCloseLabelingAsync(symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason);
+
+                // [v3.7.1] 실시간 승률 서킷브레이커 추적
+                lock (_recentTradeResults)
+                {
+                    _recentTradeResults.Enqueue(actualProfitPct > 0);
+                    while (_recentTradeResults.Count > WIN_RATE_WINDOW) _recentTradeResults.Dequeue();
+                    if (_recentTradeResults.Count >= WIN_RATE_WINDOW)
+                    {
+                        double recentWinRate = _recentTradeResults.Count(r => r) / (double)_recentTradeResults.Count;
+                        if (recentWinRate < WIN_RATE_MIN)
+                        {
+                            _winRatePauseUntil = DateTime.Now.AddMinutes(30);
+                            OnAlert?.Invoke($"⛔ [승률 서킷브레이커] 최근 {WIN_RATE_WINDOW}건 승률 {recentWinRate:P0} < {WIN_RATE_MIN:P0} → 30분 진입 중단");
+                        }
+                    }
+                }
 
                 // [수익률 회귀] 거래 결과를 학습 데이터로 피드백
                 try
@@ -6958,6 +6979,14 @@ namespace TradingBot
             {
                 OnStatusLog?.Invoke(TradingStateLogger.RejectedByRiskManagement(symbol, decision, "서킷 브레이커 발동 중"));
                 EntryLog("RISK", "BLOCK", "circuitBreaker=on");
+                return;
+            }
+
+            // [v3.7.1] 승률 서킷브레이커 — 최근 10건 승률 40% 미만이면 30분 진입 중단
+            if (DateTime.Now < _winRatePauseUntil
+                && signalSource != "CRASH_REVERSE" && signalSource != "PUMP_REVERSE")
+            {
+                EntryLog("WINRATE", "BLOCK", $"pauseUntil={_winRatePauseUntil:HH:mm} recentWinRate<{WIN_RATE_MIN:P0}");
                 return;
             }
 

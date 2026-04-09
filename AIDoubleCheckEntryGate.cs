@@ -1866,12 +1866,14 @@ namespace TradingBot
     {
         public readonly record struct SymbolThreshold(double EntryScoreCut, float MaxRsiLimit, float AiConfidenceMin);
 
-        public float MinMLConfidence { get; set; } = 0.56f;
-        public float MinTransformerConfidence { get; set; } = 0.52f;
-        public float MinMLConfidenceMajor { get; set; } = 0.60f; // [v3.2.3] 75→60%: 폭락 후 반등 진입 기회 확보
-        public float MinTransformerConfidenceMajor { get; set; } = 0.55f; // [v3.2.3] 68→55%
-        public float MinMLConfidencePumping { get; set; } = 0.56f; // 펌핑 손실 구간 대응: 보수 강화
-        public float MinTransformerConfidencePumping { get; set; } = 0.54f;
+        // [v3.7.1] AI Gate 임계값 대폭 상향 — 56%는 동전 던지기 수준
+        // DB 분석: 승률 40% → 70% 목표, 확신 있는 진입만 허용
+        public float MinMLConfidence { get; set; } = 0.65f;           // 56→65%
+        public float MinTransformerConfidence { get; set; } = 0.60f;  // 52→60%
+        public float MinMLConfidenceMajor { get; set; } = 0.70f;     // 60→70%
+        public float MinTransformerConfidenceMajor { get; set; } = 0.65f; // 55→65%
+        public float MinMLConfidencePumping { get; set; } = 0.65f;   // 56→65%
+        public float MinTransformerConfidencePumping { get; set; } = 0.60f; // 54→60%
 
         public float StrongTrendBypassThreshold { get; set; } = 0.80f;
         public float ElliottRule3Penalty { get; set; } = 0.15f;
