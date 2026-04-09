@@ -67,6 +67,9 @@ namespace TradingBot
         private const int WIN_RATE_WINDOW = 10;
         private const double WIN_RATE_MIN = 0.40;
 
+        // [v4.0.3] PUMP 슬롯 교체 대상
+        private string? _pendingSwapEvict;
+
         // [v4.0.1] D1+H4 방향 캐시 (API 절약: 5분 캐시)
         private readonly ConcurrentDictionary<string, (float bias, DateTime time)> _directionBiasCache = new(StringComparer.OrdinalIgnoreCase);
 
@@ -7419,9 +7422,40 @@ namespace TradingBot
 
                 if (!isMajorSymbol && pumpCount >= maxPump)
                 {
-                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} PUMP 포화 ({pumpCount}/{maxPump}) → 진입 차단");
-                    EntryLog("SLOT", "BLOCK", $"pump={pumpCount}/{maxPump}");
-                    return;
+                    // [v4.0.3] 슬롯 교체: 기존 약한 PUMP 포지션 → 신규 강한 코인으로 교체
+                    string? swapTarget = null;
+                    decimal worstROE = decimal.MaxValue;
+                    foreach (var kvp in _activePositions)
+                    {
+                        if (MajorSymbols.Contains(kvp.Key)) continue;
+                        if (kvp.Value.EntryPrice <= 0 || kvp.Value.Quantity == 0) continue;
+                        // 현재 ROE 계산
+                        decimal curPx = 0;
+                        if (_marketDataManager.TickerCache.TryGetValue(kvp.Key, out var t)) curPx = t.LastPrice;
+                        if (curPx <= 0) continue;
+                        decimal pxDiff = kvp.Value.IsLong ? (curPx - kvp.Value.EntryPrice) : (kvp.Value.EntryPrice - curPx);
+                        decimal roe = (pxDiff / kvp.Value.EntryPrice) * kvp.Value.Leverage * 100;
+                        // ROE 마이너스이고 가장 나쁜 포지션 선택
+                        if (roe < 0 && roe < worstROE)
+                        {
+                            worstROE = roe;
+                            swapTarget = kvp.Key;
+                        }
+                    }
+
+                    if (swapTarget != null && worstROE < -5m)
+                    {
+                        OnAlert?.Invoke($"🔄 [슬롯 교체] {swapTarget} (ROE {worstROE:F1}%) 청산 → {symbol} 진입");
+                        EntryLog("SLOT", "SWAP", $"evict={swapTarget} roe={worstROE:F1}% → new={symbol}");
+                        // lock 밖에서 청산 실행해야 하므로 플래그만 설정
+                        _pendingSwapEvict = swapTarget;
+                    }
+                    else
+                    {
+                        OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} PUMP 포화 ({pumpCount}/{maxPump}) 교체 대상 없음");
+                        EntryLog("SLOT", "BLOCK", $"pump={pumpCount}/{maxPump} noSwapTarget");
+                        return;
+                    }
                 }
 
                 if (totalPositions >= maxTotal)
@@ -7429,6 +7463,22 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 총 포화 ({totalPositions}/{maxTotal}) → 진입 차단");
                     EntryLog("SLOT", "BLOCK", $"total={totalPositions}/{maxTotal}");
                     return;
+                }
+            }
+
+            // [v4.0.3] 슬롯 교체: lock 밖에서 기존 포지션 청산
+            if (_pendingSwapEvict != null)
+            {
+                string evictSym = _pendingSwapEvict;
+                _pendingSwapEvict = null;
+                try
+                {
+                    await _positionMonitor.ExecuteMarketClose(evictSym, $"슬롯 교체 청산 ({symbol} 진입 위해)", token);
+                    await Task.Delay(300, token);
+                }
+                catch (Exception swapEx)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [슬롯 교체] {evictSym} 청산 실패: {swapEx.Message}");
                 }
             }
 

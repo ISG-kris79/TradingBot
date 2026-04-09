@@ -1777,6 +1777,10 @@ namespace TradingBot.Services
 
             OnLog?.Invoke($"📋 {symbol} [Meme Coin Mode] SL={stopLossROE:F0}% BreakEven={pumpBreakEvenRoe:F0}% TrailStart={trailingStartROE:F0}% TrailGap={trailingDropROE:F0}%");
 
+            // [v4.0.3] 실가격 추적
+            decimal highestPrice = entryPrice;
+            decimal lowestPrice = entryPrice;
+
             while (!token.IsCancellationRequested)
             {
                 await Task.Delay(500, token);
@@ -2297,12 +2301,48 @@ namespace TradingBot.Services
                 //     continue;
                 // }
 
-                if (currentROE <= -effectiveStopLossRoe)
+                // [v4.0.3] 실가격 기반 손절 — 진입가 대비 % + 최고가 대비 %
                 {
-                    string exitReason = isBreakEvenTriggered ? "🛡️ Break Even (본절)" : $"ROE 손절 (-{effectiveStopLossRoe}%)";
-                    OnLog?.Invoke($"[청산 트리거] {symbol} 손절 조건 충족 | 방향={(isLongPosition ? "LONG" : "SHORT")}, 현재ROE={currentROE:F2}%, 기준ROE=-{effectiveStopLossRoe:F2}%, BreakEven={(isBreakEvenTriggered ? "ON" : "OFF")}");
-                    await ExecuteMarketClose(symbol, exitReason, token);
-                    break;
+                    // 최고가 추적
+                    if (isLongPosition && currentPrice > highestPrice) highestPrice = currentPrice;
+                    if (!isLongPosition && (lowestPrice == 0 || currentPrice < lowestPrice)) lowestPrice = currentPrice;
+
+                    // 진입가 대비 하락% (초기 손절)
+                    decimal dropFromEntry = isLongPosition
+                        ? (entryPrice - currentPrice) / entryPrice * 100
+                        : (currentPrice - entryPrice) / entryPrice * 100;
+
+                    // 최고가 대비 하락% (트레일링 손절)
+                    decimal dropFromPeak = 0;
+                    if (isLongPosition && highestPrice > 0)
+                        dropFromPeak = (highestPrice - currentPrice) / highestPrice * 100;
+                    else if (!isLongPosition && lowestPrice > 0)
+                        dropFromPeak = (currentPrice - lowestPrice) / lowestPrice * 100;
+
+                    // 초기 손절: 진입가 대비 -3% (20x = ROE -60%)
+                    if (dropFromEntry >= 3.0m && !isBreakEvenTriggered)
+                    {
+                        OnLog?.Invoke($"[청산 트리거] {symbol} 실가격 손절 | 진입가 대비 -{dropFromEntry:F2}% (>= 3%)");
+                        await ExecuteMarketClose(symbol, $"실가격 손절 (진입가 대비 -{dropFromEntry:F1}%)", token);
+                        break;
+                    }
+
+                    // 최고가 대비 -5% 하락 (고점 찍고 내려올 때)
+                    if (highestPrice > entryPrice && dropFromPeak >= 5.0m)
+                    {
+                        OnLog?.Invoke($"[청산 트리거] {symbol} 고점 대비 -{dropFromPeak:F2}% 하락 (>= 5%) | 고점={highestPrice:F6}");
+                        await ExecuteMarketClose(symbol, $"고점 대비 -{dropFromPeak:F1}% 하락 (고점 {highestPrice:F6})", token);
+                        break;
+                    }
+
+                    // 기존 ROE 기반 백업 (위 조건에 안 걸리면)
+                    if (currentROE <= -effectiveStopLossRoe)
+                    {
+                        string exitReason = isBreakEvenTriggered ? "🛡️ Break Even (본절)" : $"ROE 손절 (-{effectiveStopLossRoe}%)";
+                        OnLog?.Invoke($"[청산 트리거] {symbol} ROE 백업 손절 | ROE={currentROE:F2}%");
+                        await ExecuteMarketClose(symbol, exitReason, token);
+                        break;
+                    }
                 }
 
                 // ── [Meme Coin Mode] PUMP 트레일링: 고정 간격 pumpTrailingGapRoe 유지 ──────
