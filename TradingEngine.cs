@@ -183,6 +183,7 @@ namespace TradingBot
         private readonly TradingBot.Services.ProfitRegressorService _profitRegressor = new();
         private readonly TradingBot.Services.TradeSignalClassifier _tradeSignalClassifier = new();
         private readonly TradingBot.Services.PumpSignalClassifier _pumpSignalClassifier = new();
+        private readonly TradingBot.Services.PriceDirectionPredictor _directionPredictor = new();
         private DateTime _lastSsaTrainTime = DateTime.MinValue;
         private TradingBot.Services.SsaForecastResult? _latestSsaResult;
 
@@ -533,7 +534,7 @@ namespace TradingBot
             _exitOptimizer.TryLoadModel();
             _positionMonitor.SetExitAIModels(_regimeClassifier, _exitOptimizer);
             _positionMonitor.SetMacdCrossService(_macdCrossService);
-            _ = TrainExitModelsAsync(_cts.Token);
+            StartModelRetrainTimer(); // [v3.8.1] 전체 모델 자동 재학습
 
             _riskManager.OnTripped += (reason) =>
             {
@@ -730,6 +731,8 @@ namespace TradingBot
             // [PUMP ML] 초기화
             _pumpSignalClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
             _pumpSignalClassifier.LoadModel();
+            _directionPredictor.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _directionPredictor.TryLoadModels();
             // [수익률 회귀] 로그 연결 + DB 과거 거래 학습
             _profitRegressor.OnLog += msg => OnStatusLog?.Invoke(msg);
             _ = Task.Run(async () =>
@@ -5998,12 +6001,156 @@ namespace TradingBot
             }
         }
 
-        private async Task TrainExitModelsAsync(CancellationToken token)
+        private System.Threading.Timer? _modelRetrainTimer;
+
+        /// <summary>[v3.8.1] 전체 ML 모델 1시간 주기 자동 재학습</summary>
+        private void StartModelRetrainTimer()
+        {
+            _modelRetrainTimer = new System.Threading.Timer(
+                _ => _ = TrainAllModelsAsync(_cts?.Token ?? CancellationToken.None),
+                null,
+                TimeSpan.FromMinutes(2),   // 시작 2분 후 첫 학습
+                TimeSpan.FromHours(1));     // 이후 1시간 주기
+            OnStatusLog?.Invoke("🧠 [ML] 전체 모델 자동 재학습 타이머 시작 (1시간 주기)");
+        }
+
+        private async Task TrainAllModelsAsync(CancellationToken token)
         {
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(30), token); // 시작 직후 부하 방지
+                OnStatusLog?.Invoke("🧠 [ML 재학습] 전체 모델 학습 시작...");
 
+                // 1. TradeSignalClassifier (3-class: LONG/SHORT/HOLD)
+                try
+                {
+                    if (_tradeSignalClassifier != null)
+                    {
+                        var allCandles = new List<CandleData>();
+                        foreach (var kvp in _marketDataManager.KlineCache)
+                        {
+                            if (token.IsCancellationRequested) break;
+                            List<IBinanceKline> candles;
+                            lock (kvp.Value) { candles = kvp.Value.TakeLast(100).ToList(); }
+                            if (candles.Count < 30) continue;
+
+                            // IBinanceKline → CandleData 변환 (지표 계산 포함)
+                            var cdList = ConvertKlinesToCandleData(kvp.Key, candles);
+                            allCandles.AddRange(cdList);
+                        }
+                        if (allCandles.Count >= 100)
+                        {
+                            var labeled = _tradeSignalClassifier.LabelCandleData(allCandles);
+                            if (labeled.Count >= 50)
+                            {
+                                var metrics = await _tradeSignalClassifier.TrainAndSaveAsync(labeled, token);
+                                OnStatusLog?.Invoke($"🧠 [ML] TradeSignal 학습 완료 | {labeled.Count}건 | Acc={metrics?.MicroAccuracy:P1}");
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] TradeSignal 학습 실패: {ex.Message}"); }
+
+                // 2. PumpSignalClassifier
+                try
+                {
+                    if (_pumpSignalClassifier != null)
+                    {
+                        var pumpCandles = new List<IBinanceKline>();
+                        foreach (var kvp in _marketDataManager.KlineCache)
+                        {
+                            if (token.IsCancellationRequested) break;
+                            if (MajorSymbols.Contains(kvp.Key)) continue;
+                            List<IBinanceKline> candles;
+                            lock (kvp.Value) { candles = kvp.Value.TakeLast(100).ToList(); }
+                            if (candles.Count >= 30)
+                                pumpCandles.AddRange(candles);
+                        }
+                        if (pumpCandles.Count >= 200)
+                        {
+                            var labeled = _pumpSignalClassifier.LabelCandleData(pumpCandles);
+                            if (labeled.Count >= 100)
+                            {
+                                var metrics = await _pumpSignalClassifier.TrainAndSaveAsync(labeled, token);
+                                OnStatusLog?.Invoke($"🧠 [ML] PumpSignal 학습 완료 | {labeled.Count}건 | Acc={metrics?.Accuracy:P1}");
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] PumpSignal 학습 실패: {ex.Message}"); }
+
+                // 3. Direction + Volatility Predictor
+                try
+                {
+                    var allDirData = new List<PriceDirectionPredictor.DirectionFeature>();
+                    var allVolData = new List<PriceDirectionPredictor.VolatilityFeature>();
+                    foreach (var kvp in _marketDataManager.KlineCache)
+                    {
+                        if (token.IsCancellationRequested) break;
+                        List<IBinanceKline> candles;
+                        lock (kvp.Value) { candles = kvp.Value.TakeLast(150).ToList(); }
+                        if (candles.Count < 30) continue;
+                        var (dir, vol) = _directionPredictor.BuildTrainingData(candles);
+                        allDirData.AddRange(dir);
+                        allVolData.AddRange(vol);
+                    }
+                    if (allDirData.Count >= 100)
+                    {
+                        var (dirAcc, volR2) = await _directionPredictor.TrainAsync(allDirData, allVolData, token);
+                        OnStatusLog?.Invoke($"🧠 [ML] Direction={dirAcc:P1} Volatility R²={volR2:F3} ({allDirData.Count}건)");
+                    }
+                }
+                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] Direction/Volatility 학습 실패: {ex.Message}"); }
+
+                // 4-5. MarketRegime + ExitOptimizer (기존 로직)
+                await TrainExitModelsInternalAsync(token);
+
+                OnStatusLog?.Invoke("🧠 [ML 재학습] 전체 모델 학습 완료");
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [ML 재학습] 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>IBinanceKline → CandleData 변환 (지표 포함)</summary>
+        private List<CandleData> ConvertKlinesToCandleData(string symbol, List<IBinanceKline> klines)
+        {
+            var result = new List<CandleData>();
+            if (klines.Count < 20) return result;
+
+            double rsi = IndicatorCalculator.CalculateRSI(klines, 14);
+            var bb = IndicatorCalculator.CalculateBB(klines, 20, 2);
+            var macd = IndicatorCalculator.CalculateMACD(klines);
+            double atr = IndicatorCalculator.CalculateATR(klines, 14);
+            double sma20 = IndicatorCalculator.CalculateSMA(klines, 20);
+
+            for (int i = Math.Max(20, klines.Count - 50); i < klines.Count; i++)
+            {
+                var k = klines[i];
+                result.Add(new CandleData
+                {
+                    Symbol = symbol,
+                    OpenTime = k.OpenTime,
+                    Open = k.OpenPrice, High = k.HighPrice, Low = k.LowPrice, Close = k.ClosePrice,
+                    Volume = (float)k.Volume,
+                    RSI = (float)rsi,
+                    MACD = (float)macd.Macd, MACD_Signal = (float)macd.Signal, MACD_Hist = (float)macd.Hist,
+                    ATR = (float)atr,
+                    BollingerUpper = (float)bb.Upper, BollingerLower = (float)bb.Lower,
+                    SMA_20 = (float)sma20,
+                    Price_Change_Pct = k.OpenPrice > 0 ? (float)((k.ClosePrice - k.OpenPrice) / k.OpenPrice * 100) : 0,
+                    BB_Width = bb.Mid > 0 ? (float)((bb.Upper - bb.Lower) / bb.Mid * 100) : 0,
+                    Volume_Ratio = 1.0f
+                });
+            }
+            return result;
+        }
+
+        private async Task TrainExitModelsInternalAsync(CancellationToken token)
+        {
+            try
+            {
                 // 1. MarketRegimeClassifier 학습 (KlineCache에서)
                 OnStatusLog?.Invoke("[AI Exit] 시장 상태 분류 모델 학습 시작...");
                 var allRegimeData = new List<RegimeFeature>();
@@ -7658,6 +7805,42 @@ namespace TradingBot
                         OnStatusLog?.Invoke($"⛔ [RSI 극단 차단] {symbol} {decision} | RSI={rsiCheck:F1} → {limitText}");
                         EntryLog("RSI_EXTREME", "BLOCK", $"dir={decision} rsi={rsiCheck:F1}");
                         return;
+                    }
+
+                    // [v3.8.1] 방향 예측기 체크 — ML이 반대 방향 예측 시 차단
+                    if (_directionPredictor.IsDirectionModelLoaded)
+                    {
+                        var dirFeature = new PriceDirectionPredictor.DirectionFeature
+                        {
+                            RSI = rsiCheck / 100f,
+                            MACD = latestCandle.MACD, MACD_Signal = latestCandle.MACD_Signal,
+                            MACD_Hist = latestCandle.MACD_Hist,
+                            BB_Position = latestCandle.Price_To_BB_Mid / 100f + 0.5f,
+                            BB_Width = latestCandle.BB_Width,
+                            ATR_Ratio = currentPrice > 0 ? latestCandle.ATR / (float)currentPrice * 100f : 0,
+                            Volume_Ratio = latestCandle.Volume_Ratio,
+                            Price_Change_1 = latestCandle.Price_Change_Pct,
+                            Price_Change_3 = latestCandle.Price_Momentum_30m / 2f,
+                            Price_Change_6 = latestCandle.Price_Momentum_30m,
+                            SMA20_Distance = latestCandle.Price_To_SMA20_Pct,
+                            ADX = latestCandle.ADX / 100f,
+                            Stoch_K = latestCandle.Stoch_K / 100f,
+                            Stoch_D = latestCandle.Stoch_D / 100f,
+                            HourOfDay = DateTime.Now.Hour
+                        };
+                        var dirPred = _directionPredictor.PredictDirection(dirFeature);
+                        if (dirPred != null && dirPred.Probability > 0.60f)
+                        {
+                            bool aiSaysUp = dirPred.GoesUp;
+                            bool entryIsLong = decision == "LONG";
+                            if (aiSaysUp != entryIsLong)
+                            {
+                                EntryLog("DIRECTION_AI", "BLOCK", $"ai={( aiSaysUp ? "UP" : "DOWN")} prob={dirPred.Probability:P0} vs entry={decision}");
+                                OnStatusLog?.Invoke($"⛔ [방향AI] {symbol} {decision} 차단 | AI 예측={( aiSaysUp ? "상승" : "하락")} ({dirPred.Probability:P0})");
+                                return;
+                            }
+                            EntryLog("DIRECTION_AI", "CONFIRM", $"ai={( aiSaysUp ? "UP" : "DOWN")} prob={dirPred.Probability:P0} matches={decision}");
+                        }
                     }
 
                     var threshold = GetThresholdProfile(symbol, signalSource);

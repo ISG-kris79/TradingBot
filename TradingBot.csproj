@@ -16,9 +16,9 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
     <LangVersion>latest</LangVersion>
-      <Version>3.8.1</Version>
-      <AssemblyVersion>3.8.1.0</AssemblyVersion>
-      <FileVersion>3.8.1.0</FileVersion>
+      <Version>3.9.0</Version>
+      <AssemblyVersion>3.9.0.0</AssemblyVersion>
+      <FileVersion>3.9.0.0</FileVersion>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
     <Company>TradingBot</Company>
     <Product>CoinFF TradingBot</Product>
@@ -98,6 +98,7 @@
     
     <!-- 기타 의존 파일 제외 -->
     <Compile Remove="DualAI_IntegrationGuide.cs" />
+    <Compile Remove="Services\AiEntryModelService.cs" />
     <Compile Remove="CheckpointManager.cs" />
     <Compile Remove="TimeBasedLearningSystem.cs" />
     <Compile Remove="ReinforcementLearningFramework.cs" />
