@@ -720,34 +720,32 @@ namespace TradingBot.Services
 
                         OnAlert?.Invoke($"🛡️ {symbol} 본절 보호 (ROE {highestROE:F1}% → 스탑 {breakEvenPrice:F4})");
 
-                        // [v3.6.3] 바이낸스 서버사이드 STOP_MARKET → 본절가
-                        _ = Task.Run(async () =>
+                        // [v3.6.4] 바이낸스 서버사이드 STOP_MARKET → 본절가 (동기 실행)
+                        try
                         {
-                            try
+                            string beStopSide = isLong ? "SELL" : "BUY";
+                            decimal beQty = 0;
+                            string? beOldOrderId = null;
+                            lock (_posLock)
                             {
-                                string stopSide = isLong ? "SELL" : "BUY";
-                                decimal qty = 0;
-                                string? oldOrderId = null;
-                                lock (_posLock)
-                                {
-                                    if (_activePositions.TryGetValue(symbol, out var p))
-                                    {
-                                        qty = Math.Abs(p.Quantity);
-                                        oldOrderId = p.StopOrderId;
-                                    }
-                                }
-                                if (qty <= 0) return;
-                                if (!string.IsNullOrEmpty(oldOrderId))
-                                    await _exchangeService.CancelOrderAsync(symbol, oldOrderId, token);
-                                var (ok, newId) = await _exchangeService.PlaceStopOrderAsync(symbol, stopSide, qty, breakEvenPrice, token);
-                                if (ok)
-                                {
-                                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId; }
-                                    OnLog?.Invoke($"📡 {symbol} 서버 STOP_MARKET → 본절가 {breakEvenPrice:F4}");
-                                }
+                                if (_activePositions.TryGetValue(symbol, out var p))
+                                { beQty = Math.Abs(p.Quantity); beOldOrderId = p.StopOrderId; }
                             }
-                            catch (Exception ex) { OnLog?.Invoke($"⚠️ {symbol} 본절 서버 스탑 등록 실패: {ex.Message}"); }
-                        });
+                            if (beQty > 0)
+                            {
+                                if (!string.IsNullOrEmpty(beOldOrderId))
+                                    await _exchangeService.CancelOrderAsync(symbol, beOldOrderId, CancellationToken.None);
+                                OnLog?.Invoke($"📡 {symbol} STOP_MARKET 본절가 시도 | qty={beQty} price={breakEvenPrice:F4}");
+                                var (beOk, beNewId) = await _exchangeService.PlaceStopOrderAsync(symbol, beStopSide, beQty, breakEvenPrice, CancellationToken.None);
+                                if (beOk)
+                                {
+                                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = beNewId; }
+                                    OnLog?.Invoke($"📡 {symbol} 서버 STOP_MARKET → 본절가 {breakEvenPrice:F4} 완료");
+                                }
+                                else OnLog?.Invoke($"⚠️ {symbol} 본절 STOP_MARKET 실패");
+                            }
+                        }
+                        catch (Exception ex) { OnLog?.Invoke($"❌ {symbol} 본절 서버 스탑 예외: {ex.Message}"); }
                     }
 
                     // [AI Exit Optimizer] ROE 10% 이상일 때 5초마다 모델 질의
@@ -2096,55 +2094,59 @@ namespace TradingBot.Services
                     OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 1단계 | ROI {stairStep1TriggerRoe:F0}% → 보호선 ROE +{StairStep1FloorRoe:F0}%");
                     PersistPositionState(symbol, stairStep: 1, highestROE: highestROE);
 
-                    // [v3.3.8] 서버사이드 TRAILING_STOP_MARKET 설정 (1초 급락 대비)
-                    // 바이낸스가 자동으로 고점 추적 → callbackRate% 하락 시 시장가 청산
-                    // PUMP 20x: 트레일링갭 ROE 20% = 가격 1% → callbackRate 1.0%
-                    _ = Task.Run(async () =>
+                    // [v3.6.4] 서버사이드 TRAILING_STOP_MARKET (CancellationToken.None 사용)
                     {
-                        try
+                        string stopSide = isLongPosition ? "SELL" : "BUY";
+                        decimal qty = 0;
+                        string? oldOrderId = null;
+                        lock (_posLock)
                         {
-                            string stopSide = isLongPosition ? "SELL" : "BUY";
-                            decimal qty = 0;
-                            string? oldOrderId = null;
-                            lock (_posLock)
+                            if (_activePositions.TryGetValue(symbol, out var p))
                             {
-                                if (_activePositions.TryGetValue(symbol, out var p))
-                                {
-                                    qty = Math.Abs(p.Quantity);
-                                    oldOrderId = p.StopOrderId;
-                                }
-                            }
-                            if (qty <= 0) return;
-                            // 기존 STOP_MARKET 주문 취소
-                            if (!string.IsNullOrEmpty(oldOrderId))
-                                await _exchangeService.CancelOrderAsync(symbol, oldOrderId, token);
-
-                            // callbackRate = 트레일링갭 ROE / 레버리지 (ROE% → 가격%)
-                            // PUMP 20x: 20% ROE / 20 = 1.0% 가격
-                            decimal callbackRate = Math.Clamp(trailingDropROE / leverage, 0.1m, 5.0m);
-                            var (ok, newId) = await _exchangeService.PlaceTrailingStopOrderAsync(
-                                symbol, stopSide, qty, callbackRate, activationPrice: null, token);
-                            if (ok)
-                            {
-                                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId; }
-                                OnAlert?.Invoke($"🪜📡 {symbol} 서버사이드 TRAILING_STOP 등록 | callback={callbackRate:F1}% (고점 대비 {callbackRate:F1}% 하락 시 자동 청산)");
-                            }
-                            else
-                            {
-                                // TRAILING_STOP 실패 시 STOP_MARKET 폴백
-                                decimal floorPrice = isLongPosition
-                                    ? entryPrice * (1m + StairStep1FloorRoe / leverage / 100m)
-                                    : entryPrice * (1m - StairStep1FloorRoe / leverage / 100m);
-                                var (ok2, newId2) = await _exchangeService.PlaceStopOrderAsync(symbol, stopSide, qty, floorPrice, token);
-                                if (ok2)
-                                {
-                                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId2; }
-                                    OnLog?.Invoke($"🪜🛡️ {symbol} TRAILING 실패 → STOP_MARKET 폴백 {floorPrice:F8}");
-                                }
+                                qty = Math.Abs(p.Quantity);
+                                oldOrderId = p.StopOrderId;
                             }
                         }
-                        catch (Exception ex) { OnLog?.Invoke($"⚠️ {symbol} 서버사이드 트레일링 설정 실패: {ex.Message}"); }
-                    });
+                        if (qty > 0)
+                        {
+                            try
+                            {
+                                if (!string.IsNullOrEmpty(oldOrderId))
+                                    await _exchangeService.CancelOrderAsync(symbol, oldOrderId, CancellationToken.None);
+
+                                decimal callbackRate = Math.Clamp(trailingDropROE / leverage, 0.1m, 5.0m);
+                                OnLog?.Invoke($"📡 {symbol} TRAILING_STOP 시도 | qty={qty} callback={callbackRate:F1}%");
+
+                                var (ok, newId) = await _exchangeService.PlaceTrailingStopOrderAsync(
+                                    symbol, stopSide, qty, callbackRate, activationPrice: null, CancellationToken.None);
+                                if (ok)
+                                {
+                                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId; }
+                                    OnAlert?.Invoke($"📡 {symbol} 서버 TRAILING_STOP 등록 완료 | callback={callbackRate:F1}%");
+                                }
+                                else
+                                {
+                                    OnLog?.Invoke($"⚠️ {symbol} TRAILING_STOP 실패 → STOP_MARKET 폴백 시도");
+                                    decimal floorPrice = isLongPosition
+                                        ? entryPrice * (1m + StairStep1FloorRoe / leverage / 100m)
+                                        : entryPrice * (1m - StairStep1FloorRoe / leverage / 100m);
+                                    var (ok2, newId2) = await _exchangeService.PlaceStopOrderAsync(symbol, stopSide, qty, floorPrice, CancellationToken.None);
+                                    if (ok2)
+                                    {
+                                        lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId2; }
+                                        OnLog?.Invoke($"📡 {symbol} STOP_MARKET 폴백 성공 {floorPrice:F8}");
+                                    }
+                                    else
+                                        OnLog?.Invoke($"❌ {symbol} STOP_MARKET 폴백도 실패");
+                                }
+                            }
+                            catch (Exception ex) { OnLog?.Invoke($"❌ {symbol} 서버 트레일링 예외: {ex.Message}"); }
+                        }
+                        else
+                        {
+                            OnLog?.Invoke($"⚠️ {symbol} 서버 트레일링 스킵: qty=0");
+                        }
+                    }
                 }
 
                 if (currentROE >= stairStep2TriggerRoe && stairStep < 2)
@@ -2154,38 +2156,36 @@ namespace TradingBot.Services
                     OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 2단계 | ROI {stairStep2TriggerRoe:F0}% → 보호선 ROE +{StairStep2FloorRoe:F0}% (100% 먹고 50% 보존)");
                     PersistPositionState(symbol, stairStep: 2, highestROE: highestROE);
 
-                    // [v3.3.8] 2단계: 트레일링 콜백을 타이트하게 (0.5% 가격)
-                    _ = Task.Run(async () =>
+                    // [v3.6.4] 2단계 TRAILING_STOP 업그레이드 (동기 + CancellationToken.None)
                     {
-                        try
+                        string stopSide2 = isLongPosition ? "SELL" : "BUY";
+                        decimal qty2 = 0;
+                        string? oldId2 = null;
+                        lock (_posLock)
                         {
-                            string stopSide = isLongPosition ? "SELL" : "BUY";
-                            decimal qty = 0;
-                            string? oldOrderId = null;
-                            lock (_posLock)
-                            {
-                                if (_activePositions.TryGetValue(symbol, out var p))
-                                {
-                                    qty = Math.Abs(p.Quantity);
-                                    oldOrderId = p.StopOrderId;
-                                }
-                            }
-                            if (qty <= 0) return;
-                            if (!string.IsNullOrEmpty(oldOrderId))
-                                await _exchangeService.CancelOrderAsync(symbol, oldOrderId, token);
-
-                            // 2단계: 더 타이트한 콜백 (0.5%)
-                            decimal callbackRate = Math.Clamp(trailingDropROE / leverage * 0.5m, 0.1m, 5.0m);
-                            var (ok, newId) = await _exchangeService.PlaceTrailingStopOrderAsync(
-                                symbol, stopSide, qty, callbackRate, activationPrice: null, token);
-                            if (ok)
-                            {
-                                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId; }
-                                OnAlert?.Invoke($"🪜📡 {symbol} 서버 TRAILING_STOP 업그레이드 | callback={callbackRate:F1}% (2단계 타이트)");
-                            }
+                            if (_activePositions.TryGetValue(symbol, out var p))
+                            { qty2 = Math.Abs(p.Quantity); oldId2 = p.StopOrderId; }
                         }
-                        catch (Exception ex) { OnLog?.Invoke($"⚠️ {symbol} 2단계 트레일링 업데이트 실패: {ex.Message}"); }
-                    });
+                        if (qty2 > 0)
+                        {
+                            try
+                            {
+                                if (!string.IsNullOrEmpty(oldId2))
+                                    await _exchangeService.CancelOrderAsync(symbol, oldId2, CancellationToken.None);
+                                decimal callbackRate2 = Math.Clamp(trailingDropROE / leverage * 0.5m, 0.1m, 5.0m);
+                                OnLog?.Invoke($"📡 {symbol} TRAILING_STOP 2단계 시도 | qty={qty2} callback={callbackRate2:F1}%");
+                                var (ok, newId) = await _exchangeService.PlaceTrailingStopOrderAsync(
+                                    symbol, stopSide2, qty2, callbackRate2, activationPrice: null, CancellationToken.None);
+                                if (ok)
+                                {
+                                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId; }
+                                    OnAlert?.Invoke($"📡 {symbol} 서버 TRAILING_STOP 2단계 완료 | callback={callbackRate2:F1}%");
+                                }
+                                else OnLog?.Invoke($"⚠️ {symbol} TRAILING_STOP 2단계 실패");
+                            }
+                            catch (Exception ex) { OnLog?.Invoke($"❌ {symbol} 2단계 트레일링 예외: {ex.Message}"); }
+                        }
+                    }
                 }
 
                 if (currentROE >= stairStep3TriggerRoe && stairStep < 3)
