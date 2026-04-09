@@ -315,8 +315,8 @@ namespace TradingBot.Strategies
                 // [v3.7.3] 임계값 4→6 상향 — 4개는 아무 코인이나 통과
                 else if (hasPriceMomentum && bullishSignals >= 6)
                     decision = "LONG";
-                // ML 모델이 60%+ → LONG (55→60 강화)
-                else if (mlSignal && mlProb >= 0.60f && hasPriceMomentum && !isNearTop)
+                // [v3.7.3] ML도 bullishSignals 5개+ 필수 (60%로 아무거나 진입 방지)
+                else if (mlSignal && mlProb >= 0.65f && hasPriceMomentum && !isNearTop && bullishSignals >= 5)
                 {
                     decision = "LONG";
                     PumpSignalLog("ML_ENTRY", $"sym={symbol} prob={mlProb:P0} bull={bullishSignals}");

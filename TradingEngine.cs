@@ -4779,7 +4779,7 @@ namespace TradingBot
                             pick2h.Price,
                             token,
                             "DROUGHT_RECOVERY_2H",
-                            skipAiGateCheck: true);
+                            skipAiGateCheck: false);
 
                         await Task.Delay(120, token);
                         action = "ETA_2H_ORDER_ATTEMPT";
@@ -4828,7 +4828,7 @@ namespace TradingBot
                             token,
                             signalSource: "DROUGHT_RECOVERY_NEAR_2H",
                             manualSizeMultiplier: trialSizeMultiplier,
-                            skipAiGateCheck: true);
+                            skipAiGateCheck: false);
                         action = "NEAR_2H_ORDER_ATTEMPT";
                         string nearSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
                         OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {nearSummary}");
@@ -4895,7 +4895,7 @@ namespace TradingBot
                             token,
                             signalSource: "DROUGHT_RECOVERY_PUMP",
                             manualSizeMultiplier: pumpRecoverySizeMultiplier,
-                            skipAiGateCheck: true);
+                            skipAiGateCheck: false);
                         action = "PUMP_FALLBACK_ORDER_ATTEMPT";
                         string pumpSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
                         OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {pumpSummary}");
@@ -6432,6 +6432,27 @@ namespace TradingBot
                         return;
                     }
                     currentPrice = nowTick.LastPrice; // 최신 가격으로 갱신
+                }
+
+                // [v3.7.3] SPIKE_FAST에도 BTC 하락장 체크
+                if (direction == "LONG")
+                {
+                    if (_marketDataManager.TickerCache.TryGetValue("BTCUSDT", out var spkBtc) && spkBtc.LastPrice > 0
+                        && _marketDataManager.KlineCache.TryGetValue("BTCUSDT", out var spkBtcK) && spkBtcK.Count >= 12)
+                    {
+                        List<IBinanceKline> spkBtcSnap;
+                        lock (spkBtcK) { spkBtcSnap = spkBtcK.TakeLast(12).ToList(); }
+                        if (spkBtcSnap.Count >= 12)
+                        {
+                            decimal btcChg = (spkBtc.LastPrice - spkBtcSnap[0].OpenPrice) / spkBtcSnap[0].OpenPrice * 100m;
+                            if (btcChg <= -2.0m)
+                            {
+                                OnStatusLog?.Invoke($"⛔ [SPIKE_FAST] {symbol} BTC 하락장 {btcChg:F1}% → LONG 스킵");
+                                lock (_posLock) { _activePositions.Remove(symbol); }
+                                return;
+                            }
+                        }
+                    }
                 }
 
                 // [v3.3.2] RSI 과열 체크 + 눌림 대기 (고점 매수 방지)
