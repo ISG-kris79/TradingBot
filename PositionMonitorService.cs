@@ -31,6 +31,8 @@ namespace TradingBot.Services
         private readonly ConcurrentDictionary<string, int> _closingPositions = new();
         // [v3.4.0] 부분청산 실패 쿨다운 (무한 재시도 방지)
         private readonly ConcurrentDictionary<string, DateTime> _partialCloseFailCooldown = new();
+        // [v3.9.1] 손절 횟수 추적 — 2회 손절 시 당일 블랙리스트
+        private readonly ConcurrentDictionary<string, int> _stopLossCountToday = new(StringComparer.OrdinalIgnoreCase);
         private readonly AdvancedExitStopCalculator _advancedExitCalculator;  // [v2.1.18] 지표 결합 익절
         private AIPredictor? _aiPredictor;
 
@@ -3135,9 +3137,29 @@ namespace TradingBot.Services
 
                 OnAlert?.Invoke($"✅ {symbol} 청산 완료(검증됨): {reason}");
 
-                // 청산 후 30분 블랙리스트
-                _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
-                OnLog?.Invoke($"🚫 {symbol} 30분간 블랙리스트 등록 (청산 사유: {reason})");
+                // [v3.9.1] 손절이면 횟수 추적 → 2회 이상 당일 블랙리스트
+                bool isStopLoss = reason.Contains("손절") || reason.Contains("ROE") || reason.Contains("하락추세");
+                if (isStopLoss)
+                {
+                    int count = _stopLossCountToday.AddOrUpdate(symbol, 1, (_, c) => c + 1);
+                    if (count >= 2)
+                    {
+                        // 당일 자정까지 블랙리스트
+                        var midnight = DateTime.Today.AddDays(1);
+                        _blacklistedSymbols[symbol] = midnight;
+                        OnAlert?.Invoke($"🚫 {symbol} 당일 블랙리스트 (손절 {count}회 → 오늘 재진입 금지)");
+                    }
+                    else
+                    {
+                        _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
+                        OnLog?.Invoke($"🚫 {symbol} 30분 블랙리스트 (손절 {count}회차)");
+                    }
+                }
+                else
+                {
+                    _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
+                    OnLog?.Invoke($"🚫 {symbol} 30분 블랙리스트 (익절: {reason})");
+                }
 
                 CleanupPositionData(symbol);
             }
