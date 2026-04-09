@@ -7004,23 +7004,23 @@ namespace TradingBot
 
             lock (_posLock)
             {
-                // [v3.3.6] 중복 진입 차단: 이미 포지션/예약이 있으면 즉시 차단
+                // [v3.5.1] 중복 진입 완전 차단: 이미 포지션/예약이 있으면 즉시 차단
+                // scout add-on은 MonitorScoutToMainUpgradeAsync에서 별도 처리
                 if (_activePositions.ContainsKey(symbol))
                 {
-                    // 정찰대 추가 진입 가능 여부만 플래그 설정 (PlaceAndTrackEntryAsync에서 처리)
                     var existingPos = _activePositions[symbol];
-                    if (existingPos.Quantity > 0 || existingPos.EntryPrice > 0)
+                    if (existingPos.Quantity == 0 && existingPos.EntryPrice == 0)
                     {
-                        scoutAddOnEligible = existingPos.Quantity > 0; // 실제 포지션이면 scout add-on 가능
-                        EntryLog("SLOT", "DUPLICATE_CHECK", $"existingPos qty={existingPos.Quantity} → scoutAddOn={scoutAddOnEligible}");
+                        // Quantity=0, EntryPrice=0 → 다른 경로에서 진입 진행 중
+                        OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 다른 경로에서 진입 진행 중 → 중복 차단");
+                        EntryLog("SLOT", "BLOCK", "duplicateReservation=true");
                     }
                     else
                     {
-                        // Quantity=0 예약 상태 → 다른 경로에서 진입 진행 중
-                        OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 다른 경로에서 진입 진행 중 → 중복 차단");
-                        EntryLog("SLOT", "BLOCK", "duplicateReservation=true");
-                        return;
+                        // 실제 포지션 보유 중 → 중복 진입 차단
+                        EntryLog("SLOT", "BLOCK", $"duplicatePosition qty={existingPos.Quantity}");
                     }
+                    return;
                 }
 
                 bool isMajorSymbol = MajorSymbols.Contains(symbol);
