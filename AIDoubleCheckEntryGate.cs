@@ -180,15 +180,11 @@ namespace TradingBot
                 var fibSignal = EvaluateFibonacciSupportSignal(symbol, decision, currentPrice, m15List, m1List);
                 float fibConfidenceBonus = (float)(fibSignal.BonusScore / 100.0);
 
-                // [ML 0% 대응] ML 결과가 0이면 기본 통과 (학습 데이터 부족 상태)
+                // [v3.7.8] ML 결과 0% → 차단 (학습 데이터 부족이면 진입하면 안 됨)
                 if (_mlTrainer.IsModelLoaded && mlConfidence < 0.01f)
                 {
-                    mlApprove = true;
-                    mlConfidence = 0.50f; // 기본 50%로 설정
-                    tfApprove = true;
-                    tfConfidence = 0.50f;
-                    effectiveMLThreshold = 0f;
-                    OnLog?.Invoke($"⚠️ [{symbol}] ML 결과 0% → 기본 통과 (학습 데이터 부족)");
+                    OnLog?.Invoke($"⚠️ [{symbol}] ML 결과 0% → 차단 (학습 데이터 부족)");
+                    return (false, "ML_Zero_Confidence", new AIEntryDetail());
                 }
 
                 bool tfPass = tfApprove && (tfConfidence + fibConfidenceBonus) >= effectiveTFThreshold;
