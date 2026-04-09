@@ -1813,6 +1813,36 @@ namespace TradingBot.Services
                         firstTpDone = p.PartialProfitStage >= 1 || p.TakeProfitStep >= 1;
                 }
 
+                // [v3.6.5] 1분봉 하락추세 조기 청산 — -40% ROE 전에 탈출
+                // 조건: 진입 후 2분+ & ROE < 0 & 연속 3개 음봉 & RSI 하락
+                if (isPumpPosition && !firstTpDone && currentROE < 0 && (DateTime.Now - startTime).TotalMinutes >= 2)
+                {
+                    try
+                    {
+                        var m1Klines = await _exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.OneMinute, 10, CancellationToken.None);
+                        if (m1Klines != null && m1Klines.Count >= 5)
+                        {
+                            var last5 = m1Klines.TakeLast(5).ToList();
+                            // 최근 3봉 연속 음봉 체크
+                            int bearishCount = 0;
+                            for (int bi = last5.Count - 1; bi >= Math.Max(0, last5.Count - 3); bi--)
+                            {
+                                if (last5[bi].ClosePrice < last5[bi].OpenPrice) bearishCount++;
+                            }
+                            // RSI 하락 체크
+                            double m1Rsi = IndicatorCalculator.CalculateRSI(m1Klines.ToList(), Math.Min(7, m1Klines.Count - 1));
+                            // 3봉 연속 음봉 + RSI < 40 + ROE -10% 이하 → 조기 청산
+                            if (bearishCount >= 3 && m1Rsi < 40 && currentROE <= -10.0m)
+                            {
+                                OnLog?.Invoke($"[조기청산] {symbol} 1분봉 하락추세 | 음봉{bearishCount}연속 RSI={m1Rsi:F0} ROE={currentROE:F1}% → -40% 전 탈출");
+                                await ExecuteMarketClose(symbol, $"1분봉 하락추세 조기청산 (음봉{bearishCount}연속 RSI={m1Rsi:F0})", token);
+                                break;
+                            }
+                        }
+                    }
+                    catch (Exception m1Ex) { OnLog?.Invoke($"⚠️ {symbol} 1분봉 체크 오류: {m1Ex.Message}"); }
+                }
+
                 // [20배 PUMP 즉시 손절] 진입 후 다음 5분봉이 BB중단을 음봉으로 하향 돌파 마감 시 즉시 청산
                 if (isPumpPosition && (DateTime.Now - startTime).TotalMinutes >= 5)
                 {

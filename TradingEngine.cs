@@ -554,6 +554,22 @@ namespace TradingBot
             _crashDetector.OnCrashDetected += (coins, avgDrop) => _ = HandleCrashDetectedAsync(coins, avgDrop);
             _crashDetector.OnPumpDetected += (coins, avgRise) => _ = HandlePumpDetectedAsync(coins, avgRise);
             _crashDetector.OnSpikeDetected += (symbol, changePct, price) => _ = HandleSpikeDetectedAsync(symbol, changePct, price);
+
+            // [v3.6.5] 거래량 급증 선행 감지 → AI Gate 통과 시 진입
+            _crashDetector.OnVolumeSurgeDetected += (symbol, volRatio, price) =>
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        OnStatusLog?.Invoke($"🔥 [거래량 선행] {symbol} vol={volRatio:F1}x → AI 판단 요청");
+                        await ExecuteAutoOrder(symbol, "LONG", price, _cts?.Token ?? CancellationToken.None,
+                            "VOLUME_SURGE", manualSizeMultiplier: 0.5m); // 50% 사이즈 (확인 진입)
+                    }
+                    catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [거래량 선행] {symbol} 진입 실패: {ex.Message}"); }
+                });
+            };
+
             _marketDataManager.OnTickerUpdate += HandleTickerUpdate;
 
             _positionMonitor.OnLog += msg => OnStatusLog?.Invoke(msg);

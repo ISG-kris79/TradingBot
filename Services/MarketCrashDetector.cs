@@ -134,6 +134,10 @@ namespace TradingBot.Services
         /// <summary>급등/급락 코인 발견 이벤트: (symbol, changePct, currentPrice)</summary>
         public event Action<string, decimal, decimal>? OnSpikeDetected;
 
+        /// <summary>[v3.6.5] 거래량 급증 감지 (가격 변동 전): (symbol, volumeRatio, currentPrice)</summary>
+        public event Action<string, decimal, decimal>? OnVolumeSurgeDetected;
+        private readonly ConcurrentDictionary<string, DateTime> _volumeSurgeCooldown = new();
+
         /// <summary>[v3.2.7] 전 종목(메이저 포함) 1분 가격 변동률 스캔</summary>
         public void CheckSpikeDetection(ConcurrentDictionary<string, TickerCacheItem> tickerCache)
         {
@@ -188,6 +192,31 @@ namespace TradingBot.Services
                     string direction = changePct > 0 ? "급등" : "급락";
                     OnLog?.Invoke($"⚡ [{direction} 감지] {sym} {changePct:+0.00;-0.00}% (30초) | 가격: {kvp.Value.LastPrice}");
                     OnSpikeDetected?.Invoke(sym, changePct, kvp.Value.LastPrice);
+                }
+            }
+
+            // [v3.6.5] 거래량 급증 선행 감지 — 가격 아직 안 움직였는데 거래량 3x+
+            foreach (var kvp in tickerCache)
+            {
+                string vSym = kvp.Value.Symbol ?? kvp.Key;
+                if (string.IsNullOrWhiteSpace(vSym) || !vSym.EndsWith("USDT")) continue;
+                if (MajorWatchSymbols.Contains(vSym)) continue; // 메이저 제외
+                if (kvp.Value.QuoteVolume < 500_000m) continue; // 최소 $500K
+                if (kvp.Value.LastPrice < 0.001m) continue;
+
+                if (_volumeSurgeCooldown.TryGetValue(vSym, out var vcd) && now < vcd) continue;
+                if (!_allVolumeSnapshot.TryGetValue(vSym, out var prevVol) || prevVol <= 0) continue;
+                if (!_allPriceSnapshot.TryGetValue(vSym, out var prevPx) || prevPx <= 0) continue;
+
+                decimal volRatio = kvp.Value.QuoteVolume / prevVol;
+                decimal pxChange = Math.Abs((kvp.Value.LastPrice - prevPx) / prevPx * 100m);
+
+                // 거래량 3배+ 급증 && 가격 변동 1.5% 미만 = 아직 안 터짐
+                if (volRatio >= 3.0m && pxChange < 1.5m)
+                {
+                    _volumeSurgeCooldown[vSym] = now.AddMinutes(10);
+                    OnLog?.Invoke($"🔥 [거래량 급증] {vSym} 거래량 {volRatio:F1}x (가격 {pxChange:+0.0;-0.0}% 미변동) → 급등 선행 감지");
+                    OnVolumeSurgeDetected?.Invoke(vSym, volRatio, kvp.Value.LastPrice);
                 }
             }
 
