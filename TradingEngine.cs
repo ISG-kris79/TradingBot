@@ -3399,6 +3399,11 @@ namespace TradingBot
                 }
                 */
 
+                // [v3.6.1] HybridExitManager 완전 비활성화 — PositionMonitor가 단독 담당
+                // 문제: HybridExit의 절대 손절(-20% ROE)이 PositionMonitor(-25%)보다 먼저 발동
+                // → 진입 즉시 -20%에서 청산, PUMP 코인 전부 손절
+                // ATR 트레일링은 v3.4.0에서 이미 제거, 절대 손절도 제거
+                /*
                 var exitAction = _hybridExitManager.CheckExit(
                     symbol,
                     currentPrice,
@@ -3406,13 +3411,12 @@ namespace TradingBot
                     bb.Upper,
                     bb.Mid,
                     bb.Lower,
-                    atr,          // ATR 파라미터 추가
+                    atr,
                     newPrediction,
                     emitAlerts: false);
 
                 if (exitAction != null)
                 {
-                    // [추가] 실행 직전 포지션 재검증 (레이스 조건 방지)
                     bool hasPositionNow;
                     lock (_posLock)
                     {
@@ -3434,7 +3438,6 @@ namespace TradingBot
                     {
                         await _positionMonitor.ExecuteMarketClose(symbol, $"Hybrid Exit: {exitAction.Reason}", token);
                         _hybridExitManager.RemoveState(symbol);
-                        // [추가] 청산 후 내부 포지션이 남아있지 않을 때만 실행 알림
                         bool stillHasPosition;
                         lock (_posLock)
                         {
@@ -3447,6 +3450,7 @@ namespace TradingBot
                         }
                     }
                 }
+                */
             }
             catch (Exception ex)
             {
