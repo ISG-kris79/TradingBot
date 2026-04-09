@@ -6954,6 +6954,18 @@ namespace TradingBot
                 return;
             }
 
+            // [v3.7.7] 신호 가격 vs 현재가 검증 — 신호 발생 후 가격 1.5%+ 변동이면 무효
+            if (_marketDataManager.TickerCache.TryGetValue(symbol, out var nowTicker) && nowTicker.LastPrice > 0 && currentPrice > 0)
+            {
+                decimal priceDrift = Math.Abs((nowTicker.LastPrice - currentPrice) / currentPrice * 100m);
+                if (priceDrift >= 1.5m)
+                {
+                    EntryLog("STALE", "BLOCK", $"signalPrice={currentPrice} nowPrice={nowTicker.LastPrice} drift={priceDrift:F1}% ≥1.5% → 신호 만료");
+                    return;
+                }
+                currentPrice = nowTicker.LastPrice; // 최신 가격으로 갱신
+            }
+
             // 1-2. 데이터 수집
             CandleData? latestCandle = await GetLatestCandleDataAsync(symbol, token);
             List<IBinanceKline>? recentEntryKlines =
