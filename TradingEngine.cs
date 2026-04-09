@@ -6434,8 +6434,8 @@ namespace TradingBot
                     currentPrice = nowTick.LastPrice; // 최신 가격으로 갱신
                 }
 
-                // [v3.7.3] SPIKE_FAST에도 BTC 하락장 체크
-                if (direction == "LONG")
+                // SPIKE_FAST: BTC 체크는 메이저 코인만 (PUMP는 BTC와 독립)
+                if (direction == "LONG" && isMajor)
                 {
                     if (_marketDataManager.TickerCache.TryGetValue("BTCUSDT", out var spkBtc) && spkBtc.LastPrice > 0
                         && _marketDataManager.KlineCache.TryGetValue("BTCUSDT", out var spkBtcK) && spkBtcK.Count >= 12)
@@ -7024,8 +7024,8 @@ namespace TradingBot
                 return;
             }
 
-            // [v3.4.1] BTC 하락장 필터 — BTC가 1시간 내 2%+ 하락 시 LONG 진입 차단
-            if (decision == "LONG" && signalSource != "CRASH_REVERSE" && signalSource != "PUMP_REVERSE")
+            // BTC 하락장 필터 제거 — 메이저도 BTC와 독립적으로 움직일 수 있음
+            if (false && decision == "LONG")
             {
                 if (_marketDataManager.TickerCache.TryGetValue("BTCUSDT", out var btcTick) && btcTick.LastPrice > 0
                     && _marketDataManager.KlineCache.TryGetValue("BTCUSDT", out var btcCandles) && btcCandles.Count >= 12)
@@ -7380,28 +7380,7 @@ namespace TradingBot
                     }
                 }
 
-                // [v3.6.0] PUMP 코인도 BTC D1+H4 방향 체크 (PUMP LONG만)
-                if (!MajorSymbols.Contains(symbol) && decision == "LONG")
-                {
-                    try
-                    {
-                        var btcH4 = await _exchangeService.GetKlinesAsync("BTCUSDT", KlineInterval.FourHour, 30, token);
-                        var btcD1 = await _exchangeService.GetKlinesAsync("BTCUSDT", KlineInterval.OneDay, 20, token);
-                        if (btcH4?.Count >= 26 && btcD1?.Count >= 14)
-                        {
-                            var (bH4Macd, bH4Sig, _) = IndicatorCalculator.CalculateMACD(btcH4);
-                            var (bD1Macd, bD1Sig, _) = IndicatorCalculator.CalculateMACD(btcD1);
-                            float btcBias = (bD1Macd > bD1Sig ? 1f : -1f) + (bH4Macd > bH4Sig ? 1f : -1f);
-                            if (btcBias <= -1.5f)
-                            {
-                                OnStatusLog?.Invoke($"⛔ [BTC 방향] {symbol} PUMP LONG 차단 | BTC D1+H4 하락 (bias={btcBias:F1})");
-                                EntryLog("DIRECTION", "BLOCK", $"pumpBtcBias={btcBias:F1} btcDowntrend");
-                                return;
-                            }
-                        }
-                    }
-                    catch (Exception btcDirEx) { EntryLog("DIRECTION", "WARN", $"btcPumpCheck skip: {btcDirEx.Message}"); }
-                }
+                // PUMP 코인은 BTC와 독립 — BTC 방향 체크 제거
 
                 // Scout add-on 검토 (LONG + Major only)
                 if (!scoutModeActivated

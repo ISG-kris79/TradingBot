@@ -312,8 +312,10 @@ namespace TradingBot.Strategies
                     PumpSignalLog("OVERHEAT_BLOCK", $"sym={symbol} rsi={rsi:F0} aboveBBUpper → 과열 진입 차단");
                     decision = "WAIT";
                 }
-                // [v3.7.3] 임계값 4→6 상향 — 4개는 아무 코인이나 통과
-                else if (hasPriceMomentum && bullishSignals >= 6)
+                // [v3.7.4] 강화 진입 조건: bullish 6개+ AND RSI 40~75 AND 가격 > SMA20
+                else if (hasPriceMomentum && bullishSignals >= 6
+                    && rsi >= 40 && rsi <= 75
+                    && currentPrice > (decimal)sma20 && sma20 > 0)
                     decision = "LONG";
                 // [v3.7.3] ML도 bullishSignals 5개+ 필수 (60%로 아무거나 진입 방지)
                 else if (mlSignal && mlProb >= 0.65f && hasPriceMomentum && !isNearTop && bullishSignals >= 5)
