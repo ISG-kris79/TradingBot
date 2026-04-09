@@ -195,28 +195,36 @@ namespace TradingBot.Services
                 }
             }
 
-            // [v3.6.5] 거래량 급증 선행 감지 — 가격 아직 안 움직였는데 거래량 3x+
+            // [v3.8.0] 거래량 증분 급증 선행 감지 — 30초간 증분이 평소 30초 증분의 3배+
             foreach (var kvp in tickerCache)
             {
                 string vSym = kvp.Value.Symbol ?? kvp.Key;
                 if (string.IsNullOrWhiteSpace(vSym) || !vSym.EndsWith("USDT")) continue;
-                if (MajorWatchSymbols.Contains(vSym)) continue; // 메이저 제외
-                if (kvp.Value.QuoteVolume < 500_000m) continue; // 최소 $500K
+                if (MajorWatchSymbols.Contains(vSym)) continue;
+                if (kvp.Value.QuoteVolume < 500_000m) continue;
                 if (kvp.Value.LastPrice < 0.001m) continue;
 
                 if (_volumeSurgeCooldown.TryGetValue(vSym, out var vcd) && now < vcd) continue;
                 if (!_allVolumeSnapshot.TryGetValue(vSym, out var prevVol) || prevVol <= 0) continue;
                 if (!_allPriceSnapshot.TryGetValue(vSym, out var prevPx) || prevPx <= 0) continue;
 
-                decimal volRatio = kvp.Value.QuoteVolume / prevVol;
+                // 증분 계산: 현재 24h누적 - 이전 24h누적 = 30초간 거래량
+                decimal volIncrement = kvp.Value.QuoteVolume - prevVol;
+                if (volIncrement <= 0) continue;
+
+                // 평소 30초 증분 추정: 24h 누적 / (24*120) = 30초 평균
+                decimal avgIncrement30s = kvp.Value.QuoteVolume / (24m * 120m);
+                if (avgIncrement30s <= 0) continue;
+
+                decimal volIncrRatio = volIncrement / avgIncrement30s;
                 decimal pxChange = Math.Abs((kvp.Value.LastPrice - prevPx) / prevPx * 100m);
 
-                // 거래량 3배+ 급증 && 가격 변동 1.5% 미만 = 아직 안 터짐
-                if (volRatio >= 3.0m && pxChange < 1.5m)
+                // 30초 증분이 평소의 5배+ && 가격 1.5% 미만 변동
+                if (volIncrRatio >= 5.0m && pxChange < 1.5m)
                 {
                     _volumeSurgeCooldown[vSym] = now.AddMinutes(10);
-                    OnLog?.Invoke($"🔥 [거래량 급증] {vSym} 거래량 {volRatio:F1}x (가격 {pxChange:+0.0;-0.0}% 미변동) → 급등 선행 감지");
-                    OnVolumeSurgeDetected?.Invoke(vSym, volRatio, kvp.Value.LastPrice);
+                    OnLog?.Invoke($"🔥 [거래량 급증] {vSym} 30초 증분 {volIncrRatio:F1}x (가격 {pxChange:+0.0;-0.0}%) → 감시 풀 등록");
+                    OnVolumeSurgeDetected?.Invoke(vSym, volIncrRatio, kvp.Value.LastPrice);
                 }
             }
 
