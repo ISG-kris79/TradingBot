@@ -59,6 +59,8 @@ namespace TradingBot
         private ConcurrentDictionary<string, DateTime> _blacklistedSymbols = new ConcurrentDictionary<string, DateTime>();
         // [FIX] 최근 청산 쿨다운 — ACCOUNT_UPDATE 도착 시 팬텀 EXTERNAL_PARTIAL_CLOSE_SYNC 방지
         private readonly ConcurrentDictionary<string, DateTime> _recentlyClosedCooldown = new();
+        // [v3.4.0] 부분청산 쿨다운 — 봇 자체 부분청산 후 ACCOUNT_UPDATE 이중 기록 방지
+        private readonly ConcurrentDictionary<string, DateTime> _recentPartialCloseCooldown = new();
         // 슬롯 설정
         // 메이저 4 + PUMP 2 = 총 6
         private const int MAX_TOTAL_SLOTS = 7;        // 총 최대 7개 (메이저4 + PUMP3)
@@ -573,6 +575,11 @@ namespace TradingBot
                 OnCloseIncompleteStatusChanged?.Invoke(s, isIncomplete, detail);
             };
             _positionMonitor.OnTradeHistoryUpdated += () => OnTradeHistoryUpdated?.Invoke();
+            // [v3.4.0] 부분청산 완료 → 30초 쿨다운 등록 (팬텀 EXTERNAL_PARTIAL_CLOSE_SYNC 방지)
+            _positionMonitor.OnPartialCloseCompleted += symbol =>
+            {
+                _recentPartialCloseCooldown[symbol] = DateTime.Now.AddSeconds(30);
+            };
             _positionMonitor.OnPositionClosedForAiLabel += (symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason) =>
             {
                 _ = HandleAiCloseLabelingAsync(symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason);
@@ -5391,6 +5398,21 @@ namespace TradingBot
 
                 if (wasTracked && existing != null && !_positionMonitor.IsCloseInProgress(pos.Symbol))
                 {
+                    // [v3.4.0] 봇 자체 부분청산 후 30초간 EXTERNAL_PARTIAL_CLOSE_SYNC 기록 차단
+                    if (_recentPartialCloseCooldown.TryGetValue(pos.Symbol, out var partialCd) && DateTime.Now < partialCd)
+                    {
+                        // 내부 수량만 동기화, DB 기록은 스킵
+                        if (updatedQtyAbs + 0.000001m < existingQtyAbs)
+                        {
+                            lock (_posLock)
+                            {
+                                if (_activePositions.TryGetValue(pos.Symbol, out var p))
+                                    p.Quantity = isLong ? updatedQtyAbs : -updatedQtyAbs;
+                            }
+                        }
+                        continue;
+                    }
+
                     if (updatedQtyAbs + 0.000001m < existingQtyAbs)
                     {
                         decimal externalClosedQty = existingQtyAbs - updatedQtyAbs;

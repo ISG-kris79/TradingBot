@@ -29,6 +29,8 @@ namespace TradingBot.Services
         private readonly Func<TradingSettings?> _settingsProvider;
         private readonly ConcurrentDictionary<string, DateTime> _blacklistedSymbols;
         private readonly ConcurrentDictionary<string, int> _closingPositions = new();
+        // [v3.4.0] 부분청산 실패 쿨다운 (무한 재시도 방지)
+        private readonly ConcurrentDictionary<string, DateTime> _partialCloseFailCooldown = new();
         private readonly AdvancedExitStopCalculator _advancedExitCalculator;  // [v2.1.18] 지표 결합 익절
         private AIPredictor? _aiPredictor;
 
@@ -53,6 +55,8 @@ namespace TradingBot.Services
         public event Action<string, bool, string?>? OnCloseIncompleteStatusChanged = delegate { };
         public event Action? OnTradeHistoryUpdated = delegate { };
         public event Action<string, DateTime, decimal, bool, decimal, string>? OnPositionClosedForAiLabel = delegate { };
+        // [v3.4.0] 부분청산 완료 이벤트 (EXTERNAL_PARTIAL_CLOSE_SYNC 팬텀 방지용)
+        public event Action<string>? OnPartialCloseCompleted = delegate { };
 
         public PositionMonitorService(
             IBinanceRestClient client,
@@ -3245,6 +3249,12 @@ namespace TradingBot.Services
 
         public async Task<bool> ExecutePartialClose(string symbol, decimal ratio, CancellationToken token)
         {
+            // [v3.4.0] 부분청산 실패 쿨다운 체크 (60초간 재시도 차단)
+            if (_partialCloseFailCooldown.TryGetValue(symbol, out var cooldownUntil) && DateTime.Now < cooldownUntil)
+            {
+                return false; // 조용히 스킵 (로그 스팸 방지)
+            }
+
             MarkCloseStarted(symbol);
             try
             {
@@ -3369,7 +3379,22 @@ namespace TradingBot.Services
                                 currentQty = realQty;
                             }
 
-                            closeQty = Math.Round(realQty * ratio, 6, MidpointRounding.AwayFromZero);
+                            // [v3.4.0] 재시도 시에도 stepSize 보정 적용
+                            closeQty = realQty * ratio;
+                            try
+                            {
+                                var retryExInfo = await _client.UsdFuturesApi.ExchangeData.GetExchangeInfoAsync(ct: token);
+                                if (retryExInfo.Success && retryExInfo.Data != null)
+                                {
+                                    var retrySym = retryExInfo.Data.Symbols.FirstOrDefault(s => s.Name == symbol);
+                                    if (retrySym?.LotSizeFilter?.StepSize is decimal retryStep && retryStep > 0)
+                                    {
+                                        closeQty = retryStep >= 1m ? Math.Floor(closeQty) : Math.Floor(closeQty / retryStep) * retryStep;
+                                    }
+                                }
+                            }
+                            catch { closeQty = Math.Round(closeQty, 6, MidpointRounding.AwayFromZero); }
+
                             if (closeQty <= 0)
                             {
                                 OnLog?.Invoke($"⚠️ {symbol} 재계산 수량 0 이하 (실제={realQty}, 비율={ratio})");
@@ -3389,6 +3414,7 @@ namespace TradingBot.Services
 
                     if (success)
                     {
+                        _partialCloseFailCooldown.TryRemove(symbol, out _); // 쿨다운 해제
                         if (attempt > 1)
                         {
                             OnLog?.Invoke($"✅ {symbol} 부분청산 {attempt}차 재시도 성공");
@@ -3404,8 +3430,9 @@ namespace TradingBot.Services
 
                     if (attempt == maxRetries)
                     {
-                        // 최종 실패 → 텔레그램 알림
-                        OnAlert?.Invoke($"❌ {symbol} 부분청산 {maxRetries}회 재시도 모두 실패");
+                        // 최종 실패 → 60초 쿨다운 등록 (무한 재시도 방지)
+                        _partialCloseFailCooldown[symbol] = DateTime.Now.AddSeconds(60);
+                        OnAlert?.Invoke($"❌ {symbol} 부분청산 {maxRetries}회 재시도 모두 실패 → 60초 쿨다운");
                         _ = SendPartialCloseErrorTelegramAsync(symbol, side, closeQty, maxRetries, $"{maxRetries}회 재시도 모두 실패");
                         return false;
                     }
@@ -3558,6 +3585,7 @@ namespace TradingBot.Services
                 }
 
                 OnLog?.Invoke($"✅ {symbol} 부분청산 완료: 청산={actualClosedQty}, 잔여={remainingQty}, PnL={pnl:F2}, ROE={pnlPercent:F2}%");
+                OnPartialCloseCompleted?.Invoke(symbol); // [v3.4.0] 팬텀 기록 방지 쿨다운
                 OnPositionStatusUpdate?.Invoke(symbol, remainingQty > 0, 0);
 
                 // [텔레그램] 부분청산 알림
