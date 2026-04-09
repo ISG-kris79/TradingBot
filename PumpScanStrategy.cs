@@ -352,15 +352,8 @@ namespace TradingBot.Strategies
                     return false;
                 }
 
-                // [v4.0.6] BB 상단 위면 무조건 차단 (RSI 무관) — 천천히 올라간 고점 걸러냄
-                if (isAboveBBUpper)
-                {
-                    PumpSignalLog("BB_UPPER_BLOCK", $"sym={symbol} price>{bb.Upper:F6} → BB 상단 위 진입 차단");
-                    return false;
-                }
-
                 // 꼭대기 진입 차단: 고점 2% 이내 + RSI 65+
-                if (hasPriceMomentum && isRsiOverbought && isNearTop)
+                if (hasPriceMomentum && isRsiOverbought && (isNearTop || isAboveBBUpper))
                 {
                     PumpSignalLog("TOP_BLOCK", $"sym={symbol} dropFromHigh={dropFromHighPct:F2}% rsi={rsi:F0} aboveBB={isAboveBBUpper} → 꼭대기 진입 차단");
                     decision = "WAIT";
