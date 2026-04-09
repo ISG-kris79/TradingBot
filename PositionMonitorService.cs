@@ -3135,8 +3135,7 @@ namespace TradingBot.Services
 
                 OnAlert?.Invoke($"✅ {symbol} 청산 완료(검증됨): {reason}");
 
-                // [수정] 모든 청산(손절/익절/지루함)에 30분 블랙리스트 적용
-                // 프로그램 재시작 전에 재신호 방지 + 재시작 후 DB에서 복구
+                // 청산 후 30분 블랙리스트
                 _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
                 OnLog?.Invoke($"🚫 {symbol} 30분간 블랙리스트 등록 (청산 사유: {reason})");
 

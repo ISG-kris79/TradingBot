@@ -204,6 +204,18 @@ namespace TradingBot.Strategies
                     PumpSignalLog("REJECT", $"sym={symbol} reason=price<0.001 ({currentPrice})");
                     return false;
                 }
+                // [v3.7.2] 초고변동성 코인 차단 — ATR/가격 3%+ = 1초에 20%+ 가능
+                double pumpAtrCheck = IndicatorCalculator.CalculateATR(list, 14);
+                if (pumpAtrCheck > 0 && (double)currentPrice > 0)
+                {
+                    double atrRatioPct = pumpAtrCheck / (double)currentPrice * 100;
+                    if (atrRatioPct >= 3.0)
+                    {
+                        PumpSignalLog("REJECT", $"sym={symbol} reason=ultraVolatile ATR/price={atrRatioPct:F1}%");
+                        return false;
+                    }
+                }
+
                 double rsi = IndicatorCalculator.CalculateRSI(list, 14);
                 var bb = IndicatorCalculator.CalculateBB(list, 20, 2);
                 bool isUptrend = IndicatorCalculator.AnalyzeElliottWave(list);
@@ -300,7 +312,8 @@ namespace TradingBot.Strategies
                     PumpSignalLog("OVERHEAT_BLOCK", $"sym={symbol} rsi={rsi:F0} aboveBBUpper → 과열 진입 차단");
                     decision = "WAIT";
                 }
-                else if (hasPriceMomentum && bullishSignals >= 4)
+                // [v3.7.3] 임계값 4→6 상향 — 4개는 아무 코인이나 통과
+                else if (hasPriceMomentum && bullishSignals >= 6)
                     decision = "LONG";
                 // ML 모델이 60%+ → LONG (55→60 강화)
                 else if (mlSignal && mlProb >= 0.60f && hasPriceMomentum && !isNearTop)

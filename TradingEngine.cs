@@ -6442,6 +6442,19 @@ namespace TradingBot
                         var klines = await _exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.OneMinute, 20, token);
                         if (klines != null && klines.Count >= 14)
                         {
+                            // [v3.7.2] 초고변동성 차단 — ATR/가격 3%+ = 대응 불가
+                            double spikeAtr = IndicatorCalculator.CalculateATR(klines.ToList(), Math.Min(7, klines.Count - 1));
+                            if (spikeAtr > 0 && currentPrice > 0)
+                            {
+                                double atrPctSpike = spikeAtr / (double)currentPrice * 100;
+                                if (atrPctSpike >= 3.0)
+                                {
+                                    OnStatusLog?.Invoke($"⛔ [SPIKE_FAST] {symbol} ATR/가격={atrPctSpike:F1}% ≥ 3% → 초고변동성 스킵");
+                                    lock (_posLock) { _activePositions.Remove(symbol); }
+                                    return;
+                                }
+                            }
+
                             double rsi = IndicatorCalculator.CalculateRSI(klines.ToList(), 14);
                             // [v3.6.2] RSI 80→75로 강화 (꼭대기 진입 방지)
                             if (rsi >= 75)
@@ -7081,6 +7094,28 @@ namespace TradingBot
                         EntryLog("VOLUME", "BLOCK", $"volumeRatio={latestCandle.Volume_Ratio:F2} < 0.50 (5봉 평균의 절반 미만 → 가짜 무빙 가능성)");
                         return;
                     }
+                }
+            }
+
+            // [v3.7.2] 초고변동성 코인 진입 차단 — 1분에 20%+ 움직이면 대응 불가
+            if (latestCandle != null && latestCandle.ATR > 0 && currentPrice > 0)
+            {
+                // ATR 대비 가격 비율 (%) — 5분봉 ATR이 가격의 3%+ = 초고변동성
+                float atrPriceRatio = latestCandle.ATR / (float)currentPrice * 100f;
+                if (atrPriceRatio >= 3.0f)
+                {
+                    OnStatusLog?.Invoke($"⛔ [변동성] {symbol} ATR/가격={atrPriceRatio:F1}% ≥ 3% → 초고변동성 진입 차단 (1초에 20%+ 가능)");
+                    EntryLog("VOLATILITY", "BLOCK", $"atrRatio={atrPriceRatio:F1}% tooVolatile");
+                    return;
+                }
+
+                // 5분봉 내 고저폭(%) — 단일 봉에서 5%+ 움직임 = 위험
+                float candleRangePct = (float)(latestCandle.High - latestCandle.Low) / (float)currentPrice * 100f;
+                if (candleRangePct >= 5.0f)
+                {
+                    OnStatusLog?.Invoke($"⛔ [변동성] {symbol} 5분봉 고저폭={candleRangePct:F1}% ≥ 5% → 극단 변동성 차단");
+                    EntryLog("VOLATILITY", "BLOCK", $"candleRange={candleRangePct:F1}% extremeVolatility");
+                    return;
                 }
             }
 
