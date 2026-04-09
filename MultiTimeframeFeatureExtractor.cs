@@ -291,6 +291,12 @@ namespace TradingBot
             feature.D1_Signal = d1.Signal;
             feature.D1_BBPosition = d1.BBPosition;
             feature.D1_Volume_Ratio = d1.VolumeRatio;
+            feature.D1_Stoch_K = d1.Stoch_K;
+            feature.D1_Stoch_D = d1.Stoch_D;
+            feature.D1_MACD_Cross = d1.MACD_Cross;
+            feature.D1_ADX = d1.ADX;
+            feature.D1_PlusDI = d1.PlusDI;
+            feature.D1_MinusDI = d1.MinusDI;
 
             feature.H4_Trend = h4.Trend;
             feature.H4_RSI = h4.RSI;
@@ -300,6 +306,13 @@ namespace TradingBot
             feature.H4_Volume_Ratio = h4.VolumeRatio;
             feature.H4_DistanceToSupport = CalculateDistanceToSupport(h4Klines);
             feature.H4_DistanceToResist = CalculateDistanceToResistance(h4Klines);
+            feature.H4_Stoch_K = h4.Stoch_K;
+            feature.H4_Stoch_D = h4.Stoch_D;
+            feature.H4_MACD_Cross = h4.MACD_Cross;
+            feature.H4_ADX = h4.ADX;
+            feature.H4_PlusDI = h4.PlusDI;
+            feature.H4_MinusDI = h4.MinusDI;
+            feature.H4_MomentumStrength = CalculateMomentumStrength(h4Klines);
 
             feature.H2_Trend = h2.Trend;
             feature.H2_RSI = h2.RSI;
@@ -316,12 +329,24 @@ namespace TradingBot
             feature.H1_BBPosition = h1.BBPosition;
             feature.H1_Volume_Ratio = h1.VolumeRatio;
             feature.H1_MomentumStrength = CalculateMomentumStrength(h1Klines);
+            feature.H1_Stoch_K = h1.Stoch_K;
+            feature.H1_Stoch_D = h1.Stoch_D;
+            feature.H1_MACD_Cross = h1.MACD_Cross;
 
             feature.M15_RSI = m15.RSI;
             feature.M15_MACD = m15.MACD;
             feature.M15_Signal = m15.Signal;
             feature.M15_BBPosition = m15.BBPosition;
             feature.M15_Volume_Ratio = m15.VolumeRatio;
+            feature.M15_Stoch_K = m15.Stoch_K;
+            feature.M15_Stoch_D = m15.Stoch_D;
+
+            // [v3.4.2] D1+H4 방향성 합산 (-2~+2)
+            // D1 방향: MACD > Signal = +1, MACD < Signal = -1
+            // H4 방향: MACD > Signal = +1, MACD < Signal = -1
+            float d1Dir = d1.MACD > d1.Signal ? 1f : (d1.MACD < d1.Signal ? -1f : 0f);
+            float h4Dir = h4.MACD > h4.Signal ? 1f : (h4.MACD < h4.Signal ? -1f : 0f);
+            feature.DirectionBias = d1Dir + h4Dir;
             feature.M15_PriceVsSMA20 = CalculatePriceVsSMA(m15Klines, 20);
             feature.M15_PriceVsSMA60 = CalculatePriceVsSMA(m15Klines, 60);
             feature.M15_ADX = CalculateADX(m15Klines);
@@ -345,6 +370,13 @@ namespace TradingBot
             public float Signal;
             public float BBPosition;
             public float VolumeRatio;
+            // [v3.4.2] 확장 피처
+            public float Stoch_K;
+            public float Stoch_D;
+            public float MACD_Cross;     // 1=골든, -1=데드, 0=없음
+            public float ADX;
+            public float PlusDI;
+            public float MinusDI;
         }
 
         private void ExtractTimeframeFeatures(List<IBinanceKline> klines, out TimeframeFeatures features)
@@ -372,9 +404,24 @@ namespace TradingBot
             features.RSI = (float)(rsi / 100.0);
 
             // MACD
-            var (macd, signal, _) = IndicatorCalculator.CalculateMACD(klines);
+            var (macd, signal, hist) = IndicatorCalculator.CalculateMACD(klines);
             features.MACD = (float)macd;
             features.Signal = (float)signal;
+
+            // [v3.4.2] MACD 크로스 감지 (최근 3봉 이내)
+            if (klines.Count >= 30)
+            {
+                try
+                {
+                    // 이전 봉의 MACD 계산 (현재 - 1봉)
+                    var prevKlines = klines.Take(klines.Count - 1).ToList();
+                    var (prevMacd, prevSignal, _) = IndicatorCalculator.CalculateMACD(prevKlines);
+                    bool goldenCross = prevMacd <= prevSignal && macd > signal;
+                    bool deadCross = prevMacd >= prevSignal && macd < signal;
+                    features.MACD_Cross = goldenCross ? 1.0f : (deadCross ? -1.0f : 0.0f);
+                }
+                catch { features.MACD_Cross = 0f; }
+            }
 
             // 볼린저밴드 위치 (0~1)
             var bb = IndicatorCalculator.CalculateBB(klines, 20, 2.0);
@@ -387,6 +434,28 @@ namespace TradingBot
             // 거래량 비율
             double avgVolume = klines.TakeLast(20).Average(k => (double)k.Volume);
             features.VolumeRatio = avgVolume > 0 ? (float)((double)latest.Volume / avgVolume) : 1.0f;
+
+            // [v3.4.2] Stochastic (14, 3, 3)
+            try
+            {
+                var (stochK, stochD) = IndicatorCalculator.CalculateStochastic(klines, 14, 3, 3);
+                features.Stoch_K = (float)(stochK / 100.0);
+                features.Stoch_D = (float)(stochD / 100.0);
+            }
+            catch { features.Stoch_K = 0.5f; features.Stoch_D = 0.5f; }
+
+            // [v3.4.2] ADX + DI
+            if (klines.Count >= 28)
+            {
+                try
+                {
+                    var (adx, plusDI, minusDI) = IndicatorCalculator.CalculateADX(klines, 14);
+                    features.ADX = (float)(adx / 100.0);
+                    features.PlusDI = (float)(plusDI / 100.0);
+                    features.MinusDI = (float)(minusDI / 100.0);
+                }
+                catch { }
+            }
         }
 
         private float CalculateDistanceToSupport(List<IBinanceKline> klines)

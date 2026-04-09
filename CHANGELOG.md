@@ -15,6 +15,29 @@
 
  - 없음
 
+## [3.5.0] - 2026-04-09
+
+### Added
+
+- **AI 피처 확장 (D1/H4/H1/M15)**: ML 학습 입력에 20개 피처 추가
+  - Stochastic %K/%D: D1, H4, H1, M15 전 타임프레임
+  - MACD 골든/데드크로스 감지: D1, H4, H1 (이전봉 대비 크로스 판정)
+  - ADX + DI: D1, H4 (추세 강도 + 방향)
+  - H4 모멘텀 강도 (0~1)
+  - **DirectionBias** (-2~+2): D1+H4 MACD 방향 합산
+
+- **D1+H4 방향성 필터**: 메이저 코인 진입 시 상위 TF 방향과 일치해야 진입
+  - LONG: D1+H4 둘 다 데드크로스(-1.5 이하) → 차단
+  - SHORT: D1+H4 둘 다 골든크로스(+1.5 이상) → 차단
+  - 일봉+4시간봉 기준으로 롱/숏 방향성 정렬
+
+### Changed
+
+- **AI 학습 데이터**: ExtractTimeframeFeatures에서 Stochastic, MACD Cross, ADX 자동 추출
+  - 기존 Stoch_K/Stoch_D 프로퍼티가 CandleData에만 선언되고 미사용 → 실제 계산 적용
+  - IndicatorCalculator.CalculateStochastic(14,3,3) 호출
+  - 모델 재학습 시 새 피처 자동 반영 (LightGBM)
+
 ## [3.4.2] - 2026-04-09
 
 ### Added

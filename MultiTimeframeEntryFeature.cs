@@ -80,6 +80,38 @@ namespace TradingBot
         public float IsUSSession { get; set; }           // 1=미국, 0=기타
 
         // ═══════════════════════════════════════════════════════════════
+        // [v3.4.2] 확장 피처: Stochastic + MACD Cross + ADX + 방향성
+        // ═══════════════════════════════════════════════════════════════
+        // D1 확장
+        public float D1_Stoch_K { get; set; }             // Stochastic %K (0~1)
+        public float D1_Stoch_D { get; set; }             // Stochastic %D (0~1)
+        public float D1_MACD_Cross { get; set; }          // 1=골든, -1=데드, 0=없음
+        public float D1_ADX { get; set; }                 // 추세 강도 (0~1)
+        public float D1_PlusDI { get; set; }
+        public float D1_MinusDI { get; set; }
+
+        // H4 확장
+        public float H4_Stoch_K { get; set; }
+        public float H4_Stoch_D { get; set; }
+        public float H4_MACD_Cross { get; set; }
+        public float H4_ADX { get; set; }
+        public float H4_PlusDI { get; set; }
+        public float H4_MinusDI { get; set; }
+        public float H4_MomentumStrength { get; set; }    // H4 모멘텀 (0~1)
+
+        // H1 확장
+        public float H1_Stoch_K { get; set; }
+        public float H1_Stoch_D { get; set; }
+        public float H1_MACD_Cross { get; set; }
+
+        // M15 확장
+        public float M15_Stoch_K { get; set; }
+        public float M15_Stoch_D { get; set; }
+
+        // 방향성 합산 (D1+H4 기준)
+        public float DirectionBias { get; set; }           // -2~+2: D1+H4 방향 합산
+
+        // ═══════════════════════════════════════════════════════════════
         // 피보나치 되돌림 레벨 (객관적 수치로 AI 특징 사용)
         // ═══════════════════════════════════════════════════════════════
         public float Fib_DistanceTo0382_Pct { get; set; }    // 현재가에서 0.382 레벨까지 거리 (%)

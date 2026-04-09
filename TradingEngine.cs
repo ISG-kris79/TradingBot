@@ -7192,6 +7192,46 @@ namespace TradingBot
                     return;
                 }
 
+                // [v3.4.2] D1+H4 방향성 필터 — 메이저 코인은 상위 TF 방향과 일치해야 진입
+                if (MajorSymbols.Contains(symbol))
+                {
+                    try
+                    {
+                        var h4Klines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FourHour, 30, token);
+                        var d1Klines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneDay, 20, token);
+
+                        if (h4Klines?.Count >= 26 && d1Klines?.Count >= 14)
+                        {
+                            var (h4Macd, h4Signal, _) = IndicatorCalculator.CalculateMACD(h4Klines);
+                            var (d1Macd, d1Signal, _) = IndicatorCalculator.CalculateMACD(d1Klines);
+
+                            float d1Dir = d1Macd > d1Signal ? 1f : (d1Macd < d1Signal ? -1f : 0f);
+                            float h4Dir = h4Macd > h4Signal ? 1f : (h4Macd < h4Signal ? -1f : 0f);
+                            float dirBias = d1Dir + h4Dir; // -2 ~ +2
+
+                            // LONG인데 D1+H4 둘 다 하락(데드크로스) → 차단
+                            if (decision == "LONG" && dirBias <= -1.5f)
+                            {
+                                OnStatusLog?.Invoke($"⛔ [D1+H4 방향] {symbol} LONG 차단 | D1={d1Dir:+0;-0;0} H4={h4Dir:+0;-0;0} bias={dirBias:F1} (일봉+4시간봉 하락)");
+                                EntryLog("DIRECTION", "BLOCK", $"d1={d1Dir} h4={h4Dir} bias={dirBias:F1} longInDowntrend");
+                                return;
+                            }
+                            // SHORT인데 D1+H4 둘 다 상승(골든크로스) → 차단
+                            if (decision == "SHORT" && dirBias >= 1.5f)
+                            {
+                                OnStatusLog?.Invoke($"⛔ [D1+H4 방향] {symbol} SHORT 차단 | D1={d1Dir:+0;-0;0} H4={h4Dir:+0;-0;0} bias={dirBias:F1} (일봉+4시간봉 상승)");
+                                EntryLog("DIRECTION", "BLOCK", $"d1={d1Dir} h4={h4Dir} bias={dirBias:F1} shortInUptrend");
+                                return;
+                            }
+                            EntryLog("DIRECTION", "PASS", $"d1={d1Dir} h4={h4Dir} bias={dirBias:F1}");
+                        }
+                    }
+                    catch (Exception dirEx)
+                    {
+                        EntryLog("DIRECTION", "WARN", $"skip reason={dirEx.Message}");
+                    }
+                }
+
                 // Scout add-on 검토 (LONG + Major only)
                 if (!scoutModeActivated
                     && gateResult.allowEntry
