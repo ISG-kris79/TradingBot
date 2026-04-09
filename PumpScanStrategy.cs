@@ -258,12 +258,27 @@ namespace TradingBot.Strategies
                 double fibBonus = CalculateFibScore(symbol, list, currentPrice);
                 if (fibBonus > 0) aiScore = Math.Clamp(aiScore + (int)fibBonus, 0, 100);
 
-                // [v3.2.7] AI 최우선 진입: 모멘텀 기반 방향 판단 → AI에 위임
                 // 가격 모멘텀 직접 감지
                 var recent6 = list.TakeLast(6).ToList();
                 decimal price6Ago = recent6.First().ClosePrice;
                 double priceRecoveryPct = price6Ago > 0 ? (double)((currentPrice - price6Ago) / price6Ago * 100) : 0;
                 bool isPriceRecovering = priceRecoveryPct >= 1.5;
+
+                // [v4.0.2] 이미 크게 올라간 코인 차단 — 30분간 +5%+ = 이미 늦음
+                if (priceRecoveryPct >= 5.0)
+                {
+                    PumpSignalLog("REJECT", $"sym={symbol} reason=alreadyPumped +{priceRecoveryPct:F1}% in 30min");
+                    return false;
+                }
+                // 1시간 저점 대비 +8%+ = 급등 이후
+                var recent12Check = list.TakeLast(12).ToList();
+                decimal low12 = recent12Check.Min(k => k.LowPrice);
+                double riseFrom12Low = low12 > 0 ? (double)((currentPrice - low12) / low12 * 100) : 0;
+                if (riseFrom12Low >= 8.0)
+                {
+                    PumpSignalLog("REJECT", $"sym={symbol} reason=bigRiseFromLow +{riseFrom12Low:F1}% in 1h");
+                    return false;
+                }
 
                 var recent12 = list.TakeLast(12).ToList();
                 decimal recentLow = recent12.Min(k => k.LowPrice);
@@ -326,6 +341,16 @@ namespace TradingBot.Strategies
 
                 // PUMP는 급등만: 가격 모멘텀 필수
                 bool hasPriceMomentum = isPriceRecovering || isStrongBounce;
+
+                // [v4.0.2] 마지막 2봉 연속 음봉 = 하락 시작 → 진입 금지
+                var lastBars = list.TakeLast(3).ToList();
+                int bearishBars = lastBars.Count(k => k.ClosePrice < k.OpenPrice);
+                if (bearishBars >= 2)
+                {
+                    PumpSignalLog("REJECT", $"sym={symbol} reason=bearishBars={bearishBars}/3 (하락 시작)");
+                    decision = "WAIT";
+                    return false;
+                }
 
                 // [v3.7.5] 꼭대기 진입 차단 강화: 고점 2% 이내 OR BB 상단 위 → RSI 65+ 시 차단
                 if (hasPriceMomentum && isRsiOverbought && (isNearTop || isAboveBBUpper))
