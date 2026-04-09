@@ -816,7 +816,7 @@ namespace TradingBot
                                 symbol, direction, price, ct,
                                 signalSource: signalSrc,
                                 manualSizeMultiplier: sizeMultiplier,
-                                skipAiGateCheck: true);
+                                skipAiGateCheck: false);
                         }
                     }
                     catch (Exception ex)
@@ -7153,20 +7153,24 @@ namespace TradingBot
                     "INFO",
                     $"bbSupport={isBbCenterSupport} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.TF_Confidence:P0} blended={blendedMlTfScore:P0} weights={(isBbCenterSupport ? "ML30_TF70" : "ML50_TF50")}");
 
-                // [AI 관제탑] 텔레그램 알림 + DB 기록 (fire-and-forget)
+                // [AI 관제탑] 텔레그램 알림(승인 시만) + DB 기록 (fire-and-forget)
                 _ = Task.Run(async () =>
                 {
                     try
                     {
                         string coinTypeStr = coinType.ToString();
-                        await TelegramService.Instance.SendAiGateResultAsync(
-                            symbol, decision, gateResult.allowEntry,
-                            coinTypeStr, gateResult.reason,
-                            gateResult.detail.ML_Confidence,
-                            gateResult.detail.TF_Confidence,
-                            gateResult.detail.TrendScore,
-                            gateResult.detail.M15_RSI,
-                            gateResult.detail.M15_BBPosition);
+                        // [v3.5.0] 텔레그램: 승인 시에만 알림 (차단 시 스팸 방지)
+                        if (gateResult.allowEntry)
+                        {
+                            await TelegramService.Instance.SendAiGateResultAsync(
+                                symbol, decision, gateResult.allowEntry,
+                                coinTypeStr, gateResult.reason,
+                                gateResult.detail.ML_Confidence,
+                                gateResult.detail.TF_Confidence,
+                                gateResult.detail.TrendScore,
+                                gateResult.detail.M15_RSI,
+                                gateResult.detail.M15_BBPosition);
+                        }
 
                         await _dbManager.SaveAiSignalLogAsync(
                             symbol, decision, coinTypeStr,
