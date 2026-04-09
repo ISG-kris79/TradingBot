@@ -4220,13 +4220,27 @@ namespace TradingBot.Services
 
         private void CleanupPositionData(string symbol)
         {
+            // [v3.9.0] 블랙리스트를 Remove 전에 등록 (틈 방지)
+            if (!_blacklistedSymbols.ContainsKey(symbol))
+                _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
+
             lock (_posLock) _activePositions.Remove(symbol);
             OnCloseIncompleteStatusChanged?.Invoke(symbol, false, null);
             OnPositionStatusUpdate?.Invoke(symbol, false, 0);
-            
+
             // [중요] 포지션 청산 후 ROI를 명시적으로 0으로 리셋
-            // (감시 루프의 마지막 ROE 값이 UI를 덮어씌우는 것을 방지)
             OnTickerUpdate?.Invoke(symbol, 0m, 0d);
+
+            // [v3.9.0] DB 포지션 상태 삭제
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    int userId = AppConfig.CurrentUser?.Id ?? 0;
+                    if (userId > 0) await _dbManager.DeletePositionStateAsync(userId, symbol);
+                }
+                catch { }
+            });
         }
     }
 }
