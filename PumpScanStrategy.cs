@@ -200,22 +200,9 @@ namespace TradingBot.Strategies
 
                 decimal currentPrice = list[list.Count - 1].ClosePrice;
 
-                // [v3.8.0] 1분봉 거래량 급증 체크
+                // [v4.0.1] 1분봉 API는 bullishSignals 계산 후 유력 후보만 호출 (API 절약)
                 bool hasM1VolumeSurge = false;
                 double m1VolumeRatio = 0;
-                try
-                {
-                    var k1mRes = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.OneMinute, limit: 20, ct: token);
-                    if (k1mRes.Success && k1mRes.Data != null && k1mRes.Data.Length >= 10)
-                    {
-                        var m1List = k1mRes.Data.ToList();
-                        double m1AvgVol = m1List.Take(m1List.Count - 1).Average(k => (double)k.Volume); // 마지막 봉 제외 평균
-                        double m1LastVol = (double)m1List[^1].Volume;
-                        m1VolumeRatio = m1AvgVol > 0 ? m1LastVol / m1AvgVol : 0;
-                        hasM1VolumeSurge = m1VolumeRatio >= 3.0; // 1분봉 거래량 3배+
-                    }
-                }
-                catch { /* 1분봉 실패해도 5분봉 기반 분석 계속 */ }
 
                 if (currentPrice < 0.001m) // [v3.2.40] 초저가 밈코인 제외
                 {
@@ -295,7 +282,23 @@ namespace TradingBot.Strategies
                 if (volumeMomentum >= 1.10) bullishSignals++;
                 // SMA 정렬 (20>50>60) = 강한 상승추세
                 if (sma20 > sma50 && sma50 > sma60) bullishSignals++;
-                // [v3.8.0] 1분봉 거래량 3x+ 급증 = 강한 매수세
+                // [v4.0.1] 1분봉 거래량 체크: bullish 4점+일 때만 API 호출 (분당 360회 → ~10회)
+                if (bullishSignals >= 4)
+                {
+                    try
+                    {
+                        var k1mRes = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.OneMinute, limit: 20, ct: token);
+                        if (k1mRes.Success && k1mRes.Data != null && k1mRes.Data.Length >= 10)
+                        {
+                            var m1List = k1mRes.Data.ToList();
+                            double m1AvgVol = m1List.Take(m1List.Count - 1).Average(k => (double)k.Volume);
+                            double m1LastVol = (double)m1List[^1].Volume;
+                            m1VolumeRatio = m1AvgVol > 0 ? m1LastVol / m1AvgVol : 0;
+                            hasM1VolumeSurge = m1VolumeRatio >= 3.0;
+                        }
+                    }
+                    catch { }
+                }
                 if (hasM1VolumeSurge) bullishSignals += 2;
 
                 // ML 모델 예측
