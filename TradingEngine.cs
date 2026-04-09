@@ -2071,10 +2071,11 @@ namespace TradingBot
                                 decimal nowPrice = wTick.LastPrice;
                                 decimal risePct = (nowPrice - watchPrice) / watchPrice * 100m;
 
-                                // 상승 확인: 감시 시작 대비 +1~3% 상승 (너무 많이 오르면 꼭대기)
-                                if (risePct >= 1.0m && risePct <= 3.0m)
+                                // [v4.0.4] 상승 확인: +0.5~5% (빠른 감지 + 꼭대기 방지)
+                                if (risePct >= 0.5m && risePct <= 5.0m)
                                 {
                                     expiredKeys.Add(kvp.Key);
+                                    // 빠른 진입: AI Gate 포함 전체 파이프라인 통과
                                     OnStatusLog?.Invoke($"✅ [감시확인] {kvp.Key} +{risePct:F1}% 상승 확인 → 진입 시도 (vol={volRatio:F1}x)");
                                     _ = Task.Run(async () =>
                                     {
@@ -2082,13 +2083,19 @@ namespace TradingBot
                                         {
                                             await ExecuteAutoOrder(kvp.Key, "LONG", nowPrice,
                                                 _cts?.Token ?? CancellationToken.None,
-                                                "PUMP_WATCH_CONFIRMED", manualSizeMultiplier: 0.5m);
+                                                "PUMP_WATCH_CONFIRMED", manualSizeMultiplier: 0.7m);
                                         }
                                         catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [감시진입] {kvp.Key} 실패: {ex.Message}"); }
                                     });
                                 }
-                                // 하락하면 제거 (-1% 이하)
-                                else if (risePct <= -1.0m)
+                                // 너무 많이 오름 (+5%+) = 이미 늦음
+                                else if (risePct > 5.0m)
+                                {
+                                    expiredKeys.Add(kvp.Key);
+                                    OnStatusLog?.Invoke($"⏰ [감시만료] {kvp.Key} +{risePct:F1}% 이미 급등 → 감시 해제");
+                                }
+                                // 하락하면 제거 (-1.5% 이하)
+                                else if (risePct <= -1.5m)
                                 {
                                     expiredKeys.Add(kvp.Key);
                                     OnStatusLog?.Invoke($"❌ [감시취소] {kvp.Key} {risePct:F1}% 하락 → 감시 해제");

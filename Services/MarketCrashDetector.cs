@@ -201,7 +201,7 @@ namespace TradingBot.Services
                 string vSym = kvp.Value.Symbol ?? kvp.Key;
                 if (string.IsNullOrWhiteSpace(vSym) || !vSym.EndsWith("USDT")) continue;
                 if (MajorWatchSymbols.Contains(vSym)) continue;
-                if (kvp.Value.QuoteVolume < 500_000m) continue;
+                if (kvp.Value.QuoteVolume < 200_000m) continue;  // [v4.0.4] 500K→200K (소형 PUMP 포함)
                 if (kvp.Value.LastPrice < 0.001m) continue;
 
                 if (_volumeSurgeCooldown.TryGetValue(vSym, out var vcd) && now < vcd) continue;
@@ -219,8 +219,8 @@ namespace TradingBot.Services
                 decimal volIncrRatio = volIncrement / avgIncrement30s;
                 decimal pxChange = Math.Abs((kvp.Value.LastPrice - prevPx) / prevPx * 100m);
 
-                // 30초 증분이 평소의 5배+ && 가격 1.5% 미만 변동
-                if (volIncrRatio >= 5.0m && pxChange < 1.5m)
+                // [v4.0.4] 조건 완화: 3배+ 증분, 가격 3% 미만 (기존: 5배, 1.5%)
+                if (volIncrRatio >= 3.0m && pxChange < 3.0m)
                 {
                     _volumeSurgeCooldown[vSym] = now.AddMinutes(10);
                     OnLog?.Invoke($"🔥 [거래량 급증] {vSym} 30초 증분 {volIncrRatio:F1}x (가격 {pxChange:+0.0;-0.0}%) → 감시 풀 등록");
