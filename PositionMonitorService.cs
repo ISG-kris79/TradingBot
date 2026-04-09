@@ -719,6 +719,35 @@ namespace TradingBot.Services
                             protectiveStopPrice = breakEvenPrice;
 
                         OnAlert?.Invoke($"🛡️ {symbol} 본절 보호 (ROE {highestROE:F1}% → 스탑 {breakEvenPrice:F4})");
+
+                        // [v3.6.3] 바이낸스 서버사이드 STOP_MARKET → 본절가
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                string stopSide = isLong ? "SELL" : "BUY";
+                                decimal qty = 0;
+                                string? oldOrderId = null;
+                                lock (_posLock)
+                                {
+                                    if (_activePositions.TryGetValue(symbol, out var p))
+                                    {
+                                        qty = Math.Abs(p.Quantity);
+                                        oldOrderId = p.StopOrderId;
+                                    }
+                                }
+                                if (qty <= 0) return;
+                                if (!string.IsNullOrEmpty(oldOrderId))
+                                    await _exchangeService.CancelOrderAsync(symbol, oldOrderId, token);
+                                var (ok, newId) = await _exchangeService.PlaceStopOrderAsync(symbol, stopSide, qty, breakEvenPrice, token);
+                                if (ok)
+                                {
+                                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId; }
+                                    OnLog?.Invoke($"📡 {symbol} 서버 STOP_MARKET → 본절가 {breakEvenPrice:F4}");
+                                }
+                            }
+                            catch (Exception ex) { OnLog?.Invoke($"⚠️ {symbol} 본절 서버 스탑 등록 실패: {ex.Message}"); }
+                        });
                     }
 
                     // [AI Exit Optimizer] ROE 10% 이상일 때 5초마다 모델 질의
@@ -884,14 +913,54 @@ namespace TradingBot.Services
                     if (profitLockActivated && !tightTrailingActivated && highestROE >= tightTrailingROE)
                     {
                         tightTrailingActivated = true;
-                        
+
                         // ROE 15% = 0.75% 가격 변동 (20배 레버리지)
                         decimal minLockPriceChange = minLockROE / leverage / 100;
-                        protectiveStopPrice = isLong 
+                        protectiveStopPrice = isLong
                             ? entryPrice * (1 + minLockPriceChange)
                             : entryPrice * (1 - minLockPriceChange);
 
                         OnLog?.Invoke($"🚀 {symbol} 3차 구간 진입: SL +{minLockROE:F0}% 유지 + Wide Trailing {majorTrailingGap:F0}% 시작 (ROE {highestROE:F1}%)");
+                        PersistPositionState(symbol, isBreakEvenTriggered: true, highestROE: highestROE);
+
+                        // [v3.6.3] 바이낸스 TRAILING_STOP_MARKET 서버 등록
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                string stopSide = isLong ? "SELL" : "BUY";
+                                decimal qty = 0;
+                                string? oldOrderId = null;
+                                lock (_posLock)
+                                {
+                                    if (_activePositions.TryGetValue(symbol, out var p))
+                                    {
+                                        qty = Math.Abs(p.Quantity);
+                                        oldOrderId = p.StopOrderId;
+                                    }
+                                }
+                                if (qty <= 0) return;
+                                if (!string.IsNullOrEmpty(oldOrderId))
+                                    await _exchangeService.CancelOrderAsync(symbol, oldOrderId, token);
+
+                                decimal callbackRate = Math.Clamp(majorTrailingGap / leverage, 0.1m, 5.0m);
+                                var (ok, newId) = await _exchangeService.PlaceTrailingStopOrderAsync(
+                                    symbol, stopSide, qty, callbackRate, activationPrice: null, token);
+                                if (ok)
+                                {
+                                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId; }
+                                    OnAlert?.Invoke($"📡 {symbol} 서버 TRAILING_STOP 등록 | callback={callbackRate:F1}% (고점 대비 {callbackRate:F1}% 하락 시 자동 청산)");
+                                }
+                                else
+                                {
+                                    var (ok2, newId2) = await _exchangeService.PlaceStopOrderAsync(symbol, stopSide, qty, protectiveStopPrice, token);
+                                    if (ok2)
+                                        lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId2; }
+                                    OnLog?.Invoke($"📡 {symbol} TRAILING 실패 → STOP_MARKET 폴백 {protectiveStopPrice:F4}");
+                                }
+                            }
+                            catch (Exception ex) { OnLog?.Invoke($"⚠️ {symbol} 서버 트레일링 등록 실패: {ex.Message}"); }
+                        });
 
                         // [v2.1.18] 지표 기반 익절 준비: ROE 20% 도달 시 지표 모니터링 시작
                         OnLog?.Invoke($"� {symbol} 지표모니터링");
