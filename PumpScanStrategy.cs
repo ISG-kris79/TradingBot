@@ -294,15 +294,15 @@ namespace TradingBot.Strategies
                 var topCheck20 = list.TakeLast(20).ToList();
                 decimal recentHigh20 = topCheck20.Max(k => k.HighPrice);
                 double dropFromHighPct = recentHigh20 > 0 ? (double)((recentHigh20 - currentPrice) / recentHigh20 * 100) : 0;
-                bool isNearTop = dropFromHighPct < 0.5; // 고점 대비 0.5% 이내 = 꼭대기
-                bool isRsiOverbought = rsi >= 75;       // RSI 과매수
+                bool isNearTop = dropFromHighPct < 2.0; // [v3.7.5] 0.5→2%: 고점 대비 2% 이내 = 꼭대기
+                bool isRsiOverbought = rsi >= 65;       // [v3.7.5] 75→65: 과매수 기준 강화
                 bool isAboveBBUpper = (double)currentPrice > bb.Upper; // BB 상단 돌파 = 과열
 
-                // [v3.2.19] PUMP는 급등만: 가격 모멘텀 필수 + 신호 4개+
+                // PUMP는 급등만: 가격 모멘텀 필수
                 bool hasPriceMomentum = isPriceRecovering || isStrongBounce;
 
-                // 꼭대기 진입 차단: 고점 근처 + RSI 과매수 + BB 상단 위
-                if (hasPriceMomentum && (isNearTop && isRsiOverbought))
+                // [v3.7.5] 꼭대기 진입 차단 강화: 고점 2% 이내 OR BB 상단 위 → RSI 65+ 시 차단
+                if (hasPriceMomentum && isRsiOverbought && (isNearTop || isAboveBBUpper))
                 {
                     PumpSignalLog("TOP_BLOCK", $"sym={symbol} dropFromHigh={dropFromHighPct:F2}% rsi={rsi:F0} aboveBB={isAboveBBUpper} → 꼭대기 진입 차단");
                     decision = "WAIT";
