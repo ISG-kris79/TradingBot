@@ -7274,6 +7274,29 @@ namespace TradingBot
                     }
                 }
 
+                // [v3.6.0] PUMP 코인도 BTC D1+H4 방향 체크 (PUMP LONG만)
+                if (!MajorSymbols.Contains(symbol) && decision == "LONG")
+                {
+                    try
+                    {
+                        var btcH4 = await _exchangeService.GetKlinesAsync("BTCUSDT", KlineInterval.FourHour, 30, token);
+                        var btcD1 = await _exchangeService.GetKlinesAsync("BTCUSDT", KlineInterval.OneDay, 20, token);
+                        if (btcH4?.Count >= 26 && btcD1?.Count >= 14)
+                        {
+                            var (bH4Macd, bH4Sig, _) = IndicatorCalculator.CalculateMACD(btcH4);
+                            var (bD1Macd, bD1Sig, _) = IndicatorCalculator.CalculateMACD(btcD1);
+                            float btcBias = (bD1Macd > bD1Sig ? 1f : -1f) + (bH4Macd > bH4Sig ? 1f : -1f);
+                            if (btcBias <= -1.5f)
+                            {
+                                OnStatusLog?.Invoke($"⛔ [BTC 방향] {symbol} PUMP LONG 차단 | BTC D1+H4 하락 (bias={btcBias:F1})");
+                                EntryLog("DIRECTION", "BLOCK", $"pumpBtcBias={btcBias:F1} btcDowntrend");
+                                return;
+                            }
+                        }
+                    }
+                    catch (Exception btcDirEx) { EntryLog("DIRECTION", "WARN", $"btcPumpCheck skip: {btcDirEx.Message}"); }
+                }
+
                 // Scout add-on 검토 (LONG + Major only)
                 if (!scoutModeActivated
                     && gateResult.allowEntry
