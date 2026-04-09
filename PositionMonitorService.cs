@@ -3536,6 +3536,47 @@ namespace TradingBot.Services
                     return false;
                 }
 
+                // [v4.0.5] maxQty 초과 시 분할 주문
+                decimal maxQty = 0;
+                try
+                {
+                    var mqInfo = await _client.UsdFuturesApi.ExchangeData.GetExchangeInfoAsync(ct: token);
+                    if (mqInfo.Success && mqInfo.Data != null)
+                    {
+                        var mqSym = mqInfo.Data.Symbols.FirstOrDefault(s => s.Name == symbol);
+                        if (mqSym?.LotSizeFilter?.MaxQuantity is decimal mq && mq > 0)
+                            maxQty = mq;
+                    }
+                }
+                catch { }
+
+                if (maxQty > 0 && closeQty > maxQty)
+                {
+                    OnLog?.Invoke($"ℹ️ {symbol} 수량 {closeQty} > maxQty {maxQty} → 분할 주문");
+                    decimal remaining = closeQty;
+                    bool allSuccess = true;
+                    while (remaining > 0)
+                    {
+                        decimal batch = Math.Min(remaining, maxQty);
+                        bool ok = await _exchangeService.PlaceOrderAsync(symbol, side, batch, null, token, reduceOnly: true);
+                        if (!ok) { allSuccess = false; break; }
+                        remaining -= batch;
+                        if (remaining > 0) await Task.Delay(200, token);
+                    }
+                    if (allSuccess)
+                    {
+                        OnLog?.Invoke($"✅ {symbol} 분할 부분청산 완료 (총 {closeQty})");
+                        PersistPositionState(symbol);
+                        OnPartialCloseCompleted?.Invoke(symbol);
+                    }
+                    else
+                    {
+                        OnLog?.Invoke($"⚠️ {symbol} 분할 부분청산 일부 실패");
+                    }
+                    MarkCloseFinished(symbol);
+                    return allSuccess;
+                }
+
                 // [부분청산 반복 재시도] 최대 3회
                 const int maxRetries = 3;
                 bool success = false;
