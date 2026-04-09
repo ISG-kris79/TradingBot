@@ -277,12 +277,33 @@ namespace TradingBot.Strategies
                 }
 
                 string decision = "WAIT";
+
+                // [v3.6.2] 꼭대기 진입 방지 — 고점 대비 위치 + RSI + BB 체크
+                var topCheck20 = list.TakeLast(20).ToList();
+                decimal recentHigh20 = topCheck20.Max(k => k.HighPrice);
+                double dropFromHighPct = recentHigh20 > 0 ? (double)((recentHigh20 - currentPrice) / recentHigh20 * 100) : 0;
+                bool isNearTop = dropFromHighPct < 0.5; // 고점 대비 0.5% 이내 = 꼭대기
+                bool isRsiOverbought = rsi >= 75;       // RSI 과매수
+                bool isAboveBBUpper = (double)currentPrice > bb.Upper; // BB 상단 돌파 = 과열
+
                 // [v3.2.19] PUMP는 급등만: 가격 모멘텀 필수 + 신호 4개+
                 bool hasPriceMomentum = isPriceRecovering || isStrongBounce;
-                if (hasPriceMomentum && bullishSignals >= 4)
+
+                // 꼭대기 진입 차단: 고점 근처 + RSI 과매수 + BB 상단 위
+                if (hasPriceMomentum && (isNearTop && isRsiOverbought))
+                {
+                    PumpSignalLog("TOP_BLOCK", $"sym={symbol} dropFromHigh={dropFromHighPct:F2}% rsi={rsi:F0} aboveBB={isAboveBBUpper} → 꼭대기 진입 차단");
+                    decision = "WAIT";
+                }
+                else if (hasPriceMomentum && isAboveBBUpper && isRsiOverbought)
+                {
+                    PumpSignalLog("OVERHEAT_BLOCK", $"sym={symbol} rsi={rsi:F0} aboveBBUpper → 과열 진입 차단");
+                    decision = "WAIT";
+                }
+                else if (hasPriceMomentum && bullishSignals >= 4)
                     decision = "LONG";
                 // ML 모델이 60%+ → LONG (55→60 강화)
-                else if (mlSignal && mlProb >= 0.60f && hasPriceMomentum)
+                else if (mlSignal && mlProb >= 0.60f && hasPriceMomentum && !isNearTop)
                 {
                     decision = "LONG";
                     PumpSignalLog("ML_ENTRY", $"sym={symbol} prob={mlProb:P0} bull={bullishSignals}");

@@ -6406,9 +6406,10 @@ namespace TradingBot
                         if (klines != null && klines.Count >= 14)
                         {
                             double rsi = IndicatorCalculator.CalculateRSI(klines.ToList(), 14);
-                            if (rsi >= 80)
+                            // [v3.6.2] RSI 80→75로 강화 (꼭대기 진입 방지)
+                            if (rsi >= 75)
                             {
-                                OnStatusLog?.Invoke($"⚠️ [SPIKE_FAST] {symbol} RSI={rsi:F1} ≥ 80 과열 → 스킵");
+                                OnStatusLog?.Invoke($"⚠️ [SPIKE_FAST] {symbol} RSI={rsi:F1} ≥ 75 과열 → 스킵");
                                 lock (_posLock) { _activePositions.Remove(symbol); }
                                 return;
                             }

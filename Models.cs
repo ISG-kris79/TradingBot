@@ -44,8 +44,8 @@ namespace TradingBot.Models
         // 1차 부분익절: ROI +20% → 포지션 30% 청산
         // 2차 트레일링: ROI +40% 시작 → 최고점 대비 ROI 5% 하락 시 50% 청산
         // 3차 나머지: 2차에서 +5% 내려가면 스탑로스
-        // [v3.6.0] 초기 손절: ROI -25% (가격 -1.25%, 20x) — DB 분석: -40%에서 건당 -$113 → -25%로 축소
-        public decimal PumpStopLossRoe { get; set; } = 25.0m;      // 초기 손절 ROI -25% (빠른 손절로 건당 손실 축소)
+        // 초기 손절: ROI -40% (가격 -2%, 20x) — 진입 품질 개선으로 넓은 손절 유지 (찍고 날라가는 경우 대비)
+        public decimal PumpStopLossRoe { get; set; } = 40.0m;      // 초기 손절 ROI -40%
         public decimal PumpMargin { get; set; } = 150.0m;           // PUMP 전용 기본 진입 증거금 ($200→$150: SL 축소와 함께 리스크 조정)
         public decimal PumpBreakEvenRoe { get; set; } = 25.0m;     // ROI +25% 시 본절 이동 (슬리피지 대응)
         // 주의: 0.15% 오프셋(슬리피지 방어)이 적용되어 실제 손절은 진입가 + 0.15% 근처로 설정됨
