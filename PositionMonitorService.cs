@@ -58,6 +58,24 @@ namespace TradingBot.Services
         // [v3.4.0] 부분청산 완료 이벤트 (EXTERNAL_PARTIAL_CLOSE_SYNC 팬텀 방지용)
         public event Action<string>? OnPartialCloseCompleted = delegate { };
 
+        // [v3.5.2] 포지션 상태 DB 저장 (재시작 시 복원용)
+        private void PersistPositionState(string symbol, int stairStep = 0, bool isBreakEvenTriggered = false, decimal highestROE = 0)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    int userId = AppConfig.CurrentUser?.Id ?? 0;
+                    if (userId <= 0) return;
+                    PositionInfo? pos;
+                    lock (_posLock) { _activePositions.TryGetValue(symbol, out pos); }
+                    if (pos == null) return;
+                    await _dbManager.SavePositionStateAsync(userId, symbol, pos, stairStep, isBreakEvenTriggered, highestROE);
+                }
+                catch { }
+            });
+        }
+
         public PositionMonitorService(
             IBinanceRestClient client,
             IExchangeService exchangeService, // [변경]
@@ -679,6 +697,7 @@ namespace TradingBot.Services
                     if (!breakEvenActivated && highestROE >= breakEvenROE)
                     {
                         breakEvenActivated = true;
+                        PersistPositionState(symbol, isBreakEvenTriggered: true, highestROE: highestROE);
 
                         // [v3.3.6] 회복 모드 졸업: 본절 도달 → 넓은 손절(-80%) 정상화(-50%)
                         if (isVolatilityRecovery)
@@ -1624,7 +1643,20 @@ namespace TradingBot.Services
             if (stairStep3TriggerRoe <= stairStep2TriggerRoe)
                 stairStep3TriggerRoe = stairStep2TriggerRoe + 20.0m;
 
+            // [v3.5.2] DB에서 복원된 상태 반영
             int stairStep = 0;
+            lock (_posLock)
+            {
+                if (_activePositions.TryGetValue(symbol, out var savedPos))
+                {
+                    if (savedPos.TakeProfitStep > 0 || savedPos.PartialProfitStage > 0)
+                    {
+                        OnLog?.Invoke($"🔄 {symbol} PUMP 상태 복원 | TP={savedPos.TakeProfitStep} Partial={savedPos.PartialProfitStage} BE={savedPos.BreakevenPrice:F4} ROE={savedPos.HighestROEForTrailing:F1}%");
+                    }
+                    if (savedPos.HighestROEForTrailing > 0)
+                        highestROE = (decimal)savedPos.HighestROEForTrailing;
+                }
+            }
             decimal lockedProfitFloorRoe = decimal.MinValue;
             decimal dynamicStopLossRoe = stopLossROE;
 
@@ -1993,6 +2025,7 @@ namespace TradingBot.Services
                     stairStep = 1;
                     lockedProfitFloorRoe = Math.Max(lockedProfitFloorRoe, StairStep1FloorRoe);
                     OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 1단계 | ROI {stairStep1TriggerRoe:F0}% → 보호선 ROE +{StairStep1FloorRoe:F0}%");
+                    PersistPositionState(symbol, stairStep: 1, highestROE: highestROE);
 
                     // [v3.3.8] 서버사이드 TRAILING_STOP_MARKET 설정 (1초 급락 대비)
                     // 바이낸스가 자동으로 고점 추적 → callbackRate% 하락 시 시장가 청산
@@ -2050,6 +2083,7 @@ namespace TradingBot.Services
                     stairStep = 2;
                     lockedProfitFloorRoe = Math.Max(lockedProfitFloorRoe, StairStep2FloorRoe);
                     OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 2단계 | ROI {stairStep2TriggerRoe:F0}% → 보호선 ROE +{StairStep2FloorRoe:F0}% (100% 먹고 50% 보존)");
+                    PersistPositionState(symbol, stairStep: 2, highestROE: highestROE);
 
                     // [v3.3.8] 2단계: 트레일링 콜백을 타이트하게 (0.5% 가격)
                     _ = Task.Run(async () =>
@@ -2090,6 +2124,7 @@ namespace TradingBot.Services
                     stairStep = 3;
                     trailingDropROE = 30.0m;
                     OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 3단계 | ROI {stairStep3TriggerRoe:F0}% → Moonshot Trailing Gap {trailingDropROE:F0}%");
+                    PersistPositionState(symbol, stairStep: 3, highestROE: highestROE);
                 }
 
                 // [v3.3.7] 계단식 보호선 발동 — 다른 모든 청산 로직보다 우선
@@ -2125,6 +2160,7 @@ namespace TradingBot.Services
                 if (!isBreakEvenTriggered && firstTpDone && currentROE >= pumpBreakEvenRoe)
                 {
                     isBreakEvenTriggered = true;
+                    PersistPositionState(symbol, stairStep: stairStep, isBreakEvenTriggered: true, highestROE: highestROE);
                     OnAlert?.Invoke($"🛡️ {symbol} Break Even 발동! (ROI {pumpBreakEvenRoe:F0}% 도달 → 손절라인 진입가로 이동, 절대 손실 없음)");
                     await TelegramService.Instance.SendBreakEvenReachedAsync(symbol, entryPrice);
                 }
@@ -3585,6 +3621,7 @@ namespace TradingBot.Services
                 }
 
                 OnLog?.Invoke($"✅ {symbol} 부분청산 완료: 청산={actualClosedQty}, 잔여={remainingQty}, PnL={pnl:F2}, ROE={pnlPercent:F2}%");
+                PersistPositionState(symbol); // [v3.5.2] DB에 부분청산 상태 저장
                 OnPartialCloseCompleted?.Invoke(symbol); // [v3.4.0] 팬텀 기록 방지 쿨다운
                 OnPositionStatusUpdate?.Invoke(symbol, remainingQty > 0, 0);
 

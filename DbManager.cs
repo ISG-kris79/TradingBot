@@ -32,8 +32,7 @@ namespace TradingBot.Services
         public DbManager(string connectionString)
         {
             _connectionString = connectionString;
-            _ = EnsureIsSimulationColumnAsync();
-            _ = EnsureOrderErrorTableAsync();
+            // DB 스키마는 직접 관리 (EnsureIsSimulationColumnAsync, EnsureOrderErrorTableAsync, EnsurePositionStateTableAsync 제거)
         }
 
         private async Task EnsureIsSimulationColumnAsync()
@@ -54,6 +53,135 @@ END");
             {
                 MainWindow.Instance?.AddLog($"⚠️ [DB] IsSimulation 컬럼 자동 추가 실패: {ex.Message}");
             }
+        }
+
+        // [v3.5.2] 포지션 상태 영속화 — 재시작 시 부분청산/본절/계단식 상태 복원
+        private async Task EnsurePositionStateTableAsync()
+        {
+            try
+            {
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await db.ExecuteAsync(@"
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'PositionState' AND schema_id = SCHEMA_ID('dbo'))
+BEGIN
+    CREATE TABLE dbo.PositionState (
+        UserId              INT            NOT NULL,
+        Symbol              NVARCHAR(20)   NOT NULL,
+        TakeProfitStep      INT            NOT NULL DEFAULT 0,
+        PartialProfitStage  INT            NOT NULL DEFAULT 0,
+        BreakevenPrice      DECIMAL(18,8)  NOT NULL DEFAULT 0,
+        HighestROE          DECIMAL(18,4)  NOT NULL DEFAULT 0,
+        StairStep           INT            NOT NULL DEFAULT 0,
+        IsBreakEvenTriggered BIT           NOT NULL DEFAULT 0,
+        HighestPrice        DECIMAL(18,8)  NOT NULL DEFAULT 0,
+        LowestPrice         DECIMAL(18,8)  NOT NULL DEFAULT 0,
+        IsPumpStrategy      BIT            NOT NULL DEFAULT 0,
+        LastUpdatedAt       DATETIME2      NOT NULL DEFAULT SYSDATETIME(),
+        CONSTRAINT PK_PositionState PRIMARY KEY (UserId, Symbol)
+    );
+END");
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] PositionState 테이블 생성 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>포지션 상태 저장/업데이트 (부분청산, 본절, 계단식 등)</summary>
+        public async Task SavePositionStateAsync(int userId, string symbol, PositionInfo pos, int stairStep = 0, bool isBreakEvenTriggered = false, decimal highestROE = 0)
+        {
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                await db.ExecuteAsync(@"
+MERGE dbo.PositionState AS target
+USING (SELECT @UserId AS UserId, @Symbol AS Symbol) AS source
+ON target.UserId = source.UserId AND target.Symbol = source.Symbol
+WHEN MATCHED THEN
+    UPDATE SET
+        TakeProfitStep = @TakeProfitStep,
+        PartialProfitStage = @PartialProfitStage,
+        BreakevenPrice = @BreakevenPrice,
+        HighestROE = @HighestROE,
+        StairStep = @StairStep,
+        IsBreakEvenTriggered = @IsBreakEvenTriggered,
+        HighestPrice = @HighestPrice,
+        LowestPrice = @LowestPrice,
+        IsPumpStrategy = @IsPumpStrategy,
+        LastUpdatedAt = SYSDATETIME()
+WHEN NOT MATCHED THEN
+    INSERT (UserId, Symbol, TakeProfitStep, PartialProfitStage, BreakevenPrice,
+            HighestROE, StairStep, IsBreakEvenTriggered, HighestPrice, LowestPrice, IsPumpStrategy)
+    VALUES (@UserId, @Symbol, @TakeProfitStep, @PartialProfitStage, @BreakevenPrice,
+            @HighestROE, @StairStep, @IsBreakEvenTriggered, @HighestPrice, @LowestPrice, @IsPumpStrategy);",
+                new
+                {
+                    UserId = userId,
+                    Symbol = symbol,
+                    TakeProfitStep = pos.TakeProfitStep,
+                    PartialProfitStage = pos.PartialProfitStage,
+                    BreakevenPrice = pos.BreakevenPrice,
+                    HighestROE = highestROE,
+                    StairStep = stairStep,
+                    IsBreakEvenTriggered = isBreakEvenTriggered,
+                    HighestPrice = pos.HighestPrice,
+                    LowestPrice = pos.LowestPrice,
+                    IsPumpStrategy = pos.IsPumpStrategy
+                });
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] PositionState 저장 실패 [{symbol}]: {ex.Message}");
+            }
+        }
+
+        /// <summary>재시작 시 포지션 상태 복원</summary>
+        public async Task<Dictionary<string, (int TakeProfitStep, int PartialProfitStage, decimal BreakevenPrice,
+            decimal HighestROE, int StairStep, bool IsBreakEvenTriggered, decimal HighestPrice, decimal LowestPrice, bool IsPumpStrategy)>>
+            LoadPositionStatesAsync(int userId)
+        {
+            var result = new Dictionary<string, (int, int, decimal, decimal, int, bool, decimal, decimal, bool)>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                var rows = await db.QueryAsync(@"
+SELECT Symbol, TakeProfitStep, PartialProfitStage, BreakevenPrice,
+       HighestROE, StairStep, IsBreakEvenTriggered, HighestPrice, LowestPrice, IsPumpStrategy
+FROM dbo.PositionState
+WHERE UserId = @UserId", new { UserId = userId });
+
+                foreach (var row in rows)
+                {
+                    result[(string)row.Symbol] = (
+                        (int)row.TakeProfitStep,
+                        (int)row.PartialProfitStage,
+                        (decimal)row.BreakevenPrice,
+                        (decimal)row.HighestROE,
+                        (int)row.StairStep,
+                        (bool)row.IsBreakEvenTriggered,
+                        (decimal)row.HighestPrice,
+                        (decimal)row.LowestPrice,
+                        (bool)row.IsPumpStrategy);
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] PositionState 복원 실패: {ex.Message}");
+            }
+            return result;
+        }
+
+        /// <summary>포지션 청산 시 상태 삭제</summary>
+        public async Task DeletePositionStateAsync(int userId, string symbol)
+        {
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                await db.ExecuteAsync("DELETE FROM dbo.PositionState WHERE UserId = @UserId AND Symbol = @Symbol",
+                    new { UserId = userId, Symbol = symbol });
+            }
+            catch { }
         }
 
         private async Task EnsureOrderErrorTableAsync()

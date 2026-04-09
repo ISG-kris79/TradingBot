@@ -1398,6 +1398,37 @@ namespace TradingBot
                         }
                     }
 
+                    // [v3.5.2] DB에서 포지션 상태 복원 (부분청산/본절/계단식)
+                    try
+                    {
+                        int stateUserId = AppConfig.CurrentUser?.Id ?? 0;
+                        if (stateUserId > 0)
+                        {
+                            var savedStates = await _dbManager.LoadPositionStatesAsync(stateUserId);
+                            lock (_posLock)
+                            {
+                                foreach (var kvp in savedStates)
+                                {
+                                    if (_activePositions.TryGetValue(kvp.Key, out var ap))
+                                    {
+                                        ap.TakeProfitStep = kvp.Value.TakeProfitStep;
+                                        ap.PartialProfitStage = kvp.Value.PartialProfitStage;
+                                        ap.BreakevenPrice = kvp.Value.BreakevenPrice;
+                                        ap.HighestROEForTrailing = kvp.Value.HighestROE;
+                                        ap.HighestPrice = kvp.Value.HighestPrice > 0 ? kvp.Value.HighestPrice : ap.HighestPrice;
+                                        ap.LowestPrice = kvp.Value.LowestPrice > 0 ? kvp.Value.LowestPrice : ap.LowestPrice;
+                                        ap.IsPumpStrategy = kvp.Value.IsPumpStrategy;
+                                        OnStatusLog?.Invoke($"🔄 [상태 복원] {kvp.Key} | TP단계={kvp.Value.TakeProfitStep} 부분청산={kvp.Value.PartialProfitStage} 본절={kvp.Value.BreakevenPrice:F4} 계단={kvp.Value.StairStep} 최고ROE={kvp.Value.HighestROE:F1}%");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception stateEx)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [상태 복원] DB 로드 실패: {stateEx.Message}");
+                    }
+
                     foreach (var synced in syncedPositions)
                     {
                         var pos = synced.Pos;
