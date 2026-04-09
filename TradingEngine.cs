@@ -7022,8 +7022,15 @@ namespace TradingBot
             {
                 if (latestCandle.Volume_Ratio > 0 && latestCandle.Volume_Ratio < 0.5f)
                 {
-                    EntryLog("VOLUME", "BLOCK", $"volumeRatio={latestCandle.Volume_Ratio:F2} < 0.50 (5봉 평균의 절반 미만 → 가짜 무빙 가능성)");
-                    return;
+                    if (ShouldBypassLowVolumeForMajorMeme(signalSource, decision, latestCandle, recentEntryKlines, out string bypassReason))
+                    {
+                        EntryLog("VOLUME", "BYPASS", bypassReason);
+                    }
+                    else
+                    {
+                        EntryLog("VOLUME", "BLOCK", $"volumeRatio={latestCandle.Volume_Ratio:F2} < 0.50 (5봉 평균의 절반 미만 → 가짜 무빙 가능성)");
+                        return;
+                    }
                 }
             }
 
@@ -7359,6 +7366,7 @@ namespace TradingBot
                             OnStatusLog?.Invoke($"⚠️ [AI관제탑] 모델 미준비 안내 발송 실패: {ex.Message}");
                         }
                     });
+
                 }
             }
 
@@ -7716,6 +7724,14 @@ namespace TradingBot
                 EntryLog("SIZE", "FINAL", $"blended={capturedBlendedScore:P0} mlSignal={mlSignalSizeMultiplier:P0} manual={manualSizeMultiplier:P0} → {finalSizeMultiplier:P0}");
             }
 
+            // [v3.5.3] US 세션(16~23시 KST) 사이즈 축소 — 33% 승률, -$523 손실
+            int kstHour = DateTime.Now.Hour;
+            if (kstHour >= 16 && kstHour <= 23)
+            {
+                finalSizeMultiplier *= 0.5m; // 50% 축소
+                EntryLog("SIZE", "US_SESSION", $"hour={kstHour} → 50% 축소 (US세션 저승률)");
+            }
+
             ctx.SizeMultiplier = Math.Clamp(finalSizeMultiplier, 0.10m, 2.00m);
 
             // ═══════════════════════════════════════════════════════════════
@@ -7826,9 +7842,10 @@ namespace TradingBot
             // 1. AI Predictor (보너스 없음 for SHORT)
             await EvaluateAiPredictorForEntry(ctx, applyMajorBonuses: false);
 
-            // 2. SHORT 전용 차단: RSI 과매도 + 가격 MA20 위 — ONLY 이 조건만 차단
+            // 2. SHORT 전용 다중 필터 (v3.5.3: 0승10패 → 엄격 필터)
             if (ctx.LatestCandle != null)
             {
+                // 2-1. RSI 과매도 + 가격 MA20 위 → 차단
                 bool shortPriceAboveMa20 = ctx.LatestCandle.Close >= (decimal)ctx.LatestCandle.SMA_20;
                 if (ctx.LatestCandle.RSI <= _shortRsiExhaustionFloor && shortPriceAboveMa20)
                 {
@@ -7836,14 +7853,33 @@ namespace TradingBot
                     return;
                 }
 
-                // 참고 로그만 (차단 없음)
-                var shortInfos = new List<string>();
-                if (ctx.AiPredictUp == true)
-                    shortInfos.Add($"AI상승예측");
-                if (ctx.LatestCandle.MACD > 0)
-                    shortInfos.Add($"MACD양수({ctx.LatestCandle.MACD:F4})");
-                if (shortInfos.Count > 0)
-                    EntryLog("AI", "INFO", $"shortRef={string.Join(",", shortInfos)} (not blocking)");
+                // 2-2. MACD 골든크로스 활성 → SHORT 차단 (MACD > Signal이면 상승 모멘텀)
+                if (ctx.LatestCandle.MACD > ctx.LatestCandle.MACD_Signal && ctx.LatestCandle.MACD > 0)
+                {
+                    EntryLog("SHORT_FILTER", "BLOCK", $"goldenCross MACD={ctx.LatestCandle.MACD:F6}>Signal={ctx.LatestCandle.MACD_Signal:F6} (상승 모멘텀 중 숏 금지)");
+                    return;
+                }
+
+                // 2-3. 피보나치 38.2~61.8% 지지구간 → SHORT 차단 (반등 가능성 높음)
+                if (ctx.LatestCandle.Fib_Position > 0 && ctx.LatestCandle.Fib_Position >= 0.35f && ctx.LatestCandle.Fib_Position <= 0.65f)
+                {
+                    EntryLog("SHORT_FILTER", "BLOCK", $"fibZone position={ctx.LatestCandle.Fib_Position:F2} (38~65% 지지구간 숏 금지)");
+                    return;
+                }
+
+                // 2-4. Stochastic K > D (상승 교차) → SHORT 차단
+                if (ctx.LatestCandle.Stoch_K > 0 && ctx.LatestCandle.Stoch_K > ctx.LatestCandle.Stoch_D && ctx.LatestCandle.Stoch_K < 80)
+                {
+                    EntryLog("SHORT_FILTER", "BLOCK", $"stochBullish K={ctx.LatestCandle.Stoch_K:F1}>D={ctx.LatestCandle.Stoch_D:F1} (상승 교차 숏 금지)");
+                    return;
+                }
+
+                // 2-5. 가격 > SMA60 (중기 상승추세) → SHORT 차단
+                if (ctx.LatestCandle.SMA_60 > 0 && ctx.LatestCandle.Close > (decimal)ctx.LatestCandle.SMA_60)
+                {
+                    EntryLog("SHORT_FILTER", "BLOCK", $"aboveSMA60 price={ctx.LatestCandle.Close}>SMA60={ctx.LatestCandle.SMA_60:F4} (중기 상승추세 숏 금지)");
+                    return;
+                }
             }
 
             // 3. AI Score 사이즈 조절 제거 — 라우터 AI Gate Advisor에서 이미 적용됨
@@ -7928,6 +7964,52 @@ namespace TradingBot
 
             // 5. 주문 실행
             await PlaceAndTrackEntryAsync(ctx);
+        }
+
+        private static bool ShouldBypassLowVolumeForMajorMeme(
+            string signalSource,
+            string decision,
+            CandleData latestCandle,
+            List<IBinanceKline>? recentEntryKlines,
+            out string reason)
+        {
+            reason = string.Empty;
+
+            if (!signalSource.StartsWith("MAJOR_MEME", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (!string.Equals(decision, "LONG", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            float volumeRatio = latestCandle.Volume_Ratio;
+            if (volumeRatio < 0.15f)
+                return false;
+
+            bool aboveSma20 = latestCandle.SMA_20 > 0f && latestCandle.Close > (decimal)latestCandle.SMA_20;
+            bool healthyRsi = latestCandle.RSI >= 50f;
+            bool higherLows = HasSuccessiveHigherLows(recentEntryKlines, 3);
+            bool supportedTrend = aboveSma20 && (healthyRsi || higherLows);
+
+            if (!supportedTrend)
+                return false;
+
+            reason = $"majorMemeLowVolumeBypass=true volumeRatio={volumeRatio:F2} sma20={(double)latestCandle.SMA_20:F4} rsi={latestCandle.RSI:F1} higherLows={higherLows}";
+            return true;
+        }
+
+        private static bool HasSuccessiveHigherLows(List<IBinanceKline>? candles, int count)
+        {
+            if (candles == null || candles.Count < count + 1)
+                return false;
+
+            var recent = candles.TakeLast(count + 1).ToList();
+            for (int i = 1; i < recent.Count; i++)
+            {
+                if (recent[i].LowPrice <= recent[i - 1].LowPrice)
+                    return false;
+            }
+
+            return true;
         }
 
         // ═══════════════════════════════════════════════════════════════════════════
