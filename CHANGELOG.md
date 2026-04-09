@@ -15,6 +15,26 @@
 
  - 없음
 
+## [3.4.2] - 2026-04-09
+
+### Added
+
+- **BTC 하락장 필터**: BTC 1시간 내 -2%+ 하락 시 모든 LONG 진입 차단
+  - CRASH_REVERSE/PUMP_REVERSE만 예외 (급변 대응)
+  - KlineCache 12봉(1시간) 기준 실시간 계산
+  - 하락장에서 무리한 LONG 진입 원천 차단
+
+- **SPIKE_FAST 거래량 비율 체크**: SpikeVolumeMinRatio (2.0x) 실제 적용
+  - 이전 30초 스냅샷 대비 거래량 2배 미만이면 가짜 스파이크로 판정
+  - 거래량 없는 가격 조작/노이즈 필터링
+
+### Fixed
+
+- **DROUGHT_RECOVERY AI Gate 우회 제거**: 가뭄 진입이 AI Gate를 완전 우회하던 문제
+  - CRASH_REVERSE/PUMP_REVERSE만 AI Gate 우회 유지
+  - DROUGHT_RECOVERY, SPIKE_DETECT도 AI Gate 통과 필수
+  - 하락장에서 무필터 강제 진입 차단
+
 ## [3.4.1] - 2026-04-09
 
 ### Fixed

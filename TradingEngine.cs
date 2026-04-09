@@ -6909,6 +6909,30 @@ namespace TradingBot
                 return;
             }
 
+            // [v3.4.1] BTC 하락장 필터 — BTC가 1시간 내 2%+ 하락 시 LONG 진입 차단
+            if (decision == "LONG" && signalSource != "CRASH_REVERSE" && signalSource != "PUMP_REVERSE")
+            {
+                if (_marketDataManager.TickerCache.TryGetValue("BTCUSDT", out var btcTick) && btcTick.LastPrice > 0
+                    && _marketDataManager.KlineCache.TryGetValue("BTCUSDT", out var btcCandles) && btcCandles.Count >= 12)
+                {
+                    List<IBinanceKline> btcSnapshot;
+                    lock (btcCandles) { btcSnapshot = btcCandles.TakeLast(12).ToList(); }
+                    if (btcSnapshot.Count >= 12)
+                    {
+                        decimal btcPrice1hAgo = btcSnapshot[0].OpenPrice;
+                        decimal btcNow = btcTick.LastPrice;
+                        decimal btc1hChange = (btcNow - btcPrice1hAgo) / btcPrice1hAgo * 100m;
+
+                        if (btc1hChange <= -2.0m)
+                        {
+                            OnStatusLog?.Invoke($"⛔ [BTC 하락장] {symbol} LONG 차단 | BTC 1시간 변동 {btc1hChange:+0.00;-0.00}% (≤-2%) | source={signalSource}");
+                            EntryLog("MACRO", "BLOCK", $"btc1hChange={btc1hChange:F2}% bearMarket=true");
+                            return;
+                        }
+                    }
+                }
+            }
+
             // 1-6. 패턴 홀드 참고 로그
             if (patternSnapshot?.Match?.ShouldDeferEntry == true)
             {
@@ -7038,9 +7062,9 @@ namespace TradingBot
             string? aiGateDecisionId = null;
             decimal aiGateSizeMultiplier = 1.0m; // AI Gate에서 산출된 사이즈 배수
 
-            bool shouldBypassAiGate = (skipAiGateCheck && IsDroughtRecoverySignalSource(signalSource))
-                || signalSource == "SPIKE_DETECT"
-                || signalSource == "CRASH_REVERSE"
+            // [v3.4.1] DROUGHT_RECOVERY AI Gate 우회 제거 — 하락장에서 무필터 진입 방지
+            // CRASH_REVERSE/PUMP_REVERSE만 우회 (급변 대응), SPIKE_DETECT도 AI Gate 통과
+            bool shouldBypassAiGate = signalSource == "CRASH_REVERSE"
                 || signalSource == "PUMP_REVERSE";
             if (shouldBypassAiGate)
             {

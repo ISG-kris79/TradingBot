@@ -127,6 +127,7 @@ namespace TradingBot.Services
         public decimal SpikeVolumeMinRatio { get; set; } = 2.0m;
 
         private readonly ConcurrentDictionary<string, decimal> _allPriceSnapshot = new();
+        private readonly ConcurrentDictionary<string, decimal> _allVolumeSnapshot = new(); // [v3.4.1] 거래량 비교용
         private DateTime _lastAllSnapshotTime = DateTime.MinValue;
         private readonly ConcurrentDictionary<string, DateTime> _spikeCooldown = new();
 
@@ -165,6 +166,13 @@ namespace TradingBot.Services
                 if (kvp.Value.QuoteVolume < 1_000_000m) continue; // [v3.2.19] $500K → $1M 복원
                 if (kvp.Value.LastPrice < 0.001m) continue; // [v3.2.40] 초저가 밈코인 제외
 
+                // [v3.4.1] 거래량 비율 체크 — 이전 30초 대비 거래량 급증 확인
+                if (_allVolumeSnapshot.TryGetValue(sym, out var prevVolume) && prevVolume > 0)
+                {
+                    decimal volumeRatio = kvp.Value.QuoteVolume / prevVolume;
+                    if (volumeRatio < SpikeVolumeMinRatio) continue; // 거래량 미달 → 가짜 스파이크
+                }
+
                 bool isMajorCoin = MajorWatchSymbols.Contains(sym);
 
                 // [v3.2.19] PUMP 코인은 급등(+3%)만, 메이저는 급등/급락 둘 다
@@ -192,7 +200,11 @@ namespace TradingBot.Services
             {
                 string sym = kvp.Value.Symbol ?? kvp.Key;
                 if (!string.IsNullOrWhiteSpace(sym) && kvp.Value.LastPrice > 0)
+                {
                     _allPriceSnapshot[sym] = kvp.Value.LastPrice;
+                    if (kvp.Value.QuoteVolume > 0)
+                        _allVolumeSnapshot[sym] = kvp.Value.QuoteVolume;
+                }
             }
             _lastAllSnapshotTime = DateTime.Now;
         }
