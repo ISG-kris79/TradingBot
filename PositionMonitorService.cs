@@ -1701,7 +1701,7 @@ namespace TradingBot.Services
             decimal stairStep1TriggerRoe = _settings.PumpStairStep1Roe > 0 ? Math.Min(_settings.PumpStairStep1Roe, 25.0m) : 25.0m;
             decimal stairStep2TriggerRoe = _settings.PumpStairStep2Roe > 0 ? _settings.PumpStairStep2Roe : 80.0m;
             decimal stairStep3TriggerRoe = _settings.PumpStairStep3Roe > 0 ? _settings.PumpStairStep3Roe : 160.0m;
-            const decimal StairStep1FloorRoe = 10.0m;  // 1단계 달성 후 최소 +10% 보호
+            const decimal StairStep1FloorRoe = 15.0m;  // [v3.9.3] 1단계 보호선 10→15% (STOUSDT +22%→+0.17% 방지)
             const decimal StairStep2FloorRoe = 40.0m;  // 2단계 달성 후 최소 +40% 보호 (50→40%)
             // [1분봉 급등 스파이크 감지] 이전 체크 대비 ROE가 15% 이상 급등 시 즉시 20% 부분익절
             decimal prevCheckROE = -999m;

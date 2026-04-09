@@ -51,7 +51,7 @@ namespace TradingBot.Models
         // 주의: 0.15% 오프셋(슬리피지 방어)이 적용되어 실제 손절은 진입가 + 0.15% 근처로 설정됨
         public decimal PumpTrailingStartRoe { get; set; } = 40.0m; // 2차 트레일링 시작 ROI +40% (변경 없음)
         public decimal PumpTrailingGapRoe { get; set; } = 20.0m;    // 2차에서 최고점 대비 ROI 20% 하락 시 청산
-        public decimal PumpFirstTakeProfitRatioPct { get; set; } = 15.0m; // 1차 부분익절 비중(%)
+        public decimal PumpFirstTakeProfitRatioPct { get; set; } = 40.0m; // [v3.9.3] 1차 부분익절 15→40% (수익 확보 강화)
         public decimal PumpStairStep1Roe { get; set; } = 50.0m;     // 계단식 1단계 트리거 ROE
         public decimal PumpStairStep2Roe { get; set; } = 100.0m;    // 계단식 2단계 트리거 ROE
         public decimal PumpStairStep3Roe { get; set; } = 200.0m;    // 계단식 3단계 트리거 ROE
