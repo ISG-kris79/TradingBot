@@ -1300,7 +1300,8 @@ namespace TradingBot.Services
                         }
                     }
 
-                    if (!isSidewaysMode && isLong && !hybridDcaTaken && currentROE <= hybridDcaTriggerRoe)
+                    // [v3.3.9] 물타기(DCA) 비활성화 — 손실 증폭 원인
+                    if (false && !isSidewaysMode && isLong && !hybridDcaTaken && currentROE <= hybridDcaTriggerRoe)
                     {
                         if (TryShouldExecuteHybridLongDca(symbol, currentPrice, out string dcaReason))
                         {
@@ -2146,13 +2147,14 @@ namespace TradingBot.Services
                     }
                 }
 
-                if (!isAveraged && !isBreakEvenTriggered && currentROE <= averageDownROE)
-                {
-                    OnAlert?.Invoke($"💧 {symbol} 물타기 시도 (ROE: {currentROE:F2}%)");
-                    await ExecuteAverageDown(symbol, token);
-                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) entryPrice = p.EntryPrice; }
-                    continue;
-                }
+                // [v3.3.9] 물타기 비활성화 — 손실 2배 증폭 원인 (7일 -$1,138)
+                // if (!isAveraged && !isBreakEvenTriggered && currentROE <= averageDownROE)
+                // {
+                //     OnAlert?.Invoke($"💧 {symbol} 물타기 시도 (ROE: {currentROE:F2}%)");
+                //     await ExecuteAverageDown(symbol, token);
+                //     lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) entryPrice = p.EntryPrice; }
+                //     continue;
+                // }
 
                 if (currentROE <= -effectiveStopLossRoe)
                 {
@@ -3294,11 +3296,37 @@ namespace TradingBot.Services
                     OnLog?.Invoke($"⚠️ {symbol} 거래소 수량 확인 실패: {posEx.Message} → 내부 수량 사용");
                 }
 
-                var closeQty = Math.Round(currentQty * ratio, 6, MidpointRounding.AwayFromZero);
+                var closeQty = currentQty * ratio;
+
+                // [v3.3.9] stepSize 보정 — PUMP 코인은 정수 수량만 허용
+                try
+                {
+                    var exInfo = await _client.UsdFuturesApi.ExchangeData.GetExchangeInfoAsync(ct: token);
+                    if (exInfo.Success && exInfo.Data != null)
+                    {
+                        var symData = exInfo.Data.Symbols.FirstOrDefault(s => s.Name == symbol);
+                        if (symData?.LotSizeFilter?.StepSize is decimal stepSize && stepSize > 0)
+                        {
+                            if (stepSize >= 1m)
+                            {
+                                closeQty = Math.Floor(closeQty);
+                                OnLog?.Invoke($"ℹ️ {symbol} PUMP 수량 정수 반올림: {currentQty * ratio:F4} → {closeQty:F0} (stepSize={stepSize})");
+                            }
+                            else
+                            {
+                                closeQty = Math.Floor(closeQty / stepSize) * stepSize;
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    closeQty = Math.Round(closeQty, 6, MidpointRounding.AwayFromZero);
+                }
 
                 if (closeQty <= 0)
                 {
-                    OnLog?.Invoke($"⚠️ {symbol} 부분청산 수량 계산 실패: 현재={currentQty}, 비율={ratio}");
+                    OnLog?.Invoke($"⚠️ {symbol} 부분청산 수량 계산 실패: 현재={currentQty}, 비율={ratio}, stepSize 보정 후 0");
                     return false;
                 }
 

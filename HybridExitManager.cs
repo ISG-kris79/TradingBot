@@ -240,29 +240,10 @@ namespace TradingBot.Strategies
             }
 
             // ═══════════════════════════════════════════════
-            // 3. ATR 동적 트레일링 스톱: 실시간 가격이 스톱 가격 돌파하면 즉시 청산
+            // 3. ATR 동적 트레일링 스톱: [v3.3.9] 비활성화
+            // PositionMonitorService의 ATR 2.0 듀얼 스탑 + 계단식 보호선이 담당
+            // HybridExit의 ATR×1.5가 너무 타이트하여 진입 직후 청산 유발 (7일 -$885)
             // ═══════════════════════════════════════════════
-            if (state.CurrentTrailingStopPrice > 0)
-            {
-                bool trailingStopHit = isLong
-                    ? currentPrice <= state.CurrentTrailingStopPrice
-                    : currentPrice >= state.CurrentTrailingStopPrice;
-
-                if (trailingStopHit)
-                {
-                    state.Stage = ExitStage.FullyExited;
-                    string atmMultiplier = GetAtrMultiplierDescription(currentROE, rsi);
-                    if (emitAlerts)
-                        OnAlert?.Invoke($"⚡ [ATR 트레일링 스톱] {symbol} | 현재가: {currentPrice:F8} | 스톱: {state.CurrentTrailingStopPrice:F8} | ROE: {currentROE:F1}% | {atmMultiplier}");
-                    return new ExitAction
-                    {
-                        Symbol = symbol,
-                        ActionType = ExitActionType.FullClose,
-                        Reason = $"ATR 동적 트레일링 스톱 ({atmMultiplier})",
-                        ROE = currentROE,
-                    };
-                }
-            }
 
             // ═══════════════════════════════════════════════
             // 4. 트레일링 스톱 (기존 로직): AI 예측 반전 or BB 중단 이탈

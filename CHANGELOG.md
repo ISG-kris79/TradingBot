@@ -15,6 +15,23 @@
 
  - 없음
 
+## [3.4.0] - 2026-04-09
+
+### Fixed
+
+- **물타기(AverageDown) 비활성화**: 7일 62건 -$1,138 손실의 주범. 물타기 후 손절 시 손실 2배 증폭
+  - PUMP 모니터: averageDown 로직 주석 처리
+  - Major 모니터: hybridDCA 로직 비활성화
+
+- **HybridExitManager ATR 트레일링 비활성화**: 7일 32건 -$885 손실의 주범
+  - ATR×1.5 스탑이 PositionMonitorService의 ATR×3.5~4.5와 이중 작동
+  - 진입 직후 0~2분에 좁은 스탑 발동 → 추세 탈 기회 자체를 차단
+  - PositionMonitorService의 ATR 2.0 듀얼 스탑 + 계단식 보호선이 이미 담당
+
+- **PUMP 코인 부분청산 수량 정수 반올림**: stepSize >= 1인 PUMP 코인 수량을 Math.Floor로 정수 처리
+  - 기존: 소수점 6자리 반올림 → 0.15 같은 수량으로 주문 실패
+  - 수정: ExchangeInfo에서 stepSize 조회 → stepSize >= 1이면 정수로 절삭
+
 ## [3.3.9] - 2026-04-08
 
 ### Added
