@@ -7829,17 +7829,23 @@ namespace TradingBot
                             HourOfDay = DateTime.Now.Hour
                         };
                         var dirPred = _directionPredictor.PredictDirection(dirFeature);
-                        if (dirPred != null && dirPred.Probability > 0.60f)
+                        if (dirPred != null)
                         {
-                            bool aiSaysUp = dirPred.GoesUp;
-                            bool entryIsLong = decision == "LONG";
-                            if (aiSaysUp != entryIsLong)
+                            bool bigMoveUp = dirPred.GoesUp;
+                            float prob = dirPred.Probability;
+
+                            if (decision == "LONG" && !bigMoveUp && prob > 0.60f)
                             {
-                                EntryLog("DIRECTION_AI", "BLOCK", $"ai={( aiSaysUp ? "UP" : "DOWN")} prob={dirPred.Probability:P0} vs entry={decision}");
-                                OnStatusLog?.Invoke($"⛔ [방향AI] {symbol} {decision} 차단 | AI 예측={( aiSaysUp ? "상승" : "하락")} ({dirPred.Probability:P0})");
+                                // AI가 "큰 상승 없음" 60%+ 확신 → LONG 차단
+                                EntryLog("DIRECTION_AI", "BLOCK", $"noUpMove prob={prob:P0} → LONG 차단");
+                                OnStatusLog?.Invoke($"⛔ [방향AI] {symbol} LONG 차단 | 15분 내 큰 상승 없음 ({prob:P0})");
                                 return;
                             }
-                            EntryLog("DIRECTION_AI", "CONFIRM", $"ai={( aiSaysUp ? "UP" : "DOWN")} prob={dirPred.Probability:P0} matches={decision}");
+                            if (decision == "LONG" && bigMoveUp && prob > 0.55f)
+                            {
+                                // AI가 "큰 상승 예상" → 확인
+                                EntryLog("DIRECTION_AI", "CONFIRM", $"bigMoveUp prob={prob:P0}");
+                            }
                         }
                     }
 

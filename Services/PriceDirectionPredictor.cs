@@ -56,7 +56,7 @@ namespace TradingBot.Services
             public float HourOfDay { get; set; }
 
             [ColumnName("Label")]
-            public bool GoesUp { get; set; }            // true = 다음 봉 상승
+            public bool GoesUp { get; set; }            // true = 15분 내 +0.3%+ 큰 상승
         }
 
         public class DirectionPrediction
@@ -103,9 +103,19 @@ namespace TradingBot.Services
 
             if (candles == null || candles.Count < 30) return (dirData, volData);
 
-            for (int i = 20; i < candles.Count - 1; i++)
+            // [v3.9.2] 다음 3봉(15분) 이내 큰 움직임 예측 (±0.3%+)
+            for (int i = 20; i < candles.Count - 3; i++)
             {
                 var current = candles[i];
+                // 다음 3봉 중 최대 상승/하락 계산
+                decimal maxHigh = 0, minLow = decimal.MaxValue;
+                for (int j = 1; j <= 3 && i + j < candles.Count; j++)
+                {
+                    if (candles[i + j].HighPrice > maxHigh) maxHigh = candles[i + j].HighPrice;
+                    if (candles[i + j].LowPrice < minLow) minLow = candles[i + j].LowPrice;
+                }
+                decimal maxUpPct = current.ClosePrice > 0 ? (maxHigh - current.ClosePrice) / current.ClosePrice * 100 : 0;
+                decimal maxDownPct = current.ClosePrice > 0 ? (current.ClosePrice - minLow) / current.ClosePrice * 100 : 0;
                 var next = candles[i + 1];
                 var window = candles.Skip(Math.Max(0, i - 19)).Take(20).ToList();
                 if (window.Count < 20) continue;
@@ -146,7 +156,8 @@ namespace TradingBot.Services
                 float adx = 0;
                 try { var (a, _, _) = IndicatorCalculator.CalculateADX(window, 14); adx = (float)(a / 100); } catch { }
 
-                bool goesUp = next.ClosePrice > current.ClosePrice;
+                // [v3.9.2] 큰 움직임 레이블: 15분 내 +0.3% 이상 상승 && 상승폭 > 하락폭
+                bool bigMoveUp = maxUpPct >= 0.3m && maxUpPct > maxDownPct;
                 float nextRange = (double)next.ClosePrice > 0
                     ? (float)((double)(next.HighPrice - next.LowPrice) / (double)next.ClosePrice * 100) : 0;
 
@@ -158,7 +169,7 @@ namespace TradingBot.Services
                     Price_Change_1 = pc1, Price_Change_3 = pc3, Price_Change_6 = pc6,
                     SMA20_Distance = sma20Dist, ADX = adx, Stoch_K = stochK, Stoch_D = stochD,
                     HourOfDay = current.OpenTime.Hour,
-                    GoesUp = goesUp
+                    GoesUp = bigMoveUp
                 });
 
                 float pr1 = (double)current.ClosePrice > 0
