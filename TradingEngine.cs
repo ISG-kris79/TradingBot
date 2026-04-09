@@ -184,6 +184,7 @@ namespace TradingBot
         private readonly TradingBot.Services.TradeSignalClassifier _tradeSignalClassifier = new();
         private readonly TradingBot.Services.PumpSignalClassifier _pumpSignalClassifier = new();
         private readonly TradingBot.Services.PriceDirectionPredictor _directionPredictor = new();
+        private readonly TradingBot.Services.SurvivalEntryModel _survivalModel = new();
         private DateTime _lastSsaTrainTime = DateTime.MinValue;
         private TradingBot.Services.SsaForecastResult? _latestSsaResult;
 
@@ -733,6 +734,8 @@ namespace TradingBot
             _pumpSignalClassifier.LoadModel();
             _directionPredictor.OnLog += msg => OnStatusLog?.Invoke(msg);
             _directionPredictor.TryLoadModels();
+            _survivalModel.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _survivalModel.TryLoadModels();
             // [수익률 회귀] 로그 연결 + DB 과거 거래 학습
             _profitRegressor.OnLog += msg => OnStatusLog?.Invoke(msg);
             _ = Task.Run(async () =>
@@ -6101,7 +6104,35 @@ namespace TradingBot
                 }
                 catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] Direction/Volatility 학습 실패: {ex.Message}"); }
 
-                // 4-5. MarketRegime + ExitOptimizer (기존 로직)
+                // 4. Survival Entry Model (생존 기반)
+                try
+                {
+                    var majorSurvData = new List<SurvivalEntryModel.SurvivalFeature>();
+                    var pumpSurvData = new List<SurvivalEntryModel.SurvivalFeature>();
+
+                    foreach (var kvp in _marketDataManager.KlineCache)
+                    {
+                        if (token.IsCancellationRequested) break;
+                        List<IBinanceKline> c5m;
+                        lock (kvp.Value) { c5m = kvp.Value.TakeLast(150).ToList(); }
+                        if (c5m.Count < 40) continue;
+
+                        bool isMajor = MajorSymbols.Contains(kvp.Key);
+                        if (isMajor)
+                            majorSurvData.AddRange(_survivalModel.BuildTrainingData(c5m, null, tpPct: 1.0f, slPct: 0.5f, lookAhead: 20));
+                        else
+                            pumpSurvData.AddRange(_survivalModel.BuildTrainingData(c5m, null, tpPct: 3.0f, slPct: 1.5f, lookAhead: 6));
+                    }
+
+                    if (majorSurvData.Count >= 200 || pumpSurvData.Count >= 200)
+                    {
+                        var (mAcc, pAcc) = await _survivalModel.TrainAsync(majorSurvData, pumpSurvData, token);
+                        OnStatusLog?.Invoke($"🧠 [ML] Survival Major={mAcc:P1}({majorSurvData.Count}건) Pump={pAcc:P1}({pumpSurvData.Count}건)");
+                    }
+                }
+                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] Survival 학습 실패: {ex.Message}"); }
+
+                // 5-6. MarketRegime + ExitOptimizer (기존 로직)
                 await TrainExitModelsInternalAsync(token);
 
                 OnStatusLog?.Invoke("🧠 [ML 재학습] 전체 모델 학습 완료");
@@ -7805,6 +7836,33 @@ namespace TradingBot
                         OnStatusLog?.Invoke($"⛔ [RSI 극단 차단] {symbol} {decision} | RSI={rsiCheck:F1} → {limitText}");
                         EntryLog("RSI_EXTREME", "BLOCK", $"dir={decision} rsi={rsiCheck:F1}");
                         return;
+                    }
+
+                    // [v4.0] 생존 기반 진입 모델 — "TP에 먼저 도달할 확률"
+                    if (decision == "LONG")
+                    {
+                        List<IBinanceKline>? survCandles5m = recentEntryKlines;
+                        List<IBinanceKline>? survCandles1m = null;
+                        try { survCandles1m = (await _exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.OneMinute, 20, token))?.ToList(); } catch { }
+
+                        var survFeature = SurvivalEntryModel.BuildRealtimeFeature(survCandles5m, survCandles1m);
+                        if (survFeature != null)
+                        {
+                            bool isMajorSym = MajorSymbols.Contains(symbol);
+                            var survPred = isMajorSym ? _survivalModel.PredictMajor(survFeature) : _survivalModel.PredictPump(survFeature);
+
+                            if (survPred != null)
+                            {
+                                if (!survPred.Survived && survPred.Probability > 0.60f)
+                                {
+                                    EntryLog("SURVIVAL", "BLOCK", $"notSurvived prob={survPred.Probability:P0} → TP 미도달 예측");
+                                    OnStatusLog?.Invoke($"⛔ [생존AI] {symbol} LONG 차단 | 손절 먼저 도달 확률 {survPred.Probability:P0}");
+                                    return;
+                                }
+                                if (survPred.Survived && survPred.Probability > 0.55f)
+                                    EntryLog("SURVIVAL", "CONFIRM", $"survived prob={survPred.Probability:P0}");
+                            }
+                        }
                     }
 
                     // [v3.8.1] 방향 예측기 체크 — ML이 반대 방향 예측 시 차단
