@@ -191,6 +191,7 @@ namespace TradingBot
         private readonly TradingBot.Services.PumpSignalClassifier _pumpSignalClassifier = new();
         private readonly TradingBot.Services.PriceDirectionPredictor _directionPredictor = new();
         private readonly TradingBot.Services.SurvivalEntryModel _survivalModel = new();
+        private readonly TradingBot.Services.TickDensityMonitor _tickMonitor = new();
         private DateTime _lastSsaTrainTime = DateTime.MinValue;
         private TradingBot.Services.SsaForecastResult? _latestSsaResult;
 
@@ -741,6 +742,39 @@ namespace TradingBot
             _directionPredictor.TryLoadModels();
             _survivalModel.OnLog += msg => OnStatusLog?.Invoke(msg);
             _survivalModel.TryLoadModels();
+
+            // [v4.2.0] 틱 밀도 모니터 — 급등 시작 신호 + BB 스퀴즈 브레이크아웃
+            _tickMonitor.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _tickMonitor.OnTickSurgeDetected += (symbol, tpsRatio, buyRatio, price) =>
+            {
+                // 틱 급증 = 급등 시작 → AI Gate 거쳐 진입 (2단계 트리거)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        OnStatusLog?.Invoke($"⚡ [틱급증→진입] {symbol} TPS={tpsRatio:F1}x 매수비={buyRatio:P0}");
+                        await ExecuteAutoOrder(symbol, "LONG", price, _cts?.Token ?? CancellationToken.None,
+                            "TICK_SURGE", manualSizeMultiplier: 1.0m);
+                    }
+                    catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [틱급증] {symbol} 진입 실패: {ex.Message}"); }
+                });
+            };
+            _tickMonitor.OnSqueezeBreakout += (symbol, price, bbWidth) =>
+            {
+                // BB 스퀴즈 브레이크아웃 → AI Gate 거쳐 진입
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        OnStatusLog?.Invoke($"🔥 [스퀴즈돌파→진입] {symbol} BBWidth={bbWidth:F2}%");
+                        await ExecuteAutoOrder(symbol, "LONG", price, _cts?.Token ?? CancellationToken.None,
+                            "SQUEEZE_BREAKOUT", manualSizeMultiplier: 1.0m);
+                    }
+                    catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [스퀴즈] {symbol} 진입 실패: {ex.Message}"); }
+                });
+            };
+            // AggTrade WebSocket 시작 (백그라운드)
+            _ = StartAggTradeStreamAsync(_cts?.Token ?? CancellationToken.None);
             // [수익률 회귀] 로그 연결 + DB 과거 거래 학습
             _profitRegressor.OnLog += msg => OnStatusLog?.Invoke(msg);
             _ = Task.Run(async () =>
@@ -6026,6 +6060,54 @@ namespace TradingBot
                 TimeSpan.FromMinutes(2),   // 시작 2분 후 첫 학습
                 TimeSpan.FromHours(1));     // 이후 1시간 주기
             OnStatusLog?.Invoke("🧠 [ML] 전체 모델 자동 재학습 타이머 시작 (1시간 주기)");
+        }
+
+        /// <summary>[v4.2.0] AggTrade WebSocket으로 PUMP 후보 코인의 실시간 체결 데이터 수신</summary>
+        private async Task StartAggTradeStreamAsync(CancellationToken token)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(10), token); // 시작 안정화 대기
+
+                // 전 종목 대신 TickerCache에서 거래량 상위 코인만 구독 (API 제한)
+                var topSymbols = _marketDataManager.TickerCache
+                    .Where(t => t.Value.QuoteVolume >= 500_000m && t.Value.LastPrice >= 0.001m)
+                    .OrderByDescending(t => t.Value.QuoteVolume)
+                    .Take(50)
+                    .Select(t => t.Key)
+                    .ToList();
+
+                if (topSymbols.Count == 0)
+                {
+                    OnStatusLog?.Invoke("⚠️ [AggTrade] 구독 대상 없음 (TickerCache 미로드)");
+                    return;
+                }
+
+                OnStatusLog?.Invoke($"📡 [AggTrade] {topSymbols.Count}개 코인 구독 시작");
+
+                var socketClient = new BinanceSocketClient();
+                foreach (var sym in topSymbols)
+                {
+                    if (token.IsCancellationRequested) break;
+                    try
+                    {
+                        await socketClient.UsdFuturesApi.ExchangeData.SubscribeToAggregatedTradeUpdatesAsync(sym, data =>
+                        {
+                            var d = data.Data;
+                            _tickMonitor.ProcessAggTrade(sym, d.Price, d.Quantity, d.BuyerIsMaker, d.TradeTime);
+                        }, token);
+                    }
+                    catch { } // 개별 심볼 실패 무시
+                    await Task.Delay(100, token); // 구독 간격 (Rate Limit)
+                }
+
+                OnStatusLog?.Invoke($"📡 [AggTrade] {topSymbols.Count}개 코인 구독 완료");
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [AggTrade] 시작 실패: {ex.Message}");
+            }
         }
 
         private async Task TrainAllModelsAsync(CancellationToken token)
