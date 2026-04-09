@@ -61,11 +61,16 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, DateTime> _recentlyClosedCooldown = new();
         // [v3.4.0] 부분청산 쿨다운 — 봇 자체 부분청산 후 ACCOUNT_UPDATE 이중 기록 방지
         private readonly ConcurrentDictionary<string, DateTime> _recentPartialCloseCooldown = new();
-        // [v3.7.1] 실시간 승률 서킷브레이커 — 최근 N건 승률 < 40%면 진입 일시 중단
+        // [v3.7.1] 실시간 승률 추적
         private readonly Queue<bool> _recentTradeResults = new();
         private DateTime _winRatePauseUntil = DateTime.MinValue;
         private const int WIN_RATE_WINDOW = 10;
         private const double WIN_RATE_MIN = 0.40;
+
+        // [v3.8.0] PUMP 감시 풀 — 거래량 급증 감지 → 상승 확인 후 진입
+        // symbol → (watchPrice, watchTime, volumeRatio)
+        private readonly ConcurrentDictionary<string, (decimal WatchPrice, DateTime WatchTime, decimal VolRatio)>
+            _pumpWatchPool = new(StringComparer.OrdinalIgnoreCase);
         // 슬롯 설정
         // 메이저 4 + PUMP 2 = 총 6
         private const int MAX_TOTAL_SLOTS = 7;        // 총 최대 7개 (메이저4 + PUMP3)
@@ -560,19 +565,11 @@ namespace TradingBot
             _crashDetector.OnPumpDetected += (coins, avgRise) => _ = HandlePumpDetectedAsync(coins, avgRise);
             _crashDetector.OnSpikeDetected += (symbol, changePct, price) => _ = HandleSpikeDetectedAsync(symbol, changePct, price);
 
-            // [v3.6.5] 거래량 급증 선행 감지 → AI Gate 통과 시 진입
+            // [v3.8.0] 거래량 급증 → 감시 풀 등록 (즉시 진입 X, 확인 후 진입)
             _crashDetector.OnVolumeSurgeDetected += (symbol, volRatio, price) =>
             {
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        OnStatusLog?.Invoke($"🔥 [거래량 선행] {symbol} vol={volRatio:F1}x → AI 판단 요청");
-                        await ExecuteAutoOrder(symbol, "LONG", price, _cts?.Token ?? CancellationToken.None,
-                            "VOLUME_SURGE", manualSizeMultiplier: 0.5m); // 50% 사이즈 (확인 진입)
-                    }
-                    catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [거래량 선행] {symbol} 진입 실패: {ex.Message}"); }
-                });
+                _pumpWatchPool[symbol] = (price, DateTime.Now, volRatio);
+                OnStatusLog?.Invoke($"🔥 [감시등록] {symbol} vol={volRatio:F1}x price={price:F6} → 상승 확인 대기");
             };
 
             _marketDataManager.OnTickerUpdate += HandleTickerUpdate;
@@ -2038,6 +2035,55 @@ namespace TradingBot
                         // [C] 15분봉 위꼬리 음봉 스캔 → 백그라운드 (블로킹 5분 방지)
                         if (_macdCrossService != null && (DateTime.Now - _last15mTailScanTime).TotalMinutes >= 1)
                             _ = Task.Run(() => Scan15mBearishTailAsync(token));
+
+                        // [v3.8.0] PUMP 감시 풀 확인 — 거래량 급증 후 상승 확인 시 진입
+                        if (_pumpWatchPool.Count > 0)
+                        {
+                            var expiredKeys = new List<string>();
+                            foreach (var kvp in _pumpWatchPool)
+                            {
+                                var (watchPrice, watchTime, volRatio) = kvp.Value;
+
+                                // 5분 만료
+                                if ((DateTime.Now - watchTime).TotalMinutes > 5)
+                                {
+                                    expiredKeys.Add(kvp.Key);
+                                    continue;
+                                }
+
+                                // 이미 포지션 있으면 스킵
+                                lock (_posLock) { if (_activePositions.ContainsKey(kvp.Key)) { expiredKeys.Add(kvp.Key); continue; } }
+
+                                // 현재가 확인
+                                if (!_marketDataManager.TickerCache.TryGetValue(kvp.Key, out var wTick) || wTick.LastPrice <= 0) continue;
+                                decimal nowPrice = wTick.LastPrice;
+                                decimal risePct = (nowPrice - watchPrice) / watchPrice * 100m;
+
+                                // 상승 확인: 감시 시작 대비 +1~3% 상승 (너무 많이 오르면 꼭대기)
+                                if (risePct >= 1.0m && risePct <= 3.0m)
+                                {
+                                    expiredKeys.Add(kvp.Key);
+                                    OnStatusLog?.Invoke($"✅ [감시확인] {kvp.Key} +{risePct:F1}% 상승 확인 → 진입 시도 (vol={volRatio:F1}x)");
+                                    _ = Task.Run(async () =>
+                                    {
+                                        try
+                                        {
+                                            await ExecuteAutoOrder(kvp.Key, "LONG", nowPrice,
+                                                _cts?.Token ?? CancellationToken.None,
+                                                "PUMP_WATCH_CONFIRMED", manualSizeMultiplier: 0.5m);
+                                        }
+                                        catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [감시진입] {kvp.Key} 실패: {ex.Message}"); }
+                                    });
+                                }
+                                // 하락하면 제거 (-1% 이하)
+                                else if (risePct <= -1.0m)
+                                {
+                                    expiredKeys.Add(kvp.Key);
+                                    OnStatusLog?.Invoke($"❌ [감시취소] {kvp.Key} {risePct:F1}% 하락 → 감시 해제");
+                                }
+                            }
+                            foreach (var k in expiredKeys) _pumpWatchPool.TryRemove(k, out _);
+                        }
 
                         // [v3.2.44] AI Command Center 업데이트 (메인 루프에서 직접, 5초 간격)
                         UpdateAiCommandFromTickerCache();
