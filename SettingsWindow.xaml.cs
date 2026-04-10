@@ -332,6 +332,8 @@ namespace TradingBot
                 {
                     // DB에서 로드한 설정으로 UI 업데이트
                     txtDefaultMargin.Text = dbSettings.DefaultMargin.ToString("F4");
+                    txtMajorMarginPercent.Text = dbSettings.MajorMarginPercent.ToString("F1");
+                    txtPumpMargin.Text = dbSettings.PumpMargin.ToString("F0");
                     txtLeverage.Text = dbSettings.DefaultLeverage.ToString();
                 // [v3.2.14 removed] txtTargetRoe.Text = dbSettings.TargetRoe.ToString("F4");
                 // [v3.2.14 removed] txtStopLossRoe.Text = dbSettings.StopLossRoe.ToString("F4");
@@ -406,6 +408,8 @@ namespace TradingBot
                         if (generalNode != null)
                         {
                             txtDefaultMargin.Text = generalNode["DefaultMargin"]?.ToString() ?? "200.0";
+                            txtMajorMarginPercent.Text = generalNode["MajorMarginPercent"]?.ToString() ?? "10.0";
+                            txtPumpMargin.Text = generalNode["PumpMargin"]?.ToString() ?? "200";
                             txtLeverage.Text = generalNode["DefaultLeverage"]?.ToString() ?? "10";
                 // [v3.2.14 removed] txtTargetRoe.Text = generalNode["TargetRoe"]?.ToString() ?? "20.0";
                 // [v3.2.14 removed] txtStopLossRoe.Text = generalNode["StopLossRoe"]?.ToString() ?? "15.0";
@@ -760,11 +764,23 @@ namespace TradingBot
                 // [removed] generalSettings.CrashCooldownSeconds = cooldown;
                 // [removed] }
 
-                // DefaultMargin 저장 (UI에서 입력받지 않으면 기본값 사용)
+                // DefaultMargin 저장
                 if (decimal.TryParse(txtDefaultMargin?.Text ?? "200.0", out decimal defaultMargin))
                 {
                     generalNode["DefaultMargin"] = defaultMargin;
                     generalSettings.DefaultMargin = defaultMargin;
+                }
+                // [v4.4.4] 메이저 증거금 %
+                if (decimal.TryParse(txtMajorMarginPercent?.Text ?? "10.0", out decimal majorPct))
+                {
+                    generalNode["MajorMarginPercent"] = majorPct;
+                    generalSettings.MajorMarginPercent = majorPct;
+                }
+                // [v4.4.4] PUMP 증거금 $
+                if (decimal.TryParse(txtPumpMargin?.Text ?? "200", out decimal pumpMargin))
+                {
+                    generalNode["PumpMargin"] = pumpMargin;
+                    generalSettings.PumpMargin = pumpMargin;
                 }
 
                 // TrailingStartRoe, TrailingDropRoe도 저장 (UI에 필드가 없으면 기본값 유지)
