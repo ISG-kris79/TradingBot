@@ -112,6 +112,15 @@ namespace TradingBot
         public float DirectionBias { get; set; }           // -2~+2: D1+H4 방향 합산
 
         // ═══════════════════════════════════════════════════════════════
+        // [v4.5.2] 1분봉 MACD 휩소(Whipsaw) 품질 피처
+        // ═══════════════════════════════════════════════════════════════
+        public float M1_MACD_CrossFlipCount { get; set; }       // 5분 내 크로스 방향 전환 횟수 (0=안전, 3+=노이즈)
+        public float M1_MACD_SecsSinceOppCross { get; set; }   // 반대 크로스 경과 초 (600=없음, 30=위험)
+        public float M1_MACD_SignalGapRatio { get; set; }       // |MACD-Signal| / ATR(14) (작을수록 노이즈)
+        public float M1_RSI_ExtremeZone { get; set; }           // 1=과매수/과매도 극단(방향 반대), 0=정상
+        public float M1_MACD_HistStrength { get; set; }         // |hist| / avg|hist| (1 미만=약한 크로스)
+
+        // ═══════════════════════════════════════════════════════════════
         // 피보나치 되돌림 레벨 (객관적 수치로 AI 특징 사용)
         // ═══════════════════════════════════════════════════════════════
         public float Fib_DistanceTo0382_Pct { get; set; }    // 현재가에서 0.382 레벨까지 거리 (%)

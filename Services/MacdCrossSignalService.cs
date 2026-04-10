@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -20,9 +21,76 @@ namespace TradingBot.Services
         private readonly IExchangeService _exchangeService;
         public event Action<string>? OnLog;
 
+        // [v4.5.2] 크로스 이력 추적 — 휩소(whipsaw) ML 피처용
+        private readonly ConcurrentDictionary<string, List<CrossHistoryEntry>> _crossHistory = new();
+        private const int CrossHistoryMaxAge = 600; // 10분 보관
+
         public MacdCrossSignalService(IExchangeService exchangeService)
         {
             _exchangeService = exchangeService;
+        }
+
+        /// <summary>
+        /// 크로스 이벤트 기록 (DetectGoldenCrossAsync 내부에서 자동 호출)
+        /// </summary>
+        private void RecordCrossEvent(string symbol, MacdCrossType crossType, double macdLine, double signalLine, double rsi)
+        {
+            var history = _crossHistory.GetOrAdd(symbol, _ => new List<CrossHistoryEntry>());
+            lock (history)
+            {
+                history.Add(new CrossHistoryEntry
+                {
+                    Time = DateTime.UtcNow,
+                    CrossType = crossType,
+                    MacdLine = macdLine,
+                    SignalLine = signalLine,
+                    RSI = rsi
+                });
+                // 오래된 항목 제거
+                var cutoff = DateTime.UtcNow.AddSeconds(-CrossHistoryMaxAge);
+                history.RemoveAll(h => h.Time < cutoff);
+            }
+        }
+
+        /// <summary>
+        /// ML 피처용: 심볼의 최근 크로스 이력 통계
+        /// </summary>
+        public MacdWhipsawFeatures GetWhipsawFeatures(string symbol, MacdCrossType currentCrossType)
+        {
+            var result = new MacdWhipsawFeatures();
+
+            if (!_crossHistory.TryGetValue(symbol, out var history))
+                return result;
+
+            var now = DateTime.UtcNow;
+            List<CrossHistoryEntry> recent;
+            lock (history)
+            {
+                recent = history.Where(h => (now - h.Time).TotalSeconds <= 300).ToList(); // 5분 이내
+            }
+
+            if (recent.Count == 0)
+                return result;
+
+            // 1) 5분 내 크로스 방향 전환 횟수
+            int flipCount = 0;
+            for (int i = 1; i < recent.Count; i++)
+            {
+                if (recent[i].CrossType != recent[i - 1].CrossType)
+                    flipCount++;
+            }
+            result.CrossFlipCount5m = flipCount;
+
+            // 2) 직전 반대 크로스 이후 경과 초
+            var oppositeCross = currentCrossType == MacdCrossType.Golden
+                ? MacdCrossType.Dead : MacdCrossType.Golden;
+            var lastOpposite = recent.LastOrDefault(h => h.CrossType == oppositeCross);
+            if (lastOpposite != null)
+                result.SecondsSinceOppositeCross = (float)(now - lastOpposite.Time).TotalSeconds;
+            else
+                result.SecondsSinceOppositeCross = 600f; // 반대 크로스 없음 = 안전
+
+            return result;
         }
 
         /// <summary>
@@ -133,9 +201,20 @@ namespace TradingBot.Services
                 // DeadCrossAngle: (MACD-Signal)[t] - (MACD-Signal)[t-1]  음수일수록 급하락
                 double deadCrossAngle = (macd - signal) - (prevMacd - prevSignal);
 
+                // [v4.5.2] ML 피처용: MACD-Signal 갭 / ATR 비율, 히스토그램 강도
+                double atr14 = CalculateATR(list, 14);
+                double signalGapRatio = atr14 > 0 ? Math.Abs(macd - signal) / atr14 : 0;
+                double avgAbsHist = CalculateAvgAbsHistogram(list, 14);
+                double histStrength = avgAbsHist > 0 ? Math.Abs(hist) / avgAbsHist : 0;
+
+                // [v4.5.2] 1분봉 내 최근 10봉 크로스 횟수 (API 없이 kline에서 직접 계산)
+                int recentCrossCount = CountRecentCrosses(list, 10);
+
                 if (goldenCross)
                 {
+                    RecordCrossEvent(symbol, MacdCrossType.Golden, macd, signal, rsi);
                     string caseType = macd > 0 ? "B" : "A";
+                    var whipsaw = GetWhipsawFeatures(symbol, MacdCrossType.Golden);
                     return new MacdCrossResult
                     {
                         Detected = true,
@@ -147,15 +226,21 @@ namespace TradingBot.Services
                         HistChangeRate = histChangeRate,
                         DeadCrossAngle = deadCrossAngle,
                         RSI = rsi,
-                        Detail = $"GoldenCross Case{caseType} MACD={macd:F6} Sig={signal:F6} Hist={hist:F6} RSI={rsi:F1}"
+                        SignalGapRatio = signalGapRatio,
+                        HistogramStrength = histStrength,
+                        RecentCrossCount = recentCrossCount,
+                        WhipsawFeatures = whipsaw,
+                        Detail = $"GoldenCross Case{caseType} MACD={macd:F6} Sig={signal:F6} Hist={hist:F6} RSI={rsi:F1} GapRatio={signalGapRatio:F3} Flips={whipsaw.CrossFlipCount5m}"
                     };
                 }
 
                 if (deadCross)
                 {
+                    RecordCrossEvent(symbol, MacdCrossType.Dead, macd, signal, rsi);
                     // 숏 유형 A: 0선 근처/위에서 데드크로스 (추세 추종, 가장 안전)
                     // 숏 유형 B: 0선 아래에서 히스토그램 급감 (변곡점 포착, 하이리스크)
                     string shortCase = macd >= 0 || (macd > -0.0001 && prevMacd > 0) ? "A" : "B";
+                    var whipsaw = GetWhipsawFeatures(symbol, MacdCrossType.Dead);
                     return new MacdCrossResult
                     {
                         Detected = true,
@@ -167,7 +252,11 @@ namespace TradingBot.Services
                         HistChangeRate = histChangeRate,
                         DeadCrossAngle = deadCrossAngle,
                         RSI = rsi,
-                        Detail = $"DeadCross Case{shortCase} MACD={macd:F6} Sig={signal:F6} Angle={deadCrossAngle:F6} RSI={rsi:F1}"
+                        SignalGapRatio = signalGapRatio,
+                        HistogramStrength = histStrength,
+                        RecentCrossCount = recentCrossCount,
+                        WhipsawFeatures = whipsaw,
+                        Detail = $"DeadCross Case{shortCase} MACD={macd:F6} Sig={signal:F6} Angle={deadCrossAngle:F6} RSI={rsi:F1} GapRatio={signalGapRatio:F3} Flips={whipsaw.CrossFlipCount5m}"
                     };
                 }
 
@@ -400,9 +489,99 @@ namespace TradingBot.Services
             double rs = avgGain / avgLoss;
             return 100 - (100 / (1 + rs));
         }
+
+        /// <summary>
+        /// [v4.5.2] 1분봉 ATR(14) 계산
+        /// </summary>
+        private static double CalculateATR(List<IBinanceKline> candles, int period = 14)
+        {
+            if (candles.Count < period + 1) return 0;
+            double sum = 0;
+            for (int i = candles.Count - period; i < candles.Count; i++)
+            {
+                double h = (double)candles[i].HighPrice;
+                double l = (double)candles[i].LowPrice;
+                double pc = (double)candles[i - 1].ClosePrice;
+                double tr = Math.Max(h - l, Math.Max(Math.Abs(h - pc), Math.Abs(l - pc)));
+                sum += tr;
+            }
+            return sum / period;
+        }
+
+        /// <summary>
+        /// [v4.5.2] 최근 N봉 평균 |히스토그램| (크로스 강도 정규화용)
+        /// </summary>
+        private static double CalculateAvgAbsHistogram(List<IBinanceKline> candles, int lookback)
+        {
+            if (candles.Count < 26 + 9 + lookback) return 0;
+            var closes = candles.Select(k => (double)k.ClosePrice).ToArray();
+            double[] emaFast = EMA(closes, 12);
+            double[] emaSlow = EMA(closes, 26);
+            double[] macdLine = new double[closes.Length];
+            for (int i = 0; i < closes.Length; i++)
+                macdLine[i] = emaFast[i] - emaSlow[i];
+            double[] signalLine = EMA(macdLine, 9);
+
+            double sum = 0;
+            int start = Math.Max(0, closes.Length - lookback);
+            int count = 0;
+            for (int i = start; i < closes.Length; i++)
+            {
+                sum += Math.Abs(macdLine[i] - signalLine[i]);
+                count++;
+            }
+            return count > 0 ? sum / count : 0;
+        }
+
+        /// <summary>
+        /// [v4.5.2] 최근 N봉 내 MACD 크로스 횟수 (kline에서 직접 계산)
+        /// </summary>
+        private static int CountRecentCrosses(List<IBinanceKline> candles, int lookback)
+        {
+            if (candles.Count < 26 + 9 + lookback + 1) return 0;
+            var closes = candles.Select(k => (double)k.ClosePrice).ToArray();
+            double[] emaFast = EMA(closes, 12);
+            double[] emaSlow = EMA(closes, 26);
+            double[] macdLine = new double[closes.Length];
+            for (int i = 0; i < closes.Length; i++)
+                macdLine[i] = emaFast[i] - emaSlow[i];
+            double[] signalLine = EMA(macdLine, 9);
+
+            int crossCount = 0;
+            int start = Math.Max(1, closes.Length - lookback);
+            for (int i = start; i < closes.Length; i++)
+            {
+                double prevDiff = macdLine[i - 1] - signalLine[i - 1];
+                double currDiff = macdLine[i] - signalLine[i];
+                if ((prevDiff > 0 && currDiff <= 0) || (prevDiff < 0 && currDiff >= 0))
+                    crossCount++;
+            }
+            return crossCount;
+        }
     }
 
     public enum MacdCrossType { None, Golden, Dead, HistPeakOut, HistBottomOut }
+
+    /// <summary>
+    /// [v4.5.2] 크로스 이력 항목
+    /// </summary>
+    public class CrossHistoryEntry
+    {
+        public DateTime Time { get; set; }
+        public MacdCrossType CrossType { get; set; }
+        public double MacdLine { get; set; }
+        public double SignalLine { get; set; }
+        public double RSI { get; set; }
+    }
+
+    /// <summary>
+    /// [v4.5.2] 휩소 ML 피처
+    /// </summary>
+    public class MacdWhipsawFeatures
+    {
+        public int CrossFlipCount5m { get; set; }           // 5분 내 방향 전환 횟수
+        public float SecondsSinceOppositeCross { get; set; } = 600f; // 직전 반대 크로스 경과초 (600=없음)
+    }
 
     public class MacdCrossResult
     {
@@ -415,6 +594,11 @@ namespace TradingBot.Services
         public double HistChangeRate { get; set; }
         public double DeadCrossAngle { get; set; }  // (MACD-Sig)[t] - (MACD-Sig)[t-1] — 음수일수록 급하락
         public double RSI { get; set; }
+        // [v4.5.2] ML 피처용 필드
+        public double SignalGapRatio { get; set; }     // |MACD-Signal| / ATR(14)
+        public double HistogramStrength { get; set; }  // |hist| / avg|hist|
+        public int RecentCrossCount { get; set; }      // 최근 10봉 내 크로스 횟수
+        public MacdWhipsawFeatures WhipsawFeatures { get; set; } = new();
         public string Detail { get; set; } = "";
 
         public static MacdCrossResult None(string detail) => new() { Detail = detail };

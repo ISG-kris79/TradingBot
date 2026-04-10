@@ -15,6 +15,27 @@
 
  - 없음
 
+## [4.5.2] - 2026-04-10
+
+### Added
+
+- **MACD 휩소(Whipsaw) ML 피처 5개**: AI가 노이즈 크로스를 학습으로 판별
+  - `M1_MACD_CrossFlipCount`: 최근 10봉 크로스 횟수 (3+ = 노이즈 구간)
+  - `M1_MACD_SecsSinceOppCross`: 반대 크로스 경과초 (30s 이내 = 위험)
+  - `M1_MACD_SignalGapRatio`: |MACD-Signal|/ATR (작으면 의미 없는 크로스)
+  - `M1_RSI_ExtremeZone`: RSI 과매수/과매도 극단 (SHORT+과매도 = 반등 위험)
+  - `M1_MACD_HistStrength`: 히스토그램 강도 (1미만 = 약한 크로스)
+
+- **기존 미사용 확장 피처 19개 ML 파이프라인 활성화**:
+  - Stochastic %K/%D (D1/H4/H1/M15), MACD Cross (D1/H4/H1)
+  - ADX/DI (D1/H4), H4 MomentumStrength, DirectionBias
+
+### Changed
+
+- ML 모델 Feature 수: 49개 → 73개 (기존 모델 자동 재학습)
+- MacdCrossSignalService: 심볼별 크로스 이력 10분 보관 (휩소 감지용)
+- MultiTimeframeFeatureExtractor: 1분봉 API 병렬 fetch 추가
+
 ## [4.5.1] - 2026-04-10
 
 ### Fixed

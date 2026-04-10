@@ -40,7 +40,8 @@ namespace TradingBot
                     _exchangeService.GetKlinesAsync(symbol, KlineInterval.FourHour, 120, token),
                     _exchangeService.GetKlinesAsync(symbol, KlineInterval.TwoHour, 120, token),
                     _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneHour, 200, token),
-                    _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 260, token)
+                    _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 260, token),
+                    _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneMinute, 40, token)  // [v4.5.2] 휩소 피처용
                 };
 
                 await Task.WhenAll(tasks);
@@ -50,6 +51,7 @@ namespace TradingBot
                 var h2Klines = tasks[2].Result?.ToList();
                 var h1Klines = tasks[3].Result?.ToList();
                 var m15Klines = tasks[4].Result?.ToList();
+                var m1Klines = tasks[5].Result?.ToList();
 
                 // 요구 사항 완화: 초기 학습용으로 최소 데이터만 확보
                 if (d1Klines == null || d1Klines.Count < 20 ||      // 1일봉 20개
@@ -130,6 +132,9 @@ namespace TradingBot
                 feature.Fib_DistanceTo0618_Pct = fibLevels.distanceTo0618;
                 feature.Fib_DistanceTo0786_Pct = fibLevels.distanceTo0786;
                 feature.Fib_InEntryZone = fibLevels.inEntryZone;
+
+                // [v4.5.2] 1분봉 MACD 휩소 피처
+                ExtractM1WhipsawFeatures(m1Klines, feature);
 
                 // 시간 컨텍스트
                 ExtractTimeContext(timestamp, feature);
@@ -533,6 +538,117 @@ namespace TradingBot
             double atr = IndicatorCalculator.CalculateATR(klines, 14);
             decimal avgPrice = klines.TakeLast(14).Average(k => k.ClosePrice);
             return avgPrice > 0 ? (float)(atr / (double)avgPrice) : 0f; // 가격 대비 비율
+        }
+
+        /// <summary>
+        /// [v4.5.2] 1분봉 MACD 휩소 피처 계산
+        /// - 크로스 빈도, MACD-Signal 갭/ATR 비율, RSI 극단 여부, 히스토그램 강도
+        /// </summary>
+        private static void ExtractM1WhipsawFeatures(List<IBinanceKline>? m1Klines, MultiTimeframeEntryFeature feature)
+        {
+            if (m1Klines == null || m1Klines.Count < 30)
+                return; // 기본값 0 유지
+
+            var closes = m1Klines.Select(k => (double)k.ClosePrice).ToArray();
+            int n = closes.Length;
+
+            // MACD 계산
+            double[] emaFast = CalcEMA(closes, 12);
+            double[] emaSlow = CalcEMA(closes, 26);
+            double[] macdLine = new double[n];
+            for (int i = 0; i < n; i++)
+                macdLine[i] = emaFast[i] - emaSlow[i];
+            double[] signalLine = CalcEMA(macdLine, 9);
+
+            // 1) 최근 10봉 내 크로스 횟수
+            int crossCount = 0;
+            int lookStart = Math.Max(1, n - 10);
+            for (int i = lookStart; i < n; i++)
+            {
+                double prevDiff = macdLine[i - 1] - signalLine[i - 1];
+                double currDiff = macdLine[i] - signalLine[i];
+                if ((prevDiff > 0 && currDiff <= 0) || (prevDiff < 0 && currDiff >= 0))
+                    crossCount++;
+            }
+            feature.M1_MACD_CrossFlipCount = crossCount;
+
+            // 2) |MACD - Signal| / ATR(14)
+            double macdNow = macdLine[^1];
+            double signalNow = signalLine[^1];
+            double atr14 = CalcATR14(m1Klines);
+            feature.M1_MACD_SignalGapRatio = atr14 > 0 ? (float)(Math.Abs(macdNow - signalNow) / atr14) : 0f;
+
+            // 3) RSI 극단 여부 (방향 반대인 극단)
+            double rsi = CalcRSI14(m1Klines);
+            // RSI < 30 = 과매도 (숏 위험), RSI > 70 = 과매수 (롱 위험)
+            feature.M1_RSI_ExtremeZone = (rsi < 30 || rsi > 70) ? 1f : 0f;
+
+            // 4) |hist| / avg|hist| (히스토그램 강도)
+            double hist = macdNow - signalNow;
+            double avgAbsHist = 0;
+            int histLookback = Math.Min(14, n);
+            for (int i = n - histLookback; i < n; i++)
+                avgAbsHist += Math.Abs(macdLine[i] - signalLine[i]);
+            avgAbsHist /= histLookback;
+            feature.M1_MACD_HistStrength = avgAbsHist > 0 ? (float)(Math.Abs(hist) / avgAbsHist) : 0f;
+
+            // 5) SecondsSinceOppositeCross: 현재 방향의 반대 크로스가 마지막으로 나온 봉 수 × 60초
+            // 현재 방향 = macd > signal → Golden, else Dead
+            bool isCurrentGolden = macdNow > signalNow;
+            int barsSinceOpposite = 0;
+            for (int i = n - 2; i >= Math.Max(0, n - 30); i--)
+            {
+                bool wasGolden = macdLine[i] > signalLine[i];
+                if (wasGolden != isCurrentGolden)
+                {
+                    barsSinceOpposite = (n - 1) - i;
+                    break;
+                }
+            }
+            feature.M1_MACD_SecsSinceOppCross = barsSinceOpposite > 0
+                ? barsSinceOpposite * 60f   // 봉 수 × 60초
+                : 600f;                     // 30봉 내 반대 크로스 없음 = 안전
+        }
+
+        private static double[] CalcEMA(double[] data, int period)
+        {
+            double[] ema = new double[data.Length];
+            double k = 2.0 / (period + 1);
+            ema[0] = data[0];
+            for (int i = 1; i < data.Length; i++)
+                ema[i] = (data[i] - ema[i - 1]) * k + ema[i - 1];
+            return ema;
+        }
+
+        private static double CalcATR14(List<IBinanceKline> candles)
+        {
+            int period = 14;
+            if (candles.Count < period + 1) return 0;
+            double sum = 0;
+            for (int i = candles.Count - period; i < candles.Count; i++)
+            {
+                double h = (double)candles[i].HighPrice;
+                double l = (double)candles[i].LowPrice;
+                double pc = (double)candles[i - 1].ClosePrice;
+                sum += Math.Max(h - l, Math.Max(Math.Abs(h - pc), Math.Abs(l - pc)));
+            }
+            return sum / period;
+        }
+
+        private static double CalcRSI14(List<IBinanceKline> candles)
+        {
+            int period = 14;
+            if (candles.Count < period + 1) return 50;
+            double gainSum = 0, lossSum = 0;
+            for (int i = candles.Count - period; i < candles.Count; i++)
+            {
+                double diff = (double)(candles[i].ClosePrice - candles[i - 1].ClosePrice);
+                if (diff > 0) gainSum += diff; else lossSum += Math.Abs(diff);
+            }
+            double avgGain = gainSum / period;
+            double avgLoss = lossSum / period;
+            if (avgLoss == 0) return 100;
+            return 100 - (100 / (1 + avgGain / avgLoss));
         }
 
         private void ExtractTimeContext(DateTime timestamp, MultiTimeframeEntryFeature feature)

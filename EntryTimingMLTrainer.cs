@@ -157,7 +157,8 @@ namespace TradingBot
         }
 
         // 현재 파이프라인이 기대하는 Feature 수 (BuildPipeline의 featureColumns 길이)
-        private const int ExpectedFeatureCount = 49;
+        // 49 기존 + 19 확장(v3.4.2) + 5 휩소(v4.5.2) = 73개
+        private const int ExpectedFeatureCount = 73;
 
         /// <summary>
         /// 저장된 모델 로드 (스키마 호환성 검증 포함)
@@ -398,9 +399,10 @@ namespace TradingBot
 
         private IEstimator<ITransformer> BuildPipeline()
         {
-            // Feature 선택 (45개 numeric features)
+            // Feature 선택 (49 기존 + 19 확장 + 5 휩소 = 73개)
             var featureColumns = new[]
             {
+                // ── 기존 49개 ──
                 "D1_Trend", "D1_RSI", "D1_MACD", "D1_Signal", "D1_BBPosition", "D1_Volume_Ratio",
                 "H4_Trend", "H4_RSI", "H4_MACD", "H4_Signal", "H4_BBPosition", "H4_Volume_Ratio",
                 "H4_DistanceToSupport", "H4_DistanceToResist",
@@ -410,7 +412,16 @@ namespace TradingBot
                 "M15_PriceVsSMA20", "M15_PriceVsSMA60", "M15_ADX", "M15_PlusDI", "M15_MinusDI",
                 "M15_ATR", "M15_OI_Change_Pct",
                 "HourOfDay", "DayOfWeek", "IsAsianSession", "IsEuropeSession", "IsUSSession",
-                "Fib_DistanceTo0382_Pct", "Fib_DistanceTo0618_Pct", "Fib_DistanceTo0786_Pct", "Fib_InEntryZone"
+                "Fib_DistanceTo0382_Pct", "Fib_DistanceTo0618_Pct", "Fib_DistanceTo0786_Pct", "Fib_InEntryZone",
+                // ── [v3.4.2] 기존 추출되었으나 미등록이던 확장 피처 19개 ──
+                "D1_Stoch_K", "D1_Stoch_D", "D1_MACD_Cross", "D1_ADX", "D1_PlusDI", "D1_MinusDI",
+                "H4_Stoch_K", "H4_Stoch_D", "H4_MACD_Cross", "H4_ADX", "H4_PlusDI", "H4_MinusDI", "H4_MomentumStrength",
+                "H1_Stoch_K", "H1_Stoch_D", "H1_MACD_Cross",
+                "M15_Stoch_K", "M15_Stoch_D",
+                "DirectionBias",
+                // ── [v4.5.2] 1분봉 MACD 휩소 피처 5개 ──
+                "M1_MACD_CrossFlipCount", "M1_MACD_SecsSinceOppCross", "M1_MACD_SignalGapRatio",
+                "M1_RSI_ExtremeZone", "M1_MACD_HistStrength"
             };
 
             // 전처리 및 학습 파이프라인
