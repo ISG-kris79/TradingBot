@@ -1734,18 +1734,20 @@ namespace TradingBot.Services
             if (stairStep3TriggerRoe <= stairStep2TriggerRoe)
                 stairStep3TriggerRoe = stairStep2TriggerRoe + 20.0m;
 
-            // [v3.5.2] DB에서 복원된 상태 반영
+            // [v4.4.7] DB에서 전체 상태 복원 (본절/계단식/부분청산 중복 방지)
             int stairStep = 0;
             lock (_posLock)
             {
                 if (_activePositions.TryGetValue(symbol, out var savedPos))
                 {
-                    if (savedPos.TakeProfitStep > 0 || savedPos.PartialProfitStage > 0)
-                    {
-                        OnLog?.Invoke($"🔄 {symbol} PUMP 상태 복원 | TP={savedPos.TakeProfitStep} Partial={savedPos.PartialProfitStage} BE={savedPos.BreakevenPrice:F4} ROE={savedPos.HighestROEForTrailing:F1}%");
-                    }
                     if (savedPos.HighestROEForTrailing > 0)
                         highestROE = (decimal)savedPos.HighestROEForTrailing;
+                    if (savedPos.TakeProfitStep >= 1 || savedPos.PartialProfitStage >= 1)
+                        isBreakEvenTriggered = true;
+                    if (savedPos.BreakevenPrice > 0)
+                        isBreakEvenTriggered = true;
+                    if (savedPos.TakeProfitStep > 0 || savedPos.PartialProfitStage > 0 || isBreakEvenTriggered)
+                        OnLog?.Invoke($"🔄 {symbol} PUMP 상태 복원 | TP={savedPos.TakeProfitStep} BE={isBreakEvenTriggered} ROE={highestROE:F1}%");
                 }
             }
             decimal lockedProfitFloorRoe = decimal.MinValue;
