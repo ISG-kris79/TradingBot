@@ -138,6 +138,7 @@ namespace TradingBot
 
         // [v4.5.6] AI 모델 정확도 추적 (하드 체크 자동 해제용)
         private double _pumpModelAccuracy = 0.0;
+        private double _pumpSpikeAccuracy = 0.0;   // [v4.5.8] 급등진입 모델
         private double _tradeSignalAccuracy = 0.0;
         private double _directionModelAccuracy = 0.0;
         private double _survivalPumpAccuracy = 0.0;
@@ -145,6 +146,7 @@ namespace TradingBot
         private const double AiHardCheckBypassThreshold = 0.70;
         private bool IsAiModelReadyForPumpEntry =>
             _pumpModelAccuracy >= AiHardCheckBypassThreshold
+            && _pumpSpikeAccuracy >= AiHardCheckBypassThreshold
             && _tradeSignalAccuracy >= AiHardCheckBypassThreshold;
         // [v3.3.6] 급변동 회복 구간 추적: symbol → (extremePrice, isUpwardSpike, eventTime)
         private readonly ConcurrentDictionary<string, (decimal ExtremePrice, bool IsUpwardSpike, DateTime EventTime)>
@@ -201,7 +203,9 @@ namespace TradingBot
         // [수익률 회귀] 진입 시 예상 수익률 예측 + 동적 포지션 사이징
         private readonly TradingBot.Services.ProfitRegressorService _profitRegressor = new();
         private readonly TradingBot.Services.TradeSignalClassifier _tradeSignalClassifier = new();
-        private readonly TradingBot.Services.PumpSignalClassifier _pumpSignalClassifier = new();
+        // [v4.5.8] PUMP 모델 분리: 일반진입 / 급등진입
+        private readonly TradingBot.Services.PumpSignalClassifier _pumpSignalClassifier = new(TradingBot.Services.PumpSignalType.Normal);
+        private readonly TradingBot.Services.PumpSignalClassifier _pumpSpikeClassifier = new(TradingBot.Services.PumpSignalType.Spike);
         private readonly TradingBot.Services.PriceDirectionPredictor _directionPredictor = new();
         private readonly TradingBot.Services.SurvivalEntryModel _survivalModel = new();
         private readonly TradingBot.Services.TickDensityMonitor _tickMonitor = new();
@@ -764,6 +768,9 @@ namespace TradingBot
             // [PUMP ML] 초기화
             _pumpSignalClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
             _pumpSignalClassifier.LoadModel();
+            // [v4.5.8] PUMP Spike 모델 로드
+            _pumpSpikeClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _pumpSpikeClassifier.LoadModel();
             _directionPredictor.OnLog += msg => OnStatusLog?.Invoke(msg);
             _directionPredictor.TryLoadModels();
             _survivalModel.OnLog += msg => OnStatusLog?.Invoke(msg);
@@ -6213,7 +6220,7 @@ namespace TradingBot
                 }
                 catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] TradeSignal 학습 실패: {ex.Message}"); }
 
-                // 2. PumpSignalClassifier
+                // 2. PumpSignalClassifier (Normal + Spike 분리 학습)
                 try
                 {
                     if (_pumpSignalClassifier != null)
@@ -6228,19 +6235,29 @@ namespace TradingBot
                         }
                         if (pumpCandles.Count >= 200)
                         {
-                            var labeled = _pumpSignalClassifier.LabelCandleData(pumpCandles);
-                            if (labeled.Count >= 100)
+                            // Normal 모델 학습 (일반 진입: +1.5% / 30분)
+                            var labeledNormal = _pumpSignalClassifier.LabelCandleData(pumpCandles);
+                            if (labeledNormal.Count >= 100)
                             {
-                                var metrics = await _pumpSignalClassifier.TrainAndSaveAsync(labeled, token);
-                                OnStatusLog?.Invoke($"🧠 [ML] PumpSignal 학습 완료 | {labeled.Count}건 | Acc={metrics?.Accuracy:P1}");
-                                // [v4.5.6] 정확도 추적
-                                if (metrics != null)
-                                {
-                                    _pumpModelAccuracy = metrics.Accuracy;
-                                    if (_pumpModelAccuracy >= AiHardCheckBypassThreshold && _tradeSignalAccuracy >= AiHardCheckBypassThreshold)
-                                        OnStatusLog?.Invoke($"🎯 [AI] 모든 PUMP 모델 정확도 {AiHardCheckBypassThreshold:P0} 달성 → 하드 체크 자동 해제");
-                                }
+                                var metricsNormal = await _pumpSignalClassifier.TrainAndSaveAsync(labeledNormal, token);
+                                OnStatusLog?.Invoke($"🧠 [ML] PumpSignal-Normal 학습 완료 | {labeledNormal.Count}건 | Acc={metricsNormal?.Accuracy:P1}");
+                                if (metricsNormal != null) _pumpModelAccuracy = metricsNormal.Accuracy;
                             }
+
+                            // [v4.5.8] Spike 모델 학습 (급등 진입: +3% / 10분)
+                            var labeledSpike = _pumpSpikeClassifier.LabelCandleData(pumpCandles);
+                            if (labeledSpike.Count >= 100)
+                            {
+                                var metricsSpike = await _pumpSpikeClassifier.TrainAndSaveAsync(labeledSpike, token);
+                                OnStatusLog?.Invoke($"🧠 [ML] PumpSignal-Spike 학습 완료 | {labeledSpike.Count}건 | Acc={metricsSpike?.Accuracy:P1}");
+                                if (metricsSpike != null) _pumpSpikeAccuracy = metricsSpike.Accuracy;
+                            }
+
+                            // 양쪽 모델 모두 70%+ 시 하드 체크 해제
+                            if (_pumpModelAccuracy >= AiHardCheckBypassThreshold
+                                && _pumpSpikeAccuracy >= AiHardCheckBypassThreshold
+                                && _tradeSignalAccuracy >= AiHardCheckBypassThreshold)
+                                OnStatusLog?.Invoke($"🎯 [AI] 모든 PUMP 모델 정확도 {AiHardCheckBypassThreshold:P0} 달성 → 하드 체크 자동 해제");
                         }
                     }
                 }
@@ -6868,6 +6885,27 @@ namespace TradingBot
                                     OnStatusLog?.Invoke($"⛔ [SPIKE_FAST] {symbol} ATR/가격={atrPctSpike:F1}% ≥ 3% → 초고변동성 스킵");
                                     lock (_posLock) { _activePositions.Remove(symbol); }
                                     return;
+                                }
+                            }
+
+                            // [v4.5.8] Spike 전용 AI 모델 예측 — 급등 진입 품질 검증
+                            if (_pumpSpikeClassifier != null && _pumpSpikeClassifier.IsModelLoaded && klines.Count >= 30)
+                            {
+                                var spikeFeature = TradingBot.Services.PumpSignalClassifier.ExtractFeature(klines.ToList());
+                                if (spikeFeature != null)
+                                {
+                                    var spikePred = _pumpSpikeClassifier.Predict(spikeFeature);
+                                    if (spikePred != null)
+                                    {
+                                        // 급등 진입은 엄격하게 70%+ 요구
+                                        if (spikePred.Probability < 0.70f)
+                                        {
+                                            OnStatusLog?.Invoke($"⛔ [SPIKE_FAST] {symbol} Spike모델 {spikePred.Probability:P0} < 70% → 스킵");
+                                            lock (_posLock) { _activePositions.Remove(symbol); }
+                                            return;
+                                        }
+                                        OnStatusLog?.Invoke($"✅ [SPIKE_FAST] {symbol} Spike모델 {spikePred.Probability:P0} 통과");
+                                    }
                                 }
                             }
 

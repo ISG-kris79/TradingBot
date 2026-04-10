@@ -15,6 +15,23 @@
 
  - 없음
 
+## [4.5.8] - 2026-04-10
+
+### Changed
+
+- **PUMP ML 모델 Normal/Spike 분리** (단일 모델 → 2개 모델)
+  - `PumpSignalType` enum 추가 (Normal / Spike)
+  - Normal 모델: 일반 진입용 (라벨 +1.5% / 30분, 완만 추세)
+  - Spike 모델: 급등 진입용 (라벨 +3% / 10분, 순간 폭발)
+  - 모델 파일: `pump_signal_normal.zip` + `pump_signal_spike.zip`
+  - `PumpScanStrategy` (일반 감시) → Normal 모델 사용
+  - `SPIKE_FAST` (급등 즉시 진입) → Spike 모델 70%+ 요구
+  - 하드 체크 자동 해제 조건: Normal + Spike + TradeSignal 모두 70%+
+
+### Fixed
+
+- SPIKE_FAST 경로에 AI Spike 모델 검증 추가 (기존: 검증 없음)
+
 ## [4.5.7] - 2026-04-10
 
 ### Changed

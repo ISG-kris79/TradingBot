@@ -12,8 +12,19 @@ using Microsoft.ML.Data;
 namespace TradingBot.Services
 {
     /// <summary>
+    /// [v4.5.8] PUMP 모델 타입 — 일반진입 vs 급등진입 분리
+    /// </summary>
+    public enum PumpSignalType
+    {
+        /// <summary>일반 진입 — 완만한 상승 추세 포착 (+1.5% / 30분)</summary>
+        Normal,
+        /// <summary>급등 진입 — 순간 폭발 포착 (+3% / 10분)</summary>
+        Spike
+    }
+
+    /// <summary>
     /// PUMP 코인 전용 ML 모델 — 급등 패턴 특화 이진 분류
-    /// 라벨: 1=진입(30분 내 +2% 이상), 0=관망
+    /// [v4.5.8] Normal/Spike 모델 분리 지원
     /// [v3.0.9] 규칙 기반 PumpScanStrategy를 ML로 보강
     /// </summary>
     public class PumpSignalClassifier : IDisposable
@@ -23,6 +34,7 @@ namespace TradingBot.Services
         private PredictionEngine<PumpFeature, PumpPrediction>? _predictionEngine;
         private readonly object _predictLock = new();
         private bool _disposed;
+        private readonly PumpSignalType _signalType;
 
         // 학습 데이터 버퍼
         private readonly ConcurrentQueue<PumpFeature> _trainingBuffer = new();
@@ -32,22 +44,40 @@ namespace TradingBot.Services
 
         private static readonly string DefaultModelDir =
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TradingBot", "Models");
-        private static readonly string ModelFileName = "pump_signal_model.zip";
+
+        /// <summary>타입별 모델 파일명</summary>
+        private string ModelFileName => _signalType == PumpSignalType.Spike
+            ? "pump_signal_spike.zip"
+            : "pump_signal_normal.zip";
 
         public bool IsModelLoaded => _model != null && _predictionEngine != null;
         public int BufferCount => _trainingBuffer.Count;
+        public PumpSignalType SignalType => _signalType;
 
         public event Action<string>? OnLog;
 
         /// <summary>라벨링 기준: N봉 후 가격변동률 +X% 이상이면 진입</summary>
-        public float EntryThresholdPct { get; set; } = 2.0f;
+        public float EntryThresholdPct { get; set; }
         /// <summary>라벨링 기준 봉 수 (5분봉 기준)</summary>
-        public int LookAheadCandles { get; set; } = 6; // 30분
+        public int LookAheadCandles { get; set; }
 
-        public PumpSignalClassifier()
+        public PumpSignalClassifier(PumpSignalType signalType = PumpSignalType.Normal)
         {
             _mlContext = new MLContext(seed: 42);
             Directory.CreateDirectory(DefaultModelDir);
+            _signalType = signalType;
+
+            // [v4.5.8] 타입별 라벨링 기준
+            if (signalType == PumpSignalType.Spike)
+            {
+                EntryThresholdPct = 3.0f;  // +3% 이상
+                LookAheadCandles = 2;       // 10분 (5분봉 × 2)
+            }
+            else
+            {
+                EntryThresholdPct = 1.5f;  // +1.5% 이상
+                LookAheadCandles = 6;       // 30분 (5분봉 × 6)
+            }
         }
 
         // ═══════════════════════════════════════════
@@ -210,7 +240,7 @@ namespace TradingBot.Services
             }
 
             int entries = dataset.Count(d => d.Label);
-            OnLog?.Invoke($"[PumpML] 라벨링 완료: {dataset.Count}건 (Entry={entries}, Hold={dataset.Count - entries})");
+            OnLog?.Invoke($"[PumpML-{_signalType}] 라벨링 완료: {dataset.Count}건 (Entry={entries}, Hold={dataset.Count - entries}) | TP={EntryThresholdPct:F1}% LookAhead={LookAheadCandles}봉");
             return dataset;
         }
 
@@ -273,7 +303,7 @@ namespace TradingBot.Services
                             learningRate: 0.1,
                             numberOfIterations: 200));
 
-                    OnLog?.Invoke($"[PumpML] LightGBM 학습 시작 ({trainingData.Count}건, 피처 18개)...");
+                    OnLog?.Invoke($"[PumpML-{_signalType}] LightGBM 학습 시작 ({trainingData.Count}건, 피처 18개)...");
                     _model = pipeline.Fit(split.TrainSet);
 
                     var predictions = _model.Transform(split.TestSet);
@@ -288,11 +318,11 @@ namespace TradingBot.Services
                         TrainedAt = DateTime.Now
                     };
 
-                    OnLog?.Invoke($"[PumpML] 학습 완료 | Acc={metrics.Accuracy:P2}, F1={metrics.F1Score:F3}, AUC={metrics.AreaUnderRocCurve:F3}");
+                    OnLog?.Invoke($"[PumpML-{_signalType}] 학습 완료 | Acc={metrics.Accuracy:P2}, F1={metrics.F1Score:F3}, AUC={metrics.AreaUnderRocCurve:F3}");
 
                     string modelPath = Path.Combine(DefaultModelDir, ModelFileName);
                     _mlContext.Model.Save(_model, dataView.Schema, modelPath);
-                    OnLog?.Invoke($"[PumpML] 모델 저장: {modelPath}");
+                    OnLog?.Invoke($"[PumpML-{_signalType}] 모델 저장: {modelPath}");
 
                     lock (_predictLock)
                     {
@@ -319,7 +349,7 @@ namespace TradingBot.Services
                 string modelPath = Path.Combine(DefaultModelDir, ModelFileName);
                 if (!File.Exists(modelPath))
                 {
-                    OnLog?.Invoke("[PumpML] 모델 파일 없음 — 학습 필요");
+                    OnLog?.Invoke($"[PumpML-{_signalType}] 모델 파일 없음 — 학습 필요");
                     return false;
                 }
 
@@ -330,12 +360,12 @@ namespace TradingBot.Services
                     _predictionEngine = _mlContext.Model.CreatePredictionEngine<PumpFeature, PumpPrediction>(_model);
                 }
 
-                OnLog?.Invoke($"[PumpML] 모델 로드 완료: {modelPath}");
+                OnLog?.Invoke($"[PumpML-{_signalType}] 모델 로드 완료: {modelPath}");
                 return true;
             }
             catch (Exception ex)
             {
-                OnLog?.Invoke($"[PumpML] 모델 로드 실패: {ex.Message}");
+                OnLog?.Invoke($"[PumpML-{_signalType}] 모델 로드 실패: {ex.Message}");
                 return false;
             }
         }
