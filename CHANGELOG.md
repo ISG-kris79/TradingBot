@@ -15,6 +15,17 @@
 
  - 없음
 
+## [4.6.3] - 2026-04-11
+
+(v4.6.2 통합 + 카운터 리셋 로직 단순화)
+
+### Fixed
+
+- **카운터 자정 리셋 로직 단순화**
+  - `DateTime.UtcNow.AddHours(9).Date` → `DateTime.Now.Date` (Windows KST 기준)
+  - `!= todayKst` → `todayKst > _dailyPumpCountDate` (날짜 진행 명확)
+  - 메인 루프 + TryReserve 양쪽 모두 같은 로직 통일
+
 ## [4.6.2] - 2026-04-11
 
 ### Fixed (Critical Hotfix)
