@@ -5887,23 +5887,23 @@ namespace TradingBot
 
             if (_macdCrossService == null) return;
 
-            foreach (var symbol in MajorSymbols)
+            // [v4.3.1] 병렬 스캔 (순차 2.4초 → 병렬 0.6초)
+            var macdTasks = MajorSymbols.Where(sym =>
             {
-                if (token.IsCancellationRequested) break;
-
-                // 이미 보유 중이면 스킵
-                lock (_posLock) { if (_activePositions.ContainsKey(symbol)) continue; }
-                if (_blacklistedSymbols.TryGetValue(symbol, out var exp) && DateTime.Now < exp) continue;
-
+                lock (_posLock) { if (_activePositions.ContainsKey(sym)) return false; }
+                if (_blacklistedSymbols.TryGetValue(sym, out var bExp) && DateTime.Now < bExp) return false;
+                return true;
+            }).Select(async symbol =>
+            {
                 try
                 {
                     var crossResult = await _macdCrossService.DetectGoldenCrossAsync(symbol, token);
-                    if (!crossResult.Detected) continue;
+                    if (!crossResult.Detected) return;
 
                     decimal currentPrice = 0;
                     if (_marketDataManager.TickerCache.TryGetValue(symbol, out var tick))
                         currentPrice = tick.LastPrice;
-                    if (currentPrice <= 0) continue;
+                    if (currentPrice <= 0) return;
 
                     // ── 골든크로스 → LONG ──
                     if (crossResult.CrossType == MacdCrossType.Golden)
@@ -5912,7 +5912,7 @@ namespace TradingBot
                         if (!isBullish)
                         {
                             OnStatusLog?.Invoke($"📊 [MACD] {symbol} 골든크로스 but 상위봉 비정배열 → 스킵 | {htfDetail}");
-                            continue;
+                            return;
                         }
 
                         bool shouldLong = crossResult.CaseType == "B"
@@ -5921,7 +5921,7 @@ namespace TradingBot
                         if (!shouldLong)
                         {
                             OnStatusLog?.Invoke($"📊 [MACD] {symbol} LONG Case{crossResult.CaseType} 미충족 (RSI={crossResult.RSI:F1})");
-                            continue;
+                            return;
                         }
 
                         string source = $"MACD_GOLDEN_CASE{crossResult.CaseType}";
@@ -5944,7 +5944,7 @@ namespace TradingBot
                         if (!isBearish)
                         {
                             OnStatusLog?.Invoke($"📊 [MACD] {symbol} 데드크로스 but 상위봉 비하락 → 스킵 | {htfDetail}");
-                            continue;
+                            return;
                         }
 
                         // 숏 유형 A (추세추종): 0선 근처/위 데드크로스 — 가장 안전
@@ -5955,7 +5955,7 @@ namespace TradingBot
                         if (!shouldShort)
                         {
                             OnStatusLog?.Invoke($"📊 [MACD] {symbol} SHORT Case{crossResult.CaseType} 미충족 (Angle={crossResult.DeadCrossAngle:F6})");
-                            continue;
+                            return;
                         }
 
                         string source = $"MACD_DEAD_CASE{crossResult.CaseType}";
@@ -5975,7 +5975,9 @@ namespace TradingBot
                 {
                     OnStatusLog?.Invoke($"⚠️ [MACD] {symbol} 스캔 오류: {ex.Message}");
                 }
-            }
+            }).ToList();
+            if (macdTasks.Count > 0)
+                await Task.WhenAll(macdTasks);
         }
 
         // ═══════════════════════════════════════════════════════════════

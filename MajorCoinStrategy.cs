@@ -95,30 +95,16 @@ namespace TradingBot.Strategies
                 double fibBonus = CalculateFibScore(list, currentPrice);
                 if (fibBonus > 0) aiScore = Math.Clamp(aiScore + (int)fibBonus, 0, 100);
 
-                // 방향 판단: 모멘텀 + 구조 종합 (AI에 위임할 방향 결정)
-                int bullishSignals = 0;
-                int bearishSignals = 0;
-
-                // 모멘텀 기반 (즉각 반응)
-                if (isPriceRecovering) bullishSignals += 2;
-                if (isStrongBounce) bullishSignals += 2;
-                if (isPriceDropping) bearishSignals += 2;
-                if (isStrongDrop) bearishSignals += 2;
-
-                // 구조 기반 (추세 확인)
-                if (isUptrend) bullishSignals++;
-                if (isMakingHigherLows) bullishSignals++;
-                if (currentPrice > (decimal)sma20) bullishSignals++;
-                if (macd.Hist > 0) bullishSignals++;
-                if (!isUptrend) bearishSignals++;
-                if (isMakingLowerHighs) bearishSignals++;
-                if (currentPrice < (decimal)sma20) bearishSignals++;
-                if (macd.Hist < 0) bearishSignals++;
-
+                // [v4.3.1] AI 전용 방향 판단 — 하드코딩 제거
+                // aiScore를 기준으로 방향 결정, 나머지는 AI Gate + Survival이 검증
                 string decision = "WAIT";
-                if (bullishSignals >= 3 && bullishSignals > bearishSignals)
+
+                // aiScore 70+ = LONG (AI 스코어 기반)
+                // aiScore 30- = SHORT
+                // 30~70 = WAIT (확신 부족)
+                if (aiScore >= 70)
                     decision = "LONG";
-                else if (bearishSignals >= 3 && bearishSignals > bullishSignals)
+                else if (aiScore <= 30)
                     decision = "SHORT";
 
                 try
@@ -200,20 +186,13 @@ namespace TradingBot.Strategies
                     }
                 }
 
-                string reason = "";
-                if (decision == "WAIT")
-                {
-                    reason = $"holdReason=bull{bullishSignals}/bear{bearishSignals}(3개미만)";
-                }
-
                 if (decision == "WAIT")
                 {
                     // WAIT는 조용히 건너뜀
                 }
                 else
                 {
-                    string holdReasonStr = string.IsNullOrWhiteSpace(reason) ? "" : $" | {reason}";
-                    OnLog?.Invoke($"📊 [{symbol}] {decisionKr} → AI 판단 요청 | 가격 ${currentPrice:F2} | bull={bullishSignals} bear={bearishSignals} | RSI {rsi:F1} | Vol {volumeMomentum:F2}x{holdReasonStr}");
+                    OnLog?.Invoke($"📊 [{symbol}] {decisionKr} → AI 판단 요청 | 가격 ${currentPrice:F2} | aiScore={aiScore} | RSI {rsi:F1} | Vol {volumeMomentum:F2}x");
 
                     try
                     {

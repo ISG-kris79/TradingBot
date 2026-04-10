@@ -23,6 +23,8 @@ namespace TradingBot
         private readonly IExchangeService _exchangeService;
         private readonly EntryTimingMLTrainer _mlTrainer;
         private readonly MultiTimeframeFeatureExtractor _featureExtractor;
+        // [v4.3.1] MultiTF 피처 캐시 (30초 TTL) — 5개 API 호출 제거
+        private readonly ConcurrentDictionary<string, (MultiTimeframeEntryFeature feature, DateTime time)> _featureCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly BacktestEntryLabeler _labeler;
         private readonly EntryRuleValidator _ruleValidator;
         private readonly ConcurrentDictionary<string, Queue<MultiTimeframeEntryFeature>> _recentFeatureBuffers
@@ -143,8 +145,18 @@ namespace TradingBot
 
             try
             {
-                // 1. Multi-Timeframe Feature 추출
-                var feature = await _featureExtractor.ExtractRealtimeFeatureAsync(symbol, DateTime.UtcNow, token);
+                // 1. Multi-Timeframe Feature 추출 (30초 캐시)
+                MultiTimeframeEntryFeature? feature = null;
+                if (_featureCache.TryGetValue(symbol, out var cached) && (DateTime.Now - cached.time).TotalSeconds < 30)
+                {
+                    feature = cached.feature;
+                }
+                else
+                {
+                    feature = await _featureExtractor.ExtractRealtimeFeatureAsync(symbol, DateTime.UtcNow, token);
+                    if (feature != null)
+                        _featureCache[symbol] = (feature, DateTime.Now);
+                }
                 if (feature == null)
                 {
                     OnLog?.Invoke($"⚠️ [{symbol}] Feature 추출 실패 (데이터 부족)");
