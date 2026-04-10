@@ -82,6 +82,12 @@ namespace TradingBot
         private const int MAX_TOTAL_SLOTS = 7;        // 총 최대 7개 (메이저4 + PUMP3)
         private const int MAX_MAJOR_SLOTS = 4;        // 메이저 최대 4개 (BTC/ETH/SOL/XRP)
         private const int MAX_PUMP_SLOTS = 3;         // PUMP 최대 3개
+
+        // [v4.5.9] 일일 PUMP 진입 횟수 제한 (자정 KST 리셋)
+        private const int MAX_DAILY_PUMP_ENTRIES = 40;
+        private int _dailyPumpEntryCount = 0;
+        private DateTime _dailyPumpCountDate = DateTime.MinValue;
+        private readonly object _dailyPumpLock = new();
         private const decimal PUMP_FIXED_MARGIN_USDT = 100m; // (레거시 fallback) PUMP 고정 증거금
         private const int PUMP_MANUAL_LEVERAGE = 20; // 20배 롱 전용 대응 매뉴얼
         
@@ -148,6 +154,35 @@ namespace TradingBot
             _pumpModelAccuracy >= AiHardCheckBypassThreshold
             && _pumpSpikeAccuracy >= AiHardCheckBypassThreshold
             && _tradeSignalAccuracy >= AiHardCheckBypassThreshold;
+
+        /// <summary>
+        /// [v4.5.9] 일일 PUMP 진입 카운터 관리
+        /// - 자정(KST) 기준 자동 리셋
+        /// - 40회 도달 시 신규 진입 차단
+        /// </summary>
+        private bool TryReserveDailyPumpEntry(string symbol, string source)
+        {
+            lock (_dailyPumpLock)
+            {
+                var todayKst = DateTime.UtcNow.AddHours(9).Date;
+                if (_dailyPumpCountDate != todayKst)
+                {
+                    _dailyPumpCountDate = todayKst;
+                    _dailyPumpEntryCount = 0;
+                    OnStatusLog?.Invoke($"🔄 [일일 PUMP 카운터] 자정 리셋 ({todayKst:yyyy-MM-dd})");
+                }
+
+                if (_dailyPumpEntryCount >= MAX_DAILY_PUMP_ENTRIES)
+                {
+                    OnStatusLog?.Invoke($"⛔ [일일한도] {symbol} {source} 진입 차단 ({_dailyPumpEntryCount}/{MAX_DAILY_PUMP_ENTRIES}) — 내일 자정 리셋");
+                    return false;
+                }
+
+                _dailyPumpEntryCount++;
+                OnStatusLog?.Invoke($"📊 [일일 PUMP 카운터] {_dailyPumpEntryCount}/{MAX_DAILY_PUMP_ENTRIES} ({symbol} {source})");
+                return true;
+            }
+        }
         // [v3.3.6] 급변동 회복 구간 추적: symbol → (extremePrice, isUpwardSpike, eventTime)
         private readonly ConcurrentDictionary<string, (decimal ExtremePrice, bool IsUpwardSpike, DateTime EventTime)>
             _volatilityRecoveryZone = new(StringComparer.OrdinalIgnoreCase);
@@ -2161,6 +2196,10 @@ namespace TradingBot
                                     {
                                         try
                                         {
+                                            // [v4.5.9] 일일 PUMP 진입 한도 (40회) 체크
+                                            if (!TryReserveDailyPumpEntry(pumpKey, "PUMP_WATCH_CONFIRMED"))
+                                                return;
+
                                             // [v4.5.6] AI 모델 학습 부족 시 하드 체크: 상위 TF(H1/M15) 하락추세 차단
                                             // - 조건 충족 시(정확도 70%+) 하드 체크 자동 해제되고 AI 단독 판단
                                             if (!IsAiModelReadyForPumpEntry && _macdCrossService != null)
@@ -6670,6 +6709,13 @@ namespace TradingBot
 
             bool isMajor = MajorSymbols.Contains(symbol);
 
+            // [v4.5.9] PUMP 알트만 일일 한도(40회) 체크 (메이저는 제외)
+            if (!isMajor)
+            {
+                if (!TryReserveDailyPumpEntry(symbol, "SPIKE_FAST"))
+                    return;
+            }
+
             // [v3.3.6] 메이저 코인 급변동 → 회복 구간 등록
             if (isMajor && Math.Abs(changePct) >= 3.0m)
                 RecordVolatilityEvent(symbol, currentPrice, isUpwardSpike: changePct > 0);
@@ -6889,6 +6935,7 @@ namespace TradingBot
                             }
 
                             // [v4.5.8] Spike 전용 AI 모델 예측 — 급등 진입 품질 검증
+                            // [v4.5.9] 알트 불장 모드 시 임계값 70% → 75% 상향 (과열장 진입 품질 우선)
                             if (_pumpSpikeClassifier != null && _pumpSpikeClassifier.IsModelLoaded && klines.Count >= 30)
                             {
                                 var spikeFeature = TradingBot.Services.PumpSignalClassifier.ExtractFeature(klines.ToList());
@@ -6897,14 +6944,15 @@ namespace TradingBot
                                     var spikePred = _pumpSpikeClassifier.Predict(spikeFeature);
                                     if (spikePred != null)
                                     {
-                                        // 급등 진입은 엄격하게 70%+ 요구
-                                        if (spikePred.Probability < 0.70f)
+                                        float spikeThreshold = _altBullDetector.IsActive ? 0.75f : 0.70f;
+                                        if (spikePred.Probability < spikeThreshold)
                                         {
-                                            OnStatusLog?.Invoke($"⛔ [SPIKE_FAST] {symbol} Spike모델 {spikePred.Probability:P0} < 70% → 스킵");
+                                            string modeTag = _altBullDetector.IsActive ? "알트불장" : "정상";
+                                            OnStatusLog?.Invoke($"⛔ [SPIKE_FAST] {symbol} Spike모델 {spikePred.Probability:P0} < {spikeThreshold:P0} ({modeTag}) → 스킵");
                                             lock (_posLock) { _activePositions.Remove(symbol); }
                                             return;
                                         }
-                                        OnStatusLog?.Invoke($"✅ [SPIKE_FAST] {symbol} Spike모델 {spikePred.Probability:P0} 통과");
+                                        OnStatusLog?.Invoke($"✅ [SPIKE_FAST] {symbol} Spike모델 {spikePred.Probability:P0} 통과 (임계값 {spikeThreshold:P0})");
                                     }
                                 }
                             }

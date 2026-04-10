@@ -15,6 +15,21 @@
 
  - 없음
 
+## [4.5.9] - 2026-04-10
+
+### Added
+
+- **일일 PUMP 진입 한도 40회**: 과도한 거래 방지
+  - 자정(KST) 자동 리셋
+  - PUMP_WATCH_CONFIRMED / SPIKE_FAST 경로 모두 적용
+  - 메이저 코인(BTC/ETH/SOL/XRP)은 제외
+
+### Changed
+
+- **알트 불장 모드 시 Spike AI 임계값 70% → 75% 자동 상향**
+  - `_altBullDetector.IsActive` 상태 기반 동적 조정
+  - 과열장에서 진입 품질 우선, 낮은 확률 진입 차단
+
 ## [4.5.8] - 2026-04-10
 
 ### Changed
