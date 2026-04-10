@@ -26,6 +26,12 @@ namespace TradingBot.Services
             _tripReason = string.Empty;
         }
 
+        /// <summary>[v4.4.0] DB에서 오늘 누적 PnL 복원 (재시작 시)</summary>
+        public void RestoreDailyPnl(decimal todayPnl)
+        {
+            DailyRealizedPnl = todayPnl;
+        }
+
         public void UpdatePnlAndCheck(decimal pnl)
         {
             DailyRealizedPnl += pnl;

@@ -1804,6 +1804,25 @@ namespace TradingBot
                 await InitializeSeedAsync(token); // InitialBalance 설정
                 _riskManager.Initialize((decimal)InitialBalance); // RiskManager 초기화
 
+                // [v4.4.0] DB에서 오늘 누적 PnL 복원
+                try
+                {
+                    int userId = AppConfig.CurrentUser?.Id ?? 0;
+                    if (userId > 0)
+                    {
+                        var todayTrades = await _dbManager.GetTradeHistoryAsync(userId, DateTime.Today, DateTime.Now, 500);
+                        if (todayTrades != null && todayTrades.Count > 0)
+                        {
+                            decimal todayPnl = todayTrades
+                                .Where(t => t.PnL != 0 && !string.Equals(t.ExitReason, "OPEN_POSITION", StringComparison.OrdinalIgnoreCase))
+                                .Sum(t => t.PnL);
+                            _riskManager.RestoreDailyPnl(todayPnl);
+                            OnStatusLog?.Invoke($"💰 [복원] 금일 누적 PnL: ${todayPnl:N2} (DB 기반, {todayTrades.Count}건)");
+                        }
+                    }
+                }
+                catch (Exception pnlEx) { OnStatusLog?.Invoke($"⚠️ 금일 PnL 복원 실패: {pnlEx.Message}"); }
+
                 OnStatusLog?.Invoke($"🔧 엔진 초기화 중...");
 
                 // 시뮬레이션 모드일 경우 초기 잔고 로그 출력
