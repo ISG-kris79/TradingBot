@@ -648,10 +648,7 @@ namespace TradingBot
             bool transformerRequestedByConfig = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
             bool doubleCheckGateEnabled = transformerRequestedByConfig || _enableFifteenMinWaveGate;
 
-            if (!transformerRequestedByConfig && _enableFifteenMinWaveGate)
-            {
-                OnStatusLog?.Invoke("ℹ️ AI 관제탑 자동 활성화: TransformerSettings.Enabled=false 이지만 15분 Gate가 ON이라 더블체크 게이트를 유지합니다.");
-            }
+            // Transformer 미사용 — AI Gate는 ML.NET 단독 운용
 
             /* TensorFlow 전환 중 임시 비활성화
             // [Agent 3] 멀티 에이전트 매니저 초기화 (상태 차원: 3 [RSI, MACD, BB], 행동 차원: 3 [Hold, Buy, Sell])
@@ -727,7 +724,7 @@ namespace TradingBot
             else
             {
                 _aiDoubleCheckEntryGate = null;
-                OnStatusLog?.Invoke("🛡️ AI 더블체크 게이트 비활성화: Torch/Transformer 설정이 꺼져 있어 15분 WaveGate 폴백만 사용합니다.");
+                OnStatusLog?.Invoke("🛡️ AI 더블체크 게이트 비활성화");
             }
 
             // [SSA] 시계열 예측 로그 연결
@@ -957,9 +954,7 @@ namespace TradingBot
             var tfSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
             bool transformerEnabledByConfig = tfSettings.Enabled;
 
-            // ========== TensorFlow.NET 전환 중 - Transformer 기능 임시 비활성화 ==========
-            OnStatusLog?.Invoke("⚠️ Transformer 기능은 TensorFlow.NET으로 전환 작업 중입니다 (현재 비활성화)");
-            OnStatusLog?.Invoke("🛡️ ML.NET 기반 AI와 MajorCoinStrategy(지표 기반) 전략으로 안전하게 동작합니다.");
+            // ========== Transformer 비활성화 (ML.NET 전용) ==========
 
             /* TensorFlow.NET 전환 완료 후 복원 예정
             if (transformerEnabledByConfig)
@@ -1914,21 +1909,18 @@ namespace TradingBot
                 // 따라서 이 메인 프로세스는 상태 플래그(IsReady)만 확인하게 하고, 실제 훈련은 백그라운드 Worker Thread로 오프로딩하여 UI 및 엔진 파이프라인을 즉시 재개함.
                 if (_aiDoubleCheckEntryGate != null && !_aiDoubleCheckEntryGate.IsReady)
                 {
-                    OnStatusLog?.Invoke("ℹ️ AI 모델 초기 학습을 백그라운드로 시작합니다. 학습 완료 시까지 모델 매매 진입이 지연됩니다.");
+                    OnStatusLog?.Invoke("ℹ️ AI Gate 초기 학습 백그라운드 시작...");
                     _ = Task.Run(async () =>
                     {
                         try
                         {
                             var (success, message) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, _symbols, token);
                             if (success)
-                            {
-                                // 학습 완료 시 크리티컬 메시지로 알림 (UI 스레드로 디스패치)
-                                _ = NotificationService.Instance.NotifyAsync("✅ [AI 더블체크] 백그라운드 수집 및 초기 학습 메인 프로세스 완료!", NotificationChannel.Alert);
-                            }
+                                _ = NotificationService.Instance.NotifyAsync("✅ AI Gate 초기 학습 완료", NotificationChannel.Alert);
                         }
                         catch (Exception ex)
                         {
-                            OnStatusLog?.Invoke($"❌ AI 백그라운드 학습 오류: {ex.Message}");
+                            OnStatusLog?.Invoke($"❌ AI Gate 초기 학습 오류: {ex.Message}");
                         }
                     }, token);
                 }
@@ -2880,7 +2872,7 @@ namespace TradingBot
                     : "🧠 수동 초기 학습 시작: ML.NET + AI 더블체크 순차 실행 (Transformer 비활성화)");
                 */
 
-                OnAlert?.Invoke("🧠 수동 초기 학습 시작: ML.NET + AI 더블체크 순차 실행 (TensorFlow 전환 중)");
+                OnAlert?.Invoke("🧠 수동 초기 학습 시작: ML.NET + AI Gate 순차 실행");
 
                 _initialMLNetTrainingTriggered = false;
 

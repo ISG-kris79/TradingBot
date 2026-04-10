@@ -15,6 +15,16 @@
 
  - 없음
 
+## [4.5.4] - 2026-04-10
+
+### Changed
+
+- **Transformer 관련 불필요 로그 메시지 정리**
+  - "Transformer 기능은 TensorFlow.NET으로 전환 작업 중" 제거
+  - "AI 관제탑 자동 활성화: TransformerSettings.Enabled=false" 제거
+  - AI 더블체크 게이트 비활성화 메시지 간결화
+  - "AI 백그라운드 수집 및 초기 학습 메인 프로세스 완료" → "AI Gate 초기 학습 완료"
+
 ## [4.5.3] - 2026-04-10
 
 ### Changed
