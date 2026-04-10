@@ -927,6 +927,9 @@ namespace TradingBot.ViewModels
             InitializeTickerUpdatePipeline();
             InitializeFooterLogPipeline();
 
+            // [v4.4.2] 퍼포먼스 탭 초기 로드
+            _ = LoadPerformanceDataAsync();
+
             // Initialize services
             if (!DesignerProperties.GetIsInDesignMode(new DependencyObject()))
             {
@@ -1818,7 +1821,11 @@ namespace TradingBot.ViewModels
                             Fill = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x00, 0xE6, 0x76)),
                             StrokeThickness = 0,
                             ColumnPadding = 2,
-                            MaxColumnWidth = 40
+                            MaxColumnWidth = 60,
+                            DataLabels = true,
+                            LabelPoint = p => p.Y != 0 ? $"${p.Y:N0}" : "",
+                            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x7E, 0xE7, 0x87)),
+                            FontSize = 10
                         },
                         new ColumnSeries
                         {
@@ -1827,7 +1834,11 @@ namespace TradingBot.ViewModels
                             Fill = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0x53, 0x70)),
                             StrokeThickness = 0,
                             ColumnPadding = 2,
-                            MaxColumnWidth = 40
+                            MaxColumnWidth = 60,
+                            DataLabels = true,
+                            LabelPoint = p => p.Y != 0 ? $"${p.Y:N0}" : "",
+                            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0x7B, 0x72)),
+                            FontSize = 10
                         }
                     };
                     OnPropertyChanged(nameof(PerformanceSeries));
