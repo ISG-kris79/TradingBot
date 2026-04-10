@@ -88,6 +88,12 @@ namespace TradingBot
         private int _dailyPumpEntryCount = 0;
         private DateTime _dailyPumpCountDate = DateTime.MinValue;
         private readonly object _dailyPumpLock = new();
+
+        // [v4.5.10] 심볼별 일일 리버스 횟수 제한 (플립플롭 방지)
+        private const int MAX_DAILY_REVERSAL_PER_SYMBOL = 3;
+        private readonly ConcurrentDictionary<string, int> _dailyReversalCount = new(StringComparer.OrdinalIgnoreCase);
+        private DateTime _dailyReversalCountDate = DateTime.MinValue;
+        private readonly object _dailyReversalLock = new();
         private const decimal PUMP_FIXED_MARGIN_USDT = 100m; // (레거시 fallback) PUMP 고정 증거금
         private const int PUMP_MANUAL_LEVERAGE = 20; // 20배 롱 전용 대응 매뉴얼
         
@@ -154,6 +160,118 @@ namespace TradingBot
             _pumpModelAccuracy >= AiHardCheckBypassThreshold
             && _pumpSpikeAccuracy >= AiHardCheckBypassThreshold
             && _tradeSignalAccuracy >= AiHardCheckBypassThreshold;
+
+        /// <summary>
+        /// [v4.5.10] 심볼별 일일 리버스 횟수 체크 및 예약 (자정 KST 리셋)
+        /// </summary>
+        private bool TryReserveDailyReversal(string symbol, string source)
+        {
+            lock (_dailyReversalLock)
+            {
+                var todayKst = DateTime.UtcNow.AddHours(9).Date;
+                if (_dailyReversalCountDate != todayKst)
+                {
+                    _dailyReversalCountDate = todayKst;
+                    _dailyReversalCount.Clear();
+                    OnStatusLog?.Invoke($"🔄 [리버스 카운터] 자정 리셋 ({todayKst:yyyy-MM-dd})");
+                }
+
+                int currentCount = _dailyReversalCount.GetOrAdd(symbol, 0);
+                if (currentCount >= MAX_DAILY_REVERSAL_PER_SYMBOL)
+                {
+                    OnStatusLog?.Invoke($"⛔ [리버스 한도] {symbol} {source} 차단 ({currentCount}/{MAX_DAILY_REVERSAL_PER_SYMBOL}) — 내일 리셋");
+                    return false;
+                }
+
+                _dailyReversalCount[symbol] = currentCount + 1;
+                OnStatusLog?.Invoke($"📊 [리버스 카운터] {symbol} {_dailyReversalCount[symbol]}/{MAX_DAILY_REVERSAL_PER_SYMBOL} ({source})");
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// [v4.5.10] MACD 반대 크로스 감지 시 50% 부분 청산
+        /// - 추세 전환 일부 대응 (100% 청산 후 리버스는 너무 공격적)
+        /// - 나머지 50%는 기존 트레일링 스탑으로 관리
+        /// - 심볼당 하루 3회 제한
+        /// </summary>
+        private async Task HandleOppositeMacdCrossAsync(
+            string symbol,
+            bool positionIsLong,
+            MacdCrossResult crossResult,
+            CancellationToken token)
+        {
+            try
+            {
+                // 상위 TF 검증 — 반대 방향 정배열인지 확인
+                bool shouldClose;
+                string htfDetail;
+                if (positionIsLong)
+                {
+                    // LONG 보유 + 데드크로스 → H1/M15 약세 전환 확인
+                    var (isBearish, detail) = await _macdCrossService!.CheckHigherTimeframeBearishAsync(symbol, token);
+                    shouldClose = isBearish;
+                    htfDetail = detail;
+                }
+                else
+                {
+                    // SHORT 보유 + 골든크로스 → H1/M15 강세 전환 확인
+                    var (isBullish, detail) = await _macdCrossService!.CheckHigherTimeframeBullishAsync(symbol, token);
+                    shouldClose = isBullish;
+                    htfDetail = detail;
+                }
+
+                if (!shouldClose)
+                {
+                    OnStatusLog?.Invoke($"ℹ️ [MACD-반대] {symbol} {crossResult.CrossType} 감지되었으나 상위TF 미전환 → 유지 | {htfDetail}");
+                    return;
+                }
+
+                // 일일 리버스 한도 체크
+                if (!TryReserveDailyReversal(symbol, $"MACD_OPPOSITE_{crossResult.CrossType}"))
+                    return;
+
+                // 현재 수량 확인
+                decimal qty = 0;
+                lock (_posLock)
+                {
+                    if (_activePositions.TryGetValue(symbol, out var pos))
+                        qty = Math.Abs(pos.Quantity);
+                }
+                if (qty <= 0) return;
+
+                // 50% 부분 청산 수량 계산
+                decimal partialQty = Math.Round(qty * 0.5m, 3, MidpointRounding.ToZero);
+                if (partialQty <= 0)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [MACD-반대] {symbol} 부분청산 수량 계산 불가 (qty={qty})");
+                    return;
+                }
+
+                string side = positionIsLong ? "SELL" : "BUY";
+                OnAlert?.Invoke(
+                    $"⚠️ [추세 전환] {symbol} MACD {crossResult.CrossType} + 상위TF 전환\n" +
+                    $"→ 50% 부분 청산 ({partialQty:F4} / {qty:F4}) | {crossResult.Detail}");
+
+                var partialResult = await _exchangeService.PlaceMarketOrderAsync(
+                    symbol, side, partialQty, token);
+
+                if (partialResult.Success)
+                {
+                    OnStatusLog?.Invoke($"✅ [MACD-반대] {symbol} 50% 부분청산 완료 (filled={partialResult.FilledQuantity:F4})");
+                    // 남은 50%는 기존 트레일링 스탑으로 관리됨
+                    // DB 반영은 ACCOUNT_UPDATE 이벤트 또는 다음 동기화에서 처리됨
+                }
+                else
+                {
+                    OnStatusLog?.Invoke($"❌ [MACD-반대] {symbol} 부분청산 실패");
+                }
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [MACD-반대] {symbol} 처리 오류: {ex.Message}");
+            }
+        }
 
         /// <summary>
         /// [v4.5.9] 일일 PUMP 진입 카운터 관리
@@ -5987,10 +6105,9 @@ namespace TradingBot
 
             if (_macdCrossService == null) return;
 
-            // [v4.3.1] 병렬 스캔 (순차 2.4초 → 병렬 0.6초)
+            // [v4.5.10] 포지션 있어도 스캔 통과 (반대 크로스 시 부분 청산 처리)
             var macdTasks = MajorSymbols.Where(sym =>
             {
-                lock (_posLock) { if (_activePositions.ContainsKey(sym)) return false; }
                 if (_blacklistedSymbols.TryGetValue(sym, out var bExp) && DateTime.Now < bExp) return false;
                 return true;
             }).Select(async symbol =>
@@ -6004,6 +6121,33 @@ namespace TradingBot
                     if (_marketDataManager.TickerCache.TryGetValue(symbol, out var tick))
                         currentPrice = tick.LastPrice;
                     if (currentPrice <= 0) return;
+
+                    // [v4.5.10] 기존 포지션 있을 때 반대 크로스 → 50% 부분 청산
+                    bool hasPosition = false;
+                    bool positionIsLong = false;
+                    lock (_posLock)
+                    {
+                        if (_activePositions.TryGetValue(symbol, out var existPos))
+                        {
+                            hasPosition = true;
+                            positionIsLong = existPos.IsLong;
+                        }
+                    }
+
+                    if (hasPosition)
+                    {
+                        bool isOppositeCross =
+                            (positionIsLong && crossResult.CrossType == MacdCrossType.Dead) ||
+                            (!positionIsLong && crossResult.CrossType == MacdCrossType.Golden);
+
+                        if (isOppositeCross)
+                        {
+                            // 일일 리버스 한도 체크 + 실행
+                            await HandleOppositeMacdCrossAsync(symbol, positionIsLong, crossResult, token);
+                        }
+                        // 같은 방향 크로스면 기존 포지션 유지 (아무것도 안 함)
+                        return;
+                    }
 
                     // ── 골든크로스 → LONG ──
                     if (crossResult.CrossType == MacdCrossType.Golden)
@@ -6800,6 +6944,13 @@ namespace TradingBot
             // [v3.2.38] 리버스: 기존 반대 포지션 청산
             if (needsReverse)
             {
+                // [v4.5.10] 심볼별 일일 리버스 한도 (3회) 체크
+                if (!TryReserveDailyReversal(symbol, "SPIKE_REVERSE"))
+                {
+                    lock (_posLock) { _activePositions.Remove(symbol); } // 예약 취소
+                    return;
+                }
+
                 string reverseLabel = changePct > 0 ? "숏→롱" : "롱→숏";
                 OnAlert?.Invoke($"🔄 [{reverseLabel} 리버스] {symbol} 기존 포지션 청산 중...");
                 try
@@ -6944,10 +7095,13 @@ namespace TradingBot
                                     var spikePred = _pumpSpikeClassifier.Predict(spikeFeature);
                                     if (spikePred != null)
                                     {
-                                        float spikeThreshold = _altBullDetector.IsActive ? 0.75f : 0.70f;
+                                        // [v4.5.10] 리버스 진입은 무조건 75%+ 요구 (기존 포지션 엎는 위험 방어)
+                                        // [v4.5.9] 알트 불장 모드도 75%+
+                                        float spikeThreshold = (needsReverse || _altBullDetector.IsActive) ? 0.75f : 0.70f;
                                         if (spikePred.Probability < spikeThreshold)
                                         {
-                                            string modeTag = _altBullDetector.IsActive ? "알트불장" : "정상";
+                                            string modeTag = needsReverse ? "리버스"
+                                                : _altBullDetector.IsActive ? "알트불장" : "정상";
                                             OnStatusLog?.Invoke($"⛔ [SPIKE_FAST] {symbol} Spike모델 {spikePred.Probability:P0} < {spikeThreshold:P0} ({modeTag}) → 스킵");
                                             lock (_posLock) { _activePositions.Remove(symbol); }
                                             return;
