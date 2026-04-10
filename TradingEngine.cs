@@ -512,6 +512,12 @@ namespace TradingBot
             _riskManager = new RiskManager();
             _marketDataManager = new MarketDataManager(_client, _symbols);
             _marketHistoryService = new MarketHistoryService(_marketDataManager, AppConfig.ConnectionString);
+            // [v4.5.7] 최초 알트 캔들 수집 완료 시 ML 학습 즉시 트리거 (2분 대기 없이)
+            _marketHistoryService.OnFirstAltCollectionComplete += () =>
+            {
+                OnStatusLog?.Invoke("🎯 [ML] 알트 학습 데이터 확보 완료 → 즉시 재학습 시작");
+                _ = Task.Run(() => TrainAllModelsAsync(_cts?.Token ?? CancellationToken.None));
+            };
             _oiCollector = new OiDataCollector(_client);
 
             _tickerChannel = Channel.CreateBounded<IBinance24HPrice>(new BoundedChannelOptions(1000)

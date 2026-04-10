@@ -24,10 +24,16 @@ namespace TradingBot.Services
         private readonly BinanceRestClient _restClient = new();
         // [v4.5.6] 알트 캔들 수집 전용 상태
         private DateTime _lastAltCollectionTime = DateTime.MinValue;
+        private bool _firstAltCollectionDone;
         private static readonly HashSet<string> MajorSymbolsSet = new(StringComparer.OrdinalIgnoreCase)
         {
             "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"
         };
+
+        /// <summary>
+        /// [v4.5.7] 최초 알트 캔들 수집 완료 시 발화 (ML 학습 즉시 트리거용)
+        /// </summary>
+        public event Action? OnFirstAltCollectionComplete;
 
         public MarketHistoryService(MarketDataManager marketDataManager, string connectionString)
         {
@@ -321,6 +327,14 @@ namespace TradingBot.Services
                 }
 
                 MainWindow.Instance?.AddLog($"✅ [AltCollect] {successSymbols}/{topAlts.Count} 심볼 저장 | {totalSaved}개 캔들 | 에러 {errorSymbols}");
+
+                // [v4.5.7] 최초 수집 완료 시 ML 학습 즉시 트리거
+                if (!_firstAltCollectionDone && totalSaved > 0)
+                {
+                    _firstAltCollectionDone = true;
+                    MainWindow.Instance?.AddLog($"🎯 [AltCollect] 최초 수집 완료 → ML 재학습 트리거");
+                    OnFirstAltCollectionComplete?.Invoke();
+                }
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)
