@@ -7198,21 +7198,26 @@ namespace TradingBot
                                     var spikePred = _pumpSpikeClassifier.Predict(spikeFeature);
                                     if (spikePred != null)
                                     {
-                                        // [v4.5.10] 리버스 진입은 무조건 75%+ 요구 (기존 포지션 엎는 위험 방어)
-                                        // [v4.5.9] 알트 불장 모드도 75%+
-                                        float baseThreshold = (needsReverse || _altBullDetector.IsActive) ? 0.75f : 0.70f;
-                                        // [v4.5.11] 일일 수익 모드 boost 추가 ($250+=+10%p, $500+=+15%p)
+                                        // [v4.5.13] Spike 모델 학습 미성숙 시 임계값 완화 (진입 전면 차단 방지)
+                                        // - 정확도 < 70%: 학습 부족 → 55% 임계값 (기본 검증만)
+                                        // - 정확도 >= 70%: 성숙한 모델 → 기존 70% 기본값
+                                        bool isModelMature = _pumpSpikeAccuracy >= 0.70;
+                                        float baseThreshold = isModelMature
+                                            ? ((needsReverse || _altBullDetector.IsActive) ? 0.75f : 0.70f)
+                                            : 0.55f; // 학습 초기 완화
+                                        // 일일 수익 모드 boost 추가 ($250+=+10%p, $500+=+15%p)
                                         float spikeThreshold = Math.Min(0.95f, baseThreshold + profitModeAiBoost);
                                         if (spikePred.Probability < spikeThreshold)
                                         {
-                                            string modeTag = needsReverse ? "리버스"
+                                            string modeTag = !isModelMature ? $"학습중(acc={_pumpSpikeAccuracy:P0})"
+                                                : needsReverse ? "리버스"
                                                 : _altBullDetector.IsActive ? "알트불장"
                                                 : profitModeAiBoost > 0 ? "보수모드" : "정상";
                                             OnStatusLog?.Invoke($"⛔ [SPIKE_FAST] {symbol} Spike모델 {spikePred.Probability:P0} < {spikeThreshold:P0} ({modeTag}) → 스킵");
                                             lock (_posLock) { _activePositions.Remove(symbol); }
                                             return;
                                         }
-                                        OnStatusLog?.Invoke($"✅ [SPIKE_FAST] {symbol} Spike모델 {spikePred.Probability:P0} 통과 (임계값 {spikeThreshold:P0})");
+                                        OnStatusLog?.Invoke($"✅ [SPIKE_FAST] {symbol} Spike모델 {spikePred.Probability:P0} 통과 (임계값 {spikeThreshold:P0}, acc={_pumpSpikeAccuracy:P0})");
                                     }
                                 }
                             }
