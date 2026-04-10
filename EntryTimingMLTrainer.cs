@@ -440,7 +440,10 @@ namespace TradingBot
                     MinimumExampleCountPerLeaf = 10,
                     LearningRate = 0.1,
                     NumberOfIterations = 300,
-                    NumberOfThreads = Math.Max(2, Environment.ProcessorCount - 2)
+                    // [v4.5.14] 메인 루프 블로킹 방지: CPU 절반 + 상한 4로 제한
+                    // - 기존: ProcessorCount-2 (8코어=6 스레드 = 75% 점유) → 메인 루프 CPU 대기
+                    // - 변경: max(2, min(4, CPU/2))
+                    NumberOfThreads = Math.Max(2, Math.Min(4, Environment.ProcessorCount / 2))
                 })); // LightGBM: 빠르고 정확한 트리 기반 모델
 
             return pipeline;

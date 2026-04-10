@@ -6384,6 +6384,9 @@ namespace TradingBot
 
         private System.Threading.Timer? _modelRetrainTimer;
 
+        // [v4.5.14] 중복 학습 방지 플래그 (OnFirstAltCollectionComplete + 2분 타이머 중복 방지)
+        private int _mlTrainingInProgress = 0;
+
         /// <summary>[v3.8.1] 전체 ML 모델 1시간 주기 자동 재학습</summary>
         private void StartModelRetrainTimer()
         {
@@ -6445,6 +6448,13 @@ namespace TradingBot
 
         private async Task TrainAllModelsAsync(CancellationToken token)
         {
+            // [v4.5.14] 중복 학습 방지 (OnFirstAltCollectionComplete + 2분 타이머 동시 실행 차단)
+            if (Interlocked.Exchange(ref _mlTrainingInProgress, 1) == 1)
+            {
+                OnStatusLog?.Invoke("⚠️ [ML 재학습] 이미 학습 중 → 스킵 (중복 트리거 방지)");
+                return;
+            }
+
             try
             {
                 OnStatusLog?.Invoke("🧠 [ML 재학습] 전체 모델 학습 시작 (DB 기반)...");
@@ -6593,6 +6603,11 @@ namespace TradingBot
             catch (Exception ex)
             {
                 OnStatusLog?.Invoke($"⚠️ [ML 재학습] 실패: {ex.Message}");
+            }
+            finally
+            {
+                // [v4.5.14] 학습 완료/실패 시 플래그 해제
+                Interlocked.Exchange(ref _mlTrainingInProgress, 0);
             }
         }
 
