@@ -25,11 +25,8 @@ namespace TradingBot.Services
         // [v4.5.6] 알트 캔들 수집 전용 상태
         private DateTime _lastAltCollectionTime = DateTime.MinValue;
         private bool _firstAltCollectionDone;
-        private static readonly HashSet<string> MajorSymbolsSet = new(StringComparer.OrdinalIgnoreCase)
-        {
-            "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"
-        };
-
+        // [v4.6.0] 동적 수집 대상 심볼 — 감시풀/SPIKE/진입 시 등록, 24h 무신호 시 해제
+        private readonly ConcurrentDictionary<string, DateTime> _dynamicSymbols = new(StringComparer.OrdinalIgnoreCase);
         /// <summary>
         /// [v4.5.7] 최초 알트 캔들 수집 완료 시 발화 (ML 학습 즉시 트리거용)
         /// </summary>
@@ -171,7 +168,7 @@ namespace TradingBot.Services
             {
                 // 첫 저장은 즉시 실행
                 await SaveAllSymbolsAsync(saveAllClosedCandles: false, token);
-                _ = Task.Run(() => CollectTopAltCandlesAsync(token)); // 알트 수집 병렬 시작
+                _ = Task.Run(() => CollectDynamicSymbolsAsync(token)); // 동적 심볼 수집 병렬 시작
 
                 while (!token.IsCancellationRequested)
                 {
@@ -179,8 +176,8 @@ namespace TradingBot.Services
                     await Task.Delay(TimeSpan.FromMinutes(5), token);
                     await SaveAllSymbolsAsync(saveAllClosedCandles: false, token);
 
-                    // [v4.5.6] 상위 50개 알트 5분봉 수집 (ML 학습용)
-                    _ = Task.Run(() => CollectTopAltCandlesAsync(token));
+                    // [v4.6.0] 동적 심볼 5분봉 수집 (감시풀/SPIKE/진입 등록 심볼)
+                    _ = Task.Run(() => CollectDynamicSymbolsAsync(token));
                 }
             }
             catch (OperationCanceledException)
@@ -194,12 +191,33 @@ namespace TradingBot.Services
         }
 
         /// <summary>
-        /// [v4.5.6] 상위 50개 알트 5분봉 수집 (PUMP/SurvivalPump ML 학습용)
-        /// - TickerCache에서 거래량 상위 알트 추출 (API 호출 0)
-        /// - 각 심볼당 200개 5분봉 REST 폴링 (5분에 1회, 50회 REST)
-        /// - CPU 무부하: 5분에 1회만 실행
+        /// [v4.6.0] 심볼을 동적 수집 대상에 등록/갱신
+        /// (감시풀 등록, SPIKE 감지, 포지션 진입 시 호출)
         /// </summary>
-        private async Task CollectTopAltCandlesAsync(CancellationToken token)
+        public void RegisterSymbol(string symbol)
+        {
+            bool isNew = !_dynamicSymbols.ContainsKey(symbol);
+            _dynamicSymbols[symbol] = DateTime.UtcNow;
+            if (isNew)
+                MainWindow.Instance?.AddLog($"📌 [DynCollect] {symbol} 수집 등록");
+        }
+
+        /// <summary>
+        /// [v4.6.0] 즉시 백필 요청 — 감시풀 등록 / SPIKE 감지 시 직접 호출
+        /// 5분 throttle 무시, 즉시 REST 폴링
+        /// </summary>
+        public Task RequestBackfillAsync(string symbol, CancellationToken token = default)
+        {
+            _dynamicSymbols[symbol] = DateTime.UtcNow;
+            return BackfillSymbolAsync(symbol, token);
+        }
+
+        /// <summary>
+        /// [v4.6.0] 동적 심볼 수집 루프 (5분 주기)
+        /// - _dynamicSymbols 순회 수집
+        /// - 24시간 미신호 심볼 자동 해제
+        /// </summary>
+        private async Task CollectDynamicSymbolsAsync(CancellationToken token)
         {
             try
             {
@@ -208,138 +226,145 @@ namespace TradingBot.Services
                     return;
                 _lastAltCollectionTime = DateTime.UtcNow;
 
-                // 거래량(QuoteVolume) 상위 50개 알트 선정
-                var topAlts = _marketDataManager.TickerCache.Values
-                    .Where(t => !string.IsNullOrEmpty(t.Symbol)
-                                && t.Symbol!.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
-                                && !MajorSymbolsSet.Contains(t.Symbol!)
-                                && t.QuoteVolume > 0)
-                    .OrderByDescending(t => t.QuoteVolume)
-                    .Take(50)
-                    .Select(t => t.Symbol!)
+                // 24시간 미신호 심볼 자동 해제
+                var toEvict = _dynamicSymbols
+                    .Where(kvp => (DateTime.UtcNow - kvp.Value).TotalHours >= 24)
+                    .Select(kvp => kvp.Key)
                     .ToList();
+                foreach (var sym in toEvict)
+                {
+                    _dynamicSymbols.TryRemove(sym, out _);
+                    _latestSavedOpenTimes.TryRemove(sym, out _);
+                    MainWindow.Instance?.AddLog($"🗑️ [DynCollect] {sym} 24시간 미신호 → 수집 해제");
+                }
 
-                if (topAlts.Count == 0)
-                    return;
+                if (_dynamicSymbols.IsEmpty) return;
 
-                MainWindow.Instance?.AddLog($"📥 [AltCollect] 상위 {topAlts.Count}개 알트 5분봉 수집 시작");
+                var symbols = _dynamicSymbols.Keys.ToList();
+                MainWindow.Instance?.AddLog($"📥 [DynCollect] 동적 심볼 {symbols.Count}개 수집 시작");
 
-                int totalSaved = 0;
-                int successSymbols = 0;
-                int errorSymbols = 0;
+                int totalSaved = 0, successSymbols = 0, errorSymbols = 0;
 
-                foreach (var symbol in topAlts)
+                foreach (var symbol in symbols)
                 {
                     if (token.IsCancellationRequested) break;
-
                     try
                     {
-                        // 이미 최신 데이터가 있으면 스킵
-                        var latestSaved = await GetLatestSavedOpenTimeAsync(symbol);
-                        if (latestSaved.HasValue && (DateTime.UtcNow - latestSaved.Value.ToUniversalTime()).TotalMinutes < 5)
-                            continue;
-
-                        var klineResult = await _restClient.UsdFuturesApi.ExchangeData.GetKlinesAsync(
-                            symbol, KlineInterval.FiveMinutes, limit: 200, ct: token);
-
-                        if (!klineResult.Success || klineResult.Data == null)
-                        {
-                            errorSymbols++;
-                            continue;
-                        }
-
-                        var klines = klineResult.Data.Cast<IBinanceKline>().ToList();
-                        if (klines.Count < 30) continue;
-
-                        var closedKlines = klines
-                            .Where(k => IsCandleClosed(NormalizeToUtc(k.OpenTime)))
-                            .ToList();
-
-                        if (latestSaved.HasValue)
-                        {
-                            closedKlines = closedKlines
-                                .Where(k => ConvertUtcToSeoul(NormalizeToUtc(k.OpenTime)) > latestSaved.Value)
-                                .ToList();
-                        }
-
-                        if (closedKlines.Count == 0) continue;
-
-                        // 지표 계산 (전체 캐시 기반)
-                        int fibLookback = Math.Min(60, klines.Count);
-                        double rsi = IndicatorCalculator.CalculateRSI(klines, 14);
-                        var bb = IndicatorCalculator.CalculateBB(klines, 20, 2);
-                        var macd = IndicatorCalculator.CalculateMACD(klines);
-                        double atr = IndicatorCalculator.CalculateATR(klines, 14);
-                        var fib = IndicatorCalculator.CalculateFibonacci(klines, fibLookback);
-                        bool elliottUptrend = klines.Count >= 20 && IndicatorCalculator.AnalyzeElliottWave(klines);
-
-                        var candleList = new List<CandleData>();
-                        foreach (var k in closedKlines)
-                        {
-                            candleList.Add(new CandleData
-                            {
-                                Symbol = symbol,
-                                Interval = "5m",
-                                OpenTime = ConvertUtcToSeoul(NormalizeToUtc(k.OpenTime)),
-                                Open = k.OpenPrice,
-                                High = k.HighPrice,
-                                Low = k.LowPrice,
-                                Close = k.ClosePrice,
-                                Volume = (float)k.Volume,
-                                RSI = (float)rsi,
-                                BollingerUpper = (float)bb.Upper,
-                                BollingerLower = (float)bb.Lower,
-                                MACD = (float)macd.Macd,
-                                MACD_Signal = (float)macd.Signal,
-                                MACD_Hist = (float)macd.Hist,
-                                ATR = (float)atr,
-                                Fib_236 = (float)fib.Level236,
-                                Fib_382 = (float)fib.Level382,
-                                Fib_500 = (float)fib.Level500,
-                                Fib_618 = (float)fib.Level618,
-                                ElliottWaveState = elliottUptrend ? 3.0f : 1.0f,
-                                Trend_Strength = elliottUptrend ? 1.0f : -1.0f,
-                            });
-                        }
-
-                        await Task.WhenAll(
-                            _databaseService.BulkInsertMarketDataAsync(candleList),
-                            _databaseService.SaveCandleDataBulkAsync(candleList),
-                            _databaseService.SaveCandleHistoryBulkAsync(candleList),
-                            _databaseService.SaveMarketDataBulkAsync(candleList)
-                        );
-
-                        totalSaved += candleList.Count;
-                        successSymbols++;
-
-                        var maxTime = candleList.Max(c => c.OpenTime);
-                        _latestSavedOpenTimes.AddOrUpdate(symbol, maxTime, (_, c) => maxTime > c ? maxTime : c);
-
-                        // API weight 제한 대응: 심볼 간 20ms 대기 (전체 50 * 20 = 1초)
-                        await Task.Delay(20, token);
+                        int saved = await BackfillSymbolAsync(symbol, token);
+                        if (saved > 0) { totalSaved += saved; successSymbols++; }
+                        await Task.Delay(20, token); // API weight 제한 대응
                     }
                     catch (OperationCanceledException) { throw; }
                     catch (Exception ex)
                     {
                         errorSymbols++;
-                        MainWindow.Instance?.AddLog($"⚠️ [AltCollect] {symbol} 실패: {ex.Message}");
+                        MainWindow.Instance?.AddLog($"⚠️ [DynCollect] {symbol} 실패: {ex.Message}");
                     }
                 }
 
-                MainWindow.Instance?.AddLog($"✅ [AltCollect] {successSymbols}/{topAlts.Count} 심볼 저장 | {totalSaved}개 캔들 | 에러 {errorSymbols}");
+                if (totalSaved > 0 || errorSymbols > 0)
+                    MainWindow.Instance?.AddLog($"✅ [DynCollect] {successSymbols}/{symbols.Count} 심볼 저장 | {totalSaved}개 캔들 | 에러 {errorSymbols}");
 
-                // [v4.5.7] 최초 수집 완료 시 ML 학습 즉시 트리거
+                // [v4.5.7] 최초 수집 완료 시 ML 재학습 트리거
                 if (!_firstAltCollectionDone && totalSaved > 0)
                 {
                     _firstAltCollectionDone = true;
-                    MainWindow.Instance?.AddLog($"🎯 [AltCollect] 최초 수집 완료 → ML 재학습 트리거");
+                    MainWindow.Instance?.AddLog($"🎯 [DynCollect] 최초 수집 완료 → ML 재학습 트리거");
                     OnFirstAltCollectionComplete?.Invoke();
                 }
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                MainWindow.Instance?.AddLog($"❌ [AltCollect] 오류: {ex.Message}");
+                MainWindow.Instance?.AddLog($"❌ [DynCollect] 오류: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// [v4.6.0] 단일 심볼 백필 — REST API로 최신 200개 5분봉 수집·저장
+        /// 성공 시 저장된 캔들 수 반환, 실패/스킵 시 0 반환
+        /// </summary>
+        private async Task<int> BackfillSymbolAsync(string symbol, CancellationToken token)
+        {
+            try
+            {
+                var latestSaved = await GetLatestSavedOpenTimeAsync(symbol);
+                if (latestSaved.HasValue && (DateTime.UtcNow - latestSaved.Value.ToUniversalTime()).TotalMinutes < 5)
+                    return 0;
+
+                var klineResult = await _restClient.UsdFuturesApi.ExchangeData.GetKlinesAsync(
+                    symbol, KlineInterval.FiveMinutes, limit: 200, ct: token);
+
+                if (!klineResult.Success || klineResult.Data == null) return 0;
+
+                var klines = klineResult.Data.Cast<IBinanceKline>().ToList();
+                if (klines.Count < 30) return 0;
+
+                var closedKlines = klines
+                    .Where(k => IsCandleClosed(NormalizeToUtc(k.OpenTime)))
+                    .ToList();
+
+                if (latestSaved.HasValue)
+                    closedKlines = closedKlines
+                        .Where(k => ConvertUtcToSeoul(NormalizeToUtc(k.OpenTime)) > latestSaved.Value)
+                        .ToList();
+
+                if (closedKlines.Count == 0) return 0;
+
+                int fibLookback = Math.Min(60, klines.Count);
+                double rsi = IndicatorCalculator.CalculateRSI(klines, 14);
+                var bb = IndicatorCalculator.CalculateBB(klines, 20, 2);
+                var macd = IndicatorCalculator.CalculateMACD(klines);
+                double atr = IndicatorCalculator.CalculateATR(klines, 14);
+                var fib = IndicatorCalculator.CalculateFibonacci(klines, fibLookback);
+                bool elliottUptrend = klines.Count >= 20 && IndicatorCalculator.AnalyzeElliottWave(klines);
+
+                var candleList = new List<CandleData>();
+                foreach (var k in closedKlines)
+                {
+                    candleList.Add(new CandleData
+                    {
+                        Symbol = symbol,
+                        Interval = "5m",
+                        OpenTime = ConvertUtcToSeoul(NormalizeToUtc(k.OpenTime)),
+                        Open = k.OpenPrice,
+                        High = k.HighPrice,
+                        Low = k.LowPrice,
+                        Close = k.ClosePrice,
+                        Volume = (float)k.Volume,
+                        RSI = (float)rsi,
+                        BollingerUpper = (float)bb.Upper,
+                        BollingerLower = (float)bb.Lower,
+                        MACD = (float)macd.Macd,
+                        MACD_Signal = (float)macd.Signal,
+                        MACD_Hist = (float)macd.Hist,
+                        ATR = (float)atr,
+                        Fib_236 = (float)fib.Level236,
+                        Fib_382 = (float)fib.Level382,
+                        Fib_500 = (float)fib.Level500,
+                        Fib_618 = (float)fib.Level618,
+                        ElliottWaveState = elliottUptrend ? 3.0f : 1.0f,
+                        Trend_Strength = elliottUptrend ? 1.0f : -1.0f,
+                    });
+                }
+
+                await Task.WhenAll(
+                    _databaseService.BulkInsertMarketDataAsync(candleList),
+                    _databaseService.SaveCandleDataBulkAsync(candleList),
+                    _databaseService.SaveCandleHistoryBulkAsync(candleList),
+                    _databaseService.SaveMarketDataBulkAsync(candleList)
+                );
+
+                var maxTime = candleList.Max(c => c.OpenTime);
+                _latestSavedOpenTimes.AddOrUpdate(symbol, maxTime, (_, c) => maxTime > c ? maxTime : c);
+
+                return candleList.Count;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DynCollect] {symbol} 백필 실패: {ex.Message}");
+                return 0;
             }
         }
 

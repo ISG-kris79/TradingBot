@@ -1,0 +1,26 @@
+﻿=== Top reasons (180m) ===
+
+ReasonLabel Cnt
+----------- ---
+RSI 과확장 차단  773
+기타          120
+
+
+
+=== By symbol group ===
+
+SymbolGroup ReasonLabel Cnt
+----------- ----------- ---
+PUMP        RSI 과확장 차단  773
+PUMP        기타          120
+
+
+
+=== Total ===
+
+TotalEntryBlocks180m
+--------------------
+                 893
+
+
+

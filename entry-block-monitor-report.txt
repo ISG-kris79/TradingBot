@@ -1,0 +1,28 @@
+﻿=== Monitor Configuration ===
+StartTime	2026-03-18 19:06:10
+DurationMinutes	20
+BaselineMinutes	30
+
+=== Baseline Window ===
+From	2026-03-18 18:36:10
+To	2026-03-18 19:06:10
+TotalBlocks	0
+PumpBlocks	0
+RsiBlocks	0
+BlocksPerMinute	0
+
+TopReasons
+
+=== Observed Window ===
+From	2026-03-18 19:06:10
+To	2026-03-18 19:26:11
+TotalBlocks	0
+PumpBlocks	0
+RsiBlocks	0
+PumpRatioPct	0
+BlocksPerMinute	0
+RateReductionPct_vsBaseline	0
+
+TopReasons
+
+BySymbolGroup

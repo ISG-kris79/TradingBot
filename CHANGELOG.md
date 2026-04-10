@@ -15,6 +15,30 @@
 
  - 없음
 
+## [4.6.0] - 2026-04-11
+
+### Fixed (PUMP/급등 진입 전면 차단 해결)
+
+- **변동성 차단 PUMP/급등 경로 우회**: ATR 3% / 봉 5% 차단을 메이저 일반 진입에만 적용
+  - PUMP_WATCH_CONFIRMED, SPIKE_*, MAJOR_MEME, TICK_SURGE는 변동성으로 차단 안 함
+  - 급등 자체가 신호인데 변동성으로 차단하던 모순 해결
+
+- **130봉 부족 차단 완화**: 신규 상장 알트는 5분봉 130봉(11시간) 부족 → 진입 전면 차단되던 문제
+  - PUMP/급등 경로는 30봉 fallback retry 적용
+  - latestCandle null fallback 로직 PUMP/급등 전체 적용 (기존: SPIKE_DETECT만)
+
+- **PUMP HTF 차단 D1 → H1/M15 OR 조건**: D1 SMA 기준은 PUMP 알트에 너무 엄격
+  - `CheckPumpHtfBullishAsync` 신규: H1 또는 M15 SMA20>SMA60 중 하나만 충족
+  - PUMP_WATCH_CONFIRMED 진입 시 이 메서드 사용
+
+- **AI Gate 우회 시도 제거**: AI 단독 판단 원칙 복원
+
+### Added
+
+- 감시풀 등록 시 `MarketHistoryService.RegisterSymbol` + `RequestBackfillAsync` 호출 연결
+- SPIKE 감지 시 동적 수집 등록 + 즉시 백필
+- PUMP_WATCH_CONFIRMED 차단 이유 모든 경로 로깅 강화
+
 ## [4.5.17] - 2026-04-10
 
 ### Changed

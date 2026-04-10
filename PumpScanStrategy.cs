@@ -209,12 +209,12 @@ namespace TradingBot.Strategies
                     PumpSignalLog("REJECT", $"sym={symbol} reason=price<0.001 ({currentPrice})");
                     return false;
                 }
-                // [v3.7.2] 초고변동성 코인 차단 — ATR/가격 3%+ = 1초에 20%+ 가능
+                // [v3.7.2] 초고변동성 코인 차단 — ATR/가격 5%+ = 1초에 30%+ 가능 (v3.7.3: 3%→5%)
                 double pumpAtrCheck = IndicatorCalculator.CalculateATR(list, 14);
                 if (pumpAtrCheck > 0 && (double)currentPrice > 0)
                 {
                     double atrRatioPct = pumpAtrCheck / (double)currentPrice * 100;
-                    if (atrRatioPct >= 3.0)
+                    if (atrRatioPct >= 5.0)
                     {
                         PumpSignalLog("REJECT", $"sym={symbol} reason=ultraVolatile ATR/price={atrRatioPct:F1}%");
                         return false;

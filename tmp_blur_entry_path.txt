@@ -1,0 +1,200 @@
+﻿2026-04-09 13:56:03	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:56:03	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.42
+2026-04-09 13:55:50	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:55:50	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.42
+2026-04-09 13:55:40	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:55:40	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.42
+2026-04-09 13:55:29	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:55:29	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.42
+2026-04-09 13:55:19	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0219  | hold사유=bull2(3개미만)
+2026-04-09 13:55:19	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.40
+2026-04-09 13:55:09	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.40
+2026-04-09 13:55:09	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0219  | hold사유=bull2(3개미만)
+2026-04-09 13:54:58	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.38
+2026-04-09 13:54:58	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0219  | hold사유=bull2(3개미만)
+2026-04-09 13:54:48	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0219  | hold사유=bull2(3개미만)
+2026-04-09 13:54:48	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.38
+2026-04-09 13:54:37	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:54:37	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.38
+2026-04-09 13:54:27	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.38
+2026-04-09 13:54:27	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0219  | hold사유=bull2(3개미만)
+2026-04-09 13:54:18	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0219  | hold사유=bull2(3개미만)
+2026-04-09 13:54:18	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.38
+2026-04-09 13:54:07	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.38
+2026-04-09 13:54:07	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:53:56	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:53:56	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.38
+2026-04-09 13:53:50	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0219  | hold사유=bull1(3개미만)
+2026-04-09 13:53:35	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0219  | hold사유=bull1(3개미만)
+2026-04-09 13:53:24	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0219  | hold사유=bull2(3개미만)
+2026-04-09 13:53:24	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.31
+2026-04-09 13:53:14	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0219  | hold사유=bull2(3개미만)
+2026-04-09 13:53:14	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.31
+2026-04-09 13:53:03	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.31
+2026-04-09 13:53:03	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0219  | hold사유=bull2(3개미만)
+2026-04-09 13:52:53	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.27
+2026-04-09 13:52:53	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:52:42	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:52:42	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.27
+2026-04-09 13:52:32	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.27
+2026-04-09 13:52:32	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:52:21	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:52:21	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.27
+2026-04-09 13:52:11	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:52:11	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.27
+2026-04-09 13:52:01	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.27
+2026-04-09 13:52:01	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:51:50	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:51:50	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.27
+2026-04-09 13:51:40	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=WAIT px=0.0220  | hold사유=bull2(3개미만)
+2026-04-09 13:51:40	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.27
+2026-04-09 13:51:29	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:51:29	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.19x]
+2026-04-09 13:51:29	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:51:29	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.19
+2026-04-09 13:51:19	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:51:19	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:51:19	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.19
+2026-04-09 13:51:19	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.19x]
+2026-04-09 13:51:08	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:51:08	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.19x]
+2026-04-09 13:51:08	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:51:08	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.19
+2026-04-09 13:50:58	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:50:58	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.19x]
+2026-04-09 13:50:58	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:50:58	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.19
+2026-04-09 13:50:47	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:50:47	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:50:47	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.19x]
+2026-04-09 13:50:47	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.19
+2026-04-09 13:50:37	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:50:37	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.19
+2026-04-09 13:50:37	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.19x]
+2026-04-09 13:50:37	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:50:26	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.19x]
+2026-04-09 13:50:26	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:50:26	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:50:26	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.19
+2026-04-09 13:50:16	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:50:16	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.19x]
+2026-04-09 13:50:16	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:50:16	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.19
+2026-04-09 13:50:05	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:50:05	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.54x]
+2026-04-09 13:50:05	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:50:05	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.54
+2026-04-09 13:49:55	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:49:55	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.54x]
+2026-04-09 13:49:55	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:49:55	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.54
+2026-04-09 13:49:45	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:49:45	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:49:45	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.54x]
+2026-04-09 13:49:45	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.54
+2026-04-09 13:49:35	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:49:35	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.54x]
+2026-04-09 13:49:35	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:49:35	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.54
+2026-04-09 13:49:24	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:49:24	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:49:24	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.54x]
+2026-04-09 13:49:24	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.54
+2026-04-09 13:49:13	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0220 원인=MAJOR_MEME
+2026-04-09 13:49:13	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0220 prefilter=need-ai-check [거래량0.54x]
+2026-04-09 13:49:13	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0220 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:49:13	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.54
+2026-04-09 13:49:03	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0220 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:49:03	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0220 원인=MAJOR_MEME
+2026-04-09 13:49:03	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.54
+2026-04-09 13:49:03	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0220 prefilter=need-ai-check [거래량0.54x]
+2026-04-09 13:48:52	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:48:52	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.52
+2026-04-09 13:48:52	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.52x]
+2026-04-09 13:48:52	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:48:41	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:48:41	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:48:41	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.52
+2026-04-09 13:48:41	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.52x]
+2026-04-09 13:48:31	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:48:31	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.52x]
+2026-04-09 13:48:31	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:48:31	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.52
+2026-04-09 13:48:20	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0220 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:48:20	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0220 원인=MAJOR_MEME
+2026-04-09 13:48:20	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.52
+2026-04-09 13:48:20	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0220 prefilter=need-ai-check [거래량0.52x]
+2026-04-09 13:48:10	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:48:10	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:48:10	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.47
+2026-04-09 13:48:10	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.47x]
+2026-04-09 13:47:59	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:47:59	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.47
+2026-04-09 13:47:59	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.47x]
+2026-04-09 13:47:59	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:47:49	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0221 원인=MAJOR_MEME
+2026-04-09 13:47:49	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.47
+2026-04-09 13:47:49	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0221 prefilter=need-ai-check [거래량0.47x]
+2026-04-09 13:47:49	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0221 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:47:38	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:47:38	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:47:38	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.47
+2026-04-09 13:47:38	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.47x]
+2026-04-09 13:47:28	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:47:28	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.47x]
+2026-04-09 13:47:28	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:47:28	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.47
+2026-04-09 13:47:17	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:47:17	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.46x]
+2026-04-09 13:47:17	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:47:17	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.46
+2026-04-09 13:47:07	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:47:07	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:47:07	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.46x]
+2026-04-09 13:47:07	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.46
+2026-04-09 13:46:56	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:46:56	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.45x]
+2026-04-09 13:46:56	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:46:56	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.45
+2026-04-09 13:46:46	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.45x]
+2026-04-09 13:46:46	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:46:46	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:46:46	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.45
+2026-04-09 13:46:35	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:46:35	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:46:35	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.45
+2026-04-09 13:46:35	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.45x]
+2026-04-09 13:46:25	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:46:25	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.45x]
+2026-04-09 13:46:25	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:46:25	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.45
+2026-04-09 13:46:14	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:46:14	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:46:14	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.44x]
+2026-04-09 13:46:14	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.44
+2026-04-09 13:46:04	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:46:04	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.43x]
+2026-04-09 13:46:04	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:46:04	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.43
+2026-04-09 13:45:53	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:45:53	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:45:53	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.43x]
+2026-04-09 13:45:53	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.43
+2026-04-09 13:45:43	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:45:43	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.41x]
+2026-04-09 13:45:43	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:45:43	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.41
+2026-04-09 13:45:32	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.41x]
+2026-04-09 13:45:32	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:45:32	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:45:32	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.41
+2026-04-09 13:45:22	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:45:22	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:45:22	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.41
+2026-04-09 13:45:22	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.41x]
+2026-04-09 13:45:11	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:45:11	PUMP	BLURUSDT	📡 [신호][PUMP][신호발생] 심볼=BLURUSDT 방향=LONG px=0.0222 전략=MAJOR score=100 atr=0.0003
+2026-04-09 13:45:11	PUMP	BLURUSDT	📡 [신호][PUMP][INFO] 심볼=BLURUSDT lowVolumeBypass=on volumeMomentum=0.41
+2026-04-09 13:45:11	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.41x]
+2026-04-09 13:45:01	PUMP	BLURUSDT	🧭 [진입][START][INFO] 전략=MAJOR_MEME mode=TREND 심볼=BLURUSDT 방향=LONG | price=0.0222 원인=MAJOR_MEME
+2026-04-09 13:45:01	PUMP	BLURUSDT	📡 [신호][PUMP][후보] 심볼=BLURUSDT 방향=LONG px=0.0222 prefilter=need-ai-check [거래량0.58x]

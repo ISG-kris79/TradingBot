@@ -133,6 +133,53 @@ namespace TradingBot.Services
         }
 
         /// <summary>
+        /// [v4.6.0] PUMP 알트 전용 HTF 강세 체크 — 더 관대함
+        /// - MACD 크로스(메이저)는 D1 기준이지만, PUMP 알트는 D1 대부분 하향 추세라 차단 과함
+        /// - H1 SMA20>SMA60 또는 M15 SMA20>SMA60 중 하나만 충족하면 통과
+        /// - 단기 상승 모멘텀 포착 우선
+        /// </summary>
+        public async Task<(bool isBullish, string detail)> CheckPumpHtfBullishAsync(
+            string symbol, CancellationToken token)
+        {
+            try
+            {
+                // H1 체크
+                var k1h = await GetKlinesCachedAsync(symbol, KlineInterval.OneHour, 70, token);
+                bool h1Bullish = false;
+                if (k1h != null && k1h.Count >= 60)
+                {
+                    var list1h = k1h.ToList();
+                    double sma20 = list1h.TakeLast(20).Average(k => (double)k.ClosePrice);
+                    double sma60 = list1h.TakeLast(60).Average(k => (double)k.ClosePrice);
+                    h1Bullish = sma20 > sma60;
+                }
+
+                // M15 체크
+                var k15m = await GetKlinesCachedAsync(symbol, KlineInterval.FifteenMinutes, 70, token);
+                bool m15Bullish = false;
+                if (k15m != null && k15m.Count >= 60)
+                {
+                    var list15m = k15m.ToList();
+                    double sma20 = list15m.TakeLast(20).Average(k => (double)k.ClosePrice);
+                    double sma60 = list15m.TakeLast(60).Average(k => (double)k.ClosePrice);
+                    m15Bullish = sma20 > sma60;
+                }
+
+                // 둘 다 데이터 없으면 false
+                if (k1h == null && k15m == null)
+                    return (false, "H1/M15 데이터 모두 부족");
+
+                // OR 조건: 하나만 충족해도 통과 (관대)
+                bool pass = h1Bullish || m15Bullish;
+                return (pass, $"PUMP-HTF H1={h1Bullish} M15={m15Bullish} → {(pass ? "통과" : "차단")}");
+            }
+            catch (Exception ex)
+            {
+                return (false, $"에러: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// [v4.5.17] 상위봉 하락세 확인 (D1 SMA20 < SMA60 또는 RSI 과매수 꺾임)
         /// </summary>
         public async Task<(bool isBearish, string detail)> CheckHigherTimeframeBearishAsync(

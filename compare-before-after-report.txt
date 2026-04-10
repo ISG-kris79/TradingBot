@@ -1,0 +1,18 @@
+﻿=== BEFORE vs AFTER Block Rate Comparison ===
+Pivot: 2026-03-18 18:42:20
+
+Phase	TotalLogs	BlockTotal	RsiBlocks	RrBlocks	SlotBlocks	DurMin	Blocks/min	Rsi/min	Rr/min
+BEFORE	0	0	0	0	0	60	0	0	0
+AFTER	0	0	0	0	0	1	0	0	0
+
+=== Change (BEFORE ??AFTER) ===
+Blocks/min: 0 ??0  (N/A%)
+RSI/min   : 0 ??0  (N/A%)
+RR/min    : 0 ??0  (N/A%)
+Slot/min  : 0 ??0
+
+=== RSI Block Symbols (AFTER) ===
+
+=== Hourly Block Rate (AFTER) ===
+hr=0	Logs=0	Blocks=0	BlkRate=0%
+hr=0	Logs=0	Blocks=0	BlkRate=0%

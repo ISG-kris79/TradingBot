@@ -1,0 +1,24 @@
+﻿=== Top reasons (30m) ===
+
+ReasonLabel Cnt
+----------- ---
+RSI 과확장 차단  195
+
+
+
+=== By symbol group ===
+
+SymbolGroup ReasonLabel Cnt
+----------- ----------- ---
+PUMP        RSI 과확장 차단  195
+
+
+
+=== Total ===
+
+TotalEntryBlocks30m
+-------------------
+                195
+
+
+

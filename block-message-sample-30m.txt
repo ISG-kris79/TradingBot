@@ -1,0 +1,16 @@
+﻿
+Timestamp             Category Symbol  Message                                                              
+---------             -------- ------  -------                                                              
+2026-03-18 오후 6:05:17 PUMP     AINUSDT ⛔ [RSI 과확장 차단] AINUSDT LONG | RSI=76.3 (longLimit=70) → 모멘텀 소진, 진입 차단
+2026-03-18 오후 6:05:16 PUMP     AINUSDT ⛔ [RSI 과확장 차단] AINUSDT LONG | RSI=76.3 (longLimit=70) → 모멘텀 소진, 진입 차단
+2026-03-18 오후 6:05:15 PUMP     AINUSDT ⛔ [RSI 과확장 차단] AINUSDT LONG | RSI=76.3 (longLimit=70) → 모멘텀 소진, 진입 차단
+2026-03-18 오후 6:05:14 PUMP     AINUSDT ⛔ [RSI 과확장 차단] AINUSDT LONG | RSI=76.3 (longLimit=70) → 모멘텀 소진, 진입 차단
+2026-03-18 오후 6:05:13 PUMP     AINUSDT ⛔ [RSI 과확장 차단] AINUSDT LONG | RSI=76.0 (longLimit=70) → 모멘텀 소진, 진입 차단
+2026-03-18 오후 6:05:11 PUMP     AINUSDT ⛔ [RSI 과확장 차단] AINUSDT LONG | RSI=76.0 (longLimit=70) → 모멘텀 소진, 진입 차단
+2026-03-18 오후 6:04:01 PUMP     AINUSDT ⛔ [RSI 과확장 차단] AINUSDT LONG | RSI=74.9 (longLimit=70) → 모멘텀 소진, 진입 차단
+2026-03-18 오후 6:03:23 PUMP     AINUSDT ⛔ [RSI 과확장 차단] AINUSDT LONG | RSI=75.1 (longLimit=70) → 모멘텀 소진, 진입 차단
+2026-03-18 오후 6:03:21 PUMP     AINUSDT ⛔ [RSI 과확장 차단] AINUSDT LONG | RSI=74.9 (longLimit=70) → 모멘텀 소진, 진입 차단
+2026-03-18 오후 6:03:20 PUMP     AINUSDT ⛔ [RSI 과확장 차단] AINUSDT LONG | RSI=74.0 (longLimit=70) → 모멘텀 소진, 진입 차단
+
+
+

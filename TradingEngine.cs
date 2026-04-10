@@ -845,6 +845,9 @@ namespace TradingBot
             {
                 _pumpWatchPool[symbol] = (price, DateTime.Now, volRatio);
                 OnStatusLog?.Invoke($"🔥 [감시등록] {symbol} vol={volRatio:F1}x price={price:F6} → 상승 확인 대기");
+                // [v4.6.0] 감시풀 등록 시 동적 수집 등록 + 즉시 백필
+                _marketHistoryService?.RegisterSymbol(symbol);
+                _ = _marketHistoryService?.RequestBackfillAsync(symbol, _cts?.Token ?? CancellationToken.None);
             };
 
             _marketDataManager.OnTickerUpdate += HandleTickerUpdate;
@@ -2398,26 +2401,39 @@ namespace TradingBot
                                     {
                                         try
                                         {
+                                            // [v4.6.0] 감시풀 등록 심볼 → 동적 수집 대상 등록 + 즉시 백필
+                                            _marketHistoryService?.RegisterSymbol(pumpKey);
+                                            _ = _marketHistoryService?.RequestBackfillAsync(pumpKey, _cts?.Token ?? CancellationToken.None);
+
                                             // [v4.5.11] 일일 수익 모드 기반 보수 모드 체크
                                             var (allowed, sizeMul, _) = CheckDailyProfitModeForPumpEntry(pumpKey, "PUMP_WATCH_CONFIRMED");
-                                            if (!allowed) return;
+                                            if (!allowed)
+                                            {
+                                                OnStatusLog?.Invoke($"⛔ [감시진입차단] {pumpKey} 보수모드 차단 (일일 수익 한도)");
+                                                return;
+                                            }
 
                                             // [v4.5.9] 일일 PUMP 진입 한도 (40회) 체크
                                             if (!TryReserveDailyPumpEntry(pumpKey, "PUMP_WATCH_CONFIRMED"))
+                                            {
+                                                OnStatusLog?.Invoke($"⛔ [감시진입차단] {pumpKey} 일일 PUMP 한도 40회 초과");
                                                 return;
+                                            }
 
-                                            // [v4.5.6] AI 모델 학습 부족 시 하드 체크: 상위 TF(H1/M15) 하락추세 차단
+                                            // [v4.6.0] PUMP 전용 HTF 체크 — H1 OR M15 중 하나만 충족하면 통과 (D1 기준은 너무 엄격)
                                             if (!IsAiModelReadyForPumpEntry && _macdCrossService != null)
                                             {
-                                                var (isBullish, htfDetail) = await _macdCrossService.CheckHigherTimeframeBullishAsync(
+                                                var (isBullish, htfDetail) = await _macdCrossService.CheckPumpHtfBullishAsync(
                                                     pumpKey, _cts?.Token ?? CancellationToken.None);
                                                 if (!isBullish)
                                                 {
-                                                    OnStatusLog?.Invoke($"⛔ [PUMP-HTF차단] {pumpKey} 상위TF 약세 → 진입 거부 (AI 학습 부족: pump={_pumpModelAccuracy:P0} trade={_tradeSignalAccuracy:P0}) | {htfDetail}");
+                                                    OnStatusLog?.Invoke($"⛔ [감시진입차단-HTF] {pumpKey} H1/M15 둘 다 약세 | {htfDetail}");
                                                     return;
                                                 }
+                                                OnStatusLog?.Invoke($"✅ [감시진입-HTF통과] {pumpKey} | {htfDetail}");
                                             }
 
+                                            OnStatusLog?.Invoke($"🟢 [감시진입시도] {pumpKey} → ExecuteAutoOrder 호출 (size×{sizeMul})");
                                             await ExecuteAutoOrder(pumpKey, "LONG", nowPrice,
                                                 _cts?.Token ?? CancellationToken.None,
                                                 "PUMP_WATCH_CONFIRMED", manualSizeMultiplier: sizeMul);
@@ -6954,6 +6970,10 @@ namespace TradingBot
             if (_stablecoinSymbols.Contains(symbol)) return; // 스테이블코인 제외
             var token = _cts?.Token ?? CancellationToken.None;
 
+            // [v4.6.0] SPIKE 감지 시 동적 수집 등록 + 즉시 백필
+            _marketHistoryService?.RegisterSymbol(symbol);
+            _ = _marketHistoryService?.RequestBackfillAsync(symbol, token);
+
             bool isMajor = MajorSymbols.Contains(symbol);
 
             // [v4.5.11] 일일 수익 모드 기반 보수 모드 체크 (PUMP 알트만)
@@ -7743,10 +7763,17 @@ namespace TradingBot
             List<IBinanceKline>? recentEntryKlines =
                 (await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 140, token))?.ToList();
 
-            // SPIKE_DETECT: 140봉 부족 시 30봉으로 재시도
-            if ((recentEntryKlines == null || recentEntryKlines.Count < 20) && signalSource == "SPIKE_DETECT")
+            // [v4.6.0] PUMP/SPIKE/MAJOR_MEME 모두 140봉 부족 시 30봉으로 retry (신규 상장 알트 대응)
+            bool isPumpOrSpikeSource = signalSource == "SPIKE_DETECT"
+                || signalSource == "PUMP_WATCH_CONFIRMED"
+                || signalSource.StartsWith("SPIKE", StringComparison.OrdinalIgnoreCase)
+                || signalSource.StartsWith("MAJOR_MEME", StringComparison.OrdinalIgnoreCase)
+                || signalSource == "TICK_SURGE";
+
+            if ((recentEntryKlines == null || recentEntryKlines.Count < 20) && isPumpOrSpikeSource)
             {
                 recentEntryKlines = (await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 30, token))?.ToList();
+                EntryLog("DATA", "RETRY30", $"path={signalSource} count={recentEntryKlines?.Count ?? 0}");
             }
 
             var hsKlines = (await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 80, token))?.ToList();
@@ -7835,8 +7862,17 @@ namespace TradingBot
                 EntryLog("GUARD", "INFO", $"patternHold={deferReason} (not blocking)");
             }
 
-            // 1-7. 데이터 유효성 (SPIKE_DETECT는 캔들 부족 시 최소 데이터로 진행)
-            if (latestCandle == null && signalSource == "SPIKE_DETECT")
+            // 1-7. 데이터 유효성 — [v4.6.0] PUMP/SPIKE/MAJOR_MEME 모두 fallback 허용
+            // 신규 상장 알트는 5분봉 130봉(11시간) 부족할 수 있음
+            bool allowDataFallback = signalSource == "SPIKE_DETECT"
+                || signalSource == "PUMP_WATCH_CONFIRMED"
+                || signalSource.StartsWith("SPIKE", StringComparison.OrdinalIgnoreCase)
+                || signalSource.StartsWith("MAJOR_MEME", StringComparison.OrdinalIgnoreCase)
+                || signalSource == "TICK_SURGE"
+                || signalSource == "PUMP_REVERSE"
+                || signalSource == "CRASH_REVERSE";
+
+            if (latestCandle == null && allowDataFallback)
             {
                 // 급등 감지는 TickerCache 가격만으로도 진입 가능하도록 최소 CandleData 생성
                 if (recentEntryKlines != null && recentEntryKlines.Count >= 20)
@@ -7896,26 +7932,37 @@ namespace TradingBot
                 }
             }
 
-            // [v3.7.2] 초고변동성 코인 진입 차단 — 1분에 20%+ 움직이면 대응 불가
-            if (latestCandle != null && latestCandle.ATR > 0 && currentPrice > 0)
+            // [v4.6.0] 변동성 차단 — 메이저 일반 진입에만 적용 (PUMP/급등은 우회)
+            // PUMP/급등은 변동성 자체가 진입 신호이므로 변동성으로 차단하면 모순
+            bool isVolatilitySignalPath = signalSource == "PUMP_WATCH_CONFIRMED"
+                || signalSource.StartsWith("SPIKE", StringComparison.OrdinalIgnoreCase)
+                || signalSource.StartsWith("MAJOR_MEME", StringComparison.OrdinalIgnoreCase)
+                || signalSource == "TICK_SURGE"
+                || signalSource == "PUMP_REVERSE"
+                || signalSource == "CRASH_REVERSE";
+
+            if (!isVolatilitySignalPath && latestCandle != null && latestCandle.ATR > 0 && currentPrice > 0)
             {
-                // ATR 대비 가격 비율 (%) — 5분봉 ATR이 가격의 3%+ = 초고변동성
+                // 메이저 일반 진입만: ATR 3%+, 5분봉 5%+ 차단
                 float atrPriceRatio = latestCandle.ATR / (float)currentPrice * 100f;
                 if (atrPriceRatio >= 3.0f)
                 {
-                    OnStatusLog?.Invoke($"⛔ [변동성] {symbol} ATR/가격={atrPriceRatio:F1}% ≥ 3% → 초고변동성 진입 차단 (1초에 20%+ 가능)");
-                    EntryLog("VOLATILITY", "BLOCK", $"atrRatio={atrPriceRatio:F1}% tooVolatile");
+                    OnStatusLog?.Invoke($"⛔ [변동성] {symbol} ATR/가격={atrPriceRatio:F1}% ≥ 3% → 차단");
+                    EntryLog("VOLATILITY", "BLOCK", $"atrRatio={atrPriceRatio:F1}% (메이저 진입)");
                     return;
                 }
 
-                // 5분봉 내 고저폭(%) — 단일 봉에서 5%+ 움직임 = 위험
                 float candleRangePct = (float)(latestCandle.High - latestCandle.Low) / (float)currentPrice * 100f;
                 if (candleRangePct >= 5.0f)
                 {
-                    OnStatusLog?.Invoke($"⛔ [변동성] {symbol} 5분봉 고저폭={candleRangePct:F1}% ≥ 5% → 극단 변동성 차단");
-                    EntryLog("VOLATILITY", "BLOCK", $"candleRange={candleRangePct:F1}% extremeVolatility");
+                    OnStatusLog?.Invoke($"⛔ [변동성] {symbol} 5분봉={candleRangePct:F1}% ≥ 5% → 차단");
+                    EntryLog("VOLATILITY", "BLOCK", $"candleRange={candleRangePct:F1}% (메이저 진입)");
                     return;
                 }
+            }
+            else if (isVolatilitySignalPath)
+            {
+                EntryLog("VOLATILITY", "BYPASS", $"path={signalSource} (PUMP/급등은 변동성 자체가 신호)");
             }
 
             // ═══════════════════════════════════════════════════════════════
@@ -8112,7 +8159,7 @@ namespace TradingBot
                     }
                 });
 
-                // [v3.2.47] AI Gate 차단 → 완전 차단 (정찰대 손실 방지)
+                // [v3.2.47] AI Gate 차단 — 우회 없음 (AI 단독 판단 원칙)
                 if (!gateResult.allowEntry)
                 {
                     EntryLog("AI_GATE", "BLOCK",
@@ -9551,6 +9598,8 @@ namespace TradingBot
 
                 EntryLog("ORDER", "FILLED", $"entryPrice={actualEntryPrice:F4} qty={filledQty}");
                 _lastSuccessfulEntryTime = DateTime.Now;
+                // [v4.6.0] 진입 심볼 동적 수집 등록 (지속 수집 보장)
+                _marketHistoryService?.RegisterSymbol(symbol);
 
                 if (ctx.ScoutModeActivated)
                 {
