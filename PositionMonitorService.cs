@@ -852,7 +852,9 @@ namespace TradingBot.Services
                     {
                         try
                         {
-                            var macdResult = await _macdCrossService.DetectGoldenCrossAsync(symbol, token);
+                            // [v4.5.17] 익절 타이밍은 1분봉 기준 — DetectShortTermCrossAsync 사용
+                            // (DetectGoldenCrossAsync는 4시간봉 기준으로 진입 판단용)
+                            var macdResult = await _macdCrossService.DetectShortTermCrossAsync(symbol, token);
 
                             if (isLong)
                             {

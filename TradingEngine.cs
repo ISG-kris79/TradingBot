@@ -6186,8 +6186,9 @@ namespace TradingBot
 
         private async Task ScanMacdGoldenCrossAsync(CancellationToken token)
         {
-            // 30초 간격 스캔
-            if ((DateTime.Now - _lastMacdScanTime).TotalSeconds < 30) return;
+            // [v4.5.17] 4시간봉 MACD 크로스 → 15분 주기 스캔 (기존 30초)
+            // 4시간봉은 봉 마감이 4시간마다이므로 15분 주기면 충분
+            if ((DateTime.Now - _lastMacdScanTime).TotalMinutes < 15) return;
             _lastMacdScanTime = DateTime.Now;
 
             if (_macdCrossService == null) return;

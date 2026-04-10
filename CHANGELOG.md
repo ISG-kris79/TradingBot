@@ -15,6 +15,31 @@
 
  - 없음
 
+## [4.5.17] - 2026-04-10
+
+### Changed
+
+- **MACD 골든크로스/데드크로스 감지 1분봉 → 4시간봉 변경**
+  - 1분봉은 노이즈 과다 (XRP 0.000009 같은 의미 없는 크로스)
+  - 4시간봉은 추세 전환 확실성 훨씬 높음
+  - 미완성 마지막 봉 제외 (직전 완성봉 기준)
+  - 상위 TF 체크: H4 → **D1 SMA20/60** 기준으로 재구성
+  - 스캔 주기: 30초 → **15분** (4시간봉 마감 대응)
+
+- **노이즈 필터 4종 추가** (`DetectGoldenCrossAsync` 내부)
+  - `noiseGap`: |MACD-Signal| / ATR(14) < 0.02 차단
+  - `noiseAngle`: DeadCrossAngle 절대값 < 평균 히스토그램 × 5%
+  - `whipsawZone`: 최근 10봉 내 크로스 3회+
+  - RSI 중립 구간: Golden RSI<55 또는 Dead RSI>45 차단
+  - 로그 태그: `NoiseFiltered[이유]`
+
+### Added
+
+- **`DetectShortTermCrossAsync` 메서드 신규**: 1분봉 전용 단타/익절 감지
+  - `PositionMonitorService`의 실시간 익절 타이밍 체크
+  - `WaitForRetestShortTriggerAsync`의 꼬리 리테스트 단타 진입
+  - 노이즈 필터 미적용 (빠른 반응 우선)
+
 ## [4.5.16] - 2026-04-10
 
 ### Performance

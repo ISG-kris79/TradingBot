@@ -107,35 +107,24 @@ namespace TradingBot.Services
         }
 
         /// <summary>
-        /// 상위봉 정배열 확인 (15m + 1H SMA20 > SMA60)
+        /// [v4.5.17] 상위봉 정배열 확인 (D1 SMA20 > SMA60)
+        /// - MACD 크로스가 4시간봉 기준이므로, 상위 TF는 D1로 변경
         /// </summary>
         public async Task<(bool isBullish, string detail)> CheckHigherTimeframeBullishAsync(
             string symbol, CancellationToken token)
         {
             try
             {
-                // 15분봉
-                var k15m = await GetKlinesCachedAsync(symbol, KlineInterval.FifteenMinutes, 70, token);
-                if (k15m == null || k15m.Count < 60)
-                    return (false, "15m 데이터 부족");
+                var kD1 = await GetKlinesCachedAsync(symbol, KlineInterval.OneDay, 70, token);
+                if (kD1 == null || kD1.Count < 60)
+                    return (false, "D1 데이터 부족");
 
-                var list15m = k15m.ToList();
-                double sma20_15m = list15m.TakeLast(20).Average(k => (double)k.ClosePrice);
-                double sma60_15m = list15m.TakeLast(60).Average(k => (double)k.ClosePrice);
-                bool bullish15m = sma20_15m > sma60_15m;
+                var listD1 = kD1.ToList();
+                double sma20 = listD1.TakeLast(20).Average(k => (double)k.ClosePrice);
+                double sma60 = listD1.TakeLast(60).Average(k => (double)k.ClosePrice);
+                bool bullish = sma20 > sma60;
 
-                // 1시간봉
-                var k1h = await GetKlinesCachedAsync(symbol, KlineInterval.OneHour, 70, token);
-                if (k1h == null || k1h.Count < 60)
-                    return (bullish15m, $"15m={bullish15m}, 1H=데이터부족");
-
-                var list1h = k1h.ToList();
-                double sma20_1h = list1h.TakeLast(20).Average(k => (double)k.ClosePrice);
-                double sma60_1h = list1h.TakeLast(60).Average(k => (double)k.ClosePrice);
-                bool bullish1h = sma20_1h > sma60_1h;
-
-                bool ultraBullish = bullish15m && bullish1h;
-                return (ultraBullish, $"15m={bullish15m}(sma20={sma20_15m:F4},sma60={sma60_15m:F4}), 1H={bullish1h}(sma20={sma20_1h:F4},sma60={sma60_1h:F4})");
+                return (bullish, $"D1 sma20={sma20:F4},sma60={sma60:F4},bullish={bullish}");
             }
             catch (Exception ex)
             {
@@ -144,38 +133,28 @@ namespace TradingBot.Services
         }
 
         /// <summary>
-        /// 상위봉 하락세 확인 (15m + 1H SMA20 < SMA60, 또는 RSI 과매수 꺾임)
+        /// [v4.5.17] 상위봉 하락세 확인 (D1 SMA20 < SMA60 또는 RSI 과매수 꺾임)
         /// </summary>
         public async Task<(bool isBearish, string detail)> CheckHigherTimeframeBearishAsync(
             string symbol, CancellationToken token)
         {
             try
             {
-                var k15m = await GetKlinesCachedAsync(symbol, KlineInterval.FifteenMinutes, 70, token);
-                if (k15m == null || k15m.Count < 60)
-                    return (false, "15m 데이터 부족");
+                var kD1 = await GetKlinesCachedAsync(symbol, KlineInterval.OneDay, 70, token);
+                if (kD1 == null || kD1.Count < 60)
+                    return (false, "D1 데이터 부족");
 
-                var list15m = k15m.ToList();
-                double sma20_15m = list15m.TakeLast(20).Average(k => (double)k.ClosePrice);
-                double sma60_15m = list15m.TakeLast(60).Average(k => (double)k.ClosePrice);
-                bool bearish15m = sma20_15m < sma60_15m;
+                var listD1 = kD1.ToList();
+                double sma20 = listD1.TakeLast(20).Average(k => (double)k.ClosePrice);
+                double sma60 = listD1.TakeLast(60).Average(k => (double)k.ClosePrice);
+                bool bearish = sma20 < sma60;
 
-                var k1h = await GetKlinesCachedAsync(symbol, KlineInterval.OneHour, 70, token);
-                if (k1h == null || k1h.Count < 60)
-                    return (bearish15m, $"15m={bearish15m}, 1H=데이터부족");
+                // RSI 과매수 꺾임 (D1 RSI 60~70 구간에서 역전 신호)
+                double rsiD1 = CalculateRSI(listD1, 14);
+                bool overboughtReversal = rsiD1 > 60 && rsiD1 < 70 && sma20 > sma60;
 
-                var list1h = k1h.ToList();
-                double sma20_1h = list1h.TakeLast(20).Average(k => (double)k.ClosePrice);
-                double sma60_1h = list1h.TakeLast(60).Average(k => (double)k.ClosePrice);
-                bool bearish1h = sma20_1h < sma60_1h;
-
-                // RSI 과매수 꺾임 (1H RSI가 70 이상이었다가 내려오는 경우)
-                double rsi1h = CalculateRSI(list1h, 14);
-                bool overboughtReversal = rsi1h > 60 && rsi1h < 70 && sma20_1h > sma60_1h; // 아직 정배열이지만 꺾이는 중
-
-                // [v3.2.1] 15분봉 하락이면 진입 허용 (1H는 참고만 — 급락 시 1H 전환 느림)
-                bool isBearish = bearish15m || (bearish1h && overboughtReversal);
-                return (isBearish, $"15m={bearish15m}, 1H={bearish1h}, RSI1H={rsi1h:F1}, overboughtReversal={overboughtReversal}");
+                bool isBearish = bearish || overboughtReversal;
+                return (isBearish, $"D1 bearish={bearish},RSI={rsiD1:F1},overboughtReversal={overboughtReversal}");
             }
             catch (Exception ex)
             {
@@ -184,18 +163,27 @@ namespace TradingBot.Services
         }
 
         /// <summary>
-        /// 1분봉 MACD 골든크로스 감지
+        /// [v4.5.17] 4시간봉 MACD 골든크로스/데드크로스 감지 (기존 1분봉 → 4시간봉)
+        /// - 4시간봉은 노이즈 적고 추세 전환을 확실하게 포착
+        /// - 마지막 미완성 봉 제외 → 직전 완성봉으로 판단
+        /// - 노이즈 필터: SignalGapRatio, Angle, 휩소, RSI 중립 구간 차단
         /// </summary>
         /// <returns>(detected, caseType, macdLine, signalLine, histogram, rsi)</returns>
         public async Task<MacdCrossResult> DetectGoldenCrossAsync(string symbol, CancellationToken token)
         {
             try
             {
-                var klines = await GetKlinesCachedAsync(symbol, KlineInterval.OneMinute, 40, token);
-                if (klines == null || klines.Count < 30)
-                    return MacdCrossResult.None("1m 데이터 부족");
+                // [v4.5.17] 4시간봉 100개 (약 17일 분량) — MACD EMA(26) + Signal(9) 안정 계산 가능
+                var klines = await GetKlinesCachedAsync(symbol, KlineInterval.FourHour, 100, token);
+                if (klines == null || klines.Count < 40)
+                    return MacdCrossResult.None("4h 데이터 부족");
 
+                // [v4.5.17] 미완성 마지막 봉 제외 (현재 진행 중인 봉은 값이 계속 바뀜)
                 var list = klines.ToList();
+                if (list.Count > 0) list.RemoveAt(list.Count - 1);
+                if (list.Count < 35)
+                    return MacdCrossResult.None("4h 완성봉 부족");
+
                 var (macd, signal, hist) = CalculateMACD(list);
                 var (prevMacd, prevSignal, prevHist) = CalculateMACD(list.Take(list.Count - 1).ToList());
 
@@ -220,8 +208,37 @@ namespace TradingBot.Services
                 double avgAbsHist = CalculateAvgAbsHistogram(list, 14);
                 double histStrength = avgAbsHist > 0 ? Math.Abs(hist) / avgAbsHist : 0;
 
-                // [v4.5.2] 1분봉 내 최근 10봉 크로스 횟수 (API 없이 kline에서 직접 계산)
+                // [v4.5.2] 4시간봉 최근 10봉 크로스 횟수
                 int recentCrossCount = CountRecentCrosses(list, 10);
+
+                // ═══════════════════════════════════════════════════════════════
+                // [v4.5.17] 노이즈 필터 — 의미 없는 크로스를 텔레그램 알림 전에 차단
+                // ═══════════════════════════════════════════════════════════════
+                // 필터 1: SignalGapRatio 너무 작음 — |MACD-Signal| < ATR×0.02 = 가격 변동의 2% 미만
+                //        = MACD 선과 Signal 선이 거의 겹쳐 있음 (횡보 노이즈)
+                bool noiseGap = signalGapRatio < 0.02;
+
+                // 필터 2: Angle(교차 기울기) 너무 약함
+                //        DeadCrossAngle의 절대값이 평균 히스토그램의 5% 미만 = 거의 수평 교차
+                bool noiseAngle = avgAbsHist > 0 && Math.Abs(deadCrossAngle) < avgAbsHist * 0.05;
+
+                // 필터 3: 휩소 구간 (최근 10봉 내 크로스 3회 이상)
+                bool whipsawZone = recentCrossCount >= 3;
+
+                // 필터 4: RSI 중립 구간 — 방향성 약함
+                //        Golden은 RSI < 55, Dead는 RSI > 45 이면 확신 부족
+                bool rsiNeutralForGolden = goldenCross && rsi < 55;
+                bool rsiNeutralForDead = deadCross && rsi > 45;
+
+                if ((goldenCross || deadCross) && (noiseGap || noiseAngle || whipsawZone || rsiNeutralForGolden || rsiNeutralForDead))
+                {
+                    string reason = noiseGap ? "GapRatio부족"
+                        : noiseAngle ? "Angle약함"
+                        : whipsawZone ? $"휩소{recentCrossCount}회"
+                        : rsiNeutralForGolden ? $"RSI중립({rsi:F0})"
+                        : $"RSI중립({rsi:F0})";
+                    return MacdCrossResult.None($"NoiseFiltered[{reason}] MACD={macd:F6} Gap={signalGapRatio:F3} Angle={deadCrossAngle:F6}");
+                }
 
                 if (goldenCross)
                 {
@@ -243,7 +260,7 @@ namespace TradingBot.Services
                         HistogramStrength = histStrength,
                         RecentCrossCount = recentCrossCount,
                         WhipsawFeatures = whipsaw,
-                        Detail = $"GoldenCross Case{caseType} MACD={macd:F6} Sig={signal:F6} Hist={hist:F6} RSI={rsi:F1} GapRatio={signalGapRatio:F3} Flips={whipsaw.CrossFlipCount5m}"
+                        Detail = $"4h GoldenCross Case{caseType} MACD={macd:F6} Sig={signal:F6} Hist={hist:F6} RSI={rsi:F1} GapRatio={signalGapRatio:F3} Flips={whipsaw.CrossFlipCount5m}"
                     };
                 }
 
@@ -269,7 +286,7 @@ namespace TradingBot.Services
                         HistogramStrength = histStrength,
                         RecentCrossCount = recentCrossCount,
                         WhipsawFeatures = whipsaw,
-                        Detail = $"DeadCross Case{shortCase} MACD={macd:F6} Sig={signal:F6} Angle={deadCrossAngle:F6} RSI={rsi:F1} GapRatio={signalGapRatio:F3} Flips={whipsaw.CrossFlipCount5m}"
+                        Detail = $"4h DeadCross Case{shortCase} MACD={macd:F6} Sig={signal:F6} Angle={deadCrossAngle:F6} RSI={rsi:F1} GapRatio={signalGapRatio:F3} Flips={whipsaw.CrossFlipCount5m}"
                     };
                 }
 
@@ -303,6 +320,92 @@ namespace TradingBot.Services
                     DeadCrossAngle = deadCrossAngle,
                     RSI = rsi,
                     Detail = noCrossDetail
+                };
+            }
+            catch (Exception ex)
+            {
+                return MacdCrossResult.None($"에러: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// [v4.5.17] 1분봉 MACD 단타 감지 (익절 타이밍 / 꼬리 리테스트용)
+        /// - `DetectGoldenCrossAsync`는 4시간봉이라 익절/단타에 느림
+        /// - 이 메서드는 기존 1분봉 로직 유지 (PositionMonitor 실시간 익절 + 15분 꼬리 리테스트 전용)
+        /// - 노이즈 필터는 적용하지 않음 (빠른 반응 우선)
+        /// </summary>
+        public async Task<MacdCrossResult> DetectShortTermCrossAsync(string symbol, CancellationToken token)
+        {
+            try
+            {
+                var klines = await GetKlinesCachedAsync(symbol, KlineInterval.OneMinute, 40, token);
+                if (klines == null || klines.Count < 30)
+                    return MacdCrossResult.None("1m 데이터 부족");
+
+                var list = klines.ToList();
+                var (macd, signal, hist) = CalculateMACD(list);
+                var (prevMacd, prevSignal, prevHist) = CalculateMACD(list.Take(list.Count - 1).ToList());
+
+                bool goldenCross = prevMacd < prevSignal && macd >= signal;
+                bool deadCross = prevMacd > prevSignal && macd <= signal;
+
+                double rsi = CalculateRSI(list, 14);
+                double histChangeRate = prevHist != 0 ? (hist - prevHist) / Math.Abs(prevHist) : 0;
+                double deadCrossAngle = (macd - signal) - (prevMacd - prevSignal);
+
+                if (goldenCross)
+                {
+                    string caseType = macd > 0 ? "B" : "A";
+                    return new MacdCrossResult
+                    {
+                        Detected = true,
+                        CrossType = MacdCrossType.Golden,
+                        CaseType = caseType,
+                        MacdLine = macd,
+                        SignalLine = signal,
+                        Histogram = hist,
+                        HistChangeRate = histChangeRate,
+                        DeadCrossAngle = deadCrossAngle,
+                        RSI = rsi,
+                        Detail = $"1m GoldenCross Case{caseType} MACD={macd:F6}"
+                    };
+                }
+                if (deadCross)
+                {
+                    string shortCase = macd >= 0 || (macd > -0.0001 && prevMacd > 0) ? "A" : "B";
+                    return new MacdCrossResult
+                    {
+                        Detected = true,
+                        CrossType = MacdCrossType.Dead,
+                        CaseType = shortCase,
+                        MacdLine = macd,
+                        SignalLine = signal,
+                        Histogram = hist,
+                        HistChangeRate = histChangeRate,
+                        DeadCrossAngle = deadCrossAngle,
+                        RSI = rsi,
+                        Detail = $"1m DeadCross Case{shortCase} MACD={macd:F6}"
+                    };
+                }
+
+                // 히스토그램 Peak/Bottom Out 감지 (익절 신호)
+                bool histPeakOut = prevHist > 0 && hist > 0 && hist < prevHist && prevHist > 0.00001;
+                bool histBottomOut = prevHist < 0 && hist < 0 && hist > prevHist && prevHist < -0.00001;
+                MacdCrossType noCrossType = MacdCrossType.None;
+                if (histPeakOut) noCrossType = MacdCrossType.HistPeakOut;
+                else if (histBottomOut) noCrossType = MacdCrossType.HistBottomOut;
+
+                return new MacdCrossResult
+                {
+                    Detected = false,
+                    CrossType = noCrossType,
+                    MacdLine = macd,
+                    SignalLine = signal,
+                    Histogram = hist,
+                    HistChangeRate = histChangeRate,
+                    DeadCrossAngle = deadCrossAngle,
+                    RSI = rsi,
+                    Detail = "1m NoCross"
                 };
             }
             catch (Exception ex)
@@ -414,8 +517,8 @@ namespace TradingBot.Services
                     {
                         retestZoneReached = true;
 
-                        // 1분봉 MACD 데크 확인
-                        var crossResult = await DetectGoldenCrossAsync(symbol, token);
+                        // [v4.5.17] 1분봉 단타 MACD 데크 확인 — DetectShortTermCrossAsync 사용
+                        var crossResult = await DetectShortTermCrossAsync(symbol, token);
                         if (crossResult.CrossType == MacdCrossType.Dead)
                         {
                             OnLog?.Invoke($"✅ [꼬리 리테스트] {symbol} 리테스트 구간({currentPrice:F4}) + MACD 데크 → SHORT 트리거!");
