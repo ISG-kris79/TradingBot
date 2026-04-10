@@ -15,6 +15,30 @@
 
  - 없음
 
+## [4.5.16] - 2026-04-10
+
+### Performance
+
+- **PUMP 알트 동적 멀티TF WebSocket 구독** (진입 REST 호출 완전 제거)
+  - 거래량 상위 50개 알트를 5분 주기로 M1/M15 캐시 추가
+  - `StartPumpMultiTfRefreshLoopAsync` 백그라운드 루프
+  - 초기 30초 대기 (TickerCache 워밍업) → 이후 5분 주기
+  - rate limit 준수: 구독 간 150ms 간격 (10 msg/sec)
+  - 총 구독 상한 200개 (Binance 1024 한도의 20%)
+  - 한 번 구독한 심볼은 계속 캐시 유지 (볼륨 변동 대응)
+
+### 효과
+
+- **PUMP 진입 시 REST 호출 0건** (캐시 히트 시)
+- PUMP 알트 진입 반응 속도 대폭 개선
+- Binance API weight 사용량 감소
+
+### 이전 "WebSocket 한도 초과 위험" 정정
+
+- 실제 Binance USDT-M Futures 한도: **소켓당 1024 스트림**
+- 100개 알트 × 5 TF = 500 스트림 = 49% 사용 (여유 충분)
+- 이전 v4.5.15 CHANGELOG의 "수백 종목 × 5 TF = 한도 초과" 문구는 오판이었음
+
 ## [4.5.15] - 2026-04-10
 
 ### Performance

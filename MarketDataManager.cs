@@ -36,6 +36,19 @@ namespace TradingBot.Services
         // [v4.5.15] 전역 싱글턴 참조 (IExchangeService만 받는 클래스에서 캐시 조회용)
         public static MarketDataManager? Instance { get; private set; }
 
+        // [v4.5.16] PUMP 알트 동적 멀티TF 구독 상태
+        // - 거래량 상위 알트만 M1/M15 캐시, 5분 주기 갱신
+        // - 한 번 구독한 심볼은 계속 캐시 유지 (200개 상한)
+        private readonly ConcurrentDictionary<string, bool> _pumpSubscribedSymbols = new(StringComparer.OrdinalIgnoreCase);
+        private DateTime _lastPumpSubRefreshTime = DateTime.MinValue;
+        private const int MaxPumpSubscribedSymbols = 200;
+        private const int TopAltRefreshCount = 50;
+        private static readonly BinanceEnums.KlineInterval[] PumpIntervals = new[]
+        {
+            BinanceEnums.KlineInterval.OneMinute,
+            BinanceEnums.KlineInterval.FifteenMinutes
+        };
+
         // [v4.5.15] 캐시 대상 타임프레임 (메이저 코인만 멀티 TF 구독)
         private static readonly BinanceEnums.KlineInterval[] MultiTfIntervals = new[]
         {
@@ -120,8 +133,147 @@ namespace TradingBot.Services
             _ = StartKlineStreamAsync(internalToken);
             // [v4.5.15] 멀티 TF WebSocket 캐시 가동 (M1/M15/H1/H4/D1) — REST 호출 제거용
             _ = StartMultiTfKlineStreamAsync(internalToken);
+            // [v4.5.16] PUMP 알트 동적 멀티TF 구독 루프 (5분 주기)
+            _ = StartPumpMultiTfRefreshLoopAsync(internalToken);
 
             return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// [v4.5.16] 거래량 상위 PUMP 알트를 5분마다 M1/M15 WebSocket 구독
+        /// - 첫 실행: 30초 대기 (TickerCache 데이터 수집 시간 확보)
+        /// - 이후: 5분 주기로 top 50 알트 추출 → 미구독 심볼만 신규 구독
+        /// - 총 구독 상한 200개 (1024 Binance 한도의 20%)
+        /// - rate limit: 150ms 간격 (10 msg/sec 준수)
+        /// </summary>
+        private async Task StartPumpMultiTfRefreshLoopAsync(CancellationToken token)
+        {
+            try
+            {
+                // 1회: TickerCache 워밍업 대기
+                await Task.Delay(TimeSpan.FromSeconds(30), token);
+
+                while (!token.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await RefreshPumpMultiTfSubscriptionsAsync(token);
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLog?.Invoke($"⚠️ [PUMP 멀티TF] 루프 오류: {ex.Message}");
+                    }
+                    await Task.Delay(TimeSpan.FromMinutes(5), token);
+                }
+            }
+            catch (OperationCanceledException) { }
+        }
+
+        private async Task RefreshPumpMultiTfSubscriptionsAsync(CancellationToken token)
+        {
+            // 상한 체크
+            if (_pumpSubscribedSymbols.Count >= MaxPumpSubscribedSymbols)
+            {
+                OnLog?.Invoke($"ℹ️ [PUMP 멀티TF] 구독 상한 도달 ({_pumpSubscribedSymbols.Count}/{MaxPumpSubscribedSymbols}) → 스킵");
+                return;
+            }
+
+            // 거래량 상위 알트 추출 (메이저 제외)
+            var majorSet = new HashSet<string>(_majorSymbols, StringComparer.OrdinalIgnoreCase);
+            var topAlts = TickerCache.Values
+                .Where(t => !string.IsNullOrEmpty(t.Symbol)
+                            && t.Symbol!.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
+                            && !majorSet.Contains(t.Symbol!)
+                            && t.QuoteVolume > 0)
+                .OrderByDescending(t => t.QuoteVolume)
+                .Take(TopAltRefreshCount)
+                .Select(t => t.Symbol!)
+                .ToList();
+
+            if (topAlts.Count == 0)
+            {
+                OnLog?.Invoke("ℹ️ [PUMP 멀티TF] TickerCache 비어있음 → 다음 주기 대기");
+                return;
+            }
+
+            // 미구독 심볼만 필터
+            var newSymbols = topAlts
+                .Where(s => !_pumpSubscribedSymbols.ContainsKey(s))
+                .Take(MaxPumpSubscribedSymbols - _pumpSubscribedSymbols.Count)
+                .ToList();
+
+            if (newSymbols.Count == 0)
+            {
+                return; // 전부 이미 구독됨
+            }
+
+            OnLog?.Invoke($"📡 [PUMP 멀티TF] 신규 {newSymbols.Count}개 심볼 구독 시작 (현재 {_pumpSubscribedSymbols.Count}개)");
+
+            foreach (var interval in PumpIntervals)
+            {
+                if (token.IsCancellationRequested) return;
+
+                foreach (var symbol in newSymbols)
+                {
+                    if (token.IsCancellationRequested) return;
+                    string cacheKey = MultiTfKey(symbol, interval);
+
+                    // 1. 초기 선로딩 (REST)
+                    try
+                    {
+                        int limit = interval == BinanceEnums.KlineInterval.OneMinute ? 60 : 120;
+                        var klines = await _restClient.UsdFuturesApi.ExchangeData.GetKlinesAsync(
+                            symbol, interval, limit: limit, ct: token);
+                        if (klines.Success && klines.Data != null)
+                        {
+                            MultiTfKlineCache[cacheKey] = klines.Data.Cast<IBinanceKline>().ToList();
+                        }
+                    }
+                    catch { /* 개별 심볼 실패 무시 */ }
+
+                    // 2. WebSocket 구독
+                    try
+                    {
+                        var sub = await _socketClient.UsdFuturesApi.ExchangeData.SubscribeToKlineUpdatesAsync(
+                            symbol, interval, data =>
+                            {
+                                var kline = data.Data.Data;
+                                var sym = data.Symbol;
+                                if (string.IsNullOrEmpty(sym)) return;
+                                string cKey = MultiTfKey(sym, interval);
+                                MultiTfKlineCache.AddOrUpdate(cKey,
+                                    _ => new List<IBinanceKline> { kline },
+                                    (_, list) =>
+                                    {
+                                        lock (list)
+                                        {
+                                            var last = list.LastOrDefault();
+                                            if (last != null && last.OpenTime == kline.OpenTime)
+                                                list[list.Count - 1] = kline;
+                                            else
+                                            {
+                                                list.Add(kline);
+                                                int maxSize = interval == BinanceEnums.KlineInterval.OneMinute ? 60 : 120;
+                                                if (list.Count > maxSize) list.RemoveAt(0);
+                                            }
+                                        }
+                                        return list;
+                                    });
+                            }, ct: token);
+
+                        if (sub.Success)
+                        {
+                            _pumpSubscribedSymbols[symbol] = true;
+                        }
+                    }
+                    catch { /* 개별 실패 무시 */ }
+
+                    // [rate limit] 10 msg/sec → 150ms 간격 유지
+                    await Task.Delay(150, token);
+                }
+            }
+
+            OnLog?.Invoke($"✅ [PUMP 멀티TF] 구독 완료 | 총 {_pumpSubscribedSymbols.Count}개 심볼 × {PumpIntervals.Length}개 TF = {_pumpSubscribedSymbols.Count * PumpIntervals.Length}개 스트림");
         }
 
         public async Task PreloadRecentKlinesAsync(int limit, CancellationToken token)
