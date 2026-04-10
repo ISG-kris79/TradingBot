@@ -7292,6 +7292,13 @@ namespace TradingBot
             // ═══════════════════════════════════════════════════════════════
 
             // 1-1. 진입 신호 체크
+            // [v4.4.6] USDT 쌍만 허용 (USDC, BUSD 등 차단)
+            if (!symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase))
+            {
+                EntryLog("SIGNAL", "BLOCK", $"notUSDT pair={symbol}");
+                return;
+            }
+
             if (decision != "LONG" && decision != "SHORT")
             {
                 EntryLog("SIGNAL", "BLOCK", "decision!=LONG/SHORT");
