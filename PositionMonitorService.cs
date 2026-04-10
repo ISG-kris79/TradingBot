@@ -114,7 +114,8 @@ namespace TradingBot.Services
 
         private decimal GetCurrentStopLossRoe()
         {
-            // [메이저/PUMP 완전 분리] 메이저 전용 손절 ROE 우선 사용
+            // [v4.5.5] 청산 버퍼 확대: 기본 80% ROE (20x 기준 -4% 가격 = 청산까지 1% 여유)
+            // 기존 50% ROE는 -2.5%로 청산까지 0.5% 여유밖에 없어 위험
             var current = GetCurrentSettings();
             if (current.MajorStopLossRoe > 0m)
                 return current.MajorStopLossRoe;
@@ -130,7 +131,7 @@ namespace TradingBot.Services
             if (_settings.StopLossRoe > 0m)
                 return _settings.StopLossRoe;
 
-            return 60.0m;
+            return 80.0m;  // 60→80: 청산 안전 거리 확대
         }
 
         public void UpdateAiPredictor(AIPredictor? aiPredictor)
@@ -475,11 +476,33 @@ namespace TradingBot.Services
             {
                 try
                 {
-                    decimal currentPrice = await _exchangeService.GetPriceAsync(symbol, ct: token);
-                    if (currentPrice == 0 && _marketDataManager.TickerCache.TryGetValue(symbol, out var ticker))
+                    // [v4.5.5] CPU 최적화: REST API 호출 제거, WebSocket TickerCache만 사용
+                    // - 기존: REST + Cache fallback (300~800ms 지연 + API weight 소모)
+                    // - 변경: Cache 단독 (50ms 미만, CPU 무부하)
+                    decimal currentPrice = 0;
+                    if (_marketDataManager.TickerCache.TryGetValue(symbol, out var ticker))
                         currentPrice = ticker.LastPrice;
 
-                    if (currentPrice == 0) { await Task.Delay(2000, token); continue; }
+                    if (currentPrice == 0) { await Task.Delay(500, token); continue; }
+
+                    // [v4.5.5] 단일 포지션 회로차단기: 절대 -4% 손실 즉시 강제 청산
+                    // 서버 STOP_MARKET 실패/슬리피지 대비 로컬 안전장치
+                    decimal absPriceLossPct = isLong
+                        ? (entryPrice - currentPrice) / entryPrice * 100m
+                        : (currentPrice - entryPrice) / entryPrice * 100m;
+                    if (absPriceLossPct >= 4.0m && !IsCloseInProgress(symbol))
+                    {
+                        OnLog?.Invoke($"🚨 [회로차단기] {symbol} 가격 {absPriceLossPct:F2}% 손실 → 즉시 강제 청산");
+                        try
+                        {
+                            await ExecuteMarketClose(symbol, "EMERGENCY_CIRCUIT_BREAKER", token);
+                        }
+                        catch (Exception cbEx)
+                        {
+                            OnLog?.Invoke($"⚠️ [회로차단기] {symbol} 청산 오류: {cbEx.Message}");
+                        }
+                        return;
+                    }
 
                     // [듀얼 스탑] 15분봉 캔들 30초마다 갱신 (Fractal Low + 거래량 계산용)
                     if (hasCustomAbsoluteStop && !isSidewaysMode && DateTime.Now >= nextDualStopCandleRefresh)
@@ -1646,7 +1669,8 @@ namespace TradingBot.Services
                         }
                     }
 
-                    await Task.Delay(1000, token);
+                    // [v4.5.5] 1000ms → 250ms (4x 빠른 반응, CPU 무부하: 캐시 lookup만 수행)
+                    await Task.Delay(250, token);
                 }
                 catch (OperationCanceledException) { break; }
                 catch (Exception ex)

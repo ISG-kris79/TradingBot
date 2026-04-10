@@ -14,12 +14,14 @@ namespace TradingBot.Services
     public class MarketCrashDetector
     {
         // ─── 설정 ───────────────────────────────────────────
-        public decimal CrashThresholdPct { get; set; } = -1.5m;   // 1분 -1.5% → CRASH
-        public decimal PumpThresholdPct { get; set; } = 1.5m;     // 1분 +1.5% → PUMP
+        // [v4.5.5] 60초 → 15초 단축 (4배 빠른 감지)
+        public decimal CrashThresholdPct { get; set; } = -0.8m;   // 15초 -0.8% → CRASH (60초 -1.5% 비례)
+        public decimal PumpThresholdPct { get; set; } = 0.8m;     // 15초 +0.8% → PUMP
+        public int SnapshotIntervalSeconds { get; set; } = 15;    // 스냅샷 주기 (60초 → 15초)
         public int MinCoinCount { get; set; } = 2;                // 최소 N개 코인 동시 급변
         public decimal ReverseEntrySizeRatio { get; set; } = 0.5m; // 리버스 진입 사이즈 (기본 50%)
         public bool Enabled { get; set; } = true;
-        public int CooldownSeconds { get; set; } = 120;           // 발동 후 쿨다운 (중복 방지)
+        public int CooldownSeconds { get; set; } = 60;            // 쿨다운 단축 (120 → 60)
 
         // ─── 감시 대상 ──────────────────────────────────────
         private static readonly string[] WatchSymbols = { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
@@ -53,8 +55,8 @@ namespace TradingBot.Services
                 return;
             }
 
-            // 1분 미만이면 스킵
-            if ((now - _lastSnapshotTime).TotalSeconds < 60)
+            // [v4.5.5] 스냅샷 주기 미만이면 스킵 (15초)
+            if ((now - _lastSnapshotTime).TotalSeconds < SnapshotIntervalSeconds)
                 return;
 
             // 쿨다운 체크

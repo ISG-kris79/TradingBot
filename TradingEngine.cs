@@ -133,6 +133,8 @@ namespace TradingBot
         private PumpScanStrategy? _pumpStrategy;
         private MajorCoinStrategy? _majorStrategy;
         private readonly MarketCrashDetector _crashDetector = new();
+        // [v4.5.5] 알트 불장 자동 감지기
+        private readonly AltBullMarketDetector _altBullDetector = new();
         // [v3.3.6] 급변동 회복 구간 추적: symbol → (extremePrice, isUpwardSpike, eventTime)
         private readonly ConcurrentDictionary<string, (decimal ExtremePrice, bool IsUpwardSpike, DateTime EventTime)>
             _volatilityRecoveryZone = new(StringComparer.OrdinalIgnoreCase);
@@ -571,6 +573,16 @@ namespace TradingBot
             _crashDetector.CooldownSeconds = _settings.CrashCooldownSeconds > 0 ? _settings.CrashCooldownSeconds : 120;
             _crashDetector.OnLog += msg => OnAlert?.Invoke(msg);
             _crashDetector.OnCrashDetected += (coins, avgDrop) => _ = HandleCrashDetectedAsync(coins, avgDrop);
+
+            // [v4.5.5] 알트 불장 감지기 이벤트 연결
+            _altBullDetector.OnLog += msg => OnAlert?.Invoke(msg);
+            _altBullDetector.OnAltBullStateChanged += active =>
+            {
+                if (active)
+                    OnAlert?.Invoke("🔥 [알트 불장 모드] 활성화 — 신규 진입 레버리지 50% 하향, 사이즈 70%");
+                else
+                    OnAlert?.Invoke("💧 [알트 불장 모드] 해제 — 정상 레버리지 복귀");
+            };
             _crashDetector.OnPumpDetected += (coins, avgRise) => _ = HandlePumpDetectedAsync(coins, avgRise);
             _crashDetector.OnSpikeDetected += (symbol, changePct, price) => _ = HandleSpikeDetectedAsync(symbol, changePct, price);
 
@@ -6958,9 +6970,12 @@ namespace TradingBot
                 if (ticks == null)
                     return;
 
-                // [급변 감지] 1분 가격 변동률 체크
+                // [급변 감지] 15초 가격 변동률 체크 (v4.5.5: 60→15초)
                 _crashDetector.CheckPriceVelocity(_marketDataManager.TickerCache);
                 _crashDetector.CheckSpikeDetection(_marketDataManager.TickerCache);
+
+                // [v4.5.5] 알트 불장 자동 감지 (5분 주기, 내부 throttle)
+                _altBullDetector.Check(_marketDataManager.TickerCache);
 
                 var trackedSymbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -8813,6 +8828,16 @@ namespace TradingBot
                 int leverage = ctx.Leverage;
                 decimal positionSizeMultiplier = 1.0m;
                 decimal effectiveSizeMultiplier = Math.Clamp(ctx.SizeMultiplier, 0.10m, 2.00m);
+
+                // [v4.5.5] 알트 불장 모드: 레버리지 50% 하향 + 사이즈 70%
+                if (_altBullDetector.IsActive)
+                {
+                    int originalLev = leverage;
+                    decimal originalMul = effectiveSizeMultiplier;
+                    leverage = _altBullDetector.AdjustLeverage(leverage);
+                    effectiveSizeMultiplier = _altBullDetector.AdjustSizeMultiplier(effectiveSizeMultiplier);
+                    OnStatusLog?.Invoke($"🔥 [알트불장] {symbol} 레버리지 {originalLev}x→{leverage}x, 사이즈 {originalMul:F2}→{effectiveSizeMultiplier:F2}");
+                }
 
                 if (ctx.PatternSnapshot != null)
                 {

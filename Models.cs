@@ -69,7 +69,7 @@ namespace TradingBot.Models
         public decimal MajorTp2Roe           { get; set; } = 40.0m;   // 2차 수익 확정 구간 ROI +40%
         public decimal MajorTrailingStartRoe { get; set; } = 40.0m;   // 타이트 트레일링 시작 ROI +40%
         public decimal MajorTrailingGapRoe   { get; set; } = 5.0m;    // 트레일링 간격(메이저 기본 5%, 운용 범위 5~10%)
-        public decimal MajorStopLossRoe      { get; set; } = 20.0m;   // 초기 손절 ROE -20%
+        public decimal MajorStopLossRoe      { get; set; } = 60.0m;   // [v4.5.5] 60% ROE = 20x 기준 -3% 가격 (포지션 호흡 공간 + 청산 -5%까지 2% 버퍼)
 
         // ─── [Sniper Mode] 스나이퍼 모드 설정 (v2.5) ────────────────────────────
         // 종목당 일일 1~2회 진입으로 정조준하는 모드
@@ -234,6 +234,7 @@ namespace TradingBot.Models
         public decimal HighPrice { get; set; }
         public decimal OpenPrice { get; set; }
         public decimal QuoteVolume { get; set; }
+        public decimal PriceChangePercent { get; set; } // [v4.5.5] 24h 변동률 (%)
     }
 
     // [이동] 볼린저 밴드 결과 구조체
