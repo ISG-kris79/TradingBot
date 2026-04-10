@@ -2085,6 +2085,16 @@ namespace TradingBot
                 OnAlert?.Invoke("🚀 최적화 엔진 가동 (WebSocket 모드)");
                 LoggerService.Info("엔진 시작: WebSocket 모드");
 
+                // [v4.7.0] 초기 학습 상태 안내
+                if (IsInitialTrainingComplete)
+                {
+                    OnAlert?.Invoke("✅ [초기학습] 완료 상태 — 진입 활성화");
+                }
+                else
+                {
+                    OnAlert?.Invoke("⚠️ [초기학습] 미완료 — 모든 진입 차단됨\n📌 텔레그램에서 `/train` 명령으로 6개월 데이터 학습 실행 필요");
+                }
+
                 foreach (var symbol in _symbols)
                 {
                     EnsureSymbolInList(symbol);
@@ -2238,7 +2248,8 @@ namespace TradingBot
                     lock (_posLock) { return new HashSet<string>(_activePositions.Keys, StringComparer.OrdinalIgnoreCase); }
                 };
                 TelegramService.Instance.OnRequestStop = StopEngine;
-                TelegramService.Instance.OnRequestTrain = ForceInitialAiTrainingAsync;
+                // [v4.7.0] /train 명령 → 옵션A 초기학습 (6개월 다운로드 + 학습 + 검증)
+                TelegramService.Instance.OnRequestTrain = (ct) => StartOptionAInitialTrainingAsync(token: ct);
                 TelegramService.Instance.OnRequestDroughtScan = ForceDroughtDiagnosticAsync;
                 TelegramService.Instance.StartReceiving();
                 OnTelegramStatusUpdate?.Invoke(true, "Telegram: Connected");
@@ -2444,8 +2455,9 @@ namespace TradingBot
                                                 return;
                                             }
 
-                                            // [v4.6.0] PUMP 전용 HTF 체크 — H1 OR M15 중 하나만 충족하면 통과 (D1 기준은 너무 엄격)
-                                            if (!IsAiModelReadyForPumpEntry && _macdCrossService != null)
+                                            // [v4.6.0] PUMP 전용 HTF 체크 — H1 OR M15 중 하나만 충족하면 통과
+                                            // [v4.7.0] 초기학습 완료 시 우회 (AI 단독 판단)
+                                            if (!IsInitialTrainingComplete && !IsAiModelReadyForPumpEntry && _macdCrossService != null)
                                             {
                                                 var (isBullish, htfDetail) = await _macdCrossService.CheckPumpHtfBullishAsync(
                                                     pumpKey, _cts?.Token ?? CancellationToken.None);
@@ -3180,6 +3192,50 @@ namespace TradingBot
             }
         }
         */
+
+        /// <summary>
+        /// [v4.7.0] 옵션 A 초기 학습 — 6개월 데이터 다운로드 + 학습 + 검증
+        /// 봇이 정지 상태에서도 실행 가능 (시작 전 학습 목적)
+        /// </summary>
+        public async Task<string> StartOptionAInitialTrainingAsync(
+            int monthsBack = 6,
+            int topAltCount = 100,
+            bool includeSpike1m = true,
+            CancellationToken token = default)
+        {
+            if (IsInitialTrainingInProgress)
+                return "⚠️ 이미 초기 학습 진행 중";
+
+            try
+            {
+                OnAlert?.Invoke($"🚀 [옵션A 초기학습] 시작 — 메이저 4 + 알트 {topAltCount} × {monthsBack}개월");
+
+                // dbManager 초기화 보장 (봇 정지 상태에서 호출 가능)
+                if (_dbManager == null)
+                {
+                    OnAlert?.Invoke("❌ DbManager 미초기화 — 봇을 한 번 시작했다가 정지한 후 재시도");
+                    return "DbManager 미초기화";
+                }
+
+                var (success, message) = await TriggerInitialDownloadAndTrainAsync(
+                    monthsBack: monthsBack,
+                    topAltCount: topAltCount,
+                    includeOneMinuteForSpike: includeSpike1m,
+                    token: token);
+
+                string result = success
+                    ? $"✅ [옵션A 초기학습] 완료 — {message}"
+                    : $"⚠️ [옵션A 초기학습] 미완료 — {message}";
+                OnAlert?.Invoke(result);
+                return result;
+            }
+            catch (Exception ex)
+            {
+                string err = $"❌ [옵션A 초기학습] 오류: {ex.Message}";
+                OnAlert?.Invoke(err);
+                return err;
+            }
+        }
 
         public async Task<string> ForceInitialAiTrainingAsync(CancellationToken token = default)
         {
@@ -6428,6 +6484,58 @@ namespace TradingBot
         // [v4.5.14] 중복 학습 방지 플래그 (OnFirstAltCollectionComplete + 2분 타이머 중복 방지)
         private int _mlTrainingInProgress = 0;
 
+        // [v4.7.0] 초기 학습 완료 여부 (다운로드 + 학습 + 검증 통과 시 true)
+        // 영속화: %LOCALAPPDATA%\TradingBot\Models\initial_training_ready.flag
+        private static readonly string InitialTrainingFlagPath = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "TradingBot", "Models", "initial_training_ready.flag");
+
+        private bool _isInitialTrainingComplete;
+        public bool IsInitialTrainingComplete
+        {
+            get
+            {
+                if (_isInitialTrainingComplete) return true;
+                // 파일 존재 시 자동 복원
+                try
+                {
+                    if (System.IO.File.Exists(InitialTrainingFlagPath))
+                    {
+                        _isInitialTrainingComplete = true;
+                        return true;
+                    }
+                }
+                catch { }
+                return false;
+            }
+            private set
+            {
+                _isInitialTrainingComplete = value;
+                try
+                {
+                    System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(InitialTrainingFlagPath)!);
+                    if (value)
+                        System.IO.File.WriteAllText(InitialTrainingFlagPath, $"completed_at={DateTime.UtcNow:o}\n");
+                    else if (System.IO.File.Exists(InitialTrainingFlagPath))
+                        System.IO.File.Delete(InitialTrainingFlagPath);
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [초기학습] flag 파일 저장 실패: {ex.Message}");
+                }
+            }
+        }
+        public bool IsInitialTrainingInProgress { get; private set; }
+        private const double InitialTrainingMinAccuracy = 0.70;
+        public event Action<string>? OnInitialTrainingProgress;
+        public event Action<bool>? OnInitialTrainingCompleted; // (success)
+
+        /// <summary>
+        /// [v4.7.0] 진입 가능 여부 — IsInitialTrainingComplete 시에만 진입 허용
+        /// 봇 자체는 시작 가능하지만 진입 라우터에서 차단
+        /// </summary>
+        public bool CanEnterPosition => IsInitialTrainingComplete;
+
         /// <summary>[v3.8.1] 전체 ML 모델 1시간 주기 자동 재학습</summary>
         private void StartModelRetrainTimer()
         {
@@ -6652,6 +6760,88 @@ namespace TradingBot
             {
                 // [v4.5.14] 학습 완료/실패 시 플래그 해제
                 Interlocked.Exchange(ref _mlTrainingInProgress, 0);
+            }
+        }
+
+        /// <summary>
+        /// [v4.7.0] 옵션 A — 6개월 과거 데이터 다운로드 → 라벨링 → 학습 → 검증
+        /// 봇 시작 전 1회 실행. 정확도 70%+ 달성 시 IsInitialTrainingComplete=true
+        /// </summary>
+        public async Task<(bool success, string message)> TriggerInitialDownloadAndTrainAsync(
+            int monthsBack = 6,
+            int topAltCount = 100,
+            bool includeOneMinuteForSpike = true,
+            CancellationToken token = default)
+        {
+            if (IsInitialTrainingInProgress)
+                return (false, "이미 초기 학습 진행 중");
+
+            IsInitialTrainingInProgress = true;
+            try
+            {
+                if (_dbManager == null)
+                    return (false, "DbManager 미준비");
+
+                var dbSvc = new DatabaseService();
+                var downloader = new HistoricalDataDownloader(_dbManager, dbSvc);
+                downloader.OnLog += msg => { OnStatusLog?.Invoke(msg); OnInitialTrainingProgress?.Invoke(msg); };
+                downloader.OnProgress += (cur, total, msg) =>
+                {
+                    string text = $"📥 다운로드 [{cur}/{total}] {msg}";
+                    OnInitialTrainingProgress?.Invoke(text);
+                };
+
+                // 1단계: 다운로드
+                OnInitialTrainingProgress?.Invoke($"🚀 [초기학습] 1단계 — 과거 {monthsBack}개월 캔들 다운로드 시작 (메이저 4 + 알트 {topAltCount})");
+                var summary = await downloader.DownloadAllAsync(monthsBack, topAltCount, includeOneMinuteForSpike, token);
+                OnInitialTrainingProgress?.Invoke($"✅ [초기학습] 1단계 완료 — {summary.TotalSaved:N0}봉 저장 ({summary.Duration.TotalMinutes:F1}분)");
+
+                if (token.IsCancellationRequested)
+                    return (false, "사용자 취소");
+
+                // 2단계: 학습 (TrainAllModelsAsync 재사용)
+                OnInitialTrainingProgress?.Invoke("🧠 [초기학습] 2단계 — ML 모델 4개 학습 시작");
+                await TrainAllModelsAsync(token);
+                OnInitialTrainingProgress?.Invoke("✅ [초기학습] 2단계 완료");
+
+                // 3단계: 검증 — 정확도 70%+ 달성?
+                bool tradeOk = _tradeSignalAccuracy >= InitialTrainingMinAccuracy;
+                bool pumpOk = _pumpModelAccuracy >= InitialTrainingMinAccuracy;
+                bool spikeOk = _pumpSpikeAccuracy >= InitialTrainingMinAccuracy;
+
+                string verdict = $"TradeSignal={_tradeSignalAccuracy:P1} ({(tradeOk ? "OK" : "FAIL")}), " +
+                                 $"PumpNormal={_pumpModelAccuracy:P1} ({(pumpOk ? "OK" : "FAIL")}), " +
+                                 $"PumpSpike={_pumpSpikeAccuracy:P1} ({(spikeOk ? "OK" : "FAIL")})";
+
+                if (tradeOk && pumpOk && spikeOk)
+                {
+                    IsInitialTrainingComplete = true;
+                    OnInitialTrainingProgress?.Invoke($"🎯 [초기학습] 3단계 검증 통과 — {verdict}");
+                    OnInitialTrainingProgress?.Invoke($"✅ [초기학습] 완료 — 봇 진입 활성화");
+                    OnInitialTrainingCompleted?.Invoke(true);
+                    return (true, $"학습 완료 ({verdict})");
+                }
+                else
+                {
+                    OnInitialTrainingProgress?.Invoke($"⚠️ [초기학습] 검증 실패 — {verdict}");
+                    OnInitialTrainingProgress?.Invoke($"⚠️ [초기학습] 일부 모델 정확도 70% 미달 — 봇 진입 차단");
+                    IsInitialTrainingComplete = false;
+                    OnInitialTrainingCompleted?.Invoke(false);
+                    return (false, $"정확도 미달: {verdict}");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                return (false, "사용자 취소");
+            }
+            catch (Exception ex)
+            {
+                OnInitialTrainingProgress?.Invoke($"❌ [초기학습] 오류: {ex.Message}");
+                return (false, ex.Message);
+            }
+            finally
+            {
+                IsInitialTrainingInProgress = false;
             }
         }
 
@@ -7789,6 +7979,16 @@ namespace TradingBot
             EntryLog("START", "INFO", $"price={currentPrice:F4} source={signalSource}");
 
             // ═══════════════════════════════════════════════════════════════
+            // [v4.7.0] ROUTER 0. 초기 학습 완료 검증 — 미완료 시 모든 진입 차단
+            // ═══════════════════════════════════════════════════════════════
+            if (!IsInitialTrainingComplete)
+            {
+                EntryLog("INITIAL_TRAINING", "BLOCK", "초기 학습 미완료 — 텔레그램 /train 명령으로 실행 필요");
+                OnStatusLog?.Invoke($"⛔ [초기학습 미완료] {symbol} 진입 차단 — 텔레그램에서 /train 입력하여 6개월 학습 실행");
+                return;
+            }
+
+            // ═══════════════════════════════════════════════════════════════
             // [ROUTER] 1. 공통 검증
             // ═══════════════════════════════════════════════════════════════
 
@@ -7993,7 +8193,7 @@ namespace TradingBot
             }
 
             // [v4.6.0] 변동성 차단 — 메이저 일반 진입에만 적용 (PUMP/급등은 우회)
-            // PUMP/급등은 변동성 자체가 진입 신호이므로 변동성으로 차단하면 모순
+            // [v4.7.0] 초기학습 완료 시 모든 하드 필터 우회 (AI 단독 판단)
             bool isVolatilitySignalPath = signalSource == "PUMP_WATCH_CONFIRMED"
                 || signalSource.StartsWith("SPIKE", StringComparison.OrdinalIgnoreCase)
                 || signalSource.StartsWith("MAJOR_MEME", StringComparison.OrdinalIgnoreCase)
@@ -8001,7 +8201,7 @@ namespace TradingBot
                 || signalSource == "PUMP_REVERSE"
                 || signalSource == "CRASH_REVERSE";
 
-            if (!isVolatilitySignalPath && latestCandle != null && latestCandle.ATR > 0 && currentPrice > 0)
+            if (!IsInitialTrainingComplete && !isVolatilitySignalPath && latestCandle != null && latestCandle.ATR > 0 && currentPrice > 0)
             {
                 // 메이저 일반 진입만: ATR 3%+, 5분봉 5%+ 차단
                 float atrPriceRatio = latestCandle.ATR / (float)currentPrice * 100f;
@@ -8829,7 +9029,8 @@ namespace TradingBot
             var EntryLog = ctx.EntryLog;
 
             // [v4.6.2] 메이저 LONG 보조지표 필터 (대칭) — VWAP / EMA / StochRSI
-            if (ctx.LatestCandle != null)
+            // [v4.7.0] 초기학습 완료 시 모든 LONG 하드 필터 우회 (AI 단독 판단)
+            if (!IsInitialTrainingComplete && ctx.LatestCandle != null)
             {
                 // 1. VWAP 아래 → LONG 차단 (가격이 VWAP 아래면 매도 우위)
                 if (ctx.LatestCandle.VWAP > 0 && ctx.LatestCandle.Price_VWAP_Distance_Pct < -0.3f)
@@ -8937,7 +9138,8 @@ namespace TradingBot
             await EvaluateAiPredictorForEntry(ctx, applyMajorBonuses: false);
 
             // 2. SHORT 전용 다중 필터 (v3.5.3: 0승10패 → 엄격 필터)
-            if (ctx.LatestCandle != null)
+            // [v4.7.0] 초기학습 완료 시 모든 SHORT 하드 필터 우회 (AI 단독 판단)
+            if (!IsInitialTrainingComplete && ctx.LatestCandle != null)
             {
                 // 2-1. RSI 과매도 + 가격 MA20 위 → 차단
                 bool shortPriceAboveMa20 = ctx.LatestCandle.Close >= (decimal)ctx.LatestCandle.SMA_20;

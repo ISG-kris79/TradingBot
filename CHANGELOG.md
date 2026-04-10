@@ -15,6 +15,43 @@
 
  - 없음
 
+## [4.7.0] - 2026-04-11
+
+### Major: 옵션 A — 진정한 AI 단독 판단 구현
+
+#### Added
+- **HistoricalDataDownloader 신규**: Binance 과거 캔들 페이지네이션 다운로드
+  - startTime/endTime 기반 6개월 분량 일괄 수집
+  - rate limit 준수 (100ms 간격, 분당 ~600 요청)
+  - DB 저장 (CandleData 청크 500개씩)
+  - 메이저 4 + 거래량 상위 100 알트 + Spike용 50 알트 1분봉
+- **TriggerInitialDownloadAndTrainAsync**: 다운로드 → 학습 → 검증 일괄 실행
+  - 1단계: 6개월 캔들 다운로드 (15~30분)
+  - 2단계: ML 모델 4개 학습 (TrainAllModelsAsync 재사용)
+  - 3단계: 정확도 70%+ 검증 (TradeSignal/PumpNormal/PumpSpike)
+- **StartOptionAInitialTrainingAsync**: 봇 정지 상태에서도 호출 가능
+- **IsInitialTrainingComplete 영속화**: `%LOCALAPPDATA%\TradingBot\Models\initial_training_ready.flag`
+- **텔레그램 `/train` 명령**: 옵션 A 학습 트리거 (기존 ForceInitialAiTrainingAsync 대체)
+- **봇 시작 알림**: 학습 완료/미완료 상태 명시
+
+#### Changed
+- **진입 라우터 ROUTER 0**: `IsInitialTrainingComplete=false` 시 모든 진입 차단
+  - PUMP, SPIKE, MAJOR, MACD 모든 경로
+  - 메시지: "텔레그램 /train 명령으로 6개월 학습 실행"
+- **하드코딩 필터 조건부 비활성화** (학습 완료 시 AI 단독 판단):
+  - VOLATILITY 차단 (메이저 일반 진입)
+  - SHORT_FILTER (RSI/MACD/Fib/Stoch/SMA60)
+  - LONG_FILTER (VWAP/EMA/StochRSI)
+  - PUMP HTF 차단 (CheckPumpHtfBullishAsync)
+- **AI Gate 우회 없음 유지** (사용자 원칙 준수)
+
+### 사용 방법
+1. v4.7.0 업데이트
+2. 봇 시작 (자동 진입은 차단 상태)
+3. 텔레그램 `/train` 입력
+4. 30분~2시간 후 학습 완료 알림 수신
+5. 자동 진입 활성화 (이후 재시작해도 flag 파일로 자동 복원)
+
 ## [4.6.3] - 2026-04-11
 
 (v4.6.2 통합 + 카운터 리셋 로직 단순화)
