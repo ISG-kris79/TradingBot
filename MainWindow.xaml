@@ -2195,16 +2195,29 @@
                             </Border.Effect>
                         </Border>
 
-                        <!-- 데이터 대기 안내 -->
-                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
-                                    Visibility="{Binding IsAiCommandEmpty, Converter={StaticResource BooleanToVisibilityConverter}}">
-                            <TextBlock Text="🎯" FontSize="48" HorizontalAlignment="Center" Margin="0,0,0,12"/>
-                            <TextBlock Text="AI COMMAND CENTER" FontSize="20" FontWeight="Bold" Foreground="#E6EDF3" HorizontalAlignment="Center"/>
-                            <TextBlock Text="시장 분석 데이터 수집 중..." FontSize="13" Foreground="#8B949E" HorizontalAlignment="Center" Margin="0,8,0,0"/>
-                            <TextBlock Text="START 후 첫 진입 신호 발생 시 활성화됩니다" FontSize="11" Foreground="#484F58" HorizontalAlignment="Center" Margin="0,4,0,0"/>
-                        </StackPanel>
+                        <!-- Waiting overlay when no AI data -->
+                        <Grid Panel.ZIndex="50"
+                              Visibility="{Binding IsAiCommandEmpty, Converter={StaticResource BooleanToVisibilityConverter}}"
+                              Background="#E60D1117">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <TextBlock Text="🧠" FontSize="48" HorizontalAlignment="Center" Margin="0,0,0,12"/>
+                                <TextBlock Text="AI COMMAND CENTER" FontSize="20" FontWeight="Bold"
+                                           Foreground="#58A6FF" HorizontalAlignment="Center" Margin="0,0,0,8"/>
+                                <TextBlock Text="START 버튼을 눌러 AI 분석을 시작하세요" FontSize="14"
+                                           Foreground="#8B949E" HorizontalAlignment="Center" Margin="0,0,0,20"/>
+                                <Border Background="#161B22" CornerRadius="8" Padding="16,10" HorizontalAlignment="Center">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Ellipse Width="8" Height="8" Fill="#FFB300" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                        <TextBlock Text="대기 중 — AI 엔진이 실시간 데이터를 수신하면 자동 활성화됩니다"
+                                                   FontSize="12" Foreground="#C9D1D9"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Grid>
 
-                        <Grid Margin="16">
+                        <ScrollViewer Style="{StaticResource MinimalScrollViewer}" VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="16">
+                        <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="220"/>    <!-- Left: Bull/Bear seesaw -->
                                 <ColumnDefinition Width="*"/>      <!-- Center: AI gauge + TF sync -->
@@ -2216,9 +2229,9 @@
                                     Style="{StaticResource CardStyle}"
                                     Margin="0,0,12,0">
                                 <StackPanel>
-                                    <TextBlock Text="⚖️ MARKET POWER"
-                                               FontSize="13" FontWeight="Bold"
-                                               Foreground="#E6EDF3" Margin="0,0,0,16"
+                                    <TextBlock Text="⚖ MARKET POWER"
+                                               FontSize="14" FontWeight="Bold"
+                                               Foreground="#58A6FF" Margin="0,0,0,16"
                                                HorizontalAlignment="Center"/>
 
                                     <!-- Bull Power Bar -->
@@ -2287,7 +2300,7 @@
                                     <Border Background="#0A0E27" CornerRadius="8" Padding="12,8">
                                         <StackPanel>
                                             <TextBlock Text="CURRENT BIAS"
-                                                       FontSize="10" Foreground="#6B7280"
+                                                       FontSize="11" Foreground="#8B949E" FontWeight="SemiBold"
                                                        HorizontalAlignment="Center"/>
                                             <TextBlock Text="{Binding CurrentBias}"
                                                        FontSize="14" FontWeight="Bold"
@@ -2347,7 +2360,7 @@
                                         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,16">
                                             <TextBlock Text="🧠 AI CONFIDENCE — "
                                                        FontSize="14" FontWeight="Bold"
-                                                       Foreground="White"/>
+                                                       Foreground="#E6EDF3"/>
                                             <TextBlock Text="{Binding AiCmdSymbol}"
                                                        FontSize="14" FontWeight="Bold"
                                                        Foreground="{StaticResource PrimaryBrush}"/>
@@ -2497,15 +2510,15 @@
                                     x:Name="borderSniperView">
                                 <StackPanel>
                                     <TextBlock Text="🔫 1M SNIPER VIEW"
-                                               FontSize="13" FontWeight="Bold"
-                                               Foreground="White"
+                                               FontSize="14" FontWeight="Bold"
+                                               Foreground="#58A6FF"
                                                HorizontalAlignment="Center"
                                                Margin="0,0,0,16"/>
 
                                     <!-- Symbol targeting -->
                                     <StackPanel HorizontalAlignment="Center" Margin="0,0,0,12">
                                         <TextBlock Text="TARGET"
-                                                   FontSize="10" Foreground="#6B7280"
+                                                   FontSize="11" Foreground="#8B949E" FontWeight="SemiBold"
                                                    HorizontalAlignment="Center"/>
                                         <TextBlock Text="{Binding AiCmdSymbol}"
                                                    FontSize="22" FontWeight="Bold"
@@ -2783,12 +2796,14 @@
                                 </StackPanel>
                             </Grid>
                         </Border>
+                        </StackPanel>
+                        </ScrollViewer>
                     </Grid>
                 </TabItem>
 
                 <!-- PERFORMANCE TAB (v3.7.0 리디자인) -->
                 <TabItem Header="📊  PERFORMANCE">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto" Background="#0D1117">
+                    <ScrollViewer Style="{StaticResource MinimalScrollViewer}" Background="#0D1117">
                     <Grid Margin="12">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>

@@ -15,6 +15,20 @@
 
  - 없음
 
+## [4.5.1] - 2026-04-10
+
+### Fixed
+
+- **AI COMMAND 탭 레이아웃 수정**: 하단 섹션(Price Energy, Exit Score, Entry Pipeline)이 상단 3열 그리드와 겹쳐 보이지 않던 문제 해결
+  - StackPanel + ScrollViewer 구조로 변경하여 수직 정렬 정상화
+  - 컨텐츠 길어질 때 MinimalScrollViewer로 스크롤 지원
+
+### Added
+
+- **AI COMMAND 대기 오버레이**: START 전(AI 데이터 미수신)에 안내 화면 표시
+  - "🧠 AI COMMAND CENTER / START 버튼을 눌러 AI 분석을 시작하세요" 표시
+  - 데이터 수신 시 자동 사라짐 (IsAiCommandEmpty 바인딩)
+
 ## [3.5.0] - 2026-04-09
 
 ### Added
