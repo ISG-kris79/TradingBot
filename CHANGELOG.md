@@ -15,6 +15,21 @@
 
  - 없음
 
+## [4.5.3] - 2026-04-10
+
+### Changed
+
+- **ML 학습 데이터 소스: KlineCache → DB(CandleData 테이블)로 전환**
+  - 계정별 별도 학습 → 전체 DB 공유 학습으로 변경
+  - 모든 계정이 동일한 학습 데이터에서 동일한 모델 생성
+  - DB에 24시간 내 캔들이 있는 전체 USDT 심볼 대상 학습
+  - TradeSignal, PumpSignal, Direction, Survival 4개 모델 모두 DB 기반
+  - MarketRegime/ExitOptimizer는 기존 유지 (KlineCache + TradeHistory)
+
+### Added
+
+- `DbManager.GetAllCandleDataForTrainingAsync()`: 전체 심볼 캔들 일괄 조회
+
 ## [4.5.2] - 2026-04-10
 
 ### Added

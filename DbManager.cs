@@ -1838,6 +1838,44 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
             }
         }
 
+        /// <summary>
+        /// [v4.5.2] ML 학습용: 전체 심볼의 최근 캔들 데이터를 DB에서 조회 (계정 무관, 공유 데이터)
+        /// </summary>
+        public async Task<Dictionary<string, List<TradingBot.Models.CandleData>>> GetAllCandleDataForTrainingAsync(
+            int candlesPerSymbol = 200, CancellationToken token = default)
+        {
+            var result = new Dictionary<string, List<TradingBot.Models.CandleData>>();
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                // 최근 활성 심볼 목록 조회 (24시간 내 캔들이 있는 심볼)
+                var symbolsSql = @"SELECT DISTINCT Symbol FROM CandleData
+                                   WHERE OpenTime >= DATEADD(HOUR, -24, GETUTCDATE()) AND Symbol LIKE '%USDT'";
+                var symbols = (await db.QueryAsync<string>(symbolsSql, commandTimeout: 15)).ToList();
+
+                foreach (var symbol in symbols)
+                {
+                    if (token.IsCancellationRequested) break;
+                    try
+                    {
+                        var sql = @"SELECT TOP (@Limit) * FROM CandleData
+                                    WHERE Symbol = @Symbol ORDER BY OpenTime DESC";
+                        var candles = (await db.QueryAsync<TradingBot.Models.CandleData>(
+                            sql, new { Symbol = symbol, Limit = candlesPerSymbol }, commandTimeout: 10))
+                            .Reverse().ToList();
+                        if (candles.Count >= 30)
+                            result[symbol] = candles;
+                    }
+                    catch { /* 개별 심볼 실패 무시 */ }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DB] GetAllCandleDataForTraining 오류: {ex.Message}");
+            }
+            return result;
+        }
+
         public async Task ExportTradeHistoryToCsvAsync(string filePath, int userId, DateTime startDate, DateTime endDate, int limit = 10000)
         {
             var rows = await GetTradeHistoryAsync(userId, startDate, endDate, limit);

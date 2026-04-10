@@ -6135,7 +6135,22 @@ namespace TradingBot
         {
             try
             {
-                OnStatusLog?.Invoke("🧠 [ML 재학습] 전체 모델 학습 시작...");
+                OnStatusLog?.Invoke("🧠 [ML 재학습] 전체 모델 학습 시작 (DB 기반)...");
+
+                // [v4.5.2] DB에서 전체 심볼 캔들 로드 (계정 무관 공유 데이터)
+                var dbCandleMap = await _dbManager.GetAllCandleDataForTrainingAsync(200, token);
+                int dbSymbolCount = dbCandleMap.Count;
+                int dbCandleTotal = dbCandleMap.Values.Sum(v => v.Count);
+                OnStatusLog?.Invoke($"🧠 [ML] DB 학습 데이터: {dbSymbolCount}개 심볼, {dbCandleTotal}개 캔들");
+
+                // DB 데이터 → IBinanceKline 변환 캐시 (여러 모델에서 재사용)
+                var klineMap = new Dictionary<string, List<IBinanceKline>>();
+                foreach (var kvp in dbCandleMap)
+                {
+                    klineMap[kvp.Key] = kvp.Value
+                        .Select(cd => (IBinanceKline)new Services.BinanceKlineAdapter(cd, Binance.Net.Enums.KlineInterval.FiveMinutes))
+                        .ToList();
+                }
 
                 // 1. TradeSignalClassifier (3-class: LONG/SHORT/HOLD)
                 try
@@ -6143,16 +6158,10 @@ namespace TradingBot
                     if (_tradeSignalClassifier != null)
                     {
                         var allCandles = new List<CandleData>();
-                        foreach (var kvp in _marketDataManager.KlineCache)
+                        foreach (var kvp in dbCandleMap)
                         {
                             if (token.IsCancellationRequested) break;
-                            List<IBinanceKline> candles;
-                            lock (kvp.Value) { candles = kvp.Value.TakeLast(100).ToList(); }
-                            if (candles.Count < 30) continue;
-
-                            // IBinanceKline → CandleData 변환 (지표 계산 포함)
-                            var cdList = ConvertKlinesToCandleData(kvp.Key, candles);
-                            allCandles.AddRange(cdList);
+                            allCandles.AddRange(kvp.Value.TakeLast(100));
                         }
                         if (allCandles.Count >= 100)
                         {
@@ -6173,14 +6182,12 @@ namespace TradingBot
                     if (_pumpSignalClassifier != null)
                     {
                         var pumpCandles = new List<IBinanceKline>();
-                        foreach (var kvp in _marketDataManager.KlineCache)
+                        foreach (var kvp in klineMap)
                         {
                             if (token.IsCancellationRequested) break;
                             if (MajorSymbols.Contains(kvp.Key)) continue;
-                            List<IBinanceKline> candles;
-                            lock (kvp.Value) { candles = kvp.Value.TakeLast(100).ToList(); }
-                            if (candles.Count >= 30)
-                                pumpCandles.AddRange(candles);
+                            if (kvp.Value.Count >= 30)
+                                pumpCandles.AddRange(kvp.Value.TakeLast(100));
                         }
                         if (pumpCandles.Count >= 200)
                         {
@@ -6200,11 +6207,10 @@ namespace TradingBot
                 {
                     var allDirData = new List<PriceDirectionPredictor.DirectionFeature>();
                     var allVolData = new List<PriceDirectionPredictor.VolatilityFeature>();
-                    foreach (var kvp in _marketDataManager.KlineCache)
+                    foreach (var kvp in klineMap)
                     {
                         if (token.IsCancellationRequested) break;
-                        List<IBinanceKline> candles;
-                        lock (kvp.Value) { candles = kvp.Value.TakeLast(150).ToList(); }
+                        var candles = kvp.Value.TakeLast(150).ToList();
                         if (candles.Count < 30) continue;
                         var (dir, vol) = _directionPredictor.BuildTrainingData(candles);
                         allDirData.AddRange(dir);
@@ -6224,11 +6230,10 @@ namespace TradingBot
                     var majorSurvData = new List<SurvivalEntryModel.SurvivalFeature>();
                     var pumpSurvData = new List<SurvivalEntryModel.SurvivalFeature>();
 
-                    foreach (var kvp in _marketDataManager.KlineCache)
+                    foreach (var kvp in klineMap)
                     {
                         if (token.IsCancellationRequested) break;
-                        List<IBinanceKline> c5m;
-                        lock (kvp.Value) { c5m = kvp.Value.TakeLast(150).ToList(); }
+                        var c5m = kvp.Value.TakeLast(150).ToList();
                         if (c5m.Count < 40) continue;
 
                         bool isMajor = MajorSymbols.Contains(kvp.Key);
@@ -6246,7 +6251,7 @@ namespace TradingBot
                 }
                 catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] Survival 학습 실패: {ex.Message}"); }
 
-                // 5-6. MarketRegime + ExitOptimizer (기존 로직)
+                // 5-6. MarketRegime + ExitOptimizer (기존 로직 — KlineCache + TradeHistory DB)
                 await TrainExitModelsInternalAsync(token);
 
                 OnStatusLog?.Invoke("🧠 [ML 재학습] 전체 모델 학습 완료");
