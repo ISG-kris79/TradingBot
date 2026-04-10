@@ -277,6 +277,28 @@ namespace TradingBot.Services
             bool breakEvenActivated = false;       // ROE 본절 보호 활성화
             bool profitLockActivated = false;      // ROE 수익 잠금 활성화
             bool tightTrailingActivated = false;   // ROE 타이트 트레일링 활성화
+
+            // [v4.4.1] DB에서 상태 복원 (재시작 시 본절/부분청산 중복 방지)
+            lock (_posLock)
+            {
+                if (_activePositions.TryGetValue(symbol, out var restoredPos))
+                {
+                    if (restoredPos.HighestROEForTrailing > 0)
+                        highestROE = (decimal)restoredPos.HighestROEForTrailing;
+                    if (restoredPos.TakeProfitStep >= 1)
+                    {
+                        breakEvenActivated = true;
+                        profitLockActivated = true;
+                    }
+                    if (restoredPos.BreakevenPrice > 0)
+                    {
+                        breakEvenActivated = true;
+                        protectiveStopPrice = restoredPos.BreakevenPrice;
+                    }
+                    if (highestROE > 0)
+                        OnLog?.Invoke($"🔄 {symbol} Major 상태 복원 | BE={breakEvenActivated} PL={profitLockActivated} ROE={highestROE:F1}% stop={protectiveStopPrice:F4}");
+                }
+            }
             // [틱 스파이크 필터] 1단계/2단계 본절 스탑은 30초 이상 유지돼야 청산
             // → 순간 스파이크로 본절 터치 후 가격이 회복되는 90% 케이스 방어
             DateTime breakEvenStopConfirmStart = DateTime.MinValue;
