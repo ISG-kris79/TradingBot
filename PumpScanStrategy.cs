@@ -431,9 +431,18 @@ namespace TradingBot.Strategies
             }
         }
 
+        private static readonly HashSet<string> StablecoinSymbols = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "USDCUSDT", "BUSDUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "USDPUSDT", "EURUSDT"
+        };
+
         private bool IsEligiblePumpSymbol(string symbol)
         {
             if (string.IsNullOrWhiteSpace(symbol) || !symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            // 스테이블코인 제외
+            if (StablecoinSymbols.Contains(symbol))
                 return false;
 
             // 메이저 코인은 MajorCoinStrategy에서 별도 스캔 → PUMP 후보에서 제외

@@ -6590,8 +6590,14 @@ namespace TradingBot
         /// <summary>개별 코인 급등 감지 → 즉시 PUMP 진입 시도 (PumpScan 스킵)</summary>
         /// <summary>[v3.2.7] 급등/급락 감지 → AI 판단 후 진입</summary>
         /// <summary>[v3.2.16] 급등/급락 즉시 주문 — ExecuteAutoOrder 스킵 (API 4분 지연 제거)</summary>
+        private static readonly HashSet<string> _stablecoinSymbols = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "USDCUSDT", "BUSDUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "USDPUSDT", "EURUSDT"
+        };
+
         private async Task HandleSpikeDetectedAsync(string symbol, decimal changePct, decimal currentPrice)
         {
+            if (_stablecoinSymbols.Contains(symbol)) return; // 스테이블코인 제외
             var token = _cts?.Token ?? CancellationToken.None;
 
             bool isMajor = MajorSymbols.Contains(symbol);
