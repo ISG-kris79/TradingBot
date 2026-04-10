@@ -15,6 +15,27 @@
 
  - 없음
 
+## [4.5.15] - 2026-04-10
+
+### Performance
+
+- **멀티 타임프레임 WebSocket 캐시 구현** (AI 진입 평가 REST 호출 제거)
+  - 메이저 코인 5개 TF 전체 WebSocket 구독 추가 (M1/M15/H1/H4/D1)
+  - `MarketDataManager.MultiTfKlineCache` 인메모리 캐시 추가
+  - `GetCachedKlines(symbol, interval, minCount)` 조회 헬퍼 제공
+  - `MarketDataManager.Instance` 정적 접근자 (Extractor/Gate에서 캐시 조회)
+
+- **AI 진입 평가 REST → WebSocket 캐시 우선 전환**
+  - `MultiTimeframeFeatureExtractor`: 5개 TF 모두 캐시 우선, H2만 REST
+  - `AIDoubleCheckEntryGate`: M15/M1 캐시 우선
+  - `MacdCrossSignalService`: M1/M15/H1 캐시 우선
+
+### Fixed
+
+- **AI Gate 진입 평가 지연 500ms → ~50ms** (10배 단축 예상)
+- **진입당 REST 호출 5~7회 → 0~1회** (H2만 남음)
+- 메이저 코인 진입 반응 속도 대폭 개선
+
 ## [4.5.14] - 2026-04-10
 
 ### Fixed

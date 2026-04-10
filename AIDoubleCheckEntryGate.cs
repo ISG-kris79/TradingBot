@@ -176,15 +176,17 @@ namespace TradingBot
                 float tfConfidence = mlConfidence;
                 float effectiveTFThreshold = effectiveMLThreshold;
 
-                // 4. M15/M1 캔들 수집 (Fib 보너스 + 리스크/규칙 필터 공용)
-                var m15List = (await _exchangeService
+                // 4. M15/M1 캔들 수집 — [v4.5.15] WebSocket 캐시 우선 조회
+                var m15Cached = Services.MarketDataManager.Instance?.GetCachedKlines(symbol, Binance.Net.Enums.KlineInterval.FifteenMinutes, 30);
+                var m15List = m15Cached ?? (await _exchangeService
                     .GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.FifteenMinutes, 100, token))?
                     .ToList() ?? new List<IBinanceKline>();
 
                 List<IBinanceKline> m1List = new();
                 if (IsMajorSymbol(symbol) && decision.Contains("LONG", StringComparison.OrdinalIgnoreCase))
                 {
-                    m1List = (await _exchangeService
+                    var m1Cached = Services.MarketDataManager.Instance?.GetCachedKlines(symbol, Binance.Net.Enums.KlineInterval.OneMinute, 5);
+                    m1List = m1Cached ?? (await _exchangeService
                         .GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.OneMinute, 5, token))?
                         .ToList() ?? new List<IBinanceKline>();
                 }

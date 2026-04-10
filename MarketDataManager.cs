@@ -29,6 +29,42 @@ namespace TradingBot.Services
         public ConcurrentDictionary<string, TickerCacheItem> TickerCache { get; } = new();
         public ConcurrentDictionary<string, List<IBinanceKline>> KlineCache { get; } = new();
 
+        // [v4.5.15] 멀티 타임프레임 WebSocket 캐시 — REST 호출 제거용
+        // Key: "{symbol}|{interval}" (예: "BTCUSDT|1m")
+        public ConcurrentDictionary<string, List<IBinanceKline>> MultiTfKlineCache { get; } = new();
+
+        // [v4.5.15] 전역 싱글턴 참조 (IExchangeService만 받는 클래스에서 캐시 조회용)
+        public static MarketDataManager? Instance { get; private set; }
+
+        // [v4.5.15] 캐시 대상 타임프레임 (메이저 코인만 멀티 TF 구독)
+        private static readonly BinanceEnums.KlineInterval[] MultiTfIntervals = new[]
+        {
+            BinanceEnums.KlineInterval.OneMinute,
+            BinanceEnums.KlineInterval.FifteenMinutes,
+            BinanceEnums.KlineInterval.OneHour,
+            BinanceEnums.KlineInterval.FourHour,
+            BinanceEnums.KlineInterval.OneDay
+        };
+
+        private static string MultiTfKey(string symbol, BinanceEnums.KlineInterval interval)
+            => $"{symbol}|{interval}";
+
+        /// <summary>
+        /// [v4.5.15] 캐시에서 캔들 조회. 없으면 null 반환 (호출 측이 REST fallback)
+        /// </summary>
+        public List<IBinanceKline>? GetCachedKlines(string symbol, BinanceEnums.KlineInterval interval, int minCount = 30)
+        {
+            if (MultiTfKlineCache.TryGetValue(MultiTfKey(symbol, interval), out var list))
+            {
+                lock (list)
+                {
+                    if (list.Count >= minCount)
+                        return list.ToList(); // 스냅샷 복사
+                }
+            }
+            return null;
+        }
+
         // Events for TradingEngine
         public event Action<BinanceFuturesStreamAccountUpdate>? OnAccountUpdate;
         public event Action<BinanceFuturesStreamOrderUpdate>? OnOrderUpdate; // [추가] 주문 업데이트 이벤트
@@ -41,6 +77,7 @@ namespace TradingBot.Services
         {
             _restClient = restClient;
             _majorSymbols = majorSymbols;
+            Instance = this; // [v4.5.15] 정적 접근용
 
             var exchange = (AppConfig.Current?.Trading?.SelectedExchange).GetValueOrDefault(ExchangeType.Binance);
 
@@ -81,6 +118,8 @@ namespace TradingBot.Services
             _ = StartAllMarketTickerStreamAsync(internalToken);
             _ = StartPriceWebSocketAsync(internalToken);
             _ = StartKlineStreamAsync(internalToken);
+            // [v4.5.15] 멀티 TF WebSocket 캐시 가동 (M1/M15/H1/H4/D1) — REST 호출 제거용
+            _ = StartMultiTfKlineStreamAsync(internalToken);
 
             return Task.CompletedTask;
         }
@@ -333,6 +372,81 @@ namespace TradingBot.Services
                     OnLog?.Invoke($"❌ [{symbol}] 캔들 스트림 실패: {subResult.Error}");
                 }
             }
+        }
+
+        /// <summary>
+        /// [v4.5.15] 메이저 심볼에 대해 멀티 타임프레임 WebSocket 구독 + 초기 선로딩
+        /// - M1: 최근 60봉 (MACD/RSI 계산)
+        /// - M15/H1/H4/D1: 최근 120봉 (AI Feature 추출)
+        /// </summary>
+        public async Task StartMultiTfKlineStreamAsync(CancellationToken token)
+        {
+            foreach (var symbol in _majorSymbols)
+            {
+                foreach (var interval in MultiTfIntervals)
+                {
+                    if (token.IsCancellationRequested) return;
+                    string cacheKey = MultiTfKey(symbol, interval);
+
+                    // 1. 초기 선로딩
+                    try
+                    {
+                        int limit = interval == BinanceEnums.KlineInterval.OneMinute ? 60 : 120;
+                        var klines = await _restClient.UsdFuturesApi.ExchangeData.GetKlinesAsync(
+                            symbol, interval, limit: limit, ct: token);
+                        if (klines.Success && klines.Data != null)
+                        {
+                            MultiTfKlineCache[cacheKey] = klines.Data.Cast<IBinanceKline>().ToList();
+                            OnLog?.Invoke($"📥 [{symbol}] {interval} 초기 선로딩: {klines.Data.Count()}개");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLog?.Invoke($"⚠️ [{symbol}] {interval} 선로딩 예외: {ex.Message}");
+                        continue;
+                    }
+
+                    // 2. WebSocket 구독 (실시간 업데이트)
+                    try
+                    {
+                        var sub = await _socketClient.UsdFuturesApi.ExchangeData.SubscribeToKlineUpdatesAsync(
+                            symbol, interval, data =>
+                            {
+                                var kline = data.Data.Data;
+                                MultiTfKlineCache.AddOrUpdate(cacheKey,
+                                    _ => new List<IBinanceKline> { kline },
+                                    (_, list) =>
+                                    {
+                                        lock (list)
+                                        {
+                                            var last = list.LastOrDefault();
+                                            if (last != null && last.OpenTime == kline.OpenTime)
+                                                list[list.Count - 1] = kline; // 현재 봉 갱신
+                                            else
+                                            {
+                                                list.Add(kline); // 새 봉 추가
+                                                int maxSize = interval == BinanceEnums.KlineInterval.OneMinute ? 60 : 120;
+                                                if (list.Count > maxSize) list.RemoveAt(0);
+                                            }
+                                        }
+                                        return list;
+                                    });
+                            }, ct: token);
+
+                        if (sub.Success && sub.Data != null)
+                        {
+                            sub.Data.ConnectionLost += () => OnLog?.Invoke($"⚠️ [{symbol}] {interval} 스트림 끊김");
+                            sub.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ [{symbol}] {interval} 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                            OnLog?.Invoke($"📡 [{symbol}] {interval} 멀티TF 스트림 가동");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLog?.Invoke($"❌ [{symbol}] {interval} 구독 실패: {ex.Message}");
+                    }
+                }
+            }
+            OnLog?.Invoke("✅ [멀티TF] 전 타임프레임 WebSocket 캐시 가동 완료");
         }
 
         public void UpdateCandle(string symbol, CandleData candle)

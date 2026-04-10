@@ -31,6 +31,19 @@ namespace TradingBot.Services
         }
 
         /// <summary>
+        /// [v4.5.15] WebSocket 캐시 우선 조회, 없으면 REST fallback
+        /// 반환: List (호출 측이 .Count 프로퍼티 사용)
+        /// </summary>
+        private async Task<List<IBinanceKline>?> GetKlinesCachedAsync(
+            string symbol, KlineInterval interval, int limit, CancellationToken token)
+        {
+            var cached = MarketDataManager.Instance?.GetCachedKlines(symbol, interval, Math.Min(limit, 30));
+            if (cached != null) return cached;
+            var rest = await _exchangeService.GetKlinesAsync(symbol, interval, limit, token);
+            return rest?.ToList();
+        }
+
+        /// <summary>
         /// 크로스 이벤트 기록 (DetectGoldenCrossAsync 내부에서 자동 호출)
         /// </summary>
         private void RecordCrossEvent(string symbol, MacdCrossType crossType, double macdLine, double signalLine, double rsi)
@@ -102,7 +115,7 @@ namespace TradingBot.Services
             try
             {
                 // 15분봉
-                var k15m = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 70, token);
+                var k15m = await GetKlinesCachedAsync(symbol, KlineInterval.FifteenMinutes, 70, token);
                 if (k15m == null || k15m.Count < 60)
                     return (false, "15m 데이터 부족");
 
@@ -112,7 +125,7 @@ namespace TradingBot.Services
                 bool bullish15m = sma20_15m > sma60_15m;
 
                 // 1시간봉
-                var k1h = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneHour, 70, token);
+                var k1h = await GetKlinesCachedAsync(symbol, KlineInterval.OneHour, 70, token);
                 if (k1h == null || k1h.Count < 60)
                     return (bullish15m, $"15m={bullish15m}, 1H=데이터부족");
 
@@ -138,7 +151,7 @@ namespace TradingBot.Services
         {
             try
             {
-                var k15m = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 70, token);
+                var k15m = await GetKlinesCachedAsync(symbol, KlineInterval.FifteenMinutes, 70, token);
                 if (k15m == null || k15m.Count < 60)
                     return (false, "15m 데이터 부족");
 
@@ -147,7 +160,7 @@ namespace TradingBot.Services
                 double sma60_15m = list15m.TakeLast(60).Average(k => (double)k.ClosePrice);
                 bool bearish15m = sma20_15m < sma60_15m;
 
-                var k1h = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneHour, 70, token);
+                var k1h = await GetKlinesCachedAsync(symbol, KlineInterval.OneHour, 70, token);
                 if (k1h == null || k1h.Count < 60)
                     return (bearish15m, $"15m={bearish15m}, 1H=데이터부족");
 
@@ -178,7 +191,7 @@ namespace TradingBot.Services
         {
             try
             {
-                var klines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneMinute, 40, token);
+                var klines = await GetKlinesCachedAsync(symbol, KlineInterval.OneMinute, 40, token);
                 if (klines == null || klines.Count < 30)
                     return MacdCrossResult.None("1m 데이터 부족");
 

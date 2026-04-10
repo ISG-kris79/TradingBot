@@ -32,6 +32,21 @@ namespace TradingBot
         /// <summary>
         /// 특정 시점의 Multi-Timeframe Feature 추출 (실시간 예측용)
         /// </summary>
+        /// <summary>
+        /// [v4.5.15] WebSocket 캐시 우선 조회, 없으면 REST fallback
+        /// </summary>
+        private async Task<List<IBinanceKline>?> GetKlinesFromCacheOrRestAsync(
+            string symbol, KlineInterval interval, int restLimit, int minCount, CancellationToken token)
+        {
+            // 1) 캐시 우선 시도 (M1/M15/H1/H4/D1만 캐시 존재)
+            var cached = Services.MarketDataManager.Instance?.GetCachedKlines(symbol, interval, minCount);
+            if (cached != null) return cached;
+
+            // 2) REST fallback
+            var rest = await _exchangeService.GetKlinesAsync(symbol, interval, restLimit, token);
+            return rest?.ToList();
+        }
+
         public async Task<MultiTimeframeEntryFeature?> ExtractRealtimeFeatureAsync(
             string symbol,
             DateTime timestamp,
@@ -39,25 +54,25 @@ namespace TradingBot
         {
             try
             {
-                // 각 타임프레임 캔들 수집 (병렬 실행)
+                // [v4.5.15] 캐시 우선 조회 (메이저 코인은 전체 캐시 히트, PUMP는 REST fallback)
                 var tasks = new[]
                 {
-                    _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneDay, 50, token),
-                    _exchangeService.GetKlinesAsync(symbol, KlineInterval.FourHour, 120, token),
-                    _exchangeService.GetKlinesAsync(symbol, KlineInterval.TwoHour, 120, token),
-                    _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneHour, 200, token),
-                    _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 260, token),
-                    _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneMinute, 40, token)  // [v4.5.2] 휩소 피처용
+                    GetKlinesFromCacheOrRestAsync(symbol, KlineInterval.OneDay, 50, 20, token),
+                    GetKlinesFromCacheOrRestAsync(symbol, KlineInterval.FourHour, 120, 40, token),
+                    _exchangeService.GetKlinesAsync(symbol, KlineInterval.TwoHour, 120, token).ContinueWith(t => t.Result?.ToList(), token), // H2는 캐시 없음
+                    GetKlinesFromCacheOrRestAsync(symbol, KlineInterval.OneHour, 200, 50, token),
+                    GetKlinesFromCacheOrRestAsync(symbol, KlineInterval.FifteenMinutes, 260, 100, token),
+                    GetKlinesFromCacheOrRestAsync(symbol, KlineInterval.OneMinute, 40, 30, token)
                 };
 
                 await Task.WhenAll(tasks);
 
-                var d1Klines = tasks[0].Result?.ToList();
-                var h4Klines = tasks[1].Result?.ToList();
-                var h2Klines = tasks[2].Result?.ToList();
-                var h1Klines = tasks[3].Result?.ToList();
-                var m15Klines = tasks[4].Result?.ToList();
-                var m1Klines = tasks[5].Result?.ToList();
+                var d1Klines = tasks[0].Result;
+                var h4Klines = tasks[1].Result;
+                var h2Klines = tasks[2].Result;
+                var h1Klines = tasks[3].Result;
+                var m15Klines = tasks[4].Result;
+                var m1Klines = tasks[5].Result;
 
                 // 요구 사항 완화: 초기 학습용으로 최소 데이터만 확보
                 if (d1Klines == null || d1Klines.Count < 20 ||      // 1일봉 20개
