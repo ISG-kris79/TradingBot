@@ -654,10 +654,11 @@
                         </StackPanel>
                     </StackPanel>
 
-                    <!-- Live Stat Pills (Col 2) -->
+                    <!-- Live Stat Pills (Col 2) — 좌측 사이드바로 이동, 상단 숨김 -->
                     <StackPanel Grid.Column="2"
                                 Orientation="Horizontal"
                                 VerticalAlignment="Center"
+                                Visibility="Collapsed"
                                 WindowChrome.IsHitTestVisibleInChrome="True">
                         <!-- Equity Pill -->
                         <Border Background="#0A1220"
@@ -802,6 +803,16 @@
                             </ComboBox.ItemContainerStyle>
                             <ComboBoxItem Content="🟡 Binance"/>
                         </ComboBox>
+                        <Button x:Name="btnSettings"
+                                Content="⚙"
+                                Width="36"
+                                Height="36"
+                                Style="{StaticResource ModernButtonStyle}"
+                                Click="btnSettings_Click"
+                                Padding="0"
+                                Margin="0,0,8,0"
+                                ToolTip="Settings"
+                                WindowChrome.IsHitTestVisibleInChrome="True"/>
                         <Button x:Name="btnStart"
                                 Content="▶ START"
                                 Width="120"
@@ -927,14 +938,8 @@
                                 Padding="0"
                                 Margin="0,0,6,0"
                                 ToolTip="Profile"/>
-                        <Button x:Name="btnSettings"
-                                Content="⚙"
-                                Width="32"
-                                Height="32"
-                                Style="{StaticResource ModernButtonStyle}"
-                                Click="btnSettings_Click"
-                                Padding="0"
-                                Margin="0,0,16,0"
+                        <!-- Settings moved to main controls area -->
+                        <Border Width="16" Margin="0,0,0,0"
                                 ToolTip="Settings"/>
 
                         <!-- Window Controls -->
@@ -1071,6 +1076,59 @@
                                       Style="{StaticResource MinimalScrollViewer}"
                                       Margin="0,0,16,0">
                             <StackPanel>
+
+                            <!-- Account Info Card (좌측 상단) -->
+                            <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
+                                <StackPanel>
+                                    <TextBlock Text="💰 ACCOUNT" FontSize="10" FontWeight="Bold"
+                                               Foreground="{StaticResource AccentBrush}" Margin="0,0,0,6"/>
+                                    <Grid Margin="0,0,0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Equity" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding TotalEquity}"
+                                                   Foreground="{Binding EquityColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Available" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding AvailableBalance}"
+                                                   Foreground="#A5B4FC" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Transfer PnL" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding NetTransferInfo}"
+                                                   Foreground="{Binding NetTransferColor}" FontSize="11" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="ROI" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding AverageRoe, StringFormat={}{0:F2}%}"
+                                                   Foreground="{StaticResource WarningBrush}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Positions" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding TotalPositionInfo}"
+                                                   Foreground="{StaticResource AccentBrush}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
 
                             <!-- Entry Gate Card (컴팩트) -->
                             <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
