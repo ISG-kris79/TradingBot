@@ -136,6 +136,9 @@ namespace TradingBot
                 // [v4.5.2] 1분봉 MACD 휩소 피처
                 ExtractM1WhipsawFeatures(m1Klines, feature);
 
+                // [v4.5.6] 다중 TF 하락추세 감지 피처 (PUMP 진입 방어)
+                ExtractMultiTfDowntrendFeatures(m15Klines, h1Klines, feature);
+
                 // 시간 컨텍스트
                 ExtractTimeContext(timestamp, feature);
 
@@ -649,6 +652,49 @@ namespace TradingBot
             double avgLoss = lossSum / period;
             if (avgLoss == 0) return 100;
             return 100 - (100 / (1 + avgGain / avgLoss));
+        }
+
+        /// <summary>
+        /// [v4.5.6] M15/H1 다중 TF 하락추세 감지 (PUMP 진입 방어)
+        /// </summary>
+        private static void ExtractMultiTfDowntrendFeatures(
+            List<IBinanceKline>? m15Klines,
+            List<IBinanceKline>? h1Klines,
+            MultiTimeframeEntryFeature feature)
+        {
+            // ── M15 하락추세 ──
+            if (m15Klines != null && m15Klines.Count >= 60)
+            {
+                double sma20 = m15Klines.TakeLast(20).Average(k => (double)k.ClosePrice);
+                double sma60 = m15Klines.TakeLast(60).Average(k => (double)k.ClosePrice);
+                feature.M15_IsDowntrend = sma20 < sma60 ? 1f : 0f;
+
+                // 연속 음봉 개수 (최근 5봉)
+                int consecBearish = 0;
+                for (int i = m15Klines.Count - 1; i >= Math.Max(0, m15Klines.Count - 5); i--)
+                {
+                    if (m15Klines[i].ClosePrice < m15Klines[i].OpenPrice)
+                        consecBearish++;
+                    else
+                        break;
+                }
+                feature.M15_ConsecBearishCount = consecBearish;
+
+                // M15 RSI 약세
+                double m15Rsi = CalcRSI14(m15Klines);
+                feature.M15_RSI_BelowNeutral = m15Rsi < 45 ? 1f : 0f;
+            }
+
+            // ── H1 하락추세 ──
+            if (h1Klines != null && h1Klines.Count >= 60)
+            {
+                double sma20 = h1Klines.TakeLast(20).Average(k => (double)k.ClosePrice);
+                double sma60 = h1Klines.TakeLast(60).Average(k => (double)k.ClosePrice);
+                feature.H1_IsDowntrend = sma20 < sma60 ? 1f : 0f;
+
+                double currentPrice = (double)h1Klines[^1].ClosePrice;
+                feature.H1_PriceBelowSma60 = currentPrice < sma60 ? 1f : 0f;
+            }
         }
 
         private void ExtractTimeContext(DateTime timestamp, MultiTimeframeEntryFeature feature)

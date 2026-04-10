@@ -15,6 +15,38 @@
 
  - 없음
 
+## [4.5.6] - 2026-04-10
+
+### Fixed
+
+- **WETUSDT 하락추세 PUMP 진입 문제 해결**
+  - `PUMP_WATCH_CONFIRMED` 경로에 상위 TF(H1/M15) 하락추세 하드 체크 추가
+  - 1시간봉/15분봉 SMA20<SMA60 약세 시 진입 차단
+  - **AI 모델 정확도 70%+ 달성 시 하드 체크 자동 해제** (AI 단독 판단 모드)
+
+### Added
+
+- **상위 50개 알트 5분봉 DB 수집** (`MarketHistoryService.CollectTopAltCandlesAsync`)
+  - 5분 주기로 거래량 상위 50개 알트 REST 폴링 → DB 저장
+  - PumpSignalClassifier / SurvivalPump 모델 학습 데이터 확보
+  - 기존: 메이저 4개만 수집 → 신규: 알트 50개 추가 (+1250%)
+
+- **M15/H1 하락추세 방어 ML 피처 5개** (PUMP 진입 방어)
+  - `M15_IsDowntrend`: 15분봉 SMA20<SMA60 (1=하락)
+  - `H1_IsDowntrend`: 1시간봉 SMA20<SMA60 (1=하락)
+  - `M15_ConsecBearishCount`: 최근 연속 음봉 개수 (0~5)
+  - `H1_PriceBelowSma60`: 현재가 < H1 SMA60 (1=아래)
+  - `M15_RSI_BelowNeutral`: M15 RSI<45 약세 (1=약세)
+
+- **AI 모델 정확도 실시간 추적**
+  - PumpSignal/TradeSignal/Direction/SurvivalPump 정확도 메모리 저장
+  - `IsAiModelReadyForPumpEntry`: 모든 모델 정확도 ≥70% 시 true
+  - 달성 시 로그: "🎯 모든 PUMP 모델 정확도 70% 달성 → 하드 체크 자동 해제"
+
+### Changed
+
+- ML Feature 수: 73 → **78개** (M15/H1 하락추세 5개 추가)
+
 ## [4.5.5] - 2026-04-10
 
 ### Added

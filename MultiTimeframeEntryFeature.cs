@@ -121,6 +121,16 @@ namespace TradingBot
         public float M1_MACD_HistStrength { get; set; }         // |hist| / avg|hist| (1 미만=약한 크로스)
 
         // ═══════════════════════════════════════════════════════════════
+        // [v4.5.6] PUMP 진입 방어 — 다중 TF 하락추세 감지 피처
+        // WETUSDT 같은 "1시간봉/15분봉 하락추세 + 거래량 급증" 케이스 차단
+        // ═══════════════════════════════════════════════════════════════
+        public float M15_IsDowntrend { get; set; }              // 1=15분봉 SMA20<SMA60 하락추세, 0=상승/중립
+        public float H1_IsDowntrend { get; set; }               // 1=1시간봉 SMA20<SMA60 하락추세, 0=상승/중립
+        public float M15_ConsecBearishCount { get; set; }       // 15분봉 최근 연속 음봉 개수 (0~5)
+        public float H1_PriceBelowSma60 { get; set; }           // 1=현재가 < H1 SMA60 (중기 하락), 0=위
+        public float M15_RSI_BelowNeutral { get; set; }         // 1=M15 RSI<45 (약세), 0=위
+
+        // ═══════════════════════════════════════════════════════════════
         // 피보나치 되돌림 레벨 (객관적 수치로 AI 특징 사용)
         // ═══════════════════════════════════════════════════════════════
         public float Fib_DistanceTo0382_Pct { get; set; }    // 현재가에서 0.382 레벨까지 거리 (%)

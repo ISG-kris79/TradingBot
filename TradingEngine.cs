@@ -135,6 +135,17 @@ namespace TradingBot
         private readonly MarketCrashDetector _crashDetector = new();
         // [v4.5.5] 알트 불장 자동 감지기
         private readonly AltBullMarketDetector _altBullDetector = new();
+
+        // [v4.5.6] AI 모델 정확도 추적 (하드 체크 자동 해제용)
+        private double _pumpModelAccuracy = 0.0;
+        private double _tradeSignalAccuracy = 0.0;
+        private double _directionModelAccuracy = 0.0;
+        private double _survivalPumpAccuracy = 0.0;
+        // 70% 이상 정확도 달성 시 하드 체크 자동 해제
+        private const double AiHardCheckBypassThreshold = 0.70;
+        private bool IsAiModelReadyForPumpEntry =>
+            _pumpModelAccuracy >= AiHardCheckBypassThreshold
+            && _tradeSignalAccuracy >= AiHardCheckBypassThreshold;
         // [v3.3.6] 급변동 회복 구간 추적: symbol → (extremePrice, isUpwardSpike, eventTime)
         private readonly ConcurrentDictionary<string, (decimal ExtremePrice, bool IsUpwardSpike, DateTime EventTime)>
             _volatilityRecoveryZone = new(StringComparer.OrdinalIgnoreCase);
@@ -2130,17 +2141,31 @@ namespace TradingBot
                                 if (risePct >= 0.5m && risePct <= 5.0m)
                                 {
                                     expiredKeys.Add(kvp.Key);
-                                    // 빠른 진입: AI Gate 포함 전체 파이프라인 통과
-                                    OnStatusLog?.Invoke($"✅ [감시확인] {kvp.Key} +{risePct:F1}% 상승 확인 → 진입 시도 (vol={volRatio:F1}x)");
+                                    var pumpKey = kvp.Key;
+                                    var pumpVolRatio = volRatio;
+                                    OnStatusLog?.Invoke($"✅ [감시확인] {pumpKey} +{risePct:F1}% 상승 확인 → 진입 시도 (vol={pumpVolRatio:F1}x)");
                                     _ = Task.Run(async () =>
                                     {
                                         try
                                         {
-                                            await ExecuteAutoOrder(kvp.Key, "LONG", nowPrice,
+                                            // [v4.5.6] AI 모델 학습 부족 시 하드 체크: 상위 TF(H1/M15) 하락추세 차단
+                                            // - 조건 충족 시(정확도 70%+) 하드 체크 자동 해제되고 AI 단독 판단
+                                            if (!IsAiModelReadyForPumpEntry && _macdCrossService != null)
+                                            {
+                                                var (isBullish, htfDetail) = await _macdCrossService.CheckHigherTimeframeBullishAsync(
+                                                    pumpKey, _cts?.Token ?? CancellationToken.None);
+                                                if (!isBullish)
+                                                {
+                                                    OnStatusLog?.Invoke($"⛔ [PUMP-HTF차단] {pumpKey} 상위TF 약세 → 진입 거부 (AI 학습 부족: pump={_pumpModelAccuracy:P0} trade={_tradeSignalAccuracy:P0}) | {htfDetail}");
+                                                    return;
+                                                }
+                                            }
+
+                                            await ExecuteAutoOrder(pumpKey, "LONG", nowPrice,
                                                 _cts?.Token ?? CancellationToken.None,
                                                 "PUMP_WATCH_CONFIRMED", manualSizeMultiplier: 1.0m);
                                         }
-                                        catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [감시진입] {kvp.Key} 실패: {ex.Message}"); }
+                                        catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [감시진입] {pumpKey} 실패: {ex.Message}"); }
                                     });
                                 }
                                 // 너무 많이 오름 (+5%+) = 이미 늦음
@@ -6174,6 +6199,8 @@ namespace TradingBot
                             {
                                 var metrics = await _tradeSignalClassifier.TrainAndSaveAsync(labeled, token);
                                 OnStatusLog?.Invoke($"🧠 [ML] TradeSignal 학습 완료 | {labeled.Count}건 | Acc={metrics?.MicroAccuracy:P1}");
+                                // [v4.5.6] 정확도 추적
+                                if (metrics != null) _tradeSignalAccuracy = metrics.MicroAccuracy;
                             }
                         }
                     }
@@ -6200,6 +6227,13 @@ namespace TradingBot
                             {
                                 var metrics = await _pumpSignalClassifier.TrainAndSaveAsync(labeled, token);
                                 OnStatusLog?.Invoke($"🧠 [ML] PumpSignal 학습 완료 | {labeled.Count}건 | Acc={metrics?.Accuracy:P1}");
+                                // [v4.5.6] 정확도 추적
+                                if (metrics != null)
+                                {
+                                    _pumpModelAccuracy = metrics.Accuracy;
+                                    if (_pumpModelAccuracy >= AiHardCheckBypassThreshold && _tradeSignalAccuracy >= AiHardCheckBypassThreshold)
+                                        OnStatusLog?.Invoke($"🎯 [AI] 모든 PUMP 모델 정확도 {AiHardCheckBypassThreshold:P0} 달성 → 하드 체크 자동 해제");
+                                }
                             }
                         }
                     }
@@ -6224,6 +6258,7 @@ namespace TradingBot
                     {
                         var (dirAcc, volR2) = await _directionPredictor.TrainAsync(allDirData, allVolData, token);
                         OnStatusLog?.Invoke($"🧠 [ML] Direction={dirAcc:P1} Volatility R²={volR2:F3} ({allDirData.Count}건)");
+                        _directionModelAccuracy = dirAcc; // [v4.5.6] 정확도 추적
                     }
                 }
                 catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] Direction/Volatility 학습 실패: {ex.Message}"); }
@@ -6251,6 +6286,7 @@ namespace TradingBot
                     {
                         var (mAcc, pAcc) = await _survivalModel.TrainAsync(majorSurvData, pumpSurvData, token);
                         OnStatusLog?.Invoke($"🧠 [ML] Survival Major={mAcc:P1}({majorSurvData.Count}건) Pump={pAcc:P1}({pumpSurvData.Count}건)");
+                        _survivalPumpAccuracy = pAcc; // [v4.5.6] 정확도 추적
                     }
                 }
                 catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] Survival 학습 실패: {ex.Message}"); }

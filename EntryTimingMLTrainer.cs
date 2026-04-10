@@ -157,8 +157,8 @@ namespace TradingBot
         }
 
         // 현재 파이프라인이 기대하는 Feature 수 (BuildPipeline의 featureColumns 길이)
-        // 49 기존 + 19 확장(v3.4.2) + 5 휩소(v4.5.2) = 73개
-        private const int ExpectedFeatureCount = 73;
+        // 49 기존 + 19 확장(v3.4.2) + 5 휩소(v4.5.2) + 5 하락추세(v4.5.6) = 78개
+        private const int ExpectedFeatureCount = 78;
 
         /// <summary>
         /// 저장된 모델 로드 (스키마 호환성 검증 포함)
@@ -421,7 +421,10 @@ namespace TradingBot
                 "DirectionBias",
                 // ── [v4.5.2] 1분봉 MACD 휩소 피처 5개 ──
                 "M1_MACD_CrossFlipCount", "M1_MACD_SecsSinceOppCross", "M1_MACD_SignalGapRatio",
-                "M1_RSI_ExtremeZone", "M1_MACD_HistStrength"
+                "M1_RSI_ExtremeZone", "M1_MACD_HistStrength",
+                // ── [v4.5.6] M15/H1 하락추세 방어 피처 5개 ──
+                "M15_IsDowntrend", "H1_IsDowntrend", "M15_ConsecBearishCount",
+                "H1_PriceBelowSma60", "M15_RSI_BelowNeutral"
             };
 
             // 전처리 및 학습 파이프라인
