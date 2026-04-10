@@ -15,6 +15,27 @@
 
  - 없음
 
+## [4.5.11] - 2026-04-10
+
+### Added
+
+- **일일 수익 기반 4단계 모드 자동 전환** (목표 달성 후 보수 진입)
+  - `$0 ~ $200` Aggressive: 평상시 (제약 없음)
+  - `$200 ~ $250` Transition: Spike AI 임계값 +5%p, 사이즈 80%
+  - `$250 ~ $500` Conservative: Spike AI +10%p, 사이즈 50%
+  - `$500+` UltraConservative: **1개 포지션만 유지**, AI +15%p, 사이즈 40%
+
+- **ML 피처 3개 추가** (`DailyPnlRatio`, `IsAboveDailyTarget`, `DailyTradeCount`)
+  - AI가 "목표 달성 후 진입한 거래는 승률 낮다"를 학습 가능
+  - `MultiTimeframeFeatureExtractor` 정적 컨텍스트로 주입
+  - ML Feature 수: 78 → 81개
+
+### Changed
+
+- PUMP_WATCH_CONFIRMED / SPIKE_FAST 경로 모두 일일 수익 모드 체크 추가
+- SPIKE_FAST 마진 계산에 모드 사이즈 배수 적용
+- 메인 루프에서 `UpdateDailyContextForFeatures()` 주기적 호출
+
 ## [4.5.10] - 2026-04-10
 
 ### Added

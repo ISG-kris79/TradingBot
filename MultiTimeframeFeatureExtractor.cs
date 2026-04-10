@@ -18,6 +18,12 @@ namespace TradingBot
     {
         private readonly IExchangeService _exchangeService;
 
+        // [v4.5.11] 일일 세션 컨텍스트 (TradingEngine이 주기적으로 업데이트)
+        // 모든 Extractor 인스턴스가 공유 (실시간 예측 + 학습 라벨링에서 활용)
+        public static volatile float DailyPnlRatioContext = 0f;     // PnL / $250
+        public static volatile float IsAboveDailyTargetContext = 0f; // 1=초과
+        public static volatile float DailyTradeCountContext = 0f;   // 오늘 거래 수
+
         public MultiTimeframeFeatureExtractor(IExchangeService exchangeService)
         {
             _exchangeService = exchangeService ?? throw new ArgumentNullException(nameof(exchangeService));
@@ -138,6 +144,11 @@ namespace TradingBot
 
                 // [v4.5.6] 다중 TF 하락추세 감지 피처 (PUMP 진입 방어)
                 ExtractMultiTfDowntrendFeatures(m15Klines, h1Klines, feature);
+
+                // [v4.5.11] 일일 세션 컨텍스트 피처 (목표 달성 후 보수 모드 학습)
+                feature.DailyPnlRatio = DailyPnlRatioContext;
+                feature.IsAboveDailyTarget = IsAboveDailyTargetContext;
+                feature.DailyTradeCount = DailyTradeCountContext;
 
                 // 시간 컨텍스트
                 ExtractTimeContext(timestamp, feature);

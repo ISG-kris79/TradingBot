@@ -94,6 +94,27 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, int> _dailyReversalCount = new(StringComparer.OrdinalIgnoreCase);
         private DateTime _dailyReversalCountDate = DateTime.MinValue;
         private readonly object _dailyReversalLock = new();
+
+        // [v4.5.11] 일일 수익 기반 모드 단계 (Phase 1: 규칙 기반 보수 모드)
+        public enum DailyProfitMode
+        {
+            Aggressive,          // $0 ~ $200 평상시
+            Transition,          // $200 ~ $250 전환 구간
+            Conservative,        // $250 ~ $500 보수 모드
+            UltraConservative    // $500+ 1개 포지션만 유지
+        }
+
+        /// <summary>
+        /// 현재 일일 수익 기반 모드 반환
+        /// </summary>
+        public DailyProfitMode GetCurrentProfitMode()
+        {
+            decimal dailyPnl = _riskManager?.DailyRealizedPnl ?? 0m;
+            if (dailyPnl >= 500m) return DailyProfitMode.UltraConservative;
+            if (dailyPnl >= 250m) return DailyProfitMode.Conservative;
+            if (dailyPnl >= 200m) return DailyProfitMode.Transition;
+            return DailyProfitMode.Aggressive;
+        }
         private const decimal PUMP_FIXED_MARGIN_USDT = 100m; // (레거시 fallback) PUMP 고정 증거금
         private const int PUMP_MANUAL_LEVERAGE = 20; // 20배 롱 전용 대응 매뉴얼
         
@@ -160,6 +181,66 @@ namespace TradingBot
             _pumpModelAccuracy >= AiHardCheckBypassThreshold
             && _pumpSpikeAccuracy >= AiHardCheckBypassThreshold
             && _tradeSignalAccuracy >= AiHardCheckBypassThreshold;
+
+        /// <summary>
+        /// [v4.5.11] 일일 수익 모드 기반 PUMP 진입 사전 검증
+        /// - UltraConservative($500+): 포지션 1개 초과 시 차단
+        /// - Conservative($250+): AI 임계값 강화, 사이즈 50%
+        /// - Transition($200~$250): AI 임계값 5%p 상향
+        /// - Aggressive($0~$200): 평상시 (제약 없음)
+        /// </summary>
+        /// <returns>(allowed, sizeMultiplier, aiThresholdBoost)</returns>
+        private (bool allowed, decimal sizeMultiplier, float aiThresholdBoost) CheckDailyProfitModeForPumpEntry(string symbol, string source)
+        {
+            var mode = GetCurrentProfitMode();
+            int totalPositions;
+            lock (_posLock) { totalPositions = _activePositions.Count; }
+
+            switch (mode)
+            {
+                case DailyProfitMode.UltraConservative:
+                    // $500+ : 1개 포지션만 유지 (기존 포지션 있으면 모두 차단)
+                    if (totalPositions >= 1)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [보수모드 $500+] {symbol} {source} 차단 — 포지션 {totalPositions}개 (최대 1개 제한)");
+                        return (false, 0m, 0f);
+                    }
+                    // 신규 진입은 매우 엄격
+                    OnStatusLog?.Invoke($"🛡️ [초보수모드 $500+] {symbol} {source} — AI +15%p, 사이즈 40%");
+                    return (true, 0.4m, 0.15f);
+
+                case DailyProfitMode.Conservative:
+                    // $250~$500 : 사이즈 50%, AI +10%p
+                    OnStatusLog?.Invoke($"🛡️ [보수모드 $250+] {symbol} {source} — AI +10%p, 사이즈 50%");
+                    return (true, 0.5m, 0.10f);
+
+                case DailyProfitMode.Transition:
+                    // $200~$250 : AI +5%p
+                    return (true, 0.8m, 0.05f);
+
+                default:
+                    return (true, 1.0m, 0f);
+            }
+        }
+
+        /// <summary>
+        /// [v4.5.11] 일일 세션 컨텍스트를 MultiTimeframeFeatureExtractor에 주입
+        /// - ML 모델이 "목표 달성 후 보수적 판단"을 학습할 수 있도록
+        /// </summary>
+        private void UpdateDailyContextForFeatures()
+        {
+            try
+            {
+                decimal dailyPnl = _riskManager?.DailyRealizedPnl ?? 0m;
+                float pnlRatio = (float)(dailyPnl / 250m);
+                MultiTimeframeFeatureExtractor.DailyPnlRatioContext = pnlRatio;
+                MultiTimeframeFeatureExtractor.IsAboveDailyTargetContext = dailyPnl >= 250m ? 1f : 0f;
+                int tradeCount;
+                lock (_dailyPumpLock) { tradeCount = _dailyPumpEntryCount; }
+                MultiTimeframeFeatureExtractor.DailyTradeCountContext = tradeCount;
+            }
+            catch { /* 무시 — 피처는 기본값 0 */ }
+        }
 
         /// <summary>
         /// [v4.5.10] 심볼별 일일 리버스 횟수 체크 및 예약 (자정 KST 리셋)
@@ -2249,6 +2330,9 @@ namespace TradingBot
                             _dailyTargetHitNotified = false;
                         }
 
+                        // [v4.5.11] 메인 루프마다 DailyPnl 컨텍스트 갱신 (FeatureExtractor 공유)
+                        UpdateDailyContextForFeatures();
+
                         if (!_dailyTargetHitNotified && (_riskManager?.DailyRealizedPnl ?? 0m) >= 250m)
                         {
                             _dailyTargetHitNotified = true;
@@ -2314,12 +2398,15 @@ namespace TradingBot
                                     {
                                         try
                                         {
+                                            // [v4.5.11] 일일 수익 모드 기반 보수 모드 체크
+                                            var (allowed, sizeMul, _) = CheckDailyProfitModeForPumpEntry(pumpKey, "PUMP_WATCH_CONFIRMED");
+                                            if (!allowed) return;
+
                                             // [v4.5.9] 일일 PUMP 진입 한도 (40회) 체크
                                             if (!TryReserveDailyPumpEntry(pumpKey, "PUMP_WATCH_CONFIRMED"))
                                                 return;
 
                                             // [v4.5.6] AI 모델 학습 부족 시 하드 체크: 상위 TF(H1/M15) 하락추세 차단
-                                            // - 조건 충족 시(정확도 70%+) 하드 체크 자동 해제되고 AI 단독 판단
                                             if (!IsAiModelReadyForPumpEntry && _macdCrossService != null)
                                             {
                                                 var (isBullish, htfDetail) = await _macdCrossService.CheckHigherTimeframeBullishAsync(
@@ -2333,7 +2420,7 @@ namespace TradingBot
 
                                             await ExecuteAutoOrder(pumpKey, "LONG", nowPrice,
                                                 _cts?.Token ?? CancellationToken.None,
-                                                "PUMP_WATCH_CONFIRMED", manualSizeMultiplier: 1.0m);
+                                                "PUMP_WATCH_CONFIRMED", manualSizeMultiplier: sizeMul);
                                         }
                                         catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [감시진입] {pumpKey} 실패: {ex.Message}"); }
                                     });
@@ -6853,9 +6940,17 @@ namespace TradingBot
 
             bool isMajor = MajorSymbols.Contains(symbol);
 
-            // [v4.5.9] PUMP 알트만 일일 한도(40회) 체크 (메이저는 제외)
+            // [v4.5.11] 일일 수익 모드 기반 보수 모드 체크 (PUMP 알트만)
+            decimal profitModeSizeMul = 1.0m;
+            float profitModeAiBoost = 0f;
             if (!isMajor)
             {
+                var (allowed, sizeMul, aiBoost) = CheckDailyProfitModeForPumpEntry(symbol, "SPIKE_FAST");
+                if (!allowed) return;
+                profitModeSizeMul = sizeMul;
+                profitModeAiBoost = aiBoost;
+
+                // [v4.5.9] 일일 PUMP 진입 한도(40회) 체크
                 if (!TryReserveDailyPumpEntry(symbol, "SPIKE_FAST"))
                     return;
             }
@@ -6982,6 +7077,14 @@ namespace TradingBot
                 ? await GetAdaptiveEntryMarginUsdtAsync(token)
                 : GetConfiguredPumpMarginUsdt();
 
+            // [v4.5.11] 일일 수익 모드 사이즈 배수 적용 (PUMP만)
+            if (!isMajor && profitModeSizeMul < 1.0m)
+            {
+                decimal adjusted = marginUsdt * profitModeSizeMul;
+                OnStatusLog?.Invoke($"🛡️ [보수모드] {symbol} 마진 {marginUsdt:F0} → {adjusted:F0} (x{profitModeSizeMul:F2})");
+                marginUsdt = adjusted;
+            }
+
             // [v3.2.33] 가용 잔고 체크 — 마진 부족 시 스킵
             try
             {
@@ -7097,11 +7200,14 @@ namespace TradingBot
                                     {
                                         // [v4.5.10] 리버스 진입은 무조건 75%+ 요구 (기존 포지션 엎는 위험 방어)
                                         // [v4.5.9] 알트 불장 모드도 75%+
-                                        float spikeThreshold = (needsReverse || _altBullDetector.IsActive) ? 0.75f : 0.70f;
+                                        float baseThreshold = (needsReverse || _altBullDetector.IsActive) ? 0.75f : 0.70f;
+                                        // [v4.5.11] 일일 수익 모드 boost 추가 ($250+=+10%p, $500+=+15%p)
+                                        float spikeThreshold = Math.Min(0.95f, baseThreshold + profitModeAiBoost);
                                         if (spikePred.Probability < spikeThreshold)
                                         {
                                             string modeTag = needsReverse ? "리버스"
-                                                : _altBullDetector.IsActive ? "알트불장" : "정상";
+                                                : _altBullDetector.IsActive ? "알트불장"
+                                                : profitModeAiBoost > 0 ? "보수모드" : "정상";
                                             OnStatusLog?.Invoke($"⛔ [SPIKE_FAST] {symbol} Spike모델 {spikePred.Probability:P0} < {spikeThreshold:P0} ({modeTag}) → 스킵");
                                             lock (_posLock) { _activePositions.Remove(symbol); }
                                             return;
