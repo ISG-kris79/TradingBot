@@ -2791,8 +2791,8 @@
                     <Grid Background="#0D1117" Margin="12">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="3*"/>
-                            <RowDefinition Height="2*"/>
+                            <RowDefinition Height="*" MinHeight="200"/>
+                            <RowDefinition Height="Auto" MaxHeight="200"/>
                         </Grid.RowDefinitions>
 
                         <!-- 헤더: 기간 탭 + 요약 -->
@@ -2806,17 +2806,17 @@
                                     <TextBlock Text="PERFORMANCE" FontSize="16" FontWeight="Bold" Foreground="#E6EDF3" VerticalAlignment="Center" Margin="0,0,20,0"/>
                                     <Border Background="#21262D" CornerRadius="8" Padding="2">
                                         <StackPanel Orientation="Horizontal">
-                                            <RadioButton Content="  Daily  " GroupName="PerfPeriod" IsChecked="True" Margin="2" Checked="PerfDaily_Checked"
-                                                         FontSize="12" FontWeight="SemiBold" Foreground="#E6EDF3" Background="#30363D"
-                                                         BorderBrush="#484F58" BorderThickness="1" Padding="10,6"
+                                            <RadioButton Content="  일별  " GroupName="PerfPeriod" IsChecked="True" Margin="2" Checked="PerfDaily_Checked"
+                                                         FontSize="13" FontWeight="Bold" Foreground="White" Background="#30363D"
+                                                         BorderBrush="#58A6FF" BorderThickness="1" Padding="12,6"
                                                          Style="{StaticResource {x:Type ToggleButton}}"/>
-                                            <RadioButton Content="  Weekly  " GroupName="PerfPeriod" Margin="2" Checked="PerfWeekly_Checked"
-                                                         FontSize="12" FontWeight="SemiBold" Foreground="#E6EDF3" Background="#30363D"
-                                                         BorderBrush="#484F58" BorderThickness="1" Padding="10,6"
+                                            <RadioButton Content="  주별  " GroupName="PerfPeriod" Margin="2" Checked="PerfWeekly_Checked"
+                                                         FontSize="13" FontWeight="Bold" Foreground="White" Background="#30363D"
+                                                         BorderBrush="#58A6FF" BorderThickness="1" Padding="12,6"
                                                          Style="{StaticResource {x:Type ToggleButton}}"/>
-                                            <RadioButton Content="  Monthly  " GroupName="PerfPeriod" Margin="2" Checked="PerfMonthly_Checked"
-                                                         FontSize="12" FontWeight="SemiBold" Foreground="#E6EDF3" Background="#30363D"
-                                                         BorderBrush="#484F58" BorderThickness="1" Padding="10,6"
+                                            <RadioButton Content="  월별  " GroupName="PerfPeriod" Margin="2" Checked="PerfMonthly_Checked"
+                                                         FontSize="13" FontWeight="Bold" Foreground="White" Background="#30363D"
+                                                         BorderBrush="#58A6FF" BorderThickness="1" Padding="12,6"
                                                          Style="{StaticResource {x:Type ToggleButton}}"/>
                                         </StackPanel>
                                     </Border>

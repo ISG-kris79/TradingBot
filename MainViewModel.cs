@@ -1825,7 +1825,8 @@ namespace TradingBot.ViewModels
                             DataLabels = true,
                             LabelPoint = p => p.Y != 0 ? $"${p.Y:N0}" : "",
                             Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x7E, 0xE7, 0x87)),
-                            FontSize = 10
+                            FontSize = 9,
+                            FontWeight = System.Windows.FontWeights.Bold
                         },
                         new ColumnSeries
                         {
@@ -1838,7 +1839,8 @@ namespace TradingBot.ViewModels
                             DataLabels = true,
                             LabelPoint = p => p.Y != 0 ? $"${p.Y:N0}" : "",
                             Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0x7B, 0x72)),
-                            FontSize = 10
+                            FontSize = 9,
+                            FontWeight = System.Windows.FontWeights.Bold
                         }
                     };
                     OnPropertyChanged(nameof(PerformanceSeries));
