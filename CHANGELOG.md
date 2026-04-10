@@ -15,6 +15,36 @@
 
  - 없음
 
+## [4.6.1] - 2026-04-11
+
+### Fixed (Phase A: 라벨링 + AI Gate 편향 보정)
+
+- **A1 BacktestEntryLabeler 라벨링 강화**: 목표 +2% 완전 달성만 LONG positive
+  - 기존: 목표 절반(1%) 부분 달성도 positive → 하락 추세 단기 반등이 LONG으로 학습됨
+  - 변경: 목표 미달성은 모두 negative → ZEREBRO/AGT 같은 잘못 승인 차단
+- **A3 AI Gate 메이저 비대칭 임계값 + AND 조건**:
+  - LONG: ML 75% AND TF 70% (편향 방지)
+  - SHORT: ML 65% OR TF 60% (데이터 부족 보수)
+
+### Fixed (Phase B: PUMP 급등 1분 로켓 발사 포착)
+
+- **B1 SPIKE_FAST 60초 눌림 대기 폐기**:
+  - 60→30초 단축, 1.5초 간격 폴링
+  - 누적 +2% 도달 시 즉시 진입 (로켓 발사 케이스)
+  - 고점 대비 -0.5% 눌림 (기존 -1%)
+  - 30초 경과 시 강제 진입 (놓치기보다 진입)
+- **B2 PUMP 급등 ML 검증 1분봉 30→15개**: 기존 거의 항상 스킵되던 ML 검증 작동
+- **B3 Spike 모델 라벨링**: 5분봉 +3%/10분 → 1분봉 +2.5%/5분 의도로 변경
+- **B4 MarketCrashDetector 스냅샷 30→10초**: 첫 감지 3배 빠름
+- **B5 TickDensityMonitor 활성화 확인 완료**
+
+### Fixed (Phase C: survival_major 학습 강화)
+
+- **C2 survival_major TP/SL 비대칭 학습**:
+  - 기존: TP +1%/SL -0.5%/20봉 (RR 2:1)
+  - 변경: TP +2%/SL -1%/24봉 (RR 2:1 유지, 노이즈 제거)
+  - 작은 반등도 positive 학습하던 문제 해결
+
 ## [4.6.0] - 2026-04-11
 
 ### Fixed (PUMP/급등 진입 전면 차단 해결)

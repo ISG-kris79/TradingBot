@@ -79,24 +79,14 @@ namespace TradingBot
                 }
             }
 
-            // 평가 기간 내 목표/손절 모두 안 터진 경우 - 마지막 종가 기준 판단
+            // [v4.6.1] 라벨링 강화: 목표 +2% 완전 달성만 LONG positive
+            // 기존: 목표 절반(1%) 부분 달성도 positive → 하락 추세 중 단기 반등도 LONG positive로 학습됨
+            // 변경: 목표 미달성은 모두 negative → 하락 추세 코인이 LONG으로 잘못 승인되는 문제 해결
             decimal finalPrice = futureCandles[Math.Min(futureCandles.Count - 1, _config.EvaluationPeriodCandles - 1)].ClosePrice;
             float finalProfitPct = (float)((finalPrice - entryPrice) / entryPrice * 100m);
 
-            // 목표 수익의 절반 이상 달성 시 긍정으로 간주
-            if (finalProfitPct >= (float)_config.TargetProfitPct / 2f)
-            {
-                return (true, finalProfitPct, $"partial_profit_{finalProfitPct:F2}%");
-            }
-
-            // 손절 기준 절반 이상 손실 시 부정
-            if (finalProfitPct <= (float)_config.StopLossPct / 2f)
-            {
-                return (false, finalProfitPct, $"partial_loss_{finalProfitPct:F2}%");
-            }
-
-            // 중립 구간은 보수적으로 부정 처리 (노이즈 방지)
-            return (false, finalProfitPct, $"neutral_{finalProfitPct:F2}%");
+            // 목표 미달성 = LONG negative (하락 추세 단기 반등 학습 방지)
+            return (false, finalProfitPct, $"target_not_reached_{finalProfitPct:F2}%");
         }
 
         /// <summary>
@@ -154,20 +144,11 @@ namespace TradingBot
                 }
             }
 
-            decimal finalPrice = futureCandles[Math.Min(futureCandles.Count - 1, _config.EvaluationPeriodCandles - 1)].ClosePrice;
-            float finalProfitPct = (float)((entryPrice - finalPrice) / entryPrice * 100m);
+            // [v4.6.1] SHORT 라벨링 강화: 목표 -2% 완전 달성만 SHORT positive
+            decimal finalPriceS = futureCandles[Math.Min(futureCandles.Count - 1, _config.EvaluationPeriodCandles - 1)].ClosePrice;
+            float finalProfitPctS = (float)((entryPrice - finalPriceS) / entryPrice * 100m);
 
-            if (finalProfitPct >= (float)_config.TargetProfitPct / 2f)
-            {
-                return (true, finalProfitPct, $"partial_profit_{finalProfitPct:F2}%");
-            }
-
-            if (finalProfitPct <= (float)Math.Abs(_config.StopLossPct) / 2f * -1f)
-            {
-                return (false, finalProfitPct, $"partial_loss_{finalProfitPct:F2}%");
-            }
-
-            return (false, finalProfitPct, $"neutral_{finalProfitPct:F2}%");
+            return (false, finalProfitPctS, $"target_not_reached_{finalProfitPctS:F2}%");
         }
 
         /// <summary>

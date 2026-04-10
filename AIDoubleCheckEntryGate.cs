@@ -342,15 +342,32 @@ namespace TradingBot
 
             float fibBonusConfidence = detail.FibonacciBonusScore / 100f;
 
-            // 메이저 코인: 고신뢰 임계값 적용 (ML/TF 중 하나만 충족해도 통과)
+            // [v4.6.1] 메이저 코인: LONG/SHORT 비대칭 임계값 + AND 조건
+            // - LONG: 75%+ 요구 (학습 데이터 LONG 편향 보정)
+            // - SHORT: 65%+ 요구 (SHORT 학습 데이터 부족, 보수적 접근)
+            // - 기존: ML/TF OR 조건 → AND 조건으로 강화 (둘 다 만족해야 통과)
             if (coinType == CoinType.Major)
             {
-                float majorMinConf = Math.Max(_config.MinMLConfidenceMajor, symbolThreshold.AiConfidenceMin);
+                bool isLong = decision.Equals("LONG", StringComparison.OrdinalIgnoreCase);
+                float majorMinConf = isLong
+                    ? Math.Max(_config.MinMLConfidenceMajor + 0.05f, 0.75f)  // LONG: 75%+
+                    : Math.Max(_config.MinMLConfidenceMajor - 0.05f, 0.65f); // SHORT: 65%+
+                majorMinConf = Math.Max(majorMinConf, symbolThreshold.AiConfidenceMin);
+
+                float majorTfMin = isLong
+                    ? Math.Max(_config.MinTransformerConfidenceMajor + 0.05f, 0.70f)
+                    : Math.Max(_config.MinTransformerConfidenceMajor - 0.05f, 0.60f);
+                majorTfMin = Math.Max(majorTfMin, symbolThreshold.AiConfidenceMin);
+
                 bool majorMlPass = detail.ML_Approve && (detail.ML_Confidence + fibBonusConfidence) >= majorMinConf;
-                bool majorTfPass = detail.TF_Approve && (detail.TF_Confidence + fibBonusConfidence) >= Math.Max(_config.MinTransformerConfidenceMajor, symbolThreshold.AiConfidenceMin);
-                if (!majorMlPass && !majorTfPass)
+                bool majorTfPass = detail.TF_Approve && (detail.TF_Confidence + fibBonusConfidence) >= majorTfMin;
+
+                // [v4.6.1] LONG은 ML AND TF 모두 충족 (편향 방지), SHORT는 OR 유지 (데이터 부족)
+                bool combinedPass = isLong ? (majorMlPass && majorTfPass) : (majorMlPass || majorTfPass);
+
+                if (!combinedPass)
                 {
-                    return (false, $"Major_Threshold_Not_Met_ML={detail.ML_Confidence:P1}_TF={detail.TF_Confidence:P1}", detail);
+                    return (false, $"Major_{decision}_Threshold_Not_Met_ML={detail.ML_Confidence:P1}(>={majorMinConf:P0})_TF={detail.TF_Confidence:P1}(>={majorTfMin:P0})", detail);
                 }
             }
             // 펌핑 코인: 별도 모델 (TODO: 펌핑 전용 모델 학습)

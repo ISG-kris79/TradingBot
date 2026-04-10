@@ -67,11 +67,11 @@ namespace TradingBot.Services
             Directory.CreateDirectory(DefaultModelDir);
             _signalType = signalType;
 
-            // [v4.5.8] 타입별 라벨링 기준
+            // [v4.6.1] 타입별 라벨링 기준 — Spike는 1분봉 기반 (1분 로켓 발사 포착)
             if (signalType == PumpSignalType.Spike)
             {
-                EntryThresholdPct = 3.0f;  // +3% 이상
-                LookAheadCandles = 2;       // 10분 (5분봉 × 2)
+                EntryThresholdPct = 2.5f;  // +2.5% 이상 (1분봉 기준 적정)
+                LookAheadCandles = 5;       // 5분 (1분봉 × 5)
             }
             else
             {

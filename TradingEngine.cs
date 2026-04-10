@@ -6597,8 +6597,11 @@ namespace TradingBot
 
                         bool isMajor = MajorSymbols.Contains(kvp.Key);
                         if (isMajor)
-                            majorSurvData.AddRange(_survivalModel.BuildTrainingData(c5m, null, tpPct: 1.0f, slPct: 0.5f, lookAhead: 20));
+                            // [v4.6.1] 메이저 RR 비대칭 강화: TP +2.0% / SL -1.0% (RR 2:1 유지, 더 큰 신호만 학습)
+                            // 기존 +1.0%/-0.5%는 노이즈 구간도 positive로 학습 → 잘못 승인 원인
+                            majorSurvData.AddRange(_survivalModel.BuildTrainingData(c5m, null, tpPct: 2.0f, slPct: 1.0f, lookAhead: 24));
                         else
+                            // PUMP는 LONG 전용, 큰 움직임 학습 유지
                             pumpSurvData.AddRange(_survivalModel.BuildTrainingData(c5m, null, tpPct: 3.0f, slPct: 1.5f, lookAhead: 6));
                     }
 
@@ -7225,8 +7228,9 @@ namespace TradingBot
                             }
 
                             // [v4.5.8] Spike 전용 AI 모델 예측 — 급등 진입 품질 검증
-                            // [v4.5.9] 알트 불장 모드 시 임계값 70% → 75% 상향 (과열장 진입 품질 우선)
-                            if (_pumpSpikeClassifier != null && _pumpSpikeClassifier.IsModelLoaded && klines.Count >= 30)
+                            // [v4.6.1] 1분봉 30→15개 완화 (1분 로켓 발사 시 5분봉 데이터 부족 대응)
+                            // 기존 30개 조건은 30분 데이터 필요 → 1분 급등 시 거의 항상 스킵됨
+                            if (_pumpSpikeClassifier != null && _pumpSpikeClassifier.IsModelLoaded && klines.Count >= 15)
                             {
                                 var spikeFeature = TradingBot.Services.PumpSignalClassifier.ExtractFeature(klines.ToList());
                                 if (spikeFeature != null)
@@ -7267,34 +7271,66 @@ namespace TradingBot
                                 return;
                             }
 
-                            // 눌림 대기: 최대 60초, 고점 대비 -1% 눌리면 진입
+                            // [v4.6.1] 1분 로켓 발사 대응 — 눌림 대기 폐기, 3가지 진입 OR 조건
+                            // 1) 누적 +2% 도달 → 즉시 진입 (로켓 발사 케이스)
+                            // 2) 고점 대비 -0.5% 눌림 → 진입 (기존 -1%에서 완화)
+                            // 3) 30초 경과 → 강제 진입 (놓치기보다 진입)
+                            decimal spikeStart = currentPrice;
                             decimal spikeHigh = currentPrice;
-                            var deadline = DateTime.Now.AddSeconds(60);
-                            bool pullbackFound = false;
+                            var deadline = DateTime.Now.AddSeconds(30);  // 60→30초 단축
+                            bool entryReady = false;
+                            string entryReason = "";
 
                             while (DateTime.Now < deadline && !token.IsCancellationRequested)
                             {
-                                await Task.Delay(5000, token);
+                                await Task.Delay(1500, token);  // 5초→1.5초 (더 빠른 반응)
                                 if (_marketDataManager.TickerCache.TryGetValue(symbol, out var latestTick))
                                 {
                                     decimal nowPrice = latestTick.LastPrice;
                                     if (nowPrice > spikeHigh) spikeHigh = nowPrice;
 
-                                    decimal pullbackPct = (spikeHigh - nowPrice) / spikeHigh * 100;
-                                    if (pullbackPct >= 1.0m)
+                                    // 1) 누적 수익 +2% 도달 — 로켓 발사 즉시 진입
+                                    decimal cumulativeGainPct = (nowPrice - spikeStart) / spikeStart * 100m;
+                                    if (cumulativeGainPct >= 2.0m)
                                     {
                                         currentPrice = nowPrice;
-                                        quantity = currentPrice < 0.01m ? Math.Floor((marginUsdt * leverage) / currentPrice) : Math.Round((marginUsdt * leverage) / currentPrice, 2, MidpointRounding.ToZero);
-                                        pullbackFound = true;
-                                        OnStatusLog?.Invoke($"✅ [SPIKE_FAST] {symbol} 눌림 감지 ({pullbackPct:F1}%) → 진입 px={currentPrice}");
+                                        entryReady = true;
+                                        entryReason = $"누적+{cumulativeGainPct:F1}%";
+                                        break;
+                                    }
+
+                                    // 2) 고점 대비 -0.5% 눌림
+                                    decimal pullbackPct = (spikeHigh - nowPrice) / spikeHigh * 100m;
+                                    if (pullbackPct >= 0.5m)
+                                    {
+                                        currentPrice = nowPrice;
+                                        entryReady = true;
+                                        entryReason = $"눌림-{pullbackPct:F1}%";
                                         break;
                                     }
                                 }
                             }
 
-                            if (!pullbackFound)
+                            // 3) 30초 경과 — 강제 진입 (스킵 안 함)
+                            if (!entryReady)
                             {
-                                OnStatusLog?.Invoke($"⚠️ [SPIKE_FAST] {symbol} 60초 내 눌림 없음 → 스킵 (고점 매수 방지)");
+                                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var finalTick))
+                                {
+                                    currentPrice = finalTick.LastPrice;
+                                    decimal finalGain = (currentPrice - spikeStart) / spikeStart * 100m;
+                                    entryReason = $"30초경과({finalGain:+0.0;-0.0}%)";
+                                    entryReady = true;
+                                }
+                            }
+
+                            if (entryReady)
+                            {
+                                quantity = currentPrice < 0.01m ? Math.Floor((marginUsdt * leverage) / currentPrice) : Math.Round((marginUsdt * leverage) / currentPrice, 2, MidpointRounding.ToZero);
+                                OnStatusLog?.Invoke($"✅ [SPIKE_FAST] {symbol} 진입 트리거: {entryReason} px={currentPrice}");
+                            }
+                            else
+                            {
+                                OnStatusLog?.Invoke($"⚠️ [SPIKE_FAST] {symbol} TickerCache 조회 실패 → 스킵");
                                 lock (_posLock) { _activePositions.Remove(symbol); }
                                 return;
                             }

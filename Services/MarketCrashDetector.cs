@@ -153,8 +153,8 @@ namespace TradingBot.Services
                 return;
             }
 
-            // [v3.2.15] 1분 → 30초 간격 (급등 빠른 감지)
-            if ((now - _lastAllSnapshotTime).TotalSeconds < 30)
+            // [v4.6.1] 30초 → 10초 간격 (1분 로켓 발사 빠른 감지, 첫 감지 지연 최소화)
+            if ((now - _lastAllSnapshotTime).TotalSeconds < 10)
                 return;
 
             foreach (var kvp in tickerCache)
