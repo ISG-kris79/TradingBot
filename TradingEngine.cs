@@ -231,11 +231,12 @@ namespace TradingBot
         {
             try
             {
-                // [v4.6.2] 메인 루프에서 자정 체크 + 카운터 리셋 (진입 시도 없어도 리셋)
-                var todayKst = DateTime.UtcNow.AddHours(9).Date;
+                // [v4.6.2] 자정 자동 리셋 — 시스템 로컬 시간 기준 (Windows 한국시간)
+                // 단순 비교: 오늘 날짜와 마지막 리셋 날짜가 다르면 리셋
+                var todayKst = DateTime.Now.Date;
                 lock (_dailyPumpLock)
                 {
-                    if (_dailyPumpCountDate != todayKst)
+                    if (todayKst > _dailyPumpCountDate)
                     {
                         if (_dailyPumpCountDate != DateTime.MinValue)
                             OnStatusLog?.Invoke($"🔄 [일일 PUMP 카운터] 자정 자동 리셋 ({todayKst:yyyy-MM-dd}), 이전={_dailyPumpEntryCount}");
@@ -245,7 +246,7 @@ namespace TradingBot
                 }
                 lock (_dailyReversalLock)
                 {
-                    if (_dailyReversalCountDate != todayKst)
+                    if (todayKst > _dailyReversalCountDate)
                     {
                         if (_dailyReversalCountDate != DateTime.MinValue)
                             OnStatusLog?.Invoke($"🔄 [리버스 카운터] 자정 자동 리셋 ({todayKst:yyyy-MM-dd})");
@@ -272,8 +273,8 @@ namespace TradingBot
         {
             lock (_dailyReversalLock)
             {
-                var todayKst = DateTime.UtcNow.AddHours(9).Date;
-                if (_dailyReversalCountDate != todayKst)
+                var todayKst = DateTime.Now.Date; // [v4.6.2] 시스템 로컬 시간 (KST)
+                if (todayKst > _dailyReversalCountDate)
                 {
                     _dailyReversalCountDate = todayKst;
                     _dailyReversalCount.Clear();
@@ -386,8 +387,8 @@ namespace TradingBot
         {
             lock (_dailyPumpLock)
             {
-                var todayKst = DateTime.UtcNow.AddHours(9).Date;
-                if (_dailyPumpCountDate != todayKst)
+                var todayKst = DateTime.Now.Date; // [v4.6.2] 시스템 로컬 시간 (KST)
+                if (todayKst > _dailyPumpCountDate)
                 {
                     _dailyPumpCountDate = todayKst;
                     _dailyPumpEntryCount = 0;
