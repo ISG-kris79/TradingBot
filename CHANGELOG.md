@@ -15,6 +15,37 @@
 
  - 없음
 
+## [4.6.2] - 2026-04-11
+
+### Fixed (Critical Hotfix)
+
+- **AIBacktestEngine 파일 잠금 충돌 수정**
+  - SaveCache: 임시 파일 + Atomic Rename + 3회 재시도, FileShare.Read
+  - LoadCache: FileShare.ReadWrite + try/catch 안전 처리
+  - 양쪽 계정 동시 실행 시 발생하던 IOException 팝업 해결
+
+### Added (단타 트레이딩뷰 보조지표)
+
+- **VWAP** (거래량 가중 평균가): 최근 60봉 기준
+- **EMA 9/21/50 + Cross_State**: 정배열(1)/역배열(-1)/중립(0)
+- **StochRSI(14,14,3,3) + Cross**: K>D 골든(1) / K<D 데드(-1)
+- `IndicatorCalculator.CalculateVWAP()`, `CalculateStochRSI()` 신규
+- `CandleData` + `MultiTimeframeEntryFeature`에 9개 필드 추가
+
+### Fixed (메이저 SHORT 편향 보정)
+
+- **AI Gate 메이저 LONG/SHORT 대칭 필터 강화**
+  - SHORT 차단: VWAP 위 / EMA 정배열 / StochRSI 골든크로스
+  - LONG 차단: VWAP -0.3% 아래 / EMA 역배열 / StochRSI 데드크로스
+- **CheckHigherTimeframeBullishAsync**: D1 SMA + 4h MACD + 15m MACD 다중 OR (3중 2 충족)
+- **CheckHigherTimeframeBearishAsync**: 3중 3 모두 충족 (메이저 SHORT 매우 엄격)
+- **메이저 ATR 손절 LONG 진입에도 적용** ([line 8818-8826] 추가)
+
+### Changed
+
+- ML Feature 81 → **86개** (M15_EMA_CrossState, VWAP_Distance, StochRSI 5개 추가)
+- 모델 자동 재학습으로 새 피처 학습 시작
+
 ## [4.6.1] - 2026-04-11
 
 ### Fixed (Phase A: 라벨링 + AI Gate 편향 보정)

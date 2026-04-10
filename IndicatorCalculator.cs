@@ -241,6 +241,60 @@ namespace TradingBot.Services
             return ema?.Ema ?? 0;
         }
 
+        /// <summary>
+        /// [v4.6.2] VWAP (Volume Weighted Average Price) 계산
+        /// 단타 핵심 지표 — 가격이 VWAP 위/아래에 따라 매수/매도 우위 판단
+        /// </summary>
+        public static double CalculateVWAP(List<IBinanceKline> candles, int lookback = 0)
+        {
+            if (candles == null || candles.Count == 0) return 0;
+            // lookback=0이면 전체 봉, 아니면 최근 lookback봉
+            var subset = lookback > 0 && candles.Count > lookback
+                ? candles.TakeLast(lookback).ToList()
+                : candles;
+
+            double sumPV = 0;
+            double sumV = 0;
+            foreach (var k in subset)
+            {
+                double typical = (double)(k.HighPrice + k.LowPrice + k.ClosePrice) / 3.0;
+                double vol = (double)k.Volume;
+                sumPV += typical * vol;
+                sumV += vol;
+            }
+            return sumV > 0 ? sumPV / sumV : 0;
+        }
+
+        /// <summary>
+        /// [v4.6.2] Stochastic RSI 계산 — RSI보다 더 민감한 단타 진입 타이밍 지표
+        /// </summary>
+        /// <returns>(K, D) — K가 D를 상향 돌파(K>D) 시 LONG 신호, 하향 돌파 시 SHORT 신호</returns>
+        public static (double K, double D) CalculateStochRSI(
+            List<IBinanceKline> candles,
+            int rsiPeriod = 14,
+            int stochPeriod = 14,
+            int kSmooth = 3,
+            int dSmooth = 3)
+        {
+            int needed = rsiPeriod + stochPeriod + kSmooth + dSmooth;
+            if (candles == null || candles.Count < needed) return (50, 50);
+
+            var quotes = candles.Select(k => new Quote
+            {
+                Date = k.OpenTime,
+                Open = k.OpenPrice,
+                High = k.HighPrice,
+                Low = k.LowPrice,
+                Close = k.ClosePrice,
+                Volume = k.Volume
+            }).ToList();
+
+            var stochRsi = quotes.GetStochRsi(rsiPeriod, stochPeriod, kSmooth, dSmooth).LastOrDefault();
+            if (stochRsi == null) return (50, 50);
+
+            return (stochRsi.StochRsi ?? 50, stochRsi.Signal ?? 50);
+        }
+
         public static bool AnalyzeElliottWave(List<IBinanceKline> candles)
         {
             // Simplified Elliott Wave logic: Check for Higher Highs and Higher Lows in recent swing points

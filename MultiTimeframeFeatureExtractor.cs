@@ -165,6 +165,9 @@ namespace TradingBot
                 feature.IsAboveDailyTarget = IsAboveDailyTargetContext;
                 feature.DailyTradeCount = DailyTradeCountContext;
 
+                // [v4.6.2] M15 단타 보조지표 — EMA / VWAP / StochRSI
+                ExtractM15TradingViewFeatures(m15Klines, feature);
+
                 // 시간 컨텍스트
                 ExtractTimeContext(timestamp, feature);
 
@@ -721,6 +724,106 @@ namespace TradingBot
                 double currentPrice = (double)h1Klines[^1].ClosePrice;
                 feature.H1_PriceBelowSma60 = currentPrice < sma60 ? 1f : 0f;
             }
+        }
+
+        /// <summary>
+        /// [v4.6.2] M15 단타 보조지표 계산 (EMA, VWAP, StochRSI)
+        /// </summary>
+        private static void ExtractM15TradingViewFeatures(
+            List<IBinanceKline>? m15Klines,
+            MultiTimeframeEntryFeature feature)
+        {
+            if (m15Klines == null || m15Klines.Count < 50) return;
+
+            // EMA 9/21/50
+            double ema9 = CalcEMALast(m15Klines, 9);
+            double ema21 = CalcEMALast(m15Klines, 21);
+            double ema50 = CalcEMALast(m15Klines, 50);
+            float emaCrossState = 0f;
+            if (ema9 > 0 && ema21 > 0 && ema50 > 0)
+            {
+                if (ema9 > ema21 && ema21 > ema50) emaCrossState = 1f;
+                else if (ema9 < ema21 && ema21 < ema50) emaCrossState = -1f;
+            }
+            feature.M15_EMA_CrossState = emaCrossState;
+
+            // VWAP — 최근 60봉 거래량 가중 평균
+            int vwapLookback = Math.Min(60, m15Klines.Count);
+            double sumPV = 0, sumV = 0;
+            foreach (var k in m15Klines.TakeLast(vwapLookback))
+            {
+                double typical = (double)(k.HighPrice + k.LowPrice + k.ClosePrice) / 3.0;
+                double vol = (double)k.Volume;
+                sumPV += typical * vol;
+                sumV += vol;
+            }
+            double vwap = sumV > 0 ? sumPV / sumV : 0;
+            double currClose = (double)m15Klines[^1].ClosePrice;
+            feature.M15_Price_VWAP_Distance_Pct = vwap > 0
+                ? (float)((currClose - vwap) / vwap * 100.0)
+                : 0f;
+
+            // StochRSI (14, 14, 3, 3) — 간이 계산
+            var (stochK, stochD) = CalcStochRSILast(m15Klines, 14, 14, 3);
+            feature.M15_StochRSI_K = (float)stochK;
+            feature.M15_StochRSI_D = (float)stochD;
+            feature.M15_StochRSI_Cross = stochK > stochD ? 1f : (stochK < stochD ? -1f : 0f);
+        }
+
+        private static double CalcEMALast(List<IBinanceKline> candles, int period)
+        {
+            if (candles.Count < period) return 0;
+            double mult = 2.0 / (period + 1);
+            double ema = (double)candles.Take(period).Average(k => k.ClosePrice);
+            for (int i = period; i < candles.Count; i++)
+            {
+                double price = (double)candles[i].ClosePrice;
+                ema = (price - ema) * mult + ema;
+            }
+            return ema;
+        }
+
+        private static (double K, double D) CalcStochRSILast(
+            List<IBinanceKline> candles, int rsiPeriod, int stochPeriod, int smooth)
+        {
+            int needed = rsiPeriod + stochPeriod + smooth + 1;
+            if (candles.Count < needed) return (50, 50);
+
+            // RSI 시리즈
+            var rsiSeries = new List<double>();
+            for (int i = rsiPeriod; i < candles.Count; i++)
+            {
+                double gain = 0, loss = 0;
+                for (int j = i - rsiPeriod + 1; j <= i; j++)
+                {
+                    double diff = (double)(candles[j].ClosePrice - candles[j - 1].ClosePrice);
+                    if (diff > 0) gain += diff; else loss -= diff;
+                }
+                double avgGain = gain / rsiPeriod;
+                double avgLoss = loss / rsiPeriod;
+                double rs = avgLoss == 0 ? 100 : avgGain / avgLoss;
+                double rsi = 100.0 - (100.0 / (1 + rs));
+                rsiSeries.Add(rsi);
+            }
+            if (rsiSeries.Count < stochPeriod) return (50, 50);
+
+            // StochRSI = (RSI - RSI_low) / (RSI_high - RSI_low) * 100
+            var stochSeries = new List<double>();
+            for (int i = stochPeriod - 1; i < rsiSeries.Count; i++)
+            {
+                var window = rsiSeries.GetRange(i - stochPeriod + 1, stochPeriod);
+                double low = window.Min();
+                double high = window.Max();
+                double stoch = (high - low) > 0 ? (rsiSeries[i] - low) / (high - low) * 100 : 50;
+                stochSeries.Add(stoch);
+            }
+            if (stochSeries.Count < smooth * 2) return (stochSeries.Last(), stochSeries.Last());
+
+            // K = SMA(stoch, smooth), D = SMA(K, smooth)
+            double kVal = stochSeries.Skip(stochSeries.Count - smooth).Average();
+            // D는 K의 이전 smooth개 평균 (여기선 단순화: 최근 smooth*2 평균)
+            double dVal = stochSeries.Skip(stochSeries.Count - smooth * 2).Take(smooth).Average();
+            return (kVal, dVal);
         }
 
         private void ExtractTimeContext(DateTime timestamp, MultiTimeframeEntryFeature feature)

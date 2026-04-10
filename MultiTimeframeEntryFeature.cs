@@ -138,6 +138,16 @@ namespace TradingBot
         public float DailyTradeCount { get; set; }              // 오늘 거래 수 (피로도/과매매 감지)
 
         // ═══════════════════════════════════════════════════════════════
+        // [v4.6.2] 단타 보조지표 — 트레이딩뷰 검증된 단타 핵심
+        // M15 기준 EMA 9/21/50, VWAP, StochRSI
+        // ═══════════════════════════════════════════════════════════════
+        public float M15_EMA_CrossState { get; set; }           // 1=정배열(9>21>50), -1=역배열, 0=중립
+        public float M15_Price_VWAP_Distance_Pct { get; set; }  // (Close - VWAP) / VWAP * 100
+        public float M15_StochRSI_K { get; set; }
+        public float M15_StochRSI_D { get; set; }
+        public float M15_StochRSI_Cross { get; set; }           // 1=K>D 골든, -1=K<D 데드
+
+        // ═══════════════════════════════════════════════════════════════
         // 피보나치 되돌림 레벨 (객관적 수치로 AI 특징 사용)
         // ═══════════════════════════════════════════════════════════════
         public float Fib_DistanceTo0382_Pct { get; set; }    // 현재가에서 0.382 레벨까지 거리 (%)

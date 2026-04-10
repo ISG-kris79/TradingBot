@@ -322,6 +322,17 @@ namespace TradingBot.Models
         public float SMA_60 { get; set; }
         public float SMA_120 { get; set; }
 
+        // [v4.6.2] 단타 보조지표 — 트레이딩뷰 검증된 단타 핵심
+        public float EMA_9 { get; set; }                    // EMA 9 (단기)
+        public float EMA_21 { get; set; }                   // EMA 21 (중기)
+        public float EMA_50 { get; set; }                   // EMA 50 (장기)
+        public float EMA_Cross_State { get; set; }          // 1=정배열(9>21>50), -1=역배열(9<21<50), 0=중립
+        public float VWAP { get; set; }                     // 거래량 가중 평균가 (당일 누적)
+        public float Price_VWAP_Distance_Pct { get; set; }  // (Close - VWAP) / VWAP * 100
+        public float StochRSI_K { get; set; }               // Stochastic RSI %K
+        public float StochRSI_D { get; set; }               // Stochastic RSI %D
+        public float StochRSI_Cross { get; set; }           // 1=K>D 골든, -1=K<D 데드
+
         // ──────────────────── 파생 Features (AI 핵심) ────────────────────
         // 5. 정규화된 가격 파생 지표
         public float Price_Change_Pct { get; set; }        // (Close - Open) / Open * 100

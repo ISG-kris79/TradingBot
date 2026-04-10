@@ -231,6 +231,29 @@ namespace TradingBot
         {
             try
             {
+                // [v4.6.2] 메인 루프에서 자정 체크 + 카운터 리셋 (진입 시도 없어도 리셋)
+                var todayKst = DateTime.UtcNow.AddHours(9).Date;
+                lock (_dailyPumpLock)
+                {
+                    if (_dailyPumpCountDate != todayKst)
+                    {
+                        if (_dailyPumpCountDate != DateTime.MinValue)
+                            OnStatusLog?.Invoke($"🔄 [일일 PUMP 카운터] 자정 자동 리셋 ({todayKst:yyyy-MM-dd}), 이전={_dailyPumpEntryCount}");
+                        _dailyPumpCountDate = todayKst;
+                        _dailyPumpEntryCount = 0;
+                    }
+                }
+                lock (_dailyReversalLock)
+                {
+                    if (_dailyReversalCountDate != todayKst)
+                    {
+                        if (_dailyReversalCountDate != DateTime.MinValue)
+                            OnStatusLog?.Invoke($"🔄 [리버스 카운터] 자정 자동 리셋 ({todayKst:yyyy-MM-dd})");
+                        _dailyReversalCountDate = todayKst;
+                        _dailyReversalCount.Clear();
+                    }
+                }
+
                 decimal dailyPnl = _riskManager?.DailyRealizedPnl ?? 0m;
                 float pnlRatio = (float)(dailyPnl / 250m);
                 MultiTimeframeFeatureExtractor.DailyPnlRatioContext = pnlRatio;
@@ -8804,6 +8827,31 @@ namespace TradingBot
         {
             var EntryLog = ctx.EntryLog;
 
+            // [v4.6.2] 메이저 LONG 보조지표 필터 (대칭) — VWAP / EMA / StochRSI
+            if (ctx.LatestCandle != null)
+            {
+                // 1. VWAP 아래 → LONG 차단 (가격이 VWAP 아래면 매도 우위)
+                if (ctx.LatestCandle.VWAP > 0 && ctx.LatestCandle.Price_VWAP_Distance_Pct < -0.3f)
+                {
+                    EntryLog("LONG_FILTER", "BLOCK", $"belowVWAP dist={ctx.LatestCandle.Price_VWAP_Distance_Pct:F2}% (VWAP -0.3%↓에서 롱 금지)");
+                    return;
+                }
+
+                // 2. EMA 역배열(9<21<50) → LONG 차단 (강한 SHORT 추세)
+                if (ctx.LatestCandle.EMA_Cross_State <= -1f)
+                {
+                    EntryLog("LONG_FILTER", "BLOCK", "emaDowntrend EMA9<21<50 (강한 하락추세 롱 금지)");
+                    return;
+                }
+
+                // 3. StochRSI 데드크로스(K<D) + K>20 → LONG 차단 (단기 약세)
+                if (ctx.LatestCandle.StochRSI_Cross <= -1f && ctx.LatestCandle.StochRSI_K > 20f && ctx.LatestCandle.StochRSI_K > 0f)
+                {
+                    EntryLog("LONG_FILTER", "BLOCK", $"stochRsiBearish K={ctx.LatestCandle.StochRSI_K:F1}<D={ctx.LatestCandle.StochRSI_D:F1} (단기 약세 롱 금지)");
+                    return;
+                }
+            }
+
             // 1. AI Predictor + 보너스 점수 (Major LONG only: EMA retest +10, short squeeze +15, low-vol privilege +10)
             await EvaluateAiPredictorForEntry(ctx, applyMajorBonuses: true);
 
@@ -8923,6 +8971,27 @@ namespace TradingBot
                 if (ctx.LatestCandle.SMA_60 > 0 && ctx.LatestCandle.Close > (decimal)ctx.LatestCandle.SMA_60)
                 {
                     EntryLog("SHORT_FILTER", "BLOCK", $"aboveSMA60 price={ctx.LatestCandle.Close}>SMA60={ctx.LatestCandle.SMA_60:F4} (중기 상승추세 숏 금지)");
+                    return;
+                }
+
+                // [v4.6.2] 2-6. VWAP 위 → SHORT 차단 (단타에서 가격이 VWAP 위면 매수 우위)
+                if (ctx.LatestCandle.VWAP > 0 && ctx.LatestCandle.Price_VWAP_Distance_Pct > 0)
+                {
+                    EntryLog("SHORT_FILTER", "BLOCK", $"aboveVWAP dist={ctx.LatestCandle.Price_VWAP_Distance_Pct:F2}% (VWAP 위에서 숏 금지)");
+                    return;
+                }
+
+                // [v4.6.2] 2-7. EMA 정배열(9>21>50) → SHORT 차단 (강한 LONG 추세)
+                if (ctx.LatestCandle.EMA_Cross_State >= 1f)
+                {
+                    EntryLog("SHORT_FILTER", "BLOCK", $"emaUptrend EMA9>21>50 (강한 상승추세 숏 금지)");
+                    return;
+                }
+
+                // [v4.6.2] 2-8. StochRSI 골든크로스(K>D) + K<80 → SHORT 차단 (단기 반등)
+                if (ctx.LatestCandle.StochRSI_Cross >= 1f && ctx.LatestCandle.StochRSI_K < 80f && ctx.LatestCandle.StochRSI_K > 0f)
+                {
+                    EntryLog("SHORT_FILTER", "BLOCK", $"stochRsiBullish K={ctx.LatestCandle.StochRSI_K:F1}>D={ctx.LatestCandle.StochRSI_D:F1} (단기 반등 숏 금지)");
                     return;
                 }
             }
@@ -12607,6 +12676,25 @@ namespace TradingBot
                 double sma60 = IndicatorCalculator.CalculateSMA(subset, 60);
                 double sma120 = IndicatorCalculator.CalculateSMA(subset, 120);
 
+                // [v4.6.2] 단타 보조지표 — EMA, VWAP, StochRSI
+                double ema9 = IndicatorCalculator.CalculateEMA(subset, 9);
+                double ema21 = IndicatorCalculator.CalculateEMA(subset, 21);
+                double ema50 = IndicatorCalculator.CalculateEMA(subset, 50);
+                float emaCrossState = 0f;
+                if (ema9 > 0 && ema21 > 0 && ema50 > 0)
+                {
+                    if (ema9 > ema21 && ema21 > ema50) emaCrossState = 1f;
+                    else if (ema9 < ema21 && ema21 < ema50) emaCrossState = -1f;
+                }
+                double vwap = IndicatorCalculator.CalculateVWAP(subset, lookback: 60);
+                float priceVwapDistPct = vwap > 0
+                    ? (float)(((double)entryPrice - vwap) / vwap * 100)
+                    : 0f;
+                var (stochRsiK, stochRsiD) = IndicatorCalculator.CalculateStochRSI(subset, 14, 14, 3, 3);
+                float stochRsiCross = 0f;
+                if (stochRsiK > stochRsiD) stochRsiCross = 1f;
+                else if (stochRsiK < stochRsiD) stochRsiCross = -1f;
+
                 // ── 볼린저 밴드 파생 ──
                 double bbMid = (bb.Upper + bb.Lower) / 2.0;
                 float bbWidth = bbMid > 0 ? (float)((bb.Upper - bb.Lower) / bbMid * 100) : 0;
@@ -12746,6 +12834,17 @@ namespace TradingBot
                     SMA_20 = (float)sma20,
                     SMA_60 = (float)sma60,
                     SMA_120 = (float)sma120,
+
+                    // [v4.6.2] 단타 보조지표 — EMA / VWAP / StochRSI
+                    EMA_9 = (float)ema9,
+                    EMA_21 = (float)ema21,
+                    EMA_50 = (float)ema50,
+                    EMA_Cross_State = emaCrossState,
+                    VWAP = (float)vwap,
+                    Price_VWAP_Distance_Pct = priceVwapDistPct,
+                    StochRSI_K = (float)stochRsiK,
+                    StochRSI_D = (float)stochRsiD,
+                    StochRSI_Cross = stochRsiCross,
 
                     // 파생 피처
                     Price_Change_Pct = priceChangePct,

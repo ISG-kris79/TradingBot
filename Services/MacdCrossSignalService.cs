@@ -107,24 +107,51 @@ namespace TradingBot.Services
         }
 
         /// <summary>
-        /// [v4.5.17] 상위봉 정배열 확인 (D1 SMA20 > SMA60)
-        /// - MACD 크로스가 4시간봉 기준이므로, 상위 TF는 D1로 변경
+        /// [v4.6.2] 상위봉 정배열 확인 — D1 SMA + 4h MACD + 15m MACD 다중 OR 강화
+        /// - D1 SMA20>SMA60 OR
+        /// - 4h MACD>Signal (중기 모멘텀) OR
+        /// - 15m MACD>Signal (단기 모멘텀)
+        /// 위 3가지 중 2개 이상 충족 시 통과
         /// </summary>
         public async Task<(bool isBullish, string detail)> CheckHigherTimeframeBullishAsync(
             string symbol, CancellationToken token)
         {
             try
             {
+                int passCount = 0;
+                bool d1Pass = false, h4Pass = false, m15Pass = false;
+
+                // D1 SMA 체크
                 var kD1 = await GetKlinesCachedAsync(symbol, KlineInterval.OneDay, 70, token);
-                if (kD1 == null || kD1.Count < 60)
-                    return (false, "D1 데이터 부족");
+                if (kD1 != null && kD1.Count >= 60)
+                {
+                    var listD1 = kD1.ToList();
+                    double sma20 = listD1.TakeLast(20).Average(k => (double)k.ClosePrice);
+                    double sma60 = listD1.TakeLast(60).Average(k => (double)k.ClosePrice);
+                    d1Pass = sma20 > sma60;
+                    if (d1Pass) passCount++;
+                }
 
-                var listD1 = kD1.ToList();
-                double sma20 = listD1.TakeLast(20).Average(k => (double)k.ClosePrice);
-                double sma60 = listD1.TakeLast(60).Average(k => (double)k.ClosePrice);
-                bool bullish = sma20 > sma60;
+                // 4h MACD 체크
+                var k4h = await GetKlinesCachedAsync(symbol, KlineInterval.FourHour, 50, token);
+                if (k4h != null && k4h.Count >= 35)
+                {
+                    var (m, s, _) = CalculateMACD(k4h);
+                    h4Pass = m > s;
+                    if (h4Pass) passCount++;
+                }
 
-                return (bullish, $"D1 sma20={sma20:F4},sma60={sma60:F4},bullish={bullish}");
+                // 15m MACD 체크
+                var k15m = await GetKlinesCachedAsync(symbol, KlineInterval.FifteenMinutes, 50, token);
+                if (k15m != null && k15m.Count >= 35)
+                {
+                    var (m, s, _) = CalculateMACD(k15m);
+                    m15Pass = m > s;
+                    if (m15Pass) passCount++;
+                }
+
+                bool bullish = passCount >= 2; // 3가지 중 2개 이상
+                return (bullish, $"BULL D1={d1Pass} 4h={h4Pass} 15m={m15Pass} pass={passCount}/3");
             }
             catch (Exception ex)
             {
@@ -180,28 +207,47 @@ namespace TradingBot.Services
         }
 
         /// <summary>
-        /// [v4.5.17] 상위봉 하락세 확인 (D1 SMA20 < SMA60 또는 RSI 과매수 꺾임)
+        /// [v4.6.2] 상위봉 하락세 확인 — D1 SMA + 4h MACD + 15m MACD 다중 AND
+        /// 메이저 SHORT 진입은 매우 엄격하게: 3가지 중 3개 모두 충족해야 통과
+        /// (LONG 편향 모델이 SHORT를 잘못 승인하는 문제 보정)
         /// </summary>
         public async Task<(bool isBearish, string detail)> CheckHigherTimeframeBearishAsync(
             string symbol, CancellationToken token)
         {
             try
             {
+                int passCount = 0;
+                bool d1Pass = false, h4Pass = false, m15Pass = false;
+
                 var kD1 = await GetKlinesCachedAsync(symbol, KlineInterval.OneDay, 70, token);
-                if (kD1 == null || kD1.Count < 60)
-                    return (false, "D1 데이터 부족");
+                if (kD1 != null && kD1.Count >= 60)
+                {
+                    var listD1 = kD1.ToList();
+                    double sma20 = listD1.TakeLast(20).Average(k => (double)k.ClosePrice);
+                    double sma60 = listD1.TakeLast(60).Average(k => (double)k.ClosePrice);
+                    d1Pass = sma20 < sma60;
+                    if (d1Pass) passCount++;
+                }
 
-                var listD1 = kD1.ToList();
-                double sma20 = listD1.TakeLast(20).Average(k => (double)k.ClosePrice);
-                double sma60 = listD1.TakeLast(60).Average(k => (double)k.ClosePrice);
-                bool bearish = sma20 < sma60;
+                var k4h = await GetKlinesCachedAsync(symbol, KlineInterval.FourHour, 50, token);
+                if (k4h != null && k4h.Count >= 35)
+                {
+                    var (m, s, _) = CalculateMACD(k4h);
+                    h4Pass = m < s;
+                    if (h4Pass) passCount++;
+                }
 
-                // RSI 과매수 꺾임 (D1 RSI 60~70 구간에서 역전 신호)
-                double rsiD1 = CalculateRSI(listD1, 14);
-                bool overboughtReversal = rsiD1 > 60 && rsiD1 < 70 && sma20 > sma60;
+                var k15m = await GetKlinesCachedAsync(symbol, KlineInterval.FifteenMinutes, 50, token);
+                if (k15m != null && k15m.Count >= 35)
+                {
+                    var (m, s, _) = CalculateMACD(k15m);
+                    m15Pass = m < s;
+                    if (m15Pass) passCount++;
+                }
 
-                bool isBearish = bearish || overboughtReversal;
-                return (isBearish, $"D1 bearish={bearish},RSI={rsiD1:F1},overboughtReversal={overboughtReversal}");
+                // 메이저 SHORT 진입은 3가지 모두 충족 (편향 보정)
+                bool bearish = passCount >= 3;
+                return (bearish, $"BEAR D1={d1Pass} 4h={h4Pass} 15m={m15Pass} pass={passCount}/3 (need 3)");
             }
             catch (Exception ex)
             {

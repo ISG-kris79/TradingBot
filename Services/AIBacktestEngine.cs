@@ -927,36 +927,89 @@ namespace TradingBot.Services
             "TradingBot", "KlineCache");
 
         // ═══ 캐시 저장 (CSV) ═══
+        // [v4.6.2] 파일 잠금 충돌 해결 — 임시 파일에 쓰고 atomic rename, 실패 시 3회 재시도
+        // 기존: StreamWriter로 직접 쓰기 → 다른 프로세스 접근 시 IOException
         private static void SaveCache(string symbol, string interval, List<Bar> bars)
         {
-            Directory.CreateDirectory(CacheDir);
-            string path = Path.Combine(CacheDir, $"{symbol}_{interval}.csv");
-            using var sw = new StreamWriter(path, false, Encoding.UTF8);
-            foreach (var b in bars)
-                sw.WriteLine($"{b.Time:o},{b.O},{b.H},{b.L},{b.C},{b.Vol}");
+            try
+            {
+                Directory.CreateDirectory(CacheDir);
+                string path = Path.Combine(CacheDir, $"{symbol}_{interval}.csv");
+                string tmpPath = path + $".tmp.{Guid.NewGuid():N}";
+
+                // 임시 파일에 쓰기 (FileShare.Read로 다른 프로세스 읽기 허용)
+                using (var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.Read))
+                using (var sw = new StreamWriter(fs, Encoding.UTF8))
+                {
+                    foreach (var b in bars)
+                        sw.WriteLine($"{b.Time:o},{b.O},{b.H},{b.L},{b.C},{b.Vol}");
+                }
+
+                // Atomic rename — 3회 재시도 (다른 프로세스가 잠시 점유 중일 수 있음)
+                Exception? lastEx = null;
+                for (int retry = 0; retry < 3; retry++)
+                {
+                    try
+                    {
+                        if (File.Exists(path)) File.Delete(path);
+                        File.Move(tmpPath, path);
+                        return; // 성공
+                    }
+                    catch (IOException ex)
+                    {
+                        lastEx = ex;
+                        System.Threading.Thread.Sleep(100 * (retry + 1)); // 100ms / 200ms / 300ms
+                    }
+                }
+
+                // 3회 모두 실패 — 임시 파일 정리 후 무시 (캐시 저장 실패는 치명적이지 않음)
+                try { File.Delete(tmpPath); } catch { }
+                Console.WriteLine($"[AIBacktestEngine] SaveCache 실패 ({symbol} {interval}): {lastEx?.Message}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AIBacktestEngine] SaveCache 예외 ({symbol} {interval}): {ex.Message}");
+            }
         }
 
         // ═══ 캐시 로드 ═══
+        // [v4.6.2] FileShare.ReadWrite로 다른 프로세스 동시 쓰기 허용 + try-catch
         private static List<Bar> LoadCache(string symbol, string interval)
         {
             string path = Path.Combine(CacheDir, $"{symbol}_{interval}.csv");
             if (!File.Exists(path)) return new List<Bar>();
 
             var bars = new List<Bar>();
-            foreach (var line in File.ReadLines(path))
+            try
             {
-                var p = line.Split(',');
-                if (p.Length < 6) continue;
-                if (!DateTime.TryParse(p[0], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var time)) continue;
-                bars.Add(new Bar
+                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var sr = new StreamReader(fs, Encoding.UTF8);
+                string? line;
+                while ((line = sr.ReadLine()) != null)
                 {
-                    Time = time,
-                    O = double.TryParse(p[1], NumberStyles.Any, CultureInfo.InvariantCulture, out var o) ? o : 0,
-                    H = double.TryParse(p[2], NumberStyles.Any, CultureInfo.InvariantCulture, out var h) ? h : 0,
-                    L = double.TryParse(p[3], NumberStyles.Any, CultureInfo.InvariantCulture, out var l) ? l : 0,
-                    C = double.TryParse(p[4], NumberStyles.Any, CultureInfo.InvariantCulture, out var c) ? c : 0,
-                    Vol = double.TryParse(p[5], NumberStyles.Any, CultureInfo.InvariantCulture, out var v) ? v : 0,
-                });
+                    var p = line.Split(',');
+                    if (p.Length < 6) continue;
+                    if (!DateTime.TryParse(p[0], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var time)) continue;
+                    bars.Add(new Bar
+                    {
+                        Time = time,
+                        O = double.TryParse(p[1], NumberStyles.Any, CultureInfo.InvariantCulture, out var o) ? o : 0,
+                        H = double.TryParse(p[2], NumberStyles.Any, CultureInfo.InvariantCulture, out var h) ? h : 0,
+                        L = double.TryParse(p[3], NumberStyles.Any, CultureInfo.InvariantCulture, out var l) ? l : 0,
+                        C = double.TryParse(p[4], NumberStyles.Any, CultureInfo.InvariantCulture, out var c) ? c : 0,
+                        Vol = double.TryParse(p[5], NumberStyles.Any, CultureInfo.InvariantCulture, out var v) ? v : 0,
+                    });
+                }
+            }
+            catch (IOException ex)
+            {
+                Console.WriteLine($"[AIBacktestEngine] LoadCache 잠금 충돌 ({symbol} {interval}): {ex.Message}");
+                return new List<Bar>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AIBacktestEngine] LoadCache 예외 ({symbol} {interval}): {ex.Message}");
+                return new List<Bar>();
             }
             return bars;
         }

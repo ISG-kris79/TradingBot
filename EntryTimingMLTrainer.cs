@@ -157,8 +157,8 @@ namespace TradingBot
         }
 
         // 현재 파이프라인이 기대하는 Feature 수 (BuildPipeline의 featureColumns 길이)
-        // 49 기존 + 19 확장(v3.4.2) + 5 휩소(v4.5.2) + 5 하락추세(v4.5.6) + 3 DailyPnl(v4.5.11) = 81개
-        private const int ExpectedFeatureCount = 81;
+        // 49 기존 + 19 확장(v3.4.2) + 5 휩소(v4.5.2) + 5 하락추세(v4.5.6) + 3 DailyPnl(v4.5.11) + 5 단타지표(v4.6.2) = 86개
+        private const int ExpectedFeatureCount = 86;
 
         /// <summary>
         /// 저장된 모델 로드 (스키마 호환성 검증 포함)
@@ -426,7 +426,10 @@ namespace TradingBot
                 "M15_IsDowntrend", "H1_IsDowntrend", "M15_ConsecBearishCount",
                 "H1_PriceBelowSma60", "M15_RSI_BelowNeutral",
                 // ── [v4.5.11] 일일 수익 상태 피처 3개 (목표 달성 후 보수 판단 학습) ──
-                "DailyPnlRatio", "IsAboveDailyTarget", "DailyTradeCount"
+                "DailyPnlRatio", "IsAboveDailyTarget", "DailyTradeCount",
+                // ── [v4.6.2] M15 단타 보조지표 5개 (트레이딩뷰 검증) ──
+                "M15_EMA_CrossState", "M15_Price_VWAP_Distance_Pct",
+                "M15_StochRSI_K", "M15_StochRSI_D", "M15_StochRSI_Cross"
             };
 
             // 전처리 및 학습 파이프라인
