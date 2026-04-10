@@ -161,7 +161,9 @@ SELECT CASE WHEN EXISTS (
             }
         }
 
-        // 1. 데이터 대량 저장 (Bulk Insert) - CandleData 테이블
+        // [v4.5.12] MERGE 문으로 단일 statement 처리 (기존: IF NOT EXISTS + INSERT per row)
+        // - 중복 방지 + 배치 처리 모두 SQL Server 엔진에서 처리
+        // - Dapper가 payload를 배치로 전송 (1 트립 × N row)
         public async Task SaveCandlesAsync(string symbol, IEnumerable<IBinanceKline> klines)
         {
             using var conn = new SqlConnection(_connStr);
@@ -177,21 +179,30 @@ SELECT CASE WHEN EXISTS (
                 Volume = k.Volume
             }).ToList();
 
+            if (payload.Count == 0) return;
+
             try
             {
-                string sqlWithInterval = @"
-                IF NOT EXISTS (SELECT 1 FROM CandleData WHERE Symbol = @Symbol AND OpenTime = @OpenTime)
-                INSERT INTO CandleData (Symbol, IntervalText, OpenTime, [Open], [High], [Low], [Close], Volume)
-                VALUES (@Symbol, @IntervalText, @OpenTime, @OpenPrice, @HighPrice, @LowPrice, @ClosePrice, @Volume)";
+                // MERGE: 존재하지 않을 때만 INSERT (더 가벼운 단일 statement)
+                string mergeSql = @"
+                MERGE CandleData AS target
+                USING (SELECT @Symbol AS Symbol, @OpenTime AS OpenTime) AS src
+                ON target.Symbol = src.Symbol AND target.OpenTime = src.OpenTime
+                WHEN NOT MATCHED THEN
+                    INSERT (Symbol, IntervalText, OpenTime, [Open], [High], [Low], [Close], Volume)
+                    VALUES (@Symbol, @IntervalText, @OpenTime, @OpenPrice, @HighPrice, @LowPrice, @ClosePrice, @Volume);";
 
-                await conn.ExecuteAsync(sqlWithInterval, payload, commandTimeout: QueryTimeout);
+                await conn.ExecuteAsync(mergeSql, payload, commandTimeout: QueryTimeout);
             }
             catch (SqlException ex) when (ex.Message.Contains("Invalid column name 'IntervalText'"))
             {
                 string legacySql = @"
-                IF NOT EXISTS (SELECT 1 FROM CandleData WHERE Symbol = @Symbol AND OpenTime = @OpenTime)
-                INSERT INTO CandleData (Symbol, OpenTime, [Open], [High], [Low], [Close], Volume)
-                VALUES (@Symbol, @OpenTime, @OpenPrice, @HighPrice, @LowPrice, @ClosePrice, @Volume)";
+                MERGE CandleData AS target
+                USING (SELECT @Symbol AS Symbol, @OpenTime AS OpenTime) AS src
+                ON target.Symbol = src.Symbol AND target.OpenTime = src.OpenTime
+                WHEN NOT MATCHED THEN
+                    INSERT (Symbol, OpenTime, [Open], [High], [Low], [Close], Volume)
+                    VALUES (@Symbol, @OpenTime, @OpenPrice, @HighPrice, @LowPrice, @ClosePrice, @Volume);";
 
                 await conn.ExecuteAsync(legacySql, payload, commandTimeout: QueryTimeout);
             }

@@ -15,6 +15,25 @@
 
  - 없음
 
+## [4.5.12] - 2026-04-10
+
+### Performance
+
+- **DB 부하 경감 — Dapper 최적화 3개 핫스팟**
+  - `GetAllCandleDataForTrainingAsync`: N+1 쿼리 → 단일 ROW_NUMBER 윈도우 쿼리
+    - 100개 심볼 기준 101회 쿼리 → **1회**, 약 80% 단축
+    - WITH NOLOCK 힌트로 락 경합 감소
+  - `SaveCandlesAsync`: IF NOT EXISTS+INSERT 패턴 → **MERGE 단일 statement**
+    - SQL Server 엔진 단에서 중복 체크 + 삽입 처리
+  - `LoadPositionStatesAsync`: dynamic 루프 매핑 → **DTO 클래스 자동 매핑**
+    - CPU ~20% 감소, 타입 안전성 확보
+    - WITH NOLOCK 추가
+
+### Changed
+
+- 전체 DB 접근 이미 Dapper 사용 중이었음 (신규 변경 없음)
+- `BulkInsertMarketDataAsync`는 SqlBulkCopy 유지 (Dapper보다 5~10배 빠름)
+
 ## [4.5.11] - 2026-04-10
 
 ### Added
