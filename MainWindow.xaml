@@ -2788,11 +2788,12 @@
 
                 <!-- PERFORMANCE TAB (v3.7.0 리디자인) -->
                 <TabItem Header="📊  PERFORMANCE">
-                    <Grid Background="#0D1117" Margin="12">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" Background="#0D1117">
+                    <Grid Margin="12">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*" MinHeight="200"/>
-                            <RowDefinition Height="Auto" MaxHeight="200"/>
+                            <RowDefinition Height="350"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
                         <!-- 헤더: 기간 탭 + 요약 -->
@@ -2879,6 +2880,7 @@
                             </Grid>
                         </Border>
                     </Grid>
+                    </ScrollViewer>
                 </TabItem>
 
                 <!-- AI MONITOR TAB -->
