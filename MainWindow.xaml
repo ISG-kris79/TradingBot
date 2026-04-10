@@ -2178,7 +2178,7 @@
 
                 <!-- AI COMMAND CENTER TAB -->
                 <TabItem Header="🎯  AI COMMAND">
-                    <Grid x:Name="gridAiCommand" Background="#0A0E27">
+                    <Grid x:Name="gridAiCommand" Background="#0D1117">
 
                         <!-- Red Neon border overlay (SHORT detected) -->
                         <Border x:Name="borderShortNeon"
@@ -2195,6 +2195,15 @@
                             </Border.Effect>
                         </Border>
 
+                        <!-- 데이터 대기 안내 -->
+                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                                    Visibility="{Binding IsAiCommandEmpty, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <TextBlock Text="🎯" FontSize="48" HorizontalAlignment="Center" Margin="0,0,0,12"/>
+                            <TextBlock Text="AI COMMAND CENTER" FontSize="20" FontWeight="Bold" Foreground="#E6EDF3" HorizontalAlignment="Center"/>
+                            <TextBlock Text="시장 분석 데이터 수집 중..." FontSize="13" Foreground="#8B949E" HorizontalAlignment="Center" Margin="0,8,0,0"/>
+                            <TextBlock Text="START 후 첫 진입 신호 발생 시 활성화됩니다" FontSize="11" Foreground="#484F58" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                        </StackPanel>
+
                         <Grid Margin="16">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="220"/>    <!-- Left: Bull/Bear seesaw -->
@@ -2209,7 +2218,7 @@
                                 <StackPanel>
                                     <TextBlock Text="⚖️ MARKET POWER"
                                                FontSize="13" FontWeight="Bold"
-                                               Foreground="White" Margin="0,0,0,16"
+                                               Foreground="#E6EDF3" Margin="0,0,0,16"
                                                HorizontalAlignment="Center"/>
 
                                     <!-- Bull Power Bar -->
@@ -2846,7 +2855,7 @@
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="*"/>
                                 </Grid.RowDefinitions>
-                                <TextBlock Text="DAILY P&amp;L CALENDAR" FontSize="13" FontWeight="Bold" Foreground="#8B949E" Margin="4,0,0,10"/>
+                                <TextBlock Text="DAILY P&amp;L CALENDAR" FontSize="13" FontWeight="Bold" Foreground="#E6EDF3" Margin="4,0,0,10"/>
                                 <ItemsControl Grid.Row="1" ItemsSource="{Binding CalendarEntries}">
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
@@ -2858,10 +2867,10 @@
                                             <Border Background="{Binding CellBackground}" CornerRadius="8" Padding="6,8" Margin="3"
                                                     BorderBrush="{Binding PnlColor}" BorderThickness="1">
                                                 <StackPanel HorizontalAlignment="Center">
-                                                    <TextBlock Text="{Binding DayLabel}" Foreground="#8B949E" FontSize="10" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                                                    <TextBlock Text="{Binding DayLabel}" Foreground="#C9D1D9" FontSize="10" FontWeight="SemiBold" HorizontalAlignment="Center"/>
                                                     <TextBlock Text="{Binding PnlDisplay}" Foreground="{Binding PnlColor}"
-                                                               FontFamily="Consolas" FontSize="13" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,4,0,0"/>
-                                                    <TextBlock Text="{Binding TradeCountDisplay}" Foreground="#484F58" FontSize="9" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                                                               FontFamily="Consolas" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                                                    <TextBlock Text="{Binding TradeCountDisplay}" Foreground="#8B949E" FontSize="9" HorizontalAlignment="Center" Margin="0,2,0,0"/>
                                                 </StackPanel>
                                             </Border>
                                         </DataTemplate>

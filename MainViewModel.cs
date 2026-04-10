@@ -5446,10 +5446,12 @@ namespace TradingBot.ViewModels
         public Brush Tf15mColor => Tf15mStatusToBrush(_tf15mStatus);
 
         private double _bullPower = 50;
+        private bool _aiCommandDataReceived;
+        public bool IsAiCommandEmpty => !_aiCommandDataReceived;
         public double BullPower
         {
             get => _bullPower;
-            set { _bullPower = Math.Max(0, Math.Min(100, value)); OnPropertyChanged(); OnPropertyChanged(nameof(BearPower)); OnPropertyChanged(nameof(CurrentBias)); OnPropertyChanged(nameof(AiCmdBiasColor)); }
+            set { _bullPower = Math.Max(0, Math.Min(100, value)); _aiCommandDataReceived = true; OnPropertyChanged(); OnPropertyChanged(nameof(BearPower)); OnPropertyChanged(nameof(CurrentBias)); OnPropertyChanged(nameof(AiCmdBiasColor)); OnPropertyChanged(nameof(IsAiCommandEmpty)); }
         }
         public double BearPower => 100.0 - _bullPower;
 
