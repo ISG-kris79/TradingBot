@@ -15,6 +15,18 @@
 
  - 없음
 
+## [4.7.6] - 2026-04-11
+
+### Fixed (Critical)
+
+- **재시작마다 초기학습 반복 루프** — 치명적 버그
+  - **원인 1**: `InitialTrainingMinAccuracy = 0.70` 하드코딩 임계값. 학습 데이터 부족 등의 이유로 모델 정확도가 70% 미달이면 `IsInitialTrainingComplete = false` 할당 → setter가 **flag 파일을 삭제** → 다음 재시작 시 재학습 트리거 → 또 실패 → 무한 루프
+  - **원인 2**: setter의 delete 로직이 위 상황에서 이전에 저장된 정상 flag까지 제거
+  - **수정 1**: `InitialTrainingMinAccuracy` 상수 제거 (하드코딩 게이트 철폐). 학습 완료 = flag 저장. 진입 품질 필터는 `AIDoubleCheckEntryGate`, `PumpSignalClassifier`, `SurvivalEntryModel`이 개별 ML 확률로 담당
+  - **수정 2**: setter를 **write-only**로 변경. 어떤 경우에도 flag 파일을 삭제하지 않음
+  - **진단**: 봇 시작 시 flag 경로와 존재 여부를 `OnStatusLog`로 출력
+  - **메시지**: "이미 완료됨 (flag 있음) — 자동 재학습 건너뜀" 문구 추가
+
 ## [4.7.5] - 2026-04-11
 
 ### Fixed

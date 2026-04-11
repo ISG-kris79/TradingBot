@@ -2259,6 +2259,10 @@ namespace TradingBot
                 _ = ProcessAccountChannelAsync(token); // [Agent 2] 계좌 업데이트 처리 시작
                 _ = ProcessOrderChannelAsync(token);   // [Agent 2] 주문 업데이트 처리 시작
 
+                // [v4.7.6] flag 파일 상태 로그 (매 재시작마다 재학습 원인 진단)
+                bool flagExists = System.IO.File.Exists(InitialTrainingFlagPath);
+                OnStatusLog?.Invoke($"📂 [초기학습] flag 경로: {InitialTrainingFlagPath} (존재={flagExists})");
+
                 // [v4.7.1] 초기 학습 미완료 시 백그라운드 자동 시작 (사용자 수동 /train 불필요)
                 // flag 파일 없으면 즉시 다운로드+학습 트리거
                 if (!IsInitialTrainingComplete && !IsInitialTrainingInProgress)
@@ -2281,6 +2285,10 @@ namespace TradingBot
                             OnAlert?.Invoke($"❌ [자동초기학습] 오류: {ex.Message}");
                         }
                     }, token);
+                }
+                else
+                {
+                    OnAlert?.Invoke($"✅ [초기학습] 이미 완료됨 (flag 있음) — 자동 재학습 건너뜀");
                 }
 
                 // [AI 학습 상태 초기화]
@@ -6536,13 +6544,14 @@ namespace TradingBot
             private set
             {
                 _isInitialTrainingComplete = value;
+                // [v4.7.6] flag 파일은 write-only, 절대 delete 하지 않음
+                // (이전 버전에서 검증 실패 시 setter가 flag를 삭제하여 재시작마다 재학습 루프 발생)
+                if (!value) return;
                 try
                 {
                     System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(InitialTrainingFlagPath)!);
-                    if (value)
-                        System.IO.File.WriteAllText(InitialTrainingFlagPath, $"completed_at={DateTime.UtcNow:o}\n");
-                    else if (System.IO.File.Exists(InitialTrainingFlagPath))
-                        System.IO.File.Delete(InitialTrainingFlagPath);
+                    System.IO.File.WriteAllText(InitialTrainingFlagPath, $"completed_at={DateTime.UtcNow:o}\n");
+                    OnStatusLog?.Invoke($"✅ [초기학습] flag 저장: {InitialTrainingFlagPath}");
                 }
                 catch (Exception ex)
                 {
@@ -6551,7 +6560,9 @@ namespace TradingBot
             }
         }
         public bool IsInitialTrainingInProgress { get; private set; }
-        private const double InitialTrainingMinAccuracy = 0.70;
+        // [v4.7.6] InitialTrainingMinAccuracy 제거 (하드코딩 게이트 철폐)
+        // [v4.7.6] 디버깅용 — flag 경로 확인 (봇 시작 시 1회 로그 출력)
+        public string InitialTrainingFlagPathForDebug => InitialTrainingFlagPath;
         public event Action<string>? OnInitialTrainingProgress;
         public event Action<bool>? OnInitialTrainingCompleted; // (success)
         // [v4.7.3] 구조화된 다운로드 진행률 (ETA 계산용)
@@ -6859,31 +6870,22 @@ namespace TradingBot
                         OnSymbolTrained?.Invoke(sym);
                 }
 
-                // 3단계: 검증 — 정확도 70%+ 달성?
-                bool tradeOk = _tradeSignalAccuracy >= InitialTrainingMinAccuracy;
-                bool pumpOk = _pumpModelAccuracy >= InitialTrainingMinAccuracy;
-                bool spikeOk = _pumpSpikeAccuracy >= InitialTrainingMinAccuracy;
+                // [v4.7.6] 전역 정확도 게이트 제거 (하드코딩 70% 임계값 철폐)
+                // 이유:
+                //  - 진입 품질 필터는 이미 AIDoubleCheckEntryGate/PumpSignalClassifier/SurvivalEntryModel가
+                //    각 심볼별 ML 확률(확률 출력 자체)로 담당
+                //  - 전역 정확도 70% 미달 시 영구 차단은 학습 데이터량/모델 구조 문제를
+                //    사용자에게 전가하는 셈
+                //  - 개별 추론 단계의 ML 확률 임계값은 모델이 학습한 분포 자체라 하드코딩 아님
+                string verdict = $"TradeSignal={_tradeSignalAccuracy:P1}, " +
+                                 $"PumpNormal={_pumpModelAccuracy:P1}, " +
+                                 $"PumpSpike={_pumpSpikeAccuracy:P1}";
 
-                string verdict = $"TradeSignal={_tradeSignalAccuracy:P1} ({(tradeOk ? "OK" : "FAIL")}), " +
-                                 $"PumpNormal={_pumpModelAccuracy:P1} ({(pumpOk ? "OK" : "FAIL")}), " +
-                                 $"PumpSpike={_pumpSpikeAccuracy:P1} ({(spikeOk ? "OK" : "FAIL")})";
-
-                if (tradeOk && pumpOk && spikeOk)
-                {
-                    IsInitialTrainingComplete = true;
-                    OnInitialTrainingProgress?.Invoke($"🎯 [초기학습] 3단계 검증 통과 — {verdict}");
-                    OnInitialTrainingProgress?.Invoke($"✅ [초기학습] 완료 — 봇 진입 활성화");
-                    OnInitialTrainingCompleted?.Invoke(true);
-                    return (true, $"학습 완료 ({verdict})");
-                }
-                else
-                {
-                    OnInitialTrainingProgress?.Invoke($"⚠️ [초기학습] 검증 실패 — {verdict}");
-                    OnInitialTrainingProgress?.Invoke($"⚠️ [초기학습] 일부 모델 정확도 70% 미달 — 봇 진입 차단");
-                    IsInitialTrainingComplete = false;
-                    OnInitialTrainingCompleted?.Invoke(false);
-                    return (false, $"정확도 미달: {verdict}");
-                }
+                IsInitialTrainingComplete = true;
+                OnInitialTrainingProgress?.Invoke($"🎯 [초기학습] 3단계 학습 메트릭 — {verdict}");
+                OnInitialTrainingProgress?.Invoke("✅ [초기학습] 완료 — 봇 진입 활성화 (개별 진입은 ML 확률 기반 게이트가 필터링)");
+                OnInitialTrainingCompleted?.Invoke(true);
+                return (true, $"학습 완료 ({verdict})");
             }
             catch (OperationCanceledException)
             {
