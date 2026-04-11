@@ -204,22 +204,9 @@ namespace TradingBot.Strategies
                 bool hasM1VolumeSurge = false;
                 double m1VolumeRatio = 0;
 
-                if (currentPrice < 0.001m) // [v3.2.40] 초저가 밈코인 제외
-                {
-                    PumpSignalLog("REJECT", $"sym={symbol} reason=price<0.001 ({currentPrice})");
-                    return false;
-                }
-                // [v3.7.2] 초고변동성 코인 차단 — ATR/가격 5%+ = 1초에 30%+ 가능 (v3.7.3: 3%→5%)
-                double pumpAtrCheck = IndicatorCalculator.CalculateATR(list, 14);
-                if (pumpAtrCheck > 0 && (double)currentPrice > 0)
-                {
-                    double atrRatioPct = pumpAtrCheck / (double)currentPrice * 100;
-                    if (atrRatioPct >= 5.0)
-                    {
-                        PumpSignalLog("REJECT", $"sym={symbol} reason=ultraVolatile ATR/price={atrRatioPct:F1}%");
-                        return false;
-                    }
-                }
+                // [v4.9.3] 하드코딩 price<0.001 / ATR/price>=5% 필터 제거
+                // ATR은 이미 PumpSignalClassifier가 피처로 학습 중이고 Volatility도 학습됨.
+                // 초저가 밈코인도 WebSocket 가격만 정상이면 ML이 스스로 판단.
 
                 double rsi = IndicatorCalculator.CalculateRSI(list, 14);
                 var bb = IndicatorCalculator.CalculateBB(list, 20, 2);
@@ -258,27 +245,14 @@ namespace TradingBot.Strategies
                 double fibBonus = CalculateFibScore(symbol, list, currentPrice);
                 if (fibBonus > 0) aiScore = Math.Clamp(aiScore + (int)fibBonus, 0, 100);
 
-                // 가격 모멘텀 직접 감지
+                // 가격 모멘텀 직접 감지 (로그 용도로만 사용, 차단 아님)
                 var recent6 = list.TakeLast(6).ToList();
                 decimal price6Ago = recent6.First().ClosePrice;
                 double priceRecoveryPct = price6Ago > 0 ? (double)((currentPrice - price6Ago) / price6Ago * 100) : 0;
                 bool isPriceRecovering = priceRecoveryPct >= 1.5;
 
-                // [v4.0.2] 이미 크게 올라간 코인 차단 — 30분간 +5%+ = 이미 늦음
-                if (priceRecoveryPct >= 5.0)
-                {
-                    PumpSignalLog("REJECT", $"sym={symbol} reason=alreadyPumped +{priceRecoveryPct:F1}% in 30min");
-                    return false;
-                }
-                // 1시간 저점 대비 +8%+ = 급등 이후
-                var recent12Check = list.TakeLast(12).ToList();
-                decimal low12 = recent12Check.Min(k => k.LowPrice);
-                double riseFrom12Low = low12 > 0 ? (double)((currentPrice - low12) / low12 * 100) : 0;
-                if (riseFrom12Low >= 8.0)
-                {
-                    PumpSignalLog("REJECT", $"sym={symbol} reason=bigRiseFromLow +{riseFrom12Low:F1}% in 1h");
-                    return false;
-                }
+                // [v4.9.3] '이미 pumped +5% / 1시간 저점 +8%' 하드코딩 차단 제거
+                // 메모리 원칙: 진입 판단은 ML만. Price_Momentum_30m, Price_Change_Pct 는 이미 PumpSignalClassifier 피처
 
                 var recent12 = list.TakeLast(12).ToList();
                 decimal recentLow = recent12.Min(k => k.LowPrice);

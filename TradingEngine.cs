@@ -8525,23 +8525,12 @@ namespace TradingBot
                 return;
             }
 
-            // 1-8. 거래량 컨펌 필터: 5봉 평균 대비 거래량이 너무 적으면 차단
-            // 거래량 없는 무빙은 90%가 가짜 → 손절 직행
-            if (signalSource != "SPIKE_DETECT" && signalSource != "CRASH_REVERSE" && signalSource != "PUMP_REVERSE")
-            {
-                if (latestCandle.Volume_Ratio > 0 && latestCandle.Volume_Ratio < 0.5f)
-                {
-                    if (ShouldBypassLowVolumeForMajorMeme(signalSource, decision, latestCandle, recentEntryKlines, out string bypassReason))
-                    {
-                        EntryLog("VOLUME", "BYPASS", bypassReason);
-                    }
-                    else
-                    {
-                        EntryLog("VOLUME", "BLOCK", $"volumeRatio={latestCandle.Volume_Ratio:F2} < 0.50 (5봉 평균의 절반 미만 → 가짜 무빙 가능성)");
-                        return;
-                    }
-                }
-            }
+            // [v4.9.3] VOLUME 하드코딩 필터 완전 제거
+            // 메모리 원칙: 모든 진입은 AI(ML.NET) 학습·추론·예측으로만.
+            // volumeRatio<0.5 는 임의 임계값이고, 이 필터가 FooterLogs 진단에서 10분에
+            // 1,027건 진입을 차단하던 주범이었음 (PumpScan이 AI_ENTRY 승인한 것도 차단).
+            // Volume 판단은 이미 PumpSignalClassifier / AIDoubleCheckEntryGate /
+            // SurvivalEntryModel 이 Volume_Ratio·volumeMomentum 피처로 학습 중.
 
             // [v4.6.0] 변동성 차단 — 메이저 일반 진입에만 적용 (PUMP/급등은 우회)
             // [v4.7.0] 초기학습 완료 시 모든 하드 필터 우회 (AI 단독 판단)
@@ -9034,22 +9023,16 @@ namespace TradingBot
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // [ROUTER] 6. RSI 극단 차단 (공통, SPIKE_DETECT 예외)
+            // [ROUTER] 6. 생존 모델 + 방향 AI (RSI 하드코딩 제거 — v4.9.3)
             // ═══════════════════════════════════════════════════════════════
             {
                 float rsiCheck = latestCandle.RSI;
                 bool isSpikeEntry = signalSource == "SPIKE_DETECT";
                 if (rsiCheck > 0 && !isSpikeEntry)
                 {
-                    bool rsiExtreme = (decision == "LONG" && rsiCheck >= 88f)
-                                   || (decision == "SHORT" && rsiCheck <= 12f);
-                    if (rsiExtreme)
-                    {
-                        string limitText = decision == "LONG" ? "RSI≥88 극단 과매수" : "RSI≤12 극단 과매도";
-                        OnStatusLog?.Invoke($"⛔ [RSI 극단 차단] {symbol} {decision} | RSI={rsiCheck:F1} → {limitText}");
-                        EntryLog("RSI_EXTREME", "BLOCK", $"dir={decision} rsi={rsiCheck:F1}");
-                        return;
-                    }
+                    // [v4.9.3] RSI≥88 / ≤12 극단 차단 하드코딩 제거
+                    // SurvivalEntryModel과 PriceDirectionPredictor가 RSI를 피처로 학습 중이므로
+                    // AI가 자체 판단하도록 위임 (메모리 원칙: 하드코딩 조건 금지)
 
                     // [v4.0] 생존 기반 진입 모델 — "TP에 먼저 도달할 확률"
                     if (decision == "LONG")

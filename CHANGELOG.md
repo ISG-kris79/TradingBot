@@ -15,6 +15,24 @@
 
  - 없음
 
+## [4.9.3] - 2026-04-11
+
+### Removed (Critical — AI-Only 원칙 위반 하드코딩 제거)
+
+사용자 지적: "ai로 판단하라니까 자꾸 하드코딩하고 지랄이야". DB FooterLogs 기반 진단으로 10분 간 **1,027건** 진입이 VOLUME 필터로 차단되던 주범 발견. ML이 AI_ENTRY 승인한 ARIA/RAVE/SOON/LAB/BAS LONG 후보들도 모두 차단되던 상황.
+
+- **TradingEngine.cs:VOLUME 필터 완전 제거** (기존 `volumeRatio<0.5` 하드코딩) — 10분 1,027건 차단의 주범. `Volume_Ratio`/`volumeMomentum`은 이미 `PumpSignalClassifier`/`AIDoubleCheckEntryGate`/`SurvivalEntryModel` 피처로 학습 중
+- **TradingEngine.cs:RSI_EXTREME 차단 제거** (기존 `rsi>=88`/`rsi<=12` 하드코딩) — RSI 극단값 판단은 `SurvivalEntryModel` + `PriceDirectionPredictor`가 담당
+- **PumpScanStrategy.cs:ultraVolatile 차단 제거** (기존 `ATR/price>=5%` 하드코딩)
+- **PumpScanStrategy.cs:price<0.001 차단 제거**
+- **PumpScanStrategy.cs:alreadyPumped 차단 제거** (기존 `+5% in 30min`)
+- **PumpScanStrategy.cs:bigRiseFromLow 차단 제거** (기존 `+8% in 1h`)
+- 위 필터들은 모두 진짜 급등 코인을 정확히 차단하던 주범. Price_Momentum_30m, Price_Change_Pct 는 이미 ML 피처
+
+### 추가 진단 인프라
+
+- FooterLogs DB 테이블 기반 중앙 진단 — 여러 컴퓨터 운영 시 로컬 파일 로그로는 원인 추적 불가능한 문제 우회. FooterLogs에 이미 모든 `OnStatusLog` 메시지가 저장되고 있으며, DB 쿼리로 PUMP/ENTRY/BLOCK 분포 확인 가능
+
 ## [4.9.2] - 2026-04-11
 
 ### Fixed (Critical 진단)
