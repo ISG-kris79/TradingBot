@@ -15,6 +15,74 @@
 
  - 없음
 
+## [5.0.0] - 2026-04-11
+
+### 🎯 전면 재설계 — 예측형 Forecaster 아키텍처 도입
+
+기존 "실시간 반응형 진입" (매 10초 스캔 → 즉시 Market) 을
+**"예측형 진입"** (5분봉 마감 시 예측 → LIMIT 예약 → 만료/돌파 시 처리) 으로 교체.
+
+#### Added — 신규 컴포넌트 (6개 파일)
+
+**`Models/ForecastModels.cs`** — 예측 결과 + 예약 진입 데이터 모델
+- `ForecastResult`: 기회/확률/방향/시점/가격 오프셋
+- `PendingEntry`: Symbol, Direction, TargetPrice, 예측 시점, 만료, LimitOrderId
+
+**`Services/OpportunityForecaster.cs`** — 3-Model 예측 베이스 클래스
+- Model A: Classifier (기회 있음, LightGBM Binary)
+- Model B: Regressor (몇 봉 후 최적 진입, LightGBM Regression)
+- Model C: Regressor (현재가 대비 진입가 %, LightGBM Regression)
+- 학습 데이터 생성: 미래 window 내 risk-adjusted 최적 진입점 탐색
+- 36개 피처 ForecastFeature (PumpFeature 호환)
+
+**`Services/PumpForecaster.cs`** — PUMP 알트 전용 (5분봉)
+- FutureWindow=12봉(60분), Target=+2.5%, MaxDD=1.5%, MinConf=0.60
+
+**`Services/MajorForecaster.cs`** — 메이저 코인 전용 (5분봉)
+- FutureWindow=12봉, Target=+1.5% (변동폭小), MaxDD=1.0%, MinConf=0.58
+- 현재 LONG-only 학습 (SHORT는 기존 경로 fallback)
+
+**`Services/SpikeForecaster.cs`** — 1분 스파이크 전용 (1분봉 학습+추론)
+- **B1 버그 수정**: 기존 PumpSignalClassifier.Spike는 5분봉 학습 + 1분봉 추론으로 스케일 불일치
+- FutureWindow=5봉(5분), Target=+4%, MaxDD=1.0%, MinConf=0.65
+
+**`Services/EntryScheduler.cs`** — 공용 예약 스케줄러
+- `RegisterAsync`: MTF Guardian 검증 → LIMIT 주문 발주 → pending 관리
+- 가격 Watchdog: 조기 돌파 감지 시 Market Fallback (+1% 이상)
+- 만료 체크 타이머 (10초 주기): Expiry 경과 시 자동 취소 + 재예측 대기
+- 중복 방지: 심볼당 pending 1건만 허용
+
+#### Changed — TradingEngine 통합
+
+- `_pumpForecaster`, `_majorForecaster`, `_spikeForecaster`, `_entryScheduler` 인스턴스 추가
+- 초기화 시 3개 Forecaster 모델 로드 + Scheduler 연결
+- `OnTickerUpdate` → `EntryScheduler.OnPriceTickAsync` 연결 (가격 Watchdog)
+- MTF Guardian을 Scheduler에 주입 → 예약 전 사전 차단
+- Market Fallback executor: `ExecuteAutoOrder(..., "FORECAST_FALLBACK", skipAiGateCheck: true)`
+- 재학습 파이프라인: PumpForecaster + MajorForecaster + SpikeForecaster 동시 학습
+- SpikeForecaster는 **DB가 아닌 거래소 API에서 1분봉 직접 로드** (50개 심볼, 200봉)
+
+#### Changed — 진입 경로 재설계
+
+**PumpScanStrategy 신호 핸들러**:
+- 기존: PumpScan 후보 → `ExecuteAutoOrder(..., skipAiGateCheck=true)` 즉시 Market
+- 신규: PumpScan 후보 → `PumpForecaster.Forecast()` → `EntryScheduler.RegisterAsync()` LIMIT 예약
+- Forecaster 미학습 시 기존 경로 Fallback
+
+**MajorCoinStrategy 신호 핸들러**:
+- LONG: `MajorForecaster.Forecast()` → Scheduler 등록
+- SHORT: 기존 `ExecuteAutoOrder()` 경로 (SHORT 모델 미학습)
+
+**SPIKE_FAST**:
+- 기존: `PumpSignalClassifier.Spike.Predict()` (5m 학습 + 1m 추론 불일치)
+- 신규: `SpikeForecaster.Forecast(klines)` (1분봉 학습+추론 일치)
+- 1분 스파이크는 즉시 진입 원칙이므로 Scheduler 미경유
+
+#### Fixed
+
+- **B1 버그**: Spike 모델 학습/추론 시간봉 불일치 → `SpikeForecaster` 신규로 완전 해결
+- **실시간 반응형 한계**: 고점 진입/타이밍 놓침 → 예측 + LIMIT 예약 + Watchdog 로 사전 선점
+
 ## [4.9.9] - 2026-04-11
 
 ### Added (MTF Guardian — 상위 시간봉 역방향 차단)

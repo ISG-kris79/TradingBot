@@ -474,6 +474,12 @@ namespace TradingBot
         // [v4.5.8] PUMP 모델 분리: 일반진입 / 급등진입
         private readonly TradingBot.Services.PumpSignalClassifier _pumpSignalClassifier = new(TradingBot.Services.PumpSignalType.Normal);
         private readonly TradingBot.Services.PumpSignalClassifier _pumpSpikeClassifier = new(TradingBot.Services.PumpSignalType.Spike);
+
+        // [v5.0] 예측형 Forecaster — 3-Model (Classifier + Time Regressor + Price Regressor)
+        private readonly TradingBot.Services.PumpForecaster _pumpForecaster = new();
+        private readonly TradingBot.Services.MajorForecaster _majorForecaster = new();
+        private readonly TradingBot.Services.SpikeForecaster _spikeForecaster = new();
+        private TradingBot.Services.EntryScheduler? _entryScheduler;
         private readonly TradingBot.Services.PriceDirectionPredictor _directionPredictor = new();
         private readonly TradingBot.Services.SurvivalEntryModel _survivalModel = new();
         private readonly TradingBot.Services.TickDensityMonitor _tickMonitor = new();
@@ -1068,6 +1074,44 @@ namespace TradingBot
             // [v4.5.8] PUMP Spike 모델 로드
             _pumpSpikeClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
             _pumpSpikeClassifier.LoadModel();
+
+            // [v5.0] 예측형 Forecaster 3종 로드
+            _pumpForecaster.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _pumpForecaster.LoadModels();
+            _majorForecaster.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _majorForecaster.LoadModels();
+            _spikeForecaster.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _spikeForecaster.LoadModels();
+
+            // [v5.0] EntryScheduler 초기화 — MTF Guardian 연결 + Market Fallback executor
+            _entryScheduler = new TradingBot.Services.EntryScheduler(
+                _exchangeService,
+                mtfGuardian: (sym, dir) =>
+                {
+                    var passed = PassMtfGuardian(sym, dir, out string reason);
+                    return (passed, reason);
+                },
+                marketFallbackExecutor: async (sym, dir, price, tok) =>
+                {
+                    // 조기 돌파 시 Router 통과 후 Market 진입
+                    await ExecuteAutoOrder(sym, dir, price, tok, "FORECAST_FALLBACK", skipAiGateCheck: true);
+                });
+            _entryScheduler.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _entryScheduler.OnEntryRegistered += e =>
+                OnStatusLog?.Invoke($"📌 [FORECAST] {e.Symbol} {e.Direction} 예약 @ ${e.TargetPrice:F6} 신뢰={e.Confidence:P0}");
+
+            // [v5.0] 틱 업데이트를 EntryScheduler Watchdog에 연결
+            _marketDataManager.OnTickerUpdate += ticker =>
+            {
+                try
+                {
+                    if (_entryScheduler != null && ticker != null && !string.IsNullOrEmpty(ticker.Symbol) && ticker.LastPrice > 0)
+                    {
+                        _ = _entryScheduler.OnPriceTickAsync(ticker.Symbol, ticker.LastPrice, _cts?.Token ?? CancellationToken.None);
+                    }
+                }
+                catch { }
+            };
             _directionPredictor.OnLog += msg => OnStatusLog?.Invoke(msg);
             _directionPredictor.TryLoadModels();
             _survivalModel.OnLog += msg => OnStatusLog?.Invoke(msg);
@@ -1251,22 +1295,54 @@ namespace TradingBot
             {
                 try
                 {
-                    // [v4.7.9] PumpStrategy가 진입 신호로 낸 심볼은 즉시 학습 대상 등록
-                    // (PumpScanStrategy가 이미 후보 검증 + 시그널 분류 완료한 상태)
+                    // [v4.7.9] PumpStrategy가 후보 검증한 심볼은 즉시 학습 대상 등록
                     if (_trainedSymbols.TryAdd(symbol, true))
                     {
                         OnSymbolTrained?.Invoke(symbol);
-                        OnStatusLog?.Invoke($"✅ [동적학습등록] {symbol} — PumpScan 신호로 즉시 진입 게이트 통과 허용");
+                        OnStatusLog?.Invoke($"✅ [동적학습등록] {symbol}");
                     }
-                    // [v4.9.5] PumpScanStrategy.PumpSignalClassifier가 이미 AI 승인(65%+)을 완료한 상태
-                    // → AIDoubleCheckEntryGate (EntryTimingMLTrainer)는 PUMP 코인 학습 부족으로 항상 0 반환
-                    // → 두 모델 충돌 해결: PumpSignalClassifier 우선, 하위 AI Gate는 skip
-                    // 단 Router 0~7 (슬롯/스태일/블랙리스트/듀플리케이트 등) 공통 검증은 그대로 적용
-                    await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR_MEME", skipAiGateCheck: true);
+
+                    // [v5.0] 예측형 진입: PumpScan 후보 → PumpForecaster 예측 → Scheduler 등록
+                    // 기존 skipAiGateCheck=true 즉시 Market 진입 로직 제거
+                    if (_pumpForecaster.IsModelLoaded && _entryScheduler != null
+                        && _marketDataManager.KlineCache.TryGetValue(symbol, out var cache))
+                    {
+                        List<IBinanceKline> cSnap;
+                        lock (cache) { cSnap = cache.ToList(); }
+
+                        var forecast = _pumpForecaster.Forecast(cSnap, decision);
+                        if (!forecast.HasOpportunity)
+                        {
+                            OnLiveLog?.Invoke($"🧭 [FORECAST][PUMP] {symbol} 기회 없음 (prob<{_pumpForecaster.MinConfidence:P0})");
+                            return;
+                        }
+
+                        // 수량/레버리지 계산 (기존 ExecuteAutoOrder 로직 위임하려면 Fallback 직접 호출)
+                        decimal quantity = await CalculateOrderQuantityAsync(symbol, price, _cts.Token);
+                        if (quantity <= 0)
+                        {
+                            OnLiveLog?.Invoke($"⚠️ [FORECAST][PUMP] {symbol} 수량 계산 실패 → 스킵");
+                            return;
+                        }
+
+                        int leverage = 20;
+                        bool scheduled = await _entryScheduler.RegisterAsync(
+                            symbol, forecast, price, quantity, leverage, _cts.Token);
+
+                        if (!scheduled)
+                        {
+                            OnLiveLog?.Invoke($"🧭 [FORECAST][PUMP] {symbol} Scheduler 등록 실패");
+                        }
+                    }
+                    else
+                    {
+                        // Fallback: Forecaster 미학습 → 기존 즉시 진입 경로 (학습 완료 전)
+                        await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR_MEME", skipAiGateCheck: true);
+                    }
                 }
                 catch (Exception ex)
                 {
-                    OnLiveLog?.Invoke($"🧭 [ENTRY][ORDER][ERROR] src=MAJOR sym={symbol} side={decision} | detail={ex.Message}");
+                    OnLiveLog?.Invoke($"🧭 [ENTRY][ORDER][ERROR] src=PUMP sym={symbol} side={decision} | detail={ex.Message}");
                 }
             };
 
@@ -1292,7 +1368,34 @@ namespace TradingBot
                 {
                     try
                     {
-                        await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR");
+                        // [v5.0] 예측형 진입: MajorStrategy 후보 → MajorForecaster 예측 → Scheduler 등록
+                        // MajorForecaster는 현재 LONG-only 학습 → SHORT는 기존 경로 fallback
+                        if (decision == "LONG" && _majorForecaster.IsModelLoaded && _entryScheduler != null
+                            && _marketDataManager.KlineCache.TryGetValue(symbol, out var cache))
+                        {
+                            List<IBinanceKline> cSnap;
+                            lock (cache) { cSnap = cache.ToList(); }
+
+                            var forecast = _majorForecaster.Forecast(cSnap, "LONG");
+                            if (!forecast.HasOpportunity)
+                            {
+                                OnLiveLog?.Invoke($"🧭 [FORECAST][MAJOR] {symbol} 기회 없음");
+                                return;
+                            }
+
+                            decimal quantity = await CalculateOrderQuantityAsync(symbol, price, _cts.Token);
+                            if (quantity <= 0) return;
+
+                            bool scheduled = await _entryScheduler.RegisterAsync(
+                                symbol, forecast, price, quantity, 20, _cts.Token);
+                            if (!scheduled)
+                                OnLiveLog?.Invoke($"🧭 [FORECAST][MAJOR] {symbol} Scheduler 등록 실패");
+                        }
+                        else
+                        {
+                            // Fallback: Forecaster 미학습 / SHORT 방향 → 기존 경로
+                            await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR");
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -6827,10 +6930,74 @@ namespace TradingBot
                                 && _pumpSpikeAccuracy >= AiHardCheckBypassThreshold
                                 && _tradeSignalAccuracy >= AiHardCheckBypassThreshold)
                                 OnStatusLog?.Invoke($"🎯 [AI] 모든 PUMP 모델 정확도 {AiHardCheckBypassThreshold:P0} 달성 → 하드 체크 자동 해제");
+
+                            // [v5.0] PumpForecaster 학습 (3-Model: Classifier + TimeRegressor + PriceRegressor)
+                            try
+                            {
+                                var labeledPumpForecast = _pumpForecaster.LabelCandleData(pumpCandles, "LONG");
+                                if (labeledPumpForecast.Count >= 100)
+                                {
+                                    var m = await _pumpForecaster.TrainAndSaveAsync(labeledPumpForecast, token);
+                                    OnStatusLog?.Invoke($"🧠 [v5.0] PumpForecaster 학습 완료 | {labeledPumpForecast.Count}건 | AccA={m?.ClassifierAccuracy:P1} MAE_B={m?.TimeRegressorMAE:F2}봉 MAE_C={m?.PriceRegressorMAE:F3}%");
+                                }
+                            }
+                            catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [v5.0] PumpForecaster 학습 실패: {ex.Message}"); }
                         }
                     }
                 }
                 catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] PumpSignal 학습 실패: {ex.Message}"); }
+
+                // [v5.0] MajorForecaster 학습 (메이저 심볼 전용)
+                try
+                {
+                    var majorCandles = new List<IBinanceKline>();
+                    foreach (var kvp in klineMap)
+                    {
+                        if (token.IsCancellationRequested) break;
+                        if (!MajorSymbols.Contains(kvp.Key)) continue;
+                        if (kvp.Value.Count >= 30)
+                            majorCandles.AddRange(kvp.Value);
+                    }
+                    if (majorCandles.Count >= 200)
+                    {
+                        var labeledMajor = _majorForecaster.LabelCandleData(majorCandles, "LONG");
+                        if (labeledMajor.Count >= 100)
+                        {
+                            var m = await _majorForecaster.TrainAndSaveAsync(labeledMajor, token);
+                            OnStatusLog?.Invoke($"🧠 [v5.0] MajorForecaster 학습 완료 | {labeledMajor.Count}건 | AccA={m?.ClassifierAccuracy:P1} MAE_B={m?.TimeRegressorMAE:F2}봉");
+                        }
+                    }
+                }
+                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [v5.0] MajorForecaster 학습 실패: {ex.Message}"); }
+
+                // [v5.0] SpikeForecaster 학습 (1분봉 전용 — B1 버그 수정)
+                try
+                {
+                    var spikeCandles1m = new List<IBinanceKline>();
+                    int cnt = 0;
+                    foreach (var symbol in klineMap.Keys)
+                    {
+                        if (token.IsCancellationRequested) break;
+                        if (cnt++ >= 50) break;
+                        try
+                        {
+                            var res = await _exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.OneMinute, 200, token);
+                            if (res != null && res.Count >= 30)
+                                spikeCandles1m.AddRange(res);
+                        }
+                        catch { }
+                    }
+                    if (spikeCandles1m.Count >= 200)
+                    {
+                        var labeledSpike = _spikeForecaster.LabelCandleData(spikeCandles1m, "LONG");
+                        if (labeledSpike.Count >= 100)
+                        {
+                            var m = await _spikeForecaster.TrainAndSaveAsync(labeledSpike, token);
+                            OnStatusLog?.Invoke($"🧠 [v5.0] SpikeForecaster(1m) 학습 완료 | {labeledSpike.Count}건 | AccA={m?.ClassifierAccuracy:P1}");
+                        }
+                    }
+                }
+                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [v5.0] SpikeForecaster 학습 실패: {ex.Message}"); }
 
                 // 3. Direction + Volatility Predictor
                 try
@@ -7686,39 +7853,21 @@ namespace TradingBot
                                 return;
                             }
 
-                            // [v4.5.8] Spike 전용 AI 모델 예측 — 급등 진입 품질 검증
-                            // [v4.6.1] 1분봉 30→15개 완화 (1분 로켓 발사 시 5분봉 데이터 부족 대응)
-                            // 기존 30개 조건은 30분 데이터 필요 → 1분 급등 시 거의 항상 스킵됨
-                            if (_pumpSpikeClassifier != null && _pumpSpikeClassifier.IsModelLoaded && klines.Count >= 15)
+                            // [v5.0] SpikeForecaster (1분봉 학습+추론 일치) — B1 버그 수정
+                            // 기존: PumpSignalClassifier.Spike (5분봉 학습 + 1분봉 추론 = 스케일 불일치)
+                            // 신규: SpikeForecaster (1분봉 학습 + 1분봉 추론)
+                            if (_spikeForecaster != null && _spikeForecaster.IsModelLoaded && klines.Count >= 30)
                             {
-                                var spikeFeature = TradingBot.Services.PumpSignalClassifier.ExtractFeature(klines.ToList());
-                                if (spikeFeature != null)
+                                var spikeForecast = _spikeForecaster.Forecast(klines.ToList(), "LONG");
+                                if (!spikeForecast.HasOpportunity)
                                 {
-                                    var spikePred = _pumpSpikeClassifier.Predict(spikeFeature);
-                                    if (spikePred != null)
-                                    {
-                                        // [v4.5.13] Spike 모델 학습 미성숙 시 임계값 완화 (진입 전면 차단 방지)
-                                        // - 정확도 < 70%: 학습 부족 → 55% 임계값 (기본 검증만)
-                                        // - 정확도 >= 70%: 성숙한 모델 → 기존 70% 기본값
-                                        bool isModelMature = _pumpSpikeAccuracy >= 0.70;
-                                        float baseThreshold = isModelMature
-                                            ? ((needsReverse || _altBullDetector.IsActive) ? 0.75f : 0.70f)
-                                            : 0.55f; // 학습 초기 완화
-                                        // 일일 수익 모드 boost 추가 ($250+=+10%p, $500+=+15%p)
-                                        float spikeThreshold = Math.Min(0.95f, baseThreshold + profitModeAiBoost);
-                                        if (spikePred.Probability < spikeThreshold)
-                                        {
-                                            string modeTag = !isModelMature ? $"학습중(acc={_pumpSpikeAccuracy:P0})"
-                                                : needsReverse ? "리버스"
-                                                : _altBullDetector.IsActive ? "알트불장"
-                                                : profitModeAiBoost > 0 ? "보수모드" : "정상";
-                                            OnStatusLog?.Invoke($"⛔ [SPIKE_FAST] {symbol} Spike모델 {spikePred.Probability:P0} < {spikeThreshold:P0} ({modeTag}) → 스킵");
-                                            lock (_posLock) { _activePositions.Remove(symbol); }
-                                            return;
-                                        }
-                                        OnStatusLog?.Invoke($"✅ [SPIKE_FAST] {symbol} Spike모델 {spikePred.Probability:P0} 통과 (임계값 {spikeThreshold:P0}, acc={_pumpSpikeAccuracy:P0})");
-                                    }
+                                    OnStatusLog?.Invoke($"⛔ [SPIKE_FAST] {symbol} SpikeForecaster 기회 없음 (prob<{_spikeForecaster.MinConfidence:P0}) → 스킵");
+                                    lock (_posLock) { _activePositions.Remove(symbol); }
+                                    return;
                                 }
+                                OnStatusLog?.Invoke($"✅ [SPIKE_FAST] {symbol} SpikeForecaster {spikeForecast.Probability:P0} 통과 " +
+                                                    $"(offset={spikeForecast.OffsetBars}봉 priceOff={spikeForecast.PriceOffsetPct:+0.0;-0.0}%)");
+                                // Note: 1분봉 스파이크는 즉시 진입이 원칙이라 Scheduler 미경유 (offset 거의 0)
                             }
 
                             double rsi = IndicatorCalculator.CalculateRSI(klines.ToList(), 14);
@@ -10793,6 +10942,47 @@ namespace TradingBot
 
             float normalized = Math.Clamp(bbPosition, 0f, 1f);
             return normalized >= 0.40f && normalized <= 0.60f;
+        }
+
+        /// <summary>
+        /// [v5.0] Forecaster 예약 진입용 수량 계산 헬퍼
+        /// 메이저는 Equity 비율, PUMP는 고정 증거금 기반
+        /// </summary>
+        private async Task<decimal> CalculateOrderQuantityAsync(string symbol, decimal price, CancellationToken token)
+        {
+            try
+            {
+                if (price <= 0) return 0m;
+
+                bool isMajor = MajorSymbols.Contains(symbol);
+                decimal marginUsdt = isMajor
+                    ? await GetAdaptiveEntryMarginUsdtAsync(token)
+                    : GetConfiguredPumpMarginUsdt();
+
+                int leverage = 20;
+                decimal quantity = (marginUsdt * leverage) / price;
+
+                // 거래소 step size 반영
+                try
+                {
+                    var exchangeInfo = await _exchangeService.GetExchangeInfoAsync(token);
+                    var symbolData = exchangeInfo?.Symbols.FirstOrDefault(s => s.Name == symbol);
+                    if (symbolData != null)
+                    {
+                        decimal stepSize = symbolData.LotSizeFilter?.StepSize ?? 0.001m;
+                        if (stepSize > 0)
+                            quantity = Math.Floor(quantity / stepSize) * stepSize;
+                    }
+                }
+                catch { }
+
+                return quantity > 0 ? quantity : 0m;
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [SIZE] {symbol} 수량 계산 오류: {ex.Message}");
+                return 0m;
+            }
         }
 
         /// <summary>
