@@ -2258,6 +2258,30 @@ namespace TradingBot
                 _ = ProcessAccountChannelAsync(token); // [Agent 2] 계좌 업데이트 처리 시작
                 _ = ProcessOrderChannelAsync(token);   // [Agent 2] 주문 업데이트 처리 시작
 
+                // [v4.7.1] 초기 학습 미완료 시 백그라운드 자동 시작 (사용자 수동 /train 불필요)
+                // flag 파일 없으면 즉시 다운로드+학습 트리거
+                if (!IsInitialTrainingComplete && !IsInitialTrainingInProgress)
+                {
+                    OnAlert?.Invoke("🚀 [자동초기학습] 봇 시작 → 6개월 데이터 다운로드 + 학습 자동 시작 (백그라운드)");
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            // 30초 대기 (엔진 완전 초기화 보장)
+                            await Task.Delay(TimeSpan.FromSeconds(30), token);
+                            await StartOptionAInitialTrainingAsync(
+                                monthsBack: 6,
+                                topAltCount: 100,
+                                includeSpike1m: true,
+                                token: token);
+                        }
+                        catch (Exception ex)
+                        {
+                            OnAlert?.Invoke($"❌ [자동초기학습] 오류: {ex.Message}");
+                        }
+                    }, token);
+                }
+
                 // [AI 학습 상태 초기화]
                 if (_aiDoubleCheckEntryGate != null)
                 {
