@@ -30,6 +30,9 @@ namespace TradingBot.Services
         public event Action<string>? OnLog;
         public event Action<int, int, string>? OnProgress; // current, total, message
         public event Action<DownloadProgress>? OnDetailedProgress; // [v4.7.3] ETA 계산용 구조화 이벤트
+        // [v4.7.4] 심볼별 "다운로드 완료" 이벤트 (phase = "major" | "alt_5m" | "alt_1m")
+        public event Action<string, string>? OnSymbolReady;
+        public event Action? OnMajorsCompleted; // [v4.7.4] 메이저 4개 모두 완료 시 1회 발생
 
         public class DownloadProgress
         {
@@ -40,6 +43,10 @@ namespace TradingBot.Services
             public TimeSpan Elapsed { get; set; }
             public TimeSpan? EstimatedRemaining { get; set; }
             public double PercentComplete => Total > 0 ? (double)Current / Total * 100d : 0d;
+            public string Phase { get; set; } = "";             // "major" | "alt_5m" | "alt_1m"
+            public int MajorReady { get; set; }                  // 완료된 메이저 수 (0~4)
+            public int AltReady { get; set; }                    // 완료된 알트 수
+            public int AltTotal { get; set; }                    // 총 알트 수
         }
 
         public HistoricalDataDownloader(DbManager dbManager, DatabaseService databaseService)
@@ -180,7 +187,11 @@ namespace TradingBot.Services
         }
 
         /// <summary>
-        /// 전체 일괄 다운로드: 메이저 + PUMP 알트 (병렬화 + ETA 리포트)
+        /// 전체 일괄 다운로드 — 단계적 처리
+        /// Phase 1: 메이저 4개 병렬 (즉시 활성화 목적)
+        /// Phase 2: 알트 5분봉 병렬 gate(6)
+        /// Phase 3: 알트 1분봉 병렬 gate(6)
+        /// ETA는 최근 10개 심볼 소요시간의 EMA 기반 (누적평균 대비 안정적)
         /// </summary>
         public async Task<DownloadSummary> DownloadAllAsync(
             int monthsBack,
@@ -189,7 +200,6 @@ namespace TradingBot.Services
             CancellationToken token)
         {
             var summary = new DownloadSummary { StartTime = DateTime.Now };
-            var startedAt = DateTime.UtcNow;
 
             var majors = new List<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
 
@@ -197,23 +207,44 @@ namespace TradingBot.Services
             var alts = await GetTopAltSymbolsAsync(topAltCount, token);
             OnLog?.Invoke($"📡 [HistoricalDownloader] 알트 {alts.Count}개 확보");
 
-            var allSymbols = majors.Concat(alts).ToList();
-            int total = allSymbols.Count + (includeOneMinuteForSpike ? Math.Min(50, alts.Count) : 0);
+            int altsCount5m = alts.Count;
+            int altsCount1m = includeOneMinuteForSpike ? Math.Min(50, alts.Count) : 0;
+            int total = majors.Count + altsCount5m + altsCount1m;
+
+            // ── ETA: 최근 10개 심볼 완료 시간을 EMA로 추적 ─────────────────
             int current = 0;
+            int majorReady = 0;
+            int altReady = 0;
+            var recentDurations = new Queue<double>();
+            const int EmaWindow = 10;
+            DateTime lastSymbolTime = DateTime.UtcNow;
+            var etaLock = new object();
 
-            // 공통 병렬 처리 함수 — 심볼 단위 SemaphoreSlim 제한
-            using var gate = new SemaphoreSlim(MaxParallelSymbols, MaxParallelSymbols);
-
-            void ReportProgress(string sym)
+            void ReportProgress(string sym, string phase)
             {
                 int now = Interlocked.Increment(ref current);
-                var elapsed = DateTime.UtcNow - startedAt;
+
                 TimeSpan? eta = null;
-                if (now > 0 && now < total)
+                lock (etaLock)
                 {
-                    double perUnitSec = elapsed.TotalSeconds / now;
-                    eta = TimeSpan.FromSeconds(perUnitSec * (total - now));
+                    var nowUtc = DateTime.UtcNow;
+                    double dt = (nowUtc - lastSymbolTime).TotalSeconds;
+                    lastSymbolTime = nowUtc;
+
+                    // 첫 심볼은 샘플 없음 → 전체 경과시간 기반 대체 추정
+                    recentDurations.Enqueue(dt);
+                    while (recentDurations.Count > EmaWindow) recentDurations.Dequeue();
+
+                    if (now < total && recentDurations.Count > 0)
+                    {
+                        double avgPerSym = recentDurations.Average();
+                        // 병렬 실행 중이면 실제 시간은 1/MaxParallelSymbols 로 줄어듦
+                        double parallelFactor = Math.Min(MaxParallelSymbols, Math.Max(1, total - now));
+                        double effectivePer = avgPerSym / parallelFactor;
+                        eta = TimeSpan.FromSeconds(effectivePer * (total - now));
+                    }
                 }
+
                 OnProgress?.Invoke(now, total, $"{sym} ({now}/{total})");
                 OnDetailedProgress?.Invoke(new DownloadProgress
                 {
@@ -221,14 +252,18 @@ namespace TradingBot.Services
                     Total = total,
                     CurrentSymbol = sym,
                     TotalCandlesSaved = summary.TotalSaved,
-                    Elapsed = elapsed,
-                    EstimatedRemaining = eta
+                    Elapsed = DateTime.Now - summary.StartTime,
+                    EstimatedRemaining = eta,
+                    Phase = phase,
+                    MajorReady = Volatile.Read(ref majorReady),
+                    AltReady = Volatile.Read(ref altReady),
+                    AltTotal = altsCount5m
                 });
             }
 
-            async Task ProcessSymbol(string sym, KlineInterval interval, int months, string label)
+            async Task ProcessSymbol(string sym, KlineInterval interval, int months, string label, string phase, SemaphoreSlim? gate)
             {
-                await gate.WaitAsync(token);
+                if (gate != null) await gate.WaitAsync(token);
                 try
                 {
                     if (token.IsCancellationRequested) return;
@@ -238,6 +273,12 @@ namespace TradingBot.Services
                         summary.SymbolResults[sym + "_" + label] = saved;
                         summary.TotalSaved += saved;
                     }
+
+                    // 심볼 완료 이벤트 (phase별)
+                    OnSymbolReady?.Invoke(sym, phase);
+
+                    if (phase == "major") Interlocked.Increment(ref majorReady);
+                    else if (phase == "alt_5m") Interlocked.Increment(ref altReady);
                 }
                 catch (Exception ex)
                 {
@@ -246,22 +287,57 @@ namespace TradingBot.Services
                 }
                 finally
                 {
-                    ReportProgress(sym);
-                    gate.Release();
+                    ReportProgress(sym, phase);
+                    gate?.Release();
                 }
             }
 
-            // 1) 메이저 + 알트 5분봉 병렬
-            var tasks = allSymbols.Select(sym => ProcessSymbol(sym, KlineInterval.FiveMinutes, monthsBack, "5m")).ToList();
+            // ── Phase 1: 메이저 4개 병렬 (gate 없이 즉시 전개) ──────────────
+            OnLog?.Invoke("🚀 [HistoricalDownloader] Phase 1 — 메이저 4개 다운로드 시작");
+            lock (etaLock) { lastSymbolTime = DateTime.UtcNow; }
+            var majorTasks = majors
+                .Select(sym => ProcessSymbol(sym, KlineInterval.FiveMinutes, monthsBack, "5m", "major", null))
+                .ToList();
+            await Task.WhenAll(majorTasks);
+            OnLog?.Invoke($"✅ [HistoricalDownloader] Phase 1 완료 — 메이저 {majorReady}/4");
+            OnMajorsCompleted?.Invoke();
 
-            // 2) Spike 1분봉 (상위 50 알트)
-            if (includeOneMinuteForSpike)
+            if (token.IsCancellationRequested)
             {
-                tasks.AddRange(alts.Take(50).Select(sym =>
-                    ProcessSymbol(sym, KlineInterval.OneMinute, Math.Min(monthsBack, 1), "1m")));
+                summary.EndTime = DateTime.Now;
+                summary.Duration = summary.EndTime - summary.StartTime;
+                return summary;
             }
 
-            await Task.WhenAll(tasks);
+            // ── Phase 2: 알트 5분봉 병렬 (gate 6) ──────────────────────────
+            OnLog?.Invoke($"🚀 [HistoricalDownloader] Phase 2 — 알트 {altsCount5m}개 5분봉 병렬 다운로드");
+            using (var altGate5m = new SemaphoreSlim(MaxParallelSymbols, MaxParallelSymbols))
+            {
+                var altTasks = alts
+                    .Select(sym => ProcessSymbol(sym, KlineInterval.FiveMinutes, monthsBack, "5m", "alt_5m", altGate5m))
+                    .ToList();
+                await Task.WhenAll(altTasks);
+            }
+            OnLog?.Invoke($"✅ [HistoricalDownloader] Phase 2 완료 — 알트 5m {altReady}/{altsCount5m}");
+
+            if (token.IsCancellationRequested)
+            {
+                summary.EndTime = DateTime.Now;
+                summary.Duration = summary.EndTime - summary.StartTime;
+                return summary;
+            }
+
+            // ── Phase 3: 알트 1분봉 (Spike 모델용, 상위 50) ─────────────────
+            if (includeOneMinuteForSpike && altsCount1m > 0)
+            {
+                OnLog?.Invoke($"🚀 [HistoricalDownloader] Phase 3 — 알트 {altsCount1m}개 1분봉 병렬 다운로드");
+                using var altGate1m = new SemaphoreSlim(MaxParallelSymbols, MaxParallelSymbols);
+                var spikeTasks = alts.Take(50)
+                    .Select(sym => ProcessSymbol(sym, KlineInterval.OneMinute, Math.Min(monthsBack, 1), "1m", "alt_1m", altGate1m))
+                    .ToList();
+                await Task.WhenAll(spikeTasks);
+                OnLog?.Invoke($"✅ [HistoricalDownloader] Phase 3 완료");
+            }
 
             summary.EndTime = DateTime.Now;
             summary.Duration = summary.EndTime - summary.StartTime;

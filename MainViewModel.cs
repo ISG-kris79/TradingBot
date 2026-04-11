@@ -240,6 +240,21 @@ namespace TradingBot.ViewModels
             set { _initialTrainingProgressPercent = value; OnPropertyChanged(); }
         }
 
+        // [v4.7.4] 메이저/알트 단계별 상태
+        private string _initialTrainingMajorText = "메이저 0/4";
+        public string InitialTrainingMajorText
+        {
+            get => _initialTrainingMajorText;
+            set { _initialTrainingMajorText = value; OnPropertyChanged(); }
+        }
+
+        private string _initialTrainingAltText = "알트 0/0";
+        public string InitialTrainingAltText
+        {
+            get => _initialTrainingAltText;
+            set { _initialTrainingAltText = value; OnPropertyChanged(); }
+        }
+
         private DateTime _initialTrainingStartTime;
         private DispatcherTimer? _initialTrainingTimer;
 
@@ -2239,7 +2254,26 @@ namespace TradingBot.ViewModels
                 {
                     InitialTrainingEtaText = progress.Current >= progress.Total ? "ETA 완료" : "ETA 계산 중...";
                 }
-                InitialTrainingStageText = $"📥 {progress.CurrentSymbol} ({progress.Current}/{progress.Total}, {progress.PercentComplete:F0}%, {progress.TotalCandlesSaved:N0}봉 저장)";
+
+                // [v4.7.4] 메이저/알트 분리 표시
+                InitialTrainingMajorText = $"메이저 {progress.MajorReady}/4";
+                InitialTrainingAltText = progress.AltTotal > 0
+                    ? $"알트 {progress.AltReady}/{progress.AltTotal}"
+                    : "알트 대기";
+
+                string phaseEmoji = progress.Phase switch
+                {
+                    "major" => "🎯",
+                    "alt_5m" => "📊",
+                    "alt_1m" => "⚡",
+                    _ => "📥"
+                };
+                InitialTrainingStageText = $"{phaseEmoji} {progress.CurrentSymbol} ({progress.Current}/{progress.Total}, {progress.PercentComplete:F0}%, {progress.TotalCandlesSaved:N0}봉)";
+            });
+            // [v4.7.4] 심볼 개별 학습 완료 → 상태 텍스트 갱신
+            _engine.OnSymbolTrained += sym => RunOnUI(() =>
+            {
+                InitialTrainingStatusText = $"✅ 학습 진행 중 — {_engine.TrainedSymbolCount}개 심볼 진입 활성화";
             });
 
             // 초기 상태 반영: 학습 미완료면 배너 즉시 표시

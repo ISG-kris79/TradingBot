@@ -1090,6 +1090,13 @@
                             <TextBlock Text="{Binding InitialTrainingStageText}"
                                        Foreground="#E5E7EB" FontSize="11" Margin="0,3,0,0"
                                        TextTrimming="CharacterEllipsis"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                                <TextBlock Text="{Binding InitialTrainingMajorText}"
+                                           Foreground="#10B981" FontSize="10" FontWeight="Bold"
+                                           Margin="0,0,10,0"/>
+                                <TextBlock Text="{Binding InitialTrainingAltText}"
+                                           Foreground="#60A5FA" FontSize="10" FontWeight="Bold"/>
+                            </StackPanel>
                         </StackPanel>
                         <Border Grid.Column="2"
                                 Background="#111827"

@@ -15,6 +15,43 @@
 
  - 없음
 
+## [4.7.4] - 2026-04-11
+
+### Added
+
+- **AI 기반 횡보 보유 청산 (옵션 A, 하드코딩 없음)**
+  - `PositionMonitorService`에 `ProfitRegressorService` 주입 (`SetProfitRegressor`)
+  - 보유 30분 이상 + 5분 주기로 `PredictProfit` 재호출
+  - 피처: RSI/BB/ATR/VolRatio/Momentum/MLConfidence (진입 시점과 동일 구성)
+  - 모델이 예측한 향후 기대수익률 < 0 → **ML의 손익분기선 기준**으로 청산 ("AI Stagnant Re-prediction")
+  - 임계값/시간 하드코딩 전혀 없음. 5분 간격은 ETA가 아닌 단순 throttle
+  - 솔라나 2일 횡보 같은 케이스: 모델이 기대손실 전환 시 자동 청산
+
+- **심볼별 학습 완료 게이팅 (단계적 진입 허용)**
+  - 기존: 단일 `IsInitialTrainingComplete` → 전체 154 심볼 완료까지 모든 진입 차단
+  - 신규: `ConcurrentDictionary<string,bool> _trainedSymbols` — 학습 완료된 심볼만 진입 허용
+  - **메이저 4개 다운로드 완료 즉시 ML 학습 → 메이저 4개 진입 활성화** (알트는 백그라운드 계속)
+  - 알트 5분봉 완료 → 해당 심볼 즉시 허용
+  - 전체 완료 시 기존 `IsInitialTrainingComplete = true` (하위 호환)
+  - `OnSymbolTrained` 이벤트로 VM 실시간 갱신
+
+- **메이저 우선 다운로드 (Phase 1/2/3 분리)**
+  - Phase 1: 메이저 4개 병렬 (gate 없이 즉시 전개) — 수 초 내 완료 목표
+  - Phase 2: 알트 5분봉 병렬 gate(6)
+  - Phase 3: 알트 1분봉 (Spike) 병렬 gate(6)
+  - `OnMajorsCompleted` 이벤트 → TradingEngine에서 메이저 ML 학습 즉시 트리거
+
+- **배너에 메이저/알트 분리 표시 + 단계별 진행률**
+  - `메이저 0/4` · `알트 0/100` 두 줄 표시
+  - 스테이지 이모지로 현재 Phase 표시 (🎯 major / 📊 alt_5m / ⚡ alt_1m)
+
+### Fixed
+
+- **ETA가 계속 늘어나던 문제 (v4.7.3)**
+  - 기존: 누적 평균 `elapsed / current × remaining` → 빠른 심볼부터 완료되면 평균이 올라가며 ETA 증가
+  - 수정: 최근 10개 심볼 완료 간격의 EMA 기반 + 병렬도(6) 반영
+  - Phase 1 메이저는 ETA 계산에서 의미 있는 가중치를 가지지 않고, Phase 2 시작 후 ETA가 안정화
+
 ## [4.7.3] - 2026-04-11
 
 ### Fixed (Critical Performance)

@@ -823,6 +823,7 @@ namespace TradingBot
             _exitOptimizer.TryLoadModel();
             _positionMonitor.SetExitAIModels(_regimeClassifier, _exitOptimizer);
             _positionMonitor.SetMacdCrossService(_macdCrossService);
+            _positionMonitor.SetProfitRegressor(_profitRegressor); // [v4.7.4] 횡보 보유 청산용
             StartModelRetrainTimer(); // [v3.8.1] 전체 모델 자동 재학습
 
             _riskManager.OnTripped += (reason) =>
@@ -6556,6 +6557,14 @@ namespace TradingBot
         // [v4.7.3] 구조화된 다운로드 진행률 (ETA 계산용)
         public event Action<TradingBot.Services.HistoricalDataDownloader.DownloadProgress>? OnInitialTrainingDownloadProgress;
 
+        // [v4.7.4] 심볼별 학습 완료 추적 — 메이저 완료 시 즉시 진입 허용
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _trainedSymbols
+            = new(StringComparer.OrdinalIgnoreCase);
+        public bool IsSymbolTrained(string symbol) =>
+            IsInitialTrainingComplete || _trainedSymbols.ContainsKey(symbol);
+        public int TrainedSymbolCount => _trainedSymbols.Count;
+        public event Action<string>? OnSymbolTrained;
+
         /// <summary>
         /// [v4.7.0] 진입 가능 여부 — IsInitialTrainingComplete 시에만 진입 허용
         /// 봇 자체는 시작 가능하지만 진입 라우터에서 차단
@@ -6819,7 +6828,53 @@ namespace TradingBot
                 // [v4.7.3] 구조화 진행률을 VM으로 전달 (ETA 계산용)
                 downloader.OnDetailedProgress += progress => OnInitialTrainingDownloadProgress?.Invoke(progress);
 
-                // 1단계: 다운로드
+                // [v4.7.4] 심볼별 다운로드 완료 이벤트 — 즉시 DB 데이터 사용 가능
+                downloader.OnSymbolReady += (sym, phase) =>
+                {
+                    // 5분봉 데이터가 준비되면 일단 "데이터 준비 완료" 표시 (실제 모델 학습은 아래서)
+                    if (phase == "major" || phase == "alt_5m")
+                    {
+                        // Phase 2 단계에서는 메이저 모델이 이미 학습 완료 상태이므로
+                        // 알트도 즉시 진입 허용 가능. 단, 아래 TrainAllModelsAsync가 끝나야 ML 추론이 정확해짐
+                        // Phase 1은 아래 OnMajorsCompleted 블록에서 일괄 처리
+                        if (phase == "alt_5m" && IsInitialTrainingComplete == false
+                            && _trainedSymbols.ContainsKey("BTCUSDT")) // 메이저 학습 완료 후에만
+                        {
+                            if (_trainedSymbols.TryAdd(sym, true))
+                                OnSymbolTrained?.Invoke(sym);
+                        }
+                    }
+                };
+
+                // [v4.7.4] 메이저 4개 다운로드 완료 → 즉시 ML 학습 → 메이저 진입 허용
+                var majorTrainedTcs = new TaskCompletionSource<bool>();
+                downloader.OnMajorsCompleted += () =>
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            OnInitialTrainingProgress?.Invoke("🧠 [초기학습] 메이저 학습 중 — 완료 후 메이저 진입 즉시 허용");
+                            await TrainAllModelsAsync(token);
+
+                            // 메이저 4개를 trained 셋에 등록
+                            foreach (var m in new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" })
+                            {
+                                if (_trainedSymbols.TryAdd(m, true))
+                                    OnSymbolTrained?.Invoke(m);
+                            }
+                            OnInitialTrainingProgress?.Invoke("✅ [초기학습] 메이저 4개 진입 활성화 — 알트는 백그라운드 계속 학습");
+                            majorTrainedTcs.TrySetResult(true);
+                        }
+                        catch (Exception ex)
+                        {
+                            OnInitialTrainingProgress?.Invoke($"⚠️ [초기학습] 메이저 학습 오류: {ex.Message}");
+                            majorTrainedTcs.TrySetResult(false);
+                        }
+                    }, token);
+                };
+
+                // 1단계: 다운로드 (Phase 1 완료 시 메이저 학습이 병행 실행됨)
                 OnInitialTrainingProgress?.Invoke($"🚀 [초기학습] 1단계 — 과거 {monthsBack}개월 캔들 다운로드 시작 (메이저 4 + 알트 {topAltCount})");
                 var summary = await downloader.DownloadAllAsync(monthsBack, topAltCount, includeOneMinuteForSpike, token);
                 OnInitialTrainingProgress?.Invoke($"✅ [초기학습] 1단계 완료 — {summary.TotalSaved:N0}봉 저장 ({summary.Duration.TotalMinutes:F1}분)");
@@ -6827,10 +6882,22 @@ namespace TradingBot
                 if (token.IsCancellationRequested)
                     return (false, "사용자 취소");
 
-                // 2단계: 학습 (TrainAllModelsAsync 재사용)
-                OnInitialTrainingProgress?.Invoke("🧠 [초기학습] 2단계 — ML 모델 4개 학습 시작");
+                // 메이저 학습이 아직 안 끝났다면 대기
+                await majorTrainedTcs.Task;
+
+                // 2단계: 최종 학습 (전체 심볼 반영)
+                OnInitialTrainingProgress?.Invoke("🧠 [초기학습] 2단계 — 전체 심볼 포함 최종 학습 시작");
                 await TrainAllModelsAsync(token);
                 OnInitialTrainingProgress?.Invoke("✅ [초기학습] 2단계 완료");
+
+                // 모든 알트를 trained 셋에 등록
+                foreach (var sym in summary.SymbolResults.Keys
+                    .Select(k => k.Split('_')[0])
+                    .Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (_trainedSymbols.TryAdd(sym, true))
+                        OnSymbolTrained?.Invoke(sym);
+                }
 
                 // 3단계: 검증 — 정확도 70%+ 달성?
                 bool tradeOk = _tradeSignalAccuracy >= InitialTrainingMinAccuracy;
@@ -8007,12 +8074,13 @@ namespace TradingBot
             EntryLog("START", "INFO", $"price={currentPrice:F4} source={signalSource}");
 
             // ═══════════════════════════════════════════════════════════════
-            // [v4.7.0] ROUTER 0. 초기 학습 완료 검증 — 미완료 시 모든 진입 차단
+            // [v4.7.4] ROUTER 0. 심볼별 학습 완료 검증 — 학습된 심볼만 진입 허용
+            // 메이저 4개 학습 끝나면 즉시 메이저 진입 가능. 알트는 학습 순차 완료
             // ═══════════════════════════════════════════════════════════════
-            if (!IsInitialTrainingComplete)
+            if (!IsSymbolTrained(symbol))
             {
-                EntryLog("INITIAL_TRAINING", "BLOCK", "초기 학습 미완료 — 백그라운드 자동 학습 진행 중");
-                OnStatusLog?.Invoke($"⛔ [초기학습 진행중] {symbol} 진입 대기 — 백그라운드 학습 완료 시 자동 해제");
+                EntryLog("INITIAL_TRAINING", "BLOCK", $"심볼 {symbol} 학습 미완료 — 대기 중");
+                OnStatusLog?.Invoke($"⛔ [심볼학습 대기] {symbol} 진입 대기 — 학습 완료 후 자동 허용");
                 return;
             }
 

@@ -139,6 +139,15 @@ namespace TradingBot.Services
             _aiPredictor = aiPredictor;
         }
 
+        // [v4.7.4] ProfitRegressor 주입 — 횡보 보유 포지션 AI 재예측 청산
+        private TradingBot.Services.ProfitRegressorService? _profitRegressor;
+        // 심볼별 마지막 재예측 시간 (5분 간격으로 호출)
+        private readonly ConcurrentDictionary<string, DateTime> _lastStagnantCheck = new();
+        public void SetProfitRegressor(TradingBot.Services.ProfitRegressorService regressor)
+        {
+            _profitRegressor = regressor;
+        }
+
         public bool IsCloseInProgress(string symbol)
         {
             return !string.IsNullOrWhiteSpace(symbol)
@@ -1605,6 +1614,105 @@ namespace TradingBot.Services
                     // [v3.0.7] FundingCost Exit / TimeOut Exit 제거
                     // 단타에서 펀딩비(2시간)는 무의미, 메이저코인 시간초과 청산도 불필요
                     // 손절/익절/트레일링 스탑이 포지션 관리를 담당
+
+                    // ═══════════════════════════════════════════════
+                    // [v4.7.4] AI 기반 횡보 보유 재예측 청산
+                    // 5분 주기로 ProfitRegressor를 재호출.
+                    // 모델이 예측한 기대수익률이 음수 → 이 포지션은 더 이상 수익 전망이 없음 → 청산
+                    // 하드코딩 시간/ATR 임계값 사용 안 함 (AI-only 원칙)
+                    // 30분 미만 신규 포지션은 제외 (체결 직후 변동성 흔들림 방지)
+                    // ═══════════════════════════════════════════════
+                    if (_profitRegressor != null && _profitRegressor.IsModelReady
+                        && (DateTime.Now - positionEntryTime).TotalMinutes >= 30)
+                    {
+                        var lastCheck = _lastStagnantCheck.GetValueOrDefault(symbol, DateTime.MinValue);
+                        if ((DateTime.Now - lastCheck).TotalMinutes >= 5)
+                        {
+                            _lastStagnantCheck[symbol] = DateTime.Now;
+
+                            try
+                            {
+                                if (_marketDataManager.KlineCache.TryGetValue(symbol, out var cache) && cache.Count >= 30)
+                                {
+                                    var cList = cache.ToList();
+                                    var latest = cList[^1];
+
+                                    // 피처: 진입 시와 동일한 구성
+                                    double avgVol = cList.TakeLast(20).Average(k => (double)k.Volume);
+                                    float volRatio = avgVol > 0 ? (float)((double)latest.Volume / avgVol) : 1.0f;
+
+                                    // RSI 14
+                                    double gain = 0, loss = 0;
+                                    for (int i = cList.Count - 14; i < cList.Count; i++)
+                                    {
+                                        if (i <= 0) continue;
+                                        double diff = (double)(cList[i].ClosePrice - cList[i - 1].ClosePrice);
+                                        if (diff > 0) gain += diff; else loss += -diff;
+                                    }
+                                    double avgGain = gain / 14.0, avgLoss = loss / 14.0;
+                                    float rsi = (avgLoss == 0) ? 70f : (float)(100.0 - (100.0 / (1.0 + avgGain / avgLoss)));
+
+                                    // ATR 14
+                                    double tr = 0;
+                                    for (int i = cList.Count - 14; i < cList.Count; i++)
+                                    {
+                                        if (i <= 0) continue;
+                                        double h = (double)cList[i].HighPrice;
+                                        double l = (double)cList[i].LowPrice;
+                                        double pc = (double)cList[i - 1].ClosePrice;
+                                        tr += Math.Max(h - l, Math.Max(Math.Abs(h - pc), Math.Abs(l - pc)));
+                                    }
+                                    float atr = (float)(tr / 14.0);
+
+                                    // BB Position (0~1 근사: 최근 20봉 min/max 내 상대 위치)
+                                    double minC = (double)cList.TakeLast(20).Min(k => k.ClosePrice);
+                                    double maxC = (double)cList.TakeLast(20).Max(k => k.ClosePrice);
+                                    float bbPos = (maxC - minC) > 0
+                                        ? (float)(((double)latest.ClosePrice - minC) / (maxC - minC))
+                                        : 0.5f;
+
+                                    // Momentum: 최근 5봉 수익률
+                                    float momentum = cList.Count >= 6 && cList[^6].ClosePrice > 0
+                                        ? (float)(((double)latest.ClosePrice / (double)cList[^6].ClosePrice - 1.0) * 100.0)
+                                        : 0f;
+
+                                    // ML confidence: 현재 활성 포지션의 AiScore 사용 (0~1 정규화)
+                                    float mlConf = 0.5f;
+                                    lock (_posLock)
+                                    {
+                                        if (_activePositions.TryGetValue(symbol, out var pInfo))
+                                        {
+                                            mlConf = pInfo.AiScore > 1f ? pInfo.AiScore / 100f : pInfo.AiScore;
+                                            if (mlConf <= 0 || mlConf > 1) mlConf = 0.5f;
+                                        }
+                                    }
+
+                                    float? predictedFutureProfitPct = _profitRegressor.PredictProfit(
+                                        rsi, bbPos, atr, volRatio, momentum, mlConf);
+
+                                    if (predictedFutureProfitPct.HasValue)
+                                    {
+                                        float p = predictedFutureProfitPct.Value;
+                                        OnLog?.Invoke($"🤖 [AI 재예측] {symbol} 기대수익률={p:F2}% (현재 ROE={currentROE:F2}%, 보유 {(DateTime.Now - positionEntryTime).TotalHours:F1}h)");
+
+                                        // 모델이 "향후 손실 전망"으로 판단하면 청산
+                                        // 0% 기준은 ML 출력의 손익분기선 — 하드코딩된 필터가 아님
+                                        if (p < 0)
+                                        {
+                                            OnAlert?.Invoke($"🤖 [AI 횡보 청산] {symbol} 모델 예측 {p:F2}% (기대손실) → 청산");
+                                            OnLog?.Invoke($"[AI_STAGNANT_EXIT] {symbol} predicted={p:F2}% holding={(DateTime.Now - positionEntryTime).TotalHours:F1}h");
+                                            await ExecuteMarketClose(symbol, $"AI Stagnant Re-prediction ({p:F2}%)", token);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                OnLog?.Invoke($"⚠️ [AI 재예측] {symbol} 오류: {ex.Message}");
+                            }
+                        }
+                    }
 
                     if (currentROE >= profitRunTriggerRoe)
                     {
