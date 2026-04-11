@@ -1302,6 +1302,21 @@ namespace TradingBot
                         OnStatusLog?.Invoke($"✅ [동적학습등록] {symbol}");
                     }
 
+                    // [v5.0.1] Gate 1: "이미 너무 올랐음" 차단 (고점 진입 방지)
+                    // 2026-04-12 분석: TRUUSDT/AIOT/TAG/SKYAI 전부 여기서 걸러졌어야 함
+                    if (decision == "LONG" && _marketDataManager.KlineCache.TryGetValue(symbol, out var gate1Cache))
+                    {
+                        List<IBinanceKline> gate1Candles;
+                        lock (gate1Cache) { gate1Candles = gate1Cache.ToList(); }
+
+                        if (IsAlreadyPumpedRecently(gate1Candles, price, out string gate1Reason))
+                        {
+                            OnStatusLog?.Invoke($"⛔ [GATE1] {symbol} 고점 진입 차단: {gate1Reason} → Gate2 지연 예약");
+                            ScheduleGate2Reevaluation(symbol, decision, "PUMP");
+                            return;  // 즉시 진입 차단, 지연 진입 예약됨
+                        }
+                    }
+
                     // [v5.0] 예측형 진입: PumpScan 후보 → PumpForecaster 예측 → Scheduler 등록
                     // 기존 skipAiGateCheck=true 즉시 Market 진입 로직 제거
                     if (_pumpForecaster.IsModelLoaded && _entryScheduler != null
@@ -7853,6 +7868,22 @@ namespace TradingBot
                                 return;
                             }
 
+                            // [v5.0.1] Gate 1: 5분봉 기준 "이미 너무 올랐음" 차단
+                            // TRUUSDT/AIOT/TAG/SKYAI 는 SPIKE_FAST 경로로 진입했음
+                            if (_marketDataManager.KlineCache.TryGetValue(symbol, out var spkGate1Cache))
+                            {
+                                List<IBinanceKline> spkGate1Candles;
+                                lock (spkGate1Cache) { spkGate1Candles = spkGate1Cache.ToList(); }
+
+                                if (IsAlreadyPumpedRecently(spkGate1Candles, currentPrice, out string spkGate1Reason))
+                                {
+                                    OnStatusLog?.Invoke($"⛔ [SPIKE_FAST] {symbol} Gate1 차단: {spkGate1Reason} → Gate2 지연 예약");
+                                    lock (_posLock) { _activePositions.Remove(symbol); }
+                                    ScheduleGate2Reevaluation(symbol, "LONG", "SPIKE");
+                                    return;
+                                }
+                            }
+
                             // [v5.0] SpikeForecaster (1분봉 학습+추론 일치) — B1 버그 수정
                             // 기존: PumpSignalClassifier.Spike (5분봉 학습 + 1분봉 추론 = 스케일 불일치)
                             // 신규: SpikeForecaster (1분봉 학습 + 1분봉 추론)
@@ -10983,6 +11014,237 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"⚠️ [SIZE] {symbol} 수량 계산 오류: {ex.Message}");
                 return 0m;
             }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // [v5.0.1] Gate 1 + Gate 2 — 고점 진입 차단 + 지연 진입
+        // 2026-04-12 DB 분석: TRUUSDT -41%, AIOTUSDT -33%, TAGUSDT -32%, SKYAIUSDT -28%
+        // 공통 패턴: 진입 전 30분간 +5~14% 이미 올라있거나, 직전 봉 거대 음봉/긴 윗꼬리
+        // 해결: Gate 1 으로 차단 → 10분 후 Gate 2 (pullback 반등) 확인 → 지연 진입
+        // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>지연 진입 관리: symbol → (decision, source, registeredAt)</summary>
+        private readonly ConcurrentDictionary<string, (string decision, string source, DateTime regAt)> _pendingGate2 = new();
+
+        /// <summary>
+        /// [v5.0.1] Gate 1: "이미 너무 올랐음" 차단
+        /// 30분 누적 +8% 이상 / 고점 대비 2~5% 조정 중 / 직전봉 거대 음봉 or 긴 윗꼬리
+        /// </summary>
+        private bool IsAlreadyPumpedRecently(List<IBinanceKline> candles5m, decimal currentPrice, out string reason)
+        {
+            reason = string.Empty;
+            if (candles5m == null || candles5m.Count < 7 || currentPrice <= 0) return false;
+
+            // [Check 1] 최근 6봉(30분) 누적 상승률 > 8% → 너무 늦음
+            decimal close30Ago = candles5m[candles5m.Count - 7].ClosePrice;
+            if (close30Ago > 0)
+            {
+                float runUpPct = (float)((currentPrice - close30Ago) / close30Ago * 100);
+                if (runUpPct > 8.0f)
+                {
+                    reason = $"already_pumped 30m={runUpPct:F1}% > 8%";
+                    return true;
+                }
+            }
+
+            // [Check 2] 최근 6봉 고점에서 2~5% 조정 진행 중 (피크 후 하락 시작)
+            decimal recent6High = decimal.MinValue;
+            for (int i = Math.Max(0, candles5m.Count - 6); i < candles5m.Count; i++)
+                if (candles5m[i].HighPrice > recent6High) recent6High = candles5m[i].HighPrice;
+            if (recent6High > 0)
+            {
+                float pullbackFromHigh = (float)((recent6High - currentPrice) / recent6High * 100);
+                if (pullbackFromHigh > 2.0f && pullbackFromHigh < 5.0f)
+                {
+                    reason = $"post_peak_falling highPullback={pullbackFromHigh:F1}%";
+                    return true;
+                }
+            }
+
+            // [Check 3] 직전 봉이 긴 윗꼬리 or 거대 음봉
+            if (candles5m.Count >= 2)
+            {
+                var prev = candles5m[candles5m.Count - 2];
+                decimal prevRange = prev.HighPrice - prev.LowPrice;
+                if (prevRange > 0 && prev.OpenPrice > 0)
+                {
+                    // 긴 윗꼬리 체크 (range 대비 upperWick > 60%)
+                    decimal bodyMax = Math.Max(prev.OpenPrice, prev.ClosePrice);
+                    decimal upperWick = prev.HighPrice - bodyMax;
+                    float upperWickRatio = (float)(upperWick / prevRange);
+                    if (upperWickRatio > 0.60f)
+                    {
+                        reason = $"long_upper_wick ratio={upperWickRatio:P0}";
+                        return true;
+                    }
+
+                    // 거대 음봉 체크 (range 4%+ AND close < open)
+                    float rangePct = (float)(prevRange / prev.OpenPrice * 100);
+                    if (rangePct > 4.0f && prev.ClosePrice < prev.OpenPrice)
+                    {
+                        reason = $"giant_bearish_candle range={rangePct:F1}%";
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// [v5.0.1] Gate 2: "피크 후 pullback 반등 완료" 지연 진입 자리 탐지
+        /// 최근 8봉에서 피크 찾고, 2~6봉 지났고, 2~5% 조정 완료,
+        /// Higher Low 확인, 현재 양봉 + 거래량 회복 → 진짜 반등 자리
+        /// </summary>
+        private bool IsPullbackRecoveryEntry(List<IBinanceKline> candles5m, decimal currentPrice, out string reason)
+        {
+            reason = string.Empty;
+            if (candles5m == null || candles5m.Count < 8 || currentPrice <= 0) return false;
+
+            // [1] 최근 8봉 내 피크 위치 찾기 (최근 2봉 제외)
+            int peakIdx = -1;
+            decimal peakHigh = decimal.MinValue;
+            int start = candles5m.Count - 8;
+            for (int i = start; i < candles5m.Count - 2; i++)
+            {
+                if (candles5m[i].HighPrice > peakHigh)
+                {
+                    peakHigh = candles5m[i].HighPrice;
+                    peakIdx = i;
+                }
+            }
+            if (peakIdx < 0 || peakHigh <= 0)
+            {
+                reason = "no_peak_found";
+                return false;
+            }
+
+            // [2] 피크 이후 2~6봉 경과 (너무 가까우면 아직 하락, 너무 멀면 재진입 아님)
+            int barsSincePeak = candles5m.Count - 1 - peakIdx;
+            if (barsSincePeak < 2 || barsSincePeak > 6)
+            {
+                reason = $"barsSincePeak={barsSincePeak} (not in 2~6)";
+                return false;
+            }
+
+            // [3] 피크 대비 -2~5% 조정
+            float pullbackPct = (float)((peakHigh - currentPrice) / peakHigh * 100);
+            if (pullbackPct < 2.0f || pullbackPct > 5.0f)
+            {
+                reason = $"pullback={pullbackPct:F1}% (not 2~5%)";
+                return false;
+            }
+
+            // [4] Higher Low 확인 (현재 봉 저점 > 피크 이후 최저 저점)
+            decimal lowestAfterPeak = decimal.MaxValue;
+            for (int i = peakIdx + 1; i < candles5m.Count - 1; i++)
+                if (candles5m[i].LowPrice < lowestAfterPeak) lowestAfterPeak = candles5m[i].LowPrice;
+            var currentBar = candles5m[candles5m.Count - 1];
+            if (currentBar.LowPrice <= lowestAfterPeak)
+            {
+                reason = "lower_low (추가 하락 진행)";
+                return false;
+            }
+
+            // [5] 현재 봉 양봉 (반등 확인)
+            if (currentBar.ClosePrice <= currentBar.OpenPrice)
+            {
+                reason = "current_bar_bearish";
+                return false;
+            }
+
+            // [6] 거래량 회복 — 피크 시점 평균 대비 80%+
+            double avgVolAtPeak = 0;
+            int cnt = 0;
+            for (int i = peakIdx; i <= peakIdx + 2 && i < candles5m.Count; i++)
+            {
+                avgVolAtPeak += (double)candles5m[i].Volume;
+                cnt++;
+            }
+            if (cnt > 0) avgVolAtPeak /= cnt;
+            if (avgVolAtPeak > 0 && (double)currentBar.Volume < avgVolAtPeak * 0.8)
+            {
+                reason = $"vol_weak current={(double)currentBar.Volume:F0} vs peakAvg={avgVolAtPeak:F0}";
+                return false;
+            }
+
+            reason = $"recovery_confirmed peak={peakHigh} pullback={pullbackPct:F1}% barsSince={barsSincePeak}";
+            return true;
+        }
+
+        /// <summary>
+        /// [v5.0.1] Gate 1 차단 후 10분 지연 재평가 예약.
+        /// 주기적으로 Gate 2 체크 → 통과 시 ExecuteAutoOrder 호출.
+        /// 15분 내 기회 없으면 자동 만료.
+        /// </summary>
+        private void ScheduleGate2Reevaluation(string symbol, string decision, string signalSource)
+        {
+            // 중복 예약 방지
+            if (!_pendingGate2.TryAdd(symbol, (decision, signalSource, DateTime.Now)))
+            {
+                return;
+            }
+
+            OnStatusLog?.Invoke($"⏳ [GATE2] {symbol} {decision} 지연 진입 예약 (Gate 1 차단 후 pullback 반등 대기)");
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    // 최대 15분 동안 1분마다 Gate 2 체크
+                    for (int attempt = 0; attempt < 15; attempt++)
+                    {
+                        await Task.Delay(TimeSpan.FromMinutes(1), _cts?.Token ?? CancellationToken.None);
+                        if (_cts?.IsCancellationRequested ?? false) break;
+
+                        // 이미 포지션 있으면 취소
+                        if (_activePositions.ContainsKey(symbol))
+                        {
+                            OnStatusLog?.Invoke($"⏹️ [GATE2] {symbol} 이미 포지션 보유 → 지연 진입 취소");
+                            _pendingGate2.TryRemove(symbol, out _);
+                            return;
+                        }
+
+                        // 현재 캔들 + 가격 조회
+                        if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var cache))
+                            continue;
+                        if (!_marketDataManager.TickerCache.TryGetValue(symbol, out var ticker) || ticker.LastPrice <= 0)
+                            continue;
+
+                        List<IBinanceKline> candles;
+                        lock (cache) { candles = cache.ToList(); }
+
+                        // Gate 2 체크
+                        if (IsPullbackRecoveryEntry(candles, ticker.LastPrice, out string gate2Reason))
+                        {
+                            OnStatusLog?.Invoke(
+                                $"✅ [GATE2] {symbol} 지연 진입 조건 충족 → 진입 실행 ({gate2Reason})");
+                            _pendingGate2.TryRemove(symbol, out _);
+                            await ExecuteAutoOrder(symbol, decision, ticker.LastPrice,
+                                _cts.Token, signalSource + "_GATE2", skipAiGateCheck: true);
+                            return;
+                        }
+
+                        // Gate 1 재체크 — 상황이 더 나빠졌으면 즉시 포기
+                        if (IsAlreadyPumpedRecently(candles, ticker.LastPrice, out string gate1Reason))
+                        {
+                            // 여전히 고점권 → 대기 지속
+                            continue;
+                        }
+                    }
+
+                    // 15분 만료
+                    if (_pendingGate2.TryRemove(symbol, out _))
+                    {
+                        OnStatusLog?.Invoke($"⏰ [GATE2] {symbol} 15분 내 pullback 반등 없음 → 지연 진입 포기");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _pendingGate2.TryRemove(symbol, out _);
+                    OnStatusLog?.Invoke($"⚠️ [GATE2] {symbol} 지연 진입 예외: {ex.Message}");
+                }
+            });
         }
 
         /// <summary>

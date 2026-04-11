@@ -15,6 +15,57 @@
 
  - 없음
 
+## [5.0.1] - 2026-04-12
+
+### Added (Gate 1 + Gate 2 — 고점 진입 차단 + 지연 반등 진입)
+
+2026-04-12 UserId=1 DB 분석 기반:
+- **TRUUSDT -41%** (진입 1분, 01:04 진입 vs 04:01 +170% 성공 동일 심볼)
+- **AIOTUSDT -33%** (진입 1분, 진입 전 30분 +14% 이미 상승)
+- **TAGUSDT -32%** (진입 1분, 직전봉 -14.75% 덤핑 중)
+- **SKYAIUSDT -28%** (진입 1분, 피크 대비 -5% 조정 시작)
+
+4건 총 -$188.30, 전부 "이미 너무 올랐음" 패턴.
+
+#### Gate 1 — `IsAlreadyPumpedRecently` (TradingEngine.cs)
+
+**즉시 진입 차단**:
+- [Check 1] 최근 6봉(30분) 누적 상승률 > **8%** → 고점 매수 위험
+- [Check 2] 최근 6봉 고점 대비 **2~5% 조정 진행 중** → 피크 후 하락
+- [Check 3] 직전 봉이 **긴 윗꼬리 60%+** OR **거대 음봉 (range 4%+)** → 매도 압력
+
+#### Gate 2 — `IsPullbackRecoveryEntry`
+
+**지연 진입 조건** (Gate 1 차단 후 10분 이내 재평가):
+- [1] 최근 8봉 내 피크 찾기 (최근 2봉 제외)
+- [2] 피크 이후 **2~6봉 경과**
+- [3] 피크 대비 **2~5% 조정 완료**
+- [4] **Higher Low 확인** (하락 종료)
+- [5] 현재 봉 **양봉** (반등 확인)
+- [6] **거래량 피크 대비 80%+ 회복**
+
+#### ScheduleGate2Reevaluation — 지연 진입 스케줄러
+
+Gate 1 차단 시 `_pendingGate2` 등록:
+- 1분마다 Gate 2 조건 재체크 (최대 15분)
+- 중복 예약 방지 (심볼당 1건)
+- 포지션 발생 시 자동 취소
+- Gate 2 통과 시 `ExecuteAutoOrder(..., source + "_GATE2", skipAiGateCheck: true)` 실행
+- 15분 만료 시 자동 포기 (재예측 대기)
+
+#### 적용 위치
+
+1. **PumpScanStrategy.OnTradeSignal 핸들러** (TradingEngine.cs:1294)
+   - Forecaster 경로 호출 전 Gate 1 사전 차단
+2. **SPIKE_FAST 경로** (TradingEngine.cs:7693)
+   - MTF Guardian 직후, SpikeForecaster 예측 직전
+
+### Expected Impact
+
+- 04-12 기준 4건 손절 -$188 → **전부 Gate 1 차단 + Gate 2 지연 진입으로 +수익 가능**
+- TRUUSDT 사례: 01:04 차단 → Gate2 가 04:01 자리를 찾아낼 수 있음 (실제 +170% 자리)
+- 덤핑 진행 중 (TAGUSDT) 은 Gate 2 도 통과 못함 → 15분 자동 포기
+
 ## [5.0.0] - 2026-04-11
 
 ### 🎯 전면 재설계 — 예측형 Forecaster 아키텍처 도입
