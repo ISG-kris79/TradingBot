@@ -203,11 +203,14 @@ namespace TradingBot
                 var fibSignal = EvaluateFibonacciSupportSignal(symbol, decision, currentPrice, m15List, m1List);
                 float fibConfidenceBonus = (float)(fibSignal.BonusScore / 100.0);
 
-                // [v3.7.8] ML 결과 0% → 차단 (학습 데이터 부족이면 진입하면 안 됨)
+                // [v4.9.5] ML_Zero_Confidence 하드 차단 제거
+                // 이유: EntryTimingMLTrainer가 PUMP 심볼(BULLAUSDT 등)에 대해 항상 0을 반환하는데
+                //       PumpSignalClassifier는 동일 심볼을 65~80%로 승인 중. 두 모델 충돌로 PumpScan
+                //       승인이 덮어써져 진입 불가능. ML이 0이면 단순히 승인만 안 해주고 차단은 안 함
+                //       (아래 mlPass/tfPass 조건으로 자연스럽게 reject되거나 fibBonus로 통과 가능)
                 if (_mlTrainer.IsModelLoaded && mlConfidence < 0.01f)
                 {
-                    OnLog?.Invoke($"⚠️ [{symbol}] ML 결과 0% → 차단 (학습 데이터 부족)");
-                    return (false, "ML_Zero_Confidence", new AIEntryDetail());
+                    OnLog?.Invoke($"⚠️ [{symbol}] ML 결과 0% — 경고만, 진입 계속 (다운스트림 AI Gate 판정에 위임)");
                 }
 
                 bool tfPass = tfApprove && (tfConfidence + fibConfidenceBonus) >= effectiveTFThreshold;

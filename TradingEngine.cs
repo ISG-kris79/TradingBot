@@ -1258,7 +1258,11 @@ namespace TradingBot
                         OnSymbolTrained?.Invoke(symbol);
                         OnStatusLog?.Invoke($"✅ [동적학습등록] {symbol} — PumpScan 신호로 즉시 진입 게이트 통과 허용");
                     }
-                    await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR_MEME");
+                    // [v4.9.5] PumpScanStrategy.PumpSignalClassifier가 이미 AI 승인(65%+)을 완료한 상태
+                    // → AIDoubleCheckEntryGate (EntryTimingMLTrainer)는 PUMP 코인 학습 부족으로 항상 0 반환
+                    // → 두 모델 충돌 해결: PumpSignalClassifier 우선, 하위 AI Gate는 skip
+                    // 단 Router 0~7 (슬롯/스태일/블랙리스트/듀플리케이트 등) 공통 검증은 그대로 적용
+                    await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR_MEME", skipAiGateCheck: true);
                 }
                 catch (Exception ex)
                 {

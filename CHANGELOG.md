@@ -15,6 +15,33 @@
 
  - 없음
 
+## [4.9.5] - 2026-04-11
+
+### Fixed (Critical — ML 모델 충돌 해결)
+
+v4.9.4 47분 운영 후 DB 진단 결과:
+- PumpScan이 **BULLAUSDT / CROSSUSDT / IDUSDT** 를 `AI_ENTRY 65~80%` 로 승인 중
+- 그런데 `AIDoubleCheckEntryGate.EntryTimingMLTrainer` 가 동일 심볼을 **ml=0.0% 반환** → `ML_Zero_Confidence` 로 차단
+- **두 ML 모델이 정반대 결과**를 내는 구조적 충돌: `PumpSignalClassifier` 는 PUMP 심볼 전문, `EntryTimingMLTrainer` 는 PUMP 심볼 학습 거의 없음
+- 결과: 한 달 내내 **AI_ENTRY 승인 후 AI_GATE 차단** 루프에서 진입 0건
+
+**수정**:
+1. `AIDoubleCheckEntryGate`: `mlConfidence<0.01f` 하드 차단 제거 — 경고 로그만 남기고 진입 계속
+2. `_pumpStrategy.OnTradeSignal`: `ExecuteAutoOrder(... skipAiGateCheck: true)` 호출 — `PumpSignalClassifier` 가 이미 AI 승인 완료했으므로 `AIDoubleCheckEntryGate` 재검증 스킵. Router 0~7 공통 검증(슬롯/스태일/블랙리스트)은 그대로 적용됨
+
+### 진단 결과 요약 (v4.9.4 47분 운영)
+
+| 항목 | 건수 | 상태 |
+|---|---|---|
+| PumpScan 실행 | 276 | ✅ 10초 주기 정상 |
+| 후보 추출 | 16,450 | ✅ 정상 |
+| **PumpScan AI_ENTRY 승인** | **18** | ✅ 정상 (BULLA/CROSS/ID) |
+| PumpScan EMIT | 18 | ✅ 정상 |
+| ENTRY BLOCK | 7,580 |  |
+| → AI_GATE `ML_Zero_Confidence` | 3,784 | 🔴 이번 수정 대상 |
+| → VOLUME | 2,986 | 🟡 추적 불가 (소스에 없음) |
+| → SLOT | 762 |  |
+
 ## [4.9.4] - 2026-04-11
 
 ### Fixed
