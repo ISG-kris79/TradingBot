@@ -15,6 +15,16 @@
 
  - 없음
 
+## [4.7.5] - 2026-04-11
+
+### Fixed
+
+- **초기학습 중복 실행 문제**: v4.7.4에서 phased training(메이저 먼저 학습 → 알트 다운로드 후 재학습)을 구현했으나 사용자 시점에서 "학습 완료 후 또 학습 시작"처럼 보여 혼란 유발. SqlBulkCopy(v4.7.3) + 병렬 다운로드(v4.7.4) 덕분에 다운로드가 수 분 내 완료되므로 phased training이 불필요.
+  - 수정: `TriggerInitialDownloadAndTrainAsync`에서 `OnMajorsCompleted` 중간 학습 트리거 제거
+  - 단일 `TrainAllModelsAsync` 호출로 통합 (다운로드 완료 후 1회만)
+  - `_trainedSymbols`는 최종 학습 완료 후 일괄 등록
+  - `HistoricalDataDownloader.OnMajorsCompleted` 이벤트는 유지 (구독자 없음, 향후 용도)
+
 ## [4.7.4] - 2026-04-11
 
 ### Added

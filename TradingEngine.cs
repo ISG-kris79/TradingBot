@@ -6828,53 +6828,11 @@ namespace TradingBot
                 // [v4.7.3] 구조화 진행률을 VM으로 전달 (ETA 계산용)
                 downloader.OnDetailedProgress += progress => OnInitialTrainingDownloadProgress?.Invoke(progress);
 
-                // [v4.7.4] 심볼별 다운로드 완료 이벤트 — 즉시 DB 데이터 사용 가능
-                downloader.OnSymbolReady += (sym, phase) =>
-                {
-                    // 5분봉 데이터가 준비되면 일단 "데이터 준비 완료" 표시 (실제 모델 학습은 아래서)
-                    if (phase == "major" || phase == "alt_5m")
-                    {
-                        // Phase 2 단계에서는 메이저 모델이 이미 학습 완료 상태이므로
-                        // 알트도 즉시 진입 허용 가능. 단, 아래 TrainAllModelsAsync가 끝나야 ML 추론이 정확해짐
-                        // Phase 1은 아래 OnMajorsCompleted 블록에서 일괄 처리
-                        if (phase == "alt_5m" && IsInitialTrainingComplete == false
-                            && _trainedSymbols.ContainsKey("BTCUSDT")) // 메이저 학습 완료 후에만
-                        {
-                            if (_trainedSymbols.TryAdd(sym, true))
-                                OnSymbolTrained?.Invoke(sym);
-                        }
-                    }
-                };
+                // [v4.7.5] 단일 학습 전략 — 중복 학습 제거
+                // 다운로드 완료 후 단 1회 TrainAllModelsAsync 호출.
+                // v4.7.3 SqlBulkCopy + v4.7.4 병렬 덕분에 다운로드가 빨라 phased training 불필요.
 
-                // [v4.7.4] 메이저 4개 다운로드 완료 → 즉시 ML 학습 → 메이저 진입 허용
-                var majorTrainedTcs = new TaskCompletionSource<bool>();
-                downloader.OnMajorsCompleted += () =>
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            OnInitialTrainingProgress?.Invoke("🧠 [초기학습] 메이저 학습 중 — 완료 후 메이저 진입 즉시 허용");
-                            await TrainAllModelsAsync(token);
-
-                            // 메이저 4개를 trained 셋에 등록
-                            foreach (var m in new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" })
-                            {
-                                if (_trainedSymbols.TryAdd(m, true))
-                                    OnSymbolTrained?.Invoke(m);
-                            }
-                            OnInitialTrainingProgress?.Invoke("✅ [초기학습] 메이저 4개 진입 활성화 — 알트는 백그라운드 계속 학습");
-                            majorTrainedTcs.TrySetResult(true);
-                        }
-                        catch (Exception ex)
-                        {
-                            OnInitialTrainingProgress?.Invoke($"⚠️ [초기학습] 메이저 학습 오류: {ex.Message}");
-                            majorTrainedTcs.TrySetResult(false);
-                        }
-                    }, token);
-                };
-
-                // 1단계: 다운로드 (Phase 1 완료 시 메이저 학습이 병행 실행됨)
+                // 1단계: 다운로드 (메이저 먼저 병렬 → 알트 5m 병렬 → 알트 1m 병렬)
                 OnInitialTrainingProgress?.Invoke($"🚀 [초기학습] 1단계 — 과거 {monthsBack}개월 캔들 다운로드 시작 (메이저 4 + 알트 {topAltCount})");
                 var summary = await downloader.DownloadAllAsync(monthsBack, topAltCount, includeOneMinuteForSpike, token);
                 OnInitialTrainingProgress?.Invoke($"✅ [초기학습] 1단계 완료 — {summary.TotalSaved:N0}봉 저장 ({summary.Duration.TotalMinutes:F1}분)");
@@ -6882,18 +6840,20 @@ namespace TradingBot
                 if (token.IsCancellationRequested)
                     return (false, "사용자 취소");
 
-                // 메이저 학습이 아직 안 끝났다면 대기
-                await majorTrainedTcs.Task;
-
-                // 2단계: 최종 학습 (전체 심볼 반영)
-                OnInitialTrainingProgress?.Invoke("🧠 [초기학습] 2단계 — 전체 심볼 포함 최종 학습 시작");
+                // 2단계: ML 모델 학습 (전체 심볼 포함, 단 1회)
+                OnInitialTrainingProgress?.Invoke("🧠 [초기학습] 2단계 — ML 모델 학습 시작");
                 await TrainAllModelsAsync(token);
                 OnInitialTrainingProgress?.Invoke("✅ [초기학습] 2단계 완료");
 
-                // 모든 알트를 trained 셋에 등록
+                // 학습 완료 심볼 셋에 일괄 등록 (메이저 + 알트)
+                var allTrainedSyms = new HashSet<string>(new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" }, StringComparer.OrdinalIgnoreCase);
                 foreach (var sym in summary.SymbolResults.Keys
                     .Select(k => k.Split('_')[0])
                     .Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    allTrainedSyms.Add(sym);
+                }
+                foreach (var sym in allTrainedSyms)
                 {
                     if (_trainedSymbols.TryAdd(sym, true))
                         OnSymbolTrained?.Invoke(sym);
