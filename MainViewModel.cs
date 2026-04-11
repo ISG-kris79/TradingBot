@@ -226,6 +226,20 @@ namespace TradingBot.ViewModels
             set { _initialTrainingStageText = value; OnPropertyChanged(); }
         }
 
+        private string _initialTrainingEtaText = "ETA 계산 중...";
+        public string InitialTrainingEtaText
+        {
+            get => _initialTrainingEtaText;
+            set { _initialTrainingEtaText = value; OnPropertyChanged(); }
+        }
+
+        private double _initialTrainingProgressPercent;
+        public double InitialTrainingProgressPercent
+        {
+            get => _initialTrainingProgressPercent;
+            set { _initialTrainingProgressPercent = value; OnPropertyChanged(); }
+        }
+
         private DateTime _initialTrainingStartTime;
         private DispatcherTimer? _initialTrainingTimer;
 
@@ -2210,6 +2224,23 @@ namespace TradingBot.ViewModels
                 StartOrUpdateInitialTrainingBanner();
             });
             _engine.OnInitialTrainingCompleted += success => RunOnUI(() => StopInitialTrainingBanner(success));
+            // [v4.7.3] 구조화 다운로드 진행률 → 진행률% + ETA 표시
+            _engine.OnInitialTrainingDownloadProgress += progress => RunOnUI(() =>
+            {
+                InitialTrainingProgressPercent = progress.PercentComplete;
+                if (progress.EstimatedRemaining.HasValue)
+                {
+                    var eta = progress.EstimatedRemaining.Value;
+                    InitialTrainingEtaText = eta.TotalHours >= 1
+                        ? $"ETA {eta:hh\\:mm\\:ss}"
+                        : $"ETA {eta:mm\\:ss}";
+                }
+                else
+                {
+                    InitialTrainingEtaText = progress.Current >= progress.Total ? "ETA 완료" : "ETA 계산 중...";
+                }
+                InitialTrainingStageText = $"📥 {progress.CurrentSymbol} ({progress.Current}/{progress.Total}, {progress.PercentComplete:F0}%, {progress.TotalCandlesSaved:N0}봉 저장)";
+            });
 
             // 초기 상태 반영: 학습 미완료면 배너 즉시 표시
             if (!_engine.IsInitialTrainingComplete)

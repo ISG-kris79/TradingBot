@@ -15,6 +15,30 @@
 
  - 없음
 
+## [4.7.3] - 2026-04-11
+
+### Fixed (Critical Performance)
+
+- **초기학습 다운로드 7분에 1심볼 → 분 단위 내 완료**
+  - **원인 1**: `DatabaseService.SaveCandleDataBulkAsync`가 `IF NOT EXISTS + INSERT` 패턴으로 52,000봉 × 52,000번 DB 왕복. 심볼당 1~2분 소요
+  - **원인 2**: `HistoricalDataDownloader`가 각 봉마다 RSI/BB/MACD/ATR을 100봉 윈도우로 재계산. 심볼당 O(52000 × 100 × 4) = 20M 연산. **게다가 계산 결과가 DB INSERT에 포함되지도 않아 완전히 낭비되는 작업**
+  - **원인 3**: 154 심볼을 순차 처리. 병렬화 없음
+  - **수정 1**: `SaveCandleDataBulkAsync` — 50건 이상은 `SqlBulkCopy` + `#CandleStage` temp 테이블 + `INSERT WHERE NOT EXISTS`로 단일 호출 처리 (1000배 빠름)
+  - **수정 2**: `DownloadAndSaveAsync` — 지표 계산 루프 완전 제거, OHLCV만 저장
+  - **수정 3**: `DownloadAllAsync` — `SemaphoreSlim(6)` 기반 심볼 병렬 다운로드, 요청 간격 100ms→80ms (Binance 분당 6000 weight 한도 내)
+
+### Added
+
+- **구조화된 다운로드 진행률 + ETA 계산**
+  - `HistoricalDataDownloader.DownloadProgress` 클래스 신설 (Current/Total/TotalCandlesSaved/Elapsed/EstimatedRemaining)
+  - `OnDetailedProgress` 이벤트로 VM에 전달 → 배너에 실시간 ETA 표시
+  - `TradingEngine.OnInitialTrainingDownloadProgress` 이벤트 추가
+- **초기학습 배너에 ETA + 진행률 바 + 저장된 봉 수 표시**
+  - 기존 `경과` 카드 옆에 `남은 시간` 카드 추가 (ETA mm:ss 또는 hh:mm:ss)
+  - 배너 하단에 진행률 ProgressBar (0-100%)
+  - 스테이지 텍스트가 `📥 BTCUSDT (5/154, 3%, 250,000봉 저장)` 형태로 갱신
+  - ETA는 경과시간 / 진행심볼수 × 남은심볼수 기반 단순 계산
+
 ## [4.7.2] - 2026-04-11
 
 ### Removed

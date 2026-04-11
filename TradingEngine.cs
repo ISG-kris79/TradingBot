@@ -6553,6 +6553,8 @@ namespace TradingBot
         private const double InitialTrainingMinAccuracy = 0.70;
         public event Action<string>? OnInitialTrainingProgress;
         public event Action<bool>? OnInitialTrainingCompleted; // (success)
+        // [v4.7.3] 구조화된 다운로드 진행률 (ETA 계산용)
+        public event Action<TradingBot.Services.HistoricalDataDownloader.DownloadProgress>? OnInitialTrainingDownloadProgress;
 
         /// <summary>
         /// [v4.7.0] 진입 가능 여부 — IsInitialTrainingComplete 시에만 진입 허용
@@ -6814,6 +6816,8 @@ namespace TradingBot
                     string text = $"📥 다운로드 [{cur}/{total}] {msg}";
                     OnInitialTrainingProgress?.Invoke(text);
                 };
+                // [v4.7.3] 구조화 진행률을 VM으로 전달 (ETA 계산용)
+                downloader.OnDetailedProgress += progress => OnInitialTrainingDownloadProgress?.Invoke(progress);
 
                 // 1단계: 다운로드
                 OnInitialTrainingProgress?.Invoke($"🚀 [초기학습] 1단계 — 과거 {monthsBack}개월 캔들 다운로드 시작 (메이저 4 + 알트 {topAltCount})");

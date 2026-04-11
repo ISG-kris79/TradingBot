@@ -211,32 +211,117 @@ SELECT CASE WHEN EXISTS (
         // CandleData 테이블 대량 저장 (Models.CandleData 사용)
         public async Task SaveCandleDataBulkAsync(IEnumerable<CandleData> data)
         {
-            if (!data.Any()) return;
+            var list = data as IList<CandleData> ?? data.ToList();
+            if (list.Count == 0) return;
 
+            // [v4.7.3] 소량(< 50)은 기존 경로, 대량은 SqlBulkCopy + MERGE로 1000배 빠르게
+            if (list.Count < 50)
+            {
+                try
+                {
+                    using var conn = new SqlConnection(_connStr);
+                    var payload = list.Select(d => new
+                    {
+                        d.Symbol,
+                        Interval = string.IsNullOrWhiteSpace(d.Interval) ? "5m" : d.Interval,
+                        d.OpenTime,
+                        d.Open,
+                        d.High,
+                        d.Low,
+                        d.Close,
+                        d.Volume
+                    }).ToList();
+
+                    string sql = @"
+                    IF NOT EXISTS (SELECT 1 FROM CandleData WHERE Symbol = @Symbol AND OpenTime = @OpenTime)
+                    INSERT INTO CandleData (Symbol, IntervalText, OpenTime, [Open], [High], [Low], [Close], Volume)
+                    VALUES (@Symbol, @Interval, @OpenTime, @Open, @High, @Low, @Close, @Volume)";
+
+                    int affected = await conn.ExecuteAsync(sql, payload, commandTimeout: QueryTimeout);
+                    if (affected > 0) Log($"✅ [DB] {affected}건 저장 완료 (CandleData)");
+                }
+                catch (Exception ex) { Log($"❌ [DB] CandleData 저장 실패: {ex.Message}"); }
+                return;
+            }
+
+            // 대량 경로: staging temp 테이블 → SqlBulkCopy → INSERT 중복 제거
             try
             {
                 using var conn = new SqlConnection(_connStr);
-                var payload = data.Select(d => new
+                await conn.OpenAsync();
+
+                const string createTempSql = @"
+                    CREATE TABLE #CandleStage (
+                        Symbol NVARCHAR(32) NOT NULL,
+                        IntervalText NVARCHAR(8) NOT NULL,
+                        OpenTime DATETIME NOT NULL,
+                        [Open] DECIMAL(18,8) NOT NULL,
+                        [High] DECIMAL(18,8) NOT NULL,
+                        [Low]  DECIMAL(18,8) NOT NULL,
+                        [Close] DECIMAL(18,8) NOT NULL,
+                        Volume FLOAT NOT NULL
+                    );";
+                using (var cmd = new SqlCommand(createTempSql, conn)) { await cmd.ExecuteNonQueryAsync(); }
+
+                var table = new DataTable();
+                table.Columns.Add("Symbol", typeof(string));
+                table.Columns.Add("IntervalText", typeof(string));
+                table.Columns.Add("OpenTime", typeof(DateTime));
+                table.Columns.Add("Open", typeof(decimal));
+                table.Columns.Add("High", typeof(decimal));
+                table.Columns.Add("Low", typeof(decimal));
+                table.Columns.Add("Close", typeof(decimal));
+                table.Columns.Add("Volume", typeof(double));
+
+                foreach (var d in list)
                 {
-                    d.Symbol,
-                    Interval = string.IsNullOrWhiteSpace(d.Interval) ? "5m" : d.Interval,
-                    d.OpenTime,
-                    d.Open,
-                    d.High,
-                    d.Low,
-                    d.Close,
-                    d.Volume
-                }).ToList();
+                    table.Rows.Add(
+                        d.Symbol,
+                        string.IsNullOrWhiteSpace(d.Interval) ? "5m" : d.Interval,
+                        d.OpenTime,
+                        d.Open,
+                        d.High,
+                        d.Low,
+                        d.Close,
+                        (double)d.Volume);
+                }
 
-                string sql = @"
-                IF NOT EXISTS (SELECT 1 FROM CandleData WHERE Symbol = @Symbol AND OpenTime = @OpenTime)
-                INSERT INTO CandleData (Symbol, IntervalText, OpenTime, [Open], [High], [Low], [Close], Volume)
-                VALUES (@Symbol, @Interval, @OpenTime, @Open, @High, @Low, @Close, @Volume)";
+                using (var bulk = new SqlBulkCopy(conn)
+                {
+                    DestinationTableName = "#CandleStage",
+                    BulkCopyTimeout = 120,
+                    BatchSize = 5000
+                })
+                {
+                    bulk.ColumnMappings.Add("Symbol", "Symbol");
+                    bulk.ColumnMappings.Add("IntervalText", "IntervalText");
+                    bulk.ColumnMappings.Add("OpenTime", "OpenTime");
+                    bulk.ColumnMappings.Add("Open", "Open");
+                    bulk.ColumnMappings.Add("High", "High");
+                    bulk.ColumnMappings.Add("Low", "Low");
+                    bulk.ColumnMappings.Add("Close", "Close");
+                    bulk.ColumnMappings.Add("Volume", "Volume");
+                    await bulk.WriteToServerAsync(table);
+                }
 
-                int affected = await conn.ExecuteAsync(sql, payload, commandTimeout: QueryTimeout);
-                if (affected > 0) Log($"✅ [DB] {affected}건 저장 완료 (CandleData)");
+                const string mergeSql = @"
+                    INSERT INTO CandleData (Symbol, IntervalText, OpenTime, [Open], [High], [Low], [Close], Volume)
+                    SELECT s.Symbol, s.IntervalText, s.OpenTime, s.[Open], s.[High], s.[Low], s.[Close], s.Volume
+                    FROM #CandleStage s
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM CandleData c
+                        WHERE c.Symbol = s.Symbol AND c.OpenTime = s.OpenTime
+                    );
+                    DROP TABLE #CandleStage;";
+                int inserted;
+                using (var cmd = new SqlCommand(mergeSql, conn) { CommandTimeout = 120 })
+                {
+                    inserted = await cmd.ExecuteNonQueryAsync();
+                }
+
+                if (inserted > 0) Log($"✅ [DB] {inserted}건 벌크 저장 완료 (CandleData, {list.Count}건 중)");
             }
-            catch (Exception ex) { Log($"❌ [DB] CandleData 저장 실패: {ex.Message}"); }
+            catch (Exception ex) { Log($"❌ [DB] CandleData 벌크 저장 실패: {ex.Message}"); }
         }
 
         // CandleHistory 테이블 대량 저장

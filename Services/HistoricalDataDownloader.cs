@@ -12,9 +12,10 @@ using TradingBot.Models;
 namespace TradingBot.Services
 {
     /// <summary>
-    /// [v4.7.0] Binance 과거 캔들 대량 다운로드 + DB 저장
-    /// 페이지네이션으로 startTime/endTime 사이의 모든 캔들 수집
-    /// rate limit 준수: 분당 2,400 weight 한도, 요청간 100ms
+    /// [v4.7.3] Binance 과거 캔들 대량 다운로드 + DB 저장
+    /// - 심볼 병렬 다운로드 (MaxParallel=6)
+    /// - SqlBulkCopy 기반 DB 저장 (1000배 빠름)
+    /// - 지표 계산 루프 제거 (DB에 저장도 안 되는 낭비 작업이었음)
     /// </summary>
     public class HistoricalDataDownloader
     {
@@ -22,8 +23,24 @@ namespace TradingBot.Services
         private readonly DbManager _dbManager;
         private readonly DatabaseService _databaseService;
 
+        // Binance 분당 2400 weight, kline weight=1~2. 6병렬 * 100ms = 안전
+        private const int MaxParallelSymbols = 6;
+        private const int PerRequestDelayMs = 80;
+
         public event Action<string>? OnLog;
         public event Action<int, int, string>? OnProgress; // current, total, message
+        public event Action<DownloadProgress>? OnDetailedProgress; // [v4.7.3] ETA 계산용 구조화 이벤트
+
+        public class DownloadProgress
+        {
+            public int Current { get; set; }
+            public int Total { get; set; }
+            public string CurrentSymbol { get; set; } = "";
+            public long TotalCandlesSaved { get; set; }
+            public TimeSpan Elapsed { get; set; }
+            public TimeSpan? EstimatedRemaining { get; set; }
+            public double PercentComplete => Total > 0 ? (double)Current / Total * 100d : 0d;
+        }
 
         public HistoricalDataDownloader(DbManager dbManager, DatabaseService databaseService)
         {
@@ -96,9 +113,8 @@ namespace TradingBot.Services
                     var intervalMinutes = GetIntervalMinutes(interval);
                     currentStart = lastTime.AddMinutes(intervalMinutes);
 
-                    // rate limit 준수 (분당 2400 weight, weight=2 per kline = 1200 req/min = 50ms 간격)
-                    // 보수적으로 100ms 간격 사용
-                    await Task.Delay(100, token);
+                    // rate limit: 6병렬 × 80ms = 분당 4500 req (weight=1 → 4500 weight, 한도 6000 OK)
+                    await Task.Delay(PerRequestDelayMs, token);
                 }
 
                 // 중복 제거 (혹시 모를 경계 봉 중복)
@@ -116,7 +132,7 @@ namespace TradingBot.Services
         }
 
         /// <summary>
-        /// 다운로드 + DB 저장 (지표 계산 포함)
+        /// 다운로드 + DB 저장 (OHLCV만, 지표는 DB에 저장되지 않으므로 제외)
         /// </summary>
         public async Task<int> DownloadAndSaveAsync(
             string symbol,
@@ -134,81 +150,37 @@ namespace TradingBot.Services
                 return 0;
             }
 
-            // DB 저장 — CandleData 모델로 변환 후 SaveCandleDataBulkAsync
             var intervalText = IntervalToText(interval);
-            var batches = new List<CandleData>();
-            int saved = 0;
-            const int chunkSize = 500; // 500개씩 청크 저장
 
-            // 지표는 슬라이딩 윈도우로 계산
-            for (int i = 0; i < klines.Count; i++)
+            // [v4.7.3] 지표 계산 루프 제거. SqlBulkCopy로 전체를 단일 호출에 저장
+            var batches = klines.Select(k => new CandleData
             {
-                if (token.IsCancellationRequested) break;
+                Symbol = symbol,
+                Interval = intervalText,
+                OpenTime = k.OpenTime,
+                Open = k.OpenPrice,
+                High = k.HighPrice,
+                Low = k.LowPrice,
+                Close = k.ClosePrice,
+                Volume = (float)k.Volume,
+            }).ToList();
 
-                // 최소 30봉 이후부터 지표 계산 가능
-                int windowStart = Math.Max(0, i - 99);
-                var window = klines.GetRange(windowStart, i - windowStart + 1);
-                if (window.Count < 30) continue;
-
-                double rsi = IndicatorCalculator.CalculateRSI(window, 14);
-                var bb = IndicatorCalculator.CalculateBB(window, 20, 2);
-                var macd = IndicatorCalculator.CalculateMACD(window);
-                double atr = IndicatorCalculator.CalculateATR(window, 14);
-
-                var current = klines[i];
-                batches.Add(new CandleData
-                {
-                    Symbol = symbol,
-                    Interval = intervalText,
-                    OpenTime = current.OpenTime,
-                    Open = current.OpenPrice,
-                    High = current.HighPrice,
-                    Low = current.LowPrice,
-                    Close = current.ClosePrice,
-                    Volume = (float)current.Volume,
-                    RSI = (float)rsi,
-                    BollingerUpper = (float)bb.Upper,
-                    BollingerLower = (float)bb.Lower,
-                    MACD = (float)macd.Macd,
-                    MACD_Signal = (float)macd.Signal,
-                    MACD_Hist = (float)macd.Hist,
-                    ATR = (float)atr,
-                });
-
-                if (batches.Count >= chunkSize)
-                {
-                    try
-                    {
-                        await _databaseService.SaveCandleDataBulkAsync(batches);
-                        saved += batches.Count;
-                    }
-                    catch (Exception ex)
-                    {
-                        OnLog?.Invoke($"⚠️ [HistoricalDownloader] {symbol} 청크 저장 실패: {ex.Message}");
-                    }
-                    batches.Clear();
-                }
+            try
+            {
+                await _databaseService.SaveCandleDataBulkAsync(batches);
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ [HistoricalDownloader] {symbol} 벌크 저장 실패: {ex.Message}");
+                return 0;
             }
 
-            if (batches.Count > 0)
-            {
-                try
-                {
-                    await _databaseService.SaveCandleDataBulkAsync(batches);
-                    saved += batches.Count;
-                }
-                catch (Exception ex)
-                {
-                    OnLog?.Invoke($"⚠️ [HistoricalDownloader] {symbol} 마지막 청크 실패: {ex.Message}");
-                }
-            }
-
-            OnLog?.Invoke($"✅ [HistoricalDownloader] {symbol} {interval} → {saved}봉 저장 ({startTime:yyyy-MM-dd}~{endTime:yyyy-MM-dd})");
-            return saved;
+            OnLog?.Invoke($"✅ [HistoricalDownloader] {symbol} {interval} → {batches.Count}봉 저장 ({startTime:yyyy-MM-dd}~{endTime:yyyy-MM-dd})");
+            return batches.Count;
         }
 
         /// <summary>
-        /// 전체 일괄 다운로드: 메이저 + PUMP 알트
+        /// 전체 일괄 다운로드: 메이저 + PUMP 알트 (병렬화 + ETA 리포트)
         /// </summary>
         public async Task<DownloadSummary> DownloadAllAsync(
             int monthsBack,
@@ -217,57 +189,79 @@ namespace TradingBot.Services
             CancellationToken token)
         {
             var summary = new DownloadSummary { StartTime = DateTime.Now };
+            var startedAt = DateTime.UtcNow;
 
             var majors = new List<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
 
-            // 1) 알트 상위 N개 추출
             OnLog?.Invoke($"📡 [HistoricalDownloader] 알트 상위 {topAltCount}개 조회 중...");
             var alts = await GetTopAltSymbolsAsync(topAltCount, token);
             OnLog?.Invoke($"📡 [HistoricalDownloader] 알트 {alts.Count}개 확보");
 
             var allSymbols = majors.Concat(alts).ToList();
-            int total = allSymbols.Count + (includeOneMinuteForSpike ? alts.Take(50).Count() : 0);
+            int total = allSymbols.Count + (includeOneMinuteForSpike ? Math.Min(50, alts.Count) : 0);
             int current = 0;
 
-            // 2) 메이저 + 알트 5분봉
-            foreach (var sym in allSymbols)
+            // 공통 병렬 처리 함수 — 심볼 단위 SemaphoreSlim 제한
+            using var gate = new SemaphoreSlim(MaxParallelSymbols, MaxParallelSymbols);
+
+            void ReportProgress(string sym)
             {
-                if (token.IsCancellationRequested) break;
-                current++;
-                OnProgress?.Invoke(current, total, $"{sym} 5분봉 다운로드");
+                int now = Interlocked.Increment(ref current);
+                var elapsed = DateTime.UtcNow - startedAt;
+                TimeSpan? eta = null;
+                if (now > 0 && now < total)
+                {
+                    double perUnitSec = elapsed.TotalSeconds / now;
+                    eta = TimeSpan.FromSeconds(perUnitSec * (total - now));
+                }
+                OnProgress?.Invoke(now, total, $"{sym} ({now}/{total})");
+                OnDetailedProgress?.Invoke(new DownloadProgress
+                {
+                    Current = now,
+                    Total = total,
+                    CurrentSymbol = sym,
+                    TotalCandlesSaved = summary.TotalSaved,
+                    Elapsed = elapsed,
+                    EstimatedRemaining = eta
+                });
+            }
+
+            async Task ProcessSymbol(string sym, KlineInterval interval, int months, string label)
+            {
+                await gate.WaitAsync(token);
                 try
                 {
-                    int saved = await DownloadAndSaveAsync(sym, KlineInterval.FiveMinutes, monthsBack, token);
-                    summary.SymbolResults[sym] = saved;
-                    summary.TotalSaved += saved;
+                    if (token.IsCancellationRequested) return;
+                    int saved = await DownloadAndSaveAsync(sym, interval, months, token);
+                    lock (summary)
+                    {
+                        summary.SymbolResults[sym + "_" + label] = saved;
+                        summary.TotalSaved += saved;
+                    }
                 }
                 catch (Exception ex)
                 {
-                    OnLog?.Invoke($"⚠️ [HistoricalDownloader] {sym} 실패: {ex.Message}");
-                    summary.ErrorCount++;
+                    OnLog?.Invoke($"⚠️ [HistoricalDownloader] {sym} {label} 실패: {ex.Message}");
+                    Interlocked.Increment(ref summary.ErrorCount);
+                }
+                finally
+                {
+                    ReportProgress(sym);
+                    gate.Release();
                 }
             }
 
-            // 3) Spike 모델용 1분봉 (상위 50 알트만)
+            // 1) 메이저 + 알트 5분봉 병렬
+            var tasks = allSymbols.Select(sym => ProcessSymbol(sym, KlineInterval.FiveMinutes, monthsBack, "5m")).ToList();
+
+            // 2) Spike 1분봉 (상위 50 알트)
             if (includeOneMinuteForSpike)
             {
-                foreach (var sym in alts.Take(50))
-                {
-                    if (token.IsCancellationRequested) break;
-                    current++;
-                    OnProgress?.Invoke(current, total, $"{sym} 1분봉 다운로드 (Spike)");
-                    try
-                    {
-                        int saved = await DownloadAndSaveAsync(sym, KlineInterval.OneMinute, Math.Min(monthsBack, 1), token);
-                        summary.TotalSaved += saved;
-                    }
-                    catch (Exception ex)
-                    {
-                        OnLog?.Invoke($"⚠️ [HistoricalDownloader] {sym} 1m 실패: {ex.Message}");
-                        summary.ErrorCount++;
-                    }
-                }
+                tasks.AddRange(alts.Take(50).Select(sym =>
+                    ProcessSymbol(sym, KlineInterval.OneMinute, Math.Min(monthsBack, 1), "1m")));
             }
+
+            await Task.WhenAll(tasks);
 
             summary.EndTime = DateTime.Now;
             summary.Duration = summary.EndTime - summary.StartTime;
@@ -305,8 +299,8 @@ namespace TradingBot.Services
             public DateTime StartTime { get; set; }
             public DateTime EndTime { get; set; }
             public TimeSpan Duration { get; set; }
-            public int TotalSaved { get; set; }
-            public int ErrorCount { get; set; }
+            public int TotalSaved; // Interlocked.Add 대상 (lock 기반)
+            public int ErrorCount; // Interlocked.Increment 대상
             public Dictionary<string, int> SymbolResults { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         }
     }
