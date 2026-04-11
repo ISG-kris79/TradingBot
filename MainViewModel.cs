@@ -205,7 +205,7 @@ namespace TradingBot.ViewModels
             set { _initialTrainingBannerVisibility = value; OnPropertyChanged(); }
         }
 
-        private string _initialTrainingStatusText = "⚠ 초기학습 대기 중 — 진입 차단";
+        private string _initialTrainingStatusText = "⏳ 초기학습 대기 중";
         public string InitialTrainingStatusText
         {
             get => _initialTrainingStatusText;
@@ -2286,7 +2286,7 @@ namespace TradingBot.ViewModels
         private void StartOrUpdateInitialTrainingBanner()
         {
             InitialTrainingBannerVisibility = Visibility.Visible;
-            InitialTrainingStatusText = "⛔ 초기학습 진행 중 — 모든 진입 차단";
+            InitialTrainingStatusText = "🧠 초기학습 진행 중 — 완료 심볼부터 순차 진입 활성화";
 
             if (_initialTrainingTimer == null)
             {
@@ -2322,7 +2322,7 @@ namespace TradingBot.ViewModels
             }
             else
             {
-                InitialTrainingStatusText = "❌ 초기학습 실패 — 진입 여전히 차단";
+                InitialTrainingStatusText = "⚠ 초기학습 오류 발생 — 로그 확인 필요";
             }
         }
 
