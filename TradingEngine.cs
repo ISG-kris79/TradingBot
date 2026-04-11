@@ -4654,7 +4654,8 @@ namespace TradingBot
                 }
             }
 
-            decimal marginUsdt = GetConfiguredPumpMarginUsdt();
+            // [v5.0.5] 유동성 기반 동적 마진 (초저유동성 50% 축소)
+            decimal marginUsdt = GetLiquidityAdjustedPumpMarginUsdt(symbol);
             // [정찰대] 슬롯 포화 시 증거금 축소
             if (pumpScoutMode)
             {
@@ -4893,6 +4894,35 @@ namespace TradingBot
                 : (_settings.DefaultMargin > 0 ? _settings.DefaultMargin : PUMP_FIXED_MARGIN_USDT);
 
             return Math.Max(10m, configured);
+        }
+
+        /// <summary>
+        /// [v5.0.5] 유동성 기반 동적 PUMP 증거금
+        /// - 초저유동성 (24h &lt; $10M): 50% 축소 (슬리피지/덤핑 위험 회피)
+        /// - 그 외: 기본 마진 유지
+        /// 04-12 DB 분석: 초저유동성 12건 평균 -$2.43, 25~50% 축소 시 손실 2배 감소
+        /// </summary>
+        private decimal GetLiquidityAdjustedPumpMarginUsdt(string symbol)
+        {
+            decimal baseMargin = GetConfiguredPumpMarginUsdt();
+
+            try
+            {
+                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var ticker) && ticker.QuoteVolume > 0)
+                {
+                    decimal vol24h = ticker.QuoteVolume;
+                    if (vol24h < 10_000_000m)
+                    {
+                        decimal adjusted = Math.Max(10m, baseMargin * 0.5m);
+                        OnStatusLog?.Invoke(
+                            $"💧 [LIQUIDITY] {symbol} 24h=${vol24h / 1_000_000m:F1}M < $10M → 마진 ${baseMargin:F0} → ${adjusted:F0} (50% 축소)");
+                        return adjusted;
+                    }
+                }
+            }
+            catch { }
+
+            return baseMargin;
         }
 
         private decimal GetConfiguredMajorMarginPercent()
@@ -7789,7 +7819,7 @@ namespace TradingBot
             decimal leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : 20;
             decimal marginUsdt = isMajor
                 ? await GetAdaptiveEntryMarginUsdtAsync(token)
-                : GetConfiguredPumpMarginUsdt();
+                : GetLiquidityAdjustedPumpMarginUsdt(symbol);
 
             // [v4.5.11] 일일 수익 모드 사이즈 배수 적용 (PUMP만)
             if (!isMajor && profitModeSizeMul < 1.0m)
@@ -9923,9 +9953,9 @@ namespace TradingBot
 
             // 2. AI Score 사이즈 조절 제거 — 라우터 AI Gate Advisor에서 이미 적용됨
 
-            // 3. 포지션 사이즈: 고정 펌프 마진
+            // 3. 포지션 사이즈: 유동성 기반 동적 마진 (v5.0.5: 초저유동성 50% 축소)
             ctx.Leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
-            ctx.MarginUsdt = GetConfiguredPumpMarginUsdt();
+            ctx.MarginUsdt = GetLiquidityAdjustedPumpMarginUsdt(ctx.Symbol);
             ctx.IsPumpStrategy = true;
 
             EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x coinType=Pumping source=PumpMargin");
@@ -10015,9 +10045,9 @@ namespace TradingBot
 
             // 3. AI Score 사이즈 조절 제거 — 라우터 AI Gate Advisor에서 이미 적용됨
 
-            // 4. 포지션 사이즈: 고정 펌프 마진
+            // 4. 포지션 사이즈: 유동성 기반 동적 마진 (v5.0.5: 초저유동성 50% 축소)
             ctx.Leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
-            ctx.MarginUsdt = GetConfiguredPumpMarginUsdt();
+            ctx.MarginUsdt = GetLiquidityAdjustedPumpMarginUsdt(ctx.Symbol);
             ctx.IsPumpStrategy = true;
 
             EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x coinType=Pumping source=PumpMargin");
@@ -11031,7 +11061,7 @@ namespace TradingBot
                 bool isMajor = MajorSymbols.Contains(symbol);
                 decimal marginUsdt = isMajor
                     ? await GetAdaptiveEntryMarginUsdtAsync(token)
-                    : GetConfiguredPumpMarginUsdt();
+                    : GetLiquidityAdjustedPumpMarginUsdt(symbol);
 
                 int leverage = 20;
                 decimal quantity = (marginUsdt * leverage) / price;

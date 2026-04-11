@@ -15,6 +15,41 @@
 
  - 없음
 
+## [5.0.5] - 2026-04-12
+
+### Changed — 초저유동성 심볼 PUMP 마진 50% 축소
+
+2026-04-12 UserId=1 DB 분석 결과:
+
+- 초저유동성 (24h <$10M) A 버킷: 12건, 승률 66.7%, 순 -$29.21, 평균 -$2.43
+- 저유동성 ($10~50M) B 버킷: 16건, 승률 87.5%, 순 **+$293.78** (메인 수익원)
+- 중유동성 ($50~200M) C 버킷: 6건, 승률 33%, 순 -$99.26 (별도 개선 대상)
+
+A 버킷 손실 특징:
+
+- 평균 손실 -$16 / 평균 수익 +$8 → **손실이 수익의 2배**
+- 자기 펌핑 위험 (5명 × $4K = $20K notional 이 초저유동성에 충격)
+
+**수정**:
+
+- `GetLiquidityAdjustedPumpMarginUsdt(symbol)` 헬퍼 신규
+- `TickerCache.QuoteVolume` 조회 → `vol24h < $10M` 이면 **마진 50% 축소**
+- 최소 $10 보장, 로그로 축소 알림 (`💧 [LIQUIDITY]`)
+- **중형 이상은 변경 없음** (수익 개선 대상, Gate 1/2 + Forecaster 별도 작업)
+
+**적용 위치 (5곳)**:
+
+- `ExecutePumpEntry` (TradingEngine.cs:4657)
+- `SPIKE_FAST` (TradingEngine.cs:7821)
+- `ExecutePumpLongEntry` (ctx.MarginUsdt)
+- `ExecutePumpShortEntry` (ctx.MarginUsdt)
+- `CalculateOrderQuantityAsync` (Forecaster 경로 수량 계산)
+
+**예상 효과 (04-12 기준)**:
+
+- A 버킷 순PnL: -$29.21 → **-$14.60** (+$14.61 방어)
+- 승리 거래 수익도 50% 감소하지만, 손실 > 수익 구조라 순효과 플러스
+
 ## [5.0.4] - 2026-04-12
 
 ### Changed — AI 관제탑 스팸 해결
