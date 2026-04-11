@@ -15,6 +15,16 @@
 
  - 없음
 
+## [4.9.6] - 2026-04-11
+
+### Fixed (Critical — skipAiGateCheck 실제 적용)
+
+- **v4.9.5에서 `skipAiGateCheck=true` 파라미터를 추가했지만 실제로 사용 안 되던 버그**
+  - `ExecuteAutoOrder`의 AI_GATE 분기에서 `shouldBypassAiGate = signalSource=="CRASH_REVERSE" || signalSource=="PUMP_REVERSE"` 만 체크
+  - **매개변수 `skipAiGateCheck`를 무시**하여 `_pumpStrategy.OnTradeSignal`에서 `skipAiGateCheck=true`로 호출해도 여전히 AIDoubleCheckEntryGate 실행
+- **수정**: `shouldBypassAiGate = skipAiGateCheck || signalSource=="CRASH_REVERSE" || signalSource=="PUMP_REVERSE"`
+- **효과**: PumpScan이 `PumpSignalClassifier`로 AI 승인한 심볼이 AI_GATE 중복 검증 없이 바로 진입 경로로 진행
+
 ## [4.9.5] - 2026-04-11
 
 ### Fixed (Critical — ML 모델 충돌 해결)

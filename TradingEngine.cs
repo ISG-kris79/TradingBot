@@ -8659,7 +8659,11 @@ namespace TradingBot
 
             // [v3.4.1] DROUGHT_RECOVERY AI Gate 우회 제거 — 하락장에서 무필터 진입 방지
             // CRASH_REVERSE/PUMP_REVERSE만 우회 (급변 대응), SPIKE_DETECT도 AI Gate 통과
-            bool shouldBypassAiGate = signalSource == "CRASH_REVERSE"
+            // [v4.9.6] skipAiGateCheck=true 파라미터 존중 — PumpScanStrategy가 이미 PumpSignalClassifier로
+            //          AI 승인 완료한 경우 AIDoubleCheckEntryGate(EntryTimingMLTrainer) 재검증 스킵
+            //          (두 모델이 학습 도메인 다름: PumpSignalClassifier는 PUMP 전용, EntryTimingMLTrainer는 메이저 전용)
+            bool shouldBypassAiGate = skipAiGateCheck
+                || signalSource == "CRASH_REVERSE"
                 || signalSource == "PUMP_REVERSE";
             if (shouldBypassAiGate)
             {
