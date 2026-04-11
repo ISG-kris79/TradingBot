@@ -139,7 +139,8 @@ namespace TradingBot.Services
         }
 
         /// <summary>
-        /// 다운로드 + DB 저장 (OHLCV만, 지표는 DB에 저장되지 않으므로 제외)
+        /// 다운로드 + DB 저장 (OHLCV만) — [v4.7.8] 증분 다운로드
+        /// DB에 이미 있는 데이터는 건너뛰고, 없는 기간만 API 호출
         /// </summary>
         public async Task<int> DownloadAndSaveAsync(
             string symbol,
@@ -148,18 +149,44 @@ namespace TradingBot.Services
             CancellationToken token)
         {
             var endTime = DateTime.UtcNow;
-            var startTime = endTime.AddMonths(-monthsBack);
+            var requestedStart = endTime.AddMonths(-monthsBack);
+            var intervalText = IntervalToText(interval);
+            var intervalMin = GetIntervalMinutes(interval);
+
+            // ── [v4.7.8] DB 기존 데이터 범위 확인 ──────────────────────────
+            var existing = await _databaseService.GetCandleDataRangeAsync(symbol, intervalText);
+            // 이론적 기대 봉 수 (6개월 × 30일 × 24h × 60m / intervalMin)
+            int expectedCandles = (int)((monthsBack * 30.0 * 1440.0) / intervalMin);
+            // 최신 데이터가 interval × 2 이내면 "최신"으로 간주
+            bool isFresh = existing.MaxTime.HasValue
+                && (endTime - existing.MaxTime.Value).TotalMinutes < intervalMin * 2;
+            // 90% 이상 데이터 확보 + 최신이면 다운로드 전체 생략
+            if (existing.Count >= expectedCandles * 0.90 && isFresh)
+            {
+                OnLog?.Invoke($"⏭️ [HistoricalDownloader] {symbol} {intervalText} — DB에 {existing.Count:N0}봉 존재 (최신 {existing.MaxTime:yyyy-MM-dd HH:mm}), 다운로드 생략");
+                return existing.Count;
+            }
+
+            // 증분 시작점 결정: DB 최대 시점 + 1봉, 또는 전체 요청 구간
+            var startTime = requestedStart;
+            if (existing.MaxTime.HasValue && existing.MaxTime.Value > requestedStart)
+            {
+                startTime = existing.MaxTime.Value.AddMinutes(intervalMin);
+                OnLog?.Invoke($"📊 [HistoricalDownloader] {symbol} {intervalText} — DB {existing.Count:N0}봉 + 증분 {startTime:yyyy-MM-dd HH:mm}부터");
+            }
+
+            // 이미 최신까지 받은 상태 (증분할 범위 없음)
+            if (startTime >= endTime)
+            {
+                return existing.Count;
+            }
 
             var klines = await DownloadSymbolAsync(symbol, interval, startTime, endTime, token);
             if (klines.Count == 0)
             {
-                OnLog?.Invoke($"⚠️ [HistoricalDownloader] {symbol} {interval} 다운로드 결과 0봉");
-                return 0;
+                return existing.Count;
             }
 
-            var intervalText = IntervalToText(interval);
-
-            // [v4.7.3] 지표 계산 루프 제거. SqlBulkCopy로 전체를 단일 호출에 저장
             var batches = klines.Select(k => new CandleData
             {
                 Symbol = symbol,
@@ -179,11 +206,12 @@ namespace TradingBot.Services
             catch (Exception ex)
             {
                 OnLog?.Invoke($"⚠️ [HistoricalDownloader] {symbol} 벌크 저장 실패: {ex.Message}");
-                return 0;
+                return existing.Count;
             }
 
-            OnLog?.Invoke($"✅ [HistoricalDownloader] {symbol} {interval} → {batches.Count}봉 저장 ({startTime:yyyy-MM-dd}~{endTime:yyyy-MM-dd})");
-            return batches.Count;
+            int totalNow = existing.Count + batches.Count;
+            OnLog?.Invoke($"✅ [HistoricalDownloader] {symbol} {interval} → +{batches.Count:N0}봉 (총 {totalNow:N0}봉)");
+            return totalNow;
         }
 
         /// <summary>
@@ -211,13 +239,15 @@ namespace TradingBot.Services
             int altsCount1m = includeOneMinuteForSpike ? Math.Min(50, alts.Count) : 0;
             int total = majors.Count + altsCount5m + altsCount1m;
 
-            // ── ETA: 최근 10개 심볼 완료 시간을 EMA로 추적 ─────────────────
+            // ── [v4.7.8] ETA: 최근 10개 완료 시점의 실제 throughput 측정 ─────
+            //   rate = (samples-1) / (latest - oldest)  [symbols/sec]
+            //   eta  = remaining / rate
+            //   inter-arrival을 병렬도로 이중 보정하던 이전 버그 수정
             int current = 0;
             int majorReady = 0;
             int altReady = 0;
-            var recentDurations = new Queue<double>();
-            const int EmaWindow = 10;
-            DateTime lastSymbolTime = DateTime.UtcNow;
+            var recentTimestamps = new Queue<DateTime>();
+            const int WindowSize = 10;
             var etaLock = new object();
 
             void ReportProgress(string sym, string phase)
@@ -228,20 +258,19 @@ namespace TradingBot.Services
                 lock (etaLock)
                 {
                     var nowUtc = DateTime.UtcNow;
-                    double dt = (nowUtc - lastSymbolTime).TotalSeconds;
-                    lastSymbolTime = nowUtc;
+                    recentTimestamps.Enqueue(nowUtc);
+                    while (recentTimestamps.Count > WindowSize) recentTimestamps.Dequeue();
 
-                    // 첫 심볼은 샘플 없음 → 전체 경과시간 기반 대체 추정
-                    recentDurations.Enqueue(dt);
-                    while (recentDurations.Count > EmaWindow) recentDurations.Dequeue();
-
-                    if (now < total && recentDurations.Count > 0)
+                    if (now < total && recentTimestamps.Count >= 2)
                     {
-                        double avgPerSym = recentDurations.Average();
-                        // 병렬 실행 중이면 실제 시간은 1/MaxParallelSymbols 로 줄어듦
-                        double parallelFactor = Math.Min(MaxParallelSymbols, Math.Max(1, total - now));
-                        double effectivePer = avgPerSym / parallelFactor;
-                        eta = TimeSpan.FromSeconds(effectivePer * (total - now));
+                        var oldest = recentTimestamps.Peek();
+                        double windowSec = (nowUtc - oldest).TotalSeconds;
+                        if (windowSec > 0)
+                        {
+                            double rate = (recentTimestamps.Count - 1) / windowSec; // sym/sec
+                            if (rate > 0)
+                                eta = TimeSpan.FromSeconds((total - now) / rate);
+                        }
                     }
                 }
 
@@ -294,7 +323,6 @@ namespace TradingBot.Services
 
             // ── Phase 1: 메이저 4개 병렬 (gate 없이 즉시 전개) ──────────────
             OnLog?.Invoke("🚀 [HistoricalDownloader] Phase 1 — 메이저 4개 다운로드 시작");
-            lock (etaLock) { lastSymbolTime = DateTime.UtcNow; }
             var majorTasks = majors
                 .Select(sym => ProcessSymbol(sym, KlineInterval.FiveMinutes, monthsBack, "5m", "major", null))
                 .ToList();

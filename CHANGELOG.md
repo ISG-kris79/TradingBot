@@ -15,6 +15,29 @@
 
  - 없음
 
+## [4.7.8] - 2026-04-11
+
+### Fixed (Critical)
+
+- **DB에 이미 있는 데이터를 매번 재다운로드하던 버그**
+  - `HistoricalDataDownloader.DownloadAndSaveAsync`가 DB 상태 확인 없이 무조건 6개월 전부터 API 재호출
+  - 150 심볼 × 52,000봉 전부 재다운로드 + `SaveCandleDataBulkAsync`의 dedupe 로직 이중 실행 → 극심한 시간 낭비
+  - **수정**: 각 심볼에 대해 `GetCandleDataRangeAsync(Symbol, IntervalText)`로 기존 봉 개수 + 최신 OpenTime 조회
+    - 90% 이상 확보 + 최신 데이터(interval × 2 이내) → **다운로드 전체 생략**
+    - 부분 데이터만 있음 → DB 최신 시점 + 1봉부터 증분 다운로드
+    - 전혀 없음 → 6개월 전체 다운로드
+  - 재시작 시 대부분의 심볼이 ~0.1초 내 완료됨
+- **ETA 공식 이중 보정 버그**
+  - v4.7.4의 EMA 방식: `avgPerSym / parallelFactor × remaining` — inter-arrival time을 이미 병렬 처리 결과인데 병렬도로 또 나눔
+  - **수정**: 최근 10개 완료 시점의 실제 throughput 기반
+    - `rate = (samples-1) / (latestTime - oldestTime)` [symbols/sec]
+    - `eta = remaining / rate`
+  - 병렬도와 무관하게 실제 완료 속도 그대로 반영됨
+
+### Added
+
+- `DatabaseService.GetCandleDataRangeAsync(symbol, intervalText)` — (Count, MinTime, MaxTime) 단일 쿼리
+
 ## [4.7.7] - 2026-04-11
 
 ### Added

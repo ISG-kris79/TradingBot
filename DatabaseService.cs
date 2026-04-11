@@ -119,6 +119,28 @@ SELECT CASE WHEN EXISTS (
             catch (Exception ex) { Console.WriteLine($"[DB Error] {ex.Message}"); }
         }
 
+        /// <summary>
+        /// [v4.7.8] 초기학습 증분 다운로드용 — (Symbol, IntervalText) 조합의 기존 데이터 범위 조회
+        /// </summary>
+        public async Task<(int Count, DateTime? MinTime, DateTime? MaxTime)> GetCandleDataRangeAsync(string symbol, string intervalText)
+        {
+            try
+            {
+                using var conn = new SqlConnection(_connStr);
+                var row = await conn.QuerySingleOrDefaultAsync<(int cnt, DateTime? mn, DateTime? mx)>(
+                    @"SELECT COUNT(*) AS cnt, MIN(OpenTime) AS mn, MAX(OpenTime) AS mx
+                      FROM CandleData WHERE Symbol = @Symbol AND IntervalText = @Interval",
+                    new { Symbol = symbol, Interval = intervalText },
+                    commandTimeout: QueryTimeout);
+                return (row.cnt, row.mn, row.mx);
+            }
+            catch (Exception ex)
+            {
+                Log($"⚠️ [DB] {symbol} {intervalText} 범위 조회 실패: {ex.Message}");
+                return (0, null, null);
+            }
+        }
+
         public async Task<DateTime?> GetLatestSyncedOpenTimeAcrossTablesAsync(string symbol, string interval = "5m")
         {
             try
