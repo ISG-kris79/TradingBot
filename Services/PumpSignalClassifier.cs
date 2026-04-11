@@ -56,10 +56,26 @@ namespace TradingBot.Services
 
         public event Action<string>? OnLog;
 
-        /// <summary>라벨링 기준: N봉 후 가격변동률 +X% 이상이면 진입</summary>
+        /// <summary>라벨링 기준: 미래 window 내 최대 상승률 목표 (%)</summary>
         public float EntryThresholdPct { get; set; }
         /// <summary>라벨링 기준 봉 수 (5분봉 기준)</summary>
         public int LookAheadCandles { get; set; }
+
+        // ═══════════════════════════════════════════
+        // [v4.9.8] 타입별 라벨링 파라미터 (Normal vs Spike)
+        // ═══════════════════════════════════════════
+        /// <summary>Swing Low 탐지 lookback 범위 (봉 수)</summary>
+        public int LabelSwingLookback { get; private set; }
+        /// <summary>Swing Low 이후 최대 경과 봉 수 (진입 타이밍 제한)</summary>
+        public int LabelMaxBarsSinceSwing { get; private set; }
+        /// <summary>현재가 swing low 대비 최대 상승률 (%) — 초기 구간 제한</summary>
+        public float LabelMaxDistFromLowPct { get; private set; }
+        /// <summary>미래 window 내 swing low 대비 검증 목표 상승률 (%)</summary>
+        public float LabelValidationTargetPct { get; private set; }
+        /// <summary>거래량 회복 최소 배수</summary>
+        public float LabelVolumeRecoveryMultiplier { get; private set; }
+        /// <summary>미래 드로다운 허용 (swing low 대비 %, 음수 = 깨짐 허용)</summary>
+        public float LabelMaxDrawdownFromLow { get; private set; }
 
         public PumpSignalClassifier(PumpSignalType signalType = PumpSignalType.Normal)
         {
@@ -67,16 +83,30 @@ namespace TradingBot.Services
             Directory.CreateDirectory(DefaultModelDir);
             _signalType = signalType;
 
-            // [v4.6.1] 타입별 라벨링 기준 — Spike는 1분봉 기반 (1분 로켓 발사 포착)
+            // [v4.9.8] 타입별 라벨링 파라미터 — Normal은 완만, Spike는 급격
             if (signalType == PumpSignalType.Spike)
             {
-                EntryThresholdPct = 2.5f;  // +2.5% 이상 (1분봉 기준 적정)
-                LookAheadCandles = 5;       // 5분 (1분봉 × 5)
+                // 급등 진입: 빠르게 폭발하는 자리
+                EntryThresholdPct = 4.0f;             // 목표 +4%
+                LookAheadCandles = 5;                  // 25분 (5분봉 5개)
+                LabelSwingLookback = 5;                // 25분 윈도우
+                LabelMaxBarsSinceSwing = 2;            // swing low 2봉 이내 (매우 초기)
+                LabelMaxDistFromLowPct = 2.5f;         // 현재가 swing low 대비 +2.5% 이내
+                LabelValidationTargetPct = 4.0f;       // 미래 swing low 대비 +4% 검증
+                LabelVolumeRecoveryMultiplier = 1.5f;  // 거래량 1.5x+
+                LabelMaxDrawdownFromLow = -1.0f;       // 드로다운 swing low -1% 이내
             }
             else
             {
-                EntryThresholdPct = 1.5f;  // +1.5% 이상
-                LookAheadCandles = 6;       // 30분 (5분봉 × 6)
+                // 일반 진입: 완만한 상승 추세
+                EntryThresholdPct = 2.5f;              // 목표 +2.5%
+                LookAheadCandles = 12;                 // 60분 (5분봉 12개)
+                LabelSwingLookback = 10;               // 50분 윈도우
+                LabelMaxBarsSinceSwing = 4;            // swing low 4봉 이내
+                LabelMaxDistFromLowPct = 3.0f;         // 현재가 swing low 대비 +3% 이내
+                LabelValidationTargetPct = 3.0f;       // 미래 swing low 대비 +3% 검증
+                LabelVolumeRecoveryMultiplier = 1.1f;  // 거래량 1.1x+ (완만)
+                LabelMaxDrawdownFromLow = -1.5f;       // 드로다운 swing low -1.5% 이내
             }
         }
 
@@ -253,6 +283,64 @@ namespace TradingBot.Services
             // Structure Break: 직전 윈도우 최고가 돌파 여부
             float structureBreak = (windowHigh > 0 && close > windowHigh) ? 1f : 0f;
 
+            // ═══════════════════════════════════════════════════════════════
+            // [v4.9.8] 고급 지표 피처 12개
+            // ═══════════════════════════════════════════════════════════════
+
+            // MACD 메인/시그널 (이미 계산한 ema12/ema26 재사용)
+            float macdMain = (float)macdLine;
+            float macdSignal = (float)CalculateMacdSignal(candles, idx);
+
+            // ADX + DI (14)
+            var (adx, plusDi, minusDi) = CalculateAdx(candles, idx, 14);
+
+            // Price_To_BB_Mid
+            float priceToBbMid = sma20 > 0 ? (float)(((double)close - sma20) / sma20 * 100) : 0f;
+
+            // Lower_Shadow_Avg (최근 3봉)
+            float lowerShadowAvg = 0f;
+            foreach (var k in recent3)
+            {
+                decimal range = k.HighPrice - k.LowPrice;
+                if (range > 0)
+                    lowerShadowAvg += (float)((Math.Min(k.OpenPrice, k.ClosePrice) - k.LowPrice) / range);
+            }
+            lowerShadowAvg /= 3f;
+
+            // Volume_Change_Pct — 최근 3봉 평균 vs 직전 3봉 평균
+            float volumeChangePct = 0f;
+            if (idx >= 6)
+            {
+                double prev3 = candles.Skip(idx - 5).Take(3).Average(k => (double)k.Volume);
+                if (prev3 > 0) volumeChangePct = (float)((avgVol3 - prev3) / prev3 * 100);
+            }
+
+            // Trend_Strength — SMA 정배열 + ADX 결합
+            float trendStrength = 0f;
+            if (sma20 > 0 && close > 0)
+            {
+                double sma50Val = CalculateSmaSimple(candles, idx, 50);
+                bool bullAlign = sma20 > sma50Val && (double)close > sma20;
+                bool bearAlign = sma20 < sma50Val && (double)close < sma20;
+                float alignScore = bullAlign ? 1f : (bearAlign ? -1f : 0f);
+                trendStrength = alignScore * (adx / 100f);  // -1~+1 범위
+            }
+
+            // Fib_Position — 최근 100봉 고점/저점 기준
+            float fibPosition = 0.5f;
+            int fibStart = Math.Max(0, idx - 99);
+            decimal fibHigh = decimal.MinValue, fibLow = decimal.MaxValue;
+            for (int j = fibStart; j <= idx; j++)
+            {
+                if (candles[j].HighPrice > fibHigh) fibHigh = candles[j].HighPrice;
+                if (candles[j].LowPrice < fibLow) fibLow = candles[j].LowPrice;
+            }
+            if (fibHigh > fibLow)
+                fibPosition = (float)((close - fibLow) / (fibHigh - fibLow));
+
+            // Stochastic %K, %D (14, 3)
+            var (stochK, stochD) = CalculateStochastic(candles, idx, 14, 3);
+
             return new PumpFeature
             {
                 Volume_Surge_3 = Sanitize(volSurge3),
@@ -279,7 +367,20 @@ namespace TradingBot.Services
                 Swing_Low_Depth = Sanitize(swingLowDepth),
                 Volume_At_Low_Ratio = Sanitize(volumeAtLowRatio),
                 Lower_Lows_Count_Prev = lowerLowsCount,
-                Structure_Break = structureBreak
+                Structure_Break = structureBreak,
+                // [v4.9.8] 고급 지표 피처 (12개)
+                MACD_Main = Sanitize(macdMain),
+                MACD_Signal = Sanitize(macdSignal),
+                ADX = Sanitize(adx),
+                Plus_DI = Sanitize(plusDi),
+                Minus_DI = Sanitize(minusDi),
+                Price_To_BB_Mid = Sanitize(priceToBbMid),
+                Lower_Shadow_Avg = Sanitize(lowerShadowAvg),
+                Volume_Change_Pct = Sanitize(volumeChangePct),
+                Trend_Strength = Sanitize(trendStrength),
+                Fib_Position = Sanitize(fibPosition),
+                Stoch_K = Sanitize(stochK),
+                Stoch_D = Sanitize(stochD)
             };
         }
 
@@ -288,23 +389,29 @@ namespace TradingBot.Services
         // ═══════════════════════════════════════════
 
         /// <summary>
-        /// [v4.9.7] 추세 전환점 기반 라벨링 — "돌아선 직후" 패턴만 학습
-        /// 기존 라벨: "미래 +1.5% 올랐으면 진입" → 고점/하락장 반등도 포함 (잘못됨)
-        /// 신규 라벨: swing low 직후 1~3봉 이내 + 거래량 회복 + 미래 +5% 검증
+        /// [v4.9.8] 타입별 이중 경로 라벨링
+        /// 경로 A: 추세 전환점 (swing low 직후) — RAVE 17:30 케이스
+        /// 경로 B: 추세 지속 조정 (higher low에서 재반등) — 상승 중 pullback 매수
+        /// Normal은 완만/느슨, Spike는 급격/엄격
         /// </summary>
         public List<PumpFeature> LabelCandleData(List<IBinanceKline> candles)
         {
-            const int SwingLookback = 10;
-            const int MaxBarsSinceSwing = 3;   // swing low에서 최대 3봉 이내만 "초기 진입"
-            const float MaxDistFromLowPct = 2.0f;  // 현재가가 swing low 대비 +2% 이내
-            const float ValidationTargetPct = 5.0f; // 미래 window 내 swing low 대비 +5% 도달 필요
+            int swingLookback = LabelSwingLookback;
+            int maxBarsSinceSwing = LabelMaxBarsSinceSwing;
+            float maxDistFromLowPct = LabelMaxDistFromLowPct;
+            float validationTargetPct = LabelValidationTargetPct;
+            float volMultiplier = LabelVolumeRecoveryMultiplier;
+            float maxDrawdownFromLow = LabelMaxDrawdownFromLow;
 
-            int futureWindow = Math.Max(LookAheadCandles * 2, 12);
+            int futureWindow = Math.Max(LookAheadCandles, 6);
 
             if (candles == null || candles.Count < 30 + futureWindow)
                 return new List<PumpFeature>();
 
             var dataset = new List<PumpFeature>();
+            int pathATurningPoint = 0;
+            int pathBContinuation = 0;
+
             for (int i = 20; i < candles.Count - futureWindow; i++)
             {
                 var feature = ExtractFeature(candles, i);
@@ -313,10 +420,12 @@ namespace TradingBot.Services
                 decimal currentClose = candles[i].ClosePrice;
                 if (currentClose <= 0) continue;
 
-                // [1] 직전 10봉 swing low 재탐지 (라벨링 전용, ExtractFeature와 독립)
+                // ═══════════════════════════════════════
+                // 공통: swing low 탐지
+                // ═══════════════════════════════════════
                 int swingLowIdx = -1;
                 decimal swingLowPrice = decimal.MaxValue;
-                int startJ = Math.Max(1, i - SwingLookback);
+                int startJ = Math.Max(1, i - swingLookback);
                 for (int j = startJ; j <= i - 2; j++)
                 {
                     if (j - 1 < 0 || j + 1 >= candles.Count) continue;
@@ -329,49 +438,88 @@ namespace TradingBot.Services
                     }
                 }
 
-                bool isTurningPoint = false;
+                // 공통: 미래 window 계산 (경로 A, B 공유)
+                decimal futureMaxHigh = decimal.MinValue;
+                decimal futureMinLow = decimal.MaxValue;
+                int futureEnd = Math.Min(candles.Count - 1, i + futureWindow);
+                for (int j = i + 1; j <= futureEnd; j++)
+                {
+                    if (candles[j].HighPrice > futureMaxHigh) futureMaxHigh = candles[j].HighPrice;
+                    if (candles[j].LowPrice < futureMinLow) futureMinLow = candles[j].LowPrice;
+                }
+
+                bool isEntry = false;
+
+                // ═══════════════════════════════════════
+                // 경로 A: 추세 전환점 (swing low 직후)
+                // ═══════════════════════════════════════
                 if (swingLowIdx >= 0 && swingLowPrice > 0)
                 {
                     int barsSinceLow = i - swingLowIdx;
                     float distFromLow = (float)((currentClose - swingLowPrice) / swingLowPrice * 100);
 
-                    // [2] swing low에서 1~3봉 이내
-                    bool nearLow = barsSinceLow >= 1 && barsSinceLow <= MaxBarsSinceSwing;
-                    // [3] 현재가 swing low 대비 +2% 이내 (아직 초기, 이미 올라버렸으면 제외)
-                    bool stillEarly = distFromLow >= 0f && distFromLow <= MaxDistFromLowPct;
-                    // [4] Higher Low 확인 (현재 봉의 저점이 swing low보다 높음)
+                    bool nearLow = barsSinceLow >= 1 && barsSinceLow <= maxBarsSinceSwing;
+                    bool stillEarly = distFromLow >= 0f && distFromLow <= maxDistFromLowPct;
                     bool hasHigherLow = candles[i].LowPrice > swingLowPrice;
-                    // [5] 거래량 회복 (swing low 시점 대비 1.2배 이상)
+
                     double volAtLow = (double)candles[swingLowIdx].Volume;
                     double volNow = (double)candles[i].Volume;
-                    bool volumeRecovery = volAtLow > 0 && volNow > volAtLow * 1.2;
-                    // [6] 미래 검증: window 내 swing low 대비 +5% 도달
-                    decimal futureMaxHigh = decimal.MinValue;
-                    int futureEnd = Math.Min(candles.Count - 1, i + futureWindow);
-                    for (int j = i + 1; j <= futureEnd; j++)
-                    {
-                        if (candles[j].HighPrice > futureMaxHigh) futureMaxHigh = candles[j].HighPrice;
-                    }
-                    float futureMaxUpFromLow = (float)((futureMaxHigh - swingLowPrice) / swingLowPrice * 100);
-                    bool realReversal = futureMaxUpFromLow >= ValidationTargetPct;
-                    // [7] 미래 드로다운 한도: swing low 아래로 -1% 이상 깨지면 제외
-                    decimal futureMinLow = decimal.MaxValue;
-                    for (int j = i + 1; j <= futureEnd; j++)
-                    {
-                        if (candles[j].LowPrice < futureMinLow) futureMinLow = candles[j].LowPrice;
-                    }
-                    bool structureHold = futureMinLow >= swingLowPrice * 0.99m;
+                    bool volumeRecovery = volAtLow > 0 && volNow > volAtLow * volMultiplier;
 
-                    isTurningPoint = nearLow && stillEarly && hasHigherLow && volumeRecovery && realReversal && structureHold;
+                    float futureMaxUpFromLow = (float)((futureMaxHigh - swingLowPrice) / swingLowPrice * 100);
+                    bool realReversal = futureMaxUpFromLow >= validationTargetPct;
+
+                    float futureMinDownFromLow = (float)((futureMinLow - swingLowPrice) / swingLowPrice * 100);
+                    bool structureHold = futureMinDownFromLow >= maxDrawdownFromLow;
+
+                    bool turningPoint = nearLow && stillEarly && hasHigherLow && volumeRecovery && realReversal && structureHold;
+                    if (turningPoint)
+                    {
+                        isEntry = true;
+                        pathATurningPoint++;
+                    }
                 }
 
-                feature.Label = isTurningPoint;
+                // ═══════════════════════════════════════
+                // 경로 B: 추세 지속 조정 (pullback continuation)
+                // "이미 상승 중인데 잠깐 눌렸다가 재반등할 자리"
+                // ═══════════════════════════════════════
+                if (!isEntry)
+                {
+                    // 직전 N봉 추세가 상승 (SMA10 상승 or higher lows >=2)
+                    double sma10Now = CalculateSmaSimple(candles, i, 10);
+                    double sma10Prev = i >= 10 ? CalculateSmaSimple(candles, i - 5, 10) : sma10Now;
+                    bool uptrendSma = sma10Now > sma10Prev * 1.002;
+
+                    // 현재 봉이 직전 3봉 대비 눌림
+                    decimal recentMaxHigh = decimal.MinValue;
+                    for (int j = Math.Max(0, i - 3); j < i; j++)
+                        if (candles[j].HighPrice > recentMaxHigh) recentMaxHigh = candles[j].HighPrice;
+                    float pullbackPct = recentMaxHigh > 0 ? (float)((recentMaxHigh - currentClose) / recentMaxHigh * 100) : 0;
+                    bool shallowPullback = pullbackPct >= 0.3f && pullbackPct <= 2.5f;
+
+                    // 미래에 현재가 대비 목표 도달
+                    float futureUpFromCurrent = (float)((futureMaxHigh - currentClose) / currentClose * 100);
+                    bool profitTarget = futureUpFromCurrent >= EntryThresholdPct;
+
+                    // 드로다운 제한
+                    float futureDownFromCurrent = (float)((currentClose - futureMinLow) / currentClose * 100);
+                    bool riskOk = futureDownFromCurrent <= Math.Abs(maxDrawdownFromLow) + 0.5f;
+
+                    if (uptrendSma && shallowPullback && profitTarget && riskOk)
+                    {
+                        isEntry = true;
+                        pathBContinuation++;
+                    }
+                }
+
+                feature.Label = isEntry;
                 dataset.Add(feature);
             }
 
             int entries = dataset.Count(d => d.Label);
             float entryRatio = dataset.Count > 0 ? (float)entries / dataset.Count * 100 : 0f;
-            OnLog?.Invoke($"[PumpML-{_signalType}] [v4.9.7] 추세전환점 라벨링: {dataset.Count}건 (Entry={entries}={entryRatio:F1}%, Hold={dataset.Count - entries}) | swingWindow={SwingLookback} maxBars={MaxBarsSinceSwing} validation=+{ValidationTargetPct}%");
+            OnLog?.Invoke($"[PumpML-{_signalType}] [v4.9.8] 라벨링: {dataset.Count}건 (Entry={entries}={entryRatio:F1}% / A전환={pathATurningPoint} B지속={pathBContinuation}) | type={_signalType} target={EntryThresholdPct}% window={futureWindow}봉");
             return dataset;
         }
 
@@ -424,7 +572,16 @@ namespace TradingBot.Services
                         "Swing_Low_Depth",
                         "Volume_At_Low_Ratio",
                         "Lower_Lows_Count_Prev_F",
-                        "Structure_Break"
+                        "Structure_Break",
+                        // [v4.9.8] 고급 지표 피처 (12개)
+                        "MACD_Main", "MACD_Signal",
+                        "ADX", "Plus_DI", "Minus_DI",
+                        "Price_To_BB_Mid",
+                        "Lower_Shadow_Avg",
+                        "Volume_Change_Pct",
+                        "Trend_Strength",
+                        "Fib_Position",
+                        "Stoch_K", "Stoch_D"
                     };
 
                     var pipeline = _mlContext.Transforms.Conversion
@@ -445,7 +602,7 @@ namespace TradingBot.Services
                             learningRate: 0.1,
                             numberOfIterations: 200));
 
-                    OnLog?.Invoke($"[PumpML-{_signalType}] [v4.9.7] LightGBM 학습 시작 ({trainingData.Count}건, 피처 24개=기본18+구조6)...");
+                    OnLog?.Invoke($"[PumpML-{_signalType}] [v4.9.8] LightGBM 학습 시작 ({trainingData.Count}건, 피처 36개=기본18+구조6+고급12)...");
                     _model = pipeline.Fit(split.TrainSet);
 
                     var predictions = _model.Transform(split.TestSet);
@@ -580,6 +737,124 @@ namespace TradingBot.Services
             return ema;
         }
 
+        // ═══════════════════════════════════════════
+        // [v4.9.8] 고급 지표 헬퍼
+        // ═══════════════════════════════════════════
+
+        /// <summary>MACD Signal 라인 (MACD의 EMA9 근사)</summary>
+        private static double CalculateMacdSignal(List<IBinanceKline> candles, int endIdx)
+        {
+            if (endIdx < 34) return 0;
+            // MACD 최근 9개 값의 EMA
+            double[] macdValues = new double[9];
+            for (int k = 0; k < 9; k++)
+            {
+                int bi = endIdx - 8 + k;
+                if (bi < 26) { macdValues[k] = 0; continue; }
+                double e12 = CalculateEmaSimple(candles, bi, 12);
+                double e26 = CalculateEmaSimple(candles, bi, 26);
+                macdValues[k] = e12 - e26;
+            }
+            double multiplier = 2.0 / (9 + 1);
+            double signal = macdValues[0];
+            for (int k = 1; k < 9; k++)
+            {
+                signal = (macdValues[k] - signal) * multiplier + signal;
+            }
+            return signal;
+        }
+
+        /// <summary>ADX / +DI / -DI (14 period, Wilder's smoothing 근사)</summary>
+        private static (float adx, float plusDi, float minusDi) CalculateAdx(List<IBinanceKline> candles, int endIdx, int period)
+        {
+            if (endIdx < period * 2) return (0f, 0f, 0f);
+
+            int startIdx = endIdx - period * 2 + 1;
+            double sumTr = 0, sumPlusDm = 0, sumMinusDm = 0;
+            var dxList = new List<double>();
+
+            for (int i = startIdx; i <= endIdx; i++)
+            {
+                if (i < 1) continue;
+                double high = (double)candles[i].HighPrice;
+                double low  = (double)candles[i].LowPrice;
+                double prevHigh = (double)candles[i - 1].HighPrice;
+                double prevLow  = (double)candles[i - 1].LowPrice;
+                double prevClose = (double)candles[i - 1].ClosePrice;
+
+                double tr = Math.Max(high - low, Math.Max(Math.Abs(high - prevClose), Math.Abs(low - prevClose)));
+                double upMove = high - prevHigh;
+                double downMove = prevLow - low;
+
+                double plusDm  = (upMove > downMove && upMove > 0) ? upMove : 0;
+                double minusDm = (downMove > upMove && downMove > 0) ? downMove : 0;
+
+                sumTr += tr;
+                sumPlusDm += plusDm;
+                sumMinusDm += minusDm;
+
+                if (i >= startIdx + period - 1)
+                {
+                    double plusDiVal  = sumTr > 0 ? 100.0 * sumPlusDm / sumTr : 0;
+                    double minusDiVal = sumTr > 0 ? 100.0 * sumMinusDm / sumTr : 0;
+                    double dx = (plusDiVal + minusDiVal) > 0
+                        ? 100.0 * Math.Abs(plusDiVal - minusDiVal) / (plusDiVal + minusDiVal)
+                        : 0;
+                    dxList.Add(dx);
+                }
+            }
+
+            double finalPlusDi  = sumTr > 0 ? 100.0 * sumPlusDm / sumTr : 0;
+            double finalMinusDi = sumTr > 0 ? 100.0 * sumMinusDm / sumTr : 0;
+            double adxVal = dxList.Count > 0 ? dxList.Average() : 0;
+
+            return ((float)adxVal, (float)finalPlusDi, (float)finalMinusDi);
+        }
+
+        /// <summary>Stochastic Oscillator (%K, %D)</summary>
+        private static (float k, float d) CalculateStochastic(List<IBinanceKline> candles, int endIdx, int kPeriod, int dPeriod)
+        {
+            if (endIdx < kPeriod) return (50f, 50f);
+
+            // %K 배열 (최근 dPeriod개)
+            double[] kValues = new double[dPeriod];
+            for (int offset = 0; offset < dPeriod; offset++)
+            {
+                int ei = endIdx - offset;
+                if (ei < kPeriod - 1) { kValues[offset] = 50; continue; }
+
+                decimal highestHigh = decimal.MinValue;
+                decimal lowestLow = decimal.MaxValue;
+                for (int j = ei - kPeriod + 1; j <= ei; j++)
+                {
+                    if (candles[j].HighPrice > highestHigh) highestHigh = candles[j].HighPrice;
+                    if (candles[j].LowPrice < lowestLow) lowestLow = candles[j].LowPrice;
+                }
+
+                decimal curClose = candles[ei].ClosePrice;
+                double k;
+                if (highestHigh > lowestLow)
+                    k = (double)((curClose - lowestLow) / (highestHigh - lowestLow)) * 100.0;
+                else
+                    k = 50;
+                kValues[offset] = k;
+            }
+
+            float kNow = (float)kValues[0];
+            float dNow = (float)kValues.Average();
+            return (kNow, dNow);
+        }
+
+        /// <summary>SMA 간이 계산</summary>
+        private static double CalculateSmaSimple(List<IBinanceKline> candles, int endIdx, int period)
+        {
+            if (endIdx < period - 1) return (double)candles[endIdx].ClosePrice;
+            double sum = 0;
+            for (int i = endIdx - period + 1; i <= endIdx; i++)
+                sum += (double)candles[i].ClosePrice;
+            return sum / period;
+        }
+
         private static float Sanitize(float value)
         {
             if (float.IsNaN(value) || float.IsInfinity(value)) return 0f;
@@ -598,7 +873,7 @@ namespace TradingBot.Services
     // 데이터 모델
     // ═══════════════════════════════════════════
 
-    /// <summary>PUMP 전용 피처 (v4.9.7: 24개 — 추세전환 구조 피처 6개 추가)</summary>
+    /// <summary>PUMP 전용 피처 (v4.9.8: 36개 = 18 기본 + 6 구조 + 12 고급지표)</summary>
     public class PumpFeature
     {
         [ColumnName("Label")]
@@ -643,18 +918,40 @@ namespace TradingBot.Services
         // ═══════════════════════════════════════════
         // [v4.9.7] 추세 전환점 구조 피처 (6개)
         // ═══════════════════════════════════════════
-        /// <summary>직전 swing low 대비 현재가 거리 (%) — 작을수록 초기</summary>
         public float Dist_From_Swing_Low { get; set; }
-        /// <summary>swing low 이후 경과 봉 수 — 1~3이 이상적</summary>
         public int Bars_Since_Swing_Low { get; set; }
-        /// <summary>직전 10봉 고점 대비 swing low 깊이 (%) — 조정 강도</summary>
         public float Swing_Low_Depth { get; set; }
-        /// <summary>현재 거래량 / swing low 시점 거래량 — 세력 개입</summary>
         public float Volume_At_Low_Ratio { get; set; }
-        /// <summary>직전 10봉 중 lower low 카운트 — 하락추세 강도</summary>
         public int Lower_Lows_Count_Prev { get; set; }
-        /// <summary>직전 swing high 돌파 여부 (0/1) — 구조 전환 확정</summary>
         public float Structure_Break { get; set; }
+
+        // ═══════════════════════════════════════════
+        // [v4.9.8] 고급 지표 피처 (12개) — 사용자 요청 확장
+        // ═══════════════════════════════════════════
+        /// <summary>MACD 메인 라인 (EMA12 - EMA26)</summary>
+        public float MACD_Main { get; set; }
+        /// <summary>MACD Signal 라인 (MACD의 EMA9)</summary>
+        public float MACD_Signal { get; set; }
+        /// <summary>ADX (14) — 추세 강도 0~100</summary>
+        public float ADX { get; set; }
+        /// <summary>+DI (14) — 상승 방향 강도</summary>
+        public float Plus_DI { get; set; }
+        /// <summary>-DI (14) — 하락 방향 강도</summary>
+        public float Minus_DI { get; set; }
+        /// <summary>현재가가 BB 중간선 대비 거리 (%)</summary>
+        public float Price_To_BB_Mid { get; set; }
+        /// <summary>아래 꼬리 길이 / 캔들 전체 길이 (최근 3봉 평균)</summary>
+        public float Lower_Shadow_Avg { get; set; }
+        /// <summary>최근 3봉 거래량 변화율 (%)</summary>
+        public float Volume_Change_Pct { get; set; }
+        /// <summary>추세 강도 점수 (SMA 정배열 + ADX 기반)</summary>
+        public float Trend_Strength { get; set; }
+        /// <summary>피보나치 위치 (0=0.786, 1=0.382) — 최근 100봉 기준</summary>
+        public float Fib_Position { get; set; }
+        /// <summary>Stochastic %K (14)</summary>
+        public float Stoch_K { get; set; }
+        /// <summary>Stochastic %D (14,3) — %K의 SMA3</summary>
+        public float Stoch_D { get; set; }
     }
 
     /// <summary>PUMP ML 예측 결과</summary>

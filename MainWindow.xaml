@@ -1564,77 +1564,80 @@
 
                                                 <Rectangle Grid.Column="1" Fill="#1E3A5F"/>
 
-                                                <!-- ── RIGHT: Focused Position Deep Dive (보유 상태) ── -->
+                                                <!-- ── RIGHT: Active Positions (모든 포지션 표시 — v4.9.8 버그 수정) ── -->
                                                 <Grid Grid.Column="2" Margin="8,0,0,0">
                                                     <!-- 보유 있을 때 -->
-                                                    <Border Visibility="{Binding HasFocusedPosition, Converter={StaticResource BoolToVisibilityConverter}}">
-                                                        <StackPanel>
-                                                            <TextBlock Text="📊 FOCUSED POSITION" FontSize="11" FontWeight="Bold"
+                                                    <Border Visibility="{Binding HasAnyActivePosition, Converter={StaticResource BoolToVisibilityConverter}}">
+                                                        <Grid>
+                                                            <Grid.RowDefinitions>
+                                                                <RowDefinition Height="Auto"/>
+                                                                <RowDefinition Height="*"/>
+                                                            </Grid.RowDefinitions>
+                                                            <TextBlock Grid.Row="0" Text="📊 ACTIVE POSITIONS" FontSize="11" FontWeight="Bold"
                                                                        Foreground="#10B981" Margin="0,0,0,6"/>
-                                                            <Grid>
-                                                                <Grid.ColumnDefinitions>
-                                                                    <ColumnDefinition Width="Auto"/>
-                                                                    <ColumnDefinition Width="*"/>
-                                                                </Grid.ColumnDefinitions>
-                                                                <TextBlock Text="{Binding FocusedPosition.Symbol}" FontSize="18" FontWeight="Bold"
-                                                                           Foreground="#E0E7FF" FontFamily="Consolas" VerticalAlignment="Center"/>
-                                                                <Border Grid.Column="1" Background="#111827" CornerRadius="4" Padding="8,3"
-                                                                        HorizontalAlignment="Right" VerticalAlignment="Center">
-                                                                    <TextBlock Text="{Binding FocusedPosition.Side}"
-                                                                               Foreground="{Binding FocusedPosition.SideColor}"
-                                                                               FontSize="11" FontWeight="Bold" FontFamily="Consolas"/>
-                                                                </Border>
-                                                            </Grid>
-                                                            <Grid Margin="0,6,0,0">
-                                                                <Grid.ColumnDefinitions>
-                                                                    <ColumnDefinition Width="*"/>
-                                                                    <ColumnDefinition Width="*"/>
-                                                                    <ColumnDefinition Width="*"/>
-                                                                </Grid.ColumnDefinitions>
-                                                                <StackPanel Grid.Column="0">
-                                                                    <TextBlock Text="ROE" Foreground="#6B7280" FontSize="9"/>
-                                                                    <TextBlock Text="{Binding FocusedPosition.RoeText}"
-                                                                               Foreground="{Binding FocusedPosition.RoeColor}"
-                                                                               FontSize="16" FontWeight="Bold" FontFamily="Consolas"/>
-                                                                </StackPanel>
-                                                                <StackPanel Grid.Column="1">
-                                                                    <TextBlock Text="PNL" Foreground="#6B7280" FontSize="9"/>
-                                                                    <TextBlock Text="{Binding FocusedPosition.PnlText}"
-                                                                               Foreground="#A5B4FC"
-                                                                               FontSize="14" FontWeight="Bold" FontFamily="Consolas"/>
-                                                                </StackPanel>
-                                                                <StackPanel Grid.Column="2">
-                                                                    <TextBlock Text="HOLD" Foreground="#6B7280" FontSize="9"/>
-                                                                    <TextBlock Text="{Binding FocusedPosition.HoldingTimeText}"
-                                                                               Foreground="#FBBF24"
-                                                                               FontSize="14" FontWeight="Bold" FontFamily="Consolas"/>
-                                                                </StackPanel>
-                                                            </Grid>
-                                                            <Grid Margin="0,8,0,0">
-                                                                <Grid.ColumnDefinitions>
-                                                                    <ColumnDefinition Width="Auto"/>
-                                                                    <ColumnDefinition Width="*"/>
-                                                                    <ColumnDefinition Width="Auto"/>
-                                                                </Grid.ColumnDefinitions>
-                                                                <TextBlock Grid.Column="0" Text="{Binding FocusedPosition.SlText}"
-                                                                           Foreground="#EF4444" FontSize="10" FontFamily="Consolas"
-                                                                           VerticalAlignment="Center"/>
-                                                                <ProgressBar Grid.Column="1"
-                                                                             Value="{Binding FocusedPosition.ProgressToTpPct, Mode=OneWay}"
-                                                                             Maximum="100" Height="8" Margin="8,0"
-                                                                             Background="#111827" Foreground="#10B981"
-                                                                             BorderThickness="0"/>
-                                                                <TextBlock Grid.Column="2" Text="{Binding FocusedPosition.TpText}"
-                                                                           Foreground="#10B981" FontSize="10" FontFamily="Consolas"
-                                                                           VerticalAlignment="Center"/>
-                                                            </Grid>
-                                                            <TextBlock Text="{Binding FocusedPosition.AIReassessText}"
-                                                                       Foreground="{Binding FocusedPosition.AIReassessBrush}"
-                                                                       FontSize="10" FontWeight="Bold" Margin="0,8,0,0"/>
-                                                        </StackPanel>
+                                                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                                                <ItemsControl ItemsSource="{Binding ActivePositions}">
+                                                                    <ItemsControl.ItemTemplate>
+                                                                        <DataTemplate>
+                                                                            <Border Background="#0A1421" BorderBrush="#1E3A5F" BorderThickness="1"
+                                                                                    CornerRadius="4" Padding="6,4" Margin="0,0,0,4">
+                                                                                <StackPanel>
+                                                                                    <Grid>
+                                                                                        <Grid.ColumnDefinitions>
+                                                                                            <ColumnDefinition Width="Auto"/>
+                                                                                            <ColumnDefinition Width="*"/>
+                                                                                            <ColumnDefinition Width="Auto"/>
+                                                                                        </Grid.ColumnDefinitions>
+                                                                                        <TextBlock Text="{Binding Symbol}" FontSize="13" FontWeight="Bold"
+                                                                                                   Foreground="#E0E7FF" FontFamily="Consolas" VerticalAlignment="Center"/>
+                                                                                        <TextBlock Grid.Column="1" Text="{Binding RoeText}"
+                                                                                                   Foreground="{Binding RoeColor}"
+                                                                                                   FontSize="13" FontWeight="Bold" FontFamily="Consolas"
+                                                                                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                                                        <Border Grid.Column="2" Background="#111827" CornerRadius="3" Padding="5,1">
+                                                                                            <TextBlock Text="{Binding Side}"
+                                                                                                       Foreground="{Binding SideColor}"
+                                                                                                       FontSize="9" FontWeight="Bold" FontFamily="Consolas"/>
+                                                                                        </Border>
+                                                                                    </Grid>
+                                                                                    <Grid Margin="0,3,0,0">
+                                                                                        <Grid.ColumnDefinitions>
+                                                                                            <ColumnDefinition Width="Auto"/>
+                                                                                            <ColumnDefinition Width="*"/>
+                                                                                            <ColumnDefinition Width="Auto"/>
+                                                                                        </Grid.ColumnDefinitions>
+                                                                                        <TextBlock Grid.Column="0" Text="{Binding SlText}"
+                                                                                                   Foreground="#EF4444" FontSize="9" FontFamily="Consolas"
+                                                                                                   VerticalAlignment="Center"/>
+                                                                                        <ProgressBar Grid.Column="1"
+                                                                                                     Value="{Binding ProgressToTpPct, Mode=OneWay}"
+                                                                                                     Maximum="100" Height="5" Margin="5,0"
+                                                                                                     Background="#111827" Foreground="#10B981"
+                                                                                                     BorderThickness="0"/>
+                                                                                        <TextBlock Grid.Column="2" Text="{Binding TpText}"
+                                                                                                   Foreground="#10B981" FontSize="9" FontFamily="Consolas"
+                                                                                                   VerticalAlignment="Center"/>
+                                                                                    </Grid>
+                                                                                    <Grid Margin="0,2,0,0">
+                                                                                        <Grid.ColumnDefinitions>
+                                                                                            <ColumnDefinition Width="*"/>
+                                                                                            <ColumnDefinition Width="Auto"/>
+                                                                                        </Grid.ColumnDefinitions>
+                                                                                        <TextBlock Text="{Binding PnlText}" Foreground="#A5B4FC"
+                                                                                                   FontSize="10" FontFamily="Consolas"/>
+                                                                                        <TextBlock Grid.Column="1" Text="{Binding HoldingTimeText}"
+                                                                                                   Foreground="#FBBF24" FontSize="10" FontFamily="Consolas"/>
+                                                                                    </Grid>
+                                                                                </StackPanel>
+                                                                            </Border>
+                                                                        </DataTemplate>
+                                                                    </ItemsControl.ItemTemplate>
+                                                                </ItemsControl>
+                                                            </ScrollViewer>
+                                                        </Grid>
                                                     </Border>
                                                     <!-- 보유 없을 때 -->
-                                                    <Border Visibility="{Binding HasFocusedPosition, Converter={StaticResource InvertBoolToVisibilityConverter}}">
+                                                    <Border Visibility="{Binding HasAnyActivePosition, Converter={StaticResource InvertBoolToVisibilityConverter}}">
                                                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                                                             <TextBlock Text="💤" FontSize="28" HorizontalAlignment="Center"/>
                                                             <TextBlock Text="활성 포지션 없음" Foreground="#6B7280"

@@ -209,6 +209,11 @@ namespace TradingBot.ViewModels
         }
         public bool HasFocusedPosition => _focusedPosition != null;
 
+        // [v4.9.8] 모든 활성 포지션을 동시에 표시 (기존 FocusedPosition은 1개만 표시하는 버그 수정)
+        public ObservableCollection<TradingBot.Models.PositionDetailViewModel> ActivePositions { get; }
+            = new ObservableCollection<TradingBot.Models.PositionDetailViewModel>();
+        public bool HasAnyActivePosition => ActivePositions.Count > 0;
+
         public TradingBot.Models.DetectHealthViewModel DetectHealth { get; }
             = new TradingBot.Models.DetectHealthViewModel();
 
@@ -4649,66 +4654,83 @@ namespace TradingBot.ViewModels
         }
 
         /// <summary>
-        /// [v4.9.0] 활성 포지션이 있을 때 Focused Position 업데이트.
-        /// 주기적으로 호출되거나 포지션 이벤트에서 호출.
+        /// [v4.9.8] 활성 포지션 전체 업데이트 — 기존 FocusedPosition 1개만 표시하던 버그 수정.
+        /// ActivePositions 컬렉션에 모든 포지션을 담고, FocusedPosition은 최근 1개(호환용).
         /// </summary>
         public void UpdateFocusedPositionFromEngine()
         {
             if (_engine == null) return;
             try
             {
-                TradingBot.Shared.Models.PositionInfo? latest = null;
+                List<TradingBot.Shared.Models.PositionInfo> snapshot;
                 lock (typeof(TradingBot.TradingEngine))
                 {
-                    var pos = _engine.GetActivePositionSnapshot();
-                    latest = pos.OrderByDescending(p => p.EntryTime).FirstOrDefault();
+                    snapshot = _engine.GetActivePositionSnapshot()
+                        .OrderByDescending(p => p.EntryTime)
+                        .ToList();
                 }
 
-                if (latest == null)
+                if (snapshot.Count == 0)
                 {
-                    RunOnUI(() => FocusedPosition = null);
+                    RunOnUI(() =>
+                    {
+                        FocusedPosition = null;
+                        ActivePositions.Clear();
+                        OnPropertyChanged(nameof(HasAnyActivePosition));
+                    });
                     return;
                 }
 
-                decimal currentPrice = 0m;
-                if (_engine.TryGetTickerPrice(latest.Symbol, out var px)) currentPrice = px;
-                if (currentPrice <= 0) currentPrice = latest.EntryPrice;
-
-                decimal roePct = 0m;
-                if (latest.EntryPrice > 0)
+                // 모든 포지션을 ViewModel로 변환
+                var vmList = new List<TradingBot.Models.PositionDetailViewModel>(snapshot.Count);
+                foreach (var pos in snapshot)
                 {
-                    roePct = latest.IsLong
-                        ? (currentPrice - latest.EntryPrice) / latest.EntryPrice * 100m
-                        : (latest.EntryPrice - currentPrice) / latest.EntryPrice * 100m;
-                    roePct *= latest.Leverage > 0 ? latest.Leverage : 1;
-                }
+                    decimal currentPrice = 0m;
+                    if (_engine.TryGetTickerPrice(pos.Symbol, out var px)) currentPrice = px;
+                    if (currentPrice <= 0) currentPrice = pos.EntryPrice;
 
-                decimal progress = 0m;
-                if (latest.TakeProfit > 0 && latest.EntryPrice > 0)
-                {
-                    decimal span = Math.Abs(latest.TakeProfit - latest.EntryPrice);
-                    if (span > 0)
+                    decimal roePct = 0m;
+                    if (pos.EntryPrice > 0)
                     {
-                        decimal moved = Math.Abs(currentPrice - latest.EntryPrice);
-                        progress = Math.Min(100m, moved / span * 100m);
+                        roePct = pos.IsLong
+                            ? (currentPrice - pos.EntryPrice) / pos.EntryPrice * 100m
+                            : (pos.EntryPrice - currentPrice) / pos.EntryPrice * 100m;
+                        roePct *= pos.Leverage > 0 ? pos.Leverage : 1;
                     }
+
+                    decimal progress = 0m;
+                    if (pos.TakeProfit > 0 && pos.EntryPrice > 0)
+                    {
+                        decimal span = Math.Abs(pos.TakeProfit - pos.EntryPrice);
+                        if (span > 0)
+                        {
+                            decimal moved = Math.Abs(currentPrice - pos.EntryPrice);
+                            progress = Math.Min(100m, moved / span * 100m);
+                        }
+                    }
+
+                    vmList.Add(new TradingBot.Models.PositionDetailViewModel
+                    {
+                        Symbol = pos.Symbol,
+                        Side = pos.IsLong ? "LONG" : "SHORT",
+                        EntryPrice = pos.EntryPrice,
+                        CurrentPrice = currentPrice,
+                        RoePct = roePct,
+                        UnrealizedPnlUsd = (decimal)((double)pos.Quantity * ((double)currentPrice - (double)pos.EntryPrice) * (pos.IsLong ? 1 : -1)),
+                        HoldingTime = pos.EntryTime == default ? TimeSpan.Zero : DateTime.Now - pos.EntryTime,
+                        TpPrice = pos.TakeProfit,
+                        SlPrice = pos.StopLoss,
+                        ProgressToTpPct = (double)progress
+                    });
                 }
 
-                var vm = new TradingBot.Models.PositionDetailViewModel
+                RunOnUI(() =>
                 {
-                    Symbol = latest.Symbol,
-                    Side = latest.IsLong ? "LONG" : "SHORT",
-                    EntryPrice = latest.EntryPrice,
-                    CurrentPrice = currentPrice,
-                    RoePct = roePct,
-                    UnrealizedPnlUsd = (decimal)((double)latest.Quantity * ((double)currentPrice - (double)latest.EntryPrice) * (latest.IsLong ? 1 : -1)),
-                    HoldingTime = latest.EntryTime == default ? TimeSpan.Zero : DateTime.Now - latest.EntryTime,
-                    TpPrice = latest.TakeProfit,
-                    SlPrice = latest.StopLoss,
-                    ProgressToTpPct = (double)progress
-                };
-
-                RunOnUI(() => FocusedPosition = vm);
+                    ActivePositions.Clear();
+                    foreach (var v in vmList) ActivePositions.Add(v);
+                    FocusedPosition = vmList.FirstOrDefault(); // 호환용 (기존 바인딩 유지)
+                    OnPropertyChanged(nameof(HasAnyActivePosition));
+                });
             }
             catch { }
         }

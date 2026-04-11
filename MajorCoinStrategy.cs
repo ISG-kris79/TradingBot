@@ -95,16 +95,20 @@ namespace TradingBot.Strategies
                 double fibBonus = CalculateFibScore(list, currentPrice);
                 if (fibBonus > 0) aiScore = Math.Clamp(aiScore + (int)fibBonus, 0, 100);
 
-                // [v4.3.1] AI 전용 방향 판단 — 하드코딩 제거
-                // aiScore를 기준으로 방향 결정, 나머지는 AI Gate + Survival이 검증
+                // [v4.9.8] 경계 65/35로 완화 + 가격 모멘텀 직접 반영
+                // 기존 문제: sideway 장에서 50~65 박스권에 갇혀 21시간 신호 0건
+                // - aiScore 65+ = LONG (모멘텀 상승 확인 시)
+                // - aiScore 35- = SHORT (모멘텀 하락 확인 시)
                 string decision = "WAIT";
 
-                // aiScore 70+ = LONG (AI 스코어 기반)
-                // aiScore 30- = SHORT
-                // 30~70 = WAIT (확신 부족)
-                if (aiScore >= 70)
+                if (aiScore >= 65 && (isPriceRecovering || isStrongBounce))
                     decision = "LONG";
-                else if (aiScore <= 30)
+                else if (aiScore <= 35 && (isPriceDropping || isStrongDrop || isMakingLowerHighs))
+                    decision = "SHORT";
+                // [Fallback] 강한 모멘텀 단독 시그널 (aiScore가 애매해도 명확한 방향이면 진입)
+                else if (isStrongBounce && isMakingHigherLows && rsi > 55)
+                    decision = "LONG";
+                else if (isStrongDrop && isMakingLowerHighs && rsi < 45)
                     decision = "SHORT";
 
                 try
@@ -234,6 +238,7 @@ namespace TradingBot.Strategies
         {
             int score = 50;
 
+            // [v4.9.8] 대칭 스코어링 — 기존 LONG 편향 수정 (SHORT 21시간 0건 원인)
             if (isUptrend) score += 12;
             else score -= 12;
 
@@ -243,11 +248,15 @@ namespace TradingBot.Strategies
             if (sma60 > sma120) score += 8;
             else score -= 8;
 
+            // [v4.9.8] 가격-SMA 정/역배열 대칭
             if (currentPrice > (decimal)sma20 && sma20 > sma50) score += 10;
+            else if (currentPrice < (decimal)sma20 && sma20 < sma50) score -= 10;
 
-            if (rsi >= 45 && rsi <= 68) score += 10;
-            else if (rsi > 75) score -= 10;
-            else if (rsi < 35) score -= 6;
+            // [v4.9.8] RSI 중립 보너스 제거 — sideway 박스 탈출
+            if (rsi >= 55 && rsi <= 68) score += 8;          // 상승 모멘텀 구간
+            else if (rsi >= 32 && rsi <= 45) score -= 8;     // 하락 모멘텀 구간
+            else if (rsi > 75) score -= 10;                   // 과매수
+            else if (rsi < 25) score += 6;                    // 과매도 (반등 가능)
 
             if (macd.Hist > 0) score += 10;
             else score -= 10;
@@ -262,8 +271,15 @@ namespace TradingBot.Strategies
             if (price > bb.Upper && rsi > 72) score -= 8;
             else if (price < bb.Lower && rsi < 30) score += 6;
 
-            if (volumeMomentum >= 1.10) score += 10;
-            else if (volumeMomentum >= 1.00) score += 5;
+            // [v4.9.8] 거래량 대칭 — 하락 추세 + 거래량 터지면 SHORT 가속
+            if (volumeMomentum >= 1.10)
+            {
+                score += (sma20 > sma60 ? 10 : -10);  // 추세 방향으로 가점/감점
+            }
+            else if (volumeMomentum >= 1.00)
+            {
+                score += (sma20 > sma60 ? 5 : -5);
+            }
             else if (allowLowVolumeTrendBypass) score += 15;
 
             if (isMakingHigherLows && currentPrice > (decimal)sma20) score += profile.HigherLowBonus;
