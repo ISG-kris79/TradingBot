@@ -859,7 +859,11 @@ namespace TradingBot
             _crashDetector.MinCoinCount = _settings.CrashMinCoinCount > 0 ? _settings.CrashMinCoinCount : 2;
             _crashDetector.ReverseEntrySizeRatio = _settings.CrashReverseSizeRatio > 0 ? _settings.CrashReverseSizeRatio : 0.5m;
             _crashDetector.CooldownSeconds = _settings.CrashCooldownSeconds > 0 ? _settings.CrashCooldownSeconds : 120;
-            _crashDetector.OnLog += msg => OnAlert?.Invoke(msg);
+            _crashDetector.OnLog += msg =>
+            {
+                OnAlert?.Invoke(msg);
+                LoggerService.Info(msg); // [v4.9.2] CrashDetector 감지 로그 파일 기록
+            };
             _crashDetector.OnCrashDetected += (coins, avgDrop) => _ = HandleCrashDetectedAsync(coins, avgDrop);
 
             // [v4.5.5] 알트 불장 감지기 이벤트 연결
@@ -877,20 +881,20 @@ namespace TradingBot
             _crashDetector.OnVolumeSurgeDetected += (symbol, volRatio, price) =>
             {
                 _pumpWatchPool[symbol] = (price, DateTime.Now, volRatio);
-                OnStatusLog?.Invoke($"🔥 [감시등록] {symbol} vol={volRatio:F1}x price={price:F6} → 상승 확인 대기");
+                string surgeLog = $"🔥 [감시등록] {symbol} vol={volRatio:F1}x price={price:F6} → 상승 확인 대기";
+                OnStatusLog?.Invoke(surgeLog);
+                LoggerService.Info(surgeLog); // [v4.9.2]
                 // [v4.6.0] 감시풀 등록 시 동적 수집 등록 + 즉시 백필
                 _marketHistoryService?.RegisterSymbol(symbol);
                 _ = _marketHistoryService?.RequestBackfillAsync(symbol, _cts?.Token ?? CancellationToken.None);
 
                 // [v4.7.9] 거래량 급증 감지 심볼 즉시 학습 대상에 포함
-                // - Top 100 다운로드 바깥의 소형/신규 코인이 바로 급증 주인공인 경우가 많음
-                // - 실시간 WebSocket 캔들이 공급되고 있어 피처 추출/ML 추론 가능
-                // - 품질 필터는 downstream AI Gate(AIDoubleCheckEntryGate, PumpSignalClassifier)가
-                //   ML 확률 기반으로 담당하므로 Router 0은 "데이터 존재 여부" 수준만 확인
                 if (_trainedSymbols.TryAdd(symbol, true))
                 {
                     OnSymbolTrained?.Invoke(symbol);
-                    OnStatusLog?.Invoke($"✅ [동적학습등록] {symbol} — 거래량 급증 감지로 즉시 진입 게이트 통과 허용");
+                    string trainLog = $"✅ [동적학습등록] {symbol} — 거래량 급증 감지로 즉시 진입 게이트 통과 허용";
+                    OnStatusLog?.Invoke(trainLog);
+                    LoggerService.Info(trainLog); // [v4.9.2]
                 }
             };
 
@@ -1260,13 +1264,15 @@ namespace TradingBot
                 }
             };
 
-            // [v4.8.2] PumpScan 로그를 UI + 파일 양쪽 모두에 기록
-            // 기존: OnLiveLog만 → Serilog 파일에는 SCAN/CANDIDATE/BLOCK 사유가 안 찍혀 진단 불가
+            // [v4.9.2] PumpScan 로그를 UI + Serilog 파일 양쪽에 직접 기록
+            // v4.8.2는 OnStatusLog 경유만 했는데 VM.QueueFooterLog가 LoggerService를 호출하지 않아
+            // 실제로는 파일에 안 찍혔음. 이번엔 LoggerService.Info를 직접 호출해 확실히 파일로 남김
             _pumpStrategy.OnLog += msg =>
             {
                 var normalized = NormalizePumpSignalLog(msg);
                 OnLiveLog?.Invoke(normalized);
                 OnStatusLog?.Invoke(normalized);
+                LoggerService.Info(normalized);
             };
 
             if (_majorStrategy != null)
@@ -8299,7 +8305,9 @@ namespace TradingBot
             string flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
             void EntryLog(string stage, string status, string detail)
             {
-                OnStatusLog?.Invoke($"🧭 [ENTRY][{stage}][{status}] {flowTag} | {detail}");
+                string line = $"🧭 [ENTRY][{stage}][{status}] {flowTag} | {detail}";
+                OnStatusLog?.Invoke(line);
+                LoggerService.Info(line); // [v4.9.2] 진입 라우터 모든 단계 Serilog 파일 기록
 
                 bool shouldCount = status.IndexOf("BLOCK", StringComparison.OrdinalIgnoreCase) >= 0
                     || status.IndexOf("FAIL", StringComparison.OrdinalIgnoreCase) >= 0;

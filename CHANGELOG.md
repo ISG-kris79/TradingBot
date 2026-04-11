@@ -15,6 +15,21 @@
 
  - 없음
 
+## [4.9.2] - 2026-04-11
+
+### Fixed (Critical 진단)
+
+- **OnStatusLog 전체가 Serilog 파일 로그에 기록되지 않던 핵심 버그**
+  - 증상: 사용자가 "진입이 없다" 호소 시 `log-YYYYMMDD.txt` 파일에 SIGNAL/PUMP/SCAN/CANDIDATE/REJECT/EMIT/ENTRY 로그가 0건으로 진단 불가
+  - 원인: `TradingEngine.OnStatusLog` → `MainViewModel.HandleStatusLog` → `AddLog` → `QueueFooterLog` 경로에서 **`LoggerService.Info` 호출이 전혀 없어** UI 큐와 DB 쓰기만 되고 Serilog 파이프를 타지 않음. v4.8.2의 "파일 기록" 수정이 실제로는 OnStatusLog로만 경유해 효과 없었음
+  - 수정:
+    1. `MainViewModel.HandleStatusLog`에 `LoggerService.Info(msg)` 직접 호출 추가 → **모든 상태 로그가 파일에 남게 됨**
+    2. `TradingEngine._pumpStrategy.OnLog` 구독 람다에 `LoggerService.Info` 직접 호출 추가
+    3. `TradingEngine.ExecuteAutoOrder.EntryLog` 헬퍼에 `LoggerService.Info` 추가 → 모든 Router 단계 파일 기록
+    4. `_crashDetector.OnLog` 구독 람다에 `LoggerService.Info` 추가
+    5. `_crashDetector.OnVolumeSurgeDetected` 내부 `감시등록` / `동적학습등록` 로그에 `LoggerService.Info` 추가
+  - 효과: 다음 재시작부터 모든 진입 파이프라인 로그가 파일로 남아 원인 추적 가능
+
 ## [4.9.1] - 2026-04-11
 
 ### Changed

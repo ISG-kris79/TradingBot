@@ -2350,6 +2350,10 @@ namespace TradingBot.ViewModels
         {
             AddLog(msg);
 
+            // [v4.9.2] Serilog 파일 기록 — 그동안 QueueFooterLog만 호출되어
+            // OnStatusLog 내용이 log-YYYYMMDD.txt 파일에 안 남던 문제 해결
+            try { LoggerService.Info(msg); } catch { }
+
             if (ShouldMirrorStatusToLiveLog(msg))
             {
                 AddLiveLog(msg);
