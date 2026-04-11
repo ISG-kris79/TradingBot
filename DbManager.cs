@@ -1856,6 +1856,31 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
         }
 
         /// <summary>
+        /// [v4.8.0] (Symbol, IntervalText) 필터로 최근 N봉 조회
+        /// OptimalEntryPriceRegressor 학습 데이터 생성용
+        /// </summary>
+        public async Task<List<TradingBot.Models.CandleData>> GetCandleDataByIntervalAsync(
+            string symbol, string intervalText, int limit = 52000)
+        {
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                var sql = @"SELECT TOP (@Limit) *
+                            FROM CandleData
+                            WHERE Symbol = @Symbol AND IntervalText = @Interval
+                            ORDER BY OpenTime ASC";
+                var result = await db.QueryAsync<TradingBot.Models.CandleData>(
+                    sql, new { Symbol = symbol, Interval = intervalText, Limit = limit },
+                    commandTimeout: 30);
+                return result.ToList();
+            }
+            catch
+            {
+                return new List<TradingBot.Models.CandleData>();
+            }
+        }
+
+        /// <summary>
         /// [v4.5.2] ML 학습용: 전체 심볼의 최근 캔들 데이터를 DB에서 조회 (계정 무관, 공유 데이터)
         /// </summary>
         /// <summary>

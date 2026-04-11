@@ -15,6 +15,37 @@
 
  - 없음
 
+## [4.8.0] - 2026-04-11
+
+### Added
+
+- **최적 진입 가격 예측 시스템 (3접근)** — Pre-learning 기반 진입가 예측 인프라 신설
+  - **접근 A — Pullback Depth Regression** (`Services/OptimalEntryPriceRegressor.cs`): 거래량 급증 감지 시 ML이 향후 눌림 % 예측 → `current × (1 - predicted%)` 에 LIMIT 주문 배치 목표
+    - 라벨링: 과거 6개월 5m 캔들에서 `+2% 이상 랠리 발생` positive 샘플의 pullback% 추출 (lookAhead 24봉=2h)
+    - LightGBM Regression, 피처 7개 (RSI/BB/ATR/Vol/Momentum/Volatility/HourOfDay)
+    - 초기학습 2-b단계에서 상위 30 심볼로 자동 학습
+    - `TryHybridLimitEntryAsync`: `_pumpWatchPool` 진입 확인 시 예측 호출 후 현재 로깅 중 (Phase 1). LIMIT 실주문 배치는 검증 후 Phase 2 활성화 예정
+  - **접근 B — Entry Zone Multi-Output 데이터 수집** (`Services/EntryZoneDataCollector.cs`): 추후 멀티 타겟 회귀 학습을 위한 JSONL 로그 수집
+    - 진입 시: `RecordEntryContext(features, entryPrice, signalSource)`
+    - 보유 중: `UpdateRealizedExtremes` 로 realized high/low 추적
+    - 청산 시: `FinalizeEntryZoneSample` → `%LOCALAPPDATA%\TradingBot\EntryZoneData\entry_zone_YYYYMMDD.jsonl` 에 append
+    - 필드: entry/exit/optimal exit/optimal SL/realized PnL/optimal PnL/features — 추후 Entry Zone 모델 학습 데이터로 사용
+    - 라이브 의사결정에는 아직 사용하지 않음 (수집만)
+  - **접근 C — Breakout Price Classifier** (`Services/BreakoutPriceClassifier.cs`): Consolidation → Breakout 패턴 감지 전용
+    - 라벨링: 20봉 consolidation 구간 (range < 5%, 볼륨 수축) → 향후 12봉 내 +2% 돌파 여부 (Binary)
+    - LightGBM BinaryClassification, 피처 3개 (RelativeRange/VolContraction/BodyRatio)
+    - 초기학습 2-b단계에서 Pullback Regressor와 함께 학습
+    - `_pumpWatchPool` 진입 확인 시 `PredictBreakout(recent20)` 호출하여 돌파 확률 ≥ 0.6 이면 로깅
+
+- **DbManager.GetCandleDataByIntervalAsync(symbol, intervalText, limit)**: Part A/C 학습 데이터 로드용
+
+### Design Notes
+
+- Part A는 라이브 활용(하이브리드 진입 경로), Part B는 데이터 축적만, Part C는 라이브 활용(급등 후보 consolidation 감지)
+- 모두 기존 ProfitRegressorService 패턴 재사용 — MLContext + LightGBM + `%LOCALAPPDATA%\TradingBot\Models\` zip 저장
+- 초기학습 2-b단계에서 상위 30 심볼 × 6개월 데이터로 일괄 학습 (약 수 분 소요)
+- 하드코딩 임계값 최소화 — 라벨링 파라미터(lookAhead, threshold)만 고정, 예측 결과에는 하드코딩 필터 없음
+
 ## [4.7.9] - 2026-04-11
 
 ### Fixed (Critical)

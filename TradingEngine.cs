@@ -460,6 +460,12 @@ namespace TradingBot
         private readonly TradingBot.Services.SsaPriceForecastService _ssaForecast = new();
         // [수익률 회귀] 진입 시 예상 수익률 예측 + 동적 포지션 사이징
         private readonly TradingBot.Services.ProfitRegressorService _profitRegressor = new();
+        // [v4.8.0] 최적 진입 가격 예측 (Pullback Depth Regression)
+        private readonly TradingBot.Services.OptimalEntryPriceRegressor _entryPriceRegressor = new();
+        // [v4.8.0] Entry Zone 데이터 수집기 (접근 B — 추후 Multi-Output 학습용)
+        private readonly TradingBot.Services.EntryZoneDataCollector _entryZoneCollector = new();
+        // [v4.8.0] Breakout 분류기 (접근 C — 급등 코인 consolidation → breakout)
+        private readonly TradingBot.Services.BreakoutPriceClassifier _breakoutClassifier = new();
         private readonly TradingBot.Services.TradeSignalClassifier _tradeSignalClassifier = new();
         // [v4.5.8] PUMP 모델 분리: 일반진입 / 급등진입
         private readonly TradingBot.Services.PumpSignalClassifier _pumpSignalClassifier = new(TradingBot.Services.PumpSignalType.Normal);
@@ -916,6 +922,16 @@ namespace TradingBot
             {
                 _ = HandleAiCloseLabelingAsync(symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason);
 
+                // [v4.8.0] Entry Zone 데이터 수집 (Part B) — 청산 레이블 완성
+                try
+                {
+                    decimal exitPx = 0m;
+                    if (_marketDataManager.TickerCache.TryGetValue(symbol, out var exitTk))
+                        exitPx = exitTk.LastPrice;
+                    _entryZoneCollector.FinalizeEntryZoneSample(symbol, exitPx, (decimal)actualProfitPct, closeReason);
+                }
+                catch { }
+
                 // [v3.7.1] 실시간 승률 서킷브레이커 추적
                 lock (_recentTradeResults)
                 {
@@ -1083,6 +1099,9 @@ namespace TradingBot
             _ = StartAggTradeStreamAsync(_cts?.Token ?? CancellationToken.None);
             // [수익률 회귀] 로그 연결 + DB 과거 거래 학습
             _profitRegressor.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _entryPriceRegressor.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _entryZoneCollector.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _breakoutClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
             _ = Task.Run(async () =>
             {
                 try
@@ -2520,10 +2539,15 @@ namespace TradingBot
                                                 OnStatusLog?.Invoke($"✅ [감시진입-HTF통과] {pumpKey} | {htfDetail}");
                                             }
 
-                                            OnStatusLog?.Invoke($"🟢 [감시진입시도] {pumpKey} → ExecuteAutoOrder 호출 (size×{sizeMul})");
-                                            await ExecuteAutoOrder(pumpKey, "LONG", nowPrice,
-                                                _cts?.Token ?? CancellationToken.None,
-                                                "PUMP_WATCH_CONFIRMED", manualSizeMultiplier: sizeMul);
+                                            // [v4.8.0] OptimalEntryPrice Hybrid — ML 예측 pullback에 LIMIT 시도, 실패 시 시장가 fallback
+                                            bool limitFilled = await TryHybridLimitEntryAsync(pumpKey, nowPrice, sizeMul, _cts?.Token ?? CancellationToken.None);
+                                            if (!limitFilled)
+                                            {
+                                                OnStatusLog?.Invoke($"🟢 [감시진입시도] {pumpKey} → ExecuteAutoOrder 호출 (size×{sizeMul})");
+                                                await ExecuteAutoOrder(pumpKey, "LONG", nowPrice,
+                                                    _cts?.Token ?? CancellationToken.None,
+                                                    "PUMP_WATCH_CONFIRMED", manualSizeMultiplier: sizeMul);
+                                            }
                                         }
                                         catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [감시진입] {pumpKey} 실패: {ex.Message}"); }
                                     });
@@ -6903,6 +6927,56 @@ namespace TradingBot
                         OnSymbolTrained?.Invoke(sym);
                 }
 
+                // [v4.8.0] 2-b단계: OptimalEntryPriceRegressor + BreakoutPriceClassifier 학습
+                // 두 모델 모두 같은 CandleData 기반이므로 한 번의 심볼 순회로 데이터 생성
+                OnInitialTrainingProgress?.Invoke("🧠 [초기학습] 2-b단계 — 최적 진입가 / Breakout 예측 모델 학습 시작");
+                try
+                {
+                    int entryPriceSamples = 0;
+                    int breakoutSamples = 0;
+                    foreach (var sym in allTrainedSyms.Take(30))
+                    {
+                        if (token.IsCancellationRequested) break;
+                        try
+                        {
+                            var candles = await _dbManager.GetCandleDataByIntervalAsync(sym, "5m", 52000);
+                            if (candles != null && candles.Count >= 100)
+                            {
+                                entryPriceSamples += _entryPriceRegressor.GenerateTrainingDataFromCandles(sym, candles);
+                                breakoutSamples += _breakoutClassifier.GenerateTrainingDataFromCandles(sym, candles);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            OnInitialTrainingProgress?.Invoke($"⚠️ [2-b] {sym} 데이터 로드 오류: {ex.Message}");
+                        }
+                    }
+
+                    if (entryPriceSamples > 0)
+                    {
+                        await _entryPriceRegressor.TrainAsync();
+                        OnInitialTrainingProgress?.Invoke($"✅ [초기학습] Pullback Regressor 완료 — {entryPriceSamples}개 샘플");
+                    }
+                    else
+                    {
+                        OnInitialTrainingProgress?.Invoke("⚠️ [초기학습] Pullback Regressor 샘플 없음 (스킵)");
+                    }
+
+                    if (breakoutSamples > 0)
+                    {
+                        await _breakoutClassifier.TrainAsync();
+                        OnInitialTrainingProgress?.Invoke($"✅ [초기학습] Breakout Classifier 완료 — {breakoutSamples}개 샘플");
+                    }
+                    else
+                    {
+                        OnInitialTrainingProgress?.Invoke("⚠️ [초기학습] Breakout Classifier 샘플 없음 (스킵)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    OnInitialTrainingProgress?.Invoke($"⚠️ [2-b] 학습 오류: {ex.Message}");
+                }
+
                 // [v4.7.6] 전역 정확도 게이트 제거 (하드코딩 70% 임계값 철폐)
                 // 이유:
                 //  - 진입 품질 필터는 이미 AIDoubleCheckEntryGate/PumpSignalClassifier/SurvivalEntryModel가
@@ -8033,6 +8107,123 @@ namespace TradingBot
             // Logging
             public string FlowTag = string.Empty;
             public Action<string, string, string> EntryLog = (_, _, _) => { };
+        }
+
+        /// <summary>
+        /// [v4.8.0] 하이브리드 LIMIT 진입 시도 — OptimalEntryPriceRegressor 예측 기반
+        /// 1) KlineCache에서 실시간 피처 추출
+        /// 2) _entryPriceRegressor.PredictPullbackPct 호출
+        /// 3) 예측값 >= 0.2% → 예측 dip 가격 로깅 (후속 버전에서 LIMIT 주문 + 체결 대기)
+        /// 4) 예측 불가 또는 미충족 → false 반환 (호출자가 시장가 fallback)
+        /// </summary>
+        private Task<bool> TryHybridLimitEntryAsync(string symbol, decimal currentPrice, decimal sizeMul, CancellationToken token)
+        {
+            try
+            {
+                if (!_entryPriceRegressor.IsModelReady)
+                    return Task.FromResult(false);
+
+                if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var cache) || cache.Count < 30)
+                    return Task.FromResult(false);
+
+                var cList = cache.ToList();
+                var latest = cList[^1];
+
+                // RSI 14
+                double gain = 0, loss = 0;
+                for (int i = cList.Count - 14; i < cList.Count; i++)
+                {
+                    if (i <= 0) continue;
+                    double diff = (double)(cList[i].ClosePrice - cList[i - 1].ClosePrice);
+                    if (diff > 0) gain += diff; else loss += -diff;
+                }
+                double avgGain = gain / 14.0, avgLoss = loss / 14.0;
+                float rsi = (avgLoss == 0) ? 70f : (float)(100.0 - (100.0 / (1.0 + avgGain / avgLoss)));
+
+                // ATR 14
+                double tr = 0;
+                for (int i = cList.Count - 14; i < cList.Count; i++)
+                {
+                    if (i <= 0) continue;
+                    double h = (double)cList[i].HighPrice;
+                    double l = (double)cList[i].LowPrice;
+                    double pc = (double)cList[i - 1].ClosePrice;
+                    tr += Math.Max(h - l, Math.Max(Math.Abs(h - pc), Math.Abs(l - pc)));
+                }
+                float atr = (float)(tr / 14.0);
+
+                // Volume ratio
+                double avgVol = cList.Take(cList.Count - 1).Average(c => (double)c.Volume);
+                float volRatio = avgVol > 0 ? (float)((double)latest.Volume / avgVol) : 1f;
+
+                // Momentum (최근 5봉)
+                float momentum = cList.Count >= 6 && cList[^6].ClosePrice > 0
+                    ? (float)(((double)latest.ClosePrice / (double)cList[^6].ClosePrice - 1.0) * 100.0)
+                    : 0f;
+
+                // BB Position (최근 20봉 min/max)
+                var last20 = cList.TakeLast(20).ToList();
+                double minC = (double)last20.Min(c => c.ClosePrice);
+                double maxC = (double)last20.Max(c => c.ClosePrice);
+                float bbPos = (maxC - minC) > 0
+                    ? (float)(((double)latest.ClosePrice - minC) / (maxC - minC))
+                    : 0.5f;
+
+                // Volatility — 최근 10봉 실체 표준편차
+                var bodies = cList.TakeLast(10).Select(c => (double)Math.Abs(c.ClosePrice - c.OpenPrice)).ToList();
+                double meanBody = bodies.Average();
+                float volatility = (float)Math.Sqrt(bodies.Average(b => (b - meanBody) * (b - meanBody)));
+
+                int hourOfDay = DateTime.Now.Hour;
+
+                float? predicted = _entryPriceRegressor.PredictPullbackPct(
+                    rsi, bbPos, atr, volRatio, momentum, volatility, hourOfDay);
+
+                if (!predicted.HasValue)
+                {
+                    OnStatusLog?.Invoke($"🤖 [하이브리드LIMIT] {symbol} 예측 실패 → 시장가 fallback");
+                    return Task.FromResult(false);
+                }
+
+                decimal predictedLimitPrice = currentPrice * (decimal)(1.0 - predicted.Value / 100.0);
+                OnStatusLog?.Invoke(
+                    $"🤖 [하이브리드LIMIT] {symbol} 예측 pullback={predicted.Value:F2}% | 현재={currentPrice:F6} → LIMIT타겟={predictedLimitPrice:F6} | (현재 로깅만, 시장가 fallback)");
+
+                // [v4.8.0] Breakout Classifier 동시 조회 — 급등 후보 consolidation 감지
+                if (_breakoutClassifier.IsModelReady && cList.Count >= 20)
+                {
+                    // IBinanceKline → CandleData 변환 (Breakout 분류기는 CandleData 형식)
+                    var last20Candles = cList.TakeLast(20).Select(k => new CandleData
+                    {
+                        Symbol = symbol,
+                        OpenTime = k.OpenTime,
+                        Open = k.OpenPrice,
+                        High = k.HighPrice,
+                        Low = k.LowPrice,
+                        Close = k.ClosePrice,
+                        Volume = (float)k.Volume
+                    }).ToList();
+
+                    var breakoutResult = _breakoutClassifier.PredictBreakout(last20Candles);
+                    if (breakoutResult.HasValue)
+                    {
+                        var (prob, breakPrice) = breakoutResult.Value;
+                        if (prob >= 0.6f)
+                        {
+                            OnStatusLog?.Invoke(
+                                $"🚀 [Breakout예측] {symbol} prob={prob:P1} | 돌파타겟={breakPrice:F6} | consolidation 감지");
+                        }
+                    }
+                }
+
+                // [v4.8.0 Phase 1] 예측 로깅만. LIMIT 실주문 배치는 검증 후 Phase 2에서 활성화.
+                return Task.FromResult(false);
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [하이브리드LIMIT] {symbol} 예외: {ex.Message}");
+                return Task.FromResult(false);
+            }
         }
 
         /// <summary>
@@ -9850,6 +10041,23 @@ namespace TradingBot
                     }
                 }
                 positionReserved = !ctx.IsScoutAddOnOrder;
+
+                // [v4.8.0] Part B — Entry Zone 데이터 수집 시작
+                if (ctx.LatestCandle != null)
+                {
+                    _entryZoneCollector.RecordEntryContext(
+                        symbol: symbol,
+                        isLong: decision == "LONG",
+                        entryPrice: ctx.CurrentPrice,
+                        rsi: ctx.LatestCandle.RSI,
+                        bbPosition: ctx.LatestCandle.BB_Width > 0 ? ctx.LatestCandle.BB_Width / 100f : 0.5f,
+                        atr: ctx.LatestCandle.ATR,
+                        volumeRatio: ctx.LatestCandle.Volume_Ratio,
+                        momentum: ctx.LatestCandle.Price_Change_Pct,
+                        volatility: ctx.LatestCandle.ATR,
+                        mlConfidence: ctx.BlendedMlTfScore,
+                        signalSource: ctx.SignalSource ?? "UNKNOWN");
+                }
 
                 // 레버리지 설정
                 bool leverageSet = await _exchangeService.SetLeverageAsync(symbol, leverage, token: ctx.Token);
