@@ -933,7 +933,7 @@ namespace TradingBot
                     }
                     _profitRegressor.RecordTradeOutcome(
                         rsi, bbPos, atr, volRatio, momentum,
-                        0f, 0f, 0f, 0f,
+                        0f, 0f, 0f,
                         (float)actualProfitPct, holdingMin);
                 }
                 catch { /* 학습 데이터 수집 실패는 무시 */ }
@@ -1125,7 +1125,7 @@ namespace TradingBot
                 {
                     if (result.Success && result.MLProbability > 0)
                     {
-                        OnStatusLog?.Invoke($"[AIWorker] {result.Symbol} ML={result.MLProbability:P0} TF={result.TFConfidence:P0} latency={result.LatencyMs}ms");
+                        OnStatusLog?.Invoke($"[AIWorker] {result.Symbol} ML={result.MLProbability:P0} latency={result.LatencyMs}ms");
                     }
                 };
                 _aiWorkerThread.Start();
@@ -2092,7 +2092,7 @@ namespace TradingBot
                 }
                 else
                 {
-                    OnAlert?.Invoke("⚠️ [초기학습] 미완료 — 모든 진입 차단됨\n📌 텔레그램에서 `/train` 명령으로 6개월 데이터 학습 실행 필요");
+                    OnAlert?.Invoke("⚠️ [초기학습] 미완료 — 백그라운드 자동 학습 진행 중 (6개월 데이터)");
                 }
 
                 foreach (var symbol in _symbols)
@@ -8007,8 +8007,8 @@ namespace TradingBot
             // ═══════════════════════════════════════════════════════════════
             if (!IsInitialTrainingComplete)
             {
-                EntryLog("INITIAL_TRAINING", "BLOCK", "초기 학습 미완료 — 텔레그램 /train 명령으로 실행 필요");
-                OnStatusLog?.Invoke($"⛔ [초기학습 미완료] {symbol} 진입 차단 — 텔레그램에서 /train 입력하여 6개월 학습 실행");
+                EntryLog("INITIAL_TRAINING", "BLOCK", "초기 학습 미완료 — 백그라운드 자동 학습 진행 중");
+                OnStatusLog?.Invoke($"⛔ [초기학습 진행중] {symbol} 진입 대기 — 백그라운드 학습 완료 시 자동 해제");
                 return;
             }
 
@@ -9793,7 +9793,7 @@ namespace TradingBot
                         ctx.LatestCandle.RSI, ctx.LatestCandle.BB_Width > 0 ? ctx.LatestCandle.BB_Width / 100f : 0.5f,
                         ctx.LatestCandle.ATR, ctx.LatestCandle.Volume_Ratio,
                         ctx.LatestCandle.Price_Change_Pct,
-                        ctx.BlendedMlTfScore, ctx.BlendedMlTfScore);
+                        ctx.BlendedMlTfScore);
                     decimal multiplier = _profitRegressor.GetPositionMultiplier(predicted);
                     if (multiplier <= 0)
                     {

@@ -118,10 +118,6 @@ namespace TradingBot.Services
                             }
                         }
 
-                        // TF 제거 — ML 결과로 호환 필드 채움
-                        result.TFCandlesToTarget = result.MLShouldEnter ? 8f : -1f;
-                        result.TFConfidence = result.MLProbability;
-
                         // 3. 주문 조건 충족 시 즉시 실행 (UI 거치지 않음)
                         if (item.OrderAction != null && result.MLShouldEnter)
                         {
@@ -244,10 +240,6 @@ namespace TradingBot.Services
         // ML.NET
         public bool MLShouldEnter { get; set; }
         public float MLProbability { get; set; }
-
-        // TensorFlow
-        public float TFCandlesToTarget { get; set; }
-        public float TFConfidence { get; set; }
 
         // 주문
         public bool OrderExecuted { get; set; }

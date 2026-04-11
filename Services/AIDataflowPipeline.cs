@@ -143,10 +143,6 @@ namespace TradingBot.Services
                     }
                 }
 
-                // TF 제거 — ML 결과로 호환 필드 채움
-                result.TFCandlesToTarget = result.MLShouldEnter ? 8f : -1f;
-                result.TFConfidence = result.MLProbability;
-
                 result.Success = true;
             }
             catch (Exception ex)
@@ -234,10 +230,6 @@ namespace TradingBot.Services
         public bool MLShouldEnter { get; set; }
         public float MLProbability { get; set; }
         public float MLScore { get; set; }
-
-        // TensorFlow 결과
-        public float TFCandlesToTarget { get; set; }
-        public float TFConfidence { get; set; }
 
         // 성능
         public int InferenceMs { get; set; }

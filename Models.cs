@@ -1389,35 +1389,8 @@ namespace TradingBot.Models
 
         public string MLProbabilityText => _mlProbability > 0 ? $"ML: {_mlProbability:P0}" : "ML: 대기";
 
-        private float _tfConfidence = -1f;
-        public float TFConfidence
-        {
-            get => _tfConfidence;
-            set
-            {
-                if (Math.Abs(_tfConfidence - value) > 0.001f)
-                {
-                    _tfConfidence = value;
-                    OnPropertyChanged(nameof(TFConfidence));
-                    OnPropertyChanged(nameof(TFConfidenceText));
-                }
-            }
-        }
-
-        public string TFConfidenceText => _tfConfidence > 0 ? $"TF: {_tfConfidence:P0}" : "TF: 대기";
-
-        // ML/TF 확률 평균
-        public string MLTFSummary
-        {
-            get
-            {
-                // [FIX] ML=0은 매복 모드 외 상태이므로 TF만 표시
-                if (_mlProbability <= 0 && _tfConfidence < 0) return "-";
-                if (_mlProbability <= 0 && _tfConfidence >= 0) return $"TF: {_tfConfidence:P0}";
-                if (_tfConfidence < 0) return $"ML: {_mlProbability:P0}";
-                return $"ML: {_mlProbability:P0} | TF: {_tfConfidence:P0}";
-            }
-        }
+        // ML.NET 확률 요약
+        public string MLTFSummary => _mlProbability <= 0 ? "-" : $"ML: {_mlProbability:P0}";
     }
 
 

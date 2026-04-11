@@ -39,7 +39,7 @@ namespace TradingBot.Services
         /// <summary>실제 거래 결과를 학습 데이터로 추가</summary>
         public void RecordTradeOutcome(
             float rsi, float bbPosition, float atr, float volumeRatio,
-            float momentum, float mlConfidence, float tfConfidence,
+            float momentum, float mlConfidence,
             float spreadPct, float fundingRate,
             float actualProfitPct, float holdingMinutes)
         {
@@ -51,7 +51,6 @@ namespace TradingBot.Services
                 VolumeRatio = volumeRatio,
                 Momentum = momentum,
                 MLConfidence = mlConfidence,
-                TFConfidence = tfConfidence,
                 SpreadPct = spreadPct,
                 FundingRate = fundingRate,
                 HourOfDay = DateTime.Now.Hour,
@@ -113,7 +112,7 @@ namespace TradingBot.Services
                     RecordTradeOutcome(
                         rsi, bbPos, atr, volRatio, momentum,
                         trade.AiScore > 0 && trade.AiScore <= 1 ? trade.AiScore : trade.AiScore / 100f,
-                        0f, 0f, 0f,
+                        0f, 0f,
                         pnlPct, holdingMin);
                     loaded++;
                 }
@@ -154,7 +153,6 @@ namespace TradingBot.Services
                             nameof(ProfitFeature.VolumeRatio),
                             nameof(ProfitFeature.Momentum),
                             nameof(ProfitFeature.MLConfidence),
-                            nameof(ProfitFeature.TFConfidence),
                             nameof(ProfitFeature.SpreadPct),
                             nameof(ProfitFeature.FundingRate),
                             nameof(ProfitFeature.HourOfDay),
@@ -199,7 +197,7 @@ namespace TradingBot.Services
         /// </summary>
         public float? PredictProfit(
             float rsi, float bbPosition, float atr, float volumeRatio,
-            float momentum, float mlConfidence, float tfConfidence,
+            float momentum, float mlConfidence,
             float spreadPct = 0f, float fundingRate = 0f)
         {
             lock (_lock)
@@ -217,7 +215,6 @@ namespace TradingBot.Services
                     VolumeRatio = volumeRatio,
                     Momentum = momentum,
                     MLConfidence = mlConfidence,
-                    TFConfidence = tfConfidence,
                     SpreadPct = spreadPct,
                     FundingRate = fundingRate,
                     HourOfDay = DateTime.Now.Hour,
@@ -270,7 +267,6 @@ namespace TradingBot.Services
         public float VolumeRatio { get; set; }    // 현재/평균
         public float Momentum { get; set; }       // 가격 변화율
         public float MLConfidence { get; set; }   // ML.NET 확률
-        public float TFConfidence { get; set; }   // Transformer 확률
         public float SpreadPct { get; set; }      // 호가 스프레드
         public float FundingRate { get; set; }    // 펀딩비
 

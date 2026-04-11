@@ -1060,6 +1060,47 @@
                          Foreground="{StaticResource AccentBrush}"
                          BorderThickness="0"/>
 
+            <!-- [v4.7.2] 초기학습 진행 배너 — 진입 차단 시각화 (상단 오버레이) -->
+            <Border Grid.Row="2"
+                    VerticalAlignment="Top"
+                    Margin="16,8,16,0"
+                    Background="#1F2937"
+                    BorderBrush="#F59E0B"
+                    BorderThickness="2"
+                    CornerRadius="10"
+                    Padding="20,14"
+                    Panel.ZIndex="100"
+                    Visibility="{Binding InitialTrainingBannerVisibility}">
+                <Border.Effect>
+                    <DropShadowEffect Color="#F59E0B" BlurRadius="18" ShadowDepth="0" Opacity="0.7"/>
+                </Border.Effect>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="🧠"
+                               FontSize="26" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding InitialTrainingStatusText}"
+                                   Foreground="#FBBF24" FontSize="15" FontWeight="Bold"/>
+                        <TextBlock Text="{Binding InitialTrainingStageText}"
+                                   Foreground="#E5E7EB" FontSize="11" Margin="0,3,0,0"
+                                   TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+                    <Border Grid.Column="2"
+                            Background="#111827"
+                            CornerRadius="6"
+                            Padding="14,8"
+                            VerticalAlignment="Center">
+                        <TextBlock Text="{Binding InitialTrainingElapsedText}"
+                                   Foreground="#10B981" FontSize="16" FontWeight="Bold"
+                                   FontFamily="Consolas"/>
+                    </Border>
+                </Grid>
+            </Border>
+
             <!-- MAIN CONTENT -->
             <TabControl Grid.Row="2"
                         Margin="16">
@@ -1144,16 +1185,6 @@
                                         <TextBlock Text="ML.NET 예측" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding WaveMLScoreText}"
                                                    Foreground="#10B981" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
-                                    </Grid>
-
-                                    <Grid Margin="0,0,0,4">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Transformer" Foreground="#6B7280" FontSize="10"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding WaveTFScoreText}"
-                                                   Foreground="#3B82F6" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
 
                                     <TextBlock Text="{Binding GateThresholdSummaryText}"
@@ -1583,7 +1614,7 @@
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
 
-                                                    <!-- ④ AI SCORE: AIScore + ML% + TF% -->
+                                                    <!-- ④ AI SCORE: AIScore + ML% -->
                                                     <DataGridTemplateColumn Header="AI SCORE" Width="118">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
@@ -1592,11 +1623,7 @@
                                                                                Foreground="{Binding ScoreColor}"
                                                                                FontFamily="Consolas" FontSize="15" FontWeight="Bold"
                                                                                HorizontalAlignment="Center"/>
-                                                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,2,0,0">
-                                                                        <TextBlock Text="{Binding MLProbabilityText}" Foreground="#6B7280" FontSize="9" FontFamily="Consolas"/>
-                                                                        <TextBlock Text=" | " Foreground="#374151" FontSize="9"/>
-                                                                        <TextBlock Text="{Binding TFConfidenceText}" Foreground="#6B7280" FontSize="9" FontFamily="Consolas"/>
-                                                                    </StackPanel>
+                                                                    <TextBlock Text="{Binding MLProbabilityText}" Foreground="#6B7280" FontSize="9" FontFamily="Consolas" HorizontalAlignment="Center" Margin="0,2,0,0"/>
                                                                 </StackPanel>
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
@@ -1850,16 +1877,12 @@
                                                         <Grid.RowDefinitions>
                                                             <RowDefinition Height="Auto"/>
                                                             <RowDefinition Height="Auto"/>
-                                                            <RowDefinition Height="Auto"/>
                                                         </Grid.RowDefinitions>
                                                         <TextBlock Grid.Row="0" Grid.Column="0" Text="ML" Foreground="#FFD700" FontSize="10" FontWeight="Bold" Margin="0,0,8,2"/>
                                                         <ProgressBar Grid.Row="0" Grid.Column="1" Value="{Binding BattleMLConfidence, FallbackValue=0}" Maximum="100" Height="10"
                                                                      Background="#252B48" Foreground="#FFD700" BorderThickness="0"/>
-                                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="TF" Foreground="#60A5FA" FontSize="10" FontWeight="Bold" Margin="0,0,8,2"/>
-                                                        <ProgressBar Grid.Row="1" Grid.Column="1" Value="{Binding BattleTFConfidence, FallbackValue=0}" Maximum="100" Height="10"
-                                                                     Background="#252B48" Foreground="#60A5FA" BorderThickness="0"/>
-                                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="BB" Foreground="#7C4DFF" FontSize="10" FontWeight="Bold" Margin="0,4,8,0"/>
-                                                        <TextBlock Grid.Row="2" Grid.Column="1" Foreground="#94A3B8" FontSize="10" Margin="0,4,0,0"
+                                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="BB" Foreground="#7C4DFF" FontSize="10" FontWeight="Bold" Margin="0,4,8,0"/>
+                                                        <TextBlock Grid.Row="1" Grid.Column="1" Foreground="#94A3B8" FontSize="10" Margin="0,4,0,0"
                                                                    Text="{Binding BattleBBPositionText, FallbackValue='Position: --'}"/>
                                                     </Grid>
                                                 </StackPanel>

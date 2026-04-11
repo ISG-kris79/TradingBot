@@ -182,19 +182,12 @@ namespace TradingBot.ViewModels
             set { _gateAutoTuneStatusText = value; OnPropertyChanged(); }
         }
 
-        // [WaveAI] 실시간 ML/TF 점수
+        // [WaveAI] 실시간 ML.NET 점수
         private string _waveMLScoreText = "ML: --%";
         public string WaveMLScoreText
         {
             get => _waveMLScoreText;
             set { _waveMLScoreText = value; OnPropertyChanged(); }
-        }
-
-        private string _waveTFScoreText = "TF: --%";
-        public string WaveTFScoreText
-        {
-            get => _waveTFScoreText;
-            set { _waveTFScoreText = value; OnPropertyChanged(); }
         }
 
         private string _waveStatusText = "대기 중";
@@ -203,6 +196,38 @@ namespace TradingBot.ViewModels
             get => _waveStatusText;
             set { _waveStatusText = value; OnPropertyChanged(); }
         }
+
+        // [v4.7.2] 초기학습 진행 배너 (진입 차단 시각화)
+        private Visibility _initialTrainingBannerVisibility = Visibility.Collapsed;
+        public Visibility InitialTrainingBannerVisibility
+        {
+            get => _initialTrainingBannerVisibility;
+            set { _initialTrainingBannerVisibility = value; OnPropertyChanged(); }
+        }
+
+        private string _initialTrainingStatusText = "⚠ 초기학습 대기 중 — 진입 차단";
+        public string InitialTrainingStatusText
+        {
+            get => _initialTrainingStatusText;
+            set { _initialTrainingStatusText = value; OnPropertyChanged(); }
+        }
+
+        private string _initialTrainingElapsedText = "경과 00:00:00";
+        public string InitialTrainingElapsedText
+        {
+            get => _initialTrainingElapsedText;
+            set { _initialTrainingElapsedText = value; OnPropertyChanged(); }
+        }
+
+        private string _initialTrainingStageText = "대기 중";
+        public string InitialTrainingStageText
+        {
+            get => _initialTrainingStageText;
+            set { _initialTrainingStageText = value; OnPropertyChanged(); }
+        }
+
+        private DateTime _initialTrainingStartTime;
+        private DispatcherTimer? _initialTrainingTimer;
 
         private string _battleFocusSymbol = "-";
         public string BattleFocusSymbol
@@ -238,13 +263,6 @@ namespace TradingBot.ViewModels
         {
             get => _battleMLConfidence;
             set { _battleMLConfidence = value; OnPropertyChanged(); }
-        }
-
-        private double _battleTFConfidence;
-        public double BattleTFConfidence
-        {
-            get => _battleTFConfidence;
-            set { _battleTFConfidence = value; OnPropertyChanged(); }
         }
 
         // ─── SSA 시계열 예측 밴드 ──────────────────────────
@@ -477,41 +495,6 @@ namespace TradingBot.ViewModels
         {
             get => _battleXrpScenarioBrush;
             set { _battleXrpScenarioBrush = value; OnPropertyChanged(); }
-        }
-
-        private double _battleTfConfidencePercent;
-        public double BattleTfConfidencePercent
-        {
-            get => _battleTfConfidencePercent;
-            set { _battleTfConfidencePercent = value; OnPropertyChanged(); }
-        }
-
-        private string _battleTfConfidenceText = "TF Confidence: -";
-        public string BattleTfConfidenceText
-        {
-            get => _battleTfConfidenceText;
-            set { _battleTfConfidenceText = value; OnPropertyChanged(); }
-        }
-
-        private bool _battleTfHighlightActive;
-        public bool BattleTfHighlightActive
-        {
-            get => _battleTfHighlightActive;
-            set { _battleTfHighlightActive = value; OnPropertyChanged(); }
-        }
-
-        private string _battleTfHighlightText = "High Probability Pattern: 대기";
-        public string BattleTfHighlightText
-        {
-            get => _battleTfHighlightText;
-            set { _battleTfHighlightText = value; OnPropertyChanged(); }
-        }
-
-        private Brush _battleTfHighlightBrush = Brushes.LightGray;
-        public Brush BattleTfHighlightBrush
-        {
-            get => _battleTfHighlightBrush;
-            set { _battleTfHighlightBrush = value; OnPropertyChanged(); }
         }
 
         private bool _battleBbSupportActive;
@@ -2200,31 +2183,82 @@ namespace TradingBot.ViewModels
                 SsaForecastPrice = forecast;
             });
 
-            // [WaveAI] ML/TF 점수 업데이트 구독
-            _engine.OnWaveAIScoreUpdate += (symbol, mlScore, tfScore, status) =>
+            // [WaveAI] ML.NET 점수 업데이트 구독
+            _engine.OnWaveAIScoreUpdate += (symbol, mlScore, _, status) =>
             {
                 RunOnUI(() =>
                 {
                     if (!TryNormalizeTradingSymbol(symbol, out var normalizedSymbol))
                         return;
 
-                    // [FIX] ML/TF가 0이면 "대기" 표시 (0%가 아니라 아직 실행 안 됨을 의미)
                     WaveMLScoreText = mlScore <= 0 ? "ML: 대기" : $"ML: {mlScore:P0}";
-                    WaveTFScoreText = tfScore <= 0 ? "TF: 대기" : $"TF: {tfScore:P0}";
                     WaveStatusText = status;
 
-                    // [핀테크] AI Prediction 카드에 TF 신뢰도 반영
-                    if (tfScore > 0) BattleTFConfidence = tfScore * 100.0;
-                    
-                    // [NEW] 해당 심볼의 ViewModel에도 ML/TF 확률 업데이트
                     var symbolVm = MarketDataList.FirstOrDefault(x => string.Equals(x.Symbol, normalizedSymbol, StringComparison.OrdinalIgnoreCase));
                     if (symbolVm != null)
                     {
                         symbolVm.MLProbability = mlScore;
-                        symbolVm.TFConfidence = tfScore;
                     }
                 });
             };
+
+            // [v4.7.2] 초기학습 진행 배너 구독
+            _engine.OnInitialTrainingProgress += msg => RunOnUI(() =>
+            {
+                if (!string.IsNullOrWhiteSpace(msg))
+                    InitialTrainingStageText = msg;
+                StartOrUpdateInitialTrainingBanner();
+            });
+            _engine.OnInitialTrainingCompleted += success => RunOnUI(() => StopInitialTrainingBanner(success));
+
+            // 초기 상태 반영: 학습 미완료면 배너 즉시 표시
+            if (!_engine.IsInitialTrainingComplete)
+            {
+                StartOrUpdateInitialTrainingBanner();
+            }
+        }
+
+        private void StartOrUpdateInitialTrainingBanner()
+        {
+            InitialTrainingBannerVisibility = Visibility.Visible;
+            InitialTrainingStatusText = "⛔ 초기학습 진행 중 — 모든 진입 차단";
+
+            if (_initialTrainingTimer == null)
+            {
+                _initialTrainingStartTime = DateTime.Now;
+                _initialTrainingTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+                _initialTrainingTimer.Tick += (_, _) =>
+                {
+                    var elapsed = DateTime.Now - _initialTrainingStartTime;
+                    InitialTrainingElapsedText = $"경과 {elapsed:hh\\:mm\\:ss}";
+                };
+                _initialTrainingTimer.Start();
+                InitialTrainingElapsedText = "경과 00:00:00";
+            }
+        }
+
+        private void StopInitialTrainingBanner(bool success)
+        {
+            _initialTrainingTimer?.Stop();
+            _initialTrainingTimer = null;
+
+            if (success)
+            {
+                var elapsed = DateTime.Now - _initialTrainingStartTime;
+                InitialTrainingStatusText = $"✅ 초기학습 완료 — 진입 활성화 (총 {elapsed:hh\\:mm\\:ss})";
+                // 10초 후 배너 숨김
+                var hideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+                hideTimer.Tick += (_, _) =>
+                {
+                    InitialTrainingBannerVisibility = Visibility.Collapsed;
+                    hideTimer.Stop();
+                };
+                hideTimer.Start();
+            }
+            else
+            {
+                InitialTrainingStatusText = "❌ 초기학습 실패 — 진입 여전히 차단";
+            }
         }
 
         private void UnsubscribeFromEngineEvents()
@@ -2723,15 +2757,10 @@ namespace TradingBot.ViewModels
                     BattleAtrCloudText = "ATR STOP CLOUD: 대기";
                     BattleAtrCloudBrush = Brushes.LightGray;
                     BattleStopPulseActive = false;
-                    BattleTfConfidencePercent = 0;
-                    BattleTfConfidenceText = "TF Confidence: -";
-                    BattleTfHighlightActive = false;
-                    BattleTfHighlightText = "High Probability Pattern: 대기";
-                    BattleTfHighlightBrush = Brushes.LightGray;
                     BattleBbSupportActive = false;
                     BattleBbSupportText = "BB Mid Support: 대기";
                     BattleBbSupportBrush = Brushes.LightGray;
-                    BattleWeightingText = "가중치: ML 50 | TF 50";
+                    BattleWeightingText = "가중치: ML 100";
                     BattleTrendRiderActive = false;
                     BattleTrendRiderText = "TREND: 대기";
                     BattleTrendRiderBrush = Brushes.LightGray;
@@ -2857,18 +2886,8 @@ namespace TradingBot.ViewModels
                 float mlProbability = symbolVm.MLProbability > 0
                     ? Math.Clamp(symbolVm.MLProbability, 0f, 1f)
                     : 0f;
-                float tfConfidence = symbolVm.TFConfidence >= 0
-                    ? Math.Clamp(symbolVm.TFConfidence, 0f, 1f)
-                    : 0f;
 
-                bool tfHighProbability = tfConfidence >= 0.90f;
-                bool mlWeakSignal = symbolVm.MLProbability <= 0.20f;
                 bool bbMidSupport = IsBattleBbMidSupport(symbolVm.BBPosition, symbolVm.Decision);
-
-                BattleTfConfidencePercent = Math.Round(tfConfidence * 100d, 1);
-                BattleTfConfidenceText = symbolVm.TFConfidence >= 0
-                    ? $"TF Confidence: {tfConfidence:P0}"
-                    : "TF Confidence: 대기";
 
                 BattleBbSupportActive = bbMidSupport;
                 BattleBbSupportText = bbMidSupport
@@ -2878,35 +2897,17 @@ namespace TradingBot.ViewModels
                     ? Brushes.DeepSkyBlue
                     : Brushes.LightGray;
 
-                BattleTfHighlightActive = tfHighProbability;
-                if (tfHighProbability && mlWeakSignal)
-                {
-                    BattleTfHighlightText = "High Probability Pattern · TF 우세";
-                    BattleTfHighlightBrush = Brushes.LimeGreen;
-                }
-                else if (tfHighProbability)
-                {
-                    BattleTfHighlightText = "TF Confidence Strong";
-                    BattleTfHighlightBrush = Brushes.Gold;
-                }
-                else
-                {
-                    BattleTfHighlightText = "High Probability Pattern: 대기";
-                    BattleTfHighlightBrush = Brushes.LightGray;
-                }
-
                 BattleWeightingText = bbMidSupport
-                    ? "가중치: ML 30 | TF 70"
-                    : "가중치: ML 50 | TF 50";
+                    ? "가중치: ML 100 (BB Support)"
+                    : "가중치: ML 100";
 
-                // ── [Trend-Rider] 계단식 추세 지속 감지 ────────────────────────────────
+                // ── [Trend-Rider] ML 확률 기반 추세 지속 감지 ────────────────────────────────
                 bool bbAboveMid = symbolVm.BBPosition?.Contains("Upper", StringComparison.OrdinalIgnoreCase) == true
                     || symbolVm.BBPosition?.Contains("Mid", StringComparison.OrdinalIgnoreCase) == true;
-                float tfConf = symbolVm.TFConfidence >= 0 ? symbolVm.TFConfidence : 0f;
-                bool stairTfReady   = tfConf >= 0.65f;
-                bool stairPursuit   = tfConf >= 0.85f;
+                bool stairMlReady   = mlProbability >= 0.65f;
+                bool stairPursuit   = mlProbability >= 0.85f;
 
-                bool stairActive = bbAboveMid && stairTfReady;
+                bool stairActive = bbAboveMid && stairMlReady;
                 BattleTrendRiderActive = stairActive;
 
                 if (stairPursuit && bbAboveMid)
@@ -2951,14 +2952,8 @@ namespace TradingBot.ViewModels
             if (symbolVm.AiEntryProb >= 0)
                 return Math.Clamp(symbolVm.AiEntryProb, 0f, 1f);
 
-            var candidates = new List<float>();
             if (symbolVm.MLProbability > 0)
-                candidates.Add(Math.Clamp(symbolVm.MLProbability, 0f, 1f));
-            if (symbolVm.TFConfidence >= 0)
-                candidates.Add(Math.Clamp(symbolVm.TFConfidence, 0f, 1f));
-
-            if (candidates.Count > 0)
-                return candidates.Average();
+                return Math.Clamp(symbolVm.MLProbability, 0f, 1f);
 
             return (float)Math.Clamp(fallbackScore / 100d, 0d, 1d);
         }

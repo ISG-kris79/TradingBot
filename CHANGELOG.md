@@ -15,6 +15,36 @@
 
  - 없음
 
+## [4.7.2] - 2026-04-11
+
+### Removed
+
+- **TF(Transformer/TensorFlow) 관련 UI·코드 일괄 제거**
+  - MainWindow: AI SCORE 컬럼의 `TF: xx%` 표시 제거 (ML만 유지)
+  - MainWindow: AI PREDICTION 카드의 TF ProgressBar 행 제거
+  - MainWindow: ENTRY GATE의 Transformer 점수 행 제거
+  - SymbolChartWindow: TRANSFORMER 신뢰도 카드 제거 (5컬럼 → 4컬럼)
+  - Models: `TFConfidence`, `TFConfidenceText`, `MLTFSummary`(TF 분기) 제거
+  - MainViewModel: `BattleTFConfidence`, `BattleTfConfidence*`, `BattleTfHighlight*`, `WaveTFScoreText` 제거
+  - AIDataflowPipeline/AIDedicatedWorkerThread: `TFConfidence`, `TFCandlesToTarget` 필드 제거 (MLProbability로 대체)
+  - ProfitRegressorService: `TFConfidence` 피처 제거 (학습 컬럼 10개 → 9개)
+  - TradingEngine: AIWorker 로그에서 `TF=xx%` 출력 제거
+  - 이유: 프로젝트에서 실제로 TF 추론을 사용하지 않음(ML.NET 단독). 의미 없는 UI 노이즈 제거
+
+### Added
+
+- **메인창 초기학습 진행 배너 — 진입 차단 시각화 + 경과 시간 카운터**
+  - flag 파일(`initial_training_ready.flag`) 부재 시 상단에 오렌지 배너 상시 표시
+  - `⛔ 초기학습 진행 중 — 모든 진입 차단` + 실시간 단계 메시지
+  - 1초 간격 경과 시간 카운터 (`경과 hh:mm:ss`)
+  - 학습 완료 시 `✅ 초기학습 완료 — 진입 활성화` 10초 표시 후 자동 숨김
+  - 학습 실패 시 `❌ 초기학습 실패` 상태 유지
+  - 이유: 진입 차단 상태를 로그에서만 확인 가능해 사용자 혼란 발생
+
+### Fixed
+
+- `/train 명령 필요` 안내 문구 제거 → `백그라운드 자동 학습 진행 중`으로 변경
+
 ## [4.7.1] - 2026-04-11
 
 ### Fixed (Critical)
