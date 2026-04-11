@@ -2744,10 +2744,13 @@ namespace TradingBot
                             _lastPositionSyncTime = DateTime.Now;
                         }
 
-                        // [B] AI 관제탑 5분 요약 전송
-                        if ((DateTime.Now - _lastAiGateSummaryTime).TotalMinutes >= 5)
+                        // [B] AI 관제탑 15분 요약 전송 — v5.0.4 주기 완화 + 빈 알림 차단
+                        // 기존: 5분 + forceSendEmpty=true → 며칠째 "판정 없음" 스팸 발생
+                        // 원인: v5.0.0 skipAiGateCheck=true 로 EvaluateEntryWithCoinTypeAsync 호출 자체가 줄음
+                        // 해결: 주기 15분으로 완화 + 판정 없을 땐 조용히 (forceSendEmpty=false)
+                        if ((DateTime.Now - _lastAiGateSummaryTime).TotalMinutes >= 15)
                         {
-                            await TelegramService.Instance.FlushAiGateSummaryAsync(forceSendEmpty: true);
+                            await TelegramService.Instance.FlushAiGateSummaryAsync(forceSendEmpty: false);
                             _lastAiGateSummaryTime = DateTime.Now;
                         }
 

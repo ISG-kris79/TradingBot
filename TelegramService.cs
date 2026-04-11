@@ -465,7 +465,7 @@ namespace TradingBot
         // ─────────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// AI 이중 게이트(TF Brain + ML Filter) 결과를 5분 요약용으로 집계합니다.
+        /// AI 이중 게이트(TF Brain + ML Filter) 결과를 15분 요약용으로 집계합니다.
         /// - BLOCK + ML 0.50 미만은 기존과 동일하게 집계 생략
         /// - 같은 코인은 1분 내 중복 집계를 막아 요약 스팸을 줄임
         /// </summary>
@@ -611,10 +611,10 @@ namespace TradingBot
             if (snapshot.TotalCount == 0)
             {
                 body = $"🕒 구간: {snapshot.WindowStartLocal:HH:mm} ~ {windowEndLocal:HH:mm}\n" +
-                       "📭 최근 5분 동안 AI 게이트 판정이 없었습니다.";
+                       "📭 최근 15분 동안 AI 게이트 판정이 없었습니다.";
 
                 approvedOnlyBody = $"🕒 구간: {snapshot.WindowStartLocal:HH:mm} ~ {windowEndLocal:HH:mm}\n" +
-                                   "📭 최근 5분 동안 승인된 코인이 없습니다.";
+                                   "📭 최근 15분 동안 승인된 코인이 없습니다.";
             }
             else
             {
@@ -682,7 +682,7 @@ namespace TradingBot
                       (snapshot.BlockReasonsOther.Count > 0 ? $"\n\n📌 차단 사유(기타)\n{topReasonsOther}" : string.Empty);
             }
 
-                 await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 5분 요약]*\n\n{body}", true, "AI관제탑", TelegramMessageType.AiGate);
+                 await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 15분 요약]*\n\n{body}", true, "AI관제탑", TelegramMessageType.AiGate);
 
                  bool hasApprovedTargets = snapshot.AllowedLongSymbolReasons.Count > 0
                     || snapshot.AllowedShortSymbolReasons.Count > 0
@@ -690,7 +690,7 @@ namespace TradingBot
 
                  if (hasApprovedTargets)
                  {
-                     await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 승인코인 5분 브리핑]*\n\n{approvedOnlyBody}", true, "AI관제탑-승인코인", TelegramMessageType.AiGate);
+                     await SendInternalAsync($"[TradingBot]\n*[AI 관제탑 승인코인 15분 브리핑]*\n\n{approvedOnlyBody}", true, "AI관제탑-승인코인", TelegramMessageType.AiGate);
                  }
         }
 
