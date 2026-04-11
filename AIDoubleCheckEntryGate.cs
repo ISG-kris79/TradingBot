@@ -169,6 +169,15 @@ namespace TradingBot
 
                 bool mlApprove = mlPrediction?.ShouldEnter ?? false;
                 float mlConfidence = mlPrediction?.Probability ?? 0f;
+
+                // [v4.9.4] ML=0 원인 진단 로그 (첫 몇 번만)
+                if (mlConfidence < 0.01f)
+                {
+                    string reason = !_mlTrainer.IsModelLoaded ? "modelNotLoaded"
+                                   : mlPrediction == null ? "predictionNull"
+                                   : $"prob=0 shouldEnter={mlPrediction.ShouldEnter} score={mlPrediction.Score:F4}";
+                    OnLog?.Invoke($"🔬 [ML_DIAG] {symbol} {decision} | reason={reason} | featureValid={feature != null}");
+                }
                 float effectiveMLThreshold = _onlineLearning?.CurrentMLThreshold ?? _config.MinMLConfidence;
 
                 // TF 호환 변수 (UI 바인딩 유지용)

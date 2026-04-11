@@ -15,6 +15,34 @@
 
  - 없음
 
+## [4.9.4] - 2026-04-11
+
+### Fixed
+
+- **중복 시그널 폭주 차단**: MajorCoinStrategy/PumpScan이 1초마다 동일 `(symbol, direction)` 시그널을 재생성해 `ExecuteAutoOrder`가 초당 n회 호출 → 30분 만에 ENTRY 로그 32,000건 누적. `_recentEntryAttempts` ConcurrentDictionary 추가하여 동일 (symbol|direction) 10초 내 재시도는 조용히 무시. 로그 10배 감소 예상, 실제 진입은 영향 없음 (10초 내 재시도 = 원래도 차단되었을 중복 시도)
+
+### Added (진단)
+
+- **AIDoubleCheckEntryGate ML=0 진단 로그**: `ML_Zero_Confidence` 원인 추적
+  - `mlTrainer.IsModelLoaded` 여부
+  - `mlPrediction == null` 여부
+  - `mlPrediction.Probability/Score/ShouldEnter` 실제 값
+  - `🔬 [ML_DIAG] {symbol} {decision} | reason=... | featureValid=...` 포맷
+  - v4.9.3 재시작 후 DB 진단 결과: ETHUSDT SHORT가 30분 내내 `ML_Zero_Confidence` 2,537건 반복 차단되던 원인을 실시간으로 추적 가능
+
+### 진단 결과 (v4.9.3 30분 운영 후 DB 조회)
+
+| 항목 | 건수 |
+|---|---|
+| PumpScan 실행 | 152 (10초 간격 정상) |
+| 후보 추출 | 9,546 |
+| **AI_ENTRY 승인** | **0** ← 모델 임계값(0.65) 미달 |
+| **VolumeSurge 감지** | **0** ← 박스권 시장 |
+| ENTRY BLOCK | 3,685 |
+| → AI_GATE BLOCK | 2,537 (거의 전부 `ml=0.0%`) |
+| → VOLUME BLOCK | 704 (v4.9.3 제거 이전 누적) |
+| → SLOT BLOCK | 366 (duplicatePosition 반복) |
+
 ## [4.9.3] - 2026-04-11
 
 ### Removed (Critical — AI-Only 원칙 위반 하드코딩 제거)

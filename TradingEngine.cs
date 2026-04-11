@@ -57,6 +57,8 @@ namespace TradingBot
         private readonly object _posLock = new object();
         // 블랙리스트 (심볼, 해제시간) - 지루함 청산 종목 재진입 방지
         private ConcurrentDictionary<string, DateTime> _blacklistedSymbols = new ConcurrentDictionary<string, DateTime>();
+        // [v4.9.4] 중복 시그널 debounce — (symbol|direction) 기준 최근 시도 시각
+        private readonly ConcurrentDictionary<string, DateTime> _recentEntryAttempts = new();
         // [FIX] 최근 청산 쿨다운 — ACCOUNT_UPDATE 도착 시 팬텀 EXTERNAL_PARTIAL_CLOSE_SYNC 방지
         private readonly ConcurrentDictionary<string, DateTime> _recentlyClosedCooldown = new();
         // [v3.4.0] 부분청산 쿨다운 — 봇 자체 부분청산 후 ACCOUNT_UPDATE 이중 기록 방지
@@ -8321,6 +8323,24 @@ namespace TradingBot
                 {
                     OnBlockReasonUpdate?.Invoke("");
                 }
+            }
+
+            // [v4.9.4] 중복 시그널 debounce — 동일 (symbol, direction) 10초 내 재시도 차단
+            // MajorCoinStrategy/PumpScan이 1초마다 같은 신호를 재생성해 ExecuteAutoOrder가 초당 n번 호출되는 문제 해결
+            // 로그 30,000건 → 3,000건 수준으로 감소 예상. 디버그/재분석 용이성 확보
+            string debounceKey = $"{symbol}|{decision}";
+            if (_recentEntryAttempts.TryGetValue(debounceKey, out var lastTry)
+                && (DateTime.Now - lastTry).TotalSeconds < 10)
+            {
+                return; // 조용히 무시 (로그 스팸 방지)
+            }
+            _recentEntryAttempts[debounceKey] = DateTime.Now;
+            // 오래된 엔트리 정리 (1분 초과)
+            if (_recentEntryAttempts.Count > 200)
+            {
+                var cutoff = DateTime.Now.AddMinutes(-1);
+                foreach (var kv in _recentEntryAttempts)
+                    if (kv.Value < cutoff) _recentEntryAttempts.TryRemove(kv.Key, out _);
             }
 
             string decisionKr = decision == "LONG" ? "LONG" : "SHORT";
