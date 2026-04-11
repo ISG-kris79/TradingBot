@@ -15,6 +15,20 @@
 
  - 없음
 
+## [4.7.9] - 2026-04-11
+
+### Fixed (Critical)
+
+- **거래량 급증 코인이 감시 풀에 있어도 진입 못하던 버그**
+  - **원인**: `MarketCrashDetector`가 TickerCache의 **모든 심볼**에서 거래량 급증/SPIKE를 감지하여 `_pumpWatchPool`에 등록하지만, 해당 심볼이 v4.7.4부터 도입된 `_trainedSymbols` (6개월 다운로드 완료 심볼) 에 없으면 `ExecuteAutoOrder`의 Router 0이 "데이터 다운로드 대기"로 차단
+  - **특히 문제인 케이스**: 신규 상장 코인, 소형 알트, Top 100위 바깥 심볼 — **정확히 이들이 급증의 주인공**이었음에도 차단
+  - **수정**: 거래량 급증/SPIKE/PumpScan 신호로 감지된 심볼을 즉시 `_trainedSymbols`에 추가
+    - `OnVolumeSurgeDetected`: 감시풀 등록 시점에 동적 학습 대상 등록
+    - `HandleSpikeDetectedAsync`: SPIKE 감지 시점에 동적 학습 대상 등록
+    - `_pumpStrategy.OnTradeSignal`: PumpScan 신호 시점에 동적 학습 대상 등록
+  - **정당성**: 실시간 WebSocket 캔들이 공급되고 있고 품질 필터는 다운스트림 `AIDoubleCheckEntryGate`, `PumpSignalClassifier`가 ML 확률로 담당. Router 0은 "데이터 존재 여부" 수준의 검증이므로 실시간 감지 경로는 자연스럽게 허용되어야 함
+  - 로그: `✅ [동적학습등록] {symbol} — 거래량 급증 감지로 즉시 진입 게이트 통과 허용`
+
 ## [4.7.8] - 2026-04-11
 
 ### Fixed (Critical)

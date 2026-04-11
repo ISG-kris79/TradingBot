@@ -873,6 +873,17 @@ namespace TradingBot
                 // [v4.6.0] 감시풀 등록 시 동적 수집 등록 + 즉시 백필
                 _marketHistoryService?.RegisterSymbol(symbol);
                 _ = _marketHistoryService?.RequestBackfillAsync(symbol, _cts?.Token ?? CancellationToken.None);
+
+                // [v4.7.9] 거래량 급증 감지 심볼 즉시 학습 대상에 포함
+                // - Top 100 다운로드 바깥의 소형/신규 코인이 바로 급증 주인공인 경우가 많음
+                // - 실시간 WebSocket 캔들이 공급되고 있어 피처 추출/ML 추론 가능
+                // - 품질 필터는 downstream AI Gate(AIDoubleCheckEntryGate, PumpSignalClassifier)가
+                //   ML 확률 기반으로 담당하므로 Router 0은 "데이터 존재 여부" 수준만 확인
+                if (_trainedSymbols.TryAdd(symbol, true))
+                {
+                    OnSymbolTrained?.Invoke(symbol);
+                    OnStatusLog?.Invoke($"✅ [동적학습등록] {symbol} — 거래량 급증 감지로 즉시 진입 게이트 통과 허용");
+                }
             };
 
             _marketDataManager.OnTickerUpdate += HandleTickerUpdate;
@@ -1216,6 +1227,13 @@ namespace TradingBot
             {
                 try
                 {
+                    // [v4.7.9] PumpStrategy가 진입 신호로 낸 심볼은 즉시 학습 대상 등록
+                    // (PumpScanStrategy가 이미 후보 검증 + 시그널 분류 완료한 상태)
+                    if (_trainedSymbols.TryAdd(symbol, true))
+                    {
+                        OnSymbolTrained?.Invoke(symbol);
+                        OnStatusLog?.Invoke($"✅ [동적학습등록] {symbol} — PumpScan 신호로 즉시 진입 게이트 통과 허용");
+                    }
                     await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR_MEME");
                 }
                 catch (Exception ex)
@@ -7262,6 +7280,13 @@ namespace TradingBot
             // [v4.6.0] SPIKE 감지 시 동적 수집 등록 + 즉시 백필
             _marketHistoryService?.RegisterSymbol(symbol);
             _ = _marketHistoryService?.RequestBackfillAsync(symbol, token);
+
+            // [v4.7.9] SPIKE 감지 심볼 즉시 학습 대상에 포함 (거래량 급증과 동일 처리)
+            if (_trainedSymbols.TryAdd(symbol, true))
+            {
+                OnSymbolTrained?.Invoke(symbol);
+                OnStatusLog?.Invoke($"✅ [동적학습등록] {symbol} — SPIKE 감지로 즉시 진입 게이트 통과 허용");
+            }
 
             bool isMajor = MajorSymbols.Contains(symbol);
 
