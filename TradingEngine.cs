@@ -6839,6 +6839,21 @@ namespace TradingBot
                 // [v4.7.3] 구조화 진행률을 VM으로 전달 (ETA 계산용)
                 downloader.OnDetailedProgress += progress => OnInitialTrainingDownloadProgress?.Invoke(progress);
 
+                // [v4.7.7] 심볼별 데이터 다운로드 완료 즉시 진입 활성화
+                // 다운로드가 끝난 심볼은 DB에 캔들이 있으므로 피처 추출·ML 추론 가능
+                // (ML 모델은 기존 모델을 그대로 사용하며, 2단계 재학습 후 더 정확해짐)
+                downloader.OnSymbolReady += (sym, phase) =>
+                {
+                    if (phase == "major" || phase == "alt_5m")
+                    {
+                        if (_trainedSymbols.TryAdd(sym, true))
+                        {
+                            OnSymbolTrained?.Invoke(sym);
+                            OnInitialTrainingProgress?.Invoke($"✅ [{sym}] 진입 활성화 ({_trainedSymbols.Count}개 완료)");
+                        }
+                    }
+                };
+
                 // [v4.7.5] 단일 학습 전략 — 중복 학습 제거
                 // 다운로드 완료 후 단 1회 TrainAllModelsAsync 호출.
                 // v4.7.3 SqlBulkCopy + v4.7.4 병렬 덕분에 다운로드가 빨라 phased training 불필요.
@@ -8036,13 +8051,14 @@ namespace TradingBot
             EntryLog("START", "INFO", $"price={currentPrice:F4} source={signalSource}");
 
             // ═══════════════════════════════════════════════════════════════
-            // [v4.7.4] ROUTER 0. 심볼별 학습 완료 검증 — 학습된 심볼만 진입 허용
-            // 메이저 4개 학습 끝나면 즉시 메이저 진입 가능. 알트는 학습 순차 완료
+            // [v4.7.7] ROUTER 0. 심볼별 데이터 준비 검증
+            // 다운로드 완료된 심볼만 진입 허용. 미다운로드 심볼만 차단.
+            // flag 파일 있으면 IsInitialTrainingComplete=true → IsSymbolTrained 전체 허용
             // ═══════════════════════════════════════════════════════════════
             if (!IsSymbolTrained(symbol))
             {
-                EntryLog("INITIAL_TRAINING", "BLOCK", $"심볼 {symbol} 학습 미완료 — 대기 중");
-                OnStatusLog?.Invoke($"⛔ [심볼학습 대기] {symbol} 진입 대기 — 학습 완료 후 자동 허용");
+                EntryLog("INITIAL_TRAINING", "BLOCK", $"{symbol} 데이터 다운로드 대기");
+                OnStatusLog?.Invoke($"⛔ [데이터 대기] {symbol} — 다운로드 완료 시 자동 진입 허용 ({_trainedSymbols.Count}개 활성화됨)");
                 return;
             }
 

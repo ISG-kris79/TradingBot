@@ -15,6 +15,18 @@
 
  - 없음
 
+## [4.7.7] - 2026-04-11
+
+### Added
+
+- **심볼별 점진적 진입 활성화 복구**
+  - v4.7.4에서 도입한 `OnSymbolReady` 구독 로직이 v4.7.5 단일 학습 전환 시 실수로 제거됨
+  - 복구: `HistoricalDataDownloader.OnSymbolReady` 이벤트로 각 심볼 다운로드 완료 시 즉시 `_trainedSymbols`에 추가
+  - 메이저 `BTCUSDT/ETHUSDT/SOLUSDT/XRPUSDT`는 Phase 1 완료 즉시 활성화
+  - 알트는 Phase 2에서 다운로드 완료 순서대로 활성화
+  - Router 0 메시지 개선: `⛔ [데이터 대기] {symbol} — 다운로드 완료 시 자동 진입 허용 (N개 활성화됨)`
+  - Progress 메시지: `✅ [BTCUSDT] 진입 활성화 (1개 완료)`
+
 ## [4.7.6] - 2026-04-11
 
 ### Fixed (Critical)
