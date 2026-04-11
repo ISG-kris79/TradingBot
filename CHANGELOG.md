@@ -15,6 +15,71 @@
 
  - 없음
 
+## [4.9.8] - 2026-04-11
+
+### Added (PUMP 피처 대폭 확장 — 24→36개)
+
+사용자 요청 지표 12개 신규 추가:
+- **MACD_Main / MACD_Signal**: 기존엔 Hist만 있어 방향성 판단 불가 → 메인/시그널 라인 추가
+- **ADX / +DI / -DI (14)**: 추세 강도 및 방향 강도 핵심 지표
+- **Price_To_BB_Mid**: 볼밴 중간선 대비 현재가 거리 (%)
+- **Lower_Shadow_Avg**: 최근 3봉 아래꼬리 비율 (매수 압력)
+- **Volume_Change_Pct**: 최근 3봉 vs 직전 3봉 거래량 변화율
+- **Trend_Strength**: SMA 정배열 + ADX 결합 추세 강도 (-1~+1)
+- **Fib_Position**: 최근 100봉 고저점 기준 피보나치 위치
+- **Stoch_K / Stoch_D (14,3)**: Stochastic Oscillator
+
+### Changed (라벨링 이중 경로 + 타입별 파라미터)
+
+**v4.9.7 라벨링이 너무 엄격해서 Entry 비율 1~5% → 진입 급감** 문제 해결:
+
+**경로 A (추세 전환점)**: swing low 직후 1~N봉 이내 진입
+- RAVE 17:30 같은 "저점 직후" 케이스 포착
+
+**경로 B (추세 지속 조정)**: 이미 상승 중 pullback에서 재반등
+- SMA10 상승 + 직전 3봉 대비 -0.3~2.5% 눌림 + 미래 목표 달성 + 드로다운 제한
+
+**Normal (일반 진입)**: swing window 10봉, 4봉 이내, +3% 검증, 1.1x 거래량 (완만)
+**Spike (급등 진입)**: swing window 5봉, 2봉 이내, +4% 검증, 1.5x 거래량 (급격)
+
+### Fixed (MajorCoinStrategy SHORT 21시간 0건 버그)
+
+메이저 롱/숏 21시간 0건 원인 분석 및 수정:
+- **LONG 편향 스코어링**: `price > sma20 && sma20 > sma50` 는 +10만 있고 SHORT 대칭 없음
+- **박스권 고정**: `RSI 45~68 +10` 중립 보너스가 sideway 장에서 점수를 50~65에 가둠
+- **경계 너무 넓음**: 70/30 이라 애매한 시그널 전부 WAIT
+
+**수정**:
+- 경계 70/30 → **65/35** 완화 + 가격 모멘텀 확인 조건 추가 (isPriceRecovering/Dropping)
+- 강한 모멘텀 단독 fallback 추가 (isStrongBounce+higherLows+RSI>55 등)
+- CalculateScore 대칭화: SMA/RSI/Volume 모두 LONG/SHORT 대칭 가점
+- RSI 중립 보너스 제거, 구간별 대칭 (55~68 +8 / 32~45 -8)
+- Volume 가점을 추세 방향 기반으로 (상승↑거래량↑ = +, 하락↑거래량↑ = -)
+
+### Fixed (활성 포지션 UI 1개만 표시되던 버그)
+
+- `MainViewModel.UpdateFocusedPositionFromEngine` 이 `OrderByDescending(EntryTime).FirstOrDefault()` 로 가장 최근 1개만 표시하던 문제
+- **수정**: `ActivePositions` ObservableCollection 추가 → 모든 포지션 동시 표시
+- **XAML**: FOCUSED POSITION 단일 Border → ItemsControl 리스트 (스크롤 가능)
+
+## [4.9.7] - 2026-04-11
+
+### Changed (PumpSignalClassifier 추세 전환점 라벨링)
+
+기존 라벨링 문제:
+- "미래 +1.5% 올랐으면 진입=1" → 이미 고점인 봉도 라벨 1
+- 증상: RAVEUSDT 고점 진입, BASUSDT 하락장 반등 진입
+
+신규 라벨링 (swing low 기반):
+1. 직전 10봉 swing low 탐지 (로컬 최소)
+2. swing low에서 1~3봉 이내 (너무 늦지 않음)
+3. 현재가 swing low 대비 +2% 이내 (아직 초기)
+4. Higher Low + 거래량 1.2x 회복
+5. 미래 window 내 swing low 대비 +5% 도달 (진짜 반등)
+6. 미래 드로다운 swing low -1% 이내 (구조 유지)
+
+피처 6개 추가 (Dist_From_Swing_Low, Bars_Since_Swing_Low, Swing_Low_Depth, Volume_At_Low_Ratio, Lower_Lows_Count_Prev, Structure_Break)
+
 ## [4.9.6] - 2026-04-11
 
 ### Fixed (Critical — skipAiGateCheck 실제 적용)
