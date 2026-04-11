@@ -7677,6 +7677,15 @@ namespace TradingBot
                                 }
                             }
 
+                            // [v4.9.9] MTF Guardian — 5분봉 하락추세면 1분 반짝 상승 무시
+                            // BASUSDT 버그: 5분 12봉 연속 하락 중 1분 +1% 로 진입 → 물림
+                            if (!PassMtfGuardian(symbol, "LONG", out string spikeMtfReason))
+                            {
+                                OnStatusLog?.Invoke($"⛔ [SPIKE_FAST] {symbol} MTF 차단: {spikeMtfReason}");
+                                lock (_posLock) { _activePositions.Remove(symbol); }
+                                return;
+                            }
+
                             // [v4.5.8] Spike 전용 AI 모델 예측 — 급등 진입 품질 검증
                             // [v4.6.1] 1분봉 30→15개 완화 (1분 로켓 발사 시 5분봉 데이터 부족 대응)
                             // 기존 30개 조건은 30분 데이터 필요 → 1분 급등 시 거의 항상 스킵됨
@@ -8649,6 +8658,22 @@ namespace TradingBot
             }
 
             // 슬롯 교체 비활성화 (v4.0.8: 연쇄 손실 방지)
+
+            // ═══════════════════════════════════════════════════════════════
+            // [v4.9.9] MTF GUARDIAN — 상위 시간봉 역방향 차단 (공통 관문)
+            // 5분봉 명확한 하락 추세 중 LONG 진입 / 상승 추세 중 SHORT 진입 차단
+            // BASUSDT 5분 12봉 연속 하락 중 1분 반짝 상승 진입 버그 해결
+            // CRASH_REVERSE / PUMP_REVERSE 는 급변 대응이므로 제외
+            // ═══════════════════════════════════════════════════════════════
+            if (signalSource != "CRASH_REVERSE" && signalSource != "PUMP_REVERSE")
+            {
+                if (!PassMtfGuardian(symbol, decision, out string mtfReason))
+                {
+                    OnStatusLog?.Invoke($"⛔ [MTF_GUARDIAN] {symbol} {decision} 차단: {mtfReason}");
+                    EntryLog("MTF_GUARDIAN", "BLOCK", mtfReason);
+                    return;
+                }
+            }
 
             // ═══════════════════════════════════════════════════════════════
             // [ROUTER] 3. AI Gate 평가 (공통)
@@ -10768,6 +10793,104 @@ namespace TradingBot
 
             float normalized = Math.Clamp(bbPosition, 0f, 1f);
             return normalized >= 0.40f && normalized <= 0.60f;
+        }
+
+        /// <summary>
+        /// [v4.9.9] MTF Guardian — 상위 시간봉 역방향 진입 차단
+        /// 5분봉 명확한 하락장(1시간 -3% / SMA 역배열+소하락 / 12봉 9+하락+추가하락) 중 LONG 차단
+        /// 5분봉 명확한 상승장 중 SHORT 차단
+        /// 데이터 부족 시 통과 (과차단 방지)
+        /// </summary>
+        private bool PassMtfGuardian(string symbol, string decision, out string reason)
+        {
+            reason = string.Empty;
+            try
+            {
+                if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var cache))
+                {
+                    return true; // 캐시 없으면 통과
+                }
+
+                List<IBinanceKline> candles;
+                lock (cache) { candles = cache.ToList(); }
+
+                if (candles.Count < 24)
+                {
+                    return true; // 데이터 부족 시 통과
+                }
+
+                // 5분봉 기반 MTF 분석 (근래 1시간, 2시간)
+                int n = candles.Count;
+                decimal closeNow = candles[n - 1].ClosePrice;
+                decimal close12Ago = candles[n - 12].ClosePrice;
+                if (close12Ago <= 0 || closeNow <= 0) return true;
+
+                float change1h = (float)((closeNow - close12Ago) / close12Ago * 100);
+
+                // 최근 12봉 하락봉 카운트 (close<open)
+                int bearish12 = 0;
+                for (int i = n - 12; i < n; i++)
+                    if (candles[i].ClosePrice < candles[i].OpenPrice) bearish12++;
+
+                // SMA 계산 (정배열/역배열 판단)
+                double sma20 = IndicatorCalculator.CalculateSMA(candles, 20);
+                double sma50 = n >= 50 ? IndicatorCalculator.CalculateSMA(candles, 50) : sma20;
+                double sma120 = n >= 120 ? IndicatorCalculator.CalculateSMA(candles, 120) : sma50;
+
+                if (decision == "LONG")
+                {
+                    // [A] 명확한 하락 (1시간 누적 -3% 이상)
+                    if (change1h < -3.0f)
+                    {
+                        reason = $"clearDowntrend 1h={change1h:F1}%";
+                        return false;
+                    }
+                    // [B] 구조적 하락 (SMA 완전 역배열 + 추가 하락)
+                    if (sma20 < sma50 && sma50 < sma120 && change1h < -0.5f)
+                    {
+                        reason = $"structuralDown sma20<50<120 1h={change1h:F1}%";
+                        return false;
+                    }
+                    // [C] 모멘텀 하락 (12봉 중 9개 이상 하락 + 추가 하락)
+                    if (bearish12 >= 9 && change1h < 0f)
+                    {
+                        reason = $"momentumDown bearish={bearish12}/12 1h={change1h:F1}%";
+                        return false;
+                    }
+                    return true;
+                }
+
+                if (decision == "SHORT")
+                {
+                    // [A] 명확한 상승 (1시간 누적 +3% 이상)
+                    if (change1h > 3.0f)
+                    {
+                        reason = $"clearUptrend 1h={change1h:F1}%";
+                        return false;
+                    }
+                    // [B] 구조적 상승 (SMA 완전 정배열 + 추가 상승)
+                    if (sma20 > sma50 && sma50 > sma120 && change1h > 0.5f)
+                    {
+                        reason = $"structuralUp sma20>50>120 1h={change1h:F1}%";
+                        return false;
+                    }
+                    // [C] 모멘텀 상승 (12봉 중 9개 이상 상승 + 추가 상승)
+                    int bullish12 = 12 - bearish12;
+                    if (bullish12 >= 9 && change1h > 0f)
+                    {
+                        reason = $"momentumUp bullish={bullish12}/12 1h={change1h:F1}%";
+                        return false;
+                    }
+                    return true;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [MTF_GUARDIAN] {symbol} 오류 → 통과: {ex.Message}");
+                return true;
+            }
         }
 
         private static float CalculateMlTfBlendScore(float mlConfidence, float tfConfidence, bool tfPriority)
