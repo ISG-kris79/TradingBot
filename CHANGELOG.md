@@ -15,6 +15,21 @@
 
  - 없음
 
+## [4.8.1] - 2026-04-11
+
+### Added
+
+- **EntryZoneRegressor — Part B 라이브 활용** (`Services/EntryZoneRegressor.cs`)
+  - ML이 학습한 TP/SL 오프셋 %를 진입 시 실시간 예측
+  - 과거 6개월 CandleData에서 각 시점을 "가상 진입"으로 라벨링
+    - 타겟: 향후 48봉(4h) 내 최고가 상승 % (TP), 최저가 하락 % (SL)
+  - 2개 분리 LightGBM Regressor (TP, SL)
+  - 초기학습 2-b 단계에서 같이 학습
+  - `ExecuteAutoOrder` 의 ctx 구성 직후: `CustomTakeProfitPrice` 와 `CustomStopLossPrice` 가 **둘 다 비어있을 때만** 예측 결과를 적용 (fallback) — 기존 MAJOR ATR / 회복 모드 / 사용자 지정 등 기존 로직 우선권 유지
+  - LONG: `TP = price × (1+tpPct%)`, `SL = price × (1−slPct%)`
+  - SHORT: 부호 반전
+  - 로그: `🧠 [EntryZoneML] {symbol} {LONG/SHORT} | TP=1.85%→0.12345 | SL=0.96%→0.11876`
+
 ## [4.8.0] - 2026-04-11
 
 ### Added

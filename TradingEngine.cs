@@ -466,6 +466,8 @@ namespace TradingBot
         private readonly TradingBot.Services.EntryZoneDataCollector _entryZoneCollector = new();
         // [v4.8.0] Breakout 분류기 (접근 C — 급등 코인 consolidation → breakout)
         private readonly TradingBot.Services.BreakoutPriceClassifier _breakoutClassifier = new();
+        // [v4.8.1] Entry Zone Regressor — TP/SL 오프셋 예측 (Part B 라이브 활용)
+        private readonly TradingBot.Services.EntryZoneRegressor _entryZoneRegressor = new();
         private readonly TradingBot.Services.TradeSignalClassifier _tradeSignalClassifier = new();
         // [v4.5.8] PUMP 모델 분리: 일반진입 / 급등진입
         private readonly TradingBot.Services.PumpSignalClassifier _pumpSignalClassifier = new(TradingBot.Services.PumpSignalType.Normal);
@@ -1102,6 +1104,7 @@ namespace TradingBot
             _entryPriceRegressor.OnLog += msg => OnStatusLog?.Invoke(msg);
             _entryZoneCollector.OnLog += msg => OnStatusLog?.Invoke(msg);
             _breakoutClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _entryZoneRegressor.OnLog += msg => OnStatusLog?.Invoke(msg);
             _ = Task.Run(async () =>
             {
                 try
@@ -6934,6 +6937,7 @@ namespace TradingBot
                 {
                     int entryPriceSamples = 0;
                     int breakoutSamples = 0;
+                    int entryZoneSamples = 0;
                     foreach (var sym in allTrainedSyms.Take(30))
                     {
                         if (token.IsCancellationRequested) break;
@@ -6944,6 +6948,7 @@ namespace TradingBot
                             {
                                 entryPriceSamples += _entryPriceRegressor.GenerateTrainingDataFromCandles(sym, candles);
                                 breakoutSamples += _breakoutClassifier.GenerateTrainingDataFromCandles(sym, candles);
+                                entryZoneSamples += _entryZoneRegressor.GenerateTrainingDataFromCandles(sym, candles);
                             }
                         }
                         catch (Exception ex)
@@ -6970,6 +6975,17 @@ namespace TradingBot
                     else
                     {
                         OnInitialTrainingProgress?.Invoke("⚠️ [초기학습] Breakout Classifier 샘플 없음 (스킵)");
+                    }
+
+                    // [v4.8.1] Entry Zone Regressor 학습 (TP/SL 오프셋 예측)
+                    if (entryZoneSamples > 0)
+                    {
+                        await _entryZoneRegressor.TrainAsync();
+                        OnInitialTrainingProgress?.Invoke($"✅ [초기학습] Entry Zone Regressor 완료 — {entryZoneSamples}개 샘플");
+                    }
+                    else
+                    {
+                        OnInitialTrainingProgress?.Invoke("⚠️ [초기학습] Entry Zone Regressor 샘플 없음 (스킵)");
                     }
                 }
                 catch (Exception ex)
@@ -9239,6 +9255,51 @@ namespace TradingBot
                 FlowTag = flowTag,
                 EntryLog = EntryLog,
             };
+
+            // ═══════════════════════════════════════════════════════════════
+            // [v4.8.1] EntryZoneRegressor — ML이 학습한 TP/SL 오프셋 예측
+            // 기존 CustomTakeProfitPrice / CustomStopLossPrice가 비어있을 때만 적용 (fallback)
+            // 사용자 설정이나 MAJOR ATR 등 기존 로직이 있으면 그대로 유지
+            // ═══════════════════════════════════════════════════════════════
+            if (_entryZoneRegressor.IsModelReady && ctx.LatestCandle != null
+                && ctx.CustomTakeProfitPrice <= 0 && ctx.CustomStopLossPrice <= 0)
+            {
+                try
+                {
+                    var lc = ctx.LatestCandle;
+                    float bbPosNorm = lc.BB_Width > 0 ? lc.BB_Width / 100f : 0.5f;
+                    var tpsl = _entryZoneRegressor.PredictTpSl(
+                        rsi: lc.RSI,
+                        bbPos: bbPosNorm,
+                        atr: lc.ATR,
+                        volRatio: lc.Volume_Ratio,
+                        momentum: lc.Price_Change_Pct,
+                        volatility: lc.ATR,
+                        hourOfDay: DateTime.Now.Hour);
+
+                    if (tpsl.HasValue)
+                    {
+                        var (tpPct, slPct) = tpsl.Value;
+                        if (decision == "LONG")
+                        {
+                            ctx.CustomTakeProfitPrice = ctx.CurrentPrice * (1m + (decimal)tpPct / 100m);
+                            ctx.CustomStopLossPrice = ctx.CurrentPrice * (1m - (decimal)slPct / 100m);
+                        }
+                        else
+                        {
+                            ctx.CustomTakeProfitPrice = ctx.CurrentPrice * (1m - (decimal)tpPct / 100m);
+                            ctx.CustomStopLossPrice = ctx.CurrentPrice * (1m + (decimal)slPct / 100m);
+                        }
+                        OnStatusLog?.Invoke(
+                            $"🧠 [EntryZoneML] {symbol} {decision} | TP={tpPct:F2}%→{ctx.CustomTakeProfitPrice:F6} | SL={slPct:F2}%→{ctx.CustomStopLossPrice:F6}");
+                        EntryLog("ENTRY_ZONE_ML", "APPLIED", $"tp={tpPct:F2}% sl={slPct:F2}%");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [EntryZoneML] {symbol} 예측 오류: {ex.Message}");
+                }
+            }
 
             // ═══════════════════════════════════════════════════════════════
             // [ROUTER] 사이즈 결정: 정찰대 vs 메인 명확히 분리
