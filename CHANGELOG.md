@@ -15,6 +15,16 @@
 
  - 없음
 
+## [4.8.2] - 2026-04-11
+
+### Fixed
+
+- **PumpScan 진단 로그가 파일에 기록되지 않던 문제**
+  - 기존: `_pumpStrategy.OnLog`는 `OnLiveLog` 에만 연결되어 있어 Serilog 파일 로그(`log-YYYYMMDD.txt`)에는 SCAN / CANDIDATE / REJECT / AI_ENTRY / EMIT 등 모든 진단 메시지가 누락
+  - 증상: 사용자가 "진입이 없다"고 했을 때 파일 로그만으로는 원인 추적 불가 (UI 없이 디버깅 불가)
+  - 수정: `_pumpStrategy.OnLog`를 `OnLiveLog` + `OnStatusLog` 양쪽에 동시 전달
+  - 효과: 로그 파일에서 `grep "SIGNAL.*PUMP"` 로 후보 추출 / 거절 사유 / ML 확률까지 전수 조회 가능
+
 ## [4.8.1] - 2026-04-11
 
 ### Added

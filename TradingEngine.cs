@@ -1264,7 +1264,14 @@ namespace TradingBot
                 }
             };
 
-            _pumpStrategy.OnLog += msg => OnLiveLog?.Invoke(NormalizePumpSignalLog(msg));
+            // [v4.8.2] PumpScan 로그를 UI + 파일 양쪽 모두에 기록
+            // 기존: OnLiveLog만 → Serilog 파일에는 SCAN/CANDIDATE/BLOCK 사유가 안 찍혀 진단 불가
+            _pumpStrategy.OnLog += msg =>
+            {
+                var normalized = NormalizePumpSignalLog(msg);
+                OnLiveLog?.Invoke(normalized);
+                OnStatusLog?.Invoke(normalized);
+            };
 
             if (_majorStrategy != null)
             {
