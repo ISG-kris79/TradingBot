@@ -15,6 +15,12 @@
 
  - 없음
 
+## [4.9.1] - 2026-04-11
+
+### Changed
+
+- **메인창 ScrollBar 통일**: `Style TargetType="{x:Type ScrollBar}" BasedOn="{StaticResource MinimalScrollBar}"` 전역 기본 스타일 추가. Window 내 모든 ScrollBar(사이드바 ScrollViewer, Trade History, Performance 등)가 LIVE MARKET DataGrid와 동일한 색상(`#33FFFFFF`) + 두께(6px)로 통일.
+
 ## [4.9.0] - 2026-04-11
 
 ### Removed

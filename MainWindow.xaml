@@ -529,6 +529,10 @@
             </Setter>
         </Style>
 
+        <!-- [v4.9.1] 전역 ScrollBar 기본 스타일 — MinimalScrollBar 상속 -->
+        <!-- 메인창 내 모든 ScrollBar가 LIVE MARKET DataGrid와 동일한 색상/두께로 통일 -->
+        <Style TargetType="{x:Type ScrollBar}" BasedOn="{StaticResource MinimalScrollBar}"/>
+
         <!-- Minimal ScrollViewer Style -->
         <Style x:Key="MinimalScrollViewer" TargetType="ScrollViewer">
             <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
