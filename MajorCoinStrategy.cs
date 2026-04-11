@@ -95,20 +95,30 @@ namespace TradingBot.Strategies
                 double fibBonus = CalculateFibScore(list, currentPrice);
                 if (fibBonus > 0) aiScore = Math.Clamp(aiScore + (int)fibBonus, 0, 100);
 
-                // [v4.9.8] 경계 65/35로 완화 + 가격 모멘텀 직접 반영
-                // 기존 문제: sideway 장에서 50~65 박스권에 갇혀 21시간 신호 0건
-                // - aiScore 65+ = LONG (모멘텀 상승 확인 시)
-                // - aiScore 35- = SHORT (모멘텀 하락 확인 시)
+                // [v5.0.2] 경계 추가 완화 — UserId=1 PC#1 이틀간 메이저 진입 0건 해결
+                // 원인: 메이저 5m 변동성이 작아 30m +1.5% / 1h +3% 모멘텀 조건 도달 불가
+                // 해결: 3단계 OR 조건으로 aiScore 기반 진입 허용
+                //  [1] aiScore >= 70 → 순수 점수 단독 LONG (메이저는 70점 넘으면 확실한 상승)
+                //  [2] aiScore >= 62 + 모멘텀 확인 → LONG
+                //  [3] aiScore >= 58 + Higher Lows + sma20 위 → LONG (구조 기반)
                 string decision = "WAIT";
 
-                if (aiScore >= 65 && (isPriceRecovering || isStrongBounce))
+                if (aiScore >= 70)
                     decision = "LONG";
-                else if (aiScore <= 35 && (isPriceDropping || isStrongDrop || isMakingLowerHighs))
+                else if (aiScore >= 62 && (isPriceRecovering || isStrongBounce))
+                    decision = "LONG";
+                else if (aiScore >= 58 && isMakingHigherLows && currentPrice > (decimal)sma20)
+                    decision = "LONG";
+                else if (aiScore <= 30)
                     decision = "SHORT";
-                // [Fallback] 강한 모멘텀 단독 시그널 (aiScore가 애매해도 명확한 방향이면 진입)
-                else if (isStrongBounce && isMakingHigherLows && rsi > 55)
+                else if (aiScore <= 38 && (isPriceDropping || isStrongDrop || isMakingLowerHighs))
+                    decision = "SHORT";
+                else if (aiScore <= 42 && isMakingLowerHighs && currentPrice < (decimal)sma20)
+                    decision = "SHORT";
+                // [Fallback] 강한 모멘텀 단독 시그널 (aiScore 애매해도 명확한 방향이면 진입)
+                else if (isStrongBounce && isMakingHigherLows && rsi > 52)
                     decision = "LONG";
-                else if (isStrongDrop && isMakingLowerHighs && rsi < 45)
+                else if (isStrongDrop && isMakingLowerHighs && rsi < 48)
                     decision = "SHORT";
 
                 try

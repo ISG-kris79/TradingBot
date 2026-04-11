@@ -177,6 +177,12 @@ namespace TradingBot
         private double _tradeSignalAccuracy = 0.0;
         private double _directionModelAccuracy = 0.0;
         private double _survivalPumpAccuracy = 0.0;
+
+        // [v5.0.2] v5.0 Forecaster 정확도 추적 — Fallback 판단용
+        private double _pumpForecasterAccuracy = 0.0;
+        private double _majorForecasterAccuracy = 0.0;
+        private double _spikeForecasterAccuracy = 0.0;
+        private const double ForecasterMinAccuracyForEntry = 0.50;
         // 70% 이상 정확도 달성 시 하드 체크 자동 해제
         private const double AiHardCheckBypassThreshold = 0.70;
         private bool IsAiModelReadyForPumpEntry =>
@@ -1317,9 +1323,13 @@ namespace TradingBot
                         }
                     }
 
+                    // [v5.0.2] PumpForecaster 품질 검증 — AccA < 50% 면 Fallback 강제
+                    bool pumpForecasterTrustworthy = _pumpForecaster.IsModelLoaded
+                        && _pumpForecasterAccuracy >= ForecasterMinAccuracyForEntry;
+
                     // [v5.0] 예측형 진입: PumpScan 후보 → PumpForecaster 예측 → Scheduler 등록
                     // 기존 skipAiGateCheck=true 즉시 Market 진입 로직 제거
-                    if (_pumpForecaster.IsModelLoaded && _entryScheduler != null
+                    if (pumpForecasterTrustworthy && _entryScheduler != null
                         && _marketDataManager.KlineCache.TryGetValue(symbol, out var cache))
                     {
                         List<IBinanceKline> cSnap;
@@ -1383,9 +1393,13 @@ namespace TradingBot
                 {
                     try
                     {
-                        // [v5.0] 예측형 진입: MajorStrategy 후보 → MajorForecaster 예측 → Scheduler 등록
-                        // MajorForecaster는 현재 LONG-only 학습 → SHORT는 기존 경로 fallback
-                        if (decision == "LONG" && _majorForecaster.IsModelLoaded && _entryScheduler != null
+                        // [v5.0.2] MajorForecaster 품질 검증 — AccA < 50% 면 Fallback 강제
+                        // 원인: 초기 학습 샘플 부족(765건) → AccA=0% → NoOpportunity 직행으로 진입 0건
+                        // 해결: 정확도 신뢰 가능할 때만 Forecaster 경로, 아니면 기존 ExecuteAutoOrder
+                        bool forecasterTrustworthy = _majorForecaster.IsModelLoaded
+                            && _majorForecasterAccuracy >= ForecasterMinAccuracyForEntry;
+
+                        if (decision == "LONG" && forecasterTrustworthy && _entryScheduler != null
                             && _marketDataManager.KlineCache.TryGetValue(symbol, out var cache))
                         {
                             List<IBinanceKline> cSnap;
@@ -1408,7 +1422,14 @@ namespace TradingBot
                         }
                         else
                         {
-                            // Fallback: Forecaster 미학습 / SHORT 방향 → 기존 경로
+                            // [v5.0.2] Fallback 경로 — 항상 작동
+                            // - Forecaster 미학습 or AccA<50%
+                            // - SHORT 방향 (Forecaster LONG-only 학습)
+                            // - MajorForecaster 가 신뢰도 확보되기 전까지 기본 경로
+                            if (decision == "LONG" && _majorForecaster.IsModelLoaded && !forecasterTrustworthy)
+                            {
+                                OnLiveLog?.Invoke($"🧭 [MAJOR] {symbol} Fallback 경로 (Forecaster AccA={_majorForecasterAccuracy:P0} < {ForecasterMinAccuracyForEntry:P0})");
+                            }
                             await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR");
                         }
                     }
@@ -6954,6 +6975,7 @@ namespace TradingBot
                                 {
                                     var m = await _pumpForecaster.TrainAndSaveAsync(labeledPumpForecast, token);
                                     OnStatusLog?.Invoke($"🧠 [v5.0] PumpForecaster 학습 완료 | {labeledPumpForecast.Count}건 | AccA={m?.ClassifierAccuracy:P1} MAE_B={m?.TimeRegressorMAE:F2}봉 MAE_C={m?.PriceRegressorMAE:F3}%");
+                                    if (m != null) _pumpForecasterAccuracy = m.ClassifierAccuracy;
                                 }
                             }
                             catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [v5.0] PumpForecaster 학습 실패: {ex.Message}"); }
@@ -6962,16 +6984,28 @@ namespace TradingBot
                 }
                 catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] PumpSignal 학습 실패: {ex.Message}"); }
 
-                // [v5.0] MajorForecaster 학습 (메이저 심볼 전용)
+                // [v5.0.2] MajorForecaster 학습 — DB 히스토리로 샘플 대폭 확대
+                // 기존 문제: klineMap 에서 메이저만 추출 → 85봉 × 9종 = 765건, AccA=0%
+                // 해결: 거래소 API 에서 메이저 심볼당 1000봉(~3.5일) 직접 로드 → ~9000건
                 try
                 {
                     var majorCandles = new List<IBinanceKline>();
-                    foreach (var kvp in klineMap)
+                    foreach (var sym in MajorSymbols)
                     {
                         if (token.IsCancellationRequested) break;
-                        if (!MajorSymbols.Contains(kvp.Key)) continue;
-                        if (kvp.Value.Count >= 30)
-                            majorCandles.AddRange(kvp.Value);
+                        try
+                        {
+                            var hist = await _exchangeService.GetKlinesAsync(
+                                sym, Binance.Net.Enums.KlineInterval.FiveMinutes, 1000, token);
+                            if (hist != null && hist.Count >= 100)
+                            {
+                                majorCandles.AddRange(hist);
+                            }
+                        }
+                        catch (Exception innerEx)
+                        {
+                            OnStatusLog?.Invoke($"⚠️ [v5.0.2] {sym} 메이저 히스토리 로드 실패: {innerEx.Message}");
+                        }
                     }
                     if (majorCandles.Count >= 200)
                     {
@@ -6979,8 +7013,13 @@ namespace TradingBot
                         if (labeledMajor.Count >= 100)
                         {
                             var m = await _majorForecaster.TrainAndSaveAsync(labeledMajor, token);
-                            OnStatusLog?.Invoke($"🧠 [v5.0] MajorForecaster 학습 완료 | {labeledMajor.Count}건 | AccA={m?.ClassifierAccuracy:P1} MAE_B={m?.TimeRegressorMAE:F2}봉");
+                            OnStatusLog?.Invoke($"🧠 [v5.0.2] MajorForecaster 학습 완료 | {labeledMajor.Count}건 | AccA={m?.ClassifierAccuracy:P1} MAE_B={m?.TimeRegressorMAE:F2}봉");
+                            if (m != null) _majorForecasterAccuracy = m.ClassifierAccuracy;
                         }
+                    }
+                    else
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [v5.0.2] 메이저 히스토리 부족 ({majorCandles.Count}건) — Forecaster 학습 스킵, Fallback 경로 사용");
                     }
                 }
                 catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [v5.0] MajorForecaster 학습 실패: {ex.Message}"); }
@@ -7009,6 +7048,7 @@ namespace TradingBot
                         {
                             var m = await _spikeForecaster.TrainAndSaveAsync(labeledSpike, token);
                             OnStatusLog?.Invoke($"🧠 [v5.0] SpikeForecaster(1m) 학습 완료 | {labeledSpike.Count}건 | AccA={m?.ClassifierAccuracy:P1}");
+                            if (m != null) _spikeForecasterAccuracy = m.ClassifierAccuracy;
                         }
                     }
                 }

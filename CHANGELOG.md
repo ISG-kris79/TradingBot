@@ -15,6 +15,60 @@
 
  - 없음
 
+## [5.0.2] - 2026-04-12
+
+### Fixed (메이저 코인 진입 0건 — UserId=1 이틀간 BTC/ETH/SOL/XRP 진입 없음)
+
+DB 분석 결과:
+- UserId=1 최근 24시간 거래 47건 전부 PUMP, 메이저 0건
+- 원인 1: MajorCoinStrategy aiScore 경계(65/35) + 모멘텀 AND 조건이 너무 엄격
+  - 메이저 5m 변동성 작아 30m +1.5% / 1h +3% 조건 도달 거의 불가능
+- 원인 2: MajorForecaster 학습 샘플 부족(765건, 9종×85봉) → AccA=0%
+  - `forecast.HasOpportunity=false` 만 반환 → 진입 경로 완전 차단
+- 원인 3: v5.0.0 Fallback 조건 `!IsModelLoaded` 만 체크
+  - 학습 완료 후 AccA=0% 여도 Forecaster 경로 강제 사용 → 모든 신호 차단
+
+### 수정 1 — MajorCoinStrategy aiScore 3단계 완화
+
+기존 (v4.9.8):
+
+```csharp
+if (aiScore >= 65 && (isPriceRecovering || isStrongBounce)) decision = "LONG";
+```
+
+신규 (v5.0.2):
+
+```csharp
+if (aiScore >= 70) decision = "LONG";                       // 순수 점수 단독
+else if (aiScore >= 62 && (isPriceRecovering || isStrongBounce)) decision = "LONG";
+else if (aiScore >= 58 && isMakingHigherLows && currentPrice > sma20) decision = "LONG";
+// SHORT 방향 3단계 대칭
+else if (aiScore <= 30) decision = "SHORT";
+else if (aiScore <= 38 && (isPriceDropping || isStrongDrop || isMakingLowerHighs)) decision = "SHORT";
+else if (aiScore <= 42 && isMakingLowerHighs && currentPrice < sma20) decision = "SHORT";
+```
+
+### 수정 2 — Forecaster 정확도 기반 Fallback 강제
+
+- `_pumpForecasterAccuracy`, `_majorForecasterAccuracy`, `_spikeForecasterAccuracy` 필드 추가
+- `ForecasterMinAccuracyForEntry = 0.50` 임계값
+- 학습 시 각 Forecaster 정확도 저장
+- 신호 핸들러에서 `IsModelLoaded AND AccA >= 50%` 체크
+- 기준 미달 시 **기존 `ExecuteAutoOrder` 경로로 Fallback** (PumpSignalClassifier/AIDoubleCheckEntryGate 사용)
+- 이렇게 하면 초기 학습 전까지 기존 안정 경로 유지
+
+### 수정 3 — MajorForecaster 학습 데이터 12배 확대
+
+- 기존: `klineMap` 에서 메이저만 추출 → 85봉 × 9종 = 765건
+- 신규: 거래소 API 에서 메이저 심볼당 **1000봉(≈3.5일) 직접 로드** → 약 9000건
+- 이 정도 샘플로 AccA 50% 이상 도달 기대
+
+### Impact
+
+- 메이저 진입 경로 복구: aiScore 58~70 구간에서도 신호 생성
+- Forecaster 학습 품질 좋아질 때까지 Fallback 으로 정상 작동
+- PumpForecaster 도 동일 로직 적용 → PumpScanStrategy 도 AccA 부족 시 기존 경로 유지
+
 ## [5.0.1] - 2026-04-12
 
 ### Added (Gate 1 + Gate 2 — 고점 진입 차단 + 지연 반등 진입)
