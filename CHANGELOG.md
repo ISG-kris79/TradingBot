@@ -15,6 +15,40 @@
 
  - 없음
 
+## [4.9.0] - 2026-04-11
+
+### Removed
+
+- **AI COMMAND 탭 완전 제거** (Bull/Bear seesaw, Pulse, Battle 5카드, 애니메이션 Storyboard 일체)
+- **AI MONITOR 탭 완전 제거**
+- **ADVANCED 탭 완전 제거** (Arbitrage/FundTransfer/Rebalancing UI)
+- **대시보드 Cockpit Strip 제거** (AI STATUS, THE PULSE, GOLDEN ZONE, ATR STOP, TREND-RIDER 5카드)
+- **Right Panel 제거** (LIVE EVENTS, PROFIT GOAL, EXECUTION STEPPER, AI PREDICTION)
+- **ENTRY GATE / AI LEARNING / AI PREDICTIVE TIME-OUT PROB 사이드 카드** 제거
+- 관련 MainWindow.xaml.cs 핸들러 제거 (`BtnStart/Stop Arbitrage/FundTransfer/Rebalancing`, `RefreshAiCommandCenter`, `BuildArcGeometry`, `UpdateTimeOutProbWidgetUI`)
+- XAML 라인 수 3,436 → 약 2,200 (36% 축소)
+
+### Added
+
+- **🎯 AI INSIGHT PANEL** (대시보드 중앙, 대기/보유 자동 전환)
+  - **LEFT — Top Candidates**: PumpScan 로그 실시간 파싱하여 최대 8개 후보 표시 (Symbol / ML% / Status / 감지 시각)
+    - Status 색상: `AI_ENTRY`(녹색) / `WATCH`(금색) / `REJECT`(적색)
+  - **RIGHT — Focused Position**: 활성 포지션 있을 때 Deep Dive 카드 자동 표시
+    - Symbol / Side / ROE / PNL / Holding / Entry ─●─ TP 진행 바 / SL / AI 재예측
+    - 포지션 없을 때: "💤 활성 포지션 없음 — AI가 진입 기회를 탐색 중" 안내
+- **📡 DETECT / TRAINING 사이드 카드** (사이드바 ACCOUNT 아래)
+  - Trained: `N/M` (심볼별 학습 완료 수)
+  - PumpScan/m, VolSurge/m, Spike/m (분당 감지 카운트)
+- `TradingBot.Models.CandidateItem` / `PositionDetailViewModel` / `DetectHealthViewModel` 신설
+- `TradingEngine.GetActivePositionSnapshot()` / `TryGetTickerPrice()` 헬퍼
+- `InvertBoolToVisibilityConverter` 신설
+
+### Changed
+
+- 대시보드 탭을 **단일 화면**으로 통합 (사이드바 200px + 메인 영역)
+- 메인 영역 RowDefinitions: Header / DataGrid(*) / AI Insight Panel(260px) / FAST LOG+ALERTS(150px)
+- TabControl: 6개 → 3개 (DASHBOARD / TRADE HISTORY / PERFORMANCE)
+
 ## [4.8.2] - 2026-04-11
 
 ### Fixed

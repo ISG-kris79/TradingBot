@@ -1203,11 +1203,7 @@ namespace TradingBot
                     _dbManager,
                     msg => OnStatusLog?.Invoke(msg));
 
-                // UI 갱신 이벤트 → MainWindow 업데이트
-                _timeoutProbEngine.OnUIUpdated += (status, symbol, winRate, activated) =>
-                {
-                    MainWindow.Instance?.UpdateTimeOutProbWidgetUI(status, symbol, winRate, activated);
-                };
+                // [v4.9.0] UI TimeOut 위젯 제거 — OnUIUpdated 구독 제거
 
                 // 진입 요청 이벤트 → ExecuteAutoOrder 콜백 연결
                 _timeoutProbEngine.OnEntryRequested += async (symbol, direction, signalSrc, sizeMultiplier, ct) =>
@@ -6626,6 +6622,40 @@ namespace TradingBot
         public bool IsSymbolTrained(string symbol) =>
             IsInitialTrainingComplete || _trainedSymbols.ContainsKey(symbol);
         public int TrainedSymbolCount => _trainedSymbols.Count;
+
+        // [v4.9.0] AI Insight Panel 지원 — 활성 포지션 + 현재가 조회 헬퍼
+        public List<TradingBot.Shared.Models.PositionInfo> GetActivePositionSnapshot()
+        {
+            lock (_posLock)
+            {
+                return _activePositions.Values
+                    .Select(p => new TradingBot.Shared.Models.PositionInfo
+                    {
+                        Symbol = p.Symbol,
+                        IsLong = p.IsLong,
+                        EntryPrice = p.EntryPrice,
+                        Quantity = p.Quantity,
+                        Leverage = p.Leverage,
+                        EntryTime = p.EntryTime,
+                        TakeProfit = p.TakeProfit,
+                        StopLoss = p.StopLoss
+                    })
+                    .ToList();
+            }
+        }
+
+        public bool TryGetTickerPrice(string symbol, out decimal price)
+        {
+            if (_marketDataManager?.TickerCache != null
+                && _marketDataManager.TickerCache.TryGetValue(symbol, out var tick)
+                && tick.LastPrice > 0)
+            {
+                price = tick.LastPrice;
+                return true;
+            }
+            price = 0m;
+            return false;
+        }
         public event Action<string>? OnSymbolTrained;
 
         /// <summary>

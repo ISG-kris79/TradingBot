@@ -84,6 +84,21 @@ namespace TradingBot
     }
 
     /// <summary>
+    /// [v4.9.0] bool == false → Visible, bool == true → Collapsed
+    /// AI Insight Panel의 Idle 상태 표시용
+    /// </summary>
+    public class InvertBoolToVisibilityConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            bool b = value is bool v && v;
+            return b ? Visibility.Collapsed : Visibility.Visible;
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
+    /// <summary>
     /// 심볼별 동적 가격 포맷팅 Converter
     /// XRP, DOGE, SHIB, PEPE 등 저가 코인: 4자리
     /// 기타 (BTC, ETH, SOL 등): 2자리

@@ -197,6 +197,21 @@ namespace TradingBot.ViewModels
             set { _waveStatusText = value; OnPropertyChanged(); }
         }
 
+        // [v4.9.0] AI Insight Panel — Top Candidates + Focused Position + Detect Health
+        public ObservableCollection<TradingBot.Models.CandidateItem> TopCandidates { get; }
+            = new ObservableCollection<TradingBot.Models.CandidateItem>();
+
+        private TradingBot.Models.PositionDetailViewModel? _focusedPosition;
+        public TradingBot.Models.PositionDetailViewModel? FocusedPosition
+        {
+            get => _focusedPosition;
+            set { _focusedPosition = value; OnPropertyChanged(); OnPropertyChanged(nameof(HasFocusedPosition)); }
+        }
+        public bool HasFocusedPosition => _focusedPosition != null;
+
+        public TradingBot.Models.DetectHealthViewModel DetectHealth { get; }
+            = new TradingBot.Models.DetectHealthViewModel();
+
         // [v4.7.2] 초기학습 진행 배너 (진입 차단 시각화)
         private Visibility _initialTrainingBannerVisibility = Visibility.Collapsed;
         public Visibility InitialTrainingBannerVisibility
@@ -2468,6 +2483,9 @@ namespace TradingBot.ViewModels
             if (string.IsNullOrWhiteSpace(msg))
                 return;
 
+            // [v4.9.0] AI Insight Panel 갱신 — PumpScan 로그에서 후보 추출
+            TryUpdateTopCandidates(msg);
+
             var localizedMessage = LocalizeLiveLogMessage(msg);
             var compactMessage = SimplifyLiveLogMessage(localizedMessage);
             var isMajor = IsMajorSymbolLog(msg);
@@ -2588,6 +2606,12 @@ namespace TradingBot.ViewModels
                         FlushPendingTickerUpdatesToUi();
                         RefreshBattleDashboardForSelectedSymbol();
                         RefreshMajorBattlePanel();
+                        UpdateFocusedPositionFromEngine(); // [v4.9.0] AI Insight Panel
+                        if (_engine != null)
+                        {
+                            DetectHealth.TrainedCount = _engine.TrainedSymbolCount;
+                            DetectHealth.CandidatesNow = TopCandidates.Count;
+                        }
                         sw.Stop();
 
                         // [Stage2] 적응형 타이머 간격 조정
@@ -4508,6 +4532,182 @@ namespace TradingBot.ViewModels
         /// [큐 분리] 라이브 로그를 큐에 넣기 (외부에서도 호출 가능, UI 스레드 직접 접근 제거)
         /// </summary>
         public void EnqueueLiveLog(string msg) => AddLiveLog(msg);
+
+        // ═══════════════════════════════════════════════════════════════
+        // [v4.9.0] AI Insight Panel — Top Candidates 파싱
+        // PumpScan/MarketCrash 로그를 파싱하여 상위 후보 리스트 유지
+        // ═══════════════════════════════════════════════════════════════
+        private static readonly System.Text.RegularExpressions.Regex InsightSymbolRegex
+            = new(@"sym=(\w+)", System.Text.RegularExpressions.RegexOptions.Compiled);
+        private static readonly System.Text.RegularExpressions.Regex InsightProbRegex
+            = new(@"prob=(\d+(?:\.\d+)?)%", System.Text.RegularExpressions.RegexOptions.Compiled);
+        private static readonly System.Text.RegularExpressions.Regex InsightRejectRegex
+            = new(@"reason=(\w+)", System.Text.RegularExpressions.RegexOptions.Compiled);
+        private const int MaxCandidateItems = 8;
+        private DateTime _detectStatsWindowStart = DateTime.Now;
+        private int _pumpScanCount;
+        private int _volumeSurgeCount;
+        private int _spikeCount;
+
+        private void TryUpdateTopCandidates(string msg)
+        {
+            if (string.IsNullOrWhiteSpace(msg)) return;
+
+            try
+            {
+                // DetectHealth 카운터 (1분 윈도우)
+                if ((DateTime.Now - _detectStatsWindowStart).TotalMinutes >= 1)
+                {
+                    RunOnUI(() =>
+                    {
+                        DetectHealth.PumpScanPerMin = _pumpScanCount;
+                        DetectHealth.VolumeSurgePerMin = _volumeSurgeCount;
+                        DetectHealth.SpikePerMin = _spikeCount;
+                    });
+                    _pumpScanCount = 0;
+                    _volumeSurgeCount = 0;
+                    _spikeCount = 0;
+                    _detectStatsWindowStart = DateTime.Now;
+                }
+
+                if (msg.Contains("[SIGNAL][PUMP][SCAN]", StringComparison.OrdinalIgnoreCase))
+                {
+                    System.Threading.Interlocked.Increment(ref _pumpScanCount);
+                    return;
+                }
+                if (msg.Contains("거래량 급증", StringComparison.OrdinalIgnoreCase)
+                    || msg.Contains("VolumeSurge", StringComparison.OrdinalIgnoreCase))
+                {
+                    System.Threading.Interlocked.Increment(ref _volumeSurgeCount);
+                    return;
+                }
+                if (msg.Contains("급등 감지", StringComparison.OrdinalIgnoreCase)
+                    || msg.Contains("급락 감지", StringComparison.OrdinalIgnoreCase))
+                {
+                    System.Threading.Interlocked.Increment(ref _spikeCount);
+                    return;
+                }
+
+                // AI_ENTRY / REJECT / CANDIDATE 파싱
+                bool isAiEntry = msg.Contains("[SIGNAL][PUMP][AI_ENTRY]", StringComparison.OrdinalIgnoreCase);
+                bool isReject  = msg.Contains("[SIGNAL][PUMP][REJECT]", StringComparison.OrdinalIgnoreCase);
+                bool isCand    = msg.Contains("[SIGNAL][PUMP][CANDIDATE]", StringComparison.OrdinalIgnoreCase);
+                bool isEmit    = msg.Contains("[SIGNAL][PUMP][EMIT]", StringComparison.OrdinalIgnoreCase);
+                if (!isAiEntry && !isReject && !isCand && !isEmit) return;
+
+                var symMatch = InsightSymbolRegex.Match(msg);
+                if (!symMatch.Success) return;
+                string symbol = symMatch.Groups[1].Value;
+
+                double prob = 0;
+                var probMatch = InsightProbRegex.Match(msg);
+                if (probMatch.Success && double.TryParse(probMatch.Groups[1].Value, out var p))
+                    prob = p / 100.0;
+
+                string status;
+                if (isAiEntry || isEmit)
+                    status = "AI_ENTRY";
+                else if (isReject)
+                {
+                    var r = InsightRejectRegex.Match(msg);
+                    status = r.Success ? $"REJECT({r.Groups[1].Value})" : "REJECT";
+                }
+                else
+                    status = "CANDIDATE";
+
+                RunOnUI(() =>
+                {
+                    var existing = TopCandidates.FirstOrDefault(c => c.Symbol == symbol);
+                    if (existing != null)
+                    {
+                        existing.Status = status;
+                        if (prob > 0) existing.MLProbability = prob;
+                        existing.DetectedAt = DateTime.Now;
+                        // 최상단으로 이동
+                        int idx = TopCandidates.IndexOf(existing);
+                        if (idx > 0) TopCandidates.Move(idx, 0);
+                    }
+                    else
+                    {
+                        TopCandidates.Insert(0, new TradingBot.Models.CandidateItem
+                        {
+                            Symbol = symbol,
+                            MLProbability = prob,
+                            Status = status,
+                            DetectedAt = DateTime.Now
+                        });
+                        while (TopCandidates.Count > MaxCandidateItems)
+                            TopCandidates.RemoveAt(TopCandidates.Count - 1);
+                    }
+                });
+            }
+            catch { /* 파싱 오류 무시 */ }
+        }
+
+        /// <summary>
+        /// [v4.9.0] 활성 포지션이 있을 때 Focused Position 업데이트.
+        /// 주기적으로 호출되거나 포지션 이벤트에서 호출.
+        /// </summary>
+        public void UpdateFocusedPositionFromEngine()
+        {
+            if (_engine == null) return;
+            try
+            {
+                TradingBot.Shared.Models.PositionInfo? latest = null;
+                lock (typeof(TradingBot.TradingEngine))
+                {
+                    var pos = _engine.GetActivePositionSnapshot();
+                    latest = pos.OrderByDescending(p => p.EntryTime).FirstOrDefault();
+                }
+
+                if (latest == null)
+                {
+                    RunOnUI(() => FocusedPosition = null);
+                    return;
+                }
+
+                decimal currentPrice = 0m;
+                if (_engine.TryGetTickerPrice(latest.Symbol, out var px)) currentPrice = px;
+                if (currentPrice <= 0) currentPrice = latest.EntryPrice;
+
+                decimal roePct = 0m;
+                if (latest.EntryPrice > 0)
+                {
+                    roePct = latest.IsLong
+                        ? (currentPrice - latest.EntryPrice) / latest.EntryPrice * 100m
+                        : (latest.EntryPrice - currentPrice) / latest.EntryPrice * 100m;
+                    roePct *= latest.Leverage > 0 ? latest.Leverage : 1;
+                }
+
+                decimal progress = 0m;
+                if (latest.TakeProfit > 0 && latest.EntryPrice > 0)
+                {
+                    decimal span = Math.Abs(latest.TakeProfit - latest.EntryPrice);
+                    if (span > 0)
+                    {
+                        decimal moved = Math.Abs(currentPrice - latest.EntryPrice);
+                        progress = Math.Min(100m, moved / span * 100m);
+                    }
+                }
+
+                var vm = new TradingBot.Models.PositionDetailViewModel
+                {
+                    Symbol = latest.Symbol,
+                    Side = latest.IsLong ? "LONG" : "SHORT",
+                    EntryPrice = latest.EntryPrice,
+                    CurrentPrice = currentPrice,
+                    RoePct = roePct,
+                    UnrealizedPnlUsd = (decimal)((double)latest.Quantity * ((double)currentPrice - (double)latest.EntryPrice) * (latest.IsLong ? 1 : -1)),
+                    HoldingTime = latest.EntryTime == default ? TimeSpan.Zero : DateTime.Now - latest.EntryTime,
+                    TpPrice = latest.TakeProfit,
+                    SlPrice = latest.StopLoss,
+                    ProgressToTpPct = (double)progress
+                };
+
+                RunOnUI(() => FocusedPosition = vm);
+            }
+            catch { }
+        }
 
         /// <summary>
         /// [큐 분리] 틱 데이터를 큐에 넣기 (소켓 서비스에서 호출, UI 스레드 접근 X)
