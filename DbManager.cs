@@ -32,7 +32,8 @@ namespace TradingBot.Services
         public DbManager(string connectionString)
         {
             _connectionString = connectionString;
-            // DB 스키마는 직접 관리 (EnsureIsSimulationColumnAsync, EnsureOrderErrorTableAsync, EnsurePositionStateTableAsync 제거)
+            // [v5.0.3] Category 컬럼 자동 추가 — 앞으로 진입/청산에 카테고리 기록
+            _ = EnsureCategoryColumnAsync();
         }
 
         private async Task EnsureIsSimulationColumnAsync()
@@ -53,6 +54,136 @@ END");
             {
                 MainWindow.Instance?.AddLog($"⚠️ [DB] IsSimulation 컬럼 자동 추가 실패: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// [v5.0.3] TradeHistory.Category 컬럼 자동 추가 (MAJOR/PUMP/SPIKE)
+        /// 기존 레코드는 NULL 유지 → 통계 쿼리에서 자동 제외
+        /// </summary>
+        private async Task EnsureCategoryColumnAsync()
+        {
+            try
+            {
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await db.ExecuteAsync(@"
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'Category'
+)
+BEGIN
+    ALTER TABLE dbo.TradeHistory ADD Category NVARCHAR(10) NULL;
+END
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'IX_TradeHistory_Category_EntryTime'
+)
+BEGIN
+    CREATE INDEX IX_TradeHistory_Category_EntryTime
+        ON dbo.TradeHistory (Category, EntryTime)
+        WHERE Category IS NOT NULL;
+END");
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] Category 컬럼 자동 추가 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// [v5.0.3] signalSource + signal symbol 로부터 카테고리 결정
+        /// 규칙 (단순):
+        /// - MAJOR: 9개 메이저 심볼 중 하나
+        /// - SPIKE: signalSource 가 SPIKE_FAST / SPIKE_* 로 시작
+        /// - PUMP:  나머지 (MAJOR_MEME, PUMP_WATCH_CONFIRMED, TICK_SURGE, 기본값)
+        /// </summary>
+        public static string ResolveTradeCategory(string symbol, string? signalSource)
+        {
+            // 9개 메이저 심볼 (TradingEngine.MajorSymbols 동일)
+            if (!string.IsNullOrEmpty(symbol))
+            {
+                switch (symbol)
+                {
+                    case "BTCUSDT":
+                    case "ETHUSDT":
+                    case "SOLUSDT":
+                    case "XRPUSDT":
+                    case "BNBUSDT":
+                    case "ADAUSDT":
+                    case "DOGEUSDT":
+                    case "AVAXUSDT":
+                    case "LINKUSDT":
+                        return "MAJOR";
+                }
+            }
+
+            if (!string.IsNullOrEmpty(signalSource) &&
+                signalSource.StartsWith("SPIKE", StringComparison.OrdinalIgnoreCase))
+            {
+                return "SPIKE";
+            }
+
+            return "PUMP";
+        }
+
+        /// <summary>
+        /// [v5.0.3] 카테고리별 오늘(KST 00:00 기준) 통계
+        /// Category IS NOT NULL 로 과거 데이터 자동 제외
+        /// 진입 시각 + Symbol 그룹핑으로 PartialClose 중복 제거
+        /// </summary>
+        public async Task<Dictionary<string, (int entries, int wins, int losses, decimal totalPnL)>>
+            GetTodayStatsByCategoryAsync()
+        {
+            var result = new Dictionary<string, (int, int, int, decimal)>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                // KST 00:00 = UTC 전날 15:00 (DB 는 로컬 서버 시간이라 DB DATE 기준 OK)
+                DateTime todayKstStart = DateTime.Today;
+
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                // 진입 시각 + Symbol 그룹핑 — PartialClose 로 여러 행이 생겨도 1건으로 카운트
+                // Win/Loss 판정: 같은 그룹의 PnL 합계가 양수/음수
+                const string sql = @"
+WITH Groups AS (
+    SELECT
+        Category,
+        Symbol,
+        EntryTime,
+        SUM(ISNULL(PnL, 0)) AS TotalPnL,
+        MAX(CASE WHEN IsClosed = 1 THEN 1 ELSE 0 END) AS HasClosed
+    FROM dbo.TradeHistory
+    WHERE Category IS NOT NULL
+      AND EntryTime >= @todayStart
+    GROUP BY Category, Symbol, EntryTime
+)
+SELECT
+    Category,
+    COUNT(*) AS Entries,
+    SUM(CASE WHEN HasClosed = 1 AND TotalPnL > 0 THEN 1 ELSE 0 END) AS Wins,
+    SUM(CASE WHEN HasClosed = 1 AND TotalPnL < 0 THEN 1 ELSE 0 END) AS Losses,
+    SUM(TotalPnL) AS TotalPnL
+FROM Groups
+GROUP BY Category";
+
+                var rows = await db.QueryAsync(sql, new { todayStart = todayKstStart });
+                foreach (var row in rows)
+                {
+                    string cat = (string)row.Category;
+                    int entries = (int)(row.Entries ?? 0);
+                    int wins = (int)(row.Wins ?? 0);
+                    int losses = (int)(row.Losses ?? 0);
+                    decimal totalPnL = (decimal)(row.TotalPnL ?? 0m);
+                    result[cat] = (entries, wins, losses, totalPnL);
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] GetTodayStatsByCategoryAsync 오류: {ex.Message}");
+            }
+            return result;
         }
 
         // [v3.5.2] 포지션 상태 영속화 — 재시작 시 부분청산/본절/계단식 상태 복원
@@ -1014,6 +1145,8 @@ ORDER BY EntryTime DESC;";
                 decimal quantity = Math.Abs(log.Quantity);
                 DateTime entryTime = log.EntryTime == default ? log.Time : log.EntryTime;
                 string strategy = string.IsNullOrWhiteSpace(log.Strategy) ? "UNKNOWN" : log.Strategy;
+                // [v5.0.3] signalSource(=Strategy) + Symbol 로 카테고리 결정
+                string category = ResolveTradeCategory(log.Symbol ?? string.Empty, strategy);
 
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
@@ -1034,6 +1167,7 @@ SET Side = @Side,
     Quantity = @Quantity,
     AiScore = @AiScore,
     EntryTime = @EntryTime,
+    Category = @Category,
     LastUpdatedAt = GETDATE(),
     CloseVerified = 0;";
 
@@ -1046,16 +1180,17 @@ SET Side = @Side,
                     EntryPrice = entryPrice,
                     Quantity = quantity,
                     log.AiScore,
-                    EntryTime = entryTime
+                    EntryTime = entryTime,
+                    Category = category
                 }, tx);
 
                 if (affected == 0)
                 {
                     string insertSql = @"
 INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime, ExitPrice, PnL, PnLPercent, ExitReason, IsClosed, CloseVerified, IsSimulation, LastUpdatedAt)
+    (UserId, Symbol, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime, ExitPrice, PnL, PnLPercent, ExitReason, IsClosed, CloseVerified, IsSimulation, Category, LastUpdatedAt)
 VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @Quantity, @AiScore, @EntryTime, NULL, 0, 0, NULL, 0, 0, @IsSimulation, GETDATE());";
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @Quantity, @AiScore, @EntryTime, NULL, 0, 0, NULL, 0, 0, @IsSimulation, @Category, GETDATE());";
 
                     await db.ExecuteAsync(insertSql, new
                     {
@@ -1067,7 +1202,8 @@ VALUES
                         Quantity = quantity,
                         log.AiScore,
                         EntryTime = entryTime,
-                        log.IsSimulation
+                        log.IsSimulation,
+                        Category = category
                     }, tx);
                 }
 
@@ -1156,11 +1292,12 @@ WHERE Id = @Id;",
                     return (true, resolvedEntryTime, resolvedAiScore, false);
                 }
 
+                string syncCategory = ResolveTradeCategory(position.Symbol ?? string.Empty, strategy);
                 await db.ExecuteAsync(@"
 INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime, ExitPrice, PnL, PnLPercent, ExitReason, IsClosed, CloseVerified, LastUpdatedAt)
+    (UserId, Symbol, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime, ExitPrice, PnL, PnLPercent, ExitReason, IsClosed, CloseVerified, Category, LastUpdatedAt)
 VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @Quantity, @AiScore, @EntryTime, NULL, 0, 0, NULL, 0, 0, GETDATE());",
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @Quantity, @AiScore, @EntryTime, NULL, 0, 0, NULL, 0, 0, @Category, GETDATE());",
                     new
                     {
                         UserId = userId,
@@ -1170,7 +1307,8 @@ VALUES
                         EntryPrice = position.EntryPrice,
                         Quantity = quantity,
                         AiScore = position.AiScore,
-                        EntryTime = entryTime
+                        EntryTime = entryTime,
+                        Category = syncCategory
                     }, tx);
 
                 await tx.CommitAsync();
@@ -1288,12 +1426,13 @@ WHERE Id = @Id;",
                 MainWindow.Instance?.AddLog($"⚠️ [DB][TradeHistory][CloseFallback] user={userId} sym={symbolValue} openEntry=notFound action=insertRecovery");
                 string entrySide = InferEntrySideFromCloseSide(sideValue);
                 string fallbackStrategy = string.IsNullOrWhiteSpace(strategyValue) ? "RECOVERED_CLOSE" : strategyValue;
+                string fallbackCategory = ResolveTradeCategory(symbolValue ?? string.Empty, fallbackStrategy);
 
                 await db.ExecuteAsync(@"
 INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, LastUpdatedAt)
+    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, Category, LastUpdatedAt)
 VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @IsSimulation, GETDATE());",
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @IsSimulation, @Category, GETDATE());",
                     new
                     {
                         UserId = userId,
@@ -1309,7 +1448,8 @@ VALUES
                         ExitReason = exitReason,
                         EntryTime = entryTime,
                         ExitTime = exitTime,
-                        log.IsSimulation
+                        log.IsSimulation,
+                        Category = fallbackCategory
                     }, tx);
 
                 await tx.CommitAsync();
@@ -1392,12 +1532,13 @@ ORDER BY EntryTime DESC, Id DESC;",
                     string fallbackStrategy = string.IsNullOrWhiteSpace(log.Strategy) ? "EXTERNAL_CLOSE_SYNC" : log.Strategy;
                     decimal entryPrice = log.EntryPrice > 0 ? log.EntryPrice : exitPrice;
                     DateTime entryTime = log.EntryTime == default ? exitTime : log.EntryTime;
+                    string fallbackCategory = ResolveTradeCategory(log.Symbol ?? string.Empty, fallbackStrategy);
 
                     await db.ExecuteAsync(@"
 INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, LastUpdatedAt)
+    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, Category, LastUpdatedAt)
 VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, GETDATE());",
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @Category, GETDATE());",
                         new
                         {
                             UserId = userId,
@@ -1412,7 +1553,8 @@ VALUES
                             log.PnLPercent,
                             ExitReason = exitReason,
                             EntryTime = entryTime,
-                            ExitTime = exitTime
+                            ExitTime = exitTime,
+                            Category = fallbackCategory
                         }, tx);
 
                     await tx.CommitAsync();
@@ -1618,11 +1760,12 @@ WHERE Id = @Id;",
                         return true;
                     }
 
+                    string partialCategory = ResolveTradeCategory(log.Symbol ?? string.Empty, strategy);
                     await db.ExecuteAsync(@"
 INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, LastUpdatedAt)
+    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, Category, LastUpdatedAt)
 VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @IsSimulation, GETDATE());",
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @IsSimulation, @Category, GETDATE());",
                         new
                         {
                             UserId = userId,
@@ -1638,7 +1781,8 @@ VALUES
                             ExitReason = exitReason,
                             EntryTime = resolvedEntryTime,
                             ExitTime = exitTime,
-                            log.IsSimulation
+                            log.IsSimulation,
+                            Category = partialCategory
                         }, tx);
 
                     await db.ExecuteAsync(@"
@@ -1650,11 +1794,12 @@ WHERE Id = @Id;",
                 }
                 else
                 {
+                    string partialCategory = ResolveTradeCategory(log.Symbol ?? string.Empty, strategy);
                     await db.ExecuteAsync(@"
 INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, LastUpdatedAt)
+    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, Category, LastUpdatedAt)
 VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @IsSimulation, GETDATE());",
+    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @IsSimulation, @Category, GETDATE());",
                         new
                         {
                             UserId = userId,
@@ -1670,7 +1815,8 @@ VALUES
                             ExitReason = exitReason,
                             EntryTime = resolvedEntryTime,
                             ExitTime = exitTime,
-                            log.IsSimulation
+                            log.IsSimulation,
+                            Category = partialCategory
                         }, tx);
 
                     MainWindow.Instance?.AddLog($"⚠️ [DB] 열린 진입건 없이 부분청산 이력만 보정 insert: U{userId} {log.Symbol}");

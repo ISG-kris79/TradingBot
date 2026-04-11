@@ -217,6 +217,15 @@ namespace TradingBot.ViewModels
         public TradingBot.Models.DetectHealthViewModel DetectHealth { get; }
             = new TradingBot.Models.DetectHealthViewModel();
 
+        // [v5.0.3] 카테고리별 오늘(KST 00:00 기준) 통계 카드
+        public TradingBot.Models.CategoryStatsViewModel MajorStats { get; }
+            = new TradingBot.Models.CategoryStatsViewModel { Category = "MAJOR", Icon = "💎", Title = "MAJOR" };
+        public TradingBot.Models.CategoryStatsViewModel PumpStats { get; }
+            = new TradingBot.Models.CategoryStatsViewModel { Category = "PUMP", Icon = "🚀", Title = "PUMP" };
+        public TradingBot.Models.CategoryStatsViewModel SpikeStats { get; }
+            = new TradingBot.Models.CategoryStatsViewModel { Category = "SPIKE", Icon = "⚡", Title = "SPIKE" };
+        private System.Threading.Timer? _categoryStatsTimer;
+
         // [v4.7.2] 초기학습 진행 배너 (진입 차단 시각화)
         private Visibility _initialTrainingBannerVisibility = Visibility.Collapsed;
         public Visibility InitialTrainingBannerVisibility
@@ -974,6 +983,16 @@ namespace TradingBot.ViewModels
                 {
                     AddLiveLog($"⚠️ DB 초기화 실패: {ex.Message}");
                 }
+            }
+
+            // [v5.0.3] 카테고리별 오늘 통계 5분 타이머 (시작 5초 후 첫 호출)
+            if (!DesignerProperties.GetIsInDesignMode(new DependencyObject()))
+            {
+                _categoryStatsTimer = new System.Threading.Timer(
+                    async _ => await RefreshCategoryStatsAsync(),
+                    null,
+                    TimeSpan.FromSeconds(5),
+                    TimeSpan.FromMinutes(5));
             }
 
             // 테마 초기화
@@ -4651,6 +4670,37 @@ namespace TradingBot.ViewModels
                 });
             }
             catch { /* 파싱 오류 무시 */ }
+        }
+
+        /// <summary>
+        /// [v5.0.3] DB 에서 카테고리별 오늘 통계 조회 → MajorStats/PumpStats/SpikeStats 업데이트
+        /// 5분 주기 타이머 호출 + 필요 시 즉시 호출 가능
+        /// </summary>
+        public async Task RefreshCategoryStatsAsync()
+        {
+            try
+            {
+                string cs = AppConfig.ConnectionString;
+                if (string.IsNullOrEmpty(cs)) return;
+
+                var dbManager = new DbManager(cs);
+                var stats = await dbManager.GetTodayStatsByCategoryAsync();
+
+                (int e, int w, int l, decimal p) majorT = stats.TryGetValue("MAJOR", out var mv) ? mv : (0, 0, 0, 0m);
+                (int e, int w, int l, decimal p) pumpT = stats.TryGetValue("PUMP", out var pv) ? pv : (0, 0, 0, 0m);
+                (int e, int w, int l, decimal p) spikeT = stats.TryGetValue("SPIKE", out var sv) ? sv : (0, 0, 0, 0m);
+
+                RunOnUI(() =>
+                {
+                    MajorStats.Update(majorT.e, majorT.w, majorT.l, majorT.p);
+                    PumpStats.Update(pumpT.e, pumpT.w, pumpT.l, pumpT.p);
+                    SpikeStats.Update(spikeT.e, spikeT.w, spikeT.l, spikeT.p);
+                });
+            }
+            catch (Exception ex)
+            {
+                try { AddLiveLog($"⚠️ [CategoryStats] 통계 조회 실패: {ex.Message}"); } catch { }
+            }
         }
 
         /// <summary>

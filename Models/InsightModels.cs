@@ -142,4 +142,107 @@ namespace TradingBot.Models
 
         public string TrainedText => $"{_trainedCount}/{_totalCount}";
     }
+
+    /// <summary>
+    /// [v5.0.3] 카테고리별 오늘 통계 카드 (MAJOR/PUMP/SPIKE)
+    /// 진입 시각 + Symbol 그룹핑, KST 00:00 기준
+    /// </summary>
+    public class CategoryStatsViewModel : INotifyPropertyChanged
+    {
+        public event PropertyChangedEventHandler? PropertyChanged;
+        private void OnPropertyChanged([CallerMemberName] string? p = null)
+            => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(p ?? ""));
+
+        public string Category { get; set; } = "";
+        public string Icon { get; set; } = "";
+        public string Title { get; set; } = "";
+
+        private decimal _todayPnL;
+        public decimal TodayPnL
+        {
+            get => _todayPnL;
+            set { _todayPnL = value; OnPropertyChanged(); OnPropertyChanged(nameof(TodayPnLText)); OnPropertyChanged(nameof(TodayPnLColor)); }
+        }
+
+        private int _entries;
+        public int Entries
+        {
+            get => _entries;
+            set { _entries = value; OnPropertyChanged(); OnPropertyChanged(nameof(EntriesText)); OnPropertyChanged(nameof(WinRateText)); OnPropertyChanged(nameof(WinRateColor)); }
+        }
+
+        private int _wins;
+        public int Wins
+        {
+            get => _wins;
+            set { _wins = value; OnPropertyChanged(); OnPropertyChanged(nameof(WinRateText)); OnPropertyChanged(nameof(WinRateColor)); }
+        }
+
+        private int _losses;
+        public int Losses
+        {
+            get => _losses;
+            set { _losses = value; OnPropertyChanged(); }
+        }
+
+        public string TodayPnLText
+        {
+            get
+            {
+                string sign = _todayPnL >= 0 ? "+" : "";
+                return $"{sign}${_todayPnL:F2}";
+            }
+        }
+
+        public Brush TodayPnLColor
+        {
+            get
+            {
+                if (_todayPnL > 0) return new SolidColorBrush(Color.FromRgb(16, 185, 129));  // green #10B981
+                if (_todayPnL < 0) return new SolidColorBrush(Color.FromRgb(239, 68, 68));   // red #EF4444
+                return new SolidColorBrush(Color.FromRgb(156, 163, 175));                    // gray #9CA3AF
+            }
+        }
+
+        public string EntriesText => $"{_entries}건";
+
+        public double WinRate
+        {
+            get
+            {
+                int closed = _wins + _losses;
+                return closed > 0 ? (double)_wins / closed * 100 : 0;
+            }
+        }
+
+        public string WinRateText
+        {
+            get
+            {
+                int closed = _wins + _losses;
+                if (closed == 0) return "--";
+                return $"{WinRate:F1}%";
+            }
+        }
+
+        public Brush WinRateColor
+        {
+            get
+            {
+                int closed = _wins + _losses;
+                if (closed == 0) return new SolidColorBrush(Color.FromRgb(156, 163, 175));
+                if (WinRate >= 60) return new SolidColorBrush(Color.FromRgb(16, 185, 129));
+                if (WinRate >= 40) return new SolidColorBrush(Color.FromRgb(251, 191, 36));
+                return new SolidColorBrush(Color.FromRgb(239, 68, 68));
+            }
+        }
+
+        public void Update(int entries, int wins, int losses, decimal pnl)
+        {
+            TodayPnL = pnl;
+            Entries = entries;
+            Wins = wins;
+            Losses = losses;
+        }
+    }
 }

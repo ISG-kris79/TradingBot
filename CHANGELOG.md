@@ -15,6 +15,67 @@
 
  - 없음
 
+## [5.0.3] - 2026-04-12
+
+### Added — 카테고리별 오늘 통계 카드 (좌측 사이드바)
+
+메인창 좌측 사이드바 하단에 **MAJOR / PUMP / SPIKE** 3개 카드 추가.
+각 카드에 오늘(KST 00:00 기준) 통계 표시:
+
+- **PnL** (수익/손실 달러, 색상: 녹색/빨강)
+- **Entries** (진입 건수)
+- **Win Rate** (승률 %, 녹색>=60% / 노랑>=40% / 빨강<40%)
+
+#### 분류 규칙
+
+`DbManager.ResolveTradeCategory(symbol, signalSource)`:
+
+- **MAJOR**: 심볼이 9개 메이저 중 하나 (BTC/ETH/SOL/XRP/BNB/ADA/DOGE/AVAX/LINK)
+- **SPIKE**: signalSource 가 `SPIKE` 로 시작
+- **PUMP**: 나머지 (MAJOR_MEME, PUMP_WATCH_CONFIRMED, TICK_SURGE, FORECAST_FALLBACK 등)
+
+#### DB 스키마
+
+- `TradeHistory` 테이블에 `Category NVARCHAR(10) NULL` 컬럼 자동 추가 (ALTER)
+- 인덱스 `IX_TradeHistory_Category_EntryTime` (WHERE Category IS NOT NULL)
+- **과거 레코드는 NULL 유지 → 통계 쿼리에서 자동 제외**
+
+#### 진입/청산 저장 로직 수정
+
+- `UpsertTradeEntryAsync`: INSERT + UPDATE 에 `Category` 추가
+- `EnsureOpenTradeForPositionAsync`: INSERT 에 `Category` 추가 (SYNC_RESTORED)
+- `CompleteTradeAsync` / `TryCompleteOpenTradeAsync`: Fallback INSERT 에 `Category` 추가
+- PartialClose 경로 2곳: `Category` 추가
+
+#### 통계 쿼리
+
+```sql
+WITH Groups AS (
+    SELECT Category, Symbol, EntryTime,
+           SUM(ISNULL(PnL, 0)) AS TotalPnL,
+           MAX(CASE WHEN IsClosed = 1 THEN 1 ELSE 0 END) AS HasClosed
+    FROM dbo.TradeHistory
+    WHERE Category IS NOT NULL AND EntryTime >= @todayStart
+    GROUP BY Category, Symbol, EntryTime
+)
+SELECT Category, COUNT(*) AS Entries,
+       SUM(CASE WHEN HasClosed=1 AND TotalPnL>0 THEN 1 ELSE 0 END) AS Wins,
+       SUM(CASE WHEN HasClosed=1 AND TotalPnL<0 THEN 1 ELSE 0 END) AS Losses,
+       SUM(TotalPnL) AS TotalPnL
+FROM Groups GROUP BY Category
+```
+
+- **진입 시각 + Symbol 그룹핑** → PartialClose 여러 행이 1건으로 카운트
+- **전체 계정**: UserId 필터 없음 (사용자 지시)
+- 과거 데이터 = `Category IS NULL` → 자동 제외
+
+#### MainViewModel / UI
+
+- `MajorStats`, `PumpStats`, `SpikeStats` 속성 (CategoryStatsViewModel)
+- `RefreshCategoryStatsAsync()` 메서드
+- 시작 5초 후 첫 호출 + **5분 주기 Timer**
+- XAML: 좌측 사이드바 DETECT/TRAINING 카드 아래 3개 카드 (StatCardStyle)
+
 ## [5.0.2] - 2026-04-12
 
 ### Fixed (메이저 코인 진입 0건 — UserId=1 이틀간 BTC/ETH/SOL/XRP 진입 없음)

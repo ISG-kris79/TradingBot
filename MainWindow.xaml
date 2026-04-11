@@ -1255,6 +1255,111 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- [v5.0.3] MAJOR TODAY 카테고리 통계 카드 -->
+                            <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
+                                <StackPanel>
+                                    <TextBlock Text="💎 MAJOR TODAY" FontSize="10" FontWeight="Bold"
+                                               Foreground="#00E5FF" Margin="0,0,0,6"/>
+                                    <Grid Margin="0,0,0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="PnL" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding MajorStats.TodayPnLText}"
+                                                   Foreground="{Binding MajorStats.TodayPnLColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Entries" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding MajorStats.EntriesText}"
+                                                   Foreground="#A5B4FC" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Win Rate" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding MajorStats.WinRateText}"
+                                                   Foreground="{Binding MajorStats.WinRateColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- [v5.0.3] PUMP TODAY 카테고리 통계 카드 -->
+                            <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
+                                <StackPanel>
+                                    <TextBlock Text="🚀 PUMP TODAY" FontSize="10" FontWeight="Bold"
+                                               Foreground="#10B981" Margin="0,0,0,6"/>
+                                    <Grid Margin="0,0,0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="PnL" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding PumpStats.TodayPnLText}"
+                                                   Foreground="{Binding PumpStats.TodayPnLColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Entries" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding PumpStats.EntriesText}"
+                                                   Foreground="#A5B4FC" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Win Rate" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding PumpStats.WinRateText}"
+                                                   Foreground="{Binding PumpStats.WinRateColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- [v5.0.3] SPIKE TODAY 카테고리 통계 카드 -->
+                            <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
+                                <StackPanel>
+                                    <TextBlock Text="⚡ SPIKE TODAY" FontSize="10" FontWeight="Bold"
+                                               Foreground="#FBBF24" Margin="0,0,0,6"/>
+                                    <Grid Margin="0,0,0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="PnL" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding SpikeStats.TodayPnLText}"
+                                                   Foreground="{Binding SpikeStats.TodayPnLColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Entries" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding SpikeStats.EntriesText}"
+                                                   Foreground="#A5B4FC" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Win Rate" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding SpikeStats.WinRateText}"
+                                                   Foreground="{Binding SpikeStats.WinRateColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
                             </StackPanel>
                         </ScrollViewer>
 
