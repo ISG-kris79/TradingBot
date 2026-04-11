@@ -15,6 +15,48 @@
 
  - 없음
 
+## [5.0.6] - 2026-04-12
+
+### 중형 ($50~200M) 유동성 수익 개선
+
+2026-04-12 DB 분석: C 버킷(중형) 승률 33%, 순 -$99.26. AIOTUSDT/SKYAIUSDT/CROSSUSDT.
+
+**Phase 4 — Gate 1 Router 공통 관문화**
+
+기존: Gate 1 이 PumpScanStrategy 핸들러와 SPIKE_FAST 2곳에만 있어 TICK_SURGE/PUMP_WATCH 등 일부 경로 누락.
+
+신규: `ExecuteAutoOrder` Router 에 공통 배치 → 모든 LONG 진입 경로 자동 커버.
+PumpScanStrategy 는 이중 방어로 유지 (SPIKE_FAST 는 ExecuteAutoOrder 우회 경로).
+
+**Phase 3 — Gate 2 중형 대기시간 단축**
+
+- 기존: 모든 심볼 15분 대기
+- 신규: `vol24h >= $50M` 이면 8분 대기 (중형은 반등 빠름)
+- 그 외는 기존 15분 유지
+
+**Phase 2 — Gate 1 중형 특화 조건 추가**
+
+`IsAlreadyPumpedRecently` 에 2개 조건 추가 (24h 거래량 $50~200M 일 때만):
+
+- **Check 5** `midCapOverExtended`: 1시간 누적 >10% 상승 → 피크 위험
+- **Check 6** `multipleBearishVolatility`: 최근 3봉 중 range 5%+ 음봉이 2개 이상 → 덤핑 진행
+
+유동성 추정: 최근 12봉(1h) × 24 근사 (TickerCache 없을 때).
+
+**Phase 1 — 작동 검증 (DB 로그)**
+
+v5.0.1 배포 이후 `[GATE1]` 로그 0건 확인. 원인:
+
+- PC#2 구버전 운영 중 (GATE1 없음)
+- 또는 AIOT 가 PumpScan 아닌 다른 경로(TICK_SURGE) 로 진입 → v5.0.1 Gate 1 누락
+- v5.0.6 Router 공통화로 모든 경로 자동 커버
+
+### Expected Impact
+
+- 04-12 C 버킷 6건 중 AIOT/SKYAI/CROSS 3건 차단 예상
+- 순 -$99.26 → 약 -$50 방어
+- Gate 2 8분 대기로 중형 반등 자리 포착 기회
+
 ## [5.0.5] - 2026-04-12
 
 ### Changed — 초저유동성 심볼 PUMP 마진 50% 축소

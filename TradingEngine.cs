@@ -1308,8 +1308,10 @@ namespace TradingBot
                         OnStatusLog?.Invoke($"✅ [동적학습등록] {symbol}");
                     }
 
-                    // [v5.0.1] Gate 1: "이미 너무 올랐음" 차단 (고점 진입 방지)
-                    // 2026-04-12 분석: TRUUSDT/AIOT/TAG/SKYAI 전부 여기서 걸러졌어야 함
+                    // [v5.0.6] Gate 1 이중 방어:
+                    //   (1) 여기 PumpScan 핸들러: Forecaster/ExecuteAutoOrder 호출 전 사전 차단
+                    //   (2) Router ExecuteAutoOrder: 모든 경로 공통 최종 관문
+                    // SPIKE_FAST 처럼 ExecuteAutoOrder 우회 경로도 있으므로 (1)(2) 모두 필요
                     if (decision == "LONG" && _marketDataManager.KlineCache.TryGetValue(symbol, out var gate1Cache))
                     {
                         List<IBinanceKline> gate1Candles;
@@ -1319,7 +1321,7 @@ namespace TradingBot
                         {
                             OnStatusLog?.Invoke($"⛔ [GATE1] {symbol} 고점 진입 차단: {gate1Reason} → Gate2 지연 예약");
                             ScheduleGate2Reevaluation(symbol, decision, "PUMP");
-                            return;  // 즉시 진입 차단, 지연 진입 예약됨
+                            return;
                         }
                     }
 
@@ -8929,6 +8931,31 @@ namespace TradingBot
             }
 
             // ═══════════════════════════════════════════════════════════════
+            // [v5.0.6] Gate 1 — 고점 진입 차단 (공통 관문)
+            // 모든 LONG 진입 경로를 커버 (PUMP/SPIKE/TICK_SURGE/Router 전체)
+            // LONG 만 대상 (SHORT 는 역방향이라 Gate 1 로직 반대가 되어야 함 — 현재 미구현)
+            // CRASH_REVERSE / PUMP_REVERSE 는 급변 대응이므로 제외
+            // 기존: PumpScanStrategy / SPIKE_FAST 각각 분산 적용 (일부 경로 누락)
+            // 신규: Router 공통 관문 → 모든 경로 자동 커버
+            // ═══════════════════════════════════════════════════════════════
+            if (decision == "LONG"
+                && signalSource != "CRASH_REVERSE"
+                && signalSource != "PUMP_REVERSE"
+                && _marketDataManager.KlineCache.TryGetValue(symbol, out var gate1Cache))
+            {
+                List<IBinanceKline> gate1Candles;
+                lock (gate1Cache) { gate1Candles = gate1Cache.ToList(); }
+
+                if (IsAlreadyPumpedRecently(gate1Candles, currentPrice, out string gate1Reason))
+                {
+                    OnStatusLog?.Invoke($"⛔ [GATE1] {symbol} 고점 진입 차단: {gate1Reason} → Gate2 지연 예약 (src={signalSource})");
+                    EntryLog("GATE1", "BLOCK", $"{gate1Reason} src={signalSource}");
+                    ScheduleGate2Reevaluation(symbol, decision, signalSource);
+                    return;
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════
             // [ROUTER] 3. AI Gate 평가 (공통)
             // ═══════════════════════════════════════════════════════════════
             float capturedBlendedScore = 0f;
@@ -11100,8 +11127,10 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, (string decision, string source, DateTime regAt)> _pendingGate2 = new();
 
         /// <summary>
-        /// [v5.0.1] Gate 1: "이미 너무 올랐음" 차단
-        /// 30분 누적 +8% 이상 / 고점 대비 2~5% 조정 중 / 직전봉 거대 음봉 or 긴 윗꼬리
+        /// [v5.0.1 / v5.0.6] Gate 1: "이미 너무 올랐음" 차단
+        /// - Check 1~4: 기본 조건 (v5.0.1)
+        /// - Check 5~6: 중형 유동성 특화 조건 (v5.0.6) — $50~200M 코인 피크 방어
+        ///   AIOTUSDT/SKYAIUSDT/CROSSUSDT 04-12 손실 케이스 대상
         /// </summary>
         private bool IsAlreadyPumpedRecently(List<IBinanceKline> candles5m, decimal currentPrice, out string reason)
         {
@@ -11158,6 +11187,59 @@ namespace TradingBot
                         reason = $"giant_bearish_candle range={rangePct:F1}%";
                         return true;
                     }
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // [v5.0.6] 중형 유동성 ($50~200M) 특화 조건 — 04-12 C 버킷 손실 방어
+            // ═══════════════════════════════════════════════════════════════
+            bool isMidLiquidity = false;
+            try
+            {
+                // 심볼 정보가 candles 에 없으므로 대체: latest candle Volume × Close 로 추정
+                // 최근 288개 봉 (24h = 288 × 5분) 합산이 정확하지만 비용이 큼
+                // 대신 최근 12봉(1시간) × 12 = 24h 근사
+                if (candles5m.Count >= 12)
+                {
+                    double vol1h = 0;
+                    for (int i = candles5m.Count - 12; i < candles5m.Count; i++)
+                    {
+                        vol1h += (double)candles5m[i].Volume * (double)candles5m[i].ClosePrice;
+                    }
+                    double vol24hEstimate = vol1h * 24;  // 시간당 × 24
+                    isMidLiquidity = vol24hEstimate >= 50_000_000 && vol24hEstimate < 200_000_000;
+                }
+            }
+            catch { }
+
+            if (isMidLiquidity && candles5m.Count >= 13)
+            {
+                // [Check 5] 중형 코인: 1시간 누적 +10% 이상 → 피크 위험 (1h 봉 12개)
+                decimal close12Ago = candles5m[candles5m.Count - 13].ClosePrice;
+                if (close12Ago > 0)
+                {
+                    float run1hPct = (float)((currentPrice - close12Ago) / close12Ago * 100);
+                    if (run1hPct > 10.0f)
+                    {
+                        reason = $"midCapOverExtended 1h={run1hPct:F1}% > 10% (mid-liq)";
+                        return true;
+                    }
+                }
+
+                // [Check 6] 최근 3봉 중 거대 변동성 음봉 (range 5%+) 이 2개 이상
+                int bigBearCount = 0;
+                for (int i = candles5m.Count - 3; i < candles5m.Count; i++)
+                {
+                    if (i < 0) continue;
+                    var k = candles5m[i];
+                    if (k.OpenPrice <= 0) continue;
+                    float r = (float)((k.HighPrice - k.LowPrice) / k.OpenPrice * 100);
+                    if (r > 5.0f && k.ClosePrice < k.OpenPrice) bigBearCount++;
+                }
+                if (bigBearCount >= 2)
+                {
+                    reason = $"multipleBearishVolatility count={bigBearCount} (mid-liq)";
+                    return true;
                 }
             }
 
@@ -11246,9 +11328,10 @@ namespace TradingBot
         }
 
         /// <summary>
-        /// [v5.0.1] Gate 1 차단 후 10분 지연 재평가 예약.
+        /// [v5.0.1 / v5.0.6] Gate 1 차단 후 지연 재평가 예약.
+        /// - 중형 유동성 ($50M+): 8분 대기 (반등 빠름)
+        /// - 그 외: 15분 대기 (기존)
         /// 주기적으로 Gate 2 체크 → 통과 시 ExecuteAutoOrder 호출.
-        /// 15분 내 기회 없으면 자동 만료.
         /// </summary>
         private void ScheduleGate2Reevaluation(string symbol, string decision, string signalSource)
         {
@@ -11258,14 +11341,28 @@ namespace TradingBot
                 return;
             }
 
-            OnStatusLog?.Invoke($"⏳ [GATE2] {symbol} {decision} 지연 진입 예약 (Gate 1 차단 후 pullback 반등 대기)");
+            // [v5.0.6] 유동성 기반 대기 시간 조정
+            int maxWaitMinutes = 15;
+            try
+            {
+                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var initTicker) && initTicker.QuoteVolume > 0)
+                {
+                    if (initTicker.QuoteVolume >= 50_000_000m)
+                    {
+                        maxWaitMinutes = 8;  // 중형+고유동성: 반등 빠름
+                    }
+                }
+            }
+            catch { }
+
+            OnStatusLog?.Invoke($"⏳ [GATE2] {symbol} {decision} 지연 진입 예약 (최대 {maxWaitMinutes}분 pullback 반등 대기)");
 
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    // 최대 15분 동안 1분마다 Gate 2 체크
-                    for (int attempt = 0; attempt < 15; attempt++)
+                    int maxAttempts = maxWaitMinutes;
+                    for (int attempt = 0; attempt < maxAttempts; attempt++)
                     {
                         await Task.Delay(TimeSpan.FromMinutes(1), _cts?.Token ?? CancellationToken.None);
                         if (_cts?.IsCancellationRequested ?? false) break;
@@ -11306,10 +11403,10 @@ namespace TradingBot
                         }
                     }
 
-                    // 15분 만료
+                    // 만료
                     if (_pendingGate2.TryRemove(symbol, out _))
                     {
-                        OnStatusLog?.Invoke($"⏰ [GATE2] {symbol} 15분 내 pullback 반등 없음 → 지연 진입 포기");
+                        OnStatusLog?.Invoke($"⏰ [GATE2] {symbol} {maxWaitMinutes}분 내 pullback 반등 없음 → 지연 진입 포기");
                     }
                 }
                 catch (Exception ex)
