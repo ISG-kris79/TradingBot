@@ -88,7 +88,9 @@ namespace TradingBot.Services
                 OnLog?.Invoke($"❌ [SL] {symbol} 예외: {ex.Message}");
             }
 
-            // ─── TP (1차 부분 익절) ────────────────────────────────
+            // ─── TP (1차 부분 익절 — TAKE_PROFIT_MARKET) ────────────────────────────────
+            // [v5.1.2] LIMIT → TAKE_PROFIT_MARKET 변경
+            // 바이낸스 TP/SL Advanced 모드와 연동 + OCO 자동 취소
             try
             {
                 decimal tpPriceChange = takeProfitRoePct * entryPrice / (leverage * 100m);
@@ -99,22 +101,53 @@ namespace TradingBot.Services
                 decimal tpQty = Math.Floor(quantity * tpPartialRatio * 100m) / 100m;
                 if (tpQty <= 0) tpQty = quantity;
 
-                var (tpOk, tpOrderId) = await _exchange.PlaceLimitOrderAsync(
+                var (tpOk, tpOrderId) = await _exchange.PlaceTakeProfitOrderAsync(
                     symbol, closeSide, tpQty, tpPrice, token);
 
                 if (tpOk)
                 {
                     tpId = tpOrderId;
-                    OnLog?.Invoke($"✅ [TP] {symbol} 거래소 등록 | {closeSide} qty={tpQty} limit=${tpPrice:F6} (ROE+{takeProfitRoePct}% 부분{tpPartialRatio:P0})");
+                    OnLog?.Invoke($"✅ [TP] {symbol} TAKE_PROFIT_MARKET 등록 | {closeSide} qty={tpQty} stop=${tpPrice:F6} (ROE+{takeProfitRoePct}% 부분{tpPartialRatio:P0})");
                 }
                 else
                 {
-                    OnLog?.Invoke($"⚠️ [TP] {symbol} 거래소 등록 실패 → 내부 PartialClose 대체");
+                    OnLog?.Invoke($"⚠️ [TP] {symbol} TAKE_PROFIT_MARKET 실패 → 내부 PartialClose 대체");
                 }
             }
             catch (Exception ex)
             {
                 OnLog?.Invoke($"❌ [TP] {symbol} 예외: {ex.Message}");
+            }
+
+            // ─── TRAILING STOP (진입 시 즉시 등록 — 전체 수량) ────────────────
+            // [v5.1.2] 진입 직후 트레일링도 바로 등록
+            // activationPrice = TP 가격 (TP 도달 시 트레일링 활성화)
+            try
+            {
+                decimal tpPriceForActivation = isLong
+                    ? entryPrice * (1m + takeProfitRoePct / (leverage * 100m))
+                    : entryPrice * (1m - takeProfitRoePct / (leverage * 100m));
+
+                // 전체 수량의 잔여(TP 부분청산 후) 에 대해 트레일링
+                decimal trailingQty = quantity - Math.Floor(quantity * tpPartialRatio * 100m) / 100m;
+                if (trailingQty > 0)
+                {
+                    var (trailOk, trailId) = await _exchange.PlaceTrailingStopOrderAsync(
+                        symbol, closeSide, trailingQty, 2.0m, tpPriceForActivation, token);
+
+                    if (trailOk)
+                    {
+                        OnLog?.Invoke($"✅ [TRAILING] {symbol} 등록 | {closeSide} qty={trailingQty} callback=2% activation=${tpPriceForActivation:F6}");
+                    }
+                    else
+                    {
+                        OnLog?.Invoke($"⚠️ [TRAILING] {symbol} 등록 실패 → 내부 트레일링 대체");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ [TRAILING] {symbol} 예외: {ex.Message}");
             }
 
             return (slId, tpId);

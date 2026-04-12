@@ -13688,6 +13688,36 @@ namespace TradingBot
                     LastPrice = avgPrice
                 });
 
+                // [v5.1.2] 수동 진입 직후 SL/TP/트레일링 거래소 API 등록
+                if (_entryOrderRegistrar != null)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            bool isLong = direction == "LONG";
+                            bool isPump = !MajorSymbols.Contains(symbol);
+                            decimal slRoe = isPump ? -40m : -50m;
+                            decimal tpRoe = isPump ? 25m : 40m;
+                            decimal tpPartial = isPump ? 0.6m : 0.4m;
+
+                            var (slId, tpId) = await _entryOrderRegistrar.RegisterEntryOrdersAsync(
+                                symbol, isLong, avgPrice, filledQty,
+                                leverage, slRoe, tpRoe, tpPartial, CancellationToken.None);
+
+                            if (!string.IsNullOrEmpty(slId))
+                            {
+                                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = slId; }
+                            }
+                            OnStatusLog?.Invoke($"📋 [수동진입] {symbol} SL/TP API 등록 완료 (SL={!string.IsNullOrEmpty(slId)} TP={!string.IsNullOrEmpty(tpId)})");
+                        }
+                        catch (Exception regEx)
+                        {
+                            OnStatusLog?.Invoke($"⚠️ [수동진입] {symbol} SL/TP 등록 예외: {regEx.Message}");
+                        }
+                    });
+                }
+
                 // [FIX] DB TradeHistory에 진입 기록 저장
                 try
                 {

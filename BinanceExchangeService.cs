@@ -256,27 +256,52 @@ namespace TradingBot.Services
             return _defaultFallback;
         }
 
+        /// <summary>[v5.1.2] STOP_MARKET 주문 — 에러 상세 로깅 + quantity/price 검증 강화</summary>
         public async Task<(bool Success, string OrderId)> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default)
         {
-            // stepSize/tickSize 보정
-            (decimal stepSize, decimal tickSize) = await GetSymbolPrecisionAsync(symbol, ct);
-            if (stepSize > 0)
-                quantity = Math.Floor(quantity / stepSize) * stepSize;
-            if (tickSize > 0)
-                stopPrice = Math.Floor(stopPrice / tickSize) * tickSize;
+            try
+            {
+                (decimal stepSize, decimal tickSize) = await GetSymbolPrecisionAsync(symbol, ct);
+                if (stepSize > 0) quantity = Math.Floor(quantity / stepSize) * stepSize;
+                if (tickSize > 0) stopPrice = Math.Floor(stopPrice / tickSize) * tickSize;
 
-            OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
-            var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
-                symbol,
-                orderSide,
-                FuturesOrderType.StopMarket,
-                quantity,
-                stopPrice: stopPrice,
-                reduceOnly: true,
-                ct: ct);
-            return result.Success && result.Data != null
-                ? (true, result.Data.Id.ToString())
-                : (false, string.Empty);
+                if (quantity <= 0)
+                {
+                    MainWindow.Instance?.AddLog($"❌ [SL] {symbol} STOP_MARKET 실패: quantity={quantity} (stepSize 반영 후 0)");
+                    return (false, string.Empty);
+                }
+                if (stopPrice <= 0)
+                {
+                    MainWindow.Instance?.AddLog($"❌ [SL] {symbol} STOP_MARKET 실패: stopPrice={stopPrice}");
+                    return (false, string.Empty);
+                }
+
+                OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
+                var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                    symbol, orderSide,
+                    FuturesOrderType.StopMarket,
+                    quantity,
+                    stopPrice: stopPrice,
+                    reduceOnly: true,
+                    ct: ct);
+
+                if (result.Success && result.Data != null)
+                {
+                    MainWindow.Instance?.AddLog($"✅ [SL] {symbol} STOP_MARKET 등록 | {side} qty={quantity} stop=${stopPrice} id={result.Data.Id}");
+                    return (true, result.Data.Id.ToString());
+                }
+
+                string errCode = result.Error?.Code?.ToString() ?? "null";
+                string errMsg = result.Error?.Message ?? "null";
+                MainWindow.Instance?.AddLog($"❌ [SL] {symbol} STOP_MARKET 실패 | {side} qty={quantity} stop=${stopPrice} errCode={errCode} errMsg={errMsg}");
+                MainWindow.Instance?.AddAlert($"⚠️ [SL] {symbol} 손절 등록 실패: {errMsg}");
+                return (false, string.Empty);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"❌ [SL] {symbol} STOP_MARKET 예외: {ex.Message}");
+                return (false, string.Empty);
+            }
         }
 
         /// <summary>
@@ -370,6 +395,44 @@ namespace TradingBot.Services
             }
 
             return result.Success;
+        }
+
+        /// <summary>[v5.1.2] TAKE_PROFIT_MARKET 주문 — 바이낸스 TP/SL Advanced 모드 연동</summary>
+        public async Task<(bool Success, string OrderId)> PlaceTakeProfitOrderAsync(
+            string symbol, string side, decimal quantity, decimal stopPrice,
+            CancellationToken ct = default)
+        {
+            try
+            {
+                (decimal stepSize, decimal tickSize) = await GetSymbolPrecisionAsync(symbol, ct);
+                if (stepSize > 0) quantity = Math.Floor(quantity / stepSize) * stepSize;
+                if (tickSize > 0) stopPrice = Math.Floor(stopPrice / tickSize) * tickSize;
+                if (quantity <= 0) return (false, string.Empty);
+
+                OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
+                var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                    symbol, orderSide,
+                    FuturesOrderType.TakeProfitMarket,
+                    quantity,
+                    stopPrice: stopPrice,
+                    reduceOnly: true,
+                    ct: ct);
+
+                if (result.Success && result.Data != null)
+                {
+                    MainWindow.Instance?.AddLog($"✅ [TP] {symbol} TAKE_PROFIT_MARKET 등록 | {side} qty={quantity} stop=${stopPrice} id={result.Data.Id}");
+                    return (true, result.Data.Id.ToString());
+                }
+
+                string errMsg = result.Error?.Message ?? "unknown";
+                MainWindow.Instance?.AddLog($"❌ [TP] {symbol} TAKE_PROFIT_MARKET 실패 | {side} qty={quantity} stop=${stopPrice} err={errMsg}");
+                return (false, string.Empty);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"❌ [TP] {symbol} 예외: {ex.Message}");
+                return (false, string.Empty);
+            }
         }
 
         /// <summary>[v5.1.0] 특정 심볼의 모든 미체결 주문 일괄 취소</summary>

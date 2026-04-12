@@ -173,6 +173,10 @@ namespace TradingBot.Services
             }
         }
 
+        public Task<(bool Success, string OrderId)> PlaceTakeProfitOrderAsync(
+            string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default)
+            => Task.FromResult((true, Guid.NewGuid().ToString()));
+
         public Task CancelAllOrdersAsync(string symbol, CancellationToken ct = default)
         {
             lock (_syncLock)
