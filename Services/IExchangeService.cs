@@ -31,6 +31,9 @@ namespace TradingBot.Services
         Task<(bool Success, string OrderId)> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default);
         Task<bool> CancelOrderAsync(string symbol, string orderId, CancellationToken ct = default);
 
+        /// <summary>[v5.1.0] 특정 심볼의 모든 미체결 주문 일괄 취소 (SL/TP/트레일링 전부)</summary>
+        Task CancelAllOrdersAsync(string symbol, CancellationToken ct = default);
+
         // [v3.3.8] 서버사이드 트레일링 스탑 (바이낸스 TRAILING_STOP_MARKET)
         Task<(bool Success, string OrderId)> PlaceTrailingStopOrderAsync(
             string symbol, string side, decimal quantity,

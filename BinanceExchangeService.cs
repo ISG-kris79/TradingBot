@@ -372,6 +372,27 @@ namespace TradingBot.Services
             return result.Success;
         }
 
+        /// <summary>[v5.1.0] 특정 심볼의 모든 미체결 주문 일괄 취소</summary>
+        public async Task CancelAllOrdersAsync(string symbol, CancellationToken ct = default)
+        {
+            try
+            {
+                var result = await _client.UsdFuturesApi.Trading.CancelAllOrdersAsync(symbol, ct: ct);
+                if (result.Success)
+                {
+                    MainWindow.Instance?.AddLog($"🗑️ [Binance] {symbol} 미체결 주문 일괄 취소 성공");
+                }
+                else
+                {
+                    MainWindow.Instance?.AddLog($"⚠️ [Binance] {symbol} 일괄 취소 실패: {result.Error?.Message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [Binance] {symbol} 일괄 취소 예외: {ex.Message}");
+            }
+        }
+
         public async Task<bool> SetLeverageAsync(string symbol, int leverage, CancellationToken ct = default)
         {
             var result = await _client.UsdFuturesApi.Account.ChangeInitialLeverageAsync(symbol, leverage, ct: ct);

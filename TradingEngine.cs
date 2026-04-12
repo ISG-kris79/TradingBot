@@ -1401,9 +1401,11 @@ namespace TradingBot
                 {
                     try
                     {
-                        // [v5.0.2] MajorForecaster 품질 검증 — AccA < 50% 면 Fallback 강제
-                        // 원인: 초기 학습 샘플 부족(765건) → AccA=0% → NoOpportunity 직행으로 진입 0건
-                        // 해결: 정확도 신뢰 가능할 때만 Forecaster 경로, 아니면 기존 ExecuteAutoOrder
+                        // [v5.1.0] 메이저 진입 — AI_GATE 우회 (skipAiGateCheck=true)
+                        // 원인: EntryTimingMLTrainer 가 메이저 ML=0%/TF=0% 반환 → AI_GATE_BLOCK 4000건/시간
+                        //       MajorCoinStrategy 의 aiScore 가 이미 지표 기반 판단 완료
+                        //       PUMP 와 동일하게 skipAiGateCheck=true 로 AI_GATE 재검증 스킵
+                        //       Router 공통 관문 (MTF Guardian, Gate 1) 은 유지
                         bool forecasterTrustworthy = _majorForecaster.IsModelLoaded
                             && _majorForecasterAccuracy >= ForecasterMinAccuracyForEntry;
 
@@ -1416,7 +1418,9 @@ namespace TradingBot
                             var forecast = _majorForecaster.Forecast(cSnap, "LONG");
                             if (!forecast.HasOpportunity)
                             {
-                                OnLiveLog?.Invoke($"🧭 [FORECAST][MAJOR] {symbol} 기회 없음");
+                                OnLiveLog?.Invoke($"🧭 [FORECAST][MAJOR] {symbol} LONG 기회 없음");
+                                // Forecaster 가 기회 없다고 해도 Fallback 으로 진입 시도
+                                await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR", skipAiGateCheck: true);
                                 return;
                             }
 
@@ -1430,15 +1434,10 @@ namespace TradingBot
                         }
                         else
                         {
-                            // [v5.0.2] Fallback 경로 — 항상 작동
-                            // - Forecaster 미학습 or AccA<50%
-                            // - SHORT 방향 (Forecaster LONG-only 학습)
-                            // - MajorForecaster 가 신뢰도 확보되기 전까지 기본 경로
-                            if (decision == "LONG" && _majorForecaster.IsModelLoaded && !forecasterTrustworthy)
-                            {
-                                OnLiveLog?.Invoke($"🧭 [MAJOR] {symbol} Fallback 경로 (Forecaster AccA={_majorForecasterAccuracy:P0} < {ForecasterMinAccuracyForEntry:P0})");
-                            }
-                            await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR");
+                            // [v5.1.0] 모든 메이저 신호: skipAiGateCheck=true
+                            // AI_GATE (EntryTimingMLTrainer) 가 메이저에서 항상 0% 반환하므로 우회
+                            // MajorCoinStrategy 의 aiScore + 모멘텀 + SMA 가 이미 판단 완료
+                            await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR", skipAiGateCheck: true);
                         }
                     }
                     catch (Exception ex)
@@ -6330,6 +6329,30 @@ namespace TradingBot
                         {
                             OnStatusLog?.Invoke($"📝 {pos.Symbol} 외부 수량증가 감지 → TradeHistory 오픈 수량 갱신 완료 ({existingQtyAbs}→{updatedQtyAbs})");
                             OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부증가", $"외부 수량 증가 감지: {existingQtyAbs} → {updatedQtyAbs}");
+
+                            // [v5.1.0] 수동/외부 진입도 SL/TP API 등록
+                            if (_entryOrderRegistrar != null)
+                            {
+                                _ = Task.Run(async () =>
+                                {
+                                    try
+                                    {
+                                        bool isPump = !MajorSymbols.Contains(pos.Symbol);
+                                        decimal slRoe = isPump ? -40m : -50m;
+                                        decimal tpRoe = isPump ? 25m : 40m;
+                                        decimal tpPartial = isPump ? 0.6m : 0.4m;
+                                        int lev = 20;
+
+                                        await _entryOrderRegistrar.RegisterEntryOrdersAsync(
+                                            pos.Symbol, isLong, pos.EntryPrice, updatedQtyAbs,
+                                            lev, slRoe, tpRoe, tpPartial, CancellationToken.None);
+                                    }
+                                    catch (Exception regEx)
+                                    {
+                                        OnStatusLog?.Invoke($"⚠️ [EntryOrderReg] {pos.Symbol} 외부 진입 SL/TP 등록 예외: {regEx.Message}");
+                                    }
+                                });
+                            }
                         }
                     }
                 }

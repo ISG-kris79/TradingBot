@@ -3030,9 +3030,21 @@ namespace TradingBot.Services
                     return;
                 }
 
-                // [수정] 포지션 종료 전, 서버사이드 손절 주문 취소 + 실패 시 포지션 재확인
+                // [수정 / v5.1.0] 포지션 종료 전, 서버사이드 SL + TP 주문 모두 취소
+                // 기존: StopOrderId (SL) 만 취소 → TP LIMIT 주문 잔존 → 다음 진입 시 역방향 체결 위험
                 string stopOrderId = string.Empty;
                 lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) stopOrderId = p.StopOrderId; }
+
+                // [v5.1.0] 해당 심볼의 모든 미체결 주문 일괄 취소 (SL + TP + 트레일링 전부)
+                try
+                {
+                    await _exchangeService.CancelAllOrdersAsync(symbol, token);
+                    OnLog?.Invoke($"🗑️ [{symbol}] 청산 전 미체결 주문 일괄 취소 완료");
+                }
+                catch (Exception cancelAllEx)
+                {
+                    OnLog?.Invoke($"⚠️ [{symbol}] 미체결 일괄 취소 실패: {cancelAllEx.Message}");
+                }
 
                 if (!string.IsNullOrWhiteSpace(stopOrderId))
                 {

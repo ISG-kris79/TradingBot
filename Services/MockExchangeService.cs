@@ -173,6 +173,16 @@ namespace TradingBot.Services
             }
         }
 
+        public Task CancelAllOrdersAsync(string symbol, CancellationToken ct = default)
+        {
+            lock (_syncLock)
+            {
+                _stopOrders.Clear();
+                _limitOrders.Clear();
+                return Task.CompletedTask;
+            }
+        }
+
         public Task<List<IBinanceKline>> GetKlinesAsync(string symbol, KlineInterval interval, int limit, CancellationToken ct = default)
         {
             return GetPublicKlinesAsync(symbol, interval, limit, ct);
