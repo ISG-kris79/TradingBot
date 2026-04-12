@@ -60,6 +60,9 @@ namespace TradingBot.Services
         // [v3.4.0] 부분청산 완료 이벤트 (EXTERNAL_PARTIAL_CLOSE_SYNC 팬텀 방지용)
         public event Action<string>? OnPartialCloseCompleted = delegate { };
 
+        // [v5.1.1] 포지션 청산 이벤트 — 쿨다운 등록용
+        public event Action<string>? OnPositionClosed;
+
         // [v3.5.2] 포지션 상태 DB 저장 (재시작 시 복원용)
         private void PersistPositionState(string symbol, int stairStep = 0, bool isBreakEvenTriggered = false, decimal highestROE = 0)
         {
@@ -4565,6 +4568,9 @@ namespace TradingBot.Services
 
         private void CleanupPositionData(string symbol)
         {
+            // [v5.1.1] 청산 즉시 쿨다운 이벤트 (TradingEngine 에서 5분 쿨다운 등록)
+            OnPositionClosed?.Invoke(symbol);
+
             // [v3.9.0] 블랙리스트를 Remove 전에 등록 (틈 방지)
             if (!_blacklistedSymbols.ContainsKey(symbol))
                 _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);

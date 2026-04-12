@@ -57,6 +57,8 @@ namespace TradingBot
         private readonly object _posLock = new object();
         // 블랙리스트 (심볼, 해제시간) - 지루함 청산 종목 재진입 방지
         private ConcurrentDictionary<string, DateTime> _blacklistedSymbols = new ConcurrentDictionary<string, DateTime>();
+        // [v5.1.1] 손절 후 쿨다운 (5분) — 같은 심볼 즉시 재진입 방지
+        private readonly ConcurrentDictionary<string, DateTime> _stopLossCooldown = new();
         // [v4.9.4] 중복 시그널 debounce — (symbol|direction) 기준 최근 시도 시각
         private readonly ConcurrentDictionary<string, DateTime> _recentEntryAttempts = new();
         // [FIX] 최근 청산 쿨다운 — ACCOUNT_UPDATE 도착 시 팬텀 EXTERNAL_PARTIAL_CLOSE_SYNC 방지
@@ -940,6 +942,12 @@ namespace TradingBot
             {
                 _recentPartialCloseCooldown[symbol] = DateTime.Now.AddSeconds(30);
             };
+            // [v5.1.1] 포지션 청산 → 5분 쿨다운 등록 (손절 직후 재진입 방지)
+            _positionMonitor.OnPositionClosed += symbol =>
+            {
+                _stopLossCooldown[symbol] = DateTime.Now.AddMinutes(5);
+                OnStatusLog?.Invoke($"⏳ [COOLDOWN] {symbol} 5분 쿨다운 시작 (재진입 방지)");
+            };
             _positionMonitor.OnPositionClosedForAiLabel += (symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason) =>
             {
                 _ = HandleAiCloseLabelingAsync(symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason);
@@ -1133,14 +1141,15 @@ namespace TradingBot
             _tickMonitor.OnLog += msg => OnStatusLog?.Invoke(msg);
             _tickMonitor.OnTickSurgeDetected += (symbol, tpsRatio, buyRatio, price) =>
             {
-                // 틱 급증 = 급등 시작 → AI Gate 거쳐 진입 (2단계 트리거)
+                // [v5.1.1] TICK_SURGE 도 skipAiGateCheck=true — AI_GATE ML=0% 차단 해결
+                // SKYAIUSDT 케이스: TICK_SURGE 감지했으나 AI_GATE DUAL_BLOCK 으로 진입 실패
                 _ = Task.Run(async () =>
                 {
                     try
                     {
                         OnStatusLog?.Invoke($"⚡ [틱급증→진입] {symbol} TPS={tpsRatio:F1}x 매수비={buyRatio:P0}");
                         await ExecuteAutoOrder(symbol, "LONG", price, _cts?.Token ?? CancellationToken.None,
-                            "TICK_SURGE", manualSizeMultiplier: 1.0m);
+                            "TICK_SURGE", manualSizeMultiplier: 1.0m, skipAiGateCheck: true);
                     }
                     catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [틱급증] {symbol} 진입 실패: {ex.Message}"); }
                 });
@@ -8652,14 +8661,20 @@ namespace TradingBot
                 }
             }
 
+            // [v5.1.1] 손절 후 쿨다운 5분 — 같은 심볼 즉시 재진입 방지
+            // PLAYUSDT 케이스: 손절 2초 후 즉시 재진입 → 연속 손실
+            if (_stopLossCooldown.TryGetValue(symbol, out var cooldownExpiry) && DateTime.Now < cooldownExpiry)
+            {
+                OnStatusLog?.Invoke($"⛔ [COOLDOWN] {symbol} 손절 후 쿨다운 중 ({(cooldownExpiry - DateTime.Now).TotalSeconds:F0}초 남음) → 재진입 차단");
+                return;
+            }
+
             // [v4.9.4] 중복 시그널 debounce — 동일 (symbol, direction) 10초 내 재시도 차단
-            // MajorCoinStrategy/PumpScan이 1초마다 같은 신호를 재생성해 ExecuteAutoOrder가 초당 n번 호출되는 문제 해결
-            // 로그 30,000건 → 3,000건 수준으로 감소 예상. 디버그/재분석 용이성 확보
             string debounceKey = $"{symbol}|{decision}";
             if (_recentEntryAttempts.TryGetValue(debounceKey, out var lastTry)
                 && (DateTime.Now - lastTry).TotalSeconds < 10)
             {
-                return; // 조용히 무시 (로그 스팸 방지)
+                return;
             }
             _recentEntryAttempts[debounceKey] = DateTime.Now;
             // 오래된 엔트리 정리 (1분 초과)
@@ -11240,15 +11255,19 @@ namespace TradingBot
             reason = string.Empty;
             if (candles5m == null || candles5m.Count < 7 || currentPrice <= 0) return false;
 
-            // [Check 1] 최근 6봉(30분) 누적 상승률 > 8% → 너무 늦음
-            decimal close30Ago = candles5m[candles5m.Count - 7].ClosePrice;
-            if (close30Ago > 0)
+            // [Check 1] 최근 12봉(1시간) 누적 상승률 > 10% → 너무 늦음
+            // v5.1.1: 30분 6봉 → 1시간 12봉 확대 (PLAYUSDT 75분 +20% 케이스 대응)
+            if (candles5m.Count >= 13)
             {
-                float runUpPct = (float)((currentPrice - close30Ago) / close30Ago * 100);
-                if (runUpPct > 8.0f)
+                decimal close1hAgo = candles5m[candles5m.Count - 13].ClosePrice;
+                if (close1hAgo > 0)
                 {
-                    reason = $"already_pumped 30m={runUpPct:F1}% > 8%";
-                    return true;
+                    float runUpPct = (float)((currentPrice - close1hAgo) / close1hAgo * 100);
+                    if (runUpPct > 10.0f)
+                    {
+                        reason = $"already_pumped 1h={runUpPct:F1}% > 10%";
+                        return true;
+                    }
                 }
             }
 
