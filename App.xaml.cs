@@ -320,16 +320,17 @@ namespace TradingBot
             this.MainWindow = loginWindow;
             loginWindow.Show();
 
-            // 로그인 창 이후 업데이트 확인 (강제 종료 없이 안전 실행)
+            // [v5.0.8] 로그인 창 표시 직후 업데이트 확인 (로그인 전에도 체크)
             _ = loginWindow.Dispatcher.InvokeAsync(async () =>
             {
                 try
                 {
-                    await CheckForUpdatesAfterLoginAsync();
+                    bool updated = await CheckForUpdatesBeforeLoginAsync();
+                    if (updated) return;  // 업데이트 적용 시 재시작됨
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"[Update] 로그인 후 업데이트 확인 중 오류: {ex.Message}");
+                    Debug.WriteLine($"[Update] 로그인 전 업데이트 확인 중 오류: {ex.Message}");
                 }
             });
 
@@ -344,7 +345,7 @@ namespace TradingBot
         }
 
         /// <summary>
-        /// 로그인 창 표시 전 업데이트 확인 및 자동 적용
+        /// [v5.0.8] 로그인 창 표시 직후 업데이트 확인 및 자동 적용
         /// </summary>
         /// <returns>업데이트가 적용되어 재시작 예정이면 true</returns>
         private async System.Threading.Tasks.Task<bool> CheckForUpdatesBeforeLoginAsync()
