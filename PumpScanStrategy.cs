@@ -279,15 +279,31 @@ namespace TradingBot.Strategies
                     }
                 }
 
+                // [v5.1.3] 메가 펌프 즉시 진입 — 거래량 5배+ & range 3%+ & 양봉
+                // PLAYUSDT 케이스: 13:30 vol 34배, range 6.34% 양봉 → ML이 bull0 판정 → 놓침
+                // 거래량 폭발 + 큰 양봉 = 급등 시작 확실 → ML 판단 없이 즉시 LONG
+                {
+                    var latestCandle = list[list.Count - 1];
+                    decimal candleRange = latestCandle.HighPrice - latestCandle.LowPrice;
+                    float rangePctNow = latestCandle.OpenPrice > 0
+                        ? (float)(candleRange / latestCandle.OpenPrice * 100) : 0f;
+                    bool isBullish = latestCandle.ClosePrice > latestCandle.OpenPrice;
+
+                    if (volumeMomentum >= 5.0 && rangePctNow >= 3.0f && isBullish && rsi < 80)
+                    {
+                        decision = "LONG";
+                        PumpSignalLog("MEGA_PUMP", $"sym={symbol} vol={volumeMomentum:F1}x range={rangePctNow:F1}% rsi={rsi:F0} → 즉시 진입");
+                    }
+                }
+
                 // AI가 진입 승인 (65%+ 확신) → LONG
-                // 나머지 판단은 ExecuteAutoOrder의 AI Gate + Survival + Direction이 처리
-                if (mlSignal && mlProb >= 0.65f)
+                if (decision == "WAIT" && mlSignal && mlProb >= 0.65f)
                 {
                     decision = "LONG";
                     PumpSignalLog("AI_ENTRY", $"sym={symbol} prob={mlProb:P0} rsi={rsi:F0} vol={volumeMomentum:F2}");
                 }
-                // ML 모델 미로드 시 기본 조건 (최소한의 안전장치)
-                else if (!(_pumpML?.IsModelLoaded ?? false))
+                // ML 모델 미로드 시 기본 조건
+                else if (decision == "WAIT" && !(_pumpML?.IsModelLoaded ?? false))
                 {
                     bool hasMomentum = priceRecoveryPct >= 1.5 || bounceFromLowPct >= 3.0;
                     bool hasStructure = isUptrend && isMakingHigherLows && currentPrice > (decimal)sma20;

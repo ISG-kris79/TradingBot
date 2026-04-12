@@ -57,6 +57,8 @@ namespace TradingBot.Shared.Models
         public decimal TakeProfit { get; set; }
         public decimal StopLoss { get; set; }
         public string StopOrderId { get; set; } = string.Empty;
+        /// <summary>[v5.1.3] 거래소 TP 등록 완료 → 내부 PartialClose 비활성화</summary>
+        public bool TpRegisteredOnExchange { get; set; }
         public decimal EntryBbPosition { get; set; }
         public string EntryZoneTag { get; set; } = string.Empty;
         public float AiConfidencePercent { get; set; }

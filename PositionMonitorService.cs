@@ -2085,8 +2085,12 @@ namespace TradingBot.Services
                     wave1HighPrice > 0 && fib1618Target > 0)
                 {
                     // 1차 익절: 전고점(1.0) 도달 OR 설정 ROE 달성 시 15% 매도
+                    // [v5.1.3] 거래소 TP 등록 성공 시 내부 PartialClose 스킵 (이중 청산 방지)
+                    bool tpOnExchange = false;
+                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var tpChk)) tpOnExchange = tpChk.TpRegisteredOnExchange; }
+
                     bool tp1Condition = currentPrice >= wave1HighPrice || currentROE >= pumpTp1Roe;
-                    if (elliotWavePos.PartialProfitStage == 0 && tp1Condition)
+                    if (elliotWavePos.PartialProfitStage == 0 && tp1Condition && !tpOnExchange)
                     {
                         if (await ExecutePartialClose(symbol, firstPartialCloseRatio, token)) // 15% 매도
                         {

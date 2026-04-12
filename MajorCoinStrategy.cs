@@ -103,7 +103,17 @@ namespace TradingBot.Strategies
                 //  [3] aiScore >= 58 + Higher Lows + sma20 위 → LONG (구조 기반)
                 string decision = "WAIT";
 
-                if (aiScore >= 70)
+                // [v5.1.3] 횡보장 필터 — 1시간 변동폭 < 0.5% 면 진입 안 함 (수수료 손실 방지)
+                // SOL 케이스: 2시간 $82.14~$82.39 (0.3%) 횡보에서 SHORT → 수수료 손실
+                decimal rangeHigh1h = recent12.Max(k => k.HighPrice);
+                decimal rangeLow1h = recent12.Min(k => k.LowPrice);
+                float rangePercent1h = rangeLow1h > 0 ? (float)((rangeHigh1h - rangeLow1h) / rangeLow1h * 100) : 0;
+                if (rangePercent1h < 0.5f)
+                {
+                    // 횡보 — WAIT (어떤 방향이든 수수료 > 수익)
+                    decision = "WAIT";
+                }
+                else if (aiScore >= 70)
                     decision = "LONG";
                 else if (aiScore >= 62 && (isPriceRecovering || isStrongBounce))
                     decision = "LONG";

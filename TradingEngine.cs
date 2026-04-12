@@ -88,7 +88,8 @@ namespace TradingBot
         private const int MAX_PUMP_SLOTS = 3;         // PUMP 최대 3개
 
         // [v4.5.9] 일일 PUMP 진입 횟수 제한 (자정 KST 리셋)
-        private const int MAX_DAILY_PUMP_ENTRIES = 40;
+        // [v5.1.3] 40 → 60 확대 — PLAY 케이스에서 일일 한도 소진 후 메가 펌프 놓침
+        private const int MAX_DAILY_PUMP_ENTRIES = 60;
         private int _dailyPumpEntryCount = 0;
         private DateTime _dailyPumpCountDate = DateTime.MinValue;
         private readonly object _dailyPumpLock = new();
@@ -10787,13 +10788,13 @@ namespace TradingBot
                                 tpPartialRatio: tpPartial,
                                 token: CancellationToken.None);
 
-                            // 포지션에 주문 ID 저장 (취소/갱신용)
-                            if (!string.IsNullOrEmpty(slId))
+                            // 포지션에 주문 ID 저장 + TP 플래그
+                            lock (_posLock)
                             {
-                                lock (_posLock)
+                                if (_activePositions.TryGetValue(symbol, out var p))
                                 {
-                                    if (_activePositions.TryGetValue(symbol, out var p))
-                                        p.StopOrderId = slId;
+                                    if (!string.IsNullOrEmpty(slId)) p.StopOrderId = slId;
+                                    if (!string.IsNullOrEmpty(tpId)) p.TpRegisteredOnExchange = true;
                                 }
                             }
                         }
