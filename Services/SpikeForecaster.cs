@@ -10,14 +10,14 @@ namespace TradingBot.Services
     {
         public override string ModelPrefix => "forecast_spike";
 
-        /// <summary>예측 window: 5봉 × 1분 = 5분</summary>
-        public override int FutureWindowBars => 5;
+        /// <summary>예측 window: 10봉 × 1분 = 10분 (v5.0.7: 5봉은 너무 짧음)</summary>
+        public override int FutureWindowBars => 10;
 
-        /// <summary>최소 수익 목표: +4% (1분 스파이크는 크게)</summary>
-        public override float TargetProfitPct => 4.0f;
+        /// <summary>최소 수익 목표: +2.5% (v5.0.7: 4% 너무 엄격, 완화)</summary>
+        public override float TargetProfitPct => 2.5f;
 
-        /// <summary>최대 드로다운: 1.0% (타이트)</summary>
-        public override float MaxDrawdownPct => 1.0f;
+        /// <summary>최대 드로다운: 1.5% (LabelCandleData 가 2배 완화 → 실효 3.0%)</summary>
+        public override float MaxDrawdownPct => 1.5f;
 
         /// <summary>진입 최소 신뢰도 (1분 스파이크는 더 확실해야)</summary>
         public override float MinConfidence => 0.65f;

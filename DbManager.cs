@@ -2076,6 +2076,67 @@ ORDER BY Symbol, OpenTime ASC";
             return result;
         }
 
+        /// <summary>
+        /// [v5.0.7] Forecaster 대용량 학습용 — DB 의 전체 봉을 심볼당 N개까지 로드
+        /// - 기본값: 심볼당 10000봉 (약 35일 × 288봉/일 5분봉)
+        /// - 활성 심볼 필터 없음 (과거 데이터도 활용)
+        /// - IntervalText 파라미터로 5m/1m 선택
+        /// </summary>
+        public async Task<Dictionary<string, List<TradingBot.Models.CandleData>>> GetBulkCandleDataAsync(
+            string intervalText = "5m",
+            int candlesPerSymbol = 10000,
+            List<string>? symbolFilter = null,
+            CancellationToken token = default)
+        {
+            var result = new Dictionary<string, List<TradingBot.Models.CandleData>>();
+            try
+            {
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync(token);
+
+                string symbolFilterClause = symbolFilter is { Count: > 0 }
+                    ? "AND Symbol IN @Symbols"
+                    : "AND Symbol LIKE '%USDT'";
+
+                var sql = $@"
+WITH RankedCandles AS (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY Symbol ORDER BY OpenTime DESC) AS rn
+    FROM CandleData WITH (NOLOCK)
+    WHERE IntervalText = @IntervalText
+      {symbolFilterClause}
+)
+SELECT * FROM RankedCandles WHERE rn <= @Limit
+ORDER BY Symbol, OpenTime ASC";
+
+                var param = new Dictionary<string, object?>
+                {
+                    ["IntervalText"] = intervalText,
+                    ["Limit"] = candlesPerSymbol
+                };
+                if (symbolFilter is { Count: > 0 })
+                {
+                    param["Symbols"] = symbolFilter;
+                }
+
+                var rows = await db.QueryAsync<TradingBot.Models.CandleData>(
+                    sql, param, commandTimeout: 120);
+
+                foreach (var group in rows.GroupBy(r => r.Symbol ?? string.Empty))
+                {
+                    if (token.IsCancellationRequested) break;
+                    if (string.IsNullOrEmpty(group.Key)) continue;
+                    var list = group.ToList();
+                    if (list.Count >= 30)
+                        result[group.Key] = list;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DB] GetBulkCandleData 오류: {ex.Message}");
+            }
+            return result;
+        }
+
         public async Task ExportTradeHistoryToCsvAsync(string filePath, int userId, DateTime startDate, DateTime endDate, int limit = 10000)
         {
             var rows = await GetTradeHistoryAsync(userId, startDate, endDate, limit);

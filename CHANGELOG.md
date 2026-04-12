@@ -15,6 +15,85 @@
 
  - 없음
 
+## [5.0.7] - 2026-04-12
+
+### 중요 — 차트 데이터 기반 AI 학습 복원 + 하드코딩 제거
+
+사용자 지적: "학습 데이터가 왜 부족한데 좆같은넘아 차트데이터로 하기로 했잖아"
+
+DB 실제 크기 확인:
+
+- CandleData 총 7,682,014건 (883.6MB)
+- 5분봉 5,576,570건 / 557심볼 / 2024-09 ~ (18개월)
+- 1분봉 2,061,466건 / 58심볼
+- 메이저 9종: 각 ~52,800봉 (184일)
+
+기존 문제: Forecaster 학습 데이터 심볼당 200봉(`TakeLast(100)`) 만 사용 →
+Major 768건 / AccA 0%. DB 의 수백만 건을 쓰지 않았음.
+
+### DbManager.GetBulkCandleDataAsync 신규
+
+대용량 로드 메서드 추가:
+
+- IntervalText 파라미터 (5m / 1m)
+- 심볼당 최대 N개 (기본 10000)
+- SymbolFilter (null 이면 전체)
+- 120초 타임아웃, 테이블 힌트 WITH (NOLOCK)
+
+### Forecaster 학습 파이프라인 대용량 교체
+
+**MajorForecaster (5분봉)**:
+
+- 기존: 거래소 API 에서 9심볼 × 1000봉 = ~9000건
+- 신규: DB 에서 9심볼 × 20000봉 = **~18만건**
+
+**PumpForecaster (5분봉)**:
+
+- 기존: klineMap × TakeLast(100) ≈ 55K
+- 신규: DB 에서 PUMP 심볼 × 5000봉 = **수백만건**
+
+**SpikeForecaster (1분봉)**:
+
+- 기존: 거래소 API 50심볼 × 200봉 = 10K
+- 신규: DB 에서 58심볼 × 20000봉 = **~116만건**
+
+### OpportunityForecaster 라벨링 완화
+
+기존 문제: `TargetProfit` + `MaxDrawdown` AND 조건으로 포지티브 샘플 거의 없음.
+
+수정:
+
+- `relaxedMaxDd = MaxDrawdownPct × 2.0` (2배 완화)
+- risk-adjusted score: `up - 2*dd` → `up - dd` (패널티 50% 감소)
+- Forecaster 파라미터 완화:
+  - Major: window 12→24봉, target 1.5%→0.8%
+  - Pump: window 12→24봉, target 2.5%→2.0%
+  - Spike: window 5→10봉, target 4.0%→2.5%
+
+### 하드코딩 제거 (메모리 원칙 준수)
+
+**v5.0.6 에서 제가 추가한 하드코딩 필터 제거**:
+
+- Gate 1 Check 5 `midCapOverExtended` (1h >10%) ❌ 제거
+- Gate 1 Check 6 `multipleBearishVolatility` (3봉 5%+ 음봉 2개) ❌ 제거
+- Gate 2 중형 유동성 8분 단축 ❌ 제거 → 15분 통일
+
+이유: Forecaster 가 대용량 학습으로 동일 패턴을 직접 학습 → AI 판단에 위임.
+Gate 1 Check 1~4 (명백한 피크 징후) 는 유지.
+
+**유지된 것**:
+
+- v5.0.5 초소형 (<$10M) 마진 50% 축소 → 사용자 명시 지시로 유지 (사이즈 관리 영역)
+
+### Expected Impact
+
+- Forecaster AccA 대폭 개선 예상:
+  - Major 0% → 50~65% 목표
+  - Pump 90% (sample 적어서 왜곡) → 60~70% 정상화
+  - Spike 98% (포지티브 0.6% 왜곡) → 60~70% 정상화
+- Forecaster AccA ≥ 50% 시 Fallback 경로 자동 해제 (v5.0.2 로직)
+- 중형 손실 대응은 Gate 1 Check 1~4 + Forecaster 예측에 맡김
+
 ## [5.0.6] - 2026-04-12
 
 ### 중형 ($50~200M) 유동성 수익 개선

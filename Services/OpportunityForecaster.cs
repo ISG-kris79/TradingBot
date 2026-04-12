@@ -53,8 +53,12 @@ namespace TradingBot.Services
         // ═══════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// 각 봉 i 에 대해 [i+1, i+window] 안에서 risk-adjusted 최적 진입 봉을 찾고
-        /// 3개 라벨 (A: 기회있음, B: offset bars, C: price %) 동시 생성
+        /// [v5.0.7] 라벨링 완화 — 포지티브 샘플 10~20% 확보
+        /// 기존 문제: TargetProfitPct + MaxDrawdownPct 두 조건 모두 AND → 포지티브 거의 없음
+        /// 개선:
+        /// 1. 수익 조건만 체크 (드로다운은 "덜 엄격") → 포지티브 크게 증가
+        /// 2. 최적 진입점 = "가장 좋은 수익률 봉" (drawdown 패널티만 최소화)
+        /// 3. Regressor 라벨 (B/C) 은 포지티브일 때만 의미 있음
         /// </summary>
         public List<ForecastFeature> LabelCandleData(List<IBinanceKline> candles, string direction = "LONG")
         {
@@ -64,6 +68,9 @@ namespace TradingBot.Services
 
             int futureWindow = FutureWindowBars;
             int oppCount = 0;
+
+            // [v5.0.7] 드로다운 한도를 훨씬 관대하게 (원래 MaxDrawdownPct 의 2배)
+            float relaxedMaxDd = MaxDrawdownPct * 2.0f;
 
             for (int i = 20; i < candles.Count - futureWindow; i++)
             {
@@ -104,11 +111,12 @@ namespace TradingBot.Services
                         futureDdFromJ = (float)((fMaxH - entryPrice) / entryPrice * 100);
                     }
 
-                    if (futureUpFromJ < TargetProfitPct) continue;  // 수익 부족
-                    if (futureDdFromJ > MaxDrawdownPct) continue;   // 리스크 과다
+                    // [v5.0.7] 수익 조건만 엄격, 드로다운은 완화
+                    if (futureUpFromJ < TargetProfitPct) continue;
+                    if (futureDdFromJ > relaxedMaxDd) continue;  // 완화: 기존 × 2
 
                     // risk-adjusted score
-                    float score = futureUpFromJ - 2f * futureDdFromJ;
+                    float score = futureUpFromJ - futureDdFromJ;  // 완화: 2× → 1×
                     if (score > bestScore)
                     {
                         bestScore = score;
@@ -139,7 +147,7 @@ namespace TradingBot.Services
             }
 
             float ratio = dataset.Count > 0 ? (float)oppCount / dataset.Count * 100 : 0;
-            OnLog?.Invoke($"[{ModelPrefix}] 라벨링: {dataset.Count}건 (기회={oppCount}={ratio:F1}%) | window={futureWindow} target={TargetProfitPct}% maxDd={MaxDrawdownPct}% dir={direction}");
+            OnLog?.Invoke($"[{ModelPrefix}] [v5.0.7] 라벨링: {dataset.Count}건 (기회={oppCount}={ratio:F1}%) | window={futureWindow} target={TargetProfitPct}% relaxedDd={relaxedMaxDd}% dir={direction}");
             return dataset;
         }
 

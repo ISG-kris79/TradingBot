@@ -4899,10 +4899,12 @@ namespace TradingBot
         }
 
         /// <summary>
-        /// [v5.0.5] 유동성 기반 동적 PUMP 증거금
-        /// - 초저유동성 (24h &lt; $10M): 50% 축소 (슬리피지/덤핑 위험 회피)
-        /// - 그 외: 기본 마진 유지
-        /// 04-12 DB 분석: 초저유동성 12건 평균 -$2.43, 25~50% 축소 시 손실 2배 감소
+        /// [v5.0.5 / v5.0.7] 유동성 기반 동적 PUMP 증거금
+        /// v5.0.5: 초저유동성 50% 축소 (하드코딩)
+        /// v5.0.7: 하드코딩 유지 — 사용자 결정 (초소형 $100 / 그외 $200)
+        ///
+        /// 이 로직은 "진입 판단" 이 아닌 "사이즈/위험 관리" 이므로 메모리 원칙
+        /// (모든 진입은 AI 로만) 과 구분됨. 사용자 지시로 명시적 유지.
         /// </summary>
         private decimal GetLiquidityAdjustedPumpMarginUsdt(string symbol)
         {
@@ -7002,92 +7004,120 @@ namespace TradingBot
                                 && _tradeSignalAccuracy >= AiHardCheckBypassThreshold)
                                 OnStatusLog?.Invoke($"🎯 [AI] 모든 PUMP 모델 정확도 {AiHardCheckBypassThreshold:P0} 달성 → 하드 체크 자동 해제");
 
-                            // [v5.0] PumpForecaster 학습 (3-Model: Classifier + TimeRegressor + PriceRegressor)
+                            // [v5.0.7] PumpForecaster 학습 — DB 대용량 로드
+                            // 기존: klineMap × TakeLast(100) ≈ 55K
+                            // 신규: DB 직접 로드 심볼당 5000봉 × PUMP 심볼 ≈ 수백만 건
                             try
                             {
-                                var labeledPumpForecast = _pumpForecaster.LabelCandleData(pumpCandles, "LONG");
-                                if (labeledPumpForecast.Count >= 100)
+                                var pumpDbData = await _dbManager.GetBulkCandleDataAsync(
+                                    intervalText: "5m",
+                                    candlesPerSymbol: 5000,
+                                    symbolFilter: null,
+                                    token: token);
+
+                                var bulkPumpCandles = new List<IBinanceKline>();
+                                foreach (var kvp in pumpDbData)
                                 {
-                                    var m = await _pumpForecaster.TrainAndSaveAsync(labeledPumpForecast, token);
-                                    OnStatusLog?.Invoke($"🧠 [v5.0] PumpForecaster 학습 완료 | {labeledPumpForecast.Count}건 | AccA={m?.ClassifierAccuracy:P1} MAE_B={m?.TimeRegressorMAE:F2}봉 MAE_C={m?.PriceRegressorMAE:F3}%");
-                                    if (m != null) _pumpForecasterAccuracy = m.ClassifierAccuracy;
+                                    if (token.IsCancellationRequested) break;
+                                    if (MajorSymbols.Contains(kvp.Key)) continue;  // 메이저 제외
+                                    foreach (var cd in kvp.Value)
+                                    {
+                                        bulkPumpCandles.Add(new Services.BinanceKlineAdapter(cd, Binance.Net.Enums.KlineInterval.FiveMinutes));
+                                    }
+                                }
+
+                                OnStatusLog?.Invoke($"📥 [v5.0.7] PumpForecaster DB 로드: {pumpDbData.Count(kv => !MajorSymbols.Contains(kv.Key))}심볼 총 {bulkPumpCandles.Count}건");
+
+                                if (bulkPumpCandles.Count >= 1000)
+                                {
+                                    var labeledPumpForecast = _pumpForecaster.LabelCandleData(bulkPumpCandles, "LONG");
+                                    if (labeledPumpForecast.Count >= 100)
+                                    {
+                                        var m = await _pumpForecaster.TrainAndSaveAsync(labeledPumpForecast, token);
+                                        OnStatusLog?.Invoke($"🧠 [v5.0.7] PumpForecaster 학습 완료 | {labeledPumpForecast.Count}건 | AccA={m?.ClassifierAccuracy:P1} MAE_B={m?.TimeRegressorMAE:F2}봉 MAE_C={m?.PriceRegressorMAE:F3}%");
+                                        if (m != null) _pumpForecasterAccuracy = m.ClassifierAccuracy;
+                                    }
                                 }
                             }
-                            catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [v5.0] PumpForecaster 학습 실패: {ex.Message}"); }
+                            catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [v5.0.7] PumpForecaster 학습 실패: {ex.Message}"); }
                         }
                     }
                 }
                 catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] PumpSignal 학습 실패: {ex.Message}"); }
 
-                // [v5.0.2] MajorForecaster 학습 — DB 히스토리로 샘플 대폭 확대
-                // 기존 문제: klineMap 에서 메이저만 추출 → 85봉 × 9종 = 765건, AccA=0%
-                // 해결: 거래소 API 에서 메이저 심볼당 1000봉(~3.5일) 직접 로드 → ~9000건
+                // [v5.0.7] MajorForecaster 학습 — DB 대용량 로드 (9심볼 × 최대 20K봉 ≈ 18만건)
+                // DB 보유량: 각 메이저 ~52K 5분봉 (184일)
                 try
                 {
+                    var majorDbData = await _dbManager.GetBulkCandleDataAsync(
+                        intervalText: "5m",
+                        candlesPerSymbol: 20000,
+                        symbolFilter: MajorSymbols.ToList(),
+                        token: token);
+
                     var majorCandles = new List<IBinanceKline>();
-                    foreach (var sym in MajorSymbols)
+                    foreach (var kvp in majorDbData)
                     {
                         if (token.IsCancellationRequested) break;
-                        try
+                        foreach (var cd in kvp.Value)
                         {
-                            var hist = await _exchangeService.GetKlinesAsync(
-                                sym, Binance.Net.Enums.KlineInterval.FiveMinutes, 1000, token);
-                            if (hist != null && hist.Count >= 100)
-                            {
-                                majorCandles.AddRange(hist);
-                            }
-                        }
-                        catch (Exception innerEx)
-                        {
-                            OnStatusLog?.Invoke($"⚠️ [v5.0.2] {sym} 메이저 히스토리 로드 실패: {innerEx.Message}");
+                            majorCandles.Add(new Services.BinanceKlineAdapter(cd, Binance.Net.Enums.KlineInterval.FiveMinutes));
                         }
                     }
-                    if (majorCandles.Count >= 200)
+
+                    OnStatusLog?.Invoke($"📥 [v5.0.7] MajorForecaster DB 로드: {majorDbData.Count}심볼 × 평균 {(majorDbData.Count > 0 ? majorCandles.Count / majorDbData.Count : 0)}봉 = 총 {majorCandles.Count}건");
+
+                    if (majorCandles.Count >= 500)
                     {
                         var labeledMajor = _majorForecaster.LabelCandleData(majorCandles, "LONG");
                         if (labeledMajor.Count >= 100)
                         {
                             var m = await _majorForecaster.TrainAndSaveAsync(labeledMajor, token);
-                            OnStatusLog?.Invoke($"🧠 [v5.0.2] MajorForecaster 학습 완료 | {labeledMajor.Count}건 | AccA={m?.ClassifierAccuracy:P1} MAE_B={m?.TimeRegressorMAE:F2}봉");
+                            OnStatusLog?.Invoke($"🧠 [v5.0.7] MajorForecaster 학습 완료 | {labeledMajor.Count}건 | AccA={m?.ClassifierAccuracy:P1} MAE_B={m?.TimeRegressorMAE:F2}봉");
                             if (m != null) _majorForecasterAccuracy = m.ClassifierAccuracy;
                         }
                     }
                     else
                     {
-                        OnStatusLog?.Invoke($"⚠️ [v5.0.2] 메이저 히스토리 부족 ({majorCandles.Count}건) — Forecaster 학습 스킵, Fallback 경로 사용");
+                        OnStatusLog?.Invoke($"⚠️ [v5.0.7] 메이저 DB 데이터 부족 ({majorCandles.Count}건) — Forecaster 학습 스킵, Fallback 사용");
                     }
                 }
-                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [v5.0] MajorForecaster 학습 실패: {ex.Message}"); }
+                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [v5.0.7] MajorForecaster 학습 실패: {ex.Message}"); }
 
-                // [v5.0] SpikeForecaster 학습 (1분봉 전용 — B1 버그 수정)
+                // [v5.0.7] SpikeForecaster 학습 — DB 1분봉 대용량 로드 (58심볼 × 최대 20K봉)
+                // DB 보유량: 1m 약 2M 건 (58심볼)
                 try
                 {
+                    var spikeDbData = await _dbManager.GetBulkCandleDataAsync(
+                        intervalText: "1m",
+                        candlesPerSymbol: 20000,
+                        symbolFilter: null,  // 전체 심볼
+                        token: token);
+
                     var spikeCandles1m = new List<IBinanceKline>();
-                    int cnt = 0;
-                    foreach (var symbol in klineMap.Keys)
+                    foreach (var kvp in spikeDbData)
                     {
                         if (token.IsCancellationRequested) break;
-                        if (cnt++ >= 50) break;
-                        try
+                        foreach (var cd in kvp.Value)
                         {
-                            var res = await _exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.OneMinute, 200, token);
-                            if (res != null && res.Count >= 30)
-                                spikeCandles1m.AddRange(res);
+                            spikeCandles1m.Add(new Services.BinanceKlineAdapter(cd, Binance.Net.Enums.KlineInterval.OneMinute));
                         }
-                        catch { }
                     }
-                    if (spikeCandles1m.Count >= 200)
+
+                    OnStatusLog?.Invoke($"📥 [v5.0.7] SpikeForecaster DB 로드: {spikeDbData.Count}심볼 × 평균 {(spikeDbData.Count > 0 ? spikeCandles1m.Count / spikeDbData.Count : 0)}봉 = 총 {spikeCandles1m.Count}건");
+
+                    if (spikeCandles1m.Count >= 500)
                     {
                         var labeledSpike = _spikeForecaster.LabelCandleData(spikeCandles1m, "LONG");
                         if (labeledSpike.Count >= 100)
                         {
                             var m = await _spikeForecaster.TrainAndSaveAsync(labeledSpike, token);
-                            OnStatusLog?.Invoke($"🧠 [v5.0] SpikeForecaster(1m) 학습 완료 | {labeledSpike.Count}건 | AccA={m?.ClassifierAccuracy:P1}");
+                            OnStatusLog?.Invoke($"🧠 [v5.0.7] SpikeForecaster(1m) 학습 완료 | {labeledSpike.Count}건 | AccA={m?.ClassifierAccuracy:P1}");
                             if (m != null) _spikeForecasterAccuracy = m.ClassifierAccuracy;
                         }
                     }
                 }
-                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [v5.0] SpikeForecaster 학습 실패: {ex.Message}"); }
+                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [v5.0.7] SpikeForecaster 학습 실패: {ex.Message}"); }
 
                 // 3. Direction + Volatility Predictor
                 try
@@ -11190,58 +11220,11 @@ namespace TradingBot
                 }
             }
 
-            // ═══════════════════════════════════════════════════════════════
-            // [v5.0.6] 중형 유동성 ($50~200M) 특화 조건 — 04-12 C 버킷 손실 방어
-            // ═══════════════════════════════════════════════════════════════
-            bool isMidLiquidity = false;
-            try
-            {
-                // 심볼 정보가 candles 에 없으므로 대체: latest candle Volume × Close 로 추정
-                // 최근 288개 봉 (24h = 288 × 5분) 합산이 정확하지만 비용이 큼
-                // 대신 최근 12봉(1시간) × 12 = 24h 근사
-                if (candles5m.Count >= 12)
-                {
-                    double vol1h = 0;
-                    for (int i = candles5m.Count - 12; i < candles5m.Count; i++)
-                    {
-                        vol1h += (double)candles5m[i].Volume * (double)candles5m[i].ClosePrice;
-                    }
-                    double vol24hEstimate = vol1h * 24;  // 시간당 × 24
-                    isMidLiquidity = vol24hEstimate >= 50_000_000 && vol24hEstimate < 200_000_000;
-                }
-            }
-            catch { }
-
-            if (isMidLiquidity && candles5m.Count >= 13)
-            {
-                // [Check 5] 중형 코인: 1시간 누적 +10% 이상 → 피크 위험 (1h 봉 12개)
-                decimal close12Ago = candles5m[candles5m.Count - 13].ClosePrice;
-                if (close12Ago > 0)
-                {
-                    float run1hPct = (float)((currentPrice - close12Ago) / close12Ago * 100);
-                    if (run1hPct > 10.0f)
-                    {
-                        reason = $"midCapOverExtended 1h={run1hPct:F1}% > 10% (mid-liq)";
-                        return true;
-                    }
-                }
-
-                // [Check 6] 최근 3봉 중 거대 변동성 음봉 (range 5%+) 이 2개 이상
-                int bigBearCount = 0;
-                for (int i = candles5m.Count - 3; i < candles5m.Count; i++)
-                {
-                    if (i < 0) continue;
-                    var k = candles5m[i];
-                    if (k.OpenPrice <= 0) continue;
-                    float r = (float)((k.HighPrice - k.LowPrice) / k.OpenPrice * 100);
-                    if (r > 5.0f && k.ClosePrice < k.OpenPrice) bigBearCount++;
-                }
-                if (bigBearCount >= 2)
-                {
-                    reason = $"multipleBearishVolatility count={bigBearCount} (mid-liq)";
-                    return true;
-                }
-            }
+            // [v5.0.7] 중형 특화 하드코딩 조건(Check 5/6) 제거
+            // 이유: Forecaster 대용량 학습 완료 → AI 가 피크/덤핑 패턴 직접 학습
+            //       하드코딩 임계값(10%, 5%, 2개 등)은 주관적이라 AI 판단에 맡김
+            //       Check 1~4 는 명백한 피크 징후(30m >8%, 2~5% 조정, 윗꼬리 60%+, 거대 음봉)
+            //       만 남기고 정상 케이스는 통과시켜 Forecaster 에 위임
 
             return false;
         }
@@ -11328,10 +11311,10 @@ namespace TradingBot
         }
 
         /// <summary>
-        /// [v5.0.1 / v5.0.6] Gate 1 차단 후 지연 재평가 예약.
-        /// - 중형 유동성 ($50M+): 8분 대기 (반등 빠름)
-        /// - 그 외: 15분 대기 (기존)
+        /// [v5.0.1 / v5.0.7] Gate 1 차단 후 지연 재평가 예약.
         /// 주기적으로 Gate 2 체크 → 통과 시 ExecuteAutoOrder 호출.
+        /// 15분 내 기회 없으면 자동 만료.
+        /// v5.0.7: 유동성별 대기시간 차등 제거 (Forecaster 가 타이밍 학습)
         /// </summary>
         private void ScheduleGate2Reevaluation(string symbol, string decision, string signalSource)
         {
@@ -11341,20 +11324,7 @@ namespace TradingBot
                 return;
             }
 
-            // [v5.0.6] 유동성 기반 대기 시간 조정
-            int maxWaitMinutes = 15;
-            try
-            {
-                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var initTicker) && initTicker.QuoteVolume > 0)
-                {
-                    if (initTicker.QuoteVolume >= 50_000_000m)
-                    {
-                        maxWaitMinutes = 8;  // 중형+고유동성: 반등 빠름
-                    }
-                }
-            }
-            catch { }
-
+            const int maxWaitMinutes = 15;
             OnStatusLog?.Invoke($"⏳ [GATE2] {symbol} {decision} 지연 진입 예약 (최대 {maxWaitMinutes}분 pullback 반등 대기)");
 
             _ = Task.Run(async () =>
