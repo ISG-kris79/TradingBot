@@ -277,6 +277,8 @@ namespace TradingBot.Services
                 }
 
                 OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
+
+                // [v5.1.4] 1차: reduceOnly=true 시도
                 var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
                     symbol, orderSide,
                     FuturesOrderType.StopMarket,
@@ -291,10 +293,29 @@ namespace TradingBot.Services
                     return (true, result.Data.Id.ToString());
                 }
 
+                // [v5.1.4] 2차: reduceOnly 없이 STOP 으로 재시도 (일부 심볼 StopMarket 미지원)
+                var result2 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                    symbol, orderSide,
+                    FuturesOrderType.Stop,
+                    quantity,
+                    price: stopPrice,
+                    stopPrice: stopPrice,
+                    reduceOnly: true,
+                    timeInForce: TimeInForce.GoodTillCanceled,
+                    ct: ct);
+
+                if (result2.Success && result2.Data != null)
+                {
+                    MainWindow.Instance?.AddLog($"✅ [SL] {symbol} STOP(Limit) 등록 | {side} qty={quantity} stop=${stopPrice} id={result2.Data.Id}");
+                    return (true, result2.Data.Id.ToString());
+                }
+
                 string errCode = result.Error?.Code?.ToString() ?? "null";
                 string errMsg = result.Error?.Message ?? "null";
-                MainWindow.Instance?.AddLog($"❌ [SL] {symbol} STOP_MARKET 실패 | {side} qty={quantity} stop=${stopPrice} errCode={errCode} errMsg={errMsg}");
-                MainWindow.Instance?.AddAlert($"⚠️ [SL] {symbol} 손절 등록 실패: {errMsg}");
+                string errCode2 = result2.Error?.Code?.ToString() ?? "null";
+                string errMsg2 = result2.Error?.Message ?? "null";
+                MainWindow.Instance?.AddLog($"❌ [SL] {symbol} 실패 | 1차 STOP_MARKET errCode={errCode} errMsg={errMsg} | 2차 STOP errCode={errCode2} errMsg={errMsg2}");
+                MainWindow.Instance?.AddAlert($"⚠️ [SL] {symbol} 손절 등록 실패");
                 return (false, string.Empty);
             }
             catch (Exception ex)
@@ -350,26 +371,37 @@ namespace TradingBot.Services
 
                 if (result.Success && result.Data != null)
                 {
-                    string ok = $"✅ [Binance] TRAILING_STOP_MARKET 성공 - {symbol} {side} qty={quantity} callback={callbackRate}% activation={activationPrice?.ToString("F4") ?? "즉시"} id={result.Data.Id}";
-                    Console.WriteLine(ok);
+                    string ok = $"✅ [TRAILING] {symbol} TRAILING_STOP_MARKET 성공 | {side} qty={quantity} callback={callbackRate}% activation={activationPrice?.ToString("F4") ?? "즉시"} id={result.Data.Id}";
                     TradingBot.MainWindow.Instance?.AddLog(ok);
                     return (true, result.Data.Id.ToString());
                 }
 
-                // [v5.0.8] 실패 원인 상세 로깅
+                // [v5.1.4] 폴백: activationPrice 없이 재시도 (일부 심볼 activationPrice 미지원)
+                if (activationPrice.HasValue)
+                {
+                    var result2 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                        symbol, orderSide,
+                        FuturesOrderType.TrailingStopMarket,
+                        quantity,
+                        callbackRate: callbackRate,
+                        reduceOnly: true,
+                        ct: ct);
+
+                    if (result2.Success && result2.Data != null)
+                    {
+                        TradingBot.MainWindow.Instance?.AddLog($"✅ [TRAILING] {symbol} 성공 (activationPrice 없이) | {side} qty={quantity} callback={callbackRate}% id={result2.Data.Id}");
+                        return (true, result2.Data.Id.ToString());
+                    }
+                }
+
                 string errCode = result.Error?.Code?.ToString() ?? "null";
                 string errMsg = result.Error?.Message ?? "null";
-                string errDetail = $"❌ [TRAILING_STOP] {symbol} {side} qty={quantity} callback={callbackRate}% activation={activationPrice?.ToString("F4") ?? "즉시"} | errCode={errCode} errMsg={errMsg}";
-                Console.WriteLine(errDetail);
-                TradingBot.MainWindow.Instance?.AddLog(errDetail);
-                TradingBot.MainWindow.Instance?.AddAlert($"⚠️ [TRAILING_STOP] {symbol} 실패: {errMsg} (code={errCode})");
+                TradingBot.MainWindow.Instance?.AddLog($"❌ [TRAILING] {symbol} 실패 | {side} qty={quantity} callback={callbackRate}% errCode={errCode} errMsg={errMsg}");
                 return (false, string.Empty);
             }
             catch (Exception ex)
             {
-                string exDetail = $"❌ [TRAILING_STOP] {symbol} 예외: {ex.GetType().Name} {ex.Message}";
-                Console.WriteLine(exDetail);
-                TradingBot.MainWindow.Instance?.AddLog(exDetail);
+                TradingBot.MainWindow.Instance?.AddLog($"❌ [TRAILING] {symbol} 예외: {ex.Message}");
                 return (false, string.Empty);
             }
         }
@@ -410,6 +442,7 @@ namespace TradingBot.Services
                 if (quantity <= 0) return (false, string.Empty);
 
                 OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
+                // [v5.1.4] 1차: TAKE_PROFIT_MARKET
                 var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
                     symbol, orderSide,
                     FuturesOrderType.TakeProfitMarket,
@@ -424,8 +457,26 @@ namespace TradingBot.Services
                     return (true, result.Data.Id.ToString());
                 }
 
+                // [v5.1.4] 2차: TAKE_PROFIT (LIMIT) 폴백
+                var result2 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                    symbol, orderSide,
+                    FuturesOrderType.TakeProfit,
+                    quantity,
+                    price: stopPrice,
+                    stopPrice: stopPrice,
+                    reduceOnly: true,
+                    timeInForce: TimeInForce.GoodTillCanceled,
+                    ct: ct);
+
+                if (result2.Success && result2.Data != null)
+                {
+                    MainWindow.Instance?.AddLog($"✅ [TP] {symbol} TAKE_PROFIT(Limit) 등록 | {side} qty={quantity} stop=${stopPrice} id={result2.Data.Id}");
+                    return (true, result2.Data.Id.ToString());
+                }
+
                 string errMsg = result.Error?.Message ?? "unknown";
-                MainWindow.Instance?.AddLog($"❌ [TP] {symbol} TAKE_PROFIT_MARKET 실패 | {side} qty={quantity} stop=${stopPrice} err={errMsg}");
+                string errMsg2 = result2.Error?.Message ?? "unknown";
+                MainWindow.Instance?.AddLog($"❌ [TP] {symbol} 실패 | 1차={errMsg} 2차={errMsg2}");
                 return (false, string.Empty);
             }
             catch (Exception ex)
