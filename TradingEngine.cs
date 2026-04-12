@@ -486,6 +486,8 @@ namespace TradingBot
         private readonly TradingBot.Services.MajorForecaster _majorForecaster = new();
         private readonly TradingBot.Services.SpikeForecaster _spikeForecaster = new();
         private TradingBot.Services.EntryScheduler? _entryScheduler;
+        // [v5.1.0] 진입 직후 거래소 SL/TP/트레일링 등록
+        private TradingBot.Services.EntryOrderRegistrar? _entryOrderRegistrar;
         private readonly TradingBot.Services.PriceDirectionPredictor _directionPredictor = new();
         private readonly TradingBot.Services.SurvivalEntryModel _survivalModel = new();
         private readonly TradingBot.Services.TickDensityMonitor _tickMonitor = new();
@@ -1088,6 +1090,10 @@ namespace TradingBot
             _majorForecaster.LoadModels();
             _spikeForecaster.OnLog += msg => OnStatusLog?.Invoke(msg);
             _spikeForecaster.LoadModels();
+
+            // [v5.1.0] 진입 직후 거래소 SL/TP/트레일링 등록
+            _entryOrderRegistrar = new TradingBot.Services.EntryOrderRegistrar(_exchangeService);
+            _entryOrderRegistrar.OnLog += msg => OnStatusLog?.Invoke(msg);
 
             // [v5.0] EntryScheduler 초기화 — MTF Guardian 연결 + Market Fallback executor
             _entryScheduler = new TradingBot.Services.EntryScheduler(
@@ -10715,6 +10721,50 @@ namespace TradingBot
                     symbol, decision, actualEntryPrice,
                     finalStopLoss, finalTakeProfit, ctx.SignalSource);
                 OnStatusLog?.Invoke(entrySuccessMessage);
+
+                // [v5.1.0] 거래소 API 로 SL/TP 즉시 등록 — 봇 다운타임에도 거래소가 보호
+                // 긴급 대응(CRASH_REVERSE/PUMP_REVERSE) 은 제외 — 내부 모니터링만 사용
+                if (_entryOrderRegistrar != null
+                    && ctx.SignalSource != "CRASH_REVERSE"
+                    && ctx.SignalSource != "PUMP_REVERSE")
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            bool isLong = decision == "LONG";
+                            bool isPump = !MajorSymbols.Contains(symbol);
+
+                            // PUMP: SL -40% ROE, TP +25% ROE, 부분 60%
+                            // MAJOR: SL -50% ROE, TP +40% ROE, 부분 40%
+                            decimal slRoe = isPump ? -40m : -50m;
+                            decimal tpRoe = isPump ? 25m : 40m;
+                            decimal tpPartial = isPump ? 0.6m : 0.4m;
+
+                            var (slId, tpId) = await _entryOrderRegistrar.RegisterEntryOrdersAsync(
+                                symbol, isLong, actualEntryPrice, filledQty,
+                                ctx.Leverage > 0 ? ctx.Leverage : 20,
+                                stopLossRoePct: slRoe,
+                                takeProfitRoePct: tpRoe,
+                                tpPartialRatio: tpPartial,
+                                token: CancellationToken.None);
+
+                            // 포지션에 주문 ID 저장 (취소/갱신용)
+                            if (!string.IsNullOrEmpty(slId))
+                            {
+                                lock (_posLock)
+                                {
+                                    if (_activePositions.TryGetValue(symbol, out var p))
+                                        p.StopOrderId = slId;
+                                }
+                            }
+                        }
+                        catch (Exception regEx)
+                        {
+                            OnStatusLog?.Invoke($"⚠️ [EntryOrderReg] {symbol} SL/TP 등록 예외: {regEx.Message}");
+                        }
+                    });
+                }
 
                 // HybridExitManager 등록
                 if (finalTakeProfit > 0 && _hybridExitManager != null)

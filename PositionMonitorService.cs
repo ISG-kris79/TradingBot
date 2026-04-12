@@ -1988,9 +1988,17 @@ namespace TradingBot.Services
                         firstTpDone = p.PartialProfitStage >= 1 || p.TakeProfitStep >= 1;
                 }
 
-                // [v3.6.5] 1분봉 하락추세 조기 청산 — -40% ROE 전에 탈출
-                // 조건: 진입 후 2분+ & ROE < 0 & 연속 3개 음봉 & RSI 하락
-                if (isPumpPosition && !firstTpDone && currentROE < 0 && (DateTime.Now - startTime).TotalMinutes >= 2)
+                // [v3.6.5 / v5.1.0] 1분봉 하락추세 조기 청산 — 완화
+                // 기존: 음봉3연속 + RSI<40 + ROE≤-10% → 너무 타이트 (정상 조정에도 발동)
+                // 04-12 DB: 이 로직으로 15건 -$299 손절 (전체 손절 62%)
+                //
+                // 수정:
+                // - ROE -10% → -20% 완화 (실가격 -1%, 정상 조정 후 반등 기회 제공)
+                // - 음봉 3연속 → 4연속 (더 확실한 하락 확인)
+                // - RSI < 40 → RSI < 30 (과매도 깊이 확인)
+                // - 진입 후 2분 → 5분 (최소 관찰 시간 늘림)
+                // - 추가: ROE -30% 이하면 기존 조건 (3연속+RSI40+ROE-10) 유지 (큰 손실 방지)
+                if (isPumpPosition && !firstTpDone && currentROE < 0 && (DateTime.Now - startTime).TotalMinutes >= 5)
                 {
                     try
                     {
@@ -1998,19 +2006,36 @@ namespace TradingBot.Services
                         if (m1Klines != null && m1Klines.Count >= 5)
                         {
                             var last5 = m1Klines.TakeLast(5).ToList();
-                            // 최근 3봉 연속 음봉 체크
+                            // 최근 N봉 연속 음봉 체크
                             int bearishCount = 0;
-                            for (int bi = last5.Count - 1; bi >= Math.Max(0, last5.Count - 3); bi--)
+                            for (int bi = last5.Count - 1; bi >= 0; bi--)
                             {
                                 if (last5[bi].ClosePrice < last5[bi].OpenPrice) bearishCount++;
+                                else break;  // 양봉 나오면 카운트 중단
                             }
                             // RSI 하락 체크
                             double m1Rsi = IndicatorCalculator.CalculateRSI(m1Klines.ToList(), Math.Min(7, m1Klines.Count - 1));
-                            // 3봉 연속 음봉 + RSI < 40 + ROE -10% 이하 → 조기 청산
-                            if (bearishCount >= 3 && m1Rsi < 40 && currentROE <= -10.0m)
+
+                            bool shouldClose = false;
+                            string closeReason = "";
+
+                            // [긴급] ROE -30% 이하: 기존 조건 유지 (큰 손실 방지)
+                            if (bearishCount >= 3 && m1Rsi < 40 && currentROE <= -30.0m)
                             {
-                                OnLog?.Invoke($"[조기청산] {symbol} 1분봉 하락추세 | 음봉{bearishCount}연속 RSI={m1Rsi:F0} ROE={currentROE:F1}% → -40% 전 탈출");
-                                await ExecuteMarketClose(symbol, $"1분봉 하락추세 조기청산 (음봉{bearishCount}연속 RSI={m1Rsi:F0})", token);
+                                shouldClose = true;
+                                closeReason = $"긴급 (ROE{currentROE:F0}%≤-30 음봉{bearishCount} RSI{m1Rsi:F0})";
+                            }
+                            // [완화] 일반: 4연속 음봉 + RSI < 30 + ROE -20% 이하
+                            else if (bearishCount >= 4 && m1Rsi < 30 && currentROE <= -20.0m)
+                            {
+                                shouldClose = true;
+                                closeReason = $"확인됨 (ROE{currentROE:F0}% 음봉{bearishCount} RSI{m1Rsi:F0})";
+                            }
+
+                            if (shouldClose)
+                            {
+                                OnLog?.Invoke($"[조기청산] {symbol} 1분봉 하락추세 | {closeReason} → 탈출");
+                                await ExecuteMarketClose(symbol, $"1분봉 하락추세 조기청산 ({closeReason})", token);
                                 break;
                             }
                         }
@@ -4005,6 +4030,30 @@ namespace TradingBot.Services
                 OnLog?.Invoke($"✅ {symbol} 부분청산 완료: 청산={actualClosedQty}, 잔여={remainingQty}, PnL={pnl:F2}, ROE={pnlPercent:F2}%");
                 PersistPositionState(symbol); // [v3.5.2] DB에 부분청산 상태 저장
                 OnPartialCloseCompleted?.Invoke(symbol); // [v3.4.0] 팬텀 기록 방지 쿨다운
+
+                // [v5.1.0] 부분청산 후 잔여 수량에 트레일링 스탑 거래소 등록
+                // 이미 수익 구간이므로 트레일링으로 나머지 수익 보호
+                if (remainingQty > 0 && pnl > 0)
+                {
+                    try
+                    {
+                        string trailSide = localPosition.IsLong ? "SELL" : "BUY";
+                        decimal callbackRate = Math.Clamp(2.0m, 0.1m, 5.0m);
+                        OnLog?.Invoke($"📡 [v5.1.0] {symbol} 부분청산 후 잔여 {remainingQty} 트레일링 등록 시도 (callback={callbackRate}%)");
+                        var (trailOk, trailId) = await _exchangeService.PlaceTrailingStopOrderAsync(
+                            symbol, trailSide, remainingQty, callbackRate, activationPrice: null, CancellationToken.None);
+                        if (trailOk)
+                        {
+                            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = trailId; }
+                            OnLog?.Invoke($"✅ [v5.1.0] {symbol} 트레일링 스탑 거래소 등록 완료 | id={trailId} callback={callbackRate}%");
+                        }
+                        else
+                        {
+                            OnLog?.Invoke($"⚠️ [v5.1.0] {symbol} 트레일링 스탑 실패 → 내부 트레일링 계속");
+                        }
+                    }
+                    catch (Exception trEx) { OnLog?.Invoke($"⚠️ [v5.1.0] {symbol} 트레일링 등록 예외: {trEx.Message}"); }
+                }
                 OnPositionStatusUpdate?.Invoke(symbol, remainingQty > 0, 0);
 
                 // [텔레그램] 부분청산 알림
