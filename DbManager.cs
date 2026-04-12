@@ -220,6 +220,12 @@ END");
         }
 
         /// <summary>포지션 상태 저장/업데이트 (부분청산, 본절, 계단식 등)</summary>
+        /// <summary>
+        /// [v3.5.2 / v5.0.8] PositionState 저장 — 부분 merge 로 기존 값 덮어쓰기 방지
+        /// v5.0.8: 파라미터가 0/false 면 기존 DB 값 유지 (CASE WHEN)
+        /// 예: PersistPositionState(symbol, highestROE: 259) 호출 시
+        ///     StairStep=0, IsBreakEvenTriggered=false 를 전달해도 기존 값 유지
+        /// </summary>
         public async Task SavePositionStateAsync(int userId, string symbol, PositionInfo pos, int stairStep = 0, bool isBreakEvenTriggered = false, decimal highestROE = 0)
         {
             try
@@ -231,14 +237,14 @@ USING (SELECT @UserId AS UserId, @Symbol AS Symbol) AS source
 ON target.UserId = source.UserId AND target.Symbol = source.Symbol
 WHEN MATCHED THEN
     UPDATE SET
-        TakeProfitStep = @TakeProfitStep,
-        PartialProfitStage = @PartialProfitStage,
-        BreakevenPrice = @BreakevenPrice,
-        HighestROE = @HighestROE,
-        StairStep = @StairStep,
-        IsBreakEvenTriggered = @IsBreakEvenTriggered,
-        HighestPrice = @HighestPrice,
-        LowestPrice = @LowestPrice,
+        TakeProfitStep = CASE WHEN @TakeProfitStep > 0 THEN @TakeProfitStep ELSE target.TakeProfitStep END,
+        PartialProfitStage = CASE WHEN @PartialProfitStage > 0 THEN @PartialProfitStage ELSE target.PartialProfitStage END,
+        BreakevenPrice = CASE WHEN @BreakevenPrice > 0 THEN @BreakevenPrice ELSE target.BreakevenPrice END,
+        HighestROE = CASE WHEN @HighestROE > target.HighestROE THEN @HighestROE ELSE target.HighestROE END,
+        StairStep = CASE WHEN @StairStep > target.StairStep THEN @StairStep ELSE target.StairStep END,
+        IsBreakEvenTriggered = CASE WHEN @IsBreakEvenTriggered = 1 THEN 1 ELSE target.IsBreakEvenTriggered END,
+        HighestPrice = CASE WHEN @HighestPrice > target.HighestPrice THEN @HighestPrice ELSE target.HighestPrice END,
+        LowestPrice = CASE WHEN @LowestPrice > 0 AND (target.LowestPrice = 0 OR @LowestPrice < target.LowestPrice) THEN @LowestPrice ELSE target.LowestPrice END,
         IsPumpStrategy = @IsPumpStrategy,
         LastUpdatedAt = SYSDATETIME()
 WHEN NOT MATCHED THEN

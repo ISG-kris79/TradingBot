@@ -731,12 +731,13 @@ namespace TradingBot.Services
                     // 기존 ATR 손절만으로 리스크 관리
 
                     // [3단계 스마트 방어 시스템] 수익 보존 로직
-                    
+
                     // 최고 ROE 추적
                     if (currentROE > highestROE)
                     {
+                        decimal prevMax = highestROE;
                         highestROE = currentROE;
-                        
+
                         // 포지션에 최고 ROE 기록
                         lock (_posLock)
                         {
@@ -744,6 +745,16 @@ namespace TradingBot.Services
                             {
                                 p.HighestROEForTrailing = highestROE;
                             }
+                        }
+
+                        // [v5.0.8] 5% ROE 단위로 PositionState DB 저장 — 봇 재시작 시 고점 손실 방지
+                        // 기존: 본절/계단 변화 시에만 저장 → GIGGLE 08:55 peak 259% 가 복원 시 98.7% 로 손실됨
+                        // 해결: 매 5% 증가마다 이벤트 기반 즉시 저장
+                        int prevBucket = (int)(prevMax / 5m);
+                        int curBucket = (int)(highestROE / 5m);
+                        if (curBucket > prevBucket)
+                        {
+                            PersistPositionState(symbol, highestROE: highestROE);
                         }
                     }
 
@@ -2399,7 +2410,19 @@ namespace TradingBot.Services
                 }
 
                 // highestROE 업데이트 — 계단식 보호선 후에 위치해야 현재 사이클 ROE 반영
-                if (currentROE > highestROE) highestROE = currentROE;
+                // [v5.0.8] 5% 단위로 PositionState 저장 — 재시작 시 고점 복원 보장 (GIGGLE 케이스)
+                if (currentROE > highestROE)
+                {
+                    decimal prevHighPump = highestROE;
+                    highestROE = currentROE;
+
+                    int prevBucketP = (int)(prevHighPump / 5m);
+                    int curBucketP = (int)(highestROE / 5m);
+                    if (curBucketP > prevBucketP)
+                    {
+                        PersistPositionState(symbol, stairStep: stairStep, highestROE: highestROE);
+                    }
+                }
 
                 decimal effectiveStopLossRoe = dynamicStopLossRoe;
                 if (isAveraged && firstTpDone)

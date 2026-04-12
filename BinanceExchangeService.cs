@@ -280,8 +280,10 @@ namespace TradingBot.Services
         }
 
         /// <summary>
-        /// [v3.3.8] 바이낸스 서버사이드 TRAILING_STOP_MARKET 주문
+        /// [v3.3.8 / v5.0.8] 바이낸스 서버사이드 TRAILING_STOP_MARKET 주문
         /// 거래소가 자동으로 고점 추적 → callbackRate% 하락 시 시장가 청산
+        /// v5.0.8: 에러 메시지를 Console → OnLog + MainWindow.AddLog 로 노출
+        ///          실패 시 Binance 에러 코드 상세 로깅 (GIGGLE 케이스 재발 방지)
         /// </summary>
         /// <param name="callbackRate">콜백 비율 (%) — 0.1~5.0, 예: 1.0 = 고점 대비 1% 하락 시 발동</param>
         /// <param name="activationPrice">활성화 가격 — 이 가격 도달 후부터 트레일링 시작 (null이면 즉시)</param>
@@ -299,25 +301,52 @@ namespace TradingBot.Services
             // callbackRate: 바이낸스 허용 범위 0.1% ~ 5.0%
             callbackRate = Math.Clamp(callbackRate, 0.1m, 5.0m);
 
-            OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
-            var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
-                symbol,
-                orderSide,
-                FuturesOrderType.TrailingStopMarket,
-                quantity,
-                activationPrice: activationPrice,
-                callbackRate: callbackRate,
-                reduceOnly: true,
-                ct: ct);
-
-            if (result.Success && result.Data != null)
+            if (quantity <= 0)
             {
-                Console.WriteLine($"✅ [Binance] TRAILING_STOP_MARKET 설정 성공 - {symbol} callback={callbackRate}% activation={activationPrice?.ToString("F4") ?? "즉시"}");
-                return (true, result.Data.Id.ToString());
+                string qtyErr = $"❌ [TRAILING_STOP] {symbol} quantity={quantity} step={stepSize} — stepSize 반영 후 0 이하";
+                Console.WriteLine(qtyErr);
+                TradingBot.MainWindow.Instance?.AddLog(qtyErr);
+                return (false, string.Empty);
             }
 
-            Console.WriteLine($"❌ [Binance] TRAILING_STOP_MARKET 실패 - {symbol}: {result.Error?.Message}");
-            return (false, string.Empty);
+            OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
+
+            try
+            {
+                var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                    symbol,
+                    orderSide,
+                    FuturesOrderType.TrailingStopMarket,
+                    quantity,
+                    activationPrice: activationPrice,
+                    callbackRate: callbackRate,
+                    reduceOnly: true,
+                    ct: ct);
+
+                if (result.Success && result.Data != null)
+                {
+                    string ok = $"✅ [Binance] TRAILING_STOP_MARKET 성공 - {symbol} {side} qty={quantity} callback={callbackRate}% activation={activationPrice?.ToString("F4") ?? "즉시"} id={result.Data.Id}";
+                    Console.WriteLine(ok);
+                    TradingBot.MainWindow.Instance?.AddLog(ok);
+                    return (true, result.Data.Id.ToString());
+                }
+
+                // [v5.0.8] 실패 원인 상세 로깅
+                string errCode = result.Error?.Code?.ToString() ?? "null";
+                string errMsg = result.Error?.Message ?? "null";
+                string errDetail = $"❌ [TRAILING_STOP] {symbol} {side} qty={quantity} callback={callbackRate}% activation={activationPrice?.ToString("F4") ?? "즉시"} | errCode={errCode} errMsg={errMsg}";
+                Console.WriteLine(errDetail);
+                TradingBot.MainWindow.Instance?.AddLog(errDetail);
+                TradingBot.MainWindow.Instance?.AddAlert($"⚠️ [TRAILING_STOP] {symbol} 실패: {errMsg} (code={errCode})");
+                return (false, string.Empty);
+            }
+            catch (Exception ex)
+            {
+                string exDetail = $"❌ [TRAILING_STOP] {symbol} 예외: {ex.GetType().Name} {ex.Message}";
+                Console.WriteLine(exDetail);
+                TradingBot.MainWindow.Instance?.AddLog(exDetail);
+                return (false, string.Empty);
+            }
         }
 
         public async Task<bool> CancelOrderAsync(string symbol, string orderId, CancellationToken ct = default)
