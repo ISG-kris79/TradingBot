@@ -3580,7 +3580,10 @@ namespace TradingBot.Services
 
                 // [최종] 실제 PnL = 순수 가격 차이 - 수수료 - 슬리피지
                 decimal pnl = rawPnl - totalFee - estimatedSlippage;
-                _riskManager.UpdatePnlAndCheck(pnl);
+                // [v5.1.5] Strategy 전달 — MANUAL/EXTERNAL 은 서킷 브레이커 제외
+                string? posStrategy = null;
+                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var sp)) posStrategy = sp.EntryZoneTag; }
+                _riskManager.UpdatePnlAndCheck(pnl, posStrategy);
 
                 // 수익률 계산
                 decimal pnlPercent = 0;
@@ -3959,7 +3962,8 @@ namespace TradingBot.Services
                 decimal estimatedSlippage = exitPrice * actualClosedQty * 0.0005m;
                 decimal pnl = rawPnl - entryFee - exitFee - estimatedSlippage;
 
-                _riskManager.UpdatePnlAndCheck(pnl);
+                // [v5.1.5] MANUAL/EXTERNAL 은 서킷 브레이커 제외
+                _riskManager.UpdatePnlAndCheck(pnl, localPosition.EntryZoneTag);
 
                 decimal pnlPercent = 0;
                 if (localPosition.EntryPrice > 0 && actualClosedQty > 0)

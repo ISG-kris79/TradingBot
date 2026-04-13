@@ -32,9 +32,20 @@ namespace TradingBot.Services
             DailyRealizedPnl = todayPnl;
         }
 
-        public void UpdatePnlAndCheck(decimal pnl)
+        /// <summary>
+        /// [v5.1.5] strategy 파라미터 추가 — MANUAL 진입 손실은 서킷 브레이커 누적 제외
+        /// PLAY -$705 수동 테스트 → 서킷 브레이커 발동 → PUMP 하루 종일 진입 차단 방지
+        /// </summary>
+        public void UpdatePnlAndCheck(decimal pnl, string? strategy = null)
         {
+            // [v5.1.5] MANUAL/외부 진입은 PnL 누적만 하고 서킷 브레이커 트리거 안 함
+            bool isManualOrExternal = !string.IsNullOrEmpty(strategy) &&
+                (strategy.Equals("MANUAL", StringComparison.OrdinalIgnoreCase) ||
+                 strategy.StartsWith("EXTERNAL", StringComparison.OrdinalIgnoreCase));
+
             DailyRealizedPnl += pnl;
+
+            if (isManualOrExternal) return;  // 서킷 브레이커 판정 스킵
 
             if (pnl < 0) _consecutiveLosses++;
             else _consecutiveLosses = 0;
