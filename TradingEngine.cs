@@ -2327,11 +2327,15 @@ namespace TradingBot
                         var todayTrades = await _dbManager.GetTradeHistoryAsync(userId, DateTime.Today, DateTime.Now, 500);
                         if (todayTrades != null && todayTrades.Count > 0)
                         {
+                            // [v5.1.5] MANUAL/EXTERNAL 제외 — 수동 진입 손실로 서킷 브레이커 재발동 방지
                             decimal todayPnl = todayTrades
-                                .Where(t => t.PnL != 0 && !string.Equals(t.ExitReason, "OPEN_POSITION", StringComparison.OrdinalIgnoreCase))
+                                .Where(t => t.PnL != 0
+                                    && !string.Equals(t.ExitReason, "OPEN_POSITION", StringComparison.OrdinalIgnoreCase)
+                                    && !string.Equals(t.Strategy, "MANUAL", StringComparison.OrdinalIgnoreCase)
+                                    && !(t.Strategy ?? "").StartsWith("EXTERNAL", StringComparison.OrdinalIgnoreCase))
                                 .Sum(t => t.PnL);
                             _riskManager.RestoreDailyPnl(todayPnl);
-                            OnStatusLog?.Invoke($"💰 [복원] 금일 누적 PnL: ${todayPnl:N2} (DB 기반, {todayTrades.Count}건)");
+                            OnStatusLog?.Invoke($"💰 [복원] 금일 누적 PnL: ${todayPnl:N2} (DB 기반, MANUAL/EXTERNAL 제외)");
                         }
                     }
                 }
