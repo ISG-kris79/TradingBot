@@ -85,5 +85,7 @@ namespace TradingBot.Shared.Models
         public decimal HighestROEForTrailing { get; set; } // 트레일링스탑 기준 ROE
         public int PartialProfitStage { get; set; }     // 0:초기, 1:1차익절완료, 2:2차익절완료
         public decimal BreakevenPrice { get; set; }     // 본절가 (1차 익절 후 적용)
+        /// <summary>[v5.2.2] 이 봇(UserId)이 직접 진입한 포지션 여부 — false면 슬롯 카운트 제외</summary>
+        public bool IsOwnPosition { get; set; } = true;
     }
 }

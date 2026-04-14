@@ -1957,12 +1957,28 @@ namespace TradingBot
                         syncedPositions.Add((pos, ensureResult.EntryTime, ensureResult.AiScore, majorHybridStopLoss));
                     }
 
+                    // [v5.2.2] DB에서 이 유저의 오픈 포지션 심볼 목록 조회 → 거래소 포지션과 교차 비교
+                    int currentUserId = AppConfig.CurrentUser?.Id ?? 0;
+                    var ownOpenSymbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    if (currentUserId > 0)
+                    {
+                        try
+                        {
+                            var dbOpenTrades = await _dbManager.GetOpenTradesAsync(currentUserId);
+                            foreach (var dbTrade in dbOpenTrades)
+                                ownOpenSymbols.Add(dbTrade.Symbol);
+                        }
+                        catch { }
+                    }
+
                     lock (_posLock)
                     {
                         _activePositions.Clear();
                         foreach (var synced in syncedPositions)
                         {
                             var pos = synced.Pos;
+                            // [v5.2.2] DB에 이 유저의 오픈 기록이 있으면 IsOwnPosition=true
+                            bool isOwn = ownOpenSymbols.Contains(pos.Symbol);
                             _activePositions[pos.Symbol] = new PositionInfo
                             {
                                 Symbol = pos.Symbol,
@@ -1978,8 +1994,11 @@ namespace TradingBot
                                 StopLoss = synced.StopLoss,
                                 HighestPrice = pos.EntryPrice,
                                 LowestPrice = pos.EntryPrice,
-                                PyramidCount = 0
+                                PyramidCount = 0,
+                                IsOwnPosition = isOwn
                             };
+                            if (!isOwn)
+                                OnStatusLog?.Invoke($"ℹ️ [SYNC] {pos.Symbol} 거래소 포지션 감지 — 다른 유저 포지션 (슬롯 미산입)");
                         }
                     }
 
@@ -4635,7 +4654,8 @@ namespace TradingBot
             lock (_posLock)
             {
                 isHolding = _activePositions.ContainsKey(symbol);
-                currentTotalCount = _activePositions.Count;
+                // [v5.2.2] 슬롯 카운트: 이 유저가 직접 진입한 포지션만
+                currentTotalCount = _activePositions.Count(p => p.Value.IsOwnPosition);
             }
 
             // 이미 보유 중이면 진입 안 함
@@ -4652,7 +4672,8 @@ namespace TradingBot
             lock (_posLock)
             {
                 bool isMajorSymbol = MajorSymbols.Contains(symbol);
-                int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
+                // [v5.2.2] 슬롯 카운트: IsOwnPosition만
+                int majorCount = _activePositions.Count(p => p.Value.IsOwnPosition && MajorSymbols.Contains(p.Key));
                 int pumpCount = currentTotalCount - majorCount;  // PUMP 코인 수
 
                 if (isMajorSymbol && majorCount >= MAX_MAJOR_SLOTS)
@@ -5174,16 +5195,17 @@ namespace TradingBot
                 lock (_posLock)
                 {
                     bool isMajorSymbol = MajorSymbols.Contains(symbol);
-                    int currentTotal = _activePositions.Count;
-                    int currentMajorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
+                    // [v5.2.2] IsOwnPosition만 카운트
+                    int currentTotal = _activePositions.Count(p => p.Value.IsOwnPosition);
+                    int currentMajorCount = _activePositions.Count(p => p.Value.IsOwnPosition && MajorSymbols.Contains(p.Key));
                     int currentPumpCount = currentTotal - currentMajorCount;
-                    
+
                     if (isMajorSymbol && currentMajorCount >= MAX_MAJOR_SLOTS)
                     {
                         PumpTradeLog("ORDER", "BLOCK_RECHECK", $"메이저 포화 {currentMajorCount}/{MAX_MAJOR_SLOTS}");
                         return false;
                     }
-                    
+
                     if (!isMajorSymbol && currentPumpCount >= MAX_PUMP_SLOTS)
                     {
                         PumpTradeLog("ORDER", "BLOCK_RECHECK", $"PUMP 포화 {currentPumpCount}/{MAX_PUMP_SLOTS}");
@@ -6523,7 +6545,9 @@ namespace TradingBot
                         HighestPrice = wasTracked && existing != null && existing.HighestPrice > 0 ? existing.HighestPrice : pos.EntryPrice,
                         LowestPrice = wasTracked && existing != null && existing.LowestPrice > 0 ? existing.LowestPrice : pos.EntryPrice,
                         IsPyramided = existing?.IsPyramided ?? false,
-                        PyramidCount = existing?.PyramidCount ?? 0
+                        PyramidCount = existing?.PyramidCount ?? 0,
+                        // [v5.2.2] 이 봇이 추적 중이던 포지션이면 IsOwnPosition 유지
+                        IsOwnPosition = wasTracked ? (existing?.IsOwnPosition ?? true) : false
                     };
                 }
 
@@ -7854,8 +7878,9 @@ namespace TradingBot
                     needsReverse = true;
                 }
 
-                int total = _activePositions.Count;
-                int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
+                // [v5.2.2] IsOwnPosition만 카운트
+                int total = _activePositions.Count(p => p.Value.IsOwnPosition);
+                int majorCount = _activePositions.Count(p => p.Value.IsOwnPosition && MajorSymbols.Contains(p.Key));
                 int pumpCount = total - majorCount;
 
                 if (isMajor && majorCount >= MAX_MAJOR_SLOTS) return;
@@ -8485,8 +8510,9 @@ namespace TradingBot
             lock (_posLock)
             {
                 bool isMajorSymbol = MajorSymbols.Contains(symbol);
-                int totalPositions = _activePositions.Count;
-                int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
+                // [v5.2.2] 슬롯 카운트: 이 유저가 직접 진입한 포지션(IsOwnPosition)만 세기
+                int totalPositions = _activePositions.Count(p => p.Value.IsOwnPosition);
+                int majorCount = _activePositions.Count(p => p.Value.IsOwnPosition && MajorSymbols.Contains(p.Key));
                 int pumpCount = totalPositions - majorCount;
 
                 // [v5.2.0] SPIKE 전용 슬롯 — TICK_SURGE/SPIKE 경로는 별도 1슬롯
@@ -9028,8 +9054,9 @@ namespace TradingBot
                 }
 
                 bool isMajorSymbol = MajorSymbols.Contains(symbol);
-                int totalPositions = _activePositions.Count;
-                int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
+                // [v5.2.2] 슬롯 카운트: IsOwnPosition만 (다른 유저 포지션 제외)
+                int totalPositions = _activePositions.Count(p => p.Value.IsOwnPosition);
+                int majorCount = _activePositions.Count(p => p.Value.IsOwnPosition && MajorSymbols.Contains(p.Key));
                 int pumpCount = totalPositions - majorCount;
 
                 int maxTotal = GetDynamicMaxTotalSlots();
@@ -10549,8 +10576,9 @@ namespace TradingBot
                     if (!ctx.IsScoutAddOnOrder)
                     {
                         bool isMajorSymbol = MajorSymbols.Contains(symbol);
-                        int finalTotal = _activePositions.Count;
-                        int finalMajorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
+                        // [v5.2.2] IsOwnPosition만 카운트
+                        int finalTotal = _activePositions.Count(p => p.Value.IsOwnPosition);
+                        int finalMajorCount = _activePositions.Count(p => p.Value.IsOwnPosition && MajorSymbols.Contains(p.Key));
                         int finalPumpCount = finalTotal - finalMajorCount;
 
                         if (isMajorSymbol && finalMajorCount >= MAX_MAJOR_SLOTS)

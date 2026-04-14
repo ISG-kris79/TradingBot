@@ -5,6 +5,13 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.2.3] - 2026-04-14
+
+### Fixed
+
+ - **팬텀 슬롯 점유 해결**: 다른 유저 포지션이 `_activePositions` 슬롯을 점유하여 pump=3/3 차단 발생. `IsOwnPosition` 플래그 도입 — 시작 시 DB TradeHistory(UserId)와 교차 비교하여 자기 포지션만 슬롯 카운트에 포함. 슬롯 체크 6개 지점 전부 수정
+ - 실시간 웹소켓(`HandleAccountUpdate`)에서도 기존 추적 포지션이 아니면 `IsOwnPosition=false` 마킹
+
 ## [5.2.2] - 2026-04-14
 
 ### Fixed
