@@ -5,6 +5,12 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.2.8] - 2026-04-14
+
+### Fixed
+
+ - **ETA 예측 → 자동 시장가 진입 연결**: ETA_TRIGGER 시간 도달 + 재평가 65% 이상 → `ExecuteAutoOrder` 시장가 진입 자동 실행. 기존에는 로그만 찍고 진입 안 함
+
 ## [5.2.6] - 2026-04-14
 
 ### Added

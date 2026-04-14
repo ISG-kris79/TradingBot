@@ -4053,7 +4053,7 @@ namespace TradingBot
                         _scheduledEtaReEvaluations.TryRemove(symbol, out _);
                         OnStatusLog?.Invoke($"🎯 [ETA_TRIGGER] {symbol} 예약된 진입 시간 도달 → 재평가 시작 ({scheduledTime:HH:mm})");
                         
-                        // AI Gate가 준비되어 있으면 즉시 재평가 (기존 전략 분석과 병행)
+                        // [v5.2.7] AI Gate 재평가 → 65% 이상이면 즉시 시장가 진입
                         if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate.IsReady)
                         {
                             _ = Task.Run(async () =>
@@ -4062,10 +4062,23 @@ namespace TradingBot
                                 {
                                     var forecast = await _aiDoubleCheckEntryGate.ScanEntryProbabilitiesAsync(
                                         new List<string> { symbol }, token);
-                                    
+
                                     if (forecast.TryGetValue(symbol, out var result) && result.AverageProbability >= 0.65f)
                                     {
-                                        OnStatusLog?.Invoke($"✅ [ETA_TRIGGER] {symbol} 재평가 결과 진입 가능 ({result.AverageProbability:P0}) - 전략 분석 진행");
+                                        string direction = "LONG";
+                                        decimal entryPrice = 0m;
+                                        if (_marketDataManager.TickerCache.TryGetValue(symbol, out var tk))
+                                            entryPrice = tk.LastPrice;
+
+                                        OnStatusLog?.Invoke($"🎯 [ETA_TRIGGER] {symbol} 재평가 {result.AverageProbability:P0} ≥ 65% → {direction} 시장가 진입");
+                                        await ExecuteAutoOrder(symbol, direction, entryPrice, token,
+                                            signalSource: "ETA_TRIGGER",
+                                            skipAiGateCheck: true);
+                                    }
+                                    else
+                                    {
+                                        string prob = forecast.TryGetValue(symbol, out var r2) ? $"{r2.AverageProbability:P0}" : "N/A";
+                                        OnStatusLog?.Invoke($"⛔ [ETA_TRIGGER] {symbol} 재평가 {prob} < 65% → 진입 취소");
                                     }
                                 }
                                 catch (Exception ex)
