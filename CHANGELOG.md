@@ -5,11 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
-## [5.2.5] - 2026-04-14
+## [5.2.6] - 2026-04-14
+
+### Added
+
+ - **늦은 진입 차단 (LATE_ENTRY)**: PUMP/SPIKE 코인이 최근 30분 저점 대비 3% 이상 상승 + 최근 2봉 음봉(하락 전환)이면 진입 차단. FIGHTUSDT 고점 진입 → 즉시 손절 방지
 
 ### Fixed
 
- - **TICK_SURGE RR 최소값 완화**: 1.0 → 0.5. TICK_SURGE는 틱급증 즉시 반응이 핵심인데 RR 체크로 18분 지연 발생 (BCHUSDT 케이스)
+ - **TICK_SURGE RR 최소값 완화**: 1.0 → 0.5. 급등 초기에 빠르게 진입 (BCHUSDT 18분 지연 해결)
 
 ## [5.2.4] - 2026-04-14
 

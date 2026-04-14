@@ -9089,6 +9089,41 @@ namespace TradingBot
             // 슬롯 교체 비활성화 (v4.0.8: 연쇄 손실 방지)
 
             // ═══════════════════════════════════════════════════════════════
+            // [v5.2.5] 늦은 진입 차단 — PUMP/SPIKE 코인이 이미 급등한 후 진입 방지
+            // 최근 6봉(30분) 저점 대비 현재가 3% 이상 상승 + 하락 전환 시 차단
+            // FIGHTUSDT 케이스: 저점 $0.00417 → 진입 $0.00434(+4%) → 즉시 손절
+            // ═══════════════════════════════════════════════════════════════
+            if (decision == "LONG" && !MajorSymbols.Contains(symbol)
+                && signalSource != "CRASH_REVERSE" && signalSource != "PUMP_REVERSE"
+                && signalSource != "MEGA_PUMP")
+            {
+                try
+                {
+                    if (_marketDataManager.KlineCache.TryGetValue(symbol, out var lateCheckCandles) && lateCheckCandles.Count >= 6)
+                    {
+                        List<IBinanceKline> recent6;
+                        lock (lateCheckCandles) { recent6 = lateCheckCandles.TakeLast(6).ToList(); }
+
+                        decimal recentLow = recent6.Min(k => k.LowPrice);
+                        decimal riseFromLow = recentLow > 0 ? (currentPrice - recentLow) / recentLow * 100m : 0m;
+
+                        // 최근 2봉이 음봉이면 하락 전환 중
+                        bool lastTwoBearish = recent6.Count >= 2
+                            && recent6[^1].ClosePrice < recent6[^1].OpenPrice
+                            && recent6[^2].ClosePrice < recent6[^2].OpenPrice;
+
+                        if (riseFromLow >= 3.0m && lastTwoBearish)
+                        {
+                            OnStatusLog?.Invoke($"⛔ [LATE_ENTRY] {symbol} 저점 대비 +{riseFromLow:F1}% 이미 상승 + 하락 전환 → 진입 차단");
+                            EntryLog("LATE_ENTRY", "BLOCK", $"riseFromLow={riseFromLow:F1}% bearishCandles=true");
+                            return;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // ═══════════════════════════════════════════════════════════════
             // [v4.9.9] MTF GUARDIAN — 상위 시간봉 역방향 차단 (공통 관문)
             // 5분봉 명확한 하락 추세 중 LONG 진입 / 상승 추세 중 SHORT 진입 차단
             // BASUSDT 5분 12봉 연속 하락 중 1분 반짝 상승 진입 버그 해결
