@@ -68,13 +68,10 @@ namespace TradingBot.Services
             }
             _lastRegistered[symbol] = DateTime.Now;
 
-            // [v5.4.2] 기존 조건부 주문 전부 취소 후 재등록
-            try
-            {
-                await _exchange.CancelAllOrdersAsync(symbol, token);
-                OnLog?.Invoke($"🗑️ [SL/TP] {symbol} 기존 주문 취소 → 재등록");
-            }
-            catch { }
+            // [v5.4.7] 조건부 주문만 취소 (일반 LIMIT 주문은 유지)
+            // CancelAllOrdersAsync가 일반 + 조건부 모두 취소해서 LIMIT 취소 무한 반복 유발
+            // → 조건부만 취소하도록 분리 불가 (SDK 제한) → 취소 자체 제거
+            // 진입 시 1회만 호출되므로 기존 주문 없음
 
             string closeSide = isLong ? "SELL" : "BUY";
 

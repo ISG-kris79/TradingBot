@@ -6631,8 +6631,10 @@ namespace TradingBot
                             OnStatusLog?.Invoke($"📝 {pos.Symbol} 외부 수량증가 감지 → TradeHistory 오픈 수량 갱신 완료 ({existingQtyAbs}→{updatedQtyAbs})");
                             OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부증가", $"외부 수량 증가 감지: {existingQtyAbs} → {updatedQtyAbs}");
 
-                            // [v5.1.0] 수동/외부 진입도 SL/TP API 등록
-                            if (_entryOrderRegistrar != null)
+                            // [v5.4.7] 외부 수량 변경 시 SL/TP 재등록 제거 — 진입 시 1회만 등록
+                            // 기존: 수량 변경 때마다 CancelAll + 재등록 → LIMIT 취소 무한 반복
+                            // 수정: 진입 시점에만 등록, 이후 변경 불필요
+                            if (false && _entryOrderRegistrar != null)
                             {
                                 _ = Task.Run(async () =>
                                 {
