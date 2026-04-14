@@ -56,6 +56,14 @@ namespace TradingBot.Services
 
             if (entryPrice <= 0 || quantity <= 0) return (slId, tpId);
 
+            // [v5.4.2] 기존 조건부 주문 전부 취소 후 재등록 (중복 방지)
+            try
+            {
+                await _exchange.CancelAllOrdersAsync(symbol, token);
+                OnLog?.Invoke($"🗑️ [SL/TP] {symbol} 기존 주문 취소 → 재등록");
+            }
+            catch { }
+
             string closeSide = isLong ? "SELL" : "BUY";
 
             // ─── SL (손절) ────────────────────────────────────
