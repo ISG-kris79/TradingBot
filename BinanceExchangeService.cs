@@ -309,7 +309,7 @@ namespace TradingBot.Services
                     return (true, result.Data.Id.ToString());
                 }
 
-                // [v5.1.4] 2차: reduceOnly 없이 STOP 으로 재시도 (일부 심볼 StopMarket 미지원)
+                // [v5.1.4] 2차: reduceOnly 없이 STOP(LIMIT) 으로 재시도
                 var result2 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
                     symbol, orderSide,
                     FuturesOrderType.Stop,
@@ -324,6 +324,21 @@ namespace TradingBot.Services
                 {
                     MainWindow.Instance?.AddLog($"✅ [SL] {symbol} STOP(Limit) 등록 | {side} qty={quantity} stop=${stopPrice} id={result2.Data.Id}");
                     return (true, result2.Data.Id.ToString());
+                }
+
+                // [v5.2.6] 3차: closePosition=true (수량 없이 전체 포지션 청산 주문)
+                var result3 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                    symbol, orderSide,
+                    FuturesOrderType.StopMarket,
+                    null,
+                    stopPrice: stopPrice,
+                    closePosition: true,
+                    ct: ct);
+
+                if (result3.Success && result3.Data != null)
+                {
+                    MainWindow.Instance?.AddLog($"✅ [SL] {symbol} STOP_MARKET(closePos) 등록 | {side} stop=${stopPrice} id={result3.Data.Id}");
+                    return (true, result3.Data.Id.ToString());
                 }
 
                 string errCode = result.Error?.Code?.ToString() ?? "null";
@@ -392,7 +407,7 @@ namespace TradingBot.Services
                     return (true, result.Data.Id.ToString());
                 }
 
-                // [v5.1.4] 폴백: activationPrice 없이 재시도 (일부 심볼 activationPrice 미지원)
+                // [v5.1.4] 2차: activationPrice 없이 재시도
                 if (activationPrice.HasValue)
                 {
                     var result2 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
@@ -408,6 +423,21 @@ namespace TradingBot.Services
                         TradingBot.MainWindow.Instance?.AddLog($"✅ [TRAILING] {symbol} 성공 (activationPrice 없이) | {side} qty={quantity} callback={callbackRate}% id={result2.Data.Id}");
                         return (true, result2.Data.Id.ToString());
                     }
+                }
+
+                // [v5.2.6] 3차: closePosition=true (수량 없이 전체 포지션)
+                var result3 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                    symbol, orderSide,
+                    FuturesOrderType.TrailingStopMarket,
+                    null,
+                    callbackRate: callbackRate,
+                    closePosition: true,
+                    ct: ct);
+
+                if (result3.Success && result3.Data != null)
+                {
+                    TradingBot.MainWindow.Instance?.AddLog($"✅ [TRAILING] {symbol} 성공 (closePos) | {side} callback={callbackRate}% id={result3.Data.Id}");
+                    return (true, result3.Data.Id.ToString());
                 }
 
                 string errCode = result.Error?.Code?.ToString() ?? "null";
@@ -488,6 +518,21 @@ namespace TradingBot.Services
                 {
                     MainWindow.Instance?.AddLog($"✅ [TP] {symbol} TAKE_PROFIT(Limit) 등록 | {side} qty={quantity} stop=${stopPrice} id={result2.Data.Id}");
                     return (true, result2.Data.Id.ToString());
+                }
+
+                // [v5.2.6] 3차: closePosition=true
+                var result3 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                    symbol, orderSide,
+                    FuturesOrderType.TakeProfitMarket,
+                    null,
+                    stopPrice: stopPrice,
+                    closePosition: true,
+                    ct: ct);
+
+                if (result3.Success && result3.Data != null)
+                {
+                    MainWindow.Instance?.AddLog($"✅ [TP] {symbol} TP_MARKET(closePos) 등록 | {side} stop=${stopPrice} id={result3.Data.Id}");
+                    return (true, result3.Data.Id.ToString());
                 }
 
                 string errMsg = result.Error?.Message ?? "unknown";

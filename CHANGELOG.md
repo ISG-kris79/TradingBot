@@ -14,6 +14,7 @@
 ### Fixed
 
  - **TICK_SURGE RR 최소값 완화**: 1.0 → 0.5. 급등 초기에 빠르게 진입 (BCHUSDT 18분 지연 해결)
+ - **SL/TP/Trailing -4120 오류 해결**: `closePosition=true` 3차 폴백 추가. 일부 심볼에서 STOP_MARKET/TAKE_PROFIT_MARKET/TRAILING_STOP_MARKET 주문 타입 미지원 시 수량 없이 전체 포지션 청산 주문으로 등록
 
 ## [5.2.4] - 2026-04-14
 
