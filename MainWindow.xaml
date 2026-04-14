@@ -1896,7 +1896,7 @@
                                     Height="36"
                                     Margin="0,0,16,0"/>
 
-                            <TextBlock Text="{Binding TradeHistory.Count, StringFormat='Total: {0} records'}"
+                            <TextBlock Text="{Binding TradeHistory.Count, StringFormat='총 {0}건'}"
                                        VerticalAlignment="Center"
                                        Foreground="#6B7280"
                                        FontWeight="SemiBold"/>
@@ -1991,7 +1991,7 @@
                             </Grid>
                         </Border>
 
-                        <!-- Trade History Grid -->
+                        <!-- 매매 기록 -->
                         <Border Grid.Row="2"
                                 Style="{StaticResource CardStyle}"
                                 Padding="0"

@@ -32,8 +32,25 @@ namespace TradingBot.Services
         public DbManager(string connectionString)
         {
             _connectionString = connectionString;
-            // [v5.0.3] Category 컬럼 자동 추가 — 앞으로 진입/청산에 카테고리 기록
             _ = EnsureCategoryColumnAsync();
+            _ = EnsureCandleDataIndexAsync();
+        }
+
+        /// <summary>[v5.2.0] CandleData 학습 쿼리 성능 인덱스</summary>
+        private async Task EnsureCandleDataIndexAsync()
+        {
+            try
+            {
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await db.ExecuteAsync(@"
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.CandleData') AND name = 'IX_CandleData_IntervalText_Symbol_OpenTime')
+BEGIN
+    CREATE INDEX IX_CandleData_IntervalText_Symbol_OpenTime
+        ON dbo.CandleData (IntervalText, Symbol, OpenTime DESC);
+END", commandTimeout: 60);
+            }
+            catch { }
         }
 
         private async Task EnsureIsSimulationColumnAsync()

@@ -7022,11 +7022,15 @@ namespace TradingBot
                 catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] TradeSignal 학습 실패: {ex.Message}"); }
 
                 // 2. PumpSignalClassifier (Normal + Spike 분리 학습)
+                // [v5.1.9] klineMap(200봉/심볼) 대신 DB 직접 로드로 충분한 샘플 보장
                 try
                 {
                     if (_pumpSignalClassifier != null)
                     {
+                        OnStatusLog?.Invoke("🧠 [ML] PumpSignalClassifier 학습 데이터 로드 중...");
                         var pumpCandles = new List<IBinanceKline>();
+
+                        // 1차: klineMap 에서 시도
                         foreach (var kvp in klineMap)
                         {
                             if (token.IsCancellationRequested) break;
@@ -7034,6 +7038,29 @@ namespace TradingBot
                             if (kvp.Value.Count >= 30)
                                 pumpCandles.AddRange(kvp.Value.TakeLast(100));
                         }
+
+                        // 2차: klineMap 부족 시 DB bulk 로드 폴백
+                        if (pumpCandles.Count < 200)
+                        {
+                            OnStatusLog?.Invoke($"⚠️ [ML] klineMap PUMP 데이터 부족 ({pumpCandles.Count}건) → DB bulk 로드");
+                            try
+                            {
+                                var bulkData = await _dbManager.GetBulkCandleDataAsync("5m", 2000, null, token);
+                                pumpCandles.Clear();
+                                foreach (var kvp in bulkData)
+                                {
+                                    if (MajorSymbols.Contains(kvp.Key)) continue;
+                                    foreach (var cd in kvp.Value)
+                                        pumpCandles.Add(new Services.BinanceKlineAdapter(cd, Binance.Net.Enums.KlineInterval.FiveMinutes));
+                                }
+                                OnStatusLog?.Invoke($"📥 [ML] PumpSignalClassifier DB 폴백 로드: {pumpCandles.Count}건");
+                            }
+                            catch (Exception dbEx)
+                            {
+                                OnStatusLog?.Invoke($"❌ [ML] PumpSignalClassifier DB 폴백 실패: {dbEx.Message}");
+                            }
+                        }
+
                         if (pumpCandles.Count >= 200)
                         {
                             // Normal 모델 학습 (일반 진입: +1.5% / 30분)
