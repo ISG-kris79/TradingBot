@@ -5,6 +5,12 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.2.5] - 2026-04-14
+
+### Fixed
+
+ - **TICK_SURGE RR 최소값 완화**: 1.0 → 0.5. TICK_SURGE는 틱급증 즉시 반응이 핵심인데 RR 체크로 18분 지연 발생 (BCHUSDT 케이스)
+
 ## [5.2.4] - 2026-04-14
 
 ### Fixed

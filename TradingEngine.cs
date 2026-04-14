@@ -10378,7 +10378,10 @@ namespace TradingBot
             if (ctx.SignalSource == "SPIKE_DETECT" || ctx.SignalSource == "CRASH_REVERSE" || ctx.SignalSource == "PUMP_REVERSE")
                 return true;
 
+            // [v5.2.4] TICK_SURGE는 빠른 반응이 핵심 → RR 최소값 0.5로 완화
             decimal effectiveMinRiskRewardRatio = _minEntryRiskRewardRatio;
+            if (ctx.SignalSource == "TICK_SURGE")
+                effectiveMinRiskRewardRatio = Math.Min(effectiveMinRiskRewardRatio, 0.5m);
             bool usingDefaultTargetAndStop = ctx.CustomTakeProfitPrice <= 0m && ctx.CustomStopLossPrice <= 0m;
             decimal majorTp2 = _settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : _settings.TargetRoe;
             decimal majorSl = _settings.MajorStopLossRoe > 0 ? _settings.MajorStopLossRoe : _settings.StopLossRoe;
