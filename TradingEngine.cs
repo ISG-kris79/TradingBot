@@ -2099,9 +2099,11 @@ namespace TradingBot
                             {
                                 try
                                 {
-                                    // 거래소 미체결 주문 조회
-                                    var orders = await _client.UsdFuturesApi.Trading.GetOpenOrdersAsync(pos.Symbol, ct: token);
+                                    // [v5.3.5] 일반 주문 + 조건부 주문 모두 조회해서 SL/TP 존재 확인
                                     bool hasSL = false, hasTP = false;
+
+                                    // 일반 주문 조회
+                                    var orders = await _client.UsdFuturesApi.Trading.GetOpenOrdersAsync(pos.Symbol, ct: token);
                                     if (orders.Success && orders.Data != null)
                                     {
                                         foreach (var o in orders.Data)
@@ -2112,6 +2114,18 @@ namespace TradingBot
                                             if (o.Type == Binance.Net.Enums.FuturesOrderType.TakeProfitMarket
                                                 || o.Type == Binance.Net.Enums.FuturesOrderType.TakeProfit)
                                                 hasTP = true;
+                                        }
+                                    }
+
+                                    // 조건부 주문 조회 (PlaceConditionalOrderAsync로 등록한 것)
+                                    var condOrders = await _client.UsdFuturesApi.Trading.GetOpenConditionalOrdersAsync(pos.Symbol, ct: token);
+                                    if (condOrders.Success && condOrders.Data != null)
+                                    {
+                                        foreach (var co in condOrders.Data)
+                                        {
+                                            var algoType = co.AlgoType?.ToUpperInvariant() ?? "";
+                                            if (algoType.Contains("STOP")) hasSL = true;
+                                            if (algoType.Contains("TAKE_PROFIT") || algoType.Contains("TAKEPROFIT")) hasTP = true;
                                         }
                                     }
 

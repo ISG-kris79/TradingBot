@@ -519,15 +519,14 @@ namespace TradingBot.Services
         {
             try
             {
+                // [v5.3.5] 일반 주문 + 조건부 주문 모두 취소
                 var result = await _client.UsdFuturesApi.Trading.CancelAllOrdersAsync(symbol, ct: ct);
                 if (result.Success)
-                {
-                    MainWindow.Instance?.AddLog($"🗑️ [Binance] {symbol} 미체결 주문 일괄 취소 성공");
-                }
-                else
-                {
-                    MainWindow.Instance?.AddLog($"⚠️ [Binance] {symbol} 일괄 취소 실패: {result.Error?.Message}");
-                }
+                    MainWindow.Instance?.AddLog($"🗑️ [Binance] {symbol} 일반 주문 일괄 취소 성공");
+
+                var condResult = await _client.UsdFuturesApi.Trading.CancelAllConditionalOrdersAsync(symbol, ct: ct);
+                if (condResult.Success)
+                    MainWindow.Instance?.AddLog($"🗑️ [Binance] {symbol} 조건부 주문(SL/TP/Trailing) 일괄 취소 성공");
             }
             catch (Exception ex)
             {
