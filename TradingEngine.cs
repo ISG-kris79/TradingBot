@@ -685,6 +685,8 @@ namespace TradingBot
 
         // [병목 해결] RefreshProfitDashboard API 호출 캐싱
         private decimal _cachedUsdtBalance = 0m;
+        private decimal _cachedAvailableBalance = 0m;  // [v5.1.8]
+        private decimal _cachedUnrealizedPnl = 0m;     // [v5.1.8]
         private DateTime _lastBalanceCacheTime = DateTime.MinValue;
         private const int BALANCE_CACHE_INTERVAL_MS = 5000; // 5초마다 업데이트
 
@@ -5943,9 +5945,9 @@ namespace TradingBot
                 // [병목 해결] 캐시된 잔고 사용 (5초마다만 API 호출)
                 if ((DateTime.Now - _lastBalanceCacheTime).TotalMilliseconds < BALANCE_CACHE_INTERVAL_MS)
                 {
-                    // 캐시된 값 사용
-                    double equity = (double)_cachedUsdtBalance;
-                    double available = (double)_cachedUsdtBalance;
+                    // [v5.1.8] 캐시된 값 — Equity = Wallet + 미실현PnL, Available 별도
+                    double equity = (double)(_cachedUsdtBalance + _cachedUnrealizedPnl);
+                    double available = (double)_cachedAvailableBalance;
 
                     int totalCount = 0;
                     int majorCount = 0;
@@ -5963,13 +5965,24 @@ namespace TradingBot
                     return;
                 }
 
-                // 캐시 갱신 시점 - API 호출
-                decimal balance = await _exchangeService.GetBalanceAsync("USDT", token);
-                _cachedUsdtBalance = balance;
+                // [v5.1.8] 캐시 갱신 — WalletBalance + AvailableBalance + UnrealizedPnL 분리
+                decimal walletBal = await _exchangeService.GetBalanceAsync("USDT", token);
+                decimal availBal = await _exchangeService.GetAvailableBalanceAsync("USDT", token);
+                decimal unrealPnl = 0m;
+                try
+                {
+                    var positions = await _exchangeService.GetPositionsAsync(token);
+                    if (positions != null) unrealPnl = positions.Sum(p => p.UnrealizedPnL);
+                }
+                catch { }
+
+                _cachedUsdtBalance = walletBal;
+                _cachedAvailableBalance = availBal;
+                _cachedUnrealizedPnl = unrealPnl;
                 _lastBalanceCacheTime = DateTime.Now;
 
-                double equity2 = (double)balance;
-                double available2 = (double)balance;
+                double equity2 = (double)(walletBal + unrealPnl);
+                double available2 = (double)availBal;
 
                 int totalCount2 = 0;
                 int majorCount2 = 0;
@@ -5985,7 +5998,7 @@ namespace TradingBot
                 {
                     string serviceType = _exchangeService?.GetType().Name ?? "Unknown";
                     bool isSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false;
-                    OnStatusLog?.Invoke($"🔍 [Dashboard] Service: {serviceType}, Config Mode: {(isSimulation ? "Simulation" : "Real")}, Balance: ${balance:N2}");
+                    OnStatusLog?.Invoke($"🔍 [Dashboard] Service: {serviceType}, Config Mode: {(isSimulation ? "Simulation" : "Real")}, Wallet: ${walletBal:N2} Available: ${availBal:N2} UnrealPnL: ${unrealPnl:N2}");
                 }
 
                 // UI 업데이트 및 DataGrid 정렬 유지
@@ -7904,10 +7917,10 @@ namespace TradingBot
                 marginUsdt = adjusted;
             }
 
-            // [v3.2.33] 가용 잔고 체크 — 마진 부족 시 스킵
+            // [v5.1.8] 가용 잔고 체크 — GetAvailableBalanceAsync 사용
             try
             {
-                decimal available = await _exchangeService.GetBalanceAsync("USDT", token);
+                decimal available = await _exchangeService.GetAvailableBalanceAsync("USDT", token);
                 if (available < marginUsdt)
                 {
                     OnStatusLog?.Invoke($"⚠️ [{label}] {symbol} 마진 부족 (필요={marginUsdt:F0}, 가용={available:F0}) → 스킵");
