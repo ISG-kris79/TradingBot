@@ -645,7 +645,7 @@
                                            Opacity="0.7"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,-2,0,0">
-                                <TextBlock Text="AI-POWERED FUTURES TRADING ENGINE"
+                                <TextBlock Text="AI 선물 자동매매 엔진"
                                            FontSize="8"
                                            Foreground="#6B7280"
                                            FontWeight="SemiBold"/>
@@ -673,7 +673,7 @@
                                 Padding="12,6"
                                 Margin="0,0,6,0">
                             <StackPanel>
-                                <TextBlock Text="EQUITY"
+                                <TextBlock Text="총 자산"
                                            Foreground="#4B5563"
                                            FontSize="8"
                                            FontWeight="Bold"/>
@@ -697,7 +697,7 @@
                                 Padding="12,6"
                                 Margin="0,0,6,0">
                             <StackPanel>
-                                <TextBlock Text="AVAILABLE"
+                                <TextBlock Text="가용 잔고"
                                            Foreground="#4B5563"
                                            FontSize="8"
                                            FontWeight="Bold"/>
@@ -717,7 +717,7 @@
                                 Padding="12,6"
                                 Margin="0,0,6,0">
                             <StackPanel>
-                                <TextBlock Text="TRANSFER PnL"
+                                <TextBlock Text="투입 손익"
                                            Foreground="#4B5563"
                                            FontSize="8"
                                            FontWeight="Bold"/>
@@ -754,7 +754,7 @@
                                 CornerRadius="8"
                                 Padding="12,6">
                             <StackPanel>
-                                <TextBlock Text="POSITIONS"
+                                <TextBlock Text="포지션"
                                            Foreground="#4B5563"
                                            FontSize="8"
                                            FontWeight="Bold"/>
@@ -924,7 +924,7 @@
                                       Foreground="#FFB300"
                                       FontWeight="Bold"
                                       FontSize="12">
-                                <MenuItem Header="👥 User Management"
+                                <MenuItem Header="👥 사용자 관리"
                                           Click="mnuUserManagement_Click"/>
                                 <Separator/>
                                 <MenuItem x:Name="mnuPendingCount"
@@ -1145,7 +1145,7 @@
             <TabControl Grid.Row="2"
                         Margin="16">
                 <!-- DASHBOARD TAB -->
-                <TabItem Header="📊  DASHBOARD">
+                <TabItem Header="📊  대시보드">
                     <Grid Margin="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="200"/>
@@ -1161,14 +1161,14 @@
                             <!-- Account Info Card (좌측 상단) -->
                             <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
                                 <StackPanel>
-                                    <TextBlock Text="💰 ACCOUNT" FontSize="10" FontWeight="Bold"
+                                    <TextBlock Text="💰 계좌 정보" FontSize="10" FontWeight="Bold"
                                                Foreground="{StaticResource AccentBrush}" Margin="0,0,0,6"/>
                                     <Grid Margin="0,0,0,3">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Equity" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="총 자산" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding TotalEquity}"
                                                    Foreground="{Binding EquityColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1177,7 +1177,7 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Available" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="가용 잔고" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding AvailableBalance}"
                                                    Foreground="#A5B4FC" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1186,7 +1186,7 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Transfer PnL" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="투입 수익" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding NetTransferInfo}"
                                                    Foreground="{Binding NetTransferColor}" FontSize="11" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1195,7 +1195,7 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="ROI" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="수익률" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding AverageRoe, StringFormat={}{0:F2}%}"
                                                    Foreground="{StaticResource WarningBrush}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1204,7 +1204,7 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Positions" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="포지션" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding TotalPositionInfo}"
                                                    Foreground="{StaticResource AccentBrush}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1214,14 +1214,14 @@
                             <!-- [v4.9.0] DETECT/TRAINING 카드 -->
                             <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
                                 <StackPanel>
-                                    <TextBlock Text="📡 DETECT / TRAINING" FontSize="10" FontWeight="Bold"
+                                    <TextBlock Text="📡 감지 / 학습" FontSize="10" FontWeight="Bold"
                                                Foreground="#00E5FF" Margin="0,0,0,6"/>
                                     <Grid Margin="0,0,0,3">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Trained" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="학습완료" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding DetectHealth.TrainedText}"
                                                    Foreground="#10B981" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1230,7 +1230,7 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="PumpScan/m" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="펌프스캔/분" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding DetectHealth.PumpScanPerMin}"
                                                    Foreground="#A5B4FC" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1239,7 +1239,7 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="VolSurge/m" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="거래량급증/분" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding DetectHealth.VolumeSurgePerMin}"
                                                    Foreground="#FBBF24" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1248,7 +1248,7 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Spike/m" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="급등감지/분" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding DetectHealth.SpikePerMin}"
                                                    Foreground="#EF4444" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1258,14 +1258,14 @@
                             <!-- [v5.0.3] MAJOR TODAY 카테고리 통계 카드 -->
                             <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
                                 <StackPanel>
-                                    <TextBlock Text="💎 MAJOR TODAY" FontSize="10" FontWeight="Bold"
+                                    <TextBlock Text="💎 메이저(일)" FontSize="10" FontWeight="Bold"
                                                Foreground="#00E5FF" Margin="0,0,0,6"/>
                                     <Grid Margin="0,0,0,3">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="PnL" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="손익" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding MajorStats.TodayPnLText}"
                                                    Foreground="{Binding MajorStats.TodayPnLColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1274,7 +1274,7 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Entries" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="진입수" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding MajorStats.EntriesText}"
                                                    Foreground="#A5B4FC" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1283,7 +1283,7 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Win Rate" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="승률" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding MajorStats.WinRateText}"
                                                    Foreground="{Binding MajorStats.WinRateColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1293,14 +1293,14 @@
                             <!-- [v5.0.3] PUMP TODAY 카테고리 통계 카드 -->
                             <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
                                 <StackPanel>
-                                    <TextBlock Text="🚀 PUMP TODAY" FontSize="10" FontWeight="Bold"
+                                    <TextBlock Text="🚀 밈코인(일)" FontSize="10" FontWeight="Bold"
                                                Foreground="#10B981" Margin="0,0,0,6"/>
                                     <Grid Margin="0,0,0,3">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="PnL" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="손익" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding PumpStats.TodayPnLText}"
                                                    Foreground="{Binding PumpStats.TodayPnLColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1309,7 +1309,7 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Entries" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="진입수" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding PumpStats.EntriesText}"
                                                    Foreground="#A5B4FC" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1318,7 +1318,7 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Win Rate" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="승률" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding PumpStats.WinRateText}"
                                                    Foreground="{Binding PumpStats.WinRateColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1328,14 +1328,14 @@
                             <!-- [v5.0.3] SPIKE TODAY 카테고리 통계 카드 -->
                             <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
                                 <StackPanel>
-                                    <TextBlock Text="⚡ SPIKE TODAY" FontSize="10" FontWeight="Bold"
+                                    <TextBlock Text="⚡ 급등(일)" FontSize="10" FontWeight="Bold"
                                                Foreground="#FBBF24" Margin="0,0,0,6"/>
                                     <Grid Margin="0,0,0,3">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="PnL" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="손익" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding SpikeStats.TodayPnLText}"
                                                    Foreground="{Binding SpikeStats.TodayPnLColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1344,7 +1344,7 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Entries" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="진입수" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding SpikeStats.EntriesText}"
                                                    Foreground="#A5B4FC" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1353,7 +1353,7 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="Win Rate" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="승률" Foreground="#6B7280" FontSize="10"/>
                                         <TextBlock Grid.Column="1" Text="{Binding SpikeStats.WinRateText}"
                                                    Foreground="{Binding SpikeStats.WinRateColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
@@ -1391,9 +1391,9 @@
                                             <RowDefinition Height="150"/>
                                         </Grid.RowDefinitions>
                                         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
-                                            <TextBlock Text="📊 LIVE MARKET SIGNALS" FontSize="12" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}" VerticalAlignment="Center"/>
+                                            <TextBlock Text="📊 실시간 시장 신호" FontSize="12" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}" VerticalAlignment="Center"/>
                                             <Border Background="#0D2010" BorderBrush="#00E676" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="10,0,0,0">
-                                                <TextBlock Text="● REALTIME" Foreground="#00E676" FontSize="9" FontWeight="Bold"/>
+                                                <TextBlock Text="● 실시간" Foreground="#00E676" FontSize="9" FontWeight="Bold"/>
                                             </Border>
                                         </StackPanel>
                                         <Border Grid.Row="1" Padding="0">
@@ -1428,7 +1428,7 @@
                                                 <DataGrid.Columns>
 
                                                     <!-- ① SYMBOL: 심볼 + 전략 배지 + 포지션 방향 -->
-                                                    <DataGridTemplateColumn Header="SYMBOL" Width="152">
+                                                    <DataGridTemplateColumn Header="심볼" Width="152">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <StackPanel Margin="8,4">
@@ -1452,7 +1452,7 @@
                                                     </DataGridTemplateColumn>
 
                                                     <!-- ② PRICE: 현재가 + 진입가 (진입중) -->
-                                                    <DataGridTemplateColumn Header="PRICE" Width="128">
+                                                    <DataGridTemplateColumn Header="가격" Width="128">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <StackPanel Margin="8,4">
@@ -1499,7 +1499,7 @@
                                                     </DataGridTemplateColumn>
 
                                                     <!-- ④ AI SCORE: AIScore + ML% -->
-                                                    <DataGridTemplateColumn Header="AI SCORE" Width="118">
+                                                    <DataGridTemplateColumn Header="AI 점수" Width="118">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <StackPanel Margin="4,4" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -1514,7 +1514,7 @@
                                                     </DataGridTemplateColumn>
 
                                                     <!-- ⑤ STATUS: 진입 상태 Badge (v3.2.34) -->
-                                                    <DataGridTemplateColumn Header="STATUS" Width="118">
+                                                    <DataGridTemplateColumn Header="상태" Width="118">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <StackPanel Margin="4,0" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -1536,7 +1536,7 @@
                                                     </DataGridTemplateColumn>
 
                                                     <!-- ⑥ SL / TP: 손절/익절 요약 -->
-                                                    <DataGridTemplateColumn Header="SL / TP" Width="152">
+                                                    <DataGridTemplateColumn Header="손절/익절" Width="152">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <TextBlock Text="{Binding RiskSummary}" Foreground="#CBD5E1" FontFamily="Consolas" FontSize="10"
@@ -1546,7 +1546,7 @@
                                                     </DataGridTemplateColumn>
 
                                                     <!-- ⑦ SIGNAL: 매수/매도/대기 배지 -->
-                                                    <DataGridTemplateColumn Header="SIGNAL" Width="108">
+                                                    <DataGridTemplateColumn Header="신호" Width="108">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <Border Background="{Binding DecisionBg}" CornerRadius="6" Padding="10,5" Margin="4,4">
@@ -1558,7 +1558,7 @@
                                                     </DataGridTemplateColumn>
 
                                                     <!-- ⑧ EXIT: 청산 상태 -->
-                                                    <DataGridTemplateColumn Header="EXIT" Width="92">
+                                                    <DataGridTemplateColumn Header="청산" Width="92">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <Border Background="{Binding CloseStatusBackground}" CornerRadius="6" Padding="8,5" Margin="4,4"
@@ -1678,7 +1678,7 @@
                                                                 <RowDefinition Height="Auto"/>
                                                                 <RowDefinition Height="*"/>
                                                             </Grid.RowDefinitions>
-                                                            <TextBlock Grid.Row="0" Text="📊 ACTIVE POSITIONS" FontSize="11" FontWeight="Bold"
+                                                            <TextBlock Grid.Row="0" Text="📊 활성 포지션" FontSize="11" FontWeight="Bold"
                                                                        Foreground="#10B981" Margin="0,0,0,6"/>
                                                             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                                                                 <ItemsControl ItemsSource="{Binding ActivePositions}">
@@ -1775,7 +1775,7 @@
                                                         <RowDefinition Height="Auto"/>
                                                         <RowDefinition Height="*"/>
                                                     </Grid.RowDefinitions>
-                                                    <TextBlock Text="📡 FAST LOG" FontSize="10" FontWeight="Bold"
+                                                    <TextBlock Text="📡 빠른 로그" FontSize="10" FontWeight="Bold"
                                                                Foreground="{StaticResource PrimaryBrush}" Margin="0,0,0,3"/>
                                                     <ListBox Grid.Row="1"
                                                              ItemsSource="{Binding FastLogs}"
@@ -1811,7 +1811,7 @@
                                                         <RowDefinition Height="Auto"/>
                                                         <RowDefinition Height="*"/>
                                                     </Grid.RowDefinitions>
-                                                    <TextBlock Text="⚠  CRITICAL ALERTS" FontSize="10" FontWeight="Bold"
+                                                    <TextBlock Text="⚠  긴급 알림" FontSize="10" FontWeight="Bold"
                                                                Foreground="#FF6B6B" Margin="0,0,0,3"/>
                                                     <ListBox x:Name="lstAlerts"
                                                              Grid.Row="1"
@@ -2001,7 +2001,7 @@
                                       ColumnHeaderStyle="{StaticResource ModernColumnHeaderStyle}"
                                       MouseDoubleClick="DataGrid_MouseDoubleClick">
                                 <DataGrid.Columns>
-                                    <DataGridTemplateColumn Header="STATUS"
+                                    <DataGridTemplateColumn Header="상태"
                                                             Width="90">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
@@ -2032,7 +2032,7 @@
                                     <DataGridTextColumn Header="TIME"
                                                         Binding="{Binding Time, StringFormat='yyyy-MM-dd HH:mm:ss'}"
                                                         Width="160"/>
-                                    <DataGridTextColumn Header="SYMBOL"
+                                    <DataGridTextColumn Header="심볼"
                                                         Binding="{Binding Symbol}"
                                                         Width="100">
                                         <DataGridTextColumn.ElementStyle>
@@ -2074,7 +2074,7 @@
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
-                                    <DataGridTemplateColumn Header="PRICE"
+                                    <DataGridTemplateColumn Header="가격"
                                                             Width="100">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
@@ -2092,7 +2092,7 @@
                                     <DataGridTextColumn Header="STRATEGY"
                                                         Binding="{Binding Strategy}"
                                                         Width="150"/>
-                                    <DataGridTextColumn Header="AI SCORE"
+                                    <DataGridTextColumn Header="AI 점수"
                                                         Binding="{Binding AiScore, StringFormat=F1}"
                                                         Width="90">
                                         <DataGridTextColumn.ElementStyle>
@@ -2151,7 +2151,7 @@
                 </TabItem>
 
                 <!-- PERFORMANCE TAB (v3.7.0 리디자인) -->
-                <TabItem Header="📊  PERFORMANCE">
+                <TabItem Header="📊  성과분석">
                     <ScrollViewer Style="{StaticResource MinimalScrollViewer}" Background="#0D1117">
                     <Grid Margin="12">
                         <Grid.RowDefinitions>
