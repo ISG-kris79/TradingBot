@@ -2095,10 +2095,23 @@ namespace TradingBot
                                     .ToList();
                             }
 
+                            // [v5.4.1] 거래소에 실제 포지션이 있는 심볼만 필터
+                            var exchangePositions = await _exchangeService.GetPositionsAsync(ct: token);
+                            var exchangeOpenSymbols = new HashSet<string>(
+                                exchangePositions.Where(p => Math.Abs(p.Quantity) > 0).Select(p => p.Symbol),
+                                StringComparer.OrdinalIgnoreCase);
+
                             foreach (var pos in positionsToCheck)
                             {
                                 try
                                 {
+                                    // 거래소에 실제 포지션 없으면 스킵
+                                    if (!exchangeOpenSymbols.Contains(pos.Symbol))
+                                    {
+                                        OnStatusLog?.Invoke($"ℹ️ [재시작 SL/TP] {pos.Symbol} 거래소에 포지션 없음 → 스킵");
+                                        continue;
+                                    }
+
                                     // [v5.3.5] 일반 주문 + 조건부 주문 모두 조회해서 SL/TP 존재 확인
                                     bool hasSL = false, hasTP = false;
 
