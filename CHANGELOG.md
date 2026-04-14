@@ -5,6 +5,13 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.2.4] - 2026-04-14
+
+### Fixed
+
+ - **다른 유저 포지션 완전 분리**: `_activePositions`의 모든 ContainsKey 중복 체크를 `IsOwnPosition` 기반으로 변경. 다른 유저가 보유한 심볼도 이 유저가 독립적으로 진입 가능
+ - 메인 라우터, PumpEntry, SPIKE, 드라이스펠 복구진입 등 전체 경로에서 `IsOwnPosition=false`면 보유 체크 스킵
+
 ## [5.2.3] - 2026-04-14
 
 ### Fixed

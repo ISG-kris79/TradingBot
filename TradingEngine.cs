@@ -4558,10 +4558,10 @@ namespace TradingBot
         {
             try
             {
-                // 포지션 이미 보유 중이면 스킵
+                // 포지션 이미 보유 중이면 스킵 (IsOwnPosition만 체크)
                 lock (_posLock)
                 {
-                    if (_activePositions.ContainsKey(symbol)) return;
+                    if (_activePositions.TryGetValue(symbol, out var ep) && ep.IsOwnPosition) return;
                 }
 
                 var klines15m = await _exchangeService.GetKlinesAsync(
@@ -4653,8 +4653,8 @@ namespace TradingBot
 
             lock (_posLock)
             {
-                isHolding = _activePositions.ContainsKey(symbol);
-                // [v5.2.2] 슬롯 카운트: 이 유저가 직접 진입한 포지션만
+                // [v5.2.3] IsOwnPosition만 보유 체크
+                isHolding = _activePositions.TryGetValue(symbol, out var ownCheck) && ownCheck.IsOwnPosition;
                 currentTotalCount = _activePositions.Count(p => p.Value.IsOwnPosition);
             }
 
@@ -5585,7 +5585,7 @@ namespace TradingBot
                     bool alreadyHolding;
                     lock (_posLock)
                     {
-                        alreadyHolding = _activePositions.ContainsKey(pick2h.Symbol);
+                        alreadyHolding = _activePositions.TryGetValue(pick2h.Symbol, out var h2) && h2.IsOwnPosition;
                     }
 
                     if (!alreadyHolding)
@@ -5633,7 +5633,7 @@ namespace TradingBot
                     bool alreadyHolding;
                     lock (_posLock)
                     {
-                        alreadyHolding = _activePositions.ContainsKey(nearPick2h.Symbol);
+                        alreadyHolding = _activePositions.TryGetValue(nearPick2h.Symbol, out var hn) && hn.IsOwnPosition;
                     }
 
                     if (!alreadyHolding)
@@ -5693,7 +5693,7 @@ namespace TradingBot
                         bool alreadyHolding;
                         lock (_posLock)
                         {
-                            alreadyHolding = _activePositions.ContainsKey(signal.Symbol);
+                            alreadyHolding = _activePositions.TryGetValue(signal.Symbol, out var hs) && hs.IsOwnPosition;
                         }
 
                         if (alreadyHolding)
@@ -7711,7 +7711,7 @@ namespace TradingBot
                 foreach (var sym in shortTargets)
                 {
                     if (!MajorSymbols.Contains(sym)) continue;
-                    lock (_posLock) { if (_activePositions.ContainsKey(sym)) continue; } // 이미 보유 중 스킵
+                    lock (_posLock) { if (_activePositions.TryGetValue(sym, out var chk) && chk.IsOwnPosition) continue; } // 이미 보유 중 스킵
 
                     try
                     {
@@ -7867,7 +7867,7 @@ namespace TradingBot
             string? evictSymbol = null;
             lock (_posLock)
             {
-                if (_activePositions.TryGetValue(symbol, out var existingPos))
+                if (_activePositions.TryGetValue(symbol, out var existingPos) && existingPos.IsOwnPosition)
                 {
                     // 같은 방향이면 스킵
                     bool existingIsLong = existingPos.IsLong;
@@ -9036,9 +9036,9 @@ namespace TradingBot
             {
                 // [v3.5.1] 중복 진입 완전 차단: 이미 포지션/예약이 있으면 즉시 차단
                 // scout add-on은 MonitorScoutToMainUpgradeAsync에서 별도 처리
-                if (_activePositions.ContainsKey(symbol))
+                // [v5.2.3] IsOwnPosition=false(다른 유저 포지션)는 중복 체크 제외
+                if (_activePositions.TryGetValue(symbol, out var existingPos) && existingPos.IsOwnPosition)
                 {
-                    var existingPos = _activePositions[symbol];
                     if (existingPos.Quantity == 0 && existingPos.EntryPrice == 0)
                     {
                         // Quantity=0, EntryPrice=0 → 다른 경로에서 진입 진행 중
