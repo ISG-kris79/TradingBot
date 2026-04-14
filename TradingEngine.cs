@@ -1149,12 +1149,79 @@ namespace TradingBot
             _tickMonitor.OnLog += msg => OnStatusLog?.Invoke(msg);
             _tickMonitor.OnTickSurgeDetected += (symbol, tpsRatio, buyRatio, price) =>
             {
-                // [v5.1.1] TICK_SURGE 도 skipAiGateCheck=true — AI_GATE ML=0% 차단 해결
-                // SKYAIUSDT 케이스: TICK_SURGE 감지했으나 AI_GATE DUAL_BLOCK 으로 진입 실패
                 _ = Task.Run(async () =>
                 {
                     try
                     {
+                        // [v5.4.6] TICK_SURGE AI 필터 — 하락 추세 중 진입 방지
+                        // PumpSignalClassifier로 상승 판정 확인 + 5분봉 캔들/볼밴 체크
+                        bool aiApproved = false;
+                        string blockReason = "";
+
+                        // 1) PumpSignalClassifier 체크
+                        var classifier = MajorSymbols.Contains(symbol) ? null : _pumpSignalClassifier;
+                        if (classifier != null && classifier.IsModelLoaded
+                            && _marketDataManager.KlineCache.TryGetValue(symbol, out var klines) && klines.Count >= 30)
+                        {
+                            List<Binance.Net.Interfaces.IBinanceKline> snapshot;
+                            lock (klines) { snapshot = klines.TakeLast(60).ToList(); }
+                            var feat = TradingBot.Services.PumpSignalClassifier.ExtractFeature(snapshot);
+                            if (feat != null)
+                            {
+                                var pred = classifier.Predict(feat);
+                                if (pred != null && pred.ShouldEnter && pred.Probability >= 0.60f)
+                                    aiApproved = true;
+                                else
+                                    blockReason = $"ML prob={pred?.Probability:P0}(<60%)";
+                            }
+                        }
+                        else
+                        {
+                            // 메이저 코인이거나 모델 미로드 → 5분봉 캔들로 판단
+                            aiApproved = true; // 아래 캔들 체크에서 차단
+                        }
+
+                        // 2) 5분봉 하락 추세 체크 — 최근 3봉 중 2봉 음봉 + 볼밴 중심선 아래 → 차단
+                        if (aiApproved && _marketDataManager.KlineCache.TryGetValue(symbol, out var klines2) && klines2.Count >= 20)
+                        {
+                            List<Binance.Net.Interfaces.IBinanceKline> recent;
+                            lock (klines2) { recent = klines2.TakeLast(20).ToList(); }
+
+                            if (recent.Count >= 3)
+                            {
+                                var last3 = recent.TakeLast(3).ToList();
+                                int bearishCount = last3.Count(k => k.ClosePrice < k.OpenPrice);
+
+                                // 볼밴 중심선 (SMA20)
+                                decimal sma20 = recent.TakeLast(20).Average(k => k.ClosePrice);
+
+                                if (bearishCount >= 2 && price < sma20)
+                                {
+                                    // 볼밴 하단 터치 후 반등(마지막 봉 양봉) 이면 허용
+                                    bool lastBullish = last3[^1].ClosePrice > last3[^1].OpenPrice;
+                                    decimal bbLower = sma20 - 2m * (decimal)Math.Sqrt((double)recent.TakeLast(20)
+                                        .Average(k => (k.ClosePrice - sma20) * (k.ClosePrice - sma20)));
+
+                                    if (lastBullish && price <= bbLower * 1.005m)
+                                    {
+                                        // 하단 터치 후 반등 양봉 → 허용
+                                        OnStatusLog?.Invoke($"⚡ [틱급증] {symbol} 하단반등 허용 (BB하단=${bbLower:F4} 현재=${price:F4})");
+                                    }
+                                    else
+                                    {
+                                        aiApproved = false;
+                                        blockReason = $"하락추세(음봉{bearishCount}/3 BB중심아래)";
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!aiApproved)
+                        {
+                            OnStatusLog?.Invoke($"⛔ [틱급증→차단] {symbol} TPS={tpsRatio:F1}x | {blockReason}");
+                            return;
+                        }
+
                         OnStatusLog?.Invoke($"⚡ [틱급증→진입] {symbol} TPS={tpsRatio:F1}x 매수비={buyRatio:P0}");
                         await ExecuteAutoOrder(symbol, "LONG", price, _cts?.Token ?? CancellationToken.None,
                             "TICK_SURGE", manualSizeMultiplier: 1.0m, skipAiGateCheck: true);

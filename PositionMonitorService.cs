@@ -3629,6 +3629,16 @@ namespace TradingBot.Services
 
         public async Task<bool> ExecutePartialClose(string symbol, decimal ratio, CancellationToken token)
         {
+            // [v5.4.6] API TP가 등록되어 있으면 내부 PartialClose 스킵 (이중 청산 방지)
+            lock (_posLock)
+            {
+                if (_activePositions.TryGetValue(symbol, out var tpCheck) && tpCheck.TpRegisteredOnExchange)
+                {
+                    OnLog?.Invoke($"ℹ️ {symbol} API TP 등록됨 → 내부 부분청산 스킵 (이중 방지)");
+                    return false;
+                }
+            }
+
             // [v3.4.0] 부분청산 실패 쿨다운 체크 (60초간 재시도 차단)
             if (_partialCloseFailCooldown.TryGetValue(symbol, out var cooldownUntil) && DateTime.Now < cooldownUntil)
             {
