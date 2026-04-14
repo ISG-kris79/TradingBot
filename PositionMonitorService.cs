@@ -2110,53 +2110,9 @@ namespace TradingBot.Services
                         }
                     }
 
-                    // 2차 익절: Fib1.618 도달 OR 설정 ROE 달성 시 30% 매도
-                    bool tp2Condition = currentPrice >= fib1618Target || currentROE >= pumpTp2Roe;
-                    if (elliotWavePos.PartialProfitStage == 1 && tp2Condition)
-                    {
-                        decimal secondRatio = 0.30m;
-                        try
-                        {
-                            if (_marketDataManager.KlineCache.TryGetValue(symbol, out var recentCandles) && recentCandles.Count >= 20)
-                            {
-                                List<IBinanceKline> snapshot;
-                                lock (recentCandles)
-                                {
-                                    snapshot = recentCandles.TakeLast(20).ToList(); // [동시성 안전]
-                                }
-                                if (snapshot.Count < 20) continue;
-                                var rsiNow = IndicatorCalculator.CalculateRSI(snapshot, 14);
-                                if (rsiNow >= 80) secondRatio = 0.40m; // 초과매수면 익절 강도 강화
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            OnLog?.Invoke($"⚠️ [{symbol}] ElliottWave 부분익절 RSI 계산 오류: {ex.Message}");
-                        }
-
-                        if (await ExecutePartialClose(symbol, secondRatio, token))
-                        {
-                            lock (_posLock)
-                            {
-                                if (_activePositions.TryGetValue(symbol, out var p))
-                                {
-                                    p.PartialProfitStage = 2;
-                                    p.BreakevenPrice = wave1HighPrice > 0 ? wave1HighPrice : p.BreakevenPrice; // 마디가 추격 (Fib1.0로 상향)
-                                }
-                            }
-                            string tp2Trigger = currentPrice >= fib1618Target ? $"Fib1.618 {fib1618Target:F8}" : $"ROE {pumpTp2Roe:F1}% 달성 ({currentROE:F1}%)";
-                            OnAlert?.Invoke($"💰 {symbol} 2차 익절 ({secondRatio * 100m:F0}%) | 트리거: {tp2Trigger} | 스탑 상향: Fib1.0");
-                            OnLog?.Invoke($"✅ {symbol} 2차 익절 완료(Stage=2), 잔량은 밴드라이딩/다이버전스 추격 관리");
-                        }
-                    }
-
-                    // 최종 익절: Fib2.618 도달 시 잔량 정리
-                    if (elliotWavePos.PartialProfitStage >= 2 && fib2618Target > 0 && currentPrice >= fib2618Target)
-                    {
-                        OnLog?.Invoke($"[청산 트리거] {symbol} Fib2.618({fib2618Target:F8}) 도달, 잔량 최종 정리");
-                        await ExecuteMarketClose(symbol, "🎯 Fib2.618 최종 익절", token);
-                        break;
-                    }
+                    // [v5.4.0] 2차 익절 제거 — 1차 부분익절 후 잔량은 트레일링스탑에 맡김
+                    // 기존: 1차 부분익절 → 2차 익절(30%) → 최종 익절(Fib2.618) → 트레일링
+                    // 수정: 1차 부분익절 → 트레일링스탑만
                 }
 
                 // ============================================================
