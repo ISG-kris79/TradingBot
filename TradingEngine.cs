@@ -85,7 +85,8 @@ namespace TradingBot
         // 메이저 4 + PUMP 2 = 총 6
         private const int MAX_TOTAL_SLOTS = 7;        // 총 최대 7개 (메이저4 + PUMP3)
         private const int MAX_MAJOR_SLOTS = 4;        // 메이저 최대 4개 (BTC/ETH/SOL/XRP)
-        private const int MAX_PUMP_SLOTS = 3;         // PUMP 최대 3개
+        private const int MAX_PUMP_SLOTS = 3;         // PUMP(밈코인) 최대 3개
+        private const int MAX_SPIKE_SLOTS = 1;        // [v5.2.0] SPIKE(급등) 전용 1개 추가
 
         // [v4.5.9] 일일 PUMP 진입 횟수 제한 (자정 KST 리셋)
         // [v5.1.3] 40 → 60 확대 — PLAY 케이스에서 일일 한도 소진 후 메가 펌프 놓침
@@ -6821,11 +6822,20 @@ namespace TradingBot
             get
             {
                 if (_isInitialTrainingComplete) return true;
-                // 파일 존재 시 자동 복원
                 try
                 {
                     if (System.IO.File.Exists(InitialTrainingFlagPath))
                     {
+                        // [v5.2.0] flag 있어도 핵심 모델 파일 없으면 재학습 필요
+                        string modelDir = System.IO.Path.Combine(
+                            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                            "TradingBot", "Models");
+                        bool hasPumpModel = System.IO.File.Exists(System.IO.Path.Combine(modelDir, "pump_signal_normal.zip"));
+                        if (!hasPumpModel)
+                        {
+                            OnStatusLog?.Invoke("⚠️ [초기학습] flag 파일 있지만 pump_signal_normal.zip 없음 → 재학습 필요");
+                            return false;
+                        }
                         _isInitialTrainingComplete = true;
                         return true;
                     }
@@ -7022,11 +7032,15 @@ namespace TradingBot
                 catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] TradeSignal 학습 실패: {ex.Message}"); }
 
                 // 2. PumpSignalClassifier (Normal + Spike 분리 학습)
+                // [v5.1.9] klineMap(200봉/심볼) 대신 DB 직접 로드로 충분한 샘플 보장
                 try
                 {
                     if (_pumpSignalClassifier != null)
                     {
+                        OnStatusLog?.Invoke("🧠 [ML] PumpSignalClassifier 학습 데이터 로드 중...");
                         var pumpCandles = new List<IBinanceKline>();
+
+                        // 1차: klineMap 에서 시도
                         foreach (var kvp in klineMap)
                         {
                             if (token.IsCancellationRequested) break;
@@ -7034,6 +7048,29 @@ namespace TradingBot
                             if (kvp.Value.Count >= 30)
                                 pumpCandles.AddRange(kvp.Value.TakeLast(100));
                         }
+
+                        // 2차: klineMap 부족 시 DB bulk 로드 폴백
+                        if (pumpCandles.Count < 200)
+                        {
+                            OnStatusLog?.Invoke($"⚠️ [ML] klineMap PUMP 데이터 부족 ({pumpCandles.Count}건) → DB bulk 로드");
+                            try
+                            {
+                                var bulkData = await _dbManager.GetBulkCandleDataAsync("5m", 2000, null, token);
+                                pumpCandles.Clear();
+                                foreach (var kvp in bulkData)
+                                {
+                                    if (MajorSymbols.Contains(kvp.Key)) continue;
+                                    foreach (var cd in kvp.Value)
+                                        pumpCandles.Add(new Services.BinanceKlineAdapter(cd, Binance.Net.Enums.KlineInterval.FiveMinutes));
+                                }
+                                OnStatusLog?.Invoke($"📥 [ML] PumpSignalClassifier DB 폴백 로드: {pumpCandles.Count}건");
+                            }
+                            catch (Exception dbEx)
+                            {
+                                OnStatusLog?.Invoke($"❌ [ML] PumpSignalClassifier DB 폴백 실패: {dbEx.Message}");
+                            }
+                        }
+
                         if (pumpCandles.Count >= 200)
                         {
                             // Normal 모델 학습 (일반 진입: +1.5% / 30분)
@@ -8433,7 +8470,7 @@ namespace TradingBot
         /// <summary>
         /// [개선안 1] 현재 SLOT 여유도 및 심볼별 진입 가능 여부 판단
         /// </summary>
-        private (bool canEnter, string reason) CanAcceptNewEntry(string symbol)
+        private (bool canEnter, string reason) CanAcceptNewEntry(string symbol, string? signalSource = null)
         {
             lock (_posLock)
             {
@@ -8442,21 +8479,29 @@ namespace TradingBot
                 int majorCount = _activePositions.Count(p => MajorSymbols.Contains(p.Key));
                 int pumpCount = totalPositions - majorCount;
 
-                // [동적 슬롯 적용] 시간대별 탄력 조정
-                int maxTotal = GetDynamicMaxTotalSlots();
-                int maxPump = GetDynamicMaxPumpSlots();
-                int maxMajor = MAX_MAJOR_SLOTS; // 메이저는 시간대 무관
+                // [v5.2.0] SPIKE 전용 슬롯 — TICK_SURGE/SPIKE 경로는 별도 1슬롯
+                bool isSpikeEntry = !string.IsNullOrEmpty(signalSource) &&
+                    (signalSource.StartsWith("SPIKE", StringComparison.OrdinalIgnoreCase)
+                     || signalSource.Equals("TICK_SURGE", StringComparison.OrdinalIgnoreCase));
 
-                // [1] 총 포화 체크 (최우선)
+                int maxTotal = GetDynamicMaxTotalSlots() + MAX_SPIKE_SLOTS; // SPIKE 슬롯 추가
+                int maxPump = GetDynamicMaxPumpSlots();
+                int maxMajor = MAX_MAJOR_SLOTS;
+
+                // [1] 총 포화 체크
                 if (totalPositions >= maxTotal)
                     return (false, $"total={totalPositions}/{maxTotal}");
 
-                // [2] 메이저/PUMP 분리 체크
+                // [2] 메이저/PUMP/SPIKE 분리 체크
                 if (isMajorSymbol && majorCount >= maxMajor)
                     return (false, $"major={majorCount}/{maxMajor}");
 
-                if (!isMajorSymbol && pumpCount >= maxPump)
+                if (!isMajorSymbol && !isSpikeEntry && pumpCount >= maxPump)
                     return (false, $"pump={pumpCount}/{maxPump}");
+
+                // SPIKE 는 PUMP 슬롯 포화여도 추가 1슬롯 허용
+                if (isSpikeEntry && pumpCount >= maxPump + MAX_SPIKE_SLOTS)
+                    return (false, $"spike={pumpCount}/{maxPump + MAX_SPIKE_SLOTS}");
 
                 return (true, "OK");
             }
