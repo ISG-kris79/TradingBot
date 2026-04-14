@@ -6203,6 +6203,20 @@ namespace TradingBot
                         OnPositionStatusUpdate?.Invoke(pos.Symbol, false, 0); // UI 및 데이터 정리
                     }
 
+                    // [v5.3.6] 포지션 닫힘 → 잔존 조건부 주문(SL/TP/Trailing) 취소
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await _exchangeService.CancelAllOrdersAsync(pos.Symbol, _cts?.Token ?? CancellationToken.None);
+                            OnStatusLog?.Invoke($"🗑️ [{pos.Symbol}] 포지션 종료 → 잔존 주문 일괄 취소 완료");
+                        }
+                        catch (Exception cancelEx)
+                        {
+                            OnStatusLog?.Invoke($"⚠️ [{pos.Symbol}] 잔존 주문 취소 실패: {cancelEx.Message}");
+                        }
+                    });
+
                     // [FIX] 청산 쿨다운 등록 — 30초간 해당 심볼 ACCOUNT_UPDATE 무시 (팬텀 SYNC 방지)
                     _recentlyClosedCooldown[pos.Symbol] = DateTime.Now.AddSeconds(30);
 
