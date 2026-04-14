@@ -4894,21 +4894,32 @@ namespace TradingBot
 
         private async Task<decimal> GetAdaptiveEntryMarginUsdtAsync(CancellationToken token, decimal overrideBaseMargin = 0)
         {
-            // 메이저는 Equity 비율 기반 증거금 사용 (기본 10%)
+            // [v5.2.1] 메이저 마진 = WalletBalance × % (미실현PnL 제외)
+            // 기존: Equity(Wallet+미실현PnL) × 10% → 미실현PnL 크면 마진 뻥튀기
+            // 예: Wallet $2,297 + 미실현 $14,233 = $16,530 × 10% = $1,653 (과다!)
+            // 수정: WalletBalance 만 사용 → $2,297 × 10% = $230 (정상)
             decimal baseMargin = overrideBaseMargin > 0
                 ? overrideBaseMargin
                 : (_settings.DefaultMargin > 0 ? _settings.DefaultMargin : 200.0m);
-            decimal equity = await GetEstimatedAccountEquityUsdtAsync(token);
 
-            if (equity <= 0)
+            decimal walletBalance = 0m;
+            try
+            {
+                walletBalance = await _exchangeService.GetBalanceAsync("USDT", token);
+            }
+            catch { }
+
+            if (walletBalance <= 0)
                 return baseMargin;
 
             decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
-            decimal equityBasedMargin = Math.Round(equity * (majorMarginPercent / 100m), 0, MidpointRounding.AwayFromZero);
-            if (equityBasedMargin <= 0)
-                return baseMargin;
+            decimal walletBasedMargin = Math.Round(walletBalance * (majorMarginPercent / 100m), 0, MidpointRounding.AwayFromZero);
 
-            return equityBasedMargin;
+            // 최소 $50, 최대 WalletBalance의 20%
+            decimal maxMargin = Math.Round(walletBalance * 0.2m, 0);
+            walletBasedMargin = Math.Clamp(walletBasedMargin, 50m, maxMargin);
+
+            return walletBasedMargin;
         }
 
         private decimal GetConfiguredPumpMarginUsdt()
