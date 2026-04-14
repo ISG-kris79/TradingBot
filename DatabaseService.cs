@@ -18,6 +18,7 @@ namespace TradingBot.Services
         private readonly string _trainingDataPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Data", "TradingModel.csv");
         private readonly Action<string>? _logger; // 로그 대행자       
         private const int QueryTimeout = 30; // 기본 쿼리 타임아웃 (30초)
+        private bool _footerLogColumnExpanded; // [v5.2.2] FooterLogs Message 컬럼 확장 완료 플래그
 
         public DatabaseService(Action<string>? logger = null)
         {
@@ -254,13 +255,18 @@ SELECT CASE WHEN EXISTS (
                         d.Volume
                     }).ToList();
 
+                    // [v5.2.2] IntervalText 포함 → UQ_Candle 인덱스 활용 (풀스캔 방지)
                     string sql = @"
-                    IF NOT EXISTS (SELECT 1 FROM CandleData WHERE Symbol = @Symbol AND OpenTime = @OpenTime)
+                    IF NOT EXISTS (SELECT 1 FROM CandleData WHERE Symbol = @Symbol AND IntervalText = @Interval AND OpenTime = @OpenTime)
                     INSERT INTO CandleData (Symbol, IntervalText, OpenTime, [Open], [High], [Low], [Close], Volume)
                     VALUES (@Symbol, @Interval, @OpenTime, @Open, @High, @Low, @Close, @Volume)";
 
                     int affected = await conn.ExecuteAsync(sql, payload, commandTimeout: QueryTimeout);
                     if (affected > 0) Log($"✅ [DB] {affected}건 저장 완료 (CandleData)");
+                }
+                catch (SqlException sqlex) when (sqlex.Number == 2627 || sqlex.Number == 2601)
+                {
+                    // [v5.2.2] UNIQUE KEY 위반 — 레이스 컨디션 무시 (정상)
                 }
                 catch (Exception ex) { Log($"❌ [DB] CandleData 저장 실패: {ex.Message}"); }
                 return;
@@ -326,13 +332,14 @@ SELECT CASE WHEN EXISTS (
                     await bulk.WriteToServerAsync(table);
                 }
 
+                // [v5.2.2] IntervalText 포함 → UQ_Candle 인덱스 활용 + 중복 무시
                 const string mergeSql = @"
                     INSERT INTO CandleData (Symbol, IntervalText, OpenTime, [Open], [High], [Low], [Close], Volume)
                     SELECT s.Symbol, s.IntervalText, s.OpenTime, s.[Open], s.[High], s.[Low], s.[Close], s.Volume
                     FROM #CandleStage s
                     WHERE NOT EXISTS (
                         SELECT 1 FROM CandleData c
-                        WHERE c.Symbol = s.Symbol AND c.OpenTime = s.OpenTime
+                        WHERE c.Symbol = s.Symbol AND c.IntervalText = s.IntervalText AND c.OpenTime = s.OpenTime
                     );
                     DROP TABLE #CandleStage;";
                 int inserted;
@@ -836,8 +843,26 @@ SELECT CASE WHEN EXISTS (
         {
             try
             {
+                // [v5.2.2] Message 컬럼 잘림 방지 — 4000자 제한
+                if (message != null && message.Length > 4000)
+                    message = message[..4000];
+
                 using var conn = new SqlConnection(_connStr);
                 await conn.OpenAsync();
+
+                // [v5.2.2] 컬럼 크기 자동 확장 (1000 → 4000)
+                if (!_footerLogColumnExpanded)
+                {
+                    try
+                    {
+                        await conn.ExecuteAsync(@"
+                            IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.FooterLogs') AND name = 'Message' AND max_length = 2000)
+                            ALTER TABLE dbo.FooterLogs ALTER COLUMN [Message] NVARCHAR(4000) NOT NULL;",
+                            commandTimeout: 10);
+                        _footerLogColumnExpanded = true;
+                    }
+                    catch { _footerLogColumnExpanded = true; }
+                }
 
                 string insertSql = @"
                 INSERT INTO FooterLogs (Timestamp, Message)

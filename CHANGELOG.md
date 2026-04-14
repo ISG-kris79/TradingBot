@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.2.2] - 2026-04-14
+
+### Fixed
+
+ - **CandleData 저장 타임아웃 해결**: `NOT EXISTS` 조건에 `IntervalText` 누락 → 7.6M행 풀테이블 스캔 발생. 인덱스 `UQ_Candle` 활용하도록 수정
+ - **UQ_Candle UNIQUE KEY 위반 해결**: 소량/벌크 경로 모두 `IntervalText` 포함 중복 체크 + 동시 저장 레이스 컨디션 시 SqlException 2627/2601 자동 무시
+ - **FooterLogs Message 잘림 해결**: `NVARCHAR(1000)` → 자동 `NVARCHAR(4000)` 마이그레이션 + 코드에서 4000자 초과 트렁케이트
+
 ## [Unreleased]
 
 ### Added
