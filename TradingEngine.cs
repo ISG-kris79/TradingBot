@@ -2145,83 +2145,53 @@ namespace TradingBot
                     OnStatusLog?.Invoke("✅ 현재 보유 포지션 동기화 완료");
 
                     // ═══════════════════════════════════════════════════════════════
-                    // [v5.3.0] 재시작 시 SL/TP/Trailing 미등록 포지션 자동 등록
-                    // 거래소에서 심볼별 미체결 주문 조회 → STOP/TP 없으면 등록
+                    // [v5.5.1] 재시작 시 기존 API 주문 전부 삭제 → 재등록 (중복 방지)
                     // ═══════════════════════════════════════════════════════════════
                     if (_entryOrderRegistrar != null)
                     {
                         _ = Task.Run(async () =>
                         {
-                            await Task.Delay(3000, token); // 동기화 안정화 대기
-                            List<(string Symbol, decimal EntryPrice, bool IsLong, decimal Quantity, decimal Leverage, bool IsOwn)> positionsToCheck;
+                            await Task.Delay(3000, token);
+                            List<(string Symbol, decimal EntryPrice, bool IsLong, decimal Quantity, decimal Leverage)> positionsToRegister;
                             lock (_posLock)
                             {
-                                positionsToCheck = _activePositions
+                                positionsToRegister = _activePositions
                                     .Where(p => p.Value.IsOwnPosition && Math.Abs(p.Value.Quantity) > 0)
-                                    .Select(p => (p.Key, p.Value.EntryPrice, p.Value.IsLong, Math.Abs(p.Value.Quantity), p.Value.Leverage, p.Value.IsOwnPosition))
+                                    .Select(p => (p.Key, p.Value.EntryPrice, p.Value.IsLong, Math.Abs(p.Value.Quantity), p.Value.Leverage))
                                     .ToList();
                             }
 
-                            // [v5.4.1] 거래소에 실제 포지션이 있는 심볼만 필터
                             var exchangePositions = await _exchangeService.GetPositionsAsync(ct: token);
                             var exchangeOpenSymbols = new HashSet<string>(
                                 exchangePositions.Where(p => Math.Abs(p.Quantity) > 0).Select(p => p.Symbol),
                                 StringComparer.OrdinalIgnoreCase);
 
-                            foreach (var pos in positionsToCheck)
+                            foreach (var pos in positionsToRegister)
                             {
+                                if (!exchangeOpenSymbols.Contains(pos.Symbol)) continue;
+
                                 try
                                 {
-                                    // 거래소에 실제 포지션 없으면 스킵
-                                    if (!exchangeOpenSymbols.Contains(pos.Symbol))
-                                    {
-                                        OnStatusLog?.Invoke($"ℹ️ [재시작 SL/TP] {pos.Symbol} 거래소에 포지션 없음 → 스킵");
-                                        continue;
-                                    }
+                                    // 1) 기존 주문 전부 삭제
+                                    await _exchangeService.CancelAllOrdersAsync(pos.Symbol, token);
+                                    OnStatusLog?.Invoke($"🗑️ [재시작] {pos.Symbol} 기존 주문 삭제 완료");
 
-                                    // [v5.3.5] 일반 주문 + 조건부 주문 모두 조회해서 SL/TP 존재 확인
-                                    bool hasSL = false, hasTP = false;
+                                    // 2) 쿨다운 초기화 (재등록 허용)
+                                    _entryOrderRegistrar.ResetCooldown(pos.Symbol);
 
-                                    // 일반 주문 조회
-                                    var orders = await _client.UsdFuturesApi.Trading.GetOpenOrdersAsync(pos.Symbol, ct: token);
-                                    if (orders.Success && orders.Data != null)
-                                    {
-                                        foreach (var o in orders.Data)
-                                        {
-                                            if (o.Type == Binance.Net.Enums.FuturesOrderType.StopMarket
-                                                || o.Type == Binance.Net.Enums.FuturesOrderType.Stop)
-                                                hasSL = true;
-                                            if (o.Type == Binance.Net.Enums.FuturesOrderType.TakeProfitMarket
-                                                || o.Type == Binance.Net.Enums.FuturesOrderType.TakeProfit)
-                                                hasTP = true;
-                                        }
-                                    }
+                                    // 3) 재등록
+                                    bool isMajor = MajorSymbols.Contains(pos.Symbol);
+                                    decimal slRoe = isMajor ? (_settings.MajorStopLossRoe > 0 ? -_settings.MajorStopLossRoe : -60m) : -40m;
+                                    decimal tpRoe = isMajor ? (_settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : 30m) : 25m;
+                                    decimal tpPartial = isMajor ? 0.4m : 0.6m;
+                                    decimal trailCb = isMajor ? 2.0m : 3.5m;
 
-                                    // 조건부 주문 조회 (PlaceConditionalOrderAsync로 등록한 것)
-                                    var condOrders = await _client.UsdFuturesApi.Trading.GetOpenConditionalOrdersAsync(pos.Symbol, ct: token);
-                                    if (condOrders.Success && condOrders.Data != null)
-                                    {
-                                        foreach (var co in condOrders.Data)
-                                        {
-                                            var algoType = co.AlgoType?.ToUpperInvariant() ?? "";
-                                            if (algoType.Contains("STOP")) hasSL = true;
-                                            if (algoType.Contains("TAKE_PROFIT") || algoType.Contains("TAKEPROFIT")) hasTP = true;
-                                        }
-                                    }
+                                    await _entryOrderRegistrar.RegisterEntryOrdersAsync(
+                                        pos.Symbol, pos.IsLong, pos.EntryPrice,
+                                        pos.Quantity, (int)pos.Leverage,
+                                        slRoe, tpRoe, tpPartial, trailCb, token);
 
-                                    if (!hasSL || !hasTP)
-                                    {
-                                        bool isMajor = MajorSymbols.Contains(pos.Symbol);
-                                        decimal slRoe = isMajor ? (_settings.MajorStopLossRoe > 0 ? -_settings.MajorStopLossRoe : -60m) : -40m;
-                                        decimal tpRoe = isMajor ? (_settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : 30m) : 25m;
-
-                                        OnStatusLog?.Invoke($"🔧 [재시작 SL/TP] {pos.Symbol} 미등록 감지 (SL={hasSL}, TP={hasTP}) → 등록 시도");
-                                        decimal trailCb = isMajor ? 2.0m : 3.5m;
-                                        await _entryOrderRegistrar.RegisterEntryOrdersAsync(
-                                            pos.Symbol, pos.IsLong, pos.EntryPrice,
-                                            pos.Quantity, (int)pos.Leverage,
-                                            slRoe, tpRoe, 0.6m, trailCb, token);
-                                    }
+                                    OnStatusLog?.Invoke($"✅ [재시작] {pos.Symbol} SL/TP/Trailing 재등록 완료");
                                 }
                                 catch (Exception regEx)
                                 {

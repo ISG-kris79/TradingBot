@@ -31,6 +31,12 @@ namespace TradingBot.Services
             _exchange = exchange;
         }
 
+        /// <summary>[v5.5.1] 쿨다운 초기화 — 재시작 시 재등록 허용</summary>
+        public void ResetCooldown(string symbol)
+        {
+            _lastRegistered.TryRemove(symbol, out _);
+        }
+
         /// <summary>
         /// 진입 직후 SL + TP 주문을 거래소에 등록
         /// </summary>
