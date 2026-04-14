@@ -103,33 +103,27 @@ namespace TradingBot.Strategies
                 //  [3] aiScore >= 58 + Higher Lows + sma20 위 → LONG (구조 기반)
                 string decision = "WAIT";
 
-                // [v5.1.3] 횡보장 필터 — 1시간 변동폭 < 0.5% 면 진입 안 함 (수수료 손실 방지)
-                // SOL 케이스: 2시간 $82.14~$82.39 (0.3%) 횡보에서 SHORT → 수수료 손실
+                // [v5.1.7] 메이저 로직 전면 재설계 — 30일 통계 기반
+                // SHORT 승률 5% (-$1,004) → 완전 차단
+                // LONG 승률 20% (-$100) → 강한 조건만 허용
+                // 횡보 필터 유지
                 decimal rangeHigh1h = recent12.Max(k => k.HighPrice);
                 decimal rangeLow1h = recent12.Min(k => k.LowPrice);
                 float rangePercent1h = rangeLow1h > 0 ? (float)((rangeHigh1h - rangeLow1h) / rangeLow1h * 100) : 0;
+
                 if (rangePercent1h < 0.5f)
                 {
-                    // 횡보 — WAIT (어떤 방향이든 수수료 > 수익)
                     decision = "WAIT";
                 }
+                // LONG 만 허용 — 강한 조건
                 else if (aiScore >= 70)
                     decision = "LONG";
                 else if (aiScore >= 62 && (isPriceRecovering || isStrongBounce))
                     decision = "LONG";
-                else if (aiScore >= 58 && isMakingHigherLows && currentPrice > (decimal)sma20)
-                    decision = "LONG";
-                else if (aiScore <= 30)
-                    decision = "SHORT";
-                else if (aiScore <= 38 && (isPriceDropping || isStrongDrop || isMakingLowerHighs))
-                    decision = "SHORT";
-                else if (aiScore <= 42 && isMakingLowerHighs && currentPrice < (decimal)sma20)
-                    decision = "SHORT";
-                // [Fallback] 강한 모멘텀 단독 시그널 (aiScore 애매해도 명확한 방향이면 진입)
                 else if (isStrongBounce && isMakingHigherLows && rsi > 52)
                     decision = "LONG";
-                else if (isStrongDrop && isMakingLowerHighs && rsi < 48)
-                    decision = "SHORT";
+                // SHORT 완전 차단 — 30일 승률 5%, -$1,004
+                // else if (aiScore <= 30) decision = "SHORT"; ← 제거
 
                 try
                 {
