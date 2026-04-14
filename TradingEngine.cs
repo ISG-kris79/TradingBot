@@ -4894,21 +4894,31 @@ namespace TradingBot
 
         private async Task<decimal> GetAdaptiveEntryMarginUsdtAsync(CancellationToken token, decimal overrideBaseMargin = 0)
         {
-            // 메이저는 Equity 비율 기반 증거금 사용 (기본 10%)
+            // [v5.2.1] 메이저 마진 = 가용 잔고(AvailableBalance) × %
+            // 가용 잔고 = 실제 주문 가능한 금액 (전체 잔고 - 사용 중인 증거금)
+            // 예: 가용 $2,200 × 10% = $220 (정상)
             decimal baseMargin = overrideBaseMargin > 0
                 ? overrideBaseMargin
                 : (_settings.DefaultMargin > 0 ? _settings.DefaultMargin : 200.0m);
-            decimal equity = await GetEstimatedAccountEquityUsdtAsync(token);
 
-            if (equity <= 0)
+            decimal available = 0m;
+            try
+            {
+                available = await _exchangeService.GetAvailableBalanceAsync("USDT", token);
+            }
+            catch { }
+
+            if (available <= 0)
                 return baseMargin;
 
             decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
-            decimal equityBasedMargin = Math.Round(equity * (majorMarginPercent / 100m), 0, MidpointRounding.AwayFromZero);
-            if (equityBasedMargin <= 0)
-                return baseMargin;
+            decimal margin = Math.Round(available * (majorMarginPercent / 100m), 0, MidpointRounding.AwayFromZero);
 
-            return equityBasedMargin;
+            // 최소 $50, 최대 가용잔고의 20%
+            decimal maxMargin = Math.Round(available * 0.2m, 0);
+            margin = Math.Clamp(margin, 50m, maxMargin);
+
+            return margin;
         }
 
         private decimal GetConfiguredPumpMarginUsdt()
