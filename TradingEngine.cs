@@ -4863,48 +4863,10 @@ namespace TradingBot
                 return;
             }
 
-            // 슬롯 제한 체크: 메이저 최대 3개, PUMP 최대 2개, 총 5개
-            bool pumpScoutMode = false;
-            decimal pumpScoutMultiplier = 1.0m;
-
-            lock (_posLock)
-            {
-                bool isMajorSymbol = MajorSymbols.Contains(symbol);
-                // [v5.2.2] 슬롯 카운트: IsOwnPosition만
-                int majorCount = _activePositions.Count(p => p.Value.IsOwnPosition && MajorSymbols.Contains(p.Key));
-                int pumpCount = currentTotalCount - majorCount;  // PUMP 코인 수
-
-                if (isMajorSymbol && majorCount >= MAX_MAJOR_SLOTS)
-                {
-                    PumpEntryLog("SLOT", "SCOUT", $"메이저 포화 ({majorCount}/{MAX_MAJOR_SLOTS}) → 30% 정찰대");
-                    pumpScoutMode = true;
-                    pumpScoutMultiplier = 0.30m;
-                }
-
-                if (!isMajorSymbol && pumpCount >= MAX_PUMP_SLOTS)
-                {
-                    PumpEntryLog("SLOT", "SCOUT", $"PUMP 포화 ({pumpCount}/{MAX_PUMP_SLOTS}) → 30% 정찰대");
-                    pumpScoutMode = true;
-                    pumpScoutMultiplier = 0.30m;
-                }
-                
-                // 총 포화
-                if (currentTotalCount >= MAX_TOTAL_SLOTS)
-                {
-                    PumpEntryLog("SLOT", "SCOUT", $"총 포화 ({currentTotalCount}/{MAX_TOTAL_SLOTS}) → 30% 정찰대");
-                    pumpScoutMode = true;
-                    pumpScoutMultiplier = 0.30m;
-                }
-            }
+            // [v5.4.5] 정찰대(Scout) 축소 제거 — 슬롯 포화 시 진입 차단만 (CanAcceptNewEntry에서 처리)
 
             // [v5.0.5] 유동성 기반 동적 마진 (초저유동성 50% 축소)
             decimal marginUsdt = GetLiquidityAdjustedPumpMarginUsdt(symbol);
-            // [정찰대] 슬롯 포화 시 증거금 축소
-            if (pumpScoutMode)
-            {
-                marginUsdt *= pumpScoutMultiplier;
-                PumpEntryLog("SIZE", "SCOUT", $"정찰대 증거금={marginUsdt:F0}usdt ({pumpScoutMultiplier:P0})");
-            }
             PumpEntryLog("SIZE", "CONFIG", $"pumpMargin={marginUsdt:F0}usdt");
 
             if (_riskManager.IsTripped)
@@ -10161,14 +10123,7 @@ namespace TradingBot
                 EntryLog("SIZE", "FINAL", $"blended={capturedBlendedScore:P0} mlSignal={mlSignalSizeMultiplier:P0} manual={manualSizeMultiplier:P0} → {finalSizeMultiplier:P0}");
             }
 
-            // [v3.5.3] US 세션(16~23시 KST) 사이즈 축소 — 33% 승률, -$523 손실
-            int kstHour = DateTime.Now.Hour;
-            if (kstHour >= 16 && kstHour <= 23)
-            {
-                finalSizeMultiplier *= 0.5m; // 50% 축소
-                EntryLog("SIZE", "US_SESSION", $"hour={kstHour} → 50% 축소 (US세션 저승률)");
-            }
-
+            // [v5.4.5] US 세션 축소 제거
             ctx.SizeMultiplier = Math.Clamp(finalSizeMultiplier, 0.10m, 2.00m);
 
             // ═══════════════════════════════════════════════════════════════
