@@ -10078,12 +10078,11 @@ namespace TradingBot
             };
 
             // ═══════════════════════════════════════════════════════════════
-            // [v4.8.1] EntryZoneRegressor — ML이 학습한 TP/SL 오프셋 예측
-            // 기존 CustomTakeProfitPrice / CustomStopLossPrice가 비어있을 때만 적용 (fallback)
-            // 사용자 설정이나 MAJOR ATR 등 기존 로직이 있으면 그대로 유지
+            // [v5.4.3] EntryZoneRegressor — 참고 로그만 (API TP/SL에 미적용)
+            // 예측값이 너무 보수적(ROE 7~9%)이라 급등 코인 수익 극대화 방해
+            // API 등록은 고정 ROE(PUMP 25%, MAJOR 40%)만 사용
             // ═══════════════════════════════════════════════════════════════
-            if (_entryZoneRegressor.IsModelReady && ctx.LatestCandle != null
-                && ctx.CustomTakeProfitPrice <= 0 && ctx.CustomStopLossPrice <= 0)
+            if (_entryZoneRegressor.IsModelReady && ctx.LatestCandle != null)
             {
                 try
                 {
@@ -10101,19 +10100,16 @@ namespace TradingBot
                     if (tpsl.HasValue)
                     {
                         var (tpPct, slPct) = tpsl.Value;
-                        if (decision == "LONG")
-                        {
-                            ctx.CustomTakeProfitPrice = ctx.CurrentPrice * (1m + (decimal)tpPct / 100m);
-                            ctx.CustomStopLossPrice = ctx.CurrentPrice * (1m - (decimal)slPct / 100m);
-                        }
-                        else
-                        {
-                            ctx.CustomTakeProfitPrice = ctx.CurrentPrice * (1m - (decimal)tpPct / 100m);
-                            ctx.CustomStopLossPrice = ctx.CurrentPrice * (1m + (decimal)slPct / 100m);
-                        }
+                        // 참고 로그만 — CustomTakeProfitPrice/CustomStopLossPrice에 적용하지 않음
+                        decimal refTp = decision == "LONG"
+                            ? ctx.CurrentPrice * (1m + (decimal)tpPct / 100m)
+                            : ctx.CurrentPrice * (1m - (decimal)tpPct / 100m);
+                        decimal refSl = decision == "LONG"
+                            ? ctx.CurrentPrice * (1m - (decimal)slPct / 100m)
+                            : ctx.CurrentPrice * (1m + (decimal)slPct / 100m);
                         OnStatusLog?.Invoke(
-                            $"🧠 [EntryZoneML] {symbol} {decision} | TP={tpPct:F2}%→{ctx.CustomTakeProfitPrice:F6} | SL={slPct:F2}%→{ctx.CustomStopLossPrice:F6}");
-                        EntryLog("ENTRY_ZONE_ML", "APPLIED", $"tp={tpPct:F2}% sl={slPct:F2}%");
+                            $"🧠 [EntryZoneML 참고] {symbol} {decision} | TP={tpPct:F2}%→{refTp:F6} | SL={slPct:F2}%→{refSl:F6} (API 미적용)");
+                        EntryLog("ENTRY_ZONE_ML", "REF_ONLY", $"tp={tpPct:F2}% sl={slPct:F2}%");
                     }
                 }
                 catch (Exception ex)
