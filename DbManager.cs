@@ -157,14 +157,13 @@ END");
             var result = new Dictionary<string, (int, int, int, decimal)>(StringComparer.OrdinalIgnoreCase);
             try
             {
-                // KST 00:00 = UTC 전날 15:00 (DB 는 로컬 서버 시간이라 DB DATE 기준 OK)
                 DateTime todayKstStart = DateTime.Today;
+                int userId = AppConfig.CurrentUser?.Id ?? 0;
 
                 await using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
 
-                // 진입 시각 + Symbol 그룹핑 — PartialClose 로 여러 행이 생겨도 1건으로 카운트
-                // Win/Loss 판정: 같은 그룹의 PnL 합계가 양수/음수
+                // [v5.3.2] UserId 필터 추가 — 이 유저의 매매만 집계
                 const string sql = @"
 WITH Groups AS (
     SELECT
@@ -176,6 +175,7 @@ WITH Groups AS (
     FROM dbo.TradeHistory
     WHERE Category IS NOT NULL
       AND EntryTime >= @todayStart
+      AND (@userId = 0 OR UserId = @userId)
     GROUP BY Category, Symbol, EntryTime
 )
 SELECT
@@ -187,7 +187,7 @@ SELECT
 FROM Groups
 GROUP BY Category";
 
-                var rows = await db.QueryAsync(sql, new { todayStart = todayKstStart });
+                var rows = await db.QueryAsync(sql, new { todayStart = todayKstStart, userId });
                 foreach (var row in rows)
                 {
                     string cat = (string)row.Category;
