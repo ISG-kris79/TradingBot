@@ -272,7 +272,7 @@ namespace TradingBot.Services
             return _defaultFallback;
         }
 
-        /// <summary>[v5.1.2] STOP_MARKET 주문 — 에러 상세 로깅 + quantity/price 검증 강화</summary>
+        /// <summary>[v5.3.3] STOP_MARKET 주문 — PlaceConditionalOrderAsync (조건부 주문 전용 엔드포인트)</summary>
         public async Task<(bool Success, string OrderId)> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default)
         {
             try
@@ -294,12 +294,12 @@ namespace TradingBot.Services
 
                 OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
 
-                // [v5.1.4] 1차: reduceOnly=true 시도
-                var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                // [v5.3.3] 1차: PlaceConditionalOrderAsync (조건부 주문 전용 엔드포인트)
+                var result = await _client.UsdFuturesApi.Trading.PlaceConditionalOrderAsync(
                     symbol, orderSide,
-                    FuturesOrderType.StopMarket,
+                    ConditionalOrderType.StopMarket,
                     quantity,
-                    stopPrice: stopPrice,
+                    triggerPrice: stopPrice,
                     reduceOnly: true,
                     ct: ct);
 
@@ -309,47 +309,26 @@ namespace TradingBot.Services
                     return (true, result.Data.Id.ToString());
                 }
 
-                // [v5.1.4] 2차: reduceOnly 없이 STOP(LIMIT) 으로 재시도
-                var result2 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                // 2차: closePosition=true
+                var result2 = await _client.UsdFuturesApi.Trading.PlaceConditionalOrderAsync(
                     symbol, orderSide,
-                    FuturesOrderType.Stop,
-                    quantity,
-                    price: stopPrice,
-                    stopPrice: stopPrice,
-                    reduceOnly: true,
-                    timeInForce: TimeInForce.GoodTillCanceled,
+                    ConditionalOrderType.StopMarket,
+                    null,
+                    triggerPrice: stopPrice,
+                    closePosition: true,
                     ct: ct);
 
                 if (result2.Success && result2.Data != null)
                 {
-                    MainWindow.Instance?.AddLog($"✅ [SL] {symbol} STOP(Limit) 등록 | {side} qty={quantity} stop=${stopPrice} id={result2.Data.Id}");
+                    MainWindow.Instance?.AddLog($"✅ [SL] {symbol} STOP_MARKET(closePos) 등록 | {side} stop=${stopPrice} id={result2.Data.Id}");
                     return (true, result2.Data.Id.ToString());
-                }
-
-                // [v5.3.1] 3차: closePosition=true + reduceOnly 제거 (수량 없이 전체 포지션 청산)
-                MainWindow.Instance?.AddLog($"ℹ️ [SL] {symbol} 1차/2차 실패 → 3차 closePosition=true 시도");
-                var result3 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
-                    symbol, orderSide,
-                    FuturesOrderType.StopMarket,
-                    null,
-                    stopPrice: stopPrice,
-                    closePosition: true,
-                    reduceOnly: null,
-                    ct: ct);
-
-                if (result3.Success && result3.Data != null)
-                {
-                    MainWindow.Instance?.AddLog($"✅ [SL] {symbol} STOP_MARKET(closePos) 등록 | {side} stop=${stopPrice} id={result3.Data.Id}");
-                    return (true, result3.Data.Id.ToString());
                 }
 
                 string errCode = result.Error?.Code?.ToString() ?? "null";
                 string errMsg = result.Error?.Message ?? "null";
                 string errCode2 = result2.Error?.Code?.ToString() ?? "null";
                 string errMsg2 = result2.Error?.Message ?? "null";
-                string errCode3 = result3.Error?.Code?.ToString() ?? "null";
-                string errMsg3 = result3.Error?.Message ?? "null";
-                MainWindow.Instance?.AddLog($"❌ [SL] {symbol} 전부 실패 | 1차={errCode}:{errMsg} | 2차={errCode2}:{errMsg2} | 3차={errCode3}:{errMsg3}");
+                MainWindow.Instance?.AddLog($"❌ [SL] {symbol} 실패 | 1차={errCode}:{errMsg} | 2차={errCode2}:{errMsg2}");
                 MainWindow.Instance?.AddAlert($"⚠️ [SL] {symbol} 손절 등록 실패");
                 return (false, string.Empty);
             }
@@ -394,10 +373,10 @@ namespace TradingBot.Services
 
             try
             {
-                var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
-                    symbol,
-                    orderSide,
-                    FuturesOrderType.TrailingStopMarket,
+                // [v5.3.3] PlaceConditionalOrderAsync (조건부 주문 전용 엔드포인트)
+                var result = await _client.UsdFuturesApi.Trading.PlaceConditionalOrderAsync(
+                    symbol, orderSide,
+                    ConditionalOrderType.TrailingStopMarket,
                     quantity,
                     activationPrice: activationPrice,
                     callbackRate: callbackRate,
@@ -411,12 +390,12 @@ namespace TradingBot.Services
                     return (true, result.Data.Id.ToString());
                 }
 
-                // [v5.1.4] 2차: activationPrice 없이 재시도
+                // 2차: activationPrice 없이 재시도
                 if (activationPrice.HasValue)
                 {
-                    var result2 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                    var result2 = await _client.UsdFuturesApi.Trading.PlaceConditionalOrderAsync(
                         symbol, orderSide,
-                        FuturesOrderType.TrailingStopMarket,
+                        ConditionalOrderType.TrailingStopMarket,
                         quantity,
                         callbackRate: callbackRate,
                         reduceOnly: true,
@@ -429,15 +408,13 @@ namespace TradingBot.Services
                     }
                 }
 
-                // [v5.3.1] 3차: closePosition=true + reduceOnly 제거
-                TradingBot.MainWindow.Instance?.AddLog($"ℹ️ [TRAILING] {symbol} 1차/2차 실패 → 3차 closePosition=true 시도");
-                var result3 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                // 3차: closePosition=true
+                var result3 = await _client.UsdFuturesApi.Trading.PlaceConditionalOrderAsync(
                     symbol, orderSide,
-                    FuturesOrderType.TrailingStopMarket,
+                    ConditionalOrderType.TrailingStopMarket,
                     null,
                     callbackRate: callbackRate,
                     closePosition: true,
-                    reduceOnly: null,
                     ct: ct);
 
                 if (result3.Success && result3.Data != null)
@@ -448,9 +425,7 @@ namespace TradingBot.Services
 
                 string errCode = result.Error?.Code?.ToString() ?? "null";
                 string errMsg = result.Error?.Message ?? "null";
-                string errCode3 = result3.Error?.Code?.ToString() ?? "null";
-                string errMsg3 = result3.Error?.Message ?? "null";
-                TradingBot.MainWindow.Instance?.AddLog($"❌ [TRAILING] {symbol} 전부 실패 | 1차={errCode}:{errMsg} | 3차={errCode3}:{errMsg3}");
+                TradingBot.MainWindow.Instance?.AddLog($"❌ [TRAILING] {symbol} 실패 | errCode={errCode} errMsg={errMsg}");
                 return (false, string.Empty);
             }
             catch (Exception ex)
@@ -483,7 +458,7 @@ namespace TradingBot.Services
             return result.Success;
         }
 
-        /// <summary>[v5.1.2] TAKE_PROFIT_MARKET 주문 — 바이낸스 TP/SL Advanced 모드 연동</summary>
+        /// <summary>[v5.3.3] TAKE_PROFIT_MARKET 주문 — PlaceConditionalOrderAsync</summary>
         public async Task<(bool Success, string OrderId)> PlaceTakeProfitOrderAsync(
             string symbol, string side, decimal quantity, decimal stopPrice,
             CancellationToken ct = default)
@@ -496,12 +471,13 @@ namespace TradingBot.Services
                 if (quantity <= 0) return (false, string.Empty);
 
                 OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
-                // [v5.1.4] 1차: TAKE_PROFIT_MARKET
-                var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+
+                // [v5.3.3] 1차: PlaceConditionalOrderAsync
+                var result = await _client.UsdFuturesApi.Trading.PlaceConditionalOrderAsync(
                     symbol, orderSide,
-                    FuturesOrderType.TakeProfitMarket,
+                    ConditionalOrderType.TakeProfitMarket,
                     quantity,
-                    stopPrice: stopPrice,
+                    triggerPrice: stopPrice,
                     reduceOnly: true,
                     ct: ct);
 
@@ -511,44 +487,24 @@ namespace TradingBot.Services
                     return (true, result.Data.Id.ToString());
                 }
 
-                // [v5.1.4] 2차: TAKE_PROFIT (LIMIT) 폴백
-                var result2 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
+                // 2차: closePosition=true
+                var result2 = await _client.UsdFuturesApi.Trading.PlaceConditionalOrderAsync(
                     symbol, orderSide,
-                    FuturesOrderType.TakeProfit,
-                    quantity,
-                    price: stopPrice,
-                    stopPrice: stopPrice,
-                    reduceOnly: true,
-                    timeInForce: TimeInForce.GoodTillCanceled,
+                    ConditionalOrderType.TakeProfitMarket,
+                    null,
+                    triggerPrice: stopPrice,
+                    closePosition: true,
                     ct: ct);
 
                 if (result2.Success && result2.Data != null)
                 {
-                    MainWindow.Instance?.AddLog($"✅ [TP] {symbol} TAKE_PROFIT(Limit) 등록 | {side} qty={quantity} stop=${stopPrice} id={result2.Data.Id}");
+                    MainWindow.Instance?.AddLog($"✅ [TP] {symbol} TP_MARKET(closePos) 등록 | {side} stop=${stopPrice} id={result2.Data.Id}");
                     return (true, result2.Data.Id.ToString());
-                }
-
-                // [v5.3.1] 3차: closePosition=true + reduceOnly 제거
-                MainWindow.Instance?.AddLog($"ℹ️ [TP] {symbol} 1차/2차 실패 → 3차 closePosition=true 시도");
-                var result3 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
-                    symbol, orderSide,
-                    FuturesOrderType.TakeProfitMarket,
-                    null,
-                    stopPrice: stopPrice,
-                    closePosition: true,
-                    reduceOnly: null,
-                    ct: ct);
-
-                if (result3.Success && result3.Data != null)
-                {
-                    MainWindow.Instance?.AddLog($"✅ [TP] {symbol} TP_MARKET(closePos) 등록 | {side} stop=${stopPrice} id={result3.Data.Id}");
-                    return (true, result3.Data.Id.ToString());
                 }
 
                 string errMsg = result.Error?.Message ?? "unknown";
                 string errMsg2 = result2.Error?.Message ?? "unknown";
-                string errMsg3 = result3.Error?.Message ?? "unknown";
-                MainWindow.Instance?.AddLog($"❌ [TP] {symbol} 전부 실패 | 1차={errMsg} | 2차={errMsg2} | 3차={errMsg3}");
+                MainWindow.Instance?.AddLog($"❌ [TP] {symbol} 실패 | 1차={errMsg} | 2차={errMsg2}");
                 return (false, string.Empty);
             }
             catch (Exception ex)
