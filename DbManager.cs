@@ -2591,7 +2591,8 @@ ORDER BY Symbol, OpenTime ASC";
                 if (resolvedUserId <= 0)
                     resolvedUserId = GetCurrentUserId();
 
-                if (hasTradeHistoryUserId && resolvedUserId <= 0)
+                // [v5.3.4] UserId 필수 적용
+                if (resolvedUserId <= 0)
                 {
                     MainWindow.Instance?.AddLog("⚠️ [최근 종료 포지션 조회] UserId 확인 실패로 사용자별 조회를 건너뜁니다.");
                     return new List<(string, DateTime)>();
@@ -2601,10 +2602,8 @@ ORDER BY Symbol, OpenTime ASC";
                         SELECT DISTINCT Symbol, MAX(ExitTime) AS LastExitTime
                         FROM dbo.TradeHistory
                         WHERE ExitTime IS NOT NULL
-                          AND ExitTime > DATEADD(MINUTE, -@WithinMinutes, GETDATE())";
-
-                if (hasTradeHistoryUserId)
-                    sql += " AND UserId = @UserId";
+                          AND ExitTime > DATEADD(MINUTE, -@WithinMinutes, GETDATE())
+                          AND UserId = @UserId";
 
                 sql += @"
                         GROUP BY Symbol";

@@ -408,27 +408,24 @@ SELECT CASE WHEN EXISTS (
             {
                 await conn.OpenAsync();
 
-                bool hasTradeHistoryUserId = await HasColumnAsync(conn, "TradeHistory", "UserId");
                 int userId = await ResolveCurrentUserIdAsync(conn);
-                if (hasTradeHistoryUserId && userId <= 0)
+                // [v5.3.4] UserId 필수 적용
+                if (userId <= 0)
                 {
                     Log("⚠️ ExportDataForTraining: UserId 확인 실패로 사용자별 학습 데이터 추출을 건너뜁니다.");
                     return;
                 }
 
                 string sql = @"
-            SELECT 
-                CAST(EntryPrice AS REAL) AS ClosePrice, -- ML.NET은 float(REAL) 선호
-                CAST(RSI AS REAL) AS RSI, 
-                CAST(BollingerUpper AS REAL) AS BollingerUpper, 
-                CAST(BollingerLower AS REAL) AS BollingerLower, 
+            SELECT
+                CAST(EntryPrice AS REAL) AS ClosePrice,
+                CAST(RSI AS REAL) AS RSI,
+                CAST(BollingerUpper AS REAL) AS BollingerUpper,
+                CAST(BollingerLower AS REAL) AS BollingerLower,
                 CAST(ElliottWaveState AS REAL) AS ElliottWaveState,
-                CAST(CASE WHEN PnL > 0 THEN 1 ELSE 0 END AS BIT) AS Label -- 1:상승(Win), 0:하락(Loss)
+                CAST(CASE WHEN PnL > 0 THEN 1 ELSE 0 END AS BIT) AS Label
             FROM TradeHistory
-            WHERE 1=1";
-
-                if (hasTradeHistoryUserId)
-                    sql += " AND UserId = @UserId";
+            WHERE UserId = @UserId";
 
                 var data = await conn.QueryAsync<CandleData>(
                     sql,
