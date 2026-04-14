@@ -2,6 +2,8 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using TradingBot.Models;
@@ -9,115 +11,77 @@ using TradingBot.Models;
 namespace TradingBot.Services
 {
     /// <summary>
-    /// [v4.5.5] 알트 불장(Alt Bull Market) 자동 감지기
+    /// [v5.3.9] 알트 불장(Alt Season) 감지기 — 바이낸스 API 기반
     ///
-    /// 감지 기준 (3가지 동시 충족):
-    /// 1) 상위 30개 알트의 평균 ATR%/Price ≥ 2.5% (변동성 폭증)
-    /// 2) 24h +5% 이상 알트 ≥ 40개 (광범위한 상승)
-    /// 3) BTC 1h 절대 변동률 < 1.5% (BTC 안정 → 자금이 알트로)
-    ///
-    /// CPU 최적화:
-    /// - 5분 주기로만 검사
-    /// - TickerCache(WebSocket) 활용 (API 호출 0회)
-    /// - 단순 통계 계산만 수행
+    /// 3가지 조건 동시 충족 시 알트불장 판정:
+    /// 1) BTC 도미넌스 50% 이하 (BTCDOMUSDT 선물 지수)
+    /// 2) 알트시즌 지수 75 이상 (상위 50개 중 BTC 대비 아웃퍼폼 비율)
+    /// 3) ETH/BTC 페어 0.05 이상 (ETHBTC 현물)
     /// </summary>
     public class AltBullMarketDetector
     {
-        // ─── 임계값 (외부 조정 가능) ─────────────────────────
-        public double VolatilityThresholdPct { get; set; } = 2.5;     // 평균 ATR%/Price
-        public int Strong24hCountThreshold { get; set; } = 40;        // 24h +5% 알트 개수
-        public double BtcStableThresholdPct { get; set; } = 1.5;      // BTC 1h 절대 변동률 상한
-        public int CheckIntervalMinutes { get; set; } = 5;            // 검사 주기
-        public int ConsecutiveConfirmRequired { get; set; } = 2;      // 2회 연속 충족 시 활성화
-        public int CooldownAfterDeactivateMinutes { get; set; } = 30; // 해제 후 재활성화 쿨다운
+        // ─── 임계값 ─────────────────────────────────────────
+        public double BtcDominanceThreshold { get; set; } = 50.0;   // BTC 도미넌스 50% 이하
+        public int AltSeasonIndexThreshold { get; set; } = 75;       // 알트시즌 지수 75 이상
+        public double EthBtcThreshold { get; set; } = 0.05;          // ETH/BTC 0.05 이상
+        public int CheckIntervalMinutes { get; set; } = 10;          // 10분 주기 검사
+        public int ConsecutiveConfirmRequired { get; set; } = 2;     // 2회 연속 충족 시 활성화
 
         // ─── 활성화 상태 ────────────────────────────────────
         public bool IsActive { get; private set; }
         public DateTime? ActivatedAt { get; private set; }
         public DateTime? DeactivatedAt { get; private set; }
 
+        // ─── 최근 측정값 (로그/디버그용) ──────────────────────
+        public double LastBtcDominance { get; private set; }
+        public int LastAltSeasonIndex { get; private set; }
+        public double LastEthBtc { get; private set; }
+
         // ─── 내부 상태 ──────────────────────────────────────
         private DateTime _lastCheckTime = DateTime.MinValue;
         private int _consecutiveConfirmCount;
         private int _consecutiveMissCount;
-        private double _lastVolatility;
-        private int _lastStrongCount;
-        private double _lastBtcChange;
+        private static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
         // ─── 이벤트 ────────────────────────────────────────
         public event Action<string>? OnLog;
-        public event Action<bool>? OnAltBullStateChanged; // true=활성화, false=해제
-
-        // 메이저 코인 (제외 대상)
-        private static readonly HashSet<string> MajorSymbols = new(StringComparer.OrdinalIgnoreCase)
-        {
-            "BTCUSDT", "ETHUSDT"
-        };
+        public event Action<bool>? OnAltBullStateChanged;
 
         /// <summary>
-        /// TickerCache 업데이트마다 호출 — 5분 주기로 알트 불장 검사
+        /// TickerCache 기반 주기적 검사 (기존 호출부 호환)
         /// </summary>
         public void Check(ConcurrentDictionary<string, TickerCacheItem> tickerCache)
         {
+            var now = DateTime.UtcNow;
+            if ((now - _lastCheckTime).TotalMinutes < CheckIntervalMinutes)
+                return;
+            _lastCheckTime = now;
+
+            _ = CheckAsync(tickerCache);
+        }
+
+        private async Task CheckAsync(ConcurrentDictionary<string, TickerCacheItem> tickerCache)
+        {
             try
             {
-                var now = DateTime.UtcNow;
-                if ((now - _lastCheckTime).TotalMinutes < CheckIntervalMinutes)
-                    return;
-                _lastCheckTime = now;
+                // ── 조건 1: BTC 도미넌스 (BTCDOMUSDT 선물)
+                double btcDom = await GetBtcDominanceAsync();
 
-                // 해제 후 쿨다운 중이면 재활성화 검사 안 함
-                if (!IsActive && DeactivatedAt.HasValue &&
-                    (now - DeactivatedAt.Value).TotalMinutes < CooldownAfterDeactivateMinutes)
-                {
-                    return;
-                }
+                // ── 조건 2: ETH/BTC 페어 (ETHBTC 현물)
+                double ethBtc = await GetEthBtcAsync();
 
-                // 24h 변동률 = (LastPrice - OpenPrice) / OpenPrice * 100
-                static double Change24h(TickerCacheItem t)
-                    => t.OpenPrice > 0 ? (double)((t.LastPrice - t.OpenPrice) / t.OpenPrice * 100m) : 0;
+                // ── 조건 3: 알트시즌 지수 (TickerCache에서 24h 변동률 비교)
+                int altSeasonIdx = CalculateAltSeasonIndex(tickerCache);
 
-                var allTickers = tickerCache.Values
-                    .Where(t => t.LastPrice > 0 && t.OpenPrice > 0 && !string.IsNullOrEmpty(t.Symbol)
-                                && t.Symbol!.EndsWith("USDT", StringComparison.OrdinalIgnoreCase))
-                    .ToList();
+                LastBtcDominance = btcDom;
+                LastEthBtc = ethBtc;
+                LastAltSeasonIndex = altSeasonIdx;
 
-                if (allTickers.Count < 30)
-                    return; // 데이터 부족
+                bool allMet = btcDom > 0 && btcDom <= BtcDominanceThreshold
+                           && altSeasonIdx >= AltSeasonIndexThreshold
+                           && ethBtc >= EthBtcThreshold;
 
-                // ── 조건 1: 상위 30개 알트(절대 변동률 기준) 평균 변동성
-                var topAlts = allTickers
-                    .Where(t => !MajorSymbols.Contains(t.Symbol!))
-                    .OrderByDescending(t => Math.Abs(Change24h(t)))
-                    .Take(30)
-                    .ToList();
-
-                double avgVolatility = topAlts.Count > 0
-                    ? topAlts.Average(t => Math.Abs(Change24h(t)))
-                    : 0;
-
-                // ── 조건 2: 24h +5%↑ 알트 개수
-                int strongCount = allTickers
-                    .Where(t => !MajorSymbols.Contains(t.Symbol!))
-                    .Count(t => Change24h(t) >= 5);
-
-                // ── 조건 3: BTC 24h 변동률 (안정성 체크)
-                double btcChangePct = 0;
-                if (tickerCache.TryGetValue("BTCUSDT", out var btc))
-                    btcChangePct = Math.Abs(Change24h(btc));
-
-                _lastVolatility = avgVolatility;
-                _lastStrongCount = strongCount;
-                _lastBtcChange = btcChangePct;
-
-                // [v5.3.8] BTC 안정 기준 강화: BTC도 같이 올라가면 알트불장이 아니라 전체 상승장
-                // 기존 4배 완화(6%) → 2배(3%)로 수정. BTC +3% 이상이면 알트불장 아님
-                bool conditionsMet =
-                    avgVolatility >= VolatilityThresholdPct
-                    && strongCount >= Strong24hCountThreshold
-                    && btcChangePct < (BtcStableThresholdPct * 2);
-
-                if (conditionsMet)
+                if (allMet)
                 {
                     _consecutiveConfirmCount++;
                     _consecutiveMissCount = 0;
@@ -126,7 +90,7 @@ namespace TradingBot.Services
                     {
                         IsActive = true;
                         ActivatedAt = DateTime.UtcNow;
-                        OnLog?.Invoke($"🔥 [알트 불장] 활성화 | 변동성={avgVolatility:F2}% 강세알트={strongCount}개 BTC={btcChangePct:F2}%");
+                        OnLog?.Invoke($"🔥 [알트불장] 활성화 | BTC.D={btcDom:F1}% ETH/BTC={ethBtc:F4} AltIdx={altSeasonIdx}");
                         OnAltBullStateChanged?.Invoke(true);
                     }
                 }
@@ -135,49 +99,118 @@ namespace TradingBot.Services
                     _consecutiveMissCount++;
                     _consecutiveConfirmCount = 0;
 
-                    // 활성 상태에서 2회 연속 미충족 시 해제
                     if (IsActive && _consecutiveMissCount >= 2)
                     {
                         IsActive = false;
                         DeactivatedAt = DateTime.UtcNow;
                         ActivatedAt = null;
-                        OnLog?.Invoke($"💧 [알트 불장] 해제 | 변동성={avgVolatility:F2}% 강세알트={strongCount}개");
+                        OnLog?.Invoke($"💧 [알트불장] 해제 | BTC.D={btcDom:F1}% ETH/BTC={ethBtc:F4} AltIdx={altSeasonIdx}");
                         OnAltBullStateChanged?.Invoke(false);
                     }
                 }
             }
             catch (Exception ex)
             {
-                OnLog?.Invoke($"⚠️ [알트 불장] 검사 오류: {ex.Message}");
+                OnLog?.Invoke($"⚠️ [알트불장] 검사 오류: {ex.Message}");
             }
         }
 
-        /// <summary>
-        /// 알트 불장 모드 시 적용할 레버리지 (절반, 최소 5x)
-        /// </summary>
+        /// <summary>BTCDOMUSDT 선물 지수에서 BTC 도미넌스 조회</summary>
+        private async Task<double> GetBtcDominanceAsync()
+        {
+            try
+            {
+                var json = await _http.GetStringAsync("https://fapi.binance.com/fapi/v1/ticker/price?symbol=BTCDOMUSDT");
+                using var doc = JsonDocument.Parse(json);
+                var price = doc.RootElement.GetProperty("price").GetString();
+                if (double.TryParse(price, System.Globalization.NumberStyles.Any,
+                    System.Globalization.CultureInfo.InvariantCulture, out double val))
+                    return val / 100.0; // 5204.5 → 52.045%
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ [BTCDOM] 조회 실패: {ex.Message}");
+            }
+            return 0;
+        }
+
+        /// <summary>ETHBTC 현물 페어 가격 조회</summary>
+        private async Task<double> GetEthBtcAsync()
+        {
+            try
+            {
+                var json = await _http.GetStringAsync("https://api.binance.com/api/v3/ticker/price?symbol=ETHBTC");
+                using var doc = JsonDocument.Parse(json);
+                var price = doc.RootElement.GetProperty("price").GetString();
+                if (double.TryParse(price, System.Globalization.NumberStyles.Any,
+                    System.Globalization.CultureInfo.InvariantCulture, out double val))
+                    return val;
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ [ETHBTC] 조회 실패: {ex.Message}");
+            }
+            return 0;
+        }
+
+        /// <summary>TickerCache에서 알트시즌 지수 자체 계산 (상위 50개 중 BTC 대비 24h 아웃퍼폼 비율)</summary>
+        private int CalculateAltSeasonIndex(ConcurrentDictionary<string, TickerCacheItem> tickerCache)
+        {
+            try
+            {
+                var stables = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    { "USDCUSDT", "DAIUSDT", "TUSDUSDT", "BUSDUSDT", "FDUSDUSDT", "USDSUSDT", "EURUSDT" };
+
+                double btcChange = 0;
+                if (tickerCache.TryGetValue("BTCUSDT", out var btc) && btc.OpenPrice > 0)
+                    btcChange = (double)((btc.LastPrice - btc.OpenPrice) / btc.OpenPrice * 100m);
+
+                var alts = tickerCache.Values
+                    .Where(t => t.LastPrice > 0 && t.OpenPrice > 0
+                        && !string.IsNullOrEmpty(t.Symbol)
+                        && t.Symbol!.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
+                        && t.Symbol != "BTCUSDT"
+                        && !stables.Contains(t.Symbol!))
+                    .OrderByDescending(t => t.QuoteVolume)
+                    .Take(50)
+                    .ToList();
+
+                if (alts.Count == 0) return 0;
+
+                int outperform = alts.Count(t =>
+                {
+                    double change = (double)((t.LastPrice - t.OpenPrice) / t.OpenPrice * 100m);
+                    return change > btcChange;
+                });
+
+                return (int)(outperform * 100.0 / alts.Count);
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        /// <summary>알트불장 모드 시 레버리지 조정 (절반, 최소 5x)</summary>
         public int AdjustLeverage(int originalLeverage)
         {
             if (!IsActive) return originalLeverage;
             return Math.Max(5, originalLeverage / 2);
         }
 
-        /// <summary>
-        /// 알트 불장 모드 시 적용할 포지션 사이즈 배수 (70%)
-        /// </summary>
+        /// <summary>알트불장 모드 시 포지션 사이즈 배수 (70%)</summary>
         public decimal AdjustSizeMultiplier(decimal originalMultiplier)
         {
             if (!IsActive) return originalMultiplier;
             return originalMultiplier * 0.7m;
         }
 
-        /// <summary>
-        /// 현재 상태 요약
-        /// </summary>
+        /// <summary>현재 상태 요약</summary>
         public string GetStatusSummary()
         {
             return IsActive
-                ? $"🔥 알트불장 ON | 변동성={_lastVolatility:F2}% 강세={_lastStrongCount}개 BTC={_lastBtcChange:F2}%"
-                : $"💤 알트불장 OFF | 변동성={_lastVolatility:F2}% 강세={_lastStrongCount}개 BTC={_lastBtcChange:F2}%";
+                ? $"🔥 알트불장 ON | BTC.D={LastBtcDominance:F1}% ETH/BTC={LastEthBtc:F4} AltIdx={LastAltSeasonIndex}"
+                : $"💤 알트불장 OFF | BTC.D={LastBtcDominance:F1}% ETH/BTC={LastEthBtc:F4} AltIdx={LastAltSeasonIndex}";
         }
     }
 }

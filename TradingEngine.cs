@@ -3833,13 +3833,20 @@ namespace TradingBot
 
                 // 조건부 주문 타입만 처리
                 var orderType = data.Type;
+                // [v5.3.9] 조건부 주문 체결 감지 — 일반 주문(LIMIT/MARKET) 제외, 나머지 전부 기록
+                bool isNormalOrder = orderType == Binance.Net.Enums.FuturesOrderType.Limit
+                                  || orderType == Binance.Net.Enums.FuturesOrderType.Market;
+                if (isNormalOrder) return;
+
+                // 주문 타입 분류 (로그용)
                 bool isStopFill = orderType == Binance.Net.Enums.FuturesOrderType.StopMarket
                                || orderType == Binance.Net.Enums.FuturesOrderType.Stop;
                 bool isTpFill = orderType == Binance.Net.Enums.FuturesOrderType.TakeProfitMarket
                               || orderType == Binance.Net.Enums.FuturesOrderType.TakeProfit;
                 bool isTrailingFill = orderType == Binance.Net.Enums.FuturesOrderType.TrailingStopMarket;
 
-                if (!isStopFill && !isTpFill && !isTrailingFill) return;
+                // 위 3개에 안 걸려도 조건부 주문이면 기록 (알 수 없는 타입 대비)
+                OnStatusLog?.Invoke($"📋 [ORDER_FILL] {data.Symbol} type={orderType} status={data.Status} qty={data.AccumulatedQuantityOfFilledTrades} price={data.AveragePrice}");
 
                 string symbol = data.Symbol;
                 decimal filledQty = Math.Abs(data.AccumulatedQuantityOfFilledTrades);
@@ -3865,7 +3872,8 @@ namespace TradingBot
 
                 string exitReason = isStopFill ? "API_STOP_LOSS"
                     : isTpFill ? "API_TAKE_PROFIT"
-                    : "API_TRAILING_STOP";
+                    : isTrailingFill ? "API_TRAILING_STOP"
+                    : $"API_CONDITIONAL({orderType})";
 
                 string side = isLong ? "SELL" : "BUY"; // 청산 방향
                 string strategy = pos?.IsPumpStrategy == true ? "PUMP_API" : "MAJOR_API";
