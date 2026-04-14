@@ -9339,7 +9339,8 @@ namespace TradingBot
             // 슬롯이 꽉 차서 못 들어간 신호가 나중에 슬롯 비면 들어가는데,
             // 이때 가격이 이미 올라서 고점 진입 → 즉시 손절. 이걸 차단.
             // ═══════════════════════════════════════════════════════════════
-            if (decision == "LONG" && !MajorSymbols.Contains(symbol)
+            // [v5.4.8] 메이저 포함 전체 적용 — DOGE 고점 진입(-52% 손실) 방지
+            if (decision == "LONG"
                 && signalSource != "CRASH_REVERSE" && signalSource != "PUMP_REVERSE"
                 && signalSource != "MEGA_PUMP")
             {
@@ -9375,7 +9376,8 @@ namespace TradingBot
             // [v5.2.5] 늦은 진입 차단 — PUMP/SPIKE 코인이 이미 급등한 후 진입 방지
             // 최근 6봉(30분) 저점 대비 현재가 2% 이상 상승 + 하락 전환 시 차단
             // ═══════════════════════════════════════════════════════════════
-            if (decision == "LONG" && !MajorSymbols.Contains(symbol)
+            // [v5.4.8] 메이저 포함 전체 적용
+            if (decision == "LONG"
                 && signalSource != "CRASH_REVERSE" && signalSource != "PUMP_REVERSE"
                 && signalSource != "MEGA_PUMP")
             {
