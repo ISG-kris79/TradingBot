@@ -3804,6 +3804,9 @@ namespace TradingBot
                     try
                     {
                         _positionMonitor.HandleOrderUpdate(update);
+
+                        // [v5.3.7] SL/TP/Trailing API 체결 시 DB 매매기록 자동 저장
+                        await RecordConditionalOrderFillAsync(update);
                     }
                     catch (Exception ex)
                     {
@@ -3815,6 +3818,88 @@ namespace TradingBot
             catch (Exception ex)
             {
                 OnStatusLog?.Invoke($"❌ [OrderLoop] 치명 루프 오류: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// [v5.3.7] API 조건부 주문(SL/TP/Trailing) 체결 시 DB TradeHistory에 매매기록 저장
+        /// </summary>
+        private async Task RecordConditionalOrderFillAsync(BinanceFuturesStreamOrderUpdate orderUpdate)
+        {
+            try
+            {
+                var data = orderUpdate.UpdateData;
+                if (data.Status != Binance.Net.Enums.OrderStatus.Filled) return;
+
+                // 조건부 주문 타입만 처리
+                var orderType = data.Type;
+                bool isStopFill = orderType == Binance.Net.Enums.FuturesOrderType.StopMarket
+                               || orderType == Binance.Net.Enums.FuturesOrderType.Stop;
+                bool isTpFill = orderType == Binance.Net.Enums.FuturesOrderType.TakeProfitMarket
+                              || orderType == Binance.Net.Enums.FuturesOrderType.TakeProfit;
+                bool isTrailingFill = orderType == Binance.Net.Enums.FuturesOrderType.TrailingStopMarket;
+
+                if (!isStopFill && !isTpFill && !isTrailingFill) return;
+
+                string symbol = data.Symbol;
+                decimal filledQty = Math.Abs(data.AccumulatedQuantityOfFilledTrades);
+                decimal avgPrice = data.AveragePrice > 0 ? data.AveragePrice : data.PriceLastFilledTrade;
+                if (filledQty <= 0 || avgPrice <= 0) return;
+
+                // 포지션 정보에서 진입가/방향 가져오기
+                PositionInfo? pos = null;
+                lock (_posLock) { _activePositions.TryGetValue(symbol, out pos); }
+
+                decimal entryPrice = pos?.EntryPrice ?? avgPrice;
+                bool isLong = pos?.IsLong ?? (data.Side == Binance.Net.Enums.OrderSide.Sell); // SL/TP는 반대쪽 주문
+                decimal leverage = pos?.Leverage ?? _settings.DefaultLeverage;
+
+                // PnL 계산
+                decimal rawPnl = isLong
+                    ? (avgPrice - entryPrice) * filledQty
+                    : (entryPrice - avgPrice) * filledQty;
+                decimal fees = entryPrice * filledQty * 0.0004m + avgPrice * filledQty * 0.0004m;
+                decimal pnl = rawPnl - fees;
+                decimal pnlPct = entryPrice > 0 && filledQty > 0
+                    ? (pnl / (entryPrice * filledQty)) * 100m * leverage : 0m;
+
+                string exitReason = isStopFill ? "API_STOP_LOSS"
+                    : isTpFill ? "API_TAKE_PROFIT"
+                    : "API_TRAILING_STOP";
+
+                string side = isLong ? "SELL" : "BUY"; // 청산 방향
+                string strategy = pos?.IsPumpStrategy == true ? "PUMP_API" : "MAJOR_API";
+
+                // TradeHistory에 청산 기록 저장
+                var log = new TradeLog(symbol, side, strategy, avgPrice, pos?.AiScore ?? 0, DateTime.Now, pnl, pnlPct)
+                {
+                    EntryPrice = entryPrice,
+                    ExitPrice = avgPrice,
+                    Quantity = filledQty,
+                    EntryTime = pos?.EntryTime ?? DateTime.Now,
+                    ExitTime = DateTime.Now,
+                    ExitReason = exitReason
+                };
+                await _dbManager.SaveTradeLogAsync(log);
+
+                string emoji = pnl >= 0 ? "💰" : "📉";
+                OnStatusLog?.Invoke($"{emoji} [API 체결] {symbol} {exitReason} | 체결가={avgPrice:F4} 수량={filledQty:F4} PnL={pnl:+0.00;-0.00} ({pnlPct:+0.0;-0.0}%)");
+
+                // 텔레그램 알림
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await TelegramService.Instance.SendMessageAsync(
+                            $"{emoji} *[API {exitReason}]*\n`{symbol}` | 체결가: `{avgPrice:F4}`\nPnL: `{pnl:F2}` USDT ({pnlPct:+0.0;-0.0}%)",
+                            TelegramMessageType.Profit);
+                    }
+                    catch { }
+                });
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [API 체결 기록] 오류: {ex.Message}");
             }
         }
 
