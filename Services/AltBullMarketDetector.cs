@@ -110,10 +110,12 @@ namespace TradingBot.Services
                 _lastStrongCount = strongCount;
                 _lastBtcChange = btcChangePct;
 
+                // [v5.3.8] BTC 안정 기준 강화: BTC도 같이 올라가면 알트불장이 아니라 전체 상승장
+                // 기존 4배 완화(6%) → 2배(3%)로 수정. BTC +3% 이상이면 알트불장 아님
                 bool conditionsMet =
                     avgVolatility >= VolatilityThresholdPct
                     && strongCount >= Strong24hCountThreshold
-                    && btcChangePct < (BtcStableThresholdPct * 4); // 24h 기준이라 4배 완화
+                    && btcChangePct < (BtcStableThresholdPct * 2);
 
                 if (conditionsMet)
                 {
