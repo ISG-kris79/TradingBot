@@ -326,13 +326,15 @@ namespace TradingBot.Services
                     return (true, result2.Data.Id.ToString());
                 }
 
-                // [v5.2.6] 3차: closePosition=true (수량 없이 전체 포지션 청산 주문)
+                // [v5.3.1] 3차: closePosition=true + reduceOnly 제거 (수량 없이 전체 포지션 청산)
+                MainWindow.Instance?.AddLog($"ℹ️ [SL] {symbol} 1차/2차 실패 → 3차 closePosition=true 시도");
                 var result3 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
                     symbol, orderSide,
                     FuturesOrderType.StopMarket,
                     null,
                     stopPrice: stopPrice,
                     closePosition: true,
+                    reduceOnly: null,
                     ct: ct);
 
                 if (result3.Success && result3.Data != null)
@@ -345,7 +347,9 @@ namespace TradingBot.Services
                 string errMsg = result.Error?.Message ?? "null";
                 string errCode2 = result2.Error?.Code?.ToString() ?? "null";
                 string errMsg2 = result2.Error?.Message ?? "null";
-                MainWindow.Instance?.AddLog($"❌ [SL] {symbol} 실패 | 1차 STOP_MARKET errCode={errCode} errMsg={errMsg} | 2차 STOP errCode={errCode2} errMsg={errMsg2}");
+                string errCode3 = result3.Error?.Code?.ToString() ?? "null";
+                string errMsg3 = result3.Error?.Message ?? "null";
+                MainWindow.Instance?.AddLog($"❌ [SL] {symbol} 전부 실패 | 1차={errCode}:{errMsg} | 2차={errCode2}:{errMsg2} | 3차={errCode3}:{errMsg3}");
                 MainWindow.Instance?.AddAlert($"⚠️ [SL] {symbol} 손절 등록 실패");
                 return (false, string.Empty);
             }
@@ -425,13 +429,15 @@ namespace TradingBot.Services
                     }
                 }
 
-                // [v5.2.6] 3차: closePosition=true (수량 없이 전체 포지션)
+                // [v5.3.1] 3차: closePosition=true + reduceOnly 제거
+                TradingBot.MainWindow.Instance?.AddLog($"ℹ️ [TRAILING] {symbol} 1차/2차 실패 → 3차 closePosition=true 시도");
                 var result3 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
                     symbol, orderSide,
                     FuturesOrderType.TrailingStopMarket,
                     null,
                     callbackRate: callbackRate,
                     closePosition: true,
+                    reduceOnly: null,
                     ct: ct);
 
                 if (result3.Success && result3.Data != null)
@@ -442,7 +448,9 @@ namespace TradingBot.Services
 
                 string errCode = result.Error?.Code?.ToString() ?? "null";
                 string errMsg = result.Error?.Message ?? "null";
-                TradingBot.MainWindow.Instance?.AddLog($"❌ [TRAILING] {symbol} 실패 | {side} qty={quantity} callback={callbackRate}% errCode={errCode} errMsg={errMsg}");
+                string errCode3 = result3.Error?.Code?.ToString() ?? "null";
+                string errMsg3 = result3.Error?.Message ?? "null";
+                TradingBot.MainWindow.Instance?.AddLog($"❌ [TRAILING] {symbol} 전부 실패 | 1차={errCode}:{errMsg} | 3차={errCode3}:{errMsg3}");
                 return (false, string.Empty);
             }
             catch (Exception ex)
@@ -520,13 +528,15 @@ namespace TradingBot.Services
                     return (true, result2.Data.Id.ToString());
                 }
 
-                // [v5.2.6] 3차: closePosition=true
+                // [v5.3.1] 3차: closePosition=true + reduceOnly 제거
+                MainWindow.Instance?.AddLog($"ℹ️ [TP] {symbol} 1차/2차 실패 → 3차 closePosition=true 시도");
                 var result3 = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
                     symbol, orderSide,
                     FuturesOrderType.TakeProfitMarket,
                     null,
                     stopPrice: stopPrice,
                     closePosition: true,
+                    reduceOnly: null,
                     ct: ct);
 
                 if (result3.Success && result3.Data != null)
@@ -537,7 +547,8 @@ namespace TradingBot.Services
 
                 string errMsg = result.Error?.Message ?? "unknown";
                 string errMsg2 = result2.Error?.Message ?? "unknown";
-                MainWindow.Instance?.AddLog($"❌ [TP] {symbol} 실패 | 1차={errMsg} 2차={errMsg2}");
+                string errMsg3 = result3.Error?.Message ?? "unknown";
+                MainWindow.Instance?.AddLog($"❌ [TP] {symbol} 전부 실패 | 1차={errMsg} | 2차={errMsg2} | 3차={errMsg3}");
                 return (false, string.Empty);
             }
             catch (Exception ex)
