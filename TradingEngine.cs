@@ -7904,10 +7904,10 @@ namespace TradingBot
                 marginUsdt = adjusted;
             }
 
-            // [v3.2.33] 가용 잔고 체크 — 마진 부족 시 스킵
+            // [v5.1.8] 가용 잔고 체크 — GetAvailableBalanceAsync 사용
             try
             {
-                decimal available = await _exchangeService.GetBalanceAsync("USDT", token);
+                decimal available = await _exchangeService.GetAvailableBalanceAsync("USDT", token);
                 if (available < marginUsdt)
                 {
                     OnStatusLog?.Invoke($"⚠️ [{label}] {symbol} 마진 부족 (필요={marginUsdt:F0}, 가용={available:F0}) → 스킵");

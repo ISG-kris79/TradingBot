@@ -103,7 +103,23 @@ namespace TradingBot.Services
             }
         }
 
+        /// <summary>
+        /// [v5.1.8] WalletBalance 반환 (전체 잔고 — Equity 계산용)
+        /// 기존: AvailableBalance (가용 = 전체 - 증거금) → $1,314 (실제 $8,044)
+        /// 수정: WalletBalance (전체) → 정확한 Equity
+        /// 가용 잔고가 필요한 곳은 GetAvailableBalanceAsync 사용
+        /// </summary>
         public async Task<decimal> GetBalanceAsync(string asset, CancellationToken ct = default)
+        {
+            var result = await _client.UsdFuturesApi.Account.GetBalancesAsync(ct: ct);
+            if (!result.Success) return 0;
+
+            var balance = result.Data.FirstOrDefault(b => b.Asset == asset);
+            return balance?.WalletBalance ?? 0;
+        }
+
+        /// <summary>[v5.1.8] 가용 잔고 (Available — 주문 가능 금액 체크용)</summary>
+        public async Task<decimal> GetAvailableBalanceAsync(string asset, CancellationToken ct = default)
         {
             var result = await _client.UsdFuturesApi.Account.GetBalancesAsync(ct: ct);
             if (!result.Success) return 0;
