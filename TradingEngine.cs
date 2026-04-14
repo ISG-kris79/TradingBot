@@ -125,9 +125,13 @@ namespace TradingBot
         private const int PUMP_MANUAL_LEVERAGE = 20; // 20배 롱 전용 대응 매뉴얼
         
         // [NEW 개선안 2] SLOT 쿨다운 추적: SLOT 차단된 심볼의 재시도 시간제한
-        private readonly ConcurrentDictionary<string, DateTime> _slotBlockedSymbols = 
+        private readonly ConcurrentDictionary<string, DateTime> _slotBlockedSymbols =
             new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private int _slotCooldownMinutes = 3; // $250/일 목표: 3분으로 단축 (빠른 재진입)
+
+        /// <summary>[v5.2.9] 신호 첫 발생 가격 기록 — 슬롯 차단 후 뒤늦은 고점 진입 방지</summary>
+        private readonly ConcurrentDictionary<string, (decimal Price, DateTime Time)> _signalOriginPrice =
+            new(StringComparer.OrdinalIgnoreCase);
         
         private const int SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 2000;  // [v3.2.8] 1초→2초 (CPU 절감)
         private const int MAJOR_SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 1000; // [v3.2.8] 180ms→1초
@@ -9090,6 +9094,8 @@ namespace TradingBot
                 {
                     OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} PUMP 포화 ({pumpCount}/{maxPump}) → 진입 차단");
                     EntryLog("SLOT", "BLOCK", $"pump={pumpCount}/{maxPump}");
+                    // [v5.2.9] 슬롯 차단 시 최초 신호 가격 기록 (이미 있으면 유지)
+                    _signalOriginPrice.TryAdd(symbol, (currentPrice, DateTime.Now));
                     return;
                 }
 
@@ -9097,6 +9103,7 @@ namespace TradingBot
                 {
                     OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} 총 포화 ({totalPositions}/{maxTotal}) → 진입 차단");
                     EntryLog("SLOT", "BLOCK", $"total={totalPositions}/{maxTotal}");
+                    _signalOriginPrice.TryAdd(symbol, (currentPrice, DateTime.Now));
                     return;
                 }
             }
@@ -9104,9 +9111,45 @@ namespace TradingBot
             // 슬롯 교체 비활성화 (v4.0.8: 연쇄 손실 방지)
 
             // ═══════════════════════════════════════════════════════════════
+            // [v5.2.9] 신호 원가 대비 고점 진입 차단 — 슬롯 차단 후 뒤늦은 진입 방지
+            // 슬롯이 꽉 차서 못 들어간 신호가 나중에 슬롯 비면 들어가는데,
+            // 이때 가격이 이미 올라서 고점 진입 → 즉시 손절. 이걸 차단.
+            // ═══════════════════════════════════════════════════════════════
+            if (decision == "LONG" && !MajorSymbols.Contains(symbol)
+                && signalSource != "CRASH_REVERSE" && signalSource != "PUMP_REVERSE"
+                && signalSource != "MEGA_PUMP")
+            {
+                if (_signalOriginPrice.TryGetValue(symbol, out var origin))
+                {
+                    double minutesElapsed = (DateTime.Now - origin.Time).TotalMinutes;
+                    decimal priceRise = origin.Price > 0 ? (currentPrice - origin.Price) / origin.Price * 100m : 0m;
+
+                    // 30분 이상 지난 신호 → 무효화
+                    if (minutesElapsed >= 30)
+                    {
+                        _signalOriginPrice.TryRemove(symbol, out _);
+                        OnStatusLog?.Invoke($"⛔ [STALE_SIGNAL] {symbol} 신호 {minutesElapsed:F0}분 경과 → 무효화, 진입 차단");
+                        EntryLog("STALE_SIGNAL", "BLOCK", $"elapsed={minutesElapsed:F0}min originPrice={origin.Price:F4}");
+                        return;
+                    }
+
+                    // 신호 가격 대비 2% 이상 올랐으면 → 고점 진입 차단
+                    if (priceRise >= 2.0m)
+                    {
+                        _signalOriginPrice.TryRemove(symbol, out _);
+                        OnStatusLog?.Invoke($"⛔ [STALE_SIGNAL] {symbol} 신호가 ${origin.Price:F4} → 현재 ${currentPrice:F4} (+{priceRise:F1}%) → 고점 진입 차단");
+                        EntryLog("STALE_SIGNAL", "BLOCK", $"originPrice={origin.Price:F4} nowPrice={currentPrice:F4} rise={priceRise:F1}%");
+                        return;
+                    }
+
+                    // 신호 유효 → 기록 삭제하고 진입 진행
+                    _signalOriginPrice.TryRemove(symbol, out _);
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════
             // [v5.2.5] 늦은 진입 차단 — PUMP/SPIKE 코인이 이미 급등한 후 진입 방지
-            // 최근 6봉(30분) 저점 대비 현재가 3% 이상 상승 + 하락 전환 시 차단
-            // FIGHTUSDT 케이스: 저점 $0.00417 → 진입 $0.00434(+4%) → 즉시 손절
+            // 최근 6봉(30분) 저점 대비 현재가 2% 이상 상승 + 하락 전환 시 차단
             // ═══════════════════════════════════════════════════════════════
             if (decision == "LONG" && !MajorSymbols.Contains(symbol)
                 && signalSource != "CRASH_REVERSE" && signalSource != "PUMP_REVERSE"
@@ -9127,7 +9170,7 @@ namespace TradingBot
                             && recent6[^1].ClosePrice < recent6[^1].OpenPrice
                             && recent6[^2].ClosePrice < recent6[^2].OpenPrice;
 
-                        if (riseFromLow >= 3.0m && lastTwoBearish)
+                        if (riseFromLow >= 2.0m && lastTwoBearish)
                         {
                             OnStatusLog?.Invoke($"⛔ [LATE_ENTRY] {symbol} 저점 대비 +{riseFromLow:F1}% 이미 상승 + 하락 전환 → 진입 차단");
                             EntryLog("LATE_ENTRY", "BLOCK", $"riseFromLow={riseFromLow:F1}% bearishCandles=true");

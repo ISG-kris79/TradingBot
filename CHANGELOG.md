@@ -5,6 +5,13 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.3.0] - 2026-04-14
+
+### Added
+
+ - **신호 원가 대비 고점 진입 차단 (STALE_SIGNAL)**: 슬롯 부족으로 차단된 신호의 첫 가격 기록 → 나중에 슬롯 비었을 때 현재가가 2%+ 올랐으면 진입 차단. 30분 이상 경과한 신호도 무효화. TRADOORUSDT/PLUMEUSDT 고점 진입 근본 해결
+ - LATE_ENTRY 기준 3% → 2%로 강화
+
 ## [5.2.8] - 2026-04-14
 
 ### Fixed
