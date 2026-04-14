@@ -4078,7 +4078,9 @@ namespace TradingBot
                                     else
                                     {
                                         string prob = forecast.TryGetValue(symbol, out var r2) ? $"{r2.AverageProbability:P0}" : "N/A";
-                                        OnStatusLog?.Invoke($"⛔ [ETA_TRIGGER] {symbol} 재평가 {prob} < 65% → 진입 취소");
+                                        // [v5.2.8] ETA 재평가 실패 → 다음 예측까지 진입 차단 (30분 블랙리스트)
+                                        _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
+                                        OnStatusLog?.Invoke($"⛔ [ETA_TRIGGER] {symbol} 재평가 {prob} < 65% → 진입 취소 + 30분 블랙리스트");
                                     }
                                 }
                                 catch (Exception ex)
