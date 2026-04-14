@@ -2216,10 +2216,11 @@ namespace TradingBot
                                         decimal tpRoe = isMajor ? (_settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : 30m) : 25m;
 
                                         OnStatusLog?.Invoke($"🔧 [재시작 SL/TP] {pos.Symbol} 미등록 감지 (SL={hasSL}, TP={hasTP}) → 등록 시도");
+                                        decimal trailCb = isMajor ? 2.0m : 3.5m;
                                         await _entryOrderRegistrar.RegisterEntryOrdersAsync(
                                             pos.Symbol, pos.IsLong, pos.EntryPrice,
                                             pos.Quantity, (int)pos.Leverage,
-                                            slRoe, tpRoe, 0.6m, token);
+                                            slRoe, tpRoe, 0.6m, trailCb, token);
                                     }
                                 }
                                 catch (Exception regEx)
@@ -6646,9 +6647,10 @@ namespace TradingBot
                                         decimal tpPartial = isPump ? 0.6m : 0.4m;
                                         int lev = 20;
 
+                                        decimal trailCb2 = isPump ? 3.5m : 2.0m;
                                         await _entryOrderRegistrar.RegisterEntryOrdersAsync(
                                             pos.Symbol, isLong, pos.EntryPrice, updatedQtyAbs,
-                                            lev, slRoe, tpRoe, tpPartial, CancellationToken.None);
+                                            lev, slRoe, tpRoe, tpPartial, trailCb2, CancellationToken.None);
                                     }
                                     catch (Exception regEx)
                                     {
@@ -11185,11 +11187,12 @@ namespace TradingBot
                             bool isLong = decision == "LONG";
                             bool isPump = !MajorSymbols.Contains(symbol);
 
-                            // PUMP: SL -40% ROE, TP +25% ROE, 부분 60%
-                            // MAJOR: SL -50% ROE, TP +40% ROE, 부분 40%
+                            // PUMP: SL -40% ROE, TP +25% ROE, 부분 60%, Trailing 3.5%
+                            // MAJOR: SL -50% ROE, TP +40% ROE, 부분 40%, Trailing 2.0%
                             decimal slRoe = isPump ? -40m : -50m;
                             decimal tpRoe = isPump ? 25m : 40m;
                             decimal tpPartial = isPump ? 0.6m : 0.4m;
+                            decimal trailCallback = isPump ? 3.5m : 2.0m;
 
                             var (slId, tpId) = await _entryOrderRegistrar.RegisterEntryOrdersAsync(
                                 symbol, isLong, actualEntryPrice, filledQty,
@@ -11197,6 +11200,7 @@ namespace TradingBot
                                 stopLossRoePct: slRoe,
                                 takeProfitRoePct: tpRoe,
                                 tpPartialRatio: tpPartial,
+                                trailingCallbackRate: trailCallback,
                                 token: CancellationToken.None);
 
                             // 포지션에 주문 ID 저장 + TP 플래그
@@ -14113,9 +14117,10 @@ namespace TradingBot
                             decimal tpRoe = isPump ? 25m : 40m;
                             decimal tpPartial = isPump ? 0.6m : 0.4m;
 
+                            decimal trailCb3 = isPump ? 3.5m : 2.0m;
                             var (slId, tpId) = await _entryOrderRegistrar.RegisterEntryOrdersAsync(
                                 symbol, isLong, avgPrice, filledQty,
-                                leverage, slRoe, tpRoe, tpPartial, CancellationToken.None);
+                                leverage, slRoe, tpRoe, tpPartial, trailCb3, CancellationToken.None);
 
                             if (!string.IsNullOrEmpty(slId))
                             {

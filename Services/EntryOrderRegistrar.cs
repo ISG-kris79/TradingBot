@@ -53,6 +53,7 @@ namespace TradingBot.Services
             decimal stopLossRoePct = -40m,
             decimal takeProfitRoePct = 25m,
             decimal tpPartialRatio = 0.6m,
+            decimal trailingCallbackRate = 2.0m,
             CancellationToken token = default)
         {
             string slId = "";
@@ -150,11 +151,11 @@ namespace TradingBot.Services
                 if (trailingQty > 0)
                 {
                     var (trailOk, trailId) = await _exchange.PlaceTrailingStopOrderAsync(
-                        symbol, closeSide, trailingQty, 2.0m, tpPriceForActivation, token);
+                        symbol, closeSide, trailingQty, trailingCallbackRate, tpPriceForActivation, token);
 
                     if (trailOk)
                     {
-                        OnLog?.Invoke($"✅ [TRAILING] {symbol} 등록 | {closeSide} qty={trailingQty} callback=2% activation=${tpPriceForActivation:F6}");
+                        OnLog?.Invoke($"✅ [TRAILING] {symbol} 등록 | {closeSide} qty={trailingQty} callback={trailingCallbackRate}% activation=${tpPriceForActivation:F6}");
                     }
                     else
                     {
