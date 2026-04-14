@@ -2076,6 +2076,65 @@ namespace TradingBot
                             TryStartPumpMonitor(pos.Symbol, pos.EntryPrice, "SYNC_PUMP", 0d, token, "sync");
                     }
                     OnStatusLog?.Invoke("✅ 현재 보유 포지션 동기화 완료");
+
+                    // ═══════════════════════════════════════════════════════════════
+                    // [v5.3.0] 재시작 시 SL/TP/Trailing 미등록 포지션 자동 등록
+                    // 거래소에서 심볼별 미체결 주문 조회 → STOP/TP 없으면 등록
+                    // ═══════════════════════════════════════════════════════════════
+                    if (_entryOrderRegistrar != null)
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            await Task.Delay(3000, token); // 동기화 안정화 대기
+                            List<(string Symbol, decimal EntryPrice, bool IsLong, decimal Quantity, decimal Leverage, bool IsOwn)> positionsToCheck;
+                            lock (_posLock)
+                            {
+                                positionsToCheck = _activePositions
+                                    .Where(p => p.Value.IsOwnPosition && Math.Abs(p.Value.Quantity) > 0)
+                                    .Select(p => (p.Key, p.Value.EntryPrice, p.Value.IsLong, Math.Abs(p.Value.Quantity), p.Value.Leverage, p.Value.IsOwnPosition))
+                                    .ToList();
+                            }
+
+                            foreach (var pos in positionsToCheck)
+                            {
+                                try
+                                {
+                                    // 거래소 미체결 주문 조회
+                                    var orders = await _client.UsdFuturesApi.Trading.GetOpenOrdersAsync(pos.Symbol, ct: token);
+                                    bool hasSL = false, hasTP = false;
+                                    if (orders.Success && orders.Data != null)
+                                    {
+                                        foreach (var o in orders.Data)
+                                        {
+                                            if (o.Type == Binance.Net.Enums.FuturesOrderType.StopMarket
+                                                || o.Type == Binance.Net.Enums.FuturesOrderType.Stop)
+                                                hasSL = true;
+                                            if (o.Type == Binance.Net.Enums.FuturesOrderType.TakeProfitMarket
+                                                || o.Type == Binance.Net.Enums.FuturesOrderType.TakeProfit)
+                                                hasTP = true;
+                                        }
+                                    }
+
+                                    if (!hasSL || !hasTP)
+                                    {
+                                        bool isMajor = MajorSymbols.Contains(pos.Symbol);
+                                        decimal slRoe = isMajor ? (_settings.MajorStopLossRoe > 0 ? -_settings.MajorStopLossRoe : -60m) : -40m;
+                                        decimal tpRoe = isMajor ? (_settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : 30m) : 25m;
+
+                                        OnStatusLog?.Invoke($"🔧 [재시작 SL/TP] {pos.Symbol} 미등록 감지 (SL={hasSL}, TP={hasTP}) → 등록 시도");
+                                        await _entryOrderRegistrar.RegisterEntryOrdersAsync(
+                                            pos.Symbol, pos.IsLong, pos.EntryPrice,
+                                            pos.Quantity, (int)pos.Leverage,
+                                            slRoe, tpRoe, 0.6m, token);
+                                    }
+                                }
+                                catch (Exception regEx)
+                                {
+                                    OnStatusLog?.Invoke($"⚠️ [재시작 SL/TP] {pos.Symbol} 등록 실패: {regEx.Message}");
+                                }
+                            }
+                        }, token);
+                    }
                 }
             }
             catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ 포지션 동기화 에러: {ex.Message}"); }
