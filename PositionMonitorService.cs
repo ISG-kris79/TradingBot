@@ -993,7 +993,10 @@ namespace TradingBot.Services
                         OnLog?.Invoke($"🚀 {symbol} 3차 구간 진입: SL +{minLockROE:F0}% 유지 + Wide Trailing {majorTrailingGap:F0}% 시작 (ROE {highestROE:F1}%)");
                         PersistPositionState(symbol, isBreakEvenTriggered: true, highestROE: highestROE);
 
-                        // [v3.6.3] 바이낸스 TRAILING_STOP_MARKET 서버 등록
+                        // [v5.4.9] 진입 시 API 트레일링 이미 등록됨 → 내부 중복 등록 스킵
+                        bool tpAlreadyOnExchange = false;
+                        lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var tpChk2)) tpAlreadyOnExchange = tpChk2.TpRegisteredOnExchange; }
+                        if (!tpAlreadyOnExchange)
                         _ = Task.Run(async () =>
                         {
                             try

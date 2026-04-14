@@ -116,12 +116,17 @@ namespace TradingBot.Strategies
                     decision = "WAIT";
                 }
                 // LONG 만 허용 — 강한 조건
-                else if (aiScore >= 70)
-                    decision = "LONG";
-                else if (aiScore >= 62 && (isPriceRecovering || isStrongBounce))
-                    decision = "LONG";
-                else if (isStrongBounce && isMakingHigherLows && rsi > 52)
-                    decision = "LONG";
+                // [v5.4.9] Tier 1,2: BB 중심선(SMA20) 위에서만 LONG (하락 추세 진입 방지)
+                // Tier 3 (하단 반등)은 SMA20 아래 허용
+                {
+                    bool aboveBbMid = currentPrice > (decimal)sma20;
+                    if (aiScore >= 70 && aboveBbMid)
+                        decision = "LONG";
+                    else if (aiScore >= 62 && (isPriceRecovering || isStrongBounce) && aboveBbMid)
+                        decision = "LONG";
+                    else if (isStrongBounce && isMakingHigherLows && rsi > 52)
+                        decision = "LONG"; // 하단 반등은 SMA20 아래 허용
+                }
                 // SHORT 완전 차단 — 30일 승률 5%, -$1,004
                 // else if (aiScore <= 30) decision = "SHORT"; ← 제거
 
