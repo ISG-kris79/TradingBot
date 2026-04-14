@@ -575,7 +575,7 @@ namespace TradingBot
 
         private static readonly HashSet<string> MajorSymbols = new(StringComparer.OrdinalIgnoreCase)
         {
-            "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"
+            "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT"
         };
 
         private TradingSettings _settings;

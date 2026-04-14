@@ -22,6 +22,10 @@ namespace TradingBot.Services
         private readonly IExchangeService _exchange;
         public event Action<string>? OnLog;
 
+        // [v5.4.4] 중복 등록 방지 — 심볼별 최근 등록 시각
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lastRegistered = new(StringComparer.OrdinalIgnoreCase);
+        private const int REGISTER_COOLDOWN_SECONDS = 30;
+
         public EntryOrderRegistrar(IExchangeService exchange)
         {
             _exchange = exchange;
@@ -56,7 +60,15 @@ namespace TradingBot.Services
 
             if (entryPrice <= 0 || quantity <= 0) return (slId, tpId);
 
-            // [v5.4.2] 기존 조건부 주문 전부 취소 후 재등록 (중복 방지)
+            // [v5.4.4] 30초 쿨다운 — 동일 심볼 중복 등록 방지
+            if (_lastRegistered.TryGetValue(symbol, out var lastTime) && (DateTime.Now - lastTime).TotalSeconds < REGISTER_COOLDOWN_SECONDS)
+            {
+                OnLog?.Invoke($"ℹ️ [SL/TP] {symbol} 최근 {REGISTER_COOLDOWN_SECONDS}초 내 등록됨 → 스킵");
+                return (slId, tpId);
+            }
+            _lastRegistered[symbol] = DateTime.Now;
+
+            // [v5.4.2] 기존 조건부 주문 전부 취소 후 재등록
             try
             {
                 await _exchange.CancelAllOrdersAsync(symbol, token);
