@@ -5152,31 +5152,25 @@ namespace TradingBot
 
         private async Task<decimal> GetAdaptiveEntryMarginUsdtAsync(CancellationToken token, decimal overrideBaseMargin = 0)
         {
-            // [v5.2.1] 메이저 마진 = 가용 잔고(AvailableBalance) × %
-            // 가용 잔고 = 실제 주문 가능한 금액 (전체 잔고 - 사용 중인 증거금)
-            // 예: 가용 $2,200 × 10% = $220 (정상)
-            decimal baseMargin = overrideBaseMargin > 0
+            // [v5.5.3] 메이저 마진 = DefaultMargin USDT 고정 (가용자산 % 제거)
+            decimal margin = overrideBaseMargin > 0
                 ? overrideBaseMargin
                 : (_settings.DefaultMargin > 0 ? _settings.DefaultMargin : 200.0m);
 
-            decimal available = 0m;
+            // 가용 잔고 확인 — 마진이 가용 잔고의 30% 초과하면 축소
             try
             {
-                available = await _exchangeService.GetAvailableBalanceAsync("USDT", token);
+                decimal available = await _exchangeService.GetAvailableBalanceAsync("USDT", token);
+                if (available > 0)
+                {
+                    decimal maxMargin = Math.Round(available * 0.3m, 0);
+                    if (margin > maxMargin)
+                        margin = Math.Max(50m, maxMargin);
+                }
             }
             catch { }
 
-            if (available <= 0)
-                return baseMargin;
-
-            decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
-            decimal margin = Math.Round(available * (majorMarginPercent / 100m), 0, MidpointRounding.AwayFromZero);
-
-            // 최소 $50, 최대 가용잔고의 20%
-            decimal maxMargin = Math.Round(available * 0.2m, 0);
-            margin = Math.Clamp(margin, 50m, maxMargin);
-
-            return margin;
+            return Math.Max(50m, margin);
         }
 
         private decimal GetConfiguredPumpMarginUsdt()
@@ -10321,8 +10315,7 @@ namespace TradingBot
             if (ctx.IsVolatilityRecovery)
                 ctx.MarginUsdt = Math.Round(ctx.MarginUsdt * 0.6m, 2);
 
-            decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
-            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=equity*{majorMarginPercent:F1}%{(ctx.IsVolatilityRecovery ? " [RECOVERY 60%]" : "")}");
+            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=USDT고정{(ctx.IsVolatilityRecovery ? " [RECOVERY 60%]" : "")}");
 
             // 7. R:R 체크
             if (!EvaluateRiskRewardForEntry(ctx))
@@ -10450,8 +10443,7 @@ namespace TradingBot
             if (ctx.IsVolatilityRecovery)
                 ctx.MarginUsdt = Math.Round(ctx.MarginUsdt * 0.6m, 2);
 
-            decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
-            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=equity*{majorMarginPercent:F1}%{(ctx.IsVolatilityRecovery ? " [RECOVERY 60%]" : "")}");
+            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=USDT고정{(ctx.IsVolatilityRecovery ? " [RECOVERY 60%]" : "")}");
 
             // 7. R:R 체크
             if (!EvaluateRiskRewardForEntry(ctx))
