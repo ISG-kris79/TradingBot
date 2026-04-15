@@ -1837,6 +1837,7 @@ namespace TradingBot.Services
         {
             bool isLongPosition;
             bool isPumpPosition;
+            string entrySignalSource = string.Empty;
             lock (_posLock)
             {
                 if (_activePositions.TryGetValue(symbol, out var pos))
@@ -1844,6 +1845,7 @@ namespace TradingBot.Services
                     entryPrice = pos.EntryPrice;
                     isLongPosition = pos.IsLong;
                     isPumpPosition = pos.IsPumpStrategy;
+                    entrySignalSource = pos.EntrySignalSource ?? string.Empty;
                 }
                 else return;
             }
@@ -1851,6 +1853,8 @@ namespace TradingBot.Services
             OnLog?.Invoke($"🔍 {symbol} Pump 감시 시작 | 방향: {(isLongPosition ? "LONG" : "SHORT")} | 진입가: {entryPrice:F4}");
 
             DateTime startTime = DateTime.Now;
+            // [v5.9.17] BUY_PRESSURE 3분 타임아웃 본절 플래그 — 한 번만 작동
+            bool buyPressureTimeoutChecked = false;
             decimal highestROE = -999m;
             decimal leverage = _settings.PumpLeverage;
 
@@ -2019,59 +2023,24 @@ namespace TradingBot.Services
                         firstTpDone = p.PartialProfitStage >= 1 || p.TakeProfitStep >= 1;
                 }
 
-                // [v3.6.5 / v5.1.0] 1분봉 하락추세 조기 청산 — 완화
-                // 기존: 음봉3연속 + RSI<40 + ROE≤-10% → 너무 타이트 (정상 조정에도 발동)
-                // 04-12 DB: 이 로직으로 15건 -$299 손절 (전체 손절 62%)
-                //
-                // 수정:
-                // - ROE -10% → -20% 완화 (실가격 -1%, 정상 조정 후 반등 기회 제공)
-                // - 음봉 3연속 → 4연속 (더 확실한 하락 확인)
-                // - RSI < 40 → RSI < 30 (과매도 깊이 확인)
-                // - 진입 후 2분 → 5분 (최소 관찰 시간 늘림)
-                // - 추가: ROE -30% 이하면 기존 조건 (3연속+RSI40+ROE-10) 유지 (큰 손실 방지)
-                if (isPumpPosition && !firstTpDone && currentROE < 0 && (DateTime.Now - startTime).TotalMinutes >= 5)
+                // [v5.9.17] 1분봉 하락추세 조기청산 필터 제거 — 사용자 요청
+                // 이유: ROE -26~-36% 구간에서 강제 청산 → 기본 손절(-40%) 도달 전 반등 기회 박탈
+                //       12시부터 이 필터로 인한 손실 다수 발생 (ENJUSDT -$9, BR -$8, BIO -$8 등)
+                // 대안: 거래소 SL(-40% ROE) + 기본 손절 로직만 유지
+
+                // [v5.9.17] BUY_PRESSURE 3분 타임아웃 본절 청산 — 스캘핑 특성 반영
+                // 데이터 분석: BUY_PRESSURE 성공 사례 전부 1분 내 체결 (BLESS +$16, MYX +$8 등)
+                //             3분 넘게 가는 BUY_PRESSURE는 거의 다 손실 → 빨리 빠져나가기
+                if (!buyPressureTimeoutChecked
+                    && string.Equals(entrySignalSource, "BUY_PRESSURE", StringComparison.OrdinalIgnoreCase)
+                    && (DateTime.Now - startTime).TotalMinutes >= 3
+                    && currentROE < 5m
+                    && currentROE > -10m) // 이미 손절 구간이면 건드리지 않음 (기본 손절이 처리)
                 {
-                    try
-                    {
-                        var m1Klines = await _exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.OneMinute, 10, CancellationToken.None);
-                        if (m1Klines != null && m1Klines.Count >= 5)
-                        {
-                            var last5 = m1Klines.TakeLast(5).ToList();
-                            // 최근 N봉 연속 음봉 체크
-                            int bearishCount = 0;
-                            for (int bi = last5.Count - 1; bi >= 0; bi--)
-                            {
-                                if (last5[bi].ClosePrice < last5[bi].OpenPrice) bearishCount++;
-                                else break;  // 양봉 나오면 카운트 중단
-                            }
-                            // RSI 하락 체크
-                            double m1Rsi = IndicatorCalculator.CalculateRSI(m1Klines.ToList(), Math.Min(7, m1Klines.Count - 1));
-
-                            bool shouldClose = false;
-                            string closeReason = "";
-
-                            // [긴급] ROE -30% 이하: 기존 조건 유지 (큰 손실 방지)
-                            if (bearishCount >= 3 && m1Rsi < 40 && currentROE <= -30.0m)
-                            {
-                                shouldClose = true;
-                                closeReason = $"긴급 (ROE{currentROE:F0}%≤-30 음봉{bearishCount} RSI{m1Rsi:F0})";
-                            }
-                            // [완화] 일반: 4연속 음봉 + RSI < 30 + ROE -20% 이하
-                            else if (bearishCount >= 4 && m1Rsi < 30 && currentROE <= -20.0m)
-                            {
-                                shouldClose = true;
-                                closeReason = $"확인됨 (ROE{currentROE:F0}% 음봉{bearishCount} RSI{m1Rsi:F0})";
-                            }
-
-                            if (shouldClose)
-                            {
-                                OnLog?.Invoke($"[조기청산] {symbol} 1분봉 하락추세 | {closeReason} → 탈출");
-                                await ExecuteMarketClose(symbol, $"1분봉 하락추세 조기청산 ({closeReason})", token);
-                                break;
-                            }
-                        }
-                    }
-                    catch (Exception m1Ex) { OnLog?.Invoke($"⚠️ {symbol} 1분봉 체크 오류: {m1Ex.Message}"); }
+                    buyPressureTimeoutChecked = true; // 한 번만 작동
+                    OnLog?.Invoke($"[BP 타임아웃] {symbol} 3분 내 ROE {currentROE:F1}% < 5% → 본절 청산");
+                    await ExecuteMarketClose(symbol, $"BUY_PRESSURE 3분 타임아웃 본절 (ROE {currentROE:F1}%)", token);
+                    break;
                 }
 
                 // [20배 PUMP 즉시 손절] 진입 후 다음 5분봉이 BB중단을 음봉으로 하향 돌파 마감 시 즉시 청산
