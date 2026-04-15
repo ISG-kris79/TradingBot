@@ -134,8 +134,8 @@ namespace TradingBot
         private DateTime _cachedAvailableBalanceTime = DateTime.MinValue;
         private static readonly TimeSpan BalanceCacheTtl = TimeSpan.FromSeconds(30);
 
-        /// <summary>[v5.9.4] SetLeverage 실패 캐시 — 한 번 실패한 심볼은 재시도 안 함</summary>
-        private readonly ConcurrentDictionary<string, bool> _leverageSetFailed = new(StringComparer.OrdinalIgnoreCase);
+        /// <summary>[v5.9.6] 심볼별 실제 거래소 레버리지 캐시 — 수량 계산 정확도 확보</summary>
+        private readonly ConcurrentDictionary<string, int> _actualLeverageCache = new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>[v5.2.9] 신호 첫 발생 가격 기록 — 슬롯 차단 후 뒤늦은 고점 진입 방지</summary>
         private readonly ConcurrentDictionary<string, (decimal Price, DateTime Time)> _signalOriginPrice =
@@ -11141,21 +11141,52 @@ namespace TradingBot
                         signalSource: ctx.SignalSource ?? "UNKNOWN");
                 }
 
-                // [v5.9.4] 레버리지 설정 — 한 번 실패한 심볼은 API 호출 스킵
-                if (_leverageSetFailed.ContainsKey(symbol))
+                // [v5.9.6] 레버리지 설정 + 실제 거래소 레버리지 확인
+                // 서브계정은 SetLeverage 실패하는 경우가 있어, 실패 시 실제 레버리지를 조회해서 수량 계산에 반영
+                int actualLeverage = leverage;
+                if (_actualLeverageCache.TryGetValue(symbol, out var cachedLev) && cachedLev > 0)
                 {
-                    EntryLog("ORDER_SETUP", "SKIP_LEV", $"lev={leverage}x (이전 실패 캐시)");
+                    actualLeverage = cachedLev;
+                    EntryLog("ORDER_SETUP", "CACHED_LEV", $"requested={leverage}x actual={actualLeverage}x");
                 }
                 else
                 {
                     bool leverageSet = await _exchangeService.SetLeverageAsync(symbol, leverage, token: ctx.Token);
-                    if (!leverageSet)
+                    if (leverageSet)
                     {
-                        _leverageSetFailed[symbol] = true;
-                        OnStatusLog?.Invoke($"⚠️ {symbol} 레버리지 {leverage}x 설정 실패 — 이후 스킵");
-                        EntryLog("ORDER_SETUP", "WARN", $"leverageSet=false lev={leverage}x (캐시 등록)");
+                        _actualLeverageCache[symbol] = leverage;
+                        actualLeverage = leverage;
+                    }
+                    else
+                    {
+                        // 실패 → 실제 거래소 레버리지 조회해서 수량 계산에 사용 (잘못된 마진 차감 방지)
+                        try
+                        {
+                            int exchangeLev = await _exchangeService.GetSymbolLeverageAsync(symbol, ctx.Token);
+                            if (exchangeLev > 0)
+                            {
+                                actualLeverage = exchangeLev;
+                                _actualLeverageCache[symbol] = exchangeLev;
+                                OnStatusLog?.Invoke($"⚠️ {symbol} SetLeverage({leverage}x) 실패 → 거래소 실제 {exchangeLev}x 확인 → 수량 재계산");
+                                EntryLog("ORDER_SETUP", "ACTUAL_LEV", $"requested={leverage}x actual={exchangeLev}x");
+                            }
+                            else
+                            {
+                                OnStatusLog?.Invoke($"❌ {symbol} 레버리지 조회 실패 — 진입 차단 (잘못된 마진 방지)");
+                                EntryLog("ORDER_SETUP", "BLOCK", "leverage_unknown");
+                                CleanupReservedPosition("레버리지 확인 불가");
+                                return;
+                            }
+                        }
+                        catch (Exception levEx)
+                        {
+                            OnStatusLog?.Invoke($"❌ {symbol} 레버리지 조회 예외: {levEx.Message} — 진입 차단");
+                            CleanupReservedPosition("레버리지 조회 예외");
+                            return;
+                        }
                     }
                 }
+                leverage = actualLeverage;  // 수량 계산은 실제 레버리지로
 
                 // [v5.9.5] ProfitRegressor — 로그만 (마진 곱셈 제거, 설정값 그대로 사용)
                 if (_profitRegressor.IsModelReady && ctx.LatestCandle != null)

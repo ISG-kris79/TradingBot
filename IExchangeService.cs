@@ -23,6 +23,9 @@ namespace TradingBot.Services
 
         Task<bool> SetLeverageAsync(string symbol, int leverage, CancellationToken ct = default);
 
+        /// <summary>[v5.9.6] 심볼별 실제 거래소 레버리지 조회</summary>
+        Task<int> GetSymbolLeverageAsync(string symbol, CancellationToken ct = default);
+
         Task<List<PositionInfo>> GetPositionsAsync(CancellationToken ct = default);
 
         // [추가] 캔들 데이터 조회

@@ -584,6 +584,20 @@ namespace TradingBot.Services
                 .ToList();
         }
 
+        /// <summary>[v5.9.6] 심볼별 실제 거래소 레버리지 조회 (포지션 없어도 반환)</summary>
+        public async Task<int> GetSymbolLeverageAsync(string symbol, CancellationToken ct = default)
+        {
+            try
+            {
+                var result = await _client.UsdFuturesApi.Account.GetPositionInformationAsync(symbol: symbol, ct: ct);
+                if (!result.Success || result.Data == null) return 0;
+                var pos = result.Data.FirstOrDefault();
+                if (pos == null) return 0;
+                return (int)pos.Leverage;
+            }
+            catch { return 0; }
+        }
+
         public async Task<List<IBinanceKline>> GetKlinesAsync(string symbol, KlineInterval interval, int limit, CancellationToken ct = default)
         {
             var result = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, interval, limit: limit, ct: ct);

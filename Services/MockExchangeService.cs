@@ -135,6 +135,16 @@ namespace TradingBot.Services
             return Task.FromResult(true);
         }
 
+        /// <summary>[v5.9.6] 심볼별 실제 레버리지 조회 (Mock)</summary>
+        public Task<int> GetSymbolLeverageAsync(string symbol, CancellationToken ct = default)
+        {
+            lock (_syncLock)
+            {
+                if (_symbolLeverages.TryGetValue(symbol, out var lev)) return Task.FromResult(lev);
+            }
+            return Task.FromResult(20);
+        }
+
         public Task<(bool Success, string OrderId)> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default)
         {
             lock (_syncLock)
