@@ -172,8 +172,19 @@ namespace TradingBot.Services
                 if (!result.Success)
                 {
                     string errorDetail = $"Code={result.Error?.Code}, Msg={result.Error?.Message}";
+                    MainWindow.Instance?.AddLog($"❌ [Binance API] 주문 실패 - {symbol} {side} qty={quantity} | {errorDetail}");
+                    MainWindow.Instance?.AddAlert($"❌ [{symbol}] 주문 실패: {result.Error?.Message}");
                     OnLog?.Invoke($"❌ [Binance API] 주문 실패 - {symbol} {side} {quantity}");
                     OnLog?.Invoke($"   📋 오류 상세: {errorDetail}");
+
+                    // [v5.6.5] Order_Error 테이블에 저장
+                    try
+                    {
+                        var dbm = new DbManager(AppConfig.ConnectionString);
+                        _ = dbm.SaveOrderErrorAsync(symbol, side, orderType.ToString(), quantity,
+                            result.Error?.Code, result.Error?.Message ?? "unknown");
+                    }
+                    catch { }
 
                     int? errCode = result.Error?.Code;
                     if (errCode == -2019)
@@ -195,6 +206,9 @@ namespace TradingBot.Services
             }
             catch (Exception ex)
             {
+                MainWindow.Instance?.AddLog($"❌ [Binance 예외] {symbol} {side} qty={quantity} | {ex.Message}");
+                MainWindow.Instance?.AddAlert($"❌ [{symbol}] 주문 예외: {ex.Message}");
+                try { var dbm = new DbManager(AppConfig.ConnectionString); _ = dbm.SaveOrderErrorAsync(symbol, side, "EXCEPTION", quantity, null, ex.Message); } catch { }
                 OnLog?.Invoke($"❌ [Binance 예외] 주문 중 예외 발생 - {symbol} {side} {quantity}");
                 OnLog?.Invoke($"   🔥 예외: {ex.Message}");
                 if (ex.InnerException != null)
