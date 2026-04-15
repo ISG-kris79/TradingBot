@@ -11263,11 +11263,27 @@ namespace TradingBot
                     return;
                 }
 
+                // [v5.9.4] 주문 직전 잔고 최종 체크 — Margin insufficient 방지
+                {
+                    decimal avail = _cachedAvailableBalance;
+                    if ((DateTime.Now - _cachedAvailableBalanceTime) > TimeSpan.FromSeconds(5))
+                    {
+                        try { avail = await _exchangeService.GetAvailableBalanceAsync("USDT", ctx.Token); _cachedAvailableBalance = avail; _cachedAvailableBalanceTime = DateTime.Now; } catch { }
+                    }
+                    if (avail > 0 && avail < marginUsdt)
+                    {
+                        CleanupReservedPosition("잔고 부족");
+                        EntryLog("BALANCE", "BLOCK", $"avail=${avail:F0} < margin=${marginUsdt:F0}");
+                        OnLiveLog?.Invoke($"⛔ [{symbol}] 잔고 부족 ${avail:F0} < ${marginUsdt:F0} → 진입 차단");
+                        return;
+                    }
+                }
+
                 // 주문 실행
                 var side = (decision == "LONG") ? "BUY" : "SELL";
 
                 OnStatusLog?.Invoke(TradingStateLogger.PlacingOrder(symbol, decision, ctx.CurrentPrice, quantity));
-                EntryLog("ORDER", "SUBMIT", $"type=MARKET orderSide={side} qty={quantity}");
+                EntryLog("ORDER", "SUBMIT", $"type=MARKET orderSide={side} qty={quantity} margin=${marginUsdt:F0}");
 
                 var (success, filledQty, avgPrice) = await _exchangeService.PlaceMarketOrderAsync(
                     symbol,
