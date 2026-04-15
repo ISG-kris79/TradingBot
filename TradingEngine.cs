@@ -2228,8 +2228,9 @@ namespace TradingBot
                             List<(string Symbol, decimal EntryPrice, bool IsLong, decimal Quantity, decimal Leverage)> positionsToRegister;
                             lock (_posLock)
                             {
+                                // [v5.8.6] IsOwnPosition 체크 제거 — 거래소에 포지션 있으면 무조건 SL/TP 등록
                                 positionsToRegister = _activePositions
-                                    .Where(p => p.Value.IsOwnPosition && Math.Abs(p.Value.Quantity) > 0)
+                                    .Where(p => Math.Abs(p.Value.Quantity) > 0)
                                     .Select(p => (p.Key, p.Value.EntryPrice, p.Value.IsLong, Math.Abs(p.Value.Quantity), p.Value.Leverage))
                                     .ToList();
                             }
