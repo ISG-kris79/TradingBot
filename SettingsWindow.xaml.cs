@@ -406,15 +406,13 @@ namespace TradingBot
                     if (tradingNode != null)
                     {
                         // GeneralSettings 섹션에서 로드
+                        // [v5.6.2] GeneralSettings는 DB에서만 로드 — json 로드 완전 제거
+                        // 기존: json 먼저 → DB 덮어쓰기 → 타이밍 이슈로 json 값이 남음
                         var generalNode = tradingNode["GeneralSettings"];
-                        if (generalNode != null && !_dbSettingsLoaded)
+                        if (generalNode != null)
                         {
-                            // [v5.6.1] DB에서 이미 로드했으면 json으로 덮어쓰지 않음
-                            txtDefaultMargin.Text = generalNode["DefaultMargin"]?.ToString() ?? "200.0";
-                            if (generalNode["EnableMajorTrading"] != null)
-                                chkEnableMajorTrading.IsChecked = generalNode["EnableMajorTrading"]?.ToString()?.ToLower() != "false";
-                            txtPumpMargin.Text = generalNode["PumpMargin"]?.ToString() ?? "200";
-                            txtLeverage.Text = generalNode["DefaultLeverage"]?.ToString() ?? "10";
+                            // GeneralSettings json 값은 무시 — DB에서 로드
+                            // Telegram, Grid 등 다른 설정은 json에서 로드 유지
                 // [v3.2.14 removed] txtTargetRoe.Text = generalNode["TargetRoe"]?.ToString() ?? "20.0";
                 // [v3.2.14 removed] txtStopLossRoe.Text = generalNode["StopLossRoe"]?.ToString() ?? "15.0";
                 // [removed] SelectMajorTrendProfile(generalNode["MajorTrendProfile"]?.ToString());
