@@ -5,6 +5,12 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.9.11] - 2026-04-15
+
+### Notes
+
+- v5.9.10과 동일한 내용 (Velopack 인덱스 손상 복구를 위한 재빌드)
+
 ## [5.9.10] - 2026-04-15
 
 ### Added
