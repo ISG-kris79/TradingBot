@@ -735,6 +735,17 @@ namespace TradingBot.Services
 
                     // [3단계 스마트 방어 시스템] 수익 보존 로직
 
+                    // [v5.9.10] 최고/최저 ROE 및 업데이트 시각 — 포지션 교체 판정용
+                    lock (_posLock)
+                    {
+                        if (_activePositions.TryGetValue(symbol, out var pRoeTrack))
+                        {
+                            if (currentROE > pRoeTrack.MaxReachedRoe) pRoeTrack.MaxReachedRoe = currentROE;
+                            if (currentROE < pRoeTrack.MinReachedRoe || pRoeTrack.MinReachedRoe == 0m) pRoeTrack.MinReachedRoe = currentROE;
+                            pRoeTrack.LastRoeUpdateTime = DateTime.Now;
+                        }
+                    }
+
                     // 최고 ROE 추적
                     if (currentROE > highestROE)
                     {
@@ -3371,23 +3382,25 @@ namespace TradingBot.Services
                 if (isStopLoss)
                 {
                     int count = _stopLossCountToday.AddOrUpdate(symbol, 1, (_, c) => c + 1);
-                    if (count >= 2)
+                    if (count >= 3)
                     {
-                        // 당일 자정까지 블랙리스트
+                        // [v5.9.10] 당일 자정까지 블랙리스트 — 3회로 완화 (기존 2회)
                         var midnight = DateTime.Today.AddDays(1);
                         _blacklistedSymbols[symbol] = midnight;
                         OnAlert?.Invoke($"🚫 {symbol} 당일 블랙리스트 (손절 {count}회 → 오늘 재진입 금지)");
                     }
                     else
                     {
-                        _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
-                        OnLog?.Invoke($"🚫 {symbol} 30분 블랙리스트 (손절 {count}회차)");
+                        // [v5.9.10] 30분 → 5분으로 단축 (강한 재반등 기회 놓치지 않도록)
+                        _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(5);
+                        OnLog?.Invoke($"🚫 {symbol} 5분 쿨다운 (손절 {count}회차)");
                     }
                 }
                 else
                 {
-                    _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
-                    OnLog?.Invoke($"🚫 {symbol} 30분 블랙리스트 (익절: {reason})");
+                    // [v5.9.10] 익절 후 30분 → 3분으로 단축 (즉시 재진입 기회)
+                    _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(3);
+                    OnLog?.Invoke($"🚫 {symbol} 3분 쿨다운 (익절: {reason})");
                 }
 
                 CleanupPositionData(symbol);

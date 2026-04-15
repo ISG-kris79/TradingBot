@@ -5,6 +5,29 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.9.10] - 2026-04-15
+
+### Added
+
+- **우선순위 진입 큐**: TICK_SURGE/BUY_PRESSURE/SPIKE/SQUEEZE/MAJOR_MEME은 high 큐, 나머지는 normal 큐
+  - `_entryQueueHigh` 신규
+  - `IsHighPrioritySignal` 분기
+  - 프로세서가 high 큐 먼저 소비 → 급반응 신호 지연 방지
+  - 슬롯 포화 시 normal 큐만 폐기, high 큐는 유지
+- **STUCK 포지션 자동 교체**: 고착 포지션 감지 + 시장가 청산 후 신규 강신호 진입 허용
+  - 조건: 진입 15분+ & 현재 ROE -5%~+5% & 최고 ROE ≤ 5%
+  - 고우선순위 신호(TICK_SURGE/BUY_PRESSURE/SPIKE)에만 적용
+  - `TryEvictStuckPosition` 신규
+  - PositionInfo: MaxReachedRoe / MinReachedRoe / LastRoeUpdateTime 필드 추가
+  - PositionMonitorService에서 매 모니터링 사이클마다 ROE 추적
+
+### Changed
+
+- **손절 쿨다운 완화**: 30분 → 5분 (강한 재반등 기회 확보)
+- **익절 쿨다운 완화**: 30분 → 3분 (즉시 재진입 기회)
+- **손절 당일 블랙리스트 기준 완화**: 2회 → 3회
+- **블랙리스트 우회**: TICK_SURGE/BUY_PRESSURE + skipAiGate=true 시 블랙리스트 무시하고 재진입 허용
+
 ## [5.9.9] - 2026-04-15
 
 ### Added

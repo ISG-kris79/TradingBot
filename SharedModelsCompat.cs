@@ -96,5 +96,12 @@ namespace TradingBot.Shared.Models
 
         /// <summary>[v5.9.9] 진입 당시 signalSource — 청산 시 신호별 rolling win rate 기록</summary>
         public string EntrySignalSource { get; set; } = string.Empty;
+
+        /// <summary>[v5.9.10] 포지션 교체 — 최고 도달 ROE</summary>
+        public decimal MaxReachedRoe { get; set; }
+        /// <summary>[v5.9.10] 포지션 교체 — 최저 도달 ROE</summary>
+        public decimal MinReachedRoe { get; set; }
+        /// <summary>[v5.9.10] 포지션 교체 — 마지막 ROE 업데이트 시각</summary>
+        public DateTime LastRoeUpdateTime { get; set; }
     }
 }

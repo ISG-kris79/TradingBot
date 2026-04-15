@@ -549,6 +549,8 @@ namespace TradingBot
         private const int ActiveDecisionIdRetentionHours = 48;
         private readonly SemaphoreSlim _predictionValidationLimiter = new SemaphoreSlim(3, 3);
         /// <summary>[v5.9.3] 진입 주문 큐 — 1개씩 순차 처리, 슬롯 차면 큐 비움</summary>
+        /// <summary>[v5.9.10] 우선순위 큐 분리 — high(TICK_SURGE/BUY_PRESSURE/SPIKE) / normal(나머지)</summary>
+        private readonly System.Collections.Concurrent.ConcurrentQueue<EntryRequest> _entryQueueHigh = new();
         private readonly System.Collections.Concurrent.ConcurrentQueue<EntryRequest> _entryQueue = new();
         private readonly SemaphoreSlim _entryQueueSignal = new SemaphoreSlim(0);
         private int _entryQueueProcessorRunning = 0;
@@ -4954,8 +4956,9 @@ namespace TradingBot
 
         public void StopEngine()
         {
-            // [v5.9.3] 큐 비우기 — 대기 중인 진입 요청 전부 폐기
+            // [v5.9.10] 큐 비우기 — high + normal 모두 폐기
             int drained = 0;
+            while (_entryQueueHigh.TryDequeue(out _)) { drained++; try { _entryQueueSignal.Wait(0); } catch { } }
             while (_entryQueue.TryDequeue(out _)) { drained++; try { _entryQueueSignal.Wait(0); } catch { } }
             if (drained > 0)
                 OnStatusLog?.Invoke($"🛑 [STOP] 대기 큐 {drained}개 폐기");
@@ -9170,6 +9173,86 @@ namespace TradingBot
             return false;
         }
 
+        // ═══════════════════════════════════════════════════════════════
+        // [v5.9.10] STUCK 포지션 교체 — 고착 포지션 감지 + 시장가 청산
+        // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// 새 고우선순위 신호 진입을 위해 STUCK 포지션을 찾아서 청산
+        /// 조건: 진입 후 15분+ 경과 & 현재 ROE -5%~+5% & 최고 ROE ≤ 5%
+        /// </summary>
+        private bool TryEvictStuckPosition(string newSymbol, string newSignalSource)
+        {
+            string? evictSymbol = null;
+            PositionInfo? evictSnapshot = null;
+
+            lock (_posLock)
+            {
+                foreach (var kvp in _activePositions)
+                {
+                    var p = kvp.Value;
+                    if (!p.IsOwnPosition) continue;
+                    if (string.Equals(p.Symbol, newSymbol, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (Math.Abs(p.Quantity) <= 0) continue;
+                    if (p.EntryTime == default) continue;
+
+                    double holdMinutes = (DateTime.Now - p.EntryTime).TotalMinutes;
+                    if (holdMinutes < 15) continue; // 15분 미만은 평가 안 함
+
+                    // 실시간 ROE 계산 (캐시 가격 사용)
+                    decimal currentPrice = 0m;
+                    if (_marketDataManager.TickerCache.TryGetValue(p.Symbol, out var ticker))
+                        currentPrice = ticker.LastPrice;
+                    if (currentPrice <= 0) currentPrice = p.EntryPrice;
+
+                    decimal priceDiff = p.IsLong
+                        ? (currentPrice - p.EntryPrice)
+                        : (p.EntryPrice - currentPrice);
+                    decimal currentRoe = p.EntryPrice > 0
+                        ? (priceDiff / p.EntryPrice) * p.Leverage * 100m
+                        : 0m;
+
+                    // STUCK 조건:
+                    // 1) 현재 ROE -5% ~ +5% 범위 (수익도 손실도 아닌 고착)
+                    // 2) 최고 ROE ≤ 5% (한 번도 튀지 못함)
+                    // 3) 15분+ 경과 (충분한 시간 줬음)
+                    bool isStuck = currentRoe >= -5m && currentRoe <= 5m
+                        && p.MaxReachedRoe <= 5m;
+
+                    if (isStuck)
+                    {
+                        evictSymbol = p.Symbol;
+                        evictSnapshot = p;
+                        OnStatusLog?.Invoke($"🎯 [STUCK 감지] {p.Symbol} 보유 {holdMinutes:F0}분 | 현재ROE={currentRoe:F1}% 최고ROE={p.MaxReachedRoe:F1}% → 교체 대상");
+                        break;
+                    }
+                }
+            }
+
+            if (evictSymbol == null) return false;
+
+            // 비동기 시장가 청산 (블로킹 하지 않음 — 큐 적재는 즉시 진행)
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (_positionMonitor != null)
+                    {
+                        await _positionMonitor.ExecuteMarketClose(
+                            evictSymbol,
+                            $"STUCK 교체 (new={newSignalSource} for {newSymbol})",
+                            _cts?.Token ?? CancellationToken.None);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [STUCK 교체] {evictSymbol} 청산 예외: {ex.Message}");
+                }
+            });
+
+            return true;
+        }
+
         private void EnqueueEntry(
             string symbol, string decision, decimal currentPrice,
             string signalSource = "UNKNOWN", string mode = "TREND",
@@ -9184,9 +9267,21 @@ namespace TradingBot
                 return;
             }
 
-            // 슬롯 사전 체크 — 이미 풀이면 큐에 넣지도 않음
+            // 슬롯 사전 체크 — 이미 풀이면 STUCK 포지션 교체 시도
             var (canEnter, _) = CanAcceptNewEntry(symbol, signalSource);
-            if (!canEnter) return;
+            if (!canEnter)
+            {
+                // [v5.9.10] 고우선순위 신호만 STUCK 포지션 교체 시도
+                if (IsHighPrioritySignal(signalSource) && TryEvictStuckPosition(symbol, signalSource))
+                {
+                    OnStatusLog?.Invoke($"🔄 [포지션 교체] {symbol} {signalSource} → STUCK 포지션 청산 후 재진입 허용");
+                    // 교체 성공 → 진입 계속 (큐 적재)
+                }
+                else
+                {
+                    return;
+                }
+            }
 
             // debounce 체크
             string debounceKey = $"{symbol}|{decision}";
@@ -9194,18 +9289,32 @@ namespace TradingBot
                 && (DateTime.Now - lastTry).TotalSeconds < 10)
                 return;
 
-            // 블랙리스트 체크
-            if (_blacklistedSymbols.TryGetValue(symbol, out var blExp) && DateTime.Now < blExp) return;
+            // 블랙리스트 체크 — [v5.9.10] TICK_SURGE + AI 고신뢰도는 우회 허용
+            if (_blacklistedSymbols.TryGetValue(symbol, out var blExp) && DateTime.Now < blExp)
+            {
+                bool isHighConfidenceSpike = (signalSource == "TICK_SURGE" || signalSource == "BUY_PRESSURE")
+                    && skipAiGate; // 상위 AI 필터 이미 통과
+                if (!isHighConfidenceSpike)
+                    return;
+                OnStatusLog?.Invoke($"⚡ [블랙리스트 우회] {symbol} {signalSource} 고신뢰도 → 재진입 허용");
+            }
 
             // 마진 스냅샷 — 큐 적재 시점의 설정값 고정 (병렬 읽기 경합 방지)
             decimal snapDefaultMargin = _settings.DefaultMargin;
             decimal snapPumpMargin = _settings.PumpMargin;
 
-            _entryQueue.Enqueue(new EntryRequest(
+            // [v5.9.10] 우선순위 큐 분기 — 급반응 신호는 high 큐
+            var entryRequest = new EntryRequest(
                 symbol, decision, currentPrice,
                 signalSource, mode, customTp, customSl,
                 pattern, sizeMultiplier, skipAiGate,
-                snapDefaultMargin, snapPumpMargin));
+                snapDefaultMargin, snapPumpMargin);
+
+            bool isHighPrio = IsHighPrioritySignal(signalSource);
+            if (isHighPrio)
+                _entryQueueHigh.Enqueue(entryRequest);
+            else
+                _entryQueue.Enqueue(entryRequest);
 
             // 프로세서 깨우기
             try { _entryQueueSignal.Release(); } catch (SemaphoreFullException) { }
@@ -9217,7 +9326,16 @@ namespace TradingBot
             }
         }
 
-        /// <summary>큐 프로세서 — 1개씩 꺼내서 순차 실행, 슬롯 차면 큐 비움</summary>
+        /// <summary>[v5.9.10] 고우선순위 신호 — TICK_SURGE/BUY_PRESSURE/SPIKE/SQUEEZE_BREAKOUT</summary>
+        private static bool IsHighPrioritySignal(string signalSource)
+        {
+            if (string.IsNullOrEmpty(signalSource)) return false;
+            string u = signalSource.ToUpperInvariant();
+            return u == "TICK_SURGE" || u == "BUY_PRESSURE" || u == "SQUEEZE_BREAKOUT"
+                || u.StartsWith("SPIKE") || u.StartsWith("MAJOR_MEME");
+        }
+
+        /// <summary>큐 프로세서 — high 큐 우선 소비, 없으면 normal 큐</summary>
         private async Task ProcessEntryQueueAsync(CancellationToken token)
         {
             try
@@ -9227,21 +9345,27 @@ namespace TradingBot
                     // 큐에서 대기 (최대 3초, 없으면 루프 종료)
                     if (!await _entryQueueSignal.WaitAsync(TimeSpan.FromSeconds(3), token))
                     {
-                        if (_entryQueue.IsEmpty) break; // 큐 비었으면 프로세서 종료
+                        if (_entryQueue.IsEmpty && _entryQueueHigh.IsEmpty) break;
                         continue;
                     }
 
-                    if (!_entryQueue.TryDequeue(out var req)) continue;
+                    // [v5.9.10] high 큐 우선 소비
+                    EntryRequest? req = null;
+                    if (_entryQueueHigh.TryDequeue(out var highReq))
+                        req = highReq;
+                    else if (_entryQueue.TryDequeue(out var normalReq))
+                        req = normalReq;
 
-                    // 슬롯 풀이면 남은 큐 전부 비움
+                    if (req == null) continue;
+
+                    // 슬롯 풀이면 normal 큐 비움 (high 큐는 유지 — 급반응 신호는 놓치면 안 됨)
                     var (canEnter, slotReason) = CanAcceptNewEntry(req.Symbol, req.SignalSource);
                     if (!canEnter)
                     {
-                        // 슬롯 포화 → 큐 전체 비움 (무의미한 대기 방지)
                         int drained = 0;
                         while (_entryQueue.TryDequeue(out _)) { drained++; try { _entryQueueSignal.Wait(0); } catch { } }
                         if (drained > 0)
-                            OnStatusLog?.Invoke($"⛔ [ENTRY_QUEUE] 슬롯 포화 → 대기 큐 {drained}개 폐기");
+                            OnStatusLog?.Invoke($"⛔ [ENTRY_QUEUE] 슬롯 포화 → normal 큐 {drained}개 폐기 (high 큐 유지)");
                         continue;
                     }
 
