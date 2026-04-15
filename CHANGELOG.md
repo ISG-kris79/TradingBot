@@ -5,6 +5,87 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.9.8] - 2026-04-15
+
+### Fixed
+
+- **수동청산 5초 딜레이 해결**: ExecuteMarketClose 중복 API 호출 제거
+  - `CancelOrderAsync(stopOrderId)` 제거 — `CancelAllOrdersAsync`가 이미 조건부 주문 전부 취소 (항상 실패하는 dead code)
+  - 실패 복구용 `GetPositionsAsync` 제거 — 위 중복 호출의 부작용
+  - 초기 `GetPositionsAsync` 스킵 — 로컬 `_activePositions` 우선 사용
+  - `ConfirmRemainingPositionAsync` 루프 8회→3회, 첫 대기 200ms→100ms
+  - 예상 단축: 5초 → 1~2초
+- **마진 정확도 해결**: `SetLeverageWithActualAsync` 추가 — Binance가 심볼별 한도로 레버리지를 캡하는 경우 실제 적용값을 반환하여 수량 재계산
+  - Binance `ChangeInitialLeverageAsync` 응답의 `Leverage` 필드 사용 (요청 20x → 캡 10x → 10x 반환)
+  - 수량 계산 후 `actualMargin = notional / leverage` 검증 → 초과 시 한 단위 축소
+  - 로그에 notional/margin 명시
+
+## [5.9.7] - 2026-04-15
+
+### Fixed
+
+- **설정창 저장/조회 실패 해결**: `GeneralSettings` 테이블 누락 컬럼(MajorTrendProfile, PumpTp1Roe 등 6개) 자동 추가
+  - `EnsureGeneralSettingsColumnsAsync` 신규 — 앱 시작 시 ALTER TABLE로 누락 컬럼 보정
+  - 근본 원인: MERGE SQL이 존재하지 않는 컬럼 참조 → SqlException → fallback SQL로 떨어져 7개 컬럼만 저장 → EnableMajorTrading/MaxMajorSlots/MaxPumpSlots/PumpMargin 저장 안 됨
+
+## [5.9.6] - 2026-04-15
+
+### Fixed
+
+- **마진 4배 문제 근본 해결**: 서브계정 SetLeverage 실패 시 실제 거래소 레버리지 조회 → 수량 재계산
+  - `GetSymbolLeverageAsync` 신규 (Binance `GetPositionInformationAsync`)
+  - `_leverageSetFailed` → `_actualLeverageCache` 전환 (심볼별 실제 레버리지 캐시)
+  - 레버리지 조회 실패 시 진입 차단 (잘못된 마진 방지)
+
+## [5.9.5] - 2026-04-15
+
+### Fixed
+
+- **마진 멀티플라이어 전부 제거**: 설정값 그대로 진입
+  - positionSizeMultiplier (패턴/Aggressive 최대 2x) 제거
+  - effectiveSizeMultiplier (알트불장/수동배수) 제거
+  - ProfitRegressor 마진 곱셈 제거 (로그만 유지)
+- **주문 직전 잔고 최종 체크**: PlaceMarketOrderAsync 직전 가용잔고 재확인 → 잔고 < 마진이면 진입 차단
+
+## [5.9.4] - 2026-04-15
+
+### Added
+
+- **포지션별 실현 수익 + 수수료 분리 저장**:
+  - DB 컬럼 자동 추가 (`EnsureFeeColumnsAsync`): RawPnL, EntryFee, ExitFee, TotalFees
+  - TradeLog 모델에 수수료 필드 추가
+  - 카테고리 통계(`GetTodayStatsByCategoryAsync`)에 TotalFees 합계 반환
+  - CategoryStatsViewModel에 TotalFees/FeesText 프로퍼티 추가
+
+### Changed
+
+- **API 캐시 최적화**:
+  - GetKlines: `KlineCache`/`MultiTfKlineCache` 우선 조회 → API fallback (진입당 API 2~3회 절감)
+  - 가용잔고 30초 캐시 (`_cachedAvailableBalanceTime`)
+  - SetLeverage 실패 심볼 캐시 (`_leverageSetFailed`) — 서브계정 불필요 API 제거
+
+## [5.9.3] - 2026-04-15
+
+### Added
+
+- **진입 큐 직렬화**: `ConcurrentQueue<EntryRequest>` + 단일 프로세서
+  - TICK_SURGE/BUY_PRESSURE/SQUEEZE_BREAKOUT/PUMP_WATCH 4곳 `EnqueueEntry`로 전환
+  - 슬롯 포화 시 대기 큐 전체 비움 (무의미한 API 호출 방지)
+- **마진 스냅샷**: 큐 적재 시점에 `DefaultMargin`/`PumpMargin` 고정 (병렬 경합 $100→$1000 오류 방지)
+- 외부 포지션 SL/TP 자동 등록 (`HandleAccountUpdate`)
+- 활성 포지션 UI에 마진 금액 표시 (qty×entry/leverage)
+
+### Fixed
+
+- **설정창 빈 필드 문제**: 런타임 설정 우선 표시 → DB 로드 (빈 화면 방지)
+- **Stop 버튼 오류**: 큐 비우기 + CTS Dispose 2초 지연 (`ObjectDisposedException` 방지)
+
+## [5.9.2] - 2026-04-15
+
+### Added
+
+- v5.9.2 세마포어 기반 진입 직렬화 (v5.9.3에서 큐 방식으로 재설계)
+
 ## [5.3.0] - 2026-04-14
 
 ### Added
