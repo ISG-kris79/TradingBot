@@ -11063,6 +11063,8 @@ namespace TradingBot
                     OnAlert?.Invoke($"❌ [{symbol}] {decision} 주문 실패 — Order_Error 확인");
                     EntryLog("ORDER", "FAILED", $"reason=marketOrderFailed");
                     try { _ = _dbManager.SaveOrderErrorAsync(symbol, side, "MARKET_ENTRY", quantity, null, "PlaceMarketOrderAsync 실패"); } catch { }
+                    // [v5.7.8] 주문 실패 시 5분 블랙리스트 — 반복 주문 방지
+                    _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(5);
                     return;
                 }
 
