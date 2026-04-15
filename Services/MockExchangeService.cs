@@ -135,6 +135,13 @@ namespace TradingBot.Services
             return Task.FromResult(true);
         }
 
+        /// <summary>[v5.9.8] Mock: 요청 레버리지 그대로 적용</summary>
+        public Task<(bool Success, int ActualLeverage)> SetLeverageWithActualAsync(string symbol, int leverage, CancellationToken ct = default)
+        {
+            lock (_syncLock) { _symbolLeverages[symbol] = leverage; }
+            return Task.FromResult((true, leverage));
+        }
+
         /// <summary>[v5.9.6] 심볼별 실제 레버리지 조회 (Mock)</summary>
         public Task<int> GetSymbolLeverageAsync(string symbol, CancellationToken ct = default)
         {

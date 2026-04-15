@@ -11141,9 +11141,10 @@ namespace TradingBot
                         signalSource: ctx.SignalSource ?? "UNKNOWN");
                 }
 
-                // [v5.9.6] 레버리지 설정 + 실제 거래소 레버리지 확인
-                // 서브계정은 SetLeverage 실패하는 경우가 있어, 실패 시 실제 레버리지를 조회해서 수량 계산에 반영
-                int actualLeverage = leverage;
+                // [v5.9.8] 레버리지 설정 + 실제 적용 레버리지 수신
+                // Binance는 심볼별 최대 레버리지 제한이 있어 요청값이 캡될 수 있음
+                // SetLeverageWithActualAsync가 실제 적용된 값을 반환 → 수량 계산에 사용
+                int actualLeverage;
                 if (_actualLeverageCache.TryGetValue(symbol, out var cachedLev) && cachedLev > 0)
                 {
                     actualLeverage = cachedLev;
@@ -11151,15 +11152,20 @@ namespace TradingBot
                 }
                 else
                 {
-                    bool leverageSet = await _exchangeService.SetLeverageAsync(symbol, leverage, token: ctx.Token);
-                    if (leverageSet)
+                    var (ok, appliedLev) = await _exchangeService.SetLeverageWithActualAsync(symbol, leverage, ctx.Token);
+                    if (ok && appliedLev > 0)
                     {
-                        _actualLeverageCache[symbol] = leverage;
-                        actualLeverage = leverage;
+                        actualLeverage = appliedLev;
+                        _actualLeverageCache[symbol] = appliedLev;
+                        if (appliedLev != leverage)
+                        {
+                            OnStatusLog?.Invoke($"ℹ️ {symbol} 요청 {leverage}x → 거래소 적용 {appliedLev}x (심볼 한도)");
+                            EntryLog("ORDER_SETUP", "CAPPED_LEV", $"requested={leverage}x applied={appliedLev}x");
+                        }
                     }
                     else
                     {
-                        // 실패 → 실제 거래소 레버리지 조회해서 수량 계산에 사용 (잘못된 마진 차감 방지)
+                        // SetLeverage 실패 → 실제 거래소 레버리지 조회 (서브계정 대응)
                         try
                         {
                             int exchangeLev = await _exchangeService.GetSymbolLeverageAsync(symbol, ctx.Token);
@@ -11167,7 +11173,7 @@ namespace TradingBot
                             {
                                 actualLeverage = exchangeLev;
                                 _actualLeverageCache[symbol] = exchangeLev;
-                                OnStatusLog?.Invoke($"⚠️ {symbol} SetLeverage({leverage}x) 실패 → 거래소 실제 {exchangeLev}x 확인 → 수량 재계산");
+                                OnStatusLog?.Invoke($"⚠️ {symbol} SetLeverage({leverage}x) 실패 → 거래소 실제 {exchangeLev}x → 수량 재계산");
                                 EntryLog("ORDER_SETUP", "ACTUAL_LEV", $"requested={leverage}x actual={exchangeLev}x");
                             }
                             else
@@ -11186,7 +11192,7 @@ namespace TradingBot
                         }
                     }
                 }
-                leverage = actualLeverage;  // 수량 계산은 실제 레버리지로
+                leverage = actualLeverage;  // 수량 계산은 실제 적용된 레버리지로
 
                 // [v5.9.5] ProfitRegressor — 로그만 (마진 곱셈 제거, 설정값 그대로 사용)
                 if (_profitRegressor.IsModelReady && ctx.LatestCandle != null)
@@ -11203,7 +11209,8 @@ namespace TradingBot
                     catch { }
                 }
 
-                // 수량 계산
+                // [v5.9.8] 수량 계산 — 마진 정확히 준수
+                // quantity = margin × leverage / price, 이후 stepSize 내림 → 실제 마진 재계산으로 초과 방지
                 decimal quantity = (marginUsdt * leverage) / ctx.CurrentPrice;
 
                 var exchangeInfo = await _exchangeService.GetExchangeInfoAsync(ctx.Token);
@@ -11211,6 +11218,7 @@ namespace TradingBot
                 if (symbolData != null)
                 {
                     decimal stepSize = symbolData.LotSizeFilter?.StepSize ?? 0.001m;
+                    // 내림만 하면 stepSize 때문에 마진이 목표보다 작아질 수 있지만, 절대 초과하지는 않음
                     quantity = Math.Floor(quantity / stepSize) * stepSize;
                 }
 
@@ -11221,6 +11229,25 @@ namespace TradingBot
                     EntryLog("SIZE", "BLOCK", "quantity<=0");
                     return;
                 }
+
+                // [v5.9.8] 마진 초과 검증 — stepSize 정수배 문제로 계산상 마진이 설정값 넘으면 한 단위 축소
+                decimal actualNotional = quantity * ctx.CurrentPrice;
+                decimal actualMargin = leverage > 0 ? actualNotional / leverage : actualNotional;
+                if (actualMargin > marginUsdt * 1.01m && symbolData != null)  // 1% 여유
+                {
+                    decimal stepSize = symbolData.LotSizeFilter?.StepSize ?? 0.001m;
+                    quantity -= stepSize;
+                    if (quantity <= 0)
+                    {
+                        CleanupReservedPosition("마진 초과 축소 후 0");
+                        EntryLog("SIZE", "BLOCK", $"margin={actualMargin:F2} > target={marginUsdt:F2} (단위 축소 불가)");
+                        return;
+                    }
+                    actualNotional = quantity * ctx.CurrentPrice;
+                    actualMargin = leverage > 0 ? actualNotional / leverage : actualNotional;
+                    EntryLog("SIZE", "REDUCED", $"margin={actualMargin:F2} (목표 ${marginUsdt:F0})");
+                }
+                EntryLog("SIZE", "CONFIRMED", $"qty={quantity} notional=${actualNotional:F0} lev={leverage}x margin=${actualMargin:F2}");
 
                 // [v5.9.4] 주문 직전 잔고 최종 체크 — Margin insufficient 방지
                 {

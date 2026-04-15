@@ -550,18 +550,35 @@ namespace TradingBot.Services
 
         public async Task<bool> SetLeverageAsync(string symbol, int leverage, CancellationToken ct = default)
         {
-            var result = await _client.UsdFuturesApi.Account.ChangeInitialLeverageAsync(symbol, leverage, ct: ct);
+            var (ok, _) = await SetLeverageWithActualAsync(symbol, leverage, ct);
+            return ok;
+        }
 
-            if (result.Success)
+        /// <summary>[v5.9.8] SetLeverage 호출 + 실제 적용된 레버리지 반환 (Binance가 심볼별 한도로 캡할 수 있음)</summary>
+        public async Task<(bool Success, int ActualLeverage)> SetLeverageWithActualAsync(string symbol, int leverage, CancellationToken ct = default)
+        {
+            try
             {
-                Console.WriteLine($"✅ [Binance] 레버리지 설정 성공 - {symbol} Leverage={leverage}x");
-            }
-            else
-            {
+                var result = await _client.UsdFuturesApi.Account.ChangeInitialLeverageAsync(symbol, leverage, ct: ct);
+
+                if (result.Success && result.Data != null)
+                {
+                    int appliedLev = result.Data.Leverage;
+                    if (appliedLev != leverage)
+                        MainWindow.Instance?.AddLog($"ℹ️ [Binance] {symbol} 요청 {leverage}x → 실제 {appliedLev}x 적용 (심볼 한도)");
+                    else
+                        Console.WriteLine($"✅ [Binance] 레버리지 설정 성공 - {symbol} Leverage={appliedLev}x");
+                    return (true, appliedLev);
+                }
+
                 MainWindow.Instance?.AddLog($"⚠️ [Binance] 레버리지 설정 실패 - {symbol} {leverage}x | {result.Error?.Message}");
+                return (false, 0);
             }
-
-            return result.Success;
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [Binance] 레버리지 설정 예외 - {symbol}: {ex.Message}");
+                return (false, 0);
+            }
         }
 
         public async Task<List<PositionInfo>> GetPositionsAsync(CancellationToken ct = default)

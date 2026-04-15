@@ -2937,8 +2937,14 @@ namespace TradingBot.Services
                     }
                 }
 
-                var positions = await _exchangeService.GetPositionsAsync(ct: token);
-                var position = positions.FirstOrDefault(p => p.Symbol == symbol && p.Quantity != 0);
+                // [v5.9.8] 로컬 포지션 우선 사용 — GetPositionsAsync API 호출 스킵 (500~1500ms 절감)
+                // 로컬에 없으면 fallback으로 API 조회 (안전망 유지)
+                PositionInfo? position = localTrackedPosition;
+                if (position == null)
+                {
+                    var positions = await _exchangeService.GetPositionsAsync(ct: token);
+                    position = positions.FirstOrDefault(p => p.Symbol == symbol && p.Quantity != 0);
+                }
                 if (position == null)
                 {
                     if (localTrackedPosition != null)
@@ -3028,12 +3034,9 @@ namespace TradingBot.Services
                     return;
                 }
 
-                // [수정 / v5.1.0] 포지션 종료 전, 서버사이드 SL + TP 주문 모두 취소
-                // 기존: StopOrderId (SL) 만 취소 → TP LIMIT 주문 잔존 → 다음 진입 시 역방향 체결 위험
-                string stopOrderId = string.Empty;
-                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) stopOrderId = p.StopOrderId; }
-
-                // [v5.1.0] 해당 심볼의 모든 미체결 주문 일괄 취소 (SL + TP + 트레일링 전부)
+                // [v5.9.8] 해당 심볼의 모든 미체결 주문 일괄 취소 (SL + TP + 트레일링 전부)
+                // CancelAllOrdersAsync가 내부적으로 일반+조건부 주문 모두 취소하므로 추가 CancelOrderAsync 불필요
+                // (이전 버전: CancelOrderAsync(stopOrderId) 중복 호출 → 항상 실패 → 불필요한 GetPositionsAsync 복구 호출로 500~1500ms 낭비)
                 try
                 {
                     await _exchangeService.CancelAllOrdersAsync(symbol, token);
@@ -3042,37 +3045,6 @@ namespace TradingBot.Services
                 catch (Exception cancelAllEx)
                 {
                     OnLog?.Invoke($"⚠️ [{symbol}] 미체결 일괄 취소 실패: {cancelAllEx.Message}");
-                }
-
-                if (!string.IsNullOrWhiteSpace(stopOrderId))
-                {
-                    bool cancelOk = false;
-                    try { cancelOk = await _exchangeService.CancelOrderAsync(symbol, stopOrderId, token); }
-                    catch (Exception cancelEx) { OnLog?.Invoke($"⚠️ [{symbol}] 손절 주문 취소 예외: {cancelEx.Message}"); }
-
-                    if (!cancelOk)
-                    {
-                        // Cancel 실패 = Stop이 이미 체결됐을 가능성 → 포지션 재확인 후 청산 불필요 시 early return
-                        OnLog?.Invoke($"⚠️ [{symbol}] 서버사이드 손절 주문 취소 실패 (StopOrderId={stopOrderId}) - 포지션 재확인 중");
-                        try
-                        {
-                            var recheckList = await _exchangeService.GetPositionsAsync(ct: token);
-                            var recheckPos = recheckList.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.Quantity) > 0);
-                            if (recheckPos == null)
-                            {
-                                OnLog?.Invoke($"[청산 스킵] {symbol} 서버사이드 Stop이 이미 체결되어 포지션 없음 - 청산 불필요");
-                                CleanupPositionData(symbol);
-                                return;
-                            }
-                            OnLog?.Invoke($"[청산 계속] {symbol} 포지션 잔존 확인 (수량={Math.Abs(recheckPos.Quantity)}) - 청산 주문 진행");
-                            // position 갱신 (최신 수량으로)
-                            position = recheckPos;
-                        }
-                        catch (Exception recheckEx)
-                        {
-                            OnLog?.Invoke($"⚠️ [{symbol}] 재확인 실패: {recheckEx.Message} - 원래 수량으로 청산 시도");
-                        }
-                    }
                 }
 
                 bool isLongPosition = position.IsLong;
@@ -3138,12 +3110,13 @@ namespace TradingBot.Services
                 async Task<PositionInfo?> ConfirmRemainingPositionAsync()
                 {
                     PositionInfo? lastSeen = null;
-                    const int maxAttempts = 8;
+                    // [v5.9.8] 재확인 루프 단축: 8회→3회, 첫 대기 200ms→100ms (수동청산 응답성 향상)
+                    const int maxAttempts = 3;
 
                     for (int attempt = 1; attempt <= maxAttempts; attempt++)
                     {
                         if (attempt == 1)
-                            await Task.Delay(200, token);
+                            await Task.Delay(100, token);
                         else
                             await Task.Delay(300, token);
 

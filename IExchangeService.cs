@@ -23,6 +23,9 @@ namespace TradingBot.Services
 
         Task<bool> SetLeverageAsync(string symbol, int leverage, CancellationToken ct = default);
 
+        /// <summary>[v5.9.8] SetLeverage 호출 + 실제 적용된 레버리지 반환 (Binance가 심볼별 한도로 캡할 수 있음)</summary>
+        Task<(bool Success, int ActualLeverage)> SetLeverageWithActualAsync(string symbol, int leverage, CancellationToken ct = default);
+
         /// <summary>[v5.9.6] 심볼별 실제 거래소 레버리지 조회</summary>
         Task<int> GetSymbolLeverageAsync(string symbol, CancellationToken ct = default);
 
