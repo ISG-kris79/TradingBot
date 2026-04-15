@@ -47,6 +47,8 @@ namespace TradingBot.Models
         // 초기 손절: ROI -40% (가격 -2%, 20x) — 진입 품질 개선으로 넓은 손절 유지 (찍고 날라가는 경우 대비)
         public decimal PumpStopLossRoe { get; set; } = 40.0m;      // 초기 손절 ROI -40%
         public decimal PumpMargin { get; set; } = 200.0m;           // PUMP 전용 기본 진입 증거금 $200 고정
+        /// <summary>[v5.5.7] 메이저 코인 매매 ON/OFF</summary>
+        public bool EnableMajorTrading { get; set; } = true;
         public decimal PumpBreakEvenRoe { get; set; } = 25.0m;     // ROI +25% 시 본절 이동 (슬리피지 대응)
         // 주의: 0.15% 오프셋(슬리피지 방어)이 적용되어 실제 손절은 진입가 + 0.15% 근처로 설정됨
         public decimal PumpTrailingStartRoe { get; set; } = 40.0m; // 2차 트레일링 시작 ROI +40% (변경 없음)

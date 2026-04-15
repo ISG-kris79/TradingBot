@@ -4360,8 +4360,9 @@ namespace TradingBot
                 // 2. 차익거래 전략 (거래소 간 가격 차이 감지)
                 await _arbitrageStrategy.AnalyzeAsync(symbol, currentPrice, token);
 
-                // [MAJOR 전략] 메이저 코인은 항상 분석 (슬롯 체크는 ExecuteAutoOrder에서)
-                if (isMajorSymbol && _majorStrategy != null)
+                // [MAJOR 전략] 메이저 코인 분석 — 설정으로 ON/OFF
+                // [v5.5.7] _settings.EnableMajorTrading = false면 메이저 진입 비활성화
+                if (isMajorSymbol && _majorStrategy != null && (_settings.EnableMajorTrading))
                 {
                     await _majorStrategy.AnalyzeAsync(symbol, currentPrice, token);
                 }
