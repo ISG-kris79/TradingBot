@@ -335,18 +335,25 @@ namespace TradingBot
         {
             LoadSettings(); // json (Telegram/Grid 등)
 
-            // DB 연결
+            // [v5.8.3] DB에서 GeneralSettings 로드 — Task.Run + Dispatcher
             if (_dbManager == null && !string.IsNullOrEmpty(AppConfig.ConnectionString))
                 try { _dbManager = new DbManager(AppConfig.ConnectionString); } catch { }
 
             int userId = AppConfig.CurrentUser?.Id ?? 0;
             if (_dbManager == null || userId <= 0) return;
 
+            TradingSettings? s = null;
             try
             {
-                var s = await _dbManager.LoadGeneralSettingsAsync(userId);
-                if (s == null) return;
+                s = await Task.Run(() => _dbManager.LoadGeneralSettingsAsync(userId));
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"❌ [설정] DB 로드 실패: {ex.Message}");
+            }
 
+            if (s != null)
+            {
                 _dbSettingsLoaded = true;
                 txtDefaultMargin.Text = s.DefaultMargin.ToString("F0");
                 chkEnableMajorTrading.IsChecked = s.EnableMajorTrading;
@@ -356,10 +363,6 @@ namespace TradingBot
                 txtMaxPumpSlots.Text = s.MaxPumpSlots.ToString();
                 if (!string.IsNullOrWhiteSpace(s.MajorTrendProfile))
                     SelectMajorTrendProfile(s.MajorTrendProfile);
-            }
-            catch (Exception ex)
-            {
-                MainWindow.Instance?.AddLog($"❌ [설정] DB 로드 실패: {ex.Message}");
             }
         }
 
