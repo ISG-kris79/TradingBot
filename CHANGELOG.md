@@ -5,6 +5,28 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.9.13] - 2026-04-15
+
+### Added
+
+- **TICK_SURGE/BUY_PRESSURE에 선행 예측 진입 적용**: Forecaster가 OffsetBars + PriceOffsetPct로 미래 최적 진입점 예측 → EntryScheduler LIMIT 예약
+  - `TryScheduleForecastEntryAsync` 헬퍼 신규
+  - Major 심볼 → MajorForecaster, 알트 → PumpForecaster 자동 선택
+  - 정확도 `ForecasterMinAccuracyForEntry (50%)` 이상일 때만 적용
+  - 캔들 30개 미만 또는 Forecaster 미학습 시 기존 즉시 진입 fallback
+  - `HasOpportunity=false` 시 진입 스킵 (AI 판단 존중, fallback 없음)
+
+### Rationale
+
+- 사용자 요청: "10~15분 뒤 상승 예측해서 들어가야 수익"
+- 기존 Pump/Major Strategy 경로는 이미 Forecaster 사용 중이었음
+- TICK_SURGE/BUY_PRESSURE는 즉시 진입만 하고 있어 미래 예측 활용 못 함 → 수정
+- Forecaster 출력 활용:
+  - `OffsetBars`: 몇 봉 뒤 최적 진입 (5분봉 기준 × 5분)
+  - `PriceOffsetPct`: 현재가 대비 진입가 오프셋
+  - `ExpectedProfitPct`: 예상 수익률
+  - `Probability`: 신뢰도
+
 ## [5.9.12] - 2026-04-15
 
 ### Removed (하드코딩 필터 전면 제거 — 메모리 규칙 "AI 판단만 사용" 준수)

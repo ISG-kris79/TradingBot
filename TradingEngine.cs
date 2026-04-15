@@ -1215,10 +1215,15 @@ namespace TradingBot
                         }
                         catch { }
 
-                        // [v5.9.12] 하드코딩 필터 전부 제거 — AI Forecaster만 판단
-                        // 진입 경로 내부의 MajorForecaster/PumpForecaster가 미래 상승 예측 수행
-                        OnStatusLog?.Invoke($"⚡ [틱급증→진입] {symbol} TPS={tpsRatio:F1}x 매수비={buyRatio:P0}");
-                        EnqueueEntry(symbol, "LONG", price, "TICK_SURGE", sizeMultiplier: 1.0m, skipAiGate: true);
+                        // [v5.9.13] Forecaster 선행 예측 시도 → EntryScheduler 예약 (10~15분 뒤 LIMIT)
+                        // 실패 (Forecaster 미학습) 시 즉시 진입 fallback
+                        OnStatusLog?.Invoke($"⚡ [틱급증] {symbol} TPS={tpsRatio:F1}x 매수비={buyRatio:P0} → AI 예측");
+                        bool handled = await TryScheduleForecastEntryAsync(symbol, "TICK_SURGE", price);
+                        if (!handled)
+                        {
+                            OnStatusLog?.Invoke($"⚡ [틱급증→즉시진입] {symbol} (Forecaster 미학습 fallback)");
+                            EnqueueEntry(symbol, "LONG", price, "TICK_SURGE", sizeMultiplier: 1.0m, skipAiGate: true);
+                        }
                     }
                     catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [틱급증] {symbol} 진입 실패: {ex.Message}"); }
                 });
@@ -1237,9 +1242,14 @@ namespace TradingBot
                         }
                         if (MajorSymbols.Contains(symbol) && !_settings.EnableMajorTrading) return;
 
-                        // [v5.9.12] 가짜 반등 필터 제거 — AI Forecaster가 피처 기반으로 판단
-                        OnStatusLog?.Invoke($"🔥 [매수쏠림→진입] {symbol} 매수비={buyRatio:P0} → LONG 시도");
-                        EnqueueEntry(symbol, "LONG", price, "BUY_PRESSURE", sizeMultiplier: 1.0m, skipAiGate: true);
+                        // [v5.9.13] Forecaster 선행 예측 시도 → EntryScheduler 예약
+                        OnStatusLog?.Invoke($"🔥 [매수쏠림] {symbol} 매수비={buyRatio:P0} → AI 예측");
+                        bool handled = await TryScheduleForecastEntryAsync(symbol, "BUY_PRESSURE", price);
+                        if (!handled)
+                        {
+                            OnStatusLog?.Invoke($"🔥 [매수쏠림→즉시진입] {symbol} (Forecaster 미학습 fallback)");
+                            EnqueueEntry(symbol, "LONG", price, "BUY_PRESSURE", sizeMultiplier: 1.0m, skipAiGate: true);
+                        }
                     }
                     catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [매수쏠림] {symbol} 진입 실패: {ex.Message}"); }
                 });
@@ -9231,6 +9241,61 @@ namespace TradingBot
             if (Interlocked.CompareExchange(ref _entryQueueProcessorRunning, 1, 0) == 0)
             {
                 _ = Task.Run(() => ProcessEntryQueueAsync(_cts?.Token ?? CancellationToken.None));
+            }
+        }
+
+        /// <summary>
+        /// [v5.9.13] Forecaster 기반 선행 예측 진입 — TICK_SURGE/BUY_PRESSURE 전용
+        /// 성공: EntryScheduler에 미래 예측 시점 예약 (10~15분 뒤 LIMIT 진입)
+        /// 기회 없음: AI 판단 존중 → 진입 스킵 (true 반환, fallback 없음)
+        /// Forecaster 미학습: false 반환 → 호출측 fallback (즉시 진입)
+        /// </summary>
+        private async Task<bool> TryScheduleForecastEntryAsync(string symbol, string sourceTag, decimal price)
+        {
+            try
+            {
+                bool isMajor = MajorSymbols.Contains(symbol);
+                bool isLoaded = isMajor ? _majorForecaster.IsModelLoaded : _pumpForecaster.IsModelLoaded;
+                double accuracy = isMajor ? _majorForecasterAccuracy : _pumpForecasterAccuracy;
+
+                if (!isLoaded || accuracy < ForecasterMinAccuracyForEntry) return false;
+                if (_entryScheduler == null) return false;
+                if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var cache) || cache == null) return false;
+
+                List<IBinanceKline> cSnap;
+                lock (cache) { cSnap = cache.ToList(); }
+                if (cSnap.Count < 30) return false; // 최소 캔들 부족 → fallback
+
+                var forecast = isMajor
+                    ? _majorForecaster.Forecast(cSnap, "LONG")
+                    : _pumpForecaster.Forecast(cSnap, "LONG");
+
+                if (forecast == null || !forecast.HasOpportunity)
+                {
+                    OnLiveLog?.Invoke($"🧭 [FORECAST][{sourceTag}] {symbol} AI 기회 없음 → 진입 스킵");
+                    return true; // AI 판단 존중 — fallback 진입 안 함
+                }
+
+                decimal quantity = await CalculateOrderQuantityAsync(symbol, price, _cts?.Token ?? CancellationToken.None);
+                if (quantity <= 0) return false;
+
+                int leverage = 20;
+                bool scheduled = await _entryScheduler.RegisterAsync(
+                    symbol, forecast, price, quantity, leverage, _cts?.Token ?? CancellationToken.None);
+
+                if (scheduled)
+                {
+                    OnLiveLog?.Invoke(
+                        $"🧭 [FORECAST][{sourceTag}] {symbol} 예약 완료 | " +
+                        $"offsetBars={forecast.OffsetBars} priceOffset={forecast.PriceOffsetPct:F2}% " +
+                        $"expProfit={forecast.ExpectedProfitPct:F1}% prob={forecast.Probability:P0}");
+                }
+                return scheduled;
+            }
+            catch (Exception ex)
+            {
+                OnLiveLog?.Invoke($"⚠️ [FORECAST][{sourceTag}] {symbol} 예약 예외: {ex.Message}");
+                return false; // 예외 시 fallback
             }
         }
 
