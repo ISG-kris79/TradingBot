@@ -38,6 +38,12 @@ namespace TradingBot.Shared.Models
         public bool IsSimulation { get; set; }
         public bool IsOpenPosition => string.Equals(ExitReason, "OPEN_POSITION", StringComparison.OrdinalIgnoreCase);
         public string PositionStatus => IsOpenPosition ? "OPEN" : "CLOSED";
+
+        /// <summary>[v5.9.4] 수수료 분리 — 실현 수익 정확도 향상</summary>
+        public decimal RawPnL { get; set; }       // 수수료 차감 전 순수익
+        public decimal EntryFee { get; set; }     // 진입 수수료
+        public decimal ExitFee { get; set; }      // 청산 수수료
+        public decimal TotalFees { get; set; }    // 합계 수수료
     }
 
     public class PositionInfo

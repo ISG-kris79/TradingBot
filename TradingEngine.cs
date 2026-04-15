@@ -130,6 +130,13 @@ namespace TradingBot
             new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private int _slotCooldownMinutes = 3;
 
+        /// <summary>[v5.9.4] 가용잔고 캐시 갱신 시각 — 30초 미만이면 API 스킵</summary>
+        private DateTime _cachedAvailableBalanceTime = DateTime.MinValue;
+        private static readonly TimeSpan BalanceCacheTtl = TimeSpan.FromSeconds(30);
+
+        /// <summary>[v5.9.4] SetLeverage 실패 캐시 — 한 번 실패한 심볼은 재시도 안 함</summary>
+        private readonly ConcurrentDictionary<string, bool> _leverageSetFailed = new(StringComparer.OrdinalIgnoreCase);
+
         /// <summary>[v5.2.9] 신호 첫 발생 가격 기록 — 슬롯 차단 후 뒤늦은 고점 진입 방지</summary>
         private readonly ConcurrentDictionary<string, (decimal Price, DateTime Time)> _signalOriginPrice =
             new(StringComparer.OrdinalIgnoreCase);
@@ -1179,10 +1186,16 @@ namespace TradingBot
                             return;
                         }
 
-                        // [v5.7.7] 가용 잔고 체크 — 부족하면 주문 안 보냄
+                        // [v5.9.4] 가용 잔고 캐시 체크 — API 호출 절감
                         try
                         {
-                            decimal avail = await _exchangeService.GetAvailableBalanceAsync("USDT", _cts?.Token ?? CancellationToken.None);
+                            decimal avail = _cachedAvailableBalance;
+                            if ((DateTime.Now - _cachedAvailableBalanceTime) > BalanceCacheTtl)
+                            {
+                                avail = await _exchangeService.GetAvailableBalanceAsync("USDT", _cts?.Token ?? CancellationToken.None);
+                                _cachedAvailableBalance = avail;
+                                _cachedAvailableBalanceTime = DateTime.Now;
+                            }
                             if (avail < 50m)
                             {
                                 OnLiveLog?.Invoke($"⛔ [{symbol}] 가용잔고 ${avail:F0} < $50 → 스킵");
@@ -4014,6 +4027,8 @@ namespace TradingBot
                 string strategy = pos?.IsPumpStrategy == true ? "PUMP_API" : "MAJOR_API";
 
                 // TradeHistory에 청산 기록 저장
+                decimal entryFeeCalc = entryPrice * filledQty * 0.0004m;
+                decimal exitFeeCalc = avgPrice * filledQty * 0.0004m;
                 var log = new TradeLog(symbol, side, strategy, avgPrice, pos?.AiScore ?? 0, DateTime.Now, pnl, pnlPct)
                 {
                     EntryPrice = entryPrice,
@@ -4021,7 +4036,11 @@ namespace TradingBot
                     Quantity = filledQty,
                     EntryTime = pos?.EntryTime ?? DateTime.Now,
                     ExitTime = DateTime.Now,
-                    ExitReason = exitReason
+                    ExitReason = exitReason,
+                    RawPnL = rawPnl,
+                    EntryFee = entryFeeCalc,
+                    ExitFee = exitFeeCalc,
+                    TotalFees = fees
                 };
                 await _dbManager.SaveTradeLogAsync(log);
 
@@ -5212,10 +5231,16 @@ namespace TradingBot
                 ? overrideBaseMargin
                 : (_settings.DefaultMargin > 0 ? _settings.DefaultMargin : 200.0m);
 
-            // 가용 잔고 확인 — 마진이 가용 잔고의 30% 초과하면 축소
+            // [v5.9.4] 가용 잔고 캐시 우선 — 30초 내 조회된 값 재사용
             try
             {
-                decimal available = await _exchangeService.GetAvailableBalanceAsync("USDT", token);
+                decimal available = _cachedAvailableBalance;
+                if ((DateTime.Now - _cachedAvailableBalanceTime) > BalanceCacheTtl)
+                {
+                    available = await _exchangeService.GetAvailableBalanceAsync("USDT", token);
+                    _cachedAvailableBalance = available;
+                    _cachedAvailableBalanceTime = DateTime.Now;
+                }
                 if (available > 0)
                 {
                     decimal maxMargin = Math.Round(available * 0.3m, 0);
@@ -6453,7 +6478,12 @@ namespace TradingBot
                             Quantity = closeQty,
                             EntryTime = closedSnapshot.EntryTime == default ? DateTime.Now : closedSnapshot.EntryTime,
                             ExitTime = DateTime.Now,
-                            ExitReason = externalExitReason
+                            ExitReason = externalExitReason,
+                            // [v5.9.4] 수수료 분리 저장
+                            RawPnL = rawPnl,
+                            EntryFee = entryFee,
+                            ExitFee = exitFee,
+                            TotalFees = entryFee + exitFee + estimatedSlippage
                         };
 
                         bool synced = await _dbManager.TryCompleteOpenTradeAsync(syncCloseLog);
@@ -9264,12 +9294,17 @@ namespace TradingBot
                 currentPrice = nowTicker.LastPrice; // 최신 가격으로 갱신
             }
 
-            // 1-2. 데이터 수집
+            // [v5.9.4] 1-2. 데이터 수집 — 캐시 우선, 부족 시 API fallback
             CandleData? latestCandle = await GetLatestCandleDataAsync(symbol, token);
-            List<IBinanceKline>? recentEntryKlines =
-                (await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 140, token))?.ToList();
 
-            // [v4.6.0] PUMP/SPIKE/MAJOR_MEME 모두 140봉 부족 시 30봉으로 retry (신규 상장 알트 대응)
+            // 5분봉: 캐시 → API fallback
+            List<IBinanceKline>? recentEntryKlines = _marketDataManager.GetCachedKlines(symbol, KlineInterval.FiveMinutes, 20);
+            if (recentEntryKlines == null || recentEntryKlines.Count < 20)
+            {
+                recentEntryKlines = (await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 140, token))?.ToList();
+                EntryLog("DATA", "API_FALLBACK_5M", $"cache=miss count={recentEntryKlines?.Count ?? 0}");
+            }
+
             bool isPumpOrSpikeSource = signalSource == "SPIKE_DETECT"
                 || signalSource == "PUMP_WATCH_CONFIRMED"
                 || signalSource.StartsWith("SPIKE", StringComparison.OrdinalIgnoreCase)
@@ -9282,7 +9317,10 @@ namespace TradingBot
                 EntryLog("DATA", "RETRY30", $"path={signalSource} count={recentEntryKlines?.Count ?? 0}");
             }
 
-            var hsKlines = (await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 80, token))?.ToList();
+            // 15분봉: 캐시 → API fallback
+            var hsKlines = _marketDataManager.GetCachedKlines(symbol, KlineInterval.FifteenMinutes, 30);
+            if (hsKlines == null || hsKlines.Count < 30)
+                hsKlines = (await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 80, token))?.ToList();
             var hsResult = HeadAndShouldersDetector.DetectPattern(hsKlines ?? new List<IBinanceKline>(), 70);
 
             var bandwidthGate = EvaluateBandwidthGate(symbol, decision, signalSource, currentPrice, latestCandle, recentEntryKlines);
@@ -11171,12 +11209,20 @@ namespace TradingBot
                         signalSource: ctx.SignalSource ?? "UNKNOWN");
                 }
 
-                // [v5.7.4] 레버리지 설정 — 실패해도 진입 계속 (이미 설정된 레버리지로 진행)
-                bool leverageSet = await _exchangeService.SetLeverageAsync(symbol, leverage, token: ctx.Token);
-                if (!leverageSet)
+                // [v5.9.4] 레버리지 설정 — 한 번 실패한 심볼은 API 호출 스킵
+                if (_leverageSetFailed.ContainsKey(symbol))
                 {
-                    OnStatusLog?.Invoke($"⚠️ {symbol} 레버리지 {leverage}x 설정 실패 — 기존 레버리지로 진입 계속");
-                    EntryLog("ORDER_SETUP", "WARN", $"leverageSet=false lev={leverage}x (진입 계속)");
+                    EntryLog("ORDER_SETUP", "SKIP_LEV", $"lev={leverage}x (이전 실패 캐시)");
+                }
+                else
+                {
+                    bool leverageSet = await _exchangeService.SetLeverageAsync(symbol, leverage, token: ctx.Token);
+                    if (!leverageSet)
+                    {
+                        _leverageSetFailed[symbol] = true;
+                        OnStatusLog?.Invoke($"⚠️ {symbol} 레버리지 {leverage}x 설정 실패 — 이후 스킵");
+                        EntryLog("ORDER_SETUP", "WARN", $"leverageSet=false lev={leverage}x (캐시 등록)");
+                    }
                 }
 
                 // ProfitRegressor 사이징

@@ -4693,15 +4693,16 @@ namespace TradingBot.ViewModels
                 var dbManager = new DbManager(cs);
                 var stats = await dbManager.GetTodayStatsByCategoryAsync();
 
-                (int e, int w, int l, decimal p) majorT = stats.TryGetValue("MAJOR", out var mv) ? mv : (0, 0, 0, 0m);
-                (int e, int w, int l, decimal p) pumpT = stats.TryGetValue("PUMP", out var pv) ? pv : (0, 0, 0, 0m);
-                (int e, int w, int l, decimal p) spikeT = stats.TryGetValue("SPIKE", out var sv) ? sv : (0, 0, 0, 0m);
+                // [v5.9.4] 수수료 포함 통계
+                (int e, int w, int l, decimal p, decimal f) majorT = stats.TryGetValue("MAJOR", out var mv) ? mv : (0, 0, 0, 0m, 0m);
+                (int e, int w, int l, decimal p, decimal f) pumpT = stats.TryGetValue("PUMP", out var pv) ? pv : (0, 0, 0, 0m, 0m);
+                (int e, int w, int l, decimal p, decimal f) spikeT = stats.TryGetValue("SPIKE", out var sv) ? sv : (0, 0, 0, 0m, 0m);
 
                 RunOnUI(() =>
                 {
-                    MajorStats.Update(majorT.e, majorT.w, majorT.l, majorT.p);
-                    PumpStats.Update(pumpT.e, pumpT.w, pumpT.l, pumpT.p);
-                    SpikeStats.Update(spikeT.e, spikeT.w, spikeT.l, spikeT.p);
+                    MajorStats.Update(majorT.e, majorT.w, majorT.l, majorT.p, majorT.f);
+                    PumpStats.Update(pumpT.e, pumpT.w, pumpT.l, pumpT.p, pumpT.f);
+                    SpikeStats.Update(spikeT.e, spikeT.w, spikeT.l, spikeT.p, spikeT.f);
                 });
             }
             catch (Exception ex)

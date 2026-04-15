@@ -242,12 +242,22 @@ namespace TradingBot.Models
             }
         }
 
-        public void Update(int entries, int wins, int losses, decimal pnl)
+        /// <summary>[v5.9.4] 수수료 합계</summary>
+        private decimal _totalFees;
+        public decimal TotalFees
+        {
+            get => _totalFees;
+            set { _totalFees = value; OnPropertyChanged(); OnPropertyChanged(nameof(FeesText)); }
+        }
+        public string FeesText => _totalFees > 0 ? $"수수료 ${_totalFees:F2}" : "";
+
+        public void Update(int entries, int wins, int losses, decimal pnl, decimal fees = 0m)
         {
             TodayPnL = pnl;
             Entries = entries;
             Wins = wins;
             Losses = losses;
+            TotalFees = fees;
         }
     }
 }

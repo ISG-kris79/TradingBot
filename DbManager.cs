@@ -33,6 +33,7 @@ namespace TradingBot.Services
         {
             _connectionString = connectionString;
             _ = EnsureCategoryColumnAsync();
+            _ = EnsureFeeColumnsAsync();
             _ = EnsureCandleDataIndexAsync();
         }
 
@@ -109,6 +110,39 @@ END");
         }
 
         /// <summary>
+        /// [v5.9.4] TradeHistory에 수수료/실현수익 컬럼 자동 추가
+        /// </summary>
+        private async Task EnsureFeeColumnsAsync()
+        {
+            try
+            {
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await db.ExecuteAsync(@"
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'RawPnL')
+BEGIN
+    ALTER TABLE dbo.TradeHistory ADD RawPnL DECIMAL(18,4) NULL;
+END
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'EntryFee')
+BEGIN
+    ALTER TABLE dbo.TradeHistory ADD EntryFee DECIMAL(18,8) NULL;
+END
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'ExitFee')
+BEGIN
+    ALTER TABLE dbo.TradeHistory ADD ExitFee DECIMAL(18,8) NULL;
+END
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'TotalFees')
+BEGIN
+    ALTER TABLE dbo.TradeHistory ADD TotalFees DECIMAL(18,4) NULL;
+END");
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] Fee 컬럼 자동 추가 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// [v5.0.3] signalSource + signal symbol 로부터 카테고리 결정
         /// 규칙 (단순):
         /// - MAJOR: 9개 메이저 심볼 중 하나
@@ -151,10 +185,10 @@ END");
         /// Category IS NOT NULL 로 과거 데이터 자동 제외
         /// 진입 시각 + Symbol 그룹핑으로 PartialClose 중복 제거
         /// </summary>
-        public async Task<Dictionary<string, (int entries, int wins, int losses, decimal totalPnL)>>
+        public async Task<Dictionary<string, (int entries, int wins, int losses, decimal totalPnL, decimal totalFees)>>
             GetTodayStatsByCategoryAsync()
         {
-            var result = new Dictionary<string, (int, int, int, decimal)>(StringComparer.OrdinalIgnoreCase);
+            var result = new Dictionary<string, (int, int, int, decimal, decimal)>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 DateTime todayKstStart = DateTime.Today;
@@ -163,7 +197,7 @@ END");
                 await using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
 
-                // [v5.3.2] UserId 필터 추가 — 이 유저의 매매만 집계
+                // [v5.9.4] TotalFees 합계 추가 — 수수료 분리 표시
                 const string sql = @"
 WITH Groups AS (
     SELECT
@@ -171,6 +205,7 @@ WITH Groups AS (
         Symbol,
         EntryTime,
         SUM(ISNULL(PnL, 0)) AS TotalPnL,
+        SUM(ISNULL(TotalFees, 0)) AS TotalFees,
         MAX(CASE WHEN IsClosed = 1 THEN 1 ELSE 0 END) AS HasClosed
     FROM dbo.TradeHistory
     WHERE Category IS NOT NULL
@@ -183,7 +218,8 @@ SELECT
     COUNT(*) AS Entries,
     SUM(CASE WHEN HasClosed = 1 AND TotalPnL > 0 THEN 1 ELSE 0 END) AS Wins,
     SUM(CASE WHEN HasClosed = 1 AND TotalPnL < 0 THEN 1 ELSE 0 END) AS Losses,
-    SUM(TotalPnL) AS TotalPnL
+    SUM(TotalPnL) AS TotalPnL,
+    SUM(TotalFees) AS TotalFees
 FROM Groups
 GROUP BY Category";
 
@@ -195,7 +231,8 @@ GROUP BY Category";
                     int wins = (int)(row.Wins ?? 0);
                     int losses = (int)(row.Losses ?? 0);
                     decimal totalPnL = (decimal)(row.TotalPnL ?? 0m);
-                    result[cat] = (entries, wins, losses, totalPnL);
+                    decimal totalFees = (decimal)(row.TotalFees ?? 0m);
+                    result[cat] = (entries, wins, losses, totalPnL, totalFees);
                 }
             }
             catch (Exception ex)
@@ -1414,6 +1451,10 @@ SET ExitPrice = @ExitPrice,
     IsClosed = 1,
     CloseVerified = 1,
     IsSimulation = @IsSimulation,
+    RawPnL = @RawPnL,
+    EntryFee = @EntryFee,
+    ExitFee = @ExitFee,
+    TotalFees = @TotalFees,
     LastUpdatedAt = GETDATE()
 WHERE Id = @Id;",
                         new
@@ -1426,7 +1467,11 @@ WHERE Id = @Id;",
                             log.PnLPercent,
                             ExitReason = exitReason,
                             ExitTime = exitTime,
-                            log.IsSimulation
+                            log.IsSimulation,
+                            log.RawPnL,
+                            log.EntryFee,
+                            log.ExitFee,
+                            log.TotalFees
                         }, tx);
 
                     await tx.CommitAsync();
