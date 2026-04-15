@@ -2211,6 +2211,9 @@ namespace TradingBot
 
                                 try
                                 {
+                                    // [v5.6.7] API Rate Limit 방지 — 심볼 간 2초 딜레이
+                                    await Task.Delay(2000, token);
+
                                     // 1) 기존 주문 전부 삭제
                                     await _exchangeService.CancelAllOrdersAsync(pos.Symbol, token);
                                     OnStatusLog?.Invoke($"🗑️ [재시작] {pos.Symbol} 기존 주문 삭제 완료");
