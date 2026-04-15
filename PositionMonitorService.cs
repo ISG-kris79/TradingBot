@@ -3377,6 +3377,46 @@ namespace TradingBot.Services
 
                 OnAlert?.Invoke($"✅ {symbol} 청산 완료(검증됨): {reason}");
 
+                // [v5.9.14] 전량청산 텔레그램 알림 — 손절/익절 둘 다 전송
+                try
+                {
+                    decimal exitPriceTg = 0m;
+                    if (_marketDataManager != null && _marketDataManager.TickerCache.TryGetValue(symbol, out var tkr))
+                        exitPriceTg = tkr.LastPrice;
+                    if (exitPriceTg <= 0) exitPriceTg = position.EntryPrice;
+
+                    decimal rawPnlTg = isLongPosition
+                        ? (exitPriceTg - position.EntryPrice) * absQty
+                        : (position.EntryPrice - exitPriceTg) * absQty;
+                    decimal feesTg = (position.EntryPrice + exitPriceTg) * absQty * 0.0004m;
+                    decimal netPnlTg = rawPnlTg - feesTg;
+                    decimal roeTg = position.EntryPrice > 0 && position.Leverage > 0
+                        ? (netPnlTg / (position.EntryPrice * absQty)) * 100m * position.Leverage
+                        : 0m;
+
+                    bool isStopTg = reason.Contains("손절") || reason.Contains("ROE") || reason.Contains("하락추세") || reason.Contains("SL") || reason.Contains("스탑");
+                    string emojiTg = isStopTg ? "🛑" : (netPnlTg >= 0 ? "💰" : "📉");
+                    string titleTg = isStopTg ? "[손절 청산]" : (netPnlTg >= 0 ? "[익절 청산]" : "[청산]");
+                    string directionTg = isLongPosition ? "LONG" : "SHORT";
+
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await TelegramService.Instance.SendMessageAsync(
+                                $"{emojiTg} *{titleTg}*\n" +
+                                $"`{symbol}` {directionTg}\n" +
+                                $"진입: `{position.EntryPrice:F6}` → 청산: `{exitPriceTg:F6}`\n" +
+                                $"PnL: `{netPnlTg:+0.00;-0.00}` USDT (ROE {roeTg:+0.0;-0.0}%)\n" +
+                                $"사유: {reason}\n" +
+                                $"⏰ {DateTime.Now:HH:mm:ss}",
+                                TelegramMessageType.Profit);
+                        }
+                        catch { }
+                    });
+                }
+                catch (Exception tgEx) { OnLog?.Invoke($"⚠️ [Telegram] 청산 알림 실패: {tgEx.Message}"); }
+
                 // [v3.9.1] 손절이면 횟수 추적 → 2회 이상 당일 블랙리스트
                 bool isStopLoss = reason.Contains("손절") || reason.Contains("ROE") || reason.Contains("하락추세");
                 if (isStopLoss)

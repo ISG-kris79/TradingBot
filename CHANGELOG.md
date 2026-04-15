@@ -5,6 +5,23 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.9.14] - 2026-04-15
+
+### Added
+
+- **5분봉 직전 봉 음봉 차단**: LONG 진입 시 완결된 직전 5분봉이 음봉이면 진입 차단 (EnqueueEntry 초반)
+- **전량청산 텔레그램 알림**: PositionMonitorService.ExecuteMarketClose에서 손절/익절 모두 텔레그램 전송
+  - 손절: 🛑 [손절 청산] + 이모지
+  - 익절: 💰 [익절 청산] / 📉 [청산]
+  - 포함 정보: 심볼/방향/진입가/청산가/PnL/ROE/사유/시각
+
+### Removed
+
+- **서킷 브레이커 전면 제거**: 사용자 요청
+  - `_riskManager.IsTripped` 체크 전부 삭제 (진입 게이트, PumpEntry, 메인 루프)
+  - 승률 서킷브레이커 / 워밍업 가드 체크 제거
+  - 이유: AI 판단만 사용 + 수익 기회 놓치지 않기
+
 ## [5.9.13] - 2026-04-15
 
 ### Added

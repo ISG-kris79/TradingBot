@@ -2739,8 +2739,7 @@ namespace TradingBot
 
                 // 3. 메인 관리 루프 (REST API 호출 최소화)
                 OnStatusLog?.Invoke("🔄 메인 스캔 루프 시작...");
-                bool isCircuitBreakerNotificationSent = false;
-
+                // [v5.9.14] 서킷브레이커 제거 — 사용자 요청
                 while (!token.IsCancellationRequested)
                 {
                     Stopwatch? loopWatch = _mainLoopPerfEnabled ? Stopwatch.StartNew() : null;
@@ -2748,44 +2747,6 @@ namespace TradingBot
 
                     try
                     {
-                        if (_riskManager.IsTripped)
-                        {
-                            if ((DateTime.Now - _riskManager.TripTime).TotalHours >= 1)
-                            {
-                                _riskManager.Reset();
-                                isCircuitBreakerNotificationSent = false;
-
-                                int closedCount = 0;
-                                List<string> symbolsToClose;
-                                lock (_posLock) { symbolsToClose = _activePositions.Keys.ToList(); }
-
-                                foreach (var symbol in symbolsToClose)
-                                {
-                                    await _positionMonitor.ExecuteMarketClose(symbol, "서킷 브레이커 해제 후 리스크 관리(강제 청산)", token);
-                                    closedCount++;
-                                }
-                                
-                                string resumeMsg = TradingStateLogger.CircuitBreakerReleased(closedCount);
-                                await NotificationService.Instance.NotifyAsync(resumeMsg, NotificationChannel.Alert);
-                                OnAlert?.Invoke(resumeMsg);
-                                OnStatusLog?.Invoke("서킷 브레이커 자동 해제됨.");
-                            }
-                            else
-                            {
-                                if (!isCircuitBreakerNotificationSent)
-                                {
-                                    isCircuitBreakerNotificationSent = true;
-                                    string msg = TradingStateLogger.CircuitBreakerTripped(_riskManager.GetTripDetails(), 1);
-                                    await NotificationService.Instance.NotifyAsync(msg, NotificationChannel.Alert);
-                                    OnAlert?.Invoke(msg);
-                                }
-
-                                var remaining = TimeSpan.FromHours(1) - (DateTime.Now - _riskManager.TripTime);
-                                OnStatusLog?.Invoke($"⛔ 서킷 브레이커 발동 중. 매매 중단 (재개까지 {remaining.Minutes}분 남음)");
-                                await Task.Delay(10000, token);
-                                continue;
-                            }
-                        }
 
                         // [일일 수익 목표] 자정 리셋 및 알림 ($250/일 알림 전용, 차단 없음)
                         if (DateTime.Today > _dailyTargetResetDate)
@@ -4954,11 +4915,7 @@ namespace TradingBot
             decimal marginUsdt = GetLiquidityAdjustedPumpMarginUsdt(symbol);
             PumpEntryLog("SIZE", "CONFIG", $"pumpMargin={marginUsdt:F0}usdt");
 
-            if (_riskManager.IsTripped)
-            {
-                PumpEntryLog("RISK", "BLOCK", "circuitBreaker=on");
-                return;
-            }
+            // [v5.9.14] 서킷브레이커 제거
 
             // [20배 PUMP 롱 전용] 5분봉 컨플루언스 진입 필터
             var pumpKlines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 40, token);
@@ -9217,6 +9174,22 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"⚡ [블랙리스트 우회] {symbol} {signalSource} 고신뢰도 → 재진입 허용");
             }
 
+            // [v5.9.14] 5분봉 직전 봉 음봉 체크 — 사용자 요청 (완결된 직전 5분봉이 음봉이면 진입 차단)
+            if (decision == "LONG" && _marketDataManager.KlineCache.TryGetValue(symbol, out var prevKc) && prevKc != null)
+            {
+                List<IBinanceKline> snap;
+                lock (prevKc) { snap = prevKc.ToList(); }
+                if (snap.Count >= 2)
+                {
+                    var prevCandle = snap[snap.Count - 2]; // 현재 진행 중 봉 바로 앞 (완결된 직전 봉)
+                    if (prevCandle.ClosePrice < prevCandle.OpenPrice)
+                    {
+                        OnLiveLog?.Invoke($"⛔ [{symbol}] 직전 5분봉 음봉 → 진입 차단 (O={prevCandle.OpenPrice:F4} C={prevCandle.ClosePrice:F4})");
+                        return;
+                    }
+                }
+            }
+
             // 마진 스냅샷 — 큐 적재 시점의 설정값 고정 (병렬 읽기 경합 방지)
             decimal snapDefaultMargin = _settings.DefaultMargin;
             decimal snapPumpMargin = _settings.PumpMargin;
@@ -9556,22 +9529,9 @@ namespace TradingBot
                 return;
             }
 
-            // 1-5. 워밍업 + 서킷브레이커
-            if (IsEntryWarmupActive(out var remaining))
-            {
-                OnStatusLog?.Invoke(TradingStateLogger.RejectedByRiskManagement(symbol, decision, $"진입 워밍업 활성화 ({remaining.TotalSeconds:F0}초 남음)"));
-                EntryLog("GUARD", "BLOCK", $"warmupRemainingSec={remaining.TotalSeconds:F0}");
-                return;
-            }
+            // [v5.9.14] 서킷브레이커 제거 — 사용자 요청 (AI 판단만 사용)
+            // 워밍업도 제거: 수익 기회 놓치지 않기
 
-            if (_riskManager.IsTripped)
-            {
-                OnStatusLog?.Invoke(TradingStateLogger.RejectedByRiskManagement(symbol, decision, "서킷 브레이커 발동 중"));
-                EntryLog("RISK", "BLOCK", "circuitBreaker=on");
-                return;
-            }
-
-            // 승률 서킷브레이커: 시간 차단 제거 — 진입 품질로 제어
 
             // BTC 하락장 필터 제거 — 메이저도 BTC와 독립적으로 움직일 수 있음
             if (false && decision == "LONG")
