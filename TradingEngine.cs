@@ -1219,6 +1219,7 @@ namespace TradingBot
                         if (!aiApproved)
                         {
                             OnStatusLog?.Invoke($"⛔ [틱급증→차단] {symbol} TPS={tpsRatio:F1}x | {blockReason}");
+                            OnLiveLog?.Invoke($"⛔ [{symbol}] 틱급증 차단: {blockReason}");
                             return;
                         }
 
@@ -1249,14 +1250,15 @@ namespace TradingBot
                             if (bearish5m >= 2 && price < sma20_5m)
                             {
                                 OnStatusLog?.Invoke($"⛔ [매수쏠림→차단] {symbol} 5분봉 하락추세(음봉{bearish5m}/3 + BB아래) → 가짜 반등");
+                                OnLiveLog?.Invoke($"⛔ [{symbol}] 매수쏠림 차단: 하락추세");
                                 return;
                             }
 
-                            // 마지막 5분봉 양봉 + 가격 상승 중 → 진입
                             bool lastBullish = recent[^1].ClosePrice > recent[^1].OpenPrice;
                             if (!lastBullish)
                             {
                                 OnStatusLog?.Invoke($"⛔ [매수쏠림→차단] {symbol} 마지막 5분봉 음봉 → 대기");
+                                OnLiveLog?.Invoke($"⛔ [{symbol}] 매수쏠림 차단: 음봉 대기");
                                 return;
                             }
                         }
@@ -8988,6 +8990,8 @@ namespace TradingBot
                 {
                     RecordEntryBlockReason(stage);
                     OnBlockReasonUpdate?.Invoke($"[{stage}] {detail}");
+                    // [v5.7.1] 빠른 로그에도 차단 이유 표시
+                    OnLiveLog?.Invoke($"⛔ [{symbol}] {stage} 차단: {detail}");
                 }
                 else if (status.IndexOf("PASS", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
