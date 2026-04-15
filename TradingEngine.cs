@@ -2215,12 +2215,21 @@ namespace TradingBot
                                     decimal tpPartial = 0.2m; // 20% 부분익절
                                     decimal trailCb = isMajor ? 2.0m : 3.5m;
 
-                                    await _entryOrderRegistrar.RegisterEntryOrdersAsync(
+                                    var (slIdR, tpIdR) = await _entryOrderRegistrar.RegisterEntryOrdersAsync(
                                         pos.Symbol, pos.IsLong, pos.EntryPrice,
                                         pos.Quantity, (int)pos.Leverage,
                                         slRoe, tpRoe, tpPartial, trailCb, token);
 
-                                    OnStatusLog?.Invoke($"✅ [재시작] {pos.Symbol} SL/TP/Trailing 재등록 완료");
+                                    // [v5.9.18] TP 플래그 저장 — 내부 부분청산 이중 실행 방지
+                                    lock (_posLock)
+                                    {
+                                        if (_activePositions.TryGetValue(pos.Symbol, out var rp))
+                                        {
+                                            if (!string.IsNullOrEmpty(slIdR)) rp.StopOrderId = slIdR;
+                                            if (!string.IsNullOrEmpty(tpIdR)) rp.TpRegisteredOnExchange = true;
+                                        }
+                                    }
+                                    OnStatusLog?.Invoke($"✅ [재시작] {pos.Symbol} SL/TP/Trailing 재등록 완료 (TP={!string.IsNullOrEmpty(tpIdR)})");
                                 }
                                 catch (Exception regEx)
                                 {
@@ -6800,28 +6809,44 @@ namespace TradingBot
                 });
 
                 // [v5.9.2] 외부 포지션 감지 시 SL/TP/Trailing 자동 등록
+                // [v5.9.18] TpRegisteredOnExchange 플래그 설정 추가 — 내부 부분청산 이중 실행 방지
                 if (!wasTracked && _entryOrderRegistrar != null && Math.Abs(pos.Quantity) > 0)
                 {
+                    string regSymbol = pos.Symbol;
+                    bool regIsLong = isLong;
+                    decimal regEntryPrice = pos.EntryPrice;
+                    decimal regQty = Math.Abs(pos.Quantity);
+                    int regLev = (int)Math.Max(1, safeLeverage);
                     _ = Task.Run(async () =>
                     {
                         try
                         {
                             await Task.Delay(1000);
-                            _entryOrderRegistrar.ResetCooldown(pos.Symbol);
-                            bool isPump = !MajorSymbols.Contains(pos.Symbol);
+                            _entryOrderRegistrar.ResetCooldown(regSymbol);
+                            bool isPump = !MajorSymbols.Contains(regSymbol);
                             decimal slRoe = isPump ? -40m : -50m;
                             decimal tpRoe = isPump ? 25m : 40m;
                             decimal trailCb = isPump ? 3.5m : 2.0m;
-                            await _entryOrderRegistrar.RegisterEntryOrdersAsync(
-                                pos.Symbol, isLong, pos.EntryPrice,
-                                Math.Abs(pos.Quantity), (int)Math.Max(1, safeLeverage),
+                            var (slId2, tpId2) = await _entryOrderRegistrar.RegisterEntryOrdersAsync(
+                                regSymbol, regIsLong, regEntryPrice,
+                                regQty, regLev,
                                 slRoe, tpRoe, 0.2m, trailCb,
                                 _cts?.Token ?? CancellationToken.None);
-                            OnStatusLog?.Invoke($"✅ [외부포지션] {pos.Symbol} SL/TP/Trailing 자동 등록 완료");
+
+                            // [v5.9.18] 포지션에 TP 플래그 저장 — 내부 부분청산 이중 실행 방지
+                            lock (_posLock)
+                            {
+                                if (_activePositions.TryGetValue(regSymbol, out var regPos))
+                                {
+                                    if (!string.IsNullOrEmpty(slId2)) regPos.StopOrderId = slId2;
+                                    if (!string.IsNullOrEmpty(tpId2)) regPos.TpRegisteredOnExchange = true;
+                                }
+                            }
+                            OnStatusLog?.Invoke($"✅ [외부포지션] {regSymbol} SL/TP/Trailing 자동 등록 완료 (TP={!string.IsNullOrEmpty(tpId2)})");
                         }
                         catch (Exception regEx)
                         {
-                            OnStatusLog?.Invoke($"⚠️ [외부포지션] {pos.Symbol} SL/TP 등록 실패: {regEx.Message}");
+                            OnStatusLog?.Invoke($"⚠️ [외부포지션] {regSymbol} SL/TP 등록 실패: {regEx.Message}");
                         }
                     });
                 }
@@ -9044,11 +9069,21 @@ namespace TradingBot
                                     decimal tpRoeReg = isPump ? 25m : 40m;
                                     decimal trailCb = isPump ? 3.5m : 2.0m;
                                     _entryOrderRegistrar?.ResetCooldown(symbol);
-                                    await _entryOrderRegistrar!.RegisterEntryOrdersAsync(
+                                    var (slIdL, tpIdL) = await _entryOrderRegistrar!.RegisterEntryOrdersAsync(
                                         symbol, match.Quantity > 0, match.EntryPrice,
                                         Math.Abs(match.Quantity), levForReserve,
                                         slRoeReg, tpRoeReg, 0.2m, trailCb,
                                         _cts?.Token ?? CancellationToken.None);
+
+                                    // [v5.9.18] TP 플래그 저장
+                                    lock (_posLock)
+                                    {
+                                        if (_activePositions.TryGetValue(symbol, out var lpp))
+                                        {
+                                            if (!string.IsNullOrEmpty(slIdL)) lpp.StopOrderId = slIdL;
+                                            if (!string.IsNullOrEmpty(tpIdL)) lpp.TpRegisteredOnExchange = true;
+                                        }
+                                    }
                                 }
                                 catch (Exception regEx)
                                 {
@@ -14627,9 +14662,14 @@ namespace TradingBot
                                 symbol, isLong, avgPrice, filledQty,
                                 leverage, slRoe, tpRoe, tpPartial, trailCb3, CancellationToken.None);
 
-                            if (!string.IsNullOrEmpty(slId))
+                            // [v5.9.18] TP 플래그 저장 — 내부 부분청산 이중 실행 방지
+                            lock (_posLock)
                             {
-                                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = slId; }
+                                if (_activePositions.TryGetValue(symbol, out var p))
+                                {
+                                    if (!string.IsNullOrEmpty(slId)) p.StopOrderId = slId;
+                                    if (!string.IsNullOrEmpty(tpId)) p.TpRegisteredOnExchange = true;
+                                }
                             }
                             OnStatusLog?.Invoke($"📋 [수동진입] {symbol} SL/TP API 등록 완료 (SL={!string.IsNullOrEmpty(slId)} TP={!string.IsNullOrEmpty(tpId)})");
                         }

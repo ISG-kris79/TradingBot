@@ -5,6 +5,20 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.9.18] - 2026-04-16
+
+### Fixed
+
+- **부분청산 이중 실행 버그 해결** (GIGGLEUSDT 케이스):
+  - 증상: 거래소 API에 TP가 등록되어 있는데도 내부 `ExecutePartialClose`가 실행되어 "부분청산 실패" 알림
+  - 원인: `EntryOrderRegistrar.RegisterEntryOrdersAsync` 호출 후 `TpRegisteredOnExchange` 플래그를 설정하지 않던 경로들
+  - 수정 위치 (4곳):
+    1. `HandleAccountUpdate` 외부 포지션 감지 경로 (line 6815)
+    2. `SyncCurrentPositionsAsync` 재시작 복원 경로 (line 2218)
+    3. `TryHybridLimitEntryAsync` LIMIT 체결 감시 루프 (line 9072)
+    4. 수동 진입 경로 (line 14661)
+  - 효과: TP가 거래소에 등록된 포지션은 **내부 PartialClose가 스킵** → 이중 청산 시도 + 실패 알림 제거
+
 ## [5.9.17] - 2026-04-15
 
 ### Removed
