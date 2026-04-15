@@ -2895,10 +2895,9 @@ namespace TradingBot
                             _lastHeartbeatTime = DateTime.Now;
                         }
 
-                        // [FIX] 거래소 포지션 동기화 (30분 주기)
-                        if ((DateTime.Now - _lastPositionSyncTime).TotalMinutes >= 30)
+                        // [v5.9.16] 거래소 포지션 동기화 30분 → 2분 주기로 단축 (UI 누락 빠른 복구)
+                        if ((DateTime.Now - _lastPositionSyncTime).TotalMinutes >= 2)
                         {
-                            OnStatusLog?.Invoke("🔄 정기 거래소 포지션 동기화 시작...");
                             await SyncExchangePositionsAsync(token);
                             _lastPositionSyncTime = DateTime.Now;
                         }
@@ -6402,15 +6401,28 @@ namespace TradingBot
                     continue;
                 }
 
-                // [FIX] 최근 청산된 심볼은 쿨다운 기간 동안 무시 (팬텀 EXTERNAL_PARTIAL_CLOSE_SYNC 방지)
+                // [v5.9.16] 쿨다운 로직 개선 — 이미 추적 중인 포지션만 쿨다운 적용 (새 진입은 즉시 추가)
+                // 기존 버그: 새 심볼 진입인데 쿨다운 걸려서 _activePositions 추가 안 됨 → UI 누락
                 if (_recentlyClosedCooldown.TryGetValue(pos.Symbol, out var cooldownUntil))
                 {
                     if (DateTime.Now < cooldownUntil)
                     {
-                        OnStatusLog?.Invoke($"⏳ {pos.Symbol} 청산 쿨다운 중 — ACCOUNT_UPDATE 무시 ({(cooldownUntil - DateTime.Now).TotalSeconds:F0}초 남음)");
-                        continue;
+                        bool alreadyTracked;
+                        lock (_posLock) { alreadyTracked = _activePositions.ContainsKey(pos.Symbol); }
+                        if (alreadyTracked)
+                        {
+                            // 추적 중인 포지션의 업데이트만 스킵 (팬텀 EXTERNAL_PARTIAL_CLOSE_SYNC 방지)
+                            OnStatusLog?.Invoke($"⏳ {pos.Symbol} 청산 쿨다운 중 — 추적 업데이트 스킵 ({(cooldownUntil - DateTime.Now).TotalSeconds:F0}초 남음)");
+                            continue;
+                        }
+                        // 추적 안 되던 심볼이면 쿨다운 해제하고 진입 처리 계속
+                        _recentlyClosedCooldown.TryRemove(pos.Symbol, out _);
+                        OnStatusLog?.Invoke($"ℹ️ {pos.Symbol} 쿨다운 중이지만 새 진입 감지 → 쿨다운 해제 후 추가");
                     }
-                    _recentlyClosedCooldown.TryRemove(pos.Symbol, out _);
+                    else
+                    {
+                        _recentlyClosedCooldown.TryRemove(pos.Symbol, out _);
+                    }
                 }
 
                 bool isLong = pos.Quantity > 0;
@@ -8984,16 +8996,76 @@ namespace TradingBot
                 OnLiveLog?.Invoke($"📋 [LIMIT 예약] {symbol} ${predictedLimitPrice:F6} qty={quantity} (pullback 예측 -{predicted.Value:F2}%)");
                 OnStatusLog?.Invoke($"📋 [LIMIT 예약] {symbol} orderId={orderId} → 10분 내 체결 대기");
 
-                // 10분 후 미체결 시 취소
+                // [v5.9.16] LIMIT 체결 감시 루프 — 체결 시 _activePositions에 추가 (로컬 동기화 누락 방지)
+                int levForReserve = leverage;
                 _ = Task.Run(async () =>
                 {
-                    try
+                    var deadline = DateTime.Now.AddMinutes(10);
+                    bool filled = false;
+                    while (DateTime.Now < deadline)
                     {
-                        await Task.Delay(TimeSpan.FromMinutes(10), _cts?.Token ?? CancellationToken.None);
+                        try
+                        {
+                            await Task.Delay(3000, _cts?.Token ?? CancellationToken.None);
+                            var positions = await _exchangeService.GetPositionsAsync(_cts?.Token ?? CancellationToken.None);
+                            var match = positions.FirstOrDefault(p => string.Equals(p.Symbol, symbol, StringComparison.OrdinalIgnoreCase) && Math.Abs(p.Quantity) > 0);
+                            if (match != null)
+                            {
+                                filled = true;
+                                lock (_posLock)
+                                {
+                                    if (!_activePositions.ContainsKey(symbol))
+                                    {
+                                        _activePositions[symbol] = new PositionInfo
+                                        {
+                                            Symbol = symbol,
+                                            EntryPrice = match.EntryPrice > 0 ? match.EntryPrice : predictedLimitPrice,
+                                            IsLong = match.Quantity > 0,
+                                            Side = match.Quantity > 0 ? OrderSide.Buy : OrderSide.Sell,
+                                            IsPumpStrategy = !MajorSymbols.Contains(symbol),
+                                            Quantity = Math.Abs(match.Quantity),
+                                            InitialQuantity = Math.Abs(match.Quantity),
+                                            Leverage = levForReserve,
+                                            EntryTime = DateTime.Now,
+                                            HighestPrice = match.EntryPrice,
+                                            LowestPrice = match.EntryPrice,
+                                            IsOwnPosition = true,
+                                            EntrySignalSource = "HYBRID_LIMIT"
+                                        };
+                                    }
+                                }
+                                OnLiveLog?.Invoke($"✅ [LIMIT 체결] {symbol} → _activePositions 동기화 + SL/TP 등록");
+
+                                // SL/TP/Trailing 거래소 등록
+                                try
+                                {
+                                    bool isPump = !MajorSymbols.Contains(symbol);
+                                    decimal slRoeReg = isPump ? -40m : -50m;
+                                    decimal tpRoeReg = isPump ? 25m : 40m;
+                                    decimal trailCb = isPump ? 3.5m : 2.0m;
+                                    _entryOrderRegistrar?.ResetCooldown(symbol);
+                                    await _entryOrderRegistrar!.RegisterEntryOrdersAsync(
+                                        symbol, match.Quantity > 0, match.EntryPrice,
+                                        Math.Abs(match.Quantity), levForReserve,
+                                        slRoeReg, tpRoeReg, 0.2m, trailCb,
+                                        _cts?.Token ?? CancellationToken.None);
+                                }
+                                catch (Exception regEx)
+                                {
+                                    OnStatusLog?.Invoke($"⚠️ [LIMIT 체결 후 SL/TP 등록] {symbol}: {regEx.Message}");
+                                }
+                                break;
+                            }
+                        }
+                        catch { }
+                    }
+
+                    if (!filled)
+                    {
+                        // 10분 만료 → LIMIT 취소
                         try { await _exchangeService.CancelOrderAsync(symbol, orderId, _cts?.Token ?? CancellationToken.None); } catch { }
                         OnStatusLog?.Invoke($"⏰ [LIMIT 만료] {symbol} orderId={orderId} 10분 미체결 → 취소");
                     }
-                    catch { }
                 });
 
                 return true;

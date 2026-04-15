@@ -5,6 +5,16 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.9.16] - 2026-04-15
+
+### Fixed
+
+- **UI 포지션 누락 버그 해결** (CRCLUSDT 케이스):
+  - LIMIT 진입(`TryHybridLimitEntryAsync`)이 체결되어도 `_activePositions` 로컬 딕셔너리에 추가 안 되는 문제 수정
+  - 체결 감시 루프 추가: LIMIT 발주 후 3초마다 거래소 포지션 조회 → 체결 감지 시 `_activePositions`에 추가 + SL/TP/Trailing 자동 등록
+  - `HandleAccountUpdate` 쿨다운 로직 개선: 추적 중인 포지션만 쿨다운 적용, **새 진입은 쿨다운 무시하고 추가** (기존 버그: 새 심볼이 쿨다운에 걸려 UI 누락)
+- **거래소 포지션 동기화 주기 단축**: 30분 → **2분** (UI 누락 빠른 자동 복구)
+
 ## [5.9.15] - 2026-04-15
 
 ### Changed (예측 정확도 4개 항목 통합 개선)
