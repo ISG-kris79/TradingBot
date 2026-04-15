@@ -227,7 +227,19 @@
                                              Foreground="White"
                                              BorderBrush="#2D3142"/>
 
-                                    <!-- [v5.5.6] 메이저 증거금 % 제거 — DefaultMargin USDT 고정 사용 -->
+                                    <!-- [v5.5.8] 메이저 코인 매매 ON/OFF -->
+                                    <TextBlock Text="메이저 코인 매매:"
+                                               VerticalAlignment="Center"
+                                               Grid.Row="2"
+                                               Foreground="#94A3B8"
+                                               Margin="0,0,0,15"/>
+                                    <CheckBox x:Name="chkEnableMajorTrading"
+                                              Grid.Row="2" Grid.Column="1"
+                                              Content="활성화"
+                                              IsChecked="True"
+                                              Foreground="#94A3B8"
+                                              VerticalAlignment="Center"
+                                              Margin="0,0,0,15"/>
 
                                     <!-- PUMP 증거금 $ -->
                                     <TextBlock Text="PUMP 증거금 ($):"

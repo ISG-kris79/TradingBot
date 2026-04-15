@@ -332,7 +332,7 @@ namespace TradingBot
                 {
                     // DB에서 로드한 설정으로 UI 업데이트
                     txtDefaultMargin.Text = dbSettings.DefaultMargin.ToString("F4");
-                    // [v5.5.6] 메이저 증거금 % 제거
+                    chkEnableMajorTrading.IsChecked = dbSettings.EnableMajorTrading;
                     txtPumpMargin.Text = dbSettings.PumpMargin.ToString("F0");
                     txtLeverage.Text = dbSettings.DefaultLeverage.ToString();
                 // [v3.2.14 removed] txtTargetRoe.Text = dbSettings.TargetRoe.ToString("F4");
@@ -408,7 +408,8 @@ namespace TradingBot
                         if (generalNode != null)
                         {
                             txtDefaultMargin.Text = generalNode["DefaultMargin"]?.ToString() ?? "200.0";
-                            // [v5.5.6] 메이저 증거금 % 제거
+                            if (generalNode["EnableMajorTrading"] != null)
+                                chkEnableMajorTrading.IsChecked = generalNode["EnableMajorTrading"]?.ToString()?.ToLower() != "false";
                             txtPumpMargin.Text = generalNode["PumpMargin"]?.ToString() ?? "200";
                             txtLeverage.Text = generalNode["DefaultLeverage"]?.ToString() ?? "10";
                 // [v3.2.14 removed] txtTargetRoe.Text = generalNode["TargetRoe"]?.ToString() ?? "20.0";
@@ -770,7 +771,10 @@ namespace TradingBot
                     generalNode["DefaultMargin"] = defaultMargin;
                     generalSettings.DefaultMargin = defaultMargin;
                 }
-                // [v5.5.6] 메이저 증거금 % 제거 — DefaultMargin USDT 고정 사용
+                // [v5.5.8] 메이저 코인 매매 ON/OFF
+                bool enableMajor = chkEnableMajorTrading?.IsChecked ?? true;
+                generalNode["EnableMajorTrading"] = enableMajor;
+                generalSettings.EnableMajorTrading = enableMajor;
                 // [v4.4.4] PUMP 증거금 $
                 if (decimal.TryParse(txtPumpMargin?.Text ?? "200", out decimal pumpMargin))
                 {

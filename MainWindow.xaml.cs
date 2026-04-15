@@ -181,6 +181,7 @@ namespace TradingBot
             target.MajorTrailingStartRoe = source.MajorTrailingStartRoe;
             target.MajorTrailingGapRoe = source.MajorTrailingGapRoe;
             target.MajorStopLossRoe = source.MajorStopLossRoe;
+            target.EnableMajorTrading = source.EnableMajorTrading;
         }
 
         public MainWindow()
