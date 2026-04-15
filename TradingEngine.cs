@@ -9027,6 +9027,9 @@ namespace TradingBot
             OnLiveLog?.Invoke($"📤 [{symbol}] {decisionKr} 주문 요청 중 | 가격 ${currentPrice:F2} | 소스: {signalSource}");
             EntryLog("START", "INFO", $"price={currentPrice:F4} source={signalSource}");
 
+            try
+            {
+
             // ═══════════════════════════════════════════════════════════════
             // [v4.7.7] ROUTER 0. 심볼별 데이터 준비 검증
             // 다운로드 완료된 심볼만 진입 허용. 미다운로드 심볼만 차단.
@@ -10208,6 +10211,13 @@ namespace TradingBot
                 // [v3.0.9] PUMP SHORT 제거 — 급등 코인 숏은 리스크만 큼
                 ctx.EntryLog("PUMP_SHORT", "BLOCK", "PUMP 코인은 LONG만 허용");
                 return;
+            }
+            }
+            catch (Exception autoOrderEx)
+            {
+                OnLiveLog?.Invoke($"❌ [{symbol}] 주문 처리 예외: {autoOrderEx.Message}");
+                OnStatusLog?.Invoke($"❌ [ExecuteAutoOrder] {symbol} 예외: {autoOrderEx.Message}");
+                try { _ = _dbManager.SaveOrderErrorAsync(symbol, decision, signalSource, currentPrice, null, autoOrderEx.Message); } catch { }
             }
         }
 
