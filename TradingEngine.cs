@@ -137,6 +137,15 @@ namespace TradingBot
         /// <summary>[v5.9.6] 심볼별 실제 거래소 레버리지 캐시 — 수량 계산 정확도 확보</summary>
         private readonly ConcurrentDictionary<string, int> _actualLeverageCache = new(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>[v5.9.9] 신호별 최근 5건 거래 결과 (true=승, false=패) — rolling win rate</summary>
+        private readonly ConcurrentDictionary<string, Queue<bool>> _signalRecentResults = new(StringComparer.OrdinalIgnoreCase);
+        /// <summary>[v5.9.9] 신호별 pause 종료 시각 — 자동 재진입 허용</summary>
+        private readonly ConcurrentDictionary<string, DateTime> _signalPauseUntil = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _signalResultsLock = new();
+        private const int SIGNAL_WIN_RATE_WINDOW = 5;       // 최근 5건 윈도우
+        private const int SIGNAL_LOSS_THRESHOLD = 3;        // 5건 중 3건 이상 손실 시 pause
+        private static readonly TimeSpan SignalPauseDuration = TimeSpan.FromMinutes(30);
+
         /// <summary>[v5.2.9] 신호 첫 발생 가격 기록 — 슬롯 차단 후 뒤늦은 고점 진입 방지</summary>
         private readonly ConcurrentDictionary<string, (decimal Price, DateTime Time)> _signalOriginPrice =
             new(StringComparer.OrdinalIgnoreCase);
@@ -4044,6 +4053,10 @@ namespace TradingBot
                 };
                 await _dbManager.SaveTradeLogAsync(log);
 
+                // [v5.9.9] 신호별 rolling win rate 기록 — 진입 signalSource 사용
+                if (pos != null && !string.IsNullOrEmpty(pos.EntrySignalSource))
+                    RecordSignalResult(pos.EntrySignalSource, pnl);
+
                 string emoji = pnl >= 0 ? "💰" : "📉";
                 OnStatusLog?.Invoke($"{emoji} [API 체결] {symbol} {exitReason} | 체결가={avgPrice:F4} 수량={filledQty:F4} PnL={pnl:+0.00;-0.00} ({pnlPct:+0.0;-0.0}%)");
 
@@ -6292,13 +6305,18 @@ namespace TradingBot
                     return;
                 }
 
-                // [v5.1.8] 캐시 갱신 — WalletBalance + AvailableBalance + UnrealizedPnL 분리
-                decimal walletBal = await _exchangeService.GetBalanceAsync("USDT", token);
-                decimal availBal = await _exchangeService.GetAvailableBalanceAsync("USDT", token);
+                // [v5.9.9] 병렬 API 호출 — 3개를 순차 실행 대신 동시 실행 (500ms → 200ms)
+                var walletTask = _exchangeService.GetBalanceAsync("USDT", token);
+                var availTask = _exchangeService.GetAvailableBalanceAsync("USDT", token);
+                var posTask = _exchangeService.GetPositionsAsync(token);
+                await Task.WhenAll(walletTask, availTask, posTask).ConfigureAwait(false);
+
+                decimal walletBal = walletTask.Result;
+                decimal availBal = availTask.Result;
                 decimal unrealPnl = 0m;
                 try
                 {
-                    var positions = await _exchangeService.GetPositionsAsync(token);
+                    var positions = posTask.Result;
                     if (positions != null) unrealPnl = positions.Sum(p => p.UnrealizedPnL);
                 }
                 catch { }
@@ -6491,6 +6509,10 @@ namespace TradingBot
                         {
                             OnStatusLog?.Invoke($"📝 {pos.Symbol} 외부 청산 감지 → TradeHistory 반영 완료");
                             OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부청산", "거래소 계좌 업데이트 기준 외부 청산을 감지하여 TradeHistory에 반영했습니다.");
+
+                            // [v5.9.9] 신호별 rolling win rate 기록
+                            if (!string.IsNullOrEmpty(closedSnapshot.EntrySignalSource))
+                                RecordSignalResult(closedSnapshot.EntrySignalSource, pnl);
                             
                             // [수정] 외부 청산도 30분 블랙리스트 등록 (즉시 재진입 방지)
                             _blacklistedSymbols[pos.Symbol] = DateTime.Now.AddMinutes(30);
@@ -9074,6 +9096,80 @@ namespace TradingBot
         // ═══════════════════════════════════════════════════════════════
 
         /// <summary>진입 요청을 큐에 적재 (호출 즉시 반환, API 호출 없음)</summary>
+        // ═══════════════════════════════════════════════════════════════
+        // [v5.9.9] 신호별 Rolling Win Rate — 최근 5건 중 3건 손실 시 30분 pause
+        // 상승장에서는 계속 진입, 약장에서는 자동으로 해당 신호 일시 중단
+        // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>신호 소스를 카테고리로 정규화</summary>
+        private static string NormalizeSignalForWinRate(string src)
+        {
+            if (string.IsNullOrEmpty(src)) return "UNKNOWN";
+            string u = src.ToUpperInvariant();
+            if (u == "TICK_SURGE") return "TICK_SURGE";
+            if (u == "BUY_PRESSURE") return "BUY_PRESSURE";
+            if (u == "SQUEEZE_BREAKOUT") return "SQUEEZE_BREAKOUT";
+            if (u.StartsWith("PUMP_WATCH")) return "PUMP_WATCH";
+            if (u.StartsWith("SPIKE")) return "SPIKE";
+            if (u.StartsWith("MAJOR")) return "MAJOR";
+            if (u.StartsWith("DROUGHT")) return "DROUGHT";
+            if (u.Contains("CRASH")) return "CRASH_REVERSE";
+            if (u.Contains("TAIL_RETEST")) return "TAIL_RETEST";
+            return u;
+        }
+
+        /// <summary>청산 시 신호별 승패 기록 + 자동 pause 판정</summary>
+        private void RecordSignalResult(string signalSource, decimal pnl)
+        {
+            if (string.IsNullOrWhiteSpace(signalSource)) return;
+            string key = NormalizeSignalForWinRate(signalSource);
+            bool isWin = pnl > 0;
+
+            lock (_signalResultsLock)
+            {
+                var queue = _signalRecentResults.GetOrAdd(key, _ => new Queue<bool>());
+                queue.Enqueue(isWin);
+                while (queue.Count > SIGNAL_WIN_RATE_WINDOW)
+                    queue.Dequeue();
+
+                int losses = queue.Count(r => !r);
+                int wins = queue.Count(r => r);
+                if (queue.Count >= SIGNAL_WIN_RATE_WINDOW && losses >= SIGNAL_LOSS_THRESHOLD)
+                {
+                    _signalPauseUntil[key] = DateTime.Now + SignalPauseDuration;
+                    OnStatusLog?.Invoke($"⏸️ [신호 PAUSE] {key} 최근 {SIGNAL_WIN_RATE_WINDOW}건 중 {losses}건 손실 → {SignalPauseDuration.TotalMinutes:F0}분 일시중단");
+                    OnLiveLog?.Invoke($"⏸️ [{key}] 승률 저조 — {SignalPauseDuration.TotalMinutes:F0}분 일시중단");
+                }
+                else
+                {
+                    OnStatusLog?.Invoke($"📊 [신호 추적] {key} 최근 {queue.Count}건 | 승 {wins} / 패 {losses} | PnL={pnl:F2}");
+                }
+            }
+        }
+
+        /// <summary>진입 전 신호 pause 상태 체크</summary>
+        private bool IsSignalPaused(string signalSource, out TimeSpan remaining)
+        {
+            remaining = TimeSpan.Zero;
+            string key = NormalizeSignalForWinRate(signalSource);
+            if (_signalPauseUntil.TryGetValue(key, out var until))
+            {
+                if (DateTime.Now < until)
+                {
+                    remaining = until - DateTime.Now;
+                    return true;
+                }
+                // pause 종료 → 큐 비우고 재시작 (새롭게 검증)
+                _signalPauseUntil.TryRemove(key, out _);
+                lock (_signalResultsLock)
+                {
+                    if (_signalRecentResults.TryGetValue(key, out var q)) q.Clear();
+                }
+                OnStatusLog?.Invoke($"▶️ [신호 RESUME] {key} pause 해제 — 재시도 허용");
+            }
+            return false;
+        }
+
         private void EnqueueEntry(
             string symbol, string decision, decimal currentPrice,
             string signalSource = "UNKNOWN", string mode = "TREND",
@@ -9081,6 +9177,13 @@ namespace TradingBot
             PatternSnapshotInput? pattern = null, decimal sizeMultiplier = 1.0m,
             bool skipAiGate = false)
         {
+            // [v5.9.9] 신호별 rolling win rate 체크 — 최근 5건 중 3건 손실이면 pause
+            if (IsSignalPaused(signalSource, out var remaining))
+            {
+                OnLiveLog?.Invoke($"⏸️ [{symbol}] {signalSource} pause 중 ({remaining.TotalMinutes:F0}분 남음) → 스킵");
+                return;
+            }
+
             // 슬롯 사전 체크 — 이미 풀이면 큐에 넣지도 않음
             var (canEnter, _) = CanAcceptNewEntry(symbol, signalSource);
             if (!canEnter) return;
@@ -11118,7 +11221,9 @@ namespace TradingBot
                             TakeProfit = ctx.CustomTakeProfitPrice > 0 ? ctx.CustomTakeProfitPrice : 0,
                             StopLoss = ctx.CustomStopLossPrice > 0 ? ctx.CustomStopLossPrice : 0,
                             IsVolatilityRecovery = ctx.IsVolatilityRecovery,
-                            RecoveryExtremePrice = ctx.RecoveryExtremePrice
+                            RecoveryExtremePrice = ctx.RecoveryExtremePrice,
+                            // [v5.9.9] 진입 signalSource 저장 — 청산 시 신호별 win rate 기록용
+                            EntrySignalSource = ctx.SignalSource ?? "UNKNOWN"
                         };
                     }
                 }

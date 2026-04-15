@@ -23,10 +23,55 @@ namespace TradingBot.Services
         private static readonly ConcurrentDictionary<string, (decimal stepSize, decimal tickSize, DateTime cachedAt)> _symbolInfoCache = new();
         private static readonly TimeSpan _symbolInfoCacheTtl = TimeSpan.FromHours(1);
 
-        // [Rate Limiter] 바이낸스 API Weight 제한 준수 (분당 2400 Weight)
-        private static readonly SemaphoreSlim _apiThrottle = new(20, 20); // 동시 요청 20개 제한
+        // [v5.9.9] Rate Limiter — Binance Futures 분당 2400 Weight 중 80% 안전선 1920 이상 시 throttle
+        private static readonly SemaphoreSlim _apiThrottle = new(15, 15); // 동시 요청 15개 제한 (v5.9.9 20→15)
         private static int _apiWeightUsed;
         private static DateTime _apiWeightResetTime = DateTime.UtcNow;
+        private static DateTime _lastThrottleLog = DateTime.MinValue;
+        private const int WEIGHT_SOFT_LIMIT = 1600;  // 80% 안전선 (2400 × 0.67)
+        private const int WEIGHT_HARD_LIMIT = 2200;  // 92% 강제 대기선
+
+        /// <summary>[v5.9.9] API 호출 전 throttle — Weight 한도 감시</summary>
+        private static async Task ThrottleIfNeededAsync(CancellationToken ct)
+        {
+            // 분 경계 리셋
+            if ((DateTime.UtcNow - _apiWeightResetTime).TotalSeconds >= 60)
+            {
+                Interlocked.Exchange(ref _apiWeightUsed, 0);
+                _apiWeightResetTime = DateTime.UtcNow;
+            }
+
+            int used = Volatile.Read(ref _apiWeightUsed);
+            if (used >= WEIGHT_HARD_LIMIT)
+            {
+                // 강제 대기: 분 경계까지 wait
+                int waitMs = (int)Math.Max(500, 60000 - (DateTime.UtcNow - _apiWeightResetTime).TotalMilliseconds);
+                if ((DateTime.Now - _lastThrottleLog).TotalSeconds > 5)
+                {
+                    MainWindow.Instance?.AddLog($"⚠️ [Rate Limit] Weight {used}/{WEIGHT_HARD_LIMIT} — {waitMs}ms 강제 대기");
+                    _lastThrottleLog = DateTime.Now;
+                }
+                try { await Task.Delay(waitMs, ct); } catch { }
+                Interlocked.Exchange(ref _apiWeightUsed, 0);
+                _apiWeightResetTime = DateTime.UtcNow;
+            }
+            else if (used >= WEIGHT_SOFT_LIMIT)
+            {
+                // 소프트 대기: 100ms 지연으로 속도 완화
+                if ((DateTime.Now - _lastThrottleLog).TotalSeconds > 10)
+                {
+                    MainWindow.Instance?.AddLog($"ℹ️ [Rate Limit] Weight {used}/{WEIGHT_SOFT_LIMIT} — 100ms soft throttle");
+                    _lastThrottleLog = DateTime.Now;
+                }
+                try { await Task.Delay(100, ct); } catch { }
+            }
+        }
+
+        /// <summary>[v5.9.9] API 호출 후 Weight 증가량 기록</summary>
+        private static void RecordApiWeight(int weight = 1)
+        {
+            Interlocked.Add(ref _apiWeightUsed, weight);
+        }
 
         public string ExchangeName => "Binance";
 
@@ -50,6 +95,10 @@ namespace TradingBot.Services
                 {
                     options.Environment = BinanceEnvironment.Testnet;
                 }
+
+                // [v5.9.9] API 타임아웃 단축 — 무한 대기 방지 (기본 30초 → 10초)
+                // Live 환경에서 응답 느릴 때 조기 타임아웃 → 재시도 → 빠른 복구
+                options.RequestTimeout = TimeSpan.FromSeconds(10);
             });
         }
 
@@ -583,7 +632,9 @@ namespace TradingBot.Services
 
         public async Task<List<PositionInfo>> GetPositionsAsync(CancellationToken ct = default)
         {
+            await ThrottleIfNeededAsync(ct);
             var result = await _client.UsdFuturesApi.Account.GetPositionInformationAsync(ct: ct);
+            RecordApiWeight(5); // Binance: 5 Weight
             if (!result.Success) return new List<PositionInfo>();
 
             return result.Data
@@ -617,7 +668,10 @@ namespace TradingBot.Services
 
         public async Task<List<IBinanceKline>> GetKlinesAsync(string symbol, KlineInterval interval, int limit, CancellationToken ct = default)
         {
+            await ThrottleIfNeededAsync(ct);
             var result = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, interval, limit: limit, ct: ct);
+            // Weight: 5 (limit ≤ 100) / 10 (limit ≤ 500)
+            RecordApiWeight(limit > 500 ? 10 : (limit > 100 ? 5 : 1));
             if (!result.Success) return new List<IBinanceKline>();
             return result.Data.Cast<IBinanceKline>().ToList();
         }
@@ -844,6 +898,9 @@ namespace TradingBot.Services
 
                 OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
 
+                // [v5.9.9] Rate limit throttle
+                await ThrottleIfNeededAsync(ct);
+
                 // 2. 시장가 주문 실행
                 Console.WriteLine($"📤 [Binance] 시장가 주문 전송 - {symbol} {side} {quantity}");
                 var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
@@ -852,6 +909,7 @@ namespace TradingBot.Services
                     FuturesOrderType.Market,
                     quantity,
                     ct: ct);
+                RecordApiWeight(1); // Order placement: 1 Weight
 
                 if (!result.Success || result.Data == null)
                 {

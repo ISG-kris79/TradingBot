@@ -5,6 +5,29 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.9.9] - 2026-04-15
+
+### Added
+
+- **신호별 Rolling Win Rate (자동 장 구분)**: 최근 5건 중 3건 이상 손실 시 해당 신호 30분 자동 중단
+  - `_signalRecentResults`/`_signalPauseUntil` ConcurrentDictionary
+  - `RecordSignalResult`/`IsSignalPaused`/`NormalizeSignalForWinRate` 신규
+  - EnqueueEntry 시점에 pause 체크, 청산 시 결과 기록
+  - PositionInfo에 `EntrySignalSource` 필드 추가
+  - **상승장:** 연승이면 계속 진입, **조정장:** 자동으로 멈추고 30분 후 재검증
+  - 대상 신호: TICK_SURGE, BUY_PRESSURE, SQUEEZE_BREAKOUT, PUMP_WATCH, SPIKE, MAJOR, DROUGHT, CRASH_REVERSE, TAIL_RETEST
+
+### Changed
+
+- **API 속도 이슈 해결 (Live 환경 대응)**:
+  - 대시보드 API 호출 병렬화 (`Task.WhenAll`): GetBalance + GetAvailable + GetPositions 동시 실행 → 500ms → 200ms
+  - BinanceRestClient `RequestTimeout` 30초 → 10초 (Live 느린 응답 시 조기 재시도)
+  - Rate limit 실시간 감시 구현 (`ThrottleIfNeededAsync`/`RecordApiWeight`):
+    - 소프트 한도 1600 Weight: 100ms soft throttle
+    - 하드 한도 2200 Weight: 분 경계까지 강제 대기
+  - GetKlinesAsync/GetPositionsAsync/PlaceMarketOrderAsync에 throttle 적용
+  - 동시 API 요청 제한 20 → 15
+
 ## [5.9.8] - 2026-04-15
 
 ### Fixed
