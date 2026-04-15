@@ -2188,6 +2188,8 @@ namespace TradingBot.ViewModels
         private void SubscribeToEngineEvents()
         {
             if (_engine == null) return;
+            try
+            {
             // 기존 구독 해제 후 재구독 (이중 구독 방지)
             UnsubscribeFromEngineEvents();
             _engine.OnLiveLog += msg => AddLiveLog(msg);
@@ -2319,6 +2321,11 @@ namespace TradingBot.ViewModels
             if (!_engine.IsInitialTrainingComplete)
             {
                 StartOrUpdateInitialTrainingBanner();
+            }
+            }
+            catch (Exception ex)
+            {
+                AddLog($"⚠️ [SubscribeToEngineEvents] 예외: {ex.Message}");
             }
         }
 

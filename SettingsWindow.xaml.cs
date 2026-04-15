@@ -936,39 +936,36 @@ namespace TradingBot
                 }
 
 
-                // 3. 파일 저장
-                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, SettingsFileName);
-                var options = new JsonSerializerOptions
-                {
-                    WriteIndented = true,
-                    NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
-                };
-                File.WriteAllText(path, _rootNode.ToJsonString(options));
-
+                // [v5.6.8] DB 먼저 저장 → json은 부수적
                 MainWindow.ApplyGeneralSettings(generalSettings);
 
-                // 4. GeneralSettings를 DB에도 저장
+                // 3. DB 저장 (최우선)
                 if (_dbManager != null && AppConfig.CurrentUser != null)
                 {
                     await _dbManager.SaveGeneralSettingsAsync(AppConfig.CurrentUser.Id, generalSettings);
-
-                    // 시뮬레이션 모드 또는 잔고 변경 확인
-                    bool simulationModeChanged = _initialSimulationMode != (chkSimulationMode.IsChecked == true);
-                    bool simulationBalanceChanged = _initialSimulationBalance != (decimal.TryParse(txtSimulationBalance.Text, out decimal newBalance) ? newBalance : 10000m);
-
-                    string message = $"✅ [{AppConfig.CurrentUser.Username}]의 설정이 저장되었습니다.";
-                    
-                    if (simulationModeChanged || simulationBalanceChanged)
-                    {
-                        message += "\n\n⚠️ 시뮬레이션 설정이 변경되었습니다.\nStop 후 Start를 누르면 새 설정이 즉시 적용됩니다. (앱 재시작 불필요)";
-                    }
-
-                    MessageBox.Show(message, "저장 완료", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
-                else if (_dbManager != null)
+
+                // 4. json 파일 저장 (실패해도 무시 — DB가 우선)
+                try
                 {
-                    MessageBox.Show("⚠️ 현재 사용자 정보를 찾을 수 없습니다.\n설정이 파일에만 저장되었습니다.",
-                        "경고", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, SettingsFileName);
+                    var options = new JsonSerializerOptions
+                    {
+                        WriteIndented = true,
+                        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
+                    };
+                    File.WriteAllText(path, _rootNode.ToJsonString(options));
+                }
+                catch { }
+
+                // 5. 완료 메시지
+                if (AppConfig.CurrentUser != null)
+                {
+                    bool simulationModeChanged = _initialSimulationMode != (chkSimulationMode.IsChecked == true);
+                    string message = $"✅ [{AppConfig.CurrentUser.Username}]의 설정이 저장되었습니다.";
+                    if (simulationModeChanged)
+                        message += "\n\n⚠️ 시뮬레이션 설정이 변경되었습니다.\nStop 후 Start를 누르면 새 설정이 즉시 적용됩니다.";
+                    MessageBox.Show(message, "저장 완료", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
                 else
                 {
