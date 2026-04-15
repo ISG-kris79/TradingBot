@@ -52,6 +52,8 @@ namespace TradingBot.Models
         /// <summary>[v5.7.9] 슬롯 설정</summary>
         public int MaxMajorSlots { get; set; } = 4;
         public int MaxPumpSlots { get; set; } = 3;
+        /// <summary>[v5.9.20] 하루 최대 진입 횟수 (기본 500)</summary>
+        public int MaxDailyEntries { get; set; } = 500;
         public decimal PumpBreakEvenRoe { get; set; } = 25.0m;     // ROI +25% 시 본절 이동 (슬리피지 대응)
         // 주의: 0.15% 오프셋(슬리피지 방어)이 적용되어 실제 손절은 진입가 + 0.15% 근처로 설정됨
         public decimal PumpTrailingStartRoe { get; set; } = 40.0m; // 2차 트레일링 시작 ROI +40% (변경 없음)

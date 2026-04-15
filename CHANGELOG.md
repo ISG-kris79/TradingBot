@@ -5,6 +5,42 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.9.20] - 2026-04-16
+
+### 🔥 Critical Fix: Forecaster 미작동 버그
+
+**증상:** AI 학습→추론→미리진입 구조가 설계만 돼있고 실제로는 작동 안 함
+**원인:**
+- `_pumpForecasterAccuracy = 0.0` 초기값
+- `ForecasterMinAccuracyForEntry = 0.60` 임계값
+- **0.0 ≥ 0.60 = FALSE → 모든 신호가 항상 fallback 경로**
+- Fallback은 `skipAiGateCheck=true` → AI 게이트 우회 → 무분별 진입
+
+**수정:** `ForecasterMinAccuracyForEntry = 0.0` — 모델 로드 여부만 체크
+**효과:** PumpForecaster/MajorForecaster가 실제로 미래 예측 기반 LIMIT 진입 수행
+
+### Added
+
+- **MaxDailyEntries 설정** (기본 500회)
+  - `TradingSettings.MaxDailyEntries` 필드 추가
+  - DB 컬럼 `MaxDailyEntries` 자동 추가
+  - SettingsWindow UI에 "하루 진입 횟수" 입력 필드 추가
+  - `EnqueueEntry` 초반에 일일 카운터 체크, 자정 자동 리셋
+
+### Changed
+
+- **부분익절 비율 20% → 40%** — 수익 확보 강화
+  - EntryOrderRegistrar 호출 4곳 (PlaceAndTrackEntryAsync, HandleAccountUpdate, SyncCurrentPositionsAsync, LIMIT 체결 루프)
+  - 기존: TP ROE 25%에서 20% 청산 → 건당 ~$10 최대
+  - 개선: TP ROE 25%에서 40% 청산 → 건당 ~$20 최대 (2배)
+
+### 12시~현재 데이터 분석 결과
+
+- 총 262건, 승률 55%, 순손익 -$186
+- 10%+ ROE 건 118개지만 건당 $1.13에 불과 (부분익절이 너무 적음)
+- -10% 이하 손실 60건 -$267 (전체 손실의 63%)
+- 수동청산 9건 +$24 (봇보다 사용자가 잘 잡음 → trailing 부족 증거)
+
 ## [5.9.19] - 2026-04-16
 
 ### Removed

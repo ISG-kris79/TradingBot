@@ -228,6 +228,8 @@ IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Genera
     ALTER TABLE dbo.GeneralSettings ADD MaxMajorSlots INT NULL DEFAULT 4;
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MaxPumpSlots')
     ALTER TABLE dbo.GeneralSettings ADD MaxPumpSlots INT NULL DEFAULT 3;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MaxDailyEntries')
+    ALTER TABLE dbo.GeneralSettings ADD MaxDailyEntries INT NULL DEFAULT 500;
 ");
                 MainWindow.Instance?.AddLog("✅ [DB] GeneralSettings 스키마 자동 확인/보정 완료");
             }
@@ -2784,7 +2786,7 @@ ORDER BY Symbol, OpenTime ASC";
                                       @PumpFirstTakeProfitRatioPct, @PumpStairStep1Roe, @PumpStairStep2Roe, @PumpStairStep3Roe,
                                       @MajorLeverage, @MajorMargin, @MajorBreakEvenRoe, @MajorTp1Roe, @MajorTp2Roe,
                                       @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe,
-                                      @EnableMajorTrading, @MaxMajorSlots, @MaxPumpSlots)
+                                      @EnableMajorTrading, @MaxMajorSlots, @MaxPumpSlots, @MaxDailyEntries)
                             AS source (Id, DefaultLeverage, DefaultMargin, TargetRoe, StopLossRoe, TrailingStartRoe, TrailingDropRoe,
                                       PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct, MajorTrendProfile,
                                       PumpBreakEvenRoe, PumpTrailingStartRoe, PumpTrailingGapRoe,
@@ -2792,7 +2794,7 @@ ORDER BY Symbol, OpenTime ASC";
                                       PumpFirstTakeProfitRatioPct, PumpStairStep1Roe, PumpStairStep2Roe, PumpStairStep3Roe,
                                       MajorLeverage, MajorMargin, MajorBreakEvenRoe, MajorTp1Roe, MajorTp2Roe,
                                       MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe,
-                                      EnableMajorTrading, MaxMajorSlots, MaxPumpSlots)
+                                      EnableMajorTrading, MaxMajorSlots, MaxPumpSlots, MaxDailyEntries)
                         ON target.Id = source.Id
                         WHEN MATCHED THEN
                             UPDATE SET 
@@ -2829,6 +2831,7 @@ ORDER BY Symbol, OpenTime ASC";
                                 target.EnableMajorTrading = source.EnableMajorTrading,
                                 target.MaxMajorSlots = source.MaxMajorSlots,
                                 target.MaxPumpSlots = source.MaxPumpSlots,
+                                target.MaxDailyEntries = source.MaxDailyEntries,
                                 target.UpdatedAt = GETUTCDATE()
                         WHEN NOT MATCHED THEN
                             INSERT (Id, DefaultLeverage, DefaultMargin, TargetRoe, StopLossRoe, TrailingStartRoe, TrailingDropRoe,
@@ -2837,14 +2840,14 @@ ORDER BY Symbol, OpenTime ASC";
                                     PumpStopLossRoe, PumpMargin, PumpLeverage,
                                         PumpFirstTakeProfitRatioPct, PumpStairStep1Roe, PumpStairStep2Roe, PumpStairStep3Roe,
                                     MajorLeverage, MajorMargin, MajorBreakEvenRoe, MajorTp1Roe, MajorTp2Roe,
-                                    MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe, EnableMajorTrading, MaxMajorSlots, MaxPumpSlots)
+                                    MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe, EnableMajorTrading, MaxMajorSlots, MaxPumpSlots, MaxDailyEntries)
                             VALUES (@UserId, @DefaultLeverage, @DefaultMargin, @TargetRoe, @StopLossRoe, @TrailingStartRoe, @TrailingDropRoe,
                                     @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile,
                                     @PumpBreakEvenRoe, @PumpTrailingStartRoe, @PumpTrailingGapRoe,
                                     @PumpStopLossRoe, @PumpMargin, @PumpLeverage,
                                         @PumpFirstTakeProfitRatioPct, @PumpStairStep1Roe, @PumpStairStep2Roe, @PumpStairStep3Roe,
                                     @MajorLeverage, @MajorMargin, @MajorBreakEvenRoe, @MajorTp1Roe, @MajorTp2Roe,
-                                    @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe, @EnableMajorTrading, @MaxMajorSlots, @MaxPumpSlots);";
+                                    @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe, @EnableMajorTrading, @MaxMajorSlots, @MaxPumpSlots, @MaxDailyEntries);";
 
                     var parameters = new DynamicParameters();
                     parameters.Add("@UserId", userId);
@@ -2881,6 +2884,7 @@ ORDER BY Symbol, OpenTime ASC";
                     parameters.Add("@EnableMajorTrading", settings.EnableMajorTrading);
                     parameters.Add("@MaxMajorSlots", settings.MaxMajorSlots);
                     parameters.Add("@MaxPumpSlots", settings.MaxPumpSlots);
+                    parameters.Add("@MaxDailyEntries", settings.MaxDailyEntries > 0 ? settings.MaxDailyEntries : 500);
 
                     try
                     {

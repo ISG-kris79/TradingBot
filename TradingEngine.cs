@@ -137,6 +137,11 @@ namespace TradingBot
         /// <summary>[v5.9.6] 심볼별 실제 거래소 레버리지 캐시 — 수량 계산 정확도 확보</summary>
         private readonly ConcurrentDictionary<string, int> _actualLeverageCache = new(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>[v5.9.20] 하루 진입 횟수 카운터 (자정 리셋)</summary>
+        private int _dailyEntryCount = 0;
+        private DateTime _dailyEntryCountResetDate = DateTime.Today;
+        private readonly object _dailyEntryCountLock = new();
+
         /// <summary>[v5.9.9] 신호별 최근 5건 거래 결과 (true=승, false=패) — rolling win rate</summary>
         private readonly ConcurrentDictionary<string, Queue<bool>> _signalRecentResults = new(StringComparer.OrdinalIgnoreCase);
         /// <summary>[v5.9.9] 신호별 pause 종료 시각 — 자동 재진입 허용</summary>
@@ -207,8 +212,9 @@ namespace TradingBot
         private double _pumpForecasterAccuracy = 0.0;
         private double _majorForecasterAccuracy = 0.0;
         private double _spikeForecasterAccuracy = 0.0;
-        // [v5.9.15] 50% → 60% 상향: 동전 던지기 수준 진입 차단, 수수료 흡수 가능한 수익성 확보
-        private const double ForecasterMinAccuracyForEntry = 0.60;
+        // [v5.9.20] 임계값 체크 제거 — 초기값 0.0이라 항상 fallback으로 떨어지던 버그
+        // 대안: HasOpportunity 자체에 신뢰도가 포함되어 있으므로 모델 로드 여부만 체크
+        private const double ForecasterMinAccuracyForEntry = 0.0;
         // 70% 이상 정확도 달성 시 하드 체크 자동 해제
         private const double AiHardCheckBypassThreshold = 0.70;
         private bool IsAiModelReadyForPumpEntry =>
@@ -2212,7 +2218,7 @@ namespace TradingBot
                                     bool isMajor = MajorSymbols.Contains(pos.Symbol);
                                     decimal slRoe = isMajor ? (_settings.MajorStopLossRoe > 0 ? -_settings.MajorStopLossRoe : -60m) : -40m;
                                     decimal tpRoe = isMajor ? (_settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : 30m) : 25m;
-                                    decimal tpPartial = 0.2m; // 20% 부분익절
+                                    decimal tpPartial = 0.4m; // [v5.9.20] 20% → 40% 상향 (수익 확보 강화)
                                     decimal trailCb = isMajor ? 2.0m : 3.5m;
 
                                     var (slIdR, tpIdR) = await _entryOrderRegistrar.RegisterEntryOrdersAsync(
@@ -6836,7 +6842,7 @@ namespace TradingBot
                             var (slId2, tpId2) = await _entryOrderRegistrar.RegisterEntryOrdersAsync(
                                 regSymbol, regIsLong, regEntryPrice,
                                 regQty, regLev,
-                                slRoe, tpRoe, 0.2m, trailCb,
+                                slRoe, tpRoe, 0.4m, trailCb,
                                 _cts?.Token ?? CancellationToken.None);
 
                             // [v5.9.18] 포지션에 TP 플래그 저장 — 내부 부분청산 이중 실행 방지
@@ -9078,7 +9084,7 @@ namespace TradingBot
                                     var (slIdL, tpIdL) = await _entryOrderRegistrar!.RegisterEntryOrdersAsync(
                                         symbol, match.Quantity > 0, match.EntryPrice,
                                         Math.Abs(match.Quantity), levForReserve,
-                                        slRoeReg, tpRoeReg, 0.2m, trailCb,
+                                        slRoeReg, tpRoeReg, 0.4m, trailCb,
                                         _cts?.Token ?? CancellationToken.None);
 
                                     // [v5.9.18] TP 플래그 저장
@@ -9356,6 +9362,24 @@ namespace TradingBot
             {
                 OnLiveLog?.Invoke($"⏸️ [{symbol}] {signalSource} pause 중 ({remaining.TotalMinutes:F0}분 남음) → 스킵");
                 return;
+            }
+
+            // [v5.9.20] 하루 진입 횟수 제한 체크
+            lock (_dailyEntryCountLock)
+            {
+                if (DateTime.Today > _dailyEntryCountResetDate)
+                {
+                    _dailyEntryCount = 0;
+                    _dailyEntryCountResetDate = DateTime.Today;
+                    OnStatusLog?.Invoke("🌙 하루 진입 횟수 카운터 자정 리셋");
+                }
+                int maxDaily = _settings.MaxDailyEntries > 0 ? _settings.MaxDailyEntries : 500;
+                if (_dailyEntryCount >= maxDaily)
+                {
+                    OnLiveLog?.Invoke($"⛔ [{symbol}] 하루 진입 횟수 한도 {_dailyEntryCount}/{maxDaily} 초과 → 차단");
+                    return;
+                }
+                _dailyEntryCount++;
             }
 
             // 슬롯 사전 체크 — 이미 풀이면 STUCK 포지션 교체 시도
@@ -11785,7 +11809,7 @@ namespace TradingBot
                             // [v5.5.5] PUMP/MAJOR 공통: TP 20% 부분익절 + 80% 트레일링
                             decimal slRoe = isPump ? -40m : -50m;
                             decimal tpRoe = isPump ? 25m : 40m;
-                            decimal tpPartial = 0.2m; // 20% 부분익절 (나머지 80% 트레일링)
+                            decimal tpPartial = 0.4m; // [v5.9.20] 40% 부분익절 (나머지 60% 트레일링, 수익 확보 강화)
                             decimal trailCallback = isPump ? 3.5m : 2.0m;
 
                             var (slId, tpId) = await _entryOrderRegistrar.RegisterEntryOrdersAsync(

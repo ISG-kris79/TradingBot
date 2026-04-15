@@ -386,6 +386,7 @@ namespace TradingBot
             txtLeverage.Text = s.DefaultLeverage.ToString();
             txtMaxMajorSlots.Text = s.MaxMajorSlots.ToString();
             txtMaxPumpSlots.Text = s.MaxPumpSlots.ToString();
+            txtMaxDailyEntries.Text = (s.MaxDailyEntries > 0 ? s.MaxDailyEntries : 500).ToString();
             if (!string.IsNullOrWhiteSpace(s.MajorTrendProfile))
                 SelectMajorTrendProfile(s.MajorTrendProfile);
         }
@@ -582,6 +583,10 @@ namespace TradingBot
                     generalSettings.MaxMajorSlots = Math.Clamp(majorSlots, 0, 10);
                 if (int.TryParse(txtMaxPumpSlots?.Text ?? "3", out int pumpSlots))
                     generalSettings.MaxPumpSlots = Math.Clamp(pumpSlots, 1, 10);
+
+                // [v5.9.20] 하루 진입 횟수 제한
+                if (int.TryParse(txtMaxDailyEntries?.Text ?? "500", out int maxDaily))
+                    generalSettings.MaxDailyEntries = Math.Clamp(maxDaily, 1, 10000);
 
                 // TrailingStartRoe, TrailingDropRoe도 저장 (UI에 필드가 없으면 기본값 유지)
                 if (generalNode["TrailingStartRoe"] != null &&

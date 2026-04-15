@@ -197,6 +197,7 @@
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="160"/>
@@ -289,14 +290,22 @@
                                              Grid.Row="6" Grid.Column="1" Margin="0,0,0,15"
                                              Padding="8" Background="#1E2235" Foreground="White" BorderBrush="#2D3142"/>
 
+                                    <!-- [v5.9.20] 하루 진입 횟수 제한 -->
+                                    <TextBlock Text="하루 진입 횟수:"
+                                               VerticalAlignment="Center" Grid.Row="7"
+                                               Foreground="#94A3B8" Margin="0,0,0,15"/>
+                                    <TextBox x:Name="txtMaxDailyEntries"
+                                             Grid.Row="7" Grid.Column="1" Margin="0,0,0,15"
+                                             Padding="8" Background="#1E2235" Foreground="White" BorderBrush="#2D3142"/>
+
                                     <!-- 주요 심볼 -->
                                     <TextBlock Text="주요 심볼:"
                                                VerticalAlignment="Center"
-                                               Grid.Row="7"
+                                               Grid.Row="8"
                                                Foreground="#94A3B8"
                                                Margin="0,0,0,15"/>
                                     <TextBox x:Name="txtSymbols"
-                                             Grid.Row="7"
+                                             Grid.Row="8"
                                              Grid.Column="1"
                                              Margin="0,0,0,15"
                                              Padding="8"
@@ -304,15 +313,13 @@
                                              Foreground="White"
                                              BorderBrush="#2D3142"/>
 
-                                    <!-- [v3.2.14] 리스크/알트ROE 제거 — 소스 하드코딩 -->
-
                                     <!-- 시뮬레이션 모드 -->
                                     <TextBlock Text="매매 모드:"
                                                VerticalAlignment="Top"
-                                               Grid.Row="8"
+                                               Grid.Row="9"
                                                Foreground="#94A3B8"
                                                Margin="0,5,0,15"/>
-                                    <StackPanel Grid.Row="8"
+                                    <StackPanel Grid.Row="9"
                                                 Grid.Column="1"
                                                 Margin="0,0,0,15">
                                         <CheckBox x:Name="chkSimulationMode"
