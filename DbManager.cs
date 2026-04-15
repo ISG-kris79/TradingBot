@@ -34,6 +34,7 @@ namespace TradingBot.Services
             _connectionString = connectionString;
             _ = EnsureCategoryColumnAsync();
             _ = EnsureFeeColumnsAsync();
+            _ = EnsureGeneralSettingsColumnsAsync();
             _ = EnsureCandleDataIndexAsync();
         }
 
@@ -139,6 +140,100 @@ END");
             catch (Exception ex)
             {
                 MainWindow.Instance?.AddLog($"⚠️ [DB] Fee 컬럼 자동 추가 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// [v5.9.6] GeneralSettings 누락 컬럼 자동 추가
+        /// 기존 DB에 일부 컬럼이 없어 MERGE SQL 실패 → fallback으로 떨어져 저장이 안 되는 문제 해결
+        /// </summary>
+        private async Task EnsureGeneralSettingsColumnsAsync()
+        {
+            try
+            {
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await db.ExecuteAsync(@"
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'GeneralSettings' AND schema_id = SCHEMA_ID('dbo'))
+BEGIN
+    CREATE TABLE dbo.GeneralSettings (
+        Id INT PRIMARY KEY,
+        DefaultLeverage INT NOT NULL DEFAULT 20,
+        DefaultMargin DECIMAL(18,4) NOT NULL DEFAULT 100,
+        UpdatedAt DATETIME2 NULL,
+        CreatedAt DATETIME2 NULL DEFAULT GETUTCDATE()
+    );
+END
+
+-- 누락 가능한 컬럼들 자동 추가
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'TargetRoe')
+    ALTER TABLE dbo.GeneralSettings ADD TargetRoe DECIMAL(18,4) NULL DEFAULT 40;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'StopLossRoe')
+    ALTER TABLE dbo.GeneralSettings ADD StopLossRoe DECIMAL(18,4) NULL DEFAULT 60;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'TrailingStartRoe')
+    ALTER TABLE dbo.GeneralSettings ADD TrailingStartRoe DECIMAL(18,4) NULL DEFAULT 20;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'TrailingDropRoe')
+    ALTER TABLE dbo.GeneralSettings ADD TrailingDropRoe DECIMAL(18,4) NULL DEFAULT 5;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorTrendProfile')
+    ALTER TABLE dbo.GeneralSettings ADD MajorTrendProfile NVARCHAR(50) NULL DEFAULT 'Balanced';
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpTp1Roe')
+    ALTER TABLE dbo.GeneralSettings ADD PumpTp1Roe DECIMAL(18,4) NULL DEFAULT 20;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpTp2Roe')
+    ALTER TABLE dbo.GeneralSettings ADD PumpTp2Roe DECIMAL(18,4) NULL DEFAULT 100;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpTimeStopMinutes')
+    ALTER TABLE dbo.GeneralSettings ADD PumpTimeStopMinutes DECIMAL(18,4) NULL DEFAULT 120;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpStopDistanceWarnPct')
+    ALTER TABLE dbo.GeneralSettings ADD PumpStopDistanceWarnPct DECIMAL(18,4) NULL DEFAULT 1;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpStopDistanceBlockPct')
+    ALTER TABLE dbo.GeneralSettings ADD PumpStopDistanceBlockPct DECIMAL(18,4) NULL DEFAULT 1.3;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpBreakEvenRoe')
+    ALTER TABLE dbo.GeneralSettings ADD PumpBreakEvenRoe DECIMAL(18,4) NULL DEFAULT 25;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpTrailingStartRoe')
+    ALTER TABLE dbo.GeneralSettings ADD PumpTrailingStartRoe DECIMAL(18,4) NULL DEFAULT 40;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpTrailingGapRoe')
+    ALTER TABLE dbo.GeneralSettings ADD PumpTrailingGapRoe DECIMAL(18,4) NULL DEFAULT 20;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpStopLossRoe')
+    ALTER TABLE dbo.GeneralSettings ADD PumpStopLossRoe DECIMAL(18,4) NULL DEFAULT 40;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpMargin')
+    ALTER TABLE dbo.GeneralSettings ADD PumpMargin DECIMAL(18,4) NULL DEFAULT 100;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpLeverage')
+    ALTER TABLE dbo.GeneralSettings ADD PumpLeverage INT NULL DEFAULT 20;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpFirstTakeProfitRatioPct')
+    ALTER TABLE dbo.GeneralSettings ADD PumpFirstTakeProfitRatioPct DECIMAL(18,4) NULL DEFAULT 40;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpStairStep1Roe')
+    ALTER TABLE dbo.GeneralSettings ADD PumpStairStep1Roe DECIMAL(18,4) NULL DEFAULT 50;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpStairStep2Roe')
+    ALTER TABLE dbo.GeneralSettings ADD PumpStairStep2Roe DECIMAL(18,4) NULL DEFAULT 100;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'PumpStairStep3Roe')
+    ALTER TABLE dbo.GeneralSettings ADD PumpStairStep3Roe DECIMAL(18,4) NULL DEFAULT 200;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorLeverage')
+    ALTER TABLE dbo.GeneralSettings ADD MajorLeverage INT NULL DEFAULT 20;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorMargin')
+    ALTER TABLE dbo.GeneralSettings ADD MajorMargin DECIMAL(18,4) NULL DEFAULT 100;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorBreakEvenRoe')
+    ALTER TABLE dbo.GeneralSettings ADD MajorBreakEvenRoe DECIMAL(18,4) NULL DEFAULT 7;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorTp1Roe')
+    ALTER TABLE dbo.GeneralSettings ADD MajorTp1Roe DECIMAL(18,4) NULL DEFAULT 20;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorTp2Roe')
+    ALTER TABLE dbo.GeneralSettings ADD MajorTp2Roe DECIMAL(18,4) NULL DEFAULT 40;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorTrailingStartRoe')
+    ALTER TABLE dbo.GeneralSettings ADD MajorTrailingStartRoe DECIMAL(18,4) NULL DEFAULT 40;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorTrailingGapRoe')
+    ALTER TABLE dbo.GeneralSettings ADD MajorTrailingGapRoe DECIMAL(18,4) NULL DEFAULT 5;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MajorStopLossRoe')
+    ALTER TABLE dbo.GeneralSettings ADD MajorStopLossRoe DECIMAL(18,4) NULL DEFAULT 60;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'EnableMajorTrading')
+    ALTER TABLE dbo.GeneralSettings ADD EnableMajorTrading BIT NULL DEFAULT 1;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MaxMajorSlots')
+    ALTER TABLE dbo.GeneralSettings ADD MaxMajorSlots INT NULL DEFAULT 4;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.GeneralSettings') AND name = 'MaxPumpSlots')
+    ALTER TABLE dbo.GeneralSettings ADD MaxPumpSlots INT NULL DEFAULT 3;
+");
+                MainWindow.Instance?.AddLog("✅ [DB] GeneralSettings 스키마 자동 확인/보정 완료");
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] GeneralSettings 컬럼 자동 추가 실패: {ex.Message}");
             }
         }
 
