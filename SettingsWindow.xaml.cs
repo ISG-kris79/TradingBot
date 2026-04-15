@@ -571,8 +571,16 @@ namespace TradingBot
                 var generalNode = (tradingNode["GeneralSettings"] as JsonObject) ?? new JsonObject();
                 tradingNode["GeneralSettings"] = generalNode;
 
-                // GeneralSettings 객체 생성 (DB 저장용)
-                var generalSettings = new TradingSettings();
+                // [v5.6.6] DB 기존 설정 기반으로 수정 (new로 만들면 기본값이 덮어씀)
+                TradingSettings generalSettings;
+                if (_dbManager != null && AppConfig.CurrentUser != null)
+                {
+                    generalSettings = await _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id) ?? new TradingSettings();
+                }
+                else
+                {
+                    generalSettings = new TradingSettings();
+                }
 
                 if (int.TryParse(txtLeverage.Text, out int leverage))
                 {
