@@ -326,8 +326,22 @@ namespace TradingBot
             LoadSettings();
 
             // DB에서 사용자별 설정 로드
+            if (_dbManager == null)
+            {
+                MainWindow.Instance?.AddLog("⚠️ [설정] _dbManager null — DB 로드 불가");
+                // DB 없으면 appsettings.json에서라도 로드
+                try
+                {
+                    if (!string.IsNullOrEmpty(AppConfig.ConnectionString))
+                        _dbManager = new DbManager(AppConfig.ConnectionString);
+                }
+                catch { }
+            }
+
             if (_dbManager != null && AppConfig.CurrentUser != null)
             {
+                try
+                {
                 var dbSettings = await _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id);
                 if (dbSettings != null)
                 {
@@ -376,6 +390,19 @@ namespace TradingBot
                         SelectMajorTrendProfile(dbSettings.MajorTrendProfile);
                     }
                 }
+                else
+                {
+                    MainWindow.Instance?.AddLog($"⚠️ [설정] DB에서 UserId={AppConfig.CurrentUser.Id} 설정을 찾을 수 없음");
+                }
+                }
+                catch (Exception dbEx)
+                {
+                    MainWindow.Instance?.AddLog($"❌ [설정] DB 로드 실패: {dbEx.Message}");
+                }
+            }
+            else
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [설정] DB 로드 스킵 — dbManager={(_dbManager != null)} user={AppConfig.CurrentUser?.Id}");
             }
         }
 
