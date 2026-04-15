@@ -1229,6 +1229,45 @@ namespace TradingBot
                     catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [틱급증] {symbol} 진입 실패: {ex.Message}"); }
                 });
             };
+            // [v5.5.2] 매수 쏠림 선행 감지 → 5분봉/15분봉 추세 확인 후 진입
+            _tickMonitor.OnBuyPressureDetected += (symbol, buyRatio, avgNotional, price) =>
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        // 가짜 반등 필터: 5분봉 하락 중이면 차단
+                        if (_marketDataManager.KlineCache.TryGetValue(symbol, out var klines5m) && klines5m.Count >= 6)
+                        {
+                            List<Binance.Net.Interfaces.IBinanceKline> recent;
+                            lock (klines5m) { recent = klines5m.TakeLast(6).ToList(); }
+
+                            // 5분봉 최근 3봉 중 2봉 음봉 → 하락 추세
+                            int bearish5m = recent.TakeLast(3).Count(k => k.ClosePrice < k.OpenPrice);
+                            decimal sma20_5m = recent.Average(k => k.ClosePrice);
+
+                            if (bearish5m >= 2 && price < sma20_5m)
+                            {
+                                OnStatusLog?.Invoke($"⛔ [매수쏠림→차단] {symbol} 5분봉 하락추세(음봉{bearish5m}/3 + BB아래) → 가짜 반등");
+                                return;
+                            }
+
+                            // 마지막 5분봉 양봉 + 가격 상승 중 → 진입
+                            bool lastBullish = recent[^1].ClosePrice > recent[^1].OpenPrice;
+                            if (!lastBullish)
+                            {
+                                OnStatusLog?.Invoke($"⛔ [매수쏠림→차단] {symbol} 마지막 5분봉 음봉 → 대기");
+                                return;
+                            }
+                        }
+
+                        OnStatusLog?.Invoke($"🔥 [매수쏠림→진입] {symbol} 매수비={buyRatio:P0} → LONG 시도");
+                        await ExecuteAutoOrder(symbol, "LONG", price, _cts?.Token ?? CancellationToken.None,
+                            "BUY_PRESSURE", manualSizeMultiplier: 1.0m, skipAiGateCheck: true);
+                    }
+                    catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [매수쏠림] {symbol} 진입 실패: {ex.Message}"); }
+                });
+            };
             _tickMonitor.OnSqueezeBreakout += (symbol, price, bbWidth) =>
             {
                 // BB 스퀴즈 브레이크아웃 → AI Gate 거쳐 진입

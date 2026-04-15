@@ -29,6 +29,8 @@ namespace TradingBot.Services
         public event Action<string>? OnLog;
         /// <summary>급등 시작 신호: (symbol, tpsRatio, buyRatio, currentPrice)</summary>
         public event Action<string, double, double, decimal>? OnTickSurgeDetected;
+        /// <summary>[v5.5.2] 매수 쏠림 선행 신호: (symbol, buyRatio, avgNotional, currentPrice)</summary>
+        public event Action<string, double, decimal, decimal>? OnBuyPressureDetected;
         /// <summary>BB 스퀴즈 브레이크아웃: (symbol, currentPrice, bbWidth)</summary>
         public event Action<string, decimal, double>? OnSqueezeBreakout;
 
@@ -55,6 +57,10 @@ namespace TradingBot.Services
             public double LastBBWidth;
             public double MinBBWidth = double.MaxValue;
             public int SqueezeCount; // 연속 좁은 봉 카운트
+
+            // [v5.5.2] 매수 쏠림 선행 감지 — 30초 윈도우
+            public int HighBuyRatioConsecutiveSec; // 매수비 75%+ 연속 초
+            public decimal BuyPressureBasePrice; // 쏠림 감지 시작 가격
         }
 
         /// <summary>AggTrade 데이터 처리 (WebSocket 콜백)</summary>
@@ -123,28 +129,60 @@ namespace TradingBot.Services
 
         private void CheckTickSurge(string symbol, SymbolTickState state, decimal currentPrice)
         {
-            if (state.TpsHistory.Count < 10) return; // 최소 10초 데이터
-            if (_alertCooldown.TryGetValue(symbol, out var cd) && DateTime.Now < cd) return;
+            if (state.TpsHistory.Count < 10) return;
 
             double avgTps = state.TpsHistory.Average();
             if (avgTps < 1) return;
 
             double currentTps = state.TickCountCurrentSec;
             double tpsRatio = currentTps / avgTps;
+            double totalVol = (double)(state.BuyVolume + state.SellVolume);
+            double buyRatio = totalVol > 0 ? (double)state.BuyVolume / totalVol : 0.5;
 
-            // TPS 5배+ 급증 = 급등 시작 신호
-            if (tpsRatio >= 5.0 && currentTps >= 10)
+            // ═══════════════════════════════════════════════
+            // [v5.5.2] 매수 쏠림 선행 감지 — TPS 급증 전에 매수비율로 감지
+            // 급등 시작 전 매수 Taker가 75%+ 지속 → 가격 상승 임박
+            // ═══════════════════════════════════════════════
+            if (buyRatio >= 0.75 && totalVol > 0)
             {
-                double totalVol = (double)(state.BuyVolume + state.SellVolume);
-                double buyRatio = totalVol > 0 ? (double)state.BuyVolume / totalVol : 0.5;
+                state.HighBuyRatioConsecutiveSec++;
+                if (state.HighBuyRatioConsecutiveSec == 1)
+                    state.BuyPressureBasePrice = currentPrice;
 
-                // 매수 비율 60%+ = 매수세 우위
-                if (buyRatio >= 0.55)
+                // 15초+ 매수 쏠림 지속 + 가격 아직 안 올랐으면 → 선행 신호
+                if (state.HighBuyRatioConsecutiveSec >= 15)
                 {
-                    _alertCooldown[symbol] = DateTime.Now.AddMinutes(5);
-                    OnLog?.Invoke($"⚡ [틱급증] {symbol} TPS={currentTps:F0} ({tpsRatio:F1}x avg) 매수비={buyRatio:P0} → 급등 시작 신호");
-                    OnTickSurgeDetected?.Invoke(symbol, tpsRatio, buyRatio, currentPrice);
+                    decimal priceChange = state.BuyPressureBasePrice > 0
+                        ? (currentPrice - state.BuyPressureBasePrice) / state.BuyPressureBasePrice * 100m : 0m;
+
+                    // 가격이 아직 1% 미만 상승 → 초기 단계 (이미 올랐으면 TICK_SURGE가 잡음)
+                    if (priceChange < 1.0m && priceChange >= 0)
+                    {
+                        if (!_alertCooldown.TryGetValue($"bp_{symbol}", out var bpCd) || DateTime.Now >= bpCd)
+                        {
+                            _alertCooldown[$"bp_{symbol}"] = DateTime.Now.AddMinutes(3);
+                            OnLog?.Invoke($"🔥 [매수쏠림] {symbol} 매수비={buyRatio:P0} {state.HighBuyRatioConsecutiveSec}초 지속 | 가격변동={priceChange:+0.0;-0.0}% → 급등 임박");
+                            OnBuyPressureDetected?.Invoke(symbol, buyRatio, (decimal)totalVol, currentPrice);
+                        }
+                    }
+                    state.HighBuyRatioConsecutiveSec = 0;
                 }
+            }
+            else
+            {
+                state.HighBuyRatioConsecutiveSec = 0;
+            }
+
+            // ═══════════════════════════════════════════════
+            // 기존 TPS 급증 감지
+            // ═══════════════════════════════════════════════
+            if (_alertCooldown.TryGetValue(symbol, out var cd) && DateTime.Now < cd) return;
+
+            if (tpsRatio >= 5.0 && currentTps >= 10 && buyRatio >= 0.55)
+            {
+                _alertCooldown[symbol] = DateTime.Now.AddMinutes(5);
+                OnLog?.Invoke($"⚡ [틱급증] {symbol} TPS={currentTps:F0} ({tpsRatio:F1}x avg) 매수비={buyRatio:P0} → 급등 시작 신호");
+                OnTickSurgeDetected?.Invoke(symbol, tpsRatio, buyRatio, currentPrice);
             }
         }
 
