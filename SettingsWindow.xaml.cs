@@ -38,31 +38,18 @@ namespace TradingBot
                 MessageBox.Show($"DB 연결 초기화 실패: {ex.Message}", "경고", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 
-            // [v5.7.2] 설정 로드 — 동기 DB 로드 후 async 나머지
-            try
+            // [v5.7.5] 설정 로드 — Loaded에서 async 호출 (데드락 방지)
+            this.Loaded += async (s, ev) =>
             {
-                LoadSettings(); // json (Telegram 등)
-
-                // DB에서 GeneralSettings 동기 로드
-                if (_dbManager != null && AppConfig.CurrentUser != null)
+                try
                 {
-                    var dbSettings = _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id).GetAwaiter().GetResult();
-                    if (dbSettings != null)
-                    {
-                        _dbSettingsLoaded = true;
-                        txtDefaultMargin.Text = dbSettings.DefaultMargin.ToString("F4");
-                        chkEnableMajorTrading.IsChecked = dbSettings.EnableMajorTrading;
-                        txtPumpMargin.Text = dbSettings.PumpMargin.ToString("F0");
-                        txtLeverage.Text = dbSettings.DefaultLeverage.ToString();
-                        if (!string.IsNullOrWhiteSpace(dbSettings.MajorTrendProfile))
-                            SelectMajorTrendProfile(dbSettings.MajorTrendProfile);
-                    }
+                    await LoadSettingsAsync();
                 }
-            }
-            catch (Exception loadEx)
-            {
-                MainWindow.Instance?.AddLog($"❌ [설정] 로드 실패: {loadEx.Message}");
-            }
+                catch (Exception loadEx)
+                {
+                    MainWindow.Instance?.AddLog($"❌ [설정] 로드 실패: {loadEx.Message}");
+                }
+            };
 
             // 현재 로그인 사용자 정보 표시
             if (AppConfig.CurrentUser != null)
@@ -346,86 +333,31 @@ namespace TradingBot
 
         private async System.Threading.Tasks.Task LoadSettingsAsync()
         {
-            LoadSettings();
+            LoadSettings(); // json (Telegram/Grid 등)
 
-            // DB에서 사용자별 설정 로드
-            if (_dbManager == null)
-            {
-                MainWindow.Instance?.AddLog("⚠️ [설정] _dbManager null — DB 로드 불가");
-                // DB 없으면 appsettings.json에서라도 로드
-                try
-                {
-                    if (!string.IsNullOrEmpty(AppConfig.ConnectionString))
-                        _dbManager = new DbManager(AppConfig.ConnectionString);
-                }
-                catch { }
-            }
+            // DB 연결
+            if (_dbManager == null && !string.IsNullOrEmpty(AppConfig.ConnectionString))
+                try { _dbManager = new DbManager(AppConfig.ConnectionString); } catch { }
 
-            if (_dbManager != null && AppConfig.CurrentUser != null)
+            int userId = AppConfig.CurrentUser?.Id ?? 0;
+            if (_dbManager == null || userId <= 0) return;
+
+            try
             {
-                try
-                {
-                var dbSettings = await _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id);
-                if (dbSettings != null)
-                {
-                    // DB에서 로드한 설정으로 UI 업데이트
-                    _dbSettingsLoaded = true;
-                    txtDefaultMargin.Text = dbSettings.DefaultMargin.ToString("F4");
-                    chkEnableMajorTrading.IsChecked = dbSettings.EnableMajorTrading;
-                    txtPumpMargin.Text = dbSettings.PumpMargin.ToString("F0");
-                    txtLeverage.Text = dbSettings.DefaultLeverage.ToString();
-                // [v3.2.14 removed] txtTargetRoe.Text = dbSettings.TargetRoe.ToString("F4");
-                // [v3.2.14 removed] txtStopLossRoe.Text = dbSettings.StopLossRoe.ToString("F4");
-                // [v3.2.14 removed] txtPumpTp1Roe.Text = dbSettings.PumpTp1Roe.ToString("F4");
-                // [v3.2.14 removed] txtPumpTp2Roe.Text = dbSettings.PumpTp2Roe.ToString("F4");
-                // [v3.2.14 removed] txtPumpTimeStopMinutes.Text = dbSettings.PumpTimeStopMinutes.ToString("F2");
-                // [v3.2.14 removed] txtPumpStopWarnPct.Text = dbSettings.PumpStopDistanceWarnPct.ToString("F3");
-                // [v3.2.14 removed] txtPumpStopBlockPct.Text = dbSettings.PumpStopDistanceBlockPct.ToString("F3");
-                    // [메이저/PUMP 완전 분리] PUMP 추가 설정
-                // [v3.2.14 removed] txtPumpLeverage.Text = dbSettings.PumpLeverage.ToString();
-                // [v3.2.14 removed] txtPumpMargin.Text = dbSettings.PumpMargin.ToString("F2");
-                // [v3.2.14 removed] txtPumpBreakEvenRoe.Text = dbSettings.PumpBreakEvenRoe.ToString("F2");
-                // [v3.2.14 removed] txtPumpTrailingStartRoe.Text = dbSettings.PumpTrailingStartRoe.ToString("F2");
-                // [v3.2.14 removed] txtPumpTrailingGapRoe.Text = dbSettings.PumpTrailingGapRoe.ToString("F2");
-                // [v3.2.14 removed] txtPumpStopLossRoe.Text = dbSettings.PumpStopLossRoe.ToString("F2");
-                // [v3.2.14 removed] txtPumpFirstTakeProfitRatioPct.Text = dbSettings.PumpFirstTakeProfitRatioPct.ToString("F2");
-                // [v3.2.14 removed] txtPumpStairStep1Roe.Text = dbSettings.PumpStairStep1Roe.ToString("F2");
-                // [v3.2.14 removed] txtPumpStairStep2Roe.Text = dbSettings.PumpStairStep2Roe.ToString("F2");
-                // [v3.2.14 removed] txtPumpStairStep3Roe.Text = dbSettings.PumpStairStep3Roe.ToString("F2");
-                    // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정
-                // [v3.2.14 removed] txtMajorLeverage.Text = dbSettings.MajorLeverage.ToString();
-                // [v3.2.14 removed] txtMajorMargin — 제거됨
-                // [v3.2.14 removed] txtMajorBreakEvenRoe.Text = dbSettings.MajorBreakEvenRoe.ToString("F2");
-                // [v3.2.14 removed] txtMajorTp1Roe.Text = dbSettings.MajorTp1Roe.ToString("F2");
-                // [v3.2.14 removed] txtMajorTp2Roe.Text = dbSettings.MajorTp2Roe.ToString("F2");
-                // [v3.2.14 removed] txtMajorTrailingStartRoe.Text = dbSettings.MajorTrailingStartRoe.ToString("F2");
-                // [v3.2.14 removed] txtMajorTrailingGapRoe.Text = dbSettings.MajorTrailingGapRoe.ToString("F2");
-                // [v3.2.14 removed] txtMajorStopLossRoe.Text = dbSettings.MajorStopLossRoe.ToString("F2");
-                // [removed]                     // 급변 감지 설정
-                // [v3.2.14 removed] chkCrashDetectorEnabled.IsChecked = dbSettings.CrashDetectorEnabled;
-                // [v3.2.14 removed] txtCrashThreshold.Text = dbSettings.CrashThresholdPct.ToString("F1");
-                // [v3.2.14 removed] txtPumpDetectThreshold.Text = dbSettings.PumpDetectThresholdPct.ToString("F1");
-                // [v3.2.14 removed] txtCrashMinCoinCount.Text = dbSettings.CrashMinCoinCount.ToString();
-                // [v3.2.14 removed] txtCrashReverseSize.Text = (dbSettings.CrashReverseSizeRatio * 100).ToString("F0");
-                // [v3.2.14 removed] txtCrashCooldown.Text = dbSettings.CrashCooldownSeconds.ToString();
-                // [removed]                     if (!string.IsNullOrWhiteSpace(dbSettings.MajorTrendProfile))
-                    {
-                        SelectMajorTrendProfile(dbSettings.MajorTrendProfile);
-                    }
-                }
-                else
-                {
-                    MainWindow.Instance?.AddLog($"⚠️ [설정] DB에서 UserId={AppConfig.CurrentUser.Id} 설정을 찾을 수 없음");
-                }
-                }
-                catch (Exception dbEx)
-                {
-                    MainWindow.Instance?.AddLog($"❌ [설정] DB 로드 실패: {dbEx.Message}");
-                }
+                var s = await _dbManager.LoadGeneralSettingsAsync(userId);
+                if (s == null) return;
+
+                _dbSettingsLoaded = true;
+                txtDefaultMargin.Text = s.DefaultMargin.ToString("F0");
+                chkEnableMajorTrading.IsChecked = s.EnableMajorTrading;
+                txtPumpMargin.Text = s.PumpMargin.ToString("F0");
+                txtLeverage.Text = s.DefaultLeverage.ToString();
+                if (!string.IsNullOrWhiteSpace(s.MajorTrendProfile))
+                    SelectMajorTrendProfile(s.MajorTrendProfile);
             }
-            else
+            catch (Exception ex)
             {
-                MainWindow.Instance?.AddLog($"⚠️ [설정] DB 로드 스킵 — dbManager={(_dbManager != null)} user={AppConfig.CurrentUser?.Id}");
+                MainWindow.Instance?.AddLog($"❌ [설정] DB 로드 실패: {ex.Message}");
             }
         }
 
