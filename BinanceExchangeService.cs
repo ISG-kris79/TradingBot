@@ -558,8 +558,7 @@ namespace TradingBot.Services
             }
             else
             {
-                Console.WriteLine($"❌ [Binance] 레버리지 설정 실패 - {symbol} Leverage={leverage}x");
-                Console.WriteLine($"   에러: {result.Error?.Message}");
+                MainWindow.Instance?.AddLog($"⚠️ [Binance] 레버리지 설정 실패 - {symbol} {leverage}x | {result.Error?.Message}");
             }
 
             return result.Success;

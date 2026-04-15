@@ -10971,14 +10971,12 @@ namespace TradingBot
                         signalSource: ctx.SignalSource ?? "UNKNOWN");
                 }
 
-                // 레버리지 설정
+                // [v5.7.4] 레버리지 설정 — 실패해도 진입 계속 (이미 설정된 레버리지로 진행)
                 bool leverageSet = await _exchangeService.SetLeverageAsync(symbol, leverage, token: ctx.Token);
                 if (!leverageSet)
                 {
-                    CleanupReservedPosition("레버리지 설정 실패");
-                    OnStatusLog?.Invoke($"❌ {symbol} 레버리지 설정 실패로 진입 취소");
-                    EntryLog("ORDER_SETUP", "FAIL", "leverageSet=false");
-                    return;
+                    OnStatusLog?.Invoke($"⚠️ {symbol} 레버리지 {leverage}x 설정 실패 — 기존 레버리지로 진입 계속");
+                    EntryLog("ORDER_SETUP", "WARN", $"leverageSet=false lev={leverage}x (진입 계속)");
                 }
 
                 // ProfitRegressor 사이징
