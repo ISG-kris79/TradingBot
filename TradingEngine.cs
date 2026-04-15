@@ -11021,7 +11021,9 @@ namespace TradingBot
                 {
                     CleanupReservedPosition("시장가 주문 실패");
                     OnStatusLog?.Invoke($"❌ [{symbol}] {decision} 주문 실패");
+                    OnAlert?.Invoke($"❌ [{symbol}] {decision} 주문 실패 — Order_Error 확인");
                     EntryLog("ORDER", "FAILED", $"reason=marketOrderFailed");
+                    try { _ = _dbManager.SaveOrderErrorAsync(symbol, side, "MARKET_ENTRY", quantity, null, "PlaceMarketOrderAsync 실패"); } catch { }
                     return;
                 }
 

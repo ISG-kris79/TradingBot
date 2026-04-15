@@ -38,8 +38,8 @@ namespace TradingBot
                 MessageBox.Show($"DB 연결 초기화 실패: {ex.Message}", "경고", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 
-            // 비동기로 설정 로드
-            _ = LoadSettingsAsync();
+            // [v5.6.9] 설정 로드 — Loaded 이벤트에서 await로 호출 (빈값 방지)
+            this.Loaded += async (s, ev) => await LoadSettingsAsync();
 
             // 현재 로그인 사용자 정보 표시
             if (AppConfig.CurrentUser != null)

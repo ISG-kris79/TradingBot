@@ -823,8 +823,11 @@ namespace TradingBot.Services
 
                 if (!result.Success || result.Data == null)
                 {
-                    Console.WriteLine($"❌ [Binance] 시장가 주문 실패 - {symbol} {side} {quantity}");
-                    Console.WriteLine($"   에러: {result.Error?.Message}");
+                    string errMsg = result.Error?.Message ?? "unknown";
+                    int? errCode = result.Error?.Code;
+                    MainWindow.Instance?.AddLog($"❌ [Binance] 시장가 주문 실패 - {symbol} {side} qty={quantity} | Code={errCode} Msg={errMsg}");
+                    MainWindow.Instance?.AddAlert($"❌ [{symbol}] 시장가 주문 실패: {errMsg}");
+                    try { var dbm = new DbManager(AppConfig.ConnectionString); _ = dbm.SaveOrderErrorAsync(symbol, side, "MARKET", quantity, errCode, errMsg); } catch { }
                     return (false, 0, 0);
                 }
 
