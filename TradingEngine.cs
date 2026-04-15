@@ -1154,6 +1154,12 @@ namespace TradingBot
                 {
                     try
                     {
+                        // [v5.8.4] 슬롯 풀이면 조기 리턴 — API 호출 자체 안 함
+                        {
+                            var (canEnter, _) = CanAcceptNewEntry(symbol, "TICK_SURGE");
+                            if (!canEnter) return;
+                        }
+
                         // [v5.7.7] 메이저 비활성화 체크
                         if (MajorSymbols.Contains(symbol) && !_settings.EnableMajorTrading)
                         {
@@ -1256,14 +1262,12 @@ namespace TradingBot
                 {
                     try
                     {
-                        // [v5.7.7] 메이저 비활성화 + 가용잔고 체크
-                        if (MajorSymbols.Contains(symbol) && !_settings.EnableMajorTrading) return;
-                        try
+                        // [v5.8.4] 슬롯 풀 + 메이저 비활성화 조기 리턴
                         {
-                            decimal avail2 = await _exchangeService.GetAvailableBalanceAsync("USDT", _cts?.Token ?? CancellationToken.None);
-                            if (avail2 < 50m) return;
+                            var (canEnter, _) = CanAcceptNewEntry(symbol, "BUY_PRESSURE");
+                            if (!canEnter) return;
                         }
-                        catch { }
+                        if (MajorSymbols.Contains(symbol) && !_settings.EnableMajorTrading) return;
 
                         // 가짜 반등 필터: 5분봉 하락 중이면 차단
                         if (_marketDataManager.KlineCache.TryGetValue(symbol, out var klines5m) && klines5m.Count >= 6)

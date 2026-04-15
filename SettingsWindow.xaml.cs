@@ -79,8 +79,8 @@ namespace TradingBot
             bool optimizeMode = System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.LeftShift)
                              || System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.RightShift);
 
-            btnRunBacktest3Y.IsEnabled = false;
-            btnRunBacktest3Y.Content   = optimizeMode ? "최적화 중..." : "실행 중...";
+            // btnRunBacktest3Y.IsEnabled = false;
+            // btnRunBacktest3Y.Content   = optimizeMode ? "최적화 중..." : "실행 중...";
 
             var logLines = new System.Collections.Generic.List<string>();
 
@@ -141,15 +141,15 @@ namespace TradingBot
             }
             finally
             {
-                btnRunBacktest3Y.IsEnabled = true;
-                btnRunBacktest3Y.Content   = "3년 백테스트 (Shift=최적화)";
+                // btnRunBacktest3Y.IsEnabled = true;
+                // btnRunBacktest3Y.Content   = "3년 백테스트 (Shift=최적화)";
             }
         }
 
         private async void btnRunAI_Click(object sender, RoutedEventArgs e)
         {
-            btnRunAI.IsEnabled = false;
-            btnRunAI.Content = "AI 학습 중...";
+            // btnRunAI.IsEnabled = false;
+            // btnRunAI.Content = "AI 학습 중...";
 
             var logLines = new System.Collections.Generic.List<string>();
 
@@ -194,8 +194,8 @@ namespace TradingBot
             }
             finally
             {
-                btnRunAI.IsEnabled = true;
-                btnRunAI.Content = "AI 학습";
+                // btnRunAI.IsEnabled = true;
+                // btnRunAI.Content = "AI 학습";
             }
         }
 
@@ -205,8 +205,8 @@ namespace TradingBot
             bool optimizeMode = System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.LeftShift)
                              || System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.RightShift);
 
-            btnRunMtf.IsEnabled = false;
-            btnRunMtf.Content = optimizeMode ? "최적화 중..." : "실행 중...";
+            // btnRunMtf.IsEnabled = false;
+            // btnRunMtf.Content = optimizeMode ? "최적화 중..." : "실행 중...";
 
             var logLines = new System.Collections.Generic.List<string>();
 
@@ -255,15 +255,15 @@ namespace TradingBot
             }
             finally
             {
-                btnRunMtf.IsEnabled = true;
-                btnRunMtf.Content = "5분봉 최적화";
+                // btnRunMtf.IsEnabled = true;
+                // btnRunMtf.Content = "5분봉 최적화";
             }
         }
 
         private async void btnRunWfo_Click(object sender, RoutedEventArgs e)
         {
-            btnRunWfo.IsEnabled = false;
-            btnRunWfo.Content = "WFO 실행 중...";
+            // btnRunWfo.IsEnabled = false;
+            // btnRunWfo.Content = "WFO 실행 중...";
 
             var logLines = new System.Collections.Generic.List<string>();
 
@@ -318,8 +318,8 @@ namespace TradingBot
             }
             finally
             {
-                btnRunWfo.IsEnabled = true;
-                btnRunWfo.Content = "WFO 최적화";
+                // btnRunWfo.IsEnabled = true;
+                // btnRunWfo.Content = "WFO 최적화";
             }
         }
 
@@ -558,13 +558,16 @@ namespace TradingBot
                 var generalNode = (tradingNode["GeneralSettings"] as JsonObject) ?? new JsonObject();
                 tradingNode["GeneralSettings"] = generalNode;
 
-                // [v5.6.6] DB 기존 설정 기반으로 수정 (new로 만들면 기본값이 덮어씀)
+                // [v5.8.4] DB 기존 설정 로드 (Task.Run 교착 방지)
                 TradingSettings generalSettings;
-                if (_dbManager != null && AppConfig.CurrentUser != null)
+                try
                 {
-                    generalSettings = await _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id) ?? new TradingSettings();
+                    if (_dbManager != null && AppConfig.CurrentUser != null)
+                        generalSettings = await Task.Run(() => _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id)) ?? new TradingSettings();
+                    else
+                        generalSettings = new TradingSettings();
                 }
-                else
+                catch
                 {
                     generalSettings = new TradingSettings();
                 }
@@ -932,10 +935,19 @@ namespace TradingBot
                 // [v5.6.8] DB 먼저 저장 → json은 부수적
                 MainWindow.ApplyGeneralSettings(generalSettings);
 
-                // 3. DB 저장 (최우선)
+                // 3. DB 저장 (Task.Run 교착 방지)
                 if (_dbManager != null && AppConfig.CurrentUser != null)
                 {
-                    await _dbManager.SaveGeneralSettingsAsync(AppConfig.CurrentUser.Id, generalSettings);
+                    try
+                    {
+                        await Task.Run(() => _dbManager.SaveGeneralSettingsAsync(AppConfig.CurrentUser.Id, generalSettings));
+                        MainWindow.Instance?.AddLog($"✅ [설정] DB 저장 완료 | Margin={generalSettings.DefaultMargin} Pump={generalSettings.PumpMargin} Major={generalSettings.EnableMajorTrading} Slots={generalSettings.MaxMajorSlots}/{generalSettings.MaxPumpSlots}");
+                    }
+                    catch (Exception dbSaveEx)
+                    {
+                        MainWindow.Instance?.AddLog($"❌ [설정] DB 저장 실패: {dbSaveEx.Message}");
+                        MessageBox.Show($"DB 저장 실패: {dbSaveEx.Message}", "오류", MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
                 }
 
                 // 4. json 파일 저장 (실패해도 무시 — DB가 우선)
