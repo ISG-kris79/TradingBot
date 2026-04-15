@@ -83,10 +83,11 @@ namespace TradingBot
             _pumpWatchPool = new(StringComparer.OrdinalIgnoreCase);
         // 슬롯 설정
         // 메이저 4 + PUMP 2 = 총 6
-        private const int MAX_TOTAL_SLOTS = 7;        // 총 최대 7개 (메이저4 + PUMP3)
-        private const int MAX_MAJOR_SLOTS = 4;        // 메이저 최대 4개 (BTC/ETH/SOL/XRP)
-        private const int MAX_PUMP_SLOTS = 3;         // PUMP(밈코인) 최대 3개
-        private const int MAX_SPIKE_SLOTS = 1;        // [v5.2.0] SPIKE(급등) 전용 1개 추가
+        // [v5.7.9] 슬롯 설정 — 설정창에서 변경 가능
+        private int MAX_MAJOR_SLOTS => _settings?.MaxMajorSlots > 0 ? _settings.MaxMajorSlots : 4;
+        private int MAX_PUMP_SLOTS => _settings?.MaxPumpSlots > 0 ? _settings.MaxPumpSlots : 3;
+        private int MAX_TOTAL_SLOTS => MAX_MAJOR_SLOTS + MAX_PUMP_SLOTS;
+        private const int MAX_SPIKE_SLOTS = 1;
 
         // [v4.5.9] 일일 PUMP 진입 횟수 제한 (자정 KST 리셋)
         // [v5.1.3] 40 → 60 확대 — PLAY 케이스에서 일일 한도 소진 후 메가 펌프 놓침

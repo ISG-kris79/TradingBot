@@ -2644,7 +2644,7 @@ ORDER BY Symbol, OpenTime ASC";
                                       @PumpFirstTakeProfitRatioPct, @PumpStairStep1Roe, @PumpStairStep2Roe, @PumpStairStep3Roe,
                                       @MajorLeverage, @MajorMargin, @MajorBreakEvenRoe, @MajorTp1Roe, @MajorTp2Roe,
                                       @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe,
-                                      @EnableMajorTrading)
+                                      @EnableMajorTrading, @MaxMajorSlots, @MaxPumpSlots)
                             AS source (Id, DefaultLeverage, DefaultMargin, TargetRoe, StopLossRoe, TrailingStartRoe, TrailingDropRoe,
                                       PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct, MajorTrendProfile,
                                       PumpBreakEvenRoe, PumpTrailingStartRoe, PumpTrailingGapRoe,
@@ -2652,7 +2652,7 @@ ORDER BY Symbol, OpenTime ASC";
                                       PumpFirstTakeProfitRatioPct, PumpStairStep1Roe, PumpStairStep2Roe, PumpStairStep3Roe,
                                       MajorLeverage, MajorMargin, MajorBreakEvenRoe, MajorTp1Roe, MajorTp2Roe,
                                       MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe,
-                                      EnableMajorTrading)
+                                      EnableMajorTrading, MaxMajorSlots, MaxPumpSlots)
                         ON target.Id = source.Id
                         WHEN MATCHED THEN
                             UPDATE SET 
@@ -2687,6 +2687,8 @@ ORDER BY Symbol, OpenTime ASC";
                                 target.MajorTrailingGapRoe = source.MajorTrailingGapRoe,
                                 target.MajorStopLossRoe = source.MajorStopLossRoe,
                                 target.EnableMajorTrading = source.EnableMajorTrading,
+                                target.MaxMajorSlots = source.MaxMajorSlots,
+                                target.MaxPumpSlots = source.MaxPumpSlots,
                                 target.UpdatedAt = GETUTCDATE()
                         WHEN NOT MATCHED THEN
                             INSERT (Id, DefaultLeverage, DefaultMargin, TargetRoe, StopLossRoe, TrailingStartRoe, TrailingDropRoe,
@@ -2695,14 +2697,14 @@ ORDER BY Symbol, OpenTime ASC";
                                     PumpStopLossRoe, PumpMargin, PumpLeverage,
                                         PumpFirstTakeProfitRatioPct, PumpStairStep1Roe, PumpStairStep2Roe, PumpStairStep3Roe,
                                     MajorLeverage, MajorMargin, MajorBreakEvenRoe, MajorTp1Roe, MajorTp2Roe,
-                                    MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe, EnableMajorTrading)
+                                    MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe, EnableMajorTrading, MaxMajorSlots, MaxPumpSlots)
                             VALUES (@UserId, @DefaultLeverage, @DefaultMargin, @TargetRoe, @StopLossRoe, @TrailingStartRoe, @TrailingDropRoe,
                                     @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile,
                                     @PumpBreakEvenRoe, @PumpTrailingStartRoe, @PumpTrailingGapRoe,
                                     @PumpStopLossRoe, @PumpMargin, @PumpLeverage,
                                         @PumpFirstTakeProfitRatioPct, @PumpStairStep1Roe, @PumpStairStep2Roe, @PumpStairStep3Roe,
                                     @MajorLeverage, @MajorMargin, @MajorBreakEvenRoe, @MajorTp1Roe, @MajorTp2Roe,
-                                    @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe, @EnableMajorTrading);";
+                                    @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe, @EnableMajorTrading, @MaxMajorSlots, @MaxPumpSlots);";
 
                     var parameters = new DynamicParameters();
                     parameters.Add("@UserId", userId);
@@ -2737,6 +2739,8 @@ ORDER BY Symbol, OpenTime ASC";
                     parameters.Add("@MajorTrailingGapRoe", settings.MajorTrailingGapRoe);
                     parameters.Add("@MajorStopLossRoe", settings.MajorStopLossRoe);
                     parameters.Add("@EnableMajorTrading", settings.EnableMajorTrading);
+                    parameters.Add("@MaxMajorSlots", settings.MaxMajorSlots);
+                    parameters.Add("@MaxPumpSlots", settings.MaxPumpSlots);
 
                     try
                     {

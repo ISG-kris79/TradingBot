@@ -352,6 +352,8 @@ namespace TradingBot
                 chkEnableMajorTrading.IsChecked = s.EnableMajorTrading;
                 txtPumpMargin.Text = s.PumpMargin.ToString("F0");
                 txtLeverage.Text = s.DefaultLeverage.ToString();
+                txtMaxMajorSlots.Text = s.MaxMajorSlots.ToString();
+                txtMaxPumpSlots.Text = s.MaxPumpSlots.ToString();
                 if (!string.IsNullOrWhiteSpace(s.MajorTrendProfile))
                     SelectMajorTrendProfile(s.MajorTrendProfile);
             }
@@ -772,6 +774,12 @@ namespace TradingBot
                     generalNode["PumpMargin"] = pumpMargin;
                     generalSettings.PumpMargin = pumpMargin;
                 }
+
+                // [v5.7.9] 슬롯 설정
+                if (int.TryParse(txtMaxMajorSlots?.Text ?? "4", out int majorSlots))
+                    generalSettings.MaxMajorSlots = Math.Clamp(majorSlots, 0, 10);
+                if (int.TryParse(txtMaxPumpSlots?.Text ?? "3", out int pumpSlots))
+                    generalSettings.MaxPumpSlots = Math.Clamp(pumpSlots, 1, 10);
 
                 // TrailingStartRoe, TrailingDropRoe도 저장 (UI에 필드가 없으면 기본값 유지)
                 if (generalNode["TrailingStartRoe"] != null &&
