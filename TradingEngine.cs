@@ -5191,27 +5191,10 @@ namespace TradingBot
         /// 이 로직은 "진입 판단" 이 아닌 "사이즈/위험 관리" 이므로 메모리 원칙
         /// (모든 진입은 AI 로만) 과 구분됨. 사용자 지시로 명시적 유지.
         /// </summary>
+        /// <summary>[v5.5.9] 유동성 축소 제거 — 설정값 그대로 사용</summary>
         private decimal GetLiquidityAdjustedPumpMarginUsdt(string symbol)
         {
-            decimal baseMargin = GetConfiguredPumpMarginUsdt();
-
-            try
-            {
-                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var ticker) && ticker.QuoteVolume > 0)
-                {
-                    decimal vol24h = ticker.QuoteVolume;
-                    if (vol24h < 10_000_000m)
-                    {
-                        decimal adjusted = Math.Max(10m, baseMargin * 0.5m);
-                        OnStatusLog?.Invoke(
-                            $"💧 [LIQUIDITY] {symbol} 24h=${vol24h / 1_000_000m:F1}M < $10M → 마진 ${baseMargin:F0} → ${adjusted:F0} (50% 축소)");
-                        return adjusted;
-                    }
-                }
-            }
-            catch { }
-
-            return baseMargin;
+            return GetConfiguredPumpMarginUsdt();
         }
 
         private decimal GetConfiguredMajorMarginPercent()
