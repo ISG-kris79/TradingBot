@@ -11026,80 +11026,12 @@ namespace TradingBot
 
             try
             {
-                // 포지션 사이즈 산출
+                // [v5.9.5] 포지션 사이즈 — 설정값 그대로 사용, 멀티플라이어 제거
                 decimal marginUsdt = ctx.MarginUsdt;
                 int leverage = ctx.Leverage;
                 decimal positionSizeMultiplier = 1.0m;
-                decimal effectiveSizeMultiplier = Math.Clamp(ctx.SizeMultiplier, 0.10m, 2.00m);
 
-                // [v4.5.5] 알트 불장 모드: 레버리지 50% 하향 + 사이즈 70%
-                if (_altBullDetector.IsActive)
-                {
-                    int originalLev = leverage;
-                    decimal originalMul = effectiveSizeMultiplier;
-                    leverage = _altBullDetector.AdjustLeverage(leverage);
-                    effectiveSizeMultiplier = _altBullDetector.AdjustSizeMultiplier(effectiveSizeMultiplier);
-                    OnStatusLog?.Invoke($"🔥 [알트불장] {symbol} 레버리지 {originalLev}x→{leverage}x, 사이즈 {originalMul:F2}→{effectiveSizeMultiplier:F2}");
-                }
-
-                if (ctx.PatternSnapshot != null)
-                {
-                    ctx.ConvictionScore = Math.Max(ctx.ConvictionScore, (decimal)ctx.PatternSnapshot.FinalScore);
-                }
-
-                if (!ctx.IsPumpStrategy)
-                {
-                    // Major: 패턴 기반 어그레시브 멀티플라이어
-                    if (ctx.PatternSnapshot != null)
-                    {
-                        decimal patternSizeMultiplier = ctx.PatternSnapshot.Match?.PositionSizeMultiplier ?? 1.0m;
-                        bool hasStrongPatternMatch =
-                            ctx.PatternSnapshot.Match?.IsSuperEntry == true ||
-                            (ctx.PatternSnapshot.Match?.TopSimilarity ?? 0d) >= 0.80d ||
-                            (ctx.PatternSnapshot.Match?.MatchProbability ?? 0d) >= 0.70d;
-
-                        if (ctx.ConvictionScore >= 85.0m && hasStrongPatternMatch)
-                        {
-                            decimal aggressiveMultiplier = patternSizeMultiplier > 1.0m
-                                ? patternSizeMultiplier
-                                : 1.5m;
-
-                            positionSizeMultiplier = Math.Clamp(aggressiveMultiplier, 1.5m, 2.0m);
-                            OnStatusLog?.Invoke($"🚀 [Aggressive Entry] {symbol} 고신뢰 진입 감지 | Score={ctx.ConvictionScore:F1}, PatternStrong={hasStrongPatternMatch} → 비중 x{positionSizeMultiplier:F2}");
-                        }
-                        else if (patternSizeMultiplier > 1.0m)
-                        {
-                            OnStatusLog?.Invoke($"🧮 [Pattern Size] {symbol} 패턴 배수 제안 x{patternSizeMultiplier:F2} 감지, 하지만 Score={ctx.ConvictionScore:F1} < 85 또는 강매치 미충족으로 기본 비중 유지");
-                        }
-                    }
-
-                    if (effectiveSizeMultiplier != 1.0m)
-                    {
-                        positionSizeMultiplier *= effectiveSizeMultiplier;
-                        EntryLog("SIZE", "ADJUST", $"sizeMultiplier={effectiveSizeMultiplier:F2} finalMultiplier={positionSizeMultiplier:F2}");
-                    }
-
-                    marginUsdt *= positionSizeMultiplier;
-                    if (positionSizeMultiplier != 1.0m)
-                    {
-                        OnStatusLog?.Invoke($"💼 [Position Sizing] {symbol} 최종 증거금 {marginUsdt:F2} USDT (배수 x{positionSizeMultiplier:F2})");
-                    }
-                }
-                else
-                {
-                    // Pump: 고정 마진, 사이즈 멀티플라이어 적용
-                    if (effectiveSizeMultiplier != 1.0m)
-                    {
-                        marginUsdt *= effectiveSizeMultiplier;
-                        positionSizeMultiplier = effectiveSizeMultiplier;
-                        EntryLog("SIZE", "ADJUST", $"pumpSizeMultiplier={effectiveSizeMultiplier:F2} margin={marginUsdt:F2}");
-                    }
-                    else
-                    {
-                        positionSizeMultiplier = 1.0m;
-                        EntryLog("SIZE", "FIXED", $"coinType=Pumping margin={marginUsdt:F2}USDT source=PumpMargin");
-                    }
-                }
+                EntryLog("SIZE", "FIXED", $"margin=${marginUsdt:F0} leverage={leverage}x pump={ctx.IsPumpStrategy}");
 
                 if (ctx.ScoutModeActivated)
                 {
@@ -11225,23 +11157,19 @@ namespace TradingBot
                     }
                 }
 
-                // ProfitRegressor 사이징
+                // [v5.9.5] ProfitRegressor — 로그만 (마진 곱셈 제거, 설정값 그대로 사용)
                 if (_profitRegressor.IsModelReady && ctx.LatestCandle != null)
                 {
-                    float? predicted = _profitRegressor.PredictProfit(
-                        ctx.LatestCandle.RSI, ctx.LatestCandle.BB_Width > 0 ? ctx.LatestCandle.BB_Width / 100f : 0.5f,
-                        ctx.LatestCandle.ATR, ctx.LatestCandle.Volume_Ratio,
-                        ctx.LatestCandle.Price_Change_Pct,
-                        ctx.BlendedMlTfScore);
-                    decimal multiplier = _profitRegressor.GetPositionMultiplier(predicted);
-                    if (multiplier <= 0)
+                    try
                     {
-                        multiplier = 0.5m;
-                        OnStatusLog?.Invoke($"⚠️ [ProfitRegressor] {symbol} 손실 예측 ({predicted:F2}%) → 50% 사이즈로 축소 진입");
-                        EntryLog("PROFIT_REG", "WARN", $"predicted={predicted:F2}% reducedTo=50%");
+                        float? predicted = _profitRegressor.PredictProfit(
+                            ctx.LatestCandle.RSI, ctx.LatestCandle.BB_Width > 0 ? ctx.LatestCandle.BB_Width / 100f : 0.5f,
+                            ctx.LatestCandle.ATR, ctx.LatestCandle.Volume_Ratio,
+                            ctx.LatestCandle.Price_Change_Pct,
+                            ctx.BlendedMlTfScore);
+                        EntryLog("PROFIT_REG", "INFO", $"predicted={predicted:F2}% (참고용, 마진 미적용)");
                     }
-                    marginUsdt *= multiplier;
-                    OnStatusLog?.Invoke($"📊 [ProfitRegressor] {symbol} 예상수익={predicted:F2}% → 사이즈 {multiplier:P0} (${marginUsdt:N0})");
+                    catch { }
                 }
 
                 // 수량 계산
