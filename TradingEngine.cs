@@ -1153,8 +1153,26 @@ namespace TradingBot
                 {
                     try
                     {
+                        // [v5.7.7] 메이저 비활성화 체크
+                        if (MajorSymbols.Contains(symbol) && !_settings.EnableMajorTrading)
+                        {
+                            OnLiveLog?.Invoke($"⛔ [{symbol}] 메이저 비활성화 → 스킵");
+                            return;
+                        }
+
+                        // [v5.7.7] 가용 잔고 체크 — 부족하면 주문 안 보냄
+                        try
+                        {
+                            decimal avail = await _exchangeService.GetAvailableBalanceAsync("USDT", _cts?.Token ?? CancellationToken.None);
+                            if (avail < 50m)
+                            {
+                                OnLiveLog?.Invoke($"⛔ [{symbol}] 가용잔고 ${avail:F0} < $50 → 스킵");
+                                return;
+                            }
+                        }
+                        catch { }
+
                         // [v5.4.6] TICK_SURGE AI 필터 — 하락 추세 중 진입 방지
-                        // PumpSignalClassifier로 상승 판정 확인 + 5분봉 캔들/볼밴 체크
                         bool aiApproved = false;
                         string blockReason = "";
 
@@ -1237,6 +1255,15 @@ namespace TradingBot
                 {
                     try
                     {
+                        // [v5.7.7] 메이저 비활성화 + 가용잔고 체크
+                        if (MajorSymbols.Contains(symbol) && !_settings.EnableMajorTrading) return;
+                        try
+                        {
+                            decimal avail2 = await _exchangeService.GetAvailableBalanceAsync("USDT", _cts?.Token ?? CancellationToken.None);
+                            if (avail2 < 50m) return;
+                        }
+                        catch { }
+
                         // 가짜 반등 필터: 5분봉 하락 중이면 차단
                         if (_marketDataManager.KlineCache.TryGetValue(symbol, out var klines5m) && klines5m.Count >= 6)
                         {
