@@ -19,6 +19,7 @@ namespace TradingBot
         private DbManager? _dbManager;
         private bool _initialSimulationMode = false;
         private decimal _initialSimulationBalance = 10000m;
+        private bool _dbSettingsLoaded = false; // [v5.6.1] DB 로드 완료 플래그
 
         public SettingsWindow()
         {
@@ -331,6 +332,7 @@ namespace TradingBot
                 if (dbSettings != null)
                 {
                     // DB에서 로드한 설정으로 UI 업데이트
+                    _dbSettingsLoaded = true;
                     txtDefaultMargin.Text = dbSettings.DefaultMargin.ToString("F4");
                     chkEnableMajorTrading.IsChecked = dbSettings.EnableMajorTrading;
                     txtPumpMargin.Text = dbSettings.PumpMargin.ToString("F0");
@@ -405,8 +407,9 @@ namespace TradingBot
                     {
                         // GeneralSettings 섹션에서 로드
                         var generalNode = tradingNode["GeneralSettings"];
-                        if (generalNode != null)
+                        if (generalNode != null && !_dbSettingsLoaded)
                         {
+                            // [v5.6.1] DB에서 이미 로드했으면 json으로 덮어쓰지 않음
                             txtDefaultMargin.Text = generalNode["DefaultMargin"]?.ToString() ?? "200.0";
                             if (generalNode["EnableMajorTrading"] != null)
                                 chkEnableMajorTrading.IsChecked = generalNode["EnableMajorTrading"]?.ToString()?.ToLower() != "false";
