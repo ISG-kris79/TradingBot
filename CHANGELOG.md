@@ -5,6 +5,32 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.9.12] - 2026-04-15
+
+### Removed (하드코딩 필터 전면 제거 — 메모리 규칙 "AI 판단만 사용" 준수)
+
+- **TICK_SURGE 핸들러**: PumpSignalClassifier 확률 60% 임계값 + 5분봉 하락 차단(음봉 2/3 + BB중심 아래) 제거
+- **BUY_PRESSURE 핸들러**: 가짜 반등 필터(5분봉 음봉 + SMA20 아래) + 마지막 봉 음봉 차단 제거
+- **ExecuteMajorLongEntry**: VWAP -0.3% / EMA 역배열 / StochRSI 데드크로스 하드코딩 차단 제거
+- **ExecuteMajorShortEntry**: RSI 과매도 / MACD 골든크로스 / Fibonacci / Stoch / SMA60 / VWAP / EMA / StochRSI 8개 하드코딩 차단 전부 제거
+- **VOLATILITY 필터**: ATR 3%+, 5분봉 5%+ 변동성 하드코딩 차단 제거
+
+### Rationale
+
+- 위 지표들은 이미 PumpSignalClassifier / PumpForecaster / MajorForecaster / AIDoubleCheckEntryGate / SurvivalEntryModel의 학습 피처로 포함됨
+- AI 모델이 학습 기반으로 진입/비진입 판단 → 하드코딩 룰은 모델 판단을 가로막음
+- 메모리 규칙 "모든 진입은 AI(ML.NET) 학습→추론→예측으로만 진입" 엄격 준수
+- v5.5 계열에서 작동했던 수익 로직 복원 방향
+
+### Preserved (유지 — AI 판단/안전장치)
+
+- PumpForecaster / MajorForecaster / SpikeForecaster — 미래 예측 기반 진입 게이팅
+- AIDoubleCheckEntryGate — AI 재검증
+- SurvivalEntryModel — 생존 확률 예측
+- DirectionAI — 상승/하락 방향 예측
+- Slot / Blacklist / Cooldown / R:R / Balance check (안전장치)
+- Major ATR Hybrid 손절 (리스크 관리)
+
 ## [5.9.11] - 2026-04-15
 
 ### Notes

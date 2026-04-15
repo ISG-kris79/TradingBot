@@ -1215,75 +1215,8 @@ namespace TradingBot
                         }
                         catch { }
 
-                        // [v5.4.6] TICK_SURGE AI 필터 — 하락 추세 중 진입 방지
-                        bool aiApproved = false;
-                        string blockReason = "";
-
-                        // 1) PumpSignalClassifier 체크
-                        var classifier = MajorSymbols.Contains(symbol) ? null : _pumpSignalClassifier;
-                        if (classifier != null && classifier.IsModelLoaded
-                            && _marketDataManager.KlineCache.TryGetValue(symbol, out var klines) && klines.Count >= 30)
-                        {
-                            List<Binance.Net.Interfaces.IBinanceKline> snapshot;
-                            lock (klines) { snapshot = klines.TakeLast(60).ToList(); }
-                            var feat = TradingBot.Services.PumpSignalClassifier.ExtractFeature(snapshot);
-                            if (feat != null)
-                            {
-                                var pred = classifier.Predict(feat);
-                                if (pred != null && pred.ShouldEnter && pred.Probability >= 0.60f)
-                                    aiApproved = true;
-                                else
-                                    blockReason = $"ML prob={pred?.Probability:P0}(<60%)";
-                            }
-                        }
-                        else
-                        {
-                            // 메이저 코인이거나 모델 미로드 → 5분봉 캔들로 판단
-                            aiApproved = true; // 아래 캔들 체크에서 차단
-                        }
-
-                        // 2) 5분봉 하락 추세 체크 — 최근 3봉 중 2봉 음봉 + 볼밴 중심선 아래 → 차단
-                        if (aiApproved && _marketDataManager.KlineCache.TryGetValue(symbol, out var klines2) && klines2.Count >= 20)
-                        {
-                            List<Binance.Net.Interfaces.IBinanceKline> recent;
-                            lock (klines2) { recent = klines2.TakeLast(20).ToList(); }
-
-                            if (recent.Count >= 3)
-                            {
-                                var last3 = recent.TakeLast(3).ToList();
-                                int bearishCount = last3.Count(k => k.ClosePrice < k.OpenPrice);
-
-                                // 볼밴 중심선 (SMA20)
-                                decimal sma20 = recent.TakeLast(20).Average(k => k.ClosePrice);
-
-                                if (bearishCount >= 2 && price < sma20)
-                                {
-                                    // 볼밴 하단 터치 후 반등(마지막 봉 양봉) 이면 허용
-                                    bool lastBullish = last3[^1].ClosePrice > last3[^1].OpenPrice;
-                                    decimal bbLower = sma20 - 2m * (decimal)Math.Sqrt((double)recent.TakeLast(20)
-                                        .Average(k => (k.ClosePrice - sma20) * (k.ClosePrice - sma20)));
-
-                                    if (lastBullish && price <= bbLower * 1.005m)
-                                    {
-                                        // 하단 터치 후 반등 양봉 → 허용
-                                        OnStatusLog?.Invoke($"⚡ [틱급증] {symbol} 하단반등 허용 (BB하단=${bbLower:F4} 현재=${price:F4})");
-                                    }
-                                    else
-                                    {
-                                        aiApproved = false;
-                                        blockReason = $"하락추세(음봉{bearishCount}/3 BB중심아래)";
-                                    }
-                                }
-                            }
-                        }
-
-                        if (!aiApproved)
-                        {
-                            OnStatusLog?.Invoke($"⛔ [틱급증→차단] {symbol} TPS={tpsRatio:F1}x | {blockReason}");
-                            OnLiveLog?.Invoke($"⛔ [{symbol}] 틱급증 차단: {blockReason}");
-                            return;
-                        }
-
+                        // [v5.9.12] 하드코딩 필터 전부 제거 — AI Forecaster만 판단
+                        // 진입 경로 내부의 MajorForecaster/PumpForecaster가 미래 상승 예측 수행
                         OnStatusLog?.Invoke($"⚡ [틱급증→진입] {symbol} TPS={tpsRatio:F1}x 매수비={buyRatio:P0}");
                         EnqueueEntry(symbol, "LONG", price, "TICK_SURGE", sizeMultiplier: 1.0m, skipAiGate: true);
                     }
@@ -1304,32 +1237,7 @@ namespace TradingBot
                         }
                         if (MajorSymbols.Contains(symbol) && !_settings.EnableMajorTrading) return;
 
-                        // 가짜 반등 필터: 5분봉 하락 중이면 차단
-                        if (_marketDataManager.KlineCache.TryGetValue(symbol, out var klines5m) && klines5m.Count >= 6)
-                        {
-                            List<Binance.Net.Interfaces.IBinanceKline> recent;
-                            lock (klines5m) { recent = klines5m.TakeLast(6).ToList(); }
-
-                            // 5분봉 최근 3봉 중 2봉 음봉 → 하락 추세
-                            int bearish5m = recent.TakeLast(3).Count(k => k.ClosePrice < k.OpenPrice);
-                            decimal sma20_5m = recent.Average(k => k.ClosePrice);
-
-                            if (bearish5m >= 2 && price < sma20_5m)
-                            {
-                                OnStatusLog?.Invoke($"⛔ [매수쏠림→차단] {symbol} 5분봉 하락추세(음봉{bearish5m}/3 + BB아래) → 가짜 반등");
-                                OnLiveLog?.Invoke($"⛔ [{symbol}] 매수쏠림 차단: 하락추세");
-                                return;
-                            }
-
-                            bool lastBullish = recent[^1].ClosePrice > recent[^1].OpenPrice;
-                            if (!lastBullish)
-                            {
-                                OnStatusLog?.Invoke($"⛔ [매수쏠림→차단] {symbol} 마지막 5분봉 음봉 → 대기");
-                                OnLiveLog?.Invoke($"⛔ [{symbol}] 매수쏠림 차단: 음봉 대기");
-                                return;
-                            }
-                        }
-
+                        // [v5.9.12] 가짜 반등 필터 제거 — AI Forecaster가 피처 기반으로 판단
                         OnStatusLog?.Invoke($"🔥 [매수쏠림→진입] {symbol} 매수비={buyRatio:P0} → LONG 시도");
                         EnqueueEntry(symbol, "LONG", price, "BUY_PRESSURE", sizeMultiplier: 1.0m, skipAiGate: true);
                     }
@@ -9692,38 +9600,8 @@ namespace TradingBot
             // Volume 판단은 이미 PumpSignalClassifier / AIDoubleCheckEntryGate /
             // SurvivalEntryModel 이 Volume_Ratio·volumeMomentum 피처로 학습 중.
 
-            // [v4.6.0] 변동성 차단 — 메이저 일반 진입에만 적용 (PUMP/급등은 우회)
-            // [v4.7.0] 초기학습 완료 시 모든 하드 필터 우회 (AI 단독 판단)
-            bool isVolatilitySignalPath = signalSource == "PUMP_WATCH_CONFIRMED"
-                || signalSource.StartsWith("SPIKE", StringComparison.OrdinalIgnoreCase)
-                || signalSource.StartsWith("MAJOR_MEME", StringComparison.OrdinalIgnoreCase)
-                || signalSource == "TICK_SURGE"
-                || signalSource == "PUMP_REVERSE"
-                || signalSource == "CRASH_REVERSE";
-
-            if (!IsInitialTrainingComplete && !isVolatilitySignalPath && latestCandle != null && latestCandle.ATR > 0 && currentPrice > 0)
-            {
-                // 메이저 일반 진입만: ATR 3%+, 5분봉 5%+ 차단
-                float atrPriceRatio = latestCandle.ATR / (float)currentPrice * 100f;
-                if (atrPriceRatio >= 3.0f)
-                {
-                    OnStatusLog?.Invoke($"⛔ [변동성] {symbol} ATR/가격={atrPriceRatio:F1}% ≥ 3% → 차단");
-                    EntryLog("VOLATILITY", "BLOCK", $"atrRatio={atrPriceRatio:F1}% (메이저 진입)");
-                    return;
-                }
-
-                float candleRangePct = (float)(latestCandle.High - latestCandle.Low) / (float)currentPrice * 100f;
-                if (candleRangePct >= 5.0f)
-                {
-                    OnStatusLog?.Invoke($"⛔ [변동성] {symbol} 5분봉={candleRangePct:F1}% ≥ 5% → 차단");
-                    EntryLog("VOLATILITY", "BLOCK", $"candleRange={candleRangePct:F1}% (메이저 진입)");
-                    return;
-                }
-            }
-            else if (isVolatilitySignalPath)
-            {
-                EntryLog("VOLATILITY", "BYPASS", $"path={signalSource} (PUMP/급등은 변동성 자체가 신호)");
-            }
+            // [v5.9.12] VOLATILITY 하드코딩 차단 제거 — ATR/CandleRange는 AI 피처로 이미 사용됨
+            // 학습된 모델이 변동성 컨텍스트까지 포함하여 진입 결정
 
             // ═══════════════════════════════════════════════════════════════
             // [ROUTER] 2. 슬롯 검증 + 정찰대 전환
@@ -10688,31 +10566,8 @@ namespace TradingBot
         {
             var EntryLog = ctx.EntryLog;
 
-            // [v4.6.2] 메이저 LONG 보조지표 필터 (대칭) — VWAP / EMA / StochRSI
-            // [v4.7.0] 초기학습 완료 시 모든 LONG 하드 필터 우회 (AI 단독 판단)
-            if (!IsInitialTrainingComplete && ctx.LatestCandle != null)
-            {
-                // 1. VWAP 아래 → LONG 차단 (가격이 VWAP 아래면 매도 우위)
-                if (ctx.LatestCandle.VWAP > 0 && ctx.LatestCandle.Price_VWAP_Distance_Pct < -0.3f)
-                {
-                    EntryLog("LONG_FILTER", "BLOCK", $"belowVWAP dist={ctx.LatestCandle.Price_VWAP_Distance_Pct:F2}% (VWAP -0.3%↓에서 롱 금지)");
-                    return;
-                }
-
-                // 2. EMA 역배열(9<21<50) → LONG 차단 (강한 SHORT 추세)
-                if (ctx.LatestCandle.EMA_Cross_State <= -1f)
-                {
-                    EntryLog("LONG_FILTER", "BLOCK", "emaDowntrend EMA9<21<50 (강한 하락추세 롱 금지)");
-                    return;
-                }
-
-                // 3. StochRSI 데드크로스(K<D) + K>20 → LONG 차단 (단기 약세)
-                if (ctx.LatestCandle.StochRSI_Cross <= -1f && ctx.LatestCandle.StochRSI_K > 20f && ctx.LatestCandle.StochRSI_K > 0f)
-                {
-                    EntryLog("LONG_FILTER", "BLOCK", $"stochRsiBearish K={ctx.LatestCandle.StochRSI_K:F1}<D={ctx.LatestCandle.StochRSI_D:F1} (단기 약세 롱 금지)");
-                    return;
-                }
-            }
+            // [v5.9.12] 하드코딩 VWAP/EMA/StochRSI 차단 제거 — AI Predictor + Forecaster만 판단
+            // 해당 지표는 AI 모델의 입력 피처로 이미 사용됨 → 모델이 학습 기반으로 진입 결정
 
             // 1. AI Predictor + 보너스 점수 (Major LONG only: EMA retest +10, short squeeze +15, low-vol privilege +10)
             await EvaluateAiPredictorForEntry(ctx, applyMajorBonuses: true);
@@ -10796,67 +10651,8 @@ namespace TradingBot
             // 1. AI Predictor (보너스 없음 for SHORT)
             await EvaluateAiPredictorForEntry(ctx, applyMajorBonuses: false);
 
-            // 2. SHORT 전용 다중 필터 (v3.5.3: 0승10패 → 엄격 필터)
-            // [v4.7.0] 초기학습 완료 시 모든 SHORT 하드 필터 우회 (AI 단독 판단)
-            if (!IsInitialTrainingComplete && ctx.LatestCandle != null)
-            {
-                // 2-1. RSI 과매도 + 가격 MA20 위 → 차단
-                bool shortPriceAboveMa20 = ctx.LatestCandle.Close >= (decimal)ctx.LatestCandle.SMA_20;
-                if (ctx.LatestCandle.RSI <= _shortRsiExhaustionFloor && shortPriceAboveMa20)
-                {
-                    EntryLog("AI", "BLOCK", $"shortFilter reason=RSI 과매도({ctx.LatestCandle.RSI:F1}≤{_shortRsiExhaustionFloor:F1}) + 가격 MA20 위");
-                    return;
-                }
-
-                // 2-2. MACD 골든크로스 활성 → SHORT 차단 (MACD > Signal이면 상승 모멘텀)
-                if (ctx.LatestCandle.MACD > ctx.LatestCandle.MACD_Signal && ctx.LatestCandle.MACD > 0)
-                {
-                    EntryLog("SHORT_FILTER", "BLOCK", $"goldenCross MACD={ctx.LatestCandle.MACD:F6}>Signal={ctx.LatestCandle.MACD_Signal:F6} (상승 모멘텀 중 숏 금지)");
-                    return;
-                }
-
-                // 2-3. 피보나치 38.2~61.8% 지지구간 → SHORT 차단 (반등 가능성 높음)
-                if (ctx.LatestCandle.Fib_Position > 0 && ctx.LatestCandle.Fib_Position >= 0.35f && ctx.LatestCandle.Fib_Position <= 0.65f)
-                {
-                    EntryLog("SHORT_FILTER", "BLOCK", $"fibZone position={ctx.LatestCandle.Fib_Position:F2} (38~65% 지지구간 숏 금지)");
-                    return;
-                }
-
-                // 2-4. Stochastic K > D (상승 교차) → SHORT 차단
-                if (ctx.LatestCandle.Stoch_K > 0 && ctx.LatestCandle.Stoch_K > ctx.LatestCandle.Stoch_D && ctx.LatestCandle.Stoch_K < 80)
-                {
-                    EntryLog("SHORT_FILTER", "BLOCK", $"stochBullish K={ctx.LatestCandle.Stoch_K:F1}>D={ctx.LatestCandle.Stoch_D:F1} (상승 교차 숏 금지)");
-                    return;
-                }
-
-                // 2-5. 가격 > SMA60 (중기 상승추세) → SHORT 차단
-                if (ctx.LatestCandle.SMA_60 > 0 && ctx.LatestCandle.Close > (decimal)ctx.LatestCandle.SMA_60)
-                {
-                    EntryLog("SHORT_FILTER", "BLOCK", $"aboveSMA60 price={ctx.LatestCandle.Close}>SMA60={ctx.LatestCandle.SMA_60:F4} (중기 상승추세 숏 금지)");
-                    return;
-                }
-
-                // [v4.6.2] 2-6. VWAP 위 → SHORT 차단 (단타에서 가격이 VWAP 위면 매수 우위)
-                if (ctx.LatestCandle.VWAP > 0 && ctx.LatestCandle.Price_VWAP_Distance_Pct > 0)
-                {
-                    EntryLog("SHORT_FILTER", "BLOCK", $"aboveVWAP dist={ctx.LatestCandle.Price_VWAP_Distance_Pct:F2}% (VWAP 위에서 숏 금지)");
-                    return;
-                }
-
-                // [v4.6.2] 2-7. EMA 정배열(9>21>50) → SHORT 차단 (강한 LONG 추세)
-                if (ctx.LatestCandle.EMA_Cross_State >= 1f)
-                {
-                    EntryLog("SHORT_FILTER", "BLOCK", $"emaUptrend EMA9>21>50 (강한 상승추세 숏 금지)");
-                    return;
-                }
-
-                // [v4.6.2] 2-8. StochRSI 골든크로스(K>D) + K<80 → SHORT 차단 (단기 반등)
-                if (ctx.LatestCandle.StochRSI_Cross >= 1f && ctx.LatestCandle.StochRSI_K < 80f && ctx.LatestCandle.StochRSI_K > 0f)
-                {
-                    EntryLog("SHORT_FILTER", "BLOCK", $"stochRsiBullish K={ctx.LatestCandle.StochRSI_K:F1}>D={ctx.LatestCandle.StochRSI_D:F1} (단기 반등 숏 금지)");
-                    return;
-                }
-            }
+            // [v5.9.12] 하드코딩 SHORT 필터 전부 제거 (RSI/MACD/Fib/Stoch/SMA/VWAP/EMA/StochRSI)
+            // 해당 지표는 AI 모델 피처로 이미 사용됨 → 모델이 학습 기반으로 진입 결정
 
             // 3. AI Score 사이즈 조절 제거 — 라우터 AI Gate Advisor에서 이미 적용됨
 
