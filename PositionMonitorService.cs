@@ -3393,23 +3393,23 @@ namespace TradingBot.Services
                     int count = _stopLossCountToday.AddOrUpdate(symbol, 1, (_, c) => c + 1);
                     if (count >= 3)
                     {
-                        // [v5.9.10] 당일 자정까지 블랙리스트 — 3회로 완화 (기존 2회)
+                        // 당일 자정까지 블랙리스트 — 3회
                         var midnight = DateTime.Today.AddDays(1);
                         _blacklistedSymbols[symbol] = midnight;
                         OnAlert?.Invoke($"🚫 {symbol} 당일 블랙리스트 (손절 {count}회 → 오늘 재진입 금지)");
                     }
                     else
                     {
-                        // [v5.9.10] 30분 → 5분으로 단축 (강한 재반등 기회 놓치지 않도록)
-                        _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(5);
-                        OnLog?.Invoke($"🚫 {symbol} 5분 쿨다운 (손절 {count}회차)");
+                        // [v5.9.19] 5분 → 30분 연장 (반복 진입 + 고점 재진입 방지)
+                        _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
+                        OnLog?.Invoke($"🚫 {symbol} 30분 쿨다운 (손절 {count}회차)");
                     }
                 }
                 else
                 {
-                    // [v5.9.10] 익절 후 30분 → 3분으로 단축 (즉시 재진입 기회)
-                    _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(3);
-                    OnLog?.Invoke($"🚫 {symbol} 3분 쿨다운 (익절: {reason})");
+                    // [v5.9.19] 익절 후 3분 → 30분 연장 (청산가 대비 상승 시 고점 재진입 위험)
+                    _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
+                    OnLog?.Invoke($"🚫 {symbol} 30분 쿨다운 (익절: {reason})");
                 }
 
                 CleanupPositionData(symbol);

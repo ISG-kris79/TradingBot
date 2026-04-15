@@ -5,6 +5,36 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.9.19] - 2026-04-16
+
+### Removed
+
+- **STUCK 포지션 교체 전면 비활성화** — 데이터 분석 결과 기여도 마이너스
+  - 20건 검토: 승 4건 / 패 16건 (승률 20%)
+  - 순 손익: **-$12.80**
+  - 원인: 교체 트리거가 대부분 SQUEEZE_BREAKOUT (승률 저조), 교체 대상 포지션은 이미 -2~-5% 손실
+  - 수수료 + 확정 손실 > 새 진입 기대 수익
+
+### Changed
+
+- **손절/익절 후 쿨다운 5분/3분 → 30분** (PositionMonitorService)
+  - 같은 심볼 반복 진입 방지
+  - ENJUSDT 케이스: 03:52 익절 → 04:31 재진입 고점 손절 반복 차단
+
+### Added
+
+- **최근 청산가 대비 고점 재진입 차단** (v5.9.19 신규)
+  - `_recentExitPrices` ConcurrentDictionary
+  - `RecordExitPrice(symbol, exitPrice)` — 청산 시점마다 기록
+  - `IsLateEntryFromRecentExit()` — 30분 내 청산가 대비 **+2% 이상** 상승 시 진입 차단
+  - ENJUSDT 케이스: 03:52 청산 $0.0906 → 04:31 재진입 $0.0935 (**+3.2%**) → 자동 차단됨
+
+### 예상 효과
+
+- STUCK 교체 -$12.80 손실 제거 → 즉시 **+$12.80**
+- ENJUSDT 같은 고점 반복 진입 -$20 방지
+- 반복 진입 쿨다운 연장 → 일일 **-$30~50 손실 방지**
+
 ## [5.9.18] - 2026-04-16
 
 ### Fixed

@@ -3947,6 +3947,9 @@ namespace TradingBot
                 if (pos != null && !string.IsNullOrEmpty(pos.EntrySignalSource))
                     RecordSignalResult(pos.EntrySignalSource, pnl);
 
+                // [v5.9.19] 최근 청산가 기록 — 고점 재진입 방지
+                RecordExitPrice(symbol, avgPrice);
+
                 string emoji = pnl >= 0 ? "💰" : "📉";
                 OnStatusLog?.Invoke($"{emoji} [API 체결] {symbol} {exitReason} | 체결가={avgPrice:F4} 수량={filledQty:F4} PnL={pnl:+0.00;-0.00} ({pnlPct:+0.0;-0.0}%)");
 
@@ -6400,7 +6403,10 @@ namespace TradingBot
                             // [v5.9.9] 신호별 rolling win rate 기록
                             if (!string.IsNullOrEmpty(closedSnapshot.EntrySignalSource))
                                 RecordSignalResult(closedSnapshot.EntrySignalSource, pnl);
-                            
+
+                            // [v5.9.19] 최근 청산가 기록 — 고점 재진입 방지
+                            RecordExitPrice(pos.Symbol, exitPrice);
+
                             // [수정] 외부 청산도 30분 블랙리스트 등록 (즉시 재진입 방지)
                             _blacklistedSymbols[pos.Symbol] = DateTime.Now.AddMinutes(30);
                             OnStatusLog?.Invoke($"🚫 {pos.Symbol} 30분간 블랙리스트 등록 (외부 청산 후 재진입 금지)");
@@ -9226,11 +9232,15 @@ namespace TradingBot
         // ═══════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// 새 고우선순위 신호 진입을 위해 STUCK 포지션을 찾아서 청산
-        /// 조건: 진입 후 15분+ 경과 & 현재 ROE -5%~+5% & 최고 ROE ≤ 5%
+        /// [v5.9.19] STUCK 교체 전면 비활성화 — 데이터 분석 결과 손익 -$12.80 (20건, 승률 20%)
+        /// 교체 후 새 신호가 대부분 SQUEEZE_BREAKOUT 이라 승률 저조
+        /// 교체 대상 포지션은 이미 -2~-5% 손실 확정됐는데 새 진입 효과 없음
         /// </summary>
         private bool TryEvictStuckPosition(string newSymbol, string newSignalSource)
         {
+            return false; // [v5.9.19] 비활성화
+
+#pragma warning disable CS0162 // Unreachable code
             string? evictSymbol = null;
             PositionInfo? evictSnapshot = null;
 
@@ -9299,6 +9309,39 @@ namespace TradingBot
             });
 
             return true;
+#pragma warning restore CS0162
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // [v5.9.19] 심볼별 최근 청산가 추적 — 고점 재진입 방지
+        // 조건: 최근 30분 내 청산가 대비 현재가 +2% 이상 → LATE_ENTRY 차단
+        // ENJUSDT 케이스: 03:52 청산 0.0906 → 04:31 재진입 0.0935 (+3.2%) 차단
+        // ═══════════════════════════════════════════════════════════════
+        private readonly ConcurrentDictionary<string, (decimal ExitPrice, DateTime Time)> _recentExitPrices =
+            new(StringComparer.OrdinalIgnoreCase);
+        private const decimal LATE_ENTRY_RISE_THRESHOLD_PCT = 2.0m;
+        private static readonly TimeSpan RecentExitLookback = TimeSpan.FromMinutes(30);
+
+        /// <summary>청산 시 호출 — 심볼별 최근 청산가 기록</summary>
+        public void RecordExitPrice(string symbol, decimal exitPrice)
+        {
+            if (string.IsNullOrEmpty(symbol) || exitPrice <= 0) return;
+            _recentExitPrices[symbol] = (exitPrice, DateTime.Now);
+        }
+
+        /// <summary>최근 청산가 대비 고점 재진입 체크 — true면 차단</summary>
+        private bool IsLateEntryFromRecentExit(string symbol, decimal currentPrice)
+        {
+            if (currentPrice <= 0) return false;
+            if (!_recentExitPrices.TryGetValue(symbol, out var info)) return false;
+            if ((DateTime.Now - info.Time) > RecentExitLookback)
+            {
+                _recentExitPrices.TryRemove(symbol, out _);
+                return false;
+            }
+            if (info.ExitPrice <= 0) return false;
+            decimal risePct = (currentPrice - info.ExitPrice) / info.ExitPrice * 100m;
+            return risePct >= LATE_ENTRY_RISE_THRESHOLD_PCT;
         }
 
         private void EnqueueEntry(
@@ -9345,6 +9388,17 @@ namespace TradingBot
                 if (!isHighConfidenceSpike)
                     return;
                 OnStatusLog?.Invoke($"⚡ [블랙리스트 우회] {symbol} {signalSource} 고신뢰도 → 재진입 허용");
+            }
+
+            // [v5.9.19] 최근 청산가 대비 고점 재진입 차단 — ENJUSDT 반복 손절 방지
+            if (decision == "LONG" && IsLateEntryFromRecentExit(symbol, currentPrice))
+            {
+                if (_recentExitPrices.TryGetValue(symbol, out var exitInfo))
+                {
+                    decimal rise = (currentPrice - exitInfo.ExitPrice) / exitInfo.ExitPrice * 100m;
+                    OnLiveLog?.Invoke($"⛔ [{symbol}] 최근 청산가 ${exitInfo.ExitPrice:F6} 대비 +{rise:F1}% 상승 (고점 재진입) → 차단");
+                }
+                return;
             }
 
             // [v5.9.14] 5분봉 직전 봉 음봉 체크 — 사용자 요청 (완결된 직전 5분봉이 음봉이면 진입 차단)
