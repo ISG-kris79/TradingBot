@@ -563,7 +563,7 @@ namespace TradingBot
                 try
                 {
                     if (_dbManager != null && AppConfig.CurrentUser != null)
-                        generalSettings = _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id).GetAwaiter().GetResult() ?? new TradingSettings();
+                        generalSettings = Task.Run(() => _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id)).Result ?? new TradingSettings();
                     else
                         generalSettings = new TradingSettings();
                 }
@@ -940,7 +940,7 @@ namespace TradingBot
                 {
                     try
                     {
-                        _dbManager.SaveGeneralSettingsAsync(AppConfig.CurrentUser.Id, generalSettings).GetAwaiter().GetResult();
+                        Task.Run(() => _dbManager.SaveGeneralSettingsAsync(AppConfig.CurrentUser.Id, generalSettings)).Wait();
                         MainWindow.Instance?.AddLog($"✅ [설정] DB 저장 완료 | Margin={generalSettings.DefaultMargin} Pump={generalSettings.PumpMargin} Major={generalSettings.EnableMajorTrading} Slots={generalSettings.MaxMajorSlots}/{generalSettings.MaxPumpSlots}");
                     }
                     catch (Exception dbSaveEx)
