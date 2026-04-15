@@ -558,12 +558,12 @@ namespace TradingBot
                 var generalNode = (tradingNode["GeneralSettings"] as JsonObject) ?? new JsonObject();
                 tradingNode["GeneralSettings"] = generalNode;
 
-                // [v5.8.4] DB 기존 설정 로드 (Task.Run 교착 방지)
+                // [v5.8.6] DB 기존 설정 로드 (동기)
                 TradingSettings generalSettings;
                 try
                 {
                     if (_dbManager != null && AppConfig.CurrentUser != null)
-                        generalSettings = await Task.Run(() => _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id)) ?? new TradingSettings();
+                        generalSettings = _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id).GetAwaiter().GetResult() ?? new TradingSettings();
                     else
                         generalSettings = new TradingSettings();
                 }
@@ -935,12 +935,12 @@ namespace TradingBot
                 // [v5.6.8] DB 먼저 저장 → json은 부수적
                 MainWindow.ApplyGeneralSettings(generalSettings);
 
-                // 3. DB 저장 (Task.Run 교착 방지)
+                // 3. DB 저장 (동기)
                 if (_dbManager != null && AppConfig.CurrentUser != null)
                 {
                     try
                     {
-                        await Task.Run(() => _dbManager.SaveGeneralSettingsAsync(AppConfig.CurrentUser.Id, generalSettings));
+                        _dbManager.SaveGeneralSettingsAsync(AppConfig.CurrentUser.Id, generalSettings).GetAwaiter().GetResult();
                         MainWindow.Instance?.AddLog($"✅ [설정] DB 저장 완료 | Margin={generalSettings.DefaultMargin} Pump={generalSettings.PumpMargin} Major={generalSettings.EnableMajorTrading} Slots={generalSettings.MaxMajorSlots}/{generalSettings.MaxPumpSlots}");
                     }
                     catch (Exception dbSaveEx)
