@@ -335,17 +335,34 @@ namespace TradingBot
         {
             LoadSettings(); // json (Telegram/Grid 등)
 
-            // [v5.8.3] DB에서 GeneralSettings 로드 — Task.Run + Dispatcher
+            // [v5.9.3] 1단계: 런타임 설정이 있으면 먼저 UI에 채움 (빈 화면 방지)
+            var runtime = AppConfig.Current?.Trading?.GeneralSettings;
+            if (runtime != null)
+            {
+                ApplySettingsToUi(runtime);
+                MainWindow.Instance?.AddLog($"ℹ️ [설정] 런타임 설정으로 UI 초기화 | Margin={runtime.DefaultMargin} Pump={runtime.PumpMargin}");
+            }
+            else
+            {
+                // 런타임도 없으면 기본값이라도 채움
+                ApplySettingsToUi(new TradingSettings());
+            }
+
+            // 2단계: DB에서 최신 설정 로드 (런타임보다 정확)
             if (_dbManager == null && !string.IsNullOrEmpty(AppConfig.ConnectionString))
                 try { _dbManager = new DbManager(AppConfig.ConnectionString); } catch { }
 
             int userId = AppConfig.CurrentUser?.Id ?? 0;
-            if (_dbManager == null || userId <= 0) return;
+            if (_dbManager == null || userId <= 0)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [설정] DB 로드 스킵 (db={(_dbManager != null)} userId={userId})");
+                return;
+            }
 
             TradingSettings? s = null;
             try
             {
-                s = await Task.Run(() => _dbManager.LoadGeneralSettingsAsync(userId));
+                s = await Task.Run(async () => await _dbManager.LoadGeneralSettingsAsync(userId));
             }
             catch (Exception ex)
             {
@@ -355,15 +372,22 @@ namespace TradingBot
             if (s != null)
             {
                 _dbSettingsLoaded = true;
-                txtDefaultMargin.Text = s.DefaultMargin.ToString("F0");
-                chkEnableMajorTrading.IsChecked = s.EnableMajorTrading;
-                txtPumpMargin.Text = s.PumpMargin.ToString("F0");
-                txtLeverage.Text = s.DefaultLeverage.ToString();
-                txtMaxMajorSlots.Text = s.MaxMajorSlots.ToString();
-                txtMaxPumpSlots.Text = s.MaxPumpSlots.ToString();
-                if (!string.IsNullOrWhiteSpace(s.MajorTrendProfile))
-                    SelectMajorTrendProfile(s.MajorTrendProfile);
+                ApplySettingsToUi(s);
+                MainWindow.Instance?.AddLog($"✅ [설정] DB 로드 완료 | Margin={s.DefaultMargin} Pump={s.PumpMargin} Major={s.EnableMajorTrading} Lev={s.DefaultLeverage} Slots={s.MaxMajorSlots}/{s.MaxPumpSlots}");
             }
+        }
+
+        /// <summary>[v5.9.3] 설정값을 UI 컨트롤에 반영</summary>
+        private void ApplySettingsToUi(TradingSettings s)
+        {
+            txtDefaultMargin.Text = s.DefaultMargin.ToString("F0");
+            chkEnableMajorTrading.IsChecked = s.EnableMajorTrading;
+            txtPumpMargin.Text = s.PumpMargin.ToString("F0");
+            txtLeverage.Text = s.DefaultLeverage.ToString();
+            txtMaxMajorSlots.Text = s.MaxMajorSlots.ToString();
+            txtMaxPumpSlots.Text = s.MaxPumpSlots.ToString();
+            if (!string.IsNullOrWhiteSpace(s.MajorTrendProfile))
+                SelectMajorTrendProfile(s.MajorTrendProfile);
         }
 
         private void LoadSettings()
@@ -392,51 +416,7 @@ namespace TradingBot
                     var tradingNode = _rootNode["Trading"];
                     if (tradingNode != null)
                     {
-                        // GeneralSettings 섹션에서 로드
-                        // [v5.6.2] GeneralSettings는 DB에서만 로드 — json 로드 완전 제거
-                        // 기존: json 먼저 → DB 덮어쓰기 → 타이밍 이슈로 json 값이 남음
-                        var generalNode = tradingNode["GeneralSettings"];
-                        if (generalNode != null)
-                        {
-                            // GeneralSettings json 값은 무시 — DB에서 로드
-                            // Telegram, Grid 등 다른 설정은 json에서 로드 유지
-                // [v3.2.14 removed] txtTargetRoe.Text = generalNode["TargetRoe"]?.ToString() ?? "20.0";
-                // [v3.2.14 removed] txtStopLossRoe.Text = generalNode["StopLossRoe"]?.ToString() ?? "15.0";
-                // [removed] SelectMajorTrendProfile(generalNode["MajorTrendProfile"]?.ToString());
-                // [v3.2.14 removed] txtPumpTp1Roe.Text = generalNode["PumpTp1Roe"]?.ToString() ?? "25.0";
-                // [v3.2.14 removed] txtPumpTp2Roe.Text = generalNode["PumpTp2Roe"]?.ToString() ?? "50.0";
-                // [v3.2.14 removed] txtPumpTimeStopMinutes.Text = generalNode["PumpTimeStopMinutes"]?.ToString() ?? "15.0";
-                // [v3.2.14 removed] txtPumpStopWarnPct.Text = generalNode["PumpStopDistanceWarnPct"]?.ToString() ?? "1.0";
-                // [v3.2.14 removed] txtPumpStopBlockPct.Text = generalNode["PumpStopDistanceBlockPct"]?.ToString() ?? "1.3";
-                            // [메이저/PUMP 완전 분리] PUMP 추가 설정
-                // [v3.2.14 removed] txtPumpLeverage.Text = generalNode["PumpLeverage"]?.ToString() ?? "20";
-                // [v3.2.14 removed] txtPumpMargin.Text = generalNode["PumpMargin"]?.ToString() ?? "200.0";
-                // [v3.2.14 removed] txtPumpBreakEvenRoe.Text = generalNode["PumpBreakEvenRoe"]?.ToString() ?? "20.0";
-                // [v3.2.14 removed] txtPumpTrailingStartRoe.Text = generalNode["PumpTrailingStartRoe"]?.ToString() ?? "40.0";
-                // [v3.2.14 removed] txtPumpTrailingGapRoe.Text = generalNode["PumpTrailingGapRoe"]?.ToString() ?? "20.0";
-                // [v3.2.14 removed] txtPumpStopLossRoe.Text = generalNode["PumpStopLossRoe"]?.ToString() ?? "60.0";
-                // [v3.2.14 removed] txtPumpFirstTakeProfitRatioPct.Text = generalNode["PumpFirstTakeProfitRatioPct"]?.ToString() ?? "15.0";
-                // [v3.2.14 removed] txtPumpStairStep1Roe.Text = generalNode["PumpStairStep1Roe"]?.ToString() ?? "50.0";
-                // [v3.2.14 removed] txtPumpStairStep2Roe.Text = generalNode["PumpStairStep2Roe"]?.ToString() ?? "100.0";
-                // [v3.2.14 removed] txtPumpStairStep3Roe.Text = generalNode["PumpStairStep3Roe"]?.ToString() ?? "200.0";
-                            // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정
-                // [v3.2.14 removed] txtMajorLeverage.Text = generalNode["MajorLeverage"]?.ToString() ?? "20";
-                // [v3.2.14 removed] txtMajorMargin — 제거됨
-                // [v3.2.14 removed] txtMajorBreakEvenRoe.Text = generalNode["MajorBreakEvenRoe"]?.ToString() ?? "7.0";
-                // [v3.2.14 removed] txtMajorTp1Roe.Text = generalNode["MajorTp1Roe"]?.ToString() ?? "20.0";
-                // [v3.2.14 removed] txtMajorTp2Roe.Text = generalNode["MajorTp2Roe"]?.ToString() ?? "40.0";
-                // [v3.2.14 removed] txtMajorTrailingStartRoe.Text = generalNode["MajorTrailingStartRoe"]?.ToString() ?? "40.0";
-                // [v3.2.14 removed] txtMajorTrailingGapRoe.Text = generalNode["MajorTrailingGapRoe"]?.ToString() ?? "5.0";
-                // [v3.2.14 removed] txtMajorStopLossRoe.Text = generalNode["MajorStopLossRoe"]?.ToString() ?? "20.0";
-                // [removed]                             // 급변 감지 설정
-                // [v3.2.14 removed] chkCrashDetectorEnabled.IsChecked = generalNode["CrashDetectorEnabled"]?.GetValue<bool?>() ?? true;
-                // [v3.2.14 removed] txtCrashThreshold.Text = generalNode["CrashThresholdPct"]?.ToString() ?? "-1.5";
-                // [v3.2.14 removed] txtPumpDetectThreshold.Text = generalNode["PumpDetectThresholdPct"]?.ToString() ?? "1.5";
-                // [v3.2.14 removed] txtCrashMinCoinCount.Text = generalNode["CrashMinCoinCount"]?.ToString() ?? "2";
-                // [removed] var reverseRatio = generalNode["CrashReverseSizeRatio"]?.GetValue<decimal?>() ?? 0.5m;
-                // [v3.2.14 removed] txtCrashReverseSize.Text = (reverseRatio * 100).ToString("F0");
-                // [v3.2.14 removed] txtCrashCooldown.Text = generalNode["CrashCooldownSeconds"]?.ToString() ?? "120";
-                        }
+                        // [v5.6.2] GeneralSettings는 DB에서만 로드 — json 무시
 
                         // 시뮬레이션 모드 로드
                         bool isSimulation = tradingNode["IsSimulationMode"]?.GetValue<bool>() ?? false;
@@ -558,12 +538,12 @@ namespace TradingBot
                 var generalNode = (tradingNode["GeneralSettings"] as JsonObject) ?? new JsonObject();
                 tradingNode["GeneralSettings"] = generalNode;
 
-                // [v5.8.6] DB 기존 설정 로드 (동기)
+                // [v5.9.2] DB 기존 설정 로드 — Task.Run으로 UI 스레드 차단 방지
                 TradingSettings generalSettings;
                 try
                 {
                     if (_dbManager != null && AppConfig.CurrentUser != null)
-                        generalSettings = await _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id) ?? new TradingSettings();
+                        generalSettings = await Task.Run(() => _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id)) ?? new TradingSettings();
                     else
                         generalSettings = new TradingSettings();
                 }
@@ -578,191 +558,7 @@ namespace TradingBot
                     generalSettings.DefaultLeverage = leverage;
                 }
 
-                // [v3.2.14 removed] if (decimal.TryParse(txtTargetRoe.Text, out decimal targetRoe))
-                // [removed] {
-                // [removed] generalNode["TargetRoe"] = targetRoe;
-                // [removed] generalSettings.TargetRoe = targetRoe;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtStopLossRoe.Text, out decimal stopLossRoe))
-                // [removed] {
-                // [removed] generalNode["StopLossRoe"] = stopLossRoe;
-                // [removed] generalSettings.StopLossRoe = stopLossRoe;
-                // [removed] }
-
-                // [v3.2.14 removed] MajorTrendProfile — 소스 하드코딩
                 generalSettings.MajorTrendProfile = "Balanced";
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpTp1Roe.Text, out decimal pumpTp1Roe))
-                // [removed] {
-                // [removed] generalNode["PumpTp1Roe"] = pumpTp1Roe;
-                // [removed] generalSettings.PumpTp1Roe = pumpTp1Roe;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpTp2Roe.Text, out decimal pumpTp2Roe))
-                // [removed] {
-                // [removed] generalNode["PumpTp2Roe"] = pumpTp2Roe;
-                // [removed] generalSettings.PumpTp2Roe = pumpTp2Roe;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpTimeStopMinutes.Text, out decimal pumpTimeStopMinutes))
-                // [removed] {
-                // [removed] generalNode["PumpTimeStopMinutes"] = pumpTimeStopMinutes;
-                // [removed] generalSettings.PumpTimeStopMinutes = pumpTimeStopMinutes;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpStopWarnPct.Text, out decimal pumpStopWarnPct))
-                // [removed] {
-                // [removed] generalNode["PumpStopDistanceWarnPct"] = pumpStopWarnPct;
-                // [removed] generalSettings.PumpStopDistanceWarnPct = pumpStopWarnPct;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpStopBlockPct.Text, out decimal pumpStopBlockPct))
-                // [removed] {
-                // [removed] generalNode["PumpStopDistanceBlockPct"] = pumpStopBlockPct;
-                // [removed] generalSettings.PumpStopDistanceBlockPct = pumpStopBlockPct;
-                // [removed] }
-
-                // [메이저/PUMP 완전 분리] PUMP 추가 설정 저장
-                // [v3.2.14 removed] if (int.TryParse(txtPumpLeverage.Text, out int pumpLeverage))
-                // [removed] {
-                // [removed] generalNode["PumpLeverage"] = pumpLeverage;
-                // [removed] generalSettings.PumpLeverage = pumpLeverage;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpMargin.Text, out decimal pumpMargin))
-                // [removed] {
-                // [removed] generalNode["PumpMargin"] = pumpMargin;
-                // [removed] generalSettings.PumpMargin = pumpMargin;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpBreakEvenRoe.Text, out decimal pumpBreakEvenRoe))
-                // [removed] {
-                // [removed] generalNode["PumpBreakEvenRoe"] = pumpBreakEvenRoe;
-                // [removed] generalSettings.PumpBreakEvenRoe = pumpBreakEvenRoe;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpTrailingStartRoe.Text, out decimal pumpTrailingStartRoe))
-                // [removed] {
-                // [removed] generalNode["PumpTrailingStartRoe"] = pumpTrailingStartRoe;
-                // [removed] generalSettings.PumpTrailingStartRoe = pumpTrailingStartRoe;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpTrailingGapRoe.Text, out decimal pumpTrailingGapRoe))
-                // [removed] {
-                // [removed] generalNode["PumpTrailingGapRoe"] = pumpTrailingGapRoe;
-                // [removed] generalSettings.PumpTrailingGapRoe = pumpTrailingGapRoe;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpStopLossRoe.Text, out decimal pumpStopLossRoe))
-                // [removed] {
-                // [removed] generalNode["PumpStopLossRoe"] = pumpStopLossRoe;
-                // [removed] generalSettings.PumpStopLossRoe = pumpStopLossRoe;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpFirstTakeProfitRatioPct.Text, out decimal pumpFirstTakeProfitRatioPct))
-                // [removed] {
-                // [removed] generalNode["PumpFirstTakeProfitRatioPct"] = pumpFirstTakeProfitRatioPct;
-                // [removed] generalSettings.PumpFirstTakeProfitRatioPct = pumpFirstTakeProfitRatioPct;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpStairStep1Roe.Text, out decimal pumpStairStep1Roe))
-                // [removed] {
-                // [removed] generalNode["PumpStairStep1Roe"] = pumpStairStep1Roe;
-                // [removed] generalSettings.PumpStairStep1Roe = pumpStairStep1Roe;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpStairStep2Roe.Text, out decimal pumpStairStep2Roe))
-                // [removed] {
-                // [removed] generalNode["PumpStairStep2Roe"] = pumpStairStep2Roe;
-                // [removed] generalSettings.PumpStairStep2Roe = pumpStairStep2Roe;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpStairStep3Roe.Text, out decimal pumpStairStep3Roe))
-                // [removed] {
-                // [removed] generalNode["PumpStairStep3Roe"] = pumpStairStep3Roe;
-                // [removed] generalSettings.PumpStairStep3Roe = pumpStairStep3Roe;
-                // [removed] }
-
-                // [메이저/PUMP 완전 분리] 메이저 코인 전용 설정 저장
-                // [v3.2.14 removed] if (int.TryParse(txtMajorLeverage.Text, out int majorLeverage))
-                // [removed] {
-                // [removed] generalNode["MajorLeverage"] = majorLeverage;
-                // [removed] generalSettings.MajorLeverage = majorLeverage;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtMajorMargin.Text, out decimal majorMarginPercent))
-                // [removed] {
-                // [removed] majorMarginPercent = Math.Clamp(majorMarginPercent, 1.0m, 50.0m);
-                // [removed] generalNode["MajorMarginPercent"] = majorMarginPercent;
-                // [removed] generalSettings.MajorMarginPercent = majorMarginPercent;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtMajorBreakEvenRoe.Text, out decimal majorBreakEvenRoe))
-                // [removed] {
-                // [removed] generalNode["MajorBreakEvenRoe"] = majorBreakEvenRoe;
-                // [removed] generalSettings.MajorBreakEvenRoe = majorBreakEvenRoe;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtMajorTp1Roe.Text, out decimal majorTp1Roe))
-                // [removed] {
-                // [removed] generalNode["MajorTp1Roe"] = majorTp1Roe;
-                // [removed] generalSettings.MajorTp1Roe = majorTp1Roe;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtMajorTp2Roe.Text, out decimal majorTp2Roe))
-                // [removed] {
-                // [removed] generalNode["MajorTp2Roe"] = majorTp2Roe;
-                // [removed] generalSettings.MajorTp2Roe = majorTp2Roe;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtMajorTrailingStartRoe.Text, out decimal majorTrailingStartRoe))
-                // [removed] {
-                // [removed] generalNode["MajorTrailingStartRoe"] = majorTrailingStartRoe;
-                // [removed] generalSettings.MajorTrailingStartRoe = majorTrailingStartRoe;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtMajorTrailingGapRoe.Text, out decimal majorTrailingGapRoe))
-                // [removed] {
-                // [removed] generalNode["MajorTrailingGapRoe"] = majorTrailingGapRoe;
-                // [removed] generalSettings.MajorTrailingGapRoe = majorTrailingGapRoe;
-                // [removed] }
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtMajorStopLossRoe.Text, out decimal majorStopLossRoe))
-                // [removed] {
-                // [removed] generalNode["MajorStopLossRoe"] = majorStopLossRoe;
-                // [removed] generalSettings.MajorStopLossRoe = majorStopLossRoe;
-                // [removed] }
-
-                // 급변 감지 설정 저장
-                // [v3.2.14 removed] generalSettings.CrashDetectorEnabled = chkCrashDetectorEnabled.IsChecked == true;
-                // [removed] generalNode["CrashDetectorEnabled"] = generalSettings.CrashDetectorEnabled;
-
-                // [v3.2.14 removed] if (decimal.TryParse(txtCrashThreshold.Text, out decimal crashThresh))
-                // [removed] {
-                // [removed] generalNode["CrashThresholdPct"] = crashThresh;
-                // [removed] generalSettings.CrashThresholdPct = crashThresh;
-                // [removed] }
-                // [v3.2.14 removed] if (decimal.TryParse(txtPumpDetectThreshold.Text, out decimal pumpThresh))
-                // [removed] {
-                // [removed] generalNode["PumpDetectThresholdPct"] = pumpThresh;
-                // [removed] generalSettings.PumpDetectThresholdPct = pumpThresh;
-                // [removed] }
-                // [v3.2.14 removed] if (int.TryParse(txtCrashMinCoinCount.Text, out int minCoin))
-                // [removed] {
-                // [removed] generalNode["CrashMinCoinCount"] = minCoin;
-                // [removed] generalSettings.CrashMinCoinCount = minCoin;
-                // [removed] }
-                // [v3.2.14 removed] if (decimal.TryParse(txtCrashReverseSize.Text, out decimal reverseSize))
-                // [removed] {
-                // [removed] generalNode["CrashReverseSizeRatio"] = reverseSize / 100m;
-                // [removed] generalSettings.CrashReverseSizeRatio = reverseSize / 100m;
-                // [removed] }
-                // [v3.2.14 removed] if (int.TryParse(txtCrashCooldown.Text, out int cooldown))
-                // [removed] {
-                // [removed] generalNode["CrashCooldownSeconds"] = cooldown;
-                // [removed] generalSettings.CrashCooldownSeconds = cooldown;
-                // [removed] }
 
                 // DefaultMargin 저장
                 if (decimal.TryParse(txtDefaultMargin?.Text ?? "200.0", out decimal defaultMargin))
@@ -940,8 +736,14 @@ namespace TradingBot
                 {
                     try
                     {
-                        await _dbManager.SaveGeneralSettingsAsync(AppConfig.CurrentUser.Id, generalSettings);
-                        MainWindow.Instance?.AddLog($"✅ [설정] DB 저장 완료 | Margin={generalSettings.DefaultMargin} Pump={generalSettings.PumpMargin} Major={generalSettings.EnableMajorTrading} Slots={generalSettings.MaxMajorSlots}/{generalSettings.MaxPumpSlots}");
+                        int saveUserId = AppConfig.CurrentUser.Id;
+                        await Task.Run(async () => await _dbManager.SaveGeneralSettingsAsync(saveUserId, generalSettings));
+                        // 저장 후 DB에서 다시 읽어서 검증
+                        var verify = await Task.Run(async () => await _dbManager.LoadGeneralSettingsAsync(saveUserId));
+                        if (verify != null)
+                            MainWindow.Instance?.AddLog($"✅ [설정] DB 저장+검증 완료 | Margin={verify.DefaultMargin} Pump={verify.PumpMargin} Major={verify.EnableMajorTrading} Slots={verify.MaxMajorSlots}/{verify.MaxPumpSlots}");
+                        else
+                            MainWindow.Instance?.AddLog($"⚠️ [설정] DB 저장 후 검증 실패 — 저장은 됐지만 읽기 불가");
                     }
                     catch (Exception dbSaveEx)
                     {

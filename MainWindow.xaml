@@ -1727,10 +1727,13 @@
                                                                                         <Grid.ColumnDefinitions>
                                                                                             <ColumnDefinition Width="*"/>
                                                                                             <ColumnDefinition Width="Auto"/>
+                                                                                            <ColumnDefinition Width="Auto"/>
                                                                                         </Grid.ColumnDefinitions>
                                                                                         <TextBlock Text="{Binding PnlText}" Foreground="#A5B4FC"
                                                                                                    FontSize="10" FontFamily="Consolas"/>
-                                                                                        <TextBlock Grid.Column="1" Text="{Binding HoldingTimeText}"
+                                                                                        <TextBlock Grid.Column="1" Text="{Binding MarginText}" Foreground="#818CF8"
+                                                                                                   FontSize="9" FontFamily="Consolas" Margin="6,0"/>
+                                                                                        <TextBlock Grid.Column="2" Text="{Binding HoldingTimeText}"
                                                                                                    Foreground="#FBBF24" FontSize="10" FontFamily="Consolas"/>
                                                                                     </Grid>
                                                                                 </StackPanel>

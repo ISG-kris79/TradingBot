@@ -4766,6 +4766,11 @@ namespace TradingBot.ViewModels
                         }
                     }
 
+                    // [v5.9.3] 마진 = 수량 × 진입가 / 레버리지
+                    decimal marginUsdt = pos.Leverage > 0 && pos.EntryPrice > 0
+                        ? Math.Round(Math.Abs(pos.Quantity) * pos.EntryPrice / pos.Leverage, 2)
+                        : 0m;
+
                     vmList.Add(new TradingBot.Models.PositionDetailViewModel
                     {
                         Symbol = pos.Symbol,
@@ -4777,7 +4782,8 @@ namespace TradingBot.ViewModels
                         HoldingTime = pos.EntryTime == default ? TimeSpan.Zero : DateTime.Now - pos.EntryTime,
                         TpPrice = pos.TakeProfit,
                         SlPrice = pos.StopLoss,
-                        ProgressToTpPct = (double)progress
+                        ProgressToTpPct = (double)progress,
+                        MarginUsdt = marginUsdt
                     });
                 }
 

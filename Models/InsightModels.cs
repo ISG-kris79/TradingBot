@@ -111,6 +111,11 @@ namespace TradingBot.Models
 
         private Brush _aiReassessBrush = Brushes.Gray;
         public Brush AIReassessBrush { get => _aiReassessBrush; set { _aiReassessBrush = value; OnPropertyChanged(); } }
+
+        /// <summary>[v5.9.3] 진입 증거금 표시</summary>
+        private decimal _marginUsdt;
+        public decimal MarginUsdt { get => _marginUsdt; set { _marginUsdt = value; OnPropertyChanged(); OnPropertyChanged(nameof(MarginText)); } }
+        public string MarginText => _marginUsdt > 0 ? $"${_marginUsdt:F0}" : "";
     }
 
     /// <summary>

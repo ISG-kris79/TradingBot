@@ -130,9 +130,6 @@ namespace TradingBot
             new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private int _slotCooldownMinutes = 3;
 
-        /// <summary>[v5.9.0] 마진 부족 시 전체 진입 일시 중단</summary>
-        private DateTime _marginInsufficientUntil = DateTime.MinValue;
-
         /// <summary>[v5.2.9] 신호 첫 발생 가격 기록 — 슬롯 차단 후 뒤늦은 고점 진입 방지</summary>
         private readonly ConcurrentDictionary<string, (decimal Price, DateTime Time)> _signalOriginPrice =
             new(StringComparer.OrdinalIgnoreCase);
@@ -535,6 +532,18 @@ namespace TradingBot
         private readonly string _activeAiDecisionIdsPath = Path.Combine("TrainingData", "EntryDecisions", "ActiveDecisionIds.json");
         private const int ActiveDecisionIdRetentionHours = 48;
         private readonly SemaphoreSlim _predictionValidationLimiter = new SemaphoreSlim(3, 3);
+        /// <summary>[v5.9.3] 진입 주문 큐 — 1개씩 순차 처리, 슬롯 차면 큐 비움</summary>
+        private readonly System.Collections.Concurrent.ConcurrentQueue<EntryRequest> _entryQueue = new();
+        private readonly SemaphoreSlim _entryQueueSignal = new SemaphoreSlim(0);
+        private int _entryQueueProcessorRunning = 0;
+
+        private sealed record EntryRequest(
+            string Symbol, string Decision, decimal CurrentPrice,
+            string SignalSource, string Mode,
+            decimal CustomTakeProfitPrice, decimal CustomStopLossPrice,
+            PatternSnapshotInput? PatternSnapshot, decimal ManualSizeMultiplier,
+            bool SkipAiGateCheck,
+            decimal SnapshotDefaultMargin, decimal SnapshotPumpMargin);
         private static readonly TimeSpan MlMonitorRecordInterval = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan PredictionValidationDelay = TimeSpan.FromMinutes(5);
         private const decimal PredictionValidationNeutralMovePct = 0.0015m;
@@ -1252,8 +1261,7 @@ namespace TradingBot
                         }
 
                         OnStatusLog?.Invoke($"⚡ [틱급증→진입] {symbol} TPS={tpsRatio:F1}x 매수비={buyRatio:P0}");
-                        await ExecuteAutoOrder(symbol, "LONG", price, _cts?.Token ?? CancellationToken.None,
-                            "TICK_SURGE", manualSizeMultiplier: 1.0m, skipAiGateCheck: true);
+                        EnqueueEntry(symbol, "LONG", price, "TICK_SURGE", sizeMultiplier: 1.0m, skipAiGate: true);
                     }
                     catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [틱급증] {symbol} 진입 실패: {ex.Message}"); }
                 });
@@ -1299,8 +1307,7 @@ namespace TradingBot
                         }
 
                         OnStatusLog?.Invoke($"🔥 [매수쏠림→진입] {symbol} 매수비={buyRatio:P0} → LONG 시도");
-                        await ExecuteAutoOrder(symbol, "LONG", price, _cts?.Token ?? CancellationToken.None,
-                            "BUY_PRESSURE", manualSizeMultiplier: 1.0m, skipAiGateCheck: true);
+                        EnqueueEntry(symbol, "LONG", price, "BUY_PRESSURE", sizeMultiplier: 1.0m, skipAiGate: true);
                     }
                     catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [매수쏠림] {symbol} 진입 실패: {ex.Message}"); }
                 });
@@ -1313,8 +1320,7 @@ namespace TradingBot
                     try
                     {
                         OnStatusLog?.Invoke($"🔥 [스퀴즈돌파→진입] {symbol} BBWidth={bbWidth:F2}%");
-                        await ExecuteAutoOrder(symbol, "LONG", price, _cts?.Token ?? CancellationToken.None,
-                            "SQUEEZE_BREAKOUT", manualSizeMultiplier: 1.0m);
+                        EnqueueEntry(symbol, "LONG", price, "SQUEEZE_BREAKOUT", sizeMultiplier: 1.0m);
                     }
                     catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [스퀴즈] {symbol} 진입 실패: {ex.Message}"); }
                 });
@@ -2951,10 +2957,8 @@ namespace TradingBot
                                             bool limitFilled = await TryHybridLimitEntryAsync(pumpKey, nowPrice, sizeMul, _cts?.Token ?? CancellationToken.None);
                                             if (!limitFilled)
                                             {
-                                                OnStatusLog?.Invoke($"🟢 [감시진입시도] {pumpKey} → ExecuteAutoOrder 호출 (size×{sizeMul})");
-                                                await ExecuteAutoOrder(pumpKey, "LONG", nowPrice,
-                                                    _cts?.Token ?? CancellationToken.None,
-                                                    "PUMP_WATCH_CONFIRMED", manualSizeMultiplier: sizeMul);
+                                                OnStatusLog?.Invoke($"🟢 [감시진입시도] {pumpKey} → 큐 적재 (size×{sizeMul})");
+                                                EnqueueEntry(pumpKey, "LONG", nowPrice, "PUMP_WATCH_CONFIRMED", sizeMultiplier: sizeMul);
                                             }
                                         }
                                         catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [감시진입] {pumpKey} 실패: {ex.Message}"); }
@@ -4918,12 +4922,21 @@ namespace TradingBot
 
         public void StopEngine()
         {
+            // [v5.9.3] 큐 비우기 — 대기 중인 진입 요청 전부 폐기
+            int drained = 0;
+            while (_entryQueue.TryDequeue(out _)) { drained++; try { _entryQueueSignal.Wait(0); } catch { } }
+            if (drained > 0)
+                OnStatusLog?.Invoke($"🛑 [STOP] 대기 큐 {drained}개 폐기");
+
             if (_cts != null && !_cts.IsCancellationRequested)
             {
                 _cts.Cancel();
             }
-            _cts?.Dispose();
+            // [v5.9.3] Dispose 지연 — 진행 중인 작업이 OperationCanceledException을 받을 시간 확보
+            var oldCts = _cts;
             _cts = null;
+            Task.Delay(2000).ContinueWith(_ => { try { oldCts?.Dispose(); } catch { } });
+
             TelegramService.Instance.OnRequestStatus = null!;
             TelegramService.Instance.OnRequestStop = null!;
             TelegramService.Instance.OnRequestTrain = null!;
@@ -6842,6 +6855,33 @@ namespace TradingBot
                     Quantity = Math.Abs(pos.Quantity),
                     Leverage = uiLeverage
                 });
+
+                // [v5.9.2] 외부 포지션 감지 시 SL/TP/Trailing 자동 등록
+                if (!wasTracked && _entryOrderRegistrar != null && Math.Abs(pos.Quantity) > 0)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(1000);
+                            _entryOrderRegistrar.ResetCooldown(pos.Symbol);
+                            bool isPump = !MajorSymbols.Contains(pos.Symbol);
+                            decimal slRoe = isPump ? -40m : -50m;
+                            decimal tpRoe = isPump ? 25m : 40m;
+                            decimal trailCb = isPump ? 3.5m : 2.0m;
+                            await _entryOrderRegistrar.RegisterEntryOrdersAsync(
+                                pos.Symbol, isLong, pos.EntryPrice,
+                                Math.Abs(pos.Quantity), (int)Math.Max(1, safeLeverage),
+                                slRoe, tpRoe, 0.2m, trailCb,
+                                _cts?.Token ?? CancellationToken.None);
+                            OnStatusLog?.Invoke($"✅ [외부포지션] {pos.Symbol} SL/TP/Trailing 자동 등록 완료");
+                        }
+                        catch (Exception regEx)
+                        {
+                            OnStatusLog?.Invoke($"⚠️ [외부포지션] {pos.Symbol} SL/TP 등록 실패: {regEx.Message}");
+                        }
+                    });
+                }
             }
         }
 
@@ -8876,6 +8916,10 @@ namespace TradingBot
             // Logging
             public string FlowTag = string.Empty;
             public Action<string, string, string> EntryLog = (_, _, _) => { };
+
+            // [v5.9.3] 마진 스냅샷 — 큐 적재 시점의 설정값 (병렬 경합 방지)
+            public decimal SnapshotDefaultMargin;
+            public decimal SnapshotPumpMargin;
         }
 
         /// <summary>
@@ -8995,6 +9039,107 @@ namespace TradingBot
             }
         }
 
+        // ═══════════════════════════════════════════════════════════════
+        // [v5.9.3] 진입 큐 시스템 — Task.Run 병렬 호출 → 큐 적재 → 1개씩 순차 처리
+        // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>진입 요청을 큐에 적재 (호출 즉시 반환, API 호출 없음)</summary>
+        private void EnqueueEntry(
+            string symbol, string decision, decimal currentPrice,
+            string signalSource = "UNKNOWN", string mode = "TREND",
+            decimal customTp = 0m, decimal customSl = 0m,
+            PatternSnapshotInput? pattern = null, decimal sizeMultiplier = 1.0m,
+            bool skipAiGate = false)
+        {
+            // 슬롯 사전 체크 — 이미 풀이면 큐에 넣지도 않음
+            var (canEnter, _) = CanAcceptNewEntry(symbol, signalSource);
+            if (!canEnter) return;
+
+            // debounce 체크
+            string debounceKey = $"{symbol}|{decision}";
+            if (_recentEntryAttempts.TryGetValue(debounceKey, out var lastTry)
+                && (DateTime.Now - lastTry).TotalSeconds < 10)
+                return;
+
+            // 블랙리스트 체크
+            if (_blacklistedSymbols.TryGetValue(symbol, out var blExp) && DateTime.Now < blExp) return;
+
+            // 마진 스냅샷 — 큐 적재 시점의 설정값 고정 (병렬 읽기 경합 방지)
+            decimal snapDefaultMargin = _settings.DefaultMargin;
+            decimal snapPumpMargin = _settings.PumpMargin;
+
+            _entryQueue.Enqueue(new EntryRequest(
+                symbol, decision, currentPrice,
+                signalSource, mode, customTp, customSl,
+                pattern, sizeMultiplier, skipAiGate,
+                snapDefaultMargin, snapPumpMargin));
+
+            // 프로세서 깨우기
+            try { _entryQueueSignal.Release(); } catch (SemaphoreFullException) { }
+
+            // 프로세서가 안 돌고 있으면 시작
+            if (Interlocked.CompareExchange(ref _entryQueueProcessorRunning, 1, 0) == 0)
+            {
+                _ = Task.Run(() => ProcessEntryQueueAsync(_cts?.Token ?? CancellationToken.None));
+            }
+        }
+
+        /// <summary>큐 프로세서 — 1개씩 꺼내서 순차 실행, 슬롯 차면 큐 비움</summary>
+        private async Task ProcessEntryQueueAsync(CancellationToken token)
+        {
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    // 큐에서 대기 (최대 3초, 없으면 루프 종료)
+                    if (!await _entryQueueSignal.WaitAsync(TimeSpan.FromSeconds(3), token))
+                    {
+                        if (_entryQueue.IsEmpty) break; // 큐 비었으면 프로세서 종료
+                        continue;
+                    }
+
+                    if (!_entryQueue.TryDequeue(out var req)) continue;
+
+                    // 슬롯 풀이면 남은 큐 전부 비움
+                    var (canEnter, slotReason) = CanAcceptNewEntry(req.Symbol, req.SignalSource);
+                    if (!canEnter)
+                    {
+                        // 슬롯 포화 → 큐 전체 비움 (무의미한 대기 방지)
+                        int drained = 0;
+                        while (_entryQueue.TryDequeue(out _)) { drained++; try { _entryQueueSignal.Wait(0); } catch { } }
+                        if (drained > 0)
+                            OnStatusLog?.Invoke($"⛔ [ENTRY_QUEUE] 슬롯 포화 → 대기 큐 {drained}개 폐기");
+                        continue;
+                    }
+
+                    // debounce 재확인 (큐 대기 중 중복될 수 있음)
+                    string debounceKey = $"{req.Symbol}|{req.Decision}";
+                    if (_recentEntryAttempts.TryGetValue(debounceKey, out var lt) && (DateTime.Now - lt).TotalSeconds < 10)
+                        continue;
+
+                    try
+                    {
+                        await ExecuteAutoOrder(
+                            req.Symbol, req.Decision, req.CurrentPrice, token,
+                            req.SignalSource, req.Mode,
+                            req.CustomTakeProfitPrice, req.CustomStopLossPrice,
+                            req.PatternSnapshot, req.ManualSizeMultiplier,
+                            req.SkipAiGateCheck,
+                            req.SnapshotDefaultMargin, req.SnapshotPumpMargin);
+                    }
+                    catch (OperationCanceledException) { break; }
+                    catch (Exception ex)
+                    {
+                        OnStatusLog?.Invoke($"❌ [ENTRY_QUEUE] {req.Symbol} 처리 예외: {ex.Message}");
+                    }
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _entryQueueProcessorRunning, 0);
+            }
+        }
+
         /// <summary>
         /// 자동 매매 실행 메인 메서드 — ROUTER
         /// 공통 검증 후 Major/Pump x Long/Short 4개 메서드로 디스패치
@@ -9010,7 +9155,9 @@ namespace TradingBot
             decimal customStopLossPrice = 0m,
             PatternSnapshotInput? patternSnapshot = null,
             decimal manualSizeMultiplier = 1.0m,
-            bool skipAiGateCheck = false)
+            bool skipAiGateCheck = false,
+            decimal snapshotDefaultMargin = 0m,
+            decimal snapshotPumpMargin = 0m)
         {
             string flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
             void EntryLog(string stage, string status, string detail)
@@ -9046,7 +9193,7 @@ namespace TradingBot
             // [v4.9.4] 중복 시그널 debounce — 동일 (symbol, direction) 10초 내 재시도 차단
             string debounceKey = $"{symbol}|{decision}";
             if (_recentEntryAttempts.TryGetValue(debounceKey, out var lastTry)
-                && (DateTime.Now - lastTry).TotalSeconds < 30) // [v5.9.1] 10초→30초 debounce 강화
+                && (DateTime.Now - lastTry).TotalSeconds < 10)
             {
                 return;
             }
@@ -9058,9 +9205,6 @@ namespace TradingBot
                 foreach (var kv in _recentEntryAttempts)
                     if (kv.Value < cutoff) _recentEntryAttempts.TryRemove(kv.Key, out _);
             }
-
-            // [v5.9.0] 마진 부족 글로벌 중단 — 3분간 모든 진입 차단
-            if (DateTime.Now < _marginInsufficientUntil) return;
 
             // [v5.8.7] 슬롯 사전 체크
             {
@@ -10155,6 +10299,9 @@ namespace TradingBot
                 IsHybridMidBandLongEntry = isHybridMidBandLongEntry,
                 FlowTag = flowTag,
                 EntryLog = EntryLog,
+                // [v5.9.3] 마진 스냅샷 — 큐 적재 시점 고정값 사용
+                SnapshotDefaultMargin = snapshotDefaultMargin > 0 ? snapshotDefaultMargin : _settings.DefaultMargin,
+                SnapshotPumpMargin = snapshotPumpMargin > 0 ? snapshotPumpMargin : _settings.PumpMargin,
             };
 
             // ═══════════════════════════════════════════════════════════════
@@ -10357,14 +10504,14 @@ namespace TradingBot
 
             // 6. 포지션 사이즈: adaptive equity
             ctx.Leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
-            ctx.MarginUsdt = await GetAdaptiveEntryMarginUsdtAsync(ctx.Token);
+            ctx.MarginUsdt = await GetAdaptiveEntryMarginUsdtAsync(ctx.Token, ctx.SnapshotDefaultMargin);
             ctx.IsPumpStrategy = false;
 
             // [v3.3.6] 회복 모드 마진 축소 (60%): 넓은 손절 대비 리스크 일정 유지
             if (ctx.IsVolatilityRecovery)
                 ctx.MarginUsdt = Math.Round(ctx.MarginUsdt * 0.6m, 2);
 
-            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=USDT고정{(ctx.IsVolatilityRecovery ? " [RECOVERY 60%]" : "")}");
+            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=USDT고정{(ctx.IsVolatilityRecovery ? " [RECOVERY 60%]" : "")} snap=${ctx.SnapshotDefaultMargin:F0}");
 
             // 7. R:R 체크
             if (!EvaluateRiskRewardForEntry(ctx))
@@ -10485,7 +10632,7 @@ namespace TradingBot
 
             // 6. 포지션 사이즈: adaptive equity
             ctx.Leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
-            ctx.MarginUsdt = await GetAdaptiveEntryMarginUsdtAsync(ctx.Token);
+            ctx.MarginUsdt = await GetAdaptiveEntryMarginUsdtAsync(ctx.Token, ctx.SnapshotDefaultMargin);
             ctx.IsPumpStrategy = false;
 
             // [v3.3.6] 회복 모드 마진 축소 (60%)
@@ -10516,10 +10663,13 @@ namespace TradingBot
 
             // 3. 포지션 사이즈: 유동성 기반 동적 마진 (v5.0.5: 초저유동성 50% 축소)
             ctx.Leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
-            ctx.MarginUsdt = GetLiquidityAdjustedPumpMarginUsdt(ctx.Symbol);
+            // [v5.9.3] 마진 스냅샷 사용 — 설정 변경 중 경합 방지
+            ctx.MarginUsdt = ctx.SnapshotPumpMargin > 0
+                ? Math.Max(10m, ctx.SnapshotPumpMargin)
+                : GetLiquidityAdjustedPumpMarginUsdt(ctx.Symbol);
             ctx.IsPumpStrategy = true;
 
-            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x coinType=Pumping source=PumpMargin");
+            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x coinType=Pumping snap=${ctx.SnapshotPumpMargin:F0}");
 
             // 4. R:R 체크
             if (!EvaluateRiskRewardForEntry(ctx))
@@ -10606,9 +10756,11 @@ namespace TradingBot
 
             // 3. AI Score 사이즈 조절 제거 — 라우터 AI Gate Advisor에서 이미 적용됨
 
-            // 4. 포지션 사이즈: 유동성 기반 동적 마진 (v5.0.5: 초저유동성 50% 축소)
+            // 4. 포지션 사이즈: 스냅샷 마진 사용
             ctx.Leverage = _settings.MajorLeverage > 0 ? _settings.MajorLeverage : _settings.DefaultLeverage;
-            ctx.MarginUsdt = GetLiquidityAdjustedPumpMarginUsdt(ctx.Symbol);
+            ctx.MarginUsdt = ctx.SnapshotPumpMargin > 0
+                ? Math.Max(10m, ctx.SnapshotPumpMargin)
+                : GetLiquidityAdjustedPumpMarginUsdt(ctx.Symbol);
             ctx.IsPumpStrategy = true;
 
             EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x coinType=Pumping source=PumpMargin");
@@ -11086,8 +11238,6 @@ namespace TradingBot
                     try { _ = _dbManager.SaveOrderErrorAsync(symbol, side, "MARKET_ENTRY", quantity, null, "PlaceMarketOrderAsync 실패"); } catch { }
                     // [v5.7.8] 주문 실패 시 5분 블랙리스트
                     _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(5);
-                    // [v5.9.0] 마진 부족 → 3분간 전체 진입 중단
-                    _marginInsufficientUntil = DateTime.Now.AddMinutes(3);
                     return;
                 }
 
