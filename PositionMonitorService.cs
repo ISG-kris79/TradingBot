@@ -790,7 +790,7 @@ namespace TradingBot.Services
 
                         OnAlert?.Invoke($"🛡️ {symbol} 본절 보호 (ROE {highestROE:F1}% → 스탑 {breakEvenPrice:F4})");
 
-                        // [v3.6.4] 바이낸스 서버사이드 STOP_MARKET → 본절가 (동기 실행)
+                        // [v5.5.5] 본절 전환: 기존 SL만 취소 → ROE +2% 본절 SL 재등록 (TP/Trailing 유지)
                         try
                         {
                             string beStopSide = isLong ? "SELL" : "BUY";
@@ -799,18 +799,32 @@ namespace TradingBot.Services
                             lock (_posLock)
                             {
                                 if (_activePositions.TryGetValue(symbol, out var p))
-                                { beQty = Math.Abs(p.Quantity); beOldOrderId = p.StopOrderId; }
+                                {
+                                    beQty = Math.Abs(p.Quantity);
+                                    beOldOrderId = p.StopOrderId;
+                                }
                             }
                             if (beQty > 0)
                             {
+                                // 기존 SL만 취소 (StopOrderId)
                                 if (!string.IsNullOrEmpty(beOldOrderId))
-                                    await _exchangeService.CancelOrderAsync(symbol, beOldOrderId, CancellationToken.None);
-                                OnLog?.Invoke($"📡 {symbol} STOP_MARKET 본절가 시도 | qty={beQty} price={breakEvenPrice:F4}");
-                                var (beOk, beNewId) = await _exchangeService.PlaceStopOrderAsync(symbol, beStopSide, beQty, breakEvenPrice, CancellationToken.None);
+                                {
+                                    try { await _exchangeService.CancelOrderAsync(symbol, beOldOrderId, CancellationToken.None); }
+                                    catch { }
+                                }
+
+                                // 본절가 = 진입가 + ROE 2% (수수료 보장)
+                                decimal beRoe2pct = 2.0m;
+                                decimal bePrice = isLong
+                                    ? entryPrice * (1m + beRoe2pct / leverage / 100m)
+                                    : entryPrice * (1m - beRoe2pct / leverage / 100m);
+
+                                OnLog?.Invoke($"📡 {symbol} 본절 SL 등록 | qty={beQty} price={bePrice:F4} (ROE +{beRoe2pct}%)");
+                                var (beOk, beNewId) = await _exchangeService.PlaceStopOrderAsync(symbol, beStopSide, beQty, bePrice, CancellationToken.None);
                                 if (beOk)
                                 {
                                     lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = beNewId; }
-                                    OnLog?.Invoke($"📡 {symbol} 서버 STOP_MARKET → 본절가 {breakEvenPrice:F4} 완료");
+                                    OnLog?.Invoke($"✅ {symbol} 본절 SL 등록 완료 → {bePrice:F4} (TP/Trailing 유지)");
                                 }
                                 else OnLog?.Invoke($"⚠️ {symbol} 본절 STOP_MARKET 실패");
                             }
@@ -2311,6 +2325,15 @@ namespace TradingBot.Services
                                     await _exchangeService.CancelOrderAsync(symbol, oldOrderId, CancellationToken.None);
 
                                 decimal callbackRate = Math.Clamp(trailingDropROE / leverage, 0.1m, 5.0m);
+                                // [v5.5.4] 진입 시 API 트레일링 이미 등록됨 → 스킵
+                                bool trailAlreadyRegistered = false;
+                                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var trc)) trailAlreadyRegistered = trc.TpRegisteredOnExchange; }
+                                if (trailAlreadyRegistered)
+                                {
+                                    OnLog?.Invoke($"ℹ️ {symbol} API 트레일링 이미 등록 → 계단식 트레일링 스킵");
+                                }
+                                else
+                                {
                                 OnLog?.Invoke($"📡 {symbol} TRAILING_STOP 시도 | qty={qty} callback={callbackRate:F1}%");
 
                                 var (ok, newId) = await _exchangeService.PlaceTrailingStopOrderAsync(
@@ -2335,6 +2358,7 @@ namespace TradingBot.Services
                                     else
                                         OnLog?.Invoke($"❌ {symbol} STOP_MARKET 폴백도 실패");
                                 }
+                                } // else end (trailAlreadyRegistered)
                             }
                             catch (Exception ex) { OnLog?.Invoke($"❌ {symbol} 서버 트레일링 예외: {ex.Message}"); }
                         }
@@ -2369,6 +2393,14 @@ namespace TradingBot.Services
                                 if (!string.IsNullOrEmpty(oldId2))
                                     await _exchangeService.CancelOrderAsync(symbol, oldId2, CancellationToken.None);
                                 decimal callbackRate2 = Math.Clamp(trailingDropROE / leverage * 0.5m, 0.1m, 5.0m);
+                                // [v5.5.4] API 트레일링 이미 등록 → 스킵
+                                bool trail2Registered = false;
+                                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var trc2)) trail2Registered = trc2.TpRegisteredOnExchange; }
+                                if (trail2Registered)
+                                {
+                                    OnLog?.Invoke($"ℹ️ {symbol} API 트레일링 이미 등록 → 2단계 스킵");
+                                    return;
+                                }
                                 OnLog?.Invoke($"📡 {symbol} TRAILING_STOP 2단계 시도 | qty={qty2} callback={callbackRate2:F1}%");
                                 var (ok, newId) = await _exchangeService.PlaceTrailingStopOrderAsync(
                                     symbol, stopSide2, qty2, callbackRate2, activationPrice: null, CancellationToken.None);
@@ -4024,8 +4056,10 @@ namespace TradingBot.Services
                 OnPartialCloseCompleted?.Invoke(symbol); // [v3.4.0] 팬텀 기록 방지 쿨다운
 
                 // [v5.1.0] 부분청산 후 잔여 수량에 트레일링 스탑 거래소 등록
-                // 이미 수익 구간이므로 트레일링으로 나머지 수익 보호
-                if (remainingQty > 0 && pnl > 0)
+                // [v5.5.4] 진입 시 API 트레일링 이미 등록되어 있으면 스킵
+                bool partialTrailRegistered = false;
+                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var ptc)) partialTrailRegistered = ptc.TpRegisteredOnExchange; }
+                if (remainingQty > 0 && pnl > 0 && !partialTrailRegistered)
                 {
                     try
                     {
