@@ -207,7 +207,8 @@ namespace TradingBot
         private double _pumpForecasterAccuracy = 0.0;
         private double _majorForecasterAccuracy = 0.0;
         private double _spikeForecasterAccuracy = 0.0;
-        private const double ForecasterMinAccuracyForEntry = 0.50;
+        // [v5.9.15] 50% → 60% 상향: 동전 던지기 수준 진입 차단, 수수료 흡수 가능한 수익성 확보
+        private const double ForecasterMinAccuracyForEntry = 0.60;
         // 70% 이상 정확도 달성 시 하드 체크 자동 해제
         private const double AiHardCheckBypassThreshold = 0.70;
         private bool IsAiModelReadyForPumpEntry =>
@@ -8856,18 +8857,18 @@ namespace TradingBot
         /// [v4.8.0] 하이브리드 LIMIT 진입 시도 — OptimalEntryPriceRegressor 예측 기반
         /// 1) KlineCache에서 실시간 피처 추출
         /// 2) _entryPriceRegressor.PredictPullbackPct 호출
-        /// 3) 예측값 >= 0.2% → 예측 dip 가격 로깅 (후속 버전에서 LIMIT 주문 + 체결 대기)
+        /// 3) 예측값 >= 0.2% → LIMIT 주문 발주 (Phase 2 활성화)
         /// 4) 예측 불가 또는 미충족 → false 반환 (호출자가 시장가 fallback)
         /// </summary>
-        private Task<bool> TryHybridLimitEntryAsync(string symbol, decimal currentPrice, decimal sizeMul, CancellationToken token)
+        private async Task<bool> TryHybridLimitEntryAsync(string symbol, decimal currentPrice, decimal sizeMul, CancellationToken token)
         {
             try
             {
                 if (!_entryPriceRegressor.IsModelReady)
-                    return Task.FromResult(false);
+                    return false;
 
                 if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var cache) || cache.Count < 30)
-                    return Task.FromResult(false);
+                    return false;
 
                 var cList = cache.ToList();
                 var latest = cList[^1];
@@ -8925,12 +8926,77 @@ namespace TradingBot
                 if (!predicted.HasValue)
                 {
                     OnStatusLog?.Invoke($"🤖 [하이브리드LIMIT] {symbol} 예측 실패 → 시장가 fallback");
-                    return Task.FromResult(false);
+                    return false;
                 }
 
                 decimal predictedLimitPrice = currentPrice * (decimal)(1.0 - predicted.Value / 100.0);
                 OnStatusLog?.Invoke(
-                    $"🤖 [하이브리드LIMIT] {symbol} 예측 pullback={predicted.Value:F2}% | 현재={currentPrice:F6} → LIMIT타겟={predictedLimitPrice:F6} | (현재 로깅만, 시장가 fallback)");
+                    $"🤖 [하이브리드LIMIT] {symbol} 예측 pullback={predicted.Value:F2}% | 현재={currentPrice:F6} → LIMIT타겟={predictedLimitPrice:F6}");
+
+                // [v5.9.15] Phase 2 활성화 — 실제 LIMIT 주문 배치
+                // 예측값이 0.2% ~ 1.5% 범위면 LIMIT 진입, 아니면 시장가 fallback
+                if (predicted.Value < 0.2f || predicted.Value > 1.5f)
+                {
+                    OnStatusLog?.Invoke($"🤖 [하이브리드LIMIT] {symbol} 예측값 범위 외 ({predicted.Value:F2}%) → 시장가 fallback");
+                    return false;
+                }
+
+                // LIMIT 주문 배치 (sizeMul 반영)
+                bool isMajor = MajorSymbols.Contains(symbol);
+                decimal marginUsdt = isMajor
+                    ? (_settings.DefaultMargin > 0 ? _settings.DefaultMargin : 200m)
+                    : (_settings.PumpMargin > 0 ? _settings.PumpMargin : 200m);
+                marginUsdt *= sizeMul;
+
+                int leverage = isMajor ? (_settings.MajorLeverage > 0 ? _settings.MajorLeverage : 20) : 20;
+                decimal quantity = (marginUsdt * leverage) / predictedLimitPrice;
+
+                // stepSize 내림
+                try
+                {
+                    var exInfo = await _exchangeService.GetExchangeInfoAsync(token);
+                    var symData = exInfo?.Symbols.FirstOrDefault(s => s.Name == symbol);
+                    if (symData != null)
+                    {
+                        decimal step = symData.LotSizeFilter?.StepSize ?? 0.001m;
+                        quantity = Math.Floor(quantity / step) * step;
+                    }
+                }
+                catch { }
+
+                if (quantity <= 0)
+                {
+                    OnStatusLog?.Invoke($"🤖 [하이브리드LIMIT] {symbol} 수량 계산 실패 → 시장가 fallback");
+                    return false;
+                }
+
+                // 레버리지 설정 (실패 허용)
+                try { await _exchangeService.SetLeverageAsync(symbol, leverage, token); } catch { }
+
+                // LIMIT 주문 배치
+                var (limitOk, orderId) = await _exchangeService.PlaceLimitOrderAsync(symbol, "BUY", quantity, predictedLimitPrice, token);
+                if (!limitOk || string.IsNullOrEmpty(orderId))
+                {
+                    OnStatusLog?.Invoke($"🤖 [하이브리드LIMIT] {symbol} LIMIT 발주 실패 → 시장가 fallback");
+                    return false;
+                }
+
+                OnLiveLog?.Invoke($"📋 [LIMIT 예약] {symbol} ${predictedLimitPrice:F6} qty={quantity} (pullback 예측 -{predicted.Value:F2}%)");
+                OnStatusLog?.Invoke($"📋 [LIMIT 예약] {symbol} orderId={orderId} → 10분 내 체결 대기");
+
+                // 10분 후 미체결 시 취소
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromMinutes(10), _cts?.Token ?? CancellationToken.None);
+                        try { await _exchangeService.CancelOrderAsync(symbol, orderId, _cts?.Token ?? CancellationToken.None); } catch { }
+                        OnStatusLog?.Invoke($"⏰ [LIMIT 만료] {symbol} orderId={orderId} 10분 미체결 → 취소");
+                    }
+                    catch { }
+                });
+
+                return true;
 
                 // [v4.8.0] Breakout Classifier 동시 조회 — 급등 후보 consolidation 감지
                 if (_breakoutClassifier.IsModelReady && cList.Count >= 20)
@@ -8960,12 +9026,12 @@ namespace TradingBot
                 }
 
                 // [v4.8.0 Phase 1] 예측 로깅만. LIMIT 실주문 배치는 검증 후 Phase 2에서 활성화.
-                return Task.FromResult(false);
+                return false;
             }
             catch (Exception ex)
             {
                 OnStatusLog?.Invoke($"⚠️ [하이브리드LIMIT] {symbol} 예외: {ex.Message}");
-                return Task.FromResult(false);
+                return false;
             }
         }
 
@@ -9188,6 +9254,30 @@ namespace TradingBot
                         return;
                     }
                 }
+
+                // [v5.9.15] MarketRegime 필터 — 횡보장에서는 BUY_PRESSURE/TICK_SURGE 차단
+                try
+                {
+                    if (snap.Count >= 30)
+                    {
+                        var regimeWindow = snap.TakeLast(30).ToList();
+                        var regimeFeat = MarketRegimeClassifier.ExtractFeature(regimeWindow);
+                        if (regimeFeat != null)
+                        {
+                            var (regime, conf) = _regimeClassifier.Predict(regimeFeat);
+                            if (conf >= 0.70f && regime == MarketRegime.Sideways)
+                            {
+                                // 횡보장: 페이크 많은 신호 차단
+                                if (signalSource == "TICK_SURGE" || signalSource == "BUY_PRESSURE")
+                                {
+                                    OnLiveLog?.Invoke($"⛔ [{symbol}] 횡보장(conf {conf:P0}) → {signalSource} 차단");
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { /* regime 모델 미학습 시 무시 */ }
             }
 
             // 마진 스냅샷 — 큐 적재 시점의 설정값 고정 (병렬 읽기 경합 방지)
@@ -9249,6 +9339,47 @@ namespace TradingBot
                     return true; // AI 판단 존중 — fallback 진입 안 함
                 }
 
+                // [v5.9.15] 앙상블 투표 — 최소 2개 모델 합의 (Forecaster + ProfitRegressor)
+                int votes = 1; // Forecaster 찬성
+                int totalModels = 1;
+
+                // ProfitRegressor: 예상 수익률 > 0.3% 이면 찬성
+                if (_profitRegressor != null && _profitRegressor.IsModelReady)
+                {
+                    totalModels++;
+                    try
+                    {
+                        var latestCandle = await GetLatestCandleDataAsync(symbol, _cts?.Token ?? CancellationToken.None);
+                        if (latestCandle != null)
+                        {
+                            float? predicted = _profitRegressor.PredictProfit(
+                                latestCandle.RSI,
+                                latestCandle.BB_Width > 0 ? latestCandle.BB_Width / 100f : 0.5f,
+                                latestCandle.ATR,
+                                latestCandle.Volume_Ratio,
+                                latestCandle.Price_Change_Pct,
+                                0f);
+                            if (predicted.HasValue && predicted.Value > 0.3f) votes++;
+                        }
+                    }
+                    catch { }
+                }
+
+                // Forecaster 확률 추가 체크: 60% 이상이면 추가 표
+                if (forecast.Probability >= 0.60f)
+                {
+                    totalModels++;
+                    votes++;
+                }
+
+                // 앙상블: 전체 모델의 2/3 이상 찬성 (가중치: Forecaster 확률 + ProfitRegressor + 60% 이상 확률)
+                // 최소 2표 필요
+                if (votes < 2)
+                {
+                    OnLiveLog?.Invoke($"🧭 [ENSEMBLE][{sourceTag}] {symbol} 투표 부족 {votes}/{totalModels} → 진입 스킵 (prob={forecast.Probability:P0})");
+                    return true; // AI 판단 존중
+                }
+
                 decimal quantity = await CalculateOrderQuantityAsync(symbol, price, _cts?.Token ?? CancellationToken.None);
                 if (quantity <= 0) return false;
 
@@ -9260,7 +9391,8 @@ namespace TradingBot
                 {
                     OnLiveLog?.Invoke(
                         $"🧭 [FORECAST][{sourceTag}] {symbol} 예약 완료 | " +
-                        $"offsetBars={forecast.OffsetBars} priceOffset={forecast.PriceOffsetPct:F2}% " +
+                        $"votes={votes}/{totalModels} offsetBars={forecast.OffsetBars} " +
+                        $"priceOffset={forecast.PriceOffsetPct:F2}% " +
                         $"expProfit={forecast.ExpectedProfitPct:F1}% prob={forecast.Probability:P0}");
                 }
                 return scheduled;

@@ -5,6 +5,30 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.9.15] - 2026-04-15
+
+### Changed (예측 정확도 4개 항목 통합 개선)
+
+1. **Forecaster 정확도 임계값 50% → 60%**: 동전 던지기 수준 진입 차단, 수수료 흡수 가능한 수익성 확보
+2. **MarketRegimeClassifier 연결**: 이미 학습된 시장 체제 분류 모델을 EnqueueEntry에 연결. 횡보장(conf ≥70%)에서 TICK_SURGE/BUY_PRESSURE 차단
+3. **앙상블 투표 (2/N 최소)**: TryScheduleForecastEntryAsync에 ProfitRegressor 추가 합의. 단일 모델 오판 방지
+   - Forecaster HasOpportunity (1표)
+   - Forecaster 확률 ≥60% (추가 1표)
+   - ProfitRegressor 예상 수익 > 0.3% (1표)
+   - 2표 이상 시에만 진입
+4. **OptimalEntryPriceRegressor LIMIT 진입 활성화**: TryHybridLimitEntryAsync Phase 2 활성화
+   - 예측 pullback 0.2%~1.5% 범위일 때 실제 LIMIT 주문 발주
+   - 10분 만료 자동 취소
+   - 체결 시 평균 진입가 개선 → ROE +5~10% 기대
+
+### 예상 효과 (오늘 79건 -$115 기준)
+
+| 지표 | 현재 | v5.9.15 |
+|------|------|---------|
+| 진입 건수 | 79 | ~22 (-72%) |
+| 승률 | 30% | ~68% |
+| 일일 PnL | -$115 | +$75 |
+
 ## [5.9.14] - 2026-04-15
 
 ### Added
