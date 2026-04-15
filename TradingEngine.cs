@@ -2241,8 +2241,8 @@ namespace TradingBot
 
                                 try
                                 {
-                                    // [v5.6.7] API Rate Limit 방지 — 심볼 간 2초 딜레이
-                                    await Task.Delay(2000, token);
+                                    // [v5.8.2] 딜레이 500ms로 축소 (2초는 너무 느림)
+                                    await Task.Delay(500, token);
 
                                     // 1) 기존 주문 전부 삭제
                                     await _exchangeService.CancelAllOrdersAsync(pos.Symbol, token);

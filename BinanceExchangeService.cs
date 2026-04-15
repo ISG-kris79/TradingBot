@@ -809,21 +809,7 @@ namespace TradingBot.Services
                     return (false, 0, 0);
                 }
 
-                // [v5.8.0] 가용잔고 사전 체크 — Margin insufficient 방지
-                try
-                {
-                    var balResult = await _client.UsdFuturesApi.Account.GetBalancesAsync(ct: ct);
-                    if (balResult.Success)
-                    {
-                        var usdtBal = balResult.Data.FirstOrDefault(b => b.Asset == "USDT");
-                        if (usdtBal != null && usdtBal.AvailableBalance < 30m)
-                        {
-                            MainWindow.Instance?.AddLog($"⛔ [Binance] {symbol} 가용잔고 ${usdtBal.AvailableBalance:F0} 부족 → 주문 스킵");
-                            return (false, 0, 0);
-                        }
-                    }
-                }
-                catch { }
+                // [v5.8.1] 가용잔고 체크 제거 — API 호출 지연 유발. 주문 실패 시 블랙리스트로 대응
 
                 OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
 
