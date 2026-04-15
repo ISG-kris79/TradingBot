@@ -9056,6 +9056,15 @@ namespace TradingBot
                     if (kv.Value < cutoff) _recentEntryAttempts.TryRemove(kv.Key, out _);
             }
 
+            // [v5.8.7] 슬롯 사전 체크 — 풀이면 ExecuteAutoOrder 진입 자체 차단 (API 호출 절약)
+            {
+                var (canEnter, slotReason) = CanAcceptNewEntry(symbol, signalSource);
+                if (!canEnter) return;
+            }
+
+            // [v5.8.7] 블랙리스트 사전 체크
+            if (_blacklistedSymbols.TryGetValue(symbol, out var blExp) && DateTime.Now < blExp) return;
+
             string decisionKr = decision == "LONG" ? "LONG" : "SHORT";
             OnLiveLog?.Invoke($"📤 [{symbol}] {decisionKr} 주문 요청 중 | 가격 ${currentPrice:F2} | 소스: {signalSource}");
             EntryLog("START", "INFO", $"price={currentPrice:F4} source={signalSource}");
