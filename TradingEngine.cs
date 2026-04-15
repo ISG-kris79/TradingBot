@@ -128,7 +128,10 @@ namespace TradingBot
         // [NEW 개선안 2] SLOT 쿨다운 추적: SLOT 차단된 심볼의 재시도 시간제한
         private readonly ConcurrentDictionary<string, DateTime> _slotBlockedSymbols =
             new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
-        private int _slotCooldownMinutes = 3; // $250/일 목표: 3분으로 단축 (빠른 재진입)
+        private int _slotCooldownMinutes = 3;
+
+        /// <summary>[v5.9.0] 마진 부족 시 전체 진입 일시 중단</summary>
+        private DateTime _marginInsufficientUntil = DateTime.MinValue;
 
         /// <summary>[v5.2.9] 신호 첫 발생 가격 기록 — 슬롯 차단 후 뒤늦은 고점 진입 방지</summary>
         private readonly ConcurrentDictionary<string, (decimal Price, DateTime Time)> _signalOriginPrice =
@@ -9043,7 +9046,7 @@ namespace TradingBot
             // [v4.9.4] 중복 시그널 debounce — 동일 (symbol, direction) 10초 내 재시도 차단
             string debounceKey = $"{symbol}|{decision}";
             if (_recentEntryAttempts.TryGetValue(debounceKey, out var lastTry)
-                && (DateTime.Now - lastTry).TotalSeconds < 10)
+                && (DateTime.Now - lastTry).TotalSeconds < 30) // [v5.9.1] 10초→30초 debounce 강화
             {
                 return;
             }
@@ -9056,13 +9059,16 @@ namespace TradingBot
                     if (kv.Value < cutoff) _recentEntryAttempts.TryRemove(kv.Key, out _);
             }
 
-            // [v5.8.7] 슬롯 사전 체크 — 풀이면 ExecuteAutoOrder 진입 자체 차단 (API 호출 절약)
+            // [v5.9.0] 마진 부족 글로벌 중단 — 3분간 모든 진입 차단
+            if (DateTime.Now < _marginInsufficientUntil) return;
+
+            // [v5.8.7] 슬롯 사전 체크
             {
                 var (canEnter, slotReason) = CanAcceptNewEntry(symbol, signalSource);
                 if (!canEnter) return;
             }
 
-            // [v5.8.7] 블랙리스트 사전 체크
+            // 블랙리스트 사전 체크
             if (_blacklistedSymbols.TryGetValue(symbol, out var blExp) && DateTime.Now < blExp) return;
 
             string decisionKr = decision == "LONG" ? "LONG" : "SHORT";
@@ -11078,8 +11084,10 @@ namespace TradingBot
                     OnAlert?.Invoke($"❌ [{symbol}] {decision} 주문 실패 — Order_Error 확인");
                     EntryLog("ORDER", "FAILED", $"reason=marketOrderFailed");
                     try { _ = _dbManager.SaveOrderErrorAsync(symbol, side, "MARKET_ENTRY", quantity, null, "PlaceMarketOrderAsync 실패"); } catch { }
-                    // [v5.7.8] 주문 실패 시 5분 블랙리스트 — 반복 주문 방지
+                    // [v5.7.8] 주문 실패 시 5분 블랙리스트
                     _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(5);
+                    // [v5.9.0] 마진 부족 → 3분간 전체 진입 중단
+                    _marginInsufficientUntil = DateTime.Now.AddMinutes(3);
                     return;
                 }
 
