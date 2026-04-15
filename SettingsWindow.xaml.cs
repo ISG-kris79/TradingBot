@@ -332,7 +332,7 @@ namespace TradingBot
                 {
                     // DB에서 로드한 설정으로 UI 업데이트
                     txtDefaultMargin.Text = dbSettings.DefaultMargin.ToString("F4");
-                    txtMajorMarginPercent.Text = dbSettings.MajorMarginPercent.ToString("F1");
+                    // [v5.5.6] 메이저 증거금 % 제거
                     txtPumpMargin.Text = dbSettings.PumpMargin.ToString("F0");
                     txtLeverage.Text = dbSettings.DefaultLeverage.ToString();
                 // [v3.2.14 removed] txtTargetRoe.Text = dbSettings.TargetRoe.ToString("F4");
@@ -408,7 +408,7 @@ namespace TradingBot
                         if (generalNode != null)
                         {
                             txtDefaultMargin.Text = generalNode["DefaultMargin"]?.ToString() ?? "200.0";
-                            txtMajorMarginPercent.Text = generalNode["MajorMarginPercent"]?.ToString() ?? "10.0";
+                            // [v5.5.6] 메이저 증거금 % 제거
                             txtPumpMargin.Text = generalNode["PumpMargin"]?.ToString() ?? "200";
                             txtLeverage.Text = generalNode["DefaultLeverage"]?.ToString() ?? "10";
                 // [v3.2.14 removed] txtTargetRoe.Text = generalNode["TargetRoe"]?.ToString() ?? "20.0";
@@ -770,12 +770,7 @@ namespace TradingBot
                     generalNode["DefaultMargin"] = defaultMargin;
                     generalSettings.DefaultMargin = defaultMargin;
                 }
-                // [v4.4.4] 메이저 증거금 %
-                if (decimal.TryParse(txtMajorMarginPercent?.Text ?? "10.0", out decimal majorPct))
-                {
-                    generalNode["MajorMarginPercent"] = majorPct;
-                    generalSettings.MajorMarginPercent = majorPct;
-                }
+                // [v5.5.6] 메이저 증거금 % 제거 — DefaultMargin USDT 고정 사용
                 // [v4.4.4] PUMP 증거금 $
                 if (decimal.TryParse(txtPumpMargin?.Text ?? "200", out decimal pumpMargin))
                 {

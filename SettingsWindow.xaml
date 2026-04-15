@@ -227,21 +227,7 @@
                                              Foreground="White"
                                              BorderBrush="#2D3142"/>
 
-                                    <!-- 메이저 증거금 % -->
-                                    <TextBlock Text="메이저 증거금 (%):"
-                                               VerticalAlignment="Center"
-                                               Grid.Row="2"
-                                               Foreground="#94A3B8"
-                                               Margin="0,0,0,15"/>
-                                    <Grid Grid.Row="2" Grid.Column="1" Margin="0,0,0,15">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBox x:Name="txtMajorMarginPercent"
-                                                 Padding="8" Background="#1E2235" Foreground="White" BorderBrush="#2D3142"/>
-                                        <TextBlock Grid.Column="1" Text="% of Equity" Foreground="#64748B" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="11"/>
-                                    </Grid>
+                                    <!-- [v5.5.6] 메이저 증거금 % 제거 — DefaultMargin USDT 고정 사용 -->
 
                                     <!-- PUMP 증거금 $ -->
                                     <TextBlock Text="PUMP 증거금 ($):"

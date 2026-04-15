@@ -143,14 +143,15 @@ namespace TradingBot.Services
             // [v5.5.2] 매수 쏠림 선행 감지 — TPS 급증 전에 매수비율로 감지
             // 급등 시작 전 매수 Taker가 75%+ 지속 → 가격 상승 임박
             // ═══════════════════════════════════════════════
-            if (buyRatio >= 0.75 && totalVol > 0)
+            // [v5.5.5] 매수 쏠림 민감도 상향: 70%+ 10초 (기존 75%+ 15초)
+            if (buyRatio >= 0.70 && totalVol > 0)
             {
                 state.HighBuyRatioConsecutiveSec++;
                 if (state.HighBuyRatioConsecutiveSec == 1)
                     state.BuyPressureBasePrice = currentPrice;
 
-                // 15초+ 매수 쏠림 지속 + 가격 아직 안 올랐으면 → 선행 신호
-                if (state.HighBuyRatioConsecutiveSec >= 15)
+                // 10초+ 매수 쏠림 지속 + 가격 아직 안 올랐으면 → 선행 신호
+                if (state.HighBuyRatioConsecutiveSec >= 10)
                 {
                     decimal priceChange = state.BuyPressureBasePrice > 0
                         ? (currentPrice - state.BuyPressureBasePrice) / state.BuyPressureBasePrice * 100m : 0m;

@@ -2222,7 +2222,7 @@ namespace TradingBot
                                     bool isMajor = MajorSymbols.Contains(pos.Symbol);
                                     decimal slRoe = isMajor ? (_settings.MajorStopLossRoe > 0 ? -_settings.MajorStopLossRoe : -60m) : -40m;
                                     decimal tpRoe = isMajor ? (_settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : 30m) : 25m;
-                                    decimal tpPartial = isMajor ? 0.4m : 0.6m;
+                                    decimal tpPartial = 0.2m; // 20% 부분익절
                                     decimal trailCb = isMajor ? 2.0m : 3.5m;
 
                                     await _entryOrderRegistrar.RegisterEntryOrdersAsync(
@@ -11188,11 +11188,10 @@ namespace TradingBot
                             bool isLong = decision == "LONG";
                             bool isPump = !MajorSymbols.Contains(symbol);
 
-                            // PUMP: SL -40% ROE, TP +25% ROE, 부분 60%, Trailing 3.5%
-                            // MAJOR: SL -50% ROE, TP +40% ROE, 부분 40%, Trailing 2.0%
+                            // [v5.5.5] PUMP/MAJOR 공통: TP 20% 부분익절 + 80% 트레일링
                             decimal slRoe = isPump ? -40m : -50m;
                             decimal tpRoe = isPump ? 25m : 40m;
-                            decimal tpPartial = isPump ? 0.6m : 0.4m;
+                            decimal tpPartial = 0.2m; // 20% 부분익절 (나머지 80% 트레일링)
                             decimal trailCallback = isPump ? 3.5m : 2.0m;
 
                             var (slId, tpId) = await _entryOrderRegistrar.RegisterEntryOrdersAsync(
