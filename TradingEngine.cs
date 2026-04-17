@@ -2636,7 +2636,7 @@ namespace TradingBot
                 // 수학적 모델(Queueing Theory M/G/1)상, 무거운 I/O 및 ML 연산 처리 시간(S)을 UI 메인 루프에 종속(await)시키면,
                 // 리틀의 법칙(L = λW)에 의해 후속 이벤트(Telegram, Socket, UI 렌더링 등)의 시스템 대기 시간(W)이 무한히 쌓여 메인 UI 프리징(Deadlock/Starvation)을 초래함.
                 // 따라서 이 메인 프로세스는 상태 플래그(IsReady)만 확인하게 하고, 실제 훈련은 백그라운드 Worker Thread로 오프로딩하여 UI 및 엔진 파이프라인을 즉시 재개함.
-                if (_aiDoubleCheckEntryGate != null && !_aiDoubleCheckEntryGate.IsReady)
+                if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate?.IsReady != true)
                 {
                     OnStatusLog?.Invoke("ℹ️ AI Gate 초기 학습 백그라운드 시작...");
                     _ = Task.Run(async () =>
@@ -3746,7 +3746,7 @@ namespace TradingBot
                 {
                     doubleCheckStatus = "DISABLED";
                 }
-                else if (!_aiDoubleCheckEntryGate.IsReady)
+                else if (_aiDoubleCheckEntryGate?.IsReady != true)
                 {
                     var (success, _) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, _symbols, token);
                     doubleCheckStatus = success ? "READY" : "NOT_READY";
@@ -5695,7 +5695,7 @@ namespace TradingBot
                 double droughtHours = (DateTime.Now - _lastSuccessfulEntryTime).TotalHours;
                 OnStatusLog?.Invoke($"🔎 [드라이스펠] {droughtHours:F1}h 진입 없음 — 전 심볼 진입 후보 진단 시작...");
 
-                if (_aiDoubleCheckEntryGate == null || !_aiDoubleCheckEntryGate.IsReady)
+                if (_aiDoubleCheckEntryGate == null || _aiDoubleCheckEntryGate?.IsReady != true)
                 {
                     OnStatusLog?.Invoke("⚠️ [드라이스펠] AI 게이트 미준비 상태 — 진단 생략");
                     action = "AI_GATE_NOT_READY";
@@ -7626,6 +7626,14 @@ namespace TradingBot
             {
                 // [v4.5.14] 학습 완료/실패 시 플래그 해제
                 Interlocked.Exchange(ref _mlTrainingInProgress, 0);
+
+                // [v5.10.23] TrainAllModelsAsync 완료 후 pump_signal_normal.zip 생성됐으면 배너 닫기
+                // (TriggerInitialDownloadAndTrainAsync 외 경로에서도 배너 닫힘 보장)
+                if (IsInitialTrainingComplete)
+                {
+                    OnStatusLog?.Invoke("✅ [ML] 모델 학습 완료 — 진입 활성화");
+                    OnInitialTrainingCompleted?.Invoke(true);
+                }
             }
         }
 
@@ -9319,7 +9327,8 @@ namespace TradingBot
                 || signalSource == "PUMP_REVERSE"
                 || signalSource == "CRASH_REVERSE";
 
-            if (!IsInitialTrainingComplete && !isVolatilitySignalPath && latestCandle != null && latestCandle.ATR > 0 && currentPrice > 0)
+            // [v5.10.23] AI Gate 모델(EntryTimingModel.zip)이 있으면 하드 필터 우회 — pump_signal_normal.zip 없어도 진입 허용
+            if (!IsInitialTrainingComplete && _aiDoubleCheckEntryGate?.IsReady != true && !isVolatilitySignalPath && latestCandle != null && latestCandle.ATR > 0 && currentPrice > 0)
             {
                 // 메이저 일반 진입만: ATR 3%+, 5분봉 5%+ 차단
                 float atrPriceRatio = latestCandle.ATR / (float)currentPrice * 100f;
@@ -10299,7 +10308,8 @@ namespace TradingBot
 
             // [v4.6.2] 메이저 LONG 보조지표 필터 (대칭) — VWAP / EMA / StochRSI
             // [v4.7.0] 초기학습 완료 시 모든 LONG 하드 필터 우회 (AI 단독 판단)
-            if (!IsInitialTrainingComplete && ctx.LatestCandle != null)
+            // [v5.10.23] AI Gate 모델(EntryTimingModel.zip) 있으면 우회 — pump_signal_normal.zip 없어도 진입 허용
+            if (!IsInitialTrainingComplete && _aiDoubleCheckEntryGate?.IsReady != true && ctx.LatestCandle != null)
             {
                 // 1. VWAP 아래 → LONG 차단 (가격이 VWAP 아래면 매도 우위)
                 if (ctx.LatestCandle.VWAP > 0 && ctx.LatestCandle.Price_VWAP_Distance_Pct < -0.3f)

@@ -5,6 +5,16 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.24] - 2026-04-17
+
+### Fixed
+
+ - **학습 레이어 안 닫힘 + 진입 없음 수정** (`pump_signal_normal.zip` 부재로 발생):
+   - `IsInitialTrainingComplete = false` 상태에서 AI Gate(`EntryTimingModel.zip`) 모델이 있으면 하드 필터 우회
+   - 기존: `pump_signal_normal.zip` 없으면 VWAP/EMA/StochRSI/ATR 하드 필터 전부 적용 → 진입 거의 불가
+   - 수정: AI Gate 준비됐으면 AI 단독 판단 (하드 필터 우회)
+   - `TrainAllModelsAsync` 완료 후 `pump_signal_normal.zip` 생성되면 배너 자동 닫힘
+
 ## [5.10.23] - 2026-04-17
 
 ### Fixed
