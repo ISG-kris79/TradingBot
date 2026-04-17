@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.17] - 2026-04-17
+
+### Fixed
+
+ - **MaxDailyEntries 카운트 오류**: `TryReserveDailyPumpEntry` — 예약 단계에서 카운트 증가 제거, `CommitDailyPumpEntry` 신설로 실제 주문 체결 성공 시에만 카운트 증가
+   - SPIKE_FAST: `PlaceOrderAsync` 성공 후 (!isMajor)
+   - PUMP_WATCH_CONFIRMED: `ExecuteFullEntryWithAllOrdersAsync` 성공 후
+ - **DirectClosePositionAsync 중복 코드 블록**: 이전 세션 손상으로 중복 삽입된 청산 코드 블록 제거
+
 ## [5.10.16] - 2026-04-17
 
 ### Fixed
