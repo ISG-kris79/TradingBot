@@ -407,15 +407,14 @@ namespace TradingBot
         }
 
         /// <summary>
-        /// [v4.5.9] 일일 PUMP 진입 카운터 관리
-        /// - 자정(KST) 기준 자동 리셋
-        /// - 40회 도달 시 신규 진입 차단
+        /// [v5.10.17] 일일 PUMP 진입 한도 체크 — 카운트 증가 없음 (게이트 전용)
+        /// 실제 카운트는 진입 성공 후 CommitDailyPumpEntry 호출
         /// </summary>
         private bool TryReserveDailyPumpEntry(string symbol, string source)
         {
             lock (_dailyPumpLock)
             {
-                var todayKst = DateTime.Now.Date; // [v4.6.2] 시스템 로컬 시간 (KST)
+                var todayKst = DateTime.Now.Date;
                 if (todayKst > _dailyPumpCountDate)
                 {
                     _dailyPumpCountDate = todayKst;
@@ -429,9 +428,20 @@ namespace TradingBot
                     return false;
                 }
 
-                _dailyPumpEntryCount++;
-                OnStatusLog?.Invoke($"📊 [일일 PUMP 카운터] {_dailyPumpEntryCount}/{MAX_DAILY_PUMP_ENTRIES} ({symbol} {source})");
+                // [v5.10.17] 여기서는 카운트 증가 안 함 — 실제 진입 성공 후 CommitDailyPumpEntry에서 증가
                 return true;
+            }
+        }
+
+        /// <summary>
+        /// [v5.10.17] 실제 PUMP 진입 성공 시 카운트 증가 — PlaceMarketOrderAsync 성공 후 호출
+        /// </summary>
+        private void CommitDailyPumpEntry(string symbol)
+        {
+            lock (_dailyPumpLock)
+            {
+                _dailyPumpEntryCount++;
+                OnStatusLog?.Invoke($"📊 [일일 PUMP 카운터] {_dailyPumpEntryCount}/{MAX_DAILY_PUMP_ENTRIES} ({symbol} 실제진입 확정)");
             }
         }
         // [v3.3.6] 급변동 회복 구간 추적: symbol → (extremePrice, isUpwardSpike, eventTime)
@@ -8482,6 +8492,9 @@ namespace TradingBot
 
                 if (success)
                 {
+                    // [v5.10.17] SPIKE_FAST PUMP 실제 진입 확정 카운터
+                    if (!isMajor) CommitDailyPumpEntry(symbol);
+
                     // [v3.2.36] 거래소에서 실제 체결 수량/진입가 확인
                     decimal entryPrice = currentPrice;
                     decimal actualQty = quantity;
@@ -11084,6 +11097,10 @@ namespace TradingBot
                     _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(5);
                     return;
                 }
+
+                // [v5.10.17] PUMP_WATCH_CONFIRMED 실제 진입 확정 카운터
+                if (ctx.SignalSource == "PUMP_WATCH_CONFIRMED")
+                    CommitDailyPumpEntry(symbol);
 
                 // 체결가 추정 (실제로는 API에서 받아야 하지만, 현재 가격 사용)
                 var actualEntryPrice = ctx.CurrentPrice;
