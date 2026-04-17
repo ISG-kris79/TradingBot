@@ -7342,6 +7342,30 @@ namespace TradingBot
                 int dbCandleTotal = dbCandleMap.Values.Sum(v => v.Count);
                 OnStatusLog?.Invoke($"🧠 [ML] DB 학습 데이터: {dbSymbolCount}개 심볼, {dbCandleTotal}개 캔들");
 
+                // [v5.10.24] 알트 심볼 부족 감지 → GetBulkCandleDataAsync로 보완
+                // 원인: GetAllCandleDataForTrainingAsync 24시간 필터로 초기학습 다운로드 과거 데이터가 제외됨
+                // → PUMP 모델 학습 데이터 0건 → pump_signal_normal.zip 미생성
+                int altCount = dbCandleMap.Keys.Count(k => !MajorSymbols.Contains(k));
+                if (altCount < 10)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [ML] 알트 24h 데이터 {altCount}개 부족 → 과거 전체 데이터 보완 로드");
+                    try
+                    {
+                        var bulkAlt = await _dbManager.GetBulkCandleDataAsync("5m", 500, null, token);
+                        int added = 0;
+                        foreach (var kv in bulkAlt)
+                        {
+                            if (!dbCandleMap.ContainsKey(kv.Key))
+                            {
+                                dbCandleMap[kv.Key] = kv.Value;
+                                added++;
+                            }
+                        }
+                        OnStatusLog?.Invoke($"📥 [ML] 과거 데이터 보완: {added}개 심볼 추가 (총 {dbCandleMap.Count}개)");
+                    }
+                    catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] 과거 데이터 보완 실패: {ex.Message}"); }
+                }
+
                 // DB 데이터 → IBinanceKline 변환 캐시 (여러 모델에서 재사용)
                 var klineMap = new Dictionary<string, List<IBinanceKline>>();
                 foreach (var kvp in dbCandleMap)

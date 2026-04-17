@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.25] - 2026-04-17
+
+### Fixed
+
+ - **PUMP/TradeSignal 모델 파일 미생성 근본 수정** (`TrainAllModelsAsync`):
+   - 원인: `GetAllCandleDataForTrainingAsync` 24시간 필터로 초기학습 다운로드 과거 데이터 전부 제외
+   - 알트 심볼 24시간 데이터 10개 미만 감지 시 `GetBulkCandleDataAsync`로 과거 전체 데이터 보완
+   - 이후 재학습 시에도 `pump_signal_normal.zip`, `pump_signal_spike.zip`, `trade_signal_model.zip` 정상 생성
+
 ## [5.10.24] - 2026-04-17
 
 ### Fixed
