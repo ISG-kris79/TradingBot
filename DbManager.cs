@@ -250,8 +250,11 @@ END");
             try
             {
                 using var db = new SqlConnection(_connectionString);
+                // [v5.10.11] WITH (HOLDLOCK): MERGE 동시 호출 시 PK violation(2627) 방지
+                // 모니터링 루프에서 fire-and-forget으로 자주 호출 → 두 세션이 동시에 NOT MATCHED → 동시 INSERT → PK 중복
+                // commandTimeout=8: lock 경합 시 빠른 실패 (다음 tick에 재시도됨)
                 await db.ExecuteAsync(@"
-MERGE dbo.PositionState AS target
+MERGE dbo.PositionState WITH (HOLDLOCK) AS target
 USING (SELECT @UserId AS UserId, @Symbol AS Symbol) AS source
 ON target.UserId = source.UserId AND target.Symbol = source.Symbol
 WHEN MATCHED THEN
@@ -284,7 +287,11 @@ WHEN NOT MATCHED THEN
                     HighestPrice = pos.HighestPrice,
                     LowestPrice = pos.LowestPrice,
                     IsPumpStrategy = pos.IsPumpStrategy
-                });
+                }, commandTimeout: 8);
+            }
+            catch (SqlException sqlEx) when (sqlEx.Number == 2627 || sqlEx.Number == 2601)
+            {
+                // [v5.10.11] PK/UNIQUE 중복 삽입 — 동시 호출 레이스에서 다른 세션이 이미 INSERT함 → 무시 (다음 tick에 UPDATE됨)
             }
             catch (Exception ex)
             {
@@ -2636,7 +2643,7 @@ ORDER BY Symbol, OpenTime ASC";
                 using (IDbConnection db = new SqlConnection(_connectionString))
                 {
                     string sql = @"
-                        MERGE dbo.GeneralSettings AS target
+                        MERGE dbo.GeneralSettings WITH (HOLDLOCK) AS target
                         USING (SELECT @UserId AS Id, @DefaultLeverage, @DefaultMargin, @TargetRoe, @StopLossRoe, @TrailingStartRoe, @TrailingDropRoe,
                                       @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile,
                                       @PumpBreakEvenRoe, @PumpTrailingStartRoe, @PumpTrailingGapRoe,

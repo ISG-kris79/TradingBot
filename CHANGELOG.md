@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.11] - 2026-04-17
+
+### Fixed
+
+ - **DB UNIQUE 오류 수정**: `SavePositionStateAsync` MERGE에 `WITH (HOLDLOCK)` 추가 — 모니터링 루프 동시 호출 시 두 세션 모두 NOT MATCHED → 동시 INSERT → PK(UserId,Symbol) 중복 violation 발생하던 버그
+ - **GeneralSettings MERGE 동일 수정**: `WITH (HOLDLOCK)` 추가
+ - **INSERT 타임아웃 방지**: `SavePositionStateAsync` `commandTimeout=8` 설정 — lock 경합 시 빠른 실패 (다음 tick에 재시도)
+ - **UNIQUE 중복 삽입 무시**: SqlException 2627/2601(PK/UNIQUE 위반) catch 추가 — 다른 세션이 이미 INSERT한 경우 오류 없이 통과
+
 ## [5.10.10] - 2026-04-17
 
 ### Fixed
