@@ -5,6 +5,12 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.16] - 2026-04-17
+
+### Fixed
+
+ - **최신 OpenTime 조회 타임아웃 근본 수정**: `GetLatestSyncedOpenTimeAcrossTablesAsync` — 4개 개별 쿼리(4 DB 왕복) → 서브쿼리 1개로 통합(1 DB 왕복) + `_bulkDbSemaphore` 추가로 동시 호출 제한. 커넥션 대기 중 타임아웃 해소
+
 ## [5.10.15] - 2026-04-17
 
 ### Fixed

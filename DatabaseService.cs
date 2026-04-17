@@ -148,45 +148,34 @@ SELECT CASE WHEN EXISTS (
 
         public async Task<DateTime?> GetLatestSyncedOpenTimeAcrossTablesAsync(string symbol, string interval = "5m")
         {
+            // [v5.10.16] 세마포어로 동시 호출 제한 + 4개 쿼리 → 단일 SQL로 통합 (4왕복 → 1왕복)
+            await _bulkDbSemaphore.WaitAsync();
             try
             {
                 using var conn = new SqlConnection(_connStr);
-
-                // [v5.10.15] WITH (NOLOCK): 읽기 쿼리 — 블로킹 방지, 타임아웃 5초로 단축
-                var marketCandlesMax = await conn.ExecuteScalarAsync<DateTime?>(
-                    "SELECT MAX(OpenTime) FROM MarketCandles WITH (NOLOCK) WHERE Symbol = @Symbol",
-                    new { Symbol = symbol },
-                    commandTimeout: 5);
-
-                var candleDataMax = await conn.ExecuteScalarAsync<DateTime?>(
-                    "SELECT MAX(OpenTime) FROM CandleData WITH (NOLOCK) WHERE Symbol = @Symbol",
-                    new { Symbol = symbol },
-                    commandTimeout: 5);
-
-                var candleHistoryMax = await conn.ExecuteScalarAsync<DateTime?>(
-                    "SELECT MAX(OpenTime) FROM CandleHistory WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval",
+                // 단일 쿼리로 4개 테이블 MAX 동시 조회 — 1번의 DB 왕복, WITH (NOLOCK)
+                var result = await conn.QuerySingleOrDefaultAsync<(DateTime? mc, DateTime? cd, DateTime? ch, DateTime? md)>(
+                    @"SELECT
+                        (SELECT MAX(OpenTime) FROM MarketCandles WITH (NOLOCK) WHERE Symbol = @Symbol) AS mc,
+                        (SELECT MAX(OpenTime) FROM CandleData WITH (NOLOCK) WHERE Symbol = @Symbol) AS cd,
+                        (SELECT MAX(OpenTime) FROM CandleHistory WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval) AS ch,
+                        (SELECT MAX(OpenTime) FROM MarketData WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval) AS md",
                     new { Symbol = symbol, Interval = interval },
                     commandTimeout: 5);
 
-                var marketDataMax = await conn.ExecuteScalarAsync<DateTime?>(
-                    "SELECT MAX(OpenTime) FROM MarketData WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval",
-                    new { Symbol = symbol, Interval = interval },
-                    commandTimeout: 5);
-
-                var candidates = new[] { marketCandlesMax, candleDataMax, candleHistoryMax, marketDataMax }
+                var candidates = new[] { result.mc, result.cd, result.ch, result.md }
                     .Where(v => v.HasValue)
                     .Select(v => v!.Value)
                     .ToList();
 
-                if (!candidates.Any()) return null;
-
-                return candidates.Min();
+                return candidates.Count > 0 ? candidates.Min() : null;
             }
             catch (Exception ex)
             {
                 Log($"❌ [DB] 최신 OpenTime 조회 실패 ({symbol}): {ex.Message}");
                 return null;
             }
+            finally { _bulkDbSemaphore.Release(); }
         }
 
         // [v4.5.12] MERGE 문으로 단일 statement 처리 (기존: IF NOT EXISTS + INSERT per row)
