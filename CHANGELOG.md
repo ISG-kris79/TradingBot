@@ -5,6 +5,21 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.8] - 2026-04-17
+
+### Fixed
+
+ - **CPU 30%+ 절감**: TickerFlushIntervalMs 초기값 200→300ms / FooterLogFlushIntervalMs 200→500ms / MaxPumpSubscribedSymbols 100→50 / PositionMonitor 루프 250→400ms
+ - **AI_ENTRY dead cat bounce 차단**: 하락추세 + RSI < 50 조건 추가 — `AI_ENTRY_SKIP` 로그로 차단 확인 가능
+ - **isMakingHigherLows Aggressive 오판 수정**: `HigherLowMinRiseRatio` 1.000→1.005 (동일가도 Higher Low 판정하던 버그)
+
+## [5.10.7] - 2026-04-17
+
+### Fixed
+
+ - **설정창 누락 항목 복구**: 메이저 코인 활성여부(`chkEnableMajorTrading`), 메이저 슬롯, PUMP 슬롯, 하루 진입 횟수 — force push로 인해 날아간 UI + 로드/저장 코드 복구
+ - **isUptrend 3중 조건 강화**: `SMA20>SMA50` 단일 조건 → ①골든크로스 ②현재가>SMA20 ③SMA20 기울기 상승 — dead cat bounce를 상승추세로 오판하는 근본 원인 수정 (SKYAIUSDT 패턴)
+
 ## [5.10.6] - 2026-04-17
 
 ### Fixed
