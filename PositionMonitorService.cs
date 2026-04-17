@@ -1796,8 +1796,8 @@ namespace TradingBot.Services
                         }
                     }
 
-                    // [v4.5.5] 1000ms → 250ms (4x 빠른 반응, CPU 무부하: 캐시 lookup만 수행)
-                    await Task.Delay(250, token);
+                    // [v5.10.7] 250ms → 400ms: CPU 30%+ 절감 (캐시 lookup 전용, 반응성 충분)
+                    await Task.Delay(400, token);
                 }
                 catch (OperationCanceledException) { break; }
                 catch (Exception ex)

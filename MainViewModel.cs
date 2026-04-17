@@ -60,7 +60,7 @@ namespace TradingBot.ViewModels
         // [데이터 컨플레이션] Dispatcher 처리 중 재진입 방지 플래그
         private int _tickerFlushRunning;
         // [Stage2] 적응형 타이머 간격 — 부하에 따라 ticker flush 주기 자동 조절
-        private int _tickerFlushIntervalMs = 200;
+        private int _tickerFlushIntervalMs = 300; // [v5.10.7] 200→300ms: 초기값을 최소값과 일치
         private const int TickerFlushMinMs = 300; // [v5.10.3] 100→300ms: CPU 과부하 방지
         private const int TickerFlushMaxMs = 500;
         private readonly Queue<int> _tickerFlushDurationSamples = new();
@@ -75,7 +75,7 @@ namespace TradingBot.ViewModels
         private const int MaxTickerBatchPerTick = 80;        // [병목 해결] 180→80 (PropertyChanged 폭주 방지)
         private const int MaxSignalBatchPerTick = 40;        // [병목 해결] 120→40 (BeginUpdate로 보완)
         private const int MaxDbWritesPerDrain = 80;
-        private const int FooterLogFlushIntervalMs = 200;
+        private const int FooterLogFlushIntervalMs = 500; // [v5.10.7] 200→500ms: CPU 절감
         private const int MaxUiWorkBudgetMsPerTick = 6;      // [병목 해결] 8→6ms (UI 스레드 여유 확보)
         private const int MaxAlertBatchPerTick = 20;
         private const int MaxUiAlertCount = 100;

@@ -313,13 +313,18 @@ namespace TradingBot.Strategies
                     }
                 }
 
-                // AI가 진입 승인 → 하락추세면 임계값 강화 (65% → 78%)
-                // 하락추세 중 65% 신뢰도는 불충분 — 상승추세일 때만 완화
-                float aiEntryThreshold = isUptrend ? 0.65f : 0.78f; // [v5.10.5]
-                if (decision == "WAIT" && mlSignal && mlProb >= aiEntryThreshold)
+                // AI가 진입 승인 → 하락추세면 임계값 강화 (65% → 78%) + RSI < 50 추가 차단
+                // [v5.10.7] dead cat bounce 필터: 하락추세 + RSI 50 미만 = 약세 구간 → 차단
+                float aiEntryThreshold = isUptrend ? 0.65f : 0.78f;
+                bool aiDowntrendRsiBlock = !isUptrend && rsi < 50;
+                if (decision == "WAIT" && mlSignal && mlProb >= aiEntryThreshold && !aiDowntrendRsiBlock)
                 {
                     decision = "LONG";
                     PumpSignalLog("AI_ENTRY", $"sym={symbol} prob={mlProb:P0} rsi={rsi:F0} vol={volumeMomentum:F2} uptrend={isUptrend} threshold={aiEntryThreshold:P0}");
+                }
+                else if (decision == "WAIT" && mlSignal && mlProb >= aiEntryThreshold && aiDowntrendRsiBlock)
+                {
+                    PumpSignalLog("AI_ENTRY_SKIP", $"sym={symbol} 하락추세+RSI{rsi:F0}<50 dead cat bounce 차단 prob={mlProb:P0}");
                 }
                 // ML 모델 미로드 시 기본 조건
                 else if (decision == "WAIT" && !(_pumpML?.IsModelLoaded ?? false))
@@ -662,7 +667,7 @@ namespace TradingBot.Strategies
                 15,
                 2,
                 4,
-                1.000m);
+                1.005m); // [v5.10.7] 1.000m→1.005m: 0.5% 이상 상승만 HigherLow 인정 (동일가 = Higher Low 오판 방지)
         }
 
         private static TimeZoneInfo GetSeoulTimeZone()
