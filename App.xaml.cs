@@ -80,6 +80,13 @@ namespace TradingBot
 
         private void App_DispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
         {
+            // [v5.10.15] 엔진 Stop 시 Task 취소로 발생하는 정상 예외 — 무시
+            if (e.Exception is OperationCanceledException || e.Exception is TaskCanceledException)
+            {
+                e.Handled = true;
+                return;
+            }
+
             if (e.Exception is ArgumentException argumentException
                 && argumentException.Message.Contains("'NaN'")
                 && argumentException.Message.Contains("'Y1'"))

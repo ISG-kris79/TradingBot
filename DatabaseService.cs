@@ -152,25 +152,26 @@ SELECT CASE WHEN EXISTS (
             {
                 using var conn = new SqlConnection(_connStr);
 
+                // [v5.10.15] WITH (NOLOCK): 읽기 쿼리 — 블로킹 방지, 타임아웃 5초로 단축
                 var marketCandlesMax = await conn.ExecuteScalarAsync<DateTime?>(
-                    "SELECT MAX(OpenTime) FROM MarketCandles WHERE Symbol = @Symbol",
+                    "SELECT MAX(OpenTime) FROM MarketCandles WITH (NOLOCK) WHERE Symbol = @Symbol",
                     new { Symbol = symbol },
-                    commandTimeout: QueryTimeout);
+                    commandTimeout: 5);
 
                 var candleDataMax = await conn.ExecuteScalarAsync<DateTime?>(
-                    "SELECT MAX(OpenTime) FROM CandleData WHERE Symbol = @Symbol",
+                    "SELECT MAX(OpenTime) FROM CandleData WITH (NOLOCK) WHERE Symbol = @Symbol",
                     new { Symbol = symbol },
-                    commandTimeout: QueryTimeout);
+                    commandTimeout: 5);
 
                 var candleHistoryMax = await conn.ExecuteScalarAsync<DateTime?>(
-                    "SELECT MAX(OpenTime) FROM CandleHistory WHERE Symbol = @Symbol AND [Interval] = @Interval",
+                    "SELECT MAX(OpenTime) FROM CandleHistory WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval",
                     new { Symbol = symbol, Interval = interval },
-                    commandTimeout: QueryTimeout);
+                    commandTimeout: 5);
 
                 var marketDataMax = await conn.ExecuteScalarAsync<DateTime?>(
-                    "SELECT MAX(OpenTime) FROM MarketData WHERE Symbol = @Symbol AND [Interval] = @Interval",
+                    "SELECT MAX(OpenTime) FROM MarketData WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval",
                     new { Symbol = symbol, Interval = interval },
-                    commandTimeout: QueryTimeout);
+                    commandTimeout: 5);
 
                 var candidates = new[] { marketCandlesMax, candleDataMax, candleHistoryMax, marketDataMax }
                     .Where(v => v.HasValue)

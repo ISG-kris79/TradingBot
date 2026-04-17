@@ -837,8 +837,8 @@ namespace TradingBot.Services
 
                 if (!result.Success || result.Data == null)
                 {
-                    Console.WriteLine($"❌ [Binance] 시장가 주문 실패 - {symbol} {side} {quantity}");
-                    Console.WriteLine($"   에러: {result.Error?.Message}");
+                    string errMsg = result.Error?.Message ?? "알 수 없는 오류";
+                    OnLog?.Invoke($"❌ [주문실패] {symbol} {side} {quantity} — {errMsg} (code={result.Error?.Code})");
                     return (false, 0, 0);
                 }
 

@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.15] - 2026-04-17
+
+### Fixed
+
+ - **Stop 버튼 오류 창 2개**: `OperationCanceledException` / `TaskCanceledException` — 엔진 Stop 시 정상 Task 취소 예외를 `App_DispatcherUnhandledException`에서 무시 처리
+ - **PlaceMarketOrderAsync 오류 로그**: `Console.WriteLine` → `OnLog` 변경 — "Margin is insufficient" 등 주문 실패 이유가 UI 라이브 로그에 표시
+ - **최신 OpenTime 조회 타임아웃**: `GetLatestSyncedOpenTimeAcrossTablesAsync` 4개 MAX 쿼리에 `WITH (NOLOCK)` 추가 + `commandTimeout` 30→5초 단축
+
 ## [5.10.14] - 2026-04-17
 
 ### Fixed
