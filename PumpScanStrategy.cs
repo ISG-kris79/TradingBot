@@ -260,18 +260,12 @@ namespace TradingBot.Strategies
                 decimal recentLow = recent12.Min(k => k.LowPrice);
                 double bounceFromLowPct = recentLow > 0 ? (double)((currentPrice - recentLow) / recentLow * 100) : 0;
 
-                // [v5.10.4] 연속 양봉 과열 감지 — 1시간 랠리 꼭대기 진입 방지 (BIO 케이스)
-                // 5분봉 9개 연속 양봉 ≈ 15분봉 3개 연속 양봉 ≈ 45분 연속 상승 → 과열
-                // FALLBACK_ENTRY 차단, MEGA_PUMP RSI 기준 강화
-                int consecutiveBullish5m = 0;
-                for (int ci = list.Count - 1; ci >= 0 && ci >= list.Count - 20; ci--)
-                {
-                    if (list[ci].ClosePrice > list[ci].OpenPrice) consecutiveBullish5m++;
-                    else break;
-                }
-                bool isOverextended = consecutiveBullish5m >= 9; // 45분+ 연속 상승
+                // [v5.10.5] 과열 감지 — 최근 12봉 중 10개(83%+) 양봉 = 1시간 랠리 과열
+                // BIO 케이스: 15분봉 4연속 양봉 → 5분봉 12개 중 대부분 양봉 → 꼭대기 진입 방지
+                int bullCount12 = list.TakeLast(12).Count(c => c.ClosePrice > c.OpenPrice);
+                bool isOverextended = bullCount12 >= 10; // 83%+ 양봉
                 if (isOverextended)
-                    PumpSignalLog("OVEREXTENDED", $"sym={symbol} consecutive5mBull={consecutiveBullish5m} → FALLBACK 차단");
+                    PumpSignalLog("OVEREXTENDED", $"sym={symbol} bullRatio={bullCount12}/12 → FALLBACK/MEGA_PUMP 차단");
 
                 // ═══════════════════════════════════════════════════════════
                 // [v4.1.1] AI 전용 진입 판단 — 하드코딩 조건 전부 제거
@@ -304,20 +298,28 @@ namespace TradingBot.Strategies
                         ? (float)(candleRange / latestCandle.OpenPrice * 100) : 0f;
                     bool isBullish = latestCandle.ClosePrice > latestCandle.OpenPrice;
 
-                    // [v5.10.4] 과열 시 RSI 기준 강화: 45분+ 랠리 꼭대기 MEGA_PUMP 차단
+                    // [v5.10.5] MEGA_PUMP: 하락추세 차단 + 과열 RSI 강화
+                    // 기존: isUptrend 체크 없음 → 하락추세 중 단봉 거래량 폭발에도 즉시 진입
+                    // 수정: isUptrend 필수 + 과열 시 RSI 80→70
                     float megaPumpRsiCap = isOverextended ? 70f : 80f;
-                    if (volumeMomentum >= 5.0 && rangePctNow >= 3.0f && isBullish && rsi < megaPumpRsiCap)
+                    if (isUptrend && volumeMomentum >= 5.0 && rangePctNow >= 3.0f && isBullish && rsi < megaPumpRsiCap)
                     {
                         decision = "LONG";
                         PumpSignalLog("MEGA_PUMP", $"sym={symbol} vol={volumeMomentum:F1}x range={rangePctNow:F1}% rsi={rsi:F0} overext={isOverextended} → 즉시 진입");
                     }
+                    else if (!isUptrend && volumeMomentum >= 5.0 && rangePctNow >= 3.0f && isBullish)
+                    {
+                        PumpSignalLog("MEGA_PUMP_SKIP", $"sym={symbol} 하락추세 차단 vol={volumeMomentum:F1}x range={rangePctNow:F1}%");
+                    }
                 }
 
-                // AI가 진입 승인 (65%+ 확신) → LONG
-                if (decision == "WAIT" && mlSignal && mlProb >= 0.65f)
+                // AI가 진입 승인 → 하락추세면 임계값 강화 (65% → 78%)
+                // 하락추세 중 65% 신뢰도는 불충분 — 상승추세일 때만 완화
+                float aiEntryThreshold = isUptrend ? 0.65f : 0.78f; // [v5.10.5]
+                if (decision == "WAIT" && mlSignal && mlProb >= aiEntryThreshold)
                 {
                     decision = "LONG";
-                    PumpSignalLog("AI_ENTRY", $"sym={symbol} prob={mlProb:P0} rsi={rsi:F0} vol={volumeMomentum:F2}");
+                    PumpSignalLog("AI_ENTRY", $"sym={symbol} prob={mlProb:P0} rsi={rsi:F0} vol={volumeMomentum:F2} uptrend={isUptrend} threshold={aiEntryThreshold:P0}");
                 }
                 // ML 모델 미로드 시 기본 조건
                 else if (decision == "WAIT" && !(_pumpML?.IsModelLoaded ?? false))
