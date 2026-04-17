@@ -332,9 +332,13 @@ namespace TradingBot
                 {
                     // DB에서 로드한 설정으로 UI 업데이트
                     txtDefaultMargin.Text = dbSettings.DefaultMargin.ToString("F4");
+                    chkEnableMajorTrading.IsChecked = dbSettings.EnableMajorTrading;
                     txtMajorMarginPercent.Text = dbSettings.MajorMarginPercent.ToString("F1");
                     txtPumpMargin.Text = dbSettings.PumpMargin.ToString("F0");
                     txtLeverage.Text = dbSettings.DefaultLeverage.ToString();
+                    txtMaxMajorSlots.Text = dbSettings.MaxMajorSlots.ToString();
+                    txtMaxPumpSlots.Text = dbSettings.MaxPumpSlots.ToString();
+                    txtMaxDailyEntries.Text = (dbSettings.MaxDailyEntries > 0 ? dbSettings.MaxDailyEntries : 500).ToString();
                 // [v3.2.14 removed] txtTargetRoe.Text = dbSettings.TargetRoe.ToString("F4");
                 // [v3.2.14 removed] txtStopLossRoe.Text = dbSettings.StopLossRoe.ToString("F4");
                 // [v3.2.14 removed] txtPumpTp1Roe.Text = dbSettings.PumpTp1Roe.ToString("F4");
@@ -408,9 +412,13 @@ namespace TradingBot
                         if (generalNode != null)
                         {
                             txtDefaultMargin.Text = generalNode["DefaultMargin"]?.ToString() ?? "200.0";
+                            chkEnableMajorTrading.IsChecked = !bool.TryParse(generalNode["EnableMajorTrading"]?.ToString(), out bool enableMaj) || enableMaj;
                             txtMajorMarginPercent.Text = generalNode["MajorMarginPercent"]?.ToString() ?? "10.0";
                             txtPumpMargin.Text = generalNode["PumpMargin"]?.ToString() ?? "200";
                             txtLeverage.Text = generalNode["DefaultLeverage"]?.ToString() ?? "10";
+                            txtMaxMajorSlots.Text = generalNode["MaxMajorSlots"]?.ToString() ?? "4";
+                            txtMaxPumpSlots.Text = generalNode["MaxPumpSlots"]?.ToString() ?? "3";
+                            txtMaxDailyEntries.Text = generalNode["MaxDailyEntries"]?.ToString() ?? "500";
                 // [v3.2.14 removed] txtTargetRoe.Text = generalNode["TargetRoe"]?.ToString() ?? "20.0";
                 // [v3.2.14 removed] txtStopLossRoe.Text = generalNode["StopLossRoe"]?.ToString() ?? "15.0";
                 // [removed] SelectMajorTrendProfile(generalNode["MajorTrendProfile"]?.ToString());
@@ -770,6 +778,10 @@ namespace TradingBot
                     generalNode["DefaultMargin"] = defaultMargin;
                     generalSettings.DefaultMargin = defaultMargin;
                 }
+                // [v5.5.8] 메이저 코인 매매 ON/OFF
+                bool enableMajor = chkEnableMajorTrading?.IsChecked ?? true;
+                generalNode["EnableMajorTrading"] = enableMajor;
+                generalSettings.EnableMajorTrading = enableMajor;
                 // [v4.4.4] 메이저 증거금 %
                 if (decimal.TryParse(txtMajorMarginPercent?.Text ?? "10.0", out decimal majorPct))
                 {
@@ -781,6 +793,23 @@ namespace TradingBot
                 {
                     generalNode["PumpMargin"] = pumpMargin;
                     generalSettings.PumpMargin = pumpMargin;
+                }
+                // [v5.7.9] 메이저/PUMP 슬롯
+                if (int.TryParse(txtMaxMajorSlots?.Text ?? "4", out int majorSlots))
+                {
+                    generalSettings.MaxMajorSlots = Math.Clamp(majorSlots, 0, 10);
+                    generalNode["MaxMajorSlots"] = generalSettings.MaxMajorSlots;
+                }
+                if (int.TryParse(txtMaxPumpSlots?.Text ?? "3", out int pumpSlots))
+                {
+                    generalSettings.MaxPumpSlots = Math.Clamp(pumpSlots, 1, 10);
+                    generalNode["MaxPumpSlots"] = generalSettings.MaxPumpSlots;
+                }
+                // [v5.9.20] 하루 진입 횟수
+                if (int.TryParse(txtMaxDailyEntries?.Text ?? "500", out int maxDaily))
+                {
+                    generalSettings.MaxDailyEntries = Math.Clamp(maxDaily, 1, 10000);
+                    generalNode["MaxDailyEntries"] = generalSettings.MaxDailyEntries;
                 }
 
                 // TrailingStartRoe, TrailingDropRoe도 저장 (UI에 필드가 없으면 기본값 유지)

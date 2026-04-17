@@ -297,15 +297,27 @@ namespace TradingBot.Services
 
         public static bool AnalyzeElliottWave(List<IBinanceKline> candles)
         {
-            // Simplified Elliott Wave logic: Check for Higher Highs and Higher Lows in recent swing points
             if (candles.Count < 20) return false;
-            
-            // This is a placeholder for complex wave analysis.
-            // For now, we check if SMA 20 > SMA 50 as a trend proxy.
+
             double sma20 = CalculateSMA(candles, 20);
             double sma50 = CalculateSMA(candles, 50);
 
-            return sma20 > sma50;
+            // [v5.10.7] 3중 상승추세 확인 — SMA 단일 조건이 dead cat bounce를 상승추세로 오판하는 문제 수정
+            // 1. 골든크로스: SMA20 > SMA50
+            if (sma20 <= sma50) return false;
+
+            // 2. 현재가 SMA20 위에 있어야 함 (가격이 이미 SMA 아래로 내려온 경우 배제)
+            decimal currentPrice = candles[candles.Count - 1].ClosePrice;
+            if ((double)currentPrice < sma20 * 0.998) return false; // 0.2% 여유
+
+            // 3. SMA20 기울기 상승 (5봉 전 SMA20보다 현재 SMA20이 높아야 함 — 하락 중인 SMA 배제)
+            if (candles.Count >= 25)
+            {
+                double sma20Prior5 = CalculateSMA(candles.Take(candles.Count - 5).ToList(), 20);
+                if (sma20 < sma20Prior5 * 0.9998) return false; // SMA20이 0.02% 이상 하락 중이면 배제
+            }
+
+            return true;
         }
 
         // [추가] 백테스트용: 시리즈를 반환하는 헬퍼 메서드들
