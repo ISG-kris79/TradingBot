@@ -9139,6 +9139,7 @@ namespace TradingBot
                 decimal priceDrift = Math.Abs((nowTicker.LastPrice - currentPrice) / currentPrice * 100m);
                 if (priceDrift >= 1.5m)
                 {
+                    OnStatusLog?.Invoke($"⛔ [신호만료] {symbol} {decision} | 신호가 ${currentPrice:F4} → 현재 ${nowTicker.LastPrice:F4} ({priceDrift:F1}% 변동) → 재신호 대기");
                     EntryLog("STALE", "BLOCK", $"signalPrice={currentPrice} nowPrice={nowTicker.LastPrice} drift={priceDrift:F1}% ≥1.5% → 신호 만료");
                     return;
                 }
@@ -9297,6 +9298,7 @@ namespace TradingBot
 
             if (latestCandle == null)
             {
+                OnStatusLog?.Invoke($"⛔ [데이터] {symbol} 캔들 데이터 없음 → 진입 차단 (DB 수집 대기)");
                 EntryLog("DATA", "BLOCK", "latestCandle=missing");
                 return;
             }
@@ -9660,6 +9662,7 @@ namespace TradingBot
                 // [v3.2.47] AI Gate 차단 — 우회 없음 (AI 단독 판단 원칙)
                 if (!gateResult.allowEntry)
                 {
+                    OnStatusLog?.Invoke($"⛔ [AI Gate] {symbol} {decision} 차단 | blended={blendedMlTfScore:P0} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.TF_Confidence:P0} | {gateResult.reason}");
                     EntryLog("AI_GATE", "BLOCK",
                         $"blended={blendedMlTfScore:P0} gate={gateResult.reason}");
                     return;
@@ -10301,6 +10304,7 @@ namespace TradingBot
                 // 1. VWAP 아래 → LONG 차단 (가격이 VWAP 아래면 매도 우위)
                 if (ctx.LatestCandle.VWAP > 0 && ctx.LatestCandle.Price_VWAP_Distance_Pct < -0.3f)
                 {
+                    OnStatusLog?.Invoke($"⛔ [Major필터] {ctx.Symbol} LONG 차단 | VWAP 아래 ({ctx.LatestCandle.Price_VWAP_Distance_Pct:F2}%)");
                     EntryLog("LONG_FILTER", "BLOCK", $"belowVWAP dist={ctx.LatestCandle.Price_VWAP_Distance_Pct:F2}% (VWAP -0.3%↓에서 롱 금지)");
                     return;
                 }
@@ -10308,6 +10312,7 @@ namespace TradingBot
                 // 2. EMA 역배열(9<21<50) → LONG 차단 (강한 SHORT 추세)
                 if (ctx.LatestCandle.EMA_Cross_State <= -1f)
                 {
+                    OnStatusLog?.Invoke($"⛔ [Major필터] {ctx.Symbol} LONG 차단 | EMA 역배열 하락추세");
                     EntryLog("LONG_FILTER", "BLOCK", "emaDowntrend EMA9<21<50 (강한 하락추세 롱 금지)");
                     return;
                 }
@@ -10315,6 +10320,7 @@ namespace TradingBot
                 // 3. StochRSI 데드크로스(K<D) + K>20 → LONG 차단 (단기 약세)
                 if (ctx.LatestCandle.StochRSI_Cross <= -1f && ctx.LatestCandle.StochRSI_K > 20f && ctx.LatestCandle.StochRSI_K > 0f)
                 {
+                    OnStatusLog?.Invoke($"⛔ [Major필터] {ctx.Symbol} LONG 차단 | StochRSI 데드크로스 K={ctx.LatestCandle.StochRSI_K:F1}");
                     EntryLog("LONG_FILTER", "BLOCK", $"stochRsiBearish K={ctx.LatestCandle.StochRSI_K:F1}<D={ctx.LatestCandle.StochRSI_D:F1} (단기 약세 롱 금지)");
                     return;
                 }
@@ -10950,6 +10956,7 @@ namespace TradingBot
                         }
                         else
                         {
+                            OnStatusLog?.Invoke($"⛔ [중복차단] {symbol} 이미 포지션 진행 중 → 진입 스킵");
                             EntryLog("POSITION", "SKIP", "activePosition=exists");
                             return;
                         }

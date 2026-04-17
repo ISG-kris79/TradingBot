@@ -5,6 +5,21 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.22] - 2026-04-17
+
+### Fixed
+
+ - **진입 차단 이유 UI 미표시 수정**: "주문 요청 중" 이후 아무것도 안 뜨는 문제 해소
+   - AI Gate BLOCK → `⛔ [AI Gate] 차단 | blended/ml/tf 스코어 + reason` 추가
+   - 신호 만료(가격 1.5% 이상 변동) → `⛔ [신호만료]` 추가
+   - 캔들 데이터 없음 → `⛔ [데이터]` 추가
+   - Major 보조지표 필터(VWAP/EMA/StochRSI) → `⛔ [Major필터]` 추가
+   - 중복 포지션 내부 차단 → `⛔ [중복차단]` 추가
+ - **OpenTime 시작 시 커넥션 풀 고갈 근본 수정**: `_openTimeDbSlot` SemaphoreSlim(5) 추가
+   - 수십 심볼 동시 DB 조회 → 풀 소진 → 5초 타임아웃 → null → 전체 동기화 폭발 연쇄 차단
+   - 세마포어(5슬롯)로 순서 처리, 슬롯 획득 후 재캐시 체크 (대기 중 중복 쿼리 방지)
+   - 타임아웃: 연결 30초(슬롯 대기) + 쿼리 10초 (기존 5초에서 상향)
+
 ## [5.10.21] - 2026-04-17
 
 ### Fixed

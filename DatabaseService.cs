@@ -31,6 +31,9 @@ namespace TradingBot.Services
         private static readonly ConcurrentDictionary<string, DateTime> _openTimeCache
             = new(StringComparer.OrdinalIgnoreCase);
 
+        // [v5.10.22] 시작 시 동시 DB 조회 제한 — 수십 심볼 동시 쿼리 → 커넥션 풀 고갈 방지
+        private static readonly SemaphoreSlim _openTimeDbSlot = new SemaphoreSlim(5, 5);
+
         public DatabaseService(Action<string>? logger = null)
         {
             _logger = logger;
@@ -162,12 +165,23 @@ SELECT CASE WHEN EXISTS (
             if (_openTimeCache.TryGetValue(cacheKey, out var cached))
                 return cached;
 
-            // 재시작 최초 1회만 DB 조회 (짧은 타임아웃 — 실패해도 null 반환으로 전체 동기화 수행)
-            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5));
+            // [v5.10.22] 세마포어(5슬롯)로 동시 DB 조회 제한 — 시작 시 풀 고갈 방지
+            // 슬롯 획득 대기 최대 30초 (5슬롯×순번 처리), 쿼리 자체는 10초 타임아웃
+            bool acquired = await _openTimeDbSlot.WaitAsync(TimeSpan.FromSeconds(30));
+            if (!acquired)
+            {
+                // 30초 대기에도 슬롯 없음 → 매우 드문 케이스, null 반환
+                Log($"⚠️ [DB] OpenTime 슬롯 대기 초과 ({symbol}) → null (전체 동기화 수행)");
+                return null;
+            }
             try
             {
+                // 슬롯 획득 후 다시 캐시 체크 (대기 중 다른 스레드가 채웠을 수 있음)
+                if (_openTimeCache.TryGetValue(cacheKey, out var cachedAfterWait))
+                    return cachedAfterWait;
+
                 using var conn = new SqlConnection(_connStr);
-                await conn.OpenAsync(cts.Token);
+                await conn.OpenAsync();
                 var row = await conn.QuerySingleOrDefaultAsync<(DateTime? mc, DateTime? cd, DateTime? ch, DateTime? md)>(
                     @"SELECT
                         (SELECT MAX(OpenTime) FROM MarketCandles WITH (NOLOCK) WHERE Symbol = @Symbol) AS mc,
@@ -175,25 +189,24 @@ SELECT CASE WHEN EXISTS (
                         (SELECT MAX(OpenTime) FROM CandleHistory WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval) AS ch,
                         (SELECT MAX(OpenTime) FROM MarketData WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval) AS md",
                     new { Symbol = symbol, Interval = interval },
-                    commandTimeout: 5);
+                    commandTimeout: 10);
 
                 var candidates = new[] { row.mc, row.cd, row.ch, row.md }
                     .Where(v => v.HasValue).Select(v => v!.Value).ToList();
 
                 DateTime? result = candidates.Count > 0 ? candidates.Min() : null;
                 if (result.HasValue)
-                    _openTimeCache.TryAdd(cacheKey, result.Value); // 캐시 저장 (이후 DB 조회 없음)
+                    _openTimeCache.TryAdd(cacheKey, result.Value);
                 return result;
-            }
-            catch (OperationCanceledException)
-            {
-                Log($"⚠️ [DB] OpenTime 조회 취소 ({symbol}): 연결 대기 초과 → null 반환 (전체 동기화 수행)");
-                return null;
             }
             catch (Exception ex)
             {
-                Log($"⚠️ [DB] OpenTime 조회 실패 ({symbol}): {ex.Message} → null 반환 (전체 동기화 수행)");
+                Log($"⚠️ [DB] OpenTime 조회 실패 ({symbol}): {ex.Message}");
                 return null;
+            }
+            finally
+            {
+                _openTimeDbSlot.Release();
             }
         }
 
