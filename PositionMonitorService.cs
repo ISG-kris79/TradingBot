@@ -2973,6 +2973,16 @@ namespace TradingBot.Services
                             ? $"📝 {symbol} 거래소상 이미 종료된 포지션을 TradeHistory에 보정 반영했습니다."
                             : $"⚠️ {symbol} 거래소상 이미 종료된 포지션이었지만 TradeHistory 보정 반영에 실패했습니다.");
 
+                        // [v5.10.6] 이미 청산 경로에서도 텔레그램 전송 — 기존 누락 버그 수정
+                        // API SL/TP가 먼저 체결되어 ExecuteMarketClose가 "already closed" 경로를 타면
+                        // SaveCloseTradeToDbAsync를 거치지 않아 NotifyProfitAsync가 호출되지 않았음
+                        try
+                        {
+                            decimal totalPnlForNotify = _riskManager?.DailyRealizedPnl ?? 0m;
+                            _ = NotificationService.Instance.NotifyProfitAsync(symbol, fallbackPnl, fallbackPnlPercent, totalPnlForNotify);
+                        }
+                        catch { /* 알림 실패가 청산 처리를 막지 않도록 */ }
+
                         decimal fallbackPriceMovePct = 0m;
                         if (localTrackedPosition.EntryPrice > 0m)
                         {
