@@ -5,6 +5,16 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.23] - 2026-04-17
+
+### Fixed
+
+ - **활성 포지션 잠깐 떴다가 사라지는 현상 수정** (`PositionSyncService`):
+   - 진입 직후 10초 폴링이 거래소 API 미반영 상태를 청산으로 오판하는 버그
+   - 방어막 ①: grace period — 진입 후 45초 이내는 폴링 스킵
+   - 방어막 ②: 연속 2회 미확인이어야 청산 처리 (총 최소 65초 보호)
+   - 포지션 재확인 시 `_closedRetryCount` 리셋으로 일시적 API 지연에 강건
+
 ## [5.10.22] - 2026-04-17
 
 ### Fixed

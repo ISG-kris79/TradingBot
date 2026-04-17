@@ -134,7 +134,25 @@ namespace TradingBot.Services
 
             foreach (var (sym, pos) in localSnap)
             {
-                if (exchSet.Contains(sym)) continue; // 여전히 열려 있음
+                if (exchSet.Contains(sym))
+                {
+                    // 포지션 확인됨 → 미확인 카운터 리셋
+                    _closedRetryCount.TryRemove(sym, out _);
+                    continue;
+                }
+
+                // [v5.10.22] 오판 방지 ① grace period: 진입 후 45초 이내 → 거래소 미반영 가능
+                if (pos.EntryTime != default && (DateTime.Now - pos.EntryTime).TotalSeconds < 45)
+                    continue;
+
+                // [v5.10.22] 오판 방지 ② 연속 2회 미확인이어야 청산 처리 (10초 폴링 × 2 = 20초 추가 대기)
+                int missCount = _closedRetryCount.AddOrUpdate(sym, 1, (_, c) => c + 1);
+                if (missCount < 2)
+                {
+                    OnLog?.Invoke($"⚠️ [PositionSync] {sym} 거래소 미확인 {missCount}/2 → 재확인 대기");
+                    continue;
+                }
+                _closedRetryCount.TryRemove(sym, out _);
 
                 // 3. 거래소에서 사라짐 → 청산 감지
                 await HandlePositionClosedAsync(sym, pos, ct).ConfigureAwait(false);
