@@ -260,6 +260,19 @@ namespace TradingBot.Strategies
                 decimal recentLow = recent12.Min(k => k.LowPrice);
                 double bounceFromLowPct = recentLow > 0 ? (double)((currentPrice - recentLow) / recentLow * 100) : 0;
 
+                // [v5.10.4] 연속 양봉 과열 감지 — 1시간 랠리 꼭대기 진입 방지 (BIO 케이스)
+                // 5분봉 9개 연속 양봉 ≈ 15분봉 3개 연속 양봉 ≈ 45분 연속 상승 → 과열
+                // FALLBACK_ENTRY 차단, MEGA_PUMP RSI 기준 강화
+                int consecutiveBullish5m = 0;
+                for (int ci = list.Count - 1; ci >= 0 && ci >= list.Count - 20; ci--)
+                {
+                    if (list[ci].ClosePrice > list[ci].OpenPrice) consecutiveBullish5m++;
+                    else break;
+                }
+                bool isOverextended = consecutiveBullish5m >= 9; // 45분+ 연속 상승
+                if (isOverextended)
+                    PumpSignalLog("OVEREXTENDED", $"sym={symbol} consecutive5mBull={consecutiveBullish5m} → FALLBACK 차단");
+
                 // ═══════════════════════════════════════════════════════════
                 // [v4.1.1] AI 전용 진입 판단 — 하드코딩 조건 전부 제거
                 // PumpSignalClassifier ML 모델이 직접 "진입할까?" 판단
@@ -291,10 +304,12 @@ namespace TradingBot.Strategies
                         ? (float)(candleRange / latestCandle.OpenPrice * 100) : 0f;
                     bool isBullish = latestCandle.ClosePrice > latestCandle.OpenPrice;
 
-                    if (volumeMomentum >= 5.0 && rangePctNow >= 3.0f && isBullish && rsi < 80)
+                    // [v5.10.4] 과열 시 RSI 기준 강화: 45분+ 랠리 꼭대기 MEGA_PUMP 차단
+                    float megaPumpRsiCap = isOverextended ? 70f : 80f;
+                    if (volumeMomentum >= 5.0 && rangePctNow >= 3.0f && isBullish && rsi < megaPumpRsiCap)
                     {
                         decision = "LONG";
-                        PumpSignalLog("MEGA_PUMP", $"sym={symbol} vol={volumeMomentum:F1}x range={rangePctNow:F1}% rsi={rsi:F0} → 즉시 진입");
+                        PumpSignalLog("MEGA_PUMP", $"sym={symbol} vol={volumeMomentum:F1}x range={rangePctNow:F1}% rsi={rsi:F0} overext={isOverextended} → 즉시 진입");
                     }
                 }
 
@@ -307,8 +322,9 @@ namespace TradingBot.Strategies
                 // ML 모델 미로드 시 기본 조건
                 else if (decision == "WAIT" && !(_pumpML?.IsModelLoaded ?? false))
                 {
-                    bool hasMomentum = priceRecoveryPct >= 1.5 || bounceFromLowPct >= 3.0;
-                    bool hasStructure = isUptrend && isMakingHigherLows && currentPrice > (decimal)sma20;
+                    // [v5.10.4] 과열 구간에선 FALLBACK 차단 + 반등 임계값 강화 (1.5% → 2.5%)
+                    bool hasMomentum = priceRecoveryPct >= 2.5 || bounceFromLowPct >= 3.0;
+                    bool hasStructure = isUptrend && isMakingHigherLows && currentPrice > (decimal)sma20 && !isOverextended;
                     if (hasMomentum && hasStructure && rsi >= 40 && rsi <= 70 && volumeMomentum >= 1.1)
                     {
                         decision = "LONG";

@@ -2004,7 +2004,7 @@ namespace TradingBot.Services
                 // - RSI < 40 → RSI < 30 (과매도 깊이 확인)
                 // - 진입 후 2분 → 5분 (최소 관찰 시간 늘림)
                 // - 추가: ROE -30% 이하면 기존 조건 (3연속+RSI40+ROE-10) 유지 (큰 손실 방지)
-                if (isPumpPosition && !firstTpDone && currentROE < 0 && (DateTime.Now - startTime).TotalMinutes >= 5)
+                if (isPumpPosition && !firstTpDone && currentROE < 0 && (DateTime.Now - startTime).TotalMinutes >= 10) // [v5.10.4] 5분→10분: 초반 눌림 허용
                 {
                     try
                     {
@@ -2491,18 +2491,19 @@ namespace TradingBot.Services
                     else if (!isLongPosition && lowestPrice > 0)
                         dropFromPeak = (currentPrice - lowestPrice) / lowestPrice * 100;
 
-                    // 초기 손절: 진입가 대비 -3% (20x = ROE -60%)
-                    if (dropFromEntry >= 3.0m && !isBreakEvenTriggered)
+                    // [v5.10.4] 초기 손절: 진입가 대비 -3%→-4% (20x = ROE -60%→-80%)
+                    // 알트/밈코인 정상 변동폭 3~5% — 너무 타이트하면 정상 눌림에서 손절
+                    if (dropFromEntry >= 4.0m && !isBreakEvenTriggered)
                     {
-                        OnLog?.Invoke($"[청산 트리거] {symbol} 실가격 손절 | 진입가 대비 -{dropFromEntry:F2}% (>= 3%)");
+                        OnLog?.Invoke($"[청산 트리거] {symbol} 실가격 손절 | 진입가 대비 -{dropFromEntry:F2}% (>= 4%)");
                         await ExecuteMarketClose(symbol, $"실가격 손절 (진입가 대비 -{dropFromEntry:F1}%)", token);
                         break;
                     }
 
-                    // 최고가 대비 -5% 하락 (고점 찍고 내려올 때)
-                    if (highestPrice > entryPrice && dropFromPeak >= 5.0m)
+                    // [v5.10.4] 최고가 대비 -5%→-7% 하락 (고점 찍고 내려올 때, 변동성 여유 확보)
+                    if (highestPrice > entryPrice && dropFromPeak >= 7.0m)
                     {
-                        OnLog?.Invoke($"[청산 트리거] {symbol} 고점 대비 -{dropFromPeak:F2}% 하락 (>= 5%) | 고점={highestPrice:F6}");
+                        OnLog?.Invoke($"[청산 트리거] {symbol} 고점 대비 -{dropFromPeak:F2}% 하락 (>= 7%) | 고점={highestPrice:F6}");
                         await ExecuteMarketClose(symbol, $"고점 대비 -{dropFromPeak:F1}% 하락 (고점 {highestPrice:F6})", token);
                         break;
                     }
