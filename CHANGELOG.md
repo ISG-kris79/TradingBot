@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.14] - 2026-04-17
+
+### Fixed
+
+ - **DB 커넥션 풀 고갈 (캔들/마켓데이터)**: `SaveCandleDataBulkAsync`, `SaveCandleHistoryBulkAsync`, `SaveMarketDataBulkAsync`, `BulkInsertMarketDataAsync` — SemaphoreSlim(20) 추가로 동시 벌크 DB 작업 최대 20개로 제한
+ - **Max Pool Size=200**: `AppConfig.ConnectionString`에 자동 추가 — 기본 풀 100에서 200으로 확장
+ - "풀에서 연결을 만들기 전에 제한 시간 경과" / "Bulk Insert 실패: 실행 제한 시간 초과" 오류 해소
+
 ## [5.10.13] - 2026-04-17
 
 ### Fixed

@@ -16,9 +16,13 @@ namespace TradingBot.Services
         // DatabaseService.cs 내부
         private string _connStr => TradingBot.AppConfig.ConnectionString; // 지연 평가로 변경
         private readonly string _trainingDataPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Data", "TradingModel.csv");
-        private readonly Action<string>? _logger; // 로그 대행자       
+        private readonly Action<string>? _logger; // 로그 대행자
         private const int QueryTimeout = 30; // 기본 쿼리 타임아웃 (30초)
         private bool _footerLogColumnExpanded; // [v5.2.2] FooterLogs Message 컬럼 확장 완료 플래그
+
+        // [v5.10.14] 벌크 DB 동시 작업 제한 — 다수 심볼 동시 저장 시 커넥션 풀 고갈 방지
+        // 최대 20개 동시 실행 (풀 200 중 벌크용 20 예약, 나머지는 읽기/쓰기용)
+        private static readonly SemaphoreSlim _bulkDbSemaphore = new(20, 20);
 
         public DatabaseService(Action<string>? logger = null)
         {
@@ -189,6 +193,16 @@ SELECT CASE WHEN EXISTS (
         // - Dapper가 payload를 배치로 전송 (1 트립 × N row)
         public async Task SaveCandlesAsync(string symbol, IEnumerable<IBinanceKline> klines)
         {
+            await _bulkDbSemaphore.WaitAsync();
+            try
+            {
+            await SaveCandlesInternalAsync(symbol, klines);
+            }
+            finally { _bulkDbSemaphore.Release(); }
+        }
+
+        private async Task SaveCandlesInternalAsync(string symbol, IEnumerable<IBinanceKline> klines)
+        {
             using var conn = new SqlConnection(_connStr);
             var payload = klines.Select(k => new
             {
@@ -237,6 +251,9 @@ SELECT CASE WHEN EXISTS (
             var list = data as IList<CandleData> ?? data.ToList();
             if (list.Count == 0) return;
 
+            await _bulkDbSemaphore.WaitAsync();
+            try
+            {
             // [v4.7.3] 소량(< 50)은 기존 경로, 대량은 SqlBulkCopy + MERGE로 1000배 빠르게
             if (list.Count < 50)
             {
@@ -351,13 +368,15 @@ SELECT CASE WHEN EXISTS (
                 if (inserted > 0) Log($"✅ [DB] {inserted}건 벌크 저장 완료 (CandleData, {list.Count}건 중)");
             }
             catch (Exception ex) { Log($"❌ [DB] CandleData 벌크 저장 실패: {ex.Message}"); }
+            } // end outer try
+            finally { _bulkDbSemaphore.Release(); }
         }
 
         // CandleHistory 테이블 대량 저장
         public async Task SaveCandleHistoryBulkAsync(IEnumerable<CandleData> data)
         {
             if (!data.Any()) return;
-
+            await _bulkDbSemaphore.WaitAsync();
             try
             {
                 using var conn = new SqlConnection(_connStr);
@@ -370,13 +389,14 @@ SELECT CASE WHEN EXISTS (
                 if (affected > 0) Log($"✅ [DB] {affected}건 저장 완료 (CandleHistory)");
             }
             catch (Exception ex) { Log($"❌ [DB] CandleHistory 저장 실패: {ex.Message}"); }
+            finally { _bulkDbSemaphore.Release(); }
         }
 
         // MarketData 테이블 대량 저장
         public async Task SaveMarketDataBulkAsync(IEnumerable<CandleData> data)
         {
             if (!data.Any()) return;
-
+            await _bulkDbSemaphore.WaitAsync();
             try
             {
                 using var conn = new SqlConnection(_connStr);
@@ -391,6 +411,7 @@ SELECT CASE WHEN EXISTS (
                 if (affected > 0) Log($"✅ [DB] {affected}건 저장 완료 (MarketData)");
             }
             catch (Exception ex) { Log($"❌ [DB] MarketData 저장 실패: {ex.Message}"); }
+            finally { _bulkDbSemaphore.Release(); }
         }
 
 
@@ -495,6 +516,7 @@ SELECT CASE WHEN EXISTS (
         public async Task BulkInsertMarketDataAsync(IEnumerable<CandleData> data)
         {
             if (data == null || !data.Any()) return;
+            await _bulkDbSemaphore.WaitAsync();
 
             // DataTable 생성 (SqlBulkCopy용)
             var dt = new DataTable();
@@ -560,6 +582,7 @@ SELECT CASE WHEN EXISTS (
 
             try { await bulkCopy.WriteToServerAsync(dt); Log($"✅ [DB] {data.Count()}건 지표 데이터 저장 완료 (MarketCandles)"); }
             catch (Exception ex) { Log($"❌ [DB] Bulk Insert 실패: {ex.Message}"); }
+            finally { _bulkDbSemaphore.Release(); }
         }
 
         public async Task<bool> RegisterUserAsync(User user)

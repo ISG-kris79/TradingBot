@@ -16,7 +16,18 @@ namespace TradingBot
         public static string BinanceApiSecret => Current?.Binance?.ApiSecret ?? string.Empty;
         public static string TelegramBotToken => Current?.Telegram?.BotToken ?? string.Empty;
         public static string TelegramChatId => Current?.Telegram?.ChatId ?? string.Empty;
-        public static string ConnectionString => Current?.ConnectionStrings?.DefaultConnection ?? string.Empty;
+        public static string ConnectionString
+        {
+            get
+            {
+                var cs = Current?.ConnectionStrings?.DefaultConnection ?? string.Empty;
+                if (string.IsNullOrEmpty(cs)) return cs;
+                // [v5.10.14] 커넥션 풀 기본 100 → 200으로 자동 확장 (다수 심볼 동시 저장 시 풀 고갈 방지)
+                if (!cs.Contains("Max Pool Size", StringComparison.OrdinalIgnoreCase))
+                    cs += ";Max Pool Size=200";
+                return cs;
+            }
+        }
         public static string CryptoPanicApiKey => Current?.ExternalApi?.CryptoPanicApiKey ?? string.Empty;
 
         public static string CurrentUsername { get; private set; } = string.Empty;
