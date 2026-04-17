@@ -62,255 +62,8 @@ namespace TradingBot
             this.Close();
         }
 
-        private async void btnRunBacktest3Y_Click(object sender, RoutedEventArgs e)
-        {
-            // Shift 누르면 워크포워드 최적화 모드, 일반 클릭은 기본 백테스트
-            bool optimizeMode = System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.LeftShift)
-                             || System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.RightShift);
-
-            btnRunBacktest3Y.IsEnabled = false;
-            btnRunBacktest3Y.Content   = optimizeMode ? "최적화 중..." : "실행 중...";
-
-            var logLines = new System.Collections.Generic.List<string>();
-
-            try
-            {
-                var runner = new TradingBot.Services.ThreeYearBacktestRunner();
-                decimal balance = 2500m;
-
-                var report = await Task.Run(async () => optimizeMode
-                    ? await runner.RunOptimizedAsync(
-                        initialBalance: balance,
-                        years: 3,
-                        onLog: msg => { logLines.Add(msg); })
-                    : await runner.RunAsync(
-                        initialBalance: balance,
-                        years: 3,
-                        onLog: msg => { logLines.Add(msg); }));
-
-                string formatted = runner.FormatReport(report);
-                logLines.Add(formatted);
-
-                // 파일 저장
-                string path = runner.SaveReportToFile(report);
-                logLines.Add($"\n✅ 결과 파일 저장: {path}");
-
-                // 결과창 표시
-                var resultWin = new Window
-                {
-                    Title           = "3년 백테스트 결과",
-                    Width           = 820,
-                    Height          = 700,
-                    Background      = new System.Windows.Media.SolidColorBrush(
-                                          System.Windows.Media.Color.FromRgb(0x12,0x12,0x12)),
-                    WindowStartupLocation = WindowStartupLocation.CenterScreen,
-                    Owner           = this
-                };
-                var tb = new System.Windows.Controls.TextBox
-                {
-                    Text            = string.Join("\n", logLines),
-                    IsReadOnly      = true,
-                    FontFamily      = new System.Windows.Media.FontFamily("Consolas"),
-                    FontSize        = 11,
-                    Foreground      = System.Windows.Media.Brushes.White,
-                    Background      = System.Windows.Media.Brushes.Transparent,
-                    BorderThickness = new Thickness(0),
-                    AcceptsReturn   = true,
-                    TextWrapping    = System.Windows.TextWrapping.NoWrap,
-                    VerticalScrollBarVisibility   = System.Windows.Controls.ScrollBarVisibility.Auto,
-                    HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto
-                };
-                resultWin.Content = tb;
-                resultWin.Show();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"백테스트 실행 오류:\n{ex.Message}", "오류",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            finally
-            {
-                btnRunBacktest3Y.IsEnabled = true;
-                btnRunBacktest3Y.Content   = "3년 백테스트 (Shift=최적화)";
-            }
-        }
-
-        private async void btnRunAI_Click(object sender, RoutedEventArgs e)
-        {
-            btnRunAI.IsEnabled = false;
-            btnRunAI.Content = "AI 학습 중...";
-
-            var logLines = new System.Collections.Generic.List<string>();
-
-            try
-            {
-                var engine = new AIBacktestEngine();
-                var result = await Task.Run(async () =>
-                    await engine.RunAsync(
-                        initialBalance: 2500m, months: 36,
-                        onLog: msg => { logLines.Add(msg); }));
-
-                var resultWin = new Window
-                {
-                    Title = $"AI 학습 백테스트 3년 (승률 {result.WinRate:F0}% | 일 {result.AvgDailyPct:+0.0;-0.0}%)",
-                    Width = 900, Height = 750,
-                    Background = new System.Windows.Media.SolidColorBrush(
-                        System.Windows.Media.Color.FromRgb(0x12, 0x12, 0x12)),
-                    WindowStartupLocation = WindowStartupLocation.CenterScreen,
-                    Owner = this
-                };
-                var tb = new System.Windows.Controls.TextBox
-                {
-                    Text = string.Join("\n", logLines),
-                    IsReadOnly = true,
-                    FontFamily = new System.Windows.Media.FontFamily("Consolas"),
-                    FontSize = 11,
-                    Foreground = System.Windows.Media.Brushes.White,
-                    Background = System.Windows.Media.Brushes.Transparent,
-                    BorderThickness = new Thickness(0),
-                    AcceptsReturn = true,
-                    TextWrapping = System.Windows.TextWrapping.NoWrap,
-                    VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
-                    HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto
-                };
-                resultWin.Content = tb;
-                resultWin.Show();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"AI 백테스트 오류:\n{ex.Message}\n\n{ex.StackTrace}", "오류",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            finally
-            {
-                btnRunAI.IsEnabled = true;
-                btnRunAI.Content = "AI 학습";
-            }
-        }
-
-        private async void btnRunMtf_Click(object sender, RoutedEventArgs e)
-        {
-            // Shift 누르면 자동 최적화, 일반 클릭은 기본 실행
-            bool optimizeMode = System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.LeftShift)
-                             || System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.RightShift);
-
-            btnRunMtf.IsEnabled = false;
-            btnRunMtf.Content = optimizeMode ? "최적화 중..." : "실행 중...";
-
-            var logLines = new System.Collections.Generic.List<string>();
-
-            try
-            {
-                var tester = new MultiTimeframeBacktester();
-
-                var result = await Task.Run(async () => optimizeMode
-                    ? await tester.RunOptimizeAsync(
-                        initialBalance: 2500m, months: 6,
-                        onLog: msg => { logLines.Add(msg); })
-                    : await tester.RunAsync(
-                        initialBalance: 2500m, months: 6,
-                        onLog: msg => { logLines.Add(msg); }));
-
-                var resultWin = new Window
-                {
-                    Title = $"5분봉 백테스트 (일 {result.AvgDailyPct:+0.0;-0.0}% | 승률 {result.WinRate:F0}%)",
-                    Width = 900, Height = 750,
-                    Background = new System.Windows.Media.SolidColorBrush(
-                        System.Windows.Media.Color.FromRgb(0x12, 0x12, 0x12)),
-                    WindowStartupLocation = WindowStartupLocation.CenterScreen,
-                    Owner = this
-                };
-                var tb = new System.Windows.Controls.TextBox
-                {
-                    Text = string.Join("\n", logLines),
-                    IsReadOnly = true,
-                    FontFamily = new System.Windows.Media.FontFamily("Consolas"),
-                    FontSize = 11,
-                    Foreground = System.Windows.Media.Brushes.White,
-                    Background = System.Windows.Media.Brushes.Transparent,
-                    BorderThickness = new Thickness(0),
-                    AcceptsReturn = true,
-                    TextWrapping = System.Windows.TextWrapping.NoWrap,
-                    VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
-                    HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto
-                };
-                resultWin.Content = tb;
-                resultWin.Show();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"5분봉 백테스트 오류:\n{ex.Message}", "오류",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            finally
-            {
-                btnRunMtf.IsEnabled = true;
-                btnRunMtf.Content = "5분봉 최적화";
-            }
-        }
-
-        private async void btnRunWfo_Click(object sender, RoutedEventArgs e)
-        {
-            btnRunWfo.IsEnabled = false;
-            btnRunWfo.Content = "WFO 실행 중...";
-
-            var logLines = new System.Collections.Generic.List<string>();
-
-            try
-            {
-                var optimizer = new WalkForwardOptimizer(
-                    isMonths: 12, oosMonths: 4, stepMonths: 4,
-                    totalYears: 3, initialBalance: 2500m);
-
-                var report = await Task.Run(async () =>
-                    await optimizer.RunAsync(
-                        onLog: msg => { logLines.Add(msg); }));
-
-                string formatted = optimizer.FormatReport(report);
-                logLines.Add(formatted);
-
-                string path = optimizer.SaveReportToFile(report);
-                logLines.Add($"\n결과 파일 저장: {path}");
-
-                // 결과창 표시
-                var resultWin = new Window
-                {
-                    Title = $"워크포워드 최적화 결과 (OOS 승률: {report.OosWinRate:F1}%)",
-                    Width = 900,
-                    Height = 750,
-                    Background = new System.Windows.Media.SolidColorBrush(
-                        System.Windows.Media.Color.FromRgb(0x12, 0x12, 0x12)),
-                    WindowStartupLocation = WindowStartupLocation.CenterScreen,
-                    Owner = this
-                };
-                var tb = new System.Windows.Controls.TextBox
-                {
-                    Text = string.Join("\n", logLines),
-                    IsReadOnly = true,
-                    FontFamily = new System.Windows.Media.FontFamily("Consolas"),
-                    FontSize = 11,
-                    Foreground = System.Windows.Media.Brushes.White,
-                    Background = System.Windows.Media.Brushes.Transparent,
-                    BorderThickness = new Thickness(0),
-                    AcceptsReturn = true,
-                    TextWrapping = System.Windows.TextWrapping.NoWrap,
-                    VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
-                    HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto
-                };
-                resultWin.Content = tb;
-                resultWin.Show();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"워크포워드 최적화 실행 오류:\n{ex.Message}", "오류",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            finally
-            {
-                btnRunWfo.IsEnabled = true;
-                btnRunWfo.Content = "WFO 최적화";
-            }
-        }
+        // [v5.10.9] btnRunBacktest3Y_Click, btnRunAI_Click, btnRunMtf_Click, btnRunWfo_Click 제거 (설정창 단순화)
+        private void _Removed_BacktestHandlers() { }
 
         private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
@@ -333,7 +86,7 @@ namespace TradingBot
                     // DB에서 로드한 설정으로 UI 업데이트
                     txtDefaultMargin.Text = dbSettings.DefaultMargin.ToString("F4");
                     chkEnableMajorTrading.IsChecked = dbSettings.EnableMajorTrading;
-                    txtMajorMarginPercent.Text = dbSettings.MajorMarginPercent.ToString("F1");
+
                     txtPumpMargin.Text = dbSettings.PumpMargin.ToString("F0");
                     txtLeverage.Text = dbSettings.DefaultLeverage.ToString();
                     txtMaxMajorSlots.Text = dbSettings.MaxMajorSlots.ToString();
@@ -413,7 +166,7 @@ namespace TradingBot
                         {
                             txtDefaultMargin.Text = generalNode["DefaultMargin"]?.ToString() ?? "200.0";
                             chkEnableMajorTrading.IsChecked = !bool.TryParse(generalNode["EnableMajorTrading"]?.ToString(), out bool enableMaj) || enableMaj;
-                            txtMajorMarginPercent.Text = generalNode["MajorMarginPercent"]?.ToString() ?? "10.0";
+
                             txtPumpMargin.Text = generalNode["PumpMargin"]?.ToString() ?? "200";
                             txtLeverage.Text = generalNode["DefaultLeverage"]?.ToString() ?? "10";
                             txtMaxMajorSlots.Text = generalNode["MaxMajorSlots"]?.ToString() ?? "4";
@@ -487,48 +240,6 @@ namespace TradingBot
                             txtSymbols.Text = string.Join(",", arr.Where(x => x != null).Select(x => x!.ToString().Trim('"')));
                         }
 
-                        // [Agent 2] Grid Settings 로드
-                        var gridNode = tradingNode["GridStrategySettings"];
-                        if (gridNode != null)
-                        {
-                            txtGridLevels.Text = gridNode["GridLevels"]?.ToString() ?? "10";
-                            txtGridSpacing.Text = gridNode["GridSpacingPercentage"]?.ToString() ?? "0.5";
-                        }
-
-                        // [Agent 2] Arbitrage Settings 로드
-                        var arbNode = tradingNode["ArbitrageSettings"];
-                        if (arbNode != null)
-                        {
-                            bool autoHedge = arbNode["AutoHedge"]?.GetValue<bool>() ?? true;
-                            chkAutoHedge.IsChecked = autoHedge;
-                        }
-
-                        // Transformer Settings 로드
-                        var tfNode = tradingNode["TransformerSettings"];
-                        if (tfNode != null)
-                        {
-                            txtTfAdxPeriod.Text = tfNode["AdxPeriod"]?.ToString() ?? "14";
-                            txtTfAdxSidewaysThreshold.Text = tfNode["AdxSidewaysThreshold"]?.ToString() ?? "20.0";
-                            txtTfSidewaysRsiLongMax.Text = tfNode["SidewaysRsiLongMax"]?.ToString() ?? "35.0";
-                            txtTfSidewaysRsiShortMin.Text = tfNode["SidewaysRsiShortMin"]?.ToString() ?? "65.0";
-                            txtTfSidewaysVolumeRatioMax.Text = tfNode["SidewaysVolumeRatioMax"]?.ToString() ?? "1.5";
-                            txtTfSidewaysLongLowerTouch.Text = tfNode["SidewaysLongLowerBandTouchMultiplier"]?.ToString() ?? "1.001";
-                            txtTfSidewaysShortUpperTouch.Text = tfNode["SidewaysShortUpperBandTouchMultiplier"]?.ToString() ?? "0.999";
-                            txtTfSidewaysLongSlMul.Text = tfNode["SidewaysLongStopLossMultiplier"]?.ToString() ?? "0.9975";
-                            txtTfSidewaysShortSlMul.Text = tfNode["SidewaysShortStopLossMultiplier"]?.ToString() ?? "1.0025";
-                        }
-                        else
-                        {
-                            txtTfAdxPeriod.Text = "14";
-                            txtTfAdxSidewaysThreshold.Text = "20.0";
-                            txtTfSidewaysRsiLongMax.Text = "35.0";
-                            txtTfSidewaysRsiShortMin.Text = "65.0";
-                            txtTfSidewaysVolumeRatioMax.Text = "1.5";
-                            txtTfSidewaysLongLowerTouch.Text = "1.001";
-                            txtTfSidewaysShortUpperTouch.Text = "0.999";
-                            txtTfSidewaysLongSlMul.Text = "0.9975";
-                            txtTfSidewaysShortSlMul.Text = "1.0025";
-                        }
                     }
                 }
                 else
@@ -552,11 +263,6 @@ namespace TradingBot
                     return;
                 }
 
-                if (!ValidateTransformerInputs(out string validationError))
-                {
-                    MessageBox.Show(validationError, "입력값 오류", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
 
                 if (_rootNode == null) _rootNode = new JsonObject();
 
@@ -782,12 +488,7 @@ namespace TradingBot
                 bool enableMajor = chkEnableMajorTrading?.IsChecked ?? true;
                 generalNode["EnableMajorTrading"] = enableMajor;
                 generalSettings.EnableMajorTrading = enableMajor;
-                // [v4.4.4] 메이저 증거금 %
-                if (decimal.TryParse(txtMajorMarginPercent?.Text ?? "10.0", out decimal majorPct))
-                {
-                    generalNode["MajorMarginPercent"] = majorPct;
-                    generalSettings.MajorMarginPercent = majorPct;
-                }
+
                 // [v4.4.4] PUMP 증거금 $
                 if (decimal.TryParse(txtPumpMargin?.Text ?? "200", out decimal pumpMargin))
                 {
@@ -855,85 +556,6 @@ namespace TradingBot
                 foreach (var s in symbols) symbolsArray.Add(s);
                 tradingNode["Symbols"] = symbolsArray;
 
-                // [Agent 2] Grid Settings 저장
-                var gridNode = (tradingNode["GridStrategySettings"] as JsonObject) ?? new JsonObject();
-                tradingNode["GridStrategySettings"] = gridNode;
-
-                if (int.TryParse(txtGridLevels.Text, out int gridLevels))
-                    gridNode["GridLevels"] = gridLevels;
-                if (decimal.TryParse(txtGridSpacing.Text, out decimal gridSpacing))
-                    gridNode["GridSpacingPercentage"] = gridSpacing;
-
-                // [Agent 2] Arbitrage Settings 저장
-                var arbNode = (tradingNode["ArbitrageSettings"] as JsonObject) ?? new JsonObject();
-                tradingNode["ArbitrageSettings"] = arbNode;
-
-                arbNode["AutoHedge"] = chkAutoHedge.IsChecked == true;
-
-                // Transformer Settings 저장
-                var tfNode = (tradingNode["TransformerSettings"] as JsonObject) ?? new JsonObject();
-                tradingNode["TransformerSettings"] = tfNode;
-
-                var tfSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
-
-                if (int.TryParse(txtTfAdxPeriod.Text, out int adxPeriod))
-                {
-                    tfNode["AdxPeriod"] = adxPeriod;
-                    tfSettings.AdxPeriod = adxPeriod;
-                }
-
-                if (double.TryParse(txtTfAdxSidewaysThreshold.Text, out double adxSidewaysThreshold))
-                {
-                    tfNode["AdxSidewaysThreshold"] = adxSidewaysThreshold;
-                    tfSettings.AdxSidewaysThreshold = adxSidewaysThreshold;
-                }
-
-                if (double.TryParse(txtTfSidewaysRsiLongMax.Text, out double sidewaysRsiLongMax))
-                {
-                    tfNode["SidewaysRsiLongMax"] = sidewaysRsiLongMax;
-                    tfSettings.SidewaysRsiLongMax = sidewaysRsiLongMax;
-                }
-
-                if (double.TryParse(txtTfSidewaysRsiShortMin.Text, out double sidewaysRsiShortMin))
-                {
-                    tfNode["SidewaysRsiShortMin"] = sidewaysRsiShortMin;
-                    tfSettings.SidewaysRsiShortMin = sidewaysRsiShortMin;
-                }
-
-                if (double.TryParse(txtTfSidewaysVolumeRatioMax.Text, out double sidewaysVolumeRatioMax))
-                {
-                    tfNode["SidewaysVolumeRatioMax"] = sidewaysVolumeRatioMax;
-                    tfSettings.SidewaysVolumeRatioMax = sidewaysVolumeRatioMax;
-                }
-
-                if (decimal.TryParse(txtTfSidewaysLongLowerTouch.Text, out decimal longLowerTouch))
-                {
-                    tfNode["SidewaysLongLowerBandTouchMultiplier"] = longLowerTouch;
-                    tfSettings.SidewaysLongLowerBandTouchMultiplier = longLowerTouch;
-                }
-
-                if (decimal.TryParse(txtTfSidewaysShortUpperTouch.Text, out decimal shortUpperTouch))
-                {
-                    tfNode["SidewaysShortUpperBandTouchMultiplier"] = shortUpperTouch;
-                    tfSettings.SidewaysShortUpperBandTouchMultiplier = shortUpperTouch;
-                }
-
-                if (decimal.TryParse(txtTfSidewaysLongSlMul.Text, out decimal longSlMul))
-                {
-                    tfNode["SidewaysLongStopLossMultiplier"] = longSlMul;
-                    tfSettings.SidewaysLongStopLossMultiplier = longSlMul;
-                }
-
-                if (decimal.TryParse(txtTfSidewaysShortSlMul.Text, out decimal shortSlMul))
-                {
-                    tfNode["SidewaysShortStopLossMultiplier"] = shortSlMul;
-                    tfSettings.SidewaysShortStopLossMultiplier = shortSlMul;
-                }
-
-                if (AppConfig.Current?.Trading != null)
-                {
-                    AppConfig.Current.Trading.TransformerSettings = tfSettings;
-                }
 
                 // Telegram 메시지 타입 필터 저장
                 var telegramNode = (_rootNode["Telegram"] as JsonObject) ?? new JsonObject();
@@ -1010,47 +632,6 @@ namespace TradingBot
             this.Close();
         }
 
-        private bool ValidateTransformerInputs(out string errorMessage)
-        {
-            errorMessage = string.Empty;
-
-            if (!TryParseIntInRange(txtTfAdxPeriod, "ADX Period", 2, 100, out _, out errorMessage))
-                return false;
-
-            if (!TryParseDoubleInRange(txtTfAdxSidewaysThreshold, "ADX 횡보 임계값", 1.0, 80.0, out _, out errorMessage))
-                return false;
-
-            if (!TryParseDoubleInRange(txtTfSidewaysRsiLongMax, "횡보 LONG RSI 최대", 0.0, 100.0, out double longRsiMax, out errorMessage))
-                return false;
-
-            if (!TryParseDoubleInRange(txtTfSidewaysRsiShortMin, "횡보 SHORT RSI 최소", 0.0, 100.0, out double shortRsiMin, out errorMessage))
-                return false;
-
-            if (longRsiMax >= shortRsiMin)
-            {
-                txtTfSidewaysRsiLongMax.Focus();
-                txtTfSidewaysRsiLongMax.SelectAll();
-                errorMessage = "횡보 RSI 조건이 잘못되었습니다. LONG RSI 최대값은 SHORT RSI 최소값보다 작아야 합니다.";
-                return false;
-            }
-
-            if (!TryParseDoubleInRange(txtTfSidewaysVolumeRatioMax, "횡보 거래량비 최대", 0.1, 10.0, out _, out errorMessage))
-                return false;
-
-            if (!TryParseDecimalInRange(txtTfSidewaysLongLowerTouch, "LONG 하단 터치 배수", 0.9m, 1.1m, out _, out errorMessage))
-                return false;
-
-            if (!TryParseDecimalInRange(txtTfSidewaysShortUpperTouch, "SHORT 상단 터치 배수", 0.9m, 1.1m, out _, out errorMessage))
-                return false;
-
-            if (!TryParseDecimalInRange(txtTfSidewaysLongSlMul, "LONG 손절 배수", 0.9m, 1.1m, out _, out errorMessage))
-                return false;
-
-            if (!TryParseDecimalInRange(txtTfSidewaysShortSlMul, "SHORT 손절 배수", 0.9m, 1.1m, out _, out errorMessage))
-                return false;
-
-            return true;
-        }
 
         private bool ValidateGeneralInputs(out string errorMessage)
         {
@@ -1093,11 +674,6 @@ namespace TradingBot
 
                 // [v3.2.17] 제거된 검증 블록 정리 완료
 
-            if (!TryParseIntInRange(txtGridLevels, "Grid Levels", 2, 200, out _, out errorMessage))
-                return false;
-
-            if (!TryParseDecimalInRange(txtGridSpacing, "Grid Spacing(%)", 0.01m, 20m, out _, out errorMessage))
-                return false;
 
             var symbols = txtSymbols.Text
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)

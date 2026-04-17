@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.9] - 2026-04-17
+
+### Changed
+
+ - **설정창 단순화**: General + Telegram Messages 탭만 유지, 나머지 탭(Transformer/Grid Strategy/Arbitrage) 제거
+ - **메이저증거금% 제거**: 기본마진(DefaultMargin)을 메이저 증거금으로 통합 사용 — 별도 퍼센트 필드 삭제
+ - **버튼 단순화**: 3년백테스트/WFO최적화/5분봉최적화/AI학습 버튼 제거, 저장/취소만 유지
+ - **코드정리**: Grid/Arbitrage/Transformer 로드·저장·검증 코드 및 ValidateTransformerInputs 메서드 제거
+
 ## [5.10.8] - 2026-04-17
 
 ### Fixed

@@ -198,7 +198,6 @@
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="160"/>
@@ -206,7 +205,7 @@
                                     </Grid.ColumnDefinitions>
 
                                     <!-- ══════════════════════════════════════════════════════ -->
-                                    <!-- 공통 설정 (알트코인 기본값) - rows 0~10                -->
+                                    <!-- 공통 설정 - rows 0~9                                   -->
                                     <!-- ══════════════════════════════════════════════════════ -->
                                     <TextBlock Text="── 공통 기본 설정 ──"
                                                Grid.Row="0"
@@ -216,7 +215,7 @@
                                                FontSize="12"
                                                Margin="0,0,0,10"/>
 
-                                    <!-- 기본 마진 -->
+                                    <!-- 기본 마진 (메이저/PUMP 공통) -->
                                     <TextBlock Text="기본 마진 (USDT):"
                                                VerticalAlignment="Center"
                                                Grid.Row="1"
@@ -245,29 +244,13 @@
                                               VerticalAlignment="Center"
                                               Margin="0,0,0,15"/>
 
-                                    <!-- 메이저 증거금 % -->
-                                    <TextBlock Text="메이저 증거금 (%):"
+                                    <!-- PUMP 증거금 $ -->
+                                    <TextBlock Text="PUMP 증거금 ($):"
                                                VerticalAlignment="Center"
                                                Grid.Row="3"
                                                Foreground="#94A3B8"
                                                Margin="0,0,0,15"/>
                                     <Grid Grid.Row="3" Grid.Column="1" Margin="0,0,0,15">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBox x:Name="txtMajorMarginPercent"
-                                                 Padding="8" Background="#1E2235" Foreground="White" BorderBrush="#2D3142"/>
-                                        <TextBlock Grid.Column="1" Text="% of Equity" Foreground="#64748B" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="11"/>
-                                    </Grid>
-
-                                    <!-- PUMP 증거금 $ -->
-                                    <TextBlock Text="PUMP 증거금 ($):"
-                                               VerticalAlignment="Center"
-                                               Grid.Row="4"
-                                               Foreground="#94A3B8"
-                                               Margin="0,0,0,15"/>
-                                    <Grid Grid.Row="4" Grid.Column="1" Margin="0,0,0,15">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
@@ -280,11 +263,11 @@
                                     <!-- 레버리지 -->
                                     <TextBlock Text="레버리지 (x):"
                                                VerticalAlignment="Center"
-                                               Grid.Row="5"
+                                               Grid.Row="4"
                                                Foreground="#94A3B8"
                                                Margin="0,0,0,15"/>
                                     <TextBox x:Name="txtLeverage"
-                                             Grid.Row="5"
+                                             Grid.Row="4"
                                              Grid.Column="1"
                                              Margin="0,0,0,15"
                                              Padding="8"
@@ -294,35 +277,35 @@
 
                                     <!-- [v5.7.9] 메이저/PUMP 슬롯 -->
                                     <TextBlock Text="메이저 슬롯:"
-                                               VerticalAlignment="Center" Grid.Row="6"
+                                               VerticalAlignment="Center" Grid.Row="5"
                                                Foreground="#94A3B8" Margin="0,0,0,15"/>
                                     <TextBox x:Name="txtMaxMajorSlots"
-                                             Grid.Row="6" Grid.Column="1" Margin="0,0,0,15"
+                                             Grid.Row="5" Grid.Column="1" Margin="0,0,0,15"
                                              Padding="8" Background="#1E2235" Foreground="White" BorderBrush="#2D3142"/>
 
                                     <TextBlock Text="PUMP 슬롯:"
-                                               VerticalAlignment="Center" Grid.Row="7"
+                                               VerticalAlignment="Center" Grid.Row="6"
                                                Foreground="#94A3B8" Margin="0,0,0,15"/>
                                     <TextBox x:Name="txtMaxPumpSlots"
-                                             Grid.Row="7" Grid.Column="1" Margin="0,0,0,15"
+                                             Grid.Row="6" Grid.Column="1" Margin="0,0,0,15"
                                              Padding="8" Background="#1E2235" Foreground="White" BorderBrush="#2D3142"/>
 
                                     <!-- [v5.9.20] 하루 진입 횟수 제한 -->
                                     <TextBlock Text="하루 진입 횟수:"
-                                               VerticalAlignment="Center" Grid.Row="8"
+                                               VerticalAlignment="Center" Grid.Row="7"
                                                Foreground="#94A3B8" Margin="0,0,0,15"/>
                                     <TextBox x:Name="txtMaxDailyEntries"
-                                             Grid.Row="8" Grid.Column="1" Margin="0,0,0,15"
+                                             Grid.Row="7" Grid.Column="1" Margin="0,0,0,15"
                                              Padding="8" Background="#1E2235" Foreground="White" BorderBrush="#2D3142"/>
 
                                     <!-- 주요 심볼 -->
                                     <TextBlock Text="주요 심볼:"
                                                VerticalAlignment="Center"
-                                               Grid.Row="9"
+                                               Grid.Row="8"
                                                Foreground="#94A3B8"
                                                Margin="0,0,0,15"/>
                                     <TextBox x:Name="txtSymbols"
-                                             Grid.Row="9"
+                                             Grid.Row="8"
                                              Grid.Column="1"
                                              Margin="0,0,0,15"
                                              Padding="8"
@@ -330,15 +313,13 @@
                                              Foreground="White"
                                              BorderBrush="#2D3142"/>
 
-                                    <!-- [v3.2.14] 리스크/알트ROE 제거 — 소스 하드코딩 -->
-
                                     <!-- 시뮬레이션 모드 -->
                                     <TextBlock Text="매매 모드:"
                                                VerticalAlignment="Top"
-                                               Grid.Row="10"
+                                               Grid.Row="9"
                                                Foreground="#94A3B8"
                                                Margin="0,5,0,15"/>
-                                    <StackPanel Grid.Row="10"
+                                    <StackPanel Grid.Row="9"
                                                 Grid.Column="1"
                                                 Margin="0,0,0,15">
                                         <CheckBox x:Name="chkSimulationMode"
@@ -383,158 +364,7 @@
                         </ScrollViewer>
                     </TabItem>
 
-                    <TabItem Header="Transformer">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <Border Background="#161925"
-                                    CornerRadius="10"
-                                    Padding="20"
-                                    Margin="10">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                    </Grid.RowDefinitions>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="210"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-
-                                    <TextBlock Text="ADX Period:"
-                                               VerticalAlignment="Center"
-                                               Grid.Row="0"
-                                               Foreground="#94A3B8"
-                                               Margin="0,0,0,15"/>
-                                    <TextBox x:Name="txtTfAdxPeriod"
-                                             Grid.Row="0"
-                                             Grid.Column="1"
-                                             Margin="0,0,0,15"
-                                             Padding="8"
-                                             Background="#1E2235"
-                                             Foreground="White"
-                                             BorderBrush="#2D3142"/>
-
-                                    <TextBlock Text="ADX 횡보 임계값:"
-                                               VerticalAlignment="Center"
-                                               Grid.Row="1"
-                                               Foreground="#94A3B8"
-                                               Margin="0,0,0,15"/>
-                                    <TextBox x:Name="txtTfAdxSidewaysThreshold"
-                                             Grid.Row="1"
-                                             Grid.Column="1"
-                                             Margin="0,0,0,15"
-                                             Padding="8"
-                                             Background="#1E2235"
-                                             Foreground="White"
-                                             BorderBrush="#2D3142"/>
-
-                                    <TextBlock Text="횡보 LONG RSI 최대:"
-                                               VerticalAlignment="Center"
-                                               Grid.Row="2"
-                                               Foreground="#94A3B8"
-                                               Margin="0,0,0,15"/>
-                                    <TextBox x:Name="txtTfSidewaysRsiLongMax"
-                                             Grid.Row="2"
-                                             Grid.Column="1"
-                                             Margin="0,0,0,15"
-                                             Padding="8"
-                                             Background="#1E2235"
-                                             Foreground="White"
-                                             BorderBrush="#2D3142"/>
-
-                                    <TextBlock Text="횡보 SHORT RSI 최소:"
-                                               VerticalAlignment="Center"
-                                               Grid.Row="3"
-                                               Foreground="#94A3B8"
-                                               Margin="0,0,0,15"/>
-                                    <TextBox x:Name="txtTfSidewaysRsiShortMin"
-                                             Grid.Row="3"
-                                             Grid.Column="1"
-                                             Margin="0,0,0,15"
-                                             Padding="8"
-                                             Background="#1E2235"
-                                             Foreground="White"
-                                             BorderBrush="#2D3142"/>
-
-                                    <TextBlock Text="횡보 거래량비 최대:"
-                                               VerticalAlignment="Center"
-                                               Grid.Row="4"
-                                               Foreground="#94A3B8"
-                                               Margin="0,0,0,15"/>
-                                    <TextBox x:Name="txtTfSidewaysVolumeRatioMax"
-                                             Grid.Row="4"
-                                             Grid.Column="1"
-                                             Margin="0,0,0,15"
-                                             Padding="8"
-                                             Background="#1E2235"
-                                             Foreground="White"
-                                             BorderBrush="#2D3142"/>
-
-                                    <TextBlock Text="LONG 하단 터치 배수:"
-                                               VerticalAlignment="Center"
-                                               Grid.Row="5"
-                                               Foreground="#94A3B8"
-                                               Margin="0,0,0,15"/>
-                                    <TextBox x:Name="txtTfSidewaysLongLowerTouch"
-                                             Grid.Row="5"
-                                             Grid.Column="1"
-                                             Margin="0,0,0,15"
-                                             Padding="8"
-                                             Background="#1E2235"
-                                             Foreground="White"
-                                             BorderBrush="#2D3142"/>
-
-                                    <TextBlock Text="SHORT 상단 터치 배수:"
-                                               VerticalAlignment="Center"
-                                               Grid.Row="6"
-                                               Foreground="#94A3B8"
-                                               Margin="0,0,0,15"/>
-                                    <TextBox x:Name="txtTfSidewaysShortUpperTouch"
-                                             Grid.Row="6"
-                                             Grid.Column="1"
-                                             Margin="0,0,0,15"
-                                             Padding="8"
-                                             Background="#1E2235"
-                                             Foreground="White"
-                                             BorderBrush="#2D3142"/>
-
-                                    <TextBlock Text="LONG 손절 배수:"
-                                               VerticalAlignment="Center"
-                                               Grid.Row="7"
-                                               Foreground="#94A3B8"
-                                               Margin="0,0,0,15"/>
-                                    <TextBox x:Name="txtTfSidewaysLongSlMul"
-                                             Grid.Row="7"
-                                             Grid.Column="1"
-                                             Margin="0,0,0,15"
-                                             Padding="8"
-                                             Background="#1E2235"
-                                             Foreground="White"
-                                             BorderBrush="#2D3142"/>
-
-                                    <TextBlock Text="SHORT 손절 배수:"
-                                               VerticalAlignment="Center"
-                                               Grid.Row="8"
-                                               Foreground="#94A3B8"
-                                               Margin="0,0,0,15"/>
-                                    <TextBox x:Name="txtTfSidewaysShortSlMul"
-                                             Grid.Row="8"
-                                             Grid.Column="1"
-                                             Margin="0,0,0,15"
-                                             Padding="8"
-                                             Background="#1E2235"
-                                             Foreground="White"
-                                             BorderBrush="#2D3142"/>
-                                </Grid>
-                            </Border>
-                        </ScrollViewer>
-                    </TabItem>
+                    
 
                     <TabItem Header="Telegram Messages">
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -601,109 +431,9 @@
                         </ScrollViewer>
                     </TabItem>
 
-                    <TabItem Header="Grid Strategy">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <Border Background="#161925"
-                                    CornerRadius="10"
-                                    Padding="20"
-                                    Margin="10">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                    </Grid.RowDefinitions>
+                    
 
-                                    <!-- 제목 -->
-                                    <TextBlock Grid.Row="0"
-                                               Text="📊 그리드 전략 설정"
-                                               FontSize="16"
-                                               FontWeight="Bold"
-                                               Foreground="#00E676"
-                                               Margin="0,0,0,15"/>
-
-                                    <!-- 설정 -->
-                                    <Grid Grid.Row="1"
-                                          Margin="0,0,0,15">
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto"/>
-                                            <RowDefinition Height="Auto"/>
-                                        </Grid.RowDefinitions>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="150"/>
-                                            <ColumnDefinition Width="*"/>
-                                        </Grid.ColumnDefinitions>
-
-                                        <TextBlock Text="Grid Levels:"
-                                                   VerticalAlignment="Center"
-                                                   Grid.Row="0"
-                                                   Foreground="#94A3B8"
-                                                   Margin="0,0,0,15"/>
-                                        <TextBox x:Name="txtGridLevels"
-                                                 Grid.Row="0"
-                                                 Grid.Column="1"
-                                                 Margin="0,0,0,15"
-                                                 Padding="8"
-                                                 Background="#1E2235"
-                                                 Foreground="White"
-                                                 BorderBrush="#2D3142"/>
-
-                                        <TextBlock Text="Spacing (%):"
-                                                   VerticalAlignment="Center"
-                                                   Grid.Row="1"
-                                                   Foreground="#94A3B8"
-                                                   Margin="0,0,0,15"/>
-                                        <TextBox x:Name="txtGridSpacing"
-                                                 Grid.Row="1"
-                                                 Grid.Column="1"
-                                                 Margin="0,0,0,15"
-                                                 Padding="8"
-                                                 Background="#1E2235"
-                                                 Foreground="White"
-                                                 BorderBrush="#2D3142"/>
-                                    </Grid>
-                                </Grid>
-                            </Border>
-                        </ScrollViewer>
-                    </TabItem>
-
-                    <TabItem Header="Arbitrage"
-                             Visibility="Collapsed">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <Border Background="#161925"
-                                    CornerRadius="10"
-                                    Padding="20"
-                                    Margin="10">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                    </Grid.RowDefinitions>
-
-                                    <!-- 제목 -->
-                                    <TextBlock Grid.Row="0"
-                                               Text="💰 차익거래 설정"
-                                               FontSize="16"
-                                               FontWeight="Bold"
-                                               Foreground="#00E676"
-                                               Margin="0,0,0,15"/>
-
-                                    <!-- 설정 -->
-                                    <Grid Grid.Row="1">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="150"/>
-                                            <ColumnDefinition Width="*"/>
-                                        </Grid.ColumnDefinitions>
-                                        <CheckBox x:Name="chkAutoHedge"
-                                                  Content="Auto Hedge Mode"
-                                                  Grid.Column="1"
-                                                  Foreground="#94A3B8"
-                                                  Margin="0,0,0,15"/>
-                                    </Grid>
-                                </Grid>
-                            </Border>
-                        </ScrollViewer>
-                    </TabItem>
+                    
                 </TabControl>
             </Grid>
 
@@ -712,54 +442,6 @@
                         Grid.Row="2"
                         HorizontalAlignment="Right"
                         Margin="0,0,20,20">
-                <Button x:Name="btnRunBacktest3Y"
-                        Content="3년 백테스트"
-                        Width="120"
-                        Height="35"
-                        Margin="0,0,10,0"
-                        Click="btnRunBacktest3Y_Click"
-                        Background="#7C3AED"
-                        Foreground="White"
-                        FontWeight="Bold"
-                        BorderThickness="0"
-                        Cursor="Hand"
-                        ToolTip="바이낸스 3년 데이터로 현재 전략 백테스트 실행 (Shift=단일윈도우 최적화)"/>
-                <Button x:Name="btnRunWfo"
-                        Content="WFO 최적화"
-                        Width="120"
-                        Height="35"
-                        Margin="0,0,10,0"
-                        Click="btnRunWfo_Click"
-                        Background="#F59E0B"
-                        Foreground="White"
-                        FontWeight="Bold"
-                        BorderThickness="0"
-                        Cursor="Hand"
-                        ToolTip="워크포워드 최적화: 12개월 IS + 4개월 OOS 롤링 윈도우"/>
-                <Button x:Name="btnRunMtf"
-                        Content="5분봉 최적화"
-                        Width="100"
-                        Height="35"
-                        Margin="0,0,5,0"
-                        Click="btnRunMtf_Click"
-                        Background="#EF4444"
-                        Foreground="White"
-                        FontWeight="Bold"
-                        BorderThickness="0"
-                        Cursor="Hand"
-                        ToolTip="5분봉 모멘텀 스캘핑 자동 최적화"/>
-                <Button x:Name="btnRunAI"
-                        Content="AI 학습"
-                        Width="100"
-                        Height="35"
-                        Margin="0,0,10,0"
-                        Click="btnRunAI_Click"
-                        Background="#10B981"
-                        Foreground="White"
-                        FontWeight="Bold"
-                        BorderThickness="0"
-                        Cursor="Hand"
-                        ToolTip="AI 학습 백테스트: LightGBM 학습 + 승리패턴 스냅샷 매칭 (8종 6개월)"/>
                 <Button x:Name="btnSave"
                         Content="저장"
                         Width="100"
