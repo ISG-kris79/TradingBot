@@ -2185,11 +2185,15 @@ namespace TradingBot
                             }
                         }
 
+                        // [v5.10.19] 기존 포지션 → PositionSyncService 등록 (폴링 감시)
+                        _orderManager.RegisterBracket(pos.Symbol);
+                        OnStatusLog?.Invoke($"🔄 [PositionSync] {pos.Symbol} 재시작 시 브라켓 등록 — 폴링 감시 시작");
+                        // [v5.10.19] 재시작된 기존 포지션은 거래소에 이미 SL/TP가 있으므로 bot-side 감시 불필요
                         // [버그수정] PUMP 포지션에 Standard Monitor 시작하면 breakEvenROE=7%로 조기 청산됨
-                        if (!isSyncPump)
-                            TryStartStandardMonitor(pos.Symbol, pos.EntryPrice, pos.IsLong, "TREND", 0m, syncedStopLoss, token, "sync");
-                        else
-                            TryStartPumpMonitor(pos.Symbol, pos.EntryPrice, "SYNC_PUMP", 0d, token, "sync");
+                        // if (!isSyncPump)
+                        //     TryStartStandardMonitor(pos.Symbol, ...);
+                        // else
+                        //     TryStartPumpMonitor(pos.Symbol, ...);
                     }
                     OnStatusLog?.Invoke("✅ 현재 보유 포지션 동기화 완료");
 
@@ -6852,13 +6856,20 @@ namespace TradingBot
                     };
                 }
 
-                if (!savedPump)
+                // [v5.10.19] 거래소 account-update로 감지된 포지션 → PositionSyncService 등록
+                // 거래소에 SL/TP가 이미 있다고 가정 → bot-side 감시 대신 폴링 감시
+                if (wasTracked)
                 {
-                    TryStartStandardMonitor(pos.Symbol, pos.EntryPrice, isLong, "TREND", savedTakeProfit, savedStopLoss, _cts?.Token ?? CancellationToken.None, wasTracked ? "account-update" : "external-position");
+                    _orderManager.RegisterBracket(pos.Symbol);
+                    OnStatusLog?.Invoke($"🔄 [PositionSync] {pos.Symbol} account-update 브라켓 등록");
                 }
                 else
                 {
-                    TryStartPumpMonitor(pos.Symbol, pos.EntryPrice, "ACCOUNT_PUMP", 0d, _cts?.Token ?? CancellationToken.None, wasTracked ? "account-update" : "external-position");
+                    // 외부 포지션(봇이 열지 않은 것)은 기존 방식 유지
+                    if (!savedPump)
+                        TryStartStandardMonitor(pos.Symbol, pos.EntryPrice, isLong, "TREND", savedTakeProfit, savedStopLoss, _cts?.Token ?? CancellationToken.None, "external-position");
+                    else
+                        TryStartPumpMonitor(pos.Symbol, pos.EntryPrice, "ACCOUNT_PUMP", 0d, _cts?.Token ?? CancellationToken.None, "external-position");
                 }
 
                 OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
@@ -11404,24 +11415,32 @@ namespace TradingBot
                 // [v3.3.6] UI 포지션 상태 활성화 (수동진입과 동일하게)
                 OnPositionStatusUpdate?.Invoke(symbol, true, actualEntryPrice);
 
-                // 감시 루프 시작
-                bool isPumpPosition = false;
-                lock (_posLock)
+                // [v5.10.19] bot-side 감시 루프 결정
+                // ExecuteFullEntryWithAllOrdersAsync로 거래소에 SL/TP/Trailing 등록 완료된 경우
+                // → PositionSyncService(10초 폴링)가 청산 감지 + OrderManager가 잔여 주문 취소
+                // → bot-side 이중 감시 불필요 (타임아웃/충돌 원인 제거)
+                if (_orderManager.HasActiveBracket(symbol))
                 {
-                    if (_activePositions.TryGetValue(symbol, out var activePos))
-                        isPumpPosition = activePos.IsPumpStrategy;
-                }
-
-                if (isPumpPosition)
-                {
-                    double pumpAtr = ctx.LatestCandle != null ? Math.Max(0d, ctx.LatestCandle.ATR) : 0d;
-                    TryStartPumpMonitor(symbol, actualEntryPrice, ctx.SignalSource, pumpAtr, ctx.Token, "new-entry");
+                    OnStatusLog?.Invoke($"🛡️ [PositionSync] {symbol} bot-side 감시 스킵 — 거래소 SL/TP/Trailing 등록 완료");
                 }
                 else
                 {
-                    // [v5.10.10] slPrice/tpPrice 전달: hasCustomAbsoluteStop=true → MonitorPositionStandard의 중복 ROE SL 체크 비활성화
-                    // ExecuteFullEntryWithAllOrdersAsync가 이미 거래소에 SL 등록했으므로 봇 내부 ROE 체크는 이중처리
-                    TryStartStandardMonitor(symbol, actualEntryPrice, decision == "LONG", ctx.Mode, tpPrice, slPrice, ctx.Token, "new-entry");
+                    bool isPumpPosition = false;
+                    lock (_posLock)
+                    {
+                        if (_activePositions.TryGetValue(symbol, out var activePos))
+                            isPumpPosition = activePos.IsPumpStrategy;
+                    }
+
+                    if (isPumpPosition)
+                    {
+                        double pumpAtr = ctx.LatestCandle != null ? Math.Max(0d, ctx.LatestCandle.ATR) : 0d;
+                        TryStartPumpMonitor(symbol, actualEntryPrice, ctx.SignalSource, pumpAtr, ctx.Token, "new-entry");
+                    }
+                    else
+                    {
+                        TryStartStandardMonitor(symbol, actualEntryPrice, decision == "LONG", ctx.Mode, tpPrice, slPrice, ctx.Token, "new-entry");
+                    }
                 }
 
                 // [v3.2.46] 정찰대/AI Advisor 진입 → ROE 기반 본진입 전환 태스크

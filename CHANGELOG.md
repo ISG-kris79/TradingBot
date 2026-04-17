@@ -5,6 +5,25 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.19] - 2026-04-17
+
+### Changed
+
+ - **bot-side 감시 루프 비활성화** (`new-entry` 경로): `ExecuteFullEntryWithAllOrdersAsync`로 거래소에 SL/TP/Trailing 등록된 경우 `TryStartStandardMonitor` / `TryStartPumpMonitor` 호출 스킵 → `PositionSyncService`(10초 폴링)가 대체
+   - 이중 처리(거래소 + bot 양쪽 청산 시도) 제거
+   - `MonitorPositionStandard` 루프 타임아웃 / 충돌 원인 해소
+ - **재시작 시 기존 포지션**: `_orderManager.RegisterBracket` 등록 → PositionSyncService 폴링 감시 전환
+ - **account-update 경로**: bot 추적 포지션(wasTracked)은 PositionSyncService, 외부 포지션은 기존 방식 유지
+
+## [5.10.18] - 2026-04-17
+
+### Added
+
+ - **OrderManager**: SL/TP/Trailing 브라켓 주문 그룹 OCO 관리 (`RegisterBracket`, `CancelBracketAsync`, `CancelAllAsync`)
+ - **PositionSyncService**: 10초 폴링으로 거래소 포지션 감지 → `OnPositionClosed` 이벤트 → 쿨다운/DB/Telegram/AI레이블 자동 처리
+ - **GetLastTradeAsync**: 청산 후 실제 체결가 조회 (`BinanceExchangeService`)
+ - **HandleSyncedPositionClosed**: PositionSyncService 청산 이벤트 핸들러
+
 ## [5.10.17] - 2026-04-17
 
 ### Fixed
