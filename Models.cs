@@ -71,6 +71,16 @@ namespace TradingBot.Models
         public decimal MajorTrailingGapRoe   { get; set; } = 5.0m;    // 트레일링 간격(메이저 기본 5%, 운용 범위 5~10%)
         public decimal MajorStopLossRoe      { get; set; } = 60.0m;   // [v4.5.5] 60% ROE = 20x 기준 -3% 가격 (포지션 호흡 공간 + 청산 -5%까지 2% 버퍼)
 
+        // ─── [설정 연동] 슬롯 / 메이저 활성화 / 하루 진입 횟수 ──────────────────────
+        /// <summary>메이저 코인 전략 활성화 (false 시 메이저 진입 차단)</summary>
+        public bool EnableMajorTrading { get; set; } = true;
+        /// <summary>메이저 최대 동시 포지션 수 (기본 4)</summary>
+        public int MaxMajorSlots { get; set; } = 4;
+        /// <summary>PUMP 최대 동시 포지션 수 (기본 3)</summary>
+        public int MaxPumpSlots { get; set; } = 3;
+        /// <summary>하루 최대 PUMP 진입 횟수 (기본 60, 자정 KST 리셋)</summary>
+        public int MaxDailyEntries { get; set; } = 60;
+
         // ─── [Sniper Mode] 스나이퍼 모드 설정 (v2.5) ────────────────────────────
         // 종목당 일일 1~2회 진입으로 정조준하는 모드
         public bool IsSniperModeEnabled { get; set; } = true;         // 스나이퍼 모드 활성화 여부

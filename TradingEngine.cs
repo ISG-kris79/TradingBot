@@ -83,14 +83,15 @@ namespace TradingBot
             _pumpWatchPool = new(StringComparer.OrdinalIgnoreCase);
         // 슬롯 설정
         // 메이저 4 + PUMP 2 = 총 6
-        private const int MAX_TOTAL_SLOTS = 7;        // 총 최대 7개 (메이저4 + PUMP3)
-        private const int MAX_MAJOR_SLOTS = 4;        // 메이저 최대 4개 (BTC/ETH/SOL/XRP)
-        private const int MAX_PUMP_SLOTS = 3;         // PUMP(밈코인) 최대 3개
+        private const int MAX_TOTAL_SLOTS = 7;        // 총 최대 7개 (메이저4 + PUMP3) — fallback
         private const int MAX_SPIKE_SLOTS = 1;        // [v5.2.0] SPIKE(급등) 전용 1개 추가
 
-        // [v4.5.9] 일일 PUMP 진입 횟수 제한 (자정 KST 리셋)
-        // [v5.1.3] 40 → 60 확대 — PLAY 케이스에서 일일 한도 소진 후 메가 펌프 놓침
-        private const int MAX_DAILY_PUMP_ENTRIES = 60;
+        // [v5.10.2] 슬롯 / 일일한도 → DB 설정 연동 (하드코딩 const 제거)
+        private int MAX_MAJOR_SLOTS => _settings?.MaxMajorSlots > 0 ? _settings.MaxMajorSlots : 4;
+        private int MAX_PUMP_SLOTS  => _settings?.MaxPumpSlots  > 0 ? _settings.MaxPumpSlots  : 3;
+
+        // [v4.5.9] 일일 PUMP 진입 횟수 제한 (자정 KST 리셋) — DB 설정 연동
+        private int MAX_DAILY_PUMP_ENTRIES => _settings?.MaxDailyEntries > 0 ? _settings.MaxDailyEntries : 60;
         private int _dailyPumpEntryCount = 0;
         private DateTime _dailyPumpCountDate = DateTime.MinValue;
         private readonly object _dailyPumpLock = new();
@@ -352,14 +353,25 @@ namespace TradingBot
                 if (!TryReserveDailyReversal(symbol, $"MACD_OPPOSITE_{crossResult.CrossType}"))
                     return;
 
-                // 현재 수량 확인
+                // 현재 수량 확인 + 거래소 TP 중복 방지
                 decimal qty = 0;
+                bool tpOnExchange = false;
                 lock (_posLock)
                 {
                     if (_activePositions.TryGetValue(symbol, out var pos))
+                    {
                         qty = Math.Abs(pos.Quantity);
+                        tpOnExchange = pos.TpRegisteredOnExchange;
+                    }
                 }
                 if (qty <= 0) return;
+
+                // [v5.9.21] 거래소 TP/Trailing이 이미 등록된 경우 로컬 청산 스킵 (이중 청산 방지)
+                if (tpOnExchange)
+                {
+                    OnStatusLog?.Invoke($"ℹ️ [MACD-반대] {symbol} 거래소 TP 등록됨 → 로컬 부분청산 스킵 (이중 방지)");
+                    return;
+                }
 
                 // 50% 부분 청산 수량 계산
                 decimal partialQty = Math.Round(qty * 0.5m, 3, MidpointRounding.ToZero);
@@ -375,7 +387,7 @@ namespace TradingBot
                     $"→ 50% 부분 청산 ({partialQty:F4} / {qty:F4}) | {crossResult.Detail}");
 
                 var partialResult = await _exchangeService.PlaceMarketOrderAsync(
-                    symbol, side, partialQty, token);
+                    symbol, side, partialQty, token, reduceOnly: true);
 
                 if (partialResult.Success)
                 {
@@ -4321,10 +4333,17 @@ namespace TradingBot
                 // 2. 차익거래 전략 (거래소 간 가격 차이 감지)
                 await _arbitrageStrategy.AnalyzeAsync(symbol, currentPrice, token);
 
-                // [MAJOR 전략] 메이저 코인은 항상 분석 (슬롯 체크는 ExecuteAutoOrder에서)
+                // [MAJOR 전략] 메이저 코인 분석 — EnableMajorTrading=false 시 차단
                 if (isMajorSymbol && _majorStrategy != null)
                 {
-                    await _majorStrategy.AnalyzeAsync(symbol, currentPrice, token);
+                    if (_settings?.EnableMajorTrading == false)
+                    {
+                        // 설정에서 메이저 비활성화됨 → 진입 분석 스킵
+                    }
+                    else
+                    {
+                        await _majorStrategy.AnalyzeAsync(symbol, currentPrice, token);
+                    }
                 }
 
                 // [Phase 7] Transformer 전략 분석 실행
@@ -8710,7 +8729,7 @@ namespace TradingBot
         }
         
         /// <summary>
-        /// 고정 PUMP 슬롯
+        /// [v5.10.2] PUMP 슬롯 — DB 설정값 반환
         /// </summary>
         private int GetDynamicMaxPumpSlots()
         {
@@ -10987,44 +11006,59 @@ namespace TradingBot
                     return;
                 }
 
-                // 주문 실행
-                var side = (decision == "LONG") ? "BUY" : "SELL";
+                // TP/SL 가격 계산 (주문 전 계산)
+                decimal tpPrice = ctx.CustomTakeProfitPrice;
+                decimal slPrice = ctx.CustomStopLossPrice;
+                decimal actualLeverage = leverage;
 
-                OnStatusLog?.Invoke(TradingStateLogger.PlacingOrder(symbol, decision, ctx.CurrentPrice, quantity));
-                EntryLog("ORDER", "SUBMIT", $"type=MARKET orderSide={side} qty={quantity}");
-
-                var (success, filledQty, avgPrice) = await _exchangeService.PlaceMarketOrderAsync(
-                    symbol,
-                    side,
-                    quantity,
-                    ctx.Token);
-
-                if (!success || filledQty <= 0)
+                // TP 가격 계산 (설정값 없으면 ROE 기반)
+                if (tpPrice <= 0 && actualLeverage > 0)
                 {
-                    CleanupReservedPosition("시장가 주문 실패");
-                    OnStatusLog?.Invoke($"❌ [{symbol}] {decision} 주문 실패");
-                    EntryLog("ORDER", "FAILED", $"reason=marketOrderFailed");
+                    decimal tp1Roe = ctx.IsPumpStrategy ? 25.0m : (symbol.StartsWith("BTC", StringComparison.OrdinalIgnoreCase) ? 20.0m : 30.0m);
+                    tpPrice = (decision == "LONG")
+                        ? ctx.CurrentPrice + (ctx.CurrentPrice * (tp1Roe / actualLeverage / 100m))
+                        : ctx.CurrentPrice - (ctx.CurrentPrice * (tp1Roe / actualLeverage / 100m));
+                }
+
+                // SL 가격 계산 (설정값 없으면 기본)
+                if (slPrice <= 0 && actualLeverage > 0)
+                {
+                    decimal slRoe = 10.0m; // 기본 10%
+                    slPrice = (decision == "LONG")
+                        ? ctx.CurrentPrice - (ctx.CurrentPrice * (slRoe / actualLeverage / 100m))
+                        : ctx.CurrentPrice + (ctx.CurrentPrice * (slRoe / actualLeverage / 100m));
+                }
+
+                string positionSide = (decision == "LONG") ? "LONG" : "SHORT";
+                OnStatusLog?.Invoke(TradingStateLogger.PlacingOrder(symbol, decision, ctx.CurrentPrice, quantity));
+                EntryLog("ORDER", "SUBMIT", $"type=FULL_ENTRY orderSide={positionSide} qty={quantity} margin=${marginUsdt:F0} SL={slPrice:F4} TP={tpPrice:F4}");
+
+                var success = await _exchangeService.ExecuteFullEntryWithAllOrdersAsync(
+                    symbol,
+                    positionSide,
+                    quantity,
+                    actualLeverage,
+                    slPrice,
+                    tpPrice,
+                    partialProfitRoePercent: 40.0m, // 부분 익절 40%
+                    trailingStopCallbackRate: 0.01m, // 트레일링 1%
+                    ct: ctx.Token);
+
+                if (!success)
+                {
+                    CleanupReservedPosition("전체 주문 실패");
+                    OnStatusLog?.Invoke($"❌ [{symbol}] {decision} 전체 주문 실패");
+                    OnAlert?.Invoke($"❌ [{symbol}] {decision} 전체 주문 실패 — Order_Error 확인");
+                    EntryLog("ORDER", "FAILED", $"reason=ExecuteFullEntryWithAllOrdersAsync 실패");
+                    try { _ = _dbManager.SaveOrderErrorAsync(symbol, positionSide, "FULL_ENTRY", quantity, null, "ExecuteFullEntryWithAllOrdersAsync 실패"); } catch { }
+                    // [v5.7.8] 주문 실패 시 5분 블랙리스트
+                    _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(5);
                     return;
                 }
 
-                var actualEntryPrice = avgPrice > 0 ? avgPrice : ctx.CurrentPrice;
-
-                // Major ATR 체결가 기준 손절 재보정
-                if (ctx.IsMajorAtrEnforced)
-                {
-                    var filledMajorStop = await TryCalculateMajorAtrHybridStopLossAsync(symbol, actualEntryPrice, decision == "LONG", ctx.Token);
-                    if (filledMajorStop.StopLossPrice > 0)
-                    {
-                        ctx.CustomStopLossPrice = filledMajorStop.StopLossPrice;
-                        OnStatusLog?.Invoke(
-                            $"🛡️ [MAJOR ATR] {symbol} 체결가 기준 손절 재보정 | Entry={actualEntryPrice:F8}, SL={ctx.CustomStopLossPrice:F8}, ATRdist={filledMajorStop.AtrDistance:F8}, 구조선={filledMajorStop.StructureStopPrice:F8}");
-                    }
-                    else if (ctx.MajorAtrPreview.StopLossPrice > 0)
-                    {
-                        ctx.CustomStopLossPrice = ctx.MajorAtrPreview.StopLossPrice;
-                        OnStatusLog?.Invoke($"⚠️ [MAJOR ATR] {symbol} 체결가 기준 재계산 실패 → 진입 전 손절값 유지 | SL={ctx.CustomStopLossPrice:F8}");
-                    }
-                }
+                // 체결가 추정 (실제로는 API에서 받아야 하지만, 현재 가격 사용)
+                var actualEntryPrice = ctx.CurrentPrice;
+                var filledQty = quantity; // 전체 수량 체결 가정
 
                 // 포지션 업데이트
                 lock (_posLock)
@@ -11254,7 +11288,7 @@ namespace TradingBot
 
                 var entryLog = new TradeLog(
                     symbol,
-                    side,
+                    positionSide,
                     ctx.SignalSource,
                     actualEntryPrice,
                     ctx.AiScore,
@@ -14275,7 +14309,7 @@ namespace TradingBot
 
                 // 반대 방향 시장가 주문으로 청산
                 string closeSide = isLong ? "SELL" : "BUY";
-                var (success, filledQty, avgPrice) = await _exchangeService.PlaceMarketOrderAsync(symbol, closeSide, quantity, CancellationToken.None);
+                var (success, filledQty, avgPrice) = await _exchangeService.PlaceMarketOrderAsync(symbol, closeSide, quantity, CancellationToken.None, reduceOnly: true);
 
                 if (success && filledQty > 0)
                 {

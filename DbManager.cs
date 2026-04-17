@@ -2643,17 +2643,19 @@ ORDER BY Symbol, OpenTime ASC";
                                       @PumpStopLossRoe, @PumpMargin, @PumpLeverage,
                                       @PumpFirstTakeProfitRatioPct, @PumpStairStep1Roe, @PumpStairStep2Roe, @PumpStairStep3Roe,
                                       @MajorLeverage, @MajorMargin, @MajorBreakEvenRoe, @MajorTp1Roe, @MajorTp2Roe,
-                                      @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe)
+                                      @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe,
+                                      @EnableMajorTrading, @MaxMajorSlots, @MaxPumpSlots, @MaxDailyEntries)
                             AS source (Id, DefaultLeverage, DefaultMargin, TargetRoe, StopLossRoe, TrailingStartRoe, TrailingDropRoe,
                                       PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct, MajorTrendProfile,
                                       PumpBreakEvenRoe, PumpTrailingStartRoe, PumpTrailingGapRoe,
                                       PumpStopLossRoe, PumpMargin, PumpLeverage,
                                       PumpFirstTakeProfitRatioPct, PumpStairStep1Roe, PumpStairStep2Roe, PumpStairStep3Roe,
                                       MajorLeverage, MajorMargin, MajorBreakEvenRoe, MajorTp1Roe, MajorTp2Roe,
-                                      MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe)
+                                      MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe,
+                                      EnableMajorTrading, MaxMajorSlots, MaxPumpSlots, MaxDailyEntries)
                         ON target.Id = source.Id
                         WHEN MATCHED THEN
-                            UPDATE SET 
+                            UPDATE SET
                                 target.DefaultLeverage = source.DefaultLeverage,
                                 target.DefaultMargin = source.DefaultMargin,
                                 target.TargetRoe = source.TargetRoe,
@@ -2684,6 +2686,10 @@ ORDER BY Symbol, OpenTime ASC";
                                 target.MajorTrailingStartRoe = source.MajorTrailingStartRoe,
                                 target.MajorTrailingGapRoe = source.MajorTrailingGapRoe,
                                 target.MajorStopLossRoe = source.MajorStopLossRoe,
+                                target.EnableMajorTrading = source.EnableMajorTrading,
+                                target.MaxMajorSlots = source.MaxMajorSlots,
+                                target.MaxPumpSlots = source.MaxPumpSlots,
+                                target.MaxDailyEntries = source.MaxDailyEntries,
                                 target.UpdatedAt = GETUTCDATE()
                         WHEN NOT MATCHED THEN
                             INSERT (Id, DefaultLeverage, DefaultMargin, TargetRoe, StopLossRoe, TrailingStartRoe, TrailingDropRoe,
@@ -2692,14 +2698,16 @@ ORDER BY Symbol, OpenTime ASC";
                                     PumpStopLossRoe, PumpMargin, PumpLeverage,
                                         PumpFirstTakeProfitRatioPct, PumpStairStep1Roe, PumpStairStep2Roe, PumpStairStep3Roe,
                                     MajorLeverage, MajorMargin, MajorBreakEvenRoe, MajorTp1Roe, MajorTp2Roe,
-                                    MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe)
+                                    MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe,
+                                    EnableMajorTrading, MaxMajorSlots, MaxPumpSlots, MaxDailyEntries)
                             VALUES (@UserId, @DefaultLeverage, @DefaultMargin, @TargetRoe, @StopLossRoe, @TrailingStartRoe, @TrailingDropRoe,
                                     @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile,
                                     @PumpBreakEvenRoe, @PumpTrailingStartRoe, @PumpTrailingGapRoe,
                                     @PumpStopLossRoe, @PumpMargin, @PumpLeverage,
                                         @PumpFirstTakeProfitRatioPct, @PumpStairStep1Roe, @PumpStairStep2Roe, @PumpStairStep3Roe,
                                     @MajorLeverage, @MajorMargin, @MajorBreakEvenRoe, @MajorTp1Roe, @MajorTp2Roe,
-                                    @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe);";
+                                    @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe,
+                                    @EnableMajorTrading, @MaxMajorSlots, @MaxPumpSlots, @MaxDailyEntries);";
 
                     var parameters = new DynamicParameters();
                     parameters.Add("@UserId", userId);
@@ -2733,12 +2741,16 @@ ORDER BY Symbol, OpenTime ASC";
                     parameters.Add("@MajorTrailingStartRoe", settings.MajorTrailingStartRoe);
                     parameters.Add("@MajorTrailingGapRoe", settings.MajorTrailingGapRoe);
                     parameters.Add("@MajorStopLossRoe", settings.MajorStopLossRoe);
+                    parameters.Add("@EnableMajorTrading", settings.EnableMajorTrading);
+                    parameters.Add("@MaxMajorSlots", settings.MaxMajorSlots);
+                    parameters.Add("@MaxPumpSlots", settings.MaxPumpSlots);
+                    parameters.Add("@MaxDailyEntries", settings.MaxDailyEntries);
 
                     try
                     {
                         await db.ExecuteAsync(sql, parameters);
                     }
-                    catch (SqlException ex) when (ex.Message.Contains("PumpTp1Roe") || ex.Message.Contains("PumpTp2Roe") || ex.Message.Contains("PumpTimeStopMinutes") || ex.Message.Contains("PumpStopDistanceWarnPct") || ex.Message.Contains("PumpStopDistanceBlockPct") || ex.Message.Contains("MajorTrendProfile") || ex.Message.Contains("PumpBreakEvenRoe") || ex.Message.Contains("PumpTrailingStartRoe") || ex.Message.Contains("PumpTrailingGapRoe") || ex.Message.Contains("PumpStopLossRoe") || ex.Message.Contains("PumpMargin") || ex.Message.Contains("PumpLeverage") || ex.Message.Contains("PumpFirstTakeProfitRatioPct") || ex.Message.Contains("PumpStairStep1Roe") || ex.Message.Contains("PumpStairStep2Roe") || ex.Message.Contains("PumpStairStep3Roe") || ex.Message.Contains("MajorLeverage") || ex.Message.Contains("MajorMargin") || ex.Message.Contains("MajorBreakEvenRoe") || ex.Message.Contains("MajorTp1Roe") || ex.Message.Contains("MajorTp2Roe") || ex.Message.Contains("MajorTrailingStartRoe") || ex.Message.Contains("MajorTrailingGapRoe") || ex.Message.Contains("MajorStopLossRoe"))
+                    catch (SqlException ex) when (ex.Message.Contains("PumpTp1Roe") || ex.Message.Contains("PumpTp2Roe") || ex.Message.Contains("PumpTimeStopMinutes") || ex.Message.Contains("PumpStopDistanceWarnPct") || ex.Message.Contains("PumpStopDistanceBlockPct") || ex.Message.Contains("MajorTrendProfile") || ex.Message.Contains("PumpBreakEvenRoe") || ex.Message.Contains("PumpTrailingStartRoe") || ex.Message.Contains("PumpTrailingGapRoe") || ex.Message.Contains("PumpStopLossRoe") || ex.Message.Contains("PumpMargin") || ex.Message.Contains("PumpLeverage") || ex.Message.Contains("PumpFirstTakeProfitRatioPct") || ex.Message.Contains("PumpStairStep1Roe") || ex.Message.Contains("PumpStairStep2Roe") || ex.Message.Contains("PumpStairStep3Roe") || ex.Message.Contains("MajorLeverage") || ex.Message.Contains("MajorMargin") || ex.Message.Contains("MajorBreakEvenRoe") || ex.Message.Contains("MajorTp1Roe") || ex.Message.Contains("MajorTp2Roe") || ex.Message.Contains("MajorTrailingStartRoe") || ex.Message.Contains("MajorTrailingGapRoe") || ex.Message.Contains("MajorStopLossRoe") || ex.Message.Contains("EnableMajorTrading") || ex.Message.Contains("MaxMajorSlots") || ex.Message.Contains("MaxPumpSlots") || ex.Message.Contains("MaxDailyEntries"))
                     {
                         // 하위 호환: 구 스키마(펌프 컬럼 없음)에서는 기본 필드만 저장
                         string fallbackSql = @"
