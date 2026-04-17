@@ -1829,6 +1829,12 @@ namespace TradingBot
                         InitialBalance = balance;
                         OnLiveLog?.Invoke($"💰 [Real] 가용 잔고: ${InitialBalance:N2}");
                     }
+                    else
+                    {
+                        // [v5.10.10] 잔고 0 또는 API 실패 → 사용자에게 명확히 표시
+                        OnStatusLog?.Invoke("⚠️ [계좌] USDT 잔고 조회 실패 또는 0원 — API 키 권한(선물 읽기) 확인 필요");
+                        OnAlert?.Invoke("⚠️ 계좌 잔고 조회 실패 — API 키 권한 확인 필요 (선물 읽기 권한)");
+                    }
 
                     // 순 투입금 조회 (Transfer In - Out)
                     if (_exchangeService is BinanceExchangeService binanceSvc)
@@ -11342,7 +11348,9 @@ namespace TradingBot
                 }
                 else
                 {
-                    TryStartStandardMonitor(symbol, actualEntryPrice, decision == "LONG", ctx.Mode, ctx.CustomTakeProfitPrice, ctx.CustomStopLossPrice, ctx.Token, "new-entry");
+                    // [v5.10.10] slPrice/tpPrice 전달: hasCustomAbsoluteStop=true → MonitorPositionStandard의 중복 ROE SL 체크 비활성화
+                    // ExecuteFullEntryWithAllOrdersAsync가 이미 거래소에 SL 등록했으므로 봇 내부 ROE 체크는 이중처리
+                    TryStartStandardMonitor(symbol, actualEntryPrice, decision == "LONG", ctx.Mode, tpPrice, slPrice, ctx.Token, "new-entry");
                 }
 
                 // [v3.2.46] 정찰대/AI Advisor 진입 → ROE 기반 본진입 전환 태스크

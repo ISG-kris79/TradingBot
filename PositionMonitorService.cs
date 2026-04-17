@@ -279,8 +279,8 @@ namespace TradingBot.Services
 
             OnLog?.Invoke($"⏳ [{(isSidewaysMode ? "S" : "T")}] {symbol} 진입대기");
 
-            // [AI Sniper Exit] 구조적 손절 체크 (30초 주기)
-            DateTime nextSniperExitCheck = DateTime.Now.AddSeconds(15);
+            // [AI Sniper Exit] 구조적 손절 체크 (90초 주기, Dual Stop과 45s 스태거)
+            DateTime nextSniperExitCheck = DateTime.Now.AddSeconds(60);
             float entryAiConfidence = 0.50f;
             lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var pc)) entryAiConfidence = pc.AiConfidencePercent / 100f; }
 
@@ -526,7 +526,7 @@ namespace TradingBot.Services
                                 dualStopCandles = fetched.ToList();
                         }
                         catch { /* 캔들 갱신 실패 시 이전 캐시 유지 */ }
-                        nextDualStopCandleRefresh = DateTime.Now.AddSeconds(30);
+                        nextDualStopCandleRefresh = DateTime.Now.AddSeconds(90); // [v5.10.10] 30→90s: REST API 부하 절감
                     }
 
                     lock (_posLock)
@@ -724,7 +724,7 @@ namespace TradingBot.Services
                         {
                             OnLog?.Invoke($"⚠️ [AI Sniper] {symbol} 청산 판단 오류: {sniperEx.Message}");
                         }
-                        nextSniperExitCheck = DateTime.Now.AddSeconds(30);
+                        nextSniperExitCheck = DateTime.Now.AddSeconds(90); // [v5.10.10] 30→90s: REST API 부하 절감
                     }
 
                     // [v3.1.8] H&S 패턴 패닉 청산 비활성화 — 오탐지로 수익 기회 손실 다발

@@ -112,9 +112,15 @@ namespace TradingBot.Services
         public async Task<decimal> GetBalanceAsync(string asset, CancellationToken ct = default)
         {
             var result = await _client.UsdFuturesApi.Account.GetBalancesAsync(ct: ct);
-            if (!result.Success) return 0;
+            if (!result.Success)
+            {
+                OnLog?.Invoke($"❌ [계좌잔고] GetBalancesAsync 실패: {result.Error?.Message ?? "알 수 없는 오류"} (code={result.Error?.Code})");
+                return 0;
+            }
 
             var balance = result.Data.FirstOrDefault(b => b.Asset == asset);
+            if (balance == null)
+                OnLog?.Invoke($"⚠️ [계좌잔고] {asset} 잔고 항목 없음 — API 키 권한(Read) 또는 선물 계좌 확인 필요");
             return balance?.WalletBalance ?? 0;
         }
 
@@ -781,7 +787,8 @@ namespace TradingBot.Services
             string symbol,
             string side,
             decimal quantity,
-            CancellationToken ct = default)
+            CancellationToken ct = default,
+            bool reduceOnly = false)
         {
             try
             {
@@ -799,12 +806,13 @@ namespace TradingBot.Services
                 OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
 
                 // 2. 시장가 주문 실행
-                Console.WriteLine($"📤 [Binance] 시장가 주문 전송 - {symbol} {side} {quantity}");
+                Console.WriteLine($"📤 [Binance] 시장가 주문 전송 - {symbol} {side} {quantity} reduceOnly={reduceOnly}");
                 var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
                     symbol,
                     orderSide,
                     FuturesOrderType.Market,
                     quantity,
+                    reduceOnly: reduceOnly,
                     ct: ct);
 
                 if (!result.Success || result.Data == null)
@@ -1015,10 +1023,101 @@ namespace TradingBot.Services
             }
         }
 
+        /// <summary>
+        /// [v5.5.2] 시장가 진입 + SL + TP(부분익절) + 트레일링 스탑 일괄 API 등록
+        /// 진입 체결 즉시 거래소에 모든 청산 주문을 등록 → 봇 다운타임에도 거래소가 자동 처리
+        /// </summary>
+        /// <param name="partialProfitRoePercent">1차 익절 수량 비율 (예: 40.0 = 전체의 40%)</param>
+        /// <param name="trailingStopCallbackRate">트레일링 콜백율 소수 표현 (예: 0.02 = 2%)</param>
+        public async Task<bool> ExecuteFullEntryWithAllOrdersAsync(
+            string symbol,
+            string positionSide,
+            decimal quantity,
+            decimal leverage,
+            decimal stopLossPrice,
+            decimal takeProfitPrice,
+            decimal partialProfitRoePercent,
+            decimal trailingStopCallbackRate,
+            CancellationToken ct = default)
+        {
+            bool isLong = positionSide.ToUpper() == "LONG";
+            string entrySide = isLong ? "BUY" : "SELL";
+            string closeSide = isLong ? "SELL" : "BUY";
+
+            try
+            {
+                // [1] 레버리지 설정
+                await SetLeverageAsync(symbol, (int)leverage, ct);
+
+                // [2] 시장가 진입
+                var (entryOk, filledQty, avgPrice) = await PlaceMarketOrderAsync(symbol, entrySide, quantity, ct, reduceOnly: false);
+                if (!entryOk || filledQty <= 0)
+                {
+                    OnLog?.Invoke($"❌ [FULL_ENTRY] {symbol} 시장가 진입 실패");
+                    return false;
+                }
+                OnLog?.Invoke($"✅ [FULL_ENTRY] {symbol} {positionSide} 진입 | qty={filledQty} avgPrice={avgPrice:F4}");
+
+                // 수량 정밀도 보정
+                (decimal stepSize, decimal tickSize) = await GetSymbolPrecisionAsync(symbol, ct);
+
+                // [3] SL 등록 (전체 수량)
+                if (stopLossPrice > 0)
+                {
+                    var (slOk, _) = await PlaceStopOrderAsync(symbol, closeSide, filledQty, stopLossPrice, ct);
+                    if (!slOk)
+                        OnLog?.Invoke($"⚠️ [FULL_ENTRY] {symbol} SL 등록 실패 — 내부 모니터링 대체");
+                }
+
+                // [4] TP 부분익절 등록 (partialProfitRoePercent% 수량)
+                decimal tpRatio = Math.Clamp(partialProfitRoePercent / 100m, 0.1m, 0.9m);
+                decimal tpQty = stepSize > 0
+                    ? Math.Floor(filledQty * tpRatio / stepSize) * stepSize
+                    : Math.Round(filledQty * tpRatio, 8);
+
+                if (tpQty > 0 && takeProfitPrice > 0)
+                {
+                    var (tpOk, _) = await PlaceTakeProfitOrderAsync(symbol, closeSide, tpQty, takeProfitPrice, ct);
+                    if (!tpOk)
+                        OnLog?.Invoke($"⚠️ [FULL_ENTRY] {symbol} TP 등록 실패");
+                }
+
+                // [5] 트레일링 스탑 등록 (잔여 수량, TP 도달 시 활성화)
+                decimal trailingQty = stepSize > 0
+                    ? Math.Floor((filledQty - tpQty) / stepSize) * stepSize
+                    : Math.Round(filledQty - tpQty, 8);
+
+                // 소수 표현 → % 변환 (0.02 → 2.0%)
+                decimal callbackPct = trailingStopCallbackRate < 1m
+                    ? trailingStopCallbackRate * 100m
+                    : trailingStopCallbackRate;
+                callbackPct = Math.Clamp(callbackPct, 0.1m, 5.0m);
+
+                if (trailingQty > 0)
+                {
+                    var (trailOk, _) = await PlaceTrailingStopOrderAsync(
+                        symbol, closeSide, trailingQty,
+                        callbackPct,
+                        activationPrice: takeProfitPrice > 0 ? takeProfitPrice : (decimal?)null,
+                        ct);
+                    if (!trailOk)
+                        OnLog?.Invoke($"⚠️ [FULL_ENTRY] {symbol} 트레일링 등록 실패");
+                }
+
+                OnLog?.Invoke($"✅ [FULL_ENTRY] {symbol} SL/TP/Trailing 일괄 등록 완료 | SL={stopLossPrice:F4} TP={takeProfitPrice:F4} tpQty={tpQty} trailQty={trailingQty} callback={callbackPct}%");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"❌ [FULL_ENTRY] {symbol} 예외: {ex.Message}");
+                return false;
+            }
+        }
+
         public void Dispose()
         {
             if (_disposed) return;
-            
+
             try
             {
                 _client?.Dispose();
@@ -1028,7 +1127,7 @@ namespace TradingBot.Services
             {
                 _disposed = true;
             }
-            
+
             GC.SuppressFinalize(this);
         }
     }

@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.10] - 2026-04-17
+
+### Fixed
+
+ - **계좌잔고 조회 실패 가시성**: `GetBalancesAsync` 실패 시 에러 코드 + 상세 메시지 로그 + 알림 추가 (기존: 조용히 0 반환)
+ - **병목 개선 (REST API 과부하)**: `MonitorPositionStandard` 내 REST API 호출 주기 30s → 90s (AI Sniper Exit + Dual Stop Candle), 60s 오프셋 스태거링 추가 — 포지션 3개 시 6회→2회/90s
+ - **이중 SL 처리 제거**: 진입 후 `MonitorPositionStandard`에 실제 거래소 SL가격(slPrice) 전달 → `hasCustomAbsoluteStop=true` → 봇 내부 ROE 기반 SL 체크 비활성화 (거래소 SL이 이미 처리)
+ - **AI 진입 확인**: `PumpScanStrategy._pumpML.Predict()` 정상 호출 확인 — `AI_ENTRY` 로그로 구분 가능
+
 ## [5.10.9] - 2026-04-17
 
 ### Changed
