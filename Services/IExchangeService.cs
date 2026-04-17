@@ -81,6 +81,24 @@ namespace TradingBot.Services
             string symbol,
             string side,
             decimal quantity,
+            CancellationToken ct = default,
+            bool reduceOnly = false);
+
+        // [v5.5.2] 진입 + SL + TP + 트레일링 스탑 일괄 API 등록
+        // 시장가 진입 후 체결 즉시 거래소에 모든 청산 주문을 등록 → 봇 다운타임에도 거래소가 자동 처리
+        Task<bool> ExecuteFullEntryWithAllOrdersAsync(
+            string symbol,
+            string positionSide,            // "LONG" | "SHORT"
+            decimal quantity,
+            decimal leverage,
+            decimal stopLossPrice,          // 손절 절대 가격
+            decimal takeProfitPrice,        // 1차 익절 절대 가격 (트레일링 활성화 기준)
+            decimal partialProfitRoePercent, // 1차 익절 수량 비율 (예: 40.0 = 40%)
+            decimal trailingStopCallbackRate, // 트레일링 콜백율 소수 (예: 0.02 = 2%)
             CancellationToken ct = default);
+
+        // [v5.10.18] 최근 체결 내역 조회 (포지션 청산가 추적용)
+        Task<(decimal exitPrice, decimal quantity, string side, DateTime time)?> GetLastTradeAsync(
+            string symbol, DateTime since, CancellationToken ct = default);
     }
 }

@@ -560,6 +560,23 @@ namespace TradingBot.Services
             }
         }
 
+        // [v5.10.18] 진입 이후 최근 체결 내역 → 실제 청산가 추적
+        public async Task<(decimal exitPrice, decimal quantity, string side, DateTime time)?> GetLastTradeAsync(
+            string symbol, DateTime since, CancellationToken ct = default)
+        {
+            try
+            {
+                var result = await _client.UsdFuturesApi.Trading.GetUserTradesAsync(
+                    symbol, startTime: since, ct: ct);
+                if (!result.Success || result.Data == null) return null;
+                var trades = result.Data.OrderByDescending(t => t.Timestamp).ToList();
+                var last = trades.FirstOrDefault();
+                if (last == null) return null;
+                return (last.Price, Math.Abs(last.Quantity), last.Side.ToString(), last.Timestamp);
+            }
+            catch { return null; }
+        }
+
         public async Task<bool> SetLeverageAsync(string symbol, int leverage, CancellationToken ct = default)
         {
             var result = await _client.UsdFuturesApi.Account.ChangeInitialLeverageAsync(symbol, leverage, ct: ct);

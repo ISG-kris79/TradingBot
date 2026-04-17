@@ -470,6 +470,10 @@ namespace TradingBot
 
         private PositionMonitorService _positionMonitor;
 
+        // [v5.10.18] 거래소 폴링 기반 포지션 동기화 + 브라켓 주문 관리
+        private OrderManager _orderManager = null!;
+        private PositionSyncService _positionSyncService = null!;
+
         private SoundService _soundService;
 
         private readonly NotificationService _notificationService;
@@ -871,6 +875,19 @@ namespace TradingBot
                 _aiPredictor,
                 settingsProvider: () => MainWindow.CurrentGeneralSettings ?? AppConfig.Current?.Trading?.GeneralSettings ?? _settings
             );
+
+            // [v5.10.18] OrderManager + PositionSyncService 초기화
+            _orderManager = new OrderManager(_exchangeService);
+            _orderManager.OnLog += msg => OnStatusLog?.Invoke(msg);
+
+            _positionSyncService = new PositionSyncService(
+                _exchangeService,
+                _activePositions,
+                _posLock,
+                _orderManager,
+                pollIntervalMs: 10_000);
+            _positionSyncService.OnLog += msg => OnStatusLog?.Invoke(msg);
+            _positionSyncService.OnPositionClosed += HandleSyncedPositionClosed;
 
             // [AI Exit] 시장 상태 분류 + 최적 익절 모델 초기화
             _regimeClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
@@ -2475,6 +2492,9 @@ namespace TradingBot
                 _cts?.Dispose();
                 _cts = new CancellationTokenSource();
                 var token = _cts.Token;
+
+                // [v5.10.18] 거래소 폴링 동기화 시작
+                _positionSyncService.Start(token);
 
                 OnAlert?.Invoke("🚀 최적화 엔진 가동 (WebSocket 모드)");
                 LoggerService.Info("엔진 시작: WebSocket 모드");
@@ -4882,6 +4902,14 @@ namespace TradingBot
             }
             _cts?.Dispose();
             _cts = null;
+
+            // [v5.10.18] 잔여 브라켓 주문 취소 (fire-and-forget)
+            _ = Task.Run(async () =>
+            {
+                try { await _positionSyncService.StopAsync().ConfigureAwait(false); } catch { }
+                try { await _orderManager.CancelAllAsync().ConfigureAwait(false); } catch { }
+            });
+
             TelegramService.Instance.OnRequestStatus = null!;
             TelegramService.Instance.OnRequestStop = null!;
             TelegramService.Instance.OnRequestTrain = null!;
@@ -11102,6 +11130,9 @@ namespace TradingBot
                 if (ctx.SignalSource == "PUMP_WATCH_CONFIRMED")
                     CommitDailyPumpEntry(symbol);
 
+                // [v5.10.18] OrderManager에 브라켓 주문 등록 (OCO 관리)
+                _orderManager.RegisterBracket(symbol);
+
                 // 체결가 추정 (실제로는 API에서 받아야 하지만, 현재 가격 사용)
                 var actualEntryPrice = ctx.CurrentPrice;
                 var filledQty = quantity; // 전체 수량 체결 가정
@@ -12140,6 +12171,101 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⚠️ [AI DoubleCheck] 레이블링 스케줄 실패: {symbol} - {ex.Message}");
                 }
             }, CancellationToken.None);
+        }
+
+        /// <summary>
+        /// [v5.10.18] PositionSyncService.OnPositionClosed 핸들러
+        /// 거래소 폴링으로 포지션 청산 감지 시 호출 — 쿨다운/DB/알림/AI 레이블 처리
+        /// </summary>
+        private void HandleSyncedPositionClosed(
+            string symbol, decimal entryPrice, decimal exitPrice, bool isProfit, string reason)
+        {
+            // 1. 쿨다운 (재진입 방지 5분)
+            _stopLossCooldown[symbol] = DateTime.Now.AddMinutes(5);
+            OnStatusLog?.Invoke($"⏳ [COOLDOWN] {symbol} 5분 쿨다운 시작 (재진입 방지) — {reason}");
+
+            // 2. 로컬 포지션 정보 확인
+            PositionInfo? pos = null;
+            lock (_posLock) { _activePositions.TryGetValue(symbol, out pos); }
+            // PositionSyncService가 이미 제거했지만 혹시 남아있으면 제거
+            lock (_posLock) { _activePositions.Remove(symbol); }
+
+            // 3. UI 이벤트
+            OnPositionStatusUpdate?.Invoke(symbol, false, 0);
+            OnTickerUpdate?.Invoke(symbol, 0m, 0d);
+            OnTradeHistoryUpdated?.Invoke();
+
+            // 4. DB TradeLog 저장
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (pos != null && pos.EntryPrice > 0 && exitPrice > 0)
+                    {
+                        decimal priceDiff = pos.IsLong ? (exitPrice - entryPrice) : (entryPrice - exitPrice);
+                        decimal pnl = priceDiff * Math.Abs(pos.Quantity);
+                        decimal leverage = pos.Leverage > 0 ? pos.Leverage : 1m;
+                        decimal pnlPct = entryPrice > 0
+                            ? (priceDiff / entryPrice) * leverage * 100m
+                            : 0m;
+
+                        var tradeLog = new TradingBot.Shared.Models.TradeLog(
+                            symbol,
+                            pos.IsLong ? "SELL" : "BUY",
+                            "SYNC_CLOSE",
+                            exitPrice,
+                            pos.AiScore,
+                            DateTime.Now,
+                            pnl,
+                            pnlPct)
+                        {
+                            EntryPrice = entryPrice,
+                            ExitPrice = exitPrice,
+                            Quantity = Math.Abs(pos.Quantity),
+                            EntryTime = pos.EntryTime,
+                            ExitTime = DateTime.Now,
+                            ExitReason = reason
+                        };
+                        await _dbManager.SaveTradeLogAsync(tradeLog);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [PositionSync] {symbol} DB 저장 실패: {ex.Message}");
+                }
+            });
+
+            // 5. 텔레그램 알림
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    string emoji = isProfit ? "✅" : "❌";
+                    decimal roe = entryPrice > 0
+                        ? ((pos?.IsLong == true ? exitPrice - entryPrice : entryPrice - exitPrice)
+                            / entryPrice) * (pos?.Leverage ?? 1m) * 100m
+                        : 0m;
+                    await TelegramService.Instance.SendMessageAsync(
+                        $"{emoji} *[{reason}]*\n`{symbol}`\n진입가: `{entryPrice:F4}` → 청산가: `{exitPrice:F4}`\nROE: `{roe:+0.0;-0.0}%`\n⏰ {DateTime.Now:HH:mm:ss}",
+                        TelegramMessageType.Profit);
+                }
+                catch { }
+            });
+
+            // 6. 승률 서킷브레이커 추적
+            double profitPct = entryPrice > 0
+                ? (double)((pos?.IsLong == true ? exitPrice - entryPrice : entryPrice - exitPrice)
+                    / entryPrice * (pos?.Leverage ?? 1m) * 100m)
+                : 0d;
+            lock (_recentTradeResults)
+            {
+                _recentTradeResults.Enqueue(profitPct > 0);
+                while (_recentTradeResults.Count > WIN_RATE_WINDOW) _recentTradeResults.Dequeue();
+            }
+
+            // 7. AI 레이블링
+            if (pos != null)
+                _ = HandleAiCloseLabelingAsync(symbol, pos.EntryTime, entryPrice, pos.IsLong, (decimal)profitPct, reason);
         }
 
         private async Task HandleAiCloseLabelingAsync(

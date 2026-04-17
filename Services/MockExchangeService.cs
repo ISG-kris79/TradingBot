@@ -346,7 +346,8 @@ namespace TradingBot.Services
             string symbol,
             string side,
             decimal quantity,
-            CancellationToken ct = default)
+            CancellationToken ct = default,
+            bool reduceOnly = false)
         {
             var result = ExecuteOrder(symbol, side, quantity, price: null, reduceOnly: false);
             return Task.FromResult((result.Success, result.ExecutedQuantity, result.ExecutedPrice));
@@ -834,5 +835,43 @@ namespace TradingBot.Services
                 _stopOrders.Remove(orderId);
             }
         }
+
+        /// <summary>[v5.5.2] Mock: 진입 + SL + TP + 트레일링 일괄 등록 (백테스트용 단순 진입)</summary>
+        public Task<bool> ExecuteFullEntryWithAllOrdersAsync(
+            string symbol,
+            string positionSide,
+            decimal quantity,
+            decimal leverage,
+            decimal stopLossPrice,
+            decimal takeProfitPrice,
+            decimal partialProfitRoePercent,
+            decimal trailingStopCallbackRate,
+            CancellationToken ct = default)
+        {
+            bool isLong = string.Equals(positionSide, "LONG", StringComparison.OrdinalIgnoreCase);
+            string entrySide = isLong ? "BUY" : "SELL";
+            string closeSide = isLong ? "SELL" : "BUY";
+
+            lock (_syncLock) { _symbolLeverages[symbol] = (int)leverage; }
+            var result = ExecuteOrder(symbol, entrySide, quantity, price: null, reduceOnly: false);
+            if (!result.Success) return Task.FromResult(false);
+
+            // SL/TP 조건부 주문 등록 (Mock)
+            if (stopLossPrice > 0)
+            {
+                lock (_syncLock)
+                {
+                    _stopOrders[Guid.NewGuid().ToString()] = new MockStopOrder
+                    { Symbol = symbol, Side = closeSide, Quantity = quantity, StopPrice = stopLossPrice };
+                }
+            }
+            return Task.FromResult(true);
+        }
+
+
+
+        public Task<(decimal exitPrice, decimal quantity, string side, DateTime time)?> GetLastTradeAsync(
+            string symbol, DateTime since, CancellationToken ct = default)
+            => Task.FromResult<(decimal, decimal, string, DateTime)?>(null);
     }
 }
