@@ -5,6 +5,12 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.13] - 2026-04-17
+
+### Fixed
+
+ - **대시보드 초기 $0 표시**: `InitialBalance` 설정 시 `_cachedUsdtBalance` 동시 초기화 — `RefreshProfitDashboard` 첫 API 호출 실패해도 $0 대신 초기 잔고 표시
+
 ## [5.10.12] - 2026-04-17
 
 ### Fixed
