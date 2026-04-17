@@ -149,7 +149,9 @@ namespace TradingBot.Strategies
             int candidateCount)
         {
             var eligibleTickers = tickerCache.Values
-                .Where(t => !string.IsNullOrWhiteSpace(t.Symbol) && IsEligiblePumpSymbol(t.Symbol))
+                .Where(t => !string.IsNullOrWhiteSpace(t.Symbol)
+                         && IsEligiblePumpSymbol(t.Symbol)
+                         && t.QuoteVolume >= 5_000_000m) // [v5.10.3] 24h 거래량 $5M 미만 제외 — 초저유동성 심볼 진입 방지
                 .ToList();
 
             decimal maxQuoteVolume = eligibleTickers.Count > 0 ? eligibleTickers.Max(t => t.QuoteVolume) : 0m;

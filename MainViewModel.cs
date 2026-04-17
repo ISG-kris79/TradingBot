@@ -61,7 +61,7 @@ namespace TradingBot.ViewModels
         private int _tickerFlushRunning;
         // [Stage2] 적응형 타이머 간격 — 부하에 따라 ticker flush 주기 자동 조절
         private int _tickerFlushIntervalMs = 200;
-        private const int TickerFlushMinMs = 100;
+        private const int TickerFlushMinMs = 300; // [v5.10.3] 100→300ms: CPU 과부하 방지
         private const int TickerFlushMaxMs = 500;
         private readonly Queue<int> _tickerFlushDurationSamples = new();
         private const int TickerFlushSampleWindow = 30;

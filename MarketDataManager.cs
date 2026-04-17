@@ -41,7 +41,7 @@ namespace TradingBot.Services
         // - 한 번 구독한 심볼은 계속 캐시 유지 (200개 상한)
         private readonly ConcurrentDictionary<string, bool> _pumpSubscribedSymbols = new(StringComparer.OrdinalIgnoreCase);
         private DateTime _lastPumpSubRefreshTime = DateTime.MinValue;
-        private const int MaxPumpSubscribedSymbols = 200;
+        private const int MaxPumpSubscribedSymbols = 100; // [v5.10.3] 200→100: 메모리 WebSocket 스트림 절감
         private const int TopAltRefreshCount = 50;
         private static readonly BinanceEnums.KlineInterval[] PumpIntervals = new[]
         {
