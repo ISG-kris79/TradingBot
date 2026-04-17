@@ -5,6 +5,16 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.12] - 2026-04-17
+
+### Fixed
+
+ - **DB HOLDLOCK 완전 제거**: `SaveGeneralSettingsAsync` MERGE에서 `WITH (HOLDLOCK)` 제거 — SELECT 블로킹 해소 (SavePositionStateAsync는 이전 커밋에서 제거됨)
+ - **DB 커넥션 풀 고갈 수정**: Footer/LiveLog 드레인이 항목당 개별 커넥션 최대 80개 오픈 → 단일 커넥션으로 배치 INSERT (80→1 커넥션). `SaveFooterLogsBatchAsync` / `SaveLiveLogsBatchAsync` 추가
+ - **대시보드 $0 표시 버그**: API 실패 시 캐시(WalletBalance)를 0으로 덮어쓰던 버그 수정 — API 성공 시에만 캐시 업데이트, 실패 시 마지막 유효값 유지
+ - **GetBalancesAsync 중복 호출 제거**: 대시보드 갱신 시 Wallet/Available 각각 별도 API 호출 2회 → `GetBalancePairAsync` 단일 호출로 통합
+ - **GetAvailableBalanceAsync 에러 로그 추가**: 실패 시 조용히 0 반환하던 것 → 오류 메시지 로깅
+
 ## [5.10.11] - 2026-04-17
 
 ### Fixed

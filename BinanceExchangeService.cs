@@ -128,10 +128,30 @@ namespace TradingBot.Services
         public async Task<decimal> GetAvailableBalanceAsync(string asset, CancellationToken ct = default)
         {
             var result = await _client.UsdFuturesApi.Account.GetBalancesAsync(ct: ct);
-            if (!result.Success) return 0;
-
+            if (!result.Success)
+            {
+                OnLog?.Invoke($"❌ [가용잔고] GetBalancesAsync 실패: {result.Error?.Message ?? "알 수 없는 오류"} (code={result.Error?.Code})");
+                return 0;
+            }
             var balance = result.Data.FirstOrDefault(b => b.Asset == asset);
             return balance?.AvailableBalance ?? 0;
+        }
+
+        /// <summary>
+        /// [v5.10.12] WalletBalance + AvailableBalance 단일 API 호출로 반환 — 대시보드용
+        /// </summary>
+        public async Task<(decimal Wallet, decimal Available)> GetBalancePairAsync(string asset, CancellationToken ct = default)
+        {
+            var result = await _client.UsdFuturesApi.Account.GetBalancesAsync(ct: ct);
+            if (!result.Success)
+            {
+                OnLog?.Invoke($"❌ [계좌잔고] GetBalancesAsync 실패: {result.Error?.Message ?? "알 수 없는 오류"} (code={result.Error?.Code})");
+                return (0, 0);
+            }
+            var balance = result.Data.FirstOrDefault(b => b.Asset == asset);
+            if (balance == null)
+                OnLog?.Invoke($"⚠️ [계좌잔고] {asset} 잔고 항목 없음 — API 키 권한(Read) 또는 선물 계좌 확인 필요");
+            return (balance?.WalletBalance ?? 0, balance?.AvailableBalance ?? 0);
         }
 
         public async Task<decimal> GetPriceAsync(string symbol, CancellationToken ct = default)

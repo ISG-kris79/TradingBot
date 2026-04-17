@@ -6221,9 +6221,19 @@ namespace TradingBot
                     return;
                 }
 
-                // [v5.1.8] 캐시 갱신 — WalletBalance + AvailableBalance + UnrealizedPnL 분리
-                decimal walletBal = await _exchangeService.GetBalanceAsync("USDT", token);
-                decimal availBal = await _exchangeService.GetAvailableBalanceAsync("USDT", token);
+                // [v5.10.12] 단일 API 호출로 Wallet+Available 동시 조회 (기존 2회 → 1회)
+                decimal walletBal = 0m, availBal = 0m;
+                if (_exchangeService is BinanceExchangeService binanceBalSvc)
+                {
+                    var (w, a) = await binanceBalSvc.GetBalancePairAsync("USDT", token);
+                    walletBal = w; availBal = a;
+                }
+                else
+                {
+                    walletBal = await _exchangeService.GetBalanceAsync("USDT", token);
+                    availBal = await _exchangeService.GetAvailableBalanceAsync("USDT", token);
+                }
+
                 decimal unrealPnl = 0m;
                 try
                 {
@@ -6232,13 +6242,22 @@ namespace TradingBot
                 }
                 catch { }
 
-                _cachedUsdtBalance = walletBal;
-                _cachedAvailableBalance = availBal;
-                _cachedUnrealizedPnl = unrealPnl;
-                _lastBalanceCacheTime = DateTime.Now;
+                // [v5.10.12] API 실패(walletBal=0) 시 캐시를 0으로 덮어쓰지 않음 — $0 표시 방지
+                if (walletBal > 0)
+                {
+                    _cachedUsdtBalance = walletBal;
+                    _cachedAvailableBalance = availBal;
+                    _cachedUnrealizedPnl = unrealPnl;
+                    _lastBalanceCacheTime = DateTime.Now;
+                }
+                // API 실패 → 캐시 만료 유지 → 다음 tick 재시도, UI는 기존 캐시값 표시
 
-                double equity2 = (double)(walletBal + unrealPnl);
-                double available2 = (double)availBal;
+                decimal effectiveWallet = walletBal > 0 ? walletBal : _cachedUsdtBalance;
+                decimal effectiveAvail = walletBal > 0 ? availBal : _cachedAvailableBalance;
+                decimal effectiveUnreal = walletBal > 0 ? unrealPnl : _cachedUnrealizedPnl;
+
+                double equity2 = (double)(effectiveWallet + effectiveUnreal);
+                double available2 = (double)effectiveAvail;
 
                 int totalCount2 = 0;
                 int majorCount2 = 0;

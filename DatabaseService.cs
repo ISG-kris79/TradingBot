@@ -806,26 +806,31 @@ SELECT CASE WHEN EXISTS (
         }
 
         /// <summary>
-        /// 라이브 로그 저장
+        /// 라이브 로그 배치 저장 — 단일 커넥션으로 다수 항목 처리 (커넥션 풀 절약)
         /// </summary>
-        public async Task SaveLiveLogAsync(string category, string message, string? symbol = null)
+        public async Task SaveLiveLogsBatchAsync(IEnumerable<(string Category, string Message, string? Symbol)> items)
         {
+            var list = items.ToList();
+            if (list.Count == 0) return;
             try
             {
                 using var conn = new SqlConnection(_connStr);
                 await conn.OpenAsync();
-                // 로그 삽입
-                string insertSql = @"
+
+                const string insertSql = @"
                 INSERT INTO LiveLogs (Timestamp, Category, Symbol, Message)
                 VALUES (@Timestamp, @Category, @Symbol, @Message)";
 
-                await conn.ExecuteAsync(insertSql, new
+                var rows = list.Select(x => new
                 {
                     Timestamp = DateTime.Now,
-                    Category = category,
-                    Symbol = symbol,
-                    Message = message
-                }, commandTimeout: QueryTimeout);
+                    Category = x.Category,
+                    Symbol = x.Symbol,
+                    Message = x.Message
+                });
+
+                // [v5.10.12] 단일 커넥션으로 배치 INSERT — 개별 커넥션 80개 → 1개로 절감
+                await conn.ExecuteAsync(insertSql, rows, commandTimeout: 5);
             }
             catch (Exception ex)
             {
@@ -834,16 +839,22 @@ SELECT CASE WHEN EXISTS (
         }
 
         /// <summary>
-        /// Footer 로그 저장
+        /// 라이브 로그 저장 (단건 — 하위 호환)
         /// </summary>
-        public async Task SaveFooterLogAsync(DateTime timestamp, string message)
+        public async Task SaveLiveLogAsync(string category, string message, string? symbol = null)
         {
+            await SaveLiveLogsBatchAsync(new[] { (category, message, symbol) });
+        }
+
+        /// <summary>
+        /// Footer 로그 배치 저장 — 단일 커넥션으로 다수 항목 처리 (커넥션 풀 절약)
+        /// </summary>
+        public async Task SaveFooterLogsBatchAsync(IEnumerable<(DateTime Timestamp, string Message)> items)
+        {
+            var list = items.ToList();
+            if (list.Count == 0) return;
             try
             {
-                // [v5.2.2] Message 컬럼 잘림 방지 — 4000자 제한
-                if (message != null && message.Length > 4000)
-                    message = message[..4000];
-
                 using var conn = new SqlConnection(_connStr);
                 await conn.OpenAsync();
 
@@ -861,20 +872,31 @@ SELECT CASE WHEN EXISTS (
                     catch { _footerLogColumnExpanded = true; }
                 }
 
-                string insertSql = @"
+                const string insertSql = @"
                 INSERT INTO FooterLogs (Timestamp, Message)
                 VALUES (@Timestamp, @Message)";
 
-                await conn.ExecuteAsync(insertSql, new
+                var rows = list.Select(x => new
                 {
-                    Timestamp = timestamp,
-                    Message = message
-                }, commandTimeout: QueryTimeout);
+                    Timestamp = x.Timestamp,
+                    Message = x.Message?.Length > 4000 ? x.Message[..4000] : x.Message
+                });
+
+                // [v5.10.12] 단일 커넥션으로 배치 INSERT — 개별 커넥션 80개 → 1개로 절감
+                await conn.ExecuteAsync(insertSql, rows, commandTimeout: 5);
             }
             catch (Exception ex)
             {
                 Log($"❌ [DB] Footer 로그 저장 실패: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Footer 로그 저장 (단건 — 하위 호환)
+        /// </summary>
+        public async Task SaveFooterLogAsync(DateTime timestamp, string message)
+        {
+            await SaveFooterLogsBatchAsync(new[] { (timestamp, message) });
         }
 
         /// <summary>

@@ -4258,19 +4258,13 @@ namespace TradingBot.ViewModels
 
             try
             {
-                int processed = 0;
-                while (processed < MaxDbWritesPerDrain && _pendingLiveLogDbWrites.TryDequeue(out var logItem))
-                {
-                    try
-                    {
-                        await _dbService.SaveLiveLogAsync(logItem.Category, logItem.Message, logItem.Symbol);
-                    }
-                    catch
-                    {
-                    }
+                // [v5.10.12] 배치 수집 후 단일 커넥션으로 INSERT — 커넥션 풀 고갈 방지
+                var batch = new List<(string Category, string Message, string? Symbol)>(MaxDbWritesPerDrain);
+                while (batch.Count < MaxDbWritesPerDrain && _pendingLiveLogDbWrites.TryDequeue(out var logItem))
+                    batch.Add((logItem.Category, logItem.Message, logItem.Symbol));
 
-                    processed++;
-                }
+                if (batch.Count > 0)
+                    await _dbService.SaveLiveLogsBatchAsync(batch);
             }
             finally
             {
@@ -4293,19 +4287,13 @@ namespace TradingBot.ViewModels
 
             try
             {
-                int processed = 0;
-                while (processed < MaxDbWritesPerDrain && _pendingFooterLogDbWrites.TryDequeue(out var logItem))
-                {
-                    try
-                    {
-                        await _dbService.SaveFooterLogAsync(logItem.Timestamp, logItem.Message);
-                    }
-                    catch
-                    {
-                    }
+                // [v5.10.12] 배치 수집 후 단일 커넥션으로 INSERT — 커넥션 풀 고갈 방지
+                var batch = new List<(DateTime Timestamp, string Message)>(MaxDbWritesPerDrain);
+                while (batch.Count < MaxDbWritesPerDrain && _pendingFooterLogDbWrites.TryDequeue(out var logItem))
+                    batch.Add((logItem.Timestamp, logItem.Message));
 
-                    processed++;
-                }
+                if (batch.Count > 0)
+                    await _dbService.SaveFooterLogsBatchAsync(batch);
             }
             finally
             {
