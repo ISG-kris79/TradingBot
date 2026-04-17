@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.21] - 2026-04-17
+
+### Fixed
+
+ - **OpenTime 조회 타임아웃 근본 수정**: `GetLatestSyncedOpenTimeAcrossTablesAsync` — DB 반복 쿼리 제거, `_openTimeCache` (`ConcurrentDictionary`) 인메모리 캐시 도입
+   - 재시작 후 심볼당 최초 1회만 DB 조회, 이후 캐시에서 즉시 반환 (DB 왕복 0ms)
+   - `UpdateOpenTimeCache` 정적 헬퍼 추가: Save 성공 시 자동 갱신 (CandleData/CandleHistory/MarketData/MarketCandles 4경로)
+   - 수십 심볼 동시 호출 → Full table scan 반복 → 커넥션 풀 고갈 문제 근본 해소
+
 ## [5.10.19] - 2026-04-17
 
 ### Changed
