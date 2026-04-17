@@ -5,6 +5,55 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.6] - 2026-04-17
+
+### Fixed
+
+ - **텔레그램 청산 알림 누락 버그 수정**: `ExecuteMarketClose`의 "already closed" 경로(거래소에서 이미 청산됨)에서 DB 저장 후 Telegram 알림이 전송되지 않던 버그. `NotifyProfitAsync` 호출 추가 — ORDIUSDT 등 익절/손절 완료 시 알림 누락 재현 불가
+
+## [5.10.5] - 2026-04-17
+
+### Fixed
+
+ - **하락추세 MEGA_PUMP 진입 차단**: `isUptrend` 조건 추가 — 5배 거래량 + 3% 양봉이라도 하락추세면 진입 차단, `MEGA_PUMP_SKIP` 로그 기록. 기존에는 추세 방향 검사 없음 (1000PEPEUSDT -20% 진입 원인)
+ - **AI_ENTRY 하락추세 임계값 강화**: 하락추세 시 ML 확률 임계값 65% → 78%로 상향
+ - **과열 감지 기준 개선**: 연속 양봉 카운트 방식 → 비율 기반 (최근 12봉 중 10봉+ 양봉 = 83%+) 변경. 변동성 구간에서도 과열 정확도 향상
+
+## [5.10.4] - 2026-04-17
+
+### Fixed
+
+ - **PUMP 과열 진입 차단 (isOverextended)**: 최근 12개 5분봉 중 10봉 이상 양봉이면 FALLBACK 차단, MEGA_PUMP RSI 캡 80→70 적용. BIOUSDT 15분봉 4개 연속 양봉 후 고점 진입 방지
+ - **하드 가격 SL 완화**: 진입가 대비 -3% → -4% (ROE -60% → -80%), 고점 대비 -5% → -7%로 여유 확대
+ - **FALLBACK 모멘텀 기준 강화**: 가격 회복 1.5% → 2.5% 이상으로 상향
+
+## [5.10.3] - 2026-04-17
+
+### Fixed
+
+ - **저유동성 코인 진입 차단**: `BuildCandidates` 단계에서 24h 거래대금 $5M 미만 심볼 제외 (PPIPNUSDT 등 슬리피지 큰 소형 코인)
+ - **CPU 사용량 절감**: `TickerFlushMinMs` 100ms → 300ms로 조정, UI 갱신 빈도 완화
+ - **메모리 사용량 절감**: `MaxPumpSubscribedSymbols` 200 → 100으로 감소, WebSocket 구독 심볼 제한
+
+## [5.10.2] - 2026-04-17
+
+### Added
+
+ - **메이저/PUMP 슬롯·진입횟수 DB 설정 연동**: `GeneralSettings` 테이블에 `EnableMajorTrading`, `MaxMajorSlots`, `MaxPumpSlots`, `MaxDailyEntries` 컬럼 추가 — UI 설정값이 DB에 저장·적용
+
+## [5.10.1] - 2026-04-17
+
+### Fixed
+
+ - **메이저 SHORT 진입 조건 강화**: 명확한 하락 신호 없이 SHORT 진입하는 오판 방지
+
+## [5.10.0] - 2026-04-17
+
+### Fixed
+
+ - **AI 학습 개선**: 상승장 SHORT 오진 방지 — 강한 상승 추세에서 잘못된 SHORT 레이블 학습 억제
+ - **가짜 펌프 진입 방지**: 실제 모멘텀 없는 단순 가격 상승에 대한 진입 필터 강화
+
 ## [5.3.0] - 2026-04-14
 
 ### Added
