@@ -1827,6 +1827,10 @@ namespace TradingBot
                     if (balance > 0)
                     {
                         InitialBalance = balance;
+                        // [v5.10.12] 대시보드 캐시 선초기화 — RefreshProfitDashboard 첫 호출 전 $0 표시 방지
+                        _cachedUsdtBalance = balance;
+                        _cachedAvailableBalance = balance; // 가용은 최소 WalletBalance 이하이므로 보수적 초기값
+                        _lastBalanceCacheTime = DateTime.MinValue; // 즉시 첫 API 갱신 유도
                         OnLiveLog?.Invoke($"💰 [Real] 가용 잔고: ${InitialBalance:N2}");
                     }
                     else
