@@ -1,6 +1,7 @@
 ﻿﻿using Binance.Net.Interfaces;
 using Dapper;
 using Microsoft.Data.SqlClient;
+using System.Collections.Concurrent;
 using System.Data;
 using System.Globalization;
 using System.IO;
@@ -23,6 +24,12 @@ namespace TradingBot.Services
         // [v5.10.14] 벌크 DB 동시 작업 제한 — 다수 심볼 동시 저장 시 커넥션 풀 고갈 방지
         // 최대 20개 동시 실행 (풀 200 중 벌크용 20 예약, 나머지는 읽기/쓰기용)
         private static readonly SemaphoreSlim _bulkDbSemaphore = new(20, 20);
+
+        // [v5.10.20] OpenTime 인메모리 캐시 — DB 반복 조회 완전 제거
+        // key: "{Symbol}|{Interval}", value: 해당 심볼+인터벌의 최신 OpenTime
+        // 재시작 시 최초 1회만 DB 조회, 이후 Save 시 자동 갱신
+        private static readonly ConcurrentDictionary<string, DateTime> _openTimeCache
+            = new(StringComparer.OrdinalIgnoreCase);
 
         public DatabaseService(Action<string>? logger = null)
         {
@@ -148,13 +155,20 @@ SELECT CASE WHEN EXISTS (
 
         public async Task<DateTime?> GetLatestSyncedOpenTimeAcrossTablesAsync(string symbol, string interval = "5m")
         {
-            // [v5.10.16] 세마포어로 동시 호출 제한 + 4개 쿼리 → 단일 SQL로 통합 (4왕복 → 1왕복)
-            await _bulkDbSemaphore.WaitAsync();
+            // [v5.10.20] 인메모리 캐시 우선 — DB 반복 조회 완전 제거
+            // 캐시 히트(재시작 후 첫 Save 이후): 즉시 반환, 0ms, DB 왕복 없음
+            // 캐시 미스(재시작 직후): DB 1회 조회 후 캐시 저장 → 이후 재조회 없음
+            string cacheKey = $"{symbol}|{interval}";
+            if (_openTimeCache.TryGetValue(cacheKey, out var cached))
+                return cached;
+
+            // 재시작 최초 1회만 DB 조회 (짧은 타임아웃 — 실패해도 null 반환으로 전체 동기화 수행)
+            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5));
             try
             {
                 using var conn = new SqlConnection(_connStr);
-                // 단일 쿼리로 4개 테이블 MAX 동시 조회 — 1번의 DB 왕복, WITH (NOLOCK)
-                var result = await conn.QuerySingleOrDefaultAsync<(DateTime? mc, DateTime? cd, DateTime? ch, DateTime? md)>(
+                await conn.OpenAsync(cts.Token);
+                var row = await conn.QuerySingleOrDefaultAsync<(DateTime? mc, DateTime? cd, DateTime? ch, DateTime? md)>(
                     @"SELECT
                         (SELECT MAX(OpenTime) FROM MarketCandles WITH (NOLOCK) WHERE Symbol = @Symbol) AS mc,
                         (SELECT MAX(OpenTime) FROM CandleData WITH (NOLOCK) WHERE Symbol = @Symbol) AS cd,
@@ -163,19 +177,37 @@ SELECT CASE WHEN EXISTS (
                     new { Symbol = symbol, Interval = interval },
                     commandTimeout: 5);
 
-                var candidates = new[] { result.mc, result.cd, result.ch, result.md }
-                    .Where(v => v.HasValue)
-                    .Select(v => v!.Value)
-                    .ToList();
+                var candidates = new[] { row.mc, row.cd, row.ch, row.md }
+                    .Where(v => v.HasValue).Select(v => v!.Value).ToList();
 
-                return candidates.Count > 0 ? candidates.Min() : null;
+                DateTime? result = candidates.Count > 0 ? candidates.Min() : null;
+                if (result.HasValue)
+                    _openTimeCache.TryAdd(cacheKey, result.Value); // 캐시 저장 (이후 DB 조회 없음)
+                return result;
+            }
+            catch (OperationCanceledException)
+            {
+                Log($"⚠️ [DB] OpenTime 조회 취소 ({symbol}): 연결 대기 초과 → null 반환 (전체 동기화 수행)");
+                return null;
             }
             catch (Exception ex)
             {
-                Log($"❌ [DB] 최신 OpenTime 조회 실패 ({symbol}): {ex.Message}");
+                Log($"⚠️ [DB] OpenTime 조회 실패 ({symbol}): {ex.Message} → null 반환 (전체 동기화 수행)");
                 return null;
             }
-            finally { _bulkDbSemaphore.Release(); }
+        }
+
+        /// <summary>
+        /// [v5.10.20] 캔들 저장 시 OpenTime 캐시 갱신 — DB 재조회 없이 항상 최신값 유지
+        /// </summary>
+        private static void UpdateOpenTimeCache(string symbol, string interval, IEnumerable<DateTime> openTimes)
+        {
+            if (string.IsNullOrEmpty(symbol)) return;
+            string key = $"{symbol}|{interval}";
+            foreach (var t in openTimes)
+            {
+                _openTimeCache.AddOrUpdate(key, t, (_, existing) => t > existing ? t : existing);
+            }
         }
 
         // [v4.5.12] MERGE 문으로 단일 statement 처리 (기존: IF NOT EXISTS + INSERT per row)
@@ -270,6 +302,10 @@ SELECT CASE WHEN EXISTS (
 
                     int affected = await conn.ExecuteAsync(sql, payload, commandTimeout: QueryTimeout);
                     if (affected > 0) Log($"✅ [DB] {affected}건 저장 완료 (CandleData)");
+                    UpdateOpenTimeCache(
+                        list[0].Symbol,
+                        string.IsNullOrWhiteSpace(list[0].Interval) ? "5m" : list[0].Interval,
+                        list.Select(d => d.OpenTime));
                 }
                 catch (SqlException sqlex) when (sqlex.Number == 2627 || sqlex.Number == 2601)
                 {
@@ -356,6 +392,10 @@ SELECT CASE WHEN EXISTS (
                 }
 
                 if (inserted > 0) Log($"✅ [DB] {inserted}건 벌크 저장 완료 (CandleData, {list.Count}건 중)");
+                UpdateOpenTimeCache(
+                    list[0].Symbol,
+                    string.IsNullOrWhiteSpace(list[0].Interval) ? "5m" : list[0].Interval,
+                    list.Select(d => d.OpenTime));
             }
             catch (Exception ex) { Log($"❌ [DB] CandleData 벌크 저장 실패: {ex.Message}"); }
             } // end outer try
@@ -377,6 +417,9 @@ SELECT CASE WHEN EXISTS (
 
                 int affected = await conn.ExecuteAsync(sql, data, commandTimeout: QueryTimeout);
                 if (affected > 0) Log($"✅ [DB] {affected}건 저장 완료 (CandleHistory)");
+                var dataList = data as IList<CandleData> ?? data.ToList();
+                if (dataList.Count > 0)
+                    UpdateOpenTimeCache(dataList[0].Symbol, dataList[0].Interval ?? "5m", dataList.Select(d => d.OpenTime));
             }
             catch (Exception ex) { Log($"❌ [DB] CandleHistory 저장 실패: {ex.Message}"); }
             finally { _bulkDbSemaphore.Release(); }
@@ -399,6 +442,9 @@ SELECT CASE WHEN EXISTS (
 
                 int affected = await conn.ExecuteAsync(sql, data, commandTimeout: QueryTimeout);
                 if (affected > 0) Log($"✅ [DB] {affected}건 저장 완료 (MarketData)");
+                var dataList = data as IList<CandleData> ?? data.ToList();
+                if (dataList.Count > 0)
+                    UpdateOpenTimeCache(dataList[0].Symbol, dataList[0].Interval ?? "5m", dataList.Select(d => d.OpenTime));
             }
             catch (Exception ex) { Log($"❌ [DB] MarketData 저장 실패: {ex.Message}"); }
             finally { _bulkDbSemaphore.Release(); }
@@ -570,7 +616,12 @@ SELECT CASE WHEN EXISTS (
                 bulkCopy.ColumnMappings.Add(col.ColumnName, col.ColumnName);
             }
 
-            try { await bulkCopy.WriteToServerAsync(dt); Log($"✅ [DB] {data.Count()}건 지표 데이터 저장 완료 (MarketCandles)"); }
+            try
+            {
+                await bulkCopy.WriteToServerAsync(dt);
+                Log($"✅ [DB] {data.Count()}건 지표 데이터 저장 완료 (MarketCandles)");
+                UpdateOpenTimeCache(data.First().Symbol, "5m", data.Select(d => d.OpenTime));
+            }
             catch (Exception ex) { Log($"❌ [DB] Bulk Insert 실패: {ex.Message}"); }
             finally { _bulkDbSemaphore.Release(); }
         }

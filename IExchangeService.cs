@@ -56,5 +56,20 @@ namespace TradingBot.Services
             string symbol,
             string orderId,
             CancellationToken ct = default);
+
+        // [v5.5.2] 전체 진입 주문 사전 등록 (시장가 진입 + SL + TP + 부분익절 + 트레일링 스탑)
+        Task<bool> ExecuteFullEntryWithAllOrdersAsync(
+            string symbol,
+            string positionSide,
+            decimal quantity,
+            int leverage,
+            decimal stopLossPrice,
+            decimal takeProfitPrice,
+            decimal partialProfitRoePercent,
+            decimal trailingStopCallbackRate,
+            CancellationToken ct = default);
+
+        // [v5.5.2] 포지션 모드 설정 (HEDGE 모드용)
+        Task<bool> SetPositionModeAsync(string positionMode, CancellationToken ct = default);
     }
 }
