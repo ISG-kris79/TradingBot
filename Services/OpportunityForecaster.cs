@@ -38,6 +38,9 @@ namespace TradingBot.Services
         public abstract float MaxDrawdownPct { get; }      // 최적 진입 후 허용 드로다운
         public abstract float MinConfidence { get; }       // 진입 최소 신뢰도
 
+        /// <summary>[v5.10] SHORT 전용 최소 신뢰도 (기본=MinConfidence, MajorForecaster에서 override)</summary>
+        public virtual float MinConfidenceShort => MinConfidence;
+
         public bool IsModelLoaded => _engineA != null && _engineB != null && _engineC != null;
 
         public event Action<string>? OnLog;
@@ -69,8 +72,10 @@ namespace TradingBot.Services
             int futureWindow = FutureWindowBars;
             int oppCount = 0;
 
-            // [v5.10] 드로다운 한도 1.2배 (기존 2.0배에서 축소) — 상승장 SHORT 오라벨 방지
-            float relaxedMaxDd = MaxDrawdownPct * 1.2f;
+            // [v5.10] SHORT는 DD 한도를 LONG보다 더 엄격하게 — 상승장 SHORT 오라벨 방지
+            float relaxedMaxDd = direction == "SHORT"
+                ? MaxDrawdownPct * 1.0f   // SHORT: 1.0배 (엄격) — 반드시 즉시 하락해야 함
+                : MaxDrawdownPct * 1.2f;  // LONG: 1.2배 (기존)
 
             for (int i = 20; i < candles.Count - futureWindow; i++)
             {
@@ -81,22 +86,23 @@ namespace TradingBot.Services
                 if (currentClose <= 0) continue;
 
                 // [v5.10] 조기 역방향 이탈 체크
-                // 진입 신호 후 earlyCheckBars 봉 내에 반대 방향으로 1%+ 이탈 → 라벨 0
-                // SHORT 진입 후 즉시 상승 / LONG 진입 후 즉시 하락 패턴 제거
+                // SHORT: 초기 상승 0.5%+ → 라벨 0 (LONG보다 엄격)
+                // LONG:  초기 하락 1.0%+ → 라벨 0
                 {
                     int earlyCheckBars = Math.Max(3, futureWindow / 6);
+                    float earlyReversalThreshold = direction == "SHORT" ? 0.5f : 1.0f;
                     bool earlyReversalFail = false;
                     for (int ec = i + 1; ec <= Math.Min(i + earlyCheckBars, candles.Count - 1); ec++)
                     {
                         if (direction == "LONG")
                         {
                             float earlyDown = (float)((currentClose - candles[ec].LowPrice) / currentClose * 100);
-                            if (earlyDown > 1.0f) { earlyReversalFail = true; break; }
+                            if (earlyDown > earlyReversalThreshold) { earlyReversalFail = true; break; }
                         }
                         else
                         {
                             float earlyUp = (float)((candles[ec].HighPrice - currentClose) / currentClose * 100);
-                            if (earlyUp > 1.0f) { earlyReversalFail = true; break; }
+                            if (earlyUp > earlyReversalThreshold) { earlyReversalFail = true; break; }
                         }
                     }
                     if (earlyReversalFail)
@@ -375,7 +381,9 @@ namespace TradingBot.Services
                 lock (_predictLock)
                 {
                     var predA = _engineA!.Predict(feature);
-                    if (predA.Probability < MinConfidence || !predA.ShouldEnter)
+                    // [v5.10] SHORT는 MinConfidenceShort 기준 적용 (MajorForecaster는 0.70f)
+                    float requiredConf = direction == "SHORT" ? MinConfidenceShort : MinConfidence;
+                    if (predA.Probability < requiredConf || !predA.ShouldEnter)
                         return ForecastResult.NoOpportunity;
 
                     var predB = _engineB!.Predict(feature);

@@ -23,8 +23,11 @@ namespace TradingBot.Services
         /// <summary>최대 드로다운: 0.8% (LabelCandleData 1.2배 완화 → 실효 0.96%)</summary>
         public override float MaxDrawdownPct => 0.8f;
 
-        /// <summary>진입 최소 신뢰도 (메이저는 완화)</summary>
+        /// <summary>진입 최소 신뢰도 LONG (메이저는 완화)</summary>
         public override float MinConfidence => 0.58f;
+
+        /// <summary>[v5.10] SHORT 전용 신뢰도 — 메이저 SHORT는 LONG보다 12%p 높게 요구</summary>
+        public override float MinConfidenceShort => 0.70f;
 
         /// <summary>
         /// [v5.10] 장기 추세 피처 추가 — MajorForecaster 전용 override
