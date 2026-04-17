@@ -504,7 +504,8 @@ namespace TradingBot.Services
 
                     // 드로다운 제한
                     float futureDownFromCurrent = (float)((currentClose - futureMinLow) / currentClose * 100);
-                    bool riskOk = futureDownFromCurrent <= Math.Abs(maxDrawdownFromLow) + 0.5f;
+                    // [v5.10] 버퍼 제거 → 진입 직후 급락 패턴을 positive 라벨에서 제거
+                    bool riskOk = futureDownFromCurrent <= Math.Abs(maxDrawdownFromLow);
 
                     if (uptrendSma && shallowPullback && profitTarget && riskOk)
                     {

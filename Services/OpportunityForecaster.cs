@@ -69,8 +69,8 @@ namespace TradingBot.Services
             int futureWindow = FutureWindowBars;
             int oppCount = 0;
 
-            // [v5.0.7] 드로다운 한도를 훨씬 관대하게 (원래 MaxDrawdownPct 의 2배)
-            float relaxedMaxDd = MaxDrawdownPct * 2.0f;
+            // [v5.10] 드로다운 한도 1.2배 (기존 2.0배에서 축소) — 상승장 SHORT 오라벨 방지
+            float relaxedMaxDd = MaxDrawdownPct * 1.2f;
 
             for (int i = 20; i < candles.Count - futureWindow; i++)
             {
@@ -79,6 +79,36 @@ namespace TradingBot.Services
 
                 decimal currentClose = candles[i].ClosePrice;
                 if (currentClose <= 0) continue;
+
+                // [v5.10] 조기 역방향 이탈 체크
+                // 진입 신호 후 earlyCheckBars 봉 내에 반대 방향으로 1%+ 이탈 → 라벨 0
+                // SHORT 진입 후 즉시 상승 / LONG 진입 후 즉시 하락 패턴 제거
+                {
+                    int earlyCheckBars = Math.Max(3, futureWindow / 6);
+                    bool earlyReversalFail = false;
+                    for (int ec = i + 1; ec <= Math.Min(i + earlyCheckBars, candles.Count - 1); ec++)
+                    {
+                        if (direction == "LONG")
+                        {
+                            float earlyDown = (float)((currentClose - candles[ec].LowPrice) / currentClose * 100);
+                            if (earlyDown > 1.0f) { earlyReversalFail = true; break; }
+                        }
+                        else
+                        {
+                            float earlyUp = (float)((candles[ec].HighPrice - currentClose) / currentClose * 100);
+                            if (earlyUp > 1.0f) { earlyReversalFail = true; break; }
+                        }
+                    }
+                    if (earlyReversalFail)
+                    {
+                        feature.LabelA_HasOpportunity = false;
+                        feature.LabelB_OffsetBars = 0f;
+                        feature.LabelC_PriceOffsetPct = 0f;
+                        feature.LabelExpectedProfitPct = 0f;
+                        dataset.Add(feature);
+                        continue;
+                    }
+                }
 
                 // 최적 진입 봉 탐색
                 int bestJ = -1;
@@ -442,6 +472,14 @@ namespace TradingBot.Services
         public float Stoch_K { get; set; }
         public float Stoch_D { get; set; }
 
+        // [v5.10] 장기 추세 피처 (MajorForecaster에서만 채움, Pump/Spike는 0)
+        /// <summary>60봉(5시간) 수익률 — 장기 상승/하락 추세 방향</summary>
+        public float Price_Change_60 { get; set; }
+        /// <summary>240봉(20시간) 수익률 — 거시 추세 방향</summary>
+        public float Price_Change_240 { get; set; }
+        /// <summary>SMA50 기울기 (5봉 전 대비 변화율) — 추세 가속/감속</summary>
+        public float EmaSlope_50 { get; set; }
+
         public static string[] GetFeatureColumnNames() => new[]
         {
             "Volume_Surge_3", "Volume_Surge_5",
@@ -458,7 +496,9 @@ namespace TradingBot.Services
             "ADX", "Plus_DI", "Minus_DI",
             "Price_To_BB_Mid", "Lower_Shadow_Avg",
             "Volume_Change_Pct", "Trend_Strength",
-            "Fib_Position", "Stoch_K", "Stoch_D"
+            "Fib_Position", "Stoch_K", "Stoch_D",
+            // [v5.10] 장기 추세 피처 (3개)
+            "Price_Change_60", "Price_Change_240", "EmaSlope_50"
         };
 
         public static ForecastFeature FromPumpFeature(PumpFeature p)
@@ -500,7 +540,11 @@ namespace TradingBot.Services
                 Trend_Strength = p.Trend_Strength,
                 Fib_Position = p.Fib_Position,
                 Stoch_K = p.Stoch_K,
-                Stoch_D = p.Stoch_D
+                Stoch_D = p.Stoch_D,
+                // [v5.10] 장기 추세 피처 — Pump/Spike는 0, Major는 ExtractFeature override에서 채움
+                Price_Change_60 = 0f,
+                Price_Change_240 = 0f,
+                EmaSlope_50 = 0f
             };
         }
     }
