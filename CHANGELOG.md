@@ -5,6 +5,21 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.31] - 2026-04-18
+
+### Fixed
+
+ - **[DB] 캔들 저장 성공 로그 제거** (`DatabaseService.cs`):
+   - 원인: CandleData/CandleHistory/MarketData/MarketCandles 저장 완료마다 Log 호출
+   - 결과: 시간당 13,000개 [DB] 성공 로그가 FooterLogs에 쌓여 UI 노이즈 + DB 부하
+   - 수정: 성공 로그 5곳 모두 제거 (오류 로그는 유지)
+ - **MarketData/CandleHistory UNIQUE KEY 위반 무시** (`DatabaseService.cs`):
+   - 원인: 레이스 컨디션 시 동일 데이터 중복 INSERT 시도 → `[DB] MarketData 저장 실패: UNIQUE KEY 위반` 로그 반복
+   - 수정: SqlException 2627/2601 (UNIQUE KEY) 무시 처리 (CandleData와 동일하게)
+ - **DB 트랜잭션 로그 183GB → 504MB 축소** (DB 직접):
+   - 원인: 복구 모델 FULL + 로그 백업 전혀 없음 → 로그 무한 증가 → 모든 쓰기 타임아웃
+   - 수정: 복구 모델 SIMPLE 변경, DBCC SHRINKFILE, CandleHistory 인덱스 REBUILD (단편화 96.4% → 0%)
+
 ## [5.10.30] - 2026-04-18
 
 ### Fixed

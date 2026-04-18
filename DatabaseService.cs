@@ -314,7 +314,6 @@ SELECT CASE WHEN EXISTS (
                     VALUES (@Symbol, @Interval, @OpenTime, @Open, @High, @Low, @Close, @Volume)";
 
                     int affected = await conn.ExecuteAsync(sql, payload, commandTimeout: QueryTimeout);
-                    if (affected > 0) Log($"✅ [DB] {affected}건 저장 완료 (CandleData)");
                     UpdateOpenTimeCache(
                         list[0].Symbol,
                         string.IsNullOrWhiteSpace(list[0].Interval) ? "5m" : list[0].Interval,
@@ -404,7 +403,6 @@ SELECT CASE WHEN EXISTS (
                     inserted = await cmd.ExecuteNonQueryAsync();
                 }
 
-                if (inserted > 0) Log($"✅ [DB] {inserted}건 벌크 저장 완료 (CandleData, {list.Count}건 중)");
                 UpdateOpenTimeCache(
                     list[0].Symbol,
                     string.IsNullOrWhiteSpace(list[0].Interval) ? "5m" : list[0].Interval,
@@ -429,11 +427,11 @@ SELECT CASE WHEN EXISTS (
                 VALUES (@Symbol, @Interval, @OpenTime, @Open, @High, @Low, @Close, @Volume, CASE WHEN @Close >= @Open THEN 1 ELSE 0 END)";
 
                 int affected = await conn.ExecuteAsync(sql, data, commandTimeout: QueryTimeout);
-                if (affected > 0) Log($"✅ [DB] {affected}건 저장 완료 (CandleHistory)");
                 var dataList = data as IList<CandleData> ?? data.ToList();
                 if (dataList.Count > 0)
                     UpdateOpenTimeCache(dataList[0].Symbol, dataList[0].Interval ?? "5m", dataList.Select(d => d.OpenTime));
             }
+            catch (SqlException sqlex) when (sqlex.Number == 2627 || sqlex.Number == 2601) { }
             catch (Exception ex) { Log($"❌ [DB] CandleHistory 저장 실패: {ex.Message}"); }
             finally { _bulkDbSemaphore.Release(); }
         }
@@ -454,11 +452,11 @@ SELECT CASE WHEN EXISTS (
                         @RSI, @BollingerUpper, @BollingerLower, @ElliottWaveState, @Trend_Strength)";
 
                 int affected = await conn.ExecuteAsync(sql, data, commandTimeout: QueryTimeout);
-                if (affected > 0) Log($"✅ [DB] {affected}건 저장 완료 (MarketData)");
                 var dataList = data as IList<CandleData> ?? data.ToList();
                 if (dataList.Count > 0)
                     UpdateOpenTimeCache(dataList[0].Symbol, dataList[0].Interval ?? "5m", dataList.Select(d => d.OpenTime));
             }
+            catch (SqlException sqlex) when (sqlex.Number == 2627 || sqlex.Number == 2601) { }
             catch (Exception ex) { Log($"❌ [DB] MarketData 저장 실패: {ex.Message}"); }
             finally { _bulkDbSemaphore.Release(); }
         }
@@ -632,7 +630,6 @@ SELECT CASE WHEN EXISTS (
             try
             {
                 await bulkCopy.WriteToServerAsync(dt);
-                Log($"✅ [DB] {data.Count()}건 지표 데이터 저장 완료 (MarketCandles)");
                 UpdateOpenTimeCache(data.First().Symbol, "5m", data.Select(d => d.OpenTime));
             }
             catch (Exception ex) { Log($"❌ [DB] Bulk Insert 실패: {ex.Message}"); }
