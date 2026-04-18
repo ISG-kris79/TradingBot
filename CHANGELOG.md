@@ -5,6 +5,24 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.34] - 2026-04-18
+
+### Fixed
+
+ - **학습 레이어 배너 닫히지 않는 버그 수정** (`TradingEngine.cs`, `MainViewModel.cs`):
+   - 원인: 학습 예외/취소 시 `OnInitialTrainingCompleted` 미호출 → 배너 영구 개방
+   - 수정: `TriggerInitialDownloadAndTrainAsync` finally 블록에서 실패 시 `Invoke(false)` 추가
+   - 수정: `StopInitialTrainingBanner(false)` 실패 경로에 30초 후 자동 숨김 타이머 추가
+
+## [5.10.33] - 2026-04-18
+
+### Fixed
+
+ - **SubscribeToEngineEvents NullReferenceException 크래시 수정** (`MainViewModel.cs`):
+   - 원인: `OnSymbolTrained` 람다 내 `RunOnUI` 지연 실행 시 `_engine`이 null (엔진 리셋 타이밍)
+   - 증상: `System.NullReferenceException` at `MainViewModel.<SubscribeToEngineEvents>b__781_420`
+   - 수정: 람다 내 `var eng = _engine; if (eng == null) return;` 로컬 캡처 후 null 체크
+
 ## [5.10.32] - 2026-04-18
 
 ### Fixed
