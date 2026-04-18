@@ -111,6 +111,29 @@ namespace TradingBot
             {
                 Console.WriteLine($"[EntryTimingML] 학습 시작: {trainingData.Count}개 샘플");
 
+                // [v5.10.26] 클래스 불균형 보정: positive × 5 이내로 negative 다운샘플링
+                // 이유: 초기 학습 시 downtrend 시장에서 ~1.8% positive → LightGBM이 항상 0 예측
+                {
+                    var positives = trainingData.Where(d => d.ShouldEnter).ToList();
+                    var negatives = trainingData.Where(d => !d.ShouldEnter).ToList();
+                    if (positives.Count == 0)
+                    {
+                        Console.WriteLine("[EntryTimingML] 경고: positive 샘플 0개 — 모델이 전부 0 예측할 수 있음");
+                    }
+                    else if (negatives.Count > positives.Count * 5)
+                    {
+                        var rng = new Random(42);
+                        int targetNeg = positives.Count * 5;
+                        negatives = negatives.OrderBy(_ => rng.Next()).Take(targetNeg).ToList();
+                        trainingData = positives.Concat(negatives).OrderBy(_ => rng.Next()).ToList();
+                        Console.WriteLine($"[EntryTimingML] 밸런싱: pos={positives.Count}, neg(after)={negatives.Count}, total={trainingData.Count}");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[EntryTimingML] 밸런스 양호: pos={positives.Count}, neg={negatives.Count}");
+                    }
+                }
+
                 // 데이터 로드
                 var dataView = _mlContext.Data.LoadFromEnumerable(trainingData);
 
@@ -157,8 +180,8 @@ namespace TradingBot
         }
 
         // 현재 파이프라인이 기대하는 Feature 수 (BuildPipeline의 featureColumns 길이)
-        // 49 기존 + 19 확장(v3.4.2) + 5 휩소(v4.5.2) + 5 하락추세(v4.5.6) + 3 DailyPnl(v4.5.11) + 5 단타지표(v4.6.2) = 86개
-        private const int ExpectedFeatureCount = 86;
+        // 49 기존 + 19 확장(v3.4.2) + 5 휩소(v4.5.2) + 5 하락추세(v4.5.6) + 3 DailyPnl(v4.5.11) + 5 단타지표(v4.6.2) + 4 스퀴즈/ST/Pivot(v4.6.3) = 90개
+        private const int ExpectedFeatureCount = 90;
 
         /// <summary>
         /// 저장된 모델 로드 (스키마 호환성 검증 포함)
@@ -429,7 +452,10 @@ namespace TradingBot
                 "DailyPnlRatio", "IsAboveDailyTarget", "DailyTradeCount",
                 // ── [v4.6.2] M15 단타 보조지표 5개 (트레이딩뷰 검증) ──
                 "M15_EMA_CrossState", "M15_Price_VWAP_Distance_Pct",
-                "M15_StochRSI_K", "M15_StochRSI_D", "M15_StochRSI_Cross"
+                "M15_StochRSI_K", "M15_StochRSI_D", "M15_StochRSI_Cross",
+                // ── [v4.6.3] BB 스퀴즈 / SuperTrend / Daily Pivot 4개 ──
+                "M15_BB_Width_Pct", "M15_SuperTrend_Direction",
+                "M15_DailyPivot_R1_Dist_Pct", "M15_DailyPivot_S1_Dist_Pct"
             };
 
             // 전처리 및 학습 파이프라인

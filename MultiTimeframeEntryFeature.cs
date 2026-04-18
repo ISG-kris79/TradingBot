@@ -148,6 +148,14 @@ namespace TradingBot
         public float M15_StochRSI_Cross { get; set; }           // 1=K>D 골든, -1=K<D 데드
 
         // ═══════════════════════════════════════════════════════════════
+        // [v4.6.3] 단타 보조지표 추가 — BB 스퀴즈, SuperTrend, Daily Pivot
+        // ═══════════════════════════════════════════════════════════════
+        public float M15_BB_Width_Pct { get; set; }              // BB 밴드 폭 % (낮을수록 스퀴즈/폭발 직전)
+        public float M15_SuperTrend_Direction { get; set; }      // 1=상승 추세, -1=하락 추세 (ATR10, mult3)
+        public float M15_DailyPivot_R1_Dist_Pct { get; set; }   // R1까지 거리 % (양수=R1이 위)
+        public float M15_DailyPivot_S1_Dist_Pct { get; set; }   // S1까지 거리 % (음수=S1이 아래)
+
+        // ═══════════════════════════════════════════════════════════════
         // 피보나치 되돌림 레벨 (객관적 수치로 AI 특징 사용)
         // ═══════════════════════════════════════════════════════════════
         public float Fib_DistanceTo0382_Pct { get; set; }    // 현재가에서 0.382 레벨까지 거리 (%)

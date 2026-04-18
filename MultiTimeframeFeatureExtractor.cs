@@ -165,8 +165,8 @@ namespace TradingBot
                 feature.IsAboveDailyTarget = IsAboveDailyTargetContext;
                 feature.DailyTradeCount = DailyTradeCountContext;
 
-                // [v4.6.2] M15 단타 보조지표 — EMA / VWAP / StochRSI
-                ExtractM15TradingViewFeatures(m15Klines, feature);
+                // [v4.6.2/v4.6.3] M15 단타 보조지표 — EMA / VWAP / StochRSI / BB스퀴즈 / SuperTrend / DailyPivot
+                ExtractM15TradingViewFeatures(m15Klines, d1Klines, feature);
 
                 // 시간 컨텍스트
                 ExtractTimeContext(timestamp, feature);
@@ -397,6 +397,9 @@ namespace TradingBot
             feature.Fib_DistanceTo0618_Pct = fibLevels.distanceTo0618;
             feature.Fib_DistanceTo0786_Pct = fibLevels.distanceTo0786;
             feature.Fib_InEntryZone = fibLevels.inEntryZone;
+
+            // [v4.6.2/v4.6.3] M15 단타 보조지표 (PIT/히스토리컬 경로 포함)
+            ExtractM15TradingViewFeatures(m15Klines, d1Klines, feature);
         }
 
         private struct TimeframeFeatures
@@ -727,10 +730,11 @@ namespace TradingBot
         }
 
         /// <summary>
-        /// [v4.6.2] M15 단타 보조지표 계산 (EMA, VWAP, StochRSI)
+        /// [v4.6.2/v4.6.3] M15 단타 보조지표 계산 (EMA, VWAP, StochRSI, BB스퀴즈, SuperTrend, DailyPivot)
         /// </summary>
         private static void ExtractM15TradingViewFeatures(
             List<IBinanceKline>? m15Klines,
+            List<IBinanceKline>? d1Klines,
             MultiTimeframeEntryFeature feature)
         {
             if (m15Klines == null || m15Klines.Count < 50) return;
@@ -768,6 +772,84 @@ namespace TradingBot
             feature.M15_StochRSI_K = (float)stochK;
             feature.M15_StochRSI_D = (float)stochD;
             feature.M15_StochRSI_Cross = stochK > stochD ? 1f : (stochK < stochD ? -1f : 0f);
+
+            // ── [v4.6.3] 추가 단타 지표 ────────────────────────────────────────────
+
+            // BB 밴드 폭 % (스퀴즈 감지 — 낮을수록 폭발 직전)
+            if (m15Klines.Count >= 20)
+            {
+                var bbSlice = m15Klines.TakeLast(20).Select(k => (double)k.ClosePrice).ToList();
+                double bbSma = bbSlice.Average();
+                double bbVariance = bbSlice.Average(p => Math.Pow(p - bbSma, 2));
+                double bbStd = Math.Sqrt(bbVariance);
+                feature.M15_BB_Width_Pct = bbSma > 0
+                    ? (float)((4.0 * bbStd) / bbSma * 100.0) // (upper-lower)/mid = 4*std/sma
+                    : 0f;
+            }
+
+            // SuperTrend (ATR period=10, multiplier=3)
+            if (m15Klines.Count >= 12)
+            {
+                const int stPeriod = 10;
+                const double stMult = 3.0;
+
+                // True Range 시리즈
+                var tr = new double[m15Klines.Count - 1];
+                for (int i = 1; i < m15Klines.Count; i++)
+                {
+                    double hl = (double)(m15Klines[i].HighPrice - m15Klines[i].LowPrice);
+                    double hc = Math.Abs((double)(m15Klines[i].HighPrice - m15Klines[i - 1].ClosePrice));
+                    double lc = Math.Abs((double)(m15Klines[i].LowPrice - m15Klines[i - 1].ClosePrice));
+                    tr[i - 1] = Math.Max(hl, Math.Max(hc, lc));
+                }
+
+                double finalUpper = 0, finalLower = 0;
+                int stDir = 1; // 1=상승, -1=하락
+
+                for (int i = stPeriod - 1; i < tr.Length; i++)
+                {
+                    // SMA ATR (Wilder smoothing 근사)
+                    double atr = 0;
+                    for (int j = i - stPeriod + 1; j <= i; j++) atr += tr[j];
+                    atr /= stPeriod;
+
+                    var c = m15Klines[i + 1]; // tr[i] = candle[i+1]
+                    double hl2 = ((double)c.HighPrice + (double)c.LowPrice) / 2.0;
+                    double rawUpper = hl2 + stMult * atr;
+                    double rawLower = hl2 - stMult * atr;
+
+                    double prevClose = (double)m15Klines[i].ClosePrice;
+                    double newUpper = (rawUpper < finalUpper || prevClose > finalUpper) ? rawUpper : finalUpper;
+                    double newLower = (rawLower > finalLower || prevClose < finalLower) ? rawLower : finalLower;
+
+                    double close = (double)c.ClosePrice;
+                    if (i == stPeriod - 1)
+                        stDir = close >= newLower ? 1 : -1;
+                    else if (stDir == 1 && close < newLower)
+                        stDir = -1;
+                    else if (stDir == -1 && close > newUpper)
+                        stDir = 1;
+
+                    finalUpper = newUpper;
+                    finalLower = newLower;
+                }
+                feature.M15_SuperTrend_Direction = (float)stDir;
+            }
+
+            // Daily Pivot R1 / S1 (전일 완성 캔들 기준)
+            if (d1Klines != null && d1Klines.Count >= 2)
+            {
+                var prev = d1Klines[^2]; // 전일 완성봉 (미래 참조 방지)
+                double pivH = (double)prev.HighPrice;
+                double pivL = (double)prev.LowPrice;
+                double pivC = (double)prev.ClosePrice;
+                double pivot = (pivH + pivL + pivC) / 3.0;
+                double r1 = 2.0 * pivot - pivL;
+                double s1 = 2.0 * pivot - pivH;
+                double price = currClose; // 위에서 계산한 currClose 재사용
+                feature.M15_DailyPivot_R1_Dist_Pct = price > 0 ? (float)((r1 - price) / price * 100.0) : 0f;
+                feature.M15_DailyPivot_S1_Dist_Pct = price > 0 ? (float)((s1 - price) / price * 100.0) : 0f;
+            }
         }
 
         private static double CalcEMALast(List<IBinanceKline> candles, int period)

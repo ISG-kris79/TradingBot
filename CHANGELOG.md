@@ -5,6 +5,25 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.26] - 2026-04-17
+
+### Fixed
+
+ - **EntryTimingML 클래스 불균형 → 진입 21시간 완전 차단 근본 수정** (`EntryTimingMLTrainer.cs`):
+   - 원인: 초기학습 시 downtrend 시장 260봉 → positive 샘플 ~1.8% → LightGBM 전부 0 예측 (score=-11.66)
+   - 수정: `TrainAndSaveAsync` 내 다운샘플링 — negative를 positive × 5 이하로 제한
+   - 이후 초기학습/재학습 모두 적용, 로그: `[EntryTimingML] 밸런싱: pos=X, neg(after)=Y`
+
+### Added
+
+ - **ML 피처 4개 추가 — BB Squeeze / SuperTrend / Daily Pivot** (`v4.6.3`):
+   - `M15_BB_Width_Pct`: BB 밴드 폭% (낮을수록 스퀴즈/폭발 직전, 20봉 SMA±2σ)
+   - `M15_SuperTrend_Direction`: 1=상승 / -1=하락 추세 (ATR 10봉, multiplier 3)
+   - `M15_DailyPivot_R1_Dist_Pct`: 전일 R1까지 거리% (양수=저항 위)
+   - `M15_DailyPivot_S1_Dist_Pct`: 전일 S1까지 거리% (음수=지지 아래)
+   - 총 피처 수 86 → 90개 (`ExpectedFeatureCount = 90`)
+   - PIT/히스토리컬 경로에서도 TradingView 피처 계산 누락 버그 수정 (`AssignFeatures`)
+
 ## [5.10.25] - 2026-04-17
 
 ### Fixed
