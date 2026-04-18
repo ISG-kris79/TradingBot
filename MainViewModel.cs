@@ -2312,7 +2312,9 @@ namespace TradingBot.ViewModels
             // [v4.7.4] 심볼 개별 학습 완료 → 상태 텍스트 갱신
             _engine.OnSymbolTrained += sym => RunOnUI(() =>
             {
-                InitialTrainingStatusText = $"✅ 학습 진행 중 — {_engine.TrainedSymbolCount}개 심볼 진입 활성화";
+                var eng = _engine;
+                if (eng == null) return;
+                InitialTrainingStatusText = $"✅ 학습 진행 중 — {eng.TrainedSymbolCount}개 심볼 진입 활성화";
             });
 
             // 초기 상태 반영: 학습 미완료면 배너 즉시 표시
