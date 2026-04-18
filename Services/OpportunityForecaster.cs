@@ -229,8 +229,18 @@ namespace TradingBot.Services
                     // 이유: 하락장 DB 데이터는 기회=10~17% → LightGBM이 전부 0 예측 → F1≈0 → NoOpportunity만 반환
                     var posData = trainingData.Where(f => f.LabelA_HasOpportunity).ToList();
                     var negData = trainingData.Where(f => !f.LabelA_HasOpportunity).ToList();
+
+                    // [v5.10.47] positive 0개면 학습 스킵 → 기존 모델 파일 보존
+                    // 이유: all-negative 학습 시 ClassifierA가 항상 prob≈0 반환 → PUMP 진입 완전 차단
+                    if (posData.Count == 0)
+                    {
+                        OnLog?.Invoke($"[{ModelPrefix}] [A] ⚠️ positive 샘플 0개 — 기존 모델 유지 (재학습 스킵)");
+                        metrics.SampleCount = 0;
+                        return metrics;
+                    }
+
                     List<ForecastFeature> balancedData;
-                    if (posData.Count > 0 && negData.Count > posData.Count * 5)
+                    if (negData.Count > posData.Count * 5)
                     {
                         var rng = new System.Random(42);
                         int targetNeg = posData.Count * 5;

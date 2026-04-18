@@ -118,7 +118,10 @@ namespace TradingBot
                     var negatives = trainingData.Where(d => !d.ShouldEnter).ToList();
                     if (positives.Count == 0)
                     {
-                        Console.WriteLine("[EntryTimingML] 경고: positive 샘플 0개 — 모델이 전부 0 예측할 수 있음");
+                        // [v5.10.47] positive 0개면 학습 스킵 → 기존 모델 파일 보존
+                        // 이유: all-negative 데이터로 학습 시 모델이 항상 prob≈0 반환 → 진입 완전 차단
+                        Console.WriteLine("[EntryTimingML] ⚠️ positive 샘플 0개 — 기존 모델 유지 (재학습 스킵)");
+                        return new ModelMetrics { TrainingSamples = trainingData.Count, Accuracy = -1f };
                     }
                     else if (negatives.Count > positives.Count * 5)
                     {

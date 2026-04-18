@@ -175,15 +175,19 @@ SELECT CASE WHEN EXISTS (
                     @"SELECT name FROM sys.tables WHERE name IN ('MarketCandles','CandleData','CandleHistory','MarketData')",
                     commandTimeout: 10)).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+                // [v5.10.47] CAST(OpenTime AS DATETIME2) + WHERE > '1800-01-01' 필터
+                // 이유: CandleData/MarketData=datetime2, MarketCandles/CandleHistory=datetime — UNION ALL 시 타입 불일치
+                //       일부 행 OpenTime=DateTime.MinValue(0001-01-01) → "날짜/시간 범위 초과" SqlException 발생
+                const string OT_FILTER = "AND OpenTime > '1800-01-01'";
                 var parts = new List<string>();
                 if (existingTables.Contains("MarketCandles"))
-                    parts.Add("SELECT Symbol, MAX(OpenTime) AS MaxOT FROM MarketCandles WITH (NOLOCK) GROUP BY Symbol");
+                    parts.Add($"SELECT Symbol, MAX(CAST(OpenTime AS DATETIME2(7))) AS MaxOT FROM MarketCandles WITH (NOLOCK) WHERE Symbol IS NOT NULL {OT_FILTER} GROUP BY Symbol");
                 if (existingTables.Contains("CandleData"))
-                    parts.Add("SELECT Symbol, MAX(OpenTime) AS MaxOT FROM CandleData WITH (NOLOCK) GROUP BY Symbol");
+                    parts.Add($"SELECT Symbol, MAX(CAST(OpenTime AS DATETIME2(7))) AS MaxOT FROM CandleData WITH (NOLOCK) WHERE Symbol IS NOT NULL {OT_FILTER} GROUP BY Symbol");
                 if (existingTables.Contains("CandleHistory"))
-                    parts.Add("SELECT Symbol, MAX(OpenTime) AS MaxOT FROM CandleHistory WITH (NOLOCK) WHERE [Interval] = @Interval GROUP BY Symbol");
+                    parts.Add($"SELECT Symbol, MAX(CAST(OpenTime AS DATETIME2(7))) AS MaxOT FROM CandleHistory WITH (NOLOCK) WHERE [Interval] = @Interval {OT_FILTER} GROUP BY Symbol");
                 if (existingTables.Contains("MarketData"))
-                    parts.Add("SELECT Symbol, MAX(OpenTime) AS MaxOT FROM MarketData WITH (NOLOCK) WHERE [Interval] = @Interval GROUP BY Symbol");
+                    parts.Add($"SELECT Symbol, MAX(CAST(OpenTime AS DATETIME2(7))) AS MaxOT FROM MarketData WITH (NOLOCK) WHERE [Interval] = @Interval {OT_FILTER} GROUP BY Symbol");
 
                 if (parts.Count == 0)
                 {
@@ -261,12 +265,13 @@ SELECT CASE WHEN EXISTS (
 
                 using var conn = new SqlConnection(_connStr);
                 await conn.OpenAsync();
+                // [v5.10.47] CAST + 유효 날짜 필터 — datetime/datetime2 타입 불일치 및 MinValue 오류 방지
                 var row = await conn.QuerySingleOrDefaultAsync<(DateTime? mc, DateTime? cd, DateTime? ch, DateTime? md)>(
                     @"SELECT
-                        (SELECT MAX(OpenTime) FROM MarketCandles WITH (NOLOCK) WHERE Symbol = @Symbol) AS mc,
-                        (SELECT MAX(OpenTime) FROM CandleData    WITH (NOLOCK) WHERE Symbol = @Symbol) AS cd,
-                        (SELECT MAX(OpenTime) FROM CandleHistory WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval) AS ch,
-                        (SELECT MAX(OpenTime) FROM MarketData    WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval) AS md",
+                        (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM MarketCandles WITH (NOLOCK) WHERE Symbol = @Symbol AND OpenTime > '1800-01-01') AS mc,
+                        (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM CandleData    WITH (NOLOCK) WHERE Symbol = @Symbol AND OpenTime > '1800-01-01') AS cd,
+                        (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM CandleHistory WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval AND OpenTime > '1800-01-01') AS ch,
+                        (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM MarketData    WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval AND OpenTime > '1800-01-01') AS md",
                     new { Symbol = symbol, Interval = interval },
                     commandTimeout: 10);
 

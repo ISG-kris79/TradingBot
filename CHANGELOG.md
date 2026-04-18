@@ -5,6 +5,20 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.47] - 2026-04-19
+
+### Fixed
+
+ - **OpenTime datetime/datetime2 타입 불일치 → SqlException 수정** (`DatabaseService.cs`):
+   - 근본 원인: `CandleData`/`MarketData`=`datetime2`, `MarketCandles`/`CandleHistory`=`datetime` — UNION ALL 쿼리 시 타입 충돌 + `DateTime.MinValue(0001-01-01)` 행 존재 → "날짜/시간 범위 초과" SqlException 매 분 발생
+   - 수정: `BulkPreloadOpenTimeCacheAsync` 및 개별 조회 쿼리에 `CAST(OpenTime AS DATETIME2(7))` + `WHERE OpenTime > '1800-01-01'` 필터 적용
+   - 효과: OpenTime 오류 완전 제거, 캐시 로드 정상화
+ - **EntryTimingML/OpportunityForecaster positive 0개 → 기존 모델 덮어쓰기 방지** (`EntryTimingMLTrainer.cs`, `Services/OpportunityForecaster.cs`):
+   - 근본 원인: 재학습 시 positive 샘플이 0개(하락장/진입 없음 기간)이면 all-negative 학습 → 모델이 항상 prob≈0.001 반환 → AI_GATE가 모든 PUMP 진입 차단
+   - 기존 코드: positive=0 경고만 출력 후 계속 학습 → broken 모델 파일 덮어씀
+   - 수정: `positives.Count == 0` 감지 시 즉시 return (기존 모델 파일 보존)
+   - 효과: 재학습 후 진입 완전 차단 현상 방지
+
 ## [5.10.46] - 2026-04-18
 
 ### Fixed
