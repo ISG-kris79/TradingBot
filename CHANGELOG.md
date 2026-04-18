@@ -5,6 +5,16 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.40] - 2026-04-18
+
+### Fixed
+
+ - **학습 레이어 배너 재표시 후 영구 열림 근본 수정** (`MainViewModel.cs`):
+   - 근본 원인: `StopInitialTrainingBanner`가 10s/30s hide 타이머를 시작한 뒤, hide 타이머 만료 전 `OnInitialTrainingProgress` 메시지가 도착하면 `StartOrUpdateInitialTrainingBanner()`가 배너를 다시 `Visible`로 변경 + `_initialTrainingTimer` 재생성 → 이후 새 hide 타이머 없이 배너 영구 열림
+   - 수정: `_trainingBannerFinalized` 플래그 추가 — `StopInitialTrainingBanner` 호출 즉시 `true` 설정
+   - `StartOrUpdateInitialTrainingBanner()`가 `_trainingBannerFinalized = true`이면 즉시 return → 완료/실패 후 모든 progress 메시지 무시
+   - 봇 재시작(`SubscribeToEngineEvents`) 시 플래그 자동 리셋 → 다음 학습에서도 정상 표시
+
 ## [5.10.39] - 2026-04-18
 
 ### Fixed

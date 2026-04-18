@@ -227,6 +227,7 @@ namespace TradingBot.ViewModels
         private System.Threading.Timer? _categoryStatsTimer;
 
         // [v4.7.2] 초기학습 진행 배너 (진입 차단 시각화)
+        private bool _trainingBannerFinalized = false; // [v5.10.40] 완료/실패 후 재표시 방지
         private Visibility _initialTrainingBannerVisibility = Visibility.Collapsed;
         public Visibility InitialTrainingBannerVisibility
         {
@@ -2271,6 +2272,7 @@ namespace TradingBot.ViewModels
             };
 
             // [v4.7.2] 초기학습 진행 배너 구독
+            _trainingBannerFinalized = false; // [v5.10.40] 봇 재시작 시 플래그 리셋
             _engine.OnInitialTrainingProgress += msg => RunOnUI(() =>
             {
                 if (!string.IsNullOrWhiteSpace(msg))
@@ -2326,6 +2328,7 @@ namespace TradingBot.ViewModels
 
         private void StartOrUpdateInitialTrainingBanner()
         {
+            if (_trainingBannerFinalized) return; // [v5.10.40] 완료/실패 후 재표시 금지
             InitialTrainingBannerVisibility = Visibility.Visible;
             InitialTrainingStatusText = "🧠 초기학습 진행 중 — 완료 심볼부터 순차 진입 활성화";
 
@@ -2345,6 +2348,7 @@ namespace TradingBot.ViewModels
 
         private void StopInitialTrainingBanner(bool success)
         {
+            _trainingBannerFinalized = true; // [v5.10.40] 이후 StartOrUpdate 호출 무시
             _initialTrainingTimer?.Stop();
             _initialTrainingTimer = null;
 
