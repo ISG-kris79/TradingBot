@@ -160,31 +160,40 @@ SELECT CASE WHEN EXISTS (
         }
 
         /// <summary>
-        /// [v5.10.37] 전체 심볼 OpenTime 일괄 로드 — 봇 시작 시 1회 실행
-        /// 기존 구조적 문제: N개 심볼 × per-symbol 쿼리 = N번 DB 왕복 → 동시 100+ 쿼리 → 슬롯 고갈/타임아웃
-        /// 해결: 4개 테이블 UNION ALL → 심볼별 MIN(MAX) → 캐시 전체 적재 (1번 왕복)
+        /// [v5.10.42] 전체 심볼 OpenTime 일괄 로드 — 봇 시작 시 1회 실행
+        /// 실패 시 false 반환 → _openTimePreloadDone 미설정 → 다음 호출 시 재시도
         /// </summary>
-        private async Task BulkPreloadOpenTimeCacheAsync(string interval)
+        private async Task<bool> BulkPreloadOpenTimeCacheAsync(string interval)
         {
             try
             {
                 using var conn = new SqlConnection(_connStr);
                 await conn.OpenAsync();
 
-                const string sql = @"
-                    SELECT Symbol, MAX(OpenTime) AS MaxOT FROM MarketCandles WITH (NOLOCK) GROUP BY Symbol
-                    UNION ALL
-                    SELECT Symbol, MAX(OpenTime)           FROM CandleData    WITH (NOLOCK) GROUP BY Symbol
-                    UNION ALL
-                    SELECT Symbol, MAX(OpenTime)           FROM CandleHistory WITH (NOLOCK)
-                        WHERE [Interval] = @Interval GROUP BY Symbol
-                    UNION ALL
-                    SELECT Symbol, MAX(OpenTime)           FROM MarketData    WITH (NOLOCK)
-                        WHERE [Interval] = @Interval GROUP BY Symbol";
+                // 각 테이블 존재 여부를 확인 후 UNION — 테이블 미존재로 인한 전체 쿼리 실패 방지
+                var existingTables = (await conn.QueryAsync<string>(
+                    @"SELECT name FROM sys.tables WHERE name IN ('MarketCandles','CandleData','CandleHistory','MarketData')",
+                    commandTimeout: 10)).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+                var parts = new List<string>();
+                if (existingTables.Contains("MarketCandles"))
+                    parts.Add("SELECT Symbol, MAX(OpenTime) AS MaxOT FROM MarketCandles WITH (NOLOCK) GROUP BY Symbol");
+                if (existingTables.Contains("CandleData"))
+                    parts.Add("SELECT Symbol, MAX(OpenTime) AS MaxOT FROM CandleData WITH (NOLOCK) GROUP BY Symbol");
+                if (existingTables.Contains("CandleHistory"))
+                    parts.Add("SELECT Symbol, MAX(OpenTime) AS MaxOT FROM CandleHistory WITH (NOLOCK) WHERE [Interval] = @Interval GROUP BY Symbol");
+                if (existingTables.Contains("MarketData"))
+                    parts.Add("SELECT Symbol, MAX(OpenTime) AS MaxOT FROM MarketData WITH (NOLOCK) WHERE [Interval] = @Interval GROUP BY Symbol");
+
+                if (parts.Count == 0)
+                {
+                    Log("⚠️ [DB] OpenTime BulkPreload: 대상 테이블 없음");
+                    return false;
+                }
+
+                var sql = string.Join("\nUNION ALL\n", parts);
                 var rawRows = await conn.QueryAsync(sql, new { Interval = interval }, commandTimeout: 60);
 
-                // 심볼별로 4개 테이블 MAX 중 MIN 값 계산 (기존 per-symbol 쿼리와 동일 의미)
                 var grouped = new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
                 foreach (var row in rawRows)
                 {
@@ -204,10 +213,12 @@ SELECT CASE WHEN EXISTS (
                 }
 
                 Log($"✅ [DB] OpenTime 캐시 일괄 로드 완료 ({grouped.Count}개 심볼)");
+                return grouped.Count > 0;
             }
             catch (Exception ex)
             {
-                Log($"⚠️ [DB] OpenTime 캐시 일괄 로드 실패 → 개별 조회 폴백: {ex.Message}");
+                Log($"⚠️ [DB] OpenTime 캐시 일괄 로드 실패 (다음 호출 시 재시도): {ex.Message}");
+                return false;
             }
         }
 
@@ -217,8 +228,8 @@ SELECT CASE WHEN EXISTS (
             if (_openTimeCache.TryGetValue(cacheKey, out var cached))
                 return cached;
 
-            // [v5.10.37] 캐시 미스 → 최초 1회 전체 심볼 일괄 로드
-            // 100+ 심볼 동시 쿼리 → 1회 UNION ALL 쿼리로 대체 (구조적 N×쿼리 문제 해결)
+            // [v5.10.42] 캐시 미스 → 전체 심볼 일괄 로드 (실패 시 재시도 가능)
+            // 성공 시에만 _openTimePreloadDone = true → 실패하면 다음 호출 시 재시도
             if (!_openTimePreloadDone)
             {
                 await _preloadSemaphore.WaitAsync();
@@ -226,8 +237,8 @@ SELECT CASE WHEN EXISTS (
                 {
                     if (!_openTimePreloadDone)
                     {
-                        await BulkPreloadOpenTimeCacheAsync(interval);
-                        _openTimePreloadDone = true;
+                        bool success = await BulkPreloadOpenTimeCacheAsync(interval);
+                        if (success) _openTimePreloadDone = true;
                     }
                 }
                 finally { _preloadSemaphore.Release(); }
