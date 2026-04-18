@@ -5,6 +5,18 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.37] - 2026-04-18
+
+### Fixed
+
+ - **OpenTime 쿼리 폭주 근본 원인 수정** (`DatabaseService.cs`):
+   - 근본 원인: 봇 시작 시 100+ 심볼이 빈 캐시에 동시 접근 → 심볼당 4개 테이블 MAX 쿼리 발생 → DB 과부하 → 타임아웃
+   - 해결: `BulkPreloadOpenTimeCacheAsync` 신규 메서드 — 4개 테이블 UNION ALL 단일 쿼리로 전체 심볼 MAX(OpenTime) 일괄 로드
+   - `_openTimePreloadDone` (volatile bool) + `_preloadSemaphore(1,1)`로 단 1회 실행 보장
+   - 캐시 미스 첫 번째 시 → 전체 사전 로드 → 이후 개별 심볼은 캐시 HIT (DB 쿼리 불필요)
+   - 신규 심볼(DB에 없는 경우)만 fallback 개별 쿼리 실행 (드문 경우)
+   - v5.10.36 임시 타임아웃 증가 방식 → 완전 제거, 슬롯 원복 (5슬롯, 30s wait)
+
 ## [5.10.36] - 2026-04-18
 
 ### Fixed

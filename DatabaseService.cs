@@ -31,8 +31,11 @@ namespace TradingBot.Services
         private static readonly ConcurrentDictionary<string, DateTime> _openTimeCache
             = new(StringComparer.OrdinalIgnoreCase);
 
-        // [v5.10.22] 시작 시 동시 DB 조회 제한 — 수십 심볼 동시 쿼리 → 커넥션 풀 고갈 방지
-        private static readonly SemaphoreSlim _openTimeDbSlot = new SemaphoreSlim(10, 10);
+        // [v5.10.22] 시작 시 동시 DB 조회 제한 — 신규 심볼 개별 조회용 (일괄 로드 후 드문 케이스)
+        private static readonly SemaphoreSlim _openTimeDbSlot = new SemaphoreSlim(5, 5);
+        // [v5.10.37] 전체 심볼 일괄 캐시 로드 동시 실행 방지
+        private static readonly SemaphoreSlim _preloadSemaphore = new SemaphoreSlim(1, 1);
+        private static volatile bool _openTimePreloadDone = false;
 
         public DatabaseService(Action<string>? logger = null)
         {
@@ -156,18 +159,85 @@ SELECT CASE WHEN EXISTS (
             }
         }
 
+        /// <summary>
+        /// [v5.10.37] 전체 심볼 OpenTime 일괄 로드 — 봇 시작 시 1회 실행
+        /// 기존 구조적 문제: N개 심볼 × per-symbol 쿼리 = N번 DB 왕복 → 동시 100+ 쿼리 → 슬롯 고갈/타임아웃
+        /// 해결: 4개 테이블 UNION ALL → 심볼별 MIN(MAX) → 캐시 전체 적재 (1번 왕복)
+        /// </summary>
+        private async Task BulkPreloadOpenTimeCacheAsync(string interval)
+        {
+            try
+            {
+                using var conn = new SqlConnection(_connStr);
+                await conn.OpenAsync();
+
+                const string sql = @"
+                    SELECT Symbol, MAX(OpenTime) AS MaxOT FROM MarketCandles WITH (NOLOCK) GROUP BY Symbol
+                    UNION ALL
+                    SELECT Symbol, MAX(OpenTime)           FROM CandleData    WITH (NOLOCK) GROUP BY Symbol
+                    UNION ALL
+                    SELECT Symbol, MAX(OpenTime)           FROM CandleHistory WITH (NOLOCK)
+                        WHERE [Interval] = @Interval GROUP BY Symbol
+                    UNION ALL
+                    SELECT Symbol, MAX(OpenTime)           FROM MarketData    WITH (NOLOCK)
+                        WHERE [Interval] = @Interval GROUP BY Symbol";
+
+                var rawRows = await conn.QueryAsync(sql, new { Interval = interval }, commandTimeout: 60);
+
+                // 심볼별로 4개 테이블 MAX 중 MIN 값 계산 (기존 per-symbol 쿼리와 동일 의미)
+                var grouped = new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
+                foreach (var row in rawRows)
+                {
+                    string sym = (string)row.Symbol;
+                    DateTime ot = (DateTime)row.MaxOT;
+                    if (!grouped.TryGetValue(sym, out var list))
+                        grouped[sym] = list = new List<DateTime>();
+                    list.Add(ot);
+                }
+
+                foreach (var kv in grouped)
+                {
+                    var key = $"{kv.Key}|{interval}";
+                    var minMax = kv.Value.Min();
+                    _openTimeCache.AddOrUpdate(key, minMax,
+                        (_, existing) => minMax < existing ? minMax : existing);
+                }
+
+                Log($"✅ [DB] OpenTime 캐시 일괄 로드 완료 ({grouped.Count}개 심볼)");
+            }
+            catch (Exception ex)
+            {
+                Log($"⚠️ [DB] OpenTime 캐시 일괄 로드 실패 → 개별 조회 폴백: {ex.Message}");
+            }
+        }
+
         public async Task<DateTime?> GetLatestSyncedOpenTimeAcrossTablesAsync(string symbol, string interval = "5m")
         {
-            // [v5.10.20] 인메모리 캐시 우선 — DB 반복 조회 완전 제거
-            // 캐시 히트(재시작 후 첫 Save 이후): 즉시 반환, 0ms, DB 왕복 없음
-            // 캐시 미스(재시작 직후): DB 1회 조회 후 캐시 저장 → 이후 재조회 없음
             string cacheKey = $"{symbol}|{interval}";
             if (_openTimeCache.TryGetValue(cacheKey, out var cached))
                 return cached;
 
-            // [v5.10.22] 세마포어(5슬롯)로 동시 DB 조회 제한 — 시작 시 풀 고갈 방지
-            // 슬롯 획득 대기 최대 30초 (5슬롯×순번 처리), 쿼리 자체는 10초 타임아웃
-            bool acquired = await _openTimeDbSlot.WaitAsync(TimeSpan.FromSeconds(60));
+            // [v5.10.37] 캐시 미스 → 최초 1회 전체 심볼 일괄 로드
+            // 100+ 심볼 동시 쿼리 → 1회 UNION ALL 쿼리로 대체 (구조적 N×쿼리 문제 해결)
+            if (!_openTimePreloadDone)
+            {
+                await _preloadSemaphore.WaitAsync();
+                try
+                {
+                    if (!_openTimePreloadDone)
+                    {
+                        await BulkPreloadOpenTimeCacheAsync(interval);
+                        _openTimePreloadDone = true;
+                    }
+                }
+                finally { _preloadSemaphore.Release(); }
+
+                if (_openTimeCache.TryGetValue(cacheKey, out cached))
+                    return cached;
+            }
+
+            // 일괄 로드 후에도 없는 심볼 = 신규 심볼 (DB에 데이터 없음) → 개별 조회
+            bool acquired = await _openTimeDbSlot.WaitAsync(TimeSpan.FromSeconds(30));
             if (!acquired)
             {
                 Log($"⚠️ [DB] OpenTime 슬롯 대기 초과 ({symbol}) → null (전체 동기화 수행)");
@@ -175,7 +245,6 @@ SELECT CASE WHEN EXISTS (
             }
             try
             {
-                // 슬롯 획득 후 다시 캐시 체크 (대기 중 다른 스레드가 채웠을 수 있음)
                 if (_openTimeCache.TryGetValue(cacheKey, out var cachedAfterWait))
                     return cachedAfterWait;
 
@@ -184,18 +253,19 @@ SELECT CASE WHEN EXISTS (
                 var row = await conn.QuerySingleOrDefaultAsync<(DateTime? mc, DateTime? cd, DateTime? ch, DateTime? md)>(
                     @"SELECT
                         (SELECT MAX(OpenTime) FROM MarketCandles WITH (NOLOCK) WHERE Symbol = @Symbol) AS mc,
-                        (SELECT MAX(OpenTime) FROM CandleData WITH (NOLOCK) WHERE Symbol = @Symbol) AS cd,
+                        (SELECT MAX(OpenTime) FROM CandleData    WITH (NOLOCK) WHERE Symbol = @Symbol) AS cd,
                         (SELECT MAX(OpenTime) FROM CandleHistory WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval) AS ch,
-                        (SELECT MAX(OpenTime) FROM MarketData WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval) AS md",
+                        (SELECT MAX(OpenTime) FROM MarketData    WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval) AS md",
                     new { Symbol = symbol, Interval = interval },
-                    commandTimeout: 30);
+                    commandTimeout: 10);
 
                 var candidates = new[] { row.mc, row.cd, row.ch, row.md }
                     .Where(v => v.HasValue).Select(v => v!.Value).ToList();
 
                 DateTime? result = candidates.Count > 0 ? candidates.Min() : null;
                 if (result.HasValue)
-                    _openTimeCache.TryAdd(cacheKey, result.Value);
+                    _openTimeCache.AddOrUpdate(cacheKey, result.Value,
+                        (_, existing) => result.Value < existing ? result.Value : existing);
                 return result;
             }
             catch (Exception ex)
