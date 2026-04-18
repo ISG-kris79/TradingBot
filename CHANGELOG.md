@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.50] - 2026-04-19
+
+### Fixed
+
+ - **PUMP ML 모델 학습 데이터 0건 → 학습 불가 → 48시간 진입 없음 근본 수정** (`DbManager.cs`):
+   - 근본 원인: `GetAllCandleDataForTrainingAsync`/`GetBulkCandleDataAsync`가 `CandleData` 테이블을 읽는데, HistoricalDownloader는 `MarketCandles` 테이블에 저장 (테이블 불일치) → CandleData 24h 데이터 0건 + 전체 쿼리 타임아웃 → 학습 샘플 0 → `pump_signal_normal.zip` 미생성 → `IsModelLoaded=false` → 모든 PUMP 신호 WAIT
+   - 수정: 두 함수 모두 `MarketCandles WITH (NOLOCK)` 로 변경 — `OpenPrice/HighPrice/LowPrice/ClosePrice → Open/High/Low/Close` 별칭 사용, `IntervalText` 필터 제거 (MarketCandles는 5m 고정), commandTimeout 60→60s
+
 ## [5.10.49] - 2026-04-19
 
 ### Removed

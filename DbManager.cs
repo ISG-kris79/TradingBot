@@ -2127,14 +2127,24 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
             try
             {
                 using var db = new SqlConnection(_connectionString);
-                // 단일 쿼리: 24시간 내 활성 심볼의 심볼별 최근 N봉 (ROW_NUMBER PARTITION BY)
+                // [v5.10.50] CandleData(인덱스 없음/타임아웃) → MarketCandles(실제 데이터 존재) 로 변경
+                // MarketCandles: OpenPrice/HighPrice/LowPrice/ClosePrice → Open/High/Low/Close 별칭 사용
                 var sql = @"
 WITH RankedCandles AS (
-    SELECT *, ROW_NUMBER() OVER (PARTITION BY Symbol ORDER BY OpenTime DESC) AS rn
-    FROM CandleData WITH (NOLOCK)
+    SELECT
+        Symbol,
+        OpenTime,
+        OpenPrice AS [Open],
+        HighPrice AS [High],
+        LowPrice AS [Low],
+        ClosePrice AS [Close],
+        CAST(Volume AS float) AS Volume,
+        RSI, MACD, MACD_Signal, MACD_Hist, ATR, BollingerUpper, BollingerLower,
+        ROW_NUMBER() OVER (PARTITION BY Symbol ORDER BY OpenTime DESC) AS rn
+    FROM MarketCandles WITH (NOLOCK)
     WHERE Symbol LIKE '%USDT'
       AND Symbol IN (
-          SELECT DISTINCT Symbol FROM CandleData WITH (NOLOCK)
+          SELECT DISTINCT Symbol FROM MarketCandles WITH (NOLOCK)
           WHERE OpenTime >= DATEADD(HOUR, -24, GETUTCDATE()) AND Symbol LIKE '%USDT'
       )
 )
@@ -2142,7 +2152,7 @@ SELECT * FROM RankedCandles WHERE rn <= @Limit
 ORDER BY Symbol, OpenTime ASC";
 
                 var rows = await db.QueryAsync<TradingBot.Models.CandleData>(
-                    sql, new { Limit = candlesPerSymbol }, commandTimeout: 30);
+                    sql, new { Limit = candlesPerSymbol }, commandTimeout: 60);
 
                 // 심볼별 그룹핑 (이미 OpenTime ASC 정렬됨)
                 foreach (var group in rows.GroupBy(r => r.Symbol ?? string.Empty))
@@ -2165,7 +2175,7 @@ ORDER BY Symbol, OpenTime ASC";
         /// [v5.0.7] Forecaster 대용량 학습용 — DB 의 전체 봉을 심볼당 N개까지 로드
         /// - 기본값: 심볼당 10000봉 (약 35일 × 288봉/일 5분봉)
         /// - 활성 심볼 필터 없음 (과거 데이터도 활용)
-        /// - IntervalText 파라미터로 5m/1m 선택
+        /// - [v5.10.50] MarketCandles 로 변경 (IntervalText 파라미터 무시, 5m 고정)
         /// </summary>
         public async Task<Dictionary<string, List<TradingBot.Models.CandleData>>> GetBulkCandleDataAsync(
             string intervalText = "5m",
@@ -2183,11 +2193,21 @@ ORDER BY Symbol, OpenTime ASC";
                     ? "AND Symbol IN @Symbols"
                     : "AND Symbol LIKE '%USDT'";
 
+                // [v5.10.50] CandleData → MarketCandles (HistoricalDownloader 저장 테이블)
                 var sql = $@"
 WITH RankedCandles AS (
-    SELECT *, ROW_NUMBER() OVER (PARTITION BY Symbol ORDER BY OpenTime DESC) AS rn
-    FROM CandleData WITH (NOLOCK)
-    WHERE IntervalText = @IntervalText
+    SELECT
+        Symbol,
+        OpenTime,
+        OpenPrice AS [Open],
+        HighPrice AS [High],
+        LowPrice AS [Low],
+        ClosePrice AS [Close],
+        CAST(Volume AS float) AS Volume,
+        RSI, MACD, MACD_Signal, MACD_Hist, ATR, BollingerUpper, BollingerLower,
+        ROW_NUMBER() OVER (PARTITION BY Symbol ORDER BY OpenTime DESC) AS rn
+    FROM MarketCandles WITH (NOLOCK)
+    WHERE Symbol LIKE '%USDT'
       {symbolFilterClause}
 )
 SELECT * FROM RankedCandles WHERE rn <= @Limit
@@ -2195,7 +2215,6 @@ ORDER BY Symbol, OpenTime ASC";
 
                 var param = new Dictionary<string, object?>
                 {
-                    ["IntervalText"] = intervalText,
                     ["Limit"] = candlesPerSymbol
                 };
                 if (symbolFilter is { Count: > 0 })
