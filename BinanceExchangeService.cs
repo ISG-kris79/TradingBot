@@ -766,7 +766,8 @@ namespace TradingBot.Services
 
                 if (quantity <= 0) return (false, string.Empty);
 
-                OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
+                var sideUpper = side.ToUpper();
+                OrderSide orderSide = (sideUpper == "BUY" || sideUpper == "LONG") ? OrderSide.Buy : OrderSide.Sell;
 
                 var result = await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
                     symbol,
