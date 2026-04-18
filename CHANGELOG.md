@@ -5,6 +5,17 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.48] - 2026-04-19
+
+### Fixed
+
+ - **서브어카운트 레버리지 5x 제한 → 진입 차단 수정** (`BinanceExchangeService.cs`):
+   - 근본 원인: 서브어카운트에서 "Subaccounts are restricted from using leverage greater than 5x" 오류 시 기존 정규식(`cannot be greater than`)에 매칭 안 됨 → `SetLeverageAutoAsync` 0 반환 → TradingEngine이 진입 취소
+   - 수정: 정규식을 `(?:cannot be greater than|greater than)\s+(\d+)`로 확장 → 5x로 자동 다운그레이드 후 진입 진행
+ - **외부 청산 시 잔여 TP/SL 오더 미취소 → 마진 잠금 수정** (`TradingEngine.cs`):
+   - 근본 원인: PositionSyncService가 포지션 외부 청산 감지 후 `HandleSyncedPositionClosed` 호출 시 Binance에 남아있는 LIMIT SELL 오더(TP/SL)를 취소하지 않음 → 오더 마진 $707 잠금 → 가용잔고 $10 현상
+   - 수정: `HandleSyncedPositionClosed`에 `CancelAllOrdersAsync` 추가 → 외부 청산 감지 즉시 잔여 오더 일괄 취소
+
 ## [5.10.47] - 2026-04-19
 
 ### Fixed

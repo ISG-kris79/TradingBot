@@ -591,9 +591,9 @@ namespace TradingBot.Services
                 return desiredLeverage;
             }
 
-            // 심볼 최대 레버리지 초과 시 자동 조정: "'N' cannot be greater than M"
+            // 심볼 최대 레버리지 초과 시 자동 조정: "'N' cannot be greater than M" 또는 서브어카운트 "greater than Nx"
             var errMsg = result.Error?.Message ?? "";
-            var match = System.Text.RegularExpressions.Regex.Match(errMsg, @"cannot be greater than (\d+)");
+            var match = System.Text.RegularExpressions.Regex.Match(errMsg, @"(?:cannot be greater than|greater than)\s+(\d+)");
             if (match.Success && int.TryParse(match.Groups[1].Value, out int maxLev) && maxLev > 0 && maxLev < desiredLeverage)
             {
                 OnLog?.Invoke($"⚠️ [레버리지] {symbol} {desiredLeverage}x 불가 → 최대 {maxLev}x로 자동 조정");

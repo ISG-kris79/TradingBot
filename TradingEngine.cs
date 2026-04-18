@@ -12306,6 +12306,20 @@ namespace TradingBot
             // PositionSyncService가 이미 제거했지만 혹시 남아있으면 제거
             lock (_posLock) { _activePositions.Remove(symbol); }
 
+            // [v5.10.48] 외부 청산 시 잔여 TP/SL 오더 취소 (마진 잠금 방지)
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _exchangeService.CancelAllOrdersAsync(symbol, _cts?.Token ?? CancellationToken.None);
+                    OnStatusLog?.Invoke($"✅ [SYNC_CLOSE] {symbol} 잔여 오더 취소 완료");
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [SYNC_CLOSE] {symbol} 오더 취소 실패: {ex.Message}");
+                }
+            }, CancellationToken.None);
+
             // [v5.10.38] 슬롯 해방 → 대기 중인 최우선 PUMP 신호 즉시 처리
             _ = Task.Run(async () =>
             {
