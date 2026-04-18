@@ -5,6 +5,20 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.28] - 2026-04-18
+
+### Fixed
+
+ - **서킷브레이커 진입 차단 완전 제거** (`TradingEngine.cs`):
+   - `_riskManager.IsTripped` 체크 2곳(PUMP 진입, 일반 진입) 완전 제거
+   - 메인 루프 서킷브레이커 모니터링 블록(발동/해제/알림/대기) 제거
+   - `_riskManager.OnTripped` 이벤트 핸들러 제거
+   - RiskManager 자체(PnL 추적)는 유지, 진입 차단 로직만 제거
+ - **FooterLogs Full-Text Index 추가** (DB):
+   - `FT_TradingBot` Full-Text 카탈로그 생성
+   - `FooterLogs.Message` 컬럼 Full-Text Index 추가 (LANGUAGE 1042)
+   - `LIKE '%...%'` 풀스캔 타임아웃 해소
+
 ## [5.10.27] - 2026-04-18
 
 ### Fixed

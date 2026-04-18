@@ -899,13 +899,6 @@ namespace TradingBot
             _positionMonitor.SetProfitRegressor(_profitRegressor); // [v4.7.4] 횡보 보유 청산용
             StartModelRetrainTimer(); // [v3.8.1] 전체 모델 자동 재학습
 
-            _riskManager.OnTripped += (reason) =>
-            {
-                string msg = $"⛔ [서킷 브레이커] {reason}! 매매 중단 모드로 전환합니다.";
-                OnAlert?.Invoke(msg);
-                _soundService.PlayAlert();
-                _ = _notificationService.SendPushNotificationAsync("Circuit Breaker", msg);
-            };
             _marketDataManager.OnLog += (msg) =>
             {
                 OnStatusLog?.Invoke(msg);
@@ -2767,8 +2760,6 @@ namespace TradingBot
 
                 // 3. 메인 관리 루프 (REST API 호출 최소화)
                 OnStatusLog?.Invoke("🔄 메인 스캔 루프 시작...");
-                bool isCircuitBreakerNotificationSent = false;
-
                 while (!token.IsCancellationRequested)
                 {
                     Stopwatch? loopWatch = _mainLoopPerfEnabled ? Stopwatch.StartNew() : null;
@@ -2776,44 +2767,6 @@ namespace TradingBot
 
                     try
                     {
-                        if (_riskManager.IsTripped)
-                        {
-                            if ((DateTime.Now - _riskManager.TripTime).TotalHours >= 1)
-                            {
-                                _riskManager.Reset();
-                                isCircuitBreakerNotificationSent = false;
-
-                                int closedCount = 0;
-                                List<string> symbolsToClose;
-                                lock (_posLock) { symbolsToClose = _activePositions.Keys.ToList(); }
-
-                                foreach (var symbol in symbolsToClose)
-                                {
-                                    await _positionMonitor.ExecuteMarketClose(symbol, "서킷 브레이커 해제 후 리스크 관리(강제 청산)", token);
-                                    closedCount++;
-                                }
-                                
-                                string resumeMsg = TradingStateLogger.CircuitBreakerReleased(closedCount);
-                                await NotificationService.Instance.NotifyAsync(resumeMsg, NotificationChannel.Alert);
-                                OnAlert?.Invoke(resumeMsg);
-                                OnStatusLog?.Invoke("서킷 브레이커 자동 해제됨.");
-                            }
-                            else
-                            {
-                                if (!isCircuitBreakerNotificationSent)
-                                {
-                                    isCircuitBreakerNotificationSent = true;
-                                    string msg = TradingStateLogger.CircuitBreakerTripped(_riskManager.GetTripDetails(), 1);
-                                    await NotificationService.Instance.NotifyAsync(msg, NotificationChannel.Alert);
-                                    OnAlert?.Invoke(msg);
-                                }
-
-                                var remaining = TimeSpan.FromHours(1) - (DateTime.Now - _riskManager.TripTime);
-                                OnStatusLog?.Invoke($"⛔ 서킷 브레이커 발동 중. 매매 중단 (재개까지 {remaining.Minutes}분 남음)");
-                                await Task.Delay(10000, token);
-                                continue;
-                            }
-                        }
 
                         // [일일 수익 목표] 자정 리셋 및 알림 ($250/일 알림 전용, 차단 없음)
                         if (DateTime.Today > _dailyTargetResetDate)
@@ -4975,12 +4928,6 @@ namespace TradingBot
             // [v5.0.5] 유동성 기반 동적 마진 (초저유동성 50% 축소)
             decimal marginUsdt = GetLiquidityAdjustedPumpMarginUsdt(symbol);
             PumpEntryLog("SIZE", "CONFIG", $"pumpMargin={marginUsdt:F0}usdt");
-
-            if (_riskManager.IsTripped)
-            {
-                PumpEntryLog("RISK", "BLOCK", "circuitBreaker=on");
-                return;
-            }
 
             // [20배 PUMP 롱 전용] 5분봉 컨플루언스 진입 필터
             var pumpKlines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 40, token);
@@ -9235,13 +9182,6 @@ namespace TradingBot
             {
                 OnStatusLog?.Invoke(TradingStateLogger.RejectedByRiskManagement(symbol, decision, $"진입 워밍업 활성화 ({remaining.TotalSeconds:F0}초 남음)"));
                 EntryLog("GUARD", "BLOCK", $"warmupRemainingSec={remaining.TotalSeconds:F0}");
-                return;
-            }
-
-            if (_riskManager.IsTripped)
-            {
-                OnStatusLog?.Invoke(TradingStateLogger.RejectedByRiskManagement(symbol, decision, "서킷 브레이커 발동 중"));
-                EntryLog("RISK", "BLOCK", "circuitBreaker=on");
                 return;
             }
 
