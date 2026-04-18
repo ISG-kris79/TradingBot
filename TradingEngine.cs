@@ -9115,6 +9115,13 @@ namespace TradingBot
                     if (kv.Value < cutoff) _recentEntryAttempts.TryRemove(kv.Key, out _);
             }
 
+            // [v5.10.41] 메이저 비활성화 시 최상단 차단 — 이벤트 핸들러 개별 체크만으론 우회 경로 로그 발생
+            if (MajorSymbols.Contains(symbol) && _settings?.EnableMajorTrading == false)
+            {
+                OnLiveLog?.Invoke($"⛔ [MAJOR_DISABLED] {symbol} 메이저 비활성화 → 진입 차단");
+                return;
+            }
+
             string decisionKr = decision == "LONG" ? "LONG" : "SHORT";
             OnLiveLog?.Invoke($"📤 [{symbol}] {decisionKr} 주문 요청 중 | 가격 ${currentPrice:F2} | 소스: {signalSource}");
             EntryLog("START", "INFO", $"price={currentPrice:F4} source={signalSource}");
