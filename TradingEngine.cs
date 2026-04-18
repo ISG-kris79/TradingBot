@@ -65,12 +65,6 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, DateTime> _recentlyClosedCooldown = new();
         // [v3.4.0] 부분청산 쿨다운 — 봇 자체 부분청산 후 ACCOUNT_UPDATE 이중 기록 방지
         private readonly ConcurrentDictionary<string, DateTime> _recentPartialCloseCooldown = new();
-        // [v3.7.1] 실시간 승률 추적
-        private readonly Queue<bool> _recentTradeResults = new();
-        private DateTime _winRatePauseUntil = DateTime.MinValue;
-        private const int WIN_RATE_WINDOW = 10;
-        private const double WIN_RATE_MIN = 0.40;
-
         // [v4.0.3] PUMP 슬롯 교체 대상
         private string? _pendingSwapEvict;
 
@@ -1010,22 +1004,6 @@ namespace TradingBot
                     _entryZoneCollector.FinalizeEntryZoneSample(symbol, exitPx, (decimal)actualProfitPct, closeReason);
                 }
                 catch { }
-
-                // [v3.7.1] 실시간 승률 서킷브레이커 추적
-                lock (_recentTradeResults)
-                {
-                    _recentTradeResults.Enqueue(actualProfitPct > 0);
-                    while (_recentTradeResults.Count > WIN_RATE_WINDOW) _recentTradeResults.Dequeue();
-                    if (_recentTradeResults.Count >= WIN_RATE_WINDOW)
-                    {
-                        double recentWinRate = _recentTradeResults.Count(r => r) / (double)_recentTradeResults.Count;
-                        if (recentWinRate < WIN_RATE_MIN)
-                        {
-                            _winRatePauseUntil = DateTime.Now.AddMinutes(30);
-                            OnAlert?.Invoke($"⛔ [승률 서킷브레이커] 최근 {WIN_RATE_WINDOW}건 승률 {recentWinRate:P0} < {WIN_RATE_MIN:P0} → 30분 진입 중단");
-                        }
-                    }
-                }
 
                 // [수익률 회귀] 거래 결과를 학습 데이터로 피드백
                 try
@@ -12389,20 +12367,15 @@ namespace TradingBot
                 catch { }
             });
 
-            // 6. 승률 서킷브레이커 추적
-            double profitPct = entryPrice > 0
-                ? (double)((pos?.IsLong == true ? exitPrice - entryPrice : entryPrice - exitPrice)
-                    / entryPrice * (pos?.Leverage ?? 1m) * 100m)
-                : 0d;
-            lock (_recentTradeResults)
-            {
-                _recentTradeResults.Enqueue(profitPct > 0);
-                while (_recentTradeResults.Count > WIN_RATE_WINDOW) _recentTradeResults.Dequeue();
-            }
-
             // 7. AI 레이블링
             if (pos != null)
+            {
+                double profitPct = entryPrice > 0
+                    ? (double)((pos.IsLong ? exitPrice - entryPrice : entryPrice - exitPrice)
+                        / entryPrice * (pos.Leverage) * 100m)
+                    : 0d;
                 _ = HandleAiCloseLabelingAsync(symbol, pos.EntryTime, entryPrice, pos.IsLong, (decimal)profitPct, reason);
+            }
         }
 
         private async Task HandleAiCloseLabelingAsync(

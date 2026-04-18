@@ -497,25 +497,6 @@ namespace TradingBot.Services
 
                     if (currentPrice == 0) { await Task.Delay(500, token); continue; }
 
-                    // [v4.5.5] 단일 포지션 회로차단기: 절대 -4% 손실 즉시 강제 청산
-                    // 서버 STOP_MARKET 실패/슬리피지 대비 로컬 안전장치
-                    decimal absPriceLossPct = isLong
-                        ? (entryPrice - currentPrice) / entryPrice * 100m
-                        : (currentPrice - entryPrice) / entryPrice * 100m;
-                    if (absPriceLossPct >= 4.0m && !IsCloseInProgress(symbol))
-                    {
-                        OnLog?.Invoke($"🚨 [회로차단기] {symbol} 가격 {absPriceLossPct:F2}% 손실 → 즉시 강제 청산");
-                        try
-                        {
-                            await ExecuteMarketClose(symbol, "EMERGENCY_CIRCUIT_BREAKER", token);
-                        }
-                        catch (Exception cbEx)
-                        {
-                            OnLog?.Invoke($"⚠️ [회로차단기] {symbol} 청산 오류: {cbEx.Message}");
-                        }
-                        return;
-                    }
-
                     // [듀얼 스탑] 15분봉 캔들 30초마다 갱신 (Fractal Low + 거래량 계산용)
                     if (hasCustomAbsoluteStop && !isSidewaysMode && DateTime.Now >= nextDualStopCandleRefresh)
                     {

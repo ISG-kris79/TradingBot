@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.49] - 2026-04-19
+
+### Removed
+ - **서킷브레이커 로직 완전 제거** (`PositionMonitorService.cs`, `TradingEngine.cs`, `RiskManager.cs`):
+   - PositionMonitorService.cs: 단일 포지션 -4% 손실 강제청산 (EMERGENCY_CIRCUIT_BREAKER) 제거
+   - TradingEngine.cs: 승률 서킷브레이커 추적 (`_recentTradeResults`, `_winRatePauseUntil`, WIN_RATE 관련) 완전 제거
+   - RiskManager.cs: IsTripped/TripTime/OnTripped/연속손실 판정 로직 제거 (DailyRealizedPnl 보고용만 유지)
+
 ## [5.10.48] - 2026-04-19
 
 ### Fixed
