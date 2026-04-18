@@ -5,6 +5,19 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.36] - 2026-04-18
+
+### Fixed
+
+ - **OpenTime 조회 실패/슬롯 대기 초과 오류 수정** (`DatabaseService.cs`):
+   - 원인 1: `_openTimeDbSlot` 5슬롯 × 30s wait → 봇 시작 시 100+ 심볼 동시 요청으로 후순위 심볼이 30s 초과
+     → 슬롯 5 → 10, 대기 30s → 60s로 확장
+   - 원인 2: `commandTimeout: 10` → 쿼리 10초 초과 시 예외 발생
+     → commandTimeout 10 → 30으로 증가
+   - 원인 3: `SaveCandlesInternalAsync`에서 `UpdateOpenTimeCache` 미호출
+     → CandleData 저장 후에도 캐시 미갱신 → 동일 심볼 DB 재조회 반복
+     → 저장 완료 후 `UpdateOpenTimeCache(symbol, "5m", payload.Select(p => p.OpenTime))` 추가
+
 ## [5.10.35] - 2026-04-18
 
 ### Fixed

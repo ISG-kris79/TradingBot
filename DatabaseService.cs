@@ -32,7 +32,7 @@ namespace TradingBot.Services
             = new(StringComparer.OrdinalIgnoreCase);
 
         // [v5.10.22] 시작 시 동시 DB 조회 제한 — 수십 심볼 동시 쿼리 → 커넥션 풀 고갈 방지
-        private static readonly SemaphoreSlim _openTimeDbSlot = new SemaphoreSlim(5, 5);
+        private static readonly SemaphoreSlim _openTimeDbSlot = new SemaphoreSlim(10, 10);
 
         public DatabaseService(Action<string>? logger = null)
         {
@@ -167,10 +167,9 @@ SELECT CASE WHEN EXISTS (
 
             // [v5.10.22] 세마포어(5슬롯)로 동시 DB 조회 제한 — 시작 시 풀 고갈 방지
             // 슬롯 획득 대기 최대 30초 (5슬롯×순번 처리), 쿼리 자체는 10초 타임아웃
-            bool acquired = await _openTimeDbSlot.WaitAsync(TimeSpan.FromSeconds(30));
+            bool acquired = await _openTimeDbSlot.WaitAsync(TimeSpan.FromSeconds(60));
             if (!acquired)
             {
-                // 30초 대기에도 슬롯 없음 → 매우 드문 케이스, null 반환
                 Log($"⚠️ [DB] OpenTime 슬롯 대기 초과 ({symbol}) → null (전체 동기화 수행)");
                 return null;
             }
@@ -189,7 +188,7 @@ SELECT CASE WHEN EXISTS (
                         (SELECT MAX(OpenTime) FROM CandleHistory WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval) AS ch,
                         (SELECT MAX(OpenTime) FROM MarketData WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval) AS md",
                     new { Symbol = symbol, Interval = interval },
-                    commandTimeout: 10);
+                    commandTimeout: 30);
 
                 var candidates = new[] { row.mc, row.cd, row.ch, row.md }
                     .Where(v => v.HasValue).Select(v => v!.Value).ToList();
@@ -286,6 +285,9 @@ SELECT CASE WHEN EXISTS (
                     catch (SqlException sqlex) when (sqlex.Number == 2627 || sqlex.Number == 2601) { }
                 }
             }
+
+            // CandleData 저장 후 OpenTime 캐시 갱신 — DB 재조회 방지
+            UpdateOpenTimeCache(symbol, "5m", payload.Select(p => p.OpenTime));
         }
 
         // CandleData 테이블 대량 저장 (Models.CandleData 사용)
