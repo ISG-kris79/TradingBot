@@ -5503,7 +5503,8 @@ namespace TradingBot
                                 Fib1618Target = fib1618Target,
                                 PartialProfitStage = 0,
                                 BreakevenPrice = 0,
-                                PyramidCount = 0
+                                PyramidCount = 0,
+                                IsOwnPosition = true // [v5.10.39] 진입 즉시 슬롯 반영
                             };
                         }
 
@@ -8246,7 +8247,8 @@ namespace TradingBot
                     Symbol = symbol,
                     EntryPrice = currentPrice,
                     IsLong = changePct > 0,
-                    EntryTime = DateTime.Now
+                    EntryTime = DateTime.Now,
+                    IsOwnPosition = true // [v5.10.39]
                 };
             }
 
@@ -8585,7 +8587,8 @@ namespace TradingBot
                             IsPumpStrategy = !isMajor,
                             IsVolatilityRecovery = spikeRecovery,
                             RecoveryExtremePrice = spikeRecoveryExtreme,
-                            EntryTime = DateTime.Now
+                            EntryTime = DateTime.Now,
+                            IsOwnPosition = true // [v5.10.39]
                         };
                     }
 
@@ -11235,6 +11238,8 @@ namespace TradingBot
                                 : pos.EntryPrice - tpPriceDelta;
                         }
 
+                        // [v5.10.39] 진입 성공 즉시 IsOwnPosition=true — sync 대기 없이 슬롯 즉시 반영
+                        pos.IsOwnPosition = true;
                         orderPlaced = true;
                     }
                 }

@@ -5,6 +5,21 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.39] - 2026-04-18
+
+### Fixed
+
+ - **IsOwnPosition 누락으로 슬롯 카운트 불일치 근본 수정** (`TradingEngine.cs`):
+   - 근본 원인: 진입 성공 후 `_activePositions` 등록 시 `IsOwnPosition` 필드 미설정 → 기본값 `false`
+   - 슬롯 체크(`Count(p => p.Value.IsOwnPosition)`)가 새로 진입한 포지션을 카운트하지 않음
+   - 결과: 30분 주기 sync 실행 전까지 슬롯이 0으로 보여 MaxPumpSlots 초과 진입 허용
+   - sync 실행 후 갑자기 IsOwnPosition=true로 전환 → 순간적으로 "0포지션 3/3 포화" 현상
+   - 수정: 진입 성공 즉시 `IsOwnPosition = true` 설정 — 4개 진입 경로 모두 적용
+     1. `HandlePumpTradeCore` (메인 진입 경로)
+     2. `HandlePumpEntry` LIMIT 직접 진입
+     3. SPIKE_FAST 즉시 진입
+     4. MegaPump 슬롯 확보 예약
+
 ## [5.10.38] - 2026-04-18
 
 ### Fixed / Added
