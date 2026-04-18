@@ -34,6 +34,7 @@ namespace TradingBot.Services
             _connectionString = connectionString;
             _ = EnsureCategoryColumnAsync();
             _ = EnsureCandleDataIndexAsync();
+            _ = EnsureOpenTimeIndexesAsync();
         }
 
         /// <summary>[v5.2.0] CandleData 학습 쿼리 성능 인덱스</summary>
@@ -49,6 +50,37 @@ BEGIN
     CREATE INDEX IX_CandleData_IntervalText_Symbol_OpenTime
         ON dbo.CandleData (IntervalText, Symbol, OpenTime DESC);
 END", commandTimeout: 60);
+            }
+            catch { }
+        }
+
+        /// <summary>[v5.10.42] OpenTime 조회 성능 인덱스 — MarketCandles/CandleHistory/MarketData 테이블
+        /// 기존에 CandleData만 인덱스 있었고 나머지 3개 테이블은 풀스캔 → 타임아웃 → "OpenTime 조회 실패"
+        /// </summary>
+        private async Task EnsureOpenTimeIndexesAsync()
+        {
+            try
+            {
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await db.ExecuteAsync(@"
+IF OBJECT_ID('dbo.MarketCandles') IS NOT NULL
+AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.MarketCandles') AND name = 'IX_MarketCandles_Symbol_OpenTime')
+BEGIN
+    CREATE INDEX IX_MarketCandles_Symbol_OpenTime ON dbo.MarketCandles (Symbol, OpenTime DESC);
+END
+
+IF OBJECT_ID('dbo.CandleHistory') IS NOT NULL
+AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.CandleHistory') AND name = 'IX_CandleHistory_Symbol_Interval_OpenTime')
+BEGIN
+    CREATE INDEX IX_CandleHistory_Symbol_Interval_OpenTime ON dbo.CandleHistory (Symbol, [Interval], OpenTime DESC);
+END
+
+IF OBJECT_ID('dbo.MarketData') IS NOT NULL
+AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.MarketData') AND name = 'IX_MarketData_Symbol_Interval_OpenTime')
+BEGIN
+    CREATE INDEX IX_MarketData_Symbol_Interval_OpenTime ON dbo.MarketData (Symbol, [Interval], OpenTime DESC);
+END", commandTimeout: 120);
             }
             catch { }
         }
