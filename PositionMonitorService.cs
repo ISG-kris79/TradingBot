@@ -1825,136 +1825,34 @@ namespace TradingBot.Services
 
             OnLog?.Invoke($"🔍 {symbol} Pump 감시 시작 | 방향: {(isLongPosition ? "LONG" : "SHORT")} | 진입가: {entryPrice:F4}");
 
-            DateTime startTime = DateTime.Now;
             decimal highestROE = -999m;
             decimal leverage = _settings.PumpLeverage;
-
-            // [ElliottWave 3파 기반 익절/손절] 
-            PositionInfo? elliotWavePos = null;
-            decimal fib0618Level = 0;
-            decimal wave1LowPrice = 0;
-            decimal wave1HighPrice = 0;
-            decimal fib0786Level = 0;
-            decimal fib1618Target = 0;
-            decimal fib2618Target = 0;
             lock (_posLock)
             {
                 if (_activePositions.TryGetValue(symbol, out var p))
-                {
-                    elliotWavePos = p;
                     leverage = p.Leverage > 0 ? p.Leverage : leverage;
-                    fib0618Level = p.Fib0618Level;
-                    wave1LowPrice = p.Wave1LowPrice;
-                    wave1HighPrice = p.Wave1HighPrice;
-                    fib0786Level = p.Fib0786Level;
-                    fib1618Target = p.Fib1618Target;
-                    fib2618Target = p.TakeProfit;
-                }
             }
 
-            decimal stopLossROE = _settings.PumpStopLossRoe > 0 ? _settings.PumpStopLossRoe : GetCurrentStopLossRoe();  // PUMP 전용 손절 ROE (메이저 StopLossRoe와 독립)
-            // ── [Meme Coin Mode] PUMP 전용 트레일링/본절 ──────────────────────────────
-            decimal pumpBreakEvenRoe    = _settings.PumpBreakEvenRoe    > 0 ? _settings.PumpBreakEvenRoe    : 20.0m; // ROI +20% 시 본절
-            decimal pumpTrailingStartRoe = _settings.PumpTrailingStartRoe > 0 ? _settings.PumpTrailingStartRoe : 40.0m; // ROI +40% 시 트레일링 시작
-            decimal pumpTrailingGapRoe  = _settings.PumpTrailingGapRoe  > 0 ? _settings.PumpTrailingGapRoe  : 20.0m; // 최고점 대비 ROI 20% 하락 시 청산
-            // ──────────────────────────────────────────────────────────────────────────
-            decimal trailingStartROE = pumpTrailingStartRoe;
-            decimal trailingDropROE  = pumpTrailingGapRoe;
-            decimal averageDownROE = -5.0m;
+            // [v5.10.45] 서버사이드 통일: SL/TP1/Trailing은 EntryOrderRegistrar에서 등록
+            // 클라이언트는 본절 전환(SL 갱신)만 담당
+            decimal pumpBreakEvenRoe = _settings.PumpBreakEvenRoe > 0 ? _settings.PumpBreakEvenRoe : 25.0m;
             bool isBreakEvenTriggered = false;
-            decimal partialTakeProfitROE = 25.0m;
-            decimal pumpTp1Roe = _settings.PumpTp1Roe > 0 ? _settings.PumpTp1Roe : 25.0m;
-            decimal pumpTp2Roe = _settings.PumpTp2Roe > 0 ? _settings.PumpTp2Roe : 50.0m;
 
-            decimal firstPartialCloseRatioPct = _settings.PumpFirstTakeProfitRatioPct > 0 ? _settings.PumpFirstTakeProfitRatioPct : 15.0m;
-            decimal firstPartialCloseRatio = Math.Clamp(firstPartialCloseRatioPct / 100.0m, 0.05m, 0.95m);
-
-            const decimal MemeBreathingRoe = 40.0m;
-            // 1단계 25%로 앞당겨 1분봉 급등 초반에 수익 일부 확보
-            decimal stairStep1TriggerRoe = _settings.PumpStairStep1Roe > 0 ? Math.Min(_settings.PumpStairStep1Roe, 25.0m) : 25.0m;
-            decimal stairStep2TriggerRoe = _settings.PumpStairStep2Roe > 0 ? _settings.PumpStairStep2Roe : 80.0m;
-            decimal stairStep3TriggerRoe = _settings.PumpStairStep3Roe > 0 ? _settings.PumpStairStep3Roe : 160.0m;
-            const decimal StairStep1FloorRoe = 15.0m;  // [v3.9.3] 1단계 보호선 10→15% (STOUSDT +22%→+0.17% 방지)
-            const decimal StairStep2FloorRoe = 40.0m;  // 2단계 달성 후 최소 +40% 보호 (50→40%)
-            // [1분봉 급등 스파이크 감지] 이전 체크 대비 ROE가 15% 이상 급등 시 즉시 20% 부분익절
-            decimal prevCheckROE = -999m;
-            bool spikePartialTaken = false;
-
-            if (stairStep2TriggerRoe <= stairStep1TriggerRoe)
-                stairStep2TriggerRoe = stairStep1TriggerRoe + 10.0m;
-            if (stairStep3TriggerRoe <= stairStep2TriggerRoe)
-                stairStep3TriggerRoe = stairStep2TriggerRoe + 20.0m;
-
-            // [v4.4.7] DB에서 전체 상태 복원 (본절/계단식/부분청산 중복 방지)
-            int stairStep = 0;
+            // DB 상태 복원 (본절 중복 방지)
             lock (_posLock)
             {
                 if (_activePositions.TryGetValue(symbol, out var savedPos))
                 {
                     if (savedPos.HighestROEForTrailing > 0)
                         highestROE = (decimal)savedPos.HighestROEForTrailing;
-                    if (savedPos.TakeProfitStep >= 1 || savedPos.PartialProfitStage >= 1)
+                    if (savedPos.BreakevenPrice > 0 || savedPos.TakeProfitStep >= 1 || savedPos.PartialProfitStage >= 1)
                         isBreakEvenTriggered = true;
-                    if (savedPos.BreakevenPrice > 0)
-                        isBreakEvenTriggered = true;
-                    if (savedPos.TakeProfitStep > 0 || savedPos.PartialProfitStage > 0 || isBreakEvenTriggered)
-                        OnLog?.Invoke($"🔄 {symbol} PUMP 상태 복원 | TP={savedPos.TakeProfitStep} BE={isBreakEvenTriggered} ROE={highestROE:F1}%");
-                }
-            }
-            decimal lockedProfitFloorRoe = decimal.MinValue;
-            decimal dynamicStopLossRoe = stopLossROE;
-
-            if (pumpTp1Roe < 25.0m)
-            {
-                OnLog?.Invoke($"ℹ️ {symbol} PUMP 1차 익절 ROE가 {pumpTp1Roe:F1}%로 낮아 25.0%로 상향 적용");
-                pumpTp1Roe = 25.0m;
-            }
-
-            partialTakeProfitROE = pumpTp1Roe;
-
-            // [PUMP 변동성 방어] 고정 -60% 외에 구조/ATR 기반 느슨한 손절 ROE를 준비
-            if (isLongPosition && entryPrice > 0)
-            {
-                decimal structureStop = 0m;
-                if (wave1LowPrice > 0m)
-                    structureStop = wave1LowPrice;
-                if (fib0786Level > 0m)
-                    structureStop = structureStop > 0m ? Math.Min(structureStop, fib0786Level) : fib0786Level;
-
-                decimal atrStop = atr > 0 ? entryPrice - ((decimal)atr * 1.8m) : 0m;
-                decimal chosenStop = 0m;
-                if (structureStop > 0m && atrStop > 0m)
-                    chosenStop = Math.Min(structureStop, atrStop);
-                else if (structureStop > 0m)
-                    chosenStop = structureStop;
-                else if (atrStop > 0m)
-                    chosenStop = atrStop;
-
-                if (chosenStop > 0m && chosenStop < entryPrice)
-                {
-                    decimal lossPct = ((entryPrice - chosenStop) / entryPrice) * 100m;
-                    decimal candidateRoe = lossPct * leverage;
-                    if (candidateRoe > 0m)
-                        dynamicStopLossRoe = Math.Max(stopLossROE, candidateRoe);
-
-                    OnLog?.Invoke($"🛡️ {symbol} [PUMP 가변SL] 고정={stopLossROE:F1}% 동적={dynamicStopLossRoe:F1}% stop={chosenStop:F8}");
+                    if (isBreakEvenTriggered)
+                        OnLog?.Invoke($"🔄 {symbol} PUMP 상태 복원 | BE={isBreakEvenTriggered} ROE={highestROE:F1}%");
                 }
             }
 
-            if (atr > 0)
-            {
-                decimal targetPriceMove = (decimal)atr * 3.0m;
-                decimal dynamicROE = (targetPriceMove / entryPrice) * leverage * 100;
-                // [Meme Coin Mode] ATR 동적 값이 PumpTrailingStartRoe(40%) 아래로 내려가지 않도록 보정
-                trailingStartROE = Math.Clamp(dynamicROE, pumpTrailingStartRoe, pumpTrailingStartRoe + 30.0m);
-                OnLog?.Invoke($"🎯 {symbol} 목표가 동적 설정 (ATR:{atr:F2}): ROE {trailingStartROE:F1}% [PUMP floor={pumpTrailingStartRoe:F0}%]");
-            }
-
-            OnLog?.Invoke($"📋 {symbol} [Meme Coin Mode] SL={stopLossROE:F0}% BreakEven={pumpBreakEvenRoe:F0}% TrailStart={trailingStartROE:F0}% TrailGap={trailingDropROE:F0}%");
-
-            // [v4.0.3] 실가격 추적
-            decimal highestPrice = entryPrice;
-            decimal lowestPrice = entryPrice;
+            OnLog?.Invoke($"📋 {symbol} [Meme Coin Mode] BreakEven={pumpBreakEvenRoe:F0}% | 서버사이드 SL/TP/Trailing 등록됨");
 
             while (!token.IsCancellationRequested)
             {
@@ -1969,586 +1867,42 @@ namespace TradingBot.Services
                     : (entryPrice - currentPrice) / entryPrice * 100;
                 decimal currentROE = priceChangePercent * leverage;
 
-                // [1분봉 급등 스파이크 감지] 0.5초마다 체크 중 ROE가 15% 이상 단숨에 올라가면 즉시 20% 부분익절
-                // 20~50% 1분봉 급등 시 수익 일부를 확실히 잠금
-                if (!spikePartialTaken && prevCheckROE > -999m && currentROE > 0
-                    && (currentROE - prevCheckROE) >= 15.0m && currentROE >= 20.0m)
-                {
-                    OnAlert?.Invoke($"⚡ {symbol} 급등 스파이크 감지! ROE {prevCheckROE:F1}%→{currentROE:F1}% (+{currentROE - prevCheckROE:F1}%) → 즉시 20% 부분익절");
-                    if (await ExecutePartialClose(symbol, 0.20m, token))
-                        spikePartialTaken = true;
-                }
-                prevCheckROE = currentROE;
-
-                // [v3.0.15] PUMP 타임스탑 제거 — 손절/트레일링이 포지션 관리 담당
+                if (currentROE > highestROE) highestROE = currentROE;
 
                 OnTickerUpdate?.Invoke(symbol, 0m, (double)currentROE);
 
-                bool isAveraged = false;
-                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) isAveraged = p.IsAveragedDown; }
-
-                bool firstTpDone = false;
-                lock (_posLock)
-                {
-                    if (_activePositions.TryGetValue(symbol, out var p))
-                        firstTpDone = p.PartialProfitStage >= 1 || p.TakeProfitStep >= 1;
-                }
-
-                // [v3.6.5 / v5.1.0] 1분봉 하락추세 조기 청산 — 완화
-                // 기존: 음봉3연속 + RSI<40 + ROE≤-10% → 너무 타이트 (정상 조정에도 발동)
-                // 04-12 DB: 이 로직으로 15건 -$299 손절 (전체 손절 62%)
-                //
-                // 수정:
-                // - ROE -10% → -20% 완화 (실가격 -1%, 정상 조정 후 반등 기회 제공)
-                // - 음봉 3연속 → 4연속 (더 확실한 하락 확인)
-                // - RSI < 40 → RSI < 30 (과매도 깊이 확인)
-                // - 진입 후 2분 → 5분 (최소 관찰 시간 늘림)
-                // - 추가: ROE -30% 이하면 기존 조건 (3연속+RSI40+ROE-10) 유지 (큰 손실 방지)
-                if (isPumpPosition && !firstTpDone && currentROE < 0 && (DateTime.Now - startTime).TotalMinutes >= 10) // [v5.10.4] 5분→10분: 초반 눌림 허용
-                {
-                    try
-                    {
-                        var m1Klines = await _exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.OneMinute, 10, CancellationToken.None);
-                        if (m1Klines != null && m1Klines.Count >= 5)
-                        {
-                            var last5 = m1Klines.TakeLast(5).ToList();
-                            // 최근 N봉 연속 음봉 체크
-                            int bearishCount = 0;
-                            for (int bi = last5.Count - 1; bi >= 0; bi--)
-                            {
-                                if (last5[bi].ClosePrice < last5[bi].OpenPrice) bearishCount++;
-                                else break;  // 양봉 나오면 카운트 중단
-                            }
-                            // RSI 하락 체크
-                            double m1Rsi = IndicatorCalculator.CalculateRSI(m1Klines.ToList(), Math.Min(7, m1Klines.Count - 1));
-
-                            bool shouldClose = false;
-                            string closeReason = "";
-
-                            // [긴급] ROE -30% 이하: 기존 조건 유지 (큰 손실 방지)
-                            if (bearishCount >= 3 && m1Rsi < 40 && currentROE <= -30.0m)
-                            {
-                                shouldClose = true;
-                                closeReason = $"긴급 (ROE{currentROE:F0}%≤-30 음봉{bearishCount} RSI{m1Rsi:F0})";
-                            }
-                            // [완화] 일반: 4연속 음봉 + RSI < 30 + ROE -20% 이하
-                            else if (bearishCount >= 4 && m1Rsi < 30 && currentROE <= -20.0m)
-                            {
-                                shouldClose = true;
-                                closeReason = $"확인됨 (ROE{currentROE:F0}% 음봉{bearishCount} RSI{m1Rsi:F0})";
-                            }
-
-                            if (shouldClose)
-                            {
-                                OnLog?.Invoke($"[조기청산] {symbol} 1분봉 하락추세 | {closeReason} → 탈출");
-                                await ExecuteMarketClose(symbol, $"1분봉 하락추세 조기청산 ({closeReason})", token);
-                                break;
-                            }
-                        }
-                    }
-                    catch (Exception m1Ex) { OnLog?.Invoke($"⚠️ {symbol} 1분봉 체크 오류: {m1Ex.Message}"); }
-                }
-
-                // [20배 PUMP 즉시 손절] 진입 후 다음 5분봉이 BB중단을 음봉으로 하향 돌파 마감 시 즉시 청산
-                if (isPumpPosition && (DateTime.Now - startTime).TotalMinutes >= 5)
-                {
-                    try
-                    {
-                        if (_marketDataManager.KlineCache.TryGetValue(symbol, out var recentCandles) && recentCandles.Count >= 20)
-                        {
-                            List<IBinanceKline> snapshot;
-                            lock (recentCandles)
-                            {
-                                snapshot = recentCandles.TakeLast(20).ToList(); // [동시성 안전] 스냅샷 복사
-                            }
-                            
-                            if (snapshot.Count < 20) continue;
-                            var last = snapshot[snapshot.Count - 1];
-                            var bb = IndicatorCalculator.CalculateBB(snapshot, 20, 2);
-                            decimal mid = (decimal)bb.Mid;
-                            bool bearishCloseBelowMid = (decimal)last.ClosePrice < (decimal)last.OpenPrice && (decimal)last.ClosePrice < mid;
-                            if (bearishCloseBelowMid)
-                            {
-                                OnLog?.Invoke($"[청산 트리거] {symbol} 급등 추세 실패(BB중단 하향 음봉마감)");
-                                await ExecuteMarketClose(symbol, "🛑 BB중단 하향 음봉마감 (즉시손절)", token);
-                                break;
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        OnLog?.Invoke($"⚠️ [{symbol}] BB중단 하향 분석 오류: {ex.Message}");
-                    }
-                }
-
-                // ============================================================
-                // [ElliottWave 3단계 부분익절] (Wave1High → Fib1618 → 잔량)
-                // ============================================================
-                if (elliotWavePos != null && isLongPosition &&
-                    wave1HighPrice > 0 && fib1618Target > 0)
-                {
-                    // 1차 익절: 전고점(1.0) 도달 OR 설정 ROE 달성 시 15% 매도
-                    // [v5.1.3] 거래소 TP 등록 성공 시 내부 PartialClose 스킵 (이중 청산 방지)
-                    bool tpOnExchange = false;
-                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var tpChk)) tpOnExchange = tpChk.TpRegisteredOnExchange; }
-
-                    bool tp1Condition = currentPrice >= wave1HighPrice || currentROE >= pumpTp1Roe;
-                    if (elliotWavePos.PartialProfitStage == 0 && tp1Condition && !tpOnExchange)
-                    {
-                        if (await ExecutePartialClose(symbol, firstPartialCloseRatio, token)) // 15% 매도
-                        {
-                            lock (_posLock)
-                            {
-                                if (_activePositions.TryGetValue(symbol, out var p))
-                                {
-                                    p.PartialProfitStage = 1;
-                                    // [PUMP 추세홀딩] 1차 후 최소 수익선(ROE +5%) 확보
-                                    decimal lockRoe = 5.0m;
-                                    p.BreakevenPrice = entryPrice * (1m + (lockRoe / (leverage * 100m)));
-                                }
-                            }
-                            string tp1Trigger = currentPrice >= wave1HighPrice ? $"Fib1.0(전고점) {wave1HighPrice:F8}" : $"ROE {pumpTp1Roe:F1}% 달성 ({currentROE:F1}%)";
-                            OnAlert?.Invoke($"💰 {symbol} 1차 익절 ({firstPartialCloseRatio * 100m:F0}%) | 트리거: {tp1Trigger} | 생존선(ROE+5%) 설정");
-                            OnLog?.Invoke($"✅ {symbol} 1차 익절 완료(Stage=1), 다음 목표: Fib1.618 {fib1618Target:F8} 또는 ROE {pumpTp2Roe:F1}%");
-                        }
-                    }
-
-                    // [v5.4.0] 2차 익절 제거 — 1차 부분익절 후 잔량은 트레일링스탑에 맡김
-                    // 기존: 1차 부분익절 → 2차 익절(30%) → 최종 익절(Fib2.618) → 트레일링
-                    // 수정: 1차 부분익절 → 트레일링스탑만
-                }
-
-                // ============================================================
-                // [ElliottWave 절대 손절선] (4가지)
-                // ============================================================
-                if (elliotWavePos != null && isLongPosition)
-                {
-                    bool shouldAbsoluteStop = false;
-                    string stopReason = "";
-
-                    // 1. Wave1LowPrice 이탈 (절대 손절선 1)
-                    if (wave1LowPrice > 0 && currentPrice <= wave1LowPrice)
-                    {
-                        shouldAbsoluteStop = true;
-                        stopReason = $"Wave1Low {wave1LowPrice:F8} 이탈";
-                    }
-
-                    // 2. Fib0.618/논리손절 이탈 (20배 핵심 손절선)
-                    if (!shouldAbsoluteStop && fib0618Level > 0 && currentPrice <= fib0618Level)
-                    {
-                        shouldAbsoluteStop = true;
-                        stopReason = $"Fib0.618 {fib0618Level:F8} 이탈";
-                    }
-
-                    if (!shouldAbsoluteStop && fib0786Level > 0 && currentPrice <= fib0786Level)
-                    {
-                        shouldAbsoluteStop = true;
-                        stopReason = $"논리손절 {fib0786Level:F8} 이탈";
-                    }
-
-                    // 3. BB 하단 이탈 (절대 손절선 3) - 마켓 데이터 캐시에서 최신 캔들 조회
-                    if (!shouldAbsoluteStop)
-                    {
-                        try
-                        {
-                            if (_marketDataManager.KlineCache.TryGetValue(symbol, out var recentCandles) && recentCandles.Count >= 20)
-                            {
-                                List<IBinanceKline> snapshot;
-                                lock (recentCandles)
-                                {
-                                    snapshot = recentCandles.TakeLast(20).ToList(); // [동시성 안전]
-                                }
-                                if (snapshot.Count < 20) continue;
-                                var bbAnalysis = IndicatorCalculator.CalculateBB(snapshot, 20, 2);
-                                decimal bbLower = (decimal)bbAnalysis.Lower;
-                                if (currentPrice < bbLower)
-                                {
-                                    shouldAbsoluteStop = true;
-                                    stopReason = $"BB하단 {bbLower:F8} 이탈";
-                                }
-                            }
-                        }
-                        catch { /* BB 계산 실패 무시 */ }
-                    }
-
-                    // [v3.0.15] ElliottWave 타임스탑 제거 — 손절/트레일링이 포지션 관리 담당
-
-                    if (shouldAbsoluteStop && elliotWavePos.PartialProfitStage < 2)
-                    {
-                        OnLog?.Invoke($"[청산 트리거] {symbol} 절대 손절선 발동! | 이유: {stopReason} | 현재ROE: {currentROE:F2}%");
-                        await ExecuteMarketClose(symbol, $"🛑 {stopReason}", token);
-                        break;
-                    }
-                }
-
-                // [수정] 물타기 포지션의 손절폭 완화: 20% → 12% (과도한 손로 방지)
-
-                // ============================================================
-                // [레벨업 스탑 + BB 중단 추격] 2차 익절 이후 (PartialProfitStage=2)
-                // ============================================================
-                if (elliotWavePos?.PartialProfitStage == 2 && wave1HighPrice > 0)
-                {
-                    bool shouldLevelUpStop = false;
-                    string levelUpReason = "";
-
-                    // 1. BB 중단(20EMA) 추격 스탑: 종가가 BB 중단 아래로 내려오면 즉시 청산
-                    try
-                    {
-                        if (_marketDataManager.KlineCache.TryGetValue(symbol, out var recentCandles) && recentCandles.Count >= 20)
-                        {
-                            List<IBinanceKline> snapshot;
-                            lock (recentCandles)
-                            {
-                                snapshot = recentCandles.TakeLast(20).ToList(); // [동시성 안전] 스냅샷 복사
-                            }
-                            
-                            if (snapshot.Count < 20) continue;
-                            var lastCandle = snapshot[snapshot.Count - 1];
-                            decimal lastClose = (decimal)lastCandle.ClosePrice;
-
-                            var bbAnalysis = IndicatorCalculator.CalculateBB(snapshot, 20, 2);
-                            decimal bbMiddle = (decimal)bbAnalysis.Mid; // 20EMA
-
-                            // 종가가 BB 중단 아래: 추세가 죽었다고 판단 → 즉시 청산
-                            if (lastClose < bbMiddle)
-                            {
-                                shouldLevelUpStop = true;
-                                levelUpReason = $"BB 중단({bbMiddle:F8}) 이탈 (종가: {lastClose:F8})";
-                            }
-                        }
-                    }
-                    catch { /* BB 계산 실패 무시 */ }
-
-                    // 2. 레벨업 스탑: Wave1HighPrice(1차 익절가) 아래로 내려오면 청산
-                    if (!shouldLevelUpStop && currentPrice < wave1HighPrice)
-                    {
-                        shouldLevelUpStop = true;
-                        levelUpReason = $"레벨업 손절 (Wave1High {wave1HighPrice:F8} 이탈)";
-                    }
-
-                    // 3. 밴드라이딩 종료 + RSI 하락 다이버전스: 상단선 안쪽 복귀 + RSI 하락 시 전량 정리
-                    if (!shouldLevelUpStop)
-                    {
-                        try
-                        {
-                            if (_marketDataManager.KlineCache.TryGetValue(symbol, out var recentCandles) && recentCandles.Count >= 30)
-                            {
-                                List<IBinanceKline> snapshot;
-                                lock (recentCandles)
-                                {
-                                    snapshot = recentCandles.TakeLast(30).ToList(); // [동시성 안전]
-                                }
-                                
-                                if (snapshot.Count < 30) continue;
-                                var candles = snapshot;
-                                if (candles.Count < 2)
-                                {
-                                    OnLog?.Invoke($"⚠️ {symbol} candles 부족 (BB 분석, Count: {candles.Count})");
-                                    continue;
-                                }
-                                var bbNow = IndicatorCalculator.CalculateBB(candles, 20, 2);
-                                var prevCandles = candles.Take(candles.Count - 1).ToList();
-                                var bbPrev = IndicatorCalculator.CalculateBB(prevCandles, 20, 2);
-
-                                decimal lastClose = (decimal)candles[^1].ClosePrice;
-                                decimal prevClose = (decimal)candles[^2].ClosePrice;
-                                bool upperBandBackInside = prevClose >= (decimal)bbPrev.Upper && lastClose < (decimal)bbNow.Upper;
-
-                                double rsiNow = IndicatorCalculator.CalculateRSI(candles, 14);
-                                double rsiPrev = IndicatorCalculator.CalculateRSI(prevCandles, 14);
-                                bool bearishRsiDivergenceHint = lastClose > prevClose && rsiNow < rsiPrev;
-
-                                if (upperBandBackInside && bearishRsiDivergenceHint)
-                                {
-                                    shouldLevelUpStop = true;
-                                    levelUpReason = $"밴드라이딩 종료+RSI다이버전스 (RSI {rsiPrev:F1}->{rsiNow:F1})";
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            OnLog?.Invoke($"⚠️ [{symbol}] 밴드라이딩/레벨업 스탑 분석 오류: {ex.Message}");
-                        }
-                    }
-
-                    if (shouldLevelUpStop)
-                    {
-                        OnLog?.Invoke($"[청산 트리거] {symbol} 레벨업/추격 스탑 발동! | 이유: {levelUpReason} | 현재ROE: {currentROE:F2}%");
-                        await ExecuteMarketClose(symbol, $"🚀 {levelUpReason}", token);
-                        break;
-                    }
-                }
-
-                // ============================================================
-                // [v3.3.7] 계단식 보호선 우선 처리 — 본절/BB보다 먼저 체크
-                // 67% ROE 달성 후 급락 시 본절(-0.08%)이 아닌 보호선(+10%)에서 청산
-                // ============================================================
-                if (currentROE >= stairStep1TriggerRoe && stairStep < 1)
-                {
-                    stairStep = 1;
-                    lockedProfitFloorRoe = Math.Max(lockedProfitFloorRoe, StairStep1FloorRoe);
-                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 1단계 | ROI {stairStep1TriggerRoe:F0}% → 보호선 ROE +{StairStep1FloorRoe:F0}%");
-                    PersistPositionState(symbol, stairStep: 1, highestROE: highestROE);
-
-                    // [v3.6.4] 서버사이드 TRAILING_STOP_MARKET (CancellationToken.None 사용)
-                    {
-                        string stopSide = isLongPosition ? "SELL" : "BUY";
-                        decimal qty = 0;
-                        string? oldOrderId = null;
-                        lock (_posLock)
-                        {
-                            if (_activePositions.TryGetValue(symbol, out var p))
-                            {
-                                qty = Math.Abs(p.Quantity);
-                                oldOrderId = p.StopOrderId;
-                            }
-                        }
-                        if (qty > 0)
-                        {
-                            try
-                            {
-                                if (!string.IsNullOrEmpty(oldOrderId))
-                                    await _exchangeService.CancelOrderAsync(symbol, oldOrderId, CancellationToken.None);
-
-                                decimal callbackRate = Math.Clamp(trailingDropROE / leverage, 0.1m, 5.0m);
-                                OnLog?.Invoke($"📡 {symbol} TRAILING_STOP 시도 | qty={qty} callback={callbackRate:F1}%");
-
-                                var (ok, newId) = await _exchangeService.PlaceTrailingStopOrderAsync(
-                                    symbol, stopSide, qty, callbackRate, activationPrice: null, CancellationToken.None);
-                                if (ok)
-                                {
-                                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId; }
-                                    OnAlert?.Invoke($"📡 {symbol} 서버 TRAILING_STOP 등록 완료 | callback={callbackRate:F1}%");
-                                }
-                                else
-                                {
-                                    OnLog?.Invoke($"⚠️ {symbol} TRAILING_STOP 실패 → STOP_MARKET 폴백 시도");
-                                    decimal floorPrice = isLongPosition
-                                        ? entryPrice * (1m + StairStep1FloorRoe / leverage / 100m)
-                                        : entryPrice * (1m - StairStep1FloorRoe / leverage / 100m);
-                                    var (ok2, newId2) = await _exchangeService.PlaceStopOrderAsync(symbol, stopSide, qty, floorPrice, CancellationToken.None);
-                                    if (ok2)
-                                    {
-                                        lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId2; }
-                                        OnLog?.Invoke($"📡 {symbol} STOP_MARKET 폴백 성공 {floorPrice:F8}");
-                                    }
-                                    else
-                                        OnLog?.Invoke($"❌ {symbol} STOP_MARKET 폴백도 실패");
-                                }
-                            }
-                            catch (Exception ex) { OnLog?.Invoke($"❌ {symbol} 서버 트레일링 예외: {ex.Message}"); }
-                        }
-                        else
-                        {
-                            OnLog?.Invoke($"⚠️ {symbol} 서버 트레일링 스킵: qty=0");
-                        }
-                    }
-                }
-
-                if (currentROE >= stairStep2TriggerRoe && stairStep < 2)
-                {
-                    stairStep = 2;
-                    lockedProfitFloorRoe = Math.Max(lockedProfitFloorRoe, StairStep2FloorRoe);
-                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 2단계 | ROI {stairStep2TriggerRoe:F0}% → 보호선 ROE +{StairStep2FloorRoe:F0}% (100% 먹고 50% 보존)");
-                    PersistPositionState(symbol, stairStep: 2, highestROE: highestROE);
-
-                    // [v3.6.4] 2단계 TRAILING_STOP 업그레이드 (동기 + CancellationToken.None)
-                    {
-                        string stopSide2 = isLongPosition ? "SELL" : "BUY";
-                        decimal qty2 = 0;
-                        string? oldId2 = null;
-                        lock (_posLock)
-                        {
-                            if (_activePositions.TryGetValue(symbol, out var p))
-                            { qty2 = Math.Abs(p.Quantity); oldId2 = p.StopOrderId; }
-                        }
-                        if (qty2 > 0)
-                        {
-                            try
-                            {
-                                if (!string.IsNullOrEmpty(oldId2))
-                                    await _exchangeService.CancelOrderAsync(symbol, oldId2, CancellationToken.None);
-                                decimal callbackRate2 = Math.Clamp(trailingDropROE / leverage * 0.5m, 0.1m, 5.0m);
-                                OnLog?.Invoke($"📡 {symbol} TRAILING_STOP 2단계 시도 | qty={qty2} callback={callbackRate2:F1}%");
-                                var (ok, newId) = await _exchangeService.PlaceTrailingStopOrderAsync(
-                                    symbol, stopSide2, qty2, callbackRate2, activationPrice: null, CancellationToken.None);
-                                if (ok)
-                                {
-                                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId; }
-                                    OnAlert?.Invoke($"📡 {symbol} 서버 TRAILING_STOP 2단계 완료 | callback={callbackRate2:F1}%");
-                                }
-                                else OnLog?.Invoke($"⚠️ {symbol} TRAILING_STOP 2단계 실패");
-                            }
-                            catch (Exception ex) { OnLog?.Invoke($"❌ {symbol} 2단계 트레일링 예외: {ex.Message}"); }
-                        }
-                    }
-                }
-
-                if (currentROE >= stairStep3TriggerRoe && stairStep < 3)
-                {
-                    stairStep = 3;
-                    trailingDropROE = 30.0m;
-                    OnAlert?.Invoke($"🪜 {symbol} 계단식 스탑 3단계 | ROI {stairStep3TriggerRoe:F0}% → Moonshot Trailing Gap {trailingDropROE:F0}%");
-                    PersistPositionState(symbol, stairStep: 3, highestROE: highestROE);
-                }
-
-                // [v3.3.7] 계단식 보호선 발동 — 다른 모든 청산 로직보다 우선
-                if (lockedProfitFloorRoe > decimal.MinValue && currentROE <= lockedProfitFloorRoe)
-                {
-                    OnLog?.Invoke($"[청산 트리거] {symbol} 계단식 보호선 이탈 | 현재ROE={currentROE:F2}% <= 보호선={lockedProfitFloorRoe:F2}%");
-                    await ExecuteMarketClose(symbol, $"🪜 계단식 스탑 발동 (ROE {lockedProfitFloorRoe:F1}% 보호선)", token);
-                    break;
-                }
-
-                // highestROE 업데이트 — 계단식 보호선 후에 위치해야 현재 사이클 ROE 반영
-                // [v5.0.8] 5% 단위로 PositionState 저장 — 재시작 시 고점 복원 보장 (GIGGLE 케이스)
-                if (currentROE > highestROE)
-                {
-                    decimal prevHighPump = highestROE;
-                    highestROE = currentROE;
-
-                    int prevBucketP = (int)(prevHighPump / 5m);
-                    int curBucketP = (int)(highestROE / 5m);
-                    if (curBucketP > prevBucketP)
-                    {
-                        PersistPositionState(symbol, stairStep: stairStep, highestROE: highestROE);
-                    }
-                }
-
-                decimal effectiveStopLossRoe = dynamicStopLossRoe;
-                if (isAveraged && firstTpDone)
-                    effectiveStopLossRoe = Math.Min(effectiveStopLossRoe, 12.0m);
-
-                // ============================================================
-                // [본절가 스탑] ElliottWave 1차 익절 후 진입가로 손절 상향
-                // [v3.3.7] 계단식 보호선 활성 시 본절가 스탑 무시 (보호선이 더 높음)
-                // ============================================================
-                if (elliotWavePos?.BreakevenPrice > 0 && isLongPosition && stairStep == 0)
-                {
-                    if (currentPrice <= elliotWavePos.BreakevenPrice)
-                    {
-                        OnLog?.Invoke($"[청산 트리거] {symbol} 본절가 손절 발동 | BreakevenPrice: {elliotWavePos.BreakevenPrice:F8}, 현재가: {currentPrice:F8}");
-                        await ExecuteMarketClose(symbol, "🛡️ 본절가 손절 (진입가 손절 상향)", token);
-                        break;
-                    }
-                }
-
-                // [PUMP 추세홀딩] 1차 익절 전에는 본절 이동 금지
-                if (!isBreakEvenTriggered && firstTpDone && currentROE >= pumpBreakEvenRoe)
+                // [v5.10.45] 본절 전환: ROE >= PumpBreakEvenRoe → SL 취소 후 본절가 서버 등록
+                if (!isBreakEvenTriggered && currentROE >= pumpBreakEvenRoe)
                 {
                     isBreakEvenTriggered = true;
-                    PersistPositionState(symbol, stairStep: stairStep, isBreakEvenTriggered: true, highestROE: highestROE);
-                    OnAlert?.Invoke($"🛡️ {symbol} Break Even 발동! (ROI {pumpBreakEvenRoe:F0}% 도달 → 손절라인 진입가로 이동, 절대 손실 없음)");
+                    PersistPositionState(symbol, isBreakEvenTriggered: true, highestROE: highestROE);
+                    OnAlert?.Invoke($"🛡️ {symbol} Break Even 발동! (ROE {pumpBreakEvenRoe:F0}% 달성 → 본절가 서버 등록)");
+                    try
+                    {
+                        string? oldSlId = null;
+                        decimal beQty = 0;
+                        lock (_posLock)
+                        {
+                            if (_activePositions.TryGetValue(symbol, out var p))
+                            { oldSlId = p.StopOrderId; beQty = Math.Abs(p.Quantity); }
+                        }
+                        if (!string.IsNullOrEmpty(oldSlId))
+                            await _exchangeService.CancelOrderAsync(symbol, oldSlId, CancellationToken.None);
+                        const decimal BeBufferPct = 0.0015m;
+                        decimal breakEvenPrice = isLongPosition ? entryPrice * (1m - BeBufferPct) : entryPrice * (1m + BeBufferPct);
+                        string beSide = isLongPosition ? "SELL" : "BUY";
+                        if (beQty > 0)
+                        {
+                            var (beOk, beNewId) = await _exchangeService.PlaceStopOrderAsync(symbol, beSide, beQty, breakEvenPrice, CancellationToken.None);
+                            if (beOk) { lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = beNewId; } OnLog?.Invoke($"✅ {symbol} 본절 STOP_MARKET 등록 | price={breakEvenPrice:F6}"); }
+                            else OnLog?.Invoke($"⚠️ {symbol} 본절 STOP_MARKET 등록 실패");
+                        }
+                    }
+                    catch (Exception beEx) { OnLog?.Invoke($"❌ {symbol} 본절 전환 예외: {beEx.Message}"); }
                     await TelegramService.Instance.SendBreakEvenReachedAsync(symbol, entryPrice);
                 }
 
-                // [PUMP 본절 버퍼] 진입가 정확히 0%에서 청산하면 되돌림에 바로 털림
-                // → -10% ROE (0x20 기준 0.5% 가격) 여유를 줘서 PUMP 특유의 눌림을 버팀
-                // [v3.3.7] 계단식 보호선 활성 시 본절 스탑 무시
-                if (isBreakEvenTriggered && stairStep == 0)
-                    effectiveStopLossRoe = Math.Min(effectiveStopLossRoe, 10.0m);
 
-                // [초기 맷집] 1차 익절 전 + ROE 40% 미만은 느슨한 손절 유지
-                if (!firstTpDone && currentROE < MemeBreathingRoe)
-                    effectiveStopLossRoe = Math.Max(effectiveStopLossRoe, dynamicStopLossRoe);
-
-                int currentTpStep = 0;
-                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) currentTpStep = p.TakeProfitStep; }
-
-                if (currentTpStep == 0 && currentROE >= partialTakeProfitROE)
-                {
-                    if (await ExecutePartialClose(symbol, firstPartialCloseRatio, token))
-                    {
-                        lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.TakeProfitStep = 1; }
-                        OnAlert?.Invoke($"💰 {symbol} 1차 익절 ({firstPartialCloseRatio * 100m:F0}%) & 생존선 확보 (ROE: {currentROE:F2}%)");
-                    }
-                }
-
-                // [v3.3.9] 물타기 비활성화 — 손실 2배 증폭 원인 (7일 -$1,138)
-                // if (!isAveraged && !isBreakEvenTriggered && currentROE <= averageDownROE)
-                // {
-                //     OnAlert?.Invoke($"💧 {symbol} 물타기 시도 (ROE: {currentROE:F2}%)");
-                //     await ExecuteAverageDown(symbol, token);
-                //     lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) entryPrice = p.EntryPrice; }
-                //     continue;
-                // }
-
-                // [v4.0.3] 실가격 기반 손절 — 진입가 대비 % + 최고가 대비 %
-                {
-                    // 최고가 추적
-                    if (isLongPosition && currentPrice > highestPrice) highestPrice = currentPrice;
-                    if (!isLongPosition && (lowestPrice == 0 || currentPrice < lowestPrice)) lowestPrice = currentPrice;
-
-                    // 진입가 대비 하락% (초기 손절)
-                    decimal dropFromEntry = isLongPosition
-                        ? (entryPrice - currentPrice) / entryPrice * 100
-                        : (currentPrice - entryPrice) / entryPrice * 100;
-
-                    // 최고가 대비 하락% (트레일링 손절)
-                    decimal dropFromPeak = 0;
-                    if (isLongPosition && highestPrice > 0)
-                        dropFromPeak = (highestPrice - currentPrice) / highestPrice * 100;
-                    else if (!isLongPosition && lowestPrice > 0)
-                        dropFromPeak = (currentPrice - lowestPrice) / lowestPrice * 100;
-
-                    // [v5.10.4] 초기 손절: 진입가 대비 -3%→-4% (20x = ROE -60%→-80%)
-                    // 알트/밈코인 정상 변동폭 3~5% — 너무 타이트하면 정상 눌림에서 손절
-                    if (dropFromEntry >= 4.0m && !isBreakEvenTriggered)
-                    {
-                        OnLog?.Invoke($"[청산 트리거] {symbol} 실가격 손절 | 진입가 대비 -{dropFromEntry:F2}% (>= 4%)");
-                        await ExecuteMarketClose(symbol, $"실가격 손절 (진입가 대비 -{dropFromEntry:F1}%)", token);
-                        break;
-                    }
-
-                    // [v5.10.4] 최고가 대비 -5%→-7% 하락 (고점 찍고 내려올 때, 변동성 여유 확보)
-                    if (highestPrice > entryPrice && dropFromPeak >= 7.0m)
-                    {
-                        OnLog?.Invoke($"[청산 트리거] {symbol} 고점 대비 -{dropFromPeak:F2}% 하락 (>= 7%) | 고점={highestPrice:F6}");
-                        await ExecuteMarketClose(symbol, $"고점 대비 -{dropFromPeak:F1}% 하락 (고점 {highestPrice:F6})", token);
-                        break;
-                    }
-
-                    // 기존 ROE 기반 백업 (위 조건에 안 걸리면)
-                    if (currentROE <= -effectiveStopLossRoe)
-                    {
-                        string exitReason = isBreakEvenTriggered ? "🛡️ Break Even (본절)" : $"ROE 손절 (-{effectiveStopLossRoe}%)";
-                        OnLog?.Invoke($"[청산 트리거] {symbol} ROE 백업 손절 | ROE={currentROE:F2}%");
-                        await ExecuteMarketClose(symbol, exitReason, token);
-                        break;
-                    }
-                }
-
-                // ── [Meme Coin Mode] PUMP 트레일링: 고정 간격 pumpTrailingGapRoe 유지 ──────
-                // 기존의 10%→4%, 15%→5% 동적 압축은 밈코인 변동성에 적합하지 않아 제거
-                // 최고 ROI 대비 pumpTrailingGapRoe(20%) 이상 하락 시에만 청산
-                // 예시: ROI 100% → 80%로 하락(20% drop) → 청산, 어깨에서 팔고 나옴
-                // ──────────────────────────────────────────────────────────────────
-
-                decimal effectiveTrailingStartRoe = Math.Max(trailingStartROE, stairStep3TriggerRoe);
-                if (highestROE >= effectiveTrailingStartRoe)
-                {
-                    if (highestROE - currentROE >= trailingDropROE)
-                    {
-                        PositionInfo? pos = null;
-                        lock (_posLock) { _activePositions.TryGetValue(symbol, out pos); }
-
-                        if (pos != null && pos.TakeProfitStep == 0)
-                        {
-                            if (await ExecutePartialClose(symbol, firstPartialCloseRatio, token))
-                            {
-                                lock (_posLock) { if (_activePositions.ContainsKey(symbol)) _activePositions[symbol].TakeProfitStep = 1; }
-                                OnAlert?.Invoke($"💰 {symbol} 1차 트레일링 익절 ({firstPartialCloseRatio * 100m:F0}%) | ROE: {currentROE:F1}%");
-                            }
-                            // [수정] highestROE 리셋 제거 - 남은 50%도 원래 최고가 기준으로 추적
-                        }
-                        else
-                        {
-                            OnLog?.Invoke($"[청산 트리거] {symbol} 트레일링 최종청산 조건 충족 | 방향={(isLongPosition ? "LONG" : "SHORT")}, 최고ROE={highestROE:F1}%, 현재ROE={currentROE:F1}%, 간격={trailingDropROE:F1}%");
-                            await ExecuteMarketClose(symbol, $"ROE 트레일링 최종 익절 (최고:{highestROE:F1}% / 현재:{currentROE:F1}%)", token);
-                            break;
-                        }
-                    }
-                }
 
                 lock (_posLock)
                 {

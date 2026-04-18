@@ -287,6 +287,7 @@ namespace TradingBot.ViewModels
 
         private DateTime _initialTrainingStartTime;
         private DispatcherTimer? _initialTrainingTimer;
+        private DispatcherTimer? _hideTrainingBannerTimer; // [v5.10.46] 필드 타이머 — 중복 생성 방지
 
         private string _battleFocusSymbol = "-";
         public string BattleFocusSymbol
@@ -2293,7 +2294,7 @@ namespace TradingBot.ViewModels
                 }
                 else
                 {
-                    InitialTrainingEtaText = progress.Current >= progress.Total ? "ETA 완료" : "ETA 계산 중...";
+                    InitialTrainingEtaText = progress.Current >= progress.Total ? "다운로드 완료 — 학습 중..." : "ETA 계산 중...";
                 }
 
                 // [v4.7.4] 메이저/알트 분리 표시
@@ -2331,6 +2332,9 @@ namespace TradingBot.ViewModels
             if (_trainingBannerFinalized) return; // [v5.10.40] 완료/실패 후 재표시 금지
             InitialTrainingBannerVisibility = Visibility.Visible;
             InitialTrainingStatusText = "🧠 초기학습 진행 중 — 완료 심볼부터 순차 진입 활성화";
+            // [v5.10.46] "다운로드 완료" ETA 텍스트 → "모델 학습 처리 중" 으로 전환 (혼동 방지)
+            if (InitialTrainingEtaText.StartsWith("다운로드 완료"))
+                InitialTrainingEtaText = "🧠 모델 학습 처리 중...";
 
             if (_initialTrainingTimer == null)
             {
@@ -2352,30 +2356,32 @@ namespace TradingBot.ViewModels
             _initialTrainingTimer?.Stop();
             _initialTrainingTimer = null;
 
+            // [v5.10.46] 배너가 이미 숨겨진 상태면 중복 타이머 생성 방지
+            if (_initialTrainingBannerVisibility == Visibility.Collapsed)
+                return;
+
             if (success)
             {
                 var elapsed = DateTime.Now - _initialTrainingStartTime;
                 InitialTrainingStatusText = $"✅ 초기학습 완료 — 진입 활성화 (총 {elapsed:hh\\:mm\\:ss})";
-                // 10초 후 배너 숨김
-                var hideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
-                hideTimer.Tick += (_, _) =>
-                {
-                    InitialTrainingBannerVisibility = Visibility.Collapsed;
-                    hideTimer.Stop();
-                };
-                hideTimer.Start();
+                InitialTrainingEtaText = "✅ 완료";
             }
             else
             {
                 InitialTrainingStatusText = "⚠ 초기학습 오류 발생 — 로그 확인 필요";
-                var hideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
-                hideTimer.Tick += (_, _) =>
-                {
-                    InitialTrainingBannerVisibility = Visibility.Collapsed;
-                    hideTimer.Stop();
-                };
-                hideTimer.Start();
+                InitialTrainingEtaText = "⚠ 오류";
             }
+
+            // [v5.10.46] 필드 타이머 재사용 — 기존 타이머 중지 후 재시작
+            _hideTrainingBannerTimer?.Stop();
+            _hideTrainingBannerTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(success ? 10 : 30) };
+            _hideTrainingBannerTimer.Tick += (_, _) =>
+            {
+                InitialTrainingBannerVisibility = Visibility.Collapsed;
+                _hideTrainingBannerTimer?.Stop();
+                _hideTrainingBannerTimer = null;
+            };
+            _hideTrainingBannerTimer.Start();
         }
 
         private void UnsubscribeFromEngineEvents()

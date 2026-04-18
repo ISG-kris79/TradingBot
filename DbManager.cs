@@ -35,6 +35,7 @@ namespace TradingBot.Services
             _ = EnsureCategoryColumnAsync();
             _ = EnsureCandleDataIndexAsync();
             _ = EnsureOpenTimeIndexesAsync();
+            _ = EnsureTradeHistoryUserIndexAsync(); // [v5.10.46] UserId+IsClosed 복합 인덱스
         }
 
         /// <summary>[v5.2.0] CandleData 학습 쿼리 성능 인덱스</summary>
@@ -138,6 +139,27 @@ END");
             {
                 MainWindow.Instance?.AddLog($"⚠️ [DB] Category 컬럼 자동 추가 실패: {ex.Message}");
             }
+        }
+
+        /// <summary>[v5.10.46] TradeHistory UserId+IsClosed 복합 인덱스 — 미청산 포지션 조회 성능</summary>
+        private async Task EnsureTradeHistoryUserIndexAsync()
+        {
+            try
+            {
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await db.ExecuteAsync(@"
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE object_id = OBJECT_ID('dbo.TradeHistory') AND name = 'IX_TradeHistory_UserId_IsClosed'
+)
+BEGIN
+    CREATE INDEX IX_TradeHistory_UserId_IsClosed
+        ON dbo.TradeHistory (UserId, IsClosed)
+        INCLUDE (Symbol, EntryTime, EntryPrice, Quantity, Leverage, IsLong, Category);
+END", commandTimeout: 60);
+            }
+            catch { }
         }
 
         /// <summary>

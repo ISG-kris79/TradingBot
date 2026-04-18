@@ -23,6 +23,9 @@ namespace TradingBot.Services
 
         Task<bool> SetLeverageAsync(string symbol, int leverage, CancellationToken ct = default);
 
+        // 레버리지 설정 + 심볼 최대 레버리지 자동 조정 (0 = 완전 실패, N = 실제 설정된 레버리지)
+        Task<int> SetLeverageAutoAsync(string symbol, int desiredLeverage, CancellationToken ct = default);
+
         Task<List<PositionInfo>> GetPositionsAsync(CancellationToken ct = default);
 
         // [추가] 캔들 데이터 조회

@@ -11322,12 +11322,13 @@ namespace TradingBot
                             bool isLong = decision == "LONG";
                             bool isPump = !MajorSymbols.Contains(symbol);
 
-                            // PUMP: SL -40% ROE, TP +25% ROE, 부분 60%, Trailing 3.5%
+                            // [v5.10.45] PUMP: 설정값 사용 (서버사이드 SL/TP/Trailing 통일)
                             // MAJOR: SL -50% ROE, TP +40% ROE, 부분 40%, Trailing 2.0%
-                            decimal slRoe = isPump ? -40m : -50m;
-                            decimal tpRoe = isPump ? 25m : 40m;
-                            decimal tpPartial = isPump ? 0.6m : 0.4m;
-                            decimal trailCallback = isPump ? 3.5m : 2.0m;
+                            int pumpLev = ctx.Leverage > 0 ? ctx.Leverage : 20;
+                            decimal slRoe = isPump ? -(_settings.PumpStopLossRoe > 0 ? _settings.PumpStopLossRoe : 40m) : -50m;
+                            decimal tpRoe = isPump ? Math.Max(_settings.PumpTp1Roe > 0 ? _settings.PumpTp1Roe : 25m, 25m) : 40m;
+                            decimal tpPartial = isPump ? Math.Clamp((_settings.PumpFirstTakeProfitRatioPct > 0 ? _settings.PumpFirstTakeProfitRatioPct : 40m) / 100m, 0.05m, 0.95m) : 0.4m;
+                            decimal trailCallback = isPump ? Math.Clamp((_settings.PumpTrailingGapRoe > 0 ? _settings.PumpTrailingGapRoe : 20m) / pumpLev, 0.1m, 5.0m) : 2.0m;
 
                             var (slId, tpId) = await _entryOrderRegistrar.RegisterEntryOrdersAsync(
                                 symbol, isLong, actualEntryPrice, filledQty,
@@ -14413,11 +14414,12 @@ namespace TradingBot
                         {
                             bool isLong = direction == "LONG";
                             bool isPump = !MajorSymbols.Contains(symbol);
-                            decimal slRoe = isPump ? -40m : -50m;
-                            decimal tpRoe = isPump ? 25m : 40m;
-                            decimal tpPartial = isPump ? 0.6m : 0.4m;
-
-                            decimal trailCb3 = isPump ? 3.5m : 2.0m;
+                            // [v5.10.45] PUMP: 설정값 사용 (서버사이드 통일)
+                            int manLev = leverage > 0 ? leverage : 20;
+                            decimal slRoe = isPump ? -(_settings.PumpStopLossRoe > 0 ? _settings.PumpStopLossRoe : 40m) : -50m;
+                            decimal tpRoe = isPump ? Math.Max(_settings.PumpTp1Roe > 0 ? _settings.PumpTp1Roe : 25m, 25m) : 40m;
+                            decimal tpPartial = isPump ? Math.Clamp((_settings.PumpFirstTakeProfitRatioPct > 0 ? _settings.PumpFirstTakeProfitRatioPct : 40m) / 100m, 0.05m, 0.95m) : 0.4m;
+                            decimal trailCb3 = isPump ? Math.Clamp((_settings.PumpTrailingGapRoe > 0 ? _settings.PumpTrailingGapRoe : 20m) / manLev, 0.1m, 5.0m) : 2.0m;
                             var (slId, tpId) = await _entryOrderRegistrar.RegisterEntryOrdersAsync(
                                 symbol, isLong, avgPrice, filledQty,
                                 leverage, slRoe, tpRoe, tpPartial, trailCb3, CancellationToken.None);

@@ -5,6 +5,43 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.46] - 2026-04-18
+
+### Fixed
+
+ - **학습 진행중 레이어 "ETA 완료" 표시 후 배너 지속 문제** (`MainViewModel.cs`):
+   - 근본 원인 1: 다운로드 완료 시 "ETA 완료" 텍스트가 표시되지만 모델 학습(30분+)이 진행 중에도 배너 유지 → 사용자 혼동
+   - 근본 원인 2: `StopInitialTrainingBanner` 내 `hideTimer`를 로컬 변수로 생성 → 스케줄된 재학습(`TrainAllModelsAsync`)마다 중복 타이머 누적
+   - 수정 1: "ETA 완료" → "다운로드 완료 — 학습 중..." 텍스트 변경
+   - 수정 2: `StartOrUpdateInitialTrainingBanner` 호출 시 "다운로드 완료" ETA면 "🧠 모델 학습 처리 중..."으로 즉시 전환
+   - 수정 3: `_hideTrainingBannerTimer` 필드화 → `StopInitialTrainingBanner` 재진입 시 기존 타이머 중지 후 재시작
+   - 수정 4: 배너가 이미 `Collapsed` 상태면 타이머 생성 자체 스킵 (중복 방지)
+ - **MSSQL 실행 계획 개선** (`DbManager.cs`):
+   - `IX_TradeHistory_UserId_IsClosed` 복합 인덱스 자동 생성 추가 (앱 시작 시)
+   - 조회 컬럼 INCLUDE: Symbol, EntryTime, EntryPrice, Quantity, Leverage, IsLong, Category
+   - 대상 쿼리: `WHERE UserId=@uid AND IsClosed=0` (GetOpenPositionsAsync) — 풀스캔 → 인덱스 시크 전환
+
+## [5.10.45] - 2026-04-19
+
+### Fixed
+
+ - **PUMP 포지션 종료 메커니즘 서버사이드 완전 통일** (`PositionMonitorService.cs`, `TradingEngine.cs`):
+   - 근본 원인: `EntryOrderRegistrar`는 SL/TP/Trailing을 서버에 등록하나, `MonitorPumpPositionShortTerm` 클라이언트 루프가 동일 로직을 중복 실행 → 이중 청산 위험 + 불일치
+   - 버그 1: `RegisterEntryOrdersAsync` PUMP SL/TP partial ratio가 설정값 무시하고 하드코딩(-40%, 60%) 사용
+   - 버그 2: Trailing callback이 3.5% 고정 (설정값 `PumpTrailingGapRoe/leverage` 무시)
+   - **수정 (TradingEngine.cs)**: 자동/수동 진입 2곳 모두 `PumpStopLossRoe`, `PumpTp1Roe`, `PumpFirstTakeProfitRatioPct`, `PumpTrailingGapRoe/leverage` 설정값 사용으로 통일
+   - **수정 (PositionMonitorService.cs)**: `MonitorPumpPositionShortTerm` 루프 대폭 단순화:
+     - 제거: 스파이크 부분익절, 1분봉 하락추세 조기청산, BB중단 즉시손절, ElliottWave TP1/SL, 계단식 스탑 1/2/3단계, 클라이언트 ROE 손절 백업, 클라이언트 트레일링 최종청산
+     - 유지: 본절 전환만 (ROE >= PumpBreakEvenRoe → 기존 서버 SL 취소 후 본절가 STOP_MARKET 재등록)
+   - 서버사이드 처리: 진입 시 SL(-PumpStopLossRoe%), TP1(+PumpTp1Roe%, PumpFirstTakeProfitRatioPct%), TRAILING_STOP(callback=PumpTrailingGapRoe/lev%)
+
+### Research: 단타 최적 익절/손절 구조 (20x)
+
+ - SL: 진입가 대비 0.4~0.6% 거리 (ROE -8~-12%)
+ - TP1: +0.7~1.0% (ROE +14~+20%), 40~50% 부분청산 + 본절 전환 동시 수행
+ - Trailing: ATR(14)×1.5~2.0 또는 고정 0.5~0.6% callback (ROE 10~12% 거리)
+ - 최소 R:R 1.5:1 (40% 승률에서 손익분기)
+
 ## [5.10.40] - 2026-04-18
 
 ### Fixed
