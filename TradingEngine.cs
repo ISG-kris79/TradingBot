@@ -1185,6 +1185,13 @@ namespace TradingBot
                 {
                     try
                     {
+                        // 메이저 코인 비활성화 시 TICK_SURGE 경로도 차단
+                        if (MajorSymbols.Contains(symbol) && _settings?.EnableMajorTrading == false)
+                        {
+                            OnStatusLog?.Invoke($"⛔ [틱급증→차단] {symbol} 메이저 코인 비활성화됨");
+                            return;
+                        }
+
                         // [v5.4.6] TICK_SURGE AI 필터 — 하락 추세 중 진입 방지
                         // PumpSignalClassifier로 상승 판정 확인 + 5분봉 캔들/볼밴 체크
                         bool aiApproved = false;
@@ -1268,6 +1275,11 @@ namespace TradingBot
                 {
                     try
                     {
+                        if (MajorSymbols.Contains(symbol) && _settings?.EnableMajorTrading == false)
+                        {
+                            OnStatusLog?.Invoke($"⛔ [스퀴즈돌파→차단] {symbol} 메이저 코인 비활성화됨");
+                            return;
+                        }
                         OnStatusLog?.Invoke($"🔥 [스퀴즈돌파→진입] {symbol} BBWidth={bbWidth:F2}%");
                         await ExecuteAutoOrder(symbol, "LONG", price, _cts?.Token ?? CancellationToken.None,
                             "SQUEEZE_BREAKOUT", manualSizeMultiplier: 1.0m);

@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.29] - 2026-04-18
+
+### Fixed
+
+ - **TICK_SURGE/SQUEEZE_BREAKOUT 메이저 비활성화 우회 수정** (`TradingEngine.cs`):
+   - 원인: `OnTickSurgeDetected`, `OnSqueezeBreakout` 핸들러에 `EnableMajorTrading` 체크 누락
+   - XRPUSDT 등 메이저 코인이 비활성화 상태에서도 TICK_SURGE 경로로 진입 시도 → 레버리지 오류 발생
+   - 수정: 두 핸들러 모두 `MajorSymbols.Contains(symbol) && EnableMajorTrading == false` 시 즉시 return
+
 ## [5.10.28] - 2026-04-18
 
 ### Fixed
