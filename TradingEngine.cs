@@ -1483,7 +1483,9 @@ namespace TradingBot
                         var forecast = _pumpForecaster.Forecast(cSnap, decision);
                         if (!forecast.HasOpportunity)
                         {
-                            OnLiveLog?.Invoke($"🧭 [FORECAST][PUMP] {symbol} 기회 없음 (prob<{_pumpForecaster.MinConfidence:P0})");
+                            // [v5.10.44] 예측 신뢰도 부족해도 AI 승인된 신호이므로 Market 즉시 진입
+                            OnLiveLog?.Invoke($"🧭 [FORECAST][PUMP] {symbol} prob<{_pumpForecaster.MinConfidence:P0} → Market 즉시 진입");
+                            await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "PUMP_DIRECT", skipAiGateCheck: true);
                             return;
                         }
 
@@ -1501,7 +1503,10 @@ namespace TradingBot
 
                         if (!scheduled)
                         {
-                            OnLiveLog?.Invoke($"🧭 [FORECAST][PUMP] {symbol} Scheduler 등록 실패");
+                            // [v5.10.44] Scheduler 등록 실패(LIMIT 주문 실패 등) → Market 즉시 진입 fallback
+                            // 기존: 등록 실패 시 로그만 남기고 드롭 → 2일간 진입 0건 버그
+                            OnLiveLog?.Invoke($"🧭 [FORECAST][PUMP] {symbol} Scheduler 등록 실패 → Market 즉시 진입");
+                            await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "PUMP_FALLBACK", skipAiGateCheck: true);
                         }
                     }
                     else
