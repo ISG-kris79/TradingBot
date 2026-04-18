@@ -762,18 +762,17 @@ namespace TradingBot.Services
 
                 if (result.Success && result.Data != null)
                 {
-                    Console.WriteLine($"✅ [Binance] 지정가 주문 성공 - {symbol} {side} {quantity}@{price} (OrderId: {result.Data.Id})");
+                    OnLog?.Invoke($"✅ [Binance] 지정가 주문 성공 - {symbol} {side} {quantity}@{price} (OrderId: {result.Data.Id})");
                     return (true, result.Data.Id.ToString());
                 }
 
-                Console.WriteLine($"❌ [Binance] 지정가 주문 실패 - {symbol} {side} {quantity}@{price}");
-                Console.WriteLine($"   에러 코드: {result.Error?.Code} | 메시지: {result.Error?.Message}");
+                // [v5.10.27] Console → OnLog 변경: DB FooterLogs에 기록되도록
+                OnLog?.Invoke($"❌ [Binance] 지정가 주문 실패 - {symbol} {side} {quantity}@{price} | Code={result.Error?.Code} | {result.Error?.Message}");
                 return (false, string.Empty);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ [Binance] PlaceLimitOrder 예외 - {symbol} {side} {quantity}@{price}");
-                Console.WriteLine($"   예외: {ex.Message}");
+                OnLog?.Invoke($"❌ [Binance] PlaceLimitOrder 예외 - {symbol} {side} {quantity}@{price} | {ex.Message}");
                 return (false, string.Empty);
             }
         }

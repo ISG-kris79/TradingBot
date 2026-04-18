@@ -5,6 +5,22 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.27] - 2026-04-18
+
+### Fixed
+
+ - **OpportunityForecaster 클래스 불균형 → PUMP 진입 완전 차단 수정** (`Services/OpportunityForecaster.cs`):
+   - 원인: DB 재학습 시 기회=16.9% → LightGBM Model A가 전부 "기회없음" 예측 (Acc=83.1% F1=0.003)
+   - 수정: `TrainAndSaveAsync`에서 negative를 positive×5 이내로 다운샘플링 후 균형 학습
+   - EntryTimingMLTrainer와 동일한 패턴, 동일한 수정
+ - **PlaceLimitOrderAsync 오류 로그 누락 수정** (`BinanceExchangeService.cs`):
+   - Console.WriteLine → OnLog?.Invoke 변경으로 FooterLogs DB에 기록
+ - **ForceInitialAiTrainingAsync에서 EntryTimingML 강제 재학습** (`TradingEngine.cs`):
+   - IsReady=true여도 수동 학습 시 TriggerInitialTrainingAsync(forceRetrain=true) 호출
+   - 기존: IsReady=true면 RetrainModelsAsync(라벨 100개 필요)로 분기 → 초기엔 데이터 부족
+ - **TriggerInitialTrainingAsync forceRetrain 파라미터 추가** (`AIDoubleCheckEntryGate.cs`):
+   - forceRetrain=true 시 IsReady 체크 우회
+
 ## [5.10.26] - 2026-04-17
 
 ### Fixed

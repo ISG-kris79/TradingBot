@@ -3746,14 +3746,12 @@ namespace TradingBot
                 {
                     doubleCheckStatus = "DISABLED";
                 }
-                else if (_aiDoubleCheckEntryGate?.IsReady != true)
-                {
-                    var (success, _) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, _symbols, token);
-                    doubleCheckStatus = success ? "READY" : "NOT_READY";
-                }
                 else
                 {
-                    var (success, _) = await _aiDoubleCheckEntryGate.RetrainModelsAsync(token);
+                    // [v5.10.27] forceRetrain=true: IsReady=true여도 히스토리컬 재학습 강제
+                    // 이유: 기존 모델이 class imbalance로 prob=0 반환하는 상태에서도 IsReady=true가 되어
+                    //       RetrainModelsAsync(라벨 100개 필요)로 빠져 재학습이 안 됨
+                    var (success, _) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, _symbols, token, forceRetrain: true);
                     doubleCheckStatus = success ? "RETRAINED" : "RETRAIN_FAILED";
                 }
 

@@ -225,7 +225,25 @@ namespace TradingBot.Services
                         .Append(_mlContext.Transforms.NormalizeMinMax("Features"));
 
                     // ─── Model A: Classifier (기회있음 Binary) ───
-                    var allDataView = _mlContext.Data.LoadFromEnumerable(trainingData);
+                    // [v5.10.27] 클래스 불균형 보정: positive × 5 이내로 negative 다운샘플링
+                    // 이유: 하락장 DB 데이터는 기회=10~17% → LightGBM이 전부 0 예측 → F1≈0 → NoOpportunity만 반환
+                    var posData = trainingData.Where(f => f.LabelA_HasOpportunity).ToList();
+                    var negData = trainingData.Where(f => !f.LabelA_HasOpportunity).ToList();
+                    List<ForecastFeature> balancedData;
+                    if (posData.Count > 0 && negData.Count > posData.Count * 5)
+                    {
+                        var rng = new System.Random(42);
+                        int targetNeg = posData.Count * 5;
+                        negData = negData.OrderBy(_ => rng.Next()).Take(targetNeg).ToList();
+                        balancedData = posData.Concat(negData).OrderBy(_ => rng.Next()).ToList();
+                        OnLog?.Invoke($"[{ModelPrefix}] [A] 밸런싱: pos={posData.Count}, neg(after)={negData.Count}, total={balancedData.Count}");
+                    }
+                    else
+                    {
+                        balancedData = trainingData;
+                        OnLog?.Invoke($"[{ModelPrefix}] [A] 밸런스 양호: pos={posData.Count}, neg={negData.Count}");
+                    }
+                    var allDataView = _mlContext.Data.LoadFromEnumerable(balancedData);
                     var splitA = _mlContext.Data.TrainTestSplit(allDataView, testFraction: 0.2, seed: 42);
 
                     var pipelineA = pipelinePrefix
@@ -237,7 +255,7 @@ namespace TradingBot.Services
                             learningRate: 0.1,
                             numberOfIterations: 200));
 
-                    OnLog?.Invoke($"[{ModelPrefix}] [A-Classifier] 학습 시작 ({trainingData.Count}건)...");
+                    OnLog?.Invoke($"[{ModelPrefix}] [A-Classifier] 학습 시작 ({balancedData.Count}건)...");
                     _classifierA = pipelineA.Fit(splitA.TrainSet);
                     var evalA = _mlContext.BinaryClassification.Evaluate(
                         _classifierA.Transform(splitA.TestSet),

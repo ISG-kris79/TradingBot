@@ -1244,9 +1244,10 @@ namespace TradingBot
         public async Task<(bool success, string message)> TriggerInitialTrainingAsync(
             IExchangeService exchangeService,
             List<string> symbols,
-            CancellationToken token = default)
+            CancellationToken token = default,
+            bool forceRetrain = false)
         {
-            if (IsReady)
+            if (IsReady && !forceRetrain)
                 return (true, "모델이 이미 준비되었습니다.");
 
             bool signalUiSuspended = false;
