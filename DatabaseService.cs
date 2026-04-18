@@ -264,7 +264,11 @@ SELECT CASE WHEN EXISTS (
                     INSERT (Symbol, IntervalText, OpenTime, [Open], [High], [Low], [Close], Volume)
                     VALUES (@Symbol, @IntervalText, @OpenTime, @OpenPrice, @HighPrice, @LowPrice, @ClosePrice, @Volume);";
 
-                await conn.ExecuteAsync(mergeSql, payload, commandTimeout: QueryTimeout);
+                foreach (var row in payload)
+                {
+                    try { await conn.ExecuteAsync(mergeSql, row, commandTimeout: QueryTimeout); }
+                    catch (SqlException sqlex) when (sqlex.Number == 2627 || sqlex.Number == 2601) { }
+                }
             }
             catch (SqlException ex) when (ex.Message.Contains("Invalid column name 'IntervalText'"))
             {
@@ -276,7 +280,11 @@ SELECT CASE WHEN EXISTS (
                     INSERT (Symbol, OpenTime, [Open], [High], [Low], [Close], Volume)
                     VALUES (@Symbol, @OpenTime, @OpenPrice, @HighPrice, @LowPrice, @ClosePrice, @Volume);";
 
-                await conn.ExecuteAsync(legacySql, payload, commandTimeout: QueryTimeout);
+                foreach (var row in payload)
+                {
+                    try { await conn.ExecuteAsync(legacySql, row, commandTimeout: QueryTimeout); }
+                    catch (SqlException sqlex) when (sqlex.Number == 2627 || sqlex.Number == 2601) { }
+                }
             }
         }
 
@@ -313,7 +321,11 @@ SELECT CASE WHEN EXISTS (
                     INSERT INTO CandleData (Symbol, IntervalText, OpenTime, [Open], [High], [Low], [Close], Volume)
                     VALUES (@Symbol, @Interval, @OpenTime, @Open, @High, @Low, @Close, @Volume)";
 
-                    int affected = await conn.ExecuteAsync(sql, payload, commandTimeout: QueryTimeout);
+                    foreach (var row in payload)
+                    {
+                        try { await conn.ExecuteAsync(sql, row, commandTimeout: QueryTimeout); }
+                        catch (SqlException sqlex) when (sqlex.Number == 2627 || sqlex.Number == 2601) { }
+                    }
                     UpdateOpenTimeCache(
                         list[0].Symbol,
                         string.IsNullOrWhiteSpace(list[0].Interval) ? "5m" : list[0].Interval,
@@ -416,48 +428,161 @@ SELECT CASE WHEN EXISTS (
         // CandleHistory 테이블 대량 저장
         public async Task SaveCandleHistoryBulkAsync(IEnumerable<CandleData> data)
         {
-            if (!data.Any()) return;
+            var list = data as IList<CandleData> ?? data.ToList();
+            if (list.Count == 0) return;
             await _bulkDbSemaphore.WaitAsync();
             try
             {
                 using var conn = new SqlConnection(_connStr);
-                string sql = @"
-                IF NOT EXISTS (SELECT 1 FROM CandleHistory WHERE Symbol = @Symbol AND [Interval] = @Interval AND OpenTime = @OpenTime)
-                INSERT INTO CandleHistory (Symbol, [Interval], OpenTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume, IsPriceUp)
-                VALUES (@Symbol, @Interval, @OpenTime, @Open, @High, @Low, @Close, @Volume, CASE WHEN @Close >= @Open THEN 1 ELSE 0 END)";
+                await conn.OpenAsync();
 
-                int affected = await conn.ExecuteAsync(sql, data, commandTimeout: QueryTimeout);
-                var dataList = data as IList<CandleData> ?? data.ToList();
-                if (dataList.Count > 0)
-                    UpdateOpenTimeCache(dataList[0].Symbol, dataList[0].Interval ?? "5m", dataList.Select(d => d.OpenTime));
+                const string createTempSql = @"
+                    CREATE TABLE #HistStage (
+                        Symbol      NVARCHAR(32)  NOT NULL,
+                        [Interval]  NVARCHAR(8)   NOT NULL,
+                        OpenTime    DATETIME      NOT NULL,
+                        OpenPrice   DECIMAL(18,8) NOT NULL,
+                        HighPrice   DECIMAL(18,8) NOT NULL,
+                        LowPrice    DECIMAL(18,8) NOT NULL,
+                        ClosePrice  DECIMAL(18,8) NOT NULL,
+                        Volume      FLOAT         NOT NULL,
+                        IsPriceUp   BIT           NOT NULL
+                    );";
+                using (var cmd = new SqlCommand(createTempSql, conn)) { await cmd.ExecuteNonQueryAsync(); }
+
+                var table = new DataTable();
+                table.Columns.Add("Symbol",     typeof(string));
+                table.Columns.Add("Interval",   typeof(string));
+                table.Columns.Add("OpenTime",   typeof(DateTime));
+                table.Columns.Add("OpenPrice",  typeof(decimal));
+                table.Columns.Add("HighPrice",  typeof(decimal));
+                table.Columns.Add("LowPrice",   typeof(decimal));
+                table.Columns.Add("ClosePrice", typeof(decimal));
+                table.Columns.Add("Volume",     typeof(double));
+                table.Columns.Add("IsPriceUp",  typeof(bool));
+
+                foreach (var d in list)
+                    table.Rows.Add(d.Symbol, d.Interval ?? "5m", d.OpenTime,
+                        d.Open, d.High, d.Low, d.Close, (double)d.Volume, d.Close >= d.Open);
+
+                using (var bulk = new SqlBulkCopy(conn)
+                    { DestinationTableName = "#HistStage", BulkCopyTimeout = 120, BatchSize = 5000 })
+                {
+                    bulk.ColumnMappings.Add("Symbol",     "Symbol");
+                    bulk.ColumnMappings.Add("Interval",   "Interval");
+                    bulk.ColumnMappings.Add("OpenTime",   "OpenTime");
+                    bulk.ColumnMappings.Add("OpenPrice",  "OpenPrice");
+                    bulk.ColumnMappings.Add("HighPrice",  "HighPrice");
+                    bulk.ColumnMappings.Add("LowPrice",   "LowPrice");
+                    bulk.ColumnMappings.Add("ClosePrice", "ClosePrice");
+                    bulk.ColumnMappings.Add("Volume",     "Volume");
+                    bulk.ColumnMappings.Add("IsPriceUp",  "IsPriceUp");
+                    await bulk.WriteToServerAsync(table);
+                }
+
+                const string insertSql = @"
+                    INSERT INTO CandleHistory (Symbol, [Interval], OpenTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume, IsPriceUp)
+                    SELECT s.Symbol, s.[Interval], s.OpenTime, s.OpenPrice, s.HighPrice, s.LowPrice, s.ClosePrice, s.Volume, s.IsPriceUp
+                    FROM #HistStage s
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM CandleHistory c
+                        WHERE c.Symbol = s.Symbol AND c.[Interval] = s.[Interval] AND c.OpenTime = s.OpenTime
+                    );
+                    DROP TABLE #HistStage;";
+                using (var cmd = new SqlCommand(insertSql, conn) { CommandTimeout = 120 })
+                    { await cmd.ExecuteNonQueryAsync(); }
+
+                UpdateOpenTimeCache(list[0].Symbol, list[0].Interval ?? "5m", list.Select(d => d.OpenTime));
             }
-            catch (SqlException sqlex) when (sqlex.Number == 2627 || sqlex.Number == 2601) { }
-            catch (Exception ex) { Log($"❌ [DB] CandleHistory 저장 실패: {ex.Message}"); }
+            catch (Exception ex) { Log($"❌ [DB] CandleHistory 벌크 저장 실패: {ex.Message}"); }
             finally { _bulkDbSemaphore.Release(); }
         }
 
         // MarketData 테이블 대량 저장
         public async Task SaveMarketDataBulkAsync(IEnumerable<CandleData> data)
         {
-            if (!data.Any()) return;
+            var list = data as IList<CandleData> ?? data.ToList();
+            if (list.Count == 0) return;
             await _bulkDbSemaphore.WaitAsync();
             try
             {
                 using var conn = new SqlConnection(_connStr);
-                string sql = @"
-                IF NOT EXISTS (SELECT 1 FROM MarketData WHERE Symbol = @Symbol AND [Interval] = @Interval AND OpenTime = @OpenTime)
-                INSERT INTO MarketData (Symbol, [Interval], OpenTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume,
-                                        RSI, BB_Upper, BB_Lower, ElliottWaveNum, TrendScore)
-                VALUES (@Symbol, @Interval, @OpenTime, @Open, @High, @Low, @Close, @Volume,
-                        @RSI, @BollingerUpper, @BollingerLower, @ElliottWaveState, @Trend_Strength)";
+                await conn.OpenAsync();
 
-                int affected = await conn.ExecuteAsync(sql, data, commandTimeout: QueryTimeout);
-                var dataList = data as IList<CandleData> ?? data.ToList();
-                if (dataList.Count > 0)
-                    UpdateOpenTimeCache(dataList[0].Symbol, dataList[0].Interval ?? "5m", dataList.Select(d => d.OpenTime));
+                const string createTempSql = @"
+                    CREATE TABLE #MktStage (
+                        Symbol         NVARCHAR(32)  NOT NULL,
+                        [Interval]     NVARCHAR(8)   NOT NULL,
+                        OpenTime       DATETIME      NOT NULL,
+                        OpenPrice      DECIMAL(18,8) NOT NULL,
+                        HighPrice      DECIMAL(18,8) NOT NULL,
+                        LowPrice       DECIMAL(18,8) NOT NULL,
+                        ClosePrice     DECIMAL(18,8) NOT NULL,
+                        Volume         FLOAT         NOT NULL,
+                        RSI            FLOAT         NULL,
+                        BB_Upper       FLOAT         NULL,
+                        BB_Lower       FLOAT         NULL,
+                        ElliottWaveNum INT           NULL,
+                        TrendScore     FLOAT         NULL
+                    );";
+                using (var cmd = new SqlCommand(createTempSql, conn)) { await cmd.ExecuteNonQueryAsync(); }
+
+                var table = new DataTable();
+                table.Columns.Add("Symbol",         typeof(string));
+                table.Columns.Add("Interval",        typeof(string));
+                table.Columns.Add("OpenTime",        typeof(DateTime));
+                table.Columns.Add("OpenPrice",       typeof(decimal));
+                table.Columns.Add("HighPrice",       typeof(decimal));
+                table.Columns.Add("LowPrice",        typeof(decimal));
+                table.Columns.Add("ClosePrice",      typeof(decimal));
+                table.Columns.Add("Volume",          typeof(double));
+                table.Columns.Add("RSI",             typeof(double));
+                table.Columns.Add("BB_Upper",        typeof(double));
+                table.Columns.Add("BB_Lower",        typeof(double));
+                table.Columns.Add("ElliottWaveNum",  typeof(int));
+                table.Columns.Add("TrendScore",      typeof(double));
+
+                foreach (var d in list)
+                    table.Rows.Add(d.Symbol, d.Interval ?? "5m", d.OpenTime,
+                        d.Open, d.High, d.Low, d.Close, (double)d.Volume,
+                        (double)d.RSI, (double)d.BollingerUpper, (double)d.BollingerLower,
+                        (int)d.ElliottWaveState, (double)d.Trend_Strength);
+
+                using (var bulk = new SqlBulkCopy(conn)
+                    { DestinationTableName = "#MktStage", BulkCopyTimeout = 120, BatchSize = 5000 })
+                {
+                    bulk.ColumnMappings.Add("Symbol",        "Symbol");
+                    bulk.ColumnMappings.Add("Interval",      "Interval");
+                    bulk.ColumnMappings.Add("OpenTime",      "OpenTime");
+                    bulk.ColumnMappings.Add("OpenPrice",     "OpenPrice");
+                    bulk.ColumnMappings.Add("HighPrice",     "HighPrice");
+                    bulk.ColumnMappings.Add("LowPrice",      "LowPrice");
+                    bulk.ColumnMappings.Add("ClosePrice",    "ClosePrice");
+                    bulk.ColumnMappings.Add("Volume",        "Volume");
+                    bulk.ColumnMappings.Add("RSI",           "RSI");
+                    bulk.ColumnMappings.Add("BB_Upper",      "BB_Upper");
+                    bulk.ColumnMappings.Add("BB_Lower",      "BB_Lower");
+                    bulk.ColumnMappings.Add("ElliottWaveNum","ElliottWaveNum");
+                    bulk.ColumnMappings.Add("TrendScore",    "TrendScore");
+                    await bulk.WriteToServerAsync(table);
+                }
+
+                const string insertSql = @"
+                    INSERT INTO MarketData (Symbol, [Interval], OpenTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume, RSI, BB_Upper, BB_Lower, ElliottWaveNum, TrendScore)
+                    SELECT s.Symbol, s.[Interval], s.OpenTime, s.OpenPrice, s.HighPrice, s.LowPrice, s.ClosePrice, s.Volume,
+                           s.RSI, s.BB_Upper, s.BB_Lower, s.ElliottWaveNum, s.TrendScore
+                    FROM #MktStage s
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM MarketData c
+                        WHERE c.Symbol = s.Symbol AND c.[Interval] = s.[Interval] AND c.OpenTime = s.OpenTime
+                    );
+                    DROP TABLE #MktStage;";
+                using (var cmd = new SqlCommand(insertSql, conn) { CommandTimeout = 120 })
+                    { await cmd.ExecuteNonQueryAsync(); }
+
+                UpdateOpenTimeCache(list[0].Symbol, list[0].Interval ?? "5m", list.Select(d => d.OpenTime));
             }
-            catch (SqlException sqlex) when (sqlex.Number == 2627 || sqlex.Number == 2601) { }
-            catch (Exception ex) { Log($"❌ [DB] MarketData 저장 실패: {ex.Message}"); }
+            catch (Exception ex) { Log($"❌ [DB] MarketData 벌크 저장 실패: {ex.Message}"); }
             finally { _bulkDbSemaphore.Release(); }
         }
 
@@ -895,16 +1020,20 @@ SELECT CASE WHEN EXISTS (
                 INSERT INTO LiveLogs (Timestamp, Category, Symbol, Message)
                 VALUES (@Timestamp, @Category, @Symbol, @Message)";
 
-                var rows = list.Select(x => new
+                foreach (var x in list)
                 {
-                    Timestamp = DateTime.Now,
-                    Category = x.Category,
-                    Symbol = x.Symbol,
-                    Message = x.Message
-                });
-
-                // [v5.10.12] 단일 커넥션으로 배치 INSERT — 개별 커넥션 80개 → 1개로 절감
-                await conn.ExecuteAsync(insertSql, rows, commandTimeout: 5);
+                    try
+                    {
+                        await conn.ExecuteAsync(insertSql, new
+                        {
+                            Timestamp = DateTime.Now,
+                            x.Category,
+                            x.Symbol,
+                            Message = x.Message?.Length > 4000 ? x.Message[..4000] : x.Message
+                        }, commandTimeout: 10);
+                    }
+                    catch { /* 개별 행 실패 시 스킵 */ }
+                }
             }
             catch (Exception ex)
             {

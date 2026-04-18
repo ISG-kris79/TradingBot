@@ -5,6 +5,19 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.35] - 2026-04-18
+
+### Fixed
+
+ - **Dapper IEnumerable 배치 INSERT implicit transaction 전수 수정** (`DatabaseService.cs`):
+   - 근본 원인: Dapper `ExecuteAsync(sql, IEnumerable)` → implicit transaction → timeout 시 전체 배치 rollback → 데이터 영구 유실
+   - 수정 대상 5곳:
+     1. `SaveCandlesInternalAsync` (MERGE CandleData): 개별 행 루프로 변경 (UNIQUE KEY 무시)
+     2. `SaveCandleDataBulkAsync` 소량 경로 (<50행): 개별 행 루프로 변경
+     3. `SaveCandleHistoryBulkAsync`: Dapper batch → SqlBulkCopy + #HistStage 스테이징 테이블 방식으로 교체 (100,000+ 행 안전 처리)
+     4. `SaveMarketDataBulkAsync`: Dapper batch → SqlBulkCopy + #MktStage 스테이징 테이블 방식으로 교체
+     5. `SaveLiveLogsBatchAsync`: 5초 timeout 배치 → 개별 행 루프 (10초 timeout, 행 실패 시 스킵)
+
 ## [5.10.34] - 2026-04-18
 
 ### Fixed
