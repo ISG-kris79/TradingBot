@@ -7798,6 +7798,9 @@ namespace TradingBot
             finally
             {
                 IsInitialTrainingInProgress = false;
+                // 실패/취소 경로에서도 배너가 닫히도록 — 성공 시엔 이미 Invoke(true)가 선행됨
+                if (!IsInitialTrainingComplete)
+                    OnInitialTrainingCompleted?.Invoke(false);
             }
         }
 

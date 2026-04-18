@@ -2364,6 +2364,13 @@ namespace TradingBot.ViewModels
             else
             {
                 InitialTrainingStatusText = "⚠ 초기학습 오류 발생 — 로그 확인 필요";
+                var hideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+                hideTimer.Tick += (_, _) =>
+                {
+                    InitialTrainingBannerVisibility = Visibility.Collapsed;
+                    hideTimer.Stop();
+                };
+                hideTimer.Start();
             }
         }
 
