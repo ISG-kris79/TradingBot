@@ -5,6 +5,19 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.38] - 2026-04-18
+
+### Fixed / Added
+
+ - **PUMP 슬롯 포화 시 AI 점수 기반 우선순위 진입 큐** (`TradingEngine.cs`):
+   - 근본 원인: 슬롯 포화로 차단된 6개 신호가 next 캔들이 오기 전까지 아무것도 처리되지 않음
+   - `_pumpPriorityQueue`: 슬롯 차단 시 AI 승인 점수(blendedScore) 함께 등록, 점수 내림차순 정렬
+   - `_aiApprovedRecentScores`: AI Gate 승인 직후 blendedScore 캐시 → 최대 30분 재사용
+   - 포지션 종료 시(`HandleSyncedPositionClosed`) → 0.5초 후 `TryProcessPumpPriorityQueueAsync()` 즉시 실행
+   - 큐 처리: 만료(30분) / 고점(+2% 이상) 항목 자동 폐기 → 나머지 중 최고 점수 1개 진입
+   - AI 승인 이력이 있는 경우 `skipAiGateCheck: true`로 재검증 생략 (AI는 이미 승인)
+   - 없는 경우(처음 차단 시) `skipAiGateCheck: false`로 진입 시 AI 재평가
+
 ## [5.10.37] - 2026-04-18
 
 ### Fixed

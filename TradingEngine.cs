@@ -133,7 +133,16 @@ namespace TradingBot
         /// <summary>[v5.2.9] 신호 첫 발생 가격 기록 — 슬롯 차단 후 뒤늦은 고점 진입 방지</summary>
         private readonly ConcurrentDictionary<string, (decimal Price, DateTime Time)> _signalOriginPrice =
             new(StringComparer.OrdinalIgnoreCase);
-        
+
+        // [v5.10.38] PUMP 우선순위 진입 큐 — 슬롯 포화 시 AI 승인 점수 순으로 재진입
+        private sealed record PumpPriorityCandidate(
+            string Symbol, string Decision, float BlendedScore,
+            decimal OriginPrice, DateTime RegisteredAt, string SignalSource);
+        private readonly object _pumpPriorityLock = new();
+        private readonly List<PumpPriorityCandidate> _pumpPriorityQueue = new();
+        private readonly ConcurrentDictionary<string, (float Score, DateTime Time)> _aiApprovedRecentScores =
+            new(StringComparer.OrdinalIgnoreCase);
+
         private const int SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 2000;  // [v3.2.8] 1초→2초 (CPU 절감)
         private const int MAJOR_SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 1000; // [v3.2.8] 180ms→1초
         private static readonly TimeSpan MainLoopInterval = TimeSpan.FromSeconds(1);
@@ -9388,10 +9397,21 @@ namespace TradingBot
 
                 if (!isMajorSymbol && pumpCount >= maxPump)
                 {
-                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} PUMP 포화 ({pumpCount}/{maxPump}) → 진입 차단");
-                    EntryLog("SLOT", "BLOCK", $"pump={pumpCount}/{maxPump}");
                     // [v5.2.9] 슬롯 차단 시 최초 신호 가격 기록 (이미 있으면 유지)
                     _signalOriginPrice.TryAdd(symbol, (currentPrice, DateTime.Now));
+                    // [v5.10.38] 우선순위 큐 등록 — AI 승인 점수 캐시 사용 (없으면 0점 = 최하위)
+                    float queueScore = 0f;
+                    if (_aiApprovedRecentScores.TryGetValue(symbol, out var cached)
+                        && (DateTime.Now - cached.Time).TotalMinutes < 30)
+                        queueScore = cached.Score;
+                    lock (_pumpPriorityLock)
+                    {
+                        _pumpPriorityQueue.RemoveAll(e => e.Symbol.Equals(symbol, StringComparison.OrdinalIgnoreCase));
+                        _pumpPriorityQueue.Add(new PumpPriorityCandidate(symbol, decision, queueScore, currentPrice, DateTime.Now, signalSource));
+                        _pumpPriorityQueue.Sort((a, b) => b.BlendedScore.CompareTo(a.BlendedScore));
+                    }
+                    OnStatusLog?.Invoke($"⛔ [SLOT] {symbol} PUMP 포화 ({pumpCount}/{maxPump}) → 우선순위 큐 등록 (score={queueScore:P0})");
+                    EntryLog("SLOT", "BLOCK", $"pump={pumpCount}/{maxPump} queued score={queueScore:P0}");
                     return;
                 }
 
@@ -9621,6 +9641,10 @@ namespace TradingBot
                     "AI_BLEND",
                     "INFO",
                     $"bbSupport={isBbCenterSupport} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.TF_Confidence:P0} blended={blendedMlTfScore:P0} weights={(isBbCenterSupport ? "ML30_TF70" : "ML50_TF50")}");
+
+                // [v5.10.38] AI 승인 점수 캐시 (슬롯 포화 시 우선순위 큐에서 재사용)
+                if (gateResult.allowEntry)
+                    _aiApprovedRecentScores[symbol] = (capturedBlendedScore, DateTime.Now);
 
                 // [AI 관제탑] 텔레그램 알림(승인 시만) + DB 기록 (fire-and-forget)
                 _ = Task.Run(async () =>
@@ -12200,6 +12224,59 @@ namespace TradingBot
         }
 
         /// <summary>
+        /// [v5.10.38] PUMP 슬롯이 빈 즉시 우선순위 큐에서 최고 점수 신호 진입 시도
+        private async Task TryProcessPumpPriorityQueueAsync()
+        {
+            // 슬롯 여유 확인
+            int pumpCount, maxPump;
+            lock (_posLock)
+            {
+                pumpCount = _activePositions.Count(p => p.Value.IsOwnPosition && !MajorSymbols.Contains(p.Key));
+                maxPump = GetDynamicMaxPumpSlots();
+            }
+            if (pumpCount >= maxPump) return;
+
+            PumpPriorityCandidate? best = null;
+            lock (_pumpPriorityLock)
+            {
+                _pumpPriorityQueue.RemoveAll(e => (DateTime.Now - e.RegisteredAt).TotalMinutes >= 30);
+                _pumpPriorityQueue.RemoveAll(e =>
+                {
+                    if (_marketDataManager.TickerCache.TryGetValue(e.Symbol, out var t) && t.LastPrice > 0 && e.OriginPrice > 0)
+                        return (t.LastPrice - e.OriginPrice) / e.OriginPrice * 100m >= 2.0m;
+                    return false;
+                });
+                if (_pumpPriorityQueue.Count > 0)
+                {
+                    best = _pumpPriorityQueue[0];
+                    _pumpPriorityQueue.RemoveAt(0);
+                }
+            }
+
+            if (best == null) return;
+
+            if (!_marketDataManager.TickerCache.TryGetValue(best.Symbol, out var ticker) || ticker.LastPrice <= 0)
+            {
+                OnStatusLog?.Invoke($"⛔ [우선순위큐] {best.Symbol} 현재가 조회 실패 → 폐기");
+                return;
+            }
+
+            decimal priceRise = best.OriginPrice > 0
+                ? (ticker.LastPrice - best.OriginPrice) / best.OriginPrice * 100m
+                : 0m;
+            if (priceRise >= 2.0m)
+            {
+                OnStatusLog?.Invoke($"⛔ [우선순위큐] {best.Symbol} +{priceRise:F1}% 상승 → 고점 진입 차단");
+                return;
+            }
+
+            int waitMin = (int)(DateTime.Now - best.RegisteredAt).TotalMinutes;
+            OnStatusLog?.Invoke($"🏆 [우선순위큐] {best.Symbol} 진입 시도 (score={best.BlendedScore:P0}, {waitMin}분 대기)");
+            var token = _cts?.Token ?? CancellationToken.None;
+            await ExecuteAutoOrder(best.Symbol, best.Decision, ticker.LastPrice, token,
+                best.SignalSource, skipAiGateCheck: best.BlendedScore > 0f);
+        }
+
         /// [v5.10.18] PositionSyncService.OnPositionClosed 핸들러
         /// 거래소 폴링으로 포지션 청산 감지 시 호출 — 쿨다운/DB/알림/AI 레이블 처리
         /// </summary>
@@ -12215,6 +12292,13 @@ namespace TradingBot
             lock (_posLock) { _activePositions.TryGetValue(symbol, out pos); }
             // PositionSyncService가 이미 제거했지만 혹시 남아있으면 제거
             lock (_posLock) { _activePositions.Remove(symbol); }
+
+            // [v5.10.38] 슬롯 해방 → 대기 중인 최우선 PUMP 신호 즉시 처리
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(500);
+                await TryProcessPumpPriorityQueueAsync();
+            }, CancellationToken.None);
 
             // 3. UI 이벤트
             OnPositionStatusUpdate?.Invoke(symbol, false, 0);
