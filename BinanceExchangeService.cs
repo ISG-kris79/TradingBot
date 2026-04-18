@@ -579,18 +579,36 @@ namespace TradingBot.Services
 
         public async Task<bool> SetLeverageAsync(string symbol, int leverage, CancellationToken ct = default)
         {
-            var result = await _client.UsdFuturesApi.Account.ChangeInitialLeverageAsync(symbol, leverage, ct: ct);
+            return await SetLeverageAutoAsync(symbol, leverage, ct) > 0;
+        }
 
+        public async Task<int> SetLeverageAutoAsync(string symbol, int desiredLeverage, CancellationToken ct = default)
+        {
+            var result = await _client.UsdFuturesApi.Account.ChangeInitialLeverageAsync(symbol, desiredLeverage, ct: ct);
             if (result.Success)
             {
-                OnLog?.Invoke($"✅ [레버리지] {symbol} {leverage}x 설정 성공");
-            }
-            else
-            {
-                OnLog?.Invoke($"❌ [레버리지 실패] {symbol} {leverage}x 설정 불가 | 에러: {result.Error?.Message} (code={result.Error?.Code})");
+                OnLog?.Invoke($"✅ [레버리지] {symbol} {desiredLeverage}x 설정 성공");
+                return desiredLeverage;
             }
 
-            return result.Success;
+            // 심볼 최대 레버리지 초과 시 자동 조정: "'N' cannot be greater than M"
+            var errMsg = result.Error?.Message ?? "";
+            var match = System.Text.RegularExpressions.Regex.Match(errMsg, @"cannot be greater than (\d+)");
+            if (match.Success && int.TryParse(match.Groups[1].Value, out int maxLev) && maxLev > 0 && maxLev < desiredLeverage)
+            {
+                OnLog?.Invoke($"⚠️ [레버리지] {symbol} {desiredLeverage}x 불가 → 최대 {maxLev}x로 자동 조정");
+                var retry = await _client.UsdFuturesApi.Account.ChangeInitialLeverageAsync(symbol, maxLev, ct: ct);
+                if (retry.Success)
+                {
+                    OnLog?.Invoke($"✅ [레버리지] {symbol} {maxLev}x 설정 성공 (자동 조정)");
+                    return maxLev;
+                }
+                OnLog?.Invoke($"❌ [레버리지 실패] {symbol} {maxLev}x 재시도 실패 | {retry.Error?.Message}");
+                return 0;
+            }
+
+            OnLog?.Invoke($"❌ [레버리지 실패] {symbol} {desiredLeverage}x 설정 불가 | 에러: {errMsg} (code={result.Error?.Code})");
+            return 0;
         }
 
         public async Task<List<PositionInfo>> GetPositionsAsync(CancellationToken ct = default)

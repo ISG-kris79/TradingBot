@@ -135,6 +135,16 @@ namespace TradingBot.Services
             return Task.FromResult(true);
         }
 
+        public Task<int> SetLeverageAutoAsync(string symbol, int desiredLeverage, CancellationToken ct = default)
+        {
+            lock (_syncLock)
+            {
+                _symbolLeverages[symbol] = desiredLeverage;
+            }
+
+            return Task.FromResult(desiredLeverage);
+        }
+
         public Task<(bool Success, string OrderId)> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default)
         {
             lock (_syncLock)

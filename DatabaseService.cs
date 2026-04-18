@@ -950,18 +950,23 @@ SELECT CASE WHEN EXISTS (
                 INSERT INTO FooterLogs (Timestamp, Message)
                 VALUES (@Timestamp, @Message)";
 
-                var rows = list.Select(x => new
+                // 개별 INSERT — Dapper IEnumerable batch의 implicit transaction 롤백 방지
+                foreach (var item in list)
                 {
-                    Timestamp = x.Timestamp,
-                    Message = x.Message?.Length > 4000 ? x.Message[..4000] : x.Message
-                });
-
-                // [v5.10.12] 단일 커넥션으로 배치 INSERT — 개별 커넥션 80개 → 1개로 절감
-                await conn.ExecuteAsync(insertSql, rows, commandTimeout: 5);
+                    try
+                    {
+                        await conn.ExecuteAsync(insertSql, new
+                        {
+                            item.Timestamp,
+                            Message = item.Message?.Length > 4000 ? item.Message[..4000] : item.Message
+                        }, commandTimeout: 10);
+                    }
+                    catch { /* 개별 행 실패 시 스킵 */ }
+                }
             }
             catch (Exception ex)
             {
-                Log($"❌ [DB] Footer 로그 저장 실패: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[DB] Footer 로그 저장 실패: {ex.Message}");
             }
         }
 

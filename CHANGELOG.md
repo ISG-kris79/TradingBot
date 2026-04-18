@@ -5,6 +5,20 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.32] - 2026-04-18
+
+### Fixed
+
+ - **FooterLogs DB INSERT 중단 수정** (`DatabaseService.cs`):
+   - 원인: Dapper `ExecuteAsync(IEnumerable)` → implicit transaction → timeout 시 80개 batch 전체 rollback → 항목 영구 유실 → 큐 드레인 반복 실패
+   - 수정: 개별 row INSERT 루프로 변경 (implicit transaction 제거) — 개별 실패 시 스킵, 나머지 정상 저장
+   - 부가: 오류 catch에서 `Log(...)` 제거 → 재귀 FooterLogs INSERT 시도 차단
+ - **레버리지 초과 시 자동 조정 후 진입** (`BinanceExchangeService.cs`, `TradingEngine.cs`):
+   - 원인: AAVEUSDT 등 심볼 최대 레버리지 < 설정 레버리지 → 진입 취소
+   - 수정: `SetLeverageAutoAsync` 신규 메서드 — 실패 시 에러 메시지에서 최대값 파싱 후 자동 재시도
+   - 예: 설정 20x, 최대 2x → 자동 2x로 재시도 → 성공 시 2x로 진입
+   - TradingEngine에서 `actualLeverage` 반영 (수량/TP/SL 계산에 실제 레버리지 사용)
+
 ## [5.10.31] - 2026-04-18
 
 ### Fixed

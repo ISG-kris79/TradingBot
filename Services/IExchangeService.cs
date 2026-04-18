@@ -16,6 +16,9 @@ namespace TradingBot.Services
         Task<bool> PlaceOrderAsync(string symbol, string side, decimal quantity, decimal? price = null, CancellationToken ct = default, bool reduceOnly = false);
         Task<bool> SetLeverageAsync(string symbol, int leverage, CancellationToken token = default);
 
+        // 레버리지 설정 + 심볼 최대 레버리지 자동 조정 (0=완전 실패, N=실제 설정된 레버리지)
+        Task<int> SetLeverageAutoAsync(string symbol, int desiredLeverage, CancellationToken ct = default);
+
         Task<List<IBinanceKline>> GetKlinesAsync(string symbol, KlineInterval interval, int limit, CancellationToken ct = default);
 
         // [추가] 거래소 정보 조회 (LotSize 등)

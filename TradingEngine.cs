@@ -5388,9 +5388,15 @@ namespace TradingBot
 
             try
             {
-                // 1. 레버리지 설정 (IExchangeService 사용)
+                // 1. 레버리지 설정 (IExchangeService 사용) — 심볼 최대 레버리지 자동 조정
                 int leverage = PUMP_MANUAL_LEVERAGE;
-                await _exchangeService.SetLeverageAsync(symbol, leverage, token);
+                int actualLeverage = await _exchangeService.SetLeverageAutoAsync(symbol, leverage, token);
+                if (actualLeverage <= 0)
+                {
+                    PumpTradeLog("ORDER", "BLOCK", $"leverageSet=false symbol={symbol} leverage={leverage}x");
+                    return false;
+                }
+                leverage = actualLeverage;
 
                 // 2. 현재가 조회 (IExchangeService 사용)
                 decimal currentPrice = await _exchangeService.GetPriceAsync(symbol, token);
@@ -11036,15 +11042,16 @@ namespace TradingBot
                         signalSource: ctx.SignalSource ?? "UNKNOWN");
                 }
 
-                // 레버리지 설정
-                bool leverageSet = await _exchangeService.SetLeverageAsync(symbol, leverage, token: ctx.Token);
-                if (!leverageSet)
+                // 레버리지 설정 — 심볼 최대 레버리지 자동 조정
+                int actualLeverage = await _exchangeService.SetLeverageAutoAsync(symbol, leverage, ct: ctx.Token);
+                if (actualLeverage <= 0)
                 {
                     CleanupReservedPosition("레버리지 설정 실패");
-                    OnStatusLog?.Invoke($"❌ {symbol} 레버리지 {leverage}x 설정 실패로 진입 취소 (심볼 최대 레버리지 초과 가능)");
+                    OnStatusLog?.Invoke($"❌ {symbol} 레버리지 {leverage}x 설정 실패로 진입 취소");
                     EntryLog("ORDER_SETUP", "FAIL", $"leverageSet=false symbol={symbol} leverage={leverage}x src={ctx.SignalSource}");
                     return;
                 }
+                leverage = actualLeverage;
 
                 // ProfitRegressor 사이징
                 if (_profitRegressor.IsModelReady && ctx.LatestCandle != null)
@@ -11087,24 +11094,24 @@ namespace TradingBot
                 // TP/SL 가격 계산 (주문 전 계산)
                 decimal tpPrice = ctx.CustomTakeProfitPrice;
                 decimal slPrice = ctx.CustomStopLossPrice;
-                decimal actualLeverage = leverage;
+                decimal leverageDecimal = leverage;
 
                 // TP 가격 계산 (설정값 없으면 ROE 기반)
-                if (tpPrice <= 0 && actualLeverage > 0)
+                if (tpPrice <= 0 && leverageDecimal > 0)
                 {
                     decimal tp1Roe = ctx.IsPumpStrategy ? 25.0m : (symbol.StartsWith("BTC", StringComparison.OrdinalIgnoreCase) ? 20.0m : 30.0m);
                     tpPrice = (decision == "LONG")
-                        ? ctx.CurrentPrice + (ctx.CurrentPrice * (tp1Roe / actualLeverage / 100m))
-                        : ctx.CurrentPrice - (ctx.CurrentPrice * (tp1Roe / actualLeverage / 100m));
+                        ? ctx.CurrentPrice + (ctx.CurrentPrice * (tp1Roe / leverageDecimal / 100m))
+                        : ctx.CurrentPrice - (ctx.CurrentPrice * (tp1Roe / leverageDecimal / 100m));
                 }
 
                 // SL 가격 계산 (설정값 없으면 기본)
-                if (slPrice <= 0 && actualLeverage > 0)
+                if (slPrice <= 0 && leverageDecimal > 0)
                 {
                     decimal slRoe = 10.0m; // 기본 10%
                     slPrice = (decision == "LONG")
-                        ? ctx.CurrentPrice - (ctx.CurrentPrice * (slRoe / actualLeverage / 100m))
-                        : ctx.CurrentPrice + (ctx.CurrentPrice * (slRoe / actualLeverage / 100m));
+                        ? ctx.CurrentPrice - (ctx.CurrentPrice * (slRoe / leverageDecimal / 100m))
+                        : ctx.CurrentPrice + (ctx.CurrentPrice * (slRoe / leverageDecimal / 100m));
                 }
 
                 string positionSide = (decision == "LONG") ? "LONG" : "SHORT";
@@ -11115,7 +11122,7 @@ namespace TradingBot
                     symbol,
                     positionSide,
                     quantity,
-                    actualLeverage,
+                    leverageDecimal,
                     slPrice,
                     tpPrice,
                     partialProfitRoePercent: 40.0m, // 부분 익절 40%
