@@ -5,6 +5,20 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.30] - 2026-04-18
+
+### Fixed
+
+ - **레버리지 설정 실패 로그 DB 기록 수정** (`BinanceExchangeService.cs`):
+   - 원인: `SetLeverageAsync`에서 성공/실패 모두 `Console.WriteLine`으로 출력 → FooterLogs DB에 미기록
+   - 수정: `OnLog?.Invoke`로 변경, 실패 시 에러 메시지·코드 포함하여 DB 기록
+ - **MAJOR OnTradeSignal 메이저 비활성화 시 진입 차단** (`TradingEngine.cs`):
+   - 원인: `_majorStrategy.OnTradeSignal` 핸들러에 `EnableMajorTrading` 체크 누락
+   - 수정: 핸들러 진입 시 `EnableMajorTrading == false`이면 즉시 return (로그 출력)
+ - **leverageSet=false 로그 상세화** (`TradingEngine.cs`):
+   - 기존: `leverageSet=false`만 기록 → 원인 추적 불가
+   - 수정: `symbol={symbol} leverage={leverage}x src={signalSource}` 포함
+
 ## [5.10.29] - 2026-04-18
 
 ### Fixed

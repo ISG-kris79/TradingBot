@@ -583,12 +583,11 @@ namespace TradingBot.Services
 
             if (result.Success)
             {
-                Console.WriteLine($"✅ [Binance] 레버리지 설정 성공 - {symbol} Leverage={leverage}x");
+                OnLog?.Invoke($"✅ [레버리지] {symbol} {leverage}x 설정 성공");
             }
             else
             {
-                Console.WriteLine($"❌ [Binance] 레버리지 설정 실패 - {symbol} Leverage={leverage}x");
-                Console.WriteLine($"   에러: {result.Error?.Message}");
+                OnLog?.Invoke($"❌ [레버리지 실패] {symbol} {leverage}x 설정 불가 | 에러: {result.Error?.Message} (code={result.Error?.Code})");
             }
 
             return result.Success;

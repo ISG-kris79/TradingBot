@@ -1529,6 +1529,12 @@ namespace TradingBot
                 {
                     try
                     {
+                        if (_settings?.EnableMajorTrading == false)
+                        {
+                            OnLiveLog?.Invoke($"⛔ [MAJOR] {symbol} 메이저 코인 비활성화됨 → 신호 무시");
+                            return;
+                        }
+
                         // [v5.1.0] 메이저 진입 — AI_GATE 우회 (skipAiGateCheck=true)
                         // 원인: EntryTimingMLTrainer 가 메이저 ML=0%/TF=0% 반환 → AI_GATE_BLOCK 4000건/시간
                         //       MajorCoinStrategy 의 aiScore 가 이미 지표 기반 판단 완료
@@ -11035,8 +11041,8 @@ namespace TradingBot
                 if (!leverageSet)
                 {
                     CleanupReservedPosition("레버리지 설정 실패");
-                    OnStatusLog?.Invoke($"❌ {symbol} 레버리지 설정 실패로 진입 취소");
-                    EntryLog("ORDER_SETUP", "FAIL", "leverageSet=false");
+                    OnStatusLog?.Invoke($"❌ {symbol} 레버리지 {leverage}x 설정 실패로 진입 취소 (심볼 최대 레버리지 초과 가능)");
+                    EntryLog("ORDER_SETUP", "FAIL", $"leverageSet=false symbol={symbol} leverage={leverage}x src={ctx.SignalSource}");
                     return;
                 }
 
