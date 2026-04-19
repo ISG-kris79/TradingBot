@@ -441,42 +441,9 @@ namespace TradingBot.Services
                 OnLog?.Invoke($"🛡️ {symbol} ATR 하이브리드 손절 활성화 | 절대손절가={customStopLossPrice:F8}");
             }
 
-            // [추가] 안전장치: 서버사이드 손절 주문 설정 (Stop Market)
-            try
-            {
-                decimal currentStopLossRoe = effectiveMajorStopLossRoe;
-                decimal stopPrice = customStopLossPrice > 0
-                    ? customStopLossPrice
-                    : (isLong
-                        ? entryPrice * (1 - currentStopLossRoe / leverage / 100)
-                        : entryPrice * (1 + currentStopLossRoe / leverage / 100));
-
-                // 수량 조회 (락 필요)
-                decimal qty = 0;
-                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) qty = Math.Abs(p.Quantity); }
-
-                if (qty > 0)
-                {
-                    if (useMajorAtr20)
-                    {
-                        OnLog?.Invoke($"🛡️ [ATR 2.0] {symbol} Close-Only 전략 적용 → 서버사이드 STOP_MARKET 생략");
-                    }
-                    else
-                    {
-                        var (success, orderId) = await _exchangeService.PlaceStopOrderAsync(symbol, isLong ? "SELL" : "BUY", qty, stopPrice, token);
-                        if (success)
-                        {
-                            lock (_posLock)
-                            {
-                                if (_activePositions.TryGetValue(symbol, out var p))
-                                    p.StopOrderId = orderId;
-                            }
-                            OnLog?.Invoke($"🛡️ {symbol} 손절시작");
-                        }
-                    }
-                }
-            }
-            catch (Exception ex) { OnLog?.Invoke($"⚠️ 손절 주문 설정 실패: {ex.Message}"); }
+            // [v5.10.54] 중복 SL 등록 제거 — OrderLifecycleManager가 진입 시 이미 서버사이드 SL 등록함
+            // 과거: 여기서 또 PlaceStopOrderAsync 호출 → Binance -4120 중복 주문 유발
+            // MonitorPositionStandard는 이제 본절 전환 + 탈출 조건 감시만 담당
 
             // [방어 가드] PUMP 포지션은 MonitorPumpPositionShortTerm에서 전용 관리
             // Smart Protective Stop(breakEvenROE=7%)이 PUMP 전용 기준(20%)보다 낮아 조기 청산 유발
@@ -979,47 +946,8 @@ namespace TradingBot.Services
                         OnLog?.Invoke($"🚀 {symbol} 3차 구간 진입: SL +{minLockROE:F0}% 유지 + Wide Trailing {majorTrailingGap:F0}% 시작 (ROE {highestROE:F1}%)");
                         PersistPositionState(symbol, isBreakEvenTriggered: true, highestROE: highestROE);
 
-                        // [v5.4.9] 진입 시 API 트레일링 이미 등록됨 → 내부 중복 등록 스킵
-                        bool tpAlreadyOnExchange = false;
-                        lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var tpChk2)) tpAlreadyOnExchange = tpChk2.TpRegisteredOnExchange; }
-                        if (!tpAlreadyOnExchange)
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                string stopSide = isLong ? "SELL" : "BUY";
-                                decimal qty = 0;
-                                string? oldOrderId = null;
-                                lock (_posLock)
-                                {
-                                    if (_activePositions.TryGetValue(symbol, out var p))
-                                    {
-                                        qty = Math.Abs(p.Quantity);
-                                        oldOrderId = p.StopOrderId;
-                                    }
-                                }
-                                if (qty <= 0) return;
-                                if (!string.IsNullOrEmpty(oldOrderId))
-                                    await _exchangeService.CancelOrderAsync(symbol, oldOrderId, token);
-
-                                decimal callbackRate = Math.Clamp(majorTrailingGap / leverage, 0.1m, 5.0m);
-                                var (ok, newId) = await _exchangeService.PlaceTrailingStopOrderAsync(
-                                    symbol, stopSide, qty, callbackRate, activationPrice: null, token);
-                                if (ok)
-                                {
-                                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId; }
-                                    OnAlert?.Invoke($"📡 {symbol} 서버 TRAILING_STOP 등록 | callback={callbackRate:F1}% (고점 대비 {callbackRate:F1}% 하락 시 자동 청산)");
-                                }
-                                else
-                                {
-                                    var (ok2, newId2) = await _exchangeService.PlaceStopOrderAsync(symbol, stopSide, qty, protectiveStopPrice, token);
-                                    if (ok2)
-                                        lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = newId2; }
-                                    OnLog?.Invoke($"📡 {symbol} TRAILING 실패 → STOP_MARKET 폴백 {protectiveStopPrice:F4}");
-                                }
-                            }
-                            catch (Exception ex) { OnLog?.Invoke($"⚠️ {symbol} 서버 트레일링 등록 실패: {ex.Message}"); }
-                        });
+                        // [v5.10.54] 중복 Trailing 등록 제거 — OrderLifecycleManager가 진입 시 이미 Trailing 등록함
+                        // 3단계 활성화(ROE 임계 도달) 시점에 재등록 불필요. 거래소 Trailing이 자동으로 고점 추적 중.
 
                         // [v2.1.18] 지표 기반 익절 준비: ROE 20% 도달 시 지표 모니터링 시작
                         OnLog?.Invoke($"� {symbol} 지표모니터링");
@@ -3374,28 +3302,39 @@ namespace TradingBot.Services
                 PersistPositionState(symbol); // [v3.5.2] DB에 부분청산 상태 저장
                 OnPartialCloseCompleted?.Invoke(symbol); // [v3.4.0] 팬텀 기록 방지 쿨다운
 
-                // [v5.1.0] 부분청산 후 잔여 수량에 트레일링 스탑 거래소 등록
-                // 이미 수익 구간이므로 트레일링으로 나머지 수익 보호
+                // [v5.10.54] 부분청산 후 잔여 수량 Trailing 재등록 — 기존 Trailing 명시적 취소 후 새 수량으로 재설치
                 if (remainingQty > 0 && pnl > 0)
                 {
                     try
                     {
+                        string? existingTrailId = null;
+                        lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) existingTrailId = p.StopOrderId; }
+
+                        // 1) 기존 Trailing 명시적 취소 (race 방지)
+                        if (!string.IsNullOrEmpty(existingTrailId))
+                        {
+                            try { await _exchangeService.CancelOrderAsync(symbol, existingTrailId!, CancellationToken.None); }
+                            catch (Exception cEx) { OnLog?.Invoke($"⚠️ {symbol} 기존 Trailing 취소 실패: {cEx.Message}"); }
+                            await Task.Delay(300, CancellationToken.None);
+                        }
+
+                        // 2) 새 Trailing 재등록
                         string trailSide = localPosition.IsLong ? "SELL" : "BUY";
                         decimal callbackRate = Math.Clamp(2.0m, 0.1m, 5.0m);
-                        OnLog?.Invoke($"📡 [v5.1.0] {symbol} 부분청산 후 잔여 {remainingQty} 트레일링 등록 시도 (callback={callbackRate}%)");
+                        OnLog?.Invoke($"📡 {symbol} 부분청산 후 잔여 {remainingQty} 트레일링 재등록 (callback={callbackRate}%)");
                         var (trailOk, trailId) = await _exchangeService.PlaceTrailingStopOrderAsync(
                             symbol, trailSide, remainingQty, callbackRate, activationPrice: null, CancellationToken.None);
                         if (trailOk)
                         {
                             lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = trailId; }
-                            OnLog?.Invoke($"✅ [v5.1.0] {symbol} 트레일링 스탑 거래소 등록 완료 | id={trailId} callback={callbackRate}%");
+                            OnLog?.Invoke($"✅ {symbol} 부분청산 Trailing 재등록 완료 | id={trailId}");
                         }
                         else
                         {
-                            OnLog?.Invoke($"⚠️ [v5.1.0] {symbol} 트레일링 스탑 실패 → 내부 트레일링 계속");
+                            OnLog?.Invoke($"⚠️ {symbol} Trailing 재등록 실패");
                         }
                     }
-                    catch (Exception trEx) { OnLog?.Invoke($"⚠️ [v5.1.0] {symbol} 트레일링 등록 예외: {trEx.Message}"); }
+                    catch (Exception trEx) { OnLog?.Invoke($"⚠️ {symbol} 부분청산 Trailing 예외: {trEx.Message}"); }
                 }
                 OnPositionStatusUpdate?.Invoke(symbol, remainingQty > 0, 0);
 

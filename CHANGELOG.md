@@ -5,6 +5,31 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.54] - 2026-04-20
+
+### Refactored
+
+ - **주문 라이프사이클 단일 진입점 통합** — Binance `-4120` "Order type not supported" 중복 주문 에러 근본 수정:
+   - **근본 원인**: SL/TP/Trailing 등록 경로가 6곳에 분산되어 있어 진입 직후 같은 심볼에 대해 서로 다른 코드 경로가 각자 조건부 주문을 덮어쓰며 Binance가 중복으로 인식 → `-4120` 반환 → silent 실패 → SL/TP/Trailing 부재 상태로 포지션 방치
+   - **신규 `Services/OrderLifecycleManager.cs` 도입**:
+     - `RegisterOnEntryAsync`: 기존 조건부 주문 자동 취소 → 300ms 대기 → SL+TP+Trailing 순차 등록 (race-free). 30초 쿨다운 내장
+     - `ReplaceSlAsync`: 본절 전환 — 기존 SL 취소 후 새 SL 등록
+     - `OnStopLossFilledAsync` / `OnPositionClosedAsync`: 포지션 종료 시 잔여 조건부 주문 일괄 취소
+     - `AdjustTrailingAfterPartialCloseAsync`: 부분청산 후 Trailing 재조정
+   - **제거된 중복 호출 경로**:
+     - `TradingEngine.cs:6672` account-update 시 SL/TP 재등록 — 완전 삭제 (진입 1회만)
+     - `PositionMonitorService.cs:466` MonitorPositionStandard 자동 SL 등록 — 삭제 (이미 진입 시 등록됨)
+     - `PositionMonitorService.cs:1006` 3단계 활성화 시 Trailing 재등록 — 삭제 (이미 진입 시 등록됨)
+     - `PositionMonitorService.cs:3386` 부분청산 Trailing 재등록에 **기존 Trailing 명시적 취소 300ms 대기** 추가 (이전: 취소 누락으로 race 중복)
+   - **이관된 경로** (`_entryOrderRegistrar` → `_orderLifecycle`):
+     - 자동 진입 (TICK_SURGE/PUMP/SPIKE_FAST 등): `TradingEngine.cs:11315`
+     - 수동 진입: `TradingEngine.cs:14418`
+     - 재시작 동기화: `TradingEngine.cs:2240` (기존 Cancel→ResetCooldown→Register 수동 로직 제거, `OrderLifecycleManager.RegisterOnEntryAsync` 내장 처리로 위임)
+   - **WebSocket OrderUpdate 후크**: SL/Trailing 체결 시 `OnPositionClosedAsync` 자동 호출 → 잔여 TP/조건부 주문 즉시 취소 (포지션 방치 방지)
+   - **삭제된 레거시**:
+     - `Services/EntryOrderRegistrar.cs` 전체 파일 삭제 (OrderLifecycleManager로 대체)
+     - `TradingEngine._orderService` 필드 (BinanceOrderService 미사용 인스턴스) 제거
+
 ## [5.10.53] - 2026-04-19
 
 ### Fixed

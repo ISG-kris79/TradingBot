@@ -469,7 +469,7 @@ namespace TradingBot
 
         private IExchangeService _exchangeService;
 
-        private BinanceOrderService _orderService;
+        // [v5.10.54] _orderService (BinanceOrderService) 필드 제거 — 사용 없음, BinanceExchangeService로 통일
 
         private PositionMonitorService _positionMonitor;
 
@@ -523,8 +523,8 @@ namespace TradingBot
         private readonly TradingBot.Services.MajorForecaster _majorForecaster = new();
         private readonly TradingBot.Services.SpikeForecaster _spikeForecaster = new();
         private TradingBot.Services.EntryScheduler? _entryScheduler;
-        // [v5.1.0] 진입 직후 거래소 SL/TP/트레일링 등록
-        private TradingBot.Services.EntryOrderRegistrar? _entryOrderRegistrar;
+        // [v5.10.54] 주문 라이프사이클 단일 진입점 (SL/TP/Trailing 등록/취소/본절교체)
+        private TradingBot.Services.OrderLifecycleManager? _orderLifecycle;
         private readonly TradingBot.Services.PriceDirectionPredictor _directionPredictor = new();
         private readonly TradingBot.Services.SurvivalEntryModel _survivalModel = new();
         private readonly TradingBot.Services.TickDensityMonitor _tickMonitor = new();
@@ -799,8 +799,6 @@ namespace TradingBot
                 
                 OnStatusLog?.Invoke("🔗 바이낸스 거래소 연결");
             }
-
-            _orderService = new BinanceOrderService(_client);
 
             // GeneralSettings 로드: MainWindow에서 초기화된 설정 사용 (DB 우선)
             _settings = MainWindow.CurrentGeneralSettings
@@ -1126,9 +1124,9 @@ namespace TradingBot
             _spikeForecaster.OnLog += msg => OnStatusLog?.Invoke(msg);
             _spikeForecaster.LoadModels();
 
-            // [v5.1.0] 진입 직후 거래소 SL/TP/트레일링 등록
-            _entryOrderRegistrar = new TradingBot.Services.EntryOrderRegistrar(_exchangeService);
-            _entryOrderRegistrar.OnLog += msg => OnStatusLog?.Invoke(msg);
+            // [v5.10.54] OrderLifecycleManager — SL/TP/Trailing 단일 라이프사이클 관리
+            _orderLifecycle = new TradingBot.Services.OrderLifecycleManager(_exchangeService);
+            _orderLifecycle.OnLog += msg => OnStatusLog?.Invoke(msg);
 
             // [v5.0] EntryScheduler 초기화 — MTF Guardian 연결 + Market Fallback executor
             _entryScheduler = new TradingBot.Services.EntryScheduler(
@@ -2196,9 +2194,9 @@ namespace TradingBot
                     OnStatusLog?.Invoke("✅ 현재 보유 포지션 동기화 완료");
 
                     // ═══════════════════════════════════════════════════════════════
-                    // [v5.5.1] 재시작 시 기존 API 주문 전부 삭제 → 재등록 (중복 방지)
+                    // [v5.10.54] 재시작 시 OrderLifecycleManager로 재등록 — CancelAll 내장 + 쿨다운 자동 초기화
                     // ═══════════════════════════════════════════════════════════════
-                    if (_entryOrderRegistrar != null)
+                    if (_orderLifecycle != null)
                     {
                         _ = Task.Run(async () =>
                         {
@@ -2223,26 +2221,19 @@ namespace TradingBot
 
                                 try
                                 {
-                                    // 1) 기존 주문 전부 삭제
-                                    await _exchangeService.CancelAllOrdersAsync(pos.Symbol, token);
-                                    OnStatusLog?.Invoke($"🗑️ [재시작] {pos.Symbol} 기존 주문 삭제 완료");
-
-                                    // 2) 쿨다운 초기화 (재등록 허용)
-                                    _entryOrderRegistrar.ResetCooldown(pos.Symbol);
-
-                                    // 3) 재등록
                                     bool isMajor = MajorSymbols.Contains(pos.Symbol);
                                     decimal slRoe = isMajor ? (_settings.MajorStopLossRoe > 0 ? -_settings.MajorStopLossRoe : -60m) : -40m;
                                     decimal tpRoe = isMajor ? (_settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : 30m) : 25m;
                                     decimal tpPartial = isMajor ? 0.4m : 0.6m;
                                     decimal trailCb = isMajor ? 2.0m : 3.5m;
 
-                                    await _entryOrderRegistrar.RegisterEntryOrdersAsync(
+                                    _orderLifecycle.ResetCooldown(pos.Symbol);
+                                    var result = await _orderLifecycle.RegisterOnEntryAsync(
                                         pos.Symbol, pos.IsLong, pos.EntryPrice,
                                         pos.Quantity, (int)pos.Leverage,
                                         slRoe, tpRoe, tpPartial, trailCb, token);
 
-                                    OnStatusLog?.Invoke($"✅ [재시작] {pos.Symbol} SL/TP/Trailing 재등록 완료");
+                                    OnStatusLog?.Invoke($"✅ [재시작] {pos.Symbol} SL/TP/Trailing 재등록 (SL={!string.IsNullOrEmpty(result.SlOrderId)} TP={!string.IsNullOrEmpty(result.TpOrderId)} TR={!string.IsNullOrEmpty(result.TrailingOrderId)})");
                                 }
                                 catch (Exception regEx)
                                 {
@@ -3937,6 +3928,17 @@ namespace TradingBot
                     : isTpFill ? "API_TAKE_PROFIT"
                     : isTrailingFill ? "API_TRAILING_STOP"
                     : $"API_CONDITIONAL({orderType})";
+
+                // [v5.10.54] SL 또는 Trailing 체결 → 잔여 조건부 주문 일괄 취소 (포지션 완전 청산)
+                // TP1 부분 체결은 여기서 처리 안 함 (잔여 Trailing이 유효해야 함)
+                if (_orderLifecycle != null && (isStopFill || isTrailingFill))
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try { await _orderLifecycle.OnPositionClosedAsync(symbol); }
+                        catch { }
+                    });
+                }
 
                 string side = isLong ? "SELL" : "BUY"; // 청산 방향
                 string strategy = pos?.IsPumpStrategy == true ? "PUMP_API" : "MAJOR_API";
@@ -6653,32 +6655,9 @@ namespace TradingBot
                             OnStatusLog?.Invoke($"📝 {pos.Symbol} 외부 수량증가 감지 → TradeHistory 오픈 수량 갱신 완료 ({existingQtyAbs}→{updatedQtyAbs})");
                             OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부증가", $"외부 수량 증가 감지: {existingQtyAbs} → {updatedQtyAbs}");
 
-                            // [v5.4.7] 외부 수량 변경 시 SL/TP 재등록 제거 — 진입 시 1회만 등록
-                            // 기존: 수량 변경 때마다 CancelAll + 재등록 → LIMIT 취소 무한 반복
-                            // 수정: 진입 시점에만 등록, 이후 변경 불필요
-                            if (false && _entryOrderRegistrar != null)
-                            {
-                                _ = Task.Run(async () =>
-                                {
-                                    try
-                                    {
-                                        bool isPump = !MajorSymbols.Contains(pos.Symbol);
-                                        decimal slRoe = isPump ? -40m : -50m;
-                                        decimal tpRoe = isPump ? 25m : 40m;
-                                        decimal tpPartial = isPump ? 0.6m : 0.4m;
-                                        int lev = 20;
-
-                                        decimal trailCb2 = isPump ? 3.5m : 2.0m;
-                                        await _entryOrderRegistrar.RegisterEntryOrdersAsync(
-                                            pos.Symbol, isLong, pos.EntryPrice, updatedQtyAbs,
-                                            lev, slRoe, tpRoe, tpPartial, trailCb2, CancellationToken.None);
-                                    }
-                                    catch (Exception regEx)
-                                    {
-                                        OnStatusLog?.Invoke($"⚠️ [EntryOrderReg] {pos.Symbol} 외부 진입 SL/TP 등록 예외: {regEx.Message}");
-                                    }
-                                });
-                            }
+                            // [v5.10.54] account-update 시 SL/TP 재등록 경로 완전 제거
+                            // 진입 시 OrderLifecycleManager에서 한 번만 등록되므로 여기서 중복 호출 불필요.
+                            // 수량 변경 시 재조정이 필요하면 OrderLifecycleManager.AdjustTrailingAfterPartialCloseAsync 사용.
                         }
                     }
                 }
@@ -11291,9 +11270,9 @@ namespace TradingBot
                     finalStopLoss, finalTakeProfit, ctx.SignalSource);
                 OnStatusLog?.Invoke(entrySuccessMessage);
 
-                // [v5.1.0] 거래소 API 로 SL/TP 즉시 등록 — 봇 다운타임에도 거래소가 보호
-                // 긴급 대응(CRASH_REVERSE/PUMP_REVERSE) 은 제외 — 내부 모니터링만 사용
-                if (_entryOrderRegistrar != null
+                // [v5.10.54] OrderLifecycleManager 단일 진입점 — SL/TP/Trailing 3개 한 번에 등록
+                // 긴급 대응(CRASH_REVERSE/PUMP_REVERSE) 은 제외 — 내부 MARKET 청산으로만 대응
+                if (_orderLifecycle != null
                     && ctx.SignalSource != "CRASH_REVERSE"
                     && ctx.SignalSource != "PUMP_REVERSE")
                 {
@@ -11304,36 +11283,33 @@ namespace TradingBot
                             bool isLong = decision == "LONG";
                             bool isPump = !MajorSymbols.Contains(symbol);
 
-                            // [v5.10.45] PUMP: 설정값 사용 (서버사이드 SL/TP/Trailing 통일)
-                            // MAJOR: SL -50% ROE, TP +40% ROE, 부분 40%, Trailing 2.0%
                             int pumpLev = ctx.Leverage > 0 ? ctx.Leverage : 20;
                             decimal slRoe = isPump ? -(_settings.PumpStopLossRoe > 0 ? _settings.PumpStopLossRoe : 40m) : -50m;
                             decimal tpRoe = isPump ? Math.Max(_settings.PumpTp1Roe > 0 ? _settings.PumpTp1Roe : 25m, 25m) : 40m;
                             decimal tpPartial = isPump ? Math.Clamp((_settings.PumpFirstTakeProfitRatioPct > 0 ? _settings.PumpFirstTakeProfitRatioPct : 40m) / 100m, 0.05m, 0.95m) : 0.4m;
                             decimal trailCallback = isPump ? Math.Clamp((_settings.PumpTrailingGapRoe > 0 ? _settings.PumpTrailingGapRoe : 20m) / pumpLev, 0.1m, 5.0m) : 2.0m;
 
-                            var (slId, tpId) = await _entryOrderRegistrar.RegisterEntryOrdersAsync(
+                            var result = await _orderLifecycle.RegisterOnEntryAsync(
                                 symbol, isLong, actualEntryPrice, filledQty,
                                 ctx.Leverage > 0 ? ctx.Leverage : 20,
                                 stopLossRoePct: slRoe,
                                 takeProfitRoePct: tpRoe,
                                 tpPartialRatio: tpPartial,
                                 trailingCallbackRate: trailCallback,
-                                token: CancellationToken.None);
+                                ct: CancellationToken.None);
 
-                            // 포지션에 주문 ID 저장 + TP 플래그
                             lock (_posLock)
                             {
                                 if (_activePositions.TryGetValue(symbol, out var p))
                                 {
-                                    if (!string.IsNullOrEmpty(slId)) p.StopOrderId = slId;
-                                    if (!string.IsNullOrEmpty(tpId)) p.TpRegisteredOnExchange = true;
+                                    if (!string.IsNullOrEmpty(result.SlOrderId)) p.StopOrderId = result.SlOrderId;
+                                    if (!string.IsNullOrEmpty(result.TpOrderId)) p.TpRegisteredOnExchange = true;
                                 }
                             }
                         }
                         catch (Exception regEx)
                         {
-                            OnStatusLog?.Invoke($"⚠️ [EntryOrderReg] {symbol} SL/TP 등록 예외: {regEx.Message}");
+                            OnStatusLog?.Invoke($"⚠️ [OrderLifecycle] {symbol} SL/TP/Trailing 등록 예외: {regEx.Message}");
                         }
                     });
                 }
@@ -14400,8 +14376,8 @@ namespace TradingBot
                     LastPrice = avgPrice
                 });
 
-                // [v5.1.2] 수동 진입 직후 SL/TP/트레일링 거래소 API 등록
-                if (_entryOrderRegistrar != null)
+                // [v5.10.54] 수동 진입 직후 OrderLifecycleManager 통합 등록
+                if (_orderLifecycle != null)
                 {
                     _ = Task.Run(async () =>
                     {
@@ -14409,25 +14385,24 @@ namespace TradingBot
                         {
                             bool isLong = direction == "LONG";
                             bool isPump = !MajorSymbols.Contains(symbol);
-                            // [v5.10.45] PUMP: 설정값 사용 (서버사이드 통일)
                             int manLev = leverage > 0 ? leverage : 20;
                             decimal slRoe = isPump ? -(_settings.PumpStopLossRoe > 0 ? _settings.PumpStopLossRoe : 40m) : -50m;
                             decimal tpRoe = isPump ? Math.Max(_settings.PumpTp1Roe > 0 ? _settings.PumpTp1Roe : 25m, 25m) : 40m;
                             decimal tpPartial = isPump ? Math.Clamp((_settings.PumpFirstTakeProfitRatioPct > 0 ? _settings.PumpFirstTakeProfitRatioPct : 40m) / 100m, 0.05m, 0.95m) : 0.4m;
                             decimal trailCb3 = isPump ? Math.Clamp((_settings.PumpTrailingGapRoe > 0 ? _settings.PumpTrailingGapRoe : 20m) / manLev, 0.1m, 5.0m) : 2.0m;
-                            var (slId, tpId) = await _entryOrderRegistrar.RegisterEntryOrdersAsync(
+                            var result = await _orderLifecycle.RegisterOnEntryAsync(
                                 symbol, isLong, avgPrice, filledQty,
                                 leverage, slRoe, tpRoe, tpPartial, trailCb3, CancellationToken.None);
 
-                            if (!string.IsNullOrEmpty(slId))
+                            if (!string.IsNullOrEmpty(result.SlOrderId))
                             {
-                                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = slId; }
+                                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = result.SlOrderId; }
                             }
-                            OnStatusLog?.Invoke($"📋 [수동진입] {symbol} SL/TP API 등록 완료 (SL={!string.IsNullOrEmpty(slId)} TP={!string.IsNullOrEmpty(tpId)})");
+                            OnStatusLog?.Invoke($"📋 [수동진입] {symbol} SL/TP/Trailing 등록 (SL={!string.IsNullOrEmpty(result.SlOrderId)} TP={!string.IsNullOrEmpty(result.TpOrderId)} TR={!string.IsNullOrEmpty(result.TrailingOrderId)})");
                         }
                         catch (Exception regEx)
                         {
-                            OnStatusLog?.Invoke($"⚠️ [수동진입] {symbol} SL/TP 등록 예외: {regEx.Message}");
+                            OnStatusLog?.Invoke($"⚠️ [수동진입] {symbol} OrderLifecycle 예외: {regEx.Message}");
                         }
                     });
                 }
