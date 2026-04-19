@@ -5,6 +5,18 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.55] - 2026-04-20
+
+### Fixed
+
+ - **설정창 DB 직접 조회 복구** (`SettingsWindow.xaml.cs`):
+   - 근본 원인: v5.10.51에서 "비동기 DB 재쿼리 불필요"로 판단하고 `MainWindow.CurrentGeneralSettings` 인메모리 캐시만 사용하도록 변경 → 앱 시작 시점 캐시 값만 표시되어 DB가 외부에서 변경된 경우(다른 PC·스크립트·수동 SQL 등) 설정창이 **구 값**을 보여줌
+   - 수정:
+     - `SettingsWindow.Loaded` 이벤트에 `LoadGeneralSettingsFromDbAsync()` 연결 → 창이 열릴 때마다 `_dbManager.LoadGeneralSettingsAsync(UserId)` 직접 호출
+     - UI 필드(`txtDefaultMargin`, `chkEnableMajorTrading`, `txtMaxMajorSlots`, `txtMaxPumpSlots`, `txtMaxDailyEntries`, `MajorTrendProfile` 등)를 DB 값으로 Dispatcher 통해 덮어쓰기
+     - 조회 성공 시 `MainWindow.ApplyGeneralSettings(dbSettings)`로 인메모리 캐시도 즉시 동기화 → TradingEngine 실행 중이어도 반영
+   - 로그: `[Settings] ✅ DB 조회 완료 | EnableMajor=... MaxMajor=... MaxPump=... DefaultMargin=...` 로 매번 출력 → 설정 불일치 시 즉시 확인 가능
+
 ## [5.10.54] - 2026-04-20
 
 ### Refactored

@@ -37,12 +37,60 @@ namespace TradingBot
                 MessageBox.Show($"DB 연결 초기화 실패: {ex.Message}", "경고", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 
+            // JSON 기본값 먼저 로드 (Telegram 등) — 창이 뜨기 전 기본 UI 표시
             LoadSettings();
 
             // 현재 로그인 사용자 정보 표시
             if (AppConfig.CurrentUser != null)
             {
                 this.Title = $"환경 설정 - {AppConfig.CurrentUser.Username}";
+            }
+
+            // [v5.10.55] 창이 표시된 직후 DB에서 GeneralSettings 직접 조회 → UI에 덮어쓰기
+            // 인메모리 캐시(MainWindow.CurrentGeneralSettings) 대신 항상 DB 최신값 반영
+            this.Loaded += async (_, __) => await LoadGeneralSettingsFromDbAsync();
+        }
+
+        /// <summary>
+        /// [v5.10.55] 설정창 열릴 때마다 DB에서 직접 GeneralSettings 조회 → UI 덮어쓰기.
+        /// 앱 캐시 우회 — 외부에서 DB가 변경된 경우에도 항상 최신 값 반영.
+        /// </summary>
+        private async System.Threading.Tasks.Task LoadGeneralSettingsFromDbAsync()
+        {
+            if (_dbManager == null || AppConfig.CurrentUser == null) return;
+
+            try
+            {
+                var dbSettings = await _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id);
+                if (dbSettings == null)
+                {
+                    MainWindow.Instance?.AddLog($"[Settings] DB에 {AppConfig.CurrentUser.Username} 설정 없음 → appsettings.json 기본값 유지");
+                    return;
+                }
+
+                // UI 필드 덮어쓰기 (UI 스레드 보장)
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    txtDefaultMargin.Text = dbSettings.DefaultMargin.ToString("F4");
+                    chkEnableMajorTrading.IsChecked = dbSettings.EnableMajorTrading;
+                    txtPumpMargin.Text = dbSettings.PumpMargin.ToString("F0");
+                    txtLeverage.Text = dbSettings.DefaultLeverage.ToString();
+                    txtMaxMajorSlots.Text = dbSettings.MaxMajorSlots.ToString();
+                    txtMaxPumpSlots.Text = dbSettings.MaxPumpSlots.ToString();
+                    txtMaxDailyEntries.Text = (dbSettings.MaxDailyEntries > 0 ? dbSettings.MaxDailyEntries : 500).ToString();
+                    if (!string.IsNullOrWhiteSpace(dbSettings.MajorTrendProfile))
+                        SelectMajorTrendProfile(dbSettings.MajorTrendProfile);
+                });
+
+                // 인메모리 캐시도 DB 값으로 동기화 → 저장 없이 창 닫아도 최신 상태 유지
+                MainWindow.ApplyGeneralSettings(dbSettings);
+
+                MainWindow.Instance?.AddLog($"[Settings] ✅ DB 조회 완료 | EnableMajor={dbSettings.EnableMajorTrading} MaxMajor={dbSettings.MaxMajorSlots} MaxPump={dbSettings.MaxPumpSlots} DefaultMargin={dbSettings.DefaultMargin}");
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [Settings] DB 조회 실패: {ex.Message}");
+                MessageBox.Show($"DB에서 설정 조회 중 오류: {ex.Message}", "경고", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 
@@ -185,19 +233,8 @@ namespace TradingBot
                     _rootNode = new JsonObject(); // 파일이 없으면 새로 생성 준비
                 }
 
-                // CurrentGeneralSettings는 앱 시작 시 DB에서 이미 로드됨 → JSON보다 우선 적용 (비동기 DB 재쿼리 불필요)
-                var currentSettings = MainWindow.CurrentGeneralSettings;
-                if (currentSettings != null)
-                {
-                    txtDefaultMargin.Text = currentSettings.DefaultMargin.ToString("F4");
-                    chkEnableMajorTrading.IsChecked = currentSettings.EnableMajorTrading;
-                    txtPumpMargin.Text = currentSettings.PumpMargin.ToString("F0");
-                    txtLeverage.Text = currentSettings.DefaultLeverage.ToString();
-                    txtMaxMajorSlots.Text = currentSettings.MaxMajorSlots.ToString();
-                    txtMaxPumpSlots.Text = currentSettings.MaxPumpSlots.ToString();
-                    txtMaxDailyEntries.Text = (currentSettings.MaxDailyEntries > 0 ? currentSettings.MaxDailyEntries : 500).ToString();
-                    SelectMajorTrendProfile(currentSettings.MajorTrendProfile);
-                }
+                // [v5.10.55] JSON 기본값만 표시 — 실제 값은 Loaded 이벤트에서 DB 직접 조회로 덮어씀
+                // 인메모리 캐시(CurrentGeneralSettings)는 앱 시작 시점 값이라 DB와 어긋날 수 있음
             }
             catch (Exception ex)
             {
