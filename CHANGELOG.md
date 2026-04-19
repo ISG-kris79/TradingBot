@@ -9,9 +9,9 @@
 
 ### Fixed
 
- - **메인루프 DB 설정 60초 주기 갱신 → 재시작 없이 `EnableMajorTrading` 즉시 반영** (`TradingEngine.cs`):
-   - 근본 원인: `_settings`는 시작 시 1회만 로드 → DB에서 `EnableMajorTrading=False`로 변경해도 인메모리 값이 True로 유지 → TICK_SURGE 핸들러가 메이저코인(BTC/ETH/XRP/BNB) 진입을 계속 허용
-   - 수정: 메인루프에 60초 주기 `LoadGeneralSettingsAsync` 호출 추가 → `_settings.EnableMajorTrading` 등 핵심 필드를 DB 값으로 즉시 덮어씀 → 값 변경 시 상태로그 출력
+ - **`CopyTradingSettings` 누락 필드 → 설정창 저장 후 인메모리 미반영 근본 수정** (`MainWindow.xaml.cs`):
+   - 근본 원인: `CopyTradingSettings`에 `EnableMajorTrading` / `MaxMajorSlots` / `MaxPumpSlots` / `MaxDailyEntries` 4개 필드가 누락 → 설정창 저장 시 `ApplyGeneralSettings` → `CopyTradingSettings` 호출해도 이 필드들이 `CurrentGeneralSettings`(= `TradingEngine._settings`와 동일 객체)에 반영되지 않음 → Stop→Start 재시작해도 이전 값 유지
+   - 수정: 4개 필드를 `CopyTradingSettings`에 추가 → 설정창 저장 즉시 엔진에 반영
 
 ## [5.10.50] - 2026-04-19
 

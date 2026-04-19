@@ -685,7 +685,6 @@ namespace TradingBot
         }
 
         private DateTime _lastHeartbeatTime = DateTime.MinValue;
-        private DateTime _lastSettingsRefreshTime = DateTime.MinValue; // [v5.10.51] DB 설정 주기적 갱신
         private DateTime _lastPositionSyncTime = DateTime.MinValue; // [FIX] 마지막 포지션 동기화 시간
         private DateTime _lastSuccessfulEntryTime = DateTime.MinValue; // [드라이스펠] 마지막 진입 성공 시각
         private DateTime _lastDroughtScanTime = DateTime.MinValue;     // [드라이스펠] 마지막 진단 스캔 시각
@@ -2760,7 +2759,6 @@ namespace TradingBot
                 _lastDroughtScanTime = DateTime.MinValue;
                 _lastTimeOutProbScanTime = DateTime.MinValue;
                 _lastPositionSyncTime = DateTime.Now; // [FIX] 시작 시점 기록 (30분 후 첫 동기화)
-                _lastSettingsRefreshTime = DateTime.MinValue; // [v5.10.51] 시작 즉시 DB 설정 갱신
                 _periodicReportBaselineEquity = await GetEstimatedAccountEquityUsdtAsync(token);
                 if (_periodicReportBaselineEquity <= 0)
                     _periodicReportBaselineEquity = InitialBalance;
@@ -2921,36 +2919,6 @@ namespace TradingBot
                             await NotificationService.Instance.NotifyAsync(heartbeatMsg, NotificationChannel.Log);
                             LoggerService.Info("Heartbeat sent.");
                             _lastHeartbeatTime = DateTime.Now;
-                        }
-
-                        // [v5.10.51] DB 설정 주기적 갱신 (60초) — 재시작 없이 EnableMajorTrading 등 즉시 반영
-                        if ((DateTime.Now - _lastSettingsRefreshTime).TotalSeconds >= 60)
-                        {
-                            _lastSettingsRefreshTime = DateTime.Now;
-                            int refreshUserId = AppConfig.CurrentUser?.Id ?? 0;
-                            if (refreshUserId > 0)
-                            {
-                                try
-                                {
-                                    var freshSettings = await _dbManager.LoadGeneralSettingsAsync(refreshUserId);
-                                    if (freshSettings != null)
-                                    {
-                                        bool majorChanged = _settings.EnableMajorTrading != freshSettings.EnableMajorTrading;
-                                        _settings.EnableMajorTrading = freshSettings.EnableMajorTrading;
-                                        _settings.MaxMajorSlots = freshSettings.MaxMajorSlots;
-                                        _settings.MaxPumpSlots = freshSettings.MaxPumpSlots;
-                                        _settings.MaxDailyEntries = freshSettings.MaxDailyEntries;
-                                        _settings.DefaultMargin = freshSettings.DefaultMargin;
-                                        _settings.MajorMargin = freshSettings.MajorMargin;
-                                        _settings.PumpMargin = freshSettings.PumpMargin;
-                                        _settings.MajorLeverage = freshSettings.MajorLeverage;
-                                        _settings.PumpLeverage = freshSettings.PumpLeverage;
-                                        if (majorChanged)
-                                            OnStatusLog?.Invoke($"🔄 [설정갱신] EnableMajorTrading → {freshSettings.EnableMajorTrading}");
-                                    }
-                                }
-                                catch { /* 설정 갱신 실패 무시 */ }
-                            }
                         }
 
                         // [FIX] 거래소 포지션 동기화 (30분 주기)

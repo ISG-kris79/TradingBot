@@ -181,6 +181,11 @@ namespace TradingBot
             target.MajorTrailingStartRoe = source.MajorTrailingStartRoe;
             target.MajorTrailingGapRoe = source.MajorTrailingGapRoe;
             target.MajorStopLossRoe = source.MajorStopLossRoe;
+            // 설정창에서 변경 가능한 필드 — 누락 시 설정 저장 후 인메모리 미반영
+            target.EnableMajorTrading = source.EnableMajorTrading;
+            target.MaxMajorSlots = source.MaxMajorSlots;
+            target.MaxPumpSlots = source.MaxPumpSlots;
+            target.MaxDailyEntries = source.MaxDailyEntries;
         }
 
         public MainWindow()
