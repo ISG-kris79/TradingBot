@@ -36,6 +36,7 @@ namespace TradingBot.Services
             _ = EnsureCandleDataIndexAsync();
             _ = EnsureOpenTimeIndexesAsync();
             _ = EnsureTradeHistoryUserIndexAsync(); // [v5.10.46] UserId+IsClosed 복합 인덱스
+            _ = TradingBot.DbProcedures.EnsureAllAsync(connectionString); // [v5.10.58] Stored Procedure 자동 등록
         }
 
         /// <summary>[v5.2.0] CandleData 학습 쿼리 성능 인덱스</summary>
@@ -181,10 +182,6 @@ END", commandTimeout: 60);
                     case "SOLUSDT":
                     case "XRPUSDT":
                     case "BNBUSDT":
-                    case "ADAUSDT":
-                    case "DOGEUSDT":
-                    case "AVAXUSDT":
-                    case "LINKUSDT":
                         return "MAJOR";
                 }
             }
@@ -303,48 +300,39 @@ END");
         {
             try
             {
-                using var db = new SqlConnection(_connectionString);
-                // [v5.10.11] 동시 호출 시 PK 중복(2627) → catch에서 무시 (다음 tick에 UPDATE됨)
-                // commandTimeout=8: lock 경합 시 빠른 실패
-                await db.ExecuteAsync(@"
-MERGE dbo.PositionState AS target
-USING (SELECT @UserId AS UserId, @Symbol AS Symbol) AS source
-ON target.UserId = source.UserId AND target.Symbol = source.Symbol
-WHEN MATCHED THEN
-    UPDATE SET
-        TakeProfitStep = CASE WHEN @TakeProfitStep > 0 THEN @TakeProfitStep ELSE target.TakeProfitStep END,
-        PartialProfitStage = CASE WHEN @PartialProfitStage > 0 THEN @PartialProfitStage ELSE target.PartialProfitStage END,
-        BreakevenPrice = CASE WHEN @BreakevenPrice > 0 THEN @BreakevenPrice ELSE target.BreakevenPrice END,
-        HighestROE = CASE WHEN @HighestROE > target.HighestROE THEN @HighestROE ELSE target.HighestROE END,
-        StairStep = CASE WHEN @StairStep > target.StairStep THEN @StairStep ELSE target.StairStep END,
-        IsBreakEvenTriggered = CASE WHEN @IsBreakEvenTriggered = 1 THEN 1 ELSE target.IsBreakEvenTriggered END,
-        HighestPrice = CASE WHEN @HighestPrice > target.HighestPrice THEN @HighestPrice ELSE target.HighestPrice END,
-        LowestPrice = CASE WHEN @LowestPrice > 0 AND (target.LowestPrice = 0 OR @LowestPrice < target.LowestPrice) THEN @LowestPrice ELSE target.LowestPrice END,
-        IsPumpStrategy = @IsPumpStrategy,
-        LastUpdatedAt = SYSDATETIME()
-WHEN NOT MATCHED THEN
-    INSERT (UserId, Symbol, TakeProfitStep, PartialProfitStage, BreakevenPrice,
-            HighestROE, StairStep, IsBreakEvenTriggered, HighestPrice, LowestPrice, IsPumpStrategy)
-    VALUES (@UserId, @Symbol, @TakeProfitStep, @PartialProfitStage, @BreakevenPrice,
-            @HighestROE, @StairStep, @IsBreakEvenTriggered, @HighestPrice, @LowestPrice, @IsPumpStrategy);",
-                new
+                // [v5.10.58] Dapper MERGE → sp_SavePositionState (ADO.NET SqlCommand)
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await using var cmd = new SqlCommand("dbo.sp_SavePositionState", db)
                 {
-                    UserId = userId,
-                    Symbol = symbol,
-                    TakeProfitStep = pos.TakeProfitStep,
-                    PartialProfitStage = pos.PartialProfitStage,
-                    BreakevenPrice = pos.BreakevenPrice,
-                    HighestROE = highestROE,
-                    StairStep = stairStep,
-                    IsBreakEvenTriggered = isBreakEvenTriggered,
-                    HighestPrice = pos.HighestPrice,
-                    LowestPrice = pos.LowestPrice,
-                    IsPumpStrategy = pos.IsPumpStrategy
-                }, commandTimeout: 8);
+                    CommandType = CommandType.StoredProcedure,
+                    CommandTimeout = 8 // lock 경합 시 fast-fail 유지
+                };
+                cmd.Parameters.Add("@UserId",               SqlDbType.Int).Value            = userId;
+                cmd.Parameters.Add("@Symbol",               SqlDbType.NVarChar, 32).Value   = symbol;
+                cmd.Parameters.Add("@TakeProfitStep",       SqlDbType.Int).Value            = pos.TakeProfitStep;
+                cmd.Parameters.Add("@PartialProfitStage",   SqlDbType.Int).Value            = pos.PartialProfitStage;
+                cmd.Parameters.Add("@BreakevenPrice",       SqlDbType.Decimal).Value        = pos.BreakevenPrice;
+                cmd.Parameters.Add("@HighestROE",           SqlDbType.Decimal).Value        = highestROE;
+                cmd.Parameters.Add("@StairStep",            SqlDbType.Int).Value            = stairStep;
+                cmd.Parameters.Add("@IsBreakEvenTriggered", SqlDbType.Bit).Value            = isBreakEvenTriggered;
+                cmd.Parameters.Add("@HighestPrice",         SqlDbType.Decimal).Value        = pos.HighestPrice;
+                cmd.Parameters.Add("@LowestPrice",          SqlDbType.Decimal).Value        = pos.LowestPrice;
+                cmd.Parameters.Add("@IsPumpStrategy",       SqlDbType.Bit).Value            = pos.IsPumpStrategy;
+
+                // decimal precision/scale 보정
+                foreach (SqlParameter p in cmd.Parameters)
+                {
+                    if (p.SqlDbType == SqlDbType.Decimal) { p.Precision = 18; p.Scale = 8; }
+                }
+                // HighestROE는 scale 4
+                cmd.Parameters["@HighestROE"].Scale = 4;
+
+                await cmd.ExecuteNonQueryAsync();
             }
             catch (SqlException sqlEx) when (sqlEx.Number == 2627 || sqlEx.Number == 2601)
             {
-                // [v5.10.11] PK/UNIQUE 중복 삽입 — 동시 호출 레이스에서 다른 세션이 이미 INSERT함 → 무시 (다음 tick에 UPDATE됨)
+                // PK/UNIQUE 중복 — 동시 호출 race에서 다른 세션이 이미 INSERT함 → 무시
             }
             catch (Exception ex)
             {

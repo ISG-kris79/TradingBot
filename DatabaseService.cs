@@ -167,49 +167,26 @@ SELECT CASE WHEN EXISTS (
         {
             try
             {
-                using var conn = new SqlConnection(_connStr);
+                // [v5.10.58] 동적 SQL + Dapper → sp_BulkPreloadOpenTime (SP + ADO.NET SqlDataReader)
+                await using var conn = new SqlConnection(_connStr);
                 await conn.OpenAsync();
 
-                // 각 테이블 존재 여부를 확인 후 UNION — 테이블 미존재로 인한 전체 쿼리 실패 방지
-                var existingTables = (await conn.QueryAsync<string>(
-                    @"SELECT name FROM sys.tables WHERE name IN ('MarketCandles','CandleData','CandleHistory','MarketData')",
-                    commandTimeout: 10)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-                // [v5.10.47] CAST(OpenTime AS DATETIME2) + WHERE > '1800-01-01' 필터
-                // 이유: CandleData/MarketData=datetime2, MarketCandles/CandleHistory=datetime — UNION ALL 시 타입 불일치
-                //       일부 행 OpenTime=DateTime.MinValue(0001-01-01) → "날짜/시간 범위 초과" SqlException 발생
-                const string OT_FILTER = "AND OpenTime > '1800-01-01'";
-                var parts = new List<string>();
-                if (existingTables.Contains("MarketCandles"))
-                    parts.Add($"SELECT Symbol, MAX(CAST(OpenTime AS DATETIME2(7))) AS MaxOT FROM MarketCandles WITH (NOLOCK) WHERE Symbol IS NOT NULL {OT_FILTER} GROUP BY Symbol");
-                if (existingTables.Contains("CandleData"))
-                    parts.Add($"SELECT Symbol, MAX(CAST(OpenTime AS DATETIME2(7))) AS MaxOT FROM CandleData WITH (NOLOCK) WHERE Symbol IS NOT NULL {OT_FILTER} GROUP BY Symbol");
-                if (existingTables.Contains("CandleHistory"))
-                    parts.Add($"SELECT Symbol, MAX(CAST(OpenTime AS DATETIME2(7))) AS MaxOT FROM CandleHistory WITH (NOLOCK) WHERE [Interval] = @Interval {OT_FILTER} GROUP BY Symbol");
-                if (existingTables.Contains("MarketData"))
-                    parts.Add($"SELECT Symbol, MAX(CAST(OpenTime AS DATETIME2(7))) AS MaxOT FROM MarketData WITH (NOLOCK) WHERE [Interval] = @Interval {OT_FILTER} GROUP BY Symbol");
-
-                if (parts.Count == 0)
-                {
-                    Log("⚠️ [DB] OpenTime BulkPreload: 대상 테이블 없음");
-                    return false;
-                }
-
-                var sql = string.Join("\nUNION ALL\n", parts);
-
-                // [v5.10.56] Dapper dynamic 캐스팅 제거 → ADO.NET SqlDataReader로 직접 처리
-                // 이유: MAX() 결과가 NULL이거나 MinValue일 때 (DateTime)row.MaxOT 캐스팅에서 예외 발생
                 var grouped = new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
-                using (var cmd = new SqlCommand(sql, conn) { CommandTimeout = 60 })
+                await using (var cmd = new SqlCommand("dbo.sp_BulkPreloadOpenTime", conn)
                 {
-                    cmd.Parameters.AddWithValue("@Interval", interval);
-                    using var reader = await cmd.ExecuteReaderAsync();
+                    CommandType = CommandType.StoredProcedure,
+                    CommandTimeout = 120
+                })
+                {
+                    cmd.Parameters.Add("@Interval", SqlDbType.NVarChar, 8).Value = interval;
+                    await using var reader = await cmd.ExecuteReaderAsync();
+                    var minDate = new DateTime(1800, 1, 1);
                     while (await reader.ReadAsync())
                     {
                         if (reader.IsDBNull(0) || reader.IsDBNull(1)) continue;
                         string sym = reader.GetString(0);
                         DateTime ot = reader.GetDateTime(1);
-                        if (ot < new DateTime(1800, 1, 1)) continue; // 유효 날짜만 (방어)
+                        if (ot < minDate) continue;
                         if (!grouped.TryGetValue(sym, out var list))
                             grouped[sym] = list = new List<DateTime>();
                         list.Add(ot);
@@ -271,22 +248,20 @@ SELECT CASE WHEN EXISTS (
                 if (_openTimeCache.TryGetValue(cacheKey, out var cachedAfterWait))
                     return cachedAfterWait;
 
-                using var conn = new SqlConnection(_connStr);
+                // [v5.10.58] 인라인 SQL → sp_GetOpenTimeAcrossTables (SP + ADO.NET)
+                await using var conn = new SqlConnection(_connStr);
                 await conn.OpenAsync();
 
-                // [v5.10.56] Dapper tuple 매핑 → ADO.NET SqlDataReader — DBNull/MinValue 안전 처리
-                const string openTimeSql = @"SELECT
-                        (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM MarketCandles WITH (NOLOCK) WHERE Symbol = @Symbol AND OpenTime > '1800-01-01') AS mc,
-                        (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM CandleData    WITH (NOLOCK) WHERE Symbol = @Symbol AND OpenTime > '1800-01-01') AS cd,
-                        (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM CandleHistory WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval AND OpenTime > '1800-01-01') AS ch,
-                        (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM MarketData    WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval AND OpenTime > '1800-01-01') AS md";
-
                 var candidates = new List<DateTime>();
-                using (var cmd = new SqlCommand(openTimeSql, conn) { CommandTimeout = 10 })
+                await using (var cmd = new SqlCommand("dbo.sp_GetOpenTimeAcrossTables", conn)
                 {
-                    cmd.Parameters.AddWithValue("@Symbol", symbol);
-                    cmd.Parameters.AddWithValue("@Interval", interval);
-                    using var reader = await cmd.ExecuteReaderAsync();
+                    CommandType = CommandType.StoredProcedure,
+                    CommandTimeout = 15
+                })
+                {
+                    cmd.Parameters.Add("@Symbol",   SqlDbType.NVarChar, 32).Value = symbol;
+                    cmd.Parameters.Add("@Interval", SqlDbType.NVarChar, 8).Value  = interval;
+                    await using var reader = await cmd.ExecuteReaderAsync();
                     if (await reader.ReadAsync())
                     {
                         var minDate = new DateTime(1800, 1, 1);

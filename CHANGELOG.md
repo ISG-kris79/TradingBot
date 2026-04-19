@@ -5,6 +5,24 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.58] - 2026-04-20
+
+### Refactored (Dapper → ADO.NET + Stored Procedure 전환 1단계)
+
+ - **신규 `DbProcedures.cs`**: 앱 시작 시 `DbManager` 생성자에서 `CREATE OR ALTER PROCEDURE`로 3개 SP 자동 등록 (DB 권한 가정)
+ - **전환된 3개 쿼리**:
+   - `DbManager.SavePositionStateAsync` (초당 수회 호출, 가장 빈번) → `sp_SavePositionState`
+   - `DatabaseService.GetLatestSyncedOpenTimeAcrossTablesAsync` → `sp_GetOpenTimeAcrossTables`
+   - `DatabaseService.BulkPreloadOpenTimeCacheAsync` → `sp_BulkPreloadOpenTime` (테이블 존재 여부 동적 체크 내장)
+ - **벤치마크** (`test-sp-benchmark.ps1` 실측, 봇 실행 중 상태):
+   - **OpenTime 집계**: inline SQL 151ms/call → SP 21.7ms/call → **85.7% 빨라짐** ✅
+   - **PositionState MERGE**: inline SQL 418ms/call → SP 741ms/call → **77% 느려짐** ⚠️ (봇이 동일 테이블 동시 쓰기 중 lock 경합 추정 — 추후 실측 환경에서 재측정 필요)
+ - **다음 단계 예정**:
+   - v5.10.59: `sp_SaveCandleData_Bulk` (TVP, 실시간 캔들 저장)
+   - v5.10.60: `sp_UpsertTradeEntry` + `sp_CompleteTrade`
+   - v5.10.61: `sp_LoadGeneralSettings` + `sp_SaveGeneralSettings`
+   - v5.10.62: 나머지 통계/로그 쿼리
+
 ## [5.10.57] - 2026-04-20
 
 ### Fixed
