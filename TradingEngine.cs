@@ -3956,16 +3956,20 @@ namespace TradingBot
                 string emoji = pnl >= 0 ? "💰" : "📉";
                 OnStatusLog?.Invoke($"{emoji} [API 체결] {symbol} {exitReason} | 체결가={avgPrice:F4} 수량={filledQty:F4} PnL={pnl:+0.00;-0.00} ({pnlPct:+0.0;-0.0}%)");
 
-                // 텔레그램 알림
+                // 텔레그램 알림 — 마크다운 V1에서 _는 이탤릭 마커이므로 exitReason의 언더스코어를 공백으로 치환 (안 그러면 Telegram 400 거부 → silent fail)
+                string telegramReason = exitReason.Replace("_", " ");
                 _ = Task.Run(async () =>
                 {
                     try
                     {
                         await TelegramService.Instance.SendMessageAsync(
-                            $"{emoji} *[API {exitReason}]*\n`{symbol}` | 체결가: `{avgPrice:F4}`\nPnL: `{pnl:F2}` USDT ({pnlPct:+0.0;-0.0}%)",
+                            $"{emoji} *[API {telegramReason}]*\n`{symbol}` | 체결가: `{avgPrice:F4}`\nPnL: `{pnl:F2}` USDT ({pnlPct:+0.0;-0.0}%)",
                             TelegramMessageType.Profit);
                     }
-                    catch { }
+                    catch (Exception tEx)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [텔레그램 전송실패] {symbol} {telegramReason}: {tEx.Message}");
+                    }
                 });
             }
             catch (Exception ex)
@@ -12350,7 +12354,7 @@ namespace TradingBot
                 }
             });
 
-            // 5. 텔레그램 알림
+            // 5. 텔레그램 알림 — 마크다운 V1 이탤릭 충돌 방지 (reason 내 언더스코어를 공백으로)
             _ = Task.Run(async () =>
             {
                 try
@@ -12360,11 +12364,15 @@ namespace TradingBot
                         ? ((pos?.IsLong == true ? exitPrice - entryPrice : entryPrice - exitPrice)
                             / entryPrice) * (pos?.Leverage ?? 1m) * 100m
                         : 0m;
+                    string telegramReason = (reason ?? "CLOSE").Replace("_", " ");
                     await TelegramService.Instance.SendMessageAsync(
-                        $"{emoji} *[{reason}]*\n`{symbol}`\n진입가: `{entryPrice:F4}` → 청산가: `{exitPrice:F4}`\nROE: `{roe:+0.0;-0.0}%`\n⏰ {DateTime.Now:HH:mm:ss}",
+                        $"{emoji} *[{telegramReason}]*\n`{symbol}`\n진입가: `{entryPrice:F4}` → 청산가: `{exitPrice:F4}`\nROE: `{roe:+0.0;-0.0}%`\n⏰ {DateTime.Now:HH:mm:ss}",
                         TelegramMessageType.Profit);
                 }
-                catch { }
+                catch (Exception tEx)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [텔레그램 전송실패] {symbol} SYNC_CLOSE: {tEx.Message}");
+                }
             });
 
             // 7. AI 레이블링

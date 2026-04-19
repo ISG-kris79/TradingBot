@@ -5,6 +5,17 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.53] - 2026-04-19
+
+### Fixed
+
+ - **자동 익절(API TP/SL/Trailing) 체결 시 텔레그램 메시지 누락 근본 수정** (`TradingEngine.cs`):
+   - 근본 원인: `RecordConditionalOrderFillAsync`에서 메시지 템플릿 `*[API {exitReason}]*`이 `API_TAKE_PROFIT`/`API_STOP_LOSS`/`API_TRAILING_STOP` 등 언더스코어 포함 문자열을 포함 → 마크다운 V1 파서가 `_`를 이탤릭 마커로 해석 → 일부 케이스에서 Telegram 400 거부 → `catch {}` silent 삼킴 → 사용자 무음
+   - `HandleSyncedPositionClosed`도 동일 `*[{reason}]*` 패턴 사용 → 향후 reason 변경 시 동일 문제 발생 가능 → 동일 수정으로 방어
+   - 수정:
+     - 두 경로 모두 `reason.Replace("_", " ")` 적용 → 언더스코어 제거로 파서 오동작 방지
+     - `catch {}` → `catch (Exception tEx) { OnStatusLog?.Invoke(...) }` 로 교체 → 향후 텔레그램 전송 실패 시 상태 로그로 즉시 확인 가능
+
 ## [5.10.52] - 2026-04-19
 
 ### Fixed
