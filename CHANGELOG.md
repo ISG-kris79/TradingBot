@@ -5,6 +5,16 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.52] - 2026-04-19
+
+### Fixed
+
+ - **DB 전체 성능 근본 수정 4건** (`PositionMonitorService.cs`, `DbManager.cs`):
+   - **`PersistPositionState` 동시성 무제한** (`PositionMonitorService.cs:67`): fire-and-forget Task.Run 호출을 동시성 제한 없이 실행 → 포지션 수×호출 횟수만큼 동시 MERGE 발생 → PositionState 테이블 lock 경합 → commandTimeout 8s 타임아웃 반복 → `SemaphoreSlim(3,3)` + `WaitAsync(0)` 슬롯 없으면 즉시 스킵(다음 tick 재시도)으로 해결
+   - **`GetRecentCandleDataAsync` SELECT * + 10s timeout** (`DbManager.cs`): `SELECT *` + commandTimeout 10s인데 limit=5000행 조회 → 타임아웃 확실 → 필요 컬럼만 + `WITH (NOLOCK)` + 60s
+   - **`GetCandleDataByIntervalAsync` SELECT * + 30s timeout** (`DbManager.cs`): limit=52000행 조회 → 동일 수정, timeout 120s
+   - **`GetCurrentUserId()` 동기 DB 블로킹** (`DbManager.cs`): `db.Open()` + `db.ExecuteScalar<int?>()` 동기 호출이 async 컨텍스트에서 스레드 블로킹 → 로그인 후 `AppConfig.CurrentUser.Id`는 항상 설정되므로 DB 조회 제거, `static` 처리
+
 ## [5.10.51] - 2026-04-19
 
 ### Fixed

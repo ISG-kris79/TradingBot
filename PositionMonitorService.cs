@@ -64,10 +64,14 @@ namespace TradingBot.Services
         public event Action<string>? OnPositionClosed;
 
         // [v3.5.2] 포지션 상태 DB 저장 (재시작 시 복원용)
+        // 동시 PositionState MERGE 경합 방지 — 무제한 Task.Run 대신 최대 3개 동시 실행
+        private static readonly SemaphoreSlim _posStateSemaphore = new(3, 3);
+
         private void PersistPositionState(string symbol, int stairStep = 0, bool isBreakEvenTriggered = false, decimal highestROE = 0)
         {
             _ = Task.Run(async () =>
             {
+                if (!await _posStateSemaphore.WaitAsync(0)) return; // 슬롯 없으면 스킵 (다음 tick에 재시도)
                 try
                 {
                     int userId = AppConfig.CurrentUser?.Id ?? 0;
@@ -78,6 +82,7 @@ namespace TradingBot.Services
                     await _dbManager.SavePositionStateAsync(userId, symbol, pos, stairStep, isBreakEvenTriggered, highestROE);
                 }
                 catch { }
+                finally { _posStateSemaphore.Release(); }
             });
         }
 

@@ -449,42 +449,10 @@ END");
             }
         }
 
-        private int GetCurrentUserId()
+        private static int GetCurrentUserId()
         {
-            int currentUserId = AppConfig.CurrentUser?.Id ?? 0;
-            if (currentUserId > 0)
-                return currentUserId;
-
-            string? username = AppConfig.CurrentUser?.Username;
-            if (string.IsNullOrWhiteSpace(username))
-                username = AppConfig.CurrentUsername;
-
-            if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(_connectionString))
-                return 0;
-
-            try
-            {
-                using var db = new SqlConnection(_connectionString);
-                db.Open();
-
-                int? resolvedUserId = db.ExecuteScalar<int?>(
-                    "SELECT TOP (1) Id FROM dbo.Users WHERE Username = @Username",
-                    new { Username = username.Trim() });
-
-                if (resolvedUserId is > 0)
-                {
-                    if (AppConfig.CurrentUser != null && AppConfig.CurrentUser.Id <= 0)
-                        AppConfig.CurrentUser.Id = resolvedUserId.Value;
-
-                    return resolvedUserId.Value;
-                }
-            }
-            catch (Exception ex)
-            {
-                MainWindow.Instance?.AddLog($"⚠️ [DB] Users 기준 UserId 조회 실패: {ex.Message}");
-            }
-
-            return 0;
+            // 로그인 후 AppConfig.CurrentUser.Id는 항상 설정됨 — 동기 DB 블로킹 호출 제거
+            return AppConfig.CurrentUser?.Id ?? 0;
         }
 
         private bool TryGetCurrentUserIdForSave(string operation, out int userId)
@@ -2076,8 +2044,11 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
             try
             {
                 using var db = new SqlConnection(_connectionString);
-                var sql = "SELECT TOP (@Limit) * FROM CandleData WHERE Symbol = @Symbol ORDER BY OpenTime DESC";
-                var result = await db.QueryAsync<TradingBot.Models.CandleData>(sql, new { Symbol = symbol, Limit = limit }, commandTimeout: 10);
+                const string sql = @"SELECT TOP (@Limit) Symbol, OpenTime, [Open], [High], [Low], [Close], Volume
+                                     FROM CandleData WITH (NOLOCK)
+                                     WHERE Symbol = @Symbol
+                                     ORDER BY OpenTime DESC";
+                var result = await db.QueryAsync<TradingBot.Models.CandleData>(sql, new { Symbol = symbol, Limit = limit }, commandTimeout: 60);
                 return result.Reverse().ToList();
             }
             catch
@@ -2096,13 +2067,13 @@ ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime
             try
             {
                 using var db = new SqlConnection(_connectionString);
-                var sql = @"SELECT TOP (@Limit) *
-                            FROM CandleData
-                            WHERE Symbol = @Symbol AND IntervalText = @Interval
-                            ORDER BY OpenTime ASC";
+                const string sql = @"SELECT TOP (@Limit) Symbol, OpenTime, [Open], [High], [Low], [Close], Volume
+                                     FROM CandleData WITH (NOLOCK)
+                                     WHERE Symbol = @Symbol AND IntervalText = @Interval
+                                     ORDER BY OpenTime ASC";
                 var result = await db.QueryAsync<TradingBot.Models.CandleData>(
                     sql, new { Symbol = symbol, Interval = intervalText, Limit = limit },
-                    commandTimeout: 30);
+                    commandTimeout: 120);
                 return result.ToList();
             }
             catch
