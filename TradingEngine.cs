@@ -7591,13 +7591,19 @@ namespace TradingBot
                 // [v4.5.14] 학습 완료/실패 시 플래그 해제
                 Interlocked.Exchange(ref _mlTrainingInProgress, 0);
 
-                // [v5.10.23] TrainAllModelsAsync 완료 후 pump_signal_normal.zip 생성됐으면 배너 닫기
-                // (TriggerInitialDownloadAndTrainAsync 외 경로에서도 배너 닫힘 보장)
-                if (IsInitialTrainingComplete)
+                // [v5.10.56] TrainAllModelsAsync 완료 시 항상 배너 닫기 이벤트 발화
+                // 과거: IsInitialTrainingComplete=true (pump_signal_normal.zip 존재)일 때만 Invoke → 모델 파일 생성 실패 시 배너가 "모델 학습 처리 중..." 상태로 영원히 매달림
+                // 수정: 성공/실패 상관없이 이벤트 호출 — 배너는 success 인자에 따라 "✅ 완료" 또는 "⚠ 오류" 표시 후 자동 숨김
+                bool trainingCompletedSuccessfully = IsInitialTrainingComplete;
+                if (trainingCompletedSuccessfully)
                 {
                     OnStatusLog?.Invoke("✅ [ML] 모델 학습 완료 — 진입 활성화");
-                    OnInitialTrainingCompleted?.Invoke(true);
                 }
+                else
+                {
+                    OnStatusLog?.Invoke("⚠️ [ML] 학습 종료 — 일부 모델 파일 미생성 (pump_signal_normal.zip 등) → 다음 재학습 시 재시도");
+                }
+                OnInitialTrainingCompleted?.Invoke(trainingCompletedSuccessfully);
             }
         }
 

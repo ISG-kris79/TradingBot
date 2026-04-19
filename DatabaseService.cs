@@ -196,16 +196,24 @@ SELECT CASE WHEN EXISTS (
                 }
 
                 var sql = string.Join("\nUNION ALL\n", parts);
-                var rawRows = await conn.QueryAsync(sql, new { Interval = interval }, commandTimeout: 60);
 
+                // [v5.10.56] Dapper dynamic 캐스팅 제거 → ADO.NET SqlDataReader로 직접 처리
+                // 이유: MAX() 결과가 NULL이거나 MinValue일 때 (DateTime)row.MaxOT 캐스팅에서 예외 발생
                 var grouped = new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
-                foreach (var row in rawRows)
+                using (var cmd = new SqlCommand(sql, conn) { CommandTimeout = 60 })
                 {
-                    string sym = (string)row.Symbol;
-                    DateTime ot = (DateTime)row.MaxOT;
-                    if (!grouped.TryGetValue(sym, out var list))
-                        grouped[sym] = list = new List<DateTime>();
-                    list.Add(ot);
+                    cmd.Parameters.AddWithValue("@Interval", interval);
+                    using var reader = await cmd.ExecuteReaderAsync();
+                    while (await reader.ReadAsync())
+                    {
+                        if (reader.IsDBNull(0) || reader.IsDBNull(1)) continue;
+                        string sym = reader.GetString(0);
+                        DateTime ot = reader.GetDateTime(1);
+                        if (ot < new DateTime(1800, 1, 1)) continue; // 유효 날짜만 (방어)
+                        if (!grouped.TryGetValue(sym, out var list))
+                            grouped[sym] = list = new List<DateTime>();
+                        list.Add(ot);
+                    }
                 }
 
                 foreach (var kv in grouped)
@@ -265,18 +273,31 @@ SELECT CASE WHEN EXISTS (
 
                 using var conn = new SqlConnection(_connStr);
                 await conn.OpenAsync();
-                // [v5.10.47] CAST + 유효 날짜 필터 — datetime/datetime2 타입 불일치 및 MinValue 오류 방지
-                var row = await conn.QuerySingleOrDefaultAsync<(DateTime? mc, DateTime? cd, DateTime? ch, DateTime? md)>(
-                    @"SELECT
+
+                // [v5.10.56] Dapper tuple 매핑 → ADO.NET SqlDataReader — DBNull/MinValue 안전 처리
+                const string openTimeSql = @"SELECT
                         (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM MarketCandles WITH (NOLOCK) WHERE Symbol = @Symbol AND OpenTime > '1800-01-01') AS mc,
                         (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM CandleData    WITH (NOLOCK) WHERE Symbol = @Symbol AND OpenTime > '1800-01-01') AS cd,
                         (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM CandleHistory WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval AND OpenTime > '1800-01-01') AS ch,
-                        (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM MarketData    WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval AND OpenTime > '1800-01-01') AS md",
-                    new { Symbol = symbol, Interval = interval },
-                    commandTimeout: 10);
+                        (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM MarketData    WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval AND OpenTime > '1800-01-01') AS md";
 
-                var candidates = new[] { row.mc, row.cd, row.ch, row.md }
-                    .Where(v => v.HasValue).Select(v => v!.Value).ToList();
+                var candidates = new List<DateTime>();
+                using (var cmd = new SqlCommand(openTimeSql, conn) { CommandTimeout = 10 })
+                {
+                    cmd.Parameters.AddWithValue("@Symbol", symbol);
+                    cmd.Parameters.AddWithValue("@Interval", interval);
+                    using var reader = await cmd.ExecuteReaderAsync();
+                    if (await reader.ReadAsync())
+                    {
+                        var minDate = new DateTime(1800, 1, 1);
+                        for (int i = 0; i < 4; i++)
+                        {
+                            if (reader.IsDBNull(i)) continue;
+                            var dt = reader.GetDateTime(i);
+                            if (dt > minDate) candidates.Add(dt);
+                        }
+                    }
+                }
 
                 DateTime? result = candidates.Count > 0 ? candidates.Min() : null;
                 if (result.HasValue)

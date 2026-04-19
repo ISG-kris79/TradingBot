@@ -5,6 +5,25 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.56] - 2026-04-20
+
+### Fixed
+
+ - **초기학습 배너 "모델 학습 처리 중..." 무한 매달림 수정** (`TradingEngine.cs:7589-7605`):
+   - 근본 원인: `TrainAllModelsAsync` finally에서 `if (IsInitialTrainingComplete)`일 때만 `OnInitialTrainingCompleted?.Invoke(true)` 호출 → `pump_signal_normal.zip` 모델 파일 생성에 실패(클래스 불균형/샘플 부족)하면 이벤트가 영원히 발화되지 않아 배너가 "모델 학습 처리 중..." 상태로 고착
+   - 수정: 학습 완료/실패 상관없이 항상 이벤트 발화 — 성공 시 `true`, 실패 시 `false` 인자 전달 → MainViewModel이 "⚠ 초기학습 오류 발생" 표시 후 30초 뒤 자동 배너 숨김
+ - **OpenTime 집계 쿼리 Dapper → ADO.NET SqlDataReader 전환** (`DatabaseService.cs`):
+   - `BulkPreloadOpenTimeCacheAsync` / `GetLatestSyncedOpenTimeAcrossTablesAsync`의 Dapper `QueryAsync<dynamic>` / `QuerySingleOrDefaultAsync<tuple>` → 순수 ADO.NET `SqlCommand` + `SqlDataReader`
+   - `reader.IsDBNull(i)` 체크 + `dt > DateTime(1800,1,1)` 이중 방어 → 이전 버전의 `(DateTime)row.MaxOT` 강제 캐스팅에서 DBNull/MinValue 예외 완전 차단
+   - DB 현황 테스트 결과 (`test-opentime-query.ps1`): 4개 테이블 모두 `OpenTime < 1800-01-01` 행 **0건** 확인 → 데이터는 이미 정리됨, 코드 방어로 추후 오염 방지
+
+### In Progress
+
+ - **Dapper → ADO.NET + Stored Procedure 전면 전환** 단계적 진행 중 (v5.10.57+ 예정):
+   1. 성능 병목 큰 쿼리 우선 (`SavePositionStateAsync` MERGE, `GetAllCandleDataForTrainingAsync`, CandleData BulkInsert)
+   2. 각 단계마다 실제 속도 벤치마크 수행 후 비교 결과 공유
+   3. 프로시저는 DbManager 초기화 시 자동 등록 (권한 가정)
+
 ## [5.10.55] - 2026-04-20
 
 ### Fixed
