@@ -9,9 +9,9 @@
 
 ### Fixed
 
- - **`CopyTradingSettings` 누락 필드 → 설정창 저장 후 인메모리 미반영 근본 수정** (`MainWindow.xaml.cs`):
-   - 근본 원인: `CopyTradingSettings`에 `EnableMajorTrading` / `MaxMajorSlots` / `MaxPumpSlots` / `MaxDailyEntries` 4개 필드가 누락 → 설정창 저장 시 `ApplyGeneralSettings` → `CopyTradingSettings` 호출해도 이 필드들이 `CurrentGeneralSettings`(= `TradingEngine._settings`와 동일 객체)에 반영되지 않음 → Stop→Start 재시작해도 이전 값 유지
-   - 수정: 4개 필드를 `CopyTradingSettings`에 추가 → 설정창 저장 즉시 엔진에 반영
+ - **설정창 GeneralSettings 저장/로드 근본 수정 2건** (`MainWindow.xaml.cs`, `SettingsWindow.xaml.cs`):
+   - **버그 1** `CopyTradingSettings` 누락 필드: `EnableMajorTrading` / `MaxMajorSlots` / `MaxPumpSlots` / `MaxDailyEntries` 4개 필드 누락 → 설정창 저장 후 `ApplyGeneralSettings` 호출해도 인메모리 `CurrentGeneralSettings`(= `TradingEngine._settings`)에 미반영 → 4개 필드 추가로 저장 즉시 엔진 반영
+   - **버그 2** `LoadSettingsAsync` fire-and-forget 레이스 컨디션: 생성자에서 `_ = LoadSettingsAsync()` → 창이 열리자마자 저장 누르면 DB 로드 완료 전 JSON 기본값(EnableMajorTrading=true)으로 저장됨 → `LoadSettingsAsync()` 제거 + `LoadSettings()`에서 `MainWindow.CurrentGeneralSettings`(앱 시작 시 DB 로드 완료) 직접 읽도록 변경 → 동기 로드, DB 재쿼리 불필요
 
 ## [5.10.50] - 2026-04-19
 
