@@ -5,6 +5,17 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.57] - 2026-04-20
+
+### Fixed
+
+ - **설정창 비동기 race로 일부 컬럼만 DB와 다르게 보이는 현상 근본 수정**:
+   - 근본 원인: v5.10.55에서 `SettingsWindow.Loaded` 이벤트에 async DB 조회 연결 → 창이 먼저 JSON/캐시 값으로 표시된 뒤 DB 조회 완료 후 UI가 덮어써지는 구조 → 사용자가 창 뜨자마자 특정 컬럼 확인 시 **구 값** 보이다가 잠시 후 **DB 값**으로 바뀜 → "일부 컬럼만 DB랑 다름"으로 체감
+   - 수정 (`MainWindow.xaml.cs btnSettings_Click`): 설정 버튼 클릭 시 **창을 띄우기 전에** `DbManager.LoadGeneralSettingsAsync(UserId)` 선조회 → `ApplyGeneralSettings(dbSettings)`로 캐시 갱신 → 그 다음 `new SettingsWindow()` 생성
+   - 수정 (`SettingsWindow`): Loaded 이벤트 비동기 DB 조회 경로(`LoadGeneralSettingsFromDbAsync`) 완전 제거. 생성자에서 `LoadSettings()` 실행하며 이미 갱신된 `MainWindow.CurrentGeneralSettings` 동기 읽기 → 창 표시 시점에 이미 모든 UI 필드가 DB 최신값
+   - 효과: 창이 뜨는 순간 모든 컬럼이 즉시 최신 DB 값. 비동기 race 원천 제거
+   - 로그: `[Settings] ✅ DB 선조회 완료 → 설정창 표시 | EnableMajor=... MaxMajor=... MaxPump=...`
+
 ## [5.10.56] - 2026-04-20
 
 ### Fixed

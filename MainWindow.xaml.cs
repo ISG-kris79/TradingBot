@@ -372,8 +372,28 @@ namespace TradingBot
             }
         }
 
-        private void btnSettings_Click(object sender, RoutedEventArgs e)
+        private async void btnSettings_Click(object sender, RoutedEventArgs e)
         {
+            // [v5.10.57] 설정창 열기 전에 DB 최신값을 먼저 조회해서 캐시 갱신 → 창 뜰 때 이미 최신값 표시
+            // 기존: SettingsWindow 생성자/Loaded 이벤트에서 비동기 DB 조회 → UI 표시 후 일부 컬럼만 뒤늦게 갱신되는 race
+            try
+            {
+                if (!string.IsNullOrEmpty(AppConfig.ConnectionString) && AppConfig.CurrentUser != null)
+                {
+                    var dbManager = new DbManager(AppConfig.ConnectionString);
+                    var dbSettings = await dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id);
+                    if (dbSettings != null)
+                    {
+                        ApplyGeneralSettings(dbSettings);
+                        AddLog($"[Settings] ✅ DB 선조회 완료 → 설정창 표시 | EnableMajor={dbSettings.EnableMajorTrading} MaxMajor={dbSettings.MaxMajorSlots} MaxPump={dbSettings.MaxPumpSlots}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AddLog($"⚠️ [Settings] DB 선조회 실패 (캐시 값으로 표시): {ex.Message}");
+            }
+
             var settingsWindow = new SettingsWindow();
             settingsWindow.Owner = this;
             settingsWindow.ShowDialog();
