@@ -5,6 +5,18 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.59] - 2026-04-20
+
+### Hotfix (긴급)
+
+ - **외부 포지션(EXTERNAL_POSITION_INCREASE_SYNC) SL/TP/Trailing 자동 등록 누락 → 손해 무방비** 근본 수정 (`TradingEngine.cs:6799-6850`):
+   - **사례 (PHBUSDT)**: 5건 모두 `Strategy=EXTERNAL_POSITION_INCREASE_SYNC` (사용자 수동 매수/Copy/타 봇 진입), 거래소에 SL/TP/Trailing **0건** → -40~-44% PnL 무방비 손해
+   - **근본 원인**: `OrderLifecycleManager.RegisterOnEntryAsync`는 봇 자동 진입 (TradingEngine:11315/14418) 에서만 호출. `HandleAccountUpdate`에서 외부 포지션 감지 시 `_activePositions`에 추가만 하고 SL 등록 호출 누락
+   - **수정**: `HandleAccountUpdate`의 `wasTracked=false` 분기(외부 신규 포지션)에 `_orderLifecycle.RegisterOnEntryAsync` 자동 호출 추가 → 외부 포지션도 봇 진입과 동일하게 SL/TP/Trailing 자동 등록
+ - **PositionState SP 전환 롤백** (`DbManager.SavePositionStateAsync`):
+   - v5.10.58 SP 전환 후 봇 환경에서 lock 경합으로 저장 실패 보고 → 본절/트레일링 갱신 누락 가능성
+   - 안전한 인라인 MERGE로 즉시 복귀. SP 전환은 추후 안전 검증(HOLDLOCK 제거, READPAST 등) 후 재시도
+
 ## [5.10.58] - 2026-04-20
 
 ### Refactored (Dapper → ADO.NET + Stored Procedure 전환 1단계)

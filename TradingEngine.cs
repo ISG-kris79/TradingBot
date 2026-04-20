@@ -6797,7 +6797,6 @@ namespace TradingBot
                 }
 
                 // [v5.10.19] 거래소 account-update로 감지된 포지션 → PositionSyncService 등록
-                // 거래소에 SL/TP가 이미 있다고 가정 → bot-side 감시 대신 폴링 감시
                 if (wasTracked)
                 {
                     _orderManager.RegisterBracket(pos.Symbol);
@@ -6805,11 +6804,42 @@ namespace TradingBot
                 }
                 else
                 {
-                    // 외부 포지션(봇이 열지 않은 것)은 기존 방식 유지
+                    // 외부 포지션(봇이 열지 않은 것) — Standard or Pump 모니터 시작
                     if (!savedPump)
                         TryStartStandardMonitor(pos.Symbol, pos.EntryPrice, isLong, "TREND", savedTakeProfit, savedStopLoss, _cts?.Token ?? CancellationToken.None, "external-position");
                     else
                         TryStartPumpMonitor(pos.Symbol, pos.EntryPrice, "ACCOUNT_PUMP", 0d, _cts?.Token ?? CancellationToken.None, "external-position");
+
+                    // [v5.10.59 핫픽스] 외부 포지션도 SL/TP/Trailing 자동 등록
+                    // 근본 원인: PHBUSDT 등 EXTERNAL_POSITION_INCREASE_SYNC로 들어온 포지션은
+                    // OrderLifecycleManager.RegisterOnEntryAsync 호출 누락 → 거래소에 SL 0개 → -125% ROE 손해
+                    // 수정: 외부 포지션 신규 감지 시 봇 진입과 동일하게 SL/TP/Trailing 즉시 등록
+                    if (_orderLifecycle != null)
+                    {
+                        decimal entryQty = Math.Abs(pos.Quantity);
+                        int lev = (int)Math.Max(1m, safeLeverage);
+                        bool isPumpExt = !MajorSymbols.Contains(pos.Symbol);
+                        decimal slRoe = isPumpExt ? -(_settings.PumpStopLossRoe > 0 ? _settings.PumpStopLossRoe : 40m) : -50m;
+                        decimal tpRoe = isPumpExt ? Math.Max(_settings.PumpTp1Roe > 0 ? _settings.PumpTp1Roe : 25m, 25m) : 40m;
+                        decimal tpPartial = isPumpExt ? Math.Clamp((_settings.PumpFirstTakeProfitRatioPct > 0 ? _settings.PumpFirstTakeProfitRatioPct : 40m) / 100m, 0.05m, 0.95m) : 0.4m;
+                        decimal trailCb = isPumpExt ? Math.Clamp((_settings.PumpTrailingGapRoe > 0 ? _settings.PumpTrailingGapRoe : 20m) / lev, 0.1m, 5.0m) : 2.0m;
+
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                _orderLifecycle.ResetCooldown(pos.Symbol);
+                                var result = await _orderLifecycle.RegisterOnEntryAsync(
+                                    pos.Symbol, isLong, pos.EntryPrice, entryQty, lev,
+                                    slRoe, tpRoe, tpPartial, trailCb, _cts?.Token ?? CancellationToken.None);
+                                OnStatusLog?.Invoke($"🛡️ [외부포지션 보호] {pos.Symbol} SL/TP/Trailing 자동 등록 (SL={!string.IsNullOrEmpty(result.SlOrderId)} TP={!string.IsNullOrEmpty(result.TpOrderId)} TR={!string.IsNullOrEmpty(result.TrailingOrderId)})");
+                            }
+                            catch (Exception ex)
+                            {
+                                OnStatusLog?.Invoke($"⚠️ [외부포지션 보호] {pos.Symbol} 등록 실패: {ex.Message}");
+                            }
+                        });
+                    }
                 }
 
                 OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
