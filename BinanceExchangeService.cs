@@ -199,20 +199,55 @@ namespace TradingBot.Services
         }
 
         /// <summary>
-        /// [v5.10.12] WalletBalance + AvailableBalance 단일 API 호출로 반환 — 대시보드용
+        /// [v5.10.64] /fapi/v2/account — HttpClient 직접 호출로 Binance.Net 우회
+        /// 근본 원인: /fapi/v2/balance 응답의 walletBalance 필드가 일부 계정에서 빈 문자열로 와서
+        /// Binance.Net decimal 파싱 예외 → GetBalancesAsync 실패 → 대시보드 UI $0 유지
+        /// 해결: /fapi/v2/account 의 assets 배열에서 USDT walletBalance + availableBalance 직접 추출 (JSON 파싱 우리가 제어)
         /// </summary>
         public async Task<(decimal Wallet, decimal Available)> GetBalancePairAsync(string asset, CancellationToken ct = default)
         {
-            var result = await _client.UsdFuturesApi.Account.GetBalancesAsync(ct: ct);
-            if (!result.Success)
+            var (ok, body) = await CallAlgoApiAsync(HttpMethod.Get, "/fapi/v2/account", string.Empty, ct);
+            if (!ok)
             {
-                OnLog?.Invoke($"❌ [계좌잔고] GetBalancesAsync 실패: {result.Error?.Message ?? "알 수 없는 오류"} (code={result.Error?.Code})");
+                OnLog?.Invoke($"❌ [계좌잔고] /fapi/v2/account 실패: {body}");
                 return (0, 0);
             }
-            var balance = result.Data.FirstOrDefault(b => b.Asset == asset);
-            if (balance == null)
-                OnLog?.Invoke($"⚠️ [계좌잔고] {asset} 잔고 항목 없음 — API 키 권한(Read) 또는 선물 계좌 확인 필요");
-            return (balance?.WalletBalance ?? 0, balance?.AvailableBalance ?? 0);
+
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var a in assets.EnumerateArray())
+                    {
+                        if (a.TryGetProperty("asset", out var symProp) && symProp.GetString() == asset)
+                        {
+                            decimal wallet = ParseDecimalSafe(a, "walletBalance");
+                            decimal available = ParseDecimalSafe(a, "availableBalance");
+                            return (wallet, available);
+                        }
+                    }
+                }
+                OnLog?.Invoke($"⚠️ [계좌잔고] {asset} assets 배열에 없음");
+                return (0, 0);
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ [계좌잔고] JSON 파싱 실패: {ex.Message}");
+                return (0, 0);
+            }
+        }
+
+        private static decimal ParseDecimalSafe(JsonElement obj, string fieldName)
+        {
+            if (!obj.TryGetProperty(fieldName, out var prop)) return 0m;
+            if (prop.ValueKind == JsonValueKind.Number) return prop.GetDecimal();
+            if (prop.ValueKind == JsonValueKind.String)
+            {
+                string s = prop.GetString() ?? string.Empty;
+                return decimal.TryParse(s, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : 0m;
+            }
+            return 0m;
         }
 
         public async Task<decimal> GetPriceAsync(string symbol, CancellationToken ct = default)

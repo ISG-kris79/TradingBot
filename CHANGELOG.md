@@ -5,6 +5,17 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.64] - 2026-04-20
+
+### Hotfix — 총자산/가용자산 UI 미표시 근본 수정
+
+ - **근본 원인**: `/fapi/v2/balance` 응답에서 `walletBalance` 필드가 **빈 문자열**로 반환되는 계정 케이스 (실측으로 확인: `"USDT balance=726.49 availableBalance=351.64 walletBalance= crossUnPnl=32.91"`). `Binance.Net v12.8.1`의 `GetBalancesAsync`가 빈 문자열 → `decimal` 파싱 예외 → `GetBalancePairAsync` 0/0 반환 → `RefreshProfitDashboard` 캐시 업데이트 실패 → UI `$0.00` 고착
+ - **수정** (`BinanceExchangeService.GetBalancePairAsync`):
+   - Binance.Net 라이브러리 우회 → `HttpClient`로 `/fapi/v2/account` 직접 호출
+   - 응답 JSON의 `assets` 배열에서 USDT 객체 찾아 `walletBalance` + `availableBalance` 직접 추출
+   - `ParseDecimalSafe` 헬퍼 — 빈 문자열/null/Number 모두 안전 처리
+ - **검증**: 직접 API 조회 실측값 반영 확인 (Wallet $726.50, Available $351.64, UnrealPnL $32.93 → 총자산 $759.43)
+
 ## [5.10.63] - 2026-04-20
 
 ### CRITICAL FIX (며칠간의 -4120 손해 근본 원인 해결)
