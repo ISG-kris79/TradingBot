@@ -5,6 +5,22 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.60] - 2026-04-20
+
+### Refactored (Dapper → SP 전환 2단계)
+
+ - **SaveGeneralSettingsAsync**: 30컬럼 MERGE + 레거시 fallback → `sp_SaveGeneralSettings` 호출로 단순화
+   - SP 내부: `UPDATE WHERE Id=@UserId` → `@@ROWCOUNT=0`이면 `INSERT` 1회
+   - 정상 케이스(UserId row 존재)는 UPDATE 단 한 번만 실행 → MERGE 대비 훨씬 빠름
+   - C# 코드: Dapper `MERGE` 90줄 + `DynamicParameters` 35줄 + 레거시 fallback 18줄 → 익명 객체 35줄로 단순화
+   - 레거시 "구 스키마 호환(펌프 컬럼 없음)" fallback 제거 (v5.0+ 이후 불필요)
+ - **LoadGeneralSettingsAsync**: `SELECT *` 인라인 → `sp_LoadGeneralSettings` 호출 (Dapper 매핑 유지)
+ - **DbProcedures.cs 추가 SP**: `sp_LoadGeneralSettings`, `sp_SaveGeneralSettings` (총 5개 SP 자동 등록)
+
+### Notes
+
+ - 설정창 속도 개선: SP 호출로 쿼리 플랜 재사용 → 인라인 SQL 대비 응답 시간 단축
+
 ## [5.10.59] - 2026-04-20
 
 ### Hotfix (긴급)

@@ -25,6 +25,8 @@ namespace TradingBot
                 ("sp_SavePositionState",       sp_SavePositionState),
                 ("sp_GetOpenTimeAcrossTables", sp_GetOpenTimeAcrossTables),
                 ("sp_BulkPreloadOpenTime",     sp_BulkPreloadOpenTime),
+                ("sp_LoadGeneralSettings",     sp_LoadGeneralSettings),
+                ("sp_SaveGeneralSettings",     sp_SaveGeneralSettings),
             };
 
             await using var conn = new SqlConnection(connectionString);
@@ -149,6 +151,126 @@ BEGIN
     END
 
     EXEC sp_executesql @sql, N'@Interval NVARCHAR(8)', @Interval = @Interval;
+END";
+
+        // ════════════════════════════════════════════════════════════════════
+        // sp_LoadGeneralSettings — 단순 SELECT
+        // ════════════════════════════════════════════════════════════════════
+        private const string sp_LoadGeneralSettings = @"
+CREATE OR ALTER PROCEDURE dbo.sp_LoadGeneralSettings
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT * FROM dbo.GeneralSettings WHERE Id = @UserId;
+END";
+
+        // ════════════════════════════════════════════════════════════════════
+        // sp_SaveGeneralSettings — UPDATE 후 0행이면 INSERT (단일 UserId row)
+        // ════════════════════════════════════════════════════════════════════
+        private const string sp_SaveGeneralSettings = @"
+CREATE OR ALTER PROCEDURE dbo.sp_SaveGeneralSettings
+    @UserId                       INT,
+    @DefaultLeverage              INT,
+    @DefaultMargin                DECIMAL(18,8),
+    @TargetRoe                    DECIMAL(18,8),
+    @StopLossRoe                  DECIMAL(18,8),
+    @TrailingStartRoe             DECIMAL(18,8),
+    @TrailingDropRoe              DECIMAL(18,8),
+    @PumpTp1Roe                   DECIMAL(18,8),
+    @PumpTp2Roe                   DECIMAL(18,8),
+    @PumpTimeStopMinutes          DECIMAL(18,8),
+    @PumpStopDistanceWarnPct      DECIMAL(18,8),
+    @PumpStopDistanceBlockPct     DECIMAL(18,8),
+    @MajorTrendProfile            NVARCHAR(32),
+    @PumpBreakEvenRoe             DECIMAL(18,8),
+    @PumpTrailingStartRoe         DECIMAL(18,8),
+    @PumpTrailingGapRoe           DECIMAL(18,8),
+    @PumpStopLossRoe              DECIMAL(18,8),
+    @PumpMargin                   DECIMAL(18,8),
+    @PumpLeverage                 INT,
+    @PumpFirstTakeProfitRatioPct  DECIMAL(18,8),
+    @PumpStairStep1Roe            DECIMAL(18,8),
+    @PumpStairStep2Roe            DECIMAL(18,8),
+    @PumpStairStep3Roe            DECIMAL(18,8),
+    @MajorLeverage                INT,
+    @MajorMargin                  DECIMAL(18,8),
+    @MajorBreakEvenRoe            DECIMAL(18,8),
+    @MajorTp1Roe                  DECIMAL(18,8),
+    @MajorTp2Roe                  DECIMAL(18,8),
+    @MajorTrailingStartRoe        DECIMAL(18,8),
+    @MajorTrailingGapRoe          DECIMAL(18,8),
+    @MajorStopLossRoe             DECIMAL(18,8),
+    @EnableMajorTrading           BIT,
+    @MaxMajorSlots                INT,
+    @MaxPumpSlots                 INT,
+    @MaxDailyEntries              INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- 정상 경로: UserId row 이미 존재 → UPDATE
+    UPDATE dbo.GeneralSettings SET
+        DefaultLeverage             = @DefaultLeverage,
+        DefaultMargin               = @DefaultMargin,
+        TargetRoe                   = @TargetRoe,
+        StopLossRoe                 = @StopLossRoe,
+        TrailingStartRoe            = @TrailingStartRoe,
+        TrailingDropRoe             = @TrailingDropRoe,
+        PumpTp1Roe                  = @PumpTp1Roe,
+        PumpTp2Roe                  = @PumpTp2Roe,
+        PumpTimeStopMinutes         = @PumpTimeStopMinutes,
+        PumpStopDistanceWarnPct     = @PumpStopDistanceWarnPct,
+        PumpStopDistanceBlockPct    = @PumpStopDistanceBlockPct,
+        MajorTrendProfile           = @MajorTrendProfile,
+        PumpBreakEvenRoe            = @PumpBreakEvenRoe,
+        PumpTrailingStartRoe        = @PumpTrailingStartRoe,
+        PumpTrailingGapRoe          = @PumpTrailingGapRoe,
+        PumpStopLossRoe             = @PumpStopLossRoe,
+        PumpMargin                  = @PumpMargin,
+        PumpLeverage                = @PumpLeverage,
+        PumpFirstTakeProfitRatioPct = @PumpFirstTakeProfitRatioPct,
+        PumpStairStep1Roe           = @PumpStairStep1Roe,
+        PumpStairStep2Roe           = @PumpStairStep2Roe,
+        PumpStairStep3Roe           = @PumpStairStep3Roe,
+        MajorLeverage               = @MajorLeverage,
+        MajorMargin                 = @MajorMargin,
+        MajorBreakEvenRoe           = @MajorBreakEvenRoe,
+        MajorTp1Roe                 = @MajorTp1Roe,
+        MajorTp2Roe                 = @MajorTp2Roe,
+        MajorTrailingStartRoe       = @MajorTrailingStartRoe,
+        MajorTrailingGapRoe         = @MajorTrailingGapRoe,
+        MajorStopLossRoe            = @MajorStopLossRoe,
+        EnableMajorTrading          = @EnableMajorTrading,
+        MaxMajorSlots               = @MaxMajorSlots,
+        MaxPumpSlots                = @MaxPumpSlots,
+        MaxDailyEntries             = @MaxDailyEntries,
+        UpdatedAt                   = GETUTCDATE()
+    WHERE Id = @UserId;
+
+    -- 첫 호출(없을 때)만 INSERT 1회
+    IF @@ROWCOUNT = 0
+    BEGIN
+        INSERT INTO dbo.GeneralSettings (
+            Id, DefaultLeverage, DefaultMargin, TargetRoe, StopLossRoe, TrailingStartRoe, TrailingDropRoe,
+            PumpTp1Roe, PumpTp2Roe, PumpTimeStopMinutes, PumpStopDistanceWarnPct, PumpStopDistanceBlockPct, MajorTrendProfile,
+            PumpBreakEvenRoe, PumpTrailingStartRoe, PumpTrailingGapRoe,
+            PumpStopLossRoe, PumpMargin, PumpLeverage,
+            PumpFirstTakeProfitRatioPct, PumpStairStep1Roe, PumpStairStep2Roe, PumpStairStep3Roe,
+            MajorLeverage, MajorMargin, MajorBreakEvenRoe, MajorTp1Roe, MajorTp2Roe,
+            MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe,
+            EnableMajorTrading, MaxMajorSlots, MaxPumpSlots, MaxDailyEntries, UpdatedAt
+        ) VALUES (
+            @UserId, @DefaultLeverage, @DefaultMargin, @TargetRoe, @StopLossRoe, @TrailingStartRoe, @TrailingDropRoe,
+            @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile,
+            @PumpBreakEvenRoe, @PumpTrailingStartRoe, @PumpTrailingGapRoe,
+            @PumpStopLossRoe, @PumpMargin, @PumpLeverage,
+            @PumpFirstTakeProfitRatioPct, @PumpStairStep1Roe, @PumpStairStep2Roe, @PumpStairStep3Roe,
+            @MajorLeverage, @MajorMargin, @MajorBreakEvenRoe, @MajorTp1Roe, @MajorTp2Roe,
+            @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe,
+            @EnableMajorTrading, @MaxMajorSlots, @MaxPumpSlots, @MaxDailyEntries, GETUTCDATE()
+        );
+    END
 END";
     }
 }
