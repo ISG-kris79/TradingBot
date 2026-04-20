@@ -78,8 +78,10 @@ namespace TradingBot.Models
         public int MaxMajorSlots { get; set; } = 4;
         /// <summary>PUMP 최대 동시 포지션 수 (기본 3)</summary>
         public int MaxPumpSlots { get; set; } = 3;
-        /// <summary>하루 최대 PUMP 진입 횟수 (기본 60, 자정 KST 리셋)</summary>
-        public int MaxDailyEntries { get; set; } = 60;
+        /// <summary>하루 최대 PUMP 진입 횟수 (v5.10.68 EMERGENCY_REDUCE: 60 → 30, 자정 KST 리셋)</summary>
+        /// 7일 누적 -$2,666 손실 발견. After v5.10.66 라벨 N=0 (라벨링 파이프라인 장애 의심).
+        /// AI 정상화 전까지 과매매 방지 목적으로 진입 상한 축소. 정상화 후 60으로 복원.
+        public int MaxDailyEntries { get; set; } = 30;
 
         // ─── [Sniper Mode] 스나이퍼 모드 설정 (v2.5) ────────────────────────────
         // 종목당 일일 1~2회 진입으로 정조준하는 모드
