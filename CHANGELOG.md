@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.61] - 2026-04-20
+
+### Hotfix (설정창 1분 지연 근본 수정)
+
+ - **근본 원인**: `btnSettings_Click`이 매번 `new DbManager(...)` 생성 → 생성자 안의 5개 스키마 `Ensure*` 메서드(`EnsureCategoryColumnAsync`, `EnsureCandleDataIndexAsync`, `EnsureOpenTimeIndexesAsync`, `EnsureTradeHistoryUserIndexAsync`, `DbProcedures.EnsureAllAsync`) 반복 실행 → `CREATE OR ALTER PROCEDURE` / `ALTER TABLE` 등 DDL이 schema lock을 걸어 설정 SELECT 쿼리가 최대 60초 대기 (lock timeout)
+ - **수정 1** `DbManager.cs`: 생성자의 Ensure 메서드들을 `Interlocked.Exchange` 기반 static flag `_schemaInitStarted`로 **앱당 1회만 실행**. `new DbManager()`를 여러 번 호출해도 2번째부터는 Ensure 스킵
+ - **수정 2** `MainWindow.xaml.cs`: `_sharedDbManager` static 필드 추가 → 설정 버튼 클릭 시 새 `DbManager` 생성 대신 **재사용**. 응답 시간 로깅 추가 (`[Settings] ✅ DB 선조회 완료 (Xms)`)
+ - **효과**: 설정 버튼 클릭 → SELECT 1회만 실행 → **수 ms 이내 창 표시**. 이전 60초 지연 제거
+
 ## [5.10.60] - 2026-04-20
 
 ### Refactored (Dapper → SP 전환 2단계)

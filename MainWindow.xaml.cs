@@ -372,20 +372,27 @@ namespace TradingBot
             }
         }
 
+        // [v5.10.61] DbManager 공유 인스턴스 — 설정창 버튼 클릭마다 new 하지 않고 재사용
+        // 이전: 매번 new DbManager → 생성자의 Ensure 메서드들이 반복 실행되며 DDL schema lock으로 1분 지연
+        private static DbManager? _sharedDbManager;
+
         private async void btnSettings_Click(object sender, RoutedEventArgs e)
         {
-            // [v5.10.57] 설정창 열기 전에 DB 최신값을 먼저 조회해서 캐시 갱신 → 창 뜰 때 이미 최신값 표시
-            // 기존: SettingsWindow 생성자/Loaded 이벤트에서 비동기 DB 조회 → UI 표시 후 일부 컬럼만 뒤늦게 갱신되는 race
+            // 설정 버튼 클릭 시 DB 최신값 선조회 → 창 뜰 때 이미 최신값 표시
             try
             {
                 if (!string.IsNullOrEmpty(AppConfig.ConnectionString) && AppConfig.CurrentUser != null)
                 {
-                    var dbManager = new DbManager(AppConfig.ConnectionString);
-                    var dbSettings = await dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id);
+                    // 앱당 1회만 생성 (생성자의 Ensure* 스키마 DDL은 내부에서 static flag로 1회만 실행됨)
+                    _sharedDbManager ??= new DbManager(AppConfig.ConnectionString);
+
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    var dbSettings = await _sharedDbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id);
+                    sw.Stop();
                     if (dbSettings != null)
                     {
                         ApplyGeneralSettings(dbSettings);
-                        AddLog($"[Settings] ✅ DB 선조회 완료 → 설정창 표시 | EnableMajor={dbSettings.EnableMajorTrading} MaxMajor={dbSettings.MaxMajorSlots} MaxPump={dbSettings.MaxPumpSlots}");
+                        AddLog($"[Settings] ✅ DB 선조회 완료 ({sw.ElapsedMilliseconds}ms) | EnableMajor={dbSettings.EnableMajorTrading} MaxMajor={dbSettings.MaxMajorSlots} MaxPump={dbSettings.MaxPumpSlots}");
                     }
                 }
             }

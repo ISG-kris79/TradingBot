@@ -29,14 +29,22 @@ namespace TradingBot.Services
             public DateTime EntryTime { get; set; }
         }
 
+        // [v5.10.61] 생성자의 Ensure 메서드들은 앱당 1회만 실행 — DbManager를 여러 번 new 해도 반복 X
+        private static int _schemaInitStarted = 0;
+
         public DbManager(string connectionString)
         {
             _connectionString = connectionString;
-            _ = EnsureCategoryColumnAsync();
-            _ = EnsureCandleDataIndexAsync();
-            _ = EnsureOpenTimeIndexesAsync();
-            _ = EnsureTradeHistoryUserIndexAsync(); // [v5.10.46] UserId+IsClosed 복합 인덱스
-            _ = TradingBot.DbProcedures.EnsureAllAsync(connectionString); // [v5.10.58] Stored Procedure 자동 등록
+
+            // 스키마/인덱스/SP 자동 생성은 앱당 1회만 (DDL schema lock으로 인한 설정창 지연 방지)
+            if (Interlocked.Exchange(ref _schemaInitStarted, 1) == 0)
+            {
+                _ = EnsureCategoryColumnAsync();
+                _ = EnsureCandleDataIndexAsync();
+                _ = EnsureOpenTimeIndexesAsync();
+                _ = EnsureTradeHistoryUserIndexAsync();
+                _ = TradingBot.DbProcedures.EnsureAllAsync(connectionString);
+            }
         }
 
         /// <summary>[v5.2.0] CandleData 학습 쿼리 성능 인덱스</summary>
