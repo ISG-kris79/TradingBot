@@ -5,7 +5,28 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
-## [5.10.65] - 2026-04-20
+## [5.10.66] - 2026-04-20
+
+### Hotfix Phase 1 — AI 학습 죽음의 순환 차단
+
+7일 매매 분석 결과(-$4,025 손실, AiScore≥0.80 승률 13%, 라벨링 6% 성공률) AI 학습-라벨링 폐쇄 루프 붕괴 확인. 즉시 차단 + 학습 정상화 작업.
+
+**A. 라벨 기준 완화** (`AIDoubleCheckEntryGate.AddLabeledSampleToOnlineLearningAsync:978`)
+- 이전: `actualProfitPct >= 2.0f` → 414건 중 26건만 성공(6%) → 모델이 "절대 진입 X" 비관 학습
+- 변경: `actualProfitPct >= 1.0f` → 예상 성공률 ~30%, 클래스 불균형 완화로 학습 다양성 확보
+
+**B. 메이저 진입 임시 차단** (`DoubleCheckConfig.BlockMajorEntries`)
+- 이전: 메이저 365건 통과, 승률 38%, AvgPnL **-$8.59/건**, Total **-$3,133**
+- 변경: `BlockMajorEntries=true` 신규 토글 → BTC/ETH/SOL/XRP 진입 시 즉시 차단 (`Major_Temporarily_Blocked_v5_10_66`)
+- AI 학습 정상화 후 `BlockMajorEntries=false`로 복원 예정
+
+**C. 온라인 학습 진단 + DB 기록 활성화**
+- `AdaptiveOnlineLearningService.AddLabeledSampleAsync`: 50건마다 트리거 차단 사유 진단 로그 (min 미도달 / step 미일치)
+- `PeriodicRetrainingCallback`: 매번 호출 시 진입/스킵 사유 명시 (window/elapsed/min 상태)
+- 신규 `OnRetrainCompleted` 이벤트 → AIDoubleCheckEntryGate 구독 → `AiTrainingRuns` 테이블에 `Stage="Online_Retrain"` 기록 (이전엔 INIT_ML 7회만 보여 진단 불가)
+- 진단 목적: 사용자 7일간 INIT_ML만 보였던 원인 추적 (데이터 부족? 타이머 미작동? 트리거 조건 미충족?)
+
+
 
 ### Added — Lorentzian Phase 1 (KNN 사이드카 진입 검증)
 

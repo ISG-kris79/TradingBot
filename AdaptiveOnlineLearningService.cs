@@ -49,6 +49,10 @@ namespace TradingBot
         // 이벤트
         public event Action<string>? OnLog;
         public event Action<string, double, float, float>? OnPerformanceUpdate; // stage, accuracy, mlThresh, tfThresh
+
+        // [v5.10.66] 재학습 완료 이벤트 (외부에서 DB 기록용 — AiTrainingRuns에 Stage="Online_Retrain" 등록)
+        // (reason, sampleCount, accuracy, f1, success)
+        public event Action<string, int, double, double, bool>? OnRetrainCompleted;
         
         public double CurrentAccuracy => _currentAccuracy;
         public float CurrentMLThreshold => _currentMLThreshold;
@@ -105,11 +109,24 @@ namespace TradingBot
             }
 
             // 트리거 조건 1: 일정 샘플 수 도달
-            if (_slidingWindow.Count >= _minTrainingSamples &&
-                _slidingWindow.Count % _config.TriggerEveryNSamples == 0)
+            // [v5.10.66 진단] 트리거 조건 평가 결과 명시 (사용자가 INIT_ML만 보이는 이유 추적)
+            int wnd = _slidingWindow.Count;
+            int nextTriggerAt = ((wnd / _config.TriggerEveryNSamples) + 1) * _config.TriggerEveryNSamples;
+            bool reachedMin = wnd >= _minTrainingSamples;
+            bool atTriggerStep = wnd % _config.TriggerEveryNSamples == 0;
+
+            if (reachedMin && atTriggerStep)
             {
-                OnLog?.Invoke($"[OnlineLearning] 트리거: {_slidingWindow.Count}건 도달 → 재학습 시작");
+                OnLog?.Invoke($"🚀 [OnlineLearning] 트리거 발화: window={wnd}, min={_minTrainingSamples}, step={_config.TriggerEveryNSamples} → RetrainModelsAsync 호출");
                 await RetrainModelsAsync("샘플 수 도달");
+            }
+            else if (wnd > 0 && wnd % 50 == 0)
+            {
+                // 50건마다 상태 진단 로그 (트리거 안 되는 이유 추적)
+                string blockReason = !reachedMin
+                    ? $"min 미도달({wnd}<{_minTrainingSamples}), 다음={_minTrainingSamples}건"
+                    : $"step 미일치(다음 트리거={nextTriggerAt}건)";
+                OnLog?.Invoke($"📊 [OnlineLearning][진단] window={wnd}, 트리거 차단 사유: {blockReason}");
             }
         }
 
@@ -118,17 +135,29 @@ namespace TradingBot
         /// </summary>
         private async Task PeriodicRetrainingCallback()
         {
+            // [v5.10.66 진단] 타이머 호출 자체가 일어나는지 매번 기록 (사용자 7일 INIT_ML만 본 원인 추적)
+            int wnd = _slidingWindow.Count;
+            var elapsed = DateTime.UtcNow - _lastTrainingTime;
+
             if (_isTraining)
             {
-                OnLog?.Invoke("[OnlineLearning] 학습 중복 방지: 기존 학습 진행 중");
+                OnLog?.Invoke($"⏸️ [OnlineLearning] 주기 콜백 스킵: 학습 중 (window={wnd})");
                 return;
             }
 
-            var elapsed = DateTime.UtcNow - _lastTrainingTime;
             if (elapsed < _retrainingInterval)
+            {
+                OnLog?.Invoke($"⏸️ [OnlineLearning] 주기 콜백 스킵: {elapsed.TotalMinutes:F0}분/{_retrainingInterval.TotalMinutes:F0}분 (window={wnd})");
                 return;
+            }
 
-            OnLog?.Invoke($"[OnlineLearning] 주기적 재학습 트리거: {elapsed.TotalHours:F1}시간 경과");
+            if (wnd < _minTrainingSamples)
+            {
+                OnLog?.Invoke($"⏸️ [OnlineLearning] 주기 콜백 스킵: 데이터 부족 (window={wnd}/{_minTrainingSamples})");
+                return;
+            }
+
+            OnLog?.Invoke($"🚀 [OnlineLearning] 주기적 재학습 트리거: {elapsed.TotalHours:F1}시간 경과, window={wnd}");
             await RetrainModelsAsync("주기적 재학습");
         }
 
@@ -151,10 +180,11 @@ namespace TradingBot
 
             _isTraining = true;
             _lastTrainingTime = DateTime.UtcNow;
+            int trainSamples = _slidingWindow.Count;
 
             try
             {
-                OnLog?.Invoke($"🔄 [OnlineLearning] 재학습 시작: {reason} | 샘플 수={_slidingWindow.Count}");
+                OnLog?.Invoke($"🔄 [OnlineLearning] 재학습 시작: {reason} | 샘플 수={trainSamples}");
 
                 // 슬라이딩 윈도우 복사 (학습 중 데이터 변경 방지)
                 var trainingData = _slidingWindow.ToList();
@@ -171,10 +201,14 @@ namespace TradingBot
                 AdjustThresholds(mlMetrics.Accuracy, mlMetrics.Accuracy);
 
                 OnPerformanceUpdate?.Invoke(reason, _currentAccuracy, _currentMLThreshold, _currentTFThreshold);
+
+                // [v5.10.66] DB 기록 이벤트 (AiTrainingRuns에 Online_Retrain 기록)
+                OnRetrainCompleted?.Invoke(reason, trainSamples, mlMetrics.Accuracy, mlMetrics.F1Score, true);
             }
             catch (Exception ex)
             {
                 OnLog?.Invoke($"❌ [OnlineLearning] 재학습 실패: {ex.Message}");
+                OnRetrainCompleted?.Invoke(reason, trainSamples, 0, 0, false);
             }
             finally
             {

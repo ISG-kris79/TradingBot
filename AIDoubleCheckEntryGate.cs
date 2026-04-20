@@ -122,6 +122,26 @@ namespace TradingBot
                     OnAlert?.Invoke($"🧠 온라인 학습: {reason} | 정확도={acc:P1}, ML={mlThresh:P0}, TF={tfThresh:P0}");
                 };
 
+                // [v5.10.66] 온라인 재학습 결과를 AiTrainingRuns 테이블에도 기록 (이전엔 INIT_ML만 기록되어 진단 불가)
+                _onlineLearning.OnRetrainCompleted += (reason, sampleCount, accuracy, f1, success) =>
+                {
+                    if (_dbManager == null) return;
+                    string runId = $"ONLINE_ML_{DateTime.UtcNow:yyyyMMddHHmmssfff}";
+                    _ = _dbManager.UpsertAiTrainingRunAsync(
+                        projectName: "ML.NET",
+                        runId: runId,
+                        stage: "Online_Retrain",
+                        success: success,
+                        sampleCount: sampleCount,
+                        epochs: 0,
+                        accuracy: accuracy,
+                        f1Score: f1,
+                        auc: 0,
+                        bestValidationLoss: 0f,
+                        finalTrainLoss: 0f,
+                        detail: $"reason={reason}");
+                };
+
                 // 초기 윈도우 로드 (비동기 실행)
                 _ = Task.Run(async () =>
                 {
@@ -166,6 +186,14 @@ namespace TradingBot
         {
             if (!IsReady)
                 return (false, "AI_Models_Not_Ready", new AIEntryDetail());
+
+            // [v5.10.66 HOTFIX] 메이저 진입 임시 차단 — AI 학습 정상화 시까지
+            // 7일 분석 결과 메이저 -$8.59/건, 승률 38%, Total -$3,133
+            if (_config.BlockMajorEntries && IsMajorSymbol(symbol))
+            {
+                OnLog?.Invoke($"⏸️ [{symbol}] [MAJOR_BLOCKED_v5_10_66] 메이저 진입 임시 차단 (AI 학습 정상화 시까지, BlockMajorEntries=false 복원 시 활성화)");
+                return (false, "Major_Temporarily_Blocked_v5_10_66", new AIEntryDetail());
+            }
 
             try
             {
@@ -974,8 +1002,10 @@ namespace TradingBot
                 if (feature == null)
                     return;
 
-                // 라벨 설정 (목표 +2%, 손절 -1% 기준)
-                bool shouldEnter = actualProfitPct >= 2.0f;
+                // [v5.10.66] 라벨 기준 완화: +2.0% → +1.0% (성공률 6%→~30% 예상, 클래스 불균형 완화)
+                // 7일 분석: mark_to_market_15m 414건 중 26건만 성공(+2%) → 모델이 "절대 진입 X" 학습
+                // 새 기준: +1.0% 이상 = 성공 라벨 (추세 진입 신호 모델이 학습 가능)
+                bool shouldEnter = actualProfitPct >= 1.0f;
                 feature.ShouldEnter = shouldEnter;
                 feature.ActualProfitPct = actualProfitPct;
                 feature.Timestamp = entryTime;
@@ -2009,6 +2039,13 @@ namespace TradingBot
         public double FibonacciSupportBonusScore { get; set; } = 20.0;
         public float ReversalBodyRatioThreshold { get; set; } = 0.35f;
         public float DeadCatBodyBreakRatio { get; set; } = 0.55f;
+
+        // ═══════════════════════════════════════════════════════════════
+        // [v5.10.66] 메이저 진입 임시 차단 (AI 학습 정상화 후 false 복원 예정)
+        // 7일 분석: MAJOR 365건, 승률 38%, AvgPnL -$8.59/건, Total -$3,133
+        // 라벨링 6% 성공률 → ML 모델 비관적 학습 → 차단 못한 메이저는 큰 손실
+        // ═══════════════════════════════════════════════════════════════
+        public bool BlockMajorEntries { get; set; } = true;
 
         // ═══════════════════════════════════════════════════════════════
         // [Lorentzian Phase 1] KNN 사이드카 게이트 설정 (soft mode)
