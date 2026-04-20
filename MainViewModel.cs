@@ -2019,15 +2019,6 @@ namespace TradingBot.ViewModels
             MonthlyGoalXrpBonusBrush = Brushes.Gold;
         }
 
-        /* TensorFlow 전환 중 임시 비활성화
-        /// <summary>
-        /// [WaveAI] 엘리엇 파동 이중 검증 엔진 설정
-        /// </summary>
-        public void SetWaveEngine(DoubleCheckEntryEngine? waveEngine)
-        {
-            _engine?.SetWaveEngine(waveEngine);
-        }
-        */
 
         private void ApplyTheme()
         {

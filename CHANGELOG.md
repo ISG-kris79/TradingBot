@@ -5,6 +5,51 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.65] - 2026-04-20
+
+### Added — Lorentzian Phase 1 (KNN 사이드카 진입 검증)
+
+- **신규 `Services/LorentzianClassifier.cs`** — TradingView Lorentzian Classification 컨셉 차용
+  - Lorentzian 거리 `d(x,y) = Σ ln(1+|xᵢ-yᵢ|)` — 이상치/꼬리분포에 강건 (Euclidean 제곱 민감도 회피)
+  - K=10 KNN, Z-score 정규화, 최대 5000 샘플 FIFO 캐시
+  - 17차원 feature: M15(RSI/BBPos/ADX/ATR/StochRSI/Volume), H1(RSI/BBPos/Momentum), H4(RSI/BBPos/Trend), D1(Trend/RSI), DirectionBias, M15(PriceVsSMA20/EMA_Cross)
+- **`AIDoubleCheckEntryGate` 통합** — `EvaluateEntryAsync` 7.5단계에 사이드카 추가
+  - **Soft mode**: 진입 차단 안 함, 경고/동의 로그만 출력 (`[LORENTZIAN_OK]` / `[LORENTZIAN_WARN]` / `[LORENTZIAN_WARMUP]`)
+  - 청산 라벨링 시(`AddLabeledSampleToOnlineLearningAsync`) Lorentzian 샘플 자동 누적
+  - 영구화: `TrainingData/Lorentzian/lorentzian_YYYYMM.jsonl` (재부팅 시 자동 재로드)
+  - `DoubleCheckConfig`에 6개 설정 (`EnableLorentzianGate`, `LorentzianK=10`, `LorentzianMinSamples=100`, `MinLorentzianScore=2`, `MinLorentzianPassRate=0.55f` 등)
+  - `AIEntryDetail`에 4개 필드 (`LorentzianScore`, `LorentzianPassRate`, `LorentzianSampleCount`, `LorentzianReady`)
+
+### Refactored — MERGE 제거 + 인라인 SQL → SP 전환
+
+- **`sp_SavePositionState`**: MERGE → UPDATE → IF @@ROWCOUNT=0 INSERT (lock 경합 완화)
+- **`sp_UpsertAiTrainingRun`**: MERGE → UPDATE → IF @@ROWCOUNT=0 INSERT
+- **`SavePositionStateAsync`** (DbManager.cs): v5.10.59 인라인 MERGE 롤백 → `sp_SavePositionState` 호출 복원
+- **`EnsureCandleDataIndexAsync`** OBJECT_ID 체크 누락 버그 수정 (테이블 없을 때 매번 오류 삼킴)
+- **`GetAllCandleDataForTrainingAsync`** 서브쿼리 이중 스캔 제거 → CTE + INNER JOIN 단일 스캔
+
+### Removed — 미사용 코드 정리 (~7000줄 감축)
+
+- **삭제 파일 10개** (모두 0 외부 참조 확인 후 삭제):
+  - `DualAI_IntegrationGuide.cs` (가이드 문서)
+  - `FeatureImportanceAnalyzer.cs` (미사용 static 분석기)
+  - `StubWindows.cs` (공백 파일)
+  - `NewsSentimentService.cs` (Random mock 구현)
+  - `DexService.cs`, `OnChainAnalysisService.cs` (Phase 8 DeFi — 완전 스텁)
+  - `Services/WalkForwardOptimizer.cs`
+  - `HistoricalDataLabeler.cs`
+  - `Services/AdvancedAnalyticsService.cs`
+  - `ReinforcementLearningFramework.cs`
+  - `Services/SqueezeLabeller.cs`
+- **TradingEngine.cs 정리**:
+  - Phase 8 DeFi 필드 + Whale Alert 초기화 블록 제거
+  - TensorFlow.NET 임시 비활성화 주석 블록 5개 제거
+  - GATE 재설계 보관 주석 블록 1개 제거
+  - `_notificationService` 인스턴스 필드 (Whale Alert 제거 후 고아) 제거
+  - `using TradingBot.Services.DeFi;` 제거
+- **MainViewModel.cs**: TensorFlow 전환 주석 블록 1개 제거
+- **DbManager.cs**: 호출 없는 `EnsureOrderErrorTableAsync()` 메서드 + 읽히지 않는 `_orderErrorTableChecked` 필드 제거
+
 ## [5.10.64] - 2026-04-20
 
 ### Hotfix — 총자산/가용자산 UI 미표시 근본 수정

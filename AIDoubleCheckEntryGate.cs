@@ -38,6 +38,10 @@ namespace TradingBot
         // 온라인 학습 서비스
         private readonly AdaptiveOnlineLearningService? _onlineLearning;
         private readonly DbManager? _dbManager;
+
+        // [Lorentzian Phase 1] KNN 사이드카 게이트 — 진입 신호 추가 검증 (soft mode)
+        private readonly Services.LorentzianClassifier _lorentzian;
+        private readonly string _lorentzianDataPath = "TrainingData/Lorentzian";
         
         // 설정
         private readonly DoubleCheckConfig _config;
@@ -75,6 +79,26 @@ namespace TradingBot
 
             // 데이터 수집 폴더 생성
             Directory.CreateDirectory(_dataCollectionPath);
+            Directory.CreateDirectory(_lorentzianDataPath);
+
+            // [Lorentzian Phase 1] KNN 분류기 초기화 + 과거 샘플 로드 (백그라운드)
+            _lorentzian = new Services.LorentzianClassifier(
+                k: _config.LorentzianK,
+                maxSamples: _config.LorentzianMaxSamples,
+                minSamplesForPrediction: _config.LorentzianMinSamples);
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _lorentzian.LoadSamplesFromFolderAsync(_lorentzianDataPath);
+                    OnLog?.Invoke($"[Lorentzian] 초기 샘플 로드 완료: {_lorentzian.SampleCount}건 (K={_lorentzian.K}, ready={_lorentzian.IsReady})");
+                }
+                catch (Exception ex)
+                {
+                    OnLog?.Invoke($"⚠️ [Lorentzian] 샘플 로드 실패: {ex.Message}");
+                }
+            });
 
             // 온라인 학습 서비스 초기화
             if (enableOnlineLearning)
@@ -324,6 +348,29 @@ namespace TradingBot
 
                     detail.ElliottValid = waveState.IsValid;
                     detail.FibInEntryZone = fibLevels.InEntryZone;
+                }
+
+                // 7.5 [Lorentzian Phase 1] KNN 사이드카 검증 — soft mode (경고만, 차단 없음)
+                if (_config.EnableLorentzianGate)
+                {
+                    var lor = _lorentzian.Predict(feature!);
+                    detail.LorentzianReady = lor.IsReady;
+                    detail.LorentzianScore = lor.Score;
+                    detail.LorentzianPassRate = lor.PassRate;
+                    detail.LorentzianSampleCount = lor.SampleCount;
+
+                    if (!lor.IsReady)
+                    {
+                        OnLog?.Invoke($"ℹ️ [{symbol}] [LORENTZIAN_WARMUP] 샘플 부족 ({lor.SampleCount}/{_config.LorentzianMinSamples})");
+                    }
+                    else if (lor.Score < _config.MinLorentzianScore || lor.PassRate < _config.MinLorentzianPassRate)
+                    {
+                        OnLog?.Invoke($"⚠️ [{symbol}] [LORENTZIAN_WARN] KNN 약세: score={lor.Score} (need ≥{_config.MinLorentzianScore}), pass={lor.PassRate:P0} (need ≥{_config.MinLorentzianPassRate:P0}) — soft mode, 진입 계속");
+                    }
+                    else
+                    {
+                        OnLog?.Invoke($"✅ [{symbol}] [LORENTZIAN_OK] KNN 동의: score={lor.Score}/{lor.K}, pass={lor.PassRate:P0} (samples={lor.SampleCount})");
+                    }
                 }
 
                 // 8. 최종 승인 (ML 또는 TF + Fib 보너스 + 리스크 필터 + 규칙 필터)
@@ -939,6 +986,20 @@ namespace TradingBot
                 {
                     await _onlineLearning.AddLabeledSampleAsync(feature);
                     OnLog?.Invoke($"[OnlineLearning] 샘플 추가: {symbol} PnL={actualProfitPct:F2}% → Label={shouldEnter} | 윈도우={_onlineLearning.WindowSize}");
+                }
+
+                // [Lorentzian Phase 1] KNN 분류기에도 동일 샘플 추가 (메모리 + 파일 영구화)
+                if (_config.EnableLorentzianGate)
+                {
+                    _lorentzian.AddSample(feature, shouldEnter, symbol);
+                    var lorSample = new Services.LorentzianSample
+                    {
+                        Features = Services.LorentzianFeatureMapperPublic.Extract(feature),
+                        WasSuccessful = shouldEnter,
+                        Symbol = symbol,
+                        TimestampUtc = entryTime.Kind == DateTimeKind.Utc ? entryTime : entryTime.ToUniversalTime()
+                    };
+                    _ = _lorentzian.AppendSampleToFileAsync(_lorentzianDataPath, lorSample);
                 }
 
                 // 외부(DB) 적재용 이벤트 발행
@@ -1949,6 +2010,17 @@ namespace TradingBot
         public float ReversalBodyRatioThreshold { get; set; } = 0.35f;
         public float DeadCatBodyBreakRatio { get; set; } = 0.55f;
 
+        // ═══════════════════════════════════════════════════════════════
+        // [Lorentzian Phase 1] KNN 사이드카 게이트 설정 (soft mode)
+        // Phase 1: 경고만 출력, 진입 차단은 안 함. Phase 2부터 차단 활성화 예정.
+        // ═══════════════════════════════════════════════════════════════
+        public bool EnableLorentzianGate { get; set; } = true;
+        public int LorentzianK { get; set; } = 10;
+        public int LorentzianMinSamples { get; set; } = 100;
+        public int LorentzianMaxSamples { get; set; } = 5000;
+        public int MinLorentzianScore { get; set; } = 2;        // -K~+K 범위 (K=10이면 ±10)
+        public float MinLorentzianPassRate { get; set; } = 0.55f; // 60% 이상 양성 투표
+
         public int EntryForecastSteps { get; set; } = 8; // 다음 2시간(15분 x 8)
         public int EntryForecastWatchSteps { get; set; } = 16; // 관망 시 4시간(15분 x 16)
         public float EntryForecastImmediateThreshold { get; set; } = 0.62f;
@@ -2016,6 +2088,12 @@ namespace TradingBot
         public double Fib786 { get; set; }
         public bool FibReversalConfirmed { get; set; }
         public bool FibDeadCatBlocked { get; set; }
+
+        // [Lorentzian Phase 1] KNN 사이드카 검증 결과
+        public bool LorentzianReady { get; set; }
+        public int LorentzianScore { get; set; }       // -K ~ +K (K=10이면 ±10)
+        public float LorentzianPassRate { get; set; }  // 0~1
+        public int LorentzianSampleCount { get; set; }
     }
 
     /// <summary>
