@@ -14717,20 +14717,28 @@ namespace TradingBot
             {
                 try
                 {
-                    // 거래소 openOrders 조회
+                    // [v5.10.63] Binance 2025-12 이관: 조건부 주문은 /fapi/v1/algoOrder 로 이동
+                    // 일반 openOrders는 LIMIT/MARKET 만 있고 SL/TP/Trailing은 algoOrders에 있음 → 둘 다 조회
+                    int totalProtection = 0;
+
                     var openOrders = await _client.UsdFuturesApi.Trading.GetOpenOrdersAsync(pos.Symbol, ct: token);
-                    if (!openOrders.Success || openOrders.Data == null) continue;
+                    if (openOrders.Success && openOrders.Data != null)
+                    {
+                        totalProtection += openOrders.Data.Count(o =>
+                            o.Type == Binance.Net.Enums.FuturesOrderType.StopMarket ||
+                            o.Type == Binance.Net.Enums.FuturesOrderType.Stop ||
+                            o.Type == Binance.Net.Enums.FuturesOrderType.TakeProfitMarket ||
+                            o.Type == Binance.Net.Enums.FuturesOrderType.TakeProfit ||
+                            o.Type == Binance.Net.Enums.FuturesOrderType.TrailingStopMarket);
+                    }
 
-                    int slCount = openOrders.Data.Count(o =>
-                        o.Type == Binance.Net.Enums.FuturesOrderType.StopMarket ||
-                        o.Type == Binance.Net.Enums.FuturesOrderType.Stop);
-                    int tpCount = openOrders.Data.Count(o =>
-                        o.Type == Binance.Net.Enums.FuturesOrderType.TakeProfitMarket ||
-                        o.Type == Binance.Net.Enums.FuturesOrderType.TakeProfit);
-                    int trCount = openOrders.Data.Count(o =>
-                        o.Type == Binance.Net.Enums.FuturesOrderType.TrailingStopMarket);
+                    // Algo 주문 (Binance 신규 엔드포인트) 조회
+                    if (_exchangeService is BinanceExchangeService bx)
+                    {
+                        totalProtection += await bx.GetOpenAlgoOrderCountAsync(pos.Symbol, token);
+                    }
 
-                    if (slCount > 0 || tpCount > 0 || trCount > 0) continue; // 이미 보호됨 → 스킵
+                    if (totalProtection > 0) continue; // 이미 보호됨 → 스킵
 
                     // SL/TP/Trailing 모두 0 → 긴급 등록
                     OnStatusLog?.Invoke($"⚠️ [보호점검] {pos.Symbol} 보호 주문 0건 감지 → SL/TP/Trailing 자동 등록 시도");

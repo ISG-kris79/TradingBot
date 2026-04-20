@@ -7,6 +7,10 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using TradingBot.Models;
@@ -36,9 +40,17 @@ namespace TradingBot.Services
 
         public bool IsTestnet { get; }
 
+        // [v5.10.63] 직접 HttpClient — Binance.Net v12.8.1이 최신 /fapi/v1/algoOrder 미지원
+        private readonly string _apiKey;
+        private readonly string _apiSecret;
+        private readonly HttpClient _http = new HttpClient();
+        private string FuturesBase => IsTestnet ? "https://testnet.binancefuture.com" : "https://fapi.binance.com";
+
         public BinanceExchangeService(string apiKey, string apiSecret, bool useTestnet = false)
         {
             IsTestnet = useTestnet;
+            _apiKey = apiKey ?? string.Empty;
+            _apiSecret = apiSecret ?? string.Empty;
             _client = new BinanceRestClient(options =>
             {
                 if (!string.IsNullOrWhiteSpace(apiKey) && !string.IsNullOrWhiteSpace(apiSecret))
@@ -51,6 +63,55 @@ namespace TradingBot.Services
                     options.Environment = BinanceEnvironment.Testnet;
                 }
             });
+        }
+
+        /// <summary>[v5.10.63] HMAC-SHA256 서명 (Algo API 용)</summary>
+        private string SignQuery(string query)
+        {
+            if (string.IsNullOrEmpty(_apiSecret)) return string.Empty;
+            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(_apiSecret));
+            byte[] hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(query));
+            var sb = new StringBuilder(hash.Length * 2);
+            foreach (byte b in hash) sb.Append(b.ToString("x2"));
+            return sb.ToString();
+        }
+
+        /// <summary>[v5.10.63] Algo API POST — 성공 시 body 반환, 실패 시 null + OnLog</summary>
+        private async Task<(bool ok, string body)> CallAlgoApiAsync(HttpMethod method, string endpoint, string queryParams, CancellationToken ct)
+        {
+            long ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            string qs = string.IsNullOrEmpty(queryParams) ? $"timestamp={ts}" : $"{queryParams}&timestamp={ts}";
+            string sig = SignQuery(qs);
+            string fullQs = $"{qs}&signature={sig}";
+
+            HttpRequestMessage req;
+            if (method == HttpMethod.Post)
+            {
+                req = new HttpRequestMessage(method, $"{FuturesBase}{endpoint}");
+                req.Content = new StringContent(fullQs, Encoding.UTF8, "application/x-www-form-urlencoded");
+            }
+            else
+            {
+                req = new HttpRequestMessage(method, $"{FuturesBase}{endpoint}?{fullQs}");
+            }
+            req.Headers.Add("X-MBX-APIKEY", _apiKey);
+
+            try
+            {
+                var resp = await _http.SendAsync(req, ct);
+                string body = await resp.Content.ReadAsStringAsync(ct);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    OnLog?.Invoke($"⚠️ [AlgoAPI] {method} {endpoint} HTTP {(int)resp.StatusCode}: {body}");
+                    return (false, body);
+                }
+                return (true, body);
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ [AlgoAPI] {method} {endpoint} 예외: {ex.Message}");
+                return (false, string.Empty);
+            }
         }
 
         /// <summary>
@@ -298,7 +359,7 @@ namespace TradingBot.Services
             return _defaultFallback;
         }
 
-        /// <summary>[v5.3.3] STOP_MARKET 주문 — PlaceConditionalOrderAsync (조건부 주문 전용 엔드포인트)</summary>
+        /// <summary>[v5.10.63] STOP_MARKET — Binance 2025-12-09 이관 후 /fapi/v1/algoOrder 사용</summary>
         public async Task<(bool Success, string OrderId)> PlaceStopOrderAsync(string symbol, string side, decimal quantity, decimal stopPrice, CancellationToken ct = default)
         {
             try
@@ -309,7 +370,7 @@ namespace TradingBot.Services
 
                 if (quantity <= 0)
                 {
-                    MainWindow.Instance?.AddLog($"❌ [SL] {symbol} STOP_MARKET 실패: quantity={quantity} (stepSize 반영 후 0)");
+                    MainWindow.Instance?.AddLog($"❌ [SL] {symbol} STOP_MARKET 실패: quantity={quantity}");
                     return (false, string.Empty);
                 }
                 if (stopPrice <= 0)
@@ -318,45 +379,20 @@ namespace TradingBot.Services
                     return (false, string.Empty);
                 }
 
-                OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
-
-                // [v5.3.3] 1차: PlaceConditionalOrderAsync (조건부 주문 전용 엔드포인트)
-                var result = await _client.UsdFuturesApi.Trading.PlaceConditionalOrderAsync(
-                    symbol, orderSide,
-                    ConditionalOrderType.StopMarket,
-                    quantity,
-                    triggerPrice: stopPrice,
-                    reduceOnly: true,
-                    ct: ct);
-
-                if (result.Success && result.Data != null)
+                // Algo Order API 파라미터: algoType=CONDITIONAL, type=STOP_MARKET, triggerPrice
+                string qs = $"symbol={symbol}&side={side.ToUpper()}&algoType=CONDITIONAL&type=STOP_MARKET&quantity={quantity}&triggerPrice={stopPrice}&reduceOnly=true";
+                var (ok, body) = await CallAlgoApiAsync(HttpMethod.Post, "/fapi/v1/algoOrder", qs, ct);
+                if (!ok)
                 {
-                    MainWindow.Instance?.AddLog($"✅ [SL] {symbol} STOP_MARKET 등록 | {side} qty={quantity} stop=${stopPrice} id={result.Data.Id}");
-                    return (true, result.Data.Id.ToString());
+                    MainWindow.Instance?.AddLog($"❌ [SL] {symbol} algoOrder 실패: {body}");
+                    MainWindow.Instance?.AddAlert($"⚠️ [SL] {symbol} 손절 등록 실패");
+                    return (false, string.Empty);
                 }
 
-                // 2차: closePosition=true
-                var result2 = await _client.UsdFuturesApi.Trading.PlaceConditionalOrderAsync(
-                    symbol, orderSide,
-                    ConditionalOrderType.StopMarket,
-                    null,
-                    triggerPrice: stopPrice,
-                    closePosition: true,
-                    ct: ct);
-
-                if (result2.Success && result2.Data != null)
-                {
-                    MainWindow.Instance?.AddLog($"✅ [SL] {symbol} STOP_MARKET(closePos) 등록 | {side} stop=${stopPrice} id={result2.Data.Id}");
-                    return (true, result2.Data.Id.ToString());
-                }
-
-                string errCode = result.Error?.Code?.ToString() ?? "null";
-                string errMsg = result.Error?.Message ?? "null";
-                string errCode2 = result2.Error?.Code?.ToString() ?? "null";
-                string errMsg2 = result2.Error?.Message ?? "null";
-                MainWindow.Instance?.AddLog($"❌ [SL] {symbol} 실패 | 1차={errCode}:{errMsg} | 2차={errCode2}:{errMsg2}");
-                MainWindow.Instance?.AddAlert($"⚠️ [SL] {symbol} 손절 등록 실패");
-                return (false, string.Empty);
+                using var doc = JsonDocument.Parse(body);
+                long algoId = doc.RootElement.GetProperty("algoId").GetInt64();
+                MainWindow.Instance?.AddLog($"✅ [SL] {symbol} STOP_MARKET 등록 | {side} qty={quantity} trigger=${stopPrice} algoId={algoId}");
+                return (true, algoId.ToString());
             }
             catch (Exception ex)
             {
@@ -378,113 +414,74 @@ namespace TradingBot.Services
             decimal callbackRate, decimal? activationPrice = null,
             CancellationToken ct = default)
         {
-            (decimal stepSize, decimal tickSize) = await GetSymbolPrecisionAsync(symbol, ct);
-            if (stepSize > 0)
-                quantity = Math.Floor(quantity / stepSize) * stepSize;
-            if (activationPrice.HasValue && tickSize > 0)
-                activationPrice = Math.Floor(activationPrice.Value / tickSize) * tickSize;
-
-            // callbackRate: 바이낸스 허용 범위 0.1% ~ 5.0%
-            callbackRate = Math.Clamp(callbackRate, 0.1m, 5.0m);
-
-            if (quantity <= 0)
-            {
-                string qtyErr = $"❌ [TRAILING_STOP] {symbol} quantity={quantity} step={stepSize} — stepSize 반영 후 0 이하";
-                Console.WriteLine(qtyErr);
-                TradingBot.MainWindow.Instance?.AddLog(qtyErr);
-                return (false, string.Empty);
-            }
-
-            OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
-
             try
             {
-                // [v5.3.3] PlaceConditionalOrderAsync (조건부 주문 전용 엔드포인트)
-                var result = await _client.UsdFuturesApi.Trading.PlaceConditionalOrderAsync(
-                    symbol, orderSide,
-                    ConditionalOrderType.TrailingStopMarket,
-                    quantity,
-                    activationPrice: activationPrice,
-                    callbackRate: callbackRate,
-                    reduceOnly: true,
-                    ct: ct);
+                (decimal stepSize, decimal tickSize) = await GetSymbolPrecisionAsync(symbol, ct);
+                if (stepSize > 0) quantity = Math.Floor(quantity / stepSize) * stepSize;
+                if (activationPrice.HasValue && tickSize > 0)
+                    activationPrice = Math.Floor(activationPrice.Value / tickSize) * tickSize;
+                callbackRate = Math.Clamp(callbackRate, 0.1m, 5.0m);
 
-                if (result.Success && result.Data != null)
+                if (quantity <= 0)
                 {
-                    string ok = $"✅ [TRAILING] {symbol} TRAILING_STOP_MARKET 성공 | {side} qty={quantity} callback={callbackRate}% activation={activationPrice?.ToString("F4") ?? "즉시"} id={result.Data.Id}";
-                    TradingBot.MainWindow.Instance?.AddLog(ok);
-                    return (true, result.Data.Id.ToString());
+                    MainWindow.Instance?.AddLog($"❌ [TRAILING] {symbol} quantity={quantity} — step 반영 후 0");
+                    return (false, string.Empty);
                 }
 
-                // 2차: activationPrice 없이 재시도
-                if (activationPrice.HasValue)
-                {
-                    var result2 = await _client.UsdFuturesApi.Trading.PlaceConditionalOrderAsync(
-                        symbol, orderSide,
-                        ConditionalOrderType.TrailingStopMarket,
-                        quantity,
-                        callbackRate: callbackRate,
-                        reduceOnly: true,
-                        ct: ct);
+                // [v5.10.63] Algo Order API — TRAILING_STOP_MARKET
+                string qs = $"symbol={symbol}&side={side.ToUpper()}&algoType=CONDITIONAL&type=TRAILING_STOP_MARKET&quantity={quantity}&callbackRate={callbackRate}&reduceOnly=true";
+                if (activationPrice.HasValue && activationPrice.Value > 0)
+                    qs += $"&activationPrice={activationPrice.Value}";
 
-                    if (result2.Success && result2.Data != null)
-                    {
-                        TradingBot.MainWindow.Instance?.AddLog($"✅ [TRAILING] {symbol} 성공 (activationPrice 없이) | {side} qty={quantity} callback={callbackRate}% id={result2.Data.Id}");
-                        return (true, result2.Data.Id.ToString());
-                    }
+                var (ok, body) = await CallAlgoApiAsync(HttpMethod.Post, "/fapi/v1/algoOrder", qs, ct);
+                if (!ok)
+                {
+                    MainWindow.Instance?.AddLog($"❌ [TRAILING] {symbol} algoOrder 실패: {body}");
+                    return (false, string.Empty);
                 }
 
-                // 3차: closePosition=true
-                var result3 = await _client.UsdFuturesApi.Trading.PlaceConditionalOrderAsync(
-                    symbol, orderSide,
-                    ConditionalOrderType.TrailingStopMarket,
-                    null,
-                    callbackRate: callbackRate,
-                    closePosition: true,
-                    ct: ct);
-
-                if (result3.Success && result3.Data != null)
-                {
-                    TradingBot.MainWindow.Instance?.AddLog($"✅ [TRAILING] {symbol} 성공 (closePos) | {side} callback={callbackRate}% id={result3.Data.Id}");
-                    return (true, result3.Data.Id.ToString());
-                }
-
-                string errCode = result.Error?.Code?.ToString() ?? "null";
-                string errMsg = result.Error?.Message ?? "null";
-                TradingBot.MainWindow.Instance?.AddLog($"❌ [TRAILING] {symbol} 실패 | errCode={errCode} errMsg={errMsg}");
-                return (false, string.Empty);
+                using var doc = JsonDocument.Parse(body);
+                long algoId = doc.RootElement.GetProperty("algoId").GetInt64();
+                MainWindow.Instance?.AddLog($"✅ [TRAILING] {symbol} TRAILING_STOP_MARKET 등록 | {side} qty={quantity} callback={callbackRate}% activation={activationPrice?.ToString("F6") ?? "즉시"} algoId={algoId}");
+                return (true, algoId.ToString());
             }
             catch (Exception ex)
             {
-                TradingBot.MainWindow.Instance?.AddLog($"❌ [TRAILING] {symbol} 예외: {ex.Message}");
+                MainWindow.Instance?.AddLog($"❌ [TRAILING] {symbol} 예외: {ex.Message}");
                 return (false, string.Empty);
             }
         }
 
         public async Task<bool> CancelOrderAsync(string symbol, string orderId, CancellationToken ct = default)
         {
-            if (!long.TryParse(orderId, out long id))
+            // [v5.10.63] orderId는 algoId 또는 일반 orderId일 수 있음 — 둘 다 시도
+            if (!long.TryParse(orderId, out long id)) return false;
+
+            // 1) Algo 주문 취소 시도 (DELETE /fapi/v1/algoOrder?algoId=...)
+            var (ok1, body1) = await CallAlgoApiAsync(HttpMethod.Delete, "/fapi/v1/algoOrder", $"symbol={symbol}&algoId={id}", ct);
+            if (ok1)
             {
-                Console.WriteLine($"❌ [Binance] 주문 취소 실패 - 잘못된 OrderId 형식: {orderId}");
-                return false;
+                MainWindow.Instance?.AddLog($"🗑️ [Cancel] {symbol} algo {id} 취소 성공");
+                return true;
             }
 
-            var result = await _client.UsdFuturesApi.Trading.CancelOrderAsync(symbol, id, ct: ct);
-
-            if (result.Success)
+            // 2) 일반 주문 취소 (Binance.Net — LIMIT/MARKET 대상)
+            try
             {
-                Console.WriteLine($"✅ [Binance] 주문 취소 성공 - {symbol} OrderId={orderId}");
+                var result = await _client.UsdFuturesApi.Trading.CancelOrderAsync(symbol, id, ct: ct);
+                if (result.Success)
+                {
+                    MainWindow.Instance?.AddLog($"🗑️ [Cancel] {symbol} order {id} 취소 성공");
+                    return true;
+                }
             }
-            else
-            {
-                Console.WriteLine($"❌ [Binance] 주문 취소 실패 - {symbol} OrderId={orderId}");
-                Console.WriteLine($"   에러: {result.Error?.Message}");
-            }
+            catch { }
 
-            return result.Success;
+            MainWindow.Instance?.AddLog($"⚠️ [Cancel] {symbol} {id} 실패 (algo/일반 모두)");
+            return false;
         }
 
-        /// <summary>[v5.3.3] TAKE_PROFIT_MARKET 주문 — PlaceConditionalOrderAsync</summary>
+        /// <summary>[v5.10.63] TAKE_PROFIT_MARKET — Binance 이관 후 /fapi/v1/algoOrder 사용</summary>
         public async Task<(bool Success, string OrderId)> PlaceTakeProfitOrderAsync(
             string symbol, string side, decimal quantity, decimal stopPrice,
             CancellationToken ct = default)
@@ -494,44 +491,20 @@ namespace TradingBot.Services
                 (decimal stepSize, decimal tickSize) = await GetSymbolPrecisionAsync(symbol, ct);
                 if (stepSize > 0) quantity = Math.Floor(quantity / stepSize) * stepSize;
                 if (tickSize > 0) stopPrice = Math.Floor(stopPrice / tickSize) * tickSize;
-                if (quantity <= 0) return (false, string.Empty);
+                if (quantity <= 0 || stopPrice <= 0) return (false, string.Empty);
 
-                OrderSide orderSide = side.ToUpper() == "BUY" ? OrderSide.Buy : OrderSide.Sell;
-
-                // [v5.3.3] 1차: PlaceConditionalOrderAsync
-                var result = await _client.UsdFuturesApi.Trading.PlaceConditionalOrderAsync(
-                    symbol, orderSide,
-                    ConditionalOrderType.TakeProfitMarket,
-                    quantity,
-                    triggerPrice: stopPrice,
-                    reduceOnly: true,
-                    ct: ct);
-
-                if (result.Success && result.Data != null)
+                string qs = $"symbol={symbol}&side={side.ToUpper()}&algoType=CONDITIONAL&type=TAKE_PROFIT_MARKET&quantity={quantity}&triggerPrice={stopPrice}&reduceOnly=true";
+                var (ok, body) = await CallAlgoApiAsync(HttpMethod.Post, "/fapi/v1/algoOrder", qs, ct);
+                if (!ok)
                 {
-                    MainWindow.Instance?.AddLog($"✅ [TP] {symbol} TAKE_PROFIT_MARKET 등록 | {side} qty={quantity} stop=${stopPrice} id={result.Data.Id}");
-                    return (true, result.Data.Id.ToString());
+                    MainWindow.Instance?.AddLog($"❌ [TP] {symbol} algoOrder 실패: {body}");
+                    return (false, string.Empty);
                 }
 
-                // 2차: closePosition=true
-                var result2 = await _client.UsdFuturesApi.Trading.PlaceConditionalOrderAsync(
-                    symbol, orderSide,
-                    ConditionalOrderType.TakeProfitMarket,
-                    null,
-                    triggerPrice: stopPrice,
-                    closePosition: true,
-                    ct: ct);
-
-                if (result2.Success && result2.Data != null)
-                {
-                    MainWindow.Instance?.AddLog($"✅ [TP] {symbol} TP_MARKET(closePos) 등록 | {side} stop=${stopPrice} id={result2.Data.Id}");
-                    return (true, result2.Data.Id.ToString());
-                }
-
-                string errMsg = result.Error?.Message ?? "unknown";
-                string errMsg2 = result2.Error?.Message ?? "unknown";
-                MainWindow.Instance?.AddLog($"❌ [TP] {symbol} 실패 | 1차={errMsg} | 2차={errMsg2}");
-                return (false, string.Empty);
+                using var doc = JsonDocument.Parse(body);
+                long algoId = doc.RootElement.GetProperty("algoId").GetInt64();
+                MainWindow.Instance?.AddLog($"✅ [TP] {symbol} TAKE_PROFIT_MARKET 등록 | {side} qty={quantity} trigger=${stopPrice} algoId={algoId}");
+                return (true, algoId.ToString());
             }
             catch (Exception ex)
             {
@@ -540,24 +513,38 @@ namespace TradingBot.Services
             }
         }
 
-        /// <summary>[v5.1.0] 특정 심볼의 모든 미체결 주문 일괄 취소</summary>
-        public async Task CancelAllOrdersAsync(string symbol, CancellationToken ct = default)
+        /// <summary>[v5.10.63] 특정 심볼의 algoOrder 개수 조회 — EnsureActivePositionProtectionAsync에서 사용</summary>
+        public async Task<int> GetOpenAlgoOrderCountAsync(string symbol, CancellationToken ct = default)
         {
+            var (ok, body) = await CallAlgoApiAsync(HttpMethod.Get, "/fapi/v1/openAlgoOrders", $"symbol={symbol}", ct);
+            if (!ok) return 0;
             try
             {
-                // [v5.3.5] 일반 주문 + 조건부 주문 모두 취소
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.ValueKind == JsonValueKind.Array) return doc.RootElement.GetArrayLength();
+                return 0;
+            }
+            catch { return 0; }
+        }
+
+        /// <summary>[v5.10.63] 특정 심볼의 모든 주문(일반+Algo) 일괄 취소</summary>
+        public async Task CancelAllOrdersAsync(string symbol, CancellationToken ct = default)
+        {
+            // 1) 일반 주문 일괄 취소 (LIMIT/MARKET 등)
+            try
+            {
                 var result = await _client.UsdFuturesApi.Trading.CancelAllOrdersAsync(symbol, ct: ct);
                 if (result.Success)
                     MainWindow.Instance?.AddLog($"🗑️ [Binance] {symbol} 일반 주문 일괄 취소 성공");
+            }
+            catch (Exception ex) { MainWindow.Instance?.AddLog($"⚠️ [Binance] {symbol} 일반 주문 취소 예외: {ex.Message}"); }
 
-                var condResult = await _client.UsdFuturesApi.Trading.CancelAllConditionalOrdersAsync(symbol, ct: ct);
-                if (condResult.Success)
-                    MainWindow.Instance?.AddLog($"🗑️ [Binance] {symbol} 조건부 주문(SL/TP/Trailing) 일괄 취소 성공");
-            }
-            catch (Exception ex)
-            {
-                MainWindow.Instance?.AddLog($"⚠️ [Binance] {symbol} 일괄 취소 예외: {ex.Message}");
-            }
+            // 2) Algo 주문 일괄 취소 (STOP_MARKET/TP_MARKET/TRAILING_STOP_MARKET) — DELETE /fapi/v1/algoOpenOrders
+            var (ok, body) = await CallAlgoApiAsync(HttpMethod.Delete, "/fapi/v1/algoOpenOrders", $"symbol={symbol}", ct);
+            if (ok)
+                MainWindow.Instance?.AddLog($"🗑️ [Binance] {symbol} algoOrders 일괄 취소 성공");
+            else
+                MainWindow.Instance?.AddLog($"⚠️ [Binance] {symbol} algoOrders 취소 결과: {body}");
         }
 
         // [v5.10.18] 진입 이후 최근 체결 내역 → 실제 청산가 추적

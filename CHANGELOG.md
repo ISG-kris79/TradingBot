@@ -5,6 +5,40 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.63] - 2026-04-20
+
+### CRITICAL FIX (며칠간의 -4120 손해 근본 원인 해결)
+
+ - **Binance 2025-12-09 API 이관 미반영** → 모든 SL/TP/Trailing 등록 실패하던 며칠간의 진짜 원인:
+   - Binance Changelog 2025-11-06 (Effective 2025-12-09): **`STOP_MARKET`, `TAKE_PROFIT_MARKET`, `STOP`, `TAKE_PROFIT`, `TRAILING_STOP_MARKET` 모두 Algo Service로 이관**
+   - 신 엔드포인트: `POST /fapi/v1/algoOrder`, `DELETE /fapi/v1/algoOpenOrders`, `GET /fapi/v1/openAlgoOrders`
+   - 구 엔드포인트(`/fapi/v1/order`)에서 사용 시: **`-4120 STOP_ORDER_SWITCH_ALGO`** 반환 → 정확히 우리가 받던 에러
+   - `Binance.Net v12.8.1` 라이브러리는 이관 미지원 → `PlaceConditionalOrderAsync`가 여전히 구 엔드포인트 호출 → 모두 실패
+   - 봇은 `-4120` 받고 silent fail → 진입 시 SL/TP 0개 등록 → **활성 포지션 무방비** 며칠간 지속
+
+ - **수정** (`BinanceExchangeService.cs`):
+   - `HttpClient` + HMAC-SHA256 직접 호출 (`CallAlgoApiAsync` 헬퍼)
+   - `PlaceStopOrderAsync` → `POST /fapi/v1/algoOrder` `algoType=CONDITIONAL&type=STOP_MARKET&triggerPrice=...`
+   - `PlaceTakeProfitOrderAsync` → `algoType=CONDITIONAL&type=TAKE_PROFIT_MARKET`
+   - `PlaceTrailingStopOrderAsync` → `algoType=CONDITIONAL&type=TRAILING_STOP_MARKET&callbackRate=...&activationPrice=...`
+   - `CancelOrderAsync` → algo 먼저 시도 후 일반 fallback
+   - `CancelAllOrdersAsync` → `DELETE /fapi/v1/algoOpenOrders` + 일반 둘 다 호출
+   - 신규 `GetOpenAlgoOrderCountAsync` — 보호점검에서 algo 주문도 카운트
+
+ - **수정** (`TradingEngine.cs:EnsureActivePositionProtectionAsync`):
+   - 기존 `/fapi/v1/openOrders`만 조회 → 일반 + algo 둘 다 조회 → algo 주문이 있으면 중복 등록 방지
+
+### 검증 (실측)
+
+ - XAUUSDT 테스트 등록 성공: SL(algoId=...600788) + TP(algoId=...600797) + Trailing(algoId=...600801)
+ - openAlgoOrders 7건 → 10건 (XAU 3개 추가됨)
+ - TAOUSDT/BLURUSDT는 이전에 누군가 수동/타 봇으로 algo 등록한 6건 이미 존재 (봇이 못 보던 것)
+
+### 파라미터 변경 핵심
+ - `stopPrice` → **`triggerPrice`** (Algo API 사용 이름)
+ - 응답 필드 `orderId` → **`algoId`**
+ - 필수 파라미터 `algoType=CONDITIONAL` 추가
+
 ## [5.10.62] - 2026-04-20
 
 ### Hotfix (긴급 — 활성 포지션 SL 누락 보호 안전망)
