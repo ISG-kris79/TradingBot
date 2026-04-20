@@ -5,6 +5,50 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.67] - 2026-04-20
+
+### Refactor — DbManager 인라인 SQL 전체 SP 전환 + 인라인 MERGE 완전 제거
+
+**근본 원인:** 인라인 MERGE 사용 시 `(HOLDLOCK)` 으로 인한 lock 경합 발생. 모든 UPSERT는 `UPDATE → IF @@ROWCOUNT=0 INSERT` 패턴으로 통일.
+
+**신규 SP 18개** (DbProcedures.cs):
+
+- `sp_SaveAiSignalLog` — Bot_Log INSERT
+- `sp_SaveOrderError` — Order_Error INSERT
+- `sp_SaveArbitrageExecutionLog` — UserId 컬럼 유무 SP 내부 분기
+- `sp_SaveFundTransferLog` — 동일
+- `sp_SaveRebalancingLog` (parent OUTPUT Id) + `sp_SaveRebalancingAction` (child loop)
+- `sp_GetRecentlyClosedPositions` — Symbol GROUP BY MAX(ExitTime)
+- `sp_UpsertElliottWaveAnchor` — **MERGE 제거 → UPDATE → IF @@ROWCOUNT=0 INSERT**
+- `sp_LoadElliottWaveAnchors` — UserId + 선택적 SymbolsCsv (STRING_SPLIT)
+- `sp_DeleteElliottWaveAnchor`
+- `sp_ResolveCloseSymbol` — 3단계 매칭 (strict/side/open) 통합
+- `sp_MirrorToTradeLogs` — IF NOT EXISTS + INSERT (UserId 분기 SP 내부)
+- `sp_EnsureOpenTradeForPosition` — UPDATE or INSERT (3개 OUTPUT 파라미터)
+- `sp_RecordPartialClose` — 4분기 부분청산 (6개 OUTPUT, ResultCase 0/1/2/3)
+- `sp_InsertClosedTrade` — Complete/TryCompleteOpenTrade fallback INSERT 공용
+- `sp_GetAllCandleDataForTraining` — ActiveSymbols + RankedCandles CTE
+- `sp_GetBulkCandleData` — RankedCandles + STRING_SPLIT 심볼 필터
+
+**변경된 DbManager.cs 메서드 17개** — 모두 `EXEC dbo.sp_xxx` 호출로 전환:
+
+- ResolveCloseSymbolAsync, TryMirrorToTradeLogsAsync
+- SaveAiSignalLogAsync, SaveOrderErrorAsync
+- SaveArbitrageExecutionLogAsync, SaveFundTransferLogAsync, SaveRebalancingLogAsync
+- GetRecentlyClosedPositionsAsync
+- UpsertElliottWaveAnchorStateAsync, LoadElliottWaveAnchorStatesAsync, DeleteElliottWaveAnchorStateAsync
+- EnsureOpenTradeForPositionAsync (SqlCommand + OUTPUT 3개)
+- RecordPartialCloseAsync (SqlCommand + OUTPUT 6개)
+- CompleteTradeAsync fallback, TryCompleteOpenTradeAsync fallback
+- GetAllCandleDataForTrainingAsync, GetBulkCandleDataAsync
+
+**제거된 패턴:**
+- DbManager.cs의 인라인 `db.ExecuteAsync(@"...")` / `QueryAsync(@"...")` 전부 제거 (DDL 메서드 제외)
+- `HasColumnAsync` C# 호출 제거 → SP 내부 `COL_LENGTH('table','UserId')` 체크
+- 인라인 MERGE (UpsertElliottWaveAnchorStateAsync) 완전 제거
+
+**diff stat:** DbManager.cs -752줄 / DbProcedures.cs +792줄 (총 +40줄, 가독성 + lock 경합 완화)
+
 ## [5.10.66] - 2026-04-20
 
 ### Hotfix Phase 1 — AI 학습 죽음의 순환 차단

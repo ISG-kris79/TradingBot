@@ -466,17 +466,9 @@ SELECT CASE WHEN EXISTS (
             decimal targetQuantity = Math.Abs(log.Quantity);
             DateTime? targetEntryTime = log.EntryTime == default ? null : log.EntryTime;
 
-            string? symbolByStrictMatch = await db.QueryFirstOrDefaultAsync<string>(@"
-SELECT TOP (1) Symbol
-FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
-WHERE UserId = @UserId
-  AND IsClosed = 0
-  AND Side = @Side
-  AND (@EntryPrice <= 0 OR ABS(CAST(EntryPrice AS FLOAT) - CAST(@EntryPrice AS FLOAT)) <= ABS(CAST(@EntryPrice AS FLOAT)) * 0.02)
-  AND (@Quantity <= 0 OR ABS(CAST(Quantity AS FLOAT) - CAST(@Quantity AS FLOAT)) <= ABS(CAST(@Quantity AS FLOAT)) * 0.30)
-ORDER BY
-  CASE WHEN @EntryTime IS NULL THEN 0 ELSE ABS(DATEDIFF(SECOND, EntryTime, @EntryTime)) END,
-  Id DESC;",
+            // [v5.10.65] 인라인 3-step SELECT → sp_ResolveCloseSymbol 단일 호출
+            var row = await db.QueryFirstOrDefaultAsync<(string Symbol, string MatchType)>(
+                "EXEC dbo.sp_ResolveCloseSymbol @UserId, @Side, @EntryPrice, @Quantity, @EntryTime",
                 new
                 {
                     UserId = userId,
@@ -486,45 +478,17 @@ ORDER BY
                     EntryTime = targetEntryTime
                 }, tx);
 
-            string resolvedSymbol = TrimForDb(symbolByStrictMatch, 50);
+            string resolvedSymbol = TrimForDb(row.Symbol, 50);
+            string matchType = row.MatchType ?? string.Empty;
+
             if (!string.IsNullOrWhiteSpace(resolvedSymbol))
             {
-                MainWindow.Instance?.AddLog($"ℹ️ [DB][Symbol복원] strict 매칭으로 심볼 복원: {resolvedSymbol}");
-                return resolvedSymbol;
-            }
-
-            string? symbolBySide = await db.QueryFirstOrDefaultAsync<string>(@"
-SELECT TOP (1) Symbol
-FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
-WHERE UserId = @UserId
-  AND IsClosed = 0
-  AND Side = @Side
-ORDER BY EntryTime DESC, Id DESC;",
-                new
-                {
-                    UserId = userId,
-                    Side = inferredEntrySide
-                }, tx);
-
-            resolvedSymbol = TrimForDb(symbolBySide, 50);
-            if (!string.IsNullOrWhiteSpace(resolvedSymbol))
-            {
-                MainWindow.Instance?.AddLog($"ℹ️ [DB][Symbol복원] side 매칭으로 심볼 복원: {resolvedSymbol}");
-                return resolvedSymbol;
-            }
-
-            var onlyOneOpen = await db.QueryFirstOrDefaultAsync<string>(@"
-SELECT TOP (1) Symbol
-FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
-WHERE UserId = @UserId
-  AND IsClosed = 0
-ORDER BY EntryTime DESC, Id DESC;",
-                new { UserId = userId }, tx);
-
-            resolvedSymbol = TrimForDb(onlyOneOpen, 50);
-            if (!string.IsNullOrWhiteSpace(resolvedSymbol))
-            {
-                MainWindow.Instance?.AddLog($"ℹ️ [DB][Symbol복원] open 포지션 최신건으로 심볼 복원: {resolvedSymbol}");
+                if (string.Equals(matchType, "strict", StringComparison.OrdinalIgnoreCase))
+                    MainWindow.Instance?.AddLog($"ℹ️ [DB][Symbol복원] strict 매칭으로 심볼 복원: {resolvedSymbol}");
+                else if (string.Equals(matchType, "side", StringComparison.OrdinalIgnoreCase))
+                    MainWindow.Instance?.AddLog($"ℹ️ [DB][Symbol복원] side 매칭으로 심볼 복원: {resolvedSymbol}");
+                else if (string.Equals(matchType, "open", StringComparison.OrdinalIgnoreCase))
+                    MainWindow.Instance?.AddLog($"ℹ️ [DB][Symbol복원] open 포지션 최신건으로 심볼 복원: {resolvedSymbol}");
                 return resolvedSymbol;
             }
 
@@ -582,72 +546,31 @@ ORDER BY EntryTime DESC, Id DESC;",
                 float aiScoreValue = SanitizeFloatForDb(aiScore);
                 DateTime timeValue = time == default ? DateTime.Now : time;
 
+                int userId = GetCurrentUserId();
+                // [v5.10.65] HasColumnAsync 제거 — SP 내부에서 COL_LENGTH 체크
+                // userId<=0인 경우에도 SP가 UserId 컬럼 미존재 분기로 INSERT (안전)
+
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
-                bool hasTradeLogsUserId = await HasColumnAsync(db, "TradeLogs", "UserId");
-                int userId = GetCurrentUserId();
 
-                if (hasTradeLogsUserId && userId <= 0)
-                {
-                    MainWindow.Instance?.AddLog("⚠️ [TradeLogs 미러링] UserId 확인 실패로 사용자별 로그 저장을 건너뜁니다.");
-                    return;
-                }
-
-                string sql = hasTradeLogsUserId
-                    ? @"
-IF NOT EXISTS (
-    SELECT 1
-    FROM dbo.TradeLogs
-    WHERE UserId = @UserId
-      AND Symbol = @Symbol
-      AND Side = @Side
-      AND ISNULL(Strategy, '') = ISNULL(@Strategy, '')
-      AND ABS(CAST(Price AS FLOAT) - CAST(@Price AS FLOAT)) < 0.0000001
-      AND ABS(CAST(PnL AS FLOAT) - CAST(@PnL AS FLOAT)) < 0.0000001
-      AND [Time] >= DATEADD(SECOND, -3, @Time)
-      AND [Time] <= DATEADD(SECOND, 3, @Time)
-)
-BEGIN
-    INSERT INTO dbo.TradeLogs
-        (UserId, Symbol, Side, Strategy, Price, AiScore, [Time], PnL, PnLPercent, EntryPrice, ExitPrice, Quantity, ExitReason)
-    VALUES
-        (@UserId, @Symbol, @Side, @Strategy, @Price, @AiScore, @Time, @PnL, @PnLPercent, @EntryPrice, @ExitPrice, @Quantity, @ExitReason);
-END"
-                    : @"
-IF NOT EXISTS (
-    SELECT 1
-    FROM dbo.TradeLogs
-    WHERE Symbol = @Symbol
-      AND Side = @Side
-      AND ISNULL(Strategy, '') = ISNULL(@Strategy, '')
-      AND ABS(CAST(Price AS FLOAT) - CAST(@Price AS FLOAT)) < 0.0000001
-      AND ABS(CAST(PnL AS FLOAT) - CAST(@PnL AS FLOAT)) < 0.0000001
-      AND [Time] >= DATEADD(SECOND, -3, @Time)
-      AND [Time] <= DATEADD(SECOND, 3, @Time)
-)
-BEGIN
-    INSERT INTO dbo.TradeLogs
-        (Symbol, Side, Strategy, Price, AiScore, [Time], PnL, PnLPercent, EntryPrice, ExitPrice, Quantity, ExitReason)
-    VALUES
-        (@Symbol, @Side, @Strategy, @Price, @AiScore, @Time, @PnL, @PnLPercent, @EntryPrice, @ExitPrice, @Quantity, @ExitReason);
-END";
-
-                await db.ExecuteAsync(sql, new
-                {
-                    UserId = userId,
-                    Symbol = symbolValue,
-                    Side = sideValue,
-                    Strategy = strategyValue,
-                    Price = price,
-                    AiScore = aiScoreValue,
-                    Time = timeValue,
-                    PnL = pnl,
-                    PnLPercent = pnlPercent,
-                    EntryPrice = entryPrice,
-                    ExitPrice = exitPrice > 0 ? exitPrice : (decimal?)null,
-                    Quantity = quantity > 0 ? quantity : (decimal?)null,
-                    ExitReason = string.IsNullOrWhiteSpace(exitReasonValue) ? null : exitReasonValue
-                });
+                await db.ExecuteAsync(
+                    "EXEC dbo.sp_MirrorToTradeLogs @UserId, @Symbol, @Side, @Strategy, @Price, @AiScore, @Time, @PnL, @PnLPercent, @EntryPrice, @ExitPrice, @Quantity, @ExitReason",
+                    new
+                    {
+                        UserId = userId,
+                        Symbol = symbolValue,
+                        Side = sideValue,
+                        Strategy = string.IsNullOrWhiteSpace(strategyValue) ? null : strategyValue,
+                        Price = price,
+                        AiScore = aiScoreValue,
+                        Time = timeValue,
+                        PnL = pnl,
+                        PnLPercent = pnlPercent,
+                        EntryPrice = entryPrice,
+                        ExitPrice = exitPrice > 0 ? exitPrice : (decimal?)null,
+                        Quantity = quantity > 0 ? quantity : (decimal?)null,
+                        ExitReason = string.IsNullOrWhiteSpace(exitReasonValue) ? null : exitReasonValue
+                    });
             }
             catch (Exception ex)
             {
@@ -804,34 +727,6 @@ END";
 
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
-
-                string sql = @"
-
-
-INSERT INTO dbo.AiLabeledSamples
-(
-    UserId,
-    Symbol,
-    EntryTimeUtc,
-    EntryPrice,
-    ActualProfitPct,
-    IsSuccess,
-    ShouldEnter,
-    LabelSource,
-    FeatureJson
-)
-VALUES
-(
-    @UserId,
-    @Symbol,
-    @EntryTimeUtc,
-    @EntryPrice,
-    @ActualProfitPct,
-    @IsSuccess,
-    @ShouldEnter,
-    @LabelSource,
-    @FeatureJson
-);";
 
                 await db.ExecuteAsync("EXEC dbo.sp_SaveAiTrainingData @UserId, @Symbol, @EntryTimeUtc, @EntryPrice, @ActualProfitPct, @IsSuccess, @ShouldEnter, @LabelSource, @FeatureJson", new
                 {
@@ -1048,67 +943,48 @@ VALUES
                 string strategy = string.IsNullOrWhiteSpace(fallbackStrategy) ? "SYNC_RESTORED" : fallbackStrategy;
                 decimal quantity = Math.Abs(position.Quantity);
 
+                string syncCategory = ResolveTradeCategory(position.Symbol ?? string.Empty, strategy);
+
+                // [v5.10.65] 인라인 SELECT+UPDATE/INSERT → sp_EnsureOpenTradeForPosition (OUTPUT 파라미터)
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
-                using var tx = db.BeginTransaction();
 
-
-                var openTrade = await db.QueryFirstOrDefaultAsync<TradeHistoryOpenRow>(@"
-SELECT TOP (1) Id, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime
-FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
-WHERE UserId = @UserId AND Symbol = @Symbol AND IsClosed = 0
-ORDER BY EntryTime DESC, Id DESC;",
-                    new { UserId = userId, position.Symbol }, tx);
-
-                if (openTrade != null)
+                using var cmd = new SqlCommand("dbo.sp_EnsureOpenTradeForPosition", db)
                 {
-                    await db.ExecuteAsync(@"
-UPDATE dbo.TradeHistory
-SET Side = @Side,
-    Strategy = CASE WHEN NULLIF(LTRIM(RTRIM(Strategy)), '') IS NULL THEN @Strategy ELSE Strategy END,
-    EntryPrice = @EntryPrice,
-    Quantity = @Quantity,
-    AiScore = CASE WHEN AiScore = 0 AND @AiScore <> 0 THEN @AiScore ELSE AiScore END,
-    LastUpdatedAt = GETDATE()
-WHERE Id = @Id;",
-                        new
-                        {
-                            Id = openTrade.Id,
-                            Side = side,
-                            Strategy = strategy,
-                            EntryPrice = position.EntryPrice,
-                            Quantity = quantity,
-                            AiScore = position.AiScore
-                        }, tx);
+                    CommandType = CommandType.StoredProcedure,
+                    CommandTimeout = 30
+                };
+                cmd.Parameters.Add("@UserId",     SqlDbType.Int).Value          = userId;
+                cmd.Parameters.Add("@Symbol",     SqlDbType.NVarChar, 32).Value = position.Symbol ?? string.Empty;
+                cmd.Parameters.Add("@Side",       SqlDbType.NVarChar, 8).Value  = side;
+                cmd.Parameters.Add("@Strategy",   SqlDbType.NVarChar, 64).Value = strategy;
+                cmd.Parameters.Add("@EntryPrice", SqlDbType.Decimal).Value      = position.EntryPrice;
+                cmd.Parameters["@EntryPrice"].Precision = 18;
+                cmd.Parameters["@EntryPrice"].Scale = 8;
+                cmd.Parameters.Add("@Quantity",   SqlDbType.Decimal).Value      = quantity;
+                cmd.Parameters["@Quantity"].Precision = 18;
+                cmd.Parameters["@Quantity"].Scale = 8;
+                cmd.Parameters.Add("@AiScore",    SqlDbType.Real).Value         = position.AiScore;
+                cmd.Parameters.Add("@EntryTime",  SqlDbType.DateTime2).Value    = entryTime;
+                cmd.Parameters.Add("@Category",   SqlDbType.NVarChar, 32).Value = (object?)syncCategory ?? DBNull.Value;
 
-                    await tx.CommitAsync();
-                    DateTime resolvedEntryTime = openTrade.EntryTime == default ? entryTime : openTrade.EntryTime;
-                    float resolvedAiScore = openTrade.AiScore != 0 ? openTrade.AiScore : position.AiScore;
-                    return (true, resolvedEntryTime, resolvedAiScore, false);
-                }
+                var pOutEntryTime = cmd.Parameters.Add("@OutEntryTime", SqlDbType.DateTime2);
+                pOutEntryTime.Direction = ParameterDirection.Output;
+                var pOutAiScore = cmd.Parameters.Add("@OutAiScore", SqlDbType.Real);
+                pOutAiScore.Direction = ParameterDirection.Output;
+                var pOutCreated = cmd.Parameters.Add("@OutCreated", SqlDbType.Bit);
+                pOutCreated.Direction = ParameterDirection.Output;
 
-                string syncCategory = ResolveTradeCategory(position.Symbol ?? string.Empty, strategy);
-                await db.ExecuteAsync(@"
-INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime, ExitPrice, PnL, PnLPercent, ExitReason, IsClosed, CloseVerified, Category, LastUpdatedAt)
-VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @Quantity, @AiScore, @EntryTime, NULL, 0, 0, NULL, 0, 0, @Category, GETDATE());",
-                    new
-                    {
-                        UserId = userId,
-                        position.Symbol,
-                        Side = side,
-                        Strategy = strategy,
-                        EntryPrice = position.EntryPrice,
-                        Quantity = quantity,
-                        AiScore = position.AiScore,
-                        EntryTime = entryTime,
-                        Category = syncCategory
-                    }, tx);
+                await cmd.ExecuteNonQueryAsync();
 
-                await tx.CommitAsync();
-                MainWindow.Instance?.AddLog($"📝 [DB] 시작 포지션 TradeHistory 보정 insert: U{userId} {position.Symbol} {side} Qty={quantity}");
-                return (true, entryTime, position.AiScore, true);
+                DateTime resolvedEntryTime = pOutEntryTime.Value is DateTime dt ? dt : entryTime;
+                float resolvedAiScore = pOutAiScore.Value is float f ? f : position.AiScore;
+                bool created = pOutCreated.Value is bool b && b;
+
+                if (created)
+                    MainWindow.Instance?.AddLog($"📝 [DB] 시작 포지션 TradeHistory 보정 insert: U{userId} {position.Symbol} {side} Qty={quantity}");
+
+                return (true, resolvedEntryTime, resolvedAiScore, created);
             }
             catch (Exception ex)
             {
@@ -1211,11 +1087,9 @@ ORDER BY EntryTime DESC, Id DESC;",
                 string fallbackStrategy = string.IsNullOrWhiteSpace(strategyValue) ? "RECOVERED_CLOSE" : strategyValue;
                 string fallbackCategory = ResolveTradeCategory(symbolValue ?? string.Empty, fallbackStrategy);
 
-                await db.ExecuteAsync(@"
-INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, Category, LastUpdatedAt)
-VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @IsSimulation, @Category, GETDATE());",
+                // [v5.10.65] 인라인 INSERT → sp_InsertClosedTrade
+                await db.ExecuteAsync(
+                    "EXEC dbo.sp_InsertClosedTrade @UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, @IsSimulation, @Category",
                     new
                     {
                         UserId = userId,
@@ -1317,11 +1191,9 @@ ORDER BY EntryTime DESC, Id DESC;",
                     DateTime entryTime = log.EntryTime == default ? exitTime : log.EntryTime;
                     string fallbackCategory = ResolveTradeCategory(log.Symbol ?? string.Empty, fallbackStrategy);
 
-                    await db.ExecuteAsync(@"
-INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, Category, LastUpdatedAt)
-VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @Category, GETDATE());",
+                    // [v5.10.65] 인라인 INSERT → sp_InsertClosedTrade
+                    await db.ExecuteAsync(
+                        "EXEC dbo.sp_InsertClosedTrade @UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, @IsSimulation, @Category",
                         new
                         {
                             UserId = userId,
@@ -1337,6 +1209,7 @@ VALUES
                             ExitReason = exitReason,
                             EntryTime = entryTime,
                             ExitTime = exitTime,
+                            IsSimulation = false,
                             Category = fallbackCategory
                         }, tx);
 
@@ -1428,179 +1301,74 @@ VALUES
                     return false;
 
                 decimal exitPrice = log.ExitPrice > 0 ? log.ExitPrice : log.Price;
-                decimal entryPrice = log.EntryPrice > 0 ? log.EntryPrice : 0m;
                 decimal closeQty = Math.Abs(log.Quantity);
-                DateTime entryTime = log.EntryTime == default ? log.Time : log.EntryTime;
                 DateTime exitTime = log.ExitTime == default ? log.Time : log.ExitTime;
                 string exitReason = string.IsNullOrWhiteSpace(log.ExitReason) ? "PartialClose" : log.ExitReason;
+                string inferredEntrySide = InferEntrySideFromCloseSide(log.Side);
+                string logStrategy = string.IsNullOrWhiteSpace(log.Strategy) ? "PartialClose" : log.Strategy;
+                string category = ResolveTradeCategory(log.Symbol ?? string.Empty, logStrategy);
 
+                // [v5.10.65] 인라인 SELECT/UPDATE/INSERT 4단계 → sp_RecordPartialClose 단일 SP (OUTPUT 파라미터)
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
-                using var tx = db.BeginTransaction();
 
-                var duplicatedPartial = await db.ExecuteScalarAsync<int?>(@"
-SELECT TOP (1) Id
-FROM dbo.TradeHistory
-WHERE UserId = @UserId
-  AND Symbol = @Symbol
-  AND IsClosed = 1
-  AND CloseVerified = 1
-  AND ExitReason = @ExitReason
-  AND ABS(Quantity - @Quantity) < 0.000001
-  AND ABS(ExitPrice - @ExitPrice) < 0.000001
-  AND ExitTime >= DATEADD(SECOND, -5, @ExitTime)
-  AND ExitTime <= DATEADD(SECOND, 5, @ExitTime)
-ORDER BY Id DESC;",
-                    new
-                    {
-                        UserId = userId,
-                        log.Symbol,
-                        ExitReason = exitReason,
-                        Quantity = closeQty,
-                        ExitPrice = exitPrice,
-                        ExitTime = exitTime
-                    }, tx);
-
-                if (duplicatedPartial.HasValue)
+                using var cmd = new SqlCommand("dbo.sp_RecordPartialClose", db)
                 {
-                    await tx.CommitAsync();
+                    CommandType = CommandType.StoredProcedure,
+                    CommandTimeout = 30
+                };
+                cmd.Parameters.Add("@UserId",            SqlDbType.Int).Value           = userId;
+                cmd.Parameters.Add("@Symbol",            SqlDbType.NVarChar, 32).Value  = log.Symbol ?? string.Empty;
+                var pCloseQty = cmd.Parameters.Add("@CloseQty", SqlDbType.Decimal);
+                pCloseQty.Precision = 18; pCloseQty.Scale = 8; pCloseQty.Value = closeQty;
+                var pExitPrice = cmd.Parameters.Add("@ExitPrice", SqlDbType.Decimal);
+                pExitPrice.Precision = 18; pExitPrice.Scale = 8; pExitPrice.Value = exitPrice;
+                cmd.Parameters.Add("@ExitTime",          SqlDbType.DateTime2).Value     = exitTime;
+                cmd.Parameters.Add("@ExitReason",        SqlDbType.NVarChar, 255).Value = exitReason;
+                var pPnL = cmd.Parameters.Add("@PnL", SqlDbType.Decimal);
+                pPnL.Precision = 18; pPnL.Scale = 8; pPnL.Value = log.PnL;
+                var pPnLPercent = cmd.Parameters.Add("@PnLPercent", SqlDbType.Decimal);
+                pPnLPercent.Precision = 18; pPnLPercent.Scale = 4; pPnLPercent.Value = log.PnLPercent;
+                cmd.Parameters.Add("@AiScore",           SqlDbType.Real).Value          = SanitizeFloatForDb(log.AiScore);
+                cmd.Parameters.Add("@IsSimulation",      SqlDbType.Bit).Value           = log.IsSimulation;
+                cmd.Parameters.Add("@InferredEntrySide", SqlDbType.NVarChar, 8).Value   = inferredEntrySide;
+                cmd.Parameters.Add("@LogStrategy",       SqlDbType.NVarChar, 150).Value = logStrategy;
+                cmd.Parameters.Add("@Category",          SqlDbType.NVarChar, 32).Value  = (object?)category ?? DBNull.Value;
+
+                var pOutCase = cmd.Parameters.Add("@OutResultCase", SqlDbType.TinyInt);
+                pOutCase.Direction = ParameterDirection.Output;
+                var pOutEntryPrice = cmd.Parameters.Add("@OutResolvedEntryPrice", SqlDbType.Decimal);
+                pOutEntryPrice.Precision = 18; pOutEntryPrice.Scale = 8;
+                pOutEntryPrice.Direction = ParameterDirection.Output;
+                var pOutEntryTime = cmd.Parameters.Add("@OutResolvedEntryTime", SqlDbType.DateTime2);
+                pOutEntryTime.Direction = ParameterDirection.Output;
+                var pOutAiScore = cmd.Parameters.Add("@OutResolvedAiScore", SqlDbType.Real);
+                pOutAiScore.Direction = ParameterDirection.Output;
+                var pOutEntrySide = cmd.Parameters.Add("@OutResolvedEntrySide", SqlDbType.NVarChar, 8);
+                pOutEntrySide.Direction = ParameterDirection.Output;
+                var pOutStrategy = cmd.Parameters.Add("@OutResolvedStrategy", SqlDbType.NVarChar, 150);
+                pOutStrategy.Direction = ParameterDirection.Output;
+
+                await cmd.ExecuteNonQueryAsync();
+
+                byte resultCase = pOutCase.Value is byte rc ? rc : (byte)0;
+                decimal resolvedEntryPrice = pOutEntryPrice.Value is decimal rep ? rep : 0m;
+                DateTime resolvedEntryTime = pOutEntryTime.Value is DateTime ret ? ret : exitTime;
+                float resolvedAiScore = pOutAiScore.Value is float ras ? ras : SanitizeFloatForDb(log.AiScore);
+
+                if (resultCase == 0)
+                {
                     MainWindow.Instance?.AddLog($"ℹ️ [DB] TradeHistory 부분청산 중복 감지로 스킵: U{userId} {log.Symbol} Qty={closeQty}");
                     return true;
                 }
 
-                var openTrade = await db.QueryFirstOrDefaultAsync<TradeHistoryOpenRow>(@"
-SELECT TOP (1) Id, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime
-FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
-WHERE UserId = @UserId AND Symbol = @Symbol AND IsClosed = 0
-ORDER BY EntryTime DESC, Id DESC;",
-                    new { UserId = userId, log.Symbol }, tx);
-
-                string entrySide = openTrade?.Side ?? InferEntrySideFromCloseSide(log.Side);
-                string strategy = !string.IsNullOrWhiteSpace(openTrade?.Strategy) ? openTrade!.Strategy : (log.Strategy ?? "PartialClose");
-                float aiScore = openTrade?.AiScore ?? log.AiScore;
-                decimal resolvedEntryPrice = openTrade is { EntryPrice: > 0 } ? openTrade.EntryPrice : entryPrice;
-                DateTime resolvedEntryTime = openTrade is { EntryTime: var openEntryTime } && openEntryTime != default ? openEntryTime : entryTime;
-
-                if (openTrade != null)
-                {
-                    decimal remainingQty = Math.Max(0m, openTrade.Quantity - closeQty);
-
-                    if (remainingQty <= 0.000001m)
-                    {
-                        await db.ExecuteAsync(@"
-UPDATE dbo.TradeHistory
-SET ExitPrice = @ExitPrice,
-    Quantity = @Quantity,
-    AiScore = CASE WHEN @AiScore <> 0 THEN @AiScore ELSE AiScore END,
-    PnL = @PnL,
-    PnLPercent = @PnLPercent,
-    ExitReason = @ExitReason,
-    ExitTime = @ExitTime,
-    IsClosed = 1,
-    CloseVerified = 1,
-    IsSimulation = @IsSimulation,
-    LastUpdatedAt = GETDATE()
-WHERE Id = @Id;",
-                            new
-                            {
-                                Id = openTrade.Id,
-                                ExitPrice = exitPrice,
-                                Quantity = closeQty,
-                                AiScore = aiScore,
-                                log.PnL,
-                                log.PnLPercent,
-                                ExitReason = exitReason,
-                                ExitTime = exitTime,
-                                log.IsSimulation
-                            }, tx);
-
-                        await tx.CommitAsync();
-                        await TryMirrorToTradeLogsAsync(
-                            log.Symbol,
-                            log.Side,
-                            TrimForDb($"PARTIAL:{exitReason}", 150),
-                            exitPrice,
-                            aiScore,
-                            exitTime,
-                            log.PnL,
-                            log.PnLPercent,
-                            resolvedEntryPrice,
-                            exitPrice,
-                            closeQty,
-                            exitReason);
-                        MainWindow.Instance?.AddLog($"✅ [DB] TradeHistory 부분청산 잔량 0 → 전량청산 update 처리: U{userId} {log.Symbol}");
-                        return true;
-                    }
-
-                    string partialCategory = ResolveTradeCategory(log.Symbol ?? string.Empty, strategy);
-                    await db.ExecuteAsync(@"
-INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, Category, LastUpdatedAt)
-VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @IsSimulation, @Category, GETDATE());",
-                        new
-                        {
-                            UserId = userId,
-                            log.Symbol,
-                            Side = entrySide,
-                            Strategy = strategy,
-                            EntryPrice = resolvedEntryPrice,
-                            ExitPrice = exitPrice,
-                            Quantity = closeQty,
-                            AiScore = aiScore,
-                            log.PnL,
-                            log.PnLPercent,
-                            ExitReason = exitReason,
-                            EntryTime = resolvedEntryTime,
-                            ExitTime = exitTime,
-                            log.IsSimulation,
-                            Category = partialCategory
-                        }, tx);
-
-                    await db.ExecuteAsync(@"
-UPDATE dbo.TradeHistory
-SET Quantity = @RemainingQty,
-    LastUpdatedAt = GETDATE()
-WHERE Id = @Id;",
-                        new { Id = openTrade.Id, RemainingQty = remainingQty }, tx);
-                }
-                else
-                {
-                    string partialCategory = ResolveTradeCategory(log.Symbol ?? string.Empty, strategy);
-                    await db.ExecuteAsync(@"
-INSERT INTO dbo.TradeHistory
-    (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, Category, LastUpdatedAt)
-VALUES
-    (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @IsSimulation, @Category, GETDATE());",
-                        new
-                        {
-                            UserId = userId,
-                            log.Symbol,
-                            Side = entrySide,
-                            Strategy = strategy,
-                            EntryPrice = resolvedEntryPrice,
-                            ExitPrice = exitPrice,
-                            Quantity = closeQty,
-                            AiScore = aiScore,
-                            log.PnL,
-                            log.PnLPercent,
-                            ExitReason = exitReason,
-                            EntryTime = resolvedEntryTime,
-                            ExitTime = exitTime,
-                            log.IsSimulation,
-                            Category = partialCategory
-                        }, tx);
-
-                    MainWindow.Instance?.AddLog($"⚠️ [DB] 열린 진입건 없이 부분청산 이력만 보정 insert: U{userId} {log.Symbol}");
-                }
-
-                await tx.CommitAsync();
+                // 미러 → TradeLogs (case 1/2/3 모두)
                 await TryMirrorToTradeLogsAsync(
                     log.Symbol,
                     log.Side,
                     TrimForDb($"PARTIAL:{exitReason}", 150),
                     exitPrice,
-                    aiScore,
+                    resolvedAiScore,
                     exitTime,
                     log.PnL,
                     log.PnLPercent,
@@ -1608,7 +1376,21 @@ VALUES
                     exitPrice,
                     closeQty,
                     exitReason);
-                MainWindow.Instance?.AddLog($"✅ [DB] TradeHistory 부분청산 기록 완료: U{userId} {log.Symbol} Qty={closeQty}");
+
+                switch (resultCase)
+                {
+                    case 1:
+                        MainWindow.Instance?.AddLog($"✅ [DB] TradeHistory 부분청산 잔량 0 → 전량청산 update 처리: U{userId} {log.Symbol}");
+                        break;
+                    case 2:
+                        MainWindow.Instance?.AddLog($"✅ [DB] TradeHistory 부분청산 기록 완료: U{userId} {log.Symbol} Qty={closeQty}");
+                        break;
+                    case 3:
+                        MainWindow.Instance?.AddLog($"⚠️ [DB] 열린 진입건 없이 부분청산 이력만 보정 insert: U{userId} {log.Symbol}");
+                        break;
+                }
+
+                _ = resolvedEntryTime; // (필요 시 추가 로깅 확장)
                 return true;
             }
             catch (Exception ex)
@@ -1791,35 +1573,10 @@ VALUES
             try
             {
                 using var db = new SqlConnection(_connectionString);
-                // [v5.10.50] CandleData(인덱스 없음/타임아웃) → MarketCandles(실제 데이터 존재) 로 변경
-                // MarketCandles: OpenPrice/HighPrice/LowPrice/ClosePrice → Open/High/Low/Close 별칭 사용
-                var sql = @"
-WITH ActiveSymbols AS (
-    SELECT Symbol
-    FROM MarketCandles WITH (NOLOCK)
-    WHERE Symbol LIKE '%USDT'
-    GROUP BY Symbol
-    HAVING MAX(OpenTime) >= DATEADD(HOUR, -24, GETUTCDATE())
-),
-RankedCandles AS (
-    SELECT
-        mc.Symbol,
-        mc.OpenTime,
-        mc.OpenPrice AS [Open],
-        mc.HighPrice AS [High],
-        mc.LowPrice AS [Low],
-        mc.ClosePrice AS [Close],
-        CAST(mc.Volume AS float) AS Volume,
-        mc.RSI, mc.MACD, mc.MACD_Signal, mc.MACD_Hist, mc.ATR, mc.BollingerUpper, mc.BollingerLower,
-        ROW_NUMBER() OVER (PARTITION BY mc.Symbol ORDER BY mc.OpenTime DESC) AS rn
-    FROM MarketCandles mc WITH (NOLOCK)
-    INNER JOIN ActiveSymbols a ON mc.Symbol = a.Symbol
-)
-SELECT * FROM RankedCandles WHERE rn <= @Limit
-ORDER BY Symbol, OpenTime ASC";
-
+                // [v5.10.65] 인라인 CTE → sp_GetAllCandleDataForTraining
                 var rows = await db.QueryAsync<TradingBot.Models.CandleData>(
-                    sql, new { Limit = candlesPerSymbol }, commandTimeout: 60);
+                    "EXEC dbo.sp_GetAllCandleDataForTraining @Limit",
+                    new { Limit = candlesPerSymbol }, commandTimeout: 60);
 
                 // 심볼별 그룹핑 (이미 OpenTime ASC 정렬됨)
                 foreach (var group in rows.GroupBy(r => r.Symbol ?? string.Empty))
@@ -1856,41 +1613,15 @@ ORDER BY Symbol, OpenTime ASC";
                 await using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync(token);
 
-                string symbolFilterClause = symbolFilter is { Count: > 0 }
-                    ? "AND Symbol IN @Symbols"
-                    : "AND Symbol LIKE '%USDT'";
-
-                // [v5.10.50] CandleData → MarketCandles (HistoricalDownloader 저장 테이블)
-                var sql = $@"
-WITH RankedCandles AS (
-    SELECT
-        Symbol,
-        OpenTime,
-        OpenPrice AS [Open],
-        HighPrice AS [High],
-        LowPrice AS [Low],
-        ClosePrice AS [Close],
-        CAST(Volume AS float) AS Volume,
-        RSI, MACD, MACD_Signal, MACD_Hist, ATR, BollingerUpper, BollingerLower,
-        ROW_NUMBER() OVER (PARTITION BY Symbol ORDER BY OpenTime DESC) AS rn
-    FROM MarketCandles WITH (NOLOCK)
-    WHERE Symbol LIKE '%USDT'
-      {symbolFilterClause}
-)
-SELECT * FROM RankedCandles WHERE rn <= @Limit
-ORDER BY Symbol, OpenTime ASC";
-
-                var param = new Dictionary<string, object?>
-                {
-                    ["Limit"] = candlesPerSymbol
-                };
-                if (symbolFilter is { Count: > 0 })
-                {
-                    param["Symbols"] = symbolFilter;
-                }
+                // [v5.10.65] 인라인 CTE+동적 IN → sp_GetBulkCandleData (CSV 파라미터)
+                string? symbolsCsv = symbolFilter is { Count: > 0 }
+                    ? string.Join(",", symbolFilter.Where(s => !string.IsNullOrWhiteSpace(s)))
+                    : null;
 
                 var rows = await db.QueryAsync<TradingBot.Models.CandleData>(
-                    sql, param, commandTimeout: 120);
+                    "EXEC dbo.sp_GetBulkCandleData @SymbolsCsv, @Limit",
+                    new { SymbolsCsv = symbolsCsv, Limit = candlesPerSymbol },
+                    commandTimeout: 120);
 
                 foreach (var group in rows.GroupBy(r => r.Symbol ?? string.Empty))
                 {
@@ -1966,56 +1697,33 @@ ORDER BY Symbol, OpenTime ASC";
         {
             try
             {
+                // [v5.10.65] HasColumnAsync 제거 → SP 내부에서 COL_LENGTH 분기
+                int userId = GetCurrentUserId();
+
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
 
-                bool hasUserId = await HasColumnAsync(db, "ArbitrageExecutionLog", "UserId");
-                int userId = GetCurrentUserId();
-                if (hasUserId && userId <= 0)
-                {
-                    MainWindow.Instance?.AddLog("⚠️ [차익거래 로그] UserId 확인 실패로 사용자별 저장을 건너뜁니다.");
-                    return;
-                }
-
-                string sql = hasUserId
-                    ? @"
-                        INSERT INTO ArbitrageExecutionLog 
-                        (UserId, Symbol, BuyExchange, SellExchange, BuyPrice, SellPrice, Quantity, 
-                         ProfitPercent, BuyOrderId, SellOrderId, BuySuccess, SellSuccess, 
-                         Success, ErrorMessage, StartTime, EndTime)
-                        VALUES 
-                        (@UserId, @Symbol, @BuyExchange, @SellExchange, @BuyPrice, @SellPrice, @Quantity, 
-                         @ProfitPercent, @BuyOrderId, @SellOrderId, @BuySuccess, @SellSuccess, 
-                         @Success, @ErrorMessage, @StartTime, @EndTime)"
-                    : @"
-                        INSERT INTO ArbitrageExecutionLog 
-                        (Symbol, BuyExchange, SellExchange, BuyPrice, SellPrice, Quantity, 
-                         ProfitPercent, BuyOrderId, SellOrderId, BuySuccess, SellSuccess, 
-                         Success, ErrorMessage, StartTime, EndTime)
-                        VALUES 
-                        (@Symbol, @BuyExchange, @SellExchange, @BuyPrice, @SellPrice, @Quantity, 
-                         @ProfitPercent, @BuyOrderId, @SellOrderId, @BuySuccess, @SellSuccess, 
-                         @Success, @ErrorMessage, @StartTime, @EndTime)";
-
-                await db.ExecuteAsync(sql, new
-                {
-                    UserId = userId,
-                    execution.Opportunity.Symbol,
-                    BuyExchange = execution.Opportunity.BuyExchange.ToString(),
-                    SellExchange = execution.Opportunity.SellExchange.ToString(),
-                    execution.Opportunity.BuyPrice,
-                    execution.Opportunity.SellPrice,
-                    execution.Quantity,
-                    execution.Opportunity.ProfitPercent,
-                    execution.BuyOrderId,
-                    execution.SellOrderId,
-                    execution.BuySuccess,
-                    execution.SellSuccess,
-                    execution.Success,
-                    execution.ErrorMessage,
-                    execution.StartTime,
-                    execution.EndTime
-                });
+                await db.ExecuteAsync(
+                    "EXEC dbo.sp_SaveArbitrageExecutionLog @UserId, @Symbol, @BuyExchange, @SellExchange, @BuyPrice, @SellPrice, @Quantity, @ProfitPercent, @BuyOrderId, @SellOrderId, @BuySuccess, @SellSuccess, @Success, @ErrorMessage, @StartTime, @EndTime",
+                    new
+                    {
+                        UserId = userId,
+                        execution.Opportunity.Symbol,
+                        BuyExchange = execution.Opportunity.BuyExchange.ToString(),
+                        SellExchange = execution.Opportunity.SellExchange.ToString(),
+                        execution.Opportunity.BuyPrice,
+                        execution.Opportunity.SellPrice,
+                        execution.Quantity,
+                        execution.Opportunity.ProfitPercent,
+                        execution.BuyOrderId,
+                        execution.SellOrderId,
+                        execution.BuySuccess,
+                        execution.SellSuccess,
+                        execution.Success,
+                        execution.ErrorMessage,
+                        execution.StartTime,
+                        execution.EndTime
+                    });
             }
             catch (Exception ex)
             {
@@ -2030,48 +1738,29 @@ ORDER BY Symbol, OpenTime ASC";
         {
             try
             {
+                // [v5.10.65] HasColumnAsync 제거 → SP 내부에서 COL_LENGTH 분기
+                int userId = GetCurrentUserId();
+
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
 
-                bool hasUserId = await HasColumnAsync(db, "FundTransferLog", "UserId");
-                int userId = GetCurrentUserId();
-                if (hasUserId && userId <= 0)
-                {
-                    MainWindow.Instance?.AddLog("⚠️ [자금 이동 로그] UserId 확인 실패로 사용자별 저장을 건너뜁니다.");
-                    return;
-                }
-
-                string sql = hasUserId
-                    ? @"
-                        INSERT INTO FundTransferLog 
-                        (UserId, FromExchange, ToExchange, Asset, Amount, WithdrawSuccess, DepositSuccess, 
-                         Success, ErrorMessage, RequestTime, StartTime, EndTime)
-                        VALUES 
-                        (@UserId, @FromExchange, @ToExchange, @Asset, @Amount, @WithdrawSuccess, @DepositSuccess, 
-                         @Success, @ErrorMessage, @RequestTime, @StartTime, @EndTime)"
-                    : @"
-                        INSERT INTO FundTransferLog 
-                        (FromExchange, ToExchange, Asset, Amount, WithdrawSuccess, DepositSuccess, 
-                         Success, ErrorMessage, RequestTime, StartTime, EndTime)
-                        VALUES 
-                        (@FromExchange, @ToExchange, @Asset, @Amount, @WithdrawSuccess, @DepositSuccess, 
-                         @Success, @ErrorMessage, @RequestTime, @StartTime, @EndTime)";
-
-                await db.ExecuteAsync(sql, new
-                {
-                    UserId = userId,
-                    FromExchange = result.Request.FromExchange.ToString(),
-                    ToExchange = result.Request.ToExchange.ToString(),
-                    result.Request.Asset,
-                    result.Request.Amount,
-                    result.WithdrawSuccess,
-                    result.DepositSuccess,
-                    result.Success,
-                    result.ErrorMessage,
-                    RequestTime = result.Request.Timestamp,
-                    result.StartTime,
-                    result.EndTime
-                });
+                await db.ExecuteAsync(
+                    "EXEC dbo.sp_SaveFundTransferLog @UserId, @FromExchange, @ToExchange, @Asset, @Amount, @WithdrawSuccess, @DepositSuccess, @Success, @ErrorMessage, @RequestTime, @StartTime, @EndTime",
+                    new
+                    {
+                        UserId = userId,
+                        FromExchange = result.Request.FromExchange.ToString(),
+                        ToExchange = result.Request.ToExchange.ToString(),
+                        result.Request.Asset,
+                        result.Request.Amount,
+                        result.WithdrawSuccess,
+                        result.DepositSuccess,
+                        result.Success,
+                        result.ErrorMessage,
+                        RequestTime = result.Request.Timestamp,
+                        result.StartTime,
+                        result.EndTime
+                    });
             }
             catch (Exception ex)
             {
@@ -2086,77 +1775,43 @@ ORDER BY Symbol, OpenTime ASC";
         {
             try
             {
+                // [v5.10.65] HasColumnAsync 제거 → SP 내부에서 COL_LENGTH 분기
+                int userId = GetCurrentUserId();
+
                 using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
 
-                bool hasParentUserId = await HasColumnAsync(db, "PortfolioRebalancingLog", "UserId");
-                bool hasActionUserId = await HasColumnAsync(db, "RebalancingAction", "UserId");
-                int userId = GetCurrentUserId();
-                if ((hasParentUserId || hasActionUserId) && userId <= 0)
+                long logId = await db.ExecuteScalarAsync<long>(
+                    "EXEC dbo.sp_SaveRebalancingLog @UserId, @TotalValue, @ActionCount, @Success, @ErrorMessage, @StartTime, @EndTime",
+                    new
+                    {
+                        UserId = userId,
+                        report.TotalValue,
+                        ActionCount = report.ExecutedActions.Count,
+                        report.Success,
+                        report.ErrorMessage,
+                        report.StartTime,
+                        report.EndTime
+                    });
+
+                if (logId > 0 && report.ExecutedActions.Any())
                 {
-                    MainWindow.Instance?.AddLog("⚠️ [리밸런싱 로그] UserId 확인 실패로 사용자별 저장을 건너뜁니다.");
-                    return;
-                }
-
-                // 부모 로그 저장
-                string insertLogSql = hasParentUserId
-                    ? @"
-                        INSERT INTO PortfolioRebalancingLog 
-                        (UserId, TotalValue, ActionCount, Success, ErrorMessage, StartTime, EndTime)
-                        OUTPUT INSERTED.Id
-                        VALUES 
-                        (@UserId, @TotalValue, @ActionCount, @Success, @ErrorMessage, @StartTime, @EndTime)"
-                    : @"
-                        INSERT INTO PortfolioRebalancingLog 
-                        (TotalValue, ActionCount, Success, ErrorMessage, StartTime, EndTime)
-                        OUTPUT INSERTED.Id
-                        VALUES 
-                        (@TotalValue, @ActionCount, @Success, @ErrorMessage, @StartTime, @EndTime)";
-
-                long logId = await db.ExecuteScalarAsync<long>(insertLogSql, new
-                {
-                    UserId = userId,
-                    report.TotalValue,
-                    ActionCount = report.ExecutedActions.Count,
-                    report.Success,
-                    report.ErrorMessage,
-                    report.StartTime,
-                    report.EndTime
-                });
-
-                // 자식 액션 저장
-                if (report.ExecutedActions.Any())
-                {
-                    string insertActionSql = hasActionUserId
-                        ? @"
-                            INSERT INTO RebalancingAction 
-                            (RebalancingLogId, UserId, Asset, CurrentPercentage, TargetPercentage, 
-                             Deviation, Action, TargetValue, Executed)
-                            VALUES 
-                            (@RebalancingLogId, @UserId, @Asset, @CurrentPercentage, @TargetPercentage, 
-                             @Deviation, @Action, @TargetValue, @Executed)"
-                        : @"
-                            INSERT INTO RebalancingAction 
-                            (RebalancingLogId, Asset, CurrentPercentage, TargetPercentage, 
-                             Deviation, Action, TargetValue, Executed)
-                            VALUES 
-                            (@RebalancingLogId, @Asset, @CurrentPercentage, @TargetPercentage, 
-                             @Deviation, @Action, @TargetValue, @Executed)";
-
                     foreach (var action in report.ExecutedActions)
                     {
-                        await db.ExecuteAsync(insertActionSql, new
-                        {
-                            RebalancingLogId = logId,
-                            UserId = userId,
-                            action.Asset,
-                            action.CurrentPercentage,
-                            action.TargetPercentage,
-                            action.Deviation,
-                            action.Action,
-                            action.TargetValue,
-                            Executed = true
-                        });
+                        await db.ExecuteAsync(
+                            "EXEC dbo.sp_SaveRebalancingAction @LogId, @UserId, @Asset, @CurrentPercentage, @TargetPercentage, @Deviation, @Action, @TargetValue, @Executed",
+                            new
+                            {
+                                LogId = logId,
+                                UserId = userId,
+                                action.Asset,
+                                action.CurrentPercentage,
+                                action.TargetPercentage,
+                                action.Deviation,
+                                action.Action,
+                                action.TargetValue,
+                                Executed = true
+                            });
                     }
                 }
             }
@@ -2329,10 +1984,6 @@ ORDER BY Symbol, OpenTime ASC";
         {
             try
             {
-                using var db = new SqlConnection(_connectionString);
-                await db.OpenAsync();
-
-                bool hasTradeHistoryUserId = await HasColumnAsync(db, "TradeHistory", "UserId");
                 int resolvedUserId = userId.GetValueOrDefault();
                 if (resolvedUserId <= 0)
                     resolvedUserId = GetCurrentUserId();
@@ -2344,21 +1995,17 @@ ORDER BY Symbol, OpenTime ASC";
                     return new List<(string, DateTime)>();
                 }
 
-                string sql = @"
-                        SELECT DISTINCT Symbol, MAX(ExitTime) AS LastExitTime
-                        FROM dbo.TradeHistory
-                        WHERE ExitTime IS NOT NULL
-                          AND ExitTime > DATEADD(MINUTE, -@WithinMinutes, GETDATE())
-                          AND UserId = @UserId";
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
 
-                sql += @"
-                        GROUP BY Symbol";
-
-                var result = await db.QueryAsync<(string Symbol, DateTime LastExitTime)>(sql, new
-                {
-                    WithinMinutes = withinMinutes,
-                    UserId = resolvedUserId
-                });
+                // [v5.10.65] 인라인 SELECT → sp_GetRecentlyClosedPositions
+                var result = await db.QueryAsync<(string Symbol, DateTime LastExitTime)>(
+                    "EXEC dbo.sp_GetRecentlyClosedPositions @UserId, @WithinMinutes",
+                    new
+                    {
+                        UserId = resolvedUserId,
+                        WithinMinutes = withinMinutes
+                    });
                 return result.ToList();
             }
             catch (Exception ex)
@@ -2471,102 +2118,35 @@ ORDER BY Symbol, OpenTime ASC";
                 await using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
 
-                const string mergeSql = @"
-MERGE dbo.ElliottWaveAnchors AS target
-USING (
-    SELECT
-        @UserId AS UserId,
-        @Symbol AS Symbol,
-        @CurrentPhase AS CurrentPhase,
-        @Phase1StartTime AS Phase1StartTime,
-        @Phase1LowPrice AS Phase1LowPrice,
-        @Phase1HighPrice AS Phase1HighPrice,
-        @Phase1Volume AS Phase1Volume,
-        @Phase2StartTime AS Phase2StartTime,
-        @Phase2LowPrice AS Phase2LowPrice,
-        @Phase2HighPrice AS Phase2HighPrice,
-        @Phase2Volume AS Phase2Volume,
-        @Fib500Level AS Fib500Level,
-        @Fib0618Level AS Fib0618Level,
-        @Fib786Level AS Fib786Level,
-        @Fib1618Target AS Fib1618Target,
-        @AnchorLowPoint AS AnchorLowPoint,
-        @AnchorHighPoint AS AnchorHighPoint,
-        @AnchorIsConfirmed AS AnchorIsConfirmed,
-        @AnchorIsLocked AS AnchorIsLocked,
-        @AnchorConfirmedAtUtc AS AnchorConfirmedAtUtc,
-        @LowPivotStrength AS LowPivotStrength,
-        @HighPivotStrength AS HighPivotStrength,
-        @UpdatedAtUtc AS UpdatedAtUtc
-) AS source
-ON target.UserId = source.UserId AND target.Symbol = source.Symbol
-WHEN MATCHED THEN
-    UPDATE SET
-        CurrentPhase = source.CurrentPhase,
-        Phase1StartTime = source.Phase1StartTime,
-        Phase1LowPrice = source.Phase1LowPrice,
-        Phase1HighPrice = source.Phase1HighPrice,
-        Phase1Volume = source.Phase1Volume,
-        Phase2StartTime = source.Phase2StartTime,
-        Phase2LowPrice = source.Phase2LowPrice,
-        Phase2HighPrice = source.Phase2HighPrice,
-        Phase2Volume = source.Phase2Volume,
-        Fib500Level = source.Fib500Level,
-        Fib0618Level = source.Fib0618Level,
-        Fib786Level = source.Fib786Level,
-        Fib1618Target = source.Fib1618Target,
-        AnchorLowPoint = source.AnchorLowPoint,
-        AnchorHighPoint = source.AnchorHighPoint,
-        AnchorIsConfirmed = source.AnchorIsConfirmed,
-        AnchorIsLocked = source.AnchorIsLocked,
-        AnchorConfirmedAtUtc = source.AnchorConfirmedAtUtc,
-        LowPivotStrength = source.LowPivotStrength,
-        HighPivotStrength = source.HighPivotStrength,
-        UpdatedAtUtc = source.UpdatedAtUtc
-WHEN NOT MATCHED THEN
-    INSERT
-    (
-        UserId, Symbol, CurrentPhase, Phase1StartTime, Phase1LowPrice, Phase1HighPrice, Phase1Volume,
-        Phase2StartTime, Phase2LowPrice, Phase2HighPrice, Phase2Volume,
-        Fib500Level, Fib0618Level, Fib786Level, Fib1618Target,
-        AnchorLowPoint, AnchorHighPoint, AnchorIsConfirmed, AnchorIsLocked, AnchorConfirmedAtUtc,
-        LowPivotStrength, HighPivotStrength, UpdatedAtUtc
-    )
-    VALUES
-    (
-        source.UserId, source.Symbol, source.CurrentPhase, source.Phase1StartTime, source.Phase1LowPrice, source.Phase1HighPrice, source.Phase1Volume,
-        source.Phase2StartTime, source.Phase2LowPrice, source.Phase2HighPrice, source.Phase2Volume,
-        source.Fib500Level, source.Fib0618Level, source.Fib786Level, source.Fib1618Target,
-        source.AnchorLowPoint, source.AnchorHighPoint, source.AnchorIsConfirmed, source.AnchorIsLocked, source.AnchorConfirmedAtUtc,
-        source.LowPivotStrength, source.HighPivotStrength, source.UpdatedAtUtc
-    );";
-
-                await db.ExecuteAsync(mergeSql, new
-                {
-                    UserId = userId,
-                    Symbol = TrimForDb(state.Symbol, 50),
-                    state.CurrentPhase,
-                    Phase1StartTime = state.Phase1StartTime,
-                    state.Phase1LowPrice,
-                    state.Phase1HighPrice,
-                    Phase1Volume = SanitizeFloatForDb(state.Phase1Volume),
-                    Phase2StartTime = state.Phase2StartTime,
-                    state.Phase2LowPrice,
-                    state.Phase2HighPrice,
-                    Phase2Volume = SanitizeFloatForDb(state.Phase2Volume),
-                    state.Fib500Level,
-                    state.Fib0618Level,
-                    state.Fib786Level,
-                    state.Fib1618Target,
-                    state.AnchorLowPoint,
-                    state.AnchorHighPoint,
-                    state.AnchorIsConfirmed,
-                    state.AnchorIsLocked,
-                    AnchorConfirmedAtUtc = state.AnchorConfirmedAtUtc,
-                    state.LowPivotStrength,
-                    state.HighPivotStrength,
-                    UpdatedAtUtc = DateTime.UtcNow
-                });
+                // [v5.10.65] 인라인 MERGE 제거 (lock 경합) → sp_UpsertElliottWaveAnchor (UPDATE → IF @@ROWCOUNT=0 INSERT)
+                await db.ExecuteAsync(
+                    "EXEC dbo.sp_UpsertElliottWaveAnchor @UserId, @Symbol, @CurrentPhase, @Phase1StartTime, @Phase1LowPrice, @Phase1HighPrice, @Phase1Volume, @Phase2StartTime, @Phase2LowPrice, @Phase2HighPrice, @Phase2Volume, @Fib500Level, @Fib0618Level, @Fib786Level, @Fib1618Target, @AnchorLowPoint, @AnchorHighPoint, @AnchorIsConfirmed, @AnchorIsLocked, @AnchorConfirmedAtUtc, @LowPivotStrength, @HighPivotStrength, @UpdatedAtUtc",
+                    new
+                    {
+                        UserId = userId,
+                        Symbol = TrimForDb(state.Symbol, 50),
+                        state.CurrentPhase,
+                        Phase1StartTime = state.Phase1StartTime,
+                        state.Phase1LowPrice,
+                        state.Phase1HighPrice,
+                        Phase1Volume = SanitizeFloatForDb(state.Phase1Volume),
+                        Phase2StartTime = state.Phase2StartTime,
+                        state.Phase2LowPrice,
+                        state.Phase2HighPrice,
+                        Phase2Volume = SanitizeFloatForDb(state.Phase2Volume),
+                        state.Fib500Level,
+                        state.Fib0618Level,
+                        state.Fib786Level,
+                        state.Fib1618Target,
+                        state.AnchorLowPoint,
+                        state.AnchorHighPoint,
+                        state.AnchorIsConfirmed,
+                        state.AnchorIsLocked,
+                        AnchorConfirmedAtUtc = state.AnchorConfirmedAtUtc,
+                        state.LowPivotStrength,
+                        state.HighPivotStrength,
+                        UpdatedAtUtc = DateTime.UtcNow
+                    });
 
                 return true;
             }
@@ -2594,33 +2174,14 @@ WHEN NOT MATCHED THEN
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList() ?? new List<string>();
 
-                if (symbolList.Count == 0)
-                {
-                    const string sqlAll = @"
-SELECT UserId, Symbol, CurrentPhase,
-       Phase1StartTime, Phase1LowPrice, Phase1HighPrice, Phase1Volume,
-       Phase2StartTime, Phase2LowPrice, Phase2HighPrice, Phase2Volume,
-       Fib500Level, Fib0618Level, Fib786Level, Fib1618Target,
-       AnchorLowPoint, AnchorHighPoint, AnchorIsConfirmed, AnchorIsLocked,
-       AnchorConfirmedAtUtc, LowPivotStrength, HighPivotStrength, UpdatedAtUtc
-FROM dbo.ElliottWaveAnchors
-WHERE UserId = @UserId";
+                // [v5.10.65] 인라인 SQL → sp_LoadElliottWaveAnchors (CSV 파라미터)
+                string? symbolsCsv = symbolList.Count > 0 ? string.Join(",", symbolList) : null;
 
-                    return (await db.QueryAsync<ElliottWaveAnchorState>(sqlAll, new { UserId = userId })).ToList();
-                }
+                var rows = await db.QueryAsync<ElliottWaveAnchorState>(
+                    "EXEC dbo.sp_LoadElliottWaveAnchors @UserId, @SymbolsCsv",
+                    new { UserId = userId, SymbolsCsv = symbolsCsv });
 
-                const string sqlBySymbols = @"
-SELECT UserId, Symbol, CurrentPhase,
-       Phase1StartTime, Phase1LowPrice, Phase1HighPrice, Phase1Volume,
-       Phase2StartTime, Phase2LowPrice, Phase2HighPrice, Phase2Volume,
-       Fib500Level, Fib0618Level, Fib786Level, Fib1618Target,
-       AnchorLowPoint, AnchorHighPoint, AnchorIsConfirmed, AnchorIsLocked,
-       AnchorConfirmedAtUtc, LowPivotStrength, HighPivotStrength, UpdatedAtUtc
-FROM dbo.ElliottWaveAnchors
-WHERE UserId = @UserId
-  AND Symbol IN @Symbols";
-
-                return (await db.QueryAsync<ElliottWaveAnchorState>(sqlBySymbols, new { UserId = userId, Symbols = symbolList })).ToList();
+                return rows.ToList();
             }
             catch (Exception ex)
             {
@@ -2643,16 +2204,14 @@ WHERE UserId = @UserId
                 await using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
 
-                const string deleteSql = @"
-DELETE FROM dbo.ElliottWaveAnchors
-WHERE UserId = @UserId
-  AND Symbol = @Symbol";
-
-                await db.ExecuteAsync(deleteSql, new
-                {
-                    UserId = userId,
-                    Symbol = TrimForDb(symbol, 50)
-                });
+                // [v5.10.65] 인라인 DELETE → sp_DeleteElliottWaveAnchor
+                await db.ExecuteAsync(
+                    "EXEC dbo.sp_DeleteElliottWaveAnchor @UserId, @Symbol",
+                    new
+                    {
+                        UserId = userId,
+                        Symbol = TrimForDb(symbol, 50)
+                    });
 
                 return true;
             }
@@ -2696,16 +2255,6 @@ WHERE UserId = @UserId
             float rsi = 0f, float bbPos = 0f,
             string? decisionId = null)
         {
-          
-
-            const string insertSql = @"
-INSERT INTO dbo.Bot_Log
-    (UserId, Symbol, Direction, CoinType, Allowed, Reason,
-     ML_Conf, TF_Conf, TrendScore, RSI, BBPosition, DecisionId)
-VALUES
-    (@UserId, @Symbol, @Direction, @CoinType, @Allowed, @Reason,
-     @ML_Conf, @TF_Conf, @TrendScore, @RSI, @BBPosition, @DecisionId)";
-
             try
             {
                 if (!TryGetCurrentUserIdForSave($"{symbol} AI 게이트 로그", out int userId))
@@ -2713,21 +2262,25 @@ VALUES
 
                 await using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
-                await db.ExecuteAsync(insertSql, new
-                {
-                    UserId    = userId,
-                    Symbol    = TrimForDb(symbol, 20),
-                    Direction = TrimForDb(direction, 10),
-                    CoinType  = TrimForDb(coinType, 20),
-                    Allowed   = allowed,
-                    Reason    = TrimForDb(reason, 200),
-                    ML_Conf   = SanitizeFloatForDb(mlConf),
-                    TF_Conf   = SanitizeFloatForDb(tfConf),
-                    TrendScore= SanitizeFloatForDb(trendScore),
-                    RSI       = (object?)SanitizeFloatForDb(rsi) ?? DBNull.Value,
-                    BBPosition= (object?)SanitizeFloatForDb(bbPos) ?? DBNull.Value,
-                    DecisionId= string.IsNullOrWhiteSpace(decisionId) ? (object)DBNull.Value : decisionId
-                });
+
+                // [v5.10.65] 인라인 INSERT → sp_SaveAiSignalLog
+                await db.ExecuteAsync(
+                    "EXEC dbo.sp_SaveAiSignalLog @UserId, @Symbol, @Direction, @CoinType, @Allowed, @Reason, @ML_Conf, @TF_Conf, @TrendScore, @RSI, @BBPosition, @DecisionId",
+                    new
+                    {
+                        UserId    = userId,
+                        Symbol    = TrimForDb(symbol, 20),
+                        Direction = TrimForDb(direction, 10),
+                        CoinType  = TrimForDb(coinType, 20),
+                        Allowed   = allowed,
+                        Reason    = TrimForDb(reason, 200),
+                        ML_Conf   = SanitizeFloatForDb(mlConf),
+                        TF_Conf   = SanitizeFloatForDb(tfConf),
+                        TrendScore= SanitizeFloatForDb(trendScore),
+                        RSI       = (object?)SanitizeFloatForDb(rsi) ?? DBNull.Value,
+                        BBPosition= (object?)SanitizeFloatForDb(bbPos) ?? DBNull.Value,
+                        DecisionId= string.IsNullOrWhiteSpace(decisionId) ? (object)DBNull.Value : decisionId
+                    });
             }
             catch (Exception ex)
             {
@@ -2768,11 +2321,9 @@ VALUES
                 await using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
 
-                await db.ExecuteAsync(@"
-INSERT INTO dbo.Order_Error
-    (UserId, Symbol, Side, OrderType, Quantity, ErrorCode, ErrorMsg, Resolved, RetryCount, Resolution)
-VALUES
-    (@UserId, @Symbol, @Side, @OrderType, @Quantity, @ErrorCode, @ErrorMsg, @Resolved, @RetryCount, @Resolution)",
+                // [v5.10.65] 인라인 INSERT → sp_SaveOrderError
+                await db.ExecuteAsync(
+                    "EXEC dbo.sp_SaveOrderError @UserId, @Symbol, @Side, @OrderType, @Quantity, @ErrorCode, @ErrorMsg, @Resolved, @RetryCount, @Resolution",
                     new
                     {
                         UserId = userId,

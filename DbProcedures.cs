@@ -44,6 +44,24 @@ namespace TradingBot
                 ("sp_GetCandleDataByInterval", sp_GetCandleDataByInterval),
                 ("sp_CompleteTrade",          sp_CompleteTrade),
                 ("sp_TryCompleteOpenTrade",  sp_TryCompleteOpenTrade),
+                // [v5.10.65] 인라인 SQL → SP 전환 (lock 경합 / MERGE 제거)
+                ("sp_SaveAiSignalLog",            sp_SaveAiSignalLog),
+                ("sp_SaveOrderError",             sp_SaveOrderError),
+                ("sp_SaveArbitrageExecutionLog",  sp_SaveArbitrageExecutionLog),
+                ("sp_SaveFundTransferLog",        sp_SaveFundTransferLog),
+                ("sp_SaveRebalancingLog",         sp_SaveRebalancingLog),
+                ("sp_SaveRebalancingAction",      sp_SaveRebalancingAction),
+                ("sp_GetRecentlyClosedPositions", sp_GetRecentlyClosedPositions),
+                ("sp_UpsertElliottWaveAnchor",    sp_UpsertElliottWaveAnchor),
+                ("sp_LoadElliottWaveAnchors",     sp_LoadElliottWaveAnchors),
+                ("sp_DeleteElliottWaveAnchor",    sp_DeleteElliottWaveAnchor),
+                ("sp_ResolveCloseSymbol",         sp_ResolveCloseSymbol),
+                ("sp_MirrorToTradeLogs",          sp_MirrorToTradeLogs),
+                ("sp_EnsureOpenTradeForPosition", sp_EnsureOpenTradeForPosition),
+                ("sp_RecordPartialClose",         sp_RecordPartialClose),
+                ("sp_InsertClosedTrade",          sp_InsertClosedTrade),
+                ("sp_GetAllCandleDataForTraining", sp_GetAllCandleDataForTraining),
+                ("sp_GetBulkCandleData",          sp_GetBulkCandleData),
             };
 
             await using var conn = new SqlConnection(connectionString);
@@ -895,6 +913,780 @@ BEGIN
             LastUpdatedAt = GETDATE()
         WHERE Id = @OpenTradeId;
     END
+END";
+
+        // ════════════════════════════════════════════════════════════════════
+        // [v5.10.65] 신규 SP — 인라인 SQL → SP 전환
+        // ════════════════════════════════════════════════════════════════════
+
+        // sp_SaveAiSignalLog — Bot_Log INSERT
+        private const string sp_SaveAiSignalLog = @"
+CREATE OR ALTER PROCEDURE dbo.sp_SaveAiSignalLog
+    @UserId     INT,
+    @Symbol     NVARCHAR(20),
+    @Direction  NVARCHAR(10),
+    @CoinType   NVARCHAR(20),
+    @Allowed    BIT,
+    @Reason     NVARCHAR(200),
+    @ML_Conf    REAL,
+    @TF_Conf    REAL,
+    @TrendScore REAL,
+    @RSI        REAL = NULL,
+    @BBPosition REAL = NULL,
+    @DecisionId NVARCHAR(50) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    INSERT INTO dbo.Bot_Log
+        (UserId, Symbol, Direction, CoinType, Allowed, Reason,
+         ML_Conf, TF_Conf, TrendScore, RSI, BBPosition, DecisionId)
+    VALUES
+        (@UserId, @Symbol, @Direction, @CoinType, @Allowed, @Reason,
+         @ML_Conf, @TF_Conf, @TrendScore, @RSI, @BBPosition, @DecisionId);
+END";
+
+        // sp_SaveOrderError — Order_Error INSERT
+        private const string sp_SaveOrderError = @"
+CREATE OR ALTER PROCEDURE dbo.sp_SaveOrderError
+    @UserId     INT,
+    @Symbol     NVARCHAR(20),
+    @Side       NVARCHAR(10),
+    @OrderType  NVARCHAR(30),
+    @Quantity   DECIMAL(18,8),
+    @ErrorCode  INT = NULL,
+    @ErrorMsg   NVARCHAR(500),
+    @Resolved   BIT = 0,
+    @RetryCount INT = 0,
+    @Resolution NVARCHAR(200) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    INSERT INTO dbo.Order_Error
+        (UserId, Symbol, Side, OrderType, Quantity, ErrorCode, ErrorMsg, Resolved, RetryCount, Resolution)
+    VALUES
+        (@UserId, @Symbol, @Side, @OrderType, @Quantity, @ErrorCode, @ErrorMsg, @Resolved, @RetryCount, @Resolution);
+END";
+
+        // sp_SaveArbitrageExecutionLog — UserId 컬럼 유무에 따른 동적 INSERT
+        private const string sp_SaveArbitrageExecutionLog = @"
+CREATE OR ALTER PROCEDURE dbo.sp_SaveArbitrageExecutionLog
+    @UserId         INT,
+    @Symbol         NVARCHAR(50),
+    @BuyExchange    NVARCHAR(50),
+    @SellExchange   NVARCHAR(50),
+    @BuyPrice       DECIMAL(18,8),
+    @SellPrice      DECIMAL(18,8),
+    @Quantity       DECIMAL(18,8),
+    @ProfitPercent  DECIMAL(18,8),
+    @BuyOrderId     NVARCHAR(100) = NULL,
+    @SellOrderId    NVARCHAR(100) = NULL,
+    @BuySuccess     BIT,
+    @SellSuccess    BIT,
+    @Success        BIT,
+    @ErrorMessage   NVARCHAR(500) = NULL,
+    @StartTime      DATETIME2(7),
+    @EndTime        DATETIME2(7)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF OBJECT_ID('dbo.ArbitrageExecutionLog', 'U') IS NULL RETURN;
+
+    IF COL_LENGTH('dbo.ArbitrageExecutionLog', 'UserId') IS NOT NULL
+    BEGIN
+        INSERT INTO dbo.ArbitrageExecutionLog
+            (UserId, Symbol, BuyExchange, SellExchange, BuyPrice, SellPrice, Quantity,
+             ProfitPercent, BuyOrderId, SellOrderId, BuySuccess, SellSuccess,
+             Success, ErrorMessage, StartTime, EndTime)
+        VALUES
+            (@UserId, @Symbol, @BuyExchange, @SellExchange, @BuyPrice, @SellPrice, @Quantity,
+             @ProfitPercent, @BuyOrderId, @SellOrderId, @BuySuccess, @SellSuccess,
+             @Success, @ErrorMessage, @StartTime, @EndTime);
+    END
+    ELSE
+    BEGIN
+        INSERT INTO dbo.ArbitrageExecutionLog
+            (Symbol, BuyExchange, SellExchange, BuyPrice, SellPrice, Quantity,
+             ProfitPercent, BuyOrderId, SellOrderId, BuySuccess, SellSuccess,
+             Success, ErrorMessage, StartTime, EndTime)
+        VALUES
+            (@Symbol, @BuyExchange, @SellExchange, @BuyPrice, @SellPrice, @Quantity,
+             @ProfitPercent, @BuyOrderId, @SellOrderId, @BuySuccess, @SellSuccess,
+             @Success, @ErrorMessage, @StartTime, @EndTime);
+    END
+END";
+
+        // sp_SaveFundTransferLog — UserId 컬럼 유무에 따른 동적 INSERT
+        private const string sp_SaveFundTransferLog = @"
+CREATE OR ALTER PROCEDURE dbo.sp_SaveFundTransferLog
+    @UserId          INT,
+    @FromExchange    NVARCHAR(50),
+    @ToExchange      NVARCHAR(50),
+    @Asset           NVARCHAR(20),
+    @Amount          DECIMAL(18,8),
+    @WithdrawSuccess BIT,
+    @DepositSuccess  BIT,
+    @Success         BIT,
+    @ErrorMessage    NVARCHAR(500) = NULL,
+    @RequestTime     DATETIME2(7),
+    @StartTime       DATETIME2(7),
+    @EndTime         DATETIME2(7)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF OBJECT_ID('dbo.FundTransferLog', 'U') IS NULL RETURN;
+
+    IF COL_LENGTH('dbo.FundTransferLog', 'UserId') IS NOT NULL
+    BEGIN
+        INSERT INTO dbo.FundTransferLog
+            (UserId, FromExchange, ToExchange, Asset, Amount, WithdrawSuccess, DepositSuccess,
+             Success, ErrorMessage, RequestTime, StartTime, EndTime)
+        VALUES
+            (@UserId, @FromExchange, @ToExchange, @Asset, @Amount, @WithdrawSuccess, @DepositSuccess,
+             @Success, @ErrorMessage, @RequestTime, @StartTime, @EndTime);
+    END
+    ELSE
+    BEGIN
+        INSERT INTO dbo.FundTransferLog
+            (FromExchange, ToExchange, Asset, Amount, WithdrawSuccess, DepositSuccess,
+             Success, ErrorMessage, RequestTime, StartTime, EndTime)
+        VALUES
+            (@FromExchange, @ToExchange, @Asset, @Amount, @WithdrawSuccess, @DepositSuccess,
+             @Success, @ErrorMessage, @RequestTime, @StartTime, @EndTime);
+    END
+END";
+
+        // sp_SaveRebalancingLog — Parent INSERT, OUTPUT Id
+        private const string sp_SaveRebalancingLog = @"
+CREATE OR ALTER PROCEDURE dbo.sp_SaveRebalancingLog
+    @UserId        INT,
+    @TotalValue    DECIMAL(18,8),
+    @ActionCount   INT,
+    @Success       BIT,
+    @ErrorMessage  NVARCHAR(500) = NULL,
+    @StartTime     DATETIME2(7),
+    @EndTime       DATETIME2(7)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF OBJECT_ID('dbo.PortfolioRebalancingLog', 'U') IS NULL
+    BEGIN
+        SELECT CAST(0 AS BIGINT) AS Id;
+        RETURN;
+    END
+
+    IF COL_LENGTH('dbo.PortfolioRebalancingLog', 'UserId') IS NOT NULL
+    BEGIN
+        INSERT INTO dbo.PortfolioRebalancingLog
+            (UserId, TotalValue, ActionCount, Success, ErrorMessage, StartTime, EndTime)
+        OUTPUT INSERTED.Id
+        VALUES
+            (@UserId, @TotalValue, @ActionCount, @Success, @ErrorMessage, @StartTime, @EndTime);
+    END
+    ELSE
+    BEGIN
+        INSERT INTO dbo.PortfolioRebalancingLog
+            (TotalValue, ActionCount, Success, ErrorMessage, StartTime, EndTime)
+        OUTPUT INSERTED.Id
+        VALUES
+            (@TotalValue, @ActionCount, @Success, @ErrorMessage, @StartTime, @EndTime);
+    END
+END";
+
+        // sp_SaveRebalancingAction — Child INSERT (loop)
+        private const string sp_SaveRebalancingAction = @"
+CREATE OR ALTER PROCEDURE dbo.sp_SaveRebalancingAction
+    @LogId             BIGINT,
+    @UserId            INT,
+    @Asset             NVARCHAR(20),
+    @CurrentPercentage DECIMAL(18,8),
+    @TargetPercentage  DECIMAL(18,8),
+    @Deviation         DECIMAL(18,8),
+    @Action            NVARCHAR(20),
+    @TargetValue       DECIMAL(18,8),
+    @Executed          BIT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF OBJECT_ID('dbo.RebalancingAction', 'U') IS NULL RETURN;
+
+    IF COL_LENGTH('dbo.RebalancingAction', 'UserId') IS NOT NULL
+    BEGIN
+        INSERT INTO dbo.RebalancingAction
+            (RebalancingLogId, UserId, Asset, CurrentPercentage, TargetPercentage,
+             Deviation, Action, TargetValue, Executed)
+        VALUES
+            (@LogId, @UserId, @Asset, @CurrentPercentage, @TargetPercentage,
+             @Deviation, @Action, @TargetValue, @Executed);
+    END
+    ELSE
+    BEGIN
+        INSERT INTO dbo.RebalancingAction
+            (RebalancingLogId, Asset, CurrentPercentage, TargetPercentage,
+             Deviation, Action, TargetValue, Executed)
+        VALUES
+            (@LogId, @Asset, @CurrentPercentage, @TargetPercentage,
+             @Deviation, @Action, @TargetValue, @Executed);
+    END
+END";
+
+        // sp_GetRecentlyClosedPositions — DISTINCT MAX(ExitTime) GROUP BY Symbol
+        private const string sp_GetRecentlyClosedPositions = @"
+CREATE OR ALTER PROCEDURE dbo.sp_GetRecentlyClosedPositions
+    @UserId        INT,
+    @WithinMinutes INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Symbol, MAX(ExitTime) AS LastExitTime
+    FROM dbo.TradeHistory WITH (NOLOCK)
+    WHERE ExitTime IS NOT NULL
+      AND ExitTime > DATEADD(MINUTE, -@WithinMinutes, GETDATE())
+      AND UserId = @UserId
+    GROUP BY Symbol;
+END";
+
+        // sp_UpsertElliottWaveAnchor — 인라인 MERGE 제거 → UPDATE+INSERT
+        private const string sp_UpsertElliottWaveAnchor = @"
+CREATE OR ALTER PROCEDURE dbo.sp_UpsertElliottWaveAnchor
+    @UserId               INT,
+    @Symbol               NVARCHAR(50),
+    @CurrentPhase         INT,
+    @Phase1StartTime      DATETIME2(7) = NULL,
+    @Phase1LowPrice       DECIMAL(18,8),
+    @Phase1HighPrice      DECIMAL(18,8),
+    @Phase1Volume         REAL,
+    @Phase2StartTime      DATETIME2(7) = NULL,
+    @Phase2LowPrice       DECIMAL(18,8),
+    @Phase2HighPrice      DECIMAL(18,8),
+    @Phase2Volume         REAL,
+    @Fib500Level          DECIMAL(18,8),
+    @Fib0618Level         DECIMAL(18,8),
+    @Fib786Level          DECIMAL(18,8),
+    @Fib1618Target        DECIMAL(18,8),
+    @AnchorLowPoint       DECIMAL(18,8),
+    @AnchorHighPoint      DECIMAL(18,8),
+    @AnchorIsConfirmed    BIT,
+    @AnchorIsLocked       BIT,
+    @AnchorConfirmedAtUtc DATETIME2(7) = NULL,
+    @LowPivotStrength     INT,
+    @HighPivotStrength    INT,
+    @UpdatedAtUtc         DATETIME2(7)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.ElliottWaveAnchors WITH (UPDLOCK, HOLDLOCK)
+    SET CurrentPhase         = @CurrentPhase,
+        Phase1StartTime      = @Phase1StartTime,
+        Phase1LowPrice       = @Phase1LowPrice,
+        Phase1HighPrice      = @Phase1HighPrice,
+        Phase1Volume         = @Phase1Volume,
+        Phase2StartTime      = @Phase2StartTime,
+        Phase2LowPrice       = @Phase2LowPrice,
+        Phase2HighPrice      = @Phase2HighPrice,
+        Phase2Volume         = @Phase2Volume,
+        Fib500Level          = @Fib500Level,
+        Fib0618Level         = @Fib0618Level,
+        Fib786Level          = @Fib786Level,
+        Fib1618Target        = @Fib1618Target,
+        AnchorLowPoint       = @AnchorLowPoint,
+        AnchorHighPoint      = @AnchorHighPoint,
+        AnchorIsConfirmed    = @AnchorIsConfirmed,
+        AnchorIsLocked       = @AnchorIsLocked,
+        AnchorConfirmedAtUtc = @AnchorConfirmedAtUtc,
+        LowPivotStrength     = @LowPivotStrength,
+        HighPivotStrength    = @HighPivotStrength,
+        UpdatedAtUtc         = @UpdatedAtUtc
+    WHERE UserId = @UserId AND Symbol = @Symbol;
+
+    IF @@ROWCOUNT = 0
+    BEGIN
+        INSERT INTO dbo.ElliottWaveAnchors
+            (UserId, Symbol, CurrentPhase,
+             Phase1StartTime, Phase1LowPrice, Phase1HighPrice, Phase1Volume,
+             Phase2StartTime, Phase2LowPrice, Phase2HighPrice, Phase2Volume,
+             Fib500Level, Fib0618Level, Fib786Level, Fib1618Target,
+             AnchorLowPoint, AnchorHighPoint, AnchorIsConfirmed, AnchorIsLocked, AnchorConfirmedAtUtc,
+             LowPivotStrength, HighPivotStrength, UpdatedAtUtc)
+        VALUES
+            (@UserId, @Symbol, @CurrentPhase,
+             @Phase1StartTime, @Phase1LowPrice, @Phase1HighPrice, @Phase1Volume,
+             @Phase2StartTime, @Phase2LowPrice, @Phase2HighPrice, @Phase2Volume,
+             @Fib500Level, @Fib0618Level, @Fib786Level, @Fib1618Target,
+             @AnchorLowPoint, @AnchorHighPoint, @AnchorIsConfirmed, @AnchorIsLocked, @AnchorConfirmedAtUtc,
+             @LowPivotStrength, @HighPivotStrength, @UpdatedAtUtc);
+    END
+END";
+
+        // sp_LoadElliottWaveAnchors — UserId + 선택적 Symbols CSV 필터
+        private const string sp_LoadElliottWaveAnchors = @"
+CREATE OR ALTER PROCEDURE dbo.sp_LoadElliottWaveAnchors
+    @UserId     INT,
+    @SymbolsCsv NVARCHAR(MAX) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT UserId, Symbol, CurrentPhase,
+           Phase1StartTime, Phase1LowPrice, Phase1HighPrice, Phase1Volume,
+           Phase2StartTime, Phase2LowPrice, Phase2HighPrice, Phase2Volume,
+           Fib500Level, Fib0618Level, Fib786Level, Fib1618Target,
+           AnchorLowPoint, AnchorHighPoint, AnchorIsConfirmed, AnchorIsLocked,
+           AnchorConfirmedAtUtc, LowPivotStrength, HighPivotStrength, UpdatedAtUtc
+    FROM dbo.ElliottWaveAnchors WITH (NOLOCK)
+    WHERE UserId = @UserId
+      AND (@SymbolsCsv IS NULL OR LEN(@SymbolsCsv) = 0
+           OR Symbol IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@SymbolsCsv, ',')));
+END";
+
+        // sp_DeleteElliottWaveAnchor
+        private const string sp_DeleteElliottWaveAnchor = @"
+CREATE OR ALTER PROCEDURE dbo.sp_DeleteElliottWaveAnchor
+    @UserId INT,
+    @Symbol NVARCHAR(50)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DELETE FROM dbo.ElliottWaveAnchors
+    WHERE UserId = @UserId AND Symbol = @Symbol;
+END";
+
+        // sp_ResolveCloseSymbol — 3단계 매칭 (strict / side / open)
+        private const string sp_ResolveCloseSymbol = @"
+CREATE OR ALTER PROCEDURE dbo.sp_ResolveCloseSymbol
+    @UserId     INT,
+    @Side       NVARCHAR(10),
+    @EntryPrice DECIMAL(18,8),
+    @Quantity   DECIMAL(18,8),
+    @EntryTime  DATETIME2(7) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Symbol    NVARCHAR(50) = NULL;
+    DECLARE @MatchType NVARCHAR(16) = N'';
+
+    -- 1) strict 매칭
+    SELECT TOP (1) @Symbol = Symbol
+    FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+    WHERE UserId = @UserId
+      AND IsClosed = 0
+      AND Side = @Side
+      AND (@EntryPrice <= 0 OR ABS(CAST(EntryPrice AS FLOAT) - CAST(@EntryPrice AS FLOAT)) <= ABS(CAST(@EntryPrice AS FLOAT)) * 0.02)
+      AND (@Quantity   <= 0 OR ABS(CAST(Quantity   AS FLOAT) - CAST(@Quantity   AS FLOAT)) <= ABS(CAST(@Quantity   AS FLOAT)) * 0.30)
+    ORDER BY
+      CASE WHEN @EntryTime IS NULL THEN 0 ELSE ABS(DATEDIFF(SECOND, EntryTime, @EntryTime)) END,
+      Id DESC;
+
+    IF @Symbol IS NOT NULL AND LEN(@Symbol) > 0
+    BEGIN
+        SET @MatchType = N'strict';
+        SELECT @Symbol AS Symbol, @MatchType AS MatchType;
+        RETURN;
+    END
+
+    -- 2) side 매칭
+    SELECT TOP (1) @Symbol = Symbol
+    FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+    WHERE UserId = @UserId
+      AND IsClosed = 0
+      AND Side = @Side
+    ORDER BY EntryTime DESC, Id DESC;
+
+    IF @Symbol IS NOT NULL AND LEN(@Symbol) > 0
+    BEGIN
+        SET @MatchType = N'side';
+        SELECT @Symbol AS Symbol, @MatchType AS MatchType;
+        RETURN;
+    END
+
+    -- 3) open 최신
+    SELECT TOP (1) @Symbol = Symbol
+    FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+    WHERE UserId = @UserId
+      AND IsClosed = 0
+    ORDER BY EntryTime DESC, Id DESC;
+
+    IF @Symbol IS NOT NULL AND LEN(@Symbol) > 0
+    BEGIN
+        SET @MatchType = N'open';
+        SELECT @Symbol AS Symbol, @MatchType AS MatchType;
+        RETURN;
+    END
+
+    SELECT CAST(N'' AS NVARCHAR(50)) AS Symbol, CAST(N'' AS NVARCHAR(16)) AS MatchType;
+END";
+
+        // sp_MirrorToTradeLogs — IF NOT EXISTS + INSERT (UserId 유무에 따라 동적)
+        private const string sp_MirrorToTradeLogs = @"
+CREATE OR ALTER PROCEDURE dbo.sp_MirrorToTradeLogs
+    @UserId      INT,
+    @Symbol      NVARCHAR(50),
+    @Side        NVARCHAR(10),
+    @Strategy    NVARCHAR(150) = NULL,
+    @Price       DECIMAL(18,8),
+    @AiScore     REAL,
+    @Time        DATETIME2(7),
+    @PnL         DECIMAL(18,8),
+    @PnLPercent  DECIMAL(18,8),
+    @EntryPrice  DECIMAL(18,8),
+    @ExitPrice   DECIMAL(18,8) = NULL,
+    @Quantity    DECIMAL(18,8) = NULL,
+    @ExitReason  NVARCHAR(255) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF OBJECT_ID('dbo.TradeLogs', 'U') IS NULL RETURN;
+
+    IF COL_LENGTH('dbo.TradeLogs', 'UserId') IS NOT NULL
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM dbo.TradeLogs
+            WHERE UserId = @UserId
+              AND Symbol = @Symbol
+              AND Side = @Side
+              AND ISNULL(Strategy, '') = ISNULL(@Strategy, '')
+              AND ABS(CAST(Price AS FLOAT) - CAST(@Price AS FLOAT)) < 0.0000001
+              AND ABS(CAST(PnL AS FLOAT) - CAST(@PnL AS FLOAT)) < 0.0000001
+              AND [Time] >= DATEADD(SECOND, -3, @Time)
+              AND [Time] <= DATEADD(SECOND, 3, @Time)
+        )
+        BEGIN
+            INSERT INTO dbo.TradeLogs
+                (UserId, Symbol, Side, Strategy, Price, AiScore, [Time], PnL, PnLPercent, EntryPrice, ExitPrice, Quantity, ExitReason)
+            VALUES
+                (@UserId, @Symbol, @Side, @Strategy, @Price, @AiScore, @Time, @PnL, @PnLPercent, @EntryPrice, @ExitPrice, @Quantity, @ExitReason);
+        END
+    END
+    ELSE
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM dbo.TradeLogs
+            WHERE Symbol = @Symbol
+              AND Side = @Side
+              AND ISNULL(Strategy, '') = ISNULL(@Strategy, '')
+              AND ABS(CAST(Price AS FLOAT) - CAST(@Price AS FLOAT)) < 0.0000001
+              AND ABS(CAST(PnL AS FLOAT) - CAST(@PnL AS FLOAT)) < 0.0000001
+              AND [Time] >= DATEADD(SECOND, -3, @Time)
+              AND [Time] <= DATEADD(SECOND, 3, @Time)
+        )
+        BEGIN
+            INSERT INTO dbo.TradeLogs
+                (Symbol, Side, Strategy, Price, AiScore, [Time], PnL, PnLPercent, EntryPrice, ExitPrice, Quantity, ExitReason)
+            VALUES
+                (@Symbol, @Side, @Strategy, @Price, @AiScore, @Time, @PnL, @PnLPercent, @EntryPrice, @ExitPrice, @Quantity, @ExitReason);
+        END
+    END
+END";
+
+        // sp_EnsureOpenTradeForPosition — UPDATE existing or INSERT new (OUTPUT 파라미터)
+        private const string sp_EnsureOpenTradeForPosition = @"
+CREATE OR ALTER PROCEDURE dbo.sp_EnsureOpenTradeForPosition
+    @UserId        INT,
+    @Symbol        NVARCHAR(32),
+    @Side          NVARCHAR(8),
+    @Strategy      NVARCHAR(64),
+    @EntryPrice    DECIMAL(18,8),
+    @Quantity      DECIMAL(18,8),
+    @AiScore       REAL,
+    @EntryTime     DATETIME2(7),
+    @Category      NVARCHAR(32) = NULL,
+    @OutEntryTime  DATETIME2(7) OUTPUT,
+    @OutAiScore    REAL OUTPUT,
+    @OutCreated    BIT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @TradeId           INT          = NULL;
+    DECLARE @ExistingEntryTime DATETIME2(7) = NULL;
+    DECLARE @ExistingAiScore   REAL         = 0;
+
+    SELECT TOP (1)
+           @TradeId           = Id,
+           @ExistingEntryTime = EntryTime,
+           @ExistingAiScore   = AiScore
+    FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+    WHERE UserId = @UserId AND Symbol = @Symbol AND IsClosed = 0
+    ORDER BY EntryTime DESC, Id DESC;
+
+    IF @TradeId IS NOT NULL
+    BEGIN
+        UPDATE dbo.TradeHistory
+        SET Side       = @Side,
+            Strategy   = CASE WHEN NULLIF(LTRIM(RTRIM(Strategy)), '') IS NULL THEN @Strategy ELSE Strategy END,
+            EntryPrice = @EntryPrice,
+            Quantity   = @Quantity,
+            AiScore    = CASE WHEN AiScore = 0 AND @AiScore <> 0 THEN @AiScore ELSE AiScore END,
+            LastUpdatedAt = GETDATE()
+        WHERE Id = @TradeId;
+
+        SET @OutEntryTime = CASE WHEN @ExistingEntryTime IS NULL OR @ExistingEntryTime <= '0001-01-02' THEN @EntryTime ELSE @ExistingEntryTime END;
+        SET @OutAiScore   = CASE WHEN @ExistingAiScore <> 0 THEN @ExistingAiScore ELSE @AiScore END;
+        SET @OutCreated   = 0;
+    END
+    ELSE
+    BEGIN
+        INSERT INTO dbo.TradeHistory
+            (UserId, Symbol, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime,
+             ExitPrice, PnL, PnLPercent, ExitReason, IsClosed, CloseVerified, Category, LastUpdatedAt)
+        VALUES
+            (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @Quantity, @AiScore, @EntryTime,
+             NULL, 0, 0, NULL, 0, 0, @Category, GETDATE());
+
+        SET @OutEntryTime = @EntryTime;
+        SET @OutAiScore   = @AiScore;
+        SET @OutCreated   = 1;
+    END
+END";
+
+        // sp_RecordPartialClose — 복잡 부분청산 (OUTPUT)
+        // OutResultCase: 0=duplicate skip, 1=full close (update existing), 2=partial (insert+update remaining), 3=no open trade fallback insert
+        private const string sp_RecordPartialClose = @"
+CREATE OR ALTER PROCEDURE dbo.sp_RecordPartialClose
+    @UserId               INT,
+    @Symbol               NVARCHAR(32),
+    @CloseQty             DECIMAL(18,8),
+    @ExitPrice            DECIMAL(18,8),
+    @ExitTime             DATETIME2(7),
+    @ExitReason           NVARCHAR(255),
+    @PnL                  DECIMAL(18,8),
+    @PnLPercent           DECIMAL(18,4),
+    @AiScore              REAL,
+    @IsSimulation         BIT,
+    @InferredEntrySide    NVARCHAR(8),
+    @LogStrategy          NVARCHAR(150),
+    @Category             NVARCHAR(32),
+    @OutResultCase        TINYINT       OUTPUT,
+    @OutResolvedEntryPrice DECIMAL(18,8) OUTPUT,
+    @OutResolvedEntryTime  DATETIME2(7)  OUTPUT,
+    @OutResolvedAiScore    REAL          OUTPUT,
+    @OutResolvedEntrySide  NVARCHAR(8)   OUTPUT,
+    @OutResolvedStrategy   NVARCHAR(150) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @OutResultCase = 0;
+    SET @OutResolvedEntryPrice = 0;
+    SET @OutResolvedEntryTime  = @ExitTime;
+    SET @OutResolvedAiScore    = @AiScore;
+    SET @OutResolvedEntrySide  = @InferredEntrySide;
+    SET @OutResolvedStrategy   = @LogStrategy;
+
+    -- 1) 중복 체크
+    IF EXISTS (
+        SELECT 1
+        FROM dbo.TradeHistory
+        WHERE UserId = @UserId
+          AND Symbol = @Symbol
+          AND IsClosed = 1
+          AND CloseVerified = 1
+          AND ExitReason = @ExitReason
+          AND ABS(Quantity   - @CloseQty)   < 0.000001
+          AND ABS(ExitPrice  - @ExitPrice)  < 0.000001
+          AND ExitTime >= DATEADD(SECOND, -5, @ExitTime)
+          AND ExitTime <= DATEADD(SECOND,  5, @ExitTime)
+    )
+    BEGIN
+        SET @OutResultCase = 0;
+        RETURN;
+    END
+
+    -- 2) open trade 조회
+    DECLARE @OpenId         INT          = NULL;
+    DECLARE @OpenSide       NVARCHAR(8)  = NULL;
+    DECLARE @OpenStrategy   NVARCHAR(150) = NULL;
+    DECLARE @OpenEntryPrice DECIMAL(18,8) = 0;
+    DECLARE @OpenQuantity   DECIMAL(18,8) = 0;
+    DECLARE @OpenAiScore    REAL          = 0;
+    DECLARE @OpenEntryTime  DATETIME2(7)  = NULL;
+
+    SELECT TOP (1)
+           @OpenId         = Id,
+           @OpenSide       = Side,
+           @OpenStrategy   = Strategy,
+           @OpenEntryPrice = EntryPrice,
+           @OpenQuantity   = Quantity,
+           @OpenAiScore    = AiScore,
+           @OpenEntryTime  = EntryTime
+    FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+    WHERE UserId = @UserId AND Symbol = @Symbol AND IsClosed = 0
+    ORDER BY EntryTime DESC, Id DESC;
+
+    DECLARE @ResolvedSide       NVARCHAR(8)   = ISNULL(NULLIF(@OpenSide, ''), @InferredEntrySide);
+    DECLARE @ResolvedStrategy   NVARCHAR(150) = ISNULL(NULLIF(LTRIM(RTRIM(@OpenStrategy)), ''), @LogStrategy);
+    DECLARE @ResolvedAiScore    REAL          = CASE WHEN @OpenAiScore <> 0 THEN @OpenAiScore ELSE @AiScore END;
+    DECLARE @ResolvedEntryPrice DECIMAL(18,8) = CASE WHEN @OpenEntryPrice > 0 THEN @OpenEntryPrice ELSE 0 END;
+    DECLARE @ResolvedEntryTime  DATETIME2(7)  = CASE WHEN @OpenEntryTime IS NOT NULL AND @OpenEntryTime > '0001-01-02' THEN @OpenEntryTime ELSE @ExitTime END;
+
+    -- 3) open 없을 때 fallback insert (case 3)
+    IF @OpenId IS NULL
+    BEGIN
+        INSERT INTO dbo.TradeHistory
+            (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, Category, LastUpdatedAt)
+        VALUES
+            (@UserId, @Symbol, @ResolvedSide, @ResolvedStrategy, @ResolvedEntryPrice, @ExitPrice, @CloseQty, @ResolvedAiScore, @PnL, @PnLPercent, @ExitReason, @ResolvedEntryTime, @ExitTime, 1, 1, @IsSimulation, @Category, GETDATE());
+
+        SET @OutResultCase         = 3;
+        SET @OutResolvedEntryPrice = @ResolvedEntryPrice;
+        SET @OutResolvedEntryTime  = @ResolvedEntryTime;
+        SET @OutResolvedAiScore    = @ResolvedAiScore;
+        SET @OutResolvedEntrySide  = @ResolvedSide;
+        SET @OutResolvedStrategy   = @ResolvedStrategy;
+        RETURN;
+    END
+
+    DECLARE @RemainingQty DECIMAL(18,8) = CASE WHEN (@OpenQuantity - @CloseQty) > 0 THEN (@OpenQuantity - @CloseQty) ELSE 0 END;
+
+    -- 4) 잔량 0 → 기존 row 전량 청산 update (case 1)
+    IF @RemainingQty <= 0.000001
+    BEGIN
+        UPDATE dbo.TradeHistory
+        SET ExitPrice    = @ExitPrice,
+            Quantity     = @CloseQty,
+            AiScore      = CASE WHEN @ResolvedAiScore <> 0 THEN @ResolvedAiScore ELSE AiScore END,
+            PnL          = @PnL,
+            PnLPercent   = @PnLPercent,
+            ExitReason   = @ExitReason,
+            ExitTime     = @ExitTime,
+            IsClosed     = 1,
+            CloseVerified = 1,
+            IsSimulation = @IsSimulation,
+            LastUpdatedAt = GETDATE()
+        WHERE Id = @OpenId;
+
+        SET @OutResultCase         = 1;
+        SET @OutResolvedEntryPrice = @ResolvedEntryPrice;
+        SET @OutResolvedEntryTime  = @ResolvedEntryTime;
+        SET @OutResolvedAiScore    = @ResolvedAiScore;
+        SET @OutResolvedEntrySide  = @ResolvedSide;
+        SET @OutResolvedStrategy   = @ResolvedStrategy;
+        RETURN;
+    END
+
+    -- 5) 부분청산: 새 closed row insert + 기존 open row 잔량 update (case 2)
+    INSERT INTO dbo.TradeHistory
+        (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, Category, LastUpdatedAt)
+    VALUES
+        (@UserId, @Symbol, @ResolvedSide, @ResolvedStrategy, @ResolvedEntryPrice, @ExitPrice, @CloseQty, @ResolvedAiScore, @PnL, @PnLPercent, @ExitReason, @ResolvedEntryTime, @ExitTime, 1, 1, @IsSimulation, @Category, GETDATE());
+
+    UPDATE dbo.TradeHistory
+    SET Quantity      = @RemainingQty,
+        LastUpdatedAt = GETDATE()
+    WHERE Id = @OpenId;
+
+    SET @OutResultCase         = 2;
+    SET @OutResolvedEntryPrice = @ResolvedEntryPrice;
+    SET @OutResolvedEntryTime  = @ResolvedEntryTime;
+    SET @OutResolvedAiScore    = @ResolvedAiScore;
+    SET @OutResolvedEntrySide  = @ResolvedSide;
+    SET @OutResolvedStrategy   = @ResolvedStrategy;
+END";
+
+        // sp_InsertClosedTrade — Complete fallback INSERT (open 없을 때 1줄 closed row)
+        private const string sp_InsertClosedTrade = @"
+CREATE OR ALTER PROCEDURE dbo.sp_InsertClosedTrade
+    @UserId       INT,
+    @Symbol       NVARCHAR(32),
+    @Side         NVARCHAR(8),
+    @Strategy     NVARCHAR(150) = NULL,
+    @EntryPrice   DECIMAL(18,8),
+    @ExitPrice    DECIMAL(18,8),
+    @Quantity     DECIMAL(18,8),
+    @AiScore      REAL,
+    @PnL          DECIMAL(18,8),
+    @PnLPercent   DECIMAL(18,4),
+    @ExitReason   NVARCHAR(255) = NULL,
+    @EntryTime    DATETIME2(7),
+    @ExitTime     DATETIME2(7),
+    @IsSimulation BIT = 0,
+    @Category     NVARCHAR(32) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    INSERT INTO dbo.TradeHistory
+        (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, Category, LastUpdatedAt)
+    VALUES
+        (@UserId, @Symbol, @Side, @Strategy, @EntryPrice, @ExitPrice, @Quantity, @AiScore, @PnL, @PnLPercent, @ExitReason, @EntryTime, @ExitTime, 1, 1, @IsSimulation, @Category, GETDATE());
+END";
+
+        // sp_GetAllCandleDataForTraining — ActiveSymbols CTE + RankedCandles
+        private const string sp_GetAllCandleDataForTraining = @"
+CREATE OR ALTER PROCEDURE dbo.sp_GetAllCandleDataForTraining
+    @Limit INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    WITH ActiveSymbols AS (
+        SELECT Symbol
+        FROM dbo.MarketCandles WITH (NOLOCK)
+        WHERE Symbol LIKE '%USDT'
+        GROUP BY Symbol
+        HAVING MAX(OpenTime) >= DATEADD(HOUR, -24, GETUTCDATE())
+    ),
+    RankedCandles AS (
+        SELECT
+            mc.Symbol,
+            mc.OpenTime,
+            mc.OpenPrice  AS [Open],
+            mc.HighPrice  AS [High],
+            mc.LowPrice   AS [Low],
+            mc.ClosePrice AS [Close],
+            CAST(mc.Volume AS float) AS Volume,
+            mc.RSI, mc.MACD, mc.MACD_Signal, mc.MACD_Hist, mc.ATR, mc.BollingerUpper, mc.BollingerLower,
+            ROW_NUMBER() OVER (PARTITION BY mc.Symbol ORDER BY mc.OpenTime DESC) AS rn
+        FROM dbo.MarketCandles mc WITH (NOLOCK)
+        INNER JOIN ActiveSymbols a ON mc.Symbol = a.Symbol
+    )
+    SELECT *
+    FROM RankedCandles
+    WHERE rn <= @Limit
+    ORDER BY Symbol, OpenTime ASC;
+END";
+
+        // sp_GetBulkCandleData — RankedCandles + 선택적 Symbols CSV 필터
+        private const string sp_GetBulkCandleData = @"
+CREATE OR ALTER PROCEDURE dbo.sp_GetBulkCandleData
+    @SymbolsCsv NVARCHAR(MAX) = NULL,
+    @Limit      INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    WITH RankedCandles AS (
+        SELECT
+            Symbol,
+            OpenTime,
+            OpenPrice  AS [Open],
+            HighPrice  AS [High],
+            LowPrice   AS [Low],
+            ClosePrice AS [Close],
+            CAST(Volume AS float) AS Volume,
+            RSI, MACD, MACD_Signal, MACD_Hist, ATR, BollingerUpper, BollingerLower,
+            ROW_NUMBER() OVER (PARTITION BY Symbol ORDER BY OpenTime DESC) AS rn
+        FROM dbo.MarketCandles WITH (NOLOCK)
+        WHERE Symbol LIKE '%USDT'
+          AND (@SymbolsCsv IS NULL OR LEN(@SymbolsCsv) = 0
+               OR Symbol IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@SymbolsCsv, ',')))
+    )
+    SELECT *
+    FROM RankedCandles
+    WHERE rn <= @Limit
+    ORDER BY Symbol, OpenTime ASC;
 END";
     }
 }
