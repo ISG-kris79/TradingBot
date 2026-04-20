@@ -686,6 +686,7 @@ namespace TradingBot
 
         private DateTime _lastHeartbeatTime = DateTime.MinValue;
         private DateTime _lastPositionSyncTime = DateTime.MinValue; // [FIX] 마지막 포지션 동기화 시간
+        private DateTime _lastProtectionCheckTime = DateTime.MinValue; // [v5.10.62] 활성 포지션 SL 없으면 자동 등록
         private DateTime _lastSuccessfulEntryTime = DateTime.MinValue; // [드라이스펠] 마지막 진입 성공 시각
         private DateTime _lastDroughtScanTime = DateTime.MinValue;     // [드라이스펠] 마지막 진단 스캔 시각
         private static readonly TimeSpan DroughtScanThreshold = TimeSpan.FromMinutes(30);  // 30분 진입 없으면 진단
@@ -2918,6 +2919,18 @@ namespace TradingBot
                             OnStatusLog?.Invoke("🔄 정기 거래소 포지션 동기화 시작...");
                             await SyncExchangePositionsAsync(token);
                             _lastPositionSyncTime = DateTime.Now;
+                        }
+
+                        // [v5.10.62 안전망] 2분 주기 — 활성 포지션에 SL/TP/Trailing 없으면 자동 등록
+                        // TAO/BLUR/XAU 같이 wasTracked=true 경로로 들어와 보호 누락된 포지션 구제
+                        if ((DateTime.Now - _lastProtectionCheckTime).TotalMinutes >= 2)
+                        {
+                            _lastProtectionCheckTime = DateTime.Now;
+                            _ = Task.Run(async () =>
+                            {
+                                try { await EnsureActivePositionProtectionAsync(token); }
+                                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [보호점검] 예외: {ex.Message}"); }
+                            }, token);
                         }
 
                         // [B] AI 관제탑 15분 요약 전송 — v5.0.4 주기 완화 + 빈 알림 차단
@@ -14676,6 +14689,79 @@ namespace TradingBot
             catch (Exception ex)
             {
                 OnStatusLog?.Invoke($"❌ {symbol} 직접 청산 오류: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// [v5.10.62] 활성 포지션에 SL/TP/Trailing 없으면 OrderLifecycleManager로 자동 등록.
+        /// 봇이 추적 중인 포지션(_activePositions) 중 거래소 openOrders에 조건부 주문이 0개인 심볼에 대해
+        /// RegisterOnEntryAsync 호출하여 보호. 2분 주기로 반복 실행.
+        /// </summary>
+        private async Task EnsureActivePositionProtectionAsync(CancellationToken token)
+        {
+            if (_orderLifecycle == null) return;
+
+            // 1. 현재 활성 포지션 스냅샷
+            List<(string Symbol, bool IsLong, decimal EntryPrice, decimal Quantity, decimal Leverage)> snapshot;
+            lock (_posLock)
+            {
+                snapshot = _activePositions.Values
+                    .Where(p => Math.Abs(p.Quantity) > 0)
+                    .Select(p => (p.Symbol, p.IsLong, p.EntryPrice, Math.Abs(p.Quantity), p.Leverage))
+                    .ToList();
+            }
+            if (snapshot.Count == 0) return;
+
+            // 2. 각 심볼별 거래소 openOrders 조회 → SL/TP/Trailing 없으면 등록
+            foreach (var pos in snapshot)
+            {
+                try
+                {
+                    // 거래소 openOrders 조회
+                    var openOrders = await _client.UsdFuturesApi.Trading.GetOpenOrdersAsync(pos.Symbol, ct: token);
+                    if (!openOrders.Success || openOrders.Data == null) continue;
+
+                    int slCount = openOrders.Data.Count(o =>
+                        o.Type == Binance.Net.Enums.FuturesOrderType.StopMarket ||
+                        o.Type == Binance.Net.Enums.FuturesOrderType.Stop);
+                    int tpCount = openOrders.Data.Count(o =>
+                        o.Type == Binance.Net.Enums.FuturesOrderType.TakeProfitMarket ||
+                        o.Type == Binance.Net.Enums.FuturesOrderType.TakeProfit);
+                    int trCount = openOrders.Data.Count(o =>
+                        o.Type == Binance.Net.Enums.FuturesOrderType.TrailingStopMarket);
+
+                    if (slCount > 0 || tpCount > 0 || trCount > 0) continue; // 이미 보호됨 → 스킵
+
+                    // SL/TP/Trailing 모두 0 → 긴급 등록
+                    OnStatusLog?.Invoke($"⚠️ [보호점검] {pos.Symbol} 보호 주문 0건 감지 → SL/TP/Trailing 자동 등록 시도");
+
+                    int lev = (int)Math.Max(1m, pos.Leverage);
+                    bool isPump = !MajorSymbols.Contains(pos.Symbol);
+                    decimal slRoe = isPump ? -(_settings.PumpStopLossRoe > 0 ? _settings.PumpStopLossRoe : 40m) : -50m;
+                    decimal tpRoe = isPump ? Math.Max(_settings.PumpTp1Roe > 0 ? _settings.PumpTp1Roe : 25m, 25m) : 40m;
+                    decimal tpPartial = isPump ? Math.Clamp((_settings.PumpFirstTakeProfitRatioPct > 0 ? _settings.PumpFirstTakeProfitRatioPct : 40m) / 100m, 0.05m, 0.95m) : 0.4m;
+                    decimal trailCb = isPump ? Math.Clamp((_settings.PumpTrailingGapRoe > 0 ? _settings.PumpTrailingGapRoe : 20m) / lev, 0.1m, 5.0m) : 2.0m;
+
+                    _orderLifecycle.ResetCooldown(pos.Symbol);
+                    var result = await _orderLifecycle.RegisterOnEntryAsync(
+                        pos.Symbol, pos.IsLong, pos.EntryPrice, pos.Quantity, lev,
+                        slRoe, tpRoe, tpPartial, trailCb, token);
+
+                    OnStatusLog?.Invoke($"🛡️ [보호점검] {pos.Symbol} 재등록 결과: SL={!string.IsNullOrEmpty(result.SlOrderId)} TP={!string.IsNullOrEmpty(result.TpOrderId)} TR={!string.IsNullOrEmpty(result.TrailingOrderId)}");
+
+                    // 텔레그램 경고
+                    try
+                    {
+                        await TelegramService.Instance.SendMessageAsync(
+                            $"🛡️ *[보호점검]* `{pos.Symbol}` SL/TP/Trailing 자동 재등록 (SL={!string.IsNullOrEmpty(result.SlOrderId)} TP={!string.IsNullOrEmpty(result.TpOrderId)} TR={!string.IsNullOrEmpty(result.TrailingOrderId)})",
+                            TelegramMessageType.Alert);
+                    }
+                    catch { }
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [보호점검] {pos.Symbol} 실패: {ex.Message}");
+                }
             }
         }
 

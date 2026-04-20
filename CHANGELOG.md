@@ -5,6 +5,21 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.62] - 2026-04-20
+
+### Hotfix (긴급 — 활성 포지션 SL 누락 보호 안전망)
+
+ - **사례**: 12:00 현재 TAOUSDT/BLURUSDT/XAUUSDT 3개 포지션 활성, **거래소 열린 조건부 주문 0개** (SL/TP/Trailing 전부 없음). 이 포지션은 v5.10.59 배포 이전 이미 `_activePositions`에 등록됨 → `wasTracked=true` 경로로 들어와 외부포지션 SL 자동 등록 로직이 호출되지 않음. 가격 -40%+ 하락 시 청산도 안 되고 텔레그램 알림도 안 뜸 → 무방비 손해
+ - **수정** (`TradingEngine.cs`):
+   - 메인루프에 **2분 주기 `EnsureActivePositionProtectionAsync()` 안전망** 추가
+   - 각 활성 포지션마다 `GetOpenOrdersAsync(symbol)` 조회 → `STOP_MARKET`+`TAKE_PROFIT_MARKET`+`TRAILING_STOP_MARKET` **0개면 자동 재등록**
+   - `OrderLifecycleManager.RegisterOnEntryAsync` 호출 (메이저/PUMP 자동 분류 + 쿨다운 초기화)
+   - 성공/실패 로그 + 텔레그램 Alert 메시지 전송
+   - 향후 어떤 경로로 들어온 포지션이든 최대 2분 내 SL/TP/Trailing 보호됨 (진입 시 + 외부포지션 감지 시 + 주기점검 = 3중 안전)
+
+### In Progress
+ - v5.10.63+ `DbManager` 전체 쿼리 SP 전환 (대규모)
+
 ## [5.10.61] - 2026-04-20
 
 ### Hotfix (설정창 1분 지연 근본 수정)
