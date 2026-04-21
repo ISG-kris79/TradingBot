@@ -232,6 +232,16 @@ namespace TradingBot
                 }
                 float effectiveMLThreshold = _onlineLearning?.CurrentMLThreshold ?? _config.MinMLConfidence;
 
+                // [v5.10.69] KST 9시±15분 펌프 시간대에 ML 임계값 완화 (0.65 → 0.55)
+                // 한국 시장 진입 시간 펌프 집중 → ML 보수적 판단으로 기회 놓치는 문제 해결
+                DateTime kstNowGate = DateTime.UtcNow.AddHours(9);
+                bool isKst9PumpWindow = (kstNowGate.Hour == 8 && kstNowGate.Minute >= 45) || (kstNowGate.Hour == 9 && kstNowGate.Minute <= 15);
+                if (isKst9PumpWindow && effectiveMLThreshold > 0.55f)
+                {
+                    effectiveMLThreshold = 0.55f;
+                    OnLog?.Invoke($"⏰ [{symbol}] [KST9_RELAX] 9시 펌프 시간대 ML 임계값 완화 → {effectiveMLThreshold:P0}");
+                }
+
                 // TF 호환 변수 (UI 바인딩 유지용)
                 bool tfApprove = mlApprove;
                 float tfConfidence = mlConfidence;

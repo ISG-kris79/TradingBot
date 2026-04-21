@@ -8565,10 +8565,17 @@ namespace TradingBot
         
         /// <summary>
         /// [v5.10.2] PUMP 슬롯 — DB 설정값 반환
+        /// [v5.10.69] KST 9시±15분 펌프 시간대에 슬롯 +1 (한국 시장 진입 시간 = 펌프 집중)
         /// </summary>
         private int GetDynamicMaxPumpSlots()
         {
-            return MAX_PUMP_SLOTS;
+            int baseSlots = MAX_PUMP_SLOTS;
+            DateTime kstNow = DateTime.UtcNow.AddHours(9);
+            int hour = kstNow.Hour;
+            int minute = kstNow.Minute;
+            // 09:00~09:15 + 08:45~09:00 = 9시 ±15분 동적 확대
+            bool isKst9PumpWindow = (hour == 8 && minute >= 45) || (hour == 9 && minute <= 15);
+            return isKst9PumpWindow ? baseSlots + 1 : baseSlots;
         }
         
         /// <summary>
@@ -9198,12 +9205,16 @@ namespace TradingBot
                         return;
                     }
 
-                    // 신호 가격 대비 2% 이상 올랐으면 → 고점 진입 차단
-                    if (priceRise >= 2.0m)
+                    // [v5.10.69] STALE_SIGNAL 임계값 시간대별 동적 — KST 9시±15분 = 5%, 평시 = 2%
+                    DateTime kstNow = DateTime.UtcNow.AddHours(9);
+                    bool isKst9PumpWindow = (kstNow.Hour == 8 && kstNow.Minute >= 45) || (kstNow.Hour == 9 && kstNow.Minute <= 15);
+                    decimal stalePctThreshold = isKst9PumpWindow ? 5.0m : 2.0m;
+
+                    if (priceRise >= stalePctThreshold)
                     {
                         _signalOriginPrice.TryRemove(symbol, out _);
-                        OnStatusLog?.Invoke($"⛔ [STALE_SIGNAL] {symbol} 신호가 ${origin.Price:F4} → 현재 ${currentPrice:F4} (+{priceRise:F1}%) → 고점 진입 차단");
-                        EntryLog("STALE_SIGNAL", "BLOCK", $"originPrice={origin.Price:F4} nowPrice={currentPrice:F4} rise={priceRise:F1}%");
+                        OnStatusLog?.Invoke($"⛔ [STALE_SIGNAL] {symbol} 신호가 ${origin.Price:F4} → 현재 ${currentPrice:F4} (+{priceRise:F1}% ≥ {stalePctThreshold}%) → 고점 진입 차단");
+                        EntryLog("STALE_SIGNAL", "BLOCK", $"originPrice={origin.Price:F4} nowPrice={currentPrice:F4} rise={priceRise:F1}% threshold={stalePctThreshold}");
                         return;
                     }
 

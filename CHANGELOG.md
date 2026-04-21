@@ -5,6 +5,29 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.69] - 2026-04-21
+
+### Hotfix — Algo API -1022 서명 버그 + KST 9시 펌프 대응
+
+**[A] Algo API -1022 Signature invalid 버그 수정** (`BinanceExchangeService.CallAlgoApiAsync`)
+
+- **증상:** `币安人生USDT` 같은 한자 심볼에서 `algoOrders 취소`/`openAlgoOrders 조회` 시 `{"code":-1022,"msg":"Signature for this request is not valid."}` 반복 발생. POST(등록)는 OK, GET/DELETE만 실패.
+- **근본 원인:** .NET HttpClient가 GET/DELETE URL의 non-ASCII 문자를 자동 percent-encoding 하는 반면, HMAC-SHA256 서명은 raw 문자열로 계산 → 서명한 query와 실제 전송된 query 불일치.
+- **수정:** 신규 `NormalizeAlgoQueryParams()` — query string의 value만 미리 `Uri.EscapeDataString` 적용. 서명·전송 동일 문자열 사용.
+- **위험성:** 알고 주문 취소 실패 → 중복 SL/TP 누적 → 의도치 않은 청산. 수정 시급도 HIGH.
+
+**[B] KST 9시 펌프 시간대 대응 (3개 동시 완화)**
+
+KST 9시±15분(8:45~9:15)에 한국 시장 진입 펌프 집중 발생 (24h 중 거래량 4~20배, 변동성 2~10배). AXLUSDT 케이스 검증: 09:00 5분봉 +7%, 거래량 40배 → 봇이 신호 잡았으나 슬롯 포화/STALE/ML 보수성으로 전부 차단.
+
+- **PUMP 슬롯 동적 +1** (`TradingEngine.GetDynamicMaxPumpSlots`): KST 8:45~9:15 = `MAX_PUMP_SLOTS + 1`. 평시 = 기본값.
+- **STALE_SIGNAL 임계값 완화** (`TradingEngine.cs:9201`): KST 9시 시간대 = 5%, 평시 = 2%. 펌프 초기 진입 기회 보존.
+- **ML 임계값 완화** (`AIDoubleCheckEntryGate.EvaluateEntryAsync`): KST 9시 시간대 `effectiveMLThreshold` 0.55로 클램프. 보수적 학습으로 인한 기회 누락 방지. `[KST9_RELAX]` 로그.
+
+### 분리 예정 — Phase B-2 (v5.10.70)
+
+PumpScan 1분봉 fast-path (5분봉 종가 대기 5분 → 1분봉 +3% & 거래량 10배 1분 후행)는 PumpScanStrategy 핵심 흐름 변경 필요. 별도 PR/hotfix로 분리.
+
 ## [5.10.68] - 2026-04-21
 
 ### Hotfix — EXTERNAL_PARTIAL_CLOSE_SYNC 잔량 동기화 버그 + ML 강한 신호 빠른 반응

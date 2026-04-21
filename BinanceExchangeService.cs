@@ -76,11 +76,40 @@ namespace TradingBot.Services
             return sb.ToString();
         }
 
-        /// <summary>[v5.10.63] Algo API POST — 성공 시 body 반환, 실패 시 null + OnLog</summary>
+        /// <summary>[v5.10.69] Algo API query string 정규화 — value만 percent-encode
+        /// (한자 심볼 币安人生USDT 등의 -1022 Signature invalid 방지)</summary>
+        private static string NormalizeAlgoQueryParams(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return string.Empty;
+            var sb = new StringBuilder(raw.Length + 16);
+            string[] parts = raw.Split('&');
+            for (int i = 0; i < parts.Length; i++)
+            {
+                if (i > 0) sb.Append('&');
+                string p = parts[i];
+                int eq = p.IndexOf('=');
+                if (eq < 0)
+                {
+                    sb.Append(p);
+                    continue;
+                }
+                string key = p.Substring(0, eq);
+                string val = p.Substring(eq + 1);
+                sb.Append(key).Append('=').Append(Uri.EscapeDataString(val));
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>[v5.10.63] Algo API POST/GET/DELETE — 성공 시 body 반환, 실패 시 null + OnLog
+        /// [v5.10.69] 한자/특수문자 심볼(币安人生USDT 등)에서 -1022 Signature invalid 버그 수정:
+        ///   GET/DELETE의 URL이 .NET HttpClient에 의해 자동 percent-encoded 되는 반면 서명은 raw 문자열로
+        ///   생성되어 불일치. 호출 측 queryParams의 value를 미리 Uri.EscapeDataString으로 인코딩한 뒤 서명.
+        /// </summary>
         private async Task<(bool ok, string body)> CallAlgoApiAsync(HttpMethod method, string endpoint, string queryParams, CancellationToken ct)
         {
             long ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            string qs = string.IsNullOrEmpty(queryParams) ? $"timestamp={ts}" : $"{queryParams}&timestamp={ts}";
+            string normalized = NormalizeAlgoQueryParams(queryParams);
+            string qs = string.IsNullOrEmpty(normalized) ? $"timestamp={ts}" : $"{normalized}&timestamp={ts}";
             string sig = SignQuery(qs);
             string fullQs = $"{qs}&signature={sig}";
 
