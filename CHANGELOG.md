@@ -5,6 +5,37 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.68] - 2026-04-21
+
+### Hotfix — EXTERNAL_PARTIAL_CLOSE_SYNC 잔량 동기화 버그 + ML 강한 신호 빠른 반응
+
+**[A] EXTERNAL_PARTIAL_CLOSE_SYNC 라우팅 버그** (`DbManager.SaveTradeLogAsync`)
+
+- **증상:** AAVEUSDT 활성 포지션 Quantity=1.6, 외부에서 1.0 부분청산됐으나 잔량 0.6 미반영. 활성 포지션과 실시간 시장 신호 ROI 불일치.
+- **원인:** `string.Equals(ExitReason, "PartialClose", IgnoreCase)` 정확 매칭만 → `EXTERNAL_PARTIAL_CLOSE_SYNC` 등은 `CompleteTradeAsync`로 잘못 라우팅 → 잔량 update 누락.
+- **수정:** `IndexOf("Partial", IgnoreCase) >= 0` 키워드 매칭으로 변경. EXTERNAL_PARTIAL_*, External Partial Close Sync 등 모두 `RecordPartialCloseAsync` 경로로 정상 라우팅.
+
+**[B] ML 강한 반대/동방향 신호 빠른 반응** (`PositionMonitorService` + `TradingEngine`)
+
+- **증상:** 5분마다 강한 ML 신호(downProb 82~100%) 발생하지만 활성 포지션이 60분 주기로만 검증 → AAVE -30% 방치.
+- **원인:**
+  1. ML 신호가 `_pendingPredictions` 캐시에만 저장, PositionMonitor와 단절
+  2. `MonitorPositionStandard`의 `nextAiRecheckTime` 60분 주기 (5분 신호 무시)
+  3. `OnPredictionUpdated` orphaned event (구독자 0)
+- **수정:**
+  1. **신규 `PositionMonitorService.UpdateExternalMlSignal(symbol, dir, upProb, conf)`** — 외부 ML 신호 캐시
+  2. **TradingEngine 두 ML 발생부**(PUMP scan + COMMON scan)에서 `_positionMonitor?.UpdateExternalMlSignal(...)` 호출
+  3. **MonitorPositionStandard 매 틱 캐시 조회** → 강한 반대 신호(confidence ≥ 85%, upProb ≤ 20% / ≥ 80%) 즉시 처리:
+     - ROE < 5% → **즉시 시장가 청산** (`ML Strong Opposite` 사유)
+     - ROE ≥ 5% → **본절 즉시 락** (BreakevenPrice = entryPrice 설정, 1회 적용)
+  4. **AI 재검증 주기 60분 → 15분 단축** (3곳: 라인 222, 278, 533)
+
+### Phase 2 예정
+
+- 강한 동방향 신호 → trailing gap 1.2배 확대 (HybridExitManager 통합)
+- TransformerStrategy.OnPredictionUpdated 리바이브
+- ML + Lorentzian 합의 검증 게이트
+
 ## [5.10.67] - 2026-04-20
 
 ### Refactor — DbManager 인라인 SQL 전체 SP 전환 + 인라인 MERGE 완전 제거

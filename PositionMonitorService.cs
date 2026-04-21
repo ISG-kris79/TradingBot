@@ -36,6 +36,17 @@ namespace TradingBot.Services
         private readonly AdvancedExitStopCalculator _advancedExitCalculator;  // [v2.1.18] 지표 결합 익절
         private AIPredictor? _aiPredictor;
 
+        // [v5.10.68] 외부 ML 신호 빠른 반응 캐시 (TradingEngine 5분 주기 신호 → 즉시 활성 포지션에 반영)
+        // key: symbol, value: (신호 시각, 방향(true=상승), upProb, confidence)
+        private readonly ConcurrentDictionary<string, (DateTime Time, bool DirectionUp, float UpProb, float Confidence)> _externalMlSignals
+            = new(StringComparer.OrdinalIgnoreCase);
+
+        public void UpdateExternalMlSignal(string symbol, bool directionUp, float upProb, float confidence)
+        {
+            if (string.IsNullOrWhiteSpace(symbol)) return;
+            _externalMlSignals[symbol] = (DateTime.Now, directionUp, upProb, confidence);
+        }
+
         // [AI Exit] 시장 상태 분류 + 최적 익절 모델
         private MarketRegimeClassifier? _regimeClassifier;
         private ExitOptimizerService? _exitOptimizer;
@@ -208,7 +219,7 @@ namespace TradingBot.Services
             DateTime positionEntryTime = DateTime.Now;
             bool timeDecayBreakevenApplied = false;
             double timeDecayBreakevenMinutes = 60.0;
-            DateTime nextAiRecheckTime = DateTime.Now.AddMinutes(60);
+            DateTime nextAiRecheckTime = DateTime.Now.AddMinutes(15); // [v5.10.68] 60→15 단축
             DateTime nextHSCheckTime = DateTime.Now.AddMinutes(1);
             bool squeezeDefenseReduced = false;
             double squeezeDefenseMinutes = 90.0;
@@ -264,7 +275,7 @@ namespace TradingBot.Services
                     leverage = p.Leverage > 0 ? p.Leverage : leverage;
                     positionEntryTime = p.EntryTime == default ? positionEntryTime : p.EntryTime;
                     squeezeDefenseReduced = p.TakeProfitStep >= 1;
-                    nextAiRecheckTime = positionEntryTime.AddMinutes(60);
+                    nextAiRecheckTime = positionEntryTime.AddMinutes(15); // [v5.10.68] 60→15 단축
                     pyramidingCount = p.PyramidCount > 0 ? p.PyramidCount : (p.IsPyramided ? 1 : 0);
                     if (p.HighestPrice <= 0m)
                         p.HighestPrice = p.EntryPrice;
@@ -519,7 +530,41 @@ namespace TradingBot.Services
                         }
 
                         OnLog?.Invoke($"🧠 [AI 재검증 유지] {symbol} {aiRecheckReason}");
-                        nextAiRecheckTime = DateTime.Now.AddMinutes(60);
+                        nextAiRecheckTime = DateTime.Now.AddMinutes(15); // [v5.10.68] 60→15 단축
+                    }
+
+                    // [v5.10.68] 외부 ML 신호 빠른 반응 — TradingEngine 5분 주기 신호 즉시 반영
+                    // 강한 반대 신호: ROE 5% 미만 = 즉시 청산 / ROE >= 5% = 본절 락 + 트레일링 강화
+                    // 강한 동방향 신호: trailing gap 1.2배 (Phase 2에서 HybridExitManager 통합 예정)
+                    if (_externalMlSignals.TryGetValue(symbol, out var extMl)
+                        && (DateTime.Now - extMl.Time).TotalMinutes < 6)
+                    {
+                        bool oppositeStrong = isLong
+                            ? (!extMl.DirectionUp && extMl.Confidence >= 0.85f && extMl.UpProb <= 0.20f)
+                            : ( extMl.DirectionUp && extMl.Confidence >= 0.85f && extMl.UpProb >= 0.80f);
+
+                        if (oppositeStrong)
+                        {
+                            if (currentROE < 5m)
+                            {
+                                OnLog?.Invoke($"🔴 [{symbol}] [ML_STRONG_OPPOSITE] 강한 반대 신호 (conf={extMl.Confidence:P0}, up={extMl.UpProb:P0}) + ROE {currentROE:F1}%<5% → 즉시 청산");
+                                await ExecuteMarketClose(symbol, $"ML Strong Opposite (conf={extMl.Confidence:P0},up={extMl.UpProb:P0})", token);
+                                break;
+                            }
+                            else
+                            {
+                                // ROE >= 5%: 본절 락 (BreakevenPrice를 entryPrice로 설정) + 신호 캐시 1회 사용 후 제거
+                                lock (_posLock)
+                                {
+                                    if (_activePositions.TryGetValue(symbol, out var lp) && lp.BreakevenPrice <= 0m)
+                                    {
+                                        lp.BreakevenPrice = entryPrice;
+                                        OnLog?.Invoke($"🛡️ [{symbol}] [ML_STRONG_OPPOSITE] ROE {currentROE:F1}% — 본절 즉시 락 (강한 반대 신호 conf={extMl.Confidence:P0})");
+                                    }
+                                }
+                                _externalMlSignals.TryRemove(symbol, out _); // 1회 적용 후 제거
+                            }
+                        }
                     }
 
                     // ═══════════════════════════════════════════════

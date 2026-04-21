@@ -4802,6 +4802,9 @@ namespace TradingBot
                         _pendingPredictions[predictionKey] = (DateTime.Now, currentPrice, predictedPrice, prediction.Prediction, "ML.NET", monitorConfidence);
                         bool scheduled = TrySchedulePredictionValidation(predictionKey, symbol, _cts);
 
+                        // [v5.10.68] 활성 포지션 모니터에 외부 ML 신호 즉시 전달 (강한 반대 신호 빠른 반응)
+                        _positionMonitor?.UpdateExternalMlSignal(symbol, prediction.Prediction, upProbability, monitorConfidence);
+
                         string mlDirection = prediction.Prediction ? "상승" : "하락";
                         if (scheduled)
                         {
@@ -14898,6 +14901,9 @@ namespace TradingBot
                 decimal predictedPrice = currentPrice * (prediction.Prediction ? 1.02m : 0.98m);
                 _pendingPredictions[predictionKey] = (DateTime.Now, currentPrice, predictedPrice, prediction.Prediction, "ML.NET", monitorConfidence);
                 bool scheduled = TrySchedulePredictionValidation(predictionKey, symbol, _cts);
+
+                // [v5.10.68] 활성 포지션 모니터에 외부 ML 신호 즉시 전달 (강한 반대 신호 빠른 반응)
+                _positionMonitor?.UpdateExternalMlSignal(symbol, prediction.Prediction, upProbability, monitorConfidence);
 
                 string mlDirection = prediction.Prediction ? "상승" : "하락";
                 if (scheduled)

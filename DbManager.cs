@@ -1409,8 +1409,15 @@ ORDER BY EntryTime DESC, Id DESC;",
                 return;
             }
 
-            if (string.Equals(log.ExitReason, "PartialClose", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(log.Strategy, "PartialClose", StringComparison.OrdinalIgnoreCase))
+            // [v5.10.68 HOTFIX] EXTERNAL_PARTIAL_CLOSE_SYNC 잔량 동기화 버그 수정
+            // 기존: 정확한 "PartialClose" 문자열만 매칭 → EXTERNAL_PARTIAL_CLOSE_SYNC, EXTERNAL_PARTIAL 등은
+            //       CompleteTradeAsync로 잘못 라우팅 → 활성 포지션 Quantity 미갱신 (AAVE 1.6 → 0.6 누락)
+            // 수정: "Partial" 키워드 포함하면 모두 RecordPartialCloseAsync 경로로 보냄
+            bool isPartialReason = !string.IsNullOrWhiteSpace(log.ExitReason)
+                && log.ExitReason.IndexOf("Partial", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool isPartialStrategy = !string.IsNullOrWhiteSpace(log.Strategy)
+                && log.Strategy.IndexOf("Partial", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (isPartialReason || isPartialStrategy)
             {
                 await RecordPartialCloseAsync(log);
                 return;
