@@ -292,7 +292,7 @@
                 <Setter Property="Foreground"
                         Value="White"/>
                 <Setter Property="FontFamily"
-                        Value="Segoe UI"/>
+                        Value="Segoe UI, Malgun Gothic, Microsoft YaHei UI, Microsoft JhengHei UI, Microsoft YaHei, SimSun"/>
                 <Setter Property="WindowStyle"
                         Value="None"/>
                 <Setter Property="ResizeMode"

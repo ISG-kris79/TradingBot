@@ -5,6 +5,35 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.74] - 2026-04-21
+
+### 롤백 — v5.10.73 하드코딩 차단 제거 (사용자 메모리 "AI 판단만 사용" 원칙 위반)
+
+**제거된 하드코딩:**
+- `HIGH_CHASE_BLOCK` (TradingEngine.cs) — 5분봉 High +0.3% 초과 차단
+- `LOSSY_SYMBOL_BLOCK` + `IsLossySymbolBlacklisted` + `_lossySymbolCache` — 30d 누적 손실 블랙리스트
+- `M1_TOP_BLOCK` (PumpScanStrategy.cs) — 1분봉 riseFromLow/pullback 기반 차단
+
+**원칙 위반 사유:**
+사용자 메모리 `feedback_ai_only_entry.md` — **"모든 진입은 AI(ML.NET) 학습→추론→예측으로만. 하드코딩 조건 금지."** v5.10.73에서 증상별 하드코딩 차단을 추가했으나, 이는 AI가 학습할 기회를 박탈하는 땜질. 올바른 해결은 **feature로 학습**하도록 하는 것.
+
+**유지된 변경:**
+- ✅ 라벨링 파이프라인 복구 (v5.10.72): `_pendingRecords` 큐 선행 검색 + flush 1분
+- ✅ ML 클래스 불균형 보정 (v5.10.73): positive oversample + 2:1 비율 + `UnbalancedSets=true` (이건 **학습 데이터 차원**, 하드코딩 아님)
+- ✅ **폰트 CJK 지원 추가** (신규) — `币安人生USDT` 등 한자 심볼 UI 인코딩 깨짐 수정: MainWindow.xaml + App.xaml의 FontFamily에 `Microsoft YaHei UI, Microsoft JhengHei UI, SimSun` fallback 추가
+
+### Phase 2 설계 시작 (하드코딩 대체)
+
+3 모델 분리 + feature 추가로 고점 진입 / 반복 손실 심볼을 AI가 학습하도록 재설계:
+- `EntryTimingMLTrainer_Major / _Pump / _Spike` 분리
+- `MultiTimeframeEntryFeature`에 선행 지표 추가:
+  - `Price_Position_In_Prev5m_Range` (직전 5분봉 내 현재가 위치 0~1)
+  - `M1_Rise_From_Low_Pct`, `M1_Pullback_From_High_Pct`
+  - `Symbol_Recent_WinRate_30d`, `Symbol_Recent_PnL_30d`
+- ML이 학습 후 자동 판단 (차단 여부도 ML 출력)
+
+상세 설계안은 별도 보고 예정.
+
 ## [5.10.73] - 2026-04-21
 
 ### Phase 1-B — ML 클래스 불균형 2단계 보정 + MUSDT/TAOUSDT 즉시 대응
