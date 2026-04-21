@@ -5,6 +5,28 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.70] - 2026-04-21
+
+### Phase B-2 — PUMP 1분봉 fast-path (5분 후행 → 1분 후행)
+
+- **신규 1분봉 fast-path** (`PumpScanStrategy.AnalyzeSymbolAsync` MEGA_PUMP 직전):
+  - WebSocket 1분봉 캐시(`MarketDataManager.Instance.GetCachedKlines(OneMinute, 5)`) 활용
+  - 조건: 1분봉 +3% AND 거래량 10배 + 양봉 + 단기추세(`isUptrend OR price>SMA20`) + 과열 아님 + RSI<75
+  - 통과 시 즉시 `decision = "LONG"` → 5분봉 종가 대기 0
+- **기존 MEGA_PUMP 보존**: `if (decision == "WAIT")` 조건 추가하여 1분봉이 못 잡으면 5분봉 fallback
+- **AXLUSDT 09:00 케이스 검증**: 1분봉 +5% 거래량 폭발 시 즉시 진입 가능 (09:01 진입 vs 기존 09:05+)
+- 로그 키워드: `[M1_FAST_PUMP]`
+
+### 효과 요약 (v5.10.69 + v5.10.70 통합)
+
+| 항목 | Before v5.10.68 | After v5.10.70 |
+|---|---|---|
+| PUMP 진입 후행 | 5분 (5분봉 종가) | **1분** (1분봉 종가) |
+| KST 9시 PUMP 슬롯 | 평시 슬롯 | 평시 +1 |
+| KST 9시 STALE 임계 | 2% | 5% |
+| KST 9시 ML 임계 | 0.65 | 0.55 |
+| 한자 심볼 algo 취소 | -1022 실패 | 정상 |
+
 ## [5.10.69] - 2026-04-21
 
 ### Hotfix — Algo API -1022 서명 버그 + KST 9시 펌프 대응

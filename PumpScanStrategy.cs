@@ -288,9 +288,39 @@ namespace TradingBot.Strategies
                     }
                 }
 
+                // [v5.10.70 Phase B-2] 1분봉 fast-path — 5분봉 종가 대기 안 함
+                // 5분봉 기반 MEGA_PUMP가 최대 5분 후행 → 1분봉으로 1분 후행으로 단축
+                // MarketDataManager WebSocket 1분봉 캐시 활용 (실시간)
+                // AXLUSDT 09:00 케이스: 1분봉 +5% 거래량 폭발 → 5분봉 종가 대기 없이 즉시 진입
+                {
+                    var m1Cache = TradingBot.Services.MarketDataManager.Instance?
+                        .GetCachedKlines(symbol, KlineInterval.OneMinute, 5);
+                    if (m1Cache != null && m1Cache.Count >= 4 && !isOverextended && rsi < 75)
+                    {
+                        var latestM1 = m1Cache[m1Cache.Count - 1];
+                        var prev3M1 = m1Cache.Skip(Math.Max(0, m1Cache.Count - 4)).Take(3).ToList();
+                        double avgVol3M1 = prev3M1.Average(k => (double)k.Volume);
+                        double m1VolRatio = avgVol3M1 > 0 ? (double)latestM1.Volume / avgVol3M1 : 0;
+                        decimal m1Range = latestM1.HighPrice - latestM1.LowPrice;
+                        float m1RangePct = latestM1.OpenPrice > 0
+                            ? (float)(m1Range / latestM1.OpenPrice * 100) : 0f;
+                        bool m1Bullish = latestM1.ClosePrice > latestM1.OpenPrice;
+                        bool m1TrendOk = isUptrend || currentPrice > (decimal)sma20;
+
+                        // 조건: 1분봉 +3% AND 거래량 10배 + 양봉 + 단기추세 + 과열 아님 + RSI<75
+                        if (m1RangePct >= 3.0f && m1VolRatio >= 10.0 && m1Bullish && m1TrendOk)
+                        {
+                            decision = "LONG";
+                            PumpSignalLog("M1_FAST_PUMP",
+                                $"sym={symbol} m1Vol={m1VolRatio:F1}x m1Range={m1RangePct:F1}% rsi={rsi:F0} → 1분봉 fast 즉시 진입 (5분봉 종가 대기 X)");
+                        }
+                    }
+                }
+
                 // [v5.1.3] 메가 펌프 즉시 진입 — 거래량 5배+ & range 3%+ & 양봉
                 // PLAYUSDT 케이스: 13:30 vol 34배, range 6.34% 양봉 → ML이 bull0 판정 → 놓침
                 // 거래량 폭발 + 큰 양봉 = 급등 시작 확실 → ML 판단 없이 즉시 LONG
+                if (decision == "WAIT")
                 {
                     var latestCandle = list[list.Count - 1];
                     decimal candleRange = latestCandle.HighPrice - latestCandle.LowPrice;
