@@ -5,6 +5,33 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.79] - 2026-04-22
+
+### Phase 5-C — aggTrade + MarkPrice/Funding Rate WebSocket + 5 신규 feature
+
+**인프라:**
+
+- 신규 `AggTradeStatsItem` (BuyVol/SellVol 1분 슬라이딩 윈도우)
+- 신규 `MarkPriceCacheItem` (MarkPrice + FundingRate + NextFundingTime)
+- `MarketDataManager.AggTradeStats`, `MarketDataManager.MarkPriceCache` 추가
+- `_aggTradeBuffer` 60초 슬라이딩 큐로 매수/매도 볼륨 집계
+- `SubscribeToAggregatedTradeUpdatesAsync` / `SubscribeToMarkPriceUpdatesAsync` (1초 주기) 구독
+
+**신규 5개 ML feature:**
+
+- `AggTrade_Buy_Ratio_1m` (0~1) — taker buy / total. 0.7+ = 매수폭발 펌프임박
+- `AggTrade_Buy_Volume_1m` / `AggTrade_Sell_Volume_1m` — log scale 정규화
+- `Funding_Rate` — 8h funding rate (±0.01% 정상)
+- `Funding_Rate_Extreme` — 절댓값 0.05% 초과 시 1 (롱/숏 스퀴즈 임박)
+
+**ML 파이프라인:**
+
+- `featureColumns` 5개 추가
+- `ExpectedFeatureCount` 105 → 110
+
+**효과:**
+펌프 직전 시그널을 ML이 학습. taker 매수 폭발 + Funding 극단 = 강력한 선행 지표.
+
 ## [5.10.78] - 2026-04-22
 
 ### Phase 5-B — 학습 쪽 variant 분리 완성

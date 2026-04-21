@@ -258,6 +258,25 @@ namespace TradingBot.Models
         public DateTime UpdatedAt { get; set; }
     }
 
+    // [v5.10.79 Phase 5-C] aggTrade 1분 슬라이딩 윈도우 통계 — 체결 매수/매도 비율 학습용
+    public class AggTradeStatsItem
+    {
+        public string? Symbol { get; set; }
+        public decimal BuyVolume1m { get; set; }   // 1분 누적 매수 볼륨 (taker buy)
+        public decimal SellVolume1m { get; set; }  // 1분 누적 매도 볼륨 (taker sell)
+        public DateTime UpdatedAt { get; set; }
+    }
+
+    // [v5.10.79 Phase 5-C] markPrice (Funding Rate 포함) 캐시
+    public class MarkPriceCacheItem
+    {
+        public string? Symbol { get; set; }
+        public decimal MarkPrice { get; set; }
+        public decimal FundingRate { get; set; }       // 8h funding rate (예: 0.0001 = 0.01%)
+        public DateTime NextFundingTime { get; set; }
+        public DateTime UpdatedAt { get; set; }
+    }
+
     // [이동] 볼린저 밴드 결과 구조체
     public struct BBResult
     {

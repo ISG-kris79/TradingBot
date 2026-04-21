@@ -175,6 +175,9 @@ namespace TradingBot
                 // [v5.10.77 Phase 5-A] 호가창 BookTicker 선행 지표 (4개)
                 ExtractBookTickerFeatures(symbol, feature);
 
+                // [v5.10.79 Phase 5-C] aggTrade + Funding Rate 선행 지표 (5개)
+                ExtractAggTradeAndFundingFeatures(symbol, feature);
+
                 // 시간 컨텍스트
                 ExtractTimeContext(timestamp, feature);
 
@@ -458,6 +461,39 @@ namespace TradingBot
             {
                 float ratio = (float)(bidQty / askQty);
                 feature.BidQtyToAskQtyRatio = Math.Min(10f, Math.Max(0f, ratio));
+            }
+        }
+
+        /// <summary>
+        /// [v5.10.79 Phase 5-C] aggTrade (체결 매수/매도 비율) + Funding Rate 5개 feature
+        /// 펌프 임박: BuyRatio 0.7+, Funding Rate 극단 → 스퀴즈 시그널
+        /// </summary>
+        private static void ExtractAggTradeAndFundingFeatures(string symbol, MultiTimeframeEntryFeature feature)
+        {
+            if (string.IsNullOrWhiteSpace(symbol)) return;
+            var mdm = Services.MarketDataManager.Instance;
+            if (mdm == null) return;
+
+            // aggTrade 1분 통계
+            if (mdm.AggTradeStats.TryGetValue(symbol, out var agg) && agg != null
+                && (DateTime.UtcNow - agg.UpdatedAt).TotalSeconds < 10)
+            {
+                decimal buyVol = agg.BuyVolume1m;
+                decimal sellVol = agg.SellVolume1m;
+                decimal totalVol = buyVol + sellVol;
+                if (totalVol > 0m)
+                    feature.AggTrade_Buy_Ratio_1m = (float)(buyVol / totalVol);
+                // log scale 정규화 (0~약 20 범위)
+                feature.AggTrade_Buy_Volume_1m = (float)Math.Log10((double)(buyVol + 1m));
+                feature.AggTrade_Sell_Volume_1m = (float)Math.Log10((double)(sellVol + 1m));
+            }
+
+            // markPrice + Funding Rate
+            if (mdm.MarkPriceCache.TryGetValue(symbol, out var mark) && mark != null
+                && (DateTime.UtcNow - mark.UpdatedAt).TotalSeconds < 30)
+            {
+                feature.Funding_Rate = (float)mark.FundingRate;
+                feature.Funding_Rate_Extreme = Math.Abs(mark.FundingRate) > 0.0005m ? 1f : 0f; // 0.05% 초과
             }
         }
 

@@ -186,6 +186,16 @@ namespace TradingBot
         public float MidPriceVsLastPct { get; set; }          // (MidPrice - LastPrice)/LastPrice × 100 — 호가 중심 vs 마지막 체결가 차이
 
         // ═══════════════════════════════════════════════════════════════
+        // [v5.10.79 Phase 5-C] aggTrade + Funding Rate 선행 지표 (5개)
+        // 체결 방향성 + 펀딩비 극단 = 펌프/스퀴즈 임박 학습
+        // ═══════════════════════════════════════════════════════════════
+        public float AggTrade_Buy_Ratio_1m { get; set; }      // BuyVol / (BuyVol+SellVol) (0~1) — 0.5 균형, 0.7+ = 매수우세
+        public float AggTrade_Buy_Volume_1m { get; set; }     // 1분 누적 매수 볼륨 (정규화: log scale)
+        public float AggTrade_Sell_Volume_1m { get; set; }    // 1분 누적 매도 볼륨 (정규화: log scale)
+        public float Funding_Rate { get; set; }                // 8h funding rate (예: 0.0001 = 0.01%)
+        public float Funding_Rate_Extreme { get; set; }        // 1=절댓값 0.05% 초과 (롱/숏 스퀴즈 임박), 0=정상
+
+        // ═══════════════════════════════════════════════════════════════
         // 피보나치 되돌림 레벨 (객관적 수치로 AI 특징 사용)
         // ═══════════════════════════════════════════════════════════════
         public float Fib_DistanceTo0382_Pct { get; set; }    // 현재가에서 0.382 레벨까지 거리 (%)

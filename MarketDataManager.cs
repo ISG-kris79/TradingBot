@@ -32,6 +32,16 @@ namespace TradingBot.Services
         // [v5.10.77 Phase 5-A] BookTicker (Best Bid/Ask) 실시간 캐시 — 호가창 선행 지표 학습용
         public ConcurrentDictionary<string, BookTickerCacheItem> BookTickerCache { get; } = new();
 
+        // [v5.10.79 Phase 5-C] aggTrade 1분 슬라이딩 통계 (taker buy/sell volume)
+        public ConcurrentDictionary<string, AggTradeStatsItem> AggTradeStats { get; } = new();
+        // 60초 슬라이딩 buffer: List<(timestamp, isBuyerMaker, qty)>
+        private readonly ConcurrentDictionary<string, System.Collections.Generic.Queue<(DateTime ts, bool isBuyerMaker, decimal qty)>> _aggTradeBuffer
+            = new();
+        private readonly object _aggTradeBufferLock = new();
+
+        // [v5.10.79 Phase 5-C] markPrice + Funding Rate 캐시
+        public ConcurrentDictionary<string, MarkPriceCacheItem> MarkPriceCache { get; } = new();
+
         // [v4.5.15] 멀티 타임프레임 WebSocket 캐시 — REST 호출 제거용
         // Key: "{symbol}|{interval}" (예: "BTCUSDT|1m")
         public ConcurrentDictionary<string, List<IBinanceKline>> MultiTfKlineCache { get; } = new();
@@ -486,6 +496,89 @@ namespace TradingBot.Services
             catch (Exception ex)
             {
                 OnLog?.Invoke($"⚠️ BookTicker 구독 예외 (무해): {ex.Message}");
+            }
+
+            // [v5.10.79 Phase 5-C] aggTrade 구독 — 체결 매수/매도 비율 (1분 슬라이딩)
+            try
+            {
+                var aggResult = await _socketClient.UsdFuturesApi.ExchangeData.SubscribeToAggregatedTradeUpdatesAsync(_majorSymbols, data =>
+                {
+                    var t = data.Data;
+                    if (string.IsNullOrEmpty(t.Symbol)) return;
+                    var now = DateTime.UtcNow;
+                    var buf = _aggTradeBuffer.GetOrAdd(t.Symbol, _ => new System.Collections.Generic.Queue<(DateTime, bool, decimal)>());
+                    lock (_aggTradeBufferLock)
+                    {
+                        buf.Enqueue((now, t.BuyerIsMaker, t.Quantity));
+                        // 60초 이상 오래된 항목 제거
+                        while (buf.Count > 0 && (now - buf.Peek().ts).TotalSeconds > 60)
+                            buf.Dequeue();
+
+                        decimal buyVol = 0m, sellVol = 0m;
+                        foreach (var (_, isBuyerMaker, qty) in buf)
+                        {
+                            // BuyerIsMaker = true → 매도자가 시장가 (taker sell)
+                            // BuyerIsMaker = false → 매수자가 시장가 (taker buy)
+                            if (isBuyerMaker) sellVol += qty;
+                            else buyVol += qty;
+                        }
+                        AggTradeStats[t.Symbol] = new AggTradeStatsItem
+                        {
+                            Symbol = t.Symbol,
+                            BuyVolume1m = buyVol,
+                            SellVolume1m = sellVol,
+                            UpdatedAt = now
+                        };
+                    }
+                }, ct: token);
+
+                if (aggResult.Success)
+                {
+                    aggResult.Data.ConnectionLost += () => OnLog?.Invoke("⚠️ AggTrade 스트림 연결 끊김...");
+                    aggResult.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ AggTrade 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                    OnLog?.Invoke("📡 AggTrade 실시간 구독 성공 (체결 매수/매도 비율 feature 활성)");
+                }
+                else
+                {
+                    OnLog?.Invoke($"⚠️ AggTrade 구독 실패 (무해): {aggResult.Error}");
+                }
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ AggTrade 구독 예외 (무해): {ex.Message}");
+            }
+
+            // [v5.10.79 Phase 5-C] markPrice 구독 — Funding Rate feature
+            try
+            {
+                var markResult = await _socketClient.UsdFuturesApi.ExchangeData.SubscribeToMarkPriceUpdatesAsync(_majorSymbols, 1000, data =>
+                {
+                    var m = data.Data;
+                    if (m == null || string.IsNullOrEmpty(m.Symbol)) return;
+                    MarkPriceCache[m.Symbol] = new MarkPriceCacheItem
+                    {
+                        Symbol = m.Symbol,
+                        MarkPrice = m.MarkPrice,
+                        FundingRate = m.FundingRate ?? 0m,
+                        NextFundingTime = m.NextFundingTime,
+                        UpdatedAt = DateTime.UtcNow
+                    };
+                }, ct: token);
+
+                if (markResult.Success)
+                {
+                    markResult.Data.ConnectionLost += () => OnLog?.Invoke("⚠️ MarkPrice 스트림 연결 끊김...");
+                    markResult.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ MarkPrice 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                    OnLog?.Invoke("📡 MarkPrice 실시간 구독 성공 (Funding Rate feature 활성)");
+                }
+                else
+                {
+                    OnLog?.Invoke($"⚠️ MarkPrice 구독 실패 (무해): {markResult.Error}");
+                }
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ MarkPrice 구독 예외 (무해): {ex.Message}");
             }
         }
 
