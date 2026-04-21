@@ -247,6 +247,17 @@ namespace TradingBot.Models
         public decimal PriceChangePercent { get; set; } // [v4.5.5] 24h 변동률 (%)
     }
 
+    // [v5.10.77 Phase 5-A] WebSocket bookTicker 캐시 — Bid/Ask Imbalance 선행 지표용
+    public class BookTickerCacheItem
+    {
+        public string? Symbol { get; set; }
+        public decimal BestBidPrice { get; set; }
+        public decimal BestBidQty { get; set; }
+        public decimal BestAskPrice { get; set; }
+        public decimal BestAskQty { get; set; }
+        public DateTime UpdatedAt { get; set; }
+    }
+
     // [이동] 볼린저 밴드 결과 구조체
     public struct BBResult
     {

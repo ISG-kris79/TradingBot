@@ -217,8 +217,9 @@ namespace TradingBot
         }
 
         // 현재 파이프라인이 기대하는 Feature 수 (BuildPipeline의 featureColumns 길이)
-        // 49 기존 + 19 확장(v3.4.2) + 5 휩소(v4.5.2) + 5 하락추세(v4.5.6) + 3 DailyPnl(v4.5.11) + 5 단타지표(v4.6.2) + 4 스퀴즈/ST/Pivot(v4.6.3) + 11 고점학습(v5.10.75) = 101개
-        private const int ExpectedFeatureCount = 101;
+        // 49 기존 + 19 확장(v3.4.2) + 5 휩소(v4.5.2) + 5 하락추세(v4.5.6) + 3 DailyPnl(v4.5.11)
+        // + 5 단타지표(v4.6.2) + 4 스퀴즈/ST/Pivot(v4.6.3) + 11 고점학습(v5.10.75) + 4 호가창(v5.10.77) = 105개
+        private const int ExpectedFeatureCount = 105;
 
         /// <summary>
         /// 저장된 모델 로드 (스키마 호환성 검증 포함)
@@ -497,7 +498,9 @@ namespace TradingBot
                 "Price_Position_In_Prev5m_Range", "M1_Rise_From_Low_Pct", "M1_Pullback_From_High_Pct",
                 "Prev_5m_Rise_From_Low_Pct", "Symbol_Recent_WinRate_30d", "Symbol_Recent_AvgPnLPct_30d",
                 "M15_Position_In_Range", "M15_Upper_Shadow_Ratio", "M15_Is_Red_Candle",
-                "M15_Rise_From_Low_Pct", "MultiTF_Top_Confluence_Score"
+                "M15_Rise_From_Low_Pct", "MultiTF_Top_Confluence_Score",
+                // ── [v5.10.77 Phase 5-A] BookTicker 호가창 선행 지표 4개 ──
+                "BidAskImbalanceRatio", "SpreadPct", "BidQtyToAskQtyRatio", "MidPriceVsLastPct"
             };
 
             // 전처리 및 학습 파이프라인

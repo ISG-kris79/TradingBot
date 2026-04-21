@@ -177,6 +177,15 @@ namespace TradingBot
         public float MultiTF_Top_Confluence_Score { get; set; }     // (M1_pos + M5_pos + M15_pos)/3 (0~1) — 여러 TF 동시 고점 = 위험
 
         // ═══════════════════════════════════════════════════════════════
+        // [v5.10.77 Phase 5-A] 호가창 (BookTicker) 선행 지표 (4개) — WebSocket 실시간
+        // 매수/매도 호가 균형, 스프레드 = 펌프 직전 시그널
+        // ═══════════════════════════════════════════════════════════════
+        public float BidAskImbalanceRatio { get; set; }      // BidQty / (BidQty+AskQty) (0~1) — 0.5 균형, 0.7+ = 매수우세 펌프임박
+        public float SpreadPct { get; set; }                  // (Ask-Bid)/Mid × 100 (%) — 낮을수록 유동성 풍부
+        public float BidQtyToAskQtyRatio { get; set; }       // BidQty / AskQty (0~10 클램프) — 1.0 균형, 3.0+ = 매수폭발
+        public float MidPriceVsLastPct { get; set; }          // (MidPrice - LastPrice)/LastPrice × 100 — 호가 중심 vs 마지막 체결가 차이
+
+        // ═══════════════════════════════════════════════════════════════
         // 피보나치 되돌림 레벨 (객관적 수치로 AI 특징 사용)
         // ═══════════════════════════════════════════════════════════════
         public float Fib_DistanceTo0382_Pct { get; set; }    // 현재가에서 0.382 레벨까지 거리 (%)

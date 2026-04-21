@@ -29,6 +29,9 @@ namespace TradingBot.Services
         public ConcurrentDictionary<string, TickerCacheItem> TickerCache { get; } = new();
         public ConcurrentDictionary<string, List<IBinanceKline>> KlineCache { get; } = new();
 
+        // [v5.10.77 Phase 5-A] BookTicker (Best Bid/Ask) 실시간 캐시 — 호가창 선행 지표 학습용
+        public ConcurrentDictionary<string, BookTickerCacheItem> BookTickerCache { get; } = new();
+
         // [v4.5.15] 멀티 타임프레임 WebSocket 캐시 — REST 호출 제거용
         // Key: "{symbol}|{interval}" (예: "BTCUSDT|1m")
         public ConcurrentDictionary<string, List<IBinanceKline>> MultiTfKlineCache { get; } = new();
@@ -450,6 +453,40 @@ namespace TradingBot.Services
                 OnLog?.Invoke("📡 주요 종목 실시간 가격 웹소켓 연결 성공");
             }
             else OnLog?.Invoke($"❌ 주요 종목 웹소켓 연결 실패: {subResult.Error}");
+
+            // [v5.10.77 Phase 5-A] BookTicker (Best Bid/Ask) 구독 — 호가창 imbalance feature 학습용
+            try
+            {
+                var bookSubResult = await _socketClient.UsdFuturesApi.ExchangeData.SubscribeToBookTickerUpdatesAsync(_majorSymbols, data =>
+                {
+                    var d = data.Data;
+                    if (string.IsNullOrEmpty(d.Symbol)) return;
+                    BookTickerCache[d.Symbol] = new BookTickerCacheItem
+                    {
+                        Symbol = d.Symbol,
+                        BestBidPrice = d.BestBidPrice,
+                        BestBidQty = d.BestBidQuantity,
+                        BestAskPrice = d.BestAskPrice,
+                        BestAskQty = d.BestAskQuantity,
+                        UpdatedAt = DateTime.UtcNow
+                    };
+                }, ct: token);
+
+                if (bookSubResult.Success)
+                {
+                    bookSubResult.Data.ConnectionLost += () => OnLog?.Invoke("⚠️ BookTicker 스트림 연결 끊김...");
+                    bookSubResult.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ BookTicker 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                    OnLog?.Invoke("📡 BookTicker 실시간 구독 성공 (Bid/Ask Imbalance feature 활성)");
+                }
+                else
+                {
+                    OnLog?.Invoke($"⚠️ BookTicker 구독 실패 (무해, 호가 feature 0으로 처리): {bookSubResult.Error}");
+                }
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ BookTicker 구독 예외 (무해): {ex.Message}");
+            }
         }
 
         private async Task StartKlineStreamAsync(CancellationToken token)

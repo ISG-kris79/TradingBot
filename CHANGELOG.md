@@ -5,6 +5,38 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.77] - 2026-04-22
+
+### Phase 5-A — WebSocket BookTicker + 호가창 선행 지표 4개
+
+**인프라:**
+
+- 신규 `BookTickerCacheItem` 클래스 (Models.cs) — Best Bid/Ask 가격·수량 + 갱신 시각
+- `MarketDataManager.BookTickerCache` 신규 (ConcurrentDictionary)
+- `StartPriceWebSocketAsync`에 `SubscribeToBookTickerUpdatesAsync(_majorSymbols)` 추가
+- 실시간 메이저 심볼 호가 갱신 캐시 (5초 신선도 체크)
+
+**신규 4개 ML feature** — 펌프 직전 선행 지표:
+
+- `BidAskImbalanceRatio` (0~1) — `BidQty / (BidQty+AskQty)`. 0.7+ = 매수우세
+- `SpreadPct` (%) — `(Ask-Bid)/Mid × 100`. 낮을수록 유동성 풍부
+- `BidQtyToAskQtyRatio` (0~10) — 매수/매도 수량 비율. 3.0+ = 매수폭발
+- `MidPriceVsLastPct` (%) — 호가 중간가 vs 마지막 체결가 차이
+
+**ML 파이프라인:**
+
+- `EntryTimingMLTrainer.featureColumns` 4개 추가
+- `ExpectedFeatureCount` 101 → 105 (모델 스키마 불일치 시 자동 재학습)
+
+**효과:**
+ML이 호가창 선행 지표로 펌프 임박 학습 가능. PIT/히스토리컬 경로는 호가 데이터 없으므로 0 기본값. 실시간 추론 경로에서만 활성.
+
+### 다음 (Phase 5-B/C)
+
+- aggTrade (체결 매수/매도 비율)
+- Funding Rate / Open Interest WebSocket 구독
+- 학습 쪽 variant 분리 (Major/Pump/Spike 별도 학습)
+
 ## [5.10.76] - 2026-04-22
 
 ### Phase 3 — 3 모델 분리 (Major/Pump/Spike, 사용자 메모리 원칙 준수)

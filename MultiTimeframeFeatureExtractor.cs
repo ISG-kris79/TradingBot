@@ -172,6 +172,9 @@ namespace TradingBot
                 ExtractEntryPositionFeatures(m15Klines, m1Klines, feature);
                 ExtractSymbolRecentPerformanceFeatures(symbol, feature);
 
+                // [v5.10.77 Phase 5-A] 호가창 BookTicker 선행 지표 (4개)
+                ExtractBookTickerFeatures(symbol, feature);
+
                 // 시간 컨텍스트
                 ExtractTimeContext(timestamp, feature);
 
@@ -409,6 +412,53 @@ namespace TradingBot
             // PIT 경로에선 M1 데이터가 없으므로 null 전달 → M1 관련 피처는 0으로 기본값
             ExtractEntryPositionFeatures(m15Klines, null, feature);
             ExtractSymbolRecentPerformanceFeatures(feature.Symbol, feature);
+
+            // [v5.10.77 Phase 5-A] 호가창 feature (PIT/히스토리컬 경로 — 과거 호가 없음, 0 기본값)
+            // 실시간 추론에만 의미 있음
+            // (PIT 경로에선 BookTickerCache 사용 불가, feature.BidAskImbalanceRatio 등 0으로 유지)
+        }
+
+        /// <summary>
+        /// [v5.10.77 Phase 5-A] BookTicker (Bid/Ask) 선행 지표 4개 — 실시간 WebSocket 캐시 기반
+        /// 펌프 직전: BidQty 폭발, Spread 좁아짐, MidPrice가 LastPrice 위로
+        /// </summary>
+        private static void ExtractBookTickerFeatures(string symbol, MultiTimeframeEntryFeature feature)
+        {
+            if (string.IsNullOrWhiteSpace(symbol)) return;
+            var book = Services.MarketDataManager.Instance?.BookTickerCache;
+            if (book == null || !book.TryGetValue(symbol, out var bt) || bt == null) return;
+            // 5초 이내 갱신된 데이터만 사용 (오래된 호가는 신뢰 X)
+            if ((DateTime.UtcNow - bt.UpdatedAt).TotalSeconds > 5) return;
+
+            decimal bidQty = bt.BestBidQty;
+            decimal askQty = bt.BestAskQty;
+            decimal bidPx = bt.BestBidPrice;
+            decimal askPx = bt.BestAskPrice;
+
+            // 1) Bid/Ask Imbalance Ratio (0~1, 0.5 = 균형, 0.7+ = 매수우세)
+            decimal totalQty = bidQty + askQty;
+            if (totalQty > 0m)
+                feature.BidAskImbalanceRatio = (float)(bidQty / totalQty);
+
+            // 2) Spread % — 낮을수록 유동성 풍부
+            if (bidPx > 0m && askPx > 0m)
+            {
+                decimal mid = (bidPx + askPx) / 2m;
+                if (mid > 0m)
+                    feature.SpreadPct = (float)((askPx - bidPx) / mid * 100m);
+
+                // 4) MidPrice vs LastPrice
+                decimal lastPx = feature.EntryPrice;
+                if (lastPx > 0m)
+                    feature.MidPriceVsLastPct = (float)((mid - lastPx) / lastPx * 100m);
+            }
+
+            // 3) BidQty / AskQty 비율 (0~10 클램프)
+            if (askQty > 0m)
+            {
+                float ratio = (float)(bidQty / askQty);
+                feature.BidQtyToAskQtyRatio = Math.Min(10f, Math.Max(0f, ratio));
+            }
         }
 
         private struct TimeframeFeatures
