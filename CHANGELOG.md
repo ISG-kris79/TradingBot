@@ -5,6 +5,23 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.78] - 2026-04-22
+
+### Phase 5-B — 학습 쪽 variant 분리 완성
+
+`AIDoubleCheckEntryGate.TriggerInitialTrainingAsync` 학습 단계 4 모델 분리:
+
+- **Default** trainer: 전체 통합 학습 (fallback 용도)
+- **Major** trainer: `IsMajorSymbol` 필터된 BTC/ETH/SOL/XRP 데이터만
+- **Pump** trainer: 알트코인 데이터만 (Major 제외)
+- **Spike** trainer: 우선 Pump와 동일 (1분봉 초단타 학습 데이터 별도 수집은 향후 PR)
+
+각 trainer 별 `INIT_ML_{label}_{timestamp}` runId로 `AiTrainingRuns` DB에 기록 → 학습 이력 추적 가능. 데이터 < 10개면 해당 variant 스킵.
+
+`RaiseCriticalTrainingAlert`에 4 variant 샘플 카운트 함께 표시.
+
+학습 후 4개 trainer 모두 LoadModel() 호출하여 즉시 추론 가능.
+
 ## [5.10.77] - 2026-04-22
 
 ### Phase 5-A — WebSocket BookTicker + 호가창 선행 지표 4개

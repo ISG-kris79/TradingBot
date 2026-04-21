@@ -1492,55 +1492,70 @@ namespace TradingBot
                     return (false, errMsg);
                 }
 
-                // 2. ML.NET 모델 학습
+                // 2. ML.NET 모델 학습 — [v5.10.78 Phase 5-B] Default + 3 Variant 모두 학습
                 OnAlert?.Invoke($"🧠 [AI 학습] ML.NET 모델 학습 중... (샘플: {trainingFeatures.Count}개)");
-                string mlInitRunId = $"INIT_ML_{DateTime.UtcNow:yyyyMMddHHmmssfff}";
-                try
+
+                // 심볼 카테고리별 feature 분리
+                var majorFeatures = trainingFeatures.Where(f => IsMajorSymbol(f.Symbol)).ToList();
+                var pumpFeatures  = trainingFeatures.Where(f => !IsMajorSymbol(f.Symbol)).ToList();
+                // Spike는 1분봉 초단타 — 최근 학습 데이터 부족, 우선 pump와 동일 사용 (향후 분리)
+                var spikeFeatures = pumpFeatures;
+
+                async Task TrainVariantAsync(EntryTimingMLTrainer trainer, List<MultiTimeframeEntryFeature> data, string label)
                 {
-                    var mlMetrics = await _mlTrainer.TrainAndSaveAsync(trainingFeatures);
-                    OnLog?.Invoke($"[AIDoubleCheck] ML.NET 학습 완료 - Accuracy: {mlMetrics.Accuracy:P2}, F1: {mlMetrics.F1Score:P2}");
-
-                    await PersistTrainingRunAsync(
-                        projectName: "ML.NET",
-                        runId: mlInitRunId,
-                        stage: "Initial",
-                        success: true,
-                        sampleCount: trainingFeatures.Count,
-                        epochs: 0,
-                        accuracy: mlMetrics.Accuracy,
-                        f1Score: mlMetrics.F1Score,
-                        auc: mlMetrics.AUC,
-                        detail: "AIDoubleCheck 초기 학습 완료");
-
-                    RaiseCriticalTrainingAlert(
-                        projectName: "ML.NET",
-                        stage: "초기학습",
-                        success: true,
-                        detail: $"Acc={mlMetrics.Accuracy:P2}, F1={mlMetrics.F1Score:P2}, 샘플={trainingFeatures.Count}");
-                }
-                catch (Exception mlEx)
-                {
-                    OnAlert?.Invoke($"❌ [AI 학습] ML.NET 학습 실패: {mlEx.Message}");
-                    OnLog?.Invoke($"[AIDoubleCheck] ML.NET 학습 상세 오류:\n{mlEx}");
-
-                    await PersistTrainingRunAsync(
-                        projectName: "ML.NET",
-                        runId: mlInitRunId,
-                        stage: "Initial",
-                        success: false,
-                        sampleCount: trainingFeatures.Count,
-                        epochs: 0,
-                        detail: mlEx.Message);
-
-                    RaiseCriticalTrainingAlert(
-                        projectName: "ML.NET",
-                        stage: "초기학습",
-                        success: false,
-                        detail: mlEx.Message);
+                    if (data.Count < 10)
+                    {
+                        OnLog?.Invoke($"[AI 학습][{label}] 데이터 부족 ({data.Count}개) — 학습 스킵");
+                        return;
+                    }
+                    string runId = $"INIT_ML_{label}_{DateTime.UtcNow:yyyyMMddHHmmssfff}";
+                    try
+                    {
+                        var metrics = await trainer.TrainAndSaveAsync(data);
+                        OnLog?.Invoke($"[AI 학습][{label}] 완료 - Acc: {metrics.Accuracy:P2}, F1: {metrics.F1Score:P2}, N: {data.Count}");
+                        await PersistTrainingRunAsync(
+                            projectName: "ML.NET",
+                            runId: runId,
+                            stage: $"Initial_{label}",
+                            success: true,
+                            sampleCount: data.Count,
+                            epochs: 0,
+                            accuracy: metrics.Accuracy,
+                            f1Score: metrics.F1Score,
+                            auc: metrics.AUC,
+                            detail: $"{label} variant 초기 학습");
+                    }
+                    catch (Exception ex)
+                    {
+                        OnAlert?.Invoke($"❌ [AI 학습][{label}] 실패: {ex.Message}");
+                        await PersistTrainingRunAsync(
+                            projectName: "ML.NET",
+                            runId: runId,
+                            stage: $"Initial_{label}",
+                            success: false,
+                            sampleCount: data.Count,
+                            epochs: 0,
+                            detail: ex.Message);
+                    }
                 }
 
-                // 3. 모델 리로드 및 상태 확인 (TF 제거, ML만)
+                // Default (전체 통합) + 3 variant 모두 학습
+                await TrainVariantAsync(_mlTrainer,      trainingFeatures, "Default");
+                await TrainVariantAsync(_mlTrainerMajor, majorFeatures,    "Major");
+                await TrainVariantAsync(_mlTrainerPump,  pumpFeatures,     "Pump");
+                await TrainVariantAsync(_mlTrainerSpike, spikeFeatures,    "Spike");
+
+                RaiseCriticalTrainingAlert(
+                    projectName: "ML.NET",
+                    stage: "초기학습",
+                    success: true,
+                    detail: $"4 모델 학습 완료 (Default={trainingFeatures.Count}, Major={majorFeatures.Count}, Pump={pumpFeatures.Count}, Spike={spikeFeatures.Count})");
+
+                // 3. 모델 리로드 및 상태 확인
                 _mlTrainer.LoadModel();
+                _mlTrainerMajor.LoadModel();
+                _mlTrainerPump.LoadModel();
+                _mlTrainerSpike.LoadModel();
                 bool tfReady = _mlTrainer.IsModelLoaded; // UI 호환용
 
                 if (IsReady)
