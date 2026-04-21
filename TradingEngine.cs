@@ -14310,9 +14310,10 @@ namespace TradingBot
             }
 
             // 실전 모드 + 테스트넷 모드: PositionMonitor를 통한 거래소 API 청산
+            // [v5.10.75] 수동 청산은 fast-path 사용 (기존 ExecuteMarketClose는 algo 취소 대기로 10초+ 지연)
             if (_positionMonitor != null)
             {
-                await _positionMonitor.ExecuteMarketClose(symbol, "사용자 수동 청산", _cts?.Token ?? CancellationToken.None);
+                await _positionMonitor.ExecuteManualCloseFast(symbol, _cts?.Token ?? CancellationToken.None);
             }
             else
             {

@@ -193,8 +193,8 @@ namespace TradingBot
         }
 
         // 현재 파이프라인이 기대하는 Feature 수 (BuildPipeline의 featureColumns 길이)
-        // 49 기존 + 19 확장(v3.4.2) + 5 휩소(v4.5.2) + 5 하락추세(v4.5.6) + 3 DailyPnl(v4.5.11) + 5 단타지표(v4.6.2) + 4 스퀴즈/ST/Pivot(v4.6.3) = 90개
-        private const int ExpectedFeatureCount = 90;
+        // 49 기존 + 19 확장(v3.4.2) + 5 휩소(v4.5.2) + 5 하락추세(v4.5.6) + 3 DailyPnl(v4.5.11) + 5 단타지표(v4.6.2) + 4 스퀴즈/ST/Pivot(v4.6.3) + 11 고점학습(v5.10.75) = 101개
+        private const int ExpectedFeatureCount = 101;
 
         /// <summary>
         /// 저장된 모델 로드 (스키마 호환성 검증 포함)
@@ -468,7 +468,12 @@ namespace TradingBot
                 "M15_StochRSI_K", "M15_StochRSI_D", "M15_StochRSI_Cross",
                 // ── [v4.6.3] BB 스퀴즈 / SuperTrend / Daily Pivot 4개 ──
                 "M15_BB_Width_Pct", "M15_SuperTrend_Direction",
-                "M15_DailyPivot_R1_Dist_Pct", "M15_DailyPivot_S1_Dist_Pct"
+                "M15_DailyPivot_R1_Dist_Pct", "M15_DailyPivot_S1_Dist_Pct",
+                // ── [v5.10.75 Phase 2] 고점 진입 학습 + 여유도 + 심볼 성과 + 다중TF confluence 11개 ──
+                "Price_Position_In_Prev5m_Range", "M1_Rise_From_Low_Pct", "M1_Pullback_From_High_Pct",
+                "Prev_5m_Rise_From_Low_Pct", "Symbol_Recent_WinRate_30d", "Symbol_Recent_AvgPnLPct_30d",
+                "M15_Position_In_Range", "M15_Upper_Shadow_Ratio", "M15_Is_Red_Candle",
+                "M15_Rise_From_Low_Pct", "MultiTF_Top_Confluence_Score"
             };
 
             // 전처리 및 학습 파이프라인

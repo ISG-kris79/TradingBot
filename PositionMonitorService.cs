@@ -2192,6 +2192,84 @@ namespace TradingBot.Services
             return (decimal)rawScore;
         }
 
+        /// <summary>
+        /// [v5.10.75] 수동 청산 전용 fast-path — 시장가 주문 즉시 전송, algo 취소/TradeHistory 업데이트는 비동기
+        /// 기존 ExecuteMarketClose: GetPositionsAsync + CancelAllOrdersAsync(algo) 대기 → 총 10초+ 지연
+        /// 수정 흐름: local 캐시 → 시장가 reduceOnly 즉시 전송 (~1-2초) → 나머지 Task.Run으로 후처리
+        /// </summary>
+        public async Task ExecuteManualCloseFast(string symbol, CancellationToken token)
+        {
+            MarkCloseStarted(symbol);
+            try
+            {
+                OnCloseIncompleteStatusChanged?.Invoke(symbol, false, null);
+
+                // 1. local 캐시에서 즉시 포지션 정보 취득 (REST API 생략)
+                PositionInfo? localPos = null;
+                lock (_posLock)
+                {
+                    if (_activePositions.TryGetValue(symbol, out var lp) && Math.Abs(lp.Quantity) > 0m)
+                    {
+                        localPos = lp;
+                    }
+                }
+
+                if (localPos == null)
+                {
+                    OnLog?.Invoke($"⚠️ [ManualFast] {symbol} local 포지션 없음 → 일반 청산 경로로 fallback");
+                    await ExecuteMarketClose(symbol, "사용자 수동 청산 (fallback)", token);
+                    return;
+                }
+
+                bool isLong = localPos.IsLong;
+                decimal absQty = Math.Abs(localPos.Quantity);
+                string side = isLong ? "SELL" : "BUY";
+
+                // 2. 시장가 reduce-only 주문 즉시 전송
+                var ts0 = DateTime.UtcNow;
+                OnLog?.Invoke($"⚡ [ManualFast] {symbol} 시장가 청산 주문 전송 (qty={absQty}, side={side})");
+                bool orderOk = false;
+                try
+                {
+                    orderOk = await _exchangeService.PlaceOrderAsync(symbol, side, absQty, null, token, reduceOnly: true);
+                }
+                catch (Exception ex)
+                {
+                    OnLog?.Invoke($"❌ [ManualFast] {symbol} 시장가 주문 예외: {ex.Message}");
+                }
+                double elapsedMs = (DateTime.UtcNow - ts0).TotalMilliseconds;
+
+                if (!orderOk)
+                {
+                    OnLog?.Invoke($"❌ [ManualFast] {symbol} 시장가 주문 실패 ({elapsedMs:F0}ms) → 일반 청산 fallback");
+                    await ExecuteMarketClose(symbol, "사용자 수동 청산 (주문실패 fallback)", token);
+                    return;
+                }
+
+                OnLog?.Invoke($"✅ [ManualFast] {symbol} 시장가 주문 전송 완료 ({elapsedMs:F0}ms) — algo 취소/후처리 비동기");
+
+                // 3. algo 주문 취소 + 정리는 비동기로 (사용자 청산 완료 후 백그라운드)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _exchangeService.CancelAllOrdersAsync(symbol, CancellationToken.None);
+                        OnLog?.Invoke($"🗑️ [ManualFast][Async] {symbol} algo 주문 일괄 취소 완료");
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLog?.Invoke($"⚠️ [ManualFast][Async] {symbol} algo 취소 실패 (무해): {ex.Message}");
+                    }
+
+                    // TradeHistory 업데이트는 주기적 PositionSync가 처리 (외부 체결로 감지됨)
+                });
+            }
+            finally
+            {
+                MarkCloseFinished(symbol);
+            }
+        }
+
         public async Task ExecuteMarketClose(string symbol, string reason, CancellationToken token)
         {
             MarkCloseStarted(symbol);

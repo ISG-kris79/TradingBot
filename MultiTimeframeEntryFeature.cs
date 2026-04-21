@@ -153,7 +153,28 @@ namespace TradingBot
         public float M15_BB_Width_Pct { get; set; }              // BB 밴드 폭 % (낮을수록 스퀴즈/폭발 직전)
         public float M15_SuperTrend_Direction { get; set; }      // 1=상승 추세, -1=하락 추세 (ATR10, mult3)
         public float M15_DailyPivot_R1_Dist_Pct { get; set; }   // R1까지 거리 % (양수=R1이 위)
-        public float M15_DailyPivot_S1_Dist_Pct { get; set; }   // S1까지 거리 % (음수=S1이 아래)
+        public float M15_DailyPivot_S1_Dist_Pct { get; set; }   // S1까지 거리 % (음수=S1이 아해)
+
+        // ═══════════════════════════════════════════════════════════════
+        // [v5.10.75 Phase 2] 고점 진입 학습 + 여유도 + 심볼 성과 feature (6개)
+        // 하드코딩 차단 대신 ML이 "이게 고점 진입인가 / 여력이 남았나 / 이 심볼 수익 나는가"를 스스로 학습
+        // ═══════════════════════════════════════════════════════════════
+        public float Price_Position_In_Prev5m_Range { get; set; }  // 직전 5분봉 범위 내 현재가 위치 (0=Low, 1=High) — 1에 가까우면 고점
+        public float M1_Rise_From_Low_Pct { get; set; }             // 최근 1분봉 저점 대비 현재가 상승폭 (%) — 클수록 꼭대기
+        public float M1_Pullback_From_High_Pct { get; set; }        // 최근 1분봉 고점 대비 현재가 하락폭 (%) — 클수록 pullback
+        public float Prev_5m_Rise_From_Low_Pct { get; set; }        // 직전 5분봉 저점→현재가 상승폭 (%) — 여유도
+        public float Symbol_Recent_WinRate_30d { get; set; }        // 해당 심볼 30일 승률 (0~1) — 낮을수록 기피 학습
+        public float Symbol_Recent_AvgPnLPct_30d { get; set; }      // 해당 심볼 30일 건당 평균 PnLPct (정규화된 -1~+1)
+
+        // ═══════════════════════════════════════════════════════════════
+        // [v5.10.75 Phase 2b] 다중 TF 고점 confluence + 캔들 특성 (5개)
+        // ChOP/M/AAVE 등 "1분/5분/15분 모두 고점 + 윗꼬리 빨간봉" 진입 차단을 ML이 학습
+        // ═══════════════════════════════════════════════════════════════
+        public float M15_Position_In_Range { get; set; }           // 직전 15분봉 범위 내 현재가 위치 (0~1)
+        public float M15_Upper_Shadow_Ratio { get; set; }          // 15분봉 윗꼬리 / 전체 범위 (0~1) — 0.4+ = 반전 위험
+        public float M15_Is_Red_Candle { get; set; }                // 1=음봉(Close<Open), 0=양봉 — 상승 중 음봉 = 약세
+        public float M15_Rise_From_Low_Pct { get; set; }           // 15분봉 저점 대비 현재가 (%) — 여유도
+        public float MultiTF_Top_Confluence_Score { get; set; }     // (M1_pos + M5_pos + M15_pos)/3 (0~1) — 여러 TF 동시 고점 = 위험
 
         // ═══════════════════════════════════════════════════════════════
         // 피보나치 되돌림 레벨 (객관적 수치로 AI 특징 사용)

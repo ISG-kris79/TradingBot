@@ -276,6 +276,9 @@
                     Value="60"/>
             <Setter Property="FontSize"
                     Value="13"/>
+            <!-- [v5.10.75] CJK fallback - 币安人生USDT 등 한자 심볼 인코딩 표시 수정 -->
+            <Setter Property="FontFamily"
+                    Value="Segoe UI, Malgun Gothic, Microsoft YaHei UI, Microsoft JhengHei UI, Microsoft YaHei, SimSun"/>
             <Setter Property="CanUserAddRows"
                     Value="False"/>
             <Setter Property="CanUserDeleteRows"

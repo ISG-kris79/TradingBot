@@ -5,6 +5,54 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.75] - 2026-04-22
+
+### Phase 2 — AI 학습 강화 (하드코딩 대체)
+
+**[A] 신규 feature 11개 추가** — 고점 진입 / 다중 TF confluence / 심볼 성과를 ML이 학습
+
+`MultiTimeframeEntryFeature.cs` + `MultiTimeframeFeatureExtractor.cs`:
+
+- `Price_Position_In_Prev5m_Range` (0~1) — 직전 5분봉 내 현재가 위치
+- `M1_Rise_From_Low_Pct` / `M1_Pullback_From_High_Pct` — 1분봉 꼭대기 지표
+- `Prev_5m_Rise_From_Low_Pct` — 여유도
+- `Symbol_Recent_WinRate_30d` / `Symbol_Recent_AvgPnLPct_30d` — 심볼 성과 (DB 10분 캐시)
+- `M15_Position_In_Range` / `M15_Upper_Shadow_Ratio` / `M15_Is_Red_Candle` / `M15_Rise_From_Low_Pct` — 15분봉 캔들 특성
+- `MultiTF_Top_Confluence_Score` — M1+M5+M15 고점 confluence 평균
+
+**하드코딩 아님** — ML이 이 feature를 보고 "고점 진입 위험" 스스로 학습. TOP_SCORE_ENTRY / MEGA_PUMP / AI_ENTRY 모든 경로에서 동일한 feature 사용.
+
+**`EntryTimingMLTrainer.cs`**: `ExpectedFeatureCount` 90 → 101, `featureColumns` 11개 추가. 모델 스키마 불일치 감지 시 기존 모델 자동 폐기 + 재학습.
+
+**[B] 수동 청산 fast-path 추가** — CHIP 10초 지연 해결
+
+기존 `ExecuteMarketClose`: `GetPositionsAsync` + `CancelAllOrdersAsync`(algo) 동기 대기로 10초+ 지연 → 30% 익절 → 손절 전환.
+
+신규 `ExecuteManualCloseFast` (`PositionMonitorService`):
+1. local 캐시에서 즉시 수량/방향 취득 (REST 생략)
+2. 시장가 `reduceOnly` 주문 즉시 전송 (~1-2초)
+3. algo 취소 + TradeHistory 업데이트는 `Task.Run` 비동기
+
+수동 청산 호출부(TradingEngine.cs) fast-path 사용으로 전환.
+
+**[C] DataGrid CJK 폰트 fallback** — `币安人生USDT` 인코딩 깨짐 수정
+
+`ModernDataGridStyle`에 `FontFamily` setter 추가 (`Segoe UI, Malgun Gothic, Microsoft YaHei UI, Microsoft JhengHei UI, Microsoft YaHei, SimSun`). 기존 상속 체계에서 DataGrid가 누락된 문제.
+
+### 검증 필요 (사용자 재시작 후)
+
+- `[Label][Pending]` 로그 — 라벨 파이프라인 (v5.10.72 효과)
+- `[ML_STRONG_OPPOSITE]` 로그 — ML 강한 신호 반응 (v5.10.68)
+- `[MAJOR_BLOCKED_v5_10_66]` 로그 — 메이저 차단
+- `[ManualFast]` 로그 — 수동 청산 fast path 발동
+- 한자 심볼 UI 정상 표시
+
+### 다음 단계 (별도 PR)
+
+- Phase 3: 3 모델 분리 (메이저/PUMP/SPIKE)
+- 하드코딩 전수 제거 (STALE_SIGNAL, slot 기준도 feature화)
+- 호가창/tick/Funding/OI 선행 지표 인프라
+
 ## [5.10.74] - 2026-04-21
 
 ### 롤백 — v5.10.73 하드코딩 차단 제거 (사용자 메모리 "AI 판단만 사용" 원칙 위반)

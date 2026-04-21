@@ -168,6 +168,10 @@ namespace TradingBot
                 // [v4.6.2/v4.6.3] M15 단타 보조지표 — EMA / VWAP / StochRSI / BB스퀴즈 / SuperTrend / DailyPivot
                 ExtractM15TradingViewFeatures(m15Klines, d1Klines, feature);
 
+                // [v5.10.75 Phase 2] 고점 진입 학습 + 여유도 + 심볼 성과 피처 (6개)
+                ExtractEntryPositionFeatures(m15Klines, m1Klines, feature);
+                ExtractSymbolRecentPerformanceFeatures(symbol, feature);
+
                 // 시간 컨텍스트
                 ExtractTimeContext(timestamp, feature);
 
@@ -400,6 +404,11 @@ namespace TradingBot
 
             // [v4.6.2/v4.6.3] M15 단타 보조지표 (PIT/히스토리컬 경로 포함)
             ExtractM15TradingViewFeatures(m15Klines, d1Klines, feature);
+
+            // [v5.10.75 Phase 2] 고점 진입 학습 피처 (PIT/히스토리컬 경로 — M1은 m15 직전 캔들로 근사)
+            // PIT 경로에선 M1 데이터가 없으므로 null 전달 → M1 관련 피처는 0으로 기본값
+            ExtractEntryPositionFeatures(m15Klines, null, feature);
+            ExtractSymbolRecentPerformanceFeatures(feature.Symbol, feature);
         }
 
         private struct TimeframeFeatures
@@ -906,6 +915,109 @@ namespace TradingBot
             // D는 K의 이전 smooth개 평균 (여기선 단순화: 최근 smooth*2 평균)
             double dVal = stochSeries.Skip(stochSeries.Count - smooth * 2).Take(smooth).Average();
             return (kVal, dVal);
+        }
+
+        // [v5.10.75 Phase 2] 고점 진입 학습용 피처 — ChOP/M/AAVE 같은 "다중 TF 고점 + 윗꼬리 빨간봉" 케이스를 ML이 학습
+        // 하드코딩 차단 대신 11개 feature 제공 → ML이 스스로 "이 진입 위험함" 판단
+        private static void ExtractEntryPositionFeatures(List<IBinanceKline> m15Klines, List<IBinanceKline>? m1Klines, MultiTimeframeEntryFeature feature)
+        {
+            if (m15Klines == null || m15Klines.Count == 0) return;
+            decimal currentPrice = m15Klines[^1].ClosePrice;
+
+            // --- M1: 직전 1분봉 ---
+            float m1Position = 0.5f;
+            if (m1Klines != null && m1Klines.Count > 0)
+            {
+                var m1 = m1Klines[^1];
+                decimal m1Range = m1.HighPrice - m1.LowPrice;
+                if (m1Range > 0m)
+                {
+                    m1Position = (float)((currentPrice - m1.LowPrice) / m1Range);
+                    feature.M1_Rise_From_Low_Pct = m1.LowPrice > 0m
+                        ? (float)((currentPrice - m1.LowPrice) / m1.LowPrice * 100m) : 0f;
+                    feature.M1_Pullback_From_High_Pct = m1.HighPrice > 0m
+                        ? (float)((m1.HighPrice - currentPrice) / m1.HighPrice * 100m) : 0f;
+                }
+            }
+
+            // --- M5: 직전 5분봉 (완성 봉 1개 전) - 현재 15분봉 캐시를 써야 하나 m5 없으므로 m15[^2] 사용 대신 m15 자체의 직전 캔들 활용 ---
+            // 5분봉 별도 fetch 비용 때문에 m15 기반으로 근사: m15 직전 완성봉의 range 사용
+            float m5Position = 0.5f;
+            if (m15Klines.Count >= 2)
+            {
+                var prev15 = m15Klines[^2];
+                decimal prev15Range = prev15.HighPrice - prev15.LowPrice;
+                if (prev15Range > 0m)
+                {
+                    m5Position = (float)((currentPrice - prev15.LowPrice) / prev15Range);
+                    feature.Price_Position_In_Prev5m_Range = m5Position;
+                    feature.Prev_5m_Rise_From_Low_Pct = prev15.LowPrice > 0m
+                        ? (float)((currentPrice - prev15.LowPrice) / prev15.LowPrice * 100m) : 0f;
+                }
+            }
+
+            // --- M15: 현재 15분봉 진행중 ---
+            var cur15 = m15Klines[^1];
+            decimal cur15Range = cur15.HighPrice - cur15.LowPrice;
+            decimal cur15Body = Math.Abs(cur15.ClosePrice - cur15.OpenPrice);
+            float m15Position = 0.5f;
+            if (cur15Range > 0m)
+            {
+                m15Position = (float)((currentPrice - cur15.LowPrice) / cur15Range);
+                feature.M15_Position_In_Range = m15Position;
+                feature.M15_Rise_From_Low_Pct = cur15.LowPrice > 0m
+                    ? (float)((currentPrice - cur15.LowPrice) / cur15.LowPrice * 100m) : 0f;
+                decimal bodyMax = cur15.ClosePrice > cur15.OpenPrice ? cur15.ClosePrice : cur15.OpenPrice;
+                feature.M15_Upper_Shadow_Ratio = (float)((cur15.HighPrice - bodyMax) / cur15Range);
+            }
+            feature.M15_Is_Red_Candle = cur15.ClosePrice < cur15.OpenPrice ? 1f : 0f;
+
+            // --- 다중 TF 고점 confluence ---
+            feature.MultiTF_Top_Confluence_Score = (m1Position + m5Position + m15Position) / 3f;
+        }
+
+        // [v5.10.75 Phase 2] 심볼별 최근 30일 성과 피처 (DB 조회, 10분 캐시)
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Time, float WinRate, float AvgPnlPct)> _symbolPerfCache
+            = new(StringComparer.OrdinalIgnoreCase);
+
+        private static void ExtractSymbolRecentPerformanceFeatures(string symbol, MultiTimeframeEntryFeature feature)
+        {
+            if (string.IsNullOrWhiteSpace(symbol)) return;
+
+            if (_symbolPerfCache.TryGetValue(symbol, out var cached)
+                && (DateTime.Now - cached.Time).TotalMinutes < 10)
+            {
+                feature.Symbol_Recent_WinRate_30d = cached.WinRate;
+                feature.Symbol_Recent_AvgPnLPct_30d = cached.AvgPnlPct;
+                return;
+            }
+
+            try
+            {
+                using var cn = new Microsoft.Data.SqlClient.SqlConnection(AppConfig.ConnectionString);
+                cn.Open();
+                using var cmd = cn.CreateCommand();
+                cmd.CommandText = @"
+SELECT COUNT(*) AS N, SUM(CASE WHEN PnL>0 THEN 1 ELSE 0 END) AS Wins, ISNULL(AVG(PnLPercent),0) AS AvgPct
+FROM dbo.TradeHistory WITH (NOLOCK)
+WHERE Symbol=@Symbol AND IsClosed=1 AND EntryTime>=DATEADD(day,-30,GETDATE())";
+                cmd.CommandTimeout = 3;
+                var p = cmd.CreateParameter(); p.ParameterName = "@Symbol"; p.Value = symbol;
+                cmd.Parameters.Add(p);
+                using var r = cmd.ExecuteReader();
+                if (r.Read())
+                {
+                    int n = r.IsDBNull(0) ? 0 : r.GetInt32(0);
+                    int wins = r.IsDBNull(1) ? 0 : r.GetInt32(1);
+                    decimal avgPct = r.IsDBNull(2) ? 0m : r.GetDecimal(2);
+                    float winRate = n > 0 ? (float)wins / n : 0.5f;  // 데이터 없으면 중립 0.5
+                    float avgPctNorm = Math.Clamp((float)avgPct / 100f, -1f, 1f);
+                    _symbolPerfCache[symbol] = (DateTime.Now, winRate, avgPctNorm);
+                    feature.Symbol_Recent_WinRate_30d = winRate;
+                    feature.Symbol_Recent_AvgPnLPct_30d = avgPctNorm;
+                }
+            }
+            catch { /* DB 실패 무시 — feature 기본값 0 */ }
         }
 
         private void ExtractTimeContext(DateTime timestamp, MultiTimeframeEntryFeature feature)
