@@ -5,6 +5,38 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.72] - 2026-04-21
+
+### Phase 1-A — 라벨링 파이프라인 긴급 복구 (30일 -$5,710 손실 근본 원인)
+
+**🚨 v5.10.66 이후 라벨 N=0 현상의 직접 원인:**
+
+- `UpsertLabelInRecentFilesAsync`가 **디스크 파일만 검색**
+- AAVE 등 **빠른 외부 청산(3분)** 케이스는 `_pendingRecords` 큐에만 있고 아직 디스크 flush 안 됨 (5분 주기)
+- → 매칭 실패 → `AiLabeledSamples` INSERT 안 됨 → 온라인 재학습 트리거(200건) 영원히 도달 불가
+- → ML 모델이 **새 데이터로 학습 못 함** = 고정된 오염 모델로 지속 예측
+
+**수정** ([AIDoubleCheckEntryGate.cs:929](AIDoubleCheckEntryGate.cs#L929)):
+1. **`_pendingRecords` 큐 선행 검색** — flush 전 레코드도 라벨 매칭 대상 추가 (참조 타입 직접 업데이트)
+2. **flush 주기 5분 → 1분** 단축 (이중 안전장치)
+3. 큐 매칭 성공 시 `[Label][Pending]` 로그 발생
+
+**예상 효과:**
+- 24시간 내 라벨 수 0 → 수십~수백 건 복구
+- 200건 누적 후 `RetrainModelsAsync` 자동 트리거
+- AI Gate `ML_DIAG` 0% 현상 점진 완화 (새 샘플로 재학습)
+
+**진단 SQL (24h 후):**
+```sql
+SELECT COUNT(*), SUM(CASE WHEN IsSuccess=1 THEN 1 ELSE 0 END)
+FROM AiLabeledSamples WHERE EntryTimeUtc >= '2026-04-21 14:00'
+  AND LabelSource = 'mark_to_market_15m';
+```
+
+### Phase 1-B (다음 hotfix) — 클래스 불균형 보정 + 재학습 + 일반화 검증
+
+v5.10.73에 포함 예정.
+
 ## [5.10.71] - 2026-04-21
 
 ### Phase D+B — TOP_SCORE_ENTRY + WAIT 고점수 큐 fallback (RAVE 미진입 해결)

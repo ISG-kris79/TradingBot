@@ -151,7 +151,8 @@ namespace TradingBot
             }
 
             // 데이터 자동 저장 타이머 (5분마다)
-            _dataFlushTimer = new Timer(_ => FlushCollectedData(), null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+            // [v5.10.72 Phase 1-A] 5분 → 1분 단축 (빠른 외부 청산 케이스에도 디스크 반영 보장 + _pendingRecords 큐 선행 검색과 이중 안전장치)
+            _dataFlushTimer = new Timer(_ => FlushCollectedData(), null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
 
             // [Look-ahead Shield] 기동 시 기존 EntryDecisions 오염 데이터 1회 정화
             _ = Task.Run(async () =>
@@ -926,6 +927,41 @@ namespace TradingBot
                 DateTimeKind.Local => entryTime.ToUniversalTime(),
                 _ => DateTime.SpecifyKind(entryTime, DateTimeKind.Local).ToUniversalTime()
             };
+
+            // [v5.10.72 Phase 1-A] _pendingRecords 큐 선행 검색 — 빠른 외부 청산(<5분)이 flush 전이라 디스크 파일에 없는 경우 매칭 실패 버그 수정
+            // v5.10.66 이후 라벨 N=0 현상의 직접 원인. AAVE 등 3분 청산 케이스 커버.
+            foreach (var pending in _pendingRecords)
+            {
+                bool pendingMatch = false;
+                if (!string.IsNullOrWhiteSpace(decisionId)
+                    && string.Equals(pending.DecisionId, decisionId, StringComparison.OrdinalIgnoreCase)
+                    && (overwriteExisting || !pending.Labeled))
+                {
+                    pendingMatch = true;
+                }
+                else if (string.IsNullOrWhiteSpace(decisionId)
+                    && string.Equals(pending.Symbol, symbolUpper, StringComparison.OrdinalIgnoreCase)
+                    && (overwriteExisting || !pending.Labeled))
+                {
+                    // symbol+time+price fallback (1분 이내 + 가격 3% 이내)
+                    DateTime recUtc = pending.Timestamp.Kind == DateTimeKind.Utc ? pending.Timestamp : DateTime.SpecifyKind(pending.Timestamp, DateTimeKind.Utc);
+                    double timeDiff = Math.Abs((recUtc - entryUtc).TotalMinutes);
+                    double priceDiffPct = entryPrice > 0m ? (double)(Math.Abs(pending.EntryPrice - entryPrice) / entryPrice) : 1.0;
+                    if (timeDiff <= 1.0 && priceDiffPct <= 0.03)
+                        pendingMatch = true;
+                }
+
+                if (pendingMatch)
+                {
+                    pending.ActualProfitPct = actualProfitPct;
+                    pending.Labeled = true;
+                    pending.LabelSource = labelSource;
+                    pending.LabeledAt = DateTime.UtcNow;
+                    // 큐 아이템 업데이트됨 (참조 타입). 다음 flush 주기에 디스크 반영.
+                    OnLog?.Invoke($"📝 [Label][Pending] {symbol} decisionId={decisionId} pnl={actualProfitPct:F2}% → 큐 내부 레코드 업데이트 (flush 전)");
+                    return true;
+                }
+            }
 
             var files = Directory.GetFiles(_dataCollectionPath, "EntryDecisions_*.json")
                 .OrderByDescending(f => f)
