@@ -5,6 +5,37 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.73] - 2026-04-21
+
+### Phase 1-B — ML 클래스 불균형 2단계 보정 + MUSDT/TAOUSDT 즉시 대응
+
+**[A] ML 클래스 불균형 보정 강화** (`EntryTimingMLTrainer`)
+
+- **positive oversampling**: positive < 50개면 bootstrap 3배 복제
+- **negative 다운샘플링 강화**: 기존 5:1 → **2:1 비율** (minority class 학습 비중 확대)
+- **LightGbm `UnbalancedSets = true`**: LightGBM 자체 클래스 불균형 가중치 자동 부여
+- 로그: `밸런싱 완료: pos=N (orig=M), neg=N, ratio 1:X.X`
+
+**[B] MUSDT 사례 — 고점 추격 매수 차단** (`TradingEngine.cs` Gate 1)
+
+- 증상: 7일 61건 진입 중 승률 **15%**, AvgPnLPct **-24.59%**. 23:12 진입가 $4.343 > 직전 5분봉 High $4.340 (+0.3% 초과 돌파)
+- 수정: 직전 완성 5분봉 High 대비 **+0.3% 이상 초과** 시 `[HIGH_CHASE_BLOCK]` 차단
+- MEGA_PUMP / M1_FAST_PUMP / CRASH/PUMP_REVERSE는 예외 (의도된 돌파 매수)
+
+**[C] TAOUSDT 사례 — 누적 손실 심볼 자동 블랙리스트** (`TradingEngine.IsLossySymbolBlacklisted`)
+
+- 증상: 7일 13건 승률 **31%**, Total **-$45**. 4/15, 4/16, 4/20, 4/21 반복 진입
+- 수정: **30일 누적 N≥5 AND WinRate<30% AND TotalPnL<-$30** = 자동 차단
+- `_lossySymbolCache` 30분 TTL 캐시 (DB 조회 비용 회피)
+- 로그: `[LOSSY_SYMBOL_BLOCK] 30d N=13 win=31% pnl=$-45.72`
+
+### 예상 누적 효과 (v5.10.72 + v5.10.73)
+
+- **라벨링 복구** (1-A) → 24h 내 라벨 0 → 수십~수백 건
+- **ML 재학습 정상화** (1-B) → positive class 학습 부실 해결
+- **MUSDT 즉시 차단** (1-B-B) → 고점 추격 -24% 손실 방지
+- **TAOUSDT 차단** (1-B-C) → 반복 손실 심볼 30일 휴면
+
 ## [5.10.72] - 2026-04-21
 
 ### Phase 1-A — 라벨링 파이프라인 긴급 복구 (30일 -$5,710 손실 근본 원인)

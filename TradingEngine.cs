@@ -8522,6 +8522,75 @@ namespace TradingBot
         // [개선안 1~3] SLOT 최적화 헬퍼 메서드들
         // ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
         
+        // [v5.10.73 Phase 1-B] 누적 손실 심볼 캐시 (TAOUSDT 같은 반복 손실 심볼 자동 블랙리스트)
+        // key: Symbol, value: (판정 시각, 사유)
+        private readonly ConcurrentDictionary<string, (DateTime Time, string Reason)> _lossySymbolCache
+            = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// [v5.10.73] 누적 손실 심볼 판정 — 30일 누적 N≥5 AND WinRate<30% AND TotalPnL<-$30이면 true
+        /// DB 조회 비용 때문에 심볼당 30분 캐시
+        /// </summary>
+        private bool IsLossySymbolBlacklisted(string symbol, out string reason)
+        {
+            reason = string.Empty;
+            if (string.IsNullOrWhiteSpace(symbol)) return false;
+
+            // 캐시 조회 (30분 TTL)
+            if (_lossySymbolCache.TryGetValue(symbol, out var cached)
+                && (DateTime.Now - cached.Time).TotalMinutes < 30)
+            {
+                if (!string.IsNullOrEmpty(cached.Reason))
+                {
+                    reason = cached.Reason;
+                    return true;
+                }
+                return false;
+            }
+
+            try
+            {
+                using var cn = new Microsoft.Data.SqlClient.SqlConnection(AppConfig.ConnectionString);
+                cn.Open();
+                using var cmd = cn.CreateCommand();
+                cmd.CommandText = @"
+SELECT COUNT(*) AS N,
+       SUM(CASE WHEN PnL>0 THEN 1 ELSE 0 END) AS Wins,
+       ROUND(ISNULL(SUM(PnL),0),2) AS TotalPnL
+FROM dbo.TradeHistory WITH (NOLOCK)
+WHERE Symbol=@Symbol
+  AND IsClosed=1
+  AND EntryTime>=DATEADD(day,-30,GETDATE())";
+                cmd.CommandTimeout = 5;
+                var pSym = cmd.CreateParameter(); pSym.ParameterName = "@Symbol"; pSym.Value = symbol;
+                cmd.Parameters.Add(pSym);
+                using var r = cmd.ExecuteReader();
+                if (r.Read())
+                {
+                    int n = r.IsDBNull(0) ? 0 : r.GetInt32(0);
+                    int wins = r.IsDBNull(1) ? 0 : r.GetInt32(1);
+                    decimal totalPnl = r.IsDBNull(2) ? 0 : r.GetDecimal(2);
+                    double winRate = n > 0 ? (double)wins / n : 0;
+
+                    bool isLossy = n >= 5 && winRate < 0.30 && totalPnl < -30m;
+                    string cacheReason = isLossy
+                        ? $"30d N={n} win={winRate:P0} pnl=${totalPnl:F2}"
+                        : string.Empty;
+                    _lossySymbolCache[symbol] = (DateTime.Now, cacheReason);
+                    if (isLossy)
+                    {
+                        reason = cacheReason;
+                        return true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [LossyCheck] {symbol} DB 조회 실패 무시: {ex.Message}");
+            }
+            return false;
+        }
+
         /// <summary>
         /// [개선안 2] SLOT 쿨다운 체크: 최근 SLOT 차단된 심볼은 재시도 금지
         /// </summary>
@@ -9229,6 +9298,41 @@ namespace TradingBot
 
                     // 신호 유효 → 기록 삭제하고 진입 진행
                     _signalOriginPrice.TryRemove(symbol, out _);
+                }
+            }
+
+            // [v5.10.73 Phase 1-B] 5분봉 고점 초과 매수 차단 (MUSDT 사례 — EntryPx > Prev5mHigh로 -13~-27% 즉시 손실)
+            // MEGA_PUMP / CRASH_REVERSE / PUMP_REVERSE / M1_FAST_PUMP 외의 LONG 진입에서 직전 5분봉 High를 0.3% 이상 넘으면 차단
+            if (decision == "LONG"
+                && signalSource != "CRASH_REVERSE" && signalSource != "PUMP_REVERSE"
+                && signalSource != "MEGA_PUMP" && signalSource != "M1_FAST_PUMP")
+            {
+                var prevHighCache = Services.MarketDataManager.Instance?
+                    .GetCachedKlines(symbol, Binance.Net.Enums.KlineInterval.FiveMinutes, 3);
+                if (prevHighCache != null && prevHighCache.Count >= 2)
+                {
+                    // 가장 최근 완성된 5분봉 (index = Count-2, Count-1은 진행중)
+                    var prev5m = prevHighCache[prevHighCache.Count - 2];
+                    decimal prev5mHigh = prev5m.HighPrice;
+                    decimal overshootPct = prev5mHigh > 0 ? (currentPrice - prev5mHigh) / prev5mHigh * 100m : 0m;
+                    if (overshootPct >= 0.3m)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [HIGH_CHASE_BLOCK] {symbol} 진입가 ${currentPrice:F4} > 직전 5분봉 High ${prev5mHigh:F4} (+{overshootPct:F2}%) → 고점 매수 차단");
+                        EntryLog("HIGH_CHASE_BLOCK", "BLOCK", $"entryPx={currentPrice:F4} prev5mHigh={prev5mHigh:F4} over={overshootPct:F2}%");
+                        return;
+                    }
+                }
+            }
+
+            // [v5.10.73 Phase 1-B] 누적 손실 심볼 자동 블랙리스트 (TAOUSDT 사례 — 7일 13건 승률 31%, -$45 반복 진입)
+            // 30일 누적 N≥5 AND WinRate<30% AND TotalPnL<-$30 → 차단 (심볼 블랙)
+            if (decision == "LONG" && !MajorSymbols.Contains(symbol))
+            {
+                if (IsLossySymbolBlacklisted(symbol, out var lossyReason))
+                {
+                    OnStatusLog?.Invoke($"⛔ [LOSSY_SYMBOL_BLOCK] {symbol} 누적 손실 심볼 → 진입 차단 ({lossyReason})");
+                    EntryLog("LOSSY_SYMBOL_BLOCK", "BLOCK", lossyReason);
+                    return;
                 }
             }
 

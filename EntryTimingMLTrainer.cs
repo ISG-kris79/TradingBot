@@ -111,30 +111,40 @@ namespace TradingBot
             {
                 Console.WriteLine($"[EntryTimingML] 학습 시작: {trainingData.Count}개 샘플");
 
-                // [v5.10.26] 클래스 불균형 보정: positive × 5 이내로 negative 다운샘플링
-                // 이유: 초기 학습 시 downtrend 시장에서 ~1.8% positive → LightGBM이 항상 0 예측
+                // [v5.10.73 Phase 1-B] 클래스 불균형 2단계 보정 — positive oversampling + negative 다운샘플링
+                // 기존 (v5.10.26): negative만 5:1로 다운샘플링 → minority class 학습 부실 지속
+                // 개선: 1) positive < 50개면 oversample (bootstrap 3배) 2) 최종 비율 2:1로 강화 3) LightGbm UnbalancedSets=true 병행
                 {
                     var positives = trainingData.Where(d => d.ShouldEnter).ToList();
                     var negatives = trainingData.Where(d => !d.ShouldEnter).ToList();
                     if (positives.Count == 0)
                     {
-                        // [v5.10.47] positive 0개면 학습 스킵 → 기존 모델 파일 보존
-                        // 이유: all-negative 데이터로 학습 시 모델이 항상 prob≈0 반환 → 진입 완전 차단
                         Console.WriteLine("[EntryTimingML] ⚠️ positive 샘플 0개 — 기존 모델 유지 (재학습 스킵)");
                         return new ModelMetrics { TrainingSamples = trainingData.Count, Accuracy = -1f };
                     }
-                    else if (negatives.Count > positives.Count * 5)
+
+                    var rng = new Random(42);
+                    int origPositives = positives.Count;
+
+                    // 1) positive < 50개면 bootstrap oversampling (3배 복제)
+                    if (positives.Count < 50)
                     {
-                        var rng = new Random(42);
-                        int targetNeg = positives.Count * 5;
+                        var oversampled = new List<MultiTimeframeEntryFeature>(positives);
+                        for (int k = 0; k < 2; k++) // 원본 + 2회 복제 = 3배
+                            oversampled.AddRange(positives);
+                        positives = oversampled;
+                        Console.WriteLine($"[EntryTimingML] positive oversample: {origPositives} → {positives.Count} (bootstrap 3x)");
+                    }
+
+                    // 2) negative 다운샘플링 (positive × 2 이내)
+                    int targetNeg = positives.Count * 2;
+                    if (negatives.Count > targetNeg)
+                    {
                         negatives = negatives.OrderBy(_ => rng.Next()).Take(targetNeg).ToList();
-                        trainingData = positives.Concat(negatives).OrderBy(_ => rng.Next()).ToList();
-                        Console.WriteLine($"[EntryTimingML] 밸런싱: pos={positives.Count}, neg(after)={negatives.Count}, total={trainingData.Count}");
                     }
-                    else
-                    {
-                        Console.WriteLine($"[EntryTimingML] 밸런스 양호: pos={positives.Count}, neg={negatives.Count}");
-                    }
+
+                    trainingData = positives.Concat(negatives).OrderBy(_ => rng.Next()).ToList();
+                    Console.WriteLine($"[EntryTimingML] 밸런싱 완료: pos={positives.Count} (orig={origPositives}), neg={negatives.Count}, total={trainingData.Count} (ratio 1:{(double)negatives.Count / Math.Max(1, positives.Count):F1})");
                 }
 
                 // 데이터 로드
@@ -462,6 +472,9 @@ namespace TradingBot
             };
 
             // 전처리 및 학습 파이프라인
+            // [v5.10.73 Phase 1-B] UnbalancedSets=true 추가 — LightGBM 자체 클래스 불균형 보정
+            // 현재: AI 점수 역상관 (AiScore ≥0.80 승률 13%, <0.50 승률 71%) = positive class 학습 부실
+            // UnbalancedSets=true 적용 시 LightGBM이 minority class에 가중치 자동 부여
             var pipeline = _mlContext.Transforms.Concatenate("Features", featureColumns)
                 .Append(_mlContext.Transforms.NormalizeMinMax("Features")) // Feature 정규화
                 .Append(_mlContext.BinaryClassification.Trainers.LightGbm(new LightGbmBinaryTrainer.Options
@@ -472,9 +485,8 @@ namespace TradingBot
                     MinimumExampleCountPerLeaf = 10,
                     LearningRate = 0.1,
                     NumberOfIterations = 300,
+                    UnbalancedSets = true, // [v5.10.73] positive minority class 자동 가중
                     // [v4.5.14] 메인 루프 블로킹 방지: CPU 절반 + 상한 4로 제한
-                    // - 기존: ProcessorCount-2 (8코어=6 스레드 = 75% 점유) → 메인 루프 CPU 대기
-                    // - 변경: max(2, min(4, CPU/2))
                     NumberOfThreads = Math.Max(2, Math.Min(4, Environment.ProcessorCount / 2))
                 })); // LightGBM: 빠르고 정확한 트리 기반 모델
 
