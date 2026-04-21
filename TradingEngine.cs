@@ -9155,10 +9155,19 @@ namespace TradingBot
                     // [v5.2.9] 슬롯 차단 시 최초 신호 가격 기록 (이미 있으면 유지)
                     _signalOriginPrice.TryAdd(symbol, (currentPrice, DateTime.Now));
                     // [v5.10.38] 우선순위 큐 등록 — AI 승인 점수 캐시 사용 (없으면 0점 = 최하위)
+                    // [v5.10.71 B] AI 승인 score 없으면 PumpScan top60 score 사용 (RAVE처럼 WAIT 상태 고거래량 코인 대응)
                     float queueScore = 0f;
                     if (_aiApprovedRecentScores.TryGetValue(symbol, out var cached)
                         && (DateTime.Now - cached.Time).TotalMinutes < 30)
                         queueScore = cached.Score;
+                    else if (_pumpStrategy != null
+                        && _pumpStrategy.TopCandidateScores.TryGetValue(symbol, out var topCand)
+                        && (DateTime.Now - topCand.Time).TotalMinutes < 10)
+                    {
+                        // top60 rank 낮을수록(1위 → 10위) score penalty 적용 (rank 1 = 100%, rank 10 = 10%)
+                        float rankMultiplier = Math.Max(0f, 1f - (topCand.Rank - 1) * 0.1f);
+                        queueScore = topCand.Score * rankMultiplier;
+                    }
                     lock (_pumpPriorityLock)
                     {
                         _pumpPriorityQueue.RemoveAll(e => e.Symbol.Equals(symbol, StringComparison.OrdinalIgnoreCase));

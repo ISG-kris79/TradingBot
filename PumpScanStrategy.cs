@@ -19,6 +19,12 @@ namespace TradingBot.Strategies
         private readonly IBinanceRestClient _client;
         private readonly PumpScanSettings _settings;
         private readonly TradingBot.Services.PumpSignalClassifier? _pumpML;
+
+        // [v5.10.71 D+B] top60 후보의 rank/score 캐시 — AnalyzeSymbolAsync에서 TOP_SCORE_ENTRY 조건 평가용,
+        // TradingEngine 슬롯 포화 큐 등록 시 fallback score로도 활용 (RAVE 같은 고거래량 코인 대응)
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (int Rank, float Score, DateTime Time)> _topCandidateScores
+            = new(StringComparer.OrdinalIgnoreCase);
+        public System.Collections.Generic.IReadOnlyDictionary<string, (int Rank, float Score, DateTime Time)> TopCandidateScores => _topCandidateScores;
         private DateTime _lastProfileLogTime = DateTime.MinValue;
 
         public event Action<MultiTimeframeViewModel>? OnSignalAnalyzed;
@@ -71,6 +77,21 @@ namespace TradingBot.Strategies
                 string rankedSymbols = string.Join(", ", candidates.Select((t, index) =>
                     $"{index + 1}:{t.Ticker.Symbol}(score={t.Score:F3},vol={t.Ticker.QuoteVolume:N0},var={t.Volatility:P1},mom={t.Momentum:P1})"));
                 PumpSignalLog("CANDIDATE", $"top{candidates.Count}={rankedSymbols}");
+            }
+
+            // [v5.10.71 D+B] top10 candidate rank/score 캐시 갱신 — AnalyzeSymbolAsync TOP_SCORE_ENTRY + 큐 fallback
+            int topN = Math.Min(10, candidates.Count);
+            for (int i = 0; i < topN; i++)
+            {
+                string sym = candidates[i].Ticker.Symbol;
+                if (!string.IsNullOrWhiteSpace(sym))
+                    _topCandidateScores[sym] = (i + 1, (float)candidates[i].Score, DateTime.Now);
+            }
+            // 10분 지난 캐시 항목 제거
+            foreach (var kvp in _topCandidateScores.ToArray())
+            {
+                if ((DateTime.Now - kvp.Value.Time).TotalMinutes > 10)
+                    _topCandidateScores.TryRemove(kvp.Key, out _);
             }
 
             var tasks = candidates.Select(async candidate =>
@@ -340,6 +361,29 @@ namespace TradingBot.Strategies
                     else if (!isUptrend && volumeMomentum >= 5.0 && rangePctNow >= 3.0f && isBullish)
                     {
                         PumpSignalLog("MEGA_PUMP_SKIP", $"sym={symbol} 하락추세 차단 vol={volumeMomentum:F1}x range={rangePctNow:F1}%");
+                    }
+                }
+
+                // [v5.10.71 D] TOP_SCORE_ENTRY — top60 1~3위 고점수 코인 강한 펌프 직접 진입
+                // RAVE 케이스: top60 #2 score 0.54, 21:05 +5.58% 펌프였으나 volumeMomentum 0.66으로 bull0 → WAIT
+                // (고거래량 코인은 20봉 평균 대비 스파이크 비율 낮아 기존 필터 우회 필요)
+                if (decision == "WAIT" && !isOverextended && rsi < 75
+                    && _topCandidateScores.TryGetValue(symbol, out var topInfo)
+                    && topInfo.Rank <= 3 && topInfo.Score >= 0.5f)
+                {
+                    var lc = list[list.Count - 1];
+                    decimal lc_range = lc.HighPrice - lc.LowPrice;
+                    float lc_rangePct = lc.OpenPrice > 0 ? (float)(lc_range / lc.OpenPrice * 100) : 0f;
+                    bool lc_bullish = lc.ClosePrice > lc.OpenPrice;
+                    float lc_chgPct = lc.OpenPrice > 0
+                        ? (float)((lc.ClosePrice - lc.OpenPrice) / lc.OpenPrice * 100) : 0f;
+                    // 5분봉 +3% AND 양봉 AND 단기추세 (5분봉 SMA20 위)
+                    bool m5TrendOk = isUptrend || currentPrice > (decimal)sma20;
+                    if (lc_chgPct >= 3.0f && lc_bullish && lc_rangePct >= 3.0f && m5TrendOk)
+                    {
+                        decision = "LONG";
+                        PumpSignalLog("TOP_SCORE_ENTRY",
+                            $"sym={symbol} rank={topInfo.Rank} score={topInfo.Score:F2} 5mChg={lc_chgPct:F1}% rsi={rsi:F0} → top60 고점수 즉시 진입");
                     }
                 }
 

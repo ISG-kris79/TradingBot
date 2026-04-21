@@ -5,6 +5,31 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.71] - 2026-04-21
+
+### Phase D+B — TOP_SCORE_ENTRY + WAIT 고점수 큐 fallback (RAVE 미진입 해결)
+
+**근본 원인 (RAVE 케이스):**
+- RAVEUSDT가 top60 **#2위 (score 0.53~0.54)** 로 봇이 인식했으나 매매 못 함
+- volumeMomentum 0.60~0.66 (고거래량 코인 특성 — 20봉 평균 대비 스파이크 비율 낮음)
+- bullishSignals < 3 → `decision = WAIT` 지속
+- WAIT는 우선순위 큐에도 등록 안 됨
+
+**[D] TOP_SCORE_ENTRY 신규 진입 경로** (`PumpScanStrategy.AnalyzeSymbolAsync`)
+- 위치: MEGA_PUMP → M1_FAST → **TOP_SCORE_ENTRY** → AI_ENTRY → FALLBACK 순
+- 조건: `top60 rank ≤ 3` AND `score ≥ 0.5` AND `5분봉 +3%` AND `양봉` AND `단기추세` AND `!isOverextended` AND `RSI<75`
+- 효과: RAVE 같은 고거래량 고점수 코인도 5분봉 +3% 펌프 시 즉시 진입
+- 로그 키워드: `[TOP_SCORE_ENTRY]`
+
+**[B] PumpScan top60 score를 큐 fallback으로** (`TradingEngine.cs:9157`)
+- 슬롯 포화 시 우선순위 큐 등록: 기존 `_aiApprovedRecentScores`만 조회 → **없으면 `_pumpStrategy.TopCandidateScores` fallback**
+- rank penalty: 1위 = 100%, 2위 = 90%, ..., 10위 = 10%
+- 효과: AI 미승인 WAIT 심볼도 top60 상위면 큐에 축적 → 슬롯 빈 시점 재평가 기회
+
+**[신규 인프라]** `PumpScanStrategy.TopCandidateScores` (IReadOnlyDictionary)
+- `ExecuteScanAsync`에서 top10 후보의 (rank, score, time) 10분 캐시
+- AnalyzeSymbolAsync + TradingEngine 양쪽에서 공유 조회
+
 ## [5.10.70] - 2026-04-21
 
 ### Phase B-2 — PUMP 1분봉 fast-path (5분 후행 → 1분 후행)
