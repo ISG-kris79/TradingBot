@@ -36,25 +36,49 @@ namespace TradingBot
 
         public bool IsModelLoaded => _isModelLoaded;
 
+        // [v5.10.76 Phase 3] 모델 variant (메이저/PUMP/SPIKE 분리)
+        public enum ModelVariant { Default, Major, Pump, Spike }
+        public ModelVariant Variant { get; private set; } = ModelVariant.Default;
+        public string ModelDescription => Variant switch
+        {
+            ModelVariant.Major => "Major (BTC/ETH/SOL/XRP)",
+            ModelVariant.Pump => "Pump (일반 알트)",
+            ModelVariant.Spike => "Spike (1분봉 초단타)",
+            _ => "Default (통합)"
+        };
+
         public EntryTimingMLTrainer(string? modelPath = null)
+            : this(ModelVariant.Default, modelPath)
+        {
+        }
+
+        public EntryTimingMLTrainer(ModelVariant variant, string? modelPath = null)
         {
             _mlContext = new MLContext(seed: 42);
+            Variant = variant;
             _legacyModelPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "EntryTimingModel.zip");
             _modelPath = string.IsNullOrWhiteSpace(modelPath)
-                ? GetDefaultModelPath()
+                ? GetDefaultModelPath(variant)
                 : modelPath;
 
             EnsureModelDirectoryExists();
         }
 
-        private static string GetDefaultModelPath()
+        private static string GetDefaultModelPath(ModelVariant variant = ModelVariant.Default)
         {
             string modelDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "TradingBot",
                 "Models");
 
-            return Path.Combine(modelDir, "EntryTimingModel.zip");
+            string fileName = variant switch
+            {
+                ModelVariant.Major => "EntryTimingModel_Major.zip",
+                ModelVariant.Pump  => "EntryTimingModel_Pump.zip",
+                ModelVariant.Spike => "EntryTimingModel_Spike.zip",
+                _ => "EntryTimingModel.zip"
+            };
+            return Path.Combine(modelDir, fileName);
         }
 
         private void EnsureModelDirectoryExists()

@@ -5,6 +5,32 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.76] - 2026-04-22
+
+### Phase 3 — 3 모델 분리 (Major/Pump/Spike, 사용자 메모리 원칙 준수)
+
+**인프라:** `EntryTimingMLTrainer`에 `ModelVariant` enum + variant별 기본 경로 분기
+- `EntryTimingModel.zip` (Default — fallback)
+- `EntryTimingModel_Major.zip` (BTC/ETH/SOL/XRP)
+- `EntryTimingModel_Pump.zip` (일반 알트)
+- `EntryTimingModel_Spike.zip` (1분봉 초단타)
+
+**AIDoubleCheckEntryGate 통합:**
+- 4개 trainer 인스턴스 (Default/Major/Pump/Spike) 동시 보유
+- 신규 `SelectTrainerForSymbol(symbol, signalSource)` — 심볼별 동적 라우팅
+  - `IsMajorSymbol` → Major trainer (로드돼 있으면)
+  - `signalSource` SPIKE/TICK_SURGE/M1_FAST_PUMP → Spike trainer
+  - 그 외 → Pump trainer
+  - 모든 variant 미로드 → Default fallback
+- `EvaluateEntryAsync` 예측 호출 선택된 trainer로 교체
+- `ML_DIAG` 로그에 `model=Variant` 표시 추가
+
+**IsReady 조건 확장:** 4개 중 하나라도 로드되면 ready.
+
+### 향후 작업
+- 학습 쪽도 variant 분리 (현재는 Default만 학습, variant별 학습 데이터 필터는 별도 PR)
+- 학습 데이터 부족 시 Default 모델에서 transfer learning 방식 검토
+
 ## [5.10.75] - 2026-04-22
 
 ### Phase 2 — AI 학습 강화 (하드코딩 대체)

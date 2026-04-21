@@ -21,7 +21,10 @@ namespace TradingBot
     public class AIDoubleCheckEntryGate
     {
         private readonly IExchangeService _exchangeService;
-        private readonly EntryTimingMLTrainer _mlTrainer;
+        private readonly EntryTimingMLTrainer _mlTrainer;                   // [Default/기본] — Fallback
+        private readonly EntryTimingMLTrainer _mlTrainerMajor;              // [v5.10.76 Phase 3] Major 전용
+        private readonly EntryTimingMLTrainer _mlTrainerPump;               // [v5.10.76 Phase 3] Pump 전용
+        private readonly EntryTimingMLTrainer _mlTrainerSpike;              // [v5.10.76 Phase 3] Spike 전용
         private readonly MultiTimeframeFeatureExtractor _featureExtractor;
         // [v4.3.1] MultiTF 피처 캐시 (30초 TTL) — 5개 API 호출 제거
         private readonly ConcurrentDictionary<string, (MultiTimeframeEntryFeature feature, DateTime time)> _featureCache = new(StringComparer.OrdinalIgnoreCase);
@@ -51,8 +54,34 @@ namespace TradingBot
         public event Action<string>? OnAlert;
         public event Action<AiLabeledSample>? OnLabeledSample;
         
-        // [v3.0.7] ML.NET 모델 로드 시 게이트 활성화
-        public bool IsReady => _mlTrainer.IsModelLoaded;
+        // [v3.0.7] ML.NET 모델 로드 시 게이트 활성화 (Default 또는 variant 중 하나만 로드돼도 Ready)
+        public bool IsReady => _mlTrainer.IsModelLoaded || _mlTrainerMajor.IsModelLoaded
+                            || _mlTrainerPump.IsModelLoaded || _mlTrainerSpike.IsModelLoaded;
+
+        /// <summary>
+        /// [v5.10.76 Phase 3] 심볼 + signalSource로 적절한 ML trainer 선택
+        /// 우선순위: 해당 variant 모델 로드됨 → 그 모델 사용, 아니면 Default fallback
+        /// </summary>
+        private EntryTimingMLTrainer SelectTrainerForSymbol(string symbol, string? signalSource)
+        {
+            bool isMajor = IsMajorSymbol(symbol);
+            bool isSpike = !string.IsNullOrEmpty(signalSource)
+                && (signalSource.StartsWith("SPIKE", StringComparison.OrdinalIgnoreCase)
+                    || signalSource.Equals("TICK_SURGE", StringComparison.OrdinalIgnoreCase)
+                    || signalSource.Equals("M1_FAST_PUMP", StringComparison.OrdinalIgnoreCase));
+
+            EntryTimingMLTrainer selected;
+            if (isMajor && _mlTrainerMajor.IsModelLoaded) selected = _mlTrainerMajor;
+            else if (isSpike && _mlTrainerSpike.IsModelLoaded) selected = _mlTrainerSpike;
+            else if (!isMajor && _mlTrainerPump.IsModelLoaded) selected = _mlTrainerPump;
+            else if (_mlTrainer.IsModelLoaded) selected = _mlTrainer;
+            else
+            {
+                // 모든 variant 미로드 → Default (빈 모델) 반환. IsReady=false로 gate 차단됨
+                selected = _mlTrainer;
+            }
+            return selected;
+        }
 
         public AIDoubleCheckEntryGate(
             IExchangeService exchangeService,
@@ -67,13 +96,20 @@ namespace TradingBot
                 _dbManager = new DbManager(AppConfig.ConnectionString);
             }
             
-            _mlTrainer = new EntryTimingMLTrainer();
+            // [v5.10.76 Phase 3] 3 모델 분리 — 메이저/PUMP/SPIKE 각각 별도 학습/추론
+            _mlTrainer       = new EntryTimingMLTrainer(EntryTimingMLTrainer.ModelVariant.Default);
+            _mlTrainerMajor  = new EntryTimingMLTrainer(EntryTimingMLTrainer.ModelVariant.Major);
+            _mlTrainerPump   = new EntryTimingMLTrainer(EntryTimingMLTrainer.ModelVariant.Pump);
+            _mlTrainerSpike  = new EntryTimingMLTrainer(EntryTimingMLTrainer.ModelVariant.Spike);
             _featureExtractor = new MultiTimeframeFeatureExtractor(exchangeService);
             _labeler = new BacktestEntryLabeler();
             _ruleValidator = new EntryRuleValidator(_config);
 
-            // ML 모델 로드
+            // 각 모델 로드 (없으면 fallback으로 Default 사용)
             _mlTrainer.LoadModel();
+            _mlTrainerMajor.LoadModel();
+            _mlTrainerPump.LoadModel();
+            _mlTrainerSpike.LoadModel();
 
             // [v3.0.7] ML.NET 단독 모드 (TensorFlow.NET 제거됨)
 
@@ -216,9 +252,10 @@ namespace TradingBot
                     return (false, "Feature_Extraction_Failed", new AIEntryDetail());
                 }
 
-                // 2. [ML.NET] 진입 판정 (TF 제거, ML 단독)
+                // 2. [ML.NET] 진입 판정 — [v5.10.76 Phase 3] 심볼별 3 모델 분리
                 var recentFeatures = BuildTransformerSequence(symbol, feature);
-                var mlPrediction = _mlTrainer.IsModelLoaded ? _mlTrainer.Predict(feature) : null;
+                var selectedTrainer = SelectTrainerForSymbol(symbol, null);
+                var mlPrediction = selectedTrainer.IsModelLoaded ? selectedTrainer.Predict(feature) : null;
 
                 bool mlApprove = mlPrediction?.ShouldEnter ?? false;
                 float mlConfidence = mlPrediction?.Probability ?? 0f;
@@ -226,9 +263,9 @@ namespace TradingBot
                 // [v4.9.4] ML=0 원인 진단 로그 (첫 몇 번만)
                 if (mlConfidence < 0.01f)
                 {
-                    string reason = !_mlTrainer.IsModelLoaded ? "modelNotLoaded"
+                    string reason = !selectedTrainer.IsModelLoaded ? $"modelNotLoaded({selectedTrainer.Variant})"
                                    : mlPrediction == null ? "predictionNull"
-                                   : $"prob=0 shouldEnter={mlPrediction.ShouldEnter} score={mlPrediction.Score:F4}";
+                                   : $"prob=0 shouldEnter={mlPrediction.ShouldEnter} score={mlPrediction.Score:F4} model={selectedTrainer.Variant}";
                     OnLog?.Invoke($"🔬 [ML_DIAG] {symbol} {decision} | reason={reason} | featureValid={feature != null}");
                 }
                 float effectiveMLThreshold = _onlineLearning?.CurrentMLThreshold ?? _config.MinMLConfidence;
