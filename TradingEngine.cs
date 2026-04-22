@@ -595,10 +595,20 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, DateTime> _scoutAddOnPendingSymbols
             = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
-        private static readonly HashSet<string> MajorSymbols = new(StringComparer.OrdinalIgnoreCase)
+        // [v5.10.85] 메이저 = 설정창 "주요 심볼" (txtSymbols) 값에서 동적 로드
+        //   기존: hardcoded HashSet → 사용자가 설정창에서 변경해도 반영 안 됨
+        //   수정: AppConfig.Current.Trading.Symbols 직접 참조 → 사용자 설정이 source of truth
+        //   기본값: BTC/ETH/SOL/XRP (line 921 DefaultSymbols)
+        private HashSet<string> MajorSymbols
         {
-            "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT"
-        };
+            get
+            {
+                var src = AppConfig.Current?.Trading?.Symbols;
+                if (src == null || src.Count == 0)
+                    return new HashSet<string>(new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" }, StringComparer.OrdinalIgnoreCase);
+                return new HashSet<string>(src, StringComparer.OrdinalIgnoreCase);
+            }
+        }
 
         // ═══════════════════════════════════════════════════════════════════════════════════
         // [v5.10.81] 글로벌 진입 게이트 (단일 진입점)
@@ -11634,7 +11644,9 @@ namespace TradingBot
 
         private static CoinType ResolveCoinType(string symbol, string signalSource)
         {
-            if (!string.IsNullOrWhiteSpace(symbol) && MajorSymbols.Contains(symbol))
+            // [v5.10.85] static 메서드에서 인스턴스 MajorSymbols 사용 불가 → 설정창 직접 조회
+            var src = AppConfig.Current?.Trading?.Symbols ?? new List<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+            if (!string.IsNullOrWhiteSpace(symbol) && src.Contains(symbol, StringComparer.OrdinalIgnoreCase))
                 return CoinType.Major;
 
             if (!string.IsNullOrWhiteSpace(signalSource)
@@ -12073,7 +12085,9 @@ namespace TradingBot
 
         private static SymbolThresholdProfile GetThresholdBySymbol(string symbol)
         {
-            bool isMajor = !string.IsNullOrWhiteSpace(symbol) && MajorSymbols.Contains(symbol);
+            // [v5.10.85] static 메서드 → 설정창 직접 조회
+            var src = AppConfig.Current?.Trading?.Symbols ?? new List<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+            bool isMajor = !string.IsNullOrWhiteSpace(symbol) && src.Contains(symbol, StringComparer.OrdinalIgnoreCase);
 
             if (isMajor)
             {

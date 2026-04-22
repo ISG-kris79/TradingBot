@@ -1861,7 +1861,52 @@ namespace TradingBot.Services
                     await TelegramService.Instance.SendBreakEvenReachedAsync(symbol, entryPrice);
                 }
 
+                // ═══════════════════════════════════════════════════════════════
+                // [v5.10.85] PUMP 시간 손절 + 횡보 익절 (사용자 요구 직접 반영)
+                //   "알트들이 너무 오랜시간 보유하고 있다가 손절나는경우가 너무 많아"
+                //   "횡보일때 수익권이면 어떻게든 익절을 봐야하는데 그게 안되잖아"
+                //   ※ 기존 PumpTimeStopMinutes 설정값 활용 (사용자 정의 → 하드코딩 X)
+                // ═══════════════════════════════════════════════════════════════
+                {
+                    DateTime entryTime = DateTime.Now;
+                    lock (_posLock)
+                    {
+                        if (_activePositions.TryGetValue(symbol, out var posTime) && posTime.EntryTime != default)
+                            entryTime = posTime.EntryTime;
+                    }
+                    double holdMinutes = (DateTime.Now - entryTime).TotalMinutes;
 
+                    // [A] 시간 손절: PumpTimeStopMinutes(기본 120분) 초과 + 손실 중(ROE≤0) → 즉시 청산
+                    decimal timeStopMinutes = _settings.PumpTimeStopMinutes > 0 ? _settings.PumpTimeStopMinutes : 120m;
+                    if (holdMinutes >= (double)timeStopMinutes && currentROE <= 0m)
+                    {
+                        OnAlert?.Invoke($"⏰ [TIME_STOP] {symbol} {holdMinutes:F0}분 보유 ≥ {timeStopMinutes:F0}분 + ROE={currentROE:F1}% (손실 중) → 시간 손절");
+                        await ExecuteMarketClose(symbol, $"PUMP_TIME_STOP ({holdMinutes:F0}min, ROE={currentROE:F1}%)", token);
+                        break;
+                    }
+
+                    // [B] 횡보 익절: 30분 이상 보유 + ROE≥5% (수익권) + BB Width 좁음(횡보) → 익절
+                    if (holdMinutes >= 30 && currentROE >= 5m
+                        && _marketDataManager.KlineCache.TryGetValue(symbol, out var kc) && kc.Count >= 25)
+                    {
+                        try
+                        {
+                            List<IBinanceKline> recent20;
+                            lock (kc) { recent20 = kc.TakeLast(20).ToList(); }
+                            var bb = IndicatorCalculator.CalculateBB(recent20, 20, 2);
+                            double mid = bb.Mid;
+                            decimal bbWidthPct = mid > 0 ? (decimal)((bb.Upper - bb.Lower) / mid * 100.0) : 0m;
+                            // BB Width 1.5% 미만 = 횡보 / 스퀴즈
+                            if (bbWidthPct > 0 && bbWidthPct < 1.5m)
+                            {
+                                OnAlert?.Invoke($"💰 [SIDEWAYS_PROFIT] {symbol} {holdMinutes:F0}분 보유 + ROE={currentROE:F1}% + BBWidth={bbWidthPct:F2}%(횡보) → 익절");
+                                await ExecuteMarketClose(symbol, $"SIDEWAYS_PROFIT_TAKE ({holdMinutes:F0}min, ROE={currentROE:F1}%, BBW={bbWidthPct:F2}%)", token);
+                                break;
+                            }
+                        }
+                        catch (Exception bbEx) { OnLog?.Invoke($"⚠️ {symbol} 횡보 익절 BB 계산 예외: {bbEx.Message}"); }
+                    }
+                }
 
                 lock (_posLock)
                 {

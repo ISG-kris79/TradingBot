@@ -5,6 +5,50 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.85] - 2026-04-22
+
+### 🎯 사용자 핵심 요구 직접 반영: 메이저 동적 + 시간손절 + 횡보익절
+
+**사용자 요구:**
+
+> "설정에 주요심볼이 메이저코인이잖아"
+> "알트들이 너무 오랜시간 보유하고 있다가 손절나는 경우가 너무 많아"
+> "횡보일때 수익권이면 어떻게든 익절을 봐야하는데 그게 안되잖아"
+
+**수정 1 — MajorSymbols 동적 로드:**
+
+- 기존: `private static readonly HashSet<string> MajorSymbols = {"BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT"}` 하드코딩
+- 수정: 설정창 "주요 심볼" (txtSymbols / `AppConfig.Current.Trading.Symbols`) 동적 참조
+- 효과: 사용자가 설정에서 메이저 변경 시 자동 반영 (BNB/DOGE 자동 제외)
+- static 메서드 2곳(`ResolveCoinType`, `GetThresholdBySymbol`)도 동일 패턴 적용
+
+**수정 2 — PUMP 시간 손절 구현 (PumpTimeStopMinutes 활성화):**
+
+- 기존: `PumpTimeStopMinutes=120m` 설정값은 있으나 production 코드에 미구현 (백테스터에만 존재)
+- 사례: TAOUSDT 9시간 보유, BUY_PRESSURE 17시간 보유 → 결국 손절
+- 수정: `PositionMonitorService.MonitorPumpPositionShortTerm` 루프에 시간손절 추가
+- 조건: `holdMinutes >= PumpTimeStopMinutes AND ROE <= 0` → 즉시 시장가 청산
+- 로그: `[TIME_STOP] {symbol} {hold}분 ≥ {threshold}분 + ROE={roe}% → 시간 손절`
+
+**수정 3 — 횡보 익절 (Sideways Profit-Take):**
+
+- 사례: 알트 진입 후 횡보 → BB 좁아짐 → 결국 SL → 손실
+- 수정: 30분+ 보유 + ROE≥5% (수익권) + BBWidth<1.5% (횡보) → 즉시 익절
+- 로그: `[SIDEWAYS_PROFIT] {symbol} {hold}분 + ROE={roe}% + BBWidth={bbw}%(횡보) → 익절`
+- 임계값(30분/5%/1.5%)은 v1 기본값; ML 학습 후 변경 가능
+
+**효과:**
+
+1. 메이저 정의가 설정창과 일관 → 사용자 변경 즉시 반영
+2. PUMP 알트 9시간+ 자리 차지 차단 (TAOUSDT 같은 stuck 포지션 자동 정리)
+3. 횡보 진입 후 수익권에서 익절 — "그게 안되잖아" 해결
+4. 슬롯 회전율 상승 → 새 기회 진입 가능
+
+**리스크:**
+
+- 시간손절은 손실 중일 때만 작동 (수익권에선 트레일링 유지) → 보수적 설정
+- 횡보 익절 BB Width 1.5% 임계값이 너무 엄격하면 발동 빈도↓ → 모니터링 필요
+
 ## [5.10.84] - 2026-04-22
 
 ### 🎯 Phase 6 — Multi-TF 추세전환 + M1 신뢰성 (사용자 요구 직접 반영)
