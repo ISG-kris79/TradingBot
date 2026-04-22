@@ -17,6 +17,27 @@ namespace TradingBot.Services
         private readonly string _connectionString;
         private static readonly ConcurrentDictionary<string, bool> _columnExistsCache = new(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// [v5.10.89] 청산 INSERT/UPDATE 성공 시점에 텔레그램 알림 중앙 처리.
+        /// 사용자 지적: "API에 등록된거 바이낸스에서 처리되면 메시지 받아서 insert 할거면 거기서 메시지 보내야지"
+        /// 각 caller에서 개별 NotifyProfitAsync 호출 대신 DB 저장 지점에서 한 번만 호출 → 경로 누락 방지.
+        /// </summary>
+        private static void TryNotifyProfit(string symbol, decimal pnl, decimal pnlPercent, string kind)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(symbol)) return;
+                // 실제 체결이 없는 기록(PnL==0 AND PnLPercent==0)은 알림 스킵 (동기화 보정/Flip 진입 등)
+                if (pnl == 0 && pnlPercent == 0) return;
+                // DailyTotal은 0으로 통일 (NotifyProfitAsync 메시지 포맷에서만 사용됨, 선택 정보)
+                _ = NotificationService.Instance.NotifyProfitAsync(symbol, pnl, pnlPercent, 0m);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [Notify][{kind}] {symbol} 텔레그램 호출 예외: {ex.Message}");
+            }
+        }
+
         private sealed class TradeHistoryOpenRow
         {
             public int Id { get; set; }
@@ -1078,6 +1099,8 @@ ORDER BY EntryTime DESC, Id DESC;",
                         quantity > 0 ? quantity : openTrade.Quantity,
                         exitReason);
                     MainWindow.Instance?.AddLog($"✅ [DB][TradeHistory][CloseUpdate] user={userId} sym={symbolValue} exit={exitPrice:F4} pnl={log.PnL:F2} reason={exitReason}");
+                    // [v5.10.89] INSERT/UPDATE 성공 → 텔레그램 알림 (모든 청산 경로 공통)
+                    TryNotifyProfit(log.Symbol, log.PnL, log.PnLPercent, "COMPLETE_UPDATE");
                     return true;
                 }
 
@@ -1124,6 +1147,8 @@ ORDER BY EntryTime DESC, Id DESC;",
                     quantity,
                     exitReason);
                 MainWindow.Instance?.AddLog($"⚠️ [DB][TradeHistory][CloseInserted] user={userId} sym={symbolValue} reason={exitReason}");
+                // [v5.10.89] 보정 INSERT 성공 → 텔레그램 알림
+                TryNotifyProfit(log.Symbol, log.PnL, log.PnLPercent, "COMPLETE_INSERT");
                 return true;
             }
             catch (SqlException sqlEx)
@@ -1263,6 +1288,12 @@ ORDER BY EntryTime DESC, Id DESC;",
                     resolvedQuantity,
                     exitReason);
                 MainWindow.Instance?.AddLog($"✅ [DB] 외부 청산 동기화 완료: U{userId} {log.Symbol} Exit={exitPrice:F4}");
+
+                // [v5.10.89] DB INSERT 지점에서 중앙 텔레그램 알림 (사용자 지적 직접 반영)
+                //   "api에 등록된거 바이낸스에서 처리되면 메시지 내려주는거 받아서 insert 할꺼아냐 거기서 메시지 보내줘야지"
+                //   기존: 각 caller에서 개별 NotifyProfitAsync → 경로 누락 발생
+                //   수정: DB 성공 insert 시점에 한 번만 호출 → 모든 경로(caller) 자동 알림
+                TryNotifyProfit(log.Symbol, log.PnL, log.PnLPercent, "COMPLETE");
                 return true;
             }
             catch (SqlException sqlEx)
@@ -1391,6 +1422,10 @@ ORDER BY EntryTime DESC, Id DESC;",
                 }
 
                 _ = resolvedEntryTime; // (필요 시 추가 로깅 확장)
+
+                // [v5.10.89] 부분청산 INSERT 성공 → 텔레그램 알림 (API TP1 자동 체결 포함)
+                string notifyKind = resultCase == 1 ? "PARTIAL_FINAL" : "PARTIAL";
+                TryNotifyProfit(log.Symbol, log.PnL, log.PnLPercent, notifyKind);
                 return true;
             }
             catch (Exception ex)

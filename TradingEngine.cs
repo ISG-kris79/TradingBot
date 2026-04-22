@@ -6387,18 +6387,7 @@ namespace TradingBot
                             OnStatusLog?.Invoke($"📝 {pos.Symbol} 외부 청산 감지 → TradeHistory 반영 완료");
                             OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부청산", "거래소 계좌 업데이트 기준 외부 청산을 감지하여 TradeHistory에 반영했습니다.");
 
-                            // [v5.10.83 HOTFIX] 외부 청산(Binance SL/TP/수동) 텔레그램 알림 누락 버그 수정
-                            //   기존: 외부 청산 시 NotifyProfitAsync 미호출 → 익절/손절/본절 텔레그램 메시지 안 옴
-                            //   수정: 내부 청산(PositionMonitorService.cs:3012)과 동일한 알림 호출
-                            try
-                            {
-                                decimal dailyTotalPnl = _riskManager?.DailyRealizedPnl ?? 0m;
-                                _ = NotificationService.Instance.NotifyProfitAsync(pos.Symbol, pnl, pnlPercent, dailyTotalPnl);
-                            }
-                            catch (Exception notifyEx)
-                            {
-                                OnStatusLog?.Invoke($"⚠️ {pos.Symbol} 외부청산 텔레그램 알림 실패: {notifyEx.Message}");
-                            }
+                            // [v5.10.89] 텔레그램 알림은 DbManager.TryCompleteOpenTradeAsync INSERT 지점에서 중앙 처리
 
                             // [수정] 외부 청산도 30분 블랙리스트 등록 (즉시 재진입 방지)
                             _blacklistedSymbols[pos.Symbol] = DateTime.Now.AddMinutes(30);
@@ -6482,17 +6471,7 @@ namespace TradingBot
                     };
 
                     bool closeSynced = await _dbManager.TryCompleteOpenTradeAsync(flipCloseLog);
-
-                    // [v5.10.88 HOTFIX] 방향전환(Flip) 청산 텔레그램 알림
-                    if (closeSynced)
-                    {
-                        try
-                        {
-                            decimal dailyTotal = _riskManager?.DailyRealizedPnl ?? 0m;
-                            _ = NotificationService.Instance.NotifyProfitAsync(pos.Symbol, flipPnl, flipPnlPercent, dailyTotal);
-                        }
-                        catch (Exception nfEx) { OnStatusLog?.Invoke($"⚠️ {pos.Symbol} Flip 청산 텔레그램 예외: {nfEx.Message}"); }
-                    }
+                    // [v5.10.89] Flip 청산 텔레그램은 DbManager.TryCompleteOpenTradeAsync에서 중앙 처리
 
                     decimal newEntryPrice = pos.EntryPrice > 0m ? pos.EntryPrice : flipPrice;
                     var flipEntryLog = new TradeLog(
@@ -6596,16 +6575,7 @@ namespace TradingBot
                         {
                             OnStatusLog?.Invoke($"📝 {pos.Symbol} 외부 부분청산 감지 → TradeHistory 반영 완료 (청산={externalClosedQty})");
                             OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부부분", $"외부 부분청산 감지: 청산 {externalClosedQty}");
-
-                            // [v5.10.88 HOTFIX] 외부 부분청산 (API TP1 자동 체결 등) 텔레그램 알림 누락 버그 수정
-                            //   기존: v5.10.83에서 완전청산만 NotifyProfitAsync 호출, 부분청산은 누락
-                            //   사례: Binance API TP1 자동 체결 시 텔레그램 메시지 안 옴
-                            try
-                            {
-                                decimal dailyTotal = _riskManager?.DailyRealizedPnl ?? 0m;
-                                _ = NotificationService.Instance.NotifyProfitAsync(pos.Symbol, syncPnl, syncPnlPercent, dailyTotal);
-                            }
-                            catch (Exception nfEx) { OnStatusLog?.Invoke($"⚠️ {pos.Symbol} 부분청산 텔레그램 예외: {nfEx.Message}"); }
+                            // [v5.10.89] 부분청산 텔레그램은 DbManager.RecordPartialCloseAsync에서 중앙 처리
                         }
                     }
                     else if (updatedQtyAbs > existingQtyAbs + 0.000001m)
@@ -14894,14 +14864,7 @@ namespace TradingBot
                     {
                         OnStatusLog?.Invoke($"📝 [동기화] {closedPos.Symbol} 누락된 청산 감지 → TradeHistory 반영 완료 (PnL={pnl:F2}, ROE={pnlPercent:F2}%)");
                         OnAlert?.Invoke($"⚠️ [누락 청산 복구] {closedPos.Symbol} 청산이 TradeHistory에 복구되었습니다.");
-
-                        // [v5.10.88 HOTFIX] 누락 청산 복구 시에도 텔레그램 알림
-                        try
-                        {
-                            decimal dailyTotal = _riskManager?.DailyRealizedPnl ?? 0m;
-                            _ = NotificationService.Instance.NotifyProfitAsync(closedPos.Symbol, pnl, pnlPercent, dailyTotal);
-                        }
-                        catch (Exception nfEx) { OnStatusLog?.Invoke($"⚠️ {closedPos.Symbol} 누락청산 텔레그램 예외: {nfEx.Message}"); }
+                        // [v5.10.89] 누락청산 텔레그램은 DbManager.TryCompleteOpenTradeAsync에서 중앙 처리
 
                         // 청산 이력 갱신 이벤트
                         OnTradeHistoryUpdated?.Invoke();

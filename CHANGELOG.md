@@ -5,6 +5,43 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.89] - 2026-04-23
+
+### 🔔 텔레그램 알림 중앙화 — DB INSERT 지점에서 단일 처리 (아키텍처 수정)
+
+**사용자 지적:**
+
+> "API에 등록된거 바이낸스에서 처리되면 메시지 내려주는거 받아서 insert 할꺼아냐 그럼 거기서 메시지 보내줘야지"
+
+**문제:**
+
+v5.10.88 이전: 각 caller (TradingEngine 4곳, PositionMonitorService 3곳)에서 개별로 `NotifyProfitAsync` 호출 → 경로 추가 시 누락 반복 발생.
+
+**아키텍처 수정:**
+
+- `DbManager`에 `TryNotifyProfit(symbol, pnl, pnlPct, kind)` 중앙 헬퍼 신규
+- **DB INSERT 성공 지점에서 한 번만 호출** → 모든 caller 자동 알림
+- 호출 위치:
+  - `TryCompleteOpenTradeAsync` 성공 → `COMPLETE` kind
+  - `RecordPartialCloseAsync` 성공 → `PARTIAL` / `PARTIAL_FINAL` kind
+  - `CompleteTradeAsync` UPDATE/INSERT 성공 → `COMPLETE_UPDATE` / `COMPLETE_INSERT` kind
+- PnL==0 AND PnLPercent==0 = 알림 스킵 (동기화 보정 건 제외)
+
+**caller 측 중복 제거:**
+
+v5.10.88에서 추가한 TradingEngine 3곳의 `NotifyProfitAsync` 제거 (DbManager가 처리):
+
+- line 6390 (external close)
+- line 6475 (flip close)
+- line 6579 (external partial close)
+- line 14868 (missed close)
+
+**효과:**
+
+- API TP1 자동 체결 → Binance 이벤트 → DB INSERT → **텔레그램 자동 발송** ← 사용자 요구 정확히 구현
+- 향후 새 caller 추가 시 알림 누락 불가능 (DB 저장 시점이 유일 관문)
+- 중복 알림 방지 (한 청산 = 한 알림)
+
 ## [5.10.88] - 2026-04-22
 
 ### 🚨 BTC 1H 하락필터 + 텔레그램 누락 전면 수정
