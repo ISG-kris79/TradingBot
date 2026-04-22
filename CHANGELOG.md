@@ -5,6 +5,46 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.80] - 2026-04-20
+
+### Phase 5-D — Order Book Depth5 + Open Interest REST polling + Lorentzian Hard Mode + Major auto-unblock
+
+**인프라 (5-D):**
+
+- 신규 `OpenInterestCacheItem` (OpenInterest + 15분 전 스냅샷 보관)
+- 신규 `DepthCacheItem` (Top5 BidVolume/AskVolume/BidValue/AskValue)
+- `MarketDataManager.OpenInterestCache`, `MarketDataManager.DepthCache` 추가
+- `SubscribeToPartialOrderBookUpdatesAsync` (5 levels, 100ms) 구독
+- `StartOpenInterestPoller` — 1분 REST 폴링 + 15분 스냅샷 추적 (WebSocket 미지원 대응)
+
+**신규 5개 ML feature:**
+
+- `Depth5_BidAskImbalanceRatio` — top5 호가 매수/매도 불균형
+- `Depth5_BidValueToAskValueRatio` — 매수/매도 달러 가치 비율
+- `OpenInterest_Normalized` — log scale 정규화
+- `OpenInterest_Change_15m_Pct` — 15분 OI 변화율 (스퀴즈 선행)
+- `OpenInterest_Surge` — 15분 +20% 이상 1 (대규모 신규 진입)
+
+**ML 파이프라인:**
+
+- `featureColumns` 5개 추가
+- `ExpectedFeatureCount` 110 → 115
+
+**Lorentzian Phase 2 (Hard Mode):**
+
+- `LorentzianHardMode` (기본 false) + `LorentzianHardModeMinSamples` (기본 200) 신규 설정
+- 활성화 시: KNN 약세 + 충분 샘플 → 진입 차단 (`LORENTZIAN_HARD_BLOCK`)
+- 기본 비활성으로 안전 (필요 시 사용자 활성화 — 하드코딩 차단 아님)
+
+**Major 자동 해제:**
+
+- v5.10.66 메이저 임시 차단 → Major 전용 모델(`_mlTrainerMajor`) 로드 시 자동 해제
+- 3 모델 분리(v5.10.76) 이후 Major 데이터 격리되어 추론 신뢰 가능
+- 학습 완료 후 자동으로 BTC/ETH/SOL/XRP 진입 재개
+
+**효과:**
+호가 깊이 + 미체결약정 = 펌프/덤프 사전 감지. KNN 합의 게이트로 ML 단독 오판 차단. AI 학습 완료 후 메이저 자동 활성화로 운영 자동화 강화.
+
 ## [5.10.79] - 2026-04-22
 
 ### Phase 5-C — aggTrade + MarkPrice/Funding Rate WebSocket + 5 신규 feature

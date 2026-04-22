@@ -42,6 +42,13 @@ namespace TradingBot.Services
         // [v5.10.79 Phase 5-C] markPrice + Funding Rate 캐시
         public ConcurrentDictionary<string, MarkPriceCacheItem> MarkPriceCache { get; } = new();
 
+        // [v5.10.80 Phase 5-D] Open Interest 1분 주기 REST 캐시 (15분 변화율 추적)
+        public ConcurrentDictionary<string, OpenInterestCacheItem> OpenInterestCache { get; } = new();
+        private Timer? _oiPollerTimer;
+
+        // [v5.10.80 Phase 5-D] OrderBook 5단계 depth 캐시 (Cumulative Bid/Ask)
+        public ConcurrentDictionary<string, DepthCacheItem> DepthCache { get; } = new();
+
         // [v4.5.15] 멀티 타임프레임 WebSocket 캐시 — REST 호출 제거용
         // Key: "{symbol}|{interval}" (예: "BTCUSDT|1m")
         public ConcurrentDictionary<string, List<IBinanceKline>> MultiTfKlineCache { get; } = new();
@@ -580,6 +587,109 @@ namespace TradingBot.Services
             {
                 OnLog?.Invoke($"⚠️ MarkPrice 구독 예외 (무해): {ex.Message}");
             }
+
+            // [v5.10.80 Phase 5-D] OrderBook depth 5단계 구독 (100ms) — 깊은 호가 압력
+            try
+            {
+                var depthResult = await _socketClient.UsdFuturesApi.ExchangeData.SubscribeToPartialOrderBookUpdatesAsync(
+                    _majorSymbols, 5, 100, data =>
+                    {
+                        var d = data.Data;
+                        if (d == null || string.IsNullOrEmpty(d.Symbol)) return;
+                        decimal bidVol = 0m, askVol = 0m, bidVal = 0m, askVal = 0m;
+                        if (d.Bids != null) foreach (var b in d.Bids) { bidVol += b.Quantity; bidVal += b.Price * b.Quantity; }
+                        if (d.Asks != null) foreach (var a in d.Asks) { askVol += a.Quantity; askVal += a.Price * a.Quantity; }
+                        DepthCache[d.Symbol] = new DepthCacheItem
+                        {
+                            Symbol = d.Symbol,
+                            Top5_BidVolume = bidVol,
+                            Top5_AskVolume = askVol,
+                            Top5_BidValue = bidVal,
+                            Top5_AskValue = askVal,
+                            UpdatedAt = DateTime.UtcNow
+                        };
+                    }, ct: token);
+
+                if (depthResult.Success)
+                {
+                    depthResult.Data.ConnectionLost += () => OnLog?.Invoke("⚠️ Depth5 스트림 연결 끊김...");
+                    depthResult.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ Depth5 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                    OnLog?.Invoke("📡 Depth5 실시간 구독 성공 (5단계 호가 압력 feature 활성)");
+                }
+                else
+                {
+                    OnLog?.Invoke($"⚠️ Depth5 구독 실패 (무해): {depthResult.Error}");
+                }
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ Depth5 구독 예외 (무해): {ex.Message}");
+            }
+
+            // [v5.10.80 Phase 5-D] Open Interest 1분 주기 REST poller 시작
+            StartOpenInterestPoller(token);
+        }
+
+        /// <summary>[v5.10.80] OI는 WebSocket 미지원 → 1분 주기 REST 폴링 (15분 변화율 학습용)</summary>
+        private void StartOpenInterestPoller(CancellationToken token)
+        {
+            try
+            {
+                _oiPollerTimer?.Dispose();
+                _oiPollerTimer = new Timer(async _ =>
+                {
+                    if (token.IsCancellationRequested) return;
+                    foreach (var symbol in _majorSymbols)
+                    {
+                        try
+                        {
+                            var res = await _restClient.UsdFuturesApi.ExchangeData.GetOpenInterestAsync(symbol, token);
+                            if (!res.Success || res.Data == null) continue;
+                            decimal currentOi = res.Data.OpenInterest;
+                            var now = DateTime.UtcNow;
+
+                            if (OpenInterestCache.TryGetValue(symbol, out var existing))
+                            {
+                                // 15분 이상 지났으면 snapshot 갱신
+                                if ((now - existing.LastSnapshotAt).TotalMinutes >= 15)
+                                {
+                                    OpenInterestCache[symbol] = new OpenInterestCacheItem
+                                    {
+                                        Symbol = symbol,
+                                        OpenInterest = currentOi,
+                                        OpenInterest15mAgo = existing.OpenInterest,
+                                        LastSnapshotAt = now,
+                                        UpdatedAt = now
+                                    };
+                                }
+                                else
+                                {
+                                    existing.OpenInterest = currentOi;
+                                    existing.UpdatedAt = now;
+                                }
+                            }
+                            else
+                            {
+                                OpenInterestCache[symbol] = new OpenInterestCacheItem
+                                {
+                                    Symbol = symbol,
+                                    OpenInterest = currentOi,
+                                    OpenInterest15mAgo = currentOi,  // 첫 수집은 자기자신
+                                    LastSnapshotAt = now,
+                                    UpdatedAt = now
+                                };
+                            }
+                        }
+                        catch { /* 개별 심볼 실패 무시 */ }
+                        await Task.Delay(150, token);  // rate limit 보호
+                    }
+                }, null, TimeSpan.FromSeconds(5), TimeSpan.FromMinutes(1));
+                OnLog?.Invoke("📊 OpenInterest 폴러 시작 (1분 주기, 15분 변화율 추적)");
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ OI 폴러 시작 실패 (무해): {ex.Message}");
+            }
         }
 
         private async Task StartKlineStreamAsync(CancellationToken token)
@@ -759,9 +869,10 @@ namespace TradingBot.Services
             
             try
             {
+                _oiPollerTimer?.Dispose();
                 _cts?.Cancel();
                 _cts?.Dispose();
-                
+
                 _socketClient?.UnsubscribeAllAsync().Wait(TimeSpan.FromSeconds(5));
                 _socketClient?.Dispose();
             }

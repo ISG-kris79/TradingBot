@@ -196,6 +196,16 @@ namespace TradingBot
         public float Funding_Rate_Extreme { get; set; }        // 1=절댓값 0.05% 초과 (롱/숏 스퀴즈 임박), 0=정상
 
         // ═══════════════════════════════════════════════════════════════
+        // [v5.10.80 Phase 5-D] OrderBook depth5 + Open Interest (5개)
+        // 더 깊은 호가 + OI 변화 = 레버리지 축적/포지션 빌드 감지
+        // ═══════════════════════════════════════════════════════════════
+        public float Depth5_BidAskImbalanceRatio { get; set; }   // Top5 BidVol / (BidVol+AskVol) (0~1)
+        public float Depth5_BidValueToAskValueRatio { get; set; } // Top5 BidValue / AskValue (0~10 클램프)
+        public float OpenInterest_Normalized { get; set; }        // log10(OI+1) 정규화
+        public float OpenInterest_Change_15m_Pct { get; set; }    // 15분 OI 변화율 (%) — 양수 = 신규 레버리지 유입
+        public float OpenInterest_Surge { get; set; }             // 1 = 15분 변화 ≥3% (급격한 레버리지 폭발)
+
+        // ═══════════════════════════════════════════════════════════════
         // 피보나치 되돌림 레벨 (객관적 수치로 AI 특징 사용)
         // ═══════════════════════════════════════════════════════════════
         public float Fib_DistanceTo0382_Pct { get; set; }    // 현재가에서 0.382 레벨까지 거리 (%)

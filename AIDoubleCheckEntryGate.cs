@@ -224,12 +224,13 @@ namespace TradingBot
             if (!IsReady)
                 return (false, "AI_Models_Not_Ready", new AIEntryDetail());
 
-            // [v5.10.66 HOTFIX] 메이저 진입 임시 차단 — AI 학습 정상화 시까지
-            // 7일 분석 결과 메이저 -$8.59/건, 승률 38%, Total -$3,133
-            if (_config.BlockMajorEntries && IsMajorSymbol(symbol))
+            // [v5.10.66 HOTFIX → v5.10.80 자동 해제] 메이저 진입 임시 차단
+            // v5.10.80: Major 전용 모델(_mlTrainerMajor)이 로드되어 있으면 자동 해제
+            //  → 3 모델 분리(v5.10.76) 이후 Major 학습 데이터 격리되어 추론 신뢰 가능
+            if (_config.BlockMajorEntries && IsMajorSymbol(symbol) && !_mlTrainerMajor.IsModelLoaded)
             {
-                OnLog?.Invoke($"⏸️ [{symbol}] [MAJOR_BLOCKED_v5_10_66] 메이저 진입 임시 차단 (AI 학습 정상화 시까지, BlockMajorEntries=false 복원 시 활성화)");
-                return (false, "Major_Temporarily_Blocked_v5_10_66", new AIEntryDetail());
+                OnLog?.Invoke($"⏸️ [{symbol}] [MAJOR_BLOCKED_v5_10_66] 메이저 진입 임시 차단 (Major 모델 미학습 → 학습 완료 후 자동 해제)");
+                return (false, "Major_Blocked_Major_Model_Not_Loaded", new AIEntryDetail());
             }
 
             try
@@ -426,7 +427,9 @@ namespace TradingBot
                     detail.FibInEntryZone = fibLevels.InEntryZone;
                 }
 
-                // 7.5 [Lorentzian Phase 1] KNN 사이드카 검증 — soft mode (경고만, 차단 없음)
+                // 7.5 [Lorentzian Phase 2] KNN 합의 게이트 — Hard mode 옵션
+                // soft (기본): 경고만 출력, 진입 계속 (기존 동작 유지)
+                // hard (LorentzianHardMode=true): KNN 약세 + 충분한 샘플(>=200) 시 진입 차단
                 if (_config.EnableLorentzianGate)
                 {
                     var lor = _lorentzian.Predict(feature!);
@@ -441,6 +444,13 @@ namespace TradingBot
                     }
                     else if (lor.Score < _config.MinLorentzianScore || lor.PassRate < _config.MinLorentzianPassRate)
                     {
+                        // [v5.10.80 Phase L2] Hard mode + 샘플 충분 → 차단
+                        if (_config.LorentzianHardMode && lor.SampleCount >= _config.LorentzianHardModeMinSamples)
+                        {
+                            detail.DoubleCheckPassed = false;
+                            OnLog?.Invoke($"❌ [{symbol}] [LORENTZIAN_HARD_BLOCK] KNN 약세 차단: score={lor.Score}/{lor.K}, pass={lor.PassRate:P0} (samples={lor.SampleCount}≥{_config.LorentzianHardModeMinSamples})");
+                            return (false, $"Lorentzian_Hard_Block_score={lor.Score}_pass={lor.PassRate:P1}", detail);
+                        }
                         OnLog?.Invoke($"⚠️ [{symbol}] [LORENTZIAN_WARN] KNN 약세: score={lor.Score} (need ≥{_config.MinLorentzianScore}), pass={lor.PassRate:P0} (need ≥{_config.MinLorentzianPassRate:P0}) — soft mode, 진입 계속");
                     }
                     else
@@ -2155,6 +2165,10 @@ namespace TradingBot
         public int LorentzianMaxSamples { get; set; } = 5000;
         public int MinLorentzianScore { get; set; } = 2;        // -K~+K 범위 (K=10이면 ±10)
         public float MinLorentzianPassRate { get; set; } = 0.55f; // 60% 이상 양성 투표
+
+        // [Lorentzian Phase 2 v5.10.80] Hard mode: 샘플 충분 시 KNN 약세 진입 차단
+        public bool LorentzianHardMode { get; set; } = false;     // 기본 비활성 (안전)
+        public int LorentzianHardModeMinSamples { get; set; } = 200; // 최소 샘플 수
 
         public int EntryForecastSteps { get; set; } = 8; // 다음 2시간(15분 x 8)
         public int EntryForecastWatchSteps { get; set; } = 16; // 관망 시 4시간(15분 x 16)

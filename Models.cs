@@ -277,6 +277,27 @@ namespace TradingBot.Models
         public DateTime UpdatedAt { get; set; }
     }
 
+    // [v5.10.80 Phase 5-D] Open Interest 1분 주기 REST 캐시 + 15분 변화율 추적
+    public class OpenInterestCacheItem
+    {
+        public string? Symbol { get; set; }
+        public decimal OpenInterest { get; set; }                // 현재 OI (계약 수량)
+        public decimal OpenInterest15mAgo { get; set; }          // 15분 전 OI
+        public DateTime UpdatedAt { get; set; }
+        public DateTime LastSnapshotAt { get; set; }
+    }
+
+    // [v5.10.80 Phase 5-D] OrderBook depth 5단계 누적 — 더 깊은 매수/매도 압력
+    public class DepthCacheItem
+    {
+        public string? Symbol { get; set; }
+        public decimal Top5_BidVolume { get; set; }              // 매수 5단계 누적 수량
+        public decimal Top5_AskVolume { get; set; }              // 매도 5단계 누적 수량
+        public decimal Top5_BidValue { get; set; }               // 매수 5단계 누적 명목가치 (USDT)
+        public decimal Top5_AskValue { get; set; }
+        public DateTime UpdatedAt { get; set; }
+    }
+
     // [이동] 볼린저 밴드 결과 구조체
     public struct BBResult
     {

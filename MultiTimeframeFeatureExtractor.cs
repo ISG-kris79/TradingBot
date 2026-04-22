@@ -178,6 +178,9 @@ namespace TradingBot
                 // [v5.10.79 Phase 5-C] aggTrade + Funding Rate 선행 지표 (5개)
                 ExtractAggTradeAndFundingFeatures(symbol, feature);
 
+                // [v5.10.80 Phase 5-D] Depth5 + Open Interest 선행 지표 (5개)
+                ExtractDepthAndOiFeatures(symbol, feature);
+
                 // 시간 컨텍스트
                 ExtractTimeContext(timestamp, feature);
 
@@ -494,6 +497,46 @@ namespace TradingBot
             {
                 feature.Funding_Rate = (float)mark.FundingRate;
                 feature.Funding_Rate_Extreme = Math.Abs(mark.FundingRate) > 0.0005m ? 1f : 0f; // 0.05% 초과
+            }
+        }
+
+        /// <summary>
+        /// [v5.10.80 Phase 5-D] Depth5 호가 5단계 누적 + OI 변화율 (5개 feature)
+        /// </summary>
+        private static void ExtractDepthAndOiFeatures(string symbol, MultiTimeframeEntryFeature feature)
+        {
+            if (string.IsNullOrWhiteSpace(symbol)) return;
+            var mdm = Services.MarketDataManager.Instance;
+            if (mdm == null) return;
+
+            // Depth 5단계 (실시간, 5초 신선도)
+            if (mdm.DepthCache.TryGetValue(symbol, out var depth) && depth != null
+                && (DateTime.UtcNow - depth.UpdatedAt).TotalSeconds < 5)
+            {
+                decimal bidVol = depth.Top5_BidVolume;
+                decimal askVol = depth.Top5_AskVolume;
+                decimal totalVol = bidVol + askVol;
+                if (totalVol > 0m)
+                    feature.Depth5_BidAskImbalanceRatio = (float)(bidVol / totalVol);
+
+                if (depth.Top5_AskValue > 0m)
+                {
+                    float ratio = (float)(depth.Top5_BidValue / depth.Top5_AskValue);
+                    feature.Depth5_BidValueToAskValueRatio = Math.Min(10f, Math.Max(0f, ratio));
+                }
+            }
+
+            // Open Interest (1분 주기 REST, 5분 신선도)
+            if (mdm.OpenInterestCache.TryGetValue(symbol, out var oi) && oi != null
+                && (DateTime.UtcNow - oi.UpdatedAt).TotalMinutes < 5)
+            {
+                feature.OpenInterest_Normalized = (float)Math.Log10((double)(oi.OpenInterest + 1m));
+                if (oi.OpenInterest15mAgo > 0m)
+                {
+                    decimal changePct = (oi.OpenInterest - oi.OpenInterest15mAgo) / oi.OpenInterest15mAgo * 100m;
+                    feature.OpenInterest_Change_15m_Pct = (float)changePct;
+                    feature.OpenInterest_Surge = Math.Abs(changePct) >= 3m ? 1f : 0f;
+                }
             }
         }
 
