@@ -283,13 +283,16 @@ namespace TradingBot
         {
             try
             {
+                // [v5.10.91] silent fail 로그화 — 사용자 "왜 텔레그램 안 와" 원인 추적
                 if (!IsMessageTypeEnabled(messageType))
                 {
+                    MainWindow.Instance?.AddLog($"🔇 [Telegram][{scope}] {messageType} 필터 비활성 → 스킵 (AppConfig.Telegram.Enable{messageType}Messages=false)");
                     return;
                 }
 
                 if (!EnsureTelegramClientReady(scope))
                 {
+                    MainWindow.Instance?.AddLog($"🔇 [Telegram][{scope}] Client 미준비 → 스킵 (BotToken/ChatId 확인)");
                     return;
                 }
 
@@ -299,6 +302,7 @@ namespace TradingBot
                     parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
                     disableNotification: disableNotification
                 );
+                MainWindow.Instance?.AddLog($"✉️ [Telegram][{scope}] {messageType} 전송 성공");
             }
             catch (Telegram.Bot.Exceptions.ApiRequestException ex) when (ex.ErrorCode == 401)
             {

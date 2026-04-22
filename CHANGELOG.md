@@ -5,6 +5,47 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.91] - 2026-04-23
+
+### 🔍 Telegram Silent Fail 로그화 — 왜 안 오는지 실제 원인 노출
+
+**사용자 지적:**
+
+> "바이낸스 TP/SL/트레일링스탑 처리되서 프로그램으로 내려준거 DB INSERT하고 텔레그램 메시지 보내야 하는데 텔레그램 메시지가 안와"
+
+**진단:**
+
+`TelegramService.SendInternalAsync`에 **2곳 silent fail** 존재:
+
+1. `IsMessageTypeEnabled(messageType) == false` → 로그 없이 return
+2. `EnsureTelegramClientReady() == false` → 로그 없이 return (부분 로그는 있으나 `LogTelegramFailure`가 failureLogger에 의존)
+
+→ 사용자가 "왜 안 오는지" 확인 불가.
+
+**설정 확인 결과:**
+
+- `EnableProfitMessages=True` ✅
+- `BotToken`/`ChatId` ✅ (DB에 저장됨)
+- 따라서 최소 v5.10.89/90 경로에서는 작동해야 함
+
+**수정:**
+
+`TelegramService.cs:286-302`:
+
+- `IsMessageTypeEnabled` false 시 → `🔇 [Telegram][{scope}] {type} 필터 비활성 → 스킵` 로그
+- `EnsureTelegramClientReady` false 시 → `🔇 [Telegram][{scope}] Client 미준비 → 스킵 (BotToken/ChatId 확인)` 로그
+- 전송 성공 시 → `✉️ [Telegram][{scope}] {type} 전송 성공` 로그
+
+**사용 방법:**
+
+배포 후 재시작 → 다음 API TP/SL 체결 시 FooterLogs에서:
+- `📨 [Notify][PARTIAL] {symbol} 텔레그램 전송 요청` (DbManager 호출)
+- `✉️ [Telegram][General] Profit 전송 성공` (실제 전송) 또는
+- `🔇 [Telegram][General] Profit 필터 비활성 → 스킵` (원인 1) 또는
+- `🔇 [Telegram][General] Client 미준비` (원인 2)
+
+어떤 로그가 찍히는지에 따라 진짜 원인 특정 가능.
+
 ## [5.10.90] - 2026-04-23
 
 ### 🚨 Partial Fill 오분류 수정 + 텔레그램 알림 누락 근본 해결
