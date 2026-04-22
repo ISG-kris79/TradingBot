@@ -5,6 +5,28 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.87] - 2026-04-22
+
+### 🎨 UI: 실시간 시장 신호 DataGrid에 마진/손익 컬럼 추가
+
+**사용자 요구:**
+
+> "실시간 시장 신호에 열 추가해서 진입마진금액 표시하는 곳이 있어야 할 것 같아.
+> 얼마 진입해서 얼마 이익인지 손해인지 알 수가 없네."
+
+**수정:**
+
+- `MultiTimeframeViewModel`에 `EntryMarginUsdt` (마진) + `EntryNotionalUsdt` (명목금액) property 추가
+- `EntryPrice`/`Quantity`/`IsPositionActive` setter에서 PropertyChanged 통지 추가 → 실시간 갱신
+- `MainWindow.xaml`의 `dgMultiTimeframe`에 신규 컬럼 "마진/손익" (Width=120) 추가
+  - 1행: **진입 마진** (예: $200.00)
+  - 2행: **실시간 손익** (색상: 녹색=익절, 적색=손실)
+  - 3행: Notional 명목금액 (회색, 작게)
+
+**효과:**
+
+진입중인 포지션마다 한 눈에 "$200 진입 → +$15.30 익절중" 같은 형태로 가시화. 마진 / 손익 / 명목 모두 동시 표시.
+
 ## [5.10.86] - 2026-04-22
 
 ### 🎯 Regime-Aware 아키텍처 — 급등장/횡보장 차별화 (사용자 요구 직접 반영)

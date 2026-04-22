@@ -1483,6 +1483,19 @@
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
 
+                                                    <!-- [v5.10.87] ②-1 마진/손익 USDT -->
+                                                    <DataGridTemplateColumn Header="마진/손익" Width="120">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <StackPanel Margin="8,4" Visibility="{Binding IsPositionActive, Converter={StaticResource BoolToVisibilityConverter}}">
+                                                                    <TextBlock FontFamily="Consolas" FontSize="13" FontWeight="Bold" Foreground="#E0E7FF" Text="{Binding EntryMarginUsdt}" ToolTip="진입 마진 (증거금)"/>
+                                                                    <TextBlock FontFamily="Consolas" FontSize="11" Foreground="{Binding ProfitColor}" Text="{Binding ProfitUsdt}" ToolTip="실시간 손익"/>
+                                                                    <TextBlock FontSize="9" Foreground="#6B7280" Text="{Binding EntryNotionalUsdt, StringFormat='Notional {0}'}" ToolTip="명목금액 (마진 × 레버리지)"/>
+                                                                </StackPanel>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+
                                                     <!-- ③ ROI: 수익률 + USDT 금액 -->
                                                     <DataGridTemplateColumn Header="ROI" Width="100">
                                                         <DataGridTemplateColumn.CellTemplate>

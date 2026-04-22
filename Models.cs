@@ -598,7 +598,7 @@ namespace TradingBot.Models
         public decimal EntryPrice
         {
             get => _entryPrice;
-            set { _entryPrice = value; OnPropertyChanged(nameof(EntryPrice)); OnPropertyChanged(nameof(ProfitRate)); OnPropertyChanged(nameof(ProfitColor)); OnPropertyChanged(nameof(PriceColor)); OnPropertyChanged(nameof(Status)); }
+            set { _entryPrice = value; OnPropertyChanged(nameof(EntryPrice)); OnPropertyChanged(nameof(ProfitRate)); OnPropertyChanged(nameof(ProfitColor)); OnPropertyChanged(nameof(PriceColor)); OnPropertyChanged(nameof(Status)); OnPropertyChanged(nameof(EntryMarginUsdt)); OnPropertyChanged(nameof(EntryNotionalUsdt)); OnPropertyChanged(nameof(ProfitUsdt)); }
         }
         private bool _isPositionActive;
         public bool IsPositionActive
@@ -616,6 +616,9 @@ namespace TradingBot.Models
                 OnPropertyChanged(nameof(EntryStatus));
                 OnPropertyChanged(nameof(EntryStatusColor));
                 OnPropertyChanged(nameof(EntryStatusIcon));
+                OnPropertyChanged(nameof(EntryMarginUsdt));
+                OnPropertyChanged(nameof(EntryNotionalUsdt));
+                OnPropertyChanged(nameof(ProfitUsdt));
             }
         }
 
@@ -636,6 +639,9 @@ namespace TradingBot.Models
                 // 수량이 바뀌면 수익률 계산 방식(롱/숏)도 바뀔 수 있으므로 함께 통지
                 OnPropertyChanged(nameof(ProfitRate));
                 OnPropertyChanged(nameof(Status)); // 상태 아이콘도 갱신
+                OnPropertyChanged(nameof(EntryMarginUsdt));
+                OnPropertyChanged(nameof(EntryNotionalUsdt));
+                OnPropertyChanged(nameof(ProfitUsdt));
             }
         }
 
@@ -742,6 +748,32 @@ namespace TradingBot.Models
                 double pnl = (double)margin * ProfitRate / 100.0;
                 if (double.IsNaN(pnl) || double.IsInfinity(pnl)) return "";
                 return $"{pnl:+0.00;-0.00} USDT";
+            }
+        }
+
+        /// <summary>[v5.10.87] 진입 마진 금액 (USDT) — 진입가 × 수량 / 레버리지</summary>
+        public string EntryMarginUsdt
+        {
+            get
+            {
+                if (!IsPositionActive || EntryPrice == 0 || Quantity == 0)
+                    return "";
+                decimal margin = EntryPrice * Math.Abs(Quantity) / Math.Max(1, Leverage);
+                if (margin <= 0) return "";
+                return $"${margin:N2}";
+            }
+        }
+
+        /// <summary>[v5.10.87] 진입 명목금액 (Notional) = 진입가 × 수량</summary>
+        public string EntryNotionalUsdt
+        {
+            get
+            {
+                if (!IsPositionActive || EntryPrice == 0 || Quantity == 0)
+                    return "";
+                decimal notional = EntryPrice * Math.Abs(Quantity);
+                if (notional <= 0) return "";
+                return $"${notional:N2}";
             }
         }
 
