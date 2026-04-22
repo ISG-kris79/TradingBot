@@ -5,6 +5,59 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.86] - 2026-04-22
+
+### 🎯 Regime-Aware 아키텍처 — 급등장/횡보장 차별화 (사용자 요구 직접 반영)
+
+**사용자 요구:**
+
+> "단순 하드코딩은 한계가 있어. 급등장 오면 다 털려서 손절만 나게 됨.
+> 큰 익절 노리다 놓침은 급등장에서 다 털려서 해놓은 거.
+> 급등장과 횡보장에서의 차별화가 필요해."
+
+**진단:**
+
+`MarketRegimeClassifier` (Trending/Sideways/Volatile 분류) 모델은 이미 학습되어 있으나:
+- 진입 시점 SL/TP/Trailing 등록에 regime 사용 안 함 → 모든 장에 동일 거리 (Pump-tuned)
+- PUMP monitor (`MonitorPumpPositionShortTerm`)에 regime classifier 미연결
+- AI Exit 활성화 임계값 ROE >= 10% → 횡보 코인은 영원히 ML 판단 못 받음
+
+**수정:**
+
+**1. 진입 시 Regime 분류 → 적응형 SL/TP/Trailing (`RegisterProtectionOrdersAsync`)**
+
+| Regime | SL 배수 | TP 배수 | Trail 배수 | 부분익절 비율 |
+|---|---|---|---|---|
+| **Trending** (급등장) | 1.0× | 1.0× | 1.0× | 1.0× (현재 유지 — 큰 익절) |
+| **Sideways** (횡보장) | **0.4×** | **0.4×** | **0.5×** | **1.5×** (tight + 큰 부분익절) |
+| **Volatile** (변동성↑) | 0.75× | 0.75× | 0.5× | 1.2× |
+| Unknown | 1.0× | 1.0× | 1.0× | 1.0× |
+
+설정 ROE는 그대로 — ML regime이 어떤 배수 적용할지만 결정 (하드코딩 X).
+
+**2. PUMP Monitor 횡보 익절을 ML regime 기반으로 교체**
+
+기존: BB Width < 1.5% 하드코딩 임계값 (v5.10.85)
+수정: `_regimeClassifier.Predict() == Sideways && conf >= 55%` → 익절
+Fallback: regime 모델 미로드 시 BB Width 보수적 판단 유지
+
+**3. AI Exit Optimizer 활성화 임계값 ROE 10% → 3%**
+
+기존: `breakEvenActivated && ROE >= 10%` 조건 → 횡보 코인 영원히 ML 판단 못 받음
+수정: `ROE >= 3%` (본절 미발동도 허용) → 작은 수익이라도 regime 약세 시 익절
+
+**효과:**
+
+1. 급등장 진입 시 → wide SL/TP/Trail 유지 (큰 익절)
+2. 횡보장 진입 시 → tight 설정 (노이즈 회피, 빠른 익절)
+3. ML regime 학습 데이터 누적 시 자동 향상
+
+**리스크:**
+
+- regime 분류 모델이 잘못 판단하면 Trending인데 Sideways로 분류 → 너무 빠른 익절
+- regime confidence < 55% 시 Sideways exit 안 함 (보수적 안전망)
+- 임계값 0.4×/0.5× 등은 v1 기본값; 학습 데이터 누적 후 조정
+
 ## [5.10.85] - 2026-04-22
 
 ### 🎯 사용자 핵심 요구 직접 반영: 메이저 동적 + 시간손절 + 횡보익절

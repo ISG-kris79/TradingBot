@@ -647,8 +647,11 @@ namespace TradingBot
 
         /// <summary>
         /// [v5.10.83 HOTFIX] 진입 후 SL/TP/Trailing 보호 주문 일괄 등록.
-        /// SPIKE_FAST 등 ExecuteFullEntryWithAllOrdersAsync 미경유 경로에서 호출 필수.
-        /// PIEVERSEUSDT -32% 손실 (SL 미등록 162분 보유) 같은 무방비 진입 사고 차단.
+        /// [v5.10.86 Regime-Aware] 진입 시점 시장 regime 분류 → Trending/Sideways/Volatile별 SL/TP/Trail 거리 차별화.
+        ///   - Trending(급등장): wide SL/TP/Trail (큰 익절 노림) — 사용자 의도 유지
+        ///   - Sideways(횡보장): tight TP/Trail (노이즈 회피, 빠른 익절) — 횡보 손실 차단
+        ///   - Volatile: 중간 (탔다 떨어짐 대응)
+        ///   ※ 사용자 요구 "급등장과 횡보장 차별화" 직접 반영. 하드코딩 X — ML regime 분류로 프로파일 선택.
         /// </summary>
         private async Task RegisterProtectionOrdersAsync(
             string symbol, bool isLong, decimal filledQty, decimal entryPrice, int leverage, string source, CancellationToken token)
@@ -664,11 +667,43 @@ namespace TradingBot
                 bool isMajor = MajorSymbols.Contains(symbol);
                 string closeSide = isLong ? "SELL" : "BUY";
 
-                // 메이저/펌프별 ROE 설정 사용 (Models.cs 기본값)
-                decimal slRoePct      = isMajor ? (_settings?.MajorStopLossRoe   ?? 60m) : (_settings?.PumpStopLossRoe   ?? 40m);
-                decimal tpRoePct      = isMajor ? (_settings?.MajorTp1Roe        ?? 20m) : (_settings?.PumpTp1Roe        ?? 20m);
-                decimal trailGapPct   = isMajor ? (_settings?.MajorTrailingGapRoe?? 5m)  : (_settings?.PumpTrailingGapRoe?? 20m);
-                decimal tpRatioPct    = isMajor ? 30m : (_settings?.PumpFirstTakeProfitRatioPct ?? 40m); // 부분익절 수량비율
+                // ─── [v5.10.86] 진입 시점 ML regime 분류 ───
+                MarketRegime regime = MarketRegime.Unknown;
+                float regimeConf = 0f;
+                try
+                {
+                    if (_regimeClassifier != null && _regimeClassifier.IsModelLoaded
+                        && _marketDataManager.KlineCache.TryGetValue(symbol, out var rklines) && rklines.Count >= 21)
+                    {
+                        List<Binance.Net.Interfaces.IBinanceKline> snap;
+                        lock (rklines) { snap = rklines.TakeLast(21).ToList(); }
+                        var rfeat = MarketRegimeClassifier.ExtractFeature(snap);
+                        if (rfeat != null) (regime, regimeConf) = _regimeClassifier.Predict(rfeat);
+                    }
+                }
+                catch (Exception rgEx) { OnStatusLog?.Invoke($"⚠️ [PROTECT][{source}] {symbol} regime 분류 예외: {rgEx.Message}"); }
+
+                // ─── 프로파일별 배수 (사용자 설정 ROE × 배수) ───
+                decimal slMul, tpMul, trailMul, tpRatioMul;
+                switch (regime)
+                {
+                    case MarketRegime.Trending:  slMul = 1.0m;  tpMul = 1.0m;  trailMul = 1.0m;  tpRatioMul = 1.0m; break;
+                    case MarketRegime.Sideways:  slMul = 0.4m;  tpMul = 0.4m;  trailMul = 0.5m;  tpRatioMul = 1.5m; break;  // tight + 큰 부분익절
+                    case MarketRegime.Volatile:  slMul = 0.75m; tpMul = 0.75m; trailMul = 0.5m;  tpRatioMul = 1.2m; break;
+                    default:                      slMul = 1.0m;  tpMul = 1.0m;  trailMul = 1.0m;  tpRatioMul = 1.0m; break;
+                }
+
+                decimal slRoePctBase    = isMajor ? (_settings?.MajorStopLossRoe   ?? 60m) : (_settings?.PumpStopLossRoe   ?? 40m);
+                decimal tpRoePctBase    = isMajor ? (_settings?.MajorTp1Roe        ?? 20m) : (_settings?.PumpTp1Roe        ?? 20m);
+                decimal trailGapPctBase = isMajor ? (_settings?.MajorTrailingGapRoe?? 5m)  : (_settings?.PumpTrailingGapRoe?? 20m);
+                decimal tpRatioPctBase  = isMajor ? 30m : (_settings?.PumpFirstTakeProfitRatioPct ?? 40m);
+
+                decimal slRoePct    = slRoePctBase    * slMul;
+                decimal tpRoePct    = tpRoePctBase    * tpMul;
+                decimal trailGapPct = trailGapPctBase * trailMul;
+                decimal tpRatioPct  = Math.Min(80m, tpRatioPctBase * tpRatioMul);
+
+                OnStatusLog?.Invoke($"🌐 [REGIME][{source}] {symbol} regime={regime}({regimeConf:P0}) → SL={slRoePct:F0}% TP={tpRoePct:F0}%(qty {tpRatioPct:F0}%) Trail={trailGapPct:F1}%");
 
                 // ROE → 가격 변환 (priceMove% = roe% / leverage)
                 decimal slPriceMovePct = slRoePct / leverage / 100m;

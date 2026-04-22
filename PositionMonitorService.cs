@@ -816,8 +816,11 @@ namespace TradingBot.Services
                         catch (Exception ex) { OnLog?.Invoke($"❌ {symbol} 본절 서버 스탑 예외: {ex.Message}"); }
                     }
 
-                    // [AI Exit Optimizer] ROE 10% 이상일 때 5초마다 모델 질의
-                    if (breakEvenActivated && !profitLockActivated && currentROE >= 10.0m
+                    // [v5.10.86] AI Exit Optimizer 활성화 임계값 ROE 10% → 3% 하향
+                    //   기존: ROE 10% 도달 전 ML regime exit 미활용 → 횡보 코인 영원히 ML 판단 못 받음
+                    //   수정: ROE 3%부터 ML 판단 받게 → 횡보 + 수익권에서 빠른 익절 가능
+                    //   본절 미발동(breakEvenActivated=false)도 허용 — 작은 수익이라도 regime 약세 시 익절
+                    if (currentROE >= 3.0m
                         && _exitOptimizer != null && _exitOptimizer.IsModelLoaded
                         && _regimeClassifier != null && _regimeClassifier.IsModelLoaded)
                     {
@@ -1885,26 +1888,55 @@ namespace TradingBot.Services
                         break;
                     }
 
-                    // [B] 횡보 익절: 30분 이상 보유 + ROE≥5% (수익권) + BB Width 좁음(횡보) → 익절
-                    if (holdMinutes >= 30 && currentROE >= 5m
+                    // [v5.10.86] [B] Regime-aware 횡보 익절: ML regime classifier가 Sideways 판정 + 수익권 → 익절
+                    //   기존 v5.10.85: BB Width < 1.5% 하드코딩 임계값
+                    //   수정: ML 모델이 Sideways 분류 → 임계값 학습 데이터 기반 (하드코딩 X)
+                    //   추가: regime classifier 미로드 시 v5.10.85 fallback 유지 (안전망)
+                    if (holdMinutes >= 30 && currentROE >= 3m  // ROE 5% → 3% 하향 (작은 수익이라도 횡보면 확정)
                         && _marketDataManager.KlineCache.TryGetValue(symbol, out var kc) && kc.Count >= 25)
                     {
                         try
                         {
-                            List<IBinanceKline> recent20;
-                            lock (kc) { recent20 = kc.TakeLast(20).ToList(); }
-                            var bb = IndicatorCalculator.CalculateBB(recent20, 20, 2);
-                            double mid = bb.Mid;
-                            decimal bbWidthPct = mid > 0 ? (decimal)((bb.Upper - bb.Lower) / mid * 100.0) : 0m;
-                            // BB Width 1.5% 미만 = 횡보 / 스퀴즈
-                            if (bbWidthPct > 0 && bbWidthPct < 1.5m)
+                            List<IBinanceKline> recent21;
+                            lock (kc) { recent21 = kc.TakeLast(21).ToList(); }
+
+                            bool sidewaysExit = false;
+                            string detail = "";
+                            // [Primary] ML regime classifier 사용
+                            if (_regimeClassifier != null && _regimeClassifier.IsModelLoaded)
                             {
-                                OnAlert?.Invoke($"💰 [SIDEWAYS_PROFIT] {symbol} {holdMinutes:F0}분 보유 + ROE={currentROE:F1}% + BBWidth={bbWidthPct:F2}%(횡보) → 익절");
-                                await ExecuteMarketClose(symbol, $"SIDEWAYS_PROFIT_TAKE ({holdMinutes:F0}min, ROE={currentROE:F1}%, BBW={bbWidthPct:F2}%)", token);
+                                var rfeat = MarketRegimeClassifier.ExtractFeature(recent21);
+                                if (rfeat != null)
+                                {
+                                    var (regime, conf) = _regimeClassifier.Predict(rfeat);
+                                    if (regime == MarketRegime.Sideways && conf >= 0.55f)
+                                    {
+                                        sidewaysExit = true;
+                                        detail = $"ML regime=Sideways({conf:P0})";
+                                    }
+                                }
+                            }
+                            // [Fallback] regime 모델 없으면 BB Width로 보수적 판단
+                            if (!sidewaysExit)
+                            {
+                                var bb = IndicatorCalculator.CalculateBB(recent21.TakeLast(20).ToList(), 20, 2);
+                                double mid = bb.Mid;
+                                decimal bbWidthPct = mid > 0 ? (decimal)((bb.Upper - bb.Lower) / mid * 100.0) : 0m;
+                                if (bbWidthPct > 0 && bbWidthPct < 1.5m)
+                                {
+                                    sidewaysExit = true;
+                                    detail = $"BBWidth={bbWidthPct:F2}%(<1.5%)";
+                                }
+                            }
+
+                            if (sidewaysExit)
+                            {
+                                OnAlert?.Invoke($"💰 [SIDEWAYS_PROFIT] {symbol} {holdMinutes:F0}분 + ROE={currentROE:F1}% + {detail} → 익절");
+                                await ExecuteMarketClose(symbol, $"SIDEWAYS_PROFIT_TAKE ({holdMinutes:F0}min, ROE={currentROE:F1}%, {detail})", token);
                                 break;
                             }
                         }
-                        catch (Exception bbEx) { OnLog?.Invoke($"⚠️ {symbol} 횡보 익절 BB 계산 예외: {bbEx.Message}"); }
+                        catch (Exception bbEx) { OnLog?.Invoke($"⚠️ {symbol} 횡보 익절 판단 예외: {bbEx.Message}"); }
                     }
                 }
 
