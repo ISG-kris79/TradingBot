@@ -627,6 +627,39 @@ namespace TradingBot
                 return false;
             }
 
+            // [v5.10.88 Option A] BTC 1H 하락추세 시 알트 LONG 진입 차단
+            //   진단: 04-21 23시~04-22 7시 (하락장 8시간) 122건 20% 승률 -$45
+            //   근거: 봇이 SHORT 안 함 → 하락장 LONG = 데드캣 잡고 -30~50% ROE
+            //   규칙: BTC 1H 가격변화 ≤ -0.8% AND 알트 심볼 → 진입 차단
+            //        메이저(BTC/ETH/SOL/XRP)는 차단 제외 (본인 추세 판단)
+            if (!MajorSymbols.Contains(symbol) && _marketDataManager != null)
+            {
+                try
+                {
+                    if (_marketDataManager.KlineCache.TryGetValue("BTCUSDT", out var btcKlines) && btcKlines.Count >= 30)
+                    {
+                        // 5분봉 12개 (1시간) 가격 변화 계산
+                        List<Binance.Net.Interfaces.IBinanceKline> recent;
+                        lock (btcKlines) { recent = btcKlines.TakeLast(13).ToList(); }
+                        if (recent.Count >= 12)
+                        {
+                            decimal btc1hAgo = recent[0].ClosePrice;
+                            decimal btcNow = recent[^1].ClosePrice;
+                            if (btc1hAgo > 0)
+                            {
+                                decimal btc1hChangePct = (btcNow - btc1hAgo) / btc1hAgo * 100m;
+                                if (btc1hChangePct <= -0.8m)
+                                {
+                                    blockReason = $"BTC_1H_DOWNTREND ({btc1hChangePct:F2}%)";
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { /* BTC 조회 실패 시 차단하지 않음 (진입 누락 방지) */ }
+            }
+
             return true;
         }
 
@@ -6450,6 +6483,17 @@ namespace TradingBot
 
                     bool closeSynced = await _dbManager.TryCompleteOpenTradeAsync(flipCloseLog);
 
+                    // [v5.10.88 HOTFIX] 방향전환(Flip) 청산 텔레그램 알림
+                    if (closeSynced)
+                    {
+                        try
+                        {
+                            decimal dailyTotal = _riskManager?.DailyRealizedPnl ?? 0m;
+                            _ = NotificationService.Instance.NotifyProfitAsync(pos.Symbol, flipPnl, flipPnlPercent, dailyTotal);
+                        }
+                        catch (Exception nfEx) { OnStatusLog?.Invoke($"⚠️ {pos.Symbol} Flip 청산 텔레그램 예외: {nfEx.Message}"); }
+                    }
+
                     decimal newEntryPrice = pos.EntryPrice > 0m ? pos.EntryPrice : flipPrice;
                     var flipEntryLog = new TradeLog(
                         pos.Symbol,
@@ -6552,6 +6596,16 @@ namespace TradingBot
                         {
                             OnStatusLog?.Invoke($"📝 {pos.Symbol} 외부 부분청산 감지 → TradeHistory 반영 완료 (청산={externalClosedQty})");
                             OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부부분", $"외부 부분청산 감지: 청산 {externalClosedQty}");
+
+                            // [v5.10.88 HOTFIX] 외부 부분청산 (API TP1 자동 체결 등) 텔레그램 알림 누락 버그 수정
+                            //   기존: v5.10.83에서 완전청산만 NotifyProfitAsync 호출, 부분청산은 누락
+                            //   사례: Binance API TP1 자동 체결 시 텔레그램 메시지 안 옴
+                            try
+                            {
+                                decimal dailyTotal = _riskManager?.DailyRealizedPnl ?? 0m;
+                                _ = NotificationService.Instance.NotifyProfitAsync(pos.Symbol, syncPnl, syncPnlPercent, dailyTotal);
+                            }
+                            catch (Exception nfEx) { OnStatusLog?.Invoke($"⚠️ {pos.Symbol} 부분청산 텔레그램 예외: {nfEx.Message}"); }
                         }
                     }
                     else if (updatedQtyAbs > existingQtyAbs + 0.000001m)
@@ -14840,7 +14894,15 @@ namespace TradingBot
                     {
                         OnStatusLog?.Invoke($"📝 [동기화] {closedPos.Symbol} 누락된 청산 감지 → TradeHistory 반영 완료 (PnL={pnl:F2}, ROE={pnlPercent:F2}%)");
                         OnAlert?.Invoke($"⚠️ [누락 청산 복구] {closedPos.Symbol} 청산이 TradeHistory에 복구되었습니다.");
-                        
+
+                        // [v5.10.88 HOTFIX] 누락 청산 복구 시에도 텔레그램 알림
+                        try
+                        {
+                            decimal dailyTotal = _riskManager?.DailyRealizedPnl ?? 0m;
+                            _ = NotificationService.Instance.NotifyProfitAsync(closedPos.Symbol, pnl, pnlPercent, dailyTotal);
+                        }
+                        catch (Exception nfEx) { OnStatusLog?.Invoke($"⚠️ {closedPos.Symbol} 누락청산 텔레그램 예외: {nfEx.Message}"); }
+
                         // 청산 이력 갱신 이벤트
                         OnTradeHistoryUpdated?.Invoke();
                     }

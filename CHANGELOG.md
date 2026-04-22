@@ -5,6 +5,49 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.88] - 2026-04-22
+
+### 🚨 BTC 1H 하락필터 + 텔레그램 누락 전면 수정
+
+**수정 1 — 외부 부분청산 (API TP1 자동 체결) 텔레그램 누락 (사용자 지적):**
+
+v5.10.83에서 완전청산만 `NotifyProfitAsync` 호출했고 **부분청산 경로는 누락**. Binance API로 등록한 TP1이 자동 체결될 때 텔레그램 안 옴.
+
+- [TradingEngine.cs:6550](TradingEngine.cs#L6550) `RecordPartialCloseAsync` 후 → `NotifyProfitAsync` 추가
+- [TradingEngine.cs:6451](TradingEngine.cs#L6451) Flip 청산 (방향전환) → `NotifyProfitAsync` 추가
+- [TradingEngine.cs:14859](TradingEngine.cs#L14859) MissedClose 복구 → `NotifyProfitAsync` 추가
+
+이제 **모든 경로 청산**에서 텔레그램 알림 발송 (API TP1 / SL / 외부 수동 / flip / 누락 복구 / 내부 청산).
+
+**수정 2 — Option A: BTC 1H 하락추세 필터 (사용자 요구):**
+
+진단 (36시간 하락장 분석):
+
+| 시간 (KST) | 건수 | 승률 | PnL |
+|---|---|---|---|
+| 04-21 23시 ~ 04-22 7시 (하락장 8h) | 122 | 20% | -$45 |
+| 04-22 8시 이후 (회복) | 86 | 64% | +$91 |
+
+봇이 **SHORT 안 함 → 하락장 LONG만 시도 → 데드캣 바운스 -30~50% ROE**.
+
+수정 — `IsEntryAllowed`에 BTC 1H 필터 추가:
+
+- 조건: BTC 1H 가격변화 ≤ **-0.8%** AND 알트 심볼
+- 결과: 신규 진입 차단 (`BTC_1H_DOWNTREND (-X.XX%)` 로그)
+- 제외: 메이저(BTC/ETH/SOL/XRP)는 본인 추세 따라 판단
+
+**구현 상세:**
+
+- `_marketDataManager.KlineCache["BTCUSDT"]` 조회 (5분봉 WebSocket 캐시)
+- 최근 12개 5분봉 (=1시간) 시작가 vs 종가 비교
+- BTC 데이터 누락 시 차단 안 함 (진입 누락 방지)
+
+**효과:**
+
+- 하락장 8시간 -$45 손실 → 필터 적용 시 대부분 진입 차단 기대
+- BTC 상승 시 정상 진입
+- 메모리 규칙 "AI 판단만" 보완: ML이 학습할 때까지의 안전망 (하드코딩이지만 BTC 추세라는 매크로 지표 사용)
+
 ## [5.10.87] - 2026-04-22
 
 ### 🎨 UI: 실시간 시장 신호 DataGrid에 마진/손익 컬럼 추가
