@@ -5,6 +5,55 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.82] - 2026-04-22
+
+### 🔥 ROOT CAUSE FIX: AI 역상관 근본 수정 (학습/추론 타임프레임 일치 + AI Gate 강제)
+
+**진단 결과 (2026-04-22 12:00 이후 86 트레이드):**
+
+| 지표 | 값 |
+|---|---|
+| 승률 | 37.2% (32W/54L) |
+| 총 PnL | -$36.91 |
+| AiScore 0.80+ 승률 | **0.0%** ❌ (11건) |
+| 5-15분 보유 승률 | **0.0%** ❌ (24건) |
+| TICK_SURGE 비중 | 70/86건 = 81% (단일 전략 의존) |
+
+**근본 원인 — 학습/추론 타임프레임 불일치:**
+
+- 학습: `KlineInterval.OneHour`, label="10시간 이내 +2.5% 도달" (스윙 horizon)
+- 추론: `KlineInterval.FiveMinutes`, 5~15분 단타 진입에 사용
+- 같은 `RSI/BB/ATR` feature지만 1H vs 5M 통계 분포 완전 다름 → 모델이 본 적 없는 입력 → 체계적 역답변
+
+**Option A — 학습 파이프라인 5분봉 통일:**
+
+- `TriggerInitialMLNetTrainingIfNeededAsync`, `RetrainMlNetPredictorAsync` 모두 `KlineInterval.OneHour` → `FiveMinutes`로 변경
+- 라벨 정책: `LOOKAHEAD=10` (10h) → `6` (30분), `TARGET_PCT=2.5%` → `0.5%`, `STOP_PCT=1%` → `0.3%` — 단타 horizon
+- `LightGbm.UnbalancedSets=true` 추가 (AITrainer + MLService 양쪽) — 단타 라벨 양성 클래스 희소성 보정
+
+**Option B — AI Gate 우회 경로 전부 제거 (`skipAiGateCheck:true → false`):**
+
+- `TICK_SURGE` (line 1278) — 70/86건 0% 승률 원인이 게이트 우회
+- `SQUEEZE_BREAKOUT`, `MAJOR_MEME`, `MAJOR`, `FORECAST_FALLBACK`, `ETA_TRIGGER`, `GATE2` 전부 게이트 강제
+- 메이저 신호도 AIDoubleCheckEntryGate 통과 강제 (`Major` variant 모델로 검증)
+
+**B2 — EntryTimingMLTrainer 4 variant 강제 학습:**
+
+- 봇 시작 시 `IsReady=false`이면 `forceRetrain: true`로 호출
+- `initial_training_ready.flag` 삭제 → 다음 시작 시 재학습 강제
+
+**효과:**
+
+1. AiScore가 추론 분포와 일치하는 통계로 학습됨 → 0.80 = 0% 승률 패턴 해소
+2. AI Gate 우회 차단 → 모델 미학습 시 진입 자체 차단 (잘못된 진입 방지)
+3. 단일 전략(TICK_SURGE) 의존도 감소 — 게이트가 차단/허용을 결정
+4. 클래스 imbalance 보정 — 양성 라벨 가중치 조정
+
+**리스크:**
+
+- 첫 실행 시 모델 재학습 시간(~5분) 동안 AI Gate=차단 → 신규 진입 0건
+- 학습 완료 후 게이트가 너무 엄격해서 진입 빈도 급감 가능 (역상관보다는 안전)
+
 ## [5.10.81] - 2026-04-22
 
 ### 🛡️ HOTFIX: 단일 진입 게이트 (IsEntryAllowed + PlaceEntryOrderAsync) — 메이저 비활성화 우회 근본 차단

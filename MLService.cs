@@ -96,7 +96,8 @@ public class MLService : IDisposable
                 MinimumExampleCountPerLeaf = 20,
                 LearningRate = 0.05,
                 NumberOfIterations = 300,
-                NumberOfThreads = Math.Max(2, Environment.ProcessorCount - 2)
+                NumberOfThreads = Math.Max(2, Environment.ProcessorCount - 2),
+                UnbalancedSets = true  // [v5.10.82] 단타 라벨 imbalance 보정
             }));
 
         MainWindow.Instance?.AddLog($"🚀 ML.NET LightGBM 학습 시작 (Train: {trainCount}, Test: {trainingData.Count - trainCount})");

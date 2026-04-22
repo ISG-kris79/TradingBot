@@ -1166,8 +1166,8 @@ namespace TradingBot
                 },
                 marketFallbackExecutor: async (sym, dir, price, tok) =>
                 {
-                    // 조기 돌파 시 Router 통과 후 Market 진입
-                    await ExecuteAutoOrder(sym, dir, price, tok, "FORECAST_FALLBACK", skipAiGateCheck: true);
+                    // [v5.10.82] AI Gate 통과 강제 — Forecaster Fallback도 검증.
+                    await ExecuteAutoOrder(sym, dir, price, tok, "FORECAST_FALLBACK", skipAiGateCheck: false);
                 });
             _entryScheduler.OnLog += msg => OnStatusLog?.Invoke(msg);
             _entryScheduler.OnEntryRegistered += e =>
@@ -1275,8 +1275,10 @@ namespace TradingBot
                         }
 
                         OnStatusLog?.Invoke($"⚡ [틱급증→진입] {symbol} TPS={tpsRatio:F1}x 매수비={buyRatio:P0}");
+                        // [v5.10.82] AI Gate 통과 강제 — TICK_SURGE 70/86건 0% 승률 원인이 게이트 우회였음.
+                        //            새 5분봉 학습 모델로 BB 상단/고점 진입 차단.
                         await ExecuteAutoOrder(symbol, "LONG", price, _cts?.Token ?? CancellationToken.None,
-                            "TICK_SURGE", manualSizeMultiplier: 1.0m, skipAiGateCheck: true);
+                            "TICK_SURGE", manualSizeMultiplier: 1.0m, skipAiGateCheck: false);
                     }
                     catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [틱급증] {symbol} 진입 실패: {ex.Message}"); }
                 });
@@ -1511,8 +1513,8 @@ namespace TradingBot
                     }
                     else
                     {
-                        // Fallback: Forecaster 미학습 → 기존 즉시 진입 경로 (학습 완료 전)
-                        await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR_MEME", skipAiGateCheck: true);
+                        // [v5.10.82] AI Gate 통과 강제 (5분봉 학습 모델로 메이저 진입 검증)
+                        await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR_MEME", skipAiGateCheck: false);
                     }
                 }
                 catch (Exception ex)
@@ -1568,8 +1570,8 @@ namespace TradingBot
                             if (!forecast.HasOpportunity)
                             {
                                 OnLiveLog?.Invoke($"🧭 [FORECAST][MAJOR] {symbol} LONG 기회 없음");
-                                // Forecaster 가 기회 없다고 해도 Fallback 으로 진입 시도
-                                await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR", skipAiGateCheck: true);
+                                // [v5.10.82] AI Gate 통과 강제
+                                await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR", skipAiGateCheck: false);
                                 return;
                             }
 
@@ -1583,10 +1585,9 @@ namespace TradingBot
                         }
                         else
                         {
-                            // [v5.1.0] 모든 메이저 신호: skipAiGateCheck=true
-                            // AI_GATE (EntryTimingMLTrainer) 가 메이저에서 항상 0% 반환하므로 우회
-                            // MajorCoinStrategy 의 aiScore + 모멘텀 + SMA 가 이미 판단 완료
-                            await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR", skipAiGateCheck: true);
+                            // [v5.10.82] AI Gate 통과 강제
+                            // 기존 v5.1.0: AI_GATE 가 메이저에서 0% 반환했으나, v5.10.82에서 5분봉 학습 + Major variant 학습으로 정상화
+                            await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR", skipAiGateCheck: false);
                         }
                     }
                     catch (Exception ex)
@@ -2541,14 +2542,18 @@ namespace TradingBot
                 // 따라서 이 메인 프로세스는 상태 플래그(IsReady)만 확인하게 하고, 실제 훈련은 백그라운드 Worker Thread로 오프로딩하여 UI 및 엔진 파이프라인을 즉시 재개함.
                 if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate?.IsReady != true)
                 {
-                    OnStatusLog?.Invoke("ℹ️ AI Gate 초기 학습 백그라운드 시작...");
+                    OnStatusLog?.Invoke("ℹ️ [v5.10.82] AI Gate 모델 미로드 → 강제 초기 학습 시작 (forceRetrain=true)");
                     _ = Task.Run(async () =>
                     {
                         try
                         {
-                            var (success, message) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, _symbols, token);
+                            // [v5.10.82] forceRetrain=true: TICK_SURGE skipAiGateCheck=false 로 변경됐으니
+                            //            게이트가 차단되면 진입 자체가 안 됨 → 학습 실패 시 즉시 알림
+                            var (success, message) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, _symbols, token, forceRetrain: true);
                             if (success)
-                                _ = NotificationService.Instance.NotifyAsync("✅ AI Gate 초기 학습 완료", NotificationChannel.Alert);
+                                _ = NotificationService.Instance.NotifyAsync("✅ AI Gate 초기 학습 완료 — 진입 게이트 활성화", NotificationChannel.Alert);
+                            else
+                                _ = NotificationService.Instance.NotifyAsync($"⚠️ AI Gate 초기 학습 실패 — 진입 차단 상태: {message}", NotificationChannel.Alert);
                         }
                         catch (Exception ex)
                         {
@@ -3134,11 +3139,12 @@ namespace TradingBot
                     OnAlert?.Invoke("🔄 정기 AI 모델 재학습 프로세스 시작...");
 
                     // 1. 학습 데이터 수집 (주요 심볼 대상)
+                    // [v5.10.82] 추론은 5분봉(GetLatestCandleDataAsync)을 쓰는데 학습이 1H봉이라 분포 불일치 → AiScore 역상관.
+                    //            추론과 동일한 5분봉으로 학습해서 같은 통계 분포로 모델 학습.
                     var trainingData = new List<CandleData>();
                     foreach (var symbol in _symbols)
                     {
-                        // 최근 500개 1시간봉 데이터 가져오기
-                        var klines = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.OneHour, limit: 500, ct: token);
+                        var klines = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, limit: 500, ct: token);
                         if (klines.Success && klines.Data != null && klines.Data.Any() && klines.Data.Length >= 50)
                         {
                             var candles = klines.Data.ToList();
@@ -3297,10 +3303,11 @@ namespace TradingBot
                 OnAlert?.Invoke("🧠 ML.NET 초기 학습 시작 (엔진 시작 1회)...");
 
                 // 데이터 수집
+                // [v5.10.82] 추론은 5분봉을 쓰는데 학습이 1H봉이라 분포 불일치 → AiScore 역상관. 5분봉으로 통일.
                 var trainingData = new List<CandleData>();
                 foreach (var symbol in _symbols)
                 {
-                    var klines = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.OneHour, limit: 500, ct: token);
+                    var klines = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, limit: 500, ct: token);
                     if (klines.Success && klines.Data != null && klines.Data.Any() && klines.Data.Length >= 50)
                     {
                         var candles = klines.Data.ToList();
@@ -3763,10 +3770,13 @@ namespace TradingBot
         /// </summary>
         private List<CandleData> ConvertToTrainingData(List<IBinanceKline> klines, string symbol)
         {
-            const int LOOKAHEAD = 10;          // 10봉(50분) 이내 목표/손절 도달 여부
-            const decimal TARGET_PCT = 0.025m; // +2.5% 목표
-            const decimal STOP_PCT = 0.010m;   // -1.0% 손절
-            const decimal FEE_PCT = 0.0008m;   // 왕복 수수료 0.08%
+            // [v5.10.82] 5분봉 단타 추론과 horizon 일치
+            //   기존: LOOKAHEAD=10×1H=10시간, +2.5%/-1.0% (스윙 라벨) → 5분봉 추론에 부적합
+            //   변경: LOOKAHEAD=6×5m=30분, +0.5%/-0.3% (단타 라벨) → TICK_SURGE/SPIKE 진입과 동일 horizon
+            const int LOOKAHEAD = 6;            // 6봉 × 5min = 30분 horizon
+            const decimal TARGET_PCT = 0.005m;  // +0.5% 단타 목표
+            const decimal STOP_PCT = 0.003m;    // -0.3% 단타 손절
+            const decimal FEE_PCT = 0.0008m;    // 왕복 수수료 0.08%
             const float BB_WIDTH_HOLD = 0.5f;  // BB폭 < 0.5% 이면 횡보 → HOLD
 
             static (bool success, decimal fib236, decimal fib382, decimal fib500, decimal fib618) CalculateConfirmedFibLevels(
@@ -4085,9 +4095,10 @@ namespace TradingBot
                                             entryPrice = tk.LastPrice;
 
                                         OnStatusLog?.Invoke($"🎯 [ETA_TRIGGER] {symbol} 재평가 {result.AverageProbability:P0} ≥ 65% → {direction} 시장가 진입");
+                                        // [v5.10.82] AI Gate 통과 강제
                                         await ExecuteAutoOrder(symbol, direction, entryPrice, token,
                                             signalSource: "ETA_TRIGGER",
-                                            skipAiGateCheck: true);
+                                            skipAiGateCheck: false);
                                     }
                                     else
                                     {
@@ -11812,8 +11823,9 @@ namespace TradingBot
                             OnStatusLog?.Invoke(
                                 $"✅ [GATE2] {symbol} 지연 진입 조건 충족 → 진입 실행 ({gate2Reason})");
                             _pendingGate2.TryRemove(symbol, out _);
+                            // [v5.10.82] AI Gate 통과 강제
                             await ExecuteAutoOrder(symbol, decision, ticker.LastPrice,
-                                _cts.Token, signalSource + "_GATE2", skipAiGateCheck: true);
+                                _cts.Token, signalSource + "_GATE2", skipAiGateCheck: false);
                             return;
                         }
 

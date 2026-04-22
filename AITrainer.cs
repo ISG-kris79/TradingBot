@@ -41,7 +41,8 @@ public class AITrainer
                 MinimumExampleCountPerLeaf = 20,
                 LearningRate = 0.05,
                 NumberOfIterations = 300,
-                NumberOfThreads = Math.Max(2, Environment.ProcessorCount - 2)
+                NumberOfThreads = Math.Max(2, Environment.ProcessorCount - 2),
+                UnbalancedSets = true  // [v5.10.82] 단타 라벨은 양성 클래스가 희소 → imbalance 보정 필수
             }));
 
         Console.WriteLine($"🚀 ML.NET LightGBM 학습 시작 (Train: {trainCount}, Test: {data.Count - trainCount})");
