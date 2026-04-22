@@ -5,6 +5,27 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.81] - 2026-04-22
+
+### 🛡️ HOTFIX: 단일 진입 게이트 (IsEntryAllowed + PlaceEntryOrderAsync) — 메이저 비활성화 우회 근본 차단
+
+**문제:**
+설정창에서 메이저 코인 비활성화(`EnableMajorTrading=false`) 했는데도 ETH/XRP 등이 진입.
+원인: 5개 산재 if문으로 분산 가드 → SPIKE_FAST 경로(`HandleSpikeDetectedAsync` → `PlaceOrderAsync` 직접 호출)가 `ExecuteAutoOrder` 라우터를 우회하여 게이트 누락.
+
+**근본 수정 (땜빵 아닌 아키텍처):**
+
+- 신규 `IsEntryAllowed(symbol, source, out reason)` — 단일 게이트 헬퍼
+- 신규 `PlaceEntryOrderAsync(symbol, side, qty, source, ct)` — 신규 진입(reduceOnly=false) 단일 진입점
+- 기존 5개 산재 체크 (TICK_SURGE/SQUEEZE_BREAKOUT/MAJOR_SIGNAL/MAJOR_ANALYZE/ROUTER) 모두 `IsEntryAllowed` 호출로 통합
+- SPIKE_FAST `_exchangeService.PlaceOrderAsync` 직접 호출 → `PlaceEntryOrderAsync` 래퍼로 교체 (게이트 자동 강제)
+- 코멘트로 "신규 진입 시 PlaceEntryOrderAsync 또는 IsEntryAllowed 호출 필수" 명시
+
+**효과:**
+- 새 진입 경로 추가 시 자동으로 게이트 적용 (누락 방지)
+- "버전업할 때마다 메이저 우회 누락" 패턴 근본 차단
+- 향후 차단 조건 추가는 `IsEntryAllowed` 한 곳에만 추가
+
 ## [5.10.80] - 2026-04-20
 
 ### Phase 5-D — Order Book Depth5 + Open Interest REST polling + Lorentzian Hard Mode + Major auto-unblock

@@ -600,6 +600,41 @@ namespace TradingBot
             "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT"
         };
 
+        // ═══════════════════════════════════════════════════════════════════════════════════
+        // [v5.10.81] 글로벌 진입 게이트 (단일 진입점)
+        // — ALL 신규 진입(reduceOnly=false) 경로는 PlaceEntryOrderAsync 또는 IsEntryAllowed 호출 필수.
+        // — 새 진입 경로 추가 시 누락되지 않도록 _exchangeService.PlaceMarketOrderAsync/PlaceOrderAsync 직접 호출 금지.
+        // — 단일 지점에서 EnableMajorTrading 등 글로벌 차단 강제 → "버전업할 때마다 누락" 문제 근본 차단.
+        // ═══════════════════════════════════════════════════════════════════════════════════
+        private bool IsEntryAllowed(string symbol, string source, out string blockReason)
+        {
+            blockReason = string.Empty;
+
+            // 메이저 코인 진입 비활성화 (UI: chkEnableMajorTrading)
+            if (MajorSymbols.Contains(symbol) && _settings?.EnableMajorTrading == false)
+            {
+                blockReason = "MAJOR_DISABLED";
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// 신규 진입(reduceOnly=false) 단일 진입점. 모든 PUMP/SPIKE/MAJOR/MANUAL 경로는 이 메서드 호출 필수.
+        /// _exchangeService.PlaceMarketOrderAsync/PlaceOrderAsync 직접 호출 금지 (게이트 우회됨).
+        /// </summary>
+        private async Task<(bool Success, decimal FilledQuantity, decimal AveragePrice)> PlaceEntryOrderAsync(
+            string symbol, string side, decimal quantity, string source, CancellationToken token)
+        {
+            if (!IsEntryAllowed(symbol, source, out string reason))
+            {
+                OnLiveLog?.Invoke($"⛔ [ENTRY_GATE][{source}] {symbol} 차단 ({reason})");
+                return (false, 0m, 0m);
+            }
+            return await _exchangeService.PlaceMarketOrderAsync(symbol, side, quantity, token);
+        }
+
         private TradingSettings _settings;
 
         // [Events] UI와의 통신을 위한 이벤트 정의
@@ -1163,10 +1198,10 @@ namespace TradingBot
                 {
                     try
                     {
-                        // 메이저 코인 비활성화 시 TICK_SURGE 경로도 차단
-                        if (MajorSymbols.Contains(symbol) && _settings?.EnableMajorTrading == false)
+                        // [v5.10.81] 단일 게이트 IsEntryAllowed 사용
+                        if (!IsEntryAllowed(symbol, "TICK_SURGE", out string surgeBlockReason))
                         {
-                            OnStatusLog?.Invoke($"⛔ [틱급증→차단] {symbol} 메이저 코인 비활성화됨");
+                            OnStatusLog?.Invoke($"⛔ [틱급증→차단] {symbol} ({surgeBlockReason})");
                             return;
                         }
 
@@ -1253,9 +1288,10 @@ namespace TradingBot
                 {
                     try
                     {
-                        if (MajorSymbols.Contains(symbol) && _settings?.EnableMajorTrading == false)
+                        // [v5.10.81] 단일 게이트 IsEntryAllowed 사용
+                        if (!IsEntryAllowed(symbol, "SQUEEZE_BREAKOUT", out string squeezeBlockReason))
                         {
-                            OnStatusLog?.Invoke($"⛔ [스퀴즈돌파→차단] {symbol} 메이저 코인 비활성화됨");
+                            OnStatusLog?.Invoke($"⛔ [스퀴즈돌파→차단] {symbol} ({squeezeBlockReason})");
                             return;
                         }
                         OnStatusLog?.Invoke($"🔥 [스퀴즈돌파→진입] {symbol} BBWidth={bbWidth:F2}%");
@@ -1507,9 +1543,10 @@ namespace TradingBot
                 {
                     try
                     {
-                        if (_settings?.EnableMajorTrading == false)
+                        // [v5.10.81] 단일 게이트 IsEntryAllowed 사용
+                        if (!IsEntryAllowed(symbol, "MAJOR_SIGNAL", out string majorBlockReason))
                         {
-                            OnLiveLog?.Invoke($"⛔ [MAJOR] {symbol} 메이저 코인 비활성화됨 → 신호 무시");
+                            OnLiveLog?.Invoke($"⛔ [MAJOR] {symbol} 신호 무시 ({majorBlockReason})");
                             return;
                         }
 
@@ -4077,10 +4114,10 @@ namespace TradingBot
                 // 2. 차익거래 전략 (거래소 간 가격 차이 감지)
                 await _arbitrageStrategy.AnalyzeAsync(symbol, currentPrice, token);
 
-                // [MAJOR 전략] 메이저 코인 분석 — EnableMajorTrading=false 시 차단
+                // [MAJOR 전략] 메이저 코인 분석 — [v5.10.81] 단일 게이트 IsEntryAllowed
                 if (isMajorSymbol && _majorStrategy != null)
                 {
-                    if (_settings?.EnableMajorTrading == false)
+                    if (!IsEntryAllowed(symbol, "MAJOR_ANALYZE", out _))
                     {
                         // 설정에서 메이저 비활성화됨 → 진입 분석 스킵
                     }
@@ -8280,7 +8317,9 @@ namespace TradingBot
                 }
 
                 OnStatusLog?.Invoke($"[SPIKE_FAST] {symbol} {side} qty={quantity:F2} margin={marginUsdt:F0} lev={leverage} px={currentPrice}");
-                bool success = await _exchangeService.PlaceOrderAsync(symbol, side, quantity, null, token, reduceOnly: false);
+                // [v5.10.81] 단일 진입점 PlaceEntryOrderAsync 사용 — EnableMajorTrading 등 글로벌 게이트 강제
+                var spikeResult = await PlaceEntryOrderAsync(symbol, side, quantity, "SPIKE_FAST", token);
+                bool success = spikeResult.Success;
 
                 if (success)
                 {
@@ -8860,10 +8899,10 @@ namespace TradingBot
                     if (kv.Value < cutoff) _recentEntryAttempts.TryRemove(kv.Key, out _);
             }
 
-            // [v5.10.41] 메이저 비활성화 시 최상단 차단 — 이벤트 핸들러 개별 체크만으론 우회 경로 로그 발생
-            if (MajorSymbols.Contains(symbol) && _settings?.EnableMajorTrading == false)
+            // [v5.10.81] 단일 게이트 IsEntryAllowed — 모든 글로벌 차단 조건 통합
+            if (!IsEntryAllowed(symbol, $"ROUTE:{signalSource}", out string routerBlockReason))
             {
-                OnLiveLog?.Invoke($"⛔ [MAJOR_DISABLED] {symbol} 메이저 비활성화 → 진입 차단");
+                OnLiveLog?.Invoke($"⛔ [ENTRY_GATE] {symbol} 진입 차단 ({routerBlockReason})");
                 return;
             }
 
