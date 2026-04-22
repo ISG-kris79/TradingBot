@@ -635,6 +635,82 @@ namespace TradingBot
             return await _exchangeService.PlaceMarketOrderAsync(symbol, side, quantity, token);
         }
 
+        /// <summary>
+        /// [v5.10.83 HOTFIX] 진입 후 SL/TP/Trailing 보호 주문 일괄 등록.
+        /// SPIKE_FAST 등 ExecuteFullEntryWithAllOrdersAsync 미경유 경로에서 호출 필수.
+        /// PIEVERSEUSDT -32% 손실 (SL 미등록 162분 보유) 같은 무방비 진입 사고 차단.
+        /// </summary>
+        private async Task RegisterProtectionOrdersAsync(
+            string symbol, bool isLong, decimal filledQty, decimal entryPrice, int leverage, string source, CancellationToken token)
+        {
+            try
+            {
+                if (filledQty <= 0 || entryPrice <= 0 || leverage <= 0)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [PROTECT][{source}] {symbol} 보호주문 스킵 (qty/price/lev=0)");
+                    return;
+                }
+
+                bool isMajor = MajorSymbols.Contains(symbol);
+                string closeSide = isLong ? "SELL" : "BUY";
+
+                // 메이저/펌프별 ROE 설정 사용 (Models.cs 기본값)
+                decimal slRoePct      = isMajor ? (_settings?.MajorStopLossRoe   ?? 60m) : (_settings?.PumpStopLossRoe   ?? 40m);
+                decimal tpRoePct      = isMajor ? (_settings?.MajorTp1Roe        ?? 20m) : (_settings?.PumpTp1Roe        ?? 20m);
+                decimal trailGapPct   = isMajor ? (_settings?.MajorTrailingGapRoe?? 5m)  : (_settings?.PumpTrailingGapRoe?? 20m);
+                decimal tpRatioPct    = isMajor ? 30m : (_settings?.PumpFirstTakeProfitRatioPct ?? 40m); // 부분익절 수량비율
+
+                // ROE → 가격 변환 (priceMove% = roe% / leverage)
+                decimal slPriceMovePct = slRoePct / leverage / 100m;
+                decimal tpPriceMovePct = tpRoePct / leverage / 100m;
+
+                decimal slPrice = isLong
+                    ? entryPrice * (1m - slPriceMovePct)
+                    : entryPrice * (1m + slPriceMovePct);
+                decimal tpPrice = isLong
+                    ? entryPrice * (1m + tpPriceMovePct)
+                    : entryPrice * (1m - tpPriceMovePct);
+
+                // SL: 전체 수량
+                var (slOk, _) = await _exchangeService.PlaceStopOrderAsync(symbol, closeSide, filledQty, slPrice, token);
+                if (slOk)
+                    OnStatusLog?.Invoke($"🛡️ [PROTECT][{source}] {symbol} SL 등록 OK @ {slPrice:F8} (ROE -{slRoePct:F0}%)");
+                else
+                    OnAlert?.Invoke($"❌ [PROTECT][{source}] {symbol} SL 등록 실패 — 무방비 포지션! 수동 SL 설정 필요");
+
+                // TP: 부분 익절 수량
+                decimal tpQty = Math.Round(filledQty * tpRatioPct / 100m, 8);
+                if (tpQty > 0 && tpPrice > 0)
+                {
+                    var (tpOk, _) = await _exchangeService.PlaceTakeProfitOrderAsync(symbol, closeSide, tpQty, tpPrice, token);
+                    if (tpOk)
+                        OnStatusLog?.Invoke($"🎯 [PROTECT][{source}] {symbol} TP 등록 OK @ {tpPrice:F8} qty={tpQty} (ROE +{tpRoePct:F0}%, {tpRatioPct:F0}%)");
+                    else
+                        OnStatusLog?.Invoke($"⚠️ [PROTECT][{source}] {symbol} TP 등록 실패");
+                }
+
+                // Trailing: 잔여 수량
+                decimal trailQty = Math.Round(filledQty - tpQty, 8);
+                if (trailQty > 0)
+                {
+                    var (trailOk, _) = await _exchangeService.PlaceTrailingStopOrderAsync(
+                        symbol, closeSide, trailQty,
+                        callbackRate: Math.Clamp(trailGapPct, 0.1m, 5.0m),
+                        activationPrice: tpPrice > 0 ? tpPrice : (decimal?)null,
+                        ct: token);
+                    if (trailOk)
+                        OnStatusLog?.Invoke($"📈 [PROTECT][{source}] {symbol} Trailing 등록 OK callback={trailGapPct:F1}% qty={trailQty}");
+                    else
+                        OnStatusLog?.Invoke($"⚠️ [PROTECT][{source}] {symbol} Trailing 등록 실패");
+                }
+            }
+            catch (Exception ex)
+            {
+                OnAlert?.Invoke($"❌ [PROTECT][{source}] {symbol} 보호주문 등록 예외: {ex.Message} — 수동 SL 확인 필요");
+                try { await _dbManager.SaveOrderErrorAsync(symbol, isLong ? "BUY" : "SELL", "PROTECT", filledQty, null, ex.Message); } catch { }
+            }
+        }
+
         private TradingSettings _settings;
 
         // [Events] UI와의 통신을 위한 이벤트 정의
@@ -6232,7 +6308,20 @@ namespace TradingBot
                         {
                             OnStatusLog?.Invoke($"📝 {pos.Symbol} 외부 청산 감지 → TradeHistory 반영 완료");
                             OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부청산", "거래소 계좌 업데이트 기준 외부 청산을 감지하여 TradeHistory에 반영했습니다.");
-                            
+
+                            // [v5.10.83 HOTFIX] 외부 청산(Binance SL/TP/수동) 텔레그램 알림 누락 버그 수정
+                            //   기존: 외부 청산 시 NotifyProfitAsync 미호출 → 익절/손절/본절 텔레그램 메시지 안 옴
+                            //   수정: 내부 청산(PositionMonitorService.cs:3012)과 동일한 알림 호출
+                            try
+                            {
+                                decimal dailyTotalPnl = _riskManager?.DailyRealizedPnl ?? 0m;
+                                _ = NotificationService.Instance.NotifyProfitAsync(pos.Symbol, pnl, pnlPercent, dailyTotalPnl);
+                            }
+                            catch (Exception notifyEx)
+                            {
+                                OnStatusLog?.Invoke($"⚠️ {pos.Symbol} 외부청산 텔레그램 알림 실패: {notifyEx.Message}");
+                            }
+
                             // [수정] 외부 청산도 30분 블랙리스트 등록 (즉시 재진입 방지)
                             _blacklistedSymbols[pos.Symbol] = DateTime.Now.AddMinutes(30);
                             OnStatusLog?.Invoke($"🚫 {pos.Symbol} 30분간 블랙리스트 등록 (외부 청산 후 재진입 금지)");
@@ -8383,8 +8472,14 @@ namespace TradingBot
                     OnPositionStatusUpdate?.Invoke(symbol, true, entryPrice);
                     OnAlert?.Invoke($"✅ [{label} 즉시진입 성공] {symbol} {direction} @ {entryPrice:F8} qty={actualQty:F4}");
 
-                    // 포지션 감시 시작
                     bool isLong = direction == "LONG";
+
+                    // [v5.10.83 HOTFIX] SPIKE_FAST 경로 SL/TP/Trailing 미등록 버그 수정
+                    //   기존: PlaceEntryOrderAsync 만 호출 → SL/TP 미등록 → -32% 손실 무방비 (PIEVERSEUSDT 사고)
+                    //   수정: 진입 직후 RegisterProtectionOrdersAsync 강제 호출
+                    await RegisterProtectionOrdersAsync(symbol, isLong, actualQty, entryPrice, (int)leverage, $"SPIKE_FAST_{label}", token);
+
+                    // 포지션 감시 시작
                     if (isMajor)
                         _ = _positionMonitor.MonitorPositionStandard(symbol, entryPrice, isLong, token);
                     else

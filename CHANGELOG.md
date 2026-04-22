@@ -5,6 +5,40 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.83] - 2026-04-22
+
+### 🚨 CRITICAL HOTFIX: SPIKE_FAST 무방비 진입 + 외부청산 텔레그램 누락
+
+**BUG 1 — SPIKE_FAST 진입 후 SL/TP/Trailing 미등록 (자본 40% 손실 원인):**
+
+- 사례: PIEVERSEUSDT TICK_SURGE 진입 → 162분 보유 → -32% 손실 → 사용자 수동청산
+- 원인: `ExecuteImmediateSpikeEntry` ([TradingEngine.cs:8332](TradingEngine.cs#L8332))는 `PlaceEntryOrderAsync`만 호출 → `ExecuteFullEntryWithAllOrdersAsync` 미경유 → SL/TP/Trailing 거래소에 한 번도 등록 안 됨
+- 의존: 90초 REST 폴링 (`MonitorPumpPositionShortTerm`) → 빠른 가격 변동 미대응
+- 수정: 신규 헬퍼 `RegisterProtectionOrdersAsync(symbol, isLong, qty, entryPrice, leverage, source, token)` 추가
+  - PUMP/Major 별 ROE → 가격 변환 (slRoe/leverage = priceMove%)
+  - SL 전체수량, TP 부분수량, Trailing 잔여수량 일괄 등록
+  - `_settings`의 `PumpStopLossRoe`/`PumpTp1Roe`/`PumpTrailingGapRoe`/`PumpFirstTakeProfitRatioPct` 사용
+- SPIKE_FAST 진입 성공 직후 강제 호출 → 무방비 포지션 0건 보장
+- SL 등록 실패 시 `OnAlert`로 즉시 알림 (수동 SL 설정 유도)
+
+**BUG 2 — 외부 청산(Binance SL/TP/수동) 텔레그램 알림 누락:**
+
+- 사례: 익절/부분익절/본절청산/손절청산 모두 텔레그램 메시지 안 옴
+- 원인: 외부 청산은 WebSocket ACCOUNT_UPDATE 이벤트로 감지 → `TryCompleteOpenTradeAsync` ([TradingEngine.cs:6230](TradingEngine.cs#L6230))로 DB만 기록 → `NotifyProfitAsync` 호출 누락
+- 내부 청산(PositionMonitorService.cs:3012)에는 `NotifyProfitAsync` 있지만, 거래소가 SL/TP를 자동 체결한 경우 외부 청산으로 분류돼 알림 안 감
+- 수정: `TryCompleteOpenTradeAsync` 성공 직후 `NotificationService.Instance.NotifyProfitAsync(symbol, pnl, pnlPercent, dailyTotalPnl)` 호출 추가
+- 알림 실패 시 `OnStatusLog`로 백업 기록
+
+**효과:**
+
+1. 모든 신규 진입(SPIKE_FAST 포함)이 거래소에 SL/TP/Trailing 등록 보장 → 무방비 -32% 사고 차단
+2. 모든 청산 이벤트(내부+외부)가 텔레그램 알림 → 사용자가 실시간 손익 추적 가능
+3. SL 등록 실패 시 즉시 알림 → 수동 대응 가능
+
+**리스크:**
+
+- 메이저 ROE 설정값과 PUMP ROE 설정값이 SPIKE_FAST에도 적용 → SL 폭이 사용자 설정 따라 다를 수 있음 (현재 PUMP 기본 -40% ROE = 20x 기준 -2% 가격)
+
 ## [5.10.82] - 2026-04-22
 
 ### 🔥 ROOT CAUSE FIX: AI 역상관 근본 수정 (학습/추론 타임프레임 일치 + AI Gate 강제)
