@@ -84,11 +84,17 @@ namespace TradingBot
                     return null;
                 }
 
+                // [v5.10.84 Phase A] M1 데이터 신뢰성 명시적 마킹
+                //   기존: m1Klines null/부족 시 m1Position=0.5 silent fallback → ML이 1m 정보를 잘못 학습
+                //   수정: M1_Data_Valid=0 마킹으로 ML이 "1m 데이터 없음"을 인식하고 다른 TF에 가중치 줄 수 있게 함
+                bool m1Valid = m1Klines != null && m1Klines.Count >= 30;
+
                 var feature = new MultiTimeframeEntryFeature
                 {
                     Symbol = symbol,
                     Timestamp = timestamp,
-                    EntryPrice = m15Klines[^1].ClosePrice
+                    EntryPrice = m15Klines[^1].ClosePrice,
+                    M1_Data_Valid = m1Valid ? 1f : 0f
                 };
 
                 // 각 타임프레임별 Feature 추출
@@ -415,7 +421,8 @@ namespace TradingBot
             ExtractM15TradingViewFeatures(m15Klines, d1Klines, feature);
 
             // [v5.10.75 Phase 2] 고점 진입 학습 피처 (PIT/히스토리컬 경로 — M1은 m15 직전 캔들로 근사)
-            // PIT 경로에선 M1 데이터가 없으므로 null 전달 → M1 관련 피처는 0으로 기본값
+            // [v5.10.84 Phase A] PIT 경로는 M1 데이터 없음 → M1_Data_Valid=0 명시 마킹 (ML이 1m 신뢰 X 학습)
+            feature.M1_Data_Valid = 0f;
             ExtractEntryPositionFeatures(m15Klines, null, feature);
             ExtractSymbolRecentPerformanceFeatures(feature.Symbol, feature);
 
@@ -850,6 +857,38 @@ namespace TradingBot
                 }
                 feature.M15_ConsecBearishCount = consecBearish;
 
+                // [v5.10.84 Phase B] 연속 양봉 개수 (최근 5봉) — 상승전환 시그널
+                int consecBullish = 0;
+                for (int i = m15Klines.Count - 1; i >= Math.Max(0, m15Klines.Count - 5); i--)
+                {
+                    if (m15Klines[i].ClosePrice > m15Klines[i].OpenPrice)
+                        consecBullish++;
+                    else
+                        break;
+                }
+                feature.M15_ConsecBullishCount = consecBullish;
+
+                // [v5.10.84 Phase B] M15 해머 캔들 — lower_shadow > 2×body, body는 작아야 (range 30% 이하)
+                var lastM15 = m15Klines[^1];
+                double range = (double)(lastM15.HighPrice - lastM15.LowPrice);
+                if (range > 0)
+                {
+                    double body = Math.Abs((double)(lastM15.ClosePrice - lastM15.OpenPrice));
+                    double lowerShadow = (double)(Math.Min(lastM15.OpenPrice, lastM15.ClosePrice) - lastM15.LowPrice);
+                    feature.M15_Hammer_Pattern = (body / range < 0.3 && lowerShadow > 2 * body) ? 1f : 0f;
+                }
+
+                // [v5.10.84 Phase B] M15 Bullish Engulfing — 직전 음봉 + 현재 양봉이 직전봉 장악
+                if (m15Klines.Count >= 2)
+                {
+                    var prev = m15Klines[^2];
+                    var curr = m15Klines[^1];
+                    bool prevBearish = prev.ClosePrice < prev.OpenPrice;
+                    bool currBullish = curr.ClosePrice > curr.OpenPrice;
+                    bool engulfs = curr.OpenPrice <= prev.ClosePrice && curr.ClosePrice >= prev.OpenPrice;
+                    feature.M15_Bullish_Engulfing = (prevBearish && currBullish && engulfs) ? 1f : 0f;
+                }
+
                 // M15 RSI 약세
                 double m15Rsi = CalcRSI14(m15Klines);
                 feature.M15_RSI_BelowNeutral = m15Rsi < 45 ? 1f : 0f;
@@ -864,6 +903,38 @@ namespace TradingBot
 
                 double currentPrice = (double)h1Klines[^1].ClosePrice;
                 feature.H1_PriceBelowSma60 = currentPrice < sma60 ? 1f : 0f;
+
+                // [v5.10.84 Phase B] H1 추세전환 (다운→업 골든크로스 최근 5봉 내 발생)
+                //   현재 SMA20>SMA60 + 5봉 전 SMA20<SMA60 = 최근 골든크로스
+                int crossLookback = Math.Min(5, h1Klines.Count - 60);
+                bool breakoutDetected = false;
+                int trendChangeCount = 0;
+                int prevSign = 0;
+                for (int look = crossLookback; look >= 0; look--)
+                {
+                    var subset = h1Klines.Take(h1Klines.Count - look).ToList();
+                    if (subset.Count < 60) continue;
+                    double s20 = subset.TakeLast(20).Average(k => (double)k.ClosePrice);
+                    double s60 = subset.TakeLast(60).Average(k => (double)k.ClosePrice);
+                    int sign = s20 > s60 ? 1 : (s20 < s60 ? -1 : 0);
+                    if (prevSign != 0 && sign != 0 && sign != prevSign)
+                    {
+                        trendChangeCount++;
+                        if (sign == 1) breakoutDetected = true;  // 음→양 = 다운→업 돌파
+                    }
+                    if (sign != 0) prevSign = sign;
+                }
+                feature.H1_BreakoutFromDowntrend = breakoutDetected ? 1f : 0f;
+                feature.H1_TrendChange_Count_Recent5 = Math.Min(5, trendChangeCount);
+
+                // [v5.10.84 Phase B] H1 MACD 히스토그램 회복 (음→양 또는 음→0 회복)
+                if (h1Klines.Count >= 35)
+                {
+                    var prevSubset = h1Klines.Take(h1Klines.Count - 1).ToList();
+                    var currMacd = IndicatorCalculator.CalculateMACD(h1Klines);
+                    var prevMacd = IndicatorCalculator.CalculateMACD(prevSubset);
+                    feature.H1_MACD_Hist_Turning_Up = (currMacd.Hist > prevMacd.Hist) ? 1f : 0f;
+                }
             }
         }
 

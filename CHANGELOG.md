@@ -5,6 +5,54 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.84] - 2026-04-22
+
+### 🎯 Phase 6 — Multi-TF 추세전환 + M1 신뢰성 (사용자 요구 직접 반영)
+
+**사용자 요구 (CHOPUSDT/M/AAVE 등 다중 TF 고점 진입 사고 방지):**
+
+> "1H 하락추세 뚫었는지 확인 → 15m 상승전환 확인 → 5m 기준 → 1m 틱 진입.
+> 하드코딩 금지, AI 학습 추론으로만."
+
+**진단 (Multi-TF 검증 결과):**
+
+- M1 fetch 실패 시 silent 0.5 fallback → ML이 "1m 정보 없음"을 못 배움
+- PIT (학습) 경로에서 M1을 명시적으로 null 전달 → 모든 학습 샘플의 M1 feature가 0
+- H1 추세전환 (golden cross/MACD turn-up) feature 부재 → ML이 "방금 다운→업 돌파" 학습 불가
+- M15 상승전환 시퀀스 (consec bullish, hammer, engulfing) 부재 → "15m 반전" 학습 불가
+
+**Phase A — M1 데이터 신뢰성:**
+
+- 신규 `M1_Data_Valid` feature (1=fetch 성공, 0=실패) → ML이 1m 신뢰도 학습
+- Realtime extractor: m1Klines null/Count<30 시 명시 0 마킹
+- PIT extractor: 명시적 0 전달 (M1 부재 학습)
+
+**Phase B — H1/M15 추세전환 6개 신규 feature:**
+
+- `H1_BreakoutFromDowntrend` — 최근 5봉 내 SMA20-SMA60 음→양 전환 (다운→업 돌파)
+- `H1_MACD_Hist_Turning_Up` — MACD 히스토그램 회복 (현재 > 이전)
+- `H1_TrendChange_Count_Recent5` — 최근 5봉 내 추세전환 횟수 (잦으면 횡보)
+- `M15_ConsecBullishCount` — 15분봉 연속 양봉 (0~5) — 상승전환
+- `M15_Hammer_Pattern` — 해머 캔들 (lower_shadow > 2×body, body 작음)
+- `M15_Bullish_Engulfing` — 직전 음봉 장악하는 양봉
+
+**Phase C — 학습 스키마 갱신:**
+
+- `featureColumns` 7개 추가
+- `ExpectedFeatureCount` 115 → 122
+- `initial_training_ready.flag` 삭제 → 다음 시작 시 재학습 강제 (forceRetrain)
+
+**효과:**
+
+ML이 "H1 다운트렌드 뚫고 M15 상승전환 + M1 정상 수집" 패턴을 자기 학습.
+하드코딩 차단 (BB 상단 if문 같은 것) 없이 feature만 추가 → AI-only 원칙 유지.
+v5.10.82 5분봉 학습 + 본 v5.10.84 추세전환 feature 결합 시 CHOP/AAVE/M 같은 고점 진입 자동 차단 기대.
+
+**리스크:**
+
+- 첫 재학습 시 ~5분 동안 AI Gate=차단 (새 122 feature 모델 빌드)
+- 신규 feature 학습 데이터 부족 초기엔 보수적 판단 → 진입 빈도 일시 감소
+
 ## [5.10.83] - 2026-04-22
 
 ### 🚨 CRITICAL HOTFIX: SPIKE_FAST 무방비 진입 + 외부청산 텔레그램 누락

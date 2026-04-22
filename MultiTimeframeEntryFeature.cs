@@ -206,6 +206,19 @@ namespace TradingBot
         public float OpenInterest_Surge { get; set; }             // 1 = 15분 변화 ≥3% (급격한 레버리지 폭발)
 
         // ═══════════════════════════════════════════════════════════════
+        // [v5.10.84 Phase 6] H1 추세전환 + M15 상승전환 + M1 신뢰성 (7개)
+        // 사용자 요구: "1H 하락추세 뚫었는지" + "15m 상승전환" + "1m fetch 실패 silent fallback 차단"
+        // 하드코딩 차단 대신 ML이 추세전환 패턴을 자기 학습 (AI-only 원칙 유지)
+        // ═══════════════════════════════════════════════════════════════
+        public float M1_Data_Valid { get; set; }                   // 1=M1 fetch 성공(정상), 0=fetch 실패(나머지 M1 feature 신뢰 X)
+        public float H1_BreakoutFromDowntrend { get; set; }        // 1=최근 5봉 내 SMA20<SMA60 → SMA20>SMA60 골든크로스 발생, 0=아님
+        public float H1_MACD_Hist_Turning_Up { get; set; }         // 1=MACD 히스토그램 음→양 또는 회복 중 (현재>이전), 0=하락 중
+        public float H1_TrendChange_Count_Recent5 { get; set; }    // 최근 5봉 내 SMA20-SMA60 부호 전환 횟수 (0~5) — 잦으면 횡보
+        public float M15_ConsecBullishCount { get; set; }          // 15분봉 최근 연속 양봉 개수 (0~5) — 상승전환
+        public float M15_Hammer_Pattern { get; set; }              // 1=해머 캔들 (lower_shadow > 2×body, body 작음) — 반등 신호
+        public float M15_Bullish_Engulfing { get; set; }           // 1=직전 음봉을 장악하는 양봉 (open<prev_close, close>prev_open) — 강한 반전
+
+        // ═══════════════════════════════════════════════════════════════
         // 피보나치 되돌림 레벨 (객관적 수치로 AI 특징 사용)
         // ═══════════════════════════════════════════════════════════════
         public float Fib_DistanceTo0382_Pct { get; set; }    // 현재가에서 0.382 레벨까지 거리 (%)

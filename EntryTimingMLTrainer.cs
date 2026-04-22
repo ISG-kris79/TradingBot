@@ -220,7 +220,7 @@ namespace TradingBot
         // 49 기존 + 19 확장(v3.4.2) + 5 휩소(v4.5.2) + 5 하락추세(v4.5.6) + 3 DailyPnl(v4.5.11)
         // + 5 단타지표(v4.6.2) + 4 스퀴즈/ST/Pivot(v4.6.3) + 11 고점학습(v5.10.75)
         // + 4 호가창(v5.10.77) + 5 aggTrade/Funding(v5.10.79) + 5 Depth5/OI(v5.10.80) = 115개
-        private const int ExpectedFeatureCount = 115;
+        private const int ExpectedFeatureCount = 122;
 
         /// <summary>
         /// 저장된 모델 로드 (스키마 호환성 검증 포함)
@@ -507,7 +507,11 @@ namespace TradingBot
                 "Funding_Rate", "Funding_Rate_Extreme",
                 // ── [v5.10.80 Phase 5-D] Depth5 + OI 선행 지표 5개 ──
                 "Depth5_BidAskImbalanceRatio", "Depth5_BidValueToAskValueRatio",
-                "OpenInterest_Normalized", "OpenInterest_Change_15m_Pct", "OpenInterest_Surge"
+                "OpenInterest_Normalized", "OpenInterest_Change_15m_Pct", "OpenInterest_Surge",
+                // ── [v5.10.84 Phase 6] H1 추세전환 + M15 상승전환 + M1 신뢰성 7개 ──
+                "M1_Data_Valid",
+                "H1_BreakoutFromDowntrend", "H1_MACD_Hist_Turning_Up", "H1_TrendChange_Count_Recent5",
+                "M15_ConsecBullishCount", "M15_Hammer_Pattern", "M15_Bullish_Engulfing"
             };
 
             // 전처리 및 학습 파이프라인
