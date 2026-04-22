@@ -5,6 +5,51 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.90] - 2026-04-23
+
+### 🚨 Partial Fill 오분류 수정 + 텔레그램 알림 누락 근본 해결
+
+**사용자 지적:**
+
+> "metusdt 씨발아 30% 넘게 먹는건데 수익이 이상하잖아 왜 마진이 저따위야"
+> "내가 매수한거 아니야 병신새끼야"
+> "바이낸스 TP/SL 트레일링스탑 처리됐는데 텔레그램 메시지 안와"
+
+**진단 1 — 봇 진입이 외부로 오분류된 광범위 버그:**
+
+METUSDT 2026-04-23 00:06:13 Bot_Log: `DoubleCheck_PASS ML=99.4% TF=99.4%` → 봇 진입. 1초 후 `EXTERNAL_POSITION_INCREASE_SYNC` 8건 기록.
+원인: Binance partial fill로 8청크 체결 → ACCOUNT_UPDATE 8번 발생 → 1번째만 정상, 2~8번째가 "외부 증가"로 오분류.
+
+광범위 영향 (24h):
+- MUSDT 27건, TAOUSDT 19건, SUIUSDT 14건, EDUUSDT 13건, HIGHUSDT 12건, CHIPUSDT 8건, METUSDT 8건, BASEDUSDT 7건 = 총 112+건 봇 진입이 "외부"로 잘못 기록됨.
+
+**진단 2 — 텔레그램 누락 원인:**
+
+v5.10.89 DbManager 중앙화 했지만 `TryNotifyProfit`의 `if (pnl==0 && pnlPercent==0) return` 조건으로 API 체결 시 pos=null이면 pnl=0 계산되어 **알림 스킵**.
+
+**수정 — Partial Fill 오분류:**
+
+- `_recentBotEntries` ConcurrentDictionary 추가 — 봇 시장가 주문 symbol+시각 저장
+- `MarkBotEntryInProgress(symbol)` 호출 위치:
+  - `PlaceEntryOrderAsync` (SPIKE_FAST 경로)
+  - `ExecuteFullEntryWithAllOrdersAsync` 호출 직전 (일반 진입 경로)
+- `ACCOUNT_UPDATE` 핸들러 EXTERNAL_POSITION_INCREASE_SYNC 분기 ([TradingEngine.cs:6595](TradingEngine.cs#L6595)):
+  - `IsRecentBotEntry(symbol, 10초)` → true면 외부 기록 스킵, 수량만 내부 갱신
+
+**수정 — 텔레그램 근본:**
+
+- `DbManager.TryNotifyProfit` 조건 완화: `pnl==0 AND pnlPct==0 AND kind==ENTRY` 만 스킵 (기존: 무조건 0은 스킵 → API 체결 누락)
+- 전송 시점 로그 추가 (`📨 [Notify][kind] symbol 텔레그램 전송 요청`)
+- `RecordConditionalOrderFillAsync` ([line 3844](TradingEngine.cs#L3844)) 본인 텔레그램 제거 → DbManager 중앙 처리 (중복 방지)
+- pos=null 시 `GetOpenTradesAsync`로 entry price DB 조회 fallback 추가 → PnL 정확 계산
+
+**진단 3 — $200 안 들어간 이유 (설명):**
+
+METUSDT 24h 거래량 $10M 미만 → `GetLiquidityAdjustedPumpMarginUsdt` ([line 5141](TradingEngine.cs#L5141)) 자동 50% 축소 ($200 → $100).
+추가로 `SetLeverageAutoAsync` 심볼 max 레버리지 초과 시 자동 조정 → 실제 notional 감소.
+**총 마진 약 $40 = 설정 $200의 20% 규모**가 된 이유.
+(수정 없음, 설명만. 유동성 축소는 사용자 지시 유지)
+
 ## [5.10.89] - 2026-04-23
 
 ### 🔔 텔레그램 알림 중앙화 — DB INSERT 지점에서 단일 처리 (아키텍처 수정)

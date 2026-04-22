@@ -595,6 +595,31 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, DateTime> _scoutAddOnPendingSymbols
             = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
+        // [v5.10.90] 봇 자체 진입 주문 추적 (partial fill을 외부 진입으로 오분류 방지)
+        //   METUSDT 진입 1건이 Binance partial fill 8청크로 나뉨 → ACCOUNT_UPDATE 8번 발생
+        //   → 봇이 "외부 수량 증가"로 잘못 기록 (EXTERNAL_POSITION_INCREASE_SYNC × 8)
+        //   수정: 시장가 주문 직전 symbol+시각 저장 → ACCOUNT_UPDATE 처리 시 10초 이내면 봇 자체 fill로 간주
+        private readonly ConcurrentDictionary<string, DateTime> _recentBotEntries
+            = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        private void MarkBotEntryInProgress(string symbol)
+        {
+            if (!string.IsNullOrWhiteSpace(symbol))
+                _recentBotEntries[symbol] = DateTime.UtcNow;
+            // 오래된 엔트리 정리 (60초 초과)
+            if (_recentBotEntries.Count > 100)
+            {
+                var cutoff = DateTime.UtcNow.AddSeconds(-60);
+                foreach (var kv in _recentBotEntries)
+                    if (kv.Value < cutoff) _recentBotEntries.TryRemove(kv.Key, out _);
+            }
+        }
+        private bool IsRecentBotEntry(string symbol, int withinSeconds = 10)
+        {
+            if (string.IsNullOrWhiteSpace(symbol)) return false;
+            if (!_recentBotEntries.TryGetValue(symbol, out var ts)) return false;
+            return (DateTime.UtcNow - ts).TotalSeconds <= withinSeconds;
+        }
+
         // [v5.10.85] 메이저 = 설정창 "주요 심볼" (txtSymbols) 값에서 동적 로드
         //   기존: hardcoded HashSet → 사용자가 설정창에서 변경해도 반영 안 됨
         //   수정: AppConfig.Current.Trading.Symbols 직접 참조 → 사용자 설정이 source of truth
@@ -675,6 +700,8 @@ namespace TradingBot
                 OnLiveLog?.Invoke($"⛔ [ENTRY_GATE][{source}] {symbol} 차단 ({reason})");
                 return (false, 0m, 0m);
             }
+            // [v5.10.90] 봇 자체 진입 시각 마킹 (partial fill ACCOUNT_UPDATE race condition 차단)
+            MarkBotEntryInProgress(symbol);
             return await _exchangeService.PlaceMarketOrderAsync(symbol, side, quantity, token);
         }
 
@@ -3847,9 +3874,27 @@ namespace TradingBot
                 PositionInfo? pos = null;
                 lock (_posLock) { _activePositions.TryGetValue(symbol, out pos); }
 
-                decimal entryPrice = pos?.EntryPrice ?? avgPrice;
-                bool isLong = pos?.IsLong ?? (data.Side == Binance.Net.Enums.OrderSide.Sell); // SL/TP는 반대쪽 주문
+                // [v5.10.90] pos가 null인 경우 DB open TradeHistory에서 진입가 조회 (pnl 계산 정확도 개선)
+                decimal entryPrice = pos?.EntryPrice ?? 0m;
+                bool isLong = pos?.IsLong ?? (data.Side == Binance.Net.Enums.OrderSide.Sell);
                 decimal leverage = pos?.Leverage ?? _settings.DefaultLeverage;
+                if (entryPrice <= 0m)
+                {
+                    try
+                    {
+                        // [v5.10.90] pos=null 대비 GetOpenTradesAsync에서 symbol 찾아 entry 가져오기
+                        int userId = AppConfig.CurrentUser?.Id ?? 1;
+                        var openTrades = await _dbManager.GetOpenTradesAsync(userId);
+                        var row = openTrades?.FirstOrDefault(t => string.Equals(t.Symbol, symbol, StringComparison.OrdinalIgnoreCase));
+                        if (row.HasValue && row.Value.EntryPrice > 0)
+                        {
+                            entryPrice = row.Value.EntryPrice;
+                            OnStatusLog?.Invoke($"ℹ️ [ORDER_FILL] {symbol} pos=null → DB open entry ${entryPrice:F6} 사용");
+                        }
+                        else entryPrice = avgPrice;
+                    }
+                    catch { entryPrice = avgPrice; }
+                }
 
                 // PnL 계산
                 decimal rawPnl = isLong
@@ -3893,22 +3938,7 @@ namespace TradingBot
 
                 string emoji = pnl >= 0 ? "💰" : "📉";
                 OnStatusLog?.Invoke($"{emoji} [API 체결] {symbol} {exitReason} | 체결가={avgPrice:F4} 수량={filledQty:F4} PnL={pnl:+0.00;-0.00} ({pnlPct:+0.0;-0.0}%)");
-
-                // 텔레그램 알림 — 마크다운 V1에서 _는 이탤릭 마커이므로 exitReason의 언더스코어를 공백으로 치환 (안 그러면 Telegram 400 거부 → silent fail)
-                string telegramReason = exitReason.Replace("_", " ");
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await TelegramService.Instance.SendMessageAsync(
-                            $"{emoji} *[API {telegramReason}]*\n`{symbol}` | 체결가: `{avgPrice:F4}`\nPnL: `{pnl:F2}` USDT ({pnlPct:+0.0;-0.0}%)",
-                            TelegramMessageType.Profit);
-                    }
-                    catch (Exception tEx)
-                    {
-                        OnStatusLog?.Invoke($"⚠️ [텔레그램 전송실패] {symbol} {telegramReason}: {tEx.Message}");
-                    }
-                });
+                // [v5.10.90] 텔레그램 알림은 DbManager (SaveTradeLogAsync → RecordPartial/Complete → TryNotifyProfit)에서 중앙 처리. 중복 제거.
             }
             catch (Exception ex)
             {
@@ -6580,31 +6610,39 @@ namespace TradingBot
                     }
                     else if (updatedQtyAbs > existingQtyAbs + 0.000001m)
                     {
-                        var externalIncreaseLog = new TradeLog(
-                            pos.Symbol,
-                            isLong ? "BUY" : "SELL",
-                            "EXTERNAL_POSITION_INCREASE_SYNC",
-                            pos.EntryPrice,
-                            existing.AiScore,
-                            existing.EntryTime == default ? DateTime.Now : existing.EntryTime,
-                            0,
-                            0)
+                        // [v5.10.90 Race Condition Fix] 봇 자체 진입의 partial fill을 "외부 수량 증가"로 오분류하는 버그 수정
+                        //   METUSDT 사례: 봇이 한 번 진입했는데 Binance가 8청크 partial fill → ACCOUNT_UPDATE 8번
+                        //   → 8건 모두 EXTERNAL_POSITION_INCREASE_SYNC로 잘못 기록 (BASEDUSDT / MUSDT / TAOUSDT 등 광범위 오분류)
+                        //   수정: 최근 10초 이내 봇이 해당 symbol 시장가 주문을 보낸 경우 partial fill로 간주 → 수량 갱신만 (외부 기록 X)
+                        if (IsRecentBotEntry(pos.Symbol))
                         {
-                            EntryPrice = pos.EntryPrice,
-                            Quantity = updatedQtyAbs,
-                            EntryTime = existing.EntryTime == default ? DateTime.Now : existing.EntryTime,
-                            IsSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false
-                        };
-
-                        bool synced = await _dbManager.UpsertTradeEntryAsync(externalIncreaseLog);
-                        if (synced)
+                            OnStatusLog?.Invoke($"ℹ️ {pos.Symbol} 봇 자체 진입 partial fill 감지 ({existingQtyAbs}→{updatedQtyAbs}) — 외부 증가로 기록 안 함");
+                            // 내부 PositionInfo 수량만 갱신 (아래 기존 로직에서 처리됨)
+                        }
+                        else
                         {
-                            OnStatusLog?.Invoke($"📝 {pos.Symbol} 외부 수량증가 감지 → TradeHistory 오픈 수량 갱신 완료 ({existingQtyAbs}→{updatedQtyAbs})");
-                            OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부증가", $"외부 수량 증가 감지: {existingQtyAbs} → {updatedQtyAbs}");
+                            var externalIncreaseLog = new TradeLog(
+                                pos.Symbol,
+                                isLong ? "BUY" : "SELL",
+                                "EXTERNAL_POSITION_INCREASE_SYNC",
+                                pos.EntryPrice,
+                                existing.AiScore,
+                                existing.EntryTime == default ? DateTime.Now : existing.EntryTime,
+                                0,
+                                0)
+                            {
+                                EntryPrice = pos.EntryPrice,
+                                Quantity = updatedQtyAbs,
+                                EntryTime = existing.EntryTime == default ? DateTime.Now : existing.EntryTime,
+                                IsSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false
+                            };
 
-                            // [v5.10.54] account-update 시 SL/TP 재등록 경로 완전 제거
-                            // 진입 시 OrderLifecycleManager에서 한 번만 등록되므로 여기서 중복 호출 불필요.
-                            // 수량 변경 시 재조정이 필요하면 OrderLifecycleManager.AdjustTrailingAfterPartialCloseAsync 사용.
+                            bool synced = await _dbManager.UpsertTradeEntryAsync(externalIncreaseLog);
+                            if (synced)
+                            {
+                                OnStatusLog?.Invoke($"📝 {pos.Symbol} 외부 수량증가 감지 → TradeHistory 오픈 수량 갱신 완료 ({existingQtyAbs}→{updatedQtyAbs})");
+                                OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부증가", $"외부 수량 증가 감지: {existingQtyAbs} → {updatedQtyAbs}");
+                            }
                         }
                     }
                 }
@@ -11130,6 +11168,9 @@ namespace TradingBot
                 string positionSide = (decision == "LONG") ? "LONG" : "SHORT";
                 OnStatusLog?.Invoke(TradingStateLogger.PlacingOrder(symbol, decision, ctx.CurrentPrice, quantity));
                 EntryLog("ORDER", "SUBMIT", $"type=FULL_ENTRY orderSide={positionSide} qty={quantity} margin=${marginUsdt:F0} SL={slPrice:F4} TP={tpPrice:F4}");
+
+                // [v5.10.90] 봇 자체 진입 시각 마킹 (partial fill ACCOUNT_UPDATE 오분류 차단)
+                MarkBotEntryInProgress(symbol);
 
                 var success = await _exchangeService.ExecuteFullEntryWithAllOrdersAsync(
                     symbol,

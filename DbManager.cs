@@ -27,10 +27,12 @@ namespace TradingBot.Services
             try
             {
                 if (string.IsNullOrWhiteSpace(symbol)) return;
-                // 실제 체결이 없는 기록(PnL==0 AND PnLPercent==0)은 알림 스킵 (동기화 보정/Flip 진입 등)
-                if (pnl == 0 && pnlPercent == 0) return;
-                // DailyTotal은 0으로 통일 (NotifyProfitAsync 메시지 포맷에서만 사용됨, 선택 정보)
+                // [v5.10.90] 조건 완화: 실제 체결이 있는 모든 경우 알림 발송
+                //   기존: pnl==0 AND pnlPercent==0 스킵 → API 체결 시 pos=null이면 pnl=0 계산되어 알림 누락
+                //   수정: 양쪽 모두 0이면서 kind가 동기화 보정("ENTRY"/"FLIP") 경우만 스킵
+                if (pnl == 0 && pnlPercent == 0 && (kind == "ENTRY" || kind == "FLIP_ENTRY")) return;
                 _ = NotificationService.Instance.NotifyProfitAsync(symbol, pnl, pnlPercent, 0m);
+                MainWindow.Instance?.AddLog($"📨 [Notify][{kind}] {symbol} 텔레그램 전송 요청 (PnL={pnl:+0.00;-0.00} ROE={pnlPercent:+0.0;-0.0}%)");
             }
             catch (Exception ex)
             {
