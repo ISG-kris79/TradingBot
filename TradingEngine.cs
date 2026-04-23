@@ -79,6 +79,24 @@ namespace TradingBot
         private const int MAX_TOTAL_SLOTS = 7;        // 총 최대 7개 (메이저4 + PUMP3) — fallback
         private const int MAX_SPIKE_SLOTS = 1;        // [v5.2.0] SPIKE(급등) 전용 1개 추가
 
+        // [v5.12.0] 급등(SPIKE) 범주 단일 슬롯 — SPIKE_FAST + MAJOR_MEME(=PumpScan 3 fast paths) 통틀어 1개만
+        //   이유: 오늘 승률 27%, 급등 경로 동시 다수 진입으로 하락장 대량 물림
+        //   범위: SPIKE_FAST, MAJOR_MEME (PumpScanStrategy의 M1_FAST_PUMP / MEGA_PUMP / TOP_SCORE_ENTRY)
+        //   제외: PUMP_WATCH_CONFIRMED, MAJOR, 기타
+        private const int MAX_SPIKE_CATEGORY_SLOTS = 1;
+        private readonly ConcurrentDictionary<string, (DateTime entryTime, string source)> _activeSpikeSlot
+            = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// [v5.12.0] 급등 범주 signalSource 분류 — 단일 슬롯 제한 대상
+        /// </summary>
+        private static bool IsSpikeCategorySignal(string? signalSource)
+        {
+            if (string.IsNullOrEmpty(signalSource)) return false;
+            return signalSource.Equals("SPIKE_FAST", StringComparison.OrdinalIgnoreCase)
+                || signalSource.StartsWith("MAJOR_MEME", StringComparison.OrdinalIgnoreCase);
+        }
+
         // [v5.10.2] 슬롯 / 일일한도 → DB 설정 연동 (하드코딩 const 제거)
         private int MAX_MAJOR_SLOTS => _settings?.MaxMajorSlots > 0 ? _settings.MaxMajorSlots : 4;
         private int MAX_PUMP_SLOTS  => _settings?.MaxPumpSlots  > 0 ? _settings.MaxPumpSlots  : 3;
@@ -6440,6 +6458,12 @@ namespace TradingBot
                         _activePositions.Remove(pos.Symbol);
                         _hybridExitManager?.RemoveState(pos.Symbol); // [추가] 즉시 state 정리
                         OnPositionStatusUpdate?.Invoke(pos.Symbol, false, 0); // UI 및 데이터 정리
+
+                        // [v5.12.0] 급등 슬롯 해제 — PositionSync 청산 감지 시
+                        if (_activeSpikeSlot.TryRemove(pos.Symbol, out var syncReleasedSlot))
+                        {
+                            OnStatusLog?.Invoke($"🔓 [SPIKE_SLOT] {pos.Symbol}({syncReleasedSlot.source}) 해제: Sync 청산");
+                        }
                     }
 
                     // [v5.3.6] 포지션 닫힘 → 잔존 조건부 주문(SL/TP/Trailing) 취소
@@ -8256,6 +8280,14 @@ namespace TradingBot
             if (_stablecoinSymbols.Contains(symbol)) return; // 스테이블코인 제외
             var token = _cts?.Token ?? CancellationToken.None;
 
+            // [v5.12.0] 급등 단일 슬롯 체크 — SPIKE_FAST + MAJOR_MEME 통합 1개만 동시 진입
+            if (_activeSpikeSlot.Count >= MAX_SPIKE_CATEGORY_SLOTS)
+            {
+                var occupant = _activeSpikeSlot.FirstOrDefault();
+                OnStatusLog?.Invoke($"⛔ [SPIKE_SLOT] {symbol} 거부: 급등 슬롯 {occupant.Key}({occupant.Value.source}) 점유중 — 1개 제한");
+                return;
+            }
+
             // [v4.6.0] SPIKE 감지 시 동적 수집 등록 + 즉시 백필
             _marketHistoryService?.RegisterSymbol(symbol);
             _ = _marketHistoryService?.RequestBackfillAsync(symbol, token);
@@ -8666,6 +8698,10 @@ namespace TradingBot
 
                 if (success)
                 {
+                    // [v5.12.0] 급등 단일 슬롯 등록 — SPIKE_FAST 실제 체결 확정 시
+                    _activeSpikeSlot[symbol] = (DateTime.Now, "SPIKE_FAST");
+                    OnStatusLog?.Invoke($"🔒 [SPIKE_SLOT] {symbol} SPIKE_FAST 슬롯 점유 (1/{MAX_SPIKE_CATEGORY_SLOTS})");
+
                     // [v5.10.17] SPIKE_FAST PUMP 실제 진입 확정 카운터
                     if (!isMajor) CommitDailyPumpEntry(symbol);
 
@@ -9204,6 +9240,16 @@ namespace TradingBot
             bool skipAiGateCheck = false)
         {
             string flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
+
+            // [v5.12.0] 급등 단일 슬롯 체크 — MAJOR_MEME (PumpScan 3 fast paths) 진입 차단
+            //   SPIKE_FAST는 HandleSpikeDetectedAsync 초반에서 이미 체크됨
+            if (IsSpikeCategorySignal(signalSource) && _activeSpikeSlot.Count >= MAX_SPIKE_CATEGORY_SLOTS)
+            {
+                var occupant = _activeSpikeSlot.FirstOrDefault();
+                OnStatusLog?.Invoke($"⛔ [SPIKE_SLOT] {symbol} {signalSource} 거부: 급등 슬롯 {occupant.Key}({occupant.Value.source}) 점유중 — 1개 제한");
+                return;
+            }
+
             void EntryLog(string stage, string status, string detail)
             {
                 string line = $"🧭 [ENTRY][{stage}][{status}] {flowTag} | {detail}";
@@ -11350,6 +11396,13 @@ namespace TradingBot
                 if (ctx.SignalSource == "PUMP_WATCH_CONFIRMED")
                     CommitDailyPumpEntry(symbol);
 
+                // [v5.12.0] 급등 단일 슬롯 등록 — MAJOR_MEME (PumpScan 3 fast paths) 실제 체결 시
+                if (IsSpikeCategorySignal(ctx.SignalSource))
+                {
+                    _activeSpikeSlot[symbol] = (DateTime.Now, ctx.SignalSource ?? "MAJOR_MEME");
+                    OnStatusLog?.Invoke($"🔒 [SPIKE_SLOT] {symbol} {ctx.SignalSource} 슬롯 점유 (1/{MAX_SPIKE_CATEGORY_SLOTS})");
+                }
+
                 // [v5.10.18] OrderManager에 브라켓 주문 등록 (OCO 관리)
                 _orderManager.RegisterBracket(symbol);
 
@@ -12565,6 +12618,12 @@ namespace TradingBot
             lock (_posLock) { _activePositions.TryGetValue(symbol, out pos); }
             // PositionSyncService가 이미 제거했지만 혹시 남아있으면 제거
             lock (_posLock) { _activePositions.Remove(symbol); }
+
+            // [v5.12.0] 급등 슬롯 해제 — 청산 확정 시
+            if (_activeSpikeSlot.TryRemove(symbol, out var releasedSlot))
+            {
+                OnStatusLog?.Invoke($"🔓 [SPIKE_SLOT] {symbol}({releasedSlot.source}) 해제: 청산 ({reason})");
+            }
 
             // [v5.10.48] 외부 청산 시 잔여 TP/SL 오더 취소 (마진 잠금 방지)
             _ = Task.Run(async () =>

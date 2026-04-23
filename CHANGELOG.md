@@ -5,6 +5,57 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.12.0] - 2026-04-24
+
+### 🔒 급등(SPIKE) 범주 단일 슬롯 강제 — 동시 다수 진입 차단
+
+**사용자 지적:**
+
+> "SPIKE_FAST 는 무조건 1개만 진입" (옵션B: 급등 범주 전체 1개)
+
+**문제:**
+
+- `MAX_SPIKE_SLOTS = 1` 상수 존재하나 **"현재 활성 급등 포지션 개수" 카운터 없음**
+- SPIKE_FAST와 PumpScan 3 fast-path (M1_FAST/MEGA/TOP_SCORE) 동시 진입 가능
+- 오늘 BASUSDT/OPNUSDT/PIEVERSEUSDT 동시 급등 경로 물림
+
+### 구현
+
+**범위**: SPIKE_FAST + MAJOR_MEME (PumpScan 3 fast paths 통합)
+**제외**: PUMP_WATCH_CONFIRMED, MAJOR, 기타
+
+```csharp
+private const int MAX_SPIKE_CATEGORY_SLOTS = 1;
+private readonly ConcurrentDictionary<string, (DateTime entryTime, string source)>
+    _activeSpikeSlot = new(...);
+
+private static bool IsSpikeCategorySignal(string? signalSource) =>
+    signalSource == "SPIKE_FAST" || signalSource.StartsWith("MAJOR_MEME");
+```
+
+### 훅 지점
+
+| 위치 | 동작 | 파일:라인 |
+|---|---|---|
+| HandleSpikeDetectedAsync 초반 | 슬롯 점유시 즉시 거부 | TradingEngine.cs:8274 |
+| ExecuteAutoOrder 초반 | MAJOR_MEME 슬롯 체크 | TradingEngine.cs:9236 |
+| SPIKE_FAST 체결 성공 | TryAdd 슬롯 점유 | TradingEngine.cs:8693 |
+| ExecuteAutoOrder 체결 성공 | TryAdd 슬롯 점유 | TradingEngine.cs:11393 |
+| HandleSyncedPositionClosed | TryRemove 슬롯 해제 | TradingEngine.cs:12617 |
+| PositionSync Remove | TryRemove 슬롯 해제 | TradingEngine.cs:6461 |
+
+### 동작 예시
+
+```
+[10:00:01] SPIKE_FAST BASUSDT 진입 → 🔒 [SPIKE_SLOT] 1/1 점유
+[10:00:03] MEGA_PUMP OPNUSDT 시도 → ⛔ [SPIKE_SLOT] BASUSDT(SPIKE_FAST) 점유중 — 거부
+[10:00:05] M1_FAST_PUMP IRUSDT 시도 → ⛔ [SPIKE_SLOT] BASUSDT(SPIKE_FAST) 점유중 — 거부
+[10:15:30] BASUSDT 청산 → 🔓 [SPIKE_SLOT] 해제
+[10:15:45] MEGA_PUMP TAOUSDT 시도 → ✅ 진입 (슬롯 비었음)
+```
+
+---
+
 ## [5.11.1] - 2026-04-24
 
 ### 🔥 급등(PUMP) 로직 꼭대기 진입 구조적 원인 제거
