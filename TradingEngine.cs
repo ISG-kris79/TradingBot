@@ -3959,6 +3959,14 @@ namespace TradingBot
                 string emoji = pnl >= 0 ? "💰" : "📉";
                 OnStatusLog?.Invoke($"{emoji} [API 체결] {symbol} {exitReason} | 체결가={avgPrice:F4} 수량={filledQty:F4} PnL={pnl:+0.00;-0.00} ({pnlPct:+0.0;-0.0}%)");
                 // [v5.10.90] 텔레그램 알림은 DbManager (SaveTradeLogAsync → RecordPartial/Complete → TryNotifyProfit)에서 중앙 처리. 중복 제거.
+
+                // [v5.10.96] API 체결로 포지션 완전 종료 시 UI 즉시 초기화 (실시간 시장 신호 DataGrid 행 청소)
+                //   기존: ORDER_UPDATE 경로에서 OnPositionStatusUpdate 호출 누락 → 청산 후에도 EntryPrice/Qty/ROI 표시
+                //   수정: SL 또는 Trailing 체결(완전 청산) 시 UI를 false로 갱신
+                if (isStopFill || isTrailingFill)
+                {
+                    OnPositionStatusUpdate?.Invoke(symbol, false, 0);
+                }
             }
             catch (Exception ex)
             {
@@ -6626,6 +6634,12 @@ namespace TradingBot
                             OnStatusLog?.Invoke($"📝 {pos.Symbol} 외부 부분청산 감지 → TradeHistory 반영 완료 (청산={externalClosedQty})");
                             OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부부분", $"외부 부분청산 감지: 청산 {externalClosedQty}");
                             // [v5.10.89] 부분청산 텔레그램은 DbManager.RecordPartialCloseAsync에서 중앙 처리
+
+                            // [v5.10.96] 외부 부분청산 후 잔여 qty 0이면 UI 즉시 초기화
+                            if (updatedQtyAbs <= 0.000001m)
+                            {
+                                OnPositionStatusUpdate?.Invoke(pos.Symbol, false, 0);
+                            }
                         }
                     }
                     else if (updatedQtyAbs > existingQtyAbs + 0.000001m)

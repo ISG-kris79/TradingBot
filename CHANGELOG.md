@@ -5,6 +5,36 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.96] - 2026-04-23
+
+### 🎨 UI: 청산 시 실시간 시장 신호 ROI/마진/손익 자동 초기화
+
+**사용자 지적:**
+
+> "익절이나 청산되면 실시간 시장 신호에서 빼버리거나 ROI/마진/손익을 초기화하라"
+
+**진단:**
+
+`MainViewModel.UpdatePositionStatus(symbol, false, 0)` 호출 시 EntryPrice/Quantity/SL/TP 모두 0으로 초기화하는 로직 이미 존재 ([MainViewModel.cs:5040-5046](MainViewModel.cs#L5040-L5046)).
+
+문제: **`OnPositionStatusUpdate(false, 0)` 호출이 청산 경로 일부에서 누락**:
+
+- ✅ PositionMonitorService:4089 (완전 청산)
+- ✅ PositionMonitorService:3581 (부분청산 잔여=0)
+- ✅ TradingEngine:6355 (외부 완전 청산)
+- ❌ **TradingEngine.RecordConditionalOrderFillAsync** (API SL/TP/Trailing 체결 → UI 갱신 누락)
+- ❌ **TradingEngine 외부 부분청산 잔여=0** (UI 갱신 누락)
+
+**수정:**
+
+1. `RecordConditionalOrderFillAsync` ([line 3963](TradingEngine.cs#L3963)): SL 또는 Trailing 체결(완전 청산) 시 `OnPositionStatusUpdate?.Invoke(symbol, false, 0)` 호출
+2. EXTERNAL_PARTIAL_CLOSE 분기 ([line 6638](TradingEngine.cs#L6638)): `updatedQtyAbs <= 0.000001m` (잔여 0) 시 UI 즉시 false 갱신
+
+**효과:**
+
+- API SL/TP 자동 체결 즉시 DataGrid에서 EntryPrice/Quantity/ROI/Margin/PnL 모두 빈 칸
+- 외부 청산도 동일 처리
+
 ## [5.10.95] - 2026-04-23
 
 ### 🚨 Partial Fill 청크 합산 — 1 청산 = 1 텔레그램 보장
