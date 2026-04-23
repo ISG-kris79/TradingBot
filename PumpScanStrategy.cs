@@ -328,12 +328,31 @@ namespace TradingBot.Strategies
                         bool m1Bullish = latestM1.ClosePrice > latestM1.OpenPrice;
                         bool m1TrendOk = isUptrend || currentPrice > (decimal)sma20;
 
-                        // 조건: 1분봉 +3% AND 거래량 10배 + 양봉 + 단기추세 + 과열 아님 + RSI<75
-                        if (m1RangePct >= 3.0f && m1VolRatio >= 10.0 && m1Bullish && m1TrendOk)
+                        // [v5.11.1] 꼭대기 진입 방지 — 1분봉 내 현재가 위치 + 윗꼬리 검증
+                        //   m1PosInRange: 0=Low, 1=High. 0.7 초과 = 캔들 상위 30% 이내 = 꼭대기
+                        //   m1UpperWickRatio: 윗꼬리 비율. 0.30 초과 = 캔들 내에서 이미 반전 시작
+                        float m1PosInRange = 0f;
+                        float m1UpperWickRatio = 0f;
+                        if (m1Range > 0)
+                        {
+                            m1PosInRange = (float)((currentPrice - latestM1.LowPrice) / m1Range);
+                            decimal m1BodyMax = Math.Max(latestM1.OpenPrice, latestM1.ClosePrice);
+                            m1UpperWickRatio = (float)((latestM1.HighPrice - m1BodyMax) / m1Range);
+                        }
+                        bool m1PosOk = m1PosInRange <= 0.70f;
+                        bool m1WickOk = m1UpperWickRatio <= 0.30f;
+
+                        // 조건: 1분봉 +3% AND 거래량 10배 + 양봉 + 단기추세 + 과열 아님 + RSI<75 + 꼭대기 아님 + 윗꼬리 없음
+                        if (m1RangePct >= 3.0f && m1VolRatio >= 10.0 && m1Bullish && m1TrendOk && m1PosOk && m1WickOk)
                         {
                             decision = "LONG";
                             PumpSignalLog("M1_FAST_PUMP",
-                                $"sym={symbol} m1Vol={m1VolRatio:F1}x m1Range={m1RangePct:F1}% rsi={rsi:F0} → 1분봉 fast 즉시 진입 (5분봉 종가 대기 X)");
+                                $"sym={symbol} m1Vol={m1VolRatio:F1}x m1Range={m1RangePct:F1}% rsi={rsi:F0} m1Pos={m1PosInRange:P0} m1Wick={m1UpperWickRatio:P0} → 1분봉 fast 즉시 진입");
+                        }
+                        else if (m1RangePct >= 3.0f && m1VolRatio >= 10.0 && m1Bullish && m1TrendOk && (!m1PosOk || !m1WickOk))
+                        {
+                            PumpSignalLog("M1_FAST_SKIP",
+                                $"sym={symbol} 꼭대기/윗꼬리 차단 m1Pos={m1PosInRange:P0}(≤70%) m1Wick={m1UpperWickRatio:P0}(≤30%)");
                         }
                     }
                 }
@@ -349,14 +368,30 @@ namespace TradingBot.Strategies
                         ? (float)(candleRange / latestCandle.OpenPrice * 100) : 0f;
                     bool isBullish = latestCandle.ClosePrice > latestCandle.OpenPrice;
 
+                    // [v5.11.1] 꼭대기 진입 방지 — 5분봉 내 현재가 위치 + 윗꼬리 검증
+                    float m5PosInRange = 0f;
+                    float m5UpperWickRatio = 0f;
+                    if (candleRange > 0)
+                    {
+                        m5PosInRange = (float)((currentPrice - latestCandle.LowPrice) / candleRange);
+                        decimal m5BodyMax = Math.Max(latestCandle.OpenPrice, latestCandle.ClosePrice);
+                        m5UpperWickRatio = (float)((latestCandle.HighPrice - m5BodyMax) / candleRange);
+                    }
+                    bool m5PosOk = m5PosInRange <= 0.70f;
+                    bool m5WickOk = m5UpperWickRatio <= 0.30f;
+
                     // [v5.10.5] MEGA_PUMP: 하락추세 차단 + 과열 RSI 강화
-                    // 기존: isUptrend 체크 없음 → 하락추세 중 단봉 거래량 폭발에도 즉시 진입
-                    // 수정: isUptrend 필수 + 과열 시 RSI 80→70
+                    // [v5.11.1] 캔들 내 위치 검증 추가
                     float megaPumpRsiCap = isOverextended ? 70f : 80f;
-                    if (isUptrend && volumeMomentum >= 5.0 && rangePctNow >= 3.0f && isBullish && rsi < megaPumpRsiCap)
+                    bool megaBase = isUptrend && volumeMomentum >= 5.0 && rangePctNow >= 3.0f && isBullish && rsi < megaPumpRsiCap;
+                    if (megaBase && m5PosOk && m5WickOk)
                     {
                         decision = "LONG";
-                        PumpSignalLog("MEGA_PUMP", $"sym={symbol} vol={volumeMomentum:F1}x range={rangePctNow:F1}% rsi={rsi:F0} overext={isOverextended} → 즉시 진입");
+                        PumpSignalLog("MEGA_PUMP", $"sym={symbol} vol={volumeMomentum:F1}x range={rangePctNow:F1}% rsi={rsi:F0} overext={isOverextended} m5Pos={m5PosInRange:P0} m5Wick={m5UpperWickRatio:P0} → 즉시 진입");
+                    }
+                    else if (megaBase && (!m5PosOk || !m5WickOk))
+                    {
+                        PumpSignalLog("MEGA_PUMP_SKIP", $"sym={symbol} 꼭대기/윗꼬리 차단 m5Pos={m5PosInRange:P0}(≤70%) m5Wick={m5UpperWickRatio:P0}(≤30%)");
                     }
                     else if (!isUptrend && volumeMomentum >= 5.0 && rangePctNow >= 3.0f && isBullish)
                     {
@@ -377,13 +412,31 @@ namespace TradingBot.Strategies
                     bool lc_bullish = lc.ClosePrice > lc.OpenPrice;
                     float lc_chgPct = lc.OpenPrice > 0
                         ? (float)((lc.ClosePrice - lc.OpenPrice) / lc.OpenPrice * 100) : 0f;
-                    // 5분봉 +3% AND 양봉 AND 단기추세 (5분봉 SMA20 위)
                     bool m5TrendOk = isUptrend || currentPrice > (decimal)sma20;
-                    if (lc_chgPct >= 3.0f && lc_bullish && lc_rangePct >= 3.0f && m5TrendOk)
+
+                    // [v5.11.1] 꼭대기 진입 방지 — 5분봉 내 현재가 위치 + 윗꼬리 검증
+                    float lcPosInRange = 0f;
+                    float lcUpperWickRatio = 0f;
+                    if (lc_range > 0)
+                    {
+                        lcPosInRange = (float)((currentPrice - lc.LowPrice) / lc_range);
+                        decimal lcBodyMax = Math.Max(lc.OpenPrice, lc.ClosePrice);
+                        lcUpperWickRatio = (float)((lc.HighPrice - lcBodyMax) / lc_range);
+                    }
+                    bool lcPosOk = lcPosInRange <= 0.70f;
+                    bool lcWickOk = lcUpperWickRatio <= 0.30f;
+
+                    bool topBase = lc_chgPct >= 3.0f && lc_bullish && lc_rangePct >= 3.0f && m5TrendOk;
+                    if (topBase && lcPosOk && lcWickOk)
                     {
                         decision = "LONG";
                         PumpSignalLog("TOP_SCORE_ENTRY",
-                            $"sym={symbol} rank={topInfo.Rank} score={topInfo.Score:F2} 5mChg={lc_chgPct:F1}% rsi={rsi:F0} → top60 고점수 즉시 진입");
+                            $"sym={symbol} rank={topInfo.Rank} score={topInfo.Score:F2} 5mChg={lc_chgPct:F1}% rsi={rsi:F0} pos={lcPosInRange:P0} wick={lcUpperWickRatio:P0} → top60 고점수 즉시 진입");
+                    }
+                    else if (topBase && (!lcPosOk || !lcWickOk))
+                    {
+                        PumpSignalLog("TOP_SCORE_SKIP",
+                            $"sym={symbol} 꼭대기/윗꼬리 차단 pos={lcPosInRange:P0}(≤70%) wick={lcUpperWickRatio:P0}(≤30%)");
                     }
                 }
 

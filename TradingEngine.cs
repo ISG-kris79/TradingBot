@@ -8440,26 +8440,9 @@ namespace TradingBot
                 return;
             }
 
-            OnAlert?.Invoke($"⚡⚡ [{label} 즉시진입] {symbol} {changePct:+0.0;-0.0}% → {direction} qty={quantity:F4}");
-
-            // 메인창 표시
-            OnSymbolTracking?.Invoke(symbol);
-            OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
-            {
-                Symbol = symbol,
-                LastPrice = currentPrice,
-                Decision = direction,
-                SignalSource = "SPIKE_FAST",
-                StrategyName = $"⚡Spike {changePct:+0.0;-0.0}%"
-            });
-
-            // 텔레그램 (비동기, 주문 안 기다림)
-            _ = Task.Run(async () =>
-            {
-                try { await TelegramService.Instance.SendMessageAsync(
-                    $"⚡⚡ *[{label} 즉시진입]*\n`{symbol}` {changePct:+0.0;-0.0}%\n방향: {direction}\n가격: `{currentPrice}`\n⏰ {DateTime.Now:HH:mm:ss}",
-                    TelegramMessageType.Entry); } catch { }
-            });
+            // [v5.11.1] SPIKE_FAST 알림/UI/텔레그램 "즉시진입" 메시지를 게이트 통과 후로 이동
+            //   기존: 게이트 검증 전 사용자에게 "즉시진입" 알림 → 게이트 탈락해도 phantom 진입 보임
+            //   수정: OnAlert/OnSignalUpdate/Telegram 전부 PlaceEntryOrderAsync 직전으로 이동 (line ~8643)
 
             try
             {
@@ -8640,6 +8623,25 @@ namespace TradingBot
                         OnStatusLog?.Invoke($"⚠️ [SPIKE_FAST] {symbol} RSI 체크 실패: {rsiEx.Message} → 진입 계속");
                     }
                 }
+
+                // [v5.11.1] 모든 게이트 검증 통과 → 사용자 알림 + UI 갱신 + 텔레그램
+                //   이 지점 도달 = BTC 방향/RSI/MTF Guardian/Gate1/SpikeForecaster 전부 통과한 실제 진입
+                OnAlert?.Invoke($"⚡⚡ [{label} 즉시진입] {symbol} {changePct:+0.0;-0.0}% → {direction} qty={quantity:F4}");
+                OnSymbolTracking?.Invoke(symbol);
+                OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
+                {
+                    Symbol = symbol,
+                    LastPrice = currentPrice,
+                    Decision = direction,
+                    SignalSource = "SPIKE_FAST",
+                    StrategyName = $"⚡Spike {changePct:+0.0;-0.0}%"
+                });
+                _ = Task.Run(async () =>
+                {
+                    try { await TelegramService.Instance.SendMessageAsync(
+                        $"⚡⚡ *[{label} 즉시진입]*\n`{symbol}` {changePct:+0.0;-0.0}%\n방향: {direction}\n가격: `{currentPrice}`\n⏰ {DateTime.Now:HH:mm:ss}",
+                        TelegramMessageType.Entry); } catch { }
+                });
 
                 OnStatusLog?.Invoke($"[SPIKE_FAST] {symbol} {side} qty={quantity:F2} margin={marginUsdt:F0} lev={leverage} px={currentPrice}");
 
@@ -12042,17 +12044,47 @@ namespace TradingBot
             reason = string.Empty;
             if (candles5m == null || candles5m.Count < 7 || currentPrice <= 0) return false;
 
-            // [Check 1] 최근 12봉(1시간) 누적 상승률 > 10% → 너무 늦음
-            // v5.1.1: 30분 6봉 → 1시간 12봉 확대 (PLAYUSDT 75분 +20% 케이스 대응)
+            // [v5.11.1] Check 1 세분화 — 기존 1h 10% 만 → 다중 구간 (1h 5% + 30m 4% + 10m 3%)
+            //   꼭대기 진입의 근본 원인은 "이미 많이 올랐음"을 느슨한 1h 기준으로만 봐서
+            //   10분 안에 3% 이상 오른 직후 진입(스파이크 고점)을 못 걸렀음
+            // [Check 1a] 1시간 누적 > 5% → 너무 늦음
             if (candles5m.Count >= 13)
             {
                 decimal close1hAgo = candles5m[candles5m.Count - 13].ClosePrice;
                 if (close1hAgo > 0)
                 {
                     float runUpPct = (float)((currentPrice - close1hAgo) / close1hAgo * 100);
-                    if (runUpPct > 10.0f)
+                    if (runUpPct > 5.0f)
                     {
-                        reason = $"already_pumped 1h={runUpPct:F1}% > 10%";
+                        reason = $"already_pumped 1h={runUpPct:F1}% > 5%";
+                        return true;
+                    }
+                }
+            }
+            // [Check 1b] 30분 누적 > 4% (6 x 5m)
+            if (candles5m.Count >= 7)
+            {
+                decimal close30mAgo = candles5m[candles5m.Count - 7].ClosePrice;
+                if (close30mAgo > 0)
+                {
+                    float runUp30 = (float)((currentPrice - close30mAgo) / close30mAgo * 100);
+                    if (runUp30 > 4.0f)
+                    {
+                        reason = $"already_pumped 30m={runUp30:F1}% > 4%";
+                        return true;
+                    }
+                }
+            }
+            // [Check 1c] 10분 누적 > 3% (2 x 5m) — 스파이크 직후 차단
+            if (candles5m.Count >= 3)
+            {
+                decimal close10mAgo = candles5m[candles5m.Count - 3].ClosePrice;
+                if (close10mAgo > 0)
+                {
+                    float runUp10 = (float)((currentPrice - close10mAgo) / close10mAgo * 100);
+                    if (runUp10 > 3.0f)
+                    {
+                        reason = $"spike_just_happened 10m={runUp10:F1}% > 3%";
                         return true;
                     }
                 }

@@ -5,6 +5,72 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.11.1] - 2026-04-24
+
+### 🔥 급등(PUMP) 로직 꼭대기 진입 구조적 원인 제거
+
+**사용자 지적:**
+
+> "급등로직 다 재점검해 오늘 다 손실만 나고 들어가면 급하락하잖아"
+
+**감사 결과 — 5개 PUMP 경로 모두 꼭대기 진입**:
+
+| 경로 | 문제 | 파일:라인 |
+|---|---|---|
+| M1_FAST_PUMP | 1분봉 3%+ 스파이크에 캔들 내 위치 검증 없이 close 에서 진입 = 꼭대기 | PumpScanStrategy.cs:332 |
+| MEGA_PUMP | 5분봉 3%+vol 5x 단순 조건, 꼭대기 검증 없음 | PumpScanStrategy.cs:356 |
+| TOP_SCORE_ENTRY | Top60 rank 1-3 추가 진입이지만 캔들 내 위치 검증 없음 | PumpScanStrategy.cs:382 |
+| TICK_SURGE | TPS spike → 2-4초 지연, +2% 오른 뒤 체결 → 반전 | TradingEngine.cs:1540 |
+| SPIKE_FAST | 게이트 검증 **전** 이미 포지션 등록 + "즉시진입" 알림 발송 | TradingEngine.cs:8443 |
+
+**Gate1 (IsAlreadyPumpedRecently) 존재하나 작동 부실**:
+- 1시간 누적 **10%** 만 체크 → 이미 너무 늦은 시점
+- 10분 3% 급등 직후 진입(스파이크 고점)을 못 걸름
+
+### ✅ Fix 1: 캔들 내 위치 + 윗꼬리 검증 (핵심)
+
+PumpScanStrategy 3개 fast-path 모두 다음 2가지 인라인 검증 추가:
+
+```
+posInRange = (currentPrice - Low) / Range                        # 0=Low, 1=High
+upperWickRatio = (High - max(Open, Close)) / Range               # 윗꼬리 비율
+```
+
+조건: `posInRange <= 0.70 && upperWickRatio <= 0.30`
+
+- `posInRange > 0.70` → 캔들 상위 30% 이내 = 꼭대기 → **차단**
+- `upperWickRatio > 0.30` → 캔들 내 이미 반전 시작 = 상투 → **차단**
+
+적용 경로: M1_FAST_PUMP, MEGA_PUMP, TOP_SCORE_ENTRY 모두
+
+### ✅ Fix 2: Gate1 임계값 3중 강화
+
+기존 1시간 10% 단일 임계 → 3구간 세분화:
+
+| 구간 | 기존 | 신규 | 근거 |
+|---|---|---|---|
+| 1시간 누적 | 10% | **5%** | 1시간 5% 이상이면 이미 늦음 |
+| 30분 누적 | — | **4%** 추가 | 30분 4% 꼭대기 방어 |
+| 10분 누적 | — | **3%** 추가 | 스파이크 직후(10분 3%+) 차단 |
+
+### ✅ Fix 3: 캔들 윗꼬리 검증 (Fix 1 통합 구현)
+
+"급등 캔들이 이미 반전 중"을 `upperWickRatio > 0.30` 로 감지. Fix 1 에 통합되어 별도 코드 없음.
+
+### ✅ Fix 4: SPIKE_FAST 순서 역전 — 게이트 → 알림
+
+기존: 게이트 검증 **전** OnAlert/OnSignalUpdate/Telegram "즉시진입" 알림 → 게이트 탈락해도 사용자에게 phantom 진입 보임
+
+수정: 알림 블록을 모든 게이트 검증(BTC 방향/RSI/MTF Guardian/Gate1/SpikeForecaster) 통과 직후, `PlaceEntryOrderAsync` 호출 직전으로 이동
+
+### 📂 수정 파일
+
+- [PumpScanStrategy.cs:319-402](PumpScanStrategy.cs#L319-L402) — 3개 fast-path 캔들 위치/윗꼬리 검증 추가
+- [TradingEngine.cs:12040-12100](TradingEngine.cs#L12040-L12100) — Gate1 임계값 3중 강화 (1h 5% + 30m 4% + 10m 3%)
+- [TradingEngine.cs:8443-8663](TradingEngine.cs#L8443-L8663) — SPIKE_FAST 알림을 게이트 통과 후로 이동
+
+---
+
 ## [5.11.0] - 2026-04-24
 
 ### 🔥 진입 로직 전면 재설계 — 검증 → 예측 → 결정 3단계 파이프라인
