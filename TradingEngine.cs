@@ -6639,6 +6639,11 @@ namespace TradingBot
                         "외부전환",
                         $"방향 전환 감지: {(existing.IsLong ? "LONG" : "SHORT")} → {(isLong ? "LONG" : "SHORT")}");
 
+                    // [v5.10.98 P1-2] Flip 시 UI 즉시 갱신 — 기존 EntryPrice/Qty/ROI 초기화 후 새 진입가로 갱신
+                    //   기존: OnPositionStatusUpdate 미호출 → DataGrid에 stale 데이터 (이전 방향 entry/qty)
+                    OnPositionStatusUpdate?.Invoke(pos.Symbol, false, 0);  // 1) 기존 방향 청산 → UI 초기화
+                    OnPositionStatusUpdate?.Invoke(pos.Symbol, true, newEntryPrice);  // 2) 새 방향 진입가로 갱신
+
                     // [수정] 방향 전환 시 30분 블랙리스트 등록 (반대 방향 자동 진입 방지)
                     _blacklistedSymbols[pos.Symbol] = DateTime.Now.AddMinutes(30);
                     OnStatusLog?.Invoke($"🚫 {pos.Symbol} 30분간 블랙리스트 등록 (방향 전환 감지 후 재진입 금지)");
@@ -11439,8 +11444,22 @@ namespace TradingBot
                     finalStopLoss, finalTakeProfit, ctx.SignalSource);
                 OnStatusLog?.Invoke(entrySuccessMessage);
 
+                // [v5.10.98 P1-4] CRASH_REVERSE / PUMP_REVERSE 도 폴백 SL 등록 (안전망)
+                //   기존: OrderLifecycleManager 명시 제외 → monitor만 의존 → monitor 실패 시 무방비
+                //   수정: SL만이라도 등록 (TP/Trailing은 monitor가 처리, SL은 catastrophic loss 방지용)
+                if (ctx.SignalSource == "CRASH_REVERSE" || ctx.SignalSource == "PUMP_REVERSE")
+                {
+                    try
+                    {
+                        bool isLongRev = decision == "LONG";
+                        int levRev = ctx.Leverage > 0 ? ctx.Leverage : 20;
+                        await RegisterProtectionOrdersAsync(symbol, isLongRev, filledQty, actualEntryPrice, levRev, ctx.SignalSource, _cts?.Token ?? CancellationToken.None);
+                    }
+                    catch (Exception revEx) { OnStatusLog?.Invoke($"⚠️ [{ctx.SignalSource}] {symbol} 폴백 SL 등록 예외: {revEx.Message}"); }
+                }
+
                 // [v5.10.54] OrderLifecycleManager 단일 진입점 — SL/TP/Trailing 3개 한 번에 등록
-                // 긴급 대응(CRASH_REVERSE/PUMP_REVERSE) 은 제외 — 내부 MARKET 청산으로만 대응
+                // 긴급 대응(CRASH_REVERSE/PUMP_REVERSE) 은 OrderLifecycle 제외 (위에 폴백 등록됨)
                 if (_orderLifecycle != null
                     && ctx.SignalSource != "CRASH_REVERSE"
                     && ctx.SignalSource != "PUMP_REVERSE")
@@ -14480,30 +14499,53 @@ namespace TradingBot
                 string side = direction == "LONG" ? "BUY" : "SELL";
                 OnStatusLog?.Invoke($"⚡ [수동진입] {symbol} {direction} 주문 실행 | 수량={quantity} 레버={leverage}x 증거금=${marginUsdt:N0}");
 
-                var (success, filledQty, avgPrice) = await _exchangeService.PlaceMarketOrderAsync(symbol, side, quantity, token);
+                // [v5.10.98 P1-1] 수동 진입도 단일 진입점 PlaceEntryOrderAsync 사용 (LIMIT + chasing 차단 + race mark)
+                //   기존: PlaceMarketOrderAsync 직접 호출 → 슬리피지 + 게이트 우회
+                //   수정: PlaceEntryOrderAsync 경유 → IsEntryAllowed + LIMIT + chasing block 자동 적용
+                var (success, filledQty, avgPrice) = await PlaceEntryOrderAsync(symbol, side, quantity, "MANUAL_ENTRY", token);
 
                 if (!success || filledQty <= 0)
-                    return (false, $"{symbol} 주문 실패 (거래소 응답 확인)");
+                    return (false, $"{symbol} 주문 실패 (거래소 응답 확인 또는 게이트 차단)");
 
                 // 5. 포지션 등록
+                bool isLongPos = direction == "LONG";
                 lock (_posLock)
                 {
                     _activePositions[symbol] = new PositionInfo
                     {
                         Symbol = symbol,
-                        Side = direction,
-                        IsLong = direction == "LONG",
+                        Side = isLongPos ? Binance.Net.Enums.OrderSide.Buy : Binance.Net.Enums.OrderSide.Sell,
+                        IsLong = isLongPos,
                         EntryPrice = avgPrice,
                         Quantity = filledQty,
                         InitialQuantity = filledQty,
                         EntryTime = DateTime.Now,
                         Leverage = leverage,
-                        EntryZoneTag = "MANUAL"
+                        EntryZoneTag = "MANUAL",
+                        IsOwnPosition = true
                     };
                 }
 
                 OnTradeExecuted?.Invoke(symbol, direction, avgPrice, filledQty);
                 OnAlert?.Invoke($"⚡ [수동진입] {symbol} {direction} 체결 | 가격={avgPrice:F8} 수량={filledQty} 레버={leverage}x");
+
+                // [v5.10.98 P1-1] 수동 진입 SL/TP/Trailing 즉시 등록 + 모니터 시작 (안전망)
+                try
+                {
+                    await RegisterProtectionOrdersAsync(symbol, isLongPos, filledQty, avgPrice, leverage, "MANUAL_ENTRY", token);
+                }
+                catch (Exception protEx) { OnStatusLog?.Invoke($"⚠️ [수동진입] {symbol} 보호주문 등록 예외: {protEx.Message}"); }
+
+                // 모니터 시작 (메이저는 Standard, 알트는 Pump)
+                bool isMajorManual = MajorSymbols.Contains(symbol);
+                try
+                {
+                    if (isMajorManual)
+                        _ = _positionMonitor.MonitorPositionStandard(symbol, avgPrice, isLongPos, token);
+                    else
+                        _ = _positionMonitor.MonitorPumpPositionShortTerm(symbol, avgPrice, "MANUAL_ENTRY", 0, token);
+                }
+                catch (Exception monEx) { OnStatusLog?.Invoke($"⚠️ [수동진입] {symbol} 모니터 시작 예외: {monEx.Message}"); }
 
                 // [텔레그램] 수동 진입 알림
                 _ = Task.Run(async () =>

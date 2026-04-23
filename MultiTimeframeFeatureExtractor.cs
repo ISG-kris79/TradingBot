@@ -216,6 +216,15 @@ namespace TradingBot
                 // 시간 컨텍스트
                 ExtractTimeContext(timestamp, feature);
 
+                // [v5.10.98 P1-3] NaN/Infinity sanity check + 자동 0 치환
+                //   기존: extraction 중 0 division / Math.Log(0) 등 silent NaN 가능 → ML 추론 시 0% 점수
+                //   수정: 모든 float feature 검증, NaN/Infinity면 0으로 치환 + 발견 개수 로깅
+                int sanitized = SanitizeFeatures(feature);
+                if (sanitized > 0)
+                {
+                    OnLog?.Invoke($"⚠️ [FEATURE_SANITIZED] {symbol} {sanitized}개 NaN/Infinity → 0 치환");
+                }
+
                 return feature;
             }
             catch (Exception ex)
@@ -1259,6 +1268,39 @@ WHERE Symbol=@Symbol AND IsClosed=1 AND EntryTime>=DATEADD(day,-30,GETDATE())";
 
             // 미국 세션: 13:00~22:00 UTC
             feature.IsUSSession = (timestamp.Hour >= 13 && timestamp.Hour < 22) ? 1f : 0f;
+        }
+
+        /// <summary>
+        /// [v5.10.98 P1-3] Feature NaN/Infinity 검증 + 자동 0 치환
+        /// reflection으로 float 속성 모두 검사. ML.NET이 NaN 입력에 0% 점수 반환하는 문제 차단.
+        /// </summary>
+        private static int SanitizeFeatures(MultiTimeframeEntryFeature feature)
+        {
+            int count = 0;
+            var props = typeof(MultiTimeframeEntryFeature).GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+            foreach (var p in props)
+            {
+                if (!p.CanRead || !p.CanWrite) continue;
+                if (p.PropertyType == typeof(float))
+                {
+                    var v = (float)p.GetValue(feature)!;
+                    if (float.IsNaN(v) || float.IsInfinity(v))
+                    {
+                        p.SetValue(feature, 0f);
+                        count++;
+                    }
+                }
+                else if (p.PropertyType == typeof(double))
+                {
+                    var v = (double)p.GetValue(feature)!;
+                    if (double.IsNaN(v) || double.IsInfinity(v))
+                    {
+                        p.SetValue(feature, 0d);
+                        count++;
+                    }
+                }
+            }
+            return count;
         }
 
         private int FindCandleIndex(List<IBinanceKline> klines, DateTime targetTime)

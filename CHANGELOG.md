@@ -5,6 +5,39 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.98] - 2026-04-23
+
+### 🛠️ P1 4개 갭 수정 — 종합 audit 후 누락 부분 일괄 보강
+
+**P1-1: MANUAL_ENTRY 게이트/모니터 적용**
+
+- 기존: `PlaceMarketOrderAsync` 직접 호출 → IsEntryAllowed/LIMIT/chasing 차단/모니터 모두 우회
+- 수정: `PlaceEntryOrderAsync` 경유 (LIMIT + 5초 timeout + chasing 차단 자동 적용)
+- 추가: 진입 후 `RegisterProtectionOrdersAsync` (SL/TP/Trailing) + 메이저=Standard / 알트=Pump monitor 자동 시작
+
+**P1-2: Direction Flip UI cleanup 누락**
+
+- 기존: 외부 방향전환 감지 시 DB만 갱신 → DataGrid에 stale (이전 방향 EntryPrice/Qty) 잔존
+- 수정: `OnPositionStatusUpdate(false, 0)` 호출 후 `OnPositionStatusUpdate(true, newEntryPrice)`로 새 방향 갱신
+
+**P1-3: Feature NaN/Infinity sanity check**
+
+- 기존: extraction 중 0 division / log(0) 등 silent NaN → ML.NET이 NaN 입력에 0% 점수 반환 → 진입 거절
+- 수정: `SanitizeFeatures(feature)` 헬퍼 — reflection으로 모든 float/double 속성 검사, NaN/Infinity 발견 시 0 치환 + 개수 로깅
+- 로그: `⚠️ [FEATURE_SANITIZED] symbol N개 NaN/Infinity → 0 치환`
+
+**P1-4: CRASH_REVERSE / PUMP_REVERSE 폴백 SL**
+
+- 기존: OrderLifecycleManager 명시 제외 → monitor만 의존 → monitor 실패 시 무방비
+- 수정: 진입 직후 `RegisterProtectionOrdersAsync`로 SL/TP/Trailing 폴백 등록 (catastrophic loss 방지)
+
+**효과 종합:**
+
+- 수동 진입도 봇 진입과 동일 보호 (게이트/SL/모니터)
+- 방향 전환 UI 즉시 갱신
+- 잘못된 feature 값 자동 정규화 → ML 점수 안정성↑
+- 긴급 진입 (CRASH/PUMP REVERSE)도 SL 보장
+
 ## [5.10.97] - 2026-04-23
 
 ### 🎯 ROOT FIX: 진입 직후 마이너스 패턴 (시장가 슬리피지 + 펌프 꼭대기 chasing)
