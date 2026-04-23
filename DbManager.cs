@@ -43,7 +43,14 @@ namespace TradingBot.Services
             try
             {
                 if (string.IsNullOrWhiteSpace(symbol)) return;
-                if (pnl == 0 && pnlPercent == 0 && (kind == "ENTRY" || kind == "FLIP_ENTRY")) return;
+                // [v5.14.1 BUGFIX] 0-PnL 팬텀 알림 전면 차단 — 기존: ENTRY/FLIP_ENTRY만 필터 → COMPLETE 류 통과
+                //   증상: "💰 익절 완료 UBUSDT 0.00 USDT 0.00%" 텔레그램 발송 (EXTERNAL_CLOSE_SYNC 시 PnL 계산 실패)
+                //   수정: kind 무관 모든 0-PnL + 0-PnLPct 조합 차단 (의미 없는 알림)
+                if (pnl == 0 && pnlPercent == 0)
+                {
+                    MainWindow.Instance?.AddLog($"🧹 [Notify][{kind}] {symbol} 0-PnL 알림 스킵 (팬텀 차단)");
+                    return;
+                }
 
                 var now = DateTime.UtcNow;
                 bool isNew = false;

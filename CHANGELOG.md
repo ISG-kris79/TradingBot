@@ -5,6 +5,45 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.14.1] - 2026-04-24
+
+### 🚨 HOTFIX: "익절 완료 0.00 USDT" 팬텀 텔레그램 알림 차단
+
+**사용자 지적**:
+
+> "UBUSDT 익절 완료 0.00 USDT 0.00% 텔레그램 왔는데 그러니까 확인하라고"
+
+**원인**: [DbManager.cs:46](DbManager.cs#L46) 의 0-PnL 필터가 `kind == "ENTRY" || kind == "FLIP_ENTRY"` 만 차단하고 있어서, EXTERNAL_CLOSE_SYNC 발생 시 `COMPLETE` / `COMPLETE_UPDATE` / `COMPLETE_INSERT` kind 로 PnL=0, PnLPct=0 인 데이터가 들어오면 그대로 "💰 익절 완료 0.00 USDT 0.00%" 텔레그램 발송됨.
+
+**수정**: `kind` 무관 **모든** 0-PnL + 0-PnLPct 조합 차단 + 로그 기록.
+
+```csharp
+if (pnl == 0 && pnlPercent == 0)
+{
+    MainWindow.Instance?.AddLog($"🧹 [Notify][{kind}] {symbol} 0-PnL 알림 스킵 (팬텀 차단)");
+    return;
+}
+```
+
+### HUSDT "익절완료 됐는데 활성 포지션 잔류" 해명
+
+진단 결과:
+
+| 항목 | HUSDT |
+|---|---|
+| Binance 실제 positionAmt | 1095 (열려있음) |
+| unRealizedProfit | +5.46 USDT (+3.8%) |
+| DB TradeHistory IsClosed=0 | Id=4183 qty 1095 |
+| 상태 | ✅ 봇 상태 정상 동기화 |
+
+사용자가 본 "익절 완료" 텔레그램은 **이번 hotfix 로 차단되는 팬텀 알림**. HUSDT 포지션은 아직 열려있으며, Binance TP $0.1382 (657 qty) 부분익절 대기 중.
+
+### 📂 수정
+
+- [DbManager.cs:46-52](DbManager.cs#L46-L52) — 모든 `kind` 의 0-PnL 알림 차단
+
+---
+
 ## [5.14.0] - 2026-04-24
 
 ### 🧠 AI #5 AdaptiveSpikeScheduler — 경량 강화학습 (Nearest-Neighbor Bandit)
