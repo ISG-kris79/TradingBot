@@ -5,6 +5,63 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.97] - 2026-04-23
+
+### 🎯 ROOT FIX: 진입 직후 마이너스 패턴 (시장가 슬리피지 + 펌프 꼭대기 chasing)
+
+**사용자 지적:**
+
+> "왜 진입하면 모두 마이너스부터 시작" — UBUSDT 가격 +0.05%인데 ROE -13%
+
+**진단:**
+
+| 패턴 | 데이터 |
+|---|---|
+| <1분 보유 | 30건 30% 승률 -5.94% |
+| 1-3분 보유 | 5건 0% 승률 -38% |
+| 5-10분 보유 | 41건 26.8% -12% |
+
+가격이 올라도 ROE 마이너스 = **수수료 0.13% × 25배 레버리지 = -3.25% 즉시 차감 + 시장가 슬리피지**.
+
+**수정 (PlaceEntryOrderAsync 재설계):**
+
+**A. LIMIT 주문 + 5초 timeout (슬리피지 0)**
+
+- 신호 시 `LIMIT @ 현재가 -0.05%` (LONG, SHORT은 +0.05%)
+- 5초 안 체결 → 취소
+- 효과: 슬리피지 제로, 펌프 더 가는 케이스 자동 미체결 (chasing 회피)
+- 5초 미체결 + 시장가 폴백 X (chasing 차단 우선)
+
+**B. 1초 대기 + chasing 차단**
+
+- 신호가 vs 1초 후 가격 비교
+- LONG: 1초 후 가격이 +0.3% 이상 상승 시 → 진입 취소
+- 효과: 펌프 꼭대기 진입 자동 차단
+
+**C. 레버리지 20→15 하향 (Models.cs default)**
+
+- DefaultLeverage / PumpLeverage / MajorLeverage 모두 15
+- 효과: 같은 가격 -1% 변화 → ROE -25% 대신 -15% (40% 손실 폭 감소)
+- 사용자 설정창 값이 우선이므로 사용자가 별도로 25→15 변경 필요
+
+**로그 신규:**
+
+- `⛔ [CHASING_BLOCK][source] symbol 신호가 X → 1초후 Y (이동 +0.5% ≥ 0.3%) 진입 취소`
+- `✅ [LIMIT_ENTRY][source] symbol 체결 @ price qty=Q`
+- `⏱️ [LIMIT_TIMEOUT][source] symbol LIMIT @ price 5초 미체결 → 취소`
+- `⚠️ [LIMIT_FALLBACK][source] LIMIT 실패 → MARKET 폴백`
+
+**효과:**
+
+- 진입가 정확 (슬리피지 0)
+- 펌프 꼭대기 진입 자동 회피 (chasing block + LIMIT timeout)
+- 레버리지 하향으로 -1% 가격 = -15% ROE 한도
+
+**리스크:**
+
+- LIMIT 5초 미체결 시 진입 X → 진입 빈도 일부 감소 (대신 품질 상승)
+- 빠른 펌프는 놓칠 수 있음
+
 ## [5.10.96] - 2026-04-23
 
 ### 🎨 UI: 청산 시 실시간 시장 신호 ROI/마진/손익 자동 초기화

@@ -21,7 +21,7 @@ namespace TradingBot.Models
 
     public class TradingSettings
     {
-        public int DefaultLeverage { get; set; } = 20;
+        public int DefaultLeverage { get; set; } = 15;  // [v5.10.97] 25→15 하향 (수수료/슬리피지 영향 감소)
         public decimal DefaultMargin { get; set; } = 200.0m;
         public decimal SidewaysTakeProfitRoe { get; set; } = 5.0m;
         public decimal TargetRoe { get; set; } = 40.0m;
@@ -31,7 +31,7 @@ namespace TradingBot.Models
         public string MajorTrendProfile { get; set; } = string.Empty;
 
         // [Phase 12: PUMP 전략 지원] PUMP 전략 전용 레버리지
-        public int PumpLeverage { get; set; } = 20;
+        public int PumpLeverage { get; set; } = 15;  // [v5.10.97] 20→15 하향
 
         // [PUMP 20x 수동 매뉴얼 튜닝값]
         public decimal PumpTp1Roe { get; set; } = 20.0m;          // 1차 부분익절 ROI 기준 (포지션 30% 청산)
@@ -61,7 +61,7 @@ namespace TradingBot.Models
         // 2차 트레일링: ROI +20% 시작 → 최고점 대비 ROI 5% 하락 시 50% 청산
         // 3차 나머지: 2차에서 +5% 내려가면 스탑로스
         // 초기 손절: ROI -20%
-        public int    MajorLeverage          { get; set; } = 20;       // 메이저 전용 레버리지 (DefaultLeverage와 독립)
+        public int    MajorLeverage          { get; set; } = 15;       // [v5.10.97] 20→15 하향 (DefaultLeverage와 독립)
         public decimal MajorMargin           { get; set; } = 200.0m;   // (레거시) 메이저 고정 증거금
         public decimal MajorMarginPercent    { get; set; } = 10.0m;    // 메이저 진입 시 계좌 Equity 대비 증거금 비율(%)
         public decimal MajorBreakEvenRoe     { get; set; } = 7.0m;    // 1단계: 본절 이동 기준 ROE (변경 없음)

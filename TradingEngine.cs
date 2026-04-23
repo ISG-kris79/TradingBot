@@ -700,9 +700,88 @@ namespace TradingBot
                 OnLiveLog?.Invoke($"⛔ [ENTRY_GATE][{source}] {symbol} 차단 ({reason})");
                 return (false, 0m, 0m);
             }
-            // [v5.10.90] 봇 자체 진입 시각 마킹 (partial fill ACCOUNT_UPDATE race condition 차단)
-            MarkBotEntryInProgress(symbol);
-            return await _exchangeService.PlaceMarketOrderAsync(symbol, side, quantity, token);
+
+            // ═══════════════════════════════════════════════════════════════
+            // [v5.10.97 ROOT FIX] Market → LIMIT + chasing 차단
+            //   사용자 지적: "왜 진입하면 모두 마이너스부터 시작" (UBUSDT 가격+0.05% ROE-13%)
+            //   원인: Market 주문 슬리피지 + 신호→주문 사이 가격 추가 상승 + 펌프 꼭대기 진입
+            //   수정 A: LIMIT @ 현재가 -0.05% (LONG) / +0.05% (SHORT) → 5초 timeout
+            //   수정 B: 1초 대기 후 가격 재확인 → 0.3% 이상 상승(LONG) 시 chasing 차단
+            // ═══════════════════════════════════════════════════════════════
+            try
+            {
+                bool isLong = string.Equals(side, "BUY", StringComparison.OrdinalIgnoreCase) || string.Equals(side, "LONG", StringComparison.OrdinalIgnoreCase);
+
+                // 신호 발생 시점 가격
+                decimal signalPrice = 0m;
+                if (_marketDataManager?.TickerCache != null && _marketDataManager.TickerCache.TryGetValue(symbol, out var t1))
+                    signalPrice = t1.LastPrice;
+                if (signalPrice <= 0)
+                {
+                    try { signalPrice = await _exchangeService.GetPriceAsync(symbol, token); } catch { }
+                }
+
+                // [수정 B] 1초 대기 + 가격 재확인 (chasing 차단)
+                if (signalPrice > 0)
+                {
+                    await Task.Delay(1000, token);
+                    decimal nowPrice = signalPrice;
+                    if (_marketDataManager?.TickerCache != null && _marketDataManager.TickerCache.TryGetValue(symbol, out var t2))
+                        nowPrice = t2.LastPrice;
+                    if (nowPrice > 0)
+                    {
+                        decimal moveAbsPct = Math.Abs((nowPrice - signalPrice) / signalPrice * 100m);
+                        bool chasing = isLong ? (nowPrice > signalPrice * 1.003m) : (nowPrice < signalPrice * 0.997m);
+                        if (chasing)
+                        {
+                            OnLiveLog?.Invoke($"⛔ [CHASING_BLOCK][{source}] {symbol} 신호가 {signalPrice:F8} → 1초후 {nowPrice:F8} (이동 {moveAbsPct:F2}% ≥ 0.3%) 진입 취소");
+                            return (false, 0m, 0m);
+                        }
+                        signalPrice = nowPrice; // 1초 후 가격 사용
+                    }
+                }
+
+                MarkBotEntryInProgress(symbol);
+
+                // [수정 A] LIMIT 주문 (LONG: -0.05%, SHORT: +0.05% 더 유리한 가격)
+                if (signalPrice > 0)
+                {
+                    decimal limitPx = isLong ? signalPrice * 0.9995m : signalPrice * 1.0005m;
+                    var (limOk, orderId) = await _exchangeService.PlaceLimitOrderAsync(symbol, side, quantity, limitPx, token);
+                    if (limOk && !string.IsNullOrEmpty(orderId))
+                    {
+                        // 5초 동안 체결 확인
+                        DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+                        while (DateTime.UtcNow < deadline)
+                        {
+                            await Task.Delay(500, token);
+                            try
+                            {
+                                var status = await _exchangeService.GetOrderStatusAsync(symbol, orderId, token);
+                                if (status.Filled && status.FilledQuantity > 0)
+                                {
+                                    OnLiveLog?.Invoke($"✅ [LIMIT_ENTRY][{source}] {symbol} 체결 @ {status.AveragePrice:F8} qty={status.FilledQuantity}");
+                                    return (true, status.FilledQuantity, status.AveragePrice);
+                                }
+                            }
+                            catch { }
+                        }
+                        // 5초 내 미체결 → 취소
+                        try { await _exchangeService.CancelOrderAsync(symbol, orderId, token); } catch { }
+                        OnLiveLog?.Invoke($"⏱️ [LIMIT_TIMEOUT][{source}] {symbol} LIMIT @ {limitPx:F8} 5초 미체결 → 취소 (chasing 회피)");
+                        return (false, 0m, 0m);
+                    }
+                    OnLiveLog?.Invoke($"⚠️ [LIMIT_FALLBACK][{source}] {symbol} LIMIT 주문 실패 → MARKET 폴백");
+                }
+
+                // signalPrice 0이거나 LIMIT 실패 시 MARKET fallback
+                return await _exchangeService.PlaceMarketOrderAsync(symbol, side, quantity, token);
+            }
+            catch (Exception ex)
+            {
+                OnLiveLog?.Invoke($"❌ [PLACE_ENTRY_EX][{source}] {symbol} {ex.Message} → MARKET 폴백");
+                return await _exchangeService.PlaceMarketOrderAsync(symbol, side, quantity, token);
+            }
         }
 
         /// <summary>
