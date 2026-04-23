@@ -538,6 +538,8 @@ namespace TradingBot
         private TradingBot.Services.OrderLifecycleManager? _orderLifecycle;
         private readonly TradingBot.Services.PriceDirectionPredictor _directionPredictor = new();
         private readonly TradingBot.Services.SurvivalEntryModel _survivalModel = new();
+        // [v5.14.0 AI #5] SPIKE_FAST 적응형 스케줄러 (경량 RL / Nearest-Neighbor Bandit)
+        private readonly TradingBot.Services.AdaptiveSpikeScheduler _spikeScheduler = new();
         private readonly TradingBot.Services.TickDensityMonitor _tickMonitor = new();
         private DateTime _lastSsaTrainTime = DateTime.MinValue;
         private TradingBot.Services.SsaForecastResult? _latestSsaResult;
@@ -8476,6 +8478,9 @@ namespace TradingBot
             //   기존: 게이트 검증 전 사용자에게 "즉시진입" 알림 → 게이트 탈락해도 phantom 진입 보임
             //   수정: OnAlert/OnSignalUpdate/Telegram 전부 PlaceEntryOrderAsync 직전으로 이동 (line ~8643)
 
+            // [v5.14.0 AI #5] SchedulerState - try 블록 외부 선언 (성공 블록에서 참조 필요)
+            TradingBot.Services.AdaptiveSpikeScheduler.SpikeState? schedulerStateAtEntry = null;
+
             try
             {
                 // [v3.3.4] 급등 타이밍 체크 — 감지 시점 대비 +5% 이상 올랐으면 진입 취소
@@ -8604,37 +8609,61 @@ namespace TradingBot
                             // 1) 누적 +2% 도달 → 즉시 진입 (로켓 발사 케이스)
                             // 2) 고점 대비 -0.5% 눌림 → 진입 (기존 -1%에서 완화)
                             // 3) 30초 경과 → 강제 진입 (놓치기보다 진입)
+                            // [v5.14.0 AI #5] AdaptiveSpikeScheduler 연동 — 학습된 bucket winrate 로 Decide
                             decimal spikeStart = currentPrice;
                             decimal spikeHigh = currentPrice;
-                            var deadline = DateTime.Now.AddSeconds(30);  // 60→30초 단축
+                            var spikeStartTime = DateTime.Now;
+                            var deadline = spikeStartTime.AddSeconds(30);
                             bool entryReady = false;
                             string entryReason = "";
+                            // stateAtEntry 는 외부 schedulerStateAtEntry 로 대체됨 (try 외부 선언)
 
                             while (DateTime.Now < deadline && !token.IsCancellationRequested)
                             {
-                                await Task.Delay(1500, token);  // 5초→1.5초 (더 빠른 반응)
+                                await Task.Delay(1500, token);
                                 if (_marketDataManager.TickerCache.TryGetValue(symbol, out var latestTick))
                                 {
                                     decimal nowPrice = latestTick.LastPrice;
                                     if (nowPrice > spikeHigh) spikeHigh = nowPrice;
 
-                                    // 1) 누적 수익 +2% 도달 — 로켓 발사 즉시 진입
-                                    decimal cumulativeGainPct = (nowPrice - spikeStart) / spikeStart * 100m;
-                                    if (cumulativeGainPct >= 2.0m)
+                                    double cumGainPct = (double)((nowPrice - spikeStart) / spikeStart * 100m);
+                                    double pullbackPct = spikeHigh > 0 ? (double)((spikeHigh - nowPrice) / spikeHigh * 100m) : 0;
+                                    double elapsedSec = (DateTime.Now - spikeStartTime).TotalSeconds;
+
+                                    // [AI #5] Scheduler Decide — 학습된 bucket 기반 결정 (rule-based 보다 우선)
+                                    var curState = TradingBot.Services.AdaptiveSpikeScheduler.Discretize(cumGainPct, pullbackPct, elapsedSec);
+                                    var (act, expPnL, decReason) = _spikeScheduler.Decide(curState, elapsedSec);
+
+                                    if (act == TradingBot.Services.AdaptiveSpikeScheduler.SpikeAction.Cancel)
+                                    {
+                                        OnStatusLog?.Invoke($"⛔ [SPIKE_FAST][Scheduler] {symbol} 학습기 취소: {decReason} cum={cumGainPct:F1}% pull={pullbackPct:F1}% elapsed={elapsedSec:F0}s");
+                                        lock (_posLock) { _activePositions.Remove(symbol); }
+                                        return;
+                                    }
+                                    if (act == TradingBot.Services.AdaptiveSpikeScheduler.SpikeAction.Enter)
                                     {
                                         currentPrice = nowPrice;
                                         entryReady = true;
-                                        entryReason = $"누적+{cumulativeGainPct:F1}%";
+                                        schedulerStateAtEntry = curState;
+                                        entryReason = $"Scheduler({decReason}) cum={cumGainPct:F1}% pull={pullbackPct:F1}%";
                                         break;
                                     }
 
-                                    // 2) 고점 대비 -0.5% 눌림
-                                    decimal pullbackPct = (spikeHigh - nowPrice) / spikeHigh * 100m;
-                                    if (pullbackPct >= 0.5m)
+                                    // Scheduler Wait → rule-based 폴백 (기존 누적/눌림 로직 유지)
+                                    if (cumGainPct >= 2.0)
                                     {
                                         currentPrice = nowPrice;
                                         entryReady = true;
-                                        entryReason = $"눌림-{pullbackPct:F1}%";
+                                        schedulerStateAtEntry = curState;
+                                        entryReason = $"rule_cum+{cumGainPct:F1}%";
+                                        break;
+                                    }
+                                    if (pullbackPct >= 0.5)
+                                    {
+                                        currentPrice = nowPrice;
+                                        entryReady = true;
+                                        schedulerStateAtEntry = curState;
+                                        entryReason = $"rule_pullback-{pullbackPct:F1}%";
                                         break;
                                     }
                                 }
@@ -8716,6 +8745,26 @@ namespace TradingBot
                     // [v5.12.0] 급등 단일 슬롯 등록 — SPIKE_FAST 실제 체결 확정 시
                     _activeSpikeSlot[symbol] = (DateTime.Now, "SPIKE_FAST");
                     OnStatusLog?.Invoke($"🔒 [SPIKE_SLOT] {symbol} SPIKE_FAST 슬롯 점유 (1/{MAX_SPIKE_CATEGORY_SLOTS})");
+
+                    // [v5.14.0 AI #5] AdaptiveSpikeScheduler 학습 피드백 — 5분 후 PnL 로 bucket 업데이트
+                    if (schedulerStateAtEntry != null)
+                    {
+                        decimal entryRefPrice = currentPrice;
+                        var stateRef = schedulerStateAtEntry;
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await Task.Delay(TimeSpan.FromMinutes(5), CancellationToken.None);
+                                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var tick5m) && entryRefPrice > 0)
+                                {
+                                    double pnlPct = (double)((tick5m.LastPrice - entryRefPrice) / entryRefPrice * 100m);
+                                    _spikeScheduler.RecordOutcome(stateRef, pnlPct);
+                                }
+                            }
+                            catch { }
+                        });
+                    }
 
                     // [v5.10.17] SPIKE_FAST PUMP 실제 진입 확정 카운터
                     if (!isMajor) CommitDailyPumpEntry(symbol);

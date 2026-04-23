@@ -5,6 +5,77 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.14.0] - 2026-04-24
+
+### 🧠 AI #5 AdaptiveSpikeScheduler — 경량 강화학습 (Nearest-Neighbor Bandit)
+
+**사용자 요구**: "계속 진행해" (#5 RL Scheduler 진행)
+
+**설계 선택**: Deep RL (Q-Network/PPO) 대신 **Tabular Nearest-Neighbor Bandit** 채택.
+
+이유:
+1. **학습 안정성**: 심볼당 데이터 수십건 수준이라 Deep RL 수렴 어려움
+2. **해석 가능성**: "왜 wait 했나" 를 bucket hit-rate 로 즉시 설명 가능
+3. **Fail-safe**: 데이터 부족 시 기존 rule-based 로직으로 자동 폴백
+
+### 구조
+
+**상태 공간 (State)**:
+
+| 차원 | 단위 | bucket 크기 | 범위 |
+|---|---|---|---|
+| `CumGainPct` | 누적 상승률 % | 0.5% | 0~5% |
+| `PullbackPct` | 고점 대비 하락률 % | 0.25% | 0~2% |
+| `ElapsedSec` | 감지 이후 경과초 | 5s | 0~30s |
+
+→ 이산 bucket 총 11 × 9 × 7 = **693개**
+
+**액션 (Action)**:
+
+- `Wait`: 계속 관찰
+- `Enter`: 즉시 진입
+- `Cancel`: 진입 포기 (20초 이상 + 저승률 시)
+
+**보상 (Reward)**: 진입 후 5분 PnL% (레버리지 미적용)
+
+### 의사결정 로직 (Decide)
+
+```
+1. ε-greedy 탐색: 10% 확률로 무작위 Enter (새로운 bucket 학습)
+2. Exploit 단계:
+   - bucket 샘플 < 10 → 폴백 (rule-based, 기존 30초 윈도우)
+   - 승률 ≥ 55% → Enter (즉시 진입)
+   - 승률 ≤ 35% + 경과 ≥ 20s → Cancel (진입 포기)
+   - 그 외 → Wait (계속 관찰)
+3. rule-based 폴백 조건 (scheduler가 Wait 반환 시):
+   - 누적 +2% → Enter
+   - 눌림 -0.5% → Enter
+```
+
+### 학습 피드백 루프
+
+진입 성공 시 → 5분 지연 Task → `tick5m.LastPrice` 기반 PnL 계산 → `_spikeScheduler.RecordOutcome(stateAtEntry, pnl)` → bucket EnterCount/WinCount/SumPnL 갱신 → 60초 디바운스 JSON 저장
+
+### 영속성
+
+`%LOCALAPPDATA%/TradingBot/Models/spike_scheduler_stats.json` 에 bucket 통계 누적. 봇 재시작해도 학습 유지.
+
+### 📂 신규/수정 파일
+
+- [Services/AdaptiveSpikeScheduler.cs](Services/AdaptiveSpikeScheduler.cs) **신규** (약 180 줄)
+- [TradingEngine.cs:542](TradingEngine.cs#L542) — `_spikeScheduler` 필드 추가
+- [TradingEngine.cs:8481](TradingEngine.cs#L8481) — `schedulerStateAtEntry` 외부 스코프 선언
+- [TradingEngine.cs:8608-8672](TradingEngine.cs#L8608-L8672) — 30초 윈도우에 Scheduler Decide 통합
+- [TradingEngine.cs:8748-8762](TradingEngine.cs#L8748-L8762) — 5분 후 RecordOutcome 피드백 루프
+
+### 🧪 초기 운영 전략
+
+- 처음 ~100회 SPIKE_FAST 진입: bucket 대부분 "insufficient_samples" → rule-based 폴백 작동
+- 샘플 누적 후: winrate 낮은 bucket은 Cancel, 높은 bucket은 Enter 선택
+- 탐색률 10% 유지로 새로운 pattern에도 지속 학습
+
+---
+
 ## [5.13.0] - 2026-04-24
 
 ### 🧠 SPIKE_FAST AI 학습 기반 강화 (AI 개선 #1 + #2 + #3 + #4 통합)
