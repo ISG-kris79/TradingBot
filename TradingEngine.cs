@@ -8642,6 +8642,22 @@ namespace TradingBot
                 }
 
                 OnStatusLog?.Invoke($"[SPIKE_FAST] {symbol} {side} qty={quantity:F2} margin={marginUsdt:F0} lev={leverage} px={currentPrice}");
+
+                // [v5.10.100 ROOT FIX] SPIKE_FAST 레버리지 자동조정 누락 — Binance 실제 leverage 사용
+                //   기존: leverage 시도값 그대로 PositionInfo 저장 → Binance 실제 5x인데 봇 25x 기록 → UI ROE 5배 부풀림
+                //   수정: SetLeverageAutoAsync 호출 후 actualLeverage로 갱신
+                try
+                {
+                    int spikeActualLev = await _exchangeService.SetLeverageAutoAsync(symbol, (int)leverage, token);
+                    if (spikeActualLev > 0)
+                    {
+                        if (spikeActualLev != (int)leverage)
+                            OnStatusLog?.Invoke($"⚙️ [SPIKE_FAST][LEVERAGE_ADJUSTED] {symbol} 시도={leverage}x → 실제={spikeActualLev}x");
+                        leverage = spikeActualLev;
+                    }
+                }
+                catch (Exception slEx) { OnStatusLog?.Invoke($"⚠️ [SPIKE_FAST] {symbol} 레버리지 조정 예외: {slEx.Message}"); }
+
                 // [v5.10.81] 단일 진입점 PlaceEntryOrderAsync 사용 — EnableMajorTrading 등 글로벌 게이트 강제
                 var spikeResult = await PlaceEntryOrderAsync(symbol, side, quantity, "SPIKE_FAST", token);
                 bool success = spikeResult.Success;
@@ -11226,7 +11242,24 @@ namespace TradingBot
                     EntryLog("ORDER_SETUP", "FAIL", $"leverageSet=false symbol={symbol} leverage={leverage}x src={ctx.SignalSource}");
                     return;
                 }
+                if (actualLeverage != leverage)
+                {
+                    OnStatusLog?.Invoke($"⚙️ [LEVERAGE_ADJUSTED] {symbol} 시도={leverage}x → 실제={actualLeverage}x (Binance 심볼 max 한도)");
+                }
                 leverage = actualLeverage;
+
+                // [v5.10.100 ROOT FIX] PositionInfo.Leverage를 Binance 실제값으로 갱신
+                //   기존: PositionInfo 저장 시점(line 11177)에는 시도 leverage(25x) 저장 → SetLeverageAutoAsync 후 5x 갱신 안 됨
+                //   결과: UI ROE = price_change × 25 → 실제 5배 부풀려진 값 (사용자 -56% 본 게 실제 -11%)
+                //   수정: actualLeverage 받은 직후 PositionInfo.Leverage 갱신
+                lock (_posLock)
+                {
+                    if (_activePositions.TryGetValue(symbol, out var existingPos) && existingPos.Leverage != actualLeverage)
+                    {
+                        OnStatusLog?.Invoke($"🔧 [LEVERAGE_SYNC] {symbol} PositionInfo.Leverage {existingPos.Leverage} → {actualLeverage} (Binance 실제값 반영)");
+                        existingPos.Leverage = actualLeverage;
+                    }
+                }
 
                 // ProfitRegressor 사이징
                 if (_profitRegressor.IsModelReady && ctx.LatestCandle != null)
