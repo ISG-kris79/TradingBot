@@ -22,15 +22,40 @@ namespace TradingBot.Services
         /// 사용자 지적: "API에 등록된거 바이낸스에서 처리되면 메시지 받아서 insert 할거면 거기서 메시지 보내야지"
         /// 각 caller에서 개별 NotifyProfitAsync 호출 대신 DB 저장 지점에서 한 번만 호출 → 경로 누락 방지.
         /// </summary>
+        // [v5.10.93] 텔레그램 중복 알림 방지 — symbol+pnl(소수2자리) 키 + 60초 TTL
+        //   사례: 수동 청산 1건에 대해 ACCOUNT_UPDATE + ORDER_UPDATE + caller 측 NotifyProfitAsync = 6번 중복 발송
+        //   원인: v5.10.89 DbManager 중앙화 + 여러 진입 경로 모두 INSERT → 각각 알림
+        //   수정: 같은 청산 시그니처 60초 이내 중복 호출 시 스킵
+        private static readonly ConcurrentDictionary<string, DateTime> _notifyDedupCache
+            = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+
         private static void TryNotifyProfit(string symbol, decimal pnl, decimal pnlPercent, string kind)
         {
             try
             {
                 if (string.IsNullOrWhiteSpace(symbol)) return;
-                // [v5.10.90] 조건 완화: 실제 체결이 있는 모든 경우 알림 발송
-                //   기존: pnl==0 AND pnlPercent==0 스킵 → API 체결 시 pos=null이면 pnl=0 계산되어 알림 누락
-                //   수정: 양쪽 모두 0이면서 kind가 동기화 보정("ENTRY"/"FLIP") 경우만 스킵
                 if (pnl == 0 && pnlPercent == 0 && (kind == "ENTRY" || kind == "FLIP_ENTRY")) return;
+
+                // [v5.10.93] dedup: 같은 symbol+pnl 60초 이내 중복 차단
+                string dedupKey = $"{symbol}|{Math.Round(pnl, 2):F2}";
+                var now = DateTime.UtcNow;
+                if (_notifyDedupCache.TryGetValue(dedupKey, out var lastSent))
+                {
+                    if ((now - lastSent).TotalSeconds < 60)
+                    {
+                        MainWindow.Instance?.AddLog($"🔁 [Notify][{kind}] {symbol} 중복 알림 차단 (60초 dedup) PnL={pnl:F2}");
+                        return;
+                    }
+                }
+                _notifyDedupCache[dedupKey] = now;
+                // 캐시 정리 (200개 초과 + 60초 지난 항목 제거)
+                if (_notifyDedupCache.Count > 200)
+                {
+                    var cutoff = now.AddSeconds(-60);
+                    foreach (var kv in _notifyDedupCache)
+                        if (kv.Value < cutoff) _notifyDedupCache.TryRemove(kv.Key, out _);
+                }
+
                 _ = NotificationService.Instance.NotifyProfitAsync(symbol, pnl, pnlPercent, 0m);
                 MainWindow.Instance?.AddLog($"📨 [Notify][{kind}] {symbol} 텔레그램 전송 요청 (PnL={pnl:+0.00;-0.00} ROE={pnlPercent:+0.0;-0.0}%)");
             }

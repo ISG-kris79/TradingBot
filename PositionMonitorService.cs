@@ -508,6 +508,48 @@ namespace TradingBot.Services
 
                     OnTickerUpdate?.Invoke(symbol, 0m, (double)currentROE);
 
+                    // ═══════════════════════════════════════════════════════════════
+                    // [v5.10.93] MonitorPositionStandard 시간 손절 + 횡보 익절 (사용자 요구)
+                    //   AVAXUSDT 22시간/ONGUSDT 18시간 보유 사고 → 시간손절 미작동 발견
+                    //   v5.10.85 시간손절은 MonitorPumpPositionShortTerm에만 있음
+                    //   여기 MonitorPositionStandard에도 동일 로직 추가 (모든 알트 보호)
+                    // ═══════════════════════════════════════════════════════════════
+                    {
+                        double holdMinutes = holdingTime.TotalMinutes;
+                        bool isMajor = symbol == "BTCUSDT" || symbol == "ETHUSDT" || symbol == "SOLUSDT" || symbol == "XRPUSDT";
+                        // [A] 시간 손절: 알트만 (메이저는 추세 따라 보유). PumpTimeStopMinutes(기본 120분) + ROE<=0
+                        if (!isMajor)
+                        {
+                            decimal timeStopMin = _settings.PumpTimeStopMinutes > 0 ? _settings.PumpTimeStopMinutes : 120m;
+                            if (holdMinutes >= (double)timeStopMin && currentROE <= 0m)
+                            {
+                                OnAlert?.Invoke($"⏰ [TIME_STOP] {symbol} {holdMinutes:F0}분 ≥ {timeStopMin:F0}분 + ROE={currentROE:F1}% (손실) → 시간 손절 (Standard)");
+                                await ExecuteMarketClose(symbol, $"STD_TIME_STOP ({holdMinutes:F0}min, ROE={currentROE:F1}%)", token);
+                                break;
+                            }
+                        }
+                        // [B] 횡보 익절: 30분+ + ROE>=3% + BBWidth<1.5% (regime 약세)
+                        if (!isMajor && holdMinutes >= 30 && currentROE >= 3m
+                            && _marketDataManager.KlineCache.TryGetValue(symbol, out var kcStd) && kcStd.Count >= 25)
+                        {
+                            try
+                            {
+                                List<IBinanceKline> r20;
+                                lock (kcStd) { r20 = kcStd.TakeLast(20).ToList(); }
+                                var bb = IndicatorCalculator.CalculateBB(r20, 20, 2);
+                                double mid = bb.Mid;
+                                decimal bbWPct = mid > 0 ? (decimal)((bb.Upper - bb.Lower) / mid * 100.0) : 0m;
+                                if (bbWPct > 0 && bbWPct < 1.5m)
+                                {
+                                    OnAlert?.Invoke($"💰 [SIDEWAYS_PROFIT] {symbol} {holdMinutes:F0}분 ROE={currentROE:F1}% BBW={bbWPct:F2}%(횡보) → 익절 (Standard)");
+                                    await ExecuteMarketClose(symbol, $"STD_SIDEWAYS_PROFIT ({holdMinutes:F0}min, ROE={currentROE:F1}%, BBW={bbWPct:F2}%)", token);
+                                    break;
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+
                     lock (_posLock)
                     {
                         if (_activePositions.TryGetValue(symbol, out var livePos))

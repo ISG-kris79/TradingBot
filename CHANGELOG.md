@@ -5,6 +5,43 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.93] - 2026-04-23
+
+### 🚨 Standard 모니터 시간손절 + 텔레그램 6번 중복 차단
+
+**사용자 지적 1:**
+
+> "ONGUSDT AVAXUSDT는 왜 거의 1일 가까이 들고 있냐"
+
+진단:
+
+- AVAXUSDT 22시간 (1306분), ONGUSDT 18시간+ 보유
+- v5.10.85 시간손절은 `MonitorPumpPositionShortTerm` 단 1곳에만 있음
+- `MonitorPositionStandard` (메이저 + 외부 진입 알트 + PUMP_WATCH_CONFIRMED 등)에는 시간손절 미적용
+
+수정 (PositionMonitorService.cs:506):
+
+- 알트(`!isMajor`) + 보유 ≥ PumpTimeStopMinutes(120m) + ROE ≤ 0 → 시간 손절
+- 알트 + 30분+ + ROE ≥ 3% + BBWidth < 1.5%(횡보) → 횡보 익절
+- 메이저(BTC/ETH/SOL/XRP)는 추세 따라 보유 (시간 손절 제외)
+
+**사용자 지적 2:**
+
+> "수동청산 했더니 메시지 6번이나 왔어"
+
+진단: v5.10.89 DbManager 중앙화 + 여러 진입 경로(ACCOUNT_UPDATE + ORDER_UPDATE + caller 잔존)가 동일 청산 모두 알림 → 중복.
+
+수정 (DbManager.cs):
+
+- `_notifyDedupCache` ConcurrentDictionary 신규
+- 같은 `symbol|pnl(소수2)` 시그니처 60초 이내 중복 호출 시 스킵
+- 차단 시 로그: `🔁 [Notify][kind] symbol 중복 알림 차단 (60초 dedup)`
+
+효과:
+
+- 1 청산 = 1 텔레그램 (다중 경로에서 호출돼도 dedup)
+- 활성 알트 22시간/18시간 같은 stuck 포지션 자동 정리 (재시작 후 진입부터)
+
 ## [5.10.92] - 2026-04-23
 
 ### 🎯 ROOT CAUSE: ML 학습 실패 근본 수정 — Pump/Spike variant 학습 데이터 0건 버그
