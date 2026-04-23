@@ -304,9 +304,13 @@ namespace TradingBot
     public class EntryLabelConfig
     {
         /// <summary>
-        /// 목표 수익률 (예: 2.0 = 2%)
+        /// 목표 수익률 (예: 0.8 = 0.8%)
+        /// [v5.15.0 ROOT FIX] 2.0% → 0.8% 완화
+        ///   사유: MOVRUSDT 같이 8-12시간 걸쳐 +3% 오르는 steady uptrend가 전부 NEGATIVE 라벨됨
+        ///         (4시간 내 +2% 못 넘으면 fail) → 모델이 "모든 상승 = fail" 학습
+        ///   수정: +0.8% 도달 시 WIN → 중간 크기 수익도 positive 학습. 학습 데이터 3-4배 증가
         /// </summary>
-        public decimal TargetProfitPct { get; set; } = 2.0m;
+        public decimal TargetProfitPct { get; set; } = 0.8m;
 
         /// <summary>
         /// 손절 기준 (예: -1.0 = -1%)
@@ -314,9 +318,12 @@ namespace TradingBot
         public decimal StopLossPct { get; set; } = -1.0m;
 
         /// <summary>
-        /// 평가 기간 (캔들 수, 예: 16 = 15분봉 16개 = 4시간)
+        /// 평가 기간 (캔들 수, 예: 48 = 15분봉 48개 = 12시간)
+        /// [v5.15.0 ROOT FIX] 16 (4hr) → 48 (12hr) 확장
+        ///   사유: 메이저/steady 알트는 8-24시간 시간 지평으로 수익 실현
+        ///         4시간 창으로는 느린 상승을 못 잡음
         /// </summary>
-        public int EvaluationPeriodCandles { get; set; } = 16;
+        public int EvaluationPeriodCandles { get; set; } = 48;
 
         /// <summary>
         /// 최소 리스크/리워드 비율
@@ -324,21 +331,21 @@ namespace TradingBot
         public decimal MinRiskRewardRatio { get; set; } = 1.5m;
 
         /// <summary>
-        /// [v5.13.0 AI 개선 #2] 조기 실패 드로다운 임계값 (%)
-        /// 진입 후 EarlyFailWithinCandles 내 이 임계값 이상 하락 시 즉시 FAIL 판정
-        /// 목적: "진입 직후 역방향 움직이는" 진입을 모델이 회피하도록 학습
-        /// 기본 -0.3% = 3 틱 수준 (수수료+슬리피지 ≈ 0.15% 감안 시 실질 -0.45% 손실)
+        /// [v5.15.0 ROOT FIX] 조기 실패 드로다운 임계값 (%)
+        ///   기존 -0.3% → -1.5% 완화
+        ///   사유: 정상 진입도 intra-candle -0.3% 자주 찍음 → 거의 모든 sample을 FAIL 라벨
+        ///         실질 손절 수준인 -1.5% 미만 drawdown 만 early-fail로 분류
         /// </summary>
-        public decimal EarlyFailDrawdownPct { get; set; } = -0.3m;
+        public decimal EarlyFailDrawdownPct { get; set; } = -1.5m;
 
         /// <summary>
         /// [v5.13.0] 조기 실패 관측 캔들 수 (15분봉 기준 2개 = 30분)
-        /// 진입 후 이 캔들 수 내에 EarlyFailDrawdownPct 이상 하락 시 FAIL
         /// </summary>
         public int EarlyFailWithinCandles { get; set; } = 2;
 
         /// <summary>
         /// [v5.13.0] 조기 실패 라벨링 활성 여부 (false면 기존 TP/SL only 로직)
+        /// [v5.15.0] 기본값 true 유지하되 threshold를 -1.5%로 완화 (완전 비활성화 하면 flash drop 케이스 못 걸러냄)
         /// </summary>
         public bool EnableEarlyFailLabeling { get; set; } = true;
     }

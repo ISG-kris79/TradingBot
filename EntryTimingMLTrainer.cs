@@ -149,26 +149,37 @@ namespace TradingBot
 
                     var rng = new Random(42);
                     int origPositives = positives.Count;
+                    int origNegatives = negatives.Count;
 
-                    // 1) positive < 50개면 bootstrap oversampling (3배 복제)
-                    if (positives.Count < 50)
+                    // [v5.15.0 ROOT FIX] 절대 개수 대신 "positive 비율" 기준으로 oversample 트리거
+                    //   기존: positive<50 에서만 3배 복제 → 450 positives / 9000 negatives 같은 경우 무시됨
+                    //         → 모델이 95% negative 학습 → "모든 입력은 no-go" 로 bias
+                    //   수정: positive 비율이 30% 미만이면 positive 를 negative 의 절반까지 확장
+                    double posRatio = positives.Count / (double)Math.Max(1, trainingData.Count);
+                    int targetPositiveCount = Math.Max(positives.Count, negatives.Count / 2);
+
+                    if (posRatio < 0.30 && positives.Count < targetPositiveCount)
                     {
                         var oversampled = new List<MultiTimeframeEntryFeature>(positives);
-                        for (int k = 0; k < 2; k++) // 원본 + 2회 복제 = 3배
+                        int copies = (int)Math.Ceiling((double)targetPositiveCount / positives.Count) - 1;
+                        for (int k = 0; k < copies && oversampled.Count < targetPositiveCount; k++)
                             oversampled.AddRange(positives);
+                        if (oversampled.Count > targetPositiveCount)
+                            oversampled = oversampled.Take(targetPositiveCount).ToList();
                         positives = oversampled;
-                        Console.WriteLine($"[EntryTimingML] positive oversample: {origPositives} → {positives.Count} (bootstrap 3x)");
+                        Console.WriteLine($"[EntryTimingML] positive oversample (ratio-based): orig_pos={origPositives} orig_neg={origNegatives} posRatio={posRatio:P1} → new_pos={positives.Count}");
                     }
 
-                    // 2) negative 다운샘플링 (positive × 2 이내)
-                    int targetNeg = positives.Count * 2;
+                    // [v5.15.0] negative 다운샘플링 강화 — positive × 1.5 이내 (기존 2배 → 1.5배)
+                    //   모델이 negative bias 되지 않도록 클래스 균형 더 빡빡하게
+                    int targetNeg = (int)(positives.Count * 1.5);
                     if (negatives.Count > targetNeg)
                     {
                         negatives = negatives.OrderBy(_ => rng.Next()).Take(targetNeg).ToList();
                     }
 
                     trainingData = positives.Concat(negatives).OrderBy(_ => rng.Next()).ToList();
-                    Console.WriteLine($"[EntryTimingML] 밸런싱 완료: pos={positives.Count} (orig={origPositives}), neg={negatives.Count}, total={trainingData.Count} (ratio 1:{(double)negatives.Count / Math.Max(1, positives.Count):F1})");
+                    Console.WriteLine($"[EntryTimingML] 밸런싱 완료: pos={positives.Count} (orig={origPositives}), neg={negatives.Count} (orig={origNegatives}), total={trainingData.Count} (ratio 1:{(double)negatives.Count / Math.Max(1, positives.Count):F2})");
                 }
 
                 // 데이터 로드

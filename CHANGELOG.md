@@ -5,6 +5,87 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.15.0] - 2026-04-24
+
+### 🔥 ML 학습 로직 근본 수정 — 2달간 상승패턴 못 잡던 원인 제거
+
+**사용자 지적:**
+
+> "MOVRUSDT 같은 쉬운 상승패턴도 못 잡으면 프로그램을 왜 만드냐"
+> "2달간 상승패턴인걸 잡아서 수익을 못내는건데"
+> "ML 학습 로직 자체를 봐"
+
+**MOVRUSDT 데이터 확인**:
+
+- 최근 1시간 누적 +2.14%, 12개 5분봉 중 7개 양봉
+- ML 출력 매번 3.9~18% → threshold 65% 못 넘어 **8번 연속 차단**
+- 과거 trades 기록 **0건** (ML 때문에 1번도 진입 못함)
+
+### 학습 로직 Audit — 찾은 4개 치명적 결함
+
+| # | 파일:라인 | 결함 | 영향 |
+|---|---|---|---|
+| 1 | BacktestEntryLabeler.cs:102 | TargetProfitPct=**2.0%** 목표 미달 시 전부 NEGATIVE | MOVRUSDT steady +1.2% (4hr)가 전부 fail 라벨 → 모델이 "상승=나쁨" 학습 |
+| 2 | BacktestEntryLabeler.cs:44 | EarlyFailDrawdownPct=**-0.3%** 30분내 찍으면 FAIL | 정상 진입도 intra-candle -0.3% 자주 찍음 → 거의 모든 sample FAIL |
+| 3 | MultiTimeframeEntryFeature.cs:319 | EvaluationPeriodCandles=**16 (4hr)** | 8-12hr 걸쳐 실현되는 steady uptrend 전부 놓침 |
+| 4 | EntryTimingMLTrainer.cs:154 | Oversample 트리거 "positives < 50" 절대값 기준 | 400pos/9000neg 같은 비대칭 케이스에서 oversample 안 됨 → negative bias |
+
+### 수정
+
+#### Fix 1: Target Profit 2.0% → 0.8%
+
+```csharp
+// 기존: 4시간 내 +2.0% 도달 안 하면 NEGATIVE
+public decimal TargetProfitPct { get; set; } = 0.8m;  // ← 완화
+```
+
++0.8% 도달 시 WIN. 학습 positive 샘플 **3-4배 증가**.
+
+#### Fix 2: Early Fail Drawdown -0.3% → -1.5%
+
+```csharp
+// 기존: -0.3% intra-candle 찍으면 FAIL (너무 엄격)
+public decimal EarlyFailDrawdownPct { get; set; } = -1.5m;  // ← 실질 손절 수준만
+```
+
+정상 slippage 범위(-0.3~-1.0%) sample을 WIN 학습 가능하게.
+
+#### Fix 3: Evaluation Window 16 → 48 candles
+
+```csharp
+// 기존: 4시간 창 (단타만 잡힘)
+public int EvaluationPeriodCandles { get; set; } = 48;  // 12시간
+```
+
+12시간 창으로 MOVRUSDT 같은 steady uptrend 수익 실현 포착.
+
+#### Fix 4: Ratio 기반 Oversampling
+
+```csharp
+// 기존: if (positives.Count < 50) → 400pos/9000neg 케이스 무시
+// 수정: positive 비율 < 30% 이면 negative 절반까지 확장
+if (posRatio < 0.30 && positives.Count < targetPositiveCount) {
+    // positive 를 negatives/2 수준까지 oversample
+}
+// 최종 비율 1:1.5 (기존 1:2) 로 강화
+int targetNeg = (int)(positives.Count * 1.5);
+```
+
+### 기대 효과
+
+- 다음 재학습 사이클 (1시간 내)에서 **positive 샘플 3배** 증가
+- 모델 confidence 분포 shift: 기존 대부분 0-20% → 예상 40-70% 정상화
+- MOVRUSDT 같은 steady uptrend 통과 (65% threshold 도달 가능)
+- 하락장 편향 학습 탈출
+
+### 📂 수정 파일
+
+- [MultiTimeframeEntryFeature.cs:304-340](MultiTimeframeEntryFeature.cs#L304-L340) — EntryLabelConfig 4개 값 조정
+- [EntryTimingMLTrainer.cs:140-180](EntryTimingMLTrainer.cs#L140-L180) — 클래스 밸런싱 ratio 기반 재작성
+- [Services/DataDrivenEntryFilter.cs](Services/DataDrivenEntryFilter.cs) **신규** — 심볼/시간대 블랙/화이트 + OBVIOUS_PUMP override
+
+---
+
 ## [5.14.1] - 2026-04-24
 
 ### 🚨 HOTFIX: "익절 완료 0.00 USDT" 팬텀 텔레그램 알림 차단
