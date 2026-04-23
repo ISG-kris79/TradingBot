@@ -5,6 +5,41 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.94] - 2026-04-23
+
+### 🔍 Feature_Extraction_Failed 원인 진단 — 어떤 TF 부족인지 명시 + cooldown
+
+**진단 (12시간 89건 실패 5 심볼 분포):**
+
+| Symbol | 실패 횟수 | First | Last |
+|---|---|---|---|
+| **CHIPUSDT** | **73** | 03:09 | 09:42 |
+| OPGUSDT | 10 | 03:01 | 09:51 |
+| GENIUSUSDT | 4 | 05:49 | 08:50 |
+| MUUSDT | 1 | - | - |
+| AVGOUSDT | 1 | - | - |
+
+→ CHIPUSDT 한 심볼이 6시간 동안 73회 반복 실패 (PumpScan 점수 높지만 historical data 부족, 진입 시도 → 거절 무한 루프)
+
+**원인 (`MultiTimeframeFeatureExtractor.ExtractRealtimeFeatureAsync`):**
+
+요건 D1≥20 / H4≥40 / H2≥40 / H1≥50 / M15≥100. 신규 상장 알트는 D1/H4 데이터 부족 → 실패.
+
+기존: null 반환만 → 어떤 TF 부족인지 불명, 매 신호마다 재시도
+
+**수정:**
+
+1. **명시 로그**: 부족 TF 정확히 표시
+   - 예: `⚠️ [FEATURE_EXTRACTION_FAILED] CHIPUSDT 데이터 부족: D1=15/20, H4=32/40 (5분 cooldown)`
+2. **5분 cooldown**: 동일 심볼 5분 내 중복 로그 + 불필요한 재시도 차단
+3. `OnLog` event를 AIDoubleCheckEntryGate → MainWindow FooterLogs 까지 전달
+
+**효과:**
+
+- FooterLogs에 어떤 심볼이 어떤 TF 부족인지 즉시 노출
+- CHIPUSDT 같은 신규 상장 코인 73회 무의미 반복 차단 → CPU/로그 절약
+- 사용자가 신규 상장 알트 ✗인지 시스템 버그인지 즉시 구분 가능
+
 ## [5.10.93] - 2026-04-23
 
 ### 🚨 Standard 모니터 시간손절 + 텔레그램 6번 중복 차단

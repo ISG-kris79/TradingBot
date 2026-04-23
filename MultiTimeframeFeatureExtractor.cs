@@ -24,6 +24,13 @@ namespace TradingBot
         public static volatile float IsAboveDailyTargetContext = 0f; // 1=초과
         public static volatile float DailyTradeCountContext = 0f;   // 오늘 거래 수
 
+        // [v5.10.94] Feature 추출 실패 cooldown — 동일 심볼 5분 내 중복 로그 방지
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _featureFailCooldown
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+
+        // [v5.10.94] Feature 추출 실패 로그용 이벤트 (TradingEngine에서 구독)
+        public event Action<string>? OnLog;
+
         public MultiTimeframeFeatureExtractor(IExchangeService exchangeService)
         {
             _exchangeService = exchangeService ?? throw new ArgumentNullException(nameof(exchangeService));
@@ -74,13 +81,32 @@ namespace TradingBot
                 var m15Klines = tasks[4].Result;
                 var m1Klines = tasks[5].Result;
 
-                // 요구 사항 완화: 초기 학습용으로 최소 데이터만 확보
-                if (d1Klines == null || d1Klines.Count < 20 ||      // 1일봉 20개
-                    h4Klines == null || h4Klines.Count < 40 ||      // 4시간봉 40개 (1주일)
-                    h2Klines == null || h2Klines.Count < 40 ||      // 2시간봉 40개
-                    h1Klines == null || h1Klines.Count < 50 ||      // 1시간봉 50개 (2일)
-                    m15Klines == null || m15Klines.Count < 100)     // 15분봉 100개 (1일)
+                // [v5.10.94] Feature_Extraction_Failed 원인 진단 로그 + 동일 심볼 cooldown
+                //   사례: CHIPUSDT 6시간 73회 반복 실패 (신규 상장 알트 D1 부족 가능성)
+                //   기존: null 반환만 → 어떤 TF 부족인지 불명, 매번 재시도
+                //   수정: 부족 TF 명시 로그 + 5분 cooldown (반복 시도 차단)
+                int d1Cnt = d1Klines?.Count ?? 0;
+                int h4Cnt = h4Klines?.Count ?? 0;
+                int h2Cnt = h2Klines?.Count ?? 0;
+                int h1Cnt = h1Klines?.Count ?? 0;
+                int m15Cnt = m15Klines?.Count ?? 0;
+
+                if (d1Cnt < 20 || h4Cnt < 40 || h2Cnt < 40 || h1Cnt < 50 || m15Cnt < 100)
                 {
+                    var insufficient = new List<string>();
+                    if (d1Cnt < 20) insufficient.Add($"D1={d1Cnt}/20");
+                    if (h4Cnt < 40) insufficient.Add($"H4={h4Cnt}/40");
+                    if (h2Cnt < 40) insufficient.Add($"H2={h2Cnt}/40");
+                    if (h1Cnt < 50) insufficient.Add($"H1={h1Cnt}/50");
+                    if (m15Cnt < 100) insufficient.Add($"M15={m15Cnt}/100");
+                    string detail = string.Join(", ", insufficient);
+
+                    // 동일 심볼 5분 이내 중복 실패 시 로그 스킵 (FooterLogs 노이즈 방지)
+                    if (!_featureFailCooldown.TryGetValue(symbol, out var lastFail) || (DateTime.UtcNow - lastFail).TotalMinutes >= 5)
+                    {
+                        _featureFailCooldown[symbol] = DateTime.UtcNow;
+                        OnLog?.Invoke($"⚠️ [FEATURE_EXTRACTION_FAILED] {symbol} 데이터 부족: {detail} (5분 cooldown)");
+                    }
                     return null;
                 }
 

@@ -102,6 +102,8 @@ namespace TradingBot
             _mlTrainerPump   = new EntryTimingMLTrainer(EntryTimingMLTrainer.ModelVariant.Pump);
             _mlTrainerSpike  = new EntryTimingMLTrainer(EntryTimingMLTrainer.ModelVariant.Spike);
             _featureExtractor = new MultiTimeframeFeatureExtractor(exchangeService);
+            // [v5.10.94] Feature 추출 실패 로그를 AIDoubleCheckEntryGate.OnLog로 전달 → MainWindow FooterLogs 표시
+            _featureExtractor.OnLog += msg => OnLog?.Invoke(msg);
             _labeler = new BacktestEntryLabeler();
             _ruleValidator = new EntryRuleValidator(_config);
 
