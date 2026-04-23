@@ -38,8 +38,14 @@ namespace TradingBot
         private readonly string _dataCollectionPath = "TrainingData/EntryDecisions";
         private readonly Timer? _dataFlushTimer;
         
-        // 온라인 학습 서비스
-        private readonly AdaptiveOnlineLearningService? _onlineLearning;
+        // [v5.16.0 CRITICAL FIX] 온라인 학습 서비스 — 4개 variant 별 독립 인스턴스
+        //   기존 (v5.15.0까지): 1개 인스턴스(_mlTrainer=Default)만 존재 → Major/Pump/Spike 모델은 봇 시작 시 1회 로드 후 영원히 동결
+        //   근본 원인: AddLabeledSampleAsync()가 Default trainer 에만 라벨 전달, 3-모델 분리는 인프라만 있고 학습은 가짜
+        //   수정: variant 별 독립 sliding window + 독립 retrain timer + 심볼 기반 라우팅
+        private readonly AdaptiveOnlineLearningService? _onlineLearning;         // Default (fallback)
+        private readonly AdaptiveOnlineLearningService? _onlineLearningMajor;    // BTC/ETH/SOL/XRP
+        private readonly AdaptiveOnlineLearningService? _onlineLearningPump;     // 일반 알트
+        private readonly AdaptiveOnlineLearningService? _onlineLearningSpike;    // SPIKE_FAST/TICK_SURGE
         private readonly DbManager? _dbManager;
 
         // [Lorentzian Phase 1] KNN 사이드카 게이트 — 진입 신호 추가 검증 (soft mode)
@@ -81,6 +87,38 @@ namespace TradingBot
                 selected = _mlTrainer;
             }
             return selected;
+        }
+
+        /// <summary>
+        /// [v5.16.0 CRITICAL] 심볼/signalSource 로 해당 variant 의 online learning 인스턴스 반환
+        /// 라벨된 샘플을 올바른 variant 의 sliding window 에 라우팅하기 위해 사용
+        /// </summary>
+        private AdaptiveOnlineLearningService? SelectLearningServiceForSymbol(string symbol, string? signalSource)
+        {
+            bool isMajor = IsMajorSymbol(symbol);
+            bool isSpike = !string.IsNullOrEmpty(signalSource)
+                && (signalSource.StartsWith("SPIKE", StringComparison.OrdinalIgnoreCase)
+                    || signalSource.Equals("TICK_SURGE", StringComparison.OrdinalIgnoreCase)
+                    || signalSource.Equals("M1_FAST_PUMP", StringComparison.OrdinalIgnoreCase));
+
+            if (isMajor) return _onlineLearningMajor ?? _onlineLearning;
+            if (isSpike) return _onlineLearningSpike ?? _onlineLearning;
+            return _onlineLearningPump ?? _onlineLearning;
+        }
+
+        /// <summary>
+        /// [v5.16.0] variant 태그 문자열 (로그/DB 기록용)
+        /// </summary>
+        private string GetVariantTagForSymbol(string symbol, string? signalSource)
+        {
+            bool isMajor = IsMajorSymbol(symbol);
+            bool isSpike = !string.IsNullOrEmpty(signalSource)
+                && (signalSource.StartsWith("SPIKE", StringComparison.OrdinalIgnoreCase)
+                    || signalSource.Equals("TICK_SURGE", StringComparison.OrdinalIgnoreCase)
+                    || signalSource.Equals("M1_FAST_PUMP", StringComparison.OrdinalIgnoreCase));
+            if (isMajor) return "Major";
+            if (isSpike) return "Spike";
+            return "Pump";
         }
 
         public AIDoubleCheckEntryGate(
@@ -138,56 +176,75 @@ namespace TradingBot
                 }
             });
 
-            // 온라인 학습 서비스 초기화
+            // [v5.16.0] 온라인 학습 서비스 초기화 — 4개 variant 별 독립 인스턴스
             if (enableOnlineLearning)
             {
-                _onlineLearning = new AdaptiveOnlineLearningService(
-                    _mlTrainer,
-                    new OnlineLearningConfig
+                OnlineLearningConfig MakeConfig() => new OnlineLearningConfig
+                {
+                    SlidingWindowSize = 1000,
+                    MinSamplesForTraining = 200,
+                    TriggerEveryNSamples = 100,
+                    RetrainingIntervalHours = 1.0,
+                    EnablePeriodicRetraining = true,
+                    EnableConceptDriftDetection = true,
+                    TransformerFastEpochs = 5
+                };
+
+                _onlineLearning      = new AdaptiveOnlineLearningService(_mlTrainer,      MakeConfig());
+                _onlineLearningMajor = new AdaptiveOnlineLearningService(_mlTrainerMajor, MakeConfig());
+                _onlineLearningPump  = new AdaptiveOnlineLearningService(_mlTrainerPump,  MakeConfig());
+                _onlineLearningSpike = new AdaptiveOnlineLearningService(_mlTrainerSpike, MakeConfig());
+
+                // 공통 로그/이벤트 핸들러 연결
+                void AttachHandlers(AdaptiveOnlineLearningService svc, string variantTag)
+                {
+                    svc.OnLog += msg => OnLog?.Invoke($"[{variantTag}] {msg}");
+                    svc.OnPerformanceUpdate += (reason, acc, mlThresh, tfThresh) =>
                     {
-                        SlidingWindowSize = 1000,
-                        MinSamplesForTraining = 200,
-                        TriggerEveryNSamples = 100,
-                        RetrainingIntervalHours = 1.0,
-                        EnablePeriodicRetraining = true,
-                        EnableConceptDriftDetection = true,
-                        TransformerFastEpochs = 5
-                    });
+                        OnAlert?.Invoke($"🧠 온라인 학습[{variantTag}]: {reason} | 정확도={acc:P1}, ML={mlThresh:P0}");
+                    };
+                    svc.OnRetrainCompleted += (reason, sampleCount, accuracy, f1, success) =>
+                    {
+                        string status = success ? "✅" : "❌";
+                        OnLog?.Invoke($"🧠 [ONLINE_ML][{variantTag}][{status}] reason={reason} samples={sampleCount} acc={accuracy:P1} f1={f1:P1}");
+                        if (_dbManager == null) return;
+                        string runId = $"ONLINE_ML_{variantTag}_{DateTime.UtcNow:yyyyMMddHHmmssfff}";
+                        _ = _dbManager.UpsertAiTrainingRunAsync(
+                            projectName: $"ML.NET_{variantTag}",
+                            runId: runId,
+                            stage: $"Online_Retrain_{variantTag}",
+                            success: success,
+                            sampleCount: sampleCount,
+                            epochs: 0,
+                            accuracy: accuracy,
+                            f1Score: f1,
+                            auc: 0,
+                            bestValidationLoss: 0f,
+                            finalTrainLoss: 0f,
+                            detail: $"variant={variantTag} reason={reason}");
+                    };
+                }
+                AttachHandlers(_onlineLearning,      "Default");
+                AttachHandlers(_onlineLearningMajor, "Major");
+                AttachHandlers(_onlineLearningPump,  "Pump");
+                AttachHandlers(_onlineLearningSpike, "Spike");
 
-                _onlineLearning.OnLog += msg => OnLog?.Invoke(msg);
-                _onlineLearning.OnPerformanceUpdate += (reason, acc, mlThresh, tfThresh) =>
-                {
-                    OnAlert?.Invoke($"🧠 온라인 학습: {reason} | 정확도={acc:P1}, ML={mlThresh:P0}, TF={tfThresh:P0}");
-                };
-
-                // [v5.10.66] 온라인 재학습 결과를 AiTrainingRuns 테이블에도 기록
-                // [v5.10.99 P3-3] 가시성 강화 — FooterLogs에도 명시 로그
-                _onlineLearning.OnRetrainCompleted += (reason, sampleCount, accuracy, f1, success) =>
-                {
-                    string status = success ? "✅" : "❌";
-                    OnLog?.Invoke($"🧠 [ONLINE_ML][{status}] reason={reason} samples={sampleCount} acc={accuracy:P1} f1={f1:P1}");
-                    if (_dbManager == null) return;
-                    string runId = $"ONLINE_ML_{DateTime.UtcNow:yyyyMMddHHmmssfff}";
-                    _ = _dbManager.UpsertAiTrainingRunAsync(
-                        projectName: "ML.NET",
-                        runId: runId,
-                        stage: "Online_Retrain",
-                        success: success,
-                        sampleCount: sampleCount,
-                        epochs: 0,
-                        accuracy: accuracy,
-                        f1Score: f1,
-                        auc: 0,
-                        bestValidationLoss: 0f,
-                        finalTrainLoss: 0f,
-                        detail: $"reason={reason}");
-                };
-
-                // 초기 윈도우 로드 (비동기 실행)
+                // 각 variant 별 초기 윈도우 로드 (비동기 실행) — variant 별 서브디렉터리 사용
                 _ = Task.Run(async () =>
                 {
-                    await _onlineLearning.LoadInitialWindowAsync(_dataCollectionPath);
-                    OnLog?.Invoke($"[OnlineLearning] 초기화 완료: 윈도우 크기={_onlineLearning.WindowSize}");
+                    try
+                    {
+                        string basePath = _dataCollectionPath;
+                        await _onlineLearning.LoadInitialWindowAsync(Path.Combine(basePath, "Default"));
+                        await _onlineLearningMajor.LoadInitialWindowAsync(Path.Combine(basePath, "Major"));
+                        await _onlineLearningPump.LoadInitialWindowAsync(Path.Combine(basePath, "Pump"));
+                        await _onlineLearningSpike.LoadInitialWindowAsync(Path.Combine(basePath, "Spike"));
+                        OnLog?.Invoke($"[OnlineLearning] 4-variant 초기화 완료: Default={_onlineLearning.WindowSize}, Major={_onlineLearningMajor.WindowSize}, Pump={_onlineLearningPump.WindowSize}, Spike={_onlineLearningSpike.WindowSize}");
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLog?.Invoke($"⚠️ [OnlineLearning] 초기화 실패: {ex.Message}");
+                    }
                 });
             }
 
@@ -331,12 +388,17 @@ namespace TradingBot
                 bool isLong = decision.Contains("LONG", StringComparison.OrdinalIgnoreCase)
                            || decision.Equals("BUY", StringComparison.OrdinalIgnoreCase);
 
-                // [D-1] ML 확률 임계 검증 (동적 threshold — AdaptiveOnlineLearning이 승률로 자동 조정)
-                float effectiveThreshold = _onlineLearning?.CurrentMLThreshold ?? _config.MinMLConfidence;
+                // [v5.16.0] variant 별 threshold 조회 — variant service 가 승률 기반 auto-calibrate 한 값 사용
+                var variantLearningService = SelectLearningServiceForSymbol(symbol, null);
+                string activeVariantTag = GetVariantTagForSymbol(symbol, null);
+                float effectiveThreshold = variantLearningService?.CurrentMLThreshold
+                                         ?? _onlineLearning?.CurrentMLThreshold
+                                         ?? _config.MinMLConfidence;
+
                 if (mlConfidence < effectiveThreshold)
                 {
-                    OnLog?.Invoke($"❌ [{symbol}] [DECIDE][prob] ML={mlConfidence:P1} < threshold={effectiveThreshold:P0}");
-                    return (false, $"DECIDE_Prob_Low_ML={mlConfidence:P1}_TH={effectiveThreshold:P0}", detail);
+                    OnLog?.Invoke($"❌ [{symbol}] [DECIDE][{activeVariantTag}][prob] ML={mlConfidence:P1} < threshold={effectiveThreshold:P0}");
+                    return (false, $"DECIDE_Prob_Low_{activeVariantTag}_ML={mlConfidence:P1}_TH={effectiveThreshold:P0}", detail);
                 }
 
                 // [D-2] ML 방향(ShouldEnter) 승인 검증
@@ -1019,20 +1081,29 @@ namespace TradingBot
                 if (feature == null)
                     return;
 
-                // [v5.10.66] 라벨 기준 완화: +2.0% → +1.0% (성공률 6%→~30% 예상, 클래스 불균형 완화)
-                // 7일 분석: mark_to_market_15m 414건 중 26건만 성공(+2%) → 모델이 "절대 진입 X" 학습
-                // 새 기준: +1.0% 이상 = 성공 라벨 (추세 진입 신호 모델이 학습 가능)
-                bool shouldEnter = actualProfitPct >= 1.0f;
+                // [v5.15.0] 라벨 기준 완화: +1.0% → +0.8% (EntryLabelConfig.TargetProfitPct 와 일치)
+                //   사유: MOVRUSDT 같은 +1.2% (4hr) steady uptrend 가 WIN으로 분류되게
+                bool shouldEnter = actualProfitPct >= 0.8f;
                 feature.ShouldEnter = shouldEnter;
                 feature.ActualProfitPct = actualProfitPct;
                 feature.Timestamp = entryTime;
                 feature.EntryPrice = entryPrice;
 
-                // 온라인 학습 서비스에 추가
-                if (_onlineLearning != null)
+                // [v5.16.0 CRITICAL FIX] variant 별 independent sliding window 에 라우팅
+                //   기존: _onlineLearning (Default) 1개만 → Major/Pump/Spike 모델은 영원히 동결
+                //   수정: 심볼에 따라 해당 variant 의 online learning service 로 전달
+                //         ALSO 라벨 샘플을 variant 전용 디렉터리에 저장하여 봇 재시작 시 복구
+                var variantService = SelectLearningServiceForSymbol(symbol, labelSource);
+                string variantTag = GetVariantTagForSymbol(symbol, labelSource);
+                if (variantService != null)
+                {
+                    await variantService.AddLabeledSampleAsync(feature);
+                    OnLog?.Invoke($"[OnlineLearning][{variantTag}] 샘플 추가: {symbol} PnL={actualProfitPct:F2}% → Label={shouldEnter} | window={variantService.WindowSize}");
+                }
+                // Default 도 병행 유지 (안전장치 — fallback 모델이 필요한 경우)
+                if (_onlineLearning != null && variantService != _onlineLearning)
                 {
                     await _onlineLearning.AddLabeledSampleAsync(feature);
-                    OnLog?.Invoke($"[OnlineLearning] 샘플 추가: {symbol} PnL={actualProfitPct:F2}% → Label={shouldEnter} | 윈도우={_onlineLearning.WindowSize}");
                 }
 
                 // [Lorentzian Phase 1] KNN 분류기에도 동일 샘플 추가 (메모리 + 파일 영구화)

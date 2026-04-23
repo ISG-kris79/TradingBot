@@ -5,6 +5,115 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.16.0] - 2026-04-24
+
+### 🚨 ROOT FIX: "3모델 분리"가 2달간 **가짜**였다 — Major/Pump/Spike 모델 영원 동결
+
+**사용자 지적:**
+
+> "ML 학습로직 2달동안 수정만 하고 있잖아"
+> "Major/PUMP/급등 모두 다 분석해서 재점검해"
+
+### 🔴 2달간 숨어있던 진짜 원인
+
+전면 Audit 결과 — 인프라는 있는데 학습은 가짜였음:
+
+```
+봇 시작 시:
+├── EntryTimingModel.zip         (Default) ← 로드됨 + 학습됨
+├── EntryTimingModel_Major.zip              ← 로드됨 + 영원히 동결
+├── EntryTimingModel_Pump.zip               ← 로드됨 + 영원히 동결
+└── EntryTimingModel_Spike.zip              ← 로드됨 + 영원히 동결
+
+봇 운영 중 (모든 trade 결과):
+모든 종류 → _onlineLearning._mlTrainer (Default만) → 이 한 모델만 재학습
+                                                    (BTC + MOVRUSDT + SPIKE 데이터 전부 혼합)
+```
+
+**결과**:
+
+- 메모리 규칙 "3모델 분리"가 **완전히 무효**
+- 추론 시점에는 올바른 variant 모델로 예측하지만, **그 모델이 학습 중단 상태**
+- Major 모델은 BTC/ETH 최신 시장 반영 못함
+- Spike 모델은 급등 패턴 추가 학습 못함
+- 하나의 Default 모델이 모든 종류 trade를 다 학습해 뒤죽박죽
+
+### ✅ Fix: 4개 independent online learning instance
+
+```csharp
+// 기존: 1개
+private readonly AdaptiveOnlineLearningService? _onlineLearning;
+
+// 수정: 4개 완전 독립
+private readonly AdaptiveOnlineLearningService? _onlineLearning;         // Default (fallback)
+private readonly AdaptiveOnlineLearningService? _onlineLearningMajor;    // BTC/ETH/SOL/XRP
+private readonly AdaptiveOnlineLearningService? _onlineLearningPump;     // 일반 알트
+private readonly AdaptiveOnlineLearningService? _onlineLearningSpike;    // SPIKE_FAST/TICK_SURGE
+```
+
+각 인스턴스:
+
+- **독립 sliding window** (1000 samples, 서로 영향 없음)
+- **독립 retrain timer** (1시간)
+- **독립 trigger count** (100 samples → retrain)
+- **독립 concept drift detector**
+- **별도 variant 서브디렉터리**에 샘플 영구화 (`TrainingData/EntryDecisions/{Default|Major|Pump|Spike}`)
+
+### 라벨 라우팅 — 핵심 신규 헬퍼
+
+```csharp
+private AdaptiveOnlineLearningService? SelectLearningServiceForSymbol(
+    string symbol, string? signalSource)
+{
+    bool isMajor = IsMajorSymbol(symbol);  // BTC/ETH/SOL/XRP
+    bool isSpike = signalSource startsWith "SPIKE" || equals "TICK_SURGE"/"M1_FAST_PUMP";
+    if (isMajor) return _onlineLearningMajor;
+    if (isSpike) return _onlineLearningSpike;
+    return _onlineLearningPump;
+}
+```
+
+`AddLabeledSampleToOnlineLearningAsync` 에서:
+
+1. Trade 결과로 라벨 생성 (PnL ≥ 0.8% = WIN)
+2. `variantService = SelectLearningServiceForSymbol(symbol, labelSource)`
+3. `variantService.AddLabeledSampleAsync(feature)` ← **해당 variant 의 window 에만 추가**
+4. Default 에도 fallback 으로 병행 추가 (안전장치)
+
+### variant 별 threshold / 로그 표시
+
+```
+[D-1] ML 확률 검증:
+  effectiveThreshold = variantLearningService?.CurrentMLThreshold  ← 각 variant 가 승률로 자동 조정
+                    ?? _onlineLearning?.CurrentMLThreshold         ← fallback
+                    ?? _config.MinMLConfidence                      ← 최종 fallback
+
+로그:
+  ❌ [MOVRUSDT] [DECIDE][Pump][prob] ML=13.5% < threshold=58%
+  ✅ [BTCUSDT] [DECIDE][Major][prob] ML=82% ≥ threshold=75%
+
+DB AiTrainingRuns 기록:
+  project="ML.NET_Major" stage="Online_Retrain_Major"
+  project="ML.NET_Spike" stage="Online_Retrain_Spike"
+```
+
+### 기대 효과
+
+- **1시간 내** 4개 모델 각각 독립 재학습 시작
+- Major/Pump/Spike 모델이 **2달만에 처음으로 신규 데이터 학습**
+- variant 별 승률 차등 자동 반영
+- v5.15.0 의 TargetProfit 0.8% / Window 48hr / ratio balancing 이 **제대로** 적용됨
+
+### 📂 수정 파일
+
+- [AIDoubleCheckEntryGate.cs:42-46](AIDoubleCheckEntryGate.cs#L42-L46) — 4개 variant instance 필드
+- [AIDoubleCheckEntryGate.cs:141-220](AIDoubleCheckEntryGate.cs#L141-L220) — 4개 instance 생성 + 이벤트 연결 + 디렉터리 분리
+- [AIDoubleCheckEntryGate.cs:108-140](AIDoubleCheckEntryGate.cs#L108-L140) — `SelectLearningServiceForSymbol` / `GetVariantTagForSymbol` 신규
+- [AIDoubleCheckEntryGate.cs:391-402](AIDoubleCheckEntryGate.cs#L391-L402) — variant threshold 사용 + 로그 태그
+- [AIDoubleCheckEntryGate.cs:1082-1105](AIDoubleCheckEntryGate.cs#L1082-L1105) — 라벨 라우팅 (variant + fallback)
+
+---
+
 ## [5.15.0] - 2026-04-24
 
 ### 🔥 ML 학습 로직 근본 수정 — 2달간 상승패턴 못 잡던 원인 제거
