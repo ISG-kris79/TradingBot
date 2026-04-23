@@ -5,6 +5,68 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.101] - 2026-04-23
+
+### 🚨 ROOT FIX: SL 등록 silent fail 차단 + Watchdog (사용자 자산 10% 손실 원인)
+
+**사용자 지적:**
+
+> "SL 등록 누락 없는지 전체 다 확인" + "ROBOUSDT -56% 됐는데 SL 안 잘림"
+
+**SL audit 결과 — 5개 silent failure path 발견:**
+
+| 경로 | 문제 |
+|---|---|
+| TICK_SURGE / SQUEEZE_BREAKOUT / MAJOR / PUMP_WATCH_CONFIRMED | OrderLifecycleManager `Task.Run` fire-and-forget — 실패 시 OnStatusLog만 (사용자 모름) |
+| MANUAL_ENTRY | RegisterProtectionOrdersAsync 예외 시 OnStatusLog만 |
+| EXTERNAL_POSITION_INCREASE_SYNC | RegisterOnEntryAsync async + monitor 먼저 시작 → race condition |
+| CRASH/PUMP_REVERSE | RegisterProtectionOrdersAsync 실패 시 폴백 없음 |
+| ACCOUNT_UPDATE_RESTORED | 예외 시 OnStatusLog만 (Telegram 알림 X) |
+
+**수정 (PlaceAndTrackEntryAsync):**
+
+1. **SL 등록 실패 OnAlert + 텔레그램** (silent fail 차단):
+   ```
+   🚨 [SL_MISSING] symbol 진입 후 SL 등록 실패! 폴백 시도 중
+   🚨 [SL_REGISTRATION_EXCEPTION] symbol SL 등록 예외: ...
+   ```
+
+2. **자동 폴백**: SL 누락/예외 시 `RegisterProtectionOrdersAsync` 즉시 재시도
+
+3. **5초 Watchdog**: 진입 5초 후 Binance algoOrder 개수 확인
+   - 0건이면 → `🚨 [SL_WATCHDOG] symbol 5초 후 algoOrder 0건 — 긴급 폴백`
+   - 폴백도 실패 → `❌ [SL_WATCHDOG_FAIL] symbol 즉시 수동 SL 필수!`
+
+**효과:**
+
+- SL 등록 실패가 사용자 화면에 즉시 노출 (silent 차단)
+- 폴백 자동 재시도 (RegisterProtectionOrdersAsync)
+- 5초 후 검증으로 race condition 케이스도 catch
+- ROBOUSDT -56% 같은 사고 발생 시 즉시 알림 (UI + Telegram)
+
+**리스크:**
+
+- 폴백 중복 등록 시 Binance -4120 에러 가능 → BinanceExchangeService에서 cancel 후 재등록 처리됨
+
+## [5.10.100] - 2026-04-23
+
+### 🚨 ROOT FIX: PositionInfo.Leverage 미반영 (UI ROE 5배 부풀림)
+
+ROBOUSDT 사례:
+- Binance 실제 leverage: **5x** (auto-adjusted from bot's 25x attempt)
+- 봇 PositionInfo.Leverage: **25x** (시도값 그대로 저장)
+- UI ROE = price_change × 25 → **실제 5배 부풀림**
+- 사용자 본 -56% = 실제 -11.2% (가격 -2.24%)
+
+**수정 위치:**
+
+1. **PlaceAndTrackEntryAsync** ([line 11221](TradingEngine.cs#L11221)): SetLeverageAutoAsync 후 `_activePositions[symbol].Leverage = actualLeverage` 즉시 갱신
+2. **SPIKE_FAST** ([line 8644](TradingEngine.cs#L8644)): SetLeverageAutoAsync 호출 자체 누락 → 추가 + actualLeverage 사용
+
+신규 로그:
+- `⚙️ [LEVERAGE_ADJUSTED] 시도={N}x → 실제={M}x`
+- `🔧 [LEVERAGE_SYNC] PositionInfo.Leverage {old} → {new}`
+
 ## [5.10.99] - 2026-04-23
 
 ### 🧹 P2/P3 정리 — Dead code, Major fallback, 명확화, 가시성

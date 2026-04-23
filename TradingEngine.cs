@@ -11533,11 +11533,57 @@ namespace TradingBot
                                     if (!string.IsNullOrEmpty(result.TpOrderId)) p.TpRegisteredOnExchange = true;
                                 }
                             }
+
+                            // [v5.10.101 ROOT FIX] SL 등록 실패 alert + watchdog 재시도
+                            //   기존: SL 미등록도 silent (OnStatusLog만) → 사용자 모름
+                            //   수정: SL_OrderId 비어있거나 등록 실패면 OnAlert + 텔레그램 + RegisterProtectionOrdersAsync 폴백
+                            if (string.IsNullOrEmpty(result.SlOrderId))
+                            {
+                                OnAlert?.Invoke($"🚨 [SL_MISSING][{ctx.SignalSource}] {symbol} 진입 후 SL 등록 실패! 폴백 시도 중");
+                                try
+                                {
+                                    int fbLev = ctx.Leverage > 0 ? ctx.Leverage : 20;
+                                    await RegisterProtectionOrdersAsync(symbol, isLong, filledQty, actualEntryPrice, fbLev, $"FALLBACK_{ctx.SignalSource}", ctx.Token);
+                                }
+                                catch (Exception fbEx) { OnAlert?.Invoke($"❌ [SL_FALLBACK_FAIL] {symbol} 폴백 SL 등록 실패: {fbEx.Message} — 수동 SL 설정 필요"); }
+                            }
                         }
                         catch (Exception regEx)
                         {
-                            OnStatusLog?.Invoke($"⚠️ [OrderLifecycle] {symbol} SL/TP/Trailing 등록 예외: {regEx.Message}");
+                            OnAlert?.Invoke($"🚨 [SL_REGISTRATION_EXCEPTION][{ctx.SignalSource}] {symbol} SL 등록 예외: {regEx.Message} — 수동 SL 확인 필요");
+                            // 폴백 시도
+                            try
+                            {
+                                bool isLongRetry = decision == "LONG";
+                                int fbLev = ctx.Leverage > 0 ? ctx.Leverage : 20;
+                                await RegisterProtectionOrdersAsync(symbol, isLongRetry, filledQty, actualEntryPrice, fbLev, $"EX_FALLBACK_{ctx.SignalSource}", ctx.Token);
+                            }
+                            catch { }
                         }
+                    });
+
+                    // [v5.10.101] SL Watchdog: 5초 후 algoOrder 실제 존재 검증 (silent fail 차단)
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(5000);
+                            int algoCount = 0;
+                            if (_exchangeService is BinanceExchangeService binSvc)
+                                algoCount = await binSvc.GetOpenAlgoOrderCountAsync(symbol, CancellationToken.None);
+                            if (algoCount == 0)
+                            {
+                                OnAlert?.Invoke($"🚨 [SL_WATCHDOG] {symbol} 진입 5초 후 algoOrder 0건 — SL 등록 누락 감지! 긴급 폴백 등록 시도");
+                                try
+                                {
+                                    bool isLongWd = decision == "LONG";
+                                    int wdLev = ctx.Leverage > 0 ? ctx.Leverage : 20;
+                                    await RegisterProtectionOrdersAsync(symbol, isLongWd, filledQty, actualEntryPrice, wdLev, $"WATCHDOG_{ctx.SignalSource}", CancellationToken.None);
+                                }
+                                catch (Exception wdEx) { OnAlert?.Invoke($"❌ [SL_WATCHDOG_FAIL] {symbol} {wdEx.Message} — 즉시 수동 SL 필수!"); }
+                            }
+                        }
+                        catch { }
                     });
                 }
 
