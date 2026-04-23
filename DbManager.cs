@@ -22,12 +22,21 @@ namespace TradingBot.Services
         /// 사용자 지적: "API에 등록된거 바이낸스에서 처리되면 메시지 받아서 insert 할거면 거기서 메시지 보내야지"
         /// 각 caller에서 개별 NotifyProfitAsync 호출 대신 DB 저장 지점에서 한 번만 호출 → 경로 누락 방지.
         /// </summary>
-        // [v5.10.93] 텔레그램 중복 알림 방지 — symbol+pnl(소수2자리) 키 + 60초 TTL
-        //   사례: 수동 청산 1건에 대해 ACCOUNT_UPDATE + ORDER_UPDATE + caller 측 NotifyProfitAsync = 6번 중복 발송
-        //   원인: v5.10.89 DbManager 중앙화 + 여러 진입 경로 모두 INSERT → 각각 알림
-        //   수정: 같은 청산 시그니처 60초 이내 중복 호출 시 스킵
-        private static readonly ConcurrentDictionary<string, DateTime> _notifyDedupCache
-            = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        // [v5.10.93→95] 텔레그램 중복 알림 방지 — partial fill 청크 합산 + 비동기 발송
+        //   v5.10.93 결함: dedup key=symbol|pnl(2dp) → Binance partial fill 청크별 PnL 다 달라 키 다름 → 18번 발송
+        //   사례: HUSDT SL 1건이 40초 동안 18 청크 fill → 18번 텔레그램
+        //   수정: 첫 호출 시 90초 합산 윈도우 시작, 누적 PnL 모아서 윈도우 끝에 1번만 발송
+        private sealed class PendingNotify
+        {
+            public decimal PnL;
+            public decimal PnLPercentMaxAbs;
+            public int ChunkCount;
+            public DateTime FirstAt;
+            public string LastKind = "";
+        }
+        private static readonly ConcurrentDictionary<string, PendingNotify> _notifyAggregate
+            = new ConcurrentDictionary<string, PendingNotify>(StringComparer.OrdinalIgnoreCase);
+        private const int NOTIFY_AGGREGATE_WINDOW_SECONDS = 90;
 
         private static void TryNotifyProfit(string symbol, decimal pnl, decimal pnlPercent, string kind)
         {
@@ -36,28 +45,47 @@ namespace TradingBot.Services
                 if (string.IsNullOrWhiteSpace(symbol)) return;
                 if (pnl == 0 && pnlPercent == 0 && (kind == "ENTRY" || kind == "FLIP_ENTRY")) return;
 
-                // [v5.10.93] dedup: 같은 symbol+pnl 60초 이내 중복 차단
-                string dedupKey = $"{symbol}|{Math.Round(pnl, 2):F2}";
                 var now = DateTime.UtcNow;
-                if (_notifyDedupCache.TryGetValue(dedupKey, out var lastSent))
-                {
-                    if ((now - lastSent).TotalSeconds < 60)
+                bool isNew = false;
+                var agg = _notifyAggregate.AddOrUpdate(
+                    symbol,
+                    _ =>
                     {
-                        MainWindow.Instance?.AddLog($"🔁 [Notify][{kind}] {symbol} 중복 알림 차단 (60초 dedup) PnL={pnl:F2}");
-                        return;
-                    }
-                }
-                _notifyDedupCache[dedupKey] = now;
-                // 캐시 정리 (200개 초과 + 60초 지난 항목 제거)
-                if (_notifyDedupCache.Count > 200)
+                        isNew = true;
+                        return new PendingNotify { PnL = pnl, PnLPercentMaxAbs = Math.Abs(pnlPercent), ChunkCount = 1, FirstAt = now, LastKind = kind };
+                    },
+                    (_, existing) =>
+                    {
+                        existing.PnL += pnl;
+                        if (Math.Abs(pnlPercent) > existing.PnLPercentMaxAbs) existing.PnLPercentMaxAbs = Math.Abs(pnlPercent);
+                        existing.ChunkCount++;
+                        existing.LastKind = kind;
+                        return existing;
+                    });
+
+                if (!isNew)
                 {
-                    var cutoff = now.AddSeconds(-60);
-                    foreach (var kv in _notifyDedupCache)
-                        if (kv.Value < cutoff) _notifyDedupCache.TryRemove(kv.Key, out _);
+                    MainWindow.Instance?.AddLog($"🔁 [Notify][{kind}] {symbol} 청크 합산 중 (#{agg.ChunkCount} +PnL={pnl:+0.00;-0.00})");
+                    return;
                 }
 
-                _ = NotificationService.Instance.NotifyProfitAsync(symbol, pnl, pnlPercent, 0m);
-                MainWindow.Instance?.AddLog($"📨 [Notify][{kind}] {symbol} 텔레그램 전송 요청 (PnL={pnl:+0.00;-0.00} ROE={pnlPercent:+0.0;-0.0}%)");
+                // 신규 심볼 → 90초 후 1번만 발송 (fire-and-forget)
+                MainWindow.Instance?.AddLog($"📨 [Notify][{kind}] {symbol} 청산 감지 → {NOTIFY_AGGREGATE_WINDOW_SECONDS}초 합산 후 발송 예약");
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(NOTIFY_AGGREGATE_WINDOW_SECONDS));
+                        if (_notifyAggregate.TryRemove(symbol, out var final))
+                        {
+                            decimal pnlPctSign = final.PnL >= 0 ? final.PnLPercentMaxAbs : -final.PnLPercentMaxAbs;
+                            string chunkSuffix = final.ChunkCount > 1 ? $" ({final.ChunkCount}청크 합산)" : "";
+                            MainWindow.Instance?.AddLog($"✉️ [Notify][AGG] {symbol}{chunkSuffix} 최종 PnL={final.PnL:+0.00;-0.00} ROE={pnlPctSign:+0.0;-0.0}%");
+                            _ = NotificationService.Instance.NotifyProfitAsync(symbol, final.PnL, pnlPctSign, 0m);
+                        }
+                    }
+                    catch (Exception aex) { MainWindow.Instance?.AddLog($"⚠️ [Notify][AGG] {symbol} 합산 발송 예외: {aex.Message}"); }
+                });
             }
             catch (Exception ex)
             {
