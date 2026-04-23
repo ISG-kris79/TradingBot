@@ -1508,7 +1508,18 @@ namespace TradingBot
                 // 심볼 카테고리별 feature 분리
                 var majorFeatures = trainingFeatures.Where(f => IsMajorSymbol(f.Symbol)).ToList();
                 var pumpFeatures  = trainingFeatures.Where(f => !IsMajorSymbol(f.Symbol)).ToList();
-                // Spike는 1분봉 초단타 — 최근 학습 데이터 부족, 우선 pump와 동일 사용 (향후 분리)
+
+                // [v5.10.92 ROOT FIX] Pump/Spike variant 학습 데이터 0개 버그 근본 해결
+                //   증거: AiTrainingRuns DB 모든 이력에 Major+Default만 있고 Pump/Spike는 단 1건도 없음
+                //   원인: v5.10.85에서 MajorSymbols=Settings.Symbols(BTC/ETH/SOL/XRP 4개) 동적화 → 학습용 _symbols도 4개라 모두 메이저로 분류 → pumpFeatures=0 → "데이터 부족" 스킵
+                //   결과: _mlTrainerPump/Spike 모델 파일 미생성 → SelectTrainerForSymbol(알트)가 모델 0% 반환 → 모든 진입 Dual_Reject
+                //   수정: pumpFeatures 부족 시 majorFeatures(전체 학습 데이터)로 fallback. 동일 데이터지만 모델 파일 생성되어 추론 가능
+                if (pumpFeatures.Count < 10 && trainingFeatures.Count >= 10)
+                {
+                    OnLog?.Invoke($"[AI 학습] ⚠️ pumpFeatures={pumpFeatures.Count}개 부족 → trainingFeatures({trainingFeatures.Count}개) fallback 사용 (Pump/Spike variant 학습 보장)");
+                    pumpFeatures = trainingFeatures;
+                }
+                // Spike는 1분봉 초단타 — pumpFeatures 동일 사용 (향후 분리)
                 var spikeFeatures = pumpFeatures;
 
                 async Task TrainVariantAsync(EntryTimingMLTrainer trainer, List<MultiTimeframeEntryFeature> data, string label)

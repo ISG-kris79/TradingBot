@@ -5,6 +5,55 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.92] - 2026-04-23
+
+### 🎯 ROOT CAUSE: ML 학습 실패 근본 수정 — Pump/Spike variant 학습 데이터 0건 버그
+
+**사용자 지적:**
+
+> "왜 자꾸 학습이 실패하는건데 그걸 찾아서 수정해야지"
+
+**진단 (AiTrainingRuns DB 전수 조회):**
+
+| 학습 이력 | Major | Default | **Pump** | **Spike** |
+|---|---|---|---|---|
+| 모든 시점 | ✅ 다수 | ✅ 다수 | ❌ **0건** | ❌ **0건** |
+
+→ Pump / Spike variant 모델 파일 자체가 생성되지 않음
+→ `SelectTrainerForSymbol(알트, "TICK_SURGE")` → `_mlTrainerPump` 선택 → IsModelLoaded=false → 0% 점수
+→ 모든 알트 진입 `Dual_Reject_ML=0%` → 9시간 진입 0건
+
+**근본 원인 (v5.10.85 회귀 버그):**
+
+v5.10.85에서 `MajorSymbols = Settings.Symbols` (BTC/ETH/SOL/XRP 4개)로 동적화 → 학습용 `_symbols`도 같은 4개라 모두 메이저 분류:
+```csharp
+var pumpFeatures = trainingFeatures.Where(f => !IsMajorSymbol(f.Symbol)).ToList();
+// → 0개 → "데이터 부족" 스킵 → Pump 모델 파일 미생성
+```
+
+**수정 1 — Trainer fallback (AIDoubleCheckEntryGate.cs:1513):**
+
+```csharp
+if (pumpFeatures.Count < 10 && trainingFeatures.Count >= 10)
+{
+    OnLog?.Invoke("⚠️ pumpFeatures 부족 → trainingFeatures fallback");
+    pumpFeatures = trainingFeatures;
+}
+```
+→ Pump variant도 모델 파일 생성 보장
+
+**수정 2 — 학습용 심볼 확장 (TradingEngine.cs:2733, 3681):**
+
+기존: `_symbols` (Settings.Symbols = 메이저 4개)만 전달
+수정: `_symbols + KlineCache.Keys + 인기 알트 20개 fallback` 합쳐서 전달
+- 인기 알트: BLUR/CHIP/MET/ENJ/DOGE/BNB/TAO/SUI/AVAX/ADA/NEAR/ARB/OP/MATIC/LINK/DOT/INJ/ATOM/UNI/FIL
+
+**효과:**
+
+- Pump/Spike variant 학습 데이터 충분히 확보 → 모델 파일 정상 생성 (>50KB)
+- 알트 진입 시 ML 0% → 정상 점수 → AI Gate 통과 → 진입 활성화
+- `IsMajorSymbol` 정의 (4개)는 그대로 → 메이저 차단 로직 영향 없음
+
 ## [5.10.91] - 2026-04-23
 
 ### 🔍 Telegram Silent Fail 로그화 — 왜 안 오는지 실제 원인 노출

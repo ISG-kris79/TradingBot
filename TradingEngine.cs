@@ -2728,9 +2728,24 @@ namespace TradingBot
                     {
                         try
                         {
-                            // [v5.10.82] forceRetrain=true: TICK_SURGE skipAiGateCheck=false 로 변경됐으니
-                            //            게이트가 차단되면 진입 자체가 안 됨 → 학습 실패 시 즉시 알림
-                            var (success, message) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, _symbols, token, forceRetrain: true);
+                            // [v5.10.92 ROOT FIX] 학습용 심볼 리스트 확장 — Pump variant 학습 데이터 확보
+                            //   기존: _symbols(=Settings.Symbols=메이저 4개)만 전달 → pumpFeatures=0 → Pump variant 학습 불가
+                            //   수정: 메이저 4 + 인기 알트(MarketDataManager 모니터링 + 하드코딩 PUMP 후보) 합쳐서 학습
+                            var trainSymbols = new HashSet<string>(_symbols, StringComparer.OrdinalIgnoreCase);
+                            // KlineCache에 데이터 있는 모든 심볼 추가 (PumpScan 동적 후보 포함)
+                            try
+                            {
+                                foreach (var k in _marketDataManager.KlineCache.Keys)
+                                    trainSymbols.Add(k);
+                            }
+                            catch { }
+                            // 학습용 fallback 인기 PUMP 알트 (시장 데이터 부족 대비)
+                            foreach (var s in new[] { "BLURUSDT","CHIPUSDT","METUSDT","ENJUSDT","DOGEUSDT","BNBUSDT","TAOUSDT","SUIUSDT","AVAXUSDT","ADAUSDT","NEARUSDT","ARBUSDT","OPUSDT","MATICUSDT","LINKUSDT","DOTUSDT","INJUSDT","ATOMUSDT","UNIUSDT","FILUSDT" })
+                                trainSymbols.Add(s);
+                            var trainList = trainSymbols.ToList();
+                            OnStatusLog?.Invoke($"ℹ️ [v5.10.92] 학습용 심볼 {trainList.Count}개 (Settings={_symbols.Count} + 동적/fallback 알트)");
+
+                            var (success, message) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, trainList, token, forceRetrain: true);
                             if (success)
                                 _ = NotificationService.Instance.NotifyAsync("✅ AI Gate 초기 학습 완료 — 진입 게이트 활성화", NotificationChannel.Alert);
                             else
@@ -3663,7 +3678,12 @@ namespace TradingBot
                     // [v5.10.27] forceRetrain=true: IsReady=true여도 히스토리컬 재학습 강제
                     // 이유: 기존 모델이 class imbalance로 prob=0 반환하는 상태에서도 IsReady=true가 되어
                     //       RetrainModelsAsync(라벨 100개 필요)로 빠져 재학습이 안 됨
-                    var (success, _) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, _symbols, token, forceRetrain: true);
+                    // [v5.10.92] 학습용 심볼 확장 (Pump variant 학습 보장)
+                    var trainSymbolsManual = new HashSet<string>(_symbols, StringComparer.OrdinalIgnoreCase);
+                    try { foreach (var k in _marketDataManager.KlineCache.Keys) trainSymbolsManual.Add(k); } catch { }
+                    foreach (var s in new[] { "BLURUSDT","CHIPUSDT","METUSDT","ENJUSDT","DOGEUSDT","BNBUSDT","TAOUSDT","SUIUSDT","AVAXUSDT","ADAUSDT","NEARUSDT","ARBUSDT","OPUSDT","MATICUSDT","LINKUSDT","DOTUSDT","INJUSDT","ATOMUSDT","UNIUSDT","FILUSDT" })
+                        trainSymbolsManual.Add(s);
+                    var (success, _) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, trainSymbolsManual.ToList(), token, forceRetrain: true);
                     doubleCheckStatus = success ? "RETRAINED" : "RETRAIN_FAILED";
                 }
 
