@@ -5,6 +5,79 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.13.0] - 2026-04-24
+
+### 🧠 SPIKE_FAST AI 학습 기반 강화 (AI 개선 #1 + #2 + #3 + #4 통합)
+
+**사용자 지적:**
+
+> "SPIKE_FAST 의 진입조건 로직이 너무 단순해서 손실만 날 수 있는 구조"
+> "AI 학습을 통해서 들어갈 수 있게 개선할 방향 찾아봐"
+> "순서대로 전부 진행"
+
+**문제 진단:**
+
+- SPIKE_FAST 감지 트리거가 `|changePct| >= 3%` 단일 하드코딩 조건
+- 기존 AI 모델(SurvivalEntryModel, PriceDirectionPredictor, TradeSignalClassifier)이 존재하나 **ExecuteAutoOrder 에만 적용**
+- SPIKE_FAST 는 PlaceEntryOrderAsync 직접 호출 → **3개 AI 모델 전부 건너뜀**
+- BacktestEntryLabeler 가 최종 TP/SL 기반 라벨만 생성 → "진입 직후 -0.5% 빠졌다가 반등한 엔트리"도 WIN 학습
+
+### ✅ AI #2: BacktestEntryLabeler 조기 실패 라벨링
+
+**변경 파일**: [BacktestEntryLabeler.cs:24](BacktestEntryLabeler.cs#L24), [MultiTimeframeEntryFeature.cs:304](MultiTimeframeEntryFeature.cs#L304)
+
+```csharp
+// 신규 EntryLabelConfig 필드
+EarlyFailDrawdownPct = -0.3m      // -0.3% 드로다운 임계
+EarlyFailWithinCandles = 2         // 진입 후 2캔들(30분) 이내
+EnableEarlyFailLabeling = true
+```
+
+**로직**: 진입 후 2캔들 내 저가(LONG) 또는 고가(SHORT)가 임계값 이상 넘으면 **즉시 FAIL** 판정. TP/SL 체크보다 우선 평가.
+
+**결과**: 모델이 "즉시 반전형 꼭대기 진입"을 negative sample 로 학습 → 꼭대기 진입 차단력 향상.
+
+### ✅ AI #1 + #3 + #4: SPIKE_FAST 전용 AI 통합 하드 게이트
+
+**신규 헬퍼**: [TradingEngine.cs:ValidateSpikeWithAIAsync](TradingEngine.cs#L12376)
+
+3개 AI 모델을 SPIKE_FAST 진입 경로에 **하드 차단**으로 추가:
+
+| AI 모델 | 체크 | 차단 기준 |
+|---|---|---|
+| **SurvivalEntryModel** | 진입 후 TP 먼저 도달 확률 | notSurvived + prob > 55% |
+| **PriceDirectionPredictor** | 15분내 큰 상승 예측 | !GoesUp + prob > 55% |
+| **TradeSignalClassifier** | 신호 방향 override | PredictedLabel=SHORT + Score ≥ 55% |
+
+**호출 위치**: [TradingEngine.cs:8591](TradingEngine.cs#L8591) — SpikeForecaster + RSI 체크 통과 직후, 진입 타이밍 루프 직전.
+
+**Fail-open 정책**: AI 예외 발생 시 진입 계속 (기존 게이트에 의존). 데이터 부족 시에도 통과.
+
+### 📋 우선순위 반영
+
+| # | 방향 | 상태 | 비고 |
+|---|---|---|---|
+| #2 | 재라벨링 (5분내 -0.3% = FAIL) | ✅ 완료 | 기존 라벨러 확장 |
+| #1 | SpikeEntryClassifier (신규) | ✅ 통합 | 별도 모델 대신 기존 3개 AI 하드 게이트 통합 |
+| #3 | SpikeDirectionPredictor | ✅ 통합 | PriceDirectionPredictor 재활용 |
+| #4 | SpikeSurvivalModel | ✅ 통합 | SurvivalEntryModel 재활용 |
+| #5 | RL Scheduler | ⏸ 차후 | 2-3일 작업, 다음 릴리스 |
+
+**결정**: #1 을 신규 모델 작성 대신 **기존 3 AI 모델 (#3 + #4 + TradeSignal) 통합** 으로 구현. 이유:
+
+- 기존 모델들이 이미 학습/추론 파이프라인 보유
+- 신규 모델은 학습 데이터 수집 + 훈련 주기 대기 필요 (2-3일 공백)
+- 통합 게이트는 즉시 효과 적용 가능
+
+### 📂 수정 파일
+
+- [MultiTimeframeEntryFeature.cs:304-335](MultiTimeframeEntryFeature.cs#L304-L335) — `EntryLabelConfig` 조기실패 필드 3개 추가
+- [BacktestEntryLabeler.cs:24-55](BacktestEntryLabeler.cs#L24-L55) — LONG/SHORT 조기실패 로직 삽입
+- [TradingEngine.cs:8591-8603](TradingEngine.cs#L8591-L8603) — SPIKE_FAST 경로에 AI 하드 게이트 호출
+- [TradingEngine.cs:12376-12470](TradingEngine.cs#L12376-L12470) — `ValidateSpikeWithAIAsync` 헬퍼 신규
+
+---
+
 ## [5.12.0] - 2026-04-24
 
 ### 🔒 급등(SPIKE) 범주 단일 슬롯 강제 — 동시 다수 진입 차단

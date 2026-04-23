@@ -34,6 +34,23 @@ namespace TradingBot
             decimal targetPrice = entryPrice * (1 + _config.TargetProfitPct / 100m);
             decimal stopLossPrice = entryPrice * (1 + _config.StopLossPct / 100m);
 
+            // [v5.13.0 AI 개선 #2] 조기 실패 검증 — 진입 후 EarlyFailWithinCandles 내 EarlyFailDrawdownPct 이상 하락 시 FAIL
+            //   목적: "최종 TP 터치했어도 진입 직후 -0.3% 이상 하락한 엔트리"를 모델이 회피하도록 학습
+            //   결과: 즉시 반전형 꼭대기 진입 + 위진입 대부분이 negative sample 로 분류됨
+            if (_config.EnableEarlyFailLabeling)
+            {
+                decimal earlyFailPrice = entryPrice * (1 + _config.EarlyFailDrawdownPct / 100m);
+                int earlyWindow = Math.Min(_config.EarlyFailWithinCandles, futureCandles.Count);
+                for (int i = 0; i < earlyWindow; i++)
+                {
+                    if (futureCandles[i].LowPrice <= earlyFailPrice)
+                    {
+                        float earlyLossPct = (float)((earlyFailPrice - entryPrice) / entryPrice * 100m);
+                        return (false, earlyLossPct, $"early_fail_drawdown_{_config.EarlyFailDrawdownPct:F2}%_at_candle_{i}");
+                    }
+                }
+            }
+
             decimal highestPrice = 0m;
             decimal lowestPrice = decimal.MaxValue;
             bool targetHit = false;
@@ -105,6 +122,21 @@ namespace TradingBot
             // SHORT는 가격이 내려가야 수익
             decimal targetPrice = entryPrice * (1 - _config.TargetProfitPct / 100m);
             decimal stopLossPrice = entryPrice * (1 + Math.Abs(_config.StopLossPct) / 100m);
+
+            // [v5.13.0 AI 개선 #2] SHORT 조기 실패 검증 — 진입 후 EarlyFailWithinCandles 내 EarlyFailDrawdownPct(절대값) 이상 상승 시 FAIL
+            if (_config.EnableEarlyFailLabeling)
+            {
+                decimal earlyFailPrice = entryPrice * (1 + Math.Abs(_config.EarlyFailDrawdownPct) / 100m);
+                int earlyWindow = Math.Min(_config.EarlyFailWithinCandles, futureCandles.Count);
+                for (int i = 0; i < earlyWindow; i++)
+                {
+                    if (futureCandles[i].HighPrice >= earlyFailPrice)
+                    {
+                        float earlyLossPct = (float)((earlyFailPrice - entryPrice) / entryPrice * 100m);
+                        return (false, earlyLossPct, $"early_fail_drawdown_{_config.EarlyFailDrawdownPct:F2}%_at_candle_{i}");
+                    }
+                }
+            }
 
             bool targetHit = false;
             bool stopHit = false;

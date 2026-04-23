@@ -322,5 +322,24 @@ namespace TradingBot
         /// 최소 리스크/리워드 비율
         /// </summary>
         public decimal MinRiskRewardRatio { get; set; } = 1.5m;
+
+        /// <summary>
+        /// [v5.13.0 AI 개선 #2] 조기 실패 드로다운 임계값 (%)
+        /// 진입 후 EarlyFailWithinCandles 내 이 임계값 이상 하락 시 즉시 FAIL 판정
+        /// 목적: "진입 직후 역방향 움직이는" 진입을 모델이 회피하도록 학습
+        /// 기본 -0.3% = 3 틱 수준 (수수료+슬리피지 ≈ 0.15% 감안 시 실질 -0.45% 손실)
+        /// </summary>
+        public decimal EarlyFailDrawdownPct { get; set; } = -0.3m;
+
+        /// <summary>
+        /// [v5.13.0] 조기 실패 관측 캔들 수 (15분봉 기준 2개 = 30분)
+        /// 진입 후 이 캔들 수 내에 EarlyFailDrawdownPct 이상 하락 시 FAIL
+        /// </summary>
+        public int EarlyFailWithinCandles { get; set; } = 2;
+
+        /// <summary>
+        /// [v5.13.0] 조기 실패 라벨링 활성 여부 (false면 기존 TP/SL only 로직)
+        /// </summary>
+        public bool EnableEarlyFailLabeling { get; set; } = true;
     }
 }

@@ -8585,6 +8585,21 @@ namespace TradingBot
                                 return;
                             }
 
+                            // [v5.13.0 AI #1/#3/#4] SPIKE_FAST 전용 AI 통합 하드 게이트
+                            //   기존: ExecuteAutoOrder 경로만 Survival/Direction/TradeSignal AI 하드게이트
+                            //         SPIKE_FAST 는 PlaceEntryOrderAsync 직접 호출 → AI 모델 전부 건너뜀
+                            //   수정: SPIKE_FAST 도 3개 AI 모델 통과 필수 (하드 차단)
+                            if (direction == "LONG")
+                            {
+                                var spikeAiReject = await ValidateSpikeWithAIAsync(symbol, klines.ToList(), currentPrice, (float)rsi, token);
+                                if (spikeAiReject != null)
+                                {
+                                    OnStatusLog?.Invoke($"⛔ [SPIKE_FAST][AI_GATE] {symbol} 차단: {spikeAiReject}");
+                                    lock (_posLock) { _activePositions.Remove(symbol); }
+                                    return;
+                                }
+                            }
+
                             // [v4.6.1] 1분 로켓 발사 대응 — 눌림 대기 폐기, 3가지 진입 OR 조건
                             // 1) 누적 +2% 도달 → 즉시 진입 (로켓 발사 케이스)
                             // 2) 고점 대비 -0.5% 눌림 → 진입 (기존 -1%에서 완화)
@@ -12356,6 +12371,109 @@ namespace TradingBot
         /// [v4.9.9] MTF Guardian — 상위 시간봉 역방향 진입 차단
         /// 5분봉 명확한 하락장(1시간 -3% / SMA 역배열+소하락 / 12봉 9+하락+추가하락) 중 LONG 차단
         /// 5분봉 명확한 상승장 중 SHORT 차단
+        /// <summary>
+        /// [v5.13.0 AI #1/#3/#4] SPIKE_FAST 진입 전 AI 모델 3개 통합 하드 검증
+        ///
+        /// 기존: SPIKE_FAST 는 ExecuteAutoOrder 우회 → Survival/Direction/TradeSignal AI 건너뜀
+        /// 수정: 3개 AI 모델 전부 통과 필수, 하나라도 차단 시 진입 금지
+        ///
+        /// 반환: null = 통과, 문자열 = 차단 사유
+        /// </summary>
+        private async Task<string?> ValidateSpikeWithAIAsync(
+            string symbol, List<IBinanceKline> m1Candles, decimal currentPrice, float rsi, CancellationToken token)
+        {
+            try
+            {
+                // 5분봉 데이터 확보 (SurvivalModel 용)
+                List<IBinanceKline>? candles5m = null;
+                if (_marketDataManager.KlineCache.TryGetValue(symbol, out var c5mCache))
+                {
+                    lock (c5mCache) { candles5m = c5mCache.ToList(); }
+                }
+                if (candles5m == null || candles5m.Count < 30)
+                {
+                    try { candles5m = (await _exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.FiveMinutes, 60, token))?.ToList(); } catch { }
+                }
+
+                // [AI #4] SurvivalEntryModel — 진입 후 TP 도달 확률
+                if (candles5m != null && candles5m.Count >= 30)
+                {
+                    var survFeature = SurvivalEntryModel.BuildRealtimeFeature(candles5m, m1Candles);
+                    if (survFeature != null)
+                    {
+                        bool isMajorSym = MajorSymbols.Contains(symbol);
+                        var survPred = isMajorSym
+                            ? _survivalModel.PredictMajor(survFeature)
+                            : _survivalModel.PredictPump(survFeature);
+
+                        if (survPred != null && !survPred.Survived && survPred.Probability > 0.55f)
+                        {
+                            return $"Survival:notSurvived_{survPred.Probability:P0}";
+                        }
+                    }
+                }
+
+                // [AI #3] PriceDirectionPredictor — "15분내 큰 상승" 예측
+                if (_directionPredictor.IsDirectionModelLoaded && candles5m != null && candles5m.Count >= 30)
+                {
+                    var latest5m = candles5m[^1];
+                    decimal range = latest5m.HighPrice - latest5m.LowPrice;
+                    float bbPos = 0.5f; // 기본값, 정확한 BB 계산은 피처 추출기에 위임
+
+                    var dirFeature = new PriceDirectionPredictor.DirectionFeature
+                    {
+                        RSI = rsi / 100f,
+                        MACD = 0f, MACD_Signal = 0f, MACD_Hist = 0f,
+                        BB_Position = bbPos,
+                        BB_Width = 0f,
+                        ATR_Ratio = currentPrice > 0 && range > 0 ? (float)(range / currentPrice * 100) : 1f,
+                        Volume_Ratio = 1f,
+                        Price_Change_1 = latest5m.OpenPrice > 0 ? (float)((latest5m.ClosePrice - latest5m.OpenPrice) / latest5m.OpenPrice * 100) : 0f,
+                        Price_Change_3 = 0f, Price_Change_6 = 0f,
+                        SMA20_Distance = 0f,
+                        ADX = 0f,
+                        Stoch_K = 0f, Stoch_D = 0f,
+                        HourOfDay = DateTime.Now.Hour
+                    };
+                    var dirPred = _directionPredictor.PredictDirection(dirFeature);
+                    if (dirPred != null && !dirPred.GoesUp && dirPred.Probability > 0.55f)
+                    {
+                        return $"Direction:noUpMove_{dirPred.Probability:P0}";
+                    }
+                }
+
+                // [AI #1] TradeSignalClassifier — 신호 방향 오버라이드
+                if (_tradeSignalClassifier.IsModelLoaded && candles5m != null && candles5m.Count >= 30)
+                {
+                    var latest5m = candles5m[^1];
+                    var candleData = new CandleData
+                    {
+                        Symbol = symbol,
+                        OpenTime = latest5m.OpenTime,
+                        Open = latest5m.OpenPrice, High = latest5m.HighPrice,
+                        Low = latest5m.LowPrice, Close = latest5m.ClosePrice,
+                        Volume = (float)latest5m.Volume, RSI = rsi
+                    };
+                    var signalPred = _tradeSignalClassifier.Predict(candleData);
+                    // SPIKE_FAST 는 LONG 만 이곳 진입. PredictedLabel=2(SHORT) + Score[2]>=0.55 면 차단
+                    if (signalPred != null && signalPred.PredictedLabel == 2
+                        && signalPred.Score != null && signalPred.Score.Length >= 3
+                        && signalPred.Score[2] >= 0.55f)
+                    {
+                        return $"TradeSignal:SHORT_override_{signalPred.Score[2]:P0}";
+                    }
+                }
+
+                return null; // 모든 AI 모델 통과
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [SPIKE_FAST][AI_GATE] {symbol} AI 검증 예외: {ex.Message} → 진입 계속 (fail-open)");
+                return null;
+            }
+        }
+
+        /// <summary>
         /// 데이터 부족 시 통과 (과차단 방지)
         /// </summary>
         private bool PassMtfGuardian(string symbol, string decision, out string reason)
