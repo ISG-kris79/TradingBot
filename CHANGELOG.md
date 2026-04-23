@@ -5,6 +5,94 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.11.0] - 2026-04-24
+
+### 🔥 진입 로직 전면 재설계 — 검증 → 예측 → 결정 3단계 파이프라인
+
+**사용자 지적:**
+
+> "오늘 승률 27%까지 떨어졌어... 다 삭제하고 다시 만들라고 했잖아"
+> "진입대상이 있으면 검증을 해서 예측을 해야지 무조건 다 들어가냐"
+> "5분봉 하락중인데 들어갔네... AI 학습시키라고 했잖아"
+
+**12시간 실제 통계 (2026-04-23 12:00 KST 이후):**
+
+- 130건 진입 / 127건 종료
+- **승률 31.5%** (40승 85패)
+- NetPnL **-93.04 USDT**
+- AvgWin +0.49 / AvgLoss -1.32 → **RR 0.37:1**
+
+**근본 원인 4가지:**
+
+1. **3-way 동일값 가짜 더블체크** — BASUSDT 로그: `Trend=98.2% ML=98.2% TF=98.2%` 전부 같은 값. 독립적이어야 할 소스가 전부 ML 출력 복사본
+2. **방향 검증 부재** — `AI.Dir=DOWN AI.Prob=0.3%` 인데 LONG 진입 통과 (게이트가 방향 검증 안 함)
+3. **Elliott 바이패스 조항** — `"TF=98% 고신뢰로 바이패스"` 로그. 객관적 규칙을 주관적 임계값으로 무효화
+4. **Lorentzian 샘플 0/100** — 학습 자체가 안 된 상태로 soft warn만
+
+### ✅ 신규 게이트 (AIDoubleCheckEntryGate.EvaluateEntryAsync 전면 재작성)
+
+**Phase 1: 검증 (Validation)** — 예측 전 자격심사
+
+- 모델 준비 상태 확인
+- Feature 추출 성공 여부 (NaN/Inf 내장 sanitize)
+- M1_Data_Valid silent fallback 차단
+- 해당 CoinType 전용 모델 로드 여부 확인
+- → 실패 시 **예측 자체를 돌리지 않음** (리소스 절약 + 무효 예측 차단)
+
+**Phase 2: 예측 (Prediction)** — 검증 통과 시에만 실행
+
+- 선택된 variant 모델 (Major/Pump/Spike/Default) 단일 경로 예측
+- `(probability, ShouldEnter)` 산출 — 사본/복제 금지
+
+**Phase 3: 결정 (Decision)** — 독립 3소스 교차검증
+
+- **[D-1] ML 확률**: 동적 threshold (AdaptiveOnlineLearning 승률 기반 auto-calibrate)
+- **[D-2] ML 방향 승인**: `ShouldEnter==true` 강제
+- **[D-3] Raw Feature 추세**: ML 출력 아닌 원본 feature 값 — LONG 진입 시 다음 모두 차단
+  - `M15_IsDowntrend >= 0.5` (SMA20<SMA60 하락추세)
+  - `H1_IsDowntrend >= 0.5 && H1_BreakoutFromDowntrend < 0.5` (H1 하락+돌파미검출)
+  - `M15_SuperTrend_Direction < 0`
+  - `M15_ConsecBearishCount >= 3 && M15_RSI_BelowNeutral >= 0.5` (연속 음봉 3+RSI 약세)
+  - `DirectionBias <= -1.5` (D1+H4 강한 약세)
+- SHORT 은 대칭 적용 (상승추세 + 연속 양봉 3개 이상 → 거부)
+
+### 🗑️ 폐기된 레거시 (모두 삭제)
+
+| 제거 | 이유 |
+|---|---|
+| Fibonacci bonus score 가산 | 주관적 바이어스 (`detail.TrendScore += fibBonus` 류) |
+| Elliott Rule TF≥80% 바이패스 | 객관적 규칙을 임계값으로 회피 |
+| Sanity_Filter_UpperWick/RSI 하드코딩 | AI 학습으로 대체 (feature 안에 이미 내장) |
+| Lorentzian soft warn | 샘플 0/100 상태로 의미 없음 |
+| KST9 시간대 threshold 완화 | 시간대 바이어스 |
+| ML=0 경고 후 진입 계속 | ML 무력화 |
+| `skipAiGateCheck` 바이패스 | PumpScan/SPIKE_FAST 단독 승인 → 30% 승률 원인 |
+| `CRASH_REVERSE`/`PUMP_REVERSE` 바이패스 | 급변 대응 명분으로 게이트 우회 |
+
+### 🔧 ROI 불일치 수정
+
+**현상**: "실시간 시장 신호" 와 "활성 포지션" 두 패널의 ROI 값이 다름 (예: BASUSDT 한쪽은 46%, 한쪽은 15%)
+
+**원인 2가지:**
+
+1. **청산 후 stale 잔류** — `UpdatePositionStatus` 가 EntryPrice/Quantity 는 리셋하는데 `Leverage` 리셋 누락. `ProfitRate` getter 가 `!IsPositionActive` 시 cached value 반환 → 청산돼도 마지막 ROI 그대로 표시
+2. **Leverage 소스 불일치** — Panel 1 은 `MultiTimeframeViewModel.Leverage` (기본 20), Panel 2 는 `PositionInfo.Leverage` (Binance 실제값). 차이만큼 ROI 괴리 (예: 4배 부풀림)
+
+**수정:**
+
+- `MainViewModel.cs:5046` — 청산 시 `existing.Leverage = 0` 추가
+- `UpdateFocusedPositionFromEngine` — Panel 2 의 `PositionInfo.Leverage` (Binance 실제값)를 Panel 1 `MultiTimeframeViewModel.Leverage` 로 매 tick 강제 동기화 + EntryPrice 도 동일화
+
+### 📂 수정 파일
+
+- [AIDoubleCheckEntryGate.cs:223-395](AIDoubleCheckEntryGate.cs#L223-L395) — `EvaluateEntryAsync` 3단계 재작성
+- [AIDoubleCheckEntryGate.cs:410-470](AIDoubleCheckEntryGate.cs#L410-L470) — `EvaluateEntryWithCoinTypeAsync` Fib 가산 제거, 단순 threshold overlay
+- [TradingEngine.cs:9707-9718](TradingEngine.cs#L9707-L9718) — `skipAiGateCheck`/`CRASH_REVERSE`/`PUMP_REVERSE` 바이패스 제거
+- [MainViewModel.cs:5046-5050](MainViewModel.cs#L5046-L5050) — 청산 시 Leverage 리셋
+- [MainViewModel.cs:4748-4760](MainViewModel.cs#L4748-L4760) — Panel 1 Leverage/EntryPrice 매 tick 동기화
+
+---
+
 ## [5.10.101] - 2026-04-23
 
 ### 🚨 ROOT FIX: SL 등록 silent fail 차단 + Watchdog (사용자 자산 10% 손실 원인)

@@ -218,7 +218,20 @@ namespace TradingBot
         }
 
         /// <summary>
-        /// 더블체크 진입 심사
+        /// [v5.11.0] AI 진입 게이트 — 검증(Validation) → 예측(Prediction) → 결정(Decision) 3단계 파이프라인
+        ///
+        /// 설계 원칙:
+        ///  1) 검증 통과해야만 예측 수행 (리소스 절약 + 무효 예측 차단)
+        ///  2) 예측 결과와 독립된 raw feature 값으로 추세 교차검증 (동일 소스 중복 평가 금지)
+        ///  3) 바이패스/소프트패스 전면 제거 (하드코딩 예외 조항 금지)
+        ///
+        /// 폐기된 레거시:
+        ///  - Fibonacci bonus score 가산 (주관적 바이어스)
+        ///  - Elliott Rule TF>=80% 바이패스 (객관적 규칙 회피)
+        ///  - Sanity_Filter_UpperWick/RSI 하드코딩 (AI 학습으로 대체)
+        ///  - Lorentzian soft warn (샘플 0/100 상태로 무의미)
+        ///  - KST9 시간대 threshold 완화 (시간대 바이어스)
+        ///  - ML=0 경고 후 진입 계속 (ML 무력화)
         /// </summary>
         public async Task<(bool allowEntry, string reason, AIEntryDetail detail)> EvaluateEntryAsync(
             string symbol,
@@ -226,21 +239,29 @@ namespace TradingBot
             decimal currentPrice,
             CancellationToken token = default)
         {
-            if (!IsReady)
-                return (false, "AI_Models_Not_Ready", new AIEntryDetail());
-
-            // [v5.10.66 HOTFIX → v5.10.80 자동 해제] 메이저 진입 임시 차단
-            // v5.10.80: Major 전용 모델(_mlTrainerMajor)이 로드되어 있으면 자동 해제
-            //  → 3 모델 분리(v5.10.76) 이후 Major 학습 데이터 격리되어 추론 신뢰 가능
-            if (_config.BlockMajorEntries && IsMajorSymbol(symbol) && !_mlTrainerMajor.IsModelLoaded)
-            {
-                OnLog?.Invoke($"⏸️ [{symbol}] [MAJOR_BLOCKED_v5_10_66] 메이저 진입 임시 차단 (Major 모델 미학습 → 학습 완료 후 자동 해제)");
-                return (false, "Major_Blocked_Major_Model_Not_Loaded", new AIEntryDetail());
-            }
+            var detail = new AIEntryDetail();
 
             try
             {
-                // 1. Multi-Timeframe Feature 추출 (30초 캐시)
+                // ═══════════════════════════════════════════════════════════════
+                // PHASE 1: 검증 (Validation) — 예측 전 자격심사
+                // 목적: 예측을 돌려도 의미 없는 상태를 선제 차단
+                // ═══════════════════════════════════════════════════════════════
+
+                if (!IsReady)
+                {
+                    OnLog?.Invoke($"❌ [{symbol}] [VALIDATE] AI 모델 미준비");
+                    return (false, "VALIDATE_Models_Not_Ready", detail);
+                }
+
+                // Major 전용 모델 미학습 시 메이저 차단 (학습 데이터 격리 유지)
+                if (_config.BlockMajorEntries && IsMajorSymbol(symbol) && !_mlTrainerMajor.IsModelLoaded)
+                {
+                    OnLog?.Invoke($"❌ [{symbol}] [VALIDATE] Major 모델 미학습 → 메이저 진입 차단");
+                    return (false, "VALIDATE_Major_Model_Not_Loaded", detail);
+                }
+
+                // Feature 추출 (30초 캐시)
                 MultiTimeframeEntryFeature? feature = null;
                 if (_featureCache.TryGetValue(symbol, out var cached) && (DateTime.Now - cached.time).TotalSeconds < 30)
                 {
@@ -252,230 +273,144 @@ namespace TradingBot
                     if (feature != null)
                         _featureCache[symbol] = (feature, DateTime.Now);
                 }
+
                 if (feature == null)
                 {
-                    OnLog?.Invoke($"⚠️ [{symbol}] Feature 추출 실패 (데이터 부족)");
-                    return (false, "Feature_Extraction_Failed", new AIEntryDetail());
+                    OnLog?.Invoke($"❌ [{symbol}] [VALIDATE] Feature 추출 실패 (데이터 부족)");
+                    return (false, "VALIDATE_Feature_Extraction_Failed", detail);
                 }
 
-                // 2. [ML.NET] 진입 판정 — [v5.10.76 Phase 3] 심볼별 3 모델 분리
-                var recentFeatures = BuildTransformerSequence(symbol, feature);
+                // M1 데이터 silent fallback 차단 — 1분봉 수집 실패 시 진입 금지
+                if (feature.M1_Data_Valid < 0.5f)
+                {
+                    OnLog?.Invoke($"❌ [{symbol}] [VALIDATE] M1 데이터 무효 (silent fallback 감지)");
+                    return (false, "VALIDATE_M1_Data_Invalid", detail);
+                }
+
+                // 해당 coinType 전용 모델 로드 여부 확인
                 var selectedTrainer = SelectTrainerForSymbol(symbol, null);
-                var mlPrediction = selectedTrainer.IsModelLoaded ? selectedTrainer.Predict(feature) : null;
-
-                bool mlApprove = mlPrediction?.ShouldEnter ?? false;
-                float mlConfidence = mlPrediction?.Probability ?? 0f;
-
-                // [v4.9.4] ML=0 원인 진단 로그 (첫 몇 번만)
-                if (mlConfidence < 0.01f)
+                if (!selectedTrainer.IsModelLoaded)
                 {
-                    string reason = !selectedTrainer.IsModelLoaded ? $"modelNotLoaded({selectedTrainer.Variant})"
-                                   : mlPrediction == null ? "predictionNull"
-                                   : $"prob=0 shouldEnter={mlPrediction.ShouldEnter} score={mlPrediction.Score:F4} model={selectedTrainer.Variant}";
-                    OnLog?.Invoke($"🔬 [ML_DIAG] {symbol} {decision} | reason={reason} | featureValid={feature != null}");
-                }
-                float effectiveMLThreshold = _onlineLearning?.CurrentMLThreshold ?? _config.MinMLConfidence;
-
-                // [v5.10.69] KST 9시±15분 펌프 시간대에 ML 임계값 완화 (0.65 → 0.55)
-                // 한국 시장 진입 시간 펌프 집중 → ML 보수적 판단으로 기회 놓치는 문제 해결
-                DateTime kstNowGate = DateTime.UtcNow.AddHours(9);
-                bool isKst9PumpWindow = (kstNowGate.Hour == 8 && kstNowGate.Minute >= 45) || (kstNowGate.Hour == 9 && kstNowGate.Minute <= 15);
-                if (isKst9PumpWindow && effectiveMLThreshold > 0.55f)
-                {
-                    effectiveMLThreshold = 0.55f;
-                    OnLog?.Invoke($"⏰ [{symbol}] [KST9_RELAX] 9시 펌프 시간대 ML 임계값 완화 → {effectiveMLThreshold:P0}");
+                    OnLog?.Invoke($"❌ [{symbol}] [VALIDATE] {selectedTrainer.Variant} 모델 미로드");
+                    return (false, $"VALIDATE_Model_Not_Loaded_{selectedTrainer.Variant}", detail);
                 }
 
-                // TF 호환 변수 (UI 바인딩 유지용)
-                bool tfApprove = mlApprove;
-                float tfConfidence = mlConfidence;
-                float effectiveTFThreshold = effectiveMLThreshold;
+                // ═══════════════════════════════════════════════════════════════
+                // PHASE 2: 예측 (Prediction) — 검증 통과 시에만 실행
+                // 목적: 선택된 모델로 진입 확률 산출 (단일 소스, 사본/복제 금지)
+                // ═══════════════════════════════════════════════════════════════
 
-                // 4. M15/M1 캔들 수집 — [v4.5.15] WebSocket 캐시 우선 조회
-                var m15Cached = Services.MarketDataManager.Instance?.GetCachedKlines(symbol, Binance.Net.Enums.KlineInterval.FifteenMinutes, 30);
-                var m15List = m15Cached ?? (await _exchangeService
-                    .GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.FifteenMinutes, 100, token))?
-                    .ToList() ?? new List<IBinanceKline>();
-
-                List<IBinanceKline> m1List = new();
-                if (IsMajorSymbol(symbol) && decision.Contains("LONG", StringComparison.OrdinalIgnoreCase))
+                var mlPrediction = selectedTrainer.Predict(feature);
+                if (mlPrediction == null)
                 {
-                    var m1Cached = Services.MarketDataManager.Instance?.GetCachedKlines(symbol, Binance.Net.Enums.KlineInterval.OneMinute, 5);
-                    m1List = m1Cached ?? (await _exchangeService
-                        .GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.OneMinute, 5, token))?
-                        .ToList() ?? new List<IBinanceKline>();
+                    OnLog?.Invoke($"❌ [{symbol}] [PREDICT] 예측 결과 null");
+                    return (false, "PREDICT_Null", detail);
                 }
 
-                var fibSignal = EvaluateFibonacciSupportSignal(symbol, decision, currentPrice, m15List, m1List);
-                float fibConfidenceBonus = (float)(fibSignal.BonusScore / 100.0);
+                float mlConfidence = mlPrediction.Probability;
+                bool mlApprove = mlPrediction.ShouldEnter;
 
-                // [v4.9.5] ML_Zero_Confidence 하드 차단 제거
-                // 이유: EntryTimingMLTrainer가 PUMP 심볼(BULLAUSDT 등)에 대해 항상 0을 반환하는데
-                //       PumpSignalClassifier는 동일 심볼을 65~80%로 승인 중. 두 모델 충돌로 PumpScan
-                //       승인이 덮어써져 진입 불가능. ML이 0이면 단순히 승인만 안 해주고 차단은 안 함
-                //       (아래 mlPass/tfPass 조건으로 자연스럽게 reject되거나 fibBonus로 통과 가능)
-                if (_mlTrainer.IsModelLoaded && mlConfidence < 0.01f)
-                {
-                    OnLog?.Invoke($"⚠️ [{symbol}] ML 결과 0% — 경고만, 진입 계속 (다운스트림 AI Gate 판정에 위임)");
-                }
+                detail.ML_Approve = mlApprove;
+                detail.ML_Confidence = mlConfidence;
+                // UI 바인딩 호환을 위한 TF 별칭 (값 동일하지만 Decision 단계에서는 별개 소스로 재평가됨)
+                detail.TF_Approve = mlApprove;
+                detail.TF_Confidence = mlConfidence;
+                detail.TrendScore = mlConfidence;
+                detail.M15_RSI = feature.M15_RSI;
+                detail.M15_BBPosition = feature.M15_BBPosition;
 
-                bool tfPass = tfApprove && (tfConfidence + fibConfidenceBonus) >= effectiveTFThreshold;
-                bool mlPass = mlApprove && (mlConfidence + fibConfidenceBonus) >= effectiveMLThreshold;
-
-                var detail = new AIEntryDetail
-                {
-                    ML_Approve = mlApprove,
-                    ML_Confidence = mlConfidence,
-                    TF_Approve = tfApprove,
-                    TF_Confidence = tfConfidence,
-                    TrendScore = Math.Min(1f, tfConfidence + fibConfidenceBonus),
-                    DoubleCheckPassed = mlPass || tfPass,
-                    M15_RSI = feature?.M15_RSI ?? 0f,
-                    M15_BBPosition = feature?.M15_BBPosition ?? 0f,
-                    FibonacciBonusScore = (float)fibSignal.BonusScore,
-                    Fib618 = (double)fibSignal.Fib618,
-                    Fib786 = (double)fibSignal.Fib786,
-                    FibReversalConfirmed = fibSignal.ReversalConfirmed,
-                    FibDeadCatBlocked = fibSignal.DeadCatBlocked
-                };
-
-                // 5. 데이터 수집 (실시간 학습용)
-                string decisionId = RecordEntryDecision(feature, mlPrediction, tfApprove, tfConfidence, detail.DoubleCheckPassed);
+                // 데이터 수집 (실시간 학습용)
+                string decisionId = RecordEntryDecision(feature, mlPrediction, mlApprove, mlConfidence, false);
                 detail.DecisionId = decisionId;
 
-                if (fibSignal.DeadCatBlocked)
+                // ═══════════════════════════════════════════════════════════════
+                // PHASE 3: 결정 (Decision) — 독립 3소스 교차검증
+                // 목적: ML 확률 + ML 방향 + raw feature 추세 — 세 소스 모두 일치해야 진입
+                // ═══════════════════════════════════════════════════════════════
+
+                bool isLong = decision.Contains("LONG", StringComparison.OrdinalIgnoreCase)
+                           || decision.Equals("BUY", StringComparison.OrdinalIgnoreCase);
+
+                // [D-1] ML 확률 임계 검증 (동적 threshold — AdaptiveOnlineLearning이 승률로 자동 조정)
+                float effectiveThreshold = _onlineLearning?.CurrentMLThreshold ?? _config.MinMLConfidence;
+                if (mlConfidence < effectiveThreshold)
                 {
-                    detail.DoubleCheckPassed = false;
-                    OnLog?.Invoke($"❌ [{symbol}] [DEADCAT_BLOCK] {fibSignal.Reason} | Trend={detail.TrendScore:P0}");
-                    return (false, $"DeadCat_Block_{fibSignal.Reason}_Trend={detail.TrendScore:P1}_FibBonus={fibSignal.BonusScore:F0}", detail);
+                    OnLog?.Invoke($"❌ [{symbol}] [DECIDE][prob] ML={mlConfidence:P1} < threshold={effectiveThreshold:P0}");
+                    return (false, $"DECIDE_Prob_Low_ML={mlConfidence:P1}_TH={effectiveThreshold:P0}", detail);
                 }
 
-                if (fibSignal.BonusScore > 0)
+                // [D-2] ML 방향(ShouldEnter) 승인 검증
+                if (!mlApprove)
                 {
-                    OnLog?.Invoke($"🎯 [{symbol}] [FIB_SUPPORT_BONUS] 0.618~0.786 지지+1m 리버설 확인, +{fibSignal.BonusScore:F0}점");
+                    OnLog?.Invoke($"❌ [{symbol}] [DECIDE][approve] ML ShouldEnter=false (prob={mlConfidence:P1})");
+                    return (false, $"DECIDE_ML_Not_Approve_Prob={mlConfidence:P1}", detail);
                 }
 
-                if (!tfPass && !mlPass)
+                // [D-3] Raw Feature 추세 교차검증 (ML 출력 아닌 원본 피처값)
+                //  LONG: 15m 하락추세 / H1 하락추세 / SuperTrend 하락 / D1+H4 강한 약세 → 거부
+                //  SHORT: 15m 상승 + SuperTrend 상승 / D1+H4 강한 강세 → 거부
+                if (isLong)
                 {
-                    string tfReason = tfApprove
-                        ? $"TF 신뢰도 부족 ({tfConfidence + fibConfidenceBonus:P0} < {effectiveTFThreshold:P0})"
-                        : $"TF(ML) 진입 비승인 ({tfConfidence:P0})";
-                    string mlReason = mlApprove
-                        ? $"ML 신뢰도 부족 ({mlConfidence + fibConfidenceBonus:P0} < {effectiveMLThreshold:P0})"
-                        : $"ML 진입 비승인 ({mlConfidence:P0})";
-                    OnLog?.Invoke($"❌ [{symbol}] [DUAL_BLOCK] ML/TF 동시 미달: {mlReason}, {tfReason}");
-                    return (false, $"Dual_Reject_ML={mlConfidence:P1}_TF={tfConfidence:P1}_Trend={detail.TrendScore:P1}_FibBonus={fibSignal.BonusScore:F0}", detail);
-                }
-
-                if (!tfPass)
-                {
-                    OnLog?.Invoke($"⚠️ [{symbol}] [BRAIN_SOFT_PASS] TF 미달이지만 ML 통과로 진입 유지 | ML={mlConfidence:P0}, TF={tfConfidence:P0}, Fib+={fibSignal.BonusScore:F0}");
-                }
-
-                if (!mlPass)
-                {
-                    OnLog?.Invoke($"⚠️ [{symbol}] [FILTER_SOFT_PASS] ML 미달이지만 TF 통과로 진입 유지 | ML={mlConfidence:P0}, TF={tfConfidence:P0}, Fib+={fibSignal.BonusScore:F0}");
-                }
-
-                // 6. ML 필터 보강: 과열/꼬리/추격 리스크 차단
-                if (m15List.Count > 0)
-                {
-                    var sanityFilter = EvaluateDualGateRiskFilter(symbol, decision, currentPrice, feature!, tfConfidence, m15List);
-                    if (!sanityFilter.passed)
+                    if (feature.M15_IsDowntrend >= 0.5f)
                     {
-                        detail.DoubleCheckPassed = false;
-                        OnLog?.Invoke($"❌ [{symbol}] [FILTER_BLOCK] {sanityFilter.reason}");
-                        return (false, $"Sanity_Filter_{sanityFilter.reason}", detail);
+                        OnLog?.Invoke($"❌ [{symbol}] [DECIDE][slope] LONG 거부: M15 하락추세 (SMA20<SMA60)");
+                        return (false, "DECIDE_M15_Downtrend_Long_Block", detail);
+                    }
+                    // H1 하락추세이면서 아직 돌파 못했으면 거부
+                    if (feature.H1_IsDowntrend >= 0.5f && feature.H1_BreakoutFromDowntrend < 0.5f)
+                    {
+                        OnLog?.Invoke($"❌ [{symbol}] [DECIDE][slope] LONG 거부: H1 하락추세 지속 (돌파 미검출)");
+                        return (false, "DECIDE_H1_Downtrend_No_Breakout", detail);
+                    }
+                    if (feature.M15_SuperTrend_Direction < 0)
+                    {
+                        OnLog?.Invoke($"❌ [{symbol}] [DECIDE][slope] LONG 거부: M15 SuperTrend=하락");
+                        return (false, "DECIDE_M15_SuperTrend_Down", detail);
+                    }
+                    // 3 연속 음봉 이상 + M15_RSI<45 = 약세 지속 → LONG 차단
+                    if (feature.M15_ConsecBearishCount >= 3 && feature.M15_RSI_BelowNeutral >= 0.5f)
+                    {
+                        OnLog?.Invoke($"❌ [{symbol}] [DECIDE][slope] LONG 거부: 연속음봉 {feature.M15_ConsecBearishCount}개 + RSI 약세");
+                        return (false, $"DECIDE_Consec_Bearish_{feature.M15_ConsecBearishCount}", detail);
+                    }
+                    if (feature.DirectionBias <= -1.5f)
+                    {
+                        OnLog?.Invoke($"❌ [{symbol}] [DECIDE][slope] LONG 거부: D1+H4 방향 bias={feature.DirectionBias:F1} 강한약세");
+                        return (false, $"DECIDE_DirectionBias_Bearish_{feature.DirectionBias:F1}", detail);
+                    }
+                }
+                else // SHORT
+                {
+                    if (feature.M15_IsDowntrend < 0.5f
+                        && feature.M15_SuperTrend_Direction > 0
+                        && feature.M15_ConsecBullishCount >= 3)
+                    {
+                        OnLog?.Invoke($"❌ [{symbol}] [DECIDE][slope] SHORT 거부: 상승추세 + 연속양봉 {feature.M15_ConsecBullishCount}개");
+                        return (false, $"DECIDE_Uptrend_Short_Block_{feature.M15_ConsecBullishCount}", detail);
+                    }
+                    if (feature.DirectionBias >= 1.5f)
+                    {
+                        OnLog?.Invoke($"❌ [{symbol}] [DECIDE][slope] SHORT 거부: D1+H4 방향 bias={feature.DirectionBias:F1} 강한강세");
+                        return (false, $"DECIDE_DirectionBias_Bullish_{feature.DirectionBias:F1}", detail);
                     }
                 }
 
-                // 7. 엘리엇 파동 + 피보나치 규칙 검증 (거부 필터)
-                if (m15List.Count > 0)
-                {
-                    PositionSide side = decision.Contains("SHORT", StringComparison.OrdinalIgnoreCase)
-                        ? PositionSide.Short
-                        : PositionSide.Long;
-
-                    var ruleCheck = _ruleValidator.ValidateEntryRules(
-                        m15List,
-                        symbol,
-                        currentPrice,
-                        side,
-                        mlConfidence,
-                        tfConfidence,
-                        detail.M15_RSI,
-                        detail.M15_BBPosition,
-                        out var waveState,
-                        out var fibLevels);
-
-                    if (!ruleCheck.passed)
-                    {
-                        // [핫픽스] TF 80%+ 고신뢰 시 엘리엇 규칙 1/2 위반을 경고로 다운그레이드
-                        // 엘리엇 파동은 주관적 해석이므로 TF가 강하게 확신하면 진입 허용
-                        bool isElliottRuleBlock = ruleCheck.reason.Contains("Elliott_Rule1") || ruleCheck.reason.Contains("Elliott_Rule2");
-                        bool tfHighConfidence = tfConfidence >= 0.80f;
-
-                        if (isElliottRuleBlock && tfHighConfidence)
-                        {
-                            OnLog?.Invoke($"⚠️ [{symbol}] 엘리엇 규칙 위반이나 TF={tfConfidence:P0} 고신뢰로 바이패스: {ruleCheck.reason}");
-                            // 바이패스: 진입은 허용하되 기록 남김
-                        }
-                        else
-                        {
-                            detail.DoubleCheckPassed = false;
-                            OnLog?.Invoke($"❌ [{symbol}] 규칙 위반 거부: {ruleCheck.reason}");
-                            return (false, $"Rule_Violation_{ruleCheck.reason}", detail);
-                        }
-                    }
-
-                    detail.ElliottValid = waveState.IsValid;
-                    detail.FibInEntryZone = fibLevels.InEntryZone;
-                }
-
-                // 7.5 [Lorentzian Phase 2] KNN 합의 게이트 — Hard mode 옵션
-                // soft (기본): 경고만 출력, 진입 계속 (기존 동작 유지)
-                // hard (LorentzianHardMode=true): KNN 약세 + 충분한 샘플(>=200) 시 진입 차단
-                if (_config.EnableLorentzianGate)
-                {
-                    var lor = _lorentzian.Predict(feature!);
-                    detail.LorentzianReady = lor.IsReady;
-                    detail.LorentzianScore = lor.Score;
-                    detail.LorentzianPassRate = lor.PassRate;
-                    detail.LorentzianSampleCount = lor.SampleCount;
-
-                    if (!lor.IsReady)
-                    {
-                        OnLog?.Invoke($"ℹ️ [{symbol}] [LORENTZIAN_WARMUP] 샘플 부족 ({lor.SampleCount}/{_config.LorentzianMinSamples})");
-                    }
-                    else if (lor.Score < _config.MinLorentzianScore || lor.PassRate < _config.MinLorentzianPassRate)
-                    {
-                        // [v5.10.80 Phase L2] Hard mode + 샘플 충분 → 차단
-                        if (_config.LorentzianHardMode && lor.SampleCount >= _config.LorentzianHardModeMinSamples)
-                        {
-                            detail.DoubleCheckPassed = false;
-                            OnLog?.Invoke($"❌ [{symbol}] [LORENTZIAN_HARD_BLOCK] KNN 약세 차단: score={lor.Score}/{lor.K}, pass={lor.PassRate:P0} (samples={lor.SampleCount}≥{_config.LorentzianHardModeMinSamples})");
-                            return (false, $"Lorentzian_Hard_Block_score={lor.Score}_pass={lor.PassRate:P1}", detail);
-                        }
-                        OnLog?.Invoke($"⚠️ [{symbol}] [LORENTZIAN_WARN] KNN 약세: score={lor.Score} (need ≥{_config.MinLorentzianScore}), pass={lor.PassRate:P0} (need ≥{_config.MinLorentzianPassRate:P0}) — soft mode, 진입 계속");
-                    }
-                    else
-                    {
-                        OnLog?.Invoke($"✅ [{symbol}] [LORENTZIAN_OK] KNN 동의: score={lor.Score}/{lor.K}, pass={lor.PassRate:P0} (samples={lor.SampleCount})");
-                    }
-                }
-
-                // 8. 최종 승인 (ML 또는 TF + Fib 보너스 + 리스크 필터 + 규칙 필터)
-                OnLog?.Invoke($"✅ [{symbol}] AI 더블체크 승인! Trend={detail.TrendScore:P0}, ML={mlConfidence:P0}, TF={tfConfidence:P0}, Fib+={fibSignal.BonusScore:F0}");
-                return (true, $"DoubleCheck_PASS_Trend={detail.TrendScore:P1}_ML={mlConfidence:P1}_TF={tfConfidence:P1}_FibBonus={fibSignal.BonusScore:F0}", detail);
+                // 3 단계 모두 통과 → 진입 승인
+                detail.DoubleCheckPassed = true;
+                detail.ElliottValid = true;
+                OnLog?.Invoke($"✅ [{symbol}] [VPD_PASS] ML={mlConfidence:P1} dir={decision} M15_IsDown={feature.M15_IsDowntrend:F0} ST={feature.M15_SuperTrend_Direction:F0} bias={feature.DirectionBias:F1}");
+                return (true, $"VPD_PASS_ML={mlConfidence:P1}_Dir={decision}", detail);
             }
             catch (Exception ex)
             {
-                return (false, $"Exception_{ex.Message}", new AIEntryDetail());
+                OnLog?.Invoke($"❌ [{symbol}] [GATE_EXCEPTION] {ex.Message}");
+                return (false, $"Exception_{ex.Message}", detail);
             }
         }
 
         /// <summary>
-        /// 메이저 코인 vs 펌핑 코인 별도 처리
+        /// [v5.11.0] CoinType별 추가 threshold 검증 (Major/Pumping 차등)
+        /// 기본 게이트 통과 후 CoinType 특화 임계값만 overlay (Fib 보너스 등 가산 제거)
         /// </summary>
         public async Task<(bool allowEntry, string reason, AIEntryDetail detail)> EvaluateEntryWithCoinTypeAsync(
             string symbol,
@@ -485,53 +420,37 @@ namespace TradingBot
             CancellationToken token = default)
         {
             var (allow, reason, detail) = await EvaluateEntryAsync(symbol, decision, currentPrice, token);
+            if (!allow) return (allow, reason, detail);
+
             var symbolThreshold = _config.GetThresholdBySymbol(symbol);
+            bool isLong = decision.Equals("LONG", StringComparison.OrdinalIgnoreCase)
+                       || decision.Equals("BUY", StringComparison.OrdinalIgnoreCase);
 
-            if (!allow)
-                return (allow, reason, detail);
-
-            float fibBonusConfidence = detail.FibonacciBonusScore / 100f;
-
-            // [v4.6.1] 메이저 코인: LONG/SHORT 비대칭 임계값 + AND 조건
-            // - LONG: 75%+ 요구 (학습 데이터 LONG 편향 보정)
-            // - SHORT: 65%+ 요구 (SHORT 학습 데이터 부족, 보수적 접근)
-            // - 기존: ML/TF OR 조건 → AND 조건으로 강화 (둘 다 만족해야 통과)
             if (coinType == CoinType.Major)
             {
-                bool isLong = decision.Equals("LONG", StringComparison.OrdinalIgnoreCase);
-                float majorMinConf = isLong
-                    ? Math.Max(_config.MinMLConfidenceMajor + 0.05f, 0.75f)  // LONG: 75%+
-                    : Math.Max(_config.MinMLConfidenceMajor - 0.05f, 0.65f); // SHORT: 65%+
-                majorMinConf = Math.Max(majorMinConf, symbolThreshold.AiConfidenceMin);
+                // Major LONG 75%+, SHORT 65%+ (학습 데이터 편향 보정)
+                float majorMin = isLong
+                    ? Math.Max(_config.MinMLConfidenceMajor + 0.05f, 0.75f)
+                    : Math.Max(_config.MinMLConfidenceMajor - 0.05f, 0.65f);
+                majorMin = Math.Max(majorMin, symbolThreshold.AiConfidenceMin);
 
-                float majorTfMin = isLong
-                    ? Math.Max(_config.MinTransformerConfidenceMajor + 0.05f, 0.70f)
-                    : Math.Max(_config.MinTransformerConfidenceMajor - 0.05f, 0.60f);
-                majorTfMin = Math.Max(majorTfMin, symbolThreshold.AiConfidenceMin);
-
-                bool majorMlPass = detail.ML_Approve && (detail.ML_Confidence + fibBonusConfidence) >= majorMinConf;
-                bool majorTfPass = detail.TF_Approve && (detail.TF_Confidence + fibBonusConfidence) >= majorTfMin;
-
-                // [v4.6.1] LONG은 ML AND TF 모두 충족 (편향 방지), SHORT는 OR 유지 (데이터 부족)
-                bool combinedPass = isLong ? (majorMlPass && majorTfPass) : (majorMlPass || majorTfPass);
-
-                if (!combinedPass)
+                if (detail.ML_Confidence < majorMin)
                 {
-                    return (false, $"Major_{decision}_Threshold_Not_Met_ML={detail.ML_Confidence:P1}(>={majorMinConf:P0})_TF={detail.TF_Confidence:P1}(>={majorTfMin:P0})", detail);
+                    OnLog?.Invoke($"❌ [{symbol}] [DECIDE][major] ML={detail.ML_Confidence:P1} < Major 임계 {majorMin:P0}");
+                    return (false, $"Major_{decision}_Below_{majorMin:P0}_ML={detail.ML_Confidence:P1}", detail);
                 }
             }
-            // 펌핑 코인: 별도 모델 (TODO: 펌핑 전용 모델 학습)
             else if (coinType == CoinType.Pumping)
             {
-                // 펌핑 코인은 변동성 리스크가 높아 별도 강화 threshold 적용
-                float pumpMlThreshold = Math.Max(Math.Max(_config.MinMLConfidencePumping, _config.MinMLConfidence), symbolThreshold.AiConfidenceMin);
-                float pumpTfThreshold = Math.Max(Math.Max(_config.MinTransformerConfidencePumping, _config.MinTransformerConfidence), symbolThreshold.AiConfidenceMin);
+                // Pumping 변동성 리스크 → 강화 threshold
+                float pumpMin = Math.Max(
+                    Math.Max(_config.MinMLConfidencePumping, _config.MinMLConfidence),
+                    symbolThreshold.AiConfidenceMin);
 
-                bool pumpMlPass = detail.ML_Approve && (detail.ML_Confidence + fibBonusConfidence) >= pumpMlThreshold;
-                bool pumpTfPass = detail.TF_Approve && (detail.TF_Confidence + fibBonusConfidence) >= pumpTfThreshold;
-                if (!pumpMlPass && !pumpTfPass)
+                if (detail.ML_Confidence < pumpMin)
                 {
-                    return (false, $"Pumping_Threshold_Not_Met_ML={detail.ML_Confidence:P1}_TF={detail.TF_Confidence:P1}", detail);
+                    OnLog?.Invoke($"❌ [{symbol}] [DECIDE][pump] ML={detail.ML_Confidence:P1} < Pump 임계 {pumpMin:P0}");
+                    return (false, $"Pumping_Below_{pumpMin:P0}_ML={detail.ML_Confidence:P1}", detail);
                 }
             }
 

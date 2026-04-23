@@ -9705,19 +9705,11 @@ namespace TradingBot
             string? aiGateDecisionId = null;
             decimal aiGateSizeMultiplier = 1.0m; // AI Gate에서 산출된 사이즈 배수
 
-            // [v3.4.1] DROUGHT_RECOVERY AI Gate 우회 제거 — 하락장에서 무필터 진입 방지
-            // CRASH_REVERSE/PUMP_REVERSE만 우회 (급변 대응), SPIKE_DETECT도 AI Gate 통과
-            // [v4.9.6] skipAiGateCheck=true 파라미터 존중 — PumpScanStrategy가 이미 PumpSignalClassifier로
-            //          AI 승인 완료한 경우 AIDoubleCheckEntryGate(EntryTimingMLTrainer) 재검증 스킵
-            //          (두 모델이 학습 도메인 다름: PumpSignalClassifier는 PUMP 전용, EntryTimingMLTrainer는 메이저 전용)
-            bool shouldBypassAiGate = skipAiGateCheck
-                || signalSource == "CRASH_REVERSE"
-                || signalSource == "PUMP_REVERSE";
-            if (shouldBypassAiGate)
-            {
-                EntryLog("AI_GATE", "BYPASS", $"reason=prechecked signalSource={signalSource}");
-            }
-            else if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate.IsReady)
+            // [v5.11.0] 모든 AI Gate 바이패스 제거 — 진입로직 전면 재설계
+            //   - skipAiGateCheck 파라미터 무시 (PumpScan/SPIKE_FAST/CRASH_REVERSE/PUMP_REVERSE 전부 게이트 통과 강제)
+            //   - 이유: PumpSignalClassifier 단독 승인으로 진입하던 경로가 하락장에서 승률 <30%
+            //   - 신규 게이트 (검증→예측→결정) 가 모든 경로에 대해 독립 3소스 교차검증 수행
+            if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate.IsReady)
             {
                 CoinType coinType = ResolveCoinType(symbol, signalSource);
                 var gateResult = await _aiDoubleCheckEntryGate.EvaluateEntryWithCoinTypeAsync(symbol, decision, currentPrice, coinType, token);

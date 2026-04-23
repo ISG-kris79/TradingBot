@@ -4746,6 +4746,21 @@ namespace TradingBot.ViewModels
                         roePct *= pos.Leverage > 0 ? pos.Leverage : 1;
                     }
 
+                    // [v5.11.0] Panel 1(실시간 시장 신호) Leverage 를 Panel 2(Binance 실제값)로 강제 동기화
+                    //   기존: MultiTimeframeViewModel.Leverage 기본 20 (구 하드코딩)
+                    //   수정: PositionInfo.Leverage (Binance positionRisk sync 값)을 즉시 반영
+                    if (pos.Leverage > 0 && TryNormalizeTradingSymbol(pos.Symbol, out var normSym))
+                    {
+                        if (_marketDataIndex.TryGetValue(normSym, out var mdItem) && mdItem != null)
+                        {
+                            int posLev = (int)Math.Round(pos.Leverage);
+                            if (mdItem.Leverage != posLev)
+                                mdItem.Leverage = posLev;
+                            if (mdItem.EntryPrice != pos.EntryPrice && pos.EntryPrice > 0)
+                                mdItem.EntryPrice = pos.EntryPrice;
+                        }
+                    }
+
                     decimal progress = 0m;
                     if (pos.TakeProfit > 0 && pos.EntryPrice > 0)
                     {
@@ -5044,6 +5059,10 @@ namespace TradingBot.ViewModels
                     existing.TargetPrice = 0;
                     existing.StopLossPrice = 0;
                     existing.TrailingStopPrice = 0;
+                    // [v5.11.0] Leverage 도 0 으로 리셋 — 청산 후 stale ROI 잔류 버그 수정
+                    //   ProfitRate getter 가 !IsPositionActive 시 cached _profitPercent 반환하므로
+                    //   Leverage 를 리셋해야 다음 계산이 0 으로 나옴
+                    existing.Leverage = 0;
                 }
 
                 string resolvedEntryStatus = ResolveEntryStatus(existing.SignalSource, existing.Decision, existing.IsPositionActive);
