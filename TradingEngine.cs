@@ -10814,12 +10814,18 @@ namespace TradingBot
 
         // ═══════════════════════════════════════════════════════════════════════════
         // [공통] AI Predictor 평가 + 보너스 점수
+        // [v5.10.99 P2-3] 점수 시스템 명확화:
+        //   - ctx.AiScore (TradeHistory.AiScore) ← AIPredictor.Predict() = scalping_model.zip 단일 모델 (0~100)
+        //   - Bot_Log.ML_Conf ← AIDoubleCheckEntryGate의 EntryTimingMLTrainer variant 점수 (0~1, 4 variant 중 선택)
+        //   두 점수는 서로 다른 모델 출처. AiScore는 1차 screening, ML_Conf는 2차 dual gate 검증.
+        //   UI 표시: AiScore (legacy 호환), DB 분석 시 ML_Conf 우선 참고.
         // ═══════════════════════════════════════════════════════════════════════════
         private async Task EvaluateAiPredictorForEntry(EntryContext ctx, bool applyMajorBonuses)
         {
             if (_aiPredictor == null || ctx.LatestCandle == null)
                 return;
 
+            // [v5.10.99 P2-3] AiScore = scalping_model.zip 점수 (EntryTimingMLTrainer ML_Conf와 다름)
             var prediction = _aiPredictor.Predict(ctx.LatestCandle);
             ctx.AiScore = Math.Max(0f, prediction.Score);
             ctx.AiProbability = prediction.Probability;

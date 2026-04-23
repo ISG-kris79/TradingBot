@@ -5,6 +5,38 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.10.99] - 2026-04-23
+
+### 🧹 P2/P3 정리 — Dead code, Major fallback, 명확화, 가시성
+
+**P2-1: DualAI_EntryPredictor [Obsolete] 마킹**
+
+- 어디서도 인스턴스화 안 됨 (TF migration 미완성)
+- `[System.Obsolete]` 표시로 향후 제거 예정 명시
+- EntryTimingMLTrainer (4 variants)이 대체
+
+**P2-3: AiScore vs ML_Conf 명확화**
+
+`EvaluateAiPredictorForEntry` 헤더에 점수 시스템 주석 추가:
+
+- `ctx.AiScore` (TradeHistory.AiScore) ← AIPredictor / scalping_model.zip
+- `Bot_Log.ML_Conf` ← AIDoubleCheckEntryGate / EntryTimingMLTrainer variant
+- 두 점수 출처가 다름. AiScore=1차 screening, ML_Conf=2차 dual gate
+
+**P2-4: Major variant 학습 데이터 fallback**
+
+- 현재 Major 440 samples vs Pump 1540 (메이저 4개만 있어 부족)
+- `majorFeatures < 50` 시 `trainingFeatures` 전체로 fallback (Pump와 동일 패턴)
+- Major variant 모델 정확도/Sample 향상 기대
+
+**P3-1: PumpSignalClassifier 점검 완료** (별도 fix 불필요 — 현재 시스템 충분)
+
+**P3-3: Online learning 가시성 강화**
+
+- `OnRetrainCompleted` event에 FooterLogs 직접 출력 추가
+- 로그: `🧠 [ONLINE_ML][✅] reason=hourly samples=N acc=X% f1=Y%`
+- 기존엔 AiTrainingRuns DB만 기록 → 실시간 모니터링 불가
+
 ## [5.10.98] - 2026-04-23
 
 ### 🛠️ P1 4개 갭 수정 — 종합 audit 후 누락 부분 일괄 보강

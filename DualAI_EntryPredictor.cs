@@ -10,9 +10,14 @@ using TradingBot.Services.AI;
 namespace TradingBot.Services
 {
     /// <summary>
-    /// ?�??AI ?�상�??�측 ?�스??(ML.NET + Transformer)
-    /// 15분봉 120�??�이?��? 기반?�로 진입???�측
+    /// 듀얼 AI 동시 예측 시스템 (ML.NET + Transformer)
+    /// 15분봉 120봉 데이터 기반으로 진입점 예측
     /// </summary>
+    /// <remarks>
+    /// [v5.10.99 P2-1] 죽은 코드 — 어디서도 인스턴스화 안 됨. TF migration 미완성으로 사용 안 됨.
+    /// EntryTimingMLTrainer (4 variants) + AIDoubleCheckEntryGate가 대체. 향후 제거 예정.
+    /// </remarks>
+    [System.Obsolete("v5.10.99: 미사용 dead code. EntryTimingMLTrainer 사용. 향후 제거 예정.", false)]
     public class DualAI_EntryPredictor : IDisposable
     {
         private readonly AIPredictor _mlNetPredictor;

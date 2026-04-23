@@ -160,9 +160,12 @@ namespace TradingBot
                     OnAlert?.Invoke($"🧠 온라인 학습: {reason} | 정확도={acc:P1}, ML={mlThresh:P0}, TF={tfThresh:P0}");
                 };
 
-                // [v5.10.66] 온라인 재학습 결과를 AiTrainingRuns 테이블에도 기록 (이전엔 INIT_ML만 기록되어 진단 불가)
+                // [v5.10.66] 온라인 재학습 결과를 AiTrainingRuns 테이블에도 기록
+                // [v5.10.99 P3-3] 가시성 강화 — FooterLogs에도 명시 로그
                 _onlineLearning.OnRetrainCompleted += (reason, sampleCount, accuracy, f1, success) =>
                 {
+                    string status = success ? "✅" : "❌";
+                    OnLog?.Invoke($"🧠 [ONLINE_ML][{status}] reason={reason} samples={sampleCount} acc={accuracy:P1} f1={f1:P1}");
                     if (_dbManager == null) return;
                     string runId = $"ONLINE_ML_{DateTime.UtcNow:yyyyMMddHHmmssfff}";
                     _ = _dbManager.UpsertAiTrainingRunAsync(
@@ -1511,15 +1514,19 @@ namespace TradingBot
                 var majorFeatures = trainingFeatures.Where(f => IsMajorSymbol(f.Symbol)).ToList();
                 var pumpFeatures  = trainingFeatures.Where(f => !IsMajorSymbol(f.Symbol)).ToList();
 
-                // [v5.10.92 ROOT FIX] Pump/Spike variant 학습 데이터 0개 버그 근본 해결
-                //   증거: AiTrainingRuns DB 모든 이력에 Major+Default만 있고 Pump/Spike는 단 1건도 없음
-                //   원인: v5.10.85에서 MajorSymbols=Settings.Symbols(BTC/ETH/SOL/XRP 4개) 동적화 → 학습용 _symbols도 4개라 모두 메이저로 분류 → pumpFeatures=0 → "데이터 부족" 스킵
-                //   결과: _mlTrainerPump/Spike 모델 파일 미생성 → SelectTrainerForSymbol(알트)가 모델 0% 반환 → 모든 진입 Dual_Reject
-                //   수정: pumpFeatures 부족 시 majorFeatures(전체 학습 데이터)로 fallback. 동일 데이터지만 모델 파일 생성되어 추론 가능
+                // [v5.10.92 ROOT FIX] Pump/Spike variant 학습 데이터 부족 fallback
                 if (pumpFeatures.Count < 10 && trainingFeatures.Count >= 10)
                 {
-                    OnLog?.Invoke($"[AI 학습] ⚠️ pumpFeatures={pumpFeatures.Count}개 부족 → trainingFeatures({trainingFeatures.Count}개) fallback 사용 (Pump/Spike variant 학습 보장)");
+                    OnLog?.Invoke($"[AI 학습] ⚠️ pumpFeatures={pumpFeatures.Count}개 부족 → trainingFeatures({trainingFeatures.Count}개) fallback");
                     pumpFeatures = trainingFeatures;
+                }
+                // [v5.10.99 P2-4] Major variant도 동일 fallback (Major 학습 데이터 부족 대비)
+                //   현재 Major 440 samples vs Pump 1540 — 메이저 4개만 있어 데이터 적음
+                //   majorFeatures<50이면 trainingFeatures 전체로 보강 (메이저 추론 정확도↑)
+                if (majorFeatures.Count < 50 && trainingFeatures.Count >= 50)
+                {
+                    OnLog?.Invoke($"[AI 학습] ⚠️ majorFeatures={majorFeatures.Count}개 부족 → trainingFeatures({trainingFeatures.Count}개) fallback");
+                    majorFeatures = trainingFeatures;
                 }
                 // Spike는 1분봉 초단타 — pumpFeatures 동일 사용 (향후 분리)
                 var spikeFeatures = pumpFeatures;
