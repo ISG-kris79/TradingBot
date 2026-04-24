@@ -342,8 +342,10 @@ namespace TradingBot.Strategies
                         bool m1PosOk = m1PosInRange <= 0.70f;
                         bool m1WickOk = m1UpperWickRatio <= 0.30f;
 
-                        // 조건: 1분봉 +3% AND 거래량 10배 + 양봉 + 단기추세 + 과열 아님 + RSI<75 + 꼭대기 아님 + 윗꼬리 없음
-                        if (m1RangePct >= 3.0f && m1VolRatio >= 10.0 && m1Bullish && m1TrendOk && m1PosOk && m1WickOk)
+                        // [v5.17.0 OPTION A] M1_FAST_PUMP fast-path 비활성화
+                        //   사유: 하드코딩 임계 (1분 +3%, 10배 vol) → 꼭대기 추격 구조
+                        //   대체: 15-5-1 엔진이 정제된 신호로 진입 결정
+                        if (false && m1RangePct >= 3.0f && m1VolRatio >= 10.0 && m1Bullish && m1TrendOk && m1PosOk && m1WickOk)
                         {
                             decision = "LONG";
                             PumpSignalLog("M1_FAST_PUMP",
@@ -384,7 +386,8 @@ namespace TradingBot.Strategies
                     // [v5.11.1] 캔들 내 위치 검증 추가
                     float megaPumpRsiCap = isOverextended ? 70f : 80f;
                     bool megaBase = isUptrend && volumeMomentum >= 5.0 && rangePctNow >= 3.0f && isBullish && rsi < megaPumpRsiCap;
-                    if (megaBase && m5PosOk && m5WickOk)
+                    // [v5.17.0 OPTION A] MEGA_PUMP fast-path 비활성화 — 15-5-1 엔진이 대체
+                    if (false && megaBase && m5PosOk && m5WickOk)
                     {
                         decision = "LONG";
                         PumpSignalLog("MEGA_PUMP", $"sym={symbol} vol={volumeMomentum:F1}x range={rangePctNow:F1}% rsi={rsi:F0} overext={isOverextended} m5Pos={m5PosInRange:P0} m5Wick={m5UpperWickRatio:P0} → 즉시 진입");
@@ -427,7 +430,8 @@ namespace TradingBot.Strategies
                     bool lcWickOk = lcUpperWickRatio <= 0.30f;
 
                     bool topBase = lc_chgPct >= 3.0f && lc_bullish && lc_rangePct >= 3.0f && m5TrendOk;
-                    if (topBase && lcPosOk && lcWickOk)
+                    // [v5.17.0 OPTION A] TOP_SCORE_ENTRY fast-path 비활성화 — 15-5-1 엔진이 대체
+                    if (false && topBase && lcPosOk && lcWickOk)
                     {
                         decision = "LONG";
                         PumpSignalLog("TOP_SCORE_ENTRY",

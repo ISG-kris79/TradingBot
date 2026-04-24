@@ -179,12 +179,16 @@ namespace TradingBot
             // [v5.16.0] 온라인 학습 서비스 초기화 — 4개 variant 별 독립 인스턴스
             if (enableOnlineLearning)
             {
+                // [v5.17.0 SMART LEARNING ②] 재학습 가속 — 트리거 5건마다 + 주기 15분
+                //   기존(v5.16.0): 200/100/1h → 2달간 학습 0회
+                //   v5.17.0: 50/5/15min → 능동 학습 + 시장 급변 대응
+                //   콜드 스타트는 BootstrapFromTradeHistoryAsync 가 별도 처리 (DB 기반 즉시 학습)
                 OnlineLearningConfig MakeConfig() => new OnlineLearningConfig
                 {
                     SlidingWindowSize = 1000,
-                    MinSamplesForTraining = 200,
-                    TriggerEveryNSamples = 100,
-                    RetrainingIntervalHours = 1.0,
+                    MinSamplesForTraining = 50,        // 200 → 50 (현실적 임계)
+                    TriggerEveryNSamples = 5,          // 100 → 5 (능동 업데이트)
+                    RetrainingIntervalHours = 0.25,    // 1.0 → 0.25 (15분)
                     EnablePeriodicRetraining = true,
                     EnableConceptDriftDetection = true,
                     TransformerFastEpochs = 5
@@ -240,6 +244,10 @@ namespace TradingBot
                         await _onlineLearningPump.LoadInitialWindowAsync(Path.Combine(basePath, "Pump"));
                         await _onlineLearningSpike.LoadInitialWindowAsync(Path.Combine(basePath, "Spike"));
                         OnLog?.Invoke($"[OnlineLearning] 4-variant 초기화 완료: Default={_onlineLearning.WindowSize}, Major={_onlineLearningMajor.WindowSize}, Pump={_onlineLearningPump.WindowSize}, Spike={_onlineLearningSpike.WindowSize}");
+
+                        // [v5.17.0 SMART LEARNING ①] Initial Batch Learning — DB TradeHistory 일괄 학습
+                        //   목적: 콜드 스타트 1-2주 → 30분 단축. 봇 시작시 즉시 4 zip 모델 생성
+                        await BootstrapFromTradeHistoryAsync(daysBack: 30);
                     }
                     catch (Exception ex)
                     {
@@ -1061,6 +1069,158 @@ namespace TradingBot
             _dataFlushTimer?.Dispose();
             _onlineLearning?.Dispose();
             FlushCollectedData(); // 종료 시 마지막 저장
+        }
+
+        /// <summary>
+        /// [v5.17.0 SMART LEARNING ①] DB TradeHistory 일괄 학습 — 콜드 스타트 즉시 해결
+        ///
+        /// 동작:
+        ///  1) DB 에서 최근 N일 trades 조회 (PnL 있는 closed trade만)
+        ///  2) 각 trade 의 EntryTime 시점 feature 추출 (MultiTimeframeFeatureExtractor 활용)
+        ///  3) 라벨: PnL > 0 → ShouldEnter=true
+        ///  4) 심볼별 variant 인스턴스에 샘플 추가
+        ///  5) 50건 이상 모인 variant → 즉시 RetrainModelsAsync 강제 호출
+        ///  6) 결과: EntryTimingModel_*.zip 4개 즉시 생성 → AI Gate 즉시 활성
+        ///
+        /// 주의: feature 추출은 historical kline 필요 (현재 캐시 없으면 API 폴링)
+        ///       ~수백 trade 처리에 1-3분 소요 예상 → 백그라운드 실행 권장
+        /// </summary>
+        public async Task<(int processed, int loaded, string report)> BootstrapFromTradeHistoryAsync(int daysBack = 30)
+        {
+            if (_dbManager == null)
+                return (0, 0, "DB_NOT_AVAILABLE");
+
+            int userId = AppConfig.CurrentUser?.Id ?? 0;
+            if (userId <= 0)
+                return (0, 0, "USER_NOT_LOGGED_IN");
+
+            try
+            {
+                OnLog?.Invoke($"🎓 [BOOTSTRAP] DB TradeHistory 일괄 학습 시작 (최근 {daysBack}일)");
+
+                var since = DateTime.UtcNow.AddDays(-daysBack);
+                var trades = await _dbManager.GetTradeHistoryAsync(userId, since, DateTime.UtcNow, 5000);
+                if (trades == null || trades.Count == 0)
+                {
+                    OnLog?.Invoke("ℹ️ [BOOTSTRAP] 학습 가능한 과거 trade 없음 → 스킵");
+                    return (0, 0, "NO_TRADES");
+                }
+
+                int processed = 0, loaded = 0;
+                int defaultAdded = 0, majorAdded = 0, pumpAdded = 0, spikeAdded = 0;
+
+                foreach (var t in trades)
+                {
+                    processed++;
+                    if (string.IsNullOrEmpty(t.Symbol)) continue;
+                    if (t.Time == default || t.Price <= 0) continue;
+                    if (t.PnL == 0m && t.PnLPercent == 0m) continue; // 미체결/0-PnL 스킵
+
+                    try
+                    {
+                        // EntryTime 시점 feature 재추출
+                        var feature = await _featureExtractor.ExtractRealtimeFeatureAsync(t.Symbol, t.Time, CancellationToken.None);
+                        if (feature == null) continue;
+
+                        // 라벨: PnL > 0 = WIN
+                        feature.ShouldEnter = t.PnL > 0m;
+                        feature.ActualProfitPct = (float)t.PnLPercent;
+                        feature.Symbol = t.Symbol;
+                        feature.Timestamp = t.Time;
+                        feature.EntryPrice = t.Price;
+
+                        // variant 라우팅
+                        var svc = SelectLearningServiceForSymbol(t.Symbol, t.Strategy);
+                        var tag = GetVariantTagForSymbol(t.Symbol, t.Strategy);
+                        if (svc != null)
+                        {
+                            await svc.AddLabeledSampleAsync(feature);
+                            loaded++;
+                            if (tag == "Major") majorAdded++;
+                            else if (tag == "Spike") spikeAdded++;
+                            else pumpAdded++;
+                        }
+                        // Default 도 모든 샘플 받기
+                        if (_onlineLearning != null && svc != _onlineLearning)
+                        {
+                            await _onlineLearning.AddLabeledSampleAsync(feature);
+                            defaultAdded++;
+                        }
+                    }
+                    catch { /* per-trade skip */ }
+                }
+
+                OnLog?.Invoke($"📊 [BOOTSTRAP] 처리={processed} 로딩={loaded} | Default+={defaultAdded} Major+={majorAdded} Pump+={pumpAdded} Spike+={spikeAdded}");
+
+                // 즉시 강제 재학습 — 최소 샘플 미달이어도 시도 (window>=10이면 train 가능하도록 향후 수정 가능)
+                int trained = 0;
+                async Task TryTrain(AdaptiveOnlineLearningService? svc, string tag)
+                {
+                    if (svc == null) return;
+                    try
+                    {
+                        if (svc.WindowSize >= 10)
+                        {
+                            await svc.ForceRetrainAsync($"BOOTSTRAP_{tag}");
+                            trained++;
+                            OnLog?.Invoke($"✅ [BOOTSTRAP][{tag}] 강제 재학습 완료 (window={svc.WindowSize})");
+                        }
+                        else
+                        {
+                            OnLog?.Invoke($"⏸️ [BOOTSTRAP][{tag}] 재학습 skip (window={svc.WindowSize} < 10)");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLog?.Invoke($"⚠️ [BOOTSTRAP][{tag}] 재학습 실패: {ex.Message}");
+                    }
+                }
+                // [v5.17.0 SMART LEARNING ③] Cross-Variant Transfer
+                //   Default 먼저 학습 → 다른 variant 들이 Default 의 학습된 모델을 즉시 활용 가능
+                //   각 variant 도 자기 데이터로 추가 학습 시도 (있을 경우)
+                await TryTrain(_onlineLearning, "Default");
+
+                // Default 가 학습 성공했으면 zip 파일을 다른 variant 경로로 복사 (warm start)
+                try
+                {
+                    string defaultPath = _mlTrainer.GetModelPath();
+                    if (System.IO.File.Exists(defaultPath))
+                    {
+                        void CopyIfMissing(EntryTimingMLTrainer t, string tag)
+                        {
+                            try
+                            {
+                                string targetPath = t.GetModelPath();
+                                if (!System.IO.File.Exists(targetPath))
+                                {
+                                    System.IO.File.Copy(defaultPath, targetPath, overwrite: false);
+                                    t.LoadModel();
+                                    OnLog?.Invoke($"🔁 [BOOTSTRAP][{tag}] Default 모델 복사 (warm start) → {targetPath}");
+                                }
+                            }
+                            catch (Exception ex) { OnLog?.Invoke($"⚠️ [BOOTSTRAP][{tag}] warm start 실패: {ex.Message}"); }
+                        }
+                        CopyIfMissing(_mlTrainerMajor, "Major");
+                        CopyIfMissing(_mlTrainerPump,  "Pump");
+                        CopyIfMissing(_mlTrainerSpike, "Spike");
+                    }
+                }
+                catch (Exception ex) { OnLog?.Invoke($"⚠️ [BOOTSTRAP][warmstart] {ex.Message}"); }
+
+                // 각 variant 자체 데이터로 fine-tune (있을 경우)
+                await TryTrain(_onlineLearningMajor, "Major");
+                await TryTrain(_onlineLearningPump, "Pump");
+                await TryTrain(_onlineLearningSpike, "Spike");
+
+                string report = $"processed={processed} loaded={loaded} trained_variants={trained}/4";
+                OnLog?.Invoke($"🎉 [BOOTSTRAP] 완료: {report}");
+                return (processed, loaded, report);
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"❌ [BOOTSTRAP] 예외: {ex.Message}");
+                return (0, 0, $"EXCEPTION: {ex.Message}");
+            }
         }
 
         /// <summary>

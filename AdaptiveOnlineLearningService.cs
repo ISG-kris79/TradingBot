@@ -164,6 +164,9 @@ namespace TradingBot
         /// <summary>
         /// 모델 재학습 (ML.NET + Transformer)
         /// </summary>
+        /// <summary>[v5.17.0] 강제 재학습 — Bootstrap 등 외부 트리거용</summary>
+        public Task ForceRetrainAsync(string reason) => RetrainModelsAsync(reason);
+
         private async Task RetrainModelsAsync(string reason)
         {
             if (_isTraining)

@@ -81,6 +81,9 @@ namespace TradingBot
             return Path.Combine(modelDir, fileName);
         }
 
+        /// <summary>[v5.17.0] 모델 zip 파일 경로 반환 (Cross-Variant Transfer 용)</summary>
+        public string GetModelPath() => _modelPath;
+
         private void EnsureModelDirectoryExists()
         {
             try

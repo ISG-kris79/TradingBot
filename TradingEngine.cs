@@ -506,6 +506,13 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, byte> _analysisWorkers = new ConcurrentDictionary<string, byte>();
         private readonly SemaphoreSlim _analysisConcurrencyLimiter = new SemaphoreSlim(8, 8);
 
+        // [v5.17.0 REDESIGN] 15-5-1 엔진 — 15m 필터 / 5m 전략 / 1m 체결
+        private readonly TradingBot.Services.FifteenFiveOneEngine _entryEngine151 = new();
+        // 5m 종가 확정 디바운스 (각 심볼당 마지막 처리한 5m 캔들 종가 시각)
+        private readonly ConcurrentDictionary<string, DateTime> _last5mProcessedAt = new(StringComparer.OrdinalIgnoreCase);
+        // 15m 종가 확정 디바운스 (각 심볼당 마지막 처리한 15m 캔들 종가 시각)
+        private readonly ConcurrentDictionary<string, DateTime> _last15mProcessedAt = new(StringComparer.OrdinalIgnoreCase);
+
         // [우선순위 격리] AI 추론 + 주문 전용 워커 스레드 (UI보다 높은 우선순위)
         private TradingBot.Services.AIDedicatedWorkerThread? _aiWorkerThread;
         // [동적 트레일링] AI 기반 동적 익절/손절 엔진
@@ -1243,7 +1250,11 @@ namespace TradingBot
                     OnAlert?.Invoke("💧 [알트 불장 모드] 해제 — 정상 레버리지 복귀");
             };
             _crashDetector.OnPumpDetected += (coins, avgRise) => _ = HandlePumpDetectedAsync(coins, avgRise);
-            _crashDetector.OnSpikeDetected += (symbol, changePct, price) => _ = HandleSpikeDetectedAsync(symbol, changePct, price);
+            // [v5.17.0 REDESIGN] SPIKE_FAST (HandleSpikeDetectedAsync) 비활성화
+            //   이유: 기존 하드코딩된 3% 감지 → 즉시 시장가 경로는 "꼭대기 진입" 구조.
+            //         신규 15-5-1 엔진이 5m strategy + 1m trigger 로 정제된 타이밍 사용
+            //   기존 HandleSpikeDetectedAsync 메서드는 호출되지 않지만 코드는 보존 (롤백 대비)
+            // _crashDetector.OnSpikeDetected += (symbol, changePct, price) => _ = HandleSpikeDetectedAsync(symbol, changePct, price);
 
             _crashDetector.OnVolumeSurgeDetected += (symbol, volRatio, price) =>
             {
@@ -1472,8 +1483,11 @@ namespace TradingBot
 
             // [v4.2.0] 틱 밀도 모니터 — 급등 시작 신호 + BB 스퀴즈 브레이크아웃
             _tickMonitor.OnLog += msg => OnStatusLog?.Invoke(msg);
+            // [v5.17.0 REDESIGN] TICK_SURGE 핸들러 비활성화
+            //   이유: 신규 15-5-1 엔진이 정제된 1m 볼륨 spike 시 진입 → 별도 TICK_SURGE 경로 불필요
             _tickMonitor.OnTickSurgeDetected += (symbol, tpsRatio, buyRatio, price) =>
             {
+                if (true) return; // [v5.17.0] TICK_SURGE 즉시 진입 경로 비활성화
                 _ = Task.Run(async () =>
                 {
                     try
@@ -2695,8 +2709,31 @@ namespace TradingBot
                 // [v5.10.18] 거래소 폴링 동기화 시작
                 _positionSyncService.Start(token);
 
-                OnAlert?.Invoke("🚀 최적화 엔진 가동 (WebSocket 모드)");
-                LoggerService.Info("엔진 시작: WebSocket 모드");
+                // [v5.17.0 REDESIGN] 15-5-1 엔진 이벤트 연결
+                _entryEngine151.OnLog += msg => OnStatusLog?.Invoke(msg);
+                _entryEngine151.OnEntryFire += async trigger =>
+                {
+                    try
+                    {
+                        // 글로벌 진입 게이트 체크 (슬롯 / 일일한도 / 블랙리스트)
+                        if (!IsEntryAllowed(trigger.Symbol, "ENGINE_151", out string blockReason))
+                        {
+                            OnStatusLog?.Invoke($"⛔ [ENGINE_151] {trigger.Symbol} 차단: {blockReason}");
+                            return;
+                        }
+                        // ExecuteAutoOrder 로 통합 — 기존 AI Gate / 슬롯 체크 / 사이즈 산출 활용
+                        await ExecuteAutoOrder(trigger.Symbol, trigger.Direction, trigger.TriggerPrice, token, "ENGINE_151", skipAiGateCheck: false);
+                    }
+                    catch (Exception ex)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [ENGINE_151] {trigger.Symbol} 체결 예외: {ex.Message}");
+                    }
+                };
+                // 5초 주기 15m/5m/1m 폴링 루프 시작
+                _ = Task.Run(() => Run151EngineLoopAsync(token), token);
+
+                OnAlert?.Invoke("🚀 최적화 엔진 가동 (WebSocket 모드) + 15-5-1 엔진 활성");
+                LoggerService.Info("엔진 시작: WebSocket 모드 + 15-5-1");
 
                 // [v4.7.0] 초기 학습 상태 안내
                 if (IsInitialTrainingComplete)
@@ -3420,6 +3457,93 @@ namespace TradingBot
             int index = (int)Math.Ceiling(clamped * ordered.Length) - 1;
             index = Math.Clamp(index, 0, ordered.Length - 1);
             return ordered[index];
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // [v5.17.0 REDESIGN] 15-5-1 엔진 폴링 루프
+        //   MarketDataManager 캐시에서 15m/5m/1m 캔들 확인 → 엔진 Layer 호출
+        //   - 15m 종가 확정 → EvaluateRegime
+        //   - 5m 종가 확정 → TryGenerateSignal
+        //   - 1m 종가 확정 → TryTriggerEntry
+        //
+        //   폴링 간격: 3초 (1m 봉 종가 확정 감지에 충분, CPU 부담 낮음)
+        // ═══════════════════════════════════════════════════════════════
+        private async Task Run151EngineLoopAsync(CancellationToken token)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(10), token); // 시작 직후 초기 데이터 안정화 대기
+            OnStatusLog?.Invoke("🎯 [ENGINE_151] 루프 시작 (15m/5m/1m 폴링 간격=3초)");
+
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(3), token);
+
+                    // 추적 대상: 심볼 리스트 + 감시풀 + top60 랭킹 (존재하면)
+                    var symbolsToScan = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var s in _symbols) symbolsToScan.Add(s);
+                    foreach (var kv in _pumpWatchPool) symbolsToScan.Add(kv.Key);
+
+                    foreach (var symbol in symbolsToScan)
+                    {
+                        if (token.IsCancellationRequested) break;
+
+                        // ── Layer 1: 15m 종가 확정 감지 + EvaluateRegime
+                        try
+                        {
+                            var c15 = Services.MarketDataManager.Instance?.GetCachedKlines(
+                                symbol, Binance.Net.Enums.KlineInterval.FifteenMinutes, 60);
+                            if (c15 != null && c15.Count >= 51)
+                            {
+                                var lastOpen = c15[^1].OpenTime;
+                                if (!_last15mProcessedAt.TryGetValue(symbol, out var prev15) || prev15 != lastOpen)
+                                {
+                                    _last15mProcessedAt[symbol] = lastOpen;
+                                    _entryEngine151.EvaluateRegime(symbol, c15);
+                                }
+                            }
+                        }
+                        catch { /* per-symbol skip */ }
+
+                        // ── Layer 2: 5m 종가 확정 감지 + TryGenerateSignal
+                        try
+                        {
+                            var c5 = Services.MarketDataManager.Instance?.GetCachedKlines(
+                                symbol, Binance.Net.Enums.KlineInterval.FiveMinutes, 60);
+                            if (c5 != null && c5.Count >= 30)
+                            {
+                                var lastOpen = c5[^1].OpenTime;
+                                if (!_last5mProcessedAt.TryGetValue(symbol, out var prev5) || prev5 != lastOpen)
+                                {
+                                    _last5mProcessedAt[symbol] = lastOpen;
+                                    _entryEngine151.TryGenerateSignal(symbol, c5, out _);
+                                }
+                            }
+                        }
+                        catch { /* per-symbol skip */ }
+
+                        // ── Layer 3: 1m 현재 봉 상태 + 최근 10봉으로 TryTriggerEntry
+                        try
+                        {
+                            var c1 = Services.MarketDataManager.Instance?.GetCachedKlines(
+                                symbol, Binance.Net.Enums.KlineInterval.OneMinute, 15);
+                            if (c1 != null && c1.Count >= 11)
+                            {
+                                bool isMajor = MajorSymbols.Contains(symbol);
+                                _entryEngine151.TryTriggerEntry(symbol, c1[^1], c1, isMajor, out _);
+                            }
+                        }
+                        catch { /* per-symbol skip */ }
+                    }
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [ENGINE_151] 루프 예외: {ex.Message}");
+                }
+            }
+
+            OnStatusLog?.Invoke("🛑 [ENGINE_151] 루프 종료");
         }
 
         private async Task StartPeriodicTrainingAsync(CancellationToken token)
