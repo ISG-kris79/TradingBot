@@ -591,6 +591,41 @@ namespace TradingBot.Services
             catch { return 0; }
         }
 
+        /// <summary>
+        /// [v5.17.0 SAFETY] 전체 심볼의 algoOpenOrders 조회 (orphan algo cleanup 용)
+        ///   반환: 심볼별 algoOrder 개수 dictionary (1+ 면 algo 주문 활성)
+        /// </summary>
+        public async Task<Dictionary<string, int>> GetAllOpenAlgoOrdersBySymbolAsync(CancellationToken ct = default)
+        {
+            var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var (ok, body) = await CallAlgoApiAsync(HttpMethod.Get, "/fapi/v1/openAlgoOrders", "", ct);
+            if (!ok) return result;
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in doc.RootElement.EnumerateArray())
+                    {
+                        if (item.TryGetProperty("symbol", out var symEl))
+                        {
+                            string sym = symEl.GetString() ?? "";
+                            if (!string.IsNullOrEmpty(sym))
+                            {
+                                if (result.ContainsKey(sym)) result[sym]++;
+                                else result[sym] = 1;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [Binance] algoOpenOrders 파싱 실패: {ex.Message}");
+            }
+            return result;
+        }
+
         /// <summary>[v5.10.63] 특정 심볼의 모든 주문(일반+Algo) 일괄 취소</summary>
         public async Task CancelAllOrdersAsync(string symbol, CancellationToken ct = default)
         {

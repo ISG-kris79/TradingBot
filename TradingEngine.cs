@@ -2732,6 +2732,15 @@ namespace TradingBot
                 // 5초 주기 15m/5m/1m 폴링 루프 시작
                 _ = Task.Run(() => Run151EngineLoopAsync(token), token);
 
+                // [v5.17.1 SAFETY] 봇 시작 시 잔존 algoOrder cleanup
+                //   사용자 사례: 1시 청산 후 잠든 사이 algoOrder 자동 trigger 로 14건 부분 매도
+                //   봇 시작 직후 활성 포지션 없는 심볼의 algoOrder 일괄 cancel
+                _ = Task.Run(async () =>
+                {
+                    try { await Task.Delay(TimeSpan.FromSeconds(5), token); } catch { }
+                    try { await CleanupOrphanAlgoOrdersAsync(allSymbols: true, reason: "engine_start"); } catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [START_CLEANUP] {ex.Message}"); }
+                }, token);
+
                 OnAlert?.Invoke("🚀 최적화 엔진 가동 (WebSocket 모드) + 15-5-1 엔진 활성");
                 LoggerService.Info("엔진 시작: WebSocket 모드 + 15-5-1");
 
@@ -5095,6 +5104,11 @@ namespace TradingBot
             {
                 try { await _positionSyncService.StopAsync().ConfigureAwait(false); } catch { }
                 try { await _orderManager.CancelAllAsync().ConfigureAwait(false); } catch { }
+
+                // [v5.17.1 SAFETY] 종료 시 모든 잔존 algoOrder cleanup
+                //   사용자 사례: 1시 청산 후 잠든 사이 algoOrder trailing trigger 로 자동 매도 14건 발생
+                //   봇 종료 시 자동으로 모든 algoOrder cancel 하여 동일 사고 재발 방지
+                try { await CleanupOrphanAlgoOrdersAsync(allSymbols: true, reason: "engine_stop"); } catch (Exception cex) { OnStatusLog?.Invoke($"⚠️ [STOP_CLEANUP] {cex.Message}"); }
             });
 
             TelegramService.Instance.OnRequestStatus = null!;
@@ -5103,6 +5117,92 @@ namespace TradingBot
             OnTelegramStatusUpdate?.Invoke(false, "Telegram: Disconnected");
             IsBotRunning = false;
             OnStatusLog?.Invoke("엔진 정지");
+        }
+
+        /// <summary>
+        /// [v5.17.1 SAFETY] 잔존 algoOrder 일괄 정리
+        ///
+        /// 발견된 사고: 사용자가 수동 청산 후 봇 종료 → Binance 에 algoOrder 잔존
+        ///   → 가격이 trailing trigger 도달 시 Binance 가 자동 reduceOnly 매도 trigger
+        ///   → 14건 partial close 발생, 봇은 EXTERNAL_PARTIAL_CLOSE_SYNC 로 사후 인식
+        ///   → 사용자는 "봇이 매수했다" 오해
+        ///
+        /// 동작:
+        ///   - allSymbols=true: 모든 심볼의 algoOpenOrders 조회 후 활성 포지션 없는 것만 cancel
+        ///   - allSymbols=false: 활성 포지션 없는 심볼 중 _activePositions 에도 없는 것만 cancel
+        ///
+        /// 호출 시점:
+        ///   1) 봇 시작 직후 (orphan 상태 청소)
+        ///   2) 봇 종료 직전 (다음 시작/꺼짐 사고 방지)
+        /// </summary>
+        public async Task CleanupOrphanAlgoOrdersAsync(bool allSymbols = false, string reason = "manual")
+        {
+            try
+            {
+                if (_exchangeService is not BinanceExchangeService binSvc)
+                {
+                    OnStatusLog?.Invoke("⚠️ [ALGO_CLEANUP] BinanceExchangeService 아님 → 스킵");
+                    return;
+                }
+
+                // 1) Binance 에서 모든 활성 algoOrder 조회 (심볼별 개수)
+                var algoBySymbol = await binSvc.GetAllOpenAlgoOrdersBySymbolAsync(CancellationToken.None);
+                if (algoBySymbol.Count == 0)
+                {
+                    OnStatusLog?.Invoke($"✅ [ALGO_CLEANUP][{reason}] 잔존 algoOrder 없음");
+                    return;
+                }
+
+                // 2) 실제 Binance 포지션 조회 (positionAmt > 0 인 심볼만 = 활성)
+                var positions = await _exchangeService.GetPositionsAsync(ct: CancellationToken.None);
+                var activeOnBinance = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (positions != null)
+                {
+                    foreach (var p in positions)
+                    {
+                        if (p.Quantity != 0 && !string.IsNullOrEmpty(p.Symbol))
+                            activeOnBinance.Add(p.Symbol);
+                    }
+                }
+
+                // 3) algo 가 있지만 포지션 없는 심볼 = orphan
+                var orphans = new List<string>();
+                foreach (var (symbol, count) in algoBySymbol)
+                {
+                    if (!activeOnBinance.Contains(symbol))
+                        orphans.Add($"{symbol}({count})");
+                }
+
+                if (orphans.Count == 0)
+                {
+                    OnStatusLog?.Invoke($"✅ [ALGO_CLEANUP][{reason}] orphan 없음 (모든 algoOrder가 활성 포지션 보유)");
+                    return;
+                }
+
+                OnStatusLog?.Invoke($"🧹 [ALGO_CLEANUP][{reason}] orphan algoOrder 감지: {orphans.Count}개 심볼 [{string.Join(", ", orphans)}]");
+
+                // 4) orphan 심볼 algoOrder 일괄 취소
+                int cleaned = 0;
+                foreach (var (symbol, _) in algoBySymbol)
+                {
+                    if (activeOnBinance.Contains(symbol)) continue;
+                    try
+                    {
+                        await binSvc.CancelAllOrdersAsync(symbol, CancellationToken.None);
+                        cleaned++;
+                    }
+                    catch (Exception ex)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [ALGO_CLEANUP] {symbol} 취소 실패: {ex.Message}");
+                    }
+                }
+
+                OnAlert?.Invoke($"🧹 [ALGO_CLEANUP][{reason}] {cleaned}개 심볼 orphan algoOrder cleanup 완료");
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"❌ [ALGO_CLEANUP] 예외: {ex.Message}");
+            }
         }
 
         private async Task CheckPartialTakeProfit(string symbol, double currentProfit, CancellationToken token)
