@@ -733,11 +733,13 @@ namespace TradingBot
                         ? (latestClose - minLow) / minLow * 100m
                         : 0m;
 
-                    // 규칙 1: 고점 추격
-                    if (posPct >= 85m && riseFromLowPct >= 3m)
+                    // 규칙 1: 고점 추격 — [v5.19.6] 임계 완화 (90% AND 5%) — 학습된 BB Walk 라이딩 통과 가능
+                    //   사용자: "상승 vs 하락 구분이 불가능한가? 너무 빡세면 BB Walk 정상 진입도 차단됨"
+                    //   완화: 위치 85→90, 상승 3%→5% (단, 둘 다 충족 시에만 차단)
+                    if (posPct >= 90m && riseFromLowPct >= 5m)
                     {
                         blockReason = $"HIGH_TOP_CHASING:pos={posPct:F1}%_rise={riseFromLowPct:F2}%";
-                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (M15 30봉 위치≥85% AND 상승≥3%)");
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (M15 30봉 위치≥90% AND 상승≥5%)");
                         return false;
                     }
 
@@ -811,6 +813,37 @@ namespace TradingBot
             {
                 OnLiveLog?.Invoke($"⛔ [ENTRY_GATE][{source}] {symbol} 차단 ({reason})");
                 return (false, 0m, 0m);
+            }
+
+            // [v5.19.6] 가용잔고 가드 — Binance -2027 InsufficientMargin 에러 사전 차단
+            //   필요 마진 = quantity × 현재가 / 레버리지 × 1.05 (수수료 + 버퍼)
+            //   가용 잔고 < 필요 마진 → 차단 (재시도/주문 폭주 방지)
+            try
+            {
+                decimal nowPriceForMargin = 0m;
+                if (_marketDataManager?.TickerCache != null && _marketDataManager.TickerCache.TryGetValue(symbol, out var tMargin))
+                    nowPriceForMargin = tMargin.LastPrice;
+                if (nowPriceForMargin <= 0m)
+                {
+                    try { nowPriceForMargin = await _exchangeService.GetPriceAsync(symbol, token); } catch { }
+                }
+                if (nowPriceForMargin > 0m && quantity > 0m)
+                {
+                    int lev = _settings?.DefaultLeverage > 0 ? _settings.DefaultLeverage : 10;
+                    decimal notional = quantity * nowPriceForMargin;
+                    decimal requiredMargin = notional / lev * 1.05m;
+                    decimal available = await _exchangeService.GetAvailableBalanceAsync("USDT", token);
+                    if (available > 0m && available < requiredMargin)
+                    {
+                        OnLiveLog?.Invoke($"⛔ [ENTRY_GATE][{source}] {symbol} 차단 (INSUFFICIENT_MARGIN) — 필요={requiredMargin:F2} 가용={available:F2} (qty={quantity} px={nowPriceForMargin:F8} lev={lev}x)");
+                        OnStatusLog?.Invoke($"⛔ [잔고부족] {symbol} 진입 취소 — 필요 ${requiredMargin:F2} > 가용 ${available:F2}");
+                        return (false, 0m, 0m);
+                    }
+                }
+            }
+            catch (Exception exMargin)
+            {
+                OnStatusLog?.Invoke($"⚠️ [잔고가드] {symbol} 체크 실패 (무시): {exMargin.Message}");
             }
 
             // ═══════════════════════════════════════════════════════════════
@@ -9402,13 +9435,9 @@ namespace TradingBot
         /// </summary>
         private int GetDynamicMaxPumpSlots()
         {
-            int baseSlots = MAX_PUMP_SLOTS;
-            DateTime kstNow = DateTime.UtcNow.AddHours(9);
-            int hour = kstNow.Hour;
-            int minute = kstNow.Minute;
-            // 09:00~09:15 + 08:45~09:00 = 9시 ±15분 동적 확대
-            bool isKst9PumpWindow = (hour == 8 && minute >= 45) || (hour == 9 && minute <= 15);
-            return isKst9PumpWindow ? baseSlots + 1 : baseSlots;
+            // [v5.19.6] KST 9시 +1슬롯 자동 확장 제거 — 사용자가 인지 못한 동작 (설정 2개인데 3개 진입)
+            //   요구: 설정창 MaxPumpSlots 값을 그대로 따름. 동적 확장 원하면 별도 설정 필요.
+            return MAX_PUMP_SLOTS;
         }
         
         /// <summary>
