@@ -1619,10 +1619,23 @@ namespace TradingBot.ViewModels
                     {
                         if (_engine != null)
                         {
-                            await _engine.ClosePositionAsync(symbol);
-                            AddLog($"⚡ {symbol} 수동 청산 요청 처리됨 (실패 시 로그 확인 후 [동기화] 버튼 실행)");
-                            // [FIX] 청산 후 TradeHistory 즉시 갱신
-                            await LoadTradeHistory();
+                            // [v5.19.9] 청산 + DB 갱신 모두 background — UI 즉시 응답 (사용자 체감 ~50ms)
+                            //   기존: ClosePositionAsync(5초 timeout) + LoadTradeHistory(1-3초) 순차 await → UI 5-8초 블록
+                            //   수정: 둘 다 fire-and-forget. 청산 결과는 텔레그램 + 인메모리 _activePositions 즉시 반영됨
+                            AddLog($"⚡ {symbol} 수동 청산 요청 전송 — 결과는 텔레그램/포지션패널 확인");
+                            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    await _engine.ClosePositionAsync(symbol);
+                                    await LoadTradeHistory();
+                                }
+                                catch (Exception ex)
+                                {
+                                    Application.Current?.Dispatcher.Invoke(() =>
+                                        AddLog($"⚠️ {symbol} 청산 백그라운드 실패: {ex.Message}"));
+                                }
+                            });
                         }
                         else
                         {

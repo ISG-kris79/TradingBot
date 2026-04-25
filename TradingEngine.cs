@@ -15453,6 +15453,9 @@ namespace TradingBot
                 return;
             }
 
+            // [v5.19.9] cooldown 을 청산 시작 전 즉시 등록 → 청산 진행 중 봇이 같은 심볼 진입 시도해도 차단
+            RegisterManualCloseCooldown(symbol);
+
             // 실전 모드 + 테스트넷 모드: PositionMonitor를 통한 거래소 API 청산
             // [v5.10.75] 수동 청산은 fast-path 사용 (기존 ExecuteMarketClose는 algo 취소 대기로 10초+ 지연)
             if (_positionMonitor != null)
@@ -15465,9 +15468,6 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"⚠️ {symbol} PositionMonitor 미초기화 — 직접 거래소 API 청산 시도");
                 await DirectClosePositionAsync(symbol);
             }
-
-            // [v5.19.5] 수동 청산 후 cooldown 등록 — 사용자 의도 무시하고 즉시 재진입 차단
-            RegisterManualCloseCooldown(symbol);
         }
 
         /// <summary>
