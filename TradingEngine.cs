@@ -1401,6 +1401,10 @@ namespace TradingBot
                     _aiDoubleCheckEntryGate.OnLog += msg => OnStatusLog?.Invoke(msg);
                     _aiDoubleCheckEntryGate.OnAlert += msg => OnAlert?.Invoke(msg);
                     _aiDoubleCheckEntryGate.OnLabeledSample += sample => _ = PersistAiLabeledSampleToDbAsync(sample);
+
+                    // [v5.18.0] BacktestBootstrap 용 추적 심볼 + ModelHealthMonitor 시작
+                    _aiDoubleCheckEntryGate.SetTrackedSymbols(_symbols);
+                    _aiDoubleCheckEntryGate.StartHealthMonitor();
                     if (_aiDoubleCheckEntryGate.IsReady)
                     {
                         OnStatusLog?.Invoke(

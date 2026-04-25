@@ -245,9 +245,10 @@ namespace TradingBot
                         await _onlineLearningSpike.LoadInitialWindowAsync(Path.Combine(basePath, "Spike"));
                         OnLog?.Invoke($"[OnlineLearning] 4-variant 초기화 완료: Default={_onlineLearning.WindowSize}, Major={_onlineLearningMajor.WindowSize}, Pump={_onlineLearningPump.WindowSize}, Spike={_onlineLearningSpike.WindowSize}");
 
-                        // [v5.17.0 SMART LEARNING ①] Initial Batch Learning — DB TradeHistory 일괄 학습
-                        //   목적: 콜드 스타트 1-2주 → 30분 단축. 봇 시작시 즉시 4 zip 모델 생성
-                        await BootstrapFromTradeHistoryAsync(daysBack: 30);
+                        // [v5.18.0 BACKTEST BOOTSTRAP] DB 과거 차트로 즉시 학습 (50만+ 샘플)
+                        //   기존 BootstrapFromTradeHistoryAsync (trade 기반, 50건) → 효과 미미
+                        //   신규: 모든 코인 모든 5분봉을 가상 진입 → backtest 라벨링
+                        await BacktestBootstrapAllSymbolsAsync(daysBack: 30);
                     }
                     catch (Exception ex)
                     {
@@ -1085,6 +1086,132 @@ namespace TradingBot
         /// 주의: feature 추출은 historical kline 필요 (현재 캐시 없으면 API 폴링)
         ///       ~수백 trade 처리에 1-3분 소요 예상 → 백그라운드 실행 권장
         /// </summary>
+        // [v5.18.0] Health monitor + 추적 심볼 리스트 외부 주입
+        public Services.ModelHealthMonitor? HealthMonitor { get; private set; }
+        private List<string>? _externalTrackedSymbols;
+        public void SetTrackedSymbols(IEnumerable<string> symbols) => _externalTrackedSymbols = symbols?.ToList() ?? new List<string>();
+
+        /// <summary>
+        /// [v5.18.0] DB 과거 차트 backtest → 4 variant 즉시 학습
+        ///   tracked symbol 모두 sliding window 처리. APE 같은 폭등 코인도 학습 데이터로 흡수.
+        /// </summary>
+        public async Task BacktestBootstrapAllSymbolsAsync(int daysBack = 30)
+        {
+            if (_dbManager == null)
+            {
+                OnLog?.Invoke("ℹ️ [BACKTEST_BOOTSTRAP] DB 미연결 → 스킵");
+                return;
+            }
+            var symbols = _externalTrackedSymbols;
+            if (symbols == null || symbols.Count == 0)
+            {
+                OnLog?.Invoke("ℹ️ [BACKTEST_BOOTSTRAP] 추적 심볼 미설정 → 스킵");
+                return;
+            }
+
+            OnLog?.Invoke($"🎓 [BACKTEST_BOOTSTRAP] {symbols.Count} 심볼 × {daysBack}일 sliding window 시작");
+            var trainer = new Services.BacktestBootstrapTrainer(_dbManager, _featureExtractor);
+            trainer.OnLog += msg => OnLog?.Invoke(msg);
+
+            int totalPos = 0, totalNeg = 0;
+            int defAdded = 0, majAdded = 0, pumAdded = 0, spkAdded = 0;
+            int symIdx = 0;
+            foreach (var symbol in symbols)
+            {
+                symIdx++;
+                try
+                {
+                    var (pos, neg) = await trainer.BacktestSymbolAsync(symbol, daysBack);
+                    if (pos.Count == 0 && neg.Count == 0) continue;
+
+                    bool isMajor = IsMajorSymbol(symbol);
+                    var primary = isMajor ? _onlineLearningMajor : _onlineLearningPump;
+
+                    foreach (var f in pos.Concat(neg))
+                    {
+                        if (primary != null) { await primary.AddLabeledSampleAsync(f); }
+                        if (_onlineLearning != null && primary != _onlineLearning) { await _onlineLearning.AddLabeledSampleAsync(f); }
+                        // Spike trainer 에도 (모든 폭등 케이스 학습) — 필요 최소만
+                        if (_onlineLearningSpike != null && pos.Count > 0 && f.ShouldEnter)
+                        {
+                            await _onlineLearningSpike.AddLabeledSampleAsync(f);
+                            spkAdded++;
+                        }
+                    }
+                    if (isMajor) majAdded += pos.Count + neg.Count;
+                    else pumAdded += pos.Count + neg.Count;
+                    defAdded += pos.Count + neg.Count;
+                    totalPos += pos.Count;
+                    totalNeg += neg.Count;
+
+                    OnLog?.Invoke($"📊 [BACKTEST] [{symIdx}/{symbols.Count}] {symbol}: win={pos.Count} loss={neg.Count}");
+                }
+                catch (Exception ex)
+                {
+                    OnLog?.Invoke($"⚠️ [BACKTEST] {symbol} 예외: {ex.Message}");
+                }
+            }
+
+            OnLog?.Invoke($"📦 [BACKTEST] 총 라벨링: pos={totalPos} neg={totalNeg} | Default+={defAdded} Major+={majAdded} Pump+={pumAdded} Spike+={spkAdded}");
+
+            // 4 variant 강제 재학습
+            async Task Train(AdaptiveOnlineLearningService? s, string tag)
+            {
+                if (s == null || s.WindowSize < 10) { OnLog?.Invoke($"⏸️ [BACKTEST][{tag}] skip (window={s?.WindowSize ?? 0})"); return; }
+                try { await s.ForceRetrainAsync($"BACKTEST_BOOTSTRAP"); OnLog?.Invoke($"✅ [BACKTEST][{tag}] 재학습 완료 (window={s.WindowSize})"); }
+                catch (Exception ex) { OnLog?.Invoke($"⚠️ [BACKTEST][{tag}] 재학습 실패: {ex.Message}"); }
+            }
+            await Train(_onlineLearning, "Default");
+
+            // Cross-Variant warm start (Default zip → Major/Pump/Spike 복사)
+            try
+            {
+                string defaultPath = _mlTrainer.GetModelPath();
+                if (System.IO.File.Exists(defaultPath))
+                {
+                    void Copy(EntryTimingMLTrainer t, string tag)
+                    {
+                        try
+                        {
+                            string target = t.GetModelPath();
+                            if (!System.IO.File.Exists(target))
+                            {
+                                System.IO.File.Copy(defaultPath, target, false);
+                                t.LoadModel();
+                                OnLog?.Invoke($"🔁 [BACKTEST][{tag}] Default → warm start 복사");
+                            }
+                        }
+                        catch { }
+                    }
+                    Copy(_mlTrainerMajor, "Major");
+                    Copy(_mlTrainerPump,  "Pump");
+                    Copy(_mlTrainerSpike, "Spike");
+                }
+            }
+            catch { }
+            await Train(_onlineLearningMajor, "Major");
+            await Train(_onlineLearningPump,  "Pump");
+            await Train(_onlineLearningSpike, "Spike");
+
+            OnLog?.Invoke("🎉 [BACKTEST_BOOTSTRAP] 완료");
+        }
+
+        /// <summary>
+        /// [v5.18.0] ModelHealthMonitor 초기화 + 4 variant 등록
+        /// </summary>
+        public void StartHealthMonitor()
+        {
+            if (HealthMonitor != null) return;
+            HealthMonitor = new Services.ModelHealthMonitor();
+            HealthMonitor.OnLog += msg => OnLog?.Invoke(msg);
+            HealthMonitor.OnAlert += msg => OnAlert?.Invoke(msg);
+            HealthMonitor.Register("Default", _mlTrainer.GetModelPath(), () => _mlTrainer.LoadModel());
+            HealthMonitor.Register("Major",   _mlTrainerMajor.GetModelPath(), () => _mlTrainerMajor.LoadModel());
+            HealthMonitor.Register("Pump",    _mlTrainerPump.GetModelPath(),  () => _mlTrainerPump.LoadModel());
+            HealthMonitor.Register("Spike",   _mlTrainerSpike.GetModelPath(), () => _mlTrainerSpike.LoadModel());
+            HealthMonitor.Start();
+        }
+
         public async Task<(int processed, int loaded, string report)> BootstrapFromTradeHistoryAsync(int daysBack = 30)
         {
             if (_dbManager == null)

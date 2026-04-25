@@ -81,6 +81,42 @@ namespace TradingBot
                 var m15Klines = tasks[4].Result;
                 var m1Klines = tasks[5].Result;
 
+                return BuildFeatureFromKlines(symbol, timestamp, d1Klines, h4Klines, h2Klines, h1Klines, m15Klines, m1Klines);
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ [MTF] {symbol} feature 추출 예외: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// [v5.18.0 BACKTEST] 사전 로드된 timeframe 별 캔들로 feature 추출 (네트워크 호출 없음)
+        ///   각 TF 캔들은 asOfTime 이전까지 잘라서 전달해야 함 (look-ahead bias 방지)
+        ///   BacktestBootstrapTrainer 가 DB 에서 한번만 로드 후 sliding window 로 호출
+        /// </summary>
+        public MultiTimeframeEntryFeature? BuildFeatureFromPreloaded(
+            string symbol,
+            DateTime asOfTime,
+            List<IBinanceKline>? d1, List<IBinanceKline>? h4, List<IBinanceKline>? h2,
+            List<IBinanceKline>? h1, List<IBinanceKline>? m15, List<IBinanceKline>? m1)
+        {
+            return BuildFeatureFromKlines(symbol, asOfTime, d1, h4, h2, h1, m15, m1);
+        }
+
+        private MultiTimeframeEntryFeature? BuildFeatureFromKlines(
+            string symbol,
+            DateTime timestamp,
+            List<IBinanceKline>? d1Klines,
+            List<IBinanceKline>? h4Klines,
+            List<IBinanceKline>? h2Klines,
+            List<IBinanceKline>? h1Klines,
+            List<IBinanceKline>? m15Klines,
+            List<IBinanceKline>? m1Klines)
+        {
+            try
+            {
+
                 // [v5.10.94] Feature_Extraction_Failed 원인 진단 로그 + 동일 심볼 cooldown
                 //   사례: CHIPUSDT 6시간 73회 반복 실패 (신규 상장 알트 D1 부족 가능성)
                 //   기존: null 반환만 → 어떤 TF 부족인지 불명, 매번 재시도
