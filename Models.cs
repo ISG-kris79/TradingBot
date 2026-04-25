@@ -756,10 +756,13 @@ namespace TradingBot.Models
         {
             get
             {
-                if (!IsPositionActive || EntryPrice == 0 || Quantity == 0)
-                    return "";
-                decimal margin = EntryPrice * Math.Abs(Quantity) / Math.Max(1, Leverage);
-                if (margin <= 0) return "";
+                if (!IsPositionActive) return "";
+                // [v5.20.5] race: WebSocket UserData lag 시 EntryPrice/Quantity 0 → "..." 표시 (0 USDT 오인 방지)
+                if (EntryPrice == 0 || Quantity == 0)
+                    return "...";
+                decimal lev = Leverage > 0 ? Leverage : 10;  // leverage 미설정 시 10x 가정
+                decimal margin = EntryPrice * Math.Abs(Quantity) / lev;
+                if (margin <= 0) return "...";
                 return $"${margin:N2}";
             }
         }

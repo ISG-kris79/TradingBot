@@ -128,39 +128,47 @@ namespace TradingBot.Services
             var allPump    = new List<MultiTimeframeEntryFeature>();
             var allSpike   = new List<MultiTimeframeEntryFeature>();
 
-            int symbolCount = 0;
-            int idx = 0;
+            // [v5.20.5] 병렬 처리 — Semaphore(8) 로 동시 8 심볼 처리 (CPU 코어 수 기준)
             int total = symbols.Count();
-            foreach (var sym in symbols)
+            int processedCount = 0;
+            int symbolCount = 0;
+            var sem = new System.Threading.SemaphoreSlim(8, 8);
+            var allLock = new object();
+
+            var tasks = symbols.Select(async sym =>
             {
-                idx++;
-                if (token.IsCancellationRequested) break;
+                await sem.WaitAsync(token);
                 try
                 {
+                    if (token.IsCancellationRequested) return;
                     var (positives, negatives) = await bootstrap.BacktestSymbolAsync(sym, daysBack: daysBack, token: token);
                     var combined = positives.Concat(negatives).ToList();
-                    if (combined.Count == 0)
+
+                    int curIdx;
+                    lock (allLock)
                     {
-                        if (idx % 5 == 0) OnLog?.Invoke($"📊 [ML 검증] {idx}/{total} | 누적 처리={symbolCount} 샘플={allDefault.Count}");
-                        continue;
+                        processedCount++;
+                        curIdx = processedCount;
+                        if (combined.Count > 0)
+                        {
+                            symbolCount++;
+                            bool isMajor = majorSymbols.Contains(sym);
+                            allDefault.AddRange(combined);
+                            if (isMajor) allMajor.AddRange(combined);
+                            else        allPump.AddRange(combined);
+                            foreach (var f in combined)
+                            {
+                                if (f.ShouldEnter && f.ActualProfitPct >= 1.5f) allSpike.Add(f);
+                            }
+                        }
                     }
-
-                    bool isMajor = majorSymbols.Contains(sym);
-                    allDefault.AddRange(combined);
-                    if (isMajor) allMajor.AddRange(combined);
-                    else        allPump.AddRange(combined);
-
-                    foreach (var f in combined)
-                    {
-                        if (f.ShouldEnter && f.ActualProfitPct >= 1.5f) allSpike.Add(f);
-                    }
-
-                    symbolCount++;
-                    if (symbolCount % 5 == 0)
-                        OnLog?.Invoke($"📊 [ML 검증] {idx}/{total} | 처리={symbolCount} D={allDefault.Count} M={allMajor.Count} P={allPump.Count} S={allSpike.Count}");
+                    if (curIdx % 5 == 0)
+                        OnLog?.Invoke($"📊 [ML 검증] {curIdx}/{total} | 처리={symbolCount} D={allDefault.Count} M={allMajor.Count} P={allPump.Count} S={allSpike.Count}");
                 }
-                catch (Exception ex) { sb.AppendLine($"⚠️ {sym} 데이터 로드 실패: {ex.Message}"); }
-            }
+                catch (Exception ex) { OnLog?.Invoke($"⚠️ {sym} 데이터 로드 실패: {ex.Message}"); }
+                finally { sem.Release(); }
+            });
+            await Task.WhenAll(tasks);
 
             sb.AppendLine($"  심볼 처리: {symbolCount}개 / 누적 샘플: Default={allDefault.Count} Major={allMajor.Count} Pump={allPump.Count} Spike={allSpike.Count}");
             sb.AppendLine();
@@ -200,52 +208,64 @@ namespace TradingBot.Services
             int globalLong = 0, globalShort = 0, globalNeutral = 0;
             var perSym = new List<(string sym, int n, int correct, double winRate)>();
 
-            int v2idx = 0;
+            // [v5.20.5] V2 도 병렬 처리 (Semaphore 8)
             int v2total = symbols.Count();
-            foreach (var sym in symbols)
+            int v2processed = 0;
+            var v2sem = new System.Threading.SemaphoreSlim(8, 8);
+            var v2lock = new object();
+
+            var v2tasks = symbols.Select(async sym =>
             {
-                v2idx++;
-                if (token.IsCancellationRequested) break;
-                if (v2idx % 5 == 0)
-                    OnLog?.Invoke($"📊 [V2 검증] {v2idx}/{v2total} | 누적 {globalTotal}건 정답 {globalCorrect}");
+                await v2sem.WaitAsync(token);
                 try
                 {
+                    if (token.IsCancellationRequested) return;
                     int max5m = daysBack * 24 * 12 + 100;
                     var raw = await _db.GetCandleDataByIntervalAsync(sym, "5m", max5m);
-                    if (raw == null || raw.Count < 100) continue;
+                    if (raw == null || raw.Count < 100) return;
                     var asc = raw.OrderBy(c => c.OpenTime)
                                  .Select(c => new TradingBot.Services.KlineAdapter(c))
                                  .Cast<Binance.Net.Interfaces.IBinanceKline>()
                                  .ToList();
-                    if (asc.Count < 65) continue;
+                    if (asc.Count < 65) return;
 
-                    int symN = 0, symCorrect = 0;
+                    int symN = 0, symCorrect = 0, symLong = 0, symShort = 0;
                     for (int i = 60; i < asc.Count - 4; i++)
                     {
                         var slice = asc.GetRange(0, i + 1);
                         var pred = v2.Predict(sym, slice);
                         if (!pred.IsReady || pred.Prediction == 0) continue;
-
                         decimal nowClose = asc[i].ClosePrice;
                         decimal future4 = asc[i + 4].ClosePrice;
                         int actualSign = future4 > nowClose ? 1 : future4 < nowClose ? -1 : 0;
                         if (actualSign == 0) continue;
-
                         symN++;
                         bool correct = (pred.Prediction > 0 && actualSign > 0) || (pred.Prediction < 0 && actualSign < 0);
                         if (correct) symCorrect++;
-                        if (pred.Prediction > 0) globalLong++; else globalShort++;
+                        if (pred.Prediction > 0) symLong++; else symShort++;
                     }
-                    if (symN > 0)
+                    int curIdx;
+                    lock (v2lock)
                     {
-                        double wr = (double)symCorrect / symN * 100.0;
-                        perSym.Add((sym, symN, symCorrect, wr));
-                        globalTotal += symN;
-                        globalCorrect += symCorrect;
+                        v2processed++;
+                        curIdx = v2processed;
+                        if (symN > 0)
+                        {
+                            double wr = (double)symCorrect / symN * 100.0;
+                            perSym.Add((sym, symN, symCorrect, wr));
+                            globalTotal += symN;
+                            globalCorrect += symCorrect;
+                            globalLong += symLong;
+                            globalShort += symShort;
+                        }
                     }
+                    if (curIdx % 5 == 0)
+                        OnLog?.Invoke($"📊 [V2 검증] {curIdx}/{v2total} | 누적 {globalTotal}건 정답 {globalCorrect}");
                 }
-                catch (Exception ex) { sb.AppendLine($"⚠️ {sym} 검증 실패: {ex.Message}"); }
-            }
+                catch (Exception ex) { OnLog?.Invoke($"⚠️ {sym} V2 검증 실패: {ex.Message}"); }
+                finally { v2sem.Release(); }
+            });
+            await Task.WhenAll(v2tasks);
 
             // 글로벌 win rate
             double overallWr = globalTotal > 0 ? (double)globalCorrect / globalTotal * 100.0 : 0;

@@ -1211,10 +1211,10 @@ namespace TradingBot
         /// 사용자 요구: "차트 데이터로 미리 예측 못하고 있어 — 테스트하면서 로직 수정"
         /// </summary>
         public async Task<string> RunBacktestValidationAsync(
-            int daysBack = 3,            // [v5.20.4] 7→3 단축 (속도 우선)
+            int daysBack = 7,            // [v5.20.5] 데이터 충분 (병렬 처리로 속도 해결)
             float threshold = 0.5f,
             System.Threading.CancellationToken token = default,
-            int maxSymbols = 30)         // [v5.20.4] 최대 30 심볼만 검증 (빠른 결과)
+            int maxSymbols = 100)        // [v5.20.5] 100심볼까지 (병렬 처리)
         {
             try
             {
