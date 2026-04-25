@@ -37,6 +37,10 @@ namespace TradingBot.Services
 
         public long MinHealthyBytes { get; set; } = 30 * 1024;       // 30KB 미만이면 손상 의심
         public TimeSpan StaleThreshold { get; set; } = TimeSpan.FromHours(6);  // 6시간 학습 안 됨 = 의심
+        // [v5.19.1] grace period — 등록 직후 학습 중일 가능성 높으므로 알람 억제
+        public TimeSpan InitialGracePeriod { get; set; } = TimeSpan.FromMinutes(30);
+        // [v5.19.1] 동일 variant + 동일 사유 알람 cooldown — 분당 4건 폭주 방지
+        public TimeSpan AlertCooldown { get; set; } = TimeSpan.FromMinutes(60);
 
         /// <summary>학습 모델 등록 (variant 별로 한 번씩 호출)</summary>
         public void Register(string variantTag, string zipPath, Action reloadCallback)
@@ -48,7 +52,8 @@ namespace TradingBot.Services
                     Tag = variantTag,
                     Path = zipPath,
                     Reload = reloadCallback,
-                    LastSeenWriteTime = File.Exists(zipPath) ? new FileInfo(zipPath).LastWriteTimeUtc : DateTime.MinValue
+                    LastSeenWriteTime = File.Exists(zipPath) ? new FileInfo(zipPath).LastWriteTimeUtc : DateTime.MinValue,
+                    RegisteredAt = DateTime.UtcNow
                 };
             }
             OnLog?.Invoke($"📋 [HEALTH] {variantTag} 등록: {zipPath}");
@@ -80,25 +85,51 @@ namespace TradingBot.Services
         {
             ModelEntry[] snapshot;
             lock (_lock) snapshot = _models.Values.ToArray();
+            DateTime nowUtc = DateTime.UtcNow;
             foreach (var m in snapshot)
             {
+                // [v5.19.1] 등록 직후 grace period 내 알람 억제 (학습 중일 가능성)
+                bool inGrace = (nowUtc - m.RegisteredAt) < InitialGracePeriod;
+
                 if (!File.Exists(m.Path))
                 {
-                    OnAlert?.Invoke($"🚨 [HEALTH][{m.Tag}] zip 파일 없음! {m.Path}");
+                    if (inGrace)
+                    {
+                        // grace 중에는 1회만 info 로그
+                        if (!m.GraceMissingLogged)
+                        {
+                            m.GraceMissingLogged = true;
+                            OnLog?.Invoke($"⏳ [HEALTH][{m.Tag}] zip 미존재 — grace {InitialGracePeriod.TotalMinutes:F0}분 학습 대기");
+                        }
+                        continue;
+                    }
+                    if (TryAlert(m, "MISSING", nowUtc))
+                        OnAlert?.Invoke($"🚨 [HEALTH][{m.Tag}] zip 파일 없음! {m.Path}");
                     continue;
                 }
                 var fi = new FileInfo(m.Path);
                 if (fi.Length < MinHealthyBytes)
                 {
-                    OnAlert?.Invoke($"🚨 [HEALTH][{m.Tag}] zip 파일 손상 의심! 크기 {fi.Length}B < {MinHealthyBytes}B");
+                    if (TryAlert(m, "CORRUPT", nowUtc))
+                        OnAlert?.Invoke($"🚨 [HEALTH][{m.Tag}] zip 파일 손상 의심! 크기 {fi.Length}B < {MinHealthyBytes}B");
                     continue;
                 }
-                var age = DateTime.UtcNow - fi.LastWriteTimeUtc;
+                var age = nowUtc - fi.LastWriteTimeUtc;
                 if (age > StaleThreshold)
                 {
-                    OnAlert?.Invoke($"⚠️ [HEALTH][{m.Tag}] 학습 stale: 마지막 갱신 {age.TotalHours:F1}h 전 (threshold {StaleThreshold.TotalHours:F0}h)");
+                    if (TryAlert(m, "STALE", nowUtc))
+                        OnAlert?.Invoke($"⚠️ [HEALTH][{m.Tag}] 학습 stale: 마지막 갱신 {age.TotalHours:F1}h 전 (threshold {StaleThreshold.TotalHours:F0}h)");
                 }
             }
+        }
+
+        /// <summary>[v5.19.1] 동일 variant + 동일 사유 알람 cooldown 체크</summary>
+        private bool TryAlert(ModelEntry m, string reason, DateTime nowUtc)
+        {
+            if (m.LastAlerts.TryGetValue(reason, out var lastAt) && (nowUtc - lastAt) < AlertCooldown)
+                return false;
+            m.LastAlerts[reason] = nowUtc;
+            return true;
         }
 
         private void ReloadIfChanged()
@@ -120,7 +151,8 @@ namespace TradingBot.Services
                     }
                     catch (Exception ex)
                     {
-                        OnAlert?.Invoke($"🚨 [HEALTH][{m.Tag}] reload 실패: {ex.Message}");
+                        if (TryAlert(m, "RELOAD_FAIL", DateTime.UtcNow))
+                            OnAlert?.Invoke($"🚨 [HEALTH][{m.Tag}] reload 실패: {ex.Message}");
                     }
                 }
             }
@@ -164,6 +196,10 @@ namespace TradingBot.Services
             public string Path = "";
             public Action? Reload;
             public DateTime LastSeenWriteTime;
+            // [v5.19.1] grace + alert cooldown
+            public DateTime RegisteredAt;
+            public bool GraceMissingLogged;
+            public Dictionary<string, DateTime> LastAlerts = new();
         }
 
         public class ModelStatus
