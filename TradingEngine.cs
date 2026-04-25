@@ -683,6 +683,15 @@ namespace TradingBot
         {
             blockReason = string.Empty;
 
+            // [v5.19.8] _settings 자체가 null = 봇 부팅 중 / 설정 미로드 → 모든 진입 차단
+            //   v5.19.3은 메이저만 차단했으나, 일반 진입도 leverage/marginUsdt 등 설정값 없으면 위험
+            if (_settings == null)
+            {
+                blockReason = "SETTINGS_NOT_LOADED";
+                OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (봇 부팅 중 또는 설정 미로드)");
+                return false;
+            }
+
             // [v5.19.5] 수동 청산 cooldown — 사용자가 청산한 심볼은 30분간 재진입 차단
             if (_manualCloseCooldown.TryGetValue(symbol, out var closedAt))
             {
@@ -5855,6 +5864,17 @@ namespace TradingBot
             void PumpTradeLog(string stage, string status, string detail)
             {
                 OnStatusLog?.Invoke($"🧭 [ENTRY][{stage}][{status}] src=PUMP sym={symbol} side=LONG | {detail}");
+            }
+
+            // [v5.19.8 ROOT FIX] ExecutePumpTrade 가 IsEntryAllowed 게이트 우회하던 버그 차단
+            //   증상: BTCUSDT/SOLUSDT/CTSI/CELR/API3 진입이 메이저 비활성화 + 고점 가드 모두 통과
+            //   원인: 이 메서드가 _exchangeService.PlaceMarketOrderAsync 직접 호출 (line ~5934)
+            //         → PlaceEntryOrderAsync 의 글로벌 가드 미적용
+            //   수정: 진입 시작에서 IsEntryAllowed 강제 호출
+            if (!IsEntryAllowed(symbol, "PUMP_TRADE", out string pumpBlockReason))
+            {
+                PumpTradeLog("GATE", "BLOCK", pumpBlockReason);
+                return false;
             }
 
             try
