@@ -181,14 +181,14 @@ namespace TradingBot
 
                 OnSniperLog?.Invoke(
                     $"🚀 [{symbol}] {decision} Sniper 승인! " +
-                    $"| ML신뢰도 {result.detail.ML_Confidence:P0}, TF신뢰도 {result.detail.TF_Confidence:P0} " +
+                    $"| ML신뢰도 {result.detail.ML_Confidence:P0} " +
                     $"| ETA target까지 {minutesRemaining}분 남음");
 
                 OnAmbushWindowChanged?.Invoke(
                     $"✅ #{symbol}# Sniper 진입 실행! ETA까지 {minutesRemaining}분");
 
-                return (true, result.detail.ML_Confidence, 
-                    $"sniper_approved_ml={result.detail.ML_Confidence:P1}_tf={result.detail.TF_Confidence:P1}");
+                return (true, result.detail.ML_Confidence,
+                    $"sniper_approved_ml={result.detail.ML_Confidence:P1}");
             }
             catch (Exception ex)
             {

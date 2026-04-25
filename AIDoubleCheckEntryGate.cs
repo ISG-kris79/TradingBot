@@ -378,9 +378,6 @@ namespace TradingBot
 
                 detail.ML_Approve = mlApprove;
                 detail.ML_Confidence = mlConfidence;
-                // UI 바인딩 호환을 위한 TF 별칭 (값 동일하지만 Decision 단계에서는 별개 소스로 재평가됨)
-                detail.TF_Approve = mlApprove;
-                detail.TF_Confidence = mlConfidence;
                 detail.TrendScore = mlConfidence;
                 detail.M15_RSI = feature.M15_RSI;
                 detail.M15_BBPosition = feature.M15_BBPosition;
@@ -772,8 +769,8 @@ namespace TradingBot
         private string RecordEntryDecision(
             MultiTimeframeEntryFeature? feature,
             EntryTimingPrediction mlPred,
-            bool tfApprove,
-            float tfConf,
+            bool _unused1,
+            float _unused2,
             bool finalDecision)
         {
             string decisionId = Guid.NewGuid().ToString("N");
@@ -793,8 +790,6 @@ namespace TradingBot
                 EntryPrice = safeFeature.EntryPrice,
                 ML_Approve = mlPred.ShouldEnter,
                 ML_Confidence = mlPred.Probability,
-                TF_Approve = tfApprove,
-                TF_Confidence = tfConf,
                 FinalDecision = finalDecision,
                 Feature = safeFeature,
                 // ActualProfit는 15분 후 별도 업데이트
@@ -1562,43 +1557,30 @@ namespace TradingBot
             var baseSequence = BuildTransformerSequence(symbol, feature);
             var candidates = new List<AIEntryForecastResult>(_config.EntryForecastSteps + 1);
 
-            // [Time-to-Target 회귀 기반 ETA 예측]
-            // Transformer가 "목표가 도달까지 몇 캔들 후인지" 직접 예측
+            // [v5.19.2] TF 제거 — ML 단일 모델 ETA 예측
             var mlPred = _mlTrainer.Predict(feature);
             float candlesToTarget = mlPred?.ShouldEnter == true ? 8f : -1f;
-            float tfConfidence = mlPred?.Probability ?? 0f;
-
-            // 현재 시점 ML 확률 계산
-            float currentMlProb = 0f;
-            var mlPrediction = _mlTrainer.Predict(feature);
-            if (mlPrediction != null)
-                currentMlProb = mlPrediction.Probability;
+            float currentMlProb = mlPred?.Probability ?? 0f;
 
             AIEntryForecastResult best;
 
-            // Time-to-Target이 유효한 경우 (1~32캔들 범위)
             if (candlesToTarget >= 1f && candlesToTarget <= 32f)
             {
-                // 예측된 시간 계산
-                int minutesToTarget = (int)Math.Round(candlesToTarget * 15); // 15분봉 기준
+                int minutesToTarget = (int)Math.Round(candlesToTarget * 15);
                 var forecastUtc = referenceUtc.AddMinutes(minutesToTarget);
-                
-                // 해당 시점의 ML 확률 예측 (미래 시점 피처 생성)
+
                 var futureFeature = feature.CloneWithTimestamp(forecastUtc);
                 float futureMlProb = 0f;
                 var futureMlPrediction = _mlTrainer.Predict(futureFeature);
                 if (futureMlPrediction != null)
                     futureMlProb = futureMlPrediction.Probability;
 
-                // 평균 확률 계산 (ML 스나이퍼 + TF 네비게이터)
-                float avgProb = (futureMlProb + tfConfidence) / 2f;
-
                 best = new AIEntryForecastResult
                 {
                     Symbol = symbol,
                     MLProbability = futureMlProb,
-                    TFProbability = tfConfidence,
-                    AverageProbability = avgProb,
+                    TFProbability = futureMlProb,
+                    AverageProbability = futureMlProb,
                     ForecastTimeUtc = forecastUtc,
                     ForecastTimeLocal = forecastUtc.ToLocalTime(),
                     ForecastOffsetMinutes = Math.Max(1, minutesToTarget),
@@ -1607,14 +1589,12 @@ namespace TradingBot
             }
             else
             {
-                // Time-to-Target 예측 실패 또는 범위 외 → 현재 시점 기준 반환
-                float avgProb = (currentMlProb + tfConfidence) / 2f;
                 best = new AIEntryForecastResult
                 {
                     Symbol = symbol,
                     MLProbability = currentMlProb,
-                    TFProbability = tfConfidence,
-                    AverageProbability = avgProb,
+                    TFProbability = currentMlProb,
+                    AverageProbability = currentMlProb,
                     ForecastTimeUtc = referenceUtc,
                     ForecastTimeLocal = referenceLocal,
                     ForecastOffsetMinutes = 0,
@@ -1858,23 +1838,29 @@ namespace TradingBot
                     success: true,
                     detail: $"4 모델 학습 완료 (Default={trainingFeatures.Count}, Major={majorFeatures.Count}, Pump={pumpFeatures.Count}, Spike={spikeFeatures.Count})");
 
-                // 3. 모델 리로드 및 상태 확인
+                // 3. 모델 리로드 및 상태 확인 — 4 variant 별 직접 표시 (TF 표시 제거: v5.19.2)
                 _mlTrainer.LoadModel();
                 _mlTrainerMajor.LoadModel();
                 _mlTrainerPump.LoadModel();
                 _mlTrainerSpike.LoadModel();
-                bool tfReady = _mlTrainer.IsModelLoaded; // UI 호환용
+
+                string st(bool ok) => ok ? "OK" : "FAIL";
+                string status =
+                    $"Default={st(_mlTrainer.IsModelLoaded)}, " +
+                    $"Major={st(_mlTrainerMajor.IsModelLoaded)}, " +
+                    $"Pump={st(_mlTrainerPump.IsModelLoaded)}, " +
+                    $"Spike={st(_mlTrainerSpike.IsModelLoaded)}";
 
                 if (IsReady)
                 {
-                    string msg = $"✅ [AI 학습] 초기 학습 완료! ML Ready: {_mlTrainer.IsModelLoaded}, TF Ready: {tfReady}";
+                    string msg = $"✅ [AI 학습] 초기 학습 완료! {status}";
                     OnAlert?.Invoke(msg);
                     OnLog?.Invoke(msg);
                     return (true, msg);
                 }
                 else
                 {
-                    string errMsg = $"⚠️ [AI 학습] 학습 후 모델 상태 - ML: {(_mlTrainer.IsModelLoaded ? "OK" : "FAIL")}, TF: {(tfReady ? "OK" : "FAIL")}";
+                    string errMsg = $"⚠️ [AI 학습] 학습 후 모델 상태 - {status}";
                     OnAlert?.Invoke(errMsg);
                     return (false, errMsg);
                 }
@@ -2316,7 +2302,7 @@ namespace TradingBot
                 return false;
             }
 
-            if (!float.IsFinite(record.ML_Confidence) || !float.IsFinite(record.TF_Confidence))
+            if (!float.IsFinite(record.ML_Confidence))
             {
                 reason = "confidence_not_finite";
                 return false;
@@ -2515,8 +2501,6 @@ namespace TradingBot
         public string DecisionId { get; set; } = string.Empty;
         public bool ML_Approve { get; set; }
         public float ML_Confidence { get; set; }
-        public bool TF_Approve { get; set; }
-        public float TF_Confidence { get; set; }
         public float TrendScore { get; set; }
         public bool DoubleCheckPassed { get; set; }
 
@@ -2553,8 +2537,6 @@ namespace TradingBot
         public decimal EntryPrice { get; set; }
         public bool ML_Approve { get; set; }
         public float ML_Confidence { get; set; }
-        public bool TF_Approve { get; set; }
-        public float TF_Confidence { get; set; }
         public bool FinalDecision { get; set; }
         public MultiTimeframeEntryFeature? Feature { get; set; }
         public float? ActualProfitPct { get; set; } // 15분 후 업데이트

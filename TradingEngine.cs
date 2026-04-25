@@ -6035,7 +6035,7 @@ namespace TradingBot
                             var gr = await _aiDoubleCheckEntryGate.EvaluateEntryAsync(
                                 symbol, dir, currentPrice, token);
 
-                            float combo = gr.detail.ML_Confidence + gr.detail.TF_Confidence;
+                            float combo = gr.detail.ML_Confidence + gr.detail.ML_Confidence;
                             if (combo > bestCombo)
                             {
                                 bestCombo = combo;
@@ -6052,7 +6052,7 @@ namespace TradingBot
                         int forecastOffsetMinutes = forecast?.ForecastOffsetMinutes ?? int.MaxValue;
 
                         results.Add((symbol, bestDir, currentPrice,
-                            bestGate.detail.ML_Confidence, bestGate.detail.TF_Confidence,
+                            bestGate.detail.ML_Confidence, bestGate.detail.ML_Confidence,
                             bwPct, bestGate.allowEntry, bestGate.reason ?? string.Empty,
                             forecastProbability, forecastOffsetMinutes));
 
@@ -10057,7 +10057,7 @@ namespace TradingBot
                 bool isBbCenterSupport = IsBbCenterSupport(gateResult.detail.M15_BBPosition, decision);
                 float blendedMlTfScore = CalculateMlTfBlendScore(
                     gateResult.detail.ML_Confidence,
-                    gateResult.detail.TF_Confidence,
+                    gateResult.detail.ML_Confidence,
                     isBbCenterSupport);
                 capturedBlendedScore = blendedMlTfScore;
 
@@ -10066,7 +10066,7 @@ namespace TradingBot
                 {
                     float bbPosMain = gateResult.detail.M15_BBPosition;
                     float mlConfMain = gateResult.detail.ML_Confidence;
-                    float tfConfMain = gateResult.detail.TF_Confidence;
+                    float tfConfMain = gateResult.detail.ML_Confidence;
                     bool tfConvergDiv = (bbPosMain >= 0.35f && bbPosMain <= 0.65f) && (tfConfMain >= 0.70f);
                     OnPriceProgressUpdate.Invoke(Math.Clamp(bbPosMain, 0f, 1f), mlConfMain, tfConvergDiv);
                 }
@@ -10101,7 +10101,7 @@ namespace TradingBot
                 // [AI Command Center] 상태 업데이트
                 if (OnAiCommandUpdate != null)
                 {
-                    float tf  = gateResult.detail.TF_Confidence;
+                    float tf  = gateResult.detail.ML_Confidence;
                     float ml  = gateResult.detail.ML_Confidence;
                     float trend = gateResult.detail.TrendScore;
 
@@ -10126,11 +10126,11 @@ namespace TradingBot
                 EntryLog(
                     "AI_GATE",
                     gateResult.allowEntry ? "PASS" : "BLOCK",
-                    $"coinType={coinType} reason={gateResult.reason} ml={gateResult.detail.ML_Confidence:P1} tf={gateResult.detail.TF_Confidence:P1} trend={gateResult.detail.TrendScore:P1} fibBonus={gateResult.detail.FibonacciBonusScore:F0}");
+                    $"coinType={coinType} reason={gateResult.reason} ml={gateResult.detail.ML_Confidence:P1} tf={gateResult.detail.ML_Confidence:P1} trend={gateResult.detail.TrendScore:P1} fibBonus={gateResult.detail.FibonacciBonusScore:F0}");
                 EntryLog(
                     "AI_BLEND",
                     "INFO",
-                    $"bbSupport={isBbCenterSupport} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.TF_Confidence:P0} blended={blendedMlTfScore:P0} weights={(isBbCenterSupport ? "ML30_TF70" : "ML50_TF50")}");
+                    $"bbSupport={isBbCenterSupport} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.ML_Confidence:P0} blended={blendedMlTfScore:P0} weights={(isBbCenterSupport ? "ML30_TF70" : "ML50_TF50")}");
 
                 // [v5.10.38] AI 승인 점수 캐시 (슬롯 포화 시 우선순위 큐에서 재사용)
                 if (gateResult.allowEntry)
@@ -10149,7 +10149,7 @@ namespace TradingBot
                                 symbol, decision, gateResult.allowEntry,
                                 coinTypeStr, gateResult.reason,
                                 gateResult.detail.ML_Confidence,
-                                gateResult.detail.TF_Confidence,
+                                gateResult.detail.ML_Confidence,
                                 gateResult.detail.TrendScore,
                                 gateResult.detail.M15_RSI,
                                 gateResult.detail.M15_BBPosition);
@@ -10159,7 +10159,7 @@ namespace TradingBot
                             symbol, decision, coinTypeStr,
                             gateResult.allowEntry, gateResult.reason,
                             gateResult.detail.ML_Confidence,
-                            gateResult.detail.TF_Confidence,
+                            gateResult.detail.ML_Confidence,
                             gateResult.detail.TrendScore,
                             gateResult.detail.M15_RSI,
                             gateResult.detail.M15_BBPosition,
@@ -10174,7 +10174,7 @@ namespace TradingBot
                 // [v3.2.47] AI Gate 차단 — 우회 없음 (AI 단독 판단 원칙)
                 if (!gateResult.allowEntry)
                 {
-                    OnStatusLog?.Invoke($"⛔ [AI Gate] {symbol} {decision} 차단 | blended={blendedMlTfScore:P0} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.TF_Confidence:P0} | {gateResult.reason}");
+                    OnStatusLog?.Invoke($"⛔ [AI Gate] {symbol} {decision} 차단 | blended={blendedMlTfScore:P0} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.ML_Confidence:P0} | {gateResult.reason}");
                     EntryLog("AI_GATE", "BLOCK",
                         $"blended={blendedMlTfScore:P0} gate={gateResult.reason}");
                     return;
@@ -10236,7 +10236,7 @@ namespace TradingBot
                 {
                     bool volumeRecovered = latestCandle?.Volume_Ratio >= 1.0f;
                     bool mlRecovered = gateResult.detail.ML_Confidence >= 0.50f;
-                    bool tfSustained = gateResult.detail.TF_Confidence >= 0.70f;
+                    bool tfSustained = gateResult.detail.ML_Confidence >= 0.70f;
 
                     if (volumeRecovered && mlRecovered && tfSustained)
                     {
@@ -10261,7 +10261,7 @@ namespace TradingBot
                         EntryLog(
                             "SCOUT",
                             "ADDON_READY",
-                            $"reason=volume_ml_recovered stairBreakout={stairBreakout} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.TF_Confidence:P0} vol={latestCandle?.Volume_Ratio:F2}x");
+                            $"reason=volume_ml_recovered stairBreakout={stairBreakout} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.ML_Confidence:P0} vol={latestCandle?.Volume_Ratio:F2}x");
 
                         if (stairBreakout)
                             OnStatusLog?.Invoke($"🔥 [불타기 Add-on] {symbol} 최근 5봉 고점 돌파 → 계단식 불타기");
@@ -10272,7 +10272,7 @@ namespace TradingBot
                 if (!scoutModeActivated && !scoutAddOnEligible
                     && gateResult.allowEntry
                     && decision == "LONG"
-                    && gateResult.detail.TF_Confidence >= 0.85f
+                    && gateResult.detail.ML_Confidence >= 0.85f
                     && latestCandle != null
                     && recentEntryKlines != null && recentEntryKlines.Count >= 4)
                 {
@@ -10282,7 +10282,7 @@ namespace TradingBot
                         : 0.5m;
 
                     float mlConf = gateResult.detail.ML_Confidence;
-                    float tfConf = gateResult.detail.TF_Confidence;
+                    float tfConf = gateResult.detail.ML_Confidence;
                     bool tfConvergenceDivergence = (latestCandle.BB_Width < 2.0f) && (tfConf >= 0.70f);
                     OnPriceProgressUpdate?.Invoke((double)Math.Clamp(bbPos, 0m, 1m), mlConf, tfConvergenceDivergence);
 
@@ -10292,8 +10292,8 @@ namespace TradingBot
                         flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
                         _scoutAddOnPendingSymbols[symbol] = DateTime.UtcNow;
                         EntryLog("STAIRCASE", "PURSUIT",
-                            $"reason=HigherLows_BBMid tf={gateResult.detail.TF_Confidence:P0} bb={bbPos:P0}");
-                        OnAlert?.Invoke($"🪜 STAIRCASE PURSUIT ({symbol} LONG) TF {gateResult.detail.TF_Confidence:P0} — ATR 3.5x 하이브리드 손절 대기");
+                            $"reason=HigherLows_BBMid tf={gateResult.detail.ML_Confidence:P0} bb={bbPos:P0}");
+                        OnAlert?.Invoke($"🪜 STAIRCASE PURSUIT ({symbol} LONG) TF {gateResult.detail.ML_Confidence:P0} — ATR 3.5x 하이브리드 손절 대기");
                     }
                 }
             }

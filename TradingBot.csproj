@@ -16,9 +16,9 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
     <LangVersion>latest</LangVersion>
-    <Version>5.19.1</Version>
-    <AssemblyVersion>5.19.1.0</AssemblyVersion>
-    <FileVersion>5.19.1.0</FileVersion>
+    <Version>5.19.2</Version>
+    <AssemblyVersion>5.19.2.0</AssemblyVersion>
+    <FileVersion>5.19.2.0</FileVersion>
     <Company>TradingBot</Company>
     <Product>CoinFF TradingBot</Product>
     <Description>Cryptocurrency Trading Bot with AI/ML capabilities</Description>
@@ -74,33 +74,8 @@
     <Compile Remove="TradingBot.Shared/**/*.cs" />
     <EmbeddedResource Remove="Releases\**" />
     
-    <!-- 레거시 Transformer/Torch/TensorFlow 파일 제외 (ML.NET 통합) -->
-    <Compile Remove="TransformerTrainer.cs" />
-    <Compile Remove="TimeSeriesTransformer.cs" />
-    <Compile Remove="EntryTimingTransformerTrainer.cs" />
-    <Compile Remove="TimeSeriesDataLoader.cs" />
-    <Compile Remove="PPOAgent.cs" />
-    <Compile Remove="TransformerWaveNavigator.cs" />
-    <Compile Remove="Services\TorchInitializer.cs" />
-    <Compile Remove="TensorFlowTransformer.cs" />
-    <Compile Remove="TensorFlowEntryTimingTrainer.cs" />
-    
-    <!-- 레거시 AI 의존 파일들 추가 제외 -->
-    <Compile Remove="CoinSpecialistLearningSystem.cs" />
-    <Compile Remove="DoubleCheckEntryEngine.cs" />
-    <Compile Remove="WaveAIManager.cs" />
-    <Compile Remove="WaveDatasetGenerator.cs" />
-    <Compile Remove="SimpleDoubleCheckEngine.cs" />
-    <Compile Remove="MultiAgentManager.cs" />
-    <Compile Remove="TransformerStrategy.cs" />
-    <Compile Remove="DualAI_EntryPredictor.cs" />
-    
-    <!-- 기타 의존 파일 제외 -->
-    <Compile Remove="DualAI_IntegrationGuide.cs" />
-    <Compile Remove="Services\AiEntryModelService.cs" />
-    <Compile Remove="CheckpointManager.cs" />
-    <Compile Remove="TimeBasedLearningSystem.cs" />
-    <Compile Remove="ReinforcementLearningFramework.cs" />
+    <!-- [v5.19.2] 레거시 Transformer/Torch/TensorFlow 파일 모두 디스크에서 삭제 — Compile Remove 불필요 -->
+
     
     <!-- 루트에 있는 중복 파일 제외 (Services 폴더 사용) -->
     <Compile Remove="IExchangeService.cs" />
