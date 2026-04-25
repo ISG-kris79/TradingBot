@@ -673,10 +673,18 @@ namespace TradingBot
             blockReason = string.Empty;
 
             // 메이저 코인 진입 비활성화 (UI: chkEnableMajorTrading)
-            if (MajorSymbols.Contains(symbol) && _settings?.EnableMajorTrading == false)
+            // [v5.19.3] _settings null 시 안전 차단 — 설정 미로드 상태에서 메이저 진입 방지
+            if (MajorSymbols.Contains(symbol))
             {
-                blockReason = "MAJOR_DISABLED";
-                return false;
+                bool? majorAllowed = _settings?.EnableMajorTrading;
+                if (majorAllowed != true)   // null OR false → 차단
+                {
+                    blockReason = (_settings == null)
+                        ? "MAJOR_BLOCKED:settings_not_loaded"
+                        : "MAJOR_DISABLED";
+                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} | EnableMajorTrading={majorAllowed?.ToString() ?? "null"}");
+                    return false;
+                }
             }
 
             // [v5.10.88 Option A] BTC 1H 하락추세 시 알트 LONG 진입 차단
