@@ -2394,6 +2394,21 @@ namespace TradingBot.Services
                     return;
                 }
 
+                // [v5.19.11] OPTIMISTIC UI UPDATE — 주문 거래소 accept 즉시 로컬 캐시 제거 + UI 이벤트 발생
+                //   기존: WebSocket UserData ORDER_TRADE_UPDATE 푸시 대기 (Binance 측 lag 10s-1분)
+                //   수정: PlaceOrderAsync 성공 = 거래소 accept 확정 → 즉시 _activePositions 제거 + OnPositionClosed 발생
+                //   안전성: PlaceOrderAsync가 true 반환은 거래소가 주문을 받은 상태 (체결은 시장가라 거의 즉시)
+                //         만약 늦은 WebSocket이 다시 푸시해도 idempotent (이미 제거된 심볼은 재제거 무해)
+                try
+                {
+                    OnLog?.Invoke($"⚡ [ManualFast] {symbol} optimistic UI 제거 (WebSocket 확정 대기 안 함)");
+                    CleanupPositionData(symbol);
+                }
+                catch (Exception exOpt)
+                {
+                    OnLog?.Invoke($"⚠️ [ManualFast] {symbol} optimistic 제거 실패 (무해): {exOpt.Message}");
+                }
+
                 // 3. algo 주문 취소 + 정리는 비동기로 (사용자 청산 완료 후 백그라운드)
                 _ = Task.Run(async () =>
                 {
