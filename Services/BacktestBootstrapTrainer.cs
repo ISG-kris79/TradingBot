@@ -99,7 +99,44 @@ namespace TradingBot.Services
                         if (c5m[j].HighPrice >= tpPrice) { win = true; break; }
                         if (c5m[j].LowPrice  <= slPrice) { loss = true; break; }
                     }
-                    if (!win && !loss) continue; // 무승부 skip
+
+                    // [v5.19.10] 횡보 박스 NEGATIVE 라벨 강제
+                    //   1차 TP/SL 무승부(=박스) 케이스 중 24봉(2시간) 내 ±0.5% 미만 횡보 → 강제 NEGATIVE 라벨
+                    //   목적: AI가 "박스 진입 = 손실" 학습 → 진입 회피
+                    if (!win && !loss)
+                    {
+                        // 24봉 윈도우 내 max-min 범위 확인
+                        int boxEnd = Math.Min(i + 24, n - 1);
+                        decimal boxMaxRise = 0m, boxMaxDrop = 0m;
+                        for (int j = i + 1; j <= boxEnd; j++)
+                        {
+                            decimal risePct = (c5m[j].HighPrice - entryPrice) / entryPrice * 100m;
+                            decimal dropPct = (c5m[j].LowPrice  - entryPrice) / entryPrice * 100m;
+                            if (risePct > boxMaxRise) boxMaxRise = risePct;
+                            if (dropPct < boxMaxDrop) boxMaxDrop = dropPct;
+                        }
+                        // 박스 판정: 24봉 동안 +0.5% 미달 AND -0.5% 미달
+                        if (boxMaxRise < 0.5m && boxMaxDrop > -0.5m)
+                        {
+                            var asOfBox = entryBar.OpenTime;
+                            var s5m  = SliceBefore(c5m,  asOfBox, 260);
+                            var s15m = SliceBefore(c15m, asOfBox, 260);
+                            var s1h  = SliceBefore(c1h,  asOfBox, 200);
+                            var s4h  = SliceBefore(c4h,  asOfBox, 120);
+                            var s1d  = SliceBefore(c1d,  asOfBox, 50);
+                            if (s15m.Count >= 100 && s1h.Count >= 50 && s4h.Count >= 40 && s1d.Count >= 20)
+                            {
+                                var fBox = _extractor.BuildFeatureFromPreloaded(symbol, asOfBox, s1d, s4h, null, s1h, s15m, null, s5m);
+                                if (fBox != null)
+                                {
+                                    fBox.ShouldEnter = false;
+                                    fBox.ActualProfitPct = 0f;
+                                    negatives.Add(fBox);
+                                }
+                            }
+                        }
+                        continue; // 박스 케이스는 일반 라벨 skip (대박 라벨도 skip)
+                    }
 
                     // 각 TF 슬라이스 (asOf = entryBar.OpenTime, 그 이전까지)
                     var asOf = entryBar.OpenTime;

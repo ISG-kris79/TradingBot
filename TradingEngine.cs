@@ -768,6 +768,34 @@ namespace TradingBot
                             return false;
                         }
                     }
+
+                    // [v5.19.10] 규칙 3: 일반 횡보 박스 차단 — "상승중인줄 알고 진입했더니 횡보" 케이스
+                    //   M15 직전 20봉 range/avg < 0.5% AND BB 폭 < 1% → 좁은 박스 (변동성 죽음)
+                    //   사용자: 진입 후 박스에서 무한정 홀딩 → 손실/기회비용
+                    {
+                        var last20 = k15.TakeLast(20).ToList();
+                        if (last20.Count >= 20)
+                        {
+                            decimal hi20 = last20.Max(b => b.HighPrice);
+                            decimal lo20 = last20.Min(b => b.LowPrice);
+                            decimal avg20 = last20.Average(b => b.ClosePrice);
+                            decimal range20Pct = avg20 > 0m ? (hi20 - lo20) / avg20 * 100m : 0m;
+
+                            // BB(20,2) std 계산
+                            var closes = last20.Select(b => (double)b.ClosePrice).ToArray();
+                            double sma = closes.Average();
+                            double variance = closes.Select(c => (c - sma) * (c - sma)).Average();
+                            double sd = Math.Sqrt(variance);
+                            double bbWidthPct = sma > 0 ? (sd * 4.0) / sma * 100.0 : 0;  // upper-lower = 4σ
+
+                            if (range20Pct < 0.5m && bbWidthPct < 1.0)
+                            {
+                                blockReason = $"SIDEWAYS_BOX:range20={range20Pct:F2}%_bbw={bbWidthPct:F2}%";
+                                OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (좁은 박스 — 진입 후 횡보 위험)");
+                                return false;
+                            }
+                        }
+                    }
                 }
             }
             catch (Exception exGuard)

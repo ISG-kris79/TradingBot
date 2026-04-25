@@ -528,6 +528,23 @@ namespace TradingBot.Services
                                 break;
                             }
                         }
+                        // [v5.19.10 STAGNATION] 진입 후 20분+ AND |ROE| < 0.3% → 청산 (no progress)
+                        //   사용자 보고: "상승중 진입이라고 판단해서 횡보에서 오래 가지고 있는 상태"
+                        //   기존 시간손절(120분/ROE<=0)/횡보익절(30분/ROE>=3%) 사이 빈틈 메움
+                        if (!isMajor && holdMinutes >= 20 && Math.Abs(currentROE) < 0.3m)
+                        {
+                            OnAlert?.Invoke($"💤 [STAGNATION] {symbol} {holdMinutes:F0}분 ROE={currentROE:F2}% (|ROE|<0.3% — 진척 없음) → 청산");
+                            await ExecuteMarketClose(symbol, $"STD_STAGNATION ({holdMinutes:F0}min, ROE={currentROE:F2}%)", token);
+                            break;
+                        }
+                        // [v5.19.10 SLOW_BOX] 진입 후 30분+ AND |ROE| < 0.8% → 청산 (느린 박스)
+                        if (!isMajor && holdMinutes >= 30 && Math.Abs(currentROE) < 0.8m)
+                        {
+                            OnAlert?.Invoke($"💤 [SLOW_BOX] {symbol} {holdMinutes:F0}분 ROE={currentROE:F2}% (|ROE|<0.8% — 느린 박스) → 청산");
+                            await ExecuteMarketClose(symbol, $"STD_SLOW_BOX ({holdMinutes:F0}min, ROE={currentROE:F2}%)", token);
+                            break;
+                        }
+
                         // [B] 횡보 익절: 30분+ + ROE>=3% + BBWidth<1.5% (regime 약세)
                         if (!isMajor && holdMinutes >= 30 && currentROE >= 3m
                             && _marketDataManager.KlineCache.TryGetValue(symbol, out var kcStd) && kcStd.Count >= 25)
