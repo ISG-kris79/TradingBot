@@ -1662,6 +1662,33 @@ ORDER BY EntryTime DESC, Id DESC;",
         }
 
         /// <summary>
+        /// [v5.20.1] 직전 30일 동안 N봉 이상 보유한 심볼 자동 발견 — BacktestValidator 자동 fallback 용
+        /// </summary>
+        public async Task<List<string>> GetSymbolsWithRecentCandlesAsync(string intervalText = "5m", int minBarsLast30Days = 500)
+        {
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                string sql = @"
+                    SELECT Symbol
+                    FROM CandleData WITH (NOLOCK)
+                    WHERE IntervalText = @Interval AND OpenTime >= DATEADD(DAY, -30, GETUTCDATE())
+                    GROUP BY Symbol
+                    HAVING COUNT(*) >= @MinBars
+                    ORDER BY COUNT(*) DESC";
+                var result = await db.QueryAsync<string>(sql,
+                    new { Interval = intervalText, MinBars = minBarsLast30Days },
+                    commandTimeout: 120);
+                return result.ToList();
+            }
+            catch
+            {
+                return new List<string>();
+            }
+        }
+
+        /// <summary>
         /// [v4.5.2] ML 학습용: 전체 심볼의 최근 캔들 데이터를 DB에서 조회 (계정 무관, 공유 데이터)
         /// </summary>
         /// <summary>

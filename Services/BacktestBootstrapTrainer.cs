@@ -60,7 +60,11 @@ namespace TradingBot.Services
                 int max1d  = daysBack + 50;
 
                 var c5mRaw = await _db.GetCandleDataByIntervalAsync(symbol, "5m",  max5m);
-                if (c5mRaw == null || c5mRaw.Count < 100) return (positives, negatives);
+                if (c5mRaw == null || c5mRaw.Count < 100)
+                {
+                    OnLog?.Invoke($"⚠️ [BACKTEST] {symbol} skip — 5m 데이터 부족 ({c5mRaw?.Count ?? 0}/100)");
+                    return (positives, negatives);
+                }
                 var c15mRaw = await _db.GetCandleDataByIntervalAsync(symbol, "15m", max15m);
                 var c1hRaw  = await _db.GetCandleDataByIntervalAsync(symbol, "1h",  max1h);
                 var c4hRaw  = await _db.GetCandleDataByIntervalAsync(symbol, "4h",  max4h);
@@ -146,7 +150,13 @@ namespace TradingBot.Services
                     var slice4h  = SliceBefore(c4h,  asOf, 120);
                     var slice1d  = SliceBefore(c1d,  asOf, 50);
 
-                    if (slice5m.Count < 100 || slice15m.Count < 100 || slice1h.Count < 50 || slice4h.Count < 40 || slice1d.Count < 20) continue;
+                    // [v5.20.1] skip 사유 첫 1회만 출력 (반복 노이즈 방지)
+                    if (slice5m.Count < 100 || slice15m.Count < 100 || slice1h.Count < 50 || slice4h.Count < 40 || slice1d.Count < 20)
+                    {
+                        if (i == lookback5m)
+                            OnLog?.Invoke($"ℹ️ [BACKTEST] {symbol} TF 데이터 부족: 5m={slice5m.Count}/100 15m={slice15m.Count}/100 1h={slice1h.Count}/50 4h={slice4h.Count}/40 1d={slice1d.Count}/20");
+                        continue;
+                    }
 
                     // [v5.19.0] M5 슬라이스 전달 → Band Walk 피처 자동 추출
                     var feature = _extractor.BuildFeatureFromPreloaded(symbol, asOf, slice1d, slice4h, null, slice1h, slice15m, null, slice5m);

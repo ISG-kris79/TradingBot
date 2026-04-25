@@ -1222,12 +1222,31 @@ namespace TradingBot
                 var validator = new Services.BacktestValidator(_dbManager, _featureExtractor);
                 validator.OnLog += msg => OnLog?.Invoke(msg);
 
-                var symbols = _externalTrackedSymbols != null && _externalTrackedSymbols.Count > 0
-                    ? (IEnumerable<string>)_externalTrackedSymbols
-                    : new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };  // 최소 fallback
-                if (!symbols.Any())
+                List<string> symbols;
+                if (_externalTrackedSymbols != null && _externalTrackedSymbols.Count > 0)
                 {
-                    return "❌ [VALIDATE] 추적 심볼 없음 — TradingEngine.SetTrackedSymbols 호출 필요";
+                    symbols = _externalTrackedSymbols.ToList();
+                    OnLog?.Invoke($"[VALIDATE] 추적 심볼 사용: {symbols.Count}개 (예: {string.Join(",", symbols.Take(5))}...)");
+                }
+                else
+                {
+                    // [v5.20.1] DB 에서 5m 데이터 보유 심볼 자동 발견
+                    OnLog?.Invoke("[VALIDATE] _externalTrackedSymbols 비어있음 → DB 5m 보유 심볼 자동 발견");
+                    try
+                    {
+                        var auto = await _dbManager.GetSymbolsWithRecentCandlesAsync(intervalText: "5m", minBarsLast30Days: 500);
+                        symbols = auto?.ToList() ?? new List<string>();
+                        OnLog?.Invoke($"[VALIDATE] DB 자동 발견: {symbols.Count} 심볼");
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLog?.Invoke($"[VALIDATE] DB 자동 발견 실패: {ex.Message} → 메이저 4개 fallback");
+                        symbols = new List<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+                    }
+                }
+                if (symbols.Count == 0)
+                {
+                    return "❌ [VALIDATE] 추적 심볼 0개 (DB 도 비어있음). 봇 시작 후 5m 데이터 수집 대기 필요";
                 }
 
                 // MajorSymbols 추정 (TradingEngine 의 정의와 동일)
