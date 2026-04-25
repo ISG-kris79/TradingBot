@@ -3144,6 +3144,38 @@ namespace TradingBot
                                                 OnStatusLog?.Invoke($"✅ [감시진입-HTF통과] {pumpKey} | {htfDetail}");
                                             }
 
+                                            // [v5.19.4] 15분봉 고점 진입 차단 — CTSIUSDT 사례:
+                                            //   30봉 range 위치 85.7%, 직전 2봉 +0.86%/+0.86% 폭주 후 진입 → 즉시 -0.56% pullback
+                                            //   규칙: M15 30봉 range 위치 ≥ 85% AND 30봉 저점 대비 ≥ +3% 상승 → 차단
+                                            try
+                                            {
+                                                var k15 = await _exchangeService.GetKlinesAsync(
+                                                    pumpKey, KlineInterval.FifteenMinutes, 30,
+                                                    _cts?.Token ?? CancellationToken.None);
+                                                if (k15 != null)
+                                                {
+                                                    var k15List = k15.ToList();
+                                                    if (k15List.Count >= 30)
+                                                    {
+                                                        decimal minLow = k15List.Min(b => b.LowPrice);
+                                                        decimal maxHigh = k15List.Max(b => b.HighPrice);
+                                                        decimal latestClose = k15List[^1].ClosePrice;
+                                                        decimal posPct = maxHigh > minLow
+                                                            ? (latestClose - minLow) / (maxHigh - minLow) * 100m
+                                                            : 50m;
+                                                        decimal riseFromLowPct = minLow > 0m
+                                                            ? (latestClose - minLow) / minLow * 100m
+                                                            : 0m;
+                                                        if (posPct >= 85m && riseFromLowPct >= 3m)
+                                                        {
+                                                            OnStatusLog?.Invoke($"⛔ [감시진입차단-고점] {pumpKey} M15 30봉 위치={posPct:F1}% rise={riseFromLowPct:F2}% (≥85% & ≥3% → 고점 추격)");
+                                                            return;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            catch (Exception exG) { OnStatusLog?.Invoke($"⚠️ [감시고점가드] {pumpKey} 체크 실패 (무시): {exG.Message}"); }
+
                                             // [v4.8.0] OptimalEntryPrice Hybrid — ML 예측 pullback에 LIMIT 시도, 실패 시 시장가 fallback
                                             bool limitFilled = await TryHybridLimitEntryAsync(pumpKey, nowPrice, sizeMul, _cts?.Token ?? CancellationToken.None);
                                             if (!limitFilled)
