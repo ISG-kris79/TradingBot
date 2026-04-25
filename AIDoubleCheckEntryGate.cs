@@ -1211,9 +1211,10 @@ namespace TradingBot
         /// 사용자 요구: "차트 데이터로 미리 예측 못하고 있어 — 테스트하면서 로직 수정"
         /// </summary>
         public async Task<string> RunBacktestValidationAsync(
-            int daysBack = 7,
+            int daysBack = 3,            // [v5.20.4] 7→3 단축 (속도 우선)
             float threshold = 0.5f,
-            System.Threading.CancellationToken token = default)
+            System.Threading.CancellationToken token = default,
+            int maxSymbols = 30)         // [v5.20.4] 최대 30 심볼만 검증 (빠른 결과)
         {
             try
             {
@@ -1244,9 +1245,15 @@ namespace TradingBot
                 {
                     return "❌ [VALIDATE] 추적 심볼 0개 (DB 도 비어있음). 봇 시작 후 5m 데이터 수집 대기 필요";
                 }
-                if (symbols.Count < 20)
+                if (symbols.Count > maxSymbols)
                 {
-                    OnLog?.Invoke($"⚠️ [VALIDATE] 심볼 {symbols.Count}개로 검증 → 의미있는 통계 위해 50+ 권장");
+                    // [v5.20.4] 너무 많으면 첫 maxSymbols 만 (속도 우선) — DB autoFound 가 봉 수 desc 정렬이라 활성 심볼 우선
+                    OnLog?.Invoke($"[VALIDATE] {symbols.Count} 심볼 → 상위 {maxSymbols}개만 검증 (속도 우선). 전체 검증은 daysBack=1 로 별도 가능");
+                    symbols = symbols.Take(maxSymbols).ToList();
+                }
+                if (symbols.Count < 10)
+                {
+                    OnLog?.Invoke($"⚠️ [VALIDATE] 심볼 {symbols.Count}개로 검증 → 의미있는 통계 위해 30+ 권장");
                 }
 
                 // MajorSymbols 추정 (TradingEngine 의 정의와 동일)

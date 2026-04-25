@@ -129,27 +129,35 @@ namespace TradingBot.Services
             var allSpike   = new List<MultiTimeframeEntryFeature>();
 
             int symbolCount = 0;
+            int idx = 0;
+            int total = symbols.Count();
             foreach (var sym in symbols)
             {
+                idx++;
                 if (token.IsCancellationRequested) break;
                 try
                 {
                     var (positives, negatives) = await bootstrap.BacktestSymbolAsync(sym, daysBack: daysBack, token: token);
                     var combined = positives.Concat(negatives).ToList();
-                    if (combined.Count == 0) continue;
+                    if (combined.Count == 0)
+                    {
+                        if (idx % 5 == 0) OnLog?.Invoke($"📊 [ML 검증] {idx}/{total} | 누적 처리={symbolCount} 샘플={allDefault.Count}");
+                        continue;
+                    }
 
                     bool isMajor = majorSymbols.Contains(sym);
                     allDefault.AddRange(combined);
                     if (isMajor) allMajor.AddRange(combined);
                     else        allPump.AddRange(combined);
 
-                    // SPIKE: 1차 라벨 win 케이스 중 ActualProfitPct >= 1.5 (대박) 만
                     foreach (var f in combined)
                     {
                         if (f.ShouldEnter && f.ActualProfitPct >= 1.5f) allSpike.Add(f);
                     }
 
                     symbolCount++;
+                    if (symbolCount % 5 == 0)
+                        OnLog?.Invoke($"📊 [ML 검증] {idx}/{total} | 처리={symbolCount} D={allDefault.Count} M={allMajor.Count} P={allPump.Count} S={allSpike.Count}");
                 }
                 catch (Exception ex) { sb.AppendLine($"⚠️ {sym} 데이터 로드 실패: {ex.Message}"); }
             }
@@ -192,9 +200,14 @@ namespace TradingBot.Services
             int globalLong = 0, globalShort = 0, globalNeutral = 0;
             var perSym = new List<(string sym, int n, int correct, double winRate)>();
 
+            int v2idx = 0;
+            int v2total = symbols.Count();
             foreach (var sym in symbols)
             {
+                v2idx++;
                 if (token.IsCancellationRequested) break;
+                if (v2idx % 5 == 0)
+                    OnLog?.Invoke($"📊 [V2 검증] {v2idx}/{v2total} | 누적 {globalTotal}건 정답 {globalCorrect}");
                 try
                 {
                     int max5m = daysBack * 24 * 12 + 100;
