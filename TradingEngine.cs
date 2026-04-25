@@ -3081,6 +3081,12 @@ namespace TradingBot
                 // [v4.7.0] /train 명령 → 옵션A 초기학습 (6개월 다운로드 + 학습 + 검증)
                 TelegramService.Instance.OnRequestTrain = (ct) => StartOptionAInitialTrainingAsync(token: ct);
                 TelegramService.Instance.OnRequestDroughtScan = ForceDroughtDiagnosticAsync;
+                // [v5.19.12 Phase 1] /validate 명령 → 4 variant 백테스트 검증
+                TelegramService.Instance.OnRequestValidate = async (ct) =>
+                {
+                    if (_aiDoubleCheckEntryGate == null) return "❌ AI Gate 미초기화";
+                    return await _aiDoubleCheckEntryGate.RunBacktestValidationAsync(daysBack: 7, threshold: 0.5f, token: ct);
+                };
                 TelegramService.Instance.StartReceiving();
                 OnTelegramStatusUpdate?.Invoke(true, "Telegram: Connected");
 

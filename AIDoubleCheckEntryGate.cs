@@ -1192,6 +1192,46 @@ namespace TradingBot
         }
 
         /// <summary>
+        /// [v5.19.12 Phase 1] 백테스트 검증 — 4 variant precision/recall/win-rate 측정
+        /// 사용자 요구: "차트 데이터로 미리 예측 못하고 있어 — 테스트하면서 로직 수정"
+        /// </summary>
+        public async Task<string> RunBacktestValidationAsync(
+            int daysBack = 7,
+            float threshold = 0.5f,
+            System.Threading.CancellationToken token = default)
+        {
+            try
+            {
+                if (_dbManager == null)
+                    return "❌ [VALIDATE] DbManager 미초기화";
+                var validator = new Services.BacktestValidator(_dbManager, _featureExtractor);
+                validator.OnLog += msg => OnLog?.Invoke(msg);
+
+                var symbols = _externalTrackedSymbols != null && _externalTrackedSymbols.Count > 0
+                    ? (IEnumerable<string>)_externalTrackedSymbols
+                    : new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };  // 최소 fallback
+                if (!symbols.Any())
+                {
+                    return "❌ [VALIDATE] 추적 심볼 없음 — TradingEngine.SetTrackedSymbols 호출 필요";
+                }
+
+                // MajorSymbols 추정 (TradingEngine 의 정의와 동일)
+                var majorSyms = new HashSet<string>(new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" }, StringComparer.OrdinalIgnoreCase);
+
+                string report = await validator.ValidateAllVariantsAsync(
+                    _mlTrainer, _mlTrainerMajor, _mlTrainerPump, _mlTrainerSpike,
+                    symbols, majorSyms, daysBack, threshold, token);
+                return report;
+            }
+            catch (Exception ex)
+            {
+                string err = $"❌ [VALIDATE] 예외: {ex.Message}";
+                OnLog?.Invoke(err);
+                return err;
+            }
+        }
+
+        /// <summary>
         /// [v5.18.0] ModelHealthMonitor 초기화 + 4 variant 등록
         /// </summary>
         public void StartHealthMonitor()
