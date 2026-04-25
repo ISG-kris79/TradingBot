@@ -238,13 +238,17 @@ namespace TradingBot.Services
             double overallWr = globalTotal > 0 ? (double)globalCorrect / globalTotal * 100.0 : 0;
             sb.AppendLine($"  전체: {globalTotal}건 / 정답 {globalCorrect}건 / win-rate={overallWr:F2}% (LONG={globalLong} SHORT={globalShort})");
             sb.AppendLine();
-            sb.AppendLine("  [TOP 15 per-symbol win-rate]");
-            foreach (var s in perSym.OrderByDescending(p => p.winRate).Take(15))
-                sb.AppendLine($"    {s.sym,-14} N={s.n,4} 정답={s.correct,4} win-rate={s.winRate,6:F2}%");
+            // [v5.20.2] N>=30 필터로 통계 신뢰도 확보
+            var filtered = perSym.Where(p => p.n >= 30).ToList();
+            sb.AppendLine($"  유효 심볼 (N>=30): {filtered.Count} / 전체 {perSym.Count}");
             sb.AppendLine();
-            sb.AppendLine("  [BOTTOM 5 per-symbol win-rate]");
-            foreach (var s in perSym.OrderBy(p => p.winRate).Take(5))
-                sb.AppendLine($"    {s.sym,-14} N={s.n,4} 정답={s.correct,4} win-rate={s.winRate,6:F2}%");
+            sb.AppendLine("  [TOP 15 per-symbol win-rate]");
+            foreach (var s in filtered.OrderByDescending(p => p.winRate).Take(15))
+                sb.AppendLine($"    {s.sym,-14} N={s.n,5} 정답={s.correct,5} win-rate={s.winRate,6:F2}%");
+            sb.AppendLine();
+            sb.AppendLine("  [BOTTOM 10 per-symbol win-rate]");
+            foreach (var s in filtered.OrderBy(p => p.winRate).Take(10))
+                sb.AppendLine($"    {s.sym,-14} N={s.n,5} 정답={s.correct,5} win-rate={s.winRate,6:F2}%");
 
             string report = sb.ToString();
             OnLog?.Invoke(report);

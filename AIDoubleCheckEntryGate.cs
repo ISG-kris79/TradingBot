@@ -1222,31 +1222,31 @@ namespace TradingBot
                 var validator = new Services.BacktestValidator(_dbManager, _featureExtractor);
                 validator.OnLog += msg => OnLog?.Invoke(msg);
 
+                // [v5.20.2] 메이저 4개만 있으면 (이전 결과처럼) 의미 없음 → 항상 DB 자동 발견 + union
                 List<string> symbols;
-                if (_externalTrackedSymbols != null && _externalTrackedSymbols.Count > 0)
+                List<string> tracked = _externalTrackedSymbols?.ToList() ?? new List<string>();
+                List<string> autoFound = new List<string>();
+                try
                 {
-                    symbols = _externalTrackedSymbols.ToList();
-                    OnLog?.Invoke($"[VALIDATE] 추적 심볼 사용: {symbols.Count}개 (예: {string.Join(",", symbols.Take(5))}...)");
+                    autoFound = (await _dbManager.GetSymbolsWithRecentCandlesAsync(intervalText: "5m", minBarsLast30Days: 500)) ?? new List<string>();
                 }
-                else
-                {
-                    // [v5.20.1] DB 에서 5m 데이터 보유 심볼 자동 발견
-                    OnLog?.Invoke("[VALIDATE] _externalTrackedSymbols 비어있음 → DB 5m 보유 심볼 자동 발견");
-                    try
-                    {
-                        var auto = await _dbManager.GetSymbolsWithRecentCandlesAsync(intervalText: "5m", minBarsLast30Days: 500);
-                        symbols = auto?.ToList() ?? new List<string>();
-                        OnLog?.Invoke($"[VALIDATE] DB 자동 발견: {symbols.Count} 심볼");
-                    }
-                    catch (Exception ex)
-                    {
-                        OnLog?.Invoke($"[VALIDATE] DB 자동 발견 실패: {ex.Message} → 메이저 4개 fallback");
-                        symbols = new List<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
-                    }
-                }
+                catch (Exception ex) { OnLog?.Invoke($"[VALIDATE] DB 자동 발견 실패: {ex.Message}"); }
+
+                // tracked + auto union, 중복 제거
+                var union = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var s in tracked) union.Add(s);
+                foreach (var s in autoFound) union.Add(s);
+                symbols = union.ToList();
+
+                OnLog?.Invoke($"[VALIDATE] tracked={tracked.Count} + autoFound={autoFound.Count} → union={symbols.Count} 심볼 (예: {string.Join(",", symbols.Take(8))}...)");
+
                 if (symbols.Count == 0)
                 {
                     return "❌ [VALIDATE] 추적 심볼 0개 (DB 도 비어있음). 봇 시작 후 5m 데이터 수집 대기 필요";
+                }
+                if (symbols.Count < 20)
+                {
+                    OnLog?.Invoke($"⚠️ [VALIDATE] 심볼 {symbols.Count}개로 검증 → 의미있는 통계 위해 50+ 권장");
                 }
 
                 // MajorSymbols 추정 (TradingEngine 의 정의와 동일)
