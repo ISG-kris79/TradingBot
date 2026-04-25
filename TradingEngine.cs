@@ -668,9 +668,33 @@ namespace TradingBot
         // — 새 진입 경로 추가 시 누락되지 않도록 _exchangeService.PlaceMarketOrderAsync/PlaceOrderAsync 직접 호출 금지.
         // — 단일 지점에서 EnableMajorTrading 등 글로벌 차단 강제 → "버전업할 때마다 누락" 문제 근본 차단.
         // ═══════════════════════════════════════════════════════════════════════════════════
+        // [v5.19.5] 수동 청산 후 재진입 차단 (사용자 의도 존중) — symbol → 청산 시각
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _manualCloseCooldown = new();
+        public TimeSpan ManualCloseCooldown { get; set; } = TimeSpan.FromMinutes(30);
+
+        public void RegisterManualCloseCooldown(string symbol)
+        {
+            if (string.IsNullOrWhiteSpace(symbol)) return;
+            _manualCloseCooldown[symbol] = DateTime.UtcNow;
+            OnStatusLog?.Invoke($"⏱️ [수동청산-COOLDOWN] {symbol} {ManualCloseCooldown.TotalMinutes:F0}분 재진입 차단 등록");
+        }
+
         private bool IsEntryAllowed(string symbol, string source, out string blockReason)
         {
             blockReason = string.Empty;
+
+            // [v5.19.5] 수동 청산 cooldown — 사용자가 청산한 심볼은 30분간 재진입 차단
+            if (_manualCloseCooldown.TryGetValue(symbol, out var closedAt))
+            {
+                var elapsed = DateTime.UtcNow - closedAt;
+                if (elapsed < ManualCloseCooldown)
+                {
+                    blockReason = $"MANUAL_CLOSE_COOLDOWN:{(ManualCloseCooldown - elapsed).TotalMinutes:F0}m";
+                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason}");
+                    return false;
+                }
+                _manualCloseCooldown.TryRemove(symbol, out _);
+            }
 
             // 메이저 코인 진입 비활성화 (UI: chkEnableMajorTrading)
             // [v5.19.3] _settings null 시 안전 차단 — 설정 미로드 상태에서 메이저 진입 방지
@@ -685,6 +709,59 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} | EnableMajorTrading={majorAllowed?.ToString() ?? "null"}");
                     return false;
                 }
+            }
+
+            // [v5.19.5] M15 고점 추격 + 횡보 분배 가드 — API3USDT/CTSI/CELR 사례 근본 차단
+            //   API3USDT: 수직상승 후 횡보 → BB 상단 진입 → 폭락 90%+
+            //   규칙 1: M15 30봉 range 위치 ≥ 85% AND 30봉 저점→현재가 ≥ 3% → 차단
+            //   규칙 2: 직전 30봉 +5% 이상 + 직전 5봉 변동폭 < 0.8% → 횡보 분배 차단
+            //   캐시 우선 (Services.MarketDataManager.Instance.GetCachedKlines), 없으면 가드 skip (정상)
+            try
+            {
+                var k15 = Services.MarketDataManager.Instance?.GetCachedKlines(
+                    symbol, KlineInterval.FifteenMinutes, 30);
+                if (k15 != null && k15.Count >= 30)
+                {
+                    decimal minLow = k15.Min(b => b.LowPrice);
+                    decimal maxHigh = k15.Max(b => b.HighPrice);
+                    decimal latestClose = k15[^1].ClosePrice;
+
+                    decimal posPct = maxHigh > minLow
+                        ? (latestClose - minLow) / (maxHigh - minLow) * 100m
+                        : 50m;
+                    decimal riseFromLowPct = minLow > 0m
+                        ? (latestClose - minLow) / minLow * 100m
+                        : 0m;
+
+                    // 규칙 1: 고점 추격
+                    if (posPct >= 85m && riseFromLowPct >= 3m)
+                    {
+                        blockReason = $"HIGH_TOP_CHASING:pos={posPct:F1}%_rise={riseFromLowPct:F2}%";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (M15 30봉 위치≥85% AND 상승≥3%)");
+                        return false;
+                    }
+
+                    // 규칙 2: 수직상승 후 횡보 분배 (직전 5봉 high-low/avg < 0.8%)
+                    if (riseFromLowPct >= 5m)
+                    {
+                        var last5 = k15.TakeLast(5).ToList();
+                        decimal hi5 = last5.Max(b => b.HighPrice);
+                        decimal lo5 = last5.Min(b => b.LowPrice);
+                        decimal avg5 = last5.Average(b => b.ClosePrice);
+                        decimal range5Pct = avg5 > 0m ? (hi5 - lo5) / avg5 * 100m : 0m;
+                        decimal peakDistPct = maxHigh > 0m ? (maxHigh - latestClose) / maxHigh * 100m : 0m;
+                        if (range5Pct < 0.8m && peakDistPct < 1.0m)
+                        {
+                            blockReason = $"TOP_DISTRIBUTION:rise={riseFromLowPct:F1}%_range5={range5Pct:F2}%_peakDist={peakDistPct:F2}%";
+                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (수직상승 후 횡보 = 분배 종료)");
+                            return false;
+                        }
+                    }
+                }
+            }
+            catch (Exception exGuard)
+            {
+                OnStatusLog?.Invoke($"⚠️ [GATE-고점가드] {symbol} 체크 실패 (무시): {exGuard.Message}");
             }
 
             // [v5.10.88 Option A] BTC 1H 하락추세 시 알트 LONG 진입 차단
@@ -15339,6 +15416,9 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"⚠️ {symbol} PositionMonitor 미초기화 — 직접 거래소 API 청산 시도");
                 await DirectClosePositionAsync(symbol);
             }
+
+            // [v5.19.5] 수동 청산 후 cooldown 등록 — 사용자 의도 무시하고 즉시 재진입 차단
+            RegisterManualCloseCooldown(symbol);
         }
 
         /// <summary>
