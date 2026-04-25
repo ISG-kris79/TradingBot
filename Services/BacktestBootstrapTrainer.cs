@@ -210,11 +210,10 @@ namespace TradingBot.Services
     }
 
     /// <summary>
-    /// [v5.18.0] CandleData → IBinanceKline 어댑터 (BacktestBootstrapTrainer 전용)
-    /// MultiTimeframeFeatureExtractor 가 IBinanceKline 를 받기 때문에 brige 필요
-    /// 모든 필드 구현 — 사용 안 하는 필드는 default 값
+    /// [v5.18.0] CandleData → IBinanceKline 어댑터
+    /// [v5.20.0] public 으로 변경 — LorentzianV2Service 등 다른 모듈도 사용
     /// </summary>
-    internal sealed class KlineAdapter : IBinanceKline
+    public sealed class KlineAdapter : IBinanceKline
     {
         public KlineAdapter(TradingBot.Models.CandleData c)
         {

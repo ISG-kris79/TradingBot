@@ -50,6 +50,8 @@ namespace TradingBot
 
         // [Lorentzian Phase 1] KNN 사이드카 게이트 — 진입 신호 추가 검증 (soft mode)
         private readonly Services.LorentzianClassifier _lorentzian;
+        private readonly Services.LorentzianV2.LorentzianV2Service _lorentzianV2;
+        public Services.LorentzianV2.LorentzianV2Service LorentzianV2 => _lorentzianV2;
         private readonly string _lorentzianDataPath = "TrainingData/Lorentzian";
         
         // 설정
@@ -162,6 +164,10 @@ namespace TradingBot
                 k: _config.LorentzianK,
                 maxSamples: _config.LorentzianMaxSamples,
                 minSamplesForPrediction: _config.LorentzianMinSamples);
+
+            // [v5.20.0] Lorentzian V2 — Pine 정통 ANN 포팅 (per-symbol, 5피처 정규화, 합산투표)
+            _lorentzianV2 = new Services.LorentzianV2.LorentzianV2Service();
+            _lorentzianV2.OnLog += msg => OnLog?.Invoke(msg);
 
             _ = Task.Run(async () =>
             {
@@ -1188,6 +1194,15 @@ namespace TradingBot
             await Train(_onlineLearningPump,  "Pump");
             await Train(_onlineLearningSpike, "Spike");
 
+            // [v5.20.0] LorentzianV2 per-symbol backfill — 5피처 + 4봉 forward 라벨
+            try
+            {
+                OnLog?.Invoke($"📚 [LorentzianV2] {symbols.Count} 심볼 backfill 시작 ({daysBack}일)");
+                int v2Total = await _lorentzianV2.BackfillAllAsync(_dbManager, symbols, daysBack);
+                OnLog?.Invoke($"✅ [LorentzianV2] backfill 완료: {v2Total} 샘플");
+            }
+            catch (Exception ex) { OnLog?.Invoke($"⚠️ [LorentzianV2] backfill 실패: {ex.Message}"); }
+
             OnLog?.Invoke("🎉 [BACKTEST_BOOTSTRAP] 완료");
         }
 
@@ -1218,10 +1233,13 @@ namespace TradingBot
                 // MajorSymbols 추정 (TradingEngine 의 정의와 동일)
                 var majorSyms = new HashSet<string>(new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" }, StringComparer.OrdinalIgnoreCase);
 
-                string report = await validator.ValidateAllVariantsAsync(
+                string mlReport = await validator.ValidateAllVariantsAsync(
                     _mlTrainer, _mlTrainerMajor, _mlTrainerPump, _mlTrainerSpike,
                     symbols, majorSyms, daysBack, threshold, token);
-                return report;
+
+                // [v5.20.0] LorentzianV2 per-symbol win-rate 추가
+                string v2Report = await validator.ValidateLorentzianV2Async(_lorentzianV2, symbols, daysBack, token);
+                return mlReport + "\n" + v2Report;
             }
             catch (Exception ex)
             {

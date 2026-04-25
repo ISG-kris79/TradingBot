@@ -174,5 +174,81 @@ namespace TradingBot.Services
             OnLog?.Invoke(report);
             return report;
         }
+
+        /// <summary>
+        /// [v5.20.0] LorentzianV2 per-symbol 검증 — Pine 스타일 정확도 측정
+        /// 5m 캔들 sliding window: feature 추출 + 4봉 후 실제 가격 변화 vs Engine 예측 sign 일치 여부
+        /// </summary>
+        public async Task<string> ValidateLorentzianV2Async(
+            LorentzianV2.LorentzianV2Service v2,
+            IEnumerable<string> symbols,
+            int daysBack = 7,
+            CancellationToken token = default)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine($"📊 [LorentzianV2] per-symbol {daysBack}일 검증 시작");
+
+            int globalTotal = 0, globalCorrect = 0;
+            int globalLong = 0, globalShort = 0, globalNeutral = 0;
+            var perSym = new List<(string sym, int n, int correct, double winRate)>();
+
+            foreach (var sym in symbols)
+            {
+                if (token.IsCancellationRequested) break;
+                try
+                {
+                    int max5m = daysBack * 24 * 12 + 100;
+                    var raw = await _db.GetCandleDataByIntervalAsync(sym, "5m", max5m);
+                    if (raw == null || raw.Count < 100) continue;
+                    var asc = raw.OrderBy(c => c.OpenTime)
+                                 .Select(c => new TradingBot.Services.KlineAdapter(c))
+                                 .Cast<Binance.Net.Interfaces.IBinanceKline>()
+                                 .ToList();
+                    if (asc.Count < 65) continue;
+
+                    int symN = 0, symCorrect = 0;
+                    for (int i = 60; i < asc.Count - 4; i++)
+                    {
+                        var slice = asc.GetRange(0, i + 1);
+                        var pred = v2.Predict(sym, slice);
+                        if (!pred.IsReady || pred.Prediction == 0) continue;
+
+                        decimal nowClose = asc[i].ClosePrice;
+                        decimal future4 = asc[i + 4].ClosePrice;
+                        int actualSign = future4 > nowClose ? 1 : future4 < nowClose ? -1 : 0;
+                        if (actualSign == 0) continue;
+
+                        symN++;
+                        bool correct = (pred.Prediction > 0 && actualSign > 0) || (pred.Prediction < 0 && actualSign < 0);
+                        if (correct) symCorrect++;
+                        if (pred.Prediction > 0) globalLong++; else globalShort++;
+                    }
+                    if (symN > 0)
+                    {
+                        double wr = (double)symCorrect / symN * 100.0;
+                        perSym.Add((sym, symN, symCorrect, wr));
+                        globalTotal += symN;
+                        globalCorrect += symCorrect;
+                    }
+                }
+                catch (Exception ex) { sb.AppendLine($"⚠️ {sym} 검증 실패: {ex.Message}"); }
+            }
+
+            // 글로벌 win rate
+            double overallWr = globalTotal > 0 ? (double)globalCorrect / globalTotal * 100.0 : 0;
+            sb.AppendLine($"  전체: {globalTotal}건 / 정답 {globalCorrect}건 / win-rate={overallWr:F2}% (LONG={globalLong} SHORT={globalShort})");
+            sb.AppendLine();
+            sb.AppendLine("  [TOP 15 per-symbol win-rate]");
+            foreach (var s in perSym.OrderByDescending(p => p.winRate).Take(15))
+                sb.AppendLine($"    {s.sym,-14} N={s.n,4} 정답={s.correct,4} win-rate={s.winRate,6:F2}%");
+            sb.AppendLine();
+            sb.AppendLine("  [BOTTOM 5 per-symbol win-rate]");
+            foreach (var s in perSym.OrderBy(p => p.winRate).Take(5))
+                sb.AppendLine($"    {s.sym,-14} N={s.n,4} 정답={s.correct,4} win-rate={s.winRate,6:F2}%");
+
+            string report = sb.ToString();
+            OnLog?.Invoke(report);
+            return report;
+        }
     }
 }
