@@ -77,7 +77,12 @@ namespace TradingBot.Services
                 int lookback5m = 260;     // M15 100봉 = 5m 약 300봉
                 int forward = forwardWindowBars;
                 int n = c5m.Count;
-                for (int i = lookback5m; i < n - forward; i++)
+                // [v5.19.0] Band Walk 대박 라벨용 확장 윈도우 (24봉 = 2시간) + 더 큰 TP
+                int bandWalkWindow = Math.Max(forward, 24);
+                decimal bandWalkTpPct = 3.0m;   // +3%
+                decimal bandWalkSlPct = 1.5m;   // -1.5%
+
+                for (int i = lookback5m; i < n - bandWalkWindow; i++)
                 {
                     if (token.IsCancellationRequested) break;
 
@@ -85,12 +90,11 @@ namespace TradingBot.Services
                     decimal entryPrice = entryBar.ClosePrice;
                     if (entryPrice <= 0) continue;
 
+                    // ── 1차 라벨: 표준 스캘핑 (+0.8% / -1% / 12봉) ──
                     decimal tpPrice = entryPrice * (1m + tpPct / 100m);
                     decimal slPrice = entryPrice * (1m - slPct / 100m);
-
-                    // 다음 forward 봉 동안 TP / SL 어느 쪽 먼저 닿는지
                     bool win = false, loss = false;
-                    for (int j = i + 1; j <= i + forward; j++)
+                    for (int j = i + 1; j <= i + forward && j < n; j++)
                     {
                         if (c5m[j].HighPrice >= tpPrice) { win = true; break; }
                         if (c5m[j].LowPrice  <= slPrice) { loss = true; break; }
@@ -107,8 +111,8 @@ namespace TradingBot.Services
 
                     if (slice5m.Count < 100 || slice15m.Count < 100 || slice1h.Count < 50 || slice4h.Count < 40 || slice1d.Count < 20) continue;
 
-                    // M1 데이터는 DB 에 없거나 양 적음 → null 전달 (extractor 가 M1_Data_Valid=0 처리)
-                    var feature = _extractor.BuildFeatureFromPreloaded(symbol, asOf, slice1d, slice4h, null, slice1h, slice15m, null);
+                    // [v5.19.0] M5 슬라이스 전달 → Band Walk 피처 자동 추출
+                    var feature = _extractor.BuildFeatureFromPreloaded(symbol, asOf, slice1d, slice4h, null, slice1h, slice15m, null, slice5m);
                     if (feature == null) continue;
 
                     feature.ShouldEnter = win;
@@ -116,6 +120,28 @@ namespace TradingBot.Services
 
                     if (win) positives.Add(feature);
                     else negatives.Add(feature);
+
+                    // ── 2차 라벨: Band Walk 대박 (+3% / -1.5% / 24봉) ──
+                    // 진입 시점 BB 상단 라이딩(walkCount ≥ 3 또는 streak ≥ 2)인 경우에만 추가 라벨
+                    bool isBandWalk = feature.M5_BB_Walk_Count_10 >= 3f || feature.M5_Upper_Touch_Streak >= 2f;
+                    if (!isBandWalk) continue;
+
+                    decimal bigTp = entryPrice * (1m + bandWalkTpPct / 100m);
+                    decimal bigSl = entryPrice * (1m - bandWalkSlPct / 100m);
+                    bool bigWin = false, bigLoss = false;
+                    for (int j = i + 1; j <= i + bandWalkWindow && j < n; j++)
+                    {
+                        if (c5m[j].HighPrice >= bigTp) { bigWin = true; break; }
+                        if (c5m[j].LowPrice  <= bigSl) { bigLoss = true; break; }
+                    }
+                    if (!bigWin && !bigLoss) continue;
+
+                    var bigFeature = _extractor.BuildFeatureFromPreloaded(symbol, asOf, slice1d, slice4h, null, slice1h, slice15m, null, slice5m);
+                    if (bigFeature == null) continue;
+                    bigFeature.ShouldEnter = bigWin;
+                    bigFeature.ActualProfitPct = bigWin ? (float)bandWalkTpPct : -(float)bandWalkSlPct;
+                    if (bigWin) positives.Add(bigFeature);
+                    else negatives.Add(bigFeature);
                 }
             }
             catch (Exception ex)

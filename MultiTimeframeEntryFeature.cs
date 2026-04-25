@@ -219,6 +219,22 @@ namespace TradingBot
         public float M15_Bullish_Engulfing { get; set; }           // 1=직전 음봉을 장악하는 양봉 (open<prev_close, close>prev_open) — 강한 반전
 
         // ═══════════════════════════════════════════════════════════════
+        // [v5.19.0] 볼린저밴드 Band Walk 패턴 학습용 피처 (9개)
+        // 캡처: 5m 차트 +50% 급등 중 BB 상단을 따라 올라가는 "Band Walk" 패턴
+        // 일반 룰: BB 상단 = 과매수 = 매도 → 강추세에서는 정반대 (상단 라이딩 = 매수 지속)
+        // 5m 기준으로 추출 (BacktestBootstrapTrainer 가 5m 슬라이스 사용)
+        // ═══════════════════════════════════════════════════════════════
+        public float M5_BB_Position { get; set; }                  // (Close - Lower) / (Upper - Lower)  — 1.0 근처 = 상단
+        public float M5_BB_Walk_Count_10 { get; set; }             // 직전 10봉 중 Close > Upper 인 봉 수 (3+ = 라이딩)
+        public float M5_BB_Width_Ratio { get; set; }               // (Upper - Lower) / Mid              — 변동성 절대치
+        public float M5_BB_Width_Expand { get; set; }              // 현재 BBWidth / 20봉 평균 BBWidth   — >1.3 = 변동성 폭발
+        public float M5_Close_Above_Upper_Pct { get; set; }        // (Close - Upper) / Upper × 100      — 상단 돌파 강도 (양수 = 위)
+        public float M5_Upper_Touch_Streak { get; set; }           // 연속 상단 터치(또는 돌파) 봉 수    — 직전부터 카운트
+        public float M5_EMA20_Slope_Pct { get; set; }              // EMA20 5봉 기울기 (%)               — 양수 + 가파름 = 강추세
+        public float M5_Volume_Surge_Ratio { get; set; }           // 현재봉 거래량 / 20봉 평균          — 2.0+ = 폭발
+        public float M5_Body_Ratio { get; set; }                   // |Close-Open| / (High-Low)          — 양봉 강도 (1=풀바디)
+
+        // ═══════════════════════════════════════════════════════════════
         // 피보나치 되돌림 레벨 (객관적 수치로 AI 특징 사용)
         // ═══════════════════════════════════════════════════════════════
         public float Fib_DistanceTo0382_Pct { get; set; }    // 현재가에서 0.382 레벨까지 거리 (%)

@@ -5,6 +5,49 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.19.0] - 2026-04-25
+
+### ✨ AI 학습: Bollinger Band Walk 패턴 학습 (5분봉 상단 라이딩 = 강추세 매수 신호)
+
+**사용자 요구:**
+
+> "5분봉 캡처 — +50% 급등, ROE 1000%+, 마지막은 볼밴 상단 타고 올라가는 패턴.
+>  특히 볼밴 상단 타고 올라가는 패턴을 ai에 어떻게 학습시킬지 파악해봐"
+
+### 🎯 핵심 변경
+
+일반적으로 "BB 상단 = 과매수 = 매도"로 알려져 있지만, 강추세에서는 정반대 — **밴드워크(Band Walk)는 매수 지속의 신호**. AI가 이 패턴을 별도 라벨로 학습하도록 추가.
+
+#### 추가된 5분봉 BB Walk 피처 (9개)
+- `M5_BB_Position` — (Close - Lower) / (Upper - Lower), 1.0 근처 = 상단
+- `M5_BB_Walk_Count_10` — 직전 10봉 중 종가가 상단 위인 봉 수
+- `M5_Upper_Touch_Streak` — 직전부터 연속 상단 터치 봉 수
+- `M5_BB_Width_Ratio` — 밴드폭 / 중심선 (변동성 절대치)
+- `M5_BB_Width_Expand` — 현재 밴드폭 / 20봉 평균 밴드폭
+- `M5_Close_Above_Upper_Pct` — 상단 돌파 강도 %
+- `M5_EMA20_Slope_Pct` — EMA20 5봉 기울기 %
+- `M5_Volume_Surge_Ratio` — 현재봉 거래량 / 20봉 평균
+- `M5_Body_Ratio` — 캔들 몸통 비율
+
+#### Band Walk 대박 라벨 분기 (BacktestBootstrapTrainer)
+- 기본 라벨: +0.8% TP / -1% SL / 12봉
+- **추가**: 진입 시점 BB Walk 감지 시 (+3% TP / -1.5% SL / 24봉) 추가 라벨링
+- → AI가 "상단 라이딩 = 큰 수익 가능" 패턴을 별도로 학습
+
+#### 실시간 추론 경로에도 5m fetch 추가
+- `MultiTimeframeFeatureExtractor.ExtractRealtimeFeatureAsync` 가 5m 캔들 60개 추가 조회
+- live 예측 시에도 BB Walk 피처 자동 적용
+
+### 📁 변경 파일
+- `MultiTimeframeEntryFeature.cs` — 9개 피처 신규
+- `MultiTimeframeFeatureExtractor.cs` — `ExtractM5BandWalkFeatures` + 5m 슬라이스 오버로드
+- `Services/BacktestBootstrapTrainer.cs` — Band Walk 대박 라벨 분기
+
+### 🛠 DB 인덱스 (별도 스크립트)
+- `IX_CandleData_IntervalText_OpenTime_DESC` 추가 — GROUP BY 타임아웃 해소
+
+---
+
 ## [5.16.0] - 2026-04-24
 
 ### 🚨 ROOT FIX: "3모델 분리"가 2달간 **가짜**였다 — Major/Pump/Spike 모델 영원 동결

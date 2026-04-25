@@ -62,6 +62,7 @@ namespace TradingBot
             try
             {
                 // [v4.5.15] 캐시 우선 조회 (메이저 코인은 전체 캐시 히트, PUMP는 REST fallback)
+                // [v5.19.0] 5m 추가 (Band Walk 패턴 추출용)
                 var tasks = new[]
                 {
                     GetKlinesFromCacheOrRestAsync(symbol, KlineInterval.OneDay, 50, 20, token),
@@ -69,7 +70,8 @@ namespace TradingBot
                     _exchangeService.GetKlinesAsync(symbol, KlineInterval.TwoHour, 120, token).ContinueWith(t => t.Result?.ToList(), token), // H2는 캐시 없음
                     GetKlinesFromCacheOrRestAsync(symbol, KlineInterval.OneHour, 200, 50, token),
                     GetKlinesFromCacheOrRestAsync(symbol, KlineInterval.FifteenMinutes, 260, 100, token),
-                    GetKlinesFromCacheOrRestAsync(symbol, KlineInterval.OneMinute, 40, 30, token)
+                    GetKlinesFromCacheOrRestAsync(symbol, KlineInterval.OneMinute, 40, 30, token),
+                    GetKlinesFromCacheOrRestAsync(symbol, KlineInterval.FiveMinutes, 60, 30, token)
                 };
 
                 await Task.WhenAll(tasks);
@@ -80,8 +82,9 @@ namespace TradingBot
                 var h1Klines = tasks[3].Result;
                 var m15Klines = tasks[4].Result;
                 var m1Klines = tasks[5].Result;
+                var m5Klines = tasks[6].Result;
 
-                return BuildFeatureFromKlines(symbol, timestamp, d1Klines, h4Klines, h2Klines, h1Klines, m15Klines, m1Klines);
+                return BuildFeatureFromKlines(symbol, timestamp, d1Klines, h4Klines, h2Klines, h1Klines, m15Klines, m1Klines, m5Klines);
             }
             catch (Exception ex)
             {
@@ -101,7 +104,20 @@ namespace TradingBot
             List<IBinanceKline>? d1, List<IBinanceKline>? h4, List<IBinanceKline>? h2,
             List<IBinanceKline>? h1, List<IBinanceKline>? m15, List<IBinanceKline>? m1)
         {
-            return BuildFeatureFromKlines(symbol, asOfTime, d1, h4, h2, h1, m15, m1);
+            return BuildFeatureFromKlines(symbol, asOfTime, d1, h4, h2, h1, m15, m1, null);
+        }
+
+        /// <summary>
+        /// [v5.19.0] 5m 슬라이스 포함 오버로드 — Band Walk 패턴 학습용
+        /// </summary>
+        public MultiTimeframeEntryFeature? BuildFeatureFromPreloaded(
+            string symbol,
+            DateTime asOfTime,
+            List<IBinanceKline>? d1, List<IBinanceKline>? h4, List<IBinanceKline>? h2,
+            List<IBinanceKline>? h1, List<IBinanceKline>? m15, List<IBinanceKline>? m1,
+            List<IBinanceKline>? m5)
+        {
+            return BuildFeatureFromKlines(symbol, asOfTime, d1, h4, h2, h1, m15, m1, m5);
         }
 
         private MultiTimeframeEntryFeature? BuildFeatureFromKlines(
@@ -112,7 +128,8 @@ namespace TradingBot
             List<IBinanceKline>? h2Klines,
             List<IBinanceKline>? h1Klines,
             List<IBinanceKline>? m15Klines,
-            List<IBinanceKline>? m1Klines)
+            List<IBinanceKline>? m1Klines,
+            List<IBinanceKline>? m5Klines = null)
         {
             try
             {
@@ -251,6 +268,12 @@ namespace TradingBot
 
                 // 시간 컨텍스트
                 ExtractTimeContext(timestamp, feature);
+
+                // [v5.19.0] 5m BB Band Walk 패턴 피처 (제공된 경우만 — 백테스트 학습 시 핵심)
+                if (m5Klines != null && m5Klines.Count >= 30)
+                {
+                    ExtractM5BandWalkFeatures(m5Klines, feature);
+                }
 
                 // [v5.10.98 P1-3] NaN/Infinity sanity check + 자동 0 치환
                 //   기존: extraction 중 0 division / Math.Log(0) 등 silent NaN 가능 → ML 추론 시 0% 점수
@@ -789,6 +812,97 @@ namespace TradingBot
             double atr = IndicatorCalculator.CalculateATR(klines, 14);
             decimal avgPrice = klines.TakeLast(14).Average(k => k.ClosePrice);
             return avgPrice > 0 ? (float)(atr / (double)avgPrice) : 0f; // 가격 대비 비율
+        }
+
+        /// <summary>
+        /// [v5.19.0] 5분봉 Bollinger Band Walk 패턴 피처 계산
+        /// 강추세에서 BB 상단을 따라 올라가는 라이딩 패턴 학습 (반환값 없이 feature 직접 set)
+        /// </summary>
+        private static void ExtractM5BandWalkFeatures(List<IBinanceKline> m5, MultiTimeframeEntryFeature feature)
+        {
+            int n = m5.Count;
+            if (n < 30) return;
+
+            var latest = m5[^1];
+            decimal close = latest.ClosePrice;
+
+            // 현재봉 BB
+            var bbNow = IndicatorCalculator.CalculateBB(m5, 20, 2.0);
+            decimal upper = (decimal)bbNow.Upper;
+            decimal mid   = (decimal)bbNow.Mid;
+            decimal lower = (decimal)bbNow.Lower;
+
+            if (upper > lower)
+                feature.M5_BB_Position = (float)((close - lower) / (upper - lower));
+            else
+                feature.M5_BB_Position = 0.5f;
+
+            if (mid > 0m)
+                feature.M5_BB_Width_Ratio = (float)((upper - lower) / mid);
+
+            if (upper > 0m)
+                feature.M5_Close_Above_Upper_Pct = (float)((close - upper) / upper * 100m);
+
+            // BB Walk 카운트 (직전 10봉 중 종가가 그 시점 BB Upper 위) + 연속 터치 streak
+            int walkCount = 0;
+            int streak = 0;
+            bool streakBroken = false;
+            for (int back = 0; back < 10 && back < n - 20; back++)
+            {
+                int idx = n - 1 - back;
+                var slice = m5.GetRange(0, idx + 1);
+                if (slice.Count < 20) break;
+                var bbAt = IndicatorCalculator.CalculateBB(slice, 20, 2.0);
+                if (bbAt.Upper <= 0) continue;
+                bool aboveUpper = (double)slice[^1].ClosePrice >= bbAt.Upper;
+                if (aboveUpper) walkCount++;
+                if (!streakBroken)
+                {
+                    if (aboveUpper) streak++;
+                    else streakBroken = true;
+                }
+            }
+            feature.M5_BB_Walk_Count_10 = walkCount;
+            feature.M5_Upper_Touch_Streak = streak;
+
+            // BB Width 확장도 (현재 vs 20봉 평균)
+            int widthSamples = 0;
+            double widthSum = 0;
+            for (int back = 0; back < 20 && back < n - 20; back++)
+            {
+                int idx = n - 1 - back;
+                var slice = m5.GetRange(0, idx + 1);
+                if (slice.Count < 20) break;
+                var bbAt = IndicatorCalculator.CalculateBB(slice, 20, 2.0);
+                if (bbAt.Mid <= 0) continue;
+                widthSum += (bbAt.Upper - bbAt.Lower) / bbAt.Mid;
+                widthSamples++;
+            }
+            if (widthSamples >= 5 && widthSum > 0)
+            {
+                double avgWidth = widthSum / widthSamples;
+                if (avgWidth > 0)
+                    feature.M5_BB_Width_Expand = (float)(feature.M5_BB_Width_Ratio / avgWidth);
+            }
+
+            // EMA20 5봉 기울기 (%)
+            var closes = m5.Select(k => (double)k.ClosePrice).ToArray();
+            double[] ema20 = CalcEMA(closes, 20);
+            if (ema20.Length >= 6 && ema20[ema20.Length - 6] > 0)
+            {
+                double slope = (ema20[^1] - ema20[ema20.Length - 6]) / ema20[ema20.Length - 6] * 100.0;
+                feature.M5_EMA20_Slope_Pct = (float)slope;
+            }
+
+            // Volume Surge (현재봉 / 20봉 평균)
+            double avgVol20 = m5.TakeLast(20).Average(k => (double)k.Volume);
+            if (avgVol20 > 0)
+                feature.M5_Volume_Surge_Ratio = (float)((double)latest.Volume / avgVol20);
+
+            // 캔들 몸통 비율
+            decimal range = latest.HighPrice - latest.LowPrice;
+            if (range > 0m)
+                feature.M5_Body_Ratio = (float)(Math.Abs(latest.ClosePrice - latest.OpenPrice) / range);
         }
 
         /// <summary>
