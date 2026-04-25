@@ -2313,12 +2313,12 @@ namespace TradingBot.Services
 
         /// <summary>
         /// [v5.10.75] 수동 청산 전용 fast-path — 시장가 주문 즉시 전송, algo 취소/TradeHistory 업데이트는 비동기
-        /// 기존 ExecuteMarketClose: GetPositionsAsync + CancelAllOrdersAsync(algo) 대기 → 총 10초+ 지연
-        /// 수정 흐름: local 캐시 → 시장가 reduceOnly 즉시 전송 (~1-2초) → 나머지 Task.Run으로 후처리
+        /// [v5.19.7] 5초 hard timeout + 즉시 UI 반영 (체결 응답 안 기다림) — 사용자 체감 속도 ~500ms 목표
         /// </summary>
         public async Task ExecuteManualCloseFast(string symbol, CancellationToken token)
         {
             MarkCloseStarted(symbol);
+            var totalSw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 OnCloseIncompleteStatusChanged?.Invoke(symbol, false, null);
@@ -2344,28 +2344,38 @@ namespace TradingBot.Services
                 decimal absQty = Math.Abs(localPos.Quantity);
                 string side = isLong ? "SELL" : "BUY";
 
-                // 2. 시장가 reduce-only 주문 즉시 전송
-                var ts0 = DateTime.UtcNow;
-                OnLog?.Invoke($"⚡ [ManualFast] {symbol} 시장가 청산 주문 전송 (qty={absQty}, side={side})");
+                // 2. 시장가 reduce-only 주문 — 5초 hard timeout (사용자 응답성 우선)
+                OnLog?.Invoke($"⚡ [ManualFast] {symbol} 시장가 청산 전송 (qty={absQty}, side={side})");
                 bool orderOk = false;
-                try
+                using (var hardTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+                using (var linked = CancellationTokenSource.CreateLinkedTokenSource(token, hardTimeout.Token))
                 {
-                    orderOk = await _exchangeService.PlaceOrderAsync(symbol, side, absQty, null, token, reduceOnly: true);
+                    var ts0 = totalSw.ElapsedMilliseconds;
+                    try
+                    {
+                        orderOk = await _exchangeService.PlaceOrderAsync(symbol, side, absQty, null, linked.Token, reduceOnly: true);
+                    }
+                    catch (OperationCanceledException) when (hardTimeout.IsCancellationRequested)
+                    {
+                        OnLog?.Invoke($"⏱️ [ManualFast] {symbol} 5초 timeout — 주문은 거래소에서 처리 중일 수 있음 (PositionSync로 확인)");
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLog?.Invoke($"❌ [ManualFast] {symbol} 주문 예외 ({totalSw.ElapsedMilliseconds - ts0}ms): {ex.Message}");
+                    }
+                    OnLog?.Invoke($"⏲️ [ManualFast] {symbol} 주문 phase {totalSw.ElapsedMilliseconds - ts0}ms (총 {totalSw.ElapsedMilliseconds}ms)");
                 }
-                catch (Exception ex)
-                {
-                    OnLog?.Invoke($"❌ [ManualFast] {symbol} 시장가 주문 예외: {ex.Message}");
-                }
-                double elapsedMs = (DateTime.UtcNow - ts0).TotalMilliseconds;
 
                 if (!orderOk)
                 {
-                    OnLog?.Invoke($"❌ [ManualFast] {symbol} 시장가 주문 실패 ({elapsedMs:F0}ms) → 일반 청산 fallback");
-                    await ExecuteMarketClose(symbol, "사용자 수동 청산 (주문실패 fallback)", token);
+                    // timeout/실패 시에도 fallback 호출 — 단 fallback 도 background 로 옮겨 UI 즉시 해제
+                    _ = Task.Run(async () =>
+                    {
+                        try { await ExecuteMarketClose(symbol, "사용자 수동 청산 (fast 실패 fallback)", CancellationToken.None); }
+                        catch (Exception ex) { OnLog?.Invoke($"⚠️ [ManualFast][BG] {symbol} fallback 실패: {ex.Message}"); }
+                    });
                     return;
                 }
-
-                OnLog?.Invoke($"✅ [ManualFast] {symbol} 시장가 주문 전송 완료 ({elapsedMs:F0}ms) — algo 취소/후처리 비동기");
 
                 // 3. algo 주문 취소 + 정리는 비동기로 (사용자 청산 완료 후 백그라운드)
                 _ = Task.Run(async () =>
@@ -2373,19 +2383,18 @@ namespace TradingBot.Services
                     try
                     {
                         await _exchangeService.CancelAllOrdersAsync(symbol, CancellationToken.None);
-                        OnLog?.Invoke($"🗑️ [ManualFast][Async] {symbol} algo 주문 일괄 취소 완료");
+                        OnLog?.Invoke($"🗑️ [ManualFast][Async] {symbol} algo 일괄 취소 완료");
                     }
                     catch (Exception ex)
                     {
                         OnLog?.Invoke($"⚠️ [ManualFast][Async] {symbol} algo 취소 실패 (무해): {ex.Message}");
                     }
-
-                    // TradeHistory 업데이트는 주기적 PositionSync가 처리 (외부 체결로 감지됨)
                 });
             }
             finally
             {
                 MarkCloseFinished(symbol);
+                OnLog?.Invoke($"✅ [ManualFast] {symbol} 종료 (총 {totalSw.ElapsedMilliseconds}ms)");
             }
         }
 

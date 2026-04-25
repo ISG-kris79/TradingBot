@@ -291,8 +291,24 @@ namespace TradingBot.Services
             // 테스트넷 키로 초기화된 경우 _client가 테스트넷을 가리키므로 안전
 
             // [FIX] 부분청산도 ratio 계산 후 stepSize 안 맞을 수 있으므로 항상 보정
+            // [v5.19.7] reduceOnly 수동청산 시 캐시만 사용 — ExchangeInfo 1-2초 await 차단 (사용자 청산 속도 우선)
             {
-                (decimal stepSize, decimal tickSize) = await GetSymbolPrecisionAsync(symbol, ct);
+                decimal stepSize, tickSize;
+                if (reduceOnly && _symbolInfoCache.TryGetValue(symbol, out var cachedFast))
+                {
+                    stepSize = cachedFast.stepSize;
+                    tickSize = cachedFast.tickSize;
+                }
+                else if (reduceOnly)
+                {
+                    var fb = GetFallbackPrecision(symbol);
+                    stepSize = fb.stepSize;
+                    tickSize = fb.tickSize;
+                }
+                else
+                {
+                    (stepSize, tickSize) = await GetSymbolPrecisionAsync(symbol, ct);
+                }
                 if (stepSize > 0)
                     quantity = Math.Floor(quantity / stepSize) * stepSize;
                 if (price.HasValue && tickSize > 0)
