@@ -682,6 +682,8 @@ namespace TradingBot
         private bool IsEntryAllowed(string symbol, string source, out string blockReason)
         {
             blockReason = string.Empty;
+            // [v5.20.3] 가드 호출 자체를 명시적 로그 → 우회 여부 즉시 추적
+            OnStatusLog?.Invoke($"🚦 [GATE-CHECK] {symbol} {source} 가드 진입");
 
             // [v5.19.8] _settings 자체가 null = 봇 부팅 중 / 설정 미로드 → 모든 진입 차단
             //   v5.19.3은 메이저만 차단했으나, 일반 진입도 leverage/marginUsdt 등 설정값 없으면 위험
@@ -836,6 +838,8 @@ namespace TradingBot
                 catch { /* BTC 조회 실패 시 차단하지 않음 (진입 누락 방지) */ }
             }
 
+            // [v5.20.3] 모든 가드 통과 시 명시 로그 → "가드 통과인지 우회인지" 즉시 식별 가능
+            OnStatusLog?.Invoke($"✅ [GATE-PASS] {symbol} {source} 모든 가드 통과");
             return true;
         }
 
@@ -3089,6 +3093,19 @@ namespace TradingBot
                 };
                 TelegramService.Instance.StartReceiving();
                 OnTelegramStatusUpdate?.Invoke(true, "Telegram: Connected");
+
+                // [v5.20.3] 봇 시작 시 텔레그램에 버전 + 활성 명령 명시 — "v5.20.x 적용됐는지" 사용자 즉시 확인 가능
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var ver = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "?";
+                        await TelegramService.Instance.SendMessageAsync(
+                            $"🤖 *TradingBot v{ver}* 시작됨\n" +
+                            $"활성 명령: /status /train /validate /droughtscan /help");
+                    }
+                    catch { }
+                });
 
                 _ = ProcessTickerChannelAsync(token);
                 _ = ProcessAccountChannelAsync(token); // [Agent 2] 계좌 업데이트 처리 시작
