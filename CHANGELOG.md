@@ -5,6 +5,37 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.20.8] - 2026-04-26
+
+### 🎯 게이트 재설계 — 진단 결과 기반 흑자 전환
+
+#### Diagnosis (Tools/LorentzianValidator --diagnose, 30 syms × 14days 5m)
+- **Lorentzian Pred>3 가드 무효 입증**: baseline 31.79% → Pred>3 31.26% (오히려 -0.53%p), 음수 Pred(-5)에서 49.22% 발견 = 모델 학습 부적합
+- **VolSurge>1.3x 단독 -1.21%p**, 결합 시 over-filter (-7.64%p)
+- **EMA20 rising 단독 +1.32%p edge** — 유일한 양성 가드
+- **RSI 70+ 진입 -11.71%p edge** (FOMO 진입 = 손실 주범) — 신규 추가
+- **SL이 평균 1.4봉 빨리 맞음** → TP/SL 비대칭 1.5/0.7 → 1.5/1.5 대칭 전환 필요
+- **ATR 0.7-1.5% sweet spot** (저변동성 7.69%, 고변동성 18.18%)
+
+#### Removed (효과 없음 / 악화 입증)
+- **LORENTZIAN_WEAK_SIGNAL** 가드 제거 — 단독 효과 -2.07%p, 모델 학습 데이터 부적합
+- **VOL_NOT_SURGED** 가드 제거 — 단독 -1.21%p, 결합 over-filter
+
+#### Added
+- **RSI70_OVERHEATED**: RSI(14) ≥ 70 진입 차단 — 진단 -11.71%p edge 회피
+
+#### Kept
+- **EMA20_NOT_RISING**: 5봉 EMA20 비상승 차단 — 진단 +1.32%p edge (유일 양성)
+- 외 기존 v5.20.7 가드 유지: MODEL_ZIP_MISSING, ALT_RSI_FALLING_KNIFE, M15 고점추격, BTC 1H 하락, SETTINGS_NOT_LOADED, MAJOR_DISABLED, MANUAL_CLOSE_COOLDOWN
+
+#### Validation (--redesign)
+- **EMA20↑ + RSI<70 + TP1.5/SL1.5/WIN24 = +$7,958 (795% ROI/$1000), 7,133 trades, WR 56.39%, $1.12/trade**
+- TOP1: EMA20↑ + TP1.5/SL1.5 = +$9,445 (944% ROI), 9,756 trades, WR 55.89%
+- 현재 v5.20.7 (1.5/0.7 비대칭) = -$18,375 → v5.20.8 (1.5/1.5) 적용 시 흑자 전환
+
+#### TODO (사용자 UI 조정 권장)
+- TargetRoe (TP) / StopLossRoe (SL) 대칭 설정: 22.5/22.5 (15x 레버리지 기준 1.5%/1.5% 가격)
+
 ## [5.20.7] - 2026-04-25
 
 ### 🚨 Critical Bug Fixes (사용자 -$70 손실 표시 안되던 통계 버그 + 알람 폭주)

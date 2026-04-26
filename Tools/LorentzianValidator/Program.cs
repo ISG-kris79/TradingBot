@@ -64,6 +64,551 @@ internal static class Program
 {
     private static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(25) };
 
+    /// <summary>[v5.20.8 REDESIGN] 진단 결과 기반 새 전략 검증 — Lorentzian 제거, EMA+RSI<70+ATR sweet spot</summary>
+    private static async Task RunRedesignAsync()
+    {
+        Console.WriteLine("=================================================================");
+        Console.WriteLine("  v5.20.8 REDESIGN BACKTEST (chart, 30 syms × 14 days)");
+        Console.WriteLine("  진단 기반: Lorentzian 제거 / EMA20↑ + RSI<70 + ATR 0.7~1.5%");
+        Console.WriteLine("=================================================================");
+
+        var symData = new Dictionary<string, List<IBinanceKline>>();
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[fetch {idx}/{symbols.Length}] {sym} ");
+            try
+            {
+                var kl = await FetchKlinesAsync(sym);
+                if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+                symData[sym] = kl;
+                Console.WriteLine($"ok ({kl.Count} bars)");
+            }
+            catch (Exception ex) { Console.WriteLine("fail: " + ex.Message); }
+        }
+
+        // 4개 가드 조합 + 4개 TP/SL × WIN combo 검증
+        var gateSets = new (string label, Func<List<IBinanceKline>, int, bool> ok)[]
+        {
+            ("none",                               (kl, i) => true),
+            ("EMA20↑",                            (kl, i) => Ema20Rising(kl, i)),
+            ("EMA20↑ + RSI<70",                  (kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 70),
+            ("EMA20↑ + RSI<70 + ATR 0.7-1.5%",   (kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 70 && CalcAtrPct(kl, i) >= 0.7 && CalcAtrPct(kl, i) <= 1.5),
+            ("EMA20↑ + RSI 30-70 + ATR 0.7-1.5%",(kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) >= 30 && CalcRsi14(kl, i) < 70 && CalcAtrPct(kl, i) >= 0.7 && CalcAtrPct(kl, i) <= 1.5),
+            ("RSI<70 단독",                       (kl, i) => CalcRsi14(kl, i) < 70),
+            ("ATR 0.7-1.5% 단독",                (kl, i) => CalcAtrPct(kl, i) >= 0.7 && CalcAtrPct(kl, i) <= 1.5),
+        };
+        var tpslSets = new (string label, decimal tp, decimal sl, int win)[]
+        {
+            ("TP1.5/SL1.0/WIN24",  1.5m, 1.0m, 24),
+            ("TP1.5/SL1.5/WIN24",  1.5m, 1.5m, 24),  // SL 더 넓게 — SL 1.4봉 빨리 맞는 문제 해결
+            ("TP2.0/SL1.5/WIN24",  2.0m, 1.5m, 24),  // 2:1.5 = 손익비 1.33
+            ("TP1.0/SL1.0/WIN24",  1.0m, 1.0m, 24),  // 1:1 단순
+            ("TP1.5/SL1.0/WIN48",  1.5m, 1.0m, 48),  // 윈도우 더 넓게 (TP가 평균 8봉 도달)
+        };
+
+        Console.WriteLine();
+        Console.WriteLine("Gate Combo                              | TP/SL/WIN              | Trades  Wins  WR%   PnL$       AvgPnL$  ROI%");
+        Console.WriteLine(new string('-', 130));
+
+        var results = new List<(string gate, string tp, int n, double wr, decimal pnl, decimal roi, decimal avg)>();
+
+        foreach (var gs in gateSets)
+        {
+            foreach (var ts in tpslSets)
+            {
+                decimal tpUsd = Notional * ts.tp / 100m - RoundTripFee;
+                decimal slUsd = Notional * ts.sl / 100m + RoundTripFee;
+                decimal beWR = ts.sl / (ts.tp + ts.sl) * 100m;
+
+                int n = 0, w = 0; decimal pnl = 0m;
+                foreach (var kv in symData)
+                {
+                    var kl = kv.Value;
+                    int trainEnd = (int)(kl.Count * 0.7);
+                    for (int i = trainEnd + 50; i < kl.Count - ts.win; i++)
+                    {
+                        if (!gs.ok(kl, i)) continue;
+                        var (tp, sl) = OutcomeIn(kl, i, ts.tp, ts.sl, ts.win);
+                        if (!(tp || sl)) continue;
+                        n++;
+                        if (tp) { w++; pnl += tpUsd; } else pnl -= slUsd;
+                    }
+                }
+                double wr = n > 0 ? w * 100.0 / n : 0;
+                decimal avg = n > 0 ? pnl / n : 0m;
+                decimal roi = pnl / 1000m * 100m;  // 초기자본 $1000
+                Console.WriteLine($"{gs.label,-38} | {ts.label,-22} | {n,6}  {w,4}  {wr,5:F2} {pnl,9:F2}  {avg,7:F2}  {roi,6:F2}%");
+                results.Add((gs.label, ts.label, n, wr, pnl, roi, avg));
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("=== TOP 5 흑자 조합 (PnL 양수만) ===");
+        var profitable = results.Where(r => r.pnl > 0).OrderByDescending(r => r.pnl).Take(5).ToList();
+        if (profitable.Count == 0)
+            Console.WriteLine("  ❌ 모든 조합 손실. 더 근본적인 재설계 필요 (다른 지표/엔진).");
+        else
+            foreach (var r in profitable)
+                Console.WriteLine($"  ✅ {r.gate,-40} | {r.tp,-22} | n={r.n}, WR={r.wr:F2}%, PnL=${r.pnl:F2} ({r.roi:F2}%)");
+
+        Console.WriteLine();
+        Console.WriteLine("=== TOP 5 손실 조합 ===");
+        foreach (var r in results.OrderBy(r => r.pnl).Take(5))
+            Console.WriteLine($"  ❌ {r.gate,-40} | {r.tp,-22} | n={r.n}, WR={r.wr:F2}%, PnL=${r.pnl:F2}");
+
+        Console.WriteLine();
+        Console.WriteLine("=== AVG PnL/거래 TOP 5 (효율성) ===");
+        foreach (var r in results.Where(r => r.n >= 50).OrderByDescending(r => r.avg).Take(5))
+            Console.WriteLine($"  {r.gate,-40} | {r.tp,-22} | n={r.n}, avg=${r.avg:F2}/trade, WR={r.wr:F2}%");
+    }
+
+    /// <summary>[v5.20.7 DIAG] 로직 원인 분석 — 임계값 만으로 안 풀림. 왜 지는지 추적.</summary>
+    private static async Task RunDiagnosisAsync()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  v5.20.7 LOGIC DIAGNOSIS — 왜 가드를 강화해도 손실인가?");
+        Console.WriteLine("================================================================");
+
+        var svc = new MiniLorentzianService();
+        var symData = new Dictionary<string, List<IBinanceKline>>();
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[fetch {idx}/{symbols.Length}] {sym} ");
+            try
+            {
+                var kl = await FetchKlinesAsync(sym);
+                if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+                int trainEnd = (int)(kl.Count * 0.7);
+                int added = svc.BackfillFromCandles(sym, kl.GetRange(0, trainEnd));
+                symData[sym] = kl;
+                Console.WriteLine($"trained={added}");
+            }
+            catch (Exception ex) { Console.WriteLine("fail: " + ex.Message); }
+        }
+
+        var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+        decimal tpUsd = Notional * 2.0m / 100m - RoundTripFee;
+        decimal slUsd = Notional * 1.0m / 100m + RoundTripFee;
+
+        // === A. Lorentzian Prediction 분포 + per-bucket 승률 ===
+        Console.WriteLine();
+        Console.WriteLine("=== A. Lorentzian Prediction 분포 vs TP-first 승률 ===");
+        Console.WriteLine("    예측 강도가 실제로 의미 있는지 측정");
+        Console.WriteLine();
+        var bucketStats = new Dictionary<int, (int n, int tpHits, int slHits)>();
+        foreach (var kv in symData)
+        {
+            string sym = kv.Key; var kl = kv.Value;
+            int trainEnd = (int)(kl.Count * 0.7);
+            for (int i = trainEnd + 50; i < kl.Count - 24; i++)
+            {
+                var slice = kl.GetRange(0, i + 1);
+                var pred = svc.Predict(sym, slice);
+                if (!pred.IsReady) continue;
+                int b = pred.Prediction;
+                var (tp, sl) = OutcomeIn(kl, i, 2.0m, 1.0m, 24);
+                if (!(tp || sl)) continue;
+                if (!bucketStats.ContainsKey(b)) bucketStats[b] = (0, 0, 0);
+                var s = bucketStats[b];
+                s.n++; if (tp) s.tpHits++; else s.slHits++;
+                bucketStats[b] = s;
+            }
+        }
+        Console.WriteLine("  Pred  Trades  TP    SL    WinRate  Edge(BE 33.33%)");
+        foreach (var kv in bucketStats.OrderBy(kv => kv.Key))
+        {
+            var s = kv.Value;
+            double wr = s.n > 0 ? s.tpHits * 100.0 / s.n : 0;
+            decimal pnl = s.tpHits * tpUsd - s.slHits * slUsd;
+            Console.WriteLine($"  {kv.Key,4}  {s.n,6}  {s.tpHits,4}  {s.slHits,4}  {wr,6:F2}%  {(wr - 33.33),+6:F2}%p   PnL ${pnl,8:F2}");
+        }
+
+        // === B. Hit time 분포 — TP가 빨리 오나 SL이 빨리 오나? ===
+        Console.WriteLine();
+        Console.WriteLine("=== B. TP vs SL hit time 분포 ===");
+        Console.WriteLine("    SL이 평균 더 일찍 맞으면 시장이 LONG에 비호의적");
+        var tpTimes = new List<int>();
+        var slTimes = new List<int>();
+        foreach (var kv in symData)
+        {
+            string sym = kv.Key; var kl = kv.Value;
+            int trainEnd = (int)(kl.Count * 0.7);
+            for (int i = trainEnd + 50; i < kl.Count - 24; i++)
+            {
+                if (!Ema20Rising(kl, i)) continue;
+                if (!VolSurge(kl, i, 1.3)) continue;
+                var slice = kl.GetRange(0, i + 1);
+                var pred = svc.Predict(sym, slice);
+                if (!pred.IsReady || pred.Prediction <= 3) continue;
+
+                decimal entry = kl[i].ClosePrice;
+                decimal tpPx = entry * 1.020m, slPx = entry * 0.990m;
+                for (int k = 1; k <= 24 && i + k < kl.Count; k++)
+                {
+                    var b = kl[i + k];
+                    if (b.HighPrice >= tpPx && b.LowPrice <= slPx) { slTimes.Add(k); break; }
+                    if (b.HighPrice >= tpPx) { tpTimes.Add(k); break; }
+                    if (b.LowPrice <= slPx)  { slTimes.Add(k); break; }
+                }
+            }
+        }
+        if (tpTimes.Count > 0 && slTimes.Count > 0)
+        {
+            Console.WriteLine($"  TP hit: count={tpTimes.Count}, 평균 {tpTimes.Average():F1}봉, 중앙값 {Median(tpTimes)}봉, p25={Percentile(tpTimes,25)} p75={Percentile(tpTimes,75)}");
+            Console.WriteLine($"  SL hit: count={slTimes.Count}, 평균 {slTimes.Average():F1}봉, 중앙값 {Median(slTimes)}봉, p25={Percentile(slTimes,25)} p75={Percentile(slTimes,75)}");
+            Console.WriteLine($"  → SL이 평균 {slTimes.Average() - tpTimes.Average():+0.0;-0.0}봉 더 {(slTimes.Average() < tpTimes.Average() ? "빠르게" : "느리게")} 맞음");
+        }
+
+        // === C. 진입 시점 RSI 구간별 승률 — 늦은 진입(고RSI) vs 이른 진입 ===
+        Console.WriteLine();
+        Console.WriteLine("=== C. 진입 시점 RSI(14) 구간별 승률 ===");
+        Console.WriteLine("    RSI 70+ = 과열, 50-70 = 상승 중, 30-50 = 약세, <30 = 떨어짐");
+        var rsiBuckets = new Dictionary<string, (int n, int w)>
+        {
+            { "RSI<30",   (0, 0) }, { "RSI 30-50", (0, 0) },
+            { "RSI 50-70", (0, 0) }, { "RSI 70+",   (0, 0) },
+        };
+        foreach (var kv in symData)
+        {
+            string sym = kv.Key; var kl = kv.Value;
+            int trainEnd = (int)(kl.Count * 0.7);
+            for (int i = trainEnd + 50; i < kl.Count - 24; i++)
+            {
+                if (!Ema20Rising(kl, i) || !VolSurge(kl, i, 1.3)) continue;
+                var slice = kl.GetRange(0, i + 1);
+                var pred = svc.Predict(sym, slice);
+                if (!pred.IsReady || pred.Prediction <= 3) continue;
+                double rsi = CalcRsi14(kl, i);
+                var (tp, sl) = OutcomeIn(kl, i, 2.0m, 1.0m, 24);
+                if (!(tp || sl)) continue;
+                string bk = rsi < 30 ? "RSI<30" : rsi < 50 ? "RSI 30-50" : rsi < 70 ? "RSI 50-70" : "RSI 70+";
+                var s = rsiBuckets[bk]; s.n++; if (tp) s.w++; rsiBuckets[bk] = s;
+            }
+        }
+        Console.WriteLine("  Bucket       Trades  Wins  WinRate  Edge");
+        foreach (var kv in rsiBuckets)
+        {
+            double wr = kv.Value.n > 0 ? kv.Value.w * 100.0 / kv.Value.n : 0;
+            Console.WriteLine($"  {kv.Key,-10}  {kv.Value.n,6}  {kv.Value.w,4}  {wr,6:F2}%  {(wr - 33.33),+6:F2}%p");
+        }
+
+        // === D. ATR-based 변동성 구간별 승률 ===
+        Console.WriteLine();
+        Console.WriteLine("=== D. ATR/Close 변동성 구간별 승률 ===");
+        Console.WriteLine("    저변동성(<0.3%)은 TP 도달 어렵, 고변동성(>3%)은 SL 빠르게");
+        var atrBuckets = new Dictionary<string, (int n, int w)>
+        {
+            { "<0.3%",      (0, 0) }, { "0.3-0.7%", (0, 0) },
+            { "0.7-1.5%",   (0, 0) }, { "1.5-3.0%", (0, 0) },
+            { ">3.0%",      (0, 0) },
+        };
+        foreach (var kv in symData)
+        {
+            string sym = kv.Key; var kl = kv.Value;
+            int trainEnd = (int)(kl.Count * 0.7);
+            for (int i = trainEnd + 50; i < kl.Count - 24; i++)
+            {
+                if (!Ema20Rising(kl, i) || !VolSurge(kl, i, 1.3)) continue;
+                var slice = kl.GetRange(0, i + 1);
+                var pred = svc.Predict(sym, slice);
+                if (!pred.IsReady || pred.Prediction <= 3) continue;
+                double atrPct = CalcAtrPct(kl, i);
+                var (tp, sl) = OutcomeIn(kl, i, 2.0m, 1.0m, 24);
+                if (!(tp || sl)) continue;
+                string bk = atrPct < 0.3 ? "<0.3%" : atrPct < 0.7 ? "0.3-0.7%" : atrPct < 1.5 ? "0.7-1.5%" : atrPct < 3.0 ? "1.5-3.0%" : ">3.0%";
+                var s = atrBuckets[bk]; s.n++; if (tp) s.w++; atrBuckets[bk] = s;
+            }
+        }
+        Console.WriteLine("  ATR/Close   Trades  Wins  WinRate  Edge");
+        foreach (var kv in atrBuckets)
+        {
+            double wr = kv.Value.n > 0 ? kv.Value.w * 100.0 / kv.Value.n : 0;
+            Console.WriteLine($"  {kv.Key,-10}  {kv.Value.n,6}  {kv.Value.w,4}  {wr,6:F2}%  {(wr - 33.33),+6:F2}%p");
+        }
+
+        // === E. 트리거별 단독 승률 (각 가드의 진짜 가치) ===
+        Console.WriteLine();
+        Console.WriteLine("=== E. 각 가드 단독 vs 무가드 비교 (TP=2.0/SL=1.0/WIN=24) ===");
+        var (eN, eW) = MeasureNone(symData);
+        var (lN, lW) = MeasureWith(symData, svc, useEma:false, useVol:false, lorThr:3);
+        var (eaN, eaW) = MeasureWith(symData, svc, useEma:true, useVol:false, lorThr:-99);
+        var (vaN, vaW) = MeasureWith(symData, svc, useEma:false, useVol:true, lorThr:-99);
+        var (allN, allW) = MeasureWith(symData, svc, useEma:true, useVol:true, lorThr:3);
+        Console.WriteLine("  Filter                      Trades  Wins  WinRate  Edge");
+        Print("none                       ", eN, eW);
+        Print("Lorentzian>3 only          ", lN, lW);
+        Print("EMA20 rising only          ", eaN, eaW);
+        Print("VolSurge>1.3x only         ", vaN, vaW);
+        Print("ALL gates (Lor+EMA+Vol)    ", allN, allW);
+
+        // === F. 결론 — 어느 가드가 정말 효과 있나, 어느 게 노이즈만 추가하나 ===
+        Console.WriteLine();
+        Console.WriteLine("=== F. 결론 / 권장 조치 ===");
+        Console.WriteLine("  1. Pred 분포(A)에서 high-Pred일수록 win-rate가 높지 않으면 → Lorentzian 학습 부족");
+        Console.WriteLine("  2. SL hit time(B)이 TP보다 짧으면 → 시장이 short bias, LONG 전략 자체 부적합");
+        Console.WriteLine("  3. RSI 70+ 진입 승률이 낮으면 → '늦은 진입' 차단 가드 추가 필요");
+        Console.WriteLine("  4. 단독 가드(E)에서 가장 효과 큰 것만 유지, 나머지 제거 → 진입 기회 확보");
+    }
+
+    private static double CalcRsi14(List<IBinanceKline> kl, int i)
+    {
+        if (i < 14) return 50.0;
+        double g = 0, l = 0;
+        for (int q = i - 13; q <= i; q++)
+        {
+            double d = (double)(kl[q].ClosePrice - kl[q - 1].ClosePrice);
+            if (d > 0) g += d; else l -= d;
+        }
+        double avgG = g / 14.0, avgL = l / 14.0;
+        return avgL < 1e-12 ? 100.0 : 100.0 - (100.0 / (1.0 + avgG / avgL));
+    }
+    private static double CalcAtrPct(List<IBinanceKline> kl, int i)
+    {
+        if (i < 14) return 0;
+        double tr = 0;
+        for (int q = i - 13; q <= i; q++)
+        {
+            double hl = (double)(kl[q].HighPrice - kl[q].LowPrice);
+            double hc = Math.Abs((double)(kl[q].HighPrice - kl[q - 1].ClosePrice));
+            double lc = Math.Abs((double)(kl[q].LowPrice - kl[q - 1].ClosePrice));
+            tr += Math.Max(hl, Math.Max(hc, lc));
+        }
+        double atr = tr / 14.0;
+        double close = (double)kl[i].ClosePrice;
+        return close > 0 ? atr / close * 100.0 : 0;
+    }
+    private static double Median(List<int> a)
+    {
+        var s = a.OrderBy(x => x).ToList();
+        return s.Count % 2 == 0 ? (s[s.Count/2 - 1] + s[s.Count/2]) / 2.0 : s[s.Count/2];
+    }
+    private static int Percentile(List<int> a, int p)
+    {
+        var s = a.OrderBy(x => x).ToList();
+        int idx = (int)Math.Floor(p / 100.0 * s.Count);
+        return s[Math.Min(idx, s.Count - 1)];
+    }
+    private static (int n, int w) MeasureNone(Dictionary<string, List<IBinanceKline>> symData)
+    {
+        int n = 0, w = 0;
+        foreach (var kv in symData)
+        {
+            var kl = kv.Value; int te = (int)(kl.Count * 0.7);
+            for (int i = te + 50; i < kl.Count - 24; i++)
+            {
+                var (tp, sl) = OutcomeIn(kl, i, 2.0m, 1.0m, 24);
+                if (!(tp || sl)) continue;
+                n++; if (tp) w++;
+            }
+        }
+        return (n, w);
+    }
+    private static (int n, int w) MeasureWith(Dictionary<string, List<IBinanceKline>> symData, MiniLorentzianService svc, bool useEma, bool useVol, int lorThr)
+    {
+        int n = 0, w = 0;
+        foreach (var kv in symData)
+        {
+            string sym = kv.Key; var kl = kv.Value; int te = (int)(kl.Count * 0.7);
+            for (int i = te + 50; i < kl.Count - 24; i++)
+            {
+                if (useEma && !Ema20Rising(kl, i)) continue;
+                if (useVol && !VolSurge(kl, i, 1.3)) continue;
+                if (lorThr > -99)
+                {
+                    var slice = kl.GetRange(0, i + 1);
+                    var pred = svc.Predict(sym, slice);
+                    if (!pred.IsReady || pred.Prediction <= lorThr) continue;
+                }
+                var (tp, sl) = OutcomeIn(kl, i, 2.0m, 1.0m, 24);
+                if (!(tp || sl)) continue;
+                n++; if (tp) w++;
+            }
+        }
+        return (n, w);
+    }
+    private static void Print(string label, int n, int w)
+    {
+        double wr = n > 0 ? w * 100.0 / n : 0;
+        Console.WriteLine($"  {label} {n,6}  {w,4}  {wr,6:F2}%  {(wr - 33.33),+6:F2}%p");
+    }
+
+    /// <summary>[v5.20.7 FINAL] 실제 적용된 v5.20.7 로직으로 백테스트 — 수익률/수익금 보고</summary>
+    private static async Task RunFinalBacktestAsync()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  v5.20.7 FINAL LOGIC BACKTEST (chart data, 30 syms × 14 days 5m)");
+        Console.WriteLine("  Gates: Lorentzian Pred>3 + EMA20 rising + Volume > 1.3x avg(20)");
+        Console.WriteLine("  ALT_RSI<30 blocked (BTC/ETH/SOL/XRP exempt)");
+        Console.WriteLine("================================================================");
+
+        var svc = new MiniLorentzianService();
+        var symData = new Dictionary<string, List<IBinanceKline>>();
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[fetch {idx}/{symbols.Length}] {sym} ");
+            try
+            {
+                var kl = await FetchKlinesAsync(sym);
+                if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+                int trainEnd = (int)(kl.Count * 0.7);
+                int added = svc.BackfillFromCandles(sym, kl.GetRange(0, trainEnd));
+                symData[sym] = kl;
+                Console.WriteLine($"trained={added}");
+            }
+            catch (Exception ex) { Console.WriteLine("fail: " + ex.Message); }
+        }
+        var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+
+        // 3 TP/SL configs to compare: 현재 코드 기본값 vs sweep 최적값 vs 보수
+        var configs = new (string label, decimal tp, decimal sl, int win)[]
+        {
+            ("Current(1.5/0.7/12bar)",  1.5m, 0.7m, 12),
+            ("Sweep-Best(2.0/1.0/24bar)", 2.0m, 1.0m, 24),
+            ("Conservative(1.0/0.7/24bar)", 1.0m, 0.7m, 24),
+        };
+
+        Console.WriteLine();
+        Console.WriteLine("=== v5.20.7 ALL GATES ON: Lorentzian>3 + EMA20↑ + Vol>1.3x + ALT_RSI block ===");
+        Console.WriteLine();
+
+        foreach (var cfg in configs)
+        {
+            decimal tpUsd = Notional * cfg.tp / 100m - RoundTripFee;
+            decimal slUsd = Notional * cfg.sl / 100m + RoundTripFee;
+            decimal beWR = cfg.sl / (cfg.tp + cfg.sl) * 100m;
+
+            int trades = 0, wins = 0;
+            decimal pnl = 0m;
+            var perSym = new Dictionary<string, (int n, int w, decimal p)>();
+
+            foreach (var kv in symData)
+            {
+                string sym = kv.Key; var kl = kv.Value;
+                int trainEnd = (int)(kl.Count * 0.7);
+                int sN = 0, sW = 0; decimal sP = 0m;
+
+                for (int i = trainEnd + 50; i < kl.Count - cfg.win; i++)
+                {
+                    // Gate 1: ALT_RSI_FALLING_KNIFE
+                    if (!majors.Contains(sym))
+                    {
+                        if (i >= 14)
+                        {
+                            double g = 0, l = 0;
+                            for (int q = i - 13; q <= i; q++)
+                            {
+                                double d = (double)(kl[q].ClosePrice - kl[q - 1].ClosePrice);
+                                if (d > 0) g += d; else l -= d;
+                            }
+                            double avgG = g / 14.0, avgL = l / 14.0;
+                            double rsi = avgL < 1e-12 ? 100.0 : 100.0 - (100.0 / (1.0 + avgG / avgL));
+                            if (rsi < 30.0) continue;
+                        }
+                    }
+                    // Gate 2: EMA20 rising
+                    if (!Ema20Rising(kl, i)) continue;
+                    // Gate 3: Vol surge >1.3x
+                    if (!VolSurge(kl, i, 1.3)) continue;
+                    // Gate 4: Lorentzian Pred > 3
+                    var slice = kl.GetRange(0, i + 1);
+                    var pred = svc.Predict(sym, slice);
+                    if (!pred.IsReady || pred.Prediction <= 3) continue;
+                    // TP/SL outcome
+                    var (tp, sl) = OutcomeIn(kl, i, cfg.tp, cfg.sl, cfg.win);
+                    if (!(tp || sl)) continue;
+                    trades++; sN++;
+                    if (tp) { wins++; sW++; pnl += tpUsd; sP += tpUsd; }
+                    else    {                         pnl -= slUsd; sP -= slUsd; }
+                }
+                if (sN > 0) perSym[sym] = (sN, sW, sP);
+            }
+
+            double wr = trades > 0 ? wins * 100.0 / trades : 0;
+            decimal avg = trades > 0 ? pnl / trades : 0m;
+            // ROI: 마진 ${MARGIN_USD} 기준 누적 수익률
+            decimal capitalUsed = MARGIN_USD * trades;  // 단순 누적 기준
+            decimal roiPerTrade = trades > 0 ? pnl / capitalUsed * 100m : 0m;
+            decimal roiOnInitial = pnl / 1000m * 100m;  // 초기 자본 $1000 기준
+
+            Console.WriteLine($"┌─ Config: {cfg.label}  (BE win-rate {beWR:F2}%)");
+            Console.WriteLine($"│   Trades:        {trades}");
+            Console.WriteLine($"│   Wins / Losses: {wins} / {trades - wins}");
+            Console.WriteLine($"│   Win-rate:      {wr:F2}%   (BE {beWR:F2}% → {(wr - (double)beWR):+0.00;-0.00}%p)");
+            Console.WriteLine($"│   Total PnL:     ${pnl:F2}");
+            Console.WriteLine($"│   Avg PnL/trade: ${avg:F2}");
+            Console.WriteLine($"│   ROI/trade:     {roiPerTrade:F2}% (수익금/투입마진)");
+            Console.WriteLine($"│   ROI vs $1000:  {roiOnInitial:F2}% (초기자본 $1000 기준)");
+            Console.WriteLine($"│   $/14days:      ${pnl:F2}  →  ${(pnl/14m):F2}/day");
+            Console.WriteLine($"└─ TOP 5 symbols:");
+            foreach (var t in perSym.OrderByDescending(p => p.Value.p).Take(5))
+                Console.WriteLine($"     {t.Key,-14} {t.Value.n,3} trades, {t.Value.w} wins, ${t.Value.p:F2}");
+            Console.WriteLine($"   BOTTOM 5:");
+            foreach (var t in perSym.OrderBy(p => p.Value.p).Take(5))
+                Console.WriteLine($"     {t.Key,-14} {t.Value.n,3} trades, {t.Value.w} wins, ${t.Value.p:F2}");
+            Console.WriteLine();
+        }
+
+        // Compare BASELINE (no gates) vs FINAL (all gates) for reference
+        Console.WriteLine("=== REFERENCE: Baseline (no gates) vs FINAL (v5.20.7 all gates) ===");
+        decimal tpRef = Notional * 1.5m / 100m - RoundTripFee;
+        decimal slRef = Notional * 0.7m / 100m + RoundTripFee;
+        int bN = 0, bW = 0; decimal bP = 0m;
+        int fN = 0, fW = 0; decimal fP = 0m;
+        foreach (var kv in symData)
+        {
+            string sym = kv.Key; var kl = kv.Value;
+            int trainEnd = (int)(kl.Count * 0.7);
+            for (int i = trainEnd + 50; i < kl.Count - 12; i++)
+            {
+                var (tp, sl) = OutcomeIn(kl, i, 1.5m, 0.7m, 12);
+                if (!(tp || sl)) continue;
+                bN++;
+                if (tp) { bW++; bP += tpRef; } else bP -= slRef;
+            }
+        }
+        foreach (var kv in symData)
+        {
+            string sym = kv.Key; var kl = kv.Value;
+            int trainEnd = (int)(kl.Count * 0.7);
+            for (int i = trainEnd + 50; i < kl.Count - 12; i++)
+            {
+                if (!majors.Contains(sym))
+                {
+                    if (i >= 14)
+                    {
+                        double g = 0, l = 0;
+                        for (int q = i - 13; q <= i; q++)
+                        { double d = (double)(kl[q].ClosePrice - kl[q-1].ClosePrice); if (d > 0) g += d; else l -= d; }
+                        double avgG = g / 14.0, avgL = l / 14.0;
+                        double rsi = avgL < 1e-12 ? 100.0 : 100.0 - (100.0 / (1.0 + avgG / avgL));
+                        if (rsi < 30.0) continue;
+                    }
+                }
+                if (!Ema20Rising(kl, i)) continue;
+                if (!VolSurge(kl, i, 1.3)) continue;
+                var slice = kl.GetRange(0, i + 1);
+                var pred = svc.Predict(sym, slice);
+                if (!pred.IsReady || pred.Prediction <= 3) continue;
+                var (tp, sl) = OutcomeIn(kl, i, 1.5m, 0.7m, 12);
+                if (!(tp || sl)) continue;
+                fN++;
+                if (tp) { fW++; fP += tpRef; } else fP -= slRef;
+            }
+        }
+        Console.WriteLine($"  Baseline (no gates, 모든 캔들 진입):");
+        Console.WriteLine($"    {bN} trades, win-rate {(bN>0?bW*100.0/bN:0):F2}%, PnL ${bP:F2}");
+        Console.WriteLine($"  v5.20.7 FINAL (모든 가드 적용):");
+        Console.WriteLine($"    {fN} trades, win-rate {(fN>0?fW*100.0/fN:0):F2}%, PnL ${fP:F2}");
+        Console.WriteLine($"  → 진입 차단: {bN - fN}건 ({(bN>0?(bN-fN)*100.0/bN:0):F1}%)");
+        Console.WriteLine($"  → PnL 개선: {(fP - bP):+$0.00;-$0.00} ({(bP!=0?(double)((fP-bP)/Math.Abs(bP)*100):0):+0.00;-0.00}%)");
+    }
+
     /// <summary>[v5.20.7 B-plan] 통합 스윕 — fetch+train 1회 후 P1/P2/P3 모두 실행</summary>
     private static async Task RunAllSweepsAsync()
     {
@@ -432,6 +977,21 @@ internal static class Program
         if (args.Length > 0 && args[0] == "--sweep-all")
         {
             await RunAllSweepsAsync();
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--final")
+        {
+            await RunFinalBacktestAsync();
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--diagnose")
+        {
+            await RunDiagnosisAsync();
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--redesign")
+        {
+            await RunRedesignAsync();
             return;
         }
         var svc = new MiniLorentzianService();

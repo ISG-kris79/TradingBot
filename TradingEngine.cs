@@ -851,67 +851,46 @@ namespace TradingBot
                 }
             }
 
-            // [v5.20.7] Lorentzian Classification = 메인 AI 게이트
-            //   사용자 요구: "ai 를 Lorentzian Classification 이거 기준으로 메인을 잡으라고"
-            //   근거: API3USDT 72% 사례, KNN 거리 기반 분류로 ML.NET LightGBM 보완
-            //   규칙: 학습 미완료(IsReady=false) → 차단 ("검증된 AI 신호만 통과")
-            //         Prediction ≤ 0 (LONG 비추천) → 차단
-            if (_aiDoubleCheckEntryGate?.LorentzianV2 != null && _marketDataManager != null)
+            // [v5.20.8 REDESIGN] 진단 결과 기반 게이트 재설계 (Tools/LorentzianValidator --diagnose)
+            //   - Lorentzian 게이트 제거: Pred > 3 가드는 baseline 31.79% → 31.26% (-0.53%p) 오히려 악화
+            //     음수 Pred(-5)에서 win-rate 49.22% 발견 = 모델 학습 부적합, 가치 입증 안됨
+            //   - VolSurge>1.3x 게이트 제거: 단독 -1.21%p, ALL gates 결합 시 over-filter (-7.64%p)
+            //   - EMA20 rising 게이트 유지: 단독 +1.32%p edge — 유일한 양성 가드
+            //   - RSI 70+ 차단 신규: -11.71%p edge (FOMO 진입 손실 주범)
+            //   --redesign 검증: EMA20↑ + RSI<70 + TP/SL 1.5/1.5 대칭 = +$7,958 (795% ROI), WR 56.39%
+            if (_marketDataManager != null && _marketDataManager.KlineCache.TryGetValue(symbol, out var entryKlines) && entryKlines.Count >= 25)
             {
-                try
+                List<Binance.Net.Interfaces.IBinanceKline> snap;
+                lock (entryKlines) snap = entryKlines.ToList();
+
+                // EMA20 5봉 상승 (유일 양성 가드, 진단 +1.32%p edge)
+                decimal e1 = CalcEma20Local(snap, snap.Count - 1);
+                decimal e0 = CalcEma20Local(snap, snap.Count - 6);
+                if (e1 <= e0)
                 {
-                    if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var loKlines) || loKlines.Count < 305)
-                    {
-                        blockReason = $"LORENTZIAN_NO_KLINES:cnt={(loKlines?.Count ?? 0)}";
-                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (Lorentzian feature 추출 불가 — 305봉 필요)");
-                        return false;
-                    }
-                    List<Binance.Net.Interfaces.IBinanceKline> loSnap;
-                    lock (loKlines) loSnap = loKlines.ToList();
-                    var loPred = _aiDoubleCheckEntryGate.LorentzianV2.Predict(symbol, loSnap);
-                    if (!loPred.IsReady)
-                    {
-                        blockReason = "LORENTZIAN_NOT_TRAINED";
-                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (Lorentzian 학습 샘플 부족 — backfill 필요)");
-                        return false;
-                    }
-                    // [v5.20.7 B-plan] Prediction > 0 → > 3 강화 (차트 sweep 결과)
-                    //   sweep: > 0 -$10,370 / > 3 -$1,531 / EMA+Vol 합성 +$427 흑자
-                    if (loPred.Prediction <= 3)
-                    {
-                        blockReason = $"LORENTZIAN_WEAK_SIGNAL:pred={loPred.Prediction}";
-                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (Lorentzian KNN 약한 신호 — 강한 신호 >3 필요)");
-                        return false;
-                    }
-                    // [v5.20.7 B-plan] EMA20 상승 + 거래량 surge 추가 트리거
-                    //   sweep P4 합성 흑자 조건: Lorentzian>3 + EMA20↑ + Vol>1.3x → +$427.20
-                    if (loSnap.Count >= 25)
-                    {
-                        decimal e1 = CalcEma20Local(loSnap, loSnap.Count - 1);
-                        decimal e0 = CalcEma20Local(loSnap, loSnap.Count - 6);
-                        if (e1 <= e0)
-                        {
-                            blockReason = "EMA20_NOT_RISING";
-                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (EMA20 5봉 비상승 — sweep 검증 필수 트리거)");
-                            return false;
-                        }
-                        decimal volCur = loSnap[^1].Volume;
-                        decimal volSum = 0m;
-                        for (int v = loSnap.Count - 21; v < loSnap.Count - 1; v++) volSum += loSnap[v].Volume;
-                        decimal volAvg = volSum / 20m;
-                        if (volAvg > 0m && volCur < volAvg * 1.3m)
-                        {
-                            blockReason = $"VOL_NOT_SURGED:cur/avg={(volCur / volAvg):F2}x";
-                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (직전 20봉 평균 1.3x 미만)");
-                            return false;
-                        }
-                    }
-                }
-                catch (Exception exLo)
-                {
-                    OnStatusLog?.Invoke($"⚠️ [GATE-Lorentzian] {symbol} 예측 실패 (fail-closed 차단): {exLo.Message}");
-                    blockReason = "LORENTZIAN_PREDICT_FAIL";
+                    blockReason = "EMA20_NOT_RISING";
+                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason}");
                     return false;
+                }
+
+                // RSI(14) ≥ 70 = 과열 (FOMO 진입 차단, 진단 -11.71%p edge)
+                if (snap.Count >= 15)
+                {
+                    double g = 0, l = 0;
+                    int last = snap.Count - 1;
+                    for (int q = last - 13; q <= last; q++)
+                    {
+                        double d = (double)(snap[q].ClosePrice - snap[q - 1].ClosePrice);
+                        if (d > 0) g += d; else l -= d;
+                    }
+                    double avgG = g / 14.0, avgL = l / 14.0;
+                    double rsi = avgL < 1e-12 ? 100.0 : 100.0 - (100.0 / (1.0 + avgG / avgL));
+                    if (rsi >= 70.0)
+                    {
+                        blockReason = $"RSI70_OVERHEATED:rsi={rsi:F1}";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (FOMO 진입 — 진단 -11.71%p edge)");
+                        return false;
+                    }
                 }
             }
 
