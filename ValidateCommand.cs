@@ -25,7 +25,7 @@ namespace TradingBot.TelegramCommands
 
             await botClient.SendMessage(
                 chatId: message.Chat.Id,
-                text: "📊 백테스트 검증 시작 (7일치 차트, 4 variant 모두) — 1-3분 소요 예상...",
+                text: "📊 백테스트 검증 시작 (7일치, 100심볼, 병렬 8) — 30-50초 내 완료...",
                 cancellationToken: cancellationToken);
 
             string result;

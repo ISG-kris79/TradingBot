@@ -322,27 +322,55 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    WITH Groups AS (
+    -- [v5.20.7 BUG FIX] 기존 EntryTime 필터 → '어제 진입 / 오늘 청산' 손실 통째로 누락
+    --   사례: 2026-04-25 BTC -65달러 손실(어제 22:45 진입, 오늘 07:58 청산) 표시 안됨
+    --   해결: 청산 통계는 ExitTime 기준, 신규 진입 카운트는 EntryTime 기준 분리 집계
+    WITH ClosedToday AS (
         SELECT
-            Category,
-            Symbol,
-            EntryTime,
-            SUM(ISNULL(PnL, 0)) AS TotalPnL,
-            MAX(CASE WHEN IsClosed = 1 THEN 1 ELSE 0 END) AS HasClosed
+            Category, Symbol, EntryTime,
+            SUM(ISNULL(PnL, 0)) AS TotalPnL
         FROM dbo.TradeHistory
         WHERE Category IS NOT NULL
-          AND EntryTime >= @todayStart
+          AND IsClosed = 1
+          AND ExitTime >= @todayStart
           AND (@userId = 0 OR UserId = @userId)
         GROUP BY Category, Symbol, EntryTime
+    ),
+    ClosedAgg AS (
+        SELECT
+            Category,
+            COUNT(*) AS ClosedCount,
+            SUM(CASE WHEN TotalPnL > 0 THEN 1 ELSE 0 END) AS Wins,
+            SUM(CASE WHEN TotalPnL < 0 THEN 1 ELSE 0 END) AS Losses,
+            SUM(TotalPnL) AS TotalPnL
+        FROM ClosedToday
+        GROUP BY Category
+    ),
+    OpenToday AS (
+        SELECT
+            Category,
+            COUNT(DISTINCT Symbol + '|' + CONVERT(NVARCHAR(30), EntryTime, 121)) AS NewEntries
+        FROM dbo.TradeHistory
+        WHERE Category IS NOT NULL
+          AND IsClosed = 0
+          AND EntryTime >= @todayStart
+          AND (@userId = 0 OR UserId = @userId)
+        GROUP BY Category
+    ),
+    AllCats AS (
+        SELECT Category FROM ClosedAgg
+        UNION
+        SELECT Category FROM OpenToday
     )
     SELECT
-        Category,
-        COUNT(*) AS Entries,
-        SUM(CASE WHEN HasClosed = 1 AND TotalPnL > 0 THEN 1 ELSE 0 END) AS Wins,
-        SUM(CASE WHEN HasClosed = 1 AND TotalPnL < 0 THEN 1 ELSE 0 END) AS Losses,
-        SUM(TotalPnL) AS TotalPnL
-    FROM Groups
-    GROUP BY Category;
+        a.Category,
+        ISNULL(c.ClosedCount, 0) + ISNULL(o.NewEntries, 0) AS Entries,
+        ISNULL(c.Wins, 0)     AS Wins,
+        ISNULL(c.Losses, 0)   AS Losses,
+        ISNULL(c.TotalPnL, 0) AS TotalPnL
+    FROM AllCats a
+    LEFT JOIN ClosedAgg c ON a.Category = c.Category
+    LEFT JOIN OpenToday o ON a.Category = o.Category;
 END";
 
         // ════════════════════════════════════════════════════════════════════

@@ -37,10 +37,13 @@ namespace TradingBot.Services
 
         public long MinHealthyBytes { get; set; } = 30 * 1024;       // 30KB 미만이면 손상 의심
         public TimeSpan StaleThreshold { get; set; } = TimeSpan.FromHours(6);  // 6시간 학습 안 됨 = 의심
-        // [v5.19.1] grace period — 등록 직후 학습 중일 가능성 높으므로 알람 억제
-        public TimeSpan InitialGracePeriod { get; set; } = TimeSpan.FromMinutes(30);
-        // [v5.19.1] 동일 variant + 동일 사유 알람 cooldown — 분당 4건 폭주 방지
-        public TimeSpan AlertCooldown { get; set; } = TimeSpan.FromMinutes(60);
+        // [v5.20.7] grace 30→120min — 4 variant 학습은 1시간 이상 걸림
+        public TimeSpan InitialGracePeriod { get; set; } = TimeSpan.FromMinutes(120);
+        // [v5.20.7] cooldown 60→360min (6h) — "또 뜨고 있어" 폭주 근본 차단
+        public TimeSpan AlertCooldown { get; set; } = TimeSpan.FromHours(6);
+        // [v5.20.7] 번들 알람 dedupe 윈도 — variant 4개 한 번에 묶기
+        public TimeSpan BundleWindow { get; set; } = TimeSpan.FromSeconds(5);
+        private DateTime _lastBundleAlertAt = DateTime.MinValue;
 
         /// <summary>학습 모델 등록 (variant 별로 한 번씩 호출)</summary>
         public void Register(string variantTag, string zipPath, Action reloadCallback)
@@ -86,16 +89,20 @@ namespace TradingBot.Services
             ModelEntry[] snapshot;
             lock (_lock) snapshot = _models.Values.ToArray();
             DateTime nowUtc = DateTime.UtcNow;
+
+            // [v5.20.7] 알람 번들링 — variant 4개 missing/corrupt/stale 한 번에 묶음
+            var missing = new List<string>();
+            var corrupt = new List<string>();
+            var stale = new List<string>();
+
             foreach (var m in snapshot)
             {
-                // [v5.19.1] 등록 직후 grace period 내 알람 억제 (학습 중일 가능성)
                 bool inGrace = (nowUtc - m.RegisteredAt) < InitialGracePeriod;
 
                 if (!File.Exists(m.Path))
                 {
                     if (inGrace)
                     {
-                        // grace 중에는 1회만 info 로그
                         if (!m.GraceMissingLogged)
                         {
                             m.GraceMissingLogged = true;
@@ -103,23 +110,32 @@ namespace TradingBot.Services
                         }
                         continue;
                     }
-                    if (TryAlert(m, "MISSING", nowUtc))
-                        OnAlert?.Invoke($"🚨 [HEALTH][{m.Tag}] zip 파일 없음! {m.Path}");
+                    if (TryAlert(m, "MISSING", nowUtc)) missing.Add(m.Tag);
                     continue;
                 }
                 var fi = new FileInfo(m.Path);
                 if (fi.Length < MinHealthyBytes)
                 {
-                    if (TryAlert(m, "CORRUPT", nowUtc))
-                        OnAlert?.Invoke($"🚨 [HEALTH][{m.Tag}] zip 파일 손상 의심! 크기 {fi.Length}B < {MinHealthyBytes}B");
+                    if (TryAlert(m, "CORRUPT", nowUtc)) corrupt.Add($"{m.Tag}({fi.Length}B)");
                     continue;
                 }
                 var age = nowUtc - fi.LastWriteTimeUtc;
                 if (age > StaleThreshold)
                 {
-                    if (TryAlert(m, "STALE", nowUtc))
-                        OnAlert?.Invoke($"⚠️ [HEALTH][{m.Tag}] 학습 stale: 마지막 갱신 {age.TotalHours:F1}h 전 (threshold {StaleThreshold.TotalHours:F0}h)");
+                    if (TryAlert(m, "STALE", nowUtc)) stale.Add($"{m.Tag}({age.TotalHours:F1}h)");
                 }
+            }
+
+            // [v5.20.7] 번들 발사 — 사유 종류 + 변종 묶음 1개 메시지
+            if (missing.Count + corrupt.Count + stale.Count > 0)
+            {
+                if ((nowUtc - _lastBundleAlertAt) < BundleWindow) return;
+                _lastBundleAlertAt = nowUtc;
+                var parts = new List<string>();
+                if (missing.Count > 0) parts.Add($"MISSING [{string.Join(",", missing)}]");
+                if (corrupt.Count > 0) parts.Add($"CORRUPT [{string.Join(",", corrupt)}]");
+                if (stale.Count > 0)   parts.Add($"STALE [{string.Join(",", stale)}]");
+                OnAlert?.Invoke($"🚨 [MODEL HEALTH] {string.Join(" | ", parts)} (다음 알람 {AlertCooldown.TotalHours:F0}h 후)");
             }
         }
 
@@ -156,6 +172,20 @@ namespace TradingBot.Services
                     }
                 }
             }
+        }
+
+        /// <summary>[v5.20.7] 등록된 모델 중 하나라도 zip 파일이 없으면 true → 진입 차단용</summary>
+        public bool AnyMissing(out List<string> missingTags)
+        {
+            missingTags = new List<string>();
+            ModelEntry[] snapshot;
+            lock (_lock) snapshot = _models.Values.ToArray();
+            foreach (var m in snapshot)
+            {
+                if (!File.Exists(m.Path) || new FileInfo(m.Path).Length < MinHealthyBytes)
+                    missingTags.Add(m.Tag);
+            }
+            return missingTags.Count > 0;
         }
 
         /// <summary>현재 모든 모델 상태 보고 (UI/외부 호출용)</summary>

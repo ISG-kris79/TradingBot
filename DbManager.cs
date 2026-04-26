@@ -156,7 +156,42 @@ AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.Candl
 BEGIN
     CREATE INDEX IX_CandleData_IntervalText_Symbol_OpenTime
         ON dbo.CandleData (IntervalText, Symbol, OpenTime DESC);
-END", commandTimeout: 60);
+END
+
+-- [v5.20.7] Symbol leading 인덱스 — GROUP BY Symbol / WHERE Symbol=? 쿼리 타임아웃 방지
+--   (diag-validator-direct.ps1 에서 SQL Fill 30초+ 타임아웃 발생 → 풀스캔이 원인)
+IF OBJECT_ID('dbo.CandleData') IS NOT NULL
+AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.CandleData') AND name = 'IX_CandleData_Symbol_IntervalText_OpenTime')
+BEGIN
+    CREATE INDEX IX_CandleData_Symbol_IntervalText_OpenTime
+        ON dbo.CandleData (Symbol, IntervalText, OpenTime DESC);
+END
+
+-- [v5.20.7] BacktestDataset 테이블 — 90일 × 100심볼 라벨링된 학습/검증용 데이터
+IF OBJECT_ID('dbo.BacktestDataset', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.BacktestDataset (
+        Id          BIGINT IDENTITY(1,1) PRIMARY KEY,
+        Symbol      NVARCHAR(40) NOT NULL,
+        IntervalText NVARCHAR(8) NOT NULL,
+        OpenTime    DATETIME2 NOT NULL,
+        ClosePrice  DECIMAL(28,10) NOT NULL,
+        EMA20_5m    DECIMAL(28,10) NULL,
+        EMA50_15m   DECIMAL(28,10) NULL,
+        RSI14       DECIMAL(10,4) NULL,
+        ATR14       DECIMAL(28,10) NULL,
+        VolMA20     DECIMAL(28,4) NULL,
+        Volume      DECIMAL(28,4) NULL,
+        Label_TP_First BIT NULL,
+        Label_SL_First BIT NULL,
+        TP_Pct      DECIMAL(8,4) NULL,
+        SL_Pct      DECIMAL(8,4) NULL,
+        WindowMinutes INT NULL,
+        CreatedAt   DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT UX_BacktestDataset_Sym_Int_Time UNIQUE (Symbol, IntervalText, OpenTime)
+    );
+    CREATE INDEX IX_BacktestDataset_Symbol ON dbo.BacktestDataset (Symbol, OpenTime DESC);
+END", commandTimeout: 120);
             }
             catch { }
         }

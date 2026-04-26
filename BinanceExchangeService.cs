@@ -194,6 +194,41 @@ namespace TradingBot.Services
         }
 
         /// <summary>
+        /// [v5.20.7] 특정 심볼의 REALIZED_PNL 합계 조회 (외부 청산 PnL 복구용)
+        /// EXTERNAL_CLOSE_WHILE_BOT_STOPPED 처럼 봇이 못 본 청산도 Binance Income API에서 PnL 가져옴
+        /// </summary>
+        public async Task<decimal> GetRealizedPnLAsync(string symbol, DateTime startTime, DateTime? endTime = null, CancellationToken ct = default)
+        {
+            try
+            {
+                decimal total = 0m;
+                DateTime cursor = startTime;
+                DateTime end = endTime ?? DateTime.UtcNow;
+                while (cursor < end)
+                {
+                    var result = await _client.UsdFuturesApi.Account.GetIncomeHistoryAsync(
+                        symbol: symbol,
+                        incomeType: "REALIZED_PNL",
+                        startTime: cursor,
+                        endTime: end,
+                        limit: 1000,
+                        ct: ct);
+                    if (!result.Success || result.Data == null || !result.Data.Any())
+                        break;
+                    foreach (var inc in result.Data) total += inc.Income;
+                    if (result.Data.Count() < 1000) break;
+                    cursor = result.Data.Last().Timestamp.AddMilliseconds(1);
+                }
+                return total;
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ [RealizedPnL] {symbol} 조회 실패: {ex.Message}");
+                return 0m;
+            }
+        }
+
+        /// <summary>
         /// [v5.1.8] WalletBalance 반환 (전체 잔고 — Equity 계산용)
         /// 기존: AvailableBalance (가용 = 전체 - 증거금) → $1,314 (실제 $8,044)
         /// 수정: WalletBalance (전체) → 정확한 Equity

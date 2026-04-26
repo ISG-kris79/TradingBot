@@ -16,9 +16,9 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
     <LangVersion>latest</LangVersion>
-    <Version>5.20.5</Version>
-    <AssemblyVersion>5.20.5.0</AssemblyVersion>
-    <FileVersion>5.20.5.0</FileVersion>
+    <Version>5.20.7</Version>
+    <AssemblyVersion>5.20.7.0</AssemblyVersion>
+    <FileVersion>5.20.7.0</FileVersion>
     <Company>TradingBot</Company>
     <Product>CoinFF TradingBot</Product>
     <Description>Cryptocurrency Trading Bot with AI/ML capabilities</Description>
@@ -45,6 +45,12 @@
     <TieredCompilation>true</TieredCompilation>
     <TieredCompilationQuickJit>true</TieredCompilationQuickJit>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- [v5.20.7] Tools 하위 csproj는 별도 빌드. 메인 빌드에서 제외. -->
+    <Compile Remove="Tools\**\*.cs" />
+    <None Remove="Tools\**\*" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- WPF Window Icon용 (어셈블리에 임베드) -->

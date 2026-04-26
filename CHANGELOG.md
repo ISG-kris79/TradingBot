@@ -5,6 +5,35 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.20.7] - 2026-04-25
+
+### 🚨 Critical Bug Fixes (사용자 -$70 손실 표시 안되던 통계 버그 + 알람 폭주)
+
+#### Fixed
+- **sp_GetTodayStatsByCategory**: `EntryTime >= @todayStart` → `ExitTime` 기준으로 변경. "어제 진입 / 오늘 청산" 손실(BTC -$64.30 등)이 통계에서 통째로 누락되던 버그 수정. 즉시 적용 후 MAJOR Losses=1, TotalPnL=-$64.30 표시 확인.
+- **EXTERNAL_CLOSE_WHILE_BOT_STOPPED**: PnL=0 일괄 처리 → Binance Income API REALIZED_PNL 자동 fetch. 봇 정지 중 청산도 실제 손익 기록.
+- **ZIP 알람 폭주**: variant 4개가 따로따로 알람 → 1개 번들 메시지로 통합. cooldown 60min→6h, grace 30min→120min.
+
+#### Added (Hard Gates — chart-data 검증 통과 후 적용)
+- **MODEL_ZIP_MISSING 진입 차단**: AI 모델(Default/Major/Pump/Spike) zip 미생성/손상 시 ALL 진입 차단. 사용자 요구: "zip 생성이 안되어 있으면 진입을 하지를 말어".
+- **LORENTZIAN_WEAK_SIGNAL 메인 게이트 강화**: Lorentzian Classification KNN이 메인 AI. IsReady=false OR `Prediction ≤ 3` 시 진입 차단. 차트 sweep: > 0 -$10,370 / > 3 -$1,531 (8.6배 손실 감소). 사용자 요구: "Lorentzian Classification 이거 기준으로 메인을 잡으라고".
+- **EMA20_NOT_RISING 트리거**: 5m EMA20이 5봉 전보다 높지 않으면 차단. 차트 sweep: P4 합성 흑자 조건의 핵심 트리거.
+- **VOL_NOT_SURGED 트리거**: 직전 20봉 평균 거래량의 1.3x 미만이면 차단. 차트 sweep P4 합성에 필수.
+- **ALT_RSI_FALLING_KNIFE 가드**: 알트(메이저 4종 외) RSI(14)<30 LONG 차단. 30심볼 5m 1500봉 검증 결과 BOTTOM 10 알트 39~47% win-rate (떨어지는 칼날).
+
+#### Validation
+- 30 심볼 × 14일 5m 차트 데이터 + REAL Lorentzian C# 엔진 검증 (Tools/LorentzianValidator).
+- TP/SL 11종 스윕 + Lorentzian threshold 6단계 + 진입 트리거 6종 + Window 6종 sweep 완료.
+- **P4 합성 흑자 입증**: Lorentzian>3 + EMA20↑ + Vol>1.3x + WIN=24 + TP2.0/SL1.0 = +$427.20 (40.89% win-rate).
+- 그 외 단독 조건은 모두 손실 (-$8,588 ~ -$33,963 범위).
+
+#### Infrastructure
+- `IX_CandleData_Symbol_IntervalText_OpenTime` 인덱스 추가 (DB Symbol GROUP BY/WHERE 타임아웃 해결).
+- `BacktestDataset` 테이블 + `diag-build-dataset.ps1`: 30심볼 × 30일 × 5m = 267,999 rows / TP-first 25.04% baseline 측정.
+- `diag-validator-direct.ps1`: 30심볼 RSI baseline 검증 (49.01% — random 미만, 알트 차단 근거).
+- `BinanceExchangeService.GetRealizedPnLAsync()`: 외부청산 PnL 복구 헬퍼.
+- `ModelHealthMonitor.AnyMissing()`: 진입 차단 게이트용 헬퍼.
+
 ## [5.19.0] - 2026-04-25
 
 ### ✨ AI 학습: Bollinger Band Walk 패턴 학습 (5분봉 상단 라이딩 = 강추세 매수 신호)

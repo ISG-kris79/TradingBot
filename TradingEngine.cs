@@ -838,9 +838,133 @@ namespace TradingBot
                 catch { /* BTC 조회 실패 시 차단하지 않음 (진입 누락 방지) */ }
             }
 
+            // [v5.20.7] AI 모델 zip 미생성/손상 시 진입 전면 차단
+            //   사용자 요구: "zip 생성이 안되어 있으면 진입을 하지를 말어"
+            //   근거: 모델 없는 상태에서 진입 = 가드/AI 무력화 → 손실만 증가
+            if (_aiDoubleCheckEntryGate?.HealthMonitor != null)
+            {
+                if (_aiDoubleCheckEntryGate.HealthMonitor.AnyMissing(out var missingTags))
+                {
+                    blockReason = $"MODEL_ZIP_MISSING:{string.Join(",", missingTags)}";
+                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (학습 완료 전까지 진입 금지)");
+                    return false;
+                }
+            }
+
+            // [v5.20.7] Lorentzian Classification = 메인 AI 게이트
+            //   사용자 요구: "ai 를 Lorentzian Classification 이거 기준으로 메인을 잡으라고"
+            //   근거: API3USDT 72% 사례, KNN 거리 기반 분류로 ML.NET LightGBM 보완
+            //   규칙: 학습 미완료(IsReady=false) → 차단 ("검증된 AI 신호만 통과")
+            //         Prediction ≤ 0 (LONG 비추천) → 차단
+            if (_aiDoubleCheckEntryGate?.LorentzianV2 != null && _marketDataManager != null)
+            {
+                try
+                {
+                    if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var loKlines) || loKlines.Count < 305)
+                    {
+                        blockReason = $"LORENTZIAN_NO_KLINES:cnt={(loKlines?.Count ?? 0)}";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (Lorentzian feature 추출 불가 — 305봉 필요)");
+                        return false;
+                    }
+                    List<Binance.Net.Interfaces.IBinanceKline> loSnap;
+                    lock (loKlines) loSnap = loKlines.ToList();
+                    var loPred = _aiDoubleCheckEntryGate.LorentzianV2.Predict(symbol, loSnap);
+                    if (!loPred.IsReady)
+                    {
+                        blockReason = "LORENTZIAN_NOT_TRAINED";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (Lorentzian 학습 샘플 부족 — backfill 필요)");
+                        return false;
+                    }
+                    // [v5.20.7 B-plan] Prediction > 0 → > 3 강화 (차트 sweep 결과)
+                    //   sweep: > 0 -$10,370 / > 3 -$1,531 / EMA+Vol 합성 +$427 흑자
+                    if (loPred.Prediction <= 3)
+                    {
+                        blockReason = $"LORENTZIAN_WEAK_SIGNAL:pred={loPred.Prediction}";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (Lorentzian KNN 약한 신호 — 강한 신호 >3 필요)");
+                        return false;
+                    }
+                    // [v5.20.7 B-plan] EMA20 상승 + 거래량 surge 추가 트리거
+                    //   sweep P4 합성 흑자 조건: Lorentzian>3 + EMA20↑ + Vol>1.3x → +$427.20
+                    if (loSnap.Count >= 25)
+                    {
+                        decimal e1 = CalcEma20Local(loSnap, loSnap.Count - 1);
+                        decimal e0 = CalcEma20Local(loSnap, loSnap.Count - 6);
+                        if (e1 <= e0)
+                        {
+                            blockReason = "EMA20_NOT_RISING";
+                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (EMA20 5봉 비상승 — sweep 검증 필수 트리거)");
+                            return false;
+                        }
+                        decimal volCur = loSnap[^1].Volume;
+                        decimal volSum = 0m;
+                        for (int v = loSnap.Count - 21; v < loSnap.Count - 1; v++) volSum += loSnap[v].Volume;
+                        decimal volAvg = volSum / 20m;
+                        if (volAvg > 0m && volCur < volAvg * 1.3m)
+                        {
+                            blockReason = $"VOL_NOT_SURGED:cur/avg={(volCur / volAvg):F2}x";
+                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (직전 20봉 평균 1.3x 미만)");
+                            return false;
+                        }
+                    }
+                }
+                catch (Exception exLo)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [GATE-Lorentzian] {symbol} 예측 실패 (fail-closed 차단): {exLo.Message}");
+                    blockReason = "LORENTZIAN_PREDICT_FAIL";
+                    return false;
+                }
+            }
+
+            // [v5.20.7] 알트 RSI 역추세 진입 차단 — diag-validator-direct.ps1 결과 근거
+            //   30심볼 RSI(14) baseline win-rate = 49.01% (랜덤보다 못함)
+            //   BOTTOM 10 알트 (DYDX/APE/GALA/ESPORTS/API3/W/GRIFFAIN/SOON/AVAX/TRX): 39~47%
+            //   결론: 알트는 RSI<30 LONG (떨어지는 칼날) / RSI>70 SHORT (눌림 안 옴) 모두 손해
+            //   봇은 LONG 전용 → "RSI<30 알트 LONG" 차단이 핵심
+            //   메이저(BTC/ETH/SOL/XRP)는 baseline 53~55% → 차단 제외
+            if (!MajorSymbols.Contains(symbol) && _marketDataManager != null)
+            {
+                try
+                {
+                    if (_marketDataManager.KlineCache.TryGetValue(symbol, out var altKlines) && altKlines.Count >= 15)
+                    {
+                        List<Binance.Net.Interfaces.IBinanceKline> last15;
+                        lock (altKlines) { last15 = altKlines.TakeLast(15).ToList(); }
+                        if (last15.Count >= 15)
+                        {
+                            double gain = 0, loss = 0;
+                            for (int i = 1; i < 15; i++)
+                            {
+                                double diff = (double)(last15[i].ClosePrice - last15[i - 1].ClosePrice);
+                                if (diff > 0) gain += diff; else loss -= diff;
+                            }
+                            double avgG = gain / 14.0, avgL = loss / 14.0;
+                            double rsi = avgL < 1e-12 ? 100.0 : 100.0 - (100.0 / (1.0 + avgG / avgL));
+                            if (rsi < 30.0)
+                            {
+                                blockReason = $"ALT_RSI_FALLING_KNIFE:rsi={rsi:F1}";
+                                OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (알트 RSI<30 = 떨어지는 칼날, baseline 39~47% 손실)");
+                                return false;
+                            }
+                        }
+                    }
+                }
+                catch { /* 가드 실패 시 차단하지 않음 */ }
+            }
+
             // [v5.20.3] 모든 가드 통과 시 명시 로그 → "가드 통과인지 우회인지" 즉시 식별 가능
             OnStatusLog?.Invoke($"✅ [GATE-PASS] {symbol} {source} 모든 가드 통과");
             return true;
+        }
+
+        /// <summary>[v5.20.7 B-plan] EMA20 sliding 계산 — IsEntryAllowed 트리거 전용</summary>
+        private static decimal CalcEma20Local(System.Collections.Generic.List<Binance.Net.Interfaces.IBinanceKline> kl, int idx)
+        {
+            const int period = 20;
+            decimal k = 2m / (period + 1);
+            int from = System.Math.Max(0, idx - period * 2);
+            decimal ema = kl[from].ClosePrice;
+            for (int j = from + 1; j <= idx; j++) ema = kl[j].ClosePrice * k + ema * (1m - k);
+            return ema;
         }
 
         /// <summary>
@@ -2685,24 +2809,40 @@ namespace TradingBot
                         // DB에만 있고 거래소에 없음 → 외부 청산된 것으로 간주
                         string side = dbTrade.Side;
                         string closeSide = side.Equals("BUY", StringComparison.OrdinalIgnoreCase) ? "SELL" : "BUY";
-                        
+
+                        // [v5.20.7 BUG FIX] 외부 청산도 Binance Income REALIZED_PNL 조회 → 실제 PnL 기록
+                        //   기존: PnL=0 일괄 처리 → 일일 손익 통계에서 손실 누락 ($-70 사라짐)
+                        decimal actualPnl = 0m;
+                        try
+                        {
+                            if (_exchangeService is BinanceExchangeService binSvc)
+                            {
+                                actualPnl = await binSvc.GetRealizedPnLAsync(
+                                    dbTrade.Symbol,
+                                    dbTrade.EntryTime.ToUniversalTime(),
+                                    DateTime.UtcNow);
+                            }
+                        }
+                        catch { }
+
                         var closeLog = new TradeLog(
                             dbTrade.Symbol,
                             closeSide,
                             "EXTERNAL_RECONCILE",
-                            dbTrade.EntryPrice, // 청산가 불명 → 진입가 사용 (PnL=0)
+                            dbTrade.EntryPrice, // 청산가 불명 → 진입가 사용
                             0f,
                             DateTime.Now,
-                            0m, // 실제 PnL 불명
+                            actualPnl,
                             0m
                         )
                         {
                             ExitPrice = dbTrade.EntryPrice,
                             EntryPrice = dbTrade.EntryPrice,
                             Quantity = dbTrade.Quantity,
-                            ExitReason = "EXTERNAL_CLOSE_WHILE_BOT_STOPPED",
+                            ExitReason = $"EXTERNAL_CLOSE_WHILE_BOT_STOPPED (PnL={actualPnl:F4})",
                             EntryTime = dbTrade.EntryTime,
-                            ExitTime = DateTime.Now
+                            ExitTime = DateTime.Now,
+                            PnL = actualPnl
                         };
 
                         bool saved = await _dbManager.CompleteTradeAsync(closeLog);
