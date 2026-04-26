@@ -64,6 +64,108 @@ internal static class Program
 {
     private static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(25) };
 
+    /// <summary>[v5.21.1] PUMP 전용 튜닝 — 76% WR + 1:3 TP/SL 비대칭 결함 해결</summary>
+    private static async Task RunPumpTuneAsync(int pages = 18)
+    {
+        int days = pages * BARS_PER_REQ * 5 / (60 * 24);
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  v5.21.1 PUMP 전용 TUNING ({days}일 / 30 syms)");
+        Console.WriteLine("  현재 76.79% WR / -$9 → 흑자 전환 위한 TP/SL + 가드 강화 sweep");
+        Console.WriteLine("================================================================");
+
+        var symData = new Dictionary<string, List<IBinanceKline>>();
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[fetch {idx}/{symbols.Length}] {sym} ");
+            try
+            {
+                var kl = await FetchKlinesAsync(sym, pages);
+                if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+                symData[sym] = kl;
+                Console.WriteLine($"ok ({kl.Count} bars)");
+            }
+            catch { Console.WriteLine("fail"); }
+        }
+
+        // PUMP 트리거: 1분 +1.5% + Vol 3x
+        Func<List<IBinanceKline>, int, bool> pumpTrig = (kl, i) =>
+            i >= 20 && PriceChange(kl, i, 1) >= 1.5 && VolMult(kl, i, 20) >= 3.0;
+
+        // PUMP 전용 가드 7종 — 펌프코인 특성 반영
+        var gateSets = new (string label, Func<List<IBinanceKline>, int, bool> ok)[]
+        {
+            ("baseline (v5.20.8)",          (kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 70),
+            ("RSI<65",                       (kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 65),
+            ("RSI<60",                       (kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 60),
+            ("RSI<55",                       (kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 55),
+            ("RSI<60 + Vol 5x",              (kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 60 && VolMult(kl, i, 20) >= 5.0),
+            ("RSI<60 + EMA5>EMA20",         (kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 60 && Ema5GtEma20(kl, i)),
+            ("RSI<60 + ATR 0.5-1.5%",       (kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 60 && CalcAtrPct(kl, i) >= 0.5 && CalcAtrPct(kl, i) <= 1.5),
+            ("RSI<55 + EMA5>EMA20 + Vol 5x", (kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 55 && Ema5GtEma20(kl, i) && VolMult(kl, i, 20) >= 5.0),
+        };
+
+        // PUMP 코인 특성에 맞는 TP/SL — 펌프는 빠르게 익절, SL은 짧게
+        var tpslSets = new (string label, decimal tp, decimal sl, int win)[]
+        {
+            ("Current 1.0/3.0/24 (BE 75%)",  1.0m, 3.0m, 24),
+            ("PUMP 2.0/0.7/12 (BE 25.9%)",   2.0m, 0.7m, 12),  // 펌프 따라가기
+            ("PUMP 1.5/0.7/12 (BE 31.8%)",   1.5m, 0.7m, 12),  // 빠른 익절
+            ("PUMP 1.5/1.0/12 (BE 40%)",     1.5m, 1.0m, 12),  // 1.5:1
+            ("PUMP 2.0/1.0/12 (BE 33.3%)",   2.0m, 1.0m, 12),
+            ("PUMP 3.0/1.0/24 (BE 25%)",     3.0m, 1.0m, 24),  // 큰 익절
+            ("PUMP 1.0/0.5/6 (BE 33.3%)",    1.0m, 0.5m, 6),   // 초고속 스캘핑
+            ("PUMP 0.7/0.5/6 (BE 41.7%)",    0.7m, 0.5m, 6),
+            ("PUMP 2.0/1.5/24 (BE 42.9%)",   2.0m, 1.5m, 24),
+        };
+
+        Console.WriteLine();
+        Console.WriteLine($"{"Gate",-36} | {"TP/SL/WIN",-32} | {"Trades",7} {"WR%",7} {"PnL$",10} {"avg",7}  Status");
+        Console.WriteLine(new string('-', 130));
+
+        var results = new List<(string g, string t, int n, double wr, decimal pnl, decimal avg)>();
+        foreach (var gs in gateSets)
+        {
+            foreach (var ts in tpslSets)
+            {
+                decimal tpUsd = Notional * ts.tp / 100m - RoundTripFee;
+                decimal slUsd = Notional * ts.sl / 100m + RoundTripFee;
+
+                int n = 0, w = 0; decimal pnl = 0m;
+                foreach (var kv in symData)
+                {
+                    var kl = kv.Value;
+                    int trainEnd = (int)(kl.Count * 0.7);
+                    for (int i = trainEnd + 50; i < kl.Count - ts.win; i++)
+                    {
+                        if (!pumpTrig(kl, i)) continue;
+                        if (!gs.ok(kl, i)) continue;
+                        var (tp, sl) = OutcomeIn(kl, i, ts.tp, ts.sl, ts.win);
+                        if (!(tp || sl)) continue;
+                        n++;
+                        if (tp) { w++; pnl += tpUsd; } else pnl -= slUsd;
+                    }
+                }
+                double wr = n > 0 ? w * 100.0 / n : 0;
+                decimal avg = n > 0 ? pnl / n : 0m;
+                string status = pnl > 0 ? "✅ 흑자" : "";
+                Console.WriteLine($"{gs.label,-36} | {ts.label,-32} | {n,7} {wr,6:F2} {pnl,9:F2} {avg,7:F2}  {status}");
+                results.Add((gs.label, ts.label, n, wr, pnl, avg));
+            }
+            Console.WriteLine();
+        }
+
+        Console.WriteLine("=== PUMP 흑자 조합 TOP 10 (PnL DESC, n>=30) ===");
+        foreach (var r in results.Where(r => r.pnl > 0 && r.n >= 30).OrderByDescending(r => r.pnl).Take(10))
+            Console.WriteLine($"  ✅ n={r.n,5}  WR={r.wr,6:F2}%  PnL=${r.pnl,8:F2}  avg=${r.avg,5:F2} | {r.g} | {r.t}");
+
+        Console.WriteLine();
+        Console.WriteLine("=== PUMP 평균 PnL/trade TOP 10 (효율성, n>=30) ===");
+        foreach (var r in results.Where(r => r.n >= 30).OrderByDescending(r => r.avg).Take(10))
+            Console.WriteLine($"  n={r.n,5}  WR={r.wr,6:F2}%  PnL=${r.pnl,8:F2}  avg=${r.avg,5:F2} | {r.g} | {r.t}");
+    }
+
     /// <summary>[v5.21.0] 봇 진입 로직별 30일 백테스트 — 각 트리거 시뮬 + 가드 적용 비교</summary>
     private static async Task RunLogicBreakdownAsync(int pages = 6)
     {
@@ -121,6 +223,8 @@ internal static class Program
             }),
             // v5.20.8 (재설계): EMA20↑ + RSI<70
             ("v5.20.8", (kl, i, sym) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 70),
+            // v5.21.1 (PUMP 강화): EMA20↑ + RSI<65
+            ("v5.21.1", (kl, i, sym) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 65),
         };
 
         // TP/SL 시나리오
@@ -1367,6 +1471,16 @@ internal static class Program
         if (args.Length > 0 && args[0] == "--logic-90d")
         {
             await RunLogicBreakdownAsync(pages: 18);  // 90일
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--logic-180d")
+        {
+            await RunLogicBreakdownAsync(pages: 36);  // 180일 (6개월)
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--pump-tune")
+        {
+            await RunPumpTuneAsync(pages: 18);  // 90일 PUMP 전용
             return;
         }
         var svc = new MiniLorentzianService();

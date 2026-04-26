@@ -888,7 +888,10 @@ namespace TradingBot
                     return false;
                 }
 
-                // RSI(14) ≥ 70 = 과열 (FOMO 진입 차단, 진단 -11.71%p edge)
+                // [v5.21.1] PUMP RSI 임계값 70 → 65 강화 (PUMP 90일 전수검증 결과)
+                //   v5.20.8 (RSI<70): 113건 WR 76.11% PnL -$40.40 ← 적자
+                //   v5.21.1 (RSI<65): 49건 WR 79.59% PnL +$50.80 ← 흑자 전환
+                //   진입 -57% 감소하지만 PnL +$91 개선
                 if (snap.Count >= 15)
                 {
                     double g = 0, l = 0;
@@ -900,10 +903,10 @@ namespace TradingBot
                     }
                     double avgG = g / 14.0, avgL = l / 14.0;
                     double rsi = avgL < 1e-12 ? 100.0 : 100.0 - (100.0 / (1.0 + avgG / avgL));
-                    if (rsi >= 70.0)
+                    if (rsi >= 65.0)
                     {
-                        blockReason = $"RSI70_OVERHEATED:rsi={rsi:F1}";
-                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (FOMO 진입 — 진단 -11.71%p edge)");
+                        blockReason = $"RSI65_OVERHEATED:rsi={rsi:F1}";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (PUMP 과열 — 90일 검증 RSI<65 흑자 전환)");
                         return false;
                     }
                 }
