@@ -64,6 +64,353 @@ internal static class Program
 {
     private static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(25) };
 
+    /// <summary>[v5.21.0] 봇 진입 로직별 30일 백테스트 — 각 트리거 시뮬 + 가드 적용 비교</summary>
+    private static async Task RunLogicBreakdownAsync(int pages = 6)
+    {
+        int days = pages * BARS_PER_REQ * 5 / (60 * 24);
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  v5.21.0 LOGIC BREAKDOWN BACKTEST ({days}일 / 30 syms)");
+        Console.WriteLine("  봇 5종 진입 트리거 시뮬: PUMP / SPIKE / MAJOR / SQUEEZE / BB_WALK");
+        Console.WriteLine("  3가지 가드 시나리오로 비교: NONE / v5.20.7 (기존) / v5.20.8 (재설계)");
+        Console.WriteLine("================================================================");
+
+        var symData = new Dictionary<string, List<IBinanceKline>>();
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[fetch {idx}/{symbols.Length}] {sym} ");
+            try
+            {
+                var kl = await FetchKlinesAsync(sym, pages);
+                if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+                symData[sym] = kl;
+                Console.WriteLine($"ok ({kl.Count} bars)");
+            }
+            catch { Console.WriteLine("fail"); }
+        }
+        var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+
+        // 봇 5종 진입 트리거 시뮬레이터
+        var triggers = new (string name, Func<List<IBinanceKline>, int, string, bool> ok)[]
+        {
+            // PUMP: 1분 +1.5% AND 거래량 3x avg(20)
+            ("PUMP", (kl, i, sym) => i >= 20 && PriceChange(kl, i, 1) >= 1.5 && VolMult(kl, i, 20) >= 3.0),
+            // SPIKE (TICK_SURGE): 5분 +2.0% AND 거래량 5x avg(20)
+            ("SPIKE", (kl, i, sym) => i >= 20 && PriceChange(kl, i, 5) >= 2.0 && VolMult(kl, i, 20) >= 5.0),
+            // MAJOR: BTC/ETH/SOL/XRP만, EMA20 추세, M15 30봉 위치 60-85%
+            ("MAJOR", (kl, i, sym) => majors.Contains(sym) && i >= 30 && Ema20Rising(kl, i)
+                       && M15RangePos(kl, i, 30) is >= 60 and <= 85),
+            // SQUEEZE_BREAKOUT: BB width < 1.5% (조임) AND 종가 > BB upper (돌파)
+            ("SQUEEZE", (kl, i, sym) => i >= 20 && BBWidth(kl, i) < 1.5 && BBWalkUpper(kl, i)),
+            // BB_WALK: 직전 5봉 중 4봉 이상 종가 > BB upper
+            ("BB_WALK", (kl, i, sym) => i >= 20 && BBWalkStreak(kl, i, 5) >= 4),
+        };
+
+        // 가드 시나리오
+        var scenarios = new (string name, Func<List<IBinanceKline>, int, string, bool> guard)[]
+        {
+            // NONE: 트리거 그대로 진입
+            ("NONE", (kl, i, sym) => true),
+            // v5.20.7 (기존 게이트 묶음): MAJOR 외 RSI<30 차단 + Lorentzian Pred>3 (생략 가능, 효과 미미) + EMA20↑ + Vol>1.3x
+            ("v5.20.7", (kl, i, sym) => {
+                if (!majors.Contains(sym) && CalcRsi14(kl, i) < 30) return false;
+                if (!Ema20Rising(kl, i)) return false;
+                if (!VolSurge(kl, i, 1.3)) return false;
+                return true;
+            }),
+            // v5.20.8 (재설계): EMA20↑ + RSI<70
+            ("v5.20.8", (kl, i, sym) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 70),
+        };
+
+        // TP/SL 시나리오
+        var tpslSets = new (string label, decimal tp, decimal sl, int win)[]
+        {
+            ("Bot기본 1.5/0.7/12",  1.5m, 0.7m, 12),  // 현재 봇 설정
+            ("권장 1.0/3.0/24",     1.0m, 3.0m, 24),  // 87% WR target
+            ("타이트 0.5/1.5/12",   0.5m, 1.5m, 12),
+        };
+
+        Console.WriteLine();
+        Console.WriteLine($"{"Trigger",-9} {"Guard",-10} {"TP/SL/WIN",-22} | {"Trades",7} {"WR%",7} {"PnL$",10} {"avg",7}");
+        Console.WriteLine(new string('-', 100));
+
+        var results = new List<(string trig, string guard, string ts, int n, double wr, decimal pnl, decimal avg)>();
+
+        foreach (var trig in triggers)
+        {
+            foreach (var sc in scenarios)
+            {
+                foreach (var ts in tpslSets)
+                {
+                    decimal tpUsd = Notional * ts.tp / 100m - RoundTripFee;
+                    decimal slUsd = Notional * ts.sl / 100m + RoundTripFee;
+
+                    int n = 0, w = 0; decimal pnl = 0m;
+                    foreach (var kv in symData)
+                    {
+                        var kl = kv.Value; var sym = kv.Key;
+                        int trainEnd = (int)(kl.Count * 0.7);
+                        for (int i = trainEnd + 50; i < kl.Count - ts.win; i++)
+                        {
+                            if (!trig.ok(kl, i, sym)) continue;
+                            if (!sc.guard(kl, i, sym)) continue;
+                            var (tp, sl) = OutcomeIn(kl, i, ts.tp, ts.sl, ts.win);
+                            if (!(tp || sl)) continue;
+                            n++;
+                            if (tp) { w++; pnl += tpUsd; } else pnl -= slUsd;
+                        }
+                    }
+                    double wr = n > 0 ? w * 100.0 / n : 0;
+                    decimal avg = n > 0 ? pnl / n : 0m;
+                    Console.WriteLine($"{trig.name,-9} {sc.name,-10} {ts.label,-22} | {n,7} {wr,6:F2} {pnl,9:F2} {avg,7:F2}");
+                    results.Add((trig.name, sc.name, ts.label, n, wr, pnl, avg));
+                }
+            }
+            Console.WriteLine();
+        }
+
+        // 트리거별 BEST 조합
+        Console.WriteLine("=== 트리거별 BEST PnL 조합 ===");
+        foreach (var trigGroup in results.GroupBy(r => r.trig))
+        {
+            var best = trigGroup.OrderByDescending(r => r.pnl).First();
+            string tag = best.pnl > 0 ? "✅" : "❌";
+            Console.WriteLine($"  {tag} {best.trig,-9} | {best.guard,-10} | {best.ts,-22} | n={best.n}, WR={best.wr:F2}%, PnL=${best.pnl:F2}, avg=${best.avg:F2}");
+        }
+
+        // SCENARIO 비교 — 같은 트리거에서 가드 효과
+        Console.WriteLine();
+        Console.WriteLine("=== 가드 효과 비교 (TP/SL 동일, NONE vs v5.20.7 vs v5.20.8) ===");
+        foreach (var trig in triggers)
+        {
+            foreach (var ts in tpslSets)
+            {
+                Console.WriteLine($"  [{trig.name} / {ts.label}]");
+                foreach (var sc in scenarios)
+                {
+                    var r = results.First(x => x.trig == trig.name && x.guard == sc.name && x.ts == ts.label);
+                    Console.WriteLine($"     {sc.name,-10} n={r.n,5}  WR={r.wr,6:F2}%  PnL=${r.pnl,9:F2}  avg=${r.avg,6:F2}");
+                }
+            }
+        }
+
+        // 추천: 트리거별 흑자 보장 가드+TP/SL
+        Console.WriteLine();
+        Console.WriteLine("=== 흑자 가능 조합만 (PnL > 0, n >= 30) ===");
+        foreach (var r in results.Where(r => r.pnl > 0 && r.n >= 30).OrderByDescending(r => r.avg))
+            Console.WriteLine($"  ✅ {r.trig,-9} | {r.guard,-10} | {r.ts,-22} | n={r.n}, WR={r.wr:F2}%, PnL=${r.pnl:F2}, avg=${r.avg:F2}/trade");
+
+        // 손실 강한 트리거 — 차단 권고
+        Console.WriteLine();
+        Console.WriteLine("=== 손실 큰 조합 TOP 10 — 봇에서 차단 권고 ===");
+        foreach (var r in results.Where(r => r.n >= 30).OrderBy(r => r.pnl).Take(10))
+            Console.WriteLine($"  ❌ {r.trig,-9} | {r.guard,-10} | {r.ts,-22} | n={r.n}, WR={r.wr:F2}%, PnL=${r.pnl:F2}");
+    }
+    private static double PriceChange(List<IBinanceKline> kl, int i, int barsAgo)
+    {
+        if (i < barsAgo) return 0;
+        decimal prev = kl[i - barsAgo].ClosePrice;
+        decimal cur = kl[i].ClosePrice;
+        return prev > 0m ? (double)((cur - prev) / prev * 100m) : 0;
+    }
+    private static double VolMult(List<IBinanceKline> kl, int i, int avgPeriod)
+    {
+        if (i < avgPeriod) return 0;
+        double cur = (double)kl[i].Volume;
+        double sum = 0;
+        for (int j = i - avgPeriod; j < i; j++) sum += (double)kl[j].Volume;
+        double avg = sum / avgPeriod;
+        return avg < 1e-9 ? 0 : cur / avg;
+    }
+    private static double M15RangePos(List<IBinanceKline> kl, int i, int bars)
+    {
+        // 5m × 3 = 15m approximation, look at last `bars*3` 5m bars
+        int win = bars * 3;
+        if (i < win) return 50;
+        decimal hi = decimal.MinValue, lo = decimal.MaxValue;
+        for (int j = i - win + 1; j <= i; j++)
+        {
+            if (kl[j].HighPrice > hi) hi = kl[j].HighPrice;
+            if (kl[j].LowPrice < lo) lo = kl[j].LowPrice;
+        }
+        decimal cur = kl[i].ClosePrice;
+        return hi > lo ? (double)((cur - lo) / (hi - lo) * 100m) : 50;
+    }
+    private static double BBWidth(List<IBinanceKline> kl, int i)
+    {
+        if (i < 20) return 0;
+        double sum = 0;
+        for (int j = i - 19; j <= i; j++) sum += (double)kl[j].ClosePrice;
+        double mean = sum / 20;
+        double sq = 0;
+        for (int j = i - 19; j <= i; j++) { double d = (double)kl[j].ClosePrice - mean; sq += d * d; }
+        double sd = Math.Sqrt(sq / 20);
+        return mean > 0 ? (sd * 4) / mean * 100 : 0;
+    }
+    private static int BBWalkStreak(List<IBinanceKline> kl, int i, int lookback)
+    {
+        if (i < 20) return 0;
+        int cnt = 0;
+        for (int q = i - lookback + 1; q <= i; q++)
+        {
+            if (q < 20) continue;
+            double sum = 0;
+            for (int j = q - 19; j <= q; j++) sum += (double)kl[j].ClosePrice;
+            double mean = sum / 20;
+            double sq = 0;
+            for (int j = q - 19; j <= q; j++) { double d = (double)kl[j].ClosePrice - mean; sq += d * d; }
+            double sd = Math.Sqrt(sq / 20);
+            double upper = mean + 2 * sd;
+            if ((double)kl[q].ClosePrice >= upper) cnt++;
+        }
+        return cnt;
+    }
+
+    /// <summary>[v5.20.9] 승률 70% 목표 — 작은 TP + 넓은 SL + 다중 필터 sweep</summary>
+    private static async Task RunTarget70Async(int pages = PAGES)
+    {
+        int days = pages * BARS_PER_REQ * 5 / (60 * 24);
+        Console.WriteLine("=================================================================");
+        Console.WriteLine($"  v5.20.9 TARGET 70%+ WIN-RATE BACKTEST (chart 30 syms × {days} days)");
+        Console.WriteLine("  전략: 작은 TP (쉽게 도달) + 넓은 SL (드물게 맞음) + 강한 필터");
+        Console.WriteLine("=================================================================");
+
+        var symData = new Dictionary<string, List<IBinanceKline>>();
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[fetch {idx}/{symbols.Length}] {sym} ");
+            try
+            {
+                var kl = await FetchKlinesAsync(sym, pages);
+                if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+                symData[sym] = kl;
+                Console.WriteLine($"ok ({kl.Count} bars)");
+            }
+            catch { Console.WriteLine("fail"); }
+        }
+
+        // 70% WR 가능성 높은 TP/SL 조합 (작은 TP + 큰 SL)
+        var tpslSets = new (string label, decimal tp, decimal sl, int win)[]
+        {
+            ("TP0.3/SL2.0/WIN24",  0.3m, 2.0m, 24),
+            ("TP0.5/SL2.0/WIN24",  0.5m, 2.0m, 24),
+            ("TP0.5/SL3.0/WIN24",  0.5m, 3.0m, 24),
+            ("TP0.7/SL2.0/WIN24",  0.7m, 2.0m, 24),
+            ("TP0.7/SL3.0/WIN24",  0.7m, 3.0m, 24),
+            ("TP1.0/SL3.0/WIN24",  1.0m, 3.0m, 24),
+            ("TP0.5/SL2.0/WIN48",  0.5m, 2.0m, 48),
+            ("TP0.7/SL3.0/WIN48",  0.7m, 3.0m, 48),
+            ("TP0.3/SL2.0/WIN12",  0.3m, 2.0m, 12),
+            ("TP0.5/SL1.5/WIN12",  0.5m, 1.5m, 12),
+        };
+
+        // 강한 필터 조합 — 진단 양성 (EMA20↑, RSI<70, ATR sweet spot) + 추가 강력 필터
+        var gateSets = new (string label, Func<List<IBinanceKline>, int, bool> ok)[]
+        {
+            ("none", (kl, i) => true),
+            ("EMA20↑",
+                (kl, i) => Ema20Rising(kl, i)),
+            ("EMA20↑ + RSI<70",
+                (kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 70),
+            ("EMA20↑ + RSI 30-65",
+                (kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) >= 30 && CalcRsi14(kl, i) < 65),
+            ("EMA20↑ + RSI 40-60",
+                (kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) >= 40 && CalcRsi14(kl, i) < 60),
+            ("EMA20↑ + RSI<70 + ATR 0.5-1.5%",
+                (kl, i) => Ema20Rising(kl, i) && CalcRsi14(kl, i) < 70 && CalcAtrPct(kl, i) >= 0.5 && CalcAtrPct(kl, i) <= 1.5),
+            ("EMA5>EMA20 + RSI<70 + ATR 0.5-1.5%",
+                (kl, i) => Ema5GtEma20(kl, i) && CalcRsi14(kl, i) < 70 && CalcAtrPct(kl, i) >= 0.5 && CalcAtrPct(kl, i) <= 1.5),
+            ("EMA5>EMA20 + RSI 40-60 + ATR 0.5-1.5%",
+                (kl, i) => Ema5GtEma20(kl, i) && CalcRsi14(kl, i) >= 40 && CalcRsi14(kl, i) < 60 && CalcAtrPct(kl, i) >= 0.5 && CalcAtrPct(kl, i) <= 1.5),
+            ("ULTRA: EMA5>20 + RSI 45-58 + ATR 0.6-1.2 + Vol normal",
+                (kl, i) => Ema5GtEma20(kl, i) && CalcRsi14(kl, i) >= 45 && CalcRsi14(kl, i) <= 58 && CalcAtrPct(kl, i) >= 0.6 && CalcAtrPct(kl, i) <= 1.2 && IsVolNormal(kl, i, 0.7, 1.5)),
+            ("Pullback: RSI 35-50 + EMA20↑ + ATR 0.5-1.5",
+                (kl, i) => CalcRsi14(kl, i) >= 35 && CalcRsi14(kl, i) <= 50 && Ema20Rising(kl, i) && CalcAtrPct(kl, i) >= 0.5 && CalcAtrPct(kl, i) <= 1.5),
+        };
+
+        Console.WriteLine();
+        Console.WriteLine($"{"Gate",-50} | {"TP/SL/WIN",-22} | {"BE%",6} {"Trades",7} {"WR%",7} {"PnL$",10} {"avg",7}  Status");
+        Console.WriteLine(new string('-', 140));
+
+        var hits70 = new List<(string g, string t, int n, double wr, decimal pnl, decimal avg)>();
+
+        foreach (var gs in gateSets)
+        {
+            foreach (var ts in tpslSets)
+            {
+                decimal tpUsd = Notional * ts.tp / 100m - RoundTripFee;
+                decimal slUsd = Notional * ts.sl / 100m + RoundTripFee;
+                decimal beWR = ts.sl / (ts.tp + ts.sl) * 100m;
+
+                int n = 0, w = 0; decimal pnl = 0m;
+                foreach (var kv in symData)
+                {
+                    var kl = kv.Value;
+                    int trainEnd = (int)(kl.Count * 0.7);
+                    for (int i = trainEnd + 50; i < kl.Count - ts.win; i++)
+                    {
+                        if (!gs.ok(kl, i)) continue;
+                        var (tp, sl) = OutcomeIn(kl, i, ts.tp, ts.sl, ts.win);
+                        if (!(tp || sl)) continue;
+                        n++;
+                        if (tp) { w++; pnl += tpUsd; } else pnl -= slUsd;
+                    }
+                }
+                double wr = n > 0 ? w * 100.0 / n : 0;
+                decimal avg = n > 0 ? pnl / n : 0m;
+                string status = wr >= 70.0 ? (pnl > 0 ? "✅ 70%+ 흑자" : "⚠️ 70%+ 적자") : (pnl > 0 ? "흑자" : "");
+                Console.WriteLine($"{gs.label,-50} | {ts.label,-22} | {beWR,5:F1}% {n,7} {wr,6:F2}% {pnl,9:F2} {avg,7:F2}  {status}");
+                if (wr >= 70.0) hits70.Add((gs.label, ts.label, n, wr, pnl, avg));
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("=== 승률 70%+ 달성 조합 (PnL 양수만) ===");
+        var winners = hits70.Where(h => h.pnl > 0 && h.n >= 30).OrderByDescending(h => h.pnl).ToList();
+        if (winners.Count == 0)
+        {
+            Console.WriteLine("  ❌ 70%+ 흑자 조합 없음. BE 임계가 높아 적자 우세.");
+            Console.WriteLine();
+            Console.WriteLine("  최고 WR 조합 (PnL 음수 포함):");
+            foreach (var h in hits70.Where(h => h.n >= 30).OrderByDescending(h => h.wr).Take(5))
+                Console.WriteLine($"    WR={h.wr:F2}% n={h.n} PnL=${h.pnl:F2} | {h.g} | {h.t}");
+        }
+        else
+        {
+            foreach (var h in winners.Take(10))
+                Console.WriteLine($"  ✅ WR={h.wr:F2}% n={h.n} PnL=${h.pnl:F2} avg=${h.avg:F2} | {h.g} | {h.t}");
+        }
+    }
+    private static bool Ema5GtEma20(List<IBinanceKline> kl, int i)
+    {
+        if (i < 25) return false;
+        decimal e5 = CalcEmaN(kl, i, 5);
+        decimal e20 = CalcEmaN(kl, i, 20);
+        return e5 > e20;
+    }
+    private static decimal CalcEmaN(List<IBinanceKline> kl, int idx, int period)
+    {
+        decimal k = 2m / (period + 1);
+        int from = Math.Max(0, idx - period * 3);
+        decimal e = kl[from].ClosePrice;
+        for (int j = from + 1; j <= idx; j++) e = kl[j].ClosePrice * k + e * (1 - k);
+        return e;
+    }
+    private static bool IsVolNormal(List<IBinanceKline> kl, int i, double low, double high)
+    {
+        if (i < 20) return false;
+        double cur = (double)kl[i].Volume;
+        double sum = 0;
+        for (int j = i - 20; j < i; j++) sum += (double)kl[j].Volume;
+        double avg = sum / 20.0;
+        if (avg < 1e-9) return false;
+        double r = cur / avg;
+        return r >= low && r <= high;
+    }
+
     /// <summary>[v5.20.8 REDESIGN] 진단 결과 기반 새 전략 검증 — Lorentzian 제거, EMA+RSI<70+ATR sweet spot</summary>
     private static async Task RunRedesignAsync()
     {
@@ -908,20 +1255,20 @@ internal static class Program
     };
     private const int BARS_PER_REQ = 1500;
     private const int PAGES = 3; // ~14 days
-    // 수익금 시뮬: 마진 $100 × 레버리지 10x = notional $1000, 수수료 0.04% 양방향
+    // 수익금 시뮬: 마진 $100 × 레버리지 (CLI override 가능), 수수료 0.04% 양방향
     private const decimal MARGIN_USD = 100m;
-    private const decimal LEVERAGE   = 10m;
+    private static decimal LEVERAGE = 10m;  // --lev N CLI 로 override
     private const decimal FEE_RATE   = 0.0004m;
     private static decimal Notional => MARGIN_USD * LEVERAGE;
     private static decimal RoundTripFee => Notional * FEE_RATE * 2m;
     private static decimal TpProfit => Notional * TP_PCT / 100m - RoundTripFee;
     private static decimal SlLoss   => Notional * SL_PCT / 100m + RoundTripFee;
 
-    private static async Task<List<IBinanceKline>> FetchKlinesAsync(string sym)
+    private static async Task<List<IBinanceKline>> FetchKlinesAsync(string sym, int pages = PAGES)
     {
         var all = new List<List<IBinanceKline>>();
         long endMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        for (int p = 0; p < PAGES; p++)
+        for (int p = 0; p < pages; p++)
         {
             var page = await FetchPageAsync(sym, endMs, BARS_PER_REQ);
             if (page == null || page.Count == 0) break;
@@ -969,6 +1316,14 @@ internal static class Program
     private static async Task Main(string[] args)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
+        for (int a = 0; a < args.Length; a++)
+        {
+            if (args[a] == "--lev" && a + 1 < args.Length && decimal.TryParse(args[a + 1], out var lev))
+            {
+                LEVERAGE = lev;
+                Console.WriteLine($"[CONFIG] LEVERAGE override = {LEVERAGE}x → notional ${Notional:F0}");
+            }
+        }
         if (args.Length > 0 && args[0] == "--sweep")
         {
             await RunSweepAsync();
@@ -992,6 +1347,26 @@ internal static class Program
         if (args.Length > 0 && args[0] == "--redesign")
         {
             await RunRedesignAsync();
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--target70")
+        {
+            await RunTarget70Async();
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--target70-90d")
+        {
+            await RunTarget70Async(pages: 18);  // ~90일
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--logic-30d")
+        {
+            await RunLogicBreakdownAsync(pages: 6);  // 30일
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--logic-90d")
+        {
+            await RunLogicBreakdownAsync(pages: 18);  // 90일
             return;
         }
         var svc = new MiniLorentzianService();

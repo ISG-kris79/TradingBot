@@ -685,6 +685,25 @@ namespace TradingBot
             // [v5.20.3] 가드 호출 자체를 명시적 로그 → 우회 여부 즉시 추적
             OnStatusLog?.Invoke($"🚦 [GATE-CHECK] {symbol} {source} 가드 진입");
 
+            // [v5.21.0] 트리거 카테고리 분류 — 30일 백테스트 기반 차별 가드 적용
+            //   --logic-30d 결과: SPIKE 모든 조합 적자, MAJOR/SQUEEZE/BB_WALK 가드 없을 때 흑자 최대
+            string srcU = (source ?? "").ToUpperInvariant();
+            string entryCat;
+            if (srcU.Contains("TICK_SURGE") || srcU.Contains("SPIKE")) entryCat = "SPIKE";
+            else if (srcU.Contains("SQUEEZE")) entryCat = "SQUEEZE";
+            else if (srcU.Contains("BB_WALK") || srcU.Contains("BBWALK")) entryCat = "BB_WALK";
+            else if (srcU.Contains("MAJOR")) entryCat = "MAJOR";
+            else entryCat = "PUMP";  // PUMP_TRADE, ENGINE_*, ROUTE:* 기본
+
+            // [v5.21.0] SPIKE 카테고리 전면 차단 — 30일 검증 모든 조합에서 적자
+            //   사용자 -$130/시간 손실 주범 (TACUSDT 9건 동시 진입 12초 손절 사례)
+            if (entryCat == "SPIKE")
+            {
+                blockReason = "SPIKE_DISABLED:30d_loss_proven";
+                OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (30일 검증 SPIKE 모든 TP/SL 조합 적자, 차단)");
+                return false;
+            }
+
             // [v5.19.8] _settings 자체가 null = 봇 부팅 중 / 설정 미로드 → 모든 진입 차단
             //   v5.19.3은 메이저만 차단했으나, 일반 진입도 leverage/marginUsdt 등 설정값 없으면 위험
             if (_settings == null)
@@ -851,14 +870,10 @@ namespace TradingBot
                 }
             }
 
-            // [v5.20.8 REDESIGN] 진단 결과 기반 게이트 재설계 (Tools/LorentzianValidator --diagnose)
-            //   - Lorentzian 게이트 제거: Pred > 3 가드는 baseline 31.79% → 31.26% (-0.53%p) 오히려 악화
-            //     음수 Pred(-5)에서 win-rate 49.22% 발견 = 모델 학습 부적합, 가치 입증 안됨
-            //   - VolSurge>1.3x 게이트 제거: 단독 -1.21%p, ALL gates 결합 시 over-filter (-7.64%p)
-            //   - EMA20 rising 게이트 유지: 단독 +1.32%p edge — 유일한 양성 가드
-            //   - RSI 70+ 차단 신규: -11.71%p edge (FOMO 진입 손실 주범)
-            //   --redesign 검증: EMA20↑ + RSI<70 + TP/SL 1.5/1.5 대칭 = +$7,958 (795% ROI), WR 56.39%
-            if (_marketDataManager != null && _marketDataManager.KlineCache.TryGetValue(symbol, out var entryKlines) && entryKlines.Count >= 25)
+            // [v5.21.0] EMA20↑ + RSI<70 게이트 — PUMP 카테고리에만 적용
+            //   30일 검증: PUMP는 v5.20.8 가드 적용 시 -$675 → +$69 (흑자 전환)
+            //              MAJOR/SQUEEZE/BB_WALK는 가드 없는 게 더 좋음 (가드 적용 시 PnL 30~50% 감소)
+            if (entryCat == "PUMP" && _marketDataManager != null && _marketDataManager.KlineCache.TryGetValue(symbol, out var entryKlines) && entryKlines.Count >= 25)
             {
                 List<Binance.Net.Interfaces.IBinanceKline> snap;
                 lock (entryKlines) snap = entryKlines.ToList();

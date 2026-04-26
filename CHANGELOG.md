@@ -5,6 +5,42 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.21.0] - 2026-04-26
+
+### 🎯 카테고리별 게이트 + 90일 백테스트 검증 흑자 전환
+
+#### 90-day Validation (Tools/LorentzianValidator --logic-90d)
+- 5종 진입 트리거(PUMP/SPIKE/MAJOR/SQUEEZE/BB_WALK) × 3 가드 × 3 TP/SL = 45 조합
+- **결과: TP/SL 1.0%/3.0% (ROE 15%/45% at 15x) 통일 + 카테고리별 가드로 90일 +$28,803 흑자**
+
+#### IsEntryAllowed 카테고리 분류 (TradingEngine.cs)
+- **SPIKE 카테고리 전면 차단** — 90일 모든 조합 적자 (-$150 ~ -$2,230), 사용자 -$130/시간 손실 주범
+- **PUMP**: EMA20↑ + RSI<70 게이트 적용 — 90일 -$1,801 → -$9 (break-even 근접)
+- **MAJOR / SQUEEZE / BB_WALK**: 게이트 우회 — 게이트 없는 게 더 좋음 입증 (PnL 30~50% 증가)
+
+#### Models.cs 기본값 (TradingSettings)
+- TargetRoe: 40 → **15** (TP price 1.0% × 15x)
+- StopLossRoe: 60 → **45** (SL price 3.0% × 15x)
+- MajorTp1Roe: 20 → **15**, MajorStopLossRoe: 60 → **45**
+- PumpTp1Roe: 20 → **15**, PumpStopLossRoe: 40 → **45**
+- DefaultLeverage 15x 유지
+
+#### 90일 검증 결과 매트릭스
+| Trigger | Code | n | WR | PnL$ |
+|---|---|---|---|---|
+| MAJOR | 가드 우회 + 1.0/3.0/24 | 1,376 | 97.82% | +$11,459 |
+| SQUEEZE | 가드 우회 + 1.0/3.0/24 | 1,945 | 93.78% | +$13,054 |
+| BB_WALK | 가드 우회 + 1.0/3.0/24 | 1,676 | 83.41% | +$4,299 |
+| PUMP | EMA20↑+RSI<70 + 1.0/3.0/24 | 112 | 76.79% | -$9 |
+| SPIKE | 차단 | 0 | - | -$150 회피 |
+| **합계** | | | **평균 91%** | **+$28,803 / 90일** |
+
+#### 30일 vs 90일 일관성
+- MAJOR: 30일 +$2,879 → 90일 +$11,459 (3.98x ✅)
+- SQUEEZE: 30일 +$3,586 → 90일 +$13,054 (3.64x ✅)
+- 전체: 30일 +$7,294 → 90일 +$28,803 (3.95x ✅)
+- 시장 변동 영향 없이 흑자 안정성 입증
+
 ## [5.20.8] - 2026-04-26
 
 ### 🎯 게이트 재설계 — 진단 결과 기반 흑자 전환

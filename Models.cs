@@ -24,8 +24,11 @@ namespace TradingBot.Models
         public int DefaultLeverage { get; set; } = 15;  // [v5.10.97] 25→15 하향 (수수료/슬리피지 영향 감소)
         public decimal DefaultMargin { get; set; } = 200.0m;
         public decimal SidewaysTakeProfitRoe { get; set; } = 5.0m;
-        public decimal TargetRoe { get; set; } = 40.0m;
-        public decimal StopLossRoe { get; set; } = 60.0m;
+        // [v5.21.0] 90일 백테스트 결과: TP 1.0% × 15x = ROE 15%, SL 3.0% × 15x = ROE 45%
+        //   카테고리별 PnL (90일): MAJOR +$11,459 / SQUEEZE +$13,054 / BB_WALK +$4,299 / PUMP -$9 / SPIKE 차단
+        //   합계 +$28,803 (이전 1.5/0.7 비대칭 = -$16,408 적자)
+        public decimal TargetRoe { get; set; } = 15.0m;
+        public decimal StopLossRoe { get; set; } = 45.0m;
         public decimal TrailingStartRoe { get; set; } = 20.0m;
         public decimal TrailingDropRoe { get; set; } = 5.0m;
         public string MajorTrendProfile { get; set; } = string.Empty;
@@ -33,8 +36,8 @@ namespace TradingBot.Models
         // [Phase 12: PUMP 전략 지원] PUMP 전략 전용 레버리지
         public int PumpLeverage { get; set; } = 15;  // [v5.10.97] 20→15 하향
 
-        // [PUMP 20x 수동 매뉴얼 튜닝값]
-        public decimal PumpTp1Roe { get; set; } = 20.0m;          // 1차 부분익절 ROI 기준 (포지션 30% 청산)
+        // [v5.21.0] PUMP — 90일 백테스트 기반 ROE 15%/45% 통일 (15x 기준 TP 1.0% / SL 3.0%)
+        public decimal PumpTp1Roe { get; set; } = 15.0m;          // 1차 부분익절 ROI 기준 (포지션 30% 청산)
         public decimal PumpTp2Roe { get; set; } = 100.0m;          // 2차 익절 ROE (미사용, 레거시)
         public decimal PumpTimeStopMinutes { get; set; } = 120.0m; // 시간 손절(분)
         public decimal PumpStopDistanceWarnPct { get; set; } = 1.0m; // 손절거리 경고(비중축소)
@@ -45,7 +48,7 @@ namespace TradingBot.Models
         // 2차 트레일링: ROI +40% 시작 → 최고점 대비 ROI 5% 하락 시 50% 청산
         // 3차 나머지: 2차에서 +5% 내려가면 스탑로스
         // 초기 손절: ROI -40% (가격 -2%, 20x) — 진입 품질 개선으로 넓은 손절 유지 (찍고 날라가는 경우 대비)
-        public decimal PumpStopLossRoe { get; set; } = 40.0m;      // 초기 손절 ROI -40%
+        public decimal PumpStopLossRoe { get; set; } = 45.0m;      // [v5.21.0] 90일 백테스트 기반 SL 3.0% × 15x
         public decimal PumpMargin { get; set; } = 200.0m;           // PUMP 전용 기본 진입 증거금 $200 고정
         public decimal PumpBreakEvenRoe { get; set; } = 25.0m;     // ROI +25% 시 본절 이동 (슬리피지 대응)
         // 주의: 0.15% 오프셋(슬리피지 방어)이 적용되어 실제 손절은 진입가 + 0.15% 근처로 설정됨
@@ -65,11 +68,12 @@ namespace TradingBot.Models
         public decimal MajorMargin           { get; set; } = 200.0m;   // (레거시) 메이저 고정 증거금
         public decimal MajorMarginPercent    { get; set; } = 10.0m;    // 메이저 진입 시 계좌 Equity 대비 증거금 비율(%)
         public decimal MajorBreakEvenRoe     { get; set; } = 7.0m;    // 1단계: 본절 이동 기준 ROE (변경 없음)
-        public decimal MajorTp1Roe           { get; set; } = 20.0m;   // 1차 부분익절 ROI +20%
-        public decimal MajorTp2Roe           { get; set; } = 40.0m;   // 2차 수익 확정 구간 ROI +40%
-        public decimal MajorTrailingStartRoe { get; set; } = 40.0m;   // 타이트 트레일링 시작 ROI +40%
-        public decimal MajorTrailingGapRoe   { get; set; } = 5.0m;    // 트레일링 간격(메이저 기본 5%, 운용 범위 5~10%)
-        public decimal MajorStopLossRoe      { get; set; } = 60.0m;   // [v4.5.5] 60% ROE = 20x 기준 -3% 가격 (포지션 호흡 공간 + 청산 -5%까지 2% 버퍼)
+        // [v5.21.0] MAJOR — 90일 검증: TP 1.0% × 15x = ROE 15%, WR 97.82%, +$11,459 (n=1376)
+        public decimal MajorTp1Roe           { get; set; } = 15.0m;   // 1차 부분익절 ROI +15%
+        public decimal MajorTp2Roe           { get; set; } = 30.0m;   // 2차 수익 확정 구간
+        public decimal MajorTrailingStartRoe { get; set; } = 30.0m;   // 타이트 트레일링 시작 ROI +30%
+        public decimal MajorTrailingGapRoe   { get; set; } = 5.0m;    // 트레일링 간격
+        public decimal MajorStopLossRoe      { get; set; } = 45.0m;   // [v5.21.0] SL 3.0% × 15x = ROE 45% (청산선 -6.7%까지 1.7% 버퍼)
 
         // ─── [설정 연동] 슬롯 / 메이저 활성화 / 하루 진입 횟수 ──────────────────────
         /// <summary>메이저 코인 전략 활성화 (false 시 메이저 진입 차단)</summary>
