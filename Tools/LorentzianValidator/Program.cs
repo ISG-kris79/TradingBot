@@ -1468,6 +1468,11 @@ internal static class Program
             await RunLogicBreakdownAsync(pages: 6);  // 30일
             return;
         }
+        if (args.Length > 0 && args[0] == "--logic-60d")
+        {
+            await RunLogicBreakdownAsync(pages: 12);  // 60일
+            return;
+        }
         if (args.Length > 0 && args[0] == "--logic-90d")
         {
             await RunLogicBreakdownAsync(pages: 18);  // 90일
@@ -1476,6 +1481,11 @@ internal static class Program
         if (args.Length > 0 && args[0] == "--logic-180d")
         {
             await RunLogicBreakdownAsync(pages: 36);  // 180일 (6개월)
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--logic-365d")
+        {
+            await RunLogicBreakdownAsync(pages: 70);  // 365일 (1년)
             return;
         }
         if (args.Length > 0 && args[0] == "--pump-tune")

@@ -144,11 +144,20 @@ namespace TradingBot
             Console.WriteLine("[MLNetSniper] 학습 시작...");
             _model = pipeline.Fit(split.TrainSet);
 
-            // 평가
+            // 평가 — [v5.21.2] AUC 단일 클래스 예외 안전 처리
             var predictions = _model.Transform(split.TestSet);
-            var metrics = _mlContext.BinaryClassification.Evaluate(predictions, nameof(SniperInput.LabelSuccess));
-
-            Console.WriteLine($"[MLNetSniper] 정확도={metrics.Accuracy:P1} AUC={metrics.AreaUnderRocCurve:F3} F1={metrics.F1Score:F3}");
+            float acc = 0f, auc = 0f;
+            try
+            {
+                var metrics = _mlContext.BinaryClassification.Evaluate(predictions, nameof(SniperInput.LabelSuccess));
+                acc = (float)metrics.Accuracy;
+                auc = (float)metrics.AreaUnderRocCurve;
+                Console.WriteLine($"[MLNetSniper] 정확도={metrics.Accuracy:P1} AUC={metrics.AreaUnderRocCurve:F3} F1={metrics.F1Score:F3}");
+            }
+            catch (Exception evalEx)
+            {
+                Console.WriteLine($"[MLNetSniper] ⚠️ 평가 metrics 실패 (test set 단일 클래스): {evalEx.Message}");
+            }
 
             // 저장
             _mlContext.Model.Save(_model, dataView.Schema, _modelPath);
@@ -157,7 +166,7 @@ namespace TradingBot
             // PredictionEngine 재생성
             _predictionEngine = _mlContext.Model.CreatePredictionEngine<SniperInput, SniperOutput>(_model);
 
-            return ((float)metrics.Accuracy, (float)metrics.AreaUnderRocCurve);
+            return (acc, auc);
         }
 
         /// <summary>

@@ -203,11 +203,27 @@ namespace TradingBot
 
                 Console.WriteLine($"[EntryTimingML] 학습 완료: {watch.Elapsed.TotalSeconds:F1}초");
 
-                // 모델 평가
+                // 모델 평가 — [v5.21.2] AUC 단일 클래스 예외 안전 처리
+                //   "AUC is not defined when there is no positive class in the data"
+                //   원인: TrainTestSplit 80/20 후 test set 에 한쪽 클래스만 남음
+                //   해결: metrics 계산 try/catch + 단일 클래스 시 AUC 0.0 으로 fallback
                 var predictions = _model.Transform(split.TestSet);
-                var metrics = _mlContext.BinaryClassification.Evaluate(predictions, labelColumnName: "Label");
-
-                PrintMetrics(metrics);
+                double accuracy = 0, auc = 0, f1 = 0, prec = 0, recall = 0;
+                try
+                {
+                    var metrics = _mlContext.BinaryClassification.Evaluate(predictions, labelColumnName: "Label");
+                    accuracy = metrics.Accuracy;
+                    auc = metrics.AreaUnderRocCurve;
+                    f1 = metrics.F1Score;
+                    prec = metrics.PositivePrecision;
+                    recall = metrics.PositiveRecall;
+                    PrintMetrics(metrics);
+                }
+                catch (Exception evalEx)
+                {
+                    Console.WriteLine($"[EntryTimingML] ⚠️ 평가 metrics 계산 실패 (test set 단일 클래스 가능): {evalEx.Message}");
+                    Console.WriteLine($"[EntryTimingML] AUC=N/A 로 처리, 모델은 정상 저장 진행 (학습 자체는 성공)");
+                }
 
                 // 모델 저장
                 EnsureModelDirectoryExists();
@@ -219,11 +235,11 @@ namespace TradingBot
 
                 return new ModelMetrics
                 {
-                    Accuracy = metrics.Accuracy,
-                    AUC = metrics.AreaUnderRocCurve,
-                    F1Score = metrics.F1Score,
-                    Precision = metrics.PositivePrecision,
-                    Recall = metrics.PositiveRecall,
+                    Accuracy = accuracy,
+                    AUC = auc,
+                    F1Score = f1,
+                    Precision = prec,
+                    Recall = recall,
                     TrainingSamples = trainingData.Count,
                     TrainingTimeSeconds = watch.Elapsed.TotalSeconds
                 };

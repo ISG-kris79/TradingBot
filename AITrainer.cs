@@ -48,10 +48,17 @@ public class AITrainer
         Console.WriteLine($"🚀 ML.NET LightGBM 학습 시작 (Train: {trainCount}, Test: {data.Count - trainCount})");
         var model = pipeline.Fit(trainData);
 
-        // 검증
+        // 검증 — [v5.21.2] AUC 단일 클래스 예외 안전 처리
         var predictions = model.Transform(testData);
-        var metrics = _mlContext.BinaryClassification.Evaluate(predictions, "Label");
-        Console.WriteLine($"✅ Acc: {metrics.Accuracy:P1} | F1: {metrics.F1Score:F3} | AUC: {metrics.AreaUnderRocCurve:F3}");
+        try
+        {
+            var metrics = _mlContext.BinaryClassification.Evaluate(predictions, "Label");
+            Console.WriteLine($"✅ Acc: {metrics.Accuracy:P1} | F1: {metrics.F1Score:F3} | AUC: {metrics.AreaUnderRocCurve:F3}");
+        }
+        catch (Exception evalEx)
+        {
+            Console.WriteLine($"⚠️ 평가 metrics 실패 (test set 단일 클래스): {evalEx.Message} — 모델 저장은 계속 진행");
+        }
 
         // 모델 저장
         _mlContext.Model.Save(model, fullData.Schema, _modelPath);
