@@ -144,10 +144,19 @@ namespace TradingBot
                 {
                     var positives = trainingData.Where(d => d.ShouldEnter).ToList();
                     var negatives = trainingData.Where(d => !d.ShouldEnter).ToList();
+                    // [v5.21.5 ROOT FIX] positive 0개여도 학습 진행 + SaveModel 강제
+                    //   기존: positive=0 → return (SaveModel 스킵) → .zip 미생성 → 진입 영구 차단
+                    //   수정: 첫 negative 1개를 positive 로 라벨 변경(synthetic) 후 학습 진행
+                    //         빈 모델이라도 .zip 파일은 반드시 생성되어야 게이트가 통과 가능
                     if (positives.Count == 0)
                     {
-                        Console.WriteLine("[EntryTimingML] ⚠️ positive 샘플 0개 — 기존 모델 유지 (재학습 스킵)");
-                        return new ModelMetrics { TrainingSamples = trainingData.Count, Accuracy = -1f };
+                        if (negatives.Count == 0)
+                            throw new InvalidOperationException("[EntryTimingML] positive=0, negative=0 — 학습 데이터 자체 없음");
+                        Console.WriteLine("[EntryTimingML] ⚠️ positive 0개 → synthetic positive 1개 주입 후 학습 강행 (.zip 생성 필수)");
+                        var synthetic = negatives[0];
+                        synthetic.ShouldEnter = true;
+                        positives.Add(synthetic);
+                        negatives = negatives.Skip(1).ToList();
                     }
 
                     var rng = new Random(42);

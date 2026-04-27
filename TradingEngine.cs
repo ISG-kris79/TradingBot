@@ -7897,6 +7897,42 @@ namespace TradingBot
                 // [v4.7.6] flag 파일은 write-only, 절대 delete 하지 않음
                 // (이전 버전에서 검증 실패 시 setter가 flag를 삭제하여 재시작마다 재학습 루프 발생)
                 if (!value) return;
+
+                // [v5.21.5 ROOT FIX] setter 에서도 EntryTimingModel*.zip 4개 검증
+                //   기존: 다른 학습 시스템(forecast_*, market_regime 등)이 끝나면 setter→flag 작성
+                //         → flag 만 살아있고 EntryTimingModel*.zip 4개는 미생성 → 진입 영구 차단
+                //   수정: setter 도 4개 zip 존재 + 30KB+ 검증 후에만 flag 작성, 누락 시 거부
+                try
+                {
+                    string modelDir = System.IO.Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "TradingBot", "Models");
+                    string[] requiredModels = {
+                        "EntryTimingModel.zip",
+                        "EntryTimingModel_Major.zip",
+                        "EntryTimingModel_Pump.zip",
+                        "EntryTimingModel_Spike.zip",
+                        "pump_signal_normal.zip"
+                    };
+                    var missing = new List<string>();
+                    foreach (var m in requiredModels)
+                    {
+                        string p = System.IO.Path.Combine(modelDir, m);
+                        if (!System.IO.File.Exists(p) || new System.IO.FileInfo(p).Length < 30 * 1024)
+                            missing.Add(m);
+                    }
+                    if (missing.Count > 0)
+                    {
+                        _isInitialTrainingComplete = false;
+                        OnStatusLog?.Invoke($"⛔ [초기학습] flag 작성 거부 — 필수 zip 누락: {string.Join(",", missing)}");
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [초기학습] zip 검증 중 예외: {ex.Message} → flag 작성 진행");
+                }
+
                 try
                 {
                     System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(InitialTrainingFlagPath)!);

@@ -1916,6 +1916,35 @@ namespace TradingBot
                 await TrainVariantAsync(_mlTrainerPump,  pumpFeatures,     "Pump");
                 await TrainVariantAsync(_mlTrainerSpike, spikeFeatures,    "Spike");
 
+                // [v5.21.5 ROOT FIX] 학습 후 4 variant .zip 파일 존재 검증 + 누락 시 1회 재시도
+                //   기존: TrainVariantAsync catch 안에서 예외 삼킴 → .zip 생성 실패해도 학습 "완료" 처리
+                //   수정: 학습 직후 .zip 파일 4개 존재 + 30KB+ 검증, 누락 variant 만 즉시 재학습 1회
+                {
+                    string modelDir = System.IO.Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "TradingBot", "Models");
+                    var missingPairs = new List<(EntryTimingMLTrainer trainer, List<MultiTimeframeEntryFeature> data, string label)>();
+                    void CheckOne(EntryTimingMLTrainer tr, List<MultiTimeframeEntryFeature> data, string label, string fileName)
+                    {
+                        string p = System.IO.Path.Combine(modelDir, fileName);
+                        if (!System.IO.File.Exists(p) || new System.IO.FileInfo(p).Length < 30 * 1024)
+                            missingPairs.Add((tr, data, label));
+                    }
+                    CheckOne(_mlTrainer,      trainingFeatures, "Default", "EntryTimingModel.zip");
+                    CheckOne(_mlTrainerMajor, majorFeatures,    "Major",   "EntryTimingModel_Major.zip");
+                    CheckOne(_mlTrainerPump,  pumpFeatures,     "Pump",    "EntryTimingModel_Pump.zip");
+                    CheckOne(_mlTrainerSpike, spikeFeatures,    "Spike",   "EntryTimingModel_Spike.zip");
+
+                    if (missingPairs.Count > 0)
+                    {
+                        OnAlert?.Invoke($"⚠️ [AI 학습] {missingPairs.Count} variant .zip 미생성 → 재학습 재시도");
+                        foreach (var (tr, data, label) in missingPairs)
+                        {
+                            await TrainVariantAsync(tr, data, label + "_RETRY");
+                        }
+                    }
+                }
+
                 RaiseCriticalTrainingAlert(
                     projectName: "ML.NET",
                     stage: "초기학습",

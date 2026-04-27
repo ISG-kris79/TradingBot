@@ -5,6 +5,25 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.21.5] - 2026-04-27
+
+### 🚨 ROOT FIX: EntryTimingModel*.zip 영구 미생성 → 진입 무한 차단 해결
+
+#### 발견 (2026-04-27 16:26)
+- v5.21.4 설치 + 4시간 가동 후에도 4개 EntryTimingModel*.zip 파일 미생성
+- 봇 자체는 정상 가동, 신호도 활발 (Q +0.7%/vol 7.1x, AWE +0.6%/vol 3.9x, MAJOR 4종 매 초 평가)
+- 모든 진입 시도 100%가 `MODEL_ZIP_MISSING:Default,Major,Pump,Spike` 게이트로 차단
+
+#### 근본 원인 (3중 결함)
+1. `EntryTimingMLTrainer.TrainAndSaveAsync` — `positives.Count==0` 시 SaveModel 스킵 → .zip 영구 미생성
+2. `TradingEngine.IsInitialTrainingComplete` setter — 4 zip 검증 없이 flag 무조건 작성 → 다른 학습기(forecast_*, market_regime 등)가 끝나면 flag 재작성 → getter 검증이 무력화
+3. `AIDoubleCheckEntryGate.TriggerInitialTrainingAsync` — 학습 후 .zip 생성 검증 없음 → 실패해도 "완료" 처리
+
+#### Fixed
+- **EntryTimingMLTrainer.cs:147**: positives 0개 → synthetic positive 1개 주입 후 학습 강행 (.zip 생성 보장)
+- **TradingEngine.cs:7894 setter**: 4개 EntryTimingModel*.zip + pump_signal_normal.zip 검증 후에만 flag 작성, 누락 시 거부
+- **AIDoubleCheckEntryGate.cs:1919**: 4 variant 학습 후 .zip 존재 검증, 누락 variant만 즉시 1회 재학습 retry
+
 ## [5.21.1] - 2026-04-26
 
 ### 🎯 PUMP 게이트 RSI<70 → RSI<65 강화 + 6개월 검증
