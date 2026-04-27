@@ -5,6 +5,28 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.21.12] - 2026-04-27
+
+### 🚪 AI 임계 임시 완화 65% → 0.5% — 학습 부실 모델 회피
+
+#### 발견
+- 라이브 ML_Conf 분포 (오늘 212건): <1% 208건 / 1-10% 2건 / 10-30% 2건 / **≥65% 0건**
+- 차단 사유 100%: `DECIDE_Prob_Low_*_ML=0.0%~0.6%_TH=65%`
+- 마지막 ALLOW: 2026-04-24 (3일 전)
+- 백테스트(가드만) +$34K/180일 vs 라이브 0건 → AI 게이트가 진입 차단 중
+
+#### 원인
+- v5.21.5 synthetic positive 1개로 학습 → 모델이 모든 입력에 0.0~0.6% 출력
+- 라벨러(EntryLabelConfig)는 v5.15.0에서 이미 완화됨 (TP 0.8% / SL -1% / 12hr)
+- 추가 분석 필요: `ExtractHistoricalFeatures` 가 라벨링 결과 0개 만드는 별도 경로 가능
+
+#### Changed (B 옵션 — 임시 완화)
+- AIDoubleCheckEntryGate.MinMLConfidence/Major/Pumping: 0.65/0.70/0.65 → **0.005**
+- AIDoubleCheckEntryGate.MinTransformerConfidence*/Major/Pumping: 0.60/0.65/0.60 → **0.005**
+- AdaptiveOnlineLearningService._currentMLThreshold: 0.65 → **0.005**, _minThreshold: 0.50 → 0.001
+
+라벨러 정상화(C 작업) 완료 후 65%로 복원 예정
+
 ## [5.21.11] - 2026-04-27
 
 ### 🔄 PUMP TP/SL 롤백 — 타이트 적용은 큰 적자

@@ -31,10 +31,12 @@ namespace TradingBot
         private double _currentAccuracy = 0.70; // 초기 기대 정확도
         private double _baselineAccuracy = 0.70; // 기준 정확도 (Drift 감지용)
         
-        // 적응형 Threshold
-        private float _currentMLThreshold = 0.65f;
-        private float _currentTFThreshold = 0.60f;
-        private readonly float _minThreshold = 0.50f;
+        // [v5.21.12] 적응형 Threshold — 학습 부실 모델 회피용 임시 완화
+        //   기존: 0.65 / 0.60, min 0.50 → max 0.85
+        //   임시: 0.005 / 0.005, min 0.001 → max 0.85 (학습 정상화 후 복원)
+        private float _currentMLThreshold = 0.005f;
+        private float _currentTFThreshold = 0.005f;
+        private readonly float _minThreshold = 0.001f;
         private readonly float _maxThreshold = 0.85f;
         
         // 학습 스케줄
