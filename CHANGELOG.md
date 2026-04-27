@@ -5,6 +5,32 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.1] - 2026-04-28
+
+### 🚪 SIMPLE-AI KNN 게이트도 제거 — 가드만으로 진입
+
+#### 사용자 결정 (2026-04-28)
+"AI만 사용" 규칙 폐기, 수익 우선. 차트 백테스트로 검증된 가드만으로 진입.
+
+#### 백테스트 검증 결과 (180일)
+- 가드만: +$47,856
+- 가드 + KNN: +$26,482
+- **AI 게이트 차이: -$21,374 (-45%)**
+
+#### 원인
+1. KNN 학습 라벨(4봉 후) vs 진입 시뮬(12-24봉 TP/SL) 시간 지평 불일치
+2. Regime change 미적응 — 180일 동안 시장 변동성 변화에 KNN 패턴 매칭 실패
+3. MAJOR 진입 과다 차단
+
+#### Removed
+- `TradingEngine.IsEntryAllowedCore` 안의 SIMPLE-AI KNN 게이트 (v5.22.0 도입)
+- `_simpleAi` / `_simpleAiBackfilled` 인스턴스는 유지 (코드 호환, 차후 재활용 가능)
+
+#### 유지 (호환성)
+- AIDoubleCheckEntryGate stub (IsReady=true, EvaluateEntryAsync 즉시 통과)
+- IsInitialTrainingComplete=true (자동 학습 트리거 영구 비활성)
+- ML.NET PackageReference (코드 컴파일 위해 유지, 호출 안 됨)
+
 ## [5.22.0] - 2026-04-27
 
 ### 💥 BREAKING — ML.NET 4 variant 시스템 폐기 → 단일 Lorentzian KNN 으로 교체

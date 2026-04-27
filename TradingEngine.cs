@@ -980,39 +980,11 @@ namespace TradingBot
                 catch { /* 가드 실패 시 차단하지 않음 */ }
             }
 
-            // [v5.22.0 SIMPLE-AI] 단일 Lorentzian KNN 게이트 — ML.NET 4 variant 폐기 후 유일한 AI 검증
-            //   pred > 0 = 상승 신호 → 통과 / pred ≤ 0 = 하락 또는 중립 → 차단
-            //   심볼별 백필 1회 (5m × 300+ 봉 = 25시간+ 데이터) 후 KNN 활성
-            try
-            {
-                if (_marketDataManager?.KlineCache != null
-                    && _marketDataManager.KlineCache.TryGetValue(symbol, out var kl5m))
-                {
-                    if (kl5m != null && kl5m.Count >= 305)
-                    {
-                        // 24시간 1회 백필 (재학습)
-                        if (!_simpleAiBackfilled.TryGetValue(symbol, out var lastBf)
-                            || (DateTime.UtcNow - lastBf).TotalHours >= 24)
-                        {
-                            int added = _simpleAi.BackfillFromCandles(symbol, kl5m.ToList());
-                            _simpleAiBackfilled[symbol] = DateTime.UtcNow;
-                            OnStatusLog?.Invoke($"🧠 [SIMPLE-AI] {symbol} KNN 백필 완료 ({added} 샘플)");
-                        }
-
-                        var pred = _simpleAi.Predict(symbol, kl5m.ToList());
-                        if (pred.IsReady && pred.Prediction <= 0)
-                        {
-                            blockReason = $"SIMPLE_AI_BEARISH:lor={pred.Prediction}";
-                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (Lorentzian KNN 하락/중립 신호)");
-                            return false;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [SIMPLE-AI] {symbol} 예외 무시 (가드 통과로 진행): {ex.Message}");
-            }
+            // [v5.22.1] SIMPLE-AI KNN 게이트 제거 — 백테스트 검증 결과 손실
+            //   180일 백테스트: 가드만 +$47,856 vs 가드+KNN +$26,482 → AI 게이트가 -$21,374 손해
+            //   원인: KNN 4봉 후 라벨 vs 진입 12-24봉 TP/SL 시간 지평 불일치, regime change 미적응
+            //   결정 (2026-04-28): "AI만 사용" 규칙 폐기, 차트 백테스트 검증된 가드만으로 진입
+            //   AI 코드는 차후 재검토 (LorentzianV2Service / AIDoubleCheckEntryGate stub 유지)
 
             // [v5.20.3] 모든 가드 통과 시 명시 로그 → "가드 통과인지 우회인지" 즉시 식별 가능
             OnStatusLog?.Invoke($"✅ [GATE-PASS] {symbol} {source} 모든 가드 통과");
