@@ -17,6 +17,14 @@ namespace TradingBot.Services
         private readonly string _connectionString;
         private static readonly ConcurrentDictionary<string, bool> _columnExistsCache = new(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>[v5.21.4] 앱 전역 공유 인스턴스 — SettingsWindow 등 매번 new 방지 (Ensure DDL 반복 실행 차단)</summary>
+        public static DbManager? Shared { get; private set; }
+        public static DbManager GetShared(string connectionString)
+        {
+            if (Shared == null) Shared = new DbManager(connectionString);
+            return Shared;
+        }
+
         /// <summary>
         /// [v5.10.89] 청산 INSERT/UPDATE 성공 시점에 텔레그램 알림 중앙 처리.
         /// 사용자 지적: "API에 등록된거 바이낸스에서 처리되면 메시지 받아서 insert 할거면 거기서 메시지 보내야지"

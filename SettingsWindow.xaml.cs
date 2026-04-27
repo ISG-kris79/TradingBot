@@ -24,12 +24,12 @@ namespace TradingBot
         {
             InitializeComponent();
 
-            // DbManager 초기화
+            // [v5.21.4] DbManager 공유 인스턴스 사용 — 매번 new 시 EnsureXxx DDL 반복 실행으로 1분+ 지연 발생
             try
             {
                 if (!string.IsNullOrEmpty(AppConfig.ConnectionString))
                 {
-                    _dbManager = new DbManager(AppConfig.ConnectionString);
+                    _dbManager = DbManager.GetShared(AppConfig.ConnectionString);
                 }
             }
             catch (Exception ex)

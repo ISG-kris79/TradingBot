@@ -204,28 +204,58 @@ namespace TradingBot
                 return;
             }
 
-            // 중복 실행 방지 (전역 Mutex 사용)
-            const string mutexName = @"Global\TradingBot_SingleInstance_8F9A2B3C";
-
+            // [v5.21.4] 중복 실행 방지 강화 — Local\ (권한 문제 회피) + 기존 프로세스 자동 종료 옵션
+            //   기존 Global\ + catch 진행 = mutex 우회로 실제 중복 실행 발생
+            const string mutexName = @"Local\TradingBot_SingleInstance_8F9A2B3C";
             try
             {
-                _mutex = new Mutex(true, mutexName, out bool createdNew);
-                _ownsMutex = createdNew;
+                _mutex = new Mutex(false, mutexName, out bool createdNew);
+                _ownsMutex = false;
+                bool got = false;
+                try { got = _mutex.WaitOne(TimeSpan.Zero, false); }
+                catch (AbandonedMutexException) { got = true; }
 
-                if (!createdNew)
+                if (!got)
                 {
-                    Debug.WriteLine("[App] 중복 실행 방지: 이미 실행 중인 인스턴스가 있습니다.");
-                    MessageBox.Show("TradingBot이 이미 실행 중입니다.\n실행 중인 창을 확인해 주세요.", "중복 실행 감지", MessageBoxButton.OK, MessageBoxImage.Information);
-                    this.Shutdown();
-                    return;
+                    Debug.WriteLine("[App] 중복 실행 감지");
+                    var result = MessageBox.Show(
+                        "TradingBot이 이미 실행 중입니다.\n\n" +
+                        "[예] 기존 인스턴스를 종료하고 새로 시작합니다.\n" +
+                        "[아니오] 종료합니다.",
+                        "중복 실행 감지",
+                        MessageBoxButton.YesNo, MessageBoxImage.Question);
+                    if (result == MessageBoxResult.Yes)
+                    {
+                        try
+                        {
+                            int curPid = System.Diagnostics.Process.GetCurrentProcess().Id;
+                            foreach (var p in System.Diagnostics.Process.GetProcessesByName("TradingBot"))
+                            {
+                                if (p.Id != curPid)
+                                {
+                                    try { p.Kill(true); p.WaitForExit(3000); }
+                                    catch (Exception kex) { Debug.WriteLine($"kill {p.Id}: {kex.Message}"); }
+                                }
+                            }
+                            // mutex 다시 획득 시도
+                            try { got = _mutex.WaitOne(TimeSpan.FromSeconds(5), false); }
+                            catch (AbandonedMutexException) { got = true; }
+                        }
+                        catch (Exception ex2) { Debug.WriteLine($"replace failed: {ex2.Message}"); }
+                    }
+                    if (!got) { this.Shutdown(); return; }
                 }
-
+                _ownsMutex = true;
                 Debug.WriteLine("[App] 단일 인스턴스 확인 완료");
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"[App] Mutex 생성 오류: {ex.Message}");
-                // Mutex 생성 실패 시에도 계속 진행 (보안 문제보다는 사용성 우선)
+                // [v5.21.4] catch 시 계속 진행 X — mutex 실패 = 중복 실행 가능 → 안전 종료
+                MessageBox.Show($"단일 인스턴스 검사 실패:\n{ex.Message}\n\n중복 실행 위험으로 종료합니다.",
+                    "보안 종료", MessageBoxButton.OK, MessageBoxImage.Warning);
+                this.Shutdown();
+                return;
             }
 
             // [중요] Velopack 런타임 체크 비활성화 (자체 포함 배포이므로 불필요)
