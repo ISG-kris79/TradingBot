@@ -5,6 +5,23 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.21.8] - 2026-04-27
+
+### 🚨 MODEL_ZIP_MISSING 영구 차단 + 메인 루프 1초 폭주 동시 해결
+
+#### 발견 (v5.21.7 21분 가동)
+- EntryTimingModel*.zip 4개 다 생성됨 (13~22KB) 그러나 여전히 `MODEL_ZIP_MISSING` 차단 지속
+- `[PERF][MAIN_LOOP] workMs=1125 avgMs=1050ms` — 메인 루프 1회 1초 소요
+- 단일 스레드 1코어 100% 점유, FooterLogs 5분당 5,892건 폭주
+
+#### 근본 원인
+1. **30KB 임계 false-fail (4곳)**: ModelHealthMonitor.MinHealthyBytes=30KB, TradingEngine getter/setter, AIDoubleCheckEntryGate. 13KB 정상 모델(synthetic positive로 학습)도 거부됨
+2. **MainLoopInterval 1초 + 1초 작업 = 풀가동**: 메인 루프가 쉴 틈 없이 1코어 100% 점유
+
+#### Fixed
+- **30KB → 1KB 완화 (4곳 동시)**: ModelHealthMonitor + TradingEngine 2곳 + AIDoubleCheckEntryGate. 진짜 손상(0KB, 빈 파일)만 거부
+- **MainLoopInterval 1초 → 3초**: CPU 부하 ~33%로 감소. GATE 디바운스(5초)와 동조
+
 ## [5.21.7] - 2026-04-27
 
 ### ⚡ CPU 16% / 메모리 2.1GB 과다 사용 해결 (정상치 2~3배)

@@ -1927,7 +1927,7 @@ namespace TradingBot
                     void CheckOne(EntryTimingMLTrainer tr, List<MultiTimeframeEntryFeature> data, string label, string fileName)
                     {
                         string p = System.IO.Path.Combine(modelDir, fileName);
-                        if (!System.IO.File.Exists(p) || new System.IO.FileInfo(p).Length < 30 * 1024)
+                        if (!System.IO.File.Exists(p) || new System.IO.FileInfo(p).Length < 1024) // [v5.21.8] 30KB → 1KB
                             missingPairs.Add((tr, data, label));
                     }
                     CheckOne(_mlTrainer,      trainingFeatures, "Default", "EntryTimingModel.zip");

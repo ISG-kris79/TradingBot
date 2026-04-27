@@ -156,7 +156,10 @@ namespace TradingBot
 
         private const int SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 2000;  // [v3.2.8] 1초→2초 (CPU 절감)
         private const int MAJOR_SYMBOL_ANALYSIS_MIN_INTERVAL_MS = 1000; // [v3.2.8] 180ms→1초
-        private static readonly TimeSpan MainLoopInterval = TimeSpan.FromSeconds(1);
+        // [v5.21.8] MainLoopInterval 1초 → 3초 — 1코어 100% 점유 해소
+        //   원인: workMs avg = 1050ms (1초짜리 작업) + interval 1초 = 쉴 틈 없이 1코어 풀가동
+        //   해결: 3초로 완화 → CPU 부하 ~33% 로 감소. 진입 반응성은 GATE 디바운스(5초)와 동조
+        private static readonly TimeSpan MainLoopInterval = TimeSpan.FromSeconds(3);
         private decimal _minEntryRiskRewardRatio = 1.20m; // [v3.2.3] 1.40→1.20: 폭락 후 반등 진입 기회 확보
         private bool _rrConfigMismatchWarned = false;
         private float _fifteenMinuteMlMinConfidence = 0.65f; // 가이드 기본값
@@ -7895,7 +7898,7 @@ namespace TradingBot
                         foreach (var m in requiredModels)
                         {
                             string p = System.IO.Path.Combine(modelDir, m);
-                            if (!System.IO.File.Exists(p) || new System.IO.FileInfo(p).Length < 30 * 1024)
+                            if (!System.IO.File.Exists(p) || new System.IO.FileInfo(p).Length < 1024) // [v5.21.8] 30KB → 1KB
                                 missing.Add(m);
                         }
                         if (missing.Count > 0)

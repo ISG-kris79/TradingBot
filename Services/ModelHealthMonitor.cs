@@ -35,7 +35,10 @@ namespace TradingBot.Services
         private Timer? _reloadTimer;
         private bool _disposed;
 
-        public long MinHealthyBytes { get; set; } = 30 * 1024;       // 30KB 미만이면 손상 의심
+        // [v5.21.8] 30KB → 1KB 완화 — 학습 데이터 적을 때 (synthetic positive 등) 13KB 정상 모델도
+        //   30KB 미달로 거부되어 MODEL_ZIP_MISSING 게이트 영구 차단 발생.
+        //   진짜 손상(0KB, 헤더 부족)만 거부, 작은 모델도 PredictionEngine 생성되면 유효
+        public long MinHealthyBytes { get; set; } = 1024;            // 1KB 미만이면 진짜 손상 (0KB, 빈 파일)
         public TimeSpan StaleThreshold { get; set; } = TimeSpan.FromHours(6);  // 6시간 학습 안 됨 = 의심
         // [v5.20.7] grace 30→120min — 4 variant 학습은 1시간 이상 걸림
         public TimeSpan InitialGracePeriod { get; set; } = TimeSpan.FromMinutes(120);
