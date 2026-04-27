@@ -5,6 +5,30 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.21.9] - 2026-04-27
+
+### 🎯 ActiveTrackingPool — 12개 추적 풀 (메이저4 + 동적8)
+
+#### 설계 의도 (사용자)
+- 200+ 심볼 무작위 평가 → CPU/메모리/API 호출 폭주
+- 메이저 4 + PumpScan top 동적 8 = 12개만 실시간 신호 추적
+- 5분마다 동적 8 갱신 → 시장 신호에 반응
+
+#### Added
+- `TradingEngine._activeTrackingPool`: ConcurrentDictionary<string, byte> + 5분 주기 갱신
+- `EnsureActiveTrackingPoolFresh()`: 메이저 4 고정 + PumpScan TopCandidateScores 상위 8개 동적 선택 (활성 포지션 심볼 제외)
+- `ProcessCoinAndTradeBySymbolAsync` 시작부에 풀 가드 추가 — 12개 외 심볼은 평가 즉시 스킵
+- `AIDoubleCheckEntryGate.SetTrackedSymbols(12개)` 자동 동기화
+
+#### 예상 효과
+- ML.NET 추론 200+ → 12 (94% 감소)
+- 메인 루프 workMs 1050ms → ~150ms
+- CPU 1코어 100% → ~15%
+- 메모리 ~500MB 절감
+
+#### 활성 포지션 보호
+- 풀에서 빠져도 _activePositions 에 있으면 통과 → TP/SL/Trailing 정상 동작 보장
+
 ## [5.21.8] - 2026-04-27
 
 ### 🚨 MODEL_ZIP_MISSING 영구 차단 + 메인 루프 1초 폭주 동시 해결

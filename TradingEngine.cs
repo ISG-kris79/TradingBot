@@ -4861,10 +4861,80 @@ namespace TradingBot
 
             OnTickerUpdate?.Invoke(normalizedSymbol, currentPrice, pnl);
         }
+        // ═══════════════════════════════════════════════════════════════════════════════════
+        // [v5.21.9] ActiveTrackingPool — 메이저 4 + 동적 8 = 12개만 실시간 평가
+        //   원인: 200+ 심볼 매 사이클 평가 → ML.NET 추론 + 게이트 검증 폭주 → CPU/메모리 폭주
+        //   해결: 메이저 4 고정 + PumpScan top score 상위 8 동적 선택 = 12개만 진입 분석
+        //   효과: ML.NET 추론 200+ → 12 (94% 감소), 메인 루프 workMs 1050ms → ~150ms 예상
+        // ═══════════════════════════════════════════════════════════════════════════════════
+        private static readonly string[] FixedMajorPool = { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+        private const int DynamicPoolSize = 8;
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _activeTrackingPool = new(StringComparer.OrdinalIgnoreCase);
+        private DateTime _lastTrackingPoolRefresh = DateTime.MinValue;
+        private static readonly TimeSpan TrackingPoolRefreshInterval = TimeSpan.FromMinutes(5);
+
+        private void EnsureActiveTrackingPoolFresh()
+        {
+            // 메이저 4개는 항상 포함 (idempotent)
+            foreach (var m in FixedMajorPool) _activeTrackingPool.TryAdd(m, 0);
+
+            if ((DateTime.Now - _lastTrackingPoolRefresh) < TrackingPoolRefreshInterval && _activeTrackingPool.Count > 4)
+                return;
+
+            _lastTrackingPoolRefresh = DateTime.Now;
+
+            var dynamicSymbols = new List<string>();
+            if (_pumpStrategy != null)
+            {
+                // PumpScan top10 candidates score 상위 8개. 활성 포지션 심볼은 제외 (이미 진입됨)
+                HashSet<string> activeSet;
+                lock (_posLock) { activeSet = new HashSet<string>(_activePositions.Keys, StringComparer.OrdinalIgnoreCase); }
+
+                var sorted = _pumpStrategy.TopCandidateScores
+                    .OrderBy(kv => kv.Value.Rank)
+                    .Select(kv => kv.Key)
+                    .ToList();
+                foreach (var sym in sorted)
+                {
+                    if (FixedMajorPool.Contains(sym)) continue;
+                    if (activeSet.Contains(sym)) continue;
+                    dynamicSymbols.Add(sym);
+                    if (dynamicSymbols.Count >= DynamicPoolSize) break;
+                }
+            }
+
+            var newPool = new HashSet<string>(FixedMajorPool, StringComparer.OrdinalIgnoreCase);
+            foreach (var s in dynamicSymbols) newPool.Add(s);
+
+            // 기존 풀에서 빠진 심볼 제거 (활성 포지션은 별도 경로로 보호되므로 풀에서 빼도 안전)
+            foreach (var existing in _activeTrackingPool.Keys.ToList())
+            {
+                if (!newPool.Contains(existing))
+                    _activeTrackingPool.TryRemove(existing, out _);
+            }
+            foreach (var added in newPool)
+                _activeTrackingPool.TryAdd(added, 0);
+
+            OnStatusLog?.Invoke($"🎯 [추적풀] 갱신 — 메이저4 + 동적{dynamicSymbols.Count}개 = 총 {_activeTrackingPool.Count}개 ({string.Join(",", dynamicSymbols)})");
+
+            // AI Gate 의 추적 심볼도 동기화 (4 variant 추론 대상 축소)
+            _aiDoubleCheckEntryGate?.SetTrackedSymbols(_activeTrackingPool.Keys);
+        }
+
         private async Task ProcessCoinAndTradeBySymbolAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
             try
             {
+                // [v5.21.9] 추적 풀 가드 — 12개 외 심볼은 평가 즉시 스킵
+                //   활성 포지션 심볼은 풀에 없어도 통과 (TP/SL/Trailing 보호 위해 _activePositions 체크)
+                EnsureActiveTrackingPoolFresh();
+                if (!_activeTrackingPool.ContainsKey(symbol))
+                {
+                    bool hasActivePos;
+                    lock (_posLock) { hasActivePos = _activePositions.ContainsKey(symbol); }
+                    if (!hasActivePos) return;
+                }
+
                 if (IsEntryWarmupActive(out var remaining))
                 {
                     if ((DateTime.Now - _lastEntryWarmupLogTime).TotalSeconds >= 10)
