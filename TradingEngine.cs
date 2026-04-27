@@ -7857,14 +7857,31 @@ namespace TradingBot
                 {
                     if (System.IO.File.Exists(InitialTrainingFlagPath))
                     {
-                        // [v5.2.0] flag 있어도 핵심 모델 파일 없으면 재학습 필요
+                        // [v5.21.3] flag 있어도 ML.NET EntryTiming 4 variant zip 모두 검증
+                        //   사용자 사례: 12시간 진입 0건 = ML/TF 점수 1E-15 = 모델 zip 미존재
+                        //   AUC 예외로 학습 실패 시 zip 미생성되는데 flag만 남음 → 재학습 안 트리거
+                        //   해결: flag + 4 variant 모두 존재할 때만 "완료" 인정
                         string modelDir = System.IO.Path.Combine(
                             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                             "TradingBot", "Models");
-                        bool hasPumpModel = System.IO.File.Exists(System.IO.Path.Combine(modelDir, "pump_signal_normal.zip"));
-                        if (!hasPumpModel)
+                        string[] requiredModels = {
+                            "EntryTimingModel.zip",
+                            "EntryTimingModel_Major.zip",
+                            "EntryTimingModel_Pump.zip",
+                            "EntryTimingModel_Spike.zip",
+                            "pump_signal_normal.zip"
+                        };
+                        var missing = new List<string>();
+                        foreach (var m in requiredModels)
                         {
-                            OnStatusLog?.Invoke("⚠️ [초기학습] flag 파일 있지만 pump_signal_normal.zip 없음 → 재학습 필요");
+                            string p = System.IO.Path.Combine(modelDir, m);
+                            if (!System.IO.File.Exists(p) || new System.IO.FileInfo(p).Length < 30 * 1024)
+                                missing.Add(m);
+                        }
+                        if (missing.Count > 0)
+                        {
+                            OnStatusLog?.Invoke($"⚠️ [초기학습] flag 파일 있지만 모델 zip 미존재/손상: {string.Join(",", missing)} → 재학습 필요");
+                            try { System.IO.File.Delete(InitialTrainingFlagPath); OnStatusLog?.Invoke("🗑️ [초기학습] 잘못된 flag 자동 삭제 — 봇 재시작 시 강제 재학습"); } catch { }
                             return false;
                         }
                         _isInitialTrainingComplete = true;

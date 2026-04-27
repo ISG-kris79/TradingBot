@@ -243,12 +243,15 @@ internal static class Program
 
         foreach (var trig in triggers)
         {
+            // [v5.21.3] 카테고리별 marg 적용
+            decimal trigNotional = NotionalFor(trig.name);
+            decimal trigFee = trigNotional * FEE_RATE * 2m;
             foreach (var sc in scenarios)
             {
                 foreach (var ts in tpslSets)
                 {
-                    decimal tpUsd = Notional * ts.tp / 100m - RoundTripFee;
-                    decimal slUsd = Notional * ts.sl / 100m + RoundTripFee;
+                    decimal tpUsd = trigNotional * ts.tp / 100m - trigFee;
+                    decimal slUsd = trigNotional * ts.sl / 100m + trigFee;
 
                     int n = 0, w = 0; decimal pnl = 0m;
                     foreach (var kv in symData)
@@ -1367,6 +1370,21 @@ internal static class Program
     private static decimal RoundTripFee => Notional * FEE_RATE * 2m;
     private static decimal TpProfit => Notional * TP_PCT / 100m - RoundTripFee;
     private static decimal SlLoss   => Notional * SL_PCT / 100m + RoundTripFee;
+    // [v5.21.3] 카테고리별 마진 (CLI: --margin-major / --margin-pump 등)
+    private static decimal MarginMajor = 100m;
+    private static decimal MarginPump  = 100m;
+    private static decimal MarginSqueeze = 100m;
+    private static decimal MarginBBWalk = 100m;
+    private static decimal MarginSpike = 100m;
+    private static decimal NotionalFor(string trig) => trig switch
+    {
+        "MAJOR" => MarginMajor * LEVERAGE,
+        "PUMP" => MarginPump * LEVERAGE,
+        "SQUEEZE" => MarginSqueeze * LEVERAGE,
+        "BB_WALK" => MarginBBWalk * LEVERAGE,
+        "SPIKE" => MarginSpike * LEVERAGE,
+        _ => MARGIN_USD * LEVERAGE
+    };
 
     private static async Task<List<IBinanceKline>> FetchKlinesAsync(string sym, int pages = PAGES)
     {
@@ -1426,6 +1444,16 @@ internal static class Program
             {
                 LEVERAGE = lev;
                 Console.WriteLine($"[CONFIG] LEVERAGE override = {LEVERAGE}x → notional ${Notional:F0}");
+            }
+            if (args[a] == "--margin-major" && a + 1 < args.Length && decimal.TryParse(args[a + 1], out var mm))
+            {
+                MarginMajor = MarginSqueeze = MarginBBWalk = mm;  // major-tier triggers
+                Console.WriteLine($"[CONFIG] MarginMajor/Squeeze/BBWalk = ${mm}");
+            }
+            if (args[a] == "--margin-pump" && a + 1 < args.Length && decimal.TryParse(args[a + 1], out var mp))
+            {
+                MarginPump = MarginSpike = mp;
+                Console.WriteLine($"[CONFIG] MarginPump/Spike = ${mp}");
             }
         }
         if (args.Length > 0 && args[0] == "--sweep")

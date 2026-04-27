@@ -224,6 +224,9 @@ namespace TradingBot.ViewModels
             = new TradingBot.Models.CategoryStatsViewModel { Category = "PUMP", Icon = "🚀", Title = "PUMP" };
         public TradingBot.Models.CategoryStatsViewModel SpikeStats { get; }
             = new TradingBot.Models.CategoryStatsViewModel { Category = "SPIKE", Icon = "⚡", Title = "SPIKE" };
+        // [v5.21.3] SQUEEZE 카테고리 — SPIKE 차단 후 메인 수익원 (90일 +$30K, WR 94%)
+        public TradingBot.Models.CategoryStatsViewModel SqueezeStats { get; }
+            = new TradingBot.Models.CategoryStatsViewModel { Category = "SQUEEZE", Icon = "📊", Title = "SQUEEZE" };
         private System.Threading.Timer? _categoryStatsTimer;
 
         // [v4.7.2] 초기학습 진행 배너 (진입 차단 시각화)
@@ -3315,10 +3318,25 @@ namespace TradingBot.ViewModels
             FooterText = $"[{DateTime.Now:HH:mm:ss}] {latestMessage}";
         }
 
+        // [v5.20.6] OnLog 폭주 throttle — 동일 메시지 200ms 내 중복 제거
+        private string _lastFooterMsg = "";
+        private DateTime _lastFooterAt = DateTime.MinValue;
+        private readonly object _footerThrottleLock = new();
+
         private void QueueFooterLog(string msg)
         {
             if (string.IsNullOrWhiteSpace(msg))
                 return;
+
+            // [v5.20.6] throttle: 동일 메시지 200ms 내 dedupe
+            lock (_footerThrottleLock)
+            {
+                var now = DateTime.UtcNow;
+                if (msg == _lastFooterMsg && (now - _lastFooterAt).TotalMilliseconds < 200)
+                    return;
+                _lastFooterMsg = msg;
+                _lastFooterAt = now;
+            }
 
             lock (_footerLogLock)
             {
@@ -4700,12 +4718,14 @@ namespace TradingBot.ViewModels
                 (int e, int w, int l, decimal p) majorT = stats.TryGetValue("MAJOR", out var mv) ? mv : (0, 0, 0, 0m);
                 (int e, int w, int l, decimal p) pumpT = stats.TryGetValue("PUMP", out var pv) ? pv : (0, 0, 0, 0m);
                 (int e, int w, int l, decimal p) spikeT = stats.TryGetValue("SPIKE", out var sv) ? sv : (0, 0, 0, 0m);
+                (int e, int w, int l, decimal p) squeezeT = stats.TryGetValue("SQUEEZE", out var qv) ? qv : (0, 0, 0, 0m);
 
                 RunOnUI(() =>
                 {
                     MajorStats.Update(majorT.e, majorT.w, majorT.l, majorT.p);
                     PumpStats.Update(pumpT.e, pumpT.w, pumpT.l, pumpT.p);
                     SpikeStats.Update(spikeT.e, spikeT.w, spikeT.l, spikeT.p);
+                    SqueezeStats.Update(squeezeT.e, squeezeT.w, squeezeT.l, squeezeT.p);
                 });
             }
             catch (Exception ex)
