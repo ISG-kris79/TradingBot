@@ -5,6 +5,24 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.21.6] - 2026-04-27
+
+### 🚨 ROOT FIX: LoadModel 스키마 검증 false-fail → 4 variant 영구 FAIL 해결
+
+#### 발견
+- v5.21.5 설치 직후 즉시 알림: `⚠️ AI 학습 학습 후 모델 상태 - Default=FAIL, Major=FAIL, Pump=FAIL, Spike=FAIL`
+- SaveModel 은 성공하지만 직후 LoadModel 이 .zip 을 즉시 삭제
+
+#### 근본 원인
+- `MultiTimeframeEntryFeature` 의 numeric 프로퍼티 = **144개**
+- `EntryTimingMLTrainer.ExpectedFeatureCount = 122` (BuildPipeline featureColumns 배열 길이)
+- LoadModel: `_modelSchema` 컬럼 수 = LoadFromEnumerable 의 144 (Concatenate 사용분만이 아님)
+- 144 ≠ 122 → 무조건 "스키마 불일치" → `File.Delete(_modelPath)` → IsModelLoaded=false 영구
+
+#### Fixed
+- **EntryTimingMLTrainer.LoadModel()**: 스키마 검증 `!= ExpectedFeatureCount` → `< ExpectedFeatureCount` 변경 (Feature 추가에도 안전)
+- **3개 LoadModel catch 경로 모두 `File.Delete` 제거**: 파일 보존 → 다음 학습이 덮어쓰면 됨. 삭제는 영구 차단의 원인
+
 ## [5.21.5] - 2026-04-27
 
 ### 🚨 ROOT FIX: EntryTimingModel*.zip 영구 미생성 → 진입 무한 차단 해결

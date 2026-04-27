@@ -281,25 +281,26 @@ namespace TradingBot
 
                 _model = _mlContext.Model.Load(loadPath, out _modelSchema);
 
-                // 스키마 호환성 검증: Feature 수 확인
+                // [v5.21.6 ROOT FIX] 스키마 호환성 검증
+                //   기존: schemaColumnCount != ExpectedFeatureCount → File.Delete (무조건 삭제)
+                //   문제: dataView.Schema 컬럼 수 = MultiTimeframeEntryFeature 의 모든 numeric 프로퍼티 개수 (144)
+                //         ExpectedFeatureCount = BuildPipeline 의 featureColumns 배열 길이 (122) — Concatenate 사용분만
+                //         144 ≠ 122 → 모든 variant 무조건 파일 삭제 → 진입 영구 차단
+                //   해결: 1) 비교를 < 로 변경 (Feature 수가 늘어나도 OK)
+                //         2) File.Delete 제거 (다음 학습에서 덮어쓰면 됨, 삭제는 영구 차단의 원인)
                 if (_modelSchema != null)
                 {
                     int schemaColumnCount = 0;
                     foreach (var col in _modelSchema)
                     {
-                        // NoColumn이나 메타 컬럼 제외, 실제 Feature 컬럼만 카운트
                         if (col.Type is Microsoft.ML.Data.NumberDataViewType)
                             schemaColumnCount++;
                     }
-                    // Label(Boolean)은 제외하고 Feature만 비교
-                    // 스키마에 "Label" + N float columns가 있어야 함
-                    if (schemaColumnCount != ExpectedFeatureCount)
+                    if (schemaColumnCount < ExpectedFeatureCount)
                     {
-                        Console.WriteLine($"[EntryTimingML] ⚠️ 모델 스키마 불일치: {schemaColumnCount}개 Feature (기대: {ExpectedFeatureCount}개). 모델 삭제 후 재학습 필요.");
+                        Console.WriteLine($"[EntryTimingML] ⚠️ 모델 스키마 컬럼 부족: {schemaColumnCount} < {ExpectedFeatureCount} (모델 손상 가능) — 파일 보존, 다음 학습에서 덮어씀");
                         _model = null;
                         _isModelLoaded = false;
-                        // 호환되지 않는 모델 파일 삭제
-                        try { File.Delete(_modelPath); } catch { }
                         return false;
                     }
                 }
@@ -312,10 +313,10 @@ namespace TradingBot
                 }
                 catch (Exception schemaEx)
                 {
-                    Console.WriteLine($"[EntryTimingML] ⚠️ 모델 스키마 타입 불일치: {schemaEx.Message}. 모델 삭제 후 재학습 필요.");
+                    // [v5.21.6] File.Delete 제거 — 진입 영구 차단의 원인. 다음 학습에서 덮어쓰면 됨
+                    Console.WriteLine($"[EntryTimingML] ⚠️ 모델 스키마 타입 불일치: {schemaEx.Message} — 파일 보존, 다음 학습에서 덮어씀");
                     _model = null;
                     _isModelLoaded = false;
-                    try { File.Delete(_modelPath); } catch { }
                     return false;
                 }
 
@@ -334,9 +335,8 @@ namespace TradingBot
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[EntryTimingML] 모델 로드 실패: {ex.Message}");
-                // 손상된 모델 파일 삭제
-                try { File.Delete(_modelPath); } catch { }
+                // [v5.21.6] File.Delete 제거 — 진입 영구 차단의 원인. 파일은 보존, 다음 학습에서 덮어씀
+                Console.WriteLine($"[EntryTimingML] 모델 로드 실패: {ex.Message} — 파일 보존");
                 _model = null;
                 _isModelLoaded = false;
                 return false;
