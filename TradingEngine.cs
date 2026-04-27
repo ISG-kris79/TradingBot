@@ -1469,11 +1469,13 @@ namespace TradingBot
             _marketDataManager = new MarketDataManager(_client, _symbols);
             _marketHistoryService = new MarketHistoryService(_marketDataManager, AppConfig.ConnectionString);
             // [v4.5.7] 최초 알트 캔들 수집 완료 시 ML 학습 즉시 트리거 (2분 대기 없이)
-            _marketHistoryService.OnFirstAltCollectionComplete += () =>
-            {
-                OnStatusLog?.Invoke("🎯 [ML] 알트 학습 데이터 확보 완료 → 즉시 재학습 시작");
-                _ = Task.Run(() => TrainAllModelsAsync(_cts?.Token ?? CancellationToken.None));
-            };
+            // [v5.22.2] AI 학습 시스템 전체 비활성화 — 사용자 결정 (2026-04-28)
+            //   "ai 다 제거했는데 왜 학습을 하는거야?" — TrainAllModelsAsync 등 자동 호출 차단
+            // _marketHistoryService.OnFirstAltCollectionComplete += () =>
+            // {
+            //     OnStatusLog?.Invoke("🎯 [ML] 알트 학습 데이터 확보 완료 → 즉시 재학습 시작");
+            //     _ = Task.Run(() => TrainAllModelsAsync(_cts?.Token ?? CancellationToken.None));
+            // };
             _oiCollector = new OiDataCollector(_client);
 
             _tickerChannel = Channel.CreateBounded<IBinance24HPrice>(new BoundedChannelOptions(1000)
@@ -3145,8 +3147,8 @@ namespace TradingBot
                 // [Elliott 앵커 복원] 재시작 후에도 파동 기준점 유지
                 await RestoreElliottWaveAnchorsFromDatabaseAsync(token);
 
-                // [추가] ML.NET 초기 학습 1회 자동 실행 (모델 미준비 시) - 워밍업 후 실행
-                await TriggerInitialMLNetTrainingIfNeededAsync(token);
+                // [v5.22.2] AI 학습 비활성화 — 사용자 결정 (2026-04-28)
+                // await TriggerInitialMLNetTrainingIfNeededAsync(token);
 
                 // [AI 데이터 수집] 백그라운드 자동 수집 서비스 시작 (30분마다 증분 수집)
                 try
@@ -3350,9 +3352,10 @@ namespace TradingBot
                     _ = _marketHistoryService.StartRecordingAsync(token);
                 }
 
-                _ = StartPeriodicTrainingAsync(token);
-                _ = StartPeriodicAiEntryProbScanAsync(token);
-                TryStartHistoricalEntryAudit(token);
+                // [v5.22.2] AI 학습/예측 주기 작업 비활성화 — 사용자 결정 (2026-04-28)
+                // _ = StartPeriodicTrainingAsync(token);
+                // _ = StartPeriodicAiEntryProbScanAsync(token);
+                // TryStartHistoricalEntryAudit(token);
 
                 // 엔진 가동 시간 기록 및 주기 타이머 초기화
                 // [수정] 모든 초기화 작업 완료 후 메인 루프 시작 직전에 워밍업 타이머 설정
@@ -8119,12 +8122,9 @@ namespace TradingBot
         /// <summary>[v3.8.1] 전체 ML 모델 1시간 주기 자동 재학습</summary>
         private void StartModelRetrainTimer()
         {
-            _modelRetrainTimer = new System.Threading.Timer(
-                _ => _ = TrainAllModelsAsync(_cts?.Token ?? CancellationToken.None),
-                null,
-                TimeSpan.FromMinutes(2),   // 시작 2분 후 첫 학습
-                TimeSpan.FromHours(1));     // 이후 1시간 주기
-            OnStatusLog?.Invoke("🧠 [ML] 전체 모델 자동 재학습 타이머 시작 (1시간 주기)");
+            // [v5.22.2] 1시간 주기 ML 자동 재학습 비활성화 — 사용자 결정 (2026-04-28)
+            //   AI 시스템 전체 폐기, 가드만으로 진입
+            OnStatusLog?.Invoke("⏸️ [ML] 자동 재학습 타이머 비활성 (v5.22.2)");
         }
 
         /// <summary>[v4.2.0] AggTrade WebSocket으로 PUMP 후보 코인의 실시간 체결 데이터 수신</summary>

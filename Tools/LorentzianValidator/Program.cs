@@ -1386,6 +1386,262 @@ internal static class Program
         _ => MARGIN_USD * LEVERAGE
     };
 
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // [v5.21.13] AI 게이트 포함 백테스트 — 라이브 봇 시뮬과 동일
+    //   가드(v5.21.1: EMA20↑ + RSI<65) + AI(Lorentzian KNN pred>0) → 진입 시뮬
+    //   카테고리별 TP/SL: MAJOR 타이트(0.5/1.5/12) / 알트 권장(1.0/3.0/24)
+    //   기간: 10/30/60/90/180일
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // [v5.22.1] 라이브 로직 백테스트 — AI 게이트 제거, 가드만으로 진입
+    //   가드: v5.21.1 (EMA20↑ + RSI<65)
+    //   TP/SL: MAJOR 0.5/1.5/12  /  알트 1.0/3.0/24
+    //   기간: 1/10/30/60/90/180/360일 (7개)
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    private static async Task RunLiveAllPeriodsAsync()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  v5.22.1 라이브 로직 백테스트 (AI 게이트 제거, 가드만)");
+        Console.WriteLine("  가드: v5.21.1 (EMA20↑ + RSI<65)");
+        Console.WriteLine("  TP/SL: MAJOR 0.5/1.5/12  /  알트 1.0/3.0/24");
+        Console.WriteLine("================================================================");
+
+        var periods = new[] {
+            (label: "1일",   pages: 1),
+            (label: "10일",  pages: 2),
+            (label: "30일",  pages: 6),
+            (label: "60일",  pages: 12),
+            (label: "90일",  pages: 18),
+            (label: "180일", pages: 36),
+            (label: "360일", pages: 70),
+        };
+
+        Console.WriteLine();
+        Console.WriteLine($"[fetch 360일치 캔들 — {symbols.Length}개 심볼]");
+        var maxPages = periods.Max(p => p.pages);
+        var fullData = new Dictionary<string, List<IBinanceKline>>();
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[{idx}/{symbols.Length}] {sym} ");
+            try
+            {
+                var kl = await FetchKlinesAsync(sym, maxPages);
+                if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+                fullData[sym] = kl;
+                Console.WriteLine($"ok ({kl.Count} bars)");
+            }
+            catch (Exception ex) { Console.WriteLine("fail: " + ex.Message); }
+        }
+
+        var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+        var triggers = new (string name, Func<List<IBinanceKline>, int, string, bool> ok)[]
+        {
+            ("PUMP",    (kl, i, sym) => i >= 20 && PriceChange(kl, i, 1) >= 1.5 && VolMult(kl, i, 20) >= 3.0),
+            ("MAJOR",   (kl, i, sym) => majors.Contains(sym) && i >= 30 && Ema20Rising(kl, i)
+                          && M15RangePos(kl, i, 30) is >= 60 and <= 85),
+            ("SQUEEZE", (kl, i, sym) => i >= 20 && BBWidth(kl, i) < 1.5 && BBWalkUpper(kl, i)),
+            ("BB_WALK", (kl, i, sym) => i >= 20 && BBWalkStreak(kl, i, 5) >= 4),
+        };
+
+        var summary = new List<(string period, int n, int w, decimal pnl, decimal majorPnl, decimal pumpPnl, decimal sqzPnl, decimal bbwPnl)>();
+
+        foreach (var per in periods)
+        {
+            int sliceLen = per.pages * BARS_PER_REQ;
+            var slicedData = new Dictionary<string, List<IBinanceKline>>();
+            foreach (var kv in fullData)
+            {
+                int start = Math.Max(0, kv.Value.Count - sliceLen);
+                var slice = kv.Value.GetRange(start, kv.Value.Count - start);
+                if (slice.Count < 400) continue;
+                slicedData[kv.Key] = slice;
+            }
+
+            int totalN = 0, totalW = 0;
+            decimal totalPnl = 0m, majorPnl = 0m, pumpPnl = 0m, sqzPnl = 0m, bbwPnl = 0m;
+
+            foreach (var trig in triggers)
+            {
+                decimal trigNotional = NotionalFor(trig.name);
+                decimal trigFee = trigNotional * FEE_RATE * 2m;
+                decimal tpPct, slPct; int win;
+                if (trig.name == "MAJOR") { tpPct = 0.5m; slPct = 1.5m; win = 12; }
+                else { tpPct = 1.0m; slPct = 3.0m; win = 24; }
+                decimal tpUsd = trigNotional * tpPct / 100m - trigFee;
+                decimal slUsd = trigNotional * slPct / 100m + trigFee;
+
+                int catN = 0, catW = 0; decimal catPnl = 0m;
+                foreach (var kv in slicedData)
+                {
+                    var kl = kv.Value; var sym = kv.Key;
+                    for (int i = 50; i < kl.Count - win; i++)
+                    {
+                        if (!trig.ok(kl, i, sym)) continue;
+                        // v5.21.1 가드 — AI 게이트 없음
+                        if (!Ema20Rising(kl, i)) continue;
+                        if (CalcRsi14(kl, i) >= 65) continue;
+                        var (tp, sl) = OutcomeIn(kl, i, tpPct, slPct, win);
+                        if (!(tp || sl)) continue;
+                        catN++;
+                        if (tp) { catW++; catPnl += tpUsd; } else catPnl -= slUsd;
+                    }
+                }
+                totalN += catN; totalW += catW; totalPnl += catPnl;
+                if (trig.name == "MAJOR") majorPnl = catPnl;
+                else if (trig.name == "PUMP") pumpPnl = catPnl;
+                else if (trig.name == "SQUEEZE") sqzPnl = catPnl;
+                else if (trig.name == "BB_WALK") bbwPnl = catPnl;
+            }
+
+            summary.Add((per.label, totalN, totalW, totalPnl, majorPnl, pumpPnl, sqzPnl, bbwPnl));
+        }
+
+        // 출력
+        Console.WriteLine();
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  v5.22.1 라이브 로직 백테스트 결과 (가드만, AI 없음)");
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"{"기간",-7} {"진입수",7} {"승률",8} {"총PnL",11} {"avg",8} {"MAJOR",10} {"PUMP",10} {"SQZ",10} {"BBW",10}");
+        Console.WriteLine(new string('-', 100));
+        foreach (var s in summary)
+        {
+            double wr = s.n > 0 ? s.w * 100.0 / s.n : 0;
+            decimal avg = s.n > 0 ? s.pnl / s.n : 0m;
+            Console.WriteLine($"{s.period,-7} {s.n,7} {wr,7:F2}% {s.pnl,10:F2} {avg,7:F2} {s.majorPnl,9:F2} {s.pumpPnl,9:F2} {s.sqzPnl,9:F2} {s.bbwPnl,9:F2}");
+        }
+    }
+
+    private static async Task RunAiAllPeriodsAsync()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  AI 게이트 포함 백테스트 (라이브 봇 시뮬)");
+        Console.WriteLine("  가드: v5.21.1 (EMA20↑ + RSI<65)  AI: Lorentzian KNN pred>0");
+        Console.WriteLine("  TP/SL: MAJOR 0.5/1.5/12  /  알트 1.0/3.0/24");
+        Console.WriteLine("================================================================");
+
+        var periods = new[] {
+            (label: "1일",   pages: 1),   // 페이징 최소 단위 (실제 5일치)
+            (label: "10일",  pages: 2),
+            (label: "30일",  pages: 6),
+            (label: "60일",  pages: 12),
+            (label: "90일",  pages: 18),
+            (label: "180일", pages: 36),
+        };
+
+        // 한 번에 가장 긴 기간(180일) fetch — 짧은 기간은 슬라이스로 사용
+        Console.WriteLine();
+        Console.WriteLine($"[fetch 180일치 캔들 — {symbols.Length}개 심볼]");
+        var maxPages = periods.Max(p => p.pages);
+        var fullData = new Dictionary<string, List<IBinanceKline>>();
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[{idx}/{symbols.Length}] {sym} ");
+            try
+            {
+                var kl = await FetchKlinesAsync(sym, maxPages);
+                if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+                fullData[sym] = kl;
+                Console.WriteLine($"ok ({kl.Count} bars)");
+            }
+            catch (Exception ex) { Console.WriteLine("fail: " + ex.Message); }
+        }
+
+        var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+        var triggers = new (string name, Func<List<IBinanceKline>, int, string, bool> ok)[]
+        {
+            ("PUMP",    (kl, i, sym) => i >= 20 && PriceChange(kl, i, 1) >= 1.5 && VolMult(kl, i, 20) >= 3.0),
+            ("MAJOR",   (kl, i, sym) => majors.Contains(sym) && i >= 30 && Ema20Rising(kl, i)
+                          && M15RangePos(kl, i, 30) is >= 60 and <= 85),
+            ("SQUEEZE", (kl, i, sym) => i >= 20 && BBWidth(kl, i) < 1.5 && BBWalkUpper(kl, i)),
+            ("BB_WALK", (kl, i, sym) => i >= 20 && BBWalkStreak(kl, i, 5) >= 4),
+        };
+
+        // 각 기간별 결과 누적
+        var summary = new List<(string period, int n, int w, decimal pnl, decimal majorPnl, decimal pumpPnl, decimal sqzPnl, decimal bbwPnl)>();
+
+        foreach (var per in periods)
+        {
+            // 기간 슬라이스: 마지막 (per.pages * BARS_PER_REQ) 개 캔들
+            int sliceLen = per.pages * BARS_PER_REQ;
+
+            // AI 학습: 슬라이스 시작 전 KNN 백필 (학습 = 슬라이스 이전 70% / 테스트 = 슬라이스 30% 후반부 — 미래 데이터 누설 방지)
+            var svc = new MiniLorentzianService();
+            var slicedData = new Dictionary<string, List<IBinanceKline>>();
+            foreach (var kv in fullData)
+            {
+                int start = Math.Max(0, kv.Value.Count - sliceLen);
+                var slice = kv.Value.GetRange(start, kv.Value.Count - start);
+                if (slice.Count < 400) continue;
+                slicedData[kv.Key] = slice;
+                int trainEnd = (int)(slice.Count * 0.5);  // 슬라이스 앞 50% 학습
+                svc.BackfillFromCandles(kv.Key, slice.GetRange(0, trainEnd));
+            }
+
+            int totalN = 0, totalW = 0;
+            decimal totalPnl = 0m, majorPnl = 0m, pumpPnl = 0m, sqzPnl = 0m, bbwPnl = 0m;
+
+            foreach (var trig in triggers)
+            {
+                decimal trigNotional = NotionalFor(trig.name);
+                decimal trigFee = trigNotional * FEE_RATE * 2m;
+                // TP/SL: MAJOR 만 타이트, 나머지는 권장
+                decimal tpPct, slPct; int win;
+                if (trig.name == "MAJOR") { tpPct = 0.5m; slPct = 1.5m; win = 12; }
+                else { tpPct = 1.0m; slPct = 3.0m; win = 24; }
+                decimal tpUsd = trigNotional * tpPct / 100m - trigFee;
+                decimal slUsd = trigNotional * slPct / 100m + trigFee;
+
+                int catN = 0, catW = 0; decimal catPnl = 0m;
+                foreach (var kv in slicedData)
+                {
+                    var kl = kv.Value; var sym = kv.Key;
+                    int trainEnd = (int)(kl.Count * 0.5);
+                    for (int i = trainEnd + 50; i < kl.Count - win; i++)
+                    {
+                        if (!trig.ok(kl, i, sym)) continue;
+                        // v5.21.1 가드
+                        if (!Ema20Rising(kl, i)) continue;
+                        if (CalcRsi14(kl, i) >= 65) continue;
+                        // [핵심] AI 게이트: Lorentzian KNN pred > 0
+                        var aiSlice = kl.GetRange(0, i + 1);
+                        var pred = svc.Predict(sym, aiSlice);
+                        if (!pred.IsReady || pred.Prediction <= 0) continue;
+                        // TP/SL 시뮬
+                        var (tp, sl) = OutcomeIn(kl, i, tpPct, slPct, win);
+                        if (!(tp || sl)) continue;
+                        catN++;
+                        if (tp) { catW++; catPnl += tpUsd; } else catPnl -= slUsd;
+                    }
+                }
+                totalN += catN; totalW += catW; totalPnl += catPnl;
+                if (trig.name == "MAJOR") majorPnl = catPnl;
+                else if (trig.name == "PUMP") pumpPnl = catPnl;
+                else if (trig.name == "SQUEEZE") sqzPnl = catPnl;
+                else if (trig.name == "BB_WALK") bbwPnl = catPnl;
+            }
+
+            summary.Add((per.label, totalN, totalW, totalPnl, majorPnl, pumpPnl, sqzPnl, bbwPnl));
+        }
+
+        // 최종 표 출력
+        Console.WriteLine();
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  AI 게이트 포함 백테스트 결과 (라이브 봇 시뮬)");
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"{"기간",-7} {"진입수",7} {"승률",8} {"총PnL",11} {"avg",8} {"MAJOR",10} {"PUMP",10} {"SQZ",10} {"BBW",10}");
+        Console.WriteLine(new string('-', 100));
+        foreach (var s in summary)
+        {
+            double wr = s.n > 0 ? s.w * 100.0 / s.n : 0;
+            decimal avg = s.n > 0 ? s.pnl / s.n : 0m;
+            Console.WriteLine($"{s.period,-7} {s.n,7} {wr,7:F2}% {s.pnl,10:F2} {avg,7:F2} {s.majorPnl,9:F2} {s.pumpPnl,9:F2} {s.sqzPnl,9:F2} {s.bbwPnl,9:F2}");
+        }
+    }
+
     private static async Task<List<IBinanceKline>> FetchKlinesAsync(string sym, int pages = PAGES)
     {
         var all = new List<List<IBinanceKline>>();
@@ -1489,6 +1745,32 @@ internal static class Program
         if (args.Length > 0 && args[0] == "--target70-90d")
         {
             await RunTarget70Async(pages: 18);  // ~90일
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--live-all")
+        {
+            // [v5.22.1] 라이브 로직 백테스트 — AI 게이트 제거, 가드만으로 진입
+            //   1/10/30/60/90/180/360일 7개 기간 카테고리별 합산
+            await RunLiveAllPeriodsAsync();
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--ai-all")
+        {
+            // [v5.21.13] AI 게이트 포함 백테스트 — 라이브 봇 시뮬과 동일
+            //   기존 RunLogicBreakdownAsync = 가드만 시뮬 (AI 미포함)
+            //   본 모드 = 가드 + Lorentzian KNN (라이브 봇의 ML.NET 모델 근사) 게이트
+            //   AI 임계: pred.Prediction > 0 통과 (v5.21.12 임계 0.005 와 동급 수준)
+            await RunAiAllPeriodsAsync();
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--logic-1d")
+        {
+            await RunLogicBreakdownAsync(pages: 1);  // 1일 (실제 5일치 데이터, 페이징 최소 단위)
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--logic-10d")
+        {
+            await RunLogicBreakdownAsync(pages: 2);  // 10일
             return;
         }
         if (args.Length > 0 && args[0] == "--logic-30d")

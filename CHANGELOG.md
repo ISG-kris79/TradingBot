@@ -5,6 +5,26 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.2] - 2026-04-28
+
+### 🛑 AI 학습 자동 트리거 4곳 모두 비활성화
+
+#### 사용자 지적
+"ai 다 제거했는데 왜 학습을 하는거야?"
+
+#### 진단
+v5.22.0/22.1 에서 AI 게이트만 stub 처리. 학습 트리거 4곳은 그대로 호출 중:
+- TradingEngine.cs:1475 — 알트 데이터 수집 완료 시 즉시 TrainAllModelsAsync
+- TradingEngine.cs:3149 — 봇 시작 시 TriggerInitialMLNetTrainingIfNeededAsync
+- TradingEngine.cs:3353 — StartPeriodicTrainingAsync, StartPeriodicAiEntryProbScanAsync, TryStartHistoricalEntryAudit
+- TradingEngine.cs:8123 — 1시간 주기 _modelRetrainTimer
+
+→ 봇 시작 시 18개 ML 시스템(forecast_*, market_regime, exit_optimizer 등) 학습 시도 → CPU 폭주 + 메모리 점유
+
+#### Removed
+- 위 4곳 모두 주석 처리 — AI 학습 호출 영구 차단
+- StartModelRetrainTimer 본문 비움 (로그만 출력)
+
 ## [5.22.1] - 2026-04-28
 
 ### 🚪 SIMPLE-AI KNN 게이트도 제거 — 가드만으로 진입
