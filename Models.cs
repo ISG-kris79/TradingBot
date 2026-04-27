@@ -37,8 +37,10 @@ namespace TradingBot.Models
         // [Phase 12: PUMP 전략 지원] PUMP 전략 전용 레버리지
         public int PumpLeverage { get; set; } = 15;  // [v5.10.97] 20→15 하향
 
-        // [v5.21.10] PUMP — 6개월 백테스트 기반 타이트 통일 (15x 기준 TP 0.5% / SL 1.5%)
-        public decimal PumpTp1Roe { get; set; } = 7.5m;          // [v5.21.10] 15.0 → 7.5
+        // [v5.21.11 ROLLBACK] PUMP 타이트(0.5/1.5) 적용은 큰 적자 — 180일 WR 57.94% -$6,008
+        //   원인: PUMP 알트 변동성 큼 → SL 1.5% 노이즈 즉시 청산 → 승률 88%→58% 폭락
+        //   복구: 권장(1.0/3.0) 유지 — 180일 WR 81.69% +$199.80 (작아도 흑자)
+        public decimal PumpTp1Roe { get; set; } = 15.0m;         // [v5.21.11] 7.5 → 15.0 롤백 (TP 1.0% × 15x)
         public decimal PumpTp2Roe { get; set; } = 100.0m;          // 2차 익절 ROE (미사용, 레거시)
         public decimal PumpTimeStopMinutes { get; set; } = 120.0m; // 시간 손절(분)
         public decimal PumpStopDistanceWarnPct { get; set; } = 1.0m; // 손절거리 경고(비중축소)
@@ -49,7 +51,7 @@ namespace TradingBot.Models
         // 2차 트레일링: ROI +40% 시작 → 최고점 대비 ROI 5% 하락 시 50% 청산
         // 3차 나머지: 2차에서 +5% 내려가면 스탑로스
         // 초기 손절: ROI -40% (가격 -2%, 20x) — 진입 품질 개선으로 넓은 손절 유지 (찍고 날라가는 경우 대비)
-        public decimal PumpStopLossRoe { get; set; } = 22.5m;      // [v5.21.10] 45.0 → 22.5 (SL 1.5% × 15x)
+        public decimal PumpStopLossRoe { get; set; } = 45.0m;      // [v5.21.11] 22.5 → 45.0 롤백 (SL 3.0% × 15x — 변동성 흡수)
         public decimal PumpMargin { get; set; } = 200.0m;           // PUMP 전용 기본 진입 증거금 $200 고정
         public decimal PumpBreakEvenRoe { get; set; } = 25.0m;     // ROI +25% 시 본절 이동 (슬리피지 대응)
         // 주의: 0.15% 오프셋(슬리피지 방어)이 적용되어 실제 손절은 진입가 + 0.15% 근처로 설정됨
