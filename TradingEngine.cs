@@ -679,7 +679,27 @@ namespace TradingBot
             OnStatusLog?.Invoke($"⏱️ [수동청산-COOLDOWN] {symbol} {ManualCloseCooldown.TotalMinutes:F0}분 재진입 차단 등록");
         }
 
+        // [v5.21.7] IsEntryAllowed 디바운스 — 동일 (symbol, source) 5초 캐시
+        //   원인: BTC/ETH/SOL/XRP × MAJOR_ANALYZE 가 매 초 호출되어 게이트 검증 + 로그 폭주 → CPU 1코어 99% 점유
+        //   해결: 결과(allowed/blocked) 5초 캐시. ALLOW도 캐시(차단 후 즉시 진입 시도 방지 — 5초 내 중복 진입 차단)
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime ts, bool allowed, string reason)> _entryGateCache = new();
+        private static readonly TimeSpan EntryGateCacheTtl = TimeSpan.FromSeconds(5);
+
         private bool IsEntryAllowed(string symbol, string source, out string blockReason)
+        {
+            string cacheKey = $"{symbol}|{source}";
+            if (_entryGateCache.TryGetValue(cacheKey, out var cached) &&
+                (DateTime.UtcNow - cached.ts) < EntryGateCacheTtl)
+            {
+                blockReason = cached.reason;
+                return cached.allowed;
+            }
+            bool result = IsEntryAllowedCore(symbol, source, out blockReason);
+            _entryGateCache[cacheKey] = (DateTime.UtcNow, result, blockReason);
+            return result;
+        }
+
+        private bool IsEntryAllowedCore(string symbol, string source, out string blockReason)
         {
             blockReason = string.Empty;
             // [v5.20.3] 가드 호출 자체를 명시적 로그 → 우회 여부 즉시 추적

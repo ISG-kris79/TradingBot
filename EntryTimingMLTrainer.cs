@@ -323,13 +323,11 @@ namespace TradingBot
                 _isModelLoaded = true;
                 Console.WriteLine($"[EntryTimingML] 모델 로드 성공: {loadPath}");
 
-                // [WPF최적화 2] PredictionEnginePool 초기화 (실패해도 진입에 영향 없음)
-                try { InitializeEnginePool(); }
-                catch (Exception poolEx)
-                {
-                    Console.WriteLine($"[EntryTimingML] PredictionEnginePool 초기화 예외 무시: {poolEx.Message}");
-                    _enginePool = null;
-                }
+                // [v5.21.7 메모리 최적화] PredictionEnginePool 비활성화
+                //   원인: 4 variant × Pool = 메모리 1GB+ 점유 (총 봇 메모리 2.1GB 의 약 절반)
+                //   봇은 단일 스레드 추론이 대부분이라 Pool 의 다중 인스턴스 캐싱 이점 없음
+                //   해결: 캐시 엔진(Predict 메서드 내부 _cachedEngine, 단일 인스턴스) 폴백만 사용
+                _enginePool = null;
 
                 return true;
             }

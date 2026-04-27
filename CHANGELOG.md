@@ -5,6 +5,23 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.21.7] - 2026-04-27
+
+### ⚡ CPU 16% / 메모리 2.1GB 과다 사용 해결 (정상치 2~3배)
+
+#### 측정값 (v5.21.6, 27분 가동)
+- 메모리: 2,175 MB (정상 600-800 MB 대비 2~3배)
+- CPU 누적: 1,847s / 27분 = 1코어 114% 점유
+- 단일 스레드가 1,464s (전체 79%) 점유 — IsEntryAllowed 무한 폴링
+
+#### 근본 원인
+1. **GATE 폭주**: BTC/ETH/SOL/XRP × MAJOR_ANALYZE 가 매 초 호출 → IsEntryAllowed 가드 검증 + 로그 출력 폭주 → 1코어 99% 점유
+2. **PredictionEnginePool 메모리 점유**: 4 variant × Pool = 메모리 1GB+ 점유. 단일 스레드 추론 대부분이라 Pool 이점 없음
+
+#### Fixed
+- **TradingEngine.IsEntryAllowed**: 5초 결과 캐시 wrapper 추가 (CPU 50%+ 감소 예상)
+- **EntryTimingMLTrainer.LoadModel**: PredictionEnginePool 비활성화 → 캐시 엔진(단일 인스턴스) 폴백만 사용 (메모리 500MB+ 감소 예상)
+
 ## [5.21.6] - 2026-04-27
 
 ### 🚨 ROOT FIX: LoadModel 스키마 검증 false-fail → 4 variant 영구 FAIL 해결
