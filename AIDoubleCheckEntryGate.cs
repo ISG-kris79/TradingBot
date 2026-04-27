@@ -62,9 +62,11 @@ namespace TradingBot
         public event Action<string>? OnAlert;
         public event Action<AiLabeledSample>? OnLabeledSample;
         
-        // [v3.0.7] ML.NET 모델 로드 시 게이트 활성화 (Default 또는 variant 중 하나만 로드돼도 Ready)
-        public bool IsReady => _mlTrainer.IsModelLoaded || _mlTrainerMajor.IsModelLoaded
-                            || _mlTrainerPump.IsModelLoaded || _mlTrainerSpike.IsModelLoaded;
+        // [v5.22.0 SIMPLE-AI] ML.NET LightGBM 4 variant 시스템 폐기 → 항상 Ready
+        //   원인: 학습 부실로 모델이 모든 입력에 0~0.6% 출력 → 12+시간 진입 0건
+        //   해결: 단순 Lorentzian KNN(LorentzianV2Service) 가 TradingEngine 의 IsEntryAllowed 안에서 게이트 역할
+        //         이 클래스는 stub 으로 동작 (IsReady=true, EvaluateEntryAsync 즉시 통과)
+        public bool IsReady => true;
 
         /// <summary>
         /// [v5.10.76 Phase 3] 심볼 + signalSource로 적절한 ML trainer 선택
@@ -311,15 +313,18 @@ namespace TradingBot
             decimal currentPrice,
             CancellationToken token = default)
         {
+            // [v5.22.0 SIMPLE-AI] 4 variant ML.NET 폐기 — 항상 통과
+            //   실제 AI 게이트는 TradingEngine.IsEntryAllowedCore 안의 Lorentzian KNN 이 담당
+            //   본 메서드는 호출 흐름 유지용 stub (49 곳 호출 호환성)
+            await Task.CompletedTask;
+            return (true, "BYPASS_SIMPLE_AI", new AIEntryDetail());
+
+            // 기존 ML.NET 검증 코드 — 영구 비활성 (참고용 dead code)
+            #pragma warning disable CS0162
             var detail = new AIEntryDetail();
 
             try
             {
-                // ═══════════════════════════════════════════════════════════════
-                // PHASE 1: 검증 (Validation) — 예측 전 자격심사
-                // 목적: 예측을 돌려도 의미 없는 상태를 선제 차단
-                // ═══════════════════════════════════════════════════════════════
-
                 if (!IsReady)
                 {
                     OnLog?.Invoke($"❌ [{symbol}] [VALIDATE] AI 모델 미준비");
@@ -480,6 +485,7 @@ namespace TradingBot
                 OnLog?.Invoke($"❌ [{symbol}] [GATE_EXCEPTION] {ex.Message}");
                 return (false, $"Exception_{ex.Message}", detail);
             }
+            #pragma warning restore CS0162
         }
 
         /// <summary>

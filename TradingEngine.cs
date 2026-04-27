@@ -203,6 +203,15 @@ namespace TradingBot
         // [v4.5.5] 알트 불장 자동 감지기
         private readonly AltBullMarketDetector _altBullDetector = new();
 
+        // [v5.22.0 SIMPLE-AI] 단일 Lorentzian KNN 분류기 — ML.NET 4 variant 대체
+        //   매 진입 시 KNN pred 검사: pred > 0 = 상승 신호 → 통과 / pred ≤ 0 = 하락 → 차단
+        //   학습: BackfillFromCandles (5m × 300+ 봉 = 25시간+ 데이터 필요)
+        //   심볼별 인스턴스 자동 생성 (ConcurrentDictionary 내부)
+        private readonly TradingBot.Services.LorentzianV2.LorentzianV2Service _simpleAi
+            = new TradingBot.Services.LorentzianV2.LorentzianV2Service();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _simpleAiBackfilled
+            = new(StringComparer.OrdinalIgnoreCase);
+
         // [v4.5.6] AI 모델 정확도 추적 (하드 체크 자동 해제용)
         private double _pumpModelAccuracy = 0.0;
         private double _pumpSpikeAccuracy = 0.0;   // [v4.5.8] 급등진입 모델
@@ -969,6 +978,40 @@ namespace TradingBot
                     }
                 }
                 catch { /* 가드 실패 시 차단하지 않음 */ }
+            }
+
+            // [v5.22.0 SIMPLE-AI] 단일 Lorentzian KNN 게이트 — ML.NET 4 variant 폐기 후 유일한 AI 검증
+            //   pred > 0 = 상승 신호 → 통과 / pred ≤ 0 = 하락 또는 중립 → 차단
+            //   심볼별 백필 1회 (5m × 300+ 봉 = 25시간+ 데이터) 후 KNN 활성
+            try
+            {
+                if (_marketDataManager?.KlineCache != null
+                    && _marketDataManager.KlineCache.TryGetValue(symbol, out var kl5m))
+                {
+                    if (kl5m != null && kl5m.Count >= 305)
+                    {
+                        // 24시간 1회 백필 (재학습)
+                        if (!_simpleAiBackfilled.TryGetValue(symbol, out var lastBf)
+                            || (DateTime.UtcNow - lastBf).TotalHours >= 24)
+                        {
+                            int added = _simpleAi.BackfillFromCandles(symbol, kl5m.ToList());
+                            _simpleAiBackfilled[symbol] = DateTime.UtcNow;
+                            OnStatusLog?.Invoke($"🧠 [SIMPLE-AI] {symbol} KNN 백필 완료 ({added} 샘플)");
+                        }
+
+                        var pred = _simpleAi.Predict(symbol, kl5m.ToList());
+                        if (pred.IsReady && pred.Prediction <= 0)
+                        {
+                            blockReason = $"SIMPLE_AI_BEARISH:lor={pred.Prediction}";
+                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (Lorentzian KNN 하락/중립 신호)");
+                            return false;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [SIMPLE-AI] {symbol} 예외 무시 (가드 통과로 진행): {ex.Message}");
             }
 
             // [v5.20.3] 모든 가드 통과 시 명시 로그 → "가드 통과인지 우회인지" 즉시 식별 가능
@@ -7943,8 +7986,14 @@ namespace TradingBot
         private bool _isInitialTrainingComplete;
         public bool IsInitialTrainingComplete
         {
+            // [v5.22.0 SIMPLE-AI] 4 variant ML.NET 폐기 — 항상 완료 상태로 간주
+            //   초기학습 자동 트리거(StartOptionAInitialTrainingAsync) 호출 안 됨 → CPU/메모리 절감
+            //   실제 AI 게이트는 IsEntryAllowedCore 안의 LorentzianV2Service KNN 가 담당
             get
             {
+                return true;
+                #pragma warning disable CS0162
+                // 기존 ML.NET 검증 코드 — dead code (참고용)
                 if (_isInitialTrainingComplete) return true;
                 try
                 {

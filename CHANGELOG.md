@@ -5,6 +5,36 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.0] - 2026-04-27
+
+### 💥 BREAKING — ML.NET 4 variant 시스템 폐기 → 단일 Lorentzian KNN 으로 교체
+
+#### 사용자 결정
+"AI 학습쪽이 다 엉망이고 망가졌다, 모두 제거하고 단순한 Lorentzian KNN 기반 재구축만 해"
+
+#### 폐기된 ML.NET 시스템
+- 4 variant LightGBM (Default/Major/Pump/Spike) — 학습 부실로 모든 입력에 0~0.6% 출력
+- EntryTimingMLTrainer / TriggerInitialTrainingAsync / synthetic positive fix 등
+- 12+ 시간 진입 0건, CPU 폭주, 메모리 2GB+ 점유 등 모든 부작용
+
+#### 신규 SIMPLE-AI 게이트
+- `LorentzianV2Service` (이미 존재하던 KNN 분류기) 를 메인 AI 게이트로 사용
+- `TradingEngine.IsEntryAllowedCore` 안에 단순 호출:
+  - 5m × 305+ 봉 KlineCache 보유 시 KNN 백필 (24h 1회)
+  - `pred.Prediction <= 0` 이면 차단(`SIMPLE_AI_BEARISH:lor=N`)
+  - `pred.Prediction > 0` 이면 통과
+- 7 feature, K=8 neighbors, MaxBarsBack=2000 (LorentzianV2 기본값)
+
+#### Stub 처리 (코드 호환성 유지)
+- `AIDoubleCheckEntryGate.IsReady`: 항상 true
+- `AIDoubleCheckEntryGate.EvaluateEntryAsync`: 즉시 통과 (`BYPASS_SIMPLE_AI`)
+- `TradingEngine.IsInitialTrainingComplete`: 항상 true → 자동 학습 트리거 영구 비활성
+
+#### 예상 효과
+- 진입 활성화: ML 임계 65% 차단 해소
+- CPU/메모리: 4 variant 학습/추론 폐기 → 50% 이상 절감 예상
+- 안정성: 학습 실패 시나리오 (synthetic positive, AUC 예외, zip 미생성, 30KB 임계 등) 전부 무관
+
 ## [5.21.12] - 2026-04-27
 
 ### 🚪 AI 임계 임시 완화 65% → 0.5% — 학습 부실 모델 회피
