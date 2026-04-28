@@ -1280,8 +1280,7 @@ namespace TradingBot
         private DateTime _lastTimeOutProbScanTime = DateTime.MinValue; // 마지막 TimeOut 스캔 시각
         private static readonly TimeSpan TimeOutProbScanThreshold = TimeSpan.FromHours(1);   // 60분 공백 시 가동
         private static readonly TimeSpan TimeOutProbScanInterval  = TimeSpan.FromMinutes(20); // 스캔은 20분에 1회 재시도 제한
-        private bool _initialMLNetTrainingTriggered = false;
-        private int _manualInitialTrainingRunning = 0;
+        // [v5.22.13] _initialMLNetTrainingTriggered / _manualInitialTrainingRunning 제거
         private TimeSpan _entryWarmupDuration = TimeSpan.FromSeconds(30); // 설정에서 로드
         private DateTime _lastEntryWarmupLogTime = DateTime.MinValue;
         private DateTime _lastAiGateNotReadyTelegramTime = DateTime.MinValue;
@@ -1508,14 +1507,7 @@ namespace TradingBot
                 _marketHistoryService?.RegisterSymbol(symbol);
                 _ = _marketHistoryService?.RequestBackfillAsync(symbol, _cts?.Token ?? CancellationToken.None);
 
-                // [v4.7.9] 거래량 급증 감지 심볼 즉시 학습 대상에 포함
-                if (_trainedSymbols.TryAdd(symbol, true))
-                {
-                    OnSymbolTrained?.Invoke(symbol);
-                    string trainLog = $"✅ [동적학습등록] {symbol} — 거래량 급증 감지로 즉시 진입 게이트 통과 허용";
-                    OnStatusLog?.Invoke(trainLog);
-                    LoggerService.Info(trainLog); // [v4.9.2]
-                }
+                // [v5.22.13] 동적학습등록 제거 — AI 시스템 폐기 (2026-04-29)
             };
 
             _marketDataManager.OnTickerUpdate += HandleTickerUpdate;
@@ -2601,15 +2593,7 @@ namespace TradingBot
                 OnAlert?.Invoke("🚀 최적화 엔진 가동 (WebSocket 모드) + 15-5-1 엔진 활성");
                 LoggerService.Info("엔진 시작: WebSocket 모드 + 15-5-1");
 
-                // [v4.7.0] 초기 학습 상태 안내
-                if (IsInitialTrainingComplete)
-                {
-                    OnAlert?.Invoke("✅ [초기학습] 완료 상태 — 진입 활성화");
-                }
-                else
-                {
-                    OnAlert?.Invoke("⚠️ [초기학습] 미완료 — 백그라운드 자동 학습 진행 중 (6개월 데이터)");
-                }
+                // [v5.22.13] 초기학습 안내 제거 — AI 시스템 폐기 (2026-04-29)
 
                 foreach (var symbol in _symbols)
                 {
@@ -2685,8 +2669,8 @@ namespace TradingBot
                     lock (_posLock) { return new HashSet<string>(_activePositions.Keys, StringComparer.OrdinalIgnoreCase); }
                 };
                 TelegramService.Instance.OnRequestStop = StopEngine;
-                // [v4.7.0] /train 명령 → 옵션A 초기학습 (6개월 다운로드 + 학습 + 검증)
-                TelegramService.Instance.OnRequestTrain = (ct) => StartOptionAInitialTrainingAsync(token: ct);
+                // [v5.22.13] /train 명령 비활성화 — AI 시스템 폐기 (2026-04-29)
+                TelegramService.Instance.OnRequestTrain = (ct) => Task.FromResult("ℹ️ AI 시스템 제거됨 — /train 명령은 무효 처리됨");
                 TelegramService.Instance.OnRequestDroughtScan = ForceDroughtDiagnosticAsync;
                 // [AI 제거] /validate 명령 핸들러 제거
                 TelegramService.Instance.OnRequestValidate = (ct) => Task.FromResult("ℹ️ AI Gate 제거됨 (validate 비활성화)");
@@ -2710,37 +2694,7 @@ namespace TradingBot
                 _ = ProcessAccountChannelAsync(token); // [Agent 2] 계좌 업데이트 처리 시작
                 _ = ProcessOrderChannelAsync(token);   // [Agent 2] 주문 업데이트 처리 시작
 
-                // [v4.7.6] flag 파일 상태 로그 (매 재시작마다 재학습 원인 진단)
-                bool flagExists = System.IO.File.Exists(InitialTrainingFlagPath);
-                OnStatusLog?.Invoke($"📂 [초기학습] flag 경로: {InitialTrainingFlagPath} (존재={flagExists})");
-
-                // [v4.7.1] 초기 학습 미완료 시 백그라운드 자동 시작 (사용자 수동 /train 불필요)
-                // flag 파일 없으면 즉시 다운로드+학습 트리거
-                if (!IsInitialTrainingComplete && !IsInitialTrainingInProgress)
-                {
-                    OnAlert?.Invoke("🚀 [자동초기학습] 봇 시작 → 6개월 데이터 다운로드 + 학습 자동 시작 (백그라운드)");
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            // 30초 대기 (엔진 완전 초기화 보장)
-                            await Task.Delay(TimeSpan.FromSeconds(30), token);
-                            await StartOptionAInitialTrainingAsync(
-                                monthsBack: 6,
-                                topAltCount: 100,
-                                includeSpike1m: true,
-                                token: token);
-                        }
-                        catch (Exception ex)
-                        {
-                            OnAlert?.Invoke($"❌ [자동초기학습] 오류: {ex.Message}");
-                        }
-                    }, token);
-                }
-                else
-                {
-                    OnAlert?.Invoke($"✅ [초기학습] 이미 완료됨 (flag 있음) — 자동 재학습 건너뜀");
-                }
+                // [v5.22.13] 초기학습 자동 트리거 + flag 진단 로그 통째 제거 — AI 시스템 폐기 (2026-04-29)
 
                 // [AI 제거] AI 학습 상태 UI 초기화 — 라벨링 통계만 파일에서 조회
                 {
@@ -2892,8 +2846,8 @@ namespace TradingBot
                                             }
 
                                             // [v4.6.0] PUMP 전용 HTF 체크 — H1 OR M15 중 하나만 충족하면 통과
-                                            // [v4.7.0] 초기학습 완료 시 우회 (AI 단독 판단)
-                                            if (!IsInitialTrainingComplete && !IsAiModelReadyForPumpEntry && _macdCrossService != null)
+                                            // [v5.22.13] 초기학습 우회 조건 제거 — AI 폐기 후 항상 HTF 체크 수행
+                                            if (!IsAiModelReadyForPumpEntry && _macdCrossService != null)
                                             {
                                                 var (isBullish, htfDetail) = await _macdCrossService.CheckPumpHtfBullishAsync(
                                                     pumpKey, _cts?.Token ?? CancellationToken.None);
@@ -3373,57 +3327,7 @@ namespace TradingBot
         // [AI 제거] TriggerInitialMLNetTrainingIfNeededAsync 전체 제거 — AITrainer / AIPredictor 의존
 
 
-        /// <summary>
-        /// [v4.7.0] 옵션 A 초기 학습 — 6개월 데이터 다운로드 + 학습 + 검증
-        /// 봇이 정지 상태에서도 실행 가능 (시작 전 학습 목적)
-        /// </summary>
-        public async Task<string> StartOptionAInitialTrainingAsync(
-            int monthsBack = 6,
-            int topAltCount = 100,
-            bool includeSpike1m = true,
-            CancellationToken token = default)
-        {
-            if (IsInitialTrainingInProgress)
-                return "⚠️ 이미 초기 학습 진행 중";
-
-            try
-            {
-                OnAlert?.Invoke($"🚀 [옵션A 초기학습] 시작 — 메이저 4 + 알트 {topAltCount} × {monthsBack}개월");
-
-                // dbManager 초기화 보장 (봇 정지 상태에서 호출 가능)
-                if (_dbManager == null)
-                {
-                    OnAlert?.Invoke("❌ DbManager 미초기화 — 봇을 한 번 시작했다가 정지한 후 재시도");
-                    return "DbManager 미초기화";
-                }
-
-                var (success, message) = await TriggerInitialDownloadAndTrainAsync(
-                    monthsBack: monthsBack,
-                    topAltCount: topAltCount,
-                    includeOneMinuteForSpike: includeSpike1m,
-                    token: token);
-
-                string result = success
-                    ? $"✅ [옵션A 초기학습] 완료 — {message}"
-                    : $"⚠️ [옵션A 초기학습] 미완료 — {message}";
-                OnAlert?.Invoke(result);
-                return result;
-            }
-            catch (Exception ex)
-            {
-                string err = $"❌ [옵션A 초기학습] 오류: {ex.Message}";
-                OnAlert?.Invoke(err);
-                return err;
-            }
-        }
-
-        public Task<string> ForceInitialAiTrainingAsync(CancellationToken token = default)
-        {
-            // [AI 제거] 모든 ML 모델 폐기 — AI 학습 자체가 더 이상 존재하지 않음
-            const string msg = "ℹ️ AI 시스템 제거됨 — 수동 학습 호출은 무효 처리됨";
-            OnAlert?.Invoke(msg);
-            return Task.FromResult(msg);
-        }
+        // [v5.22.13] StartOptionAInitialTrainingAsync / ForceInitialAiTrainingAsync 통째 제거 — AI 시스템 폐기 (2026-04-29)
 
         public async Task<string> ForceDroughtDiagnosticAsync(CancellationToken token = default)
         {
@@ -6692,131 +6596,11 @@ namespace TradingBot
         // [v4.5.14] 중복 학습 방지 플래그 (OnFirstAltCollectionComplete + 2분 타이머 중복 방지)
         private int _mlTrainingInProgress = 0;
 
-        // [v4.7.0] 초기 학습 완료 여부 (다운로드 + 학습 + 검증 통과 시 true)
-        // 영속화: %LOCALAPPDATA%\TradingBot\Models\initial_training_ready.flag
-        private static readonly string InitialTrainingFlagPath = System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "TradingBot", "Models", "initial_training_ready.flag");
-
-        private bool _isInitialTrainingComplete;
-        public bool IsInitialTrainingComplete
-        {
-            // [v5.22.0 SIMPLE-AI] 4 variant ML.NET 폐기 — 항상 완료 상태로 간주
-            //   초기학습 자동 트리거(StartOptionAInitialTrainingAsync) 호출 안 됨 → CPU/메모리 절감
-            //   실제 AI 게이트는 IsEntryAllowedCore 안의 LorentzianV2Service KNN 가 담당
-            get
-            {
-                return true;
-                #pragma warning disable CS0162
-                // 기존 ML.NET 검증 코드 — dead code (참고용)
-                if (_isInitialTrainingComplete) return true;
-                try
-                {
-                    if (System.IO.File.Exists(InitialTrainingFlagPath))
-                    {
-                        // [v5.21.3] flag 있어도 ML.NET EntryTiming 4 variant zip 모두 검증
-                        //   사용자 사례: 12시간 진입 0건 = ML/TF 점수 1E-15 = 모델 zip 미존재
-                        //   AUC 예외로 학습 실패 시 zip 미생성되는데 flag만 남음 → 재학습 안 트리거
-                        //   해결: flag + 4 variant 모두 존재할 때만 "완료" 인정
-                        string modelDir = System.IO.Path.Combine(
-                            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                            "TradingBot", "Models");
-                        string[] requiredModels = {
-                            "EntryTimingModel.zip",
-                            "EntryTimingModel_Major.zip",
-                            "EntryTimingModel_Pump.zip",
-                            "EntryTimingModel_Spike.zip",
-                            "pump_signal_normal.zip"
-                        };
-                        var missing = new List<string>();
-                        foreach (var m in requiredModels)
-                        {
-                            string p = System.IO.Path.Combine(modelDir, m);
-                            if (!System.IO.File.Exists(p) || new System.IO.FileInfo(p).Length < 1024) // [v5.21.8] 30KB → 1KB
-                                missing.Add(m);
-                        }
-                        if (missing.Count > 0)
-                        {
-                            OnStatusLog?.Invoke($"⚠️ [초기학습] flag 파일 있지만 모델 zip 미존재/손상: {string.Join(",", missing)} → 재학습 필요");
-                            try { System.IO.File.Delete(InitialTrainingFlagPath); OnStatusLog?.Invoke("🗑️ [초기학습] 잘못된 flag 자동 삭제 — 봇 재시작 시 강제 재학습"); } catch { }
-                            return false;
-                        }
-                        _isInitialTrainingComplete = true;
-                        return true;
-                    }
-                }
-                catch { }
-                return false;
-            }
-            private set
-            {
-                _isInitialTrainingComplete = value;
-                // [v4.7.6] flag 파일은 write-only, 절대 delete 하지 않음
-                // (이전 버전에서 검증 실패 시 setter가 flag를 삭제하여 재시작마다 재학습 루프 발생)
-                if (!value) return;
-
-                // [v5.21.5 ROOT FIX] setter 에서도 EntryTimingModel*.zip 4개 검증
-                //   기존: 다른 학습 시스템(forecast_*, market_regime 등)이 끝나면 setter→flag 작성
-                //         → flag 만 살아있고 EntryTimingModel*.zip 4개는 미생성 → 진입 영구 차단
-                //   수정: setter 도 4개 zip 존재 + 30KB+ 검증 후에만 flag 작성, 누락 시 거부
-                try
-                {
-                    string modelDir = System.IO.Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                        "TradingBot", "Models");
-                    string[] requiredModels = {
-                        "EntryTimingModel.zip",
-                        "EntryTimingModel_Major.zip",
-                        "EntryTimingModel_Pump.zip",
-                        "EntryTimingModel_Spike.zip",
-                        "pump_signal_normal.zip"
-                    };
-                    var missing = new List<string>();
-                    foreach (var m in requiredModels)
-                    {
-                        string p = System.IO.Path.Combine(modelDir, m);
-                        if (!System.IO.File.Exists(p) || new System.IO.FileInfo(p).Length < 30 * 1024)
-                            missing.Add(m);
-                    }
-                    if (missing.Count > 0)
-                    {
-                        _isInitialTrainingComplete = false;
-                        OnStatusLog?.Invoke($"⛔ [초기학습] flag 작성 거부 — 필수 zip 누락: {string.Join(",", missing)}");
-                        return;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ [초기학습] zip 검증 중 예외: {ex.Message} → flag 작성 진행");
-                }
-
-                try
-                {
-                    System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(InitialTrainingFlagPath)!);
-                    System.IO.File.WriteAllText(InitialTrainingFlagPath, $"completed_at={DateTime.UtcNow:o}\n");
-                    OnStatusLog?.Invoke($"✅ [초기학습] flag 저장: {InitialTrainingFlagPath}");
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ [초기학습] flag 파일 저장 실패: {ex.Message}");
-                }
-            }
-        }
-        public bool IsInitialTrainingInProgress { get; private set; }
-        // [v4.7.6] InitialTrainingMinAccuracy 제거 (하드코딩 게이트 철폐)
-        // [v4.7.6] 디버깅용 — flag 경로 확인 (봇 시작 시 1회 로그 출력)
-        public string InitialTrainingFlagPathForDebug => InitialTrainingFlagPath;
-        public event Action<string>? OnInitialTrainingProgress;
-        public event Action<bool>? OnInitialTrainingCompleted; // (success)
-        // [v4.7.3] 구조화된 다운로드 진행률 (ETA 계산용)
-        public event Action<TradingBot.Services.HistoricalDataDownloader.DownloadProgress>? OnInitialTrainingDownloadProgress;
-
-        // [v4.7.4] 심볼별 학습 완료 추적 — 메이저 완료 시 즉시 진입 허용
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _trainedSymbols
-            = new(StringComparer.OrdinalIgnoreCase);
-        public bool IsSymbolTrained(string symbol) =>
-            IsInitialTrainingComplete || _trainedSymbols.ContainsKey(symbol);
-        public int TrainedSymbolCount => _trainedSymbols.Count;
+        // [v5.22.13] 초기학습 인프라 통째 제거 — AI 시스템 폐기 (2026-04-29)
+        //   IsInitialTrainingComplete / InitialTrainingFlagPath / _isInitialTrainingComplete /
+        //   IsInitialTrainingInProgress / InitialTrainingFlagPathForDebug /
+        //   OnInitialTrainingProgress / OnInitialTrainingCompleted / OnInitialTrainingDownloadProgress /
+        //   _trainedSymbols / IsSymbolTrained / TrainedSymbolCount — 모두 제거
 
         // [v4.9.0] AI Insight Panel 지원 — 활성 포지션 + 현재가 조회 헬퍼
         public List<TradingBot.Shared.Models.PositionInfo> GetActivePositionSnapshot()
@@ -6851,13 +6635,8 @@ namespace TradingBot
             price = 0m;
             return false;
         }
-        public event Action<string>? OnSymbolTrained;
-
-        /// <summary>
-        /// [v4.7.0] 진입 가능 여부 — IsInitialTrainingComplete 시에만 진입 허용
-        /// 봇 자체는 시작 가능하지만 진입 라우터에서 차단
-        /// </summary>
-        public bool CanEnterPosition => IsInitialTrainingComplete;
+        // [v5.22.13] OnSymbolTrained / CanEnterPosition 제거 — AI 시스템 폐기 (2026-04-29)
+        public bool CanEnterPosition => true;
 
         /// <summary>[v3.8.1] 전체 ML 모델 1시간 주기 자동 재학습</summary>
         private void StartModelRetrainTimer()
@@ -6924,24 +6703,7 @@ namespace TradingBot
 
         }
 
-        /// <summary>
-        /// [v4.7.0] 옵션 A — 6개월 과거 데이터 다운로드 → 라벨링 → 학습 → 검증
-        /// 봇 시작 전 1회 실행. 정확도 70%+ 달성 시 IsInitialTrainingComplete=true
-        /// </summary>
-        public async Task<(bool success, string message)> TriggerInitialDownloadAndTrainAsync(
-            int monthsBack = 6,
-            int topAltCount = 100,
-            bool includeOneMinuteForSpike = true,
-            CancellationToken token = default)
-        {
-            if (IsInitialTrainingInProgress)
-                return (false, "이미 초기 학습 진행 중");
-
-            // [AI 제거] 초기 학습/다운로드 메서드 본체 통째 제거
-            await Task.CompletedTask;
-            try { OnInitialTrainingCompleted?.Invoke(false); } catch { }
-            return (false, "AI 제거됨 (초기학습 비활성화)");
-        }
+        // [v5.22.13] TriggerInitialDownloadAndTrainAsync 통째 제거 — AI 시스템 폐기 (2026-04-29)
 
         /// <summary>IBinanceKline → CandleData 변환 (지표 포함)</summary>
         private List<CandleData> ConvertKlinesToCandleData(string symbol, List<IBinanceKline> klines)
@@ -7216,12 +6978,7 @@ namespace TradingBot
             _marketHistoryService?.RegisterSymbol(symbol);
             _ = _marketHistoryService?.RequestBackfillAsync(symbol, token);
 
-            // [v4.7.9] SPIKE 감지 심볼 즉시 학습 대상에 포함 (거래량 급증과 동일 처리)
-            if (_trainedSymbols.TryAdd(symbol, true))
-            {
-                OnSymbolTrained?.Invoke(symbol);
-                OnStatusLog?.Invoke($"✅ [동적학습등록] {symbol} — SPIKE 감지로 즉시 진입 게이트 통과 허용");
-            }
+            // [v5.22.13] SPIKE 동적학습등록 제거 — AI 시스템 폐기 (2026-04-29)
 
             bool isMajor = MajorSymbols.Contains(symbol);
 
@@ -8117,18 +7874,7 @@ namespace TradingBot
             OnLiveLog?.Invoke($"📤 [{symbol}] {decisionKr} 주문 요청 중 | 가격 ${currentPrice:F2} | 소스: {signalSource}");
             EntryLog("START", "INFO", $"price={currentPrice:F4} source={signalSource}");
 
-            // ═══════════════════════════════════════════════════════════════
-            // [v4.7.7] ROUTER 0. 심볼별 데이터 준비 검증
-            // 다운로드 완료된 심볼만 진입 허용. 미다운로드 심볼만 차단.
-            // flag 파일 있으면 IsInitialTrainingComplete=true → IsSymbolTrained 전체 허용
-            // ═══════════════════════════════════════════════════════════════
-            if (!IsSymbolTrained(symbol))
-            {
-                EntryLog("INITIAL_TRAINING", "BLOCK", $"{symbol} 데이터 다운로드 대기");
-                OnStatusLog?.Invoke($"⛔ [데이터 대기] {symbol} — 다운로드 완료 시 자동 진입 허용 ({_trainedSymbols.Count}개 활성화됨)");
-                return;
-            }
-
+            // [v5.22.13] ROUTER 0 (심볼별 데이터 준비 검증) 제거 — AI 시스템 폐기 (2026-04-29)
             // ═══════════════════════════════════════════════════════════════
             // [ROUTER] 1. 공통 검증
             // ═══════════════════════════════════════════════════════════════
@@ -8326,8 +8072,8 @@ namespace TradingBot
                 || signalSource == "PUMP_REVERSE"
                 || signalSource == "CRASH_REVERSE";
 
-            // [AI 제거] AI Gate 우회 조건 단순화 — IsInitialTrainingComplete 만 평가
-            if (!IsInitialTrainingComplete && !isVolatilitySignalPath && latestCandle != null && latestCandle.ATR > 0 && currentPrice > 0)
+            // [v5.22.13] 메이저 변동성 가드 — 항상 평가 (AI 폐기 후)
+            if (!isVolatilitySignalPath && latestCandle != null && latestCandle.ATR > 0 && currentPrice > 0)
             {
                 // 메이저 일반 진입만: ATR 3%+, 5분봉 5%+ 차단
                 float atrPriceRatio = latestCandle.ATR / (float)currentPrice * 100f;
@@ -8951,8 +8697,8 @@ namespace TradingBot
         {
             var EntryLog = ctx.EntryLog;
 
-            // [AI 제거] AI Gate 우회 조건 단순화 — IsInitialTrainingComplete 만 평가
-            if (!IsInitialTrainingComplete && ctx.LatestCandle != null)
+            // [v5.22.13] Major LONG 필터 — 항상 평가 (AI 폐기 후)
+            if (ctx.LatestCandle != null)
             {
                 // 1. VWAP 아래 → LONG 차단 (가격이 VWAP 아래면 매도 우위)
                 if (ctx.LatestCandle.VWAP > 0 && ctx.LatestCandle.Price_VWAP_Distance_Pct < -0.3f)
@@ -9062,8 +8808,8 @@ namespace TradingBot
             await EvaluateAiPredictorForEntry(ctx, applyMajorBonuses: false);
 
             // 2. SHORT 전용 다중 필터 (v3.5.3: 0승10패 → 엄격 필터)
-            // [v4.7.0] 초기학습 완료 시 모든 SHORT 하드 필터 우회 (AI 단독 판단)
-            if (!IsInitialTrainingComplete && ctx.LatestCandle != null)
+            // [v5.22.13] SHORT 필터 — 항상 평가 (AI 폐기 후)
+            if (ctx.LatestCandle != null)
             {
                 // 2-1. RSI 과매도 + 가격 MA20 위 → 차단
                 bool shortPriceAboveMa20 = ctx.LatestCandle.Close >= (decimal)ctx.LatestCandle.SMA_20;

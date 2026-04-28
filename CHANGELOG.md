@@ -5,6 +5,36 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.13] - 2026-04-29
+
+### 🧹 잔존 InitialTraining/TrainedSymbol/OnSymbolTrained 전부 진짜 제거
+
+#### 사용자 보고
+"긴급 알람에 초기학습 메시지 뜨잖아 프로젝트 전체 다 뒤져서 정리좀 해 빠른로그도 안올라오고"
+
+#### Removed (TradingEngine.cs)
+- IsInitialTrainingComplete / IsInitialTrainingInProgress / InitialTrainingFlagPath / _isInitialTrainingComplete
+- OnInitialTrainingProgress / OnInitialTrainingCompleted / OnInitialTrainingDownloadProgress 이벤트
+- _trainedSymbols / IsSymbolTrained / TrainedSymbolCount / OnSymbolTrained
+- StartOptionAInitialTrainingAsync (39줄) / ForceInitialAiTrainingAsync / TriggerInitialDownloadAndTrainAsync (14줄)
+- 봇 시작 자동 학습 트리거 + 알림 4곳
+- TelegramService.OnRequestTrain stub 으로 변경
+- ROUTER 0 IsSymbolTrained 차단 게이트 → 항상 통과
+- `!IsInitialTrainingComplete &&` 우회 조건 4곳 제거 → 가드 항상 평가 (PUMP HTF, 변동성/LONG/SHORT 필터 진짜 작동)
+
+#### Removed (MainViewModel.cs)
+- InitialTraining* 프로퍼티 8개 + 백킹 필드 + 타이머/시간 필드 4개
+- _engine.OnInitialTraining* / OnSymbolTrained 이벤트 구독 (47줄)
+- StartOrUpdateInitialTrainingBanner (22줄) / StopInitialTrainingBanner (33줄)
+- _engine.IsInitialTrainingComplete / TrainedSymbolCount 호출
+
+#### 결과
+- "초기학습" 실행 코드: 0건
+- InitialTraining* / TrainedSymbol* 호출: 0건
+- "긴급" + "학습" 알림: 0건
+- 빌드 0 Error / WPF XAML 통과
+- stub 추가 0개
+
 ## [5.22.12] - 2026-04-28
 
 ### 🚨 WebSocket Watchdog 추가 — 끊김 폭주 시 강제 전체 재구독

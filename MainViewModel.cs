@@ -229,68 +229,7 @@ namespace TradingBot.ViewModels
             = new TradingBot.Models.CategoryStatsViewModel { Category = "SQUEEZE", Icon = "📊", Title = "SQUEEZE" };
         private System.Threading.Timer? _categoryStatsTimer;
 
-        // [v4.7.2] 초기학습 진행 배너 (진입 차단 시각화)
-        private bool _trainingBannerFinalized = false; // [v5.10.40] 완료/실패 후 재표시 방지
-        private Visibility _initialTrainingBannerVisibility = Visibility.Collapsed;
-        public Visibility InitialTrainingBannerVisibility
-        {
-            get => _initialTrainingBannerVisibility;
-            set { _initialTrainingBannerVisibility = value; OnPropertyChanged(); }
-        }
-
-        private string _initialTrainingStatusText = "⏳ 초기학습 대기 중";
-        public string InitialTrainingStatusText
-        {
-            get => _initialTrainingStatusText;
-            set { _initialTrainingStatusText = value; OnPropertyChanged(); }
-        }
-
-        private string _initialTrainingElapsedText = "경과 00:00:00";
-        public string InitialTrainingElapsedText
-        {
-            get => _initialTrainingElapsedText;
-            set { _initialTrainingElapsedText = value; OnPropertyChanged(); }
-        }
-
-        private string _initialTrainingStageText = "대기 중";
-        public string InitialTrainingStageText
-        {
-            get => _initialTrainingStageText;
-            set { _initialTrainingStageText = value; OnPropertyChanged(); }
-        }
-
-        private string _initialTrainingEtaText = "ETA 계산 중...";
-        public string InitialTrainingEtaText
-        {
-            get => _initialTrainingEtaText;
-            set { _initialTrainingEtaText = value; OnPropertyChanged(); }
-        }
-
-        private double _initialTrainingProgressPercent;
-        public double InitialTrainingProgressPercent
-        {
-            get => _initialTrainingProgressPercent;
-            set { _initialTrainingProgressPercent = value; OnPropertyChanged(); }
-        }
-
-        // [v4.7.4] 메이저/알트 단계별 상태
-        private string _initialTrainingMajorText = "메이저 0/4";
-        public string InitialTrainingMajorText
-        {
-            get => _initialTrainingMajorText;
-            set { _initialTrainingMajorText = value; OnPropertyChanged(); }
-        }
-
-        private string _initialTrainingAltText = "알트 0/0";
-        public string InitialTrainingAltText
-        {
-            get => _initialTrainingAltText;
-            set { _initialTrainingAltText = value; OnPropertyChanged(); }
-        }
-
-        private DateTime _initialTrainingStartTime;
-        private DispatcherTimer? _initialTrainingTimer;
-        private DispatcherTimer? _hideTrainingBannerTimer; // [v5.10.46] 필드 타이머 — 중복 생성 방지
+        // [v5.22.13] 초기학습 진행 배너 — 모든 필드/프로퍼티 통째 제거 (AI 시스템 폐기, 2026-04-29)
 
         private string _battleFocusSymbol = "-";
         public string BattleFocusSymbol
@@ -2275,116 +2214,7 @@ namespace TradingBot.ViewModels
                 });
             };
 
-            // [v4.7.2] 초기학습 진행 배너 구독
-            _trainingBannerFinalized = false; // [v5.10.40] 봇 재시작 시 플래그 리셋
-            _engine.OnInitialTrainingProgress += msg => RunOnUI(() =>
-            {
-                if (!string.IsNullOrWhiteSpace(msg))
-                    InitialTrainingStageText = msg;
-                StartOrUpdateInitialTrainingBanner();
-            });
-            _engine.OnInitialTrainingCompleted += success => RunOnUI(() => StopInitialTrainingBanner(success));
-            // [v4.7.3] 구조화 다운로드 진행률 → 진행률% + ETA 표시
-            _engine.OnInitialTrainingDownloadProgress += progress => RunOnUI(() =>
-            {
-                InitialTrainingProgressPercent = progress.PercentComplete;
-                if (progress.EstimatedRemaining.HasValue)
-                {
-                    var eta = progress.EstimatedRemaining.Value;
-                    InitialTrainingEtaText = eta.TotalHours >= 1
-                        ? $"ETA {eta:hh\\:mm\\:ss}"
-                        : $"ETA {eta:mm\\:ss}";
-                }
-                else
-                {
-                    InitialTrainingEtaText = progress.Current >= progress.Total ? "다운로드 완료 — 학습 중..." : "ETA 계산 중...";
-                }
-
-                // [v4.7.4] 메이저/알트 분리 표시
-                InitialTrainingMajorText = $"메이저 {progress.MajorReady}/4";
-                InitialTrainingAltText = progress.AltTotal > 0
-                    ? $"알트 {progress.AltReady}/{progress.AltTotal}"
-                    : "알트 대기";
-
-                string phaseEmoji = progress.Phase switch
-                {
-                    "major" => "🎯",
-                    "alt_5m" => "📊",
-                    "alt_1m" => "⚡",
-                    _ => "📥"
-                };
-                InitialTrainingStageText = $"{phaseEmoji} {progress.CurrentSymbol} ({progress.Current}/{progress.Total}, {progress.PercentComplete:F0}%, {progress.TotalCandlesSaved:N0}봉)";
-            });
-            // [v4.7.4] 심볼 개별 학습 완료 → 상태 텍스트 갱신
-            _engine.OnSymbolTrained += sym => RunOnUI(() =>
-            {
-                var eng = _engine;
-                if (eng == null) return;
-                InitialTrainingStatusText = $"✅ 학습 진행 중 — {eng.TrainedSymbolCount}개 심볼 진입 활성화";
-            });
-
-            // 초기 상태 반영: 학습 미완료면 배너 즉시 표시
-            if (!_engine.IsInitialTrainingComplete)
-            {
-                StartOrUpdateInitialTrainingBanner();
-            }
-        }
-
-        private void StartOrUpdateInitialTrainingBanner()
-        {
-            if (_trainingBannerFinalized) return; // [v5.10.40] 완료/실패 후 재표시 금지
-            InitialTrainingBannerVisibility = Visibility.Visible;
-            InitialTrainingStatusText = "🧠 초기학습 진행 중 — 완료 심볼부터 순차 진입 활성화";
-            // [v5.10.46] "다운로드 완료" ETA 텍스트 → "모델 학습 처리 중" 으로 전환 (혼동 방지)
-            if (InitialTrainingEtaText.StartsWith("다운로드 완료"))
-                InitialTrainingEtaText = "🧠 모델 학습 처리 중...";
-
-            if (_initialTrainingTimer == null)
-            {
-                _initialTrainingStartTime = DateTime.Now;
-                _initialTrainingTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-                _initialTrainingTimer.Tick += (_, _) =>
-                {
-                    var elapsed = DateTime.Now - _initialTrainingStartTime;
-                    InitialTrainingElapsedText = $"경과 {elapsed:hh\\:mm\\:ss}";
-                };
-                _initialTrainingTimer.Start();
-                InitialTrainingElapsedText = "경과 00:00:00";
-            }
-        }
-
-        private void StopInitialTrainingBanner(bool success)
-        {
-            _trainingBannerFinalized = true; // [v5.10.40] 이후 StartOrUpdate 호출 무시
-            _initialTrainingTimer?.Stop();
-            _initialTrainingTimer = null;
-
-            // [v5.10.46] 배너가 이미 숨겨진 상태면 중복 타이머 생성 방지
-            if (_initialTrainingBannerVisibility == Visibility.Collapsed)
-                return;
-
-            if (success)
-            {
-                var elapsed = DateTime.Now - _initialTrainingStartTime;
-                InitialTrainingStatusText = $"✅ 초기학습 완료 — 진입 활성화 (총 {elapsed:hh\\:mm\\:ss})";
-                InitialTrainingEtaText = "✅ 완료";
-            }
-            else
-            {
-                InitialTrainingStatusText = "⚠ 초기학습 오류 발생 — 로그 확인 필요";
-                InitialTrainingEtaText = "⚠ 오류";
-            }
-
-            // [v5.10.46] 필드 타이머 재사용 — 기존 타이머 중지 후 재시작
-            _hideTrainingBannerTimer?.Stop();
-            _hideTrainingBannerTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(success ? 10 : 30) };
-            _hideTrainingBannerTimer.Tick += (_, _) =>
-            {
-                InitialTrainingBannerVisibility = Visibility.Collapsed;
-                _hideTrainingBannerTimer?.Stop();
-                _hideTrainingBannerTimer = null;
-            };
-            _hideTrainingBannerTimer.Start();
+            // [v5.22.13] 초기학습 진행 배너 이벤트 구독 + Start/Stop 메서드 통째 제거 (AI 시스템 폐기, 2026-04-29)
         }
 
         private void UnsubscribeFromEngineEvents()
@@ -2659,7 +2489,8 @@ namespace TradingBot.ViewModels
                         UpdateFocusedPositionFromEngine(); // [v4.9.0] AI Insight Panel
                         if (_engine != null)
                         {
-                            DetectHealth.TrainedCount = _engine.TrainedSymbolCount;
+                            // [v5.22.13] TrainedSymbolCount 제거 — AI 시스템 폐기 (2026-04-29)
+                            DetectHealth.TrainedCount = 0;
                             DetectHealth.CandidatesNow = TopCandidates.Count;
                         }
                         sw.Stop();
