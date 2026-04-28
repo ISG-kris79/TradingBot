@@ -70,13 +70,15 @@ namespace TradingBot.Services
         };
 
         // [v4.5.15] 캐시 대상 타임프레임 (메이저 코인만 멀티 TF 구독)
+        // [v5.22.14] H4/D1 제거 — 코드 grep 결과 사용처 0건 (M1/M15/H1만 사용)
+        //   사용자 지적: "멀티TF는 왜 올라오는데"
+        //   효과: WebSocket 스트림 메이저4 × 5TF=20 → 12심볼 × 3TF=36 (절감 추가)
+        //   M1=Layer3 진입트리거, M15=가드(30봉위치)+Layer1, H1=MACD 가드
         private static readonly BinanceEnums.KlineInterval[] MultiTfIntervals = new[]
         {
             BinanceEnums.KlineInterval.OneMinute,
             BinanceEnums.KlineInterval.FifteenMinutes,
-            BinanceEnums.KlineInterval.OneHour,
-            BinanceEnums.KlineInterval.FourHour,
-            BinanceEnums.KlineInterval.OneDay
+            BinanceEnums.KlineInterval.OneHour
         };
 
         private static string MultiTfKey(string symbol, BinanceEnums.KlineInterval interval)
