@@ -1531,8 +1531,9 @@ namespace TradingBot
             // [AI Exit] 시장 상태 분류 + 최적 익절 모델 초기화
             _regimeClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
             _exitOptimizer.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _regimeClassifier.TryLoadModel();
-            _exitOptimizer.TryLoadModel();
+            // [v5.22.7] AI 모델 LoadModel 비활성화 — IsLoaded=false → 추론 if 체크에 막힘
+            // _regimeClassifier.TryLoadModel();
+            // _exitOptimizer.TryLoadModel();
             _positionMonitor.SetExitAIModels(_regimeClassifier, _exitOptimizer);
             _positionMonitor.SetMacdCrossService(_macdCrossService);
             _positionMonitor.SetProfitRegressor(_profitRegressor); // [v4.7.4] 횡보 보유 청산용
@@ -1757,7 +1758,8 @@ namespace TradingBot
             _ = InitTradeSignalClassifierAsync();
             // [PUMP ML] 초기화
             _pumpSignalClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _pumpSignalClassifier.LoadModel();
+            // [v5.22.7] PUMP signal classifier 비활성화 — PUMP 카테고리 차단됨
+            // _pumpSignalClassifier.LoadModel();
             // [v4.5.8] PUMP Spike 모델 로드
             _pumpSpikeClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
             _pumpSpikeClassifier.LoadModel();
@@ -1804,9 +1806,10 @@ namespace TradingBot
                 catch { }
             };
             _directionPredictor.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _directionPredictor.TryLoadModels();
+            // [v5.22.7] DirectionPredictor / SurvivalModel 로드 비활성화 — AI 폐기
+            // _directionPredictor.TryLoadModels();
             _survivalModel.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _survivalModel.TryLoadModels();
+            // _survivalModel.TryLoadModels();
 
             // [v4.2.0] 틱 밀도 모니터 — 급등 시작 신호 + BB 스퀴즈 브레이크아웃
             _tickMonitor.OnLog += msg => OnStatusLog?.Invoke(msg);
@@ -1936,8 +1939,9 @@ namespace TradingBot
             {
                 try
                 {
+                    // [v5.22.7] ProfitRegressor 학습 비활성화 — AI 폐기
                     int userId = AppConfig.CurrentUser?.Id ?? 0;
-                    if (userId > 0)
+                    if (false && userId > 0)
                     {
                         int loaded = await _profitRegressor.LoadFromTradeHistoryAsync(_dbManager, userId, days: 60);
                         if (loaded >= 50)

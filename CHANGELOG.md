@@ -5,6 +5,37 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.7] - 2026-04-28
+
+### 🚨 잔존 ML 모델 7개 LoadModel 비활성화 — CPU 1코어 97% / 메모리 1.9GB 진단
+
+#### 사용자 보고
+"ai 제거 했는데 왜 cpu 점유율하고 메모리에 변동이 없는거야"
+
+#### 진단 (v5.22.6 149분 가동)
+- 메모리: 1,895 MB (이전 v5.22.1 640MB 대비 3배 증가!)
+- CPU: 1코어 97% (단일 스레드 91% 점유)
+- 진입 0건 (12+ 시간)
+
+#### 원인
+v5.22.0~22.6 에서 EntryTimingMLTrainer 4 variant + 자동 학습 트리거만 비활성화.
+**잔존 ML 모델 7개**가 LoadModel + 메인 루프 추론 호출 중:
+- _exitOptimizer / _regimeClassifier
+- _pumpSignalClassifier
+- _survivalModel / _directionPredictor
+- _profitRegressor (60일 학습 데이터 로드 + Train 매번)
+
+#### Removed
+- TradingEngine.cs:1534-35 — `_regimeClassifier.TryLoadModel()` + `_exitOptimizer.TryLoadModel()` 비활성
+- TradingEngine.cs:1760 — `_pumpSignalClassifier.LoadModel()` 비활성
+- TradingEngine.cs:1807-09 — `_directionPredictor.TryLoadModels()` + `_survivalModel.TryLoadModels()` 비활성
+- TradingEngine.cs:1937-47 — `_profitRegressor.LoadFromTradeHistoryAsync` + `TrainAsync` 비활성 (`if (false &&)`)
+
+#### 예상 효과
+- IsLoaded=false 상태로 추론 if 체크 통과 못 함 → 메인 루프 부담 감소
+- 메모리 1.9GB → ~600MB 예상 (ML 모델 5개 메모리 해제)
+- CPU 1코어 97% → ~30% 예상
+
 ## [5.22.6] - 2026-04-28
 
 ### 🧹 메인 UI 학습 관련 카드 제거 + 배포 시 봇 종료 금지 규칙

@@ -1407,6 +1407,8 @@ internal static class Program
         Console.WriteLine("================================================================");
 
         var periods = new[] {
+            (label: "6시간", pages: 1),    // 5분봉 72봉 — sliceLen 별도 처리
+            (label: "12시간",pages: 1),    // 5분봉 144봉
             (label: "1일",   pages: 1),
             (label: "10일",  pages: 2),
             (label: "30일",  pages: 6),
@@ -1449,7 +1451,14 @@ internal static class Program
 
         foreach (var per in periods)
         {
-            int sliceLen = per.pages * BARS_PER_REQ;
+            // [v5.22.7] 6h/12h 짧은 기간은 별도 sliceLen (5분봉 기준 72/144봉)
+            //   기본 컨텍스트 위해 최소 400봉 필요 → 400봉 슬라이스 후 마지막 N봉만 시뮬
+            int sliceLen;
+            int simBars; // 실제 시뮬할 봉 수 (가드 평가 윈도)
+            if (per.label == "6시간") { sliceLen = 500; simBars = 72; }
+            else if (per.label == "12시간") { sliceLen = 500; simBars = 144; }
+            else { sliceLen = per.pages * BARS_PER_REQ; simBars = sliceLen; }
+
             var slicedData = new Dictionary<string, List<IBinanceKline>>();
             foreach (var kv in fullData)
             {
@@ -1476,7 +1485,9 @@ internal static class Program
                 foreach (var kv in slicedData)
                 {
                     var kl = kv.Value; var sym = kv.Key;
-                    for (int i = 50; i < kl.Count - win; i++)
+                    // 시뮬 시작점: 6h/12h 는 마지막 simBars 만, 일 단위는 50번부터 전체
+                    int startI = Math.Max(50, kl.Count - simBars - win);
+                    for (int i = startI; i < kl.Count - win; i++)
                     {
                         if (!trig.ok(kl, i, sym)) continue;
                         // v5.21.1 가드 — AI 게이트 없음
