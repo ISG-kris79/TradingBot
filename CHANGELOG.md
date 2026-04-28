@@ -5,6 +5,23 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.9] - 2026-04-28
+
+### 🚨 잔존 AI 호출 추가 비활성화 — AI Gate / ML.NET 자동 PREDICT
+
+#### 사용자 보고
+"자동 재학습 로그 뜨는거 보니까 AI가 남아있잖아"
+"프로그램이 왜이렇게 느려"
+
+#### 진단 — FooterLog 잔존 AI 호출
+- `[ENTRY][AI_GATE][BLOCK]` Major LONG 80% / Pump 72% 임계 적용 → 모든 진입 차단
+- `[DECIDE][major] ML=0.0% < Major 임계 80%`
+- `[ML.NET] BTCUSDT 예측 검증 시작 (5분 경과)` — ML.NET 자동 추론
+
+#### Removed
+- `AIDoubleCheckEntryGate.EvaluateEntryWithCoinTypeAsync` — 즉시 통과 (BYPASS_COINTYPE_AI)
+- `TradingEngine.cs:5037` — `TryRecordMlNetPredictionFromCommonScanAsync` 호출 비활성화
+
 ## [5.22.8] - 2026-04-28
 
 ### 🚨 PumpScanStrategy 비활성화 — Binance API -1003 폭주 ROOT FIX

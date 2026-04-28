@@ -499,6 +499,13 @@ namespace TradingBot
             CoinType coinType,
             CancellationToken token = default)
         {
+            // [v5.22.9] AI CoinType 임계 검증 즉시 통과 — AI 시스템 폐기 (2026-04-28)
+            //   기존: Major LONG ML>=80%, Pump ML>=72% 임계 검증 → 모든 진입 차단 (학습 부실 모델 0.0% 출력)
+            //   해결: BYPASS — 가드만으로 진입 결정
+            await Task.CompletedTask;
+            return (true, "BYPASS_COINTYPE_AI", new AIEntryDetail());
+
+            #pragma warning disable CS0162
             var (allow, reason, detail) = await EvaluateEntryAsync(symbol, decision, currentPrice, token);
             if (!allow) return (allow, reason, detail);
 

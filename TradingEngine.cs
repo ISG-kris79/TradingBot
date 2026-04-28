@@ -5034,8 +5034,8 @@ namespace TradingBot
                     }
                 }
 
-                // [AI 모니터링] 공통 스캔 경로에서 ML.NET 예측을 주기적으로 기록(심볼당 5분 1회)
-                _ = TryRecordMlNetPredictionFromCommonScanAsync(symbol, currentPrice, token);
+                // [v5.22.9] ML.NET 자동 예측 비활성화 — AI 시스템 폐기 (2026-04-28)
+                // _ = TryRecordMlNetPredictionFromCommonScanAsync(symbol, currentPrice, token);
 
                 // 1. 그리드 전략 (횡보장 대응)
                 await _gridStrategy.ExecuteAsync(symbol, currentPrice, token);
