@@ -5,6 +5,22 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.6] - 2026-04-28
+
+### 🧹 메인 UI 학습 관련 카드 제거 + 배포 시 봇 종료 금지 규칙
+
+#### 사용자 결정
+"메인UI 좌측 학습카드 필요없잖아 그리고 배포할때 봇프로그램 닫지마"
+
+#### Removed (MainWindow.xaml)
+- 상단 "🧠 초기학습 진행 배너" (InitialTrainingBannerVisibility 바인딩 영역) — AI 학습 자체 폐기로 의미 없음
+- 좌측 "📡 감지 / 학습" 카드 (학습완료 / 펌프스캔 / 거래량급증 / 급등감지) — PUMP 차단 + AI 폐기로 무의미
+
+#### 배포 정책 변경
+- `Stop-Process -Name TradingBot,Update -Force` 호출 영구 금지
+- Velopack 자동 업데이트가 봇을 안전하게 재시작
+- 메모리 규칙 추가: `feedback_no_kill_bot_on_deploy.md`
+
 ## [5.22.5] - 2026-04-28
 
 ### 🎯 PUMP 카테고리 전면 차단 + 메인 UI PUMP 카드 제거 + AI 대량 추론 비활성화

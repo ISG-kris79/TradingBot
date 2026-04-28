@@ -1068,81 +1068,7 @@
                          Foreground="{StaticResource AccentBrush}"
                          BorderThickness="0"/>
 
-            <!-- [v4.7.2+v4.7.3] 초기학습 진행 배너 — 진입 차단 시각화 + ETA -->
-            <Border Grid.Row="2"
-                    VerticalAlignment="Top"
-                    Margin="16,8,16,0"
-                    Background="#1F2937"
-                    BorderBrush="#F59E0B"
-                    BorderThickness="2"
-                    CornerRadius="10"
-                    Padding="20,14"
-                    Panel.ZIndex="100"
-                    Visibility="{Binding InitialTrainingBannerVisibility}">
-                <Border.Effect>
-                    <DropShadowEffect Color="#F59E0B" BlurRadius="18" ShadowDepth="0" Opacity="0.7"/>
-                </Border.Effect>
-                <StackPanel>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="🧠"
-                                   FontSize="26" VerticalAlignment="Center" Margin="0,0,14,0"/>
-                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding InitialTrainingStatusText}"
-                                       Foreground="#FBBF24" FontSize="15" FontWeight="Bold"/>
-                            <TextBlock Text="{Binding InitialTrainingStageText}"
-                                       Foreground="#E5E7EB" FontSize="11" Margin="0,3,0,0"
-                                       TextTrimming="CharacterEllipsis"/>
-                            <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
-                                <TextBlock Text="{Binding InitialTrainingMajorText}"
-                                           Foreground="#10B981" FontSize="10" FontWeight="Bold"
-                                           Margin="0,0,10,0"/>
-                                <TextBlock Text="{Binding InitialTrainingAltText}"
-                                           Foreground="#60A5FA" FontSize="10" FontWeight="Bold"/>
-                            </StackPanel>
-                        </StackPanel>
-                        <Border Grid.Column="2"
-                                Background="#111827"
-                                CornerRadius="6"
-                                Padding="10,6"
-                                VerticalAlignment="Center"
-                                Margin="0,0,8,0">
-                            <StackPanel>
-                                <TextBlock Text="경과"
-                                           Foreground="#6B7280" FontSize="9"
-                                           HorizontalAlignment="Center"/>
-                                <TextBlock Text="{Binding InitialTrainingElapsedText}"
-                                           Foreground="#10B981" FontSize="14" FontWeight="Bold"
-                                           FontFamily="Consolas"
-                                           HorizontalAlignment="Center"/>
-                            </StackPanel>
-                        </Border>
-                        <Border Grid.Column="3"
-                                Background="#111827"
-                                CornerRadius="6"
-                                Padding="10,6"
-                                VerticalAlignment="Center">
-                            <StackPanel>
-                                <TextBlock Text="남은 시간"
-                                           Foreground="#6B7280" FontSize="9"
-                                           HorizontalAlignment="Center"/>
-                                <TextBlock Text="{Binding InitialTrainingEtaText}"
-                                           Foreground="#60A5FA" FontSize="14" FontWeight="Bold"
-                                           FontFamily="Consolas"
-                                           HorizontalAlignment="Center"/>
-                            </StackPanel>
-                        </Border>
-                    </Grid>
-                    <ProgressBar Value="{Binding InitialTrainingProgressPercent, Mode=OneWay}"
-                                 Maximum="100" Height="6" Margin="0,10,0,0"
-                                 Background="#111827" Foreground="#F59E0B" BorderThickness="0"/>
-                </StackPanel>
-            </Border>
+            <!-- [v5.22.6] 초기학습 진행 배너 제거 — AI 시스템 폐기 (2026-04-28) -->
 
             <!-- MAIN CONTENT -->
             <TabControl Grid.Row="2"
@@ -1214,49 +1140,9 @@
                                 </StackPanel>
                             </Border>
 
-                            <!-- [v4.9.0] DETECT/TRAINING 카드 -->
-                            <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
-                                <StackPanel>
-                                    <TextBlock Text="📡 감지 / 학습" FontSize="10" FontWeight="Bold"
-                                               Foreground="#00E5FF" Margin="0,0,0,6"/>
-                                    <Grid Margin="0,0,0,3">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Text="학습완료" Foreground="#6B7280" FontSize="10"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding DetectHealth.TrainedText}"
-                                                   Foreground="#10B981" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
-                                    </Grid>
-                                    <Grid Margin="0,0,0,3">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Text="펌프스캔/분" Foreground="#6B7280" FontSize="10"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding DetectHealth.PumpScanPerMin}"
-                                                   Foreground="#A5B4FC" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
-                                    </Grid>
-                                    <Grid Margin="0,0,0,3">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Text="거래량급증/분" Foreground="#6B7280" FontSize="10"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding DetectHealth.VolumeSurgePerMin}"
-                                                   Foreground="#FBBF24" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
-                                    </Grid>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Text="급등감지/분" Foreground="#6B7280" FontSize="10"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding DetectHealth.SpikePerMin}"
-                                                   Foreground="#EF4444" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
-                                    </Grid>
-                                </StackPanel>
-                            </Border>
+            <!-- [v5.22.6] 좌측 학습/감지 카드 제거 — AI 시스템 폐기 (2026-04-28)
+                 학습완료/펌프스캔/거래량급증/급등감지 모두 PUMP/AI 관련 → 의미 없음 -->
+
 
                             <!-- [v5.0.3] MAJOR TODAY 카테고리 통계 카드 -->
                             <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
