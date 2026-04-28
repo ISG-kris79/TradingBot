@@ -5,6 +5,28 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.5] - 2026-04-28
+
+### 🎯 PUMP 카테고리 전면 차단 + 메인 UI PUMP 카드 제거 + AI 대량 추론 비활성화
+
+#### 백테스트 검증 결과 (360일, v5.22.4 라이브 로직)
+- 전체: 28,772건 WR 90.66% +$363,479 (월 ~$30K)
+- MAJOR: +$167,843 (46%)
+- SQUEEZE: +$187,968 (51%) ← 메인 수익원
+- BB_WALK: +$8,069 (2%)
+- **PUMP: -$401 (적자)** ← 차단 결정
+
+#### Changed
+- `TradingEngine.IsEntryAllowedCore`: PUMP 카테고리 진입 즉시 차단 (SPIKE 와 동일 패턴)
+- `MainWindow.xaml`: "🚀 밈코인(일)" PumpStats 카드 제거
+- `TradingEngine.RunPeriodicAiEntryProbScanAsync` 4030: AI 대량 추론 호출 비활성화 (`if (false)`)
+- `TradingEngine.HistoricalEntryAuditAsync` 6475: ScanEntryProbabilitiesAsync 빈 Dictionary 반환
+
+#### 영향
+- 백테스트 +$401 회수 (PUMP 손실 제거)
+- CPU 절감 (200+ 심볼 ML.NET 추론 호출 0회)
+- 메인 UI 단순화 (MAJOR + SQUEEZE 카드만 유지)
+
 ## [5.22.4] - 2026-04-28
 
 ### 🚀 BulkPreloadOpenTime SP 호출 비활성화 — 봇 시작 60-120초 timeout 해소

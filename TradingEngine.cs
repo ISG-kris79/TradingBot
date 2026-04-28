@@ -736,6 +736,16 @@ namespace TradingBot
                 return false;
             }
 
+            // [v5.22.5] PUMP 카테고리 전면 차단 — 360일 백테스트 -$401 적자 입증
+            //   180일 -$406, 360일 -$401, 90일 +$128 (작은 우연성 흑자)
+            //   MAJOR/SQUEEZE 360일 +$355K 대비 PUMP는 손해만 가져옴
+            if (entryCat == "PUMP")
+            {
+                blockReason = "PUMP_DISABLED:360d_backtest_loss";
+                OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (360일 백테스트 -$401, MAJOR/SQUEEZE 위주 진입)");
+                return false;
+            }
+
             // [v5.19.8] _settings 자체가 null = 봇 부팅 중 / 설정 미로드 → 모든 진입 차단
             //   v5.19.3은 메이저만 차단했으나, 일반 진입도 leverage/marginUsdt 등 설정값 없으면 위험
             if (_settings == null)
@@ -4014,10 +4024,10 @@ namespace TradingBot
             {
                 try
                 {
-                    if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate.IsReady)
+                    if (false) // [v5.22.5] AI 추론 비활성화 — AI 시스템 폐기 (2026-04-28)
                     {
                         var scanSymbols = _symbols.Take(20).ToList();
-                        var forecasts = await _aiDoubleCheckEntryGate.ScanEntryProbabilitiesAsync(scanSymbols, token);
+                        var forecasts = new Dictionary<string, AIEntryForecastResult>(StringComparer.OrdinalIgnoreCase);
 
                         foreach (var (symbol, forecast) in forecasts)
                         {
@@ -6462,7 +6472,8 @@ namespace TradingBot
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
-                var forecastBySymbol = await _aiDoubleCheckEntryGate.ScanEntryProbabilitiesAsync(scanUniverse, token);
+                // [v5.22.5] AI 대량 추론 비활성화 — AI 시스템 폐기 (2026-04-28)
+                var forecastBySymbol = new Dictionary<string, AIEntryForecastResult>(StringComparer.OrdinalIgnoreCase);
 
                 var results = new List<(string Symbol, string Direction, decimal Price, float ML, float TF, float BandwidthPct, bool GatePass, string Reason, float ForecastProbability, int ForecastOffsetMinutes)>();
 

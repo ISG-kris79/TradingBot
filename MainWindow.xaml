@@ -1293,40 +1293,7 @@
                                 </StackPanel>
                             </Border>
 
-                            <!-- [v5.0.3] PUMP TODAY 카테고리 통계 카드 -->
-                            <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
-                                <StackPanel>
-                                    <TextBlock Text="🚀 밈코인(일)" FontSize="10" FontWeight="Bold"
-                                               Foreground="#10B981" Margin="0,0,0,6"/>
-                                    <Grid Margin="0,0,0,3">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Text="손익" Foreground="#6B7280" FontSize="10"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding PumpStats.TodayPnLText}"
-                                                   Foreground="{Binding PumpStats.TodayPnLColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
-                                    </Grid>
-                                    <Grid Margin="0,0,0,3">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Text="진입수" Foreground="#6B7280" FontSize="10"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding PumpStats.EntriesText}"
-                                                   Foreground="#A5B4FC" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
-                                    </Grid>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Text="승률" Foreground="#6B7280" FontSize="10"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding PumpStats.WinRateText}"
-                                                   Foreground="{Binding PumpStats.WinRateColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
-                                    </Grid>
-                                </StackPanel>
-                            </Border>
+                            <!-- [v5.22.5] PUMP 카드 제거 — 360일 백테스트 -$401 적자, 카테고리 차단됨 -->
 
                             <!-- [v5.21.3] SQUEEZE TODAY (이전 SPIKE 자리, 30일 검증 메인 수익원) -->
                             <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
