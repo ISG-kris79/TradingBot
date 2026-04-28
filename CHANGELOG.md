@@ -5,6 +5,27 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.10] - 2026-04-28
+
+### 🧹 메모리 누수 cleanup + ActiveTrackingPool TickerCache 기반
+
+#### 사용자 보고
+"메모리 누수도 확인해봐 메모리 할당만 해놓고 안쓰는게 너무 많은거 같은데"
+"왜 알트나 밈코인들 데이터 안올라오는건데"
+
+#### Added
+- `CleanupExpiredCaches()` 메인 루프 5분 주기 — 14개 ConcurrentDictionary TTL 만료 자동 제거
+  - blacklisted/stopLoss/recentEntry/recentlyClosed/partialClose 60분
+  - lastTicker/lastAnalysis/last5m/last15m/lastMlMonitor 2시간
+  - simpleAi 48시간, signalOrigin 60분, slotBlocked 60분, manualClose 60분
+- `_pumpPriorityQueue` 비우기 (PumpScan 비활성화됨)
+- `GC.Collect(2, Optimized, non-blocking)` LOH 정리
+
+#### Changed (알트 데이터 복구)
+- `EnsureActiveTrackingPoolFresh`: PumpScan TopCandidateScores → **TickerCache 24h 가격변동률 큰 순**
+  - PumpScan 비활성화됐으므로 TopCandidateScores 비어있음 → 동적 8개 갱신 X → 알트/밈 데이터 X
+  - TickerCache는 WebSocket으로 항상 최신 → API 호출 0회 + 알트/밈 자동 추적
+
 ## [5.22.9] - 2026-04-28
 
 ### 🚨 잔존 AI 호출 추가 비활성화 — AI Gate / ML.NET 자동 PREDICT

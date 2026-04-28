@@ -3611,6 +3611,13 @@ namespace TradingBot
                             _lastEntryBlockSummaryTime = DateTime.Now;
                         }
 
+                        // [v5.22.10] 메모리 누수 방지 — TTL 기반 ConcurrentDictionary cleanup (5분 주기)
+                        if ((DateTime.Now - _lastMemoryCleanupTime).TotalMinutes >= 5)
+                        {
+                            CleanupExpiredCaches();
+                            _lastMemoryCleanupTime = DateTime.Now;
+                        }
+
                         // [C] 텔레그램 정기 수익 보고 (1시간 주기)
                         if ((DateTime.Now - _lastReportTime).TotalHours >= 1)
                         {
@@ -4902,6 +4909,74 @@ namespace TradingBot
         private DateTime _lastTrackingPoolRefresh = DateTime.MinValue;
         private static readonly TimeSpan TrackingPoolRefreshInterval = TimeSpan.FromMinutes(5);
 
+        // [v5.22.10] 메모리 누수 방지 — 5분 주기 cleanup
+        private DateTime _lastMemoryCleanupTime = DateTime.MinValue;
+
+        private void CleanupExpiredCaches()
+        {
+            try
+            {
+                var now = DateTime.UtcNow;
+                int totalRemoved = 0;
+                // TTL 30분 만료 항목 제거 — DateTime 단일 값 dictionary
+                int Cleanup(System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> dict, TimeSpan ttl)
+                {
+                    int removed = 0;
+                    foreach (var kv in dict.ToArray())
+                    {
+                        if ((now - kv.Value.ToUniversalTime()) > ttl)
+                        {
+                            if (dict.TryRemove(kv.Key, out _)) removed++;
+                        }
+                    }
+                    return removed;
+                }
+                totalRemoved += Cleanup(_blacklistedSymbols, TimeSpan.FromMinutes(60));
+                totalRemoved += Cleanup(_stopLossCooldown, TimeSpan.FromMinutes(60));
+                totalRemoved += Cleanup(_recentEntryAttempts, TimeSpan.FromMinutes(30));
+                totalRemoved += Cleanup(_recentlyClosedCooldown, TimeSpan.FromMinutes(60));
+                totalRemoved += Cleanup(_recentPartialCloseCooldown, TimeSpan.FromMinutes(60));
+                totalRemoved += Cleanup(_lastTickerUpdateTimes, TimeSpan.FromHours(2));
+                totalRemoved += Cleanup(_lastAnalysisTimes, TimeSpan.FromHours(2));
+                totalRemoved += Cleanup(_last5mProcessedAt, TimeSpan.FromHours(2));
+                totalRemoved += Cleanup(_last15mProcessedAt, TimeSpan.FromHours(2));
+                totalRemoved += Cleanup(_lastMlMonitorRecordTimes, TimeSpan.FromHours(2));
+                totalRemoved += Cleanup(_simpleAiBackfilled, TimeSpan.FromHours(48));
+                totalRemoved += Cleanup(_slotBlockedSymbols, TimeSpan.FromMinutes(60));
+                totalRemoved += Cleanup(_manualCloseCooldown, TimeSpan.FromMinutes(60));
+
+                // (Score, DateTime) tuple dictionary
+                int CleanupTuple<TVal>(System.Collections.Concurrent.ConcurrentDictionary<string, TVal> dict, Func<TVal, DateTime> getDate, TimeSpan ttl)
+                {
+                    int removed = 0;
+                    foreach (var kv in dict.ToArray())
+                    {
+                        if ((now - getDate(kv.Value).ToUniversalTime()) > ttl)
+                        {
+                            if (dict.TryRemove(kv.Key, out _)) removed++;
+                        }
+                    }
+                    return removed;
+                }
+                totalRemoved += CleanupTuple(_directionBiasCache, v => v.time, TimeSpan.FromMinutes(30));
+                totalRemoved += CleanupTuple(_aiApprovedRecentScores, v => v.Time, TimeSpan.FromMinutes(60));
+                totalRemoved += CleanupTuple(_signalOriginPrice, v => v.Time, TimeSpan.FromMinutes(60));
+
+                // _pumpPriorityQueue (List) 비우기 — PumpScan 비활성화됨
+                lock (_pumpPriorityQueue) { _pumpPriorityQueue.Clear(); }
+
+                if (totalRemoved > 0)
+                    OnStatusLog?.Invoke($"🧹 [메모리cleanup] {totalRemoved}개 만료 항목 제거 (5분 주기)");
+
+                // GC 명시 호출 (LOH 정리)
+                GC.Collect(2, GCCollectionMode.Optimized, blocking: false);
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [메모리cleanup] 예외: {ex.Message}");
+            }
+        }
+
         private void EnsureActiveTrackingPoolFresh()
         {
             // 메이저 4개는 항상 포함 (idempotent)
@@ -4912,20 +4987,26 @@ namespace TradingBot
 
             _lastTrackingPoolRefresh = DateTime.Now;
 
+            // [v5.22.10] 동적 8개 = TickerCache 기반 (PumpScan 비활성화 후 대체)
+            //   PumpScan TopCandidateScores 가 비어있으므로 TickerCache의 24h 가격 변동률 큰 순으로 선택
+            //   장점: API 호출 0회, 알트/밈 데이터 자동 추적
             var dynamicSymbols = new List<string>();
-            if (_pumpStrategy != null)
+            if (_marketDataManager?.TickerCache != null)
             {
-                // PumpScan top10 candidates score 상위 8개. 활성 포지션 심볼은 제외 (이미 진입됨)
                 HashSet<string> activeSet;
                 lock (_posLock) { activeSet = new HashSet<string>(_activePositions.Keys, StringComparer.OrdinalIgnoreCase); }
 
-                var sorted = _pumpStrategy.TopCandidateScores
-                    .OrderBy(kv => kv.Value.Rank)
-                    .Select(kv => kv.Key)
+                // 24h 가격 변동률 절댓값 큰 순 (상승/하락 모두 추적)
+                var sorted = _marketDataManager.TickerCache.Values
+                    .Where(t => !string.IsNullOrWhiteSpace(t.Symbol)
+                                && t.Symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
+                                && !FixedMajorPool.Contains(t.Symbol))
+                    .OrderByDescending(t => Math.Abs(t.PriceChangePercent))
+                    .Select(t => t.Symbol)
                     .ToList();
+
                 foreach (var sym in sorted)
                 {
-                    if (FixedMajorPool.Contains(sym)) continue;
                     if (activeSet.Contains(sym)) continue;
                     dynamicSymbols.Add(sym);
                     if (dynamicSymbols.Count >= DynamicPoolSize) break;
