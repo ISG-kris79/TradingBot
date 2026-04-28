@@ -173,23 +173,6 @@ namespace TradingBot
 
         protected override void OnStartup(StartupEventArgs e)
         {
-            /* TensorFlow 전환 중 비활성화 - TorchSharp Probe
-            // ── TorchSharp 서브프로세스 프로브 모드 ──
-            // --torch-probe 인수로 실행된 경우, TorchSharp 호환성만 테스트하고 즉시 종료
-            if (TorchInitializer.HandleProbeIfRequested(Environment.GetCommandLineArgs()))
-            {
-                this.Shutdown();
-                return;
-            }
-
-            // ── [v2.4.22] 비정상 종료 감지 기반 Torch 안전모드 run-state 등록 ──
-            TorchInitializer.RegisterStartupRunState();
-
-            // ── [v2.4.21] 앱 버전 변경 시 기존 Transformer 모델 파일 자동 정리 ──
-            // 이전 버전의 모델이 현재 아키텍처와 불일치하면 C++ abort(BEX64) 크래시 발생
-            TorchInitializer.InvalidateModelsIfVersionChanged();
-            */
-
             // ── Hybrid 주문 로직 백테스트 CLI 모드 ──
             if (HandleHybridBacktestCliIfRequested(e.Args))
             {
@@ -294,47 +277,6 @@ namespace TradingBot
 
             // [Phase 15] 사용자별 GeneralSettings는 로그인 후 LoginWindow에서 로드
             // (로그인 전에는 사용자 정보가 없으므로 appsettings.json의 기본값 사용)
-
-            // [Phase 16] TorchSharp 실행에 필요한 VC++ 재배포 패키지 확인
-            // (자체 포함 배포로 인해 개발 환경에서는 스킵)
-#if !DEBUG  // 릴리스 빌드에서만 체크
-            if (!Services.VisualCppRedistributableInstaller.IsInstalledX64())
-            {
-                var installResult = MessageBox.Show(
-                    "TorchSharp 기능을 위해 Visual C++ Redistributable 2015-2022 x64가 필요합니다.\n\n" +
-                    "지금 자동 설치를 진행할까요? (관리자 권한 필요)",
-                    "필수 구성요소 설치",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Information);
-
-                if (installResult == MessageBoxResult.Yes)
-                {
-                    if (Services.VisualCppRedistributableInstaller.TryInstallX64(out var installError))
-                    {
-                        MessageBox.Show(
-                            "설치가 완료되었습니다. TorchSharp 기능 활성화를 위해 앱을 재시작해주세요.",
-                            "설치 완료",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Information);
-                    }
-                    else
-                    {
-                        MessageBox.Show(
-                            $"Visual C++ 설치 실패:\n{installError}",
-                            "설치 실패",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Warning);
-                    }
-                }
-            }
-#else
-            Debug.WriteLine("[App] 🔧 DEBUG 모드 - VC++ Redistributable 체크 스킵");
-#endif
-
-            // [안정성] TorchSharp 초기화는 앱 시작 시 수행하지 않습니다.
-            // 네이티브 라이브러리(torch_cpu.dll)가 프로세스 크래시(0xc0000005)를 유발할 수 있으므로,
-            // TradingEngine 시작 시 서브프로세스 프로브로 안전하게 검증 후 초기화합니다.
-            Debug.WriteLine("[App] TorchSharp 초기화는 엔진 시작 시 서브프로세스 프로브로 지연 실행됩니다.");
 
             // [추가] DB 연결 문자열 확인 및 설정 유도
             if (string.IsNullOrEmpty(AppConfig.ConnectionString))
@@ -766,11 +708,6 @@ namespace TradingBot
             _mutex?.Dispose();
             _mutex = null;
             _ownsMutex = false;
-
-            /* TensorFlow 전환 중 비활성화
-            // Torch run-state 정리 (정상 종료 마킹)
-            TorchInitializer.RegisterCleanShutdown();
-            */
 
             Debug.WriteLine("[App] 애플리케이션 종료 - Mutex 해제됨");
             base.OnExit(e);

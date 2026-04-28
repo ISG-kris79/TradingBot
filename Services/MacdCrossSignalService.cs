@@ -30,17 +30,39 @@ namespace TradingBot.Services
             _exchangeService = exchangeService;
         }
 
+        // [v5.22.16] 멀티TF WebSocket 캐시 폐기 → REST 60초 throttle 캐시로 변경
+        //   기존: MarketDataManager.Instance.GetCachedKlines (M1/M15/H1 WebSocket 캐시)
+        //   신규: REST 직접 호출 + 심볼+TF별 60초 캐싱
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime ts, List<IBinanceKline> klines)> _restCache
+            = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan RestCacheTtl = TimeSpan.FromSeconds(60);
+
         /// <summary>
-        /// [v4.5.15] WebSocket 캐시 우선 조회, 없으면 REST fallback
-        /// 반환: List (호출 측이 .Count 프로퍼티 사용)
+        /// [v5.22.16] REST 호출 + 60초 throttle 캐싱
         /// </summary>
         private async Task<List<IBinanceKline>?> GetKlinesCachedAsync(
             string symbol, KlineInterval interval, int limit, CancellationToken token)
         {
-            var cached = MarketDataManager.Instance?.GetCachedKlines(symbol, interval, Math.Min(limit, 30));
-            if (cached != null) return cached;
-            var rest = await _exchangeService.GetKlinesAsync(symbol, interval, limit, token);
-            return rest?.ToList();
+            string key = $"{symbol}|{interval}";
+            var nowUtc = DateTime.UtcNow;
+            if (_restCache.TryGetValue(key, out var cached)
+                && (nowUtc - cached.ts) < RestCacheTtl
+                && cached.klines.Count >= limit)
+            {
+                return cached.klines;
+            }
+            try
+            {
+                var rest = await _exchangeService.GetKlinesAsync(symbol, interval, limit, token);
+                if (rest == null) return cached.klines;
+                var list = rest.ToList();
+                _restCache[key] = (nowUtc, list);
+                return list;
+            }
+            catch
+            {
+                return cached.klines; // 직전 캐시 fallback
+            }
         }
 
         /// <summary>

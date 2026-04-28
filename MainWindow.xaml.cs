@@ -253,8 +253,6 @@ namespace TradingBot
                 var settingsTask = InitializeGeneralSettingsAsync();
                 await Task.WhenAll(updateTask, settingsTask);
                 await InitializeAdvancedFeaturesAsync();
-
-                AddLog("[WaveAI] ℹ️ 앱 시작 시 MainWindow Torch 초기화는 비활성화되었습니다. (외부 AI 서비스 경로 사용)");
             };
         }
 
@@ -1103,21 +1101,6 @@ namespace TradingBot
         {
             try
             {
-                bool torchFeaturesEnabled = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
-                if (!torchFeaturesEnabled)
-                {
-                    AddLog("[WaveAI] 🛡️ Torch/Transformer 비활성화 상태라 WaveAI 자동 초기화를 건너뜁니다.");
-                    return Task.CompletedTask;
-                }
-
-                /* TensorFlow 전환 중 비활성화
-                if (!TorchInitializer.IsAvailable && !TorchInitializer.TryInitialize())
-                {
-                    AddLog($"[WaveAI] 🛡️ Torch 안전모드로 WaveAI 자동 초기화를 건너뜁니다. ({TorchInitializer.ErrorMessage})");
-                    return;
-                }
-                */
-
                 AddLog("[WaveAI] 🌊 엘리엇 파동 AI 시스템 초기화 중...");
 
                 // IExchangeService 생성 (Simulation 또는 실제 Binance)

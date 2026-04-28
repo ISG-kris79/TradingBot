@@ -214,11 +214,7 @@ namespace TradingBot
         private double _directionModelAccuracy = 0.0;
         private double _survivalPumpAccuracy = 0.0;
 
-        // [v5.0.2] v5.0 Forecaster 정확도 추적 — Fallback 판단용
-        private double _pumpForecasterAccuracy = 0.0;
-        private double _majorForecasterAccuracy = 0.0;
-        private double _spikeForecasterAccuracy = 0.0;
-        private const double ForecasterMinAccuracyForEntry = 0.50;
+        // [v5.22.16] _pumpForecasterAccuracy / _majorForecasterAccuracy / _spikeForecasterAccuracy / ForecasterMinAccuracyForEntry 통째 제거 (Forecaster 의존 제거됨)
         // 70% 이상 정확도 달성 시 하드 체크 자동 해제
         private const double AiHardCheckBypassThreshold = 0.70;
         private bool IsAiModelReadyForPumpEntry =>
@@ -518,7 +514,7 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, DateTime> _last15mProcessedAt = new(StringComparer.OrdinalIgnoreCase);
 
         // [AI 제거] 모든 ML.NET / AI 워커 / 분류기 / 회귀자 / 예측기 제거
-        private TradingBot.Services.EntryScheduler? _entryScheduler;
+        // [v5.22.16] _entryScheduler 필드 제거 — Forecaster 의존
         // [v5.10.54] 주문 라이프사이클 단일 진입점 (SL/TP/Trailing 등록/취소/본절교체)
         private TradingBot.Services.OrderLifecycleManager? _orderLifecycle;
         private readonly TradingBot.Services.TickDensityMonitor _tickMonitor = new();
@@ -749,10 +745,10 @@ namespace TradingBot
             //   API3USDT: 수직상승 후 횡보 → BB 상단 진입 → 폭락 90%+
             //   규칙 1: M15 30봉 range 위치 ≥ 85% AND 30봉 저점→현재가 ≥ 3% → 차단
             //   규칙 2: 직전 30봉 +5% 이상 + 직전 5봉 변동폭 < 0.8% → 횡보 분배 차단
-            //   캐시 우선 (Services.MarketDataManager.Instance.GetCachedKlines), 없으면 가드 skip (정상)
+            //   [v5.22.16] 멀티TF WebSocket 캐시 폐기 → sync REST throttle 캐시 (없으면 가드 skip + 백그라운드 fetch)
             try
             {
-                var k15 = Services.MarketDataManager.Instance?.GetCachedKlines(
+                var k15 = GetMultiTfKlinesCachedOrRefresh(
                     symbol, KlineInterval.FifteenMinutes, 30);
                 if (k15 != null && k15.Count >= 30)
                 {
@@ -1580,35 +1576,9 @@ namespace TradingBot
             _orderLifecycle = new TradingBot.Services.OrderLifecycleManager(_exchangeService);
             _orderLifecycle.OnLog += msg => OnStatusLog?.Invoke(msg);
 
-            // [v5.0] EntryScheduler 초기화 — MTF Guardian 연결 + Market Fallback executor
-            _entryScheduler = new TradingBot.Services.EntryScheduler(
-                _exchangeService,
-                mtfGuardian: (sym, dir) =>
-                {
-                    var passed = PassMtfGuardian(sym, dir, out string reason);
-                    return (passed, reason);
-                },
-                marketFallbackExecutor: async (sym, dir, price, tok) =>
-                {
-                    // [v5.10.82] AI Gate 통과 강제 — Forecaster Fallback도 검증.
-                    await ExecuteAutoOrder(sym, dir, price, tok, "FORECAST_FALLBACK", skipAiGateCheck: false);
-                });
-            _entryScheduler.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _entryScheduler.OnEntryRegistered += e =>
-                OnStatusLog?.Invoke($"📌 [FORECAST] {e.Symbol} {e.Direction} 예약 @ ${e.TargetPrice:F6} 신뢰={e.Confidence:P0}");
-
-            // [v5.0] 틱 업데이트를 EntryScheduler Watchdog에 연결
-            _marketDataManager.OnTickerUpdate += ticker =>
-            {
-                try
-                {
-                    if (_entryScheduler != null && ticker != null && !string.IsNullOrEmpty(ticker.Symbol) && ticker.LastPrice > 0)
-                    {
-                        _ = _entryScheduler.OnPriceTickAsync(ticker.Symbol, ticker.LastPrice, _cts?.Token ?? CancellationToken.None);
-                    }
-                }
-                catch { }
-            };
+            // [v5.22.16] EntryScheduler 통째 제거 — Forecaster 의존 클래스
+            //   원인: RegisterAsync 호출자 0건 (Forecaster 결과로만 호출됨) → dead instance
+            //   효과: 매 ticker 마다 OnPriceTickAsync 호출 부하도 제거
             // [AI 제거] DirectionPredictor / SurvivalModel 로드 제거
 
             // [v4.2.0] 틱 밀도 모니터 — 급등 시작 신호 + BB 스퀴즈 브레이크아웃
@@ -1730,108 +1700,6 @@ namespace TradingBot
                 };
                 _majorStrategy.OnLog += msg => OnLiveLog?.Invoke(msg);
             }
-
-            // [Phase 7] Transformer 모델 및 전략 초기화 (설정 파일 로드)
-            // [v2.4.13] TorchSharp는 기본 비활성화 (BEX64 크래시 방지)
-            var tfSettings = AppConfig.Current?.Trading?.TransformerSettings ?? new TransformerSettings();
-            bool transformerEnabledByConfig = tfSettings.Enabled;
-
-            // ========== Transformer 비활성화 (ML.NET 전용) ==========
-
-            /* TensorFlow.NET 전환 완료 후 복원 예정
-            if (transformerEnabledByConfig)
-            {
-                OnStatusLog?.Invoke("⚠️ TorchSharp/Transformer 기능은 현재 개발 및 테스트 중입니다. 활성화 시 BEX64 크래시 위험이 있습니다.");
-                OnStatusLog?.Invoke("🔍 설정에서 Transformer.Enabled=true로 확인됨 — TorchSharp 환경 호환성 검증 중...");
-                try
-                {
-                    bool torchReady = TorchInitializer.IsAvailable || TorchInitializer.TryInitialize();
-                    if (!torchReady)
-                    {
-                        string errMsg = TorchInitializer.ErrorMessage ?? "알 수 없는 오류";
-                        OnStatusLog?.Invoke($"⚠️ TorchSharp 초기화 실패로 Transformer 기능이 비활성화됩니다. ({errMsg})");
-                        OnStatusLog?.Invoke("🛡️ 안전모드: Transformer 기능은 비활성화되어 있습니다. (ML.NET 기반 AI는 정상 작동)");
-                    }
-                    else
-                    {
-                        OnStatusLog?.Invoke("✅ TorchSharp 환경 검증 통과");
-
-                        // 메모리 정리
-                        GC.Collect();
-                        GC.WaitForPendingFinalizers();
-
-                        _transformerTrainer = new TransformerTrainer(
-                            tfSettings.InputDim,
-                            tfSettings.DModel,
-                            tfSettings.NHeads,
-                            tfSettings.NLayers,
-                            tfSettings.OutputDim,
-                            tfSettings.SeqLen
-                        );
-
-                        // [Phase 7] Transformer 학습 상태 이벤트 연결
-                        _transformerTrainer.OnLog += msg => OnLiveLog?.Invoke(msg);
-                        _transformerTrainer.OnEpochCompleted += (epoch, total, loss) =>
-                        {
-                            // 학습 진행 상황을 상태바에도 표시 (선택 사항)
-                            // OnStatusLog?.Invoke($"🧠 AI 학습 중... Epoch {epoch}/{total} (Loss: {loss:F5})");
-                        };
-
-                        // 기존 학습된 모델이 있다면 로드
-                        _transformerTrainer.LoadModel();
-                        transformerInitSuccess = true;
-                        OnStatusLog?.Invoke("✅ TorchSharp Transformer 초기화 완료");
-
-                        // [간소화] SimpleDoubleCheckEngine 초기화 (Transformer + ML.NET 매복 모드)
-                        try
-                        {
-                            _simpleDoubleCheck = new SimpleDoubleCheckEngine(_transformerTrainer, _aiPredictor);
-                            _simpleDoubleCheck.OnLog += msg => OnStatusLog?.Invoke($"🎯 [더블체크] {msg}");
-                            
-                            if (_simpleDoubleCheck.IsReady)
-                            {
-                                OnStatusLog?.Invoke("✅ SimpleDoubleCheckEngine 준비 완료 (매복 모드 활성화)");
-                            }
-                            else
-                            {
-                                OnStatusLog?.Invoke("⚠️ SimpleDoubleCheckEngine 모델 미준비 (초기 학습 필요)");
-                            }
-                        }
-                        catch (Exception dcEx)
-                        {
-                            OnStatusLog?.Invoke($"⚠️ SimpleDoubleCheckEngine 초기화 실패: {dcEx.Message}");
-                            _simpleDoubleCheck = null;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    OnAlert?.Invoke($"⚠️ Transformer AI 초기화 실패: {ex.Message}");
-                    OnStatusLog?.Invoke("⚠️ Transformer 기능이 비활성화됩니다 (기본 전략으로 동작)");
-                    _transformerTrainer = null;
-
-                    // 크래시 로그 저장
-                    try
-                    {
-                        string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "TRANSFORMER_CRASH.txt");
-                        File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Transformer Init Failed\n" +
-                            $"Message: {ex.Message}\n" +
-                            $"StackTrace: {ex.StackTrace}\n" +
-                            $"InnerException: {ex.InnerException?.Message ?? "None"}\n\n");
-                    }
-                    catch (Exception fileEx)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"Transformer crash log 저장 실패: {fileEx.Message}");
-                    }
-                }
-            }
-            else
-            {
-                OnStatusLog?.Invoke("✅ Transformer/TorchSharp 기능이 설정에서 비활성화되어 있습니다 (기본 안정 모드).");
-                OnStatusLog?.Invoke("🛡️ ML.NET 기반 AI와 MajorCoinStrategy(지표 기반) 전략으로 안전하게 동작합니다.");
-                _transformerTrainer = null;
-            }
-            */
 
             // [3파 확정형 전략] 먼저 초기화 (TransformerStrategy에서 사용하기 위해)
             _elliotWave3Strategy = new ElliottWave3WaveStrategy();
@@ -3249,13 +3117,15 @@ namespace TradingBot
         private async Task Run151EngineLoopAsync(CancellationToken token)
         {
             await Task.Delay(TimeSpan.FromSeconds(10), token); // 시작 직후 초기 데이터 안정화 대기
-            OnStatusLog?.Invoke("🎯 [ENGINE_151] 루프 시작 (15m/5m/1m 폴링 간격=3초)");
+            // [v5.22.16] 폴링 간격 3초 → 30초 (멀티TF WebSocket 캐시 폐기 → REST throttle 30초와 동기화)
+            //   효과: REST 호출 12심볼 × 3TF × 초당 = 초당 12회 → 30초당 12회 = 1초당 0.4회
+            OnStatusLog?.Invoke("🎯 [ENGINE_151] 루프 시작 (15m/5m/1m 폴링 간격=30초, REST throttle 캐시)");
 
             while (!token.IsCancellationRequested)
             {
                 try
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(3), token);
+                    await Task.Delay(TimeSpan.FromSeconds(30), token);
 
                     // 추적 대상: 심볼 리스트 + 감시풀 + top60 랭킹 (존재하면)
                     var symbolsToScan = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -3267,10 +3137,11 @@ namespace TradingBot
                         if (token.IsCancellationRequested) break;
 
                         // ── Layer 1: 15m 종가 확정 감지 + EvaluateRegime
+                        // [v5.22.16] WebSocket 캐시 → REST throttle 30초 캐시
                         try
                         {
-                            var c15 = Services.MarketDataManager.Instance?.GetCachedKlines(
-                                symbol, Binance.Net.Enums.KlineInterval.FifteenMinutes, 60);
+                            var c15 = await GetMultiTfKlinesThrottledAsync(
+                                symbol, Binance.Net.Enums.KlineInterval.FifteenMinutes, 60, token);
                             if (c15 != null && c15.Count >= 51)
                             {
                                 var lastOpen = c15[^1].OpenTime;
@@ -3284,10 +3155,19 @@ namespace TradingBot
                         catch { /* per-symbol skip */ }
 
                         // ── Layer 2: 5m 종가 확정 감지 + TryGenerateSignal
+                        // [v5.22.16] 5분봉은 KlineCache (WebSocket) 우선 사용 (실시간), 미존재 시 REST
                         try
                         {
-                            var c5 = Services.MarketDataManager.Instance?.GetCachedKlines(
-                                symbol, Binance.Net.Enums.KlineInterval.FiveMinutes, 60);
+                            List<IBinanceKline>? c5 = null;
+                            if (Services.MarketDataManager.Instance?.KlineCache.TryGetValue(symbol, out var cachedList) == true && cachedList.Count >= 30)
+                            {
+                                lock (cachedList) { c5 = cachedList.ToList(); }
+                            }
+                            if (c5 == null)
+                            {
+                                c5 = await GetMultiTfKlinesThrottledAsync(
+                                    symbol, Binance.Net.Enums.KlineInterval.FiveMinutes, 60, token);
+                            }
                             if (c5 != null && c5.Count >= 30)
                             {
                                 var lastOpen = c5[^1].OpenTime;
@@ -3301,10 +3181,11 @@ namespace TradingBot
                         catch { /* per-symbol skip */ }
 
                         // ── Layer 3: 1m 현재 봉 상태 + 최근 10봉으로 TryTriggerEntry
+                        // [v5.22.16] WebSocket 캐시 → REST throttle 30초 캐시 (1m 봉 종가 확정 감지는 다소 늦어짐)
                         try
                         {
-                            var c1 = Services.MarketDataManager.Instance?.GetCachedKlines(
-                                symbol, Binance.Net.Enums.KlineInterval.OneMinute, 15);
+                            var c1 = await GetMultiTfKlinesThrottledAsync(
+                                symbol, Binance.Net.Enums.KlineInterval.OneMinute, 15, token);
                             if (c1 != null && c1.Count >= 11)
                             {
                                 bool isMajor = MajorSymbols.Contains(symbol);
@@ -3883,8 +3764,90 @@ namespace TradingBot
         private DateTime _lastTrackingPoolRefresh = DateTime.MinValue;
         private static readonly TimeSpan TrackingPoolRefreshInterval = TimeSpan.FromMinutes(5);
 
-        // [v5.22.15] BB Squeeze REST throttle — 심볼당 5분에 1회만 REST fallback (캐시 우선)
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lastBbSqueezeRestTime = new(StringComparer.OrdinalIgnoreCase);
+        // [v5.22.16] _lastBbSqueezeRestTime 제거 — GetMultiTfKlinesThrottledAsync 가 30초 throttle 통합 관리
+
+        // [v5.22.16] 멀티TF WebSocket 캐시 폐기 → REST throttle (심볼+TF별 30초 1회)
+        //   - HIGH_TOP_CHASING/SIDEWAYS_BOX 가드 (15m 30봉) — IsEntryAllowed 내부
+        //   - ENGINE_151 Layer 1/2/3 (15m / 5m / 1m) — Run151EngineLoopAsync
+        //   캐시 키: "{symbol}|{interval}", value: (마지막 REST 시각, 결과 List)
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime ts, List<IBinanceKline> klines)> _multiTfRestCache
+            = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan MultiTfRestThrottle = TimeSpan.FromSeconds(30);
+
+        /// <summary>
+        /// [v5.22.16] 멀티TF WebSocket 캐시 대체 — REST 호출 + 30초 throttle 캐싱 (async)
+        /// 캐시 hit 시 즉시 반환. miss 시 REST 1회 후 캐시.
+        /// </summary>
+        private async Task<List<IBinanceKline>?> GetMultiTfKlinesThrottledAsync(
+            string symbol, KlineInterval interval, int limit, CancellationToken token)
+        {
+            string key = $"{symbol}|{interval}";
+            var nowUtc = DateTime.UtcNow;
+            if (_multiTfRestCache.TryGetValue(key, out var cached)
+                && (nowUtc - cached.ts) < MultiTfRestThrottle
+                && cached.klines.Count >= limit)
+            {
+                return cached.klines;
+            }
+            try
+            {
+                var fetched = await _exchangeService.GetKlinesAsync(symbol, interval, limit, token);
+                if (fetched == null) return cached.klines; // null 시 직전 캐시 재활용
+                var list = fetched.ToList();
+                _multiTfRestCache[key] = (nowUtc, list);
+                return list;
+            }
+            catch
+            {
+                return cached.klines; // throttle 직후 fail 시 직전 캐시 재활용 (있다면)
+            }
+        }
+
+        /// <summary>
+        /// [v5.22.16] sync 가드 (IsEntryAllowedCore) 전용 — 캐시만 조회 (없으면 백그라운드 refresh + null 반환)
+        /// 첫 호출은 가드 skip (정상). 두 번째부터 throttle 캐시 hit.
+        /// </summary>
+        private List<IBinanceKline>? GetMultiTfKlinesCachedOrRefresh(
+            string symbol, KlineInterval interval, int limit)
+        {
+            string key = $"{symbol}|{interval}";
+            var nowUtc = DateTime.UtcNow;
+            if (_multiTfRestCache.TryGetValue(key, out var cached)
+                && cached.klines.Count >= limit)
+            {
+                // 캐시 만료 시 백그라운드 새로고침 (반환은 stale 그대로)
+                if ((nowUtc - cached.ts) >= MultiTfRestThrottle)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var fetched = await _exchangeService.GetKlinesAsync(symbol, interval, limit, default);
+                            if (fetched != null)
+                                _multiTfRestCache[key] = (DateTime.UtcNow, fetched.ToList());
+                        }
+                        catch { /* 무시 */ }
+                    });
+                }
+                return cached.klines;
+            }
+            // 캐시 미존재 — 백그라운드 fetch 후 다음 호출에 사용
+            if (!_multiTfRestCache.ContainsKey(key) || (nowUtc - cached.ts) >= MultiTfRestThrottle)
+            {
+                _multiTfRestCache[key] = (nowUtc, cached.klines ?? new List<IBinanceKline>()); // 마커 (재진입 방지)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var fetched = await _exchangeService.GetKlinesAsync(symbol, interval, limit, default);
+                        if (fetched != null)
+                            _multiTfRestCache[key] = (DateTime.UtcNow, fetched.ToList());
+                    }
+                    catch { /* 무시 */ }
+                });
+            }
+            return null;
+        }
 
         // [v5.22.10] 메모리 누수 방지 — 5분 주기 cleanup
         private DateTime _lastMemoryCleanupTime = DateTime.MinValue;
@@ -3941,6 +3904,17 @@ namespace TradingBot
 
                 // _pumpPriorityQueue (List) 비우기 — PumpScan 비활성화됨
                 lock (_pumpPriorityQueue) { _pumpPriorityQueue.Clear(); }
+
+                // [v5.22.16] 멀티TF REST throttle 캐시 cleanup — TTL 5분
+                int multiTfRemoved = 0;
+                foreach (var kv in _multiTfRestCache.ToArray())
+                {
+                    if ((now - kv.Value.ts) > TimeSpan.FromMinutes(5))
+                    {
+                        if (_multiTfRestCache.TryRemove(kv.Key, out _)) multiTfRemoved++;
+                    }
+                }
+                totalRemoved += multiTfRemoved;
 
                 if (totalRemoved > 0)
                     OnStatusLog?.Invoke($"🧹 [메모리cleanup] {totalRemoved}개 만료 항목 제거 (5분 주기)");
@@ -4562,29 +4536,11 @@ namespace TradingBot
                     if (_activePositions.TryGetValue(symbol, out var ep) && ep.IsOwnPosition) return;
                 }
 
-                // [v5.22.15] WebSocket 캐시 우선 사용 → REST 호출 제거
-                //   원인: 매 ticker 업데이트마다 80봉 REST 호출 → 12심볼 × 초당 N회 → API 폭주 + workMs 3000+ms
-                //   해결: MultiTfKlineCache (15m WebSocket) 캐시 우선, 비어있으면 5분 throttle 후 1회 REST
-                List<IBinanceKline>? klines15m = null;
-                var cached15m = _marketDataManager?.GetCachedKlines(symbol, KlineInterval.FifteenMinutes, 60);
-                if (cached15m != null && cached15m.Count >= 60)
-                {
-                    klines15m = cached15m;
-                }
-                else
-                {
-                    // 캐시 미존재 시 throttle: 심볼당 5분에 1회 REST 만 허용
-                    var nowUtc = DateTime.UtcNow;
-                    if (_lastBbSqueezeRestTime.TryGetValue(symbol, out var lastRest)
-                        && (nowUtc - lastRest) < TimeSpan.FromMinutes(5))
-                    {
-                        return; // 최근 REST 호출 → skip (캐시 채워질 때까지 대기)
-                    }
-                    _lastBbSqueezeRestTime[symbol] = nowUtc;
-                    var rest = await _exchangeService.GetKlinesAsync(
-                        symbol, KlineInterval.FifteenMinutes, 80, token);
-                    klines15m = rest?.ToList();
-                }
+                // [v5.22.16] 멀티TF WebSocket 캐시 폐기 → REST throttle 30초 캐시로 통합
+                //   기존: MultiTfKlineCache (15m WebSocket) 우선 + 5분 fallback
+                //   신규: GetMultiTfKlinesThrottledAsync (REST 30초 throttle 단일 경로)
+                List<IBinanceKline>? klines15m = await GetMultiTfKlinesThrottledAsync(
+                    symbol, KlineInterval.FifteenMinutes, 80, token);
 
                 if (klines15m == null || klines15m.Count < 60) return;
 
@@ -12405,11 +12361,7 @@ namespace TradingBot
             return remaining > TimeSpan.Zero;
         }
 
-        private async Task InitTradeSignalClassifierAsync()
-        {
-            // [AI 제거] TradeSignalClassifier 통째 제거
-            await Task.CompletedTask;
-        }
+        // [v5.22.16] InitTradeSignalClassifierAsync 통째 삭제 (TradeSignalClassifier 의존 제거됨, 호출자 0건)
 
         /// <summary>
         /// [v3.0.11] 정찰대(30%) 진입 후 ROE 기반으로 메인(70%) 추가 진입 모니터
