@@ -20,7 +20,7 @@ namespace TradingBot.Services
     {
         private bool _disposed = false;
         private readonly IBinanceRestClient _restClient;
-        private readonly BinanceSocketClient _socketClient = null!;
+        private BinanceSocketClient _socketClient = null!; // [v5.22.12] readonly 제거 — Watchdog 에서 재생성 필요
         private readonly List<string> _majorSymbols;
         private CancellationTokenSource? _cts;
         private string? _currentListenKey;
@@ -154,10 +154,72 @@ namespace TradingBot.Services
             // [v4.5.15] 멀티 TF WebSocket 캐시 가동 (M1/M15/H1/H4/D1) — REST 호출 제거용
             _ = StartMultiTfKlineStreamAsync(internalToken);
             // [v5.22.11] PUMP 알트 동적 멀티TF 구독 비활성화 — PUMP 카테고리 차단됨 (v5.22.5)
-            //   사용자 지적: "PUMP 멀티TF 구독 완료도 뜨는데 이건 안쓰는거 아냐?"
             // _ = StartPumpMultiTfRefreshLoopAsync(internalToken);
 
+            // [v5.22.12] WebSocket Watchdog — 5분 동안 끊김만 있고 복구 0건이면 강제 전체 재구독
+            _ = StartWebSocketWatchdogAsync(internalToken);
+
             return Task.CompletedTask;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════════════
+        // [v5.22.12] WebSocket Watchdog — 끊김 폭주 + 복구 0건 시 전체 강제 재구독
+        //   원인: -1003 rate limit / 네트워크 일시 끊김 후 SDK 자동 재연결 실패 케이스
+        //   증상: ConnectionLost 로그만 5분에 4000+개, ConnectionRestored 0건
+        //   해결: 5분마다 Connect/Restore 카운터 비교 → 끊김>10 + 복구=0 시 전체 재시작
+        // ═══════════════════════════════════════════════════════════════════════════════════
+        private long _wsLostCount;
+        private long _wsRestoredCount;
+        public void IncrementWsLost() => System.Threading.Interlocked.Increment(ref _wsLostCount);
+        public void IncrementWsRestored() => System.Threading.Interlocked.Increment(ref _wsRestoredCount);
+
+        private async Task StartWebSocketWatchdogAsync(CancellationToken token)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromMinutes(2), token); // 부팅 후 2분 대기
+                long lastLostSnapshot = 0;
+                long lastRestoredSnapshot = 0;
+                while (!token.IsCancellationRequested)
+                {
+                    long curLost = System.Threading.Interlocked.Read(ref _wsLostCount);
+                    long curRestored = System.Threading.Interlocked.Read(ref _wsRestoredCount);
+                    long lostDelta = curLost - lastLostSnapshot;
+                    long restoredDelta = curRestored - lastRestoredSnapshot;
+
+                    if (lostDelta > 10 && restoredDelta == 0)
+                    {
+                        OnLog?.Invoke($"🚨 [WS-WATCHDOG] 5분간 끊김={lostDelta} 복구={restoredDelta} → 전체 강제 재구독 시도");
+                        try
+                        {
+                            // SocketClient 자체 재생성 (모든 구독 끊고 처음부터)
+                            try { await _socketClient.UnsubscribeAllAsync(); } catch { }
+                            _socketClient.Dispose();
+                            _socketClient = new BinanceSocketClient(options =>
+                            {
+                                if (!string.IsNullOrWhiteSpace(AppConfig.BinanceApiKey) && !string.IsNullOrWhiteSpace(AppConfig.BinanceApiSecret))
+                                    options.ApiCredentials = new ApiCredentials(AppConfig.BinanceApiKey, AppConfig.BinanceApiSecret);
+                                options.ReconnectInterval = TimeSpan.FromSeconds(10);
+                            });
+                            // 재구독: User + Ticker + Kline + MultiTf (가장 핵심)
+                            _ = StartUserDataStreamAsync(token);
+                            _ = StartAllMarketTickerStreamAsync(token);
+                            _ = StartPriceWebSocketAsync(token);
+                            _ = StartKlineStreamAsync(token);
+                            _ = StartMultiTfKlineStreamAsync(token);
+                            OnLog?.Invoke("✅ [WS-WATCHDOG] SocketClient 재생성 + 핵심 5종 재구독 완료");
+                        }
+                        catch (Exception ex)
+                        {
+                            OnLog?.Invoke($"❌ [WS-WATCHDOG] 재구독 실패: {ex.Message}");
+                        }
+                    }
+                    lastLostSnapshot = curLost;
+                    lastRestoredSnapshot = curRestored;
+                    await Task.Delay(TimeSpan.FromMinutes(5), token);
+                }
+            }
+            catch (OperationCanceledException) { }
         }
 
         /// <summary>
@@ -450,8 +512,8 @@ namespace TradingBot.Services
 
             if (subResult.Success)
             {
-                subResult.Data.ConnectionLost += () => OnLog?.Invoke("⚠️ 전체 시세 스트림 연결 끊김...");
-                subResult.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ 전체 시세 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                subResult.Data.ConnectionLost += () => { IncrementWsLost(); OnLog?.Invoke("⚠️ 전체 시세 스트림 연결 끊김..."); };
+                subResult.Data.ConnectionRestored += (ts) => { IncrementWsRestored(); OnLog?.Invoke($"✅ 전체 시세 스트림 복구 ({ts.TotalSeconds:F1}초)"); };
                 OnLog?.Invoke("📡 전 종목 실시간 시세 스트림 가동 (고속 스캔)");
             }
             else OnLog?.Invoke($"❌ 전 종목 스트림 실패: {subResult.Error}");
@@ -466,8 +528,8 @@ namespace TradingBot.Services
 
             if (subResult.Success)
             {
-                subResult.Data.ConnectionLost += () => OnLog?.Invoke("⚠️ 주요 종목 시세 스트림 연결 끊김...");
-                subResult.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ 주요 종목 시세 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                subResult.Data.ConnectionLost += () => { IncrementWsLost(); OnLog?.Invoke("⚠️ 주요 종목 시세 스트림 연결 끊김..."); };
+                subResult.Data.ConnectionRestored += (ts) => { IncrementWsRestored(); OnLog?.Invoke($"✅ 주요 종목 시세 스트림 복구 ({ts.TotalSeconds:F1}초)"); };
                 OnLog?.Invoke("📡 주요 종목 실시간 가격 웹소켓 연결 성공");
             }
             else OnLog?.Invoke($"❌ 주요 종목 웹소켓 연결 실패: {subResult.Error}");
@@ -492,8 +554,8 @@ namespace TradingBot.Services
 
                 if (bookSubResult.Success)
                 {
-                    bookSubResult.Data.ConnectionLost += () => OnLog?.Invoke("⚠️ BookTicker 스트림 연결 끊김...");
-                    bookSubResult.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ BookTicker 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                    bookSubResult.Data.ConnectionLost += () => { IncrementWsLost(); OnLog?.Invoke("⚠️ BookTicker 스트림 연결 끊김..."); };
+                    bookSubResult.Data.ConnectionRestored += (ts) => { IncrementWsRestored(); OnLog?.Invoke($"✅ BookTicker 스트림 복구 ({ts.TotalSeconds:F1}초)"); };
                     OnLog?.Invoke("📡 BookTicker 실시간 구독 성공 (Bid/Ask Imbalance feature 활성)");
                 }
                 else
@@ -542,8 +604,8 @@ namespace TradingBot.Services
 
                 if (aggResult.Success)
                 {
-                    aggResult.Data.ConnectionLost += () => OnLog?.Invoke("⚠️ AggTrade 스트림 연결 끊김...");
-                    aggResult.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ AggTrade 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                    aggResult.Data.ConnectionLost += () => { IncrementWsLost(); OnLog?.Invoke("⚠️ AggTrade 스트림 연결 끊김..."); };
+                    aggResult.Data.ConnectionRestored += (ts) => { IncrementWsRestored(); OnLog?.Invoke($"✅ AggTrade 스트림 복구 ({ts.TotalSeconds:F1}초)"); };
                     OnLog?.Invoke("📡 AggTrade 실시간 구독 성공 (체결 매수/매도 비율 feature 활성)");
                 }
                 else
@@ -575,8 +637,8 @@ namespace TradingBot.Services
 
                 if (markResult.Success)
                 {
-                    markResult.Data.ConnectionLost += () => OnLog?.Invoke("⚠️ MarkPrice 스트림 연결 끊김...");
-                    markResult.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ MarkPrice 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                    markResult.Data.ConnectionLost += () => { IncrementWsLost(); OnLog?.Invoke("⚠️ MarkPrice 스트림 연결 끊김..."); };
+                    markResult.Data.ConnectionRestored += (ts) => { IncrementWsRestored(); OnLog?.Invoke($"✅ MarkPrice 스트림 복구 ({ts.TotalSeconds:F1}초)"); };
                     OnLog?.Invoke("📡 MarkPrice 실시간 구독 성공 (Funding Rate feature 활성)");
                 }
                 else
@@ -613,8 +675,8 @@ namespace TradingBot.Services
 
                 if (depthResult.Success)
                 {
-                    depthResult.Data.ConnectionLost += () => OnLog?.Invoke("⚠️ Depth5 스트림 연결 끊김...");
-                    depthResult.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ Depth5 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                    depthResult.Data.ConnectionLost += () => { IncrementWsLost(); OnLog?.Invoke("⚠️ Depth5 스트림 연결 끊김..."); };
+                    depthResult.Data.ConnectionRestored += (ts) => { IncrementWsRestored(); OnLog?.Invoke($"✅ Depth5 스트림 복구 ({ts.TotalSeconds:F1}초)"); };
                     OnLog?.Invoke("📡 Depth5 실시간 구독 성공 (5단계 호가 압력 feature 활성)");
                 }
                 else
@@ -756,8 +818,8 @@ namespace TradingBot.Services
 
                 if (subResult.Success)
                 {
-                    subResult.Data.ConnectionLost += () => OnLog?.Invoke($"⚠️ [{symbol}] 캔들 스트림 연결 끊김...");
-                    subResult.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ [{symbol}] 캔들 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                    subResult.Data.ConnectionLost += () => { IncrementWsLost(); OnLog?.Invoke($"⚠️ [{symbol}] 캔들 스트림 연결 끊김..."); };
+                    subResult.Data.ConnectionRestored += (ts) => { IncrementWsRestored(); OnLog?.Invoke($"✅ [{symbol}] 캔들 스트림 복구 ({ts.TotalSeconds:F1}초)"); };
                     OnLog?.Invoke($"📡 [{symbol}] 5분봉 캔들 스트림 가동");
                 }
                 else
@@ -828,8 +890,8 @@ namespace TradingBot.Services
 
                         if (sub.Success && sub.Data != null)
                         {
-                            sub.Data.ConnectionLost += () => OnLog?.Invoke($"⚠️ [{symbol}] {interval} 스트림 끊김");
-                            sub.Data.ConnectionRestored += (ts) => OnLog?.Invoke($"✅ [{symbol}] {interval} 스트림 복구 ({ts.TotalSeconds:F1}초)");
+                            sub.Data.ConnectionLost += () => { IncrementWsLost(); OnLog?.Invoke($"⚠️ [{symbol}] {interval} 스트림 끊김"); };
+                            sub.Data.ConnectionRestored += (ts) => { IncrementWsRestored(); OnLog?.Invoke($"✅ [{symbol}] {interval} 스트림 복구 ({ts.TotalSeconds:F1}초)"); };
                             OnLog?.Invoke($"📡 [{symbol}] {interval} 멀티TF 스트림 가동");
                         }
                     }

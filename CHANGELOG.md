@@ -5,6 +5,33 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.12] - 2026-04-28
+
+### 🚨 WebSocket Watchdog 추가 — 끊김 폭주 시 강제 전체 재구독
+
+#### 사용자 보고
+"6시간 넘게 진행이 아무것도 안되고 있잖아"
+"씨발새끼야 최신버전으로 진행한거야"
+
+#### 진단 (v5.22.11 5시간 45분 가동)
+- 메모리 263MB / CPU 3% (정상)
+- 모든 WebSocket 스트림 끊김:
+  - MarkPrice, BTC/ETH/SOL/XRP × OneDay/OneHour/M15/M1/H4 모두
+  - 5분간 끊김 로그 4,335건
+  - ConnectionRestored 복구 로그 0건 ← SDK 자동 재연결 실패
+- 데이터 안 들어옴 → 트리거 평가 못 함 → 진입 0
+
+#### Added
+- `MarketDataManager.StartWebSocketWatchdogAsync` — 5분 주기 감시
+- `_wsLostCount` / `_wsRestoredCount` 카운터 (18곳 ConnectionLost/Restored 이벤트에 IncrementWsLost/IncrementWsRestored 호출 추가)
+- 끊김>10 + 복구=0 감지 시:
+  1. `_socketClient.UnsubscribeAllAsync()`
+  2. `_socketClient.Dispose()` + 재생성
+  3. 5종 핵심 스트림 재구독 (User/Ticker/Price/Kline/MultiTf)
+
+#### Changed
+- `_socketClient` readonly 제거 (Watchdog 재생성 필요)
+
 ## [5.22.11] - 2026-04-28
 
 ### 🧹 BREAKING — AI 시스템 47개 파일 + ML.NET 5개 패키지 진짜 제거
