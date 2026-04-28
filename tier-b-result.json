@@ -1,0 +1,17 @@
+﻿{
+    "timestamp":  "2026-04-21 06:14:19",
+    "pnl_7d":  -2666.97,
+    "n_7d":  2307,
+    "label_after_n":  0,
+    "label_after_rate":  0,
+    "label_before_n":  87,
+    "label_before_rate":  0,
+    "major_n_7d":  357,
+    "major_pnl_7d":  -1416.62,
+    "major_entries_after_deploy":  0,
+    "pump_n_7d":  719,
+    "pump_pnl_7d":  -786.31,
+    "spike_n_7d":  1231,
+    "spike_pnl_7d":  -464.03,
+    "action":  "EMERGENCY_REDUCE"
+}

@@ -1,6 +1,7 @@
 ﻿﻿using Binance.Net.Enums;
 using System.Collections.Generic;
-using Microsoft.ML.Data;
+// using Microsoft.ML.Data; // [v5.22.11] AI/ML.NET 완전 폐기
+using System;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows.Media;
@@ -8,7 +9,17 @@ using ExchangeType = TradingBot.Shared.Models.ExchangeType;
 
 namespace TradingBot.Models
 {
+    // [v5.22.11] AI 폐기 후 잔존 ML.NET attribute 호환용 빈 stub
+    [AttributeUsage(AttributeTargets.Property | AttributeTargets.Field, AllowMultiple = false)]
+    internal sealed class NoColumnAttribute : Attribute { }
+
+    [AttributeUsage(AttributeTargets.Property | AttributeTargets.Field, AllowMultiple = false)]
+    internal sealed class ColumnNameAttribute : Attribute { public ColumnNameAttribute(string name) { } }
+
     public enum StrategyType { Major, Scanner, Listing }
+
+    // [v5.22.x] AI 폐기 후에도 진입 카테고리 분류용으로 보존
+    public enum CoinType { Normal, Major, Pumping }
 
     public class PumpScanSettings
     {

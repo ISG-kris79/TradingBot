@@ -792,20 +792,7 @@ namespace TradingBot
                 }
 
                 Console.OutputEncoding = System.Text.Encoding.UTF8;
-                Console.WriteLine($"[워크포워드 최적화] 시작 — 초기잔고: ${balance:N0} | {years}년");
-
-                var runner = new TradingBot.Services.ThreeYearBacktestRunner();
-                var report = runner.RunOptimizedAsync(
-                    initialBalance: balance,
-                    years: years,
-                    onLog: msg => Console.WriteLine(msg)
-                ).GetAwaiter().GetResult();
-
-                string formatted = runner.FormatReport(report);
-                Console.WriteLine(formatted);
-
-                string path = runner.SaveReportToFile(report);
-                Console.WriteLine($"\n✅ 결과 저장: {path}");
+                Console.WriteLine("[워크포워드 최적화] 비활성화 — ThreeYearBacktestRunner는 AI 시스템과 함께 제거됨");
             }
             catch (Exception ex)
             {

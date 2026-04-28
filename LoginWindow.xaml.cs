@@ -1,7 +1,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Input;
-using Newtonsoft.Json;
+using System.Text.Json;
 using TradingBot.Services;
 using TradingBot.Shared.Services;
 
@@ -86,7 +86,7 @@ namespace TradingBot
                 if (chkAutoLogin.IsChecked == true)
                 {
                     var config = new { Username = username, Token = hash }; // 실제로는 토큰 사용 권장
-                    File.WriteAllText("login.config", JsonConvert.SerializeObject(config));
+                    File.WriteAllText("login.config", JsonSerializer.Serialize(config));
                 }
 
                 // 앱 설정에 사용자 키 로드

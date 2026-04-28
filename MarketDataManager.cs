@@ -153,8 +153,9 @@ namespace TradingBot.Services
             _ = StartKlineStreamAsync(internalToken);
             // [v4.5.15] 멀티 TF WebSocket 캐시 가동 (M1/M15/H1/H4/D1) — REST 호출 제거용
             _ = StartMultiTfKlineStreamAsync(internalToken);
-            // [v4.5.16] PUMP 알트 동적 멀티TF 구독 루프 (5분 주기)
-            _ = StartPumpMultiTfRefreshLoopAsync(internalToken);
+            // [v5.22.11] PUMP 알트 동적 멀티TF 구독 비활성화 — PUMP 카테고리 차단됨 (v5.22.5)
+            //   사용자 지적: "PUMP 멀티TF 구독 완료도 뜨는데 이건 안쓰는거 아냐?"
+            // _ = StartPumpMultiTfRefreshLoopAsync(internalToken);
 
             return Task.CompletedTask;
         }

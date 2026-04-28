@@ -16,9 +16,9 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
     <LangVersion>latest</LangVersion>
-    <Version>5.22.10</Version>
-    <AssemblyVersion>5.22.10.0</AssemblyVersion>
-    <FileVersion>5.22.10.0</FileVersion>
+    <Version>5.22.11</Version>
+    <AssemblyVersion>5.22.11.0</AssemblyVersion>
+    <FileVersion>5.22.11.0</FileVersion>
     <Company>TradingBot</Company>
     <Product>CoinFF TradingBot</Product>
     <Description>Cryptocurrency Trading Bot with AI/ML capabilities</Description>
@@ -92,7 +92,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.ML" Version="5.0.0" />
     <PackageReference Include="SkiaSharp" Version="3.116.1" />
     <PackageReference Include="SkiaSharp.Views.WPF" Version="3.116.1" />
     <PackageReference Include="System.Threading.Tasks.Dataflow" Version="9.0.1" />
@@ -103,10 +102,6 @@
     <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.0" />
     <PackageReference Include="LiveCharts.Wpf" Version="0.9.7" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.4" />
-    <PackageReference Include="Microsoft.ML" Version="5.0.0" />
-    <PackageReference Include="Microsoft.ML.FastTree" Version="5.0.0" />
-    <PackageReference Include="Microsoft.ML.LightGbm" Version="5.0.0" />
-    <PackageReference Include="Microsoft.ML.TimeSeries" Version="5.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.0" />

@@ -34,7 +34,6 @@ namespace TradingBot.Services
         // [v3.9.1] 손절 횟수 추적 — 2회 손절 시 당일 블랙리스트
         private readonly ConcurrentDictionary<string, int> _stopLossCountToday = new(StringComparer.OrdinalIgnoreCase);
         private readonly AdvancedExitStopCalculator _advancedExitCalculator;  // [v2.1.18] 지표 결합 익절
-        private AIPredictor? _aiPredictor;
 
         // [v5.10.68] 외부 ML 신호 빠른 반응 캐시 (TradingEngine 5분 주기 신호 → 즉시 활성 포지션에 반영)
         // key: symbol, value: (신호 시각, 방향(true=상승), upProb, confidence)
@@ -47,16 +46,8 @@ namespace TradingBot.Services
             _externalMlSignals[symbol] = (DateTime.Now, directionUp, upProb, confidence);
         }
 
-        // [AI Exit] 시장 상태 분류 + 최적 익절 모델
-        private MarketRegimeClassifier? _regimeClassifier;
-        private ExitOptimizerService? _exitOptimizer;
+        // [AI 제거] MarketRegimeClassifier / ExitOptimizerService 의존 제거
         private MacdCrossSignalService? _macdCrossService;
-
-        public void SetExitAIModels(MarketRegimeClassifier? regime, ExitOptimizerService? exitOpt)
-        {
-            _regimeClassifier = regime;
-            _exitOptimizer = exitOpt;
-        }
 
         public void SetMacdCrossService(MacdCrossSignalService? svc) => _macdCrossService = svc;
 
@@ -107,7 +98,6 @@ namespace TradingBot.Services
             object posLock,
             ConcurrentDictionary<string, DateTime> blacklistedSymbols,
             TradingSettings settings,
-            AIPredictor? aiPredictor = null,
             AdvancedExitStopCalculator? advancedExitCalculator = null,
             Func<TradingSettings?>? settingsProvider = null)  // [v2.1.18] 선택적
         {
@@ -122,7 +112,6 @@ namespace TradingBot.Services
             _blacklistedSymbols = blacklistedSymbols;
             _settings = settings;
             _settingsProvider = settingsProvider ?? (() => _settings);
-            _aiPredictor = aiPredictor;
             _advancedExitCalculator = advancedExitCalculator ?? new AdvancedExitStopCalculator();  // [v2.1.18] 기본값 생성
         }
 
@@ -153,19 +142,8 @@ namespace TradingBot.Services
             return 80.0m;  // 60→80: 청산 안전 거리 확대
         }
 
-        public void UpdateAiPredictor(AIPredictor? aiPredictor)
-        {
-            _aiPredictor = aiPredictor;
-        }
-
-        // [v4.7.4] ProfitRegressor 주입 — 횡보 보유 포지션 AI 재예측 청산
-        private TradingBot.Services.ProfitRegressorService? _profitRegressor;
-        // 심볼별 마지막 재예측 시간 (5분 간격으로 호출)
+        // [AI 제거] UpdateAiPredictor / SetProfitRegressor 제거 — 호출자도 정리됨
         private readonly ConcurrentDictionary<string, DateTime> _lastStagnantCheck = new();
-        public void SetProfitRegressor(TradingBot.Services.ProfitRegressorService regressor)
-        {
-            _profitRegressor = regressor;
-        }
 
         public bool IsCloseInProgress(string symbol)
         {
@@ -219,7 +197,6 @@ namespace TradingBot.Services
             DateTime positionEntryTime = DateTime.Now;
             bool timeDecayBreakevenApplied = false;
             double timeDecayBreakevenMinutes = 60.0;
-            DateTime nextAiRecheckTime = DateTime.Now.AddMinutes(15); // [v5.10.68] 60→15 단축
             DateTime nextHSCheckTime = DateTime.Now.AddMinutes(1);
             bool squeezeDefenseReduced = false;
             double squeezeDefenseMinutes = 90.0;
@@ -275,7 +252,6 @@ namespace TradingBot.Services
                     leverage = p.Leverage > 0 ? p.Leverage : leverage;
                     positionEntryTime = p.EntryTime == default ? positionEntryTime : p.EntryTime;
                     squeezeDefenseReduced = p.TakeProfitStep >= 1;
-                    nextAiRecheckTime = positionEntryTime.AddMinutes(15); // [v5.10.68] 60→15 단축
                     pyramidingCount = p.PyramidCount > 0 ? p.PyramidCount : (p.IsPyramided ? 1 : 0);
                     if (p.HighestPrice <= 0m)
                         p.HighestPrice = p.EntryPrice;
@@ -295,10 +271,7 @@ namespace TradingBot.Services
 
             OnLog?.Invoke($"⏳ [{(isSidewaysMode ? "S" : "T")}] {symbol} 진입대기");
 
-            // [AI Sniper Exit] 구조적 손절 체크 (90초 주기, Dual Stop과 45s 스태거)
-            DateTime nextSniperExitCheck = DateTime.Now.AddSeconds(60);
-            float entryAiConfidence = 0.50f;
-            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var pc)) entryAiConfidence = pc.AiConfidencePercent / 100f; }
+            // [AI 제거] AI Sniper Exit / entryAiConfidence 제거
 
             // [3단계 본절 보호 & 수익 잠금] 스마트 방어 시스템
             decimal highestROE = -999m;            // 최고 ROE 추적
@@ -579,18 +552,7 @@ namespace TradingBot.Services
                         }
                     }
 
-                    if (_aiPredictor != null && DateTime.Now >= nextAiRecheckTime)
-                    {
-                        if (TryEvaluateAiReversalExit(symbol, currentPrice, isLong, out string aiRecheckReason))
-                        {
-                            OnLog?.Invoke($"🧠 [AI 재검증 청산] {symbol} {aiRecheckReason}");
-                            await ExecuteMarketClose(symbol, $"AI Reversal Exit ({aiRecheckReason})", token);
-                            break;
-                        }
-
-                        OnLog?.Invoke($"🧠 [AI 재검증 유지] {symbol} {aiRecheckReason}");
-                        nextAiRecheckTime = DateTime.Now.AddMinutes(15); // [v5.10.68] 60→15 단축
-                    }
+                    // [AI 제거] AI 재검증 청산 로직 제거 — 모든 AI 의존 제거
 
                     // [v5.10.68] 외부 ML 신호 빠른 반응 — TradingEngine 5분 주기 신호 즉시 반영
                     // 강한 반대 신호: ROE 5% 미만 = 즉시 청산 / ROE >= 5% = 본절 락 + 트레일링 강화
@@ -626,163 +588,7 @@ namespace TradingBot.Services
                         }
                     }
 
-                    // ═══════════════════════════════════════════════
-                    // [AI Sniper Exit] 구조적 손절 — ML 기반 유연한 맷집
-                    // - 개미 털기 의심: 볼륨 없는 하락 → 버텨라
-                    // - 매도압력 급증: 가격 유지 + 매도 체결 강도↑ → 즉시 던져라
-                    // - 파동 인식: 3파 진행중 → 트레일링 갭 확대
-                    // ═══════════════════════════════════════════════
-                    if (DateTime.Now >= nextSniperExitCheck)
-                    {
-                        try
-                        {
-                            var aiDecision = AIDecisionService.Instance;
-                            if (aiDecision.IsExitModelReady)
-                            {
-                                // 5분봉 최근 데이터로 시장 상태 피처 구성
-                                var exitKlines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 30, token);
-                                if (exitKlines != null && exitKlines.Count >= 20)
-                                {
-                                    var kList = exitKlines.ToList();
-                                    var latest = kList[^1];
-                                    var prev = kList[^2];
-
-                                    // 볼륨 밀도: 최근 3봉 합 / 20봉 평균
-                                    double avgVol = kList.TakeLast(20).Average(k => (double)k.Volume);
-                                    double vol3Sum = kList.TakeLast(3).Sum(k => (double)k.Volume);
-                                    float volDensity = avgVol > 0 ? (float)(vol3Sum / (avgVol * 3)) : 1.0f;
-                                    float volRatio = avgVol > 0 ? (float)((double)latest.Volume / avgVol) : 1.0f;
-
-                                    // 매도 체결 강도 추정 (음봉 비율 기반)
-                                    int bearCandles = kList.TakeLast(5).Count(k => k.ClosePrice < k.OpenPrice);
-                                    float sellPressure = bearCandles / 5.0f;
-
-                                    // RSI 간이 계산
-                                    double gain = 0, loss = 0;
-                                    for (int ri = kList.Count - 14; ri < kList.Count; ri++)
-                                    {
-                                        if (ri <= 0) continue;
-                                        double diff = (double)(kList[ri].ClosePrice - kList[ri - 1].ClosePrice);
-                                        if (diff > 0) gain += diff; else loss -= diff;
-                                    }
-                                    float rsi = loss > 0 ? (float)(100.0 - 100.0 / (1.0 + gain / loss)) : 50f;
-
-                                    var exitInput = new AIDecisionService.SniperExitInput
-                                    {
-                                        UnrealizedRoePct = (float)currentROE,
-                                        MaxRoePct = (float)highestROE,
-                                        DrawdownFromPeak = (float)(currentROE - highestROE),
-                                        HoldMinutes = (float)(holdingTime.TotalMinutes / 60.0), // 정규화
-                                        EntryConfidence = entryAiConfidence,
-                                        IsLong = isLong ? 1f : 0f,
-                                        PartialExitDone = partialTaken ? 1f : 0f,
-                                        TrailingActive = tightTrailingActivated ? 1f : 0f,
-                                        RSI = rsi / 100f,
-                                        MACD_Rising = latest.ClosePrice > prev.ClosePrice ? 1f : 0f,
-                                        BB_Position = 0.5f,
-                                        ATR_Pct = 0.01f,
-                                        Volume_Ratio = volRatio,
-                                        Volume_Density = volDensity,
-                                        SellPressure = sellPressure,
-                                        EMA_Alignment = isLong ? 1f : -1f,
-                                        Price_Change_3Bar = (float)((double)(latest.ClosePrice - kList[^4].ClosePrice) / (double)kList[^4].ClosePrice * 100),
-                                        Momentum_Score = 0.5f,
-                                    };
-
-                                    var decision = aiDecision.SniperExit(exitInput);
-
-                                    // ═══ [구조적 손절 v2] 전저점/Swing Low 종가 확인 ═══
-                                    // 고정 -18% ROE가 아닌, 전저점(최근 12봉 최저가) 이탈을
-                                    // '종가' 기준으로 확인한 뒤에만 청산합니다.
-                                    // → 세력 털기 꼬리(wick)에 걸리지 않아 승률 55%+ 달성
-                                    if (decision.Action == AIDecisionService.ExitAction.Hold
-                                        || decision.Action == AIDecisionService.ExitAction.TightenTrail)
-                                    {
-                                        // 전저점 계산: 최근 12봉 중 최저/최고 (현재봉 제외)
-                                        var structureCandles = kList.SkipLast(1).TakeLast(12).ToList();
-                                        if (structureCandles.Count >= 6)
-                                        {
-                                            decimal swingLow  = structureCandles.Min(k => k.LowPrice);
-                                            decimal swingHigh = structureCandles.Max(k => k.HighPrice);
-                                            decimal closePrice = latest.ClosePrice;
-
-                                            bool structuralBreak = isLong
-                                                ? closePrice < swingLow     // LONG: 종가가 전저점 이탈
-                                                : closePrice > swingHigh;   // SHORT: 종가가 전고점 돌파
-
-                                            if (structuralBreak)
-                                            {
-                                                string breakType = isLong ? $"SwingLow={swingLow:F4}" : $"SwingHigh={swingHigh:F4}";
-                                                OnLog?.Invoke($"🏗️ [구조적 손절] {symbol} 종가 {closePrice:F4} {breakType} 이탈 확인 → 청산");
-                                                decision = new AIDecisionService.SniperDecision
-                                                {
-                                                    Action = AIDecisionService.ExitAction.FullClose,
-                                                    Reason = $"StructuralBreak_{breakType}_Close={closePrice:F4}"
-                                                };
-                                            }
-                                        }
-                                    }
-
-                                    switch (decision.Action)
-                                    {
-                                        case AIDecisionService.ExitAction.EmergencyCut:
-                                            OnLog?.Invoke($"🚨 [AI Sniper] {symbol} 긴급 손절 | {decision.Reason}");
-                                            await ExecuteMarketClose(symbol, $"AI_Emergency ({decision.Reason})", token);
-                                            break; // inner switch
-
-                                        case AIDecisionService.ExitAction.FullClose:
-                                            OnLog?.Invoke($"🔴 [AI Sniper] {symbol} 전량 청산 | {decision.Reason}");
-                                            await ExecuteMarketClose(symbol, $"AI_FullClose ({decision.Reason})", token);
-                                            break;
-
-                                        case AIDecisionService.ExitAction.PartialClose:
-                                            if (!partialTaken)
-                                            {
-                                                OnLog?.Invoke($"💰 [AI Sniper] {symbol} 부분익절 | {decision.Reason}");
-                                                if (await ExecutePartialClose(symbol, 0.40m, token))
-                                                    partialTaken = true;
-                                            }
-                                            break;
-
-                                        case AIDecisionService.ExitAction.TightenTrail:
-                                            if (decision.SuggestedTrailGap > 0 && tightTrailingActivated)
-                                            {
-                                                decimal newGap = majorTrailingGap * decision.SuggestedTrailGap;
-                                                if (newGap < majorTrailingGap)
-                                                {
-                                                    majorTrailingGap = Math.Max(newGap, 2.0m);
-                                                    OnLog?.Invoke($"📉 [AI Sniper] {symbol} 트레일링 갭 축소 → {majorTrailingGap:F1}%");
-                                                }
-                                            }
-                                            break;
-
-                                        case AIDecisionService.ExitAction.WidenTrail:
-                                            if (decision.SuggestedTrailGap > 0 && tightTrailingActivated)
-                                            {
-                                                decimal newGap = majorTrailingGap * decision.SuggestedTrailGap;
-                                                majorTrailingGap = Math.Min(newGap, 10.0m);
-                                                OnLog?.Invoke($"📈 [AI Sniper] {symbol} 트레일링 갭 확대 → {majorTrailingGap:F1}%");
-                                            }
-                                            break;
-
-                                        case AIDecisionService.ExitAction.Hold:
-                                            // 홀드 — 아무것도 안 함 (개미 털기 등)
-                                            break;
-                                    }
-
-                                    // EmergencyCut / FullClose 시 루프 탈출
-                                    if (decision.Action == AIDecisionService.ExitAction.EmergencyCut
-                                        || decision.Action == AIDecisionService.ExitAction.FullClose)
-                                        break;
-                                }
-                            }
-                        }
-                        catch (Exception sniperEx)
-                        {
-                            OnLog?.Invoke($"⚠️ [AI Sniper] {symbol} 청산 판단 오류: {sniperEx.Message}");
-                        }
-                        nextSniperExitCheck = DateTime.Now.AddSeconds(90); // [v5.10.10] 30→90s: REST API 부하 절감
-                    }
+                    // [AI 제거] AI Sniper Exit 전체 블록 제거 — AIDecisionService 의존 — 트레일링/본절은 아래 일반 로직만 사용
 
                     // [v3.1.8] H&S 패턴 패닉 청산 비활성화 — 오탐지로 수익 기회 손실 다발
                     // 넥라인 이탈 전 1.5% 여유만으로 청산 → 소폭 하락에서 패닉 손절 반복
@@ -875,58 +681,7 @@ namespace TradingBot.Services
                         catch (Exception ex) { OnLog?.Invoke($"❌ {symbol} 본절 서버 스탑 예외: {ex.Message}"); }
                     }
 
-                    // [v5.10.86] AI Exit Optimizer 활성화 임계값 ROE 10% → 3% 하향
-                    //   기존: ROE 10% 도달 전 ML regime exit 미활용 → 횡보 코인 영원히 ML 판단 못 받음
-                    //   수정: ROE 3%부터 ML 판단 받게 → 횡보 + 수익권에서 빠른 익절 가능
-                    //   본절 미발동(breakEvenActivated=false)도 허용 — 작은 수익이라도 regime 약세 시 익절
-                    if (currentROE >= 3.0m
-                        && _exitOptimizer != null && _exitOptimizer.IsModelLoaded
-                        && _regimeClassifier != null && _regimeClassifier.IsModelLoaded)
-                    {
-                        try
-                        {
-                            // 시장 상태 분류
-                            RegimeFeature? regimeInput = null;
-                            if (_marketDataManager.KlineCache.TryGetValue(symbol, out var klines) && klines.Count >= 21)
-                            {
-                                List<Binance.Net.Interfaces.IBinanceKline> snapshot;
-                                lock (klines) { snapshot = klines.TakeLast(21).ToList(); }
-                                regimeInput = MarketRegimeClassifier.ExtractFeature(snapshot);
-                            }
-
-                            var (regime, regimeConf) = regimeInput != null
-                                ? _regimeClassifier.Predict(regimeInput)
-                                : (MarketRegime.Unknown, 0f);
-
-                            // Exit 판단
-                            var exitFeature = new ExitFeature
-                            {
-                                CurrentROE = (float)currentROE,
-                                HighestROE = (float)highestROE,
-                                ROE_Drawdown = (float)(highestROE - currentROE),
-                                BB_Width = regimeInput?.BB_Width ?? 0f,
-                                ADX = regimeInput?.ADX ?? 0f,
-                                RSI = regimeInput?.RSI ?? 50f,
-                                MACD_Slope = regimeInput?.MACD_Slope ?? 0f,
-                                Volume_Change_Pct = regimeInput?.Volume_Change_Pct ?? 0f,
-                                HoldingMinutes = (float)(DateTime.Now - positionEntryTime).TotalMinutes,
-                                RegimeLabel = (int)regime
-                            };
-
-                            var (exitNow, exitProb) = _exitOptimizer.Predict(exitFeature);
-
-                            if (exitNow && exitProb >= 0.70f)
-                            {
-                                OnAlert?.Invoke($"🧠 [AI Exit] {symbol} EXIT_NOW ({exitProb:P0}) | regime={regime} ROE={currentROE:F1}% peak={highestROE:F1}%");
-                                await ExecuteMarketClose(symbol, $"AI Exit Optimizer (prob={exitProb:P0}, regime={regime}, ROE={currentROE:F1}%)", token);
-                                break;
-                            }
-                        }
-                        catch (Exception aiEx)
-                        {
-                            OnLog?.Invoke($"⚠️ [{symbol}] AI Exit 판단 오류: {aiEx.Message}");
-                        }
-                    }
+                    // [AI 제거] AI Exit Optimizer / RegimeClassifier 블록 전체 제거
 
                     // ═══════════════════════════════════════════════
                     // [MACD 크로스] 1분봉 MACD 감시 → 트레일링 조임 / 익절
@@ -1653,104 +1408,7 @@ namespace TradingBot.Services
                     // 단타에서 펀딩비(2시간)는 무의미, 메이저코인 시간초과 청산도 불필요
                     // 손절/익절/트레일링 스탑이 포지션 관리를 담당
 
-                    // ═══════════════════════════════════════════════
-                    // [v4.7.4] AI 기반 횡보 보유 재예측 청산
-                    // 5분 주기로 ProfitRegressor를 재호출.
-                    // 모델이 예측한 기대수익률이 음수 → 이 포지션은 더 이상 수익 전망이 없음 → 청산
-                    // 하드코딩 시간/ATR 임계값 사용 안 함 (AI-only 원칙)
-                    // 30분 미만 신규 포지션은 제외 (체결 직후 변동성 흔들림 방지)
-                    // ═══════════════════════════════════════════════
-                    if (_profitRegressor != null && _profitRegressor.IsModelReady
-                        && (DateTime.Now - positionEntryTime).TotalMinutes >= 30)
-                    {
-                        var lastCheck = _lastStagnantCheck.GetValueOrDefault(symbol, DateTime.MinValue);
-                        if ((DateTime.Now - lastCheck).TotalMinutes >= 5)
-                        {
-                            _lastStagnantCheck[symbol] = DateTime.Now;
-
-                            try
-                            {
-                                if (_marketDataManager.KlineCache.TryGetValue(symbol, out var cache) && cache.Count >= 30)
-                                {
-                                    var cList = cache.ToList();
-                                    var latest = cList[^1];
-
-                                    // 피처: 진입 시와 동일한 구성
-                                    double avgVol = cList.TakeLast(20).Average(k => (double)k.Volume);
-                                    float volRatio = avgVol > 0 ? (float)((double)latest.Volume / avgVol) : 1.0f;
-
-                                    // RSI 14
-                                    double gain = 0, loss = 0;
-                                    for (int i = cList.Count - 14; i < cList.Count; i++)
-                                    {
-                                        if (i <= 0) continue;
-                                        double diff = (double)(cList[i].ClosePrice - cList[i - 1].ClosePrice);
-                                        if (diff > 0) gain += diff; else loss += -diff;
-                                    }
-                                    double avgGain = gain / 14.0, avgLoss = loss / 14.0;
-                                    float rsi = (avgLoss == 0) ? 70f : (float)(100.0 - (100.0 / (1.0 + avgGain / avgLoss)));
-
-                                    // ATR 14
-                                    double tr = 0;
-                                    for (int i = cList.Count - 14; i < cList.Count; i++)
-                                    {
-                                        if (i <= 0) continue;
-                                        double h = (double)cList[i].HighPrice;
-                                        double l = (double)cList[i].LowPrice;
-                                        double pc = (double)cList[i - 1].ClosePrice;
-                                        tr += Math.Max(h - l, Math.Max(Math.Abs(h - pc), Math.Abs(l - pc)));
-                                    }
-                                    float atr = (float)(tr / 14.0);
-
-                                    // BB Position (0~1 근사: 최근 20봉 min/max 내 상대 위치)
-                                    double minC = (double)cList.TakeLast(20).Min(k => k.ClosePrice);
-                                    double maxC = (double)cList.TakeLast(20).Max(k => k.ClosePrice);
-                                    float bbPos = (maxC - minC) > 0
-                                        ? (float)(((double)latest.ClosePrice - minC) / (maxC - minC))
-                                        : 0.5f;
-
-                                    // Momentum: 최근 5봉 수익률
-                                    float momentum = cList.Count >= 6 && cList[^6].ClosePrice > 0
-                                        ? (float)(((double)latest.ClosePrice / (double)cList[^6].ClosePrice - 1.0) * 100.0)
-                                        : 0f;
-
-                                    // ML confidence: 현재 활성 포지션의 AiScore 사용 (0~1 정규화)
-                                    float mlConf = 0.5f;
-                                    lock (_posLock)
-                                    {
-                                        if (_activePositions.TryGetValue(symbol, out var pInfo))
-                                        {
-                                            mlConf = pInfo.AiScore > 1f ? pInfo.AiScore / 100f : pInfo.AiScore;
-                                            if (mlConf <= 0 || mlConf > 1) mlConf = 0.5f;
-                                        }
-                                    }
-
-                                    float? predictedFutureProfitPct = _profitRegressor.PredictProfit(
-                                        rsi, bbPos, atr, volRatio, momentum, mlConf);
-
-                                    if (predictedFutureProfitPct.HasValue)
-                                    {
-                                        float p = predictedFutureProfitPct.Value;
-                                        OnLog?.Invoke($"🤖 [AI 재예측] {symbol} 기대수익률={p:F2}% (현재 ROE={currentROE:F2}%, 보유 {(DateTime.Now - positionEntryTime).TotalHours:F1}h)");
-
-                                        // 모델이 "향후 손실 전망"으로 판단하면 청산
-                                        // 0% 기준은 ML 출력의 손익분기선 — 하드코딩된 필터가 아님
-                                        if (p < 0)
-                                        {
-                                            OnAlert?.Invoke($"🤖 [AI 횡보 청산] {symbol} 모델 예측 {p:F2}% (기대손실) → 청산");
-                                            OnLog?.Invoke($"[AI_STAGNANT_EXIT] {symbol} predicted={p:F2}% holding={(DateTime.Now - positionEntryTime).TotalHours:F1}h");
-                                            await ExecuteMarketClose(symbol, $"AI Stagnant Re-prediction ({p:F2}%)", token);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                OnLog?.Invoke($"⚠️ [AI 재예측] {symbol} 오류: {ex.Message}");
-                            }
-                        }
-                    }
+                    // [AI 제거] AI 기반 횡보 보유 재예측 청산 블록 전체 제거 — ProfitRegressorService 의존
 
                     if (currentROE >= profitRunTriggerRoe)
                     {
@@ -1961,22 +1619,7 @@ namespace TradingBot.Services
 
                             bool sidewaysExit = false;
                             string detail = "";
-                            // [Primary] ML regime classifier 사용
-                            if (_regimeClassifier != null && _regimeClassifier.IsModelLoaded)
-                            {
-                                var rfeat = MarketRegimeClassifier.ExtractFeature(recent21);
-                                if (rfeat != null)
-                                {
-                                    var (regime, conf) = _regimeClassifier.Predict(rfeat);
-                                    if (regime == MarketRegime.Sideways && conf >= 0.55f)
-                                    {
-                                        sidewaysExit = true;
-                                        detail = $"ML regime=Sideways({conf:P0})";
-                                    }
-                                }
-                            }
-                            // [Fallback] regime 모델 없으면 BB Width로 보수적 판단
-                            if (!sidewaysExit)
+                            // [AI 제거] ML regime classifier 분기 제거 — BB Width 단독 판정
                             {
                                 var bb = IndicatorCalculator.CalculateBB(recent21.TakeLast(20).ToList(), 20, 2);
                                 double mid = bb.Mid;
@@ -2087,131 +1730,7 @@ namespace TradingBot.Services
             return true;
         }
 
-        private bool TryEvaluateAiReversalExit(string symbol, decimal currentPrice, bool isLong, out string reason)
-        {
-            reason = "AI 재검증 데이터 부족";
-
-            if (_aiPredictor == null)
-                return false;
-
-            var candle = BuildAiRecheckCandle(symbol, currentPrice);
-            if (candle == null)
-                return false;
-
-            var prediction = _aiPredictor.Predict(candle);
-            float confidencePct = prediction.Probability * 100f;
-            bool oppositeSignal = isLong ? !prediction.Prediction : prediction.Prediction;
-
-            lock (_posLock)
-            {
-                if (_activePositions.TryGetValue(symbol, out var p))
-                {
-                    p.AiScore = prediction.Score;
-                    p.AiConfidencePercent = confidencePct;
-                }
-            }
-
-            if (oppositeSignal && prediction.Probability >= 0.58f)
-            {
-                reason = $"반대 예측 감지 | 방향={(prediction.Prediction ? "LONG" : "SHORT")}, 확률={confidencePct:F1}%";
-                return true;
-            }
-
-            reason = $"현재 방향 유지 | 예측={(prediction.Prediction ? "LONG" : "SHORT")}, 확률={confidencePct:F1}%";
-            return false;
-        }
-
-        private CandleData? BuildAiRecheckCandle(string symbol, decimal currentPrice)
-        {
-            try
-            {
-                if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var candles) || candles.Count < 30)
-                    return null;
-
-                List<IBinanceKline> recent;
-                lock (candles)
-                {
-                    recent = candles.TakeLast(120).ToList(); // [동시성 안전]
-                }
-                if (recent.Count < 20)
-                {
-                    OnLog?.Invoke($"⚠️ {symbol} recent 데이터 부족 (MarketStatus, Count: {recent.Count})");
-                    return null;
-                }
-                var recent20 = recent.TakeLast(20).ToList();
-                var latest = recent[^1];
-                var previous = recent.Count >= 2 ? recent[^2] : latest;
-
-                var bb = IndicatorCalculator.CalculateBB(recent20, 20, 2);
-                var macd = IndicatorCalculator.CalculateMACD(recent);
-                double rsi = IndicatorCalculator.CalculateRSI(recent20, 14);
-                double atr = IndicatorCalculator.CalculateATR(recent20, 14);
-                double sma20 = IndicatorCalculator.CalculateSMA(recent, 20);
-                double sma60 = IndicatorCalculator.CalculateSMA(recent, 60);
-                double sma120 = IndicatorCalculator.CalculateSMA(recent, 120);
-
-                decimal mid = (decimal)bb.Mid;
-                decimal upper = (decimal)bb.Upper;
-                decimal lower = (decimal)bb.Lower;
-                decimal high = latest.HighPrice;
-                decimal low = latest.LowPrice;
-                decimal open = latest.OpenPrice;
-                decimal close = currentPrice > 0 ? currentPrice : latest.ClosePrice;
-                decimal range = Math.Max(high - low, 0.00000001m);
-                float volumeRatio = 0f;
-                var avgVolume = recent20.Take(recent20.Count - 1).Select(k => (double)k.Volume).DefaultIfEmpty((double)latest.Volume).Average();
-                if (avgVolume > 0)
-                    volumeRatio = (float)((double)latest.Volume / avgVolume);
-
-                float volumeChangePct = 0f;
-                if (previous.Volume > 0)
-                    volumeChangePct = (float)(((double)latest.Volume - (double)previous.Volume) / (double)previous.Volume * 100.0);
-
-                decimal bbWidthPct = mid > 0 ? ((upper - lower) / mid) * 100m : 0m;
-                decimal priceToMidPct = mid > 0 ? ((close - mid) / mid) * 100m : 0m;
-                decimal sma20Dec = (decimal)sma20;
-                decimal priceToSma20Pct = sma20Dec > 0 ? ((close - sma20Dec) / sma20Dec) * 100m : 0m;
-                decimal body = Math.Abs(close - open);
-                decimal upperShadow = high - Math.Max(open, close);
-                decimal lowerShadow = Math.Min(open, close) - low;
-
-                return new CandleData
-                {
-                    Symbol = symbol,
-                    Open = open,
-                    High = high,
-                    Low = low,
-                    Close = close,
-                    Volume = (float)latest.Volume,
-                    OpenTime = latest.OpenTime,
-                    CloseTime = latest.CloseTime,
-                    RSI = (float)rsi,
-                    BollingerUpper = (float)upper,
-                    BollingerLower = (float)lower,
-                    MACD = (float)macd.Macd,
-                    MACD_Signal = (float)macd.Signal,
-                    MACD_Hist = (float)macd.Hist,
-                    ATR = (float)atr,
-                    SMA_20 = (float)sma20,
-                    SMA_60 = (float)sma60,
-                    SMA_120 = (float)sma120,
-                    Price_Change_Pct = open > 0 ? (float)(((close - open) / open) * 100m) : 0f,
-                    Price_To_BB_Mid = (float)priceToMidPct,
-                    BB_Width = (float)bbWidthPct,
-                    Price_To_SMA20_Pct = (float)priceToSma20Pct,
-                    Candle_Body_Ratio = (float)(body / range),
-                    Upper_Shadow_Ratio = (float)(Math.Max(upperShadow, 0m) / range),
-                    Lower_Shadow_Ratio = (float)(Math.Max(lowerShadow, 0m) / range),
-                    Volume_Ratio = volumeRatio,
-                    Volume_Change_Pct = volumeChangePct
-                };
-            }
-            catch (Exception ex)
-            {
-                OnLog?.Invoke($"⚠️ {symbol} AI 재검증 캔들 생성 실패: {ex.Message}");
-                return null;
-            }
-        }
+        // [AI 제거] TryEvaluateAiReversalExit / BuildAiRecheckCandle 전체 제거 (AIPredictor 의존)
 
         private bool TryGetCurrentBbWidthPct(string symbol, out decimal bbWidthPct)
         {

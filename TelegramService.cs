@@ -105,12 +105,11 @@ namespace TradingBot
             _commands = new Dictionary<string, ITelegramCommand>();
             var statusCmd = new StatusCommand();
             var stopCmd = new StopCommand();
-            var trainCmd = new TrainCommand();
+            // [AI 제거] TrainCommand 제거 — AI 학습 기능 자체가 폐기
             var droughtCmd = new DroughtScanCommand();
             var validateCmd = new ValidateCommand();
             _commands[statusCmd.Name] = statusCmd;
             _commands[stopCmd.Name] = stopCmd;
-            _commands[trainCmd.Name] = trainCmd;
             _commands[droughtCmd.Name] = droughtCmd;
             _commands[validateCmd.Name] = validateCmd;
             _commands["/help"] = new HelpCommand(_commands.Values);

@@ -45,7 +45,7 @@ namespace TradingBot.ViewModels
         private readonly ConcurrentQueue<(DateTime Timestamp, string Message)> _pendingFooterLogDbWrites = new();
         private readonly ConcurrentDictionary<string, (decimal Price, double? Pnl)> _pendingTickerUpdates = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, MultiTimeframeViewModel> _pendingSignalUpdates = new(StringComparer.OrdinalIgnoreCase);
-        private readonly ConcurrentDictionary<string, AIEntryForecastResult> _pendingAiEntryProbUpdates = new(StringComparer.OrdinalIgnoreCase);
+        // [AI 제거] _pendingAiEntryProbUpdates 제거
         private readonly Dictionary<string, MultiTimeframeViewModel> _marketDataIndex = new(StringComparer.OrdinalIgnoreCase);
         private readonly object _footerLogLock = new();
         // [병목 해결] LoadTradeHistory 디바운싱 — 연속 이벤트로 인한 중복 DB 쿼리 + UI 큐 폭주 방지
@@ -2233,11 +2233,7 @@ namespace TradingBot.ViewModels
                 ScheduleLoadTradeHistory();
             };
 
-            // [AI 진입 예측] 확률 업데이트 구독
-            _engine.OnAiEntryProbUpdate += (symbol, forecast) =>
-            {
-                UpdateAiEntryProb(symbol, forecast);
-            };
+            // [AI 제거] OnAiEntryProbUpdate 이벤트 구독 제거
 
             // [AI Command Center] 상태 업데이트
             _engine.OnAiCommandUpdate += (symbol, confidence, direction, h4, h1, m15, bull, bear) =>
@@ -3379,58 +3375,8 @@ namespace TradingBot.ViewModels
                 ConfigureMarketDataSorting();
         }
 
-        private void FlushPendingAiEntryProbUpdatesToUi()
-        {
-            if (_pendingAiEntryProbUpdates.IsEmpty)
-                return;
-
-            var watch = Stopwatch.StartNew();
-            int processed = 0;
-            foreach (var key in _pendingAiEntryProbUpdates.Keys)
-            {
-                if (processed >= MaxSignalBatchPerTick || watch.ElapsedMilliseconds >= MaxUiWorkBudgetMsPerTick)
-                    break;
-
-                if (!_pendingAiEntryProbUpdates.TryRemove(key, out var payload))
-                    continue;
-
-                if (!TryNormalizeTradingSymbol(key, out var normalizedSymbol))
-                    continue;
-
-                var existing = GetOrCreateMarketDataItem(normalizedSymbol);
-                if (existing == null)
-                    continue;
-                bool probChanged = Math.Abs(existing.AiEntryProb - payload.AverageProbability) > 0.001f;
-                bool forecastTimeChanged = existing.AiEntryForecastTime != payload.ForecastTimeLocal;
-                bool forecastOffsetChanged = existing.AiEntryForecastOffsetMinutes != payload.ForecastOffsetMinutes;
-                bool timestampChanged = existing.AiEntryProbUpdatedAt != payload.GeneratedAtLocal;
-
-                if (!probChanged && !forecastTimeChanged && !forecastOffsetChanged && !timestampChanged)
-                    continue;
-
-                existing.BeginUpdate();
-                try
-                {
-                    if (probChanged)
-                        existing.AiEntryProb = payload.AverageProbability;
-
-                    if (forecastTimeChanged)
-                        existing.AiEntryForecastTime = payload.ForecastTimeLocal;
-
-                    if (forecastOffsetChanged)
-                        existing.AiEntryForecastOffsetMinutes = payload.ForecastOffsetMinutes;
-
-                    if (probChanged || timestampChanged)
-                        existing.AiEntryProbUpdatedAt = payload.GeneratedAtLocal;
-                }
-                finally
-                {
-                    existing.EndUpdate();
-                }
-
-                processed++;
-            }
-        }
+        // [AI 제거] FlushPendingAiEntryProbUpdatesToUi 본체 제거
+        private void FlushPendingAiEntryProbUpdatesToUi() { }
 
         private MultiTimeframeViewModel? GetOrCreateMarketDataItem(string symbol)
         {
@@ -4844,18 +4790,7 @@ namespace TradingBot.ViewModels
         /// <summary>
         /// AI 진입 확률을 해당 심볼의 MarketDataList 행에 업데이트
         /// </summary>
-        private void UpdateAiEntryProb(string symbol, AIEntryForecastResult? forecast)
-        {
-            if (!TryNormalizeTradingSymbol(symbol, out var normalizedSymbol) || forecast == null)
-                return;
-
-            if (TryNormalizeTradingSymbol(forecast.Symbol, out var normalizedForecastSymbol))
-                forecast.Symbol = normalizedForecastSymbol;
-            else
-                forecast.Symbol = normalizedSymbol;
-
-            _pendingAiEntryProbUpdates[normalizedSymbol] = forecast;
-        }
+        // [AI 제거] UpdateAiEntryProb 제거
 
         private void UpdateProgress(int current, int total)
         {

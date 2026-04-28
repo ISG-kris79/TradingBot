@@ -829,54 +829,7 @@ SELECT CASE WHEN EXISTS (
             }
         }
 
-        public async Task<bool> SaveAiTrainingDataAsync(AiLabeledSample sample)
-        {
-            try
-            {
-                if (sample == null)
-                    return false;
-
-                if (!TryGetCurrentUserIdForSave("AI 라벨 샘플 저장", out int userId))
-                    return false;
-
-                string symbol = TrimForDb(sample.Symbol, 50);
-                if (string.IsNullOrWhiteSpace(symbol))
-                    return false;
-
-                DateTime entryTimeUtc = sample.EntryTimeUtc == default ? DateTime.UtcNow : sample.EntryTimeUtc;
-                decimal entryPrice = sample.EntryPrice < 0 ? 0m : sample.EntryPrice;
-                float actualProfitPct = SanitizeFloatForDb(sample.ActualProfitPct);
-                string labelSource = TrimForDb(sample.LabelSource, 120);
-                if (string.IsNullOrWhiteSpace(labelSource))
-                    labelSource = "unknown";
-
-                bool shouldEnter = sample.Feature?.ShouldEnter ?? sample.IsSuccess;
-                string featureJson = JsonSerializer.Serialize(sample.Feature ?? new MultiTimeframeEntryFeature());
-
-                using var db = new SqlConnection(_connectionString);
-                await db.OpenAsync();
-
-                await db.ExecuteAsync("EXEC dbo.sp_SaveAiTrainingData @UserId, @Symbol, @EntryTimeUtc, @EntryPrice, @ActualProfitPct, @IsSuccess, @ShouldEnter, @LabelSource, @FeatureJson", new
-                {
-                    UserId = userId,
-                    Symbol = symbol,
-                    EntryTimeUtc = entryTimeUtc,
-                    EntryPrice = entryPrice,
-                    ActualProfitPct = actualProfitPct,
-                    IsSuccess = sample.IsSuccess,
-                    ShouldEnter = shouldEnter,
-                    LabelSource = labelSource,
-                    FeatureJson = featureJson
-                });
-
-                return true;
-            }
-            catch (Exception ex)
-            {
-                MainWindow.Instance?.AddLog($"⚠️ [AI][DB] 라벨 샘플 저장 실패: {ex.Message}");
-                return false;
-            }
-        }
+        // [AI 제거] SaveAiTrainingDataAsync 제거 — AiLabeledSample 의존
 
         public async Task<bool> UpsertAiTrainingRunAsync(
             string projectName,

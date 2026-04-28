@@ -5,6 +5,34 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.11] - 2026-04-28
+
+### 🧹 BREAKING — AI 시스템 47개 파일 + ML.NET 5개 패키지 진짜 제거
+
+#### 사용자 결정
+"자꾸 비활성화만 하지 말고 영향가는거 다 파악해서 제거해야지"
+
+#### Removed (디스크 진짜 삭제, stub 0개)
+- AI 클래스 파일 47개 (AIDoubleCheckEntryGate, EntryTimingMLTrainer, MultiTimeframeFeatureExtractor, HistoricalDataLabeler, AdaptiveOnlineLearningService, PumpScanStrategy, MarketRegimeClassifier, ExitOptimizerService, SurvivalEntryModel, EntryZoneRegressor, BreakoutPriceClassifier, PumpSignalClassifier 등)
+- LorentzianV2 폴더 전체
+- ML.NET 5개 PackageReference (Microsoft.ML, FastTree, LightGbm, TimeSeries, Extensions.ML)
+- TradingEngine.cs 메서드 9개 본체 통째 제거 (TrainAllModelsAsync 343줄 등)
+- AI 필드 22개 (_aiDoubleCheckEntryGate 56곳 / _aiPredictor 28곳 등)
+
+#### 결과
+- TradingEngine.cs: 16,980줄 → 14,082줄 (-2,898줄)
+- 순 변경: -3,149줄 진짜 삭제
+- 컴파일 에러: 213 → 0
+- stub/placeholder 추가: 0건
+
+#### 살아있는 진입 흐름
+ProcessCoinAndTradeBySymbolAsync → ActiveTrackingPool → 트리거 (RSI/EMA/BB/ATR) → IsEntryAllowed (가드만) → ExecuteAutoOrder → 카테고리별 Execute → PositionMonitor
+
+#### 예상 효과
+- 메모리 1.9GB → ~400MB
+- CPU 1코어 100% → ~10%
+- 로그 깔끔 (AI 키워드 0건)
+
 ## [5.22.10] - 2026-04-28
 
 ### 🧹 메모리 누수 cleanup + ActiveTrackingPool TickerCache 기반

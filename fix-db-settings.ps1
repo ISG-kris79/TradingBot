@@ -1,0 +1,25 @@
+function Get-CS {
+    $json = Get-Content "$PSScriptRoot\appsettings.json" -Raw | ConvertFrom-Json
+    $enc = $json.ConnectionStrings.DefaultConnection
+    $k = [byte[]](0x43, 0x6F, 0x69, 0x6E, 0x46, 0x46, 0x2D, 0x54, 0x72, 0x61, 0x64, 0x69, 0x6E, 0x67, 0x42, 0x6F, 0x74, 0x2D, 0x41, 0x45, 0x53, 0x32, 0x35, 0x36, 0x2D, 0x4B, 0x65, 0x79, 0x2D, 0x33, 0x32, 0x42)
+    $f = [Convert]::FromBase64String($enc)
+    $a = [System.Security.Cryptography.Aes]::Create(); $a.Key = $k
+    $iv = New-Object byte[] $a.IV.Length; $c = New-Object byte[] ($f.Length - $a.IV.Length)
+    [Buffer]::BlockCopy($f, 0, $iv, 0, $a.IV.Length); [Buffer]::BlockCopy($f, $a.IV.Length, $c, 0, $c.Length)
+    $a.IV = $iv; $d = $a.CreateDecryptor($a.Key, $a.IV)
+    $s = [Text.Encoding]::UTF8.GetString($d.TransformFinalBlock($c, 0, $c.Length)); $a.Dispose(); $d.Dispose(); return $s
+}
+$cn = New-Object System.Data.SqlClient.SqlConnection (Get-CS); $cn.Open()
+$cm = $cn.CreateCommand()
+$cm.CommandText = "UPDATE GeneralSettings SET PumpMargin = 100, EnableMajorTrading = 0, DefaultMargin = 250 WHERE Id = 1"
+$affected = $cm.ExecuteNonQuery()
+Write-Host "Updated $affected rows"
+
+$cm2 = $cn.CreateCommand()
+$cm2.CommandText = "SELECT Id, DefaultMargin, PumpMargin, EnableMajorTrading FROM GeneralSettings WHERE Id = 1"
+$rd = $cm2.ExecuteReader()
+while ($rd.Read()) {
+    Write-Host "UserId=$($rd['Id']) DefaultMargin=$($rd['DefaultMargin']) PumpMargin=$($rd['PumpMargin']) EnableMajor=$($rd['EnableMajorTrading'])"
+}
+$rd.Close()
+$cn.Close()

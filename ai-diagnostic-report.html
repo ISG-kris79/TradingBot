@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>AI 신경망 트레이딩 전면 진단 보고서</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+:root { color-scheme: dark; }
+body {
+  font-family: -apple-system, 'Segoe UI', Tahoma, sans-serif;
+  background: #0f1419;
+  color: #d1d5db;
+  margin: 0; padding: 20px; line-height: 1.6;
+}
+.container { max-width: 1200px; margin: 0 auto; }
+h1 { color: #f87171; border-bottom: 3px solid #f87171; padding-bottom: 10px; }
+h2 { color: #60a5fa; margin-top: 40px; border-left: 4px solid #60a5fa; padding-left: 12px; }
+h3 { color: #fbbf24; }
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin: 20px 0;
+}
+.kpi-card {
+  background: #1f2937;
+  border-left: 4px solid #60a5fa;
+  padding: 16px;
+  border-radius: 6px;
+}
+.kpi-card.danger { border-left-color: #ef4444; }
+.kpi-card.warn { border-left-color: #fbbf24; }
+.kpi-card.good { border-left-color: #10b981; }
+.kpi-card .label { font-size: 0.85em; color: #9ca3af; }
+.kpi-card .value { font-size: 2em; font-weight: bold; color: #f9fafb; }
+.kpi-card .sub { font-size: 0.8em; color: #6b7280; }
+.chart-container {
+  background: #1f2937;
+  padding: 20px;
+  border-radius: 8px;
+  margin: 20px 0;
+  position: relative;
+  height: 400px;
+}
+.chart-container canvas { max-height: 360px; }
+.grid-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #1f2937;
+  border-radius: 6px;
+  overflow: hidden;
+}
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #374151; }
+th { background: #111827; color: #f3f4f6; }
+tr:hover { background: #273649; }
+.critical { color: #f87171; font-weight: bold; }
+.warning { color: #fbbf24; }
+.success { color: #34d399; }
+.info { color: #60a5fa; }
+.callout {
+  background: #1e293b;
+  border-left: 5px solid #ef4444;
+  padding: 14px 18px;
+  margin: 20px 0;
+  border-radius: 4px;
+}
+.callout.warn { border-left-color: #fbbf24; }
+.callout.good { border-left-color: #10b981; }
+.callout.info { border-left-color: #60a5fa; }
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.8em;
+  font-weight: bold;
+}
+.tag.p1 { background: #dc2626; color: white; }
+.tag.p2 { background: #f59e0b; color: white; }
+.tag.p3 { background: #3b82f6; color: white; }
+ul li { margin: 6px 0; }
+.mermaid { background: #1f2937; padding: 20px; border-radius: 8px; margin: 20px 0; }
+footer { margin-top: 60px; padding: 20px; color: #6b7280; text-align: center; font-size: 0.85em; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>🤖 AI 신경망 트레이딩 전면 진단 보고서</h1>
+<p><strong>생성:</strong> <span id="genTime">-</span> | <strong>버전:</strong> v5.10.71 (2026-04-21)</p>
+
+<div class="callout">
+<strong>📉 핵심 결론:</strong> 30일간 <span class="critical">-$5,710.94 손실</span>, 2,805건 거래, 승률 52%. AI 신경망은 "선진입 수익"이 목적이나 현재 <strong>학습-라벨링-예측 폐쇄 루프가 붕괴된 상태</strong>. 진입 자체는 많으나 건당 평균 -$2. 구조적 문제 6개 영역에서 발견.
+</div>
+
+<h2>1. 핵심 지표 (30일)</h2>
+<div class="kpi-grid">
+  <div class="kpi-card danger"><div class="label">30일 누적 PnL</div><div class="value" id="kpiPnl">-</div><div class="sub" id="kpiPnlSub">-</div></div>
+  <div class="kpi-card warn"><div class="label">총 거래</div><div class="value" id="kpiTrades">-</div><div class="sub" id="kpiTradesSub">-</div></div>
+  <div class="kpi-card warn"><div class="label">승률</div><div class="value" id="kpiWinrate">-</div><div class="sub">동전 던지기 수준</div></div>
+  <div class="kpi-card danger"><div class="label">건당 평균 PnL</div><div class="value" id="kpiAvgPnl">-</div><div class="sub">AI 가치 = 0</div></div>
+</div>
+
+<h2>2. 일별 PnL 추이 (30일)</h2>
+<div class="chart-container"><canvas id="chartDaily"></canvas></div>
+<div class="callout warn">
+<strong>관찰:</strong> 수익일과 손실일 혼재하나 <strong>누적은 계속 하락</strong>. 특히 04-16 +$707 같은 큰 수익일 뒤에 04-17 -$1,886 같은 대형 손실이 따라옴 → <strong>리스크 관리 실패</strong>.
+</div>
+
+<h2>3. AiScore 분포 vs 승률 — 역상관 (가장 심각한 문제)</h2>
+<div class="chart-container"><canvas id="chartScore"></canvas></div>
+<div class="callout">
+<strong>🚨 치명적 발견:</strong> AI가 "확신할수록 더 틀림". <code>AiScore ≥0.80</code>일 때 승률이 오히려 낮음. 96% 거래에서 AiScore=0 = 모델이 대부분 "판단 불가" 상태. <strong>모델이 "반대 방향으로 학습됐을 가능성"</strong>.
+</div>
+
+<h2>4. 카테고리별 성과 (MAJOR/PUMP/SPIKE)</h2>
+<div class="chart-container"><canvas id="chartCategory"></canvas></div>
+<div class="callout warn">
+<strong>MAJOR가 최악:</strong> 건당 평균 -$8.59. BTC/ETH/SOL/XRP는 "거의 무작위" 시장이라 AI가 패턴 학습 어려움. v5.10.66에서 <code>BlockMajorEntries=true</code>로 차단.
+</div>
+
+<h2>5. 보유 시간별 PnL (타이밍 진단)</h2>
+<div class="chart-container"><canvas id="chartHold"></canvas></div>
+<div class="callout">
+<strong>진입 직후 즉시 손실:</strong> 0~5분 보유가 가장 큰 손실 구간 = <strong>고점 매수 패턴 확정</strong>. 시장 확인 전 무리한 진입 + 손절 타이트.
+</div>
+
+<h2>6. 청산 사유 TOP 10</h2>
+<div class="chart-container"><canvas id="chartExit"></canvas></div>
+
+<h2>7. 시간대별 진입 (KST)</h2>
+<div class="chart-container"><canvas id="chartHour"></canvas></div>
+
+<h2>8. 라벨 성공률 추이 — 학습 파이프라인 건강 지표</h2>
+<div class="chart-container"><canvas id="chartLabel"></canvas></div>
+<div class="callout">
+<strong>🚨 v5.10.66 (04-20 13:37) 이후 라벨링 파이프라인 사실상 정지.</strong> 이전에는 일별 수십~수백 건 생성됐으나 이후 일별 5~0건. 온라인 재학습 트리거 조건(200건 누적) 도달 불가 → <strong>모델이 새 데이터로 학습 안 됨 = 고정된 과거 모델로 지속 예측</strong>.
+</div>
+
+<h2>9. AI 학습 이력</h2>
+<div id="trainingTable"></div>
+<div class="callout warn">
+<strong>Overfitting 의심:</strong> Acc=1.0, F1=1.0인 학습 기록 다수 = 학습셋 100% 맞춤 = <strong>일반화 실패</strong>. 실전에서는 40% 정도만 맞춤.
+</div>
+
+<h2>10. 구조적 문제 아키텍처</h2>
+<div class="mermaid">
+flowchart TB
+  subgraph PROB ["🔴 현재 문제 구조"]
+    direction TB
+    A[봇 진입 신호] --> B[진입 후 즉시 손실 -1~-2%]
+    B --> C[mark_to_market_15m 라벨링<br/>+2% 미도달 = '실패' 0]
+    C --> D[ML 모델: 진입하지 말라 학습<br/>클래스 불균형 15:1]
+    D --> E[다음 신호 99% 차단<br/>ML 2~6%]
+    E --> F[차단 못한 1% 진입<br/>= 시장 강하게 움직일 때<br/>= 고점 매수]
+    F --> B
+  end
+
+  style B fill:#7f1d1d,color:#fff
+  style D fill:#7f1d1d,color:#fff
+  style F fill:#7f1d1d,color:#fff
+</div>
+
+<h2>11. 6대 근본 원인 분류</h2>
+
+<h3><span class="tag p1">P1</span> A. 데이터 문제 (Garbage In, Garbage Out)</h3>
+<ul>
+<li><strong>라벨링 파이프라인 정지</strong> — v5.10.66 이후 mark_to_market 라벨 거의 0건</li>
+<li><strong>클래스 불균형</strong> — 388 실패 vs 26 성공 (15:1)</li>
+<li><strong>학습 샘플 고정</strong> — 440건으로 7일간 매일 재학습 (신규 0)</li>
+<li><strong>Look-ahead bias</strong> — 있으나 실효성 불명</li>
+</ul>
+
+<h3><span class="tag p1">P1</span> B. 모델 문제 (Model Bias)</h3>
+<ul>
+<li><strong>AI 점수 역상관</strong> — 확신할수록 틀림 (치명적)</li>
+<li><strong>Overfitting</strong> — Acc 1.0, F1 1.0 = 학습셋 암기 (일반화 X)</li>
+<li><strong>단일 통합 모델</strong> — 메이저/PUMP/SPIKE 모두 같은 ML 1개 (사용자 메모리 "3 모델 분리 원칙" 미준수)</li>
+</ul>
+
+<h3><span class="tag p2">P2</span> C. 타이밍 문제 (Latency)</h3>
+<ul>
+<li><strong>5분봉 후행 (5분 지연)</strong> — v5.10.70에서 1분봉 fast-path 추가로 개선</li>
+<li><strong>AI 재검증 60분 → 15분</strong> — v5.10.68에서 단축 완료</li>
+<li><strong>REST API 재호출 지연</strong> — 진입 결정 시점 ~4초 추가</li>
+</ul>
+
+<h3><span class="tag p2">P2</span> D. 인프라 문제 (Data Missing)</h3>
+<ul>
+<li><strong>호가창(Orderbook) 미활용</strong> — Bid/Ask Imbalance 선행 지표 없음</li>
+<li><strong>Tick/aggTrade 미구독</strong> — 체결 방향 (매수비율) 선행 지표 없음</li>
+<li><strong>Funding Rate / Open Interest 미학습</strong> — 숏스퀴즈/롱스퀴즈 예측 불가</li>
+<li><strong>피처 분포</strong> — 5분/15분봉 피처 70%, 1분봉 5%, 호가 0%</li>
+</ul>
+
+<h3><span class="tag p2">P2</span> E. 전략 문제 (Exit Strategy)</h3>
+<ul>
+<li><strong>ML 강한 반대 신호 → 60분 후행 반응</strong> — v5.10.68에서 즉시 반응 추가</li>
+<li><strong>HybridExitManager ML 미연동</strong> — ATR만 사용</li>
+<li><strong>트레일링 스탑 = 고정 파라미터</strong> — ML 신호 강도 미반영</li>
+<li><strong>부분익절 타이밍 고정</strong> — ROE 기반, ML 예측 미반영</li>
+</ul>
+
+<h3><span class="tag p3">P3</span> F. 진입 경로 문제 (Entry Gate)</h3>
+<ul>
+<li><strong>PumpScan volumeMomentum 편향</strong> — RAVE 같은 고거래량 코인 누락 (v5.10.71 TOP_SCORE_ENTRY 추가)</li>
+<li><strong>STALE_SIGNAL 정책</strong> — 기회 보존과 상충 (v5.10.69 9시 완화)</li>
+<li><strong>slot 관리</strong> — 중저점 신호 못 잡음 (v5.10.71 큐 fallback 추가)</li>
+</ul>
+
+<h2>12. 단계별 복구 로드맵</h2>
+
+<div class="callout info">
+<strong>Phase 0 (이미 v5.10.66~71 적용):</strong><br/>
+✅ 라벨 기준 완화 (+2% → +1%)<br/>
+✅ 메이저 임시 차단<br/>
+✅ 온라인 학습 진단 + DB 기록<br/>
+✅ ML 강한 신호 즉시 반응<br/>
+✅ 1분봉 fast-path<br/>
+✅ KST 9시 슬롯/STALE/ML 완화<br/>
+✅ TOP_SCORE_ENTRY + 큐 fallback<br/>
+✅ Algo API 서명 버그 수정
+</div>
+
+<h3>Phase 1 (1주일) — 학습 파이프라인 복구</h3>
+<ul>
+<li><strong>라벨링 파이프라인 긴급 점검</strong> — v5.10.66 배포 후 라벨 N=0. LabelActualProfitByCloseAsync 호출 경로 디버깅</li>
+<li><strong>클래스 불균형 보정</strong> — SMOTE 또는 weight balancing (ML.NET)</li>
+<li><strong>기존 오염 샘플 격리</strong> — 손실 기간 데이터에서 학습된 모델 폐기 + 재학습</li>
+<li><strong>모델 일반화 검증</strong> — Train/Validation 분리 + Acc 정상 범위(0.6~0.8) 확인</li>
+</ul>
+
+<h3>Phase 2 (2주일) — 3 모델 분리 (사용자 메모리 원칙)</h3>
+<ul>
+<li><strong>메이저 전용 ML</strong> — BTC/ETH/SOL/XRP (트렌드 + 레짐 인식 중심)</li>
+<li><strong>PUMP 일반 ML</strong> — 알트코인 초기 펌프 (거래량/변동성 기반)</li>
+<li><strong>PUMP 급등 ML (SPIKE)</strong> — 1분봉 tick 기반 초단타 (호가창/체결 선행)</li>
+<li>각 모델 독립 학습/라벨/임계값</li>
+</ul>
+
+<h3>Phase 3 (3~4주) — 선행 지표 인프라</h3>
+<ul>
+<li><strong>WebSocket bookTicker 구독</strong> — Bid/Ask Imbalance 실시간</li>
+<li><strong>aggTrade 구독</strong> — 체결 매수 비율 (tick buy %)</li>
+<li><strong>Funding Rate 30분 구독</strong> — 극단치 스퀴즈 시그널</li>
+<li><strong>Open Interest 변화율</strong> — 레버리지 축적 감지</li>
+<li>모든 선행 지표 → Lorentzian KNN feature에 추가 (이미 v5.10.65 Phase 1 인프라 있음)</li>
+</ul>
+
+<h3>Phase 4 (장기) — 진입 전략 재설계</h3>
+<ul>
+<li><strong>선진입 우선 (아닌 추격 금지)</strong> — RSI <50 반등 시그널 학습</li>
+<li><strong>레짐별 진입 기준 차별화</strong> — Trending/Ranging/Volatile</li>
+<li><strong>HybridExitManager ML 통합</strong> — 익절/손절 결정에 ML 신호 강도 반영</li>
+<li><strong>Lorentzian + ML 앙상블</strong> — 두 모델 합의 시만 진입 (이미 Phase 1 인프라)</li>
+</ul>
+
+<h2>13. 즉시 실행 권장 (오늘~내일)</h2>
+
+<div class="callout">
+<strong>🔴 긴급 (24시간 내):</strong>
+<ol>
+<li><strong>라벨링 파이프라인 디버깅</strong> — FooterLogs에서 <code>[OnlineLearning] 샘플 추가</code> 로그 발생 여부 추적. 안 나오면 CompleteTradeAsync → LabelActualProfitByCloseAsync 호출 경로 breakpoint</li>
+<li><strong>기존 ML 모델 백업 후 재학습 트리거</strong> — TriggerInitialTrainingAsync 수동 호출 (UI 또는 스크립트)</li>
+<li><strong>현재 활성 포지션 리스크 재평가</strong> — AAVE 등 큰 포지션 분할 익절/손절 검토</li>
+</ol>
+</div>
+
+<div class="callout warn">
+<strong>🟡 1주일 내:</strong>
+<ol>
+<li>Phase 1 Phase 1 라벨/모델 작업 진행</li>
+<li>Lorentzian Phase 2 전환 검토 (KNN + ML 합의 게이트)</li>
+<li>3 모델 분리 설계안 작성</li>
+</ol>
+</div>
+
+<h2>14. 결론</h2>
+<div class="callout info">
+<strong>AI 신경망 자체가 문제가 아님.</strong> 올바르게 구성하면 가능한 기술. 현재는:<br/>
+<strong>1) 라벨 데이터가 노이즈</strong> (6% 성공률 + 파이프라인 정지)<br/>
+<strong>2) 모델이 역방향 학습</strong> (AiScore ↑ = 승률 ↓)<br/>
+<strong>3) 선행 지표 없음</strong> (5분봉 종가 = 후행)<br/>
+<strong>4) 3 모델 미분리</strong> (사용자 메모리 원칙 위반)<br/><br/>
+→ v5.10.66~71에서 <span class="success">긴급 안전장치</span>는 구축했음 (메이저 차단/ML 즉시 반응/1분봉/TOP_SCORE_ENTRY).<br/>
+→ <span class="critical">근본 복구</span>는 <strong>라벨 파이프라인 수리 + 재학습 + 3 모델 분리</strong> 필요. 최소 1~2주 집중 작업.
+</div>
+
+<footer>
+Generated by AI Diagnostic Pipeline · TradingBot v5.10.71 · 2026-04-21<br/>
+Source: TradeHistory (30d, 2805 trades) + AiLabeledSamples + AiTrainingRuns + FooterLogs
+</footer>
+</div>
+
+<script>
+const DATA = __DATA_PLACEHOLDER__;
+
+function parseMsDate(s) {
+  if (!s) return null;
+  if (typeof s === 'string' && s.indexOf('/Date(') === 0) {
+    return new Date(parseInt(s.match(/\d+/)[0]));
+  }
+  return new Date(s);
+}
+function fmtDay(s) {
+  const d = parseMsDate(s);
+  return d ? d.toISOString().substring(5, 10) : s;
+}
+function fmtNum(n, dp=2) {
+  if (n === null || n === undefined) return '-';
+  return Number(n).toFixed(dp);
+}
+
+// Summary KPIs
+const total30dPnl = DATA.dailyPnl.reduce((s, d) => s + (Number(d.TotalPnL) || 0), 0);
+const total30dTrades = DATA.dailyPnl.reduce((s, d) => s + (Number(d.N) || 0), 0);
+const total30dWins = DATA.dailyPnl.reduce((s, d) => s + (Number(d.Wins) || 0), 0);
+const winRate = total30dTrades > 0 ? total30dWins / total30dTrades : 0;
+const avgPnl = total30dTrades > 0 ? total30dPnl / total30dTrades : 0;
+
+document.getElementById('genTime').textContent = DATA.generatedAt;
+document.getElementById('kpiPnl').textContent = '$' + fmtNum(total30dPnl, 0);
+document.getElementById('kpiPnlSub').textContent = '손실 심각';
+document.getElementById('kpiTrades').textContent = total30dTrades;
+document.getElementById('kpiTradesSub').textContent = '30일, 일평균 ' + Math.round(total30dTrades/30) + '건';
+document.getElementById('kpiWinrate').textContent = (winRate * 100).toFixed(1) + '%';
+document.getElementById('kpiAvgPnl').textContent = '$' + fmtNum(avgPnl, 2);
+
+// Chart defaults
+Chart.defaults.color = '#d1d5db';
+Chart.defaults.borderColor = '#374151';
+const grad = (c, a=0.3) => c.replace('rgb', 'rgba').replace(')', ', '+a+')');
+
+// [1] 일별 PnL
+new Chart(document.getElementById('chartDaily'), {
+  type: 'bar',
+  data: {
+    labels: DATA.dailyPnl.map(d => fmtDay(d.Day)),
+    datasets: [{
+      label: '일별 PnL ($)',
+      data: DATA.dailyPnl.map(d => Number(d.TotalPnL)),
+      backgroundColor: DATA.dailyPnl.map(d => Number(d.TotalPnL) >= 0 ? 'rgba(52, 211, 153, 0.6)' : 'rgba(248, 113, 113, 0.6)'),
+      borderColor: DATA.dailyPnl.map(d => Number(d.TotalPnL) >= 0 ? 'rgb(52, 211, 153)' : 'rgb(248, 113, 113)'),
+      borderWidth: 1
+    }, {
+      type: 'line',
+      label: '누적 PnL',
+      data: (() => { let s = 0; return DATA.dailyPnl.map(d => s += Number(d.TotalPnL)); })(),
+      borderColor: 'rgb(251, 191, 36)',
+      backgroundColor: 'rgba(251, 191, 36, 0.2)',
+      tension: 0.2,
+      yAxisID: 'y1'
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    scales: {
+      y: { title: { display: true, text: '일별 PnL ($)' } },
+      y1: { position: 'right', grid: { display: false }, title: { display: true, text: '누적 PnL ($)' } }
+    }
+  }
+});
+
+// [2] AiScore 분포 vs 승률
+new Chart(document.getElementById('chartScore'), {
+  type: 'bar',
+  data: {
+    labels: DATA.scoreDist.map(d => d.ScoreBin),
+    datasets: [{
+      label: '거래 수',
+      data: DATA.scoreDist.map(d => Number(d.N)),
+      backgroundColor: 'rgba(96, 165, 250, 0.6)',
+      yAxisID: 'y'
+    }, {
+      type: 'line',
+      label: '승률 (%)',
+      data: DATA.scoreDist.map(d => {
+        const n = Number(d.N), w = Number(d.Wins);
+        return n > 0 ? (w / n * 100).toFixed(1) : 0;
+      }),
+      borderColor: 'rgb(239, 68, 68)',
+      backgroundColor: 'rgba(239, 68, 68, 0.2)',
+      tension: 0.3,
+      yAxisID: 'y1',
+      pointRadius: 8
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    scales: {
+      y: { title: { display: true, text: '거래 수' } },
+      y1: { position: 'right', min: 0, max: 100, grid: { display: false }, title: { display: true, text: '승률 (%)' } }
+    }
+  }
+});
+
+// [3] 카테고리
+new Chart(document.getElementById('chartCategory'), {
+  type: 'bar',
+  data: {
+    labels: DATA.byCategory.map(d => d.Category),
+    datasets: [{
+      label: 'TotalPnL ($)',
+      data: DATA.byCategory.map(d => Number(d.TotalPnL)),
+      backgroundColor: DATA.byCategory.map(d => Number(d.TotalPnL) >= 0 ? 'rgba(52, 211, 153, 0.6)' : 'rgba(248, 113, 113, 0.6)')
+    }, {
+      label: '거래 수',
+      data: DATA.byCategory.map(d => Number(d.N)),
+      backgroundColor: 'rgba(96, 165, 250, 0.3)',
+      yAxisID: 'y1'
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    indexAxis: 'y',
+    scales: {
+      x: { title: { display: true, text: 'TotalPnL ($)' } },
+      x1: { position: 'top', grid: { display: false }, title: { display: true, text: '거래 수' } }
+    }
+  }
+});
+
+// [4] 보유 시간별
+new Chart(document.getElementById('chartHold'), {
+  type: 'bar',
+  data: {
+    labels: DATA.holdTime.map(d => d.HoldRange),
+    datasets: [{
+      label: 'TotalPnL ($)',
+      data: DATA.holdTime.map(d => Number(d.TotalPnL)),
+      backgroundColor: DATA.holdTime.map(d => Number(d.TotalPnL) >= 0 ? 'rgba(52, 211, 153, 0.6)' : 'rgba(248, 113, 113, 0.6)')
+    }, {
+      type: 'line',
+      label: '승률 (%)',
+      data: DATA.holdTime.map(d => {
+        const n = Number(d.N), w = Number(d.Wins);
+        return n > 0 ? (w / n * 100).toFixed(1) : 0;
+      }),
+      borderColor: 'rgb(251, 191, 36)',
+      tension: 0.3,
+      yAxisID: 'y1'
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    scales: {
+      y: { title: { display: true, text: 'TotalPnL ($)' } },
+      y1: { position: 'right', min: 0, max: 100, grid: { display: false }, title: { display: true, text: '승률 (%)' } }
+    }
+  }
+});
+
+// [5] 청산 사유
+new Chart(document.getElementById('chartExit'), {
+  type: 'bar',
+  data: {
+    labels: DATA.exitReasons.map(d => d.Reason),
+    datasets: [{
+      label: 'TotalPnL ($)',
+      data: DATA.exitReasons.map(d => Number(d.TotalPnL)),
+      backgroundColor: DATA.exitReasons.map(d => Number(d.TotalPnL) >= 0 ? 'rgba(52, 211, 153, 0.6)' : 'rgba(248, 113, 113, 0.6)')
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    indexAxis: 'y'
+  }
+});
+
+// [6] 시간대별
+new Chart(document.getElementById('chartHour'), {
+  type: 'bar',
+  data: {
+    labels: DATA.hourDist.map(d => d.Hour + '시'),
+    datasets: [{
+      label: 'TotalPnL ($)',
+      data: DATA.hourDist.map(d => Number(d.TotalPnL)),
+      backgroundColor: DATA.hourDist.map(d => Number(d.TotalPnL) >= 0 ? 'rgba(52, 211, 153, 0.6)' : 'rgba(248, 113, 113, 0.6)'),
+      yAxisID: 'y'
+    }, {
+      type: 'line',
+      label: '거래 수',
+      data: DATA.hourDist.map(d => Number(d.N)),
+      borderColor: 'rgb(96, 165, 250)',
+      tension: 0.3,
+      yAxisID: 'y1'
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    scales: {
+      y: { title: { display: true, text: 'TotalPnL ($)' } },
+      y1: { position: 'right', grid: { display: false }, title: { display: true, text: '거래 수' } }
+    }
+  }
+});
+
+// [7] 라벨 성공률 추이
+new Chart(document.getElementById('chartLabel'), {
+  type: 'line',
+  data: {
+    labels: DATA.labelDaily.map(d => fmtDay(d.Day)),
+    datasets: [{
+      label: '일별 라벨 수',
+      data: DATA.labelDaily.map(d => Number(d.N)),
+      borderColor: 'rgb(96, 165, 250)',
+      backgroundColor: 'rgba(96, 165, 250, 0.2)',
+      tension: 0.3,
+      yAxisID: 'y'
+    }, {
+      label: '성공률 (%)',
+      data: DATA.labelDaily.map(d => {
+        const n = Number(d.N), s = Number(d.Success);
+        return n > 0 ? (s / n * 100).toFixed(1) : 0;
+      }),
+      borderColor: 'rgb(239, 68, 68)',
+      backgroundColor: 'rgba(239, 68, 68, 0.2)',
+      tension: 0.3,
+      yAxisID: 'y1'
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    scales: {
+      y: { title: { display: true, text: '라벨 수' } },
+      y1: { position: 'right', min: 0, max: 100, grid: { display: false }, title: { display: true, text: '성공률 (%)' } }
+    }
+  }
+});
+
+// [9] AI 학습 이력 테이블
+let tt = '<table><thead><tr><th>시각 (UTC)</th><th>Stage</th><th>Success</th><th>샘플</th><th>Acc</th><th>F1</th></tr></thead><tbody>';
+DATA.trainingRuns.forEach(r => {
+  tt += '<tr>';
+  tt += `<td>${r.CompletedUtc || '-'}</td>`;
+  tt += `<td>${r.Stage}</td>`;
+  tt += `<td class="${r.Success ? 'success' : 'critical'}">${r.Success ? '✅' : '❌'}</td>`;
+  tt += `<td>${r.SampleCount}</td>`;
+  const acc = r.Acc === null ? '-' : Number(r.Acc).toFixed(3);
+  const f1 = r.F1 === null ? '-' : Number(r.F1).toFixed(3);
+  tt += `<td class="${Number(r.Acc) >= 0.99 ? 'warning' : ''}">${acc}</td>`;
+  tt += `<td>${f1}</td>`;
+  tt += '</tr>';
+});
+tt += '</tbody></table>';
+document.getElementById('trainingTable').innerHTML = tt;
+
+// Mermaid
+mermaid.initialize({ startOnLoad: true, theme: 'dark' });
+</script>
+</body>
+</html>

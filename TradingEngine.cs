@@ -197,18 +197,13 @@ namespace TradingBot
         private int _mainLoopMaxMs;
 
         // 전략 인스턴스
-        private PumpScanStrategy? _pumpStrategy;
+        // [AI 제거] PumpScanStrategy 제거
         private MajorCoinStrategy? _majorStrategy;
         private readonly MarketCrashDetector _crashDetector = new();
         // [v4.5.5] 알트 불장 자동 감지기
         private readonly AltBullMarketDetector _altBullDetector = new();
 
-        // [v5.22.0 SIMPLE-AI] 단일 Lorentzian KNN 분류기 — ML.NET 4 variant 대체
-        //   매 진입 시 KNN pred 검사: pred > 0 = 상승 신호 → 통과 / pred ≤ 0 = 하락 → 차단
-        //   학습: BackfillFromCandles (5m × 300+ 봉 = 25시간+ 데이터 필요)
-        //   심볼별 인스턴스 자동 생성 (ConcurrentDictionary 내부)
-        private readonly TradingBot.Services.LorentzianV2.LorentzianV2Service _simpleAi
-            = new TradingBot.Services.LorentzianV2.LorentzianV2Service();
+        // [AI 제거] LorentzianV2 / SimpleAI 분류기 모두 제거
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _simpleAiBackfilled
             = new(StringComparer.OrdinalIgnoreCase);
 
@@ -304,15 +299,13 @@ namespace TradingBot
                     }
                 }
 
-                decimal dailyPnl = _riskManager?.DailyRealizedPnl ?? 0m;
-                float pnlRatio = (float)(dailyPnl / 250m);
-                MultiTimeframeFeatureExtractor.DailyPnlRatioContext = pnlRatio;
-                MultiTimeframeFeatureExtractor.IsAboveDailyTargetContext = dailyPnl >= 250m ? 1f : 0f;
+                // [AI 제거] MultiTimeframeFeatureExtractor 컨텍스트 제거
+                _ = _riskManager?.DailyRealizedPnl ?? 0m;
                 int tradeCount;
                 lock (_dailyPumpLock) { tradeCount = _dailyPumpEntryCount; }
-                MultiTimeframeFeatureExtractor.DailyTradeCountContext = tradeCount;
+                _ = tradeCount;
             }
-            catch { /* 무시 — 피처는 기본값 0 */ }
+            catch { /* 무시 */ }
         }
 
         /// <summary>
@@ -480,8 +473,7 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, (decimal ExtremePrice, bool IsUpwardSpike, DateTime EventTime)>
             _volatilityRecoveryZone = new(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan VolatilityRecoveryDuration = TimeSpan.FromHours(4);
-        private readonly MarketRegimeClassifier _regimeClassifier = new();
-        private readonly ExitOptimizerService _exitOptimizer = new();
+        // [AI 제거] MarketRegimeClassifier / ExitOptimizerService 제거
         private MacdCrossSignalService? _macdCrossService;
         private GridStrategy _gridStrategy;
         private ArbitrageStrategy _arbitrageStrategy;
@@ -525,43 +517,11 @@ namespace TradingBot
         // 15m 종가 확정 디바운스 (각 심볼당 마지막 처리한 15m 캔들 종가 시각)
         private readonly ConcurrentDictionary<string, DateTime> _last15mProcessedAt = new(StringComparer.OrdinalIgnoreCase);
 
-        // [우선순위 격리] AI 추론 + 주문 전용 워커 스레드 (UI보다 높은 우선순위)
-        private TradingBot.Services.AIDedicatedWorkerThread? _aiWorkerThread;
-        // [동적 트레일링] AI 기반 동적 익절/손절 엔진
-        private TradingBot.Services.DynamicTrailingStopEngine? _dynamicTrailingEngine;
-        // [Fail-safe] API 연결 끊김 + 슬리피지 감지 모듈
-        private TradingBot.Services.FailSafeGuardService? _failSafeGuard;
-        // [SSA] ML.NET 시계열 가격 범위 예측
-        private readonly TradingBot.Services.SsaPriceForecastService _ssaForecast = new();
-        // [수익률 회귀] 진입 시 예상 수익률 예측 + 동적 포지션 사이징
-        private readonly TradingBot.Services.ProfitRegressorService _profitRegressor = new();
-        // [v4.8.0] 최적 진입 가격 예측 (Pullback Depth Regression)
-        private readonly TradingBot.Services.OptimalEntryPriceRegressor _entryPriceRegressor = new();
-        // [v4.8.0] Entry Zone 데이터 수집기 (접근 B — 추후 Multi-Output 학습용)
-        private readonly TradingBot.Services.EntryZoneDataCollector _entryZoneCollector = new();
-        // [v4.8.0] Breakout 분류기 (접근 C — 급등 코인 consolidation → breakout)
-        private readonly TradingBot.Services.BreakoutPriceClassifier _breakoutClassifier = new();
-        // [v4.8.1] Entry Zone Regressor — TP/SL 오프셋 예측 (Part B 라이브 활용)
-        private readonly TradingBot.Services.EntryZoneRegressor _entryZoneRegressor = new();
-        private readonly TradingBot.Services.TradeSignalClassifier _tradeSignalClassifier = new();
-        // [v4.5.8] PUMP 모델 분리: 일반진입 / 급등진입
-        private readonly TradingBot.Services.PumpSignalClassifier _pumpSignalClassifier = new(TradingBot.Services.PumpSignalType.Normal);
-        private readonly TradingBot.Services.PumpSignalClassifier _pumpSpikeClassifier = new(TradingBot.Services.PumpSignalType.Spike);
-
-        // [v5.0] 예측형 Forecaster — 3-Model (Classifier + Time Regressor + Price Regressor)
-        private readonly TradingBot.Services.PumpForecaster _pumpForecaster = new();
-        private readonly TradingBot.Services.MajorForecaster _majorForecaster = new();
-        private readonly TradingBot.Services.SpikeForecaster _spikeForecaster = new();
+        // [AI 제거] 모든 ML.NET / AI 워커 / 분류기 / 회귀자 / 예측기 제거
         private TradingBot.Services.EntryScheduler? _entryScheduler;
         // [v5.10.54] 주문 라이프사이클 단일 진입점 (SL/TP/Trailing 등록/취소/본절교체)
         private TradingBot.Services.OrderLifecycleManager? _orderLifecycle;
-        private readonly TradingBot.Services.PriceDirectionPredictor _directionPredictor = new();
-        private readonly TradingBot.Services.SurvivalEntryModel _survivalModel = new();
-        // [v5.14.0 AI #5] SPIKE_FAST 적응형 스케줄러 (경량 RL / Nearest-Neighbor Bandit)
-        private readonly TradingBot.Services.AdaptiveSpikeScheduler _spikeScheduler = new();
         private readonly TradingBot.Services.TickDensityMonitor _tickMonitor = new();
-        private DateTime _lastSsaTrainTime = DateTime.MinValue;
-        private TradingBot.Services.SsaForecastResult? _latestSsaResult;
 
         private DateTime _lastCleanupTime = DateTime.Now;
 
@@ -574,9 +534,7 @@ namespace TradingBot
 
         private readonly MarketDataManager _marketDataManager;
         private readonly RiskManager _riskManager;
-        private AIPredictor? _aiPredictor;
-        private AIDoubleCheckEntryGate? _aiDoubleCheckEntryGate;
-        private HybridNavigatorSniper? _hybridNavigatorSniper; // [v2.4.2] Navigator-Sniper 매복 아키텍처
+        // [AI 제거] AIPredictor / AIDoubleCheckEntryGate / HybridNavigatorSniper 모두 제거
         // private DoubleCheckEntryEngine? _waveEntryEngine; // [WaveAI] TensorFlow 전환 중 임시 비활성화
         // private SimpleDoubleCheckEngine? _simpleDoubleCheck; // [간소화] TensorFlow 전환 중 임시 비활성화
         // private MultiAgentManager _multiAgentManager; // TensorFlow 전환 중 임시 비활성화
@@ -628,9 +586,7 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, DateTime> _scheduledEtaReEvaluations
             = new ConcurrentDictionary<string, DateTime>();
 
-        // [A안 조기진입] 최신 AI 예측 캐시 — 캔들 확인 bypass 판단용 (80% 이상 시 즉시 진입)
-        private readonly ConcurrentDictionary<string, AIEntryForecastResult> _latestAiForecasts
-            = new ConcurrentDictionary<string, AIEntryForecastResult>(StringComparer.OrdinalIgnoreCase);
+        // [AI 제거] _latestAiForecasts 제거 — AIEntryForecastResult 의존
         private readonly ConcurrentDictionary<string, DateTime> _scoutAddOnPendingSymbols
             = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
@@ -1154,31 +1110,8 @@ namespace TradingBot
                 bool isMajor = MajorSymbols.Contains(symbol);
                 string closeSide = isLong ? "SELL" : "BUY";
 
-                // ─── [v5.10.86] 진입 시점 ML regime 분류 ───
-                MarketRegime regime = MarketRegime.Unknown;
-                float regimeConf = 0f;
-                try
-                {
-                    if (_regimeClassifier != null && _regimeClassifier.IsModelLoaded
-                        && _marketDataManager.KlineCache.TryGetValue(symbol, out var rklines) && rklines.Count >= 21)
-                    {
-                        List<Binance.Net.Interfaces.IBinanceKline> snap;
-                        lock (rklines) { snap = rklines.TakeLast(21).ToList(); }
-                        var rfeat = MarketRegimeClassifier.ExtractFeature(snap);
-                        if (rfeat != null) (regime, regimeConf) = _regimeClassifier.Predict(rfeat);
-                    }
-                }
-                catch (Exception rgEx) { OnStatusLog?.Invoke($"⚠️ [PROTECT][{source}] {symbol} regime 분류 예외: {rgEx.Message}"); }
-
-                // ─── 프로파일별 배수 (사용자 설정 ROE × 배수) ───
-                decimal slMul, tpMul, trailMul, tpRatioMul;
-                switch (regime)
-                {
-                    case MarketRegime.Trending:  slMul = 1.0m;  tpMul = 1.0m;  trailMul = 1.0m;  tpRatioMul = 1.0m; break;
-                    case MarketRegime.Sideways:  slMul = 0.4m;  tpMul = 0.4m;  trailMul = 0.5m;  tpRatioMul = 1.5m; break;  // tight + 큰 부분익절
-                    case MarketRegime.Volatile:  slMul = 0.75m; tpMul = 0.75m; trailMul = 0.5m;  tpRatioMul = 1.2m; break;
-                    default:                      slMul = 1.0m;  tpMul = 1.0m;  trailMul = 1.0m;  tpRatioMul = 1.0m; break;
-                }
+                // [AI 제거] ML regime 분류 제거 — 기본 배수 사용
+                decimal slMul = 1.0m, tpMul = 1.0m, trailMul = 1.0m, tpRatioMul = 1.0m;
 
                 decimal slRoePctBase    = isMajor ? (_settings?.MajorStopLossRoe   ?? 60m) : (_settings?.PumpStopLossRoe   ?? 40m);
                 decimal tpRoePctBase    = isMajor ? (_settings?.MajorTp1Roe        ?? 20m) : (_settings?.PumpTp1Roe        ?? 20m);
@@ -1190,7 +1123,7 @@ namespace TradingBot
                 decimal trailGapPct = trailGapPctBase * trailMul;
                 decimal tpRatioPct  = Math.Min(80m, tpRatioPctBase * tpRatioMul);
 
-                OnStatusLog?.Invoke($"🌐 [REGIME][{source}] {symbol} regime={regime}({regimeConf:P0}) → SL={slRoePct:F0}% TP={tpRoePct:F0}%(qty {tpRatioPct:F0}%) Trail={trailGapPct:F1}%");
+                OnStatusLog?.Invoke($"🌐 [PROTECT][{source}] {symbol} → SL={slRoePct:F0}% TP={tpRoePct:F0}%(qty {tpRatioPct:F0}%) Trail={trailGapPct:F1}%");
 
                 // ROE → 가격 변환 (priceMove% = roe% / leverage)
                 decimal slPriceMovePct = slRoePct / leverage / 100m;
@@ -1265,7 +1198,7 @@ namespace TradingBot
         public event Action<string, float, float>? OnRLStatsUpdate; // [추가] RL 학습 상태 업데이트
         public event Action<AIPredictionRecord>? OnAIPrediction; // [AI 모니터링] 예측 기록 이벤트
         public event Action? OnTradeHistoryUpdated; // [FIX] 청산 시 TradeHistory 자동 갱신 트리거
-        public event Action<string, AIEntryForecastResult>? OnAiEntryProbUpdate; // [AI 진입 예측] symbol, forecast
+        // [AI 제거] OnAiEntryProbUpdate 이벤트 제거 — AIEntryForecastResult 의존
         public event Action<string, float, float, string>? OnWaveAIScoreUpdate; // [WaveAI] symbol, mlScore, tfScore, status
         private bool HasWaveAiScoreSubscribers => OnWaveAIScoreUpdate != null;
         public event Action<string>? OnBlockReasonUpdate; // [Entry Pipeline] 진입 차단 사유 실시간 업데이트
@@ -1309,7 +1242,7 @@ namespace TradingBot
             OnRLStatsUpdate = null;
             OnAIPrediction = null;
             OnTradeHistoryUpdated = null;
-            OnAiEntryProbUpdate = null;
+            // [AI 제거] OnAiEntryProbUpdate = null;
             OnWaveAIScoreUpdate = null;
             OnBlockReasonUpdate = null;
             OnTrailingStopPriceUpdate = null;
@@ -1335,13 +1268,12 @@ namespace TradingBot
         private decimal _atrVolatilityBlockRatio = 3.5m; // [AI Hub] 2.0→3.5: 진짜 폭발 구간만 차단
         private float _shortRsiExhaustionFloor = 35f;
 
-        // [AI Intelligence + 1min Execution]
-        private OneMinuteExecutionHub? _executionHub;
-
-        // [양방향 AI 시나리오 엔진]
-        private BiDirectionalScenarioEngine? _scenarioEngine;
+        // [AI 제거] OneMinuteExecutionHub / BiDirectionalScenarioEngine 제거
 
         private int _historicalEntryAuditStarted = 0;
+
+        // [Fail-safe] API 연결 끊김 + 슬리피지 감지 모듈
+        private TradingBot.Services.FailSafeGuardService? _failSafeGuard;
 
         // [TimeOut Probability Entry] 60분 공백 확률 베팅 엔진
         private TimeOutProbabilityEngine? _timeoutProbEngine;
@@ -1453,15 +1385,9 @@ namespace TradingBot
             }
             _soundService = new SoundService();
 
-            // [AI Intelligence + 1min Execution Hub]
-            _executionHub = new OneMinuteExecutionHub(_exchangeService);
+            // [AI 제거] OneMinuteExecutionHub / BiDirectionalScenarioEngine 초기화 제거
             _macdCrossService = new MacdCrossSignalService(_exchangeService);
             _macdCrossService.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _executionHub.OnLog = msg => OnStatusLog?.Invoke(msg);
-
-            // [양방향 AI 시나리오 엔진]
-            _scenarioEngine = new BiDirectionalScenarioEngine(_exchangeService);
-            _scenarioEngine.OnLog = msg => OnStatusLog?.Invoke(msg);
 
             _arbitrageStrategy = new ArbitrageStrategy(_client);
 
@@ -1511,7 +1437,6 @@ namespace TradingBot
                 _posLock,
                 _blacklistedSymbols,
                 _settings,
-                _aiPredictor,
                 settingsProvider: () => MainWindow.CurrentGeneralSettings ?? AppConfig.Current?.Trading?.GeneralSettings ?? _settings
             );
 
@@ -1528,16 +1453,9 @@ namespace TradingBot
             _positionSyncService.OnLog += msg => OnStatusLog?.Invoke(msg);
             _positionSyncService.OnPositionClosed += HandleSyncedPositionClosed;
 
-            // [AI Exit] 시장 상태 분류 + 최적 익절 모델 초기화
-            _regimeClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _exitOptimizer.OnLog += msg => OnStatusLog?.Invoke(msg);
-            // [v5.22.7] AI 모델 LoadModel 비활성화 — IsLoaded=false → 추론 if 체크에 막힘
-            // _regimeClassifier.TryLoadModel();
-            // _exitOptimizer.TryLoadModel();
-            _positionMonitor.SetExitAIModels(_regimeClassifier, _exitOptimizer);
+            // [AI 제거] regime/exit/profit AI 모델 모두 제거 — MACD cross 만 유지
             _positionMonitor.SetMacdCrossService(_macdCrossService);
-            _positionMonitor.SetProfitRegressor(_profitRegressor); // [v4.7.4] 횡보 보유 청산용
-            StartModelRetrainTimer(); // [v3.8.1] 전체 모델 자동 재학습
+            // [AI 제거] StartModelRetrainTimer 제거 (모델 자체 없음)
 
             _marketDataManager.OnLog += (msg) =>
             {
@@ -1636,33 +1554,7 @@ namespace TradingBot
             {
                 _ = HandleAiCloseLabelingAsync(symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason);
 
-                // [v4.8.0] Entry Zone 데이터 수집 (Part B) — 청산 레이블 완성
-                try
-                {
-                    decimal exitPx = 0m;
-                    if (_marketDataManager.TickerCache.TryGetValue(symbol, out var exitTk))
-                        exitPx = exitTk.LastPrice;
-                    _entryZoneCollector.FinalizeEntryZoneSample(symbol, exitPx, (decimal)actualProfitPct, closeReason);
-                }
-                catch { }
-
-                // [수익률 회귀] 거래 결과를 학습 데이터로 피드백
-                try
-                {
-                    float holdingMin = (float)(DateTime.Now - entryTime).TotalMinutes;
-                    // 진입 시점의 지표 스냅샷 (KlineCache에서 복원)
-                    float rsi = 50f, bbPos = 0.5f, atr = 0f, volRatio = 1f, momentum = 0f;
-                    if (_marketDataManager.KlineCache.TryGetValue(symbol, out var klines) && klines.Count > 0)
-                    {
-                        var latest = klines[^1];
-                        rsi = (float)latest.HighPrice; // 실제로는 IndicatorCalculator에서 계산해야 하지만 간략화
-                    }
-                    _profitRegressor.RecordTradeOutcome(
-                        rsi, bbPos, atr, volRatio, momentum,
-                        0f, 0f, 0f,
-                        (float)actualProfitPct, holdingMin);
-                }
-                catch { /* 학습 데이터 수집 실패는 무시 */ }
+                // [AI 제거] EntryZoneCollector / ProfitRegressor 학습 피드백 코드 통째 제거
             };
 
             bool transformerRequestedByConfig = AppConfig.Current?.Trading?.TransformerSettings?.Enabled ?? false;
@@ -1681,96 +1573,10 @@ namespace TradingBot
             */
 
 
-            // [AI 초기화]
-            try
-            {
-                _aiPredictor = new AIPredictor();
-                _positionMonitor.UpdateAiPredictor(_aiPredictor);
-                
-                // 실제 모델 로드 여부 확인
-                if (_aiPredictor.IsModelLoaded)
-                {
-                    OnStatusLog?.Invoke("🧠 AI 예측 모델 로드 완료");
-                }
-                else
-                {
-                    OnStatusLog?.Invoke("⚠️ AI 모델 파일 없음 (학습 후 사용 가능)");
-                }
-            }
-            catch (Exception ex)
-            {
-                _positionMonitor.UpdateAiPredictor(null);
-                OnStatusLog?.Invoke($"⚠️ AI 모델 로드 실패: {ex.Message}");
-            }
+            // [AI 제거] AIPredictor 초기화 제거
 
-            // [AI 더블체크 게이트 초기화]
-            if (doubleCheckGateEnabled)
-            {
-                try
-                {
-                    var doubleCheckConfig = new DoubleCheckConfig
-                    {
-                        MinMLConfidence = Math.Clamp(Math.Max(_fifteenMinuteMlMinConfidence, 0.65f), 0f, 1f),
-                        MinTransformerConfidence = Math.Clamp(Math.Max(_fifteenMinuteTransformerMinConfidence, 0.60f), 0f, 1f),
-                        MinMLConfidenceMajor = Math.Clamp(Math.Max(_fifteenMinuteMlMinConfidence + 0.08f, 0.75f), 0f, 1f),
-                        MinTransformerConfidenceMajor = Math.Clamp(Math.Max(_fifteenMinuteTransformerMinConfidence + 0.08f, 0.68f), 0f, 1f),
-                        MinMLConfidencePumping = Math.Clamp(Math.Max(_fifteenMinuteMlMinConfidence + 0.01f, 0.66f), 0f, 1f),
-                        MinTransformerConfidencePumping = Math.Clamp(Math.Max(_fifteenMinuteTransformerMinConfidence + 0.03f, 0.63f), 0f, 1f)
-                    };
-
-                    _aiDoubleCheckEntryGate = new AIDoubleCheckEntryGate(
-                        _exchangeService,
-                        doubleCheckConfig,
-                        preferExternalTorchService: false);
-                    _aiDoubleCheckEntryGate.OnLog += msg => OnStatusLog?.Invoke(msg);
-                    _aiDoubleCheckEntryGate.OnAlert += msg => OnAlert?.Invoke(msg);
-                    _aiDoubleCheckEntryGate.OnLabeledSample += sample => _ = PersistAiLabeledSampleToDbAsync(sample);
-
-                    // [v5.18.0] BacktestBootstrap 용 추적 심볼 + ModelHealthMonitor 시작
-                    _aiDoubleCheckEntryGate.SetTrackedSymbols(_symbols);
-                    _aiDoubleCheckEntryGate.StartHealthMonitor();
-                    if (_aiDoubleCheckEntryGate.IsReady)
-                    {
-                        OnStatusLog?.Invoke(
-                            $"✅ AI 더블체크 게이트 활성화 | ML>={doubleCheckConfig.MinMLConfidence:P0}, TF>={doubleCheckConfig.MinTransformerConfidence:P0}, MAJOR(ML>={doubleCheckConfig.MinMLConfidenceMajor:P0}/TF>={doubleCheckConfig.MinTransformerConfidenceMajor:P0}), PUMP(ML>={doubleCheckConfig.MinMLConfidencePumping:P0}/TF>={doubleCheckConfig.MinTransformerConfidencePumping:P0})");
-                    }
-                    else
-                    {
-                        OnStatusLog?.Invoke("⚠️ AI 더블체크 모델 미준비 (기존 15분 WaveGate로 자동 폴백)");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _aiDoubleCheckEntryGate = null;
-                    OnStatusLog?.Invoke($"⚠️ AI 더블체크 게이트 초기화 실패: {ex.Message}");
-                }
-            }
-            else
-            {
-                _aiDoubleCheckEntryGate = null;
-                OnStatusLog?.Invoke("🛡️ AI 더블체크 게이트 비활성화");
-            }
-
-            // [SSA] 시계열 예측 로그 연결
-            _ssaForecast.OnLog += msg => OnStatusLog?.Invoke(msg);
-            // [3분류 매매 신호] 모델 로드 + DB 학습
-            _tradeSignalClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _ = InitTradeSignalClassifierAsync();
-            // [PUMP ML] 초기화
-            _pumpSignalClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
-            // [v5.22.7] PUMP signal classifier 비활성화 — PUMP 카테고리 차단됨
-            // _pumpSignalClassifier.LoadModel();
-            // [v4.5.8] PUMP Spike 모델 로드
-            _pumpSpikeClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _pumpSpikeClassifier.LoadModel();
-
-            // [v5.0] 예측형 Forecaster 3종 로드
-            _pumpForecaster.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _pumpForecaster.LoadModels();
-            _majorForecaster.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _majorForecaster.LoadModels();
-            _spikeForecaster.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _spikeForecaster.LoadModels();
+            // [AI 제거] AI 더블체크 게이트 + SSA + Forecaster + PumpSignal/TradeSignal Classifier — 모두 폐기
+            OnStatusLog?.Invoke("🛡️ AI 시스템 전체 비활성화 (v5.22.x)");
 
             // [v5.10.54] OrderLifecycleManager — SL/TP/Trailing 단일 라이프사이클 관리
             _orderLifecycle = new TradingBot.Services.OrderLifecycleManager(_exchangeService);
@@ -1805,108 +1611,13 @@ namespace TradingBot
                 }
                 catch { }
             };
-            _directionPredictor.OnLog += msg => OnStatusLog?.Invoke(msg);
-            // [v5.22.7] DirectionPredictor / SurvivalModel 로드 비활성화 — AI 폐기
-            // _directionPredictor.TryLoadModels();
-            _survivalModel.OnLog += msg => OnStatusLog?.Invoke(msg);
-            // _survivalModel.TryLoadModels();
+            // [AI 제거] DirectionPredictor / SurvivalModel 로드 제거
 
             // [v4.2.0] 틱 밀도 모니터 — 급등 시작 신호 + BB 스퀴즈 브레이크아웃
             _tickMonitor.OnLog += msg => OnStatusLog?.Invoke(msg);
             // [v5.17.0 REDESIGN] TICK_SURGE 핸들러 비활성화
             //   이유: 신규 15-5-1 엔진이 정제된 1m 볼륨 spike 시 진입 → 별도 TICK_SURGE 경로 불필요
-            _tickMonitor.OnTickSurgeDetected += (symbol, tpsRatio, buyRatio, price) =>
-            {
-                if (true) return; // [v5.17.0] TICK_SURGE 즉시 진입 경로 비활성화
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        // [v5.10.81] 단일 게이트 IsEntryAllowed 사용
-                        if (!IsEntryAllowed(symbol, "TICK_SURGE", out string surgeBlockReason))
-                        {
-                            OnStatusLog?.Invoke($"⛔ [틱급증→차단] {symbol} ({surgeBlockReason})");
-                            return;
-                        }
-
-                        // [v5.4.6] TICK_SURGE AI 필터 — 하락 추세 중 진입 방지
-                        // PumpSignalClassifier로 상승 판정 확인 + 5분봉 캔들/볼밴 체크
-                        bool aiApproved = false;
-                        string blockReason = "";
-
-                        // 1) PumpSignalClassifier 체크
-                        var classifier = MajorSymbols.Contains(symbol) ? null : _pumpSignalClassifier;
-                        if (classifier != null && classifier.IsModelLoaded
-                            && _marketDataManager.KlineCache.TryGetValue(symbol, out var klines) && klines.Count >= 30)
-                        {
-                            List<Binance.Net.Interfaces.IBinanceKline> snapshot;
-                            lock (klines) { snapshot = klines.TakeLast(60).ToList(); }
-                            var feat = TradingBot.Services.PumpSignalClassifier.ExtractFeature(snapshot);
-                            if (feat != null)
-                            {
-                                var pred = classifier.Predict(feat);
-                                if (pred != null && pred.ShouldEnter && pred.Probability >= 0.60f)
-                                    aiApproved = true;
-                                else
-                                    blockReason = $"ML prob={pred?.Probability:P0}(<60%)";
-                            }
-                        }
-                        else
-                        {
-                            // 메이저 코인이거나 모델 미로드 → 5분봉 캔들로 판단
-                            aiApproved = true; // 아래 캔들 체크에서 차단
-                        }
-
-                        // 2) 5분봉 하락 추세 체크 — 최근 3봉 중 2봉 음봉 + 볼밴 중심선 아래 → 차단
-                        if (aiApproved && _marketDataManager.KlineCache.TryGetValue(symbol, out var klines2) && klines2.Count >= 20)
-                        {
-                            List<Binance.Net.Interfaces.IBinanceKline> recent;
-                            lock (klines2) { recent = klines2.TakeLast(20).ToList(); }
-
-                            if (recent.Count >= 3)
-                            {
-                                var last3 = recent.TakeLast(3).ToList();
-                                int bearishCount = last3.Count(k => k.ClosePrice < k.OpenPrice);
-
-                                // 볼밴 중심선 (SMA20)
-                                decimal sma20 = recent.TakeLast(20).Average(k => k.ClosePrice);
-
-                                if (bearishCount >= 2 && price < sma20)
-                                {
-                                    // 볼밴 하단 터치 후 반등(마지막 봉 양봉) 이면 허용
-                                    bool lastBullish = last3[^1].ClosePrice > last3[^1].OpenPrice;
-                                    decimal bbLower = sma20 - 2m * (decimal)Math.Sqrt((double)recent.TakeLast(20)
-                                        .Average(k => (k.ClosePrice - sma20) * (k.ClosePrice - sma20)));
-
-                                    if (lastBullish && price <= bbLower * 1.005m)
-                                    {
-                                        // 하단 터치 후 반등 양봉 → 허용
-                                        OnStatusLog?.Invoke($"⚡ [틱급증] {symbol} 하단반등 허용 (BB하단=${bbLower:F4} 현재=${price:F4})");
-                                    }
-                                    else
-                                    {
-                                        aiApproved = false;
-                                        blockReason = $"하락추세(음봉{bearishCount}/3 BB중심아래)";
-                                    }
-                                }
-                            }
-                        }
-
-                        if (!aiApproved)
-                        {
-                            OnStatusLog?.Invoke($"⛔ [틱급증→차단] {symbol} TPS={tpsRatio:F1}x | {blockReason}");
-                            return;
-                        }
-
-                        OnStatusLog?.Invoke($"⚡ [틱급증→진입] {symbol} TPS={tpsRatio:F1}x 매수비={buyRatio:P0}");
-                        // [v5.10.82] AI Gate 통과 강제 — TICK_SURGE 70/86건 0% 승률 원인이 게이트 우회였음.
-                        //            새 5분봉 학습 모델로 BB 상단/고점 진입 차단.
-                        await ExecuteAutoOrder(symbol, "LONG", price, _cts?.Token ?? CancellationToken.None,
-                            "TICK_SURGE", manualSizeMultiplier: 1.0m, skipAiGateCheck: false);
-                    }
-                    catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [틱급증] {symbol} 진입 실패: {ex.Message}"); }
-                });
-            };
+            // [AI 제거] OnTickSurgeDetected 핸들러 전체 제거 (PumpSignalClassifier 의존)
             _tickMonitor.OnSqueezeBreakout += (symbol, price, bbWidth) =>
             {
                 // BB 스퀴즈 브레이크아웃 → AI Gate 거쳐 진입
@@ -1929,32 +1640,7 @@ namespace TradingBot
             };
             // AggTrade WebSocket 시작 (백그라운드)
             _ = StartAggTradeStreamAsync(_cts?.Token ?? CancellationToken.None);
-            // [수익률 회귀] 로그 연결 + DB 과거 거래 학습
-            _profitRegressor.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _entryPriceRegressor.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _entryZoneCollector.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _breakoutClassifier.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _entryZoneRegressor.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    // [v5.22.7] ProfitRegressor 학습 비활성화 — AI 폐기
-                    int userId = AppConfig.CurrentUser?.Id ?? 0;
-                    if (false && userId > 0)
-                    {
-                        int loaded = await _profitRegressor.LoadFromTradeHistoryAsync(_dbManager, userId, days: 60);
-                        if (loaded >= 50)
-                        {
-                            await _profitRegressor.TrainAsync();
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ [ProfitRegressor] 초기 학습 실패: {ex.Message}");
-                }
-            });
+            // [AI 제거] ProfitRegressor / EntryPriceRegressor / EntryZoneCollector / BreakoutClassifier / EntryZoneRegressor 모두 제거
 
             // [Fail-safe] API 연결 끊김 + 슬리피지 감지 모듈
             _failSafeGuard = new TradingBot.Services.FailSafeGuardService();
@@ -1972,55 +1658,8 @@ namespace TradingBot
                 }
             };
 
-            // [동적 트레일링] AI 기반 동적 익절/손절 엔진 초기화
-            _dynamicTrailingEngine = new TradingBot.Services.DynamicTrailingStopEngine();
-            _dynamicTrailingEngine.OnLog += msg => OnStatusLog?.Invoke(msg);
-            _dynamicTrailingEngine.OnAlert += msg => OnAlert?.Invoke(msg);
-            _dynamicTrailingEngine.OnExitScoreUpdate += (sym, score, prob, stop) =>
-                OnExitScoreUpdate?.Invoke(sym, score, prob, stop);
-
-            // [우선순위 격리] AI 추론 + 주문 전용 워커 스레드 시작
-            // UI 스레드(Normal)보다 높은 AboveNormal 우선순위로 실행
-            // UI가 밀려도 주문은 실시간 시세에 맞춰 정밀하게 나감
-            try
-            {
-                _aiWorkerThread = new TradingBot.Services.AIDedicatedWorkerThread();
-                _aiWorkerThread.OnLog += msg => OnStatusLog?.Invoke(msg);
-                _aiWorkerThread.OnResultReady += result =>
-                {
-                    if (result.Success && result.MLProbability > 0)
-                    {
-                        OnStatusLog?.Invoke($"[AIWorker] {result.Symbol} ML={result.MLProbability:P0} latency={result.LatencyMs}ms");
-                    }
-                };
-                _aiWorkerThread.Start();
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ AI 워커 스레드 시작 실패: {ex.Message}");
-            }
-
-            // [v2.4.2] Navigator-Sniper 하이브리드 아키텍처 초기화
-            if (_aiDoubleCheckEntryGate != null)
-            {
-                try
-                {
-                    _hybridNavigatorSniper = new HybridNavigatorSniper(_aiDoubleCheckEntryGate);
-                    _hybridNavigatorSniper.OnNavigatorLog += msg => OnStatusLog?.Invoke(msg);
-                    _hybridNavigatorSniper.OnSniperLog += msg => OnStatusLog?.Invoke(msg);
-                    _hybridNavigatorSniper.OnAmbushWindowChanged += msg => OnAlert?.Invoke(msg);
-                    OnStatusLog?.Invoke("🎯 [v2.4.2] Navigator-Sniper 하이브리드 아키텍처 활성화");
-                }
-                catch (Exception ex)
-                {
-                    _hybridNavigatorSniper = null;
-                    OnStatusLog?.Invoke($"⚠️ Navigator-Sniper 초기화 실패: {ex.Message}");
-                }
-            }
-
+            // [AI 제거] DynamicTrailingStopEngine / AIDedicatedWorkerThread / HybridNavigatorSniper / PumpScanStrategy 모두 제거
             LoadActiveAiDecisionIds();
-
-            _pumpStrategy = new PumpScanStrategy(_client, _symbols, AppConfig.Current?.Trading?.PumpSettings ?? new PumpScanSettings(), _pumpSignalClassifier);
             _majorStrategy = new MajorCoinStrategy(
                 _marketDataManager,
                 () => MainWindow.CurrentGeneralSettings ?? AppConfig.Current?.Trading?.GeneralSettings);
@@ -2067,98 +1706,7 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"⚠️ [TimeOut-Prob] 엔진 초기화 실패: {ex.Message}");
             }
 
-            _pumpStrategy.OnSignalAnalyzed += vm =>
-            {
-                try { OnSignalUpdate?.Invoke(vm); }
-                catch (Exception ex) { OnLiveLog?.Invoke($"📡 [SIGNAL][PUMP][ERROR] source=uiBinding detail={ex.Message}"); }
-            };
-            _pumpStrategy.OnTradeSignal += async (symbol, decision, price) =>
-            {
-                try
-                {
-                    // [v4.7.9] PumpStrategy가 후보 검증한 심볼은 즉시 학습 대상 등록
-                    if (_trainedSymbols.TryAdd(symbol, true))
-                    {
-                        OnSymbolTrained?.Invoke(symbol);
-                        OnStatusLog?.Invoke($"✅ [동적학습등록] {symbol}");
-                    }
-
-                    // [v5.0.6] Gate 1 이중 방어:
-                    //   (1) 여기 PumpScan 핸들러: Forecaster/ExecuteAutoOrder 호출 전 사전 차단
-                    //   (2) Router ExecuteAutoOrder: 모든 경로 공통 최종 관문
-                    // SPIKE_FAST 처럼 ExecuteAutoOrder 우회 경로도 있으므로 (1)(2) 모두 필요
-                    if (decision == "LONG" && _marketDataManager.KlineCache.TryGetValue(symbol, out var gate1Cache))
-                    {
-                        List<IBinanceKline> gate1Candles;
-                        lock (gate1Cache) { gate1Candles = gate1Cache.ToList(); }
-
-                        if (IsAlreadyPumpedRecently(gate1Candles, price, out string gate1Reason))
-                        {
-                            OnStatusLog?.Invoke($"⛔ [GATE1] {symbol} 고점 진입 차단: {gate1Reason} → Gate2 지연 예약");
-                            ScheduleGate2Reevaluation(symbol, decision, "PUMP");
-                            return;
-                        }
-                    }
-
-                    // [v5.0.2] PumpForecaster 품질 검증 — AccA < 50% 면 Fallback 강제
-                    bool pumpForecasterTrustworthy = _pumpForecaster.IsModelLoaded
-                        && _pumpForecasterAccuracy >= ForecasterMinAccuracyForEntry;
-
-                    // [v5.0] 예측형 진입: PumpScan 후보 → PumpForecaster 예측 → Scheduler 등록
-                    // 기존 skipAiGateCheck=true 즉시 Market 진입 로직 제거
-                    if (pumpForecasterTrustworthy && _entryScheduler != null
-                        && _marketDataManager.KlineCache.TryGetValue(symbol, out var cache))
-                    {
-                        List<IBinanceKline> cSnap;
-                        lock (cache) { cSnap = cache.ToList(); }
-
-                        var forecast = _pumpForecaster.Forecast(cSnap, decision);
-                        if (!forecast.HasOpportunity)
-                        {
-                            OnLiveLog?.Invoke($"🧭 [FORECAST][PUMP] {symbol} 기회 없음 (prob<{_pumpForecaster.MinConfidence:P0})");
-                            return;
-                        }
-
-                        // 수량/레버리지 계산 (기존 ExecuteAutoOrder 로직 위임하려면 Fallback 직접 호출)
-                        decimal quantity = await CalculateOrderQuantityAsync(symbol, price, _cts.Token);
-                        if (quantity <= 0)
-                        {
-                            OnLiveLog?.Invoke($"⚠️ [FORECAST][PUMP] {symbol} 수량 계산 실패 → 스킵");
-                            return;
-                        }
-
-                        int leverage = 20;
-                        bool scheduled = await _entryScheduler.RegisterAsync(
-                            symbol, forecast, price, quantity, leverage, _cts.Token);
-
-                        if (!scheduled)
-                        {
-                            OnLiveLog?.Invoke($"🧭 [FORECAST][PUMP] {symbol} Scheduler 등록 실패");
-                        }
-                    }
-                    else
-                    {
-                        // [v5.10.82] AI Gate 통과 강제 (5분봉 학습 모델로 메이저 진입 검증)
-                        await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR_MEME", skipAiGateCheck: false);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    OnLiveLog?.Invoke($"🧭 [ENTRY][ORDER][ERROR] src=PUMP sym={symbol} side={decision} | detail={ex.Message}");
-                }
-            };
-
-            // [v4.9.2] PumpScan 로그를 UI + Serilog 파일 양쪽에 직접 기록
-            // v4.8.2는 OnStatusLog 경유만 했는데 VM.QueueFooterLog가 LoggerService를 호출하지 않아
-            // 실제로는 파일에 안 찍혔음. 이번엔 LoggerService.Info를 직접 호출해 확실히 파일로 남김
-            _pumpStrategy.OnLog += msg =>
-            {
-                var normalized = NormalizePumpSignalLog(msg);
-                OnLiveLog?.Invoke(normalized);
-                OnStatusLog?.Invoke(normalized);
-                LoggerService.Info(normalized);
-            };
-
+            // [AI 제거] _pumpStrategy 핸들러 제거. _majorStrategy는 단순화 — Forecaster 의존 제거
             if (_majorStrategy != null)
             {
                 _majorStrategy.OnSignalAnalyzed += vm =>
@@ -2170,50 +1718,12 @@ namespace TradingBot
                 {
                     try
                     {
-                        // [v5.10.81] 단일 게이트 IsEntryAllowed 사용
                         if (!IsEntryAllowed(symbol, "MAJOR_SIGNAL", out string majorBlockReason))
                         {
                             OnLiveLog?.Invoke($"⛔ [MAJOR] {symbol} 신호 무시 ({majorBlockReason})");
                             return;
                         }
-
-                        // [v5.1.0] 메이저 진입 — AI_GATE 우회 (skipAiGateCheck=true)
-                        // 원인: EntryTimingMLTrainer 가 메이저 ML=0%/TF=0% 반환 → AI_GATE_BLOCK 4000건/시간
-                        //       MajorCoinStrategy 의 aiScore 가 이미 지표 기반 판단 완료
-                        //       PUMP 와 동일하게 skipAiGateCheck=true 로 AI_GATE 재검증 스킵
-                        //       Router 공통 관문 (MTF Guardian, Gate 1) 은 유지
-                        bool forecasterTrustworthy = _majorForecaster.IsModelLoaded
-                            && _majorForecasterAccuracy >= ForecasterMinAccuracyForEntry;
-
-                        if (decision == "LONG" && forecasterTrustworthy && _entryScheduler != null
-                            && _marketDataManager.KlineCache.TryGetValue(symbol, out var cache))
-                        {
-                            List<IBinanceKline> cSnap;
-                            lock (cache) { cSnap = cache.ToList(); }
-
-                            var forecast = _majorForecaster.Forecast(cSnap, "LONG");
-                            if (!forecast.HasOpportunity)
-                            {
-                                OnLiveLog?.Invoke($"🧭 [FORECAST][MAJOR] {symbol} LONG 기회 없음");
-                                // [v5.10.82] AI Gate 통과 강제
-                                await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR", skipAiGateCheck: false);
-                                return;
-                            }
-
-                            decimal quantity = await CalculateOrderQuantityAsync(symbol, price, _cts.Token);
-                            if (quantity <= 0) return;
-
-                            bool scheduled = await _entryScheduler.RegisterAsync(
-                                symbol, forecast, price, quantity, 20, _cts.Token);
-                            if (!scheduled)
-                                OnLiveLog?.Invoke($"🧭 [FORECAST][MAJOR] {symbol} Scheduler 등록 실패");
-                        }
-                        else
-                        {
-                            // [v5.10.82] AI Gate 통과 강제
-                            // 기존 v5.1.0: AI_GATE 가 메이저에서 0% 반환했으나, v5.10.82에서 5분봉 학습 + Major variant 학습으로 정상화
-                            await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR", skipAiGateCheck: false);
-                        }
+                        await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR", skipAiGateCheck: false);
                     }
                     catch (Exception ex)
                     {
@@ -3157,98 +2667,7 @@ namespace TradingBot
                 // [v5.22.2] AI 학습 비활성화 — 사용자 결정 (2026-04-28)
                 // await TriggerInitialMLNetTrainingIfNeededAsync(token);
 
-                // [AI 데이터 수집] 백그라운드 자동 수집 서비스 시작 (30분마다 증분 수집)
-                try
-                {
-                    var aiCollector = Services.AIDataCollectorService.Instance;
-                    aiCollector.OnLog += msg => OnStatusLog?.Invoke(msg);
-                    aiCollector.Start();
-                    OnStatusLog?.Invoke("🤖 AI 데이터 백그라운드 수집 서비스 시작 (30분 주기)");
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ AI 데이터 수집 서비스 시작 실패: {ex.Message}");
-                }
-
-                // [AI 의사결정] 학습된 ML 모델 로드 (진입/청산/패턴)
-                try
-                {
-                    var aiDecision = Services.AIDecisionService.Instance;
-                    bool loaded = aiDecision.TryLoadModels();
-                    if (loaded)
-                    {
-                        OnStatusLog?.Invoke($"🧠 AI 의사결정 모델 로드 완료 (학습: {aiDecision.LastTrainTime:yyyy-MM-dd HH:mm}, 정확도: {aiDecision.EntryModelAccuracy:P1})");
-                    }
-                    else
-                    {
-                        // [자동 백그라운드 학습] 모델 미준비시 자동으로 학습 시작
-                        OnStatusLog?.Invoke("🤖 AI 의사결정 모델 미준비 — 백그라운드 자동 학습 시작...");
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                var engine = new Services.AIBacktestEngine();
-                                var result = await engine.RunAsync();
-                                if (result != null && result.TotalTrades > 0)
-                                {
-                                    OnStatusLog?.Invoke($"✅ AI 자동 학습 완료 | 승률: {result.WinRate:P1} | 거래: {result.TotalTrades}건");
-                                    // 학습 완료 후 모델 재로드
-                                    aiDecision.TryLoadModels();
-                                }
-                            }
-                            catch (Exception ex2)
-                            {
-                                OnStatusLog?.Invoke($"⚠️ AI 자동 학습 실패: {ex2.Message}");
-                            }
-                        }, token);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ AI 의사결정 모델 로드 실패: {ex.Message}");
-                }
-
-
-                // [수정] AI 더블체크 게이트 초기 학습 방식을 백그라운드로 전환 (Fire & Forget)
-                // 수학적 모델(Queueing Theory M/G/1)상, 무거운 I/O 및 ML 연산 처리 시간(S)을 UI 메인 루프에 종속(await)시키면,
-                // 리틀의 법칙(L = λW)에 의해 후속 이벤트(Telegram, Socket, UI 렌더링 등)의 시스템 대기 시간(W)이 무한히 쌓여 메인 UI 프리징(Deadlock/Starvation)을 초래함.
-                // 따라서 이 메인 프로세스는 상태 플래그(IsReady)만 확인하게 하고, 실제 훈련은 백그라운드 Worker Thread로 오프로딩하여 UI 및 엔진 파이프라인을 즉시 재개함.
-                if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate?.IsReady != true)
-                {
-                    OnStatusLog?.Invoke("ℹ️ [v5.10.82] AI Gate 모델 미로드 → 강제 초기 학습 시작 (forceRetrain=true)");
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            // [v5.10.92 ROOT FIX] 학습용 심볼 리스트 확장 — Pump variant 학습 데이터 확보
-                            //   기존: _symbols(=Settings.Symbols=메이저 4개)만 전달 → pumpFeatures=0 → Pump variant 학습 불가
-                            //   수정: 메이저 4 + 인기 알트(MarketDataManager 모니터링 + 하드코딩 PUMP 후보) 합쳐서 학습
-                            var trainSymbols = new HashSet<string>(_symbols, StringComparer.OrdinalIgnoreCase);
-                            // KlineCache에 데이터 있는 모든 심볼 추가 (PumpScan 동적 후보 포함)
-                            try
-                            {
-                                foreach (var k in _marketDataManager.KlineCache.Keys)
-                                    trainSymbols.Add(k);
-                            }
-                            catch { }
-                            // 학습용 fallback 인기 PUMP 알트 (시장 데이터 부족 대비)
-                            foreach (var s in new[] { "BLURUSDT","CHIPUSDT","METUSDT","ENJUSDT","DOGEUSDT","BNBUSDT","TAOUSDT","SUIUSDT","AVAXUSDT","ADAUSDT","NEARUSDT","ARBUSDT","OPUSDT","MATICUSDT","LINKUSDT","DOTUSDT","INJUSDT","ATOMUSDT","UNIUSDT","FILUSDT" })
-                                trainSymbols.Add(s);
-                            var trainList = trainSymbols.ToList();
-                            OnStatusLog?.Invoke($"ℹ️ [v5.10.92] 학습용 심볼 {trainList.Count}개 (Settings={_symbols.Count} + 동적/fallback 알트)");
-
-                            var (success, message) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, trainList, token, forceRetrain: true);
-                            if (success)
-                                _ = NotificationService.Instance.NotifyAsync("✅ AI Gate 초기 학습 완료 — 진입 게이트 활성화", NotificationChannel.Alert);
-                            else
-                                _ = NotificationService.Instance.NotifyAsync($"⚠️ AI Gate 초기 학습 실패 — 진입 차단 상태: {message}", NotificationChannel.Alert);
-                        }
-                        catch (Exception ex)
-                        {
-                            OnStatusLog?.Invoke($"❌ AI Gate 초기 학습 오류: {ex.Message}");
-                        }
-                    }, token);
-                }
+                // [AI 제거] AIDataCollectorService / AIDecisionService / AIBacktestEngine / AIDoubleCheckEntryGate 초기화 통째 제거
 
                 // 텔레그램 시작 알림 전송
                 string startMessage = $"🚀 *[봇 시작]*\n\n" +
@@ -3269,12 +2688,8 @@ namespace TradingBot
                 // [v4.7.0] /train 명령 → 옵션A 초기학습 (6개월 다운로드 + 학습 + 검증)
                 TelegramService.Instance.OnRequestTrain = (ct) => StartOptionAInitialTrainingAsync(token: ct);
                 TelegramService.Instance.OnRequestDroughtScan = ForceDroughtDiagnosticAsync;
-                // [v5.19.12 Phase 1] /validate 명령 → 4 variant 백테스트 검증
-                TelegramService.Instance.OnRequestValidate = async (ct) =>
-                {
-                    if (_aiDoubleCheckEntryGate == null) return "❌ AI Gate 미초기화";
-                    return await _aiDoubleCheckEntryGate.RunBacktestValidationAsync(daysBack: 7, threshold: 0.5f, token: ct);
-                };
+                // [AI 제거] /validate 명령 핸들러 제거
+                TelegramService.Instance.OnRequestValidate = (ct) => Task.FromResult("ℹ️ AI Gate 제거됨 (validate 비활성화)");
                 TelegramService.Instance.StartReceiving();
                 OnTelegramStatusUpdate?.Invoke(true, "Telegram: Connected");
 
@@ -3327,25 +2742,12 @@ namespace TradingBot
                     OnAlert?.Invoke($"✅ [초기학습] 이미 완료됨 (flag 있음) — 자동 재학습 건너뜀");
                 }
 
-                // [AI 학습 상태 초기화]
-                if (_aiDoubleCheckEntryGate != null)
+                // [AI 제거] AI 학습 상태 UI 초기화 — 라벨링 통계만 파일에서 조회
                 {
-                    var stats = _aiDoubleCheckEntryGate.GetRecentLabelStats(10);
-                    bool coreModelReady = _aiPredictor?.IsModelLoaded ?? false;
-                    // [UI 안정화] 더블체크 게이트 준비 여부와 무관하게 코어 ML 모델 로드 상태를 기준으로 표시
-                    bool modelsReady = coreModelReady;
-                    MainWindow.Instance?.UpdateAiLearningStatusUI(
-                        stats.total, stats.labeled, stats.markToMarket, 
-                        stats.tradeClose, _activeAiDecisionIds.Count, modelsReady);
-                }
-                else
-                {
-                    // AI 게이트가 없어도 라벨링 통계는 파일에서 직접 조회
                     var stats = GetRecentLabelStatsFromFiles(10);
-                    bool coreModelReady = _aiPredictor?.IsModelLoaded ?? false;
                     MainWindow.Instance?.UpdateAiLearningStatusUI(
                         stats.total, stats.labeled, stats.markToMarket,
-                        stats.tradeClose, _activeAiDecisionIds.Count, coreModelReady);
+                        stats.tradeClose, _activeAiDecisionIds.Count, false);
                 }
 
                 // 2. 실시간 감시 시작 (Non-blocking)
@@ -3631,10 +3033,7 @@ namespace TradingBot
                             && (DateTime.Now - _lastDroughtScanTime) >= DroughtScanInterval)
                         {
                             _lastDroughtScanTime = DateTime.Now;
-                            _ = Task.Run(async () =>
-                            {
-                                _ = await RunDroughtDiagnosticScanAsync(token);
-                            }, CancellationToken.None);
+                            // [AI 제거] RunDroughtDiagnosticScanAsync 제거됨 — drought 자동 복구 진입 비활성화
                         }
 
                         // [D2] TimeOut Probability Entry: 60분 공백 시 과거 패턴 유사도 기반 확률 베팅
@@ -3965,263 +3364,13 @@ namespace TradingBot
             OnStatusLog?.Invoke("🛑 [ENGINE_151] 루프 종료");
         }
 
-        private async Task StartPeriodicTrainingAsync(CancellationToken token)
-        {
-            while (!token.IsCancellationRequested)
-            {
-                try
-                {
-                    // 1시간마다 학습 (테스트를 위해 짧게 설정 가능하지만 실사용은 1시간 권장)
-                    await Task.Delay(TimeSpan.FromHours(1), token);
+        // [AI 제거] StartPeriodicTrainingAsync 전체 제거 — AI 재학습 루프 폐기
 
-                    OnAlert?.Invoke("🔄 정기 AI 모델 재학습 프로세스 시작...");
+        // [AI 제거] StartPeriodicAiEntryProbScanAsync 전체 제거
 
-                    // 1. 학습 데이터 수집 (주요 심볼 대상)
-                    // [v5.10.82] 추론은 5분봉(GetLatestCandleDataAsync)을 쓰는데 학습이 1H봉이라 분포 불일치 → AiScore 역상관.
-                    //            추론과 동일한 5분봉으로 학습해서 같은 통계 분포로 모델 학습.
-                    var trainingData = new List<CandleData>();
-                    foreach (var symbol in _symbols)
-                    {
-                        var klines = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, limit: 500, ct: token);
-                        if (klines.Success && klines.Data != null && klines.Data.Any() && klines.Data.Length >= 50)
-                        {
-                            var candles = klines.Data.ToList();
-                            // 지표 계산 및 라벨링을 포함하여 CandleData로 변환
-                            var converted = ConvertToTrainingData(candles, symbol);
-                            trainingData.AddRange(converted);
-                        }
-                        await Task.Delay(500, token); // API 제한 고려
-                    }
+        // [AI 제거] RetrainMlNetPredictorAsync 전체 제거 — AITrainer / AIPredictor 의존
 
-                    if (trainingData.Count > 100)
-                    {
-                        await RetrainMlNetPredictorAsync(trainingData, token);
-
-
-                        // [추가] AI 더블체크 게이트 재학습
-                        if (_aiDoubleCheckEntryGate != null)
-                        {
-                            try
-                            {
-                                var (success, message) = await _aiDoubleCheckEntryGate.RetrainModelsAsync(token);
-                                // 결과 메시지는 이미 AIDoubleCheckEntryGate.OnAlert에서 출력됨
-                            }
-                            catch (Exception ex)
-                            {
-                                OnAlert?.Invoke($"❌ [AI 재학습] 오류: {ex.Message}");
-                            }
-                        }
-
-                        OnAlert?.Invoke($"✅ 정기 이중 모델 재학습 완료 (데이터: {trainingData.Count}건)");
-                    }
-                    else
-                    {
-                        OnAlert?.Invoke("⚠️ 학습 데이터 부족으로 재학습 건너뜀.");
-                    }
-                }
-                catch (OperationCanceledException) { break; }
-                catch (Exception ex)
-                {
-                    OnAlert?.Invoke($"❌ 재학습 중 오류: {ex.Message}");
-                }
-            }
-        }
-
-        /// <summary>
-        /// 주기적으로 메이저 코인의 AI 진입 확률을 스캔하여 UI에 표시
-        /// </summary>
-        private async Task StartPeriodicAiEntryProbScanAsync(CancellationToken token)
-        {
-            // 엔진 안정화 대기 (초기 학습 완료 후 시작)
-            await Task.Delay(TimeSpan.FromMinutes(3), token);
-
-            while (!token.IsCancellationRequested)
-            {
-                try
-                {
-                    if (false) // [v5.22.5] AI 추론 비활성화 — AI 시스템 폐기 (2026-04-28)
-                    {
-                        var scanSymbols = _symbols.Take(20).ToList();
-                        var forecasts = new Dictionary<string, AIEntryForecastResult>(StringComparer.OrdinalIgnoreCase);
-
-                        foreach (var (symbol, forecast) in forecasts)
-                        {
-                            OnAiEntryProbUpdate?.Invoke(symbol, forecast);
-                            _latestAiForecasts[symbol] = forecast; // [A안] 캐시 갱신
-
-                            // 높은 확률 코인 알림 (70% 이상)
-                            if (forecast.AverageProbability >= 0.70f)
-                            {
-                                string etaText = forecast.IsImmediate ? "지금" : forecast.ForecastTimeLocal.ToString("HH:mm");
-                                OnStatusLog?.Invoke($"🎯 [AI 진입예측] {symbol} 예상 진입 {etaText} | {forecast.AverageProbability:P0} (ML={forecast.MLProbability:P0}, TF={forecast.TFProbability:P0})");
-
-                                // [ETA 자동 트리거] 미래 시점 예측인 경우 자동 재평가 스케줄링
-                                if (!forecast.IsImmediate && forecast.ForecastOffsetMinutes > 0)
-                                {
-                                    var targetTime = forecast.ForecastTimeLocal;
-                                    _scheduledEtaReEvaluations[symbol] = targetTime;
-                                    OnStatusLog?.Invoke($"⏰ [ETA_TRIGGER] {symbol} {etaText} 자동 재평가 예약 (확률 {forecast.AverageProbability:P0})");
-                                }
-                            }
-                        }
-                    }
-                }
-                catch (OperationCanceledException) { break; }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ AI 진입 확률 스캔 오류: {ex.Message}");
-                }
-
-                // 5분마다 스캔
-                await Task.Delay(TimeSpan.FromMinutes(5), token);
-            }
-        }
-
-        private async Task RetrainMlNetPredictorAsync(List<CandleData> trainingData, CancellationToken token)
-        {
-            try
-            {
-                UISuspensionManager.SuspendSignalUpdates(true);
-                try
-                {
-                    await Task.Run(() =>
-                    {
-                        var trainer = new AITrainer();
-                        trainer.TrainAndSave(trainingData);
-                    }, token);
-                }
-                finally
-                {
-                    UISuspensionManager.SuspendSignalUpdates(false);
-                }
-
-                var oldPredictor = _aiPredictor;
-                _aiPredictor = new AIPredictor();
-                _positionMonitor.UpdateAiPredictor(_aiPredictor);
-
-                try
-                {
-                    oldPredictor?.Dispose();
-                }
-                catch
-                {
-                }
-
-                if (_aiPredictor.IsModelLoaded)
-                    OnAlert?.Invoke("✅ ML.NET 모델 재학습 및 리로드 완료");
-                else
-                    OnAlert?.Invoke("⚠️ ML.NET 재학습은 완료됐지만 모델 리로드 확인 실패");
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                OnAlert?.Invoke($"❌ ML.NET 재학습 오류: {ex.Message}");
-            }
-        }
-
-        private async Task TriggerInitialMLNetTrainingIfNeededAsync(CancellationToken token, bool force = false)
-        {
-            if (_initialMLNetTrainingTriggered && !force)
-                return;
-
-            _initialMLNetTrainingTriggered = true;
-
-            // ML.NET 모델이 이미 로드되어 있으면 건너뜀
-            if (!force && _aiPredictor != null && _aiPredictor.IsModelLoaded)
-            {
-                OnAlert?.Invoke("✅ ML.NET 모델이 이미 준비되어 초기 학습을 건너뜁니다.");
-                return;
-            }
-
-            try
-            {
-                OnAlert?.Invoke("🧠 ML.NET 초기 학습 시작 (엔진 시작 1회)...");
-
-                // 데이터 수집
-                // [v5.10.82] 추론은 5분봉을 쓰는데 학습이 1H봉이라 분포 불일치 → AiScore 역상관. 5분봉으로 통일.
-                var trainingData = new List<CandleData>();
-                foreach (var symbol in _symbols)
-                {
-                    var klines = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, limit: 500, ct: token);
-                    if (klines.Success && klines.Data != null && klines.Data.Any() && klines.Data.Length >= 50)
-                    {
-                        var candles = klines.Data.ToList();
-                        var converted = ConvertToTrainingData(candles, symbol);
-                        trainingData.AddRange(converted);
-                    }
-
-                    await Task.Delay(200, token);
-                }
-
-                // 최소 데이터 검증 (200건 이상 필요)
-                if (trainingData.Count < 200)
-                {
-                    OnAlert?.Invoke($"⚠️ ML.NET 초기 학습 데이터 부족 (수집: {trainingData.Count}건, 최소 200건 필요)");
-                    return;
-                }
-
-                // 백그라운드 학습 (UI DataGrid 일시 중단으로 프리징 방지)
-                try
-                {
-                    UISuspensionManager.SuspendSignalUpdates(true);
-                    await Task.Run(() =>
-                    {
-                        try
-                        {
-                            var trainer = new AITrainer();
-                            trainer.TrainAndSave(trainingData);
-                        }
-                        catch (Exception ex)
-                        {
-                            OnAlert?.Invoke($"❌ ML.NET 초기 학습 내부 오류: {ex.Message}");
-                            throw;
-                        }
-                    }, token);
-
-                    // 모델 재로드
-                    var oldPredictor = _aiPredictor;
-                    _aiPredictor = new AIPredictor();
-                    _positionMonitor.UpdateAiPredictor(_aiPredictor);
-
-                    try
-                    {
-                        oldPredictor?.Dispose();
-                    }
-                    catch
-                    {
-                    }
-
-                    if (_aiPredictor.IsModelLoaded)
-                    {
-                        OnAlert?.Invoke($"✅ ML.NET 초기 학습 완료 및 모델 생성 성공 (데이터: {trainingData.Count}건)");
-                    }
-                    else
-                    {
-                        OnAlert?.Invoke("⚠️ ML.NET 초기 학습 후에도 모델 로드에 실패했습니다. 모델 파일 저장 경로를 확인하세요.");
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    OnAlert?.Invoke("⚠️ ML.NET 초기 학습이 취소되었습니다.");
-                    throw;
-                }
-                finally
-                {
-                    UISuspensionManager.SuspendSignalUpdates(false);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                OnAlert?.Invoke($"❌ ML.NET 초기 학습 오류: {ex.Message}");
-            }
-        }
+        // [AI 제거] TriggerInitialMLNetTrainingIfNeededAsync 전체 제거 — AITrainer / AIPredictor 의존
 
 
         /// <summary>
@@ -4268,95 +3417,12 @@ namespace TradingBot
             }
         }
 
-        public async Task<string> ForceInitialAiTrainingAsync(CancellationToken token = default)
+        public Task<string> ForceInitialAiTrainingAsync(CancellationToken token = default)
         {
-            if (!IsBotRunning)
-            {
-                const string stoppedMessage = "⚠️ 엔진이 정지 상태라 수동 초기 학습을 실행할 수 없습니다. 봇 시작 후 다시 시도하세요.";
-                OnAlert?.Invoke(stoppedMessage);
-                return stoppedMessage;
-            }
-
-            if (Interlocked.CompareExchange(ref _manualInitialTrainingRunning, 1, 0) != 0)
-            {
-                const string busyMessage = "⚠️ 수동 초기 학습이 이미 실행 중입니다. 잠시 후 다시 시도하세요.";
-                OnAlert?.Invoke(busyMessage);
-                return busyMessage;
-            }
-
-            try
-            {
-                /* TensorFlow 전환 중 비활성화
-                bool canTrainTransformer = _transformerTrainer != null;
-                OnAlert?.Invoke(canTrainTransformer
-                    ? "🧠 수동 초기 학습 시작: ML.NET + Transformer + AI 더블체크 순차 실행"
-                    : "🧠 수동 초기 학습 시작: ML.NET + AI 더블체크 순차 실행 (Transformer 비활성화)");
-                */
-
-                OnAlert?.Invoke("🧠 수동 초기 학습 시작: ML.NET + AI Gate 순차 실행");
-
-                _initialMLNetTrainingTriggered = false;
-
-                await TriggerInitialMLNetTrainingIfNeededAsync(token, force: true);
-                
-                /* TensorFlow 전환 중 비활성화
-                if (canTrainTransformer)
-                {
-                    await TriggerInitialTransformerTrainingIfNeededAsync(token, force: true);
-                }
-                else
-                {
-                    OnStatusLog?.Invoke("ℹ️ 수동 학습: Transformer 단계는 비활성화되어 건너뜁니다.");
-                }
-                */
-
-                string doubleCheckStatus;
-                if (_aiDoubleCheckEntryGate == null)
-                {
-                    doubleCheckStatus = "DISABLED";
-                }
-                else
-                {
-                    // [v5.10.27] forceRetrain=true: IsReady=true여도 히스토리컬 재학습 강제
-                    // 이유: 기존 모델이 class imbalance로 prob=0 반환하는 상태에서도 IsReady=true가 되어
-                    //       RetrainModelsAsync(라벨 100개 필요)로 빠져 재학습이 안 됨
-                    // [v5.10.92] 학습용 심볼 확장 (Pump variant 학습 보장)
-                    var trainSymbolsManual = new HashSet<string>(_symbols, StringComparer.OrdinalIgnoreCase);
-                    try { foreach (var k in _marketDataManager.KlineCache.Keys) trainSymbolsManual.Add(k); } catch { }
-                    foreach (var s in new[] { "BLURUSDT","CHIPUSDT","METUSDT","ENJUSDT","DOGEUSDT","BNBUSDT","TAOUSDT","SUIUSDT","AVAXUSDT","ADAUSDT","NEARUSDT","ARBUSDT","OPUSDT","MATICUSDT","LINKUSDT","DOTUSDT","INJUSDT","ATOMUSDT","UNIUSDT","FILUSDT" })
-                        trainSymbolsManual.Add(s);
-                    var (success, _) = await _aiDoubleCheckEntryGate.TriggerInitialTrainingAsync(_exchangeService, trainSymbolsManual.ToList(), token, forceRetrain: true);
-                    doubleCheckStatus = success ? "RETRAINED" : "RETRAIN_FAILED";
-                }
-
-                string mlStatus = _aiPredictor != null && _aiPredictor.IsModelLoaded ? "READY" : "NOT_READY";
-                /* TensorFlow 전환 중 비활성화
-                string tfStatus = _transformerTrainer == null
-                    ? "DISABLED"
-                    : (_transformerTrainer.IsModelReady ? "READY" : "NOT_READY");
-                */
-                string tfStatus = "TF_MIGRATION";
-
-                string summary = $"🧠 수동 학습 완료 | ML={mlStatus}, TF={tfStatus}, DOUBLE_CHECK={doubleCheckStatus}";
-                OnAlert?.Invoke(summary);
-                return summary;
-            }
-            catch (OperationCanceledException)
-            {
-                const string cancelMessage = "⚠️ 수동 초기 학습이 취소되었습니다.";
-                OnAlert?.Invoke(cancelMessage);
-                return cancelMessage;
-            }
-            catch (Exception ex)
-            {
-                string errorMessage = $"❌ 수동 초기 학습 실패: {ex.Message}";
-                OnAlert?.Invoke(errorMessage);
-                return errorMessage;
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _manualInitialTrainingRunning, 0);
-            }
+            // [AI 제거] 모든 ML 모델 폐기 — AI 학습 자체가 더 이상 존재하지 않음
+            const string msg = "ℹ️ AI 시스템 제거됨 — 수동 학습 호출은 무효 처리됨";
+            OnAlert?.Invoke(msg);
+            return Task.FromResult(msg);
         }
 
         public async Task<string> ForceDroughtDiagnosticAsync(CancellationToken token = default)
@@ -4366,11 +3432,9 @@ namespace TradingBot
                 return "⚠️ 엔진이 정지 상태라 드라이스펠 진단을 실행할 수 없습니다. 봇 시작 후 다시 시도하세요.";
             }
 
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, token);
+            // [AI 제거] RunDroughtDiagnosticScanAsync 본체 제거됨
             _lastDroughtScanTime = DateTime.Now;
-            string summary = await RunDroughtDiagnosticScanAsync(linkedCts.Token);
-
-            return $"🔎 드라이스펠 진단 완료 | {summary}";
+            return "🔎 드라이스펠 진단 비활성화됨 (AI 시스템 제거)";
         }
 
         private async Task ProcessTickerChannelAsync(CancellationToken token)
@@ -5027,8 +4091,7 @@ namespace TradingBot
 
             OnStatusLog?.Invoke($"🎯 [추적풀] 갱신 — 메이저4 + 동적{dynamicSymbols.Count}개 = 총 {_activeTrackingPool.Count}개 ({string.Join(",", dynamicSymbols)})");
 
-            // AI Gate 의 추적 심볼도 동기화 (4 variant 추론 대상 축소)
-            _aiDoubleCheckEntryGate?.SetTrackedSymbols(_activeTrackingPool.Keys);
+            // [AI 제거] AI Gate 동기화 제거
         }
 
         private async Task ProcessCoinAndTradeBySymbolAsync(string symbol, decimal currentPrice, CancellationToken token)
@@ -5075,43 +4138,20 @@ namespace TradingBot
                         _scheduledEtaReEvaluations.TryRemove(symbol, out _);
                         OnStatusLog?.Invoke($"🎯 [ETA_TRIGGER] {symbol} 예약된 진입 시간 도달 → 재평가 시작 ({scheduledTime:HH:mm})");
                         
-                        // [v5.2.7] AI Gate 재평가 → 65% 이상이면 즉시 시장가 진입
-                        if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate.IsReady)
+                        // [AI 제거] ETA_TRIGGER 시점 AI Gate 재평가 제거 — 즉시 시장가 진입 시도
+                        try
                         {
-                            _ = Task.Run(async () =>
+                            decimal entryPrice = 0m;
+                            if (_marketDataManager.TickerCache.TryGetValue(symbol, out var tk))
+                                entryPrice = tk.LastPrice;
+                            if (entryPrice > 0m)
                             {
-                                try
-                                {
-                                    var forecast = await _aiDoubleCheckEntryGate.ScanEntryProbabilitiesAsync(
-                                        new List<string> { symbol }, token);
-
-                                    if (forecast.TryGetValue(symbol, out var result) && result.AverageProbability >= 0.65f)
-                                    {
-                                        string direction = "LONG";
-                                        decimal entryPrice = 0m;
-                                        if (_marketDataManager.TickerCache.TryGetValue(symbol, out var tk))
-                                            entryPrice = tk.LastPrice;
-
-                                        OnStatusLog?.Invoke($"🎯 [ETA_TRIGGER] {symbol} 재평가 {result.AverageProbability:P0} ≥ 65% → {direction} 시장가 진입");
-                                        // [v5.10.82] AI Gate 통과 강제
-                                        await ExecuteAutoOrder(symbol, direction, entryPrice, token,
-                                            signalSource: "ETA_TRIGGER",
-                                            skipAiGateCheck: false);
-                                    }
-                                    else
-                                    {
-                                        string prob = forecast.TryGetValue(symbol, out var r2) ? $"{r2.AverageProbability:P0}" : "N/A";
-                                        // [v5.2.8] ETA 재평가 실패 → 다음 예측까지 진입 차단 (30분 블랙리스트)
-                                        _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(30);
-                                        OnStatusLog?.Invoke($"⛔ [ETA_TRIGGER] {symbol} 재평가 {prob} < 65% → 진입 취소 + 30분 블랙리스트");
-                                    }
-                                }
-                                catch (Exception ex)
-                                {
-                                    OnStatusLog?.Invoke($"⚠️ [ETA_TRIGGER] {symbol} 재평가 오류: {ex.Message}");
-                                }
-                            }, token);
+                                _ = ExecuteAutoOrder(symbol, "LONG", entryPrice, token,
+                                    signalSource: "ETA_TRIGGER",
+                                    skipAiGateCheck: false);
+                            }
                         }
+                        catch { }
                     }
                 }
 
@@ -5921,42 +4961,8 @@ namespace TradingBot
                 return;
             }
 
+            // [AI 제거] AIPredictor 진입 검증 통째 제거
             float aiScore = 0;
-            if (_aiPredictor != null)
-            {
-                var candleData = await GetLatestCandleDataAsync(symbol, token);
-                if (candleData != null)
-                {
-                    var prediction = _aiPredictor.Predict(candleData);
-                    // [FIX] Score가 음수가 될 수 있으므로 0 이상으로 고정
-                    aiScore = Math.Max(0f, prediction.Score);
-                    float upProbability = NormalizeProbability01(prediction.Probability, fallback: 0.5f);
-                    float monitorConfidence = Math.Max(upProbability, 1f - upProbability);
-
-                        // [AI 모니터링] 예측 기록 (5분 후 검증)
-                        string predictionKey = BuildPredictionValidationKey("ML.NET", symbol);
-                        decimal predictedPrice = currentPrice * (prediction.Prediction ? 1.02m : 0.98m); // 2% 변동 예측
-                        _pendingPredictions[predictionKey] = (DateTime.Now, currentPrice, predictedPrice, prediction.Prediction, "ML.NET", monitorConfidence);
-                        bool scheduled = TrySchedulePredictionValidation(predictionKey, symbol, _cts);
-
-                        // [v5.10.68] 활성 포지션 모니터에 외부 ML 신호 즉시 전달 (강한 반대 신호 빠른 반응)
-                        _positionMonitor?.UpdateExternalMlSignal(symbol, prediction.Prediction, upProbability, monitorConfidence);
-
-                        string mlDirection = prediction.Prediction ? "상승" : "하락";
-                        if (scheduled)
-                        {
-                            OnStatusLog?.Invoke($"🔮 [SIGNAL][ML.NET][PREDICT] sym={symbol} dir={mlDirection} upProb={upProbability:P0} confidence={monitorConfidence:P0} validateAfter=5m");
-                        }
-
-                        // 상승 확률이 60% 미만이면 진입 보류 (단, RSI 과매도 등 강력한 시그널일 경우 예외 처리 가능)
-                        if (upProbability < 0.6f && rsi5m > 30)
-                        {
-                            OnStatusLog?.Invoke($"🧭 [ENTRY][AI][BLOCK] src=PUMP sym={symbol} side=LONG | upProb={upProbability:P1} threshold=60.0% reason=lowProbability");
-                            return;
-                        }
-                        OnStatusLog?.Invoke($"🧭 [ENTRY][AI][PASS] src=PUMP sym={symbol} side=LONG | dir={(prediction.Prediction ? "UP" : "DOWN")} upProb={upProbability:P1} confidence={monitorConfidence:P1}");
-                    }
-            }
 
             // RSI 과열 시 비중 축소 로직
             if (rsi5m >= 80)
@@ -6535,345 +5541,6 @@ namespace TradingBot
             return $"ETA2h={eta2hCandidateCount} | Near2h={near2hCandidateCount} | PumpFallback={pumpFallbackResult} | Action={action}";
         }
 
-        private async Task<string> RunDroughtDiagnosticScanAsync(CancellationToken token)
-        {
-            int eta2hCandidateCount = 0;
-            int near2hCandidateCount = 0;
-            string pumpFallbackResult = "NOT_USED";
-            string action = "NONE";
-
-            try
-            {
-                double droughtHours = (DateTime.Now - _lastSuccessfulEntryTime).TotalHours;
-                OnStatusLog?.Invoke($"🔎 [드라이스펠] {droughtHours:F1}h 진입 없음 — 전 심볼 진입 후보 진단 시작...");
-
-                if (_aiDoubleCheckEntryGate == null || _aiDoubleCheckEntryGate?.IsReady != true)
-                {
-                    OnStatusLog?.Invoke("⚠️ [드라이스펠] AI 게이트 미준비 상태 — 진단 생략");
-                    action = "AI_GATE_NOT_READY";
-                    string skippedSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
-                    OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {skippedSummary}");
-                    return skippedSummary;
-                }
-
-                var scanUniverse = _symbols
-                    .Where(s => !string.IsNullOrWhiteSpace(s))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-
-                // [v5.22.5] AI 대량 추론 비활성화 — AI 시스템 폐기 (2026-04-28)
-                var forecastBySymbol = new Dictionary<string, AIEntryForecastResult>(StringComparer.OrdinalIgnoreCase);
-
-                var results = new List<(string Symbol, string Direction, decimal Price, float ML, float TF, float BandwidthPct, bool GatePass, string Reason, float ForecastProbability, int ForecastOffsetMinutes)>();
-
-                foreach (var symbol in scanUniverse)
-                {
-                    if (token.IsCancellationRequested) break;
-
-                    bool hasPosition;
-                    lock (_posLock) { hasPosition = _activePositions.ContainsKey(symbol); }
-                    if (hasPosition) continue;
-
-                    try
-                    {
-                        decimal currentPrice = 0;
-                        if (_marketDataManager.TickerCache.TryGetValue(symbol, out var tick))
-                            currentPrice = tick.LastPrice;
-                        if (currentPrice <= 0) continue;
-
-                        // BB 폭 (스퀴즈 여부 확인용)
-                        List<IBinanceKline>? klines = (await _exchangeService.GetKlinesAsync(
-                            symbol, KlineInterval.FiveMinutes, 60, token))?.ToList();
-                        float bwPct = klines != null && klines.Count >= 20
-                            ? (float)CalculateBollingerWidthPct(klines, 20) : 0f;
-
-                        // LONG / SHORT 두 방향 중 AI 점수 합산이 높은 방향 선택
-                        string bestDir = "LONG";
-                        (bool allowEntry, string reason, AIEntryDetail detail) bestGate = default;
-                        float bestCombo = -1f;
-
-                        foreach (var dir in new[] { "LONG", "SHORT" })
-                        {
-                            var gr = await _aiDoubleCheckEntryGate.EvaluateEntryAsync(
-                                symbol, dir, currentPrice, token);
-
-                            float combo = gr.detail.ML_Confidence + gr.detail.ML_Confidence;
-                            if (combo > bestCombo)
-                            {
-                                bestCombo = combo;
-                                bestDir   = dir;
-                                bestGate  = gr;
-                            }
-                            await Task.Delay(80, token);
-                        }
-
-                        if (bestCombo < 0 || bestGate.detail == null) continue;
-
-                        forecastBySymbol.TryGetValue(symbol, out var forecast);
-                        float forecastProbability = forecast?.AverageProbability ?? 0f;
-                        int forecastOffsetMinutes = forecast?.ForecastOffsetMinutes ?? int.MaxValue;
-
-                        results.Add((symbol, bestDir, currentPrice,
-                            bestGate.detail.ML_Confidence, bestGate.detail.ML_Confidence,
-                            bwPct, bestGate.allowEntry, bestGate.reason ?? string.Empty,
-                            forecastProbability, forecastOffsetMinutes));
-
-                        await Task.Delay(250, token); // API 스로틀
-                    }
-                    catch (OperationCanceledException) { break; }
-                    catch (Exception ex)
-                    {
-                        OnStatusLog?.Invoke($"⚠️ [드라이스펠] {symbol} 스캔 오류: {ex.Message}");
-                    }
-                }
-
-                if (results.Count == 0)
-                {
-                    OnStatusLog?.Invoke("🔎 [드라이스펠] 스캔 가능한 심볼 없음 (전부 포지션 보유 또는 데이터 없음)");
-                    action = "NO_SCANNABLE_SYMBOL";
-                    string emptySummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
-                    OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {emptySummary}");
-                    return emptySummary;
-                }
-
-                // 정렬: AI 게이트 통과 우선, 이후 ML+TF 합산 내림차순
-                var top5 = results
-                    .OrderByDescending(r => r.GatePass ? 1 : 0)
-                    .ThenBy(r => r.ForecastOffsetMinutes <= DroughtRecoveryForecastHorizonMinutes ? 0 : 1)
-                    .ThenByDescending(r => r.ForecastProbability)
-                    .ThenByDescending(r => r.ML + r.TF)
-                    .Take(5)
-                    .ToList();
-
-                // ── 상태 로그 ─────────────────────────────────────────
-                var sb = new System.Text.StringBuilder();
-                sb.AppendLine($"🔎 [드라이스펠 진단] {droughtHours:F0}h 진입 공백 — TOP {top5.Count} 후보");
-                sb.AppendLine();
-
-                float mlTh = _fifteenMinuteMlMinConfidence;
-                float tfTh = _fifteenMinuteTransformerMinConfidence;
-
-                foreach (var (sym, dir, _, ml, tf, bw, gatePass, reason, forecastProb, forecastOffset) in top5)
-                {
-                    string passIcon = gatePass ? "✅" : "⛔";
-                    float mlGap = ml - mlTh;
-                    float tfGap = tf - tfTh;
-                    string mlGapStr = mlGap >= 0 ? $"+{mlGap:P0}" : $"{mlGap:P0}";
-                    string tfGapStr = tfGap >= 0 ? $"+{tfGap:P0}" : $"{tfGap:P0}";
-                    string etaText = forecastOffset == int.MaxValue
-                        ? "ETA:N/A"
-                        : (forecastOffset <= 1 ? "ETA:지금" : $"ETA:+{forecastOffset}m");
-                    sb.AppendLine($"{passIcon} {sym} [{dir}] | ML:{ml:P0}({mlGapStr}) TF:{tf:P0}({tfGapStr}) AI:{forecastProb:P0} {etaText} BW:{bw:F2}%");
-                    sb.AppendLine($"   └ {reason}");
-                }
-
-                OnStatusLog?.Invoke(sb.ToString());
-                OnAlert?.Invoke($"🔎 [드라이스펠] {droughtHours:F0}h 진입 없음 — 진입 후보 진단 완료 (로그 참조)");
-
-                // ── 텔레그램 발송 ───────────────────────────────────────
-                var lines = top5.Select(r =>
-                {
-                    string icon    = r.GatePass ? "✅" : "⛔";
-                    float  mlGapV  = r.ML - mlTh;
-                    float  tfGapV  = r.TF - tfTh;
-                    string mlGapS  = mlGapV >= 0 ? $"+{mlGapV:P0}" : $"{mlGapV:P0}";
-                    string tfGapS  = tfGapV >= 0 ? $"+{tfGapV:P0}" : $"{tfGapV:P0}";
-                    string etaText = r.ForecastOffsetMinutes == int.MaxValue
-                        ? "ETA:N/A"
-                        : (r.ForecastOffsetMinutes <= 1 ? "ETA:지금" : $"ETA:+{r.ForecastOffsetMinutes}m");
-                    return $"{icon} `{r.Symbol}` [{r.Direction}] | ML:{r.ML:P0}({mlGapS}) TF:{r.TF:P0}({tfGapS}) AI:{r.ForecastProbability:P0} {etaText}\n└ {r.Reason}";
-                });
-
-                _ = TelegramService.Instance.SendMessageAsync(
-                    $"[TradingBot]\n🔎 *[드라이스펠 진단]*\n진입 없음 {droughtHours:F0}h\n" +
-                    $"임계: ML≥{mlTh:P0} / TF≥{tfTh:P0}\n\n" +
-                    string.Join("\n\n", lines));
-
-                // ── 자동 복구 진입: 2시간 이내 ETA 코인 1개 우선 ───────────────────
-                var autoEntryCandidates2h = results
-                    .Where(r => r.GatePass
-                        && r.ForecastOffsetMinutes <= DroughtRecoveryForecastHorizonMinutes
-                        && r.ForecastProbability >= DroughtRecoveryForecastMinProbability)
-                    .OrderByDescending(r => r.ForecastProbability)
-                    .ThenBy(r => r.ForecastOffsetMinutes)
-                    .ThenByDescending(r => r.ML + r.TF)
-                    .ToList();
-                eta2hCandidateCount = autoEntryCandidates2h.Count;
-
-                var pick2h = autoEntryCandidates2h.FirstOrDefault();
-
-                if (!string.IsNullOrWhiteSpace(pick2h.Symbol))
-                {
-                    bool alreadyHolding;
-                    lock (_posLock)
-                    {
-                        alreadyHolding = _activePositions.TryGetValue(pick2h.Symbol, out var h2) && h2.IsOwnPosition;
-                    }
-
-                    if (!alreadyHolding)
-                    {
-                        string etaText = pick2h.ForecastOffsetMinutes <= 1 ? "지금" : $"+{pick2h.ForecastOffsetMinutes}분";
-                        OnStatusLog?.Invoke(
-                            $"🚀 [드라이스펠 2시간 복구진입] {pick2h.Symbol} {pick2h.Direction} 시도 | ETA={etaText} AI:{pick2h.ForecastProbability:P0} ML:{pick2h.ML:P0} TF:{pick2h.TF:P0} price={pick2h.Price:F4}");
-
-                        await ExecuteAutoOrder(
-                            pick2h.Symbol,
-                            pick2h.Direction,
-                            pick2h.Price,
-                            token,
-                            "DROUGHT_RECOVERY_2H",
-                            skipAiGateCheck: false);
-
-                        await Task.Delay(120, token);
-                        action = "ETA_2H_ORDER_ATTEMPT";
-                        string etaSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
-                        OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {etaSummary}");
-                        return etaSummary;
-                    }
-
-                    action = "ETA_2H_HOLDING_SKIP";
-                    OnStatusLog?.Invoke($"ℹ️ [드라이스펠] ETA 2시간 최우선 후보 {pick2h.Symbol}은 이미 보유 중이라 스킵합니다.");
-                }
-
-                const float nearThresholdFactor = 0.90f;
-                const decimal trialSizeMultiplier = 0.70m;
-
-                var nearCandidates2h = results
-                    .Where(r => !r.GatePass
-                        && r.ForecastOffsetMinutes <= DroughtRecoveryForecastHorizonMinutes
-                        && r.ML >= mlTh * nearThresholdFactor
-                        && r.TF >= tfTh * nearThresholdFactor)
-                    .OrderByDescending(r => r.ForecastProbability)
-                    .ThenBy(r => r.ForecastOffsetMinutes)
-                    .ThenByDescending(r => r.ML + r.TF)
-                    .ToList();
-                near2hCandidateCount = nearCandidates2h.Count;
-
-                var nearPick2h = nearCandidates2h.FirstOrDefault();
-                if (!string.IsNullOrWhiteSpace(nearPick2h.Symbol))
-                {
-                    bool alreadyHolding;
-                    lock (_posLock)
-                    {
-                        alreadyHolding = _activePositions.TryGetValue(nearPick2h.Symbol, out var hn) && hn.IsOwnPosition;
-                    }
-
-                    if (!alreadyHolding)
-                    {
-                        string etaText = nearPick2h.ForecastOffsetMinutes <= 1 ? "지금" : $"+{nearPick2h.ForecastOffsetMinutes}분";
-                        OnStatusLog?.Invoke(
-                            $"🧪 [드라이스펠 2시간 근접진입] {nearPick2h.Symbol} {nearPick2h.Direction} 시도 | ETA={etaText} AI:{nearPick2h.ForecastProbability:P0} ML:{nearPick2h.ML:P0} TF:{nearPick2h.TF:P0} | 비중 x{trialSizeMultiplier:F2}");
-
-                        await ExecuteAutoOrder(
-                            nearPick2h.Symbol,
-                            nearPick2h.Direction,
-                            nearPick2h.Price,
-                            token,
-                            signalSource: "DROUGHT_RECOVERY_NEAR_2H",
-                            manualSizeMultiplier: trialSizeMultiplier,
-                            skipAiGateCheck: false);
-                        action = "NEAR_2H_ORDER_ATTEMPT";
-                        string nearSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
-                        OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {nearSummary}");
-                        return nearSummary;
-                    }
-
-                    action = "NEAR_2H_HOLDING_SKIP";
-                    OnStatusLog?.Invoke($"ℹ️ [드라이스펠] 2시간 근접 후보 {nearPick2h.Symbol}은 이미 보유 중이라 스킵합니다.");
-                }
-
-                OnStatusLog?.Invoke($"⛔ [드라이스펠 자동진입] 2시간 이내 ETA 조건 충족 후보 없음 (기준: ETA≤{DroughtRecoveryForecastHorizonMinutes}m, AI≥{DroughtRecoveryForecastMinProbability:P0})");
-
-                if (_pumpStrategy != null)
-                {
-                    var recoveryBlacklist = new ConcurrentDictionary<string, DateTime>(_blacklistedSymbols, StringComparer.OrdinalIgnoreCase);
-                    List<string> activeSymbols;
-                    lock (_posLock)
-                    {
-                        activeSymbols = _activePositions.Keys.ToList();
-                    }
-
-                    DateTime holdSkipExpiry = DateTime.Now.AddHours(6);
-                    foreach (var activeSymbol in activeSymbols)
-                    {
-                        recoveryBlacklist[activeSymbol] = holdSkipExpiry;
-                    }
-
-                    OnStatusLog?.Invoke("🔁 [드라이스펠 복구] ETA 2시간 후보 없음 → PUMP 확장 스캔(Top60, first-hit) 연계 시작");
-                    var pumpRecoverySignal = await _pumpStrategy.ExecuteRecoveryScanAsync(
-                        _marketDataManager.TickerCache,
-                        recoveryBlacklist,
-                        token,
-                        candidateCount: 60);
-
-                    if (pumpRecoverySignal.HasValue)
-                    {
-                        const decimal pumpRecoverySizeMultiplier = 0.70m;
-                        var signal = pumpRecoverySignal.Value;
-                        pumpFallbackResult = $"HIT:{signal.Symbol}:{signal.Decision}";
-
-                        bool alreadyHolding;
-                        lock (_posLock)
-                        {
-                            alreadyHolding = _activePositions.TryGetValue(signal.Symbol, out var hs) && hs.IsOwnPosition;
-                        }
-
-                        if (alreadyHolding)
-                        {
-                            pumpFallbackResult = $"HOLDING_SKIP:{signal.Symbol}";
-                            action = "PUMP_FALLBACK_HOLDING_SKIP";
-                            OnStatusLog?.Invoke($"ℹ️ [드라이스펠] PUMP fallback 후보 {signal.Symbol}은 이미 보유 중이라 스킵합니다.");
-                            string holdingSkipSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
-                            OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {holdingSkipSummary}");
-                            return holdingSkipSummary;
-                        }
-
-                        OnStatusLog?.Invoke(
-                            $"🚀 [드라이스펠 PUMP 복구진입] {signal.Symbol} {signal.Decision} 시도 | price={signal.Price:F4} | 비중 x{pumpRecoverySizeMultiplier:F2}");
-
-                        await ExecuteAutoOrder(
-                            signal.Symbol,
-                            signal.Decision,
-                            signal.Price,
-                            token,
-                            signalSource: "DROUGHT_RECOVERY_PUMP",
-                            manualSizeMultiplier: pumpRecoverySizeMultiplier,
-                            skipAiGateCheck: false);
-                        action = "PUMP_FALLBACK_ORDER_ATTEMPT";
-                        string pumpSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
-                        OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {pumpSummary}");
-                        return pumpSummary;
-                    }
-
-                    pumpFallbackResult = "MISS";
-                    OnStatusLog?.Invoke("⛔ [드라이스펠 복구] PUMP 확장 스캔에서도 진입 가능 신호를 찾지 못했습니다.");
-                }
-                else
-                {
-                    pumpFallbackResult = "DISABLED";
-                }
-
-                action = "NO_ENTRY";
-                string finalSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
-                OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {finalSummary}");
-                return finalSummary;
-            }
-            catch (OperationCanceledException)
-            {
-                action = "CANCELLED";
-                string canceledSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
-                OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {canceledSummary}");
-                return canceledSummary;
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [드라이스펠] 진단 오류: {ex.Message}");
-                action = "ERROR";
-                string errorSummary = BuildDroughtScanSummaryLine(eta2hCandidateCount, near2hCandidateCount, pumpFallbackResult, action);
-                OnStatusLog?.Invoke($"🧾 [드라이스펠 요약] {errorSummary}");
-                return errorSummary;
-            }
-        }
 
         private sealed class HistoricalEntryAuditResult
         {
@@ -7181,32 +5848,12 @@ namespace TradingBot
                 OnDashboardUpdate?.Invoke(equity2, available2, totalCount2);
                 OnSlotStatusUpdate?.Invoke(totalCount2, maxSlots2, majorCount2, 0);
 
-                // [AI 학습 상태 업데이트]
-                if (_aiDoubleCheckEntryGate != null)
+                // [AI 제거] AI 학습 상태 UI — 라벨링 통계만 파일에서 조회
                 {
-                    var stats = _aiDoubleCheckEntryGate.GetRecentLabelStats(10);
-                    int activeDecisionCount = _activeAiDecisionIds.Count;
-                    bool coreModelReady = _aiPredictor?.IsModelLoaded ?? false;
-                    // [UI 안정화] 더블체크 게이트 준비 여부와 무관하게 코어 ML 모델 로드 상태를 기준으로 표시
-                    bool modelsReady = coreModelReady;
-
-                    MainWindow.Instance?.UpdateAiLearningStatusUI(
-                        stats.total,
-                        stats.labeled,
-                        stats.markToMarket,
-                        stats.tradeClose,
-                        activeDecisionCount,
-                        modelsReady
-                    );
-                }
-                else
-                {
-                    // AI 게이트가 없어도 라벨링 통계는 파일에서 직접 조회
                     var stats = GetRecentLabelStatsFromFiles(10);
-                    bool coreModelReady = _aiPredictor?.IsModelLoaded ?? false;
                     MainWindow.Instance?.UpdateAiLearningStatusUI(
                         stats.total, stats.labeled, stats.markToMarket,
-                        stats.tradeClose, _activeAiDecisionIds.Count, coreModelReady);
+                        stats.tradeClose, _activeAiDecisionIds.Count, false);
                 }
             }
             catch (Exception ex)
@@ -8270,346 +6917,11 @@ namespace TradingBot
 
         private async Task TrainAllModelsAsync(CancellationToken token)
         {
-            // [v4.5.14] 중복 학습 방지 (OnFirstAltCollectionComplete + 2분 타이머 동시 실행 차단)
-            if (Interlocked.Exchange(ref _mlTrainingInProgress, 1) == 1)
-            {
-                OnStatusLog?.Invoke("⚠️ [ML 재학습] 이미 학습 중 → 스킵 (중복 트리거 방지)");
-                return;
-            }
+            // [AI 제거] 모든 ML.NET 모델 제거 → 학습 메서드 본체 통째 제거
+            await Task.CompletedTask;
+            OnStatusLog?.Invoke("ℹ️ [ML] AI 학습 비활성화됨 (AI 시스템 폐기)");
+            return;
 
-            try
-            {
-                OnStatusLog?.Invoke("🧠 [ML 재학습] 전체 모델 학습 시작 (DB 기반)...");
-
-                // [v4.5.2] DB에서 전체 심볼 캔들 로드 (계정 무관 공유 데이터)
-                var dbCandleMap = await _dbManager.GetAllCandleDataForTrainingAsync(200, token);
-                int dbSymbolCount = dbCandleMap.Count;
-                int dbCandleTotal = dbCandleMap.Values.Sum(v => v.Count);
-                OnStatusLog?.Invoke($"🧠 [ML] DB 학습 데이터: {dbSymbolCount}개 심볼, {dbCandleTotal}개 캔들");
-
-                // [v5.10.24] 알트 심볼 부족 감지 → GetBulkCandleDataAsync로 보완
-                // 원인: GetAllCandleDataForTrainingAsync 24시간 필터로 초기학습 다운로드 과거 데이터가 제외됨
-                // → PUMP 모델 학습 데이터 0건 → pump_signal_normal.zip 미생성
-                int altCount = dbCandleMap.Keys.Count(k => !MajorSymbols.Contains(k));
-                if (altCount < 10)
-                {
-                    OnStatusLog?.Invoke($"⚠️ [ML] 알트 24h 데이터 {altCount}개 부족 → 과거 전체 데이터 보완 로드");
-                    try
-                    {
-                        var bulkAlt = await _dbManager.GetBulkCandleDataAsync("5m", 500, null, token);
-                        int added = 0;
-                        foreach (var kv in bulkAlt)
-                        {
-                            if (!dbCandleMap.ContainsKey(kv.Key))
-                            {
-                                dbCandleMap[kv.Key] = kv.Value;
-                                added++;
-                            }
-                        }
-                        OnStatusLog?.Invoke($"📥 [ML] 과거 데이터 보완: {added}개 심볼 추가 (총 {dbCandleMap.Count}개)");
-                    }
-                    catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] 과거 데이터 보완 실패: {ex.Message}"); }
-                }
-
-                // DB 데이터 → IBinanceKline 변환 캐시 (여러 모델에서 재사용)
-                var klineMap = new Dictionary<string, List<IBinanceKline>>();
-                foreach (var kvp in dbCandleMap)
-                {
-                    klineMap[kvp.Key] = kvp.Value
-                        .Select(cd => (IBinanceKline)new Services.BinanceKlineAdapter(cd, Binance.Net.Enums.KlineInterval.FiveMinutes))
-                        .ToList();
-                }
-
-                // 1. TradeSignalClassifier (3-class: LONG/SHORT/HOLD)
-                try
-                {
-                    if (_tradeSignalClassifier != null)
-                    {
-                        var allCandles = new List<CandleData>();
-                        foreach (var kvp in dbCandleMap)
-                        {
-                            if (token.IsCancellationRequested) break;
-                            allCandles.AddRange(kvp.Value.TakeLast(100));
-                        }
-                        if (allCandles.Count >= 100)
-                        {
-                            var labeled = _tradeSignalClassifier.LabelCandleData(allCandles);
-                            if (labeled.Count >= 50)
-                            {
-                                var metrics = await _tradeSignalClassifier.TrainAndSaveAsync(labeled, token);
-                                OnStatusLog?.Invoke($"🧠 [ML] TradeSignal 학습 완료 | {labeled.Count}건 | Acc={metrics?.MicroAccuracy:P1}");
-                                // [v4.5.6] 정확도 추적
-                                if (metrics != null) _tradeSignalAccuracy = metrics.MicroAccuracy;
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] TradeSignal 학습 실패: {ex.Message}"); }
-
-                // 2. PumpSignalClassifier (Normal + Spike 분리 학습)
-                // [v5.1.9] klineMap(200봉/심볼) 대신 DB 직접 로드로 충분한 샘플 보장
-                try
-                {
-                    if (_pumpSignalClassifier != null)
-                    {
-                        OnStatusLog?.Invoke("🧠 [ML] PumpSignalClassifier 학습 데이터 로드 중...");
-                        var pumpCandles = new List<IBinanceKline>();
-
-                        // 1차: klineMap 에서 시도
-                        foreach (var kvp in klineMap)
-                        {
-                            if (token.IsCancellationRequested) break;
-                            if (MajorSymbols.Contains(kvp.Key)) continue;
-                            if (kvp.Value.Count >= 30)
-                                pumpCandles.AddRange(kvp.Value.TakeLast(100));
-                        }
-
-                        // 2차: klineMap 부족 시 DB bulk 로드 폴백
-                        if (pumpCandles.Count < 200)
-                        {
-                            OnStatusLog?.Invoke($"⚠️ [ML] klineMap PUMP 데이터 부족 ({pumpCandles.Count}건) → DB bulk 로드");
-                            try
-                            {
-                                var bulkData = await _dbManager.GetBulkCandleDataAsync("5m", 2000, null, token);
-                                pumpCandles.Clear();
-                                foreach (var kvp in bulkData)
-                                {
-                                    if (MajorSymbols.Contains(kvp.Key)) continue;
-                                    foreach (var cd in kvp.Value)
-                                        pumpCandles.Add(new Services.BinanceKlineAdapter(cd, Binance.Net.Enums.KlineInterval.FiveMinutes));
-                                }
-                                OnStatusLog?.Invoke($"📥 [ML] PumpSignalClassifier DB 폴백 로드: {pumpCandles.Count}건");
-                            }
-                            catch (Exception dbEx)
-                            {
-                                OnStatusLog?.Invoke($"❌ [ML] PumpSignalClassifier DB 폴백 실패: {dbEx.Message}");
-                            }
-                        }
-
-                        if (pumpCandles.Count >= 200)
-                        {
-                            // Normal 모델 학습 (일반 진입: +1.5% / 30분)
-                            var labeledNormal = _pumpSignalClassifier.LabelCandleData(pumpCandles);
-                            if (labeledNormal.Count >= 100)
-                            {
-                                var metricsNormal = await _pumpSignalClassifier.TrainAndSaveAsync(labeledNormal, token);
-                                OnStatusLog?.Invoke($"🧠 [ML] PumpSignal-Normal 학습 완료 | {labeledNormal.Count}건 | Acc={metricsNormal?.Accuracy:P1}");
-                                if (metricsNormal != null) _pumpModelAccuracy = metricsNormal.Accuracy;
-                            }
-
-                            // [v4.5.8] Spike 모델 학습 (급등 진입: +3% / 10분)
-                            var labeledSpike = _pumpSpikeClassifier.LabelCandleData(pumpCandles);
-                            if (labeledSpike.Count >= 100)
-                            {
-                                var metricsSpike = await _pumpSpikeClassifier.TrainAndSaveAsync(labeledSpike, token);
-                                OnStatusLog?.Invoke($"🧠 [ML] PumpSignal-Spike 학습 완료 | {labeledSpike.Count}건 | Acc={metricsSpike?.Accuracy:P1}");
-                                if (metricsSpike != null) _pumpSpikeAccuracy = metricsSpike.Accuracy;
-                            }
-
-                            // 양쪽 모델 모두 70%+ 시 하드 체크 해제
-                            if (_pumpModelAccuracy >= AiHardCheckBypassThreshold
-                                && _pumpSpikeAccuracy >= AiHardCheckBypassThreshold
-                                && _tradeSignalAccuracy >= AiHardCheckBypassThreshold)
-                                OnStatusLog?.Invoke($"🎯 [AI] 모든 PUMP 모델 정확도 {AiHardCheckBypassThreshold:P0} 달성 → 하드 체크 자동 해제");
-
-                            // [v5.0.7] PumpForecaster 학습 — DB 대용량 로드
-                            // 기존: klineMap × TakeLast(100) ≈ 55K
-                            // 신규: DB 직접 로드 심볼당 5000봉 × PUMP 심볼 ≈ 수백만 건
-                            try
-                            {
-                                var pumpDbData = await _dbManager.GetBulkCandleDataAsync(
-                                    intervalText: "5m",
-                                    candlesPerSymbol: 5000,
-                                    symbolFilter: null,
-                                    token: token);
-
-                                var bulkPumpCandles = new List<IBinanceKline>();
-                                foreach (var kvp in pumpDbData)
-                                {
-                                    if (token.IsCancellationRequested) break;
-                                    if (MajorSymbols.Contains(kvp.Key)) continue;  // 메이저 제외
-                                    foreach (var cd in kvp.Value)
-                                    {
-                                        bulkPumpCandles.Add(new Services.BinanceKlineAdapter(cd, Binance.Net.Enums.KlineInterval.FiveMinutes));
-                                    }
-                                }
-
-                                OnStatusLog?.Invoke($"📥 [v5.0.7] PumpForecaster DB 로드: {pumpDbData.Count(kv => !MajorSymbols.Contains(kv.Key))}심볼 총 {bulkPumpCandles.Count}건");
-
-                                if (bulkPumpCandles.Count >= 1000)
-                                {
-                                    var labeledPumpForecast = _pumpForecaster.LabelCandleData(bulkPumpCandles, "LONG");
-                                    if (labeledPumpForecast.Count >= 100)
-                                    {
-                                        var m = await _pumpForecaster.TrainAndSaveAsync(labeledPumpForecast, token);
-                                        OnStatusLog?.Invoke($"🧠 [v5.0.7] PumpForecaster 학습 완료 | {labeledPumpForecast.Count}건 | AccA={m?.ClassifierAccuracy:P1} MAE_B={m?.TimeRegressorMAE:F2}봉 MAE_C={m?.PriceRegressorMAE:F3}%");
-                                        if (m != null) _pumpForecasterAccuracy = m.ClassifierAccuracy;
-                                    }
-                                }
-                            }
-                            catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [v5.0.7] PumpForecaster 학습 실패: {ex.Message}"); }
-                        }
-                    }
-                }
-                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] PumpSignal 학습 실패: {ex.Message}"); }
-
-                // [v5.0.7] MajorForecaster 학습 — DB 대용량 로드 (9심볼 × 최대 20K봉 ≈ 18만건)
-                // DB 보유량: 각 메이저 ~52K 5분봉 (184일)
-                try
-                {
-                    var majorDbData = await _dbManager.GetBulkCandleDataAsync(
-                        intervalText: "5m",
-                        candlesPerSymbol: 20000,
-                        symbolFilter: MajorSymbols.ToList(),
-                        token: token);
-
-                    var majorCandles = new List<IBinanceKline>();
-                    foreach (var kvp in majorDbData)
-                    {
-                        if (token.IsCancellationRequested) break;
-                        foreach (var cd in kvp.Value)
-                        {
-                            majorCandles.Add(new Services.BinanceKlineAdapter(cd, Binance.Net.Enums.KlineInterval.FiveMinutes));
-                        }
-                    }
-
-                    OnStatusLog?.Invoke($"📥 [v5.0.7] MajorForecaster DB 로드: {majorDbData.Count}심볼 × 평균 {(majorDbData.Count > 0 ? majorCandles.Count / majorDbData.Count : 0)}봉 = 총 {majorCandles.Count}건");
-
-                    if (majorCandles.Count >= 500)
-                    {
-                        var labeledMajor = _majorForecaster.LabelCandleData(majorCandles, "LONG");
-                        if (labeledMajor.Count >= 100)
-                        {
-                            var m = await _majorForecaster.TrainAndSaveAsync(labeledMajor, token);
-                            OnStatusLog?.Invoke($"🧠 [v5.0.7] MajorForecaster 학습 완료 | {labeledMajor.Count}건 | AccA={m?.ClassifierAccuracy:P1} MAE_B={m?.TimeRegressorMAE:F2}봉");
-                            if (m != null) _majorForecasterAccuracy = m.ClassifierAccuracy;
-                        }
-                    }
-                    else
-                    {
-                        OnStatusLog?.Invoke($"⚠️ [v5.0.7] 메이저 DB 데이터 부족 ({majorCandles.Count}건) — Forecaster 학습 스킵, Fallback 사용");
-                    }
-                }
-                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [v5.0.7] MajorForecaster 학습 실패: {ex.Message}"); }
-
-                // [v5.0.7] SpikeForecaster 학습 — DB 1분봉 대용량 로드 (58심볼 × 최대 20K봉)
-                // DB 보유량: 1m 약 2M 건 (58심볼)
-                try
-                {
-                    var spikeDbData = await _dbManager.GetBulkCandleDataAsync(
-                        intervalText: "1m",
-                        candlesPerSymbol: 20000,
-                        symbolFilter: null,  // 전체 심볼
-                        token: token);
-
-                    var spikeCandles1m = new List<IBinanceKline>();
-                    foreach (var kvp in spikeDbData)
-                    {
-                        if (token.IsCancellationRequested) break;
-                        foreach (var cd in kvp.Value)
-                        {
-                            spikeCandles1m.Add(new Services.BinanceKlineAdapter(cd, Binance.Net.Enums.KlineInterval.OneMinute));
-                        }
-                    }
-
-                    OnStatusLog?.Invoke($"📥 [v5.0.7] SpikeForecaster DB 로드: {spikeDbData.Count}심볼 × 평균 {(spikeDbData.Count > 0 ? spikeCandles1m.Count / spikeDbData.Count : 0)}봉 = 총 {spikeCandles1m.Count}건");
-
-                    if (spikeCandles1m.Count >= 500)
-                    {
-                        var labeledSpike = _spikeForecaster.LabelCandleData(spikeCandles1m, "LONG");
-                        if (labeledSpike.Count >= 100)
-                        {
-                            var m = await _spikeForecaster.TrainAndSaveAsync(labeledSpike, token);
-                            OnStatusLog?.Invoke($"🧠 [v5.0.7] SpikeForecaster(1m) 학습 완료 | {labeledSpike.Count}건 | AccA={m?.ClassifierAccuracy:P1}");
-                            if (m != null) _spikeForecasterAccuracy = m.ClassifierAccuracy;
-                        }
-                    }
-                }
-                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [v5.0.7] SpikeForecaster 학습 실패: {ex.Message}"); }
-
-                // 3. Direction + Volatility Predictor
-                try
-                {
-                    var allDirData = new List<PriceDirectionPredictor.DirectionFeature>();
-                    var allVolData = new List<PriceDirectionPredictor.VolatilityFeature>();
-                    foreach (var kvp in klineMap)
-                    {
-                        if (token.IsCancellationRequested) break;
-                        var candles = kvp.Value.TakeLast(150).ToList();
-                        if (candles.Count < 30) continue;
-                        var (dir, vol) = _directionPredictor.BuildTrainingData(candles);
-                        allDirData.AddRange(dir);
-                        allVolData.AddRange(vol);
-                    }
-                    if (allDirData.Count >= 100)
-                    {
-                        var (dirAcc, volR2) = await _directionPredictor.TrainAsync(allDirData, allVolData, token);
-                        OnStatusLog?.Invoke($"🧠 [ML] Direction={dirAcc:P1} Volatility R²={volR2:F3} ({allDirData.Count}건)");
-                        _directionModelAccuracy = dirAcc; // [v4.5.6] 정확도 추적
-                    }
-                }
-                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] Direction/Volatility 학습 실패: {ex.Message}"); }
-
-                // 4. Survival Entry Model (생존 기반)
-                try
-                {
-                    var majorSurvData = new List<SurvivalEntryModel.SurvivalFeature>();
-                    var pumpSurvData = new List<SurvivalEntryModel.SurvivalFeature>();
-
-                    foreach (var kvp in klineMap)
-                    {
-                        if (token.IsCancellationRequested) break;
-                        var c5m = kvp.Value.TakeLast(150).ToList();
-                        if (c5m.Count < 40) continue;
-
-                        bool isMajor = MajorSymbols.Contains(kvp.Key);
-                        if (isMajor)
-                            // [v4.6.1] 메이저 RR 비대칭 강화: TP +2.0% / SL -1.0% (RR 2:1 유지, 더 큰 신호만 학습)
-                            // 기존 +1.0%/-0.5%는 노이즈 구간도 positive로 학습 → 잘못 승인 원인
-                            majorSurvData.AddRange(_survivalModel.BuildTrainingData(c5m, null, tpPct: 2.0f, slPct: 1.0f, lookAhead: 24));
-                        else
-                            // PUMP는 LONG 전용, 큰 움직임 학습 유지
-                            pumpSurvData.AddRange(_survivalModel.BuildTrainingData(c5m, null, tpPct: 3.0f, slPct: 1.5f, lookAhead: 6));
-                    }
-
-                    if (majorSurvData.Count >= 200 || pumpSurvData.Count >= 200)
-                    {
-                        var (mAcc, pAcc) = await _survivalModel.TrainAsync(majorSurvData, pumpSurvData, token);
-                        OnStatusLog?.Invoke($"🧠 [ML] Survival Major={mAcc:P1}({majorSurvData.Count}건) Pump={pAcc:P1}({pumpSurvData.Count}건)");
-                        _survivalPumpAccuracy = pAcc; // [v4.5.6] 정확도 추적
-                    }
-                }
-                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [ML] Survival 학습 실패: {ex.Message}"); }
-
-                // 5-6. MarketRegime + ExitOptimizer (기존 로직 — KlineCache + TradeHistory DB)
-                await TrainExitModelsInternalAsync(token);
-
-                OnStatusLog?.Invoke("🧠 [ML 재학습] 전체 모델 학습 완료");
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [ML 재학습] 실패: {ex.Message}");
-            }
-            finally
-            {
-                // [v4.5.14] 학습 완료/실패 시 플래그 해제
-                Interlocked.Exchange(ref _mlTrainingInProgress, 0);
-
-                // [v5.10.56] TrainAllModelsAsync 완료 시 항상 배너 닫기 이벤트 발화
-                // 과거: IsInitialTrainingComplete=true (pump_signal_normal.zip 존재)일 때만 Invoke → 모델 파일 생성 실패 시 배너가 "모델 학습 처리 중..." 상태로 영원히 매달림
-                // 수정: 성공/실패 상관없이 이벤트 호출 — 배너는 success 인자에 따라 "✅ 완료" 또는 "⚠ 오류" 표시 후 자동 숨김
-                bool trainingCompletedSuccessfully = IsInitialTrainingComplete;
-                if (trainingCompletedSuccessfully)
-                {
-                    OnStatusLog?.Invoke("✅ [ML] 모델 학습 완료 — 진입 활성화");
-                }
-                else
-                {
-                    OnStatusLog?.Invoke("⚠️ [ML] 학습 종료 — 일부 모델 파일 미생성 (pump_signal_normal.zip 등) → 다음 재학습 시 재시도");
-                }
-                OnInitialTrainingCompleted?.Invoke(trainingCompletedSuccessfully);
-            }
         }
 
         /// <summary>
@@ -8625,165 +6937,10 @@ namespace TradingBot
             if (IsInitialTrainingInProgress)
                 return (false, "이미 초기 학습 진행 중");
 
-            IsInitialTrainingInProgress = true;
-            try
-            {
-                if (_dbManager == null)
-                    return (false, "DbManager 미준비");
-
-                var dbSvc = new DatabaseService();
-                var downloader = new HistoricalDataDownloader(_dbManager, dbSvc);
-                downloader.OnLog += msg => { OnStatusLog?.Invoke(msg); OnInitialTrainingProgress?.Invoke(msg); };
-                downloader.OnProgress += (cur, total, msg) =>
-                {
-                    string text = $"📥 다운로드 [{cur}/{total}] {msg}";
-                    OnInitialTrainingProgress?.Invoke(text);
-                };
-                // [v4.7.3] 구조화 진행률을 VM으로 전달 (ETA 계산용)
-                downloader.OnDetailedProgress += progress => OnInitialTrainingDownloadProgress?.Invoke(progress);
-
-                // [v4.7.7] 심볼별 데이터 다운로드 완료 즉시 진입 활성화
-                // 다운로드가 끝난 심볼은 DB에 캔들이 있으므로 피처 추출·ML 추론 가능
-                // (ML 모델은 기존 모델을 그대로 사용하며, 2단계 재학습 후 더 정확해짐)
-                downloader.OnSymbolReady += (sym, phase) =>
-                {
-                    if (phase == "major" || phase == "alt_5m")
-                    {
-                        if (_trainedSymbols.TryAdd(sym, true))
-                        {
-                            OnSymbolTrained?.Invoke(sym);
-                            OnInitialTrainingProgress?.Invoke($"✅ [{sym}] 진입 활성화 ({_trainedSymbols.Count}개 완료)");
-                        }
-                    }
-                };
-
-                // [v4.7.5] 단일 학습 전략 — 중복 학습 제거
-                // 다운로드 완료 후 단 1회 TrainAllModelsAsync 호출.
-                // v4.7.3 SqlBulkCopy + v4.7.4 병렬 덕분에 다운로드가 빨라 phased training 불필요.
-
-                // 1단계: 다운로드 (메이저 먼저 병렬 → 알트 5m 병렬 → 알트 1m 병렬)
-                OnInitialTrainingProgress?.Invoke($"🚀 [초기학습] 1단계 — 과거 {monthsBack}개월 캔들 다운로드 시작 (메이저 4 + 알트 {topAltCount})");
-                var summary = await downloader.DownloadAllAsync(monthsBack, topAltCount, includeOneMinuteForSpike, token);
-                OnInitialTrainingProgress?.Invoke($"✅ [초기학습] 1단계 완료 — {summary.TotalSaved:N0}봉 저장 ({summary.Duration.TotalMinutes:F1}분)");
-
-                if (token.IsCancellationRequested)
-                    return (false, "사용자 취소");
-
-                // 2단계: ML 모델 학습 (전체 심볼 포함, 단 1회)
-                OnInitialTrainingProgress?.Invoke("🧠 [초기학습] 2단계 — ML 모델 학습 시작");
-                await TrainAllModelsAsync(token);
-                OnInitialTrainingProgress?.Invoke("✅ [초기학습] 2단계 완료");
-
-                // 학습 완료 심볼 셋에 일괄 등록 (메이저 + 알트)
-                var allTrainedSyms = new HashSet<string>(new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" }, StringComparer.OrdinalIgnoreCase);
-                foreach (var sym in summary.SymbolResults.Keys
-                    .Select(k => k.Split('_')[0])
-                    .Distinct(StringComparer.OrdinalIgnoreCase))
-                {
-                    allTrainedSyms.Add(sym);
-                }
-                foreach (var sym in allTrainedSyms)
-                {
-                    if (_trainedSymbols.TryAdd(sym, true))
-                        OnSymbolTrained?.Invoke(sym);
-                }
-
-                // [v4.8.0] 2-b단계: OptimalEntryPriceRegressor + BreakoutPriceClassifier 학습
-                // 두 모델 모두 같은 CandleData 기반이므로 한 번의 심볼 순회로 데이터 생성
-                OnInitialTrainingProgress?.Invoke("🧠 [초기학습] 2-b단계 — 최적 진입가 / Breakout 예측 모델 학습 시작");
-                try
-                {
-                    int entryPriceSamples = 0;
-                    int breakoutSamples = 0;
-                    int entryZoneSamples = 0;
-                    foreach (var sym in allTrainedSyms.Take(30))
-                    {
-                        if (token.IsCancellationRequested) break;
-                        try
-                        {
-                            var candles = await _dbManager.GetCandleDataByIntervalAsync(sym, "5m", 52000);
-                            if (candles != null && candles.Count >= 100)
-                            {
-                                entryPriceSamples += _entryPriceRegressor.GenerateTrainingDataFromCandles(sym, candles);
-                                breakoutSamples += _breakoutClassifier.GenerateTrainingDataFromCandles(sym, candles);
-                                entryZoneSamples += _entryZoneRegressor.GenerateTrainingDataFromCandles(sym, candles);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            OnInitialTrainingProgress?.Invoke($"⚠️ [2-b] {sym} 데이터 로드 오류: {ex.Message}");
-                        }
-                    }
-
-                    if (entryPriceSamples > 0)
-                    {
-                        await _entryPriceRegressor.TrainAsync();
-                        OnInitialTrainingProgress?.Invoke($"✅ [초기학습] Pullback Regressor 완료 — {entryPriceSamples}개 샘플");
-                    }
-                    else
-                    {
-                        OnInitialTrainingProgress?.Invoke("⚠️ [초기학습] Pullback Regressor 샘플 없음 (스킵)");
-                    }
-
-                    if (breakoutSamples > 0)
-                    {
-                        await _breakoutClassifier.TrainAsync();
-                        OnInitialTrainingProgress?.Invoke($"✅ [초기학습] Breakout Classifier 완료 — {breakoutSamples}개 샘플");
-                    }
-                    else
-                    {
-                        OnInitialTrainingProgress?.Invoke("⚠️ [초기학습] Breakout Classifier 샘플 없음 (스킵)");
-                    }
-
-                    // [v4.8.1] Entry Zone Regressor 학습 (TP/SL 오프셋 예측)
-                    if (entryZoneSamples > 0)
-                    {
-                        await _entryZoneRegressor.TrainAsync();
-                        OnInitialTrainingProgress?.Invoke($"✅ [초기학습] Entry Zone Regressor 완료 — {entryZoneSamples}개 샘플");
-                    }
-                    else
-                    {
-                        OnInitialTrainingProgress?.Invoke("⚠️ [초기학습] Entry Zone Regressor 샘플 없음 (스킵)");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    OnInitialTrainingProgress?.Invoke($"⚠️ [2-b] 학습 오류: {ex.Message}");
-                }
-
-                // [v4.7.6] 전역 정확도 게이트 제거 (하드코딩 70% 임계값 철폐)
-                // 이유:
-                //  - 진입 품질 필터는 이미 AIDoubleCheckEntryGate/PumpSignalClassifier/SurvivalEntryModel가
-                //    각 심볼별 ML 확률(확률 출력 자체)로 담당
-                //  - 전역 정확도 70% 미달 시 영구 차단은 학습 데이터량/모델 구조 문제를
-                //    사용자에게 전가하는 셈
-                //  - 개별 추론 단계의 ML 확률 임계값은 모델이 학습한 분포 자체라 하드코딩 아님
-                string verdict = $"TradeSignal={_tradeSignalAccuracy:P1}, " +
-                                 $"PumpNormal={_pumpModelAccuracy:P1}, " +
-                                 $"PumpSpike={_pumpSpikeAccuracy:P1}";
-
-                IsInitialTrainingComplete = true;
-                OnInitialTrainingProgress?.Invoke($"🎯 [초기학습] 3단계 학습 메트릭 — {verdict}");
-                OnInitialTrainingProgress?.Invoke("✅ [초기학습] 완료 — 봇 진입 활성화 (개별 진입은 ML 확률 기반 게이트가 필터링)");
-                OnInitialTrainingCompleted?.Invoke(true);
-                return (true, $"학습 완료 ({verdict})");
-            }
-            catch (OperationCanceledException)
-            {
-                return (false, "사용자 취소");
-            }
-            catch (Exception ex)
-            {
-                OnInitialTrainingProgress?.Invoke($"❌ [초기학습] 오류: {ex.Message}");
-                return (false, ex.Message);
-            }
-            finally
-            {
-                IsInitialTrainingInProgress = false;
-                // 실패/취소 경로에서도 배너가 닫히도록 — 성공 시엔 이미 Invoke(true)가 선행됨
-                if (!IsInitialTrainingComplete)
-                    OnInitialTrainingCompleted?.Invoke(false);
-            }
+            // [AI 제거] 초기 학습/다운로드 메서드 본체 통째 제거
+            await Task.CompletedTask;
+            try { OnInitialTrainingCompleted?.Invoke(false); } catch { }
+            return (false, "AI 제거됨 (초기학습 비활성화)");
         }
 
         /// <summary>IBinanceKline → CandleData 변환 (지표 포함)</summary>
@@ -8822,89 +6979,8 @@ namespace TradingBot
 
         private async Task TrainExitModelsInternalAsync(CancellationToken token)
         {
-            try
-            {
-                // 1. MarketRegimeClassifier 학습 (KlineCache에서)
-                OnStatusLog?.Invoke("[AI Exit] 시장 상태 분류 모델 학습 시작...");
-                var allRegimeData = new List<RegimeFeature>();
-                foreach (var kvp in _marketDataManager.KlineCache)
-                {
-                    if (token.IsCancellationRequested) break;
-                    List<Binance.Net.Interfaces.IBinanceKline> candles;
-                    lock (kvp.Value) { candles = kvp.Value.ToList(); }
-                    if (candles.Count >= 30)
-                        allRegimeData.AddRange(MarketRegimeClassifier.BuildTrainingData(candles));
-                }
-
-                if (allRegimeData.Count >= 100)
-                {
-                    bool regimeTrained = await _regimeClassifier.TrainAndSaveAsync(allRegimeData, token);
-                    if (regimeTrained)
-                        OnStatusLog?.Invoke($"[AI Exit] 시장 상태 모델 학습 완료 ({allRegimeData.Count}건)");
-                }
-                else
-                {
-                    OnStatusLog?.Invoke($"[AI Exit] 시장 상태 학습 데이터 부족 ({allRegimeData.Count}건 < 100)");
-                }
-
-                // 2. ExitOptimizer 학습 (TradeHistory에서)
-                OnStatusLog?.Invoke("[AI Exit] 최적 익절 모델 학습 시작...");
-                int userId = AppConfig.CurrentUser?.Id ?? 0;
-                var tradeHistory = userId > 0
-                    ? await _dbManager.GetTradeHistoryAsync(userId, DateTime.Now.AddDays(-90), DateTime.Now, 500)
-                    : null;
-
-                var closedTrades = tradeHistory?.Where(t =>
-                    t.EntryPrice > 0 && t.ExitPrice > 0 && t.PnLPercent != 0).ToList();
-
-                if (closedTrades != null && closedTrades.Count >= 30)
-                {
-                    var exitTrainingData = new List<ExitFeature>();
-                    foreach (var trade in closedTrades)
-                    {
-                        bool isLong = trade.Side == "BUY";
-                        int leverage = 20;
-
-                        // 최고가 추정: 익절이면 ExitPrice 근처, 손절이면 EntryPrice 근처
-                        decimal highestPrice = isLong
-                            ? Math.Max(trade.ExitPrice, trade.EntryPrice * 1.005m)
-                            : trade.EntryPrice;
-                        decimal lowestPrice = isLong
-                            ? trade.EntryPrice
-                            : Math.Min(trade.ExitPrice, trade.EntryPrice * 0.995m);
-
-                        double holdMinutes = trade.ExitTime > trade.EntryTime
-                            ? (trade.ExitTime - trade.EntryTime).TotalMinutes : 30;
-
-                        exitTrainingData.AddRange(ExitOptimizerService.BuildTrainingDataFromTrades(
-                            new() { (trade.EntryPrice, trade.ExitPrice, highestPrice, lowestPrice,
-                                     isLong, leverage, 2.0f, 25f, 50f, 0f, 0f, holdMinutes, 0) }));
-                    }
-
-                    if (exitTrainingData.Count >= 50)
-                    {
-                        bool exitTrained = await _exitOptimizer.TrainAndSaveAsync(exitTrainingData, token);
-                        if (exitTrained)
-                        {
-                            OnStatusLog?.Invoke($"[AI Exit] 최적 익절 모델 학습 완료 ({exitTrainingData.Count}건, 원본 {closedTrades.Count} 트레이드)");
-                            _positionMonitor.SetExitAIModels(_regimeClassifier, _exitOptimizer);
-                        }
-                    }
-                    else
-                    {
-                        OnStatusLog?.Invoke($"[AI Exit] 익절 학습 데이터 부족 ({exitTrainingData.Count}건 < 50)");
-                    }
-                }
-                else
-                {
-                    OnStatusLog?.Invoke($"[AI Exit] 트레이드 히스토리 부족 ({closedTrades?.Count ?? 0}건 < 30)");
-                }
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [AI Exit] 모델 학습 실패: {ex.Message}");
-            }
+            // [AI 제거] Exit 모델 학습 통째 제거
+            await Task.CompletedTask;
         }
 
         // ═══════════════════════════════════════════════════════════════
@@ -9324,8 +7400,7 @@ namespace TradingBot
             //   기존: 게이트 검증 전 사용자에게 "즉시진입" 알림 → 게이트 탈락해도 phantom 진입 보임
             //   수정: OnAlert/OnSignalUpdate/Telegram 전부 PlaceEntryOrderAsync 직전으로 이동 (line ~8643)
 
-            // [v5.14.0 AI #5] SchedulerState - try 블록 외부 선언 (성공 블록에서 참조 필요)
-            TradingBot.Services.AdaptiveSpikeScheduler.SpikeState? schedulerStateAtEntry = null;
+            // [AI 제거] AdaptiveSpikeScheduler 상태 변수 제거 — 단순 진입 흐름
 
             try
             {
@@ -9410,22 +7485,7 @@ namespace TradingBot
                                 }
                             }
 
-                            // [v5.0] SpikeForecaster (1분봉 학습+추론 일치) — B1 버그 수정
-                            // 기존: PumpSignalClassifier.Spike (5분봉 학습 + 1분봉 추론 = 스케일 불일치)
-                            // 신규: SpikeForecaster (1분봉 학습 + 1분봉 추론)
-                            if (_spikeForecaster != null && _spikeForecaster.IsModelLoaded && klines.Count >= 30)
-                            {
-                                var spikeForecast = _spikeForecaster.Forecast(klines.ToList(), "LONG");
-                                if (!spikeForecast.HasOpportunity)
-                                {
-                                    OnStatusLog?.Invoke($"⛔ [SPIKE_FAST] {symbol} SpikeForecaster 기회 없음 (prob<{_spikeForecaster.MinConfidence:P0}) → 스킵");
-                                    lock (_posLock) { _activePositions.Remove(symbol); }
-                                    return;
-                                }
-                                OnStatusLog?.Invoke($"✅ [SPIKE_FAST] {symbol} SpikeForecaster {spikeForecast.Probability:P0} 통과 " +
-                                                    $"(offset={spikeForecast.OffsetBars}봉 priceOff={spikeForecast.PriceOffsetPct:+0.0;-0.0}%)");
-                                // Note: 1분봉 스파이크는 즉시 진입이 원칙이라 Scheduler 미경유 (offset 거의 0)
-                            }
+                            // [AI 제거] SpikeForecaster 검증 통째 제거
 
                             double rsi = IndicatorCalculator.CalculateRSI(klines.ToList(), 14);
                             // [v3.6.2] RSI 80→75로 강화 (꼭대기 진입 방지)
@@ -9436,19 +7496,9 @@ namespace TradingBot
                                 return;
                             }
 
-                            // [v5.13.0 AI #1/#3/#4] SPIKE_FAST 전용 AI 통합 하드 게이트
-                            //   기존: ExecuteAutoOrder 경로만 Survival/Direction/TradeSignal AI 하드게이트
-                            //         SPIKE_FAST 는 PlaceEntryOrderAsync 직접 호출 → AI 모델 전부 건너뜀
-                            //   수정: SPIKE_FAST 도 3개 AI 모델 통과 필수 (하드 차단)
+                            // [AI 제거] SPIKE_FAST AI 게이트 검증 제거
                             if (direction == "LONG")
                             {
-                                var spikeAiReject = await ValidateSpikeWithAIAsync(symbol, klines.ToList(), currentPrice, (float)rsi, token);
-                                if (spikeAiReject != null)
-                                {
-                                    OnStatusLog?.Invoke($"⛔ [SPIKE_FAST][AI_GATE] {symbol} 차단: {spikeAiReject}");
-                                    lock (_posLock) { _activePositions.Remove(symbol); }
-                                    return;
-                                }
                             }
 
                             // [v4.6.1] 1분 로켓 발사 대응 — 눌림 대기 폐기, 3가지 진입 OR 조건
@@ -9474,33 +7524,12 @@ namespace TradingBot
 
                                     double cumGainPct = (double)((nowPrice - spikeStart) / spikeStart * 100m);
                                     double pullbackPct = spikeHigh > 0 ? (double)((spikeHigh - nowPrice) / spikeHigh * 100m) : 0;
-                                    double elapsedSec = (DateTime.Now - spikeStartTime).TotalSeconds;
 
-                                    // [AI #5] Scheduler Decide — 학습된 bucket 기반 결정 (rule-based 보다 우선)
-                                    var curState = TradingBot.Services.AdaptiveSpikeScheduler.Discretize(cumGainPct, pullbackPct, elapsedSec);
-                                    var (act, expPnL, decReason) = _spikeScheduler.Decide(curState, elapsedSec);
-
-                                    if (act == TradingBot.Services.AdaptiveSpikeScheduler.SpikeAction.Cancel)
-                                    {
-                                        OnStatusLog?.Invoke($"⛔ [SPIKE_FAST][Scheduler] {symbol} 학습기 취소: {decReason} cum={cumGainPct:F1}% pull={pullbackPct:F1}% elapsed={elapsedSec:F0}s");
-                                        lock (_posLock) { _activePositions.Remove(symbol); }
-                                        return;
-                                    }
-                                    if (act == TradingBot.Services.AdaptiveSpikeScheduler.SpikeAction.Enter)
-                                    {
-                                        currentPrice = nowPrice;
-                                        entryReady = true;
-                                        schedulerStateAtEntry = curState;
-                                        entryReason = $"Scheduler({decReason}) cum={cumGainPct:F1}% pull={pullbackPct:F1}%";
-                                        break;
-                                    }
-
-                                    // Scheduler Wait → rule-based 폴백 (기존 누적/눌림 로직 유지)
+                                    // [AI 제거] AdaptiveSpikeScheduler 제거 → rule-based만 사용
                                     if (cumGainPct >= 2.0)
                                     {
                                         currentPrice = nowPrice;
                                         entryReady = true;
-                                        schedulerStateAtEntry = curState;
                                         entryReason = $"rule_cum+{cumGainPct:F1}%";
                                         break;
                                     }
@@ -9508,7 +7537,6 @@ namespace TradingBot
                                     {
                                         currentPrice = nowPrice;
                                         entryReady = true;
-                                        schedulerStateAtEntry = curState;
                                         entryReason = $"rule_pullback-{pullbackPct:F1}%";
                                         break;
                                     }
@@ -9592,25 +7620,7 @@ namespace TradingBot
                     _activeSpikeSlot[symbol] = (DateTime.Now, "SPIKE_FAST");
                     OnStatusLog?.Invoke($"🔒 [SPIKE_SLOT] {symbol} SPIKE_FAST 슬롯 점유 (1/{MAX_SPIKE_CATEGORY_SLOTS})");
 
-                    // [v5.14.0 AI #5] AdaptiveSpikeScheduler 학습 피드백 — 5분 후 PnL 로 bucket 업데이트
-                    if (schedulerStateAtEntry != null)
-                    {
-                        decimal entryRefPrice = currentPrice;
-                        var stateRef = schedulerStateAtEntry;
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                await Task.Delay(TimeSpan.FromMinutes(5), CancellationToken.None);
-                                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var tick5m) && entryRefPrice > 0)
-                                {
-                                    double pnlPct = (double)((tick5m.LastPrice - entryRefPrice) / entryRefPrice * 100m);
-                                    _spikeScheduler.RecordOutcome(stateRef, pnlPct);
-                                }
-                            }
-                            catch { }
-                        });
-                    }
+                    // [AI 제거] AdaptiveSpikeScheduler 학습 피드백 통째 제거
 
                     // [v5.10.17] SPIKE_FAST PUMP 실제 진입 확정 카운터
                     if (!isMajor) CommitDailyPumpEntry(symbol);
@@ -10020,112 +8030,8 @@ namespace TradingBot
         /// </summary>
         private Task<bool> TryHybridLimitEntryAsync(string symbol, decimal currentPrice, decimal sizeMul, CancellationToken token)
         {
-            try
-            {
-                if (!_entryPriceRegressor.IsModelReady)
-                    return Task.FromResult(false);
-
-                if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var cache) || cache.Count < 30)
-                    return Task.FromResult(false);
-
-                var cList = cache.ToList();
-                var latest = cList[^1];
-
-                // RSI 14
-                double gain = 0, loss = 0;
-                for (int i = cList.Count - 14; i < cList.Count; i++)
-                {
-                    if (i <= 0) continue;
-                    double diff = (double)(cList[i].ClosePrice - cList[i - 1].ClosePrice);
-                    if (diff > 0) gain += diff; else loss += -diff;
-                }
-                double avgGain = gain / 14.0, avgLoss = loss / 14.0;
-                float rsi = (avgLoss == 0) ? 70f : (float)(100.0 - (100.0 / (1.0 + avgGain / avgLoss)));
-
-                // ATR 14
-                double tr = 0;
-                for (int i = cList.Count - 14; i < cList.Count; i++)
-                {
-                    if (i <= 0) continue;
-                    double h = (double)cList[i].HighPrice;
-                    double l = (double)cList[i].LowPrice;
-                    double pc = (double)cList[i - 1].ClosePrice;
-                    tr += Math.Max(h - l, Math.Max(Math.Abs(h - pc), Math.Abs(l - pc)));
-                }
-                float atr = (float)(tr / 14.0);
-
-                // Volume ratio
-                double avgVol = cList.Take(cList.Count - 1).Average(c => (double)c.Volume);
-                float volRatio = avgVol > 0 ? (float)((double)latest.Volume / avgVol) : 1f;
-
-                // Momentum (최근 5봉)
-                float momentum = cList.Count >= 6 && cList[^6].ClosePrice > 0
-                    ? (float)(((double)latest.ClosePrice / (double)cList[^6].ClosePrice - 1.0) * 100.0)
-                    : 0f;
-
-                // BB Position (최근 20봉 min/max)
-                var last20 = cList.TakeLast(20).ToList();
-                double minC = (double)last20.Min(c => c.ClosePrice);
-                double maxC = (double)last20.Max(c => c.ClosePrice);
-                float bbPos = (maxC - minC) > 0
-                    ? (float)(((double)latest.ClosePrice - minC) / (maxC - minC))
-                    : 0.5f;
-
-                // Volatility — 최근 10봉 실체 표준편차
-                var bodies = cList.TakeLast(10).Select(c => (double)Math.Abs(c.ClosePrice - c.OpenPrice)).ToList();
-                double meanBody = bodies.Average();
-                float volatility = (float)Math.Sqrt(bodies.Average(b => (b - meanBody) * (b - meanBody)));
-
-                int hourOfDay = DateTime.Now.Hour;
-
-                float? predicted = _entryPriceRegressor.PredictPullbackPct(
-                    rsi, bbPos, atr, volRatio, momentum, volatility, hourOfDay);
-
-                if (!predicted.HasValue)
-                {
-                    OnStatusLog?.Invoke($"🤖 [하이브리드LIMIT] {symbol} 예측 실패 → 시장가 fallback");
-                    return Task.FromResult(false);
-                }
-
-                decimal predictedLimitPrice = currentPrice * (decimal)(1.0 - predicted.Value / 100.0);
-                OnStatusLog?.Invoke(
-                    $"🤖 [하이브리드LIMIT] {symbol} 예측 pullback={predicted.Value:F2}% | 현재={currentPrice:F6} → LIMIT타겟={predictedLimitPrice:F6} | (현재 로깅만, 시장가 fallback)");
-
-                // [v4.8.0] Breakout Classifier 동시 조회 — 급등 후보 consolidation 감지
-                if (_breakoutClassifier.IsModelReady && cList.Count >= 20)
-                {
-                    // IBinanceKline → CandleData 변환 (Breakout 분류기는 CandleData 형식)
-                    var last20Candles = cList.TakeLast(20).Select(k => new CandleData
-                    {
-                        Symbol = symbol,
-                        OpenTime = k.OpenTime,
-                        Open = k.OpenPrice,
-                        High = k.HighPrice,
-                        Low = k.LowPrice,
-                        Close = k.ClosePrice,
-                        Volume = (float)k.Volume
-                    }).ToList();
-
-                    var breakoutResult = _breakoutClassifier.PredictBreakout(last20Candles);
-                    if (breakoutResult.HasValue)
-                    {
-                        var (prob, breakPrice) = breakoutResult.Value;
-                        if (prob >= 0.6f)
-                        {
-                            OnStatusLog?.Invoke(
-                                $"🚀 [Breakout예측] {symbol} prob={prob:P1} | 돌파타겟={breakPrice:F6} | consolidation 감지");
-                        }
-                    }
-                }
-
-                // [v4.8.0 Phase 1] 예측 로깅만. LIMIT 실주문 배치는 검증 후 Phase 2에서 활성화.
-                return Task.FromResult(false);
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [하이브리드LIMIT] {symbol} 예외: {ex.Message}");
-                return Task.FromResult(false);
-            }
+            // [AI 제거] EntryPriceRegressor / BreakoutClassifier 의존 통째 제거
+            return Task.FromResult(false);
         }
 
         /// <summary>
@@ -10420,8 +8326,8 @@ namespace TradingBot
                 || signalSource == "PUMP_REVERSE"
                 || signalSource == "CRASH_REVERSE";
 
-            // [v5.10.23] AI Gate 모델(EntryTimingModel.zip)이 있으면 하드 필터 우회 — pump_signal_normal.zip 없어도 진입 허용
-            if (!IsInitialTrainingComplete && _aiDoubleCheckEntryGate?.IsReady != true && !isVolatilitySignalPath && latestCandle != null && latestCandle.ATR > 0 && currentPrice > 0)
+            // [AI 제거] AI Gate 우회 조건 단순화 — IsInitialTrainingComplete 만 평가
+            if (!IsInitialTrainingComplete && !isVolatilitySignalPath && latestCandle != null && latestCandle.ATR > 0 && currentPrice > 0)
             {
                 // 메이저 일반 진입만: ATR 3%+, 5분봉 5%+ 차단
                 float atrPriceRatio = latestCandle.ATR / (float)currentPrice * 100f;
@@ -10500,14 +8406,7 @@ namespace TradingBot
                     if (_aiApprovedRecentScores.TryGetValue(symbol, out var cached)
                         && (DateTime.Now - cached.Time).TotalMinutes < 30)
                         queueScore = cached.Score;
-                    else if (_pumpStrategy != null
-                        && _pumpStrategy.TopCandidateScores.TryGetValue(symbol, out var topCand)
-                        && (DateTime.Now - topCand.Time).TotalMinutes < 10)
-                    {
-                        // top60 rank 낮을수록(1위 → 10위) score penalty 적용 (rank 1 = 100%, rank 10 = 10%)
-                        float rankMultiplier = Math.Max(0f, 1f - (topCand.Rank - 1) * 0.1f);
-                        queueScore = topCand.Score * rankMultiplier;
-                    }
+                    // [AI 제거] _pumpStrategy 의존 코드 제거
                     lock (_pumpPriorityLock)
                     {
                         _pumpPriorityQueue.RemoveAll(e => e.Symbol.Equals(symbol, StringComparison.OrdinalIgnoreCase));
@@ -10653,288 +8552,48 @@ namespace TradingBot
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // [ROUTER] 3. AI Gate 평가 (공통)
+            // [AI 제거] AI Gate 평가 통째 제거 — 가드/슬롯/MTF/Gate1 만으로 진입
             // ═══════════════════════════════════════════════════════════════
             float capturedBlendedScore = 0f;
             string? aiGateDecisionId = null;
-            decimal aiGateSizeMultiplier = 1.0m; // AI Gate에서 산출된 사이즈 배수
+            decimal aiGateSizeMultiplier = 1.0m; // 사용 안함 (1.0 고정)
 
-            // [v5.11.0] 모든 AI Gate 바이패스 제거 — 진입로직 전면 재설계
-            //   - skipAiGateCheck 파라미터 무시 (PumpScan/SPIKE_FAST/CRASH_REVERSE/PUMP_REVERSE 전부 게이트 통과 강제)
-            //   - 이유: PumpSignalClassifier 단독 승인으로 진입하던 경로가 하락장에서 승률 <30%
-            //   - 신규 게이트 (검증→예측→결정) 가 모든 경로에 대해 독립 3소스 교차검증 수행
-            if (_aiDoubleCheckEntryGate != null && _aiDoubleCheckEntryGate.IsReady)
+            // [AI 제거] Major D1+H4 방향성 필터 — 단순 동작
+            if (MajorSymbols.Contains(symbol))
             {
-                CoinType coinType = ResolveCoinType(symbol, signalSource);
-                var gateResult = await _aiDoubleCheckEntryGate.EvaluateEntryWithCoinTypeAsync(symbol, decision, currentPrice, coinType, token);
-
-                bool isBbCenterSupport = IsBbCenterSupport(gateResult.detail.M15_BBPosition, decision);
-                float blendedMlTfScore = CalculateMlTfBlendScore(
-                    gateResult.detail.ML_Confidence,
-                    gateResult.detail.ML_Confidence,
-                    isBbCenterSupport);
-                capturedBlendedScore = blendedMlTfScore;
-
-                // [상승 에너지] 에너지 잔량 업데이트
-                if (OnPriceProgressUpdate != null)
+                try
                 {
-                    float bbPosMain = gateResult.detail.M15_BBPosition;
-                    float mlConfMain = gateResult.detail.ML_Confidence;
-                    float tfConfMain = gateResult.detail.ML_Confidence;
-                    bool tfConvergDiv = (bbPosMain >= 0.35f && bbPosMain <= 0.65f) && (tfConfMain >= 0.70f);
-                    OnPriceProgressUpdate.Invoke(Math.Clamp(bbPosMain, 0f, 1f), mlConfMain, tfConvergDiv);
-                }
-
-                // [SSA] 시계열 예측
-                if ((DateTime.Now - _lastSsaTrainTime).TotalMinutes >= 5)
-                {
-                    try
+                    float dirBias = 0;
+                    if (_directionBiasCache.TryGetValue(symbol, out var dirCached) && (DateTime.Now - dirCached.time).TotalMinutes < 5)
                     {
-                        if (_marketDataManager.KlineCache.TryGetValue(symbol, out var klineList) && klineList.Count >= 100)
+                        dirBias = dirCached.bias;
+                    }
+                    else
+                    {
+                        var h4Klines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FourHour, 30, token);
+                        var d1Klines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneDay, 20, token);
+                        if (h4Klines?.Count >= 26 && d1Klines?.Count >= 14)
                         {
-                            List<float> closePrices;
-                            lock (klineList) { closePrices = klineList.Select(k => (float)k.ClosePrice).ToList(); }
-                            if (_ssaForecast.Train(closePrices))
-                            {
-                                _lastSsaTrainTime = DateTime.Now;
-                                var result = _ssaForecast.Predict(closePrices[^1]);
-                                if (result != null)
-                                {
-                                    _latestSsaResult = result;
-                                    OnSsaForecastUpdate?.Invoke(result.LastUpperBound, result.LastLowerBound, result.LastForecast);
-                                }
-                            }
+                            var (h4Macd, h4Signal, _) = IndicatorCalculator.CalculateMACD(h4Klines);
+                            var (d1Macd, d1Signal, _) = IndicatorCalculator.CalculateMACD(d1Klines);
+                            float d1Dir = d1Macd > d1Signal ? 1f : (d1Macd < d1Signal ? -1f : 0f);
+                            float h4Dir = h4Macd > h4Signal ? 1f : (h4Macd < h4Signal ? -1f : 0f);
+                            dirBias = d1Dir + h4Dir;
+                            _directionBiasCache[symbol] = (dirBias, DateTime.Now);
                         }
                     }
-                    catch (Exception ssaEx)
+                    if (decision == "LONG" && dirBias <= -1.5f)
                     {
-                        OnStatusLog?.Invoke($"⚠️ [SSA] 예측 오류: {ssaEx.Message}");
+                        EntryLog("DIRECTION", "BLOCK", $"bias={dirBias:F1} longInDowntrend");
+                        return;
+                    }
+                    if (decision == "SHORT" && dirBias >= 1.5f)
+                    {
+                        EntryLog("DIRECTION", "BLOCK", $"bias={dirBias:F1} shortInUptrend");
+                        return;
                     }
                 }
-
-                // [AI Command Center] 상태 업데이트
-                if (OnAiCommandUpdate != null)
-                {
-                    float tf  = gateResult.detail.ML_Confidence;
-                    float ml  = gateResult.detail.ML_Confidence;
-                    float trend = gateResult.detail.TrendScore;
-
-                    string h4Status  = tf >= 0.75f ? "TRENDING UP"    : tf >= 0.50f ? "STRENGTHENING" : "NEUTRAL";
-                    string h1Status  = ml >= 0.70f ? "STRENGTHENING"  : ml >= 0.50f ? "WATCHING"      : "NEUTRAL";
-                    string m15Status = blendedMlTfScore >= 0.82f ? "FIRE" :
-                                       blendedMlTfScore >= 0.65f ? "READY TO SHOOT" : "SCANNING";
-
-                    double bullPower = decision == "LONG"
-                        ? Math.Min(100, blendedMlTfScore * 100 + trend * 20)
-                        : Math.Max(0, 100 - blendedMlTfScore * 100);
-                    double bearPower = 100.0 - bullPower;
-
-                    OnAiCommandUpdate.Invoke(symbol, blendedMlTfScore, decision, h4Status, h1Status, m15Status, bullPower, bearPower);
-                }
-
-                if (!string.IsNullOrWhiteSpace(gateResult.detail.DecisionId))
-                {
-                    aiGateDecisionId = gateResult.detail.DecisionId;
-                }
-
-                EntryLog(
-                    "AI_GATE",
-                    gateResult.allowEntry ? "PASS" : "BLOCK",
-                    $"coinType={coinType} reason={gateResult.reason} ml={gateResult.detail.ML_Confidence:P1} tf={gateResult.detail.ML_Confidence:P1} trend={gateResult.detail.TrendScore:P1} fibBonus={gateResult.detail.FibonacciBonusScore:F0}");
-                EntryLog(
-                    "AI_BLEND",
-                    "INFO",
-                    $"bbSupport={isBbCenterSupport} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.ML_Confidence:P0} blended={blendedMlTfScore:P0} weights={(isBbCenterSupport ? "ML30_TF70" : "ML50_TF50")}");
-
-                // [v5.10.38] AI 승인 점수 캐시 (슬롯 포화 시 우선순위 큐에서 재사용)
-                if (gateResult.allowEntry)
-                    _aiApprovedRecentScores[symbol] = (capturedBlendedScore, DateTime.Now);
-
-                // [AI 관제탑] 텔레그램 알림(승인 시만) + DB 기록 (fire-and-forget)
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        string coinTypeStr = coinType.ToString();
-                        // [v3.5.0] 텔레그램: 승인 시에만 알림 (차단 시 스팸 방지)
-                        if (gateResult.allowEntry)
-                        {
-                            await TelegramService.Instance.SendAiGateResultAsync(
-                                symbol, decision, gateResult.allowEntry,
-                                coinTypeStr, gateResult.reason,
-                                gateResult.detail.ML_Confidence,
-                                gateResult.detail.ML_Confidence,
-                                gateResult.detail.TrendScore,
-                                gateResult.detail.M15_RSI,
-                                gateResult.detail.M15_BBPosition);
-                        }
-
-                        await _dbManager.SaveAiSignalLogAsync(
-                            symbol, decision, coinTypeStr,
-                            gateResult.allowEntry, gateResult.reason,
-                            gateResult.detail.ML_Confidence,
-                            gateResult.detail.ML_Confidence,
-                            gateResult.detail.TrendScore,
-                            gateResult.detail.M15_RSI,
-                            gateResult.detail.M15_BBPosition,
-                            gateResult.detail.DecisionId);
-                    }
-                    catch (Exception ex)
-                    {
-                        OnStatusLog?.Invoke($"⚠️ [AI관제탑] 알림/DB 기록 실패: {ex.Message}");
-                    }
-                });
-
-                // [v3.2.47] AI Gate 차단 — 우회 없음 (AI 단독 판단 원칙)
-                if (!gateResult.allowEntry)
-                {
-                    OnStatusLog?.Invoke($"⛔ [AI Gate] {symbol} {decision} 차단 | blended={blendedMlTfScore:P0} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.ML_Confidence:P0} | {gateResult.reason}");
-                    EntryLog("AI_GATE", "BLOCK",
-                        $"blended={blendedMlTfScore:P0} gate={gateResult.reason}");
-                    return;
-                }
-
-                // [v4.0.1] D1+H4 방향성 필터 — 5분 캐시 (API 절약)
-                if (MajorSymbols.Contains(symbol))
-                {
-                    try
-                    {
-                        float dirBias = 0;
-                        if (_directionBiasCache.TryGetValue(symbol, out var cached) && (DateTime.Now - cached.time).TotalMinutes < 5)
-                        {
-                            dirBias = cached.bias;
-                        }
-                        else
-                        {
-                            var h4Klines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FourHour, 30, token);
-                            var d1Klines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneDay, 20, token);
-                            if (h4Klines?.Count >= 26 && d1Klines?.Count >= 14)
-                            {
-                                var (h4Macd, h4Signal, _) = IndicatorCalculator.CalculateMACD(h4Klines);
-                                var (d1Macd, d1Signal, _) = IndicatorCalculator.CalculateMACD(d1Klines);
-                                float d1Dir = d1Macd > d1Signal ? 1f : (d1Macd < d1Signal ? -1f : 0f);
-                                float h4Dir = h4Macd > h4Signal ? 1f : (h4Macd < h4Signal ? -1f : 0f);
-                                dirBias = d1Dir + h4Dir;
-                                _directionBiasCache[symbol] = (dirBias, DateTime.Now);
-                            }
-                        }
-
-                        if (decision == "LONG" && dirBias <= -1.5f)
-                        {
-                            OnStatusLog?.Invoke($"⛔ [D1+H4 방향] {symbol} LONG 차단 | bias={dirBias:F1}");
-                            EntryLog("DIRECTION", "BLOCK", $"bias={dirBias:F1} longInDowntrend");
-                            return;
-                        }
-                        if (decision == "SHORT" && dirBias >= 1.5f)
-                        {
-                            OnStatusLog?.Invoke($"⛔ [D1+H4 방향] {symbol} SHORT 차단 | bias={dirBias:F1}");
-                            EntryLog("DIRECTION", "BLOCK", $"bias={dirBias:F1} shortInUptrend");
-                            return;
-                        }
-                        EntryLog("DIRECTION", "PASS", $"bias={dirBias:F1}");
-                    }
-                    catch (Exception dirEx)
-                    {
-                        EntryLog("DIRECTION", "WARN", $"skip reason={dirEx.Message}");
-                    }
-                }
-
-                // PUMP 코인은 BTC와 독립 — BTC 방향 체크 제거
-
-                // Scout add-on 검토 (LONG + Major only)
-                if (!scoutModeActivated
-                    && gateResult.allowEntry
-                    && coinType == CoinType.Major
-                    && decision == "LONG"
-                    && _scoutAddOnPendingSymbols.ContainsKey(symbol))
-                {
-                    bool volumeRecovered = latestCandle?.Volume_Ratio >= 1.0f;
-                    bool mlRecovered = gateResult.detail.ML_Confidence >= 0.50f;
-                    bool tfSustained = gateResult.detail.ML_Confidence >= 0.70f;
-
-                    if (volumeRecovered && mlRecovered && tfSustained)
-                    {
-                        bool stairBreakout = recentEntryKlines != null && recentEntryKlines.Count >= 5
-                            && currentPrice >= recentEntryKlines.TakeLast(5).Max(k => k.HighPrice);
-
-                        bool fibBreakout = false;
-                        if (recentEntryKlines != null && recentEntryKlines.Count >= 20)
-                        {
-                            var last20 = recentEntryKlines.TakeLast(20).ToList();
-                            decimal recentLow = last20.Min(k => k.LowPrice);
-                            decimal recentHigh = last20.Max(k => k.HighPrice);
-                            decimal fib382Level = recentHigh - (recentHigh - recentLow) * 0.382m;
-                            fibBreakout = currentPrice > fib382Level && recentHigh > recentLow * 1.01m;
-                        }
-
-                        scoutAddOnEligible = true;
-                        string addOnTag = fibBreakout ? "FIB382_WAVE3_ADDON" : stairBreakout ? "STAIRCASE_ADDON" : "SCOUT_ADDON";
-                        signalSource = $"{signalSource}_{addOnTag}";
-                        flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
-
-                        EntryLog(
-                            "SCOUT",
-                            "ADDON_READY",
-                            $"reason=volume_ml_recovered stairBreakout={stairBreakout} ml={gateResult.detail.ML_Confidence:P0} tf={gateResult.detail.ML_Confidence:P0} vol={latestCandle?.Volume_Ratio:F2}x");
-
-                        if (stairBreakout)
-                            OnStatusLog?.Invoke($"🔥 [불타기 Add-on] {symbol} 최근 5봉 고점 돌파 → 계단식 불타기");
-                    }
-                }
-
-                // [Staircase Pursuit] (LONG only)
-                if (!scoutModeActivated && !scoutAddOnEligible
-                    && gateResult.allowEntry
-                    && decision == "LONG"
-                    && gateResult.detail.ML_Confidence >= 0.85f
-                    && latestCandle != null
-                    && recentEntryKlines != null && recentEntryKlines.Count >= 4)
-                {
-                    decimal bbPos = latestCandle.BollingerUpper > 0 && latestCandle.BollingerLower > 0
-                        ? (currentPrice - (decimal)latestCandle.BollingerLower)
-                          / ((decimal)latestCandle.BollingerUpper - (decimal)latestCandle.BollingerLower)
-                        : 0.5m;
-
-                    float mlConf = gateResult.detail.ML_Confidence;
-                    float tfConf = gateResult.detail.ML_Confidence;
-                    bool tfConvergenceDivergence = (latestCandle.BB_Width < 2.0f) && (tfConf >= 0.70f);
-                    OnPriceProgressUpdate?.Invoke((double)Math.Clamp(bbPos, 0m, 1m), mlConf, tfConvergenceDivergence);
-
-                    if (IsStaircaseUptrendPattern(recentEntryKlines, bbPos, latestCandle))
-                    {
-                        signalSource = $"{signalSource}_STAIRCASE";
-                        flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
-                        _scoutAddOnPendingSymbols[symbol] = DateTime.UtcNow;
-                        EntryLog("STAIRCASE", "PURSUIT",
-                            $"reason=HigherLows_BBMid tf={gateResult.detail.ML_Confidence:P0} bb={bbPos:P0}");
-                        OnAlert?.Invoke($"🪜 STAIRCASE PURSUIT ({symbol} LONG) TF {gateResult.detail.ML_Confidence:P0} — ATR 3.5x 하이브리드 손절 대기");
-                    }
-                }
-            }
-            else if (_aiDoubleCheckEntryGate != null)
-            {
-                EntryLog("AI_GATE", "NOT_READY", "fallback=waveGate reason=models-not-ready");
-
-                if ((DateTime.UtcNow - _lastAiGateNotReadyTelegramTime).TotalMinutes >= 15)
-                {
-                    _lastAiGateNotReadyTelegramTime = DateTime.UtcNow;
-
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            await TelegramService.Instance.SendMessageAsync(
-                                "⚠️ *[AI 관제탑 대기]*\n" +
-                                "AI 더블체크 모델이 아직 준비되지 않아 PASS/BLOCK 알림이 일시 지연됩니다.\n" +
-                                "(신규 설치 PC에서는 초기 학습 완료 후 자동 복구됩니다.)");
-                        }
-                        catch (Exception ex)
-                        {
-                            OnStatusLog?.Invoke($"⚠️ [AI관제탑] 모델 미준비 안내 발송 실패: {ex.Message}");
-                        }
-                    });
-
-                }
+                catch { }
             }
 
             EntryLog("1M_HUB", "SKIP", "disabled — immediate entry");
@@ -11061,74 +8720,7 @@ namespace TradingBot
                     // SurvivalEntryModel과 PriceDirectionPredictor가 RSI를 피처로 학습 중이므로
                     // AI가 자체 판단하도록 위임 (메모리 원칙: 하드코딩 조건 금지)
 
-                    // [v4.0] 생존 기반 진입 모델 — "TP에 먼저 도달할 확률"
-                    if (decision == "LONG")
-                    {
-                        List<IBinanceKline>? survCandles5m = recentEntryKlines;
-                        List<IBinanceKline>? survCandles1m = null;
-                        try { survCandles1m = (await _exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.OneMinute, 20, token))?.ToList(); } catch { }
-
-                        var survFeature = SurvivalEntryModel.BuildRealtimeFeature(survCandles5m, survCandles1m);
-                        if (survFeature != null)
-                        {
-                            bool isMajorSym = MajorSymbols.Contains(symbol);
-                            var survPred = isMajorSym ? _survivalModel.PredictMajor(survFeature) : _survivalModel.PredictPump(survFeature);
-
-                            if (survPred != null)
-                            {
-                                if (!survPred.Survived && survPred.Probability > 0.60f)
-                                {
-                                    EntryLog("SURVIVAL", "BLOCK", $"notSurvived prob={survPred.Probability:P0} → TP 미도달 예측");
-                                    OnStatusLog?.Invoke($"⛔ [생존AI] {symbol} LONG 차단 | 손절 먼저 도달 확률 {survPred.Probability:P0}");
-                                    return;
-                                }
-                                if (survPred.Survived && survPred.Probability > 0.55f)
-                                    EntryLog("SURVIVAL", "CONFIRM", $"survived prob={survPred.Probability:P0}");
-                            }
-                        }
-                    }
-
-                    // [v3.8.1] 방향 예측기 체크 — ML이 반대 방향 예측 시 차단
-                    if (_directionPredictor.IsDirectionModelLoaded)
-                    {
-                        var dirFeature = new PriceDirectionPredictor.DirectionFeature
-                        {
-                            RSI = rsiCheck / 100f,
-                            MACD = latestCandle.MACD, MACD_Signal = latestCandle.MACD_Signal,
-                            MACD_Hist = latestCandle.MACD_Hist,
-                            BB_Position = latestCandle.Price_To_BB_Mid / 100f + 0.5f,
-                            BB_Width = latestCandle.BB_Width,
-                            ATR_Ratio = currentPrice > 0 ? latestCandle.ATR / (float)currentPrice * 100f : 0,
-                            Volume_Ratio = latestCandle.Volume_Ratio,
-                            Price_Change_1 = latestCandle.Price_Change_Pct,
-                            Price_Change_3 = latestCandle.Price_Momentum_30m / 2f,
-                            Price_Change_6 = latestCandle.Price_Momentum_30m,
-                            SMA20_Distance = latestCandle.Price_To_SMA20_Pct,
-                            ADX = latestCandle.ADX / 100f,
-                            Stoch_K = latestCandle.Stoch_K / 100f,
-                            Stoch_D = latestCandle.Stoch_D / 100f,
-                            HourOfDay = DateTime.Now.Hour
-                        };
-                        var dirPred = _directionPredictor.PredictDirection(dirFeature);
-                        if (dirPred != null)
-                        {
-                            bool bigMoveUp = dirPred.GoesUp;
-                            float prob = dirPred.Probability;
-
-                            if (decision == "LONG" && !bigMoveUp && prob > 0.60f)
-                            {
-                                // AI가 "큰 상승 없음" 60%+ 확신 → LONG 차단
-                                EntryLog("DIRECTION_AI", "BLOCK", $"noUpMove prob={prob:P0} → LONG 차단");
-                                OnStatusLog?.Invoke($"⛔ [방향AI] {symbol} LONG 차단 | 15분 내 큰 상승 없음 ({prob:P0})");
-                                return;
-                            }
-                            if (decision == "LONG" && bigMoveUp && prob > 0.55f)
-                            {
-                                // AI가 "큰 상승 예상" → 확인
-                                EntryLog("DIRECTION_AI", "CONFIRM", $"bigMoveUp prob={prob:P0}");
-                            }
-                        }
-                    }
+                    // [AI 제거] SurvivalEntryModel + PriceDirectionPredictor 검증 통째 제거
 
                     var threshold = GetThresholdProfile(symbol, signalSource);
                     bool priceAboveMa20 = latestCandle.Close >= (decimal)latestCandle.SMA_20;
@@ -11145,38 +8737,8 @@ namespace TradingBot
                 }
             }
 
-            // ═══════════════════════════════════════════════════════════════
-            // [ROUTER] 7. 3분류 ML 신호 (공통) — 사이즈 조절만
-            // ═══════════════════════════════════════════════════════════════
+            // [AI 제거] 3분류 ML 신호 사이즈 조절 제거
             decimal mlSignalSizeMultiplier = 1.0m;
-            if (_tradeSignalClassifier.IsModelLoaded && latestCandle != null)
-            {
-                var signalPred = _tradeSignalClassifier.Predict(latestCandle);
-                if (signalPred != null)
-                {
-                    var (signalDir, signalConf) = TradeSignalClassifier.InterpretPrediction(signalPred);
-
-                    if (decision == "LONG" && signalDir == "SHORT" && signalConf >= 0.60f)
-                    {
-                        mlSignalSizeMultiplier = 0.30m;
-                        EntryLog("SIGNAL_3C", "ADVISOR", $"entry=LONG but model=SHORT({signalConf:P0}) → size 30%");
-                    }
-                    else if (decision == "SHORT" && signalDir == "LONG" && signalConf >= 0.60f)
-                    {
-                        mlSignalSizeMultiplier = 0.30m;
-                        EntryLog("SIGNAL_3C", "ADVISOR", $"entry=SHORT but model=LONG({signalConf:P0}) → size 30%");
-                    }
-                    else if (signalDir == decision && signalConf >= 0.70f)
-                    {
-                        mlSignalSizeMultiplier = 1.3m;
-                        EntryLog("SIGNAL_3C", "BOOST", $"model={signalDir}({signalConf:P0}) matches entry → size boost");
-                    }
-                    else
-                    {
-                        EntryLog("SIGNAL_3C", "INFO", $"model={signalDir}({signalConf:P0}) label={signalPred.PredictedLabel}");
-                    }
-                }
-            }
 
             // ═══════════════════════════════════════════════════════════════
             // [ROUTER] 8. 참고 정보 수집 (차단 없음)
@@ -11316,41 +8878,7 @@ namespace TradingBot
             // 예측값이 너무 보수적(ROE 7~9%)이라 급등 코인 수익 극대화 방해
             // API 등록은 고정 ROE(PUMP 25%, MAJOR 40%)만 사용
             // ═══════════════════════════════════════════════════════════════
-            if (_entryZoneRegressor.IsModelReady && ctx.LatestCandle != null)
-            {
-                try
-                {
-                    var lc = ctx.LatestCandle;
-                    float bbPosNorm = lc.BB_Width > 0 ? lc.BB_Width / 100f : 0.5f;
-                    var tpsl = _entryZoneRegressor.PredictTpSl(
-                        rsi: lc.RSI,
-                        bbPos: bbPosNorm,
-                        atr: lc.ATR,
-                        volRatio: lc.Volume_Ratio,
-                        momentum: lc.Price_Change_Pct,
-                        volatility: lc.ATR,
-                        hourOfDay: DateTime.Now.Hour);
-
-                    if (tpsl.HasValue)
-                    {
-                        var (tpPct, slPct) = tpsl.Value;
-                        // 참고 로그만 — CustomTakeProfitPrice/CustomStopLossPrice에 적용하지 않음
-                        decimal refTp = decision == "LONG"
-                            ? ctx.CurrentPrice * (1m + (decimal)tpPct / 100m)
-                            : ctx.CurrentPrice * (1m - (decimal)tpPct / 100m);
-                        decimal refSl = decision == "LONG"
-                            ? ctx.CurrentPrice * (1m - (decimal)slPct / 100m)
-                            : ctx.CurrentPrice * (1m + (decimal)slPct / 100m);
-                        OnStatusLog?.Invoke(
-                            $"🧠 [EntryZoneML 참고] {symbol} {decision} | TP={tpPct:F2}%→{refTp:F6} | SL={slPct:F2}%→{refSl:F6} (API 미적용)");
-                        EntryLog("ENTRY_ZONE_ML", "REF_ONLY", $"tp={tpPct:F2}% sl={slPct:F2}%");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ [EntryZoneML] {symbol} 예측 오류: {ex.Message}");
-                }
-            }
+            // [AI 제거] EntryZoneRegressor 참고 로그 제거
 
             // ═══════════════════════════════════════════════════════════════
             // [ROUTER] 사이즈 결정: 정찰대 vs 메인 명확히 분리
@@ -11423,10 +8951,8 @@ namespace TradingBot
         {
             var EntryLog = ctx.EntryLog;
 
-            // [v4.6.2] 메이저 LONG 보조지표 필터 (대칭) — VWAP / EMA / StochRSI
-            // [v4.7.0] 초기학습 완료 시 모든 LONG 하드 필터 우회 (AI 단독 판단)
-            // [v5.10.23] AI Gate 모델(EntryTimingModel.zip) 있으면 우회 — pump_signal_normal.zip 없어도 진입 허용
-            if (!IsInitialTrainingComplete && _aiDoubleCheckEntryGate?.IsReady != true && ctx.LatestCandle != null)
+            // [AI 제거] AI Gate 우회 조건 단순화 — IsInitialTrainingComplete 만 평가
+            if (!IsInitialTrainingComplete && ctx.LatestCandle != null)
             {
                 // 1. VWAP 아래 → LONG 차단 (가격이 VWAP 아래면 매도 우위)
                 if (ctx.LatestCandle.VWAP > 0 && ctx.LatestCandle.Price_VWAP_Distance_Pct < -0.3f)
@@ -11453,8 +8979,7 @@ namespace TradingBot
                 }
             }
 
-            // 1. AI Predictor + 보너스 점수 (Major LONG only: EMA retest +10, short squeeze +15, low-vol privilege +10)
-            await EvaluateAiPredictorForEntry(ctx, applyMajorBonuses: true);
+            // [AI 제거] EvaluateAiPredictorForEntry 호출 제거
 
             // 2. AI Score 사이즈 조절 제거 — 라우터 AI Gate Advisor에서 이미 적용됨
 
@@ -11782,65 +9307,8 @@ namespace TradingBot
         //   두 점수는 서로 다른 모델 출처. AiScore는 1차 screening, ML_Conf는 2차 dual gate 검증.
         //   UI 표시: AiScore (legacy 호환), DB 분석 시 ML_Conf 우선 참고.
         // ═══════════════════════════════════════════════════════════════════════════
-        private async Task EvaluateAiPredictorForEntry(EntryContext ctx, bool applyMajorBonuses)
-        {
-            if (_aiPredictor == null || ctx.LatestCandle == null)
-                return;
-
-            // [v5.10.99 P2-3] AiScore = scalping_model.zip 점수 (EntryTimingMLTrainer ML_Conf와 다름)
-            var prediction = _aiPredictor.Predict(ctx.LatestCandle);
-            ctx.AiScore = Math.Max(0f, prediction.Score);
-            ctx.AiProbability = prediction.Probability;
-            ctx.AiPredictUp = prediction.Prediction;
-            ctx.ConvictionScore = Math.Max(ctx.ConvictionScore, (decimal)(prediction.Probability * 100f));
-
-            float baseAiScore = Math.Max(0f, prediction.Probability * 100);
-            float bonusPoints = 0;
-
-            if (ctx.BandwidthGate.AiBonusPoints > 0)
-            {
-                bonusPoints += (float)ctx.BandwidthGate.AiBonusPoints;
-                OnStatusLog?.Invoke(
-                    $"➕ {ctx.Symbol} Bandwidth 보너스 +{ctx.BandwidthGate.AiBonusPoints:F0}점 | " +
-                    $"ratio={ctx.BandwidthGate.SqueezeRatio:P0}, 현재폭={ctx.BandwidthGate.CurrentBandwidthPct:F2}%, 평균폭={ctx.BandwidthGate.AverageBandwidthPct:F2}%");
-            }
-
-            if (applyMajorBonuses)
-            {
-                CoinType entryCoinType = ResolveCoinType(ctx.Symbol, ctx.SignalSource);
-                bool isMajorCoin = entryCoinType == CoinType.Major;
-
-                if (isMajorCoin)
-                {
-                    bool isLowVolume = ctx.LatestCandle.Volume_Ratio > 0f && ctx.LatestCandle.Volume_Ratio < 1.0f;
-                    bool isTrendHealthy = ctx.LatestCandle.Close > (decimal)ctx.LatestCandle.SMA_20 && ctx.LatestCandle.RSI > 50f;
-                    bool isPerfectAlignment = ctx.LatestCandle.SMA_20 > ctx.LatestCandle.SMA_60 && ctx.LatestCandle.SMA_60 > ctx.LatestCandle.SMA_120;
-                    bool hasOiSupport = ctx.LatestCandle.OI_Change_Pct > 0.5f;
-                    bool majorLowVolumePrivilege = ctx.Decision == "LONG" && isLowVolume && (isTrendHealthy || isPerfectAlignment || hasOiSupport);
-
-                    if (await CheckEMA20RetestAsync(ctx.Symbol, ctx.LatestCandle, ctx.Token))
-                    {
-                        bonusPoints += 10;
-                        OnStatusLog?.Invoke($"➕ {ctx.Symbol} EMA 20 눌림목 감지 → AI 보너스 +10점");
-                    }
-
-                    if (await CheckShortSqueezeAsync(ctx.Symbol, ctx.LatestCandle, ctx.Token))
-                    {
-                        bonusPoints += 15;
-                        OnStatusLog?.Invoke($"➕ {ctx.Symbol} 숏 스퀴즈 감지 → AI 보너스 +15점");
-                    }
-
-                    if (majorLowVolumePrivilege)
-                    {
-                        bonusPoints += 10;
-                        OnStatusLog?.Invoke($"🛡️ [Major 특권] {ctx.Symbol} 거래량 부족보다 OI/이평선 추세를 우선합니다. (Vol={ctx.LatestCandle.Volume_Ratio:F2}x, OI={ctx.LatestCandle.OI_Change_Pct:F2}%)");
-                    }
-                }
-            }
-
-            float finalAiScore = Math.Max(0f, baseAiScore + bonusPoints);
-            ctx.ConvictionScore = Math.Max(ctx.ConvictionScore, (decimal)finalAiScore);
-        }
+        // [AI 제거] EvaluateAiPredictorForEntry 본체 제거 — AIPredictor 의존
+        private Task EvaluateAiPredictorForEntry(EntryContext ctx, bool applyMajorBonuses) => Task.CompletedTask;
 
         // ═══════════════════════════════════════════════════════════════════════════
         // [공통] AI Score 기반 사이즈 멀티플라이어 산출
@@ -12162,22 +9630,7 @@ namespace TradingBot
                 }
                 positionReserved = !ctx.IsScoutAddOnOrder;
 
-                // [v4.8.0] Part B — Entry Zone 데이터 수집 시작
-                if (ctx.LatestCandle != null)
-                {
-                    _entryZoneCollector.RecordEntryContext(
-                        symbol: symbol,
-                        isLong: decision == "LONG",
-                        entryPrice: ctx.CurrentPrice,
-                        rsi: ctx.LatestCandle.RSI,
-                        bbPosition: ctx.LatestCandle.BB_Width > 0 ? ctx.LatestCandle.BB_Width / 100f : 0.5f,
-                        atr: ctx.LatestCandle.ATR,
-                        volumeRatio: ctx.LatestCandle.Volume_Ratio,
-                        momentum: ctx.LatestCandle.Price_Change_Pct,
-                        volatility: ctx.LatestCandle.ATR,
-                        mlConfidence: ctx.BlendedMlTfScore,
-                        signalSource: ctx.SignalSource ?? "UNKNOWN");
-                }
+                // [AI 제거] EntryZoneCollector 컨텍스트 수집 통째 제거
 
                 // 레버리지 설정 — 심볼 최대 레버리지 자동 조정
                 int actualLeverage = await _exchangeService.SetLeverageAutoAsync(symbol, leverage, ct: ctx.Token);
@@ -12207,24 +9660,7 @@ namespace TradingBot
                     }
                 }
 
-                // ProfitRegressor 사이징
-                if (_profitRegressor.IsModelReady && ctx.LatestCandle != null)
-                {
-                    float? predicted = _profitRegressor.PredictProfit(
-                        ctx.LatestCandle.RSI, ctx.LatestCandle.BB_Width > 0 ? ctx.LatestCandle.BB_Width / 100f : 0.5f,
-                        ctx.LatestCandle.ATR, ctx.LatestCandle.Volume_Ratio,
-                        ctx.LatestCandle.Price_Change_Pct,
-                        ctx.BlendedMlTfScore);
-                    decimal multiplier = _profitRegressor.GetPositionMultiplier(predicted);
-                    if (multiplier <= 0)
-                    {
-                        multiplier = 0.5m;
-                        OnStatusLog?.Invoke($"⚠️ [ProfitRegressor] {symbol} 손실 예측 ({predicted:F2}%) → 50% 사이즈로 축소 진입");
-                        EntryLog("PROFIT_REG", "WARN", $"predicted={predicted:F2}% reducedTo=50%");
-                    }
-                    marginUsdt *= multiplier;
-                    OnStatusLog?.Invoke($"📊 [ProfitRegressor] {symbol} 예상수익={predicted:F2}% → 사이즈 {multiplier:P0} (${marginUsdt:N0})");
-                }
+                // [AI 제거] ProfitRegressor 사이징 통째 제거 (사이즈 1.0 고정)
 
                 // 수량 계산
                 decimal quantity = (marginUsdt * leverage) / ctx.CurrentPrice;
@@ -13262,107 +10698,8 @@ namespace TradingBot
         /// [v4.9.9] MTF Guardian — 상위 시간봉 역방향 진입 차단
         /// 5분봉 명확한 하락장(1시간 -3% / SMA 역배열+소하락 / 12봉 9+하락+추가하락) 중 LONG 차단
         /// 5분봉 명확한 상승장 중 SHORT 차단
-        /// <summary>
-        /// [v5.13.0 AI #1/#3/#4] SPIKE_FAST 진입 전 AI 모델 3개 통합 하드 검증
-        ///
-        /// 기존: SPIKE_FAST 는 ExecuteAutoOrder 우회 → Survival/Direction/TradeSignal AI 건너뜀
-        /// 수정: 3개 AI 모델 전부 통과 필수, 하나라도 차단 시 진입 금지
-        ///
-        /// 반환: null = 통과, 문자열 = 차단 사유
         /// </summary>
-        private async Task<string?> ValidateSpikeWithAIAsync(
-            string symbol, List<IBinanceKline> m1Candles, decimal currentPrice, float rsi, CancellationToken token)
-        {
-            try
-            {
-                // 5분봉 데이터 확보 (SurvivalModel 용)
-                List<IBinanceKline>? candles5m = null;
-                if (_marketDataManager.KlineCache.TryGetValue(symbol, out var c5mCache))
-                {
-                    lock (c5mCache) { candles5m = c5mCache.ToList(); }
-                }
-                if (candles5m == null || candles5m.Count < 30)
-                {
-                    try { candles5m = (await _exchangeService.GetKlinesAsync(symbol, Binance.Net.Enums.KlineInterval.FiveMinutes, 60, token))?.ToList(); } catch { }
-                }
-
-                // [AI #4] SurvivalEntryModel — 진입 후 TP 도달 확률
-                if (candles5m != null && candles5m.Count >= 30)
-                {
-                    var survFeature = SurvivalEntryModel.BuildRealtimeFeature(candles5m, m1Candles);
-                    if (survFeature != null)
-                    {
-                        bool isMajorSym = MajorSymbols.Contains(symbol);
-                        var survPred = isMajorSym
-                            ? _survivalModel.PredictMajor(survFeature)
-                            : _survivalModel.PredictPump(survFeature);
-
-                        if (survPred != null && !survPred.Survived && survPred.Probability > 0.55f)
-                        {
-                            return $"Survival:notSurvived_{survPred.Probability:P0}";
-                        }
-                    }
-                }
-
-                // [AI #3] PriceDirectionPredictor — "15분내 큰 상승" 예측
-                if (_directionPredictor.IsDirectionModelLoaded && candles5m != null && candles5m.Count >= 30)
-                {
-                    var latest5m = candles5m[^1];
-                    decimal range = latest5m.HighPrice - latest5m.LowPrice;
-                    float bbPos = 0.5f; // 기본값, 정확한 BB 계산은 피처 추출기에 위임
-
-                    var dirFeature = new PriceDirectionPredictor.DirectionFeature
-                    {
-                        RSI = rsi / 100f,
-                        MACD = 0f, MACD_Signal = 0f, MACD_Hist = 0f,
-                        BB_Position = bbPos,
-                        BB_Width = 0f,
-                        ATR_Ratio = currentPrice > 0 && range > 0 ? (float)(range / currentPrice * 100) : 1f,
-                        Volume_Ratio = 1f,
-                        Price_Change_1 = latest5m.OpenPrice > 0 ? (float)((latest5m.ClosePrice - latest5m.OpenPrice) / latest5m.OpenPrice * 100) : 0f,
-                        Price_Change_3 = 0f, Price_Change_6 = 0f,
-                        SMA20_Distance = 0f,
-                        ADX = 0f,
-                        Stoch_K = 0f, Stoch_D = 0f,
-                        HourOfDay = DateTime.Now.Hour
-                    };
-                    var dirPred = _directionPredictor.PredictDirection(dirFeature);
-                    if (dirPred != null && !dirPred.GoesUp && dirPred.Probability > 0.55f)
-                    {
-                        return $"Direction:noUpMove_{dirPred.Probability:P0}";
-                    }
-                }
-
-                // [AI #1] TradeSignalClassifier — 신호 방향 오버라이드
-                if (_tradeSignalClassifier.IsModelLoaded && candles5m != null && candles5m.Count >= 30)
-                {
-                    var latest5m = candles5m[^1];
-                    var candleData = new CandleData
-                    {
-                        Symbol = symbol,
-                        OpenTime = latest5m.OpenTime,
-                        Open = latest5m.OpenPrice, High = latest5m.HighPrice,
-                        Low = latest5m.LowPrice, Close = latest5m.ClosePrice,
-                        Volume = (float)latest5m.Volume, RSI = rsi
-                    };
-                    var signalPred = _tradeSignalClassifier.Predict(candleData);
-                    // SPIKE_FAST 는 LONG 만 이곳 진입. PredictedLabel=2(SHORT) + Score[2]>=0.55 면 차단
-                    if (signalPred != null && signalPred.PredictedLabel == 2
-                        && signalPred.Score != null && signalPred.Score.Length >= 3
-                        && signalPred.Score[2] >= 0.55f)
-                    {
-                        return $"TradeSignal:SHORT_override_{signalPred.Score[2]:P0}";
-                    }
-                }
-
-                return null; // 모든 AI 모델 통과
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [SPIKE_FAST][AI_GATE] {symbol} AI 검증 예외: {ex.Message} → 진입 계속 (fail-open)");
-                return null;
-            }
-        }
+        // [AI 제거] ValidateSpikeWithAIAsync 본체 제거
 
         /// <summary>
         /// 데이터 부족 시 통과 (과차단 방지)
@@ -13532,30 +10869,7 @@ namespace TradingBot
 
         private void ScheduleAiDoubleCheckLabeling(string symbol, decimal entryPrice, bool isLong, string? decisionId, CancellationToken token)
         {
-            if (_aiDoubleCheckEntryGate == null)
-                return;
-
-            DateTime entryTimeUtc = DateTime.UtcNow;
-
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await Task.Delay(TimeSpan.FromMinutes(15), token);
-                    if (token.IsCancellationRequested)
-                        return;
-
-                    await _aiDoubleCheckEntryGate.LabelActualProfitAsync(symbol, entryTimeUtc, entryPrice, isLong, decisionId, token);
-                }
-                catch (OperationCanceledException)
-                {
-                    // 정상 취소
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ [AI DoubleCheck] 레이블링 스케줄 실패: {symbol} - {ex.Message}");
-                }
-            }, CancellationToken.None);
+            // [AI 제거] AI DoubleCheck 레이블링 통째 제거
         }
 
         /// <summary>
@@ -13740,48 +11054,12 @@ namespace TradingBot
             decimal actualProfitPct,
             string closeReason)
         {
-            if (_aiDoubleCheckEntryGate == null)
-                return;
-
-            try
-            {
-                _activeAiDecisionIds.TryGetValue(symbol, out var decisionState);
-                string? decisionId = decisionState?.DecisionId;
-                RemoveActiveAiDecisionId(symbol);
-
-                await _aiDoubleCheckEntryGate.LabelActualProfitByCloseAsync(
-                    symbol,
-                    entryTime,
-                    entryPrice,
-                    (float)actualProfitPct,
-                    closeReason,
-                    decisionId,
-                    CancellationToken.None);
-
-                string side = isLong ? "LONG" : "SHORT";
-                OnStatusLog?.Invoke($"🧠 [AI DoubleCheck] 실손익 라벨 반영 | {symbol} {side} pnl={actualProfitPct:F2}% reason={closeReason}");
-
-                var stats = _aiDoubleCheckEntryGate.GetRecentLabelStats(10);
-                OnStatusLog?.Invoke($"📊 [AI DoubleCheck] 라벨 통계 | total={stats.total} labeled={stats.labeled} mtm15m={stats.markToMarket} close={stats.tradeClose}");
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [AI DoubleCheck] 청산 라벨 반영 실패: {symbol} - {ex.Message}");
-            }
+            // [AI 제거] AI DoubleCheck 청산 라벨 통째 제거
+            await Task.CompletedTask;
+            try { RemoveActiveAiDecisionId(symbol); } catch { }
         }
 
-        private async Task PersistAiLabeledSampleToDbAsync(AiLabeledSample sample)
-        {
-            try
-            {
-                await _dbManager.SaveAiTrainingDataAsync(sample);
-                OnStatusLog?.Invoke($"🗄️ [AI][DB] 라벨 샘플 저장 완료 | sym={sample.Symbol} pnl={sample.ActualProfitPct:F2}% success={sample.IsSuccess}");
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [AI][DB] 라벨 샘플 저장 실패 | sym={sample.Symbol} detail={ex.Message}");
-            }
-        }
+        // [AI 제거] PersistAiLabeledSampleToDbAsync 제거
 
         private void SetActiveAiDecisionId(string symbol, string decisionId)
         {
@@ -13907,59 +11185,11 @@ namespace TradingBot
         }
 
         /// <summary>
-        /// AI 게이트가 없을 때도 라벨링 통계를 직접 파일에서 조회
+        /// [AI 제거] EntryDecisionRecord 타입 제거됨 → 라벨 통계 항상 0 반환
         /// </summary>
         private (int total, int labeled, int markToMarket, int tradeClose) GetRecentLabelStatsFromFiles(int maxFiles = 10)
         {
-            try
-            {
-                string dataCollectionPath = Path.Combine("TrainingData", "EntryDecisions");
-                if (!Directory.Exists(dataCollectionPath))
-                    return (0, 0, 0, 0);
-
-                int safeMaxFiles = Math.Max(1, maxFiles);
-                var files = Directory.GetFiles(dataCollectionPath, "EntryDecisions_*.json")
-                    .OrderByDescending(f => f)
-                    .Take(safeMaxFiles);
-
-                int total = 0;
-                int labeled = 0;
-                int markToMarket = 0;
-                int tradeClose = 0;
-
-                foreach (var file in files)
-                {
-                    var json = File.ReadAllText(file);
-                    var records = JsonSerializer.Deserialize<List<EntryDecisionRecord>>(json);
-                    if (records == null)
-                        continue;
-
-                    total += records.Count;
-
-                    foreach (var record in records)
-                    {
-                        if (!record.Labeled)
-                            continue;
-
-                        labeled++;
-
-                        if (string.Equals(record.LabelSource, "mark_to_market_15m", StringComparison.OrdinalIgnoreCase))
-                            markToMarket++;
-
-                        if (!string.IsNullOrWhiteSpace(record.LabelSource)
-                            && record.LabelSource.StartsWith("trade_close", StringComparison.OrdinalIgnoreCase))
-                        {
-                            tradeClose++;
-                        }
-                    }
-                }
-
-                return (total, labeled, markToMarket, tradeClose);
-            }
-            catch
-            {
-                return (0, 0, 0, 0);
-            }
+            return (0, 0, 0, 0);
         }
 
         // [GATE 제거] 재설계 예정
@@ -14157,48 +11387,13 @@ namespace TradingBot
                 return (false, structureReason, 0m, 0m, "NONE", 0f, 0f);
             }
 
-            if (_aiPredictor == null || !_aiPredictor.IsModelLoaded)
-                return (false, "ML.NET 모델 미준비", finalTp, finalSl, scenario, 0f, 0f);
-
-            var mlPrediction = _aiPredictor.Predict(latestCandle);
-            
-            // [GATE 제거] 디버그 로그 제거
-            // TODO: 재설계 시 AI 예측 로그 복원
-            
-            bool mlAligned = string.Equals(decision, "LONG", StringComparison.OrdinalIgnoreCase)
-                ? mlPrediction.Prediction
-                : !mlPrediction.Prediction;
-            float mlDirectionalProb = string.Equals(decision, "LONG", StringComparison.OrdinalIgnoreCase)
-                ? NormalizeProbability01(mlPrediction.Probability)
-                : NormalizeProbability01(1f - mlPrediction.Probability);
-            
-            // [GATE 제거] 하이브리드 모드 및 DEBUG 로그 제거
-            // TODO: 재설계 시 복원
-            
-            // 하이브리드: 신뢰도 60% 이상이면 방향 무시, 미만은 방향 일치 필요
-            const float highConfThreshold = 0.60f;
-            bool mlPass = mlDirectionalProb >= mlThreshold && (mlAligned || mlDirectionalProb >= highConfThreshold);
-            if (!mlPass)
-            {
-                string mlRejectReason = mlDirectionalProb < mlThreshold
-                    ? $"ML.NET 신뢰도부족 conf={mlDirectionalProb:P1}<{mlThreshold:P1}"
-                    : $"ML.NET 방향불일치 aligned={mlAligned} conf={mlDirectionalProb:P1}<{highConfThreshold:P1}";
-                return (false,
-                    mlRejectReason,
-                    finalTp,
-                    finalSl,
-                    scenario,
-                    mlDirectionalProb,
-                    0f);
-            }
-
-            // TensorFlow 전환 중 임시 bypass - Transformer 체크 건너뛰기
-            return (true, 
-                $"✅ TensorFlow 전환 중 - Transformer bypass | topdown=1h:{h1Bias},4h:{h4Bias} structure={scenario}",
+            // [AI 제거] AIPredictor / Transformer 체크 통째 제거 → 구조 분석만으로 통과
+            return (true,
+                $"✅ AI 제거 — 구조분석만 사용 | topdown=1h:{h1Bias},4h:{h4Bias} structure={scenario}",
                 finalTp,
                 finalSl,
                 scenario,
-                mlDirectionalProb,
+                0f,
                 1f);
 
             /* TensorFlow 전환 완료 후 복원 예정
@@ -15436,50 +12631,8 @@ namespace TradingBot
 
         private async Task InitTradeSignalClassifierAsync()
         {
-            try
-            {
-                // 1. 기존 모델 로드 시도
-                if (_tradeSignalClassifier.LoadModel())
-                {
-                    OnStatusLog?.Invoke("✅ [TradeSignal] 3분류 모델 로드 완료");
-                    return;
-                }
-
-                // 2. 모델 없으면 DB에서 캔들 데이터 로드 → 라벨링 → 학습
-                OnStatusLog?.Invoke("🧠 [TradeSignal] 모델 없음 → DB 캔들 데이터로 초기 학습 시작...");
-
-                if (_dbManager == null || string.IsNullOrWhiteSpace(AppConfig.ConnectionString))
-                {
-                    OnStatusLog?.Invoke("⚠️ [TradeSignal] DB 미연결 — 초기 학습 건너뜀");
-                    return;
-                }
-
-                var allFeatures = new List<TradeSignalFeature>();
-                foreach (var symbol in _symbols.Take(10)) // 상위 10개 심볼
-                {
-                    var candles = await _dbManager.GetRecentCandleDataAsync(symbol, limit: 5000);
-                    if (candles == null || candles.Count < 100)
-                        continue;
-
-                    // 시간순 정렬 (오래된 → 최신)
-                    candles.Reverse();
-                    var labeled = _tradeSignalClassifier.LabelCandleData(candles);
-                    allFeatures.AddRange(labeled);
-                }
-
-                if (allFeatures.Count < 50)
-                {
-                    OnStatusLog?.Invoke($"⚠️ [TradeSignal] 학습 데이터 부족 ({allFeatures.Count}건) — 데이터 축적 후 자동 학습");
-                    return;
-                }
-
-                var metrics = await _tradeSignalClassifier.TrainAndSaveAsync(allFeatures);
-                OnStatusLog?.Invoke($"✅ [TradeSignal] 초기 학습 완료 | MicroAcc={metrics.MicroAccuracy:P2}, MacroAcc={metrics.MacroAccuracy:P2}, 샘플={metrics.SampleCount}");
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [TradeSignal] 초기화 실패: {ex.Message}");
-            }
+            // [AI 제거] TradeSignalClassifier 통째 제거
+            await Task.CompletedTask;
         }
 
         /// <summary>
@@ -15596,42 +12749,8 @@ namespace TradingBot
 
         private async Task PreloadInitialAiScoresAsync(CancellationToken token)
         {
-            if (_aiPredictor == null)
-            {
-                OnStatusLog?.Invoke("ℹ️ 초기 AI 점수 프리로드 건너뜀: AI 예측기 미준비");
-                return;
-            }
-
-            int preparedCount = 0;
-            foreach (var symbol in _symbols)
-            {
-                if (token.IsCancellationRequested) break;
-
-                try
-                {
-                    var candle = await GetLatestCandleDataAsync(symbol, token);
-                    if (candle == null) continue;
-
-                    var prediction = _aiPredictor.Predict(candle);
-                    preparedCount++;
-
-                    OnSignalUpdate?.Invoke(new MultiTimeframeViewModel
-                    {
-                        Symbol = symbol,
-                        LastPrice = candle.Close,
-                        RSI_1H = candle.RSI,
-                        AIScore = prediction.Score,
-                        Decision = prediction.Prediction ? "AI_UP" : "AI_DOWN",
-                        StrategyName = "AI Warmup"
-                    });
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ {symbol} 초기 AI 점수 생성 실패: {ex.Message}");
-                }
-            }
-
-            OnStatusLog?.Invoke($"🧠 초기 AI 점수 생성 완료: {preparedCount}/{_symbols.Count}개 심볼");
+            // [AI 제거] AIPredictor 의존 통째 제거
+            await Task.CompletedTask;
         }
 
         /// <summary>
@@ -16496,49 +13615,8 @@ namespace TradingBot
 
         private async Task TryRecordMlNetPredictionFromCommonScanAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
-            if (_aiPredictor == null || string.IsNullOrWhiteSpace(symbol) || currentPrice <= 0 || token.IsCancellationRequested)
-                return;
-
-            var nowUtc = DateTime.UtcNow;
-            if (_lastMlMonitorRecordTimes.TryGetValue(symbol, out var lastRecordedUtc) &&
-                (nowUtc - lastRecordedUtc) < MlMonitorRecordInterval)
-            {
-                return;
-            }
-
-            _lastMlMonitorRecordTimes[symbol] = nowUtc;
-
-            try
-            {
-                var candleData = await GetLatestCandleDataAsync(symbol, token, emitStatusLog: false);
-                if (candleData == null)
-                    return;
-
-                var prediction = _aiPredictor.Predict(candleData);
-                float upProbability = NormalizeProbability01(prediction.Probability, fallback: 0.5f);
-                float monitorConfidence = Math.Max(upProbability, 1f - upProbability);
-
-                string predictionKey = BuildPredictionValidationKey("ML.NET", symbol);
-                decimal predictedPrice = currentPrice * (prediction.Prediction ? 1.02m : 0.98m);
-                _pendingPredictions[predictionKey] = (DateTime.Now, currentPrice, predictedPrice, prediction.Prediction, "ML.NET", monitorConfidence);
-                bool scheduled = TrySchedulePredictionValidation(predictionKey, symbol, _cts);
-
-                // [v5.10.68] 활성 포지션 모니터에 외부 ML 신호 즉시 전달 (강한 반대 신호 빠른 반응)
-                _positionMonitor?.UpdateExternalMlSignal(symbol, prediction.Prediction, upProbability, monitorConfidence);
-
-                string mlDirection = prediction.Prediction ? "상승" : "하락";
-                if (scheduled)
-                {
-                    OnStatusLog?.Invoke($"🔮 [SIGNAL][ML.NET][PREDICT] src=COMMON_SCAN sym={symbol} dir={mlDirection} upProb={upProbability:P0} confidence={monitorConfidence:P0} validateAfter=5m");
-                }
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [SIGNAL][ML.NET][ERROR] src=COMMON_SCAN sym={symbol} detail={ex.Message}");
-            }
+            // [AI 제거] AIPredictor 의존 통째 제거
+            await Task.CompletedTask;
         }
 
         #endregion
@@ -16813,19 +13891,7 @@ namespace TradingBot
             var upTime = DateTime.Now - _engineStartTime;
             string timeStr = $"{(int)upTime.TotalDays}일 {upTime.Hours}시간 {upTime.Minutes}분";
 
-            if (_aiDoubleCheckEntryGate != null)
-            {
-                var stats = _aiDoubleCheckEntryGate.GetRecentLabelStats(10);
-                int activeDecisionCount = _activeAiDecisionIds.Count;
-                double labeledRate = stats.total > 0 ? (double)stats.labeled / stats.total * 100.0 : 0.0;
-
-                aiLabelingStr = $"🧠 *[AI 라벨링 상태]*\n" +
-                                $"   • 전체 결정: {stats.total}건\n" +
-                                $"   • 라벨링 완료: {stats.labeled}건 ({labeledRate:F1}%)\n" +
-                                $"   • Mark-to-Market: {stats.markToMarket}건\n" +
-                                $"   • 실거래 종료: {stats.tradeClose}건\n" +
-                                $"   • 진행 중 결정: {activeDecisionCount}건";
-            }
+            // [AI 제거] AI 라벨링 상태 텍스트 제거
 
             return $"🤖 *[시스템 상태]*\n" +
                    $"⏱ 가동 시간: {timeStr}\n" +
@@ -16851,14 +13917,7 @@ namespace TradingBot
             int aiLabelClose = 0;
             int activeDecisionCount = _activeAiDecisionIds.Count;
 
-            if (_aiDoubleCheckEntryGate != null)
-            {
-                var stats = _aiDoubleCheckEntryGate.GetRecentLabelStats(10);
-                aiLabelTotal = stats.total;
-                aiLabelLabeled = stats.labeled;
-                aiLabelMarkToMarket = stats.markToMarket;
-                aiLabelClose = stats.tradeClose;
-            }
+            // [AI 제거] AI 라벨 통계 제거 — 모두 0 유지
 
             double aiLabelRate = aiLabelTotal > 0 ? (double)aiLabelLabeled / aiLabelTotal * 100.0 : 0.0;
 
@@ -16976,10 +14035,7 @@ namespace TradingBot
                     disposableExchange.Dispose();
                 }
                 
-                // AI 서비스 정리
-                _aiPredictor?.Dispose();
-                _aiDoubleCheckEntryGate?.Dispose();
-                // _transformerTrainer?.Dispose(); // TensorFlow 전환 중 비활성화
+                // [AI 제거] AI 서비스 Dispose 통째 제거
                 
                 // 데이터베이스 연결 정리
                 // DbManager는 연결을 공유하므로 명시적 Dispose 불필요

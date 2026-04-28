@@ -2,7 +2,7 @@ using System;
 using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
-using Newtonsoft.Json;
+using System.Text.Json;
 using TradingBot.Shared.Models;
 
 namespace TradingBot.Services
@@ -81,7 +81,7 @@ namespace TradingBot.Services
                     }
                 };
 
-                var json = JsonConvert.SerializeObject(payload);
+                var json = JsonSerializer.Serialize(payload);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
                 
                 _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", $"key={_fcmServerKey}");
