@@ -5,6 +5,31 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.3] - 2026-04-28
+
+### 🚨 MODEL_ZIP_MISSING 가드 비활성화 — 진입 0건 ROOT FIX
+
+#### 발견 (사용자 보고)
+"근데 왜 진입이 없어"
+
+#### 진단
+- v5.22.2 봇 8시간 가동, GATE-PASS 30분 44,618건 (가드 폭주 통과)
+- 그러나 TradeHistory 신규 진입 0건
+- FooterLogs 분석: GATE-PASS 직후 `MODEL_ZIP_MISSING` 차단 발생
+
+#### 원인
+v5.22.0/22.1/22.2 에서 AI 게이트 + 학습 트리거 모두 제거했지만
+**`TradingEngine.cs:892-903` 의 ModelHealthMonitor.AnyMissing 가드가 살아있음**
+→ Models 폴더 비어있음 (학습 안 함) → AnyMissing=true → 진입 영구 차단
+
+#### Removed
+- TradingEngine.IsEntryAllowedCore 의 MODEL_ZIP_MISSING 가드 코드 (v5.20.7 도입분)
+- AI 폐기 결정 (2026-04-28) 에 따라 zip 파일 존재 검증 자체 우회
+
+#### 예상 효과
+- 진입 즉시 활성화 (가드 통과만으로 진입)
+- 백테스트 +$47K/180일 (가드만) 수준 라이브 진입 시도
+
 ## [5.22.2] - 2026-04-28
 
 ### 🛑 AI 학습 자동 트리거 4곳 모두 비활성화

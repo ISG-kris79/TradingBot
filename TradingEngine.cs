@@ -889,18 +889,11 @@ namespace TradingBot
                 catch { /* BTC 조회 실패 시 차단하지 않음 (진입 누락 방지) */ }
             }
 
-            // [v5.20.7] AI 모델 zip 미생성/손상 시 진입 전면 차단
-            //   사용자 요구: "zip 생성이 안되어 있으면 진입을 하지를 말어"
-            //   근거: 모델 없는 상태에서 진입 = 가드/AI 무력화 → 손실만 증가
-            if (_aiDoubleCheckEntryGate?.HealthMonitor != null)
-            {
-                if (_aiDoubleCheckEntryGate.HealthMonitor.AnyMissing(out var missingTags))
-                {
-                    blockReason = $"MODEL_ZIP_MISSING:{string.Join(",", missingTags)}";
-                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (학습 완료 전까지 진입 금지)");
-                    return false;
-                }
-            }
+            // [v5.22.3] MODEL_ZIP_MISSING 가드 비활성화 — AI 시스템 폐기 (2026-04-28)
+            //   v5.22.0/22.1/22.2 에서 AI 게이트 + 학습 트리거 모두 제거했지만
+            //   ModelHealthMonitor.AnyMissing 가드가 여기 살아있어서 zip 파일 미존재 시 진입 차단 중
+            //   → Models 폴더 비어있음 → MODEL_ZIP_MISSING 차단 → 진입 0건 (사용자 보고)
+            //   해결: AI 폐기 결정 (2026-04-28) 에 따라 zip 검증 자체 우회
 
             // [v5.21.0] EMA20↑ + RSI<70 게이트 — PUMP 카테고리에만 적용
             //   30일 검증: PUMP는 v5.20.8 가드 적용 시 -$675 → +$69 (흑자 전환)
