@@ -5,6 +5,32 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.8] - 2026-04-28
+
+### 🚨 PumpScanStrategy 비활성화 — Binance API -1003 폭주 ROOT FIX
+
+#### 사용자 지적 (정확)
+"진입중인 코인도 없고 진입대기중인 코인도 없는데 폭주하는 이유가 없잖아"
+"GetKlinesAsync 이거를 그렇게 많이 호출할 이유가 없잖아 DB에 있으면 그거 활용하고 없는데이터만 가져오면 되는건데"
+
+#### 진단 — 진짜 폭주 위치
+PumpScanStrategy.ExecuteScanAsync (메인 루프 10초 주기)
+  → 60 candidates 병렬 (Task.WhenAll)
+  → 각 AnalyzeSymbolAsync 안에서 GetKlinesAsync(5m, 150봉) — DB 캐시 X, 무조건 API
+  = 분당 360회 × Binance weight 5 = **1,800 weight/분 (한도 2400의 75%)**
+
+추가 호출 (account 12, openOrders 49, etc) 합산 → **-1003 Too many requests**
+
+#### Removed
+- TradingEngine.cs:3420-25 — `_pumpStrategy.ExecuteScanAsync` 호출 비활성화
+- PUMP 카테고리는 v5.22.5 에서 진입 차단됨 → PumpScan 자체 무의미
+
+#### 향후 작업
+- GetKlinesAsync 자체에 DB 캐시 우선 조회 추가 (CandleData 테이블 활용)
+- ActiveTrackingPool 동적 8개 갱신은 다른 경로 필요
+
+#### BALANCE_CACHE 5초 유지 (사용자 지적: 30초 stale 문제)
+
 ## [5.22.7] - 2026-04-28
 
 ### 🚨 잔존 ML 모델 7개 LoadModel 비활성화 — CPU 1코어 97% / 메모리 1.9GB 진단

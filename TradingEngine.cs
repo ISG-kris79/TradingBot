@@ -1359,7 +1359,7 @@ namespace TradingBot
         private decimal _cachedAvailableBalance = 0m;  // [v5.1.8]
         private decimal _cachedUnrealizedPnl = 0m;     // [v5.1.8]
         private DateTime _lastBalanceCacheTime = DateTime.MinValue;
-        private const int BALANCE_CACHE_INTERVAL_MS = 5000; // 5초마다 업데이트
+        private const int BALANCE_CACHE_INTERVAL_MS = 5000; // 5초 (사용자 지적: 30초는 진입 마진 계산 stale 문제)
 
         public TradingEngine()
         {
@@ -3417,12 +3417,16 @@ namespace TradingBot
                             OnStatusLog?.Invoke($"🎯 일일 $250 목표 달성! 금일 실현 손익: ${dailyPnl:N2}");
                         }
 
-                        // [A] 급등주 스캔 (10초 간격)
-                        if (_pumpStrategy != null && (DateTime.Now - _lastPumpScanTime).TotalSeconds >= 10)
-                        {
-                            _lastPumpScanTime = DateTime.Now;
-                            await _pumpStrategy.ExecuteScanAsync(_marketDataManager.TickerCache, _blacklistedSymbols, token);
-                        }
+                        // [v5.22.8] 급등주 스캔 비활성화 — 사용자 지적 + 폭주 ROOT FIX
+                        //   원인: 60 candidates 병렬 × GetKlinesAsync(5m, 150봉) = 분당 360회 × weight 5 = 1,800 weight/분
+                        //   PumpScanStrategy 가 분당 2400 한도의 75% 점유 → -1003 발생
+                        //   PUMP 카테고리는 v5.22.5 에서 진입 차단됨 → PumpScan 자체 무의미
+                        //   필요 시 ActiveTrackingPool 의 동적 8개 갱신용으로만 5분 1회 호출 (별도)
+                        // if (_pumpStrategy != null && (DateTime.Now - _lastPumpScanTime).TotalSeconds >= 10)
+                        // {
+                        //     _lastPumpScanTime = DateTime.Now;
+                        //     await _pumpStrategy.ExecuteScanAsync(_marketDataManager.TickerCache, _blacklistedSymbols, token);
+                        // }
 
                         // [B] MACD 골든크로스/데드크로스 스캔 (메이저 코인 대상)
                         if (_macdCrossService != null)
