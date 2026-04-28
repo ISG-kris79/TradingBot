@@ -4370,6 +4370,7 @@ namespace TradingBot.ViewModels
         // ═══════════════════════════════════════════════════════════════
         // [v4.9.0] AI Insight Panel — Top Candidates 파싱
         // PumpScan/MarketCrash 로그를 파싱하여 상위 후보 리스트 유지
+        // [v5.22.12] PumpScan 제거 후 ENGINE_151/MAJOR/BB_SQUEEZE/GATE 트리거도 파싱
         // ═══════════════════════════════════════════════════════════════
         private static readonly System.Text.RegularExpressions.Regex InsightSymbolRegex
             = new(@"sym=(\w+)", System.Text.RegularExpressions.RegexOptions.Compiled);
@@ -4377,6 +4378,12 @@ namespace TradingBot.ViewModels
             = new(@"prob=(\d+(?:\.\d+)?)%", System.Text.RegularExpressions.RegexOptions.Compiled);
         private static readonly System.Text.RegularExpressions.Regex InsightRejectRegex
             = new(@"reason=(\w+)", System.Text.RegularExpressions.RegexOptions.Compiled);
+        // [v5.22.12] ENGINE_151 / GATE / MAJOR / BB_SQUEEZE / ETA_TRIGGER 등 트리거 로그에서 심볼 추출
+        //   패턴: "[TAG] SYMBOLUSDT ..." (TAG 뒤 첫 토큰이 심볼)
+        private static readonly System.Text.RegularExpressions.Regex GenericSymbolRegex
+            = new(@"\]\s+([A-Z0-9]{2,15}USDT)\b", System.Text.RegularExpressions.RegexOptions.Compiled);
+        private static readonly System.Text.RegularExpressions.Regex GateBlockReasonRegex
+            = new(@"reason=([^\s|()]+)", System.Text.RegularExpressions.RegexOptions.Compiled);
         private const int MaxCandidateItems = 8;
         private DateTime _detectStatsWindowStart = DateTime.Now;
         private int _pumpScanCount;
@@ -4427,16 +4434,44 @@ namespace TradingBot.ViewModels
                 bool isReject  = msg.Contains("[SIGNAL][PUMP][REJECT]", StringComparison.OrdinalIgnoreCase);
                 bool isCand    = msg.Contains("[SIGNAL][PUMP][CANDIDATE]", StringComparison.OrdinalIgnoreCase);
                 bool isEmit    = msg.Contains("[SIGNAL][PUMP][EMIT]", StringComparison.OrdinalIgnoreCase);
-                if (!isAiEntry && !isReject && !isCand && !isEmit) return;
 
-                var symMatch = InsightSymbolRegex.Match(msg);
-                if (!symMatch.Success) return;
-                string symbol = symMatch.Groups[1].Value;
+                // [v5.22.12] PumpScan 제거 후 — ENGINE_151/MAJOR/BB_SQUEEZE/GATE 로그도 파싱
+                //   GATE-CHECK = 가드 체크 시작 (CANDIDATE)
+                //   GATE 차단 = REJECT(reason)
+                //   ENGINE_151 차단 / 체결 → 각각 REJECT / AI_ENTRY
+                //   MAJOR_ANALYZE / ElliottWave3Wave / ETA_TRIGGER → CANDIDATE
+                bool isGateCheck = msg.Contains("[GATE-CHECK]", StringComparison.OrdinalIgnoreCase);
+                bool isGateBlock = msg.Contains("[GATE]", StringComparison.OrdinalIgnoreCase) && msg.Contains("차단", StringComparison.OrdinalIgnoreCase) && !isGateCheck;
+                bool isEngine151Block = msg.Contains("[ENGINE_151]", StringComparison.OrdinalIgnoreCase) && msg.Contains("차단", StringComparison.OrdinalIgnoreCase);
+                bool isMajorAnalyze = msg.Contains("[MAJOR_ANALYZE]", StringComparison.OrdinalIgnoreCase) || msg.Contains("[MAJOR ATR]", StringComparison.OrdinalIgnoreCase);
+                bool isBbSqueeze = msg.Contains("BB_SQUEEZE", StringComparison.OrdinalIgnoreCase) || msg.Contains("BB_WALK", StringComparison.OrdinalIgnoreCase);
+                bool isElliott = msg.Contains("ElliottWave3Wave", StringComparison.OrdinalIgnoreCase) || msg.Contains("ETA_TRIGGER", StringComparison.OrdinalIgnoreCase) || msg.Contains("FORECAST_FALLBACK", StringComparison.OrdinalIgnoreCase);
 
+                bool isLegacyPump = isAiEntry || isReject || isCand || isEmit;
+                bool isGenericTrigger = isGateCheck || isGateBlock || isEngine151Block || isMajorAnalyze || isBbSqueeze || isElliott;
+
+                if (!isLegacyPump && !isGenericTrigger) return;
+
+                string symbol;
                 double prob = 0;
-                var probMatch = InsightProbRegex.Match(msg);
-                if (probMatch.Success && double.TryParse(probMatch.Groups[1].Value, out var p))
-                    prob = p / 100.0;
+
+                if (isLegacyPump)
+                {
+                    var symMatch = InsightSymbolRegex.Match(msg);
+                    if (!symMatch.Success) return;
+                    symbol = symMatch.Groups[1].Value;
+
+                    var probMatch = InsightProbRegex.Match(msg);
+                    if (probMatch.Success && double.TryParse(probMatch.Groups[1].Value, out var p))
+                        prob = p / 100.0;
+                }
+                else
+                {
+                    // GENERIC: 태그 뒤 첫 토큰이 심볼 (BTCUSDT 같은 형태)
+                    var gMatch = GenericSymbolRegex.Match(msg);
+                    if (!gMatch.Success) return;
+                    symbol = gMatch.Groups[1].Value;
+                }
 
                 string status;
                 if (isAiEntry || isEmit)
@@ -4446,6 +4481,15 @@ namespace TradingBot.ViewModels
                     var r = InsightRejectRegex.Match(msg);
                     status = r.Success ? $"REJECT({r.Groups[1].Value})" : "REJECT";
                 }
+                else if (isGateBlock || isEngine151Block)
+                {
+                    var rg = GateBlockReasonRegex.Match(msg);
+                    string rsn = rg.Success ? rg.Groups[1].Value : "BLOCKED";
+                    if (rsn.Length > 24) rsn = rsn.Substring(0, 24);
+                    status = $"REJECT({rsn})";
+                }
+                else if (isGateCheck || isMajorAnalyze || isBbSqueeze || isElliott)
+                    status = "CANDIDATE";
                 else
                     status = "CANDIDATE";
 

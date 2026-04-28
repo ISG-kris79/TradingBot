@@ -186,6 +186,8 @@ namespace TradingBot.Services
                 await Task.Delay(TimeSpan.FromSeconds(30), token);
                 long lastLostSnapshot = System.Threading.Interlocked.Read(ref _wsLostCount);
                 long lastRestoredSnapshot = System.Threading.Interlocked.Read(ref _wsRestoredCount);
+                // [v5.22.12] 재구독 후 grace period — 새 SocketClient 가 안정화될 시간 확보 (무한 재구독 루프 방지)
+                DateTime resubscribeGraceUntil = DateTime.MinValue;
                 while (!token.IsCancellationRequested)
                 {
                     long curLost = System.Threading.Interlocked.Read(ref _wsLostCount);
@@ -195,7 +197,9 @@ namespace TradingBot.Services
 
                     // 조건: 1분 동안 끊김>3 + 복구=0 → 즉시 강제 재구독
                     //   (기존 끊김>10 + 5분 → 너무 느림. 사용자 사례 1분 4000+건 끊김 → 30초 안에 트리거됨)
-                    if (lostDelta > 3 && restoredDelta == 0)
+                    // [v5.22.12] grace period 내에는 트리거 스킵 (재구독 직후 새 연결의 일시적 끊김 누적 방지)
+                    bool inGrace = DateTime.UtcNow < resubscribeGraceUntil;
+                    if (lostDelta > 3 && restoredDelta == 0 && !inGrace)
                     {
                         OnLog?.Invoke($"🚨 [WS-WATCHDOG] 1분간 끊김={lostDelta} 복구={restoredDelta} → 전체 강제 재구독 시도");
                         try
@@ -215,18 +219,25 @@ namespace TradingBot.Services
                             _ = StartPriceWebSocketAsync(token);
                             _ = StartKlineStreamAsync(token);
                             _ = StartMultiTfKlineStreamAsync(token);
-                            OnLog?.Invoke("✅ [WS-WATCHDOG] SocketClient 재생성 + 핵심 5종 재구독 완료");
+                            OnLog?.Invoke("✅ [WS-WATCHDOG] SocketClient 재생성 + 핵심 5종 재구독 완료 (3분 grace period 적용)");
 
                             // [v5.22.15] 재구독 후 카운터 리셋 — 새 SocketClient 의 끊김/복구만 카운트
+                            // [v5.22.12] curLost/curRestored 도 동시 리셋 → 다음 lastSnapshot 도 0 → 무한 루프 방지
                             System.Threading.Interlocked.Exchange(ref _wsLostCount, 0);
                             System.Threading.Interlocked.Exchange(ref _wsRestoredCount, 0);
                             curLost = 0;
                             curRestored = 0;
+                            // 3분 grace period — 새 연결이 자리잡을 시간
+                            resubscribeGraceUntil = DateTime.UtcNow.AddMinutes(3);
                         }
                         catch (Exception ex)
                         {
                             OnLog?.Invoke($"❌ [WS-WATCHDOG] 재구독 실패: {ex.Message}");
                         }
+                    }
+                    else if (inGrace && lostDelta > 3 && restoredDelta == 0)
+                    {
+                        OnLog?.Invoke($"⏳ [WS-WATCHDOG] grace period 중 — 끊김={lostDelta} 복구={restoredDelta} 무시 (재구독 안정화 대기)");
                     }
                     lastLostSnapshot = curLost;
                     lastRestoredSnapshot = curRestored;
@@ -506,7 +517,8 @@ namespace TradingBot.Services
                 {
                     foreach (var t in snapshot.Data)
                     {
-                        TickerCache[t.Symbol] = new TickerCacheItem { Symbol = t.Symbol, LastPrice = t.LastPrice, HighPrice = t.HighPrice, OpenPrice = t.OpenPrice, QuoteVolume = t.QuoteVolume };
+                        // [v5.22.12] PriceChangePercent 채우기 — ActiveTrackingPool 동적 8개 정렬 정상화
+                        TickerCache[t.Symbol] = new TickerCacheItem { Symbol = t.Symbol, LastPrice = t.LastPrice, HighPrice = t.HighPrice, OpenPrice = t.OpenPrice, QuoteVolume = t.QuoteVolume, PriceChangePercent = t.PriceChangePercent };
                     }
                 }
             }
@@ -517,9 +529,10 @@ namespace TradingBot.Services
             {
                 foreach (var t in data.Data)
                 {
+                    // [v5.22.12] PriceChangePercent 채우기 — WebSocket 실시간 업데이트도 반영
                     TickerCache.AddOrUpdate(t.Symbol,
-                        k => new TickerCacheItem { Symbol = t.Symbol, LastPrice = t.LastPrice, HighPrice = t.HighPrice, OpenPrice = t.OpenPrice, QuoteVolume = t.QuoteVolume },
-                        (k, v) => { v.LastPrice = t.LastPrice; v.HighPrice = t.HighPrice; v.OpenPrice = t.OpenPrice; v.QuoteVolume = t.QuoteVolume; return v; });
+                        k => new TickerCacheItem { Symbol = t.Symbol, LastPrice = t.LastPrice, HighPrice = t.HighPrice, OpenPrice = t.OpenPrice, QuoteVolume = t.QuoteVolume, PriceChangePercent = t.PriceChangePercent },
+                        (k, v) => { v.LastPrice = t.LastPrice; v.HighPrice = t.HighPrice; v.OpenPrice = t.OpenPrice; v.QuoteVolume = t.QuoteVolume; v.PriceChangePercent = t.PriceChangePercent; return v; });
                 }
                 OnAllTickerUpdate?.Invoke(data.Data);
             }, ct: token);

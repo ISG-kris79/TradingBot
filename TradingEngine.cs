@@ -675,13 +675,18 @@ namespace TradingBot
 
             // [v5.21.0] 트리거 카테고리 분류 — 30일 백테스트 기반 차별 가드 적용
             //   --logic-30d 결과: SPIKE 모든 조합 적자, MAJOR/SQUEEZE/BB_WALK 가드 없을 때 흑자 최대
+            // [v5.22.12] PUMP 분류 사이드이펙트 수정 — 명시적 PUMP_* source 만 PUMP 분류
+            //   v5.22.5 "default → PUMP" 가 ENGINE_151 / ETA_TRIGGER / ElliottWave3Wave / FORECAST_FALLBACK
+            //   까지 PUMP 로 떨어뜨려서 12+시간 진입 0건 → GENERIC 카테고리 신설 (PUMP 차단 면제)
             string srcU = (source ?? "").ToUpperInvariant();
             string entryCat;
             if (srcU.Contains("TICK_SURGE") || srcU.Contains("SPIKE")) entryCat = "SPIKE";
             else if (srcU.Contains("SQUEEZE")) entryCat = "SQUEEZE";
             else if (srcU.Contains("BB_WALK") || srcU.Contains("BBWALK")) entryCat = "BB_WALK";
             else if (srcU.Contains("MAJOR")) entryCat = "MAJOR";
-            else entryCat = "PUMP";  // PUMP_TRADE, ENGINE_*, ROUTE:* 기본
+            else if (srcU.StartsWith("PUMP_") || srcU == "PUMP" || srcU.Contains("PUMP_TRADE") || srcU.Contains("PUMP_WATCH") || srcU.Contains("PUMPSCAN"))
+                entryCat = "PUMP";  // 명시적 PUMP source 만
+            else entryCat = "GENERIC";  // ENGINE_151 / ETA_TRIGGER / ElliottWave3Wave / FORECAST_FALLBACK / ROUTE:* 등
 
             // [v5.21.0] SPIKE 카테고리 전면 차단 — 30일 검증 모든 조합에서 적자
             //   사용자 -$130/시간 손실 주범 (TACUSDT 9건 동시 진입 12초 손절 사례)
@@ -695,6 +700,7 @@ namespace TradingBot
             // [v5.22.5] PUMP 카테고리 전면 차단 — 360일 백테스트 -$401 적자 입증
             //   180일 -$406, 360일 -$401, 90일 +$128 (작은 우연성 흑자)
             //   MAJOR/SQUEEZE 360일 +$355K 대비 PUMP는 손해만 가져옴
+            // [v5.22.12] 명시적 PUMP_* source 만 차단 (GENERIC 은 면제 — 일반 가드만 통과 시 진입)
             if (entryCat == "PUMP")
             {
                 blockReason = "PUMP_DISABLED:360d_backtest_loss";

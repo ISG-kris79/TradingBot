@@ -1524,6 +1524,83 @@ internal static class Program
         }
     }
 
+    private static async Task RunDaily60Async()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  v5.22.5+ 60일 일별 PnL (PUMP/SPIKE 차단, MAJOR+SQZ+BBW)");
+        Console.WriteLine("================================================================");
+        const decimal seed = 1000m;
+        int pages = 12;
+        var fullData = new Dictionary<string, List<IBinanceKline>>();
+        int idx = 0;
+        Console.WriteLine($"\n[fetch 60일 — {symbols.Length}개 심볼]");
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[{idx}/{symbols.Length}] {sym} ");
+            try
+            {
+                var kl = await FetchKlinesAsync(sym, pages);
+                if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+                fullData[sym] = kl;
+                Console.WriteLine($"ok ({kl.Count} bars)");
+            }
+            catch (Exception ex) { Console.WriteLine("fail: " + ex.Message); }
+        }
+        var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+        var triggers = new (string name, Func<List<IBinanceKline>, int, string, bool> ok)[]
+        {
+            ("MAJOR",   (kl, i, sym) => majors.Contains(sym) && i >= 30 && Ema20Rising(kl, i)
+                          && M15RangePos(kl, i, 30) is >= 60 and <= 85),
+            ("SQUEEZE", (kl, i, sym) => i >= 20 && BBWidth(kl, i) < 1.5 && BBWalkUpper(kl, i)),
+            ("BB_WALK", (kl, i, sym) => i >= 20 && BBWalkStreak(kl, i, 5) >= 4),
+        };
+        var dailyPnl = new SortedDictionary<DateTime, (int n, int w, decimal pnl)>();
+        foreach (var trig in triggers)
+        {
+            decimal trigNotional = NotionalFor(trig.name);
+            decimal trigFee = trigNotional * FEE_RATE * 2m;
+            decimal tpPct, slPct; int win;
+            if (trig.name == "MAJOR") { tpPct = 0.5m; slPct = 1.5m; win = 12; }
+            else { tpPct = 1.0m; slPct = 3.0m; win = 24; }
+            decimal tpUsd = trigNotional * tpPct / 100m - trigFee;
+            decimal slUsd = trigNotional * slPct / 100m + trigFee;
+            foreach (var kv in fullData)
+            {
+                var kl = kv.Value; var sym = kv.Key;
+                for (int i = 50; i < kl.Count - win; i++)
+                {
+                    if (!trig.ok(kl, i, sym)) continue;
+                    if (!Ema20Rising(kl, i)) continue;
+                    if (CalcRsi14(kl, i) >= 65) continue;
+                    var (tp, sl) = OutcomeIn(kl, i, tpPct, slPct, win);
+                    if (!(tp || sl)) continue;
+                    DateTime day = kl[i].OpenTime.Date;
+                    var (n, w, p) = dailyPnl.TryGetValue(day, out var v) ? v : (0, 0, 0m);
+                    n++;
+                    if (tp) { w++; p += tpUsd; } else { p -= slUsd; }
+                    dailyPnl[day] = (n, w, p);
+                }
+            }
+        }
+        Console.WriteLine();
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"{"날짜",-12} {"진입",6} {"승",5} {"승률",8} {"일PnL",11} {"누적PnL",12} {"누적ROI",9}");
+        Console.WriteLine(new string('-', 78));
+        decimal cum = 0m;
+        foreach (var kv in dailyPnl)
+        {
+            cum += kv.Value.pnl;
+            double wr = kv.Value.n > 0 ? kv.Value.w * 100.0 / kv.Value.n : 0;
+            decimal roi = cum / seed * 100m;
+            Console.WriteLine($"{kv.Key:yyyy-MM-dd}   {kv.Value.n,6} {kv.Value.w,5} {wr,7:F2}% {kv.Value.pnl,10:F2} {cum,11:F2} {roi,8:F2}%");
+        }
+        Console.WriteLine(new string('-', 78));
+        int tn = dailyPnl.Sum(x => x.Value.n);
+        int tw = dailyPnl.Sum(x => x.Value.w);
+        Console.WriteLine($"합계: {tn}건 / 승률 {(tn > 0 ? tw * 100.0 / tn : 0):F2}% / 누적 ${cum:F2} / 시드 $1000 → ${1000m + cum:F2} ({cum / seed * 100m:F2}%)");
+    }
+
     private static async Task RunAiAllPeriodsAsync()
     {
         Console.WriteLine("================================================================");
@@ -1746,6 +1823,11 @@ internal static class Program
         if (args.Length > 0 && args[0] == "--redesign")
         {
             await RunRedesignAsync();
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--daily-60d")
+        {
+            await RunDaily60Async();
             return;
         }
         if (args.Length > 0 && args[0] == "--target70")
