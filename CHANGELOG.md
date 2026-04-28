@@ -5,6 +5,27 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.4] - 2026-04-28
+
+### 🚀 BulkPreloadOpenTime SP 호출 비활성화 — 봇 시작 60-120초 timeout 해소
+
+#### 사용자 보고
+"OpenTime 캐시 일괄 로드 실패 뜨는데 확인해봐"
+
+#### 진단
+- `sp_BulkPreloadOpenTime` 4개 candle 테이블(MarketCandles + CandleData + CandleHistory + MarketData) UNION ALL + GROUP BY → 60-120초+ 소요
+- CommandTimeout 120초 초과로 timeout 반복 발생
+- 봇 시작 시 60-120초 멈춤 + `_openTimePreloadDone` 미설정 → 매번 재시도
+
+#### Removed
+- `DatabaseService.GetLatestSyncedOpenTimeAcrossTablesAsync` 안의 `BulkPreloadOpenTimeCacheAsync` 호출 (v5.10.42 도입분)
+- `_openTimePreloadDone = true` 강제 설정 → SP 호출 우회
+- 개별 lazy 조회 (`_openTimeDbSlot` 경로) 만 사용
+
+#### 영향
+- 봇 시작 60-120초 단축
+- 첫 OpenTime 조회 약간 느려짐 (그러나 캐시 채워지면 동일 성능)
+
 ## [5.22.3] - 2026-04-28
 
 ### 🚨 MODEL_ZIP_MISSING 가드 비활성화 — 진입 0건 ROOT FIX

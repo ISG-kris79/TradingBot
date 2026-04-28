@@ -217,24 +217,12 @@ SELECT CASE WHEN EXISTS (
             if (_openTimeCache.TryGetValue(cacheKey, out var cached))
                 return cached;
 
-            // [v5.10.42] 캐시 미스 → 전체 심볼 일괄 로드 (실패 시 재시도 가능)
-            // 성공 시에만 _openTimePreloadDone = true → 실패하면 다음 호출 시 재시도
-            if (!_openTimePreloadDone)
-            {
-                await _preloadSemaphore.WaitAsync();
-                try
-                {
-                    if (!_openTimePreloadDone)
-                    {
-                        bool success = await BulkPreloadOpenTimeCacheAsync(interval);
-                        if (success) _openTimePreloadDone = true;
-                    }
-                }
-                finally { _preloadSemaphore.Release(); }
-
-                if (_openTimeCache.TryGetValue(cacheKey, out cached))
-                    return cached;
-            }
+            // [v5.22.4] BulkPreloadOpenTime 호출 비활성화 — SP 60-120초+ timeout 발생
+            //   원인: 4개 candle 테이블 UNION ALL + GROUP BY → 봇 시작 시 매번 timeout
+            //   영향: 봇 시작 60-120초 멈춤 + 재시도 반복 → CPU 낭비
+            //   해결: SP 호출 우회, lazy 개별 조회만 사용 (아래 _openTimeDbSlot 경로)
+            //         첫 OpenTime 조회 시 약간 느려지지만 캐시 채워지면 동일 성능
+            _openTimePreloadDone = true;
 
             // 일괄 로드 후에도 없는 심볼 = 신규 심볼 (DB에 데이터 없음) → 개별 조회
             bool acquired = await _openTimeDbSlot.WaitAsync(TimeSpan.FromSeconds(30));
