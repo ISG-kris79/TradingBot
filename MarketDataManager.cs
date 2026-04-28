@@ -179,9 +179,13 @@ namespace TradingBot.Services
         {
             try
             {
-                await Task.Delay(TimeSpan.FromMinutes(2), token); // 부팅 후 2분 대기
-                long lastLostSnapshot = 0;
-                long lastRestoredSnapshot = 0;
+                // [v5.22.15] 부팅 후 30초 대기 (기존 2분 → 30초) + 1분 주기 (기존 5분 → 1분)
+                //   원인: 사용자 보고 v5.22.14 — 봇 가동 1분 만에 WebSocket 전체 끊김 폭주
+                //         기존 watchdog 첫 작동까지 7분 (2분 대기 + 5분 주기) 동안 무방비
+                //   해결: 30초 대기 + 1분 주기 + 끊김>3 트리거 → 1.5분 내 자동 복구
+                await Task.Delay(TimeSpan.FromSeconds(30), token);
+                long lastLostSnapshot = System.Threading.Interlocked.Read(ref _wsLostCount);
+                long lastRestoredSnapshot = System.Threading.Interlocked.Read(ref _wsRestoredCount);
                 while (!token.IsCancellationRequested)
                 {
                     long curLost = System.Threading.Interlocked.Read(ref _wsLostCount);
@@ -189,14 +193,16 @@ namespace TradingBot.Services
                     long lostDelta = curLost - lastLostSnapshot;
                     long restoredDelta = curRestored - lastRestoredSnapshot;
 
-                    if (lostDelta > 10 && restoredDelta == 0)
+                    // 조건: 1분 동안 끊김>3 + 복구=0 → 즉시 강제 재구독
+                    //   (기존 끊김>10 + 5분 → 너무 느림. 사용자 사례 1분 4000+건 끊김 → 30초 안에 트리거됨)
+                    if (lostDelta > 3 && restoredDelta == 0)
                     {
-                        OnLog?.Invoke($"🚨 [WS-WATCHDOG] 5분간 끊김={lostDelta} 복구={restoredDelta} → 전체 강제 재구독 시도");
+                        OnLog?.Invoke($"🚨 [WS-WATCHDOG] 1분간 끊김={lostDelta} 복구={restoredDelta} → 전체 강제 재구독 시도");
                         try
                         {
                             // SocketClient 자체 재생성 (모든 구독 끊고 처음부터)
                             try { await _socketClient.UnsubscribeAllAsync(); } catch { }
-                            _socketClient.Dispose();
+                            try { _socketClient.Dispose(); } catch { }
                             _socketClient = new BinanceSocketClient(options =>
                             {
                                 if (!string.IsNullOrWhiteSpace(AppConfig.BinanceApiKey) && !string.IsNullOrWhiteSpace(AppConfig.BinanceApiSecret))
@@ -210,6 +216,12 @@ namespace TradingBot.Services
                             _ = StartKlineStreamAsync(token);
                             _ = StartMultiTfKlineStreamAsync(token);
                             OnLog?.Invoke("✅ [WS-WATCHDOG] SocketClient 재생성 + 핵심 5종 재구독 완료");
+
+                            // [v5.22.15] 재구독 후 카운터 리셋 — 새 SocketClient 의 끊김/복구만 카운트
+                            System.Threading.Interlocked.Exchange(ref _wsLostCount, 0);
+                            System.Threading.Interlocked.Exchange(ref _wsRestoredCount, 0);
+                            curLost = 0;
+                            curRestored = 0;
                         }
                         catch (Exception ex)
                         {
@@ -218,7 +230,7 @@ namespace TradingBot.Services
                     }
                     lastLostSnapshot = curLost;
                     lastRestoredSnapshot = curRestored;
-                    await Task.Delay(TimeSpan.FromMinutes(5), token);
+                    await Task.Delay(TimeSpan.FromMinutes(1), token);
                 }
             }
             catch (OperationCanceledException) { }

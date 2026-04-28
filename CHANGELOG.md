@@ -5,6 +5,33 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.15] - 2026-04-29
+
+### 🚨 메인 루프 3초 폭주 ROOT FIX + WebSocket Watchdog 빠르게
+
+#### 사용자 보고
+"전체 소스 다 점검한거 맞아 되는게 하나도 없잖아"
+
+#### 진단
+- MAIN_LOOP workMs=3117ms (3초 인터벌 풀가동)
+- GATE-PASS 4143건 / EntryAttempt 1건 / FILLED 0건
+- WebSocket 끊김 폭주 + Watchdog 미작동
+
+#### 핵심 폭주 원인
+`AnalyzeFifteenMinBBSqueezeBreakoutAsync` 매 ticker REST 80봉 호출 → 12심볼 × cycle = 3000ms 폭주
+
+#### Fixed
+- AnalyzeFifteenMinBBSqueezeBreakoutAsync: REST → MultiTfKlineCache 우선, 캐시 없으면 5분 throttle REST fallback
+- WebSocket Watchdog: 부팅 2분→30초, 주기 5분→1분, 트리거 끊김>10→3, 재구독 후 카운터 리셋
+
+#### 진입 흐름 검증
+- 진입 코드 모두 살아있음 (끊긴 곳 0개)
+- 진입 안 되는 진짜 이유: PUMP/SPIKE 차단 (의도) + MAJOR 신호 빡센 조건
+
+## [5.22.14] - 2026-04-29
+
+### 🧹 멀티TF H4/D1 제거 (사용처 0건)
+
 ## [5.22.13] - 2026-04-29
 
 ### 🧹 잔존 InitialTraining/TrainedSymbol/OnSymbolTrained 전부 진짜 제거

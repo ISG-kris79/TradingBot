@@ -3877,6 +3877,9 @@ namespace TradingBot
         private DateTime _lastTrackingPoolRefresh = DateTime.MinValue;
         private static readonly TimeSpan TrackingPoolRefreshInterval = TimeSpan.FromMinutes(5);
 
+        // [v5.22.15] BB Squeeze REST throttle — 심볼당 5분에 1회만 REST fallback (캐시 우선)
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lastBbSqueezeRestTime = new(StringComparer.OrdinalIgnoreCase);
+
         // [v5.22.10] 메모리 누수 방지 — 5분 주기 cleanup
         private DateTime _lastMemoryCleanupTime = DateTime.MinValue;
 
@@ -4553,8 +4556,29 @@ namespace TradingBot
                     if (_activePositions.TryGetValue(symbol, out var ep) && ep.IsOwnPosition) return;
                 }
 
-                var klines15m = await _exchangeService.GetKlinesAsync(
-                    symbol, KlineInterval.FifteenMinutes, 80, token);
+                // [v5.22.15] WebSocket 캐시 우선 사용 → REST 호출 제거
+                //   원인: 매 ticker 업데이트마다 80봉 REST 호출 → 12심볼 × 초당 N회 → API 폭주 + workMs 3000+ms
+                //   해결: MultiTfKlineCache (15m WebSocket) 캐시 우선, 비어있으면 5분 throttle 후 1회 REST
+                List<IBinanceKline>? klines15m = null;
+                var cached15m = _marketDataManager?.GetCachedKlines(symbol, KlineInterval.FifteenMinutes, 60);
+                if (cached15m != null && cached15m.Count >= 60)
+                {
+                    klines15m = cached15m;
+                }
+                else
+                {
+                    // 캐시 미존재 시 throttle: 심볼당 5분에 1회 REST 만 허용
+                    var nowUtc = DateTime.UtcNow;
+                    if (_lastBbSqueezeRestTime.TryGetValue(symbol, out var lastRest)
+                        && (nowUtc - lastRest) < TimeSpan.FromMinutes(5))
+                    {
+                        return; // 최근 REST 호출 → skip (캐시 채워질 때까지 대기)
+                    }
+                    _lastBbSqueezeRestTime[symbol] = nowUtc;
+                    var rest = await _exchangeService.GetKlinesAsync(
+                        symbol, KlineInterval.FifteenMinutes, 80, token);
+                    klines15m = rest?.ToList();
+                }
 
                 if (klines15m == null || klines15m.Count < 60) return;
 

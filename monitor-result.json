@@ -1,5 +1,5 @@
 ﻿{
-    "timestamp":  "2026-04-28 15:17:00",
+    "timestamp":  "2026-04-28 21:17:00",
     "version":  "5.10.66",
     "status":  "OK",
     "alerts":  [
@@ -14,7 +14,7 @@
                     "pnl_24h":  0,
                     "minutes_since_last_log":  0,
                     "major_entries_24h":  0,
-                    "online_logs_24h":  14576,
+                    "online_logs_24h":  9906,
                     "trades_6h":  0,
                     "label_success_rate_24h":  0,
                     "major_blocked_24h":  0
