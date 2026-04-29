@@ -437,5 +437,7 @@ VALUES
             }
         }
         public string SideKr => PositionSide == "LONG" ? "롱" : (PositionSide == "SHORT" ? "숏" : PositionSide);
+        // [v5.22.28] 결과 컬럼 — NetPnl 부호로 익절/손절/본절 추론
+        public string ResultText => NetPnl > 0 ? "✅ 익절" : (NetPnl < 0 ? "❌ 손절" : "⚪ 본절");
     }
 }
