@@ -4189,6 +4189,21 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⚠️ BB 스퀴즈 분석 오류: {ex.Message}");
                 }
 
+                // [v5.22.35] 알트용 단순 SQUEEZE + BB_WALK — 백테스트 (RunDaily60Async) 검증된 로직 이식
+                //   사용자: '알트 20% 넘는 코인 10개+, 10% 넘는 코인 수십개인데 진입 0건은 말이 안됨'
+                //   기존: AnalyzeFifteenMinBBSqueezeBreakoutAsync 의 5중 조건 (BBW<평균50%, 거래량1.5x, RSI정렬, R:R 1.5:1) 너무 까다로움
+                //   신규: 백테스트 트리거 그대로 — BBW<1.5% + 상단돌파 (SQUEEZE), 4회 연속 상단워킹 (BB_WALK)
+                //         + EMA20↑ + RSI<65 가드 + TP 1%/SL 3% (백테스트 동일)
+                try
+                {
+                    if (!isMajorSymbol)
+                        await AnalyzeAltSimpleTriggersAsync(symbol, currentPrice, token);
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ 알트 단순 트리거 오류: {ex.Message}");
+                }
+
                 // ═══════════════════════════
                 // [Hybrid Exit] AI+지표 기반 이탈 관리
                 // ═══════════════════════════
@@ -4625,6 +4640,97 @@ namespace TradingBot
         /// 2) 종가가 BB 중심선을 아래→위로 돌파할 때
         /// 3) 거래량 & RSI 조건 충족 시 LONG 진입
         /// </summary>
+        // [v5.22.35] 알트용 단순 SQUEEZE + BB_WALK — 백테스트 (Tools/LorentzianValidator/RunDaily60Async) 트리거 그대로 이식
+        //   조건: 15m 80봉 + EMA20 rising + RSI14<65 가드
+        //     SQUEEZE: BBWidth (Upper-Lower)/Middle*100 < 1.5 + 종가 > Upper Band
+        //     BB_WALK: 최근 5봉 중 4봉 이상 종가 > Upper Band
+        //   진입: ExecuteAutoOrder LONG, signalSource="BB_SQUEEZE_ALT" or "BB_WALK_ALT"
+        //         → entryCat=SQUEEZE/BB_WALK → MaxSqueezeSlots/MaxBbWalkSlots enforce
+        //   재진입 방지: 같은 심볼 30분 cooldown (_altSimpleTriggerCooldown)
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _altSimpleTriggerCooldown = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan AltSimpleTriggerCooldown = TimeSpan.FromMinutes(30);
+
+        private async Task AnalyzeAltSimpleTriggersAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            // 활성 포지션 있으면 스킵
+            lock (_posLock)
+            {
+                if (_activePositions.ContainsKey(symbol)) return;
+            }
+
+            // 30분 cooldown
+            if (_altSimpleTriggerCooldown.TryGetValue(symbol, out var lastTry))
+            {
+                if (DateTime.UtcNow - lastTry < AltSimpleTriggerCooldown) return;
+            }
+
+            try
+            {
+                // 15m 80봉 (백테스트 검증 동일 — 30초 throttle)
+                var klines = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 80, token);
+                if (klines == null || klines.Count < 25) return;
+
+                // BB(20,2) — Skender 또는 자체
+                var bb = IndicatorCalculator.CalculateBB(klines.ToList(), 20, 2);
+                decimal upper = (decimal)bb.Upper;
+                decimal middle = (decimal)bb.Mid;
+                decimal lower = (decimal)bb.Lower;
+                if (middle <= 0) return;
+                decimal bbWidthPct = (upper - lower) / middle * 100m;
+
+                // EMA20 rising 가드 (직전 5봉 EMA 추세)
+                bool emaRising = IsEma20Rising(klines);
+                if (!emaRising) return;
+
+                // RSI14 < 65 가드
+                double rsi = IndicatorCalculator.CalculateRSI(klines.ToList(), 14);
+                if (rsi >= 65) return;
+
+                decimal lastClose = klines[^1].ClosePrice;
+
+                // 트리거 1: SQUEEZE — BBWidth < 1.5% + 상단 돌파
+                bool sqzTrigger = bbWidthPct < 1.5m && lastClose > upper;
+
+                // 트리거 2: BB_WALK — 최근 5봉 중 4봉 이상 종가 > Upper
+                int walkCount = 0;
+                int n = klines.Count;
+                for (int i = Math.Max(0, n - 5); i < n; i++)
+                {
+                    if (klines[i].ClosePrice > upper) walkCount++;
+                }
+                bool walkTrigger = walkCount >= 4;
+
+                if (!sqzTrigger && !walkTrigger) return;
+
+                string source = sqzTrigger ? "BB_SQUEEZE_ALT" : "BB_WALK_ALT";
+
+                _altSimpleTriggerCooldown[symbol] = DateTime.UtcNow;
+
+                OnStatusLog?.Invoke(
+                    $"🎯 [ALT_SIMPLE] {symbol} {(sqzTrigger ? "SQUEEZE" : "BB_WALK")} 발화 | " +
+                    $"BBW={bbWidthPct:F2}% close={lastClose:F4} upper={upper:F4} RSI={rsi:F1} EMA↑={emaRising} walk={walkCount}/5");
+
+                await ExecuteAutoOrder(
+                    symbol, "LONG", currentPrice, token,
+                    signalSource: source,
+                    mode: "TREND");
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [ALT_SIMPLE] {symbol} 분석 오류: {ex.Message}");
+            }
+        }
+
+        // [v5.22.35] EMA20 직전 봉 대비 상승 추세
+        private static bool IsEma20Rising(List<IBinanceKline> klines)
+        {
+            if (klines == null || klines.Count < 22) return false;
+            var closes = klines.Select(k => (double)k.ClosePrice).ToList();
+            var ema = IndicatorCalculator.CalculateEMASeries(closes, 20);
+            if (ema == null || ema.Count < 2) return false;
+            return ema[^1] > ema[^2];
+        }
+
         private async Task AnalyzeFifteenMinBBSqueezeBreakoutAsync(
             string symbol, decimal currentPrice, CancellationToken token)
         {
