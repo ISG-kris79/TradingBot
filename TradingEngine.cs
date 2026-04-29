@@ -29,6 +29,8 @@ namespace TradingBot
         private bool _disposed = false;
         public bool IsBotRunning { get; private set; } = false;
         private readonly IBinanceRestClient _client;
+        // [v5.22.27] 외부 노출 — BinancePositionHistorySync 등에서 사용
+        public IBinanceRestClient GetRestClient() => _client;
         private CancellationTokenSource? _cts;
         private readonly string apiKey;
         private readonly string apiSecret;

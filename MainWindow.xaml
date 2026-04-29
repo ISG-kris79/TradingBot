@@ -1378,17 +1378,14 @@
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
 
-                                                    <!-- ④ AI SCORE: AIScore + ML% -->
-                                                    <DataGridTemplateColumn Header="AI 점수" Width="118">
+                                                    <!-- [v5.22.27] AI 점수 컬럼 제거 — AI 시스템 폐기 (2026-04-29). 기존 AIScore/MLProbability 0 영구 표시 잔존 코드 제거. -->
+                                                    <DataGridTemplateColumn Header="신호점수" Width="100">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
-                                                                <StackPanel Margin="4,4" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                                                    <TextBlock Text="{Binding AIScoreText}"
-                                                                               Foreground="{Binding ScoreColor}"
-                                                                               FontFamily="Consolas" FontSize="15" FontWeight="Bold"
-                                                                               HorizontalAlignment="Center"/>
-                                                                    <TextBlock Text="{Binding MLProbabilityText}" Foreground="#6B7280" FontSize="9" FontFamily="Consolas" HorizontalAlignment="Center" Margin="0,2,0,0"/>
-                                                                </StackPanel>
+                                                                <TextBlock Text="{Binding AIScoreText}"
+                                                                           Foreground="{Binding ScoreColor}"
+                                                                           FontFamily="Consolas" FontSize="15" FontWeight="Bold"
+                                                                           HorizontalAlignment="Center" VerticalAlignment="Center" Margin="4,4"/>
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
@@ -1727,7 +1724,7 @@
                 </TabItem>
 
                 <!-- TRADE HISTORY TAB -->
-                <TabItem Header="📈  TRADE HISTORY">
+                <TabItem Header="📈  매매기록">
                     <Grid Margin="16">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -1857,7 +1854,7 @@
 
                                 <StackPanel Grid.Column="3"
                                             HorizontalAlignment="Center">
-                                    <TextBlock Text="TOTAL TRADES"
+                                    <TextBlock Text="매매 건수"
                                                FontSize="11"
                                                Foreground="#6B7280"
                                                HorizontalAlignment="Center"
@@ -1876,154 +1873,229 @@
                                 Style="{StaticResource CardStyle}"
                                 Padding="0"
                                 Margin="0">
-                            <DataGrid ItemsSource="{Binding TradeHistory}"
+                            <DataGrid ItemsSource="{Binding PositionHistory}"
                                       Style="{StaticResource ModernDataGridStyle}"
                                       ColumnHeaderStyle="{StaticResource ModernColumnHeaderStyle}"
-                                      MouseDoubleClick="DataGrid_MouseDoubleClick">
+                                      AutoGenerateColumns="False"
+                                      IsReadOnly="True">
                                 <DataGrid.Columns>
-                                    <DataGridTemplateColumn Header="상태"
-                                                            Width="90">
-                                        <DataGridTemplateColumn.CellTemplate>
-                                            <DataTemplate>
-                                                <Border CornerRadius="4"
-                                                        Padding="8,4"
-                                                        ToolTip="{Binding ExitReason}">
-                                                    <Border.Style>
-                                                        <Style TargetType="Border">
-                                                            <Setter Property="Background"
-                                                                    Value="#334155"/>
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding IsOpenPosition}"
-                                                                             Value="True">
-                                                                    <Setter Property="Background"
-                                                                            Value="{StaticResource WarningBrush}"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Border.Style>
-                                                    <TextBlock Text="{Binding PositionStatus}"
-                                                               Foreground="White"
-                                                               FontWeight="Bold"
-                                                               HorizontalAlignment="Center"/>
-                                                </Border>
-                                            </DataTemplate>
-                                        </DataGridTemplateColumn.CellTemplate>
-                                    </DataGridTemplateColumn>
-                                    <DataGridTextColumn Header="TIME"
-                                                        Binding="{Binding Time, StringFormat='yyyy-MM-dd HH:mm:ss'}"
-                                                        Width="160"/>
-                                    <DataGridTextColumn Header="심볼"
-                                                        Binding="{Binding Symbol}"
-                                                        Width="100">
+                                    <DataGridTextColumn Header="진입시각" Binding="{Binding OpenTimeText}" Width="130"/>
+                                    <DataGridTextColumn Header="종료시각" Binding="{Binding CloseTimeText}" Width="130"/>
+                                    <DataGridTextColumn Header="심볼" Binding="{Binding Symbol}" Width="100"/>
+                                    <DataGridTextColumn Header="방향" Binding="{Binding SideKr}" Width="60"/>
+                                    <DataGridTextColumn Header="평균진입" Binding="{Binding AvgEntryPrice, StringFormat=N4}" Width="110"/>
+                                    <DataGridTextColumn Header="평균청산" Binding="{Binding AvgExitPrice, StringFormat=N4}" Width="110"/>
+                                    <DataGridTextColumn Header="수량" Binding="{Binding TotalQuantity, StringFormat=N4}" Width="100"/>
+                                    <DataGridTextColumn Header="순손익" Binding="{Binding NetPnl, StringFormat=N4}" Width="110">
                                         <DataGridTextColumn.ElementStyle>
                                             <Style TargetType="TextBlock">
-                                                <Setter Property="FontWeight"
-                                                        Value="Bold"/>
-                                                <Setter Property="Foreground"
-                                                        Value="White"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
-                                    </DataGridTextColumn>
-                                    <DataGridTemplateColumn Header="SIDE"
-                                                            Width="80">
-                                        <DataGridTemplateColumn.CellTemplate>
-                                            <DataTemplate>
-                                                <Border CornerRadius="4"
-                                                        Padding="8,4">
-                                                    <Border.Style>
-                                                        <Style TargetType="Border">
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding Side}"
-                                                                             Value="BUY">
-                                                                    <Setter Property="Background"
-                                                                            Value="{StaticResource AccentBrush}"/>
-                                                                </DataTrigger>
-                                                                <DataTrigger Binding="{Binding Side}"
-                                                                             Value="SELL">
-                                                                    <Setter Property="Background"
-                                                                            Value="{StaticResource ErrorBrush}"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Border.Style>
-                                                    <TextBlock Text="{Binding Side}"
-                                                               Foreground="White"
-                                                               FontWeight="Bold"
-                                                               HorizontalAlignment="Center"/>
-                                                </Border>
-                                            </DataTemplate>
-                                        </DataGridTemplateColumn.CellTemplate>
-                                    </DataGridTemplateColumn>
-                                    <DataGridTemplateColumn Header="가격"
-                                                            Width="100">
-                                        <DataGridTemplateColumn.CellTemplate>
-                                            <DataTemplate>
-                                                <TextBlock>
-                                                    <TextBlock.Text>
-                                                        <MultiBinding Converter="{StaticResource PriceFormattingConverter}">
-                                                            <Binding Path="Symbol"/>
-                                                            <Binding Path="Price"/>
-                                                        </MultiBinding>
-                                                    </TextBlock.Text>
-                                                </TextBlock>
-                                            </DataTemplate>
-                                        </DataGridTemplateColumn.CellTemplate>
-                                    </DataGridTemplateColumn>
-                                    <DataGridTextColumn Header="STRATEGY"
-                                                        Binding="{Binding Strategy}"
-                                                        Width="150"/>
-                                    <DataGridTextColumn Header="AI 점수"
-                                                        Binding="{Binding AiScore, StringFormat=F1}"
-                                                        Width="90">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="FontWeight"
-                                                        Value="Bold"/>
-                                                <Setter Property="HorizontalAlignment"
-                                                        Value="Center"/>
-                                                <Setter Property="Foreground"
-                                                        Value="White"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
-                                    </DataGridTextColumn>
-                                    <DataGridTextColumn Header="PNL (USDT)"
-                                                        Binding="{Binding PnL, StringFormat=N2}"
-                                                        Width="110">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="FontWeight"
-                                                        Value="Bold"/>
-                                                <Setter Property="HorizontalAlignment"
-                                                        Value="Right"/>
-                                                <Setter Property="Foreground"
-                                                        Value="White"/>
+                                                <Setter Property="FontWeight" Value="Bold"/>
+                                                <Setter Property="HorizontalAlignment" Value="Right"/>
                                                 <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding PnL, Converter={StaticResource LessThanConverter}, ConverterParameter=0}"
-                                                                 Value="True">
-                                                        <Setter Property="Foreground"
-                                                                Value="{StaticResource ErrorBrush}"/>
+                                                    <DataTrigger Binding="{Binding NetPnl, Converter={StaticResource LessThanConverter}, ConverterParameter=0}" Value="True">
+                                                        <Setter Property="Foreground" Value="{StaticResource ErrorBrush}"/>
                                                     </DataTrigger>
-                                                    <DataTrigger Binding="{Binding PnL, Converter={StaticResource GreaterThanConverter}, ConverterParameter=0}"
-                                                                 Value="True">
-                                                        <Setter Property="Foreground"
-                                                                Value="{StaticResource AccentBrush}"/>
+                                                    <DataTrigger Binding="{Binding NetPnl, Converter={StaticResource GreaterThanConverter}, ConverterParameter=0}" Value="True">
+                                                        <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
                                                     </DataTrigger>
                                                 </Style.Triggers>
                                             </Style>
                                         </DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="ROE (%)"
-                                                        Binding="{Binding PnLPercent, StringFormat={}{0:F2}%}"
-                                                        Width="90">
+                                    <DataGridTextColumn Header="ROE%" Binding="{Binding RoePct, StringFormat={}{0:F2}%}" Width="80"/>
+                                    <DataGridTextColumn Header="분할" Binding="{Binding FillCount}" Width="50"/>
+                                    <DataGridTextColumn Header="구간" Binding="{Binding DurationText}" Width="60"/>
+                                    <DataGridTextColumn Header="카테고리" Binding="{Binding Category}" Width="90"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Border>
+                    </Grid>
+                </TabItem>
+
+
+                <!-- TRADE HISTORY TAB -->
+                <TabItem Header="📈  매매기록">
+                    <Grid Margin="16">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- Toolbar -->
+                        <StackPanel Orientation="Horizontal"
+                                    Margin="0,0,0,16">
+                            <TextBlock Text="Start:"
+                                       VerticalAlignment="Center"
+                                       Foreground="#9CA3AF"
+                                       Margin="0,0,8,0"/>
+                            <DatePicker SelectedDate="{Binding StartDate}"
+                                        Width="130"
+                                        Margin="0,0,16,0"/>
+
+                            <TextBlock Text="End:"
+                                       VerticalAlignment="Center"
+                                       Foreground="#9CA3AF"
+                                       Margin="0,0,8,0"/>
+                            <DatePicker SelectedDate="{Binding EndDate}"
+                                        Width="130"
+                                        Margin="0,0,16,0"/>
+
+                            <Button Content="🔍 SEARCH"
+                                    Command="{Binding LoadHistoryCommand}"
+                                    Style="{StaticResource PrimaryButtonStyle}"
+                                    Width="110"
+                                    Height="36"
+                                    Margin="0,0,12,0"/>
+
+                            <Button Content="� Sync"
+                                    Command="{Binding SyncPositionsCommand}"
+                                    Style="{StaticResource PrimaryButtonStyle}"
+                                    Width="90"
+                                    Height="36"
+                                    Margin="0,0,12,0"
+                                    ToolTip="거래소 포지션 동기화 (누락된 청산 복구)"/>
+
+                            <Button Content="�📥 Export CSV"
+                                    Command="{Binding ExportHistoryCommand}"
+                                    Style="{StaticResource SuccessButtonStyle}"
+                                    Width="130"
+                                    Height="36"
+                                    Margin="0,0,16,0"/>
+
+                            <TextBlock Text="{Binding TradeHistory.Count, StringFormat='총 {0}건'}"
+                                       VerticalAlignment="Center"
+                                       Foreground="#6B7280"
+                                       FontWeight="SemiBold"/>
+                        </StackPanel>
+
+                        <!-- Stats Panel -->
+                        <Border Grid.Row="1"
+                                Style="{StaticResource CardStyle}"
+                                Padding="24"
+                                Margin="0,0,0,16">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0"
+                                            HorizontalAlignment="Center">
+                                    <TextBlock Text="WIN RATE"
+                                               FontSize="11"
+                                               Foreground="#6B7280"
+                                               HorizontalAlignment="Center"
+                                               Margin="0,0,0,8"/>
+                                    <TextBlock Text="{Binding WinRate, StringFormat={}{0:F1}%}"
+                                               FontSize="28"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource AccentBrush}"
+                                               HorizontalAlignment="Center"/>
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="1"
+                                            HorizontalAlignment="Center">
+                                    <TextBlock Text="TOTAL PROFIT"
+                                               FontSize="11"
+                                               Foreground="#6B7280"
+                                               HorizontalAlignment="Center"
+                                               Margin="0,0,0,8"/>
+                                    <TextBlock Text="{Binding TotalProfit, StringFormat={}{0:N2} USDT}"
+                                               FontSize="28"
+                                               FontWeight="Bold"
+                                               HorizontalAlignment="Center">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground"
+                                                        Value="White"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding TotalProfit, Converter={StaticResource GreaterThanConverter}, ConverterParameter=0}"
+                                                                 Value="True">
+                                                        <Setter Property="Foreground"
+                                                                Value="{StaticResource AccentBrush}"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding TotalProfit, Converter={StaticResource LessThanConverter}, ConverterParameter=0}"
+                                                                 Value="True">
+                                                        <Setter Property="Foreground"
+                                                                Value="{StaticResource ErrorBrush}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="2"
+                                            HorizontalAlignment="Center">
+                                    <TextBlock Text="AVERAGE ROI"
+                                               FontSize="11"
+                                               Foreground="#6B7280"
+                                               HorizontalAlignment="Center"
+                                               Margin="0,0,0,8"/>
+                                    <TextBlock Text="{Binding AverageRoe, StringFormat={}{0:F2}%}"
+                                               FontSize="28"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource PrimaryBrush}"
+                                               HorizontalAlignment="Center"/>
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="3"
+                                            HorizontalAlignment="Center">
+                                    <TextBlock Text="매매 건수"
+                                               FontSize="11"
+                                               Foreground="#6B7280"
+                                               HorizontalAlignment="Center"
+                                               Margin="0,0,0,8"/>
+                                    <TextBlock Text="{Binding TradeHistory.Count}"
+                                               FontSize="28"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource SecondaryBrush}"
+                                               HorizontalAlignment="Center"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- 매매 기록 -->
+                        <Border Grid.Row="2"
+                                Style="{StaticResource CardStyle}"
+                                Padding="0"
+                                Margin="0">
+                            <DataGrid ItemsSource="{Binding PositionHistory}"
+                                      Style="{StaticResource ModernDataGridStyle}"
+                                      ColumnHeaderStyle="{StaticResource ModernColumnHeaderStyle}"
+                                      AutoGenerateColumns="False"
+                                      IsReadOnly="True">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="진입시각" Binding="{Binding OpenTimeText}" Width="130"/>
+                                    <DataGridTextColumn Header="종료시각" Binding="{Binding CloseTimeText}" Width="130"/>
+                                    <DataGridTextColumn Header="심볼" Binding="{Binding Symbol}" Width="100"/>
+                                    <DataGridTextColumn Header="방향" Binding="{Binding SideKr}" Width="60"/>
+                                    <DataGridTextColumn Header="평균진입" Binding="{Binding AvgEntryPrice, StringFormat=N4}" Width="110"/>
+                                    <DataGridTextColumn Header="평균청산" Binding="{Binding AvgExitPrice, StringFormat=N4}" Width="110"/>
+                                    <DataGridTextColumn Header="수량" Binding="{Binding TotalQuantity, StringFormat=N4}" Width="100"/>
+                                    <DataGridTextColumn Header="순손익" Binding="{Binding NetPnl, StringFormat=N4}" Width="110">
                                         <DataGridTextColumn.ElementStyle>
                                             <Style TargetType="TextBlock">
-                                                <Setter Property="FontWeight"
-                                                        Value="SemiBold"/>
-                                                <Setter Property="HorizontalAlignment"
-                                                        Value="Center"/>
+                                                <Setter Property="FontWeight" Value="Bold"/>
+                                                <Setter Property="HorizontalAlignment" Value="Right"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding NetPnl, Converter={StaticResource LessThanConverter}, ConverterParameter=0}" Value="True">
+                                                        <Setter Property="Foreground" Value="{StaticResource ErrorBrush}"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding NetPnl, Converter={StaticResource GreaterThanConverter}, ConverterParameter=0}" Value="True">
+                                                        <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
                                             </Style>
                                         </DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
+                                    <DataGridTextColumn Header="ROE%" Binding="{Binding RoePct, StringFormat={}{0:F2}%}" Width="80"/>
+                                    <DataGridTextColumn Header="분할" Binding="{Binding FillCount}" Width="50"/>
+                                    <DataGridTextColumn Header="구간" Binding="{Binding DurationText}" Width="60"/>
+                                    <DataGridTextColumn Header="카테고리" Binding="{Binding Category}" Width="90"/>
                                 </DataGrid.Columns>
                             </DataGrid>
                         </Border>

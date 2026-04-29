@@ -144,6 +144,11 @@ namespace TradingBot.ViewModels
         public ObservableCollection<string> FastLogs { get; set; } = new ObservableCollection<string>();
         public ObservableCollection<TradeLog> TradeHistory { get; set; } = new ObservableCollection<TradeLog>();
 
+        // [v5.22.27] BinancePositionHistory — 분할청산 묶은 1행 표시
+        public ObservableCollection<TradingBot.Services.PositionHistoryRow> PositionHistory { get; set; } = new ObservableCollection<TradingBot.Services.PositionHistoryRow>();
+        private TradingBot.Services.BinancePositionHistorySync? _bphSync;
+        private System.Threading.Timer? _bphRefreshTimer;
+
         // [v3.2.49] Performance 탭
         public SeriesCollection PerformanceSeries { get; set; } = new SeriesCollection();
         public string[] PerformanceLabels { get; set; } = Array.Empty<string>();
@@ -949,7 +954,7 @@ namespace TradingBot.ViewModels
                     if (!_marketDataIndex.ContainsKey(sym))
                     {
                         var placeholder = new MultiTimeframeViewModel { Symbol = sym };
-                        placeholder.EntryStatus = ResolveEntryStatus(placeholder.SignalSource, placeholder.Decision, placeholder.IsPositionActive);
+                        placeholder.EntryStatus = ResolveEntryStatus(placeholder.SignalSource, placeholder.Decision, placeholder.IsPositionActive, placeholder.Symbol);
                         MarketDataList.Add(placeholder);
                         _marketDataIndex[sym] = placeholder;
                     }
@@ -982,6 +987,13 @@ namespace TradingBot.ViewModels
                     null,
                     TimeSpan.FromSeconds(5),
                     TimeSpan.FromMinutes(5));
+
+                // [v5.22.27] BinancePositionHistory 30초 주기 UI refresh
+                _bphRefreshTimer = new System.Threading.Timer(
+                    async _ => await RefreshPositionHistoryFromDbAsync(),
+                    null,
+                    TimeSpan.FromSeconds(8),
+                    TimeSpan.FromSeconds(30));
             }
 
             // 테마 초기화
@@ -1004,6 +1016,20 @@ namespace TradingBot.ViewModels
                     _engine = new TradingEngine();
                     SubscribeToEngineEvents();
                     OnPropertyChanged(nameof(InitialBalance));
+
+                    // [v5.22.27] BinancePositionHistorySync 가동 — 5분 주기 + 90일 백필
+                    try
+                    {
+                        var rest = _engine.GetRestClient();
+                        int uid = AppConfig.CurrentUser?.Id ?? 0;
+                        if (rest != null && uid > 0)
+                        {
+                            _bphSync = new TradingBot.Services.BinancePositionHistorySync(rest, AppConfig.ConnectionString, uid);
+                            _bphSync.OnLog += msg => AddLiveLog(msg);
+                            _ = _bphSync.EnsureSchemaAsync().ContinueWith(t => _bphSync.StartAsync(System.Threading.CancellationToken.None));
+                        }
+                    }
+                    catch (Exception ex) { AddLiveLog($"⚠️ [BPH] 가동 실패: {ex.Message}"); }
                 }
                 catch (Exception ex)
                 {
@@ -3302,13 +3328,17 @@ namespace TradingBot.ViewModels
             }
 
             var created = new MultiTimeframeViewModel { Symbol = normalizedSymbol };
-            created.EntryStatus = ResolveEntryStatus(created.SignalSource, created.Decision, created.IsPositionActive);
+            created.EntryStatus = ResolveEntryStatus(created.SignalSource, created.Decision, created.IsPositionActive, created.Symbol);
             MarketDataList.Add(created);
             _marketDataIndex[normalizedSymbol] = created;
             return created;
         }
 
-        private static string ResolveEntryStatus(string? signalSource, string? decision, bool isPositionActive)
+        // [v5.22.27] 메이저 심볼 (BTC/ETH/SOL/XRP/BNB) 정의 — 알트 EntryStatus 분기용
+        private static readonly HashSet<string> MajorSymbolsSet = new(StringComparer.OrdinalIgnoreCase)
+        { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT" };
+
+        private static string ResolveEntryStatus(string? signalSource, string? decision, bool isPositionActive, string? symbol = null)
         {
             if (isPositionActive)
                 return "진입중";
@@ -3336,6 +3366,12 @@ namespace TradingBot.ViewModels
                 return "신호 감시";
             }
 
+            // [v5.22.27] 알트 = "관망 (PUMP/SPIKE 차단)" 으로 사유 명시
+            //   v5.22.5 PUMP_DISABLED + v5.21.0 SPIKE_DISABLED 로 알트 진입 source 거의 없음.
+            //   기존 "대기" 표시 → 사용자 혼란 ("왜 진입 안하나"). 차단 사유를 보이도록 변경.
+            if (!string.IsNullOrEmpty(symbol) && !MajorSymbolsSet.Contains(symbol))
+                return "관망 (알트차단)";
+
             return "대기";
         }
 
@@ -3355,7 +3391,7 @@ namespace TradingBot.ViewModels
                     if (signal.AIScore > 0)
                         signal.TouchAIScoreUpdatedAt();
 
-                    signal.EntryStatus = ResolveEntryStatus(signal.SignalSource, signal.Decision, signal.IsPositionActive);
+                    signal.EntryStatus = ResolveEntryStatus(signal.SignalSource, signal.Decision, signal.IsPositionActive, signal.Symbol);
 
                     MarketDataList.Add(signal);
                     _marketDataIndex[symbol] = signal;
@@ -3423,7 +3459,7 @@ namespace TradingBot.ViewModels
                         existing.AiEntryProbUpdatedAt = effectiveUpdatedAt;
                 }
 
-                string resolvedEntryStatus = ResolveEntryStatus(existing.SignalSource, existing.Decision, existing.IsPositionActive);
+                string resolvedEntryStatus = ResolveEntryStatus(existing.SignalSource, existing.Decision, existing.IsPositionActive, existing.Symbol);
                 if (!string.Equals(existing.EntryStatus, resolvedEntryStatus, StringComparison.Ordinal))
                     existing.EntryStatus = resolvedEntryStatus;
             }
@@ -4622,25 +4658,103 @@ namespace TradingBot.ViewModels
                 string cs = AppConfig.ConnectionString;
                 if (string.IsNullOrEmpty(cs)) return;
 
+                // [v5.22.27] BinancePositionHistory 우선 사용 (분할청산 묶음 → 정확한 진입수)
+                //   fallback: 데이터 0건이면 기존 TradeHistory 통계
+                var bphStats = await GetTodayStatsFromBphAsync(cs);
+                if (bphStats != null && bphStats.Sum(kv => kv.Value.e) > 0)
+                {
+                    (int e, int w, int l, decimal p) majorT = bphStats.TryGetValue("MAJOR", out var mv) ? mv : (0, 0, 0, 0m);
+                    (int e, int w, int l, decimal p) pumpT = bphStats.TryGetValue("PUMP", out var pv) ? pv : (0, 0, 0, 0m);
+                    (int e, int w, int l, decimal p) spikeT = bphStats.TryGetValue("SPIKE", out var sv) ? sv : (0, 0, 0, 0m);
+                    (int e, int w, int l, decimal p) squeezeT = bphStats.TryGetValue("SQUEEZE", out var qv) ? qv : (0, 0, 0, 0m);
+                    RunOnUI(() =>
+                    {
+                        MajorStats.Update(majorT.e, majorT.w, majorT.l, majorT.p);
+                        PumpStats.Update(pumpT.e, pumpT.w, pumpT.l, pumpT.p);
+                        SpikeStats.Update(spikeT.e, spikeT.w, spikeT.l, spikeT.p);
+                        SqueezeStats.Update(squeezeT.e, squeezeT.w, squeezeT.l, squeezeT.p);
+                    });
+                    return;
+                }
+
                 var dbManager = new DbManager(cs);
                 var stats = await dbManager.GetTodayStatsByCategoryAsync();
 
-                (int e, int w, int l, decimal p) majorT = stats.TryGetValue("MAJOR", out var mv) ? mv : (0, 0, 0, 0m);
-                (int e, int w, int l, decimal p) pumpT = stats.TryGetValue("PUMP", out var pv) ? pv : (0, 0, 0, 0m);
-                (int e, int w, int l, decimal p) spikeT = stats.TryGetValue("SPIKE", out var sv) ? sv : (0, 0, 0, 0m);
-                (int e, int w, int l, decimal p) squeezeT = stats.TryGetValue("SQUEEZE", out var qv) ? qv : (0, 0, 0, 0m);
+                (int e, int w, int l, decimal p) majorT2 = stats.TryGetValue("MAJOR", out var mv2) ? mv2 : (0, 0, 0, 0m);
+                (int e, int w, int l, decimal p) pumpT2 = stats.TryGetValue("PUMP", out var pv2) ? pv2 : (0, 0, 0, 0m);
+                (int e, int w, int l, decimal p) spikeT2 = stats.TryGetValue("SPIKE", out var sv2) ? sv2 : (0, 0, 0, 0m);
+                (int e, int w, int l, decimal p) squeezeT2 = stats.TryGetValue("SQUEEZE", out var qv2) ? qv2 : (0, 0, 0, 0m);
 
                 RunOnUI(() =>
                 {
-                    MajorStats.Update(majorT.e, majorT.w, majorT.l, majorT.p);
-                    PumpStats.Update(pumpT.e, pumpT.w, pumpT.l, pumpT.p);
-                    SpikeStats.Update(spikeT.e, spikeT.w, spikeT.l, spikeT.p);
-                    SqueezeStats.Update(squeezeT.e, squeezeT.w, squeezeT.l, squeezeT.p);
+                    MajorStats.Update(majorT2.e, majorT2.w, majorT2.l, majorT2.p);
+                    PumpStats.Update(pumpT2.e, pumpT2.w, pumpT2.l, pumpT2.p);
+                    SpikeStats.Update(spikeT2.e, spikeT2.w, spikeT2.l, spikeT2.p);
+                    SqueezeStats.Update(squeezeT2.e, squeezeT2.w, squeezeT2.l, squeezeT2.p);
                 });
             }
             catch (Exception ex)
             {
                 try { AddLiveLog($"⚠️ [CategoryStats] 통계 조회 실패: {ex.Message}"); } catch { }
+            }
+        }
+
+        // [v5.22.27] BinancePositionHistory 기반 오늘(KST 00:00~) 카테고리 통계 — 분할청산 묶인 1포지션 = 1진입
+        private static async Task<Dictionary<string, (int e, int w, int l, decimal p)>?> GetTodayStatsFromBphAsync(string cs)
+        {
+            try
+            {
+                await using var db = new Microsoft.Data.SqlClient.SqlConnection(cs);
+                await db.OpenAsync();
+                // KST 00:00 = UTC -09:00 from KST midnight = today's 15:00 prev day UTC
+                var rows = await Dapper.SqlMapper.QueryAsync<(string Category, int Entries, int Wins, int Losses, decimal TotalPnl)>(db, @"
+DECLARE @kstNow DATETIME2 = SWITCHOFFSET(SYSUTCDATETIME(), '+09:00');
+DECLARE @kstStart DATETIME2 = DATEADD(DAY, DATEDIFF(DAY, 0, @kstNow), 0);
+DECLARE @utcStart DATETIME2 = TODATETIMEOFFSET(@kstStart, '+09:00') AT TIME ZONE 'UTC';
+
+SELECT
+  ISNULL(Category, 'UNKNOWN') AS Category,
+  COUNT(*) AS Entries,
+  SUM(CASE WHEN NetPnl > 0 THEN 1 ELSE 0 END) AS Wins,
+  SUM(CASE WHEN NetPnl < 0 THEN 1 ELSE 0 END) AS Losses,
+  SUM(NetPnl) AS TotalPnl
+FROM dbo.BinancePositionHistory
+WHERE CloseTime >= @utcStart
+GROUP BY Category
+", commandTimeout: 30);
+                var dict = new Dictionary<string, (int, int, int, decimal)>(StringComparer.OrdinalIgnoreCase);
+                foreach (var r in rows)
+                    dict[r.Category] = (r.Entries, r.Wins, r.Losses, r.TotalPnl);
+                return dict;
+            }
+            catch { return null; }
+        }
+
+        // [v5.22.27] BinancePositionHistory → PositionHistory ObservableCollection 갱신
+        private async Task RefreshPositionHistoryFromDbAsync()
+        {
+            try
+            {
+                string cs = AppConfig.ConnectionString;
+                if (string.IsNullOrEmpty(cs)) return;
+                await using var db = new Microsoft.Data.SqlClient.SqlConnection(cs);
+                await db.OpenAsync();
+                var rows = await Dapper.SqlMapper.QueryAsync<TradingBot.Services.PositionHistoryRow>(db, @"
+SELECT TOP 500 Id, Symbol, PositionSide, OpenTime, CloseTime, AvgEntryPrice, AvgExitPrice,
+       TotalQuantity, RealizedPnl, Commission, NetPnl, RoePct, FillCount, ISNULL(Category,'') AS Category
+FROM dbo.BinancePositionHistory
+ORDER BY CloseTime DESC, Id DESC
+", commandTimeout: 30);
+                var list = rows.ToList();
+                RunOnUI(() =>
+                {
+                    PositionHistory.Clear();
+                    foreach (var r in list) PositionHistory.Add(r);
+                });
+            }
+            catch (Exception ex)
+            {
+                try { AddLiveLog($"⚠️ [PositionHistory] DB 조회 실패: {ex.Message}"); } catch { }
             }
         }
 
@@ -4999,7 +5113,7 @@ namespace TradingBot.ViewModels
                     existing.Leverage = 0;
                 }
 
-                string resolvedEntryStatus = ResolveEntryStatus(existing.SignalSource, existing.Decision, existing.IsPositionActive);
+                string resolvedEntryStatus = ResolveEntryStatus(existing.SignalSource, existing.Decision, existing.IsPositionActive, existing.Symbol);
                 if (!string.Equals(existing.EntryStatus, resolvedEntryStatus, StringComparison.Ordinal))
                     existing.EntryStatus = resolvedEntryStatus;
 
