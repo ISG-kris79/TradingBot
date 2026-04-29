@@ -622,7 +622,7 @@ namespace TradingBot.Models
         public decimal EntryPrice
         {
             get => _entryPrice;
-            set { _entryPrice = value; OnPropertyChanged(nameof(EntryPrice)); OnPropertyChanged(nameof(ProfitRate)); OnPropertyChanged(nameof(ProfitColor)); OnPropertyChanged(nameof(PriceColor)); OnPropertyChanged(nameof(Status)); OnPropertyChanged(nameof(EntryMarginUsdt)); OnPropertyChanged(nameof(EntryNotionalUsdt)); OnPropertyChanged(nameof(ProfitUsdt)); }
+            set { _entryPrice = value; OnPropertyChanged(nameof(EntryPrice)); OnPropertyChanged(nameof(ProfitRate)); OnPropertyChanged(nameof(ProfitColor)); OnPropertyChanged(nameof(PriceColor)); OnPropertyChanged(nameof(Status)); OnPropertyChanged(nameof(EntryMarginUsdt)); OnPropertyChanged(nameof(EntryNotionalUsdt)); OnPropertyChanged(nameof(ProfitUsdt)); OnPropertyChanged(nameof(RiskSummary)); }
         }
         private bool _isPositionActive;
         public bool IsPositionActive
@@ -666,6 +666,7 @@ namespace TradingBot.Models
                 OnPropertyChanged(nameof(EntryMarginUsdt));
                 OnPropertyChanged(nameof(EntryNotionalUsdt));
                 OnPropertyChanged(nameof(ProfitUsdt));
+                OnPropertyChanged(nameof(RiskSummary)); // [v5.22.32] USD 금액 재계산
             }
         }
 
@@ -1463,15 +1464,35 @@ namespace TradingBot.Models
             }
         }
 
-        // 리스크 요약 (SL/TP/트레일링스탑 가격 + USD 금액 [v5.22.29])
+        // 리스크 요약 (SL/TP/트레일링스탑 가격 + USD 금액 [v5.22.29], fallback 강제계산 [v5.22.32])
         public string RiskSummary
         {
             get
             {
-                if (!IsPositionActive) return "-";
+                // [v5.22.32] 진입가만 있으면 무조건 표시 — IsPositionActive=true 인데 SL/TP 가 0 인 경우
+                //   (UpdatePositionStatus 가 호출 안 되거나, PositionInfo.TakeProfit 이 0 인 경우)
+                //   → fallback 가격 즉시 계산해서 게터에서 직접 반환. 이벤트/timer 의존 없음.
+                if (!IsPositionActive || EntryPrice <= 0) return "-";
 
                 // [v3.2.39] 가격 기반 소수점 자동 결정
                 string FmtPrice(decimal p) => p >= 100 ? p.ToString("F2") : p >= 1 ? p.ToString("F4") : p >= 0.01m ? p.ToString("F6") : p.ToString("F8");
+
+                // [v5.22.32] SL/TP 가 0 이면 fallback 계산 — 메이저 0.5%/1.5%, 알트 1%/3% (v5.21.10 검증값)
+                bool isMajor = !string.IsNullOrEmpty(Symbol) &&
+                    (Symbol == "BTCUSDT" || Symbol == "ETHUSDT" || Symbol == "SOLUSDT" || Symbol == "XRPUSDT" || Symbol == "BNBUSDT");
+                decimal effTp = TargetPrice;
+                decimal effSl = StopLossPrice;
+                bool tpFallback = false, slFallback = false;
+                if (effTp <= 0)
+                {
+                    effTp = EntryPrice * (isMajor ? 1.005m : 1.01m);
+                    tpFallback = true;
+                }
+                if (effSl <= 0)
+                {
+                    effSl = EntryPrice * (isMajor ? 0.985m : 0.97m);
+                    slFallback = true;
+                }
 
                 // [v5.22.29] USD 금액 — 가격 도달 시 PnL (Long: TP→이익 / SL→손실, Short 반대)
                 decimal qty = Math.Abs(Quantity);
@@ -1479,32 +1500,26 @@ namespace TradingBot.Models
                 string FmtUsd(decimal usd) => usd >= 0 ? $"+${usd:F1}" : $"-${Math.Abs(usd):F1}";
                 string SlUsdText(decimal slPrice)
                 {
-                    if (qty == 0 || EntryPrice == 0 || slPrice == 0) return "";
+                    if (qty == 0 || slPrice == 0) return "";
                     decimal pnl = isLong ? (slPrice - EntryPrice) * qty : (EntryPrice - slPrice) * qty;
                     return $"({FmtUsd(pnl)})";
                 }
                 string TpUsdText(decimal tpPrice)
                 {
-                    if (qty == 0 || EntryPrice == 0 || tpPrice == 0) return "";
+                    if (qty == 0 || tpPrice == 0) return "";
                     decimal pnl = isLong ? (tpPrice - EntryPrice) * qty : (EntryPrice - tpPrice) * qty;
                     return $"({FmtUsd(pnl)})";
                 }
 
-                var sl = StopLossPrice > 0 ? $"SL:{FmtPrice(StopLossPrice)}{SlUsdText(StopLossPrice)}" : null;
-                var tp = TargetPrice > 0 ? $"TP:{FmtPrice(TargetPrice)}{TpUsdText(TargetPrice)}" : null;
+                string slLabel = slFallback ? "SL*" : "SL";  // *=추정값
+                string tpLabel = tpFallback ? "TP*" : "TP";
+                var sl = $"{slLabel}:{FmtPrice(effSl)}{SlUsdText(effSl)}";
+                var tp = $"{tpLabel}:{FmtPrice(effTp)}{TpUsdText(effTp)}";
                 var ts = TrailingStopPrice > 0 ? $"TS:{FmtPrice(TrailingStopPrice)}{SlUsdText(TrailingStopPrice)}" : null;
 
                 // 트레일링스탑이 활성화되면 SL 대신 TS 표시 (TS가 실질적 손절가)
-                if (ts != null)
-                {
-                    return tp != null ? $"{ts} | {tp}" : ts;
-                }
-
-                if (sl != null && tp != null)
-                    return $"{sl} | {tp}";
-                if (sl != null) return sl;
-                if (tp != null) return tp;
-                return "-";
+                if (ts != null) return $"{ts} | {tp}";
+                return $"{sl} | {tp}";
             }
         }
 
