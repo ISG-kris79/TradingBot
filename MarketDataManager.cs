@@ -132,27 +132,48 @@ namespace TradingBot.Services
         private async Task StartMajorRestPollingAsync(CancellationToken token)
         {
             await Task.Delay(TimeSpan.FromSeconds(3), token);
-            OnLog?.Invoke("📊 [REST_POLL] 메이저 4개 5초 주기 가격 폴링 시작 (WebSocket fallback)");
+            OnLog?.Invoke("📊 [REST_POLL] 5초 주기 전체 ticker 폴링 시작 — 메이저4 + 알트 동적8 (총 12 emit)");
             var majorSet = new HashSet<string>(_majorSymbols, StringComparer.OrdinalIgnoreCase);
             while (!token.IsCancellationRequested)
             {
                 try
                 {
-                    // 한 번의 GetTickersAsync (전체 ticker) 호출 → 메이저 4개만 추출
+                    // 한 번의 GetTickersAsync (전체 ticker) 호출
                     var pr = await _restClient.UsdFuturesApi.ExchangeData.GetTickersAsync(ct: token);
                     if (pr.Success && pr.Data != null)
                     {
-                        foreach (var t in pr.Data)
+                        var snap = pr.Data
+                            .Where(t => t != null && !string.IsNullOrEmpty(t.Symbol))
+                            .ToList();
+
+                        // 1) TickerCache 전체 갱신
+                        foreach (var t in snap)
                         {
-                            if (t == null || string.IsNullOrEmpty(t.Symbol)) continue;
-                            // TickerCache 는 항상 갱신 (전체 종목)
                             TickerCache.AddOrUpdate(t.Symbol,
                                 _ => new TickerCacheItem { Symbol = t.Symbol, LastPrice = t.LastPrice, HighPrice = t.HighPrice, OpenPrice = t.OpenPrice, QuoteVolume = t.QuoteVolume, PriceChangePercent = t.PriceChangePercent },
                                 (_, v) => { v.LastPrice = t.LastPrice; v.HighPrice = t.HighPrice; v.OpenPrice = t.OpenPrice; v.QuoteVolume = t.QuoteVolume; v.PriceChangePercent = t.PriceChangePercent; return v; });
-                            // 메이저만 OnTickerUpdate emit
+                        }
+
+                        // 2) 메이저 4 OnTickerUpdate emit
+                        foreach (var t in snap)
+                        {
                             if (majorSet.Contains(t.Symbol))
                                 OnTickerUpdate?.Invoke(t);
                         }
+
+                        // 3) [v5.22.22] 알트 동적 8 — USDT_FUTURES 24h 거래대금 큰 순 (메이저 제외)
+                        //    OnAllTickerUpdate 무동작 회귀 우회 — 알트 가격도 UI 그리드에 표시.
+                        //    QuoteVolume 정렬 = 가장 활발하게 거래되는 알트 (밈/펌프 코인 포함).
+                        var topAlts = snap
+                            .Where(t => !majorSet.Contains(t.Symbol)
+                                        && t.Symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
+                                        && t.QuoteVolume > 0)
+                            .OrderByDescending(t => t.QuoteVolume)
+                            .Take(8)
+                            .ToList();
+
+                        foreach (var t in topAlts)
+                            OnTickerUpdate?.Invoke(t);
                     }
                 }
                 catch (OperationCanceledException) { return; }
