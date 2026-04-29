@@ -163,15 +163,17 @@ namespace TradingBot.Services
                                 OnTickerUpdate?.Invoke(t);
                         }
 
-                        // 3) [v5.22.22] 알트 동적 8 — USDT_FUTURES 24h 거래대금 큰 순 (메이저 제외)
-                        //    OnAllTickerUpdate 무동작 회귀 우회 — 알트 가격도 UI 그리드에 표시.
-                        //    QuoteVolume 정렬 = 가장 활발하게 거래되는 알트 (밈/펌프 코인 포함).
+                        // 3) [v5.22.33] B+C — 알트 동적 20 (기존 8) + 변동성 기준 선정 (기존 거래대금)
+                        //    원인: 거래대금 큰 메인 알트는 BBW 압축 안 일어남 → 스퀴즈 신호 0건
+                        //    해결: |PriceChangePercent| desc → 변동성 큰 알트 추적 (BBW 압축/돌파 잘 만듬)
+                        //          + 풀 크기 8 → 20 으로 후보 확대
+                        //    최소 거래대금 필터 (10M USDT) 로 페니/저유동성 코인 제거.
                         var topAlts = snap
                             .Where(t => !majorSet.Contains(t.Symbol)
                                         && t.Symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
-                                        && t.QuoteVolume > 0)
-                            .OrderByDescending(t => t.QuoteVolume)
-                            .Take(8)
+                                        && t.QuoteVolume >= 10_000_000m)
+                            .OrderByDescending(t => Math.Abs(t.PriceChangePercent))
+                            .Take(20)
                             .ToList();
 
                         foreach (var t in topAlts)

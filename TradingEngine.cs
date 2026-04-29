@@ -3849,7 +3849,10 @@ namespace TradingBot
         //   효과: ML.NET 추론 200+ → 12 (94% 감소), 메인 루프 workMs 1050ms → ~150ms 예상
         // ═══════════════════════════════════════════════════════════════════════════════════
         private static readonly string[] FixedMajorPool = { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
-        private const int DynamicPoolSize = 8;
+        // [v5.22.33] B+C — 동적 알트 풀 8 → 20 확대 (스퀴즈/엘리엇 신호 발생 빈도 증가)
+        //   원인: 거래대금 큰 메인 알트는 변동성 압축 (BBW < 평균 50%) 조건 거의 안 맞음
+        //   해결: 풀 크기 확대 + 변동성 기준 선정 (이미 EnsureActiveTrackingPoolFresh 는 |PriceChangePercent| desc)
+        private const int DynamicPoolSize = 20;
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _activeTrackingPool = new(StringComparer.OrdinalIgnoreCase);
         private DateTime _lastTrackingPoolRefresh = DateTime.MinValue;
         private static readonly TimeSpan TrackingPoolRefreshInterval = TimeSpan.FromMinutes(5);
