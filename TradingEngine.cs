@@ -4160,6 +4160,19 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⚠️ 반대시그널 청산 오류: {ex.Message}");
                 }
 
+                // [v5.22.41] Time Stop — 백테스트 win 봉 도달 시 강제 청산 (라이브 무한 보유 방지)
+                //   원인: 백테스트는 win=12봉(메이저 1h) / 24봉(알트 2h) 도달 시 자동 청산 가정
+                //         라이브는 TP/SL 만 algoOrder 등록 → 도달 안 하면 OPENUSDT 7시간+ 보유 → 백테스트 모델 위반
+                //   해결: 진입 후 win 시간 초과 + TP/SL 미체결 → 즉시 시장가 청산
+                try
+                {
+                    await CheckTimeStopExitAsync(symbol, currentPrice, token);
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ Time Stop 청산 오류: {ex.Message}");
+                }
+
                 // ═══════════════════════════
                 // [Hybrid Exit] AI+지표 기반 이탈 관리
                 // ═══════════════════════════
@@ -4636,6 +4649,63 @@ namespace TradingBot
             catch (Exception ex)
             {
                 OnStatusLog?.Invoke($"⚠️ [MAJOR_SIMPLE] {symbol} 오류: {ex.Message}");
+            }
+        }
+
+        // [v5.22.41] Time Stop — 백테스트 win 봉 도달 시 강제 청산
+        //   메이저 = 12봉 × 5분 = 60분 (1시간) 경과 후 TP/SL 미체결 → 즉시 청산
+        //   알트   = 24봉 × 5분 = 120분 (2시간) 경과 후 TP/SL 미체결 → 즉시 청산
+        //   사용자: 'OPENUSDT 7시간째 보유 → 백테스트 모델 위반'
+        //   재호출 폭주 방지: 같은 심볼 1분 cooldown
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _timeStopChecked = new(StringComparer.OrdinalIgnoreCase);
+
+        private async Task CheckTimeStopExitAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            PositionInfo? pos = null;
+            lock (_posLock)
+            {
+                if (!_activePositions.TryGetValue(symbol, out pos)) return;
+                if (pos == null || !pos.IsOwnPosition) return;
+            }
+
+            // 같은 심볼 1분 cooldown
+            if (_timeStopChecked.TryGetValue(symbol, out var lastCheck))
+            {
+                if (DateTime.UtcNow - lastCheck < TimeSpan.FromMinutes(1)) return;
+            }
+
+            // 진입 후 경과 시간
+            DateTime entryUtc = pos.EntryTime.ToUniversalTime();
+            TimeSpan elapsed = DateTime.UtcNow - entryUtc;
+
+            // 메이저 = 60분, 알트 = 120분
+            bool isMajor = MajorSymbols.Contains(symbol);
+            TimeSpan winLimit = isMajor ? TimeSpan.FromMinutes(60) : TimeSpan.FromMinutes(120);
+            if (elapsed < winLimit) return;
+
+            _timeStopChecked[symbol] = DateTime.UtcNow;
+
+            // 현재 ROE
+            decimal lev = pos.Leverage > 0 ? pos.Leverage : (_settings?.DefaultLeverage ?? 15m);
+            decimal pnlPct = pos.IsLong
+                ? (currentPrice - pos.EntryPrice) / pos.EntryPrice * 100m
+                : (pos.EntryPrice - currentPrice) / pos.EntryPrice * 100m;
+            decimal roe = pnlPct * lev;
+
+            OnStatusLog?.Invoke(
+                $"⏰ [TIME_STOP] {symbol} 진입 후 {elapsed.TotalMinutes:F0}분 경과 (한도 {winLimit.TotalMinutes:F0}분) ROE={roe:F2}% → 강제 청산");
+            OnAlert?.Invoke($"⏰ [Time Stop] {symbol} {elapsed.TotalMinutes:F0}분 보유 ROE={roe:F2}% 청산 (백테스트 win 봉 도달)");
+
+            try
+            {
+                decimal qty = Math.Abs(pos.Quantity);
+                if (qty <= 0) return;
+                string side = pos.IsLong ? "SELL" : "BUY";
+                await _exchangeService.PlaceMarketOrderAsync(symbol, side, qty, token, reduceOnly: true);
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"❌ [TIME_STOP] {symbol} 청산 실패: {ex.Message}");
             }
         }
 

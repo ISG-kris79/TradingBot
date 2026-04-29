@@ -99,23 +99,22 @@ namespace TradingBot.Tools.LorentzianValidator
         }
 
         // ───────────────────────────────────────────────────────────────────
-        // [v5.22.40] 라이브 AnalyzeMajorSimpleAsync 100% 동일
+        // [v5.22.41] 라이브 v5.22.40 AnalyzeMajorSimpleAsync 100% 동일 — aiScore 폐기 후 단순 트리거
         //   가드 1: EMA20 5봉 차이 상승 (i 봉 EMA vs i-5 봉 EMA)
         //   가드 2: RSI14 < 65
         //   가드 3: M15RangePos 60~85% — 직전 30봉 High/Low 범위 내 종가 위치
+        //   * aiScore / 3 Tier / Staircase Pursuit / 정배열 확장 모두 폐기 (v5.22.40)
         // ───────────────────────────────────────────────────────────────────
         public static bool ShouldEnterLong(List<IBinanceKline> kl, int upTo, decimal currentPrice)
         {
-            if (upTo + 1 < 30) return false;
+            if (upTo + 1 < 30 || upTo < 25) return false;
 
-            // 가드 1: EMA20 5봉 차이 상승 — 자체 EMA 계산 (Skender 호출 비용 회피)
-            if (upTo < 25) return false;
-            decimal alpha = 2m / (20 + 1);
+            // 가드 1: EMA20 5봉 차이 상승 — 자체 EMA 계산 (rolling window)
+            decimal alpha = 2m / 21m;
             decimal ema = kl[upTo - 25].ClosePrice;
             for (int j = upTo - 24; j <= upTo; j++)
                 ema = kl[j].ClosePrice * alpha + ema * (1 - alpha);
-            decimal emaPrev5 = kl[upTo - 30 < 0 ? 0 : upTo - 30].ClosePrice;
-            int from5 = Math.Max(0, upTo - 5 - 25);
+            int from5 = Math.Max(0, upTo - 30);
             decimal e5 = kl[from5].ClosePrice;
             for (int j = from5 + 1; j <= upTo - 5; j++)
                 e5 = kl[j].ClosePrice * alpha + e5 * (1 - alpha);

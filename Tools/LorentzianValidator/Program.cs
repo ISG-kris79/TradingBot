@@ -1540,6 +1540,187 @@ internal static class Program
     private static async Task RunAlt180Async() => await RunDailyAsync(pages: 36, label: "알트180일", altOnly: true);
     private static async Task RunAlt60Async() => await RunDailyAsync(pages: 12, label: "알트60일", altOnly: true);
 
+    // [v5.22.41] 사용자 실제 설정 시뮬 — 시드 $400, 마진 메이저 $150/슬롯 1, 알트 $100/슬롯 2
+    //   슬롯 제한: 메이저 활성 1 초과 / 알트 활성 2 초과 시 진입 차단
+    //   활성 = 진입 후 win 봉 (TP/SL 도달 시점) 동안 점유
+    private static async Task RunLiveStatsV2Async()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  v5.22.40 라이브 시뮬 — 시드 \\$400, 메이저 마진 \\$150/슬롯 1, 알트 \\$100/슬롯 2");
+        Console.WriteLine("================================================================");
+
+        const decimal seed = 400m;
+        const decimal majorMargin = 150m;
+        const decimal altMargin = 100m;
+        const int majorSlot = 1;
+        const int altSlot = 2;
+        const int fetchPages = 36;
+
+        var fullData = new Dictionary<string, List<IBinanceKline>>();
+        Console.WriteLine($"\n[fetch 180일 — {symbols.Length}개 심볼]");
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[{idx}/{symbols.Length}] {sym} ");
+            try
+            {
+                var kl = await FetchKlinesAsync(sym, fetchPages);
+                if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+                fullData[sym] = kl;
+                Console.WriteLine($"ok ({kl.Count} bars)");
+            }
+            catch (Exception ex) { Console.WriteLine("fail: " + ex.Message); }
+        }
+
+        var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT" };
+
+        // 시간 정렬된 모든 진입 후보 한꺼번에 시뮬 (슬롯 제한 시뮬)
+        (int n, int w, decimal pnl) Eval(int days)
+        {
+            DateTime since = DateTime.UtcNow.AddDays(-days);
+            // 슬롯 추적 — Major/Alt 분리
+            // 활성 슬롯 [심볼별 종료 시각 (kline 인덱스)]
+            // 시뮬 흐름: 모든 (sym, i) 후보 시간순 → 슬롯 통과 → win 봉까지 점유
+            const int cooldownBars = 6; // 30분
+            decimal feeRate = FEE_RATE;
+
+            // 모든 후보 모음 (timeIndex, sym, isMajor)
+            var candidates = new List<(DateTime time, string sym, bool isMajor, int barIdx, decimal entryPrice, decimal high, decimal low)>();
+            foreach (var kv in fullData)
+            {
+                var kl = kv.Value; var sym = kv.Key;
+                bool isMajor = majors.Contains(sym);
+                int win = isMajor ? 12 : 24;
+                int lastFire = -1000;
+                for (int i = 50; i < kl.Count - win; i++)
+                {
+                    if (kl[i].OpenTime < since) continue;
+                    if (i - lastFire < cooldownBars) continue;
+                    bool fire = isMajor
+                        ? LiveMajorEvaluator.ShouldEnterLong(kl, i, kl[i].ClosePrice)
+                        : LiveAltEvaluator.ShouldEnterLong(kl, i);
+                    if (!fire) continue;
+                    candidates.Add((kl[i].OpenTime, sym, isMajor, i, kl[i].ClosePrice, 0m, 0m));
+                    lastFire = i;
+                }
+            }
+            // 시간 정렬
+            candidates.Sort((a, b) => a.time.CompareTo(b.time));
+
+            // 슬롯 시뮬 — Major/Alt 별 활성 종료 시각 풀
+            var majorActive = new List<DateTime>();  // 각 활성 포지션 종료 시각
+            var altActive = new List<DateTime>();
+            int totalN = 0, totalW = 0; decimal totalPnl = 0m;
+
+            foreach (var c in candidates)
+            {
+                // 활성 슬롯 정리 (현재 시각 ≥ 종료시각인 거 제거)
+                majorActive.RemoveAll(t => t <= c.time);
+                altActive.RemoveAll(t => t <= c.time);
+
+                bool slotOk = c.isMajor ? majorActive.Count < majorSlot : altActive.Count < altSlot;
+                if (!slotOk) continue;
+
+                // TP/SL 평가
+                decimal tpPct = c.isMajor ? 0.5m : 1.0m;
+                decimal slPct = c.isMajor ? 1.5m : 3.0m;
+                int win = c.isMajor ? 12 : 24;
+                decimal margin = c.isMajor ? majorMargin : altMargin;
+                decimal lev = LEVERAGE;
+                decimal notional = margin * lev;
+                decimal trigFee = notional * feeRate * 2m;
+                decimal tpUsd = notional * tpPct / 100m - trigFee;
+                decimal slUsd = notional * slPct / 100m + trigFee;
+
+                var kl = fullData[c.sym];
+                var (tp, sl) = OutcomeIn(kl, c.barIdx, tpPct, slPct, win);
+                if (!(tp || sl))
+                {
+                    // 미체결 — win 봉까지 점유 후 청산 (PnL 0)
+                    DateTime closeT = kl[Math.Min(c.barIdx + win, kl.Count - 1)].OpenTime;
+                    if (c.isMajor) majorActive.Add(closeT); else altActive.Add(closeT);
+                    continue;
+                }
+
+                totalN++;
+                if (tp) { totalW++; totalPnl += tpUsd; } else { totalPnl -= slUsd; }
+                // 종료 시각 = TP/SL 도달 봉 — 단순화: c.barIdx + win/2 (평균 절반)
+                int endBar = Math.Min(c.barIdx + win / 2, kl.Count - 1);
+                DateTime endTime = kl[endBar].OpenTime;
+                if (c.isMajor) majorActive.Add(endTime); else altActive.Add(endTime);
+            }
+            return (totalN, totalW, totalPnl);
+        }
+
+        // 메이저 / 알트 분리 통계는 슬롯 시뮬과 별개 — 독립 평가도 추가로
+        (int n, int w, decimal pnl) EvalCategory(int days, bool majorMode)
+        {
+            int totalN = 0, totalW = 0; decimal totalPnl = 0m;
+            DateTime since = DateTime.UtcNow.AddDays(-days);
+            const int cooldownBars = 6;
+            decimal margin = majorMode ? majorMargin : altMargin;
+            decimal lev = LEVERAGE;
+            decimal notional = margin * lev;
+            decimal trigFee = notional * FEE_RATE * 2m;
+            decimal tpPct = majorMode ? 0.5m : 1.0m;
+            decimal slPct = majorMode ? 1.5m : 3.0m;
+            int win = majorMode ? 12 : 24;
+            decimal tpUsd = notional * tpPct / 100m - trigFee;
+            decimal slUsd = notional * slPct / 100m + trigFee;
+
+            foreach (var kv in fullData)
+            {
+                var kl = kv.Value; var sym = kv.Key;
+                bool isMajor = majors.Contains(sym);
+                if (majorMode != isMajor) continue;
+                int lastFire = -1000;
+                for (int i = 50; i < kl.Count - win; i++)
+                {
+                    if (kl[i].OpenTime < since) continue;
+                    if (i - lastFire < cooldownBars) continue;
+                    bool fire = majorMode
+                        ? LiveMajorEvaluator.ShouldEnterLong(kl, i, kl[i].ClosePrice)
+                        : LiveAltEvaluator.ShouldEnterLong(kl, i);
+                    if (!fire) continue;
+                    var (tp, sl) = OutcomeIn(kl, i, tpPct, slPct, win);
+                    if (!(tp || sl)) continue;
+                    totalN++;
+                    if (tp) { totalW++; totalPnl += tpUsd; } else { totalPnl -= slUsd; }
+                    lastFire = i;
+                }
+            }
+            return (totalN, totalW, totalPnl);
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"{"기간",-6} {"카테",-7} {"진입",6} {"승",6} {"승률",8} {"PnL($)",10} {"ROI%(시드$400)",16}");
+        Console.WriteLine(new string('-', 80));
+        int[] periods = { 1, 10, 30, 60, 90, 180 };
+        foreach (int days in periods)
+        {
+            // 슬롯 미적용 (raw — 모든 신호 진입)
+            var maj = EvalCategory(days, true);
+            var alt = EvalCategory(days, false);
+            // 슬롯 적용 (실제 봇 시뮬)
+            var slot = Eval(days);
+
+            double majWr = maj.n > 0 ? maj.w * 100.0 / maj.n : 0;
+            double altWr = alt.n > 0 ? alt.w * 100.0 / alt.n : 0;
+            double slotWr = slot.n > 0 ? slot.w * 100.0 / slot.n : 0;
+            decimal majRoi = maj.pnl / seed * 100m;
+            decimal altRoi = alt.pnl / seed * 100m;
+            decimal slotRoi = slot.pnl / seed * 100m;
+
+            Console.WriteLine($"{days,-6}일 {"메이저",-7} {maj.n,6} {maj.w,6} {majWr,7:F2}% {maj.pnl,9:F2} {majRoi,15:F2}%");
+            Console.WriteLine($"{days,-6}일 {"알트",-7} {alt.n,6} {alt.w,6} {altWr,7:F2}% {alt.pnl,9:F2} {altRoi,15:F2}%");
+            Console.WriteLine($"{days,-6}일 {"★슬롯적용",-7} {slot.n,6} {slot.w,6} {slotWr,7:F2}% {slot.pnl,9:F2} {slotRoi,15:F2}%");
+            Console.WriteLine();
+        }
+        Console.WriteLine(new string('-', 80));
+        Console.WriteLine("[해석] '슬롯적용' = 메이저 1 / 알트 2 동시 활성 제한 시뮬 (실제 봇 결과)");
+    }
+
     // [v5.22.40] 라이브 v5.22.40 진입 로직 100% 동일 — 1/10/30/60/90/180일
     //   메이저: AnalyzeMajorSimpleAsync (EMA20 5봉↑ + RSI<65 + M15RangePos 60~85%)
     //   알트:   AnalyzeAltSimpleTriggersAsync (EMA20 5봉↑ + RSI<65 + (BBW<1.5% 상단돌파 OR 5봉중 4봉워킹))
@@ -2171,6 +2352,11 @@ internal static class Program
         if (HasArg("--redesign"))
         {
             await RunRedesignAsync();
+            return;
+        }
+        if (HasArg("--live-stats-v2"))
+        {
+            await RunLiveStatsV2Async();
             return;
         }
         if (HasArg("--live-stats"))
