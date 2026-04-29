@@ -912,6 +912,28 @@ namespace TradingBot.ViewModels
             InitializeTickerUpdatePipeline();
             InitializeFooterLogPipeline();
 
+            // [v5.22.21] UI 그리드 실제 값 30초 덤프 — MarketDataList[].LastPrice 가 진짜 갱신되는지 검증
+            try
+            {
+                var uiDumpTimer = new System.Threading.Timer(_ =>
+                {
+                    try
+                    {
+                        var snap = MarketDataList?.ToList() ?? new List<MultiTimeframeViewModel>();
+                        string Pick(string s)
+                        {
+                            var x = snap.FirstOrDefault(r => string.Equals(r.Symbol, s, StringComparison.OrdinalIgnoreCase));
+                            return x == null ? $"{s.Replace("USDT","")}=NULL" : $"{s.Replace("USDT","")}=${x.LastPrice:F4}";
+                        }
+                        var line = $"📊 [UI_DUMP] MarketDataList rows={snap.Count} | {Pick("BTCUSDT")} {Pick("ETHUSDT")} {Pick("SOLUSDT")} {Pick("XRPUSDT")} | TopCandidates={TopCandidates?.Count ?? 0}";
+                        AddLiveLog(line);
+                        QueueFooterLog(line);
+                    }
+                    catch { }
+                }, null, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(30));
+            }
+            catch { }
+
             // [v5.22.17] 메이저 4개 (BTC/ETH/SOL/XRP) 강제 prefill — 봇 가동 직후 가격 도착 전이라도
             //   "실시간 시장 신호" DataGrid 가 빈 상태로 보이지 않도록 placeholder row 미리 생성.
             //   이후 OnTickerUpdate 도착 시 GetOrCreateMarketDataItem 이 동일 row 를 재사용하여 LastPrice/ProfitPercent 갱신.

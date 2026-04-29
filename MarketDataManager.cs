@@ -117,7 +117,47 @@ namespace TradingBot.Services
             // [v5.22.12] WebSocket Watchdog — 5분 동안 끊김만 있고 복구 0건이면 강제 전체 재구독
             _ = StartWebSocketWatchdogAsync(internalToken);
 
+            // [v5.22.21] REST 폴링 fallback — WebSocket 메이저 ticker 콜백 무동작 회귀 우회
+            //   원인: Binance.Net 12.8.1 SubscribeToTickerUpdatesAsync(_majorSymbols) + SubscribeToAllTickerUpdatesAsync
+            //         둘 다 구독 성공 로그만 떴고 실제 callback 호출 0건 (v5.22.19 4분 / v5.22.20 2분 가동 확인).
+            //   해결: 5초마다 /fapi/v1/ticker/price?symbol=... 직접 폴링 → OnTickerUpdate?.Invoke 로 emit
+            //         → TradingEngine.HandleTickerUpdate → channel → ProcessTickerChannelAsync → UI.
+            //   weight: 1/symbol → 4*12 = 48/min (한도 2400 의 2%, 안전).
+            _ = StartMajorRestPollingAsync(internalToken);
+
             return Task.CompletedTask;
+        }
+
+        // [v5.22.21] 메이저 4개 가격 REST 폴링 — WebSocket 무동작 fallback
+        private async Task StartMajorRestPollingAsync(CancellationToken token)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(3), token);
+            OnLog?.Invoke("📊 [REST_POLL] 메이저 4개 5초 주기 가격 폴링 시작 (WebSocket fallback)");
+            while (!token.IsCancellationRequested)
+            {
+                foreach (var sym in _majorSymbols)
+                {
+                    try
+                    {
+                        var pr = await _restClient.UsdFuturesApi.ExchangeData.GetTickersAsync(sym, token);
+                        if (pr.Success && pr.Data != null)
+                        {
+                            foreach (var t in pr.Data)
+                            {
+                                if (t == null || string.IsNullOrEmpty(t.Symbol)) continue;
+                                TickerCache.AddOrUpdate(t.Symbol,
+                                    _ => new TickerCacheItem { Symbol = t.Symbol, LastPrice = t.LastPrice, HighPrice = t.HighPrice, OpenPrice = t.OpenPrice, QuoteVolume = t.QuoteVolume, PriceChangePercent = t.PriceChangePercent },
+                                    (_, v) => { v.LastPrice = t.LastPrice; v.HighPrice = t.HighPrice; v.OpenPrice = t.OpenPrice; v.QuoteVolume = t.QuoteVolume; v.PriceChangePercent = t.PriceChangePercent; return v; });
+                                OnTickerUpdate?.Invoke(t);
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException) { return; }
+                    catch { /* 일시 오류 무시 */ }
+                }
+                try { await Task.Delay(TimeSpan.FromSeconds(5), token); }
+                catch (OperationCanceledException) { return; }
+            }
         }
 
         // ═══════════════════════════════════════════════════════════════════════════════════
