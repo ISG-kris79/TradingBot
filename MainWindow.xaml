@@ -1480,15 +1480,16 @@
                                                     <ColumnDefinition Width="*"/>
                                                 </Grid.ColumnDefinitions>
 
-                                                <!-- ── LEFT: Top Candidates (대기 상태) ── -->
+                                                <!-- [v5.22.30] B 옵션 — 가드 차단 모니터 (REJECT 사유 위주) -->
                                                 <Grid Grid.Column="0" Margin="0,0,8,0">
                                                     <Grid.RowDefinitions>
                                                         <RowDefinition Height="Auto"/>
                                                         <RowDefinition Height="*"/>
                                                     </Grid.RowDefinitions>
                                                     <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
-                                                        <TextBlock Text="🎯 TOP CANDIDATES" FontSize="11" FontWeight="Bold"
-                                                                   Foreground="#00E5FF"/>
+                                                        <TextBlock Text="🚦 가드 차단 모니터" FontSize="11" FontWeight="Bold"
+                                                                   Foreground="#F87171"
+                                                                   ToolTip="진입 시도가 가드/슬롯/AI 게이트에 의해 차단된 코인 + 사유"/>
                                                         <TextBlock Text="{Binding TopCandidates.Count, StringFormat={} ({0})}"
                                                                    FontSize="10" Foreground="#6B7280" Margin="6,0,0,0" VerticalAlignment="Center"/>
                                                     </StackPanel>
@@ -1523,11 +1524,9 @@
                                                                                        Foreground="#6B7280" FontSize="9" FontFamily="Consolas"/>
                                                                         </StackPanel>
                                                                         <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="8,0">
-                                                                            <TextBlock Text="{Binding MLProbabilityText}"
-                                                                                       Foreground="#FFD700" FontSize="12" FontWeight="Bold"
-                                                                                       FontFamily="Consolas" HorizontalAlignment="Right"/>
+                                                                            <!-- [v5.22.30] AI ML 표시 제거 (영구 0%) — DetectedAt 만 유지 -->
                                                                             <TextBlock Text="{Binding DetectedAtText}"
-                                                                                       Foreground="#4B5563" FontSize="8"
+                                                                                       Foreground="#9CA3AF" FontSize="9"
                                                                                        HorizontalAlignment="Right"/>
                                                                         </StackPanel>
                                                                         <Border Grid.Column="2" Background="{Binding StatusColor}"

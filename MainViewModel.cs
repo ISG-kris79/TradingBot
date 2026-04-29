@@ -4554,69 +4554,46 @@ namespace TradingBot.ViewModels
                     return;
                 }
 
-                // AI_ENTRY / REJECT / CANDIDATE 파싱
-                bool isAiEntry = msg.Contains("[SIGNAL][PUMP][AI_ENTRY]", StringComparison.OrdinalIgnoreCase);
-                bool isReject  = msg.Contains("[SIGNAL][PUMP][REJECT]", StringComparison.OrdinalIgnoreCase);
-                bool isCand    = msg.Contains("[SIGNAL][PUMP][CANDIDATE]", StringComparison.OrdinalIgnoreCase);
-                bool isEmit    = msg.Contains("[SIGNAL][PUMP][EMIT]", StringComparison.OrdinalIgnoreCase);
-
-                // [v5.22.12] PumpScan 제거 후 — ENGINE_151/MAJOR/BB_SQUEEZE/GATE 로그도 파싱
-                //   GATE-CHECK = 가드 체크 시작 (CANDIDATE)
-                //   GATE 차단 = REJECT(reason)
-                //   ENGINE_151 차단 / 체결 → 각각 REJECT / AI_ENTRY
-                //   MAJOR_ANALYZE / ElliottWave3Wave / ETA_TRIGGER → CANDIDATE
-                bool isGateCheck = msg.Contains("[GATE-CHECK]", StringComparison.OrdinalIgnoreCase);
-                bool isGateBlock = msg.Contains("[GATE]", StringComparison.OrdinalIgnoreCase) && msg.Contains("차단", StringComparison.OrdinalIgnoreCase) && !isGateCheck;
+                // [v5.22.30] B 옵션 — TopCandidates 를 '🚦 가드 차단 모니터' 로 재포지셔닝
+                //   목적: 어떤 코인이 어떤 사유로 차단됐는지 실시간 추적
+                //   변경: CANDIDATE / AI_ENTRY 무시 (실시간 시장 신호 그리드와 중복) → REJECT 만 표시
+                //   AI 잔재 (ML score) 제거 — MLProbability 항상 0
+                bool isGateBlock = msg.Contains("[GATE]", StringComparison.OrdinalIgnoreCase) && msg.Contains("차단", StringComparison.OrdinalIgnoreCase);
                 bool isEngine151Block = msg.Contains("[ENGINE_151]", StringComparison.OrdinalIgnoreCase) && msg.Contains("차단", StringComparison.OrdinalIgnoreCase);
-                bool isMajorAnalyze = msg.Contains("[MAJOR_ANALYZE]", StringComparison.OrdinalIgnoreCase) || msg.Contains("[MAJOR ATR]", StringComparison.OrdinalIgnoreCase);
-                bool isBbSqueeze = msg.Contains("BB_SQUEEZE", StringComparison.OrdinalIgnoreCase) || msg.Contains("BB_WALK", StringComparison.OrdinalIgnoreCase);
-                bool isElliott = msg.Contains("ElliottWave3Wave", StringComparison.OrdinalIgnoreCase) || msg.Contains("ETA_TRIGGER", StringComparison.OrdinalIgnoreCase) || msg.Contains("FORECAST_FALLBACK", StringComparison.OrdinalIgnoreCase);
+                bool isAiGateBlock = msg.Contains("[AI Gate]", StringComparison.OrdinalIgnoreCase) && msg.Contains("차단", StringComparison.OrdinalIgnoreCase);
+                bool isLegacyReject = msg.Contains("[SIGNAL][PUMP][REJECT]", StringComparison.OrdinalIgnoreCase);
 
-                bool isLegacyPump = isAiEntry || isReject || isCand || isEmit;
-                bool isGenericTrigger = isGateCheck || isGateBlock || isEngine151Block || isMajorAnalyze || isBbSqueeze || isElliott;
-
-                if (!isLegacyPump && !isGenericTrigger) return;
+                bool isReject = isGateBlock || isEngine151Block || isAiGateBlock || isLegacyReject;
+                if (!isReject) return;
 
                 string symbol;
-                double prob = 0;
-
-                if (isLegacyPump)
+                if (isLegacyReject)
                 {
                     var symMatch = InsightSymbolRegex.Match(msg);
                     if (!symMatch.Success) return;
                     symbol = symMatch.Groups[1].Value;
-
-                    var probMatch = InsightProbRegex.Match(msg);
-                    if (probMatch.Success && double.TryParse(probMatch.Groups[1].Value, out var p))
-                        prob = p / 100.0;
                 }
                 else
                 {
-                    // GENERIC: 태그 뒤 첫 토큰이 심볼 (BTCUSDT 같은 형태)
                     var gMatch = GenericSymbolRegex.Match(msg);
                     if (!gMatch.Success) return;
                     symbol = gMatch.Groups[1].Value;
                 }
 
                 string status;
-                if (isAiEntry || isEmit)
-                    status = "AI_ENTRY";
-                else if (isReject)
+                if (isLegacyReject)
                 {
                     var r = InsightRejectRegex.Match(msg);
-                    status = r.Success ? $"REJECT({r.Groups[1].Value})" : "REJECT";
+                    status = r.Success ? $"BLOCK({r.Groups[1].Value})" : "BLOCK";
                 }
-                else if (isGateBlock || isEngine151Block)
+                else
                 {
                     var rg = GateBlockReasonRegex.Match(msg);
                     string rsn = rg.Success ? rg.Groups[1].Value : "BLOCKED";
-                    if (rsn.Length > 24) rsn = rsn.Substring(0, 24);
-                    status = $"REJECT({rsn})";
+                    if (rsn.Length > 28) rsn = rsn.Substring(0, 28);
+                    status = $"BLOCK({rsn})";
                 }
-                else if (isGateCheck || isMajorAnalyze || isBbSqueeze || isElliott)
-                    status = "CANDIDATE";
-                else
-                    status = "CANDIDATE";
+                double prob = 0; // AI 폐기 — 영구 0
 
                 RunOnUI(() =>
                 {
