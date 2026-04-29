@@ -1539,6 +1539,130 @@ internal static class Program
     private static async Task RunAlt180Async() => await RunDailyAsync(pages: 36, label: "알트180일", altOnly: true);
     private static async Task RunAlt60Async() => await RunDailyAsync(pages: 12, label: "알트60일", altOnly: true);
 
+    // [v5.22.38] 종합 통계 — 180일 fetch 후 슬라이스, 30/60/90/180일 × 메이저/알트 × 기존/완화 임계 16조합
+    private static async Task RunStatsAllAsync()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  v5.22.38 종합 통계 — 30/60/90/180일 × 메이저/알트 × 기존/완화 임계");
+        Console.WriteLine("================================================================");
+
+        const decimal seed = 1000m;
+        const int fetchPages = 36; // 180일치 한번 fetch
+        var fullData = new Dictionary<string, List<IBinanceKline>>();
+        Console.WriteLine($"\n[fetch 180일 — {symbols.Length}개 심볼]");
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[{idx}/{symbols.Length}] {sym} ");
+            try
+            {
+                var kl = await FetchKlinesAsync(sym, fetchPages);
+                if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+                fullData[sym] = kl;
+                Console.WriteLine($"ok ({kl.Count} bars)");
+            }
+            catch (Exception ex) { Console.WriteLine("fail: " + ex.Message); }
+        }
+
+        var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT" };
+        // 평가 함수: 기간 (마지막 N일), 메이저모드, BBW 임계, 워킹 임계, MID_BREAK 사용
+        (int n, int w, decimal pnl) Eval(int days, bool majorMode, double bbwThr, int walkThr, bool useMidBreak)
+        {
+            int totalN = 0, totalW = 0; decimal totalPnl = 0m;
+            DateTime since = DateTime.UtcNow.AddDays(-days);
+            // 메이저 (TP 0.5/SL 1.5/win 12) vs 알트 (TP 1.0/SL 3.0/win 24)
+            decimal tpPct = majorMode ? 0.5m : 1.0m;
+            decimal slPct = majorMode ? 1.5m : 3.0m;
+            int win = majorMode ? 12 : 24;
+            decimal trigNotional = NotionalFor(majorMode ? "MAJOR" : "SQUEEZE");
+            decimal trigFee = trigNotional * FEE_RATE * 2m;
+            decimal tpUsd = trigNotional * tpPct / 100m - trigFee;
+            decimal slUsd = trigNotional * slPct / 100m + trigFee;
+
+            foreach (var kv in fullData)
+            {
+                var kl = kv.Value; var sym = kv.Key;
+                bool isMajor = majors.Contains(sym);
+                if (majorMode && !isMajor) continue;
+                if (!majorMode && isMajor) continue;
+                for (int i = 50; i < kl.Count - win; i++)
+                {
+                    if (kl[i].OpenTime < since) continue;
+                    if (!Ema20Rising(kl, i)) continue;
+                    if (CalcRsi14(kl, i) >= 65) continue;
+                    bool fire;
+                    if (majorMode)
+                    {
+                        // 메이저: M15 30봉 위치 60~85% (백테스트 동일)
+                        var pos = M15RangePos(kl, i, 30);
+                        fire = i >= 30 && pos >= 60 && pos <= 85;
+                    }
+                    else
+                    {
+                        // 알트: SQUEEZE + BB_WALK + (옵션) MID_BREAK
+                        bool sqz = i >= 20 && BBWidth(kl, i) < bbwThr && BBWalkUpper(kl, i);
+                        bool walk = i >= 20 && BBWalkStreak(kl, i, 5) >= walkThr;
+                        bool midBr = useMidBreak && i >= 22 && BbMidBreak(kl, i);
+                        fire = sqz || walk || midBr;
+                    }
+                    if (!fire) continue;
+                    var (tp, sl) = OutcomeIn(kl, i, tpPct, slPct, win);
+                    if (!(tp || sl)) continue;
+                    totalN++;
+                    if (tp) { totalW++; totalPnl += tpUsd; } else { totalPnl -= slUsd; }
+                }
+            }
+            return (totalN, totalW, totalPnl);
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"{"기간",-6} {"카테",-6} {"임계",-12} {"진입",6} {"승",6} {"승률",8} {"PnL($)",10} {"ROI%",10}");
+        Console.WriteLine(new string('-', 78));
+        int[] periods = { 30, 60, 90, 180 };
+        foreach (int days in periods)
+        {
+            // 메이저 (임계 무관 — 메이저 트리거는 1개)
+            var maj = Eval(days, true, 0, 0, false);
+            double majWr = maj.n > 0 ? maj.w * 100.0 / maj.n : 0;
+            decimal majRoi = maj.pnl / seed * 100m;
+            Console.WriteLine($"{days,-6}일 {"메이저",-6} {"-",-12} {maj.n,6} {maj.w,6} {majWr,7:F2}% {maj.pnl,9:F2} {majRoi,9:F2}%");
+
+            // 알트 기존 임계 (BBW<1.5%, 워킹 4/5)
+            var altOld = Eval(days, false, 1.5, 4, false);
+            double altOldWr = altOld.n > 0 ? altOld.w * 100.0 / altOld.n : 0;
+            decimal altOldRoi = altOld.pnl / seed * 100m;
+            Console.WriteLine($"{days,-6}일 {"알트",-6} {"기존(1.5/4)",-12} {altOld.n,6} {altOld.w,6} {altOldWr,7:F2}% {altOld.pnl,9:F2} {altOldRoi,9:F2}%");
+
+            // 알트 완화 임계 (BBW<3.0%, 워킹 3/5, MID_BREAK 포함)
+            var altNew = Eval(days, false, 3.0, 3, true);
+            double altNewWr = altNew.n > 0 ? altNew.w * 100.0 / altNew.n : 0;
+            decimal altNewRoi = altNew.pnl / seed * 100m;
+            Console.WriteLine($"{days,-6}일 {"알트",-6} {"완화(3.0/3)",-12} {altNew.n,6} {altNew.w,6} {altNewWr,7:F2}% {altNew.pnl,9:F2} {altNewRoi,9:F2}%");
+            Console.WriteLine();
+        }
+        Console.WriteLine(new string('-', 78));
+        Console.WriteLine("[해석] 완화 임계 PnL/ROI 가 기존보다 크면 v5.22.38 배포 정당, 작거나 마이너스면 롤백");
+    }
+
+    // BB 중심선 아래→위 돌파 + 양봉 (v5.22.38 MID_BREAK 트리거)
+    private static bool BbMidBreak(List<IBinanceKline> kl, int i)
+    {
+        if (i < 21) return false;
+        // i-1 BB
+        double s1 = 0;
+        for (int j = i - 20; j <= i - 1; j++) s1 += (double)kl[j].ClosePrice;
+        double mid1 = s1 / 20;
+        // i BB
+        double s2 = 0;
+        for (int j = i - 19; j <= i; j++) s2 += (double)kl[j].ClosePrice;
+        double mid2 = s2 / 20;
+        bool wasBelow = (double)kl[i - 1].ClosePrice < mid1;
+        bool nowAbove = (double)kl[i].ClosePrice > mid2;
+        bool bullCandle = kl[i].ClosePrice > kl[i].OpenPrice;
+        return wasBelow && nowAbove && bullCandle;
+    }
+
     private static async Task RunDailyAsync(int pages, string label, bool altOnly = false)
     {
         Console.WriteLine("================================================================");
@@ -1848,6 +1972,11 @@ internal static class Program
         if (HasArg("--redesign"))
         {
             await RunRedesignAsync();
+            return;
+        }
+        if (HasArg("--stats-all"))
+        {
+            await RunStatsAllAsync();
             return;
         }
         if (HasArg("--alt-180d"))
