@@ -748,12 +748,17 @@ namespace TradingBot
 
             // [v5.22.24] 카테고리별 슬롯 제한 — MaxXxxSlots 초과 시 진입 차단
             //   분류는 이미 위에서 entryCat 결정. 활성포지션의 카테고리는 TradeHistory.Category 와 동일 ResolveTradeCategory 적용.
+            // [v5.22.34] 슬롯 값을 MainWindow.CurrentGeneralSettings 에서 매 호출마다 최신 값 읽기
+            //   원인: _settings 는 봇 시작 시 1회만 로드된 캐시 → UI 에서 변경 후 저장해도 봇 재시작 전엔 옛값 사용
+            //   해결: CurrentGeneralSettings (UI 저장 시 ApplyGeneralSettings 로 즉시 갱신) 우선 사용 → fallback _settings
+            var liveSettings = MainWindow.CurrentGeneralSettings ?? _settings;
             int catMax = entryCat switch
             {
-                "MAJOR"   => _settings.MaxMajorSlots,
-                "SQUEEZE" => _settings.MaxSqueezeSlots,
-                "BB_WALK" => _settings.MaxBbWalkSlots,
-                "GENERIC" => _settings.MaxGenericSlots,
+                "MAJOR"   => liveSettings.MaxMajorSlots,
+                "SQUEEZE" => liveSettings.MaxSqueezeSlots,
+                "BB_WALK" => liveSettings.MaxBbWalkSlots,
+                "GENERIC" => liveSettings.MaxGenericSlots,
+                "PUMP"    => liveSettings.MaxPumpSlots,
                 _ => int.MaxValue
             };
             if (catMax > 0 && catMax < int.MaxValue)
@@ -768,10 +773,12 @@ namespace TradingBot
                             activeInCat++;
                     }
                 }
+                // [v5.22.34] 슬롯 진단 로그 — 매 SLOT 체크마다 사용 중인 설정값 출력
+                //   사용자가 UI 에서 보는 값과 봇이 사용하는 값 불일치 (UI 1 vs 봇 4) 추적
                 if (activeInCat >= catMax)
                 {
                     blockReason = $"SLOT_FULL:{entryCat}={activeInCat}/{catMax}";
-                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason}");
+                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (live={liveSettings.MaxMajorSlots}/{liveSettings.MaxPumpSlots}/{liveSettings.MaxSqueezeSlots}/{liveSettings.MaxBbWalkSlots}/{liveSettings.MaxGenericSlots})");
                     return false;
                 }
             }
