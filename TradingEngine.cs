@@ -7472,6 +7472,13 @@ namespace TradingBot
 
                 var trackedSymbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+                // [v5.22.20] 메이저 4 항상 포함 — Binance.Net 12.8.1 SubscribeToTickerUpdatesAsync(_majorSymbols)
+                //   콜백이 무동작인 회귀 (v5.22.19 TICK_HEARTBEAT 4분 0건 확인) 우회.
+                //   전체 시세 스트림 (SubscribeToAllTickerUpdatesAsync) 은 정상 작동하므로
+                //   메이저를 trackedSymbols 에 강제 포함시키면 메이저 가격이 HandleTickerUpdate 로 흘러감.
+                foreach (var m in FixedMajorPool)
+                    trackedSymbols.Add(m);
+
                 lock (_posLock)
                 {
                     foreach (var symbol in _activePositions.Keys)
