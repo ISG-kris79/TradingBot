@@ -4662,6 +4662,29 @@ namespace TradingBot
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _altSimpleTriggerCooldown = new(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan AltSimpleTriggerCooldown = TimeSpan.FromMinutes(30);
 
+        // [v5.22.37] 알트 트리거 통과/차단 카운터 — 60초마다 통계 1회 emit
+        private DateTime _altDiagWindowStart = DateTime.UtcNow;
+        private int _altDiagBbwTooWide;        // BBW >= 1.5%
+        private int _altDiagNoBreakout;        // BBW<1.5% 인데 종가<Upper
+        private int _altDiagWalkInsuf;         // 워킹 < 4/5
+        private int _altDiagEmaFalling;        // EMA20 하락
+        private int _altDiagRsiTooHigh;        // RSI >= 65
+        private int _altDiagPassed;            // 신호 발화
+        private void EmitAltDiagIfDue()
+        {
+            if ((DateTime.UtcNow - _altDiagWindowStart).TotalSeconds < 60) return;
+            int bbw = System.Threading.Interlocked.Exchange(ref _altDiagBbwTooWide, 0);
+            int br = System.Threading.Interlocked.Exchange(ref _altDiagNoBreakout, 0);
+            int wk = System.Threading.Interlocked.Exchange(ref _altDiagWalkInsuf, 0);
+            int em = System.Threading.Interlocked.Exchange(ref _altDiagEmaFalling, 0);
+            int rs = System.Threading.Interlocked.Exchange(ref _altDiagRsiTooHigh, 0);
+            int ps = System.Threading.Interlocked.Exchange(ref _altDiagPassed, 0);
+            _altDiagWindowStart = DateTime.UtcNow;
+            int total = bbw + br + wk + em + rs + ps;
+            if (total > 0)
+                OnStatusLog?.Invoke($"📊 [ALT_DIAG] 1분 통과/차단: pass={ps} | BBW≥1.5%={bbw} 돌파X={br} 워킹<4/5={wk} EMA↓={em} RSI≥65={rs} (총 {total} 평가)");
+        }
+
         private async Task AnalyzeAltSimpleTriggersAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
             // 활성 포지션 있으면 스킵
@@ -4692,16 +4715,16 @@ namespace TradingBot
 
                 // EMA20 rising 가드 (직전 5봉 EMA 추세)
                 bool emaRising = IsEma20Rising(klines);
-                if (!emaRising) return;
 
                 // RSI14 < 65 가드
                 double rsi = IndicatorCalculator.CalculateRSI(klines.ToList(), 14);
-                if (rsi >= 65) return;
 
                 decimal lastClose = klines[^1].ClosePrice;
 
                 // 트리거 1: SQUEEZE — BBWidth < 1.5% + 상단 돌파
-                bool sqzTrigger = bbWidthPct < 1.5m && lastClose > upper;
+                bool bbwOk = bbWidthPct < 1.5m;
+                bool breakoutOk = lastClose > upper;
+                bool sqzTrigger = bbwOk && breakoutOk;
 
                 // 트리거 2: BB_WALK — 최근 5봉 중 4봉 이상 종가 > Upper
                 int walkCount = 0;
@@ -4712,7 +4735,29 @@ namespace TradingBot
                 }
                 bool walkTrigger = walkCount >= 4;
 
-                if (!sqzTrigger && !walkTrigger) return;
+                // [v5.22.37] 진단 카운터 — 어디서 막히는지 가시화
+                if (!sqzTrigger && !walkTrigger)
+                {
+                    if (!bbwOk) System.Threading.Interlocked.Increment(ref _altDiagBbwTooWide);
+                    else if (!breakoutOk) System.Threading.Interlocked.Increment(ref _altDiagNoBreakout);
+                    if (walkCount < 4) System.Threading.Interlocked.Increment(ref _altDiagWalkInsuf);
+                    EmitAltDiagIfDue();
+                    return;
+                }
+                if (!emaRising)
+                {
+                    System.Threading.Interlocked.Increment(ref _altDiagEmaFalling);
+                    EmitAltDiagIfDue();
+                    return;
+                }
+                if (rsi >= 65)
+                {
+                    System.Threading.Interlocked.Increment(ref _altDiagRsiTooHigh);
+                    EmitAltDiagIfDue();
+                    return;
+                }
+                System.Threading.Interlocked.Increment(ref _altDiagPassed);
+                EmitAltDiagIfDue();
 
                 string source = sqzTrigger ? "BB_SQUEEZE_ALT" : "BB_WALK_ALT";
 

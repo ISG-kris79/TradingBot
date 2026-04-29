@@ -1527,15 +1527,19 @@ internal static class Program
     // [v5.22.36] 180일 일별 PnL — RunDaily60Async 와 동일 로직, pages=36 으로 확장
     private static async Task RunDaily180Async()
     {
-        await RunDailyAsync(pages: 36, label: "180일");
+        await RunDailyAsync(pages: 36, label: "180일", altOnly: false);
     }
 
     private static async Task RunDaily60Async()
     {
-        await RunDailyAsync(pages: 12, label: "60일");
+        await RunDailyAsync(pages: 12, label: "60일", altOnly: false);
     }
 
-    private static async Task RunDailyAsync(int pages, string label)
+    // [v5.22.37] 알트 26개만 — 메이저 (BTC/ETH/SOL/XRP/BNB) 제외, SQUEEZE + BB_WALK 트리거만 평가
+    private static async Task RunAlt180Async() => await RunDailyAsync(pages: 36, label: "알트180일", altOnly: true);
+    private static async Task RunAlt60Async() => await RunDailyAsync(pages: 12, label: "알트60일", altOnly: true);
+
+    private static async Task RunDailyAsync(int pages, string label, bool altOnly = false)
     {
         Console.WriteLine("================================================================");
         Console.WriteLine($"  v5.22.5+ {label} 일별 PnL (PUMP/SPIKE 차단, MAJOR+SQZ+BBW)");
@@ -1557,14 +1561,21 @@ internal static class Program
             }
             catch (Exception ex) { Console.WriteLine("fail: " + ex.Message); }
         }
-        var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
-        var triggers = new (string name, Func<List<IBinanceKline>, int, string, bool> ok)[]
-        {
-            ("MAJOR",   (kl, i, sym) => majors.Contains(sym) && i >= 30 && Ema20Rising(kl, i)
-                          && M15RangePos(kl, i, 30) is >= 60 and <= 85),
-            ("SQUEEZE", (kl, i, sym) => i >= 20 && BBWidth(kl, i) < 1.5 && BBWalkUpper(kl, i)),
-            ("BB_WALK", (kl, i, sym) => i >= 20 && BBWalkStreak(kl, i, 5) >= 4),
-        };
+        var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT" };
+        var triggers = altOnly
+            ? new (string name, Func<List<IBinanceKline>, int, string, bool> ok)[]
+            {
+                // 알트만 — SQUEEZE + BB_WALK 만 평가, 메이저 심볼 제외
+                ("SQUEEZE", (kl, i, sym) => !majors.Contains(sym) && i >= 20 && BBWidth(kl, i) < 1.5 && BBWalkUpper(kl, i)),
+                ("BB_WALK", (kl, i, sym) => !majors.Contains(sym) && i >= 20 && BBWalkStreak(kl, i, 5) >= 4),
+            }
+            : new (string name, Func<List<IBinanceKline>, int, string, bool> ok)[]
+            {
+                ("MAJOR",   (kl, i, sym) => majors.Contains(sym) && i >= 30 && Ema20Rising(kl, i)
+                              && M15RangePos(kl, i, 30) is >= 60 and <= 85),
+                ("SQUEEZE", (kl, i, sym) => i >= 20 && BBWidth(kl, i) < 1.5 && BBWalkUpper(kl, i)),
+                ("BB_WALK", (kl, i, sym) => i >= 20 && BBWalkStreak(kl, i, 5) >= 4),
+            };
         var dailyPnl = new SortedDictionary<DateTime, (int n, int w, decimal pnl)>();
         foreach (var trig in triggers)
         {
@@ -1837,6 +1848,16 @@ internal static class Program
         if (HasArg("--redesign"))
         {
             await RunRedesignAsync();
+            return;
+        }
+        if (HasArg("--alt-180d"))
+        {
+            await RunAlt180Async();
+            return;
+        }
+        if (HasArg("--alt-60d"))
+        {
+            await RunAlt60Async();
             return;
         }
         if (HasArg("--daily-180d"))
