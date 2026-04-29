@@ -4721,26 +4721,42 @@ namespace TradingBot
 
                 decimal lastClose = klines[^1].ClosePrice;
 
-                // 트리거 1: SQUEEZE — BBWidth < 1.5% + 상단 돌파
-                bool bbwOk = bbWidthPct < 1.5m;
+                // [v5.22.38] 임계 완화 — 라이브 발화 빈도 ↑ (백테스트 BBW<1.5% 너무 까다로움)
+                //   변동성 큰 알트 (24h ±10%+) 는 BBW 가 보통 2~5% → 1.5% 임계로는 자연 발화 거의 0
+                //   완화: BBW < 3% (스퀴즈 압축 정의 완화) + 워킹 5봉 중 3봉 (기존 4봉)
+                // 트리거 1: SQUEEZE — BBWidth < 3% + 상단 돌파
+                bool bbwOk = bbWidthPct < 3.0m;
                 bool breakoutOk = lastClose > upper;
                 bool sqzTrigger = bbwOk && breakoutOk;
 
-                // 트리거 2: BB_WALK — 최근 5봉 중 4봉 이상 종가 > Upper
+                // 트리거 2: BB_WALK — 최근 5봉 중 3봉 이상 종가 > Upper (기존 4봉)
                 int walkCount = 0;
                 int n = klines.Count;
                 for (int i = Math.Max(0, n - 5); i < n; i++)
                 {
                     if (klines[i].ClosePrice > upper) walkCount++;
                 }
-                bool walkTrigger = walkCount >= 4;
+                bool walkTrigger = walkCount >= 3;
+
+                // 트리거 3: BB_MID_BREAK — 종가가 BB 중심선 아래→위 돌파 + 양봉 (반등 진입)
+                bool midBreakTrigger = false;
+                if (klines.Count >= 22)
+                {
+                    var prevBb = IndicatorCalculator.CalculateBB(klines.Take(klines.Count - 1).ToList(), 20, 2);
+                    decimal prevMid = (decimal)prevBb.Mid;
+                    decimal prevClose = klines[^2].ClosePrice;
+                    bool wasBelow = prevClose < prevMid;
+                    bool nowAbove = lastClose > middle;
+                    bool bullCandle = klines[^1].ClosePrice > klines[^1].OpenPrice;
+                    midBreakTrigger = wasBelow && nowAbove && bullCandle;
+                }
 
                 // [v5.22.37] 진단 카운터 — 어디서 막히는지 가시화
-                if (!sqzTrigger && !walkTrigger)
+                if (!sqzTrigger && !walkTrigger && !midBreakTrigger)
                 {
                     if (!bbwOk) System.Threading.Interlocked.Increment(ref _altDiagBbwTooWide);
                     else if (!breakoutOk) System.Threading.Interlocked.Increment(ref _altDiagNoBreakout);
-                    if (walkCount < 4) System.Threading.Interlocked.Increment(ref _altDiagWalkInsuf);
+                    if (walkCount < 3) System.Threading.Interlocked.Increment(ref _altDiagWalkInsuf);
                     EmitAltDiagIfDue();
                     return;
                 }
@@ -4759,13 +4775,14 @@ namespace TradingBot
                 System.Threading.Interlocked.Increment(ref _altDiagPassed);
                 EmitAltDiagIfDue();
 
-                string source = sqzTrigger ? "BB_SQUEEZE_ALT" : "BB_WALK_ALT";
+                string source = sqzTrigger ? "BB_SQUEEZE_ALT" : (walkTrigger ? "BB_WALK_ALT" : "BB_MIDBREAK_ALT");
+                string trigName = sqzTrigger ? "SQUEEZE" : (walkTrigger ? "BB_WALK" : "MID_BREAK");
 
                 _altSimpleTriggerCooldown[symbol] = DateTime.UtcNow;
 
                 OnStatusLog?.Invoke(
-                    $"🎯 [ALT_SIMPLE] {symbol} {(sqzTrigger ? "SQUEEZE" : "BB_WALK")} 발화 | " +
-                    $"BBW={bbWidthPct:F2}% close={lastClose:F4} upper={upper:F4} RSI={rsi:F1} EMA↑={emaRising} walk={walkCount}/5");
+                    $"🎯 [ALT_SIMPLE] {symbol} {trigName} 발화 | " +
+                    $"BBW={bbWidthPct:F2}% close={lastClose:F4} upper={upper:F4} mid={middle:F4} RSI={rsi:F1} EMA↑={emaRising} walk={walkCount}/5");
 
                 await ExecuteAutoOrder(
                     symbol, "LONG", currentPrice, token,
