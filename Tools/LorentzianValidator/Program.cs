@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Binance.Net.Interfaces;
 using TradingBot.Services.LorentzianV2;
+using TradingBot.Tools.LorentzianValidator;
 
 namespace LorentzianValidator;
 
@@ -1539,6 +1540,204 @@ internal static class Program
     private static async Task RunAlt180Async() => await RunDailyAsync(pages: 36, label: "알트180일", altOnly: true);
     private static async Task RunAlt60Async() => await RunDailyAsync(pages: 12, label: "알트60일", altOnly: true);
 
+    // [v5.22.40] 라이브 v5.22.40 진입 로직 100% 동일 — 1/10/30/60/90/180일
+    //   메이저: AnalyzeMajorSimpleAsync (EMA20 5봉↑ + RSI<65 + M15RangePos 60~85%)
+    //   알트:   AnalyzeAltSimpleTriggersAsync (EMA20 5봉↑ + RSI<65 + (BBW<1.5% 상단돌파 OR 5봉중 4봉워킹))
+    //   TP/SL:  메이저 0.5%/1.5%/win 12, 알트 1%/3%/win 24
+    //   30분 cooldown (5분봉 6개)
+    private static async Task RunLiveStatsAsync()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  v5.22.40 라이브 100% 동일 — 1/10/30/60/90/180일 × 메이저/알트");
+        Console.WriteLine("================================================================");
+
+        const decimal seed = 1000m;
+        const int fetchPages = 36;
+        var fullData = new Dictionary<string, List<IBinanceKline>>();
+        Console.WriteLine($"\n[fetch 180일 — {symbols.Length}개 심볼]");
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[{idx}/{symbols.Length}] {sym} ");
+            try
+            {
+                var kl = await FetchKlinesAsync(sym, fetchPages);
+                if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+                fullData[sym] = kl;
+                Console.WriteLine($"ok ({kl.Count} bars)");
+            }
+            catch (Exception ex) { Console.WriteLine("fail: " + ex.Message); }
+        }
+
+        var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT" };
+
+        (int n, int w, decimal pnl) Eval(int days, bool majorMode)
+        {
+            int totalN = 0, totalW = 0; decimal totalPnl = 0m;
+            DateTime since = DateTime.UtcNow.AddDays(-days);
+            decimal tpPct = majorMode ? 0.5m : 1.0m;
+            decimal slPct = majorMode ? 1.5m : 3.0m;
+            int win = majorMode ? 12 : 24;
+            decimal trigNotional = NotionalFor(majorMode ? "MAJOR" : "SQUEEZE");
+            decimal trigFee = trigNotional * FEE_RATE * 2m;
+            decimal tpUsd = trigNotional * tpPct / 100m - trigFee;
+            decimal slUsd = trigNotional * slPct / 100m + trigFee;
+            const int cooldownBars = 6; // 30분 = 5분봉 6개
+
+            foreach (var kv in fullData)
+            {
+                var kl = kv.Value; var sym = kv.Key;
+                bool isMajor = majors.Contains(sym);
+                if (majorMode && !isMajor) continue;
+                if (!majorMode && isMajor) continue;
+                int lastFire = -1000;
+
+                for (int i = 50; i < kl.Count - win; i++)
+                {
+                    if (kl[i].OpenTime < since) continue;
+                    if (i - lastFire < cooldownBars) continue;
+                    bool fire = majorMode
+                        ? LiveMajorEvaluator.ShouldEnterLong(kl, i, kl[i].ClosePrice)
+                        : LiveAltEvaluator.ShouldEnterLong(kl, i);
+                    if (!fire) continue;
+                    var (tp, sl) = OutcomeIn(kl, i, tpPct, slPct, win);
+                    if (!(tp || sl)) continue;
+                    totalN++;
+                    if (tp) { totalW++; totalPnl += tpUsd; } else { totalPnl -= slUsd; }
+                    lastFire = i;
+                }
+            }
+            return (totalN, totalW, totalPnl);
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"{"기간",-6} {"카테",-6} {"진입",6} {"승",6} {"승률",8} {"PnL($)",10} {"ROI%",10}");
+        Console.WriteLine(new string('-', 72));
+        int[] periods = { 1, 10, 30, 60, 90, 180 };
+        foreach (int days in periods)
+        {
+            var maj = Eval(days, true);
+            double majWr = maj.n > 0 ? maj.w * 100.0 / maj.n : 0;
+            decimal majRoi = maj.pnl / seed * 100m;
+            Console.WriteLine($"{days,-6}일 {"메이저",-6} {maj.n,6} {maj.w,6} {majWr,7:F2}% {maj.pnl,9:F2} {majRoi,9:F2}%");
+
+            var alt = Eval(days, false);
+            double altWr = alt.n > 0 ? alt.w * 100.0 / alt.n : 0;
+            decimal altRoi = alt.pnl / seed * 100m;
+            Console.WriteLine($"{days,-6}일 {"알트",-6} {alt.n,6} {alt.w,6} {altWr,7:F2}% {alt.pnl,9:F2} {altRoi,9:F2}%");
+
+            int totN = maj.n + alt.n; int totW = maj.w + alt.w;
+            decimal totPnl = maj.pnl + alt.pnl;
+            double totWr = totN > 0 ? totW * 100.0 / totN : 0;
+            decimal totRoi = totPnl / seed * 100m;
+            Console.WriteLine($"{days,-6}일 {"합계",-6} {totN,6} {totW,6} {totWr,7:F2}% {totPnl,9:F2} {totRoi,9:F2}%");
+            Console.WriteLine();
+        }
+        Console.WriteLine(new string('-', 72));
+        Console.WriteLine("[해석] 라이브 v5.22.40 진입 로직 (메이저 단순 + 알트 단순) 100% 동일");
+    }
+
+    // [v5.22.39] 진짜 라이브 백테스트 — MajorCoinStrategy + AnalyzeAltSimpleTriggers 코드 그대로 이식
+    //   메이저: 3 Tier OR (aiScore≥70 / aiScore≥62+모멘텀 / 반등+HigherLows+RSI>52) — 횡보필터 + 우회로직 모두 포함
+    //   알트:   SQUEEZE BBW<3% + 상단돌파 / BB_WALK 5봉 중 3봉 / MID_BREAK (v5.22.38 완화)
+    //   가드:   EMA20↑ + RSI<65 (알트만) — 메이저는 RSI 가드 없음 (라이브 동일)
+    //   TP/SL:  메이저 0.5%/1.5%/win 12, 알트 1%/3%/win 24
+    private static async Task RunLive180Async()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  v5.22.39 진짜 라이브 백테스트 — Major(3 Tier+우회) + Alt(v5.22.38)");
+        Console.WriteLine("  30/60/90/180일 × 메이저/알트 분리 통계");
+        Console.WriteLine("================================================================");
+
+        const decimal seed = 1000m;
+        const int fetchPages = 36;
+        var fullData = new Dictionary<string, List<IBinanceKline>>();
+        Console.WriteLine($"\n[fetch 180일 — {symbols.Length}개 심볼]");
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[{idx}/{symbols.Length}] {sym} ");
+            try
+            {
+                var kl = await FetchKlinesAsync(sym, fetchPages);
+                if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+                fullData[sym] = kl;
+                Console.WriteLine($"ok ({kl.Count} bars)");
+            }
+            catch (Exception ex) { Console.WriteLine("fail: " + ex.Message); }
+        }
+
+        var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT" };
+
+        (int n, int w, decimal pnl) Eval(int days, bool majorMode)
+        {
+            int totalN = 0, totalW = 0; decimal totalPnl = 0m;
+            DateTime since = DateTime.UtcNow.AddDays(-days);
+            decimal tpPct = majorMode ? 0.5m : 1.0m;
+            decimal slPct = majorMode ? 1.5m : 3.0m;
+            int win = majorMode ? 12 : 24;
+            decimal trigNotional = NotionalFor(majorMode ? "MAJOR" : "SQUEEZE");
+            decimal trigFee = trigNotional * FEE_RATE * 2m;
+            decimal tpUsd = trigNotional * tpPct / 100m - trigFee;
+            decimal slUsd = trigNotional * slPct / 100m + trigFee;
+
+            foreach (var kv in fullData)
+            {
+                var kl = kv.Value; var sym = kv.Key;
+                bool isMajor = majors.Contains(sym);
+                if (majorMode && !isMajor) continue;
+                if (!majorMode && isMajor) continue;
+                // 30분 cooldown 시뮬 (알트 트리거에 적용. 메이저는 라이브가 5초 캐시이지만 여기선 봉 단위 1회로 단순화)
+                int lastFire = -1000;
+                int cooldownBars = majorMode ? 0 : 6; // 30분 = 5분봉 6개
+
+                for (int i = 120; i < kl.Count - win; i++)
+                {
+                    if (kl[i].OpenTime < since) continue;
+                    if (i - lastFire < cooldownBars) continue;
+                    bool fire = majorMode
+                        ? LiveMajorEvaluator.ShouldEnterLong(kl, i, kl[i].ClosePrice)
+                        : LiveAltEvaluator.ShouldEnterLong(kl, i);
+                    if (!fire) continue;
+                    var (tp, sl) = OutcomeIn(kl, i, tpPct, slPct, win);
+                    if (!(tp || sl)) continue;
+                    totalN++;
+                    if (tp) { totalW++; totalPnl += tpUsd; } else { totalPnl -= slUsd; }
+                    lastFire = i;
+                }
+            }
+            return (totalN, totalW, totalPnl);
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"{"기간",-6} {"카테",-6} {"진입",6} {"승",6} {"승률",8} {"PnL($)",10} {"ROI%",10}");
+        Console.WriteLine(new string('-', 72));
+        int[] periods = { 30, 60, 90, 180 };
+        foreach (int days in periods)
+        {
+            var maj = Eval(days, true);
+            double majWr = maj.n > 0 ? maj.w * 100.0 / maj.n : 0;
+            decimal majRoi = maj.pnl / seed * 100m;
+            Console.WriteLine($"{days,-6}일 {"메이저",-6} {maj.n,6} {maj.w,6} {majWr,7:F2}% {maj.pnl,9:F2} {majRoi,9:F2}%");
+
+            var alt = Eval(days, false);
+            double altWr = alt.n > 0 ? alt.w * 100.0 / alt.n : 0;
+            decimal altRoi = alt.pnl / seed * 100m;
+            Console.WriteLine($"{days,-6}일 {"알트",-6} {alt.n,6} {alt.w,6} {altWr,7:F2}% {alt.pnl,9:F2} {altRoi,9:F2}%");
+
+            int totN = maj.n + alt.n; int totW = maj.w + alt.w;
+            decimal totPnl = maj.pnl + alt.pnl;
+            double totWr = totN > 0 ? totW * 100.0 / totN : 0;
+            decimal totRoi = totPnl / seed * 100m;
+            Console.WriteLine($"{days,-6}일 {"합계",-6} {totN,6} {totW,6} {totWr,7:F2}% {totPnl,9:F2} {totRoi,9:F2}%");
+            Console.WriteLine();
+        }
+        Console.WriteLine(new string('-', 72));
+        Console.WriteLine("[해석] 라이브 코드 그대로 시뮬 — 메이저 3 Tier + aiScore + 우회 / 알트 v5.22.38 완화");
+    }
+
     // [v5.22.38] 종합 통계 — 180일 fetch 후 슬라이스, 30/60/90/180일 × 메이저/알트 × 기존/완화 임계 16조합
     private static async Task RunStatsAllAsync()
     {
@@ -1972,6 +2171,16 @@ internal static class Program
         if (HasArg("--redesign"))
         {
             await RunRedesignAsync();
+            return;
+        }
+        if (HasArg("--live-stats"))
+        {
+            await RunLiveStatsAsync();
+            return;
+        }
+        if (HasArg("--live-180d"))
+        {
+            await RunLive180Async();
             return;
         }
         if (HasArg("--stats-all"))

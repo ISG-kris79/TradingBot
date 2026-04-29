@@ -473,8 +473,9 @@ namespace TradingBot
         private static readonly TimeSpan VolatilityRecoveryDuration = TimeSpan.FromHours(4);
         // [AI 제거] MarketRegimeClassifier / ExitOptimizerService 제거
         private MacdCrossSignalService? _macdCrossService;
-        private GridStrategy _gridStrategy;
-        private ArbitrageStrategy _arbitrageStrategy;
+        // [v5.22.40] 호출 0건 — nullable 마크
+        private GridStrategy? _gridStrategy;
+        private ArbitrageStrategy? _arbitrageStrategy;
         // private TransformerStrategy? _transformerStrategy; // TensorFlow 전환 중 임시 비활성화
         // private TransformerTrainer? _transformerTrainer; // TensorFlow 전환 중 임시 비활성화
         private ElliottWave3WaveStrategy _elliotWave3Strategy; // [3파 확정형 단타]
@@ -747,20 +748,25 @@ namespace TradingBot
             }
 
             // [v5.22.24] 카테고리별 슬롯 제한 — MaxXxxSlots 초과 시 진입 차단
-            //   분류는 이미 위에서 entryCat 결정. 활성포지션의 카테고리는 TradeHistory.Category 와 동일 ResolveTradeCategory 적용.
-            // [v5.22.34] 슬롯 값을 MainWindow.CurrentGeneralSettings 에서 매 호출마다 최신 값 읽기
-            //   원인: _settings 는 봇 시작 시 1회만 로드된 캐시 → UI 에서 변경 후 저장해도 봇 재시작 전엔 옛값 사용
-            //   해결: CurrentGeneralSettings (UI 저장 시 ApplyGeneralSettings 로 즉시 갱신) 우선 사용 → fallback _settings
+            // [v5.22.34] _settings 캐시 대신 MainWindow.CurrentGeneralSettings fresh read
+            // [v5.22.39] 사용자 UI 통합 — 메이저 = MaxMajorSlots / 그 외 모두 (SQUEEZE/BB_WALK/PUMP/GENERIC) = MaxPumpSlots
+            //   원인: UI 입력 필드가 '메이저 슬롯' + 'PUMP 슬롯' 2개만 있는데
+            //         코드는 SQUEEZE/BB_WALK/GENERIC 별도 슬롯 (UI 없음, default 3) 사용 → PUMP 슬롯 우회
+            //   해결: 메이저 외 모든 카테고리 = 통합 PUMP 슬롯 카운트
             var liveSettings = MainWindow.CurrentGeneralSettings ?? _settings;
-            int catMax = entryCat switch
+            int catMax;
+            string slotKey;
+            if (entryCat == "MAJOR")
             {
-                "MAJOR"   => liveSettings.MaxMajorSlots,
-                "SQUEEZE" => liveSettings.MaxSqueezeSlots,
-                "BB_WALK" => liveSettings.MaxBbWalkSlots,
-                "GENERIC" => liveSettings.MaxGenericSlots,
-                "PUMP"    => liveSettings.MaxPumpSlots,
-                _ => int.MaxValue
-            };
+                catMax = liveSettings.MaxMajorSlots;
+                slotKey = "MAJOR";
+            }
+            else
+            {
+                // SQUEEZE / BB_WALK / PUMP / GENERIC / 기타 — 모두 PUMP 슬롯 통합
+                catMax = liveSettings.MaxPumpSlots;
+                slotKey = "PUMP";
+            }
             if (catMax > 0 && catMax < int.MaxValue)
             {
                 int activeInCat = 0;
@@ -769,16 +775,18 @@ namespace TradingBot
                     foreach (var kv in _activePositions)
                     {
                         var posCat = ResolveActivePositionCategory(kv.Value, kv.Key);
-                        if (string.Equals(posCat, entryCat, StringComparison.OrdinalIgnoreCase))
-                            activeInCat++;
+                        // 메이저 슬롯: 메이저 카테고리만. PUMP 슬롯: 메이저 외 모두.
+                        bool match = (slotKey == "MAJOR") ? string.Equals(posCat, "MAJOR", StringComparison.OrdinalIgnoreCase)
+                                                          : !string.Equals(posCat, "MAJOR", StringComparison.OrdinalIgnoreCase);
+                        if (match) activeInCat++;
                     }
                 }
                 // [v5.22.34] 슬롯 진단 로그 — 매 SLOT 체크마다 사용 중인 설정값 출력
-                //   사용자가 UI 에서 보는 값과 봇이 사용하는 값 불일치 (UI 1 vs 봇 4) 추적
+                //   사용자가 UI 에서 보는 값과 봇이 사용하는 값 불일치 추적
                 if (activeInCat >= catMax)
                 {
-                    blockReason = $"SLOT_FULL:{entryCat}={activeInCat}/{catMax}";
-                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (live={liveSettings.MaxMajorSlots}/{liveSettings.MaxPumpSlots}/{liveSettings.MaxSqueezeSlots}/{liveSettings.MaxBbWalkSlots}/{liveSettings.MaxGenericSlots})");
+                    blockReason = $"SLOT_FULL:{slotKey}={activeInCat}/{catMax}";
+                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (Major={liveSettings.MaxMajorSlots} Pump={liveSettings.MaxPumpSlots})");
                     return false;
                 }
             }
@@ -1725,10 +1733,8 @@ namespace TradingBot
 
             // [AI 제거] DynamicTrailingStopEngine / AIDedicatedWorkerThread / HybridNavigatorSniper / PumpScanStrategy 모두 제거
             LoadActiveAiDecisionIds();
-            _majorStrategy = new MajorCoinStrategy(
-                _marketDataManager,
-                () => MainWindow.CurrentGeneralSettings ?? AppConfig.Current?.Trading?.GeneralSettings);
-            _gridStrategy = new GridStrategy(_exchangeService);
+            // [v5.22.40] _majorStrategy / _gridStrategy 초기화 제거 — ProcessCoinAndTradeBySymbolAsync 에서 호출 0건
+            //   AnalyzeMajorSimpleAsync / AnalyzeAltSimpleTriggersAsync 가 메이저/알트 진입 단독 처리
 
             // [TimeOut Probability Entry] 초기화
             try
@@ -1771,32 +1777,7 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"⚠️ [TimeOut-Prob] 엔진 초기화 실패: {ex.Message}");
             }
 
-            // [AI 제거] _pumpStrategy 핸들러 제거. _majorStrategy는 단순화 — Forecaster 의존 제거
-            if (_majorStrategy != null)
-            {
-                _majorStrategy.OnSignalAnalyzed += vm =>
-                {
-                    try { OnSignalUpdate?.Invoke(vm); }
-                    catch (Exception ex) { OnLiveLog?.Invoke($"⚠️ Major 시그널 UI 반영 오류: {ex.Message}"); }
-                };
-                _majorStrategy.OnTradeSignal += async (symbol, decision, price) =>
-                {
-                    try
-                    {
-                        if (!IsEntryAllowed(symbol, "MAJOR_SIGNAL", out string majorBlockReason))
-                        {
-                            OnLiveLog?.Invoke($"⛔ [MAJOR] {symbol} 신호 무시 ({majorBlockReason})");
-                            return;
-                        }
-                        await ExecuteAutoOrder(symbol, decision, price, _cts.Token, "MAJOR", skipAiGateCheck: false);
-                    }
-                    catch (Exception ex)
-                    {
-                        OnLiveLog?.Invoke($"⚠️ Major 주문 처리 오류 [{symbol}]: {ex.Message}");
-                    }
-                };
-                _majorStrategy.OnLog += msg => OnLiveLog?.Invoke(msg);
-            }
+            // [v5.22.40] _majorStrategy 핸들러 제거 — AnalyzeMajorSimpleAsync 가 메이저 진입 단독 처리
 
             // [3파 확정형 전략] 먼저 초기화 (TransformerStrategy에서 사용하기 위해)
             _elliotWave3Strategy = new ElliottWave3WaveStrategy();
@@ -4142,66 +4123,29 @@ namespace TradingBot
                     }
                 }
 
-                // [v5.22.9] ML.NET 자동 예측 비활성화 — AI 시스템 폐기 (2026-04-28)
-                // _ = TryRecordMlNetPredictionFromCommonScanAsync(symbol, currentPrice, token);
-
-                // 1. 그리드 전략 (횡보장 대응)
-                await _gridStrategy.ExecuteAsync(symbol, currentPrice, token);
-                // 2. 차익거래 전략 (거래소 간 가격 차이 감지)
-                await _arbitrageStrategy.AnalyzeAsync(symbol, currentPrice, token);
-
-                // [MAJOR 전략] 메이저 코인 분석 — [v5.10.81] 단일 게이트 IsEntryAllowed
-                if (isMajorSymbol && _majorStrategy != null)
+                // ═══════════════════════════════════════════════════════════════════════════════
+                // [v5.22.39] 진입 로직 정리 — 백테스트 검증된 트리거 2개만 (메이저/알트)
+                //   제거된 잔재: _gridStrategy / _arbitrageStrategy / _majorStrategy / Transformer /
+                //                AnalyzeElliottWave3WaveAsync / AnalyzeFifteenMinBBSqueezeBreakoutAsync
+                //   메이저: AnalyzeMajorSimpleAsync (EMA20↑ + RSI<65 + M15RangePos 60~85%)
+                //   알트:   AnalyzeAltSimpleTriggersAsync (BBW<1.5% 상단돌파 / 5봉 중 4봉 워킹)
+                //   둘 다: TP 0.5%/SL 1.5% (메이저), 1%/3% (알트), 30분 cooldown
+                // ═══════════════════════════════════════════════════════════════════════════════
+                try
                 {
-                    if (!IsEntryAllowed(symbol, "MAJOR_ANALYZE", out _))
+                    if (isMajorSymbol)
                     {
-                        // 설정에서 메이저 비활성화됨 → 진입 분석 스킵
+                        if (IsEntryAllowed(symbol, "MAJOR_ANALYZE", out _))
+                            await AnalyzeMajorSimpleAsync(symbol, currentPrice, token);
                     }
                     else
                     {
-                        await _majorStrategy.AnalyzeAsync(symbol, currentPrice, token);
+                        await AnalyzeAltSimpleTriggersAsync(symbol, currentPrice, token);
                     }
                 }
-
-                // [Phase 7] Transformer 전략 분석 실행
-                /* TensorFlow 전환 중 비활성화
-                if (_transformerStrategy != null)
-                    await _transformerStrategy.AnalyzeAsync(symbol, currentPrice, token);
-                */
-
-                // [3파 확정형 전략] 5분봉 엘리엇 파동 분석
-                try
-                {
-                    await AnalyzeElliottWave3WaveAsync(symbol, currentPrice, token);
-                }
                 catch (Exception ex)
                 {
-                    OnStatusLog?.Invoke($"⚠️ Elliott Wave 분석 오류: {ex.Message}");
-                }
-
-                // [15분봉 BB 스퀴즈 돌파 전략]
-                try
-                {
-                    await AnalyzeFifteenMinBBSqueezeBreakoutAsync(symbol, currentPrice, token);
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ BB 스퀴즈 분석 오류: {ex.Message}");
-                }
-
-                // [v5.22.35] 알트용 단순 SQUEEZE + BB_WALK — 백테스트 (RunDaily60Async) 검증된 로직 이식
-                //   사용자: '알트 20% 넘는 코인 10개+, 10% 넘는 코인 수십개인데 진입 0건은 말이 안됨'
-                //   기존: AnalyzeFifteenMinBBSqueezeBreakoutAsync 의 5중 조건 (BBW<평균50%, 거래량1.5x, RSI정렬, R:R 1.5:1) 너무 까다로움
-                //   신규: 백테스트 트리거 그대로 — BBW<1.5% + 상단돌파 (SQUEEZE), 4회 연속 상단워킹 (BB_WALK)
-                //         + EMA20↑ + RSI<65 가드 + TP 1%/SL 3% (백테스트 동일)
-                try
-                {
-                    if (!isMajorSymbol)
-                        await AnalyzeAltSimpleTriggersAsync(symbol, currentPrice, token);
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ 알트 단순 트리거 오류: {ex.Message}");
+                    OnStatusLog?.Invoke($"⚠️ [{(isMajorSymbol ? "MAJOR" : "ALT")}_SIMPLE] {symbol} 분석 오류: {ex.Message}");
                 }
 
                 // [v5.22.36] 반대 시그널 익절 — 활성 LONG 포지션이 ROE>+0.3% 인데 EMA20 하락전환 + RSI<50 → 즉시 청산
@@ -4374,177 +4318,7 @@ namespace TradingBot
         /// 엘리엇 3파 확정형 전략 분석
         /// 5분봉에서 1파→2파→3파 확정 시 자동  진입
         /// </summary>
-        private async Task AnalyzeElliottWave3WaveAsync(string symbol, decimal currentPrice, CancellationToken token)
-        {
-            try
-            {
-                // 5분봉 최근 20개 가져오기 (약 100분)
-                var result = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(
-                    symbol,
-                    KlineInterval.FiveMinutes,
-                    limit: 20,
-                    ct: token
-                );
-
-                if (!result.Success || result.Data == null || result.Data.Length < 5)
-                    return;
-
-                var candles = result.Data.ToList();
-
-                // 지표 계산
-                var rsiValues = new List<double>();
-                var macdValues = new List<(double macd, double signal)>();
-
-                for (int i = 0; i < candles.Count; i++)
-                {
-                    var subset = candles.GetRange(0, i + 1);
-                    double rsi = IndicatorCalculator.CalculateRSI(subset, 14);
-                    rsiValues.Add(rsi);
-
-                    var macd = IndicatorCalculator.CalculateMACD(subset);
-                    macdValues.Add((macd.Macd, macd.Signal));
-                }
-
-                var bbAnalysis = IndicatorCalculator.CalculateBB(candles.ToList(), 20, 2);
-                
-                // [안전성 체크] 배열 인덱스 접근 전 Count 확인
-                if (candles.Count == 0 || rsiValues.Count == 0 || macdValues.Count == 0)
-                {
-                    OnStatusLog?.Invoke($"⚠️ {symbol} ElliottWave3Wave 데이터 부족 (candles: {candles.Count}, rsi: {rsiValues.Count}, macd: {macdValues.Count})");
-                    return;
-                }
-                
-                var currentCandle = new CandleData
-                {
-                    Symbol = symbol,
-                    Open = (decimal)candles[^1].OpenPrice,
-                    High = (decimal)candles[^1].HighPrice,
-                    Low = (decimal)candles[^1].LowPrice,
-                    Close = (decimal)candles[^1].ClosePrice,
-                    Volume = (float)candles[^1].Volume,
-                    RSI = (float)rsiValues[^1],
-                    BollingerUpper = (float)bbAnalysis.Upper,
-                    BollingerLower = (float)bbAnalysis.Lower,
-                    OpenTime = candles[^1].OpenTime,
-                    CloseTime = candles[^1].CloseTime
-                };
-
-                double currentRsi = rsiValues[^1];
-                var currentMacd = macdValues[^1];
-
-                // CandleData 리스트로 변환 (캔들 분석용)
-                var candleDataList = new List<CandleData>();
-                for (int i = 0; i < candles.Count; i++)
-                {
-                    candleDataList.Add(new CandleData
-                    {
-                        Symbol = symbol,
-                        Open = (decimal)candles[i].OpenPrice,
-                        High = (decimal)candles[i].HighPrice,
-                        Low = (decimal)candles[i].LowPrice,
-                        Close = (decimal)candles[i].ClosePrice,
-                        Volume = (float)candles[i].Volume,
-                        OpenTime = candles[i].OpenTime,
-                        CloseTime = candles[i].CloseTime
-                    });
-                }
-
-                var state = _elliotWave3Strategy.GetCurrentState(symbol);
-                string stateSignatureBefore = BuildElliottWavePersistenceSignature(state);
-
-                // [1단계] 1파 상승 감지
-                if (state.CurrentPhase == ElliottWave3WaveStrategy.WavePhaseType.Idle && candleDataList.Count >= 3)
-                {
-                    if (_elliotWave3Strategy.DetectWave1(symbol, candleDataList, candleDataList.Count - 1))
-                    {
-                        OnAlert?.Invoke($"🌊 {symbol} [1파 확정] 거래량 실린 강한 상승 감지!");
-                        OnStatusLog?.Invoke($"📈 {symbol} 1파: {state.Phase1LowPrice:F8} → {state.Phase1HighPrice:F8}");
-                    }
-                }
-
-                // [2단계] 2파 조정 감지 및 피보나치 설정
-                if (state.CurrentPhase == ElliottWave3WaveStrategy.WavePhaseType.Wave1Started && candleDataList.Count >= 4)
-                {
-                    if (_elliotWave3Strategy.DetectWave2AndSetFibonacci(symbol, candleDataList, candleDataList.Count - 1))
-                    {
-                        OnAlert?.Invoke($"🌊 {symbol} [2파 확정] 조정파 감지, 피보나치 설정 완료");
-                        OnStatusLog?.Invoke($"📉 {symbol} 2파 Fib: 0.618={state.Fib0618Level:F8}, 0.786={state.Fib786Level:F8}");
-                    }
-                }
-
-                // [3단계] RSI 다이버전스 감지
-                if (state.CurrentPhase == ElliottWave3WaveStrategy.WavePhaseType.Wave2Started)
-                {
-                    var rsiValuesDecimal = rsiValues.Select(r => (decimal)r).ToList();
-                    if (_elliotWave3Strategy.DetectRSIDivergence(symbol, candleDataList, rsiValuesDecimal))
-                    {
-                        OnAlert?.Invoke($"🌊 {symbol} [RSI 다이버전스] 상승 반전 신호 감지!");
-                        OnStatusLog?.Invoke($"📊 {symbol} RSI 다이버전스: {currentRsi:F1}");
-                    }
-                }
-
-                // [4단계] 진입 신호 확정
-                if (state.CurrentPhase == ElliottWave3WaveStrategy.WavePhaseType.Wave3Setup)
-                {
-                    bool entry = _elliotWave3Strategy.ConfirmEntry(
-                        symbol,
-                        currentCandle,
-                        (decimal)currentRsi,
-                        (decimal)currentMacd.macd,
-                        (decimal)currentMacd.signal,
-                        (decimal)bbAnalysis.Mid,
-                        (decimal)bbAnalysis.Lower,
-                        (decimal)bbAnalysis.Upper
-                    );
-
-                    if (entry)
-                    {
-                        OnAlert?.Invoke($"🌊 {symbol} [3파 진입 신호] 모든 조건 충족! 자동 진입합니다.");
-                        OnStatusLog?.Invoke($"✅ {symbol} 진입가: {currentPrice:F8}, RSI: {currentRsi:F1}, MACD: {currentMacd.macd:F6}");
-
-                        // 자동 진입 실행
-                        await ExecuteAutoOrder(symbol, "LONG", currentPrice, token, "ElliottWave3Wave");
-
-                        bool enteredWave3Position;
-                        lock (_posLock)
-                        {
-                            enteredWave3Position = _activePositions.TryGetValue(symbol, out var activePos)
-                                && Math.Abs(activePos.Quantity) > 0;
-                        }
-
-                        if (enteredWave3Position)
-                        {
-                            _elliotWave3Strategy.MarkWave3Active(symbol);
-                        }
-
-                        // 손절/익절 정보 로그
-                        var (tp1, tp2) = _elliotWave3Strategy.GetTakeProfits(symbol);
-                        var sl = _elliotWave3Strategy.GetStopLoss(symbol);
-                        OnAlert?.Invoke($"🎯 목표가: 1차 {tp1:F8}, 2차 {tp2:F8} | 손절: {sl:F8}");
-                    }
-                }
-
-                // [조기 익절] RSI 또는 BB 경고 신호
-                if (state.CurrentPhase == ElliottWave3WaveStrategy.WavePhaseType.Wave3Active)
-                {
-                    double prevRsi = rsiValues.Count >= 2 ? rsiValues[^2] : currentRsi;
-                    if (_elliotWave3Strategy.ShouldTakeProfitEarly(symbol, (decimal)currentRsi, (decimal)prevRsi, currentPrice, (decimal)bbAnalysis.Upper))
-                    {
-                        OnAlert?.Invoke($"⚠️ {symbol} [조기 익절 경고] RSI 또는 BB 반전 신호!");
-                    }
-                }
-
-                string stateSignatureAfter = BuildElliottWavePersistenceSignature(state);
-                if (!string.Equals(stateSignatureBefore, stateSignatureAfter, StringComparison.Ordinal))
-                {
-                    await PersistElliottWaveAnchorStateAsync(symbol);
-                }
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ {symbol} ElliottWave3Wave 분석 오류: {ex.Message}");
-            }
-        }
+        // [v5.22.40] AnalyzeElliottWave3WaveAsync 본체 제거 (호출 0건)
 
         private async Task RestoreElliottWaveAnchorsFromDatabaseAsync(CancellationToken token)
         {
@@ -4721,42 +4495,32 @@ namespace TradingBot
 
                 decimal lastClose = klines[^1].ClosePrice;
 
-                // [v5.22.38] 임계 완화 — 라이브 발화 빈도 ↑ (백테스트 BBW<1.5% 너무 까다로움)
-                //   변동성 큰 알트 (24h ±10%+) 는 BBW 가 보통 2~5% → 1.5% 임계로는 자연 발화 거의 0
-                //   완화: BBW < 3% (스퀴즈 압축 정의 완화) + 워킹 5봉 중 3봉 (기존 4봉)
-                // 트리거 1: SQUEEZE — BBWidth < 3% + 상단 돌파
-                bool bbwOk = bbWidthPct < 3.0m;
+                // [v5.22.39] 백테스트 원본 트리거 그대로 — RunDaily180Async (180일 알트만 +2,285%) 검증
+                //   v5.22.38 완화 (BBW<3%, 워킹 3/5, MID_BREAK) 는 단순화된 시뮬 결과만 +7,580%
+                //   사용자: '백테스트 로직 그대로 라이브에 이식' → 백테스트 SQUEEZE/BB_WALK 만 사용
+                // 트리거 1: SQUEEZE — BBWidth < 1.5% + 상단 돌파 (백테스트 동일)
+                bool bbwOk = bbWidthPct < 1.5m;
                 bool breakoutOk = lastClose > upper;
                 bool sqzTrigger = bbwOk && breakoutOk;
 
-                // 트리거 2: BB_WALK — 최근 5봉 중 3봉 이상 종가 > Upper (기존 4봉)
+                // 트리거 2: BB_WALK — 최근 5봉 중 4봉 이상 종가 > Upper (백테스트 동일)
                 int walkCount = 0;
                 int n = klines.Count;
                 for (int i = Math.Max(0, n - 5); i < n; i++)
                 {
                     if (klines[i].ClosePrice > upper) walkCount++;
                 }
-                bool walkTrigger = walkCount >= 3;
+                bool walkTrigger = walkCount >= 4;
 
-                // 트리거 3: BB_MID_BREAK — 종가가 BB 중심선 아래→위 돌파 + 양봉 (반등 진입)
+                // [v5.22.39] MID_BREAK 트리거 제거 — 백테스트 원본 로직 아님
                 bool midBreakTrigger = false;
-                if (klines.Count >= 22)
-                {
-                    var prevBb = IndicatorCalculator.CalculateBB(klines.Take(klines.Count - 1).ToList(), 20, 2);
-                    decimal prevMid = (decimal)prevBb.Mid;
-                    decimal prevClose = klines[^2].ClosePrice;
-                    bool wasBelow = prevClose < prevMid;
-                    bool nowAbove = lastClose > middle;
-                    bool bullCandle = klines[^1].ClosePrice > klines[^1].OpenPrice;
-                    midBreakTrigger = wasBelow && nowAbove && bullCandle;
-                }
 
                 // [v5.22.37] 진단 카운터 — 어디서 막히는지 가시화
                 if (!sqzTrigger && !walkTrigger && !midBreakTrigger)
                 {
                     if (!bbwOk) System.Threading.Interlocked.Increment(ref _altDiagBbwTooWide);
                     else if (!breakoutOk) System.Threading.Interlocked.Increment(ref _altDiagNoBreakout);
-                    if (walkCount < 3) System.Threading.Interlocked.Increment(ref _altDiagWalkInsuf);
+                    if (walkCount < 4) System.Threading.Interlocked.Increment(ref _altDiagWalkInsuf);
                     EmitAltDiagIfDue();
                     return;
                 }
@@ -4792,6 +4556,86 @@ namespace TradingBot
             catch (Exception ex)
             {
                 OnStatusLog?.Invoke($"⚠️ [ALT_SIMPLE] {symbol} 분석 오류: {ex.Message}");
+            }
+        }
+
+        // [v5.22.39] 메이저 백테스트 단순 트리거 — RunDailyAsync (180일 메이저 +2,577%) 검증
+        //   조건 (모두 만족 → LONG 진입):
+        //     1. 활성 포지션 없음
+        //     2. EMA20 직전 5봉 대비 상승
+        //     3. RSI14 < 65
+        //     4. M15RangePos 60~85% (15봉 30봉 위치 — High/Low 범위 내 종가 위치)
+        //   30분 cooldown (재진입 폭주 방지)
+        //   ExecuteAutoOrder signalSource="MAJOR_SIMPLE" → entryCat=MAJOR (메이저 심볼 강제 분기)
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _majorSimpleCooldown = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan MajorSimpleCooldown = TimeSpan.FromMinutes(30);
+
+        private async Task AnalyzeMajorSimpleAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            // 활성 포지션 있으면 스킵
+            lock (_posLock)
+            {
+                if (_activePositions.ContainsKey(symbol)) return;
+            }
+
+            // 30분 cooldown
+            if (_majorSimpleCooldown.TryGetValue(symbol, out var lastTry))
+            {
+                if (DateTime.UtcNow - lastTry < MajorSimpleCooldown) return;
+            }
+
+            try
+            {
+                // 5분봉 80봉 (백테스트는 5m kline 사용)
+                if (_marketDataManager == null) return;
+                if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var cache)) return;
+                List<IBinanceKline> kl;
+                lock (cache) { kl = cache.ToList(); }
+                if (kl.Count < 50) return;
+
+                int idx = kl.Count - 1;
+
+                // 가드 1: EMA20 rising (백테스트 Ema20Rising 동일 — i 봉 EMA vs i-5 봉 EMA)
+                if (idx < 25) return;
+                var closes = kl.Select(k => (double)k.ClosePrice).ToList();
+                var emaSeries = IndicatorCalculator.CalculateEMASeries(closes, 20);
+                if (emaSeries == null || emaSeries.Count < 6) return;
+                bool emaRising = emaSeries[^1] > emaSeries[^6];
+                if (!emaRising) return;
+
+                // 가드 2: RSI14 < 65
+                double rsi = IndicatorCalculator.CalculateRSI(kl.ToList(), 14);
+                if (rsi >= 65) return;
+
+                // 가드 3: M15RangePos 60~85% — 직전 30봉 High/Low 범위 내 현재 종가 위치
+                if (idx < 30) return;
+                int from30 = idx - 29;
+                decimal high30 = kl[from30].HighPrice;
+                decimal low30 = kl[from30].LowPrice;
+                for (int i = from30 + 1; i <= idx; i++)
+                {
+                    if (kl[i].HighPrice > high30) high30 = kl[i].HighPrice;
+                    if (kl[i].LowPrice < low30) low30 = kl[i].LowPrice;
+                }
+                decimal range = high30 - low30;
+                if (range <= 0) return;
+                double rangePos = (double)((kl[idx].ClosePrice - low30) / range * 100m);
+                if (rangePos < 60.0 || rangePos > 85.0) return;
+
+                _majorSimpleCooldown[symbol] = DateTime.UtcNow;
+
+                OnStatusLog?.Invoke(
+                    $"🎯 [MAJOR_SIMPLE] {symbol} LONG 발화 | " +
+                    $"EMA↑=True RSI={rsi:F1}<65 RangePos={rangePos:F1}% (60~85)");
+
+                await ExecuteAutoOrder(
+                    symbol, "LONG", currentPrice, token,
+                    signalSource: "MAJOR_SIMPLE",
+                    mode: "TREND");
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [MAJOR_SIMPLE] {symbol} 오류: {ex.Message}");
             }
         }
 
@@ -4870,64 +4714,18 @@ namespace TradingBot
             }
         }
 
-        // [v5.22.35] EMA20 직전 봉 대비 상승 추세
+        // [v5.22.39] EMA20 5봉 전 대비 상승 — 백테스트 Ema20Rising (kl, i, 20 vs i-5, 20) 100% 일치
+        //   기존 v5.22.35: 1봉 차이 → 백테스트 (5봉 차이) 와 다름 → 발화 빈도/타이밍 어긋남
         private static bool IsEma20Rising(List<IBinanceKline> klines)
         {
-            if (klines == null || klines.Count < 22) return false;
+            if (klines == null || klines.Count < 26) return false;
             var closes = klines.Select(k => (double)k.ClosePrice).ToList();
             var ema = IndicatorCalculator.CalculateEMASeries(closes, 20);
-            if (ema == null || ema.Count < 2) return false;
-            return ema[^1] > ema[^2];
+            if (ema == null || ema.Count < 6) return false;
+            return ema[^1] > ema[^6];
         }
 
-        private async Task AnalyzeFifteenMinBBSqueezeBreakoutAsync(
-            string symbol, decimal currentPrice, CancellationToken token)
-        {
-            try
-            {
-                // 포지션 이미 보유 중이면 스킵 (IsOwnPosition만 체크)
-                lock (_posLock)
-                {
-                    if (_activePositions.TryGetValue(symbol, out var ep) && ep.IsOwnPosition) return;
-                }
-
-                // [v5.22.16] 멀티TF WebSocket 캐시 폐기 → REST throttle 30초 캐시로 통합
-                //   기존: MultiTfKlineCache (15m WebSocket) 우선 + 5분 fallback
-                //   신규: GetMultiTfKlinesThrottledAsync (REST 30초 throttle 단일 경로)
-                List<IBinanceKline>? klines15m = await GetMultiTfKlinesThrottledAsync(
-                    symbol, KlineInterval.FifteenMinutes, 80, token);
-
-                if (klines15m == null || klines15m.Count < 60) return;
-
-                bool hasSignal = _fifteenMinBBSqueezeStrategy.Evaluate(
-                    symbol, klines15m.ToList(), out var sig);
-
-                if (!hasSignal || sig == null) return;
-
-                OnAlert?.Invoke(
-                    $"📉→📈 [{symbol}] 15분봉 BB 스퀴즈 돌파 감지! " +
-                    $"BBW={sig.BbWidth:F2}% (평균 {sig.AvgBbWidth:F2}%) " +
-                    $"RSI={sig.Rsi:F1} Vol={sig.VolumeMultiple:F1}x RR={sig.RrRatio:F1}:1");
-
-                OnStatusLog?.Invoke(
-                    $"🎯 [BB_SQUEEZE_15M] {symbol} LONG | " +
-                    $"entry={sig.EntryPrice:F4} TP={sig.TakeProfit:F4} SL={sig.StopLoss:F4}");
-
-                await ExecuteAutoOrder(
-                    symbol,
-                    "LONG",
-                    currentPrice,
-                    token,
-                    signalSource: "BB_SQUEEZE_15M",
-                    mode: "TREND",
-                    customTakeProfitPrice: sig.TakeProfit,
-                    customStopLossPrice: sig.StopLoss);
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ {symbol} BB 스퀴즈 분석 오류: {ex.Message}");
-            }
-        }
+        // [v5.22.40] AnalyzeFifteenMinBBSqueezeBreakoutAsync 본체 제거 (호출 0건)
 
         public void StopEngine()
         {
