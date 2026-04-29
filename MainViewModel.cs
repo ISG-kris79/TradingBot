@@ -2187,6 +2187,25 @@ namespace TradingBot.ViewModels
             _engine.OnTelegramStatusUpdate += (isConnected, text) => UpdateTelegramStatus(isConnected, text);
             _engine.OnSignalUpdate += vm => UpdateSignal(vm);
             _engine.OnTickerUpdate += (symbol, price, pnl) => UpdateTicker(symbol, price, pnl);
+            // [v5.22.23] 활성 추적 풀 변경 → MarketDataList 에서 풀 외 row 자동 제거 (메이저4 + 알트8 + 활성포지션 만 유지)
+            _engine.OnActiveTrackingSetChanged += activeSet =>
+            {
+                try
+                {
+                    RunOnUI(() =>
+                    {
+                        var stale = MarketDataList
+                            .Where(r => !string.IsNullOrEmpty(r.Symbol) && !activeSet.Contains(r.Symbol))
+                            .ToList();
+                        foreach (var s in stale)
+                        {
+                            MarketDataList.Remove(s);
+                            _marketDataIndex.Remove(s.Symbol);
+                        }
+                    });
+                }
+                catch { }
+            };
             _engine.OnSymbolTracking += symbol => EnsureSymbolInList(symbol);
             _engine.OnPositionStatusUpdate += (symbol, isActive, entryPrice) => UpdatePositionStatus(symbol, isActive, entryPrice);
             _engine.OnCloseIncompleteStatusChanged += (symbol, isIncomplete, detail) => UpdateCloseIncompleteStatus(symbol, isIncomplete, detail);

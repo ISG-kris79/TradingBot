@@ -16,9 +16,9 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
     <LangVersion>latest</LangVersion>
-    <Version>5.22.22</Version>
-    <AssemblyVersion>5.22.22.0</AssemblyVersion>
-    <FileVersion>5.22.22.0</FileVersion>
+    <Version>5.22.23</Version>
+    <AssemblyVersion>5.22.23.0</AssemblyVersion>
+    <FileVersion>5.22.23.0</FileVersion>
     <Company>TradingBot</Company>
     <Product>CoinFF TradingBot</Product>
     <Description>Cryptocurrency Trading Bot with AI/ML capabilities</Description>

@@ -64,6 +64,8 @@ namespace TradingBot.Services
         public event Action<IBinance24HPrice>? OnTickerUpdate;
         public event Action<string, IBinanceKline>? OnNewKlineAdded; // [실시간 저장] 새 봉 추가 이벤트
         public event Action<string>? OnLog;
+        // [v5.22.23] REST 폴링 활성 추적 풀 변경 통지 — UI grid row 자동 정리용 (메이저4 + 동적알트8 + 활성포지션)
+        public event Action<HashSet<string>>? OnActiveTrackingSetChanged;
 
         public MarketDataManager(IBinanceRestClient restClient, List<string> majorSymbols)
         {
@@ -174,6 +176,12 @@ namespace TradingBot.Services
 
                         foreach (var t in topAlts)
                             OnTickerUpdate?.Invoke(t);
+
+                        // [v5.22.23] 활성 추적 풀 통지 — UI grid 에서 풀 외 알트 row 자동 제거
+                        var activeSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var m in _majorSymbols) activeSet.Add(m);
+                        foreach (var t in topAlts) activeSet.Add(t.Symbol);
+                        OnActiveTrackingSetChanged?.Invoke(activeSet);
                     }
                 }
                 catch (OperationCanceledException) { return; }

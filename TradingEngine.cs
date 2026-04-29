@@ -1216,6 +1216,8 @@ namespace TradingBot
         public event Action<double, float, bool>? OnPriceProgressUpdate;
         /// <summary>[SSA] 시계열 예측 밴드 업데이트 (upperBound, lowerBound, forecastPrice)</summary>
         public event Action<float, float, float>? OnSsaForecastUpdate;
+        /// <summary>[v5.22.23] 활성 추적 풀 변경 통지 — MainViewModel 에서 그리드 stale row 자동 제거</summary>
+        public event Action<HashSet<string>>? OnActiveTrackingSetChanged;
 
         /// <summary>
         /// [AI Command Center] 심볼, AI신뢰도(0~1), 방향(LONG/SHORT/NONE), H4/H1/15M 상태 문자열, bullPower(0~100), bearPower(0~100)
@@ -1513,6 +1515,17 @@ namespace TradingBot
             };
 
             _marketDataManager.OnTickerUpdate += HandleTickerUpdate;
+            // [v5.22.23] 활성 추적 풀 통지 — 활성포지션 합집합 후 forward
+            _marketDataManager.OnActiveTrackingSetChanged += baseSet =>
+            {
+                try
+                {
+                    var combined = new HashSet<string>(baseSet, StringComparer.OrdinalIgnoreCase);
+                    lock (_posLock) foreach (var s in _activePositions.Keys) combined.Add(s);
+                    OnActiveTrackingSetChanged?.Invoke(combined);
+                }
+                catch { }
+            };
 
             _positionMonitor.OnLog += msg => OnStatusLog?.Invoke(msg);
             _positionMonitor.OnAlert += msg => OnAlert?.Invoke(msg);
