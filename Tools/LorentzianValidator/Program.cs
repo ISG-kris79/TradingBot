@@ -1524,13 +1524,23 @@ internal static class Program
         }
     }
 
+    // [v5.22.36] 180일 일별 PnL — RunDaily60Async 와 동일 로직, pages=36 으로 확장
+    private static async Task RunDaily180Async()
+    {
+        await RunDailyAsync(pages: 36, label: "180일");
+    }
+
     private static async Task RunDaily60Async()
     {
+        await RunDailyAsync(pages: 12, label: "60일");
+    }
+
+    private static async Task RunDailyAsync(int pages, string label)
+    {
         Console.WriteLine("================================================================");
-        Console.WriteLine("  v5.22.5+ 60일 일별 PnL (PUMP/SPIKE 차단, MAJOR+SQZ+BBW)");
+        Console.WriteLine($"  v5.22.5+ {label} 일별 PnL (PUMP/SPIKE 차단, MAJOR+SQZ+BBW)");
         Console.WriteLine("================================================================");
         const decimal seed = 1000m;
-        int pages = 12;
         var fullData = new Dictionary<string, List<IBinanceKline>>();
         int idx = 0;
         Console.WriteLine($"\n[fetch 60일 — {symbols.Length}개 심볼]");
@@ -1827,6 +1837,11 @@ internal static class Program
         if (HasArg("--redesign"))
         {
             await RunRedesignAsync();
+            return;
+        }
+        if (HasArg("--daily-180d"))
+        {
+            await RunDaily180Async();
             return;
         }
         if (HasArg("--daily-60d"))

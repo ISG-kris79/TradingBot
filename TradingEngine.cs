@@ -4204,6 +4204,18 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⚠️ 알트 단순 트리거 오류: {ex.Message}");
                 }
 
+                // [v5.22.36] 반대 시그널 익절 — 활성 LONG 포지션이 ROE>+0.3% 인데 EMA20 하락전환 + RSI<50 → 즉시 청산
+                //   사용자: '이더/솔라나 너무 긴시간 끌다보니 수익이 마이너스 됨'
+                //   목표: 흑자 구간에서 추세 반전 신호 잡으면 익절 보호
+                try
+                {
+                    await CheckReverseSignalExitAsync(symbol, currentPrice, token);
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ 반대시그널 청산 오류: {ex.Message}");
+                }
+
                 // ═══════════════════════════
                 // [Hybrid Exit] AI+지표 기반 이탈 관리
                 // ═══════════════════════════
@@ -4718,6 +4730,81 @@ namespace TradingBot
             catch (Exception ex)
             {
                 OnStatusLog?.Invoke($"⚠️ [ALT_SIMPLE] {symbol} 분석 오류: {ex.Message}");
+            }
+        }
+
+        // [v5.22.36] 반대 시그널 익절 — 흑자 보호 (이더/솔라나 같이 긴 시간 끌다 +→- 전환 방지)
+        //   조건 (모두 만족 → 즉시 청산):
+        //     1. 활성 LONG 포지션 존재 + IsOwnPosition
+        //     2. 현재 ROE > +0.3% (수수료 양방향 0.08% × 15x = 1.2% > 0.3% 보호 마진)
+        //     3. 5분봉 EMA20 직전 봉 대비 하락 전환 (방향 변경)
+        //     4. 5분봉 RSI14 < 50 (모멘텀 죽음)
+        //     5. (옵션) 종가가 BB 중심선 아래 (중단 이탈)
+        //   재호출 폭주 방지: 5분봉 OpenTime 기준 캐시 (같은 봉에서 중복 청산 시도 안 함)
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _reverseExitChecked = new(StringComparer.OrdinalIgnoreCase);
+
+        private async Task CheckReverseSignalExitAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            PositionInfo? pos = null;
+            lock (_posLock)
+            {
+                if (!_activePositions.TryGetValue(symbol, out pos)) return;
+                if (pos == null || !pos.IsOwnPosition) return;
+                if (!pos.IsLong) return; // SHORT 진입은 반대로직 별도 (LONG만 우선)
+            }
+
+            // ROE 계산
+            if (pos.EntryPrice <= 0 || currentPrice <= 0) return;
+            decimal lev = pos.Leverage > 0 ? pos.Leverage : (_settings?.DefaultLeverage ?? 15m);
+            decimal priceChangePct = (currentPrice - pos.EntryPrice) / pos.EntryPrice * 100m;
+            decimal roePct = priceChangePct * lev;
+
+            // 흑자 보호 마진 — 수수료 양방향 (0.04%×2=0.08%) × lev = 1.2% 미만이면 청산해도 손해
+            if (roePct < 0.3m * lev) return;
+
+            // 5분봉 30봉 fetch (throttle 캐시 활용)
+            var klines = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 30, token);
+            if (klines == null || klines.Count < 22) return;
+
+            // 같은 봉 중복 체크 방지
+            var lastBarTime = klines[^1].OpenTime;
+            if (_reverseExitChecked.TryGetValue(symbol, out var cached) && cached == lastBarTime) return;
+
+            // EMA20 하락 전환
+            var closes = klines.Select(k => (double)k.ClosePrice).ToList();
+            var ema = IndicatorCalculator.CalculateEMASeries(closes, 20);
+            if (ema == null || ema.Count < 2) return;
+            bool emaFalling = ema[^1] < ema[^2];
+            if (!emaFalling) return;
+
+            // RSI14 < 50
+            double rsi = IndicatorCalculator.CalculateRSI(klines.ToList(), 14);
+            if (rsi >= 50) return;
+
+            // BB 중심선 이탈 (옵션 — 강한 신호일 때만 청산)
+            var bb = IndicatorCalculator.CalculateBB(klines.ToList(), 20, 2);
+            decimal middle = (decimal)bb.Mid;
+            decimal lastClose = klines[^1].ClosePrice;
+            bool belowMid = lastClose < middle;
+            if (!belowMid) return;
+
+            _reverseExitChecked[symbol] = lastBarTime;
+
+            OnStatusLog?.Invoke(
+                $"🔄 [반대시그널익절] {symbol} ROE={roePct:F2}% | EMA20↓ + RSI={rsi:F1}<50 + 종가<중심선 → 즉시 청산");
+            OnAlert?.Invoke($"🔄 [반대시그널] {symbol} +{roePct:F2}% 익절 (추세 반전 보호)");
+
+            try
+            {
+                // 시장가 매도로 전체 청산
+                decimal qty = Math.Abs(pos.Quantity);
+                if (qty <= 0) return;
+                await _exchangeService.PlaceMarketOrderAsync(
+                    symbol, "SELL", qty, token, reduceOnly: true);
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"❌ [반대시그널익절] {symbol} 청산 실패: {ex.Message}");
             }
         }
 

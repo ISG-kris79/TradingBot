@@ -1,5 +1,5 @@
 ﻿{
-    "timestamp":  "2026-04-29 15:17:00",
+    "timestamp":  "2026-04-29 21:17:00",
     "version":  "5.10.66",
     "status":  "ALERT",
     "alerts":  [
@@ -10,11 +10,11 @@
                     "winrate_6h":  0,
                     "label_n_24h":  0,
                     "online_retrain_24h":  0,
-                    "trades_24h":  0,
-                    "pnl_24h":  0,
+                    "trades_24h":  1,
+                    "pnl_24h":  3.29,
                     "minutes_since_last_log":  0,
                     "major_entries_24h":  8,
-                    "online_logs_24h":  2942,
+                    "online_logs_24h":  3745,
                     "trades_6h":  0,
                     "label_success_rate_24h":  0,
                     "major_blocked_24h":  0
