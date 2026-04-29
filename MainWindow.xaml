@@ -1412,8 +1412,8 @@
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
 
-                                                    <!-- ⑥ SL / TP: 손절/익절 요약 -->
-                                                    <DataGridTemplateColumn Header="손절/익절" Width="152">
+                                                    <!-- ⑥ SL / TP: 손절/익절 가격 + USD 금액 [v5.22.29] -->
+                                                    <DataGridTemplateColumn Header="손절/익절 (가격+금액)" Width="280">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <TextBlock Text="{Binding RiskSummary}" Foreground="#CBD5E1" FontFamily="Consolas" FontSize="10"
@@ -1880,14 +1880,14 @@
                                       AutoGenerateColumns="False"
                                       IsReadOnly="True">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="진입시각" Binding="{Binding OpenTimeText}" Width="130"/>
-                                    <DataGridTextColumn Header="종료시각" Binding="{Binding CloseTimeText}" Width="130"/>
-                                    <DataGridTextColumn Header="심볼" Binding="{Binding Symbol}" Width="100"/>
-                                    <DataGridTextColumn Header="방향" Binding="{Binding SideKr}" Width="60"/>
-                                    <DataGridTextColumn Header="평균진입" Binding="{Binding AvgEntryPrice, StringFormat=N4}" Width="110"/>
-                                    <DataGridTextColumn Header="평균청산" Binding="{Binding AvgExitPrice, StringFormat=N4}" Width="110"/>
-                                    <DataGridTextColumn Header="수량" Binding="{Binding TotalQuantity, StringFormat=N4}" Width="100"/>
-                                    <DataGridTextColumn Header="순손익" Binding="{Binding NetPnl, StringFormat=N4}" Width="110">
+                                    <DataGridTextColumn Header="진입시각" Binding="{Binding OpenTimeText}" Width="150"/>
+                                    <DataGridTextColumn Header="종료시각" Binding="{Binding CloseTimeText}" Width="150"/>
+                                    <DataGridTextColumn Header="심볼" Binding="{Binding Symbol}" Width="120"/>
+                                    <DataGridTextColumn Header="방향" Binding="{Binding SideKr}" Width="70"/>
+                                    <DataGridTextColumn Header="평균진입" Binding="{Binding AvgEntryPrice, StringFormat=N4}" Width="130"/>
+                                    <DataGridTextColumn Header="평균청산" Binding="{Binding AvgExitPrice, StringFormat=N4}" Width="130"/>
+                                    <DataGridTextColumn Header="수량" Binding="{Binding TotalQuantity, StringFormat=N4}" Width="120"/>
+                                    <DataGridTextColumn Header="순손익" Binding="{Binding NetPnl, StringFormat=N4}" Width="130">
                                         <DataGridTextColumn.ElementStyle>
                                             <Style TargetType="TextBlock">
                                                 <Setter Property="FontWeight" Value="Bold"/>
@@ -1903,11 +1903,11 @@
                                             </Style>
                                         </DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="ROE%" Binding="{Binding RoePct, StringFormat={}{0:F2}%}" Width="80"/>
-                                    <DataGridTextColumn Header="분할" Binding="{Binding FillCount}" Width="50"/>
-                                    <DataGridTextColumn Header="구간" Binding="{Binding DurationText}" Width="60"/>
-                                    <DataGridTextColumn Header="결과" Binding="{Binding ResultText}" Width="80"/>
-                                    <DataGridTextColumn Header="카테고리" Binding="{Binding Category}" Width="90"/>
+                                    <DataGridTextColumn Header="ROE%" Binding="{Binding RoePct, StringFormat={}{0:F2}%}" Width="100"/>
+                                    <DataGridTextColumn Header="분할" Binding="{Binding FillCount}" Width="70"/>
+                                    <DataGridTextColumn Header="구간" Binding="{Binding DurationText}" Width="80"/>
+                                    <DataGridTextColumn Header="결과" Binding="{Binding ResultText}" Width="100"/>
+                                    <DataGridTextColumn Header="카테고리" Binding="{Binding Category}" Width="110"/>
                                 </DataGrid.Columns>
                             </DataGrid>
                         </Border>
@@ -1929,12 +1929,12 @@
                                           IsReadOnly="True"
                                           MouseDoubleClick="DataGrid_MouseDoubleClick">
                                     <DataGrid.Columns>
-                                        <DataGridTextColumn Header="시각" Binding="{Binding Time, StringFormat='MM-dd HH:mm:ss'}" Width="120"/>
-                                        <DataGridTextColumn Header="심볼" Binding="{Binding Symbol}" Width="100"/>
-                                        <DataGridTextColumn Header="방향" Binding="{Binding Side}" Width="60"/>
-                                        <DataGridTextColumn Header="가격" Binding="{Binding Price, StringFormat=N4}" Width="110"/>
-                                        <DataGridTextColumn Header="수량" Binding="{Binding Quantity, StringFormat=N4}" Width="100"/>
-                                        <DataGridTextColumn Header="사유 (SL/TP)" Binding="{Binding Strategy}" Width="200">
+                                        <DataGridTextColumn Header="시각" Binding="{Binding Time, StringFormat='MM-dd HH:mm:ss'}" Width="140"/>
+                                        <DataGridTextColumn Header="심볼" Binding="{Binding Symbol}" Width="120"/>
+                                        <DataGridTextColumn Header="방향" Binding="{Binding Side}" Width="80"/>
+                                        <DataGridTextColumn Header="가격" Binding="{Binding Price, StringFormat=N4}" Width="130"/>
+                                        <DataGridTextColumn Header="수량" Binding="{Binding Quantity, StringFormat=N4}" Width="120"/>
+                                        <DataGridTextColumn Header="사유 (SL/TP)" Binding="{Binding Strategy}" Width="240">
                                             <DataGridTextColumn.ElementStyle>
                                                 <Style TargetType="TextBlock">
                                                     <Setter Property="Foreground" Value="#FFD700"/>
@@ -1942,8 +1942,8 @@
                                                 </Style>
                                             </DataGridTextColumn.ElementStyle>
                                         </DataGridTextColumn>
-                                        <DataGridTextColumn Header="청산사유" Binding="{Binding ExitReason}" Width="150"/>
-                                        <DataGridTextColumn Header="PnL" Binding="{Binding PnL, StringFormat=N4}" Width="100">
+                                        <DataGridTextColumn Header="청산사유" Binding="{Binding ExitReason}" Width="180"/>
+                                        <DataGridTextColumn Header="PnL" Binding="{Binding PnL, StringFormat=N4}" Width="130">
                                             <DataGridTextColumn.ElementStyle>
                                                 <Style TargetType="TextBlock">
                                                     <Setter Property="FontWeight" Value="Bold"/>
@@ -1959,7 +1959,7 @@
                                                 </Style>
                                             </DataGridTextColumn.ElementStyle>
                                         </DataGridTextColumn>
-                                        <DataGridTextColumn Header="ROE%" Binding="{Binding PnLPercent, StringFormat={}{0:F2}%}" Width="80"/>
+                                        <DataGridTextColumn Header="ROE%" Binding="{Binding PnLPercent, StringFormat={}{0:F2}%}" Width="100"/>
                                     </DataGrid.Columns>
                                 </DataGrid>
                             </DockPanel>

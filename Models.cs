@@ -1463,7 +1463,7 @@ namespace TradingBot.Models
             }
         }
 
-        // 리스크 요약 (SL/TP/트레일링스탑 가격)
+        // 리스크 요약 (SL/TP/트레일링스탑 가격 + USD 금액 [v5.22.29])
         public string RiskSummary
         {
             get
@@ -1473,9 +1473,26 @@ namespace TradingBot.Models
                 // [v3.2.39] 가격 기반 소수점 자동 결정
                 string FmtPrice(decimal p) => p >= 100 ? p.ToString("F2") : p >= 1 ? p.ToString("F4") : p >= 0.01m ? p.ToString("F6") : p.ToString("F8");
 
-                var sl = StopLossPrice > 0 ? $"SL:{FmtPrice(StopLossPrice)}" : null;
-                var tp = TargetPrice > 0 ? $"TP:{FmtPrice(TargetPrice)}" : null;
-                var ts = TrailingStopPrice > 0 ? $"TS:{FmtPrice(TrailingStopPrice)}" : null;
+                // [v5.22.29] USD 금액 — 가격 도달 시 PnL (Long: TP→이익 / SL→손실, Short 반대)
+                decimal qty = Math.Abs(Quantity);
+                bool isLong = string.Equals(PositionSide, "LONG", StringComparison.OrdinalIgnoreCase) || string.Equals(PositionSide, "BUY", StringComparison.OrdinalIgnoreCase);
+                string FmtUsd(decimal usd) => usd >= 0 ? $"+${usd:F1}" : $"-${Math.Abs(usd):F1}";
+                string SlUsdText(decimal slPrice)
+                {
+                    if (qty == 0 || EntryPrice == 0 || slPrice == 0) return "";
+                    decimal pnl = isLong ? (slPrice - EntryPrice) * qty : (EntryPrice - slPrice) * qty;
+                    return $"({FmtUsd(pnl)})";
+                }
+                string TpUsdText(decimal tpPrice)
+                {
+                    if (qty == 0 || EntryPrice == 0 || tpPrice == 0) return "";
+                    decimal pnl = isLong ? (tpPrice - EntryPrice) * qty : (EntryPrice - tpPrice) * qty;
+                    return $"({FmtUsd(pnl)})";
+                }
+
+                var sl = StopLossPrice > 0 ? $"SL:{FmtPrice(StopLossPrice)}{SlUsdText(StopLossPrice)}" : null;
+                var tp = TargetPrice > 0 ? $"TP:{FmtPrice(TargetPrice)}{TpUsdText(TargetPrice)}" : null;
+                var ts = TrailingStopPrice > 0 ? $"TS:{FmtPrice(TrailingStopPrice)}{SlUsdText(TrailingStopPrice)}" : null;
 
                 // 트레일링스탑이 활성화되면 SL 대신 TS 표시 (TS가 실질적 손절가)
                 if (ts != null)
