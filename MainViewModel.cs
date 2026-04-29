@@ -912,6 +912,24 @@ namespace TradingBot.ViewModels
             InitializeTickerUpdatePipeline();
             InitializeFooterLogPipeline();
 
+            // [v5.22.17] 메이저 4개 (BTC/ETH/SOL/XRP) 강제 prefill — 봇 가동 직후 가격 도착 전이라도
+            //   "실시간 시장 신호" DataGrid 가 빈 상태로 보이지 않도록 placeholder row 미리 생성.
+            //   이후 OnTickerUpdate 도착 시 GetOrCreateMarketDataItem 이 동일 row 를 재사용하여 LastPrice/ProfitPercent 갱신.
+            try
+            {
+                foreach (var sym in new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" })
+                {
+                    if (!_marketDataIndex.ContainsKey(sym))
+                    {
+                        var placeholder = new MultiTimeframeViewModel { Symbol = sym };
+                        placeholder.EntryStatus = ResolveEntryStatus(placeholder.SignalSource, placeholder.Decision, placeholder.IsPositionActive);
+                        MarketDataList.Add(placeholder);
+                        _marketDataIndex[sym] = placeholder;
+                    }
+                }
+            }
+            catch { /* 초기화 실패해도 정상 흐름은 OnTickerUpdate 도착 시 자동 추가됨 */ }
+
             // [v4.4.2] 퍼포먼스 탭 초기 로드
             _ = LoadPerformanceDataAsync();
 
@@ -2229,6 +2247,19 @@ namespace TradingBot.ViewModels
             // [v4.9.2] Serilog 파일 기록 — 그동안 QueueFooterLog만 호출되어
             // OnStatusLog 내용이 log-YYYYMMDD.txt 파일에 안 남던 문제 해결
             try { LoggerService.Info(msg); } catch { }
+
+            // [v5.22.17] FastLog ListView 직결 — 사용자 요청
+            //   "OnStatusLog → HandleStatusLog → AddLog → FastLog" 파이프라인이 끊겨 있어
+            //   FastLog 패널이 비어 보이던 문제 해결. PushBattleFastLog 가 250ms throttle 자체 보유.
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(msg))
+                {
+                    var compact = SimplifyLiveLogMessage(LocalizeLiveLogMessage(msg));
+                    RunOnUI(() => PushBattleFastLog(compact));
+                }
+            }
+            catch { /* FastLog push 실패는 trading flow 영향 없음 */ }
 
             if (ShouldMirrorStatusToLiveLog(msg))
             {

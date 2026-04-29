@@ -11812,16 +11812,10 @@ namespace TradingBot
             return true;
         }
 
-        private static string NormalizePumpSignalLog(string message)
-        {
-            if (string.IsNullOrWhiteSpace(message))
-                return "📡 [SIGNAL][PUMP][TRACE] empty";
-
-            if (message.Contains("[SIGNAL][PUMP]", StringComparison.OrdinalIgnoreCase))
-                return message;
-
-            return $"📡 [SIGNAL][PUMP][TRACE] {message}";
-        }
+        // [v5.22.17] NormalizePumpSignalLog 제거 — PumpScanStrategy 폐기 후 dead code.
+        //   호출자 0건이지만 컴파일된 dll 에 "[SIGNAL][PUMP][TRACE]" / "[SIGNAL][PUMP]" string literal 잔존
+        //   → 사용자가 dll grep 시 PumpScan 코드가 살아있는 줄 오해.
+        //   메서드 자체 삭제로 dll 바이너리에서도 잔존 문자열 제거.
 
         private static string NormalizeTransformerSignalLog(string message)
         {

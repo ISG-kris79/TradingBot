@@ -10,9 +10,6 @@
   <ItemGroup>
     <PackageReference Include="Binance.Net" Version="12.8.1" />
   </ItemGroup>
-  <ItemGroup>
-    <Compile Include="..\..\Services\LorentzianV2\LorentzianFeatures.cs" Link="Lib\LorentzianFeatures.cs" />
-    <Compile Include="..\..\Services\LorentzianV2\LorentzianAnnEngine.cs" Link="Lib\LorentzianAnnEngine.cs" />
-    <Compile Remove="..\..\Services\LorentzianV2\LorentzianV2Service.cs" />
-  </ItemGroup>
+  <!-- [v5.22.17] LorentzianV2 폴더는 v5.22.11 에서 삭제됨 → 두 파일을 Validator 폴더에 직접 동봉 -->
+  <!-- (LorentzianFeatures.cs / LorentzianAnnEngine.cs 는 본 디렉터리에 자체 포함되어 자동 컴파일됨) -->
 </Project>

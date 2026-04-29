@@ -1800,54 +1800,58 @@ internal static class Program
                 Console.WriteLine($"[CONFIG] MarginPump/Spike = ${mp}");
             }
         }
-        if (args.Length > 0 && args[0] == "--sweep")
+        // [v5.22.17] mode flag 인식 — args[0] 고정 검사 → 어느 위치에 있어도 인식
+        //   기존: --lev 10 --daily-60d 호출 시 args[0]=="--lev" 라 default 분기로 떨어져
+        //   real-lorentzian C# engine 경로가 실행되며 daily-60d 절대 안 돌았음.
+        bool HasArg(string flag) => args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
+        if (HasArg("--sweep"))
         {
             await RunSweepAsync();
             return;
         }
-        if (args.Length > 0 && args[0] == "--sweep-all")
+        if (HasArg("--sweep-all"))
         {
             await RunAllSweepsAsync();
             return;
         }
-        if (args.Length > 0 && args[0] == "--final")
+        if (HasArg("--final"))
         {
             await RunFinalBacktestAsync();
             return;
         }
-        if (args.Length > 0 && args[0] == "--diagnose")
+        if (HasArg("--diagnose"))
         {
             await RunDiagnosisAsync();
             return;
         }
-        if (args.Length > 0 && args[0] == "--redesign")
+        if (HasArg("--redesign"))
         {
             await RunRedesignAsync();
             return;
         }
-        if (args.Length > 0 && args[0] == "--daily-60d")
+        if (HasArg("--daily-60d"))
         {
             await RunDaily60Async();
             return;
         }
-        if (args.Length > 0 && args[0] == "--target70")
+        if (HasArg("--target70-90d"))
+        {
+            await RunTarget70Async(pages: 18);  // ~90일 (먼저 검사 — --target70 와 substring 충돌 방지)
+            return;
+        }
+        if (HasArg("--target70"))
         {
             await RunTarget70Async();
             return;
         }
-        if (args.Length > 0 && args[0] == "--target70-90d")
-        {
-            await RunTarget70Async(pages: 18);  // ~90일
-            return;
-        }
-        if (args.Length > 0 && args[0] == "--live-all")
+        if (HasArg("--live-all"))
         {
             // [v5.22.1] 라이브 로직 백테스트 — AI 게이트 제거, 가드만으로 진입
             //   1/10/30/60/90/180/360일 7개 기간 카테고리별 합산
             await RunLiveAllPeriodsAsync();
             return;
         }
-        if (args.Length > 0 && args[0] == "--ai-all")
+        if (HasArg("--ai-all"))
         {
             // [v5.21.13] AI 게이트 포함 백테스트 — 라이브 봇 시뮬과 동일
             //   기존 RunLogicBreakdownAsync = 가드만 시뮬 (AI 미포함)
@@ -1856,42 +1860,42 @@ internal static class Program
             await RunAiAllPeriodsAsync();
             return;
         }
-        if (args.Length > 0 && args[0] == "--logic-1d")
+        if (HasArg("--logic-1d"))
         {
             await RunLogicBreakdownAsync(pages: 1);  // 1일 (실제 5일치 데이터, 페이징 최소 단위)
             return;
         }
-        if (args.Length > 0 && args[0] == "--logic-10d")
+        if (HasArg("--logic-10d"))
         {
             await RunLogicBreakdownAsync(pages: 2);  // 10일
             return;
         }
-        if (args.Length > 0 && args[0] == "--logic-30d")
+        if (HasArg("--logic-30d"))
         {
             await RunLogicBreakdownAsync(pages: 6);  // 30일
             return;
         }
-        if (args.Length > 0 && args[0] == "--logic-60d")
+        if (HasArg("--logic-60d"))
         {
             await RunLogicBreakdownAsync(pages: 12);  // 60일
             return;
         }
-        if (args.Length > 0 && args[0] == "--logic-90d")
+        if (HasArg("--logic-90d"))
         {
             await RunLogicBreakdownAsync(pages: 18);  // 90일
             return;
         }
-        if (args.Length > 0 && args[0] == "--logic-180d")
+        if (HasArg("--logic-180d"))
         {
             await RunLogicBreakdownAsync(pages: 36);  // 180일 (6개월)
             return;
         }
-        if (args.Length > 0 && args[0] == "--logic-365d")
+        if (HasArg("--logic-365d"))
         {
             await RunLogicBreakdownAsync(pages: 70);  // 365일 (1년)
             return;
         }
-        if (args.Length > 0 && args[0] == "--pump-tune")
+        if (HasArg("--pump-tune"))
         {
             await RunPumpTuneAsync(pages: 18);  // 90일 PUMP 전용
             return;
