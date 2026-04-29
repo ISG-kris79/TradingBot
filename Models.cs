@@ -94,8 +94,14 @@ namespace TradingBot.Models
         public bool EnableMajorTrading { get; set; } = true;
         /// <summary>메이저 최대 동시 포지션 수 (기본 4)</summary>
         public int MaxMajorSlots { get; set; } = 4;
-        /// <summary>PUMP 최대 동시 포지션 수 (기본 3)</summary>
+        /// <summary>PUMP 최대 동시 포지션 수 (기본 3) — v5.22.5 차단 후 무용</summary>
         public int MaxPumpSlots { get; set; } = 3;
+        /// <summary>[v5.22.24] SQUEEZE 최대 동시 포지션 수 (기본 3) — BB 스퀴즈 돌파 진입 제한</summary>
+        public int MaxSqueezeSlots { get; set; } = 3;
+        /// <summary>[v5.22.24] BB_WALK 최대 동시 포지션 수 (기본 3) — 볼린저 워킹 진입 제한</summary>
+        public int MaxBbWalkSlots { get; set; } = 3;
+        /// <summary>[v5.22.24] GENERIC 최대 동시 포지션 수 (기본 3) — ENGINE_151/ETA/ElliottWave 등</summary>
+        public int MaxGenericSlots { get; set; } = 3;
         /// <summary>하루 최대 PUMP 진입 횟수 (기본 60, 자정 KST 리셋)</summary>
         public int MaxDailyEntries { get; set; } = 60;
 

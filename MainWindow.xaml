@@ -1124,9 +1124,20 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="수익률" Foreground="#6B7280" FontSize="10"/>
+                                        <TextBlock Text="수익률" Foreground="#6B7280" FontSize="10"
+                                                   ToolTip="(현재 총자산 − 순투입금) ÷ 순투입금 × 100"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding CapitalReturnPct, StringFormat={}{0:+0.00;-0.00;0.00}%}"
+                                                   Foreground="{Binding NetTransferColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="거래당 평균%" Foreground="#6B7280" FontSize="10"
+                                                   ToolTip="닫힌 거래(분할청산 row 포함) 의 PnL% 평균"/>
                                         <TextBlock Grid.Column="1" Text="{Binding AverageRoe, StringFormat={}{0:F2}%}"
-                                                   Foreground="{StaticResource WarningBrush}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                                   Foreground="{StaticResource WarningBrush}" FontSize="11" FontFamily="Consolas"/>
                                     </Grid>
                                     <Grid>
                                         <Grid.ColumnDefinitions>

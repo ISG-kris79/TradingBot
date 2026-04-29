@@ -750,6 +750,11 @@ namespace TradingBot.ViewModels
         private double _averageRoe = 0;
         public double AverageRoe { get => _averageRoe; set { _averageRoe = value; OnPropertyChanged(); } }
 
+        // [v5.22.24] 투입 대비 실현 수익률 — 계좌정보의 "수익률" 항목.
+        //   = (현재 총자산 - 순투입금) / 순투입금 * 100. AverageRoe (거래당 평균%) 와 다른 의미.
+        private double _capitalReturnPct = 0;
+        public double CapitalReturnPct { get => _capitalReturnPct; set { _capitalReturnPct = value; OnPropertyChanged(); } }
+
         private SeriesCollection _backtestSeries = new();
         public SeriesCollection BacktestSeries
         {
@@ -4796,6 +4801,8 @@ namespace TradingBot.ViewModels
                     double profitPct = profitFromTransfer / netTransfer * 100;
                     NetTransferInfo = $"투입 ${netTransfer:N0} | PnL ${profitFromTransfer:+#,##0.00;-#,##0.00} ({profitPct:+0.0;-0.0}%)";
                     NetTransferColor = profitFromTransfer >= 0 ? Brushes.LimeGreen : Brushes.Tomato;
+                    // [v5.22.24] 계좌정보 "수익률" 항목용 — 투입 대비 실현 수익률
+                    CapitalReturnPct = profitPct;
                 }
 
                 ProfitHistory.Add(equity);

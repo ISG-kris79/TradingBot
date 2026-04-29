@@ -87,5 +87,7 @@ namespace TradingBot.Shared.Models
         public decimal BreakevenPrice { get; set; }     // 본절가 (1차 익절 후 적용)
         /// <summary>[v5.2.2] 이 봇(UserId)이 직접 진입한 포지션 여부 — false면 슬롯 카운트 제외</summary>
         public bool IsOwnPosition { get; set; } = true;
+        /// <summary>[v5.22.24] 진입 시점의 signalSource — 카테고리별 슬롯 카운트용</summary>
+        public string EntrySignalSource { get; set; } = string.Empty;
     }
 }

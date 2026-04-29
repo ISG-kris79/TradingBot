@@ -643,6 +643,28 @@ namespace TradingBot
             OnStatusLog?.Invoke($"⏱️ [수동청산-COOLDOWN] {symbol} {ManualCloseCooldown.TotalMinutes:F0}분 재진입 차단 등록");
         }
 
+        // [v5.22.24] 활성포지션 카테고리 결정 — slot 카운트용. EntrySignalSource 기준 (없으면 GENERIC fallback).
+        private static string ResolveActivePositionCategory(PositionInfo pos, string symbol)
+        {
+            // 메이저 심볼은 source 무관 MAJOR
+            if (!string.IsNullOrEmpty(symbol))
+            {
+                switch (symbol)
+                {
+                    case "BTCUSDT": case "ETHUSDT": case "SOLUSDT": case "XRPUSDT": case "BNBUSDT":
+                        return "MAJOR";
+                }
+            }
+            string source = pos?.EntrySignalSource ?? string.Empty;
+            if (string.IsNullOrEmpty(source)) return "GENERIC";
+            string s = source.ToUpperInvariant();
+            if (s.StartsWith("SPIKE") || s.Equals("TICK_SURGE")) return "SPIKE";
+            if (s.Contains("SQUEEZE")) return "SQUEEZE";
+            if (s.Contains("BB_WALK") || s.Contains("BBWALK")) return "BB_WALK";
+            if (s.StartsWith("PUMP_") || s == "PUMP" || s.Contains("PUMPSCAN")) return "PUMP";
+            return "GENERIC";
+        }
+
         // [v5.21.7] IsEntryAllowed 디바운스 — 동일 (symbol, source) 5초 캐시
         //   원인: BTC/ETH/SOL/XRP × MAJOR_ANALYZE 가 매 초 호출되어 게이트 검증 + 로그 폭주 → CPU 1코어 99% 점유
         //   해결: 결과(allowed/blocked) 5초 캐시. ALLOW도 캐시(차단 후 즉시 진입 시도 방지 — 5초 내 중복 진입 차단)
@@ -711,6 +733,50 @@ namespace TradingBot
                 blockReason = "SETTINGS_NOT_LOADED";
                 OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (봇 부팅 중 또는 설정 미로드)");
                 return false;
+            }
+
+            // [v5.22.24] 카테고리별 슬롯 제한 — MaxXxxSlots 초과 시 진입 차단
+            //   분류는 이미 위에서 entryCat 결정. 활성포지션의 카테고리는 TradeHistory.Category 와 동일 ResolveTradeCategory 적용.
+            int catMax = entryCat switch
+            {
+                "MAJOR"   => _settings.MaxMajorSlots,
+                "SQUEEZE" => _settings.MaxSqueezeSlots,
+                "BB_WALK" => _settings.MaxBbWalkSlots,
+                "GENERIC" => _settings.MaxGenericSlots,
+                _ => int.MaxValue
+            };
+            if (catMax > 0 && catMax < int.MaxValue)
+            {
+                int activeInCat = 0;
+                lock (_posLock)
+                {
+                    foreach (var kv in _activePositions)
+                    {
+                        var posCat = ResolveActivePositionCategory(kv.Value, kv.Key);
+                        if (string.Equals(posCat, entryCat, StringComparison.OrdinalIgnoreCase))
+                            activeInCat++;
+                    }
+                }
+                if (activeInCat >= catMax)
+                {
+                    blockReason = $"SLOT_FULL:{entryCat}={activeInCat}/{catMax}";
+                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason}");
+                    return false;
+                }
+            }
+
+            // [v5.22.24] 진입풀 일원화 — UI 그리드 (메이저4 + 알트8) 외 심볼 차단.
+            //   활성포지션은 면제 (TP/SL 보호 위해 풀 외라도 분석 통과).
+            if (_activeTrackingPool.Count > 0 && !_activeTrackingPool.ContainsKey(symbol))
+            {
+                bool hasActivePos;
+                lock (_posLock) { hasActivePos = _activePositions.ContainsKey(symbol); }
+                if (!hasActivePos)
+                {
+                    blockReason = "NOT_IN_TRACKING_POOL";
+                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (실시간 시장 신호 12개 외)");
+                    return false;
+                }
             }
 
             // [v5.19.5] 수동 청산 cooldown — 사용자가 청산한 심볼은 30분간 재진입 차단
