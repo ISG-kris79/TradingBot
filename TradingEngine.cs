@@ -698,7 +698,16 @@ namespace TradingBot
             //   까지 PUMP 로 떨어뜨려서 12+시간 진입 0건 → GENERIC 카테고리 신설 (PUMP 차단 면제)
             string srcU = (source ?? "").ToUpperInvariant();
             string entryCat;
-            if (srcU.Contains("TICK_SURGE") || srcU.Contains("SPIKE")) entryCat = "SPIKE";
+            // [v5.22.25] 메이저 심볼은 source 무관 MAJOR 강제 — MaxMajorSlots 회피 버그 fix
+            //   v5.22.24 까지: BTC/ETH/SOL/XRP 가 BB_SQUEEZE/ENGINE_151 source 로 들어오면 entryCat=SQUEEZE/GENERIC
+            //   → MaxSqueezeSlots(3)/MaxGenericSlots(3) 만 체크하고 MaxMajorSlots(1) 우회 → 사용자 BTC+SOL 동시진입 사례
+            //   해결: 메이저 심볼은 항상 MAJOR 카테고리 (활성카운트의 ResolveActivePositionCategory 와 일관)
+            if (!string.IsNullOrEmpty(symbol) &&
+                (symbol == "BTCUSDT" || symbol == "ETHUSDT" || symbol == "SOLUSDT" || symbol == "XRPUSDT" || symbol == "BNBUSDT"))
+            {
+                entryCat = "MAJOR";
+            }
+            else if (srcU.Contains("TICK_SURGE") || srcU.Contains("SPIKE")) entryCat = "SPIKE";
             else if (srcU.Contains("SQUEEZE")) entryCat = "SQUEEZE";
             else if (srcU.Contains("BB_WALK") || srcU.Contains("BBWALK")) entryCat = "BB_WALK";
             else if (srcU.Contains("MAJOR")) entryCat = "MAJOR";
