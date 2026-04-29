@@ -133,28 +133,31 @@ namespace TradingBot.Services
         {
             await Task.Delay(TimeSpan.FromSeconds(3), token);
             OnLog?.Invoke("📊 [REST_POLL] 메이저 4개 5초 주기 가격 폴링 시작 (WebSocket fallback)");
+            var majorSet = new HashSet<string>(_majorSymbols, StringComparer.OrdinalIgnoreCase);
             while (!token.IsCancellationRequested)
             {
-                foreach (var sym in _majorSymbols)
+                try
                 {
-                    try
+                    // 한 번의 GetTickersAsync (전체 ticker) 호출 → 메이저 4개만 추출
+                    var pr = await _restClient.UsdFuturesApi.ExchangeData.GetTickersAsync(ct: token);
+                    if (pr.Success && pr.Data != null)
                     {
-                        var pr = await _restClient.UsdFuturesApi.ExchangeData.GetTickersAsync(sym, token);
-                        if (pr.Success && pr.Data != null)
+                        foreach (var t in pr.Data)
                         {
-                            foreach (var t in pr.Data)
-                            {
-                                if (t == null || string.IsNullOrEmpty(t.Symbol)) continue;
-                                TickerCache.AddOrUpdate(t.Symbol,
-                                    _ => new TickerCacheItem { Symbol = t.Symbol, LastPrice = t.LastPrice, HighPrice = t.HighPrice, OpenPrice = t.OpenPrice, QuoteVolume = t.QuoteVolume, PriceChangePercent = t.PriceChangePercent },
-                                    (_, v) => { v.LastPrice = t.LastPrice; v.HighPrice = t.HighPrice; v.OpenPrice = t.OpenPrice; v.QuoteVolume = t.QuoteVolume; v.PriceChangePercent = t.PriceChangePercent; return v; });
+                            if (t == null || string.IsNullOrEmpty(t.Symbol)) continue;
+                            // TickerCache 는 항상 갱신 (전체 종목)
+                            TickerCache.AddOrUpdate(t.Symbol,
+                                _ => new TickerCacheItem { Symbol = t.Symbol, LastPrice = t.LastPrice, HighPrice = t.HighPrice, OpenPrice = t.OpenPrice, QuoteVolume = t.QuoteVolume, PriceChangePercent = t.PriceChangePercent },
+                                (_, v) => { v.LastPrice = t.LastPrice; v.HighPrice = t.HighPrice; v.OpenPrice = t.OpenPrice; v.QuoteVolume = t.QuoteVolume; v.PriceChangePercent = t.PriceChangePercent; return v; });
+                            // 메이저만 OnTickerUpdate emit
+                            if (majorSet.Contains(t.Symbol))
                                 OnTickerUpdate?.Invoke(t);
-                            }
                         }
                     }
-                    catch (OperationCanceledException) { return; }
-                    catch { /* 일시 오류 무시 */ }
                 }
+                catch (OperationCanceledException) { return; }
+                catch { /* 일시 오류 무시 */ }
+
                 try { await Task.Delay(TimeSpan.FromSeconds(5), token); }
                 catch (OperationCanceledException) { return; }
             }
