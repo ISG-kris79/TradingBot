@@ -994,6 +994,29 @@ namespace TradingBot.ViewModels
                     null,
                     TimeSpan.FromSeconds(8),
                     TimeSpan.FromSeconds(30));
+
+                // [v5.22.31] 활성 포지션 TP/SL 가격을 PositionInfo 에서 30초마다 동기화 → MarketDataList row.TargetPrice / StopLossPrice
+                //   기존: UpdatePositionStatus 진입 직후 1회 fallback 만 설정 → 봇이 거래소에 등록한 실제 algoOrder 가격은 반영 안됨
+                //   해결: 주기적으로 _engine.GetActivePositionSnapshot() 의 TakeProfit / StopLoss 를 row 에 push
+                _ = new System.Threading.Timer(_ =>
+                {
+                    try
+                    {
+                        var snap = _engine?.GetActivePositionSnapshot();
+                        if (snap == null) return;
+                        RunOnUI(() =>
+                        {
+                            foreach (var pos in snap)
+                            {
+                                if (string.IsNullOrEmpty(pos.Symbol)) continue;
+                                if (!_marketDataIndex.TryGetValue(pos.Symbol, out var row)) continue;
+                                if (pos.TakeProfit > 0 && row.TargetPrice != pos.TakeProfit) row.TargetPrice = pos.TakeProfit;
+                                if (pos.StopLoss > 0 && row.StopLossPrice != pos.StopLoss) row.StopLossPrice = pos.StopLoss;
+                            }
+                        });
+                    }
+                    catch { }
+                }, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30));
             }
 
             // 테마 초기화
@@ -5069,10 +5092,15 @@ ORDER BY CloseTime DESC, Id DESC
                     if (entryPrice > 0)
                     {
                         existing.LastPrice = entryPrice;
+                        // [v5.22.31] fallback TP/SL — 메이저 0.5%/1.5% (TP1Roe 7.5% × 15x = 0.5%) / 알트 1%/3%
+                        //   v5.21.10 메이저 백테스트 검증 값과 일치. 기존 1.03/0.985 (3%/1.5%) 는 옛 PUMP 기준.
+                        bool isMajor = MajorSymbolsSet.Contains(normalizedSymbol);
+                        decimal tpPct = isMajor ? 0.005m : 0.01m;   // +0.5% / +1%
+                        decimal slPct = isMajor ? 0.015m : 0.03m;   // -1.5% / -3%
                         if (existing.TargetPrice <= 0)
-                            existing.TargetPrice = entryPrice * 1.03m;
+                            existing.TargetPrice = entryPrice * (1 + tpPct);
                         if (existing.StopLossPrice <= 0)
-                            existing.StopLossPrice = entryPrice * 0.985m;
+                            existing.StopLossPrice = entryPrice * (1 - slPct);
                     }
                 }
                 else
