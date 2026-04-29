@@ -578,6 +578,16 @@ namespace TradingBot
             ViewModel?.EnqueueFooterLog(msg);
         }
 
+        // [v5.22.19] 자동업데이트가 안전 재시작 시점 판정용 — TradingEngine 활성 포지션 수
+        public int GetActivePositionCount()
+        {
+            try
+            {
+                return ViewModel?.GetActivePositionCount() ?? 0;
+            }
+            catch { return 0; }
+        }
+
         // [병목 해결] 스캔 진행색 정적 캐시 (ColorConverter.ConvertFromString 반복 호출 방지)
         private static readonly SolidColorBrush s_scanCompleteColor = FreezeB(new SolidColorBrush(Color.FromRgb(0x21, 0x96, 0xF3)));
         private static readonly SolidColorBrush s_scanProgressColor = FreezeB(new SolidColorBrush(Color.FromRgb(0x00, 0xE6, 0x76)));

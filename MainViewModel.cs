@@ -4394,6 +4394,18 @@ namespace TradingBot.ViewModels
         public void EnqueueFooterLog(string msg) => QueueFooterLog(msg);
 
         /// <summary>
+        /// [v5.22.19] 자동업데이트 안전 재시작 시점 판정용 — TradingEngine 활성 포지션 수
+        /// </summary>
+        public int GetActivePositionCount()
+        {
+            try
+            {
+                return _engine?.GetActivePositionSnapshot()?.Count ?? 0;
+            }
+            catch { return 0; }
+        }
+
+        /// <summary>
         /// [큐 분리] 라이브 로그를 큐에 넣기 (외부에서도 호출 가능, UI 스레드 직접 접근 제거)
         /// </summary>
         public void EnqueueLiveLog(string msg) => AddLiveLog(msg);

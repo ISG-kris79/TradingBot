@@ -313,6 +313,93 @@ namespace TradingBot
                 }
             });
 
+            // [v5.22.19] 주기적 자동 업데이트 — 10분마다 GitHub Releases 폴링
+            //   원인: 사용자 요구 "업데이트하면 당연히 자동 배포되게 만들어야지"
+            //   기존: 앱 시작 시 1회만 체크 → 봇 가동 후 새 릴리즈는 다음 재시작까지 무시
+            //   해결: 10분 주기 체크 → 새 버전 발견 시 다이얼로그 없이 silent download → 활성 포지션 0건일 때 자동 재시작
+            _ = System.Threading.Tasks.Task.Run(async () =>
+            {
+                await System.Threading.Tasks.Task.Delay(TimeSpan.FromMinutes(2)); // 부팅 후 2분 대기
+                while (true)
+                {
+                    try
+                    {
+                        await SilentBackgroundUpdateAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"[Update][Background] 오류: {ex.Message}");
+                    }
+                    await System.Threading.Tasks.Task.Delay(TimeSpan.FromMinutes(10));
+                }
+            });
+        }
+
+        // [v5.22.19] 백그라운드 silent 업데이트 — 다이얼로그 없이 다운로드 후 안전 시점에 재시작
+        private static int _backgroundUpdateRunning;
+        private async System.Threading.Tasks.Task SilentBackgroundUpdateAsync()
+        {
+#if DEBUG
+            await System.Threading.Tasks.Task.CompletedTask;
+#else
+            if (System.Threading.Interlocked.Exchange(ref _backgroundUpdateRunning, 1) == 1)
+                return;
+            try
+            {
+                if (!IsInstalledViaVelopack(out _))
+                    return;
+
+                var githubSource = new GithubSource(
+                    "https://github.com/ISG-kris79/TradingBot",
+                    null,
+                    false);
+                var mgr = new UpdateManager(githubSource);
+                var updateInfo = await mgr.CheckForUpdatesAsync();
+                if (updateInfo == null)
+                    return;
+
+                var newVer = updateInfo.TargetFullRelease.Version;
+                Debug.WriteLine($"[Update][Background] 새 버전 발견: v{newVer} — silent download 시작");
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    TradingBot.MainWindow.Instance?.AddLog($"📥 [자동업데이트] v{newVer} 다운로드 시작");
+                });
+
+                await mgr.DownloadUpdatesAsync(updateInfo);
+
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    TradingBot.MainWindow.Instance?.AddLog($"✅ [자동업데이트] v{newVer} 다운로드 완료 — 활성 포지션 0건일 때 자동 재시작");
+                });
+
+                // 활성 포지션 0건일 때까지 대기 (최대 30분)
+                var waitUntil = DateTime.UtcNow.AddMinutes(30);
+                while (DateTime.UtcNow < waitUntil)
+                {
+                    await System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(30));
+                    int activeCount = TradingBot.MainWindow.Instance?.GetActivePositionCount() ?? -1;
+                    if (activeCount == 0)
+                    {
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            TradingBot.MainWindow.Instance?.AddLog($"🔄 [자동업데이트] v{newVer} 적용 — 봇 재시작");
+                        });
+                        await System.Threading.Tasks.Task.Delay(2000); // 로그 flush 시간
+                        mgr.ApplyUpdatesAndRestart(updateInfo);
+                        return;
+                    }
+                }
+
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    TradingBot.MainWindow.Instance?.AddLog($"⏳ [자동업데이트] v{newVer} 30분 대기 후에도 활성 포지션 존재 → 다음 주기 재시도");
+                });
+            }
+            finally
+            {
+                System.Threading.Interlocked.Exchange(ref _backgroundUpdateRunning, 0);
+            }
+#endif
         }
         /// <summary>
         /// 로그인 후 업데이트 체크 및 적용 (업데이트 적용 시 true 반환)

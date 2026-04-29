@@ -368,10 +368,36 @@ namespace TradingBot.Services
             else OnLog?.Invoke($"❌ 전 종목 스트림 실패: {subResult.Error}");
         }
 
+        // [v5.22.19] 메이저 ticker 도착 진단 카운터 — 1분마다 OnLog 로 노출
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _majorTickRecv = new();
+        private DateTime _lastMajorTickHeartbeatLog = DateTime.MinValue;
+
         private async Task StartPriceWebSocketAsync(CancellationToken token)
         {
             var subResult = await _socketClient.UsdFuturesApi.ExchangeData.SubscribeToTickerUpdatesAsync(_majorSymbols, data =>
             {
+                // [v5.22.19] 도착 카운트 — UI/로그에서 ticker flow 가시화
+                try
+                {
+                    var sym = data.Data?.Symbol ?? string.Empty;
+                    if (!string.IsNullOrEmpty(sym))
+                        _majorTickRecv.AddOrUpdate(sym, 1L, (_, v) => v + 1);
+
+                    var now = DateTime.UtcNow;
+                    if ((now - _lastMajorTickHeartbeatLog).TotalSeconds >= 60)
+                    {
+                        _lastMajorTickHeartbeatLog = now;
+                        var summary = string.Join(" ", _majorSymbols.Select(s =>
+                        {
+                            var c = _majorTickRecv.TryGetValue(s, out var n) ? n : 0;
+                            return $"{s.Replace("USDT", "")}={c}";
+                        }));
+                        OnLog?.Invoke($"📊 [TICK_HEARTBEAT] 메이저 1분 수신: {summary}");
+                        _majorTickRecv.Clear();
+                    }
+                }
+                catch { }
+
                 OnTickerUpdate?.Invoke(data.Data);
             }, ct: token);
 
