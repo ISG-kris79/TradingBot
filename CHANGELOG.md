@@ -5,6 +5,24 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.51] - 2026-04-30
+
+### 🎯 알트 진입 자연발화 빈도 ↑ — 사용자 보고 "알트 진입이 안되네" hotfix
+
+#### 사용자 보고
+"배포해 근데 알트 진입이 안되네"
+
+#### 진단
+- `AnalyzeAltSimpleTriggersAsync` 트리거 너무 빡셈
+  - SQUEEZE: BBWidth < 1.5% + 상단 돌파 → 동시 만족 거의 없음
+  - BB_WALK: 5봉 중 4봉 이상 종가 > Upper → 한 번 박스 빠지면 못 잡음
+- 결과: 라이브에서 알트 자연발화 거의 0건
+
+#### Fixed
+- SQUEEZE 임계: BBWidth < 1.5% → **2.5%** (라이브 발화 빈도 ↑)
+- BB_WALK 임계: 5봉 중 4봉 → **3봉** 이상 종가 > Upper
+- 가드 그대로 유지: EMA20 5봉↑ + RSI<65 (역추세 진입 차단)
+
 ## [5.22.15] - 2026-04-29
 
 ### 🚨 메인 루프 3초 폭주 ROOT FIX + WebSocket Watchdog 빠르게

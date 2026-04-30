@@ -4511,19 +4511,22 @@ namespace TradingBot
                 // [v5.22.39] 백테스트 원본 트리거 그대로 — RunDaily180Async (180일 알트만 +2,285%) 검증
                 //   v5.22.38 완화 (BBW<3%, 워킹 3/5, MID_BREAK) 는 단순화된 시뮬 결과만 +7,580%
                 //   사용자: '백테스트 로직 그대로 라이브에 이식' → 백테스트 SQUEEZE/BB_WALK 만 사용
-                // 트리거 1: SQUEEZE — BBWidth < 1.5% + 상단 돌파 (백테스트 동일)
-                bool bbwOk = bbWidthPct < 1.5m;
+                // [v5.22.51] 알트 자연발화 빈도 ↑ — BBW 1.5% → 2.5%, walk 4/5 → 3/5
+                //   사용자 보고: "알트 진입이 안되네" — 실 라이브에서 BBW<1.5% + 상단돌파 동시 만족 거의 없음
+                //   완화 후에도 EMA20↑ + RSI<65 가드 그대로 유지 (역추세 진입은 여전히 차단)
+                // 트리거 1: SQUEEZE — BBWidth < 2.5% + 상단 돌파
+                bool bbwOk = bbWidthPct < 2.5m;
                 bool breakoutOk = lastClose > upper;
                 bool sqzTrigger = bbwOk && breakoutOk;
 
-                // 트리거 2: BB_WALK — 최근 5봉 중 4봉 이상 종가 > Upper (백테스트 동일)
+                // 트리거 2: BB_WALK — 최근 5봉 중 3봉 이상 종가 > Upper
                 int walkCount = 0;
                 int n = klines.Count;
                 for (int i = Math.Max(0, n - 5); i < n; i++)
                 {
                     if (klines[i].ClosePrice > upper) walkCount++;
                 }
-                bool walkTrigger = walkCount >= 4;
+                bool walkTrigger = walkCount >= 3;
 
                 // [v5.22.39] MID_BREAK 트리거 제거 — 백테스트 원본 로직 아님
                 bool midBreakTrigger = false;
