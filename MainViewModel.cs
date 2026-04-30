@@ -232,6 +232,9 @@ namespace TradingBot.ViewModels
         // [v5.21.3] SQUEEZE 카테고리 — SPIKE 차단 후 메인 수익원 (90일 +$30K, WR 94%)
         public TradingBot.Models.CategoryStatsViewModel SqueezeStats { get; }
             = new TradingBot.Models.CategoryStatsViewModel { Category = "SQUEEZE", Icon = "📊", Title = "SQUEEZE" };
+        // [v5.22.50] 알트(일) — 메이저 외 모든 카테고리 통합 (SQUEEZE+BB_WALK+GENERIC+PUMP+SPIKE)
+        public TradingBot.Models.CategoryStatsViewModel AltStats { get; }
+            = new TradingBot.Models.CategoryStatsViewModel { Category = "ALT", Icon = "🪙", Title = "ALT" };
         private System.Threading.Timer? _categoryStatsTimer;
 
         // [v5.22.13] 초기학습 진행 배너 — 모든 필드/프로퍼티 통째 제거 (AI 시스템 폐기, 2026-04-29)
@@ -4667,12 +4670,20 @@ namespace TradingBot.ViewModels
                     (int e, int w, int l, decimal p) pumpT = bphStats.TryGetValue("PUMP", out var pv) ? pv : (0, 0, 0, 0m);
                     (int e, int w, int l, decimal p) spikeT = bphStats.TryGetValue("SPIKE", out var sv) ? sv : (0, 0, 0, 0m);
                     (int e, int w, int l, decimal p) squeezeT = bphStats.TryGetValue("SQUEEZE", out var qv) ? qv : (0, 0, 0, 0m);
+                    // [v5.22.50] 알트 통합 = 메이저 외 모든 카테고리 합산 (BPH 결과 전체 - MAJOR)
+                    int altE = 0, altW = 0, altL = 0; decimal altP = 0m;
+                    foreach (var kv in bphStats)
+                    {
+                        if (string.Equals(kv.Key, "MAJOR", StringComparison.OrdinalIgnoreCase)) continue;
+                        altE += kv.Value.e; altW += kv.Value.w; altL += kv.Value.l; altP += kv.Value.p;
+                    }
                     RunOnUI(() =>
                     {
                         MajorStats.Update(majorT.e, majorT.w, majorT.l, majorT.p);
                         PumpStats.Update(pumpT.e, pumpT.w, pumpT.l, pumpT.p);
                         SpikeStats.Update(spikeT.e, spikeT.w, spikeT.l, spikeT.p);
                         SqueezeStats.Update(squeezeT.e, squeezeT.w, squeezeT.l, squeezeT.p);
+                        AltStats.Update(altE, altW, altL, altP);
                     });
                     return;
                 }
@@ -4685,12 +4696,20 @@ namespace TradingBot.ViewModels
                 (int e, int w, int l, decimal p) spikeT2 = stats.TryGetValue("SPIKE", out var sv2) ? sv2 : (0, 0, 0, 0m);
                 (int e, int w, int l, decimal p) squeezeT2 = stats.TryGetValue("SQUEEZE", out var qv2) ? qv2 : (0, 0, 0, 0m);
 
+                // [v5.22.50] 알트 통합 — fallback (TradeHistory 기반)
+                int altE2 = 0, altW2 = 0, altL2 = 0; decimal altP2 = 0m;
+                foreach (var kv in stats)
+                {
+                    if (string.Equals(kv.Key, "MAJOR", StringComparison.OrdinalIgnoreCase)) continue;
+                    altE2 += kv.Value.entries; altW2 += kv.Value.wins; altL2 += kv.Value.losses; altP2 += kv.Value.totalPnL;
+                }
                 RunOnUI(() =>
                 {
                     MajorStats.Update(majorT2.e, majorT2.w, majorT2.l, majorT2.p);
                     PumpStats.Update(pumpT2.e, pumpT2.w, pumpT2.l, pumpT2.p);
                     SpikeStats.Update(spikeT2.e, spikeT2.w, spikeT2.l, spikeT2.p);
                     SqueezeStats.Update(squeezeT2.e, squeezeT2.w, squeezeT2.l, squeezeT2.p);
+                    AltStats.Update(altE2, altW2, altL2, altP2);
                 });
             }
             catch (Exception ex)

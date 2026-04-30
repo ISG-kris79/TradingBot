@@ -1190,12 +1190,11 @@
                                 </StackPanel>
                             </Border>
 
-                            <!-- [v5.22.5] PUMP 카드 제거 — 360일 백테스트 -$401 적자, 카테고리 차단됨 -->
-
-                            <!-- [v5.21.3] SQUEEZE TODAY (이전 SPIKE 자리, 30일 검증 메인 수익원) -->
+                            <!-- [v5.22.50] 알트(일) — 메이저 외 모든 카테고리 통합 (SQUEEZE+BB_WALK+GENERIC+PUMP+SPIKE) -->
+                            <!--   슬롯 정책 (메이저 / 알트 통합) 과 일관 -->
                             <Border Style="{StaticResource StatCardStyle}" Margin="0,0,0,8">
                                 <StackPanel>
-                                    <TextBlock Text="📊 스퀴즈(일)" FontSize="10" FontWeight="Bold"
+                                    <TextBlock Text="🪙 알트(일)" FontSize="10" FontWeight="Bold"
                                                Foreground="#FBBF24" Margin="0,0,0,6"/>
                                     <Grid Margin="0,0,0,3">
                                         <Grid.ColumnDefinitions>
@@ -1203,8 +1202,8 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Text="손익" Foreground="#6B7280" FontSize="10"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding SqueezeStats.TodayPnLText}"
-                                                   Foreground="{Binding SqueezeStats.TodayPnLColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding AltStats.TodayPnLText}"
+                                                   Foreground="{Binding AltStats.TodayPnLColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
                                     <Grid Margin="0,0,0,3">
                                         <Grid.ColumnDefinitions>
@@ -1212,7 +1211,7 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Text="진입수" Foreground="#6B7280" FontSize="10"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding SqueezeStats.EntriesText}"
+                                        <TextBlock Grid.Column="1" Text="{Binding AltStats.EntriesText}"
                                                    Foreground="#A5B4FC" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
                                     <Grid>
@@ -1221,8 +1220,8 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Text="승률" Foreground="#6B7280" FontSize="10"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding SqueezeStats.WinRateText}"
-                                                   Foreground="{Binding SqueezeStats.WinRateColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding AltStats.WinRateText}"
+                                                   Foreground="{Binding AltStats.WinRateColor}" FontSize="12" FontWeight="Bold" FontFamily="Consolas"/>
                                     </Grid>
                                 </StackPanel>
                             </Border>
