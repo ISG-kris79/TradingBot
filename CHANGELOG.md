@@ -5,6 +5,22 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.53] - 2026-04-30
+
+### 🚨 hotfix — 기존 봇 강제 kill 로직 폐기
+
+#### 사용자 보고
+"왜 자구 프로그램 맘대로 kill 시키고 업뎃도 맘대로 하냐"
+
+#### 진단
+- App.xaml.cs:190 (v5.21.4) 중복 실행 감지 시 "Yes" 누르면 `Process.Kill(true)` 로 기존 TradingBot 프로세스 강제 종료
+- 사용자 메모리 룰 "배포 시 봇 종료 금지" 정면 위반
+- Velopack 자동 업데이트가 안전 재시작을 보장하므로 kill 자체 불필요
+
+#### Fixed
+- 중복 실행 감지 시 → **새 인스턴스만 종료** (기존 봇 그대로 둔다)
+- "Yes/No" 프롬프트 제거 → "OK" 안내 단일 버튼
+
 ## [5.22.52] - 2026-04-30
 
 ### 🎯 진입 로직 전면 재설계 — 5중 가드 + RSI 과열 익절
