@@ -6220,6 +6220,15 @@ namespace TradingBot
                         _hybridExitManager?.RemoveState(pos.Symbol); // [추가] 즉시 state 정리
                         OnPositionStatusUpdate?.Invoke(pos.Symbol, false, 0); // UI 및 데이터 정리
 
+                        // [v5.22.57] PositionState DB row 삭제 — 외부/수동 청산 시 stale row 정리
+                        //   누락 시: 봇 재시작 → 옛 PositionState 로드 → _activePositions 부활 → 슬롯 풀 누적
+                        try
+                        {
+                            int uid = AppConfig.CurrentUser?.Id ?? 0;
+                            if (uid > 0) _ = _dbManager?.DeletePositionStateAsync(uid, pos.Symbol);
+                        }
+                        catch { }
+
                         // [v5.12.0] 급등 슬롯 해제 — PositionSync 청산 감지 시
                         if (_activeSpikeSlot.TryRemove(pos.Symbol, out var syncReleasedSlot))
                         {

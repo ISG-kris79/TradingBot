@@ -5,6 +5,23 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.57] - 2026-05-01
+
+### 🚨 hotfix — 외부/수동 청산 시 PositionState DB row 누적 방지
+
+#### 사용자 보고
+"수동 청산시 db데이터 처리도 수정해"
+
+#### 진단
+- 사용자 PositionState UserId=1 에 stale row 16개 누적 (2026-04-09 ~ 04-17)
+- 원인: Binance 앱/웹에서 수동 청산 시 봇이 EXTERNAL_CLOSE_SYNC 감지 → `_activePositions` 메모리만 제거, **PositionState DB row 안 지움**
+- 영향: 봇 재시작 시 옛 PositionState 로드 → `_activePositions` 부활 → SLOT_FULL 영구 차단
+
+#### Fixed
+- TradingEngine.cs:6228 EXTERNAL_CLOSE_SYNC 처리에 `_dbManager.DeletePositionStateAsync` 호출 추가
+- 봇 자체 청산은 이미 PositionMonitorService.cs:3660 에서 처리 중
+- 효과: 외부/수동 청산 시 자동으로 PositionState row 삭제 → 슬롯 자동 해제
+
 ## [5.22.56] - 2026-05-01
 
 ### 🚨 hotfix — UI 알트 그리드 갱신 누락 (v5.22.55 사고)
