@@ -8244,6 +8244,14 @@ namespace TradingBot
         {
             string flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
 
+            // [v5.22.58] 알트 SHORT 절대 차단 — 사용자 정책 "알트는 롱만"
+            //   메이저(BTC/ETH/SOL/XRP/BNB)는 SHORT 허용, 그 외 알트는 SHORT 신호 자체 무시
+            if (string.Equals(decision, "SHORT", StringComparison.OrdinalIgnoreCase) && !MajorSymbols.Contains(symbol))
+            {
+                OnStatusLog?.Invoke($"⛔ [ALT_SHORT_BLOCK] {symbol} {signalSource} SHORT 차단 — 알트는 롱 전용 (사용자 정책)");
+                return;
+            }
+
             // [v5.12.0] 급등 단일 슬롯 체크 — MAJOR_MEME (PumpScan 3 fast paths) 진입 차단
             //   SPIKE_FAST는 HandleSpikeDetectedAsync 초반에서 이미 체크됨
             if (IsSpikeCategorySignal(signalSource) && _activeSpikeSlot.Count >= MAX_SPIKE_CATEGORY_SLOTS)

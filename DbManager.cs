@@ -44,7 +44,9 @@ namespace TradingBot.Services
         }
         private static readonly ConcurrentDictionary<string, PendingNotify> _notifyAggregate
             = new ConcurrentDictionary<string, PendingNotify>(StringComparer.OrdinalIgnoreCase);
-        private const int NOTIFY_AGGREGATE_WINDOW_SECONDS = 90;
+        // [v5.22.58] 90초 → 20초 단축 — 봇 재시작 잦은 환경에서 윈도우 종료 전 lost 방지
+        //   대부분 partial fill 청크는 20초 내 완료. 초과 청크는 별도 알림으로 발송됨.
+        private const int NOTIFY_AGGREGATE_WINDOW_SECONDS = 20;
 
         private static void TryNotifyProfit(string symbol, decimal pnl, decimal pnlPercent, string kind)
         {
@@ -96,7 +98,16 @@ namespace TradingBot.Services
                             decimal pnlPctSign = final.PnL >= 0 ? final.PnLPercentMaxAbs : -final.PnLPercentMaxAbs;
                             string chunkSuffix = final.ChunkCount > 1 ? $" ({final.ChunkCount}청크 합산)" : "";
                             MainWindow.Instance?.AddLog($"✉️ [Notify][AGG] {symbol}{chunkSuffix} 최종 PnL={final.PnL:+0.00;-0.00} ROE={pnlPctSign:+0.0;-0.0}%");
-                            _ = NotificationService.Instance.NotifyProfitAsync(symbol, final.PnL, pnlPctSign, 0m);
+                            // [v5.22.58] await + try-catch 로 발송 실패 명시적 로그
+                            try
+                            {
+                                await NotificationService.Instance.NotifyProfitAsync(symbol, final.PnL, pnlPctSign, 0m);
+                                MainWindow.Instance?.AddLog($"📨 [Notify][SENT] {symbol} 텔레그램 발송 완료");
+                            }
+                            catch (Exception sendEx)
+                            {
+                                MainWindow.Instance?.AddLog($"❌ [Notify][SEND_FAIL] {symbol} 텔레그램 발송 실패: {sendEx.Message}");
+                            }
                         }
                     }
                     catch (Exception aex) { MainWindow.Instance?.AddLog($"⚠️ [Notify][AGG] {symbol} 합산 발송 예외: {aex.Message}"); }

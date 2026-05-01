@@ -5,6 +5,25 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.58] - 2026-05-01
+
+### 🚨 hotfix — 알트 SHORT 차단 + Telegram 청산 알림 안 옴 fix
+
+#### 사용자 보고
+"알트 숏은 왜 들어갔어 알트는 롱만 하기로 했는데 숏은 빼"
+"익절하고 손절 텔레그램 메시지가 안오고 있어"
+
+#### Fixed — 알트 SHORT 차단
+- TradingEngine.cs:8245 ExecuteAutoOrder 시작 직전 가드 추가
+- 메이저(BTC/ETH/SOL/XRP/BNB) 외 모든 알트의 SHORT decision 차단
+- 영향 source: MACD_DEAD_CASE*, TAIL_RETEST_SHORT, 기타 SHORT 발화 모든 경로
+- 알트는 LONG 전용 (사용자 정책)
+
+#### Fixed — Telegram 청산 알림 안 옴
+- 합산 윈도우 90초 → **20초** 단축 (봇 재시작 잦은 환경에서 윈도우 종료 전 lost 방지)
+- `NotifyProfitAsync` 호출에 `await` + try-catch 추가 (기존 fire-and-forget 으로 실패 silent)
+- 발송 성공/실패 footer 로그 출력 (`📨 [Notify][SENT]` / `❌ [Notify][SEND_FAIL]`)
+
 ## [5.22.57] - 2026-05-01
 
 ### 🚨 hotfix — 외부/수동 청산 시 PositionState DB row 누적 방지
