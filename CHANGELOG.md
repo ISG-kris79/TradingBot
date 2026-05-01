@@ -5,6 +5,37 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.55] - 2026-05-01
+
+### 🎯 Daily Swing 진입 + 동적 풀 개선 — 백테스트 흑자 입증 후 도입
+
+#### 백테스트 결과 (180일/365일 양쪽 흑자)
+- **TP+15% / SL-7% / max 7일** 최적 조합
+- 180일: +$1,088 / +272% ROI / MDD 14.5%
+- 365일: +$1,018 / +254% ROI / MDD 32.7%
+- 거래 빈도: 1주 1건 정도 (저빈도 + 큰 폭)
+
+#### Added — Daily Swing 진입 (전략 #11)
+- `AnalyzeDailySwingAsync` — 1D 봉 추세 진입
+  - 진입: 1D close>20SMA + 20SMA>50SMA + RSI 50~65 + vol×1.5 + 양봉
+  - 심볼당 20시간 cooldown
+- `signalSource="DAILY_SWING_LONG"` → `entryCat=DAILY_SWING`
+- **별도 슬롯 풀**: 메이저/PUMP 슬롯과 분리, 최대 2개 동시 진입
+- TP/SL override: 가격 +15% / -7% (leverage 환산 ROE)
+- 트레일링 OFF (TP 도달 시 전량 청산)
+- 5중가드와 병행 — 분산 효과
+
+#### Changed — 동적 추적풀 (v5.22.54)
+- 풀 크기 20 → **50개**
+- 정렬 = `PriceChangePercent × log10(QuoteVolume)` (양수 변동률만)
+  - 기존 `|PriceChangePercent|` desc → 하락 종목도 포함되던 문제 해결
+  - BIOUSDT 같은 "오늘 펌핑 + 거래 활발" 종목 자동 포착
+- 갱신 주기 5분 → **15분**
+
+#### ⚠️ 주의
+DAILY_SWING SL -7%는 leverage 5x 가정. 사용자 설정 15x 사용 시 SL ROE -105% = 청산 위험.
+별도 `DailySwingLeverage` 필드 미추가 — 사용자가 메이저/PUMP 레버리지 직접 5x로 낮추거나 차후 UI 추가 필요.
+
 ## [5.22.53] - 2026-04-30
 
 ### 🚨 hotfix — 기존 봇 강제 kill 로직 폐기

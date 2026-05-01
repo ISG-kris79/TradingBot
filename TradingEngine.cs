@@ -710,6 +710,7 @@ namespace TradingBot
             {
                 entryCat = "MAJOR";
             }
+            else if (srcU.Contains("DAILY_SWING")) entryCat = "DAILY_SWING";
             else if (srcU.Contains("TICK_SURGE") || srcU.Contains("SPIKE")) entryCat = "SPIKE";
             else if (srcU.Contains("SQUEEZE")) entryCat = "SQUEEZE";
             else if (srcU.Contains("BB_WALK") || srcU.Contains("BBWALK")) entryCat = "BB_WALK";
@@ -761,6 +762,12 @@ namespace TradingBot
                 catMax = liveSettings.MaxMajorSlots;
                 slotKey = "MAJOR";
             }
+            else if (entryCat == "DAILY_SWING")
+            {
+                // [v5.22.55] Daily Swing 별도 슬롯 — 5중가드와 분리, 최대 2개 동시 진입
+                catMax = 2;
+                slotKey = "DAILY_SWING";
+            }
             else
             {
                 // SQUEEZE / BB_WALK / PUMP / GENERIC / 기타 — 모두 PUMP 슬롯 통합
@@ -775,9 +782,14 @@ namespace TradingBot
                     foreach (var kv in _activePositions)
                     {
                         var posCat = ResolveActivePositionCategory(kv.Value, kv.Key);
-                        // 메이저 슬롯: 메이저 카테고리만. PUMP 슬롯: 메이저 외 모두.
-                        bool match = (slotKey == "MAJOR") ? string.Equals(posCat, "MAJOR", StringComparison.OrdinalIgnoreCase)
-                                                          : !string.Equals(posCat, "MAJOR", StringComparison.OrdinalIgnoreCase);
+                        bool isDailySwingPos = (kv.Value?.EntrySignalSource ?? "").IndexOf("DAILY_SWING", StringComparison.OrdinalIgnoreCase) >= 0;
+                        bool match;
+                        if (slotKey == "DAILY_SWING")
+                            match = isDailySwingPos;
+                        else if (slotKey == "MAJOR")
+                            match = !isDailySwingPos && string.Equals(posCat, "MAJOR", StringComparison.OrdinalIgnoreCase);
+                        else  // PUMP — 메이저/Daily Swing 외 모두
+                            match = !isDailySwingPos && !string.Equals(posCat, "MAJOR", StringComparison.OrdinalIgnoreCase);
                         if (match) activeInCat++;
                     }
                 }
@@ -1211,6 +1223,19 @@ namespace TradingBot
                 decimal tpRoePctBase    = isMajor ? (_settings?.MajorTp1Roe        ?? 20m) : (_settings?.PumpTp1Roe        ?? 20m);
                 decimal trailGapPctBase = isMajor ? (_settings?.MajorTrailingGapRoe?? 5m)  : (_settings?.PumpTrailingGapRoe?? 20m);
                 decimal tpRatioPctBase  = isMajor ? 30m : (_settings?.PumpFirstTakeProfitRatioPct ?? 40m);
+
+                // [v5.22.55] Daily Swing source — TP/SL override (가격 기준 +15% / -7%, leverage 환산)
+                //   백테스트 검증 (180일 +272%, 365일 +254%, MDD 14.5%)
+                //   leverage = 5x 가정 시 ROE TP+75% / SL-35%. 사용자 설정 leverage 사용.
+                bool isDailySwing = (source ?? "").IndexOf("DAILY_SWING", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (isDailySwing)
+                {
+                    decimal lev = leverage > 0 ? leverage : 5m;
+                    tpRoePctBase = 15m * lev;          // 가격 +15% × lev
+                    slRoePctBase = 7m * lev;           // 가격 -7% × lev
+                    tpRatioPctBase = 100m;             // TP 도달 시 전량 청산
+                    trailGapPctBase = 0m;              // 트레일링 OFF
+                }
 
                 decimal slRoePct    = slRoePctBase    * slMul;
                 decimal tpRoePct    = tpRoePctBase    * tpMul;
@@ -3837,13 +3862,14 @@ namespace TradingBot
         //   효과: ML.NET 추론 200+ → 12 (94% 감소), 메인 루프 workMs 1050ms → ~150ms 예상
         // ═══════════════════════════════════════════════════════════════════════════════════
         private static readonly string[] FixedMajorPool = { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
-        // [v5.22.33] B+C — 동적 알트 풀 8 → 20 확대 (스퀴즈/엘리엇 신호 발생 빈도 증가)
-        //   원인: 거래대금 큰 메인 알트는 변동성 압축 (BBW < 평균 50%) 조건 거의 안 맞음
-        //   해결: 풀 크기 확대 + 변동성 기준 선정 (이미 EnsureActiveTrackingPoolFresh 는 |PriceChangePercent| desc)
-        private const int DynamicPoolSize = 20;
+        // [v5.22.54] 동적 풀 50개 + 상승 종목 우선 + 거래대금 가중
+        //   기존 v5.22.33: 20개 |PriceChangePercent| desc → 하락 종목도 들어옴, BIOUSDT 같은 신상 핫 무버 놓침
+        //   변경: 양수 변동률 × 거래대금 score = 상승 + 활발한 종목만
+        //   사용자 지적: "상승하는 알트를 못잡는게 문제"
+        private const int DynamicPoolSize = 50;
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _activeTrackingPool = new(StringComparer.OrdinalIgnoreCase);
         private DateTime _lastTrackingPoolRefresh = DateTime.MinValue;
-        private static readonly TimeSpan TrackingPoolRefreshInterval = TimeSpan.FromMinutes(5);
+        private static readonly TimeSpan TrackingPoolRefreshInterval = TimeSpan.FromMinutes(15);
 
         // [v5.22.16] _lastBbSqueezeRestTime 제거 — GetMultiTfKlinesThrottledAsync 가 30초 throttle 통합 관리
 
@@ -4019,22 +4045,29 @@ namespace TradingBot
 
             _lastTrackingPoolRefresh = DateTime.Now;
 
-            // [v5.22.10] 동적 8개 = TickerCache 기반 (PumpScan 비활성화 후 대체)
-            //   PumpScan TopCandidateScores 가 비어있으므로 TickerCache의 24h 가격 변동률 큰 순으로 선택
-            //   장점: API 호출 0회, 알트/밈 데이터 자동 추적
+            // [v5.22.54] 동적 풀 — 상승 종목만 + 거래대금 가중 score
+            //   기존: |PriceChangePercent| desc → 하락 종목도 포함됨 (LONG 봇 무용)
+            //   변경: PriceChangePercent > 0 만 통과 + score = 변동률 × log10(거래대금)
+            //   효과: BIOUSDT 같은 "지금 펌핑 중 + 거래 활발" 종목 자동 포착
             var dynamicSymbols = new List<string>();
             if (_marketDataManager?.TickerCache != null)
             {
                 HashSet<string> activeSet;
                 lock (_posLock) { activeSet = new HashSet<string>(_activePositions.Keys, StringComparer.OrdinalIgnoreCase); }
 
-                // 24h 가격 변동률 절댓값 큰 순 (상승/하락 모두 추적)
                 var sorted = _marketDataManager.TickerCache.Values
                     .Where(t => !string.IsNullOrWhiteSpace(t.Symbol)
                                 && t.Symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
-                                && !FixedMajorPool.Contains(t.Symbol))
-                    .OrderByDescending(t => Math.Abs(t.PriceChangePercent))
-                    .Select(t => t.Symbol)
+                                && !FixedMajorPool.Contains(t.Symbol)
+                                && t.PriceChangePercent > 0m)            // 상승 종목만
+                    .Select(t => new
+                    {
+                        t.Symbol,
+                        Score = (double)t.PriceChangePercent
+                              * Math.Log10(Math.Max(1.0, (double)t.QuoteVolume))
+                    })
+                    .OrderByDescending(x => x.Score)
+                    .Select(x => x.Symbol)
                     .ToList();
 
                 foreach (var sym in sorted)
@@ -4146,6 +4179,17 @@ namespace TradingBot
                 catch (Exception ex)
                 {
                     OnStatusLog?.Invoke($"⚠️ [{(isMajorSymbol ? "MAJOR" : "ALT")}_SIMPLE] {symbol} 분석 오류: {ex.Message}");
+                }
+
+                // [v5.22.55] Daily Swing 병행 — 1D 봉 기반 큰 폭 진입 (5중가드와 별도 슬롯)
+                //   백테스트: TP+15% SL-7% 7일max 180일 +272%, 365일 +254%
+                try
+                {
+                    await AnalyzeDailySwingAsync(symbol, currentPrice, token);
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [DAILY_SWING] {symbol} 분석 오류: {ex.Message}");
                 }
 
                 // [v5.22.36] 반대 시그널 익절 — 활성 LONG 포지션이 ROE>+0.3% 인데 EMA20 하락전환 + RSI<50 → 즉시 청산
@@ -4838,6 +4882,66 @@ namespace TradingBot
             var ema = IndicatorCalculator.CalculateEMASeries(closes, 20);
             if (ema == null || ema.Count < 6) return false;
             return ema[^1] > ema[^6];
+        }
+
+        // [v5.22.55] Daily Swing — 1D 봉 추세 진입 (저빈도 + 큰 폭)
+        //   진입: 1D close>20SMA + 20SMA>50SMA + RSI 50~65 + vol×1.5 + 양봉
+        //   TP +15% / SL -7% (PROTECT 라우팅에서 source 기준 override)
+        //   심볼당 1일 1회 cooldown (같은 1D 봉 재진입 차단)
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _dailySwingCooldown = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan DailySwingCooldown = TimeSpan.FromHours(20);
+
+        private async Task AnalyzeDailySwingAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            lock (_posLock)
+            {
+                if (_activePositions.ContainsKey(symbol)) return;
+            }
+            if (_dailySwingCooldown.TryGetValue(symbol, out var last))
+            {
+                if (DateTime.UtcNow - last < DailySwingCooldown) return;
+            }
+
+            try
+            {
+                var klines = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneDay, 60, token);
+                if (klines == null || klines.Count < 51) return;
+
+                int n = klines.Count;
+                int i = n - 1;
+                decimal sumS = 0m;
+                for (int q = i - 19; q <= i; q++) sumS += klines[q].ClosePrice;
+                decimal sma20 = sumS / 20m;
+                decimal sumL = 0m;
+                for (int q = i - 49; q <= i; q++) sumL += klines[q].ClosePrice;
+                decimal sma50 = sumL / 50m;
+
+                if (klines[i].ClosePrice <= sma20) return;
+                if (sma20 <= sma50) return;
+
+                double rsi = IndicatorCalculator.CalculateRSI(klines.ToList(), 14);
+                if (rsi < 50.0 || rsi > 65.0) return;
+
+                decimal volAvg = 0m;
+                for (int q = i - 5; q <= i - 1; q++) volAvg += klines[q].Volume;
+                volAvg /= 5m;
+                if (volAvg <= 0m || klines[i].Volume < volAvg * 1.5m) return;
+                if (klines[i].ClosePrice <= klines[i].OpenPrice) return;
+
+                _dailySwingCooldown[symbol] = DateTime.UtcNow;
+
+                OnStatusLog?.Invoke(
+                    $"🎯 [DAILY_SWING] {symbol} 1D 발화 | close={klines[i].ClosePrice:F4} sma20={sma20:F4} sma50={sma50:F4} RSI={rsi:F1}");
+
+                await ExecuteAutoOrder(
+                    symbol, "LONG", currentPrice, token,
+                    signalSource: "DAILY_SWING_LONG",
+                    mode: "TREND");
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [DAILY_SWING] {symbol} 분석 오류: {ex.Message}");
+            }
         }
 
         // [v5.22.52] RSI 과열 꺾임 익절 — 사용자 지시
