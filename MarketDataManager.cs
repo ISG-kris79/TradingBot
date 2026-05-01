@@ -163,17 +163,24 @@ namespace TradingBot.Services
                                 OnTickerUpdate?.Invoke(t);
                         }
 
-                        // 3) [v5.22.33] B+C — 알트 동적 20 (기존 8) + 변동성 기준 선정 (기존 거래대금)
-                        //    원인: 거래대금 큰 메인 알트는 BBW 압축 안 일어남 → 스퀴즈 신호 0건
-                        //    해결: |PriceChangePercent| desc → 변동성 큰 알트 추적 (BBW 압축/돌파 잘 만듬)
-                        //          + 풀 크기 8 → 20 으로 후보 확대
-                        //    최소 거래대금 필터 (10M USDT) 로 페니/저유동성 코인 제거.
+                        // 3) [v5.22.56] 알트 풀 — TradingEngine 과 동일 로직 (양수 변동률 × 거래대금 가중 50개)
+                        //    기존 v5.22.33: |PriceChangePercent| desc 20개 → 하락 종목도 포함 + 동일 종목 계속 선정 = 갱신 안 보임
+                        //    변경: PriceChangePercent > 0 + score = 변동률 × log10(거래대금) 50개
+                        //    효과: 상승 종목만 + 거래 활발 = BIOUSDT 같은 핫 무버 자동 갱신 표시
                         var topAlts = snap
                             .Where(t => !majorSet.Contains(t.Symbol)
                                         && t.Symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
-                                        && t.QuoteVolume >= 10_000_000m)
-                            .OrderByDescending(t => Math.Abs(t.PriceChangePercent))
-                            .Take(20)
+                                        && t.QuoteVolume >= 10_000_000m
+                                        && t.PriceChangePercent > 0m)
+                            .Select(t => new
+                            {
+                                Ticker = t,
+                                Score = (double)t.PriceChangePercent
+                                      * Math.Log10(Math.Max(1.0, (double)t.QuoteVolume))
+                            })
+                            .OrderByDescending(x => x.Score)
+                            .Take(50)
+                            .Select(x => x.Ticker)
                             .ToList();
 
                         foreach (var t in topAlts)

@@ -5,6 +5,24 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.56] - 2026-05-01
+
+### 🚨 hotfix — UI 알트 그리드 갱신 누락 (v5.22.55 사고)
+
+#### 사용자 보고
+"알트는 갱신이 안되는거 같은데 어떻게 된거야?"
+
+#### 진단
+- v5.22.55 에서 TradingEngine `_activeTrackingPool` (게이트용) 만 변경
+- MarketDataManager UI 알트 풀 (`MarketDataManager.cs:171-186`) **누락**
+- UI 그리드 = 옛 로직 `|PriceChangePercent| desc 20개` 그대로 → 핫 무버 표시 안 됨
+
+#### Fixed
+- MarketDataManager 알트 풀 = TradingEngine 과 동일 로직
+  - 양수 변동률 + 거래대금 가중 score
+  - 풀 크기 20 → 50
+- UI 그리드 = 게이트 풀 일치, BIOUSDT 같은 핫 무버 자동 표시
+
 ## [5.22.55] - 2026-05-01
 
 ### 🎯 Daily Swing 진입 + 동적 풀 개선 — 백테스트 흑자 입증 후 도입
