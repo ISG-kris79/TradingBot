@@ -25,9 +25,16 @@ namespace TradingBot.Services
             bool reduceOnly = false,
             CancellationToken ct = default)
         {
-            return await ExecuteWithRetryAsync(async () => 
+            // [v5.22.62] CHOKEPOINT — SHORT 신규 진입 절대 차단
+            if (side == OrderSide.Sell && !reduceOnly)
+            {
+                Console.WriteLine($"⛔ [SHORT_BLOCK] {symbol} BinanceOrderService(루트) SELL+!reduceOnly 차단 — 봇 전체 LONG 전용");
+                return new WebCallResult<BinanceUsdFuturesOrder>(new CryptoExchange.Net.Objects.ServerError(0, "SHORT_BLOCK_LONG_ONLY"));
+            }
+
+            return await ExecuteWithRetryAsync(async () =>
                 await _client.UsdFuturesApi.Trading.PlaceOrderAsync(
-                    symbol, side, type, quantity, price, reduceOnly: reduceOnly, ct: ct), 
+                    symbol, side, type, quantity, price, reduceOnly: reduceOnly, ct: ct),
                 ct);
         }
 

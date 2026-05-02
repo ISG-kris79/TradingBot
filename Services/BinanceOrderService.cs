@@ -18,6 +18,14 @@ namespace TradingBot.Services
 
         public async Task<bool> PlaceOrderAsync(string symbol, OrderSide side, FuturesOrderType type, decimal quantity, decimal? price = null, TimeInForce? timeInForce = null, CancellationToken ct = default)
         {
+            // [v5.22.62] CHOKEPOINT — SHORT 신규 진입 절대 차단 (이 wrapper 는 reduceOnly 파라미터 없음 = 모든 SELL 차단)
+            //   reduceOnly 청산은 PositionMonitor / BinanceExecutionService 의 명시적 reduceOnly 호출 사용
+            if (side == OrderSide.Sell)
+            {
+                Console.WriteLine($"⛔ [SHORT_BLOCK] {symbol} BinanceOrderService SELL 차단 — 봇 전체 LONG 전용");
+                return false;
+            }
+
             // 1. 거래소 정보 조회 (Precision 보정용)
             var exchangeInfo = await _client.UsdFuturesApi.ExchangeData.GetExchangeInfoAsync(ct: ct);
             if (exchangeInfo.Success)

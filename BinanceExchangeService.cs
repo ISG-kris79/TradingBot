@@ -322,6 +322,13 @@ namespace TradingBot.Services
 
         public async Task<bool> PlaceOrderAsync(string symbol, string side, decimal quantity, decimal? price = null, CancellationToken ct = default, bool reduceOnly = false)
         {
+            // [v5.22.62] CHOKEPOINT — SHORT 신규 진입 절대 차단 (지정가/시장가 공통)
+            if (string.Equals(side, "SELL", StringComparison.OrdinalIgnoreCase) && !reduceOnly)
+            {
+                OnLog?.Invoke($"⛔ [SHORT_BLOCK] {symbol} PlaceOrderAsync SELL+!reduceOnly 차단 — 봇 전체 LONG 전용");
+                return false;
+            }
+
             // [FIX] 시뮬레이션 체크 제거 — 테스트넷 모드에서도 실제 API 호출 필요
             // 테스트넷 키로 초기화된 경우 _client가 테스트넷을 가리키므로 안전
 
@@ -981,6 +988,17 @@ namespace TradingBot.Services
             CancellationToken ct = default,
             bool reduceOnly = false)
         {
+            // [v5.22.62] CHOKEPOINT — 최저 레벨 SHORT 진입 절대 차단
+            //   side=SELL + reduceOnly=false = 신규 SHORT 진입 → 무조건 차단
+            //   side=SELL + reduceOnly=true  = LONG 청산 → 허용
+            //   사용자 정책 "봇 전체 LONG 전용"
+            if (string.Equals(side, "SELL", StringComparison.OrdinalIgnoreCase) && !reduceOnly)
+            {
+                Console.WriteLine($"⛔ [SHORT_BLOCK] {symbol} SELL+!reduceOnly 차단 — 봇 전체 LONG 전용 (사용자 정책)");
+                MainWindow.Instance?.AddLog($"⛔ [SHORT_BLOCK] {symbol} 시장가 SHORT 진입 차단 — 봇 전체 LONG 전용");
+                return (false, 0, 0);
+            }
+
             try
             {
                 // 1. 수량 정밀도 보정 (캐시 + 폴백 보장)

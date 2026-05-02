@@ -5,6 +5,28 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.62] - 2026-05-03
+
+### 🚨 SHORT 차단 6중 방어 (defense-in-depth) — 모든 진입 경로 chokepoint
+
+#### 사용자 보고
+"모든 코인 숏진입 차단 확인해봐 모든 진입로직에서 차단하는지 다 확인해"
+
+#### Added - 6 chokepoint
+1. TradingEngine.cs:8253 ExecuteAutoOrder — `decision == "SHORT"` 차단
+2. SignalPipelineService.cs:62 8단계 파이프라인 — `!signal.IsLong` 차단
+3. Services/BinanceExecutionService.cs:50 OneShot — `PositionSide.Short` 차단
+4. **BinanceExchangeService.PlaceMarketOrderAsync** — `SELL && !reduceOnly` 차단
+5. **BinanceExchangeService.PlaceOrderAsync** — `SELL && !reduceOnly` 차단
+6. **BinanceOrderService.PlaceOrderAsync** (Services + 루트) — `OrderSide.Sell && !reduceOnly` 차단
+
+#### 핵심 원리 — reduceOnly 보존
+- `SELL + reduceOnly=false` = 신규 SHORT 진입 → 차단
+- `SELL + reduceOnly=true` = LONG 청산 → 허용 (정상 동작)
+- `BUY` = LONG 진입 → 허용
+
+LONG 익절/손절/수동청산 정상 동작 보장.
+
 ## [5.22.61] - 2026-05-03
 
 ### 🚨 hotfix — 봇 전체 LONG 전용 (메이저 포함 모든 SHORT 차단)
