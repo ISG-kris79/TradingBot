@@ -146,6 +146,53 @@ namespace TradingBot.ViewModels
 
         // [v5.22.27] BinancePositionHistory — 분할청산 묶은 1행 표시
         public ObservableCollection<TradingBot.Services.PositionHistoryRow> PositionHistory { get; set; } = new ObservableCollection<TradingBot.Services.PositionHistoryRow>();
+
+        // [v5.22.60] 위 행 클릭 시 분할 청산 상세 필터링
+        private TradingBot.Services.PositionHistoryRow? _selectedPositionHistory;
+        public TradingBot.Services.PositionHistoryRow? SelectedPositionHistory
+        {
+            get => _selectedPositionHistory;
+            set
+            {
+                _selectedPositionHistory = value;
+                OnPropertyChanged();
+                RebuildFilteredTradeHistory();
+            }
+        }
+        public ObservableCollection<TradeLog> FilteredTradeHistory { get; set; } = new ObservableCollection<TradeLog>();
+        private void RebuildFilteredTradeHistory()
+        {
+            try
+            {
+                var filtered = new ObservableCollection<TradeLog>();
+                if (_selectedPositionHistory == null || string.IsNullOrEmpty(_selectedPositionHistory.Symbol))
+                {
+                    // 선택 없음 → 전체 표시
+                    foreach (var t in TradeHistory) filtered.Add(t);
+                }
+                else
+                {
+                    string sym = _selectedPositionHistory.Symbol;
+                    DateTime open = _selectedPositionHistory.OpenTime;
+                    DateTime close = _selectedPositionHistory.CloseTime == DateTime.MinValue ? DateTime.UtcNow.AddYears(1) : _selectedPositionHistory.CloseTime;
+                    foreach (var t in TradeHistory)
+                    {
+                        if (!string.Equals(t.Symbol, sym, StringComparison.OrdinalIgnoreCase)) continue;
+                        DateTime tRef = t.ExitTime > DateTime.MinValue ? t.ExitTime : t.Time;
+                        // 진입~청산 ±5분 윈도우
+                        if (tRef < open.AddMinutes(-5) || tRef > close.AddMinutes(5)) continue;
+                        filtered.Add(t);
+                    }
+                }
+                System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+                {
+                    FilteredTradeHistory.Clear();
+                    foreach (var t in filtered) FilteredTradeHistory.Add(t);
+                    OnPropertyChanged(nameof(FilteredTradeHistory));
+                });
+            }
+            catch { }
+        }
         private TradingBot.Services.BinancePositionHistorySync? _bphSync;
         private System.Threading.Timer? _bphRefreshTimer;
 
@@ -1905,7 +1952,11 @@ namespace TradingBot.ViewModels
                     }
                 }
 
-                double winRate = dayCount > 0 ? (double)winCount / dayCount * 100 : 0;
+                // [v5.22.60] 승률 = trade 기준 (수익 trade 수 / 총 trade 수)
+                //   기존: dayCount 기준 → 거래 없는 날 포함 → 승률 항상 낮게 표시 (사용자 보고 "성과분석 이상해")
+                int tradeWinCount = closed.Count(t => t.PnL > 0);
+                int tradeTotalCount = closed.Count;
+                double winRate = tradeTotalCount > 0 ? (double)tradeWinCount / tradeTotalCount * 100 : 0;
 
                 RunOnUI(() =>
                 {
@@ -1956,7 +2007,7 @@ namespace TradingBot.ViewModels
                     CalendarEntries = new ObservableCollection<DayPnlEntry>(calEntries);
                     OnPropertyChanged(nameof(CalendarEntries));
 
-                    PerformanceSummary = $"총 PnL: ${totalPnl:+#,##0.00;-#,##0.00} | 승률: {winRate:F0}% ({winCount}/{labels.Count}) | 거래: {totalCount}건";
+                    PerformanceSummary = $"총 PnL: ${totalPnl:+#,##0.00;-#,##0.00} | 승률: {winRate:F0}% ({tradeWinCount}/{tradeTotalCount}) | 거래: {totalCount}건";
                 });
             }
             catch (Exception ex)
@@ -1992,7 +2043,28 @@ namespace TradingBot.ViewModels
             var profitableTrades = closedTrades.Where(t => t.PnL > 0).ToList();
             WinRate = (double)profitableTrades.Count / closedTrades.Count * 100;
             TotalProfit = (double)closedTrades.Sum(t => t.PnL);
-            AverageRoe = (double)closedTrades.Average(t => t.PnLPercent);
+
+            // [v5.22.60] PnLPercent=0 보정 — EXTERNAL_CLOSE 시 ExitPrice=EntryPrice fallback 으로 ROE 0 표시 사고
+            //   PnL 정상 + PnLPercent 0 인 경우 PnL/notional×leverage(가정 15x) 로 ROE 추정
+            //   사용자 보고: "AVERAGE ROI가 계속 0이야"
+            decimal sumRoe = 0m;
+            int roeCount = 0;
+            foreach (var t in closedTrades)
+            {
+                decimal roe = t.PnLPercent;
+                if (roe == 0m && t.PnL != 0m && t.EntryPrice > 0m && t.Quantity > 0m)
+                {
+                    decimal notional = t.EntryPrice * t.Quantity;
+                    if (notional > 0m)
+                    {
+                        // leverage 정보 없음 → 가정 15x (사용자 디폴트)
+                        roe = t.PnL / notional * 100m * 15m;
+                    }
+                }
+                sumRoe += roe;
+                roeCount++;
+            }
+            AverageRoe = roeCount > 0 ? (double)(sumRoe / roeCount) : 0d;
 
             DateTime now = DateTime.Now;
             DateTime monthStart = new DateTime(now.Year, now.Month, 1);

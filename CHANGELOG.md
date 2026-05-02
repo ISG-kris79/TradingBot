@@ -5,6 +5,29 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.60] - 2026-05-03
+
+### 매매기록 통계 표시 fix + 분할청산 상세 필터 추가
+
+#### 사용자 보고
+- "매매기록 승률 토탈 usdt 평균 ROI 등이 다 0이야"
+- "AVERAGE ROI가 계속 0이야"
+- "성과분석이 이상해"
+- "분할청산 상세는 위에 내역에서 해당로우 심볼 클릭시 표시되게"
+
+#### Fixed - AVG ROI 0 표시
+- 원인: DB 모든 row의 `PnLPercent=0` (외부 청산 시 ExitPrice=EntryPrice fallback → priceDiff=0)
+- `CalculateTradeStatistics`: PnLPercent=0 + PnL≠0 인 경우 `PnL/notional×15x` 로 ROE 추정 보정
+
+#### Fixed - 성과분석 승률 잘못 계산
+- 원인: `winRate = 수익난 일자 수 / 총 일자 수 (거래 없는 날 포함)` → 거래 적으면 항상 낮음
+- 변경: `winRate = 수익 trade 수 / 총 trade 수` (직관적)
+
+#### Added - 분할 청산 상세 클릭 필터링
+- 위 PositionHistory 행 클릭 → 해당 심볼+시간윈도우의 TradeHistory만 아래 표시
+- `SelectedPositionHistory` + `FilteredTradeHistory` 신규 property
+- 헤더에 선택된 심볼 표시 ("📋 분할 청산 상세 — ... (BTCUSDT)")
+
 ## [5.22.59] - 2026-05-03
 
 ### 🚨 손절 분석 결과 처방 일괄 적용 — 봇 안정화 + PUMP 잔재 제거 + Daily Swing 보정
