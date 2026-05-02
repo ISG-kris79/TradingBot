@@ -59,6 +59,15 @@ namespace TradingBot.Services
 
             try
             {
+                // [v5.22.61] 모든 SHORT 절대 차단 — 사용자 정책 "메이저도 숏 빼고 모든 진입로직 LONG만 유지"
+                if (!signal.IsLong)
+                {
+                    result.FailedStage = PipelineStage.AiFilter;
+                    result.FailReason = "SHORT_BLOCK (봇 전체 LONG 전용)";
+                    LogWarning($"⛔ [{signal.Symbol}] SHORT 차단 — 봇 전체 LONG 전용 (사용자 정책)");
+                    return result;
+                }
+
                 // ============ [2단계] AI 필터 ============
                 LogInfo($"🔹 [{signal.Symbol}] [2단계] AI 필터 검증 중...");
                 bool aiPass = await aiFilterFunc(signal);

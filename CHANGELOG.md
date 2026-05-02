@@ -5,6 +5,25 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.61] - 2026-05-03
+
+### 🚨 hotfix — 봇 전체 LONG 전용 (메이저 포함 모든 SHORT 차단)
+
+#### 사용자 보고
+- "알트는 숏 안한다고 했잖아" (SPACEUSDT/BTRUSDT SHORT 손절)
+- "메이저도 숏 빼고 모든 진입로직은 LONG 만 유지"
+
+#### 진단
+- v5.22.58 ExecuteAutoOrder 알트 SHORT 차단만 적용
+- 우회 경로 SignalPipelineService / BinanceExecutionService 가 ExecuteAutoOrder 안 거치고 거래소 직접 SHORT 발주
+- 메이저(BTC/ETH/SOL/XRP/BNB) 도 SHORT 진입 후 손절 발생
+
+#### Fixed - 3중 방어 (defense-in-depth)
+- **TradingEngine.cs:8253** ExecuteAutoOrder 모든 SHORT decision 차단 (메이저 포함)
+- **SignalPipelineService.cs:62** 8단계 파이프라인 진입 직전 `!signal.IsLong` 차단
+- **BinanceExecutionService.cs:50** OneShot 진입 `PositionSide.Short` 차단
+- 차단 메시지: `⛔ [SHORT_BLOCK] ... — 봇 전체 LONG 전용 (사용자 정책)`
+
 ## [5.22.60] - 2026-05-03
 
 ### 매매기록 통계 표시 fix + 분할청산 상세 필터 추가

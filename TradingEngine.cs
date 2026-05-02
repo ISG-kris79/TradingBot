@@ -8299,11 +8299,11 @@ namespace TradingBot
         {
             string flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
 
-            // [v5.22.58] 알트 SHORT 절대 차단 — 사용자 정책 "알트는 롱만"
-            //   메이저(BTC/ETH/SOL/XRP/BNB)는 SHORT 허용, 그 외 알트는 SHORT 신호 자체 무시
-            if (string.Equals(decision, "SHORT", StringComparison.OrdinalIgnoreCase) && !MajorSymbols.Contains(symbol))
+            // [v5.22.61] 모든 SHORT 절대 차단 — 사용자 정책 "메이저도 숏 빼고 모든 진입로직 LONG만 유지"
+            //   v5.22.58 알트만 차단 → v5.22.61 메이저 포함 전체 SHORT 차단
+            if (string.Equals(decision, "SHORT", StringComparison.OrdinalIgnoreCase))
             {
-                OnStatusLog?.Invoke($"⛔ [ALT_SHORT_BLOCK] {symbol} {signalSource} SHORT 차단 — 알트는 롱 전용 (사용자 정책)");
+                OnStatusLog?.Invoke($"⛔ [SHORT_BLOCK] {symbol} {signalSource} SHORT 차단 — 봇 전체 LONG 전용 (사용자 정책)");
                 return;
             }
 

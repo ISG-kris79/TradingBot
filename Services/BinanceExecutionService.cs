@@ -48,6 +48,13 @@ namespace TradingBot.Services
             decimal initialStopPrice,
             CancellationToken ct = default)
         {
+            // [v5.22.61] 모든 SHORT 절대 차단 — 사용자 정책 "메이저도 숏 빼고 모든 진입로직 LONG만 유지"
+            if (positionSide == PositionSide.Short)
+            {
+                OnAlert?.Invoke($"⛔ [SHORT_BLOCK] {symbol} SHORT 차단 — 봇 전체 LONG 전용 (사용자 정책)");
+                return false;
+            }
+
             try
             {
                 // 심볼 정밀도 정보 가져오기 (틱 사이즈/수량 사이즈)
