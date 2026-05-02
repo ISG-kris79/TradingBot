@@ -5,6 +5,42 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.59] - 2026-05-03
+
+### 🚨 손절 분석 결과 처방 일괄 적용 — 봇 안정화 + PUMP 잔재 제거 + Daily Swing 보정
+
+#### 사용자 보고 분석
+- 7일 손절 10건 모두 EXTERNAL_CLOSE_WHILE_BOT_STOPPED (-$142)
+- PUMP/MIDBREAK 옛 진입이 -$119 (84%)
+- Telegram 알림 entry==exit 동일가 + ROE 0% 표시
+- MAGMAUSDT Daily Swing 첫 진입 -2.98% 가격에서 -$30 손실
+
+#### Fixed - #1 봇 안정화
+- **App.xaml.cs**: `MessageBox.Show` 제거 (블로킹 → 봇 정지 원인). Telegram Alert + footer 로그로 비동기 알림
+- **30분 Heartbeat**: `💚 [HEARTBEAT] uptime=Xh` footer 로그 (사용자 정지 인지)
+
+#### Fixed - #2 PUMP/MIDBREAK 옛 source 완전 차단
+- ExecuteAutoOrder 진입 직전 hard-block 추가
+- 차단 source: PUMP_*, MAJOR_MEME, BB_MIDBREAK, PUMPSCAN, TICK_SURGE, SPIKE_FAST, PUMP_REVERSE, DROUGHT_RECOVERY
+- 효과: -$119 손실원 차단
+
+#### Fixed - #3 ExitPrice 정확 동기화
+- EXTERNAL_CLOSE_SYNC + PositionSync 양쪽 경로
+- GetLastTradeAsync 3회 retry → ticker fallback → EntryPrice 최후
+- Telegram 알림: entry==exit 또는 ROE \|0.01%\| 미만 시 발송 차단
+
+#### Fixed - #4 Daily Swing 5x 레버리지 강제
+- MAGMAUSDT 사례: 사용자 15x 레버리지로 인해 -2.98% 가격 변동에 ROE -45% → SL 발동
+- AnalyzeDailySwingAsync 진입 직전 SetLeverageAsync(5) 호출
+- 백테스트 (5x 가정 +272% ROI) 와 라이브 동작 일치
+
+#### Fixed - #5 PositionState DB 정리
+- PositionSync 청산 경로에도 DeletePositionStateAsync 호출 (v5.22.57은 EXTERNAL_CLOSE_SYNC 만)
+- stale row 누적 → 슬롯 영구 풀 사고 재발 방지
+
+#### Telegram 합산 윈도우 (v5.22.58 유지)
+- 90초 → 20초, await + 발송 실패 명시 로그
+
 ## [5.22.58] - 2026-05-01
 
 ### 🚨 hotfix — 알트 SHORT 차단 + Telegram 청산 알림 안 옴 fix

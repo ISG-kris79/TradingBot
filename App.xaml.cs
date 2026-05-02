@@ -166,7 +166,28 @@ namespace TradingBot
             }
             catch { }
 
-            MessageBox.Show(msg, "Unhandled Exception", MessageBoxButton.OK, MessageBoxImage.Error);
+            // [v5.22.59] MessageBox.Show 제거 — 봇 정지 원인 (사용자 OK 누를 때까지 블로킹)
+            //   대신 footer 로그 + 텔레그램 즉시 알림 (사용자 비동기 인지)
+            try
+            {
+                global::TradingBot.MainWindow.Instance?.AddAlert($"⚠️ Unhandled Exception: {exceptionType} | {e.Exception.Message}");
+            }
+            catch { }
+            try
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await global::TradingBot.TelegramService.Instance.SendMessageAsync(
+                            $"🚨 *[BOT CRITICAL]*\n`{exceptionType}`\n{e.Exception.Message}\n⏰ {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
+                            global::TradingBot.TelegramMessageType.Alert);
+                    }
+                    catch { }
+                });
+            }
+            catch { }
+
             System.Diagnostics.Debug.WriteLine($"[App] Unhandled Exception: {msg}");
             e.Handled = true;
         }

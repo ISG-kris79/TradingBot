@@ -2558,6 +2558,26 @@ namespace TradingBot
                 // 5초 주기 15m/5m/1m 폴링 루프 시작
                 _ = Task.Run(() => Run151EngineLoopAsync(token), token);
 
+                // [v5.22.59] Heartbeat — 30분마다 봇 살아있음 footer 로그 (사용자 정지 인지용)
+                _ = Task.Run(async () =>
+                {
+                    DateTime startedAt = DateTime.Now;
+                    while (!token.IsCancellationRequested)
+                    {
+                        try
+                        {
+                            await Task.Delay(TimeSpan.FromMinutes(30), token);
+                            int activeCnt = 0;
+                            lock (_posLock) { activeCnt = _activePositions.Count; }
+                            int poolCnt = _activeTrackingPool.Count;
+                            TimeSpan uptime = DateTime.Now - startedAt;
+                            OnStatusLog?.Invoke($"💚 [HEARTBEAT] uptime={uptime.TotalHours:F1}h | 활성포지션={activeCnt} | 추적풀={poolCnt}");
+                        }
+                        catch (OperationCanceledException) { break; }
+                        catch { }
+                    }
+                }, token);
+
                 // [v5.17.1 SAFETY] 봇 시작 시 잔존 algoOrder cleanup
                 //   사용자 사례: 1시 청산 후 잠든 사이 algoOrder 자동 trigger 로 14건 부분 매도
                 //   봇 시작 직후 활성 포지션 없는 심볼의 algoOrder 일괄 cancel
@@ -4930,8 +4950,23 @@ namespace TradingBot
 
                 _dailySwingCooldown[symbol] = DateTime.UtcNow;
 
+                // [v5.22.59] Daily Swing 5x leverage 강제 — 사용자 PumpStopLossRoe=45% 가 SL -7% × 15x = -105% 와 충돌
+                //   MAGMAUSDT 사례: 15x 레버리지로 진입 → -2.98% 가격 변동에 ROE -44.7% → SL 자동 발동 (-$30)
+                //   Daily Swing 백테스트 (5x lev, SL -7% × 5 = ROE -35%) 와 일치시키려면 진입 직전 5x 강제 필요
+                try
+                {
+                    bool levOk = await _exchangeService.SetLeverageAsync(symbol, 5, token);
+                    if (!levOk) OnStatusLog?.Invoke($"⚠️ [DAILY_SWING] {symbol} 5x 레버리지 설정 실패 — 진입 보류");
+                    if (!levOk) return;
+                }
+                catch (Exception lex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [DAILY_SWING] {symbol} 레버리지 설정 예외 ({lex.Message}) — 진입 보류");
+                    return;
+                }
+
                 OnStatusLog?.Invoke(
-                    $"🎯 [DAILY_SWING] {symbol} 1D 발화 | close={klines[i].ClosePrice:F4} sma20={sma20:F4} sma50={sma50:F4} RSI={rsi:F1}");
+                    $"🎯 [DAILY_SWING] {symbol} 1D 발화 | close={klines[i].ClosePrice:F4} sma20={sma20:F4} sma50={sma50:F4} RSI={rsi:F1} | leverage=5x 강제");
 
                 await ExecuteAutoOrder(
                     symbol, "LONG", currentPrice, token,
@@ -6255,11 +6290,31 @@ namespace TradingBot
 
                     if (closedSnapshot != null && !_positionMonitor.IsCloseInProgress(pos.Symbol))
                     {
+                        // [v5.22.59] ExitPrice 정확 동기화 — GetLastTradeAsync 우선, ticker fallback, EntryPrice 최후
+                        //   기존: ticker → entry fallback → PnL 0% 잘못된 알림
+                        //   변경: 실제 체결가 우선 (Binance trade history)
                         decimal exitPrice = 0m;
-                        if (_marketDataManager.TickerCache.TryGetValue(pos.Symbol, out var ticker))
+                        for (int attempt = 1; attempt <= 3; attempt++)
+                        {
+                            try
+                            {
+                                var lastTrade = await _exchangeService.GetLastTradeAsync(pos.Symbol, closedSnapshot.EntryTime, _cts?.Token ?? CancellationToken.None);
+                                if (lastTrade.HasValue && lastTrade.Value.exitPrice > 0)
+                                {
+                                    exitPrice = lastTrade.Value.exitPrice;
+                                    break;
+                                }
+                            }
+                            catch { }
+                            if (attempt < 3) await Task.Delay(800);
+                        }
+                        if (exitPrice <= 0 && _marketDataManager.TickerCache.TryGetValue(pos.Symbol, out var ticker))
                             exitPrice = ticker.LastPrice;
                         if (exitPrice <= 0)
+                        {
+                            OnStatusLog?.Invoke($"⚠️ [EXTERNAL_SYNC] {pos.Symbol} ExitPrice 조회 완전 실패 → EntryPrice fallback (PnL 부정확 가능)");
                             exitPrice = closedSnapshot.EntryPrice;
+                        }
 
                         bool stopLossLikelyTriggered = false;
                         if (closedSnapshot.StopLoss > 0)
@@ -8249,6 +8304,19 @@ namespace TradingBot
             if (string.Equals(decision, "SHORT", StringComparison.OrdinalIgnoreCase) && !MajorSymbols.Contains(symbol))
             {
                 OnStatusLog?.Invoke($"⛔ [ALT_SHORT_BLOCK] {symbol} {signalSource} SHORT 차단 — 알트는 롱 전용 (사용자 정책)");
+                return;
+            }
+
+            // [v5.22.59] 옛 PUMP/MIDBREAK/SPIKE/MEME source 완전 차단 — DB 손실 분석 -$119 (-84%) 입증
+            //   대상: PUMP_WATCH_CONFIRMED, PUMP_TRADE, PUMP_*, MAJOR_MEME, BB_MIDBREAK*, PUMPSCAN, TICK_SURGE, SPIKE
+            //   IsEntryAllowedCore 도 PUMP/SPIKE 차단하지만 BB_MIDBREAK 는 GENERIC 으로 빠져 통과 가능 → defense-in-depth
+            string srcUpper = (signalSource ?? "").ToUpperInvariant();
+            if (srcUpper.Contains("PUMP_WATCH") || srcUpper.Contains("PUMP_TRADE") || srcUpper.StartsWith("PUMP_")
+                || srcUpper == "PUMP" || srcUpper.StartsWith("MAJOR_MEME") || srcUpper.Contains("BB_MIDBREAK")
+                || srcUpper.Contains("PUMPSCAN") || srcUpper.Contains("TICK_SURGE") || srcUpper.Contains("SPIKE_FAST")
+                || srcUpper == "PUMP_REVERSE" || srcUpper.Contains("DROUGHT_RECOVERY_PUMP"))
+            {
+                OnStatusLog?.Invoke($"⛔ [LEGACY_BLOCK] {symbol} {signalSource} 차단 — 옛 진입 source 폐기 (DB 손실 -$119 입증)");
                 return;
             }
 
@@ -11202,16 +11270,34 @@ namespace TradingBot
                 }
             });
 
-            // 5. 텔레그램 알림 — 마크다운 V1 이탤릭 충돌 방지 (reason 내 언더스코어를 공백으로)
+            // [v5.22.59] PositionState DB row 정리 — PositionSync 청산 경로도 EXTERNAL_CLOSE 와 동일하게 처리
+            //   누락 시: 봇 재시작 → PositionState 부활 → SLOT_FULL 영구 차단 (사용자 실 사고 사례)
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    string emoji = isProfit ? "✅" : "❌";
+                    int uid = AppConfig.CurrentUser?.Id ?? 0;
+                    if (uid > 0) await _dbManager.DeletePositionStateAsync(uid, symbol);
+                }
+                catch { }
+            });
+
+            // 5. 텔레그램 알림 — [v5.22.59] entry==exit 또는 ROE 0 이면 발송 차단 (잘못된 알림 방지)
+            _ = Task.Run(async () =>
+            {
+                try
+                {
                     decimal roe = entryPrice > 0
                         ? ((pos?.IsLong == true ? exitPrice - entryPrice : entryPrice - exitPrice)
                             / entryPrice) * (pos?.Leverage ?? 1m) * 100m
                         : 0m;
+                    // 진입가 == 청산가 또는 ROE 절댓값 0.01% 미만 = exitPrice 동기화 실패 → 잘못된 알림 차단
+                    if (entryPrice <= 0 || exitPrice <= 0 || Math.Abs(exitPrice - entryPrice) / entryPrice < 0.0001m || Math.Abs(roe) < 0.01m)
+                    {
+                        OnStatusLog?.Invoke($"🧹 [Telegram][SKIP] {symbol} entry={entryPrice:F4} exit={exitPrice:F4} ROE={roe:F2}% — 동기화 불완전 알림 차단");
+                        return;
+                    }
+                    string emoji = isProfit ? "✅" : "❌";
                     string telegramReason = (reason ?? "CLOSE").Replace("_", " ");
                     await TelegramService.Instance.SendMessageAsync(
                         $"{emoji} *[{telegramReason}]*\n`{symbol}`\n진입가: `{entryPrice:F4}` → 청산가: `{exitPrice:F4}`\nROE: `{roe:+0.0;-0.0}%`\n⏰ {DateTime.Now:HH:mm:ss}",

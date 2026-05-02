@@ -165,32 +165,55 @@ namespace TradingBot.Services
         {
             OnLog?.Invoke($"🔔 [PositionSync] {symbol} 거래소 포지션 사라짐 → 청산 확인");
 
-            // 4. 실제 청산가 조회 (최근 체결 내역)
+            // 4. 실제 청산가 조회 (최근 체결 내역) — [v5.22.59] 3회 retry 후 ticker fallback
             decimal exitPrice = 0m;
             string closeReason = "SL/TP (exchange)";
-            try
+            for (int attempt = 1; attempt <= 3; attempt++)
             {
-                var lastTrade = await _exchangeService.GetLastTradeAsync(symbol, pos.EntryTime, ct)
-                    .ConfigureAwait(false);
-                if (lastTrade.HasValue)
+                try
                 {
-                    exitPrice = lastTrade.Value.exitPrice;
-                    string tradeSide = lastTrade.Value.side;
-                    bool isSellClose = string.Equals(tradeSide, "Sell", StringComparison.OrdinalIgnoreCase)
-                                   || string.Equals(tradeSide, "SELL", StringComparison.OrdinalIgnoreCase);
-
-                    // 방향으로 SL vs TP 추정
-                    if (pos.IsLong && exitPrice < pos.EntryPrice * 1.001m)
-                        closeReason = "SL (exchange)";
-                    else if (!pos.IsLong && exitPrice > pos.EntryPrice * 0.999m)
-                        closeReason = "SL (exchange)";
-                    else
-                        closeReason = "TP/Trailing (exchange)";
+                    var lastTrade = await _exchangeService.GetLastTradeAsync(symbol, pos.EntryTime, ct)
+                        .ConfigureAwait(false);
+                    if (lastTrade.HasValue && lastTrade.Value.exitPrice > 0)
+                    {
+                        exitPrice = lastTrade.Value.exitPrice;
+                        if (pos.IsLong && exitPrice < pos.EntryPrice * 1.001m)
+                            closeReason = "SL (exchange)";
+                        else if (!pos.IsLong && exitPrice > pos.EntryPrice * 0.999m)
+                            closeReason = "SL (exchange)";
+                        else
+                            closeReason = "TP/Trailing (exchange)";
+                        break;
+                    }
                 }
+                catch (Exception ex)
+                {
+                    OnLog?.Invoke($"⚠️ [PositionSync] {symbol} GetLastTradeAsync 실패 attempt={attempt}/3: {ex.Message}");
+                }
+                if (attempt < 3) await Task.Delay(1000, ct).ConfigureAwait(false);
             }
-            catch { }
 
-            if (exitPrice <= 0) exitPrice = pos.EntryPrice; // 조회 실패 시 fallback
+            // [v5.22.59] fallback — entryPrice 사용 X (PnL 0% 잘못된 알림 원인)
+            //   대신 ticker 현재가 사용 (외부 청산 직후 가격이 청산가 근사치)
+            if (exitPrice <= 0)
+            {
+                try
+                {
+                    var ticker = await _exchangeService.GetPriceAsync(symbol, ct).ConfigureAwait(false);
+                    if (ticker > 0)
+                    {
+                        exitPrice = ticker;
+                        OnLog?.Invoke($"⚠️ [PositionSync] {symbol} GetLastTrade 모두 실패 → ticker 현재가({ticker:F4}) fallback");
+                    }
+                }
+                catch { }
+            }
+            // 그래도 실패면 PnL 0 으로 처리 (텔레그램 발송 측에서 차단)
+            if (exitPrice <= 0)
+            {
+                OnLog?.Invoke($"❌ [PositionSync] {symbol} 청산가 조회 완전 실패 — Telegram 알림 스킵 처리됨");
+                exitPrice = pos.EntryPrice;   // 옛 동작 유지하되 PnL 0 으로 발송 차단
+            }
 
             // 5. 잔여 SL/TP 주문 일괄 취소 (OCO 효과)
             await _orderManager.CancelBracketAsync(symbol, ct).ConfigureAwait(false);
