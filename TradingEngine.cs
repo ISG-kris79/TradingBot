@@ -4196,6 +4196,10 @@ namespace TradingBot
                     else
                     {
                         await AnalyzeAltSimpleTriggersAsync(symbol, currentPrice, token);
+                        // [v5.22.69] 새 진입 — 24h 폭등 종목 (5~30%) 갓 EMA20 돌파 시 즉시 진입
+                        //   사용자 보고: "BUSDT나 top5 상승률 코인 진입 없음"
+                        //   Daily Swing은 1D 봉 마감 (KST 09:00)에만 평가 → 그 외 시간 폭등 종목 못 잡음
+                        await AnalyzeAltMomentumAsync(symbol, currentPrice, token);
                     }
                 }
                 catch (Exception ex)
@@ -4689,6 +4693,88 @@ namespace TradingBot
 #pragma warning restore CS0162
         }
 
+        // [v5.22.69] 알트 모멘텀 진입 — 24h 폭등 (5~30%) 종목 EMA20 갓 돌파 시 즉시 LONG
+        //   사용자 보고: "BUSDT나 top5 상승률 코인 진입 없음"
+        //   Daily Swing은 1D 봉 KST 09:00 마감에만 평가 → 그 외 시간 폭등 못 잡음
+        //   추격 매수 회피: 24h ≥ 30% 종목은 이미 늦음 (사용자 ACHUSDT 1시간 늦은 진입 비판)
+        //   진입 5중 가드:
+        //     1. 24h 변화율 5~30% (sweet spot)
+        //     2. 15m 마감종가 > EMA20
+        //     3. 직전 봉 종가 ≤ 직전 EMA20 (갓 돌파)
+        //     4. 거래량 > 직전 5봉 평균 × 2
+        //     5. RSI < 70
+        //   재진입 방지: 30분 cooldown + 봉 마감 1회 발화
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _altMomentumCooldown = new(StringComparer.OrdinalIgnoreCase);
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _altMomentumLastBarFired = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan AltMomentumCooldown = TimeSpan.FromMinutes(30);
+
+        private async Task AnalyzeAltMomentumAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            lock (_posLock)
+            {
+                if (_activePositions.ContainsKey(symbol)) return;
+            }
+            if (_altMomentumCooldown.TryGetValue(symbol, out var lastTry))
+            {
+                if (DateTime.UtcNow - lastTry < AltMomentumCooldown) return;
+            }
+
+            try
+            {
+                var klines = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 100, token);
+                if (klines == null || klines.Count < 97) return;     // 96봉 = 24h + 마감봉
+
+                var closedKlines = klines.Take(klines.Count - 1).ToList();
+                var lastClosedBar = closedKlines[^1];
+
+                if (_altMomentumLastBarFired.TryGetValue(symbol, out var firedBar) && firedBar == lastClosedBar.OpenTime) return;
+
+                int n = closedKlines.Count;
+                if (n < 96) return;
+                // 1. 24h 변화율 5~30%
+                decimal price24hAgo = closedKlines[n - 96].ClosePrice;
+                if (price24hAgo <= 0) return;
+                decimal change24h = (lastClosedBar.ClosePrice - price24hAgo) / price24hAgo * 100m;
+                if (change24h < 5m || change24h > 30m) return;
+
+                // 2. 15m close > EMA20
+                var closes = closedKlines.Select(k => (double)k.ClosePrice).ToList();
+                var emaSeries = IndicatorCalculator.CalculateEMASeries(closes, 20);
+                if (emaSeries == null || emaSeries.Count < 2) return;
+                decimal ema20 = (decimal)emaSeries[^1];
+                decimal ema20Prev = (decimal)emaSeries[^2];
+                if (lastClosedBar.ClosePrice <= ema20) return;
+
+                // 3. 직전 봉 종가 ≤ 직전 EMA20 (갓 돌파)
+                if (closedKlines[^2].ClosePrice > ema20Prev) return;
+
+                // 4. 거래량 > 직전 5봉 평균 × 2
+                decimal volAvg5 = 0m;
+                for (int i = n - 6; i < n - 1; i++) volAvg5 += closedKlines[i].Volume;
+                volAvg5 /= 5m;
+                if (volAvg5 <= 0m || lastClosedBar.Volume < volAvg5 * 2.0m) return;
+
+                // 5. RSI < 70
+                double rsi = IndicatorCalculator.CalculateRSI(closedKlines, 14);
+                if (rsi >= 70) return;
+
+                _altMomentumLastBarFired[symbol] = lastClosedBar.OpenTime;
+                _altMomentumCooldown[symbol] = DateTime.UtcNow;
+
+                OnStatusLog?.Invoke(
+                    $"🚀 [ALT_MOMENTUM] {symbol} 24h+{change24h:F1}% EMA20 갓 돌파 | close={lastClosedBar.ClosePrice:F4} ema20={ema20:F4} vol×{lastClosedBar.Volume / volAvg5:F1} RSI={rsi:F1}");
+
+                await ExecuteAutoOrder(
+                    symbol, "LONG", currentPrice, token,
+                    signalSource: "ALT_MOMENTUM",
+                    mode: "TREND");
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [ALT_MOMENTUM] {symbol} 분석 오류: {ex.Message}");
+            }
+        }
+
         // [v5.22.52] 봉 마감 1회 발화 추적
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _altLastBarFired = new(StringComparer.OrdinalIgnoreCase);
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _majorLastBarFired = new(StringComparer.OrdinalIgnoreCase);
@@ -4791,6 +4877,12 @@ namespace TradingBot
 
         private async Task CheckTimeStopExitAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
+            // [v5.22.69] Time Stop 전체 비활성화 — 사용자 지시 "120분 없앴는데 왜 있어"
+            //   ORCA 사례: 진입 후 정확히 120분 만에 -5.5% 가격에 강제 청산
+            //   이제 청산은 TP/SL + ProfitTrailing(retrace 기반) + BB 중심선 하향돌파만 담당
+            await Task.CompletedTask;
+            return;
+#pragma warning disable CS0162
             PositionInfo? pos = null;
             lock (_posLock)
             {
@@ -4847,6 +4939,7 @@ namespace TradingBot
             {
                 OnStatusLog?.Invoke($"❌ [TIME_STOP] {symbol} 청산 실패: {ex.Message}");
             }
+#pragma warning restore CS0162
         }
 
         // [v5.22.36] 반대 시그널 익절 — 흑자 보호 (이더/솔라나 같이 긴 시간 끌다 +→- 전환 방지)
@@ -11390,14 +11483,19 @@ namespace TradingBot
                 catch { }
             });
 
-            // 5. 텔레그램 알림 — [v5.22.59] entry==exit 또는 ROE 0 이면 발송 차단 (잘못된 알림 방지)
+            // 5. 텔레그램 알림 — [v5.22.69] pos null 시 LONG 전용 봇 가정 + 사용자 leverage 사용
+            //   사용자 보고: "ROE +5.5% 표시인데 실제 손실, 부호+%값 다 틀림"
+            //   원인: pos 가 null 일 때 IsLong=false (SHORT 가정), Leverage=1x → ROE 부호+값 모두 틀림
+            //   수정: pos null 이면 LONG 가정 (봇 전체 LONG 전용 정책) + _settings.DefaultLeverage 사용
             _ = Task.Run(async () =>
             {
                 try
                 {
+                    bool isLong = pos?.IsLong ?? true;          // 봇 전체 LONG 전용 = LONG 기본값
+                    decimal lev = pos?.Leverage > 0 ? pos.Leverage : (_settings?.DefaultLeverage ?? 15m);
                     decimal roe = entryPrice > 0
-                        ? ((pos?.IsLong == true ? exitPrice - entryPrice : entryPrice - exitPrice)
-                            / entryPrice) * (pos?.Leverage ?? 1m) * 100m
+                        ? ((isLong ? exitPrice - entryPrice : entryPrice - exitPrice)
+                            / entryPrice) * lev * 100m
                         : 0m;
                     // 진입가 == 청산가 또는 ROE 절댓값 0.01% 미만 = exitPrice 동기화 실패 → 잘못된 알림 차단
                     if (entryPrice <= 0 || exitPrice <= 0 || Math.Abs(exitPrice - entryPrice) / entryPrice < 0.0001m || Math.Abs(roe) < 0.01m)
@@ -11405,7 +11503,8 @@ namespace TradingBot
                         OnStatusLog?.Invoke($"🧹 [Telegram][SKIP] {symbol} entry={entryPrice:F4} exit={exitPrice:F4} ROE={roe:F2}% — 동기화 불완전 알림 차단");
                         return;
                     }
-                    string emoji = isProfit ? "✅" : "❌";
+                    bool isActuallyProfit = roe > 0m;
+                    string emoji = isActuallyProfit ? "✅" : "❌";
                     string telegramReason = (reason ?? "CLOSE").Replace("_", " ");
                     await TelegramService.Instance.SendMessageAsync(
                         $"{emoji} *[{telegramReason}]*\n`{symbol}`\n진입가: `{entryPrice:F4}` → 청산가: `{exitPrice:F4}`\nROE: `{roe:+0.0;-0.0}%`\n⏰ {DateTime.Now:HH:mm:ss}",

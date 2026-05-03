@@ -5,6 +5,31 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.69] - 2026-05-03
+
+### 🚨 Telegram ROE 부호 fix + Time Stop 전체 비활성화 + AltMomentum 신규 진입
+
+#### 사용자 보고
+- "ROE 마이너스인데 플러스 표시" / "%도 틀림"
+- "120분 없앴는데 왜 있어" (ORCA 120분 강제 청산)
+- "BUSDT/TST 같은 폭등 코인 진입 없음"
+
+#### Fixed - Telegram ROE 부호
+- HandleSyncedPositionClosed Telegram: pos null 시 IsLong=true (봇 LONG 전용) + DefaultLeverage
+- 실제 손실 = ❌ + 음수 ROE 정확 표시
+
+#### Fixed - Time Stop 전체 비활성화
+- CheckTimeStopExitAsync 즉시 return
+- 청산 책임 = TP/SL + ProfitTrailing + BB 중심선 하향돌파만
+
+#### Added - AnalyzeAltMomentumAsync (BUSDT 같은 폭등 종목 즉시 진입)
+- 24h 변화율 5~30% (sweet spot, 30% 이상은 추격 매수 차단)
+- 15m 종가 > EMA20 + 직전 봉 ≤ 직전 EMA20 (갓 돌파)
+- 거래량 > 직전 5봉 평균 × 2
+- RSI < 70
+- 30분 cooldown + 봉 마감 1회 발화
+- signalSource=ALT_MOMENTUM
+
 ## [5.22.68] - 2026-05-03
 
 ### 🚨 수익 보호 트레일링 + BB 중심선 하향 돌파 청산
