@@ -5,6 +5,23 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.64] - 2026-05-03
+
+### 🎯 Daily Swing 펌프 추적 강화 — TP1 30%만 청산 + 트레일링 ON
+
+#### 사용자 보고
+"BABYUSDT 27% 먹고 익절했데 근데 잘만 유지했으면 1000% ROI 인데 말이야"
+
+#### 진단
+- BABY 50초 만에 외부 청산 (FillCount 17, Category=EXTERNAL)
+- TP1 도달 시 100% 전량 청산 + 트레일링 OFF → 펌프 시작 시점에 털림
+- 1000%+ 폭등 잠재력 놓침
+
+#### Fixed
+- TP1 도달 시 청산 비율: **100% → 30%** (잔여 70% 트레일링 추적)
+- 트레일링 갭: **OFF → 가격 -10% × leverage**
+- 잔여 70%는 최고가 대비 -10% retrace 시 청산 (펌프 끝까지 추적)
+
 ## [5.22.63] - 2026-05-03
 
 ### 🚨 hotfix — BinancePositionHistory UNIQUE 중복 오류

@@ -1224,17 +1224,19 @@ namespace TradingBot
                 decimal trailGapPctBase = isMajor ? (_settings?.MajorTrailingGapRoe?? 5m)  : (_settings?.PumpTrailingGapRoe?? 20m);
                 decimal tpRatioPctBase  = isMajor ? 30m : (_settings?.PumpFirstTakeProfitRatioPct ?? 40m);
 
-                // [v5.22.55] Daily Swing source — TP/SL override (가격 기준 +15% / -7%, leverage 환산)
-                //   백테스트 검증 (180일 +272%, 365일 +254%, MDD 14.5%)
-                //   leverage = 5x 가정 시 ROE TP+75% / SL-35%. 사용자 설정 leverage 사용.
+                // [v5.22.64] Daily Swing — 펌프 끝까지 따라가도록 트레일링 ON + TP1 부분만
+                //   사용자 보고: "27% 먹고 익절했데 근데 잘만 유지했으면 1000% ROI"
+                //   기존 (v5.22.55): TP +15% 도달 시 100% 청산, 트레일링 OFF → 펌프 시작 시점에 털림
+                //   변경: TP1 +15% 도달 시 30%만 청산 + 트레일링 활성화 (가격 -10% 갭) → 70%는 펌프 끝까지
+                //         BABYUSDT 같은 +200% 폭등 시 잔여 70%로 큰 수익 가능
                 bool isDailySwing = (source ?? "").IndexOf("DAILY_SWING", StringComparison.OrdinalIgnoreCase) >= 0;
                 if (isDailySwing)
                 {
                     decimal lev = leverage > 0 ? leverage : 5m;
-                    tpRoePctBase = 15m * lev;          // 가격 +15% × lev
-                    slRoePctBase = 7m * lev;           // 가격 -7% × lev
-                    tpRatioPctBase = 100m;             // TP 도달 시 전량 청산
-                    trailGapPctBase = 0m;              // 트레일링 OFF
+                    tpRoePctBase = 15m * lev;          // TP1 가격 +15% × lev (30% 부분 청산)
+                    slRoePctBase = 7m * lev;           // SL 가격 -7% × lev
+                    tpRatioPctBase = 30m;              // TP1 도달 시 30%만 청산 (잔여 70% 트레일링)
+                    trailGapPctBase = 10m * lev;       // 트레일링 갭 가격 10% (펌프 시 retrace 흡수)
                 }
 
                 decimal slRoePct    = slRoePctBase    * slMul;
