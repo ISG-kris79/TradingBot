@@ -5,6 +5,19 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.66] - 2026-05-03
+
+### 🎯 Daily Swing RSI 임계 65 → 70 완화 (#C 변형 채택)
+
+#### 백테스트 (--daily-swing-variants 5종 비교)
+- 365일 #C RSI 50~70: **+$1,321 / +330%** / MDD **16.4%** ← 1위
+- 365일 #A 베이스 RSI 50~65: +$1,022 / +256% / MDD 28.3%
+
+#### Fixed
+- AnalyzeDailySwingAsync RSI 임계: `< 50.0 || > 65.0` → `< 50.0 || > 70.0`
+- 강한 추세 종목 (RSI 65~70 구간) 추가 포착
+- 진입 다양화 → 수익 ↑ + MDD ↓ (역설적 개선)
+
 ## [5.22.65] - 2026-05-03
 
 ### 🎯 알트 5중 가드 완전 비활성화 + Daily Swing 단독 운용 + SHORT source 전체 폐기

@@ -4947,8 +4947,10 @@ namespace TradingBot
                 if (klines[i].ClosePrice <= sma20) return;
                 if (sma20 <= sma50) return;
 
+                // [v5.22.66] #C RSI 50~70 완화 — 백테스트 365일 +330% / MDD 16.4% (베이스 +256% / MDD 28% 대비 개선)
+                //   강한 추세 종목 (RSI 65~70 구간) 추가 포착 → 진입 다양화 + 수익 ↑ + MDD ↓
                 double rsi = IndicatorCalculator.CalculateRSI(klines.ToList(), 14);
-                if (rsi < 50.0 || rsi > 65.0) return;
+                if (rsi < 50.0 || rsi > 70.0) return;
 
                 decimal volAvg = 0m;
                 for (int q = i - 5; q <= i - 1; q++) volAvg += klines[q].Volume;
