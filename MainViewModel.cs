@@ -164,23 +164,32 @@ namespace TradingBot.ViewModels
         {
             try
             {
-                var filtered = new ObservableCollection<TradeLog>();
-                if (_selectedPositionHistory == null || string.IsNullOrEmpty(_selectedPositionHistory.Symbol))
-                {
-                    // 선택 없음 → 전체 표시
-                    foreach (var t in TradeHistory) filtered.Add(t);
-                }
-                else
+                var filtered = new List<TradeLog>();
+                // [v5.22.65] 선택 없음 → 빈 리스트 (전체 X). 사용자 요청: "심볼 누르면 해당시간 진입한 내역만"
+                if (_selectedPositionHistory != null && !string.IsNullOrEmpty(_selectedPositionHistory.Symbol))
                 {
                     string sym = _selectedPositionHistory.Symbol;
+                    // BinancePositionHistory OpenTime/CloseTime 은 UTC. TradeLog EntryTime/ExitTime 은 Local 일 수 있어 시간대 통일.
                     DateTime open = _selectedPositionHistory.OpenTime;
-                    DateTime close = _selectedPositionHistory.CloseTime == DateTime.MinValue ? DateTime.UtcNow.AddYears(1) : _selectedPositionHistory.CloseTime;
+                    if (open.Kind == DateTimeKind.Utc) open = open.ToLocalTime();
+                    DateTime close = _selectedPositionHistory.CloseTime == DateTime.MinValue
+                        ? DateTime.Now.AddYears(1)
+                        : (_selectedPositionHistory.CloseTime.Kind == DateTimeKind.Utc
+                            ? _selectedPositionHistory.CloseTime.ToLocalTime()
+                            : _selectedPositionHistory.CloseTime);
+                    // ±60분 윈도우 (분할 청산이 길어질 수 있음)
+                    DateTime windowStart = open.AddMinutes(-60);
+                    DateTime windowEnd = close.AddMinutes(60);
+
                     foreach (var t in TradeHistory)
                     {
                         if (!string.Equals(t.Symbol, sym, StringComparison.OrdinalIgnoreCase)) continue;
-                        DateTime tRef = t.ExitTime > DateTime.MinValue ? t.ExitTime : t.Time;
-                        // 진입~청산 ±5분 윈도우
-                        if (tRef < open.AddMinutes(-5) || tRef > close.AddMinutes(5)) continue;
+                        // 진입 시각 또는 청산 시각이 윈도우 안에 들어오면 포함
+                        DateTime tEntry = t.EntryTime > DateTime.MinValue ? t.EntryTime : t.Time;
+                        DateTime tExit = t.ExitTime > DateTime.MinValue ? t.ExitTime : t.Time;
+                        bool inWindow = (tEntry >= windowStart && tEntry <= windowEnd)
+                                     || (tExit >= windowStart && tExit <= windowEnd);
+                        if (!inWindow) continue;
                         filtered.Add(t);
                     }
                 }

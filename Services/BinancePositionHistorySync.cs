@@ -255,6 +255,9 @@ SELECT DISTINCT Symbol FROM dbo.BinancePositionHistory WHERE UserId = @UserId AN
                     decimal realized = 0m, commission = 0m;
                     DateTime openTime = DateTime.MinValue;
                     int fillCount = 0;
+                    // [v5.22.65] BOTH 모드 SHORT/LONG 정확 판정 — 첫 진입 fill 의 BUY/SELL side 사용
+                    //   기존 버그: avgExit≥avgEntry 면 LONG, 아니면 SHORT → LONG 손실 케이스 SHORT 로 잘못 표시
+                    string detectedSideForBoth = "";
 
                     foreach (var t in ordered)
                     {
@@ -279,7 +282,12 @@ SELECT DISTINCT Symbol FROM dbo.BinancePositionHistory WHERE UserId = @UserId AN
                         if (isEntry)
                         {
                             if (openQty == 0)
+                            {
                                 openTime = t.Timestamp;
+                                // [v5.22.65] 첫 진입 시 BOTH 모드 사이드 결정
+                                if (posSide == "BOTH" && string.IsNullOrEmpty(detectedSideForBoth))
+                                    detectedSideForBoth = sideStr == "BUY" ? "LONG" : "SHORT";
+                            }
                             openQty += q;
                             entryQty += q;
                             entryNotional += q * p;
@@ -301,7 +309,8 @@ SELECT DISTINCT Symbol FROM dbo.BinancePositionHistory WHERE UserId = @UserId AN
                             decimal avgExit = exitQty > 0 ? exitNotional / exitQty : 0;
                             result.Add(new GroupedPosition(
                                 Symbol: symbol,
-                                PositionSide: posSide == "BOTH" ? (avgExit >= avgEntry ? "LONG" : "SHORT") : posSide,
+                                // [v5.22.65] BOTH 모드 = 첫 진입 BUY/SELL 로 판정 (avgExit/avgEntry 비교 폐기)
+                                PositionSide: posSide == "BOTH" ? (string.IsNullOrEmpty(detectedSideForBoth) ? "LONG" : detectedSideForBoth) : posSide,
                                 OpenTime: openTime,
                                 CloseTime: t.Timestamp,
                                 AvgEntryPrice: avgEntry,
@@ -317,6 +326,7 @@ SELECT DISTINCT Symbol FROM dbo.BinancePositionHistory WHERE UserId = @UserId AN
                             realized = 0; commission = 0;
                             fillCount = 0;
                             openTime = DateTime.MinValue;
+                            detectedSideForBoth = "";   // [v5.22.65] 다음 포지션 판정 위해 리셋
                         }
                     }
                 }

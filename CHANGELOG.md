@@ -5,6 +5,35 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.65] - 2026-05-03
+
+### 🎯 알트 5중 가드 완전 비활성화 + Daily Swing 단독 운용 + SHORT source 전체 폐기
+
+#### 사용자 보고
+- "ACHUSDT 5분봉 15봉 이상 상승 + 15분봉 BB 꼭대기 = 1시간 늦은 진입"
+- "DAILY_SWING_LONG 승률 77% / +$135 / KNCUSDT +$117"
+- "소스에서 숏은 다 제거해" / "5x 강제 제거하라"
+
+#### 백테스트 입증 (180일)
+- 알트 5중 가드 (BB_SQUEEZE_ALT) = **-$5,671** (-1,418%)
+- Daily Swing = **+$1,088** (+272%)
+- → 알트 5중 가드 폐기, Daily Swing 단독
+
+#### Fixed
+- AnalyzeAltSimpleTriggersAsync 즉시 return (5중 가드 비활성화)
+- Daily Swing SetLeverageAsync(5) 강제 제거 → UI 설정 레버리지 사용
+- ScanMacdGoldenCrossAsync 비활성화 (MACD 데드크로스 SHORT)
+- Scan15mBearishTailAsync 비활성화 (TAIL_RETEST_SHORT)
+- HandleCrashDetectedAsync 비활성화 (CRASH_REVERSE SHORT)
+- BinancePositionHistorySync.cs:304 BOTH 모드 PositionSide 판정 버그 fix
+  - 기존: avgExit≥avgEntry 면 LONG → LONG 손실 케이스 SHORT 로 잘못 표시 (ACHUSDT 사례)
+  - 변경: 첫 진입 fill 의 BUY/SELL side 사용 (정확)
+
+#### 라이브 동작
+- 알트 BB_SQUEEZE_ALT 진입 = **0건**
+- Daily Swing 1D 봉 진입 = 알트/메이저 모두 (KNCUSDT 같은 폭등 종목 잡음)
+- 모든 SHORT source 폐기 + 6중 chokepoint 유지
+
 ## [5.22.64] - 2026-05-03
 
 ### 🎯 Daily Swing 펌프 추적 강화 — TP1 30%만 청산 + 트레일링 ON

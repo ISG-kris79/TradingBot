@@ -4552,6 +4552,11 @@ namespace TradingBot
 
         private async Task AnalyzeAltSimpleTriggersAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
+            // [v5.22.65] 알트 5중 가드 비활성화 — 백테스트 -$5,671/180일 입증, Daily Swing 단독 운용 결정
+            //   사용자 보고: "DAILY_SWING_LONG 승률 77% / +$135 / KNCUSDT +$117"
+            //   알트 진입은 Daily Swing 이 1D 봉 기반으로 모두 처리 (BB_SQUEEZE_ALT 폐기)
+            return;
+#pragma warning disable CS0162 // Unreachable code (의도된 가드)
             // 활성 포지션 있으면 스킵
             lock (_posLock)
             {
@@ -4668,6 +4673,7 @@ namespace TradingBot
             {
                 OnStatusLog?.Invoke($"⚠️ [ALT_TREND] {symbol} 분석 오류: {ex.Message}");
             }
+#pragma warning restore CS0162
         }
 
         // [v5.22.52] 봉 마감 1회 발화 추적
@@ -4952,23 +4958,11 @@ namespace TradingBot
 
                 _dailySwingCooldown[symbol] = DateTime.UtcNow;
 
-                // [v5.22.59] Daily Swing 5x leverage 강제 — 사용자 PumpStopLossRoe=45% 가 SL -7% × 15x = -105% 와 충돌
-                //   MAGMAUSDT 사례: 15x 레버리지로 진입 → -2.98% 가격 변동에 ROE -44.7% → SL 자동 발동 (-$30)
-                //   Daily Swing 백테스트 (5x lev, SL -7% × 5 = ROE -35%) 와 일치시키려면 진입 직전 5x 강제 필요
-                try
-                {
-                    bool levOk = await _exchangeService.SetLeverageAsync(symbol, 5, token);
-                    if (!levOk) OnStatusLog?.Invoke($"⚠️ [DAILY_SWING] {symbol} 5x 레버리지 설정 실패 — 진입 보류");
-                    if (!levOk) return;
-                }
-                catch (Exception lex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ [DAILY_SWING] {symbol} 레버리지 설정 예외 ({lex.Message}) — 진입 보류");
-                    return;
-                }
-
+                // [v5.22.65] 5x 강제 제거 — 사용자 UI 설정 레버리지 그대로 사용
+                //   기존 v5.22.59 SetLeverageAsync(5) 호출은 사용자 설정 무시하고 5x 강제 → 사용자 격노
+                //   사용자 정책: 레버리지는 UI 설정 (MajorLeverage / PumpLeverage / DefaultLeverage) 우선
                 OnStatusLog?.Invoke(
-                    $"🎯 [DAILY_SWING] {symbol} 1D 발화 | close={klines[i].ClosePrice:F4} sma20={sma20:F4} sma50={sma50:F4} RSI={rsi:F1} | leverage=5x 강제");
+                    $"🎯 [DAILY_SWING] {symbol} 1D 발화 | close={klines[i].ClosePrice:F4} sma20={sma20:F4} sma50={sma50:F4} RSI={rsi:F1}");
 
                 await ExecuteAutoOrder(
                     symbol, "LONG", currentPrice, token,
@@ -6878,6 +6872,11 @@ namespace TradingBot
 
         private async Task ScanMacdGoldenCrossAsync(CancellationToken token)
         {
+            // [v5.22.65] SHORT 진입 source 전체 폐기 — 사용자 정책 "소스에서 숏은 다 제거해"
+            //   ScanMacdGoldenCrossAsync 는 MACD 데드크로스 시 SHORT 진입 → 비활성화
+            await Task.CompletedTask;
+            return;
+#pragma warning disable CS0162
             // [v4.5.17] 4시간봉 MACD 크로스 → 15분 주기 스캔 (기존 30초)
             // 4시간봉은 봉 마감이 4시간마다이므로 15분 주기면 충분
             if ((DateTime.Now - _lastMacdScanTime).TotalMinutes < 15) return;
@@ -6961,8 +6960,8 @@ namespace TradingBot
                         await ExecuteAutoOrder(symbol, "LONG", currentPrice, token, source);
                     }
 
-                    // ── 데드크로스 → SHORT ──
-                    else if (crossResult.CrossType == MacdCrossType.Dead)
+                    // [v5.22.65] ── 데드크로스 → SHORT 폐기 (사용자 정책 "숏 다 제거")
+                    else if (false && crossResult.CrossType == MacdCrossType.Dead)
                     {
                         var (isBearish, htfDetail) = await _macdCrossService.CheckHigherTimeframeBearishAsync(symbol, token);
                         if (!isBearish)
@@ -7010,8 +7009,19 @@ namespace TradingBot
 
         private DateTime _last15mTailScanTime = DateTime.MinValue;
 
+        // [v5.22.65] Scan15mBearishTailAsync — SHORT 발화 source 폐기
+        //   원본 진입: TAIL_RETEST_SHORT (15m 위꼬리 음봉 → 1분봉 리테스트 SHORT)
+        //   사용자 정책: "소스에서 숏은 다 제거해" — 함수 시작 직후 return
+        private async Task Scan15mBearishTailAsync_DISABLED(CancellationToken token)
+        {
+            await Task.CompletedTask;
+        }
         private async Task Scan15mBearishTailAsync(CancellationToken token)
         {
+            // [v5.22.65] SHORT 발화 source 폐기 — 사용자 정책 "소스에서 숏은 다 제거"
+            await Task.CompletedTask;
+            return;
+#pragma warning disable CS0162
             // 1분 간격 스캔 (15분봉 완성 시점 근처)
             if ((DateTime.Now - _last15mTailScanTime).TotalMinutes < 1) return;
             _last15mTailScanTime = DateTime.Now;
@@ -7268,6 +7278,10 @@ namespace TradingBot
 
         private async Task HandleCrashDetectedAsync(List<string> crashCoins, decimal avgDropPct)
         {
+            // [v5.22.65] CRASH_REVERSE SHORT 진입 폐기 — 사용자 정책 "소스에서 숏은 다 제거"
+            await Task.CompletedTask;
+            return;
+#pragma warning disable CS0162
             var token = _cts?.Token ?? CancellationToken.None;
 
             // 텔레그램 알림
