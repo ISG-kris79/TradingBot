@@ -15,6 +15,7 @@ using TradingBot.Services;
 using TradingBot.Strategies;
 using TradingBot.Services.AI;
 using TradingBot.Services.AI.RL; // [Agent 2, 3] 네임스페이스 추가
+using TradingBot.Services.LorentzianV2;
 using TradingBot.Services.Infrastructure; // [Agent 3] 메모리 관리
 using System.Threading.Channels; // [Agent 3] 추가
 using TradingBot.Shared.Models; // [Phase 11] Shared Models (NotificationChannel 등)
@@ -4178,99 +4179,18 @@ namespace TradingBot
                     }
                 }
 
-                // ═══════════════════════════════════════════════════════════════════════════════
-                // [v5.22.39] 진입 로직 정리 — 백테스트 검증된 트리거 2개만 (메이저/알트)
-                //   제거된 잔재: _gridStrategy / _arbitrageStrategy / _majorStrategy / Transformer /
-                //                AnalyzeElliottWave3WaveAsync / AnalyzeFifteenMinBBSqueezeBreakoutAsync
-                //   메이저: AnalyzeMajorSimpleAsync (EMA20↑ + RSI<65 + M15RangePos 60~85%)
-                //   알트:   AnalyzeAltSimpleTriggersAsync (BBW<1.5% 상단돌파 / 5봉 중 4봉 워킹)
-                //   둘 다: TP 0.5%/SL 1.5% (메이저), 1%/3% (알트), 30분 cooldown
-                // ═══════════════════════════════════════════════════════════════════════════════
+                // [v5.23.0] 단일 진입 로직 — Lorentzian 15m 가드 + 5m 트리거
+                //   기존 5중가드 / Daily Swing / Pullback / AltMomentum / AltSimple / MajorSimple 전체 폐기
+                //   청산: TP/SL 거래소 algoOrder + CheckHybridExitAsync 만 유지
                 try
                 {
-                    if (isMajorSymbol)
-                    {
-                        if (IsEntryAllowed(symbol, "MAJOR_ANALYZE", out _))
-                            await AnalyzeMajorSimpleAsync(symbol, currentPrice, token);
-                    }
-                    else
-                    {
-                        await AnalyzeAltSimpleTriggersAsync(symbol, currentPrice, token);
-                        await AnalyzeAltMomentumAsync(symbol, currentPrice, token);
-                        // [v5.22.72] 눌림목 진입 — 상승 추세 + 단기 눌림 + 반등 시작
-                        //   FOGO 같은 정확한 눌림목 케이스 잡기
-                        await AnalyzePullbackLongAsync(symbol, currentPrice, token);
-                    }
+                    await AnalyzeLorentzianEntryAsync(symbol, currentPrice, token);
                 }
                 catch (Exception ex)
                 {
-                    OnStatusLog?.Invoke($"⚠️ [{(isMajorSymbol ? "MAJOR" : "ALT")}_SIMPLE] {symbol} 분석 오류: {ex.Message}");
+                    OnStatusLog?.Invoke($"⚠️ [LORENTZIAN] {symbol} 분석 오류: {ex.Message}");
                 }
 
-                // [v5.22.55] Daily Swing 병행 — 1D 봉 기반 큰 폭 진입 (5중가드와 별도 슬롯)
-                //   백테스트: TP+15% SL-7% 7일max 180일 +272%, 365일 +254%
-                try
-                {
-                    await AnalyzeDailySwingAsync(symbol, currentPrice, token);
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ [DAILY_SWING] {symbol} 분석 오류: {ex.Message}");
-                }
-
-                // [v5.22.36] 반대 시그널 익절 — 활성 LONG 포지션이 ROE>+0.3% 인데 EMA20 하락전환 + RSI<50 → 즉시 청산
-                //   사용자: '이더/솔라나 너무 긴시간 끌다보니 수익이 마이너스 됨'
-                //   목표: 흑자 구간에서 추세 반전 신호 잡으면 익절 보호
-                try
-                {
-                    await CheckReverseSignalExitAsync(symbol, currentPrice, token);
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ 반대시그널 청산 오류: {ex.Message}");
-                }
-
-                // [v5.22.68] 수익 트레일링 청산 — HighestROE 추적 + retrace 시 청산
-                //   사용자 보고: "FOGOUSDT +15% → -25% (40%p 추락)"
-                //   원리: 최고 ROE 도달 후 일정 폭 떨어지면 즉시 청산 (수익 잠금)
-                //   Daily Swing은 1D 의도 보호 위해 더 큰 retrace 허용 (백테스트와 일치)
-                try
-                {
-                    await CheckProfitTrailingExitAsync(symbol, currentPrice, token);
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ 수익트레일링 청산 오류: {ex.Message}");
-                }
-
-                // [v5.22.52] RSI 과열 꺾임 익절 — 사용자 지시
-                //   진입 RSI 임계 65 → 75 완화 보완 로직.
-                //   활성 LONG 포지션이 RSI ≥ 80 도달 후 직전봉 대비 꺾이면 (rsi[-1] < rsi[-2]) 즉시 청산
-                try
-                {
-                    await CheckRsiOverheatedExitAsync(symbol, currentPrice, token);
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ RSI과열 청산 오류: {ex.Message}");
-                }
-
-                // [v5.22.41] Time Stop — 백테스트 win 봉 도달 시 강제 청산 (라이브 무한 보유 방지)
-                //   원인: 백테스트는 win=12봉(메이저 1h) / 24봉(알트 2h) 도달 시 자동 청산 가정
-                //         라이브는 TP/SL 만 algoOrder 등록 → 도달 안 하면 OPENUSDT 7시간+ 보유 → 백테스트 모델 위반
-                //   해결: 진입 후 win 시간 초과 + TP/SL 미체결 → 즉시 시장가 청산
-                try
-                {
-                    await CheckTimeStopExitAsync(symbol, currentPrice, token);
-                }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ Time Stop 청산 오류: {ex.Message}");
-                }
-
-                // ═══════════════════════════
-                // [Hybrid Exit] AI+지표 기반 이탈 관리
-                // ═══════════════════════════
                 await CheckHybridExitAsync(symbol, currentPrice, token);
             }
             catch (Exception ex)
@@ -4527,796 +4447,88 @@ namespace TradingBot
                 state.Anchor.HighPivotStrength);
         }
 
-        /// <summary>
-        /// 15분봉 BB 스퀴즈 → 중심선 상향 돌파 전략 분석
-        /// ─────────────────────────────────────────────
-        /// 1) BB 폭이 수축(스퀴즈)된 상태에서
-        /// 2) 종가가 BB 중심선을 아래→위로 돌파할 때
-        /// 3) 거래량 & RSI 조건 충족 시 LONG 진입
-        /// </summary>
-        // [v5.22.35] 알트용 단순 SQUEEZE + BB_WALK — 백테스트 (Tools/LorentzianValidator/RunDaily60Async) 트리거 그대로 이식
-        //   조건: 15m 80봉 + EMA20 rising + RSI14<65 가드
-        //     SQUEEZE: BBWidth (Upper-Lower)/Middle*100 < 1.5 + 종가 > Upper Band
-        //     BB_WALK: 최근 5봉 중 4봉 이상 종가 > Upper Band
-        //   진입: ExecuteAutoOrder LONG, signalSource="BB_SQUEEZE_ALT" or "BB_WALK_ALT"
-        //         → entryCat=SQUEEZE/BB_WALK → MaxSqueezeSlots/MaxBbWalkSlots enforce
-        //   재진입 방지: 같은 심볼 30분 cooldown (_altSimpleTriggerCooldown)
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _altSimpleTriggerCooldown = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly TimeSpan AltSimpleTriggerCooldown = TimeSpan.FromMinutes(30);
+        // [v5.23.0] jdehorty Lorentzian Classification 풀세트 (15m TF)
+        //   라이브 ≡ 백테스트 — Services/LorentzianV2/LorentzianGuard.EvaluateEntry 공유
+        //   진입 필터 7종 + walk-forward KNN 학습 + 동적 청산 (KNN flip / Kernel cross)
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, LorentzianAnnEngine> _lorentzianEngines
+            = new(StringComparer.OrdinalIgnoreCase);
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lorentzianLast15mTrained
+            = new(StringComparer.OrdinalIgnoreCase);
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lorentzianCooldown
+            = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan LorentzianCooldown = TimeSpan.FromMinutes(15);
 
-        // [v5.22.37] 알트 트리거 통과/차단 카운터 — 60초마다 통계 1회 emit
-        private DateTime _altDiagWindowStart = DateTime.UtcNow;
-        private int _altDiagBbwTooWide;        // BBW >= 1.5%
-        private int _altDiagNoBreakout;        // BBW<1.5% 인데 종가<Upper
-        private int _altDiagWalkInsuf;         // 워킹 < 4/5
-        private int _altDiagEmaFalling;        // EMA20 하락
-        private int _altDiagRsiTooHigh;        // RSI >= 65
-        private int _altDiagPassed;            // 신호 발화
-        private void EmitAltDiagIfDue()
+        private async Task AnalyzeLorentzianEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
-            if ((DateTime.UtcNow - _altDiagWindowStart).TotalSeconds < 60) return;
-            int bbw = System.Threading.Interlocked.Exchange(ref _altDiagBbwTooWide, 0);
-            int br = System.Threading.Interlocked.Exchange(ref _altDiagNoBreakout, 0);
-            int wk = System.Threading.Interlocked.Exchange(ref _altDiagWalkInsuf, 0);
-            int em = System.Threading.Interlocked.Exchange(ref _altDiagEmaFalling, 0);
-            int rs = System.Threading.Interlocked.Exchange(ref _altDiagRsiTooHigh, 0);
-            int ps = System.Threading.Interlocked.Exchange(ref _altDiagPassed, 0);
-            _altDiagWindowStart = DateTime.UtcNow;
-            int total = bbw + br + wk + em + rs + ps;
-            if (total > 0)
-                OnStatusLog?.Invoke($"📊 [ALT_DIAG] 1분 통과/차단: pass={ps} | BBW≥1.5%={bbw} 돌파X={br} 워킹<4/5={wk} EMA↓={em} RSI≥65={rs} (총 {total} 평가)");
-        }
+            if (!IsEntryAllowed(symbol, "LORENTZIAN", out _)) return;
+            if (_lorentzianCooldown.TryGetValue(symbol, out var lastEntry)
+                && DateTime.UtcNow - lastEntry < LorentzianCooldown) return;
 
-        private async Task AnalyzeAltSimpleTriggersAsync(string symbol, decimal currentPrice, CancellationToken token)
-        {
-            // [v5.22.65] 알트 5중 가드 비활성화 — 백테스트 -$5,671/180일 입증, Daily Swing 단독 운용 결정
-            //   사용자 보고: "DAILY_SWING_LONG 승률 77% / +$135 / KNCUSDT +$117"
-            //   알트 진입은 Daily Swing 이 1D 봉 기반으로 모두 처리 (BB_SQUEEZE_ALT 폐기)
-            return;
-#pragma warning disable CS0162 // Unreachable code (의도된 가드)
-            // 활성 포지션 있으면 스킵
             lock (_posLock)
             {
-                if (_activePositions.ContainsKey(symbol)) return;
+                if (_activePositions.TryGetValue(symbol, out var existing)
+                    && existing != null && Math.Abs(existing.Quantity) > 0) return;
             }
 
-            // 30분 cooldown
-            if (_altSimpleTriggerCooldown.TryGetValue(symbol, out var lastTry))
+            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 600, token);
+            if (k15 == null || k15.Count < 300) return;
+            var k15List = k15 as List<IBinanceKline> ?? new List<IBinanceKline>(k15);
+
+            var engine = _lorentzianEngines.GetOrAdd(symbol,
+                s => new LorentzianAnnEngine(s, neighborsCount: 8, maxBarsBack: 2000, featureCount: 7));
+
+            // Walk-forward 학습: 마지막 마감봉 변경 시만
+            var lastClosed15m = k15List[^2];
+            bool needTrain = !_lorentzianLast15mTrained.TryGetValue(symbol, out var prevTrained)
+                             || prevTrained != lastClosed15m.OpenTime;
+            if (needTrain)
             {
-                if (DateTime.UtcNow - lastTry < AltSimpleTriggerCooldown) return;
-            }
-
-            try
-            {
-                // [v5.22.52] 진입 5중 가드 (사용자 지시)
-                //   1. 15m 마감종가 > 15m EMA20 (하락 추세 절대 진입 금지)
-                //   2. BB 중심선 이격도 ≤ 2.5% (상단 저항 거르기)
-                //   3. BBW < 5.0% + 종가 > Upper (스퀴즈 돌파 트리거)
-                //   4. 돌파 봉 거래량 > 직전 5봉 평균 × 2.0 (모멘텀 확인)
-                //   5. RSI < 75
-                //   *반드시 마감된 봉 (klines[^2])* — 형성 중 봉(klines[^1]) 무시.
-                var klines = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 80, token);
-                if (klines == null || klines.Count < 26) return;
-
-                var closedKlines = klines.Take(klines.Count - 1).ToList();
-                var lastClosedBar = closedKlines[^1];
-
-                if (_altLastBarFired.TryGetValue(symbol, out var firedBar) && firedBar == lastClosedBar.OpenTime) return;
-
-                var closes = closedKlines.Select(k => (double)k.ClosePrice).ToList();
-                var emaSeries = IndicatorCalculator.CalculateEMASeries(closes, 20);
-                if (emaSeries == null || emaSeries.Count < 1) return;
-
-                decimal lastClose = lastClosedBar.ClosePrice;
-                decimal ema20 = (decimal)emaSeries[^1];
-
-                // 1. 하락 추세 진입 절대 금지
-                if (lastClose <= ema20)
+                _lorentzianLast15mTrained[symbol] = lastClosed15m.OpenTime;
+                if (engine.SampleCount < 200)
                 {
-                    System.Threading.Interlocked.Increment(ref _altDiagEmaFalling);
-                    EmitAltDiagIfDue();
-                    return;
+                    // 초기 bulk
+                    for (int j = 60; j <= k15List.Count - 6; j++)
+                    {
+                        int wStart = Math.Max(0, j - 499);
+                        var win = k15List.GetRange(wStart, j - wStart + 1);
+                        var feats = LorentzianFeatures.Extract(win);
+                        if (feats == null) continue;
+                        engine.AddSample(feats, LorentzianGuard.LabelForBar(k15List, j));
+                    }
                 }
-
-                // BB(20,2) 계산
-                var bb = IndicatorCalculator.CalculateBB(closedKlines, 20, 2);
-                decimal upper = (decimal)bb.Upper;
-                decimal midLine = (decimal)bb.Mid;
-                decimal lower = (decimal)bb.Lower;
-                if (midLine <= 0) return;
-
-                // 2. 상단 저항 — BB 중심선 이격도 > 2.5% 차단
-                decimal distToMidPct = (lastClose - midLine) / midLine * 100m;
-                if (distToMidPct > 2.5m)
+                else
                 {
-                    System.Threading.Interlocked.Increment(ref _altDiagBbwTooWide);
-                    EmitAltDiagIfDue();
-                    return;
+                    // incremental: 새로 마감된 봉 직전 5봉 (라벨 완전 관측)
+                    int sIdx = k15List.Count - 6;
+                    if (sIdx >= 60)
+                    {
+                        int wStart = Math.Max(0, sIdx - 499);
+                        var win = k15List.GetRange(wStart, sIdx - wStart + 1);
+                        var feats = LorentzianFeatures.Extract(win);
+                        if (feats != null) engine.AddSample(feats, LorentzianGuard.LabelForBar(k15List, sIdx));
+                    }
                 }
-
-                // 3. 스퀴즈 돌파 — BBW < 5.0% + 종가 > Upper
-                decimal bbWidthPct = (upper - lower) / midLine * 100m;
-                if (bbWidthPct >= 5.0m)
-                {
-                    System.Threading.Interlocked.Increment(ref _altDiagBbwTooWide);
-                    EmitAltDiagIfDue();
-                    return;
-                }
-                if (lastClose <= upper)
-                {
-                    System.Threading.Interlocked.Increment(ref _altDiagNoBreakout);
-                    EmitAltDiagIfDue();
-                    return;
-                }
-
-                // 4. 돌파 봉 거래량 > 직전 5봉 평균 × 2.0
-                int n = closedKlines.Count;
-                if (n < 6) return;
-                decimal volBreak = lastClosedBar.Volume;
-                decimal volAvg5 = 0m;
-                for (int i = n - 6; i < n - 1; i++) volAvg5 += closedKlines[i].Volume;
-                volAvg5 /= 5m;
-                if (volAvg5 <= 0m || volBreak < volAvg5 * 2.0m)
-                {
-                    System.Threading.Interlocked.Increment(ref _altDiagWalkInsuf);
-                    EmitAltDiagIfDue();
-                    return;
-                }
-
-                // 5. RSI 과열
-                double rsi = IndicatorCalculator.CalculateRSI(closedKlines, 14);
-                if (rsi >= 75)
-                {
-                    System.Threading.Interlocked.Increment(ref _altDiagRsiTooHigh);
-                    EmitAltDiagIfDue();
-                    return;
-                }
-                System.Threading.Interlocked.Increment(ref _altDiagPassed);
-                EmitAltDiagIfDue();
-
-                _altLastBarFired[symbol] = lastClosedBar.OpenTime;
-                _altSimpleTriggerCooldown[symbol] = DateTime.UtcNow;
-
-                decimal volMult = volBreak / volAvg5;
-                OnStatusLog?.Invoke(
-                    $"🎯 [ALT_SQZ] {symbol} 5중가드 통과 | close={lastClose:F4} ema20={ema20:F4} dist={distToMidPct:F2}% BBW={bbWidthPct:F2}% vol×{volMult:F2} RSI={rsi:F1}");
-
-                await ExecuteAutoOrder(
-                    symbol, "LONG", currentPrice, token,
-                    signalSource: "BB_SQUEEZE_ALT",
-                    mode: "TREND");
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [ALT_TREND] {symbol} 분석 오류: {ex.Message}");
-            }
-#pragma warning restore CS0162
-        }
-
-        // [v5.22.69] 알트 모멘텀 진입 — 24h 폭등 (5~30%) 종목 EMA20 갓 돌파 시 즉시 LONG
-        //   사용자 보고: "BUSDT나 top5 상승률 코인 진입 없음"
-        //   Daily Swing은 1D 봉 KST 09:00 마감에만 평가 → 그 외 시간 폭등 못 잡음
-        //   추격 매수 회피: 24h ≥ 30% 종목은 이미 늦음 (사용자 ACHUSDT 1시간 늦은 진입 비판)
-        //   진입 5중 가드:
-        //     1. 24h 변화율 5~30% (sweet spot)
-        //     2. 15m 마감종가 > EMA20
-        //     3. 직전 봉 종가 ≤ 직전 EMA20 (갓 돌파)
-        //     4. 거래량 > 직전 5봉 평균 × 2
-        //     5. RSI < 70
-        //   재진입 방지: 30분 cooldown + 봉 마감 1회 발화
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _altMomentumCooldown = new(StringComparer.OrdinalIgnoreCase);
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _altMomentumLastBarFired = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly TimeSpan AltMomentumCooldown = TimeSpan.FromMinutes(30);
-
-        private async Task AnalyzeAltMomentumAsync(string symbol, decimal currentPrice, CancellationToken token)
-        {
-            // [v5.22.72] AltMomentum 폐기 — 추격 매수 본질 (5봉 연속 BULL 후 진입)
-            //   ACH/ORCA/GIGGLE 손실 사례 입증. 대신 AnalyzePullbackLongAsync 사용.
-            await Task.CompletedTask;
-            return;
-#pragma warning disable CS0162
-            lock (_posLock)
-            {
-                if (_activePositions.ContainsKey(symbol)) return;
-            }
-            if (_altMomentumCooldown.TryGetValue(symbol, out var lastTry))
-            {
-                if (DateTime.UtcNow - lastTry < AltMomentumCooldown) return;
             }
 
-            try
+            // 마지막 마감봉 (k15List.Count-2) 기준 풀세트 가드 평가
+            int evalIdx = k15List.Count - 2;
+            int wStartE = Math.Max(0, evalIdx - 499);
+            var winE = k15List.GetRange(wStartE, evalIdx - wStartE + 1);
+            var guard = LorentzianGuard.EvaluateEntry(winE, engine);
+
+            if (!guard.Passed)
             {
-                var klines = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 100, token);
-                if (klines == null || klines.Count < 97) return;     // 96봉 = 24h + 마감봉
-
-                var closedKlines = klines.Take(klines.Count - 1).ToList();
-                var lastClosedBar = closedKlines[^1];
-
-                if (_altMomentumLastBarFired.TryGetValue(symbol, out var firedBar) && firedBar == lastClosedBar.OpenTime) return;
-
-                int n = closedKlines.Count;
-                if (n < 96) return;
-                // [v5.22.70] 진입 조건 완화 — 백테스트 24h top 30 0건 진입 → 너무 빡셈 입증
-                //   1. 24h 변화율 5~50% (30% → 50% 확대, 더 큰 폭등 종목도 포착)
-                //   2. 15m close > EMA20
-                //   3. (제거) 갓 돌파 조건 (직전 봉 ≤ 직전 EMA20)
-                //   4. 거래량 × 2.0 → × 1.3 완화
-                //   5. RSI < 70
-                decimal price24hAgo = closedKlines[n - 96].ClosePrice;
-                if (price24hAgo <= 0) return;
-                decimal change24h = (lastClosedBar.ClosePrice - price24hAgo) / price24hAgo * 100m;
-                if (change24h < 5m || change24h > 50m) return;
-
-                var closes = closedKlines.Select(k => (double)k.ClosePrice).ToList();
-                var emaSeries = IndicatorCalculator.CalculateEMASeries(closes, 20);
-                if (emaSeries == null || emaSeries.Count < 1) return;
-                decimal ema20 = (decimal)emaSeries[^1];
-                if (lastClosedBar.ClosePrice <= ema20) return;
-
-                decimal volAvg5 = 0m;
-                for (int i = n - 6; i < n - 1; i++) volAvg5 += closedKlines[i].Volume;
-                volAvg5 /= 5m;
-                if (volAvg5 <= 0m || lastClosedBar.Volume < volAvg5 * 1.3m) return;
-
-                double rsi = IndicatorCalculator.CalculateRSI(closedKlines, 14);
-                if (rsi >= 70) return;
-
-                _altMomentumLastBarFired[symbol] = lastClosedBar.OpenTime;
-                _altMomentumCooldown[symbol] = DateTime.UtcNow;
-
-                OnStatusLog?.Invoke(
-                    $"🚀 [ALT_MOMENTUM] {symbol} 24h+{change24h:F1}% EMA20 갓 돌파 | close={lastClosedBar.ClosePrice:F4} ema20={ema20:F4} vol×{lastClosedBar.Volume / volAvg5:F1} RSI={rsi:F1}");
-
-                await ExecuteAutoOrder(
-                    symbol, "LONG", currentPrice, token,
-                    signalSource: "ALT_MOMENTUM",
-                    mode: "TREND");
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [ALT_MOMENTUM] {symbol} 분석 오류: {ex.Message}");
-            }
-#pragma warning restore CS0162
-        }
-
-        // [v5.22.72] 눌림목 진입 — 상승 추세 + 단기 눌림 + 반등 시작 시점 정확 진입
-        //   진입 조건:
-        //     1. 1H 종가 > 1H EMA20 (큰 추세 상승)
-        //     2. 15m 직전 봉 BEAR (눌림 발생)
-        //     3. 15m 현재 봉 BULL + 종가 > 직전 봉 high (반등 + Higher High)
-        //     4. EMA20 이격도 ≤ 1% (지지선 근처)
-        //     5. RSI 35~60 (눌림 회복 초기)
-        //     6. 거래량 > 직전 5봉 평균 × 1.2
-        //   심볼당 30분 cooldown + 봉 마감 1회 발화
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _pullbackCooldown = new(StringComparer.OrdinalIgnoreCase);
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _pullbackLastBarFired = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly TimeSpan PullbackCooldown = TimeSpan.FromMinutes(30);
-
-        private async Task AnalyzePullbackLongAsync(string symbol, decimal currentPrice, CancellationToken token)
-        {
-            lock (_posLock)
-            {
-                if (_activePositions.ContainsKey(symbol)) return;
-            }
-            if (_pullbackCooldown.TryGetValue(symbol, out var lastTry))
-            {
-                if (DateTime.UtcNow - lastTry < PullbackCooldown) return;
-            }
-
-            try
-            {
-                // 15m 80봉 + 1H 30봉 fetch
-                var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 80, token);
-                if (k15 == null || k15.Count < 25) return;
-                var k1h = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 30, token);
-                if (k1h == null || k1h.Count < 22) return;
-
-                // 마감 봉만 사용 (klines[^2])
-                var closed15 = k15.Take(k15.Count - 1).ToList();
-                var closed1h = k1h.Take(k1h.Count - 1).ToList();
-                if (closed15.Count < 22 || closed1h.Count < 21) return;
-
-                var lastBar = closed15[^1];
-                var prevBar = closed15[^2];
-                if (_pullbackLastBarFired.TryGetValue(symbol, out var firedBar) && firedBar == lastBar.OpenTime) return;
-
-                // 1. 1H EMA20 위 (큰 추세 상승)
-                var closes1h = closed1h.Select(k => (double)k.ClosePrice).ToList();
-                var ema201h = IndicatorCalculator.CalculateEMASeries(closes1h, 20);
-                if (ema201h == null || ema201h.Count < 1) return;
-                if (closed1h[^1].ClosePrice <= (decimal)ema201h[^1]) return;
-
-                // 2. 직전 15m 봉 BEAR (눌림)
-                bool prevBear = prevBar.ClosePrice < prevBar.OpenPrice;
-                if (!prevBear) return;
-
-                // 3. 현재 봉 BULL + 종가 > 직전 봉 High
-                bool nowBull = lastBar.ClosePrice > lastBar.OpenPrice;
-                bool higherHigh = lastBar.ClosePrice > prevBar.HighPrice;
-                if (!nowBull || !higherHigh) return;
-
-                // 4. 15m EMA20 이격도 ≤ 1%
-                var closes15 = closed15.Select(k => (double)k.ClosePrice).ToList();
-                var ema2015 = IndicatorCalculator.CalculateEMASeries(closes15, 20);
-                if (ema2015 == null || ema2015.Count < 1) return;
-                decimal ema20 = (decimal)ema2015[^1];
-                decimal distEma = (lastBar.ClosePrice - ema20) / ema20 * 100m;
-                if (distEma > 1.0m || distEma < -1.0m) return;
-
-                // 5. RSI 35~60
-                double rsi = IndicatorCalculator.CalculateRSI(closed15, 14);
-                if (rsi < 35.0 || rsi > 60.0) return;
-
-                // 6. 거래량 > 직전 5봉 평균 × 1.2
-                int n = closed15.Count;
-                decimal volAvg5 = 0m;
-                for (int i = n - 6; i < n - 1; i++) volAvg5 += closed15[i].Volume;
-                volAvg5 /= 5m;
-                if (volAvg5 <= 0m || lastBar.Volume < volAvg5 * 1.2m) return;
-
-                _pullbackLastBarFired[symbol] = lastBar.OpenTime;
-                _pullbackCooldown[symbol] = DateTime.UtcNow;
-
-                OnStatusLog?.Invoke(
-                    $"📈 [PULLBACK_LONG] {symbol} 눌림목 반등 진입 | close={lastBar.ClosePrice:F4} prevHigh={prevBar.HighPrice:F4} ema20={ema20:F4} dist={distEma:F2}% RSI={rsi:F1} vol×{lastBar.Volume / volAvg5:F2}");
-
-                await ExecuteAutoOrder(
-                    symbol, "LONG", currentPrice, token,
-                    signalSource: "PULLBACK_LONG",
-                    mode: "TREND");
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [PULLBACK_LONG] {symbol} 분석 오류: {ex.Message}");
-            }
-        }
-
-        // [v5.22.52] 봉 마감 1회 발화 추적
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _altLastBarFired = new(StringComparer.OrdinalIgnoreCase);
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _majorLastBarFired = new(StringComparer.OrdinalIgnoreCase);
-
-        // [v5.22.39] 메이저 백테스트 단순 트리거 — RunDailyAsync (180일 메이저 +2,577%) 검증
-        //   조건 (모두 만족 → LONG 진입):
-        //     1. 활성 포지션 없음
-        //     2. EMA20 직전 5봉 대비 상승
-        //     3. RSI14 < 65
-        //     4. M15RangePos 60~85% (15봉 30봉 위치 — High/Low 범위 내 종가 위치)
-        //   30분 cooldown (재진입 폭주 방지)
-        //   ExecuteAutoOrder signalSource="MAJOR_SIMPLE" → entryCat=MAJOR (메이저 심볼 강제 분기)
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _majorSimpleCooldown = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly TimeSpan MajorSimpleCooldown = TimeSpan.FromMinutes(30);
-
-        private async Task AnalyzeMajorSimpleAsync(string symbol, decimal currentPrice, CancellationToken token)
-        {
-            // 활성 포지션 있으면 스킵
-            lock (_posLock)
-            {
-                if (_activePositions.ContainsKey(symbol)) return;
-            }
-
-            // 30분 cooldown
-            if (_majorSimpleCooldown.TryGetValue(symbol, out var lastTry))
-            {
-                if (DateTime.UtcNow - lastTry < MajorSimpleCooldown) return;
-            }
-
-            try
-            {
-                // [v5.22.52] 진입 5중 가드 (사용자 지시) — 알트와 동일
-                //   1. 15m 마감종가 > 15m EMA20  2. 이격도 ≤ 2.5%
-                //   3. BBW < 5% + 종가 > Upper   4. 돌파 봉 vol > 직전5봉평균×2
-                //   5. RSI < 75
-                var klines = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 80, token);
-                if (klines == null || klines.Count < 26) return;
-
-                var closedKlines = klines.Take(klines.Count - 1).ToList();
-                var lastClosedBar = closedKlines[^1];
-
-                if (_majorLastBarFired.TryGetValue(symbol, out var firedBar) && firedBar == lastClosedBar.OpenTime) return;
-
-                var closes = closedKlines.Select(k => (double)k.ClosePrice).ToList();
-                var emaSeries = IndicatorCalculator.CalculateEMASeries(closes, 20);
-                if (emaSeries == null || emaSeries.Count < 1) return;
-
-                decimal lastClose = lastClosedBar.ClosePrice;
-                decimal ema20 = (decimal)emaSeries[^1];
-                if (lastClose <= ema20) return;  // 1. 하락 추세 절대 금지
-
-                var bb = IndicatorCalculator.CalculateBB(closedKlines, 20, 2);
-                decimal upper = (decimal)bb.Upper;
-                decimal midLine = (decimal)bb.Mid;
-                decimal lower = (decimal)bb.Lower;
-                if (midLine <= 0) return;
-
-                decimal distToMidPct = (lastClose - midLine) / midLine * 100m;
-                if (distToMidPct > 2.5m) return;  // 2. 이격도
-
-                decimal bbWidthPct = (upper - lower) / midLine * 100m;
-                if (bbWidthPct >= 5.0m) return;   // 3a. BBW
-                if (lastClose <= upper) return;   // 3b. 상단 돌파
-
-                int n = closedKlines.Count;
-                if (n < 6) return;
-                decimal volBreak = lastClosedBar.Volume;
-                decimal volAvg5 = 0m;
-                for (int i = n - 6; i < n - 1; i++) volAvg5 += closedKlines[i].Volume;
-                volAvg5 /= 5m;
-                if (volAvg5 <= 0m || volBreak < volAvg5 * 2.0m) return;  // 4. 거래량
-
-                double rsi = IndicatorCalculator.CalculateRSI(closedKlines, 14);
-                if (rsi >= 75) return;  // 5. RSI
-
-                _majorLastBarFired[symbol] = lastClosedBar.OpenTime;
-                _majorSimpleCooldown[symbol] = DateTime.UtcNow;
-
-                decimal volMult = volBreak / volAvg5;
-                OnStatusLog?.Invoke(
-                    $"🎯 [MAJOR_SQZ] {symbol} 5중가드 통과 | close={lastClose:F4} ema20={ema20:F4} dist={distToMidPct:F2}% BBW={bbWidthPct:F2}% vol×{volMult:F2} RSI={rsi:F1}");
-
-                await ExecuteAutoOrder(
-                    symbol, "LONG", currentPrice, token,
-                    signalSource: "MAJOR_SIMPLE",
-                    mode: "TREND");
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [MAJOR_SIMPLE] {symbol} 오류: {ex.Message}");
-            }
-        }
-
-        // [v5.22.41] Time Stop — 백테스트 win 봉 도달 시 강제 청산
-        //   메이저 = 12봉 × 5분 = 60분 (1시간) 경과 후 TP/SL 미체결 → 즉시 청산
-        //   알트   = 24봉 × 5분 = 120분 (2시간) 경과 후 TP/SL 미체결 → 즉시 청산
-        //   사용자: 'OPENUSDT 7시간째 보유 → 백테스트 모델 위반'
-        //   재호출 폭주 방지: 같은 심볼 1분 cooldown
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _timeStopChecked = new(StringComparer.OrdinalIgnoreCase);
-
-        private async Task CheckTimeStopExitAsync(string symbol, decimal currentPrice, CancellationToken token)
-        {
-            // [v5.22.69] Time Stop 전체 비활성화 — 사용자 지시 "120분 없앴는데 왜 있어"
-            //   ORCA 사례: 진입 후 정확히 120분 만에 -5.5% 가격에 강제 청산
-            //   이제 청산은 TP/SL + ProfitTrailing(retrace 기반) + BB 중심선 하향돌파만 담당
-            await Task.CompletedTask;
-            return;
-#pragma warning disable CS0162
-            PositionInfo? pos = null;
-            lock (_posLock)
-            {
-                if (!_activePositions.TryGetValue(symbol, out pos)) return;
-                if (pos == null || !pos.IsOwnPosition) return;
-            }
-
-            // [v5.22.66] Daily Swing 포지션 Time Stop 제외 — 1D 봉 14일 보유 의도 보장
-            //   기존 60분/120분 Time Stop이 Daily Swing 진입을 조기 청산 → 백테스트 +330% 결과 무용
-            //   사용자 보고: "2시간 지나면 손절이 적절한지 분석" → Daily Swing에는 부적절
-            string entrySrc = pos.EntrySignalSource ?? "";
-            if (entrySrc.IndexOf("DAILY_SWING", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                // Daily Swing = TP/SL/트레일링이 청산 책임. Time Stop 적용 안 함.
+                OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | {guard.BlockReason} | KNN WR={guard.KnnWinRate:F2} pred={guard.KnnPrediction} ADX={guard.Adx:F1} regime={guard.RegimeSlope:F2}");
                 return;
             }
 
-            // 같은 심볼 1분 cooldown
-            if (_timeStopChecked.TryGetValue(symbol, out var lastCheck))
-            {
-                if (DateTime.UtcNow - lastCheck < TimeSpan.FromMinutes(1)) return;
-            }
-
-            // 진입 후 경과 시간
-            DateTime entryUtc = pos.EntryTime.ToUniversalTime();
-            TimeSpan elapsed = DateTime.UtcNow - entryUtc;
-
-            // 메이저 = 60분, 알트 = 120분 (5중 가드 진입용. 알트 5중 가드는 v5.22.65 폐기되어 사실상 메이저 전용)
-            bool isMajor = MajorSymbols.Contains(symbol);
-            TimeSpan winLimit = isMajor ? TimeSpan.FromMinutes(60) : TimeSpan.FromMinutes(120);
-            if (elapsed < winLimit) return;
-
-            _timeStopChecked[symbol] = DateTime.UtcNow;
-
-            // 현재 ROE
-            decimal lev = pos.Leverage > 0 ? pos.Leverage : (_settings?.DefaultLeverage ?? 15m);
-            decimal pnlPct = pos.IsLong
-                ? (currentPrice - pos.EntryPrice) / pos.EntryPrice * 100m
-                : (pos.EntryPrice - currentPrice) / pos.EntryPrice * 100m;
-            decimal roe = pnlPct * lev;
-
+            _lorentzianCooldown[symbol] = DateTime.UtcNow;
             OnStatusLog?.Invoke(
-                $"⏰ [TIME_STOP] {symbol} 진입 후 {elapsed.TotalMinutes:F0}분 경과 (한도 {winLimit.TotalMinutes:F0}분) ROE={roe:F2}% → 강제 청산");
-            OnAlert?.Invoke($"⏰ [Time Stop] {symbol} {elapsed.TotalMinutes:F0}분 보유 ROE={roe:F2}% 청산 (백테스트 win 봉 도달)");
+                $"🟢 [LORENTZIAN] {symbol} 진입 PASS | KNN WR={guard.KnnWinRate * 100:F0}% K={guard.KnnK} | ADX={guard.Adx:F1} regime={guard.RegimeSlope:F2} kernel↑ EMA200↑ SMA200↑");
 
-            try
-            {
-                decimal qty = Math.Abs(pos.Quantity);
-                if (qty <= 0) return;
-                string side = pos.IsLong ? "SELL" : "BUY";
-                await _exchangeService.PlaceMarketOrderAsync(symbol, side, qty, token, reduceOnly: true);
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"❌ [TIME_STOP] {symbol} 청산 실패: {ex.Message}");
-            }
-#pragma warning restore CS0162
+            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
+                signalSource: "LORENTZIAN", skipAiGateCheck: false);
         }
-
-        // [v5.22.36] 반대 시그널 익절 — 흑자 보호 (이더/솔라나 같이 긴 시간 끌다 +→- 전환 방지)
-        //   조건 (모두 만족 → 즉시 청산):
-        //     1. 활성 LONG 포지션 존재 + IsOwnPosition
-        //     2. 현재 ROE > +0.3% (수수료 양방향 0.08% × 15x = 1.2% > 0.3% 보호 마진)
-        //     3. 5분봉 EMA20 직전 봉 대비 하락 전환 (방향 변경)
-        //     4. 5분봉 RSI14 < 50 (모멘텀 죽음)
-        //     5. (옵션) 종가가 BB 중심선 아래 (중단 이탈)
-        //   재호출 폭주 방지: 5분봉 OpenTime 기준 캐시 (같은 봉에서 중복 청산 시도 안 함)
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _reverseExitChecked = new(StringComparer.OrdinalIgnoreCase);
-
-        private async Task CheckReverseSignalExitAsync(string symbol, decimal currentPrice, CancellationToken token)
-        {
-            PositionInfo? pos = null;
-            lock (_posLock)
-            {
-                if (!_activePositions.TryGetValue(symbol, out pos)) return;
-                if (pos == null || !pos.IsOwnPosition) return;
-                if (!pos.IsLong) return; // SHORT 진입은 반대로직 별도 (LONG만 우선)
-            }
-
-            // ROE 계산
-            if (pos.EntryPrice <= 0 || currentPrice <= 0) return;
-            decimal lev = pos.Leverage > 0 ? pos.Leverage : (_settings?.DefaultLeverage ?? 15m);
-            decimal priceChangePct = (currentPrice - pos.EntryPrice) / pos.EntryPrice * 100m;
-            decimal roePct = priceChangePct * lev;
-
-            // [v5.22.68] Daily Swing 면제 — 1D 봉 며칠 보유 의도 보호 (5m BB cross 무시)
-            //   사용자 의도: "다른전략으로 보완" → 단기 진입(메이저 5중 가드)에만 적용
-            string entrySrc = pos.EntrySignalSource ?? "";
-            if (entrySrc.IndexOf("DAILY_SWING", StringComparison.OrdinalIgnoreCase) >= 0) return;
-
-            // 5분봉 30봉 fetch (throttle 캐시 활용)
-            var klines = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 30, token);
-            if (klines == null || klines.Count < 22) return;
-
-            // 같은 봉 중복 체크 방지
-            var lastBarTime = klines[^1].OpenTime;
-            if (_reverseExitChecked.TryGetValue(symbol, out var cached) && cached == lastBarTime) return;
-
-            // [v5.22.68] BB 중심선 cross-down — 단순화 (사용자 지시: "5분봉 볼밴 중심선 뚫고 내려오면 청산")
-            //   기존 (3중 조건: ROE>0.3%×lev + EMA20↓ + RSI<50 + 종가<중심선) → BB cross-down 단독
-            //   직전 봉 종가 ≥ 직전 중심선 (위에서) → 현재 봉 종가 < 현재 중심선 (cross-down)
-            var bb = IndicatorCalculator.CalculateBB(klines.ToList(), 20, 2);
-            decimal middle = (decimal)bb.Mid;
-            decimal lastClose = klines[^1].ClosePrice;
-            // 직전 봉 BB middle 계산 (24봉 SMA 기준 슬라이드)
-            var prevSlice = klines.Take(klines.Count - 1).ToList();
-            if (prevSlice.Count < 20) return;
-            var bbPrev = IndicatorCalculator.CalculateBB(prevSlice, 20, 2);
-            decimal prevMiddle = (decimal)bbPrev.Mid;
-            decimal prevClose = klines[^2].ClosePrice;
-            // cross-down 판정
-            bool wasAbove = prevClose >= prevMiddle;
-            bool nowBelow = lastClose < middle;
-            if (!(wasAbove && nowBelow)) return;
-
-            _reverseExitChecked[symbol] = lastBarTime;
-
-            OnStatusLog?.Invoke(
-                $"🔄 [BB_MID_CROSS] {symbol} ROE={roePct:F2}% | 5m 종가 {prevClose:F4}→{lastClose:F4} BB중심선 {prevMiddle:F4}→{middle:F4} 하향돌파 → 즉시 청산");
-            OnAlert?.Invoke($"🔄 [반대신호] {symbol} ROE={roePct:F2}% 청산 (5m BB 중심선 하향돌파)");
-
-            try
-            {
-                // 시장가 매도로 전체 청산
-                decimal qty = Math.Abs(pos.Quantity);
-                if (qty <= 0) return;
-                await _exchangeService.PlaceMarketOrderAsync(
-                    symbol, "SELL", qty, token, reduceOnly: true);
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"❌ [반대시그널익절] {symbol} 청산 실패: {ex.Message}");
-            }
-        }
-
-        // [v5.22.68] 수익 트레일링 청산 — HighestROE 추적 + retrace 시 청산
-        //   사용자 보고: "FOGOUSDT +15% → -25% (40%p 추락)"
-        //   원리: 매 tick HighestROEForTrailing 갱신, retrace 폭 초과 시 즉시 청산
-        //   임계 (사용자 leverage 무관, ROE 기준):
-        //     일반 진입 (5중 가드): HighestROE ≥ +5% 도달 후 retrace ≥ 5%p → 청산
-        //     Daily Swing:        HighestROE ≥ +30% 도달 후 retrace ≥ 20%p → 청산 (큰 폭 추적)
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _profitTrailingChecked = new(StringComparer.OrdinalIgnoreCase);
-
-        private async Task CheckProfitTrailingExitAsync(string symbol, decimal currentPrice, CancellationToken token)
-        {
-            PositionInfo? pos = null;
-            lock (_posLock)
-            {
-                if (!_activePositions.TryGetValue(symbol, out pos)) return;
-                if (pos == null || !pos.IsOwnPosition) return;
-                if (!pos.IsLong) return;
-            }
-
-            if (pos.EntryPrice <= 0 || currentPrice <= 0) return;
-            decimal lev = pos.Leverage > 0 ? pos.Leverage : (_settings?.DefaultLeverage ?? 15m);
-            decimal priceChangePct = (currentPrice - pos.EntryPrice) / pos.EntryPrice * 100m;
-            decimal currentRoe = priceChangePct * lev;
-
-            // HighestROE 갱신
-            if (currentRoe > pos.HighestROEForTrailing)
-                pos.HighestROEForTrailing = currentRoe;
-
-            decimal highest = pos.HighestROEForTrailing;
-
-            // [v5.22.68] 수익권 진입 즉시 보호 — Daily Swing 면제 제거 (사용자 지시)
-            //   사용자: "FOGO -40% 청산 안 됨, Daily Swing이어도 -40%면 청산해야지"
-            //   원리: ROE +3% 도달 = 트레일링 활성. retrace 허용 = max(5%p, highest×33%) 동적 스케일
-            //     highest +5% → retrace 5%p → 청산 (= 본전 0%)
-            //     highest +15% → retrace 5%p → 청산 (= +10% 잠금)
-            //     highest +30% → retrace 10%p → 청산 (= +20% 잠금)
-            //     highest +100% → retrace 33%p → 청산 (= +67% 잠금)
-            const decimal triggerHigh = 3m;
-            if (highest < triggerHigh) return;
-            decimal retraceLimit = Math.Max(5m, highest * 0.33m);
-            decimal retrace = highest - currentRoe;
-            if (retrace < retraceLimit) return;
-
-            // 같은 5초 내 중복 청산 방지
-            if (_profitTrailingChecked.TryGetValue(symbol, out var last))
-            {
-                if (DateTime.UtcNow - last < TimeSpan.FromSeconds(5)) return;
-            }
-            _profitTrailingChecked[symbol] = DateTime.UtcNow;
-
-            OnStatusLog?.Invoke(
-                $"📉 [PROFIT_TRAIL] {symbol} 최고 ROE {highest:F1}% → 현재 {currentRoe:F1}% (retrace {retrace:F1}%p ≥ {retraceLimit:F0}%p) → 즉시 청산");
-            OnAlert?.Invoke($"📉 [수익보호] {symbol} 최고 {highest:F1}% → 현재 {currentRoe:F1}% 청산 (retrace {retrace:F1}%p)");
-
-            try
-            {
-                decimal qty = Math.Abs(pos.Quantity);
-                if (qty <= 0) return;
-                await _exchangeService.PlaceMarketOrderAsync(
-                    symbol, "SELL", qty, token, reduceOnly: true);
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"❌ [PROFIT_TRAIL] {symbol} 청산 실패: {ex.Message}");
-            }
-        }
-
-        // [v5.22.39] EMA20 5봉 전 대비 상승 — 백테스트 Ema20Rising (kl, i, 20 vs i-5, 20) 100% 일치
-        //   기존 v5.22.35: 1봉 차이 → 백테스트 (5봉 차이) 와 다름 → 발화 빈도/타이밍 어긋남
-        private static bool IsEma20Rising(List<IBinanceKline> klines)
-        {
-            if (klines == null || klines.Count < 26) return false;
-            var closes = klines.Select(k => (double)k.ClosePrice).ToList();
-            var ema = IndicatorCalculator.CalculateEMASeries(closes, 20);
-            if (ema == null || ema.Count < 6) return false;
-            return ema[^1] > ema[^6];
-        }
-
-        // [v5.22.55] Daily Swing — 1D 봉 추세 진입 (저빈도 + 큰 폭)
-        //   진입: 1D close>20SMA + 20SMA>50SMA + RSI 50~65 + vol×1.5 + 양봉
-        //   TP +15% / SL -7% (PROTECT 라우팅에서 source 기준 override)
-        //   심볼당 1일 1회 cooldown (같은 1D 봉 재진입 차단)
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _dailySwingCooldown = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly TimeSpan DailySwingCooldown = TimeSpan.FromHours(20);
-
-        private async Task AnalyzeDailySwingAsync(string symbol, decimal currentPrice, CancellationToken token)
-        {
-            lock (_posLock)
-            {
-                if (_activePositions.ContainsKey(symbol)) return;
-            }
-            if (_dailySwingCooldown.TryGetValue(symbol, out var last))
-            {
-                if (DateTime.UtcNow - last < DailySwingCooldown) return;
-            }
-
-            try
-            {
-                var klines = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneDay, 60, token);
-                if (klines == null || klines.Count < 51) return;
-
-                int n = klines.Count;
-                int i = n - 1;
-                decimal sumS = 0m;
-                for (int q = i - 19; q <= i; q++) sumS += klines[q].ClosePrice;
-                decimal sma20 = sumS / 20m;
-                decimal sumL = 0m;
-                for (int q = i - 49; q <= i; q++) sumL += klines[q].ClosePrice;
-                decimal sma50 = sumL / 50m;
-
-                if (klines[i].ClosePrice <= sma20) return;
-                if (sma20 <= sma50) return;
-
-                // [v5.22.66] #C RSI 50~70 완화 — 백테스트 365일 +330% / MDD 16.4% (베이스 +256% / MDD 28% 대비 개선)
-                //   강한 추세 종목 (RSI 65~70 구간) 추가 포착 → 진입 다양화 + 수익 ↑ + MDD ↓
-                double rsi = IndicatorCalculator.CalculateRSI(klines.ToList(), 14);
-                if (rsi < 50.0 || rsi > 70.0) return;
-
-                decimal volAvg = 0m;
-                for (int q = i - 5; q <= i - 1; q++) volAvg += klines[q].Volume;
-                volAvg /= 5m;
-                if (volAvg <= 0m || klines[i].Volume < volAvg * 1.5m) return;
-                if (klines[i].ClosePrice <= klines[i].OpenPrice) return;
-
-                _dailySwingCooldown[symbol] = DateTime.UtcNow;
-
-                // [v5.22.65] 5x 강제 제거 — 사용자 UI 설정 레버리지 그대로 사용
-                //   기존 v5.22.59 SetLeverageAsync(5) 호출은 사용자 설정 무시하고 5x 강제 → 사용자 격노
-                //   사용자 정책: 레버리지는 UI 설정 (MajorLeverage / PumpLeverage / DefaultLeverage) 우선
-                OnStatusLog?.Invoke(
-                    $"🎯 [DAILY_SWING] {symbol} 1D 발화 | close={klines[i].ClosePrice:F4} sma20={sma20:F4} sma50={sma50:F4} RSI={rsi:F1}");
-
-                await ExecuteAutoOrder(
-                    symbol, "LONG", currentPrice, token,
-                    signalSource: "DAILY_SWING_LONG",
-                    mode: "TREND");
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [DAILY_SWING] {symbol} 분석 오류: {ex.Message}");
-            }
-        }
-
-        // [v5.22.52] RSI 과열 꺾임 익절 — 사용자 지시
-        //   진입 RSI 임계 65 → 75 완화 후 보호 로직.
-        //   조건 (활성 LONG):
-        //     1. ROE > 0.3% × leverage (수수료 흡수 가능 흑자)
-        //     2. 직전봉 RSI ≥ 80 (과열 도달)
-        //     3. 현재봉 RSI < 직전봉 RSI (꺾임 발생)
-        //   → 즉시 시장가 reduce-only 청산
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _rsiOverheatedChecked = new(StringComparer.OrdinalIgnoreCase);
-
-        private async Task CheckRsiOverheatedExitAsync(string symbol, decimal currentPrice, CancellationToken token)
-        {
-            PositionInfo? pos = null;
-            lock (_posLock)
-            {
-                if (!_activePositions.TryGetValue(symbol, out pos)) return;
-                if (pos == null || !pos.IsOwnPosition) return;
-                if (!pos.IsLong) return;
-            }
-
-            if (pos.EntryPrice <= 0 || currentPrice <= 0) return;
-            decimal lev = pos.Leverage > 0 ? pos.Leverage : (_settings?.DefaultLeverage ?? 15m);
-            decimal priceChangePct = (currentPrice - pos.EntryPrice) / pos.EntryPrice * 100m;
-            decimal roePct = priceChangePct * lev;
-            if (roePct < 0.3m * lev) return;  // 수수료 흡수 가능 흑자만
-
-            var klines = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 30, token);
-            if (klines == null || klines.Count < 16) return;
-
-            var lastBarTime = klines[^1].OpenTime;
-            if (_rsiOverheatedChecked.TryGetValue(symbol, out var cached) && cached == lastBarTime) return;
-
-            // RSI14 직전봉(prev) vs 현재봉(curr) 비교
-            var fullList = klines.ToList();
-            double rsiCurr = IndicatorCalculator.CalculateRSI(fullList, 14);
-            var prevSlice = fullList.Take(fullList.Count - 1).ToList();
-            if (prevSlice.Count < 15) return;
-            double rsiPrev = IndicatorCalculator.CalculateRSI(prevSlice, 14);
-
-            if (rsiPrev < 80.0) return;       // 과열 미도달
-            if (rsiCurr >= rsiPrev) return;   // 꺾임 미발생
-
-            _rsiOverheatedChecked[symbol] = lastBarTime;
-
-            OnStatusLog?.Invoke(
-                $"🥵 [RSI과열익절] {symbol} ROE={roePct:F2}% | RSI {rsiPrev:F1}→{rsiCurr:F1} 꺾임 → 즉시 청산");
-            OnAlert?.Invoke($"🥵 [RSI과열] {symbol} +{roePct:F2}% 익절 (RSI {rsiPrev:F1}→{rsiCurr:F1})");
-
-            try
-            {
-                decimal qty = Math.Abs(pos.Quantity);
-                if (qty <= 0) return;
-                await _exchangeService.PlaceMarketOrderAsync(
-                    symbol, "SELL", qty, token, reduceOnly: true);
-            }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"❌ [RSI과열익절] {symbol} 청산 실패: {ex.Message}");
-            }
-        }
-
-        // [v5.22.40] AnalyzeFifteenMinBBSqueezeBreakoutAsync 본체 제거 (호출 0건)
 
         public void StopEngine()
         {

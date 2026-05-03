@@ -482,61 +482,6 @@ namespace TradingBot.Services
                     OnTickerUpdate?.Invoke(symbol, 0m, (double)currentROE);
 
                     // ═══════════════════════════════════════════════════════════════
-                    // [v5.10.93] MonitorPositionStandard 시간 손절 + 횡보 익절 (사용자 요구)
-                    //   AVAXUSDT 22시간/ONGUSDT 18시간 보유 사고 → 시간손절 미작동 발견
-                    //   v5.10.85 시간손절은 MonitorPumpPositionShortTerm에만 있음
-                    //   여기 MonitorPositionStandard에도 동일 로직 추가 (모든 알트 보호)
-                    // ═══════════════════════════════════════════════════════════════
-                    {
-                        double holdMinutes = holdingTime.TotalMinutes;
-                        bool isMajor = symbol == "BTCUSDT" || symbol == "ETHUSDT" || symbol == "SOLUSDT" || symbol == "XRPUSDT";
-                        // [v5.22.71] STD_TIME_STOP / STD_STAGNATION 비활성화 — 사용자 지시 "120분 손절 다 빼"
-                        //   v5.22.69 CheckTimeStopExitAsync 비활성화 + 여기 PositionMonitor Standard 시간 손절도 제거
-                        if (false && !isMajor)
-                        {
-                            decimal timeStopMin = _settings.PumpTimeStopMinutes > 0 ? _settings.PumpTimeStopMinutes : 120m;
-                            if (holdMinutes >= (double)timeStopMin && currentROE <= 0m)
-                            {
-                                OnAlert?.Invoke($"⏰ [TIME_STOP] {symbol} {holdMinutes:F0}분 ≥ {timeStopMin:F0}분 + ROE={currentROE:F1}% (손실) → 시간 손절 (Standard)");
-                                await ExecuteMarketClose(symbol, $"STD_TIME_STOP ({holdMinutes:F0}min, ROE={currentROE:F1}%)", token);
-                                break;
-                            }
-                        }
-                        // [v5.22.71] STAGNATION 도 비활성화 — 시간 기반 청산 모두 제거 (사용자 정책)
-                        if (false && !isMajor && holdMinutes >= 20 && Math.Abs(currentROE) < 0.3m)
-                        {
-                            OnAlert?.Invoke($"💤 [STAGNATION] {symbol} {holdMinutes:F0}분 ROE={currentROE:F2}% (|ROE|<0.3% — 진척 없음) → 청산");
-                            await ExecuteMarketClose(symbol, $"STD_STAGNATION ({holdMinutes:F0}min, ROE={currentROE:F2}%)", token);
-                            break;
-                        }
-                        // [v5.22.71] STD_SLOW_BOX / STD_SIDEWAYS_PROFIT 비활성화 — 시간 기반 강제 청산 모두 제거
-                        if (false && !isMajor && holdMinutes >= 30 && Math.Abs(currentROE) < 0.8m)
-                        {
-                            OnAlert?.Invoke($"💤 [SLOW_BOX] {symbol} {holdMinutes:F0}분 ROE={currentROE:F2}% (|ROE|<0.8% — 느린 박스) → 청산");
-                            await ExecuteMarketClose(symbol, $"STD_SLOW_BOX ({holdMinutes:F0}min, ROE={currentROE:F2}%)", token);
-                            break;
-                        }
-                        if (false && !isMajor && holdMinutes >= 30 && currentROE >= 3m
-                            && _marketDataManager.KlineCache.TryGetValue(symbol, out var kcStd) && kcStd.Count >= 25)
-                        {
-                            try
-                            {
-                                List<IBinanceKline> r20;
-                                lock (kcStd) { r20 = kcStd.TakeLast(20).ToList(); }
-                                var bb = IndicatorCalculator.CalculateBB(r20, 20, 2);
-                                double mid = bb.Mid;
-                                decimal bbWPct = mid > 0 ? (decimal)((bb.Upper - bb.Lower) / mid * 100.0) : 0m;
-                                if (bbWPct > 0 && bbWPct < 1.5m)
-                                {
-                                    OnAlert?.Invoke($"💰 [SIDEWAYS_PROFIT] {symbol} {holdMinutes:F0}분 ROE={currentROE:F1}% BBW={bbWPct:F2}%(횡보) → 익절 (Standard)");
-                                    await ExecuteMarketClose(symbol, $"STD_SIDEWAYS_PROFIT ({holdMinutes:F0}min, ROE={currentROE:F1}%, BBW={bbWPct:F2}%)", token);
-                                    break;
-                                }
-                            }
-                            catch { }
-                        }
-                    }
-
                     lock (_posLock)
                     {
                         if (_activePositions.TryGetValue(symbol, out var livePos))
@@ -1069,119 +1014,6 @@ namespace TradingBot.Services
                                 }
                             }
                         }
-                        // [v3.2.1] ATR Dual-Stop 비활성화 — WhipsawTimeout 3분이 너무 짧아 정상 횡보에서 손절
-                        // 구조 기반 손절(v3.2.0)이 대체
-                        else if (false && atrStopGateOpen)
-                        {
-                            bool atrHit = (isLong  && currentPrice <= customStopLossPrice)
-                                       || (!isLong && currentPrice >= customStopLossPrice);
-
-                            if (!atrHit)
-                            {
-                                if (atrFirstHitTime.HasValue)
-                                {
-                                    double recoveredSec = (DateTime.Now - atrFirstHitTime.Value).TotalSeconds;
-                                    OnLog?.Invoke($"✅ [ATR 회복] {symbol} ATR 라인 복귀 ({recoveredSec:F0}초 버팀 성공)");
-                                }
-                                atrFirstHitTime   = null;
-                                fractalBrokenTime = null;
-                                whipsawLoggedOnce = false;
-                            }
-                            else
-                            {
-                                if (!atrFirstHitTime.HasValue)
-                                    atrFirstHitTime = DateTime.Now;
-
-                                double atrHeldSec = (DateTime.Now - atrFirstHitTime.Value).TotalSeconds;
-
-                                decimal fractalStop = 0m;
-                                if (dualStopCandles != null && dualStopCandles.Count >= 5)
-                                {
-                                    var last5 = dualStopCandles.TakeLast(5).ToList();
-                                    fractalStop = isLong
-                                        ? last5.Min(c => c.LowPrice)  * 0.999m
-                                        : last5.Max(c => c.HighPrice) * 1.001m;
-                                }
-
-                                bool fractalBroken = fractalStop > 0m
-                                    && ((isLong  && currentPrice <= fractalStop)
-                                    ||  (!isLong && currentPrice >= fractalStop));
-
-                                if (!fractalBroken)
-                                {
-                                    if (!whipsawLoggedOnce)
-                                    {
-                                        OnLog?.Invoke(
-                                            $"⚠️ [WHIPSAW DETECTED - HOLDING] {symbol} " +
-                                            $"ATR=({customStopLossPrice:F8}) 터치, " +
-                                            $"Fractal 지지선=({(fractalStop > 0 ? fractalStop.ToString("F8") : "N/A")}) 생존 → 버팀 시작");
-                                        whipsawLoggedOnce = true;
-                                    }
-
-                                    if (atrHeldSec >= atrWhipsawMaxMinutes * 60)
-                                    {
-                                        decimal roeTmo = isLong
-                                            ? ((currentPrice - entryPrice) / entryPrice) * leverage * 100m
-                                            : ((entryPrice - currentPrice) / entryPrice) * leverage * 100m;
-                                        OnLog?.Invoke($"🔴 [ATR 버팀 한도초과] {symbol} {atrWhipsawMaxMinutes:F0}분 경과 → 최종 손절 (ROE={roeTmo:F1}%)");
-                                        await ExecuteMarketClose(symbol,
-                                            $"ATR Dual-Stop [WhipsawTimeout {atrWhipsawMaxMinutes:F0}min] ROE={roeTmo:F1}% ({currentPrice:F8})",
-                                            token);
-                                        break;
-                                    }
-                                }
-                                else
-                                {
-                                    if (!fractalBrokenTime.HasValue)
-                                    {
-                                        fractalBrokenTime = DateTime.Now;
-                                        OnLog?.Invoke(
-                                            $"🚨 [FRACTAL BROKEN] {symbol} " +
-                                            $"Fractal Low=({fractalStop:F8}) 돌파 → 거래량 필터 진입");
-                                    }
-
-                                    double fractalHeldSec = (DateTime.Now - fractalBrokenTime.Value).TotalSeconds;
-
-                                    decimal currentVol = dualStopCandles?.LastOrDefault()?.Volume ?? 0m;
-                                    decimal avgVol = (dualStopCandles != null && dualStopCandles.Count >= 20)
-                                        ? (decimal)dualStopCandles.TakeLast(20).Average(c => (double)c.Volume)
-                                        : 0m;
-                                    bool volumeConfirmed = avgVol <= 0m || currentVol >= avgVol * 1.5m;
-
-                                    decimal fireROE = isLong
-                                        ? ((currentPrice - entryPrice) / entryPrice) * leverage * 100m
-                                        : ((entryPrice - currentPrice) / entryPrice) * leverage * 100m;
-
-                                    if (volumeConfirmed)
-                                    {
-                                        OnLog?.Invoke(
-                                            $"🔴 [Dual-Stop 확정] {symbol} ATR+Fractal+Volume 트리플 확인 " +
-                                            $"(ROE={fireROE:F1}%, Vol={currentVol:F2} ≥ Avg×1.5={avgVol * 1.5m:F2})");
-                                        await ExecuteMarketClose(symbol,
-                                            $"ATR 2.5x Dual-Stop [Confirmed] ROE={fireROE:F1}% ({currentPrice:F8})",
-                                            token);
-                                        break;
-                                    }
-                                    else if (fractalHeldSec >= fractalVolumeMaxMinutes * 60)
-                                    {
-                                        OnLog?.Invoke(
-                                            $"🔴 [FakeOut 한도초과] {symbol} 거래량 미확인이나 " +
-                                            $"{fractalVolumeMaxMinutes:F0}분 경과 → 손절 (ROE={fireROE:F1}%)");
-                                        await ExecuteMarketClose(symbol,
-                                            $"ATR 2.5x Dual-Stop [FakeOutTimeout] ROE={fireROE:F1}% ({currentPrice:F8})",
-                                            token);
-                                        break;
-                                    }
-                                    else
-                                    {
-                                        OnLog?.Invoke(
-                                            $"⚠️ [FAKE-OUT FILTER] {symbol} Fractal 돌파했으나 거래량 미확인 " +
-                                            $"({currentVol:F2} < {avgVol * 1.5m:F2}) → 대기 " +
-                                            $"({fractalHeldSec:F0}s / {fractalVolumeMaxMinutes * 60:F0}s)");
-                                    }
-                                }
-                            }
-                        }
                     }
 
                     if (isSidewaysMode)
@@ -1238,41 +1070,7 @@ namespace TradingBot.Services
                         }
                     }
 
-                    // [v3.3.9] 물타기(DCA) 비활성화 — 손실 증폭 원인
-                    if (false && !isSidewaysMode && isLong && !hybridDcaTaken && currentROE <= hybridDcaTriggerRoe)
-                    {
-                        if (TryShouldExecuteHybridLongDca(symbol, currentPrice, out string dcaReason))
-                        {
-                            OnAlert?.Invoke($"💧 {symbol} 하이브리드 DCA 시도 (ROE: {currentROE:F2}%) | {dcaReason}");
-                            await ExecuteAverageDown(symbol, token);
-                            lock (_posLock)
-                            {
-                                if (_activePositions.TryGetValue(symbol, out var p))
-                                {
-                                    entryPrice = p.EntryPrice;
-                                    hybridDcaTaken = p.IsAveragedDown;
-                                }
-                            }
-                            hybridDcaDeferredLogged = false;
-                            continue;
-                        }
 
-                        if (!hybridDcaDeferredLogged)
-                        {
-                            OnLog?.Invoke($"⏸️ {symbol} 하이브리드 DCA 보류 | {dcaReason}");
-                            hybridDcaDeferredLogged = true;
-                        }
-                    }
-                    else
-                    {
-                        hybridDcaDeferredLogged = false;
-                    }
-
-                    // [v3.1.8] 스퀴즈 방어 축소 비활성화 — 손실 중 50% 강제 청산은 손실만 확정
-                    // 차라리 손절되더라도 버티는 게 이득
-                    if (false) // 비활성화
-                    {
-                    }
 
                     if (!isSidewaysMode && pyramidingCount < maxPyramidingCount && DateTime.Now >= pyramidingCooldownUntil)
                     {
@@ -1593,47 +1391,7 @@ namespace TradingBot.Services
                     }
                     double holdMinutes = (DateTime.Now - entryTime).TotalMinutes;
 
-                    // [v5.22.71] PUMP_TIME_STOP 비활성화 — 사용자 지시 "120분 손절 다 빼"
-                    decimal timeStopMinutes = _settings.PumpTimeStopMinutes > 0 ? _settings.PumpTimeStopMinutes : 120m;
-                    if (false && holdMinutes >= (double)timeStopMinutes && currentROE <= 0m)
-                    {
-                        OnAlert?.Invoke($"⏰ [TIME_STOP] {symbol} {holdMinutes:F0}분 보유 ≥ {timeStopMinutes:F0}분 + ROE={currentROE:F1}% (손실 중) → 시간 손절");
-                        await ExecuteMarketClose(symbol, $"PUMP_TIME_STOP ({holdMinutes:F0}min, ROE={currentROE:F1}%)", token);
-                        break;
-                    }
 
-                    // [v5.22.71] SIDEWAYS_PROFIT_TAKE 비활성화 — 시간 기반 강제 청산 모두 제거
-                    if (false && holdMinutes >= 30 && currentROE >= 3m
-                        && _marketDataManager.KlineCache.TryGetValue(symbol, out var kc) && kc.Count >= 25)
-                    {
-                        try
-                        {
-                            List<IBinanceKline> recent21;
-                            lock (kc) { recent21 = kc.TakeLast(21).ToList(); }
-
-                            bool sidewaysExit = false;
-                            string detail = "";
-                            // [AI 제거] ML regime classifier 분기 제거 — BB Width 단독 판정
-                            {
-                                var bb = IndicatorCalculator.CalculateBB(recent21.TakeLast(20).ToList(), 20, 2);
-                                double mid = bb.Mid;
-                                decimal bbWidthPct = mid > 0 ? (decimal)((bb.Upper - bb.Lower) / mid * 100.0) : 0m;
-                                if (bbWidthPct > 0 && bbWidthPct < 1.5m)
-                                {
-                                    sidewaysExit = true;
-                                    detail = $"BBWidth={bbWidthPct:F2}%(<1.5%)";
-                                }
-                            }
-
-                            if (sidewaysExit)
-                            {
-                                OnAlert?.Invoke($"💰 [SIDEWAYS_PROFIT] {symbol} {holdMinutes:F0}분 + ROE={currentROE:F1}% + {detail} → 익절");
-                                await ExecuteMarketClose(symbol, $"SIDEWAYS_PROFIT_TAKE ({holdMinutes:F0}min, ROE={currentROE:F1}%, {detail})", token);
-                                break;
-                            }
-                        }
-                        catch (Exception bbEx) { OnLog?.Invoke($"⚠️ {symbol} 횡보 익절 판단 예외: {bbEx.Message}"); }
-                    }
                 }
 
                 lock (_posLock)

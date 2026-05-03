@@ -1,0 +1,227 @@
+using System;
+using System.Collections.Generic;
+using Binance.Net.Interfaces;
+
+namespace TradingBot.Services.LorentzianV2
+{
+    // jdehorty Lorentzian Classification 공식 필터 풀세트 (Pine Script v5)
+    //   RAW LOGIC SHARED BY: TradingEngine.AnalyzeLorentzianEntryAsync (라이브)
+    //                       Tools/LorentzianValidator backtest
+    //   라이브와 백테스트 1:1 동일 코드 보장.
+    public static class LorentzianGuard
+    {
+        public const float DefaultGuardWinRate = 0.70f;
+        public const int   MinBarsHeldForExit = 4;
+        public const int   MaxHoldBars        = 96;
+
+        public sealed class FilterResult
+        {
+            public bool   Passed         { get; set; }
+            public string BlockReason    { get; set; } = "";
+            public int    KnnPrediction  { get; set; }
+            public int    KnnK           { get; set; }
+            public int    KnnPositive    { get; set; }
+            public float  KnnWinRate     { get; set; }
+            public double Atr1           { get; set; }
+            public double Atr10          { get; set; }
+            public double Adx            { get; set; }
+            public double Ema200         { get; set; }
+            public double Sma200         { get; set; }
+            public double RegimeSlope    { get; set; }
+            public double NwKernel       { get; set; }
+            public double NwKernelPrev2  { get; set; }
+        }
+
+        // 진입 가드 평가 — 마지막 봉 (kl[^1]) 기준
+        // engine 은 호출자가 미리 학습 (walk-forward 라벨 = 4봉 후 close 방향)
+        public static FilterResult EvaluateEntry(
+            List<IBinanceKline> kl,
+            LorentzianAnnEngine engine,
+            float guardWinRate = DefaultGuardWinRate)
+        {
+            var r = new FilterResult();
+            if (kl == null || kl.Count < 250) { r.BlockReason = "KLINE_TOO_FEW"; return r; }
+
+            int idx = kl.Count - 1;
+
+            // 1) KNN
+            var feats = LorentzianFeatures.Extract(kl);
+            if (feats == null) { r.BlockReason = "FEATS_NULL"; return r; }
+            var pred = engine.Predict(feats);
+            r.KnnPrediction = pred.Prediction;
+            r.KnnK = pred.K;
+            r.KnnPositive = pred.PositiveVotes;
+            r.KnnWinRate = pred.K > 0 ? (float)pred.PositiveVotes / pred.K : 0f;
+            if (!pred.IsReady || pred.K == 0) { r.BlockReason = "KNN_NOT_READY"; return r; }
+            if (pred.Prediction <= 0) { r.BlockReason = "KNN_NOT_LONG"; return r; }
+            if (r.KnnWinRate < guardWinRate) { r.BlockReason = $"KNN_WR_LOW ({r.KnnWinRate:F2})"; return r; }
+
+            // 2) Volatility: ATR(1) > ATR(10)
+            r.Atr1  = CalcTR(kl, idx);
+            r.Atr10 = CalcATR(kl, idx, 10);
+            if (r.Atr1 <= r.Atr10) { r.BlockReason = "VOLATILITY"; return r; }
+
+            // 3) Regime slope > -0.1
+            r.RegimeSlope = CalcRegimeSlope(kl, idx);
+            if (r.RegimeSlope <= -0.1) { r.BlockReason = $"REGIME ({r.RegimeSlope:F3})"; return r; }
+
+            // 4) ADX(14) > 20
+            r.Adx = CalcADX(kl, idx, 14);
+            if (r.Adx <= 20.0) { r.BlockReason = $"ADX ({r.Adx:F1})"; return r; }
+
+            // 5) close > EMA(200)
+            r.Ema200 = CalcEMA(kl, idx, 200);
+            if ((double)kl[idx].ClosePrice <= r.Ema200) { r.BlockReason = "EMA200"; return r; }
+
+            // 6) close > SMA(200)
+            r.Sma200 = CalcSMA(kl, idx, 200);
+            if ((double)kl[idx].ClosePrice <= r.Sma200) { r.BlockReason = "SMA200"; return r; }
+
+            // 7) NW Kernel direction = up (kernel[idx] > kernel[idx-2])
+            r.NwKernel = CalcNWKernel(kl, idx);
+            r.NwKernelPrev2 = idx >= 2 ? CalcNWKernel(kl, idx - 2) : r.NwKernel;
+            if (r.NwKernel <= r.NwKernelPrev2) { r.BlockReason = "NW_KERNEL"; return r; }
+
+            r.Passed = true;
+            return r;
+        }
+
+        // 청산 신호 평가 (barsHeld ≥ MinBarsHeldForExit 후만 호출)
+        // 반환: ("KNN_FLIP" | "KERNEL_FLIP" | "" if no exit signal)
+        public static string EvaluateExit(
+            List<IBinanceKline> kl,
+            int barsHeld,
+            int knnSignal,
+            double nwkNow,
+            double nwkPrev1,
+            double nwkPrev2,
+            double nwkPrev3)
+        {
+            if (barsHeld < MinBarsHeldForExit) return "";
+            bool kernelWasUp = nwkPrev1 > nwkPrev3;
+            bool kernelNowDown = nwkNow < nwkPrev2;
+            if (kernelWasUp && kernelNowDown) return "KERNEL_FLIP";
+            if (knnSignal == -1) return "KNN_FLIP";
+            return "";
+        }
+
+        // ── 필터 계산 함수 (라이브/백테스트 공유) ──
+        public static double CalcEMA(List<IBinanceKline> kl, int idx, int period)
+        {
+            if (idx < period - 1) return (double)kl[idx].ClosePrice;
+            double k = 2.0 / (period + 1);
+            double ema = (double)kl[idx - period + 1].ClosePrice;
+            for (int q = idx - period + 2; q <= idx; q++)
+                ema = (double)kl[q].ClosePrice * k + ema * (1 - k);
+            return ema;
+        }
+
+        public static double CalcSMA(List<IBinanceKline> kl, int idx, int period)
+        {
+            if (idx < period - 1) return (double)kl[idx].ClosePrice;
+            double sum = 0;
+            for (int q = idx - period + 1; q <= idx; q++) sum += (double)kl[q].ClosePrice;
+            return sum / period;
+        }
+
+        public static double CalcTR(List<IBinanceKline> kl, int idx)
+        {
+            if (idx < 1) return (double)(kl[idx].HighPrice - kl[idx].LowPrice);
+            double h = (double)kl[idx].HighPrice, l = (double)kl[idx].LowPrice, pc = (double)kl[idx - 1].ClosePrice;
+            return Math.Max(h - l, Math.Max(Math.Abs(h - pc), Math.Abs(l - pc)));
+        }
+
+        public static double CalcATR(List<IBinanceKline> kl, int idx, int period)
+        {
+            if (idx < period) return CalcTR(kl, idx);
+            double sum = 0;
+            for (int q = idx - period + 1; q <= idx; q++) sum += CalcTR(kl, q);
+            return sum / period;
+        }
+
+        // ADX(14) Wilder smoothing — 마지막 봉 smoothed ADX 반환
+        public static double CalcADX(List<IBinanceKline> kl, int idx, int period)
+        {
+            if (idx < period * 2) return 0.0;
+            double[] tr = new double[idx + 1], pdm = new double[idx + 1], ndm = new double[idx + 1];
+            for (int i = 1; i <= idx; i++)
+            {
+                double high = (double)kl[i].HighPrice, low = (double)kl[i].LowPrice, prevClose = (double)kl[i - 1].ClosePrice;
+                tr[i] = Math.Max(high - low, Math.Max(Math.Abs(high - prevClose), Math.Abs(low - prevClose)));
+                double upMove = high - (double)kl[i - 1].HighPrice;
+                double downMove = (double)kl[i - 1].LowPrice - low;
+                pdm[i] = upMove > downMove && upMove > 0 ? upMove : 0;
+                ndm[i] = downMove > upMove && downMove > 0 ? downMove : 0;
+            }
+            double atr = 0, pdmS = 0, ndmS = 0;
+            for (int i = 1; i <= period; i++) { atr += tr[i]; pdmS += pdm[i]; ndmS += ndm[i]; }
+            double adx = 0;
+            bool adxInit = false;
+            for (int i = period + 1; i <= idx; i++)
+            {
+                atr  = atr  - (atr  / period) + tr[i];
+                pdmS = pdmS - (pdmS / period) + pdm[i];
+                ndmS = ndmS - (ndmS / period) + ndm[i];
+                if (atr < 1e-12) continue;
+                double pdi = 100.0 * pdmS / atr;
+                double ndi = 100.0 * ndmS / atr;
+                double dx = (pdi + ndi) > 1e-12 ? 100.0 * Math.Abs(pdi - ndi) / (pdi + ndi) : 0;
+                if (!adxInit) { adx = dx; adxInit = true; }
+                else adx = (adx * (period - 1) + dx) / period;
+            }
+            return adx;
+        }
+
+        // KLMF (Kalman-like) trend slope: EMA50 5봉 차이 / ATR(14) — jdehorty regime filter
+        public static double CalcRegimeSlope(List<IBinanceKline> kl, int idx)
+        {
+            if (idx < 55) return 0.0;
+            double ema = CalcEMA(kl, idx, 50);
+            double emaPrev = CalcEMA(kl, idx - 5, 50);
+            double atr = CalcATR(kl, idx, 14);
+            if (atr < 1e-12) return 0.0;
+            return (ema - emaPrev) / atr;
+        }
+
+        // Nadaraya-Watson Rational Quadratic kernel estimator (h=8, r=8, x=25)
+        public static double CalcNWKernel(List<IBinanceKline> kl, int idx, int h = 8, double r = 8.0, int x = 25)
+        {
+            int look = Math.Min(idx, 200);
+            double num = 0, den = 0;
+            for (int i = 0; i < look; i++)
+            {
+                int srcIdx = idx - i;
+                if (srcIdx < 0) break;
+                double w = Math.Pow(1.0 + (i * i) / (h * h * 2.0 * r), -r);
+                num += (double)kl[srcIdx].ClosePrice * w;
+                den += w;
+            }
+            return den > 1e-12 ? num / den : (double)kl[idx].ClosePrice;
+        }
+
+        // 학습용 라벨 (4봉 후 close 방향)
+        public static int LabelForBar(List<IBinanceKline> kl, int idx, int futureBars = 4)
+        {
+            if (idx + futureBars >= kl.Count) return 0;
+            decimal fut = kl[idx + futureBars].ClosePrice;
+            decimal nowC = kl[idx].ClosePrice;
+            return fut > nowC ? 1 : (fut < nowC ? -1 : 0);
+        }
+
+        // 봉 idx 의 KNN 신호 (예측만, 학습 안 함)
+        public static (int sig, float winRate, bool ready) PredictAtBar(
+            List<IBinanceKline> kl, int idx, LorentzianAnnEngine engine, int featureWindow = 500)
+        {
+            if (idx < 60) return (0, 0f, false);
+            int wStart = Math.Max(0, idx - (featureWindow - 1));
+            var win = kl.GetRange(wStart, idx - wStart + 1);
+            var feats = LorentzianFeatures.Extract(win);
+            if (feats == null) return (0, 0f, false);
+            var p = engine.Predict(feats);
+            if (!p.IsReady || p.K == 0) return (0, 0f, false);
+            int s = p.Prediction > 0 ? 1 : (p.Prediction < 0 ? -1 : 0);
+            float wr = (float)p.PositiveVotes / p.K;
+            return (s, wr, true);
+        }
+    }
+}

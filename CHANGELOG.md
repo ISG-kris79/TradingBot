@@ -5,6 +5,46 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.0] - 2026-05-04
+
+### 🔥 전체 진입/청산 로직 폐기 + Lorentzian Classification 단일 시스템 신규 작성
+
+#### 사용자 지시
+- "다 제거하고 초기부터 다시 만들라고" / "주석처리하고 하니까 버그나잖아"
+- TradingView Machine Learning: Lorentzian Classification 전략 기반
+- 라이브 ≡ 백테스트 1:1 동일 코드 보장 요구
+
+#### 삭제 (총 977줄)
+- `TradingEngine.cs` 790줄: AnalyzeAltSimpleTriggersAsync / AnalyzeAltMomentumAsync / AnalyzePullbackLongAsync /
+  AnalyzeMajorSimpleAsync / AnalyzeDailySwingAsync / CheckTimeStopExitAsync / CheckReverseSignalExitAsync /
+  CheckProfitTrailingExitAsync / CheckRsiOverheatedExitAsync + 모든 helper field + cooldown dict + 죽은 doc 주석
+- `PositionMonitorService.cs` 187줄: STD_TIME_STOP / STAGNATION / SLOW_BOX / SIDEWAYS_PROFIT /
+  ATR Dual-Stop / DCA / empty if(false) / PUMP_TIME_STOP / SIDEWAYS_PROFIT_TAKE 죽은 블록 전체
+
+#### 신규
+- `Services/LorentzianV2/LorentzianAnnEngine.cs` — Pine ANN KNN (4봉 subsample, lastDistance monotonic)
+- `Services/LorentzianV2/LorentzianFeatures.cs` — 7-feature 추출 (RSI/WT/CCI/ADX/RSI9/maxRise/H1slope)
+- `Services/LorentzianV2/LorentzianGuard.cs` — jdehorty 풀세트 가드 (KNN+Volatility+Regime+ADX+EMA200+SMA200+NWKernel)
+- `TradingEngine.cs AnalyzeLorentzianEntryAsync` — `LorentzianGuard.EvaluateEntry()` 호출, 라이브 ≡ 백테스트
+- `Tools/LorentzianValidator/LorentzianValidator.csproj` — 메인 프로젝트 LorentzianV2 파일 직접 참조 (Compile Include link)
+
+#### 진입 파이프라인 (현재)
+```
+ProcessCoinAndTradeBySymbolAsync
+  → AnalyzeLorentzianEntryAsync (단일)
+  → CheckHybridExitAsync (기존 인프라)
+```
+
+#### 백테스트 검증 도구
+- `Tools/LorentzianValidator/Program.cs --knn-compare` — 4 KNN 변형 비교 (Pine ANN / Euclidean / Lorentzian / +BTC가드)
+- `Tools/LorentzianValidator/Program.cs --knn-sweep` — 4 심볼 × 8 TP/SL × 2 WR 임계값 sweep
+- `Tools/LorentzianValidator/Program.cs --knn-sweep-3y` — 6 심볼 (BTC/DOGE/PEPE/SHIB/BONK/WIF) × 9 TP/SL × 2 WR × 2 라벨 모드
+
+#### 알려진 한계 (배포 시점)
+- KNN walk-forward 정확도: 단순 라벨(max-hit) = 68.7%, 실거래 라벨(TP-first) = 25%
+- 백테스트 흑자 미입증 — DOGE 1.5/0.5 @ WR70% 만 borderline (6mo 16건 / 56% WR / +14% 연간)
+- 3년 검증 진행 중
+
 ## [5.22.72] - 2026-05-03
 
 ### 🎯 Pullback Long 진입 + AltMomentum 폐기 + 모든 시간 기반 청산 제거
