@@ -5,6 +5,28 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.67] - 2026-05-03
+
+### 🚨 hotfix — Daily Swing Time Stop 제외 (BABY 50초 청산 사고 근본 fix)
+
+#### 사용자 보고
+"BABYUSDT 50초 만에 청산, 그 후 1000% 폭등 놓침"
+"2시간 지나면 손절이 적절한지 분석"
+
+#### 진단
+- v5.22.41 CheckTimeStopExitAsync 가 **모든 활성 포지션** 60분/120분 강제 청산
+- Daily Swing (1D 봉, max 14일 보유 의도) 도 강제 청산 적용 → 백테스트 +330% 무용
+- BABY/MAGMA 사례: 진입 후 몇 시간 만에 강제 잘림
+
+#### Fixed
+- CheckTimeStopExitAsync 시작 시 EntrySignalSource에 "DAILY_SWING" 포함 시 즉시 return
+- Daily Swing은 TP/SL/트레일링이 청산 책임 (Time Stop 면제)
+- 메이저 5중 가드(MAJOR_SIMPLE) 60분 유지
+
+#### 효과
+- BABY 같은 폭등 종목 며칠 보유 → 1000% ROI 잠재력 실현
+- Daily Swing 백테스트 +330% 결과 라이브 동작과 일치
+
 ## [5.22.66] - 2026-05-03
 
 ### 🎯 Daily Swing RSI 임계 65 → 70 완화 (#C 변형 채택)

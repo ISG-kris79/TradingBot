@@ -4785,6 +4785,16 @@ namespace TradingBot
                 if (pos == null || !pos.IsOwnPosition) return;
             }
 
+            // [v5.22.66] Daily Swing 포지션 Time Stop 제외 — 1D 봉 14일 보유 의도 보장
+            //   기존 60분/120분 Time Stop이 Daily Swing 진입을 조기 청산 → 백테스트 +330% 결과 무용
+            //   사용자 보고: "2시간 지나면 손절이 적절한지 분석" → Daily Swing에는 부적절
+            string entrySrc = pos.EntrySignalSource ?? "";
+            if (entrySrc.IndexOf("DAILY_SWING", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                // Daily Swing = TP/SL/트레일링이 청산 책임. Time Stop 적용 안 함.
+                return;
+            }
+
             // 같은 심볼 1분 cooldown
             if (_timeStopChecked.TryGetValue(symbol, out var lastCheck))
             {
@@ -4795,7 +4805,7 @@ namespace TradingBot
             DateTime entryUtc = pos.EntryTime.ToUniversalTime();
             TimeSpan elapsed = DateTime.UtcNow - entryUtc;
 
-            // 메이저 = 60분, 알트 = 120분
+            // 메이저 = 60분, 알트 = 120분 (5중 가드 진입용. 알트 5중 가드는 v5.22.65 폐기되어 사실상 메이저 전용)
             bool isMajor = MajorSymbols.Contains(symbol);
             TimeSpan winLimit = isMajor ? TimeSpan.FromMinutes(60) : TimeSpan.FromMinutes(120);
             if (elapsed < winLimit) return;
