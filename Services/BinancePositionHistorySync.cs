@@ -351,8 +351,13 @@ WHERE EntryTime >= DATEADD(DAY, -120, SYSUTCDATETIME()) AND Category IS NOT NULL
                     decimal margin = (p.AvgEntryPrice * p.TotalQuantity) / 15m; // assume 15x; fixed for display
                     decimal? roe = margin > 0 ? netPnl / margin * 100 : (decimal?)null;
 
-                    int rows = await db.ExecuteAsync(@"
-IF NOT EXISTS (SELECT 1 FROM dbo.BinancePositionHistory
+                    // [v5.22.62] race condition fix — IF NOT EXISTS race 시 SQL 2627/2601 흡수
+                    //   기존: 두 세션이 동시 IF NOT EXISTS → 둘 다 false → 둘 다 INSERT → UNIQUE violation
+                    //   사용자 보고: "바이낸스포지션히스토리에 유니큐 중복오류 떳어"
+                    try
+                    {
+                        int rows = await db.ExecuteAsync(@"
+IF NOT EXISTS (SELECT 1 FROM dbo.BinancePositionHistory WITH (UPDLOCK, HOLDLOCK)
                WHERE UserId=@UserId AND Symbol=@Symbol AND PositionSide=@PositionSide AND OpenTime=@OpenTime)
 INSERT INTO dbo.BinancePositionHistory
   (UserId, Symbol, PositionSide, OpenTime, CloseTime, AvgEntryPrice, AvgExitPrice, TotalQuantity,
@@ -361,25 +366,30 @@ VALUES
   (@UserId, @Symbol, @PositionSide, @OpenTime, @CloseTime, @AvgEntryPrice, @AvgExitPrice, @TotalQuantity,
    @RealizedPnl, @Commission, @NetPnl, @RoePct, @FillCount, NULL, @Category);
 ",
-                        new
-                        {
-                            UserId = _userId,
-                            p.Symbol,
-                            p.PositionSide,
-                            p.OpenTime,
-                            p.CloseTime,
-                            p.AvgEntryPrice,
-                            p.AvgExitPrice,
-                            p.TotalQuantity,
-                            p.RealizedPnl,
-                            p.Commission,
-                            NetPnl = netPnl,
-                            RoePct = roe,
-                            p.FillCount,
-                            Category = category
-                        }, commandTimeout: 30);
+                            new
+                            {
+                                UserId = _userId,
+                                p.Symbol,
+                                p.PositionSide,
+                                p.OpenTime,
+                                p.CloseTime,
+                                p.AvgEntryPrice,
+                                p.AvgExitPrice,
+                                p.TotalQuantity,
+                                p.RealizedPnl,
+                                p.Commission,
+                                NetPnl = netPnl,
+                                RoePct = roe,
+                                p.FillCount,
+                                Category = category
+                            }, commandTimeout: 30);
 
-                    if (rows > 0) saved++;
+                        if (rows > 0) saved++;
+                    }
+                    catch (Microsoft.Data.SqlClient.SqlException sqlEx) when (sqlEx.Number == 2627 || sqlEx.Number == 2601)
+                    {
+                        // PK/UNIQUE 중복 — 다른 세션이 이미 INSERT 함, 무시 (idempotent)
+                    }
                 }
             }
             catch (Exception ex)

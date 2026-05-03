@@ -5,6 +5,21 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.63] - 2026-05-03
+
+### 🚨 hotfix — BinancePositionHistory UNIQUE 중복 오류
+
+#### 사용자 보고
+"바이낸스포지션히스토리에 유니큐 중복오류 떳어"
+
+#### 진단
+- `IF NOT EXISTS ... INSERT` race condition
+- 90일 백필 + 5분 폴링 동시 호출 시 둘 다 IF NOT EXISTS=false → 둘 다 INSERT → UQ_BPH_User_Sym_Side_Open violation
+
+#### Fixed
+- `WITH (UPDLOCK, HOLDLOCK)` 추가 — 첫 세션이 락 잡으면 다른 세션 대기
+- `try-catch SqlException 2627/2601` 흡수 — race 시 idempotent 보장
+
 ## [5.22.62] - 2026-05-03
 
 ### 🚨 SHORT 차단 6중 방어 (defense-in-depth) — 모든 진입 경로 chokepoint
