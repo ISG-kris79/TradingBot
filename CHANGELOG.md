@@ -5,6 +5,28 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.68] - 2026-05-03
+
+### 🚨 수익 보호 트레일링 + BB 중심선 하향 돌파 청산
+
+#### 사용자 보고
+- "FOGO +15% → -25% (40%p 추락), 청산 안 됨, -150 손실"
+- "수익권에서 하락전환 시 작은 금액 손절 전략"
+- "Daily Swing이어도 -40%면 청산해야지"
+- "5분봉 BB 중심선 뚫고 내려오면 청산"
+
+#### Added — CheckProfitTrailingExitAsync (수익 보호 트레일링)
+- HighestROE 추적 → retrace 시 즉시 청산
+- 활성화: ROE ≥ +3% 도달
+- Retrace 한도: max(5%p, highest × 33%) 동적 스케일
+- 시뮬: 최고 +15% → +10% 청산, +30% → +20% 청산, +100% → +67% 청산
+- **Daily Swing 포함 모든 진입 적용** (사용자 명시)
+
+#### Changed — CheckReverseSignalExitAsync
+- 기존 4중 조건 (ROE>0.3%×lev + EMA20↓ + RSI<50 + 종가<중심선) → BB 중심선 하향 돌파 단독
+- ROE 조건 제거 (손실 중에도 보호 청산)
+- Daily Swing 면제 (1D 의도 보호, 5m 노이즈 무시)
+
 ## [5.22.67] - 2026-05-03
 
 ### 🚨 hotfix — Daily Swing Time Stop 제외 (BABY 50초 청산 사고 근본 fix)

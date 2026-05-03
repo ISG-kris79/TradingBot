@@ -4226,6 +4226,19 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⚠️ 반대시그널 청산 오류: {ex.Message}");
                 }
 
+                // [v5.22.68] 수익 트레일링 청산 — HighestROE 추적 + retrace 시 청산
+                //   사용자 보고: "FOGOUSDT +15% → -25% (40%p 추락)"
+                //   원리: 최고 ROE 도달 후 일정 폭 떨어지면 즉시 청산 (수익 잠금)
+                //   Daily Swing은 1D 의도 보호 위해 더 큰 retrace 허용 (백테스트와 일치)
+                try
+                {
+                    await CheckProfitTrailingExitAsync(symbol, currentPrice, token);
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ 수익트레일링 청산 오류: {ex.Message}");
+                }
+
                 // [v5.22.52] RSI 과열 꺾임 익절 — 사용자 지시
                 //   진입 RSI 임계 65 → 75 완화 보완 로직.
                 //   활성 LONG 포지션이 RSI ≥ 80 도달 후 직전봉 대비 꺾이면 (rsi[-1] < rsi[-2]) 즉시 청산
@@ -4862,8 +4875,10 @@ namespace TradingBot
             decimal priceChangePct = (currentPrice - pos.EntryPrice) / pos.EntryPrice * 100m;
             decimal roePct = priceChangePct * lev;
 
-            // 흑자 보호 마진 — 수수료 양방향 (0.04%×2=0.08%) × lev = 1.2% 미만이면 청산해도 손해
-            if (roePct < 0.3m * lev) return;
+            // [v5.22.68] Daily Swing 면제 — 1D 봉 며칠 보유 의도 보호 (5m BB cross 무시)
+            //   사용자 의도: "다른전략으로 보완" → 단기 진입(메이저 5중 가드)에만 적용
+            string entrySrc = pos.EntrySignalSource ?? "";
+            if (entrySrc.IndexOf("DAILY_SWING", StringComparison.OrdinalIgnoreCase) >= 0) return;
 
             // 5분봉 30봉 fetch (throttle 캐시 활용)
             var klines = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 30, token);
@@ -4873,29 +4888,28 @@ namespace TradingBot
             var lastBarTime = klines[^1].OpenTime;
             if (_reverseExitChecked.TryGetValue(symbol, out var cached) && cached == lastBarTime) return;
 
-            // EMA20 하락 전환
-            var closes = klines.Select(k => (double)k.ClosePrice).ToList();
-            var ema = IndicatorCalculator.CalculateEMASeries(closes, 20);
-            if (ema == null || ema.Count < 2) return;
-            bool emaFalling = ema[^1] < ema[^2];
-            if (!emaFalling) return;
-
-            // RSI14 < 50
-            double rsi = IndicatorCalculator.CalculateRSI(klines.ToList(), 14);
-            if (rsi >= 50) return;
-
-            // BB 중심선 이탈 (옵션 — 강한 신호일 때만 청산)
+            // [v5.22.68] BB 중심선 cross-down — 단순화 (사용자 지시: "5분봉 볼밴 중심선 뚫고 내려오면 청산")
+            //   기존 (3중 조건: ROE>0.3%×lev + EMA20↓ + RSI<50 + 종가<중심선) → BB cross-down 단독
+            //   직전 봉 종가 ≥ 직전 중심선 (위에서) → 현재 봉 종가 < 현재 중심선 (cross-down)
             var bb = IndicatorCalculator.CalculateBB(klines.ToList(), 20, 2);
             decimal middle = (decimal)bb.Mid;
             decimal lastClose = klines[^1].ClosePrice;
-            bool belowMid = lastClose < middle;
-            if (!belowMid) return;
+            // 직전 봉 BB middle 계산 (24봉 SMA 기준 슬라이드)
+            var prevSlice = klines.Take(klines.Count - 1).ToList();
+            if (prevSlice.Count < 20) return;
+            var bbPrev = IndicatorCalculator.CalculateBB(prevSlice, 20, 2);
+            decimal prevMiddle = (decimal)bbPrev.Mid;
+            decimal prevClose = klines[^2].ClosePrice;
+            // cross-down 판정
+            bool wasAbove = prevClose >= prevMiddle;
+            bool nowBelow = lastClose < middle;
+            if (!(wasAbove && nowBelow)) return;
 
             _reverseExitChecked[symbol] = lastBarTime;
 
             OnStatusLog?.Invoke(
-                $"🔄 [반대시그널익절] {symbol} ROE={roePct:F2}% | EMA20↓ + RSI={rsi:F1}<50 + 종가<중심선 → 즉시 청산");
-            OnAlert?.Invoke($"🔄 [반대시그널] {symbol} +{roePct:F2}% 익절 (추세 반전 보호)");
+                $"🔄 [BB_MID_CROSS] {symbol} ROE={roePct:F2}% | 5m 종가 {prevClose:F4}→{lastClose:F4} BB중심선 {prevMiddle:F4}→{middle:F4} 하향돌파 → 즉시 청산");
+            OnAlert?.Invoke($"🔄 [반대신호] {symbol} ROE={roePct:F2}% 청산 (5m BB 중심선 하향돌파)");
 
             try
             {
@@ -4908,6 +4922,72 @@ namespace TradingBot
             catch (Exception ex)
             {
                 OnStatusLog?.Invoke($"❌ [반대시그널익절] {symbol} 청산 실패: {ex.Message}");
+            }
+        }
+
+        // [v5.22.68] 수익 트레일링 청산 — HighestROE 추적 + retrace 시 청산
+        //   사용자 보고: "FOGOUSDT +15% → -25% (40%p 추락)"
+        //   원리: 매 tick HighestROEForTrailing 갱신, retrace 폭 초과 시 즉시 청산
+        //   임계 (사용자 leverage 무관, ROE 기준):
+        //     일반 진입 (5중 가드): HighestROE ≥ +5% 도달 후 retrace ≥ 5%p → 청산
+        //     Daily Swing:        HighestROE ≥ +30% 도달 후 retrace ≥ 20%p → 청산 (큰 폭 추적)
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _profitTrailingChecked = new(StringComparer.OrdinalIgnoreCase);
+
+        private async Task CheckProfitTrailingExitAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            PositionInfo? pos = null;
+            lock (_posLock)
+            {
+                if (!_activePositions.TryGetValue(symbol, out pos)) return;
+                if (pos == null || !pos.IsOwnPosition) return;
+                if (!pos.IsLong) return;
+            }
+
+            if (pos.EntryPrice <= 0 || currentPrice <= 0) return;
+            decimal lev = pos.Leverage > 0 ? pos.Leverage : (_settings?.DefaultLeverage ?? 15m);
+            decimal priceChangePct = (currentPrice - pos.EntryPrice) / pos.EntryPrice * 100m;
+            decimal currentRoe = priceChangePct * lev;
+
+            // HighestROE 갱신
+            if (currentRoe > pos.HighestROEForTrailing)
+                pos.HighestROEForTrailing = currentRoe;
+
+            decimal highest = pos.HighestROEForTrailing;
+
+            // [v5.22.68] 수익권 진입 즉시 보호 — Daily Swing 면제 제거 (사용자 지시)
+            //   사용자: "FOGO -40% 청산 안 됨, Daily Swing이어도 -40%면 청산해야지"
+            //   원리: ROE +3% 도달 = 트레일링 활성. retrace 허용 = max(5%p, highest×33%) 동적 스케일
+            //     highest +5% → retrace 5%p → 청산 (= 본전 0%)
+            //     highest +15% → retrace 5%p → 청산 (= +10% 잠금)
+            //     highest +30% → retrace 10%p → 청산 (= +20% 잠금)
+            //     highest +100% → retrace 33%p → 청산 (= +67% 잠금)
+            const decimal triggerHigh = 3m;
+            if (highest < triggerHigh) return;
+            decimal retraceLimit = Math.Max(5m, highest * 0.33m);
+            decimal retrace = highest - currentRoe;
+            if (retrace < retraceLimit) return;
+
+            // 같은 5초 내 중복 청산 방지
+            if (_profitTrailingChecked.TryGetValue(symbol, out var last))
+            {
+                if (DateTime.UtcNow - last < TimeSpan.FromSeconds(5)) return;
+            }
+            _profitTrailingChecked[symbol] = DateTime.UtcNow;
+
+            OnStatusLog?.Invoke(
+                $"📉 [PROFIT_TRAIL] {symbol} 최고 ROE {highest:F1}% → 현재 {currentRoe:F1}% (retrace {retrace:F1}%p ≥ {retraceLimit:F0}%p) → 즉시 청산");
+            OnAlert?.Invoke($"📉 [수익보호] {symbol} 최고 {highest:F1}% → 현재 {currentRoe:F1}% 청산 (retrace {retrace:F1}%p)");
+
+            try
+            {
+                decimal qty = Math.Abs(pos.Quantity);
+                if (qty <= 0) return;
+                await _exchangeService.PlaceMarketOrderAsync(
+                    symbol, "SELL", qty, token, reduceOnly: true);
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"❌ [PROFIT_TRAIL] {symbol} 청산 실패: {ex.Message}");
             }
         }
 
