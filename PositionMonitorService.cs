@@ -490,8 +490,9 @@ namespace TradingBot.Services
                     {
                         double holdMinutes = holdingTime.TotalMinutes;
                         bool isMajor = symbol == "BTCUSDT" || symbol == "ETHUSDT" || symbol == "SOLUSDT" || symbol == "XRPUSDT";
-                        // [A] 시간 손절: 알트만 (메이저는 추세 따라 보유). PumpTimeStopMinutes(기본 120분) + ROE<=0
-                        if (!isMajor)
+                        // [v5.22.71] STD_TIME_STOP / STD_STAGNATION 비활성화 — 사용자 지시 "120분 손절 다 빼"
+                        //   v5.22.69 CheckTimeStopExitAsync 비활성화 + 여기 PositionMonitor Standard 시간 손절도 제거
+                        if (false && !isMajor)
                         {
                             decimal timeStopMin = _settings.PumpTimeStopMinutes > 0 ? _settings.PumpTimeStopMinutes : 120m;
                             if (holdMinutes >= (double)timeStopMin && currentROE <= 0m)
@@ -501,25 +502,21 @@ namespace TradingBot.Services
                                 break;
                             }
                         }
-                        // [v5.19.10 STAGNATION] 진입 후 20분+ AND |ROE| < 0.3% → 청산 (no progress)
-                        //   사용자 보고: "상승중 진입이라고 판단해서 횡보에서 오래 가지고 있는 상태"
-                        //   기존 시간손절(120분/ROE<=0)/횡보익절(30분/ROE>=3%) 사이 빈틈 메움
-                        if (!isMajor && holdMinutes >= 20 && Math.Abs(currentROE) < 0.3m)
+                        // [v5.22.71] STAGNATION 도 비활성화 — 시간 기반 청산 모두 제거 (사용자 정책)
+                        if (false && !isMajor && holdMinutes >= 20 && Math.Abs(currentROE) < 0.3m)
                         {
                             OnAlert?.Invoke($"💤 [STAGNATION] {symbol} {holdMinutes:F0}분 ROE={currentROE:F2}% (|ROE|<0.3% — 진척 없음) → 청산");
                             await ExecuteMarketClose(symbol, $"STD_STAGNATION ({holdMinutes:F0}min, ROE={currentROE:F2}%)", token);
                             break;
                         }
-                        // [v5.19.10 SLOW_BOX] 진입 후 30분+ AND |ROE| < 0.8% → 청산 (느린 박스)
-                        if (!isMajor && holdMinutes >= 30 && Math.Abs(currentROE) < 0.8m)
+                        // [v5.22.71] STD_SLOW_BOX / STD_SIDEWAYS_PROFIT 비활성화 — 시간 기반 강제 청산 모두 제거
+                        if (false && !isMajor && holdMinutes >= 30 && Math.Abs(currentROE) < 0.8m)
                         {
                             OnAlert?.Invoke($"💤 [SLOW_BOX] {symbol} {holdMinutes:F0}분 ROE={currentROE:F2}% (|ROE|<0.8% — 느린 박스) → 청산");
                             await ExecuteMarketClose(symbol, $"STD_SLOW_BOX ({holdMinutes:F0}min, ROE={currentROE:F2}%)", token);
                             break;
                         }
-
-                        // [B] 횡보 익절: 30분+ + ROE>=3% + BBWidth<1.5% (regime 약세)
-                        if (!isMajor && holdMinutes >= 30 && currentROE >= 3m
+                        if (false && !isMajor && holdMinutes >= 30 && currentROE >= 3m
                             && _marketDataManager.KlineCache.TryGetValue(symbol, out var kcStd) && kcStd.Count >= 25)
                         {
                             try
@@ -1596,20 +1593,17 @@ namespace TradingBot.Services
                     }
                     double holdMinutes = (DateTime.Now - entryTime).TotalMinutes;
 
-                    // [A] 시간 손절: PumpTimeStopMinutes(기본 120분) 초과 + 손실 중(ROE≤0) → 즉시 청산
+                    // [v5.22.71] PUMP_TIME_STOP 비활성화 — 사용자 지시 "120분 손절 다 빼"
                     decimal timeStopMinutes = _settings.PumpTimeStopMinutes > 0 ? _settings.PumpTimeStopMinutes : 120m;
-                    if (holdMinutes >= (double)timeStopMinutes && currentROE <= 0m)
+                    if (false && holdMinutes >= (double)timeStopMinutes && currentROE <= 0m)
                     {
                         OnAlert?.Invoke($"⏰ [TIME_STOP] {symbol} {holdMinutes:F0}분 보유 ≥ {timeStopMinutes:F0}분 + ROE={currentROE:F1}% (손실 중) → 시간 손절");
                         await ExecuteMarketClose(symbol, $"PUMP_TIME_STOP ({holdMinutes:F0}min, ROE={currentROE:F1}%)", token);
                         break;
                     }
 
-                    // [v5.10.86] [B] Regime-aware 횡보 익절: ML regime classifier가 Sideways 판정 + 수익권 → 익절
-                    //   기존 v5.10.85: BB Width < 1.5% 하드코딩 임계값
-                    //   수정: ML 모델이 Sideways 분류 → 임계값 학습 데이터 기반 (하드코딩 X)
-                    //   추가: regime classifier 미로드 시 v5.10.85 fallback 유지 (안전망)
-                    if (holdMinutes >= 30 && currentROE >= 3m  // ROE 5% → 3% 하향 (작은 수익이라도 횡보면 확정)
+                    // [v5.22.71] SIDEWAYS_PROFIT_TAKE 비활성화 — 시간 기반 강제 청산 모두 제거
+                    if (false && holdMinutes >= 30 && currentROE >= 3m
                         && _marketDataManager.KlineCache.TryGetValue(symbol, out var kc) && kc.Count >= 25)
                     {
                         try

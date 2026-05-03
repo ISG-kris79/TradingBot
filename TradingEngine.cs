@@ -4196,10 +4196,10 @@ namespace TradingBot
                     else
                     {
                         await AnalyzeAltSimpleTriggersAsync(symbol, currentPrice, token);
-                        // [v5.22.69] 새 진입 — 24h 폭등 종목 (5~30%) 갓 EMA20 돌파 시 즉시 진입
-                        //   사용자 보고: "BUSDT나 top5 상승률 코인 진입 없음"
-                        //   Daily Swing은 1D 봉 마감 (KST 09:00)에만 평가 → 그 외 시간 폭등 종목 못 잡음
                         await AnalyzeAltMomentumAsync(symbol, currentPrice, token);
+                        // [v5.22.72] 눌림목 진입 — 상승 추세 + 단기 눌림 + 반등 시작
+                        //   FOGO 같은 정확한 눌림목 케이스 잡기
+                        await AnalyzePullbackLongAsync(symbol, currentPrice, token);
                     }
                 }
                 catch (Exception ex)
@@ -4710,6 +4710,11 @@ namespace TradingBot
 
         private async Task AnalyzeAltMomentumAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
+            // [v5.22.72] AltMomentum 폐기 — 추격 매수 본질 (5봉 연속 BULL 후 진입)
+            //   ACH/ORCA/GIGGLE 손실 사례 입증. 대신 AnalyzePullbackLongAsync 사용.
+            await Task.CompletedTask;
+            return;
+#pragma warning disable CS0162
             lock (_posLock)
             {
                 if (_activePositions.ContainsKey(symbol)) return;
@@ -4770,6 +4775,99 @@ namespace TradingBot
             catch (Exception ex)
             {
                 OnStatusLog?.Invoke($"⚠️ [ALT_MOMENTUM] {symbol} 분석 오류: {ex.Message}");
+            }
+#pragma warning restore CS0162
+        }
+
+        // [v5.22.72] 눌림목 진입 — 상승 추세 + 단기 눌림 + 반등 시작 시점 정확 진입
+        //   진입 조건:
+        //     1. 1H 종가 > 1H EMA20 (큰 추세 상승)
+        //     2. 15m 직전 봉 BEAR (눌림 발생)
+        //     3. 15m 현재 봉 BULL + 종가 > 직전 봉 high (반등 + Higher High)
+        //     4. EMA20 이격도 ≤ 1% (지지선 근처)
+        //     5. RSI 35~60 (눌림 회복 초기)
+        //     6. 거래량 > 직전 5봉 평균 × 1.2
+        //   심볼당 30분 cooldown + 봉 마감 1회 발화
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _pullbackCooldown = new(StringComparer.OrdinalIgnoreCase);
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _pullbackLastBarFired = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan PullbackCooldown = TimeSpan.FromMinutes(30);
+
+        private async Task AnalyzePullbackLongAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            lock (_posLock)
+            {
+                if (_activePositions.ContainsKey(symbol)) return;
+            }
+            if (_pullbackCooldown.TryGetValue(symbol, out var lastTry))
+            {
+                if (DateTime.UtcNow - lastTry < PullbackCooldown) return;
+            }
+
+            try
+            {
+                // 15m 80봉 + 1H 30봉 fetch
+                var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 80, token);
+                if (k15 == null || k15.Count < 25) return;
+                var k1h = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 30, token);
+                if (k1h == null || k1h.Count < 22) return;
+
+                // 마감 봉만 사용 (klines[^2])
+                var closed15 = k15.Take(k15.Count - 1).ToList();
+                var closed1h = k1h.Take(k1h.Count - 1).ToList();
+                if (closed15.Count < 22 || closed1h.Count < 21) return;
+
+                var lastBar = closed15[^1];
+                var prevBar = closed15[^2];
+                if (_pullbackLastBarFired.TryGetValue(symbol, out var firedBar) && firedBar == lastBar.OpenTime) return;
+
+                // 1. 1H EMA20 위 (큰 추세 상승)
+                var closes1h = closed1h.Select(k => (double)k.ClosePrice).ToList();
+                var ema201h = IndicatorCalculator.CalculateEMASeries(closes1h, 20);
+                if (ema201h == null || ema201h.Count < 1) return;
+                if (closed1h[^1].ClosePrice <= (decimal)ema201h[^1]) return;
+
+                // 2. 직전 15m 봉 BEAR (눌림)
+                bool prevBear = prevBar.ClosePrice < prevBar.OpenPrice;
+                if (!prevBear) return;
+
+                // 3. 현재 봉 BULL + 종가 > 직전 봉 High
+                bool nowBull = lastBar.ClosePrice > lastBar.OpenPrice;
+                bool higherHigh = lastBar.ClosePrice > prevBar.HighPrice;
+                if (!nowBull || !higherHigh) return;
+
+                // 4. 15m EMA20 이격도 ≤ 1%
+                var closes15 = closed15.Select(k => (double)k.ClosePrice).ToList();
+                var ema2015 = IndicatorCalculator.CalculateEMASeries(closes15, 20);
+                if (ema2015 == null || ema2015.Count < 1) return;
+                decimal ema20 = (decimal)ema2015[^1];
+                decimal distEma = (lastBar.ClosePrice - ema20) / ema20 * 100m;
+                if (distEma > 1.0m || distEma < -1.0m) return;
+
+                // 5. RSI 35~60
+                double rsi = IndicatorCalculator.CalculateRSI(closed15, 14);
+                if (rsi < 35.0 || rsi > 60.0) return;
+
+                // 6. 거래량 > 직전 5봉 평균 × 1.2
+                int n = closed15.Count;
+                decimal volAvg5 = 0m;
+                for (int i = n - 6; i < n - 1; i++) volAvg5 += closed15[i].Volume;
+                volAvg5 /= 5m;
+                if (volAvg5 <= 0m || lastBar.Volume < volAvg5 * 1.2m) return;
+
+                _pullbackLastBarFired[symbol] = lastBar.OpenTime;
+                _pullbackCooldown[symbol] = DateTime.UtcNow;
+
+                OnStatusLog?.Invoke(
+                    $"📈 [PULLBACK_LONG] {symbol} 눌림목 반등 진입 | close={lastBar.ClosePrice:F4} prevHigh={prevBar.HighPrice:F4} ema20={ema20:F4} dist={distEma:F2}% RSI={rsi:F1} vol×{lastBar.Volume / volAvg5:F2}");
+
+                await ExecuteAutoOrder(
+                    symbol, "LONG", currentPrice, token,
+                    signalSource: "PULLBACK_LONG",
+                    mode: "TREND");
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [PULLBACK_LONG] {symbol} 분석 오류: {ex.Message}");
             }
         }
 

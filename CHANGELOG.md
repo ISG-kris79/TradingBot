@@ -5,6 +5,35 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.72] - 2026-05-03
+
+### 🎯 Pullback Long 진입 + AltMomentum 폐기 + 모든 시간 기반 청산 제거
+
+#### 사용자 보고
+- "FOGO 눌림목 진입했으면 수익 났을것" / "추격 매수 어떤 로직 있어야"
+- "120분 손절 다 빼"
+- "오늘 9시부터 들어간 코인 100% 손절 실패"
+
+#### 진단 (chase score 측정)
+- ACH/ORCA/GIGGLE: 5봉 양봉 4~6/5 (연속 상승 끝물 = 추격 매수)
+- FOGO 진입은 사실 정확한 눌림목 (15:30 BEAR → 15:45 BULL 반등 시작)
+  → 진입 좋음, 청산 누락 (v5.22.68 ProfitTrailing 미적용)
+
+#### Added - AnalyzePullbackLongAsync
+- 1H EMA20 위 (큰 추세 상승)
+- 15m 직전 봉 BEAR (눌림)
+- 15m 현재 봉 BULL + 종가 > 직전 봉 high (반등 + Higher High)
+- EMA20 이격도 ≤ ±1% (지지선 근처)
+- RSI 35~60 (눌림 회복 초기)
+- 거래량 > 직전 5봉 평균 × 1.2
+
+#### Removed
+- AnalyzeAltMomentumAsync 폐기 (추격 매수 본질)
+- 모든 시간 기반 강제 청산 비활성화 (PositionMonitorService 6곳)
+  - STD_TIME_STOP / STD_STAGNATION / STD_SLOW_BOX / STD_SIDEWAYS_PROFIT
+  - PUMP_TIME_STOP / SIDEWAYS_PROFIT_TAKE
+  - 청산 책임 = TP/SL + ProfitTrailing + BB 중심선 하향돌파만
+
 ## [5.22.70] - 2026-05-03
 
 ### 🚨 Telegram 누적 PnL fix + AltMomentum 진입 조건 완화
