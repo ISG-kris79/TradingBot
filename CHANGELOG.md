@@ -5,6 +5,25 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.22.70] - 2026-05-03
+
+### 🚨 Telegram 누적 PnL fix + AltMomentum 진입 조건 완화
+
+#### 사용자 보고
+- "수익률 0.00% / 금일 누적 0 USDT 잘못 표시"
+- Top30 24h 백테스트: 진입 0건 (조건 너무 빡셈)
+
+#### Fixed - Telegram 누적
+- `GetTodayClosedPnlAsync` 추가 — KST 자정 이후 PnL 합계 DB 조회
+- TryNotifyProfit: `0m` 하드코딩 → 실제 todayTotal
+- "💼 금일 누적: $XX.XX USDT" 정확 표시
+
+#### Changed - AltMomentum 완화
+- 24h 변화율: 5~30% → **5~50%** (더 큰 폭등 종목 포착)
+- "갓 돌파" 조건 (직전 봉 ≤ 직전 EMA20) **제거**
+- 거래량: ×2.0 → **×1.3**
+- 효과: 백테스트 0건 → 실 진입 가능
+
 ## [5.22.69] - 2026-05-03
 
 ### 🚨 Telegram ROE 부호 fix + Time Stop 전체 비활성화 + AltMomentum 신규 진입

@@ -4731,30 +4731,28 @@ namespace TradingBot
 
                 int n = closedKlines.Count;
                 if (n < 96) return;
-                // 1. 24h 변화율 5~30%
+                // [v5.22.70] 진입 조건 완화 — 백테스트 24h top 30 0건 진입 → 너무 빡셈 입증
+                //   1. 24h 변화율 5~50% (30% → 50% 확대, 더 큰 폭등 종목도 포착)
+                //   2. 15m close > EMA20
+                //   3. (제거) 갓 돌파 조건 (직전 봉 ≤ 직전 EMA20)
+                //   4. 거래량 × 2.0 → × 1.3 완화
+                //   5. RSI < 70
                 decimal price24hAgo = closedKlines[n - 96].ClosePrice;
                 if (price24hAgo <= 0) return;
                 decimal change24h = (lastClosedBar.ClosePrice - price24hAgo) / price24hAgo * 100m;
-                if (change24h < 5m || change24h > 30m) return;
+                if (change24h < 5m || change24h > 50m) return;
 
-                // 2. 15m close > EMA20
                 var closes = closedKlines.Select(k => (double)k.ClosePrice).ToList();
                 var emaSeries = IndicatorCalculator.CalculateEMASeries(closes, 20);
-                if (emaSeries == null || emaSeries.Count < 2) return;
+                if (emaSeries == null || emaSeries.Count < 1) return;
                 decimal ema20 = (decimal)emaSeries[^1];
-                decimal ema20Prev = (decimal)emaSeries[^2];
                 if (lastClosedBar.ClosePrice <= ema20) return;
 
-                // 3. 직전 봉 종가 ≤ 직전 EMA20 (갓 돌파)
-                if (closedKlines[^2].ClosePrice > ema20Prev) return;
-
-                // 4. 거래량 > 직전 5봉 평균 × 2
                 decimal volAvg5 = 0m;
                 for (int i = n - 6; i < n - 1; i++) volAvg5 += closedKlines[i].Volume;
                 volAvg5 /= 5m;
-                if (volAvg5 <= 0m || lastClosedBar.Volume < volAvg5 * 2.0m) return;
+                if (volAvg5 <= 0m || lastClosedBar.Volume < volAvg5 * 1.3m) return;
 
-                // 5. RSI < 70
                 double rsi = IndicatorCalculator.CalculateRSI(closedKlines, 14);
                 if (rsi >= 70) return;
 

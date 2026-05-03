@@ -6251,6 +6251,173 @@ internal static class Program
         Console.WriteLine("[해석] TP=ATR익절 / SL=ATR손절 / MTP=모멘텀음수전환 익절(>0.5%) / MEX=모멘텀청산(이외) / BE=±0.3% / TO=Timeout");
     }
 
+    // [v5.22.69] Top30 24h 상승률 백테스트 — AltMomentum 검증
+    //   사용자 보고: "BUSDT/TST 폭등 코인 진입 없음. 손절만 나옴"
+    //   1. Binance /fapi/v1/ticker/24hr 호출 → priceChangePercent 상위 30개 추출
+    //   2. 각 심볼 1m 1500봉 fetch (~25h)
+    //   3. AltMomentum 진입 시뮬 (24h +5~30% + EMA20 갓 돌파 + vol×2 + RSI<70)
+    //   4. TP +3% / SL -2% / max 30분 hold
+    private static async Task RunTop30Last24hAsync()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  v5.22.69 검증 — top 30 상승률 알트 (24h) AltMomentum 시뮬");
+        Console.WriteLine("================================================================");
+
+        // 1. ticker/24hr fetch top 30
+        Console.WriteLine("\n[1] Binance /fapi/v1/ticker/24hr — top 30 추출");
+        List<(string sym, decimal change24h, decimal qVol)> top30;
+        try
+        {
+            var json = await http.GetStringAsync("https://fapi.binance.com/fapi/v1/ticker/24hr");
+            var arr = JsonDocument.Parse(json).RootElement;
+            var all = new List<(string, decimal, decimal)>();
+            foreach (var e in arr.EnumerateArray())
+            {
+                string sym = e.GetProperty("symbol").GetString() ?? "";
+                if (!sym.EndsWith("USDT")) continue;
+                if (!decimal.TryParse(e.GetProperty("priceChangePercent").GetString(), CultureInfo.InvariantCulture, out var ch)) continue;
+                if (!decimal.TryParse(e.GetProperty("quoteVolume").GetString(), CultureInfo.InvariantCulture, out var qv)) continue;
+                if (qv < 5_000_000m) continue;     // 거래대금 500만 USDT 이상
+                all.Add((sym, ch, qv));
+            }
+            top30 = all.OrderByDescending(x => x.Item2).Take(30).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ ticker fetch 실패: {ex.Message}");
+            return;
+        }
+
+        Console.WriteLine($"  TOP 30 추출 완료. 1~5위:");
+        for (int k = 0; k < Math.Min(5, top30.Count); k++)
+            Console.WriteLine($"    {k + 1}. {top30[k].sym,-15} +{top30[k].change24h,6:F2}%  qVol=${top30[k].qVol / 1_000_000m,8:F1}M");
+
+        // 2. 각 심볼 1m fetch
+        Console.WriteLine($"\n[2] fetch 1m 1500봉 (~25h) × {top30.Count}");
+        var fullData = new Dictionary<string, List<IBinanceKline>>();
+        int idx = 0;
+        foreach (var (sym, _, _) in top30)
+        {
+            idx++;
+            Console.Write($"[{idx}/{top30.Count}] {sym} ");
+            try
+            {
+                var kl = await FetchKlines1mAsync(sym, 1);
+                if (kl.Count < 1440) { Console.WriteLine($"skip ({kl.Count})"); continue; }
+                fullData[sym] = kl;
+                Console.WriteLine($"ok ({kl.Count} bars)");
+            }
+            catch (Exception ex) { Console.WriteLine("fail: " + ex.Message); }
+        }
+
+        // 3. AltMomentum 시뮬 (1m → 15m 환산)
+        const decimal margin = 100m;
+        const int maxSlots = 3;
+        const decimal tpPct = 3.0m;
+        const decimal slPct = 2.0m;
+        const decimal slippagePct = 0.05m;
+        const int maxHoldBars = 30;       // 30분
+        const int cooldownBars = 30;
+
+        bool ShouldEnter(List<IBinanceKline> kl, int i)
+        {
+            // 1m봉. 15봉 = 15분.
+            if (i < 1440) return false;       // 24h 백필 필요
+            // 24h 변화율 5~30%
+            decimal price24h = kl[i - 1440].ClosePrice;
+            if (price24h <= 0) return false;
+            decimal change24h = (kl[i].ClosePrice - price24h) / price24h * 100m;
+            if (change24h < 5m || change24h > 30m) return false;
+            // 15m EMA20 — 1m × 300봉 → EMA20 환산
+            decimal ema20 = Ema(kl, i, 300);     // 1m EMA300 ≈ 15m EMA20
+            decimal ema20Prev = Ema(kl, i - 15, 300);
+            if (kl[i].ClosePrice <= ema20) return false;
+            if (kl[i - 15].ClosePrice > ema20Prev) return false;     // 갓 돌파
+            // 거래량 (직전 5×15봉 = 75봉 평균 × 2)
+            decimal volAvg = 0m;
+            for (int q = i - 75; q < i; q++) volAvg += kl[q].Volume;
+            volAvg /= 75m;
+            if (volAvg <= 0m || kl[i].Volume * 15m < volAvg * 75m * 2m) return false;
+            // RSI < 70
+            double rsi = CalcRsi14(kl, i);
+            if (rsi >= 70) return false;
+            return true;
+        }
+
+        (string kind, decimal pctRaw, int holdBars) Outcome(List<IBinanceKline> kl, int i)
+        {
+            decimal entry = kl[i].ClosePrice;
+            decimal tpPx = entry * (1 + tpPct / 100m);
+            decimal slPx = entry * (1 - slPct / 100m);
+            for (int k = 1; k <= maxHoldBars && i + k < kl.Count; k++)
+            {
+                var b = kl[i + k];
+                if (b.HighPrice >= tpPx && b.LowPrice <= slPx) return ("SL", -slPct, k);
+                if (b.HighPrice >= tpPx) return ("TP", tpPct, k);
+                if (b.LowPrice <= slPx) return ("SL", -slPct, k);
+            }
+            int idxClose = Math.Min(i + maxHoldBars, kl.Count - 1);
+            decimal pctTo = (kl[idxClose].ClosePrice - entry) / entry * 100m;
+            return (Math.Abs(pctTo) < 0.3m ? "BE" : "TIMEOUT", pctTo, maxHoldBars);
+        }
+
+        // 시뮬
+        var candidates = new List<(DateTime time, string sym, int barIdx)>();
+        foreach (var kv in fullData)
+        {
+            var kl = kv.Value; var sym = kv.Key;
+            int lastFire = -1000;
+            for (int i = 1450; i < kl.Count - maxHoldBars; i++)
+            {
+                if (i - lastFire < cooldownBars) continue;
+                if (!ShouldEnter(kl, i)) continue;
+                candidates.Add((kl[i].OpenTime, sym, i));
+                lastFire = i;
+            }
+        }
+        candidates.Sort((a, b) => a.time.CompareTo(b.time));
+
+        var active = new List<DateTime>();
+        decimal totalPnl = 0m;
+        int n = 0, tpN = 0, slN = 0, beN = 0, toN = 0;
+        var perSym = new Dictionary<string, (int n, int tp, int sl, decimal pnl)>();
+        foreach (var c in candidates)
+        {
+            active.RemoveAll(t => t <= c.time);
+            if (active.Count >= maxSlots) continue;
+            decimal notional = margin * LEVERAGE;
+            var (kind, pctRaw, hold) = Outcome(fullData[c.sym], c.barIdx);
+            decimal pctNet = pctRaw - (decimal)(FEE_RATE * 2m * 100m) - (slippagePct * 2m);
+            decimal pnlUsd = notional * pctNet / 100m;
+            totalPnl += pnlUsd;
+            n++;
+            if (kind == "TP") tpN++;
+            else if (kind == "SL") slN++;
+            else if (kind == "BE") beN++;
+            else toN++;
+            int endBar = Math.Min(c.barIdx + hold, fullData[c.sym].Count - 1);
+            active.Add(fullData[c.sym][endBar].OpenTime);
+            if (!perSym.ContainsKey(c.sym)) perSym[c.sym] = (0, 0, 0, 0m);
+            var p = perSym[c.sym];
+            perSym[c.sym] = (p.n + 1, p.tp + (kind == "TP" ? 1 : 0), p.sl + (kind == "SL" ? 1 : 0), p.pnl + pnlUsd);
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"  TP+{tpPct}% / SL-{slPct}% / max {maxHoldBars}분 / 마진 ${margin}×{maxSlots}슬롯×{LEVERAGE}x / cooldown {cooldownBars}분");
+        Console.WriteLine();
+        Console.WriteLine($"==== 24h 종합 결과 ====");
+        Console.WriteLine($"  진입: {n}건  TP: {tpN}  SL: {slN}  BE: {beN}  TIMEOUT: {toN}");
+        Console.WriteLine($"  PnL: ${totalPnl:F2}  ROI(시드 $400): {totalPnl / 400m * 100m:F2}%");
+        Console.WriteLine();
+        Console.WriteLine($"==== 심볼별 결과 (PnL desc) ====");
+        Console.WriteLine($"{"심볼",-15} {"진입",4} {"TP",3} {"SL",3} {"PnL",10}");
+        Console.WriteLine(new string('-', 50));
+        foreach (var kv in perSym.OrderByDescending(k => k.Value.pnl))
+        {
+            Console.WriteLine($"{kv.Key,-15} {kv.Value.n,4} {kv.Value.tp,3} {kv.Value.sl,3} {kv.Value.pnl,9:F2}");
+        }
+    }
+
     // [v5.22.65] Daily Swing 변형 4종 — 수익성 더 높은 변형 탐색
     //   #A 베이스: 1D close>20SMA + 20SMA>50SMA + RSI 50~65 + vol×1.5 + 양봉 (현재 라이브)
     //   #B 강화: + 24h 변화율 ≥ +5% (펌프 종목 우선)
@@ -8183,6 +8350,11 @@ internal static class Program
         if (HasArg("--daily-swing-variants"))
         {
             await RunDailySwingVariantsAsync();
+            return;
+        }
+        if (HasArg("--top30-24h"))
+        {
+            await RunTop30Last24hAsync();
             return;
         }
         if (HasArg("--daily-swing"))

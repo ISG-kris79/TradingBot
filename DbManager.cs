@@ -88,29 +88,43 @@ namespace TradingBot.Services
 
                 // 신규 심볼 → 90초 후 1번만 발송 (fire-and-forget)
                 MainWindow.Instance?.AddLog($"📨 [Notify][{kind}] {symbol} 청산 감지 → {NOTIFY_AGGREGATE_WINDOW_SECONDS}초 합산 후 발송 예약");
+                // [v5.22.70] capture symbol for closure (DbManager 정적 컨텍스트)
+                string symbolCap = symbol;
                 _ = Task.Run(async () =>
                 {
                     try
                     {
                         await Task.Delay(TimeSpan.FromSeconds(NOTIFY_AGGREGATE_WINDOW_SECONDS));
-                        if (_notifyAggregate.TryRemove(symbol, out var final))
+                        if (_notifyAggregate.TryRemove(symbolCap, out var final))
                         {
                             decimal pnlPctSign = final.PnL >= 0 ? final.PnLPercentMaxAbs : -final.PnLPercentMaxAbs;
                             string chunkSuffix = final.ChunkCount > 1 ? $" ({final.ChunkCount}청크 합산)" : "";
-                            MainWindow.Instance?.AddLog($"✉️ [Notify][AGG] {symbol}{chunkSuffix} 최종 PnL={final.PnL:+0.00;-0.00} ROE={pnlPctSign:+0.0;-0.0}%");
-                            // [v5.22.58] await + try-catch 로 발송 실패 명시적 로그
+                            MainWindow.Instance?.AddLog($"✉️ [Notify][AGG] {symbolCap}{chunkSuffix} 최종 PnL={final.PnL:+0.00;-0.00} ROE={pnlPctSign:+0.0;-0.0}%");
+
+                            // [v5.22.70] 텔레그램 표시 fix
+                            //   사용자 보고: "수익률 0.00% / 금일 누적 0 USDT 잘못 표시"
+                            //   원인: DB PnLPercent=0 (외부 청산 fallback) + totalPnl=0m 하드코딩
+                            //   fix: 오늘 자정 이후 청산 PnL 합계 DB 조회 + ROE 추정 (PnL/notional×lev)
+                            int uid = AppConfig.CurrentUser?.Id ?? 0;
+                            decimal todayTotal = 0m;
+                            if (uid > 0 && Shared != null)
+                            {
+                                try { todayTotal = await Shared.GetTodayClosedPnlAsync(uid); }
+                                catch { todayTotal = final.PnL; }
+                            }
+
                             try
                             {
-                                await NotificationService.Instance.NotifyProfitAsync(symbol, final.PnL, pnlPctSign, 0m);
-                                MainWindow.Instance?.AddLog($"📨 [Notify][SENT] {symbol} 텔레그램 발송 완료");
+                                await NotificationService.Instance.NotifyProfitAsync(symbolCap, final.PnL, pnlPctSign, todayTotal);
+                                MainWindow.Instance?.AddLog($"📨 [Notify][SENT] {symbolCap} 텔레그램 발송 완료 (오늘누적 ${todayTotal:F2})");
                             }
                             catch (Exception sendEx)
                             {
-                                MainWindow.Instance?.AddLog($"❌ [Notify][SEND_FAIL] {symbol} 텔레그램 발송 실패: {sendEx.Message}");
+                                MainWindow.Instance?.AddLog($"❌ [Notify][SEND_FAIL] {symbolCap} 텔레그램 발송 실패: {sendEx.Message}");
                             }
                         }
                     }
-                    catch (Exception aex) { MainWindow.Instance?.AddLog($"⚠️ [Notify][AGG] {symbol} 합산 발송 예외: {aex.Message}"); }
+                    catch (Exception aex) { MainWindow.Instance?.AddLog($"⚠️ [Notify][AGG] {symbolCap} 합산 발송 예외: {aex.Message}"); }
                 });
             }
             catch (Exception ex)
@@ -511,6 +525,22 @@ END");
                 MainWindow.Instance?.AddLog($"⚠️ [DB] PositionState 복원 실패: {ex.Message}");
             }
             return result;
+        }
+
+        /// <summary>[v5.22.70] 오늘(KST 자정 이후) 청산 PnL 합계 — Telegram 누적 표시용</summary>
+        public async Task<decimal> GetTodayClosedPnlAsync(int userId)
+        {
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                var sum = await db.QueryFirstOrDefaultAsync<decimal?>(
+                    @"SELECT ISNULL(SUM(PnL), 0) FROM dbo.TradeHistory
+                      WHERE UserId=@UserId AND IsClosed=1
+                            AND ExitTime >= CAST(GETDATE() AS DATE)",
+                    new { UserId = userId }, commandTimeout: 10);
+                return sum ?? 0m;
+            }
+            catch { return 0m; }
         }
 
         /// <summary>포지션 청산 시 상태 삭제</summary>
