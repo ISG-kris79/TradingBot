@@ -5,6 +5,29 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.8] - 2026-05-04
+
+### 🐛 hotfix: bot-side 감시 스킵 버그 (TRADOORUSDT 5h 33m 무관심 사고)
+
+#### 사용자 보고
+- "TRADOORUSDT 8:40 진입한 게 14:13 까지 가지고 있었는데 실시간 시장 신호 데이터그리드에 없었고 활성포지션에도 없음"
+
+#### DB 진단
+08:40:37 🛡️ [PositionSync] TRADOORUSDT bot-side 감시 스킵 — 거래소 SL/TP/Trailing 등록 완료
+... (5시간 33분 봇 무관심) ...
+14:13:55 🚫 TRADOORUSDT 외부 청산 감지 → -$59.53 (-49.5%)
+
+#### 원인
+v5.10.19 의 "거래소 algoOrder 등록 시 bot-side monitor 스킵" 로직이
+- per-symbol PositionMonitor 시작 안 함
+- BEARISH_EXIT 3종 / BB middle break 트리거 모두 미작동
+- 결국 거래소 SL hit 시까지 봇 무관심
+
+#### 수정 (TradingEngine.cs PlaceAndTrackEntryAsync)
+- `if (HasActiveBracket) skip` 분기 제거
+- 항상 TryStartPumpMonitor / TryStartStandardMonitor 호출
+- bot-side monitor + 거래소 algoOrder = 이중 보호
+
 ## [5.23.7] - 2026-05-04
 
 ### 🛡️ 4시간봉 긴 꼬리 음봉 차단 가드

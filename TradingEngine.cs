@@ -10115,15 +10115,10 @@ namespace TradingBot
                 // [v3.3.6] UI 포지션 상태 활성화 (수동진입과 동일하게)
                 OnPositionStatusUpdate?.Invoke(symbol, true, actualEntryPrice);
 
-                // [v5.10.19] bot-side 감시 루프 결정
-                // ExecuteFullEntryWithAllOrdersAsync로 거래소에 SL/TP/Trailing 등록 완료된 경우
-                // → PositionSyncService(10초 폴링)가 청산 감지 + OrderManager가 잔여 주문 취소
-                // → bot-side 이중 감시 불필요 (타임아웃/충돌 원인 제거)
-                if (_orderManager.HasActiveBracket(symbol))
-                {
-                    OnStatusLog?.Invoke($"🛡️ [PositionSync] {symbol} bot-side 감시 스킵 — 거래소 SL/TP/Trailing 등록 완료");
-                }
-                else
+                // [v5.23.8] bot-side 감시 항상 활성화 (이중 보호)
+                //   이전: HasActiveBracket 시 스킵 → TRADOORUSDT 5h 33m 무관심 사고
+                //   변경: 거래소 algoOrder + bot-side monitor 둘 다 활성화
+                //         BEARISH_EXIT 3종 + BB middle break 트리거 보장
                 {
                     bool isPumpPosition = false;
                     lock (_posLock)
@@ -10141,6 +10136,9 @@ namespace TradingBot
                     {
                         TryStartStandardMonitor(symbol, actualEntryPrice, decision == "LONG", ctx.Mode, tpPrice, slPrice, ctx.Token, "new-entry");
                     }
+
+                    if (_orderManager.HasActiveBracket(symbol))
+                        OnStatusLog?.Invoke($"🛡️ [PositionSync] {symbol} bot-side monitor + 거래소 algoOrder 이중 보호 활성");
                 }
 
                 // [v3.2.46] 정찰대/AI Advisor 진입 → ROE 기반 본진입 전환 태스크
