@@ -5,6 +5,26 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.14] - 2026-05-04
+
+### 🏷️ Category 라벨 통일 LORENTZIAN + UserId 필터 + UI 동기화
+
+#### 사용자 보고
+- "PUMP 카테고리 왜 나옴? KNN 만 한다고 했잖아"
+- DASH Id=4745 진입 STRATEGY=LORENTZIAN 정확하지만 Category=PUMP (라벨 버그)
+
+#### 수정
+1. `DbManager.ResolveTradeCategory`: default "PUMP" → "LORENTZIAN" 통일
+   - 메이저 (BTC/ETH/SOL/XRP/BNB) = "MAJOR" 만 유지
+   - 모든 알트 KNN 진입 = "LORENTZIAN"
+2. `MainViewModel.RefreshPositionHistoryFromDbAsync`: WHERE UserId = @UserId 추가
+   - 다른 user 의 row 가 cyberoto 의 row 가리는 버그 fix
+3. DB backfill: TradeHistory Category PUMP → LORENTZIAN 8 row 정정
+
+#### 봇 재시작 후
+- 신규 진입 모두 Category="LORENTZIAN" 저장
+- UI PositionHistory 그리드에 cyberoto user 의 row 만 표시
+
 ## [5.23.13] - 2026-05-04
 
 ### 🐛 hotfix: 외부 청산 ExitPrice/ExitTime 정확 복구 (DASHUSDT 익절 누락)

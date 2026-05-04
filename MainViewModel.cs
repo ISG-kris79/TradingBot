@@ -4819,20 +4819,27 @@ GROUP BY Category
         }
 
         // [v5.22.27] BinancePositionHistory → PositionHistory ObservableCollection 갱신
+        // [v5.23.14] UserId 필터 추가 (사용자: "로그인 정보가 제일 중요")
         private async Task RefreshPositionHistoryFromDbAsync()
         {
             try
             {
                 string cs = AppConfig.ConnectionString;
                 if (string.IsNullOrEmpty(cs)) return;
+                int userId = AppConfig.CurrentUser?.Id ?? 0;
+                if (userId <= 0)
+                {
+                    try { AddLiveLog("⚠️ [PositionHistory] CurrentUser.Id 없음 — 로그인 후 다시 시도"); } catch { }
+                    return;
+                }
                 await using var db = new Microsoft.Data.SqlClient.SqlConnection(cs);
                 await db.OpenAsync();
                 var rows = await Dapper.SqlMapper.QueryAsync<TradingBot.Services.PositionHistoryRow>(db, @"
 SELECT TOP 500 Id, Symbol, PositionSide, OpenTime, CloseTime, AvgEntryPrice, AvgExitPrice,
        TotalQuantity, RealizedPnl, Commission, NetPnl, RoePct, FillCount, ISNULL(Category,'') AS Category
 FROM dbo.BinancePositionHistory
-ORDER BY CloseTime DESC, Id DESC
-", commandTimeout: 30);
+WHERE UserId = @UserId
+ORDER BY CloseTime DESC, Id DESC", new { UserId = userId }, commandTimeout: 30);
                 var list = rows.ToList();
                 RunOnUI(() =>
                 {

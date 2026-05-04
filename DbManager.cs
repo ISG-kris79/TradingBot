@@ -345,7 +345,8 @@ END", commandTimeout: 60);
         /// </summary>
         public static string ResolveTradeCategory(string symbol, string? signalSource)
         {
-            // 메이저 심볼 (TradingEngine.MajorSymbols 동일)
+            // [v5.23.14] 봇 단일 진입 = LORENTZIAN. 메이저는 MAJOR 라벨만 유지 (UI 슬롯 구분용).
+            //   사용자 지시: "PUMP/SPIKE/SQUEEZE/BB_WALK 다 폐기 — KNN 만"
             if (!string.IsNullOrEmpty(symbol))
             {
                 switch (symbol)
@@ -358,18 +359,7 @@ END", commandTimeout: 60);
                         return "MAJOR";
                 }
             }
-
-            // [v5.21.3] 카테고리 분기 — SPIKE 차단 + SQUEEZE 신규 표시
-            if (!string.IsNullOrEmpty(signalSource))
-            {
-                string s = signalSource.ToUpperInvariant();
-                if (s.StartsWith("SPIKE") || s.Equals("TICK_SURGE") || s.StartsWith("CRASH"))
-                    return "SPIKE";
-                if (s.Contains("SQUEEZE")) return "SQUEEZE";
-                if (s.Contains("BB_WALK") || s.Contains("BBWALK")) return "BB_WALK";
-            }
-
-            return "PUMP";
+            return "LORENTZIAN";
         }
 
         /// <summary>
