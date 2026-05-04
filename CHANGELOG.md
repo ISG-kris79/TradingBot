@@ -5,6 +5,30 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.13] - 2026-05-04
+
+### 🐛 hotfix: 외부 청산 ExitPrice/ExitTime 정확 복구 (DASHUSDT 익절 누락)
+
+#### 사용자 보고 + 진단
+- DASH 익절 텔레그램 +20.30 USDT (15:04:04) 발화
+- 매매기록 UI 에 DASHUSDT 익절 row 표시 안 됨
+- DB 진단: Id=4745 EntryPrice=ExitPrice=46.36 + PnL=+20.30 모순
+- 바이낸스 fills 직접 확인: 14:58:34 SELL @ 47.31 익절 정확함
+- 봇이 ExitPrice = EntryPrice 로 fallback (잘못된 거짓 데이터)
+
+#### 수정
+1. `BinanceExchangeService.GetExitFillsAsync` 신규
+   - userTrades API 직접 조회 → reduceOnly SELL fills (LONG 청산) 추출
+   - 평균 ExitPrice + 마지막 ExitTime + 총 RealizedPnl + ExitQty 반환
+2. `TradingEngine.ReconcileDbWithExchangePositionsAsync`
+   - 기존: ExitPrice = dbTrade.EntryPrice (fallback) → 모순
+   - 변경: GetExitFillsAsync 호출 → 정확한 avgExitPrice / lastExitTime / pnl 사용
+   - ExitReason: "EXTERNAL_CLOSE_RECONCILE (price=... pnl=...)"
+
+#### 추가 수동 fix
+- DB Id=4745 row 직접 UPDATE: ExitPrice 46.36 → 47.31, ExitTime 15:03:44 → 14:58:34, ExitReason "TP_EXCHANGE_HIT"
+- 다음 봇 재시작 후부터 모든 외부 청산이 자동 정확 저장
+
 ## [5.23.12] - 2026-05-04
 
 ### 🐛 매매기록 UI 버그 fix (익절 누락 + 심볼 클릭 필터 + 정렬)

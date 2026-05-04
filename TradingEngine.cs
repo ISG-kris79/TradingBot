@@ -2337,16 +2337,36 @@ namespace TradingBot
                         string closeSide = side.Equals("BUY", StringComparison.OrdinalIgnoreCase) ? "SELL" : "BUY";
 
                         // [v5.20.7 BUG FIX] 외부 청산도 Binance Income REALIZED_PNL 조회 → 실제 PnL 기록
-                        //   기존: PnL=0 일괄 처리 → 일일 손익 통계에서 손실 누락 ($-70 사라짐)
+                        //   [v5.23.13] 거래소 fills 직접 조회 → 정확한 ExitPrice + ExitTime + PnL
                         decimal actualPnl = 0m;
+                        decimal actualExitPrice = dbTrade.EntryPrice;   // fallback
+                        DateTime actualExitTime = DateTime.Now;
                         try
                         {
                             if (_exchangeService is BinanceExchangeService binSvc)
                             {
-                                actualPnl = await binSvc.GetRealizedPnLAsync(
+                                bool isLongPos = string.Equals(dbTrade.Side, "LONG", StringComparison.OrdinalIgnoreCase)
+                                              || string.Equals(dbTrade.Side, "BUY", StringComparison.OrdinalIgnoreCase);
+                                var fills = await binSvc.GetExitFillsAsync(
                                     dbTrade.Symbol,
                                     dbTrade.EntryTime.ToUniversalTime(),
-                                    DateTime.UtcNow);
+                                    isLongPos);
+                                if (fills.exitQty > 0 && fills.avgExitPrice > 0)
+                                {
+                                    actualExitPrice = fills.avgExitPrice;
+                                    actualExitTime = fills.lastExitTimeUtc.Kind == DateTimeKind.Utc
+                                        ? fills.lastExitTimeUtc.ToLocalTime()
+                                        : fills.lastExitTimeUtc;
+                                    actualPnl = fills.realizedPnl;
+                                }
+                                else
+                                {
+                                    // fills 없으면 income API fallback
+                                    actualPnl = await binSvc.GetRealizedPnLAsync(
+                                        dbTrade.Symbol,
+                                        dbTrade.EntryTime.ToUniversalTime(),
+                                        DateTime.UtcNow);
+                                }
                             }
                         }
                         catch { }
@@ -2355,19 +2375,19 @@ namespace TradingBot
                             dbTrade.Symbol,
                             closeSide,
                             "EXTERNAL_RECONCILE",
-                            dbTrade.EntryPrice, // 청산가 불명 → 진입가 사용
+                            actualExitPrice,
                             0f,
-                            DateTime.Now,
+                            actualExitTime,
                             actualPnl,
                             0m
                         )
                         {
-                            ExitPrice = dbTrade.EntryPrice,
+                            ExitPrice = actualExitPrice,
                             EntryPrice = dbTrade.EntryPrice,
                             Quantity = dbTrade.Quantity,
-                            ExitReason = $"EXTERNAL_CLOSE_WHILE_BOT_STOPPED (PnL={actualPnl:F4})",
+                            ExitReason = $"EXTERNAL_CLOSE_RECONCILE (price={actualExitPrice:F4} pnl={actualPnl:F4})",
                             EntryTime = dbTrade.EntryTime,
-                            ExitTime = DateTime.Now,
+                            ExitTime = actualExitTime,
                             PnL = actualPnl
                         };
 

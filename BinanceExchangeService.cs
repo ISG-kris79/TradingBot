@@ -229,6 +229,48 @@ namespace TradingBot.Services
         }
 
         /// <summary>
+        /// [v5.23.13] 외부 청산 누락 복구용 — 평균 ExitPrice + 마지막 ExitTime 가져옴
+        ///   진입 시각 이후의 reduce-only SELL fills 조회 (LONG 가정)
+        ///   반환: (avgExitPrice, lastExitTimeUtc, totalRealizedPnl, totalExitQty)
+        /// </summary>
+        public async Task<(decimal avgExitPrice, DateTime lastExitTimeUtc, decimal realizedPnl, decimal exitQty)>
+            GetExitFillsAsync(string symbol, DateTime startTimeUtc, bool isLong = true, CancellationToken ct = default)
+        {
+            try
+            {
+                var result = await _client.UsdFuturesApi.Trading.GetUserTradesAsync(
+                    symbol: symbol,
+                    startTime: startTimeUtc,
+                    endTime: DateTime.UtcNow,
+                    limit: 1000,
+                    ct: ct);
+                if (!result.Success || result.Data == null) return (0m, DateTime.MinValue, 0m, 0m);
+
+                // LONG 청산 = SELL fills, SHORT 청산 = BUY fills
+                var exitSide = isLong ? Binance.Net.Enums.OrderSide.Sell : Binance.Net.Enums.OrderSide.Buy;
+                var exitFills = result.Data.Where(t => t.Side == exitSide && t.RealizedPnl != 0m).ToList();
+                if (exitFills.Count == 0) return (0m, DateTime.MinValue, 0m, 0m);
+
+                decimal totalQty = 0m, totalNotional = 0m, totalPnl = 0m;
+                DateTime lastExit = DateTime.MinValue;
+                foreach (var f in exitFills)
+                {
+                    totalQty += f.Quantity;
+                    totalNotional += f.Price * f.Quantity;
+                    totalPnl += f.RealizedPnl;
+                    if (f.Timestamp > lastExit) lastExit = f.Timestamp;
+                }
+                decimal avgPx = totalQty > 0 ? totalNotional / totalQty : 0m;
+                return (avgPx, lastExit, totalPnl, totalQty);
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ [GetExitFills] {symbol} 실패: {ex.Message}");
+                return (0m, DateTime.MinValue, 0m, 0m);
+            }
+        }
+
+        /// <summary>
         /// [v5.1.8] WalletBalance 반환 (전체 잔고 — Equity 계산용)
         /// 기존: AvailableBalance (가용 = 전체 - 증거금) → $1,314 (실제 $8,044)
         /// 수정: WalletBalance (전체) → 정확한 Equity
