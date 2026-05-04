@@ -5,6 +5,27 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.2] - 2026-05-04
+
+### 🚨 하락 반전 시그널 즉시 탈출 3종 추가
+
+#### 사용자 지시
+- 5m BB 상단 이탈 후 재진입 + 음봉 → 50% 청산
+- 1m 다이버전스 (가격 HH + RSI LH) → 100% 청산
+- 거래량 실린 장대음봉 (음봉 vol > 직전 양봉 vol + body ≥ 0.5%) → 100% 청산
+
+#### 신규
+- `TradingEngine.CheckBearishReversalExitAsync` — LONG 활성 포지션 대상 3종 신호 검사
+- `CloseFullAsync` / `ClosePartialAsync` 헬퍼 — reduceOnly 시장가 청산
+- 같은 5m 봉 중복 발화 방지 cooldown (`_bearishExitChecked`)
+- 50% 청산 후 30분 재발화 방지 (`_bearishPartialClosed`)
+
+#### 진입 파이프라인 (현재)
+ProcessCoinAndTradeBySymbolAsync
+  → AnalyzeLorentzianEntryAsync (단일 진입)
+  → CheckHybridExitAsync (기존 인프라)
+  → CheckBearishReversalExitAsync (신규 — 3종 하락 반전)
+
 ## [5.23.1] - 2026-05-04
 
 ### 🎯 TradingView jdehorty Pine 정확 일치 — 펌프 미스 원인 수정

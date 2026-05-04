@@ -4192,6 +4192,19 @@ namespace TradingBot
                 }
 
                 await CheckHybridExitAsync(symbol, currentPrice, token);
+
+                // [v5.23.2] 하락 반전 시그널별 즉시 탈출 (3가지)
+                //   1. 5m BB 상단 이탈 후 재진입 + 음봉 → 50% 청산
+                //   2. 1m 다이버전스 (가격 HH + RSI LH) → 100% 청산
+                //   3. 거래량 실린 장대음봉 (음봉 vol > 직전 양봉 vol) → 100% 청산
+                try
+                {
+                    await CheckBearishReversalExitAsync(symbol, currentPrice, token);
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [BEARISH_EXIT] {symbol} 오류: {ex.Message}");
+                }
             }
             catch (Exception ex)
             {
@@ -4529,6 +4542,146 @@ namespace TradingBot
 
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
                 signalSource: "LORENTZIAN", skipAiGateCheck: false);
+        }
+
+        // [v5.23.2] 하락 반전 시그널 즉시 탈출 (3가지)
+        //   같은 봉 중복 발화 방지용 cooldown
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _bearishExitChecked
+            = new(StringComparer.OrdinalIgnoreCase);
+        // 50% 부분 청산 후 같은 포지션 재발화 방지
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _bearishPartialClosed
+            = new(StringComparer.OrdinalIgnoreCase);
+
+        private async Task CheckBearishReversalExitAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            PositionInfo? pos = null;
+            lock (_posLock)
+            {
+                if (!_activePositions.TryGetValue(symbol, out pos)) return;
+                if (pos == null || !pos.IsOwnPosition) return;
+                if (!pos.IsLong) return;   // 봇 LONG 전용
+                if (Math.Abs(pos.Quantity) <= 0) return;
+            }
+
+            var k5 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 25, token);
+            if (k5 == null || k5.Count < 22) return;
+            var k5List = k5 as List<IBinanceKline> ?? new List<IBinanceKline>(k5);
+
+            var lastBarTime = k5List[^1].OpenTime;
+            if (_bearishExitChecked.TryGetValue(symbol, out var last) && last == lastBarTime) return;
+
+            // ── 신호 3: 거래량 실린 장대음봉 (5m, 우선순위 높음) ──
+            //   현재 5m 봉이 음봉 + 거래량이 직전 10봉 중 가장 가까운 양봉의 volume 초과
+            var curBar = k5List[^1];
+            bool isBearish = curBar.ClosePrice < curBar.OpenPrice;
+            decimal bodyPct = curBar.OpenPrice > 0
+                ? (curBar.OpenPrice - curBar.ClosePrice) / curBar.OpenPrice * 100m
+                : 0m;
+            if (isBearish && bodyPct >= 0.5m)
+            {
+                for (int i = 2; i <= Math.Min(10, k5List.Count - 1); i++)
+                {
+                    var prev = k5List[k5List.Count - i];
+                    bool prevBull = prev.ClosePrice > prev.OpenPrice;
+                    if (prevBull)
+                    {
+                        if (curBar.Volume > prev.Volume)
+                        {
+                            _bearishExitChecked[symbol] = lastBarTime;
+                            await CloseFullAsync(symbol, pos, $"BEARISH_BIG_VOL_{bodyPct:F2}%_vol{curBar.Volume / prev.Volume:F1}x", token);
+                            return;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // ── 신호 1: 5m BB 상단 이탈 후 재진입 + 음봉 → 50% ──
+            //   직전봉 high 가 BB upper 위 → 현재봉 close 가 BB upper 아래 + 음봉
+            if (k5List.Count >= 22)
+            {
+                var bbWindow = k5List.Skip(k5List.Count - 22).Take(21).ToList();   // 21봉 (직전봉까지)
+                var bb = IndicatorCalculator.CalculateBB(bbWindow, 20, 2.0);
+                var prevBar = k5List[^2];
+                bool prevExitedAbove = (double)prevBar.HighPrice > bb.Upper;
+                bool currInside = (double)curBar.ClosePrice < bb.Upper;
+                if (prevExitedAbove && currInside && isBearish)
+                {
+                    if (!_bearishPartialClosed.TryGetValue(symbol, out var partTs)
+                        || (DateTime.UtcNow - partTs) > TimeSpan.FromMinutes(30))
+                    {
+                        _bearishExitChecked[symbol] = lastBarTime;
+                        _bearishPartialClosed[symbol] = DateTime.UtcNow;
+                        await ClosePartialAsync(symbol, pos, 0.5m, $"BB_REENTRY_BEAR upper={bb.Upper:F4}", token);
+                        return;
+                    }
+                }
+            }
+
+            // ── 신호 2: 1m Bearish Divergence (가격 HH + RSI LH) → 100% ──
+            var k1 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneMinute, 35, token);
+            if (k1 == null || k1.Count < 30) return;
+            var k1List = k1 as List<IBinanceKline> ?? new List<IBinanceKline>(k1);
+
+            int n1 = k1List.Count;
+            // 최근 5봉 max close vs 그 이전 5~15봉 max close
+            decimal recentMax = decimal.MinValue;
+            int recentMaxIdx = n1 - 1;
+            for (int i = n1 - 5; i < n1; i++)
+                if (k1List[i].ClosePrice > recentMax) { recentMax = k1List[i].ClosePrice; recentMaxIdx = i; }
+            decimal priorMax = decimal.MinValue;
+            int priorMaxIdx = n1 - 10;
+            for (int i = n1 - 15; i < n1 - 5; i++)
+                if (k1List[i].ClosePrice > priorMax) { priorMax = k1List[i].ClosePrice; priorMaxIdx = i; }
+
+            if (recentMax > priorMax)
+            {
+                var slice1 = k1List.Take(recentMaxIdx + 1).ToList();
+                var slice2 = k1List.Take(priorMaxIdx + 1).ToList();
+                if (slice1.Count >= 15 && slice2.Count >= 15)
+                {
+                    double rsiNow = IndicatorCalculator.CalculateRSI(slice1, 14);
+                    double rsiPrior = IndicatorCalculator.CalculateRSI(slice2, 14);
+                    if (rsiNow < rsiPrior - 2.0)   // 2점 이상 꺾임 = 의미 있는 다이버전스
+                    {
+                        _bearishExitChecked[symbol] = lastBarTime;
+                        await CloseFullAsync(symbol, pos, $"BEAR_DIVERGENCE price↑ RSI {rsiPrior:F1}→{rsiNow:F1}", token);
+                        return;
+                    }
+                }
+            }
+        }
+
+        private async Task CloseFullAsync(string symbol, PositionInfo pos, string reason, CancellationToken token)
+        {
+            decimal qty = Math.Abs(pos.Quantity);
+            if (qty <= 0) return;
+            OnStatusLog?.Invoke($"🚨 [BEARISH_EXIT_FULL] {symbol} 100% 청산 | {reason}");
+            OnAlert?.Invoke($"🚨 [{symbol}] 하락반전 100% 청산: {reason}");
+            try
+            {
+                await _exchangeService.PlaceMarketOrderAsync(symbol, "SELL", qty, token, reduceOnly: true);
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"❌ [BEARISH_EXIT_FULL] {symbol} 청산 실패: {ex.Message}");
+            }
+        }
+
+        private async Task ClosePartialAsync(string symbol, PositionInfo pos, decimal ratio, string reason, CancellationToken token)
+        {
+            decimal qty = Math.Abs(pos.Quantity) * ratio;
+            if (qty <= 0) return;
+            OnStatusLog?.Invoke($"⚠️ [BEARISH_EXIT_PARTIAL] {symbol} {ratio * 100:F0}% 청산 | {reason}");
+            OnAlert?.Invoke($"⚠️ [{symbol}] 하락반전 {ratio * 100:F0}% 청산: {reason}");
+            try
+            {
+                await _exchangeService.PlaceMarketOrderAsync(symbol, "SELL", qty, token, reduceOnly: true);
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"❌ [BEARISH_EXIT_PARTIAL] {symbol} 청산 실패: {ex.Message}");
+            }
         }
 
         public void StopEngine()
