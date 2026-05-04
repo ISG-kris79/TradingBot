@@ -107,9 +107,21 @@ namespace TradingBot
                 }
 
                 await _dbManager.SaveGeneralSettingsAsync(AppConfig.CurrentUser.Id, settings);
-                _currentSettings = settings;
 
-                MainWindow.Instance?.AddLog("[GeneralSettings] ✅ 설정 저장 완료");
+                // [v5.23.10] 저장 직후 DB 에서 다시 reload → 메모리 + 봇 entry-time 캐시 즉시 동기화
+                //   사용자 사양: "설정 저장시 → 로그인 정보로 마진/진입횟수/슬롯 다시 가져온다"
+                var fresh = await _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id);
+                if (fresh != null)
+                {
+                    _currentSettings = fresh;
+                    MainWindow.ApplyGeneralSettings(fresh);
+                    MainWindow.Instance?.AddLog($"[GeneralSettings] ✅ 저장+reload | user={AppConfig.CurrentUser.Username}(Id={AppConfig.CurrentUser.Id}) PumpMargin={fresh.PumpMargin} MaxPumpSlots={fresh.MaxPumpSlots} MaxDailyEntries={fresh.MaxDailyEntries}");
+                }
+                else
+                {
+                    _currentSettings = settings;
+                    MainWindow.Instance?.AddLog("[GeneralSettings] ⚠️ 저장 완료, reload 실패 → 메모리 fallback");
+                }
                 return true;
             }
             catch (Exception ex)

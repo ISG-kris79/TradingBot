@@ -550,6 +550,14 @@ namespace TradingBot
                 {
                     await _dbManager.SaveGeneralSettingsAsync(AppConfig.CurrentUser.Id, generalSettings);
 
+                    // [v5.23.10] 저장 후 DB reload + MainWindow 메모리 동기화 (사용자 사양)
+                    var fresh = await _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id);
+                    if (fresh != null)
+                    {
+                        MainWindow.ApplyGeneralSettings(fresh);
+                        MainWindow.Instance?.AddLog($"[Settings] ✅ 저장+reload | user={AppConfig.CurrentUser.Username}(Id={AppConfig.CurrentUser.Id}) PumpMargin={fresh.PumpMargin} MaxPumpSlots={fresh.MaxPumpSlots} MaxDailyEntries={fresh.MaxDailyEntries}");
+                    }
+
                     // 시뮬레이션 모드 또는 잔고 변경 확인
                     bool simulationModeChanged = _initialSimulationMode != (chkSimulationMode.IsChecked == true);
                     bool simulationBalanceChanged = _initialSimulationBalance != (decimal.TryParse(txtSimulationBalance.Text, out decimal newBalance) ? newBalance : 10000m);

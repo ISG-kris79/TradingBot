@@ -5,6 +5,22 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.10] - 2026-05-04
+
+### 📌 설정 저장 → DB reload → 메모리 즉시 동기화 (사용자 사양)
+
+#### 사양 (사용자 명시)
+1. 로그인 시 → 로그인 정보 저장 (기존: AppConfig.CurrentUser)
+2. 시작 시 → 로그인 정보로 마진/진입횟수/슬롯 가져옴 (기존)
+3. 설정 저장 시 → 로그인 정보로 마진/진입횟수/슬롯 다시 가져옴 (NEW)
+
+#### 수정
+- `GeneralSettingsProvider.SaveSettingsAsync`: SaveGeneralSettingsAsync 직후 LoadGeneralSettingsAsync 호출 → MainWindow.ApplyGeneralSettings(fresh) 동기화
+- `SettingsWindow.btnSave_Click`: 저장 후 동일 reload 흐름 추가
+- 로그: `[GeneralSettings] ✅ 저장+reload | user={Name}(Id={Id}) PumpMargin={...} MaxPumpSlots={...} MaxDailyEntries={...}`
+
+설정 변경 후 봇 재시작 없이 다음 진입부터 새 값 적용.
+
 ## [5.23.9] - 2026-05-04
 
 ### 🐛 hotfix: PumpMargin DB 값 무시 + 잘못된 user-row 매핑 진단
