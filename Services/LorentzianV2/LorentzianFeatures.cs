@@ -5,23 +5,20 @@ using Binance.Net.Interfaces;
 
 namespace TradingBot.Services.LorentzianV2
 {
-    // Pine Script jdehorty/MLExtensions n_rsi/n_wt/n_cci/n_adx 정규화 포팅
-    //   feature 7개:
-    //     f1 RSI(14) /100
-    //     f2 WT(10,11) sliding min-max
-    //     f3 CCI(20) sliding min-max
-    //     f4 ADX(14) /100
-    //     f5 RSI(9) /100
-    //     f6 직전 30봉 최저 대비 상승폭% / 20% (overheat 검출)
-    //     f7 H1 EMA(20) 5봉 기울기 시그모이드 (상위 추세 정렬)
+    // jdehorty Pine Script 정확 일치 — 5 feature (v5.23.1 7→5 축소)
+    //   f1 RSI(14)  /100
+    //   f2 WT(10,11) sliding min-max (200봉 윈도)
+    //   f3 CCI(20)   sliding min-max
+    //   f4 ADX(14)   /100
+    //   f5 RSI(9)    /100
+    //   (이전 f6 max-rise / f7 H1 slope 제거 — Pine 원본에 없음, KNN 거리 왜곡 원인)
     public static class LorentzianFeatures
     {
-        public const int FeatureCount = 7;
+        public const int FeatureCount = 5;
 
         public static float[]? Extract(List<IBinanceKline> klines)
         {
             if (klines == null || klines.Count < 60) return null;
-
             int normWindow = Math.Min(200, klines.Count);
 
             double rsi14 = CalcRSI(klines, 14);
@@ -39,33 +36,7 @@ namespace TradingBot.Services.LorentzianV2
             double rsi9 = CalcRSI(klines, 9);
             float f5 = (float)(rsi9 / 100.0);
 
-            int look6 = Math.Min(30, klines.Count - 1);
-            decimal nowClose = klines[^1].ClosePrice;
-            decimal minLow6 = decimal.MaxValue;
-            for (int i = klines.Count - look6; i < klines.Count; i++)
-                if (klines[i].LowPrice < minLow6) minLow6 = klines[i].LowPrice;
-            decimal totalRise = minLow6 > 0 ? (nowClose - minLow6) / minLow6 * 100m : 0m;
-            float f6 = (float)Math.Min(1.0, (double)totalRise / 20.0);
-
-            float f7 = 0.5f;
-            if (klines.Count >= 12 * 25)
-            {
-                var h1Closes = new List<double>();
-                for (int g = 0; g + 12 <= klines.Count; g += 12)
-                {
-                    decimal sumClose = 0; int cnt = 0;
-                    for (int j = g; j < g + 12; j++) { sumClose += klines[j].ClosePrice; cnt++; }
-                    h1Closes.Add(cnt > 0 ? (double)(sumClose / cnt) : 0);
-                }
-                var emaH1 = EMA(h1Closes, 20);
-                if (emaH1.Count >= 6 && emaH1[^6] > 0)
-                {
-                    double slopePct = (emaH1[^1] - emaH1[^6]) / emaH1[^6] * 100.0;
-                    f7 = (float)(1.0 / (1.0 + Math.Exp(-slopePct)));
-                }
-            }
-
-            return new[] { Clamp01(f1), Clamp01(f2), Clamp01(f3), Clamp01(f4), Clamp01(f5), Clamp01(f6), Clamp01(f7) };
+            return new[] { Clamp01(f1), Clamp01(f2), Clamp01(f3), Clamp01(f4), Clamp01(f5) };
         }
 
         private static float Clamp01(float v)

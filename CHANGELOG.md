@@ -5,6 +5,28 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.1] - 2026-05-04
+
+### 🎯 TradingView jdehorty Pine 정확 일치 — 펌프 미스 원인 수정
+
+#### 사용자 보고
+- "10:30 KST BTC/ETH/XRP/SOL 다 급등했는데 진입 안 함"
+- DB 로그 확인: SOLUSDT 펌프 시각 KNN pred=-7 (학습 데이터 약세 편향)
+
+#### 원인 진단
+3가지 결정적 차이 발견 (TradingView Pine vs 제 구현):
+1. Feature 개수: Pine 5개 (RSI14/WT/CCI/ADX/RSI9) vs 제 7개 (+f6 max-rise +f7 H1 slope) — 추가 feature 가 KNN 거리 왜곡
+2. 학습 데이터 크기: Pine 차트 전체 (수천~수만봉) vs 제 600봉
+3. 정규화 윈도: 둘 다 200 (이미 일치)
+
+#### 수정
+- `Services/LorentzianV2/LorentzianFeatures.cs`: f6/f7 제거, FeatureCount 7→5 (Pine 정확 일치)
+- `TradingEngine.AnalyzeLorentzianEntryAsync`: fetch 600 → 1500봉 (~16일 15m), engine featureCount 7→5 (LorentzianFeatures.FeatureCount 사용)
+
+#### 효과 예상
+- Pine 신호와 일치 가능성 ↑ (불필요 feature 제거로 KNN 거리 정확)
+- 학습 샘플 2.5배 증가 → 펌프 패턴 매칭 가능성 ↑
+
 ## [5.23.0] - 2026-05-04
 
 ### 🔥 전체 진입/청산 로직 폐기 + Lorentzian Classification 단일 시스템 신규 작성

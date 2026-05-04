@@ -4470,12 +4470,13 @@ namespace TradingBot
                     && existing != null && Math.Abs(existing.Quantity) > 0) return;
             }
 
-            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 600, token);
+            // [v5.23.1] Pine 정확 일치를 위해 1500봉 fetch (~16일치 15m), engine featureCount 7→5
+            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 1500, token);
             if (k15 == null || k15.Count < 300) return;
             var k15List = k15 as List<IBinanceKline> ?? new List<IBinanceKline>(k15);
 
             var engine = _lorentzianEngines.GetOrAdd(symbol,
-                s => new LorentzianAnnEngine(s, neighborsCount: 8, maxBarsBack: 2000, featureCount: 7));
+                s => new LorentzianAnnEngine(s, neighborsCount: 8, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount));
 
             // Walk-forward 학습: 마지막 마감봉 변경 시만
             var lastClosed15m = k15List[^2];
