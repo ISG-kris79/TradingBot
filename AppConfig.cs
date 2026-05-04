@@ -169,7 +169,9 @@ namespace TradingBot
                 CurrentUsername = user.Username;
                 CurrentUser = user; // 현재 사용자 정보 저장
 
-                System.Diagnostics.Debug.WriteLine($"[AppConfig] 사용자 자격 증명 로드 성공: {user.Username}");
+                System.Diagnostics.Debug.WriteLine($"[AppConfig] 사용자 자격 증명 로드 성공: {user.Username}(Id={user.Id})");
+                // [v5.23.9] 로그인 직후 CurrentUser 진단 로깅 (잘못된 user 매핑 추적)
+                try { MainWindow.Instance?.AddLog($"🔐 [AppConfig.CurrentUser SET] {user.Username}(Id={user.Id}) Email={user.Email}"); } catch { }
                 return true;
             }
             catch (Exception ex)

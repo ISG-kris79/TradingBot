@@ -5,6 +5,29 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.9] - 2026-05-04
+
+### 🐛 hotfix: PumpMargin DB 값 무시 + 잘못된 user-row 매핑 진단
+
+#### 사용자 보고
+- "DASHUSDT 198 USDT 진입했음 — 설정창에서 150 으로 했는데"
+- DB 진단: GeneralSettings Id=1 (cyberoto) PumpMargin=150 / Id=10 (kadriver) PumpMargin=200
+- 봇이 user=10 의 row 사용 = AppConfig.CurrentUser.Id 가 10 으로 잘못 매핑
+
+#### 수정
+1. **DB 강제 reload (TradingEngine.GetConfiguredPumpMarginUsdt)**
+   - 진입 시점에 LoadGeneralSettingsAsync(CurrentUser.Id) 동기 호출
+   - 메모리 캐시 _settings stale 우회 → DB 최신 값 즉시 반영
+   - 사용자 설정창 변경 후 재시작 안 해도 다음 진입부터 적용
+
+2. **user-row 매핑 진단 로깅 (DbManager.LoadGeneralSettingsAsync)**
+   - 로그: `✅ [GeneralSettings] user={Username}(Id={userId}) 로드 완료 | PumpMargin={...}`
+   - 잘못된 user 매핑 즉시 식별 가능
+
+3. **AppConfig.SetUserCredentials 로그 강화**
+   - 로그: `🔐 [AppConfig.CurrentUser SET] {Username}(Id={Id}) Email={...}`
+   - 봇 시작 시 어떤 user 로 init 됐는지 명시
+
 ## [5.23.8] - 2026-05-04
 
 ### 🐛 hotfix: bot-side 감시 스킵 버그 (TRADOORUSDT 5h 33m 무관심 사고)

@@ -2260,10 +2260,12 @@ ORDER BY EntryTime DESC, Id DESC;",
                     commandType: CommandType.StoredProcedure,
                     commandTimeout: 10);
 
+                // [v5.23.9] user-row 매핑 진단 — CurrentUser.Username + PumpMargin 명시
+                string userTag = AppConfig.CurrentUser?.Username ?? "?";
                 if (result != null)
-                    MainWindow.Instance?.AddLog($"✅ [{userId}] GeneralSettings DB 로드 완료");
+                    MainWindow.Instance?.AddLog($"✅ [GeneralSettings] user={userTag}(Id={userId}) → 로드 완료 | DefaultMargin={result.DefaultMargin} PumpMargin={result.PumpMargin} MajorMargin={result.MajorMargin}");
                 else
-                    MainWindow.Instance?.AddLog($"⚠️ [{userId}] GeneralSettings 없음 (기본값 사용)");
+                    MainWindow.Instance?.AddLog($"⚠️ [GeneralSettings] user={userTag}(Id={userId}) → DB 없음 → 기본값 fallback");
 
                 return result;
             }

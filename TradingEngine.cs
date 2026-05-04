@@ -5170,6 +5170,17 @@ namespace TradingBot
 
         private decimal GetConfiguredPumpMarginUsdt()
         {
+            // [v5.23.9] DB 강제 동기 reload — 메모리 캐시 stale 우회 (사용자 지시)
+            try
+            {
+                if (_dbManager != null && AppConfig.CurrentUser != null)
+                {
+                    var fresh = _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id).GetAwaiter().GetResult();
+                    if (fresh != null) _settings = fresh;
+                }
+            }
+            catch { }
+
             decimal configured = _settings.PumpMargin > 0
                 ? _settings.PumpMargin
                 : (_settings.DefaultMargin > 0 ? _settings.DefaultMargin : PUMP_FIXED_MARGIN_USDT);
