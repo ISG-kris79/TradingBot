@@ -5,6 +5,22 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.4] - 2026-05-04
+
+### ⏳ 1분봉 정밀 트리거 추가 (페이크아웃 방지)
+
+#### 사용자 지시
+- 진입 시 1분봉 1개 지켜본 후 진입
+- 트리거: 현재가 > 직전 1분봉 high AND 현재가 > 1분봉 EMA20
+- 10분 경과 시 취소 (눌림목 안 옴)
+
+#### 변경
+- `TradingEngine.AnalyzeLorentzianEntryAsync`: 15분봉 가드 통과 시 즉시 진입 ✗ → `_lorentzianPendingEntries` 등록
+- `TradingEngine.CheckLorentzianPendingEntriesAsync` 신규: 매 tick 1분봉 데이터 확인
+  - currentPrice > 직전 1m high + currentPrice > 1m EMA20 → 진입 실행
+  - 10분 경과 → pending 자동 취소
+- 진입 파이프라인: `Analyze → Pending → Confirm tick → Execute`
+
 ## [5.23.3] - 2026-05-04
 
 ### 🛠️ 수동진입 OPGUSDT -2019 Margin insufficient hotfix

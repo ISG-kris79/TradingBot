@@ -4191,6 +4191,16 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⚠️ [LORENTZIAN] {symbol} 분석 오류: {ex.Message}");
                 }
 
+                // [v5.23.4] 1분봉 정밀 트리거 확인 (직전 1m high + EMA20 동시 돌파 시 진입)
+                try
+                {
+                    await CheckLorentzianPendingEntriesAsync(symbol, currentPrice, token);
+                }
+                catch (Exception ex)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [LORENTZIAN_CONFIRM] {symbol} 오류: {ex.Message}");
+                }
+
                 await CheckHybridExitAsync(symbol, currentPrice, token);
 
                 // [v5.23.2] 하락 반전 시그널별 즉시 탈출 (3가지)
@@ -4462,7 +4472,7 @@ namespace TradingBot
 
         // [v5.23.0] jdehorty Lorentzian Classification 풀세트 (15m TF)
         //   라이브 ≡ 백테스트 — Services/LorentzianV2/LorentzianGuard.EvaluateEntry 공유
-        //   진입 필터 7종 + walk-forward KNN 학습 + 동적 청산 (KNN flip / Kernel cross)
+        // [v5.23.4] 가드 통과 → 1분봉 1개 마감 확인 후 진입 (페이크아웃 방지)
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, LorentzianAnnEngine> _lorentzianEngines
             = new(StringComparer.OrdinalIgnoreCase);
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lorentzianLast15mTrained
@@ -4470,6 +4480,16 @@ namespace TradingBot
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lorentzianCooldown
             = new(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan LorentzianCooldown = TimeSpan.FromMinutes(15);
+
+        private sealed class LorentzianPendingEntry
+        {
+            public DateTime SignalTimeUtc;
+            public decimal SignalPrice;
+            public DateTime DeadlineUtc;
+            public string GuardSummary = "";
+        }
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, LorentzianPendingEntry> _lorentzianPendingEntries
+            = new(StringComparer.OrdinalIgnoreCase);
 
         private async Task AnalyzeLorentzianEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
@@ -4536,12 +4556,64 @@ namespace TradingBot
                 return;
             }
 
-            _lorentzianCooldown[symbol] = DateTime.UtcNow;
-            OnStatusLog?.Invoke(
-                $"🟢 [LORENTZIAN] {symbol} 진입 PASS | KNN WR={guard.KnnWinRate * 100:F0}% K={guard.KnnK} | ADX={guard.Adx:F1} regime={guard.RegimeSlope:F2} kernel↑ EMA200↑ SMA200↑");
+            // [v5.23.4] 즉시 진입 대신 다음 1분봉 마감 확인 후 진입 (페이크아웃 방지)
+            if (_lorentzianPendingEntries.ContainsKey(symbol)) return;   // 이미 대기 중
 
-            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
-                signalSource: "LORENTZIAN", skipAiGateCheck: false);
+            DateTime nowUtc = DateTime.UtcNow;
+            DateTime nextMinClose = new DateTime(nowUtc.Year, nowUtc.Month, nowUtc.Day,
+                nowUtc.Hour, nowUtc.Minute, 0, DateTimeKind.Utc).AddMinutes(1);
+            string summary = $"WR={guard.KnnWinRate * 100:F0}% K={guard.KnnK} ADX={guard.Adx:F1} regime={guard.RegimeSlope:F2}";
+            _lorentzianPendingEntries[symbol] = new LorentzianPendingEntry
+            {
+                SignalTimeUtc = nowUtc,
+                SignalPrice = currentPrice,
+                DeadlineUtc = nextMinClose.AddSeconds(3),
+                GuardSummary = summary
+            };
+            OnStatusLog?.Invoke($"⏳ [LORENTZIAN] {symbol} 가드 통과 — 1분봉 마감 대기 (deadline {nextMinClose:HH:mm:ss}Z) | {summary}");
+        }
+
+        // [v5.23.4] 진입 대기 → 1분봉 정밀 트리거: currentPrice > 직전 1m high AND currentPrice > 1m EMA20
+        //   조건 충족 시 즉시 진입, 10분 경과 시 취소 (사용자 스펙)
+        private async Task CheckLorentzianPendingEntriesAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            if (!_lorentzianPendingEntries.TryGetValue(symbol, out var pending)) return;
+
+            // 10분 타임아웃
+            if (DateTime.UtcNow - pending.SignalTimeUtc > TimeSpan.FromMinutes(10))
+            {
+                _lorentzianPendingEntries.TryRemove(symbol, out _);
+                _lorentzianCooldown[symbol] = DateTime.UtcNow;
+                OnStatusLog?.Invoke($"⏰ [LORENTZIAN_CONFIRM] {symbol} 10분 타임아웃 → 취소 | {pending.GuardSummary}");
+                return;
+            }
+
+            // 1분봉 fetch (25봉 = EMA20 + 직전 마감봉)
+            var k1 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneMinute, 25, token);
+            if (k1 == null || k1.Count < 22) return;
+            var k1List = k1 as List<IBinanceKline> ?? new List<IBinanceKline>(k1);
+
+            int last = k1List.Count - 1;
+            // 직전 마감 1분봉 (last 는 진행중 가능)
+            decimal prev1mHigh = k1List[last - 1].HighPrice;
+
+            // 1m EMA20 (직전 20개 마감봉)
+            decimal ema20 = k1List[last - 20].ClosePrice;
+            double mult = 2.0 / 21.0;
+            for (int q = last - 19; q <= last - 1; q++)
+                ema20 = (decimal)((double)k1List[q].ClosePrice * mult + (double)ema20 * (1 - mult));
+
+            // 트리거: 현재가 > 직전 1m high AND 현재가 > 1m EMA20 (눌림목 후 돌파)
+            if (currentPrice > prev1mHigh && currentPrice > ema20)
+            {
+                _lorentzianPendingEntries.TryRemove(symbol, out _);
+                _lorentzianCooldown[symbol] = DateTime.UtcNow;
+                OnStatusLog?.Invoke(
+                    $"✅ [LORENTZIAN_CONFIRM] {symbol} 1m 직전고가 {prev1mHigh:F6} + EMA20 {ema20:F6} 동시 돌파 ({currentPrice:F6}) → 진입 | {pending.GuardSummary}");
+                _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
+                    signalSource: "LORENTZIAN", skipAiGateCheck: false);
+            }
+            // else: 조건 미충족, 다음 tick 까지 계속 대기
         }
 
         // [v5.23.2] 하락 반전 시그널 즉시 탈출 (3가지)
