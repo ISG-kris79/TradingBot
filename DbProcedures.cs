@@ -774,13 +774,15 @@ BEGIN
         EntryTime,
         CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime) END AS ExitTime
     FROM dbo.TradeHistory WITH (NOLOCK)
+    -- [v5.23.12] CloseVerified=1 조건 제거 → 익절 청산 누락 버그 fix
     WHERE UserId = @UserId
         AND (
-            (IsClosed = 1 AND CloseVerified = 1 AND ExitTime >= @StartDate AND ExitTime <= @EndDate)
+            (IsClosed = 1 AND ExitTime >= @StartDate AND ExitTime <= @EndDate)
             OR
             (IsClosed = 0 AND EntryTime >= @StartDate AND EntryTime <= @EndDate)
         )
-    ORDER BY CASE WHEN IsClosed = 0 THEN EntryTime ELSE COALESCE(ExitTime, EntryTime) END DESC, Id DESC;
+    -- 종료 시각 기준 내림차순 (사용자 요구)
+    ORDER BY COALESCE(ExitTime, EntryTime) DESC, Id DESC;
 END";
 
         // ════════════════════════════════════════════════════════════════════

@@ -5,6 +5,23 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.12] - 2026-05-04
+
+### 🐛 매매기록 UI 버그 fix (익절 누락 + 심볼 클릭 필터 + 정렬)
+
+#### 사용자 보고
+- "익절한 건 나오지도 않음"
+- "심볼 클릭하면 그 심볼 진입한 관련 내역이 나와야 하는데 하나도 안 나옴"
+- "순서는 종료 시각 순으로 정렬"
+
+#### 수정
+1. `DbProcedures.sp_GetTradeHistory`: `AND CloseVerified = 1` 조건 제거
+   - 익절 후 verify 안 된 trade 도 표시
+   - ORDER BY: COALESCE(ExitTime, EntryTime) DESC, Id DESC
+2. `MainViewModel.RebuildFilteredTradeHistory`: ±60분 시간 윈도우 제거
+   - 심볼만 일치하면 모든 TradeHistory 표시
+   - 종료 시각 (ExitTime) 기준 내림차순 정렬
+
 ## [5.23.11] - 2026-05-04
 
 ### 🔐 진입 시점 user-id 기준 settings DB 강제 reload (개발 기본)
