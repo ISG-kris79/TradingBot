@@ -5,6 +5,20 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.6] - 2026-05-04
+
+### 🛡️ BB upper walking 깨짐 차단 (사용자 캡처 차트 진단)
+
+#### 패턴
+- ✅ 양봉이 BB upper 따라 walking 중 = 통과
+- ✅ 음봉 후 다시 upper 위로 회복 = 통과
+- ❌ 정점 도달 후 BB 안에서 close (rejection) + 회복 실패 = 차단
+
+#### 추가 가드 (LorentzianGuard.EvaluateEntry filter 10)
+- 직전 7봉 중 high >= upper 인 정점봉 발견
+- 정점봉 close < upper (BB 안 거부 마감) AND 그 후 모든 봉 high < upper (회복 못함)
+- → walking the band 끝 + mean reversion 시작 → 차단 (BB_WALK_BROKEN)
+
 ## [5.23.5] - 2026-05-04
 
 ### 🛡️ 횡보 방향 돌파 + BB 중심선 가드 + BB 중심선 이탈 손절

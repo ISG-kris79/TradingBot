@@ -90,6 +90,37 @@ namespace TradingBot.Services.LorentzianV2
                 return r;
             }
 
+            // 10) [v5.23.6] BB upper walking 깨짐 차단 (사용자 캡처 진단)
+            //   직전 7봉 중 high >= upper 인 정점봉 발견
+            //   정점봉 close < upper (BB 안 거부 마감) AND 그 후 모든 봉 high < upper (회복 못함)
+            //   → walking the band 끝 + mean reversion 시작 → 차단
+            //   허용: walking 중 (정점봉 close >= upper) OR 음봉 후 회복 (이후 봉 high >= upper)
+            int peakIdx10 = -1;
+            for (int b = idx; b >= Math.Max(0, idx - 6); b--)
+            {
+                CalcBB(kl, b, 20, 2.0, out _, out double upperB, out _);
+                if (upperB > 0 && (double)kl[b].HighPrice >= upperB) { peakIdx10 = b; break; }
+            }
+            if (peakIdx10 >= 0 && peakIdx10 < idx)
+            {
+                CalcBB(kl, peakIdx10, 20, 2.0, out _, out double peakUpper, out _);
+                bool peakRejected = peakUpper > 0 && (double)kl[peakIdx10].ClosePrice < peakUpper;
+                if (peakRejected)
+                {
+                    bool recovered = false;
+                    for (int b = peakIdx10 + 1; b <= idx; b++)
+                    {
+                        CalcBB(kl, b, 20, 2.0, out _, out double upperC, out _);
+                        if (upperC > 0 && (double)kl[b].HighPrice >= upperC) { recovered = true; break; }
+                    }
+                    if (!recovered)
+                    {
+                        r.BlockReason = $"BB_WALK_BROKEN (peak {idx - peakIdx10}봉전 close<upper, 회복실패)";
+                        return r;
+                    }
+                }
+            }
+
             // 8) [v5.23.5] 횡보 → 방향 돌파 확인 (사용자 지시)
             //    "옆으로 횡보하다 하락하는지 옆으로 와서 올라가는지를 봐야"
             //    최근 5봉 range < 2.5% (횡보 구간) → 현재 close 가
