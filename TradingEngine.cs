@@ -8090,6 +8090,27 @@ namespace TradingBot
         {
             string flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
 
+            // [v5.23.11] 진입 시점 settings DB 강제 reload (로그인 user 기준)
+            //   사용자 사양: "로그인 ID 별로 다른 사람이 사용 — 로그인 정보가 제일 중요"
+            //   진입 결정 직전 DB 에서 GeneralSettings 새로 가져와서 _settings 갱신
+            //   → 모든 후속 마진/슬롯/레버리지 계산이 user-id 기준 최신값 사용
+            try
+            {
+                if (_dbManager != null && AppConfig.CurrentUser != null)
+                {
+                    var fresh = await _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id);
+                    if (fresh != null)
+                    {
+                        _settings = fresh;
+                        OnStatusLog?.Invoke($"🔄 [ENTRY-SETTINGS] {symbol} user={AppConfig.CurrentUser.Username}(Id={AppConfig.CurrentUser.Id}) PumpMargin={fresh.PumpMargin} MaxPumpSlots={fresh.MaxPumpSlots} MaxDailyEntries={fresh.MaxDailyEntries}");
+                    }
+                }
+            }
+            catch (Exception sex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [ENTRY-SETTINGS] {symbol} reload 실패: {sex.Message} — 메모리 캐시 사용");
+            }
+
             // [v5.22.61] 모든 SHORT 절대 차단 — 사용자 정책 "메이저도 숏 빼고 모든 진입로직 LONG만 유지"
             //   v5.22.58 알트만 차단 → v5.22.61 메이저 포함 전체 SHORT 차단
             if (string.Equals(decision, "SHORT", StringComparison.OrdinalIgnoreCase))

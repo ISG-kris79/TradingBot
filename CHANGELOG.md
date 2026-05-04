@@ -5,6 +5,21 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.11] - 2026-05-04
+
+### 🔐 진입 시점 user-id 기준 settings DB 강제 reload (개발 기본)
+
+#### 사용자 사양
+- "로그인 ID 별로 다른 사람이 사용 — 로그인 정보가 제일 중요"
+- 모든 데이터 액세스가 AppConfig.CurrentUser.Id 기준이어야 함
+
+#### 수정 (TradingEngine.ExecuteAutoOrder 시작부)
+- 진입 결정 직전 `LoadGeneralSettingsAsync(CurrentUser.Id)` 호출
+- _settings 갱신 → 후속 모든 마진/슬롯/레버리지 계산이 user-id 기준 최신값
+- 로그: `🔄 [ENTRY-SETTINGS] {symbol} user={Name}(Id={Id}) PumpMargin={...} MaxPumpSlots={...} MaxDailyEntries={...}`
+
+진입마다 user 격리 보장. 메모리 stale / 잘못된 user-row 매핑 차단.
+
 ## [5.23.10] - 2026-05-04
 
 ### 📌 설정 저장 → DB reload → 메모리 즉시 동기화 (사용자 사양)
