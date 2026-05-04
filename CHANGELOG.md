@@ -5,6 +5,19 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.7] - 2026-05-04
+
+### 🛡️ 4시간봉 긴 꼬리 음봉 차단 가드
+
+#### 사용자 지시
+- "4시간봉 긴 음봉 = 하락 가능성 ↑, 양봉 마감까지 진입 안 함"
+- 긴 윗꼬리 음봉 = 매도 압력 강한 거부 신호
+
+#### 추가 가드 (TradingEngine.AnalyzeLorentzianEntryAsync, EvaluateEntry 호출 직전)
+- 4h 마지막 마감봉 fetch
+- 음봉 + upper wick >= range × 50% → 차단 (4H_BEAR_WICK)
+- 4h 양봉 마감 시까지 진입 불가
+
 ## [5.23.6] - 2026-05-04
 
 ### 🛡️ BB upper walking 깨짐 차단 (사용자 캡처 차트 진단)

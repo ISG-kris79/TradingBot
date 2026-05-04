@@ -4544,6 +4544,28 @@ namespace TradingBot
                 }
             }
 
+            // [v5.23.7] 4h 긴 꼬리 음봉 차단 가드 (사용자 지시)
+            //   "4시간봉 긴 음봉 = 하락 가능성 ↑, 양봉 될 때까지 진입 X"
+            //   조건: 마지막 마감 4h 봉이 음봉 + upper wick >= range × 50% (rejection)
+            try
+            {
+                var k4h = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FourHour, 5, token);
+                if (k4h != null && k4h.Count >= 2)
+                {
+                    var k4hList = k4h as List<IBinanceKline> ?? new List<IBinanceKline>(k4h);
+                    var last4h = k4hList[^2];   // 마지막 마감봉
+                    bool isBear4h = last4h.ClosePrice < last4h.OpenPrice;
+                    decimal range4h = last4h.HighPrice - last4h.LowPrice;
+                    decimal upperWick4h = last4h.HighPrice - (last4h.ClosePrice > last4h.OpenPrice ? last4h.ClosePrice : last4h.OpenPrice);
+                    if (isBear4h && range4h > 0 && upperWick4h >= range4h * 0.5m)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 4H_BEAR_WICK 차단 | upperWick={upperWick4h:F4} / range={range4h:F4} ({upperWick4h / range4h * 100m:F0}%) → 4h 양봉 마감까지 대기");
+                        return;
+                    }
+                }
+            }
+            catch { }
+
             // 마지막 마감봉 (k15List.Count-2) 기준 풀세트 가드 평가
             int evalIdx = k15List.Count - 2;
             int wStartE = Math.Max(0, evalIdx - 499);
