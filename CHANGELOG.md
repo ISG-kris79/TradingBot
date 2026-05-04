@@ -5,6 +5,25 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.3] - 2026-05-04
+
+### 🛠️ 수동진입 OPGUSDT -2019 Margin insufficient hotfix
+
+#### 사용자 보고
+- "pump 증거금 150달러인데 OPGUSDT 주문 실패"
+- "기본 마진은 메이저 마진이야"
+
+#### DB 진단 (root cause)
+12:33:06 ⚠️ [레버리지] OPGUSDT 20x 불가 → 최대 5x로 자동 조정
+12:33:06 ✅ [레버리지] OPGUSDT 5x 설정 성공 (자동 조정)
+12:33:06 ⚡ [수동진입] 수량=9953 레버=20x 증거금=$150  ← 수량 그대로 (재계산 누락)
+12:33:07 ❌ Margin insufficient (-2019)
+
+#### 수정 (TradingEngine.cs ManualMarketEntryAsync)
+- SetLeverageAsync → SetLeverageAutoAsync 사용 (실제 적용 레버리지 반환)
+- 자동 조정 시 수량 재계산 (marginUsdt × actualLev / price)
+- 메이저 vs 알트 구분 → 메이저=DefaultMargin/MajorLeverage, 알트=PumpMargin/PumpLeverage
+
 ## [5.23.2] - 2026-05-04
 
 ### 🚨 하락 반전 시그널 즉시 탈출 3종 추가

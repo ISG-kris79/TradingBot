@@ -12699,18 +12699,28 @@ namespace TradingBot
             try
             {
                 var settings = MainWindow.CurrentGeneralSettings ?? AppConfig.Current?.Trading?.GeneralSettings ?? _settings;
-                int leverage = settings.DefaultLeverage;
-                decimal marginUsdt = settings.DefaultMargin;
+                // [v5.23.3] 메이저 vs 알트 구분 → DefaultMargin (메이저) / PumpMargin (알트)
+                bool isManualMajor = MajorSymbols.Contains(symbol);
+                int leverage = isManualMajor ? settings.MajorLeverage : settings.PumpLeverage;
+                decimal marginUsdt = isManualMajor ? settings.DefaultMargin : settings.PumpMargin;
+                if (leverage <= 0) leverage = settings.DefaultLeverage;
 
                 // 1. 현재가 조회
                 decimal currentPrice = await _exchangeService.GetPriceAsync(symbol, token);
                 if (currentPrice <= 0)
                     return (false, $"{symbol} 현재가 조회 실패");
 
-                // 2. 레버리지 설정
-                await _exchangeService.SetLeverageAsync(symbol, leverage, token);
+                // 2. 레버리지 설정 (자동 조정 시 실제 적용된 값 받음)
+                int actualLev = await _exchangeService.SetLeverageAutoAsync(symbol, leverage, token);
+                if (actualLev <= 0)
+                    return (false, $"{symbol} 레버리지 설정 실패");
+                if (actualLev != leverage)
+                {
+                    OnStatusLog?.Invoke($"ℹ️ [수동진입] {symbol} 레버리지 {leverage}x → {actualLev}x 자동 조정 → 수량 재계산");
+                    leverage = actualLev;
+                }
 
-                // 3. 수량 계산
+                // 3. 수량 계산 (실제 적용된 레버리지 기준)
                 decimal quantity = (marginUsdt * leverage) / currentPrice;
 
                 var exchangeInfo = await _exchangeService.GetExchangeInfoAsync(token);
