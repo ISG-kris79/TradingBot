@@ -4642,6 +4642,29 @@ namespace TradingBot
             var lastBarTime = k5List[^1].OpenTime;
             if (_bearishExitChecked.TryGetValue(symbol, out var last) && last == lastBarTime) return;
 
+            // ── 신호 0: [v5.23.5] 15m BB(20,2) 중심선 이탈 즉시 손절 (사용자 지시)
+            //    중심선 = 평균 회귀 임계. 이탈 시 추세 종료 → 즉시 100% 청산
+            try
+            {
+                var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 22, token);
+                if (k15 != null && k15.Count >= 22)
+                {
+                    var k15List = k15 as List<IBinanceKline> ?? new List<IBinanceKline>(k15);
+                    var bbWin15 = k15List.Skip(k15List.Count - 21).Take(20).ToList();
+                    var bb15 = IndicatorCalculator.CalculateBB(bbWin15, 20, 2.0);
+                    decimal lastClose15 = k15List[^1].ClosePrice;
+                    if ((double)lastClose15 < bb15.Mid && pos.EntryPrice > 0
+                        && (double)lastClose15 < (double)pos.EntryPrice)   // 진입가 아래 + mid 아래 (이중 확인)
+                    {
+                        _bearishExitChecked[symbol] = lastBarTime;
+                        await CloseFullAsync(symbol, pos,
+                            $"BB_MID_BREAK_15M close={lastClose15:F6} < mid={bb15.Mid:F6} (entry={pos.EntryPrice:F6})", token);
+                        return;
+                    }
+                }
+            }
+            catch { }
+
             // ── 신호 3: 거래량 실린 장대음봉 (5m, 우선순위 높음) ──
             //   현재 5m 봉이 음봉 + 거래량이 직전 10봉 중 가장 가까운 양봉의 volume 초과
             var curBar = k5List[^1];

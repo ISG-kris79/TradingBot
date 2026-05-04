@@ -5,6 +5,28 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.5] - 2026-05-04
+
+### 🛡️ 횡보 방향 돌파 + BB 중심선 가드 + BB 중심선 이탈 손절
+
+#### 사용자 지시 (DASHUSDT 손실 분석 후)
+- "옆으로 횡보하다 하락하는지 옆으로 와서 올라가는지를 봐야"
+- "중심선 지키는지 보고 진입해야"
+- "중심선 이탈하면 손절"
+
+#### 신규 진입 가드 (LorentzianGuard.EvaluateEntry)
+- 8) **횡보 방향 돌파 확인**: 직전 5봉 range < 2.5% (좁은 박스) 면
+  - close > consol high → 위로 돌파 → 통과
+  - close < consol low → 하락 돌파 → 차단 (CONSOL_DOWN_BREAK)
+  - 박스 안 → 차단 (CONSOL_INSIDE_RANGE, 방향 미확정)
+- 9) **BB 중심선 유지 확인**: close ≤ BB(20,2) mid 면 차단 (BB_MID_BELOW)
+
+#### 신규 청산 (CheckBearishReversalExitAsync 신호 0 추가)
+- 15m BB 중심선 이탈 + 진입가 아래 → 즉시 100% 시장가 청산 (BB_MID_BREAK_15M)
+
+#### LorentzianGuard.CalcBB 헬퍼 추가
+- `CalcBB(kl, idx, 20, 2.0, out mid, out upper, out lower)`
+
 ## [5.23.4] - 2026-05-04
 
 ### ⏳ 1분봉 정밀 트리거 추가 (페이크아웃 방지)

@@ -82,8 +82,72 @@ namespace TradingBot.Services.LorentzianV2
             r.NwKernelPrev2 = idx >= 2 ? CalcNWKernel(kl, idx - 2) : r.NwKernel;
             if (r.NwKernel <= r.NwKernelPrev2) { r.BlockReason = "NW_KERNEL"; return r; }
 
+            // 9) [v5.23.5] BB(20,2) 중심선 유지 확인 — 진입 시 close > BB mid 필수
+            CalcBB(kl, idx, 20, 2.0, out double bbMid9, out _, out _);
+            if (bbMid9 > 0 && (double)kl[idx].ClosePrice <= bbMid9)
+            {
+                r.BlockReason = $"BB_MID_BELOW (close={kl[idx].ClosePrice:F6} <= mid={bbMid9:F6})";
+                return r;
+            }
+
+            // 8) [v5.23.5] 횡보 → 방향 돌파 확인 (사용자 지시)
+            //    "옆으로 횡보하다 하락하는지 옆으로 와서 올라가는지를 봐야"
+            //    최근 5봉 range < 2.5% (횡보 구간) → 현재 close 가
+            //      consol 상단 돌파 → ✅ 진입 허용
+            //      consol 하단 이탈 → ❌ 차단 (하락 방향)
+            //      구간 내 → ❌ 차단 (방향 미확정)
+            if (idx >= 5)
+            {
+                double consolHigh = 0, consolLow = double.MaxValue;
+                for (int b = idx - 5; b <= idx - 1; b++)
+                {
+                    double h = (double)kl[b].HighPrice;
+                    double l = (double)kl[b].LowPrice;
+                    if (h > consolHigh) consolHigh = h;
+                    if (l < consolLow) consolLow = l;
+                }
+                if (consolLow > 0)
+                {
+                    double consolRangePct = (consolHigh - consolLow) / consolLow * 100.0;
+                    // 횡보 정의: 5봉 range < 2.5% (좁은 박스)
+                    if (consolRangePct < 2.5)
+                    {
+                        double curClose = (double)kl[idx].ClosePrice;
+                        if (curClose < consolHigh)
+                        {
+                            // 상단 돌파 안 함 → 횡보 내 OR 하락
+                            string sub = curClose < consolLow ? "DOWN_BREAK" : "INSIDE_RANGE";
+                            r.BlockReason = $"CONSOL_{sub} (range {consolRangePct:F2}%, [{consolLow:F4}~{consolHigh:F4}], close {curClose:F4})";
+                            return r;
+                        }
+                        // curClose > consolHigh → 위로 돌파 → 통과
+                    }
+                    // 횡보 아닌 경우 (range >= 2.5%) → 일반 흐름, 통과
+                }
+            }
+
             r.Passed = true;
             return r;
+        }
+
+        // BB(period, multiplier) — 마지막 봉 기준 mid/upper/lower 반환
+        public static void CalcBB(List<IBinanceKline> kl, int idx, int period, double mult,
+            out double mid, out double upper, out double lower)
+        {
+            mid = 0; upper = 0; lower = 0;
+            if (idx < period - 1) return;
+            double sum = 0;
+            for (int q = idx - period + 1; q <= idx; q++) sum += (double)kl[q].ClosePrice;
+            mid = sum / period;
+            double var = 0;
+            for (int q = idx - period + 1; q <= idx; q++)
+            {
+                double d = (double)kl[q].ClosePrice - mid;
+                var += d * d;
+            }
+            double std = Math.Sqrt(var / period);
+            upper = mid + mult * std;
+            lower = mid - mult * std;
         }
 
         // 청산 신호 평가 (barsHeld ≥ MinBarsHeldForExit 후만 호출)
