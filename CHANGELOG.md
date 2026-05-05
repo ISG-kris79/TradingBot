@@ -5,6 +5,26 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.16] - 2026-05-05
+
+### 🗑️ 백그라운드 10분 주기 자동업데이트 폐기 (사용자 지시)
+
+#### 사용자 보고
+- "로그인에만 자동업데이트 넣어놨는데 누가 백그라운드 추가했냐"
+- "거기서 자동업데이트하면 로그인이 안 되잖아"
+
+#### 진단
+- v5.22.19 (커밋 667fad7, 4/29) 이 SilentBackgroundUpdateAsync + 10분 폴링 추가
+- 봇 실행 중에도 GitHub Releases 폴링 → 활성 포지션 0건 시 자동 재시작
+- 사용자 의도 = 로그인 시점만 체크
+
+#### 수정 (App.xaml.cs OnStartup)
+- 10분 주기 Task.Run 루프 제거
+- SilentBackgroundUpdateAsync 호출 제거
+- CheckForUpdatesBeforeLoginAsync (로그인 시점) 만 유지
+
+봇 재시작 후 백그라운드 자동업데이트 안 일어남.
+
 ## [5.23.15] - 2026-05-05
 
 ### 🐛 PositionSync ExitPrice 정확도 fix + 5/4~5 손절 11건 backfill

@@ -313,26 +313,8 @@ namespace TradingBot
                 }
             });
 
-            // [v5.22.19] 주기적 자동 업데이트 — 10분마다 GitHub Releases 폴링
-            //   원인: 사용자 요구 "업데이트하면 당연히 자동 배포되게 만들어야지"
-            //   기존: 앱 시작 시 1회만 체크 → 봇 가동 후 새 릴리즈는 다음 재시작까지 무시
-            //   해결: 10분 주기 체크 → 새 버전 발견 시 다이얼로그 없이 silent download → 활성 포지션 0건일 때 자동 재시작
-            _ = System.Threading.Tasks.Task.Run(async () =>
-            {
-                await System.Threading.Tasks.Task.Delay(TimeSpan.FromMinutes(2)); // 부팅 후 2분 대기
-                while (true)
-                {
-                    try
-                    {
-                        await SilentBackgroundUpdateAsync();
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine($"[Update][Background] 오류: {ex.Message}");
-                    }
-                    await System.Threading.Tasks.Task.Delay(TimeSpan.FromMinutes(10));
-                }
-            });
+            // [v5.23.16] 백그라운드 10분 주기 업데이트 폐기 (사용자 지시: "로그인에만 자동업데이트")
+            //   v5.22.19 의 SilentBackgroundUpdateAsync 호출 제거 → 로그인 시점만 체크
         }
 
         // [v5.22.19] 백그라운드 silent 업데이트 — 다이얼로그 없이 다운로드 후 안전 시점에 재시작
