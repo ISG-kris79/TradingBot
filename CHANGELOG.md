@@ -5,6 +5,32 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.15] - 2026-05-05
+
+### 🐛 PositionSync ExitPrice 정확도 fix + 5/4~5 손절 11건 backfill
+
+#### 사용자 보고
+- "PRLUSDT 손절났는데 매매기록에 수익으로 표시"
+- "5/4부터 손절 내역 확인해봐"
+
+#### 진단
+- DB Id=4766 PRL: ExitPrice NULL, PnL=0 (실제 -$24.34 손절)
+- 5/4~5 의심 row 12건: EntryPrice=ExitPrice / PnL=0 / ExitPrice NULL
+- 원인: PositionSyncService.HandlePositionClosedAsync 가 GetLastTradeAsync (단일 fill) 사용 → partial close 평균 부정확
+
+#### 수정 (Services/PositionSyncService.cs)
+- 우선 BinanceExchangeService.GetExitFillsAsync 시도 → 모든 exit fill 평균 + realPnL
+- 실패 시 기존 GetLastTradeAsync 3회 retry (fallback)
+- closeReason: "TP/SL (exchange) avg=... pnl=..." 정확값 표시
+
+#### DB backfill (수동)
+12 row 정확 정정:
+- 손절 6건 -$76.08: BAT -28.13, BB -25.92, XVG -11.25, OPG -8.74, AR -1.42, GIGGLE -0.62, PRL -24.34
+- 익절 5건 +$84.07: ZEN +43.84, TON +21.53, STEEM +11.72, MERL +7.73, LUNA2 +3.52, 1000LUNC +3.46
+- 순이익 +$8.00 (DB 정정 후 실제 손익 회복)
+
+봇 재시작 후 동일 누락 재발 안 함.
+
 ## [5.23.14] - 2026-05-04
 
 ### 🏷️ Category 라벨 통일 LORENTZIAN + UserId 필터 + UI 동기화

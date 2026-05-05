@@ -165,32 +165,59 @@ namespace TradingBot.Services
         {
             OnLog?.Invoke($"🔔 [PositionSync] {symbol} 거래소 포지션 사라짐 → 청산 확인");
 
-            // 4. 실제 청산가 조회 (최근 체결 내역) — [v5.22.59] 3회 retry 후 ticker fallback
+            // [v5.23.15] GetExitFillsAsync 우선 사용 — 모든 exit fill 평균 + realPnL 정확
+            //   기존 GetLastTradeAsync 는 최근 1건만 가져와서 partial close 평균 부정확
             decimal exitPrice = 0m;
             string closeReason = "SL/TP (exchange)";
-            for (int attempt = 1; attempt <= 3; attempt++)
+            try
             {
-                try
+                if (_exchangeService is BinanceExchangeService binSvc)
                 {
-                    var lastTrade = await _exchangeService.GetLastTradeAsync(symbol, pos.EntryTime, ct)
-                        .ConfigureAwait(false);
-                    if (lastTrade.HasValue && lastTrade.Value.exitPrice > 0)
+                    var fills = await binSvc.GetExitFillsAsync(
+                        symbol, pos.EntryTime.ToUniversalTime(), pos.IsLong, ct);
+                    if (fills.exitQty > 0 && fills.avgExitPrice > 0)
                     {
-                        exitPrice = lastTrade.Value.exitPrice;
+                        exitPrice = fills.avgExitPrice;
                         if (pos.IsLong && exitPrice < pos.EntryPrice * 1.001m)
-                            closeReason = "SL (exchange)";
+                            closeReason = $"SL (exchange) avg={exitPrice:F6} pnl={fills.realizedPnl:F2}";
                         else if (!pos.IsLong && exitPrice > pos.EntryPrice * 0.999m)
-                            closeReason = "SL (exchange)";
+                            closeReason = $"SL (exchange) avg={exitPrice:F6} pnl={fills.realizedPnl:F2}";
                         else
-                            closeReason = "TP/Trailing (exchange)";
-                        break;
+                            closeReason = $"TP/Trailing (exchange) avg={exitPrice:F6} pnl={fills.realizedPnl:F2}";
                     }
                 }
-                catch (Exception ex)
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"⚠️ [PositionSync] {symbol} GetExitFillsAsync 실패: {ex.Message}");
+            }
+            // fallback: 기존 GetLastTradeAsync 3회 retry
+            if (exitPrice <= 0)
+            {
+                for (int attempt = 1; attempt <= 3; attempt++)
                 {
-                    OnLog?.Invoke($"⚠️ [PositionSync] {symbol} GetLastTradeAsync 실패 attempt={attempt}/3: {ex.Message}");
+                    try
+                    {
+                        var lastTrade = await _exchangeService.GetLastTradeAsync(symbol, pos.EntryTime, ct)
+                            .ConfigureAwait(false);
+                        if (lastTrade.HasValue && lastTrade.Value.exitPrice > 0)
+                        {
+                            exitPrice = lastTrade.Value.exitPrice;
+                            if (pos.IsLong && exitPrice < pos.EntryPrice * 1.001m)
+                                closeReason = "SL (exchange)";
+                            else if (!pos.IsLong && exitPrice > pos.EntryPrice * 0.999m)
+                                closeReason = "SL (exchange)";
+                            else
+                                closeReason = "TP/Trailing (exchange)";
+                            break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLog?.Invoke($"⚠️ [PositionSync] {symbol} GetLastTradeAsync 실패 attempt={attempt}/3: {ex.Message}");
+                    }
+                    if (attempt < 3) await Task.Delay(1000, ct).ConfigureAwait(false);
                 }
-                if (attempt < 3) await Task.Delay(1000, ct).ConfigureAwait(false);
             }
 
             // [v5.22.59] fallback — entryPrice 사용 X (PnL 0% 잘못된 알림 원인)
