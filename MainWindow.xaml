@@ -1590,10 +1590,20 @@
                                                                                         <TextBlock Grid.Column="0" Text="{Binding SlText}"
                                                                                                    Foreground="#EF4444" FontSize="9" FontFamily="Consolas"
                                                                                                    VerticalAlignment="Center"/>
-                                                                                        <!-- [v5.23.25] SL/TP 가격 0 일 때도 bar 표시 — width 100% 가득 + 색상만 binding
-                                                                                             사용자 의도 = 색상 변경 (흑자 초록 / 적자 빨강). 진행도는 부차적. -->
-                                                                                        <Border Grid.Column="1" Height="5" Margin="5,0" CornerRadius="2"
-                                                                                                Background="{Binding ProgressBarColor}"/>
+                                                                                        <!-- [v5.23.26] Width = ActualWidth × ProgressToTpPct/100 (fallback: ROE 절댓값/15)
+                                                                                             Background = ProgressBarColor (흑자 초록 / 적자 빨강)
+                                                                                             ROE 변화 → width + color 동시 갱신 -->
+                                                                                        <Grid Grid.Column="1" Background="#111827" Height="5" Margin="5,0">
+                                                                                            <Border HorizontalAlignment="Left" CornerRadius="2"
+                                                                                                    Background="{Binding ProgressBarColor}">
+                                                                                                <Border.Width>
+                                                                                                    <MultiBinding Converter="{StaticResource ProgressWidthConverter}">
+                                                                                                        <Binding RelativeSource="{RelativeSource AncestorType=Grid, AncestorLevel=1}" Path="ActualWidth"/>
+                                                                                                        <Binding Path="ProgressToTpPct"/>
+                                                                                                    </MultiBinding>
+                                                                                                </Border.Width>
+                                                                                            </Border>
+                                                                                        </Grid>
                                                                                         <TextBlock Grid.Column="2" Text="{Binding TpText}"
                                                                                                    Foreground="#10B981" FontSize="9" FontFamily="Consolas"
                                                                                                    VerticalAlignment="Center"/>

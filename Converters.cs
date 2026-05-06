@@ -9,11 +9,16 @@ namespace TradingBot
 {
     public class LessThanConverter : IValueConverter
     {
+        // [v5.23.26] decimal/double/float/int 모두 지원 (RoePct 가 decimal 이라 기존 double 체크 실패함)
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
-            if (value is double val && double.TryParse(parameter?.ToString(), out double limit))
-                return val < limit;
-            return false;
+            if (value == null) return false;
+            double val;
+            try { val = System.Convert.ToDouble(value, CultureInfo.InvariantCulture); }
+            catch { return false; }
+            if (!double.TryParse(parameter?.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out double limit))
+                return false;
+            return val < limit;
         }
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotImplementedException();
     }
