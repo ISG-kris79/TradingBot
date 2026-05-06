@@ -1063,10 +1063,19 @@ namespace TradingBot
         private async Task<(bool Success, decimal FilledQuantity, decimal AveragePrice)> PlaceEntryOrderAsync(
             string symbol, string side, decimal quantity, string source, CancellationToken token)
         {
-            if (!IsEntryAllowed(symbol, source, out string reason))
+            // [v5.23.28] 수동진입은 가드 체크 skip (사용자 지시: "수동인데 로직 왜 체크")
+            bool isManual = source != null && source.IndexOf("MANUAL", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!isManual)
             {
-                OnLiveLog?.Invoke($"⛔ [ENTRY_GATE][{source}] {symbol} 차단 ({reason})");
-                return (false, 0m, 0m);
+                if (!IsEntryAllowed(symbol, source, out string reason))
+                {
+                    OnLiveLog?.Invoke($"⛔ [ENTRY_GATE][{source}] {symbol} 차단 ({reason})");
+                    return (false, 0m, 0m);
+                }
+            }
+            else
+            {
+                OnLiveLog?.Invoke($"⚡ [MANUAL_ENTRY] {symbol} 수동진입 — 가드 우회 직진");
             }
 
             // [v5.19.6] 가용잔고 가드 — Binance -2027 InsufficientMargin 에러 사전 차단
