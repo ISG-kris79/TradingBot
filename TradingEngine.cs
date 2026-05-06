@@ -4618,7 +4618,10 @@ namespace TradingBot
                 return;
             }
 
-            // 1분봉 fetch (30봉 = EMA20 + 직전 마감봉 + RSI14)
+            // [v5.23.20] 사용자 정확 사양: 눌림 + 반등 확인
+            //   1단계: RSI > 70 → 대기 (고점 추격 방지)
+            //   2단계: 최근 5봉 중 EMA20 ±0.1% 터치 여부 (눌림목 발생)
+            //   3단계: 현재가 > 직전 1m high (반등 시작)
             var k1 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneMinute, 30, token);
             if (k1 == null || k1.Count < 22) return;
             var k1List = k1 as List<IBinanceKline> ?? new List<IBinanceKline>(k1);
@@ -4626,45 +4629,55 @@ namespace TradingBot
             int last = k1List.Count - 1;
             decimal prev1mHigh = k1List[last - 1].HighPrice;
 
-            // 1m EMA20 (직전 20개 마감봉)
+            // 1m EMA20
             decimal ema20 = k1List[last - 20].ClosePrice;
             double mult = 2.0 / 21.0;
             for (int q = last - 19; q <= last - 1; q++)
                 ema20 = (decimal)((double)k1List[q].ClosePrice * mult + (double)ema20 * (1 - mult));
 
-            // [v5.23.18] 1m RSI(14) 계산 — 고점 진입 방지 (사용자 사양)
+            // 1m RSI(14)
             double rsi1m = IndicatorCalculator.CalculateRSI(k1List, 14);
-            // 마지막 마감봉 양봉 여부
-            bool prev1mBullish = k1List[last - 1].ClosePrice > k1List[last - 1].OpenPrice;
 
-            // 가드 1: 1m RSI > 70 → 고점, 진입 유보 (RSI 식기를 기다림)
+            // [1단계] 고점 추격 방지
             if (rsi1m > 70.0)
             {
-                // 30초마다 1번만 로그 (스팸 방지)
                 if (DateTime.UtcNow.Second % 30 == 0)
-                    OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 1m RSI={rsi1m:F1} > 70 (고점) → 진입 유보, RSI 식음 대기 | {pending.GuardSummary}");
+                    OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 1m RSI={rsi1m:F1} > 70 (고점) → 대기 | {pending.GuardSummary}");
                 return;
             }
 
-            // 가드 2: 진짜 눌림목 진입 — 모두 충족
-            //   ① 현재가 > 직전 1m high (직전 고가 갱신 = 진짜 반등)
-            //   ② 현재가 > 1m EMA20 (지지 받음)
-            //   ③ 직전 1m 봉 양봉 (눌림목 끝 + 반등 확인)
-            //   ④ RSI 50 근처 ~ 70 (식었지만 죽지 않음)
-            bool breakHigh = currentPrice > prev1mHigh;
-            bool aboveEma = currentPrice > ema20;
-            bool rsiOk = rsi1m >= 45.0 && rsi1m <= 70.0;
+            // [2단계] 눌림목 확인: 최근 5봉 (last-5 ~ last-1) 중 어느 봉의 low/close 가 EMA20 ±0.1% 근처
+            decimal touchTolerance = ema20 * 0.001m;   // ±0.1%
+            decimal touchUpper = ema20 + touchTolerance;
+            decimal touchLower = ema20 - touchTolerance;
+            bool hasTouchedEma = false;
+            for (int b = Math.Max(0, last - 5); b <= last - 1; b++)
+            {
+                // 봉의 low 가 touchUpper 보다 낮고 high 가 touchLower 보다 높으면 = 봉이 EMA20 근처 통과
+                if (k1List[b].LowPrice <= touchUpper && k1List[b].HighPrice >= touchLower)
+                {
+                    hasTouchedEma = true;
+                    break;
+                }
+            }
+            if (!hasTouchedEma)
+            {
+                if (DateTime.UtcNow.Second % 30 == 0)
+                    OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 최근 5봉 EMA20 터치 없음 (눌림 미발생) → 대기 | EMA20={ema20:F6}");
+                return;
+            }
 
-            if (breakHigh && aboveEma && prev1mBullish && rsiOk)
+            // [3단계] 반등 확인: 현재가 > 직전 1m high
+            if (currentPrice > prev1mHigh)
             {
                 _lorentzianPendingEntries.TryRemove(symbol, out _);
                 _lorentzianCooldown[symbol] = DateTime.UtcNow;
                 OnStatusLog?.Invoke(
-                    $"✅ [LORENTZIAN_CONFIRM] {symbol} 눌림목 진입 | 현재={currentPrice:F6} > 1m high={prev1mHigh:F6} + EMA20={ema20:F6} + 직전봉 양봉 + RSI={rsi1m:F1} | {pending.GuardSummary}");
+                    $"✅ [LORENTZIAN_CONFIRM] {symbol} 진짜 눌림목 반등 진입 | 현재={currentPrice:F6} > 1m high={prev1mHigh:F6} + EMA20={ema20:F6} 터치 + RSI={rsi1m:F1} | {pending.GuardSummary}");
                 _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
                     signalSource: "LORENTZIAN", skipAiGateCheck: false);
             }
-            // else: 조건 미충족, 다음 tick 까지 대기
+            // else: 직전 high 미돌파, 다음 tick 까지 대기
         }
 
         // [v5.23.2] 하락 반전 시그널 즉시 탈출 (3가지)

@@ -5,6 +5,23 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.20] - 2026-05-06
+
+### 🎯 1m 정밀 진입 — 눌림목 + 반등 정확 사양 적용
+
+#### 사용자 사양 (코드 제공)
+1. RSI > 70 → 대기 (고점 추격 방지)
+2. 최근 5봉 중 EMA20 ±0.1% 터치 (눌림목 발생)
+3. 현재가 > 직전 1m high (반등 시작)
+
+#### 수정 (CheckLorentzianPendingEntriesAsync)
+- 가드 1: RSI > 70 → 대기
+- 가드 2: 최근 5봉 (last-5 ~ last-1) low/high 가 EMA20 ±0.1% 통과 여부 체크
+- 가드 3: currentPrice > prev1mHigh 충족 시 진입
+- 로그: "진짜 눌림목 반등 진입" / "EMA20 터치 없음" / "RSI > 70 대기"
+
+봇 재시작 후 1분봉 눌림목+반등 패턴에서만 진입.
+
 ## [5.23.19] - 2026-05-06
 
 ### 🚀 HIGH_TOP_CHASING / TOP_DISTRIBUTION / SIDEWAYS_BOX 가드 폐기 (펌프 진입 가능)
