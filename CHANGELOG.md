@@ -5,6 +5,26 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.21] - 2026-05-06
+
+### 🎨 활성포지션 ProgressBar fill 색상 표시 fix (Custom ControlTemplate)
+
+#### 사용자 보고
+- "흑자/적자 색상 변경 했더니 이제 표시를 안 함"
+
+#### 원인
+- WPF 기본 `ProgressBar` 는 OS Aero/Modern 테마가 `Foreground` 무시
+- `{Binding ProgressBarColor}` 가 정상 binding 되어도 fill 색 적용 안 됨
+
+#### 수정 (MainWindow.xaml ProgressBar)
+- `ControlTemplate` 인라인 정의:
+  - Background → 배경 Border
+  - PART_Indicator → fill Border (Foreground binding 적용)
+  - PART_Track → 트랙 placeholder
+- ProgressBar 가 PART_Indicator 의 Width 자동 계산 (Value/Maximum 비율)
+
+봇 재시작 후 활성포지션 bar fill 표시됨 (흑자=초록 / 적자=빨강).
+
 ## [5.23.20] - 2026-05-06
 
 ### 🎯 1m 정밀 진입 — 눌림목 + 반등 정확 사양 적용
