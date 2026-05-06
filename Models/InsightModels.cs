@@ -103,20 +103,10 @@ namespace TradingBot.Models
         public decimal SlPrice { get => _slPrice; set { _slPrice = value; OnPropertyChanged(); OnPropertyChanged(nameof(SlText)); } }
         public string SlText => _slPrice > 0 ? $"SL {_slPrice:F4}" : "SL --";
 
+        // [v5.23.27] fallback 제거 — MainViewModel 에서 양방향 progress 정확 계산
+        //   흑자 = TP 까지 진행률 / 적자 = SL 까지 진행률
         private double _progressToTpPct;
-        public double ProgressToTpPct
-        {
-            // [v5.23.26] SL/TP 가격 0 일 때 fallback: ROE 절댓값 / 15 × 100 → 0~100% bar width
-            //   사용자 캡처: SL/TP 미설정 시 ProgressToTpPct=0 → bar 안 보임 (사고)
-            get
-            {
-                if (_progressToTpPct > 0) return _progressToTpPct;
-                double absRoe = Math.Abs((double)_roePct);
-                if (absRoe <= 0) return 5.0;   // 최소 5% (bar 항상 보이게)
-                return Math.Min(100, absRoe / 15.0 * 100.0);
-            }
-            set { _progressToTpPct = value; OnPropertyChanged(); }
-        }
+        public double ProgressToTpPct { get => _progressToTpPct; set { _progressToTpPct = value; OnPropertyChanged(); } }
 
         // [v5.23.17] PnL 음수일 때 ProgressBar 빨간색
         public Brush ProgressBarColor => _roePct >= 0 ? Brushes.LimeGreen : Brushes.Tomato;

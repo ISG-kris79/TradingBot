@@ -4924,14 +4924,27 @@ ORDER BY CloseTime DESC, Id DESC", new { UserId = userId }, commandTimeout: 30);
                         }
                     }
 
+                    // [v5.23.27] 양방향 progress: 흑자=TP까지 / 적자=SL까지
                     decimal progress = 0m;
-                    if (pos.TakeProfit > 0 && pos.EntryPrice > 0)
+                    if (pos.EntryPrice > 0)
                     {
-                        decimal span = Math.Abs(pos.TakeProfit - pos.EntryPrice);
-                        if (span > 0)
+                        if (roePct >= 0 && pos.TakeProfit > 0)
                         {
-                            decimal moved = Math.Abs(currentPrice - pos.EntryPrice);
-                            progress = Math.Min(100m, moved / span * 100m);
+                            decimal span = Math.Abs(pos.TakeProfit - pos.EntryPrice);
+                            if (span > 0)
+                            {
+                                decimal moved = Math.Abs(currentPrice - pos.EntryPrice);
+                                progress = Math.Min(100m, moved / span * 100m);
+                            }
+                        }
+                        else if (roePct < 0 && pos.StopLoss > 0)
+                        {
+                            decimal span = Math.Abs(pos.EntryPrice - pos.StopLoss);
+                            if (span > 0)
+                            {
+                                decimal moved = Math.Abs(pos.EntryPrice - currentPrice);
+                                progress = Math.Min(100m, moved / span * 100m);
+                            }
                         }
                     }
 
@@ -4952,9 +4965,40 @@ ORDER BY CloseTime DESC, Id DESC", new { UserId = userId }, commandTimeout: 30);
 
                 RunOnUI(() =>
                 {
-                    ActivePositions.Clear();
-                    foreach (var v in vmList) ActivePositions.Add(v);
-                    FocusedPosition = vmList.FirstOrDefault(); // 호환용 (기존 바인딩 유지)
+                    // [v5.23.27] Clear+Add 폐기 → 기존 인스턴스 in-place update
+                    //   원인: 매 tick Clear+Add = 매번 새 PositionDetailViewModel 인스턴스
+                    //         → binding 재생성 → bar 깜빡임/미표시
+                    //   변경: Symbol 매칭 후 RoePct/CurrentPrice/PnL/HoldingTime in-place set
+                    //         → INotifyPropertyChanged 가 width + color 실시간 갱신
+                    var newSyms = new HashSet<string>(vmList.Select(v => v.Symbol), StringComparer.OrdinalIgnoreCase);
+                    // 사라진 심볼 제거
+                    for (int i = ActivePositions.Count - 1; i >= 0; i--)
+                    {
+                        if (!newSyms.Contains(ActivePositions[i].Symbol))
+                            ActivePositions.RemoveAt(i);
+                    }
+                    // 신규/기존 update
+                    foreach (var nv in vmList)
+                    {
+                        var existing = ActivePositions.FirstOrDefault(p =>
+                            string.Equals(p.Symbol, nv.Symbol, StringComparison.OrdinalIgnoreCase));
+                        if (existing != null)
+                        {
+                            // 기존 인스턴스 in-place update (binding 유지 + ProgressBar 실시간 갱신)
+                            existing.CurrentPrice = nv.CurrentPrice;
+                            existing.RoePct = nv.RoePct;   // ← width + color 자동 PropertyChanged
+                            existing.UnrealizedPnlUsd = nv.UnrealizedPnlUsd;
+                            existing.HoldingTime = nv.HoldingTime;
+                            existing.TpPrice = nv.TpPrice;
+                            existing.SlPrice = nv.SlPrice;
+                            existing.ProgressToTpPct = nv.ProgressToTpPct;
+                        }
+                        else
+                        {
+                            ActivePositions.Add(nv);
+                        }
+                    }
+                    FocusedPosition = ActivePositions.FirstOrDefault();
                     OnPropertyChanged(nameof(HasAnyActivePosition));
                 });
             }
