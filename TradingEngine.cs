@@ -4187,12 +4187,15 @@ namespace TradingBot
                     }
                 }
 
-                // [v5.23.0] 단일 진입 로직 — Lorentzian 15m 가드 + 5m 트리거
-                //   기존 5중가드 / Daily Swing / Pullback / AltMomentum / AltSimple / MajorSimple 전체 폐기
-                //   청산: TP/SL 거래소 algoOrder + CheckHybridExitAsync 만 유지
+                // [v5.23.24] 밈코인 vs 일반 dispatch
+                //   밈코인 = 5m KNN + 1m vol spike 공격적 진입 (15m 가드 skip)
+                //   일반 = 기존 15m KNN + 1m 정밀 트리거
                 try
                 {
-                    await AnalyzeLorentzianEntryAsync(symbol, currentPrice, token);
+                    if (MemeSymbols.Contains(symbol))
+                        await AnalyzeMemeKnnEntryAsync(symbol, currentPrice, token);
+                    else
+                        await AnalyzeLorentzianEntryAsync(symbol, currentPrice, token);
                 }
                 catch (Exception ex)
                 {
@@ -4478,6 +4481,121 @@ namespace TradingBot
                 state.Anchor.HighPivotStrength);
         }
 
+        // [v5.23.24] 밈코인 정의 (5m KNN + 1m vol 공격적 진입)
+        private static readonly HashSet<string> MemeSymbols = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "1000PEPEUSDT","1000SHIBUSDT","1000BONKUSDT","1000FLOKIUSDT",
+            "WIFUSDT","DOGEUSDT","FARTCOINUSDT","BABYUSDT",
+            "MOODENGUSDT","NEIROUSDT","POPCATUSDT","BOMEUSDT",
+            "TRUMPUSDT","AI16ZUSDT","GOATUSDT","CHILLGUYUSDT","PNUTUSDT",
+            "1000RATSUSDT","1000SATSUSDT","1000LUNCUSDT","TURBOUSDT",
+            "MEMEUSDT","MEWUSDT","ACTUSDT","BANANAUSDT"
+        };
+
+        // 밈코인 전용 5m KNN engine (LorentzianMemeFeatures 사용)
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, LorentzianAnnEngine> _memeKnnEngines
+            = new(StringComparer.OrdinalIgnoreCase);
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _memeLastTrained
+            = new(StringComparer.OrdinalIgnoreCase);
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _memeCooldown
+            = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan MemeCooldown = TimeSpan.FromMinutes(10);
+
+        // 밈코인 진입 — 5m KNN (LorentzianMemeFeatures: MFI/VolDelta/OBV/RSI/ADX) + 1m vol spike 3x
+        private async Task AnalyzeMemeKnnEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            if (!IsEntryAllowed(symbol, "MEME_KNN", out _)) return;
+            if (_memeCooldown.TryGetValue(symbol, out var last)
+                && DateTime.UtcNow - last < MemeCooldown) return;
+
+            lock (_posLock)
+            {
+                if (_activePositions.TryGetValue(symbol, out var existing)
+                    && existing != null && Math.Abs(existing.Quantity) > 0) return;
+            }
+
+            // 5m kline 1500봉 (~5일) — 학습 데이터
+            var k5 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 1500, token);
+            if (k5 == null || k5.Count < 300) return;
+            var k5List = k5 as List<IBinanceKline> ?? new List<IBinanceKline>(k5);
+
+            var engine = _memeKnnEngines.GetOrAdd(symbol,
+                s => new LorentzianAnnEngine(s, neighborsCount: 8, maxBarsBack: 2000,
+                    featureCount: LorentzianMemeFeatures.FeatureCount));
+
+            // walk-forward 학습 (라벨 = 4봉 후 방향)
+            var lastClosed = k5List[^2];
+            bool needTrain = !_memeLastTrained.TryGetValue(symbol, out var prevTrained)
+                          || prevTrained != lastClosed.OpenTime;
+            if (needTrain)
+            {
+                _memeLastTrained[symbol] = lastClosed.OpenTime;
+                if (engine.SampleCount < 200)
+                {
+                    for (int j = 60; j <= k5List.Count - 6; j++)
+                    {
+                        int wStart = Math.Max(0, j - 499);
+                        var win = k5List.GetRange(wStart, j - wStart + 1);
+                        var feats = LorentzianMemeFeatures.Extract(win);
+                        if (feats == null) continue;
+                        decimal fut = k5List[j + 4].ClosePrice;
+                        decimal nowC = k5List[j].ClosePrice;
+                        int label = fut > nowC ? 1 : (fut < nowC ? -1 : 0);
+                        engine.AddSample(feats, label);
+                    }
+                }
+                else
+                {
+                    int sIdx = k5List.Count - 6;
+                    if (sIdx >= 60)
+                    {
+                        int wStart = Math.Max(0, sIdx - 499);
+                        var win = k5List.GetRange(wStart, sIdx - wStart + 1);
+                        var feats = LorentzianMemeFeatures.Extract(win);
+                        if (feats != null)
+                        {
+                            decimal fut = k5List[sIdx + 4].ClosePrice;
+                            decimal nowC = k5List[sIdx].ClosePrice;
+                            int label = fut > nowC ? 1 : (fut < nowC ? -1 : 0);
+                            engine.AddSample(feats, label);
+                        }
+                    }
+                }
+            }
+
+            // 5m KNN 예측 (마지막 마감봉 기준)
+            int evalIdx = k5List.Count - 2;
+            int wStartE = Math.Max(0, evalIdx - 499);
+            var winE = k5List.GetRange(wStartE, evalIdx - wStartE + 1);
+            var fp = LorentzianMemeFeatures.Extract(winE);
+            if (fp == null) return;
+
+            var pred = engine.Predict(fp);
+            if (!pred.IsReady || pred.K == 0) return;
+            if (pred.Prediction <= 0 || pred.PositiveRate < 0.70f) return;
+
+            // 1m volume spike 3x 체크
+            var k1 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneMinute, 25, token);
+            if (k1 == null || k1.Count < 22) return;
+            var k1List = k1 as List<IBinanceKline> ?? new List<IBinanceKline>(k1);
+            decimal curVol = k1List[^1].Volume;
+            decimal avgVol = k1List.Skip(k1List.Count - 21).Take(20).Average(k => k.Volume);
+            if (avgVol <= 0m) return;
+            double volRatio = (double)(curVol / avgVol);
+            if (volRatio < 3.0)
+            {
+                if (DateTime.UtcNow.Second % 30 == 0)
+                    OnStatusLog?.Invoke($"⏸️ [MEME_KNN] {symbol} 1m vol={volRatio:F1}x < 3x 대기 | KNN WR={pred.PositiveRate*100:F0}% K={pred.K}");
+                return;
+            }
+
+            _memeCooldown[symbol] = DateTime.UtcNow;
+            OnStatusLog?.Invoke(
+                $"🟢 [MEME_KNN] {symbol} 진입 | 5m KNN WR={pred.PositiveRate*100:F0}% K={pred.K} pred={pred.Prediction} + 1m vol={volRatio:F1}x");
+            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
+                signalSource: "MEME_KNN", skipAiGateCheck: false);
+        }
+
         // [v5.23.0] jdehorty Lorentzian Classification 풀세트 (15m TF)
         //   라이브 ≡ 백테스트 — Services/LorentzianV2/LorentzianGuard.EvaluateEntry 공유
         // [v5.23.4] 가드 통과 → 1분봉 1개 마감 확인 후 진입 (페이크아웃 방지)
@@ -4668,16 +4786,48 @@ namespace TradingBot
             }
 
             // [3단계] 반등 확인: 현재가 > 직전 1m high
-            if (currentPrice > prev1mHigh)
+            if (currentPrice <= prev1mHigh) return;
+
+            // [v5.23.24] 4단계 — 1m BB 중심선 위 (사용자 ICP 사례)
+            //   "1m BB middle 넘어갈 때 들어가야 안전, 음봉/middle 아래 진입은 손절 위험"
+            if (k1List.Count >= 22)
             {
-                _lorentzianPendingEntries.TryRemove(symbol, out _);
-                _lorentzianCooldown[symbol] = DateTime.UtcNow;
-                OnStatusLog?.Invoke(
-                    $"✅ [LORENTZIAN_CONFIRM] {symbol} 진짜 눌림목 반등 진입 | 현재={currentPrice:F6} > 1m high={prev1mHigh:F6} + EMA20={ema20:F6} 터치 + RSI={rsi1m:F1} | {pending.GuardSummary}");
-                _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
-                    signalSource: "LORENTZIAN", skipAiGateCheck: false);
+                var bbWin1 = k1List.Skip(k1List.Count - 21).Take(20).ToList();
+                var bb1 = IndicatorCalculator.CalculateBB(bbWin1, 20, 2.0);
+                if (bb1.Mid > 0 && (double)currentPrice <= bb1.Mid)
+                {
+                    if (DateTime.UtcNow.Second % 30 == 0)
+                        OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 현재가({currentPrice:F6}) <= 1m BB mid({bb1.Mid:F6}) → 대기");
+                    return;
+                }
             }
-            // else: 직전 high 미돌파, 다음 tick 까지 대기
+
+            // [v5.23.24] 5단계 — 5m 반등 확인 (직전 5m 봉 양봉)
+            //   "5m 반등 확인 안 하고 음봉일 때 진입 → 손절"
+            try
+            {
+                var k5 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 3, token);
+                if (k5 != null && k5.Count >= 2)
+                {
+                    var k5List = k5 as List<IBinanceKline> ?? new List<IBinanceKline>(k5);
+                    var prev5m = k5List[^2];
+                    bool prev5mBull = prev5m.ClosePrice > prev5m.OpenPrice;
+                    if (!prev5mBull)
+                    {
+                        if (DateTime.UtcNow.Second % 30 == 0)
+                            OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 직전 5m 음봉 → 5m 반등 대기");
+                        return;
+                    }
+                }
+            }
+            catch { }
+
+            _lorentzianPendingEntries.TryRemove(symbol, out _);
+            _lorentzianCooldown[symbol] = DateTime.UtcNow;
+            OnStatusLog?.Invoke(
+                $"✅ [LORENTZIAN_CONFIRM] {symbol} 진입 | 현재={currentPrice:F6} > 1m high={prev1mHigh:F6} + EMA20 터치 + 1m BB mid 위 + 5m 양봉 | RSI={rsi1m:F1} | {pending.GuardSummary}");
+            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
+                signalSource: "LORENTZIAN", skipAiGateCheck: false);
         }
 
         // [v5.23.2] 하락 반전 시그널 즉시 탈출 (3가지)

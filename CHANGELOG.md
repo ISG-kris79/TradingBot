@@ -5,6 +5,34 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.24] - 2026-05-06
+
+### 🚀 밈코인 5m KNN path + 변동성 스캐너 + ICP fix (1m BB middle + 5m 양봉)
+
+#### 사용자 사양
+1. 변동성 스캐너 (1m vol spike + BB 하단 반등 + Squeeze release + top 100)
+2. 밈코인 전용 5m KNN + 1m vol spike (15m 가드 우회)
+3. 밈코인 KNN feature: MFI/VolumeDelta/OBV/RSI/ADX
+4. ICP 사례: 1m BB middle 위 + 5m 양봉 확인 후 진입
+
+#### 신규 파일
+- `Services/VolatilityScanner.cs` — 후보 스캔
+- `Services/LorentzianV2/LorentzianMemeFeatures.cs` — 5-feature (MFI/VolDelta/OBV/RSI/ADX)
+
+#### TradingEngine
+- `MemeSymbols` HashSet (25 종)
+- `AnalyzeMemeKnnEntryAsync` — 5m KNN + 1m vol 3x → 진입
+- dispatch 분기: meme → MEME / 일반 → LORENTZIAN
+- `CheckLorentzianPendingEntriesAsync` 4-5단계 추가:
+  - 4: 1m close > 1m BB(20,2) middle
+  - 5: 직전 5m 봉 양봉
+
+## [5.23.23] - 2026-05-06
+
+### ProgressBar fix
+
+(WPF ProgressBar 폐기 → Grid+Border 직접 + ProgressWidthConverter)
+
 ## [5.23.21] - 2026-05-06
 
 ### 🎨 활성포지션 ProgressBar fill 색상 표시 fix (Custom ControlTemplate)
