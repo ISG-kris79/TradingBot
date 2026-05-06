@@ -5,6 +5,27 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.31] - 2026-05-06
+
+### 🛠 LORENTZIAN PULLBACK_QUALITY 가드 — 추격매수 차단
+
+#### 사례
+- XPLUSDT Id 4790 LOSS (-$9.44, 90분) → 4824 더 높은 가격(0.0977)에서 추격
+- ZECUSDT Id 4804 WIN (+$12.17, 25분) → 4823 +7% 위(600.87)에서 눌림 검증 없이 재진입
+- 진입 경로: `Strategy=LORENTZIAN, Category=LORENTZIAN` → `entryCat=GENERIC` 분류
+- GENERIC 카테고리는 EMA20↑/RSI<65 (PUMP 전용) 미적용 + HIGH_TOP_CHASING 등 v5.23.19에서 폐기
+
+#### 수정 (`AnalyzeLorentzianEntryAsync` LorentzianGuard 통과 직후)
+"고점=무조건 차단"이 아닌 "눌림 검증 없는 일직선 추격"만 차단.
+15m 30봉 기준 4개 조건 중 3개 이상 만족 시 통과:
+1. 최근 20봉 직전 local high 대비 ≥1.5% 눌림 봉 존재
+2. 현재가 ≥ (고점+눌림저점)/2 — 50% 회복 (되돌림 후 재시작)
+3. 15m EMA20 괴리율 ≤ 2.5% — 3% 이상 괴리 = 너무 늘어남
+4. 최근 3봉 평균 vol ≥ 눌림 구간 평균 vol × 0.8 — buyer 진입 확인
+
+차단 시 `_lorentzianCooldown` 등록 → 같은 봉 재트리거 방지.
+로그: `⛔ [LORENTZIAN] {symbol} CHASE 차단 | p=0(0.42%) r=1 e=0(3.81%) v=1 | hi=… lo=… cur=…`
+
 ## [5.23.30] - 2026-05-06
 
 ### 🛠 BEAR_DIVERGENCE 청산 임계값 강화 (조기 청산 방지)

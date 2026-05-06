@@ -4713,6 +4713,91 @@ namespace TradingBot
                 return;
             }
 
+            // [v5.23.31] PULLBACK_QUALITY 가드 — 추격매수 vs 정상 재진입 구분
+            //   "고점=무조건 차단" 아님. "눌림 없는 일직선 추격"만 차단.
+            //   15m 30봉 기준 4개 조건 중 3개 이상 만족 시 통과:
+            //     1. 최근 20봉 직전 local high 대비 ≥1.5% 눌림 봉 존재
+            //     2. 현재가 ≥ (고점+눌림저점)/2  (50% 회복 = 되돌림 후 재시작)
+            //     3. 15m EMA20 괴리율 ≤ 2.5%  (3% 이상 괴리 = 너무 늘어남)
+            //     4. 최근 3봉 평균 vol ≥ 눌림 구간 평균 vol × 0.8 (buyer 진입 확인)
+            //   사례: XPL 4790 LOSS → 4824 추격, ZEC 4804 WIN → 4823 +7% 추격
+            {
+                int n = k15List.Count;
+                int scanStart = Math.Max(0, n - 22);
+                int scanEnd = n - 2;
+                if (scanEnd - scanStart >= 5)
+                {
+                    int hiIdx = scanStart;
+                    decimal hiPrice = k15List[scanStart].HighPrice;
+                    for (int i = scanStart + 1; i <= scanEnd; i++)
+                    {
+                        if (k15List[i].HighPrice > hiPrice)
+                        {
+                            hiPrice = k15List[i].HighPrice;
+                            hiIdx = i;
+                        }
+                    }
+
+                    int loIdx = hiIdx;
+                    decimal loPrice = hiPrice;
+                    for (int i = hiIdx; i <= scanEnd; i++)
+                    {
+                        if (k15List[i].LowPrice < loPrice)
+                        {
+                            loPrice = k15List[i].LowPrice;
+                            loIdx = i;
+                        }
+                    }
+
+                    decimal pullbackPct = hiPrice > 0 ? (hiPrice - loPrice) / hiPrice * 100m : 0m;
+                    bool c1Pullback = pullbackPct >= 1.5m;
+
+                    decimal midPoint = (hiPrice + loPrice) / 2m;
+                    bool c2Recovery = currentPrice >= midPoint;
+
+                    decimal ema20_15m = 0m;
+                    if (n >= 21)
+                    {
+                        ema20_15m = k15List[n - 21].ClosePrice;
+                        double mult = 2.0 / 21.0;
+                        for (int q = n - 20; q <= n - 1; q++)
+                            ema20_15m = (decimal)((double)k15List[q].ClosePrice * mult + (double)ema20_15m * (1 - mult));
+                    }
+                    decimal emaDevPct = ema20_15m > 0 ? Math.Abs(currentPrice - ema20_15m) / ema20_15m * 100m : 0m;
+                    bool c3EmaOk = ema20_15m > 0 && emaDevPct <= 2.5m;
+
+                    bool c4VolOk = true;
+                    if (loIdx > hiIdx && scanEnd >= 2)
+                    {
+                        decimal recentVolSum = 0m; int recentCnt = 0;
+                        for (int i = scanEnd - 2; i <= scanEnd; i++)
+                        {
+                            if (i >= 0) { recentVolSum += k15List[i].Volume; recentCnt++; }
+                        }
+                        decimal pullVolSum = 0m; int pullCnt = 0;
+                        for (int i = hiIdx; i <= loIdx; i++)
+                        {
+                            pullVolSum += k15List[i].Volume; pullCnt++;
+                        }
+                        if (recentCnt > 0 && pullCnt > 0)
+                        {
+                            decimal recentAvg = recentVolSum / recentCnt;
+                            decimal pullAvg = pullVolSum / pullCnt;
+                            c4VolOk = pullAvg <= 0m || recentAvg >= pullAvg * 0.8m;
+                        }
+                    }
+
+                    int passCnt = (c1Pullback ? 1 : 0) + (c2Recovery ? 1 : 0) + (c3EmaOk ? 1 : 0) + (c4VolOk ? 1 : 0);
+                    if (passCnt < 3)
+                    {
+                        string detail = $"p={(c1Pullback ? 1 : 0)}({pullbackPct:F2}%) r={(c2Recovery ? 1 : 0)} e={(c3EmaOk ? 1 : 0)}({emaDevPct:F2}%) v={(c4VolOk ? 1 : 0)}";
+                        OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} CHASE 차단 | {detail} | hi={hiPrice:F6} lo={loPrice:F6} cur={currentPrice:F6} (눌림 검증 실패 — 추격매수 회피)");
+                        _lorentzianCooldown[symbol] = DateTime.UtcNow;
+                        return;
+                    }
+                }
+            }
+
             // [v5.23.4] 즉시 진입 대신 다음 1분봉 마감 확인 후 진입 (페이크아웃 방지)
             if (_lorentzianPendingEntries.ContainsKey(symbol)) return;   // 이미 대기 중
 
