@@ -5,6 +5,27 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.19] - 2026-05-06
+
+### 🚀 HIGH_TOP_CHASING / TOP_DISTRIBUTION / SIDEWAYS_BOX 가드 폐기 (펌프 진입 가능)
+
+#### 사용자 보고
+- "STORJ +42%, FIL +19% 펌프 시 봇이 못 잡음"
+- DB 진단: HIGH_TOP_CHASING:pos=99.1%_rise=42.65% 가드로 차단
+
+#### 수정 (TradingEngine.IsEntryAllowedCore)
+- HIGH_TOP_CHASING (M15 30봉 위치≥90% AND 상승≥5%) → 비활성
+- TOP_DISTRIBUTION (수직상승 후 횡보 분배) → 비활성
+- SIDEWAYS_BOX (M15 20봉 좁은 박스) → 비활성
+
+#### 대체 가드 (LorentzianGuard 가 이미 처리)
+- BB middle break (close ≤ BB mid 차단)
+- BB upper walking 깨짐 차단 (정점 거부 + 회복 실패)
+- 횡보 방향 돌파 (consol high/low 돌파 확인)
+- NW Kernel direction 상승 강제
+
+봇 재시작 후 STORJ/FIL 같은 펌프 코인 진입 가능 (KNN + LorentzianGuard 통과 시).
+
 ## [5.23.18] - 2026-05-06
 
 ### 🛡️ KNN 고점 진입 방지 — 1m RSI 다이버전스 + 눌림목 가드

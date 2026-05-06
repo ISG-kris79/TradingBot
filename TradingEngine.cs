@@ -846,16 +846,14 @@ namespace TradingBot
                 }
             }
 
-            // [v5.19.5] M15 고점 추격 + 횡보 분배 가드 — API3USDT/CTSI/CELR 사례 근본 차단
-            //   API3USDT: 수직상승 후 횡보 → BB 상단 진입 → 폭락 90%+
-            //   규칙 1: M15 30봉 range 위치 ≥ 85% AND 30봉 저점→현재가 ≥ 3% → 차단
-            //   규칙 2: 직전 30봉 +5% 이상 + 직전 5봉 변동폭 < 0.8% → 횡보 분배 차단
-            //   [v5.22.16] 멀티TF WebSocket 캐시 폐기 → sync REST throttle 캐시 (없으면 가드 skip + 백그라운드 fetch)
+            // [v5.23.19] HIGH_TOP_CHASING / TOP_DISTRIBUTION / SIDEWAYS_BOX 가드 폐기 (사용자 지시)
+            //   사용자 보고: "STORJ +42%, FIL +19% 펌프 시 HIGH_TOP_CHASING 차단으로 못 잡음"
+            //   대체: LorentzianGuard 의 7-필터 + BB middle + walking band + 횡보돌파 가드가 이미 정점/추격 차단
             try
             {
                 var k15 = GetMultiTfKlinesCachedOrRefresh(
                     symbol, KlineInterval.FifteenMinutes, 30);
-                if (k15 != null && k15.Count >= 30)
+                if (false && k15 != null && k15.Count >= 30)
                 {
                     decimal minLow = k15.Min(b => b.LowPrice);
                     decimal maxHigh = k15.Max(b => b.HighPrice);
@@ -868,18 +866,8 @@ namespace TradingBot
                         ? (latestClose - minLow) / minLow * 100m
                         : 0m;
 
-                    // 규칙 1: 고점 추격 — [v5.19.6] 임계 완화 (90% AND 5%) — 학습된 BB Walk 라이딩 통과 가능
-                    //   사용자: "상승 vs 하락 구분이 불가능한가? 너무 빡세면 BB Walk 정상 진입도 차단됨"
-                    //   완화: 위치 85→90, 상승 3%→5% (단, 둘 다 충족 시에만 차단)
-                    if (posPct >= 90m && riseFromLowPct >= 5m)
-                    {
-                        blockReason = $"HIGH_TOP_CHASING:pos={posPct:F1}%_rise={riseFromLowPct:F2}%";
-                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (M15 30봉 위치≥90% AND 상승≥5%)");
-                        return false;
-                    }
-
-                    // 규칙 2: 수직상승 후 횡보 분배 (직전 5봉 high-low/avg < 0.8%)
-                    if (riseFromLowPct >= 5m)
+                    // 사용자 지시로 제거
+                    if (false)
                     {
                         var last5 = k15.TakeLast(5).ToList();
                         decimal hi5 = last5.Max(b => b.HighPrice);
