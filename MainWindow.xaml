@@ -1592,7 +1592,7 @@
                                                                                         <ProgressBar Grid.Column="1"
                                                                                                      Value="{Binding ProgressToTpPct, Mode=OneWay}"
                                                                                                      Maximum="100" Height="5" Margin="5,0"
-                                                                                                     Background="#111827" Foreground="#10B981"
+                                                                                                     Background="#111827" Foreground="{Binding ProgressBarColor}"
                                                                                                      BorderThickness="0"/>
                                                                                         <TextBlock Grid.Column="2" Text="{Binding TpText}"
                                                                                                    Foreground="#10B981" FontSize="9" FontFamily="Consolas"

@@ -799,6 +799,10 @@ namespace TradingBot.ViewModels
         private double _totalProfit = 0;
         public double TotalProfit { get => _totalProfit; set { _totalProfit = value; OnPropertyChanged(); } }
 
+        // [v5.23.17] 종료된 거래의 평균 수익금/trade (사용자 지시)
+        private double _avgProfit = 0;
+        public double AvgProfit { get => _avgProfit; set { _avgProfit = value; OnPropertyChanged(); } }
+
         private double _averageRoe = 0;
         public double AverageRoe { get => _averageRoe; set { _averageRoe = value; OnPropertyChanged(); } }
 
@@ -2024,8 +2028,13 @@ namespace TradingBot.ViewModels
                 return;
             }
 
+            // [v5.23.17] 종료일 기준 필터 강화 (사용자 지시)
+            //   - ExitTime > MinValue (실제 청산 완료)
+            //   - PnL != 0 (실제 손익 발생)
+            //   - StartDate ~ EndDate 범위 (UI 의 날짜 필터 적용)
+            //   ExitTime 기준 정렬은 SP 가 이미 함 (sp_GetTradeHistory)
             var closedTrades = TradeHistory
-                .Where(t => !string.Equals(t.ExitReason, "OPEN_POSITION", StringComparison.OrdinalIgnoreCase))
+                .Where(t => t.ExitTime > DateTime.MinValue && t.PnL != 0m)
                 .ToList();
 
             if (closedTrades.Count == 0)
@@ -2033,6 +2042,7 @@ namespace TradingBot.ViewModels
                 WinRate = 0;
                 TotalProfit = 0;
                 AverageRoe = 0;
+                AvgProfit = 0;
                 UpdateMonthlyGoalTracker(0d);
                 return;
             }
@@ -2040,6 +2050,7 @@ namespace TradingBot.ViewModels
             var profitableTrades = closedTrades.Where(t => t.PnL > 0).ToList();
             WinRate = (double)profitableTrades.Count / closedTrades.Count * 100;
             TotalProfit = (double)closedTrades.Sum(t => t.PnL);
+            AvgProfit = (double)closedTrades.Average(t => t.PnL);   // 평균 수익금/trade
 
             // [v5.22.60] PnLPercent=0 보정 — EXTERNAL_CLOSE 시 ExitPrice=EntryPrice fallback 으로 ROE 0 표시 사고
             //   PnL 정상 + PnLPercent 0 인 경우 PnL/notional×leverage(가정 15x) 로 ROE 추정

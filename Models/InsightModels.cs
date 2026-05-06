@@ -80,7 +80,7 @@ namespace TradingBot.Models
         public decimal CurrentPrice { get => _currentPrice; set { _currentPrice = value; OnPropertyChanged(); } }
 
         private decimal _roePct;
-        public decimal RoePct { get => _roePct; set { _roePct = value; OnPropertyChanged(); OnPropertyChanged(nameof(RoeText)); OnPropertyChanged(nameof(RoeColor)); } }
+        public decimal RoePct { get => _roePct; set { _roePct = value; OnPropertyChanged(); OnPropertyChanged(nameof(RoeText)); OnPropertyChanged(nameof(RoeColor)); OnPropertyChanged(nameof(ProgressBarColor)); } }
 
         public string RoeText => $"{_roePct:+0.00;-0.00}%";
         public Brush RoeColor => _roePct >= 0 ? Brushes.LimeGreen : Brushes.Tomato;
@@ -105,6 +105,9 @@ namespace TradingBot.Models
 
         private double _progressToTpPct;
         public double ProgressToTpPct { get => _progressToTpPct; set { _progressToTpPct = value; OnPropertyChanged(); } }
+
+        // [v5.23.17] PnL 음수일 때 ProgressBar 빨간색
+        public Brush ProgressBarColor => _roePct >= 0 ? Brushes.LimeGreen : Brushes.Tomato;
 
         private string _aiReassessText = "AI 재예측: 대기 중";
         public string AIReassessText { get => _aiReassessText; set { _aiReassessText = value; OnPropertyChanged(); } }

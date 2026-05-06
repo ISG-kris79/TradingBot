@@ -5,6 +5,23 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.17] - 2026-05-06
+
+### 🎨 활성포지션 ProgressBar 음수 빨강 + 매매기록 종료일 통계 fix
+
+#### 사용자 지시
+1. 활성포지션 bar 가 초록인데 ROE 음수면 빨강으로 변경
+2. 매매기록 통계 = 종료일 기준 승률/평균수익 정확
+
+#### 수정
+- `Models/InsightModels.PositionDetailViewModel`
+  - `ProgressBarColor` brush 신규 (RoePct ≥ 0 → LimeGreen, < 0 → Tomato)
+  - RoePct setter 에 `OnPropertyChanged(nameof(ProgressBarColor))` 추가
+- `MainWindow.xaml`: ProgressBar Foreground "#10B981" → `{Binding ProgressBarColor}`
+- `MainViewModel.CalculateTradeStatistics`
+  - closedTrades 필터: `ExitTime > MinValue AND PnL != 0` (종료일 기준 정확)
+  - `AvgProfit` property 추가 (평균 수익금/trade)
+
 ## [5.23.16] - 2026-05-05
 
 ### 🗑️ 백그라운드 10분 주기 자동업데이트 폐기 (사용자 지시)
