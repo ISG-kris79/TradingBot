@@ -28,6 +28,7 @@
         <local:StatusToIconConverter x:Key="StatusToIconConverter"/>
         <local:GreaterThanConverter x:Key="GreaterThanConverter"/>
         <local:LessThanConverter x:Key="LessThanConverter"/>
+        <local:ProgressWidthConverter x:Key="ProgressWidthConverter"/>
         <local:InvertBooleanConverter x:Key="InvertBooleanConverter"/>
         <local:PriceFormattingConverter x:Key="PriceFormattingConverter"/>
         <local:LogTextToColorConverter x:Key="LogTextToColorConverter"/>
@@ -1589,24 +1590,18 @@
                                                                                         <TextBlock Grid.Column="0" Text="{Binding SlText}"
                                                                                                    Foreground="#EF4444" FontSize="9" FontFamily="Consolas"
                                                                                                    VerticalAlignment="Center"/>
-                                                                                        <ProgressBar Grid.Column="1"
-                                                                                                     Value="{Binding ProgressToTpPct, Mode=OneWay}"
-                                                                                                     Maximum="100" Height="5" Margin="5,0"
-                                                                                                     Background="#111827" Foreground="{Binding ProgressBarColor}"
-                                                                                                     BorderThickness="0">
-                                                                                            <ProgressBar.Template>
-                                                                                                <ControlTemplate TargetType="ProgressBar">
-                                                                                                    <Grid>
-                                                                                                        <Border Background="{TemplateBinding Background}" CornerRadius="2"/>
-                                                                                                        <!-- PART_Track 안에 PART_Indicator 자식으로 → ProgressBar 가 Width 자동 계산 -->
-                                                                                                        <Border Name="PART_Track" ClipToBounds="True">
-                                                                                                            <Border Name="PART_Indicator" HorizontalAlignment="Left"
-                                                                                                                    Background="{TemplateBinding Foreground}" CornerRadius="2"/>
-                                                                                                        </Border>
-                                                                                                    </Grid>
-                                                                                                </ControlTemplate>
-                                                                                            </ProgressBar.Template>
-                                                                                        </ProgressBar>
+                                                                                        <!-- [v5.23.23] WPF ProgressBar 폐기 → Grid+Border 직접 구현 (OS 테마 무시) -->
+                                                                                        <Grid Grid.Column="1" Background="#111827" Height="5" Margin="5,0" x:Name="pbBg">
+                                                                                            <Border HorizontalAlignment="Left" CornerRadius="2"
+                                                                                                    Background="{Binding ProgressBarColor}">
+                                                                                                <Border.Width>
+                                                                                                    <MultiBinding Converter="{StaticResource ProgressWidthConverter}">
+                                                                                                        <Binding ElementName="pbBg" Path="ActualWidth"/>
+                                                                                                        <Binding Path="ProgressToTpPct"/>
+                                                                                                    </MultiBinding>
+                                                                                                </Border.Width>
+                                                                                            </Border>
+                                                                                        </Grid>
                                                                                         <TextBlock Grid.Column="2" Text="{Binding TpText}"
                                                                                                    Foreground="#10B981" FontSize="9" FontFamily="Consolas"
                                                                                                    VerticalAlignment="Center"/>

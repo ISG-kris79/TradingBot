@@ -18,6 +18,26 @@ namespace TradingBot
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotImplementedException();
     }
 
+    // [v5.23.23] 활성포지션 ProgressBar — ActualWidth × pct/100 = 실제 fill width
+    public class ProgressWidthConverter : IMultiValueConverter
+    {
+        public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (values == null || values.Length < 2) return 0.0;
+            try
+            {
+                double w = System.Convert.ToDouble(values[0], CultureInfo.InvariantCulture);
+                double pct = System.Convert.ToDouble(values[1], CultureInfo.InvariantCulture);
+                if (double.IsNaN(w) || w <= 0) return 0.0;
+                if (double.IsNaN(pct)) pct = 0;
+                pct = Math.Max(0, Math.Min(100, pct));
+                return w * pct / 100.0;
+            }
+            catch { return 0.0; }
+        }
+        public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture) => throw new NotImplementedException();
+    }
+
     public class StatusToIconConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
