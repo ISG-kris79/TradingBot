@@ -5,6 +5,19 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.29] - 2026-05-03
+
+### 🛠 수동진입 시장가 주문 (LIMIT chasing 우회)
+
+#### 문제
+- LONG/SHORT 수동 버튼이 `PlaceEntryOrderAsync` (LIMIT + chasing) 호출 → 체결 안 됨
+- 사용자: "왜 지정가로 들어가, 시장가로 들어가야지"
+
+#### 수정 (TradingEngine.cs ManualMarketEntryAsync)
+- `PlaceEntryOrderAsync` → `PlaceMarketOrderAsync` 직접 호출
+- side ("BUY"/"SELL") + reduceOnly:false 시장가 즉시 체결
+- 실패 메시지: `시장가 주문 실패 (거래소 응답 확인)`
+
 ## [5.23.24] - 2026-05-06
 
 ### 🚀 밈코인 5m KNN path + 변동성 스캐너 + ICP fix (1m BB middle + 5m 양봉)

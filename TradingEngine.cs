@@ -13084,15 +13084,15 @@ namespace TradingBot
 
                 // 4. 시장가 주문
                 string side = direction == "LONG" ? "BUY" : "SELL";
-                OnStatusLog?.Invoke($"⚡ [수동진입] {symbol} {direction} 주문 실행 | 수량={quantity} 레버={leverage}x 증거금=${marginUsdt:N0}");
+                OnStatusLog?.Invoke($"⚡ [수동진입] {symbol} {direction} 시장가 주문 실행 | 수량={quantity} 레버={leverage}x 증거금=${marginUsdt:N0}");
 
-                // [v5.10.98 P1-1] 수동 진입도 단일 진입점 PlaceEntryOrderAsync 사용 (LIMIT + chasing 차단 + race mark)
-                //   기존: PlaceMarketOrderAsync 직접 호출 → 슬리피지 + 게이트 우회
-                //   수정: PlaceEntryOrderAsync 경유 → IsEntryAllowed + LIMIT + chasing block 자동 적용
-                var (success, filledQty, avgPrice) = await PlaceEntryOrderAsync(symbol, side, quantity, "MANUAL_ENTRY", token);
+                // [v5.23.29] 수동진입은 시장가 직접 (사용자: "왜 지정가로 들어가, 시장가로 들어가야지")
+                //   v5.10.98 의 PlaceEntryOrderAsync (LIMIT + chasing) 우회
+                var (success, filledQty, avgPrice) = await _exchangeService.PlaceMarketOrderAsync(
+                    symbol, side, quantity, token, reduceOnly: false);
 
                 if (!success || filledQty <= 0)
-                    return (false, $"{symbol} 주문 실패 (거래소 응답 확인 또는 게이트 차단)");
+                    return (false, $"{symbol} 시장가 주문 실패 (거래소 응답 확인)");
 
                 // 5. 포지션 등록
                 bool isLongPos = direction == "LONG";
