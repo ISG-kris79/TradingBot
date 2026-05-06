@@ -5,6 +5,25 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.30] - 2026-05-06
+
+### 🛠 BEAR_DIVERGENCE 청산 임계값 강화 (조기 청산 방지)
+
+#### 사례
+- ZECUSDT 14:47 진입 → 15:00 청산 (13분), 청산 후 즉시 상승
+- 사유: `BEAR_DIVERGENCE RSI 64.9→60.1` — RSI 60 은 bullish 영역인데도 청산
+
+#### 문제
+- 직전 RSI 제한 없음 → 정상 영역에서도 발동
+- 하락폭 2점 임계 → 시장 노이즈 수준
+- 현재 봉 음봉 확인 없음 → 즉시 시장가 청산
+
+#### 수정 (CheckBearishReversalExitAsync 신호 2)
+3중 가드 추가:
+1. `rsiPrior >= 70` — 실제 과매수일 때만 다이버전스 인정
+2. `rsiNow < rsiPrior - 10` — 10점 이상 하락 (2점 → 10점)
+3. 현재 1m 봉 `Close < Open` — 음봉 확인
+
 ## [5.23.29] - 2026-05-03
 
 ### 🛠 수동진입 시장가 주문 (LIMIT chasing 우회)

@@ -4937,6 +4937,9 @@ namespace TradingBot
             }
 
             // ── 신호 2: 1m Bearish Divergence (가격 HH + RSI LH) → 100% ──
+            // [v5.23.30] 임계값 강화 — ZECUSDT 사례: RSI 64.9→60.1 청산 후 즉시 상승
+            //   기존: 무제한 + 2점 → 정상 pullback 도 청산. RSI 60 은 bullish 영역인데도 잡음
+            //   수정: RSI 70+ 과매수일 때만 + 10점 하락 + 현재 1분봉 음봉 확인 (3중 가드)
             var k1 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneMinute, 35, token);
             if (k1 == null || k1.Count < 30) return;
             var k1List = k1 as List<IBinanceKline> ?? new List<IBinanceKline>(k1);
@@ -4960,10 +4963,17 @@ namespace TradingBot
                 {
                     double rsiNow = IndicatorCalculator.CalculateRSI(slice1, 14);
                     double rsiPrior = IndicatorCalculator.CalculateRSI(slice2, 14);
-                    if (rsiNow < rsiPrior - 2.0)   // 2점 이상 꺾임 = 의미 있는 다이버전스
+
+                    // [v5.23.30] 3중 가드
+                    bool overboughtPrior = rsiPrior >= 70.0;                        // (1) 과매수 영역에서만
+                    bool largeRsiDrop = rsiNow < rsiPrior - 10.0;                   // (2) 10점 하락
+                    var cur1m = k1List[^1];
+                    bool curBearish1m = cur1m.ClosePrice < cur1m.OpenPrice;         // (3) 현재 1m 음봉 확인
+
+                    if (overboughtPrior && largeRsiDrop && curBearish1m)
                     {
                         _bearishExitChecked[symbol] = lastBarTime;
-                        await CloseFullAsync(symbol, pos, $"BEAR_DIVERGENCE price↑ RSI {rsiPrior:F1}→{rsiNow:F1}", token);
+                        await CloseFullAsync(symbol, pos, $"BEAR_DIVERGENCE RSI {rsiPrior:F1}→{rsiNow:F1} (OB+10pt+bear1m)", token);
                         return;
                     }
                 }
