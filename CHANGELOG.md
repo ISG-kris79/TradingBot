@@ -5,6 +5,22 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.18] - 2026-05-06
+
+### 🛡️ KNN 고점 진입 방지 — 1m RSI 다이버전스 + 눌림목 가드
+
+#### 사용자 사양
+- 1m RSI > 70 시 KNN 신호 떠도 진입 유보 (고점 간주)
+- RSI 50~70 식음 + EMA20 지지 + 양봉 + 직전 high 돌파 = 진짜 눌림목 → 진입
+
+#### 수정 (TradingEngine.CheckLorentzianPendingEntriesAsync)
+- 1m fetch 25 → 30봉 (RSI14 계산 위해)
+- 가드 1: 1m RSI > 70 → 진입 유보 (RSI 식음 대기, 30초마다 1회 로그)
+- 가드 2: 진입 트리거 = ① 현재가 > 직전 1m high ② 현재가 > 1m EMA20 ③ 직전 1m 봉 양봉 ④ RSI 45~70
+- 10분 타임아웃 유지
+
+봇 재시작 후 KNN 통과 + 1m 고점이면 RSI 식을 때까지 대기.
+
 ## [5.23.17] - 2026-05-06
 
 ### 🎨 활성포지션 ProgressBar 음수 빨강 + 매매기록 종료일 통계 fix
