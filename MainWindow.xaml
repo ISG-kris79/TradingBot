@@ -1598,9 +1598,11 @@
                                                                                                 <ControlTemplate TargetType="ProgressBar">
                                                                                                     <Grid>
                                                                                                         <Border Background="{TemplateBinding Background}" CornerRadius="2"/>
-                                                                                                        <Border Name="PART_Track"/>
-                                                                                                        <Border Name="PART_Indicator" HorizontalAlignment="Left"
-                                                                                                                Background="{TemplateBinding Foreground}" CornerRadius="2"/>
+                                                                                                        <!-- PART_Track 안에 PART_Indicator 자식으로 → ProgressBar 가 Width 자동 계산 -->
+                                                                                                        <Border Name="PART_Track" ClipToBounds="True">
+                                                                                                            <Border Name="PART_Indicator" HorizontalAlignment="Left"
+                                                                                                                    Background="{TemplateBinding Foreground}" CornerRadius="2"/>
+                                                                                                        </Border>
                                                                                                     </Grid>
                                                                                                 </ControlTemplate>
                                                                                             </ProgressBar.Template>
