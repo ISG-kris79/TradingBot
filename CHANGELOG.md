@@ -5,6 +5,32 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.33] - 2026-05-08
+
+### 🛠 PUMP TP 1.0% → 2.0% 확장 — 90일 백테스트 +$413 검증
+
+#### 발견 (v5.23.32 + 90일 알트 백테스트)
+v5.23.32 PULLBACK_QUALITY 가드 적용 후에도 90일 -$212 적자 발견. 원인 분석:
+- WR 73%여도 TP 1% / SL 3% (R:R 1:3) → BE-WR 75% 필요 → 2%p 부족
+- AvgWin $4.27 vs AvgLoss -$13.14 → Loss size가 Win의 3배
+
+#### 백테스트 (15알트, v5.23.32 가드 통과 426건 × 8조합)
+| TP | SL | R:R | BE-WR | WR | PnL |
+|---|---|---|---|---|---|
+| 1.0% | 3.0% | 1:3.0 | 75% | 77% | +$113 (현재) |
+| 1.5% | 2.5% | 1:1.67 | 63% | 65% | +$160 |
+| 2.0% | 3.0% | 1:1.5 | 60% | 64% | **+$413** ⭐ |
+
+#### 수정
+`Models.cs` `PumpTp1Roe`: 15.0 → 30.0 (TP 1% → 2% × 15× lev = ROE 30%)
+- PumpStopLossRoe 그대로 (SL 3%)
+- MajorTp1Roe 그대로 (메이저는 별도 검증 — 180일 +$34K 흑자)
+- DefaultLeverage/PumpLeverage 그대로 (15×)
+
+#### 주의
+**기존 사용자 DB의 GeneralSettings는 기본값 덮어씀** — UI에서 직접 변경 필요
+(설정 → PUMP TP1 ROE 입력란을 30으로 변경)
+
 ## [5.23.32] - 2026-05-07
 
 ### 🛠 PULLBACK_QUALITY 가드 결함 수정 — 일직선 상승 차단 미작동 fix

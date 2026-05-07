@@ -51,7 +51,14 @@ namespace TradingBot.Models
         // [v5.21.11 ROLLBACK] PUMP 타이트(0.5/1.5) 적용은 큰 적자 — 180일 WR 57.94% -$6,008
         //   원인: PUMP 알트 변동성 큼 → SL 1.5% 노이즈 즉시 청산 → 승률 88%→58% 폭락
         //   복구: 권장(1.0/3.0) 유지 — 180일 WR 81.69% +$199.80 (작아도 흑자)
-        public decimal PumpTp1Roe { get; set; } = 15.0m;         // [v5.21.11] 7.5 → 15.0 롤백 (TP 1.0% × 15x)
+        // [v5.23.33] PUMP TP 1.0% → 2.0% 확장 — 알트 LORENTZIAN 90일 백테스트 검증
+        //   90일 알트 15종 (DOGE/AVAX/ARB/OP/SUI/INJ/LINK/SEI/NEAR/ICP/DYDX/ZEC/TAO/ATOM/AAVE)
+        //   v5.23.32 PULLBACK_QUALITY 가드 통과 426건 × TP/SL 8조합 스윕:
+        //     TP 1.0% / SL 3.0% (기존): WR 77% +$113
+        //     TP 2.0% / SL 3.0% (신규): WR 64% +$413  ← 3.7배 개선
+        //   원인: TP 1%는 노이즈에 잡혀 너무 일찍 익절 (AvgWin $4.27 vs Loss -$13.14)
+        //         TP 2%로 확장 시 AvgWin $8.57 → R:R 1:1.5, BE-WR 60% (실제 WR 64% > BE-WR)
+        public decimal PumpTp1Roe { get; set; } = 30.0m;         // [v5.23.33] 15.0 → 30.0 (TP 2.0% × 15x — 90일 백테스트 +$413)
         public decimal PumpTp2Roe { get; set; } = 100.0m;          // 2차 익절 ROE (미사용, 레거시)
         public decimal PumpTimeStopMinutes { get; set; } = 120.0m; // 시간 손절(분)
         public decimal PumpStopDistanceWarnPct { get; set; } = 1.0m; // 손절거리 경고(비중축소)
