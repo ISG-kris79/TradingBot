@@ -5,6 +5,30 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.32] - 2026-05-07
+
+### 🛠 PULLBACK_QUALITY 가드 결함 수정 — 일직선 상승 차단 미작동 fix
+
+#### v5.23.31 결함
+48h 결과: WR 27.91%, LORENTZIAN 단일 -$56.58. 진입 직후 0~4분 내 SL 폭발:
+- FLOCKUSDT 1분 -$22.74 / DYDXUSDT 0분 -$12.07 / LABUSDT 4분 -$14.67
+
+원인: 일직선 상승(눌림 0%) 케이스에서 4-of-3 가드가 통과:
+- `hiIdx == loIdx` → `loPrice = hiPrice` → `pullbackPct = 0%` → c1 fail ✓
+- `midPoint = (hi+lo)/2 = hiPrice` → `currentPrice >= midPoint` trivially true → **c2 pass ✗**
+- `loIdx > hiIdx` 거짓 → vol 체크 skip → `c4VolOk = true` 기본값 → **c4 pass ✗**
+- c3 (EMA dev) 통과 가능
+→ 4개 중 3개 통과 → 추격 진입 허용
+
+#### 수정 (v5.23.32)
+**c1(눌림 ≥1.5% 존재)을 필수 게이트로** — 눌림 없으면 무조건 차단.
+c1 통과 시에만 c2~c4 중 2/3 추가 확인.
+또한 c4 기본값 false로 변경, `loIdx > hiIdx` 명시 검증.
+
+차단 로그 분리:
+- `NO_PULLBACK p=0.42%` (c1 미충족 — 일직선 상승)
+- `p=2.10% r=0 e=1 v=0` (c1 통과 후 회복/EMA/vol 검증 실패)
+
 ## [5.23.31] - 2026-05-06
 
 ### 🛠 LORENTZIAN PULLBACK_QUALITY 가드 — 추격매수 차단

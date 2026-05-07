@@ -4713,14 +4713,18 @@ namespace TradingBot
                 return;
             }
 
-            // [v5.23.31] PULLBACK_QUALITY 가드 — 추격매수 vs 정상 재진입 구분
-            //   "고점=무조건 차단" 아님. "눌림 없는 일직선 추격"만 차단.
-            //   15m 30봉 기준 4개 조건 중 3개 이상 만족 시 통과:
-            //     1. 최근 20봉 직전 local high 대비 ≥1.5% 눌림 봉 존재
-            //     2. 현재가 ≥ (고점+눌림저점)/2  (50% 회복 = 되돌림 후 재시작)
-            //     3. 15m EMA20 괴리율 ≤ 2.5%  (3% 이상 괴리 = 너무 늘어남)
-            //     4. 최근 3봉 평균 vol ≥ 눌림 구간 평균 vol × 0.8 (buyer 진입 확인)
-            //   사례: XPL 4790 LOSS → 4824 추격, ZEC 4804 WIN → 4823 +7% 추격
+            // [v5.23.32] PULLBACK_QUALITY 가드 — 추격매수 vs 정상 재진입 구분
+            //   v5.23.31 결함: 일직선 상승(눌림 0) 케이스에서 c2(50% 회복) trivially pass +
+            //                   c4(vol) 기본 true → 3/4 통과 → 추격 진입 허용 (FLOCK/DYDX 0~4분 손절)
+            //   v5.23.32: c1(눌림 ≥1.5% 존재)을 **필수 게이트**로. 눌림 없으면 무조건 차단.
+            //             c1 통과 시 c2~c4 중 2/3 이상 만족해야 진입.
+            //
+            //   15m 30봉 기준:
+            //     1. (필수) 최근 20봉 직전 local high 대비 ≥1.5% 눌림 봉 존재
+            //     2. 현재가 ≥ (고점+눌림저점)/2  (50% 회복)
+            //     3. 15m EMA20 괴리율 ≤ 2.5%
+            //     4. 최근 3봉 평균 vol ≥ 눌림 구간 평균 vol × 0.8
+            //   사례: XPL 4790, ZEC 4823, FLOCK 1분 손절, DYDX 0분 손절 모두 c1 미충족
             {
                 int n = k15List.Count;
                 int scanStart = Math.Max(0, n - 22);
@@ -4750,7 +4754,15 @@ namespace TradingBot
                     }
 
                     decimal pullbackPct = hiPrice > 0 ? (hiPrice - loPrice) / hiPrice * 100m : 0m;
-                    bool c1Pullback = pullbackPct >= 1.5m;
+                    bool c1Pullback = pullbackPct >= 1.5m && loIdx > hiIdx;
+
+                    // [v5.23.32] c1 필수 — 눌림 없으면 즉시 차단
+                    if (!c1Pullback)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} CHASE 차단 | NO_PULLBACK p={pullbackPct:F2}% | hi={hiPrice:F6} cur={currentPrice:F6} (일직선 상승 — 추격매수 회피)");
+                        _lorentzianCooldown[symbol] = DateTime.UtcNow;
+                        return;
+                    }
 
                     decimal midPoint = (hiPrice + loPrice) / 2m;
                     bool c2Recovery = currentPrice >= midPoint;
@@ -4766,8 +4778,8 @@ namespace TradingBot
                     decimal emaDevPct = ema20_15m > 0 ? Math.Abs(currentPrice - ema20_15m) / ema20_15m * 100m : 0m;
                     bool c3EmaOk = ema20_15m > 0 && emaDevPct <= 2.5m;
 
-                    bool c4VolOk = true;
-                    if (loIdx > hiIdx && scanEnd >= 2)
+                    bool c4VolOk = false;
+                    if (scanEnd >= 2)
                     {
                         decimal recentVolSum = 0m; int recentCnt = 0;
                         for (int i = scanEnd - 2; i <= scanEnd; i++)
@@ -4787,11 +4799,11 @@ namespace TradingBot
                         }
                     }
 
-                    int passCnt = (c1Pullback ? 1 : 0) + (c2Recovery ? 1 : 0) + (c3EmaOk ? 1 : 0) + (c4VolOk ? 1 : 0);
-                    if (passCnt < 3)
+                    int subPassCnt = (c2Recovery ? 1 : 0) + (c3EmaOk ? 1 : 0) + (c4VolOk ? 1 : 0);
+                    if (subPassCnt < 2)
                     {
-                        string detail = $"p={(c1Pullback ? 1 : 0)}({pullbackPct:F2}%) r={(c2Recovery ? 1 : 0)} e={(c3EmaOk ? 1 : 0)}({emaDevPct:F2}%) v={(c4VolOk ? 1 : 0)}";
-                        OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} CHASE 차단 | {detail} | hi={hiPrice:F6} lo={loPrice:F6} cur={currentPrice:F6} (눌림 검증 실패 — 추격매수 회피)");
+                        string detail = $"p={pullbackPct:F2}% r={(c2Recovery ? 1 : 0)} e={(c3EmaOk ? 1 : 0)}({emaDevPct:F2}%) v={(c4VolOk ? 1 : 0)}";
+                        OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} CHASE 차단 | {detail} | hi={hiPrice:F6} lo={loPrice:F6} cur={currentPrice:F6} (눌림 후 회복 검증 실패)");
                         _lorentzianCooldown[symbol] = DateTime.UtcNow;
                         return;
                     }
