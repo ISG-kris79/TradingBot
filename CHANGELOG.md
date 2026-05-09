@@ -5,6 +5,33 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.34] - 2026-05-09
+
+### 🛠 MICRO_ALT_VOLUME 가드 — 24h <$20M 마이너 알트 진입 차단
+
+#### 사례 (48h 라이브 데이터)
+v5.23.33 적용 후 NetPnL +$26.91 흑자 전환 됐으나, 마이너 알트 0% 승률 패턴 발견:
+- SANTOSUSDT 2건 0승 -$9.24 (4분/100분 즉시 SL)
+- GOATUSDT 2건 0승 -$7.51 (0분/1분 즉시 SL)
+- INXUSDT 2건 0승 -$7.91 (9분/85분 SL)
+- 1000FLOKIUSDT 1건 0승 -$1.46 (0분 SL)
+- BROCCOLIF3BUSDT/VIRTUALUSDT — 같은 패턴
+
+#### 원인
+백테스트 셋(DOGE/AVAX/SUI/LINK 등 mid-cap)과 다른 마이너 알트는:
+1. KNN 학습 표본 부족 (90일치 충분치 않음)
+2. 일일 거래량 적어 manipulation 리스크 ↑
+3. 가드(LorentzianGuard 7-filter + PULLBACK_QUALITY) 통과해도 SL 빈발
+
+#### 수정 (`IsEntryAllowedCore` MAJOR_DISABLED 가드 직후 삽입)
+24h quote volume < $20M USDT → 즉시 차단.
+- 메이저 5종(BTC/ETH/SOL/XRP/BNB) 면제
+- ticker 데이터 없으면 차단 안 함 (진입 누락 방지)
+- 차단 reason: `MICRO_ALT_VOLUME:24h=$X.XM<$20M`
+
+기존 v5.10.x LIQUIDITY 가드는 마진 50% 축소만 했으나, 백테스트로 검증된 결과
+저유동성 알트는 마진 축소로도 흑자 전환 안됨 → 하드 차단 결정.
+
 ## [5.23.33] - 2026-05-08
 
 ### 🛠 PUMP TP 1.0% → 2.0% 확장 — 90일 백테스트 +$413 검증
