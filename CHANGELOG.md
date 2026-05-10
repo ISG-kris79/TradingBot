@@ -5,6 +5,46 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.35] - 2026-05-10
+
+### 🚨 EXTERNAL_PARTIAL_CLOSE_SYNC PnL 계산 버그 수정 (검증 결과 -$404 오차)
+
+#### 검증 결과
+7일 Binance 실제 vs DB TradeHistory 비교:
+- Binance Net PnL (REALIZED + COMMISSION + FUNDING): **-$183.58**
+- DB TradeHistory Sum: **+$220.26**
+- **차이: +$403.85 (DB 과대 기록)**
+
+DB 분류별:
+- BOT_STOPPED/SL/MANUAL/EXT_SYNC/RECONCILE: 정확 (Income API 사용)
+- **PARTIAL 59건 +$331.34: 가짜 흑자 기록** ← 버그 원인
+
+#### 원인 (TradingEngine.cs:6623)
+EXTERNAL_PARTIAL_CLOSE_SYNC 시 PnL 계산:
+- 기존: `syncExitPrice = ticker.LastPrice` → 현재가 추정
+- 실제: TP1 LIMIT 체결가 (entry × 1.02 등)
+- TP 체결 후 가격 빠르게 후퇴 시 → 추정가가 실제 체결가보다 낮음
+- → 이익 케이스가 손실로 잘못 기록 (또는 그 반대)
+
+#### 수정 (v5.23.35)
+1. `_lastPartialSyncTimeUtc` ConcurrentDictionary 추가 — 누적 partial 추적
+2. EXTERNAL_PARTIAL 감지 시:
+   - 300ms 대기 (Binance trade 기록 동기화)
+   - `GetExitFillsAsync` 호출 → 마지막 sync 이후 reduce-only 체결 조회
+   - 실제 avgExitPrice + RealizedPnl 사용
+   - exitQty가 externalClosedQty와 5% 오차 내 매칭 시 정확값 채택
+3. API 실패/매칭 실패 시 ticker fallback (기존 로직)
+4. 정확 채택 시 `📊 [PARTIAL_SYNC_EXACT]` 로그 출력 → 모니터링 가능
+
+#### 영향
+- PARTIAL_CLOSE_SYNC 이후 기록 PnL이 실제 거래소 값과 일치
+- 가드/TP/SL 효과 측정의 기반 데이터 정확화
+- 과거 기록은 그대로 (백필 별도 검토 필요)
+
+#### v5.23.34 무효화 안내
+MICRO_ALT_VOLUME 가드(v5.23.34)는 잘못된 DB PnL 위에 설계됨 → 효과 재검증 필요.
+정확한 PnL 데이터로 1주 모니터링 후 가드 유지/롤백 결정.
+
 ## [5.23.34] - 2026-05-09
 
 ### 🛠 MICRO_ALT_VOLUME 가드 — 24h <$20M 마이너 알트 진입 차단

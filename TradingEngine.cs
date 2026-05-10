@@ -67,6 +67,8 @@ namespace TradingBot
         private readonly ConcurrentDictionary<string, DateTime> _recentlyClosedCooldown = new();
         // [v3.4.0] 부분청산 쿨다운 — 봇 자체 부분청산 후 ACCOUNT_UPDATE 이중 기록 방지
         private readonly ConcurrentDictionary<string, DateTime> _recentPartialCloseCooldown = new();
+        // [v5.23.35] 마지막 EXTERNAL_PARTIAL sync 시각 — 누적 partial 차감 계산용
+        private readonly ConcurrentDictionary<string, DateTime> _lastPartialSyncTimeUtc = new();
         // [v4.0.3] PUMP 슬롯 교체 대상
         private string? _pendingSwapEvict;
 
@@ -6619,26 +6621,74 @@ namespace TradingBot
                     if (updatedQtyAbs + 0.000001m < existingQtyAbs)
                     {
                         decimal externalClosedQty = existingQtyAbs - updatedQtyAbs;
+
+                        // [v5.23.35] PnL 정확 계산 — Binance UserTrades API 직접 조회
+                        //   기존 버그: ticker.LastPrice 로 가격 추정 → 실제 LIMIT 체결가와 불일치
+                        //   7일 검증: DB +$220 vs Binance 실제 -$184 (+$404 과대 기록)
+                        //   수정: GetExitFillsAsync 로 실제 reduce-only 체결가/realizedPnl 가져옴
                         decimal syncExitPrice = 0m;
-                        if (_marketDataManager.TickerCache.TryGetValue(pos.Symbol, out var ticker))
-                            syncExitPrice = ticker.LastPrice;
-                        if (syncExitPrice <= 0)
-                            syncExitPrice = pos.EntryPrice > 0 ? pos.EntryPrice : existing.EntryPrice;
-
-                        // 순수 가격 차이
-                        decimal rawSyncPnl = existing.IsLong
-                            ? (syncExitPrice - existing.EntryPrice) * externalClosedQty
-                            : (existing.EntryPrice - syncExitPrice) * externalClosedQty;
-
-                        // 거래 수수료 및 슬리피지 차감
-                        decimal syncEntryFee = existing.EntryPrice * externalClosedQty * 0.0004m;
-                        decimal syncExitFee = syncExitPrice * externalClosedQty * 0.0004m;
-                        decimal syncSlippage = syncExitPrice * externalClosedQty * 0.0005m;
-                        decimal syncPnl = rawSyncPnl - syncEntryFee - syncExitFee - syncSlippage;
-
+                        decimal syncPnl = 0m;
                         decimal syncPnlPercent = 0m;
-                        if (existing.EntryPrice > 0 && externalClosedQty > 0)
-                            syncPnlPercent = (syncPnl / (existing.EntryPrice * externalClosedQty)) * 100m * existing.Leverage;
+                        bool exactPnlAcquired = false;
+
+                        try
+                        {
+                            if (_exchangeService is BinanceExchangeService binSvcPartial)
+                            {
+                                DateTime sliceStartUtc = _lastPartialSyncTimeUtc.TryGetValue(pos.Symbol, out var lastSync)
+                                    ? lastSync
+                                    : (existing.EntryTime != default ? existing.EntryTime.ToUniversalTime() : DateTime.UtcNow.AddHours(-24));
+
+                                // 짧은 지연 — Binance 쪽 trade 기록이 ACCOUNT_UPDATE 와 동시에 도착하지 않을 수 있음
+                                await Task.Delay(300);
+
+                                var fills = await binSvcPartial.GetExitFillsAsync(pos.Symbol, sliceStartUtc, existing.IsLong);
+
+                                // sliceStartUtc 이후 fills 중 externalClosedQty 와 매칭되는 데이터 확인
+                                // 5% 오차 허용 (소수점 반올림 + 분할 체결)
+                                if (fills.exitQty > 0 && Math.Abs(fills.exitQty - externalClosedQty) <= externalClosedQty * 0.05m + 0.0001m)
+                                {
+                                    syncExitPrice = fills.avgExitPrice;
+                                    syncPnl = fills.realizedPnl;   // Binance 가 계산한 실제 PnL (수수료 별도)
+
+                                    // 수수료는 Binance 가 별도 record (COMMISSION income type) — 추정 차감
+                                    decimal estCommission = (existing.EntryPrice + fills.avgExitPrice) * externalClosedQty * 0.0004m;
+                                    syncPnl -= estCommission;
+
+                                    if (existing.EntryPrice > 0 && externalClosedQty > 0)
+                                        syncPnlPercent = (syncPnl / (existing.EntryPrice * externalClosedQty)) * 100m * existing.Leverage;
+
+                                    _lastPartialSyncTimeUtc[pos.Symbol] = fills.lastExitTimeUtc.AddMilliseconds(1);
+                                    exactPnlAcquired = true;
+                                    OnStatusLog?.Invoke($"📊 [PARTIAL_SYNC_EXACT] {pos.Symbol} exitPx={fills.avgExitPrice:F6} qty={fills.exitQty} realizedPnl={fills.realizedPnl:F4}");
+                                }
+                            }
+                        }
+                        catch (Exception exFill)
+                        {
+                            OnStatusLog?.Invoke($"⚠️ [PARTIAL_SYNC] {pos.Symbol} GetExitFills 실패: {exFill.Message} → ticker fallback");
+                        }
+
+                        // Fallback (Binance API 실패 또는 데이터 매칭 안됨)
+                        if (!exactPnlAcquired)
+                        {
+                            if (_marketDataManager.TickerCache.TryGetValue(pos.Symbol, out var ticker))
+                                syncExitPrice = ticker.LastPrice;
+                            if (syncExitPrice <= 0)
+                                syncExitPrice = pos.EntryPrice > 0 ? pos.EntryPrice : existing.EntryPrice;
+
+                            decimal rawSyncPnl = existing.IsLong
+                                ? (syncExitPrice - existing.EntryPrice) * externalClosedQty
+                                : (existing.EntryPrice - syncExitPrice) * externalClosedQty;
+
+                            decimal syncEntryFee = existing.EntryPrice * externalClosedQty * 0.0004m;
+                            decimal syncExitFee = syncExitPrice * externalClosedQty * 0.0004m;
+                            decimal syncSlippage = syncExitPrice * externalClosedQty * 0.0005m;
+                            syncPnl = rawSyncPnl - syncEntryFee - syncExitFee - syncSlippage;
+
+                            if (existing.EntryPrice > 0 && externalClosedQty > 0)
+                                syncPnlPercent = (syncPnl / (existing.EntryPrice * externalClosedQty)) * 100m * existing.Leverage;
+                        }
 
                         var externalPartialLog = new TradeLog(
                             pos.Symbol,
