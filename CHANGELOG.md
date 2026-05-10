@@ -5,6 +5,37 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.37] - 2026-05-10
+
+### 🚨 동적 풀 폐기 — 검증된 mid-cap 알트 15개 고정
+
+#### 진단
+- 90일 백테스트 (15 mid-cap 알트): **+$413 / WR 64%**
+- 7일 라이브 실제 (Binance Income): **-$184**
+- 차이 원인: **봇 동적 풀이 백테스트와 다른 셋을 잡고 있었음**
+
+#### 동적 풀 (v5.22.54) 작동 방식
+```
+score = 24h 변동률 × log10(거래대금)
+상위 8개 매 15분 갱신
+```
+→ 마이너 펌핑 코인 자동 포착: FLOCK/GOAT/SANTOS/BANANA/ORCA/BB/BAT/XVG/OPG/NIGHT/INX/VIRTUAL/DOGS/PRL/LAB 등
+→ 24h 거래량 $1~40M, 변동성 30~100%/일 — **검증 안된 마이너 알트**
+
+#### 수정
+`FixedAltPool` 하드코드 (90일 백테스트 검증 mid-cap 15종):
+DOGE, AVAX, ARB, OP, SUI, INJ, LINK, SEI, NEAR, ICP, DYDX, ZEC, TAO, ATOM, AAVE
+
+`EnsureActiveTrackingPoolFresh` 단순화:
+- 메이저 4 + 알트 15 = 총 19개 고정 추적
+- 동적 갱신 로직 제거
+- 풀 외 심볼은 자동 정리
+
+#### 효과 예상
+- ENGINE_151/MEME_KNN/BB_SQUEEZE 등 다른 진입 경로도 자동으로 검증 셋에서만 작동
+- 라이브 결과가 백테스트 +$413/90일에 수렴해야 정상
+- 검증되지 않은 마이너 알트는 봇이 자체적으로 무시
+
 ## [5.23.36] - 2026-05-10
 
 ### 🛠 PHANTOM 포지션 수동 청산 — CLOSE 버튼 작동 fix
