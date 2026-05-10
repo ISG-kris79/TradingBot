@@ -5,6 +5,30 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.36] - 2026-05-10
+
+### 🛠 PHANTOM 포지션 수동 청산 — CLOSE 버튼 작동 fix
+
+#### 사례
+QUSDT가 활성포지션 그리드에 ROE 299%로 stuck. CLOSE 버튼 눌러도 안 사라짐.
+
+#### 원인 (PositionMonitorService.cs:1644)
+`ExecuteManualCloseFast` 흐름:
+1. 봇 `_activePositions` 에 QUSDT 있음 → `localPos != null` → 진행
+2. Binance 에 reduce-only 시장가 주문 전송
+3. **실제 거래소 포지션 0이라 거절** → `orderOk = false`
+4. fallback ExecuteMarketClose 도 같은 이유로 실패
+5. optimistic UI cleanup (line 1676) 미실행 → UI stuck
+
+#### 수정 (v5.23.36)
+ExecuteManualCloseFast 시작에 사전 포지션 조회 추가:
+- `GetPositionsAsync` 로 실제 qty 확인
+- realQty == 0 → PHANTOM 감지 → 주문 skip, `CleanupPositionData` + DB 기록
+- realQty != localQty → 수량 보정 후 정상 청산
+- 조회 실패 → 정상 청산 경로 fallback
+
+차단 사유: `ExitReason='MANUAL_PHANTOM_CLEANUP (사용자 청산 — Binance 실제 포지션 0)'`
+
 ## [5.23.35] - 2026-05-10
 
 ### 🚨 EXTERNAL_PARTIAL_CLOSE_SYNC PnL 계산 버그 수정 (검증 결과 -$404 오차)

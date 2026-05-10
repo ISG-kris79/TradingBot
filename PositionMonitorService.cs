@@ -1628,6 +1628,56 @@ namespace TradingBot.Services
                     return;
                 }
 
+                // [v5.23.36] PHANTOM 감지 — Binance 실제 포지션 0이면 reduce-only 주문 거절됨
+                //   기존: orderOk=false → fallback ExecuteMarketClose 도 같은 이유로 실패 → UI stuck
+                //   수정: 사전 GetPositionsAsync 로 실제 qty 확인. 0이면 주문 skip, 로컬 캐시만 정리
+                try
+                {
+                    var realPositions = await _exchangeService.GetPositionsAsync(ct: token);
+                    var realPos = realPositions?.FirstOrDefault(p => p.Symbol == symbol);
+                    decimal realQty = realPos != null ? Math.Abs(realPos.Quantity) : 0m;
+                    if (realQty < 0.0000001m)
+                    {
+                        OnLog?.Invoke($"🧹 [ManualFast] {symbol} PHANTOM 감지 — Binance 실제 포지션 0, 봇 캐시만 정리");
+                        try
+                        {
+                            // phantom cleanup TradeHistory 기록
+                            var phantomLog = new TradeLog(
+                                symbol, localPos.IsLong ? "SELL" : "BUY",
+                                "MANUAL_PHANTOM_CLEANUP", localPos.EntryPrice, localPos.AiScore,
+                                DateTime.Now, 0m, 0m)
+                            {
+                                EntryPrice = localPos.EntryPrice,
+                                ExitPrice = localPos.EntryPrice,
+                                Quantity = Math.Abs(localPos.Quantity),
+                                EntryTime = localPos.EntryTime == default ? DateTime.Now : localPos.EntryTime,
+                                ExitTime = DateTime.Now,
+                                ExitReason = "MANUAL_PHANTOM_CLEANUP (사용자 청산 — Binance 실제 포지션 0)"
+                            };
+                            await _dbManager.CompleteTradeAsync(phantomLog);
+                        }
+                        catch (Exception dbEx) { OnLog?.Invoke($"⚠️ [ManualFast] {symbol} phantom DB 기록 실패 (무해): {dbEx.Message}"); }
+
+                        CleanupPositionData(symbol);
+                        OnLog?.Invoke($"✅ [ManualFast] {symbol} phantom 정리 완료 ({totalSw.ElapsedMilliseconds}ms)");
+                        return;
+                    }
+                    else if (Math.Abs(realQty - Math.Abs(localPos.Quantity)) > 0.0000001m)
+                    {
+                        OnLog?.Invoke($"🔧 [ManualFast] {symbol} 수량 불일치 보정: 로컬={localPos.Quantity} → 실제={realQty}");
+                        lock (_posLock)
+                        {
+                            if (_activePositions.TryGetValue(symbol, out var p))
+                                p.Quantity = localPos.IsLong ? realQty : -realQty;
+                        }
+                        localPos.Quantity = localPos.IsLong ? realQty : -realQty;
+                    }
+                }
+                catch (Exception preEx)
+                {
+                    OnLog?.Invoke($"⚠️ [ManualFast] {symbol} 사전 포지션 조회 실패 (정상 청산 진행): {preEx.Message}");
+                }
+
                 bool isLong = localPos.IsLong;
                 decimal absQty = Math.Abs(localPos.Quantity);
                 string side = isLong ? "SELL" : "BUY";
