@@ -848,6 +848,35 @@ namespace TradingBot
                 }
             }
 
+            // [v5.23.39] 1h EMA20 추세 필터 — 모든 진입 경로 최상위 가드 (사용자 원칙)
+            //   "5분·15분봉은 속도, 방향은 1시간봉. KNN 승률 아무리 좋아도 1h EMA20 아래는 떨어지는 칼날"
+            //   - 캐시 hit → 즉시 평가
+            //   - 캐시 미존재 → 백그라운드 fetch 트리거 + 가드 skip (첫 호출만)
+            try
+            {
+                var k1hGate = GetMultiTfKlinesCachedOrRefresh(symbol, KlineInterval.OneHour, 25);
+                if (k1hGate != null && k1hGate.Count >= 21)
+                {
+                    double mult = 2.0 / 21.0;
+                    decimal ema20_1h = k1hGate[k1hGate.Count - 21].ClosePrice;
+                    for (int q = k1hGate.Count - 20; q < k1hGate.Count; q++)
+                        ema20_1h = (decimal)((double)k1hGate[q].ClosePrice * mult + (double)ema20_1h * (1 - mult));
+
+                    decimal lastClose1h = k1hGate[k1hGate.Count - 1].ClosePrice;
+                    if (lastClose1h < ema20_1h)
+                    {
+                        decimal devPct = ema20_1h > 0 ? (lastClose1h - ema20_1h) / ema20_1h * 100m : 0m;
+                        blockReason = $"BELOW_1H_EMA20:px={lastClose1h:F6}/ema={ema20_1h:F6}({devPct:F2}%)";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (1h 하락추세 — 떨어지는 칼날 회피)");
+                        return false;
+                    }
+                }
+            }
+            catch (Exception ex1h)
+            {
+                OnStatusLog?.Invoke($"⚠️ [GATE-1h] {symbol} 체크 실패 (무시): {ex1h.Message}");
+            }
+
             // [v5.23.34] MICRO_ALT_VOLUME 가드 — 24h 거래량 부족 마이너 알트 차단
             //   배경: 48h 라이브 데이터 - SANTOS/GOAT/INX/1000FLOKI/BROCCOLI 등 0% 승률
             //         백테스트 셋(DOGE/AVAX/SUI/LINK)과 다른 마이너 알트는 KNN 학습 표본 부족 +

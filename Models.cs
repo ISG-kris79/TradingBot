@@ -51,14 +51,12 @@ namespace TradingBot.Models
         // [v5.21.11 ROLLBACK] PUMP 타이트(0.5/1.5) 적용은 큰 적자 — 180일 WR 57.94% -$6,008
         //   원인: PUMP 알트 변동성 큼 → SL 1.5% 노이즈 즉시 청산 → 승률 88%→58% 폭락
         //   복구: 권장(1.0/3.0) 유지 — 180일 WR 81.69% +$199.80 (작아도 흑자)
-        // [v5.23.33] PUMP TP 1.0% → 2.0% 확장 — 알트 LORENTZIAN 90일 백테스트 검증
-        //   90일 알트 15종 (DOGE/AVAX/ARB/OP/SUI/INJ/LINK/SEI/NEAR/ICP/DYDX/ZEC/TAO/ATOM/AAVE)
-        //   v5.23.32 PULLBACK_QUALITY 가드 통과 426건 × TP/SL 8조합 스윕:
-        //     TP 1.0% / SL 3.0% (기존): WR 77% +$113
-        //     TP 2.0% / SL 3.0% (신규): WR 64% +$413  ← 3.7배 개선
-        //   원인: TP 1%는 노이즈에 잡혀 너무 일찍 익절 (AvgWin $4.27 vs Loss -$13.14)
-        //         TP 2%로 확장 시 AvgWin $8.57 → R:R 1:1.5, BE-WR 60% (실제 WR 64% > BE-WR)
-        public decimal PumpTp1Roe { get; set; } = 30.0m;         // [v5.23.33] 15.0 → 30.0 (TP 2.0% × 15x — 90일 백테스트 +$413)
+        // [v5.23.33] PUMP TP 1.0% → 2.0% 확장 — 알트 LORENTZIAN 90일 백테스트 +$413
+        // [v5.23.39] PumpTp1Roe 30 → 10 (사용자 권장: "ROI 10%에서 50% 덜어내고 본절 가드")
+        //   ROE 10% × 15× lev = 가격 +0.67% 빠른 부분익절
+        //   목적: 큰 손실 한 방 차단 (라이브 -$184/7일 → 빠른 익절 + 본절로 위험 축소)
+        //   백테스트 미검증, 라이브 1주 모니터링 후 검증 필요
+        public decimal PumpTp1Roe { get; set; } = 10.0m;         // [v5.23.39] 30 → 10 (ROE 10% 즉시 부분익절)
         public decimal PumpTp2Roe { get; set; } = 100.0m;          // 2차 익절 ROE (미사용, 레거시)
         public decimal PumpTimeStopMinutes { get; set; } = 120.0m; // 시간 손절(분)
         public decimal PumpStopDistanceWarnPct { get; set; } = 1.0m; // 손절거리 경고(비중축소)
@@ -71,11 +69,11 @@ namespace TradingBot.Models
         // 초기 손절: ROI -40% (가격 -2%, 20x) — 진입 품질 개선으로 넓은 손절 유지 (찍고 날라가는 경우 대비)
         public decimal PumpStopLossRoe { get; set; } = 45.0m;      // [v5.21.11] 22.5 → 45.0 롤백 (SL 3.0% × 15x — 변동성 흡수)
         public decimal PumpMargin { get; set; } = 200.0m;           // PUMP 전용 기본 진입 증거금 $200 고정
-        public decimal PumpBreakEvenRoe { get; set; } = 25.0m;     // ROI +25% 시 본절 이동 (슬리피지 대응)
+        public decimal PumpBreakEvenRoe { get; set; } = 10.0m;     // [v5.23.39] 25 → 10 (TP1 도달 즉시 본절 이동 — 사용자 권장)
         // 주의: 0.15% 오프셋(슬리피지 방어)이 적용되어 실제 손절은 진입가 + 0.15% 근처로 설정됨
         public decimal PumpTrailingStartRoe { get; set; } = 40.0m; // 2차 트레일링 시작 ROI +40% (변경 없음)
         public decimal PumpTrailingGapRoe { get; set; } = 20.0m;    // 2차에서 최고점 대비 ROI 20% 하락 시 청산
-        public decimal PumpFirstTakeProfitRatioPct { get; set; } = 40.0m; // [v3.9.3] 1차 부분익절 15→40% (수익 확보 강화)
+        public decimal PumpFirstTakeProfitRatioPct { get; set; } = 50.0m; // [v5.23.39] 40 → 50 (사용자 권장: "50% 덜어내고")
         public decimal PumpStairStep1Roe { get; set; } = 50.0m;     // 계단식 1단계 트리거 ROE
         public decimal PumpStairStep2Roe { get; set; } = 100.0m;    // 계단식 2단계 트리거 ROE
         public decimal PumpStairStep3Roe { get; set; } = 200.0m;    // 계단식 3단계 트리거 ROE

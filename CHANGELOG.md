@@ -5,6 +5,32 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.39] - 2026-05-11
+
+### 🎯 사용자 Action Plan 적용 — 1h 추세 가드 + 빠른 부분익절 / 본절
+
+#### 사용자 원칙
+1. "5분·15분봉은 속도, 방향은 1시간봉"
+2. "KNN 승률 아무리 좋아도 1h EMA20 아래는 떨어지는 칼날"
+3. "ROI 10%에서 50% 덜어내고 본절 가드"
+
+#### 변경 1: 1h EMA20 가드 (TradingEngine.cs IsEntryAllowedCore)
+모든 진입 경로 최상위에 1h EMA20 필터 추가:
+- 1h close < 1h EMA20 → 즉시 차단 `BELOW_1H_EMA20:px=…/ema=…(…%)`
+- LORENTZIAN/ENGINE_151/MEME_KNN/MAJOR/BB_SQUEEZE 모든 경로 적용
+- 캐시 hit → 즉시 평가, 캐시 미존재 → 백그라운드 fetch + 가드 skip (첫 호출만)
+
+#### 변경 2: 빠른 부분익절 / 본절 (Models.cs)
+- `PumpTp1Roe`: 30 → **10** (ROE 10% × 15× lev = 가격 +0.67% 즉시 부분익절)
+- `PumpFirstTakeProfitRatioPct`: 40 → **50** (TP1 도달 시 50% 청산)
+- `PumpBreakEvenRoe`: 25 → **10** (TP1 도달 즉시 본절 SL 이동)
+
+목적: 빠른 부분익절로 한 방 손실 방지. 본절 가드로 잔여 포지션 무손실 보호.
+
+#### 주의
+- 사용자 DB GeneralSettings 가 기본값 덮어씀 → UI 직접 변경 필요
+- 백테스트 미검증 — 라이브 1주 모니터링 후 효과 측정
+
 ## [5.23.38] - 2026-05-11
 
 ### 🔄 v5.23.37 롤백 — 마이너 알트 차단은 잘못된 접근
