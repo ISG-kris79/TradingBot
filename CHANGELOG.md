@@ -5,6 +5,40 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.38] - 2026-05-11
+
+### 🔄 v5.23.37 롤백 — 마이너 알트 차단은 잘못된 접근
+
+#### 이유
+사용자 지적: "로직으로 풀어야지 차단을 해버리냐"
+v5.23.37에서 마이너 알트를 추적 풀에서 제거한 건 코인 선정의 자유를 차단한 잘못된 접근.
+진짜 문제는 코인셋이 아니라 봇 내부 로직 (PnL 계산 버그, 부분청산 misfire).
+
+#### 변경
+`FixedAltPool` 하드코드 제거.
+`EnsureActiveTrackingPoolFresh` 동적 풀 (v5.22.54) 복원:
+- 메이저 4 (BTC/ETH/SOL/XRP) + 동적 N개
+- 동적 score = 24h 변동률 × log10(거래대금)
+- 양수 변동률만 통과 (LONG 봇 무용한 하락 종목 제외)
+
+### 🛠 PnL 계산 fallback 완화 — DB +$548 가짜 흑자 fix
+
+#### 검증 결과 (5/11)
+- Binance 실제 Net PnL: -$90
+- DB TradeHistory: +$458
+- 차이 +$548 (PARTIAL +$484 가짜 흑자)
+
+v5.23.35 GetExitFillsAsync 로직은 적용됐지만 매칭 5% 오차 조건이 너무 엄격
+→ 분할 체결 / 누적 partial 시 매번 매칭 실패 → ticker fallback → 가짜 PnL 기록.
+
+#### 수정 (TradingEngine.cs:6646)
+```diff
+- if (fills.exitQty > 0 && Math.Abs(fills.exitQty - externalClosedQty) <= externalClosedQty * 0.05m + 0.0001m)
++ if (fills.exitQty > 0)
+```
+sliceStartUtc 이후 fills 만 가져오므로 avgExitPrice + realizedPnl 자체가 정확.
+exitQty 가 externalClosedQty 와 미세히 달라도 (분할/슬리피지) PnL 비례 계산 OK.
+
 ## [5.23.37] - 2026-05-10
 
 ### 🚨 동적 풀 폐기 — 검증된 mid-cap 알트 15개 고정

@@ -3922,17 +3922,10 @@ namespace TradingBot
         //   효과: ML.NET 추론 200+ → 12 (94% 감소), 메인 루프 workMs 1050ms → ~150ms 예상
         // ═══════════════════════════════════════════════════════════════════════════════════
         private static readonly string[] FixedMajorPool = { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
-        // [v5.23.37] 동적 풀 폐기 → 검증된 mid-cap 알트 15개 하드코드
-        //   원인: 동적 풀이 24h 변동률 × 거래대금 score 로 마이너 펌핑 코인 자동 포착
-        //          → FLOCK/GOAT/SANTOS/BANANA/ORCA/BB/BAT/XVG 등 24h vol $1~40M 마이너 잡음
-        //          → 90일 백테스트 셋(mid-cap)과 매칭 안됨 → 백테스트 +$413 vs 라이브 -$184 괴리
-        //   변경: 90일 백테스트로 검증된 mid-cap 알트 15개 고정
-        //          → 라이브가 백테스트와 동일한 셋에서 작동 → PnL 수렴 보장
-        private static readonly string[] FixedAltPool = {
-            "DOGEUSDT", "AVAXUSDT", "ARBUSDT", "OPUSDT", "SUIUSDT",
-            "INJUSDT", "LINKUSDT", "SEIUSDT", "NEARUSDT", "ICPUSDT",
-            "DYDXUSDT", "ZECUSDT", "TAOUSDT", "ATOMUSDT", "AAVEUSDT"
-        };
+        // [v5.22.54] 동적 풀 — 양수 변동률 + 거래대금 가중 score 상위 N개
+        //   사용자 지적 (v5.23.38 롤백): 마이너 알트 진입 차단은 잘못된 접근
+        //   진짜 문제는 코인셋이 아니라 PnL 계산 버그 / 부분청산 misfire
+        private const int DynamicPoolSize = 50;
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _activeTrackingPool = new(StringComparer.OrdinalIgnoreCase);
         private DateTime _lastTrackingPoolRefresh = DateTime.MinValue;
         private static readonly TimeSpan TrackingPoolRefreshInterval = TimeSpan.FromMinutes(15);
@@ -4103,29 +4096,60 @@ namespace TradingBot
 
         private void EnsureActiveTrackingPoolFresh()
         {
-            // [v5.23.37] 동적 풀 폐기 — 검증된 mid-cap 알트 15 + 메이저 4 = 총 19개 고정
-            //   기존(v5.22.54): 동적 풀이 24h 변동률 × 거래대금 score 로 마이너 펌핑 코인 자동 포착
-            //                   → FLOCK/GOAT/SANTOS/BANANA/ORCA/BB/BAT/XVG/OPG/NIGHT/INX/VIRTUAL 등 잡힘
-            //                   → 90일 백테스트 셋(mid-cap)과 다름 → +$413 (백테) vs -$184 (라이브) 괴리
-            //   변경: 백테스트 검증된 15 알트로 고정 → 라이브가 백테스트와 동일한 셋에서 작동
-            bool needFullRefresh = _activeTrackingPool.Count < 4;
+            // 메이저 4개는 항상 포함 (idempotent)
             foreach (var m in FixedMajorPool) _activeTrackingPool.TryAdd(m, 0);
-            foreach (var a in FixedAltPool) _activeTrackingPool.TryAdd(a, 0);
 
-            // 풀 외 심볼이 누적되지 않도록 정리 (활성 포지션은 풀 외라도 평가 통과하므로 안전)
-            var validSet = new HashSet<string>(FixedMajorPool, StringComparer.OrdinalIgnoreCase);
-            foreach (var a in FixedAltPool) validSet.Add(a);
+            if ((DateTime.Now - _lastTrackingPoolRefresh) < TrackingPoolRefreshInterval && _activeTrackingPool.Count > 4)
+                return;
+
+            _lastTrackingPoolRefresh = DateTime.Now;
+
+            // [v5.22.54] 동적 풀 — 상승 종목만 + 거래대금 가중 score
+            //   기존: |PriceChangePercent| desc → 하락 종목도 포함됨 (LONG 봇 무용)
+            //   변경: PriceChangePercent > 0 만 통과 + score = 변동률 × log10(거래대금)
+            //   효과: BIOUSDT 같은 "지금 펌핑 중 + 거래 활발" 종목 자동 포착
+            var dynamicSymbols = new List<string>();
+            if (_marketDataManager?.TickerCache != null)
+            {
+                HashSet<string> activeSet;
+                lock (_posLock) { activeSet = new HashSet<string>(_activePositions.Keys, StringComparer.OrdinalIgnoreCase); }
+
+                var sorted = _marketDataManager.TickerCache.Values
+                    .Where(t => !string.IsNullOrWhiteSpace(t.Symbol)
+                                && t.Symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
+                                && !FixedMajorPool.Contains(t.Symbol)
+                                && t.PriceChangePercent > 0m)            // 상승 종목만
+                    .Select(t => new
+                    {
+                        t.Symbol,
+                        Score = (double)t.PriceChangePercent
+                              * Math.Log10(Math.Max(1.0, (double)t.QuoteVolume))
+                    })
+                    .OrderByDescending(x => x.Score)
+                    .Select(x => x.Symbol)
+                    .ToList();
+
+                foreach (var sym in sorted)
+                {
+                    if (activeSet.Contains(sym)) continue;
+                    dynamicSymbols.Add(sym);
+                    if (dynamicSymbols.Count >= DynamicPoolSize) break;
+                }
+            }
+
+            var newPool = new HashSet<string>(FixedMajorPool, StringComparer.OrdinalIgnoreCase);
+            foreach (var s in dynamicSymbols) newPool.Add(s);
+
+            // 기존 풀에서 빠진 심볼 제거 (활성 포지션은 별도 경로로 보호되므로 풀에서 빼도 안전)
             foreach (var existing in _activeTrackingPool.Keys.ToList())
             {
-                if (!validSet.Contains(existing))
+                if (!newPool.Contains(existing))
                     _activeTrackingPool.TryRemove(existing, out _);
             }
+            foreach (var added in newPool)
+                _activeTrackingPool.TryAdd(added, 0);
 
-            if (needFullRefresh)
-            {
-                _lastTrackingPoolRefresh = DateTime.Now;
-                OnStatusLog?.Invoke($"🎯 [추적풀] 고정 — 메이저{FixedMajorPool.Length} + 검증알트{FixedAltPool.Length} = 총 {_activeTrackingPool.Count}개");
-            }
+            OnStatusLog?.Invoke($"🎯 [추적풀] 갱신 — 메이저4 + 동적{dynamicSymbols.Count}개 = 총 {_activeTrackingPool.Count}개 ({string.Join(",", dynamicSymbols)})");
         }
 
         private async Task ProcessCoinAndTradeBySymbolAsync(string symbol, decimal currentPrice, CancellationToken token)
@@ -6617,9 +6641,11 @@ namespace TradingBot
 
                                 var fills = await binSvcPartial.GetExitFillsAsync(pos.Symbol, sliceStartUtc, existing.IsLong);
 
-                                // sliceStartUtc 이후 fills 중 externalClosedQty 와 매칭되는 데이터 확인
-                                // 5% 오차 허용 (소수점 반올림 + 분할 체결)
-                                if (fills.exitQty > 0 && Math.Abs(fills.exitQty - externalClosedQty) <= externalClosedQty * 0.05m + 0.0001m)
+                                // [v5.23.38] 매칭 조건 완화 — exitQty > 0 이면 채택
+                                //   기존(v5.23.35): 5% 오차 매칭 → 분할 체결/누적 partial 시 매번 fallback (ticker.LastPrice)
+                                //   라이브 검증: DB +$458 vs Binance -$90 차이 +$548 (PARTIAL +$484 가짜 흑자)
+                                //   변경: GetExitFillsAsync 성공 = sliceStartUtc 이후 새 체결만 가져옴 = avgPx 정확
+                                if (fills.exitQty > 0)
                                 {
                                     syncExitPrice = fills.avgExitPrice;
                                     syncPnl = fills.realizedPnl;   // Binance 가 계산한 실제 PnL (수수료 별도)
