@@ -1309,8 +1309,16 @@ namespace TradingBot.Services
 
             // [v5.10.45] 서버사이드 통일: SL/TP1/Trailing은 EntryOrderRegistrar에서 등록
             // 클라이언트는 본절 전환(SL 갱신)만 담당
-            decimal pumpBreakEvenRoe = _settings.PumpBreakEvenRoe > 0 ? _settings.PumpBreakEvenRoe : 25.0m;
+            decimal pumpBreakEvenRoe = _settings.PumpBreakEvenRoe > 0 ? _settings.PumpBreakEvenRoe : 10.0m;
             bool isBreakEvenTriggered = false;
+            // [v5.23.40] 2단계 ATR 변동성 추적 — 사용자 권장 "ROI 20% 도달 시 ATR(14)×1.5 trailing"
+            bool isAtrTrailingActivated = false;
+            decimal currentAtrTrailingSl = 0m;
+            DateTime lastAtrSlUpdate = DateTime.MinValue;
+            const decimal AtrTriggerRoe = 20.0m;
+            const decimal NormalAtrMult = 1.5m;
+            const decimal MemeAtrMult = 2.0m;
+            TimeSpan atrSlMinInterval = TimeSpan.FromSeconds(10);
 
             // DB 상태 복원 (본절 중복 방지)
             lock (_posLock)
@@ -1362,8 +1370,12 @@ namespace TradingBot.Services
                         }
                         if (!string.IsNullOrEmpty(oldSlId))
                             await _exchangeService.CancelOrderAsync(symbol, oldSlId, CancellationToken.None);
-                        const decimal BeBufferPct = 0.0015m;
-                        decimal breakEvenPrice = isLongPosition ? entryPrice * (1m - BeBufferPct) : entryPrice * (1m + BeBufferPct);
+                        // [v5.23.40] 본절가 부호 수정 — LONG 은 entry + 0.1% (수수료 보전, 사용자 스펙)
+                        //   기존(BUG): LONG 본절가 = entry × (1 - 0.0015) = entry × 0.9985 (-0.15% 손실 SL)
+                        //   수정: LONG 본절가 = entry × (1 + 0.001) = entry × 1.001 (수수료 +0.1% 잠금)
+                        const decimal BeBufferPct = 0.001m;
+                        decimal breakEvenPrice = isLongPosition ? entryPrice * (1m + BeBufferPct) : entryPrice * (1m - BeBufferPct);
+                        currentAtrTrailingSl = breakEvenPrice;   // ATR trailing 시작점 = 본절가
                         string beSide = isLongPosition ? "SELL" : "BUY";
                         if (beQty > 0)
                         {
@@ -1374,6 +1386,94 @@ namespace TradingBot.Services
                     }
                     catch (Exception beEx) { OnLog?.Invoke($"❌ {symbol} 본절 전환 예외: {beEx.Message}"); }
                     await TelegramService.Instance.SendBreakEvenReachedAsync(symbol, entryPrice);
+                }
+
+                // [v5.23.40] 2단계: ATR(14)×1.5 변동성 추적 — ROE 20% 도달 시 발동
+                //   사용자 스펙: "1.0% 상승(ROE 20%) → ATR×1.5 trailing, 가격↑시 SL ratchet"
+                //   밈코인(고변동성)은 ATR×2.0 — 1m 흔들림에 안 털리도록
+                if (!isAtrTrailingActivated && currentROE >= AtrTriggerRoe)
+                {
+                    isAtrTrailingActivated = true;
+                    OnAlert?.Invoke($"📈 {symbol} ATR Trailing 발동 (ROE {currentROE:F1}% ≥ {AtrTriggerRoe}%)");
+                }
+
+                if (isAtrTrailingActivated && isLongPosition
+                    && (DateTime.Now - lastAtrSlUpdate) >= atrSlMinInterval)
+                {
+                    lastAtrSlUpdate = DateTime.Now;
+                    try
+                    {
+                        // 5m × 15봉 ATR(14) — 봇 캐시 우선, 없으면 REST
+                        List<IBinanceKline>? k5m = null;
+                        if (_marketDataManager?.KlineCache != null
+                            && _marketDataManager.KlineCache.TryGetValue(symbol, out var cached5)
+                            && cached5.Count >= 15)
+                        {
+                            lock (cached5) { k5m = cached5.TakeLast(15).ToList(); }
+                        }
+                        else
+                        {
+                            var fetched = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FiveMinutes, 15, token);
+                            if (fetched != null) k5m = fetched.ToList();
+                        }
+
+                        if (k5m != null && k5m.Count >= 15)
+                        {
+                            decimal atrSum = 0m;
+                            for (int q = 1; q < k5m.Count; q++)
+                            {
+                                decimal h = k5m[q].HighPrice;
+                                decimal l = k5m[q].LowPrice;
+                                decimal pc = k5m[q - 1].ClosePrice;
+                                decimal tr = Math.Max(h - l, Math.Max(Math.Abs(h - pc), Math.Abs(l - pc)));
+                                atrSum += tr;
+                            }
+                            decimal atr5m = atrSum / (decimal)(k5m.Count - 1);
+
+                            // 밈코인 판별 — 심볼 패턴 OR ATR/price 비율 > 1%
+                            decimal atrPct = currentPrice > 0 ? atr5m / currentPrice * 100m : 0m;
+                            bool isMemeSymbol = symbol.Contains("DOGS") || symbol.Contains("FLOKI")
+                                || symbol.Contains("PEPE") || symbol.Contains("WIF")
+                                || symbol.Contains("BONK") || symbol.Contains("MEME")
+                                || symbol.Contains("BABY") || symbol.Contains("DOGE")
+                                || symbol.Contains("SHIB");
+                            bool isHighVol = atrPct > 1.0m;
+                            decimal atrMult = (isMemeSymbol || isHighVol) ? MemeAtrMult : NormalAtrMult;
+
+                            // 새 SL = 현재가 - ATR × multiplier (LONG)
+                            decimal newSl = currentPrice - atr5m * atrMult;
+
+                            // Ratchet only — 새 SL 이 기존보다 높을 때만 갱신 (LONG)
+                            if (newSl > currentAtrTrailingSl)
+                            {
+                                currentAtrTrailingSl = newSl;
+                                string? oldSlId2 = null;
+                                decimal slQty2 = 0;
+                                lock (_posLock)
+                                {
+                                    if (_activePositions.TryGetValue(symbol, out var p))
+                                    { oldSlId2 = p.StopOrderId; slQty2 = Math.Abs(p.Quantity); }
+                                }
+                                if (slQty2 > 0)
+                                {
+                                    if (!string.IsNullOrEmpty(oldSlId2))
+                                        await _exchangeService.CancelOrderAsync(symbol, oldSlId2, CancellationToken.None);
+                                    var (slOk, slNewId) = await _exchangeService.PlaceStopOrderAsync(
+                                        symbol, "SELL", slQty2, newSl, CancellationToken.None);
+                                    if (slOk)
+                                    {
+                                        lock (_posLock)
+                                        {
+                                            if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = slNewId;
+                                        }
+                                        string volTag = (isMemeSymbol || isHighVol) ? "MEME" : "NORM";
+                                        OnLog?.Invoke($"📈 {symbol} ATR-SL → {newSl:F6} (cur={currentPrice:F6} ATR={atr5m:F6}={atrPct:F2}% × {atrMult} [{volTag}])");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception atrEx) { OnLog?.Invoke($"⚠️ {symbol} ATR 트레일링 예외: {atrEx.Message}"); }
                 }
 
                 // ═══════════════════════════════════════════════════════════════

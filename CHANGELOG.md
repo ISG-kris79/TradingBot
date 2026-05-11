@@ -5,6 +5,37 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.40] - 2026-05-11
+
+### 🚨 PUMP 본절가 부호 버그 + 2단계 ATR 변동성 트레일링
+
+#### 버그 (PositionMonitorService.cs:1366)
+PUMP 본절 SL 코드:
+```diff
+- decimal breakEvenPrice = isLongPosition ? entryPrice * (1m - BeBufferPct) : entryPrice * (1m + BeBufferPct);
++ decimal breakEvenPrice = isLongPosition ? entryPrice * (1m + BeBufferPct) : entryPrice * (1m - BeBufferPct);
+```
+LONG 의 본절가가 진입가 × 0.9985 (entry - 0.15%) 로 설정 = 실질 -0.15% 손실 SL.
+사용자 스펙: "진입가 + 0.1% (수수료 보전)" — 부호 반대.
+이게 7일 라이브 -$184 손실의 숨은 원인 중 하나.
+
+`BeBufferPct`: 0.0015 → 0.001 (사용자 정확 스펙 +0.1%).
+
+#### 2단계 ATR 변동성 추적 (사용자 권장 스펙)
+ROE 20% 도달 시 ATR(14) 기반 trailing 활성화:
+- 5분봉 14봉 ATR 계산
+- SL = 현재가 - ATR × multiplier
+- multiplier: 일반 1.5, 밈코인/고변동성 2.0 (ATR/price > 1% OR 심볼 패턴)
+- Ratchet only: 가격 상승 시 SL 따라 올림, 하락 시 유지
+- 10초 throttle: API 부담 / 노이즈 방지
+
+밈코인 심볼 패턴: DOGS/FLOKI/PEPE/WIF/BONK/MEME/BABY/DOGE/SHIB
+
+#### 효과 예상
+- 5분봉 휩쏘 견디며 큰 추세 따라감
+- 평소 -$13 AvgLoss 의 큰 일부가 본절 SL 로 +$0 수렴
+- 추세 강한 종목은 ATR×1.5~2.0 buffer 로 노이즈 흡수
+
 ## [5.23.39] - 2026-05-11
 
 ### 🎯 사용자 Action Plan 적용 — 1h 추세 가드 + 빠른 부분익절 / 본절
