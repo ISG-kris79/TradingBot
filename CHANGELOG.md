@@ -5,6 +5,37 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.41] - 2026-05-12
+
+### 🔬 PARTIAL_SYNC PnL 흐름 진단 로그 추가
+
+#### 배경
+v5.23.35/38 PnL fix 적용했지만 라이브 DB 가짜 흑자 여전:
+- 7d Binance 실제: -$69 / DB 기록: +$612 / 차이 +$681
+- PARTIAL 193건 모두 +$619 흑자로 잘못 기록
+
+원인이 v5.23.35 코드 미적용인지, GetExitFillsAsync 실패인지, 또는 다른 경로에서 PnL 잘못 기록되는지 불분명 → 진단 로그로 흐름 추적.
+
+#### 추가된 로그 (PositionMonitorService → TradingEngine ACCOUNT_UPDATE)
+모든 EXTERNAL_PARTIAL_CLOSE_SYNC 발생 시 다음 출력:
+
+`🔬 [PARTIAL_DIAG] {symbol} 시작 | existingQty=… → updated=… (Δ=…)`
+`🔬 [PARTIAL_DIAG] {symbol} isBinSvc=True/False`
+`🔬 [PARTIAL_DIAG] {symbol} sliceStart=…Z isLong=…`
+`🔬 [PARTIAL_DIAG] {symbol} fills 결과: exitQty=… avgPx=… realizedPnl=… lastExit=…`
+`🔬 [PARTIAL_DIAG] {symbol} EXACT 사용 | exitPx=… pnl=…`
+또는 fallback 시:
+`⚠️ [PARTIAL_DIAG] {symbol} exitQty=0 → ticker fallback`
+`🔬 [PARTIAL_DIAG] {symbol} FALLBACK 사용 | tickerPx=… pnl=…`
+
+예외 발생 시:
+`⚠️ [PARTIAL_SYNC] {symbol} GetExitFills 실패: {ExceptionType}: {Message} → ticker fallback`
+
+#### 다음 단계
+v5.23.41 배포 후 봇 콘솔에서 PARTIAL_DIAG 로그 확인 →
+"왜" fallback 으로 빠지는지 (cast 실패 / exitQty=0 / 예외) 명확화 →
+근본 원인 fix.
+
 ## [5.23.40] - 2026-05-11
 
 ### 🚨 PUMP 본절가 부호 버그 + 2단계 ATR 변동성 트레일링

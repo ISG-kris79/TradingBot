@@ -6648,6 +6648,9 @@ namespace TradingBot
                     {
                         decimal externalClosedQty = existingQtyAbs - updatedQtyAbs;
 
+                        // [v5.23.41] 진단 로그 추가 — PARTIAL_SYNC 흐름 추적
+                        OnStatusLog?.Invoke($"🔬 [PARTIAL_DIAG] {pos.Symbol} 시작 | existingQty={existingQtyAbs:F8} → updated={updatedQtyAbs:F8} (Δ={externalClosedQty:F8})");
+
                         // [v5.23.35] PnL 정확 계산 — Binance UserTrades API 직접 조회
                         //   기존 버그: ticker.LastPrice 로 가격 추정 → 실제 LIMIT 체결가와 불일치
                         //   7일 검증: DB +$220 vs Binance 실제 -$184 (+$404 과대 기록)
@@ -6659,16 +6662,23 @@ namespace TradingBot
 
                         try
                         {
+                            bool isBinSvc = _exchangeService is BinanceExchangeService;
+                            OnStatusLog?.Invoke($"🔬 [PARTIAL_DIAG] {pos.Symbol} isBinSvc={isBinSvc} (cast 가능 여부)");
+
                             if (_exchangeService is BinanceExchangeService binSvcPartial)
                             {
                                 DateTime sliceStartUtc = _lastPartialSyncTimeUtc.TryGetValue(pos.Symbol, out var lastSync)
                                     ? lastSync
                                     : (existing.EntryTime != default ? existing.EntryTime.ToUniversalTime() : DateTime.UtcNow.AddHours(-24));
 
+                                OnStatusLog?.Invoke($"🔬 [PARTIAL_DIAG] {pos.Symbol} sliceStart={sliceStartUtc:yyyy-MM-dd HH:mm:ss}Z isLong={existing.IsLong}");
+
                                 // 짧은 지연 — Binance 쪽 trade 기록이 ACCOUNT_UPDATE 와 동시에 도착하지 않을 수 있음
                                 await Task.Delay(300);
 
                                 var fills = await binSvcPartial.GetExitFillsAsync(pos.Symbol, sliceStartUtc, existing.IsLong);
+
+                                OnStatusLog?.Invoke($"🔬 [PARTIAL_DIAG] {pos.Symbol} fills 결과: exitQty={fills.exitQty:F8} avgPx={fills.avgExitPrice:F6} realizedPnl={fills.realizedPnl:F4} lastExit={fills.lastExitTimeUtc:HH:mm:ss}Z");
 
                                 // [v5.23.38] 매칭 조건 완화 — exitQty > 0 이면 채택
                                 //   기존(v5.23.35): 5% 오차 매칭 → 분할 체결/누적 partial 시 매번 fallback (ticker.LastPrice)
@@ -6690,11 +6700,19 @@ namespace TradingBot
                                     exactPnlAcquired = true;
                                     OnStatusLog?.Invoke($"📊 [PARTIAL_SYNC_EXACT] {pos.Symbol} exitPx={fills.avgExitPrice:F6} qty={fills.exitQty} realizedPnl={fills.realizedPnl:F4}");
                                 }
+                                else
+                                {
+                                    OnStatusLog?.Invoke($"⚠️ [PARTIAL_DIAG] {pos.Symbol} exitQty=0 → ticker fallback (Binance 측 체결 기록 미수신)");
+                                }
+                            }
+                            else
+                            {
+                                OnStatusLog?.Invoke($"⚠️ [PARTIAL_DIAG] {pos.Symbol} _exchangeService 가 BinanceExchangeService 아님 → ticker fallback (Mock/Testnet?)");
                             }
                         }
                         catch (Exception exFill)
                         {
-                            OnStatusLog?.Invoke($"⚠️ [PARTIAL_SYNC] {pos.Symbol} GetExitFills 실패: {exFill.Message} → ticker fallback");
+                            OnStatusLog?.Invoke($"⚠️ [PARTIAL_SYNC] {pos.Symbol} GetExitFills 실패: {exFill.GetType().Name}: {exFill.Message} → ticker fallback");
                         }
 
                         // Fallback (Binance API 실패 또는 데이터 매칭 안됨)
@@ -6716,6 +6734,13 @@ namespace TradingBot
 
                             if (existing.EntryPrice > 0 && externalClosedQty > 0)
                                 syncPnlPercent = (syncPnl / (existing.EntryPrice * externalClosedQty)) * 100m * existing.Leverage;
+
+                            // [v5.23.41] 진단: fallback 사용한 최종 PnL 출력
+                            OnStatusLog?.Invoke($"🔬 [PARTIAL_DIAG] {pos.Symbol} FALLBACK 사용 | tickerPx={syncExitPrice:F6} entryPx={existing.EntryPrice:F6} pnl={syncPnl:F4}");
+                        }
+                        else
+                        {
+                            OnStatusLog?.Invoke($"🔬 [PARTIAL_DIAG] {pos.Symbol} EXACT 사용 | exitPx={syncExitPrice:F6} pnl={syncPnl:F4}");
                         }
 
                         var externalPartialLog = new TradeLog(
