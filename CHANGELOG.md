@@ -5,6 +5,31 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.42] - 2026-05-12
+
+### 🔬 PARTIAL_SYNC 진단을 DB Order_Error 테이블에 기록
+
+v5.23.41 OnStatusLog 출력은 봇 콘솔에만 남음 → 사용자가 직접 봐야 함 →
+대신 `Order_Error` 테이블에 `OrderType='PARTIAL_DIAG'` 로 한 줄씩 기록.
+
+#### 기록 필드 (ErrorMsg 한 줄)
+`branch=EXACT|FB_exitQty0|FB_notBinSvc|FB_exception`
+`path=isBinSvc=…;slice=HH:mm:ss;long=…;fills_ok;`
+`entryPx=… extQty=… exitQty=… avgPx=… realPnl=… finalPnl=… finalExitPx=…`
+`ex={ExceptionType:Message}` (예외 시)
+
+`Resolved` 컬럼: EXACT 채택 시 true, fallback 시 false
+`Resolution` 컬럼: branch 값 (분포 통계용)
+
+#### 사후 분석 SQL
+```sql
+SELECT Resolution AS Branch, COUNT(*) AS N, AVG(CAST(Quantity AS DECIMAL(18,8)))
+FROM Order_Error WHERE OrderType='PARTIAL_DIAG'
+  AND CreatedAt > DATEADD(HOUR,-24,GETDATE())
+GROUP BY Resolution ORDER BY N DESC
+```
+이걸로 fallback 빈도 + 사유 즉시 확인 가능.
+
 ## [5.23.41] - 2026-05-12
 
 ### 🔬 PARTIAL_SYNC PnL 흐름 진단 로그 추가
