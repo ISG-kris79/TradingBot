@@ -38,6 +38,11 @@ namespace TradingBot.Services
         public event Action<string>? OnLog;
         public event Action<string>? OnAlert;
 
+        // [v5.23.43] 마지막 주문 실패 사유 — 상위 caller (TradingEngine) 가 DB 기록용으로 읽음
+        public int? LastOrderErrorCode { get; private set; }
+        public string? LastOrderErrorMsg { get; private set; }
+        public DateTime LastOrderErrorAt { get; private set; }
+
         public bool IsTestnet { get; }
 
         // [v5.10.63] 직접 HttpClient — Binance.Net v12.8.1이 최신 /fapi/v1/algoOrder 미지원
@@ -1070,6 +1075,10 @@ namespace TradingBot.Services
                 {
                     string errMsg = result.Error?.Message ?? "알 수 없는 오류";
                     OnLog?.Invoke($"❌ [주문실패] {symbol} {side} {quantity} — {errMsg} (code={result.Error?.Code})");
+                    // [v5.23.43] 마지막 주문 실패 사유 저장 (caller 가 DB 기록용으로 읽음)
+                    LastOrderErrorCode = result.Error?.Code;
+                    LastOrderErrorMsg = $"{symbol} {side} qty={quantity}: {errMsg}";
+                    LastOrderErrorAt = DateTime.UtcNow;
                     return (false, 0, 0);
                 }
 
@@ -1102,6 +1111,10 @@ namespace TradingBot.Services
             {
                 Console.WriteLine($"❌ [Binance] PlaceMarketOrder 예외 - {symbol} {side} {quantity}");
                 Console.WriteLine($"   예외: {ex.Message}");
+                // [v5.23.43] 예외도 capture
+                LastOrderErrorCode = -1;
+                LastOrderErrorMsg = $"{symbol} {side} qty={quantity}: EX={ex.GetType().Name}:{ex.Message}";
+                LastOrderErrorAt = DateTime.UtcNow;
                 return (false, 0, 0);
             }
         }

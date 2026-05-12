@@ -5,6 +5,34 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.43] - 2026-05-12
+
+### 🔬 시장가 주문 실패 사유 DB 캡쳐 (FULL_ENTRY 실패 추적)
+
+#### 진단 결과 (5/12)
+- 봇 진입 시도: CHILLGUYUSDT 6번 / ATHUSDT 1번 / 기타 = 8건
+- 전부 ExecuteFullEntryWithAllOrdersAsync 실패
+- PARTIAL_DIAG 0건 = 활성 포지션 없으니 부분청산 자체 없음
+- Binance 잔고 $288.90 정상 / canTrade=True
+
+#### 원인 분석 (코드)
+PlaceMarketOrderAsync 가 OnLog 콘솔에만 에러 출력. caller 가 사유 모름:
+```
+catch BinanceError → OnLog 출력 → false 반환
+TradingEngine.cs:10240 → "ExecuteFullEntryWithAllOrdersAsync 실패" 만 기록
+```
+
+#### 수정
+1. `BinanceExchangeService` 에 `LastOrderErrorCode`, `LastOrderErrorMsg`, `LastOrderErrorAt` 속성 추가
+2. PlaceMarketOrderAsync 실패 시 위 속성에 Binance API error code/msg 저장
+3. TradingEngine FULL_ENTRY 실패 catch 에서 1분 내 발생한 LastOrderError 읽어 Order_Error 에 함께 기록
+
+#### 결과
+이제 Order_Error 행에 ErrorMsg 형식:
+`FULL_ENTRY 실패 | leverage=15 margin=$200 slPx=… tpPx=… | BinanceErr=[-2019]Margin is insufficient`
+
+다음 진입 시도 후 query-bot-active.ps1 D 섹션에서 즉시 정확한 사유 확인 가능.
+
 ## [5.23.42] - 2026-05-12
 
 ### 🔬 PARTIAL_SYNC 진단을 DB Order_Error 테이블에 기록

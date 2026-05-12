@@ -10237,7 +10237,18 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"❌ [{symbol}] {decision} 전체 주문 실패");
                     OnAlert?.Invoke($"❌ [{symbol}] {decision} 전체 주문 실패 — Order_Error 확인");
                     EntryLog("ORDER", "FAILED", $"reason=ExecuteFullEntryWithAllOrdersAsync 실패");
-                    try { _ = _dbManager.SaveOrderErrorAsync(symbol, positionSide, "FULL_ENTRY", quantity, null, "ExecuteFullEntryWithAllOrdersAsync 실패"); } catch { }
+                    // [v5.23.43] PlaceMarketOrder 실패 사유 상세 캡쳐 — 거래소 측 에러 코드/메시지
+                    int? failCode = null;
+                    string failMsg = "ExecuteFullEntryWithAllOrdersAsync 실패";
+                    if (_exchangeService is BinanceExchangeService binSvcFail
+                        && binSvcFail.LastOrderErrorMsg != null
+                        && (DateTime.UtcNow - binSvcFail.LastOrderErrorAt) < TimeSpan.FromMinutes(1))
+                    {
+                        failCode = binSvcFail.LastOrderErrorCode;
+                        failMsg = $"FULL_ENTRY 실패 | leverage={leverageDecimal} margin=${marginUsdt:F0} slPx={slPrice:F8} tpPx={tpPrice:F8} | BinanceErr=[{failCode}]{binSvcFail.LastOrderErrorMsg}";
+                        if (failMsg.Length > 500) failMsg = failMsg.Substring(0, 500);
+                    }
+                    try { _ = _dbManager.SaveOrderErrorAsync(symbol, positionSide, "FULL_ENTRY", quantity, failCode, failMsg); } catch { }
                     // [v5.7.8] 주문 실패 시 5분 블랙리스트
                     _blacklistedSymbols[symbol] = DateTime.Now.AddMinutes(5);
                     return;
