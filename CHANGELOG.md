@@ -5,6 +5,26 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.47] - 2026-05-13
+
+### 🧹 PHANTOM cleanup 강화 — 시작 즉시 1회 + 1분 주기 + 버전 로그
+
+#### 배경
+v5.23.44 (5분 주기) 적용 후에도 사용자 UI에 QUSDT/HUSDT 활성포지션 stuck.
+원인 추정: 봇이 v5.23.44 이상으로 업데이트 안됨 (Velopack auto-update 지연/실패)
+또는 5분 주기가 너무 느려 사용자 즉시 효과 못 봄.
+
+#### 수정
+1. 봇 시작 직후 5초 뒤 **CleanupPhantomPositionsAsync 강제 1회 실행** (즉시 phantom 제거)
+2. 주기 5분 → **1분** 단축
+3. 봇 시작 시 Assembly 버전 명시 로그:
+   `🚀 [BOT START] Assembly v5.23.47.0 — phantom cleanup 1분 주기 + 시작 즉시 1회`
+4. cleanup 발동 시 로그:
+   `🧹 [PHANTOM_CLEAN] 시작 강제 1회 실행 — v5.23.47`
+   `🧹 [PHANTOM_CLEAN] {symbol} 메모리 제거`
+
+사용자가 봇 콘솔에서 `Assembly v5.23.47.0` 로그를 보면 적용 완료 확인 가능.
+
 ## [5.23.46] - 2026-05-13
 
 ### 🚨 TP1 전량 청산 버그 fix — 거래소 Trailing 등록 제거

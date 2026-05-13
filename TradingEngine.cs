@@ -2675,17 +2675,20 @@ namespace TradingBot
                 // 5초 주기 15m/5m/1m 폴링 루프 시작
                 _ = Task.Run(() => Run151EngineLoopAsync(token), token);
 
-                // [v5.23.44] PHANTOM 자동 cleanup — 5분 주기 거래소 동기화
-                //   원인: SyncCurrentPositionsAsync 가 봇 시작 시 1회만 호출 → ACCOUNT_UPDATE 누락 시 phantom stuck
-                //   사례: QUSDT/HUSDT 가 외부 청산됐는데 봇 메모리(_activePositions)에 stuck → UI 활성포지션 표시
-                //   해결: 5분마다 GetPositionsAsync 호출 → 거래소에 없는 _activePositions 항목 자동 제거
+                // [v5.23.44/47] PHANTOM 자동 cleanup — 1분 주기 + 시작 즉시 1회
+                //   QUSDT/HUSDT 가 외부 청산됐는데 봇 메모리에 stuck 되는 케이스 처리
+                //   v5.23.47: 5분 → 1분 주기로 변경 (사용자 즉시 효과 체감), 시작 직후 5초 후 1회 강제 호출
                 _ = Task.Run(async () =>
                 {
+                    try { await Task.Delay(TimeSpan.FromSeconds(5), token); } catch { }
+                    OnStatusLog?.Invoke($"🧹 [PHANTOM_CLEAN] 시작 강제 1회 실행 — v5.23.47");
+                    try { await CleanupPhantomPositionsAsync(token); } catch { }
+
                     while (!token.IsCancellationRequested)
                     {
                         try
                         {
-                            await Task.Delay(TimeSpan.FromMinutes(5), token);
+                            await Task.Delay(TimeSpan.FromMinutes(1), token);
                             await CleanupPhantomPositionsAsync(token);
                         }
                         catch (OperationCanceledException) { break; }
@@ -2762,6 +2765,14 @@ namespace TradingBot
                 catch (Exception pnlEx) { OnStatusLog?.Invoke($"⚠️ 금일 PnL 복원 실패: {pnlEx.Message}"); }
 
                 OnStatusLog?.Invoke($"🔧 엔진 초기화 중...");
+
+                // [v5.23.47] 버전 명시 로그 — 사용자가 적용 버전 즉시 확인 가능
+                try
+                {
+                    var asm = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "?";
+                    OnStatusLog?.Invoke($"🚀 [BOT START] Assembly v{asm} — phantom cleanup 1분 주기 + 시작 즉시 1회");
+                }
+                catch { }
 
                 // 시뮬레이션 모드일 경우 초기 잔고 로그 출력
                 if (AppConfig.Current?.Trading?.IsSimulationMode == true)
