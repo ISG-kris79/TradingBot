@@ -5,6 +5,41 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.46] - 2026-05-13
+
+### 🚨 TP1 전량 청산 버그 fix — 거래소 Trailing 등록 제거
+
+#### 사례
+DAM 12:34:43 진입 → 12:35:25 청산 (40초) — TP1 도달 즉시 전량 청산
+COS 13:17:57 진입 → 13:20:57 청산 (3분) — 가격 거의 변동 없는데 청산
+청산 후 COS 가격 +7% 추가 상승 → 잠재 +$60 수익 손실
+
+#### 원인 (TradingEngine.cs:1325-1338, BinanceExchangeService.cs:1336-1356)
+진입 시 거래소에 3개 주문 등록:
+1. SL (전체 수량)
+2. TP1 LIMIT @ entry × 1.00667 (50% 수량) — ROE 10% 부분익절
+3. **Trailing Stop, activation=TP1 가격 (잔여 50%)** ← 문제
+
+가격이 TP1 도달 → TP1 부분 체결 50% + **동시에 Trailing 활성** →
+callback 1% 후퇴 시 잔여 50% 자동 청산 → 결과적으로 전량 청산.
+
+사용자 의도: TP1=10 은 "빠른 부분 익절" — 잔여는 길게 들고 가야 함.
+
+#### 수정
+1. `PlaceProtectiveOrders` 의 `PlaceTrailingStopOrderAsync` 호출 제거
+2. `ExecuteFullEntryWithAllOrdersAsync` 의 `PlaceTrailingStopOrderAsync` 호출 제거
+3. 거래소엔 SL(전량) + TP1(부분) 만 등록
+4. 잔여 수량은 봇 자체 `PositionMonitorService` 가 관리:
+   - v5.23.40 본절 SL (TP1 도달 시 → entry + 0.1%)
+   - v5.23.40 2단계 ATR×1.5 Trailing (ROE 20%+ 활성)
+
+로그: `ℹ️ [PROTECT] {symbol} 잔여 qty={trailQty} → 봇 자체 본절/ATR Trailing (거래소 trailing 미등록)`
+
+### 🧹 Phantom QUSDT/HUSDT DB 강제 정리
+사용자 UI 활성포지션에 stuck 된 QUSDT(ROE +170%) / HUSDT(ROE +250%) phantom.
+DB 직접 정리 (TradeHistory IsClosed=1, PositionState DELETE).
+v5.23.44 5분 cleanup 작동 안한 원인은 봇 미재시작 추정 — 재시작 시 메모리도 비어짐.
+
 ## [5.23.45] - 2026-05-13
 
 ### 🐛 매매기록 날짜 SEARCH 결과 표시 안되던 버그 fix

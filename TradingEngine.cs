@@ -1322,19 +1322,15 @@ namespace TradingBot
                         OnStatusLog?.Invoke($"⚠️ [PROTECT][{source}] {symbol} TP 등록 실패");
                 }
 
-                // Trailing: 잔여 수량
+                // [v5.23.46] 거래소 Trailing 등록 제거 — TP1 동시 발동 문제 fix
+                //   원인: Trailing activation 가격 = TP1 가격 (같음) → TP1 부분 체결 즉시 trailing 활성 →
+                //         callback(1%) 후퇴 시 잔여 즉시 청산 → 결과적으로 전량 청산 (사용자 의도와 다름)
+                //   변경: 잔여 수량은 봇 자체 로직 (PositionMonitorService 본절 + ATR Trailing v5.23.40) 만 사용
+                //         거래소엔 SL(전량) + TP1(부분) 만 등록
                 decimal trailQty = Math.Round(filledQty - tpQty, 8);
                 if (trailQty > 0)
                 {
-                    var (trailOk, _) = await _exchangeService.PlaceTrailingStopOrderAsync(
-                        symbol, closeSide, trailQty,
-                        callbackRate: Math.Clamp(trailGapPct, 0.1m, 5.0m),
-                        activationPrice: tpPrice > 0 ? tpPrice : (decimal?)null,
-                        ct: token);
-                    if (trailOk)
-                        OnStatusLog?.Invoke($"📈 [PROTECT][{source}] {symbol} Trailing 등록 OK callback={trailGapPct:F1}% qty={trailQty}");
-                    else
-                        OnStatusLog?.Invoke($"⚠️ [PROTECT][{source}] {symbol} Trailing 등록 실패");
+                    OnStatusLog?.Invoke($"ℹ️ [PROTECT][{source}] {symbol} 잔여 qty={trailQty} → 봇 자체 본절/ATR Trailing 으로 관리 (거래소 trailing 미등록)");
                 }
             }
             catch (Exception ex)

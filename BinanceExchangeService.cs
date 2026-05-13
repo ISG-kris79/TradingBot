@@ -1346,29 +1346,17 @@ namespace TradingBot.Services
                         OnLog?.Invoke($"⚠️ [FULL_ENTRY] {symbol} TP 등록 실패");
                 }
 
-                // [5] 트레일링 스탑 등록 (잔여 수량, TP 도달 시 활성화)
+                // [v5.23.46] 거래소 Trailing 등록 제거 — TP1 동시 발동 문제 fix
+                //   원인: Trailing activation 가격 = TP1 가격 → TP1 부분체결 즉시 trailing 활성 → callback 후퇴 시 잔여 청산
+                //   변경: 잔여 수량은 봇 자체 PositionMonitorService 본절/ATR Trailing(v5.23.40) 으로 관리
                 decimal trailingQty = stepSize > 0
                     ? Math.Floor((filledQty - tpQty) / stepSize) * stepSize
                     : Math.Round(filledQty - tpQty, 8);
 
-                // 소수 표현 → % 변환 (0.02 → 2.0%)
-                decimal callbackPct = trailingStopCallbackRate < 1m
-                    ? trailingStopCallbackRate * 100m
-                    : trailingStopCallbackRate;
-                callbackPct = Math.Clamp(callbackPct, 0.1m, 5.0m);
-
                 if (trailingQty > 0)
-                {
-                    var (trailOk, _) = await PlaceTrailingStopOrderAsync(
-                        symbol, closeSide, trailingQty,
-                        callbackPct,
-                        activationPrice: takeProfitPrice > 0 ? takeProfitPrice : (decimal?)null,
-                        ct);
-                    if (!trailOk)
-                        OnLog?.Invoke($"⚠️ [FULL_ENTRY] {symbol} 트레일링 등록 실패");
-                }
+                    OnLog?.Invoke($"ℹ️ [FULL_ENTRY] {symbol} 잔여 qty={trailingQty} → 봇 자체 본절/ATR Trailing (거래소 trailing 미등록)");
 
-                OnLog?.Invoke($"✅ [FULL_ENTRY] {symbol} SL/TP/Trailing 일괄 등록 완료 | SL={stopLossPrice:F4} TP={takeProfitPrice:F4} tpQty={tpQty} trailQty={trailingQty} callback={callbackPct}%");
+                OnLog?.Invoke($"✅ [FULL_ENTRY] {symbol} SL/TP 일괄 등록 완료 | SL={stopLossPrice:F4} TP={takeProfitPrice:F4} tpQty={tpQty} trailQty={trailingQty}");
                 return true;
             }
             catch (Exception ex)
