@@ -5,6 +5,26 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.44] - 2026-05-13
+
+### 🧹 PHANTOM 자동 cleanup — 5분 주기 거래소 동기화
+
+#### 원인
+SyncCurrentPositionsAsync 가 **봇 시작 시 1회만 호출**. 그 후 _activePositions 메모리는
+ACCOUNT_UPDATE WebSocket 으로만 갱신됨. ACCOUNT_UPDATE 누락 시 phantom 영구 stuck.
+
+사례: QUSDT, HUSDT 가 외부 청산됐는데 봇 메모리에서 안 사라짐. v5.23.36 fix 는
+CLOSE 버튼 누를 때만 cleanup, 자동 cleanup 없음.
+
+#### 수정
+1. 5분 주기 백그라운드 Task 추가 (`CleanupPhantomPositionsAsync`)
+2. `GetPositionsAsync` 로 거래소 실제 포지션 조회
+3. `_activePositions` 에 있지만 거래소엔 없는 + qty>0 stuck 항목 → 자동 제거
+4. PositionState DB row + UI 이벤트 함께 정리
+5. 로그: `🧹 [PHANTOM_CLEAN] {symbol} 메모리 제거 (거래소에 없음 — 외부 청산 후 ACCOUNT_UPDATE 누락 추정)`
+
+SyncCurrentPositionsAsync 와 달리 DB SYNC_RESTORED row 생성하지 않음 (경량).
+
 ## [5.23.43] - 2026-05-12
 
 ### 🔬 시장가 주문 실패 사유 DB 캡쳐 (FULL_ENTRY 실패 추적)

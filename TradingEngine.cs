@@ -2124,6 +2124,58 @@ namespace TradingBot
             }
         }
 
+        // [v5.23.44] PHANTOM 정리 — 거래소 실제 포지션과 _activePositions 비교 → 거래소에 없는 항목 제거
+        //   주기 호출용 경량 cleanup. SyncCurrentPositionsAsync 와 달리 DB SYNC_RESTORED row 생성 안 함.
+        private async Task CleanupPhantomPositionsAsync(CancellationToken token)
+        {
+            try
+            {
+                var realPositions = await _exchangeService.GetPositionsAsync(token);
+                if (realPositions == null) return;
+                var realSet = new HashSet<string>(
+                    realPositions.Select(p => p.Symbol),
+                    StringComparer.OrdinalIgnoreCase);
+
+                var phantoms = new List<string>();
+                lock (_posLock)
+                {
+                    foreach (var kv in _activePositions)
+                    {
+                        // 거래소에 없는 + 메모리에는 qty>0 으로 stuck = phantom
+                        if (!realSet.Contains(kv.Key) && Math.Abs(kv.Value.Quantity) > 0)
+                        {
+                            phantoms.Add(kv.Key);
+                        }
+                    }
+                }
+
+                if (phantoms.Count == 0) return;
+
+                foreach (var phantomSymbol in phantoms)
+                {
+                    lock (_posLock) { _activePositions.Remove(phantomSymbol); }
+                    _hybridExitManager?.RemoveState(phantomSymbol);
+                    OnPositionStatusUpdate?.Invoke(phantomSymbol, false, 0);
+                    OnTickerUpdate?.Invoke(phantomSymbol, 0m, 0d);
+
+                    try
+                    {
+                        int uid = AppConfig.CurrentUser?.Id ?? 0;
+                        if (uid > 0) _ = _dbManager?.DeletePositionStateAsync(uid, phantomSymbol);
+                    }
+                    catch { }
+
+                    OnStatusLog?.Invoke($"🧹 [PHANTOM_CLEAN] {phantomSymbol} 메모리 제거 (거래소에 없음 — 외부 청산 후 ACCOUNT_UPDATE 누락 추정)");
+                }
+
+                OnTradeHistoryUpdated?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                OnStatusLog?.Invoke($"⚠️ [PHANTOM_CLEAN] 거래소 조회 실패 (재시도 대기): {ex.Message}");
+            }
+        }
+
         // 1. 포지션 현재 상태 스냅샷 동기화 (REST API 활용)
         private async Task SyncCurrentPositionsAsync(CancellationToken token)
         {
@@ -2626,6 +2678,24 @@ namespace TradingBot
                 };
                 // 5초 주기 15m/5m/1m 폴링 루프 시작
                 _ = Task.Run(() => Run151EngineLoopAsync(token), token);
+
+                // [v5.23.44] PHANTOM 자동 cleanup — 5분 주기 거래소 동기화
+                //   원인: SyncCurrentPositionsAsync 가 봇 시작 시 1회만 호출 → ACCOUNT_UPDATE 누락 시 phantom stuck
+                //   사례: QUSDT/HUSDT 가 외부 청산됐는데 봇 메모리(_activePositions)에 stuck → UI 활성포지션 표시
+                //   해결: 5분마다 GetPositionsAsync 호출 → 거래소에 없는 _activePositions 항목 자동 제거
+                _ = Task.Run(async () =>
+                {
+                    while (!token.IsCancellationRequested)
+                    {
+                        try
+                        {
+                            await Task.Delay(TimeSpan.FromMinutes(5), token);
+                            await CleanupPhantomPositionsAsync(token);
+                        }
+                        catch (OperationCanceledException) { break; }
+                        catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [PHANTOM_CLEAN] 루프 예외: {ex.Message}"); }
+                    }
+                }, token);
 
                 // [v5.22.59] Heartbeat — 30분마다 봇 살아있음 footer 로그 (사용자 정지 인지용)
                 _ = Task.Run(async () =>
