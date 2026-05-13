@@ -5,6 +5,34 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.48] - 2026-05-13
+
+### 🎯 ENGINE_151 Layer 1 → 1h EMA20 변경 (사용자 원칙 적용)
+
+#### 사용자 지시 (재확인)
+"방향은 1시간봉, 속도는 5/15분봉"
+
+#### 기존 (15-5-1)
+- Layer 1: **15m EMA50** 위/아래 → 상승장/하락장 판독
+- 방향 결정이 15m 노이즈에 좌우됨
+
+#### 변경 (1h-5m-1m)
+- Layer 1: **1h EMA20** 위/아래 → 상승장/하락장 판독
+- Layer 2 (5m), Layer 3 (1m) 은 그대로
+- `Run151EngineLoopAsync` 호출 시 1h kline 전달 (interval FifteenMinutes → OneHour)
+- `RegimeSnapshot` 필드명 변경: `Close15m`/`Ema50_15m` → `Close1h`/`Ema20_1h`
+- 캐시 유효 시간 20분 → 90분 (1h 기준이라 더 길게)
+
+#### 시작 알림
+변경 전: `15-5-1 엔진 활성`
+변경 후: `1h-5m-1m 엔진 활성 (방향 1h EMA20)`
+
+#### 추가 가드 스택 (모두 1h 방향 적용)
+1. IsEntryAllowedCore 1h EMA20 가드 (v5.23.39 universal admission)
+2. ENGINE_151 Layer 1 1h EMA20 (v5.23.48 - 엔진 자체 방향 판독)
+
+defense-in-depth — 두 단계 모두 1h 방향 확인.
+
 ## [5.23.47] - 2026-05-13
 
 ### 🧹 PHANTOM cleanup 강화 — 시작 즉시 1회 + 1분 주기 + 버전 로그

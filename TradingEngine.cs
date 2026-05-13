@@ -2725,7 +2725,7 @@ namespace TradingBot
                     try { await CleanupOrphanAlgoOrdersAsync(allSymbols: true, reason: "engine_start"); } catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [START_CLEANUP] {ex.Message}"); }
                 }, token);
 
-                OnAlert?.Invoke("🚀 최적화 엔진 가동 (WebSocket 모드) + 15-5-1 엔진 활성");
+                OnAlert?.Invoke("🚀 최적화 엔진 가동 (WebSocket) + 1h-5m-1m 엔진 활성 (방향 1h EMA20)");
                 LoggerService.Info("엔진 시작: WebSocket 모드 + 15-5-1");
 
                 // [v5.22.13] 초기학습 안내 제거 — AI 시스템 폐기 (2026-04-29)
@@ -3405,19 +3405,19 @@ namespace TradingBot
                     {
                         if (token.IsCancellationRequested) break;
 
-                        // ── Layer 1: 15m 종가 확정 감지 + EvaluateRegime
-                        // [v5.22.16] WebSocket 캐시 → REST throttle 30초 캐시
+                        // ── Layer 1: 1h 종가 확정 감지 + EvaluateRegime (사용자 원칙: 방향 1h)
+                        // [v5.23.48] 15m EMA50 → 1h EMA20 변경
                         try
                         {
-                            var c15 = await GetMultiTfKlinesThrottledAsync(
-                                symbol, Binance.Net.Enums.KlineInterval.FifteenMinutes, 60, token);
-                            if (c15 != null && c15.Count >= 51)
+                            var c1h = await GetMultiTfKlinesThrottledAsync(
+                                symbol, Binance.Net.Enums.KlineInterval.OneHour, 30, token);
+                            if (c1h != null && c1h.Count >= 21)
                             {
-                                var lastOpen = c15[^1].OpenTime;
+                                var lastOpen = c1h[^1].OpenTime;
                                 if (!_last15mProcessedAt.TryGetValue(symbol, out var prev15) || prev15 != lastOpen)
                                 {
                                     _last15mProcessedAt[symbol] = lastOpen;
-                                    _entryEngine151.EvaluateRegime(symbol, c15);
+                                    _entryEngine151.EvaluateRegime(symbol, c1h);
                                 }
                             }
                         }

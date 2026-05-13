@@ -84,33 +84,36 @@ namespace TradingBot.Services
         }
 
         // ═══════════════════════════════════════════════════════════════
-        // LAYER 1: 15m FILTER
+        // LAYER 1: 1h FILTER (사용자 원칙: 방향 1h, 속도 5/15m)
         // ═══════════════════════════════════════════════════════════════
-        /// <summary>15분봉 EMA(50) 필터 — 상승장 여부 판독. 15m 종가 확정 시 호출 권장.</summary>
-        public bool EvaluateRegime(string symbol, IReadOnlyList<IBinanceKline> candles15m)
+        /// <summary>
+        /// 1시간봉 EMA(20) 필터 — 상승장 여부 판독. 1h 종가 확정 시 호출.
+        /// [v5.23.48] 15m EMA50 → 1h EMA20 변경 (사용자 원칙: "방향은 1시간봉")
+        /// </summary>
+        public bool EvaluateRegime(string symbol, IReadOnlyList<IBinanceKline> candles1h)
         {
-            if (candles15m == null || candles15m.Count < _emaPeriod15m + 1)
+            if (candles1h == null || candles1h.Count < 21)
             {
-                _regime[symbol] = new RegimeSnapshot(false, double.NaN, double.NaN, DateTime.Now, "insufficient_15m_data");
+                _regime[symbol] = new RegimeSnapshot(false, double.NaN, double.NaN, DateTime.Now, "insufficient_1h_data");
                 return false;
             }
 
-            double ema50 = IndicatorCalculator.CalculateEMA(candles15m.ToList(), _emaPeriod15m);
-            double close = (double)candles15m[^1].ClosePrice;
-            bool isUptrend = close > ema50;
+            double ema20 = IndicatorCalculator.CalculateEMA(candles1h.ToList(), 20);
+            double close = (double)candles1h[^1].ClosePrice;
+            bool isUptrend = close > ema20;
 
-            _regime[symbol] = new RegimeSnapshot(isUptrend, close, ema50, DateTime.Now, isUptrend ? "uptrend" : "downtrend");
+            _regime[symbol] = new RegimeSnapshot(isUptrend, close, ema20, DateTime.Now, isUptrend ? "1h_uptrend" : "1h_downtrend");
 
             // 하락장 전환 시 진입 대기 자동 취소
             if (!isUptrend && _pending.TryRemove(symbol, out var cancelled))
             {
-                OnLog?.Invoke($"🛑 [L1][{symbol}] 15m 하락 전환 → 진입 대기 취소 (등록={cancelled.RegisteredAt:HH:mm:ss})");
+                OnLog?.Invoke($"🛑 [L1][{symbol}] 1h EMA20 하락 전환 → 진입 대기 취소 (등록={cancelled.RegisteredAt:HH:mm:ss})");
             }
             return isUptrend;
         }
 
         public bool IsUptrend(string symbol) =>
-            _regime.TryGetValue(symbol, out var r) && r.IsUptrend && (DateTime.Now - r.EvaluatedAt).TotalMinutes < 20;
+            _regime.TryGetValue(symbol, out var r) && r.IsUptrend && (DateTime.Now - r.EvaluatedAt).TotalMinutes < 90;   // 1h 기준 90분 캐시
 
         // ═══════════════════════════════════════════════════════════════
         // LAYER 2: 5m STRATEGY
@@ -202,8 +205,8 @@ namespace TradingBot.Services
                 SignalPrice: candleList[^1].ClosePrice,
                 Strength: strength,
                 Reason: string.Join("+", hits),
-                RegimeClose: (decimal)reg.Close15m,
-                RegimeEma50: (decimal)reg.Ema50_15m
+                RegimeClose: (decimal)reg.Close1h,
+                RegimeEma50: (decimal)reg.Ema20_1h
             );
             _pending[symbol] = newPending;
             pending = newPending;
@@ -298,7 +301,7 @@ namespace TradingBot.Services
         // ═══════════════════════════════════════════════════════════════
         // 데이터 타입
         // ═══════════════════════════════════════════════════════════════
-        public record RegimeSnapshot(bool IsUptrend, double Close15m, double Ema50_15m, DateTime EvaluatedAt, string Reason);
+        public record RegimeSnapshot(bool IsUptrend, double Close1h, double Ema20_1h, DateTime EvaluatedAt, string Reason);
 
         public record PendingEntry(
             string Symbol,
