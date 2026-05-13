@@ -5,6 +5,27 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.45] - 2026-05-13
+
+### 🐛 매매기록 날짜 SEARCH 결과 표시 안되던 버그 fix
+
+#### 원인
+DataGrid (MainWindow.xaml:1938) 가 `FilteredTradeHistory` 컬렉션에 바인딩.
+`FilteredTradeHistory` 는 `RebuildFilteredTradeHistory()` 가 채우는데:
+- PositionHistory 행 클릭 시(`SelectedPositionHistory` set)만 호출됨
+- SEARCH 버튼 → `LoadTradeHistory` → `TradeHistory` 만 갱신
+- `FilteredTradeHistory` 영원히 빈 상태 → DataGrid 빈 화면
+- 심볼 미선택 시 RebuildFilteredTradeHistory 분기는 빈 리스트로 처리
+
+사용자 증상: "검색 날짜 바꿔도 데이터 안 나옴"
+
+#### 수정
+1. `RebuildFilteredTradeHistory` 에 else 분기 추가:
+   - 심볼 미선택 → `TradeHistory` 전체를 `FilteredTradeHistory` 에 복사
+2. `LoadTradeHistory` 마지막에 `RebuildFilteredTradeHistory()` 호출 추가
+   - SEARCH 클릭 → LoadTradeHistory → 자동으로 FilteredTradeHistory 갱신
+3. PositionHistory 행 클릭 시 필터링 동작은 그대로 유지
+
 ## [5.23.44] - 2026-05-13
 
 ### 🧹 PHANTOM 자동 cleanup — 5분 주기 거래소 동기화

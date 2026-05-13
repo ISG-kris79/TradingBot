@@ -165,10 +165,9 @@ namespace TradingBot.ViewModels
             try
             {
                 var filtered = new List<TradeLog>();
-                // [v5.22.65] 선택 없음 → 빈 리스트 (전체 X). 사용자 요청: "심볼 누르면 해당시간 진입한 내역만"
-                // [v5.23.12] 사용자 지시: "심볼 클릭하면 그 심볼 진입한 관련 내역 모두 나와야"
-                //   기존 ±60분 윈도우 제거 → 심볼 일치하는 모든 TradeHistory 표시
-                //   종료시각 (ExitTime) 기준 내림차순 정렬
+                // [v5.22.65/v5.23.12] PositionHistory 심볼 선택 → 해당 심볼 모든 내역
+                // [v5.23.45] 심볼 미선택 → 전체 TradeHistory 표시 (SEARCH 결과 즉시 보이도록)
+                //   기존 버그: DataGrid 가 FilteredTradeHistory 바인딩인데 미선택 시 빈 상태 → SEARCH 결과 안 보임
                 if (_selectedPositionHistory != null && !string.IsNullOrEmpty(_selectedPositionHistory.Symbol))
                 {
                     string sym = _selectedPositionHistory.Symbol;
@@ -177,10 +176,17 @@ namespace TradingBot.ViewModels
                         if (!string.Equals(t.Symbol, sym, StringComparison.OrdinalIgnoreCase)) continue;
                         filtered.Add(t);
                     }
-                    filtered = filtered
-                        .OrderByDescending(t => t.ExitTime > DateTime.MinValue ? t.ExitTime : t.EntryTime > DateTime.MinValue ? t.EntryTime : t.Time)
-                        .ToList();
                 }
+                else
+                {
+                    // 심볼 미선택 = 전체 표시 (날짜 필터는 LoadTradeHistory 에서 이미 적용됨)
+                    filtered.AddRange(TradeHistory);
+                }
+
+                filtered = filtered
+                    .OrderByDescending(t => t.ExitTime > DateTime.MinValue ? t.ExitTime : t.EntryTime > DateTime.MinValue ? t.EntryTime : t.Time)
+                    .ToList();
+
                 System.Windows.Application.Current?.Dispatcher.Invoke(() =>
                 {
                     FilteredTradeHistory.Clear();
@@ -1869,6 +1875,10 @@ namespace TradingBot.ViewModels
 
                     // 통계 계산
                     CalculateTradeStatistics();
+
+                    // [v5.23.45] DataGrid 바인딩(FilteredTradeHistory) 자동 갱신
+                    //   SEARCH 버튼 → LoadTradeHistory 갱신했는데 FilteredTradeHistory 안 채워지던 버그 fix
+                    RebuildFilteredTradeHistory();
                 });
                 AddLog($"📜 매매 이력 로드 완료 ({historyModels.Count}건)");
             }
