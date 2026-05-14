@@ -249,35 +249,14 @@ namespace TradingBot.Services
             bool isBullish = currentM1.ClosePrice > currentM1.OpenPrice;
             if (!isBullish) return false;
 
-            // [v5.23.50] 눌림 후 반등 패턴 — 사용자 원칙
-            //   "9:18 고점 진입 X → 9:20 눌림 → 9:21 반등 확인 후 진입"
-            //   조건:
-            //     1) 직전 3봉 중 음봉 최소 1개 (= 눌림 발생)
-            //     2) 현재 1m 종가 > 직전 1m high (= 반등 확정)
-            //   목적: 1m 첫 양봉 즉시 진입(추격) 방지
-            if (recentM1s.Count < 3) return false;
+            // [v5.23.57] v5.23.50 눌림+반등 필수 폐기 — 사용자 지시
+            //   v5.23.50 (직전 3봉 음봉 + 현재가 > 직전 high) 가 일직선 상승 알트 차단
+            //   사용자: "고점 도장 회피"를 "눌림 강제"로 잘못 변환 — 둘은 다른 문제
+            //   "고점 회피"는 universal IsEntryAllowedCore 단기봉 가드 (5m RSI 65~75 + 15m BB pos<0.5) 로 처리
+            //   여기서는 1m 양봉 + 볼륨 spike 만 유지
+            if (recentM1s.Count < 1) return false;
 
-            bool hasPullback = false;
-            for (int i = recentM1s.Count - 3; i < recentM1s.Count; i++)
-            {
-                if (i < 0) continue;
-                if (recentM1s[i].ClosePrice < recentM1s[i].OpenPrice)
-                {
-                    hasPullback = true; break;
-                }
-            }
-            if (!hasPullback)
-            {
-                OnLog?.Invoke($"⏸️ [L3][{symbol}] PULLBACK_MISSING — 직전 3봉 모두 양봉 (추격 회피)");
-                return false;
-            }
-
-            decimal prevHigh = recentM1s[^1].HighPrice;
-            if (currentM1.ClosePrice <= prevHigh)
-            {
-                OnLog?.Invoke($"⏸️ [L3][{symbol}] NO_BOUNCE — 현재가 {currentM1.ClosePrice:F8} ≤ 직전 1m high {prevHigh:F8}");
-                return false;
-            }
+            decimal prevHigh = recentM1s[^1].HighPrice;   // 디버깅 로그용 (가드 X)
 
             // 1m 거래량 spike 조건
             decimal avgVol = 0m;
@@ -302,10 +281,10 @@ namespace TradingBot.Services
                 PendingAgeSec: (decimal)(DateTime.Now - p.RegisteredAt).TotalSeconds,
                 VolRatio: volRatio,
                 Strength: p.Strength,
-                Reason: $"L1+L2({p.Reason})+L3(pullback+bounce>{prevHigh:F6}+vol×{volRatio:F1})"
+                Reason: $"L1+L2({p.Reason})+L3(bull+vol×{volRatio:F1})"
             );
 
-            OnLog?.Invoke($"🚀 [L3][{symbol}] TRIGGER | {p.Direction} px={currentM1.ClosePrice} > prevHigh={prevHigh:F6} (눌림+반등) vol×{volRatio:F1} pendingAge={trigger.PendingAgeSec:F0}s");
+            OnLog?.Invoke($"🚀 [L3][{symbol}] TRIGGER | {p.Direction} px={currentM1.ClosePrice} prevHi={prevHigh:F6} vol×{volRatio:F1} pendingAge={trigger.PendingAgeSec:F0}s");
             OnEntryFire?.Invoke(trigger);
             return true;
         }

@@ -871,37 +871,10 @@ namespace TradingBot
                         return false;
                     }
 
-                    // [v5.23.56] 데이터 기반 가드 재설계 — 30일 라이브 데이터 (724건) 분석 결과
-                    //   v5.23.55 (dev>3% 차단) 폐기 — 정반대 효과 (흑자 구간 차단, 베이스라인 +$186 → -$98)
-                    //   분석 결과 (winsvslosses-30d.csv):
-                    //     dev 0~1% (방금 통과): WR 35% Sum -$325  ← 최악 단일 버킷
-                    //     dev 1-2%: WR 58% +$132 / 2-3%: WR 52% +$96 / 3-5%: WR 56% +$179 / 5%+: WR 58% +$302
-                    //     24h Ch -5~0%: WR 31% -$184 / 0~5%: WR 37% -$61 (chop zone)
-                    //     24h Ch >3%: 332건 WR 58.1% Sum +$743
-                    //   FINAL_A 가드 (dev>=1% + Ch24h>3% + RSI5m<85): N=317 WR 58.4% Sum +$771 (4.1배)
-                    decimal emaDevPct1h = ema20_1h > 0 ? (lastClose1h - ema20_1h) / ema20_1h * 100m : 0m;
-                    if (emaDevPct1h < 1.0m)
-                    {
-                        blockReason = $"NEAR_EMA20:dev={emaDevPct1h:F2}%<1%";
-                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (방금 EMA20 통과 약한 신호 — 30일 라이브 WR 35% -$325)");
-                        return false;
-                    }
-
-                    // 2) 24h 가격변화 ≤ 3% 차단 — chop zone (-5~5% 구간 WR 31~37% Sum -$245)
-                    if (k1hGate.Count >= 24)
-                    {
-                        decimal px24hAgo = k1hGate[0].ClosePrice;   // 25봉 fetch, [0]은 약 24h 이전
-                        if (px24hAgo > 0)
-                        {
-                            decimal ch24hPct = (lastClose1h - px24hAgo) / px24hAgo * 100m;
-                            if (ch24hPct <= 3.0m)
-                            {
-                                blockReason = $"CHOP_24H:ch24={ch24hPct:F2}%<=3%";
-                                OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (24h 모멘텀 부족 — chop zone, 30일 라이브 WR 31~37% -$245)");
-                                return false;
-                            }
-                        }
-                    }
+                    // [v5.23.57] v5.23.56 1h 가드 폐기 — 사용자 원칙 위반 ("방향은 1h, 속도는 5/15m")
+                    //   v5.23.56 (NEAR_EMA20 dev<1% + CHOP_24H Ch24h<=3%) = 1h에 속도/모멘텀 의존 → 12시간 진입 0건
+                    //   사용자 원칙: 1h은 방향만 (EMA20 위/아래), 속도는 5/15m로 판단
+                    //   "고점 회피"는 단기봉 (5/15m) 으로. 다음 가드에서 처리.
                 }
             }
             catch (Exception ex1h)
@@ -909,8 +882,23 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"⚠️ [GATE-1h] {symbol} 체크 실패 (무시): {ex1h.Message}");
             }
 
-            // [v5.23.56] 5m RSI ≥ 85 차단 — 극단 과열 잔존 손실 패턴
-            //   FINAL_A 통과 후 잔존 손실 분석: RSI5m 90.4 (ACHUSDT -$31), RSI5m 79.7 (DASHUSDT -$27) 등
+            // [v5.23.57] 고점 도장 회피 — 단기봉 (5m RSI + 15m BB pos) 기반
+            //   사용자 원칙: "고점에서 들어가고 털어낼때 손절" 방지 = 핵심 목표
+            //   데이터 (winsvslosses-30d.csv 724건 분석):
+            //
+            //   [5m RSI 세부 버킷]
+            //     50-65:  WR 56-65% +$401 (sweet spot — 모멘텀 충분 + 고점 아님)
+            //     65-70:  WR 32.5% -$139 ← 단연 최악 ("고점 도장" 진짜 패턴)
+            //     70-75:  WR 50% -$18 (애매)
+            //     75+:    WR 41-89% +$60 (walking band — 강추세, 통과해야)
+            //
+            //   [15m BB pos 세부 버킷]
+            //     0.5-0.6: WR 26.1% -$27 ← chop zone (애매한 위치, 차단)
+            //     0.6+:    WR 50-72% +$430 (BB middle 위 = 추세 확인)
+            //     1.0+:    WR 71% +$300 (walking band)
+            //
+            //   결론: 5m RSI 65~75 차단 (고점 도장) + 15m BB pos < 0.5 차단 (chop)
+            //   라이브 30일 시뮬: NEW_A = N=319 WR 54.5% Sum +$781 (vs baseline +$186, 4.2배)
             try
             {
                 var k5mGate = GetMultiTfKlinesCachedOrRefresh(symbol, KlineInterval.FiveMinutes, 20);
@@ -925,10 +913,12 @@ namespace TradingBot
                     }
                     double avgG = g / 14.0, avgL = l / 14.0;
                     double rsi5m = avgL < 1e-12 ? 100.0 : 100.0 - (100.0 / (1.0 + avgG / avgL));
-                    if (rsi5m >= 85.0)
+
+                    // 5m RSI 65~75 구간 차단 = "고점 도장" 정확히 매칭. <65 또는 >=75 만 통과
+                    if (rsi5m >= 65.0 && rsi5m < 75.0)
                     {
-                        blockReason = $"RSI5M_EXTREME:rsi={rsi5m:F1}>=85";
-                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (5m RSI 극단 과열 — 잔존 손실 패턴)");
+                        blockReason = $"M5_HIGH_TOP:rsi={rsi5m:F1}_65~75";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (5m RSI 65~75 고점 도장 — 30일 라이브 WR 32~50% -$157)");
                         return false;
                     }
                 }
@@ -936,6 +926,43 @@ namespace TradingBot
             catch (Exception ex5m)
             {
                 OnStatusLog?.Invoke($"⚠️ [GATE-5m_RSI] {symbol} 체크 실패 (무시): {ex5m.Message}");
+            }
+
+            // [v5.23.57] 15m BB pos < 0.5 차단 — chop zone 회피
+            try
+            {
+                var k15bb = GetMultiTfKlinesCachedOrRefresh(symbol, KlineInterval.FifteenMinutes, 25);
+                if (k15bb != null && k15bb.Count >= 20)
+                {
+                    int n = k15bb.Count;
+                    double sma = 0; int sn = 20;
+                    for (int q = n - sn; q < n; q++) sma += (double)k15bb[q].ClosePrice;
+                    sma /= sn;
+                    double var2 = 0;
+                    for (int q = n - sn; q < n; q++)
+                    {
+                        double d = (double)k15bb[q].ClosePrice - sma;
+                        var2 += d * d;
+                    }
+                    double sd = System.Math.Sqrt(var2 / sn);
+                    if (sd > 1e-12)
+                    {
+                        double upper = sma + 2.0 * sd;
+                        double lower = sma - 2.0 * sd;
+                        double last = (double)k15bb[n - 1].ClosePrice;
+                        double bbPos = (last - lower) / (upper - lower);
+                        if (bbPos < 0.5)
+                        {
+                            blockReason = $"M15_BB_LOWER_HALF:pos={bbPos:F2}<0.5";
+                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (15m BB middle 아래 — 30일 라이브 WR 26~46% -$484)");
+                            return false;
+                        }
+                    }
+                }
+            }
+            catch (Exception exBB)
+            {
+                OnStatusLog?.Invoke($"⚠️ [GATE-15m_BB] {symbol} 체크 실패 (무시): {exBB.Message}");
             }
 
             // [v5.23.49] MICRO_ALT_VOLUME 가드 폐기 (사용자 지시: "차단 X 로직으로")
@@ -4973,13 +5000,10 @@ namespace TradingBot
                     decimal pullbackPct = hiPrice > 0 ? (hiPrice - loPrice) / hiPrice * 100m : 0m;
                     bool c1Pullback = pullbackPct >= 1.5m && loIdx > hiIdx;
 
-                    // [v5.23.32] c1 필수 — 눌림 없으면 즉시 차단
-                    if (!c1Pullback)
-                    {
-                        OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} CHASE 차단 | NO_PULLBACK p={pullbackPct:F2}% | hi={hiPrice:F6} cur={currentPrice:F6} (일직선 상승 — 추격매수 회피)");
-                        _lorentzianCooldown[symbol] = DateTime.UtcNow;
-                        return;
-                    }
+                    // [v5.23.57] c1 PULLBACK 필수 → 가산점으로 완화 (사용자 지시)
+                    //   v5.23.32 c1 필수가 일직선 상승 알트 모두 차단 → 5%+ 상승 알트 못 잡음
+                    //   "고점 도장 회피"는 universal IsEntryAllowedCore 의 단기봉 가드로 처리
+                    //   여기서는 c2/c3/c4 중 2/3 만 통과하면 진입 허용
 
                     decimal midPoint = (hiPrice + loPrice) / 2m;
                     bool c2Recovery = currentPrice >= midPoint;
