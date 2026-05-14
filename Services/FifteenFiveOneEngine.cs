@@ -249,6 +249,36 @@ namespace TradingBot.Services
             bool isBullish = currentM1.ClosePrice > currentM1.OpenPrice;
             if (!isBullish) return false;
 
+            // [v5.23.50] 눌림 후 반등 패턴 — 사용자 원칙
+            //   "9:18 고점 진입 X → 9:20 눌림 → 9:21 반등 확인 후 진입"
+            //   조건:
+            //     1) 직전 3봉 중 음봉 최소 1개 (= 눌림 발생)
+            //     2) 현재 1m 종가 > 직전 1m high (= 반등 확정)
+            //   목적: 1m 첫 양봉 즉시 진입(추격) 방지
+            if (recentM1s.Count < 3) return false;
+
+            bool hasPullback = false;
+            for (int i = recentM1s.Count - 3; i < recentM1s.Count; i++)
+            {
+                if (i < 0) continue;
+                if (recentM1s[i].ClosePrice < recentM1s[i].OpenPrice)
+                {
+                    hasPullback = true; break;
+                }
+            }
+            if (!hasPullback)
+            {
+                OnLog?.Invoke($"⏸️ [L3][{symbol}] PULLBACK_MISSING — 직전 3봉 모두 양봉 (추격 회피)");
+                return false;
+            }
+
+            decimal prevHigh = recentM1s[^1].HighPrice;
+            if (currentM1.ClosePrice <= prevHigh)
+            {
+                OnLog?.Invoke($"⏸️ [L3][{symbol}] NO_BOUNCE — 현재가 {currentM1.ClosePrice:F8} ≤ 직전 1m high {prevHigh:F8}");
+                return false;
+            }
+
             // 1m 거래량 spike 조건
             decimal avgVol = 0m;
             int volLookback = Math.Min(10, recentM1s.Count - 1);
@@ -272,10 +302,10 @@ namespace TradingBot.Services
                 PendingAgeSec: (decimal)(DateTime.Now - p.RegisteredAt).TotalSeconds,
                 VolRatio: volRatio,
                 Strength: p.Strength,
-                Reason: $"L1+L2({p.Reason})+L3(bull+vol×{volRatio:F1})"
+                Reason: $"L1+L2({p.Reason})+L3(pullback+bounce>{prevHigh:F6}+vol×{volRatio:F1})"
             );
 
-            OnLog?.Invoke($"🚀 [L3][{symbol}] TRIGGER | {p.Direction} price={currentM1.ClosePrice} vol×{volRatio:F1} (min {mult:F1}) pendingAge={trigger.PendingAgeSec:F0}s");
+            OnLog?.Invoke($"🚀 [L3][{symbol}] TRIGGER | {p.Direction} px={currentM1.ClosePrice} > prevHigh={prevHigh:F6} (눌림+반등) vol×{volRatio:F1} pendingAge={trigger.PendingAgeSec:F0}s");
             OnEntryFire?.Invoke(trigger);
             return true;
         }

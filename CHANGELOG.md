@@ -5,6 +5,62 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.51] - 2026-05-14
+
+### 🎯 PULLBACK_QUALITY universal 가드 — "상승 채널 + 눌림 + 반등"
+
+#### 사용자 원칙 (재확인)
+"공격적 추세 추종이 문제가 아니라, 상승 채널에서 눌릴 때 들어가는 거잖아"
+1m 단순 음봉→양봉이 아니라 15m 기준 채널 + 눌림 + 반등 패턴.
+
+#### 기존 (v5.23.32)
+- PULLBACK_QUALITY 4중 가드 = LORENTZIAN 진입 경로 inline 만 적용
+- ENGINE_151 / MEME_KNN / 기타 진입 경로는 1m 패턴 (v5.23.50) 만 — 부족
+- 결과: 1m 첫 양봉 = 진입 → 고점 추격 가능
+
+#### 수정 (v5.23.51)
+PULLBACK_QUALITY 를 `IsEntryAllowedCore` universal 가드로 승격.
+모든 진입 경로 (LORENTZIAN/ENGINE_151/MEME_KNN/BB_SQUEEZE/...) 통과 필수.
+
+조건 (15m 30봉):
+1. **직전 high 대비 ≥1.5% 눌림** (필수, 채널 형성 + 눌림 발생)
+2. 현재가 ≥ (high+눌림저점)/2 (50% 회복, 채널 중심선 위)
+3. 15m EMA20 괴리율 ≤ 2.5% (EMA20 근처)
+4. 최근 3봉 vol ≥ 눌림 구간 vol × 0.8 (buyer 복귀)
+
+c1 필수 + c2~c4 중 2/3 만족 시 통과.
+
+#### 차단 reason 로그
+- `NO_PULLBACK:p=0.42%` — 채널 내 눌림 없음 = 추격 패턴
+- `PULLBACK_QUALITY:p=2.1% r=0 e=1 v=0` — 눌림 있으나 회복/EMA/vol 검증 실패
+
+## [5.23.50] - 2026-05-14
+
+### 🎯 ENGINE_151 Layer 3 — 눌림 후 반등 패턴 (추격 진입 차단)
+
+#### 사용자 원칙
+"9시 18분 (1m 고점) 진입 X → 9시 20분 눌림 → 9시 21분 반등 확인 후 진입"
+
+#### 기존 (v5.17.0 ~ v5.23.49)
+- 1m 첫 양봉 + volume spike → 즉시 시장가 진입
+- 폭등 봉 (고점) 첫 진입 시 추격매수 위험
+
+#### 변경 (FifteenFiveOneEngine.TryTriggerEntry)
+조건 추가:
+1. **직전 3봉 중 음봉 최소 1개** (= 눌림 발생 확인)
+2. **현재 1m 종가 > 직전 1m high** (= 반등 확정)
+3. + 기존 volume spike 조건 유지
+
+로그:
+- `⏸️ [L3] PULLBACK_MISSING` — 직전 3봉 모두 양봉 (추격 회피)
+- `⏸️ [L3] NO_BOUNCE` — 현재가 ≤ 직전 1m high (반등 미확정)
+- `🚀 [L3] TRIGGER | px > prevHigh (눌림+반등) vol×N.N`
+
+#### 효과
+- DOGE 9:18 고점 즉시 진입 패턴 차단
+- 9:20 음봉 (눌림) 발생 후 9:21 양봉 close > 9:20 high → 진입
+- 추세 추종 (v5.23.49) 와 결합: 진입 정확 + 잔여 70% 길게 들고 감
+
 ## [5.23.49] - 2026-05-14
 
 ### 🎯 옵션 A — 추세 추종 전환 (안전 단타 → 큰 수익 전략)
