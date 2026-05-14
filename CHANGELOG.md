@@ -5,6 +5,40 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.52] - 2026-05-14
+
+### 🎯 15m 직전봉 양봉 + 몸통/윗꼬리 비율 가드 (사용자 원칙)
+
+#### 사용자 추가 원칙
+"1시간봉으로 상승 확인 후 진입 + 15분 전봉이 양봉이고 몸통이 윗꼬리 비율이 30% 이상일 때만 진입"
+
+#### 해석
+- 1h 상승 확인 = v5.23.39 1h EMA20 universal 가드 (이미 적용)
+- 15m 직전봉 양봉 + body / upperWick ≥ 30%
+  - 윗꼬리가 몸통의 3.33배 보다 크면 거부 (= 매도 압력, 고점 reject 패턴)
+
+#### 추가 가드 (IsEntryAllowedCore)
+```
+직전 15m 마감봉:
+  1. close > open (양봉) — 매수 압력 확인
+  2. body / upperWick ≥ 0.3 — 윗꼬리 너무 길지 않음
+     (윗꼬리 = 0 인 경우 자동 통과 = 완벽 추세 봉)
+```
+
+#### 차단 로그
+- `PREV_15M_BEARISH:O=…>C=…` — 직전봉 음봉
+- `UPPER_WICK_HEAVY:body=…/wick=…(N%<30%)` — 윗꼬리 너무 김
+
+#### 현재 진입 가드 누적 스택 (실시간 알트 진입 시)
+1. SLOT_FULL / MANUAL_CLOSE_COOLDOWN / MAJOR_DISABLED
+2. 1h EMA20 (v5.23.39) — 1h 상승 추세 확인
+3. **15m 직전봉 양봉 + body/wick ≥ 30% (v5.23.52)** ⭐ NEW
+4. PULLBACK_QUALITY universal (v5.23.51) — 채널+눌림+회복
+5. ENGINE_151 Layer 1~3 (1h-5m-1m 단계별)
+6. LORENTZIAN inline PULLBACK_QUALITY (LORENTZIAN 경로만)
+
+모두 통과 = "1h 상승 + 15m 강한 양봉 + 채널 눌림 후 50% 회복 + 1m 반등 확인".
+
 ## [5.23.51] - 2026-05-14
 
 ### 🎯 PULLBACK_QUALITY universal 가드 — "상승 채널 + 눌림 + 반등"

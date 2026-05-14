@@ -881,6 +881,45 @@ namespace TradingBot
             //   기존(v5.23.34): 24h vol < $20M → 차단. 신규/작은 알트 (DAM 같은) 진입 막힘
             //   변경: 옵션 A 추세 추종 — 신규 폭등 알트도 진입 허용. 1h EMA20 가드 + PULLBACK_QUALITY 로 품질 검증.
 
+            // [v5.23.52] 15m 직전봉 양봉 + 몸통/윗꼬리 비율 ≥ 30% 가드 (사용자 추가 원칙)
+            //   사용자 원칙: "15분 전봉 양봉 + 몸통이 윗꼬리 비율이 30% 이상일 때만 진입"
+            //   해석: 직전 마감 15m 봉이 양봉이어야 + body / upperWick ≥ 0.3
+            //         (윗꼬리가 몸통의 3.33배 보다 크면 거부 = 매도 압력 강함)
+            try
+            {
+                var k15bw = GetMultiTfKlinesCachedOrRefresh(symbol, KlineInterval.FifteenMinutes, 5);
+                if (k15bw != null && k15bw.Count >= 2)
+                {
+                    var prev15 = k15bw[k15bw.Count - 2];   // 직전 마감 15m 봉 (현재 진행 봉 제외)
+                    bool isBullish = prev15.ClosePrice > prev15.OpenPrice;
+                    if (!isBullish)
+                    {
+                        blockReason = $"PREV_15M_BEARISH:O={prev15.OpenPrice:F8}>C={prev15.ClosePrice:F8}";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | {blockReason} (15m 직전봉 음봉 — 매수 압력 약함)");
+                        return false;
+                    }
+
+                    decimal body = prev15.ClosePrice - prev15.OpenPrice;
+                    decimal upperWick = prev15.HighPrice - prev15.ClosePrice;
+
+                    // body/upperWick >= 0.3 검증. 윗꼬리 0이면 통과 (몸통 only = 완벽한 추세)
+                    if (upperWick > 0)
+                    {
+                        decimal ratioPct = body / upperWick * 100m;
+                        if (ratioPct < 30m)
+                        {
+                            blockReason = $"UPPER_WICK_HEAVY:body={body:F8}/wick={upperWick:F8}({ratioPct:F1}%<30%)";
+                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | {blockReason} (15m 직전봉 윗꼬리 너무 김 — 매도 압력 = 고점 신호)");
+                            return false;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex15bw)
+            {
+                OnStatusLog?.Invoke($"⚠️ [GATE-15m_BODY] {symbol} 체크 실패 (무시): {ex15bw.Message}");
+            }
+
             // [v5.23.51] PULLBACK_QUALITY universal 가드 — 사용자 원칙: "상승 채널에서 눌림 후 반등 진입"
             //   기존: LORENTZIAN 경로 inline 만 적용 → ENGINE_151/MEME_KNN/등 다른 경로 추격매수 가능
             //   변경: 모든 진입 경로에 universal 적용. 15m 30봉 기준 4중 가드:
