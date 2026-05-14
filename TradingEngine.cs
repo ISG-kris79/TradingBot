@@ -920,90 +920,13 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"⚠️ [GATE-15m_BODY] {symbol} 체크 실패 (무시): {ex15bw.Message}");
             }
 
-            // [v5.23.51] PULLBACK_QUALITY universal 가드 — 사용자 원칙: "상승 채널에서 눌림 후 반등 진입"
-            //   기존: LORENTZIAN 경로 inline 만 적용 → ENGINE_151/MEME_KNN/등 다른 경로 추격매수 가능
-            //   변경: 모든 진입 경로에 universal 적용. 15m 30봉 기준 4중 가드:
-            //     1) 직전 high 대비 ≥1.5% 눌림 (= 채널 형성 + 눌림 발생)
-            //     2) 현재가 ≥ (high+눌림저점)/2 (= 50% 회복, 채널 중심선 위)
-            //     3) 15m EMA20 괴리율 ≤ 2.5% (= EMA20 근처 진입, 너무 늘어남 차단)
-            //     4) 최근 3봉 평균 vol ≥ 눌림 구간 평균 vol × 0.8 (= buyer 복귀)
-            //   c1 필수 + c2~c4 중 2/3 만족 시 통과 (v5.23.32 와 동일)
-            try
-            {
-                var k15pb = GetMultiTfKlinesCachedOrRefresh(symbol, KlineInterval.FifteenMinutes, 30);
-                if (k15pb != null && k15pb.Count >= 25)
-                {
-                    int n = k15pb.Count;
-                    int scanStart = Math.Max(0, n - 22);
-                    int scanEnd = n - 2;
-                    if (scanEnd - scanStart >= 5)
-                    {
-                        int hiIdx = scanStart;
-                        decimal hiPrice = k15pb[scanStart].HighPrice;
-                        for (int i = scanStart + 1; i <= scanEnd; i++)
-                        {
-                            if (k15pb[i].HighPrice > hiPrice) { hiPrice = k15pb[i].HighPrice; hiIdx = i; }
-                        }
-                        int loIdx = hiIdx;
-                        decimal loPrice = hiPrice;
-                        for (int i = hiIdx; i <= scanEnd; i++)
-                        {
-                            if (k15pb[i].LowPrice < loPrice) { loPrice = k15pb[i].LowPrice; loIdx = i; }
-                        }
-                        decimal pullbackPct = hiPrice > 0 ? (hiPrice - loPrice) / hiPrice * 100m : 0m;
-                        bool c1 = pullbackPct >= 1.5m && loIdx > hiIdx;
-
-                        if (!c1)
-                        {
-                            blockReason = $"NO_PULLBACK:p={pullbackPct:F2}%";
-                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | {blockReason} (상승 채널 내 눌림 없음 = 추격매수 회피)");
-                            return false;
-                        }
-
-                        decimal curPx = k15pb[n - 1].ClosePrice;
-                        decimal midPoint = (hiPrice + loPrice) / 2m;
-                        bool c2 = curPx >= midPoint;
-
-                        // 15m EMA20 괴리율
-                        double mult = 2.0 / 21.0;
-                        decimal ema20 = k15pb[n - 21].ClosePrice;
-                        for (int q = n - 20; q < n; q++)
-                            ema20 = (decimal)((double)k15pb[q].ClosePrice * mult + (double)ema20 * (1 - mult));
-                        decimal emaDevPct = ema20 > 0 ? Math.Abs(curPx - ema20) / ema20 * 100m : 0m;
-                        bool c3 = ema20 > 0 && emaDevPct <= 2.5m;
-
-                        bool c4 = false;
-                        decimal recentVolSum = 0m; int recentCnt = 0;
-                        for (int i = scanEnd - 2; i <= scanEnd; i++)
-                        {
-                            if (i >= 0) { recentVolSum += k15pb[i].Volume; recentCnt++; }
-                        }
-                        decimal pullVolSum = 0m; int pullCnt = 0;
-                        for (int i = hiIdx; i <= loIdx; i++)
-                        {
-                            pullVolSum += k15pb[i].Volume; pullCnt++;
-                        }
-                        if (recentCnt > 0 && pullCnt > 0)
-                        {
-                            decimal recentAvg = recentVolSum / recentCnt;
-                            decimal pullAvg = pullVolSum / pullCnt;
-                            c4 = pullAvg <= 0m || recentAvg >= pullAvg * 0.8m;
-                        }
-
-                        int subPassCnt = (c2 ? 1 : 0) + (c3 ? 1 : 0) + (c4 ? 1 : 0);
-                        if (subPassCnt < 2)
-                        {
-                            blockReason = $"PULLBACK_QUALITY:p={pullbackPct:F2}% r={(c2?1:0)} e={(c3?1:0)}({emaDevPct:F2}%) v={(c4?1:0)}";
-                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | {blockReason} (눌림 후 회복 검증 실패)");
-                            return false;
-                        }
-                    }
-                }
-            }
-            catch (Exception expb)
-            {
-                OnStatusLog?.Invoke($"⚠️ [GATE-PULLBACK] {symbol} 체크 실패 (무시): {expb.Message}");
-            }
+            // [v5.23.53] PULLBACK_QUALITY universal 폐기 (v5.23.51 롤백)
+            //   사용자 지적: "하루 5% 알트 40~50개인데 진입 10건 미만"
+            //   문제: 15m 30봉 (5시간) 내 1.5% 눌림 + 50% 회복 + EMA20 근접 + vol 회복 = 너무 엄격
+            //         강한 펌프 알트는 5시간 내 1.5% 눌림 없이 일직선 상승 → 다 차단됨
+            //   대안: 1h EMA20 (v5.23.39) + 15m 양봉+body/wick (v5.23.52) + 1m 눌림+반등 (v5.23.50)
+            //         3중 가드로 진입 품질 유지하되 universal pullback 제거 → 진입 빈도 회복
+            //   LORENTZIAN 경로는 inline PULLBACK_QUALITY (v5.23.32) 그대로 유지
 
             // [v5.23.19] HIGH_TOP_CHASING / TOP_DISTRIBUTION / SIDEWAYS_BOX 가드 폐기 (사용자 지시)
             //   사용자 보고: "STORJ +42%, FIL +19% 펌프 시 HIGH_TOP_CHASING 차단으로 못 잡음"

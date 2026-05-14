@@ -5,6 +5,30 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.53] - 2026-05-14
+
+### 🔄 v5.23.51 universal PULLBACK_QUALITY 롤백 — 진입 빈도 회복
+
+#### 사용자 지적
+"하루 5% 이상 올라가는 알트/밈코인 40~50개인데 진입 10건도 안된다"
+v5.23.51 (universal PULLBACK_QUALITY 15m 30봉) 추가 후 더 줄어듦.
+
+#### 원인
+15m 30봉 (5시간) 내 1.5% 눌림 + 50% 회복 + EMA20 근접 + vol 회복 = 너무 엄격.
+강한 펌프 알트는 5시간 내 1.5% 눌림 없이 일직선 상승 → 모두 차단.
+
+#### 수정
+`IsEntryAllowedCore` 의 universal PULLBACK_QUALITY 가드 제거.
+LORENTZIAN inline PULLBACK_QUALITY (v5.23.32) 는 유지 (그 경로 한정).
+
+#### 남은 진입 품질 가드
+1. 1h EMA20 (v5.23.39) — 1h 상승 추세
+2. 15m 양봉 + body/wick ≥ 30% (v5.23.52) — 매수 압력 봉
+3. 1m 직전 3봉 음봉 + close > prev high (v5.23.50, ENGINE_151 만) — 눌림+반등
+
+이 3중 가드면 "1h 상승 + 15m 강한 양봉 + 1m 미세 눌림 후 반등" 패턴 진입 가능,
+그러면서도 강한 펌프 알트 catch 가능.
+
 ## [5.23.52] - 2026-05-14
 
 ### 🎯 15m 직전봉 양봉 + 몸통/윗꼬리 비율 가드 (사용자 원칙)
