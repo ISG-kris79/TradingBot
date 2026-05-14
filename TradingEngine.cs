@@ -871,22 +871,71 @@ namespace TradingBot
                         return false;
                     }
 
-                    // [v5.23.55] EMA20 괴리율 > 3% 차단 — 손실 패턴 분석 결과
-                    //   90일 백테스트 (MANA/AVAX/AXS/AAVE): EMA dev > 3% 구간 모든 코인 일관 적자
-                    //   dev < 1% → 흑자 / 1-3% 혼합 / 3-5% 적자 / 5%+ 재앙
-                    //   v5.23.54 ADX > 25 가드 제거 (잘못된 가정 - 흑자 구간 20-25 차단했음)
+                    // [v5.23.56] 데이터 기반 가드 재설계 — 30일 라이브 데이터 (724건) 분석 결과
+                    //   v5.23.55 (dev>3% 차단) 폐기 — 정반대 효과 (흑자 구간 차단, 베이스라인 +$186 → -$98)
+                    //   분석 결과 (winsvslosses-30d.csv):
+                    //     dev 0~1% (방금 통과): WR 35% Sum -$325  ← 최악 단일 버킷
+                    //     dev 1-2%: WR 58% +$132 / 2-3%: WR 52% +$96 / 3-5%: WR 56% +$179 / 5%+: WR 58% +$302
+                    //     24h Ch -5~0%: WR 31% -$184 / 0~5%: WR 37% -$61 (chop zone)
+                    //     24h Ch >3%: 332건 WR 58.1% Sum +$743
+                    //   FINAL_A 가드 (dev>=1% + Ch24h>3% + RSI5m<85): N=317 WR 58.4% Sum +$771 (4.1배)
                     decimal emaDevPct1h = ema20_1h > 0 ? (lastClose1h - ema20_1h) / ema20_1h * 100m : 0m;
-                    if (emaDevPct1h > 3.0m)
+                    if (emaDevPct1h < 1.0m)
                     {
-                        blockReason = $"FAR_FROM_EMA20:dev={emaDevPct1h:F2}%>3%";
-                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (1h 가격이 EMA20 에서 너무 늘어남 — 과열, 적자 패턴)");
+                        blockReason = $"NEAR_EMA20:dev={emaDevPct1h:F2}%<1%";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (방금 EMA20 통과 약한 신호 — 30일 라이브 WR 35% -$325)");
                         return false;
+                    }
+
+                    // 2) 24h 가격변화 ≤ 3% 차단 — chop zone (-5~5% 구간 WR 31~37% Sum -$245)
+                    if (k1hGate.Count >= 24)
+                    {
+                        decimal px24hAgo = k1hGate[0].ClosePrice;   // 25봉 fetch, [0]은 약 24h 이전
+                        if (px24hAgo > 0)
+                        {
+                            decimal ch24hPct = (lastClose1h - px24hAgo) / px24hAgo * 100m;
+                            if (ch24hPct <= 3.0m)
+                            {
+                                blockReason = $"CHOP_24H:ch24={ch24hPct:F2}%<=3%";
+                                OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (24h 모멘텀 부족 — chop zone, 30일 라이브 WR 31~37% -$245)");
+                                return false;
+                            }
+                        }
                     }
                 }
             }
             catch (Exception ex1h)
             {
                 OnStatusLog?.Invoke($"⚠️ [GATE-1h] {symbol} 체크 실패 (무시): {ex1h.Message}");
+            }
+
+            // [v5.23.56] 5m RSI ≥ 85 차단 — 극단 과열 잔존 손실 패턴
+            //   FINAL_A 통과 후 잔존 손실 분석: RSI5m 90.4 (ACHUSDT -$31), RSI5m 79.7 (DASHUSDT -$27) 등
+            try
+            {
+                var k5mGate = GetMultiTfKlinesCachedOrRefresh(symbol, KlineInterval.FiveMinutes, 20);
+                if (k5mGate != null && k5mGate.Count >= 15)
+                {
+                    double g = 0, l = 0;
+                    int last5m = k5mGate.Count - 1;
+                    for (int q = last5m - 13; q <= last5m; q++)
+                    {
+                        double d = (double)(k5mGate[q].ClosePrice - k5mGate[q - 1].ClosePrice);
+                        if (d > 0) g += d; else l -= d;
+                    }
+                    double avgG = g / 14.0, avgL = l / 14.0;
+                    double rsi5m = avgL < 1e-12 ? 100.0 : 100.0 - (100.0 / (1.0 + avgG / avgL));
+                    if (rsi5m >= 85.0)
+                    {
+                        blockReason = $"RSI5M_EXTREME:rsi={rsi5m:F1}>=85";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (5m RSI 극단 과열 — 잔존 손실 패턴)");
+                        return false;
+                    }
+                }
+            }
+            catch (Exception ex5m)
+            {
+                OnStatusLog?.Invoke($"⚠️ [GATE-5m_RSI] {symbol} 체크 실패 (무시): {ex5m.Message}");
             }
 
             // [v5.23.49] MICRO_ALT_VOLUME 가드 폐기 (사용자 지시: "차단 X 로직으로")
