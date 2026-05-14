@@ -870,6 +870,18 @@ namespace TradingBot
                         OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (1h 하락추세 — 떨어지는 칼날 회피)");
                         return false;
                     }
+
+                    // [v5.23.55] EMA20 괴리율 > 3% 차단 — 손실 패턴 분석 결과
+                    //   90일 백테스트 (MANA/AVAX/AXS/AAVE): EMA dev > 3% 구간 모든 코인 일관 적자
+                    //   dev < 1% → 흑자 / 1-3% 혼합 / 3-5% 적자 / 5%+ 재앙
+                    //   v5.23.54 ADX > 25 가드 제거 (잘못된 가정 - 흑자 구간 20-25 차단했음)
+                    decimal emaDevPct1h = ema20_1h > 0 ? (lastClose1h - ema20_1h) / ema20_1h * 100m : 0m;
+                    if (emaDevPct1h > 3.0m)
+                    {
+                        blockReason = $"FAR_FROM_EMA20:dev={emaDevPct1h:F2}%>3%";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (1h 가격이 EMA20 에서 너무 늘어남 — 과열, 적자 패턴)");
+                        return false;
+                    }
                 }
             }
             catch (Exception ex1h)
