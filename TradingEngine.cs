@@ -877,23 +877,9 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"⚠️ [GATE-1h] {symbol} 체크 실패 (무시): {ex1h.Message}");
             }
 
-            // [v5.23.34] MICRO_ALT_VOLUME 가드 — 24h 거래량 부족 마이너 알트 차단
-            //   배경: 48h 라이브 데이터 - SANTOS/GOAT/INX/1000FLOKI/BROCCOLI 등 0% 승률
-            //         백테스트 셋(DOGE/AVAX/SUI/LINK)과 다른 마이너 알트는 KNN 학습 표본 부족 +
-            //         manipulation 리스크 → 가드 통과해도 SL 발동
-            //   임계: 24h quote volume < $20M USDT → 차단
-            //   메이저(BTC/ETH/SOL/XRP/BNB) 면제, ticker 데이터 없으면 차단 안 함 (진입 누락 방지)
-            if (!MajorSymbols.Contains(symbol) && symbol != "BNBUSDT" && _marketDataManager != null)
-            {
-                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var microTicker)
-                    && microTicker.QuoteVolume > 0
-                    && microTicker.QuoteVolume < 20_000_000m)
-                {
-                    blockReason = $"MICRO_ALT_VOLUME:24h=${microTicker.QuoteVolume / 1_000_000m:F1}M<$20M";
-                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (마이너 알트 — 48h 라이브 0% 승률 패턴)");
-                    return false;
-                }
-            }
+            // [v5.23.49] MICRO_ALT_VOLUME 가드 폐기 (사용자 지시: "차단 X 로직으로")
+            //   기존(v5.23.34): 24h vol < $20M → 차단. 신규/작은 알트 (DAM 같은) 진입 막힘
+            //   변경: 옵션 A 추세 추종 — 신규 폭등 알트도 진입 허용. 1h EMA20 가드 + PULLBACK_QUALITY 로 품질 검증.
 
             // [v5.23.19] HIGH_TOP_CHASING / TOP_DISTRIBUTION / SIDEWAYS_BOX 가드 폐기 (사용자 지시)
             //   사용자 보고: "STORJ +42%, FIL +19% 펌프 시 HIGH_TOP_CHASING 차단으로 못 잡음"
@@ -5077,6 +5063,19 @@ namespace TradingBot
                 if (!pos.IsLong) return;   // 봇 LONG 전용
                 if (Math.Abs(pos.Quantity) <= 0) return;
             }
+
+            // [v5.23.49] 추세 추종 전환 — BEAR_DIVERGENCE/BB_MID_BREAK 등 조기 청산 가드는 ROE >= 100% 일 때만 발동
+            //   사용자 원칙: "폭등 중 retracement 노이즈를 반전 오인하면 못 먹는다"
+            //   ROE 100% 미만 = 추세 진행 중 → 가드 발동 X, ATR Trailing + SL 만 의존
+            decimal currentRoe = 0m;
+            if (pos.EntryPrice > 0)
+            {
+                decimal priceMovePct = pos.IsLong
+                    ? (currentPrice - pos.EntryPrice) / pos.EntryPrice * 100m
+                    : (pos.EntryPrice - currentPrice) / pos.EntryPrice * 100m;
+                currentRoe = priceMovePct * (pos.Leverage > 0 ? pos.Leverage : 1m);
+            }
+            if (currentRoe < 100m) return;
 
             var k5 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 25, token);
             if (k5 == null || k5.Count < 22) return;

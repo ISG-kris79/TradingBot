@@ -5,6 +5,44 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.49] - 2026-05-14
+
+### 🎯 옵션 A — 추세 추종 전환 (안전 단타 → 큰 수익 전략)
+
+#### 사용자 결정
+"현재 로직으로는 상승 알트로 수익 못 낸다" + "DOGE 1m 고점 진입 → 2분 후 fake drop → 털림"
+→ 추세 추종 + fake drop 흡수 로직으로 전환.
+
+#### Models.cs 변경 (PUMP/GENERIC 카테고리)
+| 항목 | Before | After | 효과 |
+|---|---|---|---|
+| `PumpTp1Roe` | 10 (0.67%) | **30 (2%)** | TP1 시점 늦춤 |
+| `PumpFirstTakeProfitRatioPct` | 50% | **30%** | 잔여 70% 추세 따라감 |
+| `PumpStopLossRoe` | 45 (3%) | **75 (5%)** | DOGE fake drop 흡수 |
+| `PumpBreakEvenRoe` | 10 | **30** | TP1 도달 시 본절 |
+| `PumpTrailingGapRoe` | 20 | **60** | 3x buffer, retracement 흡수 |
+
+#### PositionMonitorService.cs — ATR Trailing 확장
+| 항목 | Before | After |
+|---|---|---|
+| AtrTriggerRoe | 20 | **50** (가격 +3.3% 활성) |
+| NormalAtrMult | 1.5 | **3.0** |
+| MemeAtrMult | 2.0 | **5.0** |
+
+#### TradingEngine.cs 가드 완화
+- **MICRO_ALT_VOLUME 가드 폐기** (사용자: "차단 X")
+- **BEAR_DIVERGENCE/BB_MID_BREAK ROE >= 100% 일 때만 발동** (폭등 중 노이즈 무시)
+
+#### 효과 예상
+- DAM 같은 1분 +121% 폭등 시: TP1 30% 작은 익절 + 잔여 70% ATR×3.0 trailing 으로 정점 따라감
+- DOGE fake drop 2-3% 흡수 가능 (SL -5%)
+- 마이너 알트 / 신규 상장 진입 허용
+- 단점: 큰 손실도 가능 (1건 -$300 가능). WR 낮아도 큰 승리로 커버 가능 여부 라이브 검증 필요
+
+#### 주의
+사용자 DB GeneralSettings 기본값 덮어씀 → UI 직접 변경 필요:
+- PUMP TP1 ROE: 30, 부분익절 비율: 30%, SL ROE: 75, 본절 ROE: 30, Trailing Gap: 60
+
 ## [5.23.48] - 2026-05-13
 
 ### 🎯 ENGINE_151 Layer 1 → 1h EMA20 변경 (사용자 원칙 적용)

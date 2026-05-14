@@ -1311,13 +1311,15 @@ namespace TradingBot.Services
             // 클라이언트는 본절 전환(SL 갱신)만 담당
             decimal pumpBreakEvenRoe = _settings.PumpBreakEvenRoe > 0 ? _settings.PumpBreakEvenRoe : 10.0m;
             bool isBreakEvenTriggered = false;
-            // [v5.23.40] 2단계 ATR 변동성 추적 — 사용자 권장 "ROI 20% 도달 시 ATR(14)×1.5 trailing"
+            // [v5.23.40/49] 2단계 ATR 변동성 추적 — 추세 추종 강화 (옵션 A)
+            //   v5.23.40: 일반 1.5x, 밈 2.0x, trigger ROE 20%
+            //   v5.23.49: 일반 3.0x, 밈 5.0x, trigger ROE 50% (큰 추세 따라감, retracement 흡수)
             bool isAtrTrailingActivated = false;
             decimal currentAtrTrailingSl = 0m;
             DateTime lastAtrSlUpdate = DateTime.MinValue;
-            const decimal AtrTriggerRoe = 20.0m;
-            const decimal NormalAtrMult = 1.5m;
-            const decimal MemeAtrMult = 2.0m;
+            const decimal AtrTriggerRoe = 50.0m;    // 20 → 50 (가격 +3.3%에서 활성)
+            const decimal NormalAtrMult = 3.0m;     // 1.5 → 3.0
+            const decimal MemeAtrMult = 5.0m;       // 2.0 → 5.0 (밈코인 큰 흔들림 흡수)
             TimeSpan atrSlMinInterval = TimeSpan.FromSeconds(10);
 
             // DB 상태 복원 (본절 중복 방지)
