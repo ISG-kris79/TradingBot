@@ -5,6 +5,44 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.58] - 2026-05-14
+
+### 🎯 RSI 가드 재설계 — 사용자 원칙: RSI = 방향만, 고점은 봉 패턴/range로
+
+**v5.23.57 (RSI 65~75 차단)가 잘못된 RSI 사용 — 사용자 지적: "RSI로 고점 체크하면 안 됨"**
+
+#### RSI 사용 원칙 재정립 (사용자)
+
+- ✅ **RSI = 방향 설정만** (>50 상승 모멘텀, <50 하락 모멘텀)
+- ❌ **RSI ≠ 고점 체크** (특정 RSI 값으로 고점 차단 X)
+- 고점 체크는 **봉 패턴 + range 위치** 인디케이터로
+
+#### 변경 사항
+
+**REMOVE**: `M5_HIGH_TOP: 5m RSI 65~75 차단` (v5.23.57)
+
+**ADD**:
+
+1. `RSI5M_DOWN: 5m RSI < 50 차단` (방향 가드 — 하락 모멘텀 LONG 진입 X)
+2. `M5_UPPER_WICK: 5m 직전봉 윗꼬리 > 몸통 × 1.5 차단` (봉 패턴 = 매도 압력 = 고점 도장)
+3. `M15_RANGE_TOP: 15m 30봉 range 위치 ≥ 90% + 저점 대비 ≥ 3% 차단` (range 위치로 고점, RSI 아님)
+
+**KEEP**:
+
+- `M15_BB_LOWER_HALF: 15m BB pos < 0.5 차단` (BB middle 기준 방향성 — RSI 아님)
+- 1h EMA20 위 (방향)
+- 15m 직전봉 양봉 + body/wick (v5.23.52)
+
+#### 사용자 5가지 작업 진행 중
+
+1. **LORENTZIAN 1h 기준 로직** — Phase 2 (5m × 12 → 1h aggregate, DB CandleData 18M rows 활용)
+2. **차트 데이터 백그라운드 수집** — Phase 4 (별도 BackgroundCandleCollector 신설)
+3. **진입 가능 코인 실시간 마켓 UI** — Phase 5
+4. **실시간 데이터 진입** — Phase 5
+5. **3년치 백테스트** — Phase 3 (CandleData 5m 1500만 row, MarketCandles 8M 활용)
+
+v5.23.58은 Phase 1 (RSI 원칙 재정립). Phase 2~5는 별도 진행.
+
 ## [5.23.57] - 2026-05-14
 
 ### 🎯 진입 로직 전면 재설계 — 고점 회피 + 일직선 상승 진입

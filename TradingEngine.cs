@@ -882,43 +882,32 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"⚠️ [GATE-1h] {symbol} 체크 실패 (무시): {ex1h.Message}");
             }
 
-            // [v5.23.57] 고점 도장 회피 — 단기봉 (5m RSI + 15m BB pos) 기반
-            //   사용자 원칙: "고점에서 들어가고 털어낼때 손절" 방지 = 핵심 목표
-            //   데이터 (winsvslosses-30d.csv 724건 분석):
-            //
-            //   [5m RSI 세부 버킷]
-            //     50-65:  WR 56-65% +$401 (sweet spot — 모멘텀 충분 + 고점 아님)
-            //     65-70:  WR 32.5% -$139 ← 단연 최악 ("고점 도장" 진짜 패턴)
-            //     70-75:  WR 50% -$18 (애매)
-            //     75+:    WR 41-89% +$60 (walking band — 강추세, 통과해야)
-            //
-            //   [15m BB pos 세부 버킷]
-            //     0.5-0.6: WR 26.1% -$27 ← chop zone (애매한 위치, 차단)
-            //     0.6+:    WR 50-72% +$430 (BB middle 위 = 추세 확인)
-            //     1.0+:    WR 71% +$300 (walking band)
-            //
-            //   결론: 5m RSI 65~75 차단 (고점 도장) + 15m BB pos < 0.5 차단 (chop)
-            //   라이브 30일 시뮬: NEW_A = N=319 WR 54.5% Sum +$781 (vs baseline +$186, 4.2배)
+            // [v5.23.58] RSI 가드 재설계 — 사용자 원칙: RSI = 방향만, 고점은 봉 패턴/range로
+            //   v5.23.57 (RSI 65-75 차단) 폐기 — RSI로 고점 체크 = 잘못된 사용
+            //   RSI 올바른 사용:
+            //     - RSI > 50: 상승 모멘텀 (방향 OK)
+            //     - RSI < 50: 하락 모멘텀 (방향 거꾸로 = LONG 진입 X)
+            //   고점 체크는 봉 패턴/range 위치 인디케이터로 (아래 가드)
             try
             {
-                var k5mGate = GetMultiTfKlinesCachedOrRefresh(symbol, KlineInterval.FiveMinutes, 20);
-                if (k5mGate != null && k5mGate.Count >= 15)
+                var k5mDir = GetMultiTfKlinesCachedOrRefresh(symbol, KlineInterval.FiveMinutes, 20);
+                if (k5mDir != null && k5mDir.Count >= 15)
                 {
                     double g = 0, l = 0;
-                    int last5m = k5mGate.Count - 1;
+                    int last5m = k5mDir.Count - 1;
                     for (int q = last5m - 13; q <= last5m; q++)
                     {
-                        double d = (double)(k5mGate[q].ClosePrice - k5mGate[q - 1].ClosePrice);
+                        double d = (double)(k5mDir[q].ClosePrice - k5mDir[q - 1].ClosePrice);
                         if (d > 0) g += d; else l -= d;
                     }
                     double avgG = g / 14.0, avgL = l / 14.0;
                     double rsi5m = avgL < 1e-12 ? 100.0 : 100.0 - (100.0 / (1.0 + avgG / avgL));
 
-                    // 5m RSI 65~75 구간 차단 = "고점 도장" 정확히 매칭. <65 또는 >=75 만 통과
-                    if (rsi5m >= 65.0 && rsi5m < 75.0)
+                    // RSI < 50 = 하락 모멘텀 → LONG 방향 거꾸로 → 차단 (방향 가드)
+                    if (rsi5m < 50.0)
                     {
-                        blockReason = $"M5_HIGH_TOP:rsi={rsi5m:F1}_65~75";
-                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (5m RSI 65~75 고점 도장 — 30일 라이브 WR 32~50% -$157)");
+                        blockReason = $"RSI5M_DOWN:rsi={rsi5m:F1}<50";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (5m RSI 하락 모멘텀 — 방향 반대)");
                         return false;
                     }
                 }
@@ -928,7 +917,9 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"⚠️ [GATE-5m_RSI] {symbol} 체크 실패 (무시): {ex5m.Message}");
             }
 
-            // [v5.23.57] 15m BB pos < 0.5 차단 — chop zone 회피
+            // [v5.23.58] 15m BB pos < 0.5 차단 — chop zone 회피 (방향성 인디케이터, RSI 아님)
+            //   BB middle = SMA20 기준선. 위면 상승 추세, 아래면 약세
+            //   데이터 (30일 라이브): BB pos < 0.5 구간 250+건 WR 26~46% -$484
             try
             {
                 var k15bb = GetMultiTfKlinesCachedOrRefresh(symbol, KlineInterval.FifteenMinutes, 25);
@@ -954,7 +945,7 @@ namespace TradingBot
                         if (bbPos < 0.5)
                         {
                             blockReason = $"M15_BB_LOWER_HALF:pos={bbPos:F2}<0.5";
-                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (15m BB middle 아래 — 30일 라이브 WR 26~46% -$484)");
+                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (15m BB middle 아래 — chop, 30일 WR 26~46% -$484)");
                             return false;
                         }
                     }
@@ -964,6 +955,54 @@ namespace TradingBot
             {
                 OnStatusLog?.Invoke($"⚠️ [GATE-15m_BB] {symbol} 체크 실패 (무시): {exBB.Message}");
             }
+
+            // [v5.23.58] 5m 직전봉 윗꼬리 가드 — RSI 아닌 봉 패턴으로 고점 체크 (사용자 원칙)
+            //   직전 5m 봉의 윗꼬리/몸통 비율이 크면 = 매도 압력 강함 = 고점 도장 신호
+            try
+            {
+                var k5w = GetMultiTfKlinesCachedOrRefresh(symbol, KlineInterval.FiveMinutes, 5);
+                if (k5w != null && k5w.Count >= 2)
+                {
+                    var prev5 = k5w[k5w.Count - 2];   // 직전 마감 5m 봉
+                    decimal body5 = System.Math.Abs(prev5.ClosePrice - prev5.OpenPrice);
+                    decimal upperWick5 = prev5.HighPrice - System.Math.Max(prev5.ClosePrice, prev5.OpenPrice);
+                    if (body5 > 0m && upperWick5 > body5 * 1.5m)
+                    {
+                        blockReason = $"M5_UPPER_WICK:wick={upperWick5:F8}/body={body5:F8}>1.5";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (5m 직전봉 윗꼬리 > 몸통×1.5 — 매도 압력 = 고점 도장)");
+                        return false;
+                    }
+                }
+            }
+            catch (Exception exW) { OnStatusLog?.Invoke($"⚠️ [GATE-5m_WICK] {symbol} 체크 실패 (무시): {exW.Message}"); }
+
+            // [v5.23.58] 15m 30봉 range 위치 ≥ 90% + 저점 대비 ≥ 3% 차단 — 봉 위치로 고점 체크
+            //   PUMP_WATCH 가드 (M15 range 위치 85% +3%) 를 universal 화
+            //   사용자 원칙: 고점 = range 위치 (RSI 아님)
+            try
+            {
+                var k15r = GetMultiTfKlinesCachedOrRefresh(symbol, KlineInterval.FifteenMinutes, 30);
+                if (k15r != null && k15r.Count >= 30)
+                {
+                    decimal minLow = k15r[0].LowPrice;
+                    decimal maxHigh = k15r[0].HighPrice;
+                    for (int q = 1; q < k15r.Count; q++)
+                    {
+                        if (k15r[q].LowPrice < minLow) minLow = k15r[q].LowPrice;
+                        if (k15r[q].HighPrice > maxHigh) maxHigh = k15r[q].HighPrice;
+                    }
+                    decimal latestClose = k15r[k15r.Count - 1].ClosePrice;
+                    decimal posPct = maxHigh > minLow ? (latestClose - minLow) / (maxHigh - minLow) * 100m : 50m;
+                    decimal riseFromLowPct = minLow > 0m ? (latestClose - minLow) / minLow * 100m : 0m;
+                    if (posPct >= 90m && riseFromLowPct >= 3m)
+                    {
+                        blockReason = $"M15_RANGE_TOP:pos={posPct:F1}%>=90_rise={riseFromLowPct:F2}%>=3";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (15m 30봉 range 90%+ 고점)");
+                        return false;
+                    }
+                }
+            }
+            catch (Exception exR) { OnStatusLog?.Invoke($"⚠️ [GATE-15m_RANGE] {symbol} 체크 실패 (무시): {exR.Message}"); }
 
             // [v5.23.49] MICRO_ALT_VOLUME 가드 폐기 (사용자 지시: "차단 X 로직으로")
             //   기존(v5.23.34): 24h vol < $20M → 차단. 신규/작은 알트 (DAM 같은) 진입 막힘
