@@ -5,13 +5,16 @@ using Binance.Net.Interfaces;
 
 namespace TradingBot.Services.LorentzianV2
 {
-    // jdehorty Pine Script 정확 일치 — 5 feature (v5.23.1 7→5 축소)
-    //   f1 RSI(14)  /100
-    //   f2 WT(10,11) sliding min-max (200봉 윈도)
-    //   f3 CCI(20)   sliding min-max
-    //   f4 ADX(14)   /100
-    //   f5 RSI(9)    /100
-    //   (이전 f6 max-rise / f7 H1 slope 제거 — Pine 원본에 없음, KNN 거리 왜곡 원인)
+    // [v5.23.59] jdehorty MLExtensions 충실 재포팅 (advanced-ta 레퍼런스 1:1 대조)
+    //   f1 n_rsi(14,1)  = rescale(EMA(RSI(close,14),1), 0,100)            → /100
+    //   f2 n_wt(10,11)  = normalize(WT)                — 전체 히스토리 min/max (expanding)
+    //   f3 n_cci(20,1)  = normalize(EMA(CCI(20),1))    — 전체 히스토리 min/max (expanding)
+    //   f4 n_adx(14)    = rescale(ADX(14), 0,100)      — Wilder smoothed ADX *마지막값* /100
+    //   f5 n_rsi(9,1)   = rescale(EMA(RSI(close,9),1), 0,100)             → /100
+    //   변경 핵심(v5.23.58 → v5.23.59):
+    //     · ADX: 전구간 DX 평균 → Wilder smoothed ADX 마지막값 (포팅 버그 fix)
+    //     · WT/CCI 정규화: 200봉 sliding → 전체 히스토리 expanding min/max (jdehorty normalize())
+    //     · 정규화 causal 보장 (Pine var 누적 min/max 와 동일, 미래 미사용)
     public static class LorentzianFeatures
     {
         public const int FeatureCount = 5;
@@ -19,20 +22,24 @@ namespace TradingBot.Services.LorentzianV2
         public static float[]? Extract(List<IBinanceKline> klines)
         {
             if (klines == null || klines.Count < 60) return null;
-            int normWindow = Math.Min(200, klines.Count);
 
+            // f1: n_rsi(14, 1) — RSI 후 EMA(1)=무평활, rescale(0,100)=/100
             double rsi14 = CalcRSI(klines, 14);
             float f1 = (float)(rsi14 / 100.0);
 
+            // f2: n_wt(10, 11) — WaveTrend → normalize() (전체 히스토리 min/max)
             var wtSeries = CalcWaveTrendSeries(klines, 10, 11);
-            float f2 = NormalizeSliding(wtSeries, normWindow);
+            float f2 = NormalizeExpanding(wtSeries);
 
+            // f3: n_cci(20, 1) — CCI → EMA(1)=무평활 → normalize() (전체 히스토리)
             var cciSeries = CalcCCISeries(klines, 20);
-            float f3 = NormalizeSliding(cciSeries, normWindow);
+            float f3 = NormalizeExpanding(cciSeries);
 
-            double adx20 = CalcADX(klines, 14);
-            float f4 = (float)(adx20 / 100.0);
+            // f4: n_adx(14) — Wilder smoothed ADX 마지막값, rescale(0,100)=/100
+            double adx14 = CalcADX(klines, 14);
+            float f4 = (float)(adx14 / 100.0);
 
+            // f5: n_rsi(9, 1)
             double rsi9 = CalcRSI(klines, 9);
             float f5 = (float)(rsi9 / 100.0);
 
@@ -45,13 +52,14 @@ namespace TradingBot.Services.LorentzianV2
             return Math.Max(0f, Math.Min(1f, v));
         }
 
-        private static float NormalizeSliding(List<double> series, int window)
+        // jdehorty normalize(): 전체 히스토리(현재 봉까지) min/max 로 0-1 스케일.
+        //   Pine 의 var historicMin/historicMax 누적과 동일 — causal (미래 미사용).
+        //   series 는 시간 오름차순, 마지막 원소가 현재 봉.
+        private static float NormalizeExpanding(List<double> series)
         {
             if (series == null || series.Count == 0) return 0.5f;
-            int n = series.Count;
-            int start = Math.Max(0, n - window);
             double min = double.MaxValue, max = double.MinValue;
-            for (int i = start; i < n; i++)
+            for (int i = 0; i < series.Count; i++)
             {
                 double v = series[i];
                 if (double.IsNaN(v) || double.IsInfinity(v)) continue;
@@ -122,10 +130,14 @@ namespace TradingBot.Services.LorentzianV2
             return result;
         }
 
+        // [v5.23.59 fix] jdehorty n_adx = rescale(ADX(n1),0,100).
+        //   ADX = Wilder smoothed DX 의 *마지막 값* (이전: 전구간 DX 산술평균 — 명백한 포팅 버그).
+        //   표준 Wilder: TR/+DM/-DM 스무딩 → +DI/-DI → DX → ADX = Wilder smooth(DX), last 반환.
         private static double CalcADX(List<IBinanceKline> klines, int period)
         {
             int n = klines.Count;
-            if (n < period * 2 + 1) return 25.0;
+            if (n < period * 2 + 1) return 0.0;
+
             double[] tr = new double[n], pdm = new double[n], ndm = new double[n];
             for (int i = 1; i < n; i++)
             {
@@ -137,12 +149,17 @@ namespace TradingBot.Services.LorentzianV2
                 pdm[i] = upMove > downMove && upMove > 0 ? upMove : 0;
                 ndm[i] = downMove > upMove && downMove > 0 ? downMove : 0;
             }
-            double atr = tr.Skip(1).Take(period).Sum();
-            double pdmS = pdm.Skip(1).Take(period).Sum();
-            double ndmS = ndm.Skip(1).Take(period).Sum();
-            double dxSum = 0; int dxCount = 0;
+
+            // 초기 평활값 = 첫 period 합
+            double atr = 0, pdmS = 0, ndmS = 0;
+            for (int i = 1; i <= period; i++) { atr += tr[i]; pdmS += pdm[i]; ndmS += ndm[i]; }
+
+            double adx = 0;
+            bool adxInit = false;
+            int dxCount = 0;
             for (int i = period + 1; i < n; i++)
             {
+                // Wilder 평활 (이전값 - 이전값/period + 신규)
                 atr  = atr  - (atr  / period) + tr[i];
                 pdmS = pdmS - (pdmS / period) + pdm[i];
                 ndmS = ndmS - (ndmS / period) + ndm[i];
@@ -150,9 +167,23 @@ namespace TradingBot.Services.LorentzianV2
                 double pdi = 100.0 * pdmS / atr;
                 double ndi = 100.0 * ndmS / atr;
                 double dx = (pdi + ndi) > 1e-12 ? 100.0 * Math.Abs(pdi - ndi) / (pdi + ndi) : 0;
-                dxSum += dx; dxCount++;
+
+                dxCount++;
+                if (!adxInit)
+                {
+                    // 첫 period 개 DX 누적 → 평균으로 ADX 시드
+                    adx += dx;
+                    if (dxCount == period) { adx /= period; adxInit = true; }
+                }
+                else
+                {
+                    // ADX = (이전ADX*(period-1) + DX) / period — Wilder
+                    adx = (adx * (period - 1) + dx) / period;
+                }
             }
-            return dxCount > 0 ? dxSum / dxCount : 25.0;
+            // 시드 누적 완료 못 했으면(데이터 부족) 부분평균 반환
+            if (!adxInit && dxCount > 0) adx /= dxCount;
+            return adx;
         }
 
         private static List<double> EMA(List<double> src, int period)

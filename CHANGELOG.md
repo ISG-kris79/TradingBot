@@ -5,6 +5,32 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.59] - 2026-05-16
+
+### 🔧 Lorentzian KNN 포팅 버그 fix — canonical jdehorty 충실 재포팅
+
+**문제**: v5.23.x Lorentzian 진입의 KNN 예측 walk-forward 정확도가 ~48% (랜덤·손실편향).
+원인은 알고리즘이 아니라 C# 포팅 버그 (advanced-ta 레퍼런스 + jdehorty Pine 원본 1:1 대조로 확정).
+
+#### 수정한 4개 포팅 버그 (`Services/LorentzianV2/`)
+
+- **`LorentzianFeatures.cs` ADX 피처(f4)**: 전구간 DX 산술평균 → Wilder smoothed ADX *마지막값* /100 (`n_adx = rescale(ADX,0,100)`)
+- **`LorentzianFeatures.cs` WT/CCI 정규화(f2,f3)**: 200봉 sliding window → 전체 히스토리 expanding min/max (jdehorty `normalize()`, causal)
+- **`LorentzianGuard.cs` 학습 라벨**: forward `close[i+4] vs close[i]` → trailing `close[i] vs close[i-4]` (jdehorty `y_train = src[4]<src[0]`)
+- **`LorentzianAnnEngine.cs` ANN `i%4`**: `i%4==0` 처리(¼, 반대표본) → `i%4!=0` 처리(¾, jdehorty 원본 `and i%4`)
+
+#### 검증 (`--lorentzian-15m-5m`, 3년 메이저 4종)
+
+- walk-forward WR: +4봉 49.1%→**52.1%**, +12봉 48.4%→**51.3%**, +96봉 47.7%→**50.5%** (손실편향 제거)
+- 전략 손실 -$1,435(수익월 0) → **-$352(수익월 1)** — 4배 개선
+- **확인된 사실**: 포팅은 이제 jdehorty 1:1 충실 (검증 완료). 단 faithful jdehorty 도 forward ~50% — 표시 "70%"는 in-sample/repaint (trailing 라벨 특성), 포팅 결함 아님.
+
+#### 백테스트 도구 (`Tools/LorentzianValidator/`)
+
+- `--canon` 플래그: `--lorentzian-15m-5m` STRICT(현행) vs CANONICAL(jdehorty 기본 ADX/EMA/SMA OFF) A/B
+- `--lorentzian-1h` / `--lorentzian-1h-gate` / `--baseline-tpsl` 진단 모드 + featureCount 하드코딩 버그 fix
+- 라이브 진입 동작 변경 없음 (가드/슬롯/RR/TP-SL 경로 동일, KNN 정확도만 개선)
+
 ## [5.23.58] - 2026-05-14
 
 ### 🎯 RSI 가드 재설계 — 사용자 원칙: RSI = 방향만, 고점은 봉 패턴/range로

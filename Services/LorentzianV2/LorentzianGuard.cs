@@ -294,13 +294,19 @@ namespace TradingBot.Services.LorentzianV2
             return den > 1e-12 ? num / den : (double)kl[idx].ClosePrice;
         }
 
-        // 학습용 라벨 (4봉 후 close 방향)
+        // [v5.23.59 fix] jdehorty 학습 라벨 = trailing 4봉 방향:
+        //   y_train_series = src[4] < src[0] ? short : src[4] > src[0] ? long : neutral
+        //   src[0]=현재봉(idx) close, src[4]=4봉 전(idx-4) close.
+        //   라벨(idx) = sign(close[idx] - close[idx-4]).  +1=long, -1=short, 0=neutral.
+        //   (이전: forward close[idx+4] vs close[idx] — Pine 원본과 다른 비표준 라벨,
+        //    KNN 이 "현재와 닮은 과거 봉들의 *그 시점* 4봉 추세"를 합산하는 jdehorty 설계와 불일치 → 예측 랜덤화 원인)
+        //   futureBars 인자명은 호환 유지(=lookback 봉수).
         public static int LabelForBar(List<IBinanceKline> kl, int idx, int futureBars = 4)
         {
-            if (idx + futureBars >= kl.Count) return 0;
-            decimal fut = kl[idx + futureBars].ClosePrice;
-            decimal nowC = kl[idx].ClosePrice;
-            return fut > nowC ? 1 : (fut < nowC ? -1 : 0);
+            if (idx - futureBars < 0) return 0;
+            decimal nowC  = kl[idx].ClosePrice;
+            decimal prevC = kl[idx - futureBars].ClosePrice;
+            return nowC > prevC ? 1 : (nowC < prevC ? -1 : 0);
         }
 
         // 봉 idx 의 KNN 신호 (예측만, 학습 안 함)

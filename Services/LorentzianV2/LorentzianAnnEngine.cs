@@ -68,7 +68,10 @@ namespace TradingBot.Services.LorentzianV2
 
             for (int i = 0; i <= sizeLoop; i++)
             {
-                if (i % 4 != 0) continue;
+                // [v5.23.59 fix] jdehorty 원본: `if d >= lastDistance and i%4`
+                //   Pine 에서 i%4 는 i%4!=0 일 때 truthy → i%4==0 봉만 SKIP.
+                //   (이전 C#: `if(i%4!=0) continue` = i%4==0 만 처리 — 정확히 반대, 후보이웃 반대표본 + 1/4 희소)
+                if (i % 4 == 0) continue;
                 double d = LorentzianDistance(queryFeatures, feats[i]);
                 if (d < lastDistance) continue;
                 lastDistance = d;
