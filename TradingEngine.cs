@@ -4494,6 +4494,20 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⚠️ [LORENTZIAN] {symbol} 분석 오류: {ex.Message}");
                 }
 
+                // [v5.23.60] SQUEEZE/BB_WALK/MAJOR 병행 진입 (Lorentzian 과 동시 가동, 별개 경로)
+                //   --logic-365d 검증 흑자 트리거. 밈코인 제외 (밈은 MEME_KNN 전용 경로).
+                if (!MemeSymbols.Contains(symbol))
+                {
+                    try
+                    {
+                        await AnalyzeBbSqueezeTriggersAsync(symbol, currentPrice, token);
+                    }
+                    catch (Exception ex)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [BB_TRIG] {symbol} 분석 오류: {ex.Message}");
+                    }
+                }
+
                 // [v5.23.4] 1분봉 정밀 트리거 확인 (직전 1m high + EMA20 동시 돌파 시 진입)
                 try
                 {
@@ -4793,6 +4807,13 @@ namespace TradingBot
             = new(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan MemeCooldown = TimeSpan.FromMinutes(10);
 
+        // [v5.23.60] SQUEEZE/BB_WALK/MAJOR 병행 진입 — Lorentzian 과 별개로 동시 가동.
+        //   --logic-365d (364일·30알트·실제 트리거) 검증: SQUEEZE/MAJOR/BB_WALK @ TP:SL 1:3 강한 흑자·레짐강건.
+        //   Lorentzian(v5.23.59 fix) 유지 + 본 트리거 병행 (사용자 지시 "수정 커밋 + SQUEEZE 병행").
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _bbTrigCooldown
+            = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan BbTrigCooldown = TimeSpan.FromMinutes(15);
+
         // 밈코인 진입 — 5m KNN (LorentzianMemeFeatures: MFI/VolDelta/OBV/RSI/ADX) + 1m vol spike 3x
         private async Task AnalyzeMemeKnnEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
@@ -4886,6 +4907,141 @@ namespace TradingBot
                 $"🟢 [MEME_KNN] {symbol} 진입 | 5m KNN WR={pred.PositiveRate*100:F0}% K={pred.K} pred={pred.Prediction} + 1m vol={volRatio:F1}x");
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
                 signalSource: "MEME_KNN", skipAiGateCheck: false);
+        }
+
+        // [v5.23.60] SQUEEZE / BB_WALK / MAJOR 병행 진입 (Lorentzian 과 동시 가동, 5m TF)
+        //   --logic-365d 검증 정의 그대로 이식 (라이브 ≡ 백테스트):
+        //     SQUEEZE  : BBWidth(20,2)% < 1.5  AND  close ≥ BB upper      (밴드 조임 중 상단 돌파)
+        //     BB_WALK  : 직전 5봉 중 4봉+ close ≥ BB upper                 (밴드 워킹)
+        //     MAJOR    : 메이저4 + EMA20 상승 + M15 30봉 range 위치 60~85%
+        //   비메이저 → SQUEEZE/BB_WALK,  메이저4 → MAJOR (검증 유니버스 구조와 동일).
+        //   진입은 ExecuteAutoOrder funnel → IsEntryAllowed/RR/슬롯/TP-SL/청산 그대로 상속.
+        //   봇 LONG 전용: 본 트리거는 구조상 LONG only, ExecuteAutoOrder(8800대)에서 SHORT 전역 차단.
+        private async Task AnalyzeBbSqueezeTriggersAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            if (_bbTrigCooldown.TryGetValue(symbol, out var last)
+                && DateTime.UtcNow - last < BbTrigCooldown) return;
+
+            lock (_posLock)
+            {
+                if (_activePositions.TryGetValue(symbol, out var existing)
+                    && existing != null && Math.Abs(existing.Quantity) > 0) return;
+            }
+
+            var k5 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 300, token);
+            if (k5 == null) return;
+            var k = k5 as List<IBinanceKline> ?? new List<IBinanceKline>(k5);
+            if (k.Count < 95) return;            // M15RangePos(30) = 90 bars + 여유
+
+            int i = k.Count - 2;                 // 마지막 *마감* 5m 봉 (partial-bar repaint 회피)
+            bool isMajor = MajorSymbols.Contains(symbol);
+
+            string? src = null;
+            string detail = "";
+            if (isMajor)
+            {
+                // MAJOR: EMA20 상승 + M15 30봉 range 위치 60~85%
+                if (i >= 30 && BbEma20Rising(k, i))
+                {
+                    double pos = BbRangePos(k, i, 30);
+                    if (pos >= 60.0 && pos <= 85.0)
+                    {
+                        src = "MAJOR_SIMPLE";
+                        detail = $"EMA20↑ rangePos={pos:F0}%";
+                    }
+                }
+            }
+            else if (i >= 20)
+            {
+                BbBand20(k, i, out double mid, out double upper, out double widthPct);
+                bool closeAboveUpper = (double)k[i].ClosePrice >= upper;
+                // SQUEEZE 우선 (밴드 조임 + 상단 돌파), 아니면 BB_WALK (밴드 워킹)
+                if (widthPct < 1.5 && closeAboveUpper)
+                {
+                    src = "BB_SQUEEZE_ALT";
+                    detail = $"BBW={widthPct:F2}% close>upper";
+                }
+                else if (BbWalkStreak(k, i, 5) >= 4)
+                {
+                    src = "BB_WALK_ALT";
+                    detail = "5봉중 4+ close>upper";
+                }
+            }
+
+            if (src == null) return;
+            if (!IsEntryAllowed(symbol, src, out var reason))
+            {
+                if (DateTime.UtcNow.Second % 30 == 0)
+                    OnStatusLog?.Invoke($"⛔ [{src}] {symbol} 게이트 차단 | {reason}");
+                return;
+            }
+
+            _bbTrigCooldown[symbol] = DateTime.UtcNow;
+            OnStatusLog?.Invoke($"🟢 [{src}] {symbol} 진입 | {detail}");
+            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
+                signalSource: src, skipAiGateCheck: false);
+        }
+
+        // ── [v5.23.60] BB/EMA 헬퍼 (--logic-365d 검증 로직과 1:1 동일, 5m kl[i] 기준) ──
+        // BB(20,2): mid=SMA20(close), sd=stdev20, upper=mid+2sd, widthPct=(upper-lower)/mid*100=(4sd)/mid*100
+        private static void BbBand20(List<IBinanceKline> kl, int i,
+            out double mid, out double upper, out double widthPct)
+        {
+            double sum = 0;
+            for (int j = i - 19; j <= i; j++) sum += (double)kl[j].ClosePrice;
+            mid = sum / 20.0;
+            double sq = 0;
+            for (int j = i - 19; j <= i; j++) { double d = (double)kl[j].ClosePrice - mid; sq += d * d; }
+            double sd = Math.Sqrt(sq / 20.0);
+            upper = mid + 2.0 * sd;
+            widthPct = mid > 0 ? (sd * 4.0) / mid * 100.0 : 0.0;
+        }
+
+        // 직전 lookback 봉 중 close ≥ BB(20,2) upper 인 봉 수
+        private static int BbWalkStreak(List<IBinanceKline> kl, int i, int lookback)
+        {
+            if (i < 20) return 0;
+            int cnt = 0;
+            for (int q = i - lookback + 1; q <= i; q++)
+            {
+                if (q < 20) continue;
+                BbBand20(kl, q, out _, out double upperQ, out _);
+                if ((double)kl[q].ClosePrice >= upperQ) cnt++;
+            }
+            return cnt;
+        }
+
+        // EMA(20,close) at idx > EMA(20,close) at idx-5
+        private static bool BbEma20Rising(List<IBinanceKline> kl, int idx)
+        {
+            if (idx < 25) return false;
+            return BbEma20At(kl, idx) > BbEma20At(kl, idx - 5);
+        }
+
+        private static double BbEma20At(List<IBinanceKline> kl, int idx)
+        {
+            int start = Math.Max(0, idx - 19);
+            double ema = (double)kl[start].ClosePrice;
+            double mult = 2.0 / (20 + 1);
+            for (int j = start + 1; j <= idx; j++)
+                ema = (double)kl[j].ClosePrice * mult + ema * (1 - mult);
+            return ema;
+        }
+
+        // M15 근사: 직전 bars*3 개 5m 봉의 (close-lo)/(hi-lo)*100 위치
+        private static double BbRangePos(List<IBinanceKline> kl, int i, int bars)
+        {
+            int win = bars * 3;
+            if (i < win) return 50.0;
+            double hi = double.MinValue, lo = double.MaxValue;
+            for (int j = i - win + 1; j <= i; j++)
+            {
+                double h = (double)kl[j].HighPrice, l = (double)kl[j].LowPrice;
+                if (h > hi) hi = h;
+                if (l < lo) lo = l;
+            }
+            double cur = (double)kl[i].ClosePrice;
+            return hi > lo ? (cur - lo) / (hi - lo) * 100.0 : 50.0;
         }
 
         // [v5.23.0] jdehorty Lorentzian Classification 풀세트 (15m TF)

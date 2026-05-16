@@ -5,6 +5,26 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.60] - 2026-05-16
+
+### 🟢 SQUEEZE / BB_WALK / MAJOR 트리거 병행 복원 (Lorentzian 과 동시 가동)
+
+**`--logic-365d` (364일·30알트·실제 트리거) 검증**: SQUEEZE/MAJOR/BB_WALK @ TP:SL 1:3 강한 흑자·레짐강건 (SQUEEZE WR94% +$44k, MAJOR +$38k, BB_WALK +$15.6k). v5.23.0 에서 통째 삭제됐던 것을 검증 정의 그대로 복원.
+
+#### 추가
+
+- `TradingEngine.AnalyzeBbSqueezeTriggersAsync` (5m TF, `--logic-365d` 정의 1:1 이식):
+  - **SQUEEZE** (`BB_SQUEEZE_ALT`): BBWidth(20,2)% < 1.5 AND close ≥ BB upper
+  - **BB_WALK** (`BB_WALK_ALT`): 직전 5봉 중 4봉+ close ≥ BB upper
+  - **MAJOR** (`MAJOR_SIMPLE`): 메이저4 + EMA20 상승 + M15 30봉 range 위치 60~85%
+- 스캔 루프에 **병행 dispatch** — v5.23.59 fix 된 Lorentzian 유지 + 본 트리거 동시 가동 (밈코인 제외)
+- 진입은 기존 `ExecuteAutoOrder` funnel → `IsEntryAllowed`/RR/슬롯/TP-SL/청산 그대로 상속
+- 봇 LONG 전용: 트리거 구조상 LONG only + `ExecuteAutoOrder` SHORT 전역차단 (defense-in-depth)
+- `DbManager.ResolveTradeCategory`: `BB_SQUEEZE_ALT→SQUEEZE`, `BB_WALK_ALT→BB_WALK`, `MAJOR_SIMPLE→MAJOR` (통계 UI 분리)
+- 심볼당 15분 쿨다운(`_bbTrigCooldown`), 비메이저→SQUEEZE/BB_WALK·메이저4→MAJOR (검증 유니버스 구조 동일)
+
+**주의(사용자 결정 영역)**: 검증 흑자는 TP:SL 1:3 (price 1.0/3.0) 기준. 라이브 2유저 DB 는 1:3 비율이나 크기 절반(0.5/1.5) — 최적 적용은 UI 설정 변경 필요. release/publish 는 별도 승인 대기.
+
 ## [5.23.59] - 2026-05-16
 
 ### 🔧 Lorentzian KNN 포팅 버그 fix — canonical jdehorty 충실 재포팅
