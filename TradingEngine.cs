@@ -7183,6 +7183,19 @@ namespace TradingBot
                             OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부부분", $"외부 부분청산 감지: 청산 {externalClosedQty}");
                             // [v5.10.89] 부분청산 텔레그램은 DbManager.RecordPartialCloseAsync에서 중앙 처리
 
+                            // [v5.23.61] 외부청산 중복기록 방지 (idempotency 1차 방어):
+                            //   기록 성공 직후 추적 수량을 거래소 잔량으로 동기화 + fill 슬라이스 watermark 전진 +
+                            //   외부청산 쿨다운 등록 → 다음 리콘 사이클이 동일 축소를 재감지·재기록하지 못함.
+                            //   (기존 버그: 여기서 수량/watermark 미갱신 → 매 사이클 같은 청산 중복 INSERT,
+                            //    sp_RecordPartialClose 의 ExitPrice 정확일치 dedup 도 라이브티커 폴백가 변동으로 무력화됨)
+                            lock (_posLock)
+                            {
+                                if (_activePositions.TryGetValue(pos.Symbol, out var pSync) && pSync != null)
+                                    pSync.Quantity = isLong ? updatedQtyAbs : -updatedQtyAbs;
+                            }
+                            _lastPartialSyncTimeUtc[pos.Symbol] = DateTime.UtcNow;
+                            _recentPartialCloseCooldown[pos.Symbol] = DateTime.Now.AddSeconds(30);
+
                             // [v5.10.96] 외부 부분청산 후 잔여 qty 0이면 UI 즉시 초기화
                             if (updatedQtyAbs <= 0.000001m)
                             {

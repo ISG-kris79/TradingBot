@@ -5,6 +5,26 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.61] - 2026-05-18
+
+### 🛠️ 외부청산 중복기록 버그 fix — 매매기록 PnL 손상 차단 (기존 버그)
+
+**증상**: 외부(거래소/수동/서브계정) 청산이 한 포지션을 다수 `TradeHistory` 행으로 중복 INSERT
+→ `sp_GetTodayStatsByCategory` 가 `GROUP BY Symbol,EntryTime SUM(PnL)` 하므로 카테고리 통계·손익 손상
+(예: HYPERUSDT 실손실 ~−$75 → −$150 으로 2배 계상). **v5.23.59/60 무관, 기존 외부청산 리콘 경로 버그**
+(05-13/14/15 데이터에도 동일 존재). 사용자 "매매기록 재검토" 지시로 발견.
+
+#### 근본 원인 (두 결함 중첩)
+
+1. **`TradingEngine` 외부청산 리콘**: `RecordPartialCloseAsync` 성공 후 추적수량/`_lastPartialSyncTimeUtc`/쿨다운 미갱신 → 다음 사이클이 동일 축소를 재감지·재기록 (매 사이클 루프).
+2. **`sp_RecordPartialClose` 중복키 취약**: `ExitPrice` 1e-6 정확일치 요구 → 리콘이 라이브티커 폴백으로 exit 재계산 시 미세변동 → dedup 무력화.
+
+#### 수정
+
+- **`TradingEngine.cs`** [v5.23.61]: 외부 부분청산 기록 성공 직후 `_activePositions[sym].Quantity` ← 거래소잔량, `_lastPartialSyncTimeUtc` 전진, 30초 외부청산 쿨다운 등록 (idempotency 1차 방어 — 재감지 차단).
+- **`sp_RecordPartialClose`** [v5.23.61]: 중복판정에서 `ExitPrice` 정확일치 조건 제거(축소수량 동일성으로 판별), `ExitTime` 윈도우 ±5s → ±60s 확대 (2차 방어).
+- **효과**: 신규 외부청산 중복기록 차단. 기존 손상 데이터는 별도 처리(Binance 실현손익 대조 필요 — DB 휴리스틱 dedup 은 garbage 행 특성상 불가 검증됨, 백업 `TradeHistory_dupbak_20260518` 보존).
+
 ## [5.23.60] - 2026-05-16
 
 ### 🟢 SQUEEZE / BB_WALK / MAJOR 트리거 병행 복원 (Lorentzian 과 동시 가동)

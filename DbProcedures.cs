@@ -1515,7 +1515,13 @@ BEGIN
     SET @OutResolvedEntrySide  = @InferredEntrySide;
     SET @OutResolvedStrategy   = @LogStrategy;
 
-    -- 1) 중복 체크
+    -- 1) 중복 체크 [v5.23.61 강화]
+    --   기존: ExitPrice 1e-6 정확일치 요구 → 외부청산 리콘이 매 사이클 라이브티커로
+    --         exit가 재계산되어 미세 변동 → dedup 무력화 → 같은 청산 중복 INSERT.
+    --   변경: ExitPrice 정확일치 조건 제거(축소수량 @CloseQty 는 동일 shrink 라 일치),
+    --         ExitTime 윈도우 ±5s → ±60s 확대 (리콘 버스트/쿨다운 30s 포괄).
+    --   부작용: 동일 수량의 독립 부분청산이 60s 내 2회면 1건으로 dedup 될 수 있으나,
+    --           외부동기화 ExitReason 특성상 중복일 확률이 압도적 → 허용 가능한 트레이드오프.
     IF EXISTS (
         SELECT 1
         FROM dbo.TradeHistory
@@ -1524,10 +1530,9 @@ BEGIN
           AND IsClosed = 1
           AND CloseVerified = 1
           AND ExitReason = @ExitReason
-          AND ABS(Quantity   - @CloseQty)   < 0.000001
-          AND ABS(ExitPrice  - @ExitPrice)  < 0.000001
-          AND ExitTime >= DATEADD(SECOND, -5, @ExitTime)
-          AND ExitTime <= DATEADD(SECOND,  5, @ExitTime)
+          AND ABS(Quantity - @CloseQty) < 0.000001
+          AND ExitTime >= DATEADD(SECOND, -60, @ExitTime)
+          AND ExitTime <= DATEADD(SECOND,  60, @ExitTime)
     )
     BEGIN
         SET @OutResultCase = 0;
