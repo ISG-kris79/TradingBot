@@ -5,6 +5,34 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.62] - 2026-05-22
+
+### 📉 하락장 손실 차단 + 부분익절 후 본절 보호 (30일 매매기록 분석 기반)
+
+**배경**: 사용자 "하락장 손실 과다, 상승장 수익 미미" 지적 → 30일 실거래 분석.
+BTC 추세별 집계: 상승장 +$439 vs 하락장 **-$607** (DOWN 165건 30.3% / DOWN_STRONG 262건 28.6% WR).
+청산 사유별: 부분익절(EXTERNAL_PARTIAL_CLOSE_SYNC) +$651 vs 풀스탑(EXTERNAL_CLOSE_SYNC) **-$784**.
+
+#### Changed — 하락장 진입 가드 강화 (`TradingEngine.cs`)
+
+- **BTC 1H 하락추세 가드** 임계값 `-0.8%` → 카테고리별 차등: PUMP `-0.3%`, MAJOR/LORENTZIAN/SQUEEZE `-0.5%`.
+- 메이저(BTC/ETH/SOL/XRP) 면제 해제 — LONG 전용 봇은 메이저 하락장 LONG 도 위험 (실거래 MAJOR DOWN 22건 40.9% -$78).
+- BTC 캐시 부족/예외 시 silent pass → **안전 차단**으로 변경 (진입 누락보다 손실 차단 우선).
+
+#### Fixed — 부분익절 후 SL→BE 미이동 버그 (풀스탑 -$784 원인)
+
+- **본절 트리거 조건 확장** (`PositionMonitorService.cs`): 기존 `highestROE >= breakEvenROE` 만 → `PartialProfitStage>=1 OR TakeProfitStep>=1` 추가. 거래소 OCO TP1 부분 체결 후 ROE 임계 미달이어도 즉시 SL→BE 이동.
+- **외부 부분청산 감지 시 상태 갱신** (`TradingEngine.cs`): EXTERNAL_PARTIAL_CLOSE_SYNC 기록 직후 `PartialProfitStage=1`/`TakeProfitStep=1` 설정 → 다음 monitor tick 에 본절 보호 발동.
+
+#### Changed — MEME_KNN 전면 차단 (`TradingEngine.cs`)
+
+- 실거래 30일 38건 WR **10.5%** PnL **-$234** → `AnalyzeMemeKnnEntryAsync` 진입 차단 (메서드는 롤백/재실험용 보존).
+
+#### 검증
+
+- 게이트 우회 의심(TICK_SURGE 228건/PUMP_WATCH 91건)은 4-25 이후 발생 0건 — v5.22.5 PUMP_DISABLED + v5.17.0 핸들러 제거로 이미 차단됨 확인.
+- 180일 백테스트: PUMP/SPIKE 거의 전 조합 적자, MAJOR/SQUEEZE/BB_WALK 권장 1.0/3.0/24 흑자 재확인 → 기존 차단 정책 유지.
+
 ## [5.23.61] - 2026-05-18
 
 ### 🛠️ 외부청산 중복기록 버그 fix — 매매기록 PnL 손상 차단 (기존 버그)

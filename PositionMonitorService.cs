@@ -567,9 +567,20 @@ namespace TradingBot.Services
                     }
 
                     // ═══════════════════════════════════════════════
-                    // 1단계: 본절 보호 — ROE 도달 시 스탑을 진입가로 이동 (절대 마이너스 방지)
+                    // 1단계: 본절 보호 — ROE 도달 OR 부분익절 체결 시 스탑을 진입가로 이동
                     // ═══════════════════════════════════════════════
-                    if (!breakEvenActivated && highestROE >= breakEvenROE)
+                    // [v5.23.62] 트리거 조건 확장 — 부분익절 체결 즉시 본절 활성화
+                    //   기존: highestROE >= breakEvenROE 만 (메이저 BE=20% 못 가면 발동 안 함)
+                    //   문제: 거래소 OCO TP1 체결 (PartialProfitStage=1 설정) 후에도 봇 SL 그대로
+                    //         → 가격 반대로 가면 풀스탑, 30일 EXTERNAL_CLOSE_SYNC -$784 손실 원인
+                    //   해결: PartialProfitStage>=1 OR TakeProfitStep>=1 즉시 본절 보호
+                    bool _v562_partialFilled = false;
+                    lock (_posLock)
+                    {
+                        if (_activePositions.TryGetValue(symbol, out var _ppos))
+                            _v562_partialFilled = _ppos.PartialProfitStage >= 1 || _ppos.TakeProfitStep >= 1;
+                    }
+                    if (!breakEvenActivated && (highestROE >= breakEvenROE || _v562_partialFilled))
                     {
                         breakEvenActivated = true;
                         PersistPositionState(symbol, isBreakEvenTriggered: true, highestROE: highestROE);

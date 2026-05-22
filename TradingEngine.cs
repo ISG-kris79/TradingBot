@@ -1126,37 +1126,56 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"⚠️ [GATE-고점가드] {symbol} 체크 실패 (무시): {exGuard.Message}");
             }
 
-            // [v5.10.88 Option A] BTC 1H 하락추세 시 알트 LONG 진입 차단
-            //   진단: 04-21 23시~04-22 7시 (하락장 8시간) 122건 20% 승률 -$45
-            //   근거: 봇이 SHORT 안 함 → 하락장 LONG = 데드캣 잡고 -30~50% ROE
-            //   규칙: BTC 1H 가격변화 ≤ -0.8% AND 알트 심볼 → 진입 차단
-            //        메이저(BTC/ETH/SOL/XRP)는 차단 제외 (본인 추세 판단)
-            if (!MajorSymbols.Contains(symbol) && _marketDataManager != null)
+            // [v5.23.62] BTC 1H 하락추세 가드 강화
+            //   2026-05-21 30일 실거래 분석:
+            //     - DOWN(-1~-0.2%) 165건 30.3% WR -$356, DOWN_STRONG(<-1%) 262건 28.6% WR -$251
+            //     - 합 -$607 적자 (상승장 +$439 다 까먹음)
+            //   기존 -0.8% 임계는 너무 느슨 → -0.5% 기준 + 카테고리별 차등
+            //   메이저 면제도 해제 — LONG 전용 봇은 메이저 하락장도 위험 (MAJOR DOWN 22건 40.9% -$78)
+            //   BTC 캐시 부족 시 silent pass → 안전 차단으로 변경
+            if (_marketDataManager != null)
             {
+                decimal downThreshold = entryCat == "PUMP" ? -0.3m
+                                       : entryCat == "MAJOR" ? -0.5m
+                                       : -0.5m;
                 try
                 {
-                    if (_marketDataManager.KlineCache.TryGetValue("BTCUSDT", out var btcKlines) && btcKlines.Count >= 30)
+                    if (!_marketDataManager.KlineCache.TryGetValue("BTCUSDT", out var btcKlines) || btcKlines.Count < 13)
                     {
-                        // 5분봉 12개 (1시간) 가격 변화 계산
-                        List<Binance.Net.Interfaces.IBinanceKline> recent;
-                        lock (btcKlines) { recent = btcKlines.TakeLast(13).ToList(); }
-                        if (recent.Count >= 12)
-                        {
-                            decimal btc1hAgo = recent[0].ClosePrice;
-                            decimal btcNow = recent[^1].ClosePrice;
-                            if (btc1hAgo > 0)
-                            {
-                                decimal btc1hChangePct = (btcNow - btc1hAgo) / btc1hAgo * 100m;
-                                if (btc1hChangePct <= -0.8m)
-                                {
-                                    blockReason = $"BTC_1H_DOWNTREND ({btc1hChangePct:F2}%)";
-                                    return false;
-                                }
-                            }
-                        }
+                        blockReason = "BTC_DATA_INSUFFICIENT (BTC 캐시 부족 — 안전 차단)";
+                        return false;
+                    }
+
+                    List<Binance.Net.Interfaces.IBinanceKline> recent;
+                    lock (btcKlines) { recent = btcKlines.TakeLast(13).ToList(); }
+                    if (recent.Count < 12)
+                    {
+                        blockReason = "BTC_DATA_INSUFFICIENT (5m봉 12개 미만 — 안전 차단)";
+                        return false;
+                    }
+
+                    decimal btc1hAgo = recent[0].ClosePrice;
+                    decimal btcNow = recent[^1].ClosePrice;
+                    if (btc1hAgo <= 0)
+                    {
+                        blockReason = "BTC_DATA_INVALID (가격 0 — 안전 차단)";
+                        return false;
+                    }
+
+                    decimal btc1hChangePct = (btcNow - btc1hAgo) / btc1hAgo * 100m;
+                    if (btc1hChangePct <= downThreshold)
+                    {
+                        blockReason = $"BTC_1H_DOWNTREND ({btc1hChangePct:F2}% <= {downThreshold}% for {entryCat})";
+                        OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason}");
+                        return false;
                     }
                 }
-                catch { /* BTC 조회 실패 시 차단하지 않음 (진입 누락 방지) */ }
+                catch (Exception exBtc)
+                {
+                    blockReason = $"BTC_CHECK_FAILED ({exBtc.Message} — 안전 차단)";
+                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason}");
+                    return false;
+                }
             }
 
             // [v5.22.3] MODEL_ZIP_MISSING 가드 비활성화 — AI 시스템 폐기 (2026-04-28)
@@ -4815,8 +4834,17 @@ namespace TradingBot
         private static readonly TimeSpan BbTrigCooldown = TimeSpan.FromMinutes(15);
 
         // 밈코인 진입 — 5m KNN (LorentzianMemeFeatures: MFI/VolDelta/OBV/RSI/ADX) + 1m vol spike 3x
+        // [v5.23.62] MEME_KNN 전면 차단
+        //   2026-05-21 30일 실거래 검증: 38건 WR 10.5% PnL -$234.57
+        //   사이즈는 PUMP 범주(평균 -$6/건)인데 승률 10% → 9건 잡고 1건 익절 구조
+        //   KNN 5m 예측 신호 자체가 밈코인 변동성에 과적합, 실거래 검증 명확한 적자
+        //   메서드 보존 (롤백/재실험용), 진입 자체만 차단
         private async Task AnalyzeMemeKnnEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
+            // [v5.23.62] MEME_KNN 전면 차단 — 실거래 30일 WR 10.5% / PnL -$234 검증
+            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} MEME_KNN 차단 | reason=MEME_KNN_DISABLED:30d_loss_proven (WR 10.5%, -$234)");
+            return;
+#pragma warning disable CS0162  // Unreachable code (보존된 원본 로직 — 재활성화 시 위 return 제거)
             if (!IsEntryAllowed(symbol, "MEME_KNN", out _)) return;
             if (_memeCooldown.TryGetValue(symbol, out var last)
                 && DateTime.UtcNow - last < MemeCooldown) return;
@@ -4907,6 +4935,7 @@ namespace TradingBot
                 $"🟢 [MEME_KNN] {symbol} 진입 | 5m KNN WR={pred.PositiveRate*100:F0}% K={pred.K} pred={pred.Prediction} + 1m vol={volRatio:F1}x");
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
                 signalSource: "MEME_KNN", skipAiGateCheck: false);
+#pragma warning restore CS0162
         }
 
         // [v5.23.60] SQUEEZE / BB_WALK / MAJOR 병행 진입 (Lorentzian 과 동시 가동, 5m TF)
@@ -7191,7 +7220,15 @@ namespace TradingBot
                             lock (_posLock)
                             {
                                 if (_activePositions.TryGetValue(pos.Symbol, out var pSync) && pSync != null)
+                                {
                                     pSync.Quantity = isLong ? updatedQtyAbs : -updatedQtyAbs;
+                                    // [v5.23.62] 외부 부분청산 감지 → PartialProfitStage 갱신
+                                    //   PositionMonitor 본절 트리거 조건에서 활용 → 다음 tick 에 SL→BE 이동
+                                    //   기존: BE 트리거가 highestROE 임계값만 의존 → TP1 부분 체결되어도
+                                    //         ROE 미달이면 SL 그대로 → 가격 반대 시 풀스탑 (-$784/30d)
+                                    if (pSync.PartialProfitStage < 1) pSync.PartialProfitStage = 1;
+                                    if (pSync.TakeProfitStep < 1) pSync.TakeProfitStep = 1;
+                                }
                             }
                             _lastPartialSyncTimeUtc[pos.Symbol] = DateTime.UtcNow;
                             _recentPartialCloseCooldown[pos.Symbol] = DateTime.Now.AddSeconds(30);
