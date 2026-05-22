@@ -50,7 +50,14 @@ function Write-Success {
 
 function Show-ReleaseChecklist {
     $checklistPath = Join-Path $PSScriptRoot "RELEASE_CHECKLIST.md"
-    
+
+    # NonInteractive/CI 환경에서는 체크리스트 확인을 사전 통과로 간주 (TRADINGBOT_SKIP_CHECKLIST=1)
+    #   호출 측이 이미 버전/CHANGELOG/커밋/푸시를 확인한 자동 배포 흐름에서만 사용.
+    if ($env:TRADINGBOT_SKIP_CHECKLIST -eq "1") {
+        Write-Host "⏭️  체크리스트 확인 스킵 (TRADINGBOT_SKIP_CHECKLIST=1, 사전 확인 완료)" -ForegroundColor DarkGray
+        return
+    }
+
     if (Test-Path $checklistPath) {
         Write-Host "`n" -ForegroundColor Yellow
         Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Yellow
