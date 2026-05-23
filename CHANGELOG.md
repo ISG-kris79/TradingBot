@@ -5,6 +5,26 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.63] - 2026-05-23
+
+### 🪙 알트 진입 시가총액 Top 30 제한 + EnableMajorTrading 우회 버그 fix
+
+#### Added — 시가총액 Top 30 가드 (`Services/MarketCapTracker.cs` 신규)
+
+- **CoinGecko `/coins/markets` API** 1시간 주기 fetch — 시총 Top 30 심볼 캐시 (Binance `*USDT` 형식).
+- **가드 적용** (`TradingEngine.cs` `IsEntryAllowedCore`): `entryCat != "MAJOR"` 인 알트 진입 시 시총 30위 안만 통과.
+  - 메이저 4종(BTC/ETH/SOL/XRP)은 `entryCat=MAJOR` 경로로 별도 통과 (EnableMajorTrading 게이트).
+- **안전 차단**: 첫 부팅 fetch 미완료 / API 실패 / 캐시 미준비 시 진입 차단 (수익 우선 원칙 [feedback_profit_first]).
+- 초소형 알트 LONG 손실 방지 — 사용자 원칙 "초소형 PUMP는 시가총액 기준" [project_micro_cap_filter] 실현.
+
+#### Fixed — EnableMajorTrading 우회 버그 (`TradingEngine.cs`)
+
+- **Root cause**: 메이저 판정 데이터 소스 불일치
+  - `entryCat` 분류 (라인 711-714): **하드코딩** BTC/ETH/SOL/XRP/BNB → 항상 MAJOR
+  - `EnableMajorTrading` 가드 (라인 838): `MajorSymbols.Contains(symbol)` → **AppConfig.Trading.Symbols 동적** (사용자가 "주요 심볼" 목록에서 메이저 제외 시 false)
+- **영향**: 사용자가 AppConfig에서 메이저를 빼면 가드 우회 → DB 30일 ENGINE_151 36건 메이저 진입 (BTC11/ETH7/SOL15/XRP3, -$84) 발생.
+- **수정**: 가드 조건을 `entryCat == "MAJOR"` 로 변경 — 두 데이터 소스가 같은 하드코딩 분류를 공유하게 만들어 우회 차단.
+
 ## [5.23.62] - 2026-05-22
 
 ### 📉 하락장 손실 차단 + 부분익절 후 본절 보호 (30일 매매기록 분석 기반)

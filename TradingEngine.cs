@@ -835,7 +835,11 @@ namespace TradingBot
 
             // 메이저 코인 진입 비활성화 (UI: chkEnableMajorTrading)
             // [v5.19.3] _settings null 시 안전 차단 — 설정 미로드 상태에서 메이저 진입 방지
-            if (MajorSymbols.Contains(symbol))
+            // [v5.23.63] 우회 버그 fix — 기존: MajorSymbols.Contains(symbol) (AppConfig.Trading.Symbols 동적, 사용자가 메이저 제외 시 false)
+            //   문제: entryCat 분류(라인 711-714)는 하드코딩(BTC/ETH/SOL/XRP/BNB), 가드는 동적 → 데이터 소스 불일치
+            //         AppConfig에서 메이저 제외 → 가드 우회 → ENGINE_151 36건 (BTC11/ETH7/SOL15/XRP3) BTC 진입 (30d -$84)
+            //   수정: entryCat 기준 일관 차단 (entryCat=MAJOR 강제 분류와 동일 데이터 소스)
+            if (entryCat == "MAJOR")
             {
                 bool? majorAllowed = _settings?.EnableMajorTrading;
                 if (majorAllowed != true)   // null OR false → 차단
@@ -844,6 +848,25 @@ namespace TradingBot
                         ? "MAJOR_BLOCKED:settings_not_loaded"
                         : "MAJOR_DISABLED";
                     OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} | EnableMajorTrading={majorAllowed?.ToString() ?? "null"}");
+                    return false;
+                }
+            }
+            else
+            {
+                // [v5.23.63] 알트 시가총액 Top 30 제한 (메이저는 entryCat=MAJOR 별도 통과)
+                //   CoinGecko 시총 순위 1시간 캐시. 첫 부팅 / API 실패 시 IsReady=false → 안전 차단.
+                //   초소형 PUMP 손실 방지 ([project_micro_cap_filter] 사용자 원칙: "초소형은 시가총액 기준").
+                var mcap = Services.MarketCapTracker.Instance;
+                if (!mcap.IsReady)
+                {
+                    blockReason = "MCAP_NOT_READY (시총 캐시 미준비 — 안전 차단)";
+                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason}");
+                    return false;
+                }
+                if (!mcap.IsTopN(symbol))
+                {
+                    blockReason = $"MCAP_OUT_OF_TOP{mcap.TopN} (시총 {mcap.TopN}위 밖 — 알트 진입 차단)";
+                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason}");
                     return false;
                 }
             }
@@ -1643,6 +1666,11 @@ namespace TradingBot
 
             // [진입 필터 설정 로드]
             LoadEntryFilterSettings();
+
+            // [v5.23.63] 시가총액 Top 30 트래커 시작 — 알트 진입 가드용
+            //   첫 fetch 는 background, 완료 전엔 IsReady=false → 가드에서 안전 차단
+            Services.MarketCapTracker.Instance.OnLog += msg => OnStatusLog?.Invoke(msg);
+            Services.MarketCapTracker.Instance.Start();
 
             // [추가] 로그 버퍼링 (최근 100개 유지)
             this.OnLiveLog += (msg) => AddToLogBuffer($"[LIVE] {msg}");
