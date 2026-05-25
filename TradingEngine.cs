@@ -850,6 +850,18 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} | EnableMajorTrading={majorAllowed?.ToString() ?? "null"}");
                     return false;
                 }
+
+                // [v5.23.64] ENGINE_151 시그널은 BTC/ETH에 안 맞음 — 30일 실거래 검증
+                //   BTCUSDT: 11건 WR 45% PnL -$89 (큰 손실)
+                //   ETHUSDT: 7건 WR 14% PnL -$70 (거의 전패)
+                //   SOLUSDT: 15건 WR 86.7% PnL +$73 (잘 맞음)
+                //   → SOL/XRP/BNB는 통과, BTC/ETH만 차단 (Strategy×Symbol 적합도)
+                if (srcU == "ENGINE_151" && (symbol == "BTCUSDT" || symbol == "ETHUSDT"))
+                {
+                    blockReason = "ENGINE_151_MAJOR_MISMATCH:BTC/ETH 부적합 (30d -$159)";
+                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason}");
+                    return false;
+                }
             }
             else
             {
@@ -869,6 +881,17 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason}");
                     return false;
                 }
+            }
+
+            // [v5.23.64] 심볼 자가학습 스코어카드 — 30일 WR≤30% + PnL≤-$30 + n≥5 심볼 자동 차단
+            //   (메이저 면제 안 함 — BTC/ETH ENGINE_151 같은 부적합 케이스도 자동 잡힘)
+            //   캐시 미준비 / 표본 부족 → multiplier=1.0 → 통과 (진입 막지 않음)
+            decimal symMul = Services.SymbolScorecard.Instance.GetMultiplier(symbol);
+            if (symMul <= 0m)
+            {
+                blockReason = $"SCORECARD_BLOCKED (30d WR≤30% PnL≤-$30 — 자가학습 차단)";
+                OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason}");
+                return false;
             }
 
             // [v5.23.39] 1h EMA20 추세 필터 — 모든 진입 경로 최상위 가드 (사용자 원칙)
@@ -1671,6 +1694,18 @@ namespace TradingBot
             //   첫 fetch 는 background, 완료 전엔 IsReady=false → 가드에서 안전 차단
             Services.MarketCapTracker.Instance.OnLog += msg => OnStatusLog?.Invoke(msg);
             Services.MarketCapTracker.Instance.Start();
+
+            // [v5.23.64] 심볼 자가학습 스코어카드 — 30일 실거래 기반 사이즈 multiplier
+            //   캐시 미준비 시 1.0x 폴백 (진입 막지 않음). DB 조회 1h 주기.
+            Services.SymbolScorecard.Instance.OnLog += msg => OnStatusLog?.Invoke(msg);
+            try
+            {
+                int uid = AppConfig.CurrentUser?.Id ?? 0;
+                string? cs = AppConfig.Current?.ConnectionStrings?.DefaultConnection;
+                if (uid > 0 && !string.IsNullOrEmpty(cs))
+                    Services.SymbolScorecard.Instance.Start(cs, uid);
+            }
+            catch { /* 시작 실패해도 봇 부팅은 계속 — multiplier 1.0 폴백 */ }
 
             // [추가] 로그 버퍼링 (최근 100개 유지)
             this.OnLiveLog += (msg) => AddToLogBuffer($"[LIVE] {msg}");
@@ -6024,13 +6059,53 @@ namespace TradingBot
                         decimal adjusted = Math.Max(10m, baseMargin * 0.5m);
                         OnStatusLog?.Invoke(
                             $"💧 [LIQUIDITY] {symbol} 24h=${vol24h / 1_000_000m:F1}M < $10M → 마진 ${baseMargin:F0} → ${adjusted:F0} (50% 축소)");
-                        return adjusted;
+                        baseMargin = adjusted;
                     }
                 }
             }
             catch { }
 
-            return baseMargin;
+            // [v5.23.64] 시간대 가중 + 심볼 자가학습 multiplier 적용 (차단 아닌 사이즈 조절)
+            return ApplyEdgeMultipliers(symbol, baseMargin);
+        }
+
+        /// <summary>
+        /// [v5.23.64] 진입 사이즈에 시간대·심볼 스코어 multiplier 곱하기.
+        /// - 시간대(KST): 17/13/11시 1.5x (황금), 5-6시 0.2x (자살), 19-20시·새벽 0.5x
+        /// - 심볼 스코어: 30일 WR≥70% n≥5 → 1.5x 부스트 (multiplier=0은 IsEntryAllowed 가드에서 차단)
+        /// - 최종 마진은 baseMargin × hourMul × symMul. 최소 $10, 최대 baseMargin × 2.0
+        /// 차단이 아닌 사이즈 조절 → 진입 빈도 유지, 손실 크기만 감소·이익 크기 증대.
+        /// </summary>
+        private decimal ApplyEdgeMultipliers(string symbol, decimal baseMargin)
+        {
+            decimal hourMul = GetHourEdgeMultiplier(DateTime.Now.Hour);
+            decimal symMul = Services.SymbolScorecard.Instance.GetMultiplier(symbol);
+            if (symMul <= 0m) symMul = 1.0m;  // 0 차단은 IsEntryAllowed 에서 이미 처리됨, 여기선 안전 fallback
+
+            decimal final = baseMargin * hourMul * symMul;
+            decimal min = 10m;
+            decimal max = baseMargin * 2.0m;
+            final = Math.Clamp(final, min, max);
+
+            if (Math.Abs(final - baseMargin) >= 1m)
+            {
+                OnStatusLog?.Invoke(
+                    $"🎚️ [EDGE_MUL] {symbol} ${baseMargin:F0} × hour={hourMul:F1}x(KST{DateTime.Now.Hour:D2}) × sym={symMul:F1}x → ${final:F0}");
+            }
+            return final;
+        }
+
+        /// <summary>30일 실거래 WR 기반 시간대 가중 (KST hour 0-23).</summary>
+        private static decimal GetHourEdgeMultiplier(int kstHour)
+        {
+            return kstHour switch
+            {
+                17 or 13 or 11 => 1.5m,                       // 황금 시간 (WR 80%+)
+                9 or 12 or 16 or 18 => 1.3m,                  // 강한 시간 (WR 60-80%)
+                5 or 6 => 0.2m,                               // 자살 시간 (WR <10%)
+                3 or 4 or 19 or 20 or 23 => 0.5m,             // 위험 시간 (WR <30%)
+                _ => 1.0m                                      // 보통
+            };
         }
 
         private decimal GetConfiguredMajorMarginPercent()

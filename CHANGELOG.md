@@ -5,6 +5,47 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.64] - 2026-05-25
+
+### 🎯 한 달 매매기록 분석 → 4가지 학습 기반 진입/사이즈 로직 (차단이 아닌 강화)
+
+**배경**: 30일 464건 WR 46.1% / NetPnL -$85 (사실상 BE 근접). 사용자 "차단만 추가하면 봇이 거래를 안 한다" 피드백 → 데이터에서 이기는 패턴 찾아서 사이즈로 가중하는 방식으로 전환.
+
+**핵심 발견**:
+- WIN 평균 보유 71분 vs LOSS 평균 35분 (LOSS 54%가 15분 이내 SL hit)
+- ENGINE_151: BTC 11건 45% -$89 / ETH 7건 14% -$70 (못 맞음) vs SOL 15건 86.7% +$73 (잘 맞음)
+- KST 17시 89.5% WR +$49 / 5-6시 4% WR -$200 (시간대 효과 극단)
+
+#### Added — A. 진입 후 5분 손절 가속 (`PositionMonitorService.cs`)
+
+- PUMP monitor 루프 시작 부분에 추가: 진입 후 5분 이내 가격 -0.5% 이하 → `ExecuteMarketClose("EARLY_LOSS_CUT")`.
+- 근거: 이기는 트레이드는 진입 직후 +방향. 5분 -0.5% = 잘못된 진입 확정 → 거래소 SL(-25% ROE) 기다리지 말고 작은 손실로 빠른 청산.
+- 손익비: 작은 손실 60건 잡아도 큰 익절 1건이면 +. 진입 자체는 그대로.
+
+#### Added — B. 심볼 자가학습 스코어카드 (`Services/SymbolScorecard.cs` 신규)
+
+- 30일 실거래 데이터로 심볼별 multiplier 자동 계산 (1시간 주기 DB 조회).
+- WR≤30% + PnL≤-$30 + n≥5 → 자동 차단 (multiplier=0) — IsEntryAllowedCore 가드.
+- WR≥70% + PnL≥+$20 + n≥5 → 사이즈 1.5x 부스트.
+- 캐시 미준비 / 표본 부족 → 1.0x 폴백 (진입 막지 않음).
+- 시장 변화에 봇이 자동 적응 — 사용자가 수동으로 가드 조정할 필요 없음.
+
+#### Added — C. 시간대 가중 사이즈 (`ApplyEdgeMultipliers` / `GetHourEdgeMultiplier`)
+
+- 30일 시간대별 WR 기반 KST 시간 multiplier (`GetLiquidityAdjustedPumpMarginUsdt` 내부 통합):
+  - **1.5x** (황금): 11, 13, 17시
+  - **1.3x** (강함): 9, 12, 16, 18시
+  - **0.5x** (위험): 3, 4, 19, 20, 23시
+  - **0.2x** (자살): 5, 6시
+  - **1.0x** (보통): 그 외
+- 차단 아닌 사이즈 조절 → 진입 빈도 유지하면서 손실 크기 감소·익절 크기 증가.
+
+#### Fixed — D. ENGINE_151 BTC/ETH 부적합 차단
+
+- ENGINE_151 시그널이 BTC/ETH에 안 맞음 (30일 BTC -$89, ETH -$70) → `IsEntryAllowedCore`에서 차단.
+- SOL/XRP/BNB는 통과 — Strategy×Symbol 적합도 분리.
+- B 스코어카드가 자동 학습으로도 잡지만, 명시적 가드로 안정성 확보.
+
 ## [5.23.63] - 2026-05-23
 
 ### 🪙 알트 진입 시가총액 Top 30 제한 + EnableMajorTrading 우회 버그 fix
