@@ -2391,7 +2391,13 @@ namespace TradingBot
 
                 foreach (var phantomSymbol in phantoms)
                 {
-                    lock (_posLock) { _activePositions.Remove(phantomSymbol); }
+                    // [v5.23.65] phantom 정리 시 PositionInfo 스냅샷 캡처 (DB 갱신용)
+                    PositionInfo? phantomPos = null;
+                    lock (_posLock)
+                    {
+                        _activePositions.TryGetValue(phantomSymbol, out phantomPos);
+                        _activePositions.Remove(phantomSymbol);
+                    }
                     _hybridExitManager?.RemoveState(phantomSymbol);
                     OnPositionStatusUpdate?.Invoke(phantomSymbol, false, 0);
                     OnTickerUpdate?.Invoke(phantomSymbol, 0m, 0d);
@@ -2402,6 +2408,44 @@ namespace TradingBot
                         if (uid > 0) _ = _dbManager?.DeletePositionStateAsync(uid, phantomSymbol);
                     }
                     catch { }
+
+                    // [v5.23.65] Bug B fix — PHANTOM_CLEAN 시 TradeHistory IsClosed=1 갱신
+                    //   기존: 메모리/PositionState 만 정리 → DB IsClosed=0 영구 stale
+                    //   원인 주석: "DB SYNC_RESTORED row 생성 안 함" (의도적 누락)
+                    //   영향: 봇 UI "활성 포지션 N개" 잘못 표시 + 30일 통계 왜곡
+                    //   해결: phantom log 만들어서 CompleteTradeAsync 호출. PnL 은 0 (Binance income API 별도 백필)
+                    if (phantomPos != null && phantomPos.EntryPrice > 0 && _dbManager != null)
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var phantomLog = new TradingBot.Shared.Models.TradeLog(
+                                    phantomSymbol,
+                                    phantomPos.IsLong ? "SELL" : "BUY",
+                                    "PHANTOM_CLEAN_RECONCILE",
+                                    phantomPos.EntryPrice,
+                                    phantomPos.AiScore,
+                                    DateTime.Now,
+                                    0m,
+                                    0m)
+                                {
+                                    EntryPrice = phantomPos.EntryPrice,
+                                    ExitPrice = phantomPos.EntryPrice,   // 미상 — Binance income 백필로 보정
+                                    Quantity = Math.Abs(phantomPos.Quantity),
+                                    EntryTime = phantomPos.EntryTime == default ? DateTime.Now : phantomPos.EntryTime,
+                                    ExitTime = DateTime.Now,
+                                    ExitReason = "PHANTOM_CLEAN_RECONCILE (외부 청산 후 ACCOUNT_UPDATE 누락 — 사후 인식)"
+                                };
+                                await _dbManager.CompleteTradeAsync(phantomLog);
+                                OnStatusLog?.Invoke($"📝 [PHANTOM_CLEAN] {phantomSymbol} DB IsClosed=1 갱신 완료 (PnL 은 income API 백필 대상)");
+                            }
+                            catch (Exception dbEx)
+                            {
+                                OnStatusLog?.Invoke($"⚠️ [PHANTOM_CLEAN] {phantomSymbol} DB 갱신 실패: {dbEx.Message}");
+                            }
+                        });
+                    }
 
                     OnStatusLog?.Invoke($"🧹 [PHANTOM_CLEAN] {phantomSymbol} 메모리 제거 (거래소에 없음 — 외부 청산 후 ACCOUNT_UPDATE 누락 추정)");
                 }
@@ -12048,39 +12092,61 @@ namespace TradingBot
             OnTickerUpdate?.Invoke(symbol, 0m, 0d);
             OnTradeHistoryUpdated?.Invoke();
 
-            // 4. DB TradeLog 저장
+            // 4. DB TradeLog 저장 — [v5.23.65] pos null 도 허용 (PositionSyncService 가 메모리 제거를 먼저 함)
+            //   Bug A fix: 기존 `pos != null && ...` 조건이 항상 false → SaveTradeLogAsync 호출 자체 누락 →
+            //              TradeHistory IsClosed=0 영구 stale (DB 통계 왜곡 + 봇 UI "활성 포지션" 잘못 표시)
+            //   해결: exitPrice > 0 만 요구. PnL 은 reason 문자열의 "pnl=X.XX" 토큰 파싱 (PositionSyncService 가 포함).
+            //         실패 시 가격기반 추정. quantity 미상이면 CompleteTradeAsync 가 openTrade DB row 에서 폴백.
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    if (pos != null && pos.EntryPrice > 0 && exitPrice > 0)
-                    {
-                        decimal priceDiff = pos.IsLong ? (exitPrice - entryPrice) : (entryPrice - exitPrice);
-                        decimal pnl = priceDiff * Math.Abs(pos.Quantity);
-                        decimal leverage = pos.Leverage > 0 ? pos.Leverage : 1m;
-                        decimal pnlPct = entryPrice > 0
-                            ? (priceDiff / entryPrice) * leverage * 100m
-                            : 0m;
+                    if (exitPrice <= 0 || entryPrice <= 0) return;
 
-                        var tradeLog = new TradingBot.Shared.Models.TradeLog(
-                            symbol,
-                            pos.IsLong ? "SELL" : "BUY",
-                            "SYNC_CLOSE",
-                            exitPrice,
-                            pos.AiScore,
-                            DateTime.Now,
-                            pnl,
-                            pnlPct)
-                        {
-                            EntryPrice = entryPrice,
-                            ExitPrice = exitPrice,
-                            Quantity = Math.Abs(pos.Quantity),
-                            EntryTime = pos.EntryTime,
-                            ExitTime = DateTime.Now,
-                            ExitReason = reason
-                        };
-                        await _dbManager.SaveTradeLogAsync(tradeLog);
+                    // reason 에서 pnl= 토큰 파싱 (예: "TP/Trailing (exchange) avg=61.5706 pnl=15.22")
+                    decimal pnl = 0m;
+                    try
+                    {
+                        var m = System.Text.RegularExpressions.Regex.Match(reason ?? string.Empty, @"pnl=(-?[0-9]+(?:\.[0-9]+)?)");
+                        if (m.Success && decimal.TryParse(m.Groups[1].Value,
+                            System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+                            pnl = parsed;
                     }
+                    catch { }
+
+                    bool isLong = pos?.IsLong ?? true;   // 봇 LONG 전용
+                    decimal qty = pos != null ? Math.Abs(pos.Quantity) : 0m;
+                    decimal leverage = pos?.Leverage > 0 ? pos.Leverage : (_settings?.DefaultLeverage ?? 15m);
+
+                    // pnl 미파싱 시 가격기반 추정
+                    if (pnl == 0m && qty > 0m)
+                    {
+                        decimal priceDiff = isLong ? (exitPrice - entryPrice) : (entryPrice - exitPrice);
+                        pnl = priceDiff * qty;
+                    }
+
+                    decimal pnlPct = entryPrice > 0
+                        ? ((isLong ? exitPrice - entryPrice : entryPrice - exitPrice) / entryPrice) * leverage * 100m
+                        : 0m;
+
+                    var tradeLog = new TradingBot.Shared.Models.TradeLog(
+                        symbol,
+                        isLong ? "SELL" : "BUY",
+                        "SYNC_CLOSE",
+                        exitPrice,
+                        pos?.AiScore ?? 0f,
+                        DateTime.Now,
+                        pnl,
+                        pnlPct)
+                    {
+                        EntryPrice = entryPrice,
+                        ExitPrice = exitPrice,
+                        Quantity = qty,
+                        EntryTime = pos?.EntryTime ?? default,
+                        ExitTime = DateTime.Now,
+                        ExitReason = reason ?? "SYNC_CLOSE"
+                    };
+                    await _dbManager.SaveTradeLogAsync(tradeLog);
                 }
                 catch (Exception ex)
                 {

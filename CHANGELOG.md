@@ -5,6 +5,33 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.65] - 2026-05-27
+
+### 🛠️ DB ↔ 거래소 동기화 버그 fix (Bug A/B) — 봇 UI 손익 정확도 회복
+
+**증상**: 거래소는 정상 청산되어 +$53/7d 흑자인데, 봇 UI에는 "활성 포지션 4개 / PnL=0" 표시. 사용자가 손익을 못 봐서 "소액 손실만 본다"고 오해. 30일 통계도 stale 데이터로 왜곡.
+
+**Root cause 두 갈래**:
+
+#### Fixed — Bug A: `HandleSyncedPositionClosed` pos null 시 DB 갱신 누락 (`TradingEngine.cs`)
+
+- `PositionSyncService`가 메모리 `_activePositions.Remove(symbol)`를 먼저 수행 → TradingEngine 핸들러가 `pos`를 다시 TryGetValue 하면 **null 반환**.
+- 기존 조건 `pos != null && pos.EntryPrice > 0 && exitPrice > 0` → 항상 false → `SaveTradeLogAsync` 호출 자체 누락 → TradeHistory `IsClosed=0` 영구 stale.
+- **수정**: 조건을 `exitPrice > 0 && entryPrice > 0`로 완화. PnL은 `reason` 문자열에서 `pnl=X.XX` 정규식 파싱 (PositionSyncService 가 이미 포함). 가격기반 추정 폴백. quantity 미상 시 `CompleteTradeAsync` 가 openTrade DB row 에서 폴백.
+
+#### Fixed — Bug B: `CleanupPhantomPositionsAsync` DB 미정리 (`TradingEngine.cs`)
+
+- 기존: phantom 발견 시 메모리 + PositionState 만 정리. 주석에 *"DB SYNC_RESTORED row 생성 안 함"* 명시 — 의도적 누락.
+- 결과: TradeHistory `IsClosed=0` 영구 stale (XMRUSDT 같은 사례 다수).
+- **수정**: phantom 정리 시 PositionInfo 스냅샷 캡처 후 `CompleteTradeAsync(phantomLog)` 호출 — `PHANTOM_CLEAN_RECONCILE` ExitReason 으로 IsClosed=1 갱신. PnL은 0 (Binance income API 별도 백필 대상).
+
+#### 운영 — stale 3건 백필 (`backfill-stale-4.ps1`)
+
+- 기존 stale rows 4건을 Binance `/fapi/v1/income` REALIZED_PNL 으로 보정:
+  - ZECUSDT +$9.07 / HYPEUSDT +$1.58 / TONUSDT -$2.36 → IsClosed=1 갱신 완료.
+  - TRXUSDT — 아직 거래소에 활성 포지션이라 skip (정상).
+- 봇 UI 통계가 다시 거래소 실제 손익과 일치하게 됨.
+
 ## [5.23.64] - 2026-05-25
 
 ### 🎯 한 달 매매기록 분석 → 4가지 학습 기반 진입/사이즈 로직 (차단이 아닌 강화)
