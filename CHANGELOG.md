@@ -5,6 +5,34 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.66] - 2026-05-28
+
+### 🎯 추적풀 시총 재구성 + dust 처리 + 사용자 마진 설정 존중
+
+**배경**: 5-28 진입 0건. 차단 사유 93%가 `MCAP_OUT_OF_TOP30` (341K건). 봇 추적풀(펌핑 소형 알트 50개)과 시총 Top30 진입 가드가 구조적으로 충돌 — 분석은 50개 하는데 진입 가능한 건 XLM/XMR 2개뿐. 하락장 무관.
+
+#### Changed — 추적풀을 시총 상위 코인으로 재구성 (`TradingEngine.cs` `EnsureActiveTrackingPoolFresh`)
+
+- 동적 풀 후보를 `MarketCapTracker.IsTopN()` 통과 심볼로 제한 → **추적 = 진입가능 심볼 일치**.
+- 봇 성격 전환: 펌핑 소형 알트 추격 → 시총 상위 대형 알트 추세 추종.
+- MarketCapTracker 미준비 시 메이저4만 추적 (부팅 직후 일시적).
+
+#### Changed — 시총 임계값 30 → 50 (`MarketCapTracker.cs`)
+
+- 사용자 지시. 진입 후보·추적풀 확대 (Top 50 비메이저 알트 ~35개). 가드·추적풀 둘 다 적용.
+
+#### Fixed — dust 자동 처리 (`BinanceExchangeService.GetPositionsAsync`)
+
+- 노출액 $5 미만 잔량(예: TON 0.1개 = $0.19)을 활성 포지션에서 제외 + 백그라운드 `reduceOnly market` 자동 청산 시도.
+- 원인: 부분익절+트레일링 후 남는 dust를 봇이 활성으로 인식 → 동일 심볼 재진입 차단 + 슬롯 막힘.
+- 효과: 모든 봇 로직(슬롯 카운트/PHANTOM_CLEAN/재진입)이 자동 dust 무시.
+
+#### Changed — EDGE_MUL 시간대 부스트 제거 (`TradingEngine.ApplyEdgeMultipliers`)
+
+- v5.23.64 황금시간 1.5x 부스트가 사용자 PumpMargin($100)을 멋대로 $150으로 키움 → 제거.
+- 이제 사용자 PumpMargin 설정값 그대로 사용 (곱셈/변형 없음, 최소 $10 clamp 만).
+- SymbolScorecard 0 차단(WR≤30% PnL≤-$30)은 안전장치로 유지.
+
 ## [5.23.65] - 2026-05-27
 
 ### 🛠️ DB ↔ 거래소 동기화 버그 fix (Bug A/B) — 봇 UI 손익 정확도 회복

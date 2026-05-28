@@ -4499,9 +4499,14 @@ namespace TradingBot
             // [v5.22.54] 동적 풀 — 상승 종목만 + 거래대금 가중 score
             //   기존: |PriceChangePercent| desc → 하락 종목도 포함됨 (LONG 봇 무용)
             //   변경: PriceChangePercent > 0 만 통과 + score = 변동률 × log10(거래대금)
-            //   효과: BIOUSDT 같은 "지금 펌핑 중 + 거래 활발" 종목 자동 포착
+            // [v5.23.66] 옵션2 — 추적풀을 시총 Top 30 코인으로 재구성 (사용자 지시)
+            //   문제: 펌핑 스캐너가 시총 50~300위 소형 알트를 추적풀에 채움 → 시총 Top30 진입 가드와 충돌
+            //         (5-28 진입 0건, MCAP_OUT_OF_TOP30 차단 341K건 = 93%)
+            //   해결: 동적 후보를 MarketCapTracker.IsTopN(=Top30) 통과 심볼로 제한 → 추적 = 진입가능 심볼 일치
+            //   MarketCapTracker 미준비(IsReady=false) 시 후보 0 → 메이저4만 추적 (부팅 직후 일시적, 캐시 채워지면 정상)
             var dynamicSymbols = new List<string>();
-            if (_marketDataManager?.TickerCache != null)
+            var mcapTracker = Services.MarketCapTracker.Instance;
+            if (_marketDataManager?.TickerCache != null && mcapTracker.IsReady)
             {
                 HashSet<string> activeSet;
                 lock (_posLock) { activeSet = new HashSet<string>(_activePositions.Keys, StringComparer.OrdinalIgnoreCase); }
@@ -4510,6 +4515,7 @@ namespace TradingBot
                     .Where(t => !string.IsNullOrWhiteSpace(t.Symbol)
                                 && t.Symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
                                 && !FixedMajorPool.Contains(t.Symbol)
+                                && mcapTracker.IsTopN(t.Symbol)          // [v5.23.66] 시총 Top 30 만
                                 && t.PriceChangePercent > 0m)            // 상승 종목만
                     .Select(t => new
                     {
@@ -6114,42 +6120,17 @@ namespace TradingBot
         }
 
         /// <summary>
-        /// [v5.23.64] 진입 사이즈에 시간대·심볼 스코어 multiplier 곱하기.
-        /// - 시간대(KST): 17/13/11시 1.5x (황금), 5-6시 0.2x (자살), 19-20시·새벽 0.5x
-        /// - 심볼 스코어: 30일 WR≥70% n≥5 → 1.5x 부스트 (multiplier=0은 IsEntryAllowed 가드에서 차단)
-        /// - 최종 마진은 baseMargin × hourMul × symMul. 최소 $10, 최대 baseMargin × 2.0
-        /// 차단이 아닌 사이즈 조절 → 진입 빈도 유지, 손실 크기만 감소·이익 크기 증대.
+        /// [v5.23.64 → v5.23.66] 진입 사이즈 multiplier — 부스트 1.5x 비활성화.
+        /// 사용자 요청: PumpMargin 설정값($100)을 봇이 멋대로 키우지 말 것.
+        ///   기존: 황금시간(17/13/11시) 1.5x 부스트 + 심볼 스코어 1.5x → 사용자 의도와 다른 마진 사용
+        ///   변경: hour multiplier 전 시간 1.0 고정 + 심볼 스코어 부스트는 BLOCK(0) 만 유지 (차단은 살림)
+        /// 결과: baseMargin = 사용자 PumpMargin 그대로 (clamp 최소 $10 만).
         /// </summary>
         private decimal ApplyEdgeMultipliers(string symbol, decimal baseMargin)
         {
-            decimal hourMul = GetHourEdgeMultiplier(DateTime.Now.Hour);
-            decimal symMul = Services.SymbolScorecard.Instance.GetMultiplier(symbol);
-            if (symMul <= 0m) symMul = 1.0m;  // 0 차단은 IsEntryAllowed 에서 이미 처리됨, 여기선 안전 fallback
-
-            decimal final = baseMargin * hourMul * symMul;
-            decimal min = 10m;
-            decimal max = baseMargin * 2.0m;
-            final = Math.Clamp(final, min, max);
-
-            if (Math.Abs(final - baseMargin) >= 1m)
-            {
-                OnStatusLog?.Invoke(
-                    $"🎚️ [EDGE_MUL] {symbol} ${baseMargin:F0} × hour={hourMul:F1}x(KST{DateTime.Now.Hour:D2}) × sym={symMul:F1}x → ${final:F0}");
-            }
-            return final;
-        }
-
-        /// <summary>30일 실거래 WR 기반 시간대 가중 (KST hour 0-23).</summary>
-        private static decimal GetHourEdgeMultiplier(int kstHour)
-        {
-            return kstHour switch
-            {
-                17 or 13 or 11 => 1.5m,                       // 황금 시간 (WR 80%+)
-                9 or 12 or 16 or 18 => 1.3m,                  // 강한 시간 (WR 60-80%)
-                5 or 6 => 0.2m,                               // 자살 시간 (WR <10%)
-                3 or 4 or 19 or 20 or 23 => 0.5m,             // 위험 시간 (WR <30%)
-                _ => 1.0m                                      // 보통
-            };
+            // [v5.23.66] 시간대 부스트 비활성화 — 사용자 설정 PumpMargin 그대로 사용
+            // 단 SymbolScorecard.GetMultiplier 가 0 이면 IsEntryAllowed 에서 이미 차단됨 → 여기는 도달 안 함.
+            return Math.Max(10m, baseMargin);
         }
 
         private decimal GetConfiguredMajorMarginPercent()

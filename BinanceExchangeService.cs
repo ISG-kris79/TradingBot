@@ -802,14 +802,53 @@ namespace TradingBot.Services
             return 0;
         }
 
+        // [v5.23.66] dust 임계값 — 노출액 $5 미만은 활성 포지션에서 제외 + 자동 청산 시도
+        //   사용자 보고: "자잘하게 0.1달러 남아서 진입이 안되는 케이스"
+        //   원인: 부분익절+트레일링 청산 후 남는 dust 잔량(예: TON 0.1개 = $0.19)을 봇이 활성으로 인식 →
+        //         동일 심볼 재진입 차단 + 슬롯 카운트 막힘. Binance 자동 dust 청산 없음.
+        //   해결: GetPositionsAsync 단계에서 dust 필터링 → 모든 봇 로직이 자동으로 dust 무시.
+        //         + 백그라운드에서 reduceOnly market 으로 자동 청산 시도 (stepSize 미달이면 실패해도 무해)
+        private const decimal DUST_NOTIONAL_USD = 5.0m;
+        private readonly HashSet<string> _dustCleanupAttempted = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _dustLock = new object();
+
         public async Task<List<PositionInfo>> GetPositionsAsync(CancellationToken ct = default)
         {
             var result = await _client.UsdFuturesApi.Account.GetPositionInformationAsync(ct: ct);
             if (!result.Success) return new List<PositionInfo>();
 
-            return result.Data
-                .Where(p => Math.Abs(p.Quantity) > 0)
-                .Select(p => new PositionInfo
+            var live = new List<PositionInfo>();
+            foreach (var p in result.Data)
+            {
+                if (Math.Abs(p.Quantity) <= 0) continue;
+
+                // dust 판정: entryPrice * |qty| < DUST_NOTIONAL_USD
+                decimal notional = Math.Abs(p.Quantity) * (p.EntryPrice > 0 ? p.EntryPrice : (p.MarkPrice > 0 ? p.MarkPrice : 0));
+                if (notional > 0 && notional < DUST_NOTIONAL_USD)
+                {
+                    bool firstAttempt;
+                    lock (_dustLock) { firstAttempt = _dustCleanupAttempted.Add(p.Symbol); }
+                    if (firstAttempt)
+                    {
+                        OnLog?.Invoke($"🧹 [DUST] {p.Symbol} 노출 ${notional:F2} < ${DUST_NOTIONAL_USD} → 활성 제외 + reduceOnly market 청산 시도");
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                string closeSide = p.Quantity > 0 ? "SELL" : "BUY";
+                                await PlaceMarketOrderAsync(p.Symbol, closeSide, Math.Abs(p.Quantity), CancellationToken.None, reduceOnly: true);
+                                OnLog?.Invoke($"✅ [DUST] {p.Symbol} 자동 청산 완료");
+                            }
+                            catch (Exception ex)
+                            {
+                                OnLog?.Invoke($"ℹ️ [DUST] {p.Symbol} 자동 청산 실패 (stepSize 미달 가능 — 무해): {ex.Message}");
+                            }
+                        });
+                    }
+                    continue;   // dust 는 활성 포지션 리스트에서 제외
+                }
+
+                live.Add(new PositionInfo
                 {
                     Symbol = p.Symbol,
                     Side = p.Quantity > 0 ? Binance.Net.Enums.OrderSide.Buy : Binance.Net.Enums.OrderSide.Sell,
@@ -818,8 +857,9 @@ namespace TradingBot.Services
                     EntryPrice = p.EntryPrice,
                     UnrealizedPnL = p.UnrealizedPnl,
                     Leverage = p.Leverage
-                })
-                .ToList();
+                });
+            }
+            return live;
         }
 
         public async Task<List<IBinanceKline>> GetKlinesAsync(string symbol, KlineInterval interval, int limit, CancellationToken ct = default)

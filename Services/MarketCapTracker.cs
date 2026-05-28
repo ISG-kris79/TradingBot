@@ -28,7 +28,7 @@ namespace TradingBot.Services
         private DateTime _lastFetchUtc = DateTime.MinValue;
         private readonly object _lock = new object();
         private Timer? _timer;
-        private int _topN = 30;
+        private int _topN = 50;   // [v5.23.66] 30 → 50 (사용자 지시 — 추적풀/진입 후보 확대)
 
         public event Action<string>? OnLog;
 
