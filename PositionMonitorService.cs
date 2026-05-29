@@ -1349,22 +1349,11 @@ namespace TradingBot.Services
 
             OnLog?.Invoke($"📋 {symbol} [Meme Coin Mode] BreakEven={pumpBreakEvenRoe:F0}% | 서버사이드 SL/TP/Trailing 등록됨");
 
-            // [v5.23.64] 진입 후 5분 손절 가속 가드 — 빠른 SL hit 패턴 차단
-            //   30일 데이터: WIN 평균 보유 71분 vs LOSS 평균 35분, LOSS 54%가 15분 이내
-            //   이기는 트레이드는 진입 직후 +방향. 5분 안에 -0.5% 가면 잘못된 진입 확정 →
-            //   거래소 SL(-25% ROE) 기다리지 말고 작은 손실(-0.5% = ~-2.5% ROE)로 빠른 청산
-            //   손익비: 작은 손실 60건 잡아도 큰 익절 1건이면 +
-            DateTime entryTimeUtc = DateTime.UtcNow;
-            lock (_posLock)
-            {
-                if (_activePositions.TryGetValue(symbol, out var entryPos) && entryPos.EntryTime != default)
-                    entryTimeUtc = entryPos.EntryTime.Kind == DateTimeKind.Utc
-                        ? entryPos.EntryTime
-                        : entryPos.EntryTime.ToUniversalTime();
-            }
-            bool earlyLossCutFired = false;
-            const decimal EarlyLossPriceThresholdPct = -0.5m;     // 가격 -0.5% (LONG 기준)
-            TimeSpan EarlyLossWindow = TimeSpan.FromMinutes(5);
+            // [v5.23.67] 5분 손절 가속(EARLY_LOSS_CUT) 제거 — 백테스트 반증
+            //   v5.23.64 가설: "진입 후 5분 -0.5% = 잘못된 진입" → 빠른 손절
+            //   --entry-compare 검증: BREAKOUT 진입은 TP1%/SL3%/24봉 기준 WR 91.76% (건당 +$2.95)
+            //   문제: 5분 -0.5% 손절이 TP(+1%) 도달 전에 정상 추세를 끊어버림 (XLM -0.55% 손절 후 급등 사례)
+            //   해결: 가드 제거 → 거래소 SL(3%)까지 버팀 → 대부분 TP 먼저 도달
 
             while (!token.IsCancellationRequested)
             {
@@ -1380,23 +1369,6 @@ namespace TradingBot.Services
                 decimal currentROE = priceChangePercent * leverage;
 
                 if (currentROE > highestROE) highestROE = currentROE;
-
-                // [v5.23.64] 진입 후 5분 -0.5% 가드 (한 번만 발동)
-                if (!earlyLossCutFired && !isBreakEvenTriggered)
-                {
-                    TimeSpan elapsed = DateTime.UtcNow - entryTimeUtc;
-                    if (elapsed <= EarlyLossWindow && priceChangePercent <= EarlyLossPriceThresholdPct)
-                    {
-                        earlyLossCutFired = true;
-                        OnAlert?.Invoke($"⚡ {symbol} 진입 후 {elapsed.TotalMinutes:F1}분 / 가격 {priceChangePercent:F2}% → 빠른 청산 (5m 가드, 손익비 1:60)");
-                        try
-                        {
-                            await ExecuteMarketClose(symbol, $"EARLY_LOSS_CUT (5m {priceChangePercent:F2}% / {elapsed.TotalMinutes:F1}m)", token);
-                        }
-                        catch (Exception elcEx) { OnLog?.Invoke($"⚠️ [EARLY_LOSS_CUT] {symbol} 청산 실패: {elcEx.Message}"); }
-                        break;
-                    }
-                }
 
                 OnTickerUpdate?.Invoke(symbol, 0m, (double)currentROE);
 

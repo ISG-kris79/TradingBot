@@ -5,6 +5,33 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.67] - 2026-05-29
+
+### 🔧 5분 손절 가속(EARLY_LOSS_CUT) 제거 — 백테스트 반증으로 진입 로직 정상 확인
+
+**배경**: XLM 급등 진입 후 -0.55%에서 손절 → 다시 급등. 사용자 "차단 떡칠 말고 근본 로직 보라" 지적.
+
+**검증 (`--entry-compare` 신규 백테스트, 180일 알트, TP 1%/SL 3%/24봉, EMA20↑ 공통)**:
+
+| 진입 방식 | 진입 | 승률 | 순PnL | 건당 |
+|---|---|---|---|---|
+| **BREAKOUT (현재)** | 4,367 | **91.76%** | $12,888 | **$2.95** |
+| RETEST | 3,630 | 85.84% | $6,418 | $1.77 |
+| PULLBACK | 23,875 | 81.08% | $19,465 | $0.82 |
+
+- **진입 로직(BB_WALK/SQUEEZE 돌파)은 TP1%/SL3% 기준 WR 91.76%로 우수** — "고점 추격이 근본 문제"라는 가설은 백테스트로 반증됨. 리테스트/눌림목은 오히려 승률 낮음.
+- **진짜 원인은 v5.23.64에 추가한 5분 손절 가속(A 가드)** — TP(+1%) 도달 전에 -0.5%에서 정상 추세를 끊어버림.
+
+#### Removed — EARLY_LOSS_CUT (`PositionMonitorService.MonitorPumpPositionShortTerm`)
+
+- 진입 후 5분 -0.5% 손절 가속 가드 완전 제거.
+- 거래소 SL(3%)까지 버팀 → 대부분 TP(1%) 먼저 도달 → BREAKOUT 진입 91.76% 승률 복원.
+- XLM 같은 정상 급등 눌림에 손절당하는 문제 해소.
+
+#### Added — `--entry-compare` 백테스트 모드 (`Tools/LorentzianValidator`)
+
+- 진입 타이밍(BREAKOUT/RETEST/PULLBACK) A/B 비교 도구. 향후 진입 로직 변경 검증용.
+
 ## [5.23.66] - 2026-05-28
 
 ### 🎯 추적풀 시총 재구성 + dust 처리 + 사용자 마진 설정 존중

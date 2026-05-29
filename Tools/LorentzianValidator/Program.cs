@@ -1272,6 +1272,113 @@ internal static class Program
         return (double)kl[i].ClosePrice >= upper;
     }
 
+    // [v5.23.67] BB mid/upper 동시 반환 (리테스트 판정용)
+    private static void BbMidUpper(List<IBinanceKline> kl, int i, out double mid, out double upper)
+    {
+        double sum = 0; for (int j = i - 19; j <= i; j++) sum += (double)kl[j].ClosePrice;
+        mid = sum / 20.0;
+        double sq = 0;
+        for (int j = i - 19; j <= i; j++) { double d = (double)kl[j].ClosePrice - mid; sq += d * d; }
+        double sd = Math.Sqrt(sq / 20.0);
+        upper = mid + 2 * sd;
+    }
+
+    // [v5.23.67] RETEST: 직전 6봉 내 BB 상단 돌파 발생 + 현재봉이 mid 로 되돌림 터치 후 회복(양봉)
+    //   = 돌파 추격이 아니라 돌파 후 눌림에서 진입 → 진입가 낮음 + 눌림에 안 털림
+    private static bool RetestSetup(List<IBinanceKline> kl, int i)
+    {
+        if (i < 26) return false;
+        bool breakoutRecent = false;
+        for (int q = i - 6; q < i; q++)
+        {
+            if (q < 20) continue;
+            BbMidUpper(kl, q, out _, out double up);
+            if ((double)kl[q].ClosePrice >= up) { breakoutRecent = true; break; }
+        }
+        if (!breakoutRecent) return false;
+        BbMidUpper(kl, i, out double mid, out _);
+        double low = (double)kl[i].LowPrice, close = (double)kl[i].ClosePrice, open = (double)kl[i].OpenPrice;
+        return low <= mid && close > mid && close > open;   // 되돌림 터치 후 회복 양봉
+    }
+
+    // [v5.23.67] PULLBACK: EMA20 상승 추세 + 직전 5봉 고점 대비 1~4% 되돌림 + 반등 양봉
+    private static bool PullbackSetup(List<IBinanceKline> kl, int i)
+    {
+        if (i < 26) return false;
+        if (!Ema20Rising(kl, i)) return false;
+        double hi5 = double.MinValue;
+        for (int q = i - 5; q < i; q++) hi5 = Math.Max(hi5, (double)kl[q].HighPrice);
+        double low = (double)kl[i].LowPrice, close = (double)kl[i].ClosePrice, open = (double)kl[i].OpenPrice;
+        double pullPct = hi5 > 0 ? (hi5 - low) / hi5 * 100.0 : 0;
+        return pullPct >= 1.0 && pullPct <= 4.0 && close > open;   // 눌림 후 반등 양봉
+    }
+
+    // [v5.23.67] 진입 타이밍 비교 — BREAKOUT(현재) vs RETEST vs PULLBACK
+    //   사용자 지적: BB_WALK/SQUEEZE 가 고점 추격 → 진입 직후 눌림에 손절. 눌림에서 진입하면?
+    //   같은 알트셋·같은 TP/SL(1.0/3.0/24)·같은 추세가드(EMA20↑)로 진입 타이밍만 교체 비교.
+    private static async Task RunEntryTimingCompareAsync(int pages)
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  진입 타이밍 비교: BREAKOUT(현재) vs RETEST vs PULLBACK");
+        Console.WriteLine("  알트만 / TP 1.0% SL 3.0% win 24 / EMA20↑ 공통 가드");
+        Console.WriteLine("================================================================");
+        var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT" };
+        var fullData = new Dictionary<string, List<IBinanceKline>>();
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            if (majors.Contains(sym)) continue;
+            Console.Write($"[{idx}/{symbols.Length}] {sym} ");
+            try
+            {
+                var kl = await FetchKlinesAsync(sym, pages);
+                if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+                fullData[sym] = kl;
+                Console.WriteLine($"ok ({kl.Count})");
+            }
+            catch (Exception ex) { Console.WriteLine("fail " + ex.Message); }
+        }
+
+        var methods = new (string name, Func<List<IBinanceKline>, int, bool> ok, int rsiMax)[]
+        {
+            ("BREAKOUT_현재", (kl, i) => i >= 25 && (BBWalkStreak(kl, i, 5) >= 4 || (BBWidth(kl, i) < 1.5 && BBWalkUpper(kl, i))), 65),
+            ("RETEST",        (kl, i) => RetestSetup(kl, i), 70),
+            ("PULLBACK",      (kl, i) => PullbackSetup(kl, i), 70),
+        };
+
+        decimal tpPct = 1.0m, slPct = 3.0m; int win = 24;
+        decimal notional = 100m * 5m; decimal fee = notional * 0.0004m * 2m;
+        decimal tpUsd = notional * tpPct / 100m - fee;
+        decimal slUsd = notional * slPct / 100m + fee;
+
+        Console.WriteLine();
+        Console.WriteLine($"{"방식",-16} {"진입",6} {"승",5} {"승률",8} {"순PnL",12} {"건당",8}");
+        Console.WriteLine(new string('-', 60));
+        foreach (var m in methods)
+        {
+            int n = 0, w = 0; decimal pnl = 0m;
+            foreach (var kv in fullData)
+            {
+                var kl = kv.Value;
+                for (int i = 50; i < kl.Count - win; i++)
+                {
+                    if (!m.ok(kl, i)) continue;
+                    if (!Ema20Rising(kl, i)) continue;
+                    if (CalcRsi14(kl, i) >= m.rsiMax) continue;
+                    var (tp, sl) = OutcomeIn(kl, i, tpPct, slPct, win);
+                    if (!(tp || sl)) continue;
+                    n++;
+                    if (tp) { w++; pnl += tpUsd; } else { pnl -= slUsd; }
+                }
+            }
+            double wr = n > 0 ? w * 100.0 / n : 0;
+            decimal per = n > 0 ? pnl / n : 0m;
+            Console.WriteLine($"{m.name,-16} {n,6} {w,5} {wr,7:F2}% {pnl,11:F2} {per,7:F3}");
+        }
+        Console.WriteLine(new string('-', 60));
+    }
+
     /// <summary>[v5.20.7 B-plan] TP/SL 조합 스윕 — 차트데이터로 흑자 전환 가능 손익비 탐색</summary>
     private static async Task RunSweepAsync()
     {
@@ -12251,6 +12358,11 @@ internal static class Program
         if (HasArg("--pump-tune"))
         {
             await RunPumpTuneAsync(pages: 18);  // 90일 PUMP 전용
+            return;
+        }
+        if (HasArg("--entry-compare"))
+        {
+            await RunEntryTimingCompareAsync(pages: 36);  // 180일 — 진입 타이밍 비교
             return;
         }
         var svc = new MiniLorentzianService();
