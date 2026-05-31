@@ -2029,6 +2029,38 @@ namespace TradingBot.ViewModels
 
         private void CalculateTradeStatistics()
         {
+            // [v5.23.70] BPH(PositionHistory) 우선 — 메인 카테고리 통계와 동일 데이터 소스로 통일.
+            //   분할청산은 1포지션 1행으로 묶여있으므로 직관적 + 메인 통계와 자동 일치.
+            //   PositionHistory 비어있을 때만 TradeHistory fallback (호환성, 첫 부팅 시 일시적).
+            if (PositionHistory != null && PositionHistory.Count > 0)
+            {
+                var bphClosed = PositionHistory.Where(p => p.NetPnl != 0m).ToList();
+                if (bphClosed.Count == 0)
+                {
+                    WinRate = 0; TotalProfit = 0; AverageRoe = 0; AvgProfit = 0;
+                    UpdateMonthlyGoalTracker(0d);
+                    return;
+                }
+                int wins = bphClosed.Count(p => p.NetPnl > 0);
+                WinRate = (double)wins / bphClosed.Count * 100;
+                TotalProfit = (double)bphClosed.Sum(p => p.NetPnl);
+                AvgProfit = (double)bphClosed.Average(p => p.NetPnl);
+                AverageRoe = (double)bphClosed.Average(p => p.RoePct ?? 0m);
+
+                DateTime nowKst = DateTime.Now;
+                DateTime monthStartKst = new DateTime(nowKst.Year, nowKst.Month, 1);
+                double bphMonthly = (double)bphClosed
+                    .Where(p =>
+                    {
+                        DateTime localClose = p.CloseTime.Kind == DateTimeKind.Utc ? p.CloseTime.ToLocalTime() : p.CloseTime;
+                        return localClose >= monthStartKst && localClose <= nowKst;
+                    })
+                    .Sum(p => p.NetPnl);
+                UpdateMonthlyGoalTracker(bphMonthly);
+                return;
+            }
+
+            // === fallback: TradeHistory 기반 ===
             if (TradeHistory == null || TradeHistory.Count == 0)
             {
                 WinRate = 0;
@@ -4866,6 +4898,9 @@ ORDER BY CloseTime DESC, Id DESC", new { UserId = userId }, commandTimeout: 30);
                 {
                     PositionHistory.Clear();
                     foreach (var r in list) PositionHistory.Add(r);
+                    // [v5.23.70] BPH 갱신 후 매매기록 탭 상단 통계(WinRate/TotalProfit/AverageRoe) 재계산
+                    //   → 메인 카테고리 통계와 자동 일치
+                    try { CalculateTradeStatistics(); } catch { }
                 });
             }
             catch (Exception ex)

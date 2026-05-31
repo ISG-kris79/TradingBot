@@ -5,6 +5,37 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.70] - 2026-06-01
+
+### 📊 매매기록·성과 통계 BPH 기준으로 통일 — 메인 카테고리 통계와 자동 일치
+
+**문제**: 메인 통계(Major/Pump/Squeeze/Alt)는 `BinancePositionHistory` (BPH, 분할청산 1포지션 1행 묶음) 사용, 매매기록 탭 카운트·통계는 `TradeHistory` (분할청산 N행 raw) 사용. 같은 1포지션이 메인=1건, 매매기록=N건으로 보여 숫자 불일치. 성과 화면(TradeStatisticsWindow)도 TradeHistory 받아 또 다른 숫자.
+
+#### Changed — 통계 데이터 소스 통일 (`MainViewModel.CalculateTradeStatistics`)
+
+- BPH(`PositionHistory`) 우선 → 메인 카테고리 통계와 동일 소스.
+- `WinRate / TotalProfit / AverageRoe / AvgProfit / UpdateMonthlyGoalTracker`: 모두 BPH 기준.
+- `PositionHistory` 비어있을 때만 기존 `TradeHistory` fallback (첫 부팅 일시).
+- `RefreshPositionHistoryFromDbAsync` 끝에 `CalculateTradeStatistics()` 호출 추가 → BPH 갱신 시 자동 재계산.
+
+#### Changed — 매매기록 탭 카운트 (`MainWindow.xaml`)
+
+- 상단 "총 N건" 표시: `TradeHistory.Count` → `PositionHistory.Count`.
+- 상단 통계 "매매 건수" 카드: 동일하게 `PositionHistory.Count`.
+- 메인 그리드는 이미 `PositionHistory` 사용 중이라 변경 없음.
+- 하단 "분할 청산 상세" 그리드는 `FilteredTradeHistory` 그대로 유지 (선택된 포지션의 분할 raw — 의도 일치).
+
+#### Changed — 성과 화면 (`MainWindow.btnStatistics_Click`)
+
+- `TradeStatisticsWindow` 호출 시 `PositionHistory` → `TradeLog` 변환 후 전달.
+- 결과: 성과 화면의 승률/순수익/시간대별 PnL도 BPH 기준 → 메인·매매기록과 완전 일치.
+- `PositionHistory` 없을 때만 `TradeHistory` fallback.
+
+#### 결과
+
+- 메인 카테고리 통계 = 매매기록 탭 상단 통계·카운트 = 성과 화면 통계 = **동일한 BPH 데이터 소스**.
+- 1포지션 1건으로 직관적 표시. 분할청산이 N행으로 늘어나는 혼란 제거.
+
 ## [5.23.69] - 2026-06-01
 
 ### 🧹 외부 진입 포지션 자동 청산 (사용자 SUI 손실 -$700 케이스 방지)

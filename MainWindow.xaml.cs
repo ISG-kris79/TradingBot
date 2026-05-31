@@ -439,15 +439,44 @@ namespace TradingBot
 
         private void btnStatistics_Click(object sender, RoutedEventArgs e)
         {
-            if (ViewModel?.TradeHistory == null)
+            // [v5.23.70] 성과 화면도 BPH(PositionHistory) 기반 — 메인 통계/매매기록 카운트와 동일 소스
+            //   PositionHistoryRow → TradeLog 변환 (AnalyzeData 가 쓰는 PnL/Time 만 채움)
+            if (ViewModel?.PositionHistory == null || ViewModel.PositionHistory.Count == 0)
             {
-                MessageBox.Show("거래 내역이 없습니다.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+                // fallback: PositionHistory 없으면 기존 TradeHistory 사용 (첫 부팅 등)
+                if (ViewModel?.TradeHistory == null || ViewModel.TradeHistory.Count == 0)
+                {
+                    MessageBox.Show("거래 내역이 없습니다.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                try
+                {
+                    var statsWindowFb = new TradeStatisticsWindow(ViewModel.TradeHistory);
+                    statsWindowFb.Owner = this;
+                    statsWindowFb.Show();
+                }
+                catch (Exception exFb)
+                {
+                    MessageBox.Show($"통계 창을 열 수 없습니다: {exFb.Message}", "오류", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
                 return;
             }
 
             try
             {
-                var statsWindow = new TradeStatisticsWindow(ViewModel.TradeHistory);
+                var bphAsTradeLogs = ViewModel.PositionHistory
+                    .Select(p => new TradeLog(
+                        p.Symbol,
+                        p.PositionSide,
+                        p.Category ?? string.Empty,
+                        p.AvgExitPrice,
+                        0f,
+                        p.CloseTime.Kind == DateTimeKind.Utc ? p.CloseTime.ToLocalTime() : p.CloseTime,
+                        p.NetPnl,
+                        p.RoePct ?? 0m
+                    ))
+                    .ToList();
+                var statsWindow = new TradeStatisticsWindow(bphAsTradeLogs);
                 statsWindow.Owner = this;
                 statsWindow.Show();
             }

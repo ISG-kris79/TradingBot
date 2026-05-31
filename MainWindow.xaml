@@ -1782,7 +1782,7 @@
                                     Height="36"
                                     Margin="0,0,16,0"/>
 
-                            <TextBlock Text="{Binding TradeHistory.Count, StringFormat='총 {0}건'}"
+                            <TextBlock Text="{Binding PositionHistory.Count, StringFormat='총 {0}건'}"
                                        VerticalAlignment="Center"
                                        Foreground="#6B7280"
                                        FontWeight="SemiBold"/>
@@ -1868,7 +1868,7 @@
                                                Foreground="#6B7280"
                                                HorizontalAlignment="Center"
                                                Margin="0,0,0,8"/>
-                                    <TextBlock Text="{Binding TradeHistory.Count}"
+                                    <TextBlock Text="{Binding PositionHistory.Count}"
                                                FontSize="28"
                                                FontWeight="Bold"
                                                Foreground="{StaticResource SecondaryBrush}"
