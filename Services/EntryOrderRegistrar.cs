@@ -64,6 +64,10 @@ namespace TradingBot.Services
         {
             string slId = "";
             string tpId = "";
+            // [v5.23.68] A+C: 등록 시도 추적 → verify 단계에서 거래소 실제 존재 검증
+            bool slAttemptedOk = false;
+            bool tpAttemptedOk = false;
+            bool trailAttemptedOk = false;
 
             if (entryPrice <= 0 || quantity <= 0) return (slId, tpId);
 
@@ -100,6 +104,7 @@ namespace TradingBot.Services
                 if (slOk)
                 {
                     slId = slOrderId;
+                    slAttemptedOk = true;
                     OnLog?.Invoke($"✅ [SL] {symbol} 거래소 등록 | {closeSide} qty={quantity} stop=${slPrice:F6} (ROE{stopLossRoePct}%)");
                 }
                 else
@@ -131,6 +136,7 @@ namespace TradingBot.Services
                 if (tpOk)
                 {
                     tpId = tpOrderId;
+                    tpAttemptedOk = true;
                     OnLog?.Invoke($"✅ [TP] {symbol} TAKE_PROFIT_MARKET 등록 | {closeSide} qty={tpQty} stop=${tpPrice:F6} (ROE+{takeProfitRoePct}% 부분{tpPartialRatio:P0})");
                 }
                 else
@@ -161,6 +167,7 @@ namespace TradingBot.Services
 
                     if (trailOk)
                     {
+                        trailAttemptedOk = true;
                         OnLog?.Invoke($"✅ [TRAILING] {symbol} 등록 | {closeSide} qty={trailingQty} callback={trailingCallbackRate}% activation=${tpPriceForActivation:F6}");
                     }
                     else
@@ -172,6 +179,38 @@ namespace TradingBot.Services
             catch (Exception ex)
             {
                 OnLog?.Invoke($"⚠️ [TRAILING] {symbol} 예외: {ex.Message}");
+            }
+
+            // [v5.23.68] A+C: 거래소 실제 존재 verify (TAOUSDT 5-31 사례 — 봇 "등록 성공" 로그인데 실제 0건)
+            //   봇이 PlaceStopOrderAsync 응답을 받아도 거래소 algo 주문이 silently 누락되는 케이스 감지.
+            //   1초 대기(eventual consistency) → openAlgoOrders 조회 → 부족하면 1회 재조회 → 그래도 누락이면 alert.
+            int expectedCount = (slAttemptedOk ? 1 : 0) + (tpAttemptedOk ? 1 : 0) + (trailAttemptedOk ? 1 : 0);
+            if (expectedCount > 0 && _exchange is BinanceExchangeService binSvc)
+            {
+                try
+                {
+                    await Task.Delay(1000, token);
+                    int actual = await binSvc.GetOpenAlgoOrderCountAsync(symbol, token);
+                    if (actual < expectedCount)
+                    {
+                        // eventual consistency 한 번 더 기다림
+                        await Task.Delay(1500, token);
+                        actual = await binSvc.GetOpenAlgoOrderCountAsync(symbol, token);
+                    }
+                    if (actual < expectedCount)
+                    {
+                        int missing = expectedCount - actual;
+                        OnLog?.Invoke($"🚨 [BRACKET-VERIFY] {symbol} 거래소 등록 누락 확정 | expected={expectedCount} actual={actual} missing={missing} — 봇 응답 OK 였으나 거래소에 미존재. 사용자 수동 SL 권고");
+                    }
+                    else
+                    {
+                        OnLog?.Invoke($"🔒 [BRACKET-VERIFY] {symbol} 거래소 실제 등록 확인 ({actual}/{expectedCount})");
+                    }
+                }
+                catch (Exception vex)
+                {
+                    OnLog?.Invoke($"⚠️ [BRACKET-VERIFY] {symbol} 검증 실패 (무해, SL/TP 등록은 시도됨): {vex.Message}");
+                }
             }
 
             return (slId, tpId);

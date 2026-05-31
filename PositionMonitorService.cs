@@ -1399,7 +1399,35 @@ namespace TradingBot.Services
                         if (beQty > 0)
                         {
                             var (beOk, beNewId) = await _exchangeService.PlaceStopOrderAsync(symbol, beSide, beQty, breakEvenPrice, CancellationToken.None);
-                            if (beOk) { lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = beNewId; } OnLog?.Invoke($"✅ {symbol} 본절 STOP_MARKET 등록 | price={breakEvenPrice:F6}"); }
+                            if (beOk)
+                            {
+                                lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var p)) p.StopOrderId = beNewId; }
+                                OnLog?.Invoke($"✅ {symbol} 본절 STOP_MARKET 등록 | price={breakEvenPrice:F6}");
+
+                                // [v5.23.68] 본절 등록 후 거래소 실제 존재 verify
+                                //   기존 SL cancel → 새 본절 SL 등록 흐름에서 silently 누락 케이스 감지
+                                if (_exchangeService is BinanceExchangeService binSvcBe)
+                                {
+                                    _ = Task.Run(async () =>
+                                    {
+                                        try
+                                        {
+                                            await Task.Delay(1500);
+                                            int actual = await binSvcBe.GetOpenAlgoOrderCountAsync(symbol);
+                                            if (actual == 0)
+                                            {
+                                                await Task.Delay(1500);
+                                                actual = await binSvcBe.GetOpenAlgoOrderCountAsync(symbol);
+                                            }
+                                            if (actual == 0)
+                                                OnLog?.Invoke($"🚨 [BE-VERIFY] {symbol} 본절 SL 거래소 미존재 확정 (응답 OK 였으나 algo 0건) — 수동 SL 권고");
+                                            else
+                                                OnLog?.Invoke($"🔒 [BE-VERIFY] {symbol} 본절 SL 거래소 확인 (algo {actual}건)");
+                                        }
+                                        catch { /* verify 실패는 무해 — 등록은 시도됨 */ }
+                                    });
+                                }
+                            }
                             else OnLog?.Invoke($"⚠️ {symbol} 본절 STOP_MARKET 등록 실패");
                         }
                     }

@@ -5,6 +5,31 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.68] - 2026-05-31
+
+### 🔍 SL/TP 거래소 등록 verify — 봇 "응답 OK"인데 실제 0건 케이스 감지
+
+**증상**: TAOUSDT 5-31 06:10 진입. 봇 로그 "✅ SL 등록 / ✅ TP 등록 / ✅ TRAILING 등록" 모두 출력. 그러나 거래소 `openAlgoOrders` 조회 시 **0건** — SL/TP/Trailing 보호 없이 노출 상태. HYPEUSDT는 정상(SL+Trailing 2건 확인).
+
+**Root cause**: `PlaceStopOrderAsync` 등 algo 주문 API가 응답으로 `algoId`를 반환해서 봇은 "등록 성공"으로 인식하지만, 거래소가 silently 누락(eventual reject)하는 케이스가 존재. 봇이 사후 검증 없이 성공 처리.
+
+#### Added — 진입 직후 브라켓 verify (`Services/EntryOrderRegistrar.RegisterEntryOrdersAsync`)
+
+- SL/TP/Trailing 등록 시도 후 1초 대기 → `GetOpenAlgoOrderCountAsync(symbol)` 로 실제 algo 주문 수 확인.
+- 부족 시 1.5초 추가 대기 후 재조회 (eventual consistency 흡수).
+- 그래도 누락이면 `🚨 [BRACKET-VERIFY] 거래소 등록 누락 확정` 로그 + 사용자 수동 SL 권고.
+- 성공 시 `🔒 [BRACKET-VERIFY] 거래소 실제 등록 확인` 로그.
+
+#### Added — 본절 STOP_MARKET 등록 후 verify (`PositionMonitorService.MonitorPumpPositionShortTerm`)
+
+- 본절 전환 시 기존 SL cancel + 새 본절 SL 등록 흐름에서 silently 누락 케이스 감지.
+- 백그라운드 Task로 1.5초 후 algo 주문 수 확인 → 0이면 1.5초 재조회 → 그래도 0이면 `🚨 [BE-VERIFY]` 알림.
+
+#### 운영 주의
+
+- 새 verify 로그가 떴을 때 `🚨` 표시되면 거래소 직접 SL 등록 필요.
+- HYPEUSDT는 정상(본절 SL $66.16 + Trailing 활성). TAOUSDT는 SL 없이 노출 — 사용자 수동 보호 권고.
+
 ## [5.23.67] - 2026-05-29
 
 ### 🔧 5분 손절 가속(EARLY_LOSS_CUT) 제거 — 백테스트 반증으로 진입 로직 정상 확인
