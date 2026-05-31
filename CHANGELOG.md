@@ -5,6 +5,28 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.69] - 2026-06-01
+
+### 🧹 외부 진입 포지션 자동 청산 (사용자 SUI 손실 -$700 케이스 방지)
+
+**배경**: SUIUSDT 5-31 13:40:27 MARKET BUY 진입(qty 544.7, price $0.9179). 그러나 현재 봇 로그 시작은 5-31 15:54:27 — 봇이 그 시점 켜져있지 않았음을 의미. 사용자 통찰("바이낸스에 등록되어 있던 거 남아있었나?")로 추적: MARKET 주문이라 LIMIT 자동체결도 아님. 다른 인스턴스/외부 클라이언트 진입 가능성. SUI -$11 + 기존 손실 누적 -$700.
+
+#### Added — 부팅 시 외부 포지션 자동 청산 (`TradingEngine.SyncCurrentPositionsAsync`)
+
+- 봇 부팅 후 **60초 백그라운드** Task: 거래소 활성 포지션 ↔ `_dbManager.GetOpenTradesAsync(userId)` 비교.
+- 거래소엔 있는데 DB `TradeHistory IsClosed=0` 매칭 없는 심볼 = 외부 진입 → **시장가 reduceOnly 청산 + algo 일괄 cancel**.
+- 안전장치:
+  - 메이저 4종(BTC/ETH/SOL/XRP) 면제 (사용자 실수 청산 방지)
+  - DB 매칭 1건이라도 있으면 (= 봇 진입 흔적) 청산 안 함
+  - 60초 지연으로 DB sync · 거래소 API 안정화 대기
+- 알림: `🧹 [외부 포지션 청산]` OnAlert + `[EXTERNAL_CLEAN]` 상세 로그.
+
+#### 봇 UI 표시 vs 실제 ROE (참고)
+
+- "실시간 마켓 그리드" 가격 변동률은 **24시간 변동률** (어제 종가 vs 현재).
+- "활성 포지션 ROE"는 **진입가 대비 현재가 × 레버리지**.
+- BCH 사례: 24h +1% 표시이나 진입가($306.32) 대비 현재가($300.05)는 -2% × 5x = ROE -10%. 둘 다 사실, 기준이 다름.
+
 ## [5.23.68] - 2026-05-31
 
 ### 🔍 SL/TP 거래소 등록 verify — 봇 "응답 OK"인데 실제 0건 케이스 감지

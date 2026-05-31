@@ -2668,6 +2668,57 @@ namespace TradingBot
                             }
                         }, token);
                     }
+
+                    // [v5.23.69] 외부 진입 포지션 자동 청산 (사용자 요청, SUI 5-31 13:40 외부 진입 손실 -$700 케이스)
+                    //   부팅 시 거래소 활성 포지션 중 봇이 등록한 게 아닌 것(DB TradeHistory IsClosed=0 매칭 없음)을 자동 청산.
+                    //   60초 백그라운드 지연 — 부팅 직후 DB sync / 거래소 API 안정화 대기.
+                    //   안전장치: DB 매칭 1건이라도 있으면 (= 봇 진입) 청산 안 함. 메이저 4종(BTC/ETH/SOL/XRP)은 면제.
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(60_000, token);
+                            if (token.IsCancellationRequested) return;
+
+                            int uid = AppConfig.CurrentUser?.Id ?? 0;
+                            if (uid <= 0) return;
+
+                            var dbOpen = await _dbManager.GetOpenTradesAsync(uid);
+                            var dbOpenSyms = new HashSet<string>(dbOpen.Select(t => t.Symbol), StringComparer.OrdinalIgnoreCase);
+
+                            var liveExch = await _exchangeService.GetPositionsAsync(token);
+                            if (liveExch == null) return;
+
+                            var majors = new HashSet<string>(new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" }, StringComparer.OrdinalIgnoreCase);
+
+                            foreach (var ep in liveExch)
+                            {
+                                if (Math.Abs(ep.Quantity) <= 0) continue;
+                                if (majors.Contains(ep.Symbol)) continue;            // 메이저는 보호
+                                if (dbOpenSyms.Contains(ep.Symbol)) continue;        // DB 매칭 = 봇이 진입한 포지션, 보호
+
+                                // 외부 진입 확정 → 시장가 reduceOnly 청산 + algo 일괄 cancel
+                                decimal qty = Math.Abs(ep.Quantity);
+                                string closeSide = ep.IsLong ? "SELL" : "BUY";
+                                OnAlert?.Invoke($"🧹 [외부 포지션 청산] {ep.Symbol} (qty={qty}) — DB 매칭 없음, 봇 외 진입 자동 정리");
+                                OnStatusLog?.Invoke($"🧹 [EXTERNAL_CLEAN] {ep.Symbol} 외부 진입 감지 → 시장가 청산 시도 (qty={qty} side={closeSide})");
+                                try
+                                {
+                                    await _exchangeService.PlaceMarketOrderAsync(ep.Symbol, closeSide, qty, token, reduceOnly: true);
+                                    await _exchangeService.CancelAllOrdersAsync(ep.Symbol, token);
+                                    OnStatusLog?.Invoke($"✅ [EXTERNAL_CLEAN] {ep.Symbol} 청산 + algo 일괄 취소 완료");
+                                }
+                                catch (Exception cex)
+                                {
+                                    OnStatusLog?.Invoke($"⚠️ [EXTERNAL_CLEAN] {ep.Symbol} 청산 실패: {cex.Message}");
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            OnStatusLog?.Invoke($"⚠️ [EXTERNAL_CLEAN] 외부 포지션 정리 루프 예외: {ex.Message}");
+                        }
+                    }, token);
                 }
             }
             catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ 포지션 동기화 에러: {ex.Message}"); }
