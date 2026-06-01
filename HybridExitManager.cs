@@ -120,7 +120,9 @@ namespace TradingBot.Strategies
             decimal priceChangeRatio = isLong
                 ? (currentPrice - state.EntryPrice) / state.EntryPrice
                 : (state.EntryPrice - currentPrice) / state.EntryPrice;
-            double currentROE = (double)(priceChangeRatio * 20 * 100); // 20배 레버리지 ROE%
+            // [v5.23.72] 하드코딩 20 → state.Leverage 사용 (실제 진입 레버리지 반영, 미설정 시 5x default)
+            decimal effLev = state.Leverage > 0 ? state.Leverage : 5m;
+            double currentROE = (double)(priceChangeRatio * effLev * 100);
             state.HighestROE = Math.Max(state.HighestROE, currentROE);
 
             // [새로추가] ATR 기반 동적 트레일링 스톱 계산
@@ -348,11 +350,11 @@ namespace TradingBot.Strategies
             double currentRsi,
             bool isLongPosition)
         {
-            // 1. 현재 수익률(ROE) 계산 (레버리지 20배 기준)
+            // 1. 현재 수익률(ROE) 계산 — [v5.23.72] 20 하드코딩 → 5x default (알트 실거래 표준)
             decimal priceChangeRate = isLongPosition
                 ? (extremePriceSinceEntry - entryPrice) / entryPrice
                 : (entryPrice - extremePriceSinceEntry) / entryPrice;
-            decimal roe = priceChangeRate * 20 * 100; // % 단위
+            decimal roe = priceChangeRate * 5m * 100; // % 단위
 
             // 2. 상황별 ATR 멀티플라이어(승수) 결정
             double atrMultiplier;
@@ -501,7 +503,9 @@ namespace TradingBot.Strategies
                 decimal pChg = isLong
                     ? (state.HighestPriceSinceEntry - state.EntryPrice) / state.EntryPrice
                     : (state.EntryPrice - state.LowestPriceSinceEntry) / state.EntryPrice;
-                double curRoe = (double)(pChg * 20 * 100);
+                // [v5.23.72] 하드코딩 20 → state.Leverage 사용
+                decimal effLev2 = state.Leverage > 0 ? state.Leverage : 5m;
+                double curRoe = (double)(pChg * effLev2 * 100);
 
                 // 본절 전환 1회성
                 if (!state.BreakEvenTriggered && curRoe >= 10)
@@ -611,6 +615,9 @@ namespace TradingBot.Strategies
         public string Symbol { get; set; } = string.Empty;
         public string Direction { get; set; } = string.Empty;
         public decimal EntryPrice { get; set; }
+        // [v5.23.72] 실제 진입 레버리지 (default 5x — 알트 거래소 max 한도)
+        //   기존 ROE 계산이 20x 하드코딩 → 5x 진입 시 ROE 4배 부풀려진 표시 (SUI -22% 실제를 -89%로 표시한 사용자 사고)
+        public decimal Leverage { get; set; } = 5m;
         public decimal PredictedPrice { get; set; }
         public decimal PreviousPredictedPrice { get; set; }
         public decimal BreakevenPrice { get; set; }

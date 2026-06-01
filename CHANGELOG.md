@@ -5,6 +5,34 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.72] - 2026-06-01
+
+### 🐛 봇 UI ROE 20배 하드코딩 버그 fix — SUI -89% 표시 사고의 진짜 원인
+
+**증상**: 사용자가 봇 UI에서 SUI ROE -89% 표시 봤음. 거래소 실제 income 합산은 -22.65% (마진 $100 대비). 4배 부풀려진 표시 → 사용자 대패닉 + 추가 손실 회피 동작 어려움.
+
+**Root cause**: `HybridExitManager.cs` + `DynamicTrailingStopEngine.cs` 의 ROE 계산이 **레버리지 20배 하드코딩**. SUI는 실제 5x (알트 거래소 max 한도 자동 조정) 진입이라 ROE 4배 부풀려짐.
+- 실제: 가격 -4.5% × 5x = **-22% ROE**
+- 봇 UI 표시: 가격 -4.5% × **20** = **-90% ≈ 사용자가 본 -89%**
+
+#### Fixed — 4곳 하드코딩 20 제거
+
+- `HybridExitManager.cs:123` (실시간 currentROE) — `state.Leverage` 사용, 미설정 시 5x default
+- `HybridExitManager.cs:357` (ATR 멀티플라이어 ROE 분기) — 5x default (백테스트 분기점은 별도 추적)
+- `HybridExitManager.cs:506` (Smart Target curRoe) — `state.Leverage` 사용
+- `Services/DynamicTrailingStopEngine.cs:336` (CalculateROE) — 5x default
+
+#### Added — `HybridExitState.Leverage` 필드
+
+- 진입 시 실제 레버리지 전달받을 수 있도록 필드 추가 (default 5m).
+- RegisterState 호출자가 leverage 전달하면 정확한 ROE, 아니면 5x 표시 (알트 실거래 표준값).
+
+### 📦 BPH UserId 백필 (오프밴드 운영)
+
+- 매매기록 UI 가 `UserId=1` (197건) 만 필터링하던 중 `UserId=10` (384건) 발견 — 동일 거래소 계정 데이터.
+- 충돌 행 0건 확인 후 `UPDATE BinancePositionHistory SET UserId=1 WHERE UserId=10` 실행.
+- 결과: UserId=1 총 **581건** — 매매기록 화면에 SUI 등 손실 row 포함 전부 표시.
+
 ## [5.23.71] - 2026-06-01
 
 ### 🛠️ v5.23.69 외부청산 결함 fix — SUI 자동청산 누락 사고

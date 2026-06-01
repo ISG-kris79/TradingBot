@@ -333,7 +333,8 @@ namespace TradingBot.Services
             decimal change = isLong
                 ? (reference - entry) / entry
                 : (entry - reference) / entry;
-            return change * 20 * 100; // 20배 레버리지 ROE%
+            // [v5.23.72] 하드코딩 20 → 5x default (알트 실거래 거래소 max 한도)
+            return change * 5m * 100;
         }
     }
 
