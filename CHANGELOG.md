@@ -5,6 +5,26 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.71] - 2026-06-01
+
+### 🛠️ v5.23.69 외부청산 결함 fix — SUI 자동청산 누락 사고
+
+**증상**: v5.23.69 부팅 후 외부 포지션 자동청산이 SUI를 청산 안 함. 봇 재시작 → SUI 활성 포지션 그대로 → 추가 손실.
+
+**Root cause**: v5.23.69 는 `dbManager.GetOpenTradesAsync` 매칭 있으면 "봇 진입"으로 보호했음. 하지만 `Strategy='SYNC_RESTORED'` (봇이 외부 포지션 발견 시 자동 INSERT) 같은 row 도 매칭되어 보호 대상으로 잘못 판정. SUI 의 SYNC_RESTORED row 가 보호 트리거 → 청산 미실행.
+
+#### Fixed — Strategy 검사 추가 (`TradingEngine.SyncCurrentPositionsAsync` 외부청산 Task)
+
+- DB 매칭 row 의 Strategy 가 `SYNC_RESTORED / PHANTOM / EXTERNAL / RECOVERED / BACKFILL` 키워드 포함 시 "봇 진입 보호" 대상에서 **제외**.
+- 봇이 직접 진입한 row (BB_WALK_ALT 등 명시적 시그널 strategy) 만 보호 → 외부 진입 정확히 청산.
+- 지연 60초 → 10초 단축 (추가 손실 최소화).
+
+#### 운영 메모 — BPH UserId 불일치 발견 (별도 추적 필요)
+
+- BinancePositionHistory 테이블에 같은 거래소 계정 데이터가 `UserId=1` (197건) 과 `UserId=10` (384건) 으로 분산 INSERT 됨.
+- 매매기록 UI 는 `UserId=1` 만 필터링 → SUI 등 일부 손실 row 가 화면에 안 보임.
+- 백필 (UserId=10 → 1) 은 사용자 명시 승인 후 별도 진행.
+
 ## [5.23.70] - 2026-06-01
 
 ### 📊 매매기록·성과 통계 BPH 기준으로 통일 — 메인 카테고리 통계와 자동 일치
