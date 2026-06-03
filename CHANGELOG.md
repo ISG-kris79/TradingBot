@@ -5,6 +5,21 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.73] - 2026-06-03
+
+### 변경 — 진입 로직 (RSI 보조화 + BB 게이트)
+
+- **ENGINE_151 (FifteenFiveOneEngine)**: MACD 골든크로스를 진입 필수 1차 트리거로 변경. RSI 반등 단독 진입 신호 폐지 — RSI는 상승 확인 가산(보조)으로만 사용. 사용자 원칙 "RSI로 진입하지 마, RSI는 보조".
+- **RSI 과매수 거부 가드 제거**: 백테스트(`--diagnose` PnL, production TP1%/SL3%)에서 고RSI/BB상단이 최고 흑자 구간으로 확인 → 차단은 역효과.
+- **활성 BB 게이트 0.5 → 0.7 상향**: BB 위치 임계 스윕 결과 건당 품질 +21% (avg $2.39→$2.89). 추세추종 봇은 BB 중상단이 우위.
+- **죽은 코드 삭제**: `ShouldBlockChasingEntry` + `IsStaircaseUptrendPattern` — 결과를 INFO 로그로만 쓰던 reference-only 잔재("BB상단 RSI<70→진입승인" 잘못된 BB 사용법 포함).
+- 검증 도구(LorentzianValidator): BB 위치별 PnL 버킷 + 게이트 임계 스윕 진단 추가.
+- 검증 결론: 실거래 30일 +$728(건당 $2.17)로 백테스트와 일치 — 봇은 aggregate 흑자, "손실" 체감은 선택편향.
+
+### 포함 — 이전 미커밋 작업 (동일 작업트리)
+
+- UserId 강제 리팩터(`AppConfig.CurrentUser` 기반 `?? throw`) 및 Phase 2 Lorentzian 1h 스윕 작업 일부 — 이번 세션 외 작업이나 같은 작업트리에 있어 함께 커밋됨.
+
 ## [5.23.72] - 2026-06-01
 
 ### 🐛 봇 UI ROE 20배 하드코딩 버그 fix — SUI -89% 표시 사고의 진짜 원인

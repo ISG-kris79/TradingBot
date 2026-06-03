@@ -1101,7 +1101,7 @@ namespace TradingBot.ViewModels
                     try
                     {
                         var rest = _engine.GetRestClient();
-                        int uid = AppConfig.CurrentUser?.Id ?? 0;
+                        int uid = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                         if (rest != null && uid > 0)
                         {
                             _bphSync = new TradingBot.Services.BinancePositionHistorySync(rest, AppConfig.ConnectionString, uid);
@@ -1685,7 +1685,7 @@ namespace TradingBot.ViewModels
 
                     if (sfd.ShowDialog() == true)
                     {
-                        int userId = AppConfig.CurrentUser?.Id ?? 0;
+                        int userId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                         if (userId <= 0)
                         {
                             AddLog("⚠️ 로그인 사용자 ID를 확인할 수 없어 매매 이력을 내보낼 수 없습니다.");
@@ -1852,7 +1852,7 @@ namespace TradingBot.ViewModels
         {
             try
             {
-                int userId = AppConfig.CurrentUser?.Id ?? 0;
+                int userId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                 if (userId <= 0)
                 {
                     AddLog("⚠️ 로그인 사용자 ID를 확인할 수 없어 매매 이력을 로드할 수 없습니다.");
@@ -1892,7 +1892,7 @@ namespace TradingBot.ViewModels
         {
             try
             {
-                int userId = AppConfig.CurrentUser?.Id ?? 0;
+                int userId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                 if (userId <= 0) return;
 
                 var db = new DbManager(AppConfig.ConnectionString);
@@ -4879,7 +4879,7 @@ GROUP BY Category
             {
                 string cs = AppConfig.ConnectionString;
                 if (string.IsNullOrEmpty(cs)) return;
-                int userId = AppConfig.CurrentUser?.Id ?? 0;
+                int userId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                 if (userId <= 0)
                 {
                     try { AddLiveLog("⚠️ [PositionHistory] CurrentUser.Id 없음 — 로그인 후 다시 시도"); } catch { }

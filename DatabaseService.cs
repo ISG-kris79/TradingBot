@@ -84,7 +84,7 @@ SELECT CASE WHEN EXISTS (
 
         private static async Task<int> ResolveCurrentUserIdAsync(SqlConnection conn)
         {
-            int currentUserId = TradingBot.AppConfig.CurrentUser?.Id ?? 0;
+            int currentUserId = TradingBot.AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
             if (currentUserId > 0)
                 return currentUserId;
 
@@ -967,7 +967,7 @@ SELECT CASE WHEN EXISTS (
 
         public async Task<List<TradeHistoryModel>> GetTradeHistoryAsync(int limit = 100)
         {
-            int userId = TradingBot.AppConfig.CurrentUser?.Id ?? 0;
+            int userId = TradingBot.AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
             if (userId <= 0)
                 return new List<TradeHistoryModel>();
 
@@ -978,7 +978,7 @@ SELECT CASE WHEN EXISTS (
 
         public async Task<List<TradeHistoryModel>> GetTradeHistoryAsync(DateTime start, DateTime end, int limit = 1000)
         {
-            int userId = TradingBot.AppConfig.CurrentUser?.Id ?? 0;
+            int userId = TradingBot.AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
             if (userId <= 0)
                 return new List<TradeHistoryModel>();
 
@@ -990,7 +990,7 @@ SELECT CASE WHEN EXISTS (
         // [추가] 매매 이력 CSV 내보내기
         public async Task ExportTradeHistoryToCsvAsync(string filePath)
         {
-            int userId = TradingBot.AppConfig.CurrentUser?.Id ?? 0;
+            int userId = TradingBot.AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
             if (userId <= 0)
                 return;
 

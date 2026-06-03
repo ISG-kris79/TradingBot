@@ -988,10 +988,13 @@ namespace TradingBot
                         double lower = sma - 2.0 * sd;
                         double last = (double)k15bb[n - 1].ClosePrice;
                         double bbPos = (last - lower) / (upper - lower);
-                        if (bbPos < 0.5)
+                        // [v5.23.73] BB 게이트 0.5 → 0.7 상향 — 백테스트(--diagnose, EMA20↑ n=7531, production TP1%/SL3%)
+                        //   BB 위치 임계 스윕: avg/건 bbPos≥0.5 $2.39 → ≥0.7 $2.89 (+21% 품질). 추세추종 봇은 상단이 최고 흑자.
+                        //   (스윕은 5m BB 기준 — 여기 15m 게이트엔 동일 임계를 보수적으로 적용. 추후 15m 별도 검증 여지)
+                        if (bbPos < 0.7)
                         {
-                            blockReason = $"M15_BB_LOWER_HALF:pos={bbPos:F2}<0.5";
-                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (15m BB middle 아래 — chop, 30일 WR 26~46% -$484)");
+                            blockReason = $"M15_BB_BELOW_0.7:pos={bbPos:F2}<0.7";
+                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (15m BB 중상단 미만 — 추세 약함, 백테스트 avg/건 ≥0.7이 +21%)");
                             return false;
                         }
                     }
@@ -1700,7 +1703,7 @@ namespace TradingBot
             Services.SymbolScorecard.Instance.OnLog += msg => OnStatusLog?.Invoke(msg);
             try
             {
-                int uid = AppConfig.CurrentUser?.Id ?? 0;
+                int uid = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                 string? cs = AppConfig.Current?.ConnectionStrings?.DefaultConnection;
                 if (uid > 0 && !string.IsNullOrEmpty(cs))
                     Services.SymbolScorecard.Instance.Start(cs, uid);
@@ -2404,7 +2407,7 @@ namespace TradingBot
 
                     try
                     {
-                        int uid = AppConfig.CurrentUser?.Id ?? 0;
+                        int uid = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                         if (uid > 0) _ = _dbManager?.DeletePositionStateAsync(uid, phantomSymbol);
                     }
                     catch { }
@@ -2500,7 +2503,7 @@ namespace TradingBot
                     }
 
                     // [v5.2.2] DB에서 이 유저의 오픈 포지션 심볼 목록 조회 → 거래소 포지션과 교차 비교
-                    int currentUserId = AppConfig.CurrentUser?.Id ?? 0;
+                    int currentUserId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                     var ownOpenSymbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     if (currentUserId > 0)
                     {
@@ -2547,7 +2550,7 @@ namespace TradingBot
                     // [v3.5.2] DB에서 포지션 상태 복원 (부분청산/본절/계단식)
                     try
                     {
-                        int stateUserId = AppConfig.CurrentUser?.Id ?? 0;
+                        int stateUserId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                         if (stateUserId > 0)
                         {
                             var savedStates = await _dbManager.LoadPositionStatesAsync(stateUserId);
@@ -2680,7 +2683,7 @@ namespace TradingBot
                             await Task.Delay(10_000, token);
                             if (token.IsCancellationRequested) return;
 
-                            int uid = AppConfig.CurrentUser?.Id ?? 0;
+                            int uid = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                             if (uid <= 0) return;
 
                             // Strategy 까지 가져와서 외부 동기화 류 row 는 "봇 진입 보호" 대상에서 제외
@@ -2751,7 +2754,7 @@ namespace TradingBot
         {
             try
             {
-                int userId = AppConfig.CurrentUser?.Id ?? 0;
+                int userId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                 if (userId <= 0)
                 {
                     OnStatusLog?.Invoke("⚠️ [DB 정리] 현재 로그인 사용자 ID를 확인할 수 없어 사용자별 오픈 포지션 정리를 건너뜁니다.");
@@ -2882,7 +2885,7 @@ namespace TradingBot
             try
             {
                 const int withinMinutes = 60; // 1시간 이내
-                int currentUserId = AppConfig.CurrentUser?.Id ?? 0;
+                int currentUserId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                 var recentlyClosed = await _dbManager.GetRecentlyClosedPositionsAsync(
                     withinMinutes,
                     currentUserId > 0 ? currentUserId : null);
@@ -3100,7 +3103,7 @@ namespace TradingBot
                 // [v4.4.0] DB에서 오늘 누적 PnL 복원
                 try
                 {
-                    int userId = AppConfig.CurrentUser?.Id ?? 0;
+                    int userId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                     if (userId > 0)
                     {
                         var todayTrades = await _dbManager.GetTradeHistoryAsync(userId, DateTime.Today, DateTime.Now, 500);
@@ -7014,7 +7017,7 @@ namespace TradingBot
                         //   누락 시: 봇 재시작 → 옛 PositionState 로드 → _activePositions 부활 → 슬롯 풀 누적
                         try
                         {
-                            int uid = AppConfig.CurrentUser?.Id ?? 0;
+                            int uid = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                             if (uid > 0) _ = _dbManager?.DeletePositionStateAsync(uid, pos.Symbol);
                         }
                         catch { }
@@ -9986,13 +9989,8 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"🧭 {symbol} {decision} 하이브리드 진입 승인 | Zone={entryZoneTag}, %B={entryBbPosition:P0}, src={signalSource}");
             }
 
-            // 추격 필터 참고
-            if (latestCandle != null &&
-                ShouldBlockChasingEntry(symbol, decision, currentPrice, latestCandle, recentEntryKlines, mode, out string chaseReason))
-            {
-                OnStatusLog?.Invoke($"⚠️ [추격 참고] {symbol} {decision} | {chaseReason} → 1M 허브 V-Turn 대기");
-                EntryLog("CHASE", "INFO", chaseReason);
-            }
+            // [v5.23.73] 추격 필터(ShouldBlockChasingEntry) 호출 제거 — 결과를 INFO 로그로만 쓰던 reference-only 잔재.
+            //   "BB 상단인데 RSI<70 → 진입 승인" 류 로직이 enforcement 없이 죽어 있어 혼란만 줌. 메서드 자체도 삭제.
 
             // RL 상태 구성 (비활성화)
             if (latestCandle != null)
@@ -12211,7 +12209,7 @@ namespace TradingBot
             {
                 try
                 {
-                    int uid = AppConfig.CurrentUser?.Id ?? 0;
+                    int uid = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                     if (uid > 0) await _dbManager.DeletePositionStateAsync(uid, symbol);
                 }
                 catch { }
@@ -13470,246 +13468,10 @@ namespace TradingBot
             }
         }
 
-        private bool ShouldBlockChasingEntry(
-            string symbol,
-            string decision,
-            decimal currentPrice,
-            CandleData latestCandle,
-            List<IBinanceKline>? recentKlines,
-            string mode,
-            out string reason)
-        {
-            reason = string.Empty;
-
-            if (decision != "LONG" && decision != "SHORT")
-                return false;
-
-            if (string.Equals(mode, "SIDEWAYS", StringComparison.OrdinalIgnoreCase))
-                return false;
-
-            if (recentKlines == null || recentKlines.Count < 20)
-                return false;
-
-            var recent20 = recentKlines.TakeLast(20).ToList();
-            decimal recentHigh = recent20.Max(k => k.HighPrice);
-            decimal recentLow = recent20.Min(k => k.LowPrice);
-            decimal sma20 = latestCandle.SMA_20 > 0 ? (decimal)latestCandle.SMA_20 : 0m;
-            decimal bbLower = latestCandle.BollingerLower > 0 ? (decimal)latestCandle.BollingerLower : 0m;
-            decimal bbUpper = latestCandle.BollingerUpper > 0 ? (decimal)latestCandle.BollingerUpper : 0m;
-            decimal bbRange = bbUpper - bbLower;
-            decimal bbPosition = bbRange > 0m ? (currentPrice - bbLower) / bbRange : 0m;
-            decimal currentBbWidthPct = latestCandle.BB_Width > 0
-                ? (decimal)latestCandle.BB_Width
-                : 0m;
-            decimal averageBbWidthPct = CalculateAverageBollingerWidthPct(recentKlines);
-
-            decimal priceToSma20Pct = sma20 > 0
-                ? ((currentPrice - sma20) / sma20) * 100m
-                : (decimal)latestCandle.Price_To_SMA20_Pct;
-
-            int riskScore = 0;
-            var flags = new List<string>();
-            bool bbFilterPassed = false;  // ← BB 필터 통과 여부 추적
-
-            if (decision == "LONG")
-            {
-                decimal pullbackFromHighPct = recentHigh > 0
-                    ? ((recentHigh - currentPrice) / recentHigh) * 100m
-                    : 999m;
-
-                bool nearRecentHigh = pullbackFromHighPct <= 0.20m;
-                bool stretchedAboveSma20 = priceToSma20Pct >= 0.80m;
-                bool rsiHot = latestCandle.RSI >= 64f;
-                bool touchingUpperBand = bbUpper > 0 && currentPrice >= bbUpper * 0.998m;
-                bool upperShadowWarning = latestCandle.Upper_Shadow_Ratio >= 0.35f;
-                // ── 볼린저 밴드 추세/과열 구분 로직 (v2.4.12) ──
-                bool inUpperZone = bbRange > 0m && bbPosition >= 0.85m;
-                // 밴드 폭 확산(Squeeze→Expansion): 현재 폭이 평균 대비 10% 이상 넓어지는 중
-                bool isBbExpansion = averageBbWidthPct > 0m
-                    && currentBbWidthPct > 0m
-                    && currentBbWidthPct > averageBbWidthPct * 1.10m;
-
-                bool strongBreakoutException = latestCandle.Volume_Ratio >= 1.8f
-                    && latestCandle.OI_Change_Pct >= 0.8f
-                    && latestCandle.Upper_Shadow_Ratio < 0.20f
-                    && latestCandle.RSI < 70f;
-
-                // ⑤ [Staircase Pursuit] 계단식 상승 감지: Higher Lows(3봉) + BB 중단 위 + RSI<80 → nearRecentHigh 차단 면제
-                bool isStaircasePursuit = IsStaircaseUptrendPattern(recent20, bbPosition, latestCandle);
-                if (isStaircasePursuit && latestCandle.RSI < 80f)
-                {
-                    OnStatusLog?.Invoke($"🪜 [Staircase Pursuit] {symbol} 계단식 상승 패턴 → 고점 추격 필터 우회 (%B={bbPosition:P0}, RSI={latestCandle.RSI:F1})");
-                    bbFilterPassed = true;
-                }
-
-                // ① 초과열(RSI ≥ 80): 상단 구간에서 RSI 80 이상은 상투 가능성 → 차단
-                if (inUpperZone && latestCandle.RSI >= 80f)
-                {
-                    reason = $"BB 상단 초과열 차단 (BB위치 {bbPosition:P0}, RSI {latestCandle.RSI:F1} ≥ 80)";
-                    return true;
-                }
-
-                // ② 상단 구간 + 밴드 확산 중(Squeeze 탈출) → 강력한 발산 신호, 진입 승인
-                if (inUpperZone && isBbExpansion)
-                {
-                    OnStatusLog?.Invoke($"🚀 [BB 필터 통과] {symbol} 상단 {bbPosition:P0}이지만 밴드 확산 중 (현재폭 {currentBbWidthPct:F2}% > 평균폭 {averageBbWidthPct:F2}% ×1.1) → 추세 발산 진입 승인");
-                    bbFilterPassed = true;  // ← riskScore 무시
-                }
-                // ③ 상단 구간이지만 RSI < 70(미과열) → 추세의 시작으로 판단, 진입 승인
-                else if (inUpperZone && latestCandle.RSI < 70f)
-                {
-                    OnStatusLog?.Invoke($"🚀 [BB 필터 통과] {symbol} 상단 {bbPosition:P0}이지만 RSI {latestCandle.RSI:F1} < 70 → 추세 시작 진입 승인");
-                    bbFilterPassed = true;  // ← riskScore 무시
-                }
-                // ④ 상단 구간 + RSI 70~80 + 밴드 미확산 → 과열 추격 차단
-                else if (inUpperZone && !strongBreakoutException)
-                {
-                    reason = $"BB 상단 과열 (BB위치 {bbPosition:P0}, RSI {latestCandle.RSI:F1}, 밴드 미확산) → 차단";
-                    return true;
-                }
-
-                if (!bbFilterPassed)  // ← BB 필터 미통과일 때만 riskScore 계산
-                {
-                    if (nearRecentHigh)
-                    {
-                        riskScore += 2;
-                        flags.Add($"최근고점 근접({recentHigh:F4}, 되돌림 {pullbackFromHighPct:F2}%)");
-                    }
-
-                    if (stretchedAboveSma20)
-                    {
-                        riskScore += 1;
-                        flags.Add($"SMA20 이격 +{priceToSma20Pct:F2}%");
-                    }
-
-                    if (rsiHot)
-                    {
-                        riskScore += 1;
-                        flags.Add($"RSI {latestCandle.RSI:F1}");
-                    }
-
-                    if (touchingUpperBand)
-                    {
-                        riskScore += 1;
-                        flags.Add("BB 상단 근접");
-                    }
-
-                    if (upperShadowWarning)
-                    {
-                        riskScore += 1;
-                        flags.Add($"윗꼬리 {latestCandle.Upper_Shadow_Ratio * 100f:F0}%");
-                    }
-                }
-            }
-            else
-            {
-                decimal bounceFromLowPct = recentLow > 0
-                    ? ((currentPrice - recentLow) / recentLow) * 100m
-                    : 999m;
-
-                bool nearRecentLow = bounceFromLowPct <= 0.20m;
-                bool stretchedBelowSma20 = priceToSma20Pct <= -0.80m;
-                bool rsiCold = latestCandle.RSI <= 36f;
-                bool touchingLowerBand = bbLower > 0 && currentPrice <= bbLower * 1.002m;
-                bool lowerShadowWarning = latestCandle.Lower_Shadow_Ratio >= 0.35f;
-                // ── 볼린저 밴드 추세/과냉 구분 로직 (v2.4.12, SHORT 대칭) ──
-                bool inLowerZone = bbRange > 0m && bbPosition <= 0.15m;
-                bool isBbExpansionShort = averageBbWidthPct > 0m
-                    && currentBbWidthPct > 0m
-                    && currentBbWidthPct > averageBbWidthPct * 1.10m;
-
-                bool strongBreakdownException = latestCandle.Volume_Ratio >= 1.8f
-                    && latestCandle.OI_Change_Pct >= 0.8f
-                    && latestCandle.Lower_Shadow_Ratio < 0.20f
-                    && latestCandle.RSI > 30f;
-
-                // ① 초과냉(RSI ≤ 20): 하단 구간에서 RSI 20 이하는 과매도 반등 위험 → 차단
-                if (inLowerZone && latestCandle.RSI <= 20f)
-                {
-                    reason = $"BB 하단 초과냉 차단 (BB위치 {bbPosition:P0}, RSI {latestCandle.RSI:F1} ≤ 20)";
-                    return true;
-                }
-
-                // ② 하단 구간 + 밴드 확산 중(Squeeze 탈출) → 강력한 하락 발산 신호, 진입 승인
-                if (inLowerZone && isBbExpansionShort)
-                {
-                    OnStatusLog?.Invoke($"🚀 [BB 필터 통과] {symbol} 하단 {bbPosition:P0}이지만 밴드 확산 중 (현재폭 {currentBbWidthPct:F2}% > 평균폭 {averageBbWidthPct:F2}% ×1.1) → 추세 발산 진입 승인");
-                    bbFilterPassed = true;  // ← riskScore 무시
-                }
-                // ③ 하단 구간이지만 RSI > 30(미과매도) → 하락 추세 시작으로 판단, 진입 승인
-                else if (inLowerZone && latestCandle.RSI > 30f)
-                {
-                    OnStatusLog?.Invoke($"🚀 [BB 필터 통과] {symbol} 하단 {bbPosition:P0}이지만 RSI {latestCandle.RSI:F1} > 30 → 추세 시작 진입 승인");
-                    bbFilterPassed = true;  // ← riskScore 무시
-                }
-                // ④ 하단 구간 + RSI 20~30 + 밴드 미확산 → 과매도 추격 차단
-                else if (inLowerZone && !strongBreakdownException)
-                {
-                    reason = $"BB 하단 과매도 (BB위치 {bbPosition:P0}, RSI {latestCandle.RSI:F1}, 밴드 미확산) → 차단";
-                    return true;
-                }
-
-                if (!bbFilterPassed)  // ← BB 필터 미통과일 때만 riskScore 계산
-                {
-                    if (nearRecentLow)
-                    {
-                        riskScore += 2;
-                        flags.Add($"최근저점 근접({recentLow:F4}, 반등 {bounceFromLowPct:F2}%)");
-                    }
-
-                    if (stretchedBelowSma20)
-                    {
-                        riskScore += 1;
-                        flags.Add($"SMA20 이격 {priceToSma20Pct:F2}%");
-                    }
-
-                    if (rsiCold)
-                    {
-                        riskScore += 1;
-                        flags.Add($"RSI {latestCandle.RSI:F1}");
-                    }
-
-                    if (touchingLowerBand)
-                    {
-                        riskScore += 1;
-                        flags.Add("BB 하단 근접");
-                    }
-
-                    if (lowerShadowWarning)
-                    {
-                        riskScore += 1;
-                        flags.Add($"아랫꼬리 {latestCandle.Lower_Shadow_Ratio * 100f:F0}%");
-                    }
-                }
-            }
-
-            // [수정] BB 필터 미통과한 경우에만 riskScore로 차단
-            if (!bbFilterPassed && riskScore >= 4)
-            {
-                reason = string.Join(", ", flags);
-                return true;
-            }
-
-            return false;
-        }
-
-        /// <summary>[Staircase Pursuit] recent 봉 리스트 기준으로 3연속 저점 상승 + BB 중단 이상 여부를 판단합니다.</summary>
-        private static bool IsStaircaseUptrendPattern(
-            List<IBinanceKline> recentKlines,
-            decimal bbPosition,
-            CandleData latestCandle)
-        {
-            if (recentKlines == null || recentKlines.Count < 4) return false;
-            // BB 중단 위에 있어야 함 (%B > 0.45)
-            if (bbPosition < 0.45m) return false;
-            // RSI 과열(≥80) 제외
-            if (latestCandle.RSI >= 80f) return false;
-            // 최근 4봉에서 3연속 Higher Lows 확인
-            var tail = recentKlines.TakeLast(4).ToList();
-            for (int i = 1; i < tail.Count; i++)
-                if (tail[i].LowPrice <= tail[i - 1].LowPrice) return false;
-            return true;
-        }
+        // [v5.23.73] ShouldBlockChasingEntry + IsStaircaseUptrendPattern 삭제됨.
+        //   reference-only (결과를 INFO 로그로만 사용, enforcement 없음) 잔재였고,
+        //   "BB 상단인데 RSI<70 → 진입 승인" 같은 잘못된 BB 사용법 로직(저항선 매수)을 담고 있어 제거.
+        //   실제 고점 추격 차단은 IsEntryAllowedCore 의 M15_RANGE_TOP / 15m BB pos 게이트가 담당.
 
         private async Task<(bool blocked, string reason)> EvaluateOneMinuteUpperWickBlockAsync(
             string symbol,

@@ -1,20 +1,20 @@
 ﻿{
-    "timestamp":  "2026-04-30 09:17:00",
+    "timestamp":  "2026-06-03 15:17:01",
     "version":  "5.10.66",
-    "status":  "ALERT",
+    "status":  "OK",
     "alerts":  [
-                   "WARN: Major entries 22 (BlockMajorEntries malfunction suspected)"
+
                ],
     "metrics":  {
                     "pnl_6h":  0,
                     "winrate_6h":  0,
                     "label_n_24h":  0,
                     "online_retrain_24h":  0,
-                    "trades_24h":  18,
-                    "pnl_24h":  -282.4,
+                    "trades_24h":  10,
+                    "pnl_24h":  -54.25,
                     "minutes_since_last_log":  0,
-                    "major_entries_24h":  22,
-                    "online_logs_24h":  128064,
+                    "major_entries_24h":  0,
+                    "online_logs_24h":  5706,
                     "trades_6h":  0,
                     "label_success_rate_24h":  0,
                     "major_blocked_24h":  0

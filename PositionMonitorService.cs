@@ -76,7 +76,7 @@ namespace TradingBot.Services
                 if (!await _posStateSemaphore.WaitAsync(0)) return; // 슬롯 없으면 스킵 (다음 tick에 재시도)
                 try
                 {
-                    int userId = AppConfig.CurrentUser?.Id ?? 0;
+                    int userId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                     if (userId <= 0) return;
                     PositionInfo? pos;
                     lock (_posLock) { _activePositions.TryGetValue(symbol, out pos); }
@@ -3605,7 +3605,7 @@ namespace TradingBot.Services
             {
                 try
                 {
-                    int userId = AppConfig.CurrentUser?.Id ?? 0;
+                    int userId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                     if (userId > 0) await _dbManager.DeletePositionStateAsync(userId, symbol);
                 }
                 catch { }

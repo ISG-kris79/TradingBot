@@ -105,7 +105,7 @@ namespace TradingBot.Services
                             //   사용자 보고: "수익률 0.00% / 금일 누적 0 USDT 잘못 표시"
                             //   원인: DB PnLPercent=0 (외부 청산 fallback) + totalPnl=0m 하드코딩
                             //   fix: 오늘 자정 이후 청산 PnL 합계 DB 조회 + ROE 추정 (PnL/notional×lev)
-                            int uid = AppConfig.CurrentUser?.Id ?? 0;
+                            int uid = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                             decimal todayTotal = 0m;
                             if (uid > 0 && Shared != null)
                             {
@@ -378,7 +378,7 @@ END", commandTimeout: 60);
             try
             {
                 DateTime todayKstStart = DateTime.Today;
-                int userId = AppConfig.CurrentUser?.Id ?? 0;
+                int userId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
 
                 await using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
@@ -553,7 +553,7 @@ END");
         private static int GetCurrentUserId()
         {
             // 로그인 후 AppConfig.CurrentUser.Id는 항상 설정됨 — 동기 DB 블로킹 호출 제거
-            return AppConfig.CurrentUser?.Id ?? 0;
+            return AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
         }
 
         private bool TryGetCurrentUserIdForSave(string operation, out int userId)

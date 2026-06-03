@@ -20,10 +20,10 @@ namespace TradingBot.Services
     ///     - 하락장에서 LONG 차단 (가짜 신호 제거)
     ///
     ///   Layer 2 (5분봉, 전략): "진입 대기 자리 찾기"
-    ///     - MACD 골든크로스
-    ///     - RSI 반등 (과매도 40 이하에서 상승 전환)
-    ///     - EMA 12/26 정배열
-    ///     - 3개 중 2개 이상 True → "진입 대기" 상태로 등록
+    ///     - [v5.23.73] MACD 골든크로스 = 필수 1차 트리거 (없으면 진입 없음)
+    ///     - RSI = 보조: 과매수(ceiling 이상)면 거부, 상승이면 확인 가산 (단독 진입 불가)
+    ///     - EMA 12/26 정배열 = 보조: 단기 추세 동조 확인 가산
+    ///     - MACD 골든크로스 + 보조확인(RSI상승/EMA정배열) 최소 1개 → "진입 대기" 등록
     ///
     ///   Layer 3 (1분봉, 실행): "정확한 방아쇠"
     ///     - "진입 대기" 심볼 중 1m 첫 양봉 + 볼륨 spike 시 즉시 시장가
@@ -140,60 +140,67 @@ namespace TradingBot.Services
             var candleList = candles5m.ToList();
             var closes = candleList.Select(c => (double)c.ClosePrice).ToList();
 
-            int signals = 0;
+            // [v5.23.73] RSI 단독 진입 폐지 — 사용자 원칙: "RSI로 진입하지 마. RSI는 보조 개념. 진입은 MACD 골든크로스로."
+            //   기존: MACD/RSI/EMA 3개 중 2개 → 진입 (RSI 반등 + EMA 정배열 만으로도 MACD 없이 진입 = 고점 추격 손실 주범)
+            //         실거래 손실 데이터: ENGINE_151/LORENTZIAN 손절이 RSI 70~91 고점 진입에 집중 (ZEC RSI91, BEAT RSI86.8)
+            //   변경: MACD 골든크로스 = 필수 1차 트리거. RSI는 보조(① 과매수면 거부 ② 상승이면 확인 가산)로만, 단독 진입 불가.
             var hits = new List<string>();
             float strength = 0f;
+            int confirms = 0;
 
-            // ── [Signal 1] MACD 골든크로스 (최근 2봉 내 hist 음→양 전환)
+            // ── [1차 트리거 — 필수] MACD 골든크로스 (최근 2봉 내 hist 음→양 전환)
             var (macdSeries, signalSeries, _) = IndicatorCalculator.CalculateMACDSeries(closes);
             int n = macdSeries.Count;
+            bool macdGolden = false;
             if (n >= 3)
             {
                 double hist0 = macdSeries[n - 2] - signalSeries[n - 2];
                 double hist1 = macdSeries[n - 1] - signalSeries[n - 1];
-                if (hist0 <= 0 && hist1 > 0)
-                {
-                    signals++;
-                    hits.Add("MACD_golden_cross");
-                    strength += 0.35f;
-                }
+                macdGolden = hist0 <= 0 && hist1 > 0;
             }
-
-            // ── [Signal 2] RSI 반등 (직전 rsiBounceFloor 아래 + 현재 상승 + ceiling 미만)
-            var rsiSeries = IndicatorCalculator.CalculateRSISeries(closes, _rsiPeriod5m);
-            if (rsiSeries.Count >= 3)
+            if (!macdGolden)
             {
-                double rsi0 = rsiSeries[^3];
-                double rsi1 = rsiSeries[^2];
-                double rsi2 = rsiSeries[^1];
-                bool recentlyOversold = rsi0 < (double)_rsiBounceFloor || rsi1 < (double)_rsiBounceFloor;
-                bool rising = rsi2 > rsi1;
-                bool belowCeiling = rsi2 < (double)_rsiEntryCeiling;
-                if (recentlyOversold && rising && belowCeiling)
+                // MACD 골든크로스 없으면 진입 근거 없음 (RSI/EMA 단독 진입 폐지)
+                if (_pending.TryRemove(symbol, out var prevNoMacd))
+                    OnLog?.Invoke($"🛑 [L2][{symbol}] MACD 골든크로스 없음 → 대기 취소 (RSI/EMA 단독 진입 폐지)");
+                return false;
+            }
+            hits.Add("MACD_golden_cross");
+            strength += 0.50f;
+
+            // ── [보조] RSI — 단독 진입 불가, 차단도 안 함. 상승 중이면 확인 가산만 (순수 보조).
+            //   [v5.23.73] RSI≥ceiling 과매수 거부 가드 제거 — 백테스트(--diagnose PnL, production TP1%/SL3%)
+            //     결과 고RSI/BB상단이 오히려 최고 흑자 구간이었음 (상단 0.8-1.0 +$42, 밴드돌파 +$147 /
+            //     하단·중단은 전부 적자, 1:3 구조 손익분기 WR 75%를 상단만 돌파). 고RSI 차단 = 수익 구간 제거 역효과.
+            var rsiSeries = IndicatorCalculator.CalculateRSISeries(closes, _rsiPeriod5m);
+            if (rsiSeries.Count >= 2)
+            {
+                double rsiPrev = rsiSeries[^2];
+                double rsiNow = rsiSeries[^1];
+                if (rsiNow > rsiPrev)
                 {
-                    signals++;
-                    hits.Add($"RSI_bounce({rsi2:F0})");
-                    strength += 0.30f;
+                    hits.Add($"RSI_confirm({rsiNow:F0})");
+                    strength += 0.15f;
+                    confirms++;
                 }
             }
 
-            // ── [Signal 3] EMA 12/26 정배열 (단기 추세 동조)
+            // ── [보조] EMA 12/26 정배열 (단기 추세 동조 — 확인 가산)
             double ema12 = IndicatorCalculator.CalculateEMA(candleList, 12);
             double ema26 = IndicatorCalculator.CalculateEMA(candleList, 26);
             if (ema12 > ema26)
             {
-                signals++;
                 hits.Add("EMA_aligned");
-                strength += 0.20f;
+                strength += 0.25f;
+                confirms++;
             }
 
-            if (signals < _minSignalsRequired)
+            // 필수: MACD 골든크로스(통과) + 보조 확인 최소 (_minSignalsRequired-1)개 (RSI 상승 또는 EMA 정배열)
+            int confirmsNeeded = Math.Max(1, _minSignalsRequired - 1);
+            if (confirms < confirmsNeeded)
             {
-                // 이미 대기중이던 신호 소멸 → 취소
                 if (_pending.TryRemove(symbol, out var prev))
-                {
-                    OnLog?.Invoke($"🛑 [L2][{symbol}] 5m 재평가 실패 → 대기 취소 (signals={signals}/{_minSignalsRequired})");
-                }
+                    OnLog?.Invoke($"🛑 [L2][{symbol}] MACD 골든크로스이나 보조확인 {confirms}/{confirmsNeeded} 부족 → 대기 취소");
                 return false;
             }
 
@@ -210,7 +217,7 @@ namespace TradingBot.Services
             );
             _pending[symbol] = newPending;
             pending = newPending;
-            OnLog?.Invoke($"🎯 [L2][{symbol}] 진입 대기 등록 | signals={signals}/{_minSignalsRequired} [{string.Join(",", hits)}] strength={strength:F2}");
+            OnLog?.Invoke($"🎯 [L2][{symbol}] 진입 대기 등록 | MACD골든크로스+보조{confirms} [{string.Join(",", hits)}] strength={strength:F2}");
             return true;
         }
 
