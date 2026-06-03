@@ -30,6 +30,20 @@ namespace TradingBot.Services
         private Timer? _timer;
         private int _topN = 50;   // [v5.23.66] 30 → 50 (사용자 지시 — 추적풀/진입 후보 확대)
 
+        // [v5.23.74] 실효 알트 N 보정 — CoinGecko 시총 Top N 에 섞인 스테이블/랩드/스테이킹 토큰이
+        //   슬롯을 잡아먹어 실제 트레이드 가능 알트 컷오프가 훨씬 빡빡했던 문제 fix.
+        //   (예: WLDUSDT 시총 50위인데 죽은 슬롯 ~12개로 사실상 밖 → 추적 안 됨)
+        //   → per_page 를 넉넉히 받아 아래 심볼 제외 후 _topN 개의 "실제 알트" 로 채움.
+        private static readonly HashSet<string> _excludedSymbols = new(StringComparer.OrdinalIgnoreCase)
+        {
+            // 스테이블코인 (가격 ~$1, 트레이드 대상 아님)
+            "USDT","USDC","DAI","USDE","FDUSD","TUSD","USDD","PYUSD","USDS","BUSD","GUSD",
+            "FRAX","LUSD","USD1","SUSDE","USDP","RLUSD","USR","SUSDS","USDX","USD0","USDF","USDG","AUSD",
+            // 랩드/스테이킹/LST (원자산 중복 — 별도 트레이드 의미 없음)
+            "WBTC","WETH","WEETH","WSTETH","STETH","RETH","CBETH","WBETH","METH","EZETH",
+            "RSETH","SOLVBTC","LBTC","WBNB","CLBTC","BUIDL","WSOL","WHYPE","BSC-USD"
+        };
+
         public event Action<string>? OnLog;
 
         /// <summary>첫 fetch 완료 여부. false 시 가드는 안전 차단.</summary>
@@ -75,7 +89,9 @@ namespace TradingBot.Services
         {
             try
             {
-                string url = $"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page={_topN}&page=1&sparkline=false";
+                // [v5.23.74] 죽은 슬롯(스테이블/랩드) 보정용 여유 fetch — _topN×2 받아 제외 후 _topN 개 알트 확보
+                int fetchCount = Math.Min(250, _topN * 2 + 20);
+                string url = $"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page={fetchCount}&page=1&sparkline=false";
                 using var resp = await _http.GetAsync(url, ct).ConfigureAwait(false);
                 if (!resp.IsSuccessStatusCode)
                 {
@@ -88,11 +104,15 @@ namespace TradingBot.Services
                 var newSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var el in doc.RootElement.EnumerateArray())
                 {
+                    if (newSet.Count >= _topN) break;   // [v5.23.74] 실제 알트 _topN 개 채우면 종료
                     if (!el.TryGetProperty("symbol", out var symEl)) continue;
                     string? raw = symEl.GetString();
                     if (string.IsNullOrWhiteSpace(raw)) continue;
+                    string up = raw.ToUpperInvariant();
+                    // [v5.23.74] 스테이블/랩드/스테이킹 제외 → 죽은 슬롯이 알트 컷오프를 잡아먹지 않게
+                    if (_excludedSymbols.Contains(up)) continue;
                     // CoinGecko: "btc" → Binance "BTCUSDT"
-                    newSet.Add(raw.ToUpperInvariant() + "USDT");
+                    newSet.Add(up + "USDT");
                 }
 
                 if (newSet.Count == 0)
