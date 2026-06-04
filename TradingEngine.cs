@@ -5171,15 +5171,18 @@ namespace TradingBot
                 BbBand20(k, i, out double mid, out double upper, out double widthPct);
                 bool closeAboveUpper = (double)k[i].ClosePrice >= upper;
                 // SQUEEZE 우선 (밴드 조임 + 상단 돌파), 아니면 BB_WALK (밴드 워킹)
-                if (widthPct < 1.5 && closeAboveUpper)
+                // [v5.23.75] BB 트리거 확장 — 검증(--bb-expand, 35알트 62일, 전후반 견고):
+                //   SQZ 폭 1.5→2.0 (진입 +21%, WR 93.7→92.6%), WALK 4/5→3/5 (진입 +85%, WR 91.5%).
+                //   엣지 있는 유일 흑자 로직(BB_WALK/SQUEEZE)을 WR 유지하며 넓힘 — 신호 추가 아닌 확장.
+                if (widthPct < 2.0 && closeAboveUpper)
                 {
                     src = "BB_SQUEEZE_ALT";
-                    detail = $"BBW={widthPct:F2}% close>upper";
+                    detail = $"BBW={widthPct:F2}%<2.0 close>upper";
                 }
-                else if (BbWalkStreak(k, i, 5) >= 4)
+                else if (BbWalkStreak(k, i, 5) >= 3)
                 {
                     src = "BB_WALK_ALT";
-                    detail = "5봉중 4+ close>upper";
+                    detail = "5봉중 3+ close>upper";
                 }
             }
 

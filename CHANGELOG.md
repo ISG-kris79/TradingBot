@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.75] - 2026-06-04
+
+### 변경 — BB_WALK/SQUEEZE 트리거 확장 (검증된 엣지 넓히기)
+
+- **BB_SQUEEZE_ALT 폭 임계 1.5% → 2.0%**, **BB_WALK_ALT 스트릭 4/5 → 3/5** ([TradingEngine.cs](TradingEngine.cs) AnalyzeBbSqueezeTriggers).
+- 근거: `--bb-expand` 백테스트(35알트, ~62일, TP1%/SL3%) — SQZ<2.0 진입 +21%(WR 93.7→92.6%), WALK 3/5 진입 +85%(WR 91.5%), **둘 다 전·후반 견고**. 총 수익 +19%.
+- 맥락: 이번 세션 대규모 검증 결론 — StochRSI/MACD/급등/다이버전스/체결강도는 전부 WR이 손익분기(~77%)에 붙어 엣지 0(손익비로도 못 살림). **BB_WALK/SQUEEZE만 WR 90%+로 진짜 엣지** → 신호 추가가 아닌 이 엣지의 확장으로 "더 많은 좋은 진입" 달성.
+
 ## [5.23.74] - 2026-06-04
 
 ### 변경 — 추적 풀 실효 알트 N 보정 (WLD급 코인 누락 fix)
