@@ -1821,6 +1821,75 @@ internal static class Program
         Console.WriteLine("  ※ 현재 production 은 0.5/1.5(1:3). TP/SL 실제 변경은 사용자 승인 후 (메모리 규칙).");
     }
 
+    // [v5.23.74] BB_WALK/SQUEEZE 확장 — WR 유지하며 진입 늘리는 파라미터 탐색 (유일한 진짜 엣지 넓히기)
+    private static async Task RunBbExpandAsync()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  BB-EXPAND — BB_WALK/SQUEEZE 트리거 파라미터 스윕 (5m, {BbExpandPages}p=~{BbExpandPages*1500*5/60/24}일)");
+        Console.WriteLine("  목표: WR 88%+ 유지하며 진입 ↑. production TP1.0%/SL3.0%/WIN24, 전후반 견고성");
+        Console.WriteLine("================================================================");
+
+        string[] syms = {
+            "DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","LTCUSDT","BCHUSDT","NEARUSDT","APTUSDT","ARBUSDT",
+            "OPUSDT","SUIUSDT","TIAUSDT","SEIUSDT","INJUSDT","FETUSDT","WLDUSDT","ENAUSDT","ONDOUSDT","JUPUSDT",
+            "PEPEUSDT","WIFUSDT","ALGOUSDT","ATOMUSDT","FILUSDT","UNIUSDT","AAVEUSDT","ICPUSDT","ETCUSDT","XLMUSDT",
+            "GALAUSDT","SANDUSDT","GRTUSDT","CRVUSDT","RENDERUSDT"
+        };
+        var cfgs = new (string label, Func<List<IBinanceKline>,int,bool> trig)[] {
+            ("SQZ w<1.5(현재)",   (kl,i)=> i>=20 && BBWidth(kl,i)<1.5 && BBWalkUpper(kl,i)),
+            ("SQZ w<2.0",        (kl,i)=> i>=20 && BBWidth(kl,i)<2.0 && BBWalkUpper(kl,i)),
+            ("SQZ w<2.5",        (kl,i)=> i>=20 && BBWidth(kl,i)<2.5 && BBWalkUpper(kl,i)),
+            ("SQZ w<1.0",        (kl,i)=> i>=20 && BBWidth(kl,i)<1.0 && BBWalkUpper(kl,i)),
+            ("WALK 4/5(현재)",    (kl,i)=> i>=20 && BBWalkStreak(kl,i,5)>=4),
+            ("WALK 3/5",         (kl,i)=> i>=20 && BBWalkStreak(kl,i,5)>=3),
+            ("WALK 4/6",         (kl,i)=> i>=20 && BBWalkStreak(kl,i,6)>=4),
+            ("WALK 5/7",         (kl,i)=> i>=20 && BBWalkStreak(kl,i,7)>=5),
+            ("WALK 3/4",         (kl,i)=> i>=20 && BBWalkStreak(kl,i,4)>=3),
+            ("SQZ<2.0||WALK4/5", (kl,i)=> i>=20 && ((BBWidth(kl,i)<2.0 && BBWalkUpper(kl,i)) || BBWalkStreak(kl,i,5)>=4)),
+        };
+        decimal tpUsd = Notional*1.0m/100m - RoundTripFee;
+        decimal slUsd = Notional*3.0m/100m + RoundTripFee;
+        const int WIN=24, COOLDOWN=12;
+        int K=cfgs.Length;
+        var n=new int[K]; var w=new int[K]; var pnl=new decimal[K]; var h0=new decimal[K]; var h1=new decimal[K]; var last=new int[K];
+        int idx=0;
+        foreach (var sym in syms)
+        {
+            idx++; Console.Write($"[{idx}/{syms.Length}] {sym} ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlinesAsync(sym, BbExpandPages); } catch (Exception ex) { Console.WriteLine("fail:"+ex.Message); continue; }
+            if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+            double days = (kl[^1].OpenTime - kl[0].OpenTime).TotalDays;
+            Console.WriteLine($"5m={kl.Count} ({days:F0}일, {kl[0].OpenTime:yyyy-MM-dd}~)");
+            int half = kl.Count/2;
+            for (int c=0;c<K;c++) last[c]=-COOLDOWN;
+            for (int i=20;i<kl.Count-WIN;i++)
+                for (int c=0;c<K;c++)
+                {
+                    if (i-last[c] < COOLDOWN) continue;
+                    if (!cfgs[c].trig(kl,i)) continue;
+                    var (tp, sl) = OutcomeIn(kl, i, 1.0m, 3.0m, WIN);
+                    if (!(tp||sl)) continue;
+                    last[c]=i;
+                    decimal pl = tp ? tpUsd : -slUsd;
+                    n[c]++; if(tp)w[c]++; pnl[c]+=pl;
+                    if (i<half) h0[c]+=pl; else h1[c]+=pl;
+                }
+        }
+        Console.WriteLine();
+        Console.WriteLine("=== BB 트리거 확장 스윕 (TP1%/SL3%, 손익분기 75%) ===");
+        Console.WriteLine("  config              거래    승률       PnL      avg    전후반");
+        foreach (var c in Enumerable.Range(0,K).OrderByDescending(c=>pnl[c]))
+        {
+            double wr = n[c]>0?w[c]*100.0/n[c]:0; decimal avg=n[c]>0?pnl[c]/n[c]:0m;
+            string rob = (h0[c]>0&&h1[c]>0)?"✅견고":(h0[c]>0||h1[c]>0)?"⚠️한쪽":"❌둘다적자";
+            string mk = pnl[c]>0?"✅":"❌";
+            Console.WriteLine($"  {cfgs[c].label,-18} {n[c],6}  {wr,6:F2}%  {pnl[c],9:F2}  {avg,6:F2}  {rob}  {mk}");
+        }
+        Console.WriteLine();
+        Console.WriteLine("  찾는 것: '현재'보다 거래 많고 + WR 88%+ + ✅견고 인 config → 그걸로 확장 도입.");
+    }
+
     private static (bool tp, bool sl) OutcomeIn(List<IBinanceKline> kl, int i, decimal tpPct, decimal slPct, int win)
     {
         decimal entry = kl[i].ClosePrice;
@@ -2085,6 +2154,7 @@ internal static class Program
     // 수익금 시뮬: 마진 $100 × 레버리지 (CLI override 가능), 수수료 0.04% 양방향
     private const decimal MARGIN_USD = 100m;
     private static decimal LEVERAGE = 10m;  // --lev N CLI 로 override
+    private static int BbExpandPages = 12;   // --pages N CLI 로 override (12=~62일, 211=~3년)
     private const decimal FEE_RATE   = 0.0004m;
     private static decimal Notional => MARGIN_USD * LEVERAGE;
     private static decimal RoundTripFee => Notional * FEE_RATE * 2m;
@@ -14046,6 +14116,11 @@ internal static class Program
                 MarginPump = MarginSpike = mp;
                 Console.WriteLine($"[CONFIG] MarginPump/Spike = ${mp}");
             }
+            if (args[a] == "--pages" && a + 1 < args.Length && int.TryParse(args[a + 1], out var pg) && pg > 0)
+            {
+                BbExpandPages = pg;
+                Console.WriteLine($"[CONFIG] BbExpandPages = {pg} (~{pg * 1500 * 5 / 60 / 24}일)");
+            }
         }
         // [v5.22.17] mode flag 인식 — args[0] 고정 검사 → 어느 위치에 있어도 인식
         //   기존: --lev 10 --daily-60d 호출 시 args[0]=="--lev" 라 default 분기로 떨어져
@@ -14089,6 +14164,11 @@ internal static class Program
         if (HasArg("--user-signal-tpsl"))
         {
             await RunUserSignalTpslAsync();
+            return;
+        }
+        if (HasArg("--bb-expand"))
+        {
+            await RunBbExpandAsync();
             return;
         }
         if (HasArg("--user-signal"))
