@@ -1315,6 +1315,512 @@ internal static class Program
         }
     }
 
+    // [v5.23.74] "급등 코인 진입이 흑자인가?" 검증 — 최근 급등 중소형 알트, 수직스파이크 vs 지속추세 구분
+    private static async Task RunPumpRecentAsync()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  PUMP-RECENT — 최근 급등 중소형 알트, 급등 시 진입이 흑자인가?");
+        Console.WriteLine("  진입: 30분(6×5m) 누적 +4%↑ = 급등 진행 → 진입");
+        Console.WriteLine("  분류: 수직스파이크(단일 5m봉 +3%↑) vs 지속추세(점진)");
+        Console.WriteLine("  청산: production TP+1.0% / SL-3.0% / WIN 24 (1:3, 손익분기 WR 75%)");
+        Console.WriteLine("================================================================");
+
+        string[] pumpSyms = {
+            "WLDUSDT","ENAUSDT","PENGUUSDT","ONDOUSDT","JUPUSDT","WIFUSDT","BONKUSDT","FLOKIUSDT",
+            "SEIUSDT","TIAUSDT","STRKUSDT","ZKUSDT","WUSDT","PYTHUSDT","JTOUSDT","AEVOUSDT",
+            "ETHFIUSDT","SAGAUSDT","VIRTUALUSDT","GRASSUSDT","AI16ZUSDT","MOODENGUSDT","POPCATUSDT",
+            "PNUTUSDT","GOATUSDT","FARTCOINUSDT","ZROUSDT","NOTUSDT","ARKMUSDT","REZUSDT"
+        };
+
+        decimal tpUsd = Notional * 1.0m / 100m - RoundTripFee;
+        decimal slUsd = Notional * 3.0m / 100m + RoundTripFee;
+        const double PUMP_RISE = 4.0;   // 30분 누적 % 이상
+        const double SPIKE_BAR = 3.0;   // 단일 5m봉 % 이상 = 수직 스파이크
+        const int COOLDOWN = 12;        // 진입 후 봉 쿨다운 (같은 펌프 중복 진입 방지)
+
+        int allN=0, allW=0; decimal allPnl=0m;
+        int spkN=0, spkW=0; decimal spkPnl=0m;
+        int trdN=0, trdW=0; decimal trdPnl=0m;
+
+        int idx=0;
+        foreach (var sym in pumpSyms)
+        {
+            idx++;
+            Console.Write($"[fetch {idx}/{pumpSyms.Length}] {sym} ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlinesAsync(sym, 8); }   // 8페이지 ~40일
+            catch (Exception ex) { Console.WriteLine("fail: " + ex.Message); continue; }
+            if (kl.Count < 200) { Console.WriteLine("skip(데이터부족)"); continue; }
+            Console.WriteLine($"bars={kl.Count}");
+
+            int lastEntry = -COOLDOWN;
+            for (int i=6; i < kl.Count - 24; i++)
+            {
+                if (i - lastEntry < COOLDOWN) continue;
+                double c0 = (double)kl[i-6].ClosePrice;
+                double cn = (double)kl[i].ClosePrice;
+                if (c0 <= 0) continue;
+                double rise6 = (cn - c0)/c0*100.0;
+                if (rise6 < PUMP_RISE) continue;
+                double maxBar = 0;
+                for (int q=i-5; q<=i; q++){ double o=(double)kl[q].OpenPrice; double cc=(double)kl[q].ClosePrice; if(o>0){ double m=(cc-o)/o*100.0; if(m>maxBar)maxBar=m; } }
+                bool vertical = maxBar >= SPIKE_BAR;
+
+                var (tp, sl) = OutcomeIn(kl, i, 1.0m, 3.0m, 24);
+                if (!(tp || sl)) continue;   // timeout 제외 (기존 컨벤션)
+                lastEntry = i;
+                allN++; if(tp){allW++; allPnl+=tpUsd;} else allPnl-=slUsd;
+                if (vertical){ spkN++; if(tp){spkW++; spkPnl+=tpUsd;} else spkPnl-=slUsd; }
+                else { trdN++; if(tp){trdW++; trdPnl+=tpUsd;} else trdPnl-=slUsd; }
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("=== 결과 (급등 진입, production TP1%/SL3%, 손익분기 WR 75%) ===");
+        void Row(string lbl, int n, int w, decimal pnl){ double wr=n>0?w*100.0/n:0; decimal avg=n>0?pnl/n:0m; string mk=pnl>0?"✅":"❌"; Console.WriteLine($"  {lbl,-16}  n={n,5}  WR={wr,6:F2}%  PnL={pnl,10:F2}  avg={avg,7:F2}  {mk}"); }
+        Row("전체 급등진입", allN, allW, allPnl);
+        Row("수직스파이크", spkN, spkW, spkPnl);
+        Row("지속추세", trdN, trdW, trdPnl);
+        Console.WriteLine();
+        Console.WriteLine("  해석: 수직스파이크 적자 / 지속추세 흑자면 → '스파이크 제외 + 추세형 급등만' 진입이 답");
+    }
+
+    // [v5.23.74] 견고성 스윕 — StochRSI 과매도 임계 × MACD 조건, 더 많은 심볼/긴 기간 + 전후반 분할
+    private static async Task RunUserSignalSweepAsync()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  USER-SIGNAL-SWEEP — StochRSI 과매도골든 + MACD 견고성 검증");
+        Console.WriteLine("  과매도 임계 {20,30,40} × MACD {line>sig, hist상승, macd>0}");
+        Console.WriteLine("  45심볼 ~62일, production TP1%/SL3%/WIN24(1h), 손익분기 ~77%");
+        Console.WriteLine("================================================================");
+
+        string[] syms = {
+            "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT",
+            "LTCUSDT","BCHUSDT","NEARUSDT","APTUSDT","ARBUSDT","OPUSDT","SUIUSDT","TIAUSDT","SEIUSDT","INJUSDT",
+            "FETUSDT","WLDUSDT","ENAUSDT","ONDOUSDT","JUPUSDT","PEPEUSDT","WIFUSDT","ALGOUSDT","ATOMUSDT","FILUSDT",
+            "UNIUSDT","AAVEUSDT","ICPUSDT","ETCUSDT","XLMUSDT","HBARUSDT","VETUSDT","RENDERUSDT","IMXUSDT","STXUSDT",
+            "GALAUSDT","SANDUSDT","GRTUSDT","CRVUSDT","TAOUSDT"
+        };
+        decimal tpUsd = Notional * 1.0m / 100m - RoundTripFee;
+        decimal slUsd = Notional * 3.0m / 100m + RoundTripFee;
+        const int WIN1H = 24, COOLDOWN = 6;
+        double[] osThrs = { 20, 30, 40 };
+        string[] macdLbl = { "line>sig", "hist상승", "macd>0" };
+
+        var acc = new Dictionary<string,(int n,int w,decimal p)>();
+        foreach (var t in osThrs) foreach (var m in new[]{0,1,2}) acc[$"OS<{t}|{macdLbl[m]}"] = (0,0,0m);
+        // 헤드라인(OS<30, line>sig) 전후반 분할
+        int h0N=0,h0W=0; decimal h0P=0m; int h1N=0,h1W=0; decimal h1P=0m;
+
+        int idx=0;
+        foreach (var sym in syms)
+        {
+            idx++;
+            Console.Write($"[{idx}/{syms.Length}] {sym} ");
+            List<IBinanceKline> k5;
+            try { k5 = await FetchKlinesAsync(sym, 12); }   // ~62일
+            catch (Exception ex) { Console.WriteLine("fail:"+ex.Message); continue; }
+            if (k5.Count < 600) { Console.WriteLine("skip"); continue; }
+            var k1 = Aggregate1h(k5);
+            if (k1.Count < 80) { Console.WriteLine("skip"); continue; }
+            Console.WriteLine($"1h={k1.Count}");
+            var closes = k1.Select(x=>(double)x.ClosePrice).ToArray();
+            var (kk, dd) = StochRsiKD(closes, 14, 14, 3, 3);
+            var (macd, sig) = MacdSeries(closes);
+            int half = k1.Count/2;
+            int last = -COOLDOWN;
+            for (int i=2; i<k1.Count-WIN1H; i++)
+            {
+                bool golden = kk[i-1] <= dd[i-1] && kk[i] > dd[i];
+                if (!golden) continue;
+                if (i-last < COOLDOWN) continue;
+                var (tp, sl) = OutcomeIn(k1, i, 1.0m, 3.0m, WIN1H);
+                if (!(tp||sl)) continue;
+                last = i;
+                double hist = macd[i]-sig[i], histPrev = macd[i-1]-sig[i-1];
+                bool[] macdOk = { macd[i]>sig[i], (hist>histPrev && hist>0), macd[i]>0 };
+                foreach (var t in osThrs)
+                {
+                    if (kk[i] >= t) continue;
+                    for (int m=0;m<3;m++)
+                    {
+                        if (!macdOk[m]) continue;
+                        var s = acc[$"OS<{t}|{macdLbl[m]}"]; s.n++; if(tp){s.w++; s.p+=tpUsd;} else s.p-=slUsd; acc[$"OS<{t}|{macdLbl[m]}"]=s;
+                    }
+                }
+                if (kk[i] < 30 && macd[i] > sig[i])
+                {
+                    if (i < half) { h0N++; if(tp){h0W++; h0P+=tpUsd;} else h0P-=slUsd; }
+                    else          { h1N++; if(tp){h1W++; h1P+=tpUsd;} else h1P-=slUsd; }
+                }
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("=== 스윕 결과 (production TP1%/SL3%, 손익분기 ~77%) ===");
+        Console.WriteLine("  config                 n      WR        PnL      avg");
+        foreach (var kv in acc.OrderByDescending(x=>x.Value.n>0?x.Value.p/x.Value.n:-999m))
+        {
+            var v = kv.Value; double wr=v.n>0?v.w*100.0/v.n:0; decimal avg=v.n>0?v.p/v.n:0m; string mk=v.p>0?"✅":"❌";
+            Console.WriteLine($"  {kv.Key,-20} {v.n,5}  {wr,6:F2}%  {v.p,9:F2}  {avg,7:F2}  {mk}");
+        }
+        Console.WriteLine();
+        Console.WriteLine("=== 헤드라인(OS<30, line>sig) 전후반 안정성 ===");
+        void HRow(string l,int n,int w,decimal p){ double wr=n>0?w*100.0/n:0; decimal a=n>0?p/n:0m; string mk=p>0?"✅":"❌"; Console.WriteLine($"  {l,-10}  n={n,5}  WR={wr,6:F2}%  PnL={p,9:F2}  avg={a,7:F2}  {mk}"); }
+        HRow("전반기", h0N,h0W,h0P);
+        HRow("후반기", h1N,h1W,h1P);
+        Console.WriteLine();
+        Console.WriteLine("  판정: 흑자 config가 여러 개 + 전후반 모두 흑자면 → 엣지 견고. 한쪽만 흑자면 우연 의심.");
+    }
+
+    // [v5.23.74] 사용자 지표 검증 — 1h StochRSI 골든크로스 + MACD + 체결강도(Volume Power)
+    private static async Task RunUserSignalAsync()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  USER-SIGNAL — 1h StochRSI 골든크로스 + MACD + 체결강도 진입 검증");
+        Console.WriteLine("  StochRSI(14,14,3,3) %K>%D 교차 / MACD(12,26,9) line>signal / 체결강도 taker_buy/vol");
+        Console.WriteLine("  청산: production TP+1.0% / SL-3.0% / WIN 24봉(1h) — 1:3, 손익분기 WR 75%");
+        Console.WriteLine("================================================================");
+
+        string[] syms = {
+            "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT",
+            "LTCUSDT","BCHUSDT","NEARUSDT","APTUSDT","ARBUSDT","OPUSDT","SUIUSDT","TIAUSDT","SEIUSDT","INJUSDT",
+            "FETUSDT","WLDUSDT","ENAUSDT","ONDOUSDT","JUPUSDT","PEPEUSDT","WIFUSDT","ALGOUSDT","ATOMUSDT","FILUSDT"
+        };
+        decimal tpUsd = Notional * 1.0m / 100m - RoundTripFee;
+        decimal slUsd = Notional * 3.0m / 100m + RoundTripFee;
+        const double VP_MIN = 0.55;   // 체결강도 최소 (taker buy 비율)
+        const int WIN1H = 24;
+        const int COOLDOWN = 6;
+
+        int aN=0,aW=0; decimal aP=0m;   // A: StochRSI 골든 단독
+        int bN=0,bW=0; decimal bP=0m;   // B: + MACD
+        int cN=0,cW=0; decimal cP=0m;   // C: + 체결강도 (풀조합)
+        int dN=0,dW=0; decimal dP=0m;   // D: 상승 다이버전스(RSI) 단독
+        int eN=0,eW=0; decimal eP=0m;   // E: 다이버전스 + 체결강도
+
+        int idx=0;
+        foreach (var sym in syms)
+        {
+            idx++;
+            Console.Write($"[fetch {idx}/{syms.Length}] {sym} ");
+            List<IBinanceKline> k5;
+            try { k5 = await FetchKlinesAsync(sym, 10); }   // 10페이지 ~52일 5m
+            catch (Exception ex) { Console.WriteLine("fail: "+ex.Message); continue; }
+            if (k5.Count < 600) { Console.WriteLine("skip"); continue; }
+            var k1 = Aggregate1h(k5);
+            if (k1.Count < 60) { Console.WriteLine("skip(1h부족)"); continue; }
+            Console.WriteLine($"1h봉={k1.Count}");
+
+            var closes = k1.Select(x => (double)x.ClosePrice).ToArray();
+            var lows = k1.Select(x => (double)x.LowPrice).ToArray();
+            var (kk, dd) = StochRsiKD(closes, 14, 14, 3, 3);
+            var (macd, sig) = MacdSeries(closes);
+            var divSig = BullishDivergence(closes, lows, 3, 30);   // 상승 다이버전스(LL price / HL RSI)
+
+            int last = -COOLDOWN;
+            for (int i=2; i < k1.Count - WIN1H; i++)
+            {
+                if (i - last < COOLDOWN) continue;
+                bool golden = kk[i-1] <= dd[i-1] && kk[i] > dd[i] && kk[i] < 30;   // StochRSI 과매도권(<30) 골든크로스 = 강력 매수
+                if (!golden) continue;
+                bool macdBull = macd[i] > sig[i];
+                double vol = (double)k1[i].Volume;
+                double vp = vol > 0 ? (double)k1[i].TakerBuyBaseVolume / vol : 0;
+                bool vpHigh = vp >= VP_MIN;
+
+                var (tp, sl) = OutcomeIn(k1, i, 1.0m, 3.0m, WIN1H);
+                if (!(tp || sl)) continue;
+                last = i;
+                aN++; if(tp){aW++; aP+=tpUsd;} else aP-=slUsd;
+                if (macdBull) { bN++; if(tp){bW++; bP+=tpUsd;} else bP-=slUsd; }
+                if (macdBull && vpHigh) { cN++; if(tp){cW++; cP+=tpUsd;} else cP-=slUsd; }
+            }
+
+            // 상승 다이버전스 진입 루프 (별도 신호 — 골든크로스와 진입 시점 다름)
+            int lastD = -COOLDOWN;
+            for (int i=0; i < k1.Count - WIN1H; i++)
+            {
+                if (!divSig[i]) continue;
+                if (i - lastD < COOLDOWN) continue;
+                var (tp, sl) = OutcomeIn(k1, i, 1.0m, 3.0m, WIN1H);
+                if (!(tp || sl)) continue;
+                lastD = i;
+                double vol2 = (double)k1[i].Volume;
+                double vp2 = vol2 > 0 ? (double)k1[i].TakerBuyBaseVolume / vol2 : 0;
+                dN++; if(tp){dW++; dP+=tpUsd;} else dP-=slUsd;
+                if (vp2 >= VP_MIN) { eN++; if(tp){eW++; eP+=tpUsd;} else eP-=slUsd; }
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("=== 결과 (production TP1%/SL3%, 손익분기 WR 75%) ===");
+        void Row(string lbl, int n, int w, decimal pnl){ double wr=n>0?w*100.0/n:0; decimal avg=n>0?pnl/n:0m; string mk=pnl>0?"✅":"❌"; Console.WriteLine($"  {lbl,-30}  n={n,5}  WR={wr,6:F2}%  PnL={pnl,10:F2}  avg={avg,7:F2}  {mk}"); }
+        Row("A. StochRSI 과매도골든 단독", aN, aW, aP);
+        Row("B. + MACD line>signal", bN, bW, bP);
+        Row("C. + 체결강도>=0.55 (풀조합)", cN, cW, cP);
+        Row("D. 상승 다이버전스(RSI) 단독", dN, dW, dP);
+        Row("E. 다이버전스 + 체결강도", eN, eW, eP);
+        Console.WriteLine();
+        Console.WriteLine("  비교: 현재 봇 실거래 건당 +$2.17 (30일). 풀조합 avg 가 이보다 높고 흑자면 → 도입 가치 있음");
+    }
+
+    private static List<IBinanceKline> Aggregate1h(List<IBinanceKline> k5)
+    {
+        var outp = new List<IBinanceKline>();
+        SimpleKline? cur = null;
+        foreach (var b in k5)
+        {
+            bool newHour = b.OpenTime.Minute == 0;   // UTC 정시 정렬
+            if (cur == null || newHour)
+            {
+                if (cur != null) outp.Add(cur);
+                cur = new SimpleKline {
+                    OpenTime = b.OpenTime, OpenPrice = b.OpenPrice, HighPrice = b.HighPrice,
+                    LowPrice = b.LowPrice, ClosePrice = b.ClosePrice, Volume = b.Volume,
+                    CloseTime = b.CloseTime, TakerBuyBaseVolume = b.TakerBuyBaseVolume
+                };
+            }
+            else
+            {
+                if (b.HighPrice > cur.HighPrice) cur.HighPrice = b.HighPrice;
+                if (b.LowPrice < cur.LowPrice) cur.LowPrice = b.LowPrice;
+                cur.ClosePrice = b.ClosePrice;
+                cur.Volume += b.Volume;
+                cur.TakerBuyBaseVolume += b.TakerBuyBaseVolume;
+                cur.CloseTime = b.CloseTime;
+            }
+        }
+        if (cur != null) outp.Add(cur);
+        return outp;
+    }
+
+    private static double[] EmaArr(double[] d, int p)
+    {
+        var e = new double[d.Length]; if (d.Length==0) return e;
+        double k = 2.0/(p+1); e[0]=d[0];
+        for (int i=1;i<d.Length;i++) e[i]=d[i]*k + e[i-1]*(1-k);
+        return e;
+    }
+    private static (double[] macd, double[] signal) MacdSeries(double[] closes)
+    {
+        var ef = EmaArr(closes, 12); var es = EmaArr(closes, 26);
+        var m = new double[closes.Length];
+        for (int i=0;i<closes.Length;i++) m[i]=ef[i]-es[i];
+        return (m, EmaArr(m, 9));
+    }
+    private static double[] RsiArr(double[] closes, int period)
+    {
+        int n=closes.Length; var r=new double[n];
+        for (int i=0;i<n;i++){
+            if (i<period){ r[i]=50; continue; }
+            double g=0,l=0;
+            for (int q=i-period+1;q<=i;q++){ double dd=closes[q]-closes[q-1]; if(dd>0)g+=dd; else l-=dd; }
+            double ag=g/period, al=l/period;
+            r[i] = al<1e-12 ? 100 : 100 - 100/(1+ag/al);
+        }
+        return r;
+    }
+    private static (double[] k, double[] d) StochRsiKD(double[] closes, int rsiLen, int stochLen, int kSmooth, int dSmooth)
+    {
+        var rsi = RsiArr(closes, rsiLen);
+        int n = closes.Length;
+        var stoch = new double[n];
+        for (int i=0;i<n;i++){
+            if (i < rsiLen + stochLen){ stoch[i]=50; continue; }
+            double mn=double.MaxValue, mx=double.MinValue;
+            for (int q=i-stochLen+1;q<=i;q++){ if(rsi[q]<mn)mn=rsi[q]; if(rsi[q]>mx)mx=rsi[q]; }
+            stoch[i] = (mx-mn)<1e-12 ? 50 : (rsi[i]-mn)/(mx-mn)*100.0;
+        }
+        var k = SmaArr(stoch, kSmooth);
+        return (k, SmaArr(k, dSmooth));
+    }
+    private static double[] SmaArr(double[] x, int p)
+    {
+        int n=x.Length; var o=new double[n];
+        for (int i=0;i<n;i++){
+            if (i<p-1){ o[i]=x[i]; continue; }
+            double s=0; for(int q=i-p+1;q<=i;q++) s+=x[q]; o[i]=s/p;
+        }
+        return o;
+    }
+    // 상승 다이버전스: 가격은 직전 피벗저점보다 낮은 저점(LL), RSI는 높은 저점(HL) → 반전. 피벗 확인 시점에 진입 신호.
+    private static bool[] BullishDivergence(double[] closes, double[] lows, int pivLen, int maxGap)
+    {
+        int n = closes.Length;
+        var rsi = RsiArr(closes, 14);
+        var sig = new bool[n];
+        int prevIdx = -1; double prevLow = 0, prevRsi = 0;
+        for (int i = pivLen; i < n - pivLen; i++)
+        {
+            bool piv = true;   // i 가 피벗저점인가 (좌우 pivLen 봉 중 최저)
+            for (int q = i-pivLen; q <= i+pivLen; q++) { if (lows[q] < lows[i]) { piv = false; break; } }
+            if (!piv) continue;
+            if (prevIdx >= 0 && (i - prevIdx) <= maxGap)
+            {
+                bool priceLL = lows[i] < prevLow;       // 가격 저점 낮아짐
+                bool rsiHL   = rsi[i]  > prevRsi;        // RSI 저점 높아짐
+                if (priceLL && rsiHL)
+                {
+                    int entry = i + pivLen;              // 피벗 확정 시점 진입 (look-ahead 없음)
+                    if (entry < n) sig[entry] = true;
+                }
+            }
+            prevIdx = i; prevLow = lows[i]; prevRsi = rsi[i];
+        }
+        return sig;
+    }
+
+    // [v5.23.74] 3년치 일별/월별 수익 보고서 — StochRSI 과매도골든 + MACD 트리거 로직 점검 (기존 FetchKlines1hAsync 재사용)
+    private static async Task RunReport3yrAsync()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  3년 보고서 — StochRSI(1h) 과매도<30 골든크로스 + MACD line>signal");
+        Console.WriteLine("  청산 TP+1.0%/SL-3.0%/WIN24(1h) · 마진 $100 × 10x · 수수료 0.04%×2");
+        Console.WriteLine("================================================================");
+
+        string[] syms = {
+            "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT",
+            "LTCUSDT","BCHUSDT","ATOMUSDT","ETCUSDT","XLMUSDT","NEARUSDT","FILUSDT","UNIUSDT","AAVEUSDT","ICPUSDT",
+            "ALGOUSDT","SANDUSDT","GALAUSDT","GRTUSDT","VETUSDT"
+        };
+        decimal tpUsd = Notional * 1.0m / 100m - RoundTripFee;
+        decimal slUsd = Notional * 3.0m / 100m + RoundTripFee;
+        const int WIN1H = 24, COOLDOWN = 6;
+
+        var trades = new List<(DateTime t, decimal pnl, bool win)>();
+        int idx=0;
+        foreach (var sym in syms)
+        {
+            idx++;
+            Console.Write($"[{idx}/{syms.Length}] {sym} ");
+            List<IBinanceKline> k1;
+            try { k1 = await FetchKlines1hAsync(sym, 28); }   // ~3.2년
+            catch (Exception ex) { Console.WriteLine("fail:"+ex.Message); continue; }
+            if (k1.Count < 200) { Console.WriteLine("skip"); continue; }
+            Console.WriteLine($"1h={k1.Count} ({k1[0].OpenTime:yyyy-MM-dd}~{k1[^1].OpenTime:yyyy-MM-dd})");
+            var closes = k1.Select(x=>(double)x.ClosePrice).ToArray();
+            var (kk, dd) = StochRsiKD(closes, 14, 14, 3, 3);
+            var (macd, sig) = MacdSeries(closes);
+            int last=-COOLDOWN;
+            for (int i=2;i<k1.Count-WIN1H;i++)
+            {
+                bool golden = kk[i-1] <= dd[i-1] && kk[i] > dd[i] && kk[i] < 30;
+                if (!golden) continue;
+                if (macd[i] <= sig[i]) continue;   // MACD bullish
+                if (i-last < COOLDOWN) continue;
+                var (tp, sl) = OutcomeIn(k1, i, 1.0m, 3.0m, WIN1H);
+                if (!(tp||sl)) continue;
+                last=i;
+                trades.Add((k1[i].OpenTime, tp ? tpUsd : -slUsd, tp));
+            }
+        }
+
+        var months = new SortedDictionary<string,(int n,int w,decimal p)>(StringComparer.Ordinal);
+        var days = new SortedDictionary<string,(int n,int w,decimal p)>(StringComparer.Ordinal);
+        foreach (var t in trades)
+        {
+            string mk = t.t.ToString("yyyy-MM"), dk = t.t.ToString("yyyy-MM-dd");
+            var mv = months.TryGetValue(mk, out var m0) ? m0 : (n:0,w:0,p:0m); mv.n++; if(t.win)mv.w++; mv.p+=t.pnl; months[mk]=mv;
+            var dv = days.TryGetValue(dk, out var d0) ? d0 : (n:0,w:0,p:0m); dv.n++; if(t.win)dv.w++; dv.p+=t.pnl; days[dk]=dv;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("=== 월별 보고서 (수익률 = 마진 $100 기준) ===");
+        Console.WriteLine("  월        거래   승률     수익금($)    수익률(%)    누적($)");
+        decimal cum=0m;
+        foreach (var kv in months)
+        {
+            var v=kv.Value; double wr=v.n>0?v.w*100.0/v.n:0; decimal roi=v.p/MARGIN_USD*100m; cum+=v.p;
+            string mk=v.p>0?"✅":"❌";
+            Console.WriteLine($"  {kv.Key}   {v.n,4}  {wr,6:F2}%  {v.p,10:F2}  {roi,8:F1}%  {cum,10:F2}  {mk}");
+        }
+
+        int totN=trades.Count, totW=trades.Count(x=>x.win); decimal totP=trades.Sum(x=>x.pnl);
+        int profM=months.Count(x=>x.Value.p>0), profD=days.Count(x=>x.Value.p>0);
+        Console.WriteLine();
+        Console.WriteLine("=== 요약 ===");
+        Console.WriteLine($"  총 거래: {totN}  승률: {(totN>0?totW*100.0/totN:0):F2}%  총 수익금: ${totP:F2}  총 수익률(마진): {totP/MARGIN_USD*100m:F0}%");
+        Console.WriteLine($"  흑자 월: {profM}/{months.Count}  흑자 일: {profD}/{days.Count}");
+        if (months.Count>0){ var best=months.OrderByDescending(x=>x.Value.p).First(); var worst=months.OrderBy(x=>x.Value.p).First();
+            Console.WriteLine($"  최고 월: {best.Key} ${best.Value.p:F2}  /  최악 월: {worst.Key} ${worst.Value.p:F2}"); }
+
+        var sb = new System.Text.StringBuilder("Date,Trades,Wins,PnL_USD\n");
+        foreach (var kv in days) sb.Append($"{kv.Key},{kv.Value.n},{kv.Value.w},{kv.Value.p:F2}\n");
+        System.IO.File.WriteAllText("report-3yr-daily.csv", sb.ToString());
+        Console.WriteLine($"\n  일별 상세 → report-3yr-daily.csv ({days.Count}일)");
+    }
+
+    // [v5.23.74] StochRSI 과매도골든+MACD 신호 × TP/SL 손익비 스윕 — "흑자 되는 손익비" 탐색 + 견고성
+    private static async Task RunUserSignalTpslAsync()
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("  TP/SL 손익비 스윕 — StochRSI(1h)과매도<30 골든 + MACD line>signal 고정");
+        Console.WriteLine("  손익비 1:3 ~ 3:1, ~3년 1h, WIN48 · 마진$100×10x · 전후반 견고성");
+        Console.WriteLine("================================================================");
+
+        string[] syms = {
+            "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT",
+            "LTCUSDT","BCHUSDT","ATOMUSDT","ETCUSDT","XLMUSDT","NEARUSDT","FILUSDT","UNIUSDT","AAVEUSDT","ICPUSDT",
+            "ALGOUSDT","SANDUSDT","GALAUSDT","GRTUSDT","VETUSDT"
+        };
+        var cfgs = new (decimal tp, decimal sl)[] {
+            (3.0m,1.0m),(2.0m,1.0m),(1.5m,1.0m),(2.0m,2.0m),(1.0m,1.0m),(1.5m,1.5m),
+            (1.0m,1.5m),(2.0m,3.0m),(1.5m,3.0m),(1.0m,2.0m),(1.0m,3.0m),(0.5m,1.5m)
+        };
+        const int WIN1H = 48, COOLDOWN = 6;
+        int K = cfgs.Length;
+        var n=new int[K]; var w=new int[K]; var pnl=new decimal[K];
+        var h0=new decimal[K]; var h1=new decimal[K];
+        var tpU=new decimal[K]; var slU=new decimal[K];
+        for (int c=0;c<K;c++){ tpU[c]=Notional*cfgs[c].tp/100m-RoundTripFee; slU[c]=Notional*cfgs[c].sl/100m+RoundTripFee; }
+
+        int idx=0;
+        foreach (var sym in syms)
+        {
+            idx++; Console.Write($"[{idx}/{syms.Length}] {sym} ");
+            List<IBinanceKline> k1;
+            try { k1 = await FetchKlines1hAsync(sym, 24); } catch (Exception ex) { Console.WriteLine("fail:"+ex.Message); continue; }
+            if (k1.Count < 300) { Console.WriteLine("skip"); continue; }
+            Console.WriteLine($"1h={k1.Count}");
+            var closes = k1.Select(x=>(double)x.ClosePrice).ToArray();
+            var (kk, dd) = StochRsiKD(closes, 14, 14, 3, 3);
+            var (macd, sig) = MacdSeries(closes);
+            int half = k1.Count/2; int last=-COOLDOWN;
+            for (int i=2;i<k1.Count-WIN1H;i++)
+            {
+                bool golden = kk[i-1] <= dd[i-1] && kk[i] > dd[i] && kk[i] < 30;
+                if (!golden) continue;
+                if (macd[i] <= sig[i]) continue;
+                if (i-last < COOLDOWN) continue;
+                last=i;
+                for (int c=0;c<K;c++)
+                {
+                    var (t, s) = OutcomeIn(k1, i, cfgs[c].tp, cfgs[c].sl, WIN1H);
+                    if (!(t||s)) continue;
+                    decimal pl = t ? tpU[c] : -slU[c];
+                    n[c]++; if(t)w[c]++; pnl[c]+=pl;
+                    if (i < half) h0[c]+=pl; else h1[c]+=pl;
+                }
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("=== StochRSI 과매도골든+MACD × TP/SL 손익비 (1h, ~3년) ===");
+        Console.WriteLine("  TP/SL    손익분기   거래   승률       PnL      avg    전후반        ");
+        foreach (var c in Enumerable.Range(0,K).OrderByDescending(c=>pnl[c]))
+        {
+            double wr = n[c]>0?w[c]*100.0/n[c]:0; decimal avg = n[c]>0?pnl[c]/n[c]:0m;
+            decimal be = cfgs[c].sl/(cfgs[c].tp+cfgs[c].sl)*100m;
+            string rob = (h0[c]>0&&h1[c]>0)?"✅견고":(h0[c]>0||h1[c]>0)?"⚠️한쪽만":"❌둘다적자";
+            string mk = pnl[c]>0?"✅":"❌";
+            Console.WriteLine($"  {cfgs[c].tp:F1}/{cfgs[c].sl:F1}    {be,5:F0}%   {n[c],5}  {wr,6:F2}%  {pnl[c],9:F2}  {avg,6:F2}  {rob}  {mk}");
+        }
+        Console.WriteLine();
+        Console.WriteLine("  판정: 흑자 + 전후반 모두 흑자(✅견고) 손익비가 있으면 → StochRSI 신호 도입 가능.");
+        Console.WriteLine("  ※ 현재 production 은 0.5/1.5(1:3). TP/SL 실제 변경은 사용자 승인 후 (메모리 규칙).");
+    }
+
     private static (bool tp, bool sl) OutcomeIn(List<IBinanceKline> kl, int i, decimal tpPct, decimal slPct, int win)
     {
         decimal entry = kl[i].ClosePrice;
@@ -12048,7 +12554,9 @@ internal static class Program
                         LowPrice  = decimal.Parse(k[3].GetString()!, CultureInfo.InvariantCulture),
                         ClosePrice = decimal.Parse(k[4].GetString()!, CultureInfo.InvariantCulture),
                         Volume = decimal.Parse(k[5].GetString()!, CultureInfo.InvariantCulture),
-                        CloseTime = DateTimeOffset.FromUnixTimeMilliseconds(k[6].GetInt64()).UtcDateTime
+                        CloseTime = DateTimeOffset.FromUnixTimeMilliseconds(k[6].GetInt64()).UtcDateTime,
+                        // [v5.23.74] 체결강도(Volume Power) 계산용 — taker buy base volume (배열 index 9)
+                        TakerBuyBaseVolume = k.GetArrayLength() > 9 ? decimal.Parse(k[9].GetString()!, CultureInfo.InvariantCulture) : 0m
                     });
                 }
                 return list;
@@ -13561,6 +14069,31 @@ internal static class Program
         if (HasArg("--diagnose"))
         {
             await RunDiagnosisAsync();
+            return;
+        }
+        if (HasArg("--pump-recent"))
+        {
+            await RunPumpRecentAsync();
+            return;
+        }
+        if (HasArg("--user-signal-sweep"))
+        {
+            await RunUserSignalSweepAsync();
+            return;
+        }
+        if (HasArg("--report-3yr"))
+        {
+            await RunReport3yrAsync();
+            return;
+        }
+        if (HasArg("--user-signal-tpsl"))
+        {
+            await RunUserSignalTpslAsync();
+            return;
+        }
+        if (HasArg("--user-signal"))
+        {
+            await RunUserSignalAsync();
             return;
         }
         if (HasArg("--redesign"))
