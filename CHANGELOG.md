@@ -5,6 +5,16 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.78] - 2026-06-06
+
+### 치명 버그 3종 fix — 손실 미기록·PnL 손상·포지션 방치 (실거래 UserId=10 점검)
+
+- **① PnL −4,488억 오염 fix** ([TradingEngine.cs](TradingEngine.cs) EXTERNAL_RECONCILE): `GetRealizedPnLAsync(심볼,진입,현재)`가 심볼 진입~현재 전체 실현손익을 한 행에 합산 → stale 오픈행에 수개월치가 뭉침. **포지션 규모(진입가×수량) 3배 초과 PnL은 오염으로 간주, 가격기반 재계산(sanity clamp)**.
+- **② PHANTOM_CLEAN 손실 소실 fix**: 외부청산+이벤트 누락 시 손실을 PnL=0(본절)로 묻고 IsClosed=1로 닫아 백필에서 영구 제외하던 버그 → **실제 거래소 fill/income 으로 실손익 조회 후 기록 + clamp**.
+- **③ 재시작 포지션 방치 fix**: v5.10.19가 재시작 포지션의 bot-side 본절/익절/트레일 모니터를 주석처리 → 거래소 주문 실패/취소 시 영구 방치(MYXUSDT +156% ROE 미익절 사례). **외부복원(7627)과 동일 패턴으로 pump→PumpMonitor/비pump→Standard 분기 재개** (PUMP 조기청산 회피).
+- 근본 약점: 전 청산경로 PnL clamp 부재 + full-close dedup 미비 + income 조회가 심볼누적. ①②는 기록만 영향(거래 무영향), ③만 거래행동 변경(검증된 패턴).
+- ※ 진단 중 발견: 실거래는 UserId=10 (UserId=1은 옛 데이터). LORENTZIAN 실WR 40%.
+
 ## [5.23.76] - 2026-06-06
 
 ### 롤백·폐기 — v5.23.75 BB 트리거 확장 철회 + BB_WALK 단독진입 폐지

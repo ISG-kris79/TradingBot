@@ -14096,6 +14096,132 @@ internal static class Program
         Console.WriteLine($"  흑자 시간대 {profitableHours}/24, 손실 시간대 {unprofitableHours}/24");
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // [v5.23.77] --live-sim : 단일 권위 "실용 충실본" 백테스트 (LiveSim.cs 사용)
+    //   5대 괴리 닫음 + Lorentzian 워크포워드 증분학습(룩어헤드 제거).
+    //   이 모드만 배포 방향성 판단에 사용. 최종 판정은 라이브 카나리(실거래 N건).
+    // ─────────────────────────────────────────────────────────────────────
+    private static async Task RunLiveSimAsync()
+    {
+        decimal lev = (LEVERAGE == 10m) ? 15m : LEVERAGE;   // 라이브 기본 15x (미override 시)
+        int pages = BbExpandPages;
+        int days = pages * BARS_PER_REQ * 5 / (60 * 24);
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  LIVE-SIM (실용 충실본)  —  {symbols.Length}심볼 / ~{days}일 / {lev}x");
+        Console.WriteLine("  진입가=다음봉시가+슬립 | 수수료0.04%×2+슬립0.05%×2 | 다단청산(BE+TP1+트레일+SL)");
+        Console.WriteLine("  진입: LORENTZIAN(KNN 워크포워드) / SQUEEZE(BBW<1.5+상단,가드) / MAJOR(EMA20↑+rangePos)");
+        Console.WriteLine("  게이트 근사: 당일상승 동적풀 + RSI<50 낙하나이프. (미모사: BTC1h추세/시총Top30/풀랭킹)");
+        Console.WriteLine("  ※ 청산은 1,000줄 상태기의 근사 — 배포 단독기준 금지, 라이브 카나리로 최종확정");
+        Console.WriteLine("================================================================");
+
+        var trigs = new[] { "LORENTZIAN", "SQUEEZE", "MAJOR" };
+        var n = new Dictionary<string, int>();
+        var w = new Dictionary<string, int>();
+        var pnl = new Dictionary<string, decimal>();
+        var winSum = new Dictionary<string, decimal>();
+        var lossSum = new Dictionary<string, decimal>();
+        foreach (var tname in trigs) { n[tname] = 0; w[tname] = 0; pnl[tname] = 0m; winSum[tname] = 0m; lossSum[tname] = 0m; }
+
+        var lor = new MiniLorentzianService();
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[{idx}/{symbols.Length}] {sym} ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlinesAsync(sym, pages); }
+            catch (Exception ex) { Console.WriteLine("fail:" + ex.Message); continue; }
+            if (kl.Count < 600) { Console.WriteLine($"skip ({kl.Count})"); continue; }
+
+            bool isMajor = LiveSim.Majors.Contains(sym);
+            var tier = LiveSim.TierFor(sym);
+            decimal margin = MARGIN_USD;
+            var engine = lor.GetOrCreate(sym);
+            int trained = 300;            // 다음에 표본으로 추가할 봉 (워크포워드)
+            int symN = 0, busyUntil = -1; // busyUntil: 포지션 보유 중인 봉 (중복진입 방지)
+
+            for (int i = 305; i < kl.Count - 2; i++)
+            {
+                // ── 워크포워드 증분학습: 라벨 확정된(i-4 이하) 봉만 표본 추가 ──
+                while (trained <= i - 4)
+                {
+                    var fSlice = kl.GetRange(0, trained + 1);
+                    var feat = LorentzianFeatures.Extract(fSlice);
+                    if (feat != null)
+                    {
+                        decimal nowC = kl[trained].ClosePrice, fut = kl[trained + 4].ClosePrice;
+                        engine.AddSample(feat, fut > nowC ? 1 : fut < nowC ? -1 : 0);
+                    }
+                    trained++;
+                }
+                if (i <= busyUntil) continue;   // 이미 포지션 보유 — 신규진입 스킵
+
+                string? src = null;
+
+                // ── 트리거 평가 (i = 마감 확인된 봉) ──
+                if (isMajor)
+                {
+                    if (LiveMajorEvaluator.ShouldEnterLong(kl, i, kl[i].ClosePrice)) src = "MAJOR";
+                }
+                else
+                {
+                    // 알트: SQUEEZE (production v5.23.76 — BB_WALK 폐지) + 당일상승 동적풀 게이트
+                    if (LiveSim.SqueezeTrigger(kl, i) && LiveSim.DailyUpFilter(kl, i)) src = "SQUEEZE";
+                }
+
+                // ── LORENTZIAN (모든 심볼) — 충돌 시 트리거가 비어있을 때만 ──
+                if (src == null)
+                {
+                    var pred = lor.Predict(sym, kl.GetRange(0, i + 1));
+                    if (pred.IsReady && pred.Prediction > 0 && pred.PositiveRate >= 0.70f)
+                    {
+                        double sma200 = LiveMajorEvaluator.Sma(kl, i, 200);
+                        if (sma200 > 0 && (double)kl[i].ClosePrice > sma200)   // 상승추세 확인 (라이브 close>EMA200 근사)
+                            src = "LORENTZIAN";
+                    }
+                }
+
+                if (src == null) continue;
+
+                // ── 게이트: RSI 낙하나이프 (전 트리거 공통) ──
+                if (LiveSim.RsiFallingKnife(kl, i)) continue;
+
+                // ── 진입가 = 다음 봉 시가 (i+1) → 청산 시뮬 ──
+                var res = LiveSim.SimulateExit(kl, i + 1, margin, lev, tier, 288);
+                if (!res.Entered) continue;
+
+                n[src]++; symN++;
+                if (res.Win) { w[src]++; winSum[src] += res.PnlUsd; } else { lossSum[src] += res.PnlUsd; }
+                pnl[src] += res.PnlUsd;
+                busyUntil = res.ExitBarIndex;   // 청산 봉까지 신규진입 차단
+            }
+            Console.WriteLine($"ok ({kl.Count} bars, {symN} trades)");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  결과 — 마진 ${MARGIN_USD}/건, {lev}x, 비용 전구간 반영");
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"{"트리거",-12} {"진입",6} {"승",5} {"WR",7} {"순손익$",11} {"건당$",8} {"평균익",8} {"평균손",8}");
+        decimal totPnl = 0m; int totN = 0, totW = 0;
+        foreach (var tname in trigs)
+        {
+            int nn = n[tname]; if (nn == 0) { Console.WriteLine($"{tname,-12} {0,6}   (진입 없음)"); continue; }
+            decimal wr = 100m * w[tname] / nn;
+            decimal avgWin = w[tname] > 0 ? winSum[tname] / w[tname] : 0m;
+            int losses = nn - w[tname];
+            decimal avgLoss = losses > 0 ? lossSum[tname] / losses : 0m;
+            Console.WriteLine($"{tname,-12} {nn,6} {w[tname],5} {wr,6:F1}% {pnl[tname],11:F2} {pnl[tname] / nn,8:F3} {avgWin,8:F2} {avgLoss,8:F2}");
+            totPnl += pnl[tname]; totN += nn; totW += w[tname];
+        }
+        Console.WriteLine("----------------------------------------------------------------");
+        if (totN > 0)
+            Console.WriteLine($"{"합계",-12} {totN,6} {totW,5} {100m * totW / totN,6:F1}% {totPnl,12:F2} {totPnl / totN,9:F3}");
+        Console.WriteLine();
+        Console.WriteLine("  [해석] 손익분기 WR ≈ 청산구조에 따라 가변. 건당$ > 0 이어야 흑자.");
+        Console.WriteLine("  [신뢰] 진입 트리거·진입가·비용은 충실. 청산은 근사 → 라이브 카나리로 최종확정.");
+    }
+
     private static async Task Main(string[] args)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -14134,6 +14260,11 @@ internal static class Program
         if (HasArg("--sweep-all"))
         {
             await RunAllSweepsAsync();
+            return;
+        }
+        if (HasArg("--live-sim"))
+        {
+            await RunLiveSimAsync();
             return;
         }
         if (HasArg("--final"))

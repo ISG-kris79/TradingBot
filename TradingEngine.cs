@@ -2423,25 +2423,62 @@ namespace TradingBot
                         {
                             try
                             {
+                                // [v5.23.78] PHANTOM 손실을 PnL=0(본절)으로 묻던 버그 fix — 실제 거래소 PnL 조회.
+                                //   기존: PnL=0 기록 + "income 백필 대상"이라 했으나, IsClosed=1로 닫혀 백필 영구 제외
+                                //   → 손실 거래가 DB에서 소실. 이제 reconcile 과 동일하게 fill/income 으로 실손익 기록 + clamp.
+                                decimal pPnl = 0m;
+                                decimal pExitPrice = phantomPos.EntryPrice;
+                                DateTime pExitTime = DateTime.Now;
+                                DateTime pEntryTime = phantomPos.EntryTime == default ? DateTime.Now : phantomPos.EntryTime;
+                                try
+                                {
+                                    if (_exchangeService is BinanceExchangeService pBin)
+                                    {
+                                        var pf = await pBin.GetExitFillsAsync(phantomSymbol, pEntryTime.ToUniversalTime(), phantomPos.IsLong);
+                                        if (pf.exitQty > 0 && pf.avgExitPrice > 0)
+                                        {
+                                            pExitPrice = pf.avgExitPrice;
+                                            pPnl = pf.realizedPnl;
+                                            pExitTime = pf.lastExitTimeUtc.Kind == DateTimeKind.Utc ? pf.lastExitTimeUtc.ToLocalTime() : pf.lastExitTimeUtc;
+                                        }
+                                        else
+                                        {
+                                            pPnl = await pBin.GetRealizedPnLAsync(phantomSymbol, pEntryTime.ToUniversalTime(), DateTime.UtcNow);
+                                        }
+                                    }
+                                }
+                                catch { }
+
+                                // sanity clamp — 포지션 규모 3배 초과 시 가격기반 (reconcile 과 동일 방어)
+                                decimal pPosValue = phantomPos.EntryPrice * Math.Abs(phantomPos.Quantity);
+                                if (pPosValue > 0m && Math.Abs(pPnl) > pPosValue * 3m)
+                                {
+                                    decimal pPriceBased = (pExitPrice - phantomPos.EntryPrice) * Math.Abs(phantomPos.Quantity);
+                                    if (!phantomPos.IsLong) pPriceBased = -pPriceBased;
+                                    OnStatusLog?.Invoke($"⚠️ [PnL-CLAMP] {phantomSymbol} phantom PnL 오염 {pPnl:F2} → 가격기반 {pPriceBased:F2}");
+                                    pPnl = pPriceBased;
+                                }
+
                                 var phantomLog = new TradingBot.Shared.Models.TradeLog(
                                     phantomSymbol,
                                     phantomPos.IsLong ? "SELL" : "BUY",
                                     "PHANTOM_CLEAN_RECONCILE",
-                                    phantomPos.EntryPrice,
+                                    pExitPrice,
                                     phantomPos.AiScore,
-                                    DateTime.Now,
-                                    0m,
+                                    pExitTime,
+                                    pPnl,
                                     0m)
                                 {
                                     EntryPrice = phantomPos.EntryPrice,
-                                    ExitPrice = phantomPos.EntryPrice,   // 미상 — Binance income 백필로 보정
+                                    ExitPrice = pExitPrice,
                                     Quantity = Math.Abs(phantomPos.Quantity),
-                                    EntryTime = phantomPos.EntryTime == default ? DateTime.Now : phantomPos.EntryTime,
-                                    ExitTime = DateTime.Now,
-                                    ExitReason = "PHANTOM_CLEAN_RECONCILE (외부 청산 후 ACCOUNT_UPDATE 누락 — 사후 인식)"
+                                    EntryTime = pEntryTime,
+                                    ExitTime = pExitTime,
+                                    PnL = pPnl,
+                                    ExitReason = $"PHANTOM_CLEAN_RECONCILE (외부청산+이벤트누락 사후인식, pnl={pPnl:F4})"
                                 };
                                 await _dbManager.CompleteTradeAsync(phantomLog);
-                                OnStatusLog?.Invoke($"📝 [PHANTOM_CLEAN] {phantomSymbol} DB IsClosed=1 갱신 완료 (PnL 은 income API 백필 대상)");
+                                OnStatusLog?.Invoke($"📝 [PHANTOM_CLEAN] {phantomSymbol} DB IsClosed=1 + 실손익 {pPnl:F2} 기록 완료");
                             }
                             catch (Exception dbEx)
                             {
@@ -2613,12 +2650,15 @@ namespace TradingBot
                         // [v5.10.19] 기존 포지션 → PositionSyncService 등록 (폴링 감시)
                         _orderManager.RegisterBracket(pos.Symbol);
                         OnStatusLog?.Invoke($"🔄 [PositionSync] {pos.Symbol} 재시작 시 브라켓 등록 — 폴링 감시 시작");
-                        // [v5.10.19] 재시작된 기존 포지션은 거래소에 이미 SL/TP가 있으므로 bot-side 감시 불필요
-                        // [버그수정] PUMP 포지션에 Standard Monitor 시작하면 breakEvenROE=7%로 조기 청산됨
-                        // if (!isSyncPump)
-                        //     TryStartStandardMonitor(pos.Symbol, ...);
-                        // else
-                        //     TryStartPumpMonitor(pos.Symbol, ...);
+                        // [v5.23.78] 재시작 포지션 bot-side 모니터 재개 — 복원 후 본절/익절/트레일 방치 버그 fix.
+                        //   기존 v5.10.19는 "거래소 SL/TP가 있으니 불필요"라며 비활성했으나, 거래소 주문이
+                        //   취소/실패하면 포지션이 영구 방치됨(MYX +156% 미익절 사례). 7627-7629 외부복원과
+                        //   동일 패턴으로 pump→PumpMonitor(pump 본절기준)/비pump→Standard 로 분기해 조기청산 회피.
+                        var restartTok = _cts?.Token ?? CancellationToken.None;
+                        if (isSyncPump)
+                            TryStartPumpMonitor(pos.Symbol, pos.EntryPrice, "RESTART_PUMP", 0d, restartTok, "restart-sync");
+                        else
+                            TryStartStandardMonitor(pos.Symbol, pos.EntryPrice, pos.IsLong, "TREND", 0m, syncedStopLoss, restartTok, "restart-sync");
                     }
                     OnStatusLog?.Invoke("✅ 현재 보유 포지션 동기화 완료");
 
@@ -2823,6 +2863,21 @@ namespace TradingBot
                             }
                         }
                         catch { }
+
+                        // [v5.23.78] PnL sanity clamp — reconcile income 합산 오염(−4,488억) 방어.
+                        //   GetRealizedPnLAsync/GetExitFillsAsync 가 심볼 진입~현재 전체 실현손익을 합산하는
+                        //   구조라, stale 오픈행 1개에 수개월치가 뭉쳐 들어옴. 포지션 규모(진입가×수량)의
+                        //   3배를 넘으면 오염으로 간주 → 거래소 fill 가격기반(actualExitPrice)으로 재계산.
+                        decimal positionValue = dbTrade.EntryPrice * dbTrade.Quantity;
+                        if (positionValue > 0m && Math.Abs(actualPnl) > positionValue * 3m)
+                        {
+                            bool isLongReconcile = string.Equals(dbTrade.Side, "LONG", StringComparison.OrdinalIgnoreCase)
+                                                || string.Equals(dbTrade.Side, "BUY", StringComparison.OrdinalIgnoreCase);
+                            decimal priceBased = (actualExitPrice - dbTrade.EntryPrice) * dbTrade.Quantity;
+                            if (!isLongReconcile) priceBased = -priceBased;
+                            OnStatusLog?.Invoke($"⚠️ [PnL-CLAMP] {dbTrade.Symbol} reconcile PnL 오염 감지 {actualPnl:F2} → 가격기반 {priceBased:F2} 로 보정 (포지션가치=${positionValue:F2})");
+                            actualPnl = priceBased;
+                        }
 
                         var closeLog = new TradeLog(
                             dbTrade.Symbol,
