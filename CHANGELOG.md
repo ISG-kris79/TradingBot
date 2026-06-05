@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.76] - 2026-06-06
+
+### 롤백·폐기 — v5.23.75 BB 트리거 확장 철회 + BB_WALK 단독진입 폐지
+
+- **v5.23.75 롤백**: BB_SQUEEZE_ALT 폭 임계 2.0% → **1.5% 복원**, BB_WALK 스트릭 3/5 확장 철회 ([TradingEngine.cs](TradingEngine.cs) AnalyzeBbSqueezeTriggers).
+- **BB_WALK 단독진입 폐지**: 실거래 30일 검증(`diag-v75-impact`) — BB_WALK 승률 **27.6% / −$110(단일 최악 카테고리)**. `--bb-expand` 백테스트는 91.5% WR이라 보고했으나 **실거래와 64%p 괴리** → 백테스트 무효.
+- **근본 원인**: 백테스트(`LorentzianValidator`)가 실거래 봇을 모사하지 못함 — (1)종목선정 편향(고정 35알트 vs 당일 펌핑 Top30 추격), (2)청산구조 불일치(전량 고정 vs 부분TP+트레일링), (3)진입가 룩어헤드(돌파봉 종가 vs 마감후 추격가), (4)게이트 부재, (5)슬리피지 누락. **다음 작업: 백테스트를 실거래와 일치하도록 수리(신뢰 복구).**
+- BB는 보조지표(변동성/상대위치)일 뿐 방향신호 아님 — 단독 돌파추격은 천장 매수와 동치. BB는 LORENTZIAN의 확정 보조로만 사용.
+
 ## [5.23.75] - 2026-06-04
 
 ### 변경 — BB_WALK/SQUEEZE 트리거 확장 (검증된 엣지 넓히기)
