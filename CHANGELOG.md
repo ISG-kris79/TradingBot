@@ -5,6 +5,16 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.79] - 2026-06-06
+
+### SQUEEZE 폐기 + MEANREV(역추세) 진입 카나리 — 충실 백테스트 기반 진입 재설계
+
+- **SQUEEZE/BB_WALK 비메이저 BB 모멘텀 트리거 전면 폐기** ([TradingEngine.cs](TradingEngine.cs) AnalyzeBbSqueezeTriggers). 충실 백테스트(`--entry-search`)에서 모멘텀 추격 LONG은 랜덤 이하(TP1 도달 ~50% < 기대 60%)로 증명 — 천장 추격.
+- **MEANREV 역추세 진입 신규(카나리)**: `직전 1h −2%+ 하락(Drop2%) + 종가>BB중심선(반등) + ADX>20 + RSI 45~68`. `--entry-search` 62일·180일 **2회 OOS 통과**(test WR 64~71%, 흑자). 모든 승리조합 공통분모가 Drop2%.
+- **게이트 통합**: MEANREV은 모멘텀 방향게이트(5m RSI<50, 15m BB<0.7) 우회, 안전게이트(설정/슬롯/시총/스코어카드/1h추세) 유지. 카테고리 'MEANREV' 별도 추적.
+- **솔직한 한계**: MEANREV는 실거래 미검증(되감기 N=6). 백테스트 가설 → **소액 카나리로 실거래 검증 후 본격화**. 되감기는 모멘텀 진입이 작은TP 60% 맞춰도 봇이 지는 건(잔익만 먹기=청산 문제) 재확인.
+- 도구: `--entry-search`(조건조합 train/test 탐색), `--replay-entries`(실거래 진입 차트 되감기), `LiveSim.SimulateRunner`(부분TP+넓은ATR 추적) 추가.
+
 ## [5.23.78] - 2026-06-06
 
 ### 치명 버그 3종 fix — 손실 미기록·PnL 손상·포지션 방치 (실거래 UserId=10 점검)

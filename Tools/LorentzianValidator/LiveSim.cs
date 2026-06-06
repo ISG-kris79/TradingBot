@@ -23,6 +23,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Binance.Net.Interfaces;
+using Skender.Stock.Indicators;
 using TradingBot.Services.LorentzianV2;
 
 namespace TradingBot.Tools.LorentzianValidator
@@ -221,6 +222,64 @@ namespace TradingBot.Tools.LorentzianValidator
             if (bb.Mid <= 0) return false;
             decimal widthPct = ((decimal)bb.Upper - (decimal)bb.Lower) / (decimal)bb.Mid * 100m;
             return widthPct < 1.5m && kl[i].ClosePrice > (decimal)bb.Upper;
+        }
+
+        // ───────────────────────────────────────────────────────────────────
+        // [v5.23.79] 진입조건 탐색용 — "큰 수익 끝까지" 하이브리드 청산 + 지표 헬퍼
+        // ───────────────────────────────────────────────────────────────────
+        public static decimal AtrPub(List<IBinanceKline> kl, int idx) => Atr14(kl, idx);
+
+        public static double Adx(List<IBinanceKline> kl, int upTo, int period = 14)
+        {
+            if (upTo + 1 < period * 3) return 0;
+            var q = LiveMajorEvaluator.ToQuotesWindow(kl, upTo, period * 4);
+            return q.GetAdx(period).LastOrDefault()?.Adx ?? 0;
+        }
+
+        public struct RunnerResult
+        {
+            public bool Entered;
+            public bool HitTp1;     // 승 정의 = 부분익절 TP1 도달(이익 확정)
+            public decimal RetPct;  // 가격수익률 가중합 (비용 차감), 마진 대비 ROE = ×leverage
+            public int ExitIdx;
+            public int BarsHeld;
+        }
+
+        /// <summary>"큰 수익 끝까지" 하이브리드 청산: 구조적 SL + 부분TP1(승확정) + 잔량 넓은 ATR 추적.
+        ///   진입가=다음봉 시가+슬립. 봉내 비관적(저가 먼저). TP1 후 본절스탑→3×ATR 샹들리에로 잔량 런.
+        ///   HitTp1=true ⟹ 잔량 스탑이 본절 이상이라 손실 불가 → 승=이익확정.</summary>
+        public static RunnerResult SimulateRunner(List<IBinanceKline> kl, int entryIdx,
+            decimal slAtr, decimal tp1Atr, decimal tp1Pct, decimal trailAtr, int maxBars = 288)
+        {
+            var r = new RunnerResult();
+            if (entryIdx < 1 || entryIdx >= kl.Count) return r;
+            decimal atr = Atr14(kl, entryIdx - 1);
+            decimal entry = kl[entryIdx].OpenPrice * (1m + SlippagePct);
+            if (atr <= 0m || entry <= 0m) return r;
+            r.Entered = true;
+
+            decimal stop = entry - slAtr * atr;
+            decimal tp1 = entry + tp1Atr * atr;
+            decimal hi = entry, ret = 0m, rem = 1.0m;
+            bool tp1done = false;
+            int last = Math.Min(kl.Count - 1, entryIdx + maxBars);
+            int j = entryIdx;
+            for (; j <= last; j++)
+            {
+                decimal h = kl[j].HighPrice, lo = kl[j].LowPrice;
+                if (lo <= stop) { ret += rem * (stop * (1m - SlippagePct) / entry - 1m); rem = 0m; break; }  // 비관적: 스탑 먼저
+                if (h > hi) hi = h;
+                if (!tp1done && h >= tp1) { ret += tp1Pct * (tp1 * (1m - SlippagePct) / entry - 1m); rem -= tp1Pct; tp1done = true; if (entry > stop) stop = entry; }
+                if (tp1done) { decimal ts = hi - trailAtr * atr; if (ts > stop) stop = ts; }
+                if (rem <= 0.0001m) break;
+            }
+            if (rem > 0.0001m) ret += rem * (kl[Math.Min(j, last)].ClosePrice * (1m - SlippagePct) / entry - 1m);
+            ret -= FeeRate * 2m;
+            r.HitTp1 = tp1done;
+            r.RetPct = ret;
+            r.ExitIdx = Math.Min(j, last);
+            r.BarsHeld = r.ExitIdx - entryIdx;
+            return r;
         }
     }
 }

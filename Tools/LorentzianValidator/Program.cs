@@ -2155,6 +2155,7 @@ internal static class Program
     private const decimal MARGIN_USD = 100m;
     private static decimal LEVERAGE = 10m;  // --lev N CLI 로 override
     private static int BbExpandPages = 12;   // --pages N CLI 로 override (12=~62일, 211=~3년)
+    private static bool SkipKnn = false;     // --no-knn: KNN precompute 생략(장기탐색 가속, 승리조합에 KNN 없음)
     private const decimal FEE_RATE   = 0.0004m;
     private static decimal Notional => MARGIN_USD * LEVERAGE;
     private static decimal RoundTripFee => Notional * FEE_RATE * 2m;
@@ -14097,6 +14098,264 @@ internal static class Program
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // [v5.23.79] --replay-entries : 실거래 진입기록(live-entries.csv)을 차트에 되감아
+    //   "왜 실패했나" 분석. 각 진입을 진입가로 봉 앵커링 → 직전 1h 움직임(모멘텀 추격 vs 눌림)
+    //   + MEANREV 규칙(Drop2%+BBroom+ADX20) 충족 여부 + 실제 승패 대조.
+    // ─────────────────────────────────────────────────────────────────────
+    private static async Task RunReplayEntriesAsync()
+    {
+        string csv = System.IO.Path.Combine(AppContext.BaseDirectory, "live-entries.csv");
+        if (!System.IO.File.Exists(csv)) csv = "live-entries.csv";
+        if (!System.IO.File.Exists(csv)) { Console.WriteLine($"CSV 없음: {csv}"); return; }
+        var lines = System.IO.File.ReadAllLines(csv).Skip(1).ToList();
+        Console.WriteLine($"진입기록 {lines.Count}건 로드");
+
+        // 파싱
+        var entries = new List<(string sym, long ms, decimal entry, decimal exit, string cat, int win)>();
+        foreach (var ln in lines)
+        {
+            var p = ln.Split(',');
+            if (p.Length < 6) continue;
+            if (!long.TryParse(p[1], out var ms)) continue;
+            if (!decimal.TryParse(p[2], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var en)) continue;
+            if (!decimal.TryParse(p[3], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var ex)) continue;
+            if (!int.TryParse(p[5], out var w)) continue;
+            entries.Add((p[0], ms, en, ex, p[4], w));
+        }
+        // 상위 40 심볼만 (fetch 비용)
+        var topSyms = entries.GroupBy(e => e.sym).OrderByDescending(g => g.Count()).Take(40).Select(g => g.Key).ToHashSet();
+        Console.WriteLine($"상위 {topSyms.Count} 심볼 분석 (전체 {entries.Select(e=>e.sym).Distinct().Count()} 중)");
+
+        int momWin = 0, momN = 0, dipWin = 0, dipN = 0, flatWin = 0, flatN = 0;
+        int meanrevN = 0, meanrevWin = 0, restN = 0, restWin = 0;
+        decimal sumPriorWin = 0m, sumPriorLoss = 0m; int nWin = 0, nLoss = 0;
+        int anchored = 0, skipped = 0;
+
+        int si = 0;
+        foreach (var sym in topSyms)
+        {
+            si++;
+            Console.Write($"[{si}/{topSyms.Count}] {sym} ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlinesAsync(sym, 14); } // ~72일
+            catch { Console.WriteLine("fail"); continue; }
+            if (kl.Count < 320) { Console.WriteLine("skip"); continue; }
+            long firstMs = ((DateTimeOffset)kl[0].OpenTime).ToUnixTimeMilliseconds();
+            long lastMs = ((DateTimeOffset)kl[^1].OpenTime).ToUnixTimeMilliseconds();
+            int used = 0;
+            foreach (var e in entries.Where(x => x.sym == sym))
+            {
+                if (e.ms < firstMs || e.ms > lastMs) { skipped++; continue; }
+                // 시간 컨테이너 봉 + 진입가 매칭으로 앵커 (±8봉 내 가격 포함 봉)
+                int guess = (int)((e.ms - firstMs) / (5L * 60 * 1000));
+                int bi = -1;
+                for (int off = 0; off <= 8 && bi < 0; off++)
+                {
+                    foreach (int cand in new[] { guess - off, guess + off })
+                    {
+                        if (cand < 300 || cand >= kl.Count - 1) continue;
+                        if (kl[cand].LowPrice <= e.entry && e.entry <= kl[cand].HighPrice) { bi = cand; break; }
+                    }
+                }
+                if (bi < 0) { skipped++; continue; }
+                anchored++; used++;
+
+                decimal prior = bi >= 12 ? (kl[bi].ClosePrice / kl[bi - 12].ClosePrice - 1m) * 100m : 0m;
+                bool win = e.win == 1;
+                if (win) { sumPriorWin += prior; nWin++; } else { sumPriorLoss += prior; nLoss++; }
+                if (prior > 0.5m) { momN++; if (win) momWin++; }
+                else if (prior < -0.5m) { dipN++; if (win) dipWin++; }
+                else { flatN++; if (win) flatWin++; }
+
+                // MEANREV 규칙 충족?
+                double rsi = LiveMajorEvaluator.Rsi(kl, bi, 14);
+                double adx = LiveSim.Adx(kl, bi, 14);
+                var bb = LiveMajorEvaluator.Bb(kl, bi, 20, 2);
+                bool drop2 = bi >= 12 && kl[bi].ClosePrice < kl[bi - 12].ClosePrice * 0.98m;
+                bool bbroom = bb.Mid > 0 && (double)kl[bi].ClosePrice > bb.Mid;
+                bool adx20 = adx > 20;
+                bool meanrev = drop2 && bbroom && adx20;
+                if (meanrev) { meanrevN++; if (win) meanrevWin++; } else { restN++; if (win) restWin++; }
+            }
+            Console.WriteLine($"ok ({used} anchored)");
+        }
+
+        decimal WR(int w, int n) => n > 0 ? 100m * w / n : 0m;
+        Console.WriteLine();
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  실거래 진입 되감기 — 앵커성공 {anchored} / 스킵 {skipped}");
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  승리거래 평균 직전1h움직임: {(nWin>0?sumPriorWin/nWin:0):F2}%   손실거래: {(nLoss>0?sumPriorLoss/nLoss:0):F2}%");
+        Console.WriteLine($"  (양수=상승 후 추격진입 / 음수=하락 후 눌림진입)");
+        Console.WriteLine();
+        Console.WriteLine("  진입 직전 움직임별 실제 승률:");
+        Console.WriteLine($"    상승추격(+0.5%↑)  N={momN,5}  WR={WR(momWin,momN):F1}%");
+        Console.WriteLine($"    눌림진입(-0.5%↓)  N={dipN,5}  WR={WR(dipWin,dipN):F1}%");
+        Console.WriteLine($"    횡보(±0.5%)       N={flatN,5}  WR={WR(flatWin,flatN):F1}%");
+        Console.WriteLine();
+        Console.WriteLine("  실제 진입 중 MEANREV(Drop2%+BBroom+ADX20) 규칙 충족분 vs 나머지:");
+        Console.WriteLine($"    MEANREV 충족   N={meanrevN,5}  WR={WR(meanrevWin,meanrevN):F1}%");
+        Console.WriteLine($"    나머지         N={restN,5}  WR={WR(restWin,restN):F1}%");
+        Console.WriteLine();
+        Console.WriteLine("  [해석] 손실거래가 상승추격(양수)에 몰리고 MEANREV 충족분 WR이 높으면 → 새 규칙이 방향 맞음.");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // [v5.23.79] --entry-search : 과거 차트에서 "승률 60%+ 흑자" 진입조건 조합 탐색.
+    //   7개 조건의 모든 조합(128) × train(과거60%)/test(최근40%) 분할.
+    //   청산 = LiveSim.SimulateRunner (부분TP1 승확정 + 잔량 3×ATR 추적 = 큰수익 런).
+    //   승 정의 = TP1 도달(이익확정). test 60%+ & 흑자만 채택 → 과최적화 거름.
+    // ─────────────────────────────────────────────────────────────────────
+    private static async Task RunEntrySearchAsync()
+    {
+        decimal lev = (LEVERAGE == 10m) ? 15m : LEVERAGE;
+        int pages = BbExpandPages;
+        int days = pages * BARS_PER_REQ * 5 / (60 * 24);
+        // 청산 파라미터 (큰수익 끝까지)
+        decimal slAtr = 1.5m, tp1Atr = 1.0m, tp1Pct = 0.5m, trailAtr = 3.0m;
+        string[] condName = { "TREND", "RSIband", "MACDup", "ADX20", "VolSurge", "BBroom", "KNN",
+                              "Oversold", "LowBB", "Drop2%", "BullRev" };  // 7~10 = 역추세(평균회귀)
+        int NC = condName.Length;
+
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  ENTRY-SEARCH  —  {symbols.Length}심볼 / ~{days}일 / {lev}x");
+        Console.WriteLine($"  청산: SL {slAtr}×ATR / TP1 {tp1Atr}×ATR {tp1Pct:P0}청산 / 잔량 {trailAtr}×ATR 추적");
+        Console.WriteLine($"  조건({NC}): {string.Join(" ", condName)}  → 모든 조합 128개, train60/test40");
+        Console.WriteLine($"  승=TP1도달(이익확정). 진입가=다음봉시가+슬립, 비용 전구간 반영.");
+        Console.WriteLine("================================================================");
+
+        // 심볼별 precompute: 조건비트마스크[bar], 청산결과[bar]
+        var symMasks = new List<int[]>();
+        var symEntered = new List<bool[]>();
+        var symWin = new List<bool[]>();
+        var symRet = new List<decimal[]>();
+        var symExit = new List<int[]>();
+        var symStart = new List<int>();
+        var symTrainCut = new List<int>();
+
+        var lor = new MiniLorentzianService();
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[{idx}/{symbols.Length}] {sym} ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlinesAsync(sym, pages); }
+            catch (Exception ex) { Console.WriteLine("fail:" + ex.Message); continue; }
+            if (kl.Count < 800) { Console.WriteLine($"skip ({kl.Count})"); continue; }
+
+            int n = kl.Count;
+            var mask = new int[n];
+            var entered = new bool[n];
+            var win = new bool[n];
+            var ret = new decimal[n];
+            var exit = new int[n];
+            var engine = lor.GetOrCreate(sym);
+            int trained = 300;
+            int start = 305;
+
+            for (int i = start; i < n - 2; i++)
+            {
+                while (!SkipKnn && trained <= i - 4)
+                {
+                    var fs = LorentzianFeatures.Extract(kl.GetRange(0, trained + 1));
+                    if (fs != null) { decimal c0 = kl[trained].ClosePrice, fu = kl[trained + 4].ClosePrice; engine.AddSample(fs, fu > c0 ? 1 : fu < c0 ? -1 : 0); }
+                    trained++;
+                }
+
+                double sma50 = LiveMajorEvaluator.Sma(kl, i, 50);
+                double sma200 = LiveMajorEvaluator.Sma(kl, i, 200);
+                double rsi = LiveMajorEvaluator.Rsi(kl, i, 14);
+                var macd = LiveMajorEvaluator.Macd(kl, i);
+                double adx = LiveSim.Adx(kl, i, 14);
+                var bb = LiveMajorEvaluator.Bb(kl, i, 20, 2);
+                double close = (double)kl[i].ClosePrice;
+                decimal vol = kl[i].Volume; decimal volAvg = 0m;
+                for (int q = i - 20; q < i; q++) volAvg += kl[q].Volume;
+                volAvg /= 20m;
+
+                int m = 0;
+                if (sma200 > 0 && close > sma200 && sma50 > sma200) m |= 1 << 0; // TREND
+                if (rsi >= 45 && rsi <= 68) m |= 1 << 1;                          // RSIband
+                if (macd.Hist > 0) m |= 1 << 2;                                   // MACDup
+                if (adx > 20) m |= 1 << 3;                                        // ADX20
+                if (volAvg > 0m && vol > volAvg * 1.3m) m |= 1 << 4;              // VolSurge
+                if (bb.Mid > 0 && close > bb.Mid) m |= 1 << 5;                    // BBroom
+                if (!SkipKnn)
+                {
+                    var pred = lor.Predict(sym, kl.GetRange(0, i + 1));
+                    if (pred.IsReady && pred.Prediction > 0 && pred.PositiveRate >= 0.70f) m |= 1 << 6; // KNN
+                }
+                // ── 역추세(평균회귀) 조건 ──
+                if (rsi < 35) m |= 1 << 7;                                                 // Oversold
+                if (bb.Lower > 0 && close < bb.Lower * 1.005) m |= 1 << 8;                 // LowBB (하단밴드 근처/이하)
+                if (i >= 12 && kl[i].ClosePrice < kl[i - 12].ClosePrice * 0.98m) m |= 1 << 9; // Drop2% (1h내 -2%+)
+                if (kl[i].ClosePrice > kl[i].OpenPrice && kl[i - 1].ClosePrice < kl[i - 1].OpenPrice) m |= 1 << 10; // BullRev (음봉 뒤 양봉)
+                mask[i] = m;
+
+                var rr = LiveSim.SimulateRunner(kl, i + 1, slAtr, tp1Atr, tp1Pct, trailAtr, 288);
+                entered[i] = rr.Entered; win[i] = rr.HitTp1; ret[i] = rr.RetPct; exit[i] = rr.ExitIdx;
+            }
+
+            symMasks.Add(mask); symEntered.Add(entered); symWin.Add(win); symRet.Add(ret); symExit.Add(exit);
+            symStart.Add(start); symTrainCut.Add(start + (int)((n - 2 - start) * 0.6));
+            Console.WriteLine($"ok ({n} bars)");
+        }
+
+        // 조합 스윕 (128) — 비트마스크 AND, 심볼별 한 번에 한 포지션
+        var rows = new List<(int mask, int trN, int trW, decimal trRet, int teN, int teW, decimal teRet)>();
+        for (int combo = 0; combo < (1 << NC); combo++)
+        {
+            int trN = 0, trW = 0, teN = 0, teW = 0; decimal trRet = 0m, teRet = 0m;
+            for (int s = 0; s < symMasks.Count; s++)
+            {
+                var mask = symMasks[s]; var ent = symEntered[s]; var win = symWin[s]; var ret = symRet[s]; var exit = symExit[s];
+                int cut = symTrainCut[s]; int busy = -1;
+                for (int i = symStart[s]; i < mask.Length; i++)
+                {
+                    if (i <= busy) continue;
+                    if ((mask[i] & combo) != combo) continue;
+                    if (!ent[i]) continue;
+                    if (i < cut) { trN++; if (win[i]) trW++; trRet += ret[i]; }
+                    else { teN++; if (win[i]) teW++; teRet += ret[i]; }
+                    busy = exit[i];
+                }
+            }
+            rows.Add((combo, trN, trW, trRet, teN, teW, teRet));
+        }
+
+        string Name(int m) { if (m == 0) return "(전체)"; var p = new List<string>(); for (int b = 0; b < NC; b++) if ((m & (1 << b)) != 0) p.Add(condName[b]); return string.Join("+", p); }
+
+        Console.WriteLine();
+        Console.WriteLine("=== TOP 20 — test 평균수익(ROE) 순 (test 진입 30+ , test승률 표시) ===");
+        Console.WriteLine($"{"조건조합",-34} {"trN",5} {"trWR",6} {"teN",5} {"teWR",6} {"te건당ROE%",10} {"te총ROE%",9}");
+        foreach (var r in rows.Where(x => x.teN >= 30).OrderByDescending(x => x.teRet / Math.Max(1, x.teN)).Take(20))
+        {
+            decimal trWR = r.trN > 0 ? 100m * r.trW / r.trN : 0m;
+            decimal teWR = r.teN > 0 ? 100m * r.teW / r.teN : 0m;
+            decimal teAvgRoe = (r.teRet / r.teN) * lev * 100m;
+            decimal teTotRoe = r.teRet * lev * 100m;
+            Console.WriteLine($"{Name(r.mask),-34} {r.trN,5} {trWR,5:F1}% {r.teN,5} {teWR,5:F1}% {teAvgRoe,9:F1}% {teTotRoe,8:F0}%");
+        }
+        Console.WriteLine();
+        Console.WriteLine("=== 승률 우선 — test승률 60%+ & test흑자 & 30건+ (실전 후보) ===");
+        Console.WriteLine($"{"조건조합",-34} {"trWR",6} {"teN",5} {"teWR",6} {"te건당ROE%",10}");
+        var cands = rows.Where(x => x.teN >= 30 && (100m * x.teW / x.teN) >= 60m && x.teRet > 0m)
+                        .OrderByDescending(x => 100m * x.teW / x.teN).ToList();
+        if (cands.Count == 0) Console.WriteLine("  (test 60%+ & 흑자 조합 없음 — 더 탐색 필요)");
+        foreach (var r in cands.Take(20))
+        {
+            decimal trWR = r.trN > 0 ? 100m * r.trW / r.trN : 0m;
+            decimal teWR = 100m * r.teW / r.teN;
+            decimal teAvgRoe = (r.teRet / r.teN) * lev * 100m;
+            Console.WriteLine($"{Name(r.mask),-34} {trWR,5:F1}% {r.teN,5} {teWR,5:F1}% {teAvgRoe,9:F1}%");
+        }
+        Console.WriteLine();
+        Console.WriteLine("  [신뢰] train에서 좋고 test에서도 60%+ & 흑자여야 진짜. test만 좋으면 우연.");
+        Console.WriteLine("  [다음] 후보 조합 → 라이브 카나리 소액 검증 후 채택.");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // [v5.23.77] --live-sim : 단일 권위 "실용 충실본" 백테스트 (LiveSim.cs 사용)
     //   5대 괴리 닫음 + Lorentzian 워크포워드 증분학습(룩어헤드 제거).
     //   이 모드만 배포 방향성 판단에 사용. 최종 판정은 라이브 카나리(실거래 N건).
@@ -14252,6 +14511,7 @@ internal static class Program
         //   기존: --lev 10 --daily-60d 호출 시 args[0]=="--lev" 라 default 분기로 떨어져
         //   real-lorentzian C# engine 경로가 실행되며 daily-60d 절대 안 돌았음.
         bool HasArg(string flag) => args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
+        if (HasArg("--no-knn")) { SkipKnn = true; Console.WriteLine("[CONFIG] KNN precompute 생략 (--no-knn)"); }
         if (HasArg("--sweep"))
         {
             await RunSweepAsync();
@@ -14260,6 +14520,16 @@ internal static class Program
         if (HasArg("--sweep-all"))
         {
             await RunAllSweepsAsync();
+            return;
+        }
+        if (HasArg("--replay-entries"))
+        {
+            await RunReplayEntriesAsync();
+            return;
+        }
+        if (HasArg("--entry-search"))
+        {
+            await RunEntrySearchAsync();
             return;
         }
         if (HasArg("--live-sim"))

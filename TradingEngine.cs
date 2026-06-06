@@ -703,6 +703,9 @@ namespace TradingBot
             //   v5.22.5 "default → PUMP" 가 ENGINE_151 / ETA_TRIGGER / ElliottWave3Wave / FORECAST_FALLBACK
             //   까지 PUMP 로 떨어뜨려서 12+시간 진입 0건 → GENERIC 카테고리 신설 (PUMP 차단 면제)
             string srcU = (source ?? "").ToUpperInvariant();
+            // [v5.23.79] MEANREV(역추세 눌림반등)은 모멘텀 방향게이트를 우회 — 설계상 눌림 진입이라
+            //   5m RSI<50 / 15m BB<0.7 에 막히면 한 건도 못 들어감. 안전게이트(설정/슬롯/시총/스코어카드/1h추세)는 유지.
+            bool isMeanRev = srcU.Contains("MEANREV");
             string entryCat;
             // [v5.22.25] 메이저 심볼은 source 무관 MAJOR 강제 — MaxMajorSlots 회피 버그 fix
             //   v5.22.24 까지: BTC/ETH/SOL/XRP 가 BB_SQUEEZE/ENGINE_151 source 로 들어오면 entryCat=SQUEEZE/GENERIC
@@ -950,7 +953,8 @@ namespace TradingBot
                     double rsi5m = avgL < 1e-12 ? 100.0 : 100.0 - (100.0 / (1.0 + avgG / avgL));
 
                     // RSI < 50 = 하락 모멘텀 → LONG 방향 거꾸로 → 차단 (방향 가드)
-                    if (rsi5m < 50.0)
+                    //   [v5.23.79] MEANREV 제외 — 역추세 눌림반등은 의도적으로 RSI 낮은 구간 진입
+                    if (!isMeanRev && rsi5m < 50.0)
                     {
                         blockReason = $"RSI5M_DOWN:rsi={rsi5m:F1}<50";
                         OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (5m RSI 하락 모멘텀 — 방향 반대)");
@@ -991,7 +995,7 @@ namespace TradingBot
                         // [v5.23.73] BB 게이트 0.5 → 0.7 상향 — 백테스트(--diagnose, EMA20↑ n=7531, production TP1%/SL3%)
                         //   BB 위치 임계 스윕: avg/건 bbPos≥0.5 $2.39 → ≥0.7 $2.89 (+21% 품질). 추세추종 봇은 상단이 최고 흑자.
                         //   (스윕은 5m BB 기준 — 여기 15m 게이트엔 동일 임계를 보수적으로 적용. 추후 15m 별도 검증 여지)
-                        if (bbPos < 0.7)
+                        if (!isMeanRev && bbPos < 0.7)
                         {
                             blockReason = $"M15_BB_BELOW_0.7:pos={bbPos:F2}<0.7";
                             OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (15m BB 중상단 미만 — 추세 약함, 백테스트 avg/건 ≥0.7이 +21%)");
@@ -4766,6 +4770,16 @@ namespace TradingBot
                     {
                         OnStatusLog?.Invoke($"⚠️ [BB_TRIG] {symbol} 분석 오류: {ex.Message}");
                     }
+
+                    // [v5.23.79] MEANREV 역추세 진입 (카나리) — Drop2%+BBroom+ADX20+RSI밴드
+                    try
+                    {
+                        await AnalyzeMeanReversionEntryAsync(symbol, currentPrice, token);
+                    }
+                    catch (Exception ex)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [MEANREV] {symbol} 분석 오류: {ex.Message}");
+                    }
                 }
 
                 // [v5.23.4] 1분봉 정밀 트리거 확인 (직전 1m high + EMA20 동시 돌파 시 진입)
@@ -5073,6 +5087,9 @@ namespace TradingBot
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _bbTrigCooldown
             = new(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan BbTrigCooldown = TimeSpan.FromMinutes(15);
+        // [v5.23.79] MEANREV 역추세 진입 쿨다운
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _meanRevCooldown
+            = new(StringComparer.OrdinalIgnoreCase);
 
         // 밈코인 진입 — 5m KNN (LorentzianMemeFeatures: MFI/VolDelta/OBV/RSI/ADX) + 1m vol spike 3x
         // [v5.23.62] MEME_KNN 전면 차단
@@ -5221,22 +5238,12 @@ namespace TradingBot
                     }
                 }
             }
-            else if (i >= 20)
-            {
-                BbBand20(k, i, out double mid, out double upper, out double widthPct);
-                bool closeAboveUpper = (double)k[i].ClosePrice >= upper;
-                // [v5.23.76] v5.23.75 BB 트리거 확장 롤백 + BB_WALK 진입 제거.
-                //   실거래 30일 검증(diag-v75-impact): BB_WALK 승률 27.6% / -$110 (단일 최악 카테고리).
-                //   --bb-expand 백테스트는 BB_WALK 91.5% WR이라 보고했으나 실거래와 64%p 괴리 → 백테스트 무효.
-                //   BB는 보조지표(변동성/상대위치)일 뿐 방향신호가 아님 — 단독 돌파추격은 천장 매수와 동치.
-                //   SQUEEZE(밴드 조임 후 돌파)는 실거래 61.5% WR / +$66로 유지하되 문턱은 strict(1.5)로 복원.
-                if (widthPct < 1.5 && closeAboveUpper)
-                {
-                    src = "BB_SQUEEZE_ALT";
-                    detail = $"BBW={widthPct:F2}%<1.5 close>upper";
-                }
-                // BB_WALK 단독 진입 폐지 — 실거래에서 검증된 손실 신호. (BB는 확정 보조로만 사용)
-            }
+            // [v5.23.79] 비메이저 BB 트리거(SQUEEZE/BB_WALK) 전면 폐기.
+            //   BB 스퀴즈/워크 = "밴드 조임/돌파 매수" = 모멘텀 추격. --entry-search 충실 백테스트에서
+            //   모멘텀 추격 LONG은 랜덤 이하(TP1 도달 ~50% < 기대 60%)로 증명됨 — 천장 추격이라 손실.
+            //   엣지는 정반대(역추세): 직전 1h −2%+ 하락 후 반등(Drop2%+BBroom) = test WR 66~71% 흑자.
+            //   BB_WALK(v5.23.76 폐지)에 이어 SQUEEZE도 폐지. BB는 방향신호 아님(보조지표).
+            //   (역추세 진입 로직은 카나리 검증 후 별도 도입 예정)
 
             if (src == null) return;
             if (!IsEntryAllowed(symbol, src, out var reason))
@@ -5250,6 +5257,93 @@ namespace TradingBot
             OnStatusLog?.Invoke($"🟢 [{src}] {symbol} 진입 | {detail}");
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
                 signalSource: src, skipAiGateCheck: false);
+        }
+
+        // ── [v5.23.79] MEANREV — 역추세(눌림 반등) 진입 ──────────────────────
+        //   --entry-search / 180d 2회 OOS 검증 (test WR 64~71% 흑자, Drop2%가 모든 승리조합 공통):
+        //     Drop2%  : 직전 1h(12×5m) 종가 −2%+ 하락 (눌림)
+        //     BBroom  : 종가 > BB(20,2) 중심선 (반등 시작)
+        //     ADX>20  : 추세강도 존재
+        //     RSI 45~68 : 과매도 바닥/과열 아님
+        //   모멘텀 추격(SQUEEZE/BB_WALK)의 정반대 — 충실 백테스트상 모멘텀 LONG은 랜덤 이하였음.
+        //   ※ 카나리: 소액으로 실거래 N건 검증 후 본격화. 청산은 기존 funnel 상속(추후 수익런 강화).
+        //   알트 전용 (메이저4는 MAJOR_SIMPLE). LONG only (ExecuteAutoOrder에서 SHORT 전역차단).
+        private async Task AnalyzeMeanReversionEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            if (_meanRevCooldown.TryGetValue(symbol, out var last)
+                && DateTime.UtcNow - last < BbTrigCooldown) return;
+            if (MajorSymbols.Contains(symbol)) return;
+            lock (_posLock)
+            {
+                if (_activePositions.TryGetValue(symbol, out var existing)
+                    && existing != null && Math.Abs(existing.Quantity) > 0) return;
+            }
+
+            var k5 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 300, token);
+            if (k5 == null) return;
+            var k = k5 as List<IBinanceKline> ?? new List<IBinanceKline>(k5);
+            if (k.Count < 60) return;
+            int i = k.Count - 2;                 // 마지막 마감 봉
+            if (i < 45) return;                  // ADX(14) 워밍업 여유
+
+            double c = (double)k[i].ClosePrice, c1h = (double)k[i - 12].ClosePrice;
+            if (c1h <= 0) return;
+            double drop1hPct = (c / c1h - 1.0) * 100.0;
+            if (drop1hPct > -2.0) return;        // Drop2%: 직전 1h −2%+ 하락
+
+            BbBand20(k, i, out double mid, out double upper, out double widthPct);
+            if (mid <= 0 || c <= mid) return;    // BBroom: 종가 > 중심선
+
+            double adx = CalcAdx14(k, i, 14);
+            if (adx <= 20.0) return;             // ADX>20
+
+            float rsi = CalculateRsiAtIndex(k, i, 14);
+            if (rsi < 45f || rsi > 68f) return;  // RSI 45~68
+
+            if (!IsEntryAllowed(symbol, "MEANREV", out var reason))
+            {
+                if (DateTime.UtcNow.Second % 30 == 0)
+                    OnStatusLog?.Invoke($"⛔ [MEANREV] {symbol} 게이트 차단 | {reason}");
+                return;
+            }
+
+            _meanRevCooldown[symbol] = DateTime.UtcNow;
+            OnStatusLog?.Invoke($"🟢 [MEANREV] {symbol} 진입 | Drop1h={drop1hPct:F1}% >BBmid ADX={adx:F0} RSI={rsi:F0}");
+            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
+                signalSource: "MEANREV", skipAiGateCheck: false);
+        }
+
+        // Wilder ADX(14) — 마지막 봉 i 기준 (자체구현, Skender GetAdx 근사)
+        private static double CalcAdx14(List<IBinanceKline> kl, int i, int period = 14)
+        {
+            int need = period * 3;
+            if (i < need + 1) return 0;
+            int s = i - need;
+            double atr = 0, pdm = 0, ndm = 0, adx = 0, dxSum = 0;
+            int dxCount = 0; bool adxInit = false;
+            for (int t = s + 1; t <= i; t++)
+            {
+                double high = (double)kl[t].HighPrice, low = (double)kl[t].LowPrice, pc = (double)kl[t - 1].ClosePrice;
+                double tr = Math.Max(high - low, Math.Max(Math.Abs(high - pc), Math.Abs(low - pc)));
+                double up = high - (double)kl[t - 1].HighPrice;
+                double down = (double)kl[t - 1].LowPrice - low;
+                double plusDM = (up > down && up > 0) ? up : 0;
+                double minusDM = (down > up && down > 0) ? down : 0;
+                int idx = t - (s + 1);
+                if (idx < period) { atr += tr; pdm += plusDM; ndm += minusDM; }
+                else
+                {
+                    atr = atr - atr / period + tr;
+                    pdm = pdm - pdm / period + plusDM;
+                    ndm = ndm - ndm / period + minusDM;
+                    double pdi = atr > 0 ? 100 * pdm / atr : 0;
+                    double ndi = atr > 0 ? 100 * ndm / atr : 0;
+                    double dx = (pdi + ndi) > 0 ? 100 * Math.Abs(pdi - ndi) / (pdi + ndi) : 0;
+                    if (!adxInit) { dxSum += dx; dxCount++; if (dxCount == period) { adx = dxSum / period; adxInit = true; } }
+                    else adx = (adx * (period - 1) + dx) / period;
+                }
+            }
+            return adxInit ? adx : 0;
         }
 
         // ── [v5.23.60] BB/EMA 헬퍼 (--logic-365d 검증 로직과 1:1 동일, 5m kl[i] 기준) ──
