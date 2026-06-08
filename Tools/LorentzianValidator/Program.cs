@@ -2156,6 +2156,12 @@ internal static class Program
     private static decimal LEVERAGE = 10m;  // --lev N CLI 로 override
     private static int BbExpandPages = 12;   // --pages N CLI 로 override (12=~62일, 211=~3년)
     private static bool SkipKnn = false;     // --no-knn: KNN precompute 생략(장기탐색 가속, 승리조합에 KNN 없음)
+    private static bool UseMajors = false;    // --majors: 배터리를 대형주 universe로
+    private static bool UseRegime = false;    // --regime: BTC 상승장(종가>EMA200)일 때만 진입 카운트
+    private static readonly string[] LargeCaps = {
+        "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","TRXUSDT",
+        "LTCUSDT","BCHUSDT","DOTUSDT","UNIUSDT","ATOMUSDT","ETCUSDT","XLMUSDT","FILUSDT","NEARUSDT","APTUSDT",
+        "ARBUSDT","OPUSDT","INJUSDT","SUIUSDT","AAVEUSDT" };
     private const decimal FEE_RATE   = 0.0004m;
     private static decimal Notional => MARGIN_USD * LEVERAGE;
     private static decimal RoundTripFee => Notional * FEE_RATE * 2m;
@@ -14098,6 +14104,597 @@ internal static class Program
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // [v5.23.80] --rsidip-verify : 사용자 진입전략(눌림+RSI보조+가짜반등필터) 검증.
+    //   가짜반등 필터 ON vs OFF 비교 → 필터가 승률을 올리는지 확인. K폴드.
+    //   진입조건은 라이브 AnalyzeMeanReversionEntry 와 동일. 청산은 SimulateRunner(근사).
+    // ─────────────────────────────────────────────────────────────────────
+    // [v5.23.80] --user4 : 사용자 지정 4전략 검증 (Lorentzian / VolSupertrend / RSI / 선형회귀채널)
+    //   각 독립, BTC 상승장 레짐(--regime), 청산무관 전방수익률. Top? 는 symbols 사용.
+    private static async Task RunUser4Async()
+    {
+        int pages = BbExpandPages >= 12 ? BbExpandPages : 24;
+        var uni = UseMajors ? LargeCaps : symbols;
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  USER4 전략 검증 — {uni.Length}심볼 / ~{pages * 1500 * 5 / 60 / 24}일 / 레짐:{(UseRegime ? "ON(BTC상승장)" : "OFF")}");
+        Console.WriteLine("  전략: ①Lorentzian(KNN) ②VolSuperTrend ③RSI반전 ④선형회귀채널 하단반등");
+        Console.WriteLine("================================================================");
+        string[] names = { "Lorentzian", "VolSuperTrend", "RSI반전", "선형회귀채널", "Lor+거래량20선위" };
+        int S = 5;
+        var N = new int[S]; var up6 = new int[S]; var up24 = new int[S]; var c6 = new int[S]; var c24 = new int[S];
+        var sum6 = new double[S]; var sum24 = new double[S];
+
+        var btcUp = new Dictionary<long, bool>();
+        if (UseRegime)
+        {
+            Console.Write("BTC 레짐 로딩... ");
+            var bk = await FetchKlinesAsync("BTCUSDT", pages);
+            var bc2 = new double[bk.Count]; for (int t = 0; t < bk.Count; t++) bc2[t] = (double)bk[t].ClosePrice;
+            var be200 = EmaC(bc2, 200); var be50 = EmaC(bc2, 50);
+            for (int t = 0; t < bk.Count; t++) btcUp[((DateTimeOffset)bk[t].OpenTime).ToUnixTimeMilliseconds()] = (bc2[t] > be200[t] && be50[t] > be200[t]);
+            Console.WriteLine($"ok ({btcUp.Values.Count(v => v)}/{btcUp.Count} 상승)");
+        }
+        bool RegimeOk(IBinanceKline bar) => !UseRegime || (btcUp.TryGetValue(((DateTimeOffset)bar.OpenTime).ToUnixTimeMilliseconds(), out var u) && u);
+
+        var lor = new MiniLorentzianService();
+        int bidx = 0;
+        foreach (var sym in uni)
+        {
+            bidx++; Console.Write($"[{bidx}/{uni.Length}] {sym} ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlinesAsync(sym, pages); } catch { Console.WriteLine("fail"); continue; }
+            int n = kl.Count; if (n < 600) { Console.WriteLine("skip"); continue; }
+            var C = new double[n]; var H = new double[n]; var L = new double[n]; var O = new double[n]; var V = new double[n];
+            for (int t = 0; t < n; t++) { C[t] = (double)kl[t].ClosePrice; H[t] = (double)kl[t].HighPrice; L[t] = (double)kl[t].LowPrice; O[t] = (double)kl[t].OpenPrice; V[t] = (double)kl[t].Volume; }
+            var rsi = BtRsiArr(C, 14); var atr = AtrArr(H, L, C, 14); var stDir = SupertrendDir(H, L, C, atr, 3.0);
+            var (reg, lrLo, lrUp, slope) = LinRegChannel(C, 100, 2.0);
+            var engine = lor.GetOrCreate(sym); int trained = 300;
+
+            var busy = new int[S]; for (int s = 0; s < S; s++) busy[s] = -1;
+            for (int i = 305; i < n - 2; i++)
+            {
+                while (trained <= i - 4) { var fs = LorentzianFeatures.Extract(kl.GetRange(0, trained + 1)); if (fs != null) { decimal a0 = kl[trained].ClosePrice, fu = kl[trained + 4].ClosePrice; engine.AddSample(fs, fu > a0 ? 1 : fu < a0 ? -1 : 0); } trained++; }
+                bool rOk = RegimeOk(kl[i]);
+                double volAvg = 0; for (int q = i - 20; q < i; q++) volAvg += V[q]; volAvg /= 20;
+                var sig = new bool[S];
+                // ① Lorentzian
+                var pred = lor.Predict(sym, kl.GetRange(0, i + 1));
+                sig[0] = pred.IsReady && pred.Prediction > 0 && pred.PositiveRate >= 0.66f;
+                // ② Volume SuperTrend AI: 슈퍼트렌드 상향전환 + 거래량 확인
+                sig[1] = stDir[i] == 1 && stDir[i - 1] == -1 && volAvg > 0 && V[i] > volAvg * 1.2;
+                // ③ RSI 반전: 30 아래→위 돌파
+                sig[2] = rsi[i - 1] < 30 && rsi[i] >= 30;
+                // ④ 선형회귀채널: 상승채널(slope>0) + 저가가 하단밴드 터치 + 양봉 반등
+                sig[3] = slope[i] > 0 && lrLo[i] > 0 && L[i] <= lrLo[i] && C[i] > O[i];
+                // ⑤ Lorentzian + 거래량 20선 위 (사용자 지정): 시그널 + V > 20봉평균
+                sig[4] = sig[0] && volAvg > 0 && V[i] > volAvg;
+                for (int s = 0; s < S; s++)
+                {
+                    if (!sig[s] || i <= busy[s] || !rOk) continue;
+                    busy[s] = i + 24; double e = C[i]; N[s]++;
+                    int j6 = i + 72, j24 = i + 288;
+                    if (j6 < n) { c6[s]++; double r = C[j6] / e - 1; sum6[s] += r; if (r > 0) up6[s]++; }
+                    if (j24 < n) { c24[s]++; double r = C[j24] / e - 1; sum24[s] += r; if (r > 0) up24[s]++; }
+                }
+            }
+            Console.WriteLine("ok");
+        }
+        Console.WriteLine();
+        Console.WriteLine($"{"전략",-16} {"진입",7} {"6h상승%",8} {"24h상승%",9} {"6h평균%",8} {"24h평균%",9}");
+        for (int s = 0; s < S; s++)
+        {
+            double u6 = c6[s] > 0 ? 100.0 * up6[s] / c6[s] : 0, u24 = c24[s] > 0 ? 100.0 * up24[s] / c24[s] : 0;
+            double m6 = c6[s] > 0 ? sum6[s] / c6[s] * 100 : 0, m24 = c24[s] > 0 ? sum24[s] / c24[s] * 100 : 0;
+            Console.WriteLine($"{names[s],-16} {N[s],7} {u6,7:F1}% {u24,8:F1}% {m6,7:F2}% {m24,8:F2}%");
+        }
+        Console.WriteLine();
+        Console.WriteLine("  [판정] 6h/24h 상승% 55%+ & 평균% 양수면 그 전략을 독립 진입으로 채택. 50% 부근=제외.");
+    }
+
+    private static async Task RunBatteryAsync()
+    {
+        int pages = BbExpandPages >= 12 ? BbExpandPages : 24;
+        var uni = UseMajors ? LargeCaps : symbols;
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  TA 전략 배터리 — {uni.Length}심볼({(UseMajors ? "대형주" : "잡알트")}) / ~{pages * 1500 * 5 / 60 / 24}일 / 청산무관 전방수익률");
+        Console.WriteLine("================================================================");
+
+        string[] names = {
+            "RSI과매도반전","Stoch과매도반전","StochRSI반전","MACD골든크로스","MACD히스토전환",
+            "BB하단반등","EMA9>21크로스","골든크로스50/200","Williams%R반전","CCI반전",
+            "MFI과매도","돈치안20돌파","하이킨아시전환","RSI상승다이버전스","슈퍼트렌드전환",
+            "거래량스파이크","EMA200회복","EMA20눌림반등" };
+        int S = names.Length;
+        var N = new int[S]; var up6 = new int[S]; var up24 = new int[S]; var c6 = new int[S]; var c24 = new int[S];
+        var sum6 = new double[S]; var sum24 = new double[S]; var fade = new int[S]; var fadeC = new int[S];
+
+        // [v5.23.80] BTC 상승장 레짐 — 종가>EMA200 & EMA50>EMA200 인 시각만 진입 허용
+        var btcUp = new Dictionary<long, bool>();
+        if (UseRegime)
+        {
+            Console.Write("BTC 레짐 로딩... ");
+            var bk = await FetchKlinesAsync("BTCUSDT", pages);
+            var bc = new double[bk.Count]; for (int t = 0; t < bk.Count; t++) bc[t] = (double)bk[t].ClosePrice;
+            var be200 = EmaC(bc, 200); var be50 = EmaC(bc, 50);
+            for (int t = 0; t < bk.Count; t++)
+                btcUp[((DateTimeOffset)bk[t].OpenTime).ToUnixTimeMilliseconds()] = (bc[t] > be200[t] && be50[t] > be200[t]);
+            Console.WriteLine($"ok ({btcUp.Values.Count(v => v)}/{btcUp.Count} 상승봉)");
+        }
+        bool RegimeOk(IBinanceKline bar)
+        {
+            if (!UseRegime) return true;
+            return btcUp.TryGetValue(((DateTimeOffset)bar.OpenTime).ToUnixTimeMilliseconds(), out var u) && u;
+        }
+
+        int bidx = 0;
+        foreach (var sym in uni)
+        {
+            bidx++; Console.Write($"[{bidx}/{uni.Length}] {sym} ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlinesAsync(sym, pages); } catch { Console.WriteLine("fail"); continue; }
+            int n = kl.Count; if (n < 500) { Console.WriteLine("skip"); continue; }
+            var C = new double[n]; var H = new double[n]; var L = new double[n]; var O = new double[n]; var V = new double[n];
+            for (int t = 0; t < n; t++) { C[t] = (double)kl[t].ClosePrice; H[t] = (double)kl[t].HighPrice; L[t] = (double)kl[t].LowPrice; O[t] = (double)kl[t].OpenPrice; V[t] = (double)kl[t].Volume; }
+            var rsi = BtRsiArr(C, 14); var ema9 = EmaC(C, 9); var ema21 = EmaC(C, 21); var ema50 = EmaC(C, 50); var ema200 = EmaC(C, 200);
+            var atr = AtrArr(H, L, C, 14); var (bbMid, bbUp, bbLo) = BbArr(C, 20, 2);
+            var stoK = StochArr(H, L, C, 14); var srsi = StochOfArr(rsi, 14);
+            var macdH = MacdHistArr(C); var wr = WilliamsArr(H, L, C, 14); var cci = CciArr(H, L, C, 20); var mfi = MfiArr(H, L, C, V, 14);
+            var (haO, haC) = HeikinArr(O, H, L, C); var stDir = SupertrendDir(H, L, C, atr, 3.0);
+            var don20 = DonchianHigh(H, 20);
+
+            var sig = new bool[S]; var busy = new int[S]; for (int s = 0; s < S; s++) busy[s] = -1;
+            for (int i = 205; i < n - 2; i++)
+            {
+                EvalSignals(sig, i, C, H, L, O, V, rsi, ema9, ema21, ema50, ema200, bbMid, bbUp, bbLo, stoK, srsi, macdH, wr, cci, mfi, haO, haC, stDir, don20);
+                bool regimeOk = RegimeOk(kl[i]);
+                for (int s = 0; s < S; s++)
+                {
+                    if (!sig[s] || i <= busy[s]) continue;
+                    if (!regimeOk) continue;        // BTC 상승장만 진입
+                    busy[s] = i + 24; double e = C[i]; N[s]++;
+                    int j6 = i + 72, j24 = i + 288;
+                    if (j6 < n) { c6[s]++; double r = C[j6] / e - 1; sum6[s] += r; if (r > 0) up6[s]++; fadeC[s]++; if (C[j6] < e) fade[s]++; }
+                    if (j24 < n) { c24[s]++; double r = C[j24] / e - 1; sum24[s] += r; if (r > 0) up24[s]++; }
+                }
+            }
+            Console.WriteLine("ok");
+        }
+
+        var rows = new List<(string name, int n, double u6, double u24, double m6, double m24, double fd)>();
+        for (int s = 0; s < S; s++)
+            rows.Add((names[s], N[s],
+                c6[s] > 0 ? 100.0 * up6[s] / c6[s] : 0, c24[s] > 0 ? 100.0 * up24[s] / c24[s] : 0,
+                c6[s] > 0 ? sum6[s] / c6[s] * 100 : 0, c24[s] > 0 ? sum24[s] / c24[s] * 100 : 0,
+                fadeC[s] > 0 ? 100.0 * fade[s] / fadeC[s] : 0));
+        Console.WriteLine();
+        Console.WriteLine($"{"전략",-20} {"진입",7} {"6h상승%",8} {"24h상승%",9} {"6h평균%",8} {"24h평균%",9} {"가짜반등%",9}");
+        foreach (var r in rows.OrderByDescending(x => x.u6))
+            Console.WriteLine($"{r.name,-20} {r.n,7} {r.u6,7:F1}% {r.u24,8:F1}% {r.m6,7:F2}% {r.m24,8:F2}% {r.fd,8:F1}%");
+        Console.WriteLine();
+        Console.WriteLine("  [판정] 6h/24h 상승% > 55~60% & 평균% 양수면 진짜 엣지 후보. 50% 부근=동전던지기.");
+        Console.WriteLine("  [중요] 청산 가정 없는 실제 가격경로 — 부풀린 가짜 승률 아님.");
+    }
+
+    private static double[] EmaC(double[] c, int p) { var e = new double[c.Length]; double k = 2.0 / (p + 1); e[0] = c[0]; for (int i = 1; i < c.Length; i++) e[i] = c[i] * k + e[i - 1] * (1 - k); return e; }
+    private static double[] BtRsiArr(double[] c, int p) { var r = new double[c.Length]; double ag = 0, al = 0; for (int i = 1; i < c.Length; i++) { double d = c[i] - c[i - 1]; double g = d > 0 ? d : 0, l = d < 0 ? -d : 0; if (i <= p) { ag += g; al += l; if (i == p) { ag /= p; al /= p; r[i] = al < 1e-12 ? 100 : 100 - 100 / (1 + ag / al); } } else { ag = (ag * (p - 1) + g) / p; al = (al * (p - 1) + l) / p; r[i] = al < 1e-12 ? 100 : 100 - 100 / (1 + ag / al); } } return r; }
+    private static double[] AtrArr(double[] h, double[] l, double[] c, int p) { var a = new double[c.Length]; double s = 0; for (int i = 1; i < c.Length; i++) { double tr = Math.Max(h[i] - l[i], Math.Max(Math.Abs(h[i] - c[i - 1]), Math.Abs(l[i] - c[i - 1]))); if (i <= p) { s += tr; if (i == p) a[i] = s / p; } else a[i] = (a[i - 1] * (p - 1) + tr) / p; } return a; }
+    private static (double[] mid, double[] up, double[] lo) BbArr(double[] c, int p, double mult) { int n = c.Length; var mid = new double[n]; var up = new double[n]; var lo = new double[n]; for (int i = p - 1; i < n; i++) { double s = 0; for (int q = i - p + 1; q <= i; q++) s += c[q]; double m = s / p; double v = 0; for (int q = i - p + 1; q <= i; q++) v += (c[q] - m) * (c[q] - m); double sd = Math.Sqrt(v / p); mid[i] = m; up[i] = m + mult * sd; lo[i] = m - mult * sd; } return (mid, up, lo); }
+    private static double[] StochArr(double[] h, double[] l, double[] c, int p) { int n = c.Length; var k = new double[n]; for (int i = p - 1; i < n; i++) { double hh = h[i], ll = l[i]; for (int q = i - p + 1; q <= i; q++) { if (h[q] > hh) hh = h[q]; if (l[q] < ll) ll = l[q]; } k[i] = hh > ll ? (c[i] - ll) / (hh - ll) * 100 : 50; } return k; }
+    private static double[] StochOfArr(double[] src, int p) { int n = src.Length; var k = new double[n]; for (int i = p; i < n; i++) { double hh = src[i], ll = src[i]; for (int q = i - p + 1; q <= i; q++) { if (src[q] > hh) hh = src[q]; if (src[q] < ll) ll = src[q]; } k[i] = hh > ll ? (src[i] - ll) / (hh - ll) * 100 : 50; } return k; }
+    private static double[] MacdHistArr(double[] c) { var e12 = EmaC(c, 12); var e26 = EmaC(c, 26); var line = new double[c.Length]; for (int i = 0; i < c.Length; i++) line[i] = e12[i] - e26[i]; var sig = EmaC(line, 9); var h = new double[c.Length]; for (int i = 0; i < c.Length; i++) h[i] = line[i] - sig[i]; return h; }
+    private static double[] WilliamsArr(double[] h, double[] l, double[] c, int p) { int n = c.Length; var w = new double[n]; for (int i = p - 1; i < n; i++) { double hh = h[i], ll = l[i]; for (int q = i - p + 1; q <= i; q++) { if (h[q] > hh) hh = h[q]; if (l[q] < ll) ll = l[q]; } w[i] = hh > ll ? -100 * (hh - c[i]) / (hh - ll) : -50; } return w; }
+    private static double[] CciArr(double[] h, double[] l, double[] c, int p) { int n = c.Length; var cc = new double[n]; for (int i = p - 1; i < n; i++) { double s = 0; for (int q = i - p + 1; q <= i; q++) s += (h[q] + l[q] + c[q]) / 3; double m = s / p; double tp = (h[i] + l[i] + c[i]) / 3; double md = 0; for (int q = i - p + 1; q <= i; q++) md += Math.Abs((h[q] + l[q] + c[q]) / 3 - m); md /= p; cc[i] = md > 1e-12 ? (tp - m) / (0.015 * md) : 0; } return cc; }
+    private static double[] MfiArr(double[] h, double[] l, double[] c, double[] v, int p) { int n = c.Length; var m = new double[n]; for (int i = p; i < n; i++) { double pos = 0, neg = 0; for (int q = i - p + 1; q <= i; q++) { double tp = (h[q] + l[q] + c[q]) / 3, tpPrev = (h[q - 1] + l[q - 1] + c[q - 1]) / 3; double mf = tp * v[q]; if (tp > tpPrev) pos += mf; else if (tp < tpPrev) neg += mf; } m[i] = neg < 1e-9 ? 100 : 100 - 100 / (1 + pos / neg); } return m; }
+    private static (double[] o, double[] c) HeikinArr(double[] o, double[] h, double[] l, double[] c) { int n = c.Length; var ho = new double[n]; var hc = new double[n]; ho[0] = o[0]; hc[0] = (o[0] + h[0] + l[0] + c[0]) / 4; for (int i = 1; i < n; i++) { hc[i] = (o[i] + h[i] + l[i] + c[i]) / 4; ho[i] = (ho[i - 1] + hc[i - 1]) / 2; } return (ho, hc); }
+    private static int[] SupertrendDir(double[] h, double[] l, double[] c, double[] atr, double mult) { int n = c.Length; var dir = new int[n]; double prevUp = 0, prevDn = 0; int prevDir = 1; for (int i = 1; i < n; i++) { double mid = (h[i] + l[i]) / 2; double up = mid + mult * atr[i], dn = mid - mult * atr[i]; double fUp = (c[i - 1] <= prevUp) ? Math.Min(up, prevUp == 0 ? up : prevUp) : up; double fDn = (c[i - 1] >= prevDn) ? Math.Max(dn, prevDn == 0 ? dn : prevDn) : dn; int d = prevDir; if (prevDir == 1 && c[i] < fDn) d = -1; else if (prevDir == -1 && c[i] > fUp) d = 1; dir[i] = d; prevUp = fUp; prevDn = fDn; prevDir = d; } return dir; }
+    private static double[] DonchianHigh(double[] h, int p) { int n = h.Length; var d = new double[n]; for (int i = p; i < n; i++) { double hh = h[i - 1]; for (int q = i - p; q < i; q++) if (h[q] > hh) hh = h[q]; d[i] = hh; } return d; }
+
+    // 선형회귀 채널: 윗/아랫 밴드 + 기울기 (윈도우 W, ±mult·resid_std)
+    private static (double[] reg, double[] lo, double[] up, double[] slope) LinRegChannel(double[] c, int W, double mult)
+    {
+        int n = c.Length; var reg = new double[n]; var lo = new double[n]; var up = new double[n]; var sl = new double[n];
+        double sx = 0, sxx = 0; for (int x = 0; x < W; x++) { sx += x; sxx += (double)x * x; }
+        double denom = W * sxx - sx * sx;
+        for (int i = W - 1; i < n; i++)
+        {
+            double sy = 0, sxy = 0; int b = i - W + 1;
+            for (int x = 0; x < W; x++) { double y = c[b + x]; sy += y; sxy += x * y; }
+            double slope = denom != 0 ? (W * sxy - sx * sy) / denom : 0;
+            double intercept = (sy - slope * sx) / W;
+            double rv = intercept + slope * (W - 1);   // i 지점 회귀값
+            double ss = 0; for (int x = 0; x < W; x++) { double pred = intercept + slope * x; double d = c[b + x] - pred; ss += d * d; }
+            double sd = Math.Sqrt(ss / W);
+            reg[i] = rv; lo[i] = rv - mult * sd; up[i] = rv + mult * sd; sl[i] = slope;
+        }
+        return (reg, lo, up, sl);
+    }
+    private static void EvalSignals(bool[] sig, int i, double[] C, double[] H, double[] L, double[] O, double[] V,
+        double[] rsi, double[] e9, double[] e21, double[] e50, double[] e200, double[] bbMid, double[] bbUp, double[] bbLo,
+        double[] stoK, double[] srsi, double[] macdH, double[] wr, double[] cci, double[] mfi, double[] haO, double[] haC, int[] stDir, double[] don20)
+    {
+        bool green = C[i] > O[i];
+        sig[0] = rsi[i - 1] < 30 && rsi[i] >= 30;
+        sig[1] = stoK[i - 1] < 20 && stoK[i] >= 20;
+        sig[2] = srsi[i - 1] < 20 && srsi[i] >= 20;
+        sig[3] = macdH[i - 1] < 0 && macdH[i] > 0;
+        sig[4] = macdH[i] < 0 && macdH[i] > macdH[i - 1] && macdH[i - 1] > macdH[i - 2];
+        sig[5] = C[i - 1] < bbLo[i - 1] && C[i] > bbLo[i] && bbLo[i] > 0;
+        sig[6] = e9[i - 1] <= e21[i - 1] && e9[i] > e21[i];
+        sig[7] = e50[i - 1] <= e200[i - 1] && e50[i] > e200[i];
+        sig[8] = wr[i - 1] < -80 && wr[i] >= -80;
+        sig[9] = cci[i - 1] < -100 && cci[i] >= -100;
+        sig[10] = mfi[i - 1] < 20 && mfi[i] >= 20;
+        sig[11] = don20[i] > 0 && C[i] > don20[i] && C[i - 1] <= don20[i - 1];
+        sig[12] = haC[i - 1] < haO[i - 1] && haC[i] > haO[i];
+        sig[13] = false;
+        { int lb = 20; if (i > lb) { int pl2 = i - 1; for (int q = i - lb; q < i; q++) if (L[q] < L[pl2]) pl2 = q; if (L[i] < L[pl2] && rsi[i] > rsi[pl2] && green) sig[13] = true; } }
+        sig[14] = stDir[i] == 1 && stDir[i - 1] == -1;
+        { double va = 0; for (int q = i - 20; q < i; q++) va += V[q]; va /= 20; sig[15] = va > 0 && V[i] > va * 2.0 && green && C[i] > e21[i]; }
+        sig[16] = C[i - 1] <= e200[i - 1] && C[i] > e200[i];
+        sig[17] = e9[i] > e21[i] && e21[i] > e50[i] && L[i] <= e21[i] && green;
+    }
+
+    private static async Task RunRsiDipVerifyAsync()
+    {
+        decimal lev = (LEVERAGE == 10m) ? 15m : LEVERAGE;
+        int pages = BbExpandPages >= 12 ? BbExpandPages : 24;
+        decimal slAtr = 1.5m, tp1Atr = 1.0m, tp1Pct = 0.5m, trailAtr = 3.0m;
+        const int K = 5;
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  RSI-DIP 검증 (청산무관·순수 전방가격) — {symbols.Length}심볼 / ~{pages * 1500 * 5 / 60 / 24}일");
+        Console.WriteLine("  진입: BB상단/RSI60+ 금지, (RSI≤30 과매도 | 종가≤BB중심+RSI≤50 눌림)");
+        Console.WriteLine("  비교: [필터OFF]단순양봉  vs  [필터ON]강몸통+작은윗꼬리+거래량1.2x+직전고가돌파");
+        Console.WriteLine("  지표: 진입 후 2h/6h/24h 가격 상승비율 + 평균수익 + MFE/MAE + 가짜반등율(6h뒤 하락)");
+        Console.WriteLine("================================================================");
+
+        int[] H = { 24, 72, 288 };  // 2h, 6h, 24h (5m봉)
+        // [variant], 누적
+        var N = new int[2]; var cntH = new int[2, 3]; var upH = new int[2, 3]; var sumH = new double[2, 3];
+        var sumMfe = new double[2]; var sumMae = new double[2]; var fadeN = new int[2]; var fade6cnt = new int[2];
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++; Console.Write($"[{idx}/{symbols.Length}] {sym} ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlinesAsync(sym, pages); } catch { Console.WriteLine("fail"); continue; }
+            if (kl.Count < 400) { Console.WriteLine("skip"); continue; }
+            int n = kl.Count, start = 40, end = n - 2;
+            for (int v = 0; v < 2; v++)
+            {
+                int busy = -1;
+                for (int i = start; i < end; i++)
+                {
+                    if (i <= busy) continue;
+                    if (!RsiDipEntry(kl, i, v == 1)) continue;
+                    double entryPx = (double)kl[i + 1].OpenPrice;
+                    if (entryPx <= 0) continue;
+                    N[v]++; busy = i + 24;   // 2h 쿨다운(중복신호 방지)
+                    for (int h = 0; h < 3; h++)
+                    {
+                        int j = i + 1 + H[h];
+                        if (j < n) { double r = (double)kl[j].ClosePrice / entryPx - 1; cntH[v, h]++; if (r > 0) upH[v, h]++; sumH[v, h] += r; }
+                    }
+                    // MFE/MAE 24h
+                    int last = Math.Min(n - 1, i + 1 + 288); double mx = entryPx, mn = entryPx;
+                    for (int j = i + 1; j <= last; j++) { if ((double)kl[j].HighPrice > mx) mx = (double)kl[j].HighPrice; if ((double)kl[j].LowPrice < mn) mn = (double)kl[j].LowPrice; }
+                    sumMfe[v] += (mx / entryPx - 1); sumMae[v] += (mn / entryPx - 1);
+                    int j6 = i + 1 + 72; if (j6 < n) { fade6cnt[v]++; if ((double)kl[j6].ClosePrice < entryPx) fadeN[v]++; }
+                }
+            }
+            Console.WriteLine("ok");
+        }
+        Console.WriteLine();
+        string[] hl = { "2h", "6h", "24h" };
+        for (int v = 0; v < 2; v++)
+        {
+            Console.WriteLine($"── {(v == 0 ? "필터OFF (단순양봉)" : "필터ON (가짜반등 필터)")} — 진입 {N[v]}건 ──");
+            for (int h = 0; h < 3; h++)
+            {
+                int cc = cntH[v, h];
+                double up = cc > 0 ? 100.0 * upH[v, h] / cc : 0, mean = cc > 0 ? sumH[v, h] / cc * 100 : 0;
+                Console.WriteLine($"    {hl[h],3} 후: 상승비율 {up,5:F1}%   평균수익 {mean,6:F2}%");
+            }
+            double mfe = N[v] > 0 ? sumMfe[v] / N[v] * 100 : 0, mae = N[v] > 0 ? sumMae[v] / N[v] * 100 : 0;
+            double fade = fade6cnt[v] > 0 ? 100.0 * fadeN[v] / fade6cnt[v] : 0;
+            Console.WriteLine($"    평균 최대상승(MFE) {mfe:F2}%  평균 최대하락(MAE) {mae:F2}%  가짜반등율(6h뒤 하락) {fade:F1}%");
+            Console.WriteLine();
+        }
+        Console.WriteLine("  [판정] 필터ON이 OFF보다 상승비율↑·평균수익↑·가짜반등율↓ 이면 필터가 진짜 효과.");
+        Console.WriteLine("  [중요] 이 수치는 청산 가정이 전혀 없는 실제 가격경로 — 청산모델 오류가 끼어들 여지 없음.");
+    }
+
+    // 라이브 AnalyzeMeanReversionEntry 와 동일 조건 (useFilter=가짜반등 필터)
+    private static bool RsiDipEntry(List<IBinanceKline> k, int i, bool useFilter)
+    {
+        if (i < 30) return false;
+        double c = (double)k[i].ClosePrice, o = (double)k[i].OpenPrice, pc = (double)k[i - 1].ClosePrice;
+        double hi = (double)k[i].HighPrice, lo = (double)k[i].LowPrice, prevHi = (double)k[i - 1].HighPrice;
+        var bb = LiveMajorEvaluator.Bb(k, i, 20, 2);
+        if (bb.Mid <= 0) return false;
+        double mid = bb.Mid, upper = bb.Upper;
+        if (c >= upper * 0.999) return false;                  // 천장 금지
+        double rsi = LiveMajorEvaluator.Rsi(k, i, 14);
+        if (rsi >= 60) return false;
+        bool oversold = rsi <= 30, pullback = c <= mid && rsi <= 50;
+        if (!(oversold || pullback)) return false;
+        if (!useFilter) return c > o && c > pc;                // 필터OFF: 단순 양봉
+        // 필터ON: 진짜반등
+        double range = hi - lo, body = Math.Abs(c - o), upWick = hi - Math.Max(c, o);
+        double volAvg = 0; for (int q = i - 20; q < i; q++) volAvg += (double)k[q].Volume; volAvg /= 20.0;
+        bool strongBody = range > 0 && body >= range * 0.5;
+        bool smallUpWick = body > 0 && upWick <= body * 0.6;
+        bool volConfirm = volAvg > 0 && (double)k[i].Volume >= volAvg * 1.2;
+        bool reclaim = c > prevHi;
+        return c > o && strongBody && smallUpWick && volConfirm && reclaim;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // [v5.23.79] --now : 현재 실시간 시장 스캔 (바이낸스=트뷰 데이터). 지금 어떤 코인이
+    //   깨끗한 1h 상승추세인지, 과열 아닌 진입자리인지 실제 차트로 읽음.
+    // ─────────────────────────────────────────────────────────────────────
+    private static async Task RunNowScanAsync()
+    {
+        var scan = new[] { "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT" }.Concat(symbols).Distinct().ToArray();
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  실시간 시장 스캔 (바이낸스 1h) — {scan.Length}심볼");
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"{"심볼",-13} {"현재가",12} {"24h%",7} {"추세",-10} {"vsEMA20",8} {"RSI",5} {"ADX",5} {"판정",-16}");
+
+        var rows = new List<(string sym, string verdict, double score, string line)>();
+        foreach (var sym in scan)
+        {
+            List<IBinanceKline> k;
+            try { k = await FetchKlines1hAsync(sym, 1); } catch { continue; }
+            if (k.Count < 210) continue;
+            int i = k.Count - 1;
+            double[] e20 = EmaArr(k, 20), e50 = EmaArr(k, 50), e200 = EmaArr(k, 200);
+            double c = (double)k[i].ClosePrice;
+            double ch24 = i >= 24 ? (c / (double)k[i - 24].ClosePrice - 1) * 100 : 0;
+            double rsi = LiveMajorEvaluator.Rsi(k, i, 14);
+            double adx = LiveSim.Adx(k, i, 14);
+            double vsE20 = (c / e20[i] - 1) * 100;
+
+            string trend; double score;
+            bool fullUp = c > e20[i] && e20[i] > e50[i] && e50[i] > e200[i];
+            bool up = e20[i] > e50[i] && c > e50[i];
+            if (fullUp) { trend = "정배열↑"; score = 3; }
+            else if (up) { trend = "상승"; score = 2; }
+            else if (c > e200[i]) { trend = "중립↑"; score = 1; }
+            else { trend = "하락/약세"; score = 0; }
+
+            // 판정: 정배열 + 과열아님(vsEMA20 0~4% & RSI<70) + 추세강도(ADX>20) = 진입후보
+            string verdict;
+            if (fullUp && vsE20 >= -1 && vsE20 <= 4 && rsi < 70 && adx > 20) { verdict = "★진입후보"; score += 2; }
+            else if (fullUp && rsi >= 75) verdict = "과열(되돌림대기)";
+            else if (fullUp && vsE20 > 4) verdict = "확장(추격금지)";
+            else if (up) verdict = "상승中(관망)";
+            else verdict = "회피";
+
+            string line = $"{sym,-13} {c,12:G6} {ch24,6:F1}% {trend,-10} {vsE20,7:F1}% {rsi,5:F0} {adx,5:F0} {verdict,-16}";
+            rows.Add((sym, verdict, score, line));
+        }
+        foreach (var r in rows.OrderByDescending(x => x.score).ThenByDescending(x => x.sym.StartsWith("BTC") || x.sym.StartsWith("ETH")))
+            Console.WriteLine(r.line);
+        Console.WriteLine();
+        Console.WriteLine("=== ★ 지금 깨끗한 진입후보 (정배열+과열아님+ADX>20) ===");
+        var cand = rows.Where(x => x.verdict == "★진입후보").ToList();
+        if (cand.Count == 0) Console.WriteLine("  현재 깨끗한 진입후보 없음 (다 과열이거나 추세 약함)");
+        foreach (var r in cand) Console.WriteLine("  " + r.line);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // [v5.23.79] --trend1h-folds : 1시간봉 추세추종 전략을 3년 차트 다중폴드로 검증.
+    //   사용자 원칙 "방향은 1h" — 상승추세 안에서 진입(고점추격 아님). 5개 변형 × K폴드.
+    //   청산 = 부분TP1 + 넓은 ATR 추적 (큰 추세 끝까지).
+    // ─────────────────────────────────────────────────────────────────────
+    private static async Task RunTrend1hFoldsAsync()
+    {
+        decimal lev = (LEVERAGE == 10m) ? 15m : LEVERAGE;
+        int pages = BbExpandPages >= 12 ? BbExpandPages : 18;   // 1h: 18p ≈ 3년
+        decimal slAtr = 1.5m, tp1Atr = 1.5m, tp1Pct = 0.5m, trailAtr = 3.0m;
+        const int K = 5;
+
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  1H 추세추종 검증  —  {symbols.Length}심볼 / 1h {pages}p / {K}폴드 / {lev}x");
+        Console.WriteLine($"  청산: 부분TP1({tp1Atr}ATR,{tp1Pct:P0}) + 잔량 {trailAtr}ATR 추적 (추세 끝까지)");
+        Console.WriteLine("  변형: T1추세지속 T2눌림반등 T3RSI눌림 T4골든크로스 T5EMA20근접");
+        Console.WriteLine("================================================================");
+
+        string[] vname = { "T1추세지속", "T2눌림반등", "T3RSI눌림", "T4골든크로스", "T5EMA근접" };
+        int V = vname.Length;
+        var foldN = new int[V, K]; var foldW = new int[V, K]; var foldRet = new decimal[V, K];
+
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[{idx}/{symbols.Length}] {sym} ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlines1hAsync(sym, pages); }
+            catch (Exception ex) { Console.WriteLine("fail:" + ex.Message); continue; }
+            if (kl.Count < 300) { Console.WriteLine($"skip ({kl.Count})"); continue; }
+            int n = kl.Count, start = 60, end = n - 2;
+            int foldLen = (end - start) / K;
+
+            // EMA20/50 precompute
+            double[] e20 = EmaArr(kl, 20), e50 = EmaArr(kl, 50);
+
+            for (int v = 0; v < V; v++)
+            {
+                int busy = -1;
+                for (int i = start; i < end; i++)
+                {
+                    if (i <= busy) continue;
+                    if (!Trend1hCond(v, kl, i, e20, e50)) continue;
+                    var rr = LiveSim.SimulateRunner(kl, i + 1, slAtr, tp1Atr, tp1Pct, trailAtr, 240);
+                    if (!rr.Entered) continue;
+                    int fold = Math.Min(K - 1, (i - start) / Math.Max(1, foldLen));
+                    foldN[v, fold]++; if (rr.HitTp1) foldW[v, fold]++; foldRet[v, fold] += rr.RetPct;
+                    busy = rr.ExitIdx;
+                }
+            }
+            Console.WriteLine("ok");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("=== 변형별 × 폴드별 WR (각 폴드 독립구간 ~7개월 — 전부 60%+ & 흑자면 진짜) ===");
+        Console.WriteLine($"{"변형",-12} " + string.Join(" ", Enumerable.Range(1, K).Select(f => $"F{f}(N/WR)".PadLeft(12))) + "   전체WR  건당ROE%");
+        for (int v = 0; v < V; v++)
+        {
+            int tN = 0, tW = 0; decimal tR = 0m; var cells = new List<string>();
+            for (int f = 0; f < K; f++)
+            {
+                int nn = foldN[v, f], ww = foldW[v, f]; tN += nn; tW += ww; tR += foldRet[v, f];
+                decimal wr = nn > 0 ? 100m * ww / nn : 0m;
+                cells.Add($"{nn}/{wr:F0}%".PadLeft(12));
+            }
+            decimal twr = tN > 0 ? 100m * tW / tN : 0m;
+            decimal avgRoe = tN > 0 ? tR / tN * lev * 100m : 0m;
+            Console.WriteLine($"{vname[v],-12} " + string.Join(" ", cells) + $"   {twr,5:F1}% {avgRoe,8:F1}%");
+        }
+        Console.WriteLine();
+        Console.WriteLine("  [판정] 5폴드 전부 WR 60%+ & 건당ROE 양수 = 1h 추세추종 실엣지. 이게 새 전략 후보.");
+    }
+
+    private static double[] EmaArr(List<IBinanceKline> kl, int period)
+    {
+        var e = new double[kl.Count]; double k = 2.0 / (period + 1); double prev = (double)kl[0].ClosePrice;
+        e[0] = prev;
+        for (int i = 1; i < kl.Count; i++) { double c = (double)kl[i].ClosePrice; prev = c * k + prev * (1 - k); e[i] = prev; }
+        return e;
+    }
+
+    // 1h 추세추종 진입조건 변형 (LONG, 모두 상승추세 EMA20>EMA50 전제)
+    private static bool Trend1hCond(int v, List<IBinanceKline> kl, int i, double[] e20, double[] e50)
+    {
+        if (i < 51) return false;
+        double c = (double)kl[i].ClosePrice, pc = (double)kl[i - 1].ClosePrice;
+        bool up = e20[i] > e50[i];                       // 상승추세
+        switch (v)
+        {
+            case 0: // T1 추세지속: 상승추세 + 종가>EMA20 + 오르는 중
+                return up && c > e20[i] && c > pc;
+            case 1: // T2 눌림반등: 상승추세 + 직전봉 저가 EMA20 터치(눌림) + 현재 종가>직전 고가(반등)
+                return up && (double)kl[i - 1].LowPrice <= e20[i - 1] && c > (double)kl[i - 1].HighPrice;
+            case 2: // T3 RSI눌림: 상승추세 + 종가>EMA50 + RSI 40~60 (추세 중 눌림)
+            {
+                if (!(up && c > e50[i])) return false;
+                double r = LiveMajorEvaluator.Rsi(kl, i, 14); return r >= 40 && r <= 60;
+            }
+            case 3: // T4 골든크로스: EMA20이 EMA50 갓 상향돌파
+                return e20[i] > e50[i] && e20[i - 1] <= e50[i - 1];
+            case 4: // T5 EMA근접: 상승추세 + 종가가 EMA20 위 0~2% (과열 아닌 추세 진입)
+                return up && c >= e20[i] && c <= e20[i] * 1.02 && c > pc;
+        }
+        return false;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // [v5.23.79] --meanrev-folds : MEANREV 규칙을 다중 폴드(K구간)로 검증 (며칠 라이브 대신 차트로 즉시).
+    //   규칙: Drop2%(직전1h −2%↓) + BBroom(종가>BB중심) + ADX>20 + RSI 45~68.
+    //   K개 비중첩 구간 각각의 WR/기대값 + 변형(노RSI/노ADX/Drop임계) 민감도 + 심볼별.
+    // ─────────────────────────────────────────────────────────────────────
+    private static async Task RunMeanRevFoldsAsync()
+    {
+        decimal lev = (LEVERAGE == 10m) ? 15m : LEVERAGE;
+        int pages = BbExpandPages;             // 기본 12, --pages 48 권장(~250일)
+        int days = pages * BARS_PER_REQ * 5 / (60 * 24);
+        decimal slAtr = 1.5m, tp1Atr = 1.0m, tp1Pct = 0.5m, trailAtr = 3.0m;
+        const int K = 5;
+
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  MEANREV 다중폴드 검증  —  {symbols.Length}심볼 / ~{days}일 / {K}폴드 / {lev}x");
+        Console.WriteLine($"  규칙: Drop2% + BBroom + ADX>20 + RSI45~68 | 청산: 부분TP1+넓은ATR추적");
+        Console.WriteLine("================================================================");
+
+        // 변형 정의: (이름, 판정함수)
+        var variants = new (string name, Func<List<IBinanceKline>, int, bool> f)[]
+        {
+            ("MEANREV(기본)", (k,i) => CondMeanRev(k,i,-2.0,true,true)),
+            ("노RSI",        (k,i) => CondMeanRev(k,i,-2.0,false,true)),
+            ("노ADX",        (k,i) => CondMeanRev(k,i,-2.0,true,false)),
+            ("Drop3%",       (k,i) => CondMeanRev(k,i,-3.0,true,true)),
+            ("Drop1%",       (k,i) => CondMeanRev(k,i,-1.0,true,true)),
+        };
+
+        // 폴드별·변형별 집계
+        var foldN = new int[variants.Length, K];
+        var foldW = new int[variants.Length, K];
+        var foldRet = new decimal[variants.Length, K];
+        var symAgg = new Dictionary<string, (int n, int w)>();
+
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Write($"[{idx}/{symbols.Length}] {sym} ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlinesAsync(sym, pages); }
+            catch (Exception ex) { Console.WriteLine("fail:" + ex.Message); continue; }
+            if (kl.Count < 1000) { Console.WriteLine($"skip ({kl.Count})"); continue; }
+            int n = kl.Count, start = 50, end = n - 2;
+            int foldLen = (end - start) / K;
+
+            for (int v = 0; v < variants.Length; v++)
+            {
+                int busy = -1;
+                for (int i = start; i < end; i++)
+                {
+                    if (i <= busy) continue;
+                    if (!variants[v].f(kl, i)) continue;
+                    var rr = LiveSim.SimulateRunner(kl, i + 1, slAtr, tp1Atr, tp1Pct, trailAtr, 288);
+                    if (!rr.Entered) continue;
+                    int fold = Math.Min(K - 1, (i - start) / Math.Max(1, foldLen));
+                    foldN[v, fold]++; if (rr.HitTp1) foldW[v, fold]++; foldRet[v, fold] += rr.RetPct;
+                    busy = rr.ExitIdx;
+                    if (v == 0) { var cur = symAgg.TryGetValue(sym, out var x) ? x : (0, 0); symAgg[sym] = (cur.Item1 + 1, cur.Item2 + (rr.HitTp1 ? 1 : 0)); }
+                }
+            }
+            Console.WriteLine("ok");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("=== 변형별 × 폴드별 WR (각 폴드가 독립 구간 — 전부 60%+면 진짜) ===");
+        Console.WriteLine($"{"변형",-14} " + string.Join(" ", Enumerable.Range(1, K).Select(f => $"F{f}(N/WR)".PadLeft(13))) + "   전체WR  건당ROE%");
+        for (int v = 0; v < variants.Length; v++)
+        {
+            int tN = 0, tW = 0; decimal tR = 0m;
+            var cells = new List<string>();
+            for (int f = 0; f < K; f++)
+            {
+                int nn = foldN[v, f], ww = foldW[v, f];
+                tN += nn; tW += ww; tR += foldRet[v, f];
+                decimal wr = nn > 0 ? 100m * ww / nn : 0m;
+                cells.Add($"{nn}/{wr:F0}%".PadLeft(13));
+            }
+            decimal twr = tN > 0 ? 100m * tW / tN : 0m;
+            decimal avgRoe = tN > 0 ? tR / tN * lev * 100m : 0m;
+            Console.WriteLine($"{variants[v].name,-14} " + string.Join(" ", cells) + $"   {twr,5:F1}% {avgRoe,8:F1}%");
+        }
+        Console.WriteLine();
+        Console.WriteLine("=== 기본규칙 심볼별 WR (10건+, 최고/최저 8) ===");
+        foreach (var kv in symAgg.Where(x => x.Value.n >= 10).OrderByDescending(x => (double)x.Value.w / x.Value.n).Take(8))
+            Console.WriteLine($"  +{kv.Key,-12} N={kv.Value.n,4}  WR={100.0*kv.Value.w/kv.Value.n:F1}%");
+        foreach (var kv in symAgg.Where(x => x.Value.n >= 10).OrderBy(x => (double)x.Value.w / x.Value.n).Take(8))
+            Console.WriteLine($"  -{kv.Key,-12} N={kv.Value.n,4}  WR={100.0*kv.Value.w/kv.Value.n:F1}%");
+        Console.WriteLine();
+        Console.WriteLine("  [판정] 5개 폴드 전부 WR 60%+ & 건당ROE 양수 = 구간 무관 실엣지. 일부 폴드만 좋으면 우연.");
+    }
+
+    // MEANREV 조건 (dropPct=하락임계 음수, useRsi/useAdx 토글)
+    private static bool CondMeanRev(List<IBinanceKline> kl, int i, double dropPct, bool useRsi, bool useAdx)
+    {
+        if (i < 45 || i < 12) return false;
+        double c = (double)kl[i].ClosePrice, c1h = (double)kl[i - 12].ClosePrice;
+        if (c1h <= 0) return false;
+        if ((c / c1h - 1.0) * 100.0 > dropPct) return false;            // Drop
+        var bb = LiveMajorEvaluator.Bb(kl, i, 20, 2);
+        if (bb.Mid <= 0 || c <= bb.Mid) return false;                   // BBroom
+        if (useAdx && LiveSim.Adx(kl, i, 14) <= 20.0) return false;     // ADX>20
+        if (useRsi) { double r = LiveMajorEvaluator.Rsi(kl, i, 14); if (r < 45 || r > 68) return false; } // RSI
+        return true;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // [v5.23.79] --replay-entries : 실거래 진입기록(live-entries.csv)을 차트에 되감아
     //   "왜 실패했나" 분석. 각 진입을 진입가로 봉 앵커링 → 직전 1h 움직임(모멘텀 추격 vs 눌림)
     //   + MEANREV 규칙(Drop2%+BBroom+ADX20) 충족 여부 + 실제 승패 대조.
@@ -14512,6 +15109,8 @@ internal static class Program
         //   real-lorentzian C# engine 경로가 실행되며 daily-60d 절대 안 돌았음.
         bool HasArg(string flag) => args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
         if (HasArg("--no-knn")) { SkipKnn = true; Console.WriteLine("[CONFIG] KNN precompute 생략 (--no-knn)"); }
+        if (HasArg("--majors")) { UseMajors = true; Console.WriteLine("[CONFIG] 대형주 universe (--majors)"); }
+        if (HasArg("--regime")) { UseRegime = true; Console.WriteLine("[CONFIG] BTC 상승장 레짐 필터 (--regime)"); }
         if (HasArg("--sweep"))
         {
             await RunSweepAsync();
@@ -14520,6 +15119,36 @@ internal static class Program
         if (HasArg("--sweep-all"))
         {
             await RunAllSweepsAsync();
+            return;
+        }
+        if (HasArg("--user4"))
+        {
+            await RunUser4Async();
+            return;
+        }
+        if (HasArg("--battery"))
+        {
+            await RunBatteryAsync();
+            return;
+        }
+        if (HasArg("--rsidip-verify"))
+        {
+            await RunRsiDipVerifyAsync();
+            return;
+        }
+        if (HasArg("--now"))
+        {
+            await RunNowScanAsync();
+            return;
+        }
+        if (HasArg("--trend1h-folds"))
+        {
+            await RunTrend1hFoldsAsync();
+            return;
+        }
+        if (HasArg("--meanrev-folds"))
+        {
+            await RunMeanRevFoldsAsync();
             return;
         }
         if (HasArg("--replay-entries"))

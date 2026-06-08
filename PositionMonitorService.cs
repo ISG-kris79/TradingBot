@@ -1265,10 +1265,16 @@ namespace TradingBot.Services
                     }
                     decimal currentStopLossRoe = effectiveMajorStopLossRoe;
 
-                    if (!hasCustomAbsoluteStop && currentROE <= -currentStopLossRoe)
+                    // [v5.23.80] CRITICAL FIX — 고정 ROE 손절을 customStop 유무와 무관하게 *무조건* 발동.
+                    //   기존 `!hasCustomAbsoluteStop` 게이트: 메이저는 항상 ATR customStop 보유 →
+                    //   −50% 고정 손절이 영영 안 터져 ETH/SOL −327~−375% ROE 방치(실거래 -$2,770 사고).
+                    //   ATR 종가전용 스탑은 라이브가격 무시+방어선 도망 → 최후 방어망 부재.
+                    //   해결: ATR 스탑은 1차(더 일찍 자름)로 두되, 고정 ROE는 절대 backstop으로 항상 발동.
+                    //   (손절 *값* effectiveMajorStopLossRoe 는 불변 — 안 터지던 버그만 수정)
+                    if (currentROE <= -currentStopLossRoe)
                     {
-                        OnLog?.Invoke($"[청산 트리거] {symbol} 메이저 손절 조건 충족 | 방향={(isLong ? "LONG" : "SHORT")}, 현재ROE={currentROE:F2}%, 손절ROE=-{currentStopLossRoe:F2}%");
-                        await ExecuteMarketClose(symbol, $"메이저 손절 실행 (현재 {currentROE:F2}%, 기준 -{currentStopLossRoe:F2}%)", token);
+                        OnLog?.Invoke($"[청산 트리거] {symbol} 메이저 손절(절대 backstop) 충족 | 방향={(isLong ? "LONG" : "SHORT")}, 현재ROE={currentROE:F2}%, 손절ROE=-{currentStopLossRoe:F2}% (customStop={hasCustomAbsoluteStop})");
+                        await ExecuteMarketClose(symbol, $"메이저 손절 backstop (현재 {currentROE:F2}%, 기준 -{currentStopLossRoe:F2}%)", token);
                         break;
                     }
 
@@ -1371,6 +1377,17 @@ namespace TradingBot.Services
                 if (currentROE > highestROE) highestROE = currentROE;
 
                 OnTickerUpdate?.Invoke(symbol, 0m, (double)currentROE);
+
+                // [v5.23.80] CRITICAL — PUMP/알트 하드 손절 backstop (기존: 바닥 손절 전무 → 서버SL 실패 시 무한방치, PAXG -55% 등).
+                //   서버 SL/ATR트레일이 실패·누락돼도 currentROE 가 설정 손절(PumpStopLossRoe, 기본 75%) 도달 시 무조건 시장가 청산.
+                //   손절 *값* 불변 — 안 터지던 바닥 손절만 신설.
+                decimal pumpHardSlRoe = _settings.PumpStopLossRoe > 0m ? _settings.PumpStopLossRoe : 75m;
+                if (currentROE <= -pumpHardSlRoe)
+                {
+                    OnLog?.Invoke($"🔴 {symbol} PUMP 손절 backstop 발동 | ROE={currentROE:F1}% ≤ -{pumpHardSlRoe:F0}%");
+                    await ExecuteMarketClose(symbol, $"PUMP 손절 backstop (ROE {currentROE:F1}%, 기준 -{pumpHardSlRoe:F0}%)", token);
+                    break;
+                }
 
                 // [v5.10.45] 본절 전환: ROE >= PumpBreakEvenRoe → SL 취소 후 본절가 서버 등록
                 if (!isBreakEvenTriggered && currentROE >= pumpBreakEvenRoe)

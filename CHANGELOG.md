@@ -5,6 +5,17 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.80] - 2026-06-08
+
+### 🔴 CRITICAL — 손절(SL) 미발동 버그 fix + 시총 Top30 복원
+
+- **메이저 SL backstop 복원** ([PositionMonitorService.cs](PositionMonitorService.cs) MonitorPositionStandard): `!hasCustomAbsoluteStop` 게이트 때문에 메이저(ETH/SOL/XRP)는 ATR customStop이 항상 있어 **−50% 고정 손절이 영영 발동 안 함** → 실거래 ETH −327%·SOL −375% ROE 방치(-$2,770 사고). 게이트 제거 → ATR 스탑은 1차, 고정 ROE는 **무조건 발동하는 절대 backstop**.
+- **PUMP/알트 SL backstop 신설** (MonitorPumpPositionShortTerm): 바닥 하드손절이 아예 없어 서버SL 실패 시 무한 방치(PAXG −55% 등). `currentROE ≤ −PumpStopLossRoe(기본75%)` 무조건 시장가 청산 추가.
+- 손절 *값* 불변 — **안 터지던 손절만 작동**시킴(메모리 규칙 준수).
+- **시총 Top50 → Top30 복원** ([MarketCapTracker.cs](Services/MarketCapTracker.cs) `_topN=30`, DynamicPoolSize=30): Top50 확대가 우하향 저시총 잡알트만 늘려 손실 증가(사용자 지시·배터리 검증 — 저시총 알트는 모든 TA 전략 WR ~47%).
+- **SQUEEZE/BB_WALK 모멘텀 트리거 폐기 유지.** MEANREV 진입은 검증(배터리 ~47%, 엣지 없음) 미통과로 **비활성** — 검증된 전략 확정 후 재활성.
+- 도구: `--battery`(18 TA전략 청산무관 검증), `--user4`(Lorentzian/VolSuperTrend/RSI/선형회귀채널), `--regime`(BTC상승장 필터), `--now`(실시간 스캔) 추가.
+
 ## [5.23.79] - 2026-06-06
 
 ### SQUEEZE 폐기 + MEANREV(역추세) 진입 카나리 — 충실 백테스트 기반 진입 재설계

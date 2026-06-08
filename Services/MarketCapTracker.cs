@@ -28,7 +28,7 @@ namespace TradingBot.Services
         private DateTime _lastFetchUtc = DateTime.MinValue;
         private readonly object _lock = new object();
         private Timer? _timer;
-        private int _topN = 50;   // [v5.23.66] 30 → 50 (사용자 지시 — 추적풀/진입 후보 확대)
+        private int _topN = 30;   // [v5.23.80] 50 → 30 복원 — Top50 확대가 우하향 저시총 알트만 늘려 손실 증가(사용자 지시·배터리 검증). 시총 Top30만.
 
         // [v5.23.74] 실효 알트 N 보정 — CoinGecko 시총 Top N 에 섞인 스테이블/랩드/스테이킹 토큰이
         //   슬롯을 잡아먹어 실제 트레이드 가능 알트 컷오프가 훨씬 빡빡했던 문제 fix.

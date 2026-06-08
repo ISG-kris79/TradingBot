@@ -1303,7 +1303,7 @@ namespace TradingBot
                             }
                             double avgG = gain / 14.0, avgL = loss / 14.0;
                             double rsi = avgL < 1e-12 ? 100.0 : 100.0 - (100.0 / (1.0 + avgG / avgL));
-                            if (rsi < 30.0)
+                            if (!isMeanRev && rsi < 30.0)
                             {
                                 blockReason = $"ALT_RSI_FALLING_KNIFE:rsi={rsi:F1}";
                                 OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (알트 RSI<30 = 떨어지는 칼날, baseline 39~47% 손실)");
@@ -4449,7 +4449,7 @@ namespace TradingBot
         // [v5.22.54] 동적 풀 — 양수 변동률 + 거래대금 가중 score 상위 N개
         //   사용자 지적 (v5.23.38 롤백): 마이너 알트 진입 차단은 잘못된 접근
         //   진짜 문제는 코인셋이 아니라 PnL 계산 버그 / 부분청산 misfire
-        private const int DynamicPoolSize = 50;
+        private const int DynamicPoolSize = 30;  // [v5.23.80] 50→30 — 시총 Top30 정렬(저시총 잡알트 제외)
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _activeTrackingPool = new(StringComparer.OrdinalIgnoreCase);
         private DateTime _lastTrackingPoolRefresh = DateTime.MinValue;
         private static readonly TimeSpan TrackingPoolRefreshInterval = TimeSpan.FromMinutes(15);
@@ -4771,15 +4771,10 @@ namespace TradingBot
                         OnStatusLog?.Invoke($"⚠️ [BB_TRIG] {symbol} 분석 오류: {ex.Message}");
                     }
 
-                    // [v5.23.79] MEANREV 역추세 진입 (카나리) — Drop2%+BBroom+ADX20+RSI밴드
-                    try
-                    {
-                        await AnalyzeMeanReversionEntryAsync(symbol, currentPrice, token);
-                    }
-                    catch (Exception ex)
-                    {
-                        OnStatusLog?.Invoke($"⚠️ [MEANREV] {symbol} 분석 오류: {ex.Message}");
-                    }
+                    // [v5.23.80] MEANREV 진입 비활성화 — 배터리 검증상 ~47%(엣지 없음). 검증된 전략 확정 후 재활성.
+                    //   (메서드는 보존 — 전략 연구 완료 시 조건 교체해 재사용)
+                    // try { await AnalyzeMeanReversionEntryAsync(symbol, currentPrice, token); }
+                    // catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [MEANREV] {symbol} 분석 오류: {ex.Message}"); }
                 }
 
                 // [v5.23.4] 1분봉 정밀 트리거 확인 (직전 1m high + EMA20 동시 돌파 시 진입)
@@ -5284,21 +5279,44 @@ namespace TradingBot
             var k = k5 as List<IBinanceKline> ?? new List<IBinanceKline>(k5);
             if (k.Count < 60) return;
             int i = k.Count - 2;                 // 마지막 마감 봉
-            if (i < 45) return;                  // ADX(14) 워밍업 여유
+            if (i < 30) return;
 
-            double c = (double)k[i].ClosePrice, c1h = (double)k[i - 12].ClosePrice;
-            if (c1h <= 0) return;
-            double drop1hPct = (c / c1h - 1.0) * 100.0;
-            if (drop1hPct > -2.0) return;        // Drop2%: 직전 1h −2%+ 하락
+            double c = (double)k[i].ClosePrice, o = (double)k[i].OpenPrice, pc = (double)k[i - 1].ClosePrice;
+            double hi = (double)k[i].HighPrice, lo = (double)k[i].LowPrice, prevHi = (double)k[i - 1].HighPrice;
 
+            // ── 가짜반등(데드캣) 필터 — 진짜 반등만 통과 (사용자 지적: 가짜반등 손절이 손실 90%+) ──
+            //   ① 봉 강도: 몸통이 봉 길이의 50%+ & 윗꼬리 작음 (위에서 안 밀림)
+            //   ② 거래량: 직전 20봉 평균의 1.2배+ (실제 매수세 유입)
+            //   ③ 팔로스루: 종가가 직전봉 고가 회복 (가짜는 직전봉 안에서 끝남)
+            double range = hi - lo, body = Math.Abs(c - o), upWick = hi - Math.Max(c, o);
+            double volNow = (double)k[i].Volume, volAvg = 0;
+            for (int q = i - 20; q < i; q++) volAvg += (double)k[q].Volume;
+            volAvg /= 20.0;
+            bool strongBody = range > 0 && body >= range * 0.5;
+            bool smallUpWick = body > 0 && upWick <= body * 0.6;
+            bool volConfirm = volAvg > 0 && volNow >= volAvg * 1.2;
+            bool reclaim = c > prevHi;                       // 직전봉 고가 돌파 = 팔로스루
+            bool realBounce = c > o && strongBody && smallUpWick && volConfirm && reclaim;
+            if (!realBounce) return;                         // 가짜반등 차단
+
+            // BB(20,2): 가격 위치가 주(主) — 천장에서 안 사고 눌린 자리에서 산다 (사용자 원칙)
             BbBand20(k, i, out double mid, out double upper, out double widthPct);
-            if (mid <= 0 || c <= mid) return;    // BBroom: 종가 > 중심선
+            if (mid <= 0) return;
+            double lower = mid - (upper - mid);
 
-            double adx = CalcAdx14(k, i, 14);
-            if (adx <= 20.0) return;             // ADX>20
+            float rsi = CalculateRsiAtIndex(k, i, 14);  // RSI는 보조지표
 
-            float rsi = CalculateRsiAtIndex(k, i, 14);
-            if (rsi < 45f || rsi > 68f) return;  // RSI 45~68
+            // ⛔ 천장 매수 절대 금지 — BB 상단 근처 / RSI 과열에서 진입 안 함 (손실 근원)
+            if (c >= upper * 0.999) return;
+            if (rsi >= 60f) return;
+
+            // 사용자 전략: 가격이 눌린 자리(주) + RSI 보조 + 진짜반등 확인
+            //   ① 과매도 매집: RSI≤30  ② 눌림: 종가≤BB중심선(하단~중심) + RSI≤50
+            bool oversold = rsi <= 30f;
+            bool pullback = c <= mid && rsi <= 50f;
+            if (!(oversold || pullback)) return;
+            string mode = oversold ? "과매도반등" : "눌림반등";
+            double bbPos = (upper > lower) ? (c - lower) / (upper - lower) * 100.0 : 50.0;
 
             if (!IsEntryAllowed(symbol, "MEANREV", out var reason))
             {
@@ -5308,7 +5326,7 @@ namespace TradingBot
             }
 
             _meanRevCooldown[symbol] = DateTime.UtcNow;
-            OnStatusLog?.Invoke($"🟢 [MEANREV] {symbol} 진입 | Drop1h={drop1hPct:F1}% >BBmid ADX={adx:F0} RSI={rsi:F0}");
+            OnStatusLog?.Invoke($"🟢 [MEANREV] {symbol} 진입 | {mode} BB위치={bbPos:F0}% RSI={rsi:F0}(보조) 양봉");
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
                 signalSource: "MEANREV", skipAiGateCheck: false);
         }
