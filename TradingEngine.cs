@@ -5371,18 +5371,18 @@ namespace TradingBot
             double ema20m = (double)k1m[i - 20].ClosePrice;
             for (int q = i - 19; q <= i; q++) ema20m = (double)k1m[q].ClosePrice * a1 + ema20m * (1 - a1);
             float rsi1m = CalculateRsiAtIndex(k1m, i, 14);
-            double c = (double)k1m[i].ClosePrice, o = (double)k1m[i].OpenPrice, h = (double)k1m[i].HighPrice, l = (double)k1m[i].LowPrice;
-            bool pullback = rsi1m > 43f && rsi1m < 55f && c > ema20m;
-            if (!pullback) return;
+            double c = (double)k1m[i].ClosePrice, o = (double)k1m[i].OpenPrice;
+            _ = ema20m; // (참고용 — 검증된 트리거는 RSI<35 반등 사용)
 
-            // 거래량 스퍼트 4피처
+            // [v5.23.82] 검증된 1m 트리거 — RSI<35 과매도 후 반등 (--master 16일: +30m 57.8% vs RSI43~55 53.4%).
+            //   최근 10봉 내 RSI<35(일시 과매도) + 현재 양봉 + 직전 고가 회복 + RSI 상승. (거래량 스퍼트는 개선 없어 제거)
+            bool pulled = false;
+            for (int q = Math.Max(1, i - 10); q <= i; q++) { if (CalculateRsiAtIndex(k1m, q, 14) < 35f) { pulled = true; break; } }
+            float rsiPrev = CalculateRsiAtIndex(k1m, i - 1, 14);
+            bool ending = c > o && c > (double)k1m[i - 1].HighPrice && rsi1m > rsiPrev;
+            if (!(pulled && ending)) return;
             double avgVol = 0; for (int q = i - 20; q < i; q++) avgVol += (double)k1m[q].Volume; avgVol /= 20.0;
-            double volRatio = avgVol > 0 ? (double)k1m[i].Volume / avgVol : 0;
-            double range = h - l, body = Math.Abs(c - o);
-            double buyRatio = range > 0 ? (c - l) / range : 0;
-            double priceEff = range > 0 ? body / range : 0;
-            bool spurt = volRatio >= 2.5 && buyRatio > 0.6 && priceEff >= 0.5 && c > o;
-            if (!spurt) return;
+            double volRatio = avgVol > 0 ? (double)k1m[i].Volume / avgVol : 0;  // 로그용
 
             if (!IsEntryAllowed(symbol, "H1M1", out var reason))
             {
@@ -5391,7 +5391,7 @@ namespace TradingBot
                 return;
             }
             _h1m1Cooldown[symbol] = DateTime.UtcNow;
-            OnStatusLog?.Invoke($"🟢 [H1M1] {symbol} 진입 | 1h(추세 RSI{rsi1h:F0}) + 1m(눌림 RSI{rsi1m:F0}) Vol×{volRatio:F1} 순매수{buyRatio:P0}");
+            OnStatusLog?.Invoke($"🟢 [H1M1] {symbol} 진입 | 1h(추세 RSI{rsi1h:F0}) + 1m(과매도반등 RSI{rsi1m:F0}) Vol×{volRatio:F1}");
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "H1M1", skipAiGateCheck: false);
         }
 

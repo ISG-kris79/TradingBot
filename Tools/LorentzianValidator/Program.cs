@@ -14119,10 +14119,12 @@ internal static class Program
         Console.WriteLine($"  MASTER 전략 검증 — {uni.Length}심볼 / 1m {pages1m}p(~{pages1m * 1500 / 60 / 24}일)");
         Console.WriteLine("  1h(거인): EMA20>EMA50 & 종가>EMA20  |  1m(스나이퍼): RSI<35 눌림후 양봉+직전고가돌파+RSI상승");
         Console.WriteLine("================================================================");
-        int[] H = { 30, 120, 360 };  // +30m, +2h, +6h
-        string[] hl = { "30m", "2h", "6h" };
-        // [variant 0=1h필터OFF, 1=ON]
-        var N = new int[2]; var cnt = new int[2, 3]; var up = new int[2, 3]; var sum = new double[2, 3];
+        Console.WriteLine("  1h필터 항상 ON. 1m 트리거 4변형 비교 + 세분 호라이즌(15/30/60/120분).");
+        int[] H = { 15, 30, 60, 120 };
+        string[] hl = { "15m", "30m", "1h", "2h" };
+        int VAR = 4;
+        string[] vn = { "검증본RSI<35반등", "라이브RSI43~55", "라이브+거래량스퍼트", "RSI<40+거래량" };
+        var N = new int[VAR]; var cnt = new int[VAR, 4]; var up = new int[VAR, 4]; var sum = new double[VAR, 4];
         int bidx = 0;
         foreach (var sym in uni)
         {
@@ -14131,47 +14133,52 @@ internal static class Program
             try { h1 = await FetchKlines1hAsync(sym, 1); m1 = await FetchKlines1mAsync(sym, pages1m); }
             catch { Console.WriteLine("fail"); continue; }
             if (h1.Count < 60 || m1.Count < 500) { Console.WriteLine("skip"); continue; }
-            // 1h 추세 dict (hour ms → up)
             var hc = new double[h1.Count]; for (int t = 0; t < h1.Count; t++) hc[t] = (double)h1[t].ClosePrice;
             var he20 = EmaC(hc, 20); var he50 = EmaC(hc, 50);
             var hourUp = new Dictionary<long, bool>();
             for (int t = 0; t < h1.Count; t++) hourUp[((DateTimeOffset)h1[t].OpenTime).ToUnixTimeMilliseconds()] = (hc[t] > he20[t] && he20[t] > he50[t]);
-            // 1m arrays
-            int n = m1.Count; var C = new double[n]; var O = new double[n]; var Hi = new double[n];
-            for (int t = 0; t < n; t++) { C[t] = (double)m1[t].ClosePrice; O[t] = (double)m1[t].OpenPrice; Hi[t] = (double)m1[t].HighPrice; }
-            var rsi = BtRsiArr(C, 14);
-            var busy = new int[2]; busy[0] = -1; busy[1] = -1;
-            for (int i = 30; i < n - 361; i++)
+            int n = m1.Count; var C = new double[n]; var O = new double[n]; var Hi = new double[n]; var Lo = new double[n]; var Vol = new double[n];
+            for (int t = 0; t < n; t++) { C[t] = (double)m1[t].ClosePrice; O[t] = (double)m1[t].OpenPrice; Hi[t] = (double)m1[t].HighPrice; Lo[t] = (double)m1[t].LowPrice; Vol[t] = (double)m1[t].Volume; }
+            var rsi = BtRsiArr(C, 14); var ema20m = EmaC(C, 20);
+            var busy = new int[VAR]; for (int v = 0; v < VAR; v++) busy[v] = -1;
+            for (int i = 30; i < n - 121; i++)
             {
-                // 눌림: 최근 10봉 내 RSI<35 (일시 과매도)
-                bool pulled = false; for (int q = i - 10; q <= i; q++) if (rsi[q] < 35) { pulled = true; break; }
-                // 반등 시작: 양봉 + 직전 고가 돌파 + RSI 상승
-                bool ending = C[i] > O[i] && C[i] > Hi[i - 1] && rsi[i] > rsi[i - 1];
-                if (!(pulled && ending)) continue;
                 long hourMs = (((DateTimeOffset)m1[i].OpenTime).ToUnixTimeMilliseconds() / 3600000L) * 3600000L;
-                bool regimeUp = hourUp.TryGetValue(hourMs, out var u) && u;
-                for (int v = 0; v < 2; v++)
+                if (!(hourUp.TryGetValue(hourMs, out var u) && u)) continue;   // 1h 상승추세만 (항상 ON)
+                bool pulled35 = false, pulled40 = false;
+                for (int q = i - 10; q <= i; q++) { if (rsi[q] < 35) pulled35 = true; if (rsi[q] < 40) pulled40 = true; }
+                bool green = C[i] > O[i], reclaim = C[i] > Hi[i - 1], rsiUp = rsi[i] > rsi[i - 1];
+                double avgV = 0; for (int q = i - 20; q < i; q++) avgV += Vol[q]; avgV /= 20.0;
+                double range = Hi[i] - Lo[i], body = Math.Abs(C[i] - O[i]);
+                double volR = avgV > 0 ? Vol[i] / avgV : 0, buyR = range > 0 ? (C[i] - Lo[i]) / range : 0, peff = range > 0 ? body / range : 0;
+                bool spurt = volR >= 2.5 && buyR > 0.6 && peff >= 0.5 && green;
+                var sig = new bool[VAR];
+                sig[0] = pulled35 && green && reclaim && rsiUp;
+                sig[1] = rsi[i] > 43 && rsi[i] < 55 && C[i] > ema20m[i];
+                sig[2] = sig[1] && spurt;
+                sig[3] = pulled40 && spurt;
+                for (int v = 0; v < VAR; v++)
                 {
-                    if (i <= busy[v]) continue;
-                    if (v == 1 && !regimeUp) continue;
+                    if (!sig[v] || i <= busy[v]) continue;
                     busy[v] = i + 30; double e = C[i]; N[v]++;
-                    for (int h = 0; h < 3; h++) { int j = i + H[h]; if (j < n) { cnt[v, h]++; double r = C[j] / e - 1; sum[v, h] += r; if (r > 0) up[v, h]++; } }
+                    for (int h = 0; h < 4; h++) { int j = i + H[h]; if (j < n) { cnt[v, h]++; double r = C[j] / e - 1; sum[v, h] += r; if (r > 0) up[v, h]++; } }
                 }
             }
             Console.WriteLine("ok");
         }
         Console.WriteLine();
-        for (int v = 0; v < 2; v++)
+        Console.WriteLine("  (모두 1h 상승추세 필터 ON. 호라이즌별 상승비율 / 평균수익%)");
+        for (int v = 0; v < VAR; v++)
         {
-            Console.WriteLine($"── {(v == 0 ? "1h필터 OFF (1m만)" : "1h필터 ON (거인+스나이퍼)")} — 진입 {N[v]}건 ──");
-            for (int h = 0; h < 3; h++)
+            Console.WriteLine($"── {vn[v]} — 진입 {N[v]}건 ──");
+            for (int h = 0; h < 4; h++)
             {
-                int cc = cnt[v, h]; double u = cc > 0 ? 100.0 * up[v, h] / cc : 0, m = cc > 0 ? sum[v, h] / cc * 100 : 0;
-                Console.WriteLine($"    +{hl[h],3}: 상승비율 {u,5:F1}%   평균수익 {m,6:F3}%");
+                int cc = cnt[v, h]; double up_ = cc > 0 ? 100.0 * up[v, h] / cc : 0, m = cc > 0 ? sum[v, h] / cc * 100 : 0;
+                Console.WriteLine($"    +{hl[h],3}: 상승 {up_,5:F1}%  평균 {m,7:F3}%");
             }
-            Console.WriteLine();
         }
-        Console.WriteLine("  [판정] 1h필터 ON이 상승비율 55%+ & 평균 양수면 마스터 전략 채택. 청산무관 실제 가격.");
+        Console.WriteLine();
+        Console.WriteLine("  [판정] 가장 높은 단기(15~30m) 상승% & 평균 양수인 변형을 라이브 H1M1 트리거로 채택. 빠른 익절(15~30m).");
     }
 
     // [v5.23.80] --user4 : 사용자 지정 4전략 검증 (Lorentzian / VolSupertrend / RSI / 선형회귀채널)
