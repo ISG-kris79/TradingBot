@@ -360,6 +360,7 @@ END", commandTimeout: 60);
             }
             // [v5.23.60] SQUEEZE/BB_WALK 병행 트리거 복원 — signalSource 로 카테고리 분리 (통계 UI)
             var s = (signalSource ?? "").ToUpperInvariant();
+            if (s.Contains("H1M1")) return "H1M1";          // [v5.23.81] 마스터 전략 — 별도 추적
             if (s.Contains("MEANREV")) return "MEANREV";   // [v5.23.79] 역추세 카나리 — 별도 추적
             if (s.Contains("SQUEEZE")) return "SQUEEZE";
             if (s.Contains("BB_WALK") || s.Contains("BBWALK")) return "BB_WALK";

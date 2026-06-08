@@ -14108,6 +14108,72 @@ internal static class Program
     //   가짜반등 필터 ON vs OFF 비교 → 필터가 승률을 올리는지 확인. K폴드.
     //   진입조건은 라이브 AnalyzeMeanReversionEntry 와 동일. 청산은 SimulateRunner(근사).
     // ─────────────────────────────────────────────────────────────────────
+    // [v5.23.80] --master : 사용자 마스터 전략 검증 — 1h추세 필터 + 1m 눌림목끝 진입.
+    //   1h(거인): EMA20>EMA50 & 종가>EMA20 상승추세. 1m(스나이퍼): 과매도(RSI<35) 눌림 후 반등시작.
+    //   1h필터 ON vs OFF, 청산무관 전방수익률(+30m/+2h/+6h). 1m 데이터.
+    private static async Task RunMasterAsync()
+    {
+        int pages1m = BbExpandPages >= 12 ? BbExpandPages : 16;   // 1m: 16p ≈ 16.6일
+        var uni = UseMajors ? LargeCaps : symbols;
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  MASTER 전략 검증 — {uni.Length}심볼 / 1m {pages1m}p(~{pages1m * 1500 / 60 / 24}일)");
+        Console.WriteLine("  1h(거인): EMA20>EMA50 & 종가>EMA20  |  1m(스나이퍼): RSI<35 눌림후 양봉+직전고가돌파+RSI상승");
+        Console.WriteLine("================================================================");
+        int[] H = { 30, 120, 360 };  // +30m, +2h, +6h
+        string[] hl = { "30m", "2h", "6h" };
+        // [variant 0=1h필터OFF, 1=ON]
+        var N = new int[2]; var cnt = new int[2, 3]; var up = new int[2, 3]; var sum = new double[2, 3];
+        int bidx = 0;
+        foreach (var sym in uni)
+        {
+            bidx++; Console.Write($"[{bidx}/{uni.Length}] {sym} ");
+            List<IBinanceKline> h1, m1;
+            try { h1 = await FetchKlines1hAsync(sym, 1); m1 = await FetchKlines1mAsync(sym, pages1m); }
+            catch { Console.WriteLine("fail"); continue; }
+            if (h1.Count < 60 || m1.Count < 500) { Console.WriteLine("skip"); continue; }
+            // 1h 추세 dict (hour ms → up)
+            var hc = new double[h1.Count]; for (int t = 0; t < h1.Count; t++) hc[t] = (double)h1[t].ClosePrice;
+            var he20 = EmaC(hc, 20); var he50 = EmaC(hc, 50);
+            var hourUp = new Dictionary<long, bool>();
+            for (int t = 0; t < h1.Count; t++) hourUp[((DateTimeOffset)h1[t].OpenTime).ToUnixTimeMilliseconds()] = (hc[t] > he20[t] && he20[t] > he50[t]);
+            // 1m arrays
+            int n = m1.Count; var C = new double[n]; var O = new double[n]; var Hi = new double[n];
+            for (int t = 0; t < n; t++) { C[t] = (double)m1[t].ClosePrice; O[t] = (double)m1[t].OpenPrice; Hi[t] = (double)m1[t].HighPrice; }
+            var rsi = BtRsiArr(C, 14);
+            var busy = new int[2]; busy[0] = -1; busy[1] = -1;
+            for (int i = 30; i < n - 361; i++)
+            {
+                // 눌림: 최근 10봉 내 RSI<35 (일시 과매도)
+                bool pulled = false; for (int q = i - 10; q <= i; q++) if (rsi[q] < 35) { pulled = true; break; }
+                // 반등 시작: 양봉 + 직전 고가 돌파 + RSI 상승
+                bool ending = C[i] > O[i] && C[i] > Hi[i - 1] && rsi[i] > rsi[i - 1];
+                if (!(pulled && ending)) continue;
+                long hourMs = (((DateTimeOffset)m1[i].OpenTime).ToUnixTimeMilliseconds() / 3600000L) * 3600000L;
+                bool regimeUp = hourUp.TryGetValue(hourMs, out var u) && u;
+                for (int v = 0; v < 2; v++)
+                {
+                    if (i <= busy[v]) continue;
+                    if (v == 1 && !regimeUp) continue;
+                    busy[v] = i + 30; double e = C[i]; N[v]++;
+                    for (int h = 0; h < 3; h++) { int j = i + H[h]; if (j < n) { cnt[v, h]++; double r = C[j] / e - 1; sum[v, h] += r; if (r > 0) up[v, h]++; } }
+                }
+            }
+            Console.WriteLine("ok");
+        }
+        Console.WriteLine();
+        for (int v = 0; v < 2; v++)
+        {
+            Console.WriteLine($"── {(v == 0 ? "1h필터 OFF (1m만)" : "1h필터 ON (거인+스나이퍼)")} — 진입 {N[v]}건 ──");
+            for (int h = 0; h < 3; h++)
+            {
+                int cc = cnt[v, h]; double u = cc > 0 ? 100.0 * up[v, h] / cc : 0, m = cc > 0 ? sum[v, h] / cc * 100 : 0;
+                Console.WriteLine($"    +{hl[h],3}: 상승비율 {u,5:F1}%   평균수익 {m,6:F3}%");
+            }
+            Console.WriteLine();
+        }
+        Console.WriteLine("  [판정] 1h필터 ON이 상승비율 55%+ & 평균 양수면 마스터 전략 채택. 청산무관 실제 가격.");
+    }
+
     // [v5.23.80] --user4 : 사용자 지정 4전략 검증 (Lorentzian / VolSupertrend / RSI / 선형회귀채널)
     //   각 독립, BTC 상승장 레짐(--regime), 청산무관 전방수익률. Top? 는 symbols 사용.
     private static async Task RunUser4Async()
@@ -15119,6 +15185,11 @@ internal static class Program
         if (HasArg("--sweep-all"))
         {
             await RunAllSweepsAsync();
+            return;
+        }
+        if (HasArg("--master"))
+        {
+            await RunMasterAsync();
             return;
         }
         if (HasArg("--user4"))

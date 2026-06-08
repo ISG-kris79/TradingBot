@@ -705,7 +705,7 @@ namespace TradingBot
             string srcU = (source ?? "").ToUpperInvariant();
             // [v5.23.79] MEANREV(역추세 눌림반등)은 모멘텀 방향게이트를 우회 — 설계상 눌림 진입이라
             //   5m RSI<50 / 15m BB<0.7 에 막히면 한 건도 못 들어감. 안전게이트(설정/슬롯/시총/스코어카드/1h추세)는 유지.
-            bool isMeanRev = srcU.Contains("MEANREV");
+            bool isMeanRev = srcU.Contains("MEANREV") || srcU.Contains("H1M1");  // H1M1도 눌림 진입 → 모멘텀게이트 우회
             string entryCat;
             // [v5.22.25] 메이저 심볼은 source 무관 MAJOR 강제 — MaxMajorSlots 회피 버그 fix
             //   v5.22.24 까지: BTC/ETH/SOL/XRP 가 BB_SQUEEZE/ENGINE_151 source 로 들어오면 entryCat=SQUEEZE/GENERIC
@@ -4771,10 +4771,15 @@ namespace TradingBot
                         OnStatusLog?.Invoke($"⚠️ [BB_TRIG] {symbol} 분석 오류: {ex.Message}");
                     }
 
-                    // [v5.23.80] MEANREV 진입 비활성화 — 배터리 검증상 ~47%(엣지 없음). 검증된 전략 확정 후 재활성.
-                    //   (메서드는 보존 — 전략 연구 완료 시 조건 교체해 재사용)
-                    // try { await AnalyzeMeanReversionEntryAsync(symbol, currentPrice, token); }
-                    // catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [MEANREV] {symbol} 분석 오류: {ex.Message}"); }
+                    // [v5.23.81] H1M1 마스터 전략 — 1h추세 + 1m눌림 + 거래량스퍼트 (사용자 지정)
+                    try
+                    {
+                        await AnalyzeH1M1EntryAsync(symbol, currentPrice, token);
+                    }
+                    catch (Exception ex)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [H1M1] {symbol} 분석 오류: {ex.Message}");
+                    }
                 }
 
                 // [v5.23.4] 1분봉 정밀 트리거 확인 (직전 1m high + EMA20 동시 돌파 시 진입)
@@ -5329,6 +5334,65 @@ namespace TradingBot
             OnStatusLog?.Invoke($"🟢 [MEANREV] {symbol} 진입 | {mode} BB위치={bbPos:F0}% RSI={rsi:F0}(보조) 양봉");
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
                 signalSource: "MEANREV", skipAiGateCheck: false);
+        }
+
+        // [v5.23.80] 사용자 마스터 전략 — H1M1: 1시간봉 추세(거인) + 1분봉 눌림목끝(스나이퍼) + 거래량 스퍼트
+        //   1h가드: 종가>EMA20 & RSI≥50 (대세상승). 1m트리거: RSI 43~55 & 종가>1m EMA20 (눌림 후 반등),
+        //   거래량 스퍼트: Vol≥20평균×2.5 & 순매수비율>0.6 & 몸통효율≥0.5 (가짜돌파/위꼬리 차단).
+        //   (KNN 승률조건은 모델확신도 함정이라 거래량 실측 필터로 대체.) 알트 전용·LONG only.
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _h1m1Cooldown
+            = new(StringComparer.OrdinalIgnoreCase);
+        private async Task AnalyzeH1M1EntryAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            if (_h1m1Cooldown.TryGetValue(symbol, out var last) && DateTime.UtcNow - last < TimeSpan.FromMinutes(5)) return;
+            lock (_posLock)
+            {
+                if (_activePositions.TryGetValue(symbol, out var ex) && ex != null && Math.Abs(ex.Quantity) > 0) return;
+            }
+
+            // ── 1시간봉 가드 (거인) ──
+            var k1hRaw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 60, token);
+            if (k1hRaw == null) return;
+            var k1h = k1hRaw as List<IBinanceKline> ?? new List<IBinanceKline>(k1hRaw);
+            if (k1h.Count < 25) return;
+            int hi = k1h.Count - 2;
+            double a1 = 2.0 / 21.0;
+            double ema20h = (double)k1h[hi - 20].ClosePrice;
+            for (int q = hi - 19; q <= hi; q++) ema20h = (double)k1h[q].ClosePrice * a1 + ema20h * (1 - a1);
+            float rsi1h = CalculateRsiAtIndex(k1h, hi, 14);
+            if (!((double)k1h[hi].ClosePrice > ema20h && rsi1h >= 50f)) return;   // 1h 상승추세 아니면 스킵
+
+            // ── 1분봉 트리거 (스나이퍼) ──
+            var k1mRaw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneMinute, 60, token);
+            if (k1mRaw == null) return;
+            var k1m = k1mRaw as List<IBinanceKline> ?? new List<IBinanceKline>(k1mRaw);
+            if (k1m.Count < 30) return;
+            int i = k1m.Count - 2;
+            double ema20m = (double)k1m[i - 20].ClosePrice;
+            for (int q = i - 19; q <= i; q++) ema20m = (double)k1m[q].ClosePrice * a1 + ema20m * (1 - a1);
+            float rsi1m = CalculateRsiAtIndex(k1m, i, 14);
+            double c = (double)k1m[i].ClosePrice, o = (double)k1m[i].OpenPrice, h = (double)k1m[i].HighPrice, l = (double)k1m[i].LowPrice;
+            bool pullback = rsi1m > 43f && rsi1m < 55f && c > ema20m;
+            if (!pullback) return;
+
+            // 거래량 스퍼트 4피처
+            double avgVol = 0; for (int q = i - 20; q < i; q++) avgVol += (double)k1m[q].Volume; avgVol /= 20.0;
+            double volRatio = avgVol > 0 ? (double)k1m[i].Volume / avgVol : 0;
+            double range = h - l, body = Math.Abs(c - o);
+            double buyRatio = range > 0 ? (c - l) / range : 0;
+            double priceEff = range > 0 ? body / range : 0;
+            bool spurt = volRatio >= 2.5 && buyRatio > 0.6 && priceEff >= 0.5 && c > o;
+            if (!spurt) return;
+
+            if (!IsEntryAllowed(symbol, "H1M1", out var reason))
+            {
+                if (DateTime.UtcNow.Second % 30 == 0)
+                    OnStatusLog?.Invoke($"⛔ [H1M1] {symbol} 게이트 차단 | {reason}");
+                return;
+            }
+            _h1m1Cooldown[symbol] = DateTime.UtcNow;
+            OnStatusLog?.Invoke($"🟢 [H1M1] {symbol} 진입 | 1h(추세 RSI{rsi1h:F0}) + 1m(눌림 RSI{rsi1m:F0}) Vol×{volRatio:F1} 순매수{buyRatio:P0}");
+            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "H1M1", skipAiGateCheck: false);
         }
 
         // Wilder ADX(14) — 마지막 봉 i 기준 (자체구현, Skender GetAdx 근사)
