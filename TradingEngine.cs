@@ -4771,15 +4771,9 @@ namespace TradingBot
                         OnStatusLog?.Invoke($"⚠️ [BB_TRIG] {symbol} 분석 오류: {ex.Message}");
                     }
 
-                    // [v5.23.81] H1M1 마스터 전략 — 1h추세 + 1m눌림 + 거래량스퍼트 (사용자 지정)
-                    try
-                    {
-                        await AnalyzeH1M1EntryAsync(symbol, currentPrice, token);
-                    }
-                    catch (Exception ex)
-                    {
-                        OnStatusLog?.Invoke($"⚠️ [H1M1] {symbol} 분석 오류: {ex.Message}");
-                    }
+                    // [v5.23.83] H1M1 폐기 — 1h Squeeze Momentum 대세필터 + 15m Lorentzian 엔진으로 교체.
+                    //   진입 판단은 AnalyzeLorentzianEntryAsync 상단의 1h Squeeze 게이트에서 처리(중복 호출 제거).
+                    //   (AnalyzeH1M1EntryAsync 메서드는 롤백/참조용으로만 보존, 스캔에서 미호출)
                 }
 
                 // [v5.23.4] 1분봉 정밀 트리거 확인 (직전 1m high + EMA20 동시 돌파 시 진입)
@@ -5522,6 +5516,26 @@ namespace TradingBot
                 if (_activePositions.TryGetValue(symbol, out var existing)
                     && existing != null && Math.Abs(existing.Quantity) > 0) return;
             }
+
+            // [v5.23.83] 1h Squeeze Momentum 대세필터 (사용자 신규 엔진: 1h 대세 + 15m Lorentzian 타점).
+            //   LazyBear Squeeze Momentum 마지막 마감 1h봉 기준 mom>0 & mom 상승 = 상승추세 ON 일 때만 진입 허용.
+            //   하락/모멘텀 약세 1h에서는 15m Lorentzian LONG 신호가 떠도 차단 (가짜 반등 진입 방지).
+            try
+            {
+                var k1hSq = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 60, token);
+                if (k1hSq == null) return;
+                var k1hSqList = k1hSq as List<IBinanceKline> ?? new List<IBinanceKline>(k1hSq);
+                if (k1hSqList.Count < 42) return;                                  // Squeeze(20)×2 최소봉
+                var closed1h = k1hSqList.GetRange(0, k1hSqList.Count - 1);          // 형성 중 봉 제외
+                var (sqMom, sqMomPrev, _sqOn, _sqOff) = IndicatorCalculator.CalculateSqueezeMomentum(closed1h, 20, 2.0, 1.5);
+                if (!(sqMom > 0 && sqMom > sqMomPrev))
+                {
+                    if (DateTime.UtcNow.Second % 30 == 0)
+                        OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 1h_SQZ_NOT_BULL 차단 | mom={sqMom:F4} prev={sqMomPrev:F4} (1h 상승모멘텀 아님 → 진입 보류)");
+                    return;
+                }
+            }
+            catch { return; }   // 1h 데이터 실패 시 안전 차단
 
             // [v5.23.1] Pine 정확 일치를 위해 1500봉 fetch (~16일치 15m), engine featureCount 7→5
             var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 1500, token);

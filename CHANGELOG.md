@@ -5,6 +5,17 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.83] - 2026-06-09
+
+### H1M1 폐기 → 새 엔진 [1h Squeeze Momentum 대세필터 + 15m Lorentzian 진입] (사용자 지정 아키텍처, 카나리)
+
+- **H1M1(MACD/RSI 1m) 전면 폐기** ([TradingEngine.cs](TradingEngine.cs)): 스캔 dispatch에서 `AnalyzeH1M1EntryAsync` 호출 제거(메서드는 참조용 보존). 백테스트로 후행지표 진입은 베이스라인 -2~-3%p(랜덤 이하) 확인.
+- **신규 엔진**: 기존 검증된 15m Lorentzian 진입(`AnalyzeLorentzianEntryAsync`, 15m KNN가드 + 1m 눌림→반등 정밀트리거)에 **1h Squeeze Momentum(LazyBear) 대세필터**를 상단 게이트로 추가. `mom>0 && mom 상승`(상승추세 ON)일 때만 15m Lorentzian LONG 진입 허용 → 하락/약세 1h에서 가짜반등 진입 차단.
+- **`IndicatorCalculator.CalculateSqueezeMomentum`** 신규 (LazyBear: BB20/2⊂KC20/1.5 + linreg 모멘텀, 마지막 마감봉 기준).
+- **백테스트 근거** (`--sqzlor` 1m / `--sqzlor15` 15m, 메이저 25, --majors): SQZ+LOR는 테스트한 모든 모멘텀 조합 중 **유일하게 베이스라인을 이기는 선택기**(+2.5~3.0%p 엣지, 15m에서 신호 상승률 50.5~51.3%로 50% 돌파). 단 건당 가격엣지(~0.01%)가 왕복비용(maker 0.09%)보다 작아 **백테 TP/SL은 적자** → [백테스트 신뢰불가 규칙](memory)상 실거래(maker 체결·실스프레드·선택엣지)로 판정 필요.
+- **⚠️ 카나리**: 백테 미통과(비용>엣지)이나 최고 선택기 + 사용자 지정 아키텍처. 실거래 카테고리(LORENTZIAN) 결과로 판정. LONG only, 1h 데이터 실패 시 안전 차단.
+- 백테스트 도구: `--sqzlor`(1h Squeeze + 1m Lorentzian, 시장가 vs 지정가눌림), `--sqzlor15`(15m + 연도별) 추가.
+
 ## [5.23.82] - 2026-06-08
 
 ### H1M1 1m 트리거를 검증본으로 교체 — RSI<35 과매도반등 (--master 16일 검증)

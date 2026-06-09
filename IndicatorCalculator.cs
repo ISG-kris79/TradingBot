@@ -65,6 +65,41 @@ namespace TradingBot.Services
             return atr?.Atr ?? 0;
         }
 
+        // [v5.23.83] LazyBear Squeeze Momentum (TradingView #10). 대세필터용: Mom>0 && Mom>MomPrev = 상승추세 ON.
+        //   Mom = linreg(close - avg((HH+LL)/2, SMA(close)), len). KC range = SMA(TR). 마지막 봉 기준 반환.
+        //   호출 시 candles 는 "마지막 마감봉까지"만 넘길 것(형성 중 봉 제외).
+        public static (double Mom, double MomPrev, bool SqueezeOn, bool SqueezeOff) CalculateSqueezeMomentum(
+            List<IBinanceKline> candles, int len = 20, double bbMult = 2.0, double kcMult = 1.5)
+        {
+            int n = candles?.Count ?? 0;
+            if (n < 2 * len) return (0, 0, false, false);
+            var h = new double[n]; var l = new double[n]; var c = new double[n];
+            for (int i = 0; i < n; i++) { h[i] = (double)candles[i].HighPrice; l[i] = (double)candles[i].LowPrice; c[i] = (double)candles[i].ClosePrice; }
+            var tr = new double[n];
+            for (int i = 1; i < n; i++) tr[i] = Math.Max(h[i] - l[i], Math.Max(Math.Abs(h[i] - c[i - 1]), Math.Abs(l[i] - c[i - 1])));
+            var src = new double[n];
+            bool lastOn = false, lastOff = false;
+            for (int i = len - 1; i < n; i++)
+            {
+                double s = 0; for (int q = i - len + 1; q <= i; q++) s += c[q]; double basis = s / len;
+                double v = 0; for (int q = i - len + 1; q <= i; q++) v += (c[q] - basis) * (c[q] - basis); double sd = Math.Sqrt(v / len);
+                double upBB = basis + bbMult * sd, loBB = basis - bbMult * sd;
+                double st = 0; for (int q = i - len + 1; q <= i; q++) st += tr[q]; double rangema = st / len;
+                double upKC = basis + kcMult * rangema, loKC = basis - kcMult * rangema;
+                if (i == n - 1) { lastOn = loBB > loKC && upBB < upKC; lastOff = loBB < loKC && upBB > upKC; }
+                double hh = h[i], ll = l[i]; for (int q = i - len + 1; q <= i; q++) { if (h[q] > hh) hh = h[q]; if (l[q] < ll) ll = l[q]; }
+                src[i] = c[i] - (((hh + ll) / 2.0 + basis) / 2.0);
+            }
+            double sx = 0, sxx = 0; for (int x = 0; x < len; x++) { sx += x; sxx += (double)x * x; }
+            double den = len * sxx - sx * sx;
+            double LinReg(int end) { double sy = 0, sxy = 0; for (int x = 0; x < len; x++) { double y = src[end - (len - 1) + x]; sy += y; sxy += x * y; } double b = (len * sxy - sx * sy) / den; double a = (sy - b * sx) / len; return a + b * (len - 1); }
+            int idx = n - 1;
+            if (idx - 2 * (len - 1) < 0) return (0, 0, lastOn, lastOff);
+            double mom = LinReg(idx);
+            double momPrev = (idx - 1) - 2 * (len - 1) >= 0 ? LinReg(idx - 1) : 0;
+            return (mom, momPrev, lastOn, lastOff);
+        }
+
         public static (double Adx, double PlusDi, double MinusDi) CalculateADX(List<IBinanceKline> klines, int period = 14)
         {
             if (klines == null || klines.Count <= period * 2)
