@@ -704,8 +704,11 @@ namespace TradingBot
             //   까지 PUMP 로 떨어뜨려서 12+시간 진입 0건 → GENERIC 카테고리 신설 (PUMP 차단 면제)
             string srcU = (source ?? "").ToUpperInvariant();
             // [v5.23.79] MEANREV(역추세 눌림반등)은 모멘텀 방향게이트를 우회 — 설계상 눌림 진입이라
-            //   5m RSI<50 / 15m BB<0.7 에 막히면 한 건도 못 들어감. 안전게이트(설정/슬롯/시총/스코어카드/1h추세)는 유지.
-            bool isMeanRev = srcU.Contains("MEANREV") || srcU.Contains("H1M1");  // H1M1도 눌림 진입 → 모멘텀게이트 우회
+            //   5m RSI<50 / 15m BB<0.7 / 직전봉 음봉/윗꼬리 에 막히면 한 건도 못 들어감. 안전게이트(설정/슬롯/시총/스코어카드/1h추세/range상단)는 유지.
+            // [v5.23.84] LCC(LORENTZIAN)도 우회 대상에 추가 — TradingView Lorentzian Classification은 "하단 지지 눌림"에서
+            //   신호가 뜨는데, 그 순간은 5m RSI<50 + 직전 15m 음봉(눌림이니 당연)이라 모멘텀게이트가 막음 →
+            //   봇이 모멘텀 꺾일 때(=더 높은 가격=꼭대기)까지 기다려 진입(XMR 14시 LCC신호 → 17시 꼭대기 진입 버그). H1M1 폐기.
+            bool isMeanRev = srcU.Contains("MEANREV") || srcU.Contains("LORENTZIAN");  // 눌림(하단지지) 진입 → 모멘텀/고점도장 게이트 우회
             string entryCat;
             // [v5.22.25] 메이저 심볼은 source 무관 MAJOR 강제 — MaxMajorSlots 회피 버그 fix
             //   v5.22.24 까지: BTC/ETH/SOL/XRP 가 BB_SQUEEZE/ENGINE_151 source 로 들어오면 entryCat=SQUEEZE/GENERIC
@@ -1019,7 +1022,7 @@ namespace TradingBot
                     var prev5 = k5w[k5w.Count - 2];   // 직전 마감 5m 봉
                     decimal body5 = System.Math.Abs(prev5.ClosePrice - prev5.OpenPrice);
                     decimal upperWick5 = prev5.HighPrice - System.Math.Max(prev5.ClosePrice, prev5.OpenPrice);
-                    if (body5 > 0m && upperWick5 > body5 * 1.5m)
+                    if (!isMeanRev && body5 > 0m && upperWick5 > body5 * 1.5m)   // [v5.23.84] 눌림(LCC/MEANREV) 진입은 고점도장 윗꼬리 가드 우회
                     {
                         blockReason = $"M5_UPPER_WICK:wick={upperWick5:F8}/body={body5:F8}>1.5";
                         OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (5m 직전봉 윗꼬리 > 몸통×1.5 — 매도 압력 = 고점 도장)");
@@ -1072,7 +1075,9 @@ namespace TradingBot
                 {
                     var prev15 = k15bw[k15bw.Count - 2];   // 직전 마감 15m 봉 (현재 진행 봉 제외)
                     bool isBullish = prev15.ClosePrice > prev15.OpenPrice;
-                    if (!isBullish)
+                    // [v5.23.84] 눌림(LCC/MEANREV) 진입은 직전 15m 음봉/윗꼬리 가드 우회 — 눌림은 직전봉 음봉이 당연.
+                    //   이 가드가 눌림을 막아 모멘텀 꺾인 뒤(꼭대기) 진입하게 만들던 핵심 원인.
+                    if (!isMeanRev && !isBullish)
                     {
                         blockReason = $"PREV_15M_BEARISH:O={prev15.OpenPrice:F8}>C={prev15.ClosePrice:F8}";
                         OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | {blockReason} (15m 직전봉 음봉 — 매수 압력 약함)");
@@ -1083,7 +1088,7 @@ namespace TradingBot
                     decimal upperWick = prev15.HighPrice - prev15.ClosePrice;
 
                     // body/upperWick >= 0.3 검증. 윗꼬리 0이면 통과 (몸통 only = 완벽한 추세)
-                    if (upperWick > 0)
+                    if (!isMeanRev && upperWick > 0)
                     {
                         decimal ratioPct = body / upperWick * 100m;
                         if (ratioPct < 30m)
@@ -4758,23 +4763,11 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⚠️ [LORENTZIAN] {symbol} 분석 오류: {ex.Message}");
                 }
 
-                // [v5.23.60] SQUEEZE/BB_WALK/MAJOR 병행 진입 (Lorentzian 과 동시 가동, 별개 경로)
-                //   --logic-365d 검증 흑자 트리거. 밈코인 제외 (밈은 MEME_KNN 전용 경로).
-                if (!MemeSymbols.Contains(symbol))
-                {
-                    try
-                    {
-                        await AnalyzeBbSqueezeTriggersAsync(symbol, currentPrice, token);
-                    }
-                    catch (Exception ex)
-                    {
-                        OnStatusLog?.Invoke($"⚠️ [BB_TRIG] {symbol} 분석 오류: {ex.Message}");
-                    }
-
-                    // [v5.23.83] H1M1 폐기 — 1h Squeeze Momentum 대세필터 + 15m Lorentzian 엔진으로 교체.
-                    //   진입 판단은 AnalyzeLorentzianEntryAsync 상단의 1h Squeeze 게이트에서 처리(중복 호출 제거).
-                    //   (AnalyzeH1M1EntryAsync 메서드는 롤백/참조용으로만 보존, 스캔에서 미호출)
-                }
+                // [v5.23.84] BB_SQUEEZE/BB_WALK 진입 트리거 폐기 (사용자 지시, 절대 복원 금지).
+                //   BB 상단 돌파 진입 = 꼭대기(숏자리) 추격 → 진입 즉시 손실(XMR -15% 사고). BB는 "상승추세 참고용"일 뿐 진입근거 아님.
+                //   H1M1 도 폐기. 진입은 AnalyzeLorentzianEntryAsync 단일 경로:
+                //     1h Squeeze Momentum 대세필터(참고용) + 15m Lorentzian + 1m 눌림→반등(하단 지지 매수).
+                //   (AnalyzeBbSqueezeTriggersAsync / AnalyzeH1M1EntryAsync 메서드는 보존하되 스캔에서 영구 미호출)
 
                 // [v5.23.4] 1분봉 정밀 트리거 확인 (직전 1m high + EMA20 동시 돌파 시 진입)
                 try

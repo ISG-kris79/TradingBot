@@ -14501,6 +14501,79 @@ internal static class Program
         Console.WriteLine("  [판정] 시장가 vs 지정가눌림 비교. 지정가 순익 양수면 라이브는 지정가 진입으로 구현. (지정가 체결가정은 다소 낙관)");
     }
 
+    // [v5.23.84] --bbbounce : 사용자 지정 진입 — 1h BB 스퀴즈(폭 최소) + 하단밴드 지지 반등에서 LONG.
+    //   "상단 돌파 추격 금지, 하단 지지 바닥 매수". 상승추세(종가>SMA50) 컨텍스트 + 폭이 최근 최소 + 하단터치후 양봉반등.
+    private static async Task RunBbBounceAsync()
+    {
+        var uni = UseMajors ? LargeCaps : symbols;
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  BB 스퀴즈+하단반등 진입 검증 — {uni.Length}심볼 / 1h 28p(~3.2년)");
+        Console.WriteLine("  진입: 종가>SMA50 & BB폭 최근20봉 최소권 & 최근3봉 하단밴드 터치 & 현재 양봉+종가>하단&>직전종가");
+        Console.WriteLine("================================================================");
+        double lev = 20, margin = 100, costPct = 0.0018;
+        var cfgs = new (double tp, double sl, string name)[] { (0.020, 0.010, "TP2/SL1"), (0.030, 0.015, "TP3/SL1.5"), (0.030, 0.020, "TP3/SL2"), (0.020, 0.020, "TP2/SL2"), (0.010, 0.030, "TP1/SL3") };
+        int CFG = cfgs.Length;
+        int[] H = { 1, 4, 12, 24 }; string[] hl = { "+1h", "+4h", "+12h", "+24h" };
+        int N = 0;
+        var trades = new int[CFG]; var wins = new int[CFG]; var net = new double[CFG]; var heldSum = new long[CFG];
+        var fcnt = new int[4]; var fup = new int[4]; var fsum = new double[4];
+        var bcnt = new int[4]; var bup = new int[4]; var bsum = new double[4];
+        var pyTr = new Dictionary<int, int>(); var pyWin = new Dictionary<int, int>(); var pyNet = new Dictionary<int, double>();
+        int bidx = 0;
+        foreach (var sym in uni)
+        {
+            bidx++; Console.Write($"[{bidx}/{uni.Length}] {sym} ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlines1hAsync(sym, 28); } catch { Console.WriteLine("fail"); continue; }
+            int n = kl.Count;
+            if (n < 200) { Console.WriteLine("skip"); continue; }
+            var C = new double[n]; var O = new double[n]; var Hi = new double[n]; var Lo = new double[n];
+            for (int t = 0; t < n; t++) { C[t] = (double)kl[t].ClosePrice; O[t] = (double)kl[t].OpenPrice; Hi[t] = (double)kl[t].HighPrice; Lo[t] = (double)kl[t].LowPrice; }
+            var sma50 = SmaArr(C, 50);
+            var (mid, up, lo) = BbArr(C, 20, 2.0);
+            var width = new double[n]; for (int t = 0; t < n; t++) width[t] = mid[t] > 0 ? (up[t] - lo[t]) / mid[t] : 1;
+            for (int t = 60; t < n - 1; t++)
+                for (int hh = 0; hh < 4; hh++) { int j = t + H[hh]; if (j < n) { bcnt[hh]++; double r = C[j] / C[t] - 1; bsum[hh] += r; if (r > 0) bup[hh]++; } }
+            int busyUntil = -1;
+            for (int t = 60; t < n - 1; t++)
+            {
+                if (t <= busyUntil) continue;
+                if (!(C[t] > sma50[t])) continue;                                   // 상승추세 컨텍스트
+                double wmin = width[t]; for (int q = t - 20; q <= t; q++) if (width[q] < wmin) wmin = width[q];
+                bool squeeze = width[t] <= wmin * 1.10;                              // BB폭 최근20봉 최소권(스퀴즈)
+                bool lowerTouch = false; for (int q = t - 2; q <= t; q++) if (Lo[q] <= lo[q] * 1.001) { lowerTouch = true; break; }  // 하단밴드 터치(지지)
+                bool bounce = C[t] > O[t] && C[t] > lo[t] && C[t] > C[t - 1];        // 양봉+하단위 복귀+직전종가 돌파(반등)
+                if (!(squeeze && lowerTouch && bounce)) continue;
+                N++; double e = C[t]; int yr = kl[t].OpenTime.Year;
+                for (int hh = 0; hh < 4; hh++) { int j = t + H[hh]; if (j < n) { fcnt[hh]++; double r = C[j] / e - 1; fsum[hh] += r; if (r > 0) fup[hh]++; } }
+                int held0 = 1;
+                for (int ci = 0; ci < CFG; ci++)
+                {
+                    double tp = e * (1 + cfgs[ci].tp), sl = e * (1 - cfgs[ci].sl);
+                    int outc = 0, held = 1;
+                    for (int j = t + 1; j < n && j <= t + 480; j++) { held = j - t; if (Lo[j] <= sl) { outc = -1; break; } if (Hi[j] >= tp) { outc = 1; break; } }
+                    double r = outc == 1 ? cfgs[ci].tp : outc == -1 ? -cfgs[ci].sl : (C[Math.Min(n - 1, t + 480)] / e - 1);
+                    double pnl = margin * lev * (r - costPct);
+                    trades[ci]++; net[ci] += pnl; heldSum[ci] += held; if (r > 0) wins[ci]++;
+                    if (ci == 0) held0 = held;
+                    if (ci == 0) { pyTr.TryGetValue(yr, out var a); pyTr[yr] = a + 1; pyNet.TryGetValue(yr, out var b); pyNet[yr] = b + pnl; if (r > 0) { pyWin.TryGetValue(yr, out var w); pyWin[yr] = w + 1; } }
+                }
+                busyUntil = t + held0;
+            }
+            Console.WriteLine($"ok (진입 {N})");
+        }
+        Console.WriteLine();
+        Console.WriteLine($"  총 진입 {N}건 (20x·마진${margin}·왕복{costPct * 100:F2}%. 베이스=전 1h봉)");
+        Console.WriteLine("  [청산무관 전방수익률] 신호 vs 베이스라인");
+        for (int hh = 0; hh < 4; hh++) { int cc = fcnt[hh], bc = bcnt[hh]; if (cc == 0 || bc == 0) continue; double sUp = 100.0 * fup[hh] / cc, bUp = 100.0 * bup[hh] / bc; Console.WriteLine($"    {hl[hh],4}: 신호 상승 {sUp,5:F1}% 평균 {fsum[hh] / cc * 100,7:F3}%  | 베이스 상승 {bUp,5:F1}% 평균 {bsum[hh] / bc * 100,7:F3}%  | 엣지 {sUp - bUp,6:+0.0;-0.0}%p"); }
+        Console.WriteLine("  [TP/SL 시뮬]");
+        for (int ci = 0; ci < CFG; ci++) { int tr = trades[ci]; if (tr == 0) continue; double wrr = 100.0 * wins[ci] / tr, be = cfgs[ci].sl / (cfgs[ci].sl + cfgs[ci].tp) * 100; Console.WriteLine($"    {cfgs[ci].name,-11}: {tr}건 WR {wrr,5:F1}%(분기 {be:F0}%) 보유 {(double)heldSum[ci] / tr,5:F1}h 총 {net[ci],9:F0}$ 건당 {net[ci] / tr,6:F2}$"); }
+        Console.WriteLine("  [연도별 — TP2/SL1]");
+        foreach (var yr in pyTr.Keys.OrderBy(x => x)) { int tr = pyTr[yr]; pyWin.TryGetValue(yr, out var w); pyNet.TryGetValue(yr, out var nt); Console.WriteLine($"    {yr}: {tr,5}건 WR {100.0 * w / Math.Max(1, tr),5:F1}% 순익 {nt,9:F0}$"); }
+        Console.WriteLine();
+        Console.WriteLine("  [판정] 엣지(+%p) 양수 & TP/SL 순익 양수 & 연도별 견고면 라이브 채택(하단 지지 매수).");
+    }
+
     // [v5.23.83] --sqzlor15 : 1h Squeeze Momentum 대세필터 + 15m Lorentzian 진입(1m 수수료함정 회피).
     //   1m 대비 15m은 봉당 움직임 ~10배 → 왕복비용 대비 엣지 여유. 시장가 vs 지정가눌림 + 연도별.
     private static async Task RunSqueezeLor15Async()
@@ -15676,6 +15749,11 @@ internal static class Program
         if (HasArg("--sqzlor15"))
         {
             await RunSqueezeLor15Async();
+            return;
+        }
+        if (HasArg("--bbbounce"))
+        {
+            await RunBbBounceAsync();
             return;
         }
         if (HasArg("--user4"))

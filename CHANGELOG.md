@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.84] - 2026-06-09
+
+### 🔴 BB_SQUEEZE/BB_WALK 진입 폐기 + LCC(Lorentzian) 눌림 진입 게이트 우회 — XMR 꼭대기 진입 버그 fix
+
+- **BB_SQUEEZE/BB_WALK 진입 트리거 완전 폐기** ([TradingEngine.cs](TradingEngine.cs)): 스캔 dispatch에서 `AnalyzeBbSqueezeTriggersAsync` 호출 제거(복원 금지). BB 상단 돌파 진입 = 꼭대기(숏자리) 추격. **실거래 XMRUSDT가 BB_SQUEEZE_ALT/BB_WALK_ALT로 상단에서 진입 → -$60 등 손실** (DB 확인). BB는 추세 참고용일 뿐 진입근거 아님.
+- **LCC(LORENTZIAN) 진입을 `isMeanRev` 눌림-우회 대상에 추가** ([TradingEngine.cs](TradingEngine.cs) IsEntryAllowedCore): TradingView Lorentzian Classification 신호는 **하단 지지 눌림**에서 뜨는데, 그 순간은 5m RSI<50 + 직전 15m 음봉이라 모멘텀/고점도장 게이트(`RSI5M_DOWN`/`M15_BB_BELOW_0.7`/`PREV_15M_BEARISH`/`M5_UPPER_WICK`/`UPPER_WICK_HEAVY`)에 막힘 → 봇이 모멘텀 꺾일 때(=더 높은 가격=꼭대기)까지 기다려 진입. **이게 "XMR 14시 LCC 신호 → 17시 꼭대기 진입" 버그의 정확한 원인** (FooterLogs 로그로 확인). 이 5개 게이트를 LCC/MEANREV에서 우회 → 눌림(하단 지지)에서 진입. 안전게이트(슬롯/시총/스코어카드/1h추세/range상단)는 유지.
+- H1M1 폐기 상태 유지(우회 플래그에서 H1M1 → LORENTZIAN 교체).
+- 백테 도구 `--bbbounce`(1h BB 스퀴즈+하단반등) 추가 — 단독 룰은 베이스 -1~-2.4%p로 음수 확인(LCC가 답).
+
 ## [5.23.83] - 2026-06-09
 
 ### H1M1 폐기 → 새 엔진 [1h Squeeze Momentum 대세필터 + 15m Lorentzian 진입] (사용자 지정 아키텍처, 카나리)
