@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.88] - 2026-06-10
+
+### 🧹 TradingEngine.cs 죽은 코드 대청소 (동작 변경 없음)
+
+- **호출 그래프 분석으로 미사용 private 메서드 37개 삭제** (전 프로젝트에서 0~1회 참조 = 호출 안 됨, 반복 분석으로 연쇄 미사용까지): AnalyzeMeanReversionEntryAsync(MEANREV 진입), HandlePumpEntry, ExecutePumpShortEntry, ScanMacd/Tail 잔재, CalculateOrderQuantityAsync, CheckPartialTakeProfit, ValidatePredictionAsync, Train/Convert/Preload 등 AI·전략 잔재.
+- **미사용 필드 6개 삭제**: _directionModelAccuracy, _survivalPumpAccuracy, _pendingSwapEvict, _gridStrategy, _modelRetrainTimer, _mlTrainingInProgress.
+- **TradingEngine.cs 14,991 → 13,569줄 (-1,422줄)**. 빌드 0 오류. 삭제는 전부 미참조 데드코드라 런타임 동작 불변(안전망: 삭제 후 풀빌드 검증).
+- 유지: UI가 구독하는 이벤트(OnAIPrediction 등 7개, 엔진 미raise이나 MainViewModel 구독 — cross-file이라 보존), 청산 경로 전부.
+
 ## [5.23.87] - 2026-06-10
 
 ### 🧹 비-LCC 진입 전략 코드/파일 물리 삭제 (사용자 지시: LCC 빼고 모두 삭제)
