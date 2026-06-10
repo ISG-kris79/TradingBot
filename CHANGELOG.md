@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.87] - 2026-06-10
+
+### 🧹 비-LCC 진입 전략 코드/파일 물리 삭제 (사용자 지시: LCC 빼고 모두 삭제)
+
+- **진입전략 파일 11개 삭제**: `FifteenFiveOneEngine.cs`(ENGINE_151), `MajorCoinStrategy.cs`/`MajorCoinIntegratedStrategy.cs`/`MajorCoinRetestStrategy.cs`, `FifteenMinBBSqueezeBreakoutStrategy.cs`, `FiveMinuteFilterService.cs`+`SignalPipelineService.cs`, `VolatilityScanner.cs`, `TickDensityMonitor.cs`, `LorentzianV2/LorentzianMemeFeatures.cs`, `ITradingStrategy.cs`.
+- **TradingEngine.cs 죽은 코드 제거**: `_entryEngine151`/`_majorStrategy`/`_fifteenMinBBSqueezeStrategy`/`_tickMonitor` 필드 + wiring, `Run151EngineLoopAsync`(99줄), `AnalyzeMemeKnnEntryAsync`+밈 필드(104줄), `StartAggTradeStreamAsync`(SQUEEZE_BREAKOUT 피드), ENGINE_151/TickMonitor 이벤트 핸들러 전부 삭제.
+- **유지(청산에 사용)**: `MarketCrashDetector`(긴급청산), `MacdCrossSignalService`(포지션 모니터 반대크로스 청산). 진입 용도로는 v5.23.86 LCC_ONLY 차단점이 이미 차단.
+- 진입 = **LCC(Lorentzian) 단독** 확정. 빌드 0 오류.
+
 ## [5.23.86] - 2026-06-10
 
 ### 🔴 LCC(Lorentzian) 단일 진입 — 그 외 모든 진입로직 폐기 (사용자 지시)

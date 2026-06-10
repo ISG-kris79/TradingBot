@@ -203,7 +203,6 @@ namespace TradingBot
 
         // 전략 인스턴스
         // [AI 제거] PumpScanStrategy 제거
-        private MajorCoinStrategy? _majorStrategy;
         private readonly MarketCrashDetector _crashDetector = new();
         // [v4.5.5] 알트 불장 자동 감지기
         private readonly AltBullMarketDetector _altBullDetector = new();
@@ -482,7 +481,6 @@ namespace TradingBot
         // private TransformerStrategy? _transformerStrategy; // TensorFlow 전환 중 임시 비활성화
         // private TransformerTrainer? _transformerTrainer; // TensorFlow 전환 중 임시 비활성화
         private ElliottWave3WaveStrategy _elliotWave3Strategy; // [3파 확정형 단타]
-        private FifteenMinBBSqueezeBreakoutStrategy _fifteenMinBBSqueezeStrategy; // [15분봉 BB 스퀴즈 돌파]
         private HybridExitManager _hybridExitManager; // [하이브리드 AI 익절/손절 관리]
         private BinanceExecutionService _executionService; // [실시간 레버리지 주문 실행 서비스]
 
@@ -513,7 +511,6 @@ namespace TradingBot
         private readonly SemaphoreSlim _analysisConcurrencyLimiter = new SemaphoreSlim(8, 8);
 
         // [v5.17.0 REDESIGN] 15-5-1 엔진 — 15m 필터 / 5m 전략 / 1m 체결
-        private readonly TradingBot.Services.FifteenFiveOneEngine _entryEngine151 = new();
         // 5m 종가 확정 디바운스 (각 심볼당 마지막 처리한 5m 캔들 종가 시각)
         private readonly ConcurrentDictionary<string, DateTime> _last5mProcessedAt = new(StringComparer.OrdinalIgnoreCase);
         // 15m 종가 확정 디바운스 (각 심볼당 마지막 처리한 15m 캔들 종가 시각)
@@ -523,7 +520,6 @@ namespace TradingBot
         // [v5.22.16] _entryScheduler 필드 제거 — Forecaster 의존
         // [v5.10.54] 주문 라이프사이클 단일 진입점 (SL/TP/Trailing 등록/취소/본절교체)
         private TradingBot.Services.OrderLifecycleManager? _orderLifecycle;
-        private readonly TradingBot.Services.TickDensityMonitor _tickMonitor = new();
 
         private DateTime _lastCleanupTime = DateTime.Now;
 
@@ -2010,33 +2006,7 @@ namespace TradingBot
             //   효과: 매 ticker 마다 OnPriceTickAsync 호출 부하도 제거
             // [AI 제거] DirectionPredictor / SurvivalModel 로드 제거
 
-            // [v4.2.0] 틱 밀도 모니터 — 급등 시작 신호 + BB 스퀴즈 브레이크아웃
-            _tickMonitor.OnLog += msg => OnStatusLog?.Invoke(msg);
-            // [v5.17.0 REDESIGN] TICK_SURGE 핸들러 비활성화
-            //   이유: 신규 15-5-1 엔진이 정제된 1m 볼륨 spike 시 진입 → 별도 TICK_SURGE 경로 불필요
-            // [AI 제거] OnTickSurgeDetected 핸들러 전체 제거 (PumpSignalClassifier 의존)
-            _tickMonitor.OnSqueezeBreakout += (symbol, price, bbWidth) =>
-            {
-                // BB 스퀴즈 브레이크아웃 → AI Gate 거쳐 진입
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        // [v5.10.81] 단일 게이트 IsEntryAllowed 사용
-                        if (!IsEntryAllowed(symbol, "SQUEEZE_BREAKOUT", out string squeezeBlockReason))
-                        {
-                            OnStatusLog?.Invoke($"⛔ [스퀴즈돌파→차단] {symbol} ({squeezeBlockReason})");
-                            return;
-                        }
-                        OnStatusLog?.Invoke($"🔥 [스퀴즈돌파→진입] {symbol} BBWidth={bbWidth:F2}%");
-                        await ExecuteAutoOrder(symbol, "LONG", price, _cts?.Token ?? CancellationToken.None,
-                            "SQUEEZE_BREAKOUT", manualSizeMultiplier: 1.0m);
-                    }
-                    catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [스퀴즈] {symbol} 진입 실패: {ex.Message}"); }
-                });
-            };
-            // AggTrade WebSocket 시작 (백그라운드)
-            _ = StartAggTradeStreamAsync(_cts?.Token ?? CancellationToken.None);
+            // [v5.23.87] TickDensityMonitor(SQUEEZE_BREAKOUT 진입) 폐기 — LCC 단일 진입. _tickMonitor 필드/파일 삭제.
             // [AI 제거] ProfitRegressor / EntryPriceRegressor / EntryZoneCollector / BreakoutClassifier / EntryZoneRegressor 모두 제거
 
             // [Fail-safe] API 연결 끊김 + 슬리피지 감지 모듈
@@ -2107,9 +2077,7 @@ namespace TradingBot
             _elliotWave3Strategy = new ElliottWave3WaveStrategy();
             OnStatusLog?.Invoke("🌊 엘리엇 3파 확정형 전략 준비 완료");
 
-            // [15분봉 BB 스퀴즈 돌파 전략]
-            _fifteenMinBBSqueezeStrategy = new FifteenMinBBSqueezeBreakoutStrategy();
-            OnStatusLog?.Invoke("📉 15분봉 BB 스퀴즈 돌파 전략 준비 완료");
+            // [v5.23.87] 15분봉 BB 스퀴즈 돌파 전략 폐기 — LCC 단일 진입. 필드/파일 삭제.
 
             // [하이브리드 AI 익절/손절 관리]
             _hybridExitManager = new HybridExitManager();
@@ -3075,29 +3043,7 @@ namespace TradingBot
                 // [v5.10.18] 거래소 폴링 동기화 시작
                 _positionSyncService.Start(token);
 
-                // [v5.17.0 REDESIGN] 15-5-1 엔진 이벤트 연결
-                _entryEngine151.OnLog += msg => OnStatusLog?.Invoke(msg);
-                _entryEngine151.OnEntryFire += async trigger =>
-                {
-                    try
-                    {
-                        // 글로벌 진입 게이트 체크 (슬롯 / 일일한도 / 블랙리스트)
-                        if (!IsEntryAllowed(trigger.Symbol, "ENGINE_151", out string blockReason))
-                        {
-                            OnStatusLog?.Invoke($"⛔ [ENGINE_151] {trigger.Symbol} 차단: {blockReason}");
-                            return;
-                        }
-                        // ExecuteAutoOrder 로 통합 — 기존 AI Gate / 슬롯 체크 / 사이즈 산출 활용
-                        await ExecuteAutoOrder(trigger.Symbol, trigger.Direction, trigger.TriggerPrice, token, "ENGINE_151", skipAiGateCheck: false);
-                    }
-                    catch (Exception ex)
-                    {
-                        OnStatusLog?.Invoke($"⚠️ [ENGINE_151] {trigger.Symbol} 체결 예외: {ex.Message}");
-                    }
-                };
-                // [v5.23.85] ENGINE_151(15-5-1, MACD 골든크로스 모멘텀) 진입 루프 폐기 (사용자 지시) —
-                //   후행지표 모멘텀 추격 = 꼭대기 진입 → 실거래 최근 24h 8패/-$760(NEAR/MORPHO/XMR). LCC(Lorentzian) 단일 진입으로.
-                //   _ = Task.Run(() => Run151EngineLoopAsync(token), token);   // 영구 미시작
+                // [v5.23.87] ENGINE_151(15-5-1 MACD 모멘텀) 전면 폐기 — LCC 단일 진입. 엔진/루프/필드/파일 삭제.
 
                 // [v5.23.44/47] PHANTOM 자동 cleanup — 1분 주기 + 시작 즉시 1회
                 //   QUSDT/HUSDT 가 외부 청산됐는데 봇 메모리에 stuck 되는 케이스 처리
@@ -3798,105 +3744,6 @@ namespace TradingBot
             return ordered[index];
         }
 
-        // ═══════════════════════════════════════════════════════════════
-        // [v5.17.0 REDESIGN] 15-5-1 엔진 폴링 루프
-        //   MarketDataManager 캐시에서 15m/5m/1m 캔들 확인 → 엔진 Layer 호출
-        //   - 15m 종가 확정 → EvaluateRegime
-        //   - 5m 종가 확정 → TryGenerateSignal
-        //   - 1m 종가 확정 → TryTriggerEntry
-        //
-        //   폴링 간격: 3초 (1m 봉 종가 확정 감지에 충분, CPU 부담 낮음)
-        // ═══════════════════════════════════════════════════════════════
-        private async Task Run151EngineLoopAsync(CancellationToken token)
-        {
-            await Task.Delay(TimeSpan.FromSeconds(10), token); // 시작 직후 초기 데이터 안정화 대기
-            // [v5.22.16] 폴링 간격 3초 → 30초 (멀티TF WebSocket 캐시 폐기 → REST throttle 30초와 동기화)
-            //   효과: REST 호출 12심볼 × 3TF × 초당 = 초당 12회 → 30초당 12회 = 1초당 0.4회
-            OnStatusLog?.Invoke("🎯 [ENGINE_151] 루프 시작 (15m/5m/1m 폴링 간격=30초, REST throttle 캐시)");
-
-            while (!token.IsCancellationRequested)
-            {
-                try
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(30), token);
-
-                    // 추적 대상: 심볼 리스트 + 감시풀 + top60 랭킹 (존재하면)
-                    var symbolsToScan = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var s in _symbols) symbolsToScan.Add(s);
-                    foreach (var kv in _pumpWatchPool) symbolsToScan.Add(kv.Key);
-
-                    foreach (var symbol in symbolsToScan)
-                    {
-                        if (token.IsCancellationRequested) break;
-
-                        // ── Layer 1: 1h 종가 확정 감지 + EvaluateRegime (사용자 원칙: 방향 1h)
-                        // [v5.23.48] 15m EMA50 → 1h EMA20 변경
-                        try
-                        {
-                            var c1h = await GetMultiTfKlinesThrottledAsync(
-                                symbol, Binance.Net.Enums.KlineInterval.OneHour, 30, token);
-                            if (c1h != null && c1h.Count >= 21)
-                            {
-                                var lastOpen = c1h[^1].OpenTime;
-                                if (!_last15mProcessedAt.TryGetValue(symbol, out var prev15) || prev15 != lastOpen)
-                                {
-                                    _last15mProcessedAt[symbol] = lastOpen;
-                                    _entryEngine151.EvaluateRegime(symbol, c1h);
-                                }
-                            }
-                        }
-                        catch { /* per-symbol skip */ }
-
-                        // ── Layer 2: 5m 종가 확정 감지 + TryGenerateSignal
-                        // [v5.22.16] 5분봉은 KlineCache (WebSocket) 우선 사용 (실시간), 미존재 시 REST
-                        try
-                        {
-                            List<IBinanceKline>? c5 = null;
-                            if (Services.MarketDataManager.Instance?.KlineCache.TryGetValue(symbol, out var cachedList) == true && cachedList.Count >= 30)
-                            {
-                                lock (cachedList) { c5 = cachedList.ToList(); }
-                            }
-                            if (c5 == null)
-                            {
-                                c5 = await GetMultiTfKlinesThrottledAsync(
-                                    symbol, Binance.Net.Enums.KlineInterval.FiveMinutes, 60, token);
-                            }
-                            if (c5 != null && c5.Count >= 30)
-                            {
-                                var lastOpen = c5[^1].OpenTime;
-                                if (!_last5mProcessedAt.TryGetValue(symbol, out var prev5) || prev5 != lastOpen)
-                                {
-                                    _last5mProcessedAt[symbol] = lastOpen;
-                                    _entryEngine151.TryGenerateSignal(symbol, c5, out _);
-                                }
-                            }
-                        }
-                        catch { /* per-symbol skip */ }
-
-                        // ── Layer 3: 1m 현재 봉 상태 + 최근 10봉으로 TryTriggerEntry
-                        // [v5.22.16] WebSocket 캐시 → REST throttle 30초 캐시 (1m 봉 종가 확정 감지는 다소 늦어짐)
-                        try
-                        {
-                            var c1 = await GetMultiTfKlinesThrottledAsync(
-                                symbol, Binance.Net.Enums.KlineInterval.OneMinute, 15, token);
-                            if (c1 != null && c1.Count >= 11)
-                            {
-                                bool isMajor = MajorSymbols.Contains(symbol);
-                                _entryEngine151.TryTriggerEntry(symbol, c1[^1], c1, isMajor, out _);
-                            }
-                        }
-                        catch { /* per-symbol skip */ }
-                    }
-                }
-                catch (OperationCanceledException) { break; }
-                catch (Exception ex)
-                {
-                    OnStatusLog?.Invoke($"⚠️ [ENGINE_151] 루프 예외: {ex.Message}");
-                }
-            }
-
-            OnStatusLog?.Invoke("🛑 [ENGINE_151] 루프 종료");
-        }
 
         // [AI 제거] StartPeriodicTrainingAsync 전체 제거 — AI 재학습 루프 폐기
 
@@ -5056,14 +4903,6 @@ namespace TradingBot
             "MEMEUSDT","MEWUSDT","ACTUSDT","BANANAUSDT"
         };
 
-        // 밈코인 전용 5m KNN engine (LorentzianMemeFeatures 사용)
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, LorentzianAnnEngine> _memeKnnEngines
-            = new(StringComparer.OrdinalIgnoreCase);
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _memeLastTrained
-            = new(StringComparer.OrdinalIgnoreCase);
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _memeCooldown
-            = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly TimeSpan MemeCooldown = TimeSpan.FromMinutes(10);
 
         // [v5.23.60] SQUEEZE/BB_WALK/MAJOR 병행 진입 — Lorentzian 과 별개로 동시 가동.
         //   --logic-365d (364일·30알트·실제 트리거) 검증: SQUEEZE/MAJOR/BB_WALK @ TP:SL 1:3 강한 흑자·레짐강건.
@@ -5075,110 +4914,6 @@ namespace TradingBot
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _meanRevCooldown
             = new(StringComparer.OrdinalIgnoreCase);
 
-        // 밈코인 진입 — 5m KNN (LorentzianMemeFeatures: MFI/VolDelta/OBV/RSI/ADX) + 1m vol spike 3x
-        // [v5.23.62] MEME_KNN 전면 차단
-        //   2026-05-21 30일 실거래 검증: 38건 WR 10.5% PnL -$234.57
-        //   사이즈는 PUMP 범주(평균 -$6/건)인데 승률 10% → 9건 잡고 1건 익절 구조
-        //   KNN 5m 예측 신호 자체가 밈코인 변동성에 과적합, 실거래 검증 명확한 적자
-        //   메서드 보존 (롤백/재실험용), 진입 자체만 차단
-        private async Task AnalyzeMemeKnnEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
-        {
-            // [v5.23.62] MEME_KNN 전면 차단 — 실거래 30일 WR 10.5% / PnL -$234 검증
-            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} MEME_KNN 차단 | reason=MEME_KNN_DISABLED:30d_loss_proven (WR 10.5%, -$234)");
-            return;
-#pragma warning disable CS0162  // Unreachable code (보존된 원본 로직 — 재활성화 시 위 return 제거)
-            if (!IsEntryAllowed(symbol, "MEME_KNN", out _)) return;
-            if (_memeCooldown.TryGetValue(symbol, out var last)
-                && DateTime.UtcNow - last < MemeCooldown) return;
-
-            lock (_posLock)
-            {
-                if (_activePositions.TryGetValue(symbol, out var existing)
-                    && existing != null && Math.Abs(existing.Quantity) > 0) return;
-            }
-
-            // 5m kline 1500봉 (~5일) — 학습 데이터
-            var k5 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 1500, token);
-            if (k5 == null || k5.Count < 300) return;
-            var k5List = k5 as List<IBinanceKline> ?? new List<IBinanceKline>(k5);
-
-            var engine = _memeKnnEngines.GetOrAdd(symbol,
-                s => new LorentzianAnnEngine(s, neighborsCount: 8, maxBarsBack: 2000,
-                    featureCount: LorentzianMemeFeatures.FeatureCount));
-
-            // walk-forward 학습 (라벨 = 4봉 후 방향)
-            var lastClosed = k5List[^2];
-            bool needTrain = !_memeLastTrained.TryGetValue(symbol, out var prevTrained)
-                          || prevTrained != lastClosed.OpenTime;
-            if (needTrain)
-            {
-                _memeLastTrained[symbol] = lastClosed.OpenTime;
-                if (engine.SampleCount < 200)
-                {
-                    for (int j = 60; j <= k5List.Count - 6; j++)
-                    {
-                        int wStart = Math.Max(0, j - 499);
-                        var win = k5List.GetRange(wStart, j - wStart + 1);
-                        var feats = LorentzianMemeFeatures.Extract(win);
-                        if (feats == null) continue;
-                        decimal fut = k5List[j + 4].ClosePrice;
-                        decimal nowC = k5List[j].ClosePrice;
-                        int label = fut > nowC ? 1 : (fut < nowC ? -1 : 0);
-                        engine.AddSample(feats, label);
-                    }
-                }
-                else
-                {
-                    int sIdx = k5List.Count - 6;
-                    if (sIdx >= 60)
-                    {
-                        int wStart = Math.Max(0, sIdx - 499);
-                        var win = k5List.GetRange(wStart, sIdx - wStart + 1);
-                        var feats = LorentzianMemeFeatures.Extract(win);
-                        if (feats != null)
-                        {
-                            decimal fut = k5List[sIdx + 4].ClosePrice;
-                            decimal nowC = k5List[sIdx].ClosePrice;
-                            int label = fut > nowC ? 1 : (fut < nowC ? -1 : 0);
-                            engine.AddSample(feats, label);
-                        }
-                    }
-                }
-            }
-
-            // 5m KNN 예측 (마지막 마감봉 기준)
-            int evalIdx = k5List.Count - 2;
-            int wStartE = Math.Max(0, evalIdx - 499);
-            var winE = k5List.GetRange(wStartE, evalIdx - wStartE + 1);
-            var fp = LorentzianMemeFeatures.Extract(winE);
-            if (fp == null) return;
-
-            var pred = engine.Predict(fp);
-            if (!pred.IsReady || pred.K == 0) return;
-            if (pred.Prediction <= 0 || pred.PositiveRate < 0.70f) return;
-
-            // 1m volume spike 3x 체크
-            var k1 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneMinute, 25, token);
-            if (k1 == null || k1.Count < 22) return;
-            var k1List = k1 as List<IBinanceKline> ?? new List<IBinanceKline>(k1);
-            decimal curVol = k1List[^1].Volume;
-            decimal avgVol = k1List.Skip(k1List.Count - 21).Take(20).Average(k => k.Volume);
-            if (avgVol <= 0m) return;
-            double volRatio = (double)(curVol / avgVol);
-            if (volRatio < 3.0)
-            {
-                if (DateTime.UtcNow.Second % 30 == 0)
-                    OnStatusLog?.Invoke($"⏸️ [MEME_KNN] {symbol} 1m vol={volRatio:F1}x < 3x 대기 | KNN WR={pred.PositiveRate*100:F0}% K={pred.K}");
-                return;
-            }
-
-            _memeCooldown[symbol] = DateTime.UtcNow;
-            OnStatusLog?.Invoke(
-                $"🟢 [MEME_KNN] {symbol} 진입 | 5m KNN WR={pred.PositiveRate*100:F0}% K={pred.K} pred={pred.Prediction} + 1m vol={volRatio:F1}x");
-            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
-                signalSource: "MEME_KNN", skipAiGateCheck: false);
-#pragma warning restore CS0162
-        }
 
         // [v5.23.60] SQUEEZE / BB_WALK / MAJOR 병행 진입 (Lorentzian 과 동시 가동, 5m TF)
         //   --logic-365d 검증 정의 그대로 이식 (라이브 ≡ 백테스트):
@@ -8245,53 +7980,6 @@ namespace TradingBot
             OnStatusLog?.Invoke("⏸️ [ML] 자동 재학습 타이머 비활성 (v5.22.2)");
         }
 
-        /// <summary>[v4.2.0] AggTrade WebSocket으로 PUMP 후보 코인의 실시간 체결 데이터 수신</summary>
-        private async Task StartAggTradeStreamAsync(CancellationToken token)
-        {
-            try
-            {
-                await Task.Delay(TimeSpan.FromSeconds(10), token); // 시작 안정화 대기
-
-                // 전 종목 대신 TickerCache에서 거래량 상위 코인만 구독 (API 제한)
-                var topSymbols = _marketDataManager.TickerCache
-                    .Where(t => t.Value.QuoteVolume >= 500_000m && t.Value.LastPrice >= 0.001m)
-                    .OrderByDescending(t => t.Value.QuoteVolume)
-                    .Take(50)
-                    .Select(t => t.Key)
-                    .ToList();
-
-                if (topSymbols.Count == 0)
-                {
-                    OnStatusLog?.Invoke("⚠️ [AggTrade] 구독 대상 없음 (TickerCache 미로드)");
-                    return;
-                }
-
-                OnStatusLog?.Invoke($"📡 [AggTrade] {topSymbols.Count}개 코인 구독 시작");
-
-                var socketClient = new BinanceSocketClient();
-                foreach (var sym in topSymbols)
-                {
-                    if (token.IsCancellationRequested) break;
-                    try
-                    {
-                        await socketClient.UsdFuturesApi.ExchangeData.SubscribeToAggregatedTradeUpdatesAsync(sym, data =>
-                        {
-                            var d = data.Data;
-                            _tickMonitor.ProcessAggTrade(sym, d.Price, d.Quantity, d.BuyerIsMaker, d.TradeTime);
-                        }, token);
-                    }
-                    catch { } // 개별 심볼 실패 무시
-                    await Task.Delay(100, token); // 구독 간격 (Rate Limit)
-                }
-
-                OnStatusLog?.Invoke($"📡 [AggTrade] {topSymbols.Count}개 코인 구독 완료");
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                OnStatusLog?.Invoke($"⚠️ [AggTrade] 시작 실패: {ex.Message}");
-            }
-        }
 
         private async Task TrainAllModelsAsync(CancellationToken token)
         {
