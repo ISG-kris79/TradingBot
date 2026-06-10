@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.89] - 2026-06-11
+
+### 🧹 TradingEngine.cs 데드 클러스터 추가 제거 (reachability + 빌드검증)
+
+- **데드 메서드 13개 추가 삭제**: ExecutePumpTrade(194줄), AnalyzeBbSqueezeTriggersAsync(62), AnalyzeH1M1EntryAsync(52), 옛 웹API(GetChartDataJsonAsync/GetEngineStatusJson/GetPositionsJson/ClosePositionApiAsync/GetLogsJson), TrainAllModelsAsync/StartModelRetrainTimer, BbEma20At/Rising, BbRangePos 등 — 데드 클러스터끼리만 호출하던 것 + public 미사용.
+- **TradingEngine.cs 13,569 → 13,107줄** (세션 누적 14,991→13,107, **-1,884줄**).
+- **안전망 작동**: 1차 시도에서 5개(LoadEntryFilterSettings/AddToLogBuffer/ApplyMainLoopPerformanceSettings/LoadActiveAiDecisionIds/IsDroughtRecoverySignalSource)가 실제 라이브 호출이라 빌드가 깨짐 → 즉시 복원, 진짜 데드만 삭제. 빌드 0 오류.
+- 남은 ~13,100줄은 라이브 인프라(청산/SL·TP·트레일링, 포지션모니터, DB동기화·복구, 게이트스택, 하이브리드청산, 텔레그램, 재시작복구) — 데드 아님.
+
 ## [5.23.88] - 2026-06-10
 
 ### 🧹 TradingEngine.cs 죽은 코드 대청소 (동작 변경 없음)

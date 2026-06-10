@@ -4612,68 +4612,6 @@ namespace TradingBot
             = new(StringComparer.OrdinalIgnoreCase);
 
 
-        // [v5.23.60] SQUEEZE / BB_WALK / MAJOR 병행 진입 (Lorentzian 과 동시 가동, 5m TF)
-        //   --logic-365d 검증 정의 그대로 이식 (라이브 ≡ 백테스트):
-        //     SQUEEZE  : BBWidth(20,2)% < 1.5  AND  close ≥ BB upper      (밴드 조임 중 상단 돌파)
-        //     BB_WALK  : 직전 5봉 중 4봉+ close ≥ BB upper                 (밴드 워킹)
-        //     MAJOR    : 메이저4 + EMA20 상승 + M15 30봉 range 위치 60~85%
-        //   비메이저 → SQUEEZE/BB_WALK,  메이저4 → MAJOR (검증 유니버스 구조와 동일).
-        //   진입은 ExecuteAutoOrder funnel → IsEntryAllowed/RR/슬롯/TP-SL/청산 그대로 상속.
-        //   봇 LONG 전용: 본 트리거는 구조상 LONG only, ExecuteAutoOrder(8800대)에서 SHORT 전역 차단.
-        private async Task AnalyzeBbSqueezeTriggersAsync(string symbol, decimal currentPrice, CancellationToken token)
-        {
-            if (_bbTrigCooldown.TryGetValue(symbol, out var last)
-                && DateTime.UtcNow - last < BbTrigCooldown) return;
-
-            lock (_posLock)
-            {
-                if (_activePositions.TryGetValue(symbol, out var existing)
-                    && existing != null && Math.Abs(existing.Quantity) > 0) return;
-            }
-
-            var k5 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 300, token);
-            if (k5 == null) return;
-            var k = k5 as List<IBinanceKline> ?? new List<IBinanceKline>(k5);
-            if (k.Count < 95) return;            // M15RangePos(30) = 90 bars + 여유
-
-            int i = k.Count - 2;                 // 마지막 *마감* 5m 봉 (partial-bar repaint 회피)
-            bool isMajor = MajorSymbols.Contains(symbol);
-
-            string? src = null;
-            string detail = "";
-            if (isMajor)
-            {
-                // MAJOR: EMA20 상승 + M15 30봉 range 위치 60~85%
-                if (i >= 30 && BbEma20Rising(k, i))
-                {
-                    double pos = BbRangePos(k, i, 30);
-                    if (pos >= 60.0 && pos <= 85.0)
-                    {
-                        src = "MAJOR_SIMPLE";
-                        detail = $"EMA20↑ rangePos={pos:F0}%";
-                    }
-                }
-            }
-            // [v5.23.79] 비메이저 BB 트리거(SQUEEZE/BB_WALK) 전면 폐기.
-            //   BB 스퀴즈/워크 = "밴드 조임/돌파 매수" = 모멘텀 추격. --entry-search 충실 백테스트에서
-            //   모멘텀 추격 LONG은 랜덤 이하(TP1 도달 ~50% < 기대 60%)로 증명됨 — 천장 추격이라 손실.
-            //   엣지는 정반대(역추세): 직전 1h −2%+ 하락 후 반등(Drop2%+BBroom) = test WR 66~71% 흑자.
-            //   BB_WALK(v5.23.76 폐지)에 이어 SQUEEZE도 폐지. BB는 방향신호 아님(보조지표).
-            //   (역추세 진입 로직은 카나리 검증 후 별도 도입 예정)
-
-            if (src == null) return;
-            if (!IsEntryAllowed(symbol, src, out var reason))
-            {
-                if (DateTime.UtcNow.Second % 30 == 0)
-                    OnStatusLog?.Invoke($"⛔ [{src}] {symbol} 게이트 차단 | {reason}");
-                return;
-            }
-
-            _bbTrigCooldown[symbol] = DateTime.UtcNow;
-            OnStatusLog?.Invoke($"🟢 [{src}] {symbol} 진입 | {detail}");
-            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
-                signalSource: src, skipAiGateCheck: false);
-        }
 
 
         // [v5.23.80] 사용자 마스터 전략 — H1M1: 1시간봉 추세(거인) + 1분봉 눌림목끝(스나이퍼) + 거래량 스퍼트
@@ -4682,94 +4620,12 @@ namespace TradingBot
         //   (KNN 승률조건은 모델확신도 함정이라 거래량 실측 필터로 대체.) 알트 전용·LONG only.
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _h1m1Cooldown
             = new(StringComparer.OrdinalIgnoreCase);
-        private async Task AnalyzeH1M1EntryAsync(string symbol, decimal currentPrice, CancellationToken token)
-        {
-            if (_h1m1Cooldown.TryGetValue(symbol, out var last) && DateTime.UtcNow - last < TimeSpan.FromMinutes(5)) return;
-            lock (_posLock)
-            {
-                if (_activePositions.TryGetValue(symbol, out var ex) && ex != null && Math.Abs(ex.Quantity) > 0) return;
-            }
-
-            // ── 1시간봉 가드 (거인) ──
-            var k1hRaw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 60, token);
-            if (k1hRaw == null) return;
-            var k1h = k1hRaw as List<IBinanceKline> ?? new List<IBinanceKline>(k1hRaw);
-            if (k1h.Count < 25) return;
-            int hi = k1h.Count - 2;
-            double a1 = 2.0 / 21.0;
-            double ema20h = (double)k1h[hi - 20].ClosePrice;
-            for (int q = hi - 19; q <= hi; q++) ema20h = (double)k1h[q].ClosePrice * a1 + ema20h * (1 - a1);
-            float rsi1h = CalculateRsiAtIndex(k1h, hi, 14);
-            if (!((double)k1h[hi].ClosePrice > ema20h && rsi1h >= 50f)) return;   // 1h 상승추세 아니면 스킵
-
-            // ── 1분봉 트리거 (스나이퍼) ──
-            var k1mRaw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneMinute, 60, token);
-            if (k1mRaw == null) return;
-            var k1m = k1mRaw as List<IBinanceKline> ?? new List<IBinanceKline>(k1mRaw);
-            if (k1m.Count < 30) return;
-            int i = k1m.Count - 2;
-            double ema20m = (double)k1m[i - 20].ClosePrice;
-            for (int q = i - 19; q <= i; q++) ema20m = (double)k1m[q].ClosePrice * a1 + ema20m * (1 - a1);
-            float rsi1m = CalculateRsiAtIndex(k1m, i, 14);
-            double c = (double)k1m[i].ClosePrice, o = (double)k1m[i].OpenPrice;
-            _ = ema20m; // (참고용 — 검증된 트리거는 RSI<35 반등 사용)
-
-            // [v5.23.82] 검증된 1m 트리거 — RSI<35 과매도 후 반등 (--master 16일: +30m 57.8% vs RSI43~55 53.4%).
-            //   최근 10봉 내 RSI<35(일시 과매도) + 현재 양봉 + 직전 고가 회복 + RSI 상승. (거래량 스퍼트는 개선 없어 제거)
-            bool pulled = false;
-            for (int q = Math.Max(1, i - 10); q <= i; q++) { if (CalculateRsiAtIndex(k1m, q, 14) < 35f) { pulled = true; break; } }
-            float rsiPrev = CalculateRsiAtIndex(k1m, i - 1, 14);
-            bool ending = c > o && c > (double)k1m[i - 1].HighPrice && rsi1m > rsiPrev;
-            if (!(pulled && ending)) return;
-            double avgVol = 0; for (int q = i - 20; q < i; q++) avgVol += (double)k1m[q].Volume; avgVol /= 20.0;
-            double volRatio = avgVol > 0 ? (double)k1m[i].Volume / avgVol : 0;  // 로그용
-
-            if (!IsEntryAllowed(symbol, "H1M1", out var reason))
-            {
-                if (DateTime.UtcNow.Second % 30 == 0)
-                    OnStatusLog?.Invoke($"⛔ [H1M1] {symbol} 게이트 차단 | {reason}");
-                return;
-            }
-            _h1m1Cooldown[symbol] = DateTime.UtcNow;
-            OnStatusLog?.Invoke($"🟢 [H1M1] {symbol} 진입 | 1h(추세 RSI{rsi1h:F0}) + 1m(과매도반등 RSI{rsi1m:F0}) Vol×{volRatio:F1}");
-            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "H1M1", skipAiGateCheck: false);
-        }
 
 
 
 
-        // EMA(20,close) at idx > EMA(20,close) at idx-5
-        private static bool BbEma20Rising(List<IBinanceKline> kl, int idx)
-        {
-            if (idx < 25) return false;
-            return BbEma20At(kl, idx) > BbEma20At(kl, idx - 5);
-        }
 
-        private static double BbEma20At(List<IBinanceKline> kl, int idx)
-        {
-            int start = Math.Max(0, idx - 19);
-            double ema = (double)kl[start].ClosePrice;
-            double mult = 2.0 / (20 + 1);
-            for (int j = start + 1; j <= idx; j++)
-                ema = (double)kl[j].ClosePrice * mult + ema * (1 - mult);
-            return ema;
-        }
 
-        // M15 근사: 직전 bars*3 개 5m 봉의 (close-lo)/(hi-lo)*100 위치
-        private static double BbRangePos(List<IBinanceKline> kl, int i, int bars)
-        {
-            int win = bars * 3;
-            if (i < win) return 50.0;
-            double hi = double.MinValue, lo = double.MaxValue;
-            for (int j = i - win + 1; j <= i; j++)
-            {
-                double h = (double)kl[j].HighPrice, l = (double)kl[j].LowPrice;
-                if (h > hi) hi = h;
-                if (l < lo) lo = l;
-            }
-            double cur = (double)kl[i].ClosePrice;
-            return hi > lo ? (cur - lo) / (hi - lo) * 100.0 : 50.0;
-        }
 
         // [v5.23.0] jdehorty Lorentzian Classification 풀세트 (15m TF)
         //   라이브 ≡ 백테스트 — Services/LorentzianV2/LorentzianGuard.EvaluateEntry 공유
@@ -5566,200 +5422,6 @@ namespace TradingBot
 
 
 
-        /// <summary>
-        /// 급등주 매수 집행 (수정본: marginUsdt 인자 추가)
-        /// </summary>
-        public async Task<bool> ExecutePumpTrade(
-            string symbol,
-            decimal marginUsdt,
-            float aiScore,
-            decimal fib0618Level,
-            decimal stopLossPrice,
-            decimal fib1000Target,
-            decimal fib1618Target,
-            decimal fib2618Target,
-            CancellationToken token)
-        {
-            void PumpTradeLog(string stage, string status, string detail)
-            {
-                OnStatusLog?.Invoke($"🧭 [ENTRY][{stage}][{status}] src=PUMP sym={symbol} side=LONG | {detail}");
-            }
-
-            // [v5.19.8 ROOT FIX] ExecutePumpTrade 가 IsEntryAllowed 게이트 우회하던 버그 차단
-            //   증상: BTCUSDT/SOLUSDT/CTSI/CELR/API3 진입이 메이저 비활성화 + 고점 가드 모두 통과
-            //   원인: 이 메서드가 _exchangeService.PlaceMarketOrderAsync 직접 호출 (line ~5934)
-            //         → PlaceEntryOrderAsync 의 글로벌 가드 미적용
-            //   수정: 진입 시작에서 IsEntryAllowed 강제 호출
-            if (!IsEntryAllowed(symbol, "PUMP_TRADE", out string pumpBlockReason))
-            {
-                PumpTradeLog("GATE", "BLOCK", pumpBlockReason);
-                return false;
-            }
-
-            try
-            {
-                // 1. 레버리지 설정 (IExchangeService 사용) — 심볼 최대 레버리지 자동 조정
-                int leverage = PUMP_MANUAL_LEVERAGE;
-                int actualLeverage = await _exchangeService.SetLeverageAutoAsync(symbol, leverage, token);
-                if (actualLeverage <= 0)
-                {
-                    PumpTradeLog("ORDER", "BLOCK", $"leverageSet=false symbol={symbol} leverage={leverage}x");
-                    return false;
-                }
-                leverage = actualLeverage;
-
-                // 2. 현재가 조회 (IExchangeService 사용)
-                decimal currentPrice = await _exchangeService.GetPriceAsync(symbol, token);
-                if (currentPrice == 0)
-                {
-                    PumpTradeLog("ORDER", "BLOCK", "currentPrice=0");
-                    return false;
-                }
-
-                decimal limitPrice = currentPrice * 0.998m;
-
-                // 3. 수량(Quantity) 계산 (지정가 기준)
-                decimal quantity = (marginUsdt * leverage) / limitPrice;
-
-                // 4. 거래소 규격 보정 (IExchangeService 사용)
-                var exchangeInfo = await _exchangeService.GetExchangeInfoAsync(token);
-                var symbolData = exchangeInfo?.Symbols.FirstOrDefault(s => s.Name == symbol);
-                if (symbolData != null)
-                {
-                    decimal stepSize = symbolData.LotSizeFilter?.StepSize ?? 0.001m;
-                    quantity = Math.Floor(quantity / stepSize) * stepSize;
-
-                    decimal tickSize = symbolData.PriceFilter?.TickSize ?? 0.0000001m;
-                    limitPrice = Math.Floor(limitPrice / tickSize) * tickSize;
-                }
-
-                if (quantity <= 0)
-                {
-                    PumpTradeLog("ORDER", "BLOCK", "quantity=0");
-                    return false;
-                }
-
-                // [동시성 보호] 주문 직전 슬롯 재체크 (다른 신호 동시 진입 방지)
-                lock (_posLock)
-                {
-                    bool isMajorSymbol = MajorSymbols.Contains(symbol);
-                    // [v5.2.2] IsOwnPosition만 카운트
-                    int currentTotal = _activePositions.Count(p => p.Value.IsOwnPosition);
-                    int currentMajorCount = _activePositions.Count(p => p.Value.IsOwnPosition && MajorSymbols.Contains(p.Key));
-                    int currentPumpCount = currentTotal - currentMajorCount;
-
-                    if (isMajorSymbol && currentMajorCount >= MAX_MAJOR_SLOTS)
-                    {
-                        PumpTradeLog("ORDER", "BLOCK_RECHECK", $"메이저 포화 {currentMajorCount}/{MAX_MAJOR_SLOTS}");
-                        return false;
-                    }
-
-                    if (!isMajorSymbol && currentPumpCount >= MAX_PUMP_SLOTS)
-                    {
-                        PumpTradeLog("ORDER", "BLOCK_RECHECK", $"PUMP 포화 {currentPumpCount}/{MAX_PUMP_SLOTS}");
-                        return false;
-                    }
-                    
-                    if (currentTotal >= MAX_TOTAL_SLOTS)
-                    {
-                        PumpTradeLog("ORDER", "BLOCK_RECHECK", $"총 포화 {currentTotal}/{MAX_TOTAL_SLOTS}");
-                        return false;
-                    }
-                }
-
-                PumpTradeLog("ORDER", "SUBMIT", $"type=MARKET qty={quantity} margin={marginUsdt:F2} leverage={leverage}");
-
-                // 5. 시장가 매수 주문 실행 (즉시 체결)
-                var (success, filledQty, avgPrice) = await _exchangeService.PlaceMarketOrderAsync(
-                    symbol,
-                    "BUY",
-                    quantity,
-                    token);
-
-                if (success && filledQty > 0)
-                {
-
-                        lock (_posLock)
-                        {
-                            _activePositions[symbol] = new PositionInfo
-                            {
-                                Symbol = symbol,
-                                EntryPrice = avgPrice > 0 ? avgPrice : limitPrice,
-                                IsLong = true,
-                                Side = OrderSide.Buy,
-                                IsPumpStrategy = true,
-                                AiScore = aiScore,
-                                Leverage = leverage,
-                                Quantity = filledQty,
-                                InitialQuantity = filledQty,
-                                EntryTime = DateTime.Now,
-                                StopLoss = stopLossPrice,
-                                TakeProfit = fib2618Target,
-                                HighestPrice = avgPrice > 0 ? avgPrice : limitPrice,
-                                LowestPrice = avgPrice > 0 ? avgPrice : limitPrice,
-                                Wave1LowPrice = stopLossPrice,
-                                Wave1HighPrice = fib1000Target,
-                                Fib0618Level = fib0618Level,
-                                Fib0786Level = stopLossPrice,
-                                Fib1618Target = fib1618Target,
-                                PartialProfitStage = 0,
-                                BreakevenPrice = 0,
-                                PyramidCount = 0,
-                                IsOwnPosition = true // [v5.10.39] 진입 즉시 슬롯 반영
-                            };
-                        }
-
-                        decimal actualEntryPrice = avgPrice > 0 ? avgPrice : currentPrice;
-                        DateTime pumpEntryTime = DateTime.Now;
-
-                        OnTradeExecuted?.Invoke(symbol, "BUY", actualEntryPrice, filledQty);
-
-                        PumpTradeLog("ORDER", "FILLED", $"qty={filledQty} entry={actualEntryPrice:F4}");
-
-                        OnAlert?.Invoke($"🚀 {symbol} PUMP 진입 성공 (20x) | 수량: {filledQty} | SL:{stopLossPrice:F8} TP1:{fib1000Target:F8} TP2:{fib1618Target:F8}");
-
-                        try
-                        {
-                            var pumpEntryDbLog = new TradeLog(
-                                symbol,
-                                "BUY",
-                                "PUMP",
-                                actualEntryPrice,
-                                aiScore,
-                                pumpEntryTime,
-                                0,
-                                0)
-                            {
-                                EntryPrice = actualEntryPrice,
-                                Quantity = filledQty,
-                                EntryTime = pumpEntryTime,
-                                IsSimulation = AppConfig.Current?.Trading?.IsSimulationMode ?? false
-                            };
-
-                            bool dbSaved = await _dbManager.UpsertTradeEntryAsync(pumpEntryDbLog);
-                            OnStatusLog?.Invoke(dbSaved
-                                ? $"📝 {symbol} PUMP 진입 TradeHistory 저장 완료"
-                                : $"⚠️ {symbol} PUMP 진입 TradeHistory 저장 실패");
-                        }
-                        catch (Exception dbEx)
-                        {
-                            OnStatusLog?.Invoke($"⚠️ {symbol} PUMP 진입 로그 DB 저장 예외: {dbEx.Message}");
-                        }
-
-                        return true;
-                }
-                else
-                {
-                    PumpTradeLog("ORDER", "FAIL", $"success={success} filledQty={filledQty}");
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                PumpTradeLog("ORDER", "ERROR", $"exchange={_exchangeService.ExchangeName} detail={ex.Message}");
-                return false;
-            }
-        }
         private static bool TryNormalizeTradingSymbol(string? rawSymbol, out string normalizedSymbol)
         {
             normalizedSymbol = string.Empty;
@@ -7189,23 +6851,8 @@ namespace TradingBot
         // [v5.22.13] OnSymbolTrained / CanEnterPosition 제거 — AI 시스템 폐기 (2026-04-29)
         public bool CanEnterPosition => true;
 
-        /// <summary>[v3.8.1] 전체 ML 모델 1시간 주기 자동 재학습</summary>
-        private void StartModelRetrainTimer()
-        {
-            // [v5.22.2] 1시간 주기 ML 자동 재학습 비활성화 — 사용자 결정 (2026-04-28)
-            //   AI 시스템 전체 폐기, 가드만으로 진입
-            OnStatusLog?.Invoke("⏸️ [ML] 자동 재학습 타이머 비활성 (v5.22.2)");
-        }
 
 
-        private async Task TrainAllModelsAsync(CancellationToken token)
-        {
-            // [AI 제거] 모든 ML.NET 모델 제거 → 학습 메서드 본체 통째 제거
-            await Task.CompletedTask;
-            OnStatusLog?.Invoke("ℹ️ [ML] AI 학습 비활성화됨 (AI 시스템 폐기)");
-            return;
-
-        }
 
         // [v5.22.13] TriggerInitialDownloadAndTrainAsync 통째 제거 — AI 시스템 폐기 (2026-04-29)
 
@@ -13323,88 +12970,9 @@ namespace TradingBot
             if (_apiLogBuffer.Count > 100) _apiLogBuffer.TryDequeue(out _);
         }
 
-        public string GetLogsJson()
-        {
-            var logs = _apiLogBuffer.ToList();
-            logs.Reverse(); // 최신순 정렬
-            var options = new System.Text.Json.JsonSerializerOptions
-            {
-                NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
-            };
-            return System.Text.Json.JsonSerializer.Serialize(logs, options);
-        }
 
-        // [Agent 5] 차트 데이터 JSON 반환
-        public async Task<string> GetChartDataJsonAsync(string symbol, string intervalStr)
-        {
-            try
-            {
-                // 문자열을 표준 enum으로 변환 후, Binance enum으로 재변환
-                var standardInterval = BinanceExchangeAdapter.ConvertStringToKlineInterval(intervalStr);
-                var interval = BinanceExchangeAdapter.ConvertToBinanceKlineInterval(standardInterval);
 
-                // 최근 50개 캔들 조회
-                var klines = await _client.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, interval, limit: 50);
-                if (klines.Success)
-                {
-                    var data = klines.Data.Select(k => new
-                    {
-                        Time = k.OpenTime,
-                        Open = k.OpenPrice,
-                        High = k.HighPrice,
-                        Low = k.LowPrice,
-                        Close = k.ClosePrice
-                    });
-                    var options = new System.Text.Json.JsonSerializerOptions
-                    {
-                        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
-                    };
-                    return System.Text.Json.JsonSerializer.Serialize(data, options);
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"JSON 직렬화 오류: {ex.Message}");
-            }
-            return "[]";
-        }
 
-        // [추가] 포지션 목록 JSON 반환
-        public string GetPositionsJson()
-        {
-            lock (_posLock)
-            {
-                var list = _activePositions.Select(kvp => new
-                {
-                    Symbol = kvp.Key,
-                    EntryPrice = kvp.Value.EntryPrice,
-                    Quantity = kvp.Value.Quantity,
-                    Side = kvp.Value.IsLong ? "Long" : "Short",
-                    PnL = 0m // PnL은 실시간 계산이 필요하므로 여기선 0 또는 추정치 (클라이언트에서 계산 권장)
-                }).ToList();
-                var options = new System.Text.Json.JsonSerializerOptions
-                {
-                    NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
-                };
-                return System.Text.Json.JsonSerializer.Serialize(list, options);
-            }
-        }
-
-        // [추가] API를 통한 포지션 청산
-        public async Task<string> ClosePositionApiAsync(string symbol)
-        {
-            if (string.IsNullOrEmpty(symbol)) return "{\"status\": \"error\", \"message\": \"Symbol required\"}";
-
-            try
-            {
-                await ClosePositionAsync(symbol);
-                return "{\"status\": \"success\", \"message\": \"Close command sent\"}";
-            }
-            catch (Exception ex)
-            {
-                return $"{{\"status\": \"error\", \"message\": \"{ex.Message}\"}}";
-            }
-        }
 
         
 
@@ -13468,36 +13036,6 @@ namespace TradingBot
                    $"\n_Updated: {DateTime.Now:HH:mm:ss}_";
         }
 
-        public string GetEngineStatusJson()
-        {
-            int activeCount = 0;
-            lock (_posLock) activeCount = _activePositions.Count;
-
-            int aiLabelTotal = 0;
-            int aiLabelLabeled = 0;
-            int aiLabelMarkToMarket = 0;
-            int aiLabelClose = 0;
-            int activeDecisionCount = _activeAiDecisionIds.Count;
-
-            // [AI 제거] AI 라벨 통계 제거 — 모두 0 유지
-
-            double aiLabelRate = aiLabelTotal > 0 ? (double)aiLabelLabeled / aiLabelTotal * 100.0 : 0.0;
-
-            // 간단한 JSON 생성 (Newtonsoft.Json 없이 문자열 보간 사용)
-            return $@"{{
-                ""status"": ""{(IsBotRunning ? "Running" : "Stopped")}"",
-                ""uptime"": ""{(DateTime.Now - _engineStartTime).ToString(@"dd\.hh\:mm\:ss")}"",
-                ""balance"": {InitialBalance},
-                ""pnl"": {_riskManager.DailyRealizedPnl},
-                ""active_positions"": {activeCount},
-                ""ai_label_total"": {aiLabelTotal},
-                ""ai_label_labeled"": {aiLabelLabeled},
-                ""ai_label_rate"": {aiLabelRate:F2},
-                ""ai_label_mark_to_market"": {aiLabelMarkToMarket},
-                ""ai_label_close"": {aiLabelClose},
-                ""ai_active_decisions"": {activeDecisionCount}
-            }}";
-        }
 
 
         public void Dispose()
