@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.86] - 2026-06-10
+
+### 🔴 LCC(Lorentzian) 단일 진입 — 그 외 모든 진입로직 폐기 (사용자 지시)
+
+- **`ExecuteAutoOrder` 최상단 단일 차단점 추가** ([TradingEngine.cs](TradingEngine.cs)): 자동진입 funnel은 `signalSource=="LORENTZIAN"` 만 통과. 그 외 모든 source(ENGINE_151/MEANREV/MEME_KNN/SQUEEZE_BREAKOUT/ETA_TRIGGER/MAJOR/PUMP/MACD/Gate2/PriorityQueue/Scout 등) 즉시 차단(`LCC_ONLY` 로그). 잔존 디스패치가 있어도 여기서 전부 막힘. 수동진입(ManualEntryAsync)은 별도 경로라 영향 없음.
+- **스캔 루프 LCC 단일화**: 밈 KNN(`AnalyzeMemeKnnEntryAsync`) 디스패치 제거 — 밈 포함 전 심볼 `AnalyzeLorentzianEntryAsync` 단일 경로.
+- 진입 경로 = **LCC(Lorentzian) 단독**: 1h Squeeze 대세필터 + 15m KNN + 1m 눌림→반등(하단 지지). 모멘텀/고점도장 게이트 우회로 눌림 진입.
+- 후속: 안 쓰는 진입전략 파일/필드 물리 삭제 예정(빌드 검증 분리 진행).
+
 ## [5.23.85] - 2026-06-10
 
 ### 🔴 ENGINE_151(MACD 골든크로스 모멘텀) 진입 폐기 — 실거래 손실 주범 (DB 확인)

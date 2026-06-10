@@ -4749,15 +4749,11 @@ namespace TradingBot
                     }
                 }
 
-                // [v5.23.24] 밈코인 vs 일반 dispatch
-                //   밈코인 = 5m KNN + 1m vol spike 공격적 진입 (15m 가드 skip)
-                //   일반 = 기존 15m KNN + 1m 정밀 트리거
+                // [v5.23.86] LCC(Lorentzian) 단일 진입 — 밈 KNN 포함 모든 비-LCC 진입 폐기(사용자 지시).
+                //   밈코인도 일반 LCC 경로로 통일. AnalyzeMemeKnnEntryAsync 미호출.
                 try
                 {
-                    if (MemeSymbols.Contains(symbol))
-                        await AnalyzeMemeKnnEntryAsync(symbol, currentPrice, token);
-                    else
-                        await AnalyzeLorentzianEntryAsync(symbol, currentPrice, token);
+                    await AnalyzeLorentzianEntryAsync(symbol, currentPrice, token);
                 }
                 catch (Exception ex)
                 {
@@ -9450,6 +9446,15 @@ namespace TradingBot
             if (string.Equals(decision, "SHORT", StringComparison.OrdinalIgnoreCase))
             {
                 OnStatusLog?.Invoke($"⛔ [SHORT_BLOCK] {symbol} {signalSource} SHORT 차단 — 봇 전체 LONG 전용 (사용자 정책)");
+                return;
+            }
+
+            // [v5.23.86] LCC(Lorentzian) 단일 진입 정책 (사용자 지시: LCC 외 모든 진입로직 폐기).
+            //   자동진입 funnel은 source=LORENTZIAN 만 통과 — 단일 차단점. 어떤 잔존 디스패치도 여기서 전부 차단.
+            //   (수동진입 ManualEntryAsync 는 이 funnel 안 거침 → 영향 없음.)
+            if (!string.Equals(signalSource, "LORENTZIAN", StringComparison.OrdinalIgnoreCase))
+            {
+                OnStatusLog?.Invoke($"⛔ [LCC_ONLY] {symbol} {signalSource} 차단 — LCC(Lorentzian) 단일 진입 정책 (그 외 진입로직 전부 폐기)");
                 return;
             }
 
