@@ -3095,8 +3095,9 @@ namespace TradingBot
                         OnStatusLog?.Invoke($"⚠️ [ENGINE_151] {trigger.Symbol} 체결 예외: {ex.Message}");
                     }
                 };
-                // 5초 주기 15m/5m/1m 폴링 루프 시작
-                _ = Task.Run(() => Run151EngineLoopAsync(token), token);
+                // [v5.23.85] ENGINE_151(15-5-1, MACD 골든크로스 모멘텀) 진입 루프 폐기 (사용자 지시) —
+                //   후행지표 모멘텀 추격 = 꼭대기 진입 → 실거래 최근 24h 8패/-$760(NEAR/MORPHO/XMR). LCC(Lorentzian) 단일 진입으로.
+                //   _ = Task.Run(() => Run151EngineLoopAsync(token), token);   // 영구 미시작
 
                 // [v5.23.44/47] PHANTOM 자동 cleanup — 1분 주기 + 시작 즉시 1회
                 //   QUSDT/HUSDT 가 외부 청산됐는데 봇 메모리에 stuck 되는 케이스 처리

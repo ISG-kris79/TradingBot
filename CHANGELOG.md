@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.85] - 2026-06-10
+
+### 🔴 ENGINE_151(MACD 골든크로스 모멘텀) 진입 폐기 — 실거래 손실 주범 (DB 확인)
+
+- **`Run151EngineLoopAsync` 진입 루프 영구 중단** ([TradingEngine.cs](TradingEngine.cs)): ENGINE_151(15-5-1, MACD 골든크로스 1차 트리거)이 **최근 24h 실거래 8패/-$760의 주범** (NEAR -$186/-$116, XMR -$384 PUMP손절backstop, MORPHO 등). DB FooterLogs상 현재 진입은 전부 `src=ENGINE_151 mode=TREND` — 후행지표 모멘텀 추격 = 꼭대기 진입(사용자가 LCC 쓰라 한 것과 정반대). 백테로도 모멘텀 LONG 베이스라인 이하 확인.
+- ENGINE_151이 슬롯을 점유해 LCC(Lorentzian)가 SLOT_FULL로 진입조차 못 하던 것도 해소 → 슬롯 비면 LCC가 눌림에서 진입.
+- 잔존 진입 경로: **LCC(Lorentzian, 1h Squeeze 대세필터 + 눌림 게이트우회)** 주력 + MEANREV(역추세 눌림 카나리) + MAJOR. BB_SQUEEZE/BB_WALK·H1M1·ENGINE_151 모두 폐기.
+- ※ MEANREV 최근 3건 적자(-$179)는 추적 관찰 — 눌림매수 계열이라 유지, N 작음.
+
 ## [5.23.84] - 2026-06-09
 
 ### 🔴 BB_SQUEEZE/BB_WALK 진입 폐기 + LCC(Lorentzian) 눌림 진입 게이트 우회 — XMR 꼭대기 진입 버그 fix
