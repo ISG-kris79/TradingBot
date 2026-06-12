@@ -5,6 +5,18 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.90] - 2026-06-12
+
+### 🔴 LCC 2일간 진입 0건 fix — LorentzianGuard 과잉 필터 비활성화
+
+- **원인 (실거래 DB 확인)**: LCC(=Lorentzian KNN 분류기)가 LONG 신호(XRP `pred=8 WR=1.00`)를 냈는데 `LorentzianGuard.EvaluateEntry`의 필터 스택이 전부 차단. 48h 펀넬 분석: KNN_NOT_LONG/필터차단만 있고 pending/confirm/FILLED는 0건 — 가드에서 막혀 1m 확인 단계까지 가지도 못함.
+- **비활성화한 과잉 필터** ([Services/LorentzianV2/LorentzianGuard.cs](Services/LorentzianV2/LorentzianGuard.cs)):
+  - VOLATILITY(ATR1>ATR10) — 눌림=저변동성 진입을 막음(XRP 신호 차단 주범)
+  - ADX>20 / EMA200 / SMA200 — jdehorty 원본 기본 OFF인데 ON이었음
+  - BB_MID_BELOW(close>BB중심선) / CONSOL(박스 상단돌파 요구) / BB_WALK_BROKEN — "중심선 위/상단 돌파" 요구 = **하단 지지 눌림 매수와 정면 충돌**, 오히려 꼭대기 추격 강요
+- **유지**: KNN LONG 신호(pred>0) + 승률 + Regime(강하락 차단) + NW_Kernel(추세방향). 고점/눌림/추세 보호는 IsEntryAllowed 게이트(BELOW_1H_EMA20·M15_RANGE_TOP) + 1m 확인이 담당.
+- ※ KNN = LCC. TradingView "Machine Learning: Lorentzian Classification"이 로렌츠거리 KNN 분류기. KNN 엔진/가드가 LCC 본체.
+
 ## [5.23.89] - 2026-06-11
 
 ### 🧹 TradingEngine.cs 데드 클러스터 추가 제거 (reachability + 빌드검증)

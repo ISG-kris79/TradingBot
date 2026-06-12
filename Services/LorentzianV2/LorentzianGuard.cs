@@ -56,32 +56,40 @@ namespace TradingBot.Services.LorentzianV2
             if (pred.Prediction <= 0) { r.BlockReason = "KNN_NOT_LONG"; return r; }
             if (r.KnnWinRate < guardWinRate) { r.BlockReason = $"KNN_WR_LOW ({r.KnnWinRate:F2})"; return r; }
 
-            // 2) Volatility: ATR(1) > ATR(10)
+            // [v5.23.90] 과잉/중복 필터 비활성화 — 2일간 LCC 진입 0건 원인.
+            //   jdehorty 원본은 ADX/EMA/SMA 필터 기본 OFF인데 이 봇은 ON+엄격이라 KNN LONG 신호(XRP pred=8)도 VOLATILITY에서 막힘.
+            //   고점/추세 보호는 이미 IsEntryAllowed 게이트(BELOW_1H_EMA20·M15_RANGE_TOP)가 담당 → 가드는 신호+가벼운 추세확인만.
+            //   끔: VOLATILITY(눌림=저변동성 진입을 막음), ADX, EMA200, SMA200. 유지: Regime, NW_Kernel, BB_MID.
+            // 2) Volatility: ATR(1) > ATR(10)  — [v5.23.90 비활성화: 눌림 진입 차단 + jdehorty 의도와 무관]
             r.Atr1  = CalcTR(kl, idx);
             r.Atr10 = CalcATR(kl, idx, 10);
-            if (r.Atr1 <= r.Atr10) { r.BlockReason = "VOLATILITY"; return r; }
+            // if (r.Atr1 <= r.Atr10) { r.BlockReason = "VOLATILITY"; return r; }
 
-            // 3) Regime slope > -0.1
+            // 3) Regime slope > -0.1 (유지 — 강한 하락추세 차단)
             r.RegimeSlope = CalcRegimeSlope(kl, idx);
             if (r.RegimeSlope <= -0.1) { r.BlockReason = $"REGIME ({r.RegimeSlope:F3})"; return r; }
 
-            // 4) ADX(14) > 20
+            // 4) ADX(14) > 20  — [v5.23.90 비활성화: jdehorty 기본 OFF]
             r.Adx = CalcADX(kl, idx, 14);
-            if (r.Adx <= 20.0) { r.BlockReason = $"ADX ({r.Adx:F1})"; return r; }
+            // if (r.Adx <= 20.0) { r.BlockReason = $"ADX ({r.Adx:F1})"; return r; }
 
-            // 5) close > EMA(200)
+            // 5) close > EMA(200)  — [v5.23.90 비활성화: jdehorty 기본 OFF, 1h EMA20 게이트가 추세 담당]
             r.Ema200 = CalcEMA(kl, idx, 200);
-            if ((double)kl[idx].ClosePrice <= r.Ema200) { r.BlockReason = "EMA200"; return r; }
+            // if ((double)kl[idx].ClosePrice <= r.Ema200) { r.BlockReason = "EMA200"; return r; }
 
-            // 6) close > SMA(200)
+            // 6) close > SMA(200)  — [v5.23.90 비활성화: jdehorty 기본 OFF]
             r.Sma200 = CalcSMA(kl, idx, 200);
-            if ((double)kl[idx].ClosePrice <= r.Sma200) { r.BlockReason = "SMA200"; return r; }
+            // if ((double)kl[idx].ClosePrice <= r.Sma200) { r.BlockReason = "SMA200"; return r; }
 
-            // 7) NW Kernel direction = up (kernel[idx] > kernel[idx-2])
+            // 7) NW Kernel direction = up (kernel[idx] > kernel[idx-2]) (유지 — 추세 방향 확인)
             r.NwKernel = CalcNWKernel(kl, idx);
             r.NwKernelPrev2 = idx >= 2 ? CalcNWKernel(kl, idx - 2) : r.NwKernel;
             if (r.NwKernel <= r.NwKernelPrev2) { r.BlockReason = "NW_KERNEL"; return r; }
 
+            // [v5.23.90] 아래 3개 커스텀 가드(BB_MID_BELOW / BB_WALK_BROKEN / CONSOL) 비활성화 —
+            //   전부 "close가 중심선 위 / 박스 상단 돌파"를 요구 = 눌림(하단 지지) 매수와 정면 충돌, 오히려 꼭대기 추격 강요.
+            //   사용자 지시(하단 지지 눌림 매수 + 고점 추격 금지)와 반대라 제거. 고점/눌림/추세는 IsEntryAllowed 게이트 + 1m 확인이 담당.
+#if false
             // 9) [v5.23.5] BB(20,2) 중심선 유지 확인 — 진입 시 close > BB mid 필수
             CalcBB(kl, idx, 20, 2.0, out double bbMid9, out _, out _);
             if (bbMid9 > 0 && (double)kl[idx].ClosePrice <= bbMid9)
@@ -156,6 +164,7 @@ namespace TradingBot.Services.LorentzianV2
                     // 횡보 아닌 경우 (range >= 2.5%) → 일반 흐름, 통과
                 }
             }
+#endif
 
             r.Passed = true;
             return r;
