@@ -54,16 +54,16 @@ namespace TradingBot.Services.LorentzianV2
             r.KnnWinRate = pred.K > 0 ? (float)pred.PositiveVotes / pred.K : 0f;
             if (!pred.IsReady || pred.K == 0) { r.BlockReason = "KNN_NOT_READY"; return r; }
             if (pred.Prediction <= 0) { r.BlockReason = "KNN_NOT_LONG"; return r; }
-            if (r.KnnWinRate < guardWinRate) { r.BlockReason = $"KNN_WR_LOW ({r.KnnWinRate:F2})"; return r; }
+            // [v5.23.91] 순수 jdehorty LCC — KNN 승률 게이트 제거 (jdehorty는 prediction>0 자체가 신호, 별도 승률필터 없음)
+            // if (r.KnnWinRate < guardWinRate) { r.BlockReason = $"KNN_WR_LOW ({r.KnnWinRate:F2})"; return r; }
 
-            // [v5.23.90] 과잉/중복 필터 비활성화 — 2일간 LCC 진입 0건 원인.
-            //   jdehorty 원본은 ADX/EMA/SMA 필터 기본 OFF인데 이 봇은 ON+엄격이라 KNN LONG 신호(XRP pred=8)도 VOLATILITY에서 막힘.
-            //   고점/추세 보호는 이미 IsEntryAllowed 게이트(BELOW_1H_EMA20·M15_RANGE_TOP)가 담당 → 가드는 신호+가벼운 추세확인만.
-            //   끔: VOLATILITY(눌림=저변동성 진입을 막음), ADX, EMA200, SMA200. 유지: Regime, NW_Kernel, BB_MID.
-            // 2) Volatility: ATR(1) > ATR(10)  — [v5.23.90 비활성화: 눌림 진입 차단 + jdehorty 의도와 무관]
+            // [v5.23.91] 순수 TradingView LCC (jdehorty 기본 필터셋) — KNN + Volatility + Regime + Kernel 만.
+            //   봇 커스텀 필터(ADX/EMA200/SMA200/BB중심선/BB워크/박스돌파)는 LCC가 아니므로 전부 제거.
+            //   jdehorty 기본값: Volatility=ON, Regime=ON(-0.1), Kernel=ON, ADX=OFF, EMA=OFF, SMA=OFF.
+            // 2) Volatility: ATR(1) > ATR(10) — [jdehorty 기본 ON]
             r.Atr1  = CalcTR(kl, idx);
             r.Atr10 = CalcATR(kl, idx, 10);
-            // if (r.Atr1 <= r.Atr10) { r.BlockReason = "VOLATILITY"; return r; }
+            if (r.Atr1 <= r.Atr10) { r.BlockReason = "VOLATILITY"; return r; }
 
             // 3) Regime slope > -0.1 (유지 — 강한 하락추세 차단)
             r.RegimeSlope = CalcRegimeSlope(kl, idx);

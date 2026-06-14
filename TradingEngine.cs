@@ -892,6 +892,12 @@ namespace TradingBot
                 return false;
             }
 
+            // [v5.23.91] 순수 TradingView LCC (사용자 지정 "LCC만") — LORENTZIAN 은 봇이 얹은 트레이딩/추세 필터 전부 우회.
+            //   필수·안전체크(설정/슬롯/수동청산쿨다운/메이저토글/시총/스코어카드)만 적용하고,
+            //   아래 트레이딩 필터(1h_EMA20 / M15_RANGE_TOP / 5mRSI / 15mBB / 꼬리 / BTC추세 / 낙하나이프 등)는 모두 건너뜀.
+            //   진입 판단은 LorentzianGuard(=jdehorty LCC: KNN+Volatility+Regime+Kernel) 단독.
+            if (srcU.Contains("LORENTZIAN")) { blockReason = ""; return true; }
+
             // [v5.23.39] 1h EMA20 추세 필터 — 모든 진입 경로 최상위 가드 (사용자 원칙)
             //   "5분·15분봉은 속도, 방향은 1시간봉. KNN 승률 아무리 좋아도 1h EMA20 아래는 떨어지는 칼날"
             //   - 캐시 hit → 즉시 평가
@@ -4660,25 +4666,7 @@ namespace TradingBot
                     && existing != null && Math.Abs(existing.Quantity) > 0) return;
             }
 
-            // [v5.23.83] 1h Squeeze Momentum 대세필터 (사용자 신규 엔진: 1h 대세 + 15m Lorentzian 타점).
-            //   LazyBear Squeeze Momentum 마지막 마감 1h봉 기준 mom>0 & mom 상승 = 상승추세 ON 일 때만 진입 허용.
-            //   하락/모멘텀 약세 1h에서는 15m Lorentzian LONG 신호가 떠도 차단 (가짜 반등 진입 방지).
-            try
-            {
-                var k1hSq = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 60, token);
-                if (k1hSq == null) return;
-                var k1hSqList = k1hSq as List<IBinanceKline> ?? new List<IBinanceKline>(k1hSq);
-                if (k1hSqList.Count < 42) return;                                  // Squeeze(20)×2 최소봉
-                var closed1h = k1hSqList.GetRange(0, k1hSqList.Count - 1);          // 형성 중 봉 제외
-                var (sqMom, sqMomPrev, _sqOn, _sqOff) = IndicatorCalculator.CalculateSqueezeMomentum(closed1h, 20, 2.0, 1.5);
-                if (!(sqMom > 0 && sqMom > sqMomPrev))
-                {
-                    if (DateTime.UtcNow.Second % 30 == 0)
-                        OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 1h_SQZ_NOT_BULL 차단 | mom={sqMom:F4} prev={sqMomPrev:F4} (1h 상승모멘텀 아님 → 진입 보류)");
-                    return;
-                }
-            }
-            catch { return; }   // 1h 데이터 실패 시 안전 차단
+            // [v5.23.91] 순수 LCC — 1h Squeeze 대세필터 제거(봇 추가 게이트, LCC 아님). 진입판단은 LorentzianGuard(jdehorty) 단독.
 
             // [v5.23.1] Pine 정확 일치를 위해 1500봉 fetch (~16일치 15m), engine featureCount 7→5
             var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 1500, token);
@@ -4721,27 +4709,7 @@ namespace TradingBot
                 }
             }
 
-            // [v5.23.7] 4h 긴 꼬리 음봉 차단 가드 (사용자 지시)
-            //   "4시간봉 긴 음봉 = 하락 가능성 ↑, 양봉 될 때까지 진입 X"
-            //   조건: 마지막 마감 4h 봉이 음봉 + upper wick >= range × 50% (rejection)
-            try
-            {
-                var k4h = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FourHour, 5, token);
-                if (k4h != null && k4h.Count >= 2)
-                {
-                    var k4hList = k4h as List<IBinanceKline> ?? new List<IBinanceKline>(k4h);
-                    var last4h = k4hList[^2];   // 마지막 마감봉
-                    bool isBear4h = last4h.ClosePrice < last4h.OpenPrice;
-                    decimal range4h = last4h.HighPrice - last4h.LowPrice;
-                    decimal upperWick4h = last4h.HighPrice - (last4h.ClosePrice > last4h.OpenPrice ? last4h.ClosePrice : last4h.OpenPrice);
-                    if (isBear4h && range4h > 0 && upperWick4h >= range4h * 0.5m)
-                    {
-                        OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 4H_BEAR_WICK 차단 | upperWick={upperWick4h:F4} / range={range4h:F4} ({upperWick4h / range4h * 100m:F0}%) → 4h 양봉 마감까지 대기");
-                        return;
-                    }
-                }
-            }
-            catch { }
+            // [v5.23.91] 순수 LCC — 4H_BEAR_WICK 가드 제거(봇 추가, LCC 아님).
 
             // 마지막 마감봉 (k15List.Count-2) 기준 풀세트 가드 평가
             int evalIdx = k15List.Count - 2;
@@ -4755,115 +4723,11 @@ namespace TradingBot
                 return;
             }
 
-            // [v5.23.32] PULLBACK_QUALITY 가드 — 추격매수 vs 정상 재진입 구분
-            //   v5.23.31 결함: 일직선 상승(눌림 0) 케이스에서 c2(50% 회복) trivially pass +
-            //                   c4(vol) 기본 true → 3/4 통과 → 추격 진입 허용 (FLOCK/DYDX 0~4분 손절)
-            //   v5.23.32: c1(눌림 ≥1.5% 존재)을 **필수 게이트**로. 눌림 없으면 무조건 차단.
-            //             c1 통과 시 c2~c4 중 2/3 이상 만족해야 진입.
-            //
-            //   15m 30봉 기준:
-            //     1. (필수) 최근 20봉 직전 local high 대비 ≥1.5% 눌림 봉 존재
-            //     2. 현재가 ≥ (고점+눌림저점)/2  (50% 회복)
-            //     3. 15m EMA20 괴리율 ≤ 2.5%
-            //     4. 최근 3봉 평균 vol ≥ 눌림 구간 평균 vol × 0.8
-            //   사례: XPL 4790, ZEC 4823, FLOCK 1분 손절, DYDX 0분 손절 모두 c1 미충족
-            {
-                int n = k15List.Count;
-                int scanStart = Math.Max(0, n - 22);
-                int scanEnd = n - 2;
-                if (scanEnd - scanStart >= 5)
-                {
-                    int hiIdx = scanStart;
-                    decimal hiPrice = k15List[scanStart].HighPrice;
-                    for (int i = scanStart + 1; i <= scanEnd; i++)
-                    {
-                        if (k15List[i].HighPrice > hiPrice)
-                        {
-                            hiPrice = k15List[i].HighPrice;
-                            hiIdx = i;
-                        }
-                    }
-
-                    int loIdx = hiIdx;
-                    decimal loPrice = hiPrice;
-                    for (int i = hiIdx; i <= scanEnd; i++)
-                    {
-                        if (k15List[i].LowPrice < loPrice)
-                        {
-                            loPrice = k15List[i].LowPrice;
-                            loIdx = i;
-                        }
-                    }
-
-                    decimal pullbackPct = hiPrice > 0 ? (hiPrice - loPrice) / hiPrice * 100m : 0m;
-                    bool c1Pullback = pullbackPct >= 1.5m && loIdx > hiIdx;
-
-                    // [v5.23.57] c1 PULLBACK 필수 → 가산점으로 완화 (사용자 지시)
-                    //   v5.23.32 c1 필수가 일직선 상승 알트 모두 차단 → 5%+ 상승 알트 못 잡음
-                    //   "고점 도장 회피"는 universal IsEntryAllowedCore 의 단기봉 가드로 처리
-                    //   여기서는 c2/c3/c4 중 2/3 만 통과하면 진입 허용
-
-                    decimal midPoint = (hiPrice + loPrice) / 2m;
-                    bool c2Recovery = currentPrice >= midPoint;
-
-                    decimal ema20_15m = 0m;
-                    if (n >= 21)
-                    {
-                        ema20_15m = k15List[n - 21].ClosePrice;
-                        double mult = 2.0 / 21.0;
-                        for (int q = n - 20; q <= n - 1; q++)
-                            ema20_15m = (decimal)((double)k15List[q].ClosePrice * mult + (double)ema20_15m * (1 - mult));
-                    }
-                    decimal emaDevPct = ema20_15m > 0 ? Math.Abs(currentPrice - ema20_15m) / ema20_15m * 100m : 0m;
-                    bool c3EmaOk = ema20_15m > 0 && emaDevPct <= 2.5m;
-
-                    bool c4VolOk = false;
-                    if (scanEnd >= 2)
-                    {
-                        decimal recentVolSum = 0m; int recentCnt = 0;
-                        for (int i = scanEnd - 2; i <= scanEnd; i++)
-                        {
-                            if (i >= 0) { recentVolSum += k15List[i].Volume; recentCnt++; }
-                        }
-                        decimal pullVolSum = 0m; int pullCnt = 0;
-                        for (int i = hiIdx; i <= loIdx; i++)
-                        {
-                            pullVolSum += k15List[i].Volume; pullCnt++;
-                        }
-                        if (recentCnt > 0 && pullCnt > 0)
-                        {
-                            decimal recentAvg = recentVolSum / recentCnt;
-                            decimal pullAvg = pullVolSum / pullCnt;
-                            c4VolOk = pullAvg <= 0m || recentAvg >= pullAvg * 0.8m;
-                        }
-                    }
-
-                    int subPassCnt = (c2Recovery ? 1 : 0) + (c3EmaOk ? 1 : 0) + (c4VolOk ? 1 : 0);
-                    if (subPassCnt < 2)
-                    {
-                        string detail = $"p={pullbackPct:F2}% r={(c2Recovery ? 1 : 0)} e={(c3EmaOk ? 1 : 0)}({emaDevPct:F2}%) v={(c4VolOk ? 1 : 0)}";
-                        OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} CHASE 차단 | {detail} | hi={hiPrice:F6} lo={loPrice:F6} cur={currentPrice:F6} (눌림 후 회복 검증 실패)");
-                        _lorentzianCooldown[symbol] = DateTime.UtcNow;
-                        return;
-                    }
-                }
-            }
-
-            // [v5.23.4] 즉시 진입 대신 다음 1분봉 마감 확인 후 진입 (페이크아웃 방지)
-            if (_lorentzianPendingEntries.ContainsKey(symbol)) return;   // 이미 대기 중
-
-            DateTime nowUtc = DateTime.UtcNow;
-            DateTime nextMinClose = new DateTime(nowUtc.Year, nowUtc.Month, nowUtc.Day,
-                nowUtc.Hour, nowUtc.Minute, 0, DateTimeKind.Utc).AddMinutes(1);
-            string summary = $"WR={guard.KnnWinRate * 100:F0}% K={guard.KnnK} ADX={guard.Adx:F1} regime={guard.RegimeSlope:F2}";
-            _lorentzianPendingEntries[symbol] = new LorentzianPendingEntry
-            {
-                SignalTimeUtc = nowUtc,
-                SignalPrice = currentPrice,
-                DeadlineUtc = nextMinClose.AddSeconds(3),
-                GuardSummary = summary
-            };
-            OnStatusLog?.Invoke($"⏳ [LORENTZIAN] {symbol} 가드 통과 — 1분봉 마감 대기 (deadline {nextMinClose:HH:mm:ss}Z) | {summary}");
+            // [v5.23.91] 순수 TradingView LCC — PULLBACK_QUALITY 가드 + 1분봉 펜딩확인 제거 (봇 추가, LCC 아님).
+            //   TradingView LCC는 신호 봉(15m 마감)에서 즉시 진입 → 가드(jdehorty) 통과 시 바로 시장가 진입.
+            _lorentzianCooldown[symbol] = DateTime.UtcNow;
+            OnStatusLog?.Invoke($"🟢 [LORENTZIAN] {symbol} 진입 | 순수 LCC 신호 | KNN WR={guard.KnnWinRate:F2} pred={guard.KnnPrediction} regime={guard.RegimeSlope:F2}");
+            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "LORENTZIAN", skipAiGateCheck: false);
         }
 
         // [v5.23.4] 진입 대기 → 1분봉 정밀 트리거: currentPrice > 직전 1m high AND currentPrice > 1m EMA20

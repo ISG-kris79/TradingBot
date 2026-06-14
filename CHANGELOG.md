@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.91] - 2026-06-14
+
+### 🎯 순수 TradingView LCC — 봇이 얹은 비-LCC 필터/게이트 전부 제거 (사용자 지정)
+
+- **LorentzianGuard = jdehorty 기본 필터셋** ([Services/LorentzianV2/LorentzianGuard.cs](Services/LorentzianV2/LorentzianGuard.cs)): KNN(pred>0) + **Volatility + Regime + Kernel** 만. jdehorty 기본 OFF인 ADX/EMA200/SMA200 제거, 봇 커스텀(BB중심선/BB워크/박스돌파) 제거, KNN 승률 게이트 제거(jdehorty엔 없음). Volatility 복원(이전 v5.23.90에서 임의로 끈 것 — TradingView LCC 기본 ON).
+- **비-LCC 진입 게이트 전부 우회** ([TradingEngine.cs](TradingEngine.cs) IsEntryAllowedCore): `srcU.Contains("LORENTZIAN")` 면 필수·안전체크(설정/슬롯/수동청산쿨다운/메이저토글/시총/스코어카드)만 적용하고 트레이딩 필터(1h_EMA20·M15_RANGE_TOP·5mRSI·15mBB·꼬리·BTC추세·낙하나이프) 전부 건너뜀. AnalyzeLorentzianEntryAsync의 1h Squeeze·4H_BEAR·PULLBACK_QUALITY 가드도 제거.
+- **신호 봉에서 즉시 진입**: 1분봉 펜딩 확인(눌림→반등 5중조건) 제거 — TradingView LCC처럼 가드 통과 시 바로 시장가 진입.
+- 결과: 봇의 "LCC"가 TradingView 차트 LCC 라벨과 동일하게 동작. (KNN=LCC = 로렌츠거리 KNN 분류기)
+
 ## [5.23.90] - 2026-06-12
 
 ### 🔴 LCC 2일간 진입 0건 fix — LorentzianGuard 과잉 필터 비활성화
