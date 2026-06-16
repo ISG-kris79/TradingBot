@@ -54,8 +54,9 @@ namespace TradingBot.Services.LorentzianV2
             r.KnnWinRate = pred.K > 0 ? (float)pred.PositiveVotes / pred.K : 0f;
             if (!pred.IsReady || pred.K == 0) { r.BlockReason = "KNN_NOT_READY"; return r; }
             if (pred.Prediction <= 0) { r.BlockReason = "KNN_NOT_LONG"; return r; }
-            // [v5.23.91] 순수 jdehorty LCC — KNN 승률 게이트 제거 (jdehorty는 prediction>0 자체가 신호, 별도 승률필터 없음)
-            // if (r.KnnWinRate < guardWinRate) { r.BlockReason = $"KNN_WR_LOW ({r.KnnWinRate:F2})"; return r; }
+            // [v5.23.92] 신호 강도 하한 — 순수 LCC 과매매 fix (15h 11건 36%WR -손실).
+            //   약신호(pred 1~4, SUI pred=3 같은 노이즈 급반전)는 차단, 강한 LONG 합의(pred>=5, 8중 6.5표↑)만 진입.
+            if (pred.Prediction < 5) { r.BlockReason = $"KNN_WEAK (pred={pred.Prediction})"; return r; }
 
             // [v5.23.91] 순수 TradingView LCC (jdehorty 기본 필터셋) — KNN + Volatility + Regime + Kernel 만.
             //   봇 커스텀 필터(ADX/EMA200/SMA200/BB중심선/BB워크/박스돌파)는 LCC가 아니므로 전부 제거.

@@ -892,9 +892,34 @@ namespace TradingBot
                 return false;
             }
 
+            // [v5.23.92] LCC 고점 차단 — 순수 LCC가 박스/추세 꼭대기서 잡는 문제(SUI 사례) fix.
+            //   LORENTZIAN 도 15m 30봉 range 위치 ≥90% + 저점대비 ≥3% 면 차단(꼭대기 진입만). 그 외 트레이딩 필터는 계속 우회.
+            if (srcU.Contains("LORENTZIAN"))
+            {
+                try
+                {
+                    var k15top = GetMultiTfKlinesCachedOrRefresh(symbol, KlineInterval.FifteenMinutes, 30);
+                    if (k15top != null && k15top.Count >= 30)
+                    {
+                        decimal mnLo = k15top[0].LowPrice, mxHi = k15top[0].HighPrice;
+                        for (int q = 1; q < k15top.Count; q++) { if (k15top[q].LowPrice < mnLo) mnLo = k15top[q].LowPrice; if (k15top[q].HighPrice > mxHi) mxHi = k15top[q].HighPrice; }
+                        decimal lc = k15top[k15top.Count - 1].ClosePrice;
+                        decimal pPct = mxHi > mnLo ? (lc - mnLo) / (mxHi - mnLo) * 100m : 50m;
+                        decimal rPct = mnLo > 0m ? (lc - mnLo) / mnLo * 100m : 0m;
+                        if (pPct >= 90m && rPct >= 3m)
+                        {
+                            blockReason = $"LCC_RANGE_TOP:pos={pPct:F1}%>=90_rise={rPct:F2}%>=3";
+                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (15m 30봉 range 90%+ 꼭대기 — LCC 고점진입 방지)");
+                            return false;
+                        }
+                    }
+                }
+                catch { }
+            }
+
             // [v5.23.91] 순수 TradingView LCC (사용자 지정 "LCC만") — LORENTZIAN 은 봇이 얹은 트레이딩/추세 필터 전부 우회.
             //   필수·안전체크(설정/슬롯/수동청산쿨다운/메이저토글/시총/스코어카드)만 적용하고,
-            //   아래 트레이딩 필터(1h_EMA20 / M15_RANGE_TOP / 5mRSI / 15mBB / 꼬리 / BTC추세 / 낙하나이프 등)는 모두 건너뜀.
+            //   M15_RANGE_TOP(위에서 LCC도 적용) 외 트레이딩 필터(1h_EMA20 / 5mRSI / 15mBB / 꼬리 / BTC추세 / 낙하나이프)는 건너뜀.
             //   진입 판단은 LorentzianGuard(=jdehorty LCC: KNN+Volatility+Regime+Kernel) 단독.
             if (srcU.Contains("LORENTZIAN")) { blockReason = ""; return true; }
 

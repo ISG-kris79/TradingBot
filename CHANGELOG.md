@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.92] - 2026-06-16
+
+### 🛡️ 순수 LCC 과매매·고점진입 fix — 신호 강도 하한 + 고점 차단 (사용자 지정)
+
+- **배경**: v5.23.91 순수 LCC 적용 후 LCC가 활발히 진입했으나 15시간 11건 / 승률 36% / 실손 -$25(계좌 $204→$179). 원인 = 필터 제로라 KNN 약신호(pred 1~4, SUI pred=3 같은 노이즈 급반전)마다 진입 + 박스 꼭대기 진입.
+- **신호 강도 하한** ([Services/LorentzianV2/LorentzianGuard.cs](Services/LorentzianV2/LorentzianGuard.cs)): `pred >= 5`(8중 6.5표↑ 강한 LONG 합의)만 진입. 약신호(pred 1~4) `KNN_WEAK` 차단 → 과매매·노이즈 진입 대폭 감소.
+- **LCC 고점 차단** ([TradingEngine.cs](TradingEngine.cs) IsEntryAllowedCore): LORENTZIAN도 15m 30봉 range 위치 ≥90% + 저점대비 ≥3% 면 `LCC_RANGE_TOP` 차단(꼭대기 진입만). 나머지 트레이딩 필터는 계속 우회(순수 LCC 유지).
+- KNN(=LCC) 신호 자체는 유지, "강한 신호 + 꼭대기 아님"만 진입하도록 좁힘. SUI 같은 약신호·고점 진입이 걸러짐.
+
 ## [5.23.91] - 2026-06-14
 
 ### 🎯 순수 TradingView LCC — 봇이 얹은 비-LCC 필터/게이트 전부 제거 (사용자 지정)
