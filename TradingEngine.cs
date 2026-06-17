@@ -917,9 +917,61 @@ namespace TradingBot
                 catch { }
             }
 
-            // [v5.23.91] 순수 TradingView LCC (사용자 지정 "LCC만") — LORENTZIAN 은 봇이 얹은 트레이딩/추세 필터 전부 우회.
-            //   필수·안전체크(설정/슬롯/수동청산쿨다운/메이저토글/시총/스코어카드)만 적용하고,
-            //   M15_RANGE_TOP(위에서 LCC도 적용) 외 트레이딩 필터(1h_EMA20 / 5mRSI / 15mBB / 꼬리 / BTC추세 / 낙하나이프)는 건너뜀.
+            // [v5.23.93] LCC 1h 대세 필터 — "방향은 1h" 원칙 (사용자 지정 2026-06-17).
+            //   순수 LCC가 1h 하락추세에서도 진입 → 6/16 하락장 13건 23%WR -$288. 좋은날(+275) 번 걸 하락날 다 토함.
+            //   해결: LORENTZIAN 도 1h 방향(대세)만은 본다. (5mRSI/15mBB/꼬리 등 단기필터는 계속 우회 — 1h 방향만)
+            if (srcU.Contains("LORENTZIAN"))
+            {
+                // (1) 심볼 자체 1h — 종가가 1h EMA20 아래면 하락추세 → 차단 (떨어지는 칼날)
+                try
+                {
+                    var k1hLcc = GetMultiTfKlinesCachedOrRefresh(symbol, KlineInterval.OneHour, 25);
+                    if (k1hLcc != null && k1hLcc.Count >= 21)
+                    {
+                        double mult = 2.0 / 21.0;
+                        decimal ema20 = k1hLcc[k1hLcc.Count - 21].ClosePrice;
+                        for (int q = k1hLcc.Count - 20; q < k1hLcc.Count; q++)
+                            ema20 = (decimal)((double)k1hLcc[q].ClosePrice * mult + (double)ema20 * (1 - mult));
+                        decimal lastClose = k1hLcc[k1hLcc.Count - 1].ClosePrice;
+                        if (lastClose < ema20)
+                        {
+                            decimal devPct = ema20 > 0 ? (lastClose - ema20) / ema20 * 100m : 0m;
+                            blockReason = $"LCC_BELOW_1H_EMA20:px={lastClose:F6}/ema={ema20:F6}({devPct:F2}%)";
+                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (1h 하락추세 — LCC 대세필터)");
+                            return false;
+                        }
+                    }
+                }
+                catch { }
+
+                // (2) BTC 1h 하락장 — 시장 전체가 떨어지면 LCC 진입 금지 (6/16 같은 하락장)
+                if (_marketDataManager != null)
+                {
+                    try
+                    {
+                        if (_marketDataManager.KlineCache.TryGetValue("BTCUSDT", out var btcK) && btcK.Count >= 13)
+                        {
+                            List<Binance.Net.Interfaces.IBinanceKline> rc;
+                            lock (btcK) { rc = btcK.TakeLast(13).ToList(); }
+                            if (rc.Count >= 12 && rc[0].ClosePrice > 0)
+                            {
+                                decimal btcChg = (rc[^1].ClosePrice - rc[0].ClosePrice) / rc[0].ClosePrice * 100m;
+                                if (btcChg <= -0.5m)
+                                {
+                                    blockReason = $"LCC_BTC_1H_DOWNTREND ({btcChg:F2}% <= -0.5%)";
+                                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (BTC 하락장 — LCC 대세필터)");
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            // [v5.23.91] 순수 TradingView LCC (사용자 지정 "LCC만") — LORENTZIAN 은 봇이 얹은 단기 트레이딩 필터 우회.
+            //   필수·안전체크(설정/슬롯/수동청산쿨다운/메이저토글/시총/스코어카드) + 1h 대세필터(위 v5.23.93) 적용하고,
+            //   M15_RANGE_TOP·1h방향 외 단기필터(5mRSI / 15mBB / 꼬리 / 낙하나이프)는 건너뜀.
             //   진입 판단은 LorentzianGuard(=jdehorty LCC: KNN+Volatility+Regime+Kernel) 단독.
             if (srcU.Contains("LORENTZIAN")) { blockReason = ""; return true; }
 

@@ -54,21 +54,24 @@ namespace TradingBot.Services.LorentzianV2
             r.KnnWinRate = pred.K > 0 ? (float)pred.PositiveVotes / pred.K : 0f;
             if (!pred.IsReady || pred.K == 0) { r.BlockReason = "KNN_NOT_READY"; return r; }
             if (pred.Prediction <= 0) { r.BlockReason = "KNN_NOT_LONG"; return r; }
-            // [v5.23.92] 신호 강도 하한 — 순수 LCC 과매매 fix (15h 11건 36%WR -손실).
-            //   약신호(pred 1~4, SUI pred=3 같은 노이즈 급반전)는 차단, 강한 LONG 합의(pred>=5, 8중 6.5표↑)만 진입.
-            if (pred.Prediction < 5) { r.BlockReason = $"KNN_WEAK (pred={pred.Prediction})"; return r; }
+            // [v5.23.93] pred>=5 하한 제거 — 트레이딩뷰 LCC와 동일하게 pred>0(KNN LONG)이면 진입.
+            //   v5.23.92 pred>=5 하한이 저변동 메이저(XRP pred 3~4)를 거름 → 트뷰엔 신호 뜨는데 봇 스킵 (6/15 6시 XRP).
+            //   과매매 선별은 1h 대세 필터(IsEntryAllowed v5.23.93: BELOW_1H_EMA20 + BTC_1H_DOWNTREND)가 담당.
 
             // [v5.23.91] 순수 TradingView LCC (jdehorty 기본 필터셋) — KNN + Volatility + Regime + Kernel 만.
             //   봇 커스텀 필터(ADX/EMA200/SMA200/BB중심선/BB워크/박스돌파)는 LCC가 아니므로 전부 제거.
             //   jdehorty 기본값: Volatility=ON, Regime=ON(-0.1), Kernel=ON, ADX=OFF, EMA=OFF, SMA=OFF.
-            // 2) Volatility: ATR(1) > ATR(10) — [jdehorty 기본 ON]
+            // 2) Volatility: ATR(1) > ATR(10) — [v5.23.93 OFF] 사용자 "눌림 매수" 전략과 모순.
+            //   이 필터는 변동성 폭발(돌파봉)만 통과 → 조용한 눌림목 차단 + 저변동 메이저(XRP) 차단.
+            //   사용자 전략은 "1h 대세 + 하단 지지 눌림" 이라 변동성수축 구간 진입이 정상 → 끔.
+            //   (하락방향 보호는 REGIME + 1h 대세필터(IsEntryAllowed)가 담당.)
             r.Atr1  = CalcTR(kl, idx);
             r.Atr10 = CalcATR(kl, idx, 10);
-            if (r.Atr1 <= r.Atr10) { r.BlockReason = "VOLATILITY"; return r; }
+            // if (r.Atr1 <= r.Atr10) { r.BlockReason = "VOLATILITY"; return r; }
 
-            // 3) Regime slope > -0.1 (유지 — 강한 하락추세 차단)
+            // 3) Regime: normalized_slope_decline >= -0.1 통과 (jdehorty 원본) → < -0.1 만 차단
             r.RegimeSlope = CalcRegimeSlope(kl, idx);
-            if (r.RegimeSlope <= -0.1) { r.BlockReason = $"REGIME ({r.RegimeSlope:F3})"; return r; }
+            if (r.RegimeSlope < -0.1) { r.BlockReason = $"REGIME ({r.RegimeSlope:F3})"; return r; }
 
             // 4) ADX(14) > 20  — [v5.23.90 비활성화: jdehorty 기본 OFF]
             r.Adx = CalcADX(kl, idx, 14);
@@ -82,10 +85,10 @@ namespace TradingBot.Services.LorentzianV2
             r.Sma200 = CalcSMA(kl, idx, 200);
             // if ((double)kl[idx].ClosePrice <= r.Sma200) { r.BlockReason = "SMA200"; return r; }
 
-            // 7) NW Kernel direction = up (kernel[idx] > kernel[idx-2]) (유지 — 추세 방향 확인)
+            // 7) NW Kernel bullish = yhat1 >= yhat1[1] (jdehorty 원본: 추정치가 직전봉 대비 상승)
             r.NwKernel = CalcNWKernel(kl, idx);
-            r.NwKernelPrev2 = idx >= 2 ? CalcNWKernel(kl, idx - 2) : r.NwKernel;
-            if (r.NwKernel <= r.NwKernelPrev2) { r.BlockReason = "NW_KERNEL"; return r; }
+            r.NwKernelPrev2 = idx >= 1 ? CalcNWKernel(kl, idx - 1) : r.NwKernel;
+            if (r.NwKernel < r.NwKernelPrev2) { r.BlockReason = "NW_KERNEL"; return r; }
 
             // [v5.23.90] 아래 3개 커스텀 가드(BB_MID_BELOW / BB_WALK_BROKEN / CONSOL) 비활성화 —
             //   전부 "close가 중심선 위 / 박스 상단 돌파"를 요구 = 눌림(하단 지지) 매수와 정면 충돌, 오히려 꼭대기 추격 강요.
@@ -277,15 +280,37 @@ namespace TradingBot.Services.LorentzianV2
             return adx;
         }
 
-        // KLMF (Kalman-like) trend slope: EMA50 5봉 차이 / ATR(14) — jdehorty regime filter
+        // [v5.23.93] jdehorty regime_filter 원본 충실 포팅 (이전 EMA50-기울기 근사는 오류 — 트뷰 신호 차단 원인).
+        //   src = ohlc4. value1 := 0.2*(src-src[1]) + 0.8*value1[1];  value2 := 0.1*(high-low) + 0.8*value2[1]
+        //   omega = |value1/value2|;  alpha = (-omega^2 + sqrt(omega^4 + 16*omega^2)) / 8
+        //   klmf := alpha*src + (1-alpha)*klmf[1];  absCurveSlope = |klmf - klmf[1]|
+        //   normalized_slope_decline = (absCurveSlope - EMA(absCurveSlope,200)) / EMA(absCurveSlope,200)
+        //   통과조건: normalized_slope_decline >= threshold(-0.1).
         public static double CalcRegimeSlope(List<IBinanceKline> kl, int idx)
         {
-            if (idx < 55) return 0.0;
-            double ema = CalcEMA(kl, idx, 50);
-            double emaPrev = CalcEMA(kl, idx - 5, 50);
-            double atr = CalcATR(kl, idx, 14);
-            if (atr < 1e-12) return 0.0;
-            return (ema - emaPrev) / atr;
+            if (idx < 2) return 0.0;
+            double value1 = 0.0, value2 = 0.0, klmf = 0.0;
+            double emaAbsSlope = 0.0;          // EMA(absCurveSlope, 200)
+            double kEma = 2.0 / (200.0 + 1.0);
+            double absSlopeNow = 0.0;
+            for (int i = 0; i <= idx; i++)
+            {
+                double src = (double)(kl[i].OpenPrice + kl[i].HighPrice + kl[i].LowPrice + kl[i].ClosePrice) / 4.0;
+                double srcPrev = i > 0
+                    ? (double)(kl[i - 1].OpenPrice + kl[i - 1].HighPrice + kl[i - 1].LowPrice + kl[i - 1].ClosePrice) / 4.0
+                    : src;
+                double hl = (double)(kl[i].HighPrice - kl[i].LowPrice);
+                value1 = 0.2 * (src - srcPrev) + 0.8 * value1;
+                value2 = 0.1 * hl + 0.8 * value2;
+                double omega = Math.Abs(value2) > 1e-12 ? Math.Abs(value1 / value2) : 0.0;
+                double alpha = (-(omega * omega) + Math.Sqrt(omega * omega * omega * omega + 16.0 * omega * omega)) / 8.0;
+                double newKlmf = alpha * src + (1.0 - alpha) * klmf;
+                absSlopeNow = i > 0 ? Math.Abs(newKlmf - klmf) : 0.0;
+                klmf = newKlmf;
+                emaAbsSlope = i == 0 ? absSlopeNow : absSlopeNow * kEma + emaAbsSlope * (1.0 - kEma);
+            }
+            if (emaAbsSlope < 1e-12) return 0.0;
+            return (absSlopeNow - emaAbsSlope) / emaAbsSlope;
         }
 
         // Nadaraya-Watson Rational Quadratic kernel estimator (h=8, r=8, x=25)

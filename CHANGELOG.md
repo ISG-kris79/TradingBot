@@ -5,6 +5,18 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.93] - 2026-06-17
+
+### 🎯 LCC 구현을 트레이딩뷰(jdehorty) 원본과 일치 + 1h 대세 필터 복원 (사용자 지정)
+
+- **배경**: 6/15 5:50 15m봉에 트레이딩뷰 LCC가 XRP(메이저) 진입신호를 띄웠으나 봇은 진입 안 함. 원인 = 봇 LCC 구현이 jdehorty 원본과 달라 신호를 막음. 또 6/16 하락장(13건 23%WR -$288)에 1h 대세 무시하고 진입 → 6/15 +275 번 걸 다 토함.
+- **REGIME 필터 원본 교체** ([Services/LorentzianV2/LorentzianGuard.cs](Services/LorentzianV2/LorentzianGuard.cs) `CalcRegimeSlope`): 기존 `(EMA50[idx]-EMA50[idx-5])/ATR14` 근사 = **명백한 구현 오류**. jdehorty 원본 KLMF(칼만형 적응필터) → `normalized_slope_decline >= -0.1`로 충실 포팅. 저변동 메이저 신호를 잘못 막던 주범 fix.
+- **KERNEL 방향 원본 일치**: `kernel[idx] > kernel[idx-2]`(2봉) → jdehorty `yhat1 >= yhat1[1]`(직전봉).
+- **pred>=5 하한 제거**: v5.23.92에서 넣은 비-jdehorty 하한 — 저변동 메이저(XRP pred 3~4)를 막아 트뷰와 불일치. 트뷰처럼 pred>0(KNN LONG)이면 진입.
+- **VOLATILITY 필터 OFF**: ATR1>ATR10(변동성 폭발봉만 통과)은 "1h 대세 + 하단 지지 눌림 매수" 전략과 모순(눌림=변동성 수축 → 차단) + 저변동 메이저 차단. 끔.
+- **1h 대세 필터 LCC 적용** ([TradingEngine.cs](TradingEngine.cs) IsEntryAllowedCore): LORENTZIAN도 진입 전 1h 방향 확인 — `LCC_BELOW_1H_EMA20`(심볼 1h 종가<EMA20) + `LCC_BTC_1H_DOWNTREND`(BTC 1h ≤-0.5%) 차단. v5.23.91에서 "순수 LCC"한다고 우회시킨 게 6/16 하락장 진입 원인 → 복원. (5mRSI/15mBB 등 단기필터는 계속 우회.)
+- **결과**: 15m LCC 타점(jdehorty 충실) + 1h 대세 방향 게이트. 상승장(6/15)엔 XRP 등 메이저 신호 진입, 하락장(6/16)엔 진입 안 함.
+
 ## [5.23.92] - 2026-06-16
 
 ### 🛡️ 순수 LCC 과매매·고점진입 fix — 신호 강도 하한 + 고점 차단 (사용자 지정)
