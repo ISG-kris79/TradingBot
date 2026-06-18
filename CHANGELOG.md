@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.94] - 2026-06-18
+
+### 📊 더블 볼린저밴드 LCC 진입 확인 필터 (사용자 지정)
+
+- **목적**: LCC가 LONG 신호를 내도 진입 "위치"가 과열이면 차단 — "고점 추격 금지 + 하단 지지 눌림 매수" 원칙 반영.
+- **필터** ([Services/LorentzianV2/LorentzianGuard.cs](Services/LorentzianV2/LorentzianGuard.cs) EvaluateEntry): 15m BB(20) 1σ/2σ 두 밴드로 존 구분. `close > mid+1σ`(Kathy Lien 매수존 상단=과열/고점)면 `DBB_OVEREXTENDED` 차단. `close ≤ mid+1σ`(중립~하단 지지 눌림)면 허용.
+- 기존 `LCC_RANGE_TOP`(30봉 range 위치)이 박스 꼭대기를 막는 것과 함께, **밴드 기준 과열**을 추가로 막아 두 각도로 고점 진입 차단.
+- σ 임계 조정 가능(mid+1σ 기본 / mid=눌림만 / mid+2σ=극단만 차단).
+
 ## [5.23.93] - 2026-06-17
 
 ### 🎯 LCC 구현을 트레이딩뷰(jdehorty) 원본과 일치 + 1h 대세 필터 복원 (사용자 지정)

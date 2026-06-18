@@ -90,6 +90,18 @@ namespace TradingBot.Services.LorentzianV2
             r.NwKernelPrev2 = idx >= 1 ? CalcNWKernel(kl, idx - 1) : r.NwKernel;
             if (r.NwKernel < r.NwKernelPrev2) { r.BlockReason = "NW_KERNEL"; return r; }
 
+            // 8) [v5.23.94] 더블 볼린저밴드 진입 확인 필터 (사용자 지정) — LCC LONG 의 "위치" 확인.
+            //   BB(20)의 1σ/2σ 두 밴드로 존 구분. close > mid+1σ = Kathy Lien '매수존 상단'(과열/고점) → 추격 차단.
+            //   허용: close ≤ mid+1σ (중립~하단 지지 눌림). "고점 추격 금지 + 하단 지지 눌림" 원칙 반영.
+            //   σ 임계 조정 가능: 더 빡세게(눌림만)=mid 기준, 더 느슨=mid+2σ 기준.
+            CalcBB(kl, idx, 20, 1.0, out double dbbMid, out double dbbUp1, out _);
+            double dbbClose = (double)kl[idx].ClosePrice;
+            if (dbbMid > 0 && dbbClose > dbbUp1)
+            {
+                r.BlockReason = $"DBB_OVEREXTENDED (close={dbbClose:F6} > +1σ={dbbUp1:F6} — 고점 추격 차단)";
+                return r;
+            }
+
             // [v5.23.90] 아래 3개 커스텀 가드(BB_MID_BELOW / BB_WALK_BROKEN / CONSOL) 비활성화 —
             //   전부 "close가 중심선 위 / 박스 상단 돌파"를 요구 = 눌림(하단 지지) 매수와 정면 충돌, 오히려 꼭대기 추격 강요.
             //   사용자 지시(하단 지지 눌림 매수 + 고점 추격 금지)와 반대라 제거. 고점/눌림/추세는 IsEntryAllowed 게이트 + 1m 확인이 담당.
