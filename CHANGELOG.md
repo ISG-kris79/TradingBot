@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.95] - 2026-06-20
+
+### 🔧 REGIME 필터 OFF — 진입 전면차단 fix (6/20 진입 0건)
+
+- **증상**: 6/20 00시 이후 진입 0건. 실거래 차단집계 `REGIME` 157,508건(압도적 1위) — 가드 통과 심볼 거의 100%를 REGIME이 차단.
+- **원인**: v5.23.93에서 jdehorty 원본 KLMF로 충실 포팅한 REGIME 필터가, 이 봇 환경(15m 1500봉)에선 거의 항상 `normalized_slope_decline < -0.1` → 전면 차단. (기존 EMA50 근사일 땐 6/15 +275처럼 진입됨.)
+- **조치** ([Services/LorentzianV2/LorentzianGuard.cs](Services/LorentzianV2/LorentzianGuard.cs)): REGIME 차단 비활성화(VOLATILITY처럼). 하락방향 보호는 1h 대세필터(`LCC_BELOW_1H_EMA20` + `LCC_BTC_1H_DOWNTREND`) + DBB 과열(`DBB_OVEREXTENDED`) + `LCC_RANGE_TOP`이 담당하므로 중복.
+- 결과: KNN LONG 신호 → 1h 대세/과열/고점 게이트만 통과하면 진입. 진입 막힘 해소.
+
 ## [5.23.94] - 2026-06-18
 
 ### 📊 더블 볼린저밴드 LCC 진입 확인 필터 (사용자 지정)

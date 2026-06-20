@@ -69,9 +69,12 @@ namespace TradingBot.Services.LorentzianV2
             r.Atr10 = CalcATR(kl, idx, 10);
             // if (r.Atr1 <= r.Atr10) { r.BlockReason = "VOLATILITY"; return r; }
 
-            // 3) Regime: normalized_slope_decline >= -0.1 통과 (jdehorty 원본) → < -0.1 만 차단
+            // 3) Regime: [v5.23.95 OFF] jdehorty KLMF 원본대로 짰으나 실거래서 가드통과 심볼 ~100% 차단
+            //   (6/20 00시 이후 진입 0건, REGIME 차단 157k = 압도적 1위). 충실 포팅이지만 이 봇 환경(15m 1500봉)
+            //   에선 거의 항상 normalized_slope_decline < -0.1 → 전면차단. 하락방향 보호는 1h 대세필터
+            //   (LCC_BELOW_1H_EMA20 + LCC_BTC_1H_DOWNTREND) + DBB 과열 + RANGE_TOP 이 담당하므로 중복. 끔.
             r.RegimeSlope = CalcRegimeSlope(kl, idx);
-            if (r.RegimeSlope < -0.1) { r.BlockReason = $"REGIME ({r.RegimeSlope:F3})"; return r; }
+            // if (r.RegimeSlope < -0.1) { r.BlockReason = $"REGIME ({r.RegimeSlope:F3})"; return r; }
 
             // 4) ADX(14) > 20  — [v5.23.90 비활성화: jdehorty 기본 OFF]
             r.Adx = CalcADX(kl, idx, 14);
