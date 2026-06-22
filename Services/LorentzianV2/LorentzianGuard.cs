@@ -105,6 +105,13 @@ namespace TradingBot.Services.LorentzianV2
                 return r;
             }
 
+            // 9) [v5.23.96] 캔들 형태 진입금지 (사용자 지정) — 직전 마감봉 기준.
+            //   (1) 꼬리(상+하)가 몸통보다 길면 = 거부/롱윅 캔들 → 진입금지
+            //   (2) 음봉 + 작은몸통 + 긴꼬리 = 반전·소진 캔들 → 진입금지
+            var lastCandle = kl[idx];
+            if (IsLongTail(lastCandle)) { r.BlockReason = "PREV_LONG_TAIL (꼬리>몸통 거부캔들)"; return r; }
+            if (IsBearishReversalCandle(lastCandle)) { r.BlockReason = "BEARISH_REVERSAL (음봉 작은몸통 긴꼬리)"; return r; }
+
             // [v5.23.90] 아래 3개 커스텀 가드(BB_MID_BELOW / BB_WALK_BROKEN / CONSOL) 비활성화 —
             //   전부 "close가 중심선 위 / 박스 상단 돌파"를 요구 = 눌림(하단 지지) 매수와 정면 충돌, 오히려 꼭대기 추격 강요.
             //   사용자 지시(하단 지지 눌림 매수 + 고점 추격 금지)와 반대라 제거. 고점/눌림/추세는 IsEntryAllowed 게이트 + 1m 확인이 담당.
@@ -245,6 +252,24 @@ namespace TradingBot.Services.LorentzianV2
             double sum = 0;
             for (int q = idx - period + 1; q <= idx; q++) sum += (double)kl[q].ClosePrice;
             return sum / period;
+        }
+
+        // [v5.23.96] 캔들 형태 (사용자 지정 규칙용). 라이브/백테스트 공유.
+        //   꼬리(상단+하단) 가 몸통보다 길면 = 롱윅/거부 캔들.
+        public static bool IsLongTail(IBinanceKline k)
+        {
+            decimal body = Math.Abs(k.ClosePrice - k.OpenPrice);
+            decimal wick = (k.HighPrice - Math.Max(k.OpenPrice, k.ClosePrice)) + (Math.Min(k.OpenPrice, k.ClosePrice) - k.LowPrice);
+            return wick > body;
+        }
+        //   음봉 + 작은몸통(≤range 40%) + 긴꼬리(꼬리>몸통) = 반전·소진 캔들.
+        public static bool IsBearishReversalCandle(IBinanceKline k)
+        {
+            decimal range = k.HighPrice - k.LowPrice;
+            if (range <= 0) return false;
+            decimal body = Math.Abs(k.ClosePrice - k.OpenPrice);
+            decimal wick = range - body;
+            return k.ClosePrice < k.OpenPrice && body <= range * 0.4m && wick > body;
         }
 
         public static double CalcTR(List<IBinanceKline> kl, int idx)

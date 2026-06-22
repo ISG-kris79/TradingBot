@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.96] - 2026-06-22
+
+### 🕯️ 손실 차단 #1 — 캔들 형태 진입금지 + 반전캔들 조기청산 (사용자 지정)
+
+- **배경**: 실거래 30일 -$3,672 (승률 56%인데 평균손실 -$72 = 평균익절 +$29의 2.5배 = 음의 비대칭). 손절이 -75% 기준을 뚫고 -117%/-143%까지 감(서버SL 공백 + 500ms 폴링 + PUMP 급락 슬리피지). 하루(6/15) -$3,820 폭발.
+- **진입 캔들 금지** ([Services/LorentzianV2/LorentzianGuard.cs](Services/LorentzianV2/LorentzianGuard.cs)): 직전 마감봉이 (1) 꼬리(상+하)>몸통(`PREV_LONG_TAIL`, 거부/롱윅) 또는 (2) 음봉+작은몸통(≤range40%)+긴꼬리(`BEARISH_REVERSAL`)면 진입금지. LCC 신호 떠도 불안정 캔들에선 안 들어감.
+- **반전 캔들 조기청산** ([PositionMonitorService.cs](PositionMonitorService.cs)): 보유 중 5분봉이 음봉+작은몸통+긴꼬리(반전·소진)로 마감하면 **-75% backstop 기다리지 않고 즉시 시장가 청산**(익절/손절 무관). major/PUMP 양 루프 적용. -117% 같은 큰 손실 꼬리를 추세꺾임에서 조기 차단. 같은 봉 중복발동 방지.
+- 캔들 헬퍼(`IsLongTail`/`IsBearishReversalCandle`)는 LorentzianGuard에 두어 백테스트와 동일 코드 유지.
+
 ## [5.23.95] - 2026-06-20
 
 ### 🔧 REGIME 필터 OFF — 진입 전면차단 fix (6/20 진입 0건)

@@ -1278,6 +1278,9 @@ namespace TradingBot.Services
                         break;
                     }
 
+                    // [v5.23.96] 반전 캔들 조기청산 (사용자 지정)
+                    if (await TryReversalCandleExitAsync(symbol, currentROE, token)) break;
+
                     lock (_posLock)
                     {
                         if (!_activePositions.ContainsKey(symbol))
@@ -1388,6 +1391,9 @@ namespace TradingBot.Services
                     await ExecuteMarketClose(symbol, $"PUMP 손절 backstop (ROE {currentROE:F1}%, 기준 -{pumpHardSlRoe:F0}%)", token);
                     break;
                 }
+
+                // [v5.23.96] 반전 캔들 조기청산 (사용자 지정) — PUMP/알트도 추세꺾임 시 즉시 청산
+                if (await TryReversalCandleExitAsync(symbol, currentROE, token)) break;
 
                 // [v5.10.45] 본절 전환: ROE >= PumpBreakEvenRoe → SL 취소 후 본절가 서버 등록
                 if (!isBreakEvenTriggered && currentROE >= pumpBreakEvenRoe)
@@ -1647,6 +1653,32 @@ namespace TradingBot.Services
         }
 
         // [AI 제거] TryEvaluateAiReversalExit / BuildAiRecheckCandle 전체 제거 (AIPredictor 의존)
+
+        // [v5.23.96] 반전 캔들 조기청산 (사용자 지정) — 같은 봉 중복발동 방지.
+        private readonly Dictionary<string, DateTime> _lastReversalExitBar = new();
+
+        // 음봉+작은몸통+긴꼬리(반전·소진) 5분봉 마감 시 즉시 청산 — 익절/손절 무관, -75% backstop 기다리지 않고
+        //   추세 꺾임에서 빠르게 빠져 -117% 같은 큰 손실(꼬리)을 차단. (사용자 지정 규칙)
+        private async Task<bool> TryReversalCandleExitAsync(string symbol, decimal currentROE, CancellationToken token)
+        {
+            try
+            {
+                if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var candles) || candles.Count < 3)
+                    return false;
+                IBinanceKline closed;
+                lock (candles) { closed = candles[candles.Count - 2]; }   // 마지막 '마감' 봉
+                if (!LorentzianV2.LorentzianGuard.IsBearishReversalCandle(closed)) return false;
+                lock (_lastReversalExitBar)
+                {
+                    if (_lastReversalExitBar.TryGetValue(symbol, out var t) && t == closed.OpenTime) return false;
+                    _lastReversalExitBar[symbol] = closed.OpenTime;
+                }
+                OnLog?.Invoke($"🕯️ {symbol} 반전캔들 조기청산 | ROE={currentROE:F1}% (음봉 작은몸통 긴꼬리 → 추세꺾임)");
+                await ExecuteMarketClose(symbol, $"반전캔들 청산 (ROE {currentROE:F1}%)", token);
+                return true;
+            }
+            catch { return false; }
+        }
 
         private bool TryGetCurrentBbWidthPct(string symbol, out decimal bbWidthPct)
         {
