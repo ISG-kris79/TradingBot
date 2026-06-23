@@ -1282,6 +1282,8 @@ namespace TradingBot.Services
                     if (await TryReversalCandleExitAsync(symbol, currentROE, token)) break;
                     // [v5.23.97] RSI2 전략 EMA10 회복 익절
                     if (await TryRsi2Ema10ExitAsync(symbol, currentROE, token)) break;
+                    // [v5.23.98] LCC 8봉 시간정지
+                    if (await TryLccTimeStopExitAsync(symbol, currentROE, token)) break;
 
                     lock (_posLock)
                     {
@@ -1398,6 +1400,8 @@ namespace TradingBot.Services
                 if (await TryReversalCandleExitAsync(symbol, currentROE, token)) break;
                 // [v5.23.97] RSI2 전략 EMA10 회복 익절
                 if (await TryRsi2Ema10ExitAsync(symbol, currentROE, token)) break;
+                // [v5.23.98] LCC 8봉 시간정지
+                if (await TryLccTimeStopExitAsync(symbol, currentROE, token)) break;
 
                 // [v5.10.45] 본절 전환: ROE >= PumpBreakEvenRoe → SL 취소 후 본절가 서버 등록
                 if (!isBreakEvenTriggered && currentROE >= pumpBreakEvenRoe)
@@ -1711,6 +1715,22 @@ namespace TradingBot.Services
                     return true;
                 }
                 return false;
+            }
+            catch { return false; }
+        }
+
+        // [v5.23.98] LCC 8봉(2시간) 시간정지 — jdehorty 충실 검증본의 보유기간(8봉). LORENTZIAN 포지션 한정.
+        private async Task<bool> TryLccTimeStopExitAsync(string symbol, decimal currentROE, CancellationToken token)
+        {
+            try
+            {
+                string src; DateTime entryTime;
+                lock (_posLock) { if (!_activePositions.TryGetValue(symbol, out var p) || p == null) return false; src = p.EntrySignalSource ?? ""; entryTime = p.EntryTime; }
+                if (src.IndexOf("LORENTZIAN", StringComparison.OrdinalIgnoreCase) < 0) return false;
+                if ((DateTime.UtcNow - entryTime).TotalHours < 2.0) return false;   // 8봉(15m×8)=2시간 보유
+                OnLog?.Invoke($"⏱️ {symbol} LCC 시간정지(8봉/2h) 청산 | ROE={currentROE:F1}%");
+                await ExecuteMarketClose(symbol, $"LCC 시간정지 8봉 (ROE {currentROE:F1}%)", token);
+                return true;
             }
             catch { return false; }
         }

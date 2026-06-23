@@ -54,9 +54,9 @@ namespace TradingBot.Services.LorentzianV2
             r.KnnWinRate = pred.K > 0 ? (float)pred.PositiveVotes / pred.K : 0f;
             if (!pred.IsReady || pred.K == 0) { r.BlockReason = "KNN_NOT_READY"; return r; }
             if (pred.Prediction <= 0) { r.BlockReason = "KNN_NOT_LONG"; return r; }
-            // [v5.23.93] pred>=5 하한 제거 — 트레이딩뷰 LCC와 동일하게 pred>0(KNN LONG)이면 진입.
-            //   v5.23.92 pred>=5 하한이 저변동 메이저(XRP pred 3~4)를 거름 → 트뷰엔 신호 뜨는데 봇 스킵 (6/15 6시 XRP).
-            //   과매매 선별은 1h 대세 필터(IsEntryAllowed v5.23.93: BELOW_1H_EMA20 + BTC_1H_DOWNTREND)가 담당.
+            // [v5.23.98] 강신호 하한 pred>=6 — jdehorty 충실 3년 OOS 검증: 약신호 제거할수록 수익↑.
+            //   최강8 OOS +0.588%, 강신호6+ OOS +0.214%, 전체 +0.285%. 약신호(pred 1~5)는 엣지 약함.
+            if (pred.Prediction < 6) { r.BlockReason = $"KNN_WEAK (pred={pred.Prediction}<6 — 강신호만)"; return r; }
 
             // [v5.23.91] 순수 TradingView LCC (jdehorty 기본 필터셋) — KNN + Volatility + Regime + Kernel 만.
             //   봇 커스텀 필터(ADX/EMA200/SMA200/BB중심선/BB워크/박스돌파)는 LCC가 아니므로 전부 제거.
@@ -67,14 +67,14 @@ namespace TradingBot.Services.LorentzianV2
             //   (하락방향 보호는 REGIME + 1h 대세필터(IsEntryAllowed)가 담당.)
             r.Atr1  = CalcTR(kl, idx);
             r.Atr10 = CalcATR(kl, idx, 10);
-            // if (r.Atr1 <= r.Atr10) { r.BlockReason = "VOLATILITY"; return r; }
+            if (r.Atr1 <= r.Atr10) { r.BlockReason = "VOLATILITY"; return r; }   // [v5.23.98] 재활성화 — jdehorty 기본 ON, 충실본 수익의 일부
 
             // 3) Regime: [v5.23.95 OFF] jdehorty KLMF 원본대로 짰으나 실거래서 가드통과 심볼 ~100% 차단
             //   (6/20 00시 이후 진입 0건, REGIME 차단 157k = 압도적 1위). 충실 포팅이지만 이 봇 환경(15m 1500봉)
             //   에선 거의 항상 normalized_slope_decline < -0.1 → 전면차단. 하락방향 보호는 1h 대세필터
             //   (LCC_BELOW_1H_EMA20 + LCC_BTC_1H_DOWNTREND) + DBB 과열 + RANGE_TOP 이 담당하므로 중복. 끔.
             r.RegimeSlope = CalcRegimeSlope(kl, idx);
-            // if (r.RegimeSlope < -0.1) { r.BlockReason = $"REGIME ({r.RegimeSlope:F3})"; return r; }
+            if (r.RegimeSlope < -0.1) { r.BlockReason = $"REGIME ({r.RegimeSlope:F3})"; return r; }   // [v5.23.98] 재활성화 — jdehorty 기본 ON
 
             // 4) ADX(14) > 20  — [v5.23.90 비활성화: jdehorty 기본 OFF]
             r.Adx = CalcADX(kl, idx, 14);

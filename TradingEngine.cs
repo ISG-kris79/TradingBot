@@ -4804,6 +4804,21 @@ namespace TradingBot
                 return;
             }
 
+            // [v5.23.98] 신호 '전환'에서만 진입 (jdehorty 충실) — 직전봉도 통과면 지속신호라 스킵, 음→양 전환 첫 봉만 진입.
+            //   3년 OOS 검증은 전환 신호 기준(매 봉 아님). 매 봉 진입 = 희석 → 적자. 전환만 = 흑자.
+            if (evalIdx - 1 >= 60)
+            {
+                int prevIdx = evalIdx - 1;
+                int wStartP = Math.Max(0, prevIdx - 499);
+                var winP = k15List.GetRange(wStartP, prevIdx - wStartP + 1);
+                var guardPrev = LorentzianGuard.EvaluateEntry(winP, engine);
+                if (guardPrev.Passed)
+                {
+                    OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 지속신호 스킵 (직전봉도 통과 — 전환 아님)");
+                    return;
+                }
+            }
+
             // [v5.23.91] 순수 TradingView LCC — PULLBACK_QUALITY 가드 + 1분봉 펜딩확인 제거 (봇 추가, LCC 아님).
             //   TradingView LCC는 신호 봉(15m 마감)에서 즉시 진입 → 가드(jdehorty) 통과 시 바로 시장가 진입.
             _lorentzianCooldown[symbol] = DateTime.UtcNow;

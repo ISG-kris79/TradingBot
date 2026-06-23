@@ -5,6 +5,18 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.98] - 2026-06-23
+
+### 🎯 LCC를 jdehorty 충실본으로 복원 — 강신호 + 신호전환 + 필터 (3년 OOS 검증)
+
+- **배경**: LCC 3년 충실분석(신호 전환만 + 필터 + 강신호)이 OOS 흑자 확인 — 최강8(pred=8) OOS +0.588%, 강신호6+ OOS +0.214%, 전체 +0.285%. 약신호 제거할수록 수익↑. 이전 분석(pred>0 매봉=49.5만개)은 희석된 오류였음.
+- **그간 LCC를 망가뜨린 변경을 데이터근거로 되돌림**:
+  - **강신호 하한 `pred>=6`** 추가 ([LorentzianGuard.cs](Services/LorentzianV2/LorentzianGuard.cs)) — 약신호(1~5) 제거. (v5.23.93서 하한 제거했던 것 복원·강화)
+  - **Volatility(ATR1>ATR10) + Regime(>-0.1) 필터 재활성화** — jdehorty 기본 ON. (v5.23.93/95서 껐던 것 복원)
+  - **신호 '전환'에서만 진입** ([TradingEngine.cs](TradingEngine.cs) AnalyzeLorentzianEntryAsync) — 직전봉도 통과면 지속신호라 스킵, 음→양 전환 첫 봉만. (매 봉 진입=희석→적자)
+  - **8봉(2시간) 시간정지 청산** ([PositionMonitorService.cs](PositionMonitorService.cs) `TryLccTimeStopExitAsync`) — 검증본 보유기간 반영. LORENTZIAN 포지션 한정.
+- 캔들 진입금지(v5.23.96) + DBB(v5.23.94)는 보호용으로 유지. 신호가 드물어짐(jdehorty는 선별적, 3년/30코인 358개) — 정상.
+
 ## [5.23.97] - 2026-06-23
 
 ### 📈 RSI2 과매도 반등 전략 추가 — 3년 OOS 검증된 흑자 로직 (LCC 병행)
