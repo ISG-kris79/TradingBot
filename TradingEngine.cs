@@ -5954,19 +5954,29 @@ namespace TradingBot
                             exitPrice = closedSnapshot.EntryPrice;
                         }
 
-                        bool stopLossLikelyTriggered = false;
+                        // [v5.23.99] 봇 자신의 SL/TP 체결을 명확히 라벨링 — "외부청산" 혼란 제거 (사용자 지정).
+                        //   거래소가 닫은 게 봇의 SL주문이면 SL_FILLED, TP주문이면 TP_FILLED, 그 외만 진짜 외부청산.
+                        bool slFilled = false, tpFilled = false;
                         if (closedSnapshot.StopLoss > 0)
                         {
-                            decimal stopTolerance = closedSnapshot.StopLoss * 0.0015m; // 0.15% 허용
-                            if (closedSnapshot.IsLong)
-                                stopLossLikelyTriggered = exitPrice <= closedSnapshot.StopLoss + stopTolerance;
-                            else
-                                stopLossLikelyTriggered = exitPrice >= closedSnapshot.StopLoss - stopTolerance;
+                            decimal tol = closedSnapshot.StopLoss * 0.002m; // 0.2% 허용
+                            slFilled = closedSnapshot.IsLong
+                                ? exitPrice <= closedSnapshot.StopLoss + tol
+                                : exitPrice >= closedSnapshot.StopLoss - tol;
                         }
-
-                        string externalExitReason = stopLossLikelyTriggered
-                            ? $"STOP_LOSS_EXTERNAL_SYNC (SL={closedSnapshot.StopLoss:F8})"
-                            : "EXTERNAL_CLOSE_SYNC";
+                        if (!slFilled && closedSnapshot.TakeProfit > 0)
+                        {
+                            decimal tol = closedSnapshot.TakeProfit * 0.002m;
+                            tpFilled = closedSnapshot.IsLong
+                                ? exitPrice >= closedSnapshot.TakeProfit - tol
+                                : exitPrice <= closedSnapshot.TakeProfit + tol;
+                        }
+                        bool stopLossLikelyTriggered = slFilled;
+                        string externalExitReason = slFilled
+                            ? $"SL_FILLED (봇 손절체결 SL={closedSnapshot.StopLoss:F8})"
+                            : tpFilled
+                                ? $"TP_FILLED (봇 익절체결 TP={closedSnapshot.TakeProfit:F8})"
+                                : "EXTERNAL_CLOSE (수동/외부/청산)";
 
                         decimal closeQty = Math.Abs(closedSnapshot.Quantity);
                         
@@ -5990,7 +6000,7 @@ namespace TradingBot
                         var syncCloseLog = new TradeLog(
                             pos.Symbol,
                             closedSnapshot.IsLong ? "SELL" : "BUY",
-                            stopLossLikelyTriggered ? "STOP_LOSS_EXTERNAL_SYNC" : "EXTERNAL_CLOSE_SYNC",
+                            slFilled ? "SL_FILLED" : tpFilled ? "TP_FILLED" : "EXTERNAL_CLOSE",
                             exitPrice,
                             closedSnapshot.AiScore,
                             DateTime.Now,
@@ -6008,8 +6018,9 @@ namespace TradingBot
                         bool synced = await _dbManager.TryCompleteOpenTradeAsync(syncCloseLog);
                         if (synced)
                         {
-                            OnStatusLog?.Invoke($"📝 {pos.Symbol} 외부 청산 감지 → TradeHistory 반영 완료");
-                            OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부청산", "거래소 계좌 업데이트 기준 외부 청산을 감지하여 TradeHistory에 반영했습니다.");
+                            string fillKind = slFilled ? "손절(SL) 체결" : tpFilled ? "익절(TP) 체결" : "외부/수동 청산";
+                            OnStatusLog?.Invoke($"📝 {pos.Symbol} {fillKind} → TradeHistory 반영 완료");
+                            OnExternalSyncStatusChanged?.Invoke(pos.Symbol, fillKind, $"{externalExitReason} 감지하여 TradeHistory에 반영했습니다.");
 
                             // [v5.10.89] 텔레그램 알림은 DbManager.TryCompleteOpenTradeAsync INSERT 지점에서 중앙 처리
 
@@ -6268,10 +6279,20 @@ namespace TradingBot
                         }
                         catch { /* 진단 로그 실패는 무시 */ }
 
+                        // [v5.23.99] 부분청산이 봇 TP1(1차 익절) 체결이면 명확히 라벨 — "외부" 혼란 제거.
+                        bool partTpFilled = existing.TakeProfit > 0 && (existing.IsLong
+                            ? syncExitPrice >= existing.TakeProfit * 0.998m
+                            : syncExitPrice <= existing.TakeProfit * 1.002m);
+                        // ※ 라벨에 "PARTIAL" 유지 — DbManager 부분청산 라우팅이 "Partial" 키워드로 분기(v5.10.68)
+                        string partLabel = partTpFilled ? "TP1_PARTIAL_FILLED" : "PARTIAL_CLOSE";
+                        string partReason = partTpFilled
+                            ? $"TP1_PARTIAL_FILLED (봇 1차 익절 부분체결 TP={existing.TakeProfit:F8})"
+                            : "PARTIAL_CLOSE (부분청산)";
+
                         var externalPartialLog = new TradeLog(
                             pos.Symbol,
                             existing.IsLong ? "SELL" : "BUY",
-                            "EXTERNAL_PARTIAL_CLOSE_SYNC",
+                            partLabel,
                             syncExitPrice,
                             existing.AiScore,
                             DateTime.Now,
@@ -6283,14 +6304,15 @@ namespace TradingBot
                             Quantity = externalClosedQty,
                             EntryTime = existing.EntryTime == default ? DateTime.Now : existing.EntryTime,
                             ExitTime = DateTime.Now,
-                            ExitReason = "EXTERNAL_PARTIAL_CLOSE_SYNC"
+                            ExitReason = partReason
                         };
 
                         bool synced = await _dbManager.RecordPartialCloseAsync(externalPartialLog);
                         if (synced)
                         {
-                            OnStatusLog?.Invoke($"📝 {pos.Symbol} 외부 부분청산 감지 → TradeHistory 반영 완료 (청산={externalClosedQty})");
-                            OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부부분", $"외부 부분청산 감지: 청산 {externalClosedQty}");
+                            string partKind = partTpFilled ? "1차 익절(TP1) 체결" : "부분청산";
+                            OnStatusLog?.Invoke($"📝 {pos.Symbol} {partKind} → TradeHistory 반영 완료 (청산={externalClosedQty})");
+                            OnExternalSyncStatusChanged?.Invoke(pos.Symbol, partKind, $"{partReason}: 청산 {externalClosedQty}");
                             // [v5.10.89] 부분청산 텔레그램은 DbManager.RecordPartialCloseAsync에서 중앙 처리
 
                             // [v5.23.61] 외부청산 중복기록 방지 (idempotency 1차 방어):

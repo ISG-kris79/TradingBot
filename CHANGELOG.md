@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.99] - 2026-06-24
+
+### 🏷️ 청산 라벨 명확화 — "외부청산" 혼란 제거 (사용자 지정)
+
+- **배경**: 봇이 거래소에 걸어둔 자신의 SL/TP/트레일링 주문이 체결되면, WebSocket ACCOUNT_UPDATE로 인식해 `EXTERNAL_CLOSE_SYNC`/`EXTERNAL_PARTIAL_CLOSE_SYNC`로 기록 → "외부청산"처럼 보여 혼란. 실제론 봇 자신의 손절/익절 체결.
+- **풀청산 라벨** ([TradingEngine.cs](TradingEngine.cs) HandleAccountUpdate): 청산가가 SL이면 `SL_FILLED`, TP면 `TP_FILLED`, 그 외만 `EXTERNAL_CLOSE`(수동/외부). 상태 메시지도 "손절(SL) 체결"/"익절(TP) 체결"/"외부·수동 청산"으로 구분.
+- **부분청산 라벨**: TP1 부분체결이면 `TP1_PARTIAL_FILLED`, 그 외 `PARTIAL_CLOSE`. (라벨에 "PARTIAL" 유지 — DbManager 부분청산 라우팅 호환)
+- **안전성**: "EXTERNAL_CLOSE_SYNC" 등 정확매칭 소비처 없음 확인. 서킷브레이커 PnL은 이제 봇 SL/TP 손익을 정확히 포함(기존엔 "EXTERNAL"이라 잘못 제외), 진짜 외부/수동만 제외 유지.
+
 ## [5.23.98] - 2026-06-23
 
 ### 🎯 LCC를 jdehorty 충실본으로 복원 — 강신호 + 신호전환 + 필터 (3년 OOS 검증)
