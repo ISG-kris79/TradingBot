@@ -973,7 +973,9 @@ namespace TradingBot
             //   필수·안전체크(설정/슬롯/수동청산쿨다운/메이저토글/시총/스코어카드) + 1h 대세필터(위 v5.23.93) 적용하고,
             //   M15_RANGE_TOP·1h방향 외 단기필터(5mRSI / 15mBB / 꼬리 / 낙하나이프)는 건너뜀.
             //   진입 판단은 LorentzianGuard(=jdehorty LCC: KNN+Volatility+Regime+Kernel) 단독.
-            if (srcU.Contains("LORENTZIAN")) { blockReason = ""; return true; }
+            // [v5.23.97] RSI2 과매도반등도 트레이딩 필터 우회 — 딥(EMA20 아래) 매수라 BELOW_1H_EMA20 통과 필요.
+            //   RSI2 진입조건(SMA200 위 + BTC강세)이 추세/레짐 보호를 자체 담당. 필수체크(슬롯/시총/스코어카드)는 위에서 적용됨.
+            if (srcU.Contains("LORENTZIAN") || srcU.Contains("RSI2")) { blockReason = ""; return true; }
 
             // [v5.23.39] 1h EMA20 추세 필터 — 모든 진입 경로 최상위 가드 (사용자 원칙)
             //   "5분·15분봉은 속도, 방향은 1시간봉. KNN 승률 아무리 좋아도 1h EMA20 아래는 떨어지는 칼날"
@@ -4442,6 +4444,8 @@ namespace TradingBot
                 try
                 {
                     await AnalyzeLorentzianEntryAsync(symbol, currentPrice, token);
+                    // [v5.23.97] RSI2 과매도 반등 — 검증된 흑자 전략(승률 66%) 병행
+                    await AnalyzeRsi2ReversalEntryAsync(symbol, currentPrice, token);
                 }
                 catch (Exception ex)
                 {
@@ -4805,6 +4809,68 @@ namespace TradingBot
             _lorentzianCooldown[symbol] = DateTime.UtcNow;
             OnStatusLog?.Invoke($"🟢 [LORENTZIAN] {symbol} 진입 | 순수 LCC 신호 | KNN WR={guard.KnnWinRate:F2} pred={guard.KnnPrediction} regime={guard.RegimeSlope:F2}");
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "LORENTZIAN", skipAiGateCheck: false);
+        }
+
+        // [v5.23.97] RSI2 과매도 반등 전략 — 3년·119코인 OOS 검증(승률 66%, 기대 +0.103%/건, 과최적화 아님).
+        //   진입: 1h RSI(2)<5 + 종가>SMA200(상승추세) + BTC 1h 종가>EMA50(강세장). 손절 -5%(고정).
+        //   청산(익절): 1h 종가가 EMA10 회복 → PositionMonitorService.TryRsi2Ema10ExitAsync 담당.
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _rsi2Cooldown = new();
+        private async Task AnalyzeRsi2ReversalEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            if (!IsEntryAllowed(symbol, "RSI2_REVERSAL", out _)) return;
+            if (_rsi2Cooldown.TryGetValue(symbol, out var lastE) && DateTime.UtcNow - lastE < TimeSpan.FromHours(2)) return;
+            lock (_posLock)
+            {
+                if (_activePositions.TryGetValue(symbol, out var ex) && ex != null && Math.Abs(ex.Quantity) > 0) return;
+            }
+
+            var k1hRaw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 260, token);
+            var k1h = k1hRaw as List<IBinanceKline> ?? (k1hRaw != null ? new List<IBinanceKline>(k1hRaw) : null);
+            if (k1h == null || k1h.Count < 210) return;
+            int li = k1h.Count - 2;                          // 마지막 '마감' 1h봉
+            double rsi2 = CalcRsiClose(k1h, li, 2);
+            double sma200 = CalcSmaClose(k1h, li, 200);
+            double close = (double)k1h[li].ClosePrice;
+            if (!(rsi2 < 5.0 && close > sma200)) return;       // 과매도 + 상승추세
+
+            var btcRaw = await GetMultiTfKlinesThrottledAsync("BTCUSDT", KlineInterval.OneHour, 60, token);
+            var btc = btcRaw as List<IBinanceKline> ?? (btcRaw != null ? new List<IBinanceKline>(btcRaw) : null);
+            if (btc == null || btc.Count < 52) return;
+            int bi = btc.Count - 2;
+            if ((double)btc[bi].ClosePrice <= CalcEmaClose(btc, bi, 50)) return;   // BTC 강세장 아님 → 스킵
+
+            _rsi2Cooldown[symbol] = DateTime.UtcNow;
+            OnStatusLog?.Invoke($"🟢 [RSI2_REVERSAL] {symbol} 진입 | RSI2={rsi2:F1}<5 + 종가>SMA200 + BTC강세 | SL=-5%");
+            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "RSI2_REVERSAL",
+                customStopLossPrice: currentPrice * 0.95m, skipAiGateCheck: true);
+        }
+
+        // [v5.23.97] RSI2 전략용 지표 (종가 기준, 라이브 자체계산).
+        private static double CalcSmaClose(List<IBinanceKline> k, int idx, int p)
+        {
+            if (idx < p - 1) return (double)k[idx].ClosePrice;
+            double s = 0; for (int i = idx - p + 1; i <= idx; i++) s += (double)k[i].ClosePrice; return s / p;
+        }
+        private static double CalcEmaClose(List<IBinanceKline> k, int idx, int p)
+        {
+            if (idx < p - 1) return (double)k[idx].ClosePrice;
+            double m = 2.0 / (p + 1), ema = (double)k[idx - p + 1].ClosePrice;
+            for (int i = idx - p + 2; i <= idx; i++) ema = (double)k[i].ClosePrice * m + ema * (1 - m);
+            return ema;
+        }
+        private static double CalcRsiClose(List<IBinanceKline> k, int idx, int p)  // Wilder RSI (Skender 일치)
+        {
+            if (idx < p + 1) return 50.0;
+            double ag = 0, al = 0;
+            for (int i = 1; i <= p; i++) { double c = (double)(k[i].ClosePrice - k[i - 1].ClosePrice); if (c > 0) ag += c; else al -= c; }
+            ag /= p; al /= p;
+            for (int i = p + 1; i <= idx; i++)
+            {
+                double c = (double)(k[i].ClosePrice - k[i - 1].ClosePrice), g = c > 0 ? c : 0, l = c < 0 ? -c : 0;
+                ag = (ag * (p - 1) + g) / p; al = (al * (p - 1) + l) / p;
+            }
+            if (al < 1e-12) return 100.0;
+            return 100.0 - 100.0 / (1.0 + ag / al);
         }
 
         // [v5.23.4] 진입 대기 → 1분봉 정밀 트리거: currentPrice > 직전 1m high AND currentPrice > 1m EMA20
@@ -7887,9 +7953,10 @@ namespace TradingBot
             // [v5.23.86] LCC(Lorentzian) 단일 진입 정책 (사용자 지시: LCC 외 모든 진입로직 폐기).
             //   자동진입 funnel은 source=LORENTZIAN 만 통과 — 단일 차단점. 어떤 잔존 디스패치도 여기서 전부 차단.
             //   (수동진입 ManualEntryAsync 는 이 funnel 안 거침 → 영향 없음.)
-            if (!string.Equals(signalSource, "LORENTZIAN", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(signalSource, "LORENTZIAN", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(signalSource, "RSI2_REVERSAL", StringComparison.OrdinalIgnoreCase))   // [v5.23.97] RSI2 검증전략 허용
             {
-                OnStatusLog?.Invoke($"⛔ [LCC_ONLY] {symbol} {signalSource} 차단 — LCC(Lorentzian) 단일 진입 정책 (그 외 진입로직 전부 폐기)");
+                OnStatusLog?.Invoke($"⛔ [LCC_ONLY] {symbol} {signalSource} 차단 — LCC/RSI2 외 진입로직 전부 폐기");
                 return;
             }
 

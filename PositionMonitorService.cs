@@ -1280,6 +1280,8 @@ namespace TradingBot.Services
 
                     // [v5.23.96] 반전 캔들 조기청산 (사용자 지정)
                     if (await TryReversalCandleExitAsync(symbol, currentROE, token)) break;
+                    // [v5.23.97] RSI2 전략 EMA10 회복 익절
+                    if (await TryRsi2Ema10ExitAsync(symbol, currentROE, token)) break;
 
                     lock (_posLock)
                     {
@@ -1394,6 +1396,8 @@ namespace TradingBot.Services
 
                 // [v5.23.96] 반전 캔들 조기청산 (사용자 지정) — PUMP/알트도 추세꺾임 시 즉시 청산
                 if (await TryReversalCandleExitAsync(symbol, currentROE, token)) break;
+                // [v5.23.97] RSI2 전략 EMA10 회복 익절
+                if (await TryRsi2Ema10ExitAsync(symbol, currentROE, token)) break;
 
                 // [v5.10.45] 본절 전환: ROE >= PumpBreakEvenRoe → SL 취소 후 본절가 서버 등록
                 if (!isBreakEvenTriggered && currentROE >= pumpBreakEvenRoe)
@@ -1676,6 +1680,37 @@ namespace TradingBot.Services
                 OnLog?.Invoke($"🕯️ {symbol} 반전캔들 조기청산 | ROE={currentROE:F1}% (음봉 작은몸통 긴꼬리 → 추세꺾임)");
                 await ExecuteMarketClose(symbol, $"반전캔들 청산 (ROE {currentROE:F1}%)", token);
                 return true;
+            }
+            catch { return false; }
+        }
+
+        // [v5.23.97] RSI2 전략 익절 — 1h 종가가 EMA10 회복 시 청산 (검증된 청산규칙). RSI2 포지션 한정, 5분 스로틀.
+        private readonly Dictionary<string, DateTime> _rsi2ExitCheck = new();
+        private async Task<bool> TryRsi2Ema10ExitAsync(string symbol, decimal currentROE, CancellationToken token)
+        {
+            try
+            {
+                string src;
+                lock (_posLock) { if (!_activePositions.TryGetValue(symbol, out var p) || p == null) return false; src = p.EntrySignalSource ?? ""; }
+                if (src.IndexOf("RSI2", StringComparison.OrdinalIgnoreCase) < 0) return false;
+                lock (_rsi2ExitCheck)
+                {
+                    if (_rsi2ExitCheck.TryGetValue(symbol, out var t) && (DateTime.UtcNow - t).TotalMinutes < 5) return false;
+                    _rsi2ExitCheck[symbol] = DateTime.UtcNow;
+                }
+                var kRaw = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneHour, 50, token);
+                var k = kRaw as List<IBinanceKline> ?? (kRaw != null ? new List<IBinanceKline>(kRaw) : null);
+                if (k == null || k.Count < 15) return false;
+                int li = k.Count - 2;                          // 마지막 마감 1h봉
+                double m = 2.0 / 11.0, ema = (double)k[0].ClosePrice;
+                for (int i = 1; i <= li; i++) ema = (double)k[i].ClosePrice * m + ema * (1 - m);
+                if ((double)k[li].ClosePrice > ema)
+                {
+                    OnLog?.Invoke($"🟢 {symbol} RSI2 EMA10 회복 익절 | ROE={currentROE:F1}% (1h 종가>EMA10)");
+                    await ExecuteMarketClose(symbol, $"RSI2 EMA10 회복 익절 (ROE {currentROE:F1}%)", token);
+                    return true;
+                }
+                return false;
             }
             catch { return false; }
         }

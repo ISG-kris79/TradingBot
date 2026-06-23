@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.23.97] - 2026-06-23
+
+### 📈 RSI2 과매도 반등 전략 추가 — 3년 OOS 검증된 흑자 로직 (LCC 병행)
+
+- **배경**: 3년·119코인 체계적 탐색(앞70% 탐색/뒤30% OOS 검증)으로 발견. 승률 66%, 기대 +0.103%/건, IS=OOS 일치(과최적화 아님). 고승률 평균회귀 전략 중 유일하게 흑자.
+- **진입** ([TradingEngine.cs](TradingEngine.cs) `AnalyzeRsi2ReversalEntryAsync`): 1h `RSI(2)<5`(깊은 과매도) + `종가>SMA200`(상승추세) + `BTC 1h 종가>EMA50`(강세장). 셋 다 충족 시 LONG. 2h 쿨다운. 진입경로는 LCC와 병행(스캔에 추가), `LCC_ONLY` 차단점에 RSI2 허용, IsEntryAllowed 게이트는 딥매수라 BELOW_1H_EMA20 우회(추세/레짐 보호는 진입조건 자체가 담당).
+- **청산**: 손절 -5% 고정(`customStopLossPrice`, 서버SL). 익절 = 1h 종가가 EMA10 회복 시([PositionMonitorService.cs](PositionMonitorService.cs) `TryRsi2Ema10ExitAsync`, RSI2 포지션 한정·5분 스로틀).
+- **의미**: "높은 승률(66%) + 진짜 흑자"를 데이터 탐색으로 찾아 반영. $100·10x 기준 건당 평균 +$1.03(변동성 큼).
+
 ## [5.23.96] - 2026-06-22
 
 ### 🕯️ 손실 차단 #1 — 캔들 형태 진입금지 + 반전캔들 조기청산 (사용자 지정)
