@@ -1652,6 +1652,16 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
+    -- [v5.24.0] 중복기록 차단 — 같은 포지션(UserId+Symbol+진입시각±90초)이 이미 청산기록돼 있으면 INSERT 스킵.
+    --   증상: 한 포지션을 풀청산/부분청산/팬텀/동기화 여러 경로가 각자 closed행 추가 → PnL 다중계산(LAB 3중).
+    --   진입시각으로 식별 → 서버 시계 어긋남과 무관. UPDLOCK/HOLDLOCK 으로 동시삽입 레이스도 차단.
+    IF EXISTS (
+        SELECT 1 FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+        WHERE UserId = @UserId AND Symbol = @Symbol AND IsClosed = 1
+          AND ABS(DATEDIFF(SECOND, EntryTime, @EntryTime)) <= 90
+    )
+        RETURN;   -- 중복 → 삽입하지 않음
+
     INSERT INTO dbo.TradeHistory
         (UserId, Symbol, Side, Strategy, EntryPrice, ExitPrice, Quantity, AiScore, PnL, PnLPercent, ExitReason, EntryTime, ExitTime, IsClosed, CloseVerified, IsSimulation, Category, LastUpdatedAt)
     VALUES

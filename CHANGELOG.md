@@ -5,6 +5,18 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.24.0] - 2026-06-27
+
+### 🔧 매매기록 중복기록(dup) 차단 — PnL 다중계산 fix (사용자 지정)
+
+- **증상**: 한 포지션이 청산될 때 풀청산/부분청산/팬텀/동기화 여러 핸들러가 각자 closed행을 추가 → 같은 진입이 2~3행 기록(LAB 1진입 3행, PnL +16.5/-126/-84로 3중계산). 기록·화면 혼란 + PnL 손상.
+- **원인** ([DbManager.cs](DbManager.cs) `TryCompleteOpenTradeAsync`): 부분청산이 open행을 이미 닫은 뒤, 풀청산(ACCOUNT_UPDATE)이 open행을 못 찾자 `sp_InsertClosedTrade`로 새 closed행을 또 INSERT.
+- **2중 방어**:
+  - C# 가드: 풀청산 INSERT 전, 같은 포지션(UserId+Symbol+진입시각±90초)이 이미 청산기록됐으면 스킵.
+  - SP 가드 ([DbProcedures.cs](DbProcedures.cs) `sp_InsertClosedTrade`): IF EXISTS(동일 진입시각 청산행) RETURN — 전 경로(팬텀/SYNC_RESTORED 포함) 한 번에 차단. UPDLOCK/HOLDLOCK으로 동시삽입 레이스도 차단.
+- 진입시각으로 식별 → 서버 시계 어긋남과 무관. 같은 심볼 재진입(진입시각 다름)은 정상 기록.
+- ※ 신규 dup만 차단. 과거 손상 행은 별도 정리 필요(미포함).
+
 ## [5.23.99] - 2026-06-24
 
 ### 🏷️ 청산 라벨 명확화 — "외부청산" 혼란 제거 (사용자 지정)

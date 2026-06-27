@@ -1307,6 +1307,23 @@ ORDER BY EntryTime DESC, Id DESC;",
 
                 if (openTrade == null)
                 {
+                    // [v5.24.0] 중복기록 차단 — 같은 포지션(동일 진입시각)이 이미 다른 경로(부분청산/동기화)로
+                    //   청산기록됐는데, open행이 없자 풀청산이 새 closed행을 또 INSERT하던 버그(LAB 3중기록) fix.
+                    //   진입시각(±90초)으로 식별 → 서버 시계 어긋남과 무관. 이미 있으면 INSERT 스킵.
+                    DateTime dedupEntryTime = log.EntryTime == default ? exitTime : log.EntryTime;
+                    var dupId = await db.QueryFirstOrDefaultAsync<long?>(@"
+SELECT TOP (1) Id FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
+WHERE UserId=@UserId AND Symbol=@Symbol AND IsClosed=1
+  AND ABS(DATEDIFF(SECOND, EntryTime, @EntryTime)) <= 90
+ORDER BY Id DESC;",
+                        new { UserId = userId, log.Symbol, EntryTime = dedupEntryTime }, tx);
+                    if (dupId != null)
+                    {
+                        await tx.CommitAsync();
+                        MainWindow.Instance?.AddLog($"ℹ️ [DB] {log.Symbol} 풀청산 중복 차단 (동일 진입시각 청산행 Id={dupId} 존재) → INSERT 스킵");
+                        return true;
+                    }
+
                     string entrySide = InferEntrySideFromCloseSide(log.Side);
                     string fallbackStrategy = string.IsNullOrWhiteSpace(log.Strategy) ? "EXTERNAL_CLOSE_SYNC" : log.Strategy;
                     decimal entryPrice = log.EntryPrice > 0 ? log.EntryPrice : exitPrice;
