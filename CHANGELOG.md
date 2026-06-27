@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.24.1] - 2026-06-27
+
+### 🔓 글로벌 BTC강세 필터 제거 — 개별 코인 강세면 BTC 약세여도 진입 (사용자 지정 B)
+
+- **배경**: BTC가 48h 내내 약세(EMA50 아래)라 SOL +12% 반등에도 진입 0건. 두 전략 다 글로벌 BTC 필터가 막음. 사용자 요청 — 개별 코인이 자체 상승추세면 진입 허용.
+- **RSI2** ([TradingEngine.cs](TradingEngine.cs) AnalyzeRsi2ReversalEntryAsync): 글로벌 `BTC>EMA50` 제거. 코인 자체 `RSI2<5 + 종가>SMA200`(상승추세)만으로 진입. 검증: BTC강세 제외 시 OOS +0.053%/건 62%WR (포함 +0.103%보다 얇지만 흑자, 매매 ~2배).
+- **LCC** (IsEntryAllowedCore): 글로벌 `LCC_BTC_1H_DOWNTREND` 게이트 제거. 하락보호는 코인 자체 regime + 1h EMA20(`LCC_BELOW_1H_EMA20`)가 담당 — 검증 LCC도 BTC게이트 없이 OOS 흑자.
+- **트레이드오프**: 하락장 노출↑. 1차 방어 = 코인 자체 SMA200 상승추세(칼날 회피) + 손절 -5%. 코인별 강세 판단으로 전환.
+
 ## [5.24.0] - 2026-06-27
 
 ### 🔧 매매기록 중복기록(dup) 차단 — PnL 다중계산 fix (사용자 지정)

@@ -956,7 +956,9 @@ namespace TradingBot
                             if (rc.Count >= 12 && rc[0].ClosePrice > 0)
                             {
                                 decimal btcChg = (rc[^1].ClosePrice - rc[0].ClosePrice) / rc[0].ClosePrice * 100m;
-                                if (btcChg <= -0.5m)
+                                // [v5.24.1] 글로벌 BTC 하락장 게이트 제거 (사용자 지정 B) — 개별 코인 강세면 BTC 약세여도 진입.
+                                //   하락방향 보호는 코인 자체 regime + 1h EMA20(LCC_BELOW_1H_EMA20)가 담당. 검증 LCC도 BTC게이트 없이 OOS 흑자.
+                                if (false && btcChg <= -0.5m)
                                 {
                                     blockReason = $"LCC_BTC_1H_DOWNTREND ({btcChg:F2}% <= -0.5%)";
                                     OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (BTC 하락장 — LCC 대세필터)");
@@ -4846,16 +4848,14 @@ namespace TradingBot
             double rsi2 = CalcRsiClose(k1h, li, 2);
             double sma200 = CalcSmaClose(k1h, li, 200);
             double close = (double)k1h[li].ClosePrice;
-            if (!(rsi2 < 5.0 && close > sma200)) return;       // 과매도 + 상승추세
+            if (!(rsi2 < 5.0 && close > sma200)) return;       // 과매도 + 상승추세(코인 자체)
 
-            var btcRaw = await GetMultiTfKlinesThrottledAsync("BTCUSDT", KlineInterval.OneHour, 60, token);
-            var btc = btcRaw as List<IBinanceKline> ?? (btcRaw != null ? new List<IBinanceKline>(btcRaw) : null);
-            if (btc == null || btc.Count < 52) return;
-            int bi = btc.Count - 2;
-            if ((double)btc[bi].ClosePrice <= CalcEmaClose(btc, bi, 50)) return;   // BTC 강세장 아님 → 스킵
+            // [v5.24.1] 글로벌 BTC강세 필터 제거 (사용자 지정 B) — 개별 코인이 SMA200 위(상승추세)면 BTC 약세여도 진입.
+            //   검증: RSI2<5 + SMA200상승 (BTC강세 제외) = OOS +0.053%/건 62%WR (BTC강세 포함 +0.103%보다 얇지만 흑자).
+            //   하락장 노출↑이라 손절 -5%가 1차 방어. 코인 자체 상승추세(SMA200)가 칼날 회피.
 
             _rsi2Cooldown[symbol] = DateTime.UtcNow;
-            OnStatusLog?.Invoke($"🟢 [RSI2_REVERSAL] {symbol} 진입 | RSI2={rsi2:F1}<5 + 종가>SMA200 + BTC강세 | SL=-5%");
+            OnStatusLog?.Invoke($"🟢 [RSI2_REVERSAL] {symbol} 진입 | RSI2={rsi2:F1}<5 + 종가>SMA200 (코인 상승추세) | SL=-5%");
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "RSI2_REVERSAL",
                 customStopLossPrice: currentPrice * 0.95m, skipAiGateCheck: true);
         }
