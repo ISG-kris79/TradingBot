@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.24.3] - 2026-06-28
+
+### 🕯️ LCC 진입 캔들필터(PREV_LONG_TAIL/BEARISH_REVERSAL) 제거 — 상승추세 펌핑 놓침 fix (사용자 A)
+
+- **배경**: 24h +20%↑ 펌핑 9개 중 7개가 상승추세인데 진입 0건. 유니버스 안 + 상승추세(VELVET+56%/BEAT/SLX)도 안 들어감. 차단 분석: REGIME + `CANDLE`(꼬리>몸통/반전캔들, 1670건). 펌핑 돌파봉은 꼬리가 길어 캔들필터에 자주 걸림.
+- **변경** ([Services/LorentzianV2/LorentzianGuard.cs](Services/LorentzianV2/LorentzianGuard.cs)): LCC 진입 캔들필터 2종(`PREV_LONG_TAIL`/`BEARISH_REVERSAL`, v5.23.96 추가분) 비활성화. 검증 jdehorty 구성엔 없던 봇 추가 필터.
+- 반전캔들 '청산'(PositionMonitorService)은 유지 — 진입만 풀어 상승추세 LCC 신호 통과. 하락보호는 jdehorty regime 단독.
+- ※ 누적 완화(v5.24.1 BTC게이트 / .2 BELOW_1H_EMA20 / .3 캔들)로 LCC가 검증 jdehorty 순정에 근접. REGIME/SMA200(검증필터)은 유지.
+
 ## [5.24.2] - 2026-06-28
 
 ### 🔓 LCC_BELOW_1H_EMA20 게이트 제거 — 검증 jdehorty 구성과 일치 (사용자 지정 A)

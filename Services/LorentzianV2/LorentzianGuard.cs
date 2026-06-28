@@ -105,12 +105,12 @@ namespace TradingBot.Services.LorentzianV2
                 return r;
             }
 
-            // 9) [v5.23.96] 캔들 형태 진입금지 (사용자 지정) — 직전 마감봉 기준.
-            //   (1) 꼬리(상+하)가 몸통보다 길면 = 거부/롱윅 캔들 → 진입금지
-            //   (2) 음봉 + 작은몸통 + 긴꼬리 = 반전·소진 캔들 → 진입금지
+            // 9) [v5.24.3] 캔들 형태 진입금지 제거 (사용자 지정 A) — 검증 jdehorty 구성엔 없던 봇 추가 필터.
+            //   펌핑 돌파봉은 꼬리가 길어 PREV_LONG_TAIL/BEARISH_REVERSAL에 자주 걸려 상승추세 LCC 진입을 막던 문제.
+            //   (반전캔들 '청산'(PositionMonitorService)은 유지 — 진입만 푼다.)
             var lastCandle = kl[idx];
-            if (IsLongTail(lastCandle)) { r.BlockReason = "PREV_LONG_TAIL (꼬리>몸통 거부캔들)"; return r; }
-            if (IsBearishReversalCandle(lastCandle)) { r.BlockReason = "BEARISH_REVERSAL (음봉 작은몸통 긴꼬리)"; return r; }
+            if (false && IsLongTail(lastCandle)) { r.BlockReason = "PREV_LONG_TAIL (꼬리>몸통 거부캔들)"; return r; }
+            if (false && IsBearishReversalCandle(lastCandle)) { r.BlockReason = "BEARISH_REVERSAL (음봉 작은몸통 긴꼬리)"; return r; }
 
             // [v5.23.90] 아래 3개 커스텀 가드(BB_MID_BELOW / BB_WALK_BROKEN / CONSOL) 비활성화 —
             //   전부 "close가 중심선 위 / 박스 상단 돌파"를 요구 = 눌림(하단 지지) 매수와 정면 충돌, 오히려 꼭대기 추격 강요.
