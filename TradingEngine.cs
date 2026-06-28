@@ -933,7 +933,9 @@ namespace TradingBot
                         for (int q = k1hLcc.Count - 20; q < k1hLcc.Count; q++)
                             ema20 = (decimal)((double)k1hLcc[q].ClosePrice * mult + (double)ema20 * (1 - mult));
                         decimal lastClose = k1hLcc[k1hLcc.Count - 1].ClosePrice;
-                        if (lastClose < ema20)
+                        // [v5.24.2] LCC_BELOW_1H_EMA20 제거 (사용자 지정 A) — 검증된 jdehorty 구성엔 없던 봇 추가 필터.
+                        //   하락보호는 jdehorty regime(코인 자체) 단독. 검증 LCC(LccAnalysis)는 이 게이트 없이 OOS 흑자였음.
+                        if (false && lastClose < ema20)
                         {
                             decimal devPct = ema20 > 0 ? (lastClose - ema20) / ema20 * 100m : 0m;
                             blockReason = $"LCC_BELOW_1H_EMA20:px={lastClose:F6}/ema={ema20:F6}({devPct:F2}%)";

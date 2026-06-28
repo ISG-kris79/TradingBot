@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.24.2] - 2026-06-28
+
+### 🔓 LCC_BELOW_1H_EMA20 게이트 제거 — 검증 jdehorty 구성과 일치 (사용자 지정 A)
+
+- **배경**: v5.24.1로 글로벌 BTC게이트 제거 후에도 진입 0건. 차단 1순위가 REGIME(84k) + `BELOW_1H_EMA20`(27k). REGIME/SMA200은 검증된 필터라 유지하되, `BELOW_1H_EMA20`은 검증 LCC 구성(LccAnalysis)에 없던 봇 추가 필터 → 제거.
+- **변경** ([TradingEngine.cs](TradingEngine.cs) IsEntryAllowedCore): LCC `LCC_BELOW_1H_EMA20`(코인 1h 종가<EMA20) 게이트 비활성화. 하락보호는 jdehorty regime(코인 자체) 단독 — 검증 LCC도 이 게이트 없이 OOS 흑자였음.
+- 진입 약간↑. 단 시장이 하락장이면 REGIME/SMA200(검증 필터)이 여전히 (정상) 차단 → 근본 진입 부족은 하락장 자체.
+
 ## [5.24.1] - 2026-06-27
 
 ### 🔓 글로벌 BTC강세 필터 제거 — 개별 코인 강세면 BTC 약세여도 진입 (사용자 지정 B)
