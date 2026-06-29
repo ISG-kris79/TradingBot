@@ -5077,6 +5077,7 @@ ORDER BY CloseTime DESC, Id DESC", new { UserId = userId }, commandTimeout: 30);
         private static readonly System.Windows.Media.Brush BrYellow = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFB, 0xBF, 0x24));
         private static readonly System.Windows.Media.Brush BrRed = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xF8, 0x71, 0x71));
         private static readonly System.Windows.Media.Brush BrGray = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x9C, 0xA3, 0xAF));
+        private static readonly System.Windows.Media.Brush BrOrange = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFB, 0x92, 0x3C));
 
         public void RefreshNearEntrySnapshot()
         {
@@ -5086,52 +5087,66 @@ ORDER BY CloseTime DESC, Id DESC", new { UserId = userId }, commandTimeout: 30);
                 var snap = _engine.GetNearEntrySnapshot();
                 if (snap == null) return;
 
-                var rows = new List<TradingBot.Models.NearEntryItem>();
+                var built = new List<(TradingBot.Models.NearEntryItem item, int grp, double surge, int prox)>();
                 foreach (var s in snap)
                 {
                     bool knnOk = s.KnnNet >= 4;
                     bool nwOk = s.NwGap >= 0;
                     bool dbbOk = s.DbbRoomPct >= 0;
 
-                    int rank;
-                    string verdict; System.Windows.Media.Brush vColor;
-                    if (s.Passed) { rank = 0; verdict = s.InPool ? "진입가능" : "조건충족(풀밖)"; vColor = s.InPool ? BrGreen : BrGray; }
+                    // [v5.24.7] 진입 근접도 % (100% = 진입조건 충족 → 자동 진입 대상). 직관적 표시.
+                    int prox;
+                    if (s.Passed) prox = 100;
                     else
                     {
-                        int dist = 0;
-                        if (!knnOk) dist += (4 - s.KnnNet) * 10;
-                        if (!nwOk) dist += 5;
-                        if (!dbbOk) dist += (int)Math.Ceiling(-s.DbbRoomPct) + 1;
-                        rank = 1000 + dist;
-                        verdict = "근접 " + dist; vColor = BrYellow;
+                        double p = 100;
+                        if (!knnOk) p -= (4 - s.KnnNet) * 12;       // 강신호 부족(표당 ~12%)
+                        if (!nwOk) p -= 15;                          // NW커널 미상승
+                        if (!dbbOk) p -= Math.Min(20, -s.DbbRoomPct * 4); // 과열
+                        prox = (int)Math.Max(0, Math.Round(p));
                     }
-                    // 풀밖(현재 추적 안 함) 코인은 뒤로 + 회색 — 표시는 하되 실제 진입후보 아님 명시
-                    if (!s.InPool) { rank += 100000; if (!s.Passed) { verdict = "풀밖 " + verdict; vColor = BrGray; } }
+
+                    // 급등 임박 마커
+                    string surgeTxt = ""; System.Windows.Media.Brush surgeCol = BrGray;
+                    if (s.SurgeScore >= 2.0) { surgeTxt = $"🔥{s.SurgeScore:F1}"; surgeCol = BrOrange; }
+                    else if (s.SurgeScore >= 1.3) { surgeTxt = $"↑{s.SurgeScore:F1}"; surgeCol = BrYellow; }
+
+                    string verdict; System.Windows.Media.Brush vColor;
+                    if (s.Passed) { verdict = s.InPool ? "진입가능" : "조건충족(풀밖)"; vColor = s.InPool ? BrGreen : BrGray; }
+                    else { verdict = $"{prox}%"; vColor = !s.InPool ? BrGray : (prox >= 80 ? BrYellow : BrGray); }
 
                     var needs = new List<string>();
                     if (!knnOk) needs.Add($"KNN {4 - s.KnnNet}표↑");
                     if (!nwOk) needs.Add("NW커널 상승전환");
                     if (!dbbOk) needs.Add($"+1σ({s.EntryUpper:G6}) 이하 눌림");
-                    string need = s.Passed ? "✅ 조건 충족" : (needs.Count > 0 ? string.Join(" / ", needs) : "기타 가드");
-                    if (!s.InPool) need = "[추적풀 밖 — 표시전용] " + need;
+                    string need = s.Passed ? "✅ 진입조건 충족 (5m 양봉 마감 시 진입)" : (needs.Count > 0 ? string.Join(" / ", needs) : "기타 가드");
+                    if (!s.InPool) need = "[풀밖·표시전용] " + need;
 
-                    rows.Add(new TradingBot.Models.NearEntryItem
+                    int grp = (s.Passed && s.InPool) ? 0 : 1;   // 진입가능 최상단, 그 외는 급등순
+                    built.Add((new TradingBot.Models.NearEntryItem
                     {
                         Symbol = s.Symbol,
-                        Rank = rank,
                         KnnText = $"KNN {s.KnnNet}/{s.KnnK}",
                         KnnColor = knnOk ? BrGreen : BrGray,
                         NwText = $"NW {(s.NwGap >= 0 ? "↑" : "↓")}",
                         NwColor = nwOk ? BrGreen : BrGray,
                         DbbText = $"DBB {s.DbbRoomPct:+0.0;-0.0}%",
                         DbbColor = dbbOk ? BrGreen : BrRed,
+                        SurgeText = surgeTxt,
+                        SurgeColor = surgeCol,
                         NeedText = need,
                         Verdict = verdict,
                         VerdictColor = vColor
-                    });
+                    }, grp, s.SurgeScore, prox));
                 }
 
-                var ordered = rows.OrderBy(r => r.Rank).ThenBy(r => r.Symbol).Take(16).ToList();
+                // 진입가능 먼저 → 그다음 급등 점수 높은 순(대기 중 급등 임박 우선) → 근접도 높은 순
+                var ordered = built
+                    .OrderBy(x => x.grp)
+                    .ThenByDescending(x => x.surge)
+                    .ThenByDescending(x => x.prox)
+                    .Select(x => x.item)
+                    .Take(16).ToList();
                 RunOnUI(() =>
                 {
                     NearEntryItems.Clear();

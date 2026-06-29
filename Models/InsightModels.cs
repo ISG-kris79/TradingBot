@@ -78,6 +78,9 @@ namespace TradingBot.Models
         // DBB 과열여유%
         public string DbbText { get; set; } = "";
         public Brush DbbColor { get; set; } = Brushes.Gray;
+        // [v5.24.7] 급등 임박 마커 (🔥 점수)
+        public string SurgeText { get; set; } = "";
+        public Brush SurgeColor { get; set; } = Brushes.Gray;
         // 진입까지 필요한 것
         public string NeedText { get; set; } = "";
         // 판정 배지

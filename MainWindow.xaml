@@ -1521,6 +1521,8 @@
                                                                                    FontSize="10" FontFamily="Consolas" Margin="0,0,6,0"/>
                                                                         <TextBlock Text="{Binding DbbText}" Foreground="{Binding DbbColor}"
                                                                                    FontSize="10" FontFamily="Consolas"/>
+                                                                        <TextBlock Text="{Binding SurgeText}" Foreground="{Binding SurgeColor}"
+                                                                                   FontSize="10" FontWeight="Bold" FontFamily="Consolas" Margin="6,0,0,0"/>
                                                                     </StackPanel>
                                                                     <TextBlock Grid.Column="2" Text="{Binding NeedText}" Foreground="#9CA3AF"
                                                                                FontSize="9" FontFamily="Consolas" VerticalAlignment="Center"

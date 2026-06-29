@@ -4751,13 +4751,14 @@ namespace TradingBot
             public double EntryUpper;   // +1σ 가격 (DBB 진입 상한)
             public bool Passed;         // 가드 통과 여부
             public bool InPool;         // 현재 추적풀(실제 진입후보) 여부 — false면 '풀밖'
+            public double SurgeScore;   // [v5.24.7] 급등 임박 점수 (거래량급증×BB스퀴즈×모멘텀)
             public DateTime UpdatedUtc;
         }
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, NearEntryInfo> _nearEntrySnapshot
             = new(StringComparer.OrdinalIgnoreCase);
 
         private void UpdateNearEntrySnapshot(string symbol, LorentzianGuard.FilterResult guard,
-            double nwGap, double dbbRoomPct, double entryUpper)
+            double nwGap, double dbbRoomPct, double entryUpper, double surgeScore)
         {
             _nearEntrySnapshot[symbol] = new NearEntryInfo
             {
@@ -4769,8 +4770,40 @@ namespace TradingBot
                 EntryUpper = entryUpper,
                 Passed = guard.Passed,
                 InPool = _activeTrackingPool.ContainsKey(symbol),
+                SurgeScore = surgeScore,
                 UpdatedUtc = DateTime.UtcNow
             };
+        }
+
+        // [v5.24.7] 급등 임박 점수 — 거래량 급증 × BB 밴드폭 응축(스퀴즈) × 상승 모멘텀.
+        //   높을수록 변동성 폭발(급등) 직전 가능성. 진입 대기 중 우선 노출용(표시 전용).
+        private static double ComputeSurgeScore(List<IBinanceKline> b, int idx)
+        {
+            if (idx < 25) return 0;
+            // 1) 거래량 급증: 마지막 봉 vol / 직전 20봉 평균
+            double lastVol = (double)b[idx].Volume, volSum = 0;
+            for (int i = idx - 20; i < idx; i++) volSum += (double)b[i].Volume;
+            double volAvg = volSum / 20.0;
+            double volRatio = volAvg > 1e-9 ? lastVol / volAvg : 1.0;
+            // 2) BB(20,2) 밴드폭 응축: 현재 폭이 최근 21봉 평균보다 좁으면 에너지 응축(스퀴즈)
+            LorentzianGuard.CalcBB(b, idx, 20, 2.0, out double mid, out double up, out double lo);
+            double bwNow = mid > 1e-9 ? (up - lo) / mid : 0;
+            double bwSum = 0; int cnt = 0;
+            for (int i = idx - 20; i <= idx; i++)
+            {
+                LorentzianGuard.CalcBB(b, i, 20, 2.0, out double m2, out double u2, out double l2);
+                if (m2 > 1e-9) { bwSum += (u2 - l2) / m2; cnt++; }
+            }
+            double bwAvg = cnt > 0 ? bwSum / cnt : bwNow;
+            double squeeze = bwNow > 1e-9 ? Math.Clamp(bwAvg / bwNow, 0.5, 3.0) : 1.0;  // >1 = 현재 좁음(응축)
+            // 3) 상승 모멘텀: 직전 3봉 상승 여부
+            double mom = 0;
+            if (idx >= 3)
+            {
+                if (b[idx].ClosePrice > b[idx - 1].ClosePrice) mom += 0.5;
+                if (b[idx - 1].ClosePrice > b[idx - 3].ClosePrice) mom += 0.5;
+            }
+            return volRatio * squeeze * (0.5 + mom);
         }
 
         /// <summary>[v5.24.6] UI '진입 임박' 패널용 스냅샷 — 최근 4분 내 스캔된 심볼(고정 유니버스 주기 스캔).</summary>
@@ -4860,7 +4893,7 @@ namespace TradingBot
             LorentzianGuard.CalcBB(winE, eiN, 20, 1.0, out _, out double up1N, out _);
             double closeN = (double)winE[eiN].ClosePrice;
             double roomN = up1N > 0 ? (up1N - closeN) / closeN * 100.0 : 0.0;
-            UpdateNearEntrySnapshot(symbol, guard, nwNowN - nwPrevN, roomN, up1N);
+            UpdateNearEntrySnapshot(symbol, guard, nwNowN - nwPrevN, roomN, up1N, ComputeSurgeScore(winE, eiN));
         }
 
         private async Task AnalyzeLorentzianEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
@@ -4937,7 +4970,7 @@ namespace TradingBot
                 LorentzianGuard.CalcBB(winE, eiN, 20, 1.0, out _, out double up1N, out _);
                 double closeN = (double)winE[eiN].ClosePrice;
                 double roomN = up1N > 0 ? (up1N - closeN) / closeN * 100.0 : 0.0;
-                UpdateNearEntrySnapshot(symbol, guard, nwNowN - nwPrevN, roomN, up1N);
+                UpdateNearEntrySnapshot(symbol, guard, nwNowN - nwPrevN, roomN, up1N, ComputeSurgeScore(winE, eiN));
             }
             catch { }
 
