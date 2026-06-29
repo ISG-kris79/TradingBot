@@ -130,6 +130,9 @@ namespace TradingBot.ViewModels
 
         // TradingEngine 속성 노출
         public decimal InitialBalance => _engine?.InitialBalance ?? 0;
+
+        /// <summary>[v5.25.1] 설정 저장 후 ScalpAuto 재적용 (재시작 없이 토글/파라미터 반영).</summary>
+        public void ApplyScalpSettings() => _engine?.RestartScalpAuto();
         // 데이터 컬렉션
         public ObservableCollection<MultiTimeframeViewModel> MarketDataList { get; set; } = new ObservableCollection<MultiTimeframeViewModel>();
         public ObservableCollection<BattleExecutionStep> BattleExecutionSteps { get; } = new ObservableCollection<BattleExecutionStep>();

@@ -402,6 +402,8 @@ namespace TradingBot
             var settingsWindow = new SettingsWindow();
             settingsWindow.Owner = this;
             settingsWindow.ShowDialog();
+            // [v5.25.1] 설정 저장 후 ScalpAuto 재적용 — 재시작 없이 토글/파라미터 반영
+            try { ViewModel?.ApplyScalpSettings(); } catch { }
         }
 
         private void btnProfile_Click(object sender, RoutedEventArgs e)

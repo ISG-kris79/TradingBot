@@ -1666,23 +1666,40 @@ namespace TradingBot
         {
             try
             {
-                if (_settings?.ScalpAutoEnabled != true || _exchangeService == null) return;
+                // [v5.25.1] effective settings = 라이브 저장값(CurrentGeneralSettings) 우선 → 재시작 없이 토글/파라미터 반영.
+                var eff = MainWindow.CurrentGeneralSettings ?? _settings;
+                if (eff?.ScalpAutoEnabled != true || _exchangeService == null) return;
                 if (_scalpAuto != null) return;
-                var syms = (_settings.ScalpSymbols ?? "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT")
+                var syms = (eff.ScalpSymbols ?? "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT")
                     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
                 _scalpAuto = new TradingBot.Scalp.ScalpAutoTrader(
                     _exchangeService,
                     msg => OnStatusLog?.Invoke(msg),
                     () => (MainWindow.CurrentGeneralSettings ?? _settings)?.ScalpAutoEnabled == true,
                     syms,
-                    _settings.ScalpInterval ?? "15m",
-                    _settings.ScalpLeverage > 0 ? _settings.ScalpLeverage : 10,
-                    _settings.ScalpMarginUsdt > 0 ? _settings.ScalpMarginUsdt : 20m,
-                    _settings.ScalpMaxPositions > 0 ? _settings.ScalpMaxPositions : 3);
+                    eff.ScalpInterval ?? "15m",
+                    eff.ScalpLeverage > 0 ? eff.ScalpLeverage : 10,
+                    eff.ScalpMarginUsdt > 0 ? eff.ScalpMarginUsdt : 20m,
+                    eff.ScalpMaxPositions > 0 ? eff.ScalpMaxPositions : 3);
                 _scalpAuto.Start();
-                OnStatusLog?.Invoke($"🟢 [ScalpAuto] 단타 자동매매 시작 — {_settings.ScalpInterval} · {syms.Length}종목 · margin ${_settings.ScalpMarginUsdt} · {_settings.ScalpLeverage}x");
+                OnStatusLog?.Invoke($"🟢 [ScalpAuto] 단타 자동매매 시작 — {eff.ScalpInterval} · {syms.Length}종목 · margin ${eff.ScalpMarginUsdt} · {eff.ScalpLeverage}x");
             }
             catch (Exception ex) { OnStatusLog?.Invoke($"[ScalpAuto] 시작 실패: {ex.Message}"); }
+        }
+
+        /// <summary>[v5.25.1] 설정 저장 후 재시작 없이 ScalpAuto 재적용 — 토글 ON→시작, OFF→정지, 파라미터 변경→새 값 재생성.</summary>
+        public void RestartScalpAuto()
+        {
+            try
+            {
+                _scalpAuto?.Stop();
+                _scalpAuto = null;
+                TryStartScalpAuto();   // enabled=false면 시작 안 함(=정지 유지), enabled=true면 새 설정으로 시작
+                var eff = MainWindow.CurrentGeneralSettings ?? _settings;
+                if (eff?.ScalpAutoEnabled != true)
+                    OnStatusLog?.Invoke("⚪ [ScalpAuto] 비활성화 상태 — 정지");
+            }
+            catch (Exception ex) { OnStatusLog?.Invoke($"[ScalpAuto] 재적용 실패: {ex.Message}"); }
         }
 
         // [Events] UI와의 통신을 위한 이벤트 정의

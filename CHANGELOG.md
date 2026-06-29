@@ -5,6 +5,19 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.25.1] - 2026-06-30
+
+### 🔧 ScalpAuto 재시작 없이 활성화 — 설정 저장 시 즉시 반영
+- 문제: ScalpAuto(단타 자동매매)가 기본 OFF인데, `TryStartScalpAuto()`가 봇 시작 시 1회만 호출 → 설정에서 켜도 봇 재시작 전엔 안 돌았음(라이브 [ScalpAuto] 로그 0건).
+- 해결: 설정창 저장 후 `RestartScalpAuto()` 호출 → 토글 ON이면 새 설정값(심볼/인터벌/레버리지/마진/최대포지션)으로 즉시 시작, OFF면 정지. 재시작 불필요.
+- TryStartScalpAuto가 라이브 저장값(MainWindow.CurrentGeneralSettings) 우선 사용하도록 변경.
+
+## [5.25.0] - 2026-06-29
+
+### ⚡ CoinFF 단타 자동매매(ScalpAuto) 추가
+- Scalp/ 모듈(ScalpEngine 트리거 진입/대기/회피·롱숏·EMA20·골든크로스·상위TF 경고, PatternEngine, PlanManager) + ScalpAutoTrader(ENTER 시 진입+TP+SL 일괄 등록).
+- TradingSettings에 ScalpAuto 설정 + SettingsWindow '단타 ScalpAuto' 탭. 기본 OFF·테스트넷 권장·확정봉·심볼당 1포지션/쿨다운·기존 파이프라인 무영향.
+
 ## [5.24.7] - 2026-06-29
 
 ### 🔥 진입 임박 — 급등 임박 우선 표시 + 진입 근접도 % 직관화
