@@ -2247,7 +2247,14 @@ ORDER BY Id DESC;",
                     settings.EnableMajorTrading,
                     settings.MaxMajorSlots,
                     settings.MaxPumpSlots,
-                    settings.MaxDailyEntries
+                    settings.MaxDailyEntries,
+                    // [v5.25.2] ScalpAuto 영속화
+                    settings.ScalpAutoEnabled,
+                    settings.ScalpInterval,
+                    settings.ScalpSymbols,
+                    settings.ScalpLeverage,
+                    settings.ScalpMarginUsdt,
+                    settings.ScalpMaxPositions
                 }, commandType: CommandType.StoredProcedure, commandTimeout: 10);
 
                 MainWindow.Instance?.AddLog($"✅ [{userId}] GeneralSettings 저장 완료 (sp_SaveGeneralSettings)");

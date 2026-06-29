@@ -5,6 +5,13 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.25.2] - 2026-06-30
+
+### 🐞 ScalpAuto 설정 저장 안 되는 버그 fix — DB 영속화 3중 누락 보강
+- 원인: ScalpAuto 필드가 모델/UI엔 있으나 **(1) GeneralSettings 테이블 컬럼, (2) sp_SaveGeneralSettings, (3) CopyTradingSettings(인메모리 복사)** 에 모두 빠져 있었음. 설정 로드는 DB 기준이라 저장해도 재오픈/재시작 시 OFF로 복원됨(= "저장 안 됨").
+- 수정: ① GeneralSettings에 ScalpAuto 6컬럼 idempotent 추가(migrate_GeneralSettings_Scalp, sp_SaveGeneralSettings보다 먼저 실행) ② sp_SaveGeneralSettings + SaveGeneralSettingsAsync 파라미터에 6필드 추가 ③ CopyTradingSettings에 6필드 복사 추가. 로드는 SELECT * + Dapper 자동매핑이라 컬럼만 있으면 동작.
+- 이제 설정 저장 시 DB 영속 + 인메모리 즉시 반영 → v5.25.1의 RestartScalpAuto와 합쳐 재시작 없이 활성화됨.
+
 ## [5.25.1] - 2026-06-30
 
 ### 🔧 ScalpAuto 재시작 없이 활성화 — 설정 저장 시 즉시 반영

@@ -186,6 +186,13 @@ namespace TradingBot
             target.MaxMajorSlots = source.MaxMajorSlots;
             target.MaxPumpSlots = source.MaxPumpSlots;
             target.MaxDailyEntries = source.MaxDailyEntries;
+            // [v5.25.2] ScalpAuto — 누락 시 설정 저장 후 인메모리 미반영(RestartScalpAuto가 옛 값 읽음)
+            target.ScalpAutoEnabled = source.ScalpAutoEnabled;
+            target.ScalpInterval = source.ScalpInterval;
+            target.ScalpSymbols = source.ScalpSymbols;
+            target.ScalpLeverage = source.ScalpLeverage;
+            target.ScalpMarginUsdt = source.ScalpMarginUsdt;
+            target.ScalpMaxPositions = source.ScalpMaxPositions;
         }
 
         public MainWindow()

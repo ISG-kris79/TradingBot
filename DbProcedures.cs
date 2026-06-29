@@ -25,6 +25,8 @@ namespace TradingBot
                 ("sp_SavePositionState",       sp_SavePositionState),
                 ("sp_GetOpenTimeAcrossTables", sp_GetOpenTimeAcrossTables),
                 ("sp_BulkPreloadOpenTime",     sp_BulkPreloadOpenTime),
+                // [v5.25.2] ScalpAuto 컬럼 보강 — sp_SaveGeneralSettings(컬럼 참조)보다 먼저 실행 필수
+                ("migrate_GeneralSettings_Scalp", migrate_GeneralSettings_Scalp),
                 ("sp_LoadGeneralSettings",     sp_LoadGeneralSettings),
                 ("sp_SaveGeneralSettings",     sp_SaveGeneralSettings),
                 ("sp_GetTodayStatsByCategory", sp_GetTodayStatsByCategory),
@@ -204,6 +206,27 @@ BEGIN
 END";
 
         // ════════════════════════════════════════════════════════════════════
+        // migrate_GeneralSettings_Scalp — [v5.25.2] ScalpAuto 설정 컬럼 idempotent 추가.
+        //   기존: ScalpAuto 필드가 모델/UI엔 있으나 GeneralSettings 테이블·sp_Save에 없어 DB 미영속 → 저장해도 OFF로 복원.
+        // ════════════════════════════════════════════════════════════════════
+        private const string migrate_GeneralSettings_Scalp = @"
+IF OBJECT_ID('dbo.GeneralSettings','U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('dbo.GeneralSettings','ScalpAutoEnabled') IS NULL
+        ALTER TABLE dbo.GeneralSettings ADD ScalpAutoEnabled BIT NOT NULL CONSTRAINT DF_GS_ScalpAutoEnabled DEFAULT(0);
+    IF COL_LENGTH('dbo.GeneralSettings','ScalpInterval') IS NULL
+        ALTER TABLE dbo.GeneralSettings ADD ScalpInterval NVARCHAR(8) NOT NULL CONSTRAINT DF_GS_ScalpInterval DEFAULT('15m');
+    IF COL_LENGTH('dbo.GeneralSettings','ScalpSymbols') IS NULL
+        ALTER TABLE dbo.GeneralSettings ADD ScalpSymbols NVARCHAR(400) NOT NULL CONSTRAINT DF_GS_ScalpSymbols DEFAULT('BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT');
+    IF COL_LENGTH('dbo.GeneralSettings','ScalpLeverage') IS NULL
+        ALTER TABLE dbo.GeneralSettings ADD ScalpLeverage INT NOT NULL CONSTRAINT DF_GS_ScalpLeverage DEFAULT(10);
+    IF COL_LENGTH('dbo.GeneralSettings','ScalpMarginUsdt') IS NULL
+        ALTER TABLE dbo.GeneralSettings ADD ScalpMarginUsdt DECIMAL(18,8) NOT NULL CONSTRAINT DF_GS_ScalpMarginUsdt DEFAULT(20);
+    IF COL_LENGTH('dbo.GeneralSettings','ScalpMaxPositions') IS NULL
+        ALTER TABLE dbo.GeneralSettings ADD ScalpMaxPositions INT NOT NULL CONSTRAINT DF_GS_ScalpMaxPositions DEFAULT(3);
+END";
+
+        // ════════════════════════════════════════════════════════════════════
         // sp_SaveGeneralSettings — UPDATE 후 0행이면 INSERT (단일 UserId row)
         // ════════════════════════════════════════════════════════════════════
         private const string sp_SaveGeneralSettings = @"
@@ -242,7 +265,13 @@ CREATE OR ALTER PROCEDURE dbo.sp_SaveGeneralSettings
     @EnableMajorTrading           BIT,
     @MaxMajorSlots                INT,
     @MaxPumpSlots                 INT,
-    @MaxDailyEntries              INT
+    @MaxDailyEntries              INT,
+    @ScalpAutoEnabled             BIT            = 0,
+    @ScalpInterval                NVARCHAR(8)    = '15m',
+    @ScalpSymbols                 NVARCHAR(400)  = 'BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT',
+    @ScalpLeverage                INT            = 10,
+    @ScalpMarginUsdt              DECIMAL(18,8)  = 20,
+    @ScalpMaxPositions            INT            = 3
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -283,6 +312,12 @@ BEGIN
         MaxMajorSlots               = @MaxMajorSlots,
         MaxPumpSlots                = @MaxPumpSlots,
         MaxDailyEntries             = @MaxDailyEntries,
+        ScalpAutoEnabled            = @ScalpAutoEnabled,
+        ScalpInterval               = @ScalpInterval,
+        ScalpSymbols                = @ScalpSymbols,
+        ScalpLeverage               = @ScalpLeverage,
+        ScalpMarginUsdt             = @ScalpMarginUsdt,
+        ScalpMaxPositions           = @ScalpMaxPositions,
         UpdatedAt                   = GETUTCDATE()
     WHERE Id = @UserId;
 
@@ -297,7 +332,8 @@ BEGIN
             PumpFirstTakeProfitRatioPct, PumpStairStep1Roe, PumpStairStep2Roe, PumpStairStep3Roe,
             MajorLeverage, MajorMargin, MajorBreakEvenRoe, MajorTp1Roe, MajorTp2Roe,
             MajorTrailingStartRoe, MajorTrailingGapRoe, MajorStopLossRoe,
-            EnableMajorTrading, MaxMajorSlots, MaxPumpSlots, MaxDailyEntries, UpdatedAt
+            EnableMajorTrading, MaxMajorSlots, MaxPumpSlots, MaxDailyEntries,
+            ScalpAutoEnabled, ScalpInterval, ScalpSymbols, ScalpLeverage, ScalpMarginUsdt, ScalpMaxPositions, UpdatedAt
         ) VALUES (
             @UserId, @DefaultLeverage, @DefaultMargin, @TargetRoe, @StopLossRoe, @TrailingStartRoe, @TrailingDropRoe,
             @PumpTp1Roe, @PumpTp2Roe, @PumpTimeStopMinutes, @PumpStopDistanceWarnPct, @PumpStopDistanceBlockPct, @MajorTrendProfile,
@@ -306,7 +342,8 @@ BEGIN
             @PumpFirstTakeProfitRatioPct, @PumpStairStep1Roe, @PumpStairStep2Roe, @PumpStairStep3Roe,
             @MajorLeverage, @MajorMargin, @MajorBreakEvenRoe, @MajorTp1Roe, @MajorTp2Roe,
             @MajorTrailingStartRoe, @MajorTrailingGapRoe, @MajorStopLossRoe,
-            @EnableMajorTrading, @MaxMajorSlots, @MaxPumpSlots, @MaxDailyEntries, GETUTCDATE()
+            @EnableMajorTrading, @MaxMajorSlots, @MaxPumpSlots, @MaxDailyEntries,
+            @ScalpAutoEnabled, @ScalpInterval, @ScalpSymbols, @ScalpLeverage, @ScalpMarginUsdt, @ScalpMaxPositions, GETUTCDATE()
         );
     END
 END";
