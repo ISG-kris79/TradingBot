@@ -4739,11 +4739,53 @@ namespace TradingBot
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, LorentzianPendingEntry> _lorentzianPendingEntries
             = new(StringComparer.OrdinalIgnoreCase);
 
+        // [v5.24.5] 진입 임박 스냅샷 — UI '진입 임박' 패널용. 각 심볼이 LCC 가드 진입조건에 얼마나 가까운지.
+        public sealed class NearEntryInfo
+        {
+            public string Symbol = "";
+            public int KnnNet;          // KNN 순표(net votes, -K..+K). 진입조건 net>=4
+            public int KnnK;            // 이웃 수
+            public double NwGap;        // NW커널 now - prev (>=0 이면 상승)
+            public double DbbRoomPct;   // (+1σ - close)/close*100 (>=0 이면 과열 아님)
+            public double EntryUpper;   // +1σ 가격 (DBB 진입 상한)
+            public bool Passed;         // 가드 통과 여부
+            public DateTime UpdatedUtc;
+        }
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, NearEntryInfo> _nearEntrySnapshot
+            = new(StringComparer.OrdinalIgnoreCase);
+
+        private void UpdateNearEntrySnapshot(string symbol, LorentzianGuard.FilterResult guard,
+            double nwGap, double dbbRoomPct, double entryUpper)
+        {
+            _nearEntrySnapshot[symbol] = new NearEntryInfo
+            {
+                Symbol = symbol,
+                KnnNet = guard.KnnPrediction,
+                KnnK = guard.KnnK > 0 ? guard.KnnK : 8,
+                NwGap = nwGap,
+                DbbRoomPct = dbbRoomPct,
+                EntryUpper = entryUpper,
+                Passed = guard.Passed,
+                UpdatedUtc = DateTime.UtcNow
+            };
+        }
+
+        /// <summary>[v5.24.5] UI '진입 임박' 패널용 스냅샷 — 최근 60초 내 평가된 심볼만 반환.</summary>
+        public System.Collections.Generic.List<NearEntryInfo> GetNearEntrySnapshot()
+        {
+            var cutoff = DateTime.UtcNow.AddSeconds(-60);
+            return _nearEntrySnapshot.Values
+                .Where(x => x.UpdatedUtc >= cutoff)
+                .ToList();
+        }
+
         private async Task AnalyzeLorentzianEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
             if (!IsEntryAllowed(symbol, "LORENTZIAN", out _)) return;
             if (_lorentzianCooldown.TryGetValue(symbol, out var lastEntry)
                 && DateTime.UtcNow - lastEntry < LorentzianCooldown) return;
+            // [v5.24.5] 이미 5m 확인 대기(펜딩) 중이면 재평가 스킵 — 확인은 CheckLorentzianPendingEntriesAsync가 담당.
+            if (_lorentzianPendingEntries.ContainsKey(symbol)) return;
 
             lock (_posLock)
             {
@@ -4802,6 +4844,19 @@ namespace TradingBot
             var winE = k15List.GetRange(wStartE, evalIdx - wStartE + 1);
             var guard = LorentzianGuard.EvaluateEntry(winE, engine);
 
+            // [v5.24.5] 진입 임박 스냅샷 기록 — 가드 통과여부 무관하게 근접지표(KNN/NW커널/DBB) 저장.
+            try
+            {
+                int eiN = winE.Count - 1;
+                double nwNowN = LorentzianGuard.CalcNWKernel(winE, eiN);
+                double nwPrevN = eiN >= 1 ? LorentzianGuard.CalcNWKernel(winE, eiN - 1) : nwNowN;
+                LorentzianGuard.CalcBB(winE, eiN, 20, 1.0, out _, out double up1N, out _);
+                double closeN = (double)winE[eiN].ClosePrice;
+                double roomN = up1N > 0 ? (up1N - closeN) / closeN * 100.0 : 0.0;
+                UpdateNearEntrySnapshot(symbol, guard, nwNowN - nwPrevN, roomN, up1N);
+            }
+            catch { }
+
             if (!guard.Passed)
             {
                 OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | {guard.BlockReason} | KNN WR={guard.KnnWinRate:F2} pred={guard.KnnPrediction} ADX={guard.Adx:F1} regime={guard.RegimeSlope:F2}");
@@ -4823,11 +4878,17 @@ namespace TradingBot
                 }
             }
 
-            // [v5.23.91] 순수 TradingView LCC — PULLBACK_QUALITY 가드 + 1분봉 펜딩확인 제거 (봇 추가, LCC 아님).
-            //   TradingView LCC는 신호 봉(15m 마감)에서 즉시 진입 → 가드(jdehorty) 통과 시 바로 시장가 진입.
-            _lorentzianCooldown[symbol] = DateTime.UtcNow;
-            OnStatusLog?.Invoke($"🟢 [LORENTZIAN] {symbol} 진입 | 순수 LCC 신호 | KNN WR={guard.KnnWinRate:F2} pred={guard.KnnPrediction} regime={guard.RegimeSlope:F2}");
-            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "LORENTZIAN", skipAiGateCheck: false);
+            // [v5.24.5] 즉시진입 → 5m 마감 확인 펜딩으로 변경 (사용자 지정).
+            //   문제: 15m 신호봉 마감 순간 시장가 진입 → 직후 5m/1h 하락이면 그대로 물림(XRP 22:30 즉시손실).
+            //   해결: 신호 후 '새로' 마감되는 5m봉이 양봉이고 현재가>그 봉 시가일 때만 진입(CheckLorentzianPendingEntriesAsync).
+            _lorentzianPendingEntries[symbol] = new LorentzianPendingEntry
+            {
+                SignalTimeUtc = DateTime.UtcNow,
+                SignalPrice = currentPrice,
+                DeadlineUtc = DateTime.UtcNow.AddMinutes(15),
+                GuardSummary = $"KNN WR={guard.KnnWinRate:F2} pred={guard.KnnPrediction} regime={guard.RegimeSlope:F2}"
+            };
+            OnStatusLog?.Invoke($"⏳ [LORENTZIAN] {symbol} 신호 발생 → 5m 양봉 마감 확인 대기 | KNN WR={guard.KnnWinRate:F2} pred={guard.KnnPrediction} regime={guard.RegimeSlope:F2}");
         }
 
         // [v5.23.97] RSI2 과매도 반등 전략 — 3년·119코인 OOS 검증(승률 66%, 기대 +0.103%/건, 과최적화 아님).
@@ -4896,105 +4957,53 @@ namespace TradingBot
         {
             if (!_lorentzianPendingEntries.TryGetValue(symbol, out var pending)) return;
 
-            // 10분 타임아웃
-            if (DateTime.UtcNow - pending.SignalTimeUtc > TimeSpan.FromMinutes(10))
+            // [v5.24.5] 타임아웃(15분) → 5m 양봉 마감 확인 실패 시 취소
+            if (DateTime.UtcNow > pending.DeadlineUtc)
             {
                 _lorentzianPendingEntries.TryRemove(symbol, out _);
                 _lorentzianCooldown[symbol] = DateTime.UtcNow;
-                OnStatusLog?.Invoke($"⏰ [LORENTZIAN_CONFIRM] {symbol} 10분 타임아웃 → 취소 | {pending.GuardSummary}");
+                OnStatusLog?.Invoke($"⏰ [LORENTZIAN_CONFIRM] {symbol} 5m 양봉 마감 확인 실패(15분 타임아웃) → 취소 | {pending.GuardSummary}");
                 return;
             }
 
-            // [v5.23.20] 사용자 정확 사양: 눌림 + 반등 확인
-            //   1단계: RSI > 70 → 대기 (고점 추격 방지)
-            //   2단계: 최근 5봉 중 EMA20 ±0.1% 터치 여부 (눌림목 발생)
-            //   3단계: 현재가 > 직전 1m high (반등 시작)
-            var k1 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneMinute, 30, token);
-            if (k1 == null || k1.Count < 22) return;
-            var k1List = k1 as List<IBinanceKline> ?? new List<IBinanceKline>(k1);
-
-            int last = k1List.Count - 1;
-            decimal prev1mHigh = k1List[last - 1].HighPrice;
-
-            // 1m EMA20
-            decimal ema20 = k1List[last - 20].ClosePrice;
-            double mult = 2.0 / 21.0;
-            for (int q = last - 19; q <= last - 1; q++)
-                ema20 = (decimal)((double)k1List[q].ClosePrice * mult + (double)ema20 * (1 - mult));
-
-            // 1m RSI(14)
-            double rsi1m = IndicatorCalculator.CalculateRSI(k1List, 14);
-
-            // [1단계] 고점 추격 방지
-            if (rsi1m > 70.0)
+            // 이미 보유 중이면 펜딩 해제 (외부/다른 경로 진입)
+            lock (_posLock)
             {
-                if (DateTime.UtcNow.Second % 30 == 0)
-                    OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 1m RSI={rsi1m:F1} > 70 (고점) → 대기 | {pending.GuardSummary}");
-                return;
-            }
-
-            // [2단계] 눌림목 확인: 최근 5봉 (last-5 ~ last-1) 중 어느 봉의 low/close 가 EMA20 ±0.1% 근처
-            decimal touchTolerance = ema20 * 0.001m;   // ±0.1%
-            decimal touchUpper = ema20 + touchTolerance;
-            decimal touchLower = ema20 - touchTolerance;
-            bool hasTouchedEma = false;
-            for (int b = Math.Max(0, last - 5); b <= last - 1; b++)
-            {
-                // 봉의 low 가 touchUpper 보다 낮고 high 가 touchLower 보다 높으면 = 봉이 EMA20 근처 통과
-                if (k1List[b].LowPrice <= touchUpper && k1List[b].HighPrice >= touchLower)
+                if (_activePositions.TryGetValue(symbol, out var ex) && ex != null && Math.Abs(ex.Quantity) > 0)
                 {
-                    hasTouchedEma = true;
-                    break;
-                }
-            }
-            if (!hasTouchedEma)
-            {
-                if (DateTime.UtcNow.Second % 30 == 0)
-                    OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 최근 5봉 EMA20 터치 없음 (눌림 미발생) → 대기 | EMA20={ema20:F6}");
-                return;
-            }
-
-            // [3단계] 반등 확인: 현재가 > 직전 1m high
-            if (currentPrice <= prev1mHigh) return;
-
-            // [v5.23.24] 4단계 — 1m BB 중심선 위 (사용자 ICP 사례)
-            //   "1m BB middle 넘어갈 때 들어가야 안전, 음봉/middle 아래 진입은 손절 위험"
-            if (k1List.Count >= 22)
-            {
-                var bbWin1 = k1List.Skip(k1List.Count - 21).Take(20).ToList();
-                var bb1 = IndicatorCalculator.CalculateBB(bbWin1, 20, 2.0);
-                if (bb1.Mid > 0 && (double)currentPrice <= bb1.Mid)
-                {
-                    if (DateTime.UtcNow.Second % 30 == 0)
-                        OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 현재가({currentPrice:F6}) <= 1m BB mid({bb1.Mid:F6}) → 대기");
+                    _lorentzianPendingEntries.TryRemove(symbol, out _);
                     return;
                 }
             }
 
-            // [v5.23.24] 5단계 — 5m 반등 확인 (직전 5m 봉 양봉)
-            //   "5m 반등 확인 안 하고 음봉일 때 진입 → 손절"
-            try
+            // [v5.24.5] 5m 마감 확인 (사용자 지정): 신호 이후 '새로' 마감된 5m봉이 양봉(close>open)이고
+            //   현재가 > 그 5m봉 시가일 때만 진입. 하락 5m엔 진입 안 함 → XRP식 즉시손실 차단.
+            var k5 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 3, token);
+            if (k5 == null || k5.Count < 2) return;
+            var k5List = k5 as List<IBinanceKline> ?? new List<IBinanceKline>(k5);
+            var lastClosed5m = k5List[^2];   // 직전 '마감' 5m봉
+
+            // 신호 이후 마감된 봉인지 — 신호 전 봉으로 즉시 진입 방지 (다음 5m 마감까지 대기)
+            if (lastClosed5m.CloseTime <= pending.SignalTimeUtc) return;
+
+            bool bull5m = lastClosed5m.ClosePrice > lastClosed5m.OpenPrice;
+            if (!bull5m)
             {
-                var k5 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 3, token);
-                if (k5 != null && k5.Count >= 2)
-                {
-                    var k5List = k5 as List<IBinanceKline> ?? new List<IBinanceKline>(k5);
-                    var prev5m = k5List[^2];
-                    bool prev5mBull = prev5m.ClosePrice > prev5m.OpenPrice;
-                    if (!prev5mBull)
-                    {
-                        if (DateTime.UtcNow.Second % 30 == 0)
-                            OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 직전 5m 음봉 → 5m 반등 대기");
-                        return;
-                    }
-                }
+                if (DateTime.UtcNow.Second % 30 == 0)
+                    OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 직전 5m 음봉(O={lastClosed5m.OpenPrice:F6} C={lastClosed5m.ClosePrice:F6}) → 양봉 마감 대기 | {pending.GuardSummary}");
+                return;
             }
-            catch { }
+            if (currentPrice <= lastClosed5m.OpenPrice)
+            {
+                if (DateTime.UtcNow.Second % 30 == 0)
+                    OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 현재가({currentPrice:F6}) <= 5m 시가({lastClosed5m.OpenPrice:F6}) → 반등 유지 대기");
+                return;
+            }
 
             _lorentzianPendingEntries.TryRemove(symbol, out _);
             _lorentzianCooldown[symbol] = DateTime.UtcNow;
             OnStatusLog?.Invoke(
-                $"✅ [LORENTZIAN_CONFIRM] {symbol} 진입 | 현재={currentPrice:F6} > 1m high={prev1mHigh:F6} + EMA20 터치 + 1m BB mid 위 + 5m 양봉 | RSI={rsi1m:F1} | {pending.GuardSummary}");
+                $"✅ [LORENTZIAN_CONFIRM] {symbol} 진입 | 5m 양봉 마감(O={lastClosed5m.OpenPrice:F6} C={lastClosed5m.ClosePrice:F6}) + 현재가 {currentPrice:F6} | {pending.GuardSummary}");
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
                 signalSource: "LORENTZIAN", skipAiGateCheck: false);
         }

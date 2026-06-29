@@ -57,6 +57,43 @@ namespace TradingBot.Models
     }
 
     /// <summary>
+    /// [v5.24.5] 진입 임박 카드 — 각 코인이 LCC 가드 진입조건에 얼마나 가까운지 + 진입까지 필요한 것.
+    ///   가드차단/활성포지션 패널을 대체. 데이터: TradingEngine.GetNearEntrySnapshot().
+    /// </summary>
+    public class NearEntryItem : INotifyPropertyChanged
+    {
+        public event PropertyChangedEventHandler? PropertyChanged;
+        private void OnPropertyChanged([CallerMemberName] string? p = null)
+            => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(p ?? ""));
+
+        public string Symbol { get; set; } = "";
+        public int Rank { get; set; }   // 0=진입가능, 작을수록 임박 (VM에서 계산, 정렬용)
+
+        // KNN net (진입조건 net>=4)
+        public string KnnText { get; set; } = "";
+        public Brush KnnColor { get; set; } = Brushes.Gray;
+        // NW커널 상승여부
+        public string NwText { get; set; } = "";
+        public Brush NwColor { get; set; } = Brushes.Gray;
+        // DBB 과열여유%
+        public string DbbText { get; set; } = "";
+        public Brush DbbColor { get; set; } = Brushes.Gray;
+        // 진입까지 필요한 것
+        public string NeedText { get; set; } = "";
+        // 판정 배지
+        public string Verdict { get; set; } = "";
+        public Brush VerdictColor { get; set; } = Brushes.Gray;
+
+        public void Raise()
+        {
+            OnPropertyChanged(nameof(Symbol)); OnPropertyChanged(nameof(KnnText)); OnPropertyChanged(nameof(KnnColor));
+            OnPropertyChanged(nameof(NwText)); OnPropertyChanged(nameof(NwColor)); OnPropertyChanged(nameof(DbbText));
+            OnPropertyChanged(nameof(DbbColor)); OnPropertyChanged(nameof(NeedText)); OnPropertyChanged(nameof(Verdict));
+            OnPropertyChanged(nameof(VerdictColor));
+        }
+    }
+
+    /// <summary>
     /// [v4.9.0] 보유 상태 — 활성 포지션 Deep Dive
     /// </summary>
     public class PositionDetailViewModel : INotifyPropertyChanged

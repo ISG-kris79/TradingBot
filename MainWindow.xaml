@@ -1473,170 +1473,67 @@
                                                 CornerRadius="8"
                                                 Padding="12,10"
                                                 Margin="0,8,0,0">
+                                            <!-- [v5.24.5] 진입 임박 패널 — 차단/활성포지션 패널 제거(사용자 지정).
+                                                 각 코인이 LCC 가드 진입조건에 얼마나 가깝고(KNN/NW커널/DBB) 진입까지 무엇이 필요한지 표시. -->
                                             <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="1"/>
-                                                    <ColumnDefinition Width="*"/>
-                                                </Grid.ColumnDefinitions>
-
-                                                <!-- [v5.22.30] B 옵션 — 가드 차단 모니터 (REJECT 사유 위주) -->
-                                                <Grid Grid.Column="0" Margin="0,0,8,0">
-                                                    <Grid.RowDefinitions>
-                                                        <RowDefinition Height="Auto"/>
-                                                        <RowDefinition Height="*"/>
-                                                    </Grid.RowDefinitions>
-                                                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
-                                                        <TextBlock Text="🚦 가드 차단 모니터" FontSize="11" FontWeight="Bold"
-                                                                   Foreground="#F87171"
-                                                                   ToolTip="진입 시도가 가드/슬롯/AI 게이트에 의해 차단된 코인 + 사유"/>
-                                                        <TextBlock Text="{Binding TopCandidates.Count, StringFormat={} ({0})}"
-                                                                   FontSize="10" Foreground="#6B7280" Margin="6,0,0,0" VerticalAlignment="Center"/>
-                                                    </StackPanel>
-                                                    <ListBox Grid.Row="1"
-                                                             ItemsSource="{Binding TopCandidates}"
-                                                             Background="Transparent"
-                                                             BorderThickness="0"
-                                                             VirtualizingStackPanel.IsVirtualizing="True"
-                                                             ScrollViewer.VerticalScrollBarVisibility="Auto"
-                                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                                                        <ListBox.ItemContainerStyle>
-                                                            <Style TargetType="ListBoxItem">
-                                                                <Setter Property="Padding" Value="0,3"/>
-                                                                <Setter Property="Background" Value="Transparent"/>
-                                                                <Setter Property="BorderThickness" Value="0"/>
-                                                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                                                            </Style>
-                                                        </ListBox.ItemContainerStyle>
-                                                        <ListBox.ItemTemplate>
-                                                            <DataTemplate>
-                                                                <Border Background="#111827" CornerRadius="5" Padding="8,5" Margin="0,2">
-                                                                    <Grid>
-                                                                        <Grid.ColumnDefinitions>
-                                                                            <ColumnDefinition Width="*"/>
-                                                                            <ColumnDefinition Width="Auto"/>
-                                                                            <ColumnDefinition Width="Auto"/>
-                                                                        </Grid.ColumnDefinitions>
-                                                                        <StackPanel Grid.Column="0">
-                                                                            <TextBlock Text="{Binding Symbol}" Foreground="#E0E7FF"
-                                                                                       FontWeight="Bold" FontSize="12" FontFamily="Consolas"/>
-                                                                            <TextBlock Text="{Binding PredictedTpSlText}"
-                                                                                       Foreground="#6B7280" FontSize="9" FontFamily="Consolas"/>
-                                                                        </StackPanel>
-                                                                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="8,0">
-                                                                            <!-- [v5.22.30] AI ML 표시 제거 (영구 0%) — DetectedAt 만 유지 -->
-                                                                            <TextBlock Text="{Binding DetectedAtText}"
-                                                                                       Foreground="#9CA3AF" FontSize="9"
-                                                                                       HorizontalAlignment="Right"/>
-                                                                        </StackPanel>
-                                                                        <Border Grid.Column="2" Background="{Binding StatusColor}"
-                                                                                CornerRadius="4" Padding="6,2" Margin="8,0,0,0"
-                                                                                VerticalAlignment="Center">
-                                                                            <TextBlock Text="{Binding Status}"
-                                                                                       Foreground="#000000" FontSize="9"
-                                                                                       FontWeight="Bold"/>
-                                                                        </Border>
-                                                                    </Grid>
-                                                                </Border>
-                                                            </DataTemplate>
-                                                        </ListBox.ItemTemplate>
-                                                    </ListBox>
-                                                </Grid>
-
-                                                <Rectangle Grid.Column="1" Fill="#1E3A5F"/>
-
-                                                <!-- ── RIGHT: Active Positions (모든 포지션 표시 — v4.9.8 버그 수정) ── -->
-                                                <Grid Grid.Column="2" Margin="8,0,0,0">
-                                                    <!-- 보유 있을 때 -->
-                                                    <Border Visibility="{Binding HasAnyActivePosition, Converter={StaticResource BoolToVisibilityConverter}}">
-                                                        <Grid>
-                                                            <Grid.RowDefinitions>
-                                                                <RowDefinition Height="Auto"/>
-                                                                <RowDefinition Height="*"/>
-                                                            </Grid.RowDefinitions>
-                                                            <TextBlock Grid.Row="0" Text="📊 활성 포지션" FontSize="11" FontWeight="Bold"
-                                                                       Foreground="#10B981" Margin="0,0,0,6"/>
-                                                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                                                                <ItemsControl ItemsSource="{Binding ActivePositions}">
-                                                                    <ItemsControl.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <Border Background="#0A1421" BorderBrush="#1E3A5F" BorderThickness="1"
-                                                                                    CornerRadius="4" Padding="6,4" Margin="0,0,0,4">
-                                                                                <StackPanel>
-                                                                                    <Grid>
-                                                                                        <Grid.ColumnDefinitions>
-                                                                                            <ColumnDefinition Width="Auto"/>
-                                                                                            <ColumnDefinition Width="*"/>
-                                                                                            <ColumnDefinition Width="Auto"/>
-                                                                                        </Grid.ColumnDefinitions>
-                                                                                        <TextBlock Text="{Binding Symbol}" FontSize="13" FontWeight="Bold"
-                                                                                                   Foreground="#E0E7FF" FontFamily="Consolas" VerticalAlignment="Center"/>
-                                                                                        <TextBlock Grid.Column="1" Text="{Binding RoeText}"
-                                                                                                   Foreground="{Binding RoeColor}"
-                                                                                                   FontSize="13" FontWeight="Bold" FontFamily="Consolas"
-                                                                                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                                                                        <Border Grid.Column="2" Background="#111827" CornerRadius="3" Padding="5,1">
-                                                                                            <TextBlock Text="{Binding Side}"
-                                                                                                       Foreground="{Binding SideColor}"
-                                                                                                       FontSize="9" FontWeight="Bold" FontFamily="Consolas"/>
-                                                                                        </Border>
-                                                                                    </Grid>
-                                                                                    <Grid Margin="0,3,0,0">
-                                                                                        <Grid.ColumnDefinitions>
-                                                                                            <ColumnDefinition Width="Auto"/>
-                                                                                            <ColumnDefinition Width="*"/>
-                                                                                            <ColumnDefinition Width="Auto"/>
-                                                                                        </Grid.ColumnDefinitions>
-                                                                                        <TextBlock Grid.Column="0" Text="{Binding SlText}"
-                                                                                                   Foreground="#EF4444" FontSize="9" FontFamily="Consolas"
-                                                                                                   VerticalAlignment="Center"/>
-                                                                                        <!-- [v5.23.26] Width = ActualWidth × ProgressToTpPct/100 (fallback: ROE 절댓값/15)
-                                                                                             Background = ProgressBarColor (흑자 초록 / 적자 빨강)
-                                                                                             ROE 변화 → width + color 동시 갱신 -->
-                                                                                        <Grid Grid.Column="1" Background="#111827" Height="5" Margin="5,0">
-                                                                                            <Border HorizontalAlignment="Left" CornerRadius="2"
-                                                                                                    Background="{Binding ProgressBarColor}">
-                                                                                                <Border.Width>
-                                                                                                    <MultiBinding Converter="{StaticResource ProgressWidthConverter}">
-                                                                                                        <Binding RelativeSource="{RelativeSource AncestorType=Grid, AncestorLevel=1}" Path="ActualWidth"/>
-                                                                                                        <Binding Path="ProgressToTpPct"/>
-                                                                                                    </MultiBinding>
-                                                                                                </Border.Width>
-                                                                                            </Border>
-                                                                                        </Grid>
-                                                                                        <TextBlock Grid.Column="2" Text="{Binding TpText}"
-                                                                                                   Foreground="#10B981" FontSize="9" FontFamily="Consolas"
-                                                                                                   VerticalAlignment="Center"/>
-                                                                                    </Grid>
-                                                                                    <Grid Margin="0,2,0,0">
-                                                                                        <Grid.ColumnDefinitions>
-                                                                                            <ColumnDefinition Width="*"/>
-                                                                                            <ColumnDefinition Width="Auto"/>
-                                                                                        </Grid.ColumnDefinitions>
-                                                                                        <TextBlock Text="{Binding PnlText}" Foreground="#A5B4FC"
-                                                                                                   FontSize="10" FontFamily="Consolas"/>
-                                                                                        <TextBlock Grid.Column="1" Text="{Binding HoldingTimeText}"
-                                                                                                   Foreground="#FBBF24" FontSize="10" FontFamily="Consolas"/>
-                                                                                    </Grid>
-                                                                                </StackPanel>
-                                                                            </Border>
-                                                                        </DataTemplate>
-                                                                    </ItemsControl.ItemTemplate>
-                                                                </ItemsControl>
-                                                            </ScrollViewer>
-                                                        </Grid>
-                                                    </Border>
-                                                    <!-- 보유 없을 때 -->
-                                                    <Border Visibility="{Binding HasAnyActivePosition, Converter={StaticResource InvertBoolToVisibilityConverter}}">
-                                                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                                                            <TextBlock Text="💤" FontSize="28" HorizontalAlignment="Center"/>
-                                                            <TextBlock Text="활성 포지션 없음" Foreground="#6B7280"
-                                                                       FontSize="11" HorizontalAlignment="Center" Margin="0,6,0,0"/>
-                                                            <TextBlock Text="AI가 진입 기회를 탐색 중입니다" Foreground="#4B5563"
-                                                                       FontSize="9" HorizontalAlignment="Center" Margin="0,2,0,0"/>
-                                                        </StackPanel>
-                                                    </Border>
-                                                </Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="*"/>
+                                                </Grid.RowDefinitions>
+                                                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
+                                                    <TextBlock Text="⏳ 진입 임박 (LCC 가드 근접도)" FontSize="11" FontWeight="Bold"
+                                                               Foreground="#FBBF24"
+                                                               ToolTip="각 코인이 진입조건(KNN net≥4 · NW커널 상승 · DBB 과열아님)에 얼마나 가까운지 + 진입까지 필요한 것"/>
+                                                    <TextBlock Text="{Binding NearEntryItems.Count, StringFormat={} ({0})}"
+                                                               FontSize="10" Foreground="#6B7280" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                                <ListBox Grid.Row="1"
+                                                         ItemsSource="{Binding NearEntryItems}"
+                                                         Background="Transparent"
+                                                         BorderThickness="0"
+                                                         VirtualizingStackPanel.IsVirtualizing="True"
+                                                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                                    <ListBox.ItemContainerStyle>
+                                                        <Style TargetType="ListBoxItem">
+                                                            <Setter Property="Padding" Value="0,2"/>
+                                                            <Setter Property="Background" Value="Transparent"/>
+                                                            <Setter Property="BorderThickness" Value="0"/>
+                                                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                                        </Style>
+                                                    </ListBox.ItemContainerStyle>
+                                                    <ListBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Border Background="#111827" CornerRadius="5" Padding="8,5" Margin="0,2">
+                                                                <Grid>
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="78"/>
+                                                                        <ColumnDefinition Width="Auto"/>
+                                                                        <ColumnDefinition Width="*"/>
+                                                                        <ColumnDefinition Width="Auto"/>
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <TextBlock Grid.Column="0" Text="{Binding Symbol}" Foreground="#E0E7FF"
+                                                                               FontWeight="Bold" FontSize="12" FontFamily="Consolas" VerticalAlignment="Center"/>
+                                                                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0">
+                                                                        <TextBlock Text="{Binding KnnText}" Foreground="{Binding KnnColor}"
+                                                                                   FontSize="10" FontFamily="Consolas" Margin="0,0,6,0"/>
+                                                                        <TextBlock Text="{Binding NwText}" Foreground="{Binding NwColor}"
+                                                                                   FontSize="10" FontFamily="Consolas" Margin="0,0,6,0"/>
+                                                                        <TextBlock Text="{Binding DbbText}" Foreground="{Binding DbbColor}"
+                                                                                   FontSize="10" FontFamily="Consolas"/>
+                                                                    </StackPanel>
+                                                                    <TextBlock Grid.Column="2" Text="{Binding NeedText}" Foreground="#9CA3AF"
+                                                                               FontSize="9" FontFamily="Consolas" VerticalAlignment="Center"
+                                                                               TextTrimming="CharacterEllipsis" Margin="8,0"/>
+                                                                    <Border Grid.Column="3" Background="{Binding VerdictColor}"
+                                                                            CornerRadius="4" Padding="6,2" VerticalAlignment="Center">
+                                                                        <TextBlock Text="{Binding Verdict}" Foreground="#000000" FontSize="9" FontWeight="Bold"/>
+                                                                    </Border>
+                                                                </Grid>
+                                                            </Border>
+                                                        </DataTemplate>
+                                                    </ListBox.ItemTemplate>
+                                                </ListBox>
                                             </Grid>
                                         </Border>
 

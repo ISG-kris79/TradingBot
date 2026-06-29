@@ -269,6 +269,10 @@ namespace TradingBot.ViewModels
             = new ObservableCollection<TradingBot.Models.PositionDetailViewModel>();
         public bool HasAnyActivePosition => ActivePositions.Count > 0;
 
+        // [v5.24.5] 진입 임박 패널 — 가드차단/활성포지션 패널 대체. TradingEngine.GetNearEntrySnapshot() 기반.
+        public ObservableCollection<TradingBot.Models.NearEntryItem> NearEntryItems { get; }
+            = new ObservableCollection<TradingBot.Models.NearEntryItem>();
+
         public TradingBot.Models.DetectHealthViewModel DetectHealth { get; }
             = new TradingBot.Models.DetectHealthViewModel();
 
@@ -1895,7 +1899,6 @@ namespace TradingBot.ViewModels
                 int userId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                 if (userId <= 0) return;
 
-                var db = new DbManager(AppConfig.ConnectionString);
                 DateTime start, end = DateTime.Now;
 
                 if (_performancePeriod == "월별")
@@ -1905,20 +1908,35 @@ namespace TradingBot.ViewModels
                 else
                     start = end.AddDays(-30);
 
-                var trades = await db.GetTradeHistoryAsync(userId, start, end, 5000);
-                var closed = trades.Where(t => t.PnL != 0 && t.ExitTime > DateTime.MinValue).ToList();
+                // [v5.24.5] 성과분석도 BPH(바이낸스 권위 실현손익) 단일 출처로 통일 — 좌측통계·매매기록과 동일 데이터.
+                //   PnL=NetPnl, 시간기준=OpenTime(진입시간, 사용자 지정), UserId 필터. (이전: TradeHistory.PnL = 봇계산·중복 위험)
+                var startUtc = start.Date.ToUniversalTime();
+                var endUtc = end.Date.AddDays(1).AddTicks(-1).ToUniversalTime();
+                List<(DateTime When, decimal PnL)> closed;
+                await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(AppConfig.ConnectionString))
+                {
+                    await conn.OpenAsync();
+                    var bphRows = await Dapper.SqlMapper.QueryAsync<(DateTime OpenTime, decimal NetPnl)>(conn, @"
+SELECT OpenTime, NetPnl FROM dbo.BinancePositionHistory
+WHERE UserId = @UserId AND OpenTime >= @StartUtc AND OpenTime <= @EndUtc",
+                        new { UserId = userId, StartUtc = startUtc, EndUtc = endUtc }, commandTimeout: 30);
+                    // OpenTime(UTC) → 로컬(KST) 진입시각으로 변환 후 일/주/월 그룹
+                    closed = bphRows
+                        .Select(r => (When: DateTime.SpecifyKind(r.OpenTime, DateTimeKind.Utc).ToLocalTime(), PnL: r.NetPnl))
+                        .ToList();
+                }
 
-                // 일별/주별/월별 집계
+                // 일별/주별/월별 집계 (진입시간 기준)
                 var grouped = _performancePeriod switch
                 {
-                    "월별" => closed.GroupBy(t => t.ExitTime.ToString("yyyy-MM")).OrderBy(g => g.Key),
+                    "월별" => closed.GroupBy(t => t.When.ToString("yyyy-MM")).OrderBy(g => g.Key),
                     "주별" => closed.GroupBy(t =>
                     {
                         var cal = System.Globalization.CultureInfo.CurrentCulture.Calendar;
-                        int week = cal.GetWeekOfYear(t.ExitTime, System.Globalization.CalendarWeekRule.FirstDay, DayOfWeek.Monday);
-                        return $"{t.ExitTime:yyyy}-W{week:D2}";
+                        int week = cal.GetWeekOfYear(t.When, System.Globalization.CalendarWeekRule.FirstDay, DayOfWeek.Monday);
+                        return $"{t.When:yyyy}-W{week:D2}";
                     }).OrderBy(g => g.Key),
-                    _ => closed.GroupBy(t => t.ExitTime.ToString("MM/dd")).OrderBy(g => g.Key)
+                    _ => closed.GroupBy(t => t.When.ToString("MM/dd")).OrderBy(g => g.Key)
                 };
 
                 // 일별 그룹 데이터를 Dictionary로
@@ -2738,6 +2756,7 @@ namespace TradingBot.ViewModels
                         RefreshBattleDashboardForSelectedSymbol();
                         RefreshMajorBattlePanel();
                         UpdateFocusedPositionFromEngine(); // [v4.9.0] AI Insight Panel
+                        RefreshNearEntrySnapshot();        // [v5.24.5] 진입 임박 패널
                         if (_engine != null)
                         {
                             // [v5.22.13] TrainedSymbolCount 제거 — AI 시스템 폐기 (2026-04-29)
@@ -4785,7 +4804,8 @@ namespace TradingBot.ViewModels
 
                 // [v5.22.27] BinancePositionHistory 우선 사용 (분할청산 묶음 → 정확한 진입수)
                 //   fallback: 데이터 0건이면 기존 TradeHistory 통계
-                var bphStats = await GetTodayStatsFromBphAsync(cs);
+                int statUserId = AppConfig.CurrentUser?.Id ?? 0;
+                var bphStats = await GetTodayStatsFromBphAsync(cs, statUserId);
                 if (bphStats != null && bphStats.Sum(kv => kv.Value.e) > 0)
                 {
                     (int e, int w, int l, decimal p) majorT = bphStats.TryGetValue("MAJOR", out var mv) ? mv : (0, 0, 0, 0m);
@@ -4841,13 +4861,15 @@ namespace TradingBot.ViewModels
         }
 
         // [v5.22.27] BinancePositionHistory 기반 오늘(KST 00:00~) 카테고리 통계 — 분할청산 묶인 1포지션 = 1진입
-        private static async Task<Dictionary<string, (int e, int w, int l, decimal p)>?> GetTodayStatsFromBphAsync(string cs)
+        // [v5.24.5] 통일 기준: BPH(바이낸스 권위 실현손익) + NetPnl + UserId 필터 + 진입시간(OpenTime) 기준.
+        //   성과 3화면(좌측통계/매매기록/성과분석)이 동일 출처·동일 계산으로 일치하도록 통일.
+        private static async Task<Dictionary<string, (int e, int w, int l, decimal p)>?> GetTodayStatsFromBphAsync(string cs, int userId)
         {
             try
             {
                 await using var db = new Microsoft.Data.SqlClient.SqlConnection(cs);
                 await db.OpenAsync();
-                // KST 00:00 = UTC -09:00 from KST midnight = today's 15:00 prev day UTC
+                // KST 00:00 기준. 진입시간(OpenTime) 기준으로 '오늘 진입한 포지션' 집계 (사용자 지정 — 성과는 진입시간 기준).
                 var rows = await Dapper.SqlMapper.QueryAsync<(string Category, int Entries, int Wins, int Losses, decimal TotalPnl)>(db, @"
 DECLARE @kstNow DATETIME2 = SWITCHOFFSET(SYSUTCDATETIME(), '+09:00');
 DECLARE @kstStart DATETIME2 = DATEADD(DAY, DATEDIFF(DAY, 0, @kstNow), 0);
@@ -4860,9 +4882,9 @@ SELECT
   SUM(CASE WHEN NetPnl < 0 THEN 1 ELSE 0 END) AS Losses,
   SUM(NetPnl) AS TotalPnl
 FROM dbo.BinancePositionHistory
-WHERE CloseTime >= @utcStart
+WHERE OpenTime >= @utcStart AND (@UserId <= 0 OR UserId = @UserId)
 GROUP BY Category
-", commandTimeout: 30);
+", new { UserId = userId }, commandTimeout: 30);
                 var dict = new Dictionary<string, (int, int, int, decimal)>(StringComparer.OrdinalIgnoreCase);
                 foreach (var r in rows)
                     dict[r.Category] = (r.Entries, r.Wins, r.Losses, r.TotalPnl);
@@ -5045,6 +5067,72 @@ ORDER BY CloseTime DESC, Id DESC", new { UserId = userId }, commandTimeout: 30);
                     }
                     FocusedPosition = ActivePositions.FirstOrDefault();
                     OnPropertyChanged(nameof(HasAnyActivePosition));
+                });
+            }
+            catch { }
+        }
+
+        // [v5.24.5] 진입 임박 패널 갱신 — TradingEngine 가드 근접 스냅샷 → NearEntryItems (임박순 정렬).
+        private static readonly System.Windows.Media.Brush BrGreen = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x10, 0xB9, 0x81));
+        private static readonly System.Windows.Media.Brush BrYellow = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFB, 0xBF, 0x24));
+        private static readonly System.Windows.Media.Brush BrRed = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xF8, 0x71, 0x71));
+        private static readonly System.Windows.Media.Brush BrGray = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x9C, 0xA3, 0xAF));
+
+        public void RefreshNearEntrySnapshot()
+        {
+            try
+            {
+                if (_engine == null) return;
+                var snap = _engine.GetNearEntrySnapshot();
+                if (snap == null) return;
+
+                var rows = new List<TradingBot.Models.NearEntryItem>();
+                foreach (var s in snap)
+                {
+                    bool knnOk = s.KnnNet >= 4;
+                    bool nwOk = s.NwGap >= 0;
+                    bool dbbOk = s.DbbRoomPct >= 0;
+
+                    int rank;
+                    string verdict; System.Windows.Media.Brush vColor;
+                    if (s.Passed) { rank = 0; verdict = "진입가능"; vColor = BrGreen; }
+                    else
+                    {
+                        int dist = 0;
+                        if (!knnOk) dist += (4 - s.KnnNet) * 10;
+                        if (!nwOk) dist += 5;
+                        if (!dbbOk) dist += (int)Math.Ceiling(-s.DbbRoomPct) + 1;
+                        rank = 1000 + dist;
+                        verdict = "근접 " + dist; vColor = BrYellow;
+                    }
+
+                    var needs = new List<string>();
+                    if (!knnOk) needs.Add($"KNN {4 - s.KnnNet}표↑");
+                    if (!nwOk) needs.Add("NW커널 상승전환");
+                    if (!dbbOk) needs.Add($"+1σ({s.EntryUpper:G6}) 이하 눌림");
+                    string need = s.Passed ? "✅ 지금 진입 조건 충족" : (needs.Count > 0 ? string.Join(" / ", needs) : "기타 가드");
+
+                    rows.Add(new TradingBot.Models.NearEntryItem
+                    {
+                        Symbol = s.Symbol,
+                        Rank = rank,
+                        KnnText = $"KNN {s.KnnNet}/{s.KnnK}",
+                        KnnColor = knnOk ? BrGreen : BrGray,
+                        NwText = $"NW {(s.NwGap >= 0 ? "↑" : "↓")}",
+                        NwColor = nwOk ? BrGreen : BrGray,
+                        DbbText = $"DBB {s.DbbRoomPct:+0.0;-0.0}%",
+                        DbbColor = dbbOk ? BrGreen : BrRed,
+                        NeedText = need,
+                        Verdict = verdict,
+                        VerdictColor = vColor
+                    });
+                }
+
+                var ordered = rows.OrderBy(r => r.Rank).ThenBy(r => r.Symbol).Take(14).ToList();
+                RunOnUI(() =>
+                {
+                    NearEntryItems.Clear();
+                    foreach (var r in ordered) NearEntryItems.Add(r);
                 });
             }
             catch { }
