@@ -5095,7 +5095,7 @@ ORDER BY CloseTime DESC, Id DESC", new { UserId = userId }, commandTimeout: 30);
 
                     int rank;
                     string verdict; System.Windows.Media.Brush vColor;
-                    if (s.Passed) { rank = 0; verdict = "진입가능"; vColor = BrGreen; }
+                    if (s.Passed) { rank = 0; verdict = s.InPool ? "진입가능" : "조건충족(풀밖)"; vColor = s.InPool ? BrGreen : BrGray; }
                     else
                     {
                         int dist = 0;
@@ -5105,12 +5105,15 @@ ORDER BY CloseTime DESC, Id DESC", new { UserId = userId }, commandTimeout: 30);
                         rank = 1000 + dist;
                         verdict = "근접 " + dist; vColor = BrYellow;
                     }
+                    // 풀밖(현재 추적 안 함) 코인은 뒤로 + 회색 — 표시는 하되 실제 진입후보 아님 명시
+                    if (!s.InPool) { rank += 100000; if (!s.Passed) { verdict = "풀밖 " + verdict; vColor = BrGray; } }
 
                     var needs = new List<string>();
                     if (!knnOk) needs.Add($"KNN {4 - s.KnnNet}표↑");
                     if (!nwOk) needs.Add("NW커널 상승전환");
                     if (!dbbOk) needs.Add($"+1σ({s.EntryUpper:G6}) 이하 눌림");
-                    string need = s.Passed ? "✅ 지금 진입 조건 충족" : (needs.Count > 0 ? string.Join(" / ", needs) : "기타 가드");
+                    string need = s.Passed ? "✅ 조건 충족" : (needs.Count > 0 ? string.Join(" / ", needs) : "기타 가드");
+                    if (!s.InPool) need = "[추적풀 밖 — 표시전용] " + need;
 
                     rows.Add(new TradingBot.Models.NearEntryItem
                     {
@@ -5128,7 +5131,7 @@ ORDER BY CloseTime DESC, Id DESC", new { UserId = userId }, commandTimeout: 30);
                     });
                 }
 
-                var ordered = rows.OrderBy(r => r.Rank).ThenBy(r => r.Symbol).Take(14).ToList();
+                var ordered = rows.OrderBy(r => r.Rank).ThenBy(r => r.Symbol).Take(16).ToList();
                 RunOnUI(() =>
                 {
                     NearEntryItems.Clear();

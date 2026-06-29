@@ -5,6 +5,13 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.24.6] - 2026-06-29
+
+### 🔭 진입 임박 패널 — 고정 유니버스 독립 스캔 (알트도 항상 표시)
+- 문제: 패널이 추적풀(메이저4+동적알트)만 반영 → 약세장엔 동적풀이 비어 메이저만 보임. + 알트는 평가 빈도가 낮아 60초 freshness 컷오프에 탈락.
+- 해결: 추적풀과 무관하게 **고정 유니버스 16종(메이저4 + 알트12: BNB/DOGE/ADA/AVAX/LINK/TRX/SUI/LTC/BCH/XLM/DOT/HYPE)** 을 50초 주기로 독립 스캔(RunNearEntryScanLoopAsync) → 알트 근접도 항상 표시. 진입 실행은 없고 표시 전용. freshness 60초→4분.
+- 추적풀 밖 코인은 InPool=false → "풀밖" 회색 표시(실제 진입후보 아님 명시). 실제 진입은 기존대로 추적풀 + 5m 마감 확인 경로만.
+
 ## [5.24.5] - 2026-06-29
 
 ### ⏳ LCC 진입에 5m 마감 확인 추가 — 즉시진입 즉시손실 fix

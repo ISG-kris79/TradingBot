@@ -3291,6 +3291,7 @@ namespace TradingBot
                 _ = ProcessTickerChannelAsync(token);
                 _ = ProcessAccountChannelAsync(token); // [Agent 2] 계좌 업데이트 처리 시작
                 _ = ProcessOrderChannelAsync(token);   // [Agent 2] 주문 업데이트 처리 시작
+                _ = RunNearEntryScanLoopAsync(token);  // [v5.24.6] 진입 임박 패널 — 고정 유니버스 독립 주기 스캔
 
                 // [v5.22.13] 초기학습 자동 트리거 + flag 진단 로그 통째 제거 — AI 시스템 폐기 (2026-04-29)
 
@@ -4749,6 +4750,7 @@ namespace TradingBot
             public double DbbRoomPct;   // (+1σ - close)/close*100 (>=0 이면 과열 아님)
             public double EntryUpper;   // +1σ 가격 (DBB 진입 상한)
             public bool Passed;         // 가드 통과 여부
+            public bool InPool;         // 현재 추적풀(실제 진입후보) 여부 — false면 '풀밖'
             public DateTime UpdatedUtc;
         }
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, NearEntryInfo> _nearEntrySnapshot
@@ -4766,17 +4768,99 @@ namespace TradingBot
                 DbbRoomPct = dbbRoomPct,
                 EntryUpper = entryUpper,
                 Passed = guard.Passed,
+                InPool = _activeTrackingPool.ContainsKey(symbol),
                 UpdatedUtc = DateTime.UtcNow
             };
         }
 
-        /// <summary>[v5.24.5] UI '진입 임박' 패널용 스냅샷 — 최근 60초 내 평가된 심볼만 반환.</summary>
+        /// <summary>[v5.24.6] UI '진입 임박' 패널용 스냅샷 — 최근 4분 내 스캔된 심볼(고정 유니버스 주기 스캔).</summary>
         public System.Collections.Generic.List<NearEntryInfo> GetNearEntrySnapshot()
         {
-            var cutoff = DateTime.UtcNow.AddSeconds(-60);
+            var cutoff = DateTime.UtcNow.AddSeconds(-240);
             return _nearEntrySnapshot.Values
                 .Where(x => x.UpdatedUtc >= cutoff)
                 .ToList();
+        }
+
+        // [v5.24.6] 진입 임박 패널 고정 유니버스 — 추적풀(메이저4+동적)과 무관하게 항상 스캔.
+        //   약세장에 동적풀이 비어도 알트 근접도를 항상 표시(모니터링용). 풀밖 코인은 InPool=false로 표시.
+        private static readonly string[] NearEntryUniverse =
+        {
+            "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT",
+            "BNBUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","TRXUSDT",
+            "SUIUSDT","LTCUSDT","BCHUSDT","XLMUSDT","DOTUSDT","HYPEUSDT"
+        };
+
+        /// <summary>[v5.24.6] 고정 유니버스를 주기적으로 스캔해 진입 임박 스냅샷 갱신 (진입 실행 없음, 표시 전용).</summary>
+        private async Task RunNearEntryScanLoopAsync(CancellationToken token)
+        {
+            // 부팅 직후 캐시 워밍 대기
+            try { await Task.Delay(TimeSpan.FromSeconds(20), token); } catch { return; }
+            while (!token.IsCancellationRequested)
+            {
+                foreach (var sym in NearEntryUniverse)
+                {
+                    if (token.IsCancellationRequested) break;
+                    try { await UpdateNearEntryForSymbolAsync(sym, token); }
+                    catch { }
+                }
+                try { await Task.Delay(TimeSpan.FromSeconds(50), token); } catch { break; }
+            }
+        }
+
+        /// <summary>[v5.24.6] 단일 심볼 LCC 가드 평가 → 진입 임박 스냅샷만 기록 (진입 안 함).</summary>
+        private async Task UpdateNearEntryForSymbolAsync(string symbol, CancellationToken token)
+        {
+            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 1500, token);
+            if (k15 == null || k15.Count < 300) return;
+            var k15List = k15 as List<IBinanceKline> ?? new List<IBinanceKline>(k15);
+
+            var engine = _lorentzianEngines.GetOrAdd(symbol,
+                s => new LorentzianAnnEngine(s, neighborsCount: 8, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount));
+
+            // walk-forward 학습 (AnalyzeLorentzianEntryAsync와 동일 — 마지막 마감봉 변경 시만)
+            var lastClosed15m = k15List[^2];
+            bool needTrain = !_lorentzianLast15mTrained.TryGetValue(symbol, out var prevTrained)
+                             || prevTrained != lastClosed15m.OpenTime;
+            if (needTrain)
+            {
+                _lorentzianLast15mTrained[symbol] = lastClosed15m.OpenTime;
+                if (engine.SampleCount < 200)
+                {
+                    for (int j = 60; j <= k15List.Count - 6; j++)
+                    {
+                        int wStart = Math.Max(0, j - 499);
+                        var win = k15List.GetRange(wStart, j - wStart + 1);
+                        var feats = LorentzianFeatures.Extract(win);
+                        if (feats == null) continue;
+                        engine.AddSample(feats, LorentzianGuard.LabelForBar(k15List, j));
+                    }
+                }
+                else
+                {
+                    int sIdx = k15List.Count - 6;
+                    if (sIdx >= 60)
+                    {
+                        int wStart = Math.Max(0, sIdx - 499);
+                        var win = k15List.GetRange(wStart, sIdx - wStart + 1);
+                        var feats = LorentzianFeatures.Extract(win);
+                        if (feats != null) engine.AddSample(feats, LorentzianGuard.LabelForBar(k15List, sIdx));
+                    }
+                }
+            }
+
+            int evalIdx = k15List.Count - 2;
+            int wStartE = Math.Max(0, evalIdx - 499);
+            var winE = k15List.GetRange(wStartE, evalIdx - wStartE + 1);
+            var guard = LorentzianGuard.EvaluateEntry(winE, engine);
+
+            int eiN = winE.Count - 1;
+            double nwNowN = LorentzianGuard.CalcNWKernel(winE, eiN);
+            double nwPrevN = eiN >= 1 ? LorentzianGuard.CalcNWKernel(winE, eiN - 1) : nwNowN;
+            LorentzianGuard.CalcBB(winE, eiN, 20, 1.0, out _, out double up1N, out _);
+            double closeN = (double)winE[eiN].ClosePrice;
+            double roomN = up1N > 0 ? (up1N - closeN) / closeN * 100.0 : 0.0;
+            UpdateNearEntrySnapshot(symbol, guard, nwNowN - nwPrevN, roomN, up1N);
         }
 
         private async Task AnalyzeLorentzianEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
