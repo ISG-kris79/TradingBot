@@ -434,6 +434,41 @@
                     
 
                     
+                    <!-- [ScalpAuto] 단타 자동매매 탭 -->
+                    <TabItem Header="단타 ScalpAuto">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <Border Padding="20">
+                                <StackPanel>
+                                    <CheckBox x:Name="chkScalpAuto" Content="단타 자동매매 사용 (CoinFF 단타 로직 · 진입+TP/SL 자동등록)"
+                                              Foreground="#00E676" Margin="0,0,0,14" FontWeight="Bold"/>
+
+                                    <TextBlock Text="타임프레임 (예: 1m,3m,5m,15m,1h):" Foreground="#94A3B8" Margin="0,0,0,4"/>
+                                    <TextBox x:Name="txtScalpInterval" Margin="0,0,0,12" Padding="8"
+                                             Background="#1E2235" Foreground="White" BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="대상 심볼 (쉼표 구분):" Foreground="#94A3B8" Margin="0,0,0,4"/>
+                                    <TextBox x:Name="txtScalpSymbols" Margin="0,0,0,12" Padding="8"
+                                             Background="#1E2235" Foreground="White" BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="레버리지 (x):" Foreground="#94A3B8" Margin="0,0,0,4"/>
+                                    <TextBox x:Name="txtScalpLeverage" Margin="0,0,0,12" Padding="8"
+                                             Background="#1E2235" Foreground="White" BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="1회 진입 마진 (USDT):" Foreground="#94A3B8" Margin="0,0,0,4"/>
+                                    <TextBox x:Name="txtScalpMargin" Margin="0,0,0,12" Padding="8"
+                                             Background="#1E2235" Foreground="White" BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="최대 동시 포지션 수:" Foreground="#94A3B8" Margin="0,0,0,4"/>
+                                    <TextBox x:Name="txtScalpMaxPos" Margin="0,0,0,12" Padding="8"
+                                             Background="#1E2235" Foreground="White" BorderBrush="#2D3142"/>
+
+                                    <TextBlock Text="⚠ 실주문이 나갑니다. 반드시 시뮬레이션 모드 + 테스트넷 키로 먼저 검증하세요. 확정봉 기준·심볼당 1포지션·진입 후 30분 쿨다운."
+                                               Foreground="#FFB300" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                </StackPanel>
+                            </Border>
+                        </ScrollViewer>
+                    </TabItem>
+
                 </TabControl>
             </Grid>
 

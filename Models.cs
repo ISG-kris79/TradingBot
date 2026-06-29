@@ -32,6 +32,14 @@ namespace TradingBot.Models
 
     public class TradingSettings
     {
+        // [ScalpAuto] 단타 자동매매 (CoinFF 단타 로직 적용) — 기본 OFF, 테스트넷 권장
+        public bool ScalpAutoEnabled { get; set; } = false;
+        public string ScalpInterval { get; set; } = "15m";
+        public string ScalpSymbols { get; set; } = "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT";
+        public int ScalpLeverage { get; set; } = 10;
+        public decimal ScalpMarginUsdt { get; set; } = 20m;
+        public int ScalpMaxPositions { get; set; } = 3;
+
         public int DefaultLeverage { get; set; } = 15;  // [v5.10.97] 25→15 하향 (수수료/슬리피지 영향 감소)
         public decimal DefaultMargin { get; set; } = 200.0m;
         public decimal SidewaysTakeProfitRoe { get; set; } = 5.0m;

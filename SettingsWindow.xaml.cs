@@ -200,6 +200,14 @@ namespace TradingBot
                     txtMaxDailyEntries.Text = (currentSettings.MaxDailyEntries > 0 ? currentSettings.MaxDailyEntries : 500).ToString();
                     if (!string.IsNullOrWhiteSpace(currentSettings.MajorTrendProfile))
                         SelectMajorTrendProfile(currentSettings.MajorTrendProfile);
+
+                    // [ScalpAuto] 단타 자동매매 설정 로드
+                    chkScalpAuto.IsChecked = currentSettings.ScalpAutoEnabled;
+                    txtScalpInterval.Text = string.IsNullOrWhiteSpace(currentSettings.ScalpInterval) ? "15m" : currentSettings.ScalpInterval;
+                    txtScalpSymbols.Text = string.IsNullOrWhiteSpace(currentSettings.ScalpSymbols) ? "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT" : currentSettings.ScalpSymbols;
+                    txtScalpLeverage.Text = (currentSettings.ScalpLeverage > 0 ? currentSettings.ScalpLeverage : 10).ToString();
+                    txtScalpMargin.Text = (currentSettings.ScalpMarginUsdt > 0 ? currentSettings.ScalpMarginUsdt : 20m).ToString("F0");
+                    txtScalpMaxPos.Text = (currentSettings.ScalpMaxPositions > 0 ? currentSettings.ScalpMaxPositions : 3).ToString();
                 }
             }
             catch (Exception ex)
@@ -246,6 +254,17 @@ namespace TradingBot
                     generalNode["DefaultLeverage"] = leverage;
                     generalSettings.DefaultLeverage = leverage;
                 }
+
+                // [ScalpAuto] 단타 자동매매 설정 저장
+                generalSettings.ScalpAutoEnabled = chkScalpAuto.IsChecked == true;
+                generalNode["ScalpAutoEnabled"] = generalSettings.ScalpAutoEnabled;
+                generalSettings.ScalpInterval = string.IsNullOrWhiteSpace(txtScalpInterval.Text) ? "15m" : txtScalpInterval.Text.Trim();
+                generalNode["ScalpInterval"] = generalSettings.ScalpInterval;
+                generalSettings.ScalpSymbols = string.IsNullOrWhiteSpace(txtScalpSymbols.Text) ? "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT" : txtScalpSymbols.Text.Trim();
+                generalNode["ScalpSymbols"] = generalSettings.ScalpSymbols;
+                if (int.TryParse(txtScalpLeverage.Text, out int scLev) && scLev > 0) { generalSettings.ScalpLeverage = scLev; generalNode["ScalpLeverage"] = scLev; }
+                if (decimal.TryParse(txtScalpMargin.Text, out decimal scMargin) && scMargin > 0) { generalSettings.ScalpMarginUsdt = scMargin; generalNode["ScalpMarginUsdt"] = scMargin; }
+                if (int.TryParse(txtScalpMaxPos.Text, out int scMax) && scMax > 0) { generalSettings.ScalpMaxPositions = scMax; generalNode["ScalpMaxPositions"] = scMax; }
 
                 // [v3.2.14 removed] if (decimal.TryParse(txtTargetRoe.Text, out decimal targetRoe))
                 // [removed] {

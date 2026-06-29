@@ -1660,6 +1660,31 @@ namespace TradingBot
 
         private TradingSettings _settings;
 
+        // [ScalpAuto] CoinFF 단타 로직 자동매매기 (기본 OFF)
+        private TradingBot.Scalp.ScalpAutoTrader? _scalpAuto;
+        private void TryStartScalpAuto()
+        {
+            try
+            {
+                if (_settings?.ScalpAutoEnabled != true || _exchangeService == null) return;
+                if (_scalpAuto != null) return;
+                var syms = (_settings.ScalpSymbols ?? "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT")
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                _scalpAuto = new TradingBot.Scalp.ScalpAutoTrader(
+                    _exchangeService,
+                    msg => OnStatusLog?.Invoke(msg),
+                    () => (MainWindow.CurrentGeneralSettings ?? _settings)?.ScalpAutoEnabled == true,
+                    syms,
+                    _settings.ScalpInterval ?? "15m",
+                    _settings.ScalpLeverage > 0 ? _settings.ScalpLeverage : 10,
+                    _settings.ScalpMarginUsdt > 0 ? _settings.ScalpMarginUsdt : 20m,
+                    _settings.ScalpMaxPositions > 0 ? _settings.ScalpMaxPositions : 3);
+                _scalpAuto.Start();
+                OnStatusLog?.Invoke($"🟢 [ScalpAuto] 단타 자동매매 시작 — {_settings.ScalpInterval} · {syms.Length}종목 · margin ${_settings.ScalpMarginUsdt} · {_settings.ScalpLeverage}x");
+            }
+            catch (Exception ex) { OnStatusLog?.Invoke($"[ScalpAuto] 시작 실패: {ex.Message}"); }
+        }
+
         // [Events] UI와의 통신을 위한 이벤트 정의
         public event Action<string>? OnLiveLog;
         public event Action<string>? OnAlert;
@@ -1874,6 +1899,9 @@ namespace TradingBot
                 ?? AppConfig.Current?.Trading?.GeneralSettings
                 ?? new TradingSettings();
             ApplyMainLoopPerformanceSettings();
+
+            // [ScalpAuto] CoinFF 단타 로직 자동매매 (기본 OFF, 토글 시 진입+TP/SL 일괄 주문)
+            TryStartScalpAuto();
 
             _dailyTargetResetDate = DateTime.Today;
 
