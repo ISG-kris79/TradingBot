@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.24.4] - 2026-06-29
+
+### 🩹 LCC 진입 0건 fix — REGIME/VOLATILITY OFF + KNN 임계 6→4 완화
+- **REGIME/VOLATILITY 재차 OFF.** v5.23.98이 jdehorty 충실복원하며 둘을 ON으로 되돌렸으나 v5.23.95와 동일 증상 재발: 라이브 24h **REGIME 차단 78,499건(1위), 3일 진입 0건**. 15m 1500봉 환경에서 RegimeSlope가 거의 항상 -0.3~-0.9로 `< -0.1` 전면차단(캘리브레이션 미스매치). VOLATILITY(ATR1>ATR10)도 "눌림 매수"와 모순(돌파봉만 통과).
+- **KNN 강신호 하한 6→4 완화.** REGIME/VOL을 풀어도 `KNN net≥6`(8이웃 중 7+ LONG)가 약세장에선 사실상 통과 불가 → 여전히 0건. net≥4(5+ LONG)로 완화하니 진입 임박 스캐너(`--near-entry`)에서 즉시 진입 가능 1종목 + 임박 5종목 복원 확인.
+- 하락방향 보호는 1h 대세필터 + DBB 과열차단이 담당. NW_KERNEL 상승 + DBB 과열차단은 유지.
+- **신규 도구 `--near-entry`** (Tools/LorentzianValidator): 라이브 가드 그대로 30심볼 스캔 → "각 코인이 진입에 얼마나 가깝고 어느 값이면 진입되는가" 표시(가드블록 카운트 모니터 대체).
+- **신규 스크립트 `query-daily-perf.ps1`**: 성과를 진입시간 기준 일별 SUM(PnL)으로만 표기(개별 매매기록 미표시, UserId=1 실거래).
+
 ## [5.24.3] - 2026-06-28
 
 ### 🕯️ LCC 진입 캔들필터(PREV_LONG_TAIL/BEARISH_REVERSAL) 제거 — 상승추세 펌핑 놓침 fix (사용자 A)

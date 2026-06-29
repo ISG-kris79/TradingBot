@@ -54,9 +54,11 @@ namespace TradingBot.Services.LorentzianV2
             r.KnnWinRate = pred.K > 0 ? (float)pred.PositiveVotes / pred.K : 0f;
             if (!pred.IsReady || pred.K == 0) { r.BlockReason = "KNN_NOT_READY"; return r; }
             if (pred.Prediction <= 0) { r.BlockReason = "KNN_NOT_LONG"; return r; }
-            // [v5.23.98] 강신호 하한 pred>=6 — jdehorty 충실 3년 OOS 검증: 약신호 제거할수록 수익↑.
-            //   최강8 OOS +0.588%, 강신호6+ OOS +0.214%, 전체 +0.285%. 약신호(pred 1~5)는 엣지 약함.
-            if (pred.Prediction < 6) { r.BlockReason = $"KNN_WEAK (pred={pred.Prediction}<6 — 강신호만)"; return r; }
+            // [v5.24.4] 강신호 하한 6→4 완화 — v5.23.98의 pred>=6(8이웃 중 7+ LONG)이 진입 0건의 지배 게이트.
+            //   라이브 약세장에선 대부분 코인 net -6~-8(숏)이라 net≥6은 사실상 통과 불가 → 3일 진입 0건.
+            //   net≥4(=8이웃 중 5+ LONG)로 funnel 개방. 약신호(1~3)는 여전히 차단. 배포 후 카나리 관찰.
+            //   (이전 OOS: 강신호6+ +0.214% vs 전체 +0.285% — 6+가 더 좋았으나 거래빈도 극저라 실거래 무의미했음.)
+            if (pred.Prediction < 4) { r.BlockReason = $"KNN_WEAK (pred={pred.Prediction}<4)"; return r; }
 
             // [v5.23.91] 순수 TradingView LCC (jdehorty 기본 필터셋) — KNN + Volatility + Regime + Kernel 만.
             //   봇 커스텀 필터(ADX/EMA200/SMA200/BB중심선/BB워크/박스돌파)는 LCC가 아니므로 전부 제거.
@@ -67,14 +69,19 @@ namespace TradingBot.Services.LorentzianV2
             //   (하락방향 보호는 REGIME + 1h 대세필터(IsEntryAllowed)가 담당.)
             r.Atr1  = CalcTR(kl, idx);
             r.Atr10 = CalcATR(kl, idx, 10);
-            if (r.Atr1 <= r.Atr10) { r.BlockReason = "VOLATILITY"; return r; }   // [v5.23.98] 재활성화 — jdehorty 기본 ON, 충실본 수익의 일부
+            // [v5.24.4] OFF — v5.23.98 재활성화가 진입 0건의 주범(라이브 24h VOLATILITY 차단 다수). "눌림 매수" 전략과 모순:
+            //   ATR1>ATR10은 변동성 폭발(돌파봉)만 통과 → 조용한 눌림목·저변동 메이저(XRP) 차단. v5.23.93서 OFF했던 것 재차 끔.
+            // if (r.Atr1 <= r.Atr10) { r.BlockReason = "VOLATILITY"; return r; }
 
             // 3) Regime: [v5.23.95 OFF] jdehorty KLMF 원본대로 짰으나 실거래서 가드통과 심볼 ~100% 차단
             //   (6/20 00시 이후 진입 0건, REGIME 차단 157k = 압도적 1위). 충실 포팅이지만 이 봇 환경(15m 1500봉)
             //   에선 거의 항상 normalized_slope_decline < -0.1 → 전면차단. 하락방향 보호는 1h 대세필터
             //   (LCC_BELOW_1H_EMA20 + LCC_BTC_1H_DOWNTREND) + DBB 과열 + RANGE_TOP 이 담당하므로 중복. 끔.
             r.RegimeSlope = CalcRegimeSlope(kl, idx);
-            if (r.RegimeSlope < -0.1) { r.BlockReason = $"REGIME ({r.RegimeSlope:F3})"; return r; }   // [v5.23.98] 재활성화 — jdehorty 기본 ON
+            // [v5.24.4] OFF (재차) — v5.23.98이 jdehorty 충실복원하며 ON했으나, v5.23.95와 동일 증상 재발: 라이브 24h
+            //   REGIME 차단 78,499건 = 압도적 1위, 진입 0건(마지막 6/25). 이 봇 환경(15m 1500봉)에선 slope가 거의 항상
+            //   -0.3~-0.9로 찍혀 < -0.1 전면차단(캘리브레이션 미스매치). 하락방향 보호는 1h 대세필터 + DBB 과열차단이 담당.
+            // if (r.RegimeSlope < -0.1) { r.BlockReason = $"REGIME ({r.RegimeSlope:F3})"; return r; }
 
             // 4) ADX(14) > 20  — [v5.23.90 비활성화: jdehorty 기본 OFF]
             r.Adx = CalcADX(kl, idx, 14);

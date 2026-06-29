@@ -15087,6 +15087,130 @@ internal static class Program
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // [v5.24.4] --near-entry : 실제 라이브 LorentzianGuard 기준 '진입 임박' 스캐너.
+    //   라이브 AnalyzeLorentzianEntryAsync 와 동일하게 1500봉 15m fetch → walk-forward 학습 →
+    //   마지막 마감봉(count-2)에서 가드 평가. "무엇이 막나"가 아니라 "각 코인이 진입에 얼마나
+    //   가깝고, 어느 값/가격이면 진입되는가"를 보여준다. (가드블록 카운트 모니터 대체)
+    // ─────────────────────────────────────────────────────────────────────
+    private static async Task RunNearEntryScanAsync()
+    {
+        var scan = new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT" }
+            .Concat(symbols).Distinct().ToArray();
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  진입 임박 스캐너 — 실제 라이브 LorentzianGuard 기준 ({scan.Length}심볼, 15m)");
+        Console.WriteLine($"  활성 게이트: KNN신호(net≥4/8) · NW커널 상승 · DBB 과열아님(close≤+1σ)");
+        Console.WriteLine($"  (REGIME/VOLATILITY 는 v5.24.4 OFF — 라이브와 동일)");
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"{"심볼",-13}{"현재가",12}  {"KNN",-9}{"NW커널",-9}{"DBB여유",-9}{"진입상단(+1σ)",14}  판정");
+
+        var rows = new List<(int rank, string sym, string verdict, string line, string need)>();
+        int done = 0;
+        foreach (var sym in scan)
+        {
+            done++;
+            Console.Error.Write($"\r[fetch {done}/{scan.Length}] {sym}          ");
+            List<IBinanceKline> k15;
+            try { k15 = await FetchKlines15mAsync(sym, 1); } catch { continue; }
+            if (k15 == null || k15.Count < 350) continue;
+
+            // 라이브와 동일 학습: walk-forward bulk fill
+            var engine = new LorentzianAnnEngine(sym, 8, 2000, LorentzianFeatures.FeatureCount);
+            for (int j = 60; j <= k15.Count - 6; j++)
+            {
+                int wS = Math.Max(0, j - 499);
+                var win = k15.GetRange(wS, j - wS + 1);
+                var feats = LorentzianFeatures.Extract(win);
+                if (feats == null) continue;
+                engine.AddSample(feats, LorentzianGuard.LabelForBar(k15, j));
+            }
+
+            // 마지막 마감봉 평가 (라이브 evalIdx = count-2)
+            int evalIdx = k15.Count - 2;
+            int wStartE = Math.Max(0, evalIdx - 499);
+            var winE = k15.GetRange(wStartE, evalIdx - wStartE + 1);
+            int ei = winE.Count - 1;
+
+            var guard = LorentzianGuard.EvaluateEntry(winE, engine);
+
+            // 게이트별 지표 직접 계산 (가드 단락과 무관하게 전부 표시)
+            var feE = LorentzianFeatures.Extract(winE);
+            var pr = feE != null ? engine.Predict(feE) : new LorentzianAnnPrediction { K = 8, IsReady = false };
+            int net = pr.Prediction, pos = pr.PositiveVotes, K = pr.K > 0 ? pr.K : 8;
+            double nwNow = LorentzianGuard.CalcNWKernel(winE, ei);
+            double nwPrev = ei >= 1 ? LorentzianGuard.CalcNWKernel(winE, ei - 1) : nwNow;
+            double nwGap = nwNow - nwPrev;
+            LorentzianGuard.CalcBB(winE, ei, 20, 1.0, out double dbbMid, out double dbbUp1, out _);
+            double close = (double)winE[ei].ClosePrice;
+            double dbbRoomPct = dbbUp1 > 0 ? (dbbUp1 - close) / close * 100.0 : 0.0;
+
+            // 전환 여부 (라이브는 직전봉도 통과면 '지속신호'로 스킵 → 음→양 전환 첫봉만 진입)
+            bool prevPassed = false;
+            if (evalIdx - 1 >= 60)
+            {
+                int pIdx = evalIdx - 1, wsP = Math.Max(0, pIdx - 499);
+                var winP = k15.GetRange(wsP, pIdx - wsP + 1);
+                prevPassed = LorentzianGuard.EvaluateEntry(winP, engine).Passed;
+            }
+
+            // 게이트 통과 표시
+            bool knnOk = net >= 4;
+            bool nwOk = nwNow >= nwPrev;
+            bool dbbOk = !(dbbMid > 0 && close > dbbUp1);
+
+            string knnCell = $"{net,2}/{K}{(knnOk ? "✓" : "✗")}";
+            string nwCell = $"{(nwGap >= 0 ? "↑+" : "↓")}{nwGap,5:F3}{(nwOk ? "✓" : "✗")}".Replace("↓-", "↓-");
+            string dbbCell = $"{dbbRoomPct,+5:F1}%{(dbbOk ? "✓" : "✗")}";
+
+            // 판정 + 거리점수 (낮을수록 진입 임박)
+            string verdict; int rank;
+            if (guard.Passed && !prevPassed) { verdict = "★진입가능(신규전환)"; rank = 0; }
+            else if (guard.Passed && prevPassed) { verdict = "진입조건충족(지속신호—라이브스킵)"; rank = 1; }
+            else
+            {
+                // 거리: KNN 부족표 ×10 + NW 미상승 ×5 + DBB 과열 ×(초과%)
+                int dist = 0;
+                var miss = new List<string>();
+                if (!knnOk) { dist += (4 - net) * 10; miss.Add($"KNN {net}→4 ({4 - net}표↑)"); }
+                if (!nwOk) { dist += 5; miss.Add($"NW커널 상승전환 필요({nwGap:F3})"); }
+                if (!dbbOk) { dist += (int)Math.Ceiling(-dbbRoomPct) + 1; miss.Add($"DBB 과열(+1σ {dbbUp1:G6} ≤ 진입, 현재 {close:G6}, {dbbRoomPct:F1}%)"); }
+                verdict = miss.Count == 0 ? "(가드기타차단)" : "근접: " + string.Join(", ", miss);
+                rank = 2_000 + dist;
+            }
+
+            string line = $"{sym,-13}{close,12:G6}  {knnCell,-9}{nwCell,-9}{dbbCell,-9}{dbbUp1,14:G6}  {(rank < 2 ? verdict : "근접도 " + (rank - 2000))}";
+            rows.Add((rank, sym, verdict, line, BuildNeedLine(sym, guard.Passed, prevPassed, net, K, nwNow, nwPrev, close, dbbUp1, dbbOk)));
+        }
+        Console.Error.Write("\r                                        \r");
+
+        foreach (var r in rows.OrderBy(x => x.rank).ThenByDescending(x => x.sym.StartsWith("BTC") || x.sym.StartsWith("ETH")))
+            Console.WriteLine(r.line);
+
+        Console.WriteLine();
+        Console.WriteLine("=== ★ 지금 진입 가능 (가드 통과 + 신규 전환) ===");
+        var ready = rows.Where(x => x.rank == 0).ToList();
+        if (ready.Count == 0) Console.WriteLine("  현재 진입 가능 코인 없음.");
+        foreach (var r in ready) Console.WriteLine("  " + r.sym + " — " + r.verdict);
+
+        Console.WriteLine();
+        Console.WriteLine("=== 진입 임박 TOP (어느 값이면 진입되는가) ===");
+        foreach (var r in rows.OrderBy(x => x.rank).Take(8))
+            Console.WriteLine("  " + r.need);
+    }
+
+    private static string BuildNeedLine(string sym, bool passed, bool prevPassed,
+        int net, int K, double nwNow, double nwPrev, double close, double dbbUp1, bool dbbOk)
+    {
+        if (passed && !prevPassed) return $"{sym}: ✅ 지금 진입 조건 충족 (신규 전환).";
+        if (passed && prevPassed) return $"{sym}: 가드는 통과지만 직전봉도 통과(지속신호) → 라이브는 전환 첫봉만 진입하므로 스킵.";
+        var parts = new List<string>();
+        if (net < 4) parts.Add($"KNN {net}/{K} → net≥4 필요 ({4 - net}표 더 LONG 쪽으로)");
+        if (nwNow < nwPrev) parts.Add($"NW커널 하락중({nwNow:G6}<{nwPrev:G6}) → 상승전환 1봉 필요");
+        if (!dbbOk) parts.Add($"과열: 가격이 +1σ({dbbUp1:G6}) 이하로 눌려야 진입 (현재 {close:G6})");
+        if (parts.Count == 0) return $"{sym}: 기타 가드 차단.";
+        return $"{sym}: " + string.Join(" / ", parts);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // [v5.23.79] --trend1h-folds : 1시간봉 추세추종 전략을 3년 차트 다중폴드로 검증.
     //   사용자 원칙 "방향은 1h" — 상승추세 안에서 진입(고점추격 아님). 5개 변형 × K폴드.
     //   청산 = 부분TP1 + 넓은 ATR 추적 (큰 추세 끝까지).
@@ -15774,6 +15898,11 @@ internal static class Program
         if (HasArg("--now"))
         {
             await RunNowScanAsync();
+            return;
+        }
+        if (HasArg("--near-entry"))
+        {
+            await RunNearEntryScanAsync();
             return;
         }
         if (HasArg("--trend1h-folds"))
