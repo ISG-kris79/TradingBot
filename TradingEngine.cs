@@ -6559,6 +6559,7 @@ namespace TradingBot
                 int savedPartialStage = 0;
                 bool savedPump = !MajorSymbols.Contains(pos.Symbol); // [FIX] 메이저 아니면 PUMP 기본값
                 bool savedAvg = false;
+                bool isExternalManual = false; // [v5.25.3] 봇이 안 연 외부/수동 포지션 → 입양(SL/TP/감시) 안 함
                 decimal savedWave1Low = 0;
                 decimal savedWave1High = 0;
                 decimal savedFib0618 = 0;
@@ -6618,17 +6619,6 @@ namespace TradingBot
                 }
                 else
                 {
-                    decimal restoredMajorStopLoss = 0m;
-                    if (MajorSymbols.Contains(pos.Symbol))
-                    {
-                        var majorStop = await TryCalculateMajorAtrHybridStopLossAsync(pos.Symbol, pos.EntryPrice, isLong, _cts?.Token ?? CancellationToken.None);
-                        restoredMajorStopLoss = majorStop.StopLossPrice;
-                        if (restoredMajorStopLoss > 0)
-                        {
-                            OnStatusLog?.Invoke($"🛡️ [MAJOR ATR] {pos.Symbol} 외부 포지션 복원 손절 계산 | SL={restoredMajorStopLoss:F8}, ATRdist={majorStop.AtrDistance:F8}, 구조선={majorStop.StructureStopPrice:F8}");
-                        }
-                    }
-
                     var ensureResult = await _dbManager.EnsureOpenTradeForPositionAsync(new PositionInfo
                     {
                         Symbol = pos.Symbol,
@@ -6642,15 +6632,36 @@ namespace TradingBot
 
                     savedEntryTime = ensureResult.EntryTime;
                     savedAiScore = ensureResult.AiScore;
-                    if (ensureResult.Success)
-                    {
-                        string restoreDetail = ensureResult.Created
-                            ? "실행 중 외부 포지션을 감지해 TradeHistory 오픈 행을 새로 생성했습니다."
-                            : "실행 중 외부 포지션을 감지해 기존 TradeHistory 오픈 행과 재연결했습니다.";
-                        OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부복원", restoreDetail);
-                    }
 
-                    savedStopLoss = restoredMajorStopLoss;
+                    // [v5.25.3] 봇이 안 연 외부/수동 포지션 식별 — 봇 기록 없이 새로 생성(Created)되고 최근 봇 진입도 아니면 진짜 외부.
+                    //   봇 자기 포지션의 재시작 재연결(Created=false=기존 오픈행 재연결)은 정상 입양(SL/TP 복원) 유지.
+                    isExternalManual = ensureResult.Created && !IsRecentBotEntry(pos.Symbol);
+
+                    if (isExternalManual)
+                    {
+                        OnStatusLog?.Invoke($"🚫 [외부포지션] {pos.Symbol} 봇이 열지 않은 외부/수동 포지션 — 봇 입양 안 함 (SL/TP 미부착, 사용자 직접 관리)");
+                    }
+                    else
+                    {
+                        decimal restoredMajorStopLoss = 0m;
+                        if (MajorSymbols.Contains(pos.Symbol))
+                        {
+                            var majorStop = await TryCalculateMajorAtrHybridStopLossAsync(pos.Symbol, pos.EntryPrice, isLong, _cts?.Token ?? CancellationToken.None);
+                            restoredMajorStopLoss = majorStop.StopLossPrice;
+                            if (restoredMajorStopLoss > 0)
+                            {
+                                OnStatusLog?.Invoke($"🛡️ [MAJOR ATR] {pos.Symbol} 외부 포지션 복원 손절 계산 | SL={restoredMajorStopLoss:F8}, ATRdist={majorStop.AtrDistance:F8}, 구조선={majorStop.StructureStopPrice:F8}");
+                            }
+                        }
+                        if (ensureResult.Success)
+                        {
+                            string restoreDetail = ensureResult.Created
+                                ? "실행 중 외부 포지션을 감지해 TradeHistory 오픈 행을 새로 생성했습니다."
+                                : "실행 중 외부 포지션을 감지해 기존 TradeHistory 오픈 행과 재연결했습니다.";
+                            OnExternalSyncStatusChanged?.Invoke(pos.Symbol, "외부복원", restoreDetail);
+                        }
+                        savedStopLoss = restoredMajorStopLoss;
+                    }
                 }
 
                 lock (_posLock)
@@ -6695,9 +6706,10 @@ namespace TradingBot
                     _orderManager.RegisterBracket(pos.Symbol);
                     OnStatusLog?.Invoke($"🔄 [PositionSync] {pos.Symbol} account-update 브라켓 등록");
                 }
-                else
+                else if (!isExternalManual)
                 {
                     // 외부 포지션(봇이 열지 않은 것) — Standard or Pump 모니터 시작
+                    // [v5.25.3] 단, 진짜 외부/수동(isExternalManual)은 입양 안 함 → 이 블록 스킵(SL/TP/감시 미부착)
                     if (!savedPump)
                         TryStartStandardMonitor(pos.Symbol, pos.EntryPrice, isLong, "TREND", savedTakeProfit, savedStopLoss, _cts?.Token ?? CancellationToken.None, "external-position");
                     else
