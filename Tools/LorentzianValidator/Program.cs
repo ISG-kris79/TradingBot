@@ -15197,6 +15197,92 @@ internal static class Program
             Console.WriteLine("  " + r.need);
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // [v5.25.4] --macdrsi : "MACD 골든크로스 + RSI" 매매법 충실 백테스트 (유튜브 클릭베이트 검증).
+    //   규칙(표준 해석): LONG 진입 = MACD(12,26,9) 골든크로스 + RSI(14) 50~70(모멘텀↑·과열아님).
+    //   1h봉 3년 × 30심볼. 여러 TP/SL로 '승률'과 '실수익(누적·PF)'을 같이 출력 → 고승률=흑자 아님을 노출.
+    // ─────────────────────────────────────────────────────────────────────
+    // 진입 e(종가) → 선행 TP/SL 시뮬. 반환: (수익률%, 청산봉idx). 손절 우선(같은봉 둘다=보수적 손절).
+    private static (double ret, int exit) SimTpSl(List<IBinanceKline> kl, int e, double tpPct, double slPct, int maxBars)
+    {
+        double entry = (double)kl[e].ClosePrice;
+        double tp = entry * (1 + tpPct / 100.0), sl = entry * (1 - slPct / 100.0);
+        int end = Math.Min(kl.Count - 1, e + maxBars);
+        for (int j = e + 1; j <= end; j++)
+        {
+            double hi = (double)kl[j].HighPrice, lo = (double)kl[j].LowPrice;
+            if (lo <= sl) return (-slPct, j);
+            if (hi >= tp) return (tpPct, j);
+        }
+        return (((double)kl[end].ClosePrice - entry) / entry * 100.0, end);
+    }
+
+    private static async Task RunMacdRsiAsync()
+    {
+        int pages = BbExpandPages >= 12 ? BbExpandPages : 18;   // 1h 18p ≈ 3년
+        const int maxBars = 48;                                 // 최대 2일 보유
+        var configs = new[] { (0.5m, 3.0m), (1.0m, 1.0m), (1.5m, 1.0m), (2.0m, 1.5m), (3.0m, 1.5m), (1.0m, 2.0m) };
+        decimal lev = 10m; double feeRoundTrip = 0.08; // %, 진입+청산 합 (price 기준 근사)
+
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  'MACD 골든크로스 + RSI' 매매법 검증 — 1h {pages}p(~3년) × {symbols.Length}심볼");
+        Console.WriteLine($"  진입: MACD(12,26,9) 골든크로스 + RSI(14) 50~70 | 청산: TP/SL 선행 (최대 {maxBars}h)");
+        Console.WriteLine("================================================================");
+
+        int C = configs.Length;
+        var N = new int[C]; var W = new int[C]; var posSum = new double[C]; var negSum = new double[C]; var retSum = new double[C];
+
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            Console.Error.Write($"\r[{idx}/{symbols.Length}] {sym}        ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlines1hAsync(sym, pages); } catch { continue; }
+            if (kl == null || kl.Count < 300) continue;
+
+            int n = kl.Count;
+            var closes = new double[n];
+            for (int i = 0; i < n; i++) closes[i] = (double)kl[i].ClosePrice;
+            var (macd, sig) = MacdSeries(closes);
+            var rsi = RsiArr(closes, 14);
+
+            for (int ci = 0; ci < C; ci++)
+            {
+                int busy = -1;
+                for (int i = 35; i < n - 2; i++)
+                {
+                    if (i <= busy) continue;
+                    bool golden = macd[i] > sig[i] && macd[i - 1] <= sig[i - 1];
+                    bool rsiOk = rsi[i] >= 50.0 && rsi[i] <= 70.0;
+                    if (!(golden && rsiOk)) continue;
+                    var (ret, exit) = SimTpSl(kl, i, (double)configs[ci].Item1, (double)configs[ci].Item2, maxBars);
+                    N[ci]++; if (ret > 0) W[ci]++;
+                    if (ret >= 0) posSum[ci] += ret; else negSum[ci] += -ret;
+                    retSum[ci] += ret;
+                    busy = exit;
+                }
+            }
+            Console.Error.Write("ok   ");
+        }
+        Console.Error.Write("\r                                        \r");
+
+        Console.WriteLine($"{"TP/SL%",-10}{"N",6}{"승률",8}{"건당%",9}{"누적%(price)",14}{"PF",7}{"10x순누적%(수수료반영)",22}");
+        for (int ci = 0; ci < C; ci++)
+        {
+            double wr = N[ci] > 0 ? 100.0 * W[ci] / N[ci] : 0;
+            double avg = N[ci] > 0 ? retSum[ci] / N[ci] : 0;
+            double pf = negSum[ci] > 1e-9 ? posSum[ci] / negSum[ci] : 999;
+            // 10x 레버 + 건당 수수료 0.08% → ROE 환산: (건당price% - fee) × lev
+            double net10x = (avg - feeRoundTrip) * (double)lev * N[ci];
+            string tpsl = $"{configs[ci].Item1}/{configs[ci].Item2}";
+            Console.WriteLine($"{tpsl,-10}{N[ci],6}{wr,7:F1}%{avg,8:F2}%{retSum[ci],13:F0}%{pf,7:F2}{net10x,20:F0}%");
+        }
+        Console.WriteLine();
+        Console.WriteLine("  [판정] '승률'은 TP가 작을수록 높아지지만(0.5/3.0 = 고승률), PF<1·누적 음수면 깡통.");
+        Console.WriteLine("  10x순누적%는 레버10배+왕복수수료 0.08% 반영한 실제 계좌 변화 근사(음수=손실).");
+    }
+
     private static string BuildNeedLine(string sym, bool passed, bool prevPassed,
         int net, int K, double nwNow, double nwPrev, double close, double dbbUp1, bool dbbOk)
     {
@@ -15837,6 +15923,7 @@ internal static class Program
         //   기존: --lev 10 --daily-60d 호출 시 args[0]=="--lev" 라 default 분기로 떨어져
         //   real-lorentzian C# engine 경로가 실행되며 daily-60d 절대 안 돌았음.
         bool HasArg(string flag) => args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
+        if (HasArg("--macdrsi")) { await RunMacdRsiAsync(); return; }
         if (HasArg("--no-knn")) { SkipKnn = true; Console.WriteLine("[CONFIG] KNN precompute 생략 (--no-knn)"); }
         if (HasArg("--majors")) { UseMajors = true; Console.WriteLine("[CONFIG] 대형주 universe (--majors)"); }
         if (HasArg("--regime")) { UseRegime = true; Console.WriteLine("[CONFIG] BTC 상승장 레짐 필터 (--regime)"); }

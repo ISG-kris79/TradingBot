@@ -4493,13 +4493,16 @@ namespace TradingBot
                 //   밈코인도 일반 LCC 경로로 통일. AnalyzeMemeKnnEntryAsync 미호출.
                 try
                 {
-                    await AnalyzeLorentzianEntryAsync(symbol, currentPrice, token);
-                    // [v5.23.97] RSI2 과매도 반등 — 검증된 흑자 전략(승률 66%) 병행
+                    // [v5.25.4] 역추세 눌림반등(MEANREV + RSI2)을 '주력'으로 우선 평가 — 충실 OOS 검증 유일 흑자.
+                    //   모멘텀/추세추종/MACD는 전부 적자(백테스트), 역추세 눌림만 +엣지 → 우선순위 부여. LCC는 보조.
+                    await AnalyzeMeanRevEntryAsync(symbol, currentPrice, token);
                     await AnalyzeRsi2ReversalEntryAsync(symbol, currentPrice, token);
+                    // LCC(Lorentzian)는 보조 진입 — 슬롯/가드 통과 시
+                    await AnalyzeLorentzianEntryAsync(symbol, currentPrice, token);
                 }
                 catch (Exception ex)
                 {
-                    OnStatusLog?.Invoke($"⚠️ [LORENTZIAN] {symbol} 분석 오류: {ex.Message}");
+                    OnStatusLog?.Invoke($"⚠️ [ENTRY] {symbol} 분석 오류: {ex.Message}");
                 }
 
                 // [v5.23.84] BB_SQUEEZE/BB_WALK 진입 트리거 폐기 (사용자 지시, 절대 복원 금지).
@@ -5083,6 +5086,52 @@ namespace TradingBot
             OnStatusLog?.Invoke($"🟢 [RSI2_REVERSAL] {symbol} 진입 | RSI2={rsi2:F1}<5 + 종가>SMA200 (코인 상승추세) | SL=-5%");
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "RSI2_REVERSAL",
                 customStopLossPrice: currentPrice * 0.95m, skipAiGateCheck: true);
+        }
+
+        // [v5.25.4] MEANREV 역추세 눌림반등 — 충실 OOS 검증 유일 흑자(노RSI: 5폴드 전부 WR 60%+, 건당+8.2%).
+        //   규칙(5m): 1h내(-12봉) -2%↓ 하락 + 종가>BB(20,2)중심 + ADX(14)>20. 칼날회피: 1h 종가>SMA200.
+        //   청산: 1.5 ATR(5m) 손절. 추격(모멘텀) 아니라 눌림에서 사는 게 흑자라는 데이터 결론 → 주력 진입.
+        private async Task AnalyzeMeanRevEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            if (!IsEntryAllowed(symbol, "MEANREV", out _)) return;
+            if (_meanRevCooldown.TryGetValue(symbol, out var lastE) && DateTime.UtcNow - lastE < TimeSpan.FromHours(2)) return;
+            lock (_posLock)
+            {
+                if (_activePositions.TryGetValue(symbol, out var ex) && ex != null && Math.Abs(ex.Quantity) > 0) return;
+            }
+
+            var k5raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 320, token);
+            var k5 = k5raw as List<IBinanceKline> ?? (k5raw != null ? new List<IBinanceKline>(k5raw) : null);
+            if (k5 == null || k5.Count < 60) return;
+            int li = k5.Count - 2;                            // 마지막 '마감' 5m봉
+            if (li < 45) return;
+
+            double c = (double)k5[li].ClosePrice;
+            double c1h = (double)k5[li - 12].ClosePrice;      // 12×5m = 1h 전
+            if (c1h <= 0) return;
+            if (!((c / c1h - 1.0) * 100.0 <= -2.0)) return;   // Drop2% (1h내 -2%+ 하락)
+
+            LorentzianGuard.CalcBB(k5, li, 20, 2.0, out double bbMid, out _, out _);
+            if (!(bbMid > 0 && c > bbMid)) return;            // BBroom: 종가 > BB 중심선
+            if (LorentzianGuard.CalcADX(k5, li, 14) <= 20.0) return; // ADX>20
+
+            // [칼날 회피] 1h 종가 > SMA200 (코인 자체 상승추세에서만 — 사용자 제안)
+            var k1hRaw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 220, token);
+            var k1h = k1hRaw as List<IBinanceKline> ?? (k1hRaw != null ? new List<IBinanceKline>(k1hRaw) : null);
+            if (k1h != null && k1h.Count >= 210)
+            {
+                int h = k1h.Count - 2;
+                if ((double)k1h[h].ClosePrice <= CalcSmaClose(k1h, h, 200)) return;
+            }
+
+            // 1.5 ATR(5m) 손절 (검증 청산구조 근사)
+            double atr5 = LorentzianGuard.CalcATR(k5, li, 14);
+            decimal slPrice = atr5 > 0 ? currentPrice - 1.5m * (decimal)atr5 : currentPrice * 0.97m;
+
+            _meanRevCooldown[symbol] = DateTime.UtcNow;
+            OnStatusLog?.Invoke($"🟢 [MEANREV] {symbol} 진입 | 역추세 눌림반등 (1h -2%↓ + BB중심위 + ADX>20 + 1h>SMA200) | SL=1.5ATR({slPrice:F6})");
+            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "MEANREV",
+                customStopLossPrice: slPrice, skipAiGateCheck: true);
         }
 
         // [v5.23.97] RSI2 전략용 지표 (종가 기준, 라이브 자체계산).

@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.25.4] - 2026-06-30
+
+### 📈 역추세 눌림반등(MEANREV) 주력 승격 — 충실 OOS 검증 유일 흑자
+- 검증(3년·30심볼·5폴드 OOS): MACD+RSI ❌적자, 1h 추세추종 ❌(WR 47% ROE -3%), **역추세 MeanRev(노RSI) ✅ 5폴드 전부 WR 60%+·건당 +8.2%**. 추격(모멘텀)이 아니라 눌림에서 사야 흑자라는 데이터 결론.
+- 구현: `AnalyzeMeanRevEntryAsync` 신규 — 5m봉 규칙(1h내 -2%↓ + 종가>BB(20,2)중심 + ADX(14)>20) + 칼날회피(1h 종가>SMA200) + 1.5ATR 손절. 스캔 루프에서 **MEANREV+RSI2를 주력으로 우선 평가, LCC는 보조**.
+- ⚠️ 표본 작음(폴드당 N=17~38) + 백테스트는 실거래와 괴리 이력 → **라이브 카나리로 확정 필요**.
+- 신규 검증도구 `--macdrsi` (LorentzianValidator): "MACD+RSI 매매법" 클릭베이트 검증 — 고승률(82%)도 PF<1로 전구간 적자 확인.
+
 ## [5.25.3] - 2026-06-30
 
 ### 🚫 봇이 외부/수동 포지션 입양 중단 (사용자 지정) — 큰 손실 차단
