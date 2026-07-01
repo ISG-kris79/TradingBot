@@ -5,6 +5,13 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.25.6] - 2026-07-01
+
+### 🩹 추적 라벨링 버그 fix — 봇 자기 거래가 "외부(미추적)"로 오라벨되던 문제
+- 원인: 테스트넷 봇 단독인데 account-update 지연·재시작 레이스로 봇 자기 거래가 wasTracked=false→IsOwnPosition=false(외부)로 오라벨. 다청크 partial fill(METUSDT 8청크)이 IsRecentBotEntry 10초 창을 넘겨 EXTERNAL_POSITION_INCREASE_SYNC로 오분류.
+- 수정: ①IsRecentBotEntry 창 10→30초 ②account-update 미추적 포지션도 최근(30초) 봇 진입이면 IsOwnPosition=true로 편입(슬롯카운트·관리 정상화). 정리 컷오프 60초라 안전.
+- (RESTORED 라벨 자체는 BPH가 성과 권위 소스라 표시상 문제일 뿐 — 별도.)
+
 ## [5.25.5] - 2026-07-01
 
 ### ⏪ 롤백 — 외부 포지션 입양 중단(v5.25.3) 무력화, 자기 포지션 보호 복원

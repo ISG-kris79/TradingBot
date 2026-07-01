@@ -602,7 +602,10 @@ namespace TradingBot
                     if (kv.Value < cutoff) _recentBotEntries.TryRemove(kv.Key, out _);
             }
         }
-        private bool IsRecentBotEntry(string symbol, int withinSeconds = 10)
+        // [v5.25.6] 10→30초 확대 — 다청크 partial fill(예: METUSDT 8청크)이 10초 넘겨 후반 청크가
+        //   EXTERNAL_POSITION_INCREASE_SYNC로 오분류되고, account-update 지연 시 봇 자기 진입이 미추적(외부)으로
+        //   오라벨되던 문제 완화. (_recentBotEntries 정리 컷오프는 60초라 30초 창은 안전.)
+        private bool IsRecentBotEntry(string symbol, int withinSeconds = 30)
         {
             if (string.IsNullOrWhiteSpace(symbol)) return false;
             if (!_recentBotEntries.TryGetValue(symbol, out var ts)) return false;
@@ -6746,7 +6749,9 @@ namespace TradingBot
                         IsPyramided = existing?.IsPyramided ?? false,
                         PyramidCount = existing?.PyramidCount ?? 0,
                         // [v5.2.2] 이 봇이 추적 중이던 포지션이면 IsOwnPosition 유지
-                        IsOwnPosition = wasTracked ? (existing?.IsOwnPosition ?? true) : false
+                        // [v5.25.6] 미추적이라도 최근(30초) 봇이 낸 주문이면 자기 포지션 — account-update 지연/재시작 레이스로
+                        //   봇 자기 테스트넷 거래가 IsOwnPosition=false(외부)로 오라벨되어 슬롯카운트/관리에서 빠지던 버그 fix.
+                        IsOwnPosition = wasTracked ? (existing?.IsOwnPosition ?? true) : IsRecentBotEntry(pos.Symbol)
                     };
                 }
 
