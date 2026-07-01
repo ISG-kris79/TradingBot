@@ -5,6 +5,12 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.25.5] - 2026-07-01
+
+### ⏪ 롤백 — 외부 포지션 입양 중단(v5.25.3) 무력화, 자기 포지션 보호 복원
+- 정정: 이 봇은 테스트넷 단독 실거래, 수동매매 0. "ACCOUNT_UPDATE_RESTORED/외부" 라벨 포지션은 전부 봇 자신의 거래(account-update 지연·재시작으로 미추적 재감지). v5.25.3이 이를 "외부"로 보고 SL/TP 미부착 → 봇 자기 포지션 방치.
+- 수정: isExternalManual=false 고정 → 항상 입양(SL/TP/모니터 보호) 복원. 손실 원인은 외부가 아니라 전략 자체 → v5.25.4 MeanRev 전환으로 대응.
+
 ## [5.25.4] - 2026-06-30
 
 ### 📈 역추세 눌림반등(MEANREV) 주력 승격 — 충실 OOS 검증 유일 흑자

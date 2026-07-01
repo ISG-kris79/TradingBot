@@ -6682,9 +6682,10 @@ namespace TradingBot
                     savedEntryTime = ensureResult.EntryTime;
                     savedAiScore = ensureResult.AiScore;
 
-                    // [v5.25.3] 봇이 안 연 외부/수동 포지션 식별 — 봇 기록 없이 새로 생성(Created)되고 최근 봇 진입도 아니면 진짜 외부.
-                    //   봇 자기 포지션의 재시작 재연결(Created=false=기존 오픈행 재연결)은 정상 입양(SL/TP 복원) 유지.
-                    isExternalManual = ensureResult.Created && !IsRecentBotEntry(pos.Symbol);
+                    // [v5.25.5] 롤백 — 수동매매 없음(테스트넷 봇 전용) 확인됨. "외부"로 보이던 포지션은 전부 봇 자신의
+                    //   테스트넷 거래(account-update 지연/재시작으로 미추적 재감지)라, 입양 중단하면 봇 자기 포지션이 SL/TP 없이
+                    //   방치됨. → 항상 입양(보호) 복원. (v5.25.3의 isExternalManual 스킵 무력화)
+                    isExternalManual = false;
 
                     if (isExternalManual)
                     {
