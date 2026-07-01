@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **⚠️ 작업(코드수정/진단/손실분석) 시작 전 `SYSTEM_MAP.md`를 먼저 정독할 것.** 봇 전체 로직 지도(진입/청산/추적/모드/데이터) + "자주 틀리는 지점"이 정리돼 있다. 특히: 이 봇은 **테스트넷($1만 테스트머니)** 구동(appsettings의 IsSimulationMode=false는 stale). `ACCOUNT_UPDATE_RESTORED/외부` 라벨은 **봇 자신 거래의 추적 오라벨**(수동매매 0). 손실 원인은 외부가 아니라 **전략 자체**. 코드가 SYSTEM_MAP과 다르면 문서를 실제에 맞게 갱신.
+
 ## Project
 
 C# WPF cryptocurrency futures trading bot (.NET 9, Binance/Bybit). Single-user-per-machine WPF app with per-user data isolation in SQL Server. Self-contained Velopack-deployed Setup.exe (~220MB).
