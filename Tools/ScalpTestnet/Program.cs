@@ -8,7 +8,7 @@ using TradingBot.Scalp;
 
 // ───────────────────────── 인자 파싱 ─────────────────────────
 string symbol = "BTCUSDT", interval = "15m", cfgPath = "appsettings.json";
-decimal margin = 50m; int leverage = 5; bool enter = false, force = false, protectOnly = false, closePos = false, doTelegram = false;
+decimal margin = 50m; int leverage = 5; bool enter = false, force = false, protectOnly = false, closePos = false, doTelegram = false, doStats = false, doIncome = false;
 for (int i = 0; i < args.Length; i++)
 {
     string a = args[i];
@@ -25,7 +25,115 @@ for (int i = 0; i < args.Length; i++)
         case "--protect-only": protectOnly = true; break;
         case "--close": closePos = true; break;
         case "--telegram": doTelegram = true; break;
+        case "--stats": doStats = true; break;
+        case "--income": doIncome = true; break;
     }
+}
+
+// ───────────────────────── 바이낸스 수익내역 진단 (--income, 라이브 키) ─────────────────────────
+if (doIncome)
+{
+    using var doc = JsonDocument.Parse(File.ReadAllText(cfgPath));
+    var csn = doc.RootElement.GetProperty("ConnectionStrings");
+    string conn2 = csn.GetProperty("DefaultConnection").GetString() ?? "";
+    if (csn.TryGetProperty("IsEncrypted", out var e2) && e2.GetBoolean())
+        conn2 = TradingBot.Shared.Services.SecurityService.DecryptString(conn2);
+    using var db = new Microsoft.Data.SqlClient.SqlConnection(conn2);
+    db.Open();
+    var users = new List<(int id, string k, string s)>();
+    using (var cmd = db.CreateCommand())
+    {
+        cmd.CommandText = "SELECT Id, BinanceApiKey, BinanceApiSecret FROM Users WHERE BinanceApiKey IS NOT NULL AND LEN(BinanceApiKey) > 0";
+        using var rd = cmd.ExecuteReader();
+        while (rd.Read())
+        {
+            string k = TradingBot.Shared.Services.SecurityService.DecryptString(rd["BinanceApiKey"] as string ?? "");
+            string s = TradingBot.Shared.Services.SecurityService.DecryptString(rd["BinanceApiSecret"] as string ?? "");
+            if (!string.IsNullOrWhiteSpace(k)) users.Add(((int)rd["Id"], k, s));
+        }
+    }
+    var kstNow = DateTime.UtcNow.AddHours(9);
+    var startUtc = kstNow.Date.AddHours(-9); // 오늘 KST 00:00 → UTC
+    Console.WriteLine($"── 바이낸스 REALIZED_PNL (오늘 KST {kstNow:MM-dd}) ──");
+    foreach (var (id, k, s) in users)
+    {
+        var cli = new BinanceRestClient(o => o.ApiCredentials = new ApiCredentials(k, s));
+        var inc = await cli.UsdFuturesApi.Account.GetIncomeHistoryAsync(incomeType: "REALIZED_PNL", startTime: startUtc, limit: 1000);
+        if (!inc.Success) { Console.WriteLine($"  User {id}: 조회 실패 {inc.Error?.Message}"); continue; }
+        var rows = inc.Data.ToList();
+        decimal tot = rows.Sum(x => x.Income);
+        var bySym = rows.GroupBy(x => x.Symbol).Select(g => (Sym: g.Key, Cnt: g.Count(), Pnl: g.Sum(x => x.Income))).OrderByDescending(x => Math.Abs(x.Pnl)).ToList();
+        Console.WriteLine($"  User {id}: REALIZED_PNL 합계 {tot:N2} · 청산 이벤트 {rows.Count}건 · 심볼 {bySym.Count}개");
+        foreach (var b in bySym) Console.WriteLine($"      {b.Sym} : {b.Cnt}건 {b.Pnl:N2}");
+    }
+
+    // 테스트넷 계정 오늘 실현손익 (appsettings 테스트넷 키)
+    string tk = doc.RootElement.GetProperty("Trading").GetProperty("TestnetApiKey").GetString() ?? "";
+    string ts = doc.RootElement.GetProperty("Trading").GetProperty("TestnetApiSecret").GetString() ?? "";
+    if (!string.IsNullOrWhiteSpace(tk))
+    {
+        var tcli = new BinanceRestClient(o => { o.ApiCredentials = new ApiCredentials(tk, ts); o.Environment = BinanceEnvironment.Testnet; });
+        var inc = await tcli.UsdFuturesApi.Account.GetIncomeHistoryAsync(incomeType: "REALIZED_PNL", startTime: startUtc, limit: 1000);
+        Console.WriteLine("── 테스트넷 REALIZED_PNL (오늘 KST) ──");
+        if (inc.Success)
+        {
+            var rows = inc.Data.ToList();
+            var bySym = rows.GroupBy(x => x.Symbol).Select(g => (Sym: g.Key, Cnt: g.Count(), Pnl: g.Sum(x => x.Income))).OrderByDescending(x => Math.Abs(x.Pnl)).ToList();
+            Console.WriteLine($"  테스트넷: REALIZED_PNL 합계 {rows.Sum(x => x.Income):N2} · 청산 이벤트 {rows.Count}건 · 심볼 {bySym.Count}개");
+            foreach (var b in bySym) Console.WriteLine($"      {b.Sym} : {b.Cnt}건 {b.Pnl:N2}");
+        }
+        else Console.WriteLine($"  테스트넷 조회 실패: {inc.Error?.Message}");
+    }
+    return;
+}
+
+// ───────────────────────── DB 매매기록 통계 진단 (--stats) ─────────────────────────
+if (doStats)
+{
+    using var doc = JsonDocument.Parse(File.ReadAllText(cfgPath));
+    var cs = doc.RootElement.GetProperty("ConnectionStrings");
+    string conn = cs.GetProperty("DefaultConnection").GetString() ?? "";
+    if (cs.TryGetProperty("IsEncrypted", out var enc) && enc.GetBoolean())
+        conn = TradingBot.Shared.Services.SecurityService.DecryptString(conn);
+    using var db = new Microsoft.Data.SqlClient.SqlConnection(conn);
+    db.Open();
+    Console.WriteLine("── BinancePositionHistory 진단 (CloseTime · KST) ──");
+    // 유저별 최근 8일 일자별 합계/건수
+    using (var cmd = db.CreateCommand())
+    {
+        cmd.CommandText = @"
+SELECT UserId,
+       CONVERT(date, DATEADD(hour, 9, CloseTime)) AS D,
+       COUNT(*) AS Cnt,
+       SUM(CASE WHEN NetPnl>0 THEN 1 ELSE 0 END) AS Wins,
+       SUM(NetPnl) AS Pnl
+FROM dbo.BinancePositionHistory
+WHERE CloseTime >= DATEADD(day,-8, SYSUTCDATETIME())
+GROUP BY UserId, CONVERT(date, DATEADD(hour, 9, CloseTime))
+ORDER BY UserId, D DESC";
+        using var rd = cmd.ExecuteReader();
+        while (rd.Read())
+            Console.WriteLine($"  User {rd["UserId"]} | {((DateTime)rd["D"]):yyyy-MM-dd} | 건수 {rd["Cnt"]} | 승 {rd["Wins"]} | NetPnl합 {Convert.ToDecimal(rd["Pnl"]):N2}");
+    }
+    // 오늘(KST) 거래 상세
+    Console.WriteLine("── 오늘(KST) 청산 거래 상세 ──");
+    using (var cmd = db.CreateCommand())
+    {
+        cmd.CommandText = @"
+SELECT UserId, Symbol, PositionSide, CloseTime, NetPnl, RealizedPnl, Commission, RoePct
+FROM dbo.BinancePositionHistory
+WHERE CONVERT(date, DATEADD(hour,9,CloseTime)) = CONVERT(date, DATEADD(hour,9,SYSUTCDATETIME()))
+ORDER BY CloseTime";
+        using var rd = cmd.ExecuteReader();
+        int n = 0; decimal sum = 0;
+        while (rd.Read())
+        {
+            n++; decimal net = Convert.ToDecimal(rd["NetPnl"]); sum += net;
+            Console.WriteLine($"  U{rd["UserId"]} {rd["Symbol"]} {rd["PositionSide"]} close={((DateTime)rd["CloseTime"]).AddHours(9):MM-dd HH:mm} Net={net:N2} Realized={Convert.ToDecimal(rd["RealizedPnl"]):N2} Fee={Convert.ToDecimal(rd["Commission"]):N2}");
+        }
+        Console.WriteLine($"  → 오늘 거래 {n}건, NetPnl 합계 = {sum:N2}");
+    }
+    return;
 }
 
 // ───────────────────────── 테스트넷 키 로드 ─────────────────────────

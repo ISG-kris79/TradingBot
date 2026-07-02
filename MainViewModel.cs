@@ -1907,9 +1907,12 @@ namespace TradingBot.ViewModels
                 int userId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                 if (userId <= 0) return;
 
-                // [통일] 성과분석도 매매기록과 동일한 공통 날짜필터(Start/End) 사용.
-                //   기간 선택(일별/주별/월별)은 그래프 묶음 단위만 결정하고, 조회 범위는 Start~End로 통일.
-                DateTime start = StartDate, end = EndDate;
+                // [원복] 성과분석은 오늘 기준 달력(일별=최근30일 / 주별=3개월 / 월별=12개월)로 표시.
+                //   (매매기록 검색 날짜에 묶지 않음 — 사용자: "오늘 기준 달력으로 나와야지")
+                DateTime end = DateTime.Now, start;
+                if (_performancePeriod == "월별") start = end.AddMonths(-12);
+                else if (_performancePeriod == "주별") start = end.AddMonths(-3);
+                else start = end.AddDays(-30);
 
                 // [v5.24.5] 성과분석도 BPH(바이낸스 권위 실현손익) 단일 출처로 통일 — 좌측통계·매매기록과 동일 데이터.
                 //   PnL=NetPnl, 시간기준=OpenTime(진입시간, 사용자 지정), UserId 필터. (이전: TradeHistory.PnL = 봇계산·중복 위험)

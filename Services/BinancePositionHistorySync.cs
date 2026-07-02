@@ -208,6 +208,19 @@ SELECT DISTINCT Symbol FROM dbo.BinancePositionHistory WHERE UserId = @UserId AN
                 foreach (var s in rows) if (!string.IsNullOrEmpty(s)) set.Add(s);
             }
             catch { }
+
+            // [FIX] 바이낸스 income history(REALIZED_PNL)로 최근 3일 실제 청산이 발생한 모든 심볼을 발견.
+            //   기존: DB(TradeHistory/PositionState/BPH) 목록에만 의존 → 목록에 없는 심볼 거래는 영구 누락
+            //   ("오늘 수익인데 매매기록 1건"의 핵심 원인). income history는 심볼 무관 전체 조회 가능.
+            try
+            {
+                var inc = await _client.UsdFuturesApi.Account.GetIncomeHistoryAsync(
+                    incomeType: "REALIZED_PNL", startTime: DateTime.UtcNow.AddDays(-3), limit: 1000);
+                if (inc.Success && inc.Data != null)
+                    foreach (var r in inc.Data)
+                        if (!string.IsNullOrEmpty(r.Symbol)) set.Add(r.Symbol);
+            }
+            catch { }
             return set;
         }
 
