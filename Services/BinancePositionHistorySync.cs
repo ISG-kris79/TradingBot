@@ -108,8 +108,11 @@ END", commandTimeout: 60);
                 }
                 else
                 {
-                    OnLog?.Invoke($"📦 [BPH] 증분 동기화 — 마지막 동기화 {lastClose.Value:yyyy-MM-dd HH:mm} 이후");
-                    await SyncSinceAsync(lastClose.Value.AddSeconds(-60), token);
+                    // [FIX] 마지막 CloseTime-60s 로 시작하면, 그 시점 이전에 진입해 나중에 청산된 포지션의
+                    //   '진입 체결'이 조회에서 빠져 openQty가 음수가 되고 포지션이 아예 기록되지 않는 버그.
+                    //   → 롤링 3일 재조회(멱등 INSERT라 중복 없음)로 진입+청산이 항상 함께 잡히게 함.
+                    OnLog?.Invoke($"📦 [BPH] 증분 동기화 — 최근 3일 재조회 (마지막 {lastClose.Value:yyyy-MM-dd HH:mm})");
+                    await SyncSinceAsync(DateTime.UtcNow.AddDays(-3), token);
                 }
             }
             catch (OperationCanceledException) { return; }
@@ -126,9 +129,8 @@ END", commandTimeout: 60);
 
                 try
                 {
-                    var lastClose = await GetLastCloseTimeAsync();
-                    var since = lastClose?.AddSeconds(-60) ?? DateTime.UtcNow.AddDays(-1);
-                    await SyncSinceAsync(since, token);
+                    // [FIX] 진입이 커서 이전이면 청산만 잡혀 포지션 누락 → 롤링 3일 재조회(멱등 INSERT)
+                    await SyncSinceAsync(DateTime.UtcNow.AddDays(-3), token);
                 }
                 catch (OperationCanceledException) { return; }
                 catch (Exception ex)
