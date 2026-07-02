@@ -10,11 +10,13 @@
   <ItemGroup>
     <PackageReference Include="Binance.Net" Version="12.8.1" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.4" />
+    <PackageReference Include="Dapper" Version="2.1.66" />
   </ItemGroup>
   <!-- 단타 엔진 + 복호화(SecurityService) 직접 링크 (메인과 동일 로직) -->
   <ItemGroup>
     <Compile Include="..\..\Scalp\ScalpStrategy.cs" Link="Scalp\ScalpStrategy.cs" />
     <Compile Include="..\..\Scalp\ScalpEngineCore.cs" Link="Scalp\ScalpEngineCore.cs" />
     <Compile Include="..\..\SharedServicesCompat.cs" Link="Shared\SharedServicesCompat.cs" />
+    <Compile Include="..\..\Services\BinancePositionHistorySync.cs" Link="Services\BinancePositionHistorySync.cs" />
   </ItemGroup>
 </Project>

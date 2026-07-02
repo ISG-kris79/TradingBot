@@ -80,6 +80,13 @@ END", commandTimeout: 60);
             }
         }
 
+        /// <summary>[백필] 스키마 보장 후 지정 시점부터 1회 동기화. 콘솔/수동 백필용.</summary>
+        public async Task RunOnceAsync(DateTime sinceUtc, CancellationToken token = default)
+        {
+            await EnsureSchemaAsync();
+            await SyncSinceAsync(sinceUtc, token);
+        }
+
         public Task StartAsync(CancellationToken token)
         {
             _cts = CancellationTokenSource.CreateLinkedTokenSource(token);

@@ -8,7 +8,7 @@ using TradingBot.Scalp;
 
 // ───────────────────────── 인자 파싱 ─────────────────────────
 string symbol = "BTCUSDT", interval = "15m", cfgPath = "appsettings.json";
-decimal margin = 50m; int leverage = 5; bool enter = false, force = false, protectOnly = false, closePos = false, doTelegram = false, doStats = false, doIncome = false;
+decimal margin = 50m; int leverage = 5; bool enter = false, force = false, protectOnly = false, closePos = false, doTelegram = false, doStats = false, doIncome = false, doRaw = false, doBackfill = false; int backfillDays = 3;
 for (int i = 0; i < args.Length; i++)
 {
     string a = args[i];
@@ -27,7 +27,91 @@ for (int i = 0; i < args.Length; i++)
         case "--telegram": doTelegram = true; break;
         case "--stats": doStats = true; break;
         case "--income": doIncome = true; break;
+        case "--raw": doRaw = true; break;
+        case "--backfill": doBackfill = true; break;
+        case "--days": backfillDays = int.Parse(Next()); break;
     }
+}
+
+// ───────────────────────── BPH 백필 (--backfill) — 실제 봇 sync 로직 재사용 ─────────────────────────
+if (doBackfill)
+{
+    using var doc = JsonDocument.Parse(File.ReadAllText(cfgPath));
+    var csn = doc.RootElement.GetProperty("ConnectionStrings");
+    string conn2 = csn.GetProperty("DefaultConnection").GetString() ?? "";
+    if (csn.TryGetProperty("IsEncrypted", out var e2) && e2.GetBoolean())
+        conn2 = TradingBot.Shared.Services.SecurityService.DecryptString(conn2);
+
+    // 유저별 테스트넷 키 조회 (봇 실제 거래 계정)
+    var users = new List<(int id, string k, string s)>();
+    using (var db = new Microsoft.Data.SqlClient.SqlConnection(conn2))
+    {
+        db.Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT Id, TestnetApiKey, TestnetApiSecret FROM Users WHERE TestnetApiKey IS NOT NULL AND LEN(TestnetApiKey) > 0";
+        using var rd = cmd.ExecuteReader();
+        while (rd.Read())
+        {
+            string k = TradingBot.Shared.Services.SecurityService.DecryptString(rd["TestnetApiKey"] as string ?? "");
+            string s = TradingBot.Shared.Services.SecurityService.DecryptString(rd["TestnetApiSecret"] as string ?? "");
+            if (!string.IsNullOrWhiteSpace(k)) users.Add(((int)rd["Id"], k, s));
+        }
+    }
+
+    var sinceUtc = DateTime.UtcNow.AddDays(-backfillDays);
+    Console.WriteLine($"── BPH 백필 시작 (최근 {backfillDays}일, since {sinceUtc:yyyy-MM-dd HH:mm} UTC) · 유저 {users.Count}명 ──");
+    foreach (var (id, k, s) in users)
+    {
+        var cli = new BinanceRestClient(o => { o.ApiCredentials = new ApiCredentials(k, s); o.Environment = BinanceEnvironment.Testnet; });
+        var sync = new TradingBot.Services.BinancePositionHistorySync(cli, conn2, id);
+        sync.OnLog += m => Console.WriteLine($"   [U{id}] {m}");
+        try { await sync.RunOnceAsync(sinceUtc); }
+        catch (Exception ex) { Console.WriteLine($"   [U{id}] ❌ {ex.Message}"); }
+    }
+    Console.WriteLine("── 백필 완료 ──");
+    return;
+}
+
+// ───────────────────────── DB raw 덤프 (--raw) ─────────────────────────
+if (doRaw)
+{
+    using var doc = JsonDocument.Parse(File.ReadAllText(cfgPath));
+    var csn = doc.RootElement.GetProperty("ConnectionStrings");
+    string conn2 = csn.GetProperty("DefaultConnection").GetString() ?? "";
+    if (csn.TryGetProperty("IsEncrypted", out var e2) && e2.GetBoolean())
+        conn2 = TradingBot.Shared.Services.SecurityService.DecryptString(conn2);
+    using var db = new Microsoft.Data.SqlClient.SqlConnection(conn2);
+    db.Open();
+
+    void Dump(string title, string sql)
+    {
+        Console.WriteLine($"\n── {title} ──");
+        try
+        {
+            using var cmd = db.CreateCommand(); cmd.CommandText = sql;
+            using var rd = cmd.ExecuteReader();
+            var cols = Enumerable.Range(0, rd.FieldCount).Select(rd.GetName).ToArray();
+            Console.WriteLine("   " + string.Join(" | ", cols));
+            int n = 0;
+            while (rd.Read() && n++ < 40)
+                Console.WriteLine("   " + string.Join(" | ", Enumerable.Range(0, rd.FieldCount).Select(i => rd.IsDBNull(i) ? "" : rd.GetValue(i)!.ToString())));
+        }
+        catch (Exception ex) { Console.WriteLine("   (오류) " + ex.Message); }
+    }
+
+    Dump("TradeHistory 컬럼", "SELECT TOP 1 * FROM dbo.TradeHistory");
+    Dump("TradeHistory 최근 20 (ExitTime desc)", "SELECT TOP 20 * FROM dbo.TradeHistory ORDER BY ExitTime DESC");
+    Dump("TradeHistory 오늘합계(여러 TZ 해석)", @"
+SELECT
+  SUM(CASE WHEN CONVERT(date,ExitTime)=CONVERT(date,SYSUTCDATETIME()) THEN PnL ELSE 0 END) AS Pnl_UTCdate,
+  COUNT(CASE WHEN CONVERT(date,ExitTime)=CONVERT(date,SYSUTCDATETIME()) THEN 1 END) AS Cnt_UTCdate,
+  SUM(CASE WHEN CONVERT(date,DATEADD(hour,9,ExitTime))=CONVERT(date,DATEADD(hour,9,SYSUTCDATETIME())) THEN PnL ELSE 0 END) AS Pnl_KST,
+  COUNT(CASE WHEN CONVERT(date,DATEADD(hour,9,ExitTime))=CONVERT(date,DATEADD(hour,9,SYSUTCDATETIME())) THEN 1 END) AS Cnt_KST,
+  SUM(CASE WHEN CONVERT(date,ExitTime)=CONVERT(date,GETDATE()) THEN PnL ELSE 0 END) AS Pnl_LocalDate,
+  COUNT(CASE WHEN CONVERT(date,ExitTime)=CONVERT(date,GETDATE()) THEN 1 END) AS Cnt_LocalDate
+FROM dbo.TradeHistory");
+    Dump("BinancePositionHistory 최근 20 (CloseTime desc)", "SELECT TOP 20 UserId, Symbol, PositionSide, OpenTime, CloseTime, NetPnl FROM dbo.BinancePositionHistory ORDER BY CloseTime DESC");
+    return;
 }
 
 // ───────────────────────── 바이낸스 수익내역 진단 (--income, 라이브 키) ─────────────────────────
@@ -65,6 +149,29 @@ if (doIncome)
         var bySym = rows.GroupBy(x => x.Symbol).Select(g => (Sym: g.Key, Cnt: g.Count(), Pnl: g.Sum(x => x.Income))).OrderByDescending(x => Math.Abs(x.Pnl)).ToList();
         Console.WriteLine($"  User {id}: REALIZED_PNL 합계 {tot:N2} · 청산 이벤트 {rows.Count}건 · 심볼 {bySym.Count}개");
         foreach (var b in bySym) Console.WriteLine($"      {b.Sym} : {b.Cnt}건 {b.Pnl:N2}");
+    }
+
+    // 유저별 테스트넷 계정(Users.TestnetApiKey) 오늘 실현손익
+    using (var cmd = db.CreateCommand())
+    {
+        cmd.CommandText = "SELECT Id, TestnetApiKey, TestnetApiSecret FROM Users WHERE TestnetApiKey IS NOT NULL AND LEN(TestnetApiKey) > 0";
+        var utn = new List<(int id, string k, string s)>();
+        using (var rd = cmd.ExecuteReader())
+            while (rd.Read())
+            {
+                string k = TradingBot.Shared.Services.SecurityService.DecryptString(rd["TestnetApiKey"] as string ?? "");
+                string s = TradingBot.Shared.Services.SecurityService.DecryptString(rd["TestnetApiSecret"] as string ?? "");
+                if (!string.IsNullOrWhiteSpace(k)) utn.Add(((int)rd["Id"], k, s));
+            }
+        Console.WriteLine("── 유저별 테스트넷 REALIZED_PNL (오늘 KST) ──");
+        foreach (var (id, k, s) in utn)
+        {
+            var cli = new BinanceRestClient(o => { o.ApiCredentials = new ApiCredentials(k, s); o.Environment = BinanceEnvironment.Testnet; });
+            var inc2 = await cli.UsdFuturesApi.Account.GetIncomeHistoryAsync(incomeType: "REALIZED_PNL", startTime: startUtc, limit: 1000);
+            if (!inc2.Success) { Console.WriteLine($"  User {id} 테스트넷: 실패 {inc2.Error?.Message}"); continue; }
+            var rows2 = inc2.Data.ToList();
+            Console.WriteLine($"  User {id} 테스트넷: 합계 {rows2.Sum(x => x.Income):N2} · {rows2.Count}건 · 심볼 {rows2.Select(x => x.Symbol).Distinct().Count()}개 [{string.Join(",", rows2.Select(x => x.Symbol).Distinct().Take(12))}]");
+        }
     }
 
     // 테스트넷 계정 오늘 실현손익 (appsettings 테스트넷 키)
