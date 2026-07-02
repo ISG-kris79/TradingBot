@@ -1709,7 +1709,12 @@ namespace TradingBot.ViewModels
                 catch (Exception ex) { AddLog($"❌ 이력 저장 실패: {ex.Message}"); }
             });
 
-            LoadHistoryCommand = new RelayCommand(async _ => await LoadTradeHistory());
+            LoadHistoryCommand = new RelayCommand(async _ =>
+            {
+                await LoadTradeHistory();
+                await RefreshPositionHistoryFromDbAsync(); // [통일] 매매기록 통계
+                await LoadPerformanceDataAsync();          // [통일] 성과분석 — 동일 Start/End
+            });
 
             ClosePositionCommand = new RelayCommand(async param =>
             {
@@ -1902,14 +1907,9 @@ namespace TradingBot.ViewModels
                 int userId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                 if (userId <= 0) return;
 
-                DateTime start, end = DateTime.Now;
-
-                if (_performancePeriod == "월별")
-                    start = end.AddMonths(-12);
-                else if (_performancePeriod == "주별")
-                    start = end.AddMonths(-3);
-                else
-                    start = end.AddDays(-30);
+                // [통일] 성과분석도 매매기록과 동일한 공통 날짜필터(Start/End) 사용.
+                //   기간 선택(일별/주별/월별)은 그래프 묶음 단위만 결정하고, 조회 범위는 Start~End로 통일.
+                DateTime start = StartDate, end = EndDate;
 
                 // [v5.24.5] 성과분석도 BPH(바이낸스 권위 실현손익) 단일 출처로 통일 — 좌측통계·매매기록과 동일 데이터.
                 //   PnL=NetPnl, 시간기준=OpenTime(진입시간, 사용자 지정), UserId 필터. (이전: TradeHistory.PnL = 봇계산·중복 위험)
@@ -1919,13 +1919,13 @@ namespace TradingBot.ViewModels
                 await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(AppConfig.ConnectionString))
                 {
                     await conn.OpenAsync();
-                    var bphRows = await Dapper.SqlMapper.QueryAsync<(DateTime OpenTime, decimal NetPnl)>(conn, @"
-SELECT OpenTime, NetPnl FROM dbo.BinancePositionHistory
-WHERE UserId = @UserId AND OpenTime >= @StartUtc AND OpenTime <= @EndUtc",
+                    var bphRows = await Dapper.SqlMapper.QueryAsync<(DateTime CloseTime, decimal NetPnl)>(conn, @"
+SELECT CloseTime, NetPnl FROM dbo.BinancePositionHistory
+WHERE UserId = @UserId AND CloseTime >= @StartUtc AND CloseTime <= @EndUtc",
                         new { UserId = userId, StartUtc = startUtc, EndUtc = endUtc }, commandTimeout: 30);
-                    // OpenTime(UTC) → 로컬(KST) 진입시각으로 변환 후 일/주/월 그룹
+                    // [통일] CloseTime(청산) 기준. UTC → 로컬(KST) 변환 후 일/주/월 그룹
                     closed = bphRows
-                        .Select(r => (When: DateTime.SpecifyKind(r.OpenTime, DateTimeKind.Utc).ToLocalTime(), PnL: r.NetPnl))
+                        .Select(r => (When: DateTime.SpecifyKind(r.CloseTime, DateTimeKind.Utc).ToLocalTime(), PnL: r.NetPnl))
                         .ToList();
                 }
 
@@ -2055,7 +2055,8 @@ WHERE UserId = @UserId AND OpenTime >= @StartUtc AND OpenTime <= @EndUtc",
             //   PositionHistory 비어있을 때만 TradeHistory fallback (호환성, 첫 부팅 시 일시적).
             if (PositionHistory != null && PositionHistory.Count > 0)
             {
-                var bphClosed = PositionHistory.Where(p => p.NetPnl != 0m).ToList();
+                // [통일] 청산된 거래 전부 포함(본절 NetPnl=0 포함). 승률 분모 = 청산건수 = "매매 건수" 카드와 일치.
+                var bphClosed = PositionHistory.Where(p => p.CloseTime > DateTime.MinValue).ToList();
                 if (bphClosed.Count == 0)
                 {
                     WinRate = 0; TotalProfit = 0; AverageRoe = 0; AvgProfit = 0;
@@ -2066,7 +2067,9 @@ WHERE UserId = @UserId AND OpenTime >= @StartUtc AND OpenTime <= @EndUtc",
                 WinRate = (double)wins / bphClosed.Count * 100;
                 TotalProfit = (double)bphClosed.Sum(p => p.NetPnl);
                 AvgProfit = (double)bphClosed.Average(p => p.NetPnl);
-                AverageRoe = (double)bphClosed.Average(p => p.RoePct ?? 0m);
+                // ROE는 값이 있는 행만 평균(누락 행 0 혼입으로 왜곡 방지)
+                var roeRows = bphClosed.Where(p => p.RoePct.HasValue).ToList();
+                AverageRoe = roeRows.Count > 0 ? (double)roeRows.Average(p => p.RoePct!.Value) : 0d;
 
                 DateTime nowKst = DateTime.Now;
                 DateTime monthStartKst = new DateTime(nowKst.Year, nowKst.Month, 1);
@@ -4912,12 +4915,15 @@ GROUP BY Category
                 }
                 await using var db = new Microsoft.Data.SqlClient.SqlConnection(cs);
                 await db.OpenAsync();
+                // [통일] 성과분석과 동일 규칙: CloseTime(청산) 기준 + 공통 날짜필터(Start/End) + 청산된 거래 전부
+                var startUtc = StartDate.Date.ToUniversalTime();
+                var endUtc = EndDate.Date.AddDays(1).AddTicks(-1).ToUniversalTime();
                 var rows = await Dapper.SqlMapper.QueryAsync<TradingBot.Services.PositionHistoryRow>(db, @"
-SELECT TOP 500 Id, Symbol, PositionSide, OpenTime, CloseTime, AvgEntryPrice, AvgExitPrice,
+SELECT TOP 2000 Id, Symbol, PositionSide, OpenTime, CloseTime, AvgEntryPrice, AvgExitPrice,
        TotalQuantity, RealizedPnl, Commission, NetPnl, RoePct, FillCount, ISNULL(Category,'') AS Category
 FROM dbo.BinancePositionHistory
-WHERE UserId = @UserId
-ORDER BY CloseTime DESC, Id DESC", new { UserId = userId }, commandTimeout: 30);
+WHERE UserId = @UserId AND CloseTime >= @StartUtc AND CloseTime <= @EndUtc
+ORDER BY CloseTime DESC, Id DESC", new { UserId = userId, StartUtc = startUtc, EndUtc = endUtc }, commandTimeout: 30);
                 var list = rows.ToList();
                 RunOnUI(() =>
                 {

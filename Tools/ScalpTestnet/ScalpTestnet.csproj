@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>ScalpTestnet</RootNamespace>
+    <AssemblyName>ScalpTestnet</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Binance.Net" Version="12.8.1" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.4" />
+  </ItemGroup>
+  <!-- 단타 엔진 + 복호화(SecurityService) 직접 링크 (메인과 동일 로직) -->
+  <ItemGroup>
+    <Compile Include="..\..\Scalp\ScalpStrategy.cs" Link="Scalp\ScalpStrategy.cs" />
+    <Compile Include="..\..\Scalp\ScalpEngineCore.cs" Link="Scalp\ScalpEngineCore.cs" />
+    <Compile Include="..\..\SharedServicesCompat.cs" Link="Shared\SharedServicesCompat.cs" />
+  </ItemGroup>
+</Project>
