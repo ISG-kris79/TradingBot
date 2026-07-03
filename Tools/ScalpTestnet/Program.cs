@@ -8,7 +8,7 @@ using TradingBot.Scalp;
 
 // ───────────────────────── 인자 파싱 ─────────────────────────
 string symbol = "BTCUSDT", interval = "15m", cfgPath = "appsettings.json";
-decimal margin = 50m; int leverage = 5; bool enter = false, force = false, protectOnly = false, closePos = false, doTelegram = false, doStats = false, doIncome = false, doRaw = false, doBackfill = false, doRecent = false, doKlines = false, doCancelOrphans = false; int backfillDays = 3; string sinceKst = "";
+decimal margin = 50m; int leverage = 5; bool enter = false, force = false, protectOnly = false, closePos = false, doTelegram = false, doStats = false, doIncome = false, doRaw = false, doBackfill = false, doRecent = false, doKlines = false, doCancelOrphans = false, doLifecycle = false, doPositions = false; int backfillDays = 3; string sinceKst = "", checkKey = "";
 for (int i = 0; i < args.Length; i++)
 {
     string a = args[i];
@@ -34,7 +34,211 @@ for (int i = 0; i < args.Length; i++)
         case "--since": sinceKst = Next(); break;
         case "--klines": doKlines = true; break;
         case "--cancel-orphans": doCancelOrphans = true; break;
+        case "--lifecycle": doLifecycle = true; break;
+        case "--positions": doPositions = true; break;
+        case "--checkkey": checkKey = Next(); break;
     }
+}
+
+// ───────── 유저 제공 API키가 봇 저장키와 일치하는지 대조 (--checkkey <KEY>) ─────────
+if (!string.IsNullOrWhiteSpace(checkKey))
+{
+    using var doc = JsonDocument.Parse(File.ReadAllText(cfgPath));
+    var csn = doc.RootElement.GetProperty("ConnectionStrings");
+    string conn2 = csn.GetProperty("DefaultConnection").GetString() ?? "";
+    if (csn.TryGetProperty("IsEncrypted", out var e2) && e2.GetBoolean())
+        conn2 = TradingBot.Shared.Services.SecurityService.DecryptString(conn2);
+    string Mask(string x) => x.Length > 8 ? x[..4] + "…" + x[^4..] : "****";
+    Console.WriteLine($"대조 대상 키: {Mask(checkKey)} (len={checkKey.Length})");
+    bool any = false;
+    using (var db = new Microsoft.Data.SqlClient.SqlConnection(conn2))
+    {
+        db.Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT Id, TestnetApiKey, BinanceApiKey FROM Users";
+        using var rd = cmd.ExecuteReader();
+        while (rd.Read())
+        {
+            string tnet = TradingBot.Shared.Services.SecurityService.DecryptString(rd["TestnetApiKey"] as string ?? "");
+            string live = TradingBot.Shared.Services.SecurityService.DecryptString(rd["BinanceApiKey"] as string ?? "");
+            if (!string.IsNullOrWhiteSpace(tnet))
+            {
+                bool m = tnet.Trim() == checkKey.Trim();
+                Console.WriteLine($"  User {rd["Id"]} 테스트넷키 {Mask(tnet)} → {(m ? "✅ 일치!" : "불일치")}");
+                any |= m;
+            }
+            if (!string.IsNullOrWhiteSpace(live))
+                Console.WriteLine($"  User {rd["Id"]} 라이브키   {Mask(live)} → {(live.Trim() == checkKey.Trim() ? "✅ 일치!(라이브)" : "불일치")}");
+        }
+    }
+    string ak = doc.RootElement.GetProperty("Trading").GetProperty("TestnetApiKey").GetString() ?? "";
+    if (!string.IsNullOrWhiteSpace(ak))
+        Console.WriteLine($"  appsettings 테스트넷키 {Mask(ak)} → {(ak.Trim() == checkKey.Trim() ? "✅ 일치!" : "불일치")}");
+    Console.WriteLine(any ? "\n결론: 이 키는 봇이 사용하는 계정 키와 일치합니다 (같은 계정)." : "\n결론: 이 키는 봇 저장키 어디와도 불일치 → 브라우저(demo.binance.com)와 봇이 서로 다른 테스트넷 계정입니다.");
+    return;
+}
+
+// ───────── 계정별 실제 포지션 조회(읽기전용) (--positions) — 어느 계정에 포지션이 있는지 확정 ─────────
+if (doPositions)
+{
+    using var doc = JsonDocument.Parse(File.ReadAllText(cfgPath));
+    var csn = doc.RootElement.GetProperty("ConnectionStrings");
+    string conn2 = csn.GetProperty("DefaultConnection").GetString() ?? "";
+    if (csn.TryGetProperty("IsEncrypted", out var e2) && e2.GetBoolean())
+        conn2 = TradingBot.Shared.Services.SecurityService.DecryptString(conn2);
+    var accounts = new List<(string name, string k, string s)>();
+    using (var db = new Microsoft.Data.SqlClient.SqlConnection(conn2))
+    {
+        db.Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT Id, TestnetApiKey, TestnetApiSecret FROM Users WHERE TestnetApiKey IS NOT NULL AND LEN(TestnetApiKey) > 0";
+        using var rd = cmd.ExecuteReader();
+        while (rd.Read())
+        {
+            string k = TradingBot.Shared.Services.SecurityService.DecryptString(rd["TestnetApiKey"] as string ?? "");
+            string s = TradingBot.Shared.Services.SecurityService.DecryptString(rd["TestnetApiSecret"] as string ?? "");
+            if (!string.IsNullOrWhiteSpace(k)) accounts.Add(($"User {rd["Id"]} (DB)", k, s));
+        }
+    }
+    string ak = doc.RootElement.GetProperty("Trading").GetProperty("TestnetApiKey").GetString() ?? "";
+    string asc = doc.RootElement.GetProperty("Trading").GetProperty("TestnetApiSecret").GetString() ?? "";
+    if (!string.IsNullOrWhiteSpace(ak)) accounts.Add(("appsettings", ak, asc));
+
+    using var h = new HttpClient();
+    const string bu = "https://testnet.binancefuture.com";
+    foreach (var (name, k, s) in accounts)
+    {
+        string kmask = k.Length > 8 ? k[..4] + "…" + k[^4..] : "****";
+        async Task<string> G(string path, string extra)
+        {
+            long tsm = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            string qs = (string.IsNullOrEmpty(extra) ? "" : extra + "&") + "timestamp=" + tsm;
+            qs += "&signature=" + Sign(qs, s);
+            var req = new HttpRequestMessage(HttpMethod.Get, $"{bu}{path}?{qs}");
+            req.Headers.Add("X-MBX-APIKEY", k);
+            var resp = await h.SendAsync(req);
+            return await resp.Content.ReadAsStringAsync();
+        }
+        Console.WriteLine($"\n── 계정: {name} · APIKey {kmask} ──");
+        try
+        {
+            var accJson = await G("/fapi/v2/account", "");
+            var accEl = JsonDocument.Parse(accJson).RootElement;
+            if (accEl.TryGetProperty("totalWalletBalance", out var wb))
+                Console.WriteLine($"   지갑잔고 {wb.GetString()} · 가용 {(accEl.TryGetProperty("availableBalance", out var ab) ? ab.GetString() : "?")}");
+            var posJson = await G("/fapi/v2/positionRisk", "");
+            using var pd = JsonDocument.Parse(posJson);
+            int n = 0;
+            foreach (var p in pd.RootElement.EnumerateArray())
+            {
+                decimal amt = decimal.Parse(p.GetProperty("positionAmt").GetString()!, CultureInfo.InvariantCulture);
+                if (Math.Abs(amt) <= 0) continue;
+                n++;
+                Console.WriteLine($"   ▶ {p.GetProperty("symbol").GetString()} amt={amt} entry={p.GetProperty("entryPrice").GetString()} uPnL={p.GetProperty("unRealizedProfit").GetString()}");
+            }
+            if (n == 0) Console.WriteLine("   (열린 포지션 없음)");
+        }
+        catch (Exception ex) { Console.WriteLine($"   조회 오류: {ex.Message}"); }
+    }
+    return;
+}
+
+// ───────── 수동 라이프사이클 테스트 (--lifecycle --symbol XRPUSDT): 진입→SL/TP등록→조회→전부취소→청산 ─────────
+if (doLifecycle)
+{
+    using var doc = JsonDocument.Parse(File.ReadAllText(cfgPath));
+    string tk = doc.RootElement.GetProperty("Trading").GetProperty("TestnetApiKey").GetString() ?? "";
+    string ts = doc.RootElement.GetProperty("Trading").GetProperty("TestnetApiSecret").GetString() ?? "";
+    using var h = new HttpClient();
+    const string bu = "https://testnet.binancefuture.com";
+
+    async Task<string> Q(HttpMethod m, string path, string extra, bool sign)
+    {
+        string qs = extra;
+        if (sign)
+        {
+            long tsm = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            qs = (string.IsNullOrEmpty(extra) ? "" : extra + "&") + "timestamp=" + tsm;
+            qs += "&signature=" + Sign(qs, ts);
+        }
+        var req = new HttpRequestMessage(m, $"{bu}{path}" + (string.IsNullOrEmpty(qs) ? "" : "?" + qs));
+        req.Headers.Add("X-MBX-APIKEY", tk);
+        var resp = await h.SendAsync(req);
+        return await resp.Content.ReadAsStringAsync();
+    }
+    string AlgoSummary(string json)
+    {
+        try { using var d = JsonDocument.Parse(json);
+            if (d.RootElement.ValueKind == JsonValueKind.Array)
+                return string.Join(" | ", d.RootElement.EnumerateArray().Select(x =>
+                    $"{x.GetProperty("symbol").GetString()} {(x.TryGetProperty("type", out var t) ? t.GetString() : "?")} algoId={(x.TryGetProperty("algoId", out var a) ? a.ToString() : "?")}"));
+        } catch { }
+        return json.Length > 200 ? json[..200] : json;
+    }
+
+    Console.WriteLine($"═══ {symbol} 라이프사이클 테스트 (테스트넷) ═══");
+
+    // 0) 레버리지 설정
+    await Q(HttpMethod.Post, "/fapi/v1/leverage", $"symbol={symbol}&leverage={leverage}", true);
+
+    // 1) 현재가
+    var priceJson = await Q(HttpMethod.Get, "/fapi/v1/ticker/price", $"symbol={symbol}", false);
+    decimal lcPx = JsonDocument.Parse(priceJson).RootElement.GetProperty("price").GetDecimal();
+    decimal lcQty = Math.Floor(margin * leverage / lcPx); // 정수 수량 (XRP step 안전)
+    if (lcQty <= 0) lcQty = 1;
+    Console.WriteLine($"[1] 현재가 {lcPx} · 진입수량 {lcQty} (증거금 {margin} × {leverage}x)");
+
+    // 2) 시장가 진입 (LONG)
+    var buyJson = await Q(HttpMethod.Post, "/fapi/v1/order", $"symbol={symbol}&side=BUY&type=MARKET&quantity={lcQty}", true);
+    Console.WriteLine($"[2] 시장가 진입: {(buyJson.Length > 240 ? buyJson[..240] : buyJson)}");
+    await Task.Delay(1200);
+
+    // 3) 실제 포지션/진입가 조회
+    var posJson = await Q(HttpMethod.Get, "/fapi/v2/positionRisk", $"symbol={symbol}", true);
+    decimal lcEntry = lcPx, lcAmt = lcQty;
+    try { var p0 = JsonDocument.Parse(posJson).RootElement[0];
+        lcEntry = decimal.Parse(p0.GetProperty("entryPrice").GetString()!, CultureInfo.InvariantCulture);
+        lcAmt = Math.Abs(decimal.Parse(p0.GetProperty("positionAmt").GetString()!, CultureInfo.InvariantCulture));
+    } catch { }
+    Console.WriteLine($"[3] 포지션 확인: 진입가={lcEntry} 수량={lcAmt}");
+    if (lcAmt <= 0) { Console.WriteLine("❌ 진입 실패(포지션 0) — 중단"); return; }
+
+    decimal lcSl = Math.Round(lcEntry * 0.97m, 4);
+    decimal lcTp = Math.Round(lcEntry * 1.03m, 4);
+
+    // 4) SL/TP algo 등록
+    var slJson = await Q(HttpMethod.Post, "/fapi/v1/algoOrder", $"symbol={symbol}&side=SELL&algoType=CONDITIONAL&type=STOP_MARKET&quantity={lcAmt}&triggerPrice={lcSl.ToString(CultureInfo.InvariantCulture)}&reduceOnly=true", true);
+    Console.WriteLine($"[4a] 손절(SL) 등록 @ {lcSl}: {(slJson.Length > 200 ? slJson[..200] : slJson)}");
+    var tpJson = await Q(HttpMethod.Post, "/fapi/v1/algoOrder", $"symbol={symbol}&side=SELL&algoType=CONDITIONAL&type=TAKE_PROFIT_MARKET&quantity={lcAmt}&triggerPrice={lcTp.ToString(CultureInfo.InvariantCulture)}&reduceOnly=true", true);
+    Console.WriteLine($"[4b] 익절(TP) 등록 @ {lcTp}: {(tpJson.Length > 200 ? tpJson[..200] : tpJson)}");
+    await Task.Delay(800);
+
+    // 5) 등록 확인
+    var after = await Q(HttpMethod.Get, "/fapi/v1/openAlgoOrders", "", true);
+    Console.WriteLine($"[5] 등록된 조건부주문: {AlgoSummary(after)}");
+
+    // 6) 전부 취소
+    var delAlgo = await Q(HttpMethod.Delete, "/fapi/v1/algoOpenOrders", $"symbol={symbol}", true);
+    var delStd = await Q(HttpMethod.Delete, "/fapi/v1/allOpenOrders", $"symbol={symbol}", true);
+    Console.WriteLine($"[6] 취소 요청: algo={delAlgo}  일반={delStd}");
+    await Task.Delay(800);
+
+    // 7) 취소 확인
+    var after2 = await Q(HttpMethod.Get, "/fapi/v1/openAlgoOrders", "", true);
+    Console.WriteLine($"[7] 취소 후 조건부주문: {(string.IsNullOrWhiteSpace(AlgoSummary(after2)) ? "(없음)" : AlgoSummary(after2))}");
+
+    // 8) 포지션 정리 (반대 시장가, reduceOnly)
+    var closeJson = await Q(HttpMethod.Post, "/fapi/v1/order", $"symbol={symbol}&side=SELL&type=MARKET&quantity={lcAmt}&reduceOnly=true", true);
+    Console.WriteLine($"[8] 포지션 시장가 청산: {(closeJson.Length > 200 ? closeJson[..200] : closeJson)}");
+    await Task.Delay(1000);
+
+    // 9) 최종 확인
+    var finalPos = await Q(HttpMethod.Get, "/fapi/v2/positionRisk", $"symbol={symbol}", true);
+    decimal fAmt = 0m; try { fAmt = Math.Abs(decimal.Parse(JsonDocument.Parse(finalPos).RootElement[0].GetProperty("positionAmt").GetString()!, CultureInfo.InvariantCulture)); } catch { }
+    var finalAlgo = await Q(HttpMethod.Get, "/fapi/v1/openAlgoOrders", "", true);
+    Console.WriteLine($"[9] 최종: 포지션수량={fAmt} · 잔여조건부주문={(string.IsNullOrWhiteSpace(AlgoSummary(finalAlgo)) ? "(없음)" : AlgoSummary(finalAlgo))}");
+    Console.WriteLine(fAmt == 0m ? "✅ 완료: 진입→등록→취소→청산 전 과정 정상 (잔여 없음)" : "⚠️ 포지션이 남아있음 — 확인 필요");
+    return;
 }
 
 // ───────────────────────── 고아 조건부주문 즉시 취소 (--cancel-orphans) ─────────────────────────
