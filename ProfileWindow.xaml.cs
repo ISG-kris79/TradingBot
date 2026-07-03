@@ -99,6 +99,8 @@ namespace TradingBot
                     AppConfig.Current.Trading.TestnetApiKey = txtTestnetKey.Password;
                     AppConfig.Current.Trading.TestnetApiSecret = txtTestnetSecret.Password;
                 }
+                // [v5.25.14] DB+메모리 저장 후 appsettings.json 도 동기화 → 파일/메모리/DB 일괄 일치(재시작해도 동일 키 유지).
+                AppConfig.SyncTestnetKeysToAppSettings();
                 this.Close();
             }
             else

@@ -169,6 +169,10 @@ namespace TradingBot
                 CurrentUsername = user.Username;
                 CurrentUser = user; // 현재 사용자 정보 저장
 
+                // [v5.25.14] DB 키를 메모리에 로드한 직후 appsettings.json 도 동기화 → 파일/메모리/DB 일괄 일치.
+                //   기존 결함: appsettings 테스트넷 키가 갱신 안 돼 DB(실사용)와 영구 불일치 → "브라우저 계정과 봇 계정이 다름" 혼란.
+                SyncTestnetKeysToAppSettings();
+
                 System.Diagnostics.Debug.WriteLine($"[AppConfig] 사용자 자격 증명 로드 성공: {user.Username}(Id={user.Id})");
                 // [v5.23.9] 로그인 직후 CurrentUser 진단 로깅 (잘못된 user 매핑 추적)
                 try { MainWindow.Instance?.AddLog($"🔐 [AppConfig.CurrentUser SET] {user.Username}(Id={user.Id}) Email={user.Email}"); } catch { }
@@ -178,6 +182,38 @@ namespace TradingBot
             {
                 System.Diagnostics.Debug.WriteLine($"[AppConfig] 사용자 자격 증명 로드 실패: {ex.Message}");
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// [v5.25.14] 현재 메모리의 테스트넷 키를 appsettings.json 에 반영 → 파일/메모리/DB 일괄 일치.
+        ///   DB = 단일 진실. 로그인/프로파일저장 시 호출해 appsettings 가 항상 실사용 계정을 미러링하게 함.
+        ///   (라이브 Binance 키는 평문 노출 방지 위해 appsettings 에 쓰지 않음 — DB 암호화 + 로그인 오버라이드로 처리.)
+        /// </summary>
+        public static void SyncTestnetKeysToAppSettings()
+        {
+            try
+            {
+                string path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "appsettings.json");
+                if (!System.IO.File.Exists(path)) return;
+                if (System.Text.Json.Nodes.JsonNode.Parse(System.IO.File.ReadAllText(path)) is not System.Text.Json.Nodes.JsonObject root) return;
+
+                var tradingNode = (root["Trading"] as System.Text.Json.Nodes.JsonObject) ?? new System.Text.Json.Nodes.JsonObject();
+                root["Trading"] = tradingNode;
+                tradingNode["TestnetApiKey"] = Current?.Trading?.TestnetApiKey ?? "";
+                tradingNode["TestnetApiSecret"] = Current?.Trading?.TestnetApiSecret ?? "";
+
+                var opt = new System.Text.Json.JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
+                };
+                System.IO.File.WriteAllText(path, root.ToJsonString(opt));
+                System.Diagnostics.Debug.WriteLine("[AppConfig] appsettings.json 테스트넷 키 동기화 완료");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[AppConfig] appsettings 동기화 실패: {ex.Message}");
             }
         }
 
