@@ -8,7 +8,7 @@ using TradingBot.Scalp;
 
 // ───────────────────────── 인자 파싱 ─────────────────────────
 string symbol = "BTCUSDT", interval = "15m", cfgPath = "appsettings.json";
-decimal margin = 50m; int leverage = 5; bool enter = false, force = false, protectOnly = false, closePos = false, doTelegram = false, doStats = false, doIncome = false, doRaw = false, doBackfill = false, doRecent = false, doKlines = false; int backfillDays = 3; string sinceKst = "";
+decimal margin = 50m; int leverage = 5; bool enter = false, force = false, protectOnly = false, closePos = false, doTelegram = false, doStats = false, doIncome = false, doRaw = false, doBackfill = false, doRecent = false, doKlines = false, doCancelOrphans = false; int backfillDays = 3; string sinceKst = "";
 for (int i = 0; i < args.Length; i++)
 {
     string a = args[i];
@@ -33,7 +33,80 @@ for (int i = 0; i < args.Length; i++)
         case "--recent": doRecent = true; break;
         case "--since": sinceKst = Next(); break;
         case "--klines": doKlines = true; break;
+        case "--cancel-orphans": doCancelOrphans = true; break;
     }
+}
+
+// ───────────────────────── 고아 조건부주문 즉시 취소 (--cancel-orphans) ─────────────────────────
+if (doCancelOrphans)
+{
+    using var doc = JsonDocument.Parse(File.ReadAllText(cfgPath));
+    var csn = doc.RootElement.GetProperty("ConnectionStrings");
+    string conn2 = csn.GetProperty("DefaultConnection").GetString() ?? "";
+    if (csn.TryGetProperty("IsEncrypted", out var e2) && e2.GetBoolean())
+        conn2 = TradingBot.Shared.Services.SecurityService.DecryptString(conn2);
+    var users = new List<(int id, string k, string s)>();
+    using (var db = new Microsoft.Data.SqlClient.SqlConnection(conn2))
+    {
+        db.Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT Id, TestnetApiKey, TestnetApiSecret FROM Users WHERE TestnetApiKey IS NOT NULL AND LEN(TestnetApiKey) > 0";
+        using var rd = cmd.ExecuteReader();
+        while (rd.Read())
+        {
+            string k = TradingBot.Shared.Services.SecurityService.DecryptString(rd["TestnetApiKey"] as string ?? "");
+            string s = TradingBot.Shared.Services.SecurityService.DecryptString(rd["TestnetApiSecret"] as string ?? "");
+            if (!string.IsNullOrWhiteSpace(k)) users.Add(((int)rd["Id"], k, s));
+        }
+    }
+    using var httpC = new HttpClient();
+    const string baseUrl = "https://testnet.binancefuture.com";
+    foreach (var (id, k, s) in users)
+    {
+        async Task<string> Signed(HttpMethod m, string path, string extra)
+        {
+            long ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            string qs = (string.IsNullOrEmpty(extra) ? "" : extra + "&") + "timestamp=" + ts;
+            string sig = Sign(qs, s);
+            var req = new HttpRequestMessage(m, $"{baseUrl}{path}?{qs}&signature={sig}");
+            req.Headers.Add("X-MBX-APIKEY", k);
+            var resp = await httpC.SendAsync(req);
+            return await resp.Content.ReadAsStringAsync();
+        }
+        HashSet<string> SymsWhere(string json, Func<JsonElement, bool> pred)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                using var d = JsonDocument.Parse(json);
+                if (d.RootElement.ValueKind == JsonValueKind.Array)
+                    foreach (var it in d.RootElement.EnumerateArray())
+                        if (it.TryGetProperty("symbol", out var sy) && pred(it))
+                            set.Add(sy.GetString() ?? "");
+            }
+            catch { }
+            set.Remove("");
+            return set;
+        }
+
+        var posSet = SymsWhere(await Signed(HttpMethod.Get, "/fapi/v2/positionRisk", ""),
+            it => it.TryGetProperty("positionAmt", out var pa) && decimal.TryParse(pa.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var amt) && Math.Abs(amt) > 0m);
+        var algoSyms = SymsWhere(await Signed(HttpMethod.Get, "/fapi/v1/openAlgoOrders", ""), _ => true);
+        var ordSyms = SymsWhere(await Signed(HttpMethod.Get, "/fapi/v1/openOrders", ""), _ => true);
+        var orderSyms = new HashSet<string>(algoSyms, StringComparer.OrdinalIgnoreCase);
+        orderSyms.UnionWith(ordSyms);
+        var orphans = orderSyms.Where(x => !posSet.Contains(x)).ToList();
+
+        Console.WriteLine($"── User {id} 테스트넷 ── 포지션 [{string.Join(",", posSet)}] · 주문보유 [{string.Join(",", orderSyms)}] · 고아 [{string.Join(",", orphans)}]");
+        foreach (var sym in orphans)
+        {
+            string a = await Signed(HttpMethod.Delete, "/fapi/v1/algoOpenOrders", $"symbol={sym}");
+            string o = await Signed(HttpMethod.Delete, "/fapi/v1/allOpenOrders", $"symbol={sym}");
+            Console.WriteLine($"   🗑️ {sym} algo취소={a}  일반취소={o}");
+        }
+        if (orphans.Count == 0) Console.WriteLine("   ✅ 고아 주문 없음");
+    }
+    return;
 }
 
 // ───────────────────────── 캔들 구조 검증 (--klines --symbol X --since "KST" --interval 5m) ─────────────────────────

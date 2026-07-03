@@ -1785,6 +1785,7 @@ namespace TradingBot
         private DateTime _lastHeartbeatTime = DateTime.MinValue;
         private DateTime _lastPositionSyncTime = DateTime.MinValue; // [FIX] 마지막 포지션 동기화 시간
         private DateTime _lastProtectionCheckTime = DateTime.MinValue; // [v5.10.62] 활성 포지션 SL 없으면 자동 등록
+        private DateTime _lastOrphanCleanupTime = DateTime.MinValue;   // [v5.25.13] 청산 후 고아 조건부주문(STOP_MARKET 등) 주기 스윕
         private DateTime _lastSuccessfulEntryTime = DateTime.MinValue; // [드라이스펠] 마지막 진입 성공 시각
         private DateTime _lastDroughtScanTime = DateTime.MinValue;     // [드라이스펠] 마지막 진단 스캔 시각
         private static readonly TimeSpan DroughtScanThreshold = TimeSpan.FromMinutes(30);  // 30분 진입 없으면 진단
@@ -3649,6 +3650,19 @@ namespace TradingBot
                             }, token);
                         }
 
+                        // [v5.25.13] 60초 주기 — 청산 후 포지션 없는 심볼에 남은 고아 조건부주문(STOP_MARKET/TP algo) 취소.
+                        //   원인: TP algo 체결/외부청산으로 포지션이 닫히면 반대편 SL algo 가 별도로 남아 open orders 에 STOP_MARKET 잔존.
+                        //   시장가/반전캔들 청산은 CancelAllOrders 로 즉시 정리되지만, algo 체결·외부청산 경로는 누락 → 주기 스윕으로 안전망.
+                        if ((DateTime.Now - _lastOrphanCleanupTime).TotalSeconds >= 60)
+                        {
+                            _lastOrphanCleanupTime = DateTime.Now;
+                            _ = Task.Run(async () =>
+                            {
+                                try { await CleanupOrphanAlgoOrdersAsync(allSymbols: true, reason: "periodic"); }
+                                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [고아정리] 예외: {ex.Message}"); }
+                            }, token);
+                        }
+
                         // [B] AI 관제탑 15분 요약 전송 — v5.0.4 주기 완화 + 빈 알림 차단
                         // 기존: 5분 + forceSendEmpty=true → 며칠째 "판정 없음" 스팸 발생
                         // 원인: v5.0.0 skipAiGateCheck=true 로 EvaluateEntryWithCoinTypeAsync 호출 자체가 줄음
@@ -4153,12 +4167,25 @@ namespace TradingBot
                     : $"API_CONDITIONAL({orderType})";
 
                 // [v5.10.54] SL 또는 Trailing 체결 → 잔여 조건부 주문 일괄 취소 (포지션 완전 청산)
-                // TP1 부분 체결은 여기서 처리 안 함 (잔여 Trailing이 유효해야 함)
-                if (_orderLifecycle != null && (isStopFill || isTrailingFill))
+                // [v5.25.13] TP 체결도 '완전 청산'이면 잔여 SL 취소 추가.
+                //   기존 결함: isTpFill 제외 → TP algo 전체체결로 포지션이 닫혀도 반대편 SL(STOP_MARKET)이 남아
+                //   open orders 에 고아로 잔존("이더리움 정리했는데 stop market 남음"). 부분 TP1 은 GetPositions 로 판별해 유지.
+                if (_orderLifecycle != null && (isStopFill || isTrailingFill || isTpFill))
                 {
                     _ = Task.Run(async () =>
                     {
-                        try { await _orderLifecycle.OnPositionClosedAsync(symbol); }
+                        try
+                        {
+                            if (isTpFill)
+                            {
+                                // 부분청산(포지션 잔존)이면 SL/트레일 유지. 완전청산일 때만 잔여주문 정리.
+                                var poss = await _exchangeService.GetPositionsAsync(CancellationToken.None);
+                                bool stillOpen = poss != null && poss.Any(p =>
+                                    string.Equals(p.Symbol, symbol, StringComparison.OrdinalIgnoreCase) && Math.Abs(p.Quantity) > 0m);
+                                if (stillOpen) return;
+                            }
+                            await _orderLifecycle.OnPositionClosedAsync(symbol);
+                        }
                         catch { }
                     });
                 }
