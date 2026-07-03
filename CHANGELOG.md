@@ -5,6 +5,23 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.25.15] - 2026-07-03
+
+### 🧱 ActivePosition DB 레지스트리 도입 — "1코인 1포지션" DB 레벨 강제 (userId별)
+- 근본버그: 진입 중복차단·외부청산 판정이 인메모리 `_activePositions`에 의존 → 청산 desync(부분청산/오청산/one-way 넷 잔량) 시 메모리에서 심볼이 빠지면 ①중복가드가 뚫려 거래소에 살아있는 포지션 위에 재진입(SOL 61.62 @81.13 위에 81.24 중복) ②reconcile이 "외부청산"으로 오판해 청산주문 없이 DB만 닫아 SL 없는 고아 포지션 방치.
+- 신규 `dbo.ActivePosition` 테이블(PK `UserId,Symbol`): 진입=원자 INSERT, 완전청산=DELETE, 거래소 실잔량과 주기 셀프힐. userId별 완전 분리.
+
+### 🩹 Fixed
+- **중복 진입 근본차단**: 진입 커밋 전 거래소 실잔량 조회 → 이미 포지션 있으면 차단. + 심볼별 `SemaphoreSlim` 직렬화 큐로 fire-and-forget 동시진입의 await-race 제거(슬리피지 감수).
+- **오청산(고아) 차단**: reconcile이 메모리가 아니라 거래소 실잔량으로 외부청산 판정 → 잔량 있으면 청산 마킹 안 함 + 셀프힐로 표 수렴.
+- **완전청산 시 레지스트리 DELETE**: 모든 청산 경로가 거치는 `CleanupPositionData`에 ActivePosition 삭제 추가.
+- 하드코딩 `?? 1`(TradingEngine ORDER_FILL) → `?? throw` (남 유저 open trade 오조회 차단).
+- SymbolScorecard 정적 싱글톤이 Start 시점 `_userId`를 동결하던 것 → 매 갱신마다 로그인 유저 fresh 조회 + Start 시 캐시 리셋.
+- BinancePositionHistorySync 재시작 시 이전 인스턴스 `Stop()` 없이 덮어써 고아 루프가 옛 키/UserId로 돌던 것 → Start/Stop 시 정지.
+
+### 🔧 Tools
+- LorentzianValidator `--regime-check`: 손실 진입 시각의 1h ADX/BB폭/24h 레인지 레짐 재현(횡보 손실 가설 검증용).
+
 ## [5.25.6] - 2026-07-01
 
 ### 🩹 추적 라벨링 버그 fix — 봇 자기 거래가 "외부(미추적)"로 오라벨되던 문제

@@ -15613,6 +15613,100 @@ internal static class Program
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // --regime-check : live-entries.csv(sym,ms,entry,pnl,win) 각 진입시각의 레짐 재현.
+    //   손실이 "폭 긴 횡보(저 1h ADX + 넓은 24h레인지 상단 진입)"에 몰리는지 정량 확인.
+    //   앵커: 5m는 진입가 포함 봉(±8) / 1h는 OpenTime<=진입ms 마지막 봉.
+    // ─────────────────────────────────────────────────────────────────────
+    private static async Task RunRegimeCheckAsync()
+    {
+        string csv = System.IO.Path.Combine(AppContext.BaseDirectory, "live-entries.csv");
+        if (!System.IO.File.Exists(csv)) csv = "live-entries.csv";
+        if (!System.IO.File.Exists(csv)) { Console.WriteLine($"CSV 없음: {csv}"); return; }
+        var lines = System.IO.File.ReadAllLines(csv).Skip(1).Where(l => l.Trim().Length > 0).ToList();
+
+        var entries = new List<(string sym, long ms, decimal entry, decimal pnl, int win)>();
+        foreach (var ln in lines)
+        {
+            var p = ln.Split(',');
+            if (p.Length < 6) continue;
+            if (!long.TryParse(p[1], out var ms)) continue;
+            if (!decimal.TryParse(p[2], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var en)) continue;
+            if (!decimal.TryParse(p[4], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var pnl)) continue;
+            if (!int.TryParse(p[5], out var w)) continue;
+            entries.Add((p[0], ms, en, pnl, w));
+        }
+        Console.WriteLine($"진입 {entries.Count}건 로드 — 레짐 재현");
+        Console.WriteLine();
+        Console.WriteLine("SYM      OpenKST        R  1hADX  BBw1h%  24hRng%  pos%   pr1h%   5mADX  5m>mid  PnL");
+        Console.WriteLine("-------- -------------- -- -----  ------  -------  ----   -----   -----  ------  ------");
+
+        var rec = new List<(bool win, double adx1h, double rng24, double posInRng, double pr1h, double adx5, double bbw1h)>();
+        var tz = TimeZoneInfo.FindSystemTimeZoneById("Korea Standard Time");
+
+        foreach (var e in entries.OrderBy(x => x.ms))
+        {
+            List<IBinanceKline> k5, k1;
+            try { k5 = await FetchKlinesAsync(e.sym, 4); } catch { Console.WriteLine($"{e.sym} 5m fail"); continue; }
+            try { k1 = await FetchKlines1hAsync(e.sym, 2); } catch { Console.WriteLine($"{e.sym} 1h fail"); continue; }
+            if (k5.Count < 60 || k1.Count < 60) { Console.WriteLine($"{e.sym} thin"); continue; }
+
+            // 5m 앵커: 진입가 포함 봉을 시간근처(±8)에서
+            long f5 = ((DateTimeOffset)k5[0].OpenTime).ToUnixTimeMilliseconds();
+            int guess = (int)((e.ms - f5) / (5L * 60 * 1000));
+            int bi = -1;
+            for (int off = 0; off <= 12 && bi < 0; off++)
+                foreach (int cand in new[] { guess - off, guess + off })
+                {
+                    if (cand < 30 || cand >= k5.Count - 1) continue;
+                    if (k5[cand].LowPrice <= e.entry && e.entry <= k5[cand].HighPrice) { bi = cand; break; }
+                }
+            if (bi < 0) { bi = Math.Max(30, Math.Min(k5.Count - 2, guess)); }  // 폴백: 시간근사
+
+            // 1h 앵커: OpenTime <= entryMs 마지막 봉
+            int hi = -1;
+            for (int i = 0; i < k1.Count; i++)
+                if (((DateTimeOffset)k1[i].OpenTime).ToUnixTimeMilliseconds() <= e.ms) hi = i; else break;
+            if (hi < 30) { Console.WriteLine($"{e.sym} 1h anchor fail"); continue; }
+
+            double adx1h = LiveSim.Adx(k1, hi, 14);
+            var bb1h = LiveMajorEvaluator.Bb(k1, hi, 20, 2);
+            double bbw1h = bb1h.Mid > 0 ? (bb1h.Upper - bb1h.Lower) / bb1h.Mid * 100.0 : 0;
+            // 24h(=24 1h봉) 레인지 폭 및 진입 위치
+            int lo = Math.Max(0, hi - 23);
+            decimal hh = k1[lo].HighPrice, ll = k1[lo].LowPrice;
+            for (int i = lo; i <= hi; i++) { if (k1[i].HighPrice > hh) hh = k1[i].HighPrice; if (k1[i].LowPrice < ll) ll = k1[i].LowPrice; }
+            double rng24 = ll > 0 ? (double)((hh - ll) / ll) * 100.0 : 0;
+            double posInRng = hh > ll ? (double)((e.entry - ll) / (hh - ll)) * 100.0 : 50;
+
+            double adx5 = LiveSim.Adx(k5, bi, 14);
+            var bb5 = LiveMajorEvaluator.Bb(k5, bi, 20, 2);
+            bool above5 = bb5.Mid > 0 && (double)k5[bi].ClosePrice > bb5.Mid;
+            double pr1h = bi >= 12 ? (double)(k5[bi].ClosePrice / k5[bi - 12].ClosePrice - 1m) * 100.0 : 0;
+
+            bool win = e.pnl > 0;
+            var kst = TimeZoneInfo.ConvertTimeFromUtc(DateTimeOffset.FromUnixTimeMilliseconds(e.ms).UtcDateTime, tz);
+            Console.WriteLine($"{e.sym,-8} {kst:MM-dd HH:mm}  {(win ? "W" : "L"),-2} {adx1h,5:F1}  {bbw1h,6:F2}  {rng24,7:F2}  {posInRng,4:F0}  {pr1h,6:F2}  {adx5,5:F1}  {(above5 ? "Y" : "n"),-6} {e.pnl,7:F2}");
+            rec.Add((win, adx1h, rng24, posInRng, pr1h, adx5, bbw1h));
+        }
+
+        Console.WriteLine();
+        void Avg(string lbl, System.Func<(bool win, double adx1h, double rng24, double posInRng, double pr1h, double adx5, double bbw1h), double> f)
+        {
+            var L = rec.Where(r => !r.win).ToList(); var W = rec.Where(r => r.win).ToList();
+            Console.WriteLine($"  {lbl,-14}  손실 avg={(L.Count>0?L.Average(f):0),7:F2}  (n={L.Count})   승리 avg={(W.Count>0?W.Average(f):0),7:F2}  (n={W.Count})");
+        }
+        Console.WriteLine("================ 손실 vs 승리 평균 ================");
+        Avg("1h ADX", r => r.adx1h);
+        Avg("1h BBwidth%", r => r.bbw1h);
+        Avg("24h Range%", r => r.rng24);
+        Avg("pos-in-range%", r => r.posInRng);
+        Avg("prior-1h move%", r => r.pr1h);
+        Avg("5m ADX", r => r.adx5);
+        Console.WriteLine();
+        Console.WriteLine("  [해석] 손실이 저 1h ADX(<20=횡보) + 큰 24h Range% + 높은 pos-in-range(상단추격)에 몰리면 → '폭 긴 횡보 상단 진입' 가설 성립.");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // [v5.23.79] --entry-search : 과거 차트에서 "승률 60%+ 흑자" 진입조건 조합 탐색.
     //   7개 조건의 모든 조합(128) × train(과거60%)/test(최근40%) 분할.
     //   청산 = LiveSim.SimulateRunner (부분TP1 승확정 + 잔량 3×ATR 추적 = 큰수익 런).
@@ -16005,6 +16099,11 @@ internal static class Program
         if (HasArg("--replay-entries"))
         {
             await RunReplayEntriesAsync();
+            return;
+        }
+        if (HasArg("--regime-check"))
+        {
+            await RunRegimeCheckAsync();
             return;
         }
         if (HasArg("--entry-search"))

@@ -3710,7 +3710,12 @@ namespace TradingBot.Services
                 try
                 {
                     int userId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
-                    if (userId > 0) await _dbManager.DeletePositionStateAsync(userId, symbol);
+                    if (userId > 0)
+                    {
+                        await _dbManager.DeletePositionStateAsync(userId, symbol);
+                        // [ActivePosition] 완전청산 → 레지스트리 행 삭제 (모든 청산 경로가 CleanupPositionData 를 거침).
+                        await _dbManager.CloseActivePositionAsync(userId, symbol);
+                    }
                 }
                 catch { }
             });

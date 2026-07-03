@@ -2974,16 +2974,50 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"🔍 [DB 정리] DB 오픈 포지션: {dbOpenTrades.Count}개 발견, 거래소와 비교 시작");
 
                 int closedCount = 0;
-                List<string> exchangePositionSymbols;
 
-                lock (_posLock)
+                // [FIX] 거래소 실계좌를 fresh 조회해서 "실제로 남아있는 포지션"을 판단 authority 로 사용.
+                //   기존 버그: _activePositions(메모리)로 판단 → 메모리에서 빠졌지만 거래소엔 수량이 남은 포지션을
+                //   '외부청산'으로 오판, 청산주문도 안 보낸 채 DB만 EXTERNAL_CLOSE_RECONCILE 로 청산 마킹 →
+                //   거래소에 SL 없는 고아 포지션이 잔존(예: SOL 61.62 @ 81.13). one-way(BOTH) 넷 잔량에서 특히 발생.
+                //   PHANTOM_CLEAN 은 거래소를 fresh 조회하는데 이 경로만 메모리를 믿던 불일치를 제거.
+                HashSet<string> exchangeOpenSymbols;
+                try
                 {
-                    exchangePositionSymbols = _activePositions.Keys.ToList();
+                    var livePositions = await _exchangeService.GetPositionsAsync(token);
+                    if (livePositions == null)
+                    {
+                        OnStatusLog?.Invoke("⚠️ [DB 정리] 거래소 포지션 조회 실패(null) → 오판 방지 위해 이번 정리 건너뜀");
+                        return;
+                    }
+                    exchangeOpenSymbols = new HashSet<string>(
+                        livePositions.Where(p => !string.IsNullOrEmpty(p.Symbol) && Math.Abs(p.Quantity) > 0m)
+                                     .Select(p => p.Symbol),
+                        StringComparer.OrdinalIgnoreCase);
+
+                    // [ActivePosition] 셀프힐 — DB 레지스트리를 거래소 실잔량에 수렴시킴.
+                    //   완전청산 DELETE 를 어느 경로에서 놓쳐도(청산코드 다수) 여기서 stale 행 삭제 + 누락 행 복원.
+                    try
+                    {
+                        await _dbManager.SyncActivePositionsWithExchangeAsync(userId,
+                            livePositions
+                                .Where(p => !string.IsNullOrEmpty(p.Symbol) && Math.Abs(p.Quantity) > 0m)
+                                .Select(p => (p.Symbol, p.IsLong ? "LONG" : "SHORT", p.EntryPrice, p.Quantity, (int)p.Leverage)));
+                    }
+                    catch (Exception exHeal)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [ActivePosition] 셀프힐 실패: {exHeal.Message}");
+                    }
+                }
+                catch (Exception exQ)
+                {
+                    OnStatusLog?.Invoke($"⚠️ [DB 정리] 거래소 포지션 조회 예외 → 오판 방지 위해 이번 정리 건너뜀: {exQ.Message}");
+                    return;
                 }
 
                 foreach (var dbTrade in dbOpenTrades)
                 {
-                    bool existsInExchange = exchangePositionSymbols.Contains(dbTrade.Symbol);
+                    // [FIX] 거래소 실잔량 기준으로만 '외부청산' 판정 (메모리 아님)
+                    bool existsInExchange = exchangeOpenSymbols.Contains(dbTrade.Symbol);
 
                     if (!existsInExchange)
                     {
@@ -4139,7 +4173,8 @@ namespace TradingBot
                     try
                     {
                         // [v5.10.90] pos=null 대비 GetOpenTradesAsync에서 symbol 찾아 entry 가져오기
-                        int userId = AppConfig.CurrentUser?.Id ?? 1;
+                        // [FIX] 하드코딩 ?? 1 제거 — 로그인 유저 없으면 throw → catch에서 avgPrice 폴백 (남 유저 데이터 오염 차단)
+                        int userId = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                         var openTrades = await _dbManager.GetOpenTradesAsync(userId);
                         var row = openTrades?.FirstOrDefault(t => string.Equals(t.Symbol, symbol, StringComparison.OrdinalIgnoreCase));
                         if (row.HasValue && row.Value.EntryPrice > 0)
@@ -8280,7 +8315,38 @@ namespace TradingBot
         /// 자동 매매 실행 메인 메서드 — ROUTER
         /// 공통 검증 후 Major/Pump x Long/Short 4개 메서드로 디스패치
         /// </summary>
+        // [FIX] 심볼별 진입 직렬화 게이트 — fire-and-forget(_ = ExecuteAutoOrder)로 같은 심볼 진입이 동시에 돌면
+        //   내부 await(거래소조회/DB) 사이에 끼어들어 둘 다 가드를 통과 → 중복진입. 심볼당 1개 세마포어로 큐잉.
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _entryGates
+            = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>진입 실행 래퍼 — 심볼별로 직렬화(큐)해서 동시진입 await-race 중복을 원천차단.
+        /// 2번째 진입은 대기 후 Inner 에서 거래소/DB 가드에 걸려 차단됨(슬리피지 감수 — 사용자 지시).</summary>
         private async Task ExecuteAutoOrder(
+            string symbol,
+            string decision,
+            decimal currentPrice,
+            CancellationToken token,
+            string signalSource = "UNKNOWN",
+            string mode = "TREND",
+            decimal customTakeProfitPrice = 0m,
+            decimal customStopLossPrice = 0m,
+            PatternSnapshotInput? patternSnapshot = null,
+            decimal manualSizeMultiplier = 1.0m,
+            bool skipAiGateCheck = false)
+        {
+            var gate = _entryGates.GetOrAdd(symbol, _ => new SemaphoreSlim(1, 1));
+            try { await gate.WaitAsync(token); }
+            catch (OperationCanceledException) { return; }
+            try
+            {
+                await ExecuteAutoOrderInner(symbol, decision, currentPrice, token, signalSource, mode,
+                    customTakeProfitPrice, customStopLossPrice, patternSnapshot, manualSizeMultiplier, skipAiGateCheck);
+            }
+            finally { gate.Release(); }
+        }
+
+        private async Task ExecuteAutoOrderInner(
             string symbol,
             string decision,
             decimal currentPrice,
@@ -8633,6 +8699,40 @@ namespace TradingBot
             {
                 EntryLog("VOLATILITY", "BYPASS", $"path={signalSource} (PUMP/급등은 변동성 자체가 신호)");
             }
+
+            // ═══════════════════════════════════════════════════════════════
+            // [FIX] 중복 진입 근본차단 — 메모리(_activePositions)가 아니라 '거래소 실잔량'을 조회.
+            //   버그: 청산 desync(부분청산/오청산/one-way 넷 잔량)로 메모리에서 심볼이 빠지면
+            //   아래 8669 중복가드가 뚫려, 거래소에 아직 살아있는 포지션 위에 같은 심볼을 또 진입
+            //   (실사고: SOL 61.62 @81.13 잔여 위에 81.24 재진입 → "1코인 1포지션" 원칙 붕괴, 고아·중복).
+            //   → 거래소에 이 심볼 잔량이 있으면 신규 진입 차단(1코인=1포지션 강제). 조회 실패 시 이 진입만 스킵(다음 틱 재시도).
+            try
+            {
+                var liveForSym = await _exchangeService.GetPositionsAsync(token);
+                var exPosOnSym = liveForSym?.FirstOrDefault(p =>
+                    string.Equals(p.Symbol, symbol, StringComparison.OrdinalIgnoreCase) && Math.Abs(p.Quantity) > 0m);
+                if (exPosOnSym != null)
+                {
+                    bool trackedOwn;
+                    lock (_posLock)
+                    {
+                        trackedOwn = _activePositions.TryGetValue(symbol, out var tp)
+                                     && tp.IsOwnPosition && Math.Abs(tp.Quantity) > 0m;
+                    }
+                    OnStatusLog?.Invoke($"⛔ [중복차단-거래소] {symbol} 거래소에 이미 포지션 존재(qty={exPosOnSym.Quantity}, 메모리추적={trackedOwn}) → 신규 진입 차단 (1코인 1포지션)");
+                    EntryLog("SLOT", "BLOCK", $"exchangeHasPosition qty={exPosOnSym.Quantity} tracked={trackedOwn}");
+                    return;
+                }
+            }
+            catch (Exception exDupChk)
+            {
+                OnStatusLog?.Invoke($"⚠️ [중복차단-거래소] {symbol} 거래소 잔량 조회 실패 → 안전을 위해 이 진입 스킵(다음 틱 재시도): {exDupChk.Message}");
+                EntryLog("SLOT", "BLOCK", $"exchangeCheckFailed={exDupChk.Message}");
+                return;
+            }
+
+            // (dedup 권위 = 위 '거래소 실잔량' 체크. ActivePosition DB표는 아래 예약 시점에서
+            //  기록/원자등록하며, 거래소가 비어있는데 남은 stale 행은 청산 누락분이므로 진입을 막지 않고 정리한다.)
 
             // ═══════════════════════════════════════════════════════════════
             // [ROUTER] 2. 슬롯 검증 + 정찰대 전환
@@ -9591,6 +9691,8 @@ namespace TradingBot
             bool orderPlaced = false;
             string symbol = ctx.Symbol;
             string decision = ctx.Decision;
+            // [ActivePosition] 진입 커밋 시 DB표에 INSERT, 실패 rollback 시 DELETE — userId 캡처.
+            int apUserId = AppConfig.CurrentUser?.Id ?? 0;
 
             void CleanupReservedPosition(string reason)
             {
@@ -9605,6 +9707,9 @@ namespace TradingBot
                         EntryLog("RESERVE", "CLEANUP", $"reason={reason}");
                     }
                 }
+                // [ActivePosition] 예약 롤백 시 DB 레지스트리 행도 삭제 (주문 미체결 → 표 잔존 방지). fire-and-forget.
+                if (_dbManager != null && apUserId > 0)
+                    _ = _dbManager.CloseActivePositionAsync(apUserId, symbol);
             }
 
             OnStatusLog?.Invoke(
@@ -9778,6 +9883,32 @@ namespace TradingBot
                     }
                 }
                 positionReserved = !ctx.IsScoutAddOnOrder;
+
+                // [ActivePosition] 신규 진입 커밋 → DB 레지스트리에 기록(진입=INSERT, 완전청산=DELETE, 실패=cleanup DELETE).
+                //   dedup 권위는 위 '거래소 실잔량' 체크(이미 통과=거래소 비어있음)이므로, 표에 stale 행이 남아있으면
+                //   청산 누락분 → 삭제 후 재등록(upsert). 진입 자체는 막지 않는다(정상 재진입 오차단 방지).
+                if (positionReserved && _dbManager != null && apUserId > 0)
+                {
+                    try
+                    {
+                        bool opened = await _dbManager.TryOpenActivePositionAsync(
+                            apUserId, symbol, decision == "LONG" ? "LONG" : "SHORT",
+                            ctx.CurrentPrice, 0m, leverage, ctx.SignalSource);
+                        if (!opened)
+                        {
+                            // 거래소는 비어있는데 표에 행 존재 = 이전 청산의 DELETE 누락(stale) → 정리 후 재등록.
+                            OnStatusLog?.Invoke($"🧹 [ActivePosition] {symbol} stale 행 감지(거래소 비어있음) → 삭제 후 재등록");
+                            await _dbManager.CloseActivePositionAsync(apUserId, symbol);
+                            await _dbManager.TryOpenActivePositionAsync(
+                                apUserId, symbol, decision == "LONG" ? "LONG" : "SHORT",
+                                ctx.CurrentPrice, 0m, leverage, ctx.SignalSource);
+                        }
+                    }
+                    catch (Exception exApReg)
+                    {
+                        OnStatusLog?.Invoke($"⚠️ [ActivePosition] {symbol} 등록 실패(진입은 계속): {exApReg.Message}");
+                    }
+                }
 
                 // [AI 제거] EntryZoneCollector 컨텍스트 수집 통째 제거
 

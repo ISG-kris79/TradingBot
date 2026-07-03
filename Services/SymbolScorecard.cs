@@ -38,6 +38,10 @@ namespace TradingBot.Services
         {
             _connectionString = connectionString;
             _userId = userId;
+            // [FIX] 유저 전환 대비 — Start(재로그인/엔진 재시작) 시 이전 유저 캐시를 즉시 폐기해
+            //   새 유저가 옛 유저의 심볼 배수를 이어받지 않도록 함. RefreshAsync가 채우기 전까지 1.0 폴백.
+            lock (_lock) { _multipliers.Clear(); }
+            IsReady = false;
             _ = Task.Run(async () => await RefreshAsync(CancellationToken.None));
             _timer ??= new Timer(_ => _ = RefreshAsync(CancellationToken.None),
                                  null, RefreshInterval, RefreshInterval);
@@ -61,6 +65,10 @@ namespace TradingBot.Services
         public async Task<bool> RefreshAsync(CancellationToken ct)
         {
             if (string.IsNullOrEmpty(_connectionString)) return false;
+            // [FIX] 동결된 _userId 대신 현재 로그인 유저를 매 갱신마다 fresh 조회 —
+            //   프로세스 수명 내내 도는 1h 타이머가 옛 유저 데이터로 배수를 계산하던 버그 차단.
+            int userId = TradingBot.AppConfig.CurrentUser?.Id ?? _userId;
+            if (userId <= 0) return false;
             try
             {
                 const string sql = @"
@@ -75,7 +83,7 @@ GROUP BY Symbol
 HAVING COUNT(*) >= 5";
 
                 using var db = new SqlConnection(_connectionString);
-                var rows = await db.QueryAsync(sql, new { UserId = _userId });
+                var rows = await db.QueryAsync(sql, new { UserId = userId });
 
                 var newMap = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
                 int boosted = 0, blocked = 0;

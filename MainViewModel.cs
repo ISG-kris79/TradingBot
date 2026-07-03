@@ -1111,6 +1111,9 @@ namespace TradingBot.ViewModels
                         int uid = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                         if (rest != null && uid > 0)
                         {
+                            // [FIX] 이전 인스턴스를 반드시 정지 — 정지 없이 덮어쓰면 옛 유저 키/UserId로
+                            //   도는 고아 동기화 루프가 프로세스 내내 살아남아 크로스유저 기록 오염.
+                            try { _bphSync?.Stop(); } catch { }
                             _bphSync = new TradingBot.Services.BinancePositionHistorySync(rest, AppConfig.ConnectionString, uid);
                             _bphSync.OnLog += msg => AddLiveLog(msg);
                             _ = _bphSync.EnsureSchemaAsync().ContinueWith(t => _bphSync.StartAsync(System.Threading.CancellationToken.None));
@@ -1207,6 +1210,8 @@ namespace TradingBot.ViewModels
                         _engine = null;
                         OnPropertyChanged(nameof(InitialBalance));
                     }
+                    // [FIX] 엔진 정지 시 BPH 동기화 루프도 정지 — 고아 루프가 옛 유저 키/UserId로 계속 도는 것 차단.
+                    try { _bphSync?.Stop(); _bphSync = null; } catch { }
                     IsStopEnabled = false;
                     IsStartEnabled = true;
                     AddLog("엔진 정지 명령을 보냈습니다.");

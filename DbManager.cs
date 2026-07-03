@@ -172,6 +172,7 @@ namespace TradingBot.Services
                 _ = EnsureCandleDataIndexAsync();
                 _ = EnsureOpenTimeIndexesAsync();
                 _ = EnsureTradeHistoryUserIndexAsync();
+                _ = EnsureActivePositionTableAsync();
                 _ = TradingBot.DbProcedures.EnsureAllAsync(connectionString);
             }
         }
@@ -549,6 +550,145 @@ END");
                     new { UserId = userId, Symbol = symbol });
             }
             catch { }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // [ActivePosition] userId별 '현재 오픈 포지션' 권위 레지스트리 (사용자 요청)
+        //   진입 = 원자 INSERT, 완전청산 = DELETE, 거래소 실잔량과 주기 셀프힐.
+        //   PK(UserId,Symbol) = "1코인 1포지션"을 DB 레벨에서 원자적으로 강제 →
+        //   메모리(_activePositions) desync 로 중복진입/오청산 되던 근본버그 차단.
+        // ═══════════════════════════════════════════════════════════════════
+        public async Task EnsureActivePositionTableAsync()
+        {
+            try
+            {
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await db.ExecuteAsync(@"
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'ActivePosition' AND schema_id = SCHEMA_ID('dbo'))
+BEGIN
+    CREATE TABLE dbo.ActivePosition (
+        UserId        INT            NOT NULL,
+        Symbol        NVARCHAR(20)   NOT NULL,
+        PositionSide  NVARCHAR(10)   NOT NULL DEFAULT 'LONG',
+        EntryPrice    DECIMAL(28,10) NOT NULL DEFAULT 0,
+        Quantity      DECIMAL(28,10) NOT NULL DEFAULT 0,
+        Leverage      INT            NOT NULL DEFAULT 0,
+        SignalSource  NVARCHAR(40)   NULL,
+        EntryTime     DATETIME2      NOT NULL DEFAULT SYSUTCDATETIME(),
+        UpdatedAt     DATETIME2      NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_ActivePosition PRIMARY KEY (UserId, Symbol)
+    );
+END", commandTimeout: 30);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] ActivePosition 테이블 생성 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>진입 시 원자적 등록. 이미 (UserId,Symbol) 행이 있으면 false(=중복 → 진입 차단). DB실패 시 true(가용성).</summary>
+        public async Task<bool> TryOpenActivePositionAsync(int userId, string symbol, string positionSide,
+            decimal entryPrice, decimal quantity, int leverage, string? signalSource)
+        {
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                int rows = await db.ExecuteAsync(@"
+IF NOT EXISTS (SELECT 1 FROM dbo.ActivePosition WITH (UPDLOCK, HOLDLOCK) WHERE UserId=@UserId AND Symbol=@Symbol)
+INSERT INTO dbo.ActivePosition (UserId,Symbol,PositionSide,EntryPrice,Quantity,Leverage,SignalSource,EntryTime,UpdatedAt)
+VALUES (@UserId,@Symbol,@PositionSide,@EntryPrice,@Quantity,@Leverage,@SignalSource,SYSUTCDATETIME(),SYSUTCDATETIME());",
+                    new { UserId = userId, Symbol = symbol, PositionSide = positionSide, EntryPrice = entryPrice,
+                          Quantity = quantity, Leverage = leverage, SignalSource = signalSource }, commandTimeout: 8);
+                return rows > 0;   // 0 = 이미 존재(중복)
+            }
+            catch (SqlException sqlEx) when (sqlEx.Number == 2627 || sqlEx.Number == 2601)
+            {
+                return false;      // race → 다른 세션이 먼저 INSERT = 중복
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] ActivePosition 등록 실패 [{symbol}]: {ex.Message}");
+                return true;       // DB 장애 시 진입 자체를 막지 않음(가용성) — 거래소/메모리 가드가 2차 방어
+            }
+        }
+
+        /// <summary>완전청산 시 행 삭제.</summary>
+        public async Task CloseActivePositionAsync(int userId, string symbol)
+        {
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await db.ExecuteAsync("DELETE FROM dbo.ActivePosition WHERE UserId=@UserId AND Symbol=@Symbol",
+                    new { UserId = userId, Symbol = symbol }, commandTimeout: 8);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] ActivePosition 삭제 실패 [{symbol}]: {ex.Message}");
+            }
+        }
+
+        /// <summary>userId 의 현재 오픈 심볼 집합(진입 dedup 게이트용).</summary>
+        public async Task<HashSet<string>> GetActivePositionSymbolsAsync(int userId)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                var rows = await db.QueryAsync<string>("SELECT Symbol FROM dbo.ActivePosition WHERE UserId=@UserId",
+                    new { UserId = userId });
+                foreach (var s in rows) if (!string.IsNullOrEmpty(s)) set.Add(s);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] ActivePosition 조회 실패: {ex.Message}");
+            }
+            return set;
+        }
+
+        /// <summary>거래소 실잔량과 셀프힐 — 거래소에 없는(청산된) 행 삭제, 거래소에 있는데 누락된 심볼은 INSERT.
+        /// 완전청산 DELETE 를 어느 경로에서 놓쳐도 이 셀프힐이 표를 거래소 실체에 수렴시킴.</summary>
+        public async Task SyncActivePositionsWithExchangeAsync(int userId,
+            IEnumerable<(string Symbol, string Side, decimal EntryPrice, decimal Quantity, int Leverage)> livePositions)
+        {
+            try
+            {
+                var live = livePositions
+                    .Where(p => !string.IsNullOrEmpty(p.Symbol) && Math.Abs(p.Quantity) > 0m)
+                    .ToList();
+                var liveSyms = new HashSet<string>(live.Select(p => p.Symbol), StringComparer.OrdinalIgnoreCase);
+
+                using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+
+                // 1) 거래소에 없는 행 삭제 (완전청산됐는데 남은 stale 행)
+                var dbSyms = (await db.QueryAsync<string>(
+                    "SELECT Symbol FROM dbo.ActivePosition WHERE UserId=@UserId", new { UserId = userId })).ToList();
+                foreach (var s in dbSyms)
+                {
+                    if (!liveSyms.Contains(s))
+                        await db.ExecuteAsync("DELETE FROM dbo.ActivePosition WHERE UserId=@UserId AND Symbol=@Symbol",
+                            new { UserId = userId, Symbol = s }, commandTimeout: 8);
+                }
+
+                // 2) 거래소에 있는데 행 없으면 INSERT (재시작/누락 복원)
+                foreach (var p in live)
+                {
+                    await db.ExecuteAsync(@"
+IF NOT EXISTS (SELECT 1 FROM dbo.ActivePosition WHERE UserId=@UserId AND Symbol=@Symbol)
+INSERT INTO dbo.ActivePosition (UserId,Symbol,PositionSide,EntryPrice,Quantity,Leverage,SignalSource,EntryTime,UpdatedAt)
+VALUES (@UserId,@Symbol,@Side,@EntryPrice,@Quantity,@Leverage,'EXCHANGE_SYNC',SYSUTCDATETIME(),SYSUTCDATETIME());",
+                        new { UserId = userId, Symbol = p.Symbol, Side = p.Side, EntryPrice = p.EntryPrice,
+                              Quantity = Math.Abs(p.Quantity), Leverage = p.Leverage }, commandTimeout: 8);
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] ActivePosition 셀프힐 실패: {ex.Message}");
+            }
         }
 
 
