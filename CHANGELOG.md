@@ -5,6 +5,16 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.25.16] - 2026-07-03
+
+### 🩹 Fixed — desync/재진입/횡보 3종 (순차 적용)
+- **런타임 재입양(신규)**: 거래소엔 있는데 메인창(메모리)엔 없던 포지션(사용자 보고: BTC/ETH 미표시·방치)을 1분 주기로 자동 채택 — DB 오픈행+메모리+모니터+SL/TP 복구. 기존 SyncCurrentPositions는 시작 시 1회뿐이라 세션 중 desync를 못 잡던 gap 해소. (`AdoptUntrackedExchangePositionsAsync`, PHANTOM_CLEAN 루프의 역방향)
+- **reconcile 재진입 쿨다운**: 외부청산 30분 재진입 차단이 account-update·수동청산버튼 경로에만 걸리고 reconcile(EXTERNAL_CLOSE_RECONCILE) 경로엔 없어, account-update를 놓치면 즉시 재진입하던 버그 → reconcile 청산 시에도 30분 블랙리스트 + ActivePosition 정리.
+- **봉크기 횡보필터(메이저 한정)**: SOL 등 메이저가 저변동 횡보에서 -2% 미세노이즈로 진입해 반전청산 반복(실측 SOL 5m ATR ~0.2%, 24h range 4%)하던 문제 → MEANREV 메이저 진입에 5m ATR% ≥ 0.25% 하한. 알트는 변동성 충분(백테 흑자)이라 미적용. (--meanrev-folds는 알트 유니버스라 검증불가 → 라이브 카나리 확인 대상)
+
+### 🔧 Tools
+- LorentzianValidator `--meanrev-folds`: ATR%(봉크기) 하한 변형 추가.
+
 ## [5.25.15] - 2026-07-03
 
 ### 🧱 ActivePosition DB 레지스트리 도입 — "1코인 1포지션" DB 레벨 강제 (userId별)

@@ -2624,6 +2624,86 @@ namespace TradingBot
             }
         }
 
+        // [FIX] 런타임 재입양 — 거래소엔 있는데 _activePositions(메모리)에 없는 봇 포지션을 주기적으로 채택.
+        //   기존: SyncCurrentPositionsAsync 는 '시작 시 1회'만 → 세션 중 desync(청산 오판/one-way 넷 잔량)로
+        //   미추적된 포지션이 메인창 미표시 + SL/TP 미부착 방치(사용자 보고: 거래소엔 BTC/ETH인데 메인창엔 없음).
+        //   1분 주기로 채택해 표시(DB오픈행)+메모리+모니터+SL/TP 복구. (CleanupPhantomPositionsAsync 의 역방향)
+        private async Task AdoptUntrackedExchangePositionsAsync(CancellationToken token)
+        {
+            try
+            {
+                var realPositions = await _exchangeService.GetPositionsAsync(token);
+                if (realPositions == null) return;
+                int uid = AppConfig.CurrentUser?.Id ?? 0;
+                if (uid <= 0) return;
+
+                foreach (var pos in realPositions)
+                {
+                    if (string.IsNullOrEmpty(pos.Symbol) || Math.Abs(pos.Quantity) <= 0m) continue;
+
+                    // 이미 추적 중(또는 진입 예약 Quantity=0)이면 스킵
+                    lock (_posLock)
+                    {
+                        if (_activePositions.ContainsKey(pos.Symbol)) continue;
+                    }
+
+                    decimal lev = pos.Leverage > 0 ? pos.Leverage : _settings.DefaultLeverage;
+
+                    // 1) DB 오픈행 보장 → 메인창 표시
+                    var ensure = await _dbManager.EnsureOpenTradeForPositionAsync(new PositionInfo
+                    {
+                        Symbol = pos.Symbol, EntryPrice = pos.EntryPrice, IsLong = pos.IsLong, Side = pos.Side,
+                        Leverage = lev, Quantity = Math.Abs(pos.Quantity), EntryTime = DateTime.Now
+                    }, "RUNTIME_ADOPT");
+
+                    // 2) 메모리 등록 (레이스 재확인)
+                    lock (_posLock)
+                    {
+                        if (_activePositions.ContainsKey(pos.Symbol)) continue;
+                        _activePositions[pos.Symbol] = new PositionInfo
+                        {
+                            Symbol = pos.Symbol, EntryPrice = pos.EntryPrice, IsLong = pos.IsLong, Side = pos.Side,
+                            IsPumpStrategy = !MajorSymbols.Contains(pos.Symbol), Leverage = lev,
+                            Quantity = Math.Abs(pos.Quantity), InitialQuantity = Math.Abs(pos.Quantity),
+                            EntryTime = ensure.EntryTime, HighestPrice = pos.EntryPrice, LowestPrice = pos.EntryPrice,
+                            IsOwnPosition = true
+                        };
+                    }
+                    OnStatusLog?.Invoke($"🩹 [런타임재입양] {pos.Symbol} 거래소엔 있는데 미추적 → 메모리+DB 채택 (진입가 {pos.EntryPrice:F6}, 수량 {Math.Abs(pos.Quantity)})");
+
+                    // 3) ActivePosition 레지스트리에도 기록
+                    try { await _dbManager.TryOpenActivePositionAsync(uid, pos.Symbol, pos.IsLong ? "LONG" : "SHORT", pos.EntryPrice, Math.Abs(pos.Quantity), (int)lev, "RUNTIME_ADOPT"); } catch { }
+
+                    // 4) 모니터 + SL/TP 재등록 (재시작 복원과 동일 패턴)
+                    var monTok = _cts?.Token ?? CancellationToken.None;
+                    if (!MajorSymbols.Contains(pos.Symbol))
+                        TryStartPumpMonitor(pos.Symbol, pos.EntryPrice, "RUNTIME_ADOPT", 0d, monTok, "runtime-adopt");
+                    else
+                        TryStartStandardMonitor(pos.Symbol, pos.EntryPrice, pos.IsLong, "TREND", 0m, 0m, monTok, "runtime-adopt");
+                    _orderManager?.RegisterBracket(pos.Symbol);
+
+                    if (_orderLifecycle != null)
+                    {
+                        try
+                        {
+                            bool isMajor = MajorSymbols.Contains(pos.Symbol);
+                            decimal slRoe = isMajor ? (_settings.MajorStopLossRoe > 0 ? -_settings.MajorStopLossRoe : -60m) : -40m;
+                            decimal tpRoe = isMajor ? (_settings.MajorTp2Roe > 0 ? _settings.MajorTp2Roe : 30m) : 25m;
+                            decimal tpPartial = isMajor ? 0.4m : 0.6m;
+                            decimal trailCb = isMajor ? 2.0m : 3.5m;
+                            _orderLifecycle.ResetCooldown(pos.Symbol);
+                            var r = await _orderLifecycle.RegisterOnEntryAsync(
+                                pos.Symbol, pos.IsLong, pos.EntryPrice, Math.Abs(pos.Quantity), (int)lev,
+                                slRoe, tpRoe, tpPartial, trailCb, token);
+                            OnStatusLog?.Invoke($"✅ [런타임재입양] {pos.Symbol} SL/TP 등록 (SL={!string.IsNullOrEmpty(r.SlOrderId)} TP={!string.IsNullOrEmpty(r.TpOrderId)})");
+                        }
+                        catch (Exception rex) { OnStatusLog?.Invoke($"⚠️ [런타임재입양] {pos.Symbol} SL/TP 등록 실패: {rex.Message}"); }
+                    }
+                }
+            }
+            catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [런타임재입양] 오류: {ex.Message}"); }
+        }
+
         // 1. 포지션 현재 상태 스냅샷 동기화 (REST API 활용)
         private async Task SyncCurrentPositionsAsync(CancellationToken token)
         {
@@ -3099,7 +3179,12 @@ namespace TradingBot
                         if (saved)
                         {
                             closedCount++;
-                            OnStatusLog?.Invoke($"🧹 [DB 정리] {dbTrade.Symbol} {side} 외부 청산 감지 → DB 자동 정리 완료 (진입: {dbTrade.EntryTime:yyyy-MM-dd HH:mm})");
+                            // [FIX] reconcile 청산 경로도 30분 재진입 쿨다운 등록 — account-update(6385)·수동청산버튼(12885)만
+                            //   걸던 것을 통일. account-update 를 놓쳐 reconcile 이 외부청산 감지 시 즉시 재진입하던 버그 차단.
+                            _blacklistedSymbols[dbTrade.Symbol] = DateTime.Now.AddMinutes(30);
+                            // ActivePosition 레지스트리도 정리(완전청산 반영)
+                            try { await _dbManager.CloseActivePositionAsync(userId, dbTrade.Symbol); } catch { }
+                            OnStatusLog?.Invoke($"🧹 [DB 정리] {dbTrade.Symbol} {side} 외부 청산 감지 → DB 자동 정리 + 30분 재진입 차단 (진입: {dbTrade.EntryTime:yyyy-MM-dd HH:mm})");
                         }
                         else
                         {
@@ -3272,13 +3357,15 @@ namespace TradingBot
                     try { await Task.Delay(TimeSpan.FromSeconds(5), token); } catch { }
                     OnStatusLog?.Invoke($"🧹 [PHANTOM_CLEAN] 시작 강제 1회 실행 — v5.23.47");
                     try { await CleanupPhantomPositionsAsync(token); } catch { }
+                    try { await AdoptUntrackedExchangePositionsAsync(token); } catch { }  // [FIX] 미추적 거래소 포지션 재입양
 
                     while (!token.IsCancellationRequested)
                     {
                         try
                         {
                             await Task.Delay(TimeSpan.FromMinutes(1), token);
-                            await CleanupPhantomPositionsAsync(token);
+                            await CleanupPhantomPositionsAsync(token);      // 거래소에 없는 메모리 제거
+                            await AdoptUntrackedExchangePositionsAsync(token); // [FIX] 거래소엔 있는데 미추적 → 재입양(표시+SL/TP)
                         }
                         catch (OperationCanceledException) { break; }
                         catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [PHANTOM_CLEAN] 루프 예외: {ex.Message}"); }
@@ -5249,6 +5336,20 @@ namespace TradingBot
             LorentzianGuard.CalcBB(k5, li, 20, 2.0, out double bbMid, out _, out _);
             if (!(bbMid > 0 && c > bbMid)) return;            // BBroom: 종가 > BB 중심선
             if (LorentzianGuard.CalcADX(k5, li, 14) <= 20.0) return; // ADX>20
+
+            // [FIX] 봉크기 횡보필터 (메이저 한정) — SOL 등 메이저가 저변동 횡보에서 -2% 미세노이즈로 진입해
+            //   반전청산 반복(실측 SOL 5m ATR ~0.2%, 24h range 4%)하던 문제. 메이저만 5m ATR%(봉크기) 하한 요구.
+            //   알트는 이미 변동성 충분(백테 MEANREV 흑자)이라 미적용 — 알트 진입을 죽이지 않음.
+            //   ※ --meanrev-folds 는 알트 유니버스라 이 필터 무효과(검증불가) → 메이저 손실 실측 근거의 보수적 게이트, 라이브 카나리로 확인.
+            if (MajorSymbols.Contains(symbol))
+            {
+                double atrPctMr = c > 0 ? LorentzianGuard.CalcATR(k5, li, 14) / c * 100.0 : 0;
+                if (atrPctMr < 0.25)
+                {
+                    OnStatusLog?.Invoke($"⛔ [MEANREV] {symbol} 봉크기 부족(5m ATR {atrPctMr:F3}% < 0.25%) — 저변동 횡보 진입 차단 (메이저 한정)");
+                    return;
+                }
+            }
 
             // [칼날 회피] 1h 종가 > SMA200 (코인 자체 상승추세에서만 — 사용자 제안)
             var k1hRaw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 220, token);

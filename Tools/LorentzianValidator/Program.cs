@@ -15426,9 +15426,11 @@ internal static class Program
         {
             ("MEANREV(기본)", (k,i) => CondMeanRev(k,i,-2.0,true,true)),
             ("노RSI",        (k,i) => CondMeanRev(k,i,-2.0,false,true)),
-            ("노ADX",        (k,i) => CondMeanRev(k,i,-2.0,true,false)),
-            ("Drop3%",       (k,i) => CondMeanRev(k,i,-3.0,true,true)),
-            ("Drop1%",       (k,i) => CondMeanRev(k,i,-1.0,true,true)),
+            // [봉크기 횡보필터] 5m ATR%(봉크기) 하한 — 죽은 저변동 횡보 진입 차단 검증
+            ("+ATR≥0.30%",   (k,i) => CondMeanRev(k,i,-2.0,true,true) && AtrPctAt(k,i) >= 0.30),
+            ("+ATR≥0.45%",   (k,i) => CondMeanRev(k,i,-2.0,true,true) && AtrPctAt(k,i) >= 0.45),
+            ("+ATR≥0.60%",   (k,i) => CondMeanRev(k,i,-2.0,true,true) && AtrPctAt(k,i) >= 0.60),
+            ("노RSI+ATR≥0.45%",(k,i) => CondMeanRev(k,i,-2.0,false,true) && AtrPctAt(k,i) >= 0.45),
         };
 
         // 폴드별·변형별 집계
@@ -15493,6 +15495,15 @@ internal static class Program
             Console.WriteLine($"  -{kv.Key,-12} N={kv.Value.n,4}  WR={100.0*kv.Value.w/kv.Value.n:F1}%");
         Console.WriteLine();
         Console.WriteLine("  [판정] 5개 폴드 전부 WR 60%+ & 건당ROE 양수 = 구간 무관 실엣지. 일부 폴드만 좋으면 우연.");
+    }
+
+    // [봉크기] 5m ATR(14)/종가 % — 봉이 얼마나 큰지(변동성). 저변동 횡보면 작음.
+    private static double AtrPctAt(List<IBinanceKline> kl, int i)
+    {
+        if (i < 14) return 0;
+        decimal atr = AtrAt(kl, i, 14);
+        decimal c = kl[i].ClosePrice;
+        return c > 0 ? (double)(atr / c) * 100.0 : 0;
     }
 
     // MEANREV 조건 (dropPct=하락임계 음수, useRsi/useAdx 토글)
