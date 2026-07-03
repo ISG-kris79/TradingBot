@@ -2709,6 +2709,42 @@ namespace TradingBot
                         }
                     }
 
+                    // [v5.25.12] 신규 진입 텔레그램 — 스냅샷에 '새로 나타난 봇 소유 포지션'을 중복없이 1회 알림.
+                    //   원인: 봇 진입이 ExecuteAutoOrder 체결흐름이 아니라 계좌 ACCOUNT_UPDATE/SYNC 로 먼저 채택되면
+                    //         SendEntrySuccessAlertAsync 가 안 나가 "진입시 알림 없음". 스냅샷 기준 단일지점서 보강.
+                    //   시드: 봇 시작 시 이미 열려있던 포지션은 신규 아님 → 최초 1회는 표시만(알림 X).
+                    //   중복방지: ExecuteAutoOrder 진입은 거기서 _entryAlerted 선점 → 여기선 TryAdd 실패로 재알림 안 함.
+                    try
+                    {
+                        var nowSymbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var synced in syncedPositions)
+                        {
+                            var p = synced.Pos;
+                            if (Math.Abs(p.Quantity) <= 0m) continue;
+                            if (!ownOpenSymbols.Contains(p.Symbol)) continue; // 봇 소유 포지션만
+                            nowSymbols.Add(p.Symbol);
+                            bool firstSeen = _entryAlerted.TryAdd(p.Symbol, 1);
+                            if (firstSeen && _entryAlertSeeded)
+                            {
+                                decimal lev = p.Leverage > 0 ? p.Leverage : _settings.DefaultLeverage;
+                                decimal mgn = lev > 0 ? Math.Abs(p.Quantity) * p.EntryPrice / lev : 0m;
+                                int levUi = (int)Math.Max(1m, Math.Round(lev, MidpointRounding.AwayFromZero));
+                                string msg =
+                                    $"🆕 *[신규 진입]* `{p.Symbol}` {(p.IsLong ? "롱 LONG" : "숏 SHORT")}\n" +
+                                    $"진입가 `{p.EntryPrice:F6}`\n" +
+                                    $"수량 `{Math.Abs(p.Quantity)}` · `{levUi}x` · 증거금 `{mgn:F1}U`\n" +
+                                    $"⏰ {DateTime.Now:MM-dd HH:mm:ss}";
+                                _ = Task.Run(async () => { try { await TelegramService.Instance.SendMessageAsync(msg, TelegramMessageType.Entry); } catch { } });
+                                OnStatusLog?.Invoke($"📨 [ENTRY-ALERT] {p.Symbol} 신규 진입 텔레그램 발송");
+                            }
+                        }
+                        // 청산된 심볼 정리 → 재진입 시 다시 알림
+                        foreach (var k in _entryAlerted.Keys.ToArray())
+                            if (!nowSymbols.Contains(k)) _entryAlerted.TryRemove(k, out _);
+                        _entryAlertSeeded = true;
+                    }
+                    catch { }
+
                     // [v3.5.2] DB에서 포지션 상태 복원 (부분청산/본절/계단식)
                     try
                     {
@@ -4803,6 +4839,11 @@ namespace TradingBot
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _lorentzianLossStreak
             = new(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan LorentzianLossCooldownBase = TimeSpan.FromMinutes(30);
+        // [v5.25.12] 진입 텔레그램 중복없이 1회 발송 추적 — 스냅샷 동기화에 새로 나타난 봇 포지션 감지용.
+        //   봇 진입이 ExecuteAutoOrder 체결흐름이 아니라 계좌 ACCOUNT_UPDATE/SYNC 로 먼저 잡히면 진입알림 누락되던 문제 해결.
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _entryAlerted
+            = new(StringComparer.OrdinalIgnoreCase);
+        private bool _entryAlertSeeded = false; // 봇 시작 시점에 이미 열려있던 포지션은 '신규진입' 알림 제외(시드)
 
         private sealed class LorentzianPendingEntry
         {
@@ -10120,6 +10161,8 @@ namespace TradingBot
                 }
 
                 OnAlert?.Invoke($"🤖 자동 매매 진입: {symbol} [{decision}] | 증거금: {marginUsdt}U");
+                // [v5.25.12] 진입알림 선점 — SendEntrySuccessAlertAsync 로 이미 알렸으니 스냅샷 동기화가 중복발송 안 하게 마킹.
+                _entryAlerted.TryAdd(symbol, 1);
                 _soundService.PlaySuccess();
 
                 // DB 로그 저장
