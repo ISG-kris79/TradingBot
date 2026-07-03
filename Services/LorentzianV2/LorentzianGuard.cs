@@ -112,6 +112,31 @@ namespace TradingBot.Services.LorentzianV2
                 return r;
             }
 
+            // 8.5) [v5.25.11] higher-low 확인 — 눌림 '하락 중'(저점 갱신 중) 진입 차단. 사용자 지시:
+            //   "횡보→상승→눌림목인데 눌림목 내려갈 때 계속 손실" = 데드캣 양봉 바운스마다 롱 → 칼날 잡기.
+            //   원인: 남은 게이트(KNN/커널/DBB/5m양봉)가 하락 중 작은 반등에도 전부 통과 → 바닥 미확인 진입.
+            //   해결: 최근 lookback 창의 스윙저점 이후 '마지막 두 봉의 저점이 모두 그 저점 위'일 때만 진입
+            //         (= higher-low 구조 확인, 방금 신저점/1봉짜리 반등은 차단, 확립된 반등만 통과).
+            //   실측 검산(XRP 7/3): 23:45·00:15 하락중 진입 차단, 01:00 실제 바닥반등은 통과.
+            {
+                const int hlLook = 10;
+                int hlStart = Math.Max(0, idx - hlLook);
+                double swingLow = double.MaxValue;
+                for (int b = hlStart; b <= idx; b++)
+                {
+                    double lo = (double)kl[b].LowPrice;
+                    if (lo < swingLow) swingLow = lo;
+                }
+                double lowNow = (double)kl[idx].LowPrice;
+                double lowPrev = idx >= 1 ? (double)kl[idx - 1].LowPrice : lowNow;
+                // 마지막 두 봉이 모두 스윙저점보다 높게 유지 = 눌림 바닥 확인 후 반등. 아니면(=최근봉이 신저점) 차단.
+                if (!(lowNow > swingLow && lowPrev > swingLow))
+                {
+                    r.BlockReason = $"NO_HIGHER_LOW (저점갱신중 눌림바닥 미확인, swingLow={swingLow:F6} low={lowNow:F6})";
+                    return r;
+                }
+            }
+
             // 9) [v5.24.3] 캔들 형태 진입금지 제거 (사용자 지정 A) — 검증 jdehorty 구성엔 없던 봇 추가 필터.
             //   펌핑 돌파봉은 꼬리가 길어 PREV_LONG_TAIL/BEARISH_REVERSAL에 자주 걸려 상승추세 LCC 진입을 막던 문제.
             //   (반전캔들 '청산'(PositionMonitorService)은 유지 — 진입만 푼다.)

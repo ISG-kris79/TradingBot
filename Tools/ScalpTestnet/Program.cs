@@ -8,7 +8,7 @@ using TradingBot.Scalp;
 
 // ───────────────────────── 인자 파싱 ─────────────────────────
 string symbol = "BTCUSDT", interval = "15m", cfgPath = "appsettings.json";
-decimal margin = 50m; int leverage = 5; bool enter = false, force = false, protectOnly = false, closePos = false, doTelegram = false, doStats = false, doIncome = false, doRaw = false, doBackfill = false; int backfillDays = 3;
+decimal margin = 50m; int leverage = 5; bool enter = false, force = false, protectOnly = false, closePos = false, doTelegram = false, doStats = false, doIncome = false, doRaw = false, doBackfill = false, doRecent = false, doKlines = false; int backfillDays = 3; string sinceKst = "";
 for (int i = 0; i < args.Length; i++)
 {
     string a = args[i];
@@ -30,7 +30,97 @@ for (int i = 0; i < args.Length; i++)
         case "--raw": doRaw = true; break;
         case "--backfill": doBackfill = true; break;
         case "--days": backfillDays = int.Parse(Next()); break;
+        case "--recent": doRecent = true; break;
+        case "--since": sinceKst = Next(); break;
+        case "--klines": doKlines = true; break;
     }
+}
+
+// ───────────────────────── 캔들 구조 검증 (--klines --symbol X --since "KST" --interval 5m) ─────────────────────────
+if (doKlines)
+{
+    using var doc = JsonDocument.Parse(File.ReadAllText(cfgPath));
+    string tk = doc.RootElement.GetProperty("Trading").GetProperty("TestnetApiKey").GetString() ?? "";
+    string tsc = doc.RootElement.GetProperty("Trading").GetProperty("TestnetApiSecret").GetString() ?? "";
+    var cli = new BinanceRestClient(o => { o.ApiCredentials = new ApiCredentials(tk, tsc); o.Environment = BinanceEnvironment.Testnet; });
+    var iv = interval == "15m" ? KlineInterval.FifteenMinutes : interval == "1m" ? KlineInterval.OneMinute : KlineInterval.FiveMinutes;
+    var startKst = DateTime.ParseExact(string.IsNullOrWhiteSpace(sinceKst) ? "2026-07-02 23:30" : sinceKst, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+    var startUtc = startKst.AddHours(-9);
+    var kr = await cli.UsdFuturesApi.ExchangeData.GetKlinesAsync(symbol, iv, startTime: startUtc, endTime: startUtc.AddHours(4), limit: 100);
+    Console.WriteLine($"── {symbol} {interval} 캔들 (KST {startKst:MM-dd HH:mm}부터) ──");
+    Console.WriteLine("   KST시각 | 시가 | 고가 | 저가 | 종가 | 방향 | 변동%");
+    if (kr.Success && kr.Data != null)
+        foreach (var k in kr.Data)
+        {
+            var kkst = k.OpenTime.AddHours(9);
+            decimal chg = k.OpenPrice > 0 ? (k.ClosePrice - k.OpenPrice) / k.OpenPrice * 100 : 0;
+            string dir = k.ClosePrice >= k.OpenPrice ? "양" : "음";
+            Console.WriteLine($"   {kkst:MM-dd HH:mm} | {k.OpenPrice} | {k.HighPrice} | {k.LowPrice} | {k.ClosePrice} | {dir} | {chg:F2}%");
+        }
+    else Console.WriteLine("   조회 실패: " + kr.Error?.Message);
+    return;
+}
+
+// ───────────────────────── 특정 시점 이후 청산 조회 (--recent --since "yyyy-MM-dd HH:mm" KST) ─────────────────────────
+if (doRecent)
+{
+    using var doc = JsonDocument.Parse(File.ReadAllText(cfgPath));
+    var csn = doc.RootElement.GetProperty("ConnectionStrings");
+    string conn2 = csn.GetProperty("DefaultConnection").GetString() ?? "";
+    if (csn.TryGetProperty("IsEncrypted", out var e2) && e2.GetBoolean())
+        conn2 = TradingBot.Shared.Services.SecurityService.DecryptString(conn2);
+    using var db = new Microsoft.Data.SqlClient.SqlConnection(conn2);
+    db.Open();
+
+    string kst = string.IsNullOrWhiteSpace(sinceKst) ? "2026-07-02 20:00" : sinceKst;
+    Console.WriteLine($"── 기준 시각(KST): {kst} 이후 청산 ──");
+
+    void Dump(string title, string sql)
+    {
+        Console.WriteLine($"\n── {title} ──");
+        try
+        {
+            using var cmd = db.CreateCommand(); cmd.CommandText = sql;
+            var p = cmd.CreateParameter(); p.ParameterName = "@kst"; p.Value = kst; cmd.Parameters.Add(p);
+            using var rd = cmd.ExecuteReader();
+            var cols = Enumerable.Range(0, rd.FieldCount).Select(rd.GetName).ToArray();
+            Console.WriteLine("   " + string.Join(" | ", cols));
+            int n = 0;
+            while (rd.Read() && n++ < 100)
+                Console.WriteLine("   " + string.Join(" | ", Enumerable.Range(0, rd.FieldCount).Select(i => rd.IsDBNull(i) ? "" : rd.GetValue(i)!.ToString())));
+        }
+        catch (Exception ex) { Console.WriteLine("   (오류) " + ex.Message); }
+    }
+
+    // BPH: CloseTime 은 UTC → KST 기준 비교 위해 +9h. 표시도 KST 로.
+    Dump("BinancePositionHistory (KST 기준 이후, 청산순)", @"
+SELECT UserId, Symbol, PositionSide AS Side,
+       FORMAT(DATEADD(hour,9,OpenTime),'MM-dd HH:mm') AS Open_KST,
+       FORMAT(DATEADD(hour,9,CloseTime),'MM-dd HH:mm') AS Close_KST,
+       CAST(NetPnl AS DECIMAL(18,2)) AS NetPnl, CAST(RoePct AS DECIMAL(10,1)) AS RoePct, Category
+FROM dbo.BinancePositionHistory
+WHERE DATEADD(hour,9,CloseTime) >= CONVERT(datetime,@kst)
+ORDER BY CloseTime DESC");
+
+    Dump("BPH 합계 (KST 기준 이후)", @"
+SELECT UserId, COUNT(*) AS Cnt,
+       SUM(CASE WHEN NetPnl>0 THEN 1 ELSE 0 END) AS Wins,
+       SUM(CASE WHEN NetPnl<0 THEN 1 ELSE 0 END) AS Losses,
+       CAST(SUM(NetPnl) AS DECIMAL(18,2)) AS SumNetPnl
+FROM dbo.BinancePositionHistory
+WHERE DATEADD(hour,9,CloseTime) >= CONVERT(datetime,@kst)
+GROUP BY UserId");
+
+    // TradeHistory: ExitTime 은 KST(로컬) 로 저장돼 있으므로 그대로 비교.
+    Dump("TradeHistory (ExitTime 기준 이후, 청산순)", @"
+SELECT TOP 100 Id, Symbol, Side,
+       FORMAT(ExitTime,'MM-dd HH:mm') AS Exit_KST,
+       CAST(PnL AS DECIMAL(18,2)) AS PnL, CAST(PnLPercent AS DECIMAL(10,1)) AS Roe,
+       ExitReason, UserId, Strategy, IsSimulation
+FROM dbo.TradeHistory
+WHERE ExitTime >= CONVERT(datetime,@kst) AND IsClosed=1
+ORDER BY ExitTime DESC");
+    return;
 }
 
 // ───────────────────────── BPH 백필 (--backfill) — 실제 봇 sync 로직 재사용 ─────────────────────────
