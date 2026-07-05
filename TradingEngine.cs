@@ -834,6 +834,15 @@ namespace TradingBot
                 _manualCloseCooldown.TryRemove(symbol, out _);
             }
 
+            // [v5.25.17] 손절 재진입 쿨다운 — 손실 청산 후 60분(연속손실 시 120/180분) 재진입 차단(사용자 지시: "손절시 1시간 진입불가").
+            //   전략무관(MEANREV/RSI2/LORENTZIAN/펜딩 전부) — 모든 진입이 이 게이트를 통과. 등록은 OnPositionClosedForAiLabel.
+            if (_lorentzianLossCooldown.TryGetValue(symbol, out var lossUntil) && DateTime.UtcNow < lossUntil)
+            {
+                blockReason = $"STOPLOSS_COOLDOWN:{(lossUntil - DateTime.UtcNow).TotalMinutes:F0}m";
+                OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (손절 후 재진입 금지)");
+                return false;
+            }
+
             // 메이저 코인 진입 비활성화 (UI: chkEnableMajorTrading)
             // [v5.19.3] _settings null 시 안전 차단 — 설정 미로드 상태에서 메이저 진입 방지
             // [v5.23.63] 우회 버그 fix — 기존: MajorSymbols.Contains(symbol) (AppConfig.Trading.Symbols 동적, 사용자가 메이저 제외 시 false)
@@ -2107,14 +2116,15 @@ namespace TradingBot
             {
                 _ = HandleAiCloseLabelingAsync(symbol, entryTime, entryPrice, isLong, actualProfitPct, closeReason);
 
-                // [v5.25.11] LORENTZIAN 손절 재진입 쿨다운 — 손실 청산이면 연속손실 가중 쿨다운, 이익이면 리셋.
+                // [v5.25.11] 손절 재진입 쿨다운 등록 — 손실 청산이면 연속손실 가중 쿨다운, 이익이면 리셋.
                 //   눌림 하락 중 같은 종목을 데드캣 바운스마다 반복 재롱하는 출혈 차단(사용자 지시).
+                // [v5.25.17] 손절시 1시간 진입불가 — base 60분(연속손실 60/120/180). 실제 진입차단은 IsEntryAllowedCore 가 전략무관으로 담당.
                 if (actualProfitPct < 0m)
                 {
                     int streak = _lorentzianLossStreak.AddOrUpdate(symbol, 1, (_, v) => Math.Min(v + 1, 3));
-                    var cd = TimeSpan.FromTicks(LorentzianLossCooldownBase.Ticks * streak); // 30/60/90분
+                    var cd = TimeSpan.FromTicks(LorentzianLossCooldownBase.Ticks * streak); // 60/120/180분
                     _lorentzianLossCooldown[symbol] = DateTime.UtcNow.Add(cd);
-                    OnStatusLog?.Invoke($"⏳ [LORENTZIAN] {symbol} 손절 재진입 쿨다운 {cd.TotalMinutes:F0}분 (연속손실 {streak}회, {actualProfitPct:F2}%)");
+                    OnStatusLog?.Invoke($"⏳ [손절쿨다운] {symbol} 손절 재진입 {cd.TotalMinutes:F0}분 차단 (연속손실 {streak}회, {actualProfitPct:F2}%)");
                 }
                 else if (actualProfitPct > 0m)
                 {
@@ -4981,13 +4991,14 @@ namespace TradingBot
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lorentzianCooldown
             = new(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan LorentzianCooldown = TimeSpan.FromMinutes(15);
-        // [v5.25.11] 손절 후 재진입 쿨다운 — 같은 종목 손실 청산 시 30분 재롱 금지(연속손실 시 가중, 승리 시 리셋).
+        // [v5.25.11] 손절 후 재진입 쿨다운 — 같은 종목 손실 청산 시 재진입 금지(연속손실 시 가중, 승리 시 리셋).
         //   원인: 눌림 하락 중 데드캣 바운스마다 재진입(XRP 25~30분 간격 4연속 손실) → 기존 5분 flat 쿨다운으론 못 막음.
+        // [v5.25.17] 손절시 1시간 진입불가(사용자 지시) — base 30→60분. 전략무관: IsEntryAllowedCore 에서 체크(MEANREV/RSI2/LORENTZIAN 전부).
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lorentzianLossCooldown
             = new(StringComparer.OrdinalIgnoreCase);
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _lorentzianLossStreak
             = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly TimeSpan LorentzianLossCooldownBase = TimeSpan.FromMinutes(30);
+        private static readonly TimeSpan LorentzianLossCooldownBase = TimeSpan.FromMinutes(60); // [v5.25.17] 손절 1시간 (연속손실 시 60/120/180분 가중)
         // [v5.25.12] 진입 텔레그램 중복없이 1회 발송 추적 — 스냅샷 동기화에 새로 나타난 봇 포지션 감지용.
         //   봇 진입이 ExecuteAutoOrder 체결흐름이 아니라 계좌 ACCOUNT_UPDATE/SYNC 로 먼저 잡히면 진입알림 누락되던 문제 해결.
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _entryAlerted
@@ -5165,12 +5176,7 @@ namespace TradingBot
             if (!IsEntryAllowed(symbol, "LORENTZIAN", out _)) return;
             if (_lorentzianCooldown.TryGetValue(symbol, out var lastEntry)
                 && DateTime.UtcNow - lastEntry < LorentzianCooldown) return;
-            // [v5.25.11] 손절 재진입 쿨다운 — 손실 청산 후 30/60/90분 재롱 금지(연속손실 가중). 데드캣 반복매수 차단.
-            if (_lorentzianLossCooldown.TryGetValue(symbol, out var lossUntil) && DateTime.UtcNow < lossUntil)
-            {
-                OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 손절 쿨다운 중 ({(lossUntil - DateTime.UtcNow).TotalMinutes:F0}분 남음) → 재진입 차단");
-                return;
-            }
+            // [v5.25.17] 손절 재진입 쿨다운 체크는 IsEntryAllowedCore(STOPLOSS_COOLDOWN)로 이동 — 전략무관 일원화.
             // [v5.24.5] 이미 5m 확인 대기(펜딩) 중이면 재평가 스킵 — 확인은 CheckLorentzianPendingEntriesAsync가 담당.
             if (_lorentzianPendingEntries.ContainsKey(symbol)) return;
 

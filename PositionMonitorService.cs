@@ -1665,12 +1665,19 @@ namespace TradingBot.Services
         // [v5.23.96] 반전 캔들 조기청산 (사용자 지정) — 같은 봉 중복발동 방지.
         private readonly Dictionary<string, DateTime> _lastReversalExitBar = new();
 
-        // 음봉+작은몸통+긴꼬리(반전·소진) 5분봉 마감 시 즉시 청산 — 익절/손절 무관, -75% backstop 기다리지 않고
-        //   추세 꺾임에서 빠르게 빠져 -117% 같은 큰 손실(꼬리)을 차단. (사용자 지정 규칙)
+        // [v5.25.17] 반전캔들 청산은 '수익 보호' 전용으로 제한 — 이 ROE% 미만이면 발동 안 함.
+        //   원인: 본전 근처(ROE ~0%)에서 5m 노이즈 음봉마다 즉시청산 → 수수료+슬리피지(왕복 ~2% ROE)로만 지는 처닝.
+        //   7/4 89% 손실 주범(반전캔들 청산이 ROE -0~-3%에 몰려 전부 fee-loss). 하락 손절은 위 -StopLossRoe backstop + ATR스탑이 담당.
+        private const decimal ReversalExitMinProfitRoe = 8.0m;
+
+        // 음봉+작은몸통+긴꼬리(반전·소진) 5분봉 마감 시 청산 — 수익구간(ROE>=ReversalExitMinProfitRoe)에서만 발동.
+        //   추세 꺾임에서 이익을 지키고, 손실 방어는 하드 SL/backstop 에 위임(fee-bleed 처닝 차단). (v5.23.96 → v5.25.17 수익전용化)
         private async Task<bool> TryReversalCandleExitAsync(string symbol, decimal currentROE, CancellationToken token)
         {
             try
             {
+                // [v5.25.17] fee-bleed 밴드 스킵 — 본전~소폭손실 구간의 노이즈 반전캔들은 청산 안 함(수수료로만 지는 처닝 방지).
+                if (currentROE < ReversalExitMinProfitRoe) return false;
                 if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var candles) || candles.Count < 3)
                     return false;
                 IBinanceKline closed;

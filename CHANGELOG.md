@@ -5,6 +5,13 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.25.17] - 2026-07-05
+
+### 🩹 Fixed — 과매매/fee-bleed 손절 폭증 대응 (3일 진단 근거)
+진단: BPH 기준 승률 7/2 50% → 7/3 34.8% → **7/4 11.4%(-$279)** 로 급락. 청산의 거의 전부가 하드손절이 아니라 **`반전캔들 조기청산`이 ROE -0~-3% 노이즈 밴드에서 발동**한 것 = 수수료+슬리피지(왕복 ~$6.5 ≈ 2% ROE)로만 지는 처닝. 35거래×$6.5 ≈ 어제 손실의 ~80%가 순수 마찰비용. 같은 종목(ETH/BTC) 30분 간격 재진입이 이를 증폭.
+- **손절 재진입 쿨다운 30→60분 + 전략무관 일원화**: `_lorentzianLossCooldown` 체크를 `IsEntryAllowedCore`(`STOPLOSS_COOLDOWN`)로 이동 — 이제 MEANREV/RSI2/LORENTZIAN/펜딩 **모든 진입**이 손절 종목을 60분(연속손실 60/120/180) 재진입 차단. 기존엔 LORENTZIAN 진입에서만 체크돼 MEANREV 재진입이 안 막히던 gap. (사용자 지시: "손절시 1시간 진입불가")
+- **반전캔들 조기청산 = 수익 보호 전용化**: `TryReversalCandleExitAsync`가 ROE ≥ 8%(`ReversalExitMinProfitRoe`)일 때만 발동. 본전~소폭손실 노이즈 밴드에서 5m 음봉마다 잘리던 fee-bleed 차단. 하락 손절은 -StopLossRoe 절대 backstop(항상 발동, v5.24.x 수정 완료) + ATR 스탑이 담당하므로 방어 유지.
+
 ## [5.25.16] - 2026-07-03
 
 ### 🩹 Fixed — desync/재진입/횡보 3종 (순차 적용)
