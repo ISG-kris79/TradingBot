@@ -1846,12 +1846,17 @@ namespace TradingBot
             // [v5.23.64] 심볼 자가학습 스코어카드 — 30일 실거래 기반 사이즈 multiplier
             //   캐시 미준비 시 1.0x 폴백 (진입 막지 않음). DB 조회 1h 주기.
             Services.SymbolScorecard.Instance.OnLog += msg => OnStatusLog?.Invoke(msg);
+            // [v5.25.18] 전략×레짐 자가학습 스코어카드 — 동일 배선(1h 주기, 1.0x 폴백)
+            Services.StrategyRegimeScorecard.Instance.OnLog += msg => OnStatusLog?.Invoke(msg);
             try
             {
                 int uid = AppConfig.CurrentUser?.Id ?? throw new InvalidOperationException("UserId 미설정 — 로그인 후 호출되어야 함");
                 string? cs = AppConfig.Current?.ConnectionStrings?.DefaultConnection;
                 if (uid > 0 && !string.IsNullOrEmpty(cs))
+                {
                     Services.SymbolScorecard.Instance.Start(cs, uid);
+                    Services.StrategyRegimeScorecard.Instance.Start(cs, uid);
+                }
             }
             catch { /* 시작 실패해도 봇 부팅은 계속 — multiplier 1.0 폴백 */ }
 
@@ -5763,6 +5768,39 @@ namespace TradingBot
         }
 
 
+
+        // [v5.25.18] 전략×레짐 자가학습 스코어카드 — 진입 시 BTC 1h 레짐 판정.
+        //   BTC 5m 캐시 13봉(=1h) 변동률로 UP/DOWN/RANGE 3버킷. 기존 BTC_1H_DOWNTREND(-0.5%)와 임계 일치.
+        //   캐시 부족 시 "" (미상) — 스코어카드가 미상은 집계에서 제외.
+        public string GetCurrentBtcRegime()
+        {
+            try
+            {
+                if (_marketDataManager == null) return string.Empty;
+                if (!_marketDataManager.KlineCache.TryGetValue("BTCUSDT", out var btcKlines) || btcKlines.Count < 13)
+                    return string.Empty;
+                List<Binance.Net.Interfaces.IBinanceKline> recent;
+                lock (btcKlines) { recent = btcKlines.TakeLast(13).ToList(); }
+                if (recent.Count < 12) return string.Empty;
+                decimal ago = recent[0].ClosePrice, now = recent[^1].ClosePrice;
+                if (ago <= 0) return string.Empty;
+                decimal chgPct = (now - ago) / ago * 100m;
+                if (chgPct >= 0.5m) return "UP";
+                if (chgPct <= -0.5m) return "DOWN";
+                return "RANGE";
+            }
+            catch { return string.Empty; }
+        }
+
+        // [v5.25.18] 진입 소스 문자열 → 전략 정규화 (스코어카드 집계 키). ROUTE: 접두어/대소문자 무관.
+        public static string NormalizeStrategyKey(string? signalSource)
+        {
+            string s = (signalSource ?? string.Empty).ToUpperInvariant();
+            if (s.Contains("MEANREV")) return "MEANREV";
+            if (s.Contains("RSI2")) return "RSI2";
+            if (s.Contains("LORENTZIAN") || s.Contains("LCC")) return "LORENTZIAN";
+            return "OTHER";
+        }
 
         private async Task<decimal> GetAdaptiveEntryMarginUsdtAsync(CancellationToken token, decimal overrideBaseMargin = 0)
         {
@@ -9830,6 +9868,19 @@ namespace TradingBot
                 decimal positionSizeMultiplier = 1.0m;
                 decimal effectiveSizeMultiplier = Math.Clamp(ctx.SizeMultiplier, 0.10m, 2.00m);
 
+                // [v5.25.18] 전략×레짐 자가학습 사이즈 배수 — 현 BTC레짐에서 이 전략의 최근 30일 성과로 비중 가감(0.5/1.0/1.5x).
+                //   미준비/표본부족/레짐미상 → 1.0x(무영향). SymbolScorecard(심볼별)와 직교 — 둘 다 사이즈 조절만.
+                {
+                    string srRegime = GetCurrentBtcRegime();
+                    string srStrat = NormalizeStrategyKey(ctx.SignalSource);
+                    decimal srMul = Services.StrategyRegimeScorecard.Instance.GetMultiplier(srStrat, srRegime);
+                    if (srMul != 1.0m)
+                    {
+                        effectiveSizeMultiplier = Math.Clamp(effectiveSizeMultiplier * srMul, 0.10m, 2.00m);
+                        OnStatusLog?.Invoke($"🧭 [StratRegime] {symbol} {srStrat}×{srRegime} 사이즈 x{srMul:F2} → 배수 {effectiveSizeMultiplier:F2}");
+                    }
+                }
+
                 // [v4.5.5] 알트 불장 모드: 레버리지 50% 하향 + 사이즈 70%
                 if (_altBullDetector.IsActive)
                 {
@@ -9985,7 +10036,10 @@ namespace TradingBot
                             TakeProfit = ctx.CustomTakeProfitPrice > 0 ? ctx.CustomTakeProfitPrice : 0,
                             StopLoss = ctx.CustomStopLossPrice > 0 ? ctx.CustomStopLossPrice : 0,
                             IsVolatilityRecovery = ctx.IsVolatilityRecovery,
-                            RecoveryExtremePrice = ctx.RecoveryExtremePrice
+                            RecoveryExtremePrice = ctx.RecoveryExtremePrice,
+                            // [v5.25.18] 전략×레짐 자가학습 스코어카드 — 진입 시점 소스/레짐 캡처.
+                            EntrySignalSource = ctx.SignalSource,
+                            EntryRegime = GetCurrentBtcRegime()
                         };
                     }
                 }

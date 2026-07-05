@@ -173,6 +173,7 @@ namespace TradingBot.Services
                 _ = EnsureOpenTimeIndexesAsync();
                 _ = EnsureTradeHistoryUserIndexAsync();
                 _ = EnsureActivePositionTableAsync();
+                _ = EnsureStrategyRegimeOutcomeTableAsync();
                 _ = TradingBot.DbProcedures.EnsureAllAsync(connectionString);
             }
         }
@@ -584,6 +585,73 @@ END", commandTimeout: 30);
             catch (Exception ex)
             {
                 MainWindow.Instance?.AddLog($"⚠️ [DB] ActivePosition 테이블 생성 실패: {ex.Message}");
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // [v5.25.18] 전략×레짐 자가학습 스코어카드 — 청산결과 기록 테이블
+        //   봇 청산 1건당 1행. 전략(MEANREV/RSI2/LORENTZIAN) × 진입시점 BTC레짐(UP/DOWN/RANGE) × NetPnl.
+        //   SymbolScorecard(TradeHistory.Strategy 오염 문제)와 달리 진입라벨을 청산시점에 깨끗이 1회 기록.
+        // ═══════════════════════════════════════════════════════════════════
+        public async Task EnsureStrategyRegimeOutcomeTableAsync()
+        {
+            try
+            {
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await db.ExecuteAsync(@"
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'StrategyRegimeOutcome' AND schema_id = SCHEMA_ID('dbo'))
+BEGIN
+    CREATE TABLE dbo.StrategyRegimeOutcome (
+        Id        BIGINT         IDENTITY(1,1) PRIMARY KEY,
+        UserId    INT            NOT NULL,
+        Symbol    NVARCHAR(20)   NOT NULL,
+        Strategy  NVARCHAR(20)   NOT NULL,
+        Regime    NVARCHAR(8)    NOT NULL,
+        NetPnl    DECIMAL(28,10) NOT NULL DEFAULT 0,
+        IsWin     BIT            NOT NULL DEFAULT 0,
+        EntryTime DATETIME2      NULL,
+        ExitTime  DATETIME2      NOT NULL DEFAULT SYSUTCDATETIME(),
+        CreatedAt DATETIME2      NOT NULL DEFAULT SYSUTCDATETIME()
+    );
+    CREATE INDEX IX_SRO_User_Exit ON dbo.StrategyRegimeOutcome (UserId, ExitTime);
+END", commandTimeout: 30);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] StrategyRegimeOutcome 테이블 생성 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>[v5.25.18] 봇 청산 1건 기록 — 전략×레짐 스코어카드 학습 데이터. 실패해도 청산흐름 막지 않음(best-effort).
+        /// strategy/regime 빈값이면(재시작 복원분 등) 스킵.</summary>
+        public async Task RecordStrategyOutcomeAsync(int userId, string symbol, string? strategy, string? regime,
+            decimal netPnl, DateTime? entryTime, DateTime exitTime)
+        {
+            try
+            {
+                if (userId <= 0 || string.IsNullOrWhiteSpace(strategy) || string.IsNullOrWhiteSpace(regime)) return;
+                if (string.Equals(strategy, "OTHER", StringComparison.OrdinalIgnoreCase)) return; // 집계 대상 전략만
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                await db.ExecuteAsync(@"
+INSERT INTO dbo.StrategyRegimeOutcome (UserId,Symbol,Strategy,Regime,NetPnl,IsWin,EntryTime,ExitTime)
+VALUES (@UserId,@Symbol,@Strategy,@Regime,@NetPnl,@IsWin,@EntryTime,@ExitTime);",
+                    new
+                    {
+                        UserId = userId,
+                        Symbol = symbol,
+                        Strategy = strategy,
+                        Regime = regime,
+                        NetPnl = netPnl,
+                        IsWin = netPnl > 0m,
+                        EntryTime = entryTime,
+                        ExitTime = exitTime
+                    }, commandTimeout: 8);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] StrategyRegimeOutcome 기록 실패({symbol}): {ex.Message}");
             }
         }
 

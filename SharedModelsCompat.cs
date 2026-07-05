@@ -89,5 +89,7 @@ namespace TradingBot.Shared.Models
         public bool IsOwnPosition { get; set; } = true;
         /// <summary>[v5.22.24] 진입 시점의 signalSource — 카테고리별 슬롯 카운트용</summary>
         public string EntrySignalSource { get; set; } = string.Empty;
+        /// <summary>[v5.25.18] 진입 시점의 BTC 1h 레짐(UP/DOWN/RANGE) — 전략×레짐 자가학습 스코어카드용. 재시작 복원분은 빈값.</summary>
+        public string EntryRegime { get; set; } = string.Empty;
     }
 }

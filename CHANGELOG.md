@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.25.18] - 2026-07-05
+
+### ✨ Added — 전략×레짐 자가선택기 (Walk-Forward 적응, 사용자 요청 B안)
+프레임워크 대조 결과 신호·필터층은 갖췄으나 "레짐 변화 대응"이 없던 gap 보완. 라이브 결과 기반(백테불신 회피)으로 "지금 장(BTC 1h 레짐)에서 어떤 전략이 먹히는지"를 롤링 재평가해 진입 사이즈를 자동 가감.
+- **StrategyRegimeOutcome 테이블 신설**: 봇 청산 1건당 전략(MEANREV/RSI2/LORENTZIAN)×진입시점 BTC레짐(UP/DOWN/RANGE)×NetPnl을 청산시점에 깨끗이 1회 기록. 기존 `TradeHistory.Strategy`가 추적 오라벨(ACCOUNT_UPDATE_RESTORED 등)로 오염돼 전략별 집계 불가하던 문제를 전용 테이블로 우회.
+- **StrategyRegimeScorecard 서비스**: `SymbolScorecard` 자매. 최근 30일 셀별 승률/PnL(n≥5) → 사이즈 배수. WR≥65%&PnL≥0 → 1.5x, WR≤35%&PnL<0 → 0.5x, 그 외 1.0x. **가중만(완전차단 없음, 사용자 결정)**, 마진·레버·롱숏 규칙 불변, 미준비/표본부족 → 1.0x 폴백.
+- **진입 캡처/사이징 배선**: 진입 시 `EntrySignalSource`+`EntryRegime`(BTC 5m×13봉 ±0.5%) 캡처, 메인 사이징 경로에 전략×레짐 배수 적용. (겸사겸사 안 채워지던 `PositionInfo.EntrySignalSource` 세팅 버그도 수정.)
+- **효과 지연**: 셀당 n≥5(30일) 축적 필요 → 배포 후 1~2주간 전량 1.0x(행동변화 0), 이후 적응 발동. best-effort 기록(실패해도 청산/진입 안 막음).
+
 ## [5.25.17] - 2026-07-05
 
 ### 🩹 Fixed — 과매매/fee-bleed 손절 폭증 대응 (3일 진단 근거)
