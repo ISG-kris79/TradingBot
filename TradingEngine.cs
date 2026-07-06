@@ -5371,12 +5371,22 @@ namespace TradingBot
                 if ((double)k1h[h].ClosePrice <= CalcSmaClose(k1h, h, 200)) return;
             }
 
+            // [v5.25.20] #1 반등 확인 — 눌림 매수 시 '첫 칼날' 방지(사용자 지시: "너무 빨리 진입").
+            //   차단이 아니라 진입 '지점'을 개선: 마지막 마감 5m봉이 양봉(반등 시작)이고 현재가가 그 시가를 지킬 때만 진입.
+            //   하락 중(음봉)엔 진입 보류 → 다음 5m 반등 마감까지 대기(눌림 vs 칼날 구분). LCC 5m 확인과 동일 철학.
+            if (!(k5[li].ClosePrice > k5[li].OpenPrice && currentPrice >= k5[li].OpenPrice))
+            {
+                if (DateTime.UtcNow.Second % 20 == 0)
+                    OnStatusLog?.Invoke($"⏸️ [MEANREV] {symbol} 눌림 감지·5m 반등 미확인(O={k5[li].OpenPrice:F6} C={k5[li].ClosePrice:F6}) → 반등 마감 대기(칼날 회피)");
+                return;
+            }
+
             // 1.5 ATR(5m) 손절 (검증 청산구조 근사)
             double atr5 = LorentzianGuard.CalcATR(k5, li, 14);
             decimal slPrice = atr5 > 0 ? currentPrice - 1.5m * (decimal)atr5 : currentPrice * 0.97m;
 
             _meanRevCooldown[symbol] = DateTime.UtcNow;
-            OnStatusLog?.Invoke($"🟢 [MEANREV] {symbol} 진입 | 역추세 눌림반등 (1h -2%↓ + BB중심위 + ADX>20 + 1h>SMA200) | SL=1.5ATR({slPrice:F6})");
+            OnStatusLog?.Invoke($"🟢 [MEANREV] {symbol} 진입 | 역추세 눌림반등 (1h -2%↓ + BB중심위 + ADX>20 + 1h>SMA200 + 5m반등확인) | SL=1.5ATR({slPrice:F6})");
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "MEANREV",
                 customStopLossPrice: slPrice, skipAiGateCheck: true);
         }
