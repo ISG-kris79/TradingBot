@@ -10052,9 +10052,11 @@ namespace TradingBot
                 {
                     try
                     {
+                        // [v5.25.19] 진입 레짐을 레지스트리에 영속화 — 청산 시 CompleteTradeAsync가 전략×레짐 스코어카드 기록에 사용.
+                        string apRegime = GetCurrentBtcRegime();
                         bool opened = await _dbManager.TryOpenActivePositionAsync(
                             apUserId, symbol, decision == "LONG" ? "LONG" : "SHORT",
-                            ctx.CurrentPrice, 0m, leverage, ctx.SignalSource);
+                            ctx.CurrentPrice, 0m, leverage, ctx.SignalSource, apRegime);
                         if (!opened)
                         {
                             // 거래소는 비어있는데 표에 행 존재 = 이전 청산의 DELETE 누락(stale) → 정리 후 재등록.
@@ -10062,7 +10064,7 @@ namespace TradingBot
                             await _dbManager.CloseActivePositionAsync(apUserId, symbol);
                             await _dbManager.TryOpenActivePositionAsync(
                                 apUserId, symbol, decision == "LONG" ? "LONG" : "SHORT",
-                                ctx.CurrentPrice, 0m, leverage, ctx.SignalSource);
+                                ctx.CurrentPrice, 0m, leverage, ctx.SignalSource, apRegime);
                         }
                     }
                     catch (Exception exApReg)

@@ -576,11 +576,15 @@ BEGIN
         Quantity      DECIMAL(28,10) NOT NULL DEFAULT 0,
         Leverage      INT            NOT NULL DEFAULT 0,
         SignalSource  NVARCHAR(40)   NULL,
+        RegimeAtEntry NVARCHAR(8)    NULL,
         EntryTime     DATETIME2      NOT NULL DEFAULT SYSUTCDATETIME(),
         UpdatedAt     DATETIME2      NOT NULL DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_ActivePosition PRIMARY KEY (UserId, Symbol)
     );
-END", commandTimeout: 30);
+END
+-- [v5.25.19] 기존 테이블 마이그레이션 — RegimeAtEntry 컬럼(전략×레짐 스코어카드용)
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.ActivePosition') AND name='RegimeAtEntry')
+    ALTER TABLE dbo.ActivePosition ADD RegimeAtEntry NVARCHAR(8) NULL;", commandTimeout: 30);
             }
             catch (Exception ex)
             {
@@ -625,12 +629,13 @@ END", commandTimeout: 30);
 
         /// <summary>[v5.25.18] 봇 청산 1건 기록 — 전략×레짐 스코어카드 학습 데이터. 실패해도 청산흐름 막지 않음(best-effort).
         /// strategy/regime 빈값이면(재시작 복원분 등) 스킵.</summary>
-        public async Task RecordStrategyOutcomeAsync(int userId, string symbol, string? strategy, string? regime,
+        public async Task RecordStrategyOutcomeAsync(int userId, string? symbol, string? strategy, string? regime,
             decimal netPnl, DateTime? entryTime, DateTime exitTime)
         {
             try
             {
-                if (userId <= 0 || string.IsNullOrWhiteSpace(strategy) || string.IsNullOrWhiteSpace(regime)) return;
+                if (userId <= 0 || string.IsNullOrWhiteSpace(symbol)
+                    || string.IsNullOrWhiteSpace(strategy) || string.IsNullOrWhiteSpace(regime)) return;
                 if (string.Equals(strategy, "OTHER", StringComparison.OrdinalIgnoreCase)) return; // 집계 대상 전략만
                 await using var db = new SqlConnection(_connectionString);
                 await db.OpenAsync();
@@ -655,9 +660,33 @@ VALUES (@UserId,@Symbol,@Strategy,@Regime,@NetPnl,@IsWin,@EntryTime,@ExitTime);"
             }
         }
 
+        /// <summary>[v5.25.19] 청산 시 ActivePosition 레지스트리에서 진입 전략(정규화)+레짐 조회. 행 없으면 (null,null).
+        /// 레지스트리는 모든 진입에 SignalSource를 기록하므로 오염된 TradeHistory.Strategy보다 신뢰성 높음.</summary>
+        private async Task<(string? strategy, string? regime)> ReadEntryStrategyRegimeAsync(int userId, string? symbol)
+        {
+            try
+            {
+                if (userId <= 0 || string.IsNullOrWhiteSpace(symbol)) return (null, null);
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                var row = await db.QueryFirstOrDefaultAsync(
+                    "SELECT SignalSource, RegimeAtEntry FROM dbo.ActivePosition WHERE UserId=@UserId AND Symbol=@Symbol",
+                    new { UserId = userId, Symbol = symbol });
+                if (row == null) return (null, null);
+                string s = ((string?)row.SignalSource ?? string.Empty).ToUpperInvariant();
+                string regime = (string?)row.RegimeAtEntry ?? string.Empty;
+                string strat = s.Contains("MEANREV") ? "MEANREV"
+                             : s.Contains("RSI2") ? "RSI2"
+                             : (s.Contains("LORENTZIAN") || s.Contains("LCC")) ? "LORENTZIAN"
+                             : "OTHER";
+                return (strat, regime);
+            }
+            catch { return (null, null); }
+        }
+
         /// <summary>진입 시 원자적 등록. 이미 (UserId,Symbol) 행이 있으면 false(=중복 → 진입 차단). DB실패 시 true(가용성).</summary>
         public async Task<bool> TryOpenActivePositionAsync(int userId, string symbol, string positionSide,
-            decimal entryPrice, decimal quantity, int leverage, string? signalSource)
+            decimal entryPrice, decimal quantity, int leverage, string? signalSource, string? regimeAtEntry = null)
         {
             try
             {
@@ -665,10 +694,10 @@ VALUES (@UserId,@Symbol,@Strategy,@Regime,@NetPnl,@IsWin,@EntryTime,@ExitTime);"
                 await db.OpenAsync();
                 int rows = await db.ExecuteAsync(@"
 IF NOT EXISTS (SELECT 1 FROM dbo.ActivePosition WITH (UPDLOCK, HOLDLOCK) WHERE UserId=@UserId AND Symbol=@Symbol)
-INSERT INTO dbo.ActivePosition (UserId,Symbol,PositionSide,EntryPrice,Quantity,Leverage,SignalSource,EntryTime,UpdatedAt)
-VALUES (@UserId,@Symbol,@PositionSide,@EntryPrice,@Quantity,@Leverage,@SignalSource,SYSUTCDATETIME(),SYSUTCDATETIME());",
+INSERT INTO dbo.ActivePosition (UserId,Symbol,PositionSide,EntryPrice,Quantity,Leverage,SignalSource,RegimeAtEntry,EntryTime,UpdatedAt)
+VALUES (@UserId,@Symbol,@PositionSide,@EntryPrice,@Quantity,@Leverage,@SignalSource,@RegimeAtEntry,SYSUTCDATETIME(),SYSUTCDATETIME());",
                     new { UserId = userId, Symbol = symbol, PositionSide = positionSide, EntryPrice = entryPrice,
-                          Quantity = quantity, Leverage = leverage, SignalSource = signalSource }, commandTimeout: 8);
+                          Quantity = quantity, Leverage = leverage, SignalSource = signalSource, RegimeAtEntry = regimeAtEntry }, commandTimeout: 8);
                 return rows > 0;   // 0 = 이미 존재(중복)
             }
             catch (SqlException sqlEx) when (sqlEx.Number == 2627 || sqlEx.Number == 2601)
@@ -1364,6 +1393,14 @@ SELECT CASE WHEN EXISTS (
                     return false;
                 }
 
+                // [v5.25.19] 전략×레짐 스코어카드 소스 캡처 — ActivePosition 레지스트리는 아직 삭제 전(CleanupPositionData는 청산 후 실행).
+                //   부분청산(부분/PARTIAL) 은 최종 청산이 아니라 집계 제외. 전체 청산 1건당 1행만 남도록.
+                bool isPartialForSro = (exitReason?.IndexOf("부분", StringComparison.OrdinalIgnoreCase) >= 0)
+                                     || (exitReason?.IndexOf("PARTIAL", StringComparison.OrdinalIgnoreCase) >= 0);
+                (string? sroStrategy, string? sroRegime) = isPartialForSro
+                    ? (null, null)
+                    : await ReadEntryStrategyRegimeAsync(userId, symbolValue);
+
                 var openTrade = await db.QueryFirstOrDefaultAsync<TradeHistoryOpenRow>(@"
 SELECT TOP (1) Id, Side, Strategy, EntryPrice, Quantity, AiScore, EntryTime
 FROM dbo.TradeHistory WITH (UPDLOCK, HOLDLOCK)
@@ -1406,6 +1443,7 @@ ORDER BY EntryTime DESC, Id DESC;",
                     MainWindow.Instance?.AddLog($"✅ [DB][TradeHistory][CloseUpdate] user={userId} sym={symbolValue} exit={exitPrice:F4} pnl={log.PnL:F2} reason={exitReason}");
                     // [v5.10.89] INSERT/UPDATE 성공 → 텔레그램 알림 (모든 청산 경로 공통)
                     TryNotifyProfit(log.Symbol, log.PnL, log.PnLPercent, "COMPLETE_UPDATE");
+                    await RecordStrategyOutcomeAsync(userId, symbolValue, sroStrategy, sroRegime, log.PnL, entryTime, exitTime);
                     return true;
                 }
 
@@ -1454,6 +1492,7 @@ ORDER BY EntryTime DESC, Id DESC;",
                 MainWindow.Instance?.AddLog($"⚠️ [DB][TradeHistory][CloseInserted] user={userId} sym={symbolValue} reason={exitReason}");
                 // [v5.10.89] 보정 INSERT 성공 → 텔레그램 알림
                 TryNotifyProfit(log.Symbol, log.PnL, log.PnLPercent, "COMPLETE_INSERT");
+                await RecordStrategyOutcomeAsync(userId, symbolValue, sroStrategy, sroRegime, log.PnL, entryTime, exitTime);
                 return true;
             }
             catch (SqlException sqlEx)

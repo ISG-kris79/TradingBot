@@ -2742,20 +2742,8 @@ namespace TradingBot.Services
                         OnLog?.Invoke($"🧠 [Pattern] {symbol} 패턴 라벨 저장 완료: {labelText} | reason={reason}");
                     }
 
-                    // [v5.25.18] 전략×레짐 자가학습 스코어카드 — 봇 청산결과 1행 기록(best-effort).
-                    //   진입 소스/레짐이 있는 봇 자체 진입만 집계(재시작 복원분·부분청산 제외).
-                    if (!reason.Contains("부분체결", StringComparison.OrdinalIgnoreCase))
-                    {
-                        try
-                        {
-                            string stratKey = TradingEngine.NormalizeStrategyKey(position.EntrySignalSource);
-                            int uidOutcome = AppConfig.CurrentUser?.Id ?? 0;
-                            await _dbManager.RecordStrategyOutcomeAsync(
-                                uidOutcome, symbol, stratKey, position.EntryRegime,
-                                pnl, entryTimeForHistory, DateTime.Now);
-                        }
-                        catch { /* 기록 실패가 청산 처리를 막지 않도록 */ }
-                    }
+                    // [v5.25.19] 전략×레짐 스코어카드 기록은 DbManager.CompleteTradeAsync로 이동(모든 청산경로 공통 + 레지스트리 소스).
+                    //   in-memory 훅은 메인 경로만 잡고 sync/TP체결/reconcile 경로를 놓쳐 실패 → 레지스트리 기반으로 일원화.
                 }
 
                 OnLog?.Invoke($"[청산 확인] {symbol} 종료가={exitPrice:F4}, PnL={pnl:F2}, ROE={pnlPercent:F2}%");

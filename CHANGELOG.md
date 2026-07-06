@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.25.19] - 2026-07-06
+
+### 🩹 Fixed — 전략×레짐 스코어카드 적재 0건 버그(v5.25.18 검증 결과)
+배포 하루 뒤 검증: `StrategyRegimeOutcome` 테이블은 생성됐으나 **적재 0건**. 원인 = 청산 12건 중 내 in-memory 훅이 걸린 메인 경로(`반전캔들 청산`)는 1건뿐, 나머지는 `EXTERNAL_CLOSE`/`TP_FILLED`/`PARTIAL`/`RECONCILE` 등 sync·on-exchange 경로라 훅 우회. 게다가 in-memory `PositionInfo.EntryRegime`는 여러 진입 등록 경로 중 하나만 세팅돼 신뢰 불가.
+- **기록을 `DbManager.CompleteTradeAsync`로 이동** — 메인·sync 청산이 모두 거치는 공통 기록점. `log.PnL` 확보 + 삭제 전 `ActivePosition` 레지스트리에서 진입 전략/레짐 조회(모든 진입에 `SignalSource` 기록되는 신뢰 소스).
+- **`ActivePosition.RegimeAtEntry` 컬럼 신설**(+기존테이블 ALTER 마이그레이션): 진입 시 BTC레짐 영속화 → 청산 시 조회. `TryOpenActivePositionAsync`에 regime 파라미터 추가.
+- 부분청산(부분/PARTIAL) 집계 제외(전체청산 1건당 1행). in-memory 훅 제거(중복 방지).
+- v5.25.18 진입 사이징 배수 적용부는 유지(정상 동작). 데이터는 이 배포 이후 신규 진입부터 정상 축적.
+
 ## [5.25.18] - 2026-07-05
 
 ### ✨ Added — 전략×레짐 자가선택기 (Walk-Forward 적응, 사용자 요청 B안)
