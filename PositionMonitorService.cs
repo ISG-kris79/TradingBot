@@ -1729,7 +1729,8 @@ namespace TradingBot.Services
             catch { return false; }
         }
 
-        // [v5.23.98] LCC 8봉(2시간) 시간정지 — jdehorty 충실 검증본의 보유기간(8봉). LORENTZIAN 포지션 한정.
+        // [v5.23.98] LCC 8봉 시간정지 — LORENTZIAN 포지션 한정.
+        // [v5.25.21] 신호 TF 15m→1h 전환에 맞춰 8봉=8시간(기존 15m×8=2h → 1h×8=8h). 1h 신호 승자를 2h에 조기컷하던 문제 해소.
         private async Task<bool> TryLccTimeStopExitAsync(string symbol, decimal currentROE, CancellationToken token)
         {
             try
@@ -1737,8 +1738,8 @@ namespace TradingBot.Services
                 string src; DateTime entryTime;
                 lock (_posLock) { if (!_activePositions.TryGetValue(symbol, out var p) || p == null) return false; src = p.EntrySignalSource ?? ""; entryTime = p.EntryTime; }
                 if (src.IndexOf("LORENTZIAN", StringComparison.OrdinalIgnoreCase) < 0) return false;
-                if ((DateTime.UtcNow - entryTime).TotalHours < 2.0) return false;   // 8봉(15m×8)=2시간 보유
-                OnLog?.Invoke($"⏱️ {symbol} LCC 시간정지(8봉/2h) 청산 | ROE={currentROE:F1}%");
+                if ((DateTime.UtcNow - entryTime).TotalHours < 8.0) return false;   // 8봉(1h×8)=8시간 보유
+                OnLog?.Invoke($"⏱️ {symbol} LCC 시간정지(8봉/8h) 청산 | ROE={currentROE:F1}%");
                 await ExecuteMarketClose(symbol, $"LCC 시간정지 8봉 (ROE {currentROE:F1}%)", token);
                 return true;
             }

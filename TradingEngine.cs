@@ -5124,7 +5124,9 @@ namespace TradingBot
         /// <summary>[v5.24.6] 단일 심볼 LCC 가드 평가 → 진입 임박 스냅샷만 기록 (진입 안 함).</summary>
         private async Task UpdateNearEntryForSymbolAsync(string symbol, CancellationToken token)
         {
-            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 1500, token);
+            // [v5.25.21] LCC 신호 타임프레임 15m→1h — 3년 백테 검증: 15m은 엣지<노이즈(-$2506), 1h는 흑자전환(+$63).
+            //   15m 잔파동 추격("하락 중 진입")이 근본손실 원인 → 1h로 올려 노이즈 진입 제거. 엔진 공유하므로 진입/스냅샷 동일 TF 필수.
+            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 1500, token);
             if (k15 == null || k15.Count < 300) return;
             var k15List = k15 as List<IBinanceKline> ?? new List<IBinanceKline>(k15);
 
@@ -5193,8 +5195,10 @@ namespace TradingBot
 
             // [v5.23.91] 순수 LCC — 1h Squeeze 대세필터 제거(봇 추가 게이트, LCC 아님). 진입판단은 LorentzianGuard(jdehorty) 단독.
 
-            // [v5.23.1] Pine 정확 일치를 위해 1500봉 fetch (~16일치 15m), engine featureCount 7→5
-            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 1500, token);
+            // [v5.23.1] Pine 정확 일치를 위해 1500봉 fetch, engine featureCount 7→5
+            // [v5.25.21] LCC 신호 TF 15m→1h — 3년 백테: 15m −$2506(엣지<노이즈) vs 1h +$63. 15m 잔파동 추격("하락 중 진입") 제거.
+            //   1500 1h봉 = ~62일. UpdateNearEntryForSymbolAsync와 엔진 공유 → 반드시 동일 TF.
+            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 1500, token);
             if (k15 == null || k15.Count < 300) return;
             var k15List = k15 as List<IBinanceKline> ?? new List<IBinanceKline>(k15);
 
@@ -5283,7 +5287,7 @@ namespace TradingBot
             {
                 SignalTimeUtc = DateTime.UtcNow,
                 SignalPrice = currentPrice,
-                DeadlineUtc = DateTime.UtcNow.AddMinutes(15),
+                DeadlineUtc = DateTime.UtcNow.AddMinutes(60),   // [v5.25.21] 1h 신호 → 5m 반등확인 창 15→60분
                 GuardSummary = $"KNN WR={guard.KnnWinRate:F2} pred={guard.KnnPrediction} regime={guard.RegimeSlope:F2}"
             };
             OnStatusLog?.Invoke($"⏳ [LORENTZIAN] {symbol} 신호 발생 → 5m 양봉 마감 확인 대기 | KNN WR={guard.KnnWinRate:F2} pred={guard.KnnPrediction} regime={guard.RegimeSlope:F2}");
