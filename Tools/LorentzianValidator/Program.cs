@@ -10587,6 +10587,111 @@ internal static class Program
         }
     }
 
+    // [v5.25.21] --lcc-ema20 : 사용자 가설 검증 — ①20선(EMA20) 위/아래 진입 성과차이 ②EMA20이탈 청산 vs 반대신호청산.
+    //   1h LCC 신호 기준. "20선 아래 진입은 다시 하락" + "SL 대신 20선 이탈 시 청산" 을 3년으로 검증.
+    private static async Task RunLccEma20Async()
+    {
+        bool canon = Environment.GetCommandLineArgs().Any(a => a.Equals("--canon", StringComparison.OrdinalIgnoreCase));
+        decimal lev = (LEVERAGE == 10m) ? 15m : LEVERAGE;
+        const float guardWinRate = 0.70f; const int neighborsK = 8, featureWindow = 500, maxHold = 96;
+        const decimal cost = 0.0004m * 2m + 0.0005m;
+        var syms = new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+        // 진입위치 버킷: 0=20선위, 1=20선아래 (청산=반대신호)
+        var eN = new int[2]; var eW = new int[2]; var eWin = new decimal[2]; var eLoss = new decimal[2]; var ePnl = new decimal[2];
+        // 청산비교(20선위 진입만): 0=반대신호, 1=EMA20이탈
+        var xN = new int[2]; var xW = new int[2]; var xWin = new decimal[2]; var xLoss = new decimal[2]; var xPnl = new decimal[2];
+
+        Console.WriteLine("================================================================");
+        Console.WriteLine($"  LCC(1h) EMA20 가설 검증 — {syms.Length}메이저 / 3년 / [{(canon ? "CANON" : "STRICT")}] / {lev}x");
+        Console.WriteLine("  ① 진입 시 EMA20 위/아래별 성과  ② EMA20이탈 청산 vs 반대신호 청산");
+        Console.WriteLine("================================================================");
+
+        int idx = 0;
+        foreach (var sym in syms)
+        {
+            idx++; Console.Write($"[{idx}/{syms.Length}] {sym} ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlines1hAsync(sym, 28); } catch (Exception ex) { Console.WriteLine("fail:" + ex.Message); continue; }
+            if (kl.Count < 1000) { Console.WriteLine($"skip ({kl.Count})"); continue; }
+            Console.WriteLine($"1h={kl.Count}");
+
+            var feats = new float[kl.Count][];
+            for (int j = 60; j < kl.Count; j++) { int ws = Math.Max(0, j - (featureWindow - 1)); feats[j] = LorentzianFeatures.Extract(kl.GetRange(ws, j - ws + 1))!; }
+            var labels = new int[kl.Count];
+            for (int j = 4; j < kl.Count; j++) { decimal nc = kl[j].ClosePrice, pc = kl[j - 4].ClosePrice; labels[j] = nc > pc ? 1 : (nc < pc ? -1 : 0); }
+            var atr1 = new double[kl.Count]; var atr10 = new double[kl.Count]; var adx = new double[kl.Count];
+            var ema200 = new double[kl.Count]; var sma200 = new double[kl.Count]; var regime = new double[kl.Count]; var nwk = new double[kl.Count]; var ema20 = new double[kl.Count];
+            for (int j = 200; j < kl.Count; j++) { atr1[j] = CalcTR(kl, j); atr10[j] = CalcATR(kl, j, 10); adx[j] = CalcADX_idx(kl, j, 14); ema200[j] = CalcEMA(kl, j, 200); sma200[j] = CalcSMA(kl, j, 200); regime[j] = CalcRegimeSlope(kl, j); nwk[j] = CalcNWKernel(kl, j); ema20[j] = CalcEMA(kl, j, 20); }
+            var engine = new LorentzianAnnEngine(sym, neighborsCount: neighborsK, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount);
+            var sig = new int[kl.Count]; var sigWr = new float[kl.Count];
+            for (int j = 65; j < kl.Count; j++)
+            {
+                int sIdx = j - 5; if (feats[sIdx] != null) engine.AddSample(feats[sIdx], labels[sIdx]);
+                if (feats[j] == null) continue; var p = engine.Predict(feats[j]); if (!p.IsReady || p.K == 0) continue;
+                sig[j] = p.Prediction > 0 ? 1 : (p.Prediction < 0 ? -1 : 0); sigWr[j] = p.K > 0 ? (float)p.PositiveVotes / p.K : 0f;
+            }
+            var guardPass = new bool[kl.Count];
+            for (int j = 250; j < kl.Count; j++)
+            {
+                if (sig[j] != 1 || sigWr[j] < guardWinRate) continue;
+                if (atr1[j] <= atr10[j]) continue; if (regime[j] <= -0.1) continue;
+                if (!canon) { if (adx[j] <= 20.0) continue; if ((double)kl[j].ClosePrice <= ema200[j]) continue; if ((double)kl[j].ClosePrice <= sma200[j]) continue; if (j < 2 || nwk[j] <= nwk[j - 2]) continue; }
+                else { if (j < 1 || nwk[j] <= nwk[j - 1]) continue; }
+                guardPass[j] = true;
+            }
+
+            // local: 청산 시뮬 (mode 0=반대신호, 1=EMA20이탈) → netRet, exitIdx
+            (decimal net, int exitIdx) Sim(int j, int mode)
+            {
+                decimal entry = kl[j + 1].OpenPrice;
+                decimal exitPx = kl[Math.Min(kl.Count - 1, j + maxHold)].ClosePrice; int ei = Math.Min(kl.Count - 1, j + maxHold);
+                for (int e = j + 1; e < kl.Count && e <= j + maxHold; e++)
+                {
+                    if (mode == 0 && sig[e] == -1) { exitPx = kl[e].ClosePrice; ei = e; break; }
+                    if (mode == 1 && (double)kl[e].ClosePrice < ema20[e]) { exitPx = kl[e].ClosePrice; ei = e; break; }
+                }
+                return ((exitPx - entry) / entry - cost, ei);
+            }
+
+            int busy = -1;
+            for (int j = 250; j < kl.Count - 1; j++)
+            {
+                if (j <= busy) continue;
+                if (!guardPass[j] || (j > 0 && guardPass[j - 1])) continue;
+                if (kl[j + 1].OpenPrice <= 0) continue;
+                bool above = (double)kl[j].ClosePrice > ema20[j];
+                var (netOpp, exOpp) = Sim(j, 0);
+                var (netEma, _) = Sim(j, 1);
+                int eb = above ? 0 : 1;
+                eN[eb]++; if (netOpp > 0) { eW[eb]++; eWin[eb] += netOpp * 100m; } else eLoss[eb] += -netOpp * 100m; ePnl[eb] += netOpp * lev * 100m;
+                if (above)
+                {
+                    xN[0]++; if (netOpp > 0) { xW[0]++; xWin[0] += netOpp * 100m; } else xLoss[0] += -netOpp * 100m; xPnl[0] += netOpp * lev * 100m;
+                    xN[1]++; if (netEma > 0) { xW[1]++; xWin[1] += netEma * 100m; } else xLoss[1] += -netEma * 100m; xPnl[1] += netEma * lev * 100m;
+                }
+                busy = exOpp;
+            }
+        }
+
+        void Row(string label, int n, int w, decimal win, decimal loss, decimal pnl)
+        {
+            double wr = n > 0 ? w * 100.0 / n : 0; decimal aw = w > 0 ? win / w : 0m; int ls = n - w;
+            decimal al = ls > 0 ? loss / ls : 0m; decimal rr = al > 0 ? aw / al : 0m; decimal per = n > 0 ? pnl / n : 0m;
+            Console.WriteLine($"  {label,-16}{n,6}{wr,8:F1}%{aw,8:F2}%{al,8:F2}%{rr,7:F2}{pnl,11:F2}{per,9:F3} {(pnl > 0 ? "✅" : "❌")}");
+        }
+        Console.WriteLine();
+        Console.WriteLine("=== ① EMA20 진입위치별 (청산=반대신호) ===");
+        Console.WriteLine($"  {"진입위치",-16}{"N",6}{"승률",9}{"평균익%",9}{"평균손%",9}{"손익비",7}{"총손익$",11}{"건당$",9}");
+        Row("20선 위 진입", eN[0], eW[0], eWin[0], eLoss[0], ePnl[0]);
+        Row("20선 아래 진입", eN[1], eW[1], eWin[1], eLoss[1], ePnl[1]);
+        Console.WriteLine();
+        Console.WriteLine("=== ② 청산방식 비교 (20선 위 진입만) ===");
+        Console.WriteLine($"  {"청산",-16}{"N",6}{"승률",9}{"평균익%",9}{"평균손%",9}{"손익비",7}{"총손익$",11}{"건당$",9}");
+        Row("반대신호까지", xN[0], xW[0], xWin[0], xLoss[0], xPnl[0]);
+        Row("EMA20 이탈", xN[1], xW[1], xWin[1], xLoss[1], xPnl[1]);
+        Console.WriteLine("\n  ▶ 가설: 20선위 진입이 아래보다 낫고, EMA20이탈 청산이 손실을 일찍 자르면 흑자.");
+    }
+
     // [v5.22.72] Daily Swing + ProfitTrailing 3년 월별 통계
     private static async Task RunDailySwingMonthly3yAsync()
     {
@@ -16546,6 +16651,11 @@ internal static class Program
         if (HasArg("--lcc-tf"))
         {
             await RunLccTfAsync();
+            return;
+        }
+        if (HasArg("--lcc-ema20"))
+        {
+            await RunLccEma20Async();
             return;
         }
         if (HasArg("--replay-entries"))

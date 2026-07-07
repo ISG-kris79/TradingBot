@@ -1282,6 +1282,8 @@ namespace TradingBot.Services
                     if (await TryReversalCandleExitAsync(symbol, currentROE, token)) break;
                     // [v5.23.97] RSI2 전략 EMA10 회복 익절
                     if (await TryRsi2Ema10ExitAsync(symbol, currentROE, token)) break;
+                    // [v5.25.21] LCC EMA20 이탈 청산 (추세꺾임 조기컷 — 넓은 SL 방치 대체)
+                    if (await TryLccEma20ExitAsync(symbol, currentROE, token)) break;
                     // [v5.23.98] LCC 8봉 시간정지
                     if (await TryLccTimeStopExitAsync(symbol, currentROE, token)) break;
 
@@ -1400,6 +1402,8 @@ namespace TradingBot.Services
                 if (await TryReversalCandleExitAsync(symbol, currentROE, token)) break;
                 // [v5.23.97] RSI2 전략 EMA10 회복 익절
                 if (await TryRsi2Ema10ExitAsync(symbol, currentROE, token)) break;
+                // [v5.25.21] LCC EMA20 이탈 청산 (추세꺾임 조기컷)
+                if (await TryLccEma20ExitAsync(symbol, currentROE, token)) break;
                 // [v5.23.98] LCC 8봉 시간정지
                 if (await TryLccTimeStopExitAsync(symbol, currentROE, token)) break;
 
@@ -1722,6 +1726,39 @@ namespace TradingBot.Services
                 {
                     OnLog?.Invoke($"🟢 {symbol} RSI2 EMA10 회복 익절 | ROE={currentROE:F1}% (1h 종가>EMA10)");
                     await ExecuteMarketClose(symbol, $"RSI2 EMA10 회복 익절 (ROE {currentROE:F1}%)", token);
+                    return true;
+                }
+                return false;
+            }
+            catch { return false; }
+        }
+
+        // [v5.25.21] LCC EMA20 이탈 청산 (사용자 가설, 3년 검증) — LORENTZIAN 포지션이 1h 종가로 EMA20 이탈 시 청산.
+        //   검증: EMA20이탈 청산 +$1,227(손익비4.53, 평균손 −0.75%) vs 반대신호 +$348 vs 넓은 -75% SL 방치.
+        //   추세 꺾인 지점(20선 이탈)에서 조기컷 → 큰 손실 방지. LORENTZIAN 한정, 5분 스로틀.
+        private readonly Dictionary<string, DateTime> _lccEma20ExitCheck = new();
+        private async Task<bool> TryLccEma20ExitAsync(string symbol, decimal currentROE, CancellationToken token)
+        {
+            try
+            {
+                string src;
+                lock (_posLock) { if (!_activePositions.TryGetValue(symbol, out var p) || p == null) return false; src = p.EntrySignalSource ?? ""; }
+                if (src.IndexOf("LORENTZIAN", StringComparison.OrdinalIgnoreCase) < 0) return false;
+                lock (_lccEma20ExitCheck)
+                {
+                    if (_lccEma20ExitCheck.TryGetValue(symbol, out var t) && (DateTime.UtcNow - t).TotalMinutes < 5) return false;
+                    _lccEma20ExitCheck[symbol] = DateTime.UtcNow;
+                }
+                var kRaw = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneHour, 60, token);
+                var k = kRaw as List<IBinanceKline> ?? (kRaw != null ? new List<IBinanceKline>(kRaw) : null);
+                if (k == null || k.Count < 25) return false;
+                int li = k.Count - 2;                          // 마지막 마감 1h봉
+                double m = 2.0 / 21.0, ema = (double)k[0].ClosePrice;   // EMA20
+                for (int i = 1; i <= li; i++) ema = (double)k[i].ClosePrice * m + ema * (1 - m);
+                if ((double)k[li].ClosePrice < ema)
+                {
+                    OnLog?.Invoke($"📉 {symbol} LCC EMA20 이탈 청산 | ROE={currentROE:F1}% (1h 종가<EMA20 → 추세꺾임, 조기컷)");
+                    await ExecuteMarketClose(symbol, $"LCC EMA20 이탈 청산 (ROE {currentROE:F1}%)", token);
                     return true;
                 }
                 return false;

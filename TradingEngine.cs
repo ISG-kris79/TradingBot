@@ -5265,6 +5265,18 @@ namespace TradingBot
                 return;
             }
 
+            // [v5.25.21] EMA20 진입필터 (사용자 가설, 3년 검증) — 1h 종가가 EMA20 위일 때만 진입.
+            //   검증: 20선 위 진입 +$348(66%WR) vs 20선 아래 −$279 — 전체 918건 중 635건이 20선 아래(=주로 지는 자리).
+            //   20선 아래 진입은 하락 재개 확률↑ → 차단. 20선 위만 진입.
+            {
+                double ema20Now = CalcEmaClose(k15List, evalIdx, 20);
+                if ((double)k15List[evalIdx].ClosePrice <= ema20Now)
+                {
+                    OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | 1h 종가 EMA20 아래 (하락 재개 위험 — 20선 위에서만 진입)");
+                    return;
+                }
+            }
+
             // [v5.23.98] 신호 '전환'에서만 진입 (jdehorty 충실) — 직전봉도 통과면 지속신호라 스킵, 음→양 전환 첫 봉만 진입.
             //   3년 OOS 검증은 전환 신호 기준(매 봉 아님). 매 봉 진입 = 희석 → 적자. 전환만 = 흑자.
             if (evalIdx - 1 >= 60)
