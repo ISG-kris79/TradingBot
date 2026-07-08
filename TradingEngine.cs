@@ -5484,6 +5484,24 @@ namespace TradingBot
                 return;
             }
 
+            // [v5.25.23] EMA20 위 '실제 진입시점' 재확인 — v5.25.22 필터는 신호시점만 봐서, 5m 확인 몇 분 뒤 하락장 진입 구멍.
+            //   3년검증: 20선 아래 진입 −$279(918건 중 635건이 20선아래=지는자리). 진입 순간 현재가 ≤ 1h EMA20 이면 보류(20선 회복 대기).
+            var k1hp = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 60, token);
+            if (k1hp != null)
+            {
+                var k1hpList = k1hp as List<IBinanceKline> ?? new List<IBinanceKline>(k1hp);
+                if (k1hpList.Count >= 25)
+                {
+                    double ema20h = CalcEmaClose(k1hpList, k1hpList.Count - 2, 20);
+                    if (ema20h > 0 && (double)currentPrice <= ema20h)
+                    {
+                        if (DateTime.UtcNow.Second % 30 == 0)
+                            OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 현재가({currentPrice:F6}) ≤ 1h EMA20({ema20h:F6}) → 20선 위 회복 대기(하락장 진입 차단)");
+                        return;
+                    }
+                }
+            }
+
             _lorentzianPendingEntries.TryRemove(symbol, out _);
             _lorentzianCooldown[symbol] = DateTime.UtcNow;
             OnStatusLog?.Invoke(

@@ -5,6 +5,13 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.25.23] - 2026-07-08
+
+### 🩹 Fixed — EMA20 진입필터 구멍 (신호시점만 체크 → 실제진입시점 재확인)
+v5.25.22 배포됐는데도 하락장 진입 손실 지속(사용자 보고). 원인 규명: v5.25.22의 EMA20 진입필터는 `AnalyzeLorentzianEntryAsync`(신호시점)에만 있고, **실제 진입은 5m 확인 후 몇 분 뒤(`CheckLorentzianPendingEntriesAsync`)** 라 그 사이 EMA20 아래로 떨어지면 그대로 하락장 진입하던 구멍.
+- **펜딩 진입 실행 직전 EMA20 재확인 추가**: 현재가 ≤ 1h EMA20 이면 진입 보류(20선 위 회복 대기). 신호시점 필터(v5.25.22)와 이중 확인 → "20선 아래 진입" 완전 차단.
+- (버전진단 정정: v5.25.19+ 정상 실행 중 확인됨 — StrategyRegimeOutcome Regime 기록으로 검증.)
+
 ## [5.25.22] - 2026-07-07
 
 ### ✨ Added — LCC EMA20 진입필터 + EMA20이탈 청산 (사용자 가설, 3년 검증 — 세션 최고 결과)
