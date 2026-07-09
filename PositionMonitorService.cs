@@ -1683,11 +1683,8 @@ namespace TradingBot.Services
         {
             try
             {
-                // [v5.25.25] LORENTZIAN은 반전캔들 청산 제외 — 청산은 EMA20이탈이 전담(승자 EMA20까지 태움). 3년검증: 조기컷=적자, 순수EMA20=+$885.
-                {
-                    string srcRc; lock (_posLock) { if (!_activePositions.TryGetValue(symbol, out var pr) || pr == null) return false; srcRc = pr.EntrySignalSource ?? ""; }
-                    if (srcRc.IndexOf("LORENTZIAN", StringComparison.OrdinalIgnoreCase) >= 0) return false;
-                }
+                // [v5.25.26] v5.25.25의 LORENTZIAN 반전캔들 제외 철회 — 월별검증: 순수EMA20이탈은 휩쏘로 흑자월 32%뿐,
+                //   추세꺾임 청산(반대신호식)이 흑자월 64%로 훨씬 꾸준. LCC도 반전캔들(추세꺾임)에서 청산 → 월별 안정.
                 // [v5.25.20] fee-bleed 밴드(-8~+8%)만 스킵 — 그 밖(이익보호 or 하락손절)은 반전캔들 발동.
                 if (currentROE > -ReversalExitLossCutRoe && currentROE < ReversalExitMinProfitRoe) return false;
                 if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var candles) || candles.Count < 3)
@@ -1753,7 +1750,9 @@ namespace TradingBot.Services
                 bool isLcc = src.IndexOf("LORENTZIAN", StringComparison.OrdinalIgnoreCase) >= 0;
                 bool unlabeled = string.IsNullOrWhiteSpace(src);
                 if (!isLcc && !unlabeled) return false;                     // 명시적 non-LCC 라벨은 위임
-                if (unlabeled && currentROE > -10m) return false;           // 미라벨은 −10% 이하 손실일 때만(대참사 방지, 소폭 미라벨 오컷 방지)
+                // [v5.25.26] 휩쏘 완화 — EMA20 청산은 '대참사 방어용'으로만(−20% 이하). 월별검증: 20선 살짝 닿을때마다 털면 흑자월 32%뿐.
+                //   평시 청산은 반전캔들(추세꺾임)이 담당 → 승자를 노이즈에 안 털고 흑자월 64%. EMA20은 −20% 넘는 대형손실만 컷.
+                if (currentROE > -20m) return false;
                 lock (_lccEma20ExitCheck)
                 {
                     if (_lccEma20ExitCheck.TryGetValue(symbol, out var t) && (DateTime.UtcNow - t).TotalMinutes < 2) return false;
@@ -1765,11 +1764,10 @@ namespace TradingBot.Services
                 int li = k.Count - 2;                          // 마지막 마감 1h봉
                 double m = 2.0 / 21.0, ema = (double)k[0].ClosePrice;   // EMA20
                 for (int i = 1; i <= li; i++) ema = (double)k[i].ClosePrice * m + ema * (1 - m);
-                double curPx = (double)k[^1].ClosePrice;       // 진행중 1h봉 현재가 (마감 대기 안 함 → 즉시 이탈컷)
-                if (curPx < ema)
+                if ((double)k[li].ClosePrice < ema)            // 1h 마감 종가 기준(휩쏘 완화)
                 {
-                    OnLog?.Invoke($"📉 {symbol} LCC EMA20 이탈 청산 | ROE={currentROE:F1}% (현재가 {curPx:F6}<EMA20 {ema:F6} → 추세꺾임 조기컷)");
-                    await ExecuteMarketClose(symbol, $"LCC EMA20 이탈 청산 (ROE {currentROE:F1}%)", token);
+                    OnLog?.Invoke($"📉 {symbol} LCC EMA20 대참사 컷 | ROE={currentROE:F1}% (1h종가<EMA20, −20%↓ 대형손실 방어)");
+                    await ExecuteMarketClose(symbol, $"LCC EMA20 대참사 컷 (ROE {currentROE:F1}%)", token);
                     return true;
                 }
                 return false;
