@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.25.24] - 2026-07-09
+
+### 🩹 Fixed — EMA20 이탈청산이 대형손실(XMR/ZEC −$200) 안 자른 버그
+사용자 보고: 익절 작고 손절 큼. 진단: 최근 XMR −42%(−$210)/ZEC −42%(−$208)가 EMA20 청산 없이 EXTERNAL_CLOSE로 −42% 방치. 로그상 **EMA20 이탈청산 발동 0건.** 원인: v5.25.22 청산이 in-memory `EntrySignalSource=="LORENTZIAN"`일 때만 발동하는데, **입양/복원 포지션은 in-memory source가 빈값**이라 LORENTZIAN 체크에 걸려 스킵 → 넓은 SL(−75%)까지 방치.
+- **미라벨(입양/복원) 포지션도 EMA20 이탈청산 커버** (단 −10% ROE 이하 손실일 때만 = 대참사 방지, 소폭 오컷 방지). MEANREV(역추세)·RSI2는 각자 청산 위임.
+- **1h 마감 대기 대신 '현재가'(진행중 봉) 기준 즉시 이탈컷** — 알트 급락에 −42%까지 방치되던 지연 해소.
+- 스로틀 5→2분(반응속도↑).
+
 ## [5.25.23] - 2026-07-08
 
 ### 🩹 Fixed — EMA20 진입필터 구멍 (신호시점만 체크 → 실제진입시점 재확인)

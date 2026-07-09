@@ -1733,20 +1733,25 @@ namespace TradingBot.Services
             catch { return false; }
         }
 
-        // [v5.25.21] LCC EMA20 이탈 청산 (사용자 가설, 3년 검증) — LORENTZIAN 포지션이 1h 종가로 EMA20 이탈 시 청산.
-        //   검증: EMA20이탈 청산 +$1,227(손익비4.53, 평균손 −0.75%) vs 반대신호 +$348 vs 넓은 -75% SL 방치.
-        //   추세 꺾인 지점(20선 이탈)에서 조기컷 → 큰 손실 방지. LORENTZIAN 한정, 5분 스로틀.
+        // [v5.25.21] LCC EMA20 이탈 청산 — EMA20 이탈 시 조기청산(넓은 SL 방치 대체). 검증 +$1,227(손익비4.53).
+        // [v5.25.24] 버그수정: v5.22의 in-memory LORENTZIAN 체크가 입양/복원 포지션(source 빈값, XMR/ZEC −$200)을 스킵 → −42% 방치.
+        //   수정: ①미라벨(입양/복원) 포지션도 커버(단 −10% 이하 손실만=대참사 방지) ②1h 마감 대기 말고 '현재가' 기준 즉시 이탈컷 ③스로틀 5→2분.
+        //   MEANREV(역추세, EMA20 아래 진입 설계)·RSI2는 각자 청산 위임(제외).
         private readonly Dictionary<string, DateTime> _lccEma20ExitCheck = new();
         private async Task<bool> TryLccEma20ExitAsync(string symbol, decimal currentROE, CancellationToken token)
         {
             try
             {
                 string src;
-                lock (_posLock) { if (!_activePositions.TryGetValue(symbol, out var p) || p == null) return false; src = p.EntrySignalSource ?? ""; }
-                if (src.IndexOf("LORENTZIAN", StringComparison.OrdinalIgnoreCase) < 0) return false;
+                lock (_posLock) { if (!_activePositions.TryGetValue(symbol, out var p) || p == null || !p.IsLong || Math.Abs(p.Quantity) <= 0) return false; src = p.EntrySignalSource ?? ""; }
+                if (src.IndexOf("MEANREV", StringComparison.OrdinalIgnoreCase) >= 0 || src.IndexOf("RSI2", StringComparison.OrdinalIgnoreCase) >= 0) return false;
+                bool isLcc = src.IndexOf("LORENTZIAN", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool unlabeled = string.IsNullOrWhiteSpace(src);
+                if (!isLcc && !unlabeled) return false;                     // 명시적 non-LCC 라벨은 위임
+                if (unlabeled && currentROE > -10m) return false;           // 미라벨은 −10% 이하 손실일 때만(대참사 방지, 소폭 미라벨 오컷 방지)
                 lock (_lccEma20ExitCheck)
                 {
-                    if (_lccEma20ExitCheck.TryGetValue(symbol, out var t) && (DateTime.UtcNow - t).TotalMinutes < 5) return false;
+                    if (_lccEma20ExitCheck.TryGetValue(symbol, out var t) && (DateTime.UtcNow - t).TotalMinutes < 2) return false;
                     _lccEma20ExitCheck[symbol] = DateTime.UtcNow;
                 }
                 var kRaw = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneHour, 60, token);
@@ -1755,9 +1760,10 @@ namespace TradingBot.Services
                 int li = k.Count - 2;                          // 마지막 마감 1h봉
                 double m = 2.0 / 21.0, ema = (double)k[0].ClosePrice;   // EMA20
                 for (int i = 1; i <= li; i++) ema = (double)k[i].ClosePrice * m + ema * (1 - m);
-                if ((double)k[li].ClosePrice < ema)
+                double curPx = (double)k[^1].ClosePrice;       // 진행중 1h봉 현재가 (마감 대기 안 함 → 즉시 이탈컷)
+                if (curPx < ema)
                 {
-                    OnLog?.Invoke($"📉 {symbol} LCC EMA20 이탈 청산 | ROE={currentROE:F1}% (1h 종가<EMA20 → 추세꺾임, 조기컷)");
+                    OnLog?.Invoke($"📉 {symbol} LCC EMA20 이탈 청산 | ROE={currentROE:F1}% (현재가 {curPx:F6}<EMA20 {ema:F6} → 추세꺾임 조기컷)");
                     await ExecuteMarketClose(symbol, $"LCC EMA20 이탈 청산 (ROE {currentROE:F1}%)", token);
                     return true;
                 }
