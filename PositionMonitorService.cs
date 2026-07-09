@@ -1683,6 +1683,11 @@ namespace TradingBot.Services
         {
             try
             {
+                // [v5.25.25] LORENTZIAN은 반전캔들 청산 제외 — 청산은 EMA20이탈이 전담(승자 EMA20까지 태움). 3년검증: 조기컷=적자, 순수EMA20=+$885.
+                {
+                    string srcRc; lock (_posLock) { if (!_activePositions.TryGetValue(symbol, out var pr) || pr == null) return false; srcRc = pr.EntrySignalSource ?? ""; }
+                    if (srcRc.IndexOf("LORENTZIAN", StringComparison.OrdinalIgnoreCase) >= 0) return false;
+                }
                 // [v5.25.20] fee-bleed 밴드(-8~+8%)만 스킵 — 그 밖(이익보호 or 하락손절)은 반전캔들 발동.
                 if (currentROE > -ReversalExitLossCutRoe && currentROE < ReversalExitMinProfitRoe) return false;
                 if (!_marketDataManager.KlineCache.TryGetValue(symbol, out var candles) || candles.Count < 3)

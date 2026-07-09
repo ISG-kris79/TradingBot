@@ -10396,11 +10396,14 @@ namespace TradingBot
                         {
                             bool isLong = decision == "LONG";
                             bool isPump = !MajorSymbols.Contains(symbol);
+                            // [v5.25.25] LCC 스펙 확정 — 조기 부분익절 제거(승자 EMA20까지 태움). 3년검증: TP추가=적자, 순수EMA20이탈=+$885/손익비4.02.
+                            //   LORENTZIAN은 온-거래소 TP를 사실상 무효(ROE +300%=도달불가)로 등록 → 청산은 EMA20이탈(monitor)이 담당. SL은 유지.
+                            bool isLcc = ctx.SignalSource != null && ctx.SignalSource.IndexOf("LORENTZIAN", StringComparison.OrdinalIgnoreCase) >= 0;
 
                             int pumpLev = ctx.Leverage > 0 ? ctx.Leverage : 20;
                             decimal slRoe = isPump ? -(_settings.PumpStopLossRoe > 0 ? _settings.PumpStopLossRoe : 40m) : -50m;
-                            decimal tpRoe = isPump ? Math.Max(_settings.PumpTp1Roe > 0 ? _settings.PumpTp1Roe : 25m, 25m) : 40m;
-                            decimal tpPartial = isPump ? Math.Clamp((_settings.PumpFirstTakeProfitRatioPct > 0 ? _settings.PumpFirstTakeProfitRatioPct : 40m) / 100m, 0.05m, 0.95m) : 0.4m;
+                            decimal tpRoe = isLcc ? 300m : (isPump ? Math.Max(_settings.PumpTp1Roe > 0 ? _settings.PumpTp1Roe : 25m, 25m) : 40m);
+                            decimal tpPartial = isLcc ? 0.95m : (isPump ? Math.Clamp((_settings.PumpFirstTakeProfitRatioPct > 0 ? _settings.PumpFirstTakeProfitRatioPct : 40m) / 100m, 0.05m, 0.95m) : 0.4m);
                             decimal trailCallback = isPump ? Math.Clamp((_settings.PumpTrailingGapRoe > 0 ? _settings.PumpTrailingGapRoe : 20m) / pumpLev, 0.1m, 5.0m) : 2.0m;
 
                             var result = await _orderLifecycle.RegisterOnEntryAsync(
