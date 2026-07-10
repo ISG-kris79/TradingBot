@@ -83,9 +83,14 @@ namespace TradingBot.Services.LorentzianV2
             //   -0.3~-0.9로 찍혀 < -0.1 전면차단(캘리브레이션 미스매치). 하락방향 보호는 1h 대세필터 + DBB 과열차단이 담당.
             // if (r.RegimeSlope < -0.1) { r.BlockReason = $"REGIME ({r.RegimeSlope:F3})"; return r; }
 
-            // 4) ADX(14) > 20  — [v5.23.90 비활성화: jdehorty 기본 OFF]
+            // 4) ADX(14) ≥ 30  — [v5.25.28 재활성화] 3년 백테(--lcc-tune) 결과:
+            //   ADX 게이트 OFF(≤20 통과)=브레이크이븐(총 -$1.76, 건당 -$0.006).
+            //   ADX≥30 게이트 ON = 총 +$402, 건당 +$2.39, 승률 66%→69%, 흑자월 33/48.
+            //   메커니즘: "진입량 줄이기"가 아니라 KNN 엣지가 실재하는 강추세 구간만 선별
+            //   (건당손익이 음→양으로 뒤집힘 = 거래 '질' 개선). 횡보(저ADX) 구간의 KNN=노이즈 → 차단.
+            //   ADX는 jdehorty 원본의 핵심 필터. K=8·1h·BTC상승·반대신호청산 스펙 기준 최적.
             r.Adx = CalcADX(kl, idx, 14);
-            // if (r.Adx <= 20.0) { r.BlockReason = $"ADX ({r.Adx:F1})"; return r; }
+            if (r.Adx < 30.0) { r.BlockReason = $"ADX_WEAK ({r.Adx:F1}<30, 저추세 횡보구간 차단)"; return r; }
 
             // 5) close > EMA(200)  — [v5.23.90 비활성화: jdehorty 기본 OFF, 1h EMA20 게이트가 추세 담당]
             r.Ema200 = CalcEMA(kl, idx, 200);
