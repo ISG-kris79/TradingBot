@@ -5277,6 +5277,25 @@ namespace TradingBot
                 }
             }
 
+            // [v5.25.27] 시장(BTC)추세 필터 (사용자 관찰 "하락장 달엔 다 손실" → 3년 검증) — BTC 상승장(1h 종가>EMA200)일 때만 LCC LONG.
+            //   LONG전용이라 하락장 진입이 손실월 주범. 검증: 필터없음 +$150 → BTC상승장만 +$438(2.9배), 2025-01 대참사 −$364→−$84, 거래 12%↓·승률 동일.
+            try
+            {
+                var btcK = await GetMultiTfKlinesThrottledAsync("BTCUSDT", KlineInterval.OneHour, 260, token);
+                var btcList = btcK as List<IBinanceKline> ?? (btcK != null ? new List<IBinanceKline>(btcK) : null);
+                if (btcList != null && btcList.Count >= 210)
+                {
+                    int bl = btcList.Count - 2;
+                    double btcEma200 = CalcEmaClose(btcList, bl, 200);
+                    if (btcEma200 > 0 && (double)btcList[bl].ClosePrice <= btcEma200)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | BTC 하락장(1h 종가 ≤ EMA200) — 시장추세 역행 LONG 방지");
+                        return;
+                    }
+                }
+            }
+            catch { }
+
             // [v5.23.98] 신호 '전환'에서만 진입 (jdehorty 충실) — 직전봉도 통과면 지속신호라 스킵, 음→양 전환 첫 봉만 진입.
             //   3년 OOS 검증은 전환 신호 기준(매 봉 아님). 매 봉 진입 = 희석 → 적자. 전환만 = 흑자.
             if (evalIdx - 1 >= 60)

@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.25.27] - 2026-07-10
+
+### ✨ Added — LCC 시장(BTC)추세 필터: 하락장 LONG 진입 차단
+사용자 관찰(성과 HTML): "하락장 달엔 다 손실." LONG전용이라 하락장 진입이 손실월 주범. 3년 검증(`--lcc-regime`): 필터없음 +$150 vs **BTC 상승장만 진입 +$438(2.9배)**, 특히 2025-01 대참사 **−$364 → −$84**, 거래 12%만 감소, 승률 동일(66%).
+- **BTC 1h 종가 > EMA200(시장 상승장)일 때만 LCC LONG 진입** (`AnalyzeLorentzianEntryAsync`). 시장추세 역행 진입 방지.
+- 기존 코인별 20선위 필터 + 이 시장필터 이중 → 하락장 손실월 축소.
+- ⚠️ 라이브 카나리로 하락장 진입빈도·손실월 확인.
+
 ## [5.25.26] - 2026-07-09
 
 ### 🔀 Changed — LCC 청산을 '월별 꾸준한' 구조로 전환 (EMA20휩쏘 → 추세꺾임)
