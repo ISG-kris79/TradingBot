@@ -5019,6 +5019,10 @@ namespace TradingBot
         }
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, LorentzianPendingEntry> _lorentzianPendingEntries
             = new(StringComparer.OrdinalIgnoreCase);
+        // [v5.25.29] 신호 신선도 창(분). 1h 전환신호 후 이 시간 내 1m 상승트리거가 안 나면 폐기 → 다음 전환신호를 새로 대기.
+        //   사용자 스펙: "1분 내 진입 안 되면 패스하고 다음 진입 예측. 묵은신호로 늦게 들어가거나 하락중 반등에 진입 금지."
+        //   ※ 1분봉이 최소 1개는 마감돼야 트리거 판정 가능 → 1분 리터럴 대신 2분(=최대 2개 1m마감 관찰)로 둠. 조절 가능.
+        private const int LorentzianFreshnessMinutes = 2;
 
         // [v5.24.5] 진입 임박 스냅샷 — UI '진입 임박' 패널용. 각 심볼이 LCC 가드 진입조건에 얼마나 가까운지.
         public sealed class NearEntryInfo
@@ -5311,17 +5315,18 @@ namespace TradingBot
                 }
             }
 
-            // [v5.24.5] 즉시진입 → 5m 마감 확인 펜딩으로 변경 (사용자 지정).
-            //   문제: 15m 신호봉 마감 순간 시장가 진입 → 직후 5m/1h 하락이면 그대로 물림(XRP 22:30 즉시손실).
-            //   해결: 신호 후 '새로' 마감되는 5m봉이 양봉이고 현재가>그 봉 시가일 때만 진입(CheckLorentzianPendingEntriesAsync).
+            // [v5.25.29] 5m 양봉 마감 대기(만료 60분) → 1m 상승트리거 + 짧은 신선도창으로 변경 (사용자 스펙).
+            //   과거문제: 신호 후 최대 60분 대기 → 하락하다 데드캣 5m반등봉에 30~50분 늦게 진입 = "타이밍 지나 추후진입/하락중 반등진입" 손실.
+            //   해결: 신호 후 LorentzianFreshnessMinutes(2분) 내에 1m 상승트리거(현재가>직전1m고점 & >1m EMA20 & >1h EMA20)가 나야만 진입.
+            //         그 안에 안 나면 폐기 → 다음 전환신호를 새로 기다림(묵은신호 늦은진입 원천차단). 확인은 CheckLorentzianPendingEntriesAsync.
             _lorentzianPendingEntries[symbol] = new LorentzianPendingEntry
             {
                 SignalTimeUtc = DateTime.UtcNow,
                 SignalPrice = currentPrice,
-                DeadlineUtc = DateTime.UtcNow.AddMinutes(60),   // [v5.25.21] 1h 신호 → 5m 반등확인 창 15→60분
+                DeadlineUtc = DateTime.UtcNow.AddMinutes(LorentzianFreshnessMinutes),
                 GuardSummary = $"KNN WR={guard.KnnWinRate:F2} pred={guard.KnnPrediction} regime={guard.RegimeSlope:F2}"
             };
-            OnStatusLog?.Invoke($"⏳ [LORENTZIAN] {symbol} 신호 발생 → 5m 양봉 마감 확인 대기 | KNN WR={guard.KnnWinRate:F2} pred={guard.KnnPrediction} regime={guard.RegimeSlope:F2}");
+            OnStatusLog?.Invoke($"⏳ [LORENTZIAN] {symbol} 신호 발생 → {LorentzianFreshnessMinutes}분 내 1m 상승트리거 대기 | KNN WR={guard.KnnWinRate:F2} pred={guard.KnnPrediction} regime={guard.RegimeSlope:F2}");
         }
 
         // [v5.23.97] RSI2 과매도 반등 전략 — 3년·119코인 OOS 검증(승률 66%, 기대 +0.103%/건, 과최적화 아님).
@@ -5454,18 +5459,19 @@ namespace TradingBot
             return 100.0 - 100.0 / (1.0 + ag / al);
         }
 
-        // [v5.23.4] 진입 대기 → 1분봉 정밀 트리거: currentPrice > 직전 1m high AND currentPrice > 1m EMA20
-        //   조건 충족 시 즉시 진입, 10분 경과 시 취소 (사용자 스펙)
+        // [v5.25.29] 신호 신선도(2분) 내 1분봉 상승 트리거 — 묵은신호 늦은진입/하락중 반등진입 제거 (사용자 스펙).
+        //   상승시그널 = 현재가 > 직전 '마감' 1m봉 고점(돌파) AND 현재가 > 1m EMA20(단기상승) AND 현재가 > 1h EMA20(대세상승).
+        //   충족 시 즉시 진입. 신선도창 초과 시 폐기 → 다음 1h 전환신호를 새로 대기(=다음 진입 예측).
         private async Task CheckLorentzianPendingEntriesAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
             if (!_lorentzianPendingEntries.TryGetValue(symbol, out var pending)) return;
 
-            // [v5.24.5] 타임아웃(15분) → 5m 양봉 마감 확인 실패 시 취소
+            // [v5.25.29] 신선도창(2분) 초과 → 폐기. "1분 내 미체결이면 패스하고 다음 진입 예측"(사용자).
             if (DateTime.UtcNow > pending.DeadlineUtc)
             {
                 _lorentzianPendingEntries.TryRemove(symbol, out _);
                 _lorentzianCooldown[symbol] = DateTime.UtcNow;
-                OnStatusLog?.Invoke($"⏰ [LORENTZIAN_CONFIRM] {symbol} 5m 양봉 마감 확인 실패(15분 타임아웃) → 취소 | {pending.GuardSummary}");
+                OnStatusLog?.Invoke($"⏰ [LORENTZIAN_CONFIRM] {symbol} {LorentzianFreshnessMinutes}분 내 1m 상승트리거 미발생 → 폐기(묵은신호 늦은진입 방지) | {pending.GuardSummary}");
                 return;
             }
 
@@ -5479,32 +5485,23 @@ namespace TradingBot
                 }
             }
 
-            // [v5.24.5] 5m 마감 확인 (사용자 지정): 신호 이후 '새로' 마감된 5m봉이 양봉(close>open)이고
-            //   현재가 > 그 5m봉 시가일 때만 진입. 하락 5m엔 진입 안 함 → XRP식 즉시손실 차단.
-            var k5 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 3, token);
-            if (k5 == null || k5.Count < 2) return;
-            var k5List = k5 as List<IBinanceKline> ?? new List<IBinanceKline>(k5);
-            var lastClosed5m = k5List[^2];   // 직전 '마감' 5m봉
+            // [v5.25.29] 1분봉 상승 트리거 판정.
+            var k1m = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneMinute, 30, token);
+            if (k1m == null) return;
+            var k1mList = k1m as List<IBinanceKline> ?? new List<IBinanceKline>(k1m);
+            if (k1mList.Count < 22) return;
+            var lastClosed1m = k1mList[^2];               // 직전 '마감' 1m봉
+            double ema20_1m = CalcEmaClose(k1mList, k1mList.Count - 2, 20);
 
-            // 신호 이후 마감된 봉인지 — 신호 전 봉으로 즉시 진입 방지 (다음 5m 마감까지 대기)
-            if (lastClosed5m.CloseTime <= pending.SignalTimeUtc) return;
-
-            bool bull5m = lastClosed5m.ClosePrice > lastClosed5m.OpenPrice;
-            if (!bull5m)
+            // 상승시그널 = 직전 1m 고점 돌파 + 1m EMA20 위. 아니면(하락/횡보시그널) 진입 패스, 신선도 내 대기.
+            if (!(currentPrice > lastClosed1m.HighPrice && ema20_1m > 0 && (double)currentPrice > ema20_1m))
             {
-                if (DateTime.UtcNow.Second % 30 == 0)
-                    OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 직전 5m 음봉(O={lastClosed5m.OpenPrice:F6} C={lastClosed5m.ClosePrice:F6}) → 양봉 마감 대기 | {pending.GuardSummary}");
-                return;
-            }
-            if (currentPrice <= lastClosed5m.OpenPrice)
-            {
-                if (DateTime.UtcNow.Second % 30 == 0)
-                    OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 현재가({currentPrice:F6}) <= 5m 시가({lastClosed5m.OpenPrice:F6}) → 반등 유지 대기");
+                if (DateTime.UtcNow.Second % 20 == 0)
+                    OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 1m 상승트리거 대기(현재가 {currentPrice:F6} vs 1m고점 {lastClosed1m.HighPrice:F6}/1m EMA20 {ema20_1m:F6}) | 신선도 {LorentzianFreshnessMinutes}분");
                 return;
             }
 
-            // [v5.25.23] EMA20 위 '실제 진입시점' 재확인 — v5.25.22 필터는 신호시점만 봐서, 5m 확인 몇 분 뒤 하락장 진입 구멍.
-            //   3년검증: 20선 아래 진입 −$279(918건 중 635건이 20선아래=지는자리). 진입 순간 현재가 ≤ 1h EMA20 이면 보류(20선 회복 대기).
+            // [v5.25.23] 대세(1h EMA20) 상승 재확인 — 하락장 진입 차단. 진입 순간 현재가 ≤ 1h EMA20 이면 보류(=하락시그널).
             var k1hp = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 60, token);
             if (k1hp != null)
             {
@@ -5514,8 +5511,8 @@ namespace TradingBot
                     double ema20h = CalcEmaClose(k1hpList, k1hpList.Count - 2, 20);
                     if (ema20h > 0 && (double)currentPrice <= ema20h)
                     {
-                        if (DateTime.UtcNow.Second % 30 == 0)
-                            OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 현재가({currentPrice:F6}) ≤ 1h EMA20({ema20h:F6}) → 20선 위 회복 대기(하락장 진입 차단)");
+                        if (DateTime.UtcNow.Second % 20 == 0)
+                            OnStatusLog?.Invoke($"⏸️ [LORENTZIAN_CONFIRM] {symbol} 현재가({currentPrice:F6}) ≤ 1h EMA20({ema20h:F6}) → 대세 상승전환 대기(하락시그널 진입 차단)");
                         return;
                     }
                 }
@@ -5524,7 +5521,7 @@ namespace TradingBot
             _lorentzianPendingEntries.TryRemove(symbol, out _);
             _lorentzianCooldown[symbol] = DateTime.UtcNow;
             OnStatusLog?.Invoke(
-                $"✅ [LORENTZIAN_CONFIRM] {symbol} 진입 | 5m 양봉 마감(O={lastClosed5m.OpenPrice:F6} C={lastClosed5m.ClosePrice:F6}) + 현재가 {currentPrice:F6} | {pending.GuardSummary}");
+                $"✅ [LORENTZIAN_CONFIRM] {symbol} 진입 | 1m 상승트리거(현재가 {currentPrice:F6} > 1m고점 {lastClosed1m.HighPrice:F6} & >1m/1h EMA20) | {pending.GuardSummary}");
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
                 signalSource: "LORENTZIAN", skipAiGateCheck: false);
         }
