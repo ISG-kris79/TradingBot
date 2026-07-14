@@ -5300,6 +5300,28 @@ namespace TradingBot
             }
             catch { }
 
+            // [v5.25.30] 일봉 하락추세 → ADX≥35 강확인 (3년 백테 --lcc-supervisor 검증).
+            //   결과: 베이스(ADX30) 총 -$90 → A(일봉하락시 ADX35) 총 +$18(흑자전환), 손실합 17%↓(-$1187→-$983), 승률 62→64%.
+            //   일봉 EMA20 아래(하락추세)에선 저ADX(약추세) 진입이 손실 주범 → 문턱 30→35. 일봉 상승추세면 기존 30 유지.
+            //   ※ 같이 검증한 '조기컷 감시'(B)는 되레 총손익 -$124로 악화(반등놓침=fee-bleed 재발) → 폐기.
+            try
+            {
+                var dK = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneDay, 40, token);
+                var dList = dK as List<IBinanceKline> ?? (dK != null ? new List<IBinanceKline>(dK) : null);
+                if (dList != null && dList.Count >= 25)
+                {
+                    int dli = dList.Count - 2;   // 마지막 '마감' 일봉
+                    double dEma20 = CalcEmaClose(dList, dli, 20);
+                    bool dailyDown = dEma20 > 0 && (double)dList[dli].ClosePrice <= dEma20;
+                    if (dailyDown && guard.Adx < 35.0)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | 일봉 하락추세(종가≤EMA20) + ADX {guard.Adx:F1}<35 (하락장 강확인 요구)");
+                        return;
+                    }
+                }
+            }
+            catch { }
+
             // [v5.23.98] 신호 '전환'에서만 진입 (jdehorty 충실) — 직전봉도 통과면 지속신호라 스킵, 음→양 전환 첫 봉만 진입.
             //   3년 OOS 검증은 전환 신호 기준(매 봉 아님). 매 봉 진입 = 희석 → 적자. 전환만 = 흑자.
             if (evalIdx - 1 >= 60)
