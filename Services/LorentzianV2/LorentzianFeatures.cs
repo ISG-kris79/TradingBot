@@ -17,7 +17,7 @@ namespace TradingBot.Services.LorentzianV2
     //     · 정규화 causal 보장 (Pine var 누적 min/max 와 동일, 미래 미사용)
     public static class LorentzianFeatures
     {
-        public const int FeatureCount = 5;
+        public const int FeatureCount = 6;   // [2026-07-15] f6 MACD히스토 기울기 추가 (사용자 설계: 다이버전스 정량화)
 
         public static float[]? Extract(List<IBinanceKline> klines)
         {
@@ -43,7 +43,43 @@ namespace TradingBot.Services.LorentzianV2
             double rsi9 = CalcRSI(klines, 9);
             float f5 = (float)(rsi9 / 100.0);
 
-            return new[] { Clamp01(f1), Clamp01(f2), Clamp01(f3), Clamp01(f4), Clamp01(f5) };
+            // [2026-07-15] f6: MACD 오실레이터(히스토그램) 기울기 — ATR정규화 + Tanh (사용자 설계).
+            //   rawSlope=hist[t]-hist[t-1], tanh(rawSlope/ATR × 2.0) → 0.5*(1+tanh)로 0-1 매핑.
+            //   목적: "가격↓인데 MACD기울기↑"(상승 다이버전스) 패턴을 KNN이 스스로 학습. 1=세력팽창 0=숏 0.5=평탄.
+            float f6 = MacdHistSlope(klines);
+
+            return new[] { Clamp01(f1), Clamp01(f2), Clamp01(f3), Clamp01(f4), Clamp01(f5), Clamp01(f6) };
+        }
+
+        // MACD(12,26,9) 히스토그램 기울기 → ATR정규화 + Tanh → 0-1 (0.5=평탄, →1=상승가속/세력팽창, →0=하락가속/숏)
+        private static float MacdHistSlope(List<IBinanceKline> kl)
+        {
+            int n = kl.Count; if (n < 35) return 0.5f;
+            double e12 = (double)kl[0].ClosePrice, e26 = e12, sig = 0; bool si = false;
+            double histPrev = 0, histNow = 0;
+            for (int i = 1; i < n; i++)
+            {
+                double c = (double)kl[i].ClosePrice;
+                e12 += (c - e12) * (2.0 / 13); e26 += (c - e26) * (2.0 / 27);
+                double macd = e12 - e26;
+                if (!si) { sig = macd; si = true; } else sig += (macd - sig) * (2.0 / 10);
+                histPrev = histNow; histNow = macd - sig;
+            }
+            double atr = AtrForSlope(kl, 14);
+            if (atr <= 1e-12) return 0.5f;
+            double scaleFactor = (histNow - histPrev) / atr;
+            return (float)(0.5 * (1.0 + Math.Tanh(scaleFactor * 2.0)));
+        }
+        private static double AtrForSlope(List<IBinanceKline> kl, int period)
+        {
+            int n = kl.Count; if (n < period + 1) return 0;
+            double sum = 0;
+            for (int i = n - period; i < n; i++)
+            {
+                double h = (double)kl[i].HighPrice, l = (double)kl[i].LowPrice, pc = (double)kl[i - 1].ClosePrice;
+                sum += Math.Max(h - l, Math.Max(Math.Abs(h - pc), Math.Abs(l - pc)));
+            }
+            return sum / period;
         }
 
         private static float Clamp01(float v)

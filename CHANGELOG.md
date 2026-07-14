@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.25.34] - 2026-07-15
+
+### ✨ Added — KNN 피처에 f6 'MACD 히스토그램 기울기' 추가 (다이버전스 정량화) + 라이브·검증기 6피처 동기화
+사용자 설계: MACD 오실레이터 기울기를 KNN 피처로 넣으면, "가격↓인데 MACD기울기↑"(상승 다이버전스) 패턴을 KNN이 스스로 학습 → 다이버전스 타점 정량화 + 세력 가속도 감지.
+- **f6 MacdHistSlope**: MACD(12,26,9) 히스토그램 slope = hist[t]−hist[t-1], **ATR 정규화 + Tanh** → `0.5*(1+tanh(rawSlope/ATR × 2.0))` 로 0-1 매핑(0.5=평탄, 1=세력팽창, 0=숏). `LorentzianFeatures.cs`, FeatureCount 5→6.
+- **⚠️ 중대 발견/수정: 라이브(5피처)와 검증기(7피처)가 세션 내내 불일치**했음 — 백테가 라이브와 다른 피처로 돌아 결과가 안 맞았음. 검증기 `LorentzianFeatures.cs`를 라이브와 1:1 동일(6피처, expanding 정규화)로 동기화. 이제 백테=라이브.
+- KNN 엔진은 `LorentzianFeatures.FeatureCount` 사용이라 6으로 자동 전파(하드코딩 없음).
+- ⚠️ 피처 셋 변경이라 KNN 신호 특성이 바뀜 → 라이브 카나리 필수. 기존 백테(7피처) 결과는 무효, 6피처로 재검증 필요.
+
 ## [5.25.33] - 2026-07-15
 
 ### 🔧 Changed — LCC 3-타임프레임 구조 확립: 방향 1h(KNN) → 진입대기 15m → 진입 5m마감 (사용자 지정 재확립)

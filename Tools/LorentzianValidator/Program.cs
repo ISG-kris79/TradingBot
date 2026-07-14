@@ -12716,6 +12716,102 @@ internal static class Program
         Console.WriteLine("→ knn-report-ls.json 작성 완료");
     }
 
+    // --knn-macd : 1h KNN 방향 + EMA20 + MACD상승 + 지지확인 조합 비교 (30종·6슬롯·$500·15x). 사용자 3점: 백테·지지·MACD.
+    private static async Task RunKnnMacdAsync()
+    {
+        const int featureWindow = 500, maxHold = 96, K = 8, L = 8, pages = 20;   // 1h×1500×20≈3.4년
+        const decimal cost = 0.0004m * 2m + 0.0005m, slPct = 0.03m;
+        decimal lev = 15m, margin = 500m; int maxSlots = 6; decimal capital = margin * maxSlots;
+        var universe = new[] {
+            "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","TRXUSDT","AVAXUSDT","LINKUSDT",
+            "DOTUSDT","LTCUSDT","BCHUSDT","ATOMUSDT","UNIUSDT","NEARUSDT","APTUSDT","ARBUSDT","OPUSDT","SUIUSDT",
+            "INJUSDT","FILUSDT","XLMUSDT","AAVEUSDT","ICPUSDT","ETCUSDT","HBARUSDT","VETUSDT","ALGOUSDT","SEIUSDT" };
+        // (이름, MACD상승요구, MACD히스토상승요구, 지지확인요구)
+        var cfgs = new (string name, bool macdPos, bool macdRise, bool support)[]
+        {
+            ("A.KNN방향+EMA20",            false, false, false),
+            ("B.+MACD>0",                  true,  false, false),
+            ("C.+MACD상승(히스토↑)",       true,  true,  false),
+            ("D.+지지확인(눌림반등)",       false, false, true),
+            ("E.+MACD>0+지지확인",         true,  false, true),
+            ("F.+MACD상승+지지확인",        true,  true,  true),
+        };
+        int C = cfgs.Length;
+
+        Console.WriteLine($"=== KNN방향+MACD+지지 조합 — 30종·1h·{maxSlots}슬롯·${margin}·{lev}x ===");
+        Console.Write("[BTC 시장맵] ");
+        var btc = await FetchKlines1hAsync("BTCUSDT", pages);
+        var mkUp = new Dictionary<DateTime, bool>();
+        { double m = 2.0 / 201, e = (double)btc[0].ClosePrice; for (int j = 1; j < btc.Count; j++) { e = (double)btc[j].ClosePrice * m + e * (1 - m); if (j >= 200) mkUp[btc[j].OpenTime] = (double)btc[j].ClosePrice > e; } }
+        Console.WriteLine($"1h={btc.Count}");
+
+        var candByCfg = new List<(DateTime ent, DateTime ex, decimal pnl)>[C];
+        for (int c = 0; c < C; c++) candByCfg[c] = new List<(DateTime, DateTime, decimal)>();
+        int idx = 0;
+        foreach (var sym in universe)
+        {
+            idx++; Console.Write($"[{idx}/{universe.Length}] {sym} ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlines1hAsync(sym, pages); } catch { Console.WriteLine("fail"); continue; }
+            if (kl.Count < 800) { Console.WriteLine("skip"); continue; }
+            int n = kl.Count; Console.WriteLine($"1h={n}");
+            var feats = new float[n][];
+            for (int j = 60; j < n; j++) { int ws = Math.Max(0, j - (featureWindow - 1)); feats[j] = LorentzianFeatures.Extract(kl.GetRange(ws, j - ws + 1))!; }
+            var labels = new int[n];
+            for (int j = L; j < n; j++) { decimal nc = kl[j].ClosePrice, pc = kl[j - L].ClosePrice; labels[j] = nc > pc ? 1 : (nc < pc ? -1 : 0); }
+            var ema20 = new double[n]; var ema200 = new double[n]; var macdH = new double[n];
+            double e12 = (double)kl[0].ClosePrice, e26 = e12, sig9 = 0; bool s9 = false;
+            for (int j = 1; j < n; j++) { double c = (double)kl[j].ClosePrice; e12 += (c - e12) * (2.0 / 13); e26 += (c - e26) * (2.0 / 27); double md = e12 - e26; if (!s9) { sig9 = md; s9 = true; } else sig9 += (md - sig9) * (2.0 / 10); macdH[j] = md - sig9; }
+            for (int j = 200; j < n; j++) { ema20[j] = CalcEMA(kl, j, 20); ema200[j] = CalcEMA(kl, j, 200); }
+            var engine = new LorentzianAnnEngine(sym, neighborsCount: K, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount);
+            var sg = new int[n];
+            for (int j = 65; j < n; j++) { int s = j - 5; if (feats[s] != null) engine.AddSample(feats[s], labels[s]); if (feats[j] == null) continue; var p = engine.Predict(feats[j]); if (!p.IsReady || p.K == 0) continue; sg[j] = p.Prediction > 0 ? 1 : (p.Prediction < 0 ? -1 : 0); }
+
+            var busy = new int[C]; for (int c = 0; c < C; c++) busy[c] = -1;
+            for (int j = 250; j < n - 1; j++)
+            {
+                if (!(sg[j] == 1)) continue;                          // KNN 롱 방향(상태)
+                double c0 = (double)kl[j].ClosePrice;
+                if (!(c0 > ema200[j] && c0 > ema20[j])) continue;     // 1h EMA20/200 위(상승방향)
+                if (!(mkUp.TryGetValue(kl[j].OpenTime, out var bu) && bu)) continue;   // BTC 상승장
+                bool macdPos = macdH[j] > 0;
+                bool macdRise = j >= 1 && macdH[j] > macdH[j - 1];
+                // 지지확인: 최근 저점이 스윙저점 위(higher-low) + 직전봉이 EMA20 근처까지 눌렸다 반등(지지 테스트)
+                double swingLow = double.MaxValue; for (int q = Math.Max(0, j - 10); q <= j - 2; q++) if ((double)kl[q].LowPrice < swingLow) swingLow = (double)kl[q].LowPrice;
+                bool higherLow = (double)kl[j].LowPrice > swingLow;
+                bool touchedEma = (double)kl[j].LowPrice <= ema20[j] * 1.01 && c0 > ema20[j];   // EMA20 지지 테스트 후 위 마감
+                bool support = higherLow && (touchedEma || (double)kl[j - 1].LowPrice <= ema20[j - 1] * 1.01);
+                if (kl[j + 1].OpenPrice <= 0) continue;
+                decimal entry = kl[j + 1].OpenPrice; decimal slPx = entry * (1m - slPct);
+                for (int c = 0; c < C; c++)
+                {
+                    if (j <= busy[c]) continue;
+                    var cf = cfgs[c];
+                    if (cf.macdPos && !macdPos) continue;
+                    if (cf.macdRise && !macdRise) continue;
+                    if (cf.support && !support) continue;
+                    decimal net = 0m; bool done = false; int ei = Math.Min(n - 1, j + maxHold);
+                    for (int e = j + 1; e < n && e <= j + maxHold; e++) { if (kl[e].LowPrice <= slPx) { net = -slPct - cost; ei = e; done = true; break; } if (sg[e] == -1) { net = (kl[e].ClosePrice - entry) / entry - cost; ei = e; done = true; break; } }
+                    if (!done) net = (kl[ei].ClosePrice - entry) / entry - cost;
+                    busy[c] = ei;
+                    candByCfg[c].Add((kl[j + 1].OpenTime, kl[ei].OpenTime, net * margin * lev));
+                }
+            }
+        }
+
+        Console.WriteLine($"\n=== 결과 (6슬롯 포트폴리오, ${margin}·{lev}x, ~3.4년) ===");
+        Console.WriteLine($"  {"조건",-24}{"진입",6}{"승률",8}{"총손익$",11}{"월평균%",9}");
+        for (int c = 0; c < C; c++)
+        {
+            var cs = candByCfg[c]; cs.Sort((a, b) => a.ent.CompareTo(b.ent));
+            var open = new List<DateTime>(); int tn = 0, tw = 0; decimal tp = 0m; var mset = new HashSet<string>();
+            foreach (var t in cs) { open.RemoveAll(x => x <= t.ent); if (open.Count >= maxSlots) continue; open.Add(t.ex); tn++; if (t.pnl > 0) tw++; tp += t.pnl; mset.Add(t.ent.ToString("yyyy-MM")); }
+            double mo = mset.Count > 0 ? (double)(tp / capital * 100m) / mset.Count : 0;
+            Console.WriteLine($"  {cfgs[c].name,-24}{tn,6}{(tn > 0 ? 100.0 * tw / tn : 0),7:F1}%{tp,11:F2}{mo,8:F2}% {(tp > 0 ? "✅" : "❌")}");
+        }
+        Console.WriteLine("\n  ▶ MACD상승·지지확인이 총손익↑면 채택. 진입수도 같이 봐서 빈도-품질 균형 확인.");
+    }
+
     // [v5.22.72] Daily Swing + ProfitTrailing 3년 월별 통계
     private static async Task RunDailySwingMonthly3yAsync()
     {
@@ -18770,6 +18866,11 @@ internal static class Program
         if (HasArg("--knn-report-ls"))
         {
             await RunKnnReportLsAsync();
+            return;
+        }
+        if (HasArg("--knn-macd"))
+        {
+            await RunKnnMacdAsync();
             return;
         }
         if (HasArg("--replay-entries"))
