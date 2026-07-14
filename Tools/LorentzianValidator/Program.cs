@@ -11540,6 +11540,116 @@ internal static class Program
         Console.WriteLine("\n  ▶ 조기컷/강확인이 '총손익↑ & 손실합↓' 면 채택. 총손익이 되레 낮아지면(반등놓침) fee-bleed 재발 → 폐기.");
     }
 
+    // --lcc-daily2026 : 현행 로직(v5.25.30: ADX≥30 + 일봉하락→ADX35 + EMA20 + BTC필터 + 반대신호청산 + SL-3%)을
+    //   2026-01-01~오늘 일별(KST) 승률/수익률/수익금액으로 집계 → lcc-daily-2026.json 출력. 마진 $100·10x 가정.
+    private static async Task RunLccDaily2026Async()
+    {
+        decimal lev = 10m; decimal margin = 100m;
+        const int featureWindow = 500, maxHold = 96;
+        const decimal cost = 0.0004m * 2m + 0.0005m;
+        const decimal slPct = 0.03m;
+        const int K = 8;
+        var syms = new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+        var start = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+
+        Console.WriteLine("=== LCC 현행로직 2026 일별 시뮬 (ADX30/일봉하락→35/EMA20/BTC필터/반대신호/SL-3%) ===");
+        Console.Write("[BTC 시장맵] ");
+        var btc = await FetchKlines1hAsync("BTCUSDT", 28);
+        var mkUp = new Dictionary<DateTime, bool>();
+        { double m = 2.0 / 201, e = (double)btc[0].ClosePrice; for (int j = 1; j < btc.Count; j++) { e = (double)btc[j].ClosePrice * m + e * (1 - m); if (j >= 200) mkUp[btc[j].OpenTime] = (double)btc[j].ClosePrice > e; } }
+        Console.WriteLine($"1h={btc.Count}");
+
+        var daily = new SortedDictionary<string, (int n, int w, decimal roe, decimal pnl)>(StringComparer.Ordinal);
+        int idx = 0;
+        foreach (var sym in syms)
+        {
+            idx++; Console.Write($"[{idx}/{syms.Length}] {sym} ");
+            List<IBinanceKline> kl; List<IBinanceKline> dl;
+            try { kl = await FetchKlines1hAsync(sym, 28); dl = await FetchKlines1dAsync(sym, 1); }
+            catch (Exception ex) { Console.WriteLine("fail:" + ex.Message); continue; }
+            if (kl.Count < 1000 || dl.Count < 40) { Console.WriteLine("skip"); continue; }
+            Console.WriteLine($"1h={kl.Count} 1d={dl.Count}");
+
+            var dyUpByClose = new List<(DateTime close, bool up)>();
+            { double m = 2.0 / 21, e = (double)dl[0].ClosePrice; for (int j = 1; j < dl.Count; j++) { e = (double)dl[j].ClosePrice * m + e * (1 - m); if (j >= 20) dyUpByClose.Add((dl[j].CloseTime, (double)dl[j].ClosePrice > e)); } }
+            var dyUp1h = new bool[kl.Count];
+            { int di = 0; for (int j = 0; j < kl.Count; j++) { while (di + 1 < dyUpByClose.Count && dyUpByClose[di + 1].close <= kl[j].OpenTime) di++; dyUp1h[j] = dyUpByClose.Count > 0 && dyUpByClose[di].close <= kl[j].OpenTime && dyUpByClose[di].up; } }
+
+            var feats = new float[kl.Count][];
+            for (int j = 60; j < kl.Count; j++) { int ws = Math.Max(0, j - (featureWindow - 1)); feats[j] = LorentzianFeatures.Extract(kl.GetRange(ws, j - ws + 1))!; }
+            var labels = new int[kl.Count];
+            for (int j = 4; j < kl.Count; j++) { decimal nc = kl[j].ClosePrice, pc = kl[j - 4].ClosePrice; labels[j] = nc > pc ? 1 : (nc < pc ? -1 : 0); }
+            var adx = new double[kl.Count]; var ema200 = new double[kl.Count]; var sma200 = new double[kl.Count];
+            var regime = new double[kl.Count]; var nwk = new double[kl.Count]; var ema20 = new double[kl.Count]; var atr1 = new double[kl.Count]; var atr10 = new double[kl.Count];
+            for (int j = 200; j < kl.Count; j++) { atr1[j] = CalcTR(kl, j); atr10[j] = CalcATR(kl, j, 10); adx[j] = CalcADX_idx(kl, j, 14); ema200[j] = CalcEMA(kl, j, 200); sma200[j] = CalcSMA(kl, j, 200); regime[j] = CalcRegimeSlope(kl, j); nwk[j] = CalcNWKernel(kl, j); ema20[j] = CalcEMA(kl, j, 20); }
+
+            var engine = new LorentzianAnnEngine(sym, neighborsCount: K, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount);
+            var sig = new int[kl.Count]; var sigWr = new float[kl.Count];
+            for (int j = 65; j < kl.Count; j++)
+            {
+                int sIdx = j - 5; if (feats[sIdx] != null) engine.AddSample(feats[sIdx], labels[sIdx]);
+                if (feats[j] == null) continue; var p = engine.Predict(feats[j]); if (!p.IsReady || p.K == 0) continue;
+                sig[j] = p.Prediction > 0 ? 1 : (p.Prediction < 0 ? -1 : 0); sigWr[j] = p.K > 0 ? (float)p.PositiveVotes / p.K : 0f;
+            }
+
+            int busy = -1;
+            for (int j = 250; j < kl.Count - 1; j++)
+            {
+                if (j <= busy) continue;
+                double adxReq = dyUp1h[j] ? 30.0 : 35.0;
+                bool pass = sig[j] == 1 && sigWr[j] >= 0.70f && atr1[j] > atr10[j] && regime[j] > -0.1
+                    && adx[j] > adxReq && (double)kl[j].ClosePrice > ema200[j] && (double)kl[j].ClosePrice > sma200[j]
+                    && j >= 2 && nwk[j] > nwk[j - 2] && (double)kl[j].ClosePrice > ema20[j];
+                double adxReqP = (j > 250 && dyUp1h[j - 1]) ? 30.0 : 35.0;
+                bool passPrev = j > 250 && sig[j - 1] == 1 && sigWr[j - 1] >= 0.70f && atr1[j - 1] > atr10[j - 1] && regime[j - 1] > -0.1
+                    && adx[j - 1] > adxReqP && (double)kl[j - 1].ClosePrice > ema200[j - 1] && (double)kl[j - 1].ClosePrice > sma200[j - 1]
+                    && j - 1 >= 2 && nwk[j - 1] > nwk[j - 3] && (double)kl[j - 1].ClosePrice > ema20[j - 1];
+                if (!pass || passPrev) continue;
+                if (!(mkUp.TryGetValue(kl[j].OpenTime, out var up) && up)) continue;
+                if (kl[j + 1].OpenPrice <= 0) continue;
+                decimal entry = kl[j + 1].OpenPrice;
+                decimal liqPx = entry * (1m - 1m / lev); decimal slPx = entry * (1m - slPct);
+                decimal net = 0m; bool done = false; int ei = Math.Min(kl.Count - 1, j + maxHold);
+                for (int e = j + 1; e < kl.Count && e <= j + maxHold; e++)
+                {
+                    if (kl[e].LowPrice <= liqPx) { net = -1m / lev - cost; ei = e; done = true; break; }
+                    if (kl[e].LowPrice <= slPx) { net = -slPct - cost; ei = e; done = true; break; }
+                    if (sig[e] == -1) { net = (kl[e].ClosePrice - entry) / entry - cost; ei = e; done = true; break; }
+                }
+                if (!done) net = (kl[ei].ClosePrice - entry) / entry - cost;
+                busy = ei;
+
+                var entryUtc = kl[j + 1].OpenTime;
+                if (entryUtc < start) continue;                         // 2026-01-01 이후만
+                decimal roe = net * lev * 100m;                          // ROE%
+                decimal pnl = net * margin * lev;                        // $ (마진 $100 × 10x)
+                string key = entryUtc.AddHours(9).ToString("yyyy-MM-dd"); // KST 일자
+                var v = daily.TryGetValue(key, out var d0) ? d0 : (0, 0, 0m, 0m);
+                v.Item1++; if (pnl > 0) v.Item2++; v.Item3 += roe; v.Item4 += pnl; daily[key] = v;
+            }
+        }
+
+        var sb = new System.Text.StringBuilder(); sb.Append('[');
+        bool first = true;
+        foreach (var kv in daily)
+        {
+            if (!first) sb.Append(','); first = false;
+            double wr = kv.Value.n > 0 ? 100.0 * kv.Value.w / kv.Value.n : 0;
+            sb.Append("{\"d\":\"").Append(kv.Key).Append("\",\"n\":").Append(kv.Value.n)
+              .Append(",\"w\":").Append(kv.Value.w)
+              .Append(",\"wr\":").Append(wr.ToString("F1", inv))
+              .Append(",\"roe\":").Append(kv.Value.roe.ToString("F2", inv))
+              .Append(",\"pnl\":").Append(kv.Value.pnl.ToString("F2", inv)).Append('}');
+        }
+        sb.Append(']');
+        System.IO.File.WriteAllText("lcc-daily-2026.json", sb.ToString());
+        int totN = daily.Values.Sum(x => x.n), totW = daily.Values.Sum(x => x.w);
+        decimal totPnl = daily.Values.Sum(x => x.pnl);
+        Console.WriteLine($"\n일수={daily.Count} 거래={totN} 승={totW} ({(totN > 0 ? 100.0 * totW / totN : 0):F1}%) 총손익=${totPnl:F2}");
+        Console.WriteLine("→ lcc-daily-2026.json 작성 완료");
+    }
+
     // [v5.22.72] Daily Swing + ProfitTrailing 3년 월별 통계
     private static async Task RunDailySwingMonthly3yAsync()
     {
@@ -17544,6 +17654,11 @@ internal static class Program
         if (HasArg("--lcc-supervisor"))
         {
             await RunLccSupervisorAsync();
+            return;
+        }
+        if (HasArg("--lcc-daily2026"))
+        {
+            await RunLccDaily2026Async();
             return;
         }
         if (HasArg("--replay-entries"))
