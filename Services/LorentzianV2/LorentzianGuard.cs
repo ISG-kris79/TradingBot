@@ -90,7 +90,9 @@ namespace TradingBot.Services.LorentzianV2
             //   (건당손익이 음→양으로 뒤집힘 = 거래 '질' 개선). 횡보(저ADX) 구간의 KNN=노이즈 → 차단.
             //   ADX는 jdehorty 원본의 핵심 필터. K=8·1h·BTC상승·반대신호청산 스펙 기준 최적.
             r.Adx = CalcADX(kl, idx, 14);
-            if (r.Adx < 30.0) { r.BlockReason = $"ADX_WEAK ({r.Adx:F1}<30, 저추세 횡보구간 차단)"; return r; }
+            // [최적화 2026-07-14] ADX≥30 게이트 OFF — 15m 최적모델(--knn-optimize)은 ADX 대신 EMA정배열+ATR1.5+RSI45-70을 씀(greedy가 ADX 미채택=EMA정배열이 대체).
+            //   ADX는 1h용이었고 15m에선 EMA정배열 confluence가 더 나음. (AnalyzeLorentzianEntryAsync에서 새 필터 적용.)
+            // if (r.Adx < 30.0) { r.BlockReason = $"ADX_WEAK ({r.Adx:F1}<30, 저추세 횡보구간 차단)"; return r; }
 
             // 5) close > EMA(200)  — [v5.23.90 비활성화: jdehorty 기본 OFF, 1h EMA20 게이트가 추세 담당]
             r.Ema200 = CalcEMA(kl, idx, 200);
@@ -413,7 +415,8 @@ namespace TradingBot.Services.LorentzianV2
         //   (이전: forward close[idx+4] vs close[idx] — Pine 원본과 다른 비표준 라벨,
         //    KNN 이 "현재와 닮은 과거 봉들의 *그 시점* 4봉 추세"를 합산하는 jdehorty 설계와 불일치 → 예측 랜덤화 원인)
         //   futureBars 인자명은 호환 유지(=lookback 봉수).
-        public static int LabelForBar(List<IBinanceKline> kl, int idx, int futureBars = 4)
+        // [최적화 2026-07-14] 라벨기간 4→8봉 — --knn-optimize 30종 검증: 라벨8이 신호 질 최적(월0.94%→4.08%의 핵심 인자).
+        public static int LabelForBar(List<IBinanceKline> kl, int idx, int futureBars = 8)
         {
             if (idx - futureBars < 0) return 0;
             decimal nowC  = kl[idx].ClosePrice;

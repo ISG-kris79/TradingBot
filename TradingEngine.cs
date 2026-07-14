@@ -5128,9 +5128,9 @@ namespace TradingBot
         /// <summary>[v5.24.6] 단일 심볼 LCC 가드 평가 → 진입 임박 스냅샷만 기록 (진입 안 함).</summary>
         private async Task UpdateNearEntryForSymbolAsync(string symbol, CancellationToken token)
         {
-            // [v5.25.21] LCC 신호 타임프레임 15m→1h — 3년 백테 검증: 15m은 엣지<노이즈(-$2506), 1h는 흑자전환(+$63).
-            //   15m 잔파동 추격("하락 중 진입")이 근본손실 원인 → 1h로 올려 노이즈 진입 제거. 엔진 공유하므로 진입/스냅샷 동일 TF 필수.
-            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 1500, token);
+            // [최적화 2026-07-14] LCC 신호 TF 1h→15m — --knn-optimize 30종 검증: 15m+라벨8+higher-low앵커+EMA정배열+ATR1.5+RSI45-70 = 월4.08%.
+            //   (1h는 신호 극소수로 월~1% 천장. 15m 노이즈는 앵커/필터로 잡음.) 엔진 공유하므로 진입/스냅샷 동일 TF 필수.
+            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 1500, token);
             if (k15 == null || k15.Count < 300) return;
             var k15List = k15 as List<IBinanceKline> ?? new List<IBinanceKline>(k15);
 
@@ -5199,10 +5199,9 @@ namespace TradingBot
 
             // [v5.23.91] 순수 LCC — 1h Squeeze 대세필터 제거(봇 추가 게이트, LCC 아님). 진입판단은 LorentzianGuard(jdehorty) 단독.
 
-            // [v5.23.1] Pine 정확 일치를 위해 1500봉 fetch, engine featureCount 7→5
-            // [v5.25.21] LCC 신호 TF 15m→1h — 3년 백테: 15m −$2506(엣지<노이즈) vs 1h +$63. 15m 잔파동 추격("하락 중 진입") 제거.
-            //   1500 1h봉 = ~62일. UpdateNearEntryForSymbolAsync와 엔진 공유 → 반드시 동일 TF.
-            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 1500, token);
+            // [최적화 2026-07-14] LCC 신호 TF 1h→15m — --knn-optimize 30종 greedy 검증 최적모델(K8·라벨8·15m·higher-low앵커·EMA정배열·ATR1.5·RSI45-70=월4.08%).
+            //   1500 15m봉 = ~15.6일. UpdateNearEntryForSymbolAsync와 엔진 공유 → 반드시 동일 TF.
+            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 1500, token);
             if (k15 == null || k15.Count < 300) return;
             var k15List = k15 as List<IBinanceKline> ?? new List<IBinanceKline>(k15);
 
@@ -5300,27 +5299,26 @@ namespace TradingBot
             }
             catch { }
 
-            // [v5.25.30] 일봉 하락추세 → ADX≥35 강확인 (3년 백테 --lcc-supervisor 검증).
-            //   결과: 베이스(ADX30) 총 -$90 → A(일봉하락시 ADX35) 총 +$18(흑자전환), 손실합 17%↓(-$1187→-$983), 승률 62→64%.
-            //   일봉 EMA20 아래(하락추세)에선 저ADX(약추세) 진입이 손실 주범 → 문턱 30→35. 일봉 상승추세면 기존 30 유지.
-            //   ※ 같이 검증한 '조기컷 감시'(B)는 되레 총손익 -$124로 악화(반등놓침=fee-bleed 재발) → 폐기.
-            try
+            // [최적화 2026-07-14] 최적 수익모델 필터 (--knn-optimize 30종 greedy, 월0.94%→4.08%·승률78.6%):
+            //   EMA 정배열(20>50>200) + ATR≥1.5% + RSI 45~70 + higher-low 앵커(기준점). 15m 마감봉 기준.
+            //   사용자 지적 반영: "실시간만 잡아 기준점 없어 KNN 흔들림" → higher-low 앵커로 구조적 기준점 부여.
             {
-                var dK = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneDay, 40, token);
-                var dList = dK as List<IBinanceKline> ?? (dK != null ? new List<IBinanceKline>(dK) : null);
-                if (dList != null && dList.Count >= 25)
-                {
-                    int dli = dList.Count - 2;   // 마지막 '마감' 일봉
-                    double dEma20 = CalcEmaClose(dList, dli, 20);
-                    bool dailyDown = dEma20 > 0 && (double)dList[dli].ClosePrice <= dEma20;
-                    if (dailyDown && guard.Adx < 35.0)
-                    {
-                        OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | 일봉 하락추세(종가≤EMA20) + ADX {guard.Adx:F1}<35 (하락장 강확인 요구)");
-                        return;
-                    }
-                }
+                int fi = evalIdx;   // 마지막 마감 15m봉
+                double fc = (double)k15List[fi].ClosePrice;
+                double e20 = CalcEmaClose(k15List, fi, 20), e50 = CalcEmaClose(k15List, fi, 50), e200 = CalcEmaClose(k15List, fi, 200);
+                if (!(e20 > e50 && e50 > e200))
+                { OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | EMA 역배열 (20>50>200 아님)"); return; }
+                double atrv = LorentzianGuard.CalcATR(k15List, fi, 14); double atrPct = fc > 0 ? atrv / fc * 100.0 : 0;
+                if (atrPct < 1.5)
+                { OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | ATR {atrPct:F2}%<1.5 (저변동)"); return; }
+                double rsiNow = CalcRsiClose(k15List, fi, 14);
+                if (rsiNow < 45.0 || rsiNow > 70.0)
+                { OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | RSI {rsiNow:F0} (45-70 밖)"); return; }
+                double swingLow = double.MaxValue;
+                for (int q = Math.Max(0, fi - 10); q <= fi - 2; q++) if ((double)k15List[q].LowPrice < swingLow) swingLow = (double)k15List[q].LowPrice;
+                if (!((double)k15List[fi].LowPrice > swingLow))
+                { OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | higher-low 미형성 (기준점 하회 — 신호흔들림 차단)"); return; }
             }
-            catch { }
 
             // [v5.23.98] 신호 '전환'에서만 진입 (jdehorty 충실) — 직전봉도 통과면 지속신호라 스킵, 음→양 전환 첫 봉만 진입.
             //   3년 OOS 검증은 전환 신호 기준(매 봉 아님). 매 봉 진입 = 희석 → 적자. 전환만 = 흑자.
