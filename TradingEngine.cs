@@ -904,30 +904,8 @@ namespace TradingBot
                 return false;
             }
 
-            // [v5.23.92] LCC 고점 차단 — 순수 LCC가 박스/추세 꼭대기서 잡는 문제(SUI 사례) fix.
-            //   LORENTZIAN 도 15m 30봉 range 위치 ≥90% + 저점대비 ≥3% 면 차단(꼭대기 진입만). 그 외 트레이딩 필터는 계속 우회.
-            if (srcU.Contains("LORENTZIAN"))
-            {
-                try
-                {
-                    var k15top = GetMultiTfKlinesCachedOrRefresh(symbol, KlineInterval.FifteenMinutes, 30);
-                    if (k15top != null && k15top.Count >= 30)
-                    {
-                        decimal mnLo = k15top[0].LowPrice, mxHi = k15top[0].HighPrice;
-                        for (int q = 1; q < k15top.Count; q++) { if (k15top[q].LowPrice < mnLo) mnLo = k15top[q].LowPrice; if (k15top[q].HighPrice > mxHi) mxHi = k15top[q].HighPrice; }
-                        decimal lc = k15top[k15top.Count - 1].ClosePrice;
-                        decimal pPct = mxHi > mnLo ? (lc - mnLo) / (mxHi - mnLo) * 100m : 50m;
-                        decimal rPct = mnLo > 0m ? (lc - mnLo) / mnLo * 100m : 0m;
-                        if (pPct >= 90m && rPct >= 3m)
-                        {
-                            blockReason = $"LCC_RANGE_TOP:pos={pPct:F1}%>=90_rise={rPct:F2}%>=3";
-                            OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (15m 30봉 range 90%+ 꼭대기 — LCC 고점진입 방지)");
-                            return false;
-                        }
-                    }
-                }
-                catch { }
-            }
+            // [v5.25.32] LCC_RANGE_TOP 고점차단 제거 — 사용자: "급등중이면 KNN이 더 오를지 판단하는 건데 왜 blanket 차단?".
+            //   range 90%+ 차단은 급등(=range 상단)을 무조건 막아 진입0. 급등 참여 여부는 KNN 신호가 판단. (SUI식 꼭대기 걱정은 KNN+청산이 담당.)
 
             // [v5.23.93] LCC 1h 대세 필터 — "방향은 1h" 원칙 (사용자 지정 2026-06-17).
             //   순수 LCC가 1h 하락추세에서도 진입 → 6/16 하락장 13건 23%WR -$288. 좋은날(+275) 번 걸 하락날 다 토함.
@@ -5299,26 +5277,9 @@ namespace TradingBot
             }
             catch { }
 
-            // [최적화 2026-07-14] 최적 수익모델 필터 (--knn-optimize 30종 greedy, 월0.94%→4.08%·승률78.6%):
-            //   EMA 정배열(20>50>200) + ATR≥1.5% + RSI 45~70 + higher-low 앵커(기준점). 15m 마감봉 기준.
-            //   사용자 지적 반영: "실시간만 잡아 기준점 없어 KNN 흔들림" → higher-low 앵커로 구조적 기준점 부여.
-            {
-                int fi = evalIdx;   // 마지막 마감 15m봉
-                double fc = (double)k15List[fi].ClosePrice;
-                double e20 = CalcEmaClose(k15List, fi, 20), e50 = CalcEmaClose(k15List, fi, 50), e200 = CalcEmaClose(k15List, fi, 200);
-                if (!(e20 > e50 && e50 > e200))
-                { OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | EMA 역배열 (20>50>200 아님)"); return; }
-                double atrv = LorentzianGuard.CalcATR(k15List, fi, 14); double atrPct = fc > 0 ? atrv / fc * 100.0 : 0;
-                if (atrPct < 1.5)
-                { OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | ATR {atrPct:F2}%<1.5 (저변동)"); return; }
-                double rsiNow = CalcRsiClose(k15List, fi, 14);
-                if (rsiNow < 45.0 || rsiNow > 70.0)
-                { OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | RSI {rsiNow:F0} (45-70 밖)"); return; }
-                double swingLow = double.MaxValue;
-                for (int q = Math.Max(0, fi - 10); q <= fi - 2; q++) if ((double)k15List[q].LowPrice < swingLow) swingLow = (double)k15List[q].LowPrice;
-                if (!((double)k15List[fi].LowPrice > swingLow))
-                { OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | higher-low 미형성 (기준점 하회 — 신호흔들림 차단)"); return; }
-            }
+            // [v5.25.32] KNN 단독화 — v5.25.31 덧칠필터(EMA정배열·ATR1.5·RSI45-70·higher-low) 제거.
+            //   사유(사용자): 필터 겹겹이 쌓아 실전 진입 0(메이저 +4% 급등에도 미진입) = 무용지물. 백테 4%보다 '참여'가 우선.
+            //   진입판단은 KNN 신호(LorentzianGuard: KNN pred·kernel) + EMA20/BTC 대세 최소가드만. 급등 참여 위해 덧칠 제거.
 
             // [v5.23.98] 신호 '전환'에서만 진입 (jdehorty 충실) — 직전봉도 통과면 지속신호라 스킵, 음→양 전환 첫 봉만 진입.
             //   3년 OOS 검증은 전환 신호 기준(매 봉 아님). 매 봉 진입 = 희석 → 적자. 전환만 = 흑자.

@@ -111,13 +111,10 @@ namespace TradingBot.Services.LorentzianV2
             //   BB(20)의 1σ/2σ 두 밴드로 존 구분. close > mid+1σ = Kathy Lien '매수존 상단'(과열/고점) → 추격 차단.
             //   허용: close ≤ mid+1σ (중립~하단 지지 눌림). "고점 추격 금지 + 하단 지지 눌림" 원칙 반영.
             //   σ 임계 조정 가능: 더 빡세게(눌림만)=mid 기준, 더 느슨=mid+2σ 기준.
-            CalcBB(kl, idx, 20, 1.0, out double dbbMid, out double dbbUp1, out _);
-            double dbbClose = (double)kl[idx].ClosePrice;
-            if (dbbMid > 0 && dbbClose > dbbUp1)
-            {
-                r.BlockReason = $"DBB_OVEREXTENDED (close={dbbClose:F6} > +1σ={dbbUp1:F6} — 고점 추격 차단)";
-                return r;
-            }
+            // [v5.25.32] DBB 고점차단 완전 제거 — 사용자: "급등중이면 KNN이 더 올라갈지 판단하는 건데 왜 blanket 차단?".
+            //   급등 여부 판단은 KNN 신호가 담당. BB 상단 blanket 차단은 KNN 판단을 덮어써서 급등 미참여 = 모순. 참고값만 계산.
+            CalcBB(kl, idx, 20, 2.0, out double dbbMid, out double dbbUp2, out _);
+            // (차단 없음 — KNN LONG이면 급등중이라도 진입)
 
             // 8.5) [v5.25.11] higher-low 확인 — 눌림 '하락 중'(저점 갱신 중) 진입 차단. 사용자 지시:
             //   "횡보→상승→눌림목인데 눌림목 내려갈 때 계속 손실" = 데드캣 양봉 바운스마다 롱 → 칼날 잡기.
