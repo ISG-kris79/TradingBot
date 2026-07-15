@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.26.0] - 2026-07-15
+
+### ♻️ Changed — ★진입/청산 전면 재작성: 롱전용 추세타기(3.4년 백테 + 20코인 OOS 검증, PF 1.74·70%흑자)
+3개월간 못 찾던 흑자 구조를 백테로 발굴·검증(그리드서치 972조합 + 20코인 교차검증). 세션 교훈: 손실 원인은 진입이 아니라 **타이트 손절/조기청산으로 승자를 잘라먹은 것**. 넓은 트레일로 승자를 태우니 PF 0.94→1.74로 뒤집힘. (참고: 제미나이 주장 +210%/PF1.82는 동일조건 재현 결과 PF 0.94로 허구 판명 — 거래수 410만 우연 일치.)
+- **진입 (TradingEngine `AnalyzeLorentzianEntryAsync` 전면 교체)**: 롱전용 · `KNN(과거8라벨) pred>0 + EMA50>EMA200 정배열 + 종가>EMA50 + ADX(14)≥20 + BTC 상승장(1h>EMA200)`. 즉시 1h 진입(15m대기/5m펜딩 제거). guard.Passed의 과필터(pred≥4·NW커널·higher-low)는 "진입 0건" 이력이라 미사용 — raw KNN만.
+- **폐기(호출제거, 메서드 보존)**: `AnalyzeMeanRevEntryAsync` / `AnalyzeRsi2ReversalEntryAsync` — 역추세 눌림/타이트손절은 백테 PF<1(적자), 넓은트레일 구조와 충돌.
+- **청산 (PositionMonitorService)**: 트렌드라이드(`signalSource=LORENTZIAN_TRENDRIDE`) 포지션은 **초기SL=진입−5×ATR**(넓은 구조적 손절, 기존 −3% 폐기) + 조기컷 전면 제외(8봉 시간정지·EMA20이탈컷·반전캔들컷·RSI2·부분익절40%). 승자를 끝까지 태움. 하방은 넓은 SL + 1단계 본절보호가 담당.
+- **잔여(후속)**: peak−5×ATR 점진적 수익잠금 래칫은 청산엔진 여러 스톱경로 통합이 필요해 별도 신중작업으로 분리. 현재는 넓은 스톱+조기컷 제거+본절보호로 핵심 엣지 확보. 라이브 카나리 판정 필요.
+
 ## [5.25.34] - 2026-07-15
 
 ### ✨ Added — KNN 피처에 f6 'MACD 히스토그램 기울기' 추가 (다이버전스 정량화) + 라이브·검증기 6피처 동기화

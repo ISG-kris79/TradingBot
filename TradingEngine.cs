@@ -4690,11 +4690,11 @@ namespace TradingBot
                 //   밈코인도 일반 LCC 경로로 통일. AnalyzeMemeKnnEntryAsync 미호출.
                 try
                 {
-                    // [v5.25.4] 역추세 눌림반등(MEANREV + RSI2)을 '주력'으로 우선 평가 — 충실 OOS 검증 유일 흑자.
-                    //   모멘텀/추세추종/MACD는 전부 적자(백테스트), 역추세 눌림만 +엣지 → 우선순위 부여. LCC는 보조.
-                    await AnalyzeMeanRevEntryAsync(symbol, currentPrice, token);
-                    await AnalyzeRsi2ReversalEntryAsync(symbol, currentPrice, token);
-                    // LCC(Lorentzian)는 보조 진입 — 슬롯/가드 통과 시
+                    // [v5.26.0] 진입 전면 재작성 — 롱전용 추세타기 단일 경로 (3.4년 백테 + 20코인 OOS 검증, PF 1.74·70%흑자).
+                    //   구조: KNN(Lorentzian 과거8라벨) 매수 + EMA50>EMA200 정배열 + 종가>EMA50 + ADX≥20.
+                    //   청산: peak−5×ATR 넓은 트레일(승자 끝까지 홀딩)이 핵심 — 부분익절/타이트손절은 승자를 잘라 적자화(세션 교훈).
+                    //   폐기(호출제거, 메서드는 보존): AnalyzeMeanRevEntryAsync / AnalyzeRsi2ReversalEntryAsync — 넓은트레일 구조와 충돌.
+                    //   사유: 역추세 눌림/타이트손절 전부 백테 적자(PF<1). 롱전용 추세타기+승자홀딩만 흑자.
                     await AnalyzeLorentzianEntryAsync(symbol, currentPrice, token);
                 }
                 catch (Exception ex)
@@ -5239,26 +5239,36 @@ namespace TradingBot
             }
             catch { }
 
-            if (!guard.Passed)
+            // [v5.26.0] ★진입 전면 재작성 — 검증된 롱전용 추세타기 구조 (3.4년 백테 + 20코인 OOS, PF 1.74·70%흑자).
+            //   guard.Passed 의 과필터(pred≥4·NW커널·higher-low)는 '진입 0건' 이력이 있어 미사용.
+            //   검증 조합 = raw KNN(과거8라벨) pred>0 + EMA50>EMA200 정배열 + 종가>EMA50 + ADX(14)≥20.
+            //   guard 는 KNN 예측값·스냅샷 계산 목적으로만 호출(KnnPrediction 은 pred≥4 게이트 전 line51에서 항상 세팅됨).
+            if (guard.KnnPrediction <= 0)
             {
-                OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | {guard.BlockReason} | KNN WR={guard.KnnWinRate:F2} pred={guard.KnnPrediction} ADX={guard.Adx:F1} regime={guard.RegimeSlope:F2}");
+                if (DateTime.UtcNow.Second % 30 == 0)
+                    OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | KNN 매수신호 아님 (pred={guard.KnnPrediction})");
+                return;
+            }
+            // EMA 정배열(50>200) + 종가>EMA50 = 상승추세 확립 (검증 핵심)
+            double c1h = (double)k15List[evalIdx].ClosePrice;
+            double ema50v = CalcEmaClose(k15List, evalIdx, 50);
+            double ema200v = CalcEmaClose(k15List, evalIdx, 200);
+            if (!(ema50v > 0 && ema200v > 0 && ema50v > ema200v && c1h > ema50v))
+            {
+                if (DateTime.UtcNow.Second % 30 == 0)
+                    OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | EMA정배열 아님 (close={c1h:F4} ema50={ema50v:F4} ema200={ema200v:F4})");
+                return;
+            }
+            // ADX(14)≥20 = 강추세만 (횡보 구간의 KNN은 노이즈)
+            double adxV = LorentzianGuard.CalcADX(k15List, evalIdx, 14);
+            if (adxV < 20.0)
+            {
+                if (DateTime.UtcNow.Second % 30 == 0)
+                    OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | ADX<20 횡보 (adx={adxV:F1})");
                 return;
             }
 
-            // [v5.25.21] EMA20 진입필터 (사용자 가설, 3년 검증) — 1h 종가가 EMA20 위일 때만 진입.
-            //   검증: 20선 위 진입 +$348(66%WR) vs 20선 아래 −$279 — 전체 918건 중 635건이 20선 아래(=주로 지는 자리).
-            //   20선 아래 진입은 하락 재개 확률↑ → 차단. 20선 위만 진입.
-            {
-                double ema20Now = CalcEmaClose(k15List, evalIdx, 20);
-                if ((double)k15List[evalIdx].ClosePrice <= ema20Now)
-                {
-                    OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | 1h 종가 EMA20 아래 (하락 재개 위험 — 20선 위에서만 진입)");
-                    return;
-                }
-            }
-
-            // [v5.25.27] 시장(BTC)추세 필터 (사용자 관찰 "하락장 달엔 다 손실" → 3년 검증) — BTC 상승장(1h 종가>EMA200)일 때만 LCC LONG.
-            //   LONG전용이라 하락장 진입이 손실월 주범. 검증: 필터없음 +$150 → BTC상승장만 +$438(2.9배), 2025-01 대참사 −$364→−$84, 거래 12%↓·승률 동일.
+            // [v5.25.27→유지] 시장(BTC) 대세 필터 — BTC 상승장(1h 종가>EMA200)일 때만 LONG. 롱전용 하락장 진입 방지.
             try
             {
                 var btcK = await GetMultiTfKlinesThrottledAsync("BTCUSDT", KlineInterval.OneHour, 260, token);
@@ -5269,48 +5279,30 @@ namespace TradingBot
                     double btcEma200 = CalcEmaClose(btcList, bl, 200);
                     if (btcEma200 > 0 && (double)btcList[bl].ClosePrice <= btcEma200)
                     {
-                        OnStatusLog?.Invoke($"⛔ [LORENTZIAN] {symbol} 차단 | BTC 하락장(1h 종가 ≤ EMA200) — 시장추세 역행 LONG 방지");
+                        if (DateTime.UtcNow.Second % 30 == 0)
+                            OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | BTC 하락장(1h≤EMA200) — 시장 역행 LONG 방지");
                         return;
                     }
                 }
             }
             catch { }
 
-            // [v5.25.32] KNN 단독화 — v5.25.31 덧칠필터(EMA정배열·ATR1.5·RSI45-70·higher-low) 제거.
-            //   사유(사용자): 필터 겹겹이 쌓아 실전 진입 0(메이저 +4% 급등에도 미진입) = 무용지물. 백테 4%보다 '참여'가 우선.
-            //   진입판단은 KNN 신호(LorentzianGuard: KNN pred·kernel) + EMA20/BTC 대세 최소가드만. 급등 참여 위해 덧칠 제거.
-
-            // [v5.23.98] 신호 '전환'에서만 진입 (jdehorty 충실) — 직전봉도 통과면 지속신호라 스킵, 음→양 전환 첫 봉만 진입.
-            //   3년 OOS 검증은 전환 신호 기준(매 봉 아님). 매 봉 진입 = 희석 → 적자. 전환만 = 흑자.
-            // [v5.25.33] 전환-only 제거 — 1h 롱은 '방향 상태'라 유지되는 동안 5m마다 진입 기회. 재진입은 쿨다운/포지션이 페이싱.
-            //   (기존: 직전봉도 통과면 스킵 → 1h 상승 지속중 진입 1회로 제한. 사용자 구조는 1h방향 유지중 반복진입.)
-
-            // [v5.25.33] 15m 진입대기 조건 — 1h 롱 방향 확인 후, 15m도 상승 유지(종가>15m EMA20)일 때만 5m 진입대기 등록.
-            try
+            // [v5.26.0] 즉시 진입 — 백테 충실(1h 조건 충족 시 진입). 15m대기/5m펜딩 제거(검증구조는 순수 1h).
+            //   초기 손절 = 진입가 − 5×ATR(1h) = 넓은 구조적 손절. 이후 승자 청산은 모니터의 5×ATR-from-peak 트레일이 담당.
+            //   signalSource="LORENTZIAN" 유지 → isLcc 경로(온체인 부분익절 OFF, tpRoe 300)로 라우팅 = 승자 안 자름.
+            if (Math.Abs((currentPrice - (decimal)c1h) / (decimal)c1h) > 0.02m)
             {
-                var k15m = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 60, token);
-                var k15mList = k15m as List<IBinanceKline> ?? (k15m != null ? new List<IBinanceKline>(k15m) : null);
-                if (k15mList == null || k15mList.Count < 25) return;
-                int mi = k15mList.Count - 2;   // 마지막 마감 15m봉
-                double ema20_15m = CalcEmaClose(k15mList, mi, 20);
-                if (ema20_15m > 0 && (double)k15mList[mi].ClosePrice <= ema20_15m)
-                {
-                    if (DateTime.UtcNow.Second % 30 == 0)
-                        OnStatusLog?.Invoke($"⏸️ [LORENTZIAN] {symbol} 1h 롱 방향 OK, 15m 상승 대기(종가≤15m EMA20)");
-                    return;
-                }
+                // 현재가가 마감봉 종가에서 2% 이상 벌어졌으면(급변) 스킵 — 다음 평가 대기
+                return;
             }
-            catch { return; }
-
-            // [v5.25.33] 5m 마감 진입대기 등록 — 1h 롱방향 + 15m 상승 확인 → CheckLorentzianPendingEntriesAsync가 5m 양봉 마감 확인 후 진입.
-            _lorentzianPendingEntries[symbol] = new LorentzianPendingEntry
-            {
-                SignalTimeUtc = DateTime.UtcNow,
-                SignalPrice = currentPrice,
-                DeadlineUtc = DateTime.UtcNow.AddMinutes(20),   // 5m 마감 몇 개 관찰 창
-                GuardSummary = $"1h KNN LONG pred={guard.KnnPrediction} WR={guard.KnnWinRate:F2}"
-            };
-            OnStatusLog?.Invoke($"⏳ [LORENTZIAN] {symbol} 1h 롱방향 + 15m 상승 → 5m 마감 진입 대기 | pred={guard.KnnPrediction} WR={guard.KnnWinRate:F2}");
+            double atr1hV = LorentzianGuard.CalcATR(k15List, evalIdx, 14);
+            decimal atrStopPx = atr1hV > 0 ? currentPrice - (decimal)(5.0 * atr1hV) : 0m;
+            _lorentzianCooldown[symbol] = DateTime.UtcNow;
+            OnStatusLog?.Invoke($"✅ [TREND_RIDE] {symbol} 진입 | KNN pred={guard.KnnPrediction} · EMA정배열 · ADX={adxV:F1} | 초기SL=진입−5ATR({atrStopPx:F4})");
+            //   signalSource="LORENTZIAN_TRENDRIDE": "LORENTZIAN" 포함 → isLcc 라우팅(온체인 부분익절 OFF) 유지 +
+            //   "TRENDRIDE" 태그 → 모니터가 조기컷(8봉/EMA20/반전캔들)·부분익절 제외하고 넓은 트레일로 태움.
+            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
+                signalSource: "LORENTZIAN_TRENDRIDE", customStopLossPrice: atrStopPx > 0 ? atrStopPx : 0m);
         }
 
         // [v5.23.97] RSI2 과매도 반등 전략 — 3년·119코인 OOS 검증(승률 66%, 기대 +0.103%/건, 과최적화 아님).

@@ -709,7 +709,10 @@ namespace TradingBot.Services
                     // ═══════════════════════════════════════════════
                     // 2단계: 메이저 2차 구간 진입 시 부분익절 + 스탑 상향
                     // ═══════════════════════════════════════════════
-                    if (breakEvenActivated && !profitLockActivated && highestROE >= profitLockROE)
+                    //   [v5.26.0] 트렌드라이드는 부분익절 제외 — 40% 조기실현이 승자를 잘라 손익비 파괴(백테 교훈). 전량 태움.
+                    bool isTrendRidePos = false;
+                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var trp2) && trp2 != null) isTrendRidePos = (trp2.EntrySignalSource ?? "").IndexOf("TRENDRIDE", StringComparison.OrdinalIgnoreCase) >= 0; }
+                    if (!isTrendRidePos && breakEvenActivated && !profitLockActivated && highestROE >= profitLockROE)
                     {
                         profitLockActivated = true;
 
@@ -1278,14 +1281,21 @@ namespace TradingBot.Services
                         break;
                     }
 
-                    // [v5.23.96] 반전 캔들 조기청산 (사용자 지정)
-                    if (await TryReversalCandleExitAsync(symbol, currentROE, token)) break;
-                    // [v5.23.97] RSI2 전략 EMA10 회복 익절
-                    if (await TryRsi2Ema10ExitAsync(symbol, currentROE, token)) break;
-                    // [v5.25.21] LCC EMA20 이탈 청산 (추세꺾임 조기컷 — 넓은 SL 방치 대체)
-                    if (await TryLccEma20ExitAsync(symbol, currentROE, token)) break;
-                    // [v5.23.98] LCC 8봉 시간정지
-                    if (await TryLccTimeStopExitAsync(symbol, currentROE, token)) break;
+                    // [v5.26.0] 트렌드라이드(추세타기)는 조기컷 전면 제외 — 승자 끝까지 태움(백테 검증: 조기컷=승자 자름=적자화).
+                    //   하방 방어는 넓은 초기SL(진입−5ATR) + ATR close-only 스톱이 담당. 8봉시간정지·EMA20컷·반전캔들·RSI2 스킵.
+                    bool isTrendRideExit = false;
+                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var trp) && trp != null) isTrendRideExit = (trp.EntrySignalSource ?? "").IndexOf("TRENDRIDE", StringComparison.OrdinalIgnoreCase) >= 0; }
+                    if (!isTrendRideExit)
+                    {
+                        // [v5.23.96] 반전 캔들 조기청산 (사용자 지정)
+                        if (await TryReversalCandleExitAsync(symbol, currentROE, token)) break;
+                        // [v5.23.97] RSI2 전략 EMA10 회복 익절
+                        if (await TryRsi2Ema10ExitAsync(symbol, currentROE, token)) break;
+                        // [v5.25.21] LCC EMA20 이탈 청산 (추세꺾임 조기컷 — 넓은 SL 방치 대체)
+                        if (await TryLccEma20ExitAsync(symbol, currentROE, token)) break;
+                        // [v5.23.98] LCC 8봉 시간정지
+                        if (await TryLccTimeStopExitAsync(symbol, currentROE, token)) break;
+                    }
 
                     lock (_posLock)
                     {
