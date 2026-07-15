@@ -14122,6 +14122,84 @@ internal static class Program
         Console.WriteLine($"\n  ★최고: 근접 {best.prox:F1}% · 손절 {best.slMode} · TP {best.rr:F1}R · 총손익 ${best.tp:F2}");
     }
 
+    // --lorentzian-live : 라이브 v5.26.0 로직 그대로 백테 — 진입(KNN+EMA정배열+ADX20+BTC상승장) + 청산(peak−5ATR 트레일).
+    //   본절(breakeven) ON/OFF 비교 → 본절이 승자를 본절컷해 수익 깎는지 확인. 배포 전 최종 검증.
+    private static async Task RunLorentzianLiveAsync()
+    {
+        const int featureWindow = 500, K = 8, Lh = 8, pages1h = 20;
+        const decimal feeRT = 0.0008m; const double atrMult = 5.0, adxThr = 20;
+        var universe = new[] {
+            "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","TRXUSDT","AVAXUSDT","LINKUSDT",
+            "DOTUSDT","LTCUSDT","BCHUSDT","ATOMUSDT","UNIUSDT","NEARUSDT","APTUSDT","ARBUSDT","OPUSDT","SUIUSDT" };
+        Console.WriteLine("=== 라이브 v5.26.0 로직 백테 : 진입 KNN+EMA정배열+ADX20+BTC상승장 / 청산 peak−5ATR 트레일 ===\n");
+        // BTC 상승장 룩업 (1h 종가>EMA200) by OpenTime
+        var btcBull = new Dictionary<DateTime, bool>();
+        {
+            var btc = await FetchKlines1hAsync("BTCUSDT", pages1h);
+            int bn = btc.Count; var be2 = new double[bn];
+            for (int j = 200; j < bn; j++) be2[j] = CalcEMA(btc, j, 200);
+            for (int j = 200; j < bn; j++) btcBull[btc[j].OpenTime] = be2[j] > 0 && (double)btc[j].ClosePrice > be2[j];
+        }
+        foreach (var (breakeven, closeOnly) in new[] { (false, true), (false, false), (true, true) })
+        {
+            Console.WriteLine($"\n──────── 본절 {(breakeven ? "ON" : "OFF")} · 손절 {(closeOnly ? "종가기준(꼬리무시)" : "틱기준(장중저가)")} ────────");
+            Console.WriteLine($"  {"심볼",10} {"거래",5} {"승률%",6} {"PF",5} {"MDD%",6} {"1x%",8} {"판정",5}");
+            int prof = 0, valid = 0; double sum1 = 0;
+            foreach (var sym in universe)
+            {
+                List<IBinanceKline> kl;
+                try { kl = await FetchKlines1hAsync(sym, pages1h); } catch { continue; }
+                if (kl.Count < 2000) continue;
+                int n = kl.Count; var close = new double[n]; for (int j = 0; j < n; j++) close[j] = (double)kl[j].ClosePrice;
+                var feats = new float[n][];
+                for (int j = 60; j < n; j++) { int ws = Math.Max(0, j - (featureWindow - 1)); feats[j] = LorentzianFeatures.Extract(kl.GetRange(ws, j - ws + 1))!; }
+                var e50 = new double[n]; for (int j = 50; j < n; j++) e50[j] = CalcEMA(kl, j, 50);
+                var e200 = new double[n]; for (int j = 200; j < n; j++) e200[j] = CalcEMA(kl, j, 200);
+                var atr = new double[n]; for (int j = 14; j < n; j++) { double tr = 0; for (int q = j - 13; q <= j; q++) { double hh = (double)kl[q].HighPrice, ll = (double)kl[q].LowPrice, pc = close[q - 1]; tr += Math.Max(hh - ll, Math.Max(Math.Abs(hh - pc), Math.Abs(ll - pc))); } atr[j] = tr / 14.0; }
+                var adx = new double[n]; { double atrS = 0, pdmS = 0, mdmS = 0; int per = 14; for (int j = 1; j < n; j++) { double hh = (double)kl[j].HighPrice, ll = (double)kl[j].LowPrice, pc = close[j - 1], ph = (double)kl[j - 1].HighPrice, pl = (double)kl[j - 1].LowPrice; double tr = Math.Max(hh - ll, Math.Max(Math.Abs(hh - pc), Math.Abs(ll - pc))); double up = hh - ph, dn = pl - ll; double pdm = (up > dn && up > 0) ? up : 0, mdm = (dn > up && dn > 0) ? dn : 0; if (j <= per) { atrS += tr; pdmS += pdm; mdmS += mdm; } else { atrS = atrS - atrS / per + tr; pdmS = pdmS - pdmS / per + pdm; mdmS = mdmS - mdmS / per + mdm; } if (j >= per && atrS > 0) { double pd = 100 * pdmS / atrS, md = 100 * mdmS / atrS; double dx = (pd + md) > 0 ? 100 * Math.Abs(pd - md) / (pd + md) : 0; adx[j] = j <= per * 2 ? dx : (adx[j - 1] * (per - 1) + dx) / per; } } }
+                var engine = new LorentzianAnnEngine(sym, neighborsCount: K, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount);
+                var sg = new int[n];
+                for (int j = 65; j < n; j++) { int s = j - 1; if (s - Lh >= 0 && feats[s] != null) { double a = close[s], b = close[s - Lh]; engine.AddSample(feats[s], a > b ? 1 : (a < b ? -1 : 0)); } if (feats[j] == null) continue; var p = engine.Predict(feats[j]); if (!p.IsReady || p.K == 0) continue; sg[j] = p.Prediction > 0 ? 1 : (p.Prediction < 0 ? -1 : 0); }
+                decimal equity = 1m, peak = 1m, mdd = 0m; int trades = 0, wins = 0; decimal gW = 0m, gL = 0m; int busy = -1;
+                for (int j = 250; j < n - 1; j++)
+                {
+                    if (j <= busy) continue;
+                    if (!(sg[j] > 0 && e50[j] > 0 && e200[j] > 0 && e50[j] > e200[j] && close[j] > e50[j] && adx[j] >= adxThr)) continue;
+                    if (!(btcBull.TryGetValue(kl[j].OpenTime, out var bb) && bb)) continue;  // BTC 상승장만
+                    if (atr[j] <= 0 || kl[j + 1].OpenPrice <= 0) continue;
+                    decimal entry = kl[j + 1].OpenPrice; double peakP = (double)entry; bool beOn = false; decimal net = 0m; int ei = n - 1;
+                    for (int e = j + 1; e < n; e++)
+                    {
+                        double hi = (double)kl[e].HighPrice, lo = (double)kl[e].LowPrice, cc = (double)kl[e].ClosePrice;
+                        double peakRef = closeOnly ? cc : hi;
+                        if (peakRef > peakP) peakP = peakRef;
+                        double beTrig = closeOnly ? cc : hi;
+                        if (breakeven && !beOn && beTrig >= (double)entry * 1.02) beOn = true;
+                        double trail = peakP - atrMult * atr[e];
+                        double stop = beOn ? Math.Max(trail, (double)entry) : trail;
+                        if (closeOnly)
+                        {
+                            if (cc <= stop) { net = ((decimal)cc - entry) / entry - feeRT; ei = e; break; }   // 종가 마감 확인
+                        }
+                        else
+                        {
+                            if (lo <= stop) { net = ((decimal)stop - entry) / entry - feeRT; ei = e; break; } // 장중 저가 터치
+                        }
+                        if (e == n - 1) net = ((decimal)cc - entry) / entry - feeRT;
+                    }
+                    equity *= (1m + net); if (equity <= 0) break; trades++; if (net > 0) { wins++; gW += net; } else gL += -net;
+                    if (equity > peak) peak = equity; decimal dd = (peak - equity) / peak; if (dd > mdd) mdd = dd; busy = ei;
+                }
+                double pf = gL > 0 ? (double)(gW / gL) : (gW > 0 ? 99 : 0); double ret = (double)((equity - 1m) * 100m);
+                valid++; sum1 += ret; if (ret > 0) prof++;
+                string vd = pf > 1.2 && ret > 0 ? "★흑자" : ret > 0 ? "흑자" : "적자";
+                Console.WriteLine($"  {sym,10} {trades,5} {(trades > 0 ? 100.0 * wins / trades : 0),6:F1} {pf,5:F2} {mdd * 100m,6:F1} {ret,8:F1} {vd,5}");
+            }
+            Console.WriteLine($"  → 흑자 {prof}/{valid} ({(valid > 0 ? 100.0 * prof / valid : 0):F0}%) · 평균 1x {(valid > 0 ? sum1 / valid : 0):F1}%");
+        }
+        Console.WriteLine("\n  ★ 본절 OFF(순수 트레일)가 검증 백테와 동일. 본절 ON이 수익 깎으면 라이브에서 본절 제거 필요.");
+    }
+
     // --lorentzian-validate : 그리드 최적구조(롱전용 KNN+EMA정배열→ATR5트레일·ADX20)를 20코인 전체에 고정 적용.
     //   과최적화 여부 검증 — 대부분 코인에서 PF>1·흑자면 진짜 엣지. 종목별 미최적화(동일 파라미터).
     private static async Task RunLorentzianValidateAsync()
@@ -20857,6 +20935,11 @@ internal static class Program
         if (HasArg("--lorentzian-validate"))
         {
             await RunLorentzianValidateAsync();
+            return;
+        }
+        if (HasArg("--lorentzian-live"))
+        {
+            await RunLorentzianLiveAsync();
             return;
         }
         if (HasArg("--replay-entries"))

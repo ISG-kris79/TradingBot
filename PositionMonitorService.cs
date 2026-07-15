@@ -440,6 +440,14 @@ namespace TradingBot.Services
                 }
             }
 
+            // [v5.26.0] 트렌드라이드 peak−5×ATR 종가기준 트레일 상태 (승자 수익잠금 — 백테 검증: 종가기준 65%흑자·+50%, 틱기준은 꼬리털림 −22%)
+            double trendRidePeakClose = (double)entryPrice;   // 마감된 1h봉 종가의 최고값
+            double trendRideAtr1h = 0;
+            DateTime trendRideAtrNext = DateTime.MinValue;
+            //   본절/부분익절/조기컷 전부 제외 — 백테: 본절 ON은 +28%(승자 본절컷), OFF는 +50%. 순수 종가트레일만.
+            bool isTrendRide = false;
+            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var trInit) && trInit != null) isTrendRide = (trInit.EntrySignalSource ?? "").IndexOf("TRENDRIDE", StringComparison.OrdinalIgnoreCase) >= 0; }
+
             while (!token.IsCancellationRequested)
             {
                 try
@@ -580,7 +588,7 @@ namespace TradingBot.Services
                         if (_activePositions.TryGetValue(symbol, out var _ppos))
                             _v562_partialFilled = _ppos.PartialProfitStage >= 1 || _ppos.TakeProfitStep >= 1;
                     }
-                    if (!breakEvenActivated && (highestROE >= breakEvenROE || _v562_partialFilled))
+                    if (!isTrendRide && !breakEvenActivated && (highestROE >= breakEvenROE || _v562_partialFilled))
                     {
                         breakEvenActivated = true;
                         PersistPositionState(symbol, isBreakEvenTriggered: true, highestROE: highestROE);
@@ -710,9 +718,7 @@ namespace TradingBot.Services
                     // 2단계: 메이저 2차 구간 진입 시 부분익절 + 스탑 상향
                     // ═══════════════════════════════════════════════
                     //   [v5.26.0] 트렌드라이드는 부분익절 제외 — 40% 조기실현이 승자를 잘라 손익비 파괴(백테 교훈). 전량 태움.
-                    bool isTrendRidePos = false;
-                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var trp2) && trp2 != null) isTrendRidePos = (trp2.EntrySignalSource ?? "").IndexOf("TRENDRIDE", StringComparison.OrdinalIgnoreCase) >= 0; }
-                    if (!isTrendRidePos && breakEvenActivated && !profitLockActivated && highestROE >= profitLockROE)
+                    if (!isTrendRide && breakEvenActivated && !profitLockActivated && highestROE >= profitLockROE)
                     {
                         profitLockActivated = true;
 
@@ -1283,9 +1289,30 @@ namespace TradingBot.Services
 
                     // [v5.26.0] 트렌드라이드(추세타기)는 조기컷 전면 제외 — 승자 끝까지 태움(백테 검증: 조기컷=승자 자름=적자화).
                     //   하방 방어는 넓은 초기SL(진입−5ATR) + ATR close-only 스톱이 담당. 8봉시간정지·EMA20컷·반전캔들·RSI2 스킵.
-                    bool isTrendRideExit = false;
-                    lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var trp) && trp != null) isTrendRideExit = (trp.EntrySignalSource ?? "").IndexOf("TRENDRIDE", StringComparison.OrdinalIgnoreCase) >= 0; }
-                    if (!isTrendRideExit)
+                    if (isTrendRide)
+                    {
+                        // [v5.26.0] peak−5×ATR ★종가기준★ 트레일 (승자 수익잠금). 서버 STOP_MARKET(진입−5ATR)은 안전망.
+                        //   백테 검증: 종가기준(1h 마감봉 종가가 최고종가−5ATR 아래일 때만 청산, 꼬리 무시) = 65%흑자·+50%.
+                        //   틱기준(장중저가)은 꼬리에 털려 −22% → 반드시 마감봉 종가로만 판정. 90초마다 1h 마감봉 확인.
+                        if (DateTime.Now >= trendRideAtrNext)
+                        {
+                            trendRideAtrNext = DateTime.Now.AddSeconds(90);
+                            var (atr1h, lastClose) = await GetAtr1hCloseAsync(symbol, token);
+                            if (atr1h > 0 && lastClose > 0)
+                            {
+                                trendRideAtr1h = atr1h;
+                                if ((double)lastClose > trendRidePeakClose) trendRidePeakClose = (double)lastClose;
+                                double trailStop = trendRidePeakClose - 5.0 * atr1h;
+                                if ((double)lastClose <= trailStop)
+                                {
+                                    OnLog?.Invoke($"📉 {symbol} 트렌드라이드 5×ATR 종가트레일 청산 | 최고종가={trendRidePeakClose:F4} 트레일={trailStop:F4} 마감종가={lastClose:F4} (ROE {currentROE:F1}%)");
+                                    await ExecuteMarketClose(symbol, $"트렌드라이드 5ATR 종가트레일 (peak {trendRidePeakClose:F4})", token);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    else
                     {
                         // [v5.23.96] 반전 캔들 조기청산 (사용자 지정)
                         if (await TryReversalCandleExitAsync(symbol, currentROE, token)) break;
@@ -3483,6 +3510,22 @@ namespace TradingBot.Services
             {
                 OnLog?.Invoke($"⚠️ {symbol} 물타기 예외: {ex.Message}");
             }
+        }
+
+        // [v5.26.0] 트렌드라이드 종가트레일용: 1h ATR(14) + 마지막 '마감된' 1h봉 종가. 백테와 동일(종가기준·꼬리무시).
+        private async Task<(double atr, decimal lastClose)> GetAtr1hCloseAsync(string symbol, CancellationToken token)
+        {
+            try
+            {
+                var klines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneHour, 60, token);
+                if (klines == null || klines.Count < 20) return (0, 0m);
+                var list = klines.ToList();
+                double atr = IndicatorCalculator.CalculateATR(list, 14);
+                // 마지막 원소는 형성중(미마감)일 수 있음 → 직전 봉(마감 확정)의 종가 사용
+                decimal lastClose = list[list.Count - 2].ClosePrice;
+                return (atr > 0 ? atr : 0, lastClose);
+            }
+            catch { return (0, 0m); }
         }
 
         private async Task<decimal> GetAtrGapFrom15mAsync(string symbol, CancellationToken token)
