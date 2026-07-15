@@ -5268,6 +5268,26 @@ namespace TradingBot
                 return;
             }
 
+            // [v5.26.2] ★손실 방어 3종 — 지는 트레이드 전수분석(--loss-defense)으로 발굴. 손실만 골라 막음(흑자월 36→52%, 수익도↑).
+            //   1) EMA50 과확장: 종가가 EMA50 위로 2×ATR 이상 = 고점 매수 → 되돌림 손실. 2ATR 미만만 진입.
+            //   2) 거래량 급증: 진입봉 거래량이 20봉 평균의 1.5배↑ = 세력 털기(climax) → 반전. 1.5배 미만만.
+            //   3) 윗꼬리: 진입봉 윗꼬리 0.5×ATR 이상 = 매도 거부 → 하락. 짧은 윗꼬리만.
+            {
+                double atrDef = LorentzianGuard.CalcATR(k15List, evalIdx, 14);
+                if (atrDef > 0)
+                {
+                    if ((c1h - ema50v) / atrDef >= 2.0)
+                    { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | EMA50 과확장(≥2ATR 고점매수 방어)"); return; }
+                    double vsumD = 0; int vc = 0; for (int q = Math.Max(0, evalIdx - 19); q <= evalIdx; q++) { vsumD += (double)k15List[q].Volume; vc++; }
+                    double vavgD = vc > 0 ? vsumD / vc : 0;
+                    if (vavgD > 0 && (double)k15List[evalIdx].Volume / vavgD >= 1.5)
+                    { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | 거래량 급증(≥1.5배 climax 방어)"); return; }
+                    double bodyTopD = Math.Max((double)k15List[evalIdx].OpenPrice, c1h);
+                    if (((double)k15List[evalIdx].HighPrice - bodyTopD) / atrDef >= 0.5)
+                    { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | 윗꼬리 김(≥0.5ATR 매도거부 방어)"); return; }
+                }
+            }
+
             // [v5.25.27→유지] 시장(BTC) 대세 필터 — BTC 상승장(1h 종가>EMA200)일 때만 LONG. 롱전용 하락장 진입 방지.
             try
             {
