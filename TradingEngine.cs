@@ -5259,12 +5259,12 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | EMA정배열 아님 (close={c1h:F4} ema50={ema50v:F4} ema200={ema200v:F4})");
                 return;
             }
-            // ADX(14)≥20 = 강추세만 (횡보 구간의 KNN은 노이즈)
+            // [v5.26.4] ADX(14)≥30 = 강추세만 (4h 재최적화: ADX20→30이 흑자월 49→58%·MDD 37→27%. 횡보손실 감소).
             double adxV = LorentzianGuard.CalcADX(k15List, evalIdx, 14);
-            if (adxV < 20.0)
+            if (adxV < 30.0)
             {
                 if (DateTime.UtcNow.Second % 30 == 0)
-                    OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | ADX<20 횡보 (adx={adxV:F1})");
+                    OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | ADX<30 약추세 (adx={adxV:F1})");
                 return;
             }
 

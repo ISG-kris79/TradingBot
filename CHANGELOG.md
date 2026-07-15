@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.26.4] - 2026-07-15
+
+### ♻️ Changed — 4h 파라미터 재최적화: ADX 20→30, ATR 트레일 5→4 (흑자월 과반 돌파)
+`--tune-4h`(ADX×ATR트레일 병렬스윕): ADX30·ATR4가 최적 — 흑자월 **49→58%(과반!)**, MDD 37→27%, 최악월 −16.5→−12.9, 월평균 7.1% 유지. 강추세만 선별해 횡보 손실월 감소.
+- 진입 ADX 게이트 20→30 (`AnalyzeLorentzianEntryAsync`).
+- 종가 트레일 배수 5→4 ATR (`PositionMonitorService`).
+- 라이브 카나리 판정 필요.
+
 ## [5.26.3] - 2026-07-15
 
 ### ♻️ Changed — 진입/청산 타임프레임 1h → 4h (노이즈 감소로 흑자월↑·MDD↓)

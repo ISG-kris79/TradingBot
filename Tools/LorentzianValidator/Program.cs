@@ -14123,6 +14123,77 @@ internal static class Program
         Console.WriteLine($"\n  ★최고: 근접 {best.prox:F1}% · 손절 {best.slMode} · TP {best.rr:F1}R · 총손익 ${best.tp:F2}");
     }
 
+    // --tune-4h : 4h 기준 파라미터 재최적화 — ADX임계 × ATR트레일배수 병렬스윕 (방어3종 포함). 흑자월%·수익·MDD 최적점.
+    private static async Task RunTune4hAsync()
+    {
+        const int featureWindow = 500, K = 8, Lh = 8;
+        const decimal feeRT = 0.0008m; decimal margin = 500m; int slots = 6; decimal capital = margin * slots;
+        var universe = new[] {
+            "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","TRXUSDT","AVAXUSDT","LINKUSDT",
+            "DOTUSDT","LTCUSDT","BCHUSDT","ATOMUSDT","UNIUSDT","NEARUSDT","APTUSDT","ARBUSDT","OPUSDT","SUIUSDT" };
+        Console.WriteLine("=== 4h 파라미터 재최적화: ADX임계 × ATR트레일 병렬스윕 (방어3종·1x·6슬롯) ===\n");
+        var btcBull = new Dictionary<DateTime, bool>();
+        { var btc = await FetchKlines4hAsync("BTCUSDT", 12); int bn = btc.Count; var be2 = new double[bn]; for (int j = 200; j < bn; j++) be2[j] = CalcEMA(btc, j, 200); for (int j = 200; j < bn; j++) btcBull[btc[j].OpenTime] = be2[j] > 0 && (double)btc[j].ClosePrice > be2[j]; }
+        var data = new List<(List<IBinanceKline> kl, double[] close, int[] sg, double[] e50, double[] e200, double[] atr, double[] adx)>();
+        int ci = 0;
+        foreach (var sym in universe)
+        {
+            ci++; Console.Write($"[{ci}/{universe.Length}] {sym} ");
+            List<IBinanceKline> kl;
+            try { kl = await FetchKlines4hAsync(sym, 12); } catch { Console.WriteLine("fail"); continue; }
+            if (kl.Count < 800) { Console.WriteLine("skip"); continue; }
+            int n = kl.Count; Console.WriteLine($"{n}"); var close = new double[n]; for (int j = 0; j < n; j++) close[j] = (double)kl[j].ClosePrice;
+            var feats = new float[n][];
+            for (int j = 60; j < n; j++) { int ws = Math.Max(0, j - (featureWindow - 1)); feats[j] = LorentzianFeatures.Extract(kl.GetRange(ws, j - ws + 1))!; }
+            var e50 = new double[n]; for (int j = 50; j < n; j++) e50[j] = CalcEMA(kl, j, 50);
+            var e200 = new double[n]; for (int j = 200; j < n; j++) e200[j] = CalcEMA(kl, j, 200);
+            var atr = new double[n]; for (int j = 14; j < n; j++) { double tr = 0; for (int q = j - 13; q <= j; q++) { double hh = (double)kl[q].HighPrice, ll = (double)kl[q].LowPrice, pc = close[q - 1]; tr += Math.Max(hh - ll, Math.Max(Math.Abs(hh - pc), Math.Abs(ll - pc))); } atr[j] = tr / 14.0; }
+            var adx = new double[n]; { double atrS = 0, pdmS = 0, mdmS = 0; int per = 14; for (int j = 1; j < n; j++) { double hh = (double)kl[j].HighPrice, ll = (double)kl[j].LowPrice, pc = close[j - 1], ph = (double)kl[j - 1].HighPrice, pl = (double)kl[j - 1].LowPrice; double tr = Math.Max(hh - ll, Math.Max(Math.Abs(hh - pc), Math.Abs(ll - pc))); double up = hh - ph, dn = pl - ll; double pdm = (up > dn && up > 0) ? up : 0, mdm = (dn > up && dn > 0) ? dn : 0; if (j <= per) { atrS += tr; pdmS += pdm; mdmS += mdm; } else { atrS = atrS - atrS / per + tr; pdmS = pdmS - pdmS / per + pdm; mdmS = mdmS - mdmS / per + mdm; } if (j >= per && atrS > 0) { double pd = 100 * pdmS / atrS, md = 100 * mdmS / atrS; double dx = (pd + md) > 0 ? 100 * Math.Abs(pd - md) / (pd + md) : 0; adx[j] = j <= per * 2 ? dx : (adx[j - 1] * (per - 1) + dx) / per; } } }
+            var engine = new LorentzianAnnEngine(sym, neighborsCount: K, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount);
+            var sg = new int[n];
+            for (int j = 65; j < n; j++) { int s = j - 1; if (s - Lh >= 0 && feats[s] != null) { double a = close[s], b = close[s - Lh]; engine.AddSample(feats[s], a > b ? 1 : (a < b ? -1 : 0)); } if (feats[j] == null) continue; var p = engine.Predict(feats[j]); if (!p.IsReady || p.K == 0) continue; sg[j] = p.Prediction > 0 ? 1 : (p.Prediction < 0 ? -1 : 0); }
+            data.Add((kl, close, sg, e50, e200, atr, adx));
+        }
+        Console.WriteLine();
+        double[] adxThrs = { 15, 20, 25, 30 };
+        double[] atrMults = { 3, 4, 5, 6 };
+        int nA = adxThrs.Length, nM = atrMults.Length, total = nA * nM;
+        var results = new (double adxT, double atrM, int tn, double prof, double tot, double mo, double mdd, double worst)[total];
+        System.Threading.Tasks.Parallel.For(0, total, idx =>
+        {
+            double adxT = adxThrs[idx % nA]; double atrM = atrMults[idx / nA];
+            var trades = new List<(DateTime ent, DateTime ex, decimal pnl)>();
+            foreach (var (kl, close, sg, e50, e200, atr, adx) in data)
+            {
+                int n = kl.Count; int busy = -1;
+                for (int j = 250; j < n - 1; j++)
+                {
+                    if (j <= busy) continue;
+                    if (!(sg[j] > 0 && e50[j] > 0 && e200[j] > 0 && e50[j] > e200[j] && close[j] > e50[j] && adx[j] >= adxT)) continue;
+                    if (!(btcBull.TryGetValue(kl[j].OpenTime, out var bb) && bb)) continue;
+                    if (atr[j] <= 0 || kl[j + 1].OpenPrice <= 0) continue;
+                    if ((close[j] - e50[j]) / atr[j] >= 2.0) continue;
+                    double vsumM = 0; for (int q = j - 19; q <= j; q++) vsumM += (double)kl[q].Volume; double vavgM = vsumM / 20;
+                    if (vavgM > 0 && (double)kl[j].Volume / vavgM >= 1.5) continue;
+                    if (((double)kl[j].HighPrice - Math.Max((double)kl[j].OpenPrice, close[j])) / atr[j] >= 0.5) continue;
+                    decimal entry = kl[j + 1].OpenPrice; double peakP = (double)entry; decimal net = 0m; int ei = n - 1;
+                    for (int e = j + 1; e < n; e++) { double cc = close[e]; if (cc > peakP) peakP = cc; if (cc <= peakP - atrM * atr[e]) { net = ((decimal)cc - entry) / entry - feeRT; ei = e; break; } if (e == n - 1) net = ((decimal)cc - entry) / entry - feeRT; }
+                    busy = ei; trades.Add((kl[j + 1].OpenTime, kl[ei].OpenTime, net));
+                }
+            }
+            trades.Sort((a, b) => a.ent.CompareTo(b.ent));
+            var open = new List<DateTime>(); var monthly = new SortedDictionary<string, decimal>(); int tn = 0;
+            foreach (var t in trades) { open.RemoveAll(x => x <= t.ent); if (open.Count >= slots) continue; open.Add(t.ex); monthly[t.ent.ToString("yyyy-MM")] = (monthly.TryGetValue(t.ent.ToString("yyyy-MM"), out var v) ? v : 0m) + t.pnl * margin; tn++; }
+            int prof = 0; decimal cum = 0m, peak = 0m, mdd = 0m, worst = 0m, tot = 0m; int mo = monthly.Count;
+            foreach (var kv in monthly) { if (kv.Value > 0) prof++; if (kv.Value < worst) worst = kv.Value; cum += kv.Value; tot += kv.Value; if (cum > peak) peak = cum; if (peak - cum > mdd) mdd = peak - cum; }
+            results[idx] = (adxT, atrM, tn, mo > 0 ? 100.0 * prof / mo : 0, (double)(tot / capital * 100m), mo > 0 ? (double)(tot / capital * 100m) / mo : 0, (double)(mdd / capital * 100m), (double)(worst / capital * 100m));
+        });
+        Console.WriteLine($"  {"ADX",4} {"ATR트레일",8} {"진입",5} {"흑자월%",7} {"총수익%",8} {"월평균%",8} {"MDD%",6} {"최악월%",7}");
+        foreach (var r in results.OrderByDescending(x => x.prof).ThenByDescending(x => x.tot))
+            Console.WriteLine($"  {r.adxT,4:F0} {r.atrM,8:F0} {r.tn,5} {r.prof,7:F0} {r.tot,8:F0} {r.mo,8:F1} {r.mdd,6:F0} {r.worst,7:F1}");
+        Console.WriteLine("\n  → 흑자월% 최고 & MDD 낮은 조합이 4h 최적. 현재 라이브=ADX20·ATR5.");
+    }
+
     // --tf-compare : 동일 로직(KNN+EMA정배열+ADX20+BTC상승장+방어3종, 종가 5ATR트레일)을 1h vs 4h 비교.
     //   4h가 추세 깨끗해 흑자월↑·MDD↓ 되는지 검증. 1x 6슬롯.
     private static async Task RunTfCompareAsync()
@@ -21483,6 +21554,11 @@ internal static class Program
         if (HasArg("--tf-compare"))
         {
             await RunTfCompareAsync();
+            return;
+        }
+        if (HasArg("--tune-4h"))
+        {
+            await RunTune4hAsync();
             return;
         }
         if (HasArg("--replay-entries"))

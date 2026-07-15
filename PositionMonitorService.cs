@@ -1302,7 +1302,7 @@ namespace TradingBot.Services
                             {
                                 trendRideAtr1h = atr1h;
                                 if ((double)lastClose > trendRidePeakClose) trendRidePeakClose = (double)lastClose;
-                                double trailStop = trendRidePeakClose - 5.0 * atr1h;
+                                double trailStop = trendRidePeakClose - 4.0 * atr1h;   // [v5.26.4] 5→4 (4h 재최적화: MDD↓·흑자월↑)
                                 if ((double)lastClose <= trailStop)
                                 {
                                     OnLog?.Invoke($"📉 {symbol} 트렌드라이드 5×ATR 종가트레일 청산 | 최고종가={trendRidePeakClose:F4} 트레일={trailStop:F4} 마감종가={lastClose:F4} (ROE {currentROE:F1}%)");
