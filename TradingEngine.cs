@@ -5176,9 +5176,9 @@ namespace TradingBot
 
             // [v5.23.91] 순수 LCC — 1h Squeeze 대세필터 제거(봇 추가 게이트, LCC 아님). 진입판단은 LorentzianGuard(jdehorty) 단독.
 
-            // [v5.25.33] KNN=1h 방향판단 (사용자 지정 구조: 방향 1h → 진입대기 15m → 진입 5m마감).
-            //   KNN이 1h에서 상승/하락 방향을 판단, 롱이면 아래서 15m 진입대기 걸고 5m 마감에 진입.
-            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 1500, token);
+            // [v5.26.3] ★4시간봉 전환 — 백테(--tf-compare): 1h 대비 흑자월 43→49%, 월평균 2.5→7.1%, MDD 49→38%.
+            //   4h는 노이즈가 적어 횝쏘 손실 감소. 진입·방어·트레일 전부 4h로 통일(단일 TF). (변수명 k15List는 호환 유지 = 4h봉)
+            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FourHour, 1500, token);
             if (k15 == null || k15.Count < 300) return;
             var k15List = k15 as List<IBinanceKline> ?? new List<IBinanceKline>(k15);
 
@@ -5288,10 +5288,10 @@ namespace TradingBot
                 }
             }
 
-            // [v5.25.27→유지] 시장(BTC) 대세 필터 — BTC 상승장(1h 종가>EMA200)일 때만 LONG. 롱전용 하락장 진입 방지.
+            // [v5.26.3] 시장(BTC) 대세 필터 — BTC 상승장(4h 종가>EMA200)일 때만 LONG. 롱전용 하락장 진입 방지. (백테와 동일 4h)
             try
             {
-                var btcK = await GetMultiTfKlinesThrottledAsync("BTCUSDT", KlineInterval.OneHour, 260, token);
+                var btcK = await GetMultiTfKlinesThrottledAsync("BTCUSDT", KlineInterval.FourHour, 260, token);
                 var btcList = btcK as List<IBinanceKline> ?? (btcK != null ? new List<IBinanceKline>(btcK) : null);
                 if (btcList != null && btcList.Count >= 210)
                 {
@@ -5300,7 +5300,7 @@ namespace TradingBot
                     if (btcEma200 > 0 && (double)btcList[bl].ClosePrice <= btcEma200)
                     {
                         if (DateTime.UtcNow.Second % 30 == 0)
-                            OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | BTC 하락장(1h≤EMA200) — 시장 역행 LONG 방지");
+                            OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | BTC 하락장(4h≤EMA200) — 시장 역행 LONG 방지");
                         return;
                     }
                 }

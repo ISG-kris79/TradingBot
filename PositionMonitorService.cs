@@ -3512,12 +3512,12 @@ namespace TradingBot.Services
             }
         }
 
-        // [v5.26.0] 트렌드라이드 종가트레일용: 1h ATR(14) + 마지막 '마감된' 1h봉 종가. 백테와 동일(종가기준·꼬리무시).
+        // [v5.26.3] 트렌드라이드 종가트레일용: ★4h★ ATR(14) + 마지막 '마감된' 4h봉 종가. 진입TF(4h)와 통일. 종가기준·꼬리무시.
         private async Task<(double atr, decimal lastClose)> GetAtr1hCloseAsync(string symbol, CancellationToken token)
         {
             try
             {
-                var klines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.OneHour, 60, token);
+                var klines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FourHour, 60, token);
                 if (klines == null || klines.Count < 20) return (0, 0m);
                 var list = klines.ToList();
                 double atr = IndicatorCalculator.CalculateATR(list, 14);

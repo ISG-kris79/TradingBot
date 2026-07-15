@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.26.3] - 2026-07-15
+
+### ♻️ Changed — 진입/청산 타임프레임 1h → 4h (노이즈 감소로 흑자월↑·MDD↓)
+`--tf-compare` 백테(동일 로직+방어): 1h 대비 4h가 전 지표 우세 — 흑자월 43→49%, 월평균 2.5→7.1%, MDD 49→38%, 최악월 유사. 4h는 71개월(2021 불장+2022 대하락장 포함)에서도 이 성적 → 노이즈 적어 횝쏘 손실 감소. 진입·방어·트레일 전부 4h 단일화:
+- `AnalyzeLorentzianEntryAsync`: KNN 학습/평가·EMA정배열·ADX·방어3종 모두 4h(`KlineInterval.FourHour`).
+- BTC 대세필터: BTC 4h EMA200.
+- `PositionMonitorService.GetAtr1hCloseAsync`: 트레일 ATR·마감봉 종가를 4h로 통일(진입TF 일치).
+- 라이브 카나리 판정 필요(백테는 여기까지).
+
 ## [5.26.2] - 2026-07-15
 
 ### ✨ Added — 손실 방어 3종 (지는 트레이드 전수분석 → 보조지표로 손실만 차단)
