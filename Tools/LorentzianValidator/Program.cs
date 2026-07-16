@@ -14172,10 +14172,10 @@ internal static class Program
                     if (!(sg[j] > 0 && e50[j] > 0 && e200[j] > 0 && e50[j] > e200[j] && close[j] > e50[j] && adx[j] >= adxT)) continue;
                     if (!(btcBull.TryGetValue(kl[j].OpenTime, out var bb) && bb)) continue;
                     if (atr[j] <= 0 || kl[j + 1].OpenPrice <= 0) continue;
+                    // [4h 손실방어 재분석] EMA50 과확장만 유지 — 거래량·윗꼬리는 4h에서 승자 제거(해로움)라 제거. RSI14<60 추가.
                     if ((close[j] - e50[j]) / atr[j] >= 2.0) continue;
-                    double vsumM = 0; for (int q = j - 19; q <= j; q++) vsumM += (double)kl[q].Volume; double vavgM = vsumM / 20;
-                    if (vavgM > 0 && (double)kl[j].Volume / vavgM >= 1.5) continue;
-                    if (((double)kl[j].HighPrice - Math.Max((double)kl[j].OpenPrice, close[j])) / atr[j] >= 0.5) continue;
+                    // RSI14<60 (과매수 회피)
+                    { double ag = 0, al = 0; int per = 14; int s0 = Math.Max(1, j - 200); for (int q = s0; q <= j; q++) { double ch = close[q] - close[q - 1]; double g = ch > 0 ? ch : 0, ls = ch < 0 ? -ch : 0; if (q == s0) { ag = g; al = ls; } else { ag = (ag * (per - 1) + g) / per; al = (al * (per - 1) + ls) / per; } } double rsi = al == 0 ? 100 : 100 - 100 / (1 + ag / al); if (rsi >= 60) continue; }
                     decimal entry = kl[j + 1].OpenPrice; double peakP = (double)entry; decimal net = 0m; int ei = n - 1;
                     for (int e = j + 1; e < n; e++) { double cc = close[e]; if (cc > peakP) peakP = cc; if (cc <= peakP - atrM * atr[e]) { net = ((decimal)cc - entry) / entry - feeRT; ei = e; break; } if (e == n - 1) net = ((decimal)cc - entry) / entry - feeRT; }
                     busy = ei; trades.Add((kl[j + 1].OpenTime, kl[ei].OpenTime, net));
@@ -14263,16 +14263,16 @@ internal static class Program
     //   손실 원인을 지표로 정량화하고, 그 지표로 손실만 골라 막는 필터를 Parallel.For로 탐색.
     private static async Task RunLossDefenseAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8, pages1h = 20;
-        const decimal feeRT = 0.0008m; const double atrMult = 5.0, adxThr = 20;
+        const int featureWindow = 500, K = 8, Lh = 8;
+        const decimal feeRT = 0.0008m; const double atrMult = 4.0, adxThr = 30;   // [v5.26.4] 4h·ADX30·트레일4 기준
         decimal margin = 500m; int slots = 6; decimal capital = margin * slots;
         var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
         var universe = new[] {
             "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","TRXUSDT","AVAXUSDT","LINKUSDT",
             "DOTUSDT","LTCUSDT","BCHUSDT","ATOMUSDT","UNIUSDT","NEARUSDT","APTUSDT","ARBUSDT","OPUSDT","SUIUSDT" };
-        Console.WriteLine("=== 손실 방어 분석: 승자/패자 판별지표 + 방어필터 병렬탐색 (차등레버 10x/5x) ===\n");
+        Console.WriteLine("=== 손실 방어 분석 [4h·ADX30·트레일4]: 승자/패자 판별지표 + 방어필터 병렬탐색 ===\n");
         var btcBull = new Dictionary<DateTime, bool>();
-        { var btc = await FetchKlines1hAsync("BTCUSDT", pages1h); int bn = btc.Count; var be2 = new double[bn]; for (int j = 200; j < bn; j++) be2[j] = CalcEMA(btc, j, 200); for (int j = 200; j < bn; j++) btcBull[btc[j].OpenTime] = be2[j] > 0 && (double)btc[j].ClosePrice > be2[j]; }
+        { var btc = await FetchKlines4hAsync("BTCUSDT", 12); int bn = btc.Count; var be2 = new double[bn]; for (int j = 200; j < bn; j++) be2[j] = CalcEMA(btc, j, 200); for (int j = 200; j < bn; j++) btcBull[btc[j].OpenTime] = be2[j] > 0 && (double)btc[j].ClosePrice > be2[j]; }
         // trade: ent,ex,pnlPct,lev + 진입지표 [rsi14,ext20(ATR),bbPos,volRatio,upWick,macdUp?,ema20slope%,ext50]
         var trades = new List<(DateTime ent, DateTime ex, decimal pnl, int lev, double rsi, double ext20, double bbPos, double vol, double upw, double macd, double slope, double ext50)>();
         int ci = 0;
@@ -14281,8 +14281,8 @@ internal static class Program
             ci++; Console.Write($"[{ci}/{universe.Length}] {sym} ");
             int lev = majors.Contains(sym) ? 10 : 5;
             List<IBinanceKline> kl;
-            try { kl = await FetchKlines1hAsync(sym, pages1h); } catch { Console.WriteLine("fail"); continue; }
-            if (kl.Count < 2000) { Console.WriteLine("skip"); continue; }
+            try { kl = await FetchKlines4hAsync(sym, 12); } catch { Console.WriteLine("fail"); continue; }
+            if (kl.Count < 800) { Console.WriteLine("skip"); continue; }
             int n = kl.Count; Console.WriteLine($"{n}"); var close = new double[n]; for (int j = 0; j < n; j++) close[j] = (double)kl[j].ClosePrice;
             var feats = new float[n][];
             for (int j = 60; j < n; j++) { int ws = Math.Max(0, j - (featureWindow - 1)); feats[j] = LorentzianFeatures.Extract(kl.GetRange(ws, j - ws + 1))!; }
