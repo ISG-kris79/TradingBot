@@ -5176,9 +5176,33 @@ namespace TradingBot
 
             // [v5.23.91] 순수 LCC — 1h Squeeze 대세필터 제거(봇 추가 게이트, LCC 아님). 진입판단은 LorentzianGuard(jdehorty) 단독.
 
-            // [v5.26.3] ★4시간봉 전환 — 백테(--tf-compare): 1h 대비 흑자월 43→49%, 월평균 2.5→7.1%, MDD 49→38%.
-            //   4h는 노이즈가 적어 횝쏘 손실 감소. 진입·방어·트레일 전부 4h로 통일(단일 TF). (변수명 k15List는 호환 유지 = 4h봉)
-            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FourHour, 1500, token);
+            // [v5.27.0] ★MTF 전환 — 4h/BTC로 방향(상승) 판단 + 15m로 진입(단타 기본). 4h=방향(장타 맥락), 15m=KNN·진입·방어.
+            //   백테(--mtf-4h15m, 최근15개월): 진입 6→32건/월, 흑자월 58→67%, MDD 27→6%, "월0" 기간 대부분 흑자로.
+            // ── 1) 4h 방향 게이트: 상승레짐(EMA50>200 · 종가>EMA50 · ADX(4h)≥25)일 때만 ──
+            var b4raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FourHour, 300, token);
+            var b4 = b4raw as List<IBinanceKline> ?? (b4raw != null ? new List<IBinanceKline>(b4raw) : null);
+            if (b4 == null || b4.Count < 210) return;
+            {
+                int i4 = b4.Count - 2;
+                double e50a = CalcEmaClose(b4, i4, 50), e200a = CalcEmaClose(b4, i4, 200), adx4 = LorentzianGuard.CalcADX(b4, i4, 14), c4 = (double)b4[i4].ClosePrice;
+                if (!(e50a > 0 && e200a > 0 && e50a > e200a && c4 > e50a && adx4 >= 25.0))
+                { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [MTF] {symbol} 차단 | 4h 상승레짐 아님 (방향게이트: EMA50>200·종가>EMA50·ADX≥25)"); return; }
+            }
+            // ── 2) BTC 4h 완전정배열(시장 대세) ──
+            try
+            {
+                var btcK0 = await GetMultiTfKlinesThrottledAsync("BTCUSDT", KlineInterval.FourHour, 260, token);
+                var bl0 = btcK0 as List<IBinanceKline> ?? (btcK0 != null ? new List<IBinanceKline>(btcK0) : null);
+                if (bl0 != null && bl0.Count >= 210)
+                {
+                    int bi = bl0.Count - 2; double be2 = CalcEmaClose(bl0, bi, 200), be5 = CalcEmaClose(bl0, bi, 50), bc = (double)bl0[bi].ClosePrice;
+                    if (!(be2 > 0 && be5 > 0 && bc > be5 && be5 > be2))
+                    { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [MTF] {symbol} 차단 | BTC 4h 완전정배열 아님 — 하락/횡보장 방어"); return; }
+                }
+            }
+            catch { }
+            // ── 3) 15m 진입봉 — KNN·EMA정배열·방어는 15m에서 판단 (단타 타점) ──
+            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 1500, token);
             if (k15 == null || k15.Count < 300) return;
             var k15List = k15 as List<IBinanceKline> ?? new List<IBinanceKline>(k15);
 
@@ -5259,14 +5283,7 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | EMA정배열 아님 (close={c1h:F4} ema50={ema50v:F4} ema200={ema200v:F4})");
                 return;
             }
-            // [v5.26.4] ADX(14)≥30 = 강추세만 (4h 재최적화: ADX20→30이 흑자월 49→58%·MDD 37→27%. 횡보손실 감소).
-            double adxV = LorentzianGuard.CalcADX(k15List, evalIdx, 14);
-            if (adxV < 30.0)
-            {
-                if (DateTime.UtcNow.Second % 30 == 0)
-                    OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | ADX<30 약추세 (adx={adxV:F1})");
-                return;
-            }
+            // [v5.27.0] ADX는 4h 방향게이트(ADX≥25)에서 담당 — 15m 진입은 ADX 없이 (백테 --mtf-4h15m 기준).
 
             // [v5.26.5] ★손실 방어 (4h 재분석 --loss-defense) — 4h에선 거래량·윗꼬리 방어가 승자를 잘라 해로움 → 제거.
             //   유효 방어 2종만: ①EMA50 위 2×ATR 이상 과확장(고점매수 방어) ②RSI14≥60 과매수 회피. (백테: 흑자월 58%·월평균 7.1→8.4%)
@@ -5279,40 +5296,16 @@ namespace TradingBot
                 { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | RSI14≥60 과매수 (rsi={rsi14:F1})"); return; }
             }
 
-            // [v5.26.6] 시장(BTC) 대세 필터 강화 — BTC 완전정배열(4h 종가>EMA50>EMA200)일 때만 LONG.
-            //   (--regime-4h: EMA200만 걸친 횡보장을 더 걸러 최근2년 흑자월 35→42%·MDD 30→29%. 하락장 방어.)
-            try
+            // [v5.27.0] 즉시 진입 — 15m 조건 충족 시. 초기 손절 = 진입가 − 5×ATR(15m). 승자 청산은 모니터의 15m 5×ATR 종가트레일.
+            if (Math.Abs((currentPrice - (decimal)c1h) / (decimal)c1h) > 0.015m)
             {
-                var btcK = await GetMultiTfKlinesThrottledAsync("BTCUSDT", KlineInterval.FourHour, 260, token);
-                var btcList = btcK as List<IBinanceKline> ?? (btcK != null ? new List<IBinanceKline>(btcK) : null);
-                if (btcList != null && btcList.Count >= 210)
-                {
-                    int bl = btcList.Count - 2;
-                    double btcEma200 = CalcEmaClose(btcList, bl, 200);
-                    double btcEma50 = CalcEmaClose(btcList, bl, 50);
-                    double btcClose = (double)btcList[bl].ClosePrice;
-                    if (!(btcEma200 > 0 && btcEma50 > 0 && btcClose > btcEma50 && btcEma50 > btcEma200))
-                    {
-                        if (DateTime.UtcNow.Second % 30 == 0)
-                            OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | BTC 완전정배열 아님(4h 종가>EMA50>EMA200 필요) — 하락/횡보장 방어");
-                        return;
-                    }
-                }
-            }
-            catch { }
-
-            // [v5.26.0] 즉시 진입 — 백테 충실(1h 조건 충족 시 진입). 15m대기/5m펜딩 제거(검증구조는 순수 1h).
-            //   초기 손절 = 진입가 − 5×ATR(1h) = 넓은 구조적 손절. 이후 승자 청산은 모니터의 5×ATR-from-peak 트레일이 담당.
-            //   signalSource="LORENTZIAN" 유지 → isLcc 경로(온체인 부분익절 OFF, tpRoe 300)로 라우팅 = 승자 안 자름.
-            if (Math.Abs((currentPrice - (decimal)c1h) / (decimal)c1h) > 0.02m)
-            {
-                // 현재가가 마감봉 종가에서 2% 이상 벌어졌으면(급변) 스킵 — 다음 평가 대기
+                // 현재가가 15m 마감봉 종가에서 1.5% 이상 벌어졌으면(급변) 스킵 — 다음 평가 대기
                 return;
             }
-            double atr1hV = LorentzianGuard.CalcATR(k15List, evalIdx, 14);
+            double atr1hV = LorentzianGuard.CalcATR(k15List, evalIdx, 14);   // 15m ATR
             decimal atrStopPx = atr1hV > 0 ? currentPrice - (decimal)(5.0 * atr1hV) : 0m;
             _lorentzianCooldown[symbol] = DateTime.UtcNow;
-            OnStatusLog?.Invoke($"✅ [TREND_RIDE] {symbol} 진입 | KNN pred={guard.KnnPrediction} · EMA정배열 · ADX={adxV:F1} | 초기SL=진입−5ATR({atrStopPx:F4})");
+            OnStatusLog?.Invoke($"✅ [MTF_TRENDRIDE] {symbol} 진입 | 4h상승 · 15m KNN={guard.KnnPrediction} · EMA정배열 | 초기SL=진입−5ATR15({atrStopPx:F4})");
             //   signalSource="LORENTZIAN_TRENDRIDE": "LORENTZIAN" 포함 → isLcc 라우팅(온체인 부분익절 OFF) 유지 +
             //   "TRENDRIDE" 태그 → 모니터가 조기컷(8봉/EMA20/반전캔들)·부분익절 제외하고 넓은 트레일로 태움.
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,

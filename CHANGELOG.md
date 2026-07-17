@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.27.0] - 2026-07-17
+
+### ✨ Added — ★MTF 전환: 4h 방향게이트 + 15m 진입 (단타) + 실시간 반전익절
+사용자 지시("15m=단타 기본, 4h=장타 방향" · "4h만 진입은 월0 절반") → `--mtf-4h15m` 백테(최근15개월·12코인): 진입 **6→32건/월**, 흑자월 **58→67%**, MDD **27→6%**, 최악월 −16→−4%, "월0"이던 최근기간 대부분 흑자화. 4h단일의 저빈도·월0 문제 해결.
+- **진입 (`AnalyzeLorentzianEntryAsync`)**: ①4h 방향게이트(EMA50>200·종가>EMA50·ADX≥25) ②BTC 4h 완전정배열 ③15m KNN(과거8)+EMA정배열+방어(EMA50과확장·RSI<60)에서 진입. 초기SL=진입−5×ATR(15m).
+- **청산**: 15m 종가 5×ATR 트레일(`GetAtr1hCloseAsync` 15m화) + **실시간 반전익절**(`TryTrendRideReversalTPAsync`): 수익 구간(ROE≥15%)에서 1h/15m 긴꼬리음봉(상단 매도거부) 시 익절. 코인별 병렬 감시(기존 PositionMonitorService).
+- ⚠️ 백테는 15m 데이터 한계로 15개월(2024-11~)만. 실거래 카나리 판정 필요.
+
 ## [5.26.6] - 2026-07-17
 
 ### ♻️ Changed — BTC 대세필터 강화: 종가>EMA200 → 완전정배열(종가>EMA50>EMA200) (하락/횡보장 방어)

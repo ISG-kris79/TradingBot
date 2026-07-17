@@ -1291,6 +1291,8 @@ namespace TradingBot.Services
                     //   하방 방어는 넓은 초기SL(진입−5ATR) + ATR close-only 스톱이 담당. 8봉시간정지·EMA20컷·반전캔들·RSI2 스킵.
                     if (isTrendRide)
                     {
+                        // [v5.27.0] 실시간 반전익절 (수익 구간) — 1h/15m 긴꼬리음봉 상단거부 시 익절. 트레일보다 먼저 체크.
+                        if (await TryTrendRideReversalTPAsync(symbol, currentROE, token)) break;
                         // [v5.26.0] peak−5×ATR ★종가기준★ 트레일 (승자 수익잠금). 서버 STOP_MARKET(진입−5ATR)은 안전망.
                         //   백테 검증: 종가기준(1h 마감봉 종가가 최고종가−5ATR 아래일 때만 청산, 꼬리 무시) = 65%흑자·+50%.
                         //   틱기준(장중저가)은 꼬리에 털려 −22% → 반드시 마감봉 종가로만 판정. 90초마다 1h 마감봉 확인.
@@ -3512,12 +3514,43 @@ namespace TradingBot.Services
             }
         }
 
-        // [v5.26.3] 트렌드라이드 종가트레일용: ★4h★ ATR(14) + 마지막 '마감된' 4h봉 종가. 진입TF(4h)와 통일. 종가기준·꼬리무시.
+        // [v5.27.0] ★실시간 반전익절 (수익 구간에서만) — 1h/15m 마감봉에 긴꼬리음봉(상단매도거부)·반전캔들 나오면 익절.
+        //   승자를 일찍 안 자르되(수익ROE 미달이면 스킵), 고점 반전에서 이익 잠금. 사용자 지정. 2분 스로틀.
+        private readonly Dictionary<string, DateTime> _trendRideRevCheck = new();
+        private async Task<bool> TryTrendRideReversalTPAsync(string symbol, decimal currentROE, CancellationToken token)
+        {
+            try
+            {
+                if (currentROE < 15m) return false;   // 익절보호: 수익 구간(ROE≥15%)에서만
+                lock (_trendRideRevCheck)
+                {
+                    if (_trendRideRevCheck.TryGetValue(symbol, out var t) && (DateTime.UtcNow - t).TotalSeconds < 120) return false;
+                    _trendRideRevCheck[symbol] = DateTime.UtcNow;
+                }
+                foreach (var (iv, nm) in new[] { (KlineInterval.OneHour, "1h"), (KlineInterval.FifteenMinutes, "15m") })
+                {
+                    var kr = await _exchangeService.GetKlinesAsync(symbol, iv, 5, token);
+                    if (kr == null || kr.Count < 3) continue;
+                    var list = kr.ToList(); var closed = list[list.Count - 2];   // 마감봉
+                    if (!LorentzianV2.LorentzianGuard.IsBearishReversalCandle(closed)) continue;
+                    decimal upW = closed.HighPrice - Math.Max(closed.OpenPrice, closed.ClosePrice);
+                    decimal loW = Math.Min(closed.OpenPrice, closed.ClosePrice) - closed.LowPrice;
+                    if (upW < loW) continue;   // 윗꼬리 우세(상단 매도거부)일 때만 = 고점 반전
+                    OnLog?.Invoke($"🕯️ {symbol} 트렌드라이드 반전익절 | {nm} 긴꼬리음봉(상단거부) · ROE={currentROE:F1}%");
+                    await ExecuteMarketClose(symbol, $"트렌드라이드 반전 익절 ({nm} 상단거부, ROE {currentROE:F1}%)", token);
+                    return true;
+                }
+                return false;
+            }
+            catch { return false; }
+        }
+
+        // [v5.27.0] 트렌드라이드 종가트레일용: ★15m★ ATR(14) + 마지막 '마감된' 15m봉 종가. 진입TF(15m)와 통일. 종가기준·꼬리무시.
         private async Task<(double atr, decimal lastClose)> GetAtr1hCloseAsync(string symbol, CancellationToken token)
         {
             try
             {
-                var klines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FourHour, 60, token);
+                var klines = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 60, token);
                 if (klines == null || klines.Count < 20) return (0, 0m);
                 var list = klines.ToList();
                 double atr = IndicatorCalculator.CalculateATR(list, 14);
