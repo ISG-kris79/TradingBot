@@ -5,6 +5,13 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.27.2] - 2026-07-17
+
+### ♻️ Changed — 순손실 코인(OP·LINK) 제외 / RSI 밴드는 미채택(검증 실패)
+`--mtf-lossstat` 손절 전수통계 후속:
+- **OP·LINK 제외**: 통계상 순손실(OP 승률24%·−$367, LINK 30%·−$407). 10코인으로 제거 시 총 +63→+68%·흑자월 45→50%·MDD 13→10. `AnalyzeLorentzianEntryAsync`에서 제외. (2코인 과거성적 기반 = 약한 과최적화 감안.)
+- **RSI 밴드는 미채택**: per-bucket 통계는 RSI50-55만 흑자였으나, 실제 밴드로 좁히면(--mtf-rsi) 40-50 구간의 큰 승자도 잘려 총수익 68→58% 감소. RSI는 방향예측 지표가 아니라 밴드필터가 엣지 아님. 현행 RSI<60 유지.
+
 ## [5.27.1] - 2026-07-17
 
 ### ✨ Added — 손절폭 상한 (고변동 대형손실 방어)

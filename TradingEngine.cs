@@ -5161,6 +5161,13 @@ namespace TradingBot
 
         private async Task AnalyzeLorentzianEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
+            // [v5.27.2] 순손실 코인 제외 (--mtf-lossstat 통계: OP 승률24%·−$367, LINK 30%·−$407 순손실).
+            //   제거 시 총 +63→+68%·흑자월 45→50%·MDD 13→10. (2코인 과거성적 기반이라 약한 과최적화 감안.)
+            if (symbol == "OPUSDT" || symbol == "LINKUSDT")
+            {
+                if (DateTime.UtcNow.Second % 60 == 0) OnStatusLog?.Invoke($"⛔ [MTF] {symbol} 제외 (순손실 코인 통계)");
+                return;
+            }
             if (!IsEntryAllowed(symbol, "LORENTZIAN", out _)) return;
             if (_lorentzianCooldown.TryGetValue(symbol, out var lastEntry)
                 && DateTime.UtcNow - lastEntry < LorentzianCooldown) return;
