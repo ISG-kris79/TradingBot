@@ -5294,6 +5294,11 @@ namespace TradingBot
                 double rsi14 = CalcRsiClose(k15List, evalIdx, 14);
                 if (rsi14 >= 60.0)
                 { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | RSI14≥60 과매수 (rsi={rsi14:F1})"); return; }
+                // [v5.27.1] ★손절폭 상한 — 5×ATR(15m)이 진입가 5% 초과하는 고변동 진입 스킵 (--mtf-stopcap).
+                //   손실점검(--mtf-worst): 대형손실(−8~−14%)은 손절실패 아닌 ATR폭발로 손절폭 자체가 넓어진 것.
+                //   5% 상한 → 최악단일 −13.8%→−8.5%(1x $85, 100달러미만), 최악월 −9.9→−4.8%. 레버 안전 필수.
+                if (atrDef > 0 && (5.0 * atrDef) / c1h > 0.05)
+                { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | 손절폭 과대(5×ATR>진입가5% — 고변동 대형손실 방어)"); return; }
             }
 
             // [v5.27.0] 즉시 진입 — 15m 조건 충족 시. 초기 손절 = 진입가 − 5×ATR(15m). 승자 청산은 모니터의 15m 5×ATR 종가트레일.
