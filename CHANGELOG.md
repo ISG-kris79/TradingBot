@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.27.3] - 2026-07-17
+
+### ♻️ Changed — 조합 손실패턴 제외(MACD음전+윗꼬리, train/test 검증)
+`--mtf-combo` 보조지표 조합 마이닝(13비트 마스크 → 전체 pair·triple AND 열거 + train/test 분할 검증) 결과:
+- **유일한 robust 손실조합 발견**: `MACD히스토<0 + 진입봉 윗꼬리>0.4×ATR` = n68·승률25%(기준37%)·총 −$337. train21%/test28% 둘 다 기준−8%p↓ AND 실적자 → 과최적화 아님.
+- 단일지표론 안 잡히던 조합. `AnalyzeLorentzianEntryAsync` 진입 방어에 제외 추가.
+- **한계 명시**: 전체 364조합 중 유일. 나머지 저승률 조합은 대박승자 캐리라 순이익(예 MACD음전+거래량<0.7 승률37%지만 +$1,903)→제외불가. 저승률≠손실 재확인.
+
 ## [5.27.2] - 2026-07-17
 
 ### ♻️ Changed — 순손실 코인(OP·LINK) 제외 / RSI 밴드는 미채택(검증 실패)

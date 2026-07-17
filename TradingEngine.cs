@@ -5306,6 +5306,28 @@ namespace TradingBot
                 //   5% 상한 → 최악단일 −13.8%→−8.5%(1x $85, 100달러미만), 최악월 −9.9→−4.8%. 레버 안전 필수.
                 if (atrDef > 0 && (5.0 * atrDef) / c1h > 0.05)
                 { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | 손절폭 과대(5×ATR>진입가5% — 고변동 대형손실 방어)"); return; }
+                // [v5.27.3] ★조합 손실패턴 제외 (--mtf-combo, train/test 검증): MACD히스토<0 + 진입봉 윗꼬리>0.4×ATR = 승률25%·총-$337 적자패턴.
+                //   단일지표론 안 잡히던 유일한 robust 조합(train21%/test28% 둘다 기준-8%p↓+실적자). 나머지 저승률 조합은 대박승자캐리라 제외불가.
+                if (atrDef > 0)
+                {
+                    double e12 = 0, e26 = 0, sig = 0; const double k12 = 2.0 / 13, k26 = 2.0 / 27, k9 = 2.0 / 10;
+                    for (int q = 0; q <= evalIdx; q++)
+                    {
+                        double cc = (double)k15List[q].ClosePrice;
+                        if (q == 0) { e12 = cc; e26 = cc; } else { e12 = cc * k12 + e12 * (1 - k12); e26 = cc * k26 + e26 * (1 - k26); }
+                        double macd = e12 - e26;
+                        sig = (q == 0) ? macd : macd * k9 + sig * (1 - k9);
+                        if (q == evalIdx)
+                        {
+                            double hist = macd - sig;
+                            double hi = (double)k15List[evalIdx].HighPrice;
+                            double op = (double)k15List[evalIdx].OpenPrice;
+                            double upperWick = hi - Math.Max(op, c1h);
+                            if (hist < 0 && upperWick / atrDef > 0.4)
+                            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | MACD음전+윗꼬리 조합 (승률25% 검증적자패턴)"); return; }
+                        }
+                    }
+                }
             }
 
             // [v5.27.0] 즉시 진입 — 15m 조건 충족 시. 초기 손절 = 진입가 − 5×ATR(15m). 승자 청산은 모니터의 15m 5×ATR 종가트레일.
