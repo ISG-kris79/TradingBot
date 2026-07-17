@@ -5279,7 +5279,8 @@ namespace TradingBot
                 { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | RSI14≥60 과매수 (rsi={rsi14:F1})"); return; }
             }
 
-            // [v5.26.3] 시장(BTC) 대세 필터 — BTC 상승장(4h 종가>EMA200)일 때만 LONG. 롱전용 하락장 진입 방지. (백테와 동일 4h)
+            // [v5.26.6] 시장(BTC) 대세 필터 강화 — BTC 완전정배열(4h 종가>EMA50>EMA200)일 때만 LONG.
+            //   (--regime-4h: EMA200만 걸친 횡보장을 더 걸러 최근2년 흑자월 35→42%·MDD 30→29%. 하락장 방어.)
             try
             {
                 var btcK = await GetMultiTfKlinesThrottledAsync("BTCUSDT", KlineInterval.FourHour, 260, token);
@@ -5288,10 +5289,12 @@ namespace TradingBot
                 {
                     int bl = btcList.Count - 2;
                     double btcEma200 = CalcEmaClose(btcList, bl, 200);
-                    if (btcEma200 > 0 && (double)btcList[bl].ClosePrice <= btcEma200)
+                    double btcEma50 = CalcEmaClose(btcList, bl, 50);
+                    double btcClose = (double)btcList[bl].ClosePrice;
+                    if (!(btcEma200 > 0 && btcEma50 > 0 && btcClose > btcEma50 && btcEma50 > btcEma200))
                     {
                         if (DateTime.UtcNow.Second % 30 == 0)
-                            OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | BTC 하락장(4h≤EMA200) — 시장 역행 LONG 방지");
+                            OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | BTC 완전정배열 아님(4h 종가>EMA50>EMA200 필요) — 하락/횡보장 방어");
                         return;
                     }
                 }
