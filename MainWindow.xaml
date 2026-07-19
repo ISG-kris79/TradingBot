@@ -1411,6 +1411,13 @@
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
                                 </ScrollViewer>
+                                <!-- 빈 상태 안내 (활성 포지션 없을 때) -->
+                                <StackPanel Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                            Visibility="{Binding NoActivePositions, Converter={StaticResource BoolToVisibilityConverter}}">
+                                    <TextBlock Text="🌙" FontSize="34" HorizontalAlignment="Center" Opacity="0.45"/>
+                                    <TextBlock Text="진입 중인 포지션이 없습니다" FontSize="14" Foreground="#94A3B8" HorizontalAlignment="Center" Margin="0,10,0,3"/>
+                                    <TextBlock Text="진입 조건 충족 시 여기에 카드로 표시됩니다" FontSize="11" Foreground="#5B6480" HorizontalAlignment="Center"/>
+                                </StackPanel>
                             </Grid>
 
                             <!-- ═══ RIGHT: 진입 임박 + 로그 ═══ -->

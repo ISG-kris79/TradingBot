@@ -135,6 +135,9 @@ namespace TradingBot.ViewModels
         public void ApplyScalpSettings() => _engine?.RestartScalpAuto();
         // 데이터 컬렉션
         public ObservableCollection<MultiTimeframeViewModel> MarketDataList { get; set; } = new ObservableCollection<MultiTimeframeViewModel>();
+        // [v5.28.3] 카드 대시보드 — 활성 포지션 유무 (빈 상태 안내 토글)
+        public bool HasActivePositions => MarketDataList != null && MarketDataList.Any(m => m.IsPositionActive);
+        public bool NoActivePositions => !HasActivePositions;
         public ObservableCollection<BattleExecutionStep> BattleExecutionSteps { get; } = new ObservableCollection<BattleExecutionStep>();
         public ChartValues<double> ProfitHistory { get; set; } = new ChartValues<double>();
         public ObservableCollection<string> LiveLogs { get; set; } = new ObservableCollection<string>();
@@ -5401,6 +5404,7 @@ ORDER BY CloseTime DESC, Id DESC", new { UserId = userId, StartUtc = startUtc, E
                     return;
                 bool activeChanged = existing.IsPositionActive != isActive;
                 existing.IsPositionActive = isActive;
+                if (activeChanged) { OnPropertyChanged(nameof(HasActivePositions)); OnPropertyChanged(nameof(NoActivePositions)); }
                 existing.EntryPrice = entryPrice;
                 existing.HasCloseIncomplete = false;
                 existing.CloseIncompleteDetail = null;

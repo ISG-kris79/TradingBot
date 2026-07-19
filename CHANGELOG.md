@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.28.3] - 2026-07-19
+
+### ✨ Added — 메인 대시보드 카드형 리디자인
+평평한 `dgMultiTimeframe` 표 → 코인별 살아있는 카드 대시보드:
+- **진입 중 포지션 카드**: ROE 대형표시 + **가격 사다리**(손절─진입─트레일─현재 마커 시각화, `StarGridLengthConverter`로 %배치) + **청산 트리거 칩**(🟢트레일링 4×/10× · 🟡반전 감시 · 🔴손절 근접) + 청산 버튼 + 더블클릭 차트.
+- **진입 임박 큐**: KNN/NW커널/DBB여유/🔥서지 게이지 + 판정 배지 + 필요조건.
+- **로그·알림 레일** + 활성 포지션 없을 때 빈 상태 안내.
+- `MultiTimeframeViewModel`에 `ExitTrigger*`·`Ladder*` 계산속성, `MainViewModel`에 `HasActivePositions` 추가. 코드비하인드 `dgMultiTimeframe` 의존 제거(`MarketDataList` 기본뷰 정렬 공유).
+
 ## [5.28.2] - 2026-07-19
 
 ### ✨ Added — 1h EMA 컨플루언스 (4h→1h→15m 3중 추세정렬)
