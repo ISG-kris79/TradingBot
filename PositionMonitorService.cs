@@ -443,6 +443,7 @@ namespace TradingBot.Services
             // [v5.26.0] 트렌드라이드 peak−5×ATR 종가기준 트레일 상태 (승자 수익잠금 — 백테 검증: 종가기준 65%흑자·+50%, 틱기준은 꼬리털림 −22%)
             double trendRidePeakClose = (double)entryPrice;   // 마감된 1h봉 종가의 최고값
             double trendRideAtr1h = 0;
+            double trendRideEntryAtr = 0;   // [v5.28.1] 진입시점 ATR(첫 관측값) — 확대트레일 이익측정 기준
             DateTime trendRideAtrNext = DateTime.MinValue;
             //   본절/부분익절/조기컷 전부 제외 — 백테: 본절 ON은 +28%(승자 본절컷), OFF는 +50%. 순수 종가트레일만.
             bool isTrendRide = false;
@@ -1303,12 +1304,17 @@ namespace TradingBot.Services
                             if (atr1h > 0 && lastClose > 0)
                             {
                                 trendRideAtr1h = atr1h;
+                                if (trendRideEntryAtr <= 0) trendRideEntryAtr = atr1h;   // 진입시점 ATR 첫 관측 캡처
                                 if ((double)lastClose > trendRidePeakClose) trendRidePeakClose = (double)lastClose;
-                                double trailStop = trendRidePeakClose - 5.0 * atr1h;   // [v5.26.5] 4→5 (EMA50+RSI 방어 조합에선 ATR5가 흑자월 58%·수익↑)
+                                // [v5.28.1] ★확대 트레일 4→10 (--trail-sweep: 확대4→10 = 수익+83%·PF1.32·MDD 21→18%개선).
+                                //   초반 4×ATR로 손실 짧게 → 이익이 진입ATR 3배 넘으면(검증된 승자) 10×로 넓혀 끝까지 태움.
+                                double profAtr = trendRideEntryAtr > 0 ? (trendRidePeakClose - (double)entryPrice) / trendRideEntryAtr : 0;
+                                double trailMult = profAtr < 3.0 ? 4.0 : 10.0;
+                                double trailStop = trendRidePeakClose - trailMult * atr1h;
                                 if ((double)lastClose <= trailStop)
                                 {
-                                    OnLog?.Invoke($"📉 {symbol} 트렌드라이드 5×ATR 종가트레일 청산 | 최고종가={trendRidePeakClose:F4} 트레일={trailStop:F4} 마감종가={lastClose:F4} (ROE {currentROE:F1}%)");
-                                    await ExecuteMarketClose(symbol, $"트렌드라이드 5ATR 종가트레일 (peak {trendRidePeakClose:F4})", token);
+                                    OnLog?.Invoke($"📉 {symbol} 트렌드라이드 확대트레일({trailMult:F0}×ATR) 청산 | 최고종가={trendRidePeakClose:F4} 트레일={trailStop:F4} 마감종가={lastClose:F4} 이익{profAtr:F1}ATR (ROE {currentROE:F1}%)");
+                                    await ExecuteMarketClose(symbol, $"트렌드라이드 확대트레일 {trailMult:F0}ATR (peak {trendRidePeakClose:F4})", token);
                                     break;
                                 }
                             }

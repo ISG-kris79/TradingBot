@@ -14858,6 +14858,341 @@ internal static class Program
         Console.WriteLine("\n  → mtf-final.json 저장. 현재 라이브(v5.27.3)와 동일 로직. 월/일 0원 구간 = BTC 4h 비정배열로 전코인 미진입(설계).");
     }
 
+    // --trail-sweep : ★트레일링스탑 강화 — v5.28.0 게이트(BTC제거+ADX20) 동일진입에 트레일 9종만 바꿔 승자크기·수익·MDD 비교.
+    //   리서치(Chandelier Exit): ATR적응 트레일 > 고정%. "승자 크게"엔 넓게 or 초반타이트→검증후확대(widening)가 핵심.
+    private static async Task RunTrailSweepAsync()
+    {
+        const int featureWindow = 500, K = 8, Lh = 8;
+        const decimal feeRT = 0.0008m; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
+        var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","ARBUSDT","SUIUSDT" };
+        Console.WriteLine("=== 트레일링스탑 스윕 (v5.28.0 게이트 동일진입, 마진$1,000×6·1x) — 승자 크게 키우는 트레일 찾기 ===\n");
+        // 각 진입의 전방경로를 저장 → 트레일만 바꿔 재생
+        var entries = new List<(DateTime ent, double[] cl, double[] at, int j, double px)>();
+        int ci = 0;
+        foreach (var sym in universe)
+        {
+            ci++; Console.Write($"[{ci}/{universe.Length}] {sym} ");
+            List<IBinanceKline> b4, k15;
+            try { b4 = await FetchKlines4hAsync(sym, 12); k15 = await FetchKlines15mAsync(sym, 110); } catch { Console.WriteLine("fail"); continue; }
+            if (b4.Count < 300 || k15.Count < 1000) { Console.WriteLine("skip"); continue; }
+            // 코인 4h 상승레짐(ADX≥20) 판정 (BTC게이트 없음 = v5.28.0)
+            int bn = b4.Count; var be200 = new double[bn]; for (int j = 200; j < bn; j++) be200[j] = CalcEMA(b4, j, 200);
+            var be50 = new double[bn]; for (int j = 50; j < bn; j++) be50[j] = CalcEMA(b4, j, 50);
+            var badx = new double[bn]; { double aS = 0, pS = 0, mS = 0; int per = 14; for (int j = 1; j < bn; j++) { double hh = (double)b4[j].HighPrice, ll = (double)b4[j].LowPrice, pc = (double)b4[j - 1].ClosePrice, ph = (double)b4[j - 1].HighPrice, pl = (double)b4[j - 1].LowPrice; double tr = Math.Max(hh - ll, Math.Max(Math.Abs(hh - pc), Math.Abs(ll - pc))); double up = hh - ph, dn = pl - ll; double pdm = (up > dn && up > 0) ? up : 0, mdm = (dn > up && dn > 0) ? dn : 0; if (j <= per) { aS += tr; pS += pdm; mS += mdm; } else { aS = aS - aS / per + tr; pS = pS - pS / per + pdm; mS = mS - mS / per + mdm; } if (j >= per && aS > 0) { double pd = 100 * pS / aS, md = 100 * mS / aS; double dx = (pd + md) > 0 ? 100 * Math.Abs(pd - md) / (pd + md) : 0; badx[j] = j <= per * 2 ? dx : (badx[j - 1] * (per - 1) + dx) / per; } } }
+            var reg = new List<(DateTime close, bool up)>();
+            for (int j = 0; j < bn; j++) { double c = (double)b4[j].ClosePrice; reg.Add((b4[j].OpenTime.AddHours(4), j >= 200 && be50[j] > 0 && be200[j] > 0 && be50[j] > be200[j] && c > be50[j] && badx[j] >= 20.0)); }
+            int n = k15.Count; Console.WriteLine($"15m={n}");
+            var close = new double[n]; for (int j = 0; j < n; j++) close[j] = (double)k15[j].ClosePrice;
+            var feats = new float[n][]; for (int j = 60; j < n; j++) { int ws = Math.Max(0, j - (featureWindow - 1)); feats[j] = LorentzianFeatures.Extract(k15.GetRange(ws, j - ws + 1))!; }
+            var e50 = new double[n]; for (int j = 50; j < n; j++) e50[j] = CalcEMA(k15, j, 50);
+            var e200 = new double[n]; for (int j = 200; j < n; j++) e200[j] = CalcEMA(k15, j, 200);
+            var atr = new double[n]; for (int j = 14; j < n; j++) { double tr = 0; for (int q = j - 13; q <= j; q++) { double hh = (double)k15[q].HighPrice, ll = (double)k15[q].LowPrice, pc = close[q - 1]; tr += Math.Max(hh - ll, Math.Max(Math.Abs(hh - pc), Math.Abs(ll - pc))); } atr[j] = tr / 14.0; }
+            var rsi = new double[n]; { double ag = 0, al = 0; int per = 14; for (int j = 1; j < n; j++) { double ch = close[j] - close[j - 1]; double g = ch > 0 ? ch : 0, ls = ch < 0 ? -ch : 0; if (j <= per) { ag += g; al += ls; if (j == per) { ag /= per; al /= per; rsi[j] = al == 0 ? 100 : 100 - 100 / (1 + ag / al); } } else { ag = (ag * (per - 1) + g) / per; al = (al * (per - 1) + ls) / per; rsi[j] = al == 0 ? 100 : 100 - 100 / (1 + ag / al); } } }
+            var hist = new double[n]; { double x12 = 0, x26 = 0, sig = 0; const double k12 = 2.0 / 13, k26 = 2.0 / 27, k9 = 2.0 / 10; for (int j = 0; j < n; j++) { double cc = close[j]; if (j == 0) { x12 = cc; x26 = cc; } else { x12 = cc * k12 + x12 * (1 - k12); x26 = cc * k26 + x26 * (1 - k26); } double macd = x12 - x26; sig = (j == 0) ? macd : macd * k9 + sig * (1 - k9); hist[j] = macd - sig; } }
+            var engine = new LorentzianAnnEngine(sym, neighborsCount: K, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount);
+            var sg = new int[n];
+            for (int j = 65; j < n; j++) { int s = j - 1; if (s - Lh >= 0 && feats[s] != null) { double a = close[s], b = close[s - Lh]; engine.AddSample(feats[s], a > b ? 1 : (a < b ? -1 : 0)); } if (feats[j] == null) continue; var p = engine.Predict(feats[j]); if (!p.IsReady || p.K == 0) continue; sg[j] = p.Prediction > 0 ? 1 : (p.Prediction < 0 ? -1 : 0); }
+            int rp = 0, busy = -1;
+            for (int j = 250; j < n - 1; j++)
+            {
+                if (j <= busy) continue;
+                var t15 = k15[j].OpenTime;
+                while (rp + 1 < reg.Count && reg[rp + 1].close <= t15) rp++;
+                if (!(reg[rp].close <= t15 && reg[rp].up)) continue;
+                if (!(sg[j] > 0 && e50[j] > 0 && e200[j] > 0 && e50[j] > e200[j] && close[j] > e50[j])) continue;
+                if (atr[j] <= 0 || k15[j + 1].OpenPrice <= 0) continue;
+                if ((close[j] - e50[j]) / atr[j] >= 2.0 || rsi[j] >= 60.0) continue;
+                if ((5.0 * atr[j]) / close[j] > 0.05) continue;
+                double uw = ((double)k15[j].HighPrice - Math.Max((double)k15[j].OpenPrice, close[j])) / atr[j];
+                if (hist[j] < 0 && uw > 0.4) continue;
+                // 트레일재생을 위해 다음 봉 진입 후 busy = 최대보유(넓은트레일 기준 대략) — 슬롯은 각 config에서 정확히 재계산.
+                entries.Add((k15[j + 1].OpenTime, close, atr, j, (double)k15[j + 1].OpenPrice));
+                // busy를 넓은트레일(10×) 기준 종료로 잡아 진입중복 방지(모든 config 공통 진입셋)
+                double peak = (double)k15[j + 1].OpenPrice; int exi = n - 1;
+                for (int e = j + 1; e < n; e++) { double cc = close[e]; if (cc > peak) peak = cc; if (cc <= peak - 10.0 * atr[e]) { exi = e; break; } }
+                busy = exi;
+            }
+        }
+        entries.Sort((a, b) => a.ent.CompareTo(b.ent));
+        Console.WriteLine($"\n총 진입 {entries.Count}건 (10× 넓은트레일 기준 슬롯). 트레일 config별 재생:\n");
+        // 트레일 config: 입력=(peak−entry)/atrEntry(진입ATR단위 이익), 출력=현재 ATR배수
+        var configs = new (string name, Func<double, double> mult)[]
+        {
+            ("고정 3×ATR",        _ => 3.0),
+            ("고정 4×ATR",        _ => 4.0),
+            ("고정 5×ATR(현행)",  _ => 5.0),
+            ("고정 6×ATR",        _ => 6.0),
+            ("고정 8×ATR",        _ => 8.0),
+            ("고정 10×ATR",       _ => 10.0),
+            ("확대 3→8(+2ATR)",   p => p < 2 ? 3.0 : 8.0),
+            ("확대 4→10(+3ATR)",  p => p < 3 ? 4.0 : 10.0),
+            ("확대 3→12(+2ATR)",  p => p < 2 ? 3.0 : 12.0),
+            ("계단 3/6/10",       p => p < 1 ? 3.0 : (p < 4 ? 6.0 : 10.0)),
+            ("초반무손절+5×(2ATR)", p => p < 2 ? 999.0 : 5.0),
+        };
+        Console.WriteLine($"  {"트레일",20} {"총수익$",9} {"수익률%",8} {"승률%",6} {"평균승$",8} {"최대승$",8} {"평균패$",8} {"MDD%",6} {"PF",5} {"평균보유봉",7}");
+        foreach (var cfg in configs)
+        {
+            var results = new List<(DateTime ent, DateTime ex, double pnlUsd, int held)>();
+            foreach (var en in entries)
+            {
+                double atrE = en.at[en.j]; if (atrE <= 0) continue;
+                double peak = en.px; int exi = en.cl.Length - 1; double exPx = en.cl[exi];
+                for (int e = en.j + 1; e < en.cl.Length; e++)
+                {
+                    double cc = en.cl[e]; if (cc > peak) peak = cc;
+                    double profATR = (peak - en.px) / atrE;
+                    double m = cfg.mult(profATR);
+                    if (cc <= peak - m * en.at[e]) { exi = e; exPx = cc; break; }
+                    if (e == en.cl.Length - 1) { exi = e; exPx = cc; }
+                }
+                double pnlPct = (exPx - en.px) / en.px - (double)feeRT;
+                // 진입시각 근사: en.ent, 종료시각 근사: en.ent + (exi-en.j)*15분
+                results.Add((en.ent, en.ent.AddMinutes(15 * (exi - en.j)), pnlPct * (double)margin, exi - en.j));
+            }
+            results.Sort((a, b) => a.ent.CompareTo(b.ent));
+            // 6슬롯 적용
+            var open = new List<DateTime>(); double tot = 0, grossWin = 0, grossLoss = 0, maxWin = 0, cum = 0, peakC = 0, mdd = 0; int nWin = 0, nTot = 0, heldSum = 0;
+            foreach (var r in results)
+            {
+                open.RemoveAll(x => x <= r.ent); if (open.Count >= slots) continue; open.Add(r.ex);
+                tot += r.pnlUsd; nTot++; heldSum += r.held; cum += r.pnlUsd; if (cum > peakC) peakC = cum; if (peakC - cum > mdd) mdd = peakC - cum;
+                if (r.pnlUsd > 0) { nWin++; grossWin += r.pnlUsd; if (r.pnlUsd > maxWin) maxWin = r.pnlUsd; } else grossLoss += -r.pnlUsd;
+                _ = grossWin;
+            }
+            double avgWin = nWin > 0 ? grossWin / nWin : 0; double avgLoss = (nTot - nWin) > 0 ? grossLoss / (nTot - nWin) : 0;
+            double pf = grossLoss > 0 ? grossWin / grossLoss : 999; double wr = nTot > 0 ? 100.0 * nWin / nTot : 0;
+            Console.WriteLine($"  {cfg.name,20} {tot,9:F0} {(double)((decimal)tot / capital * 100m),8:F0} {wr,6:F0} {avgWin,8:F1} {maxWin,8:F0} {avgLoss,8:F1} {(double)((decimal)mdd / capital * 100m),6:F0} {pf,5:F2} {(nTot > 0 ? heldSum / (double)nTot : 0),7:F0}");
+        }
+        Console.WriteLine("\n  → '평균승$·최대승$'가 커지면서 '총수익'이 유지/증가하는 config = 승자를 키우는 최적 트레일.");
+        Console.WriteLine("  → 확대(widening)형이 총수익↑이면 채택: 초반 타이트로 손실 짧게, 검증된 승자만 넓게 늘림.");
+    }
+
+    // 형님 클린 KNN: 유클리드 Top-K + 전역 min/max 정규화 (교과서 정통). 롤링 DB(cap).
+    private sealed class CleanKnn
+    {
+        private readonly int _k, _fc, _cap;
+        private readonly double[] _db; private readonly short[] _lab; private int _size = 0, _head = 0, _count = 0;
+        private readonly double[] _min, _max;
+        public CleanKnn(int k, int featureCount, int cap = 2000) { _k = k; _fc = featureCount; _cap = cap; _db = new double[cap * featureCount]; _lab = new short[cap]; _min = new double[featureCount]; _max = new double[featureCount]; Array.Fill(_min, double.MaxValue); Array.Fill(_max, double.MinValue); }
+        public void Add(double[] f, short label)
+        {
+            int slot = _head; int baseIdx = slot * _fc;
+            for (int i = 0; i < _fc; i++) { double v = f[i]; _db[baseIdx + i] = v; if (v < _min[i]) _min[i] = v; if (v > _max[i]) _max[i] = v; }
+            _lab[slot] = label; _head = (_head + 1) % _cap; if (_count < _cap) _count++;
+        }
+        public int Predict(double[] cur)
+        {
+            if (_count < _k) return 0;
+            Span<double> nc = stackalloc double[_fc];
+            for (int i = 0; i < _fc; i++) { double d = _max[i] - _min[i]; nc[i] = d > 0 ? (cur[i] - _min[i]) / d : 0.5; }
+            Span<double> topD = stackalloc double[_k]; Span<int> topI = stackalloc int[_k]; for (int i = 0; i < _k; i++) topD[i] = double.MaxValue;
+            for (int s = 0; s < _count; s++)
+            {
+                int baseIdx = s * _fc; double dist = 0;
+                for (int j = 0; j < _fc; j++) { double dd = _max[j] - _min[j]; double nv = dd > 0 ? (_db[baseIdx + j] - _min[j]) / dd : 0.5; double diff = nv - nc[j]; dist += diff * diff; }
+                if (dist < topD[_k - 1]) { int i = _k - 1; while (i > 0 && topD[i - 1] > dist) { topD[i] = topD[i - 1]; topI[i] = topI[i - 1]; i--; } topD[i] = dist; topI[i] = s; }
+            }
+            int sum = 0; for (int i = 0; i < _k; i++) sum += _lab[topI[i]];
+            return sum > 0 ? 1 : (sum < 0 ? -1 : 0);
+        }
+    }
+
+    // --knn-ab : ★KNN A/B — 동일 게이트/트레일에서 진입KNN을 (A)현행 jdehorty ANN vs (B)클린 유클리드 Top-K 로 바꿔 3년 성적 비교.
+    private static async Task RunKnnAbAsync()
+    {
+        const int featureWindow = 500, K = 8, Lh = 8;
+        const decimal feeRT = 0.0008m; const double atrMult = 5.0; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
+        var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","ARBUSDT","SUIUSDT" };
+        Console.WriteLine("=== KNN A/B: (A)jdehorty ANN vs (B)클린 유클리드Top-K — 동일 v5.28.0게이트+5×트레일 (마진$1,000×6·1x) ===\n");
+        var aTrades = new List<(DateTime ent, DateTime ex, decimal pnl)>();
+        var bTrades = new List<(DateTime ent, DateTime ex, decimal pnl)>();
+        int ci = 0;
+        foreach (var sym in universe)
+        {
+            ci++; Console.Write($"[{ci}/{universe.Length}] {sym} ");
+            List<IBinanceKline> b4, k15;
+            try { b4 = await FetchKlines4hAsync(sym, 12); k15 = await FetchKlines15mAsync(sym, 110); } catch { Console.WriteLine("fail"); continue; }
+            if (b4.Count < 300 || k15.Count < 1000) { Console.WriteLine("skip"); continue; }
+            int bn = b4.Count; var be200 = new double[bn]; for (int j = 200; j < bn; j++) be200[j] = CalcEMA(b4, j, 200);
+            var be50 = new double[bn]; for (int j = 50; j < bn; j++) be50[j] = CalcEMA(b4, j, 50);
+            var badx = new double[bn]; { double aS = 0, pS = 0, mS = 0; int per = 14; for (int j = 1; j < bn; j++) { double hh = (double)b4[j].HighPrice, ll = (double)b4[j].LowPrice, pc = (double)b4[j - 1].ClosePrice, ph = (double)b4[j - 1].HighPrice, pl = (double)b4[j - 1].LowPrice; double tr = Math.Max(hh - ll, Math.Max(Math.Abs(hh - pc), Math.Abs(ll - pc))); double up = hh - ph, dn = pl - ll; double pdm = (up > dn && up > 0) ? up : 0, mdm = (dn > up && dn > 0) ? dn : 0; if (j <= per) { aS += tr; pS += pdm; mS += mdm; } else { aS = aS - aS / per + tr; pS = pS - pS / per + pdm; mS = mS - mS / per + mdm; } if (j >= per && aS > 0) { double pd = 100 * pS / aS, md = 100 * mS / aS; double dx = (pd + md) > 0 ? 100 * Math.Abs(pd - md) / (pd + md) : 0; badx[j] = j <= per * 2 ? dx : (badx[j - 1] * (per - 1) + dx) / per; } } }
+            var reg = new List<(DateTime close, bool up)>();
+            for (int j = 0; j < bn; j++) { double c = (double)b4[j].ClosePrice; reg.Add((b4[j].OpenTime.AddHours(4), j >= 200 && be50[j] > 0 && be200[j] > 0 && be50[j] > be200[j] && c > be50[j] && badx[j] >= 20.0)); }
+            int n = k15.Count; Console.WriteLine($"15m={n}");
+            var close = new double[n]; for (int j = 0; j < n; j++) close[j] = (double)k15[j].ClosePrice;
+            var feats = new float[n][]; for (int j = 60; j < n; j++) { int ws = Math.Max(0, j - (featureWindow - 1)); feats[j] = LorentzianFeatures.Extract(k15.GetRange(ws, j - ws + 1))!; }
+            var e50 = new double[n]; for (int j = 50; j < n; j++) e50[j] = CalcEMA(k15, j, 50);
+            var e200 = new double[n]; for (int j = 200; j < n; j++) e200[j] = CalcEMA(k15, j, 200);
+            var atr = new double[n]; for (int j = 14; j < n; j++) { double tr = 0; for (int q = j - 13; q <= j; q++) { double hh = (double)k15[q].HighPrice, ll = (double)k15[q].LowPrice, pc = close[q - 1]; tr += Math.Max(hh - ll, Math.Max(Math.Abs(hh - pc), Math.Abs(ll - pc))); } atr[j] = tr / 14.0; }
+            var rsi14 = new double[n]; { double ag = 0, al = 0; int per = 14; for (int j = 1; j < n; j++) { double ch = close[j] - close[j - 1]; double g = ch > 0 ? ch : 0, ls = ch < 0 ? -ch : 0; if (j <= per) { ag += g; al += ls; if (j == per) { ag /= per; al /= per; rsi14[j] = al == 0 ? 100 : 100 - 100 / (1 + ag / al); } } else { ag = (ag * (per - 1) + g) / per; al = (al * (per - 1) + ls) / per; rsi14[j] = al == 0 ? 100 : 100 - 100 / (1 + ag / al); } } }
+            var rsi9 = new double[n]; { double ag = 0, al = 0; int per = 9; for (int j = 1; j < n; j++) { double ch = close[j] - close[j - 1]; double g = ch > 0 ? ch : 0, ls = ch < 0 ? -ch : 0; if (j <= per) { ag += g; al += ls; if (j == per) { ag /= per; al /= per; rsi9[j] = al == 0 ? 100 : 100 - 100 / (1 + ag / al); } } else { ag = (ag * (per - 1) + g) / per; al = (al * (per - 1) + ls) / per; rsi9[j] = al == 0 ? 100 : 100 - 100 / (1 + ag / al); } } }
+            // 15m 봉별 ADX
+            var adx15 = new double[n]; { double aS = 0, pS = 0, mS = 0; int per = 14; for (int j = 1; j < n; j++) { double hh = (double)k15[j].HighPrice, ll = (double)k15[j].LowPrice, pc = close[j - 1], ph = (double)k15[j - 1].HighPrice, pl = (double)k15[j - 1].LowPrice; double tr = Math.Max(hh - ll, Math.Max(Math.Abs(hh - pc), Math.Abs(ll - pc))); double up = hh - ph, dn = pl - ll; double pdm = (up > dn && up > 0) ? up : 0, mdm = (dn > up && dn > 0) ? dn : 0; if (j <= per) { aS += tr; pS += pdm; mS += mdm; } else { aS = aS - aS / per + tr; pS = pS - pS / per + pdm; mS = mS - mS / per + mdm; } if (j >= per && aS > 0) { double pd = 100 * pS / aS, md = 100 * mS / aS; double dx = (pd + md) > 0 ? 100 * Math.Abs(pd - md) / (pd + md) : 0; adx15[j] = j <= per * 2 ? dx : (adx15[j - 1] * (per - 1) + dx) / per; } } }
+            // WaveTrend + CCI 원시 시리즈 (클린KNN 입력용, 정규화는 KNN 내부 전역)
+            var hlc3 = new double[n]; for (int j = 0; j < n; j++) hlc3[j] = ((double)k15[j].HighPrice + (double)k15[j].LowPrice + close[j]) / 3.0;
+            var esa = new double[n]; { double k1 = 2.0 / 11; esa[0] = hlc3[0]; for (int j = 1; j < n; j++) esa[j] = hlc3[j] * k1 + esa[j - 1] * (1 - k1); }
+            var de = new double[n]; { double k1 = 2.0 / 11; de[0] = Math.Abs(hlc3[0] - esa[0]); for (int j = 1; j < n; j++) { double d0 = Math.Abs(hlc3[j] - esa[j]); de[j] = d0 * k1 + de[j - 1] * (1 - k1); } }
+            var wt = new double[n]; { double k2 = 2.0 / 12; var wt1 = new double[n]; for (int j = 0; j < n; j++) { double denom = 0.015 * de[j]; double cci = denom > 1e-12 ? (hlc3[j] - esa[j]) / denom : 0; wt1[j] = j == 0 ? cci : cci * k2 + wt1[j - 1] * (1 - k2); } for (int j = 0; j < n; j++) { double s = 0; int c0 = 0; for (int q = Math.Max(0, j - 3); q <= j; q++) { s += wt1[q]; c0++; } wt[j] = wt1[j] - s / c0; } }
+            var cci20 = new double[n]; { int per = 20; for (int j = per - 1; j < n; j++) { double s = 0; for (int q = j - per + 1; q <= j; q++) s += hlc3[q]; double mean = s / per; double mad = 0; for (int q = j - per + 1; q <= j; q++) mad += Math.Abs(hlc3[q] - mean); mad /= per; cci20[j] = mad > 1e-12 ? (hlc3[j] - mean) / (0.015 * mad) : 0; } }
+            var mslope = new double[n]; { double x12 = close[0], x26 = close[0], sig = 0; bool si = false; double hp = 0, hn = 0; for (int j = 1; j < n; j++) { double c = close[j]; x12 += (c - x12) * (2.0 / 13); x26 += (c - x26) * (2.0 / 27); double macd = x12 - x26; if (!si) { sig = macd; si = true; } else sig += (macd - sig) * (2.0 / 10); hp = hn; hn = macd - sig; mslope[j] = atr[j] > 1e-12 ? (hn - hp) / atr[j] : 0; } }
+            double[] CleanFeat(int j) => new double[] { rsi14[j] / 100.0, wt[j], cci20[j], adx15[j] / 100.0, rsi9[j] / 100.0, mslope[j] };
+            // A) jdehorty ANN 예측 (현행)
+            var engine = new LorentzianAnnEngine(sym, neighborsCount: K, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount);
+            var sgA = new int[n];
+            for (int j = 65; j < n; j++) { int s = j - 1; if (s - Lh >= 0 && feats[s] != null) { double a = close[s], b = close[s - Lh]; engine.AddSample(feats[s], a > b ? 1 : (a < b ? -1 : 0)); } if (feats[j] == null) continue; var p = engine.Predict(feats[j]); if (!p.IsReady || p.K == 0) continue; sgA[j] = p.Prediction > 0 ? 1 : (p.Prediction < 0 ? -1 : 0); }
+            // B) 클린 KNN 예측 (walk-forward 누적)
+            var ck = new CleanKnn(7, 6, 2000); var sgB = new int[n];
+            for (int j = 65; j < n; j++) { int s = j - 1; if (s - Lh >= 0) { short lb = (short)(close[s] > close[s - Lh] ? 1 : (close[s] < close[s - Lh] ? -1 : 0)); ck.Add(CleanFeat(s), lb); } sgB[j] = ck.Predict(CleanFeat(j)); }
+            // 두 엔진 각각으로 진입셋 생성 (KNN 신호 외 게이트/트레일 동일)
+            void Simulate(int[] sg, List<(DateTime, DateTime, decimal)> outT)
+            {
+                int rp = 0, busy = -1;
+                for (int j = 250; j < n - 1; j++)
+                {
+                    if (j <= busy) continue;
+                    var t15 = k15[j].OpenTime;
+                    while (rp + 1 < reg.Count && reg[rp + 1].close <= t15) rp++;
+                    if (!(reg[rp].close <= t15 && reg[rp].up)) continue;
+                    if (!(sg[j] > 0 && e50[j] > 0 && e200[j] > 0 && e50[j] > e200[j] && close[j] > e50[j])) continue;
+                    if (atr[j] <= 0 || k15[j + 1].OpenPrice <= 0) continue;
+                    if ((close[j] - e50[j]) / atr[j] >= 2.0 || rsi14[j] >= 60.0) continue;
+                    if ((5.0 * atr[j]) / close[j] > 0.05) continue;
+                    double uw = ((double)k15[j].HighPrice - Math.Max((double)k15[j].OpenPrice, close[j])) / atr[j];
+                    if (mslope[j] < 0 && uw > 0.4) continue;   // MACD기울기<0(=hist하락) 근사 — 조합제외 유지
+                    decimal entry = k15[j + 1].OpenPrice; double peak = (double)entry; decimal net = 0m; int ei = n - 1;
+                    for (int e = j + 1; e < n; e++) { double cc = close[e]; if (cc > peak) peak = cc; if (cc <= peak - atrMult * atr[e]) { net = ((decimal)cc - entry) / entry - feeRT; ei = e; break; } if (e == n - 1) net = ((decimal)cc - entry) / entry - feeRT; }
+                    busy = ei; outT.Add((k15[j + 1].OpenTime, k15[ei].OpenTime, net));
+                }
+            }
+            Simulate(sgA, aTrades); Simulate(sgB, bTrades);
+        }
+        void Report(string tag, List<(DateTime ent, DateTime ex, decimal pnl)> all)
+        {
+            all.Sort((a, b) => a.ent.CompareTo(b.ent));
+            var open = new List<DateTime>(); decimal tot = 0, gw = 0, gl = 0, cum = 0, peak = 0, mdd = 0; int nWin = 0, nTot = 0;
+            foreach (var t in all) { open.RemoveAll(x => x <= t.ent); if (open.Count >= slots) continue; open.Add(t.ex); decimal p = t.pnl * margin; tot += p; nTot++; cum += p; if (cum > peak) peak = cum; if (peak - cum > mdd) mdd = peak - cum; if (p > 0) { nWin++; gw += p; } else gl += -p; }
+            double pf = gl > 0 ? (double)(gw / gl) : 999; double wr = nTot > 0 ? 100.0 * nWin / nTot : 0;
+            Console.WriteLine($"  {tag,26} 진입 {nTot,5} · 승률 {wr,4:F0}% · 총 ${tot,6:F0}({(double)(tot / capital * 100m),4:F0}%) · PF {pf,4:F2} · MDD {(double)(mdd / capital * 100m),3:F0}% · 건당 ${(nTot > 0 ? (double)tot / nTot : 0),5:F1}");
+        }
+        Console.WriteLine();
+        Report("(A) jdehorty ANN(현행)", aTrades);
+        Report("(B) 클린 유클리드 Top-K", bTrades);
+        Console.WriteLine("\n  → (B)가 총수익·PF 우세면 = 형님 지적대로 근사KNN이 손실요인 → 클린 KNN 채택 검토. 비슷하면 현행 유지.");
+    }
+
+    // --confluence : ★진입 지표 컨플루언스 — v5.28.0 게이트에 리서치 지표층(거래량/OBV/SuperTrend/MACD/RSI밴드/VWAP/1h)을 얹어 어느 조합이 수익↑인지.
+    //   리서치: 추세+모멘텀+거래량 3층이 정석. 각 add-on 단독 + 유망 조합을 baseline대비 총수익·승률·PF·진입수로 비교.
+    private static async Task RunConfluenceAsync()
+    {
+        const int featureWindow = 500, K = 8, Lh = 8;
+        const decimal feeRT = 0.0008m; const double atrMult = 5.0; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
+        var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","ARBUSDT","SUIUSDT" };
+        Console.WriteLine("=== 진입 컨플루언스 (v5.28.0 게이트 + 지표층, 마진$1,000×6·1x) — 어떤 조합이 수익 올리나 ===\n");
+        // 각 진입후보에 지표 플래그 부착 후, 필터셋별로 재집계
+        // 플래그 비트: 0=거래량>1.2avg 1=OBV상승 2=MACD히스토>0 3=SuperTrend상승 4=RSI45~58밴드 5=종가>VWAP20 6=1h EMA정배열
+        var cands = new List<(DateTime ent, DateTime ex, double pnlUsd, int flags)>();
+        int ci = 0;
+        foreach (var sym in universe)
+        {
+            ci++; Console.Write($"[{ci}/{universe.Length}] {sym} ");
+            List<IBinanceKline> b4, k15, h1;
+            try { b4 = await FetchKlines4hAsync(sym, 12); k15 = await FetchKlines15mAsync(sym, 110); h1 = await FetchKlines1hAsync(sym, 40); } catch { Console.WriteLine("fail"); continue; }
+            if (b4.Count < 300 || k15.Count < 1000) { Console.WriteLine("skip"); continue; }
+            int bn = b4.Count; var be200 = new double[bn]; for (int j = 200; j < bn; j++) be200[j] = CalcEMA(b4, j, 200);
+            var be50 = new double[bn]; for (int j = 50; j < bn; j++) be50[j] = CalcEMA(b4, j, 50);
+            var badx = new double[bn]; { double aS = 0, pS = 0, mS = 0; int per = 14; for (int j = 1; j < bn; j++) { double hh = (double)b4[j].HighPrice, ll = (double)b4[j].LowPrice, pc = (double)b4[j - 1].ClosePrice, ph = (double)b4[j - 1].HighPrice, pl = (double)b4[j - 1].LowPrice; double tr = Math.Max(hh - ll, Math.Max(Math.Abs(hh - pc), Math.Abs(ll - pc))); double up = hh - ph, dn = pl - ll; double pdm = (up > dn && up > 0) ? up : 0, mdm = (dn > up && dn > 0) ? dn : 0; if (j <= per) { aS += tr; pS += pdm; mS += mdm; } else { aS = aS - aS / per + tr; pS = pS - pS / per + pdm; mS = mS - mS / per + mdm; } if (j >= per && aS > 0) { double pd = 100 * pS / aS, md = 100 * mS / aS; double dx = (pd + md) > 0 ? 100 * Math.Abs(pd - md) / (pd + md) : 0; badx[j] = j <= per * 2 ? dx : (badx[j - 1] * (per - 1) + dx) / per; } } }
+            var reg = new List<(DateTime close, bool up)>();
+            for (int j = 0; j < bn; j++) { double c = (double)b4[j].ClosePrice; reg.Add((b4[j].OpenTime.AddHours(4), j >= 200 && be50[j] > 0 && be200[j] > 0 && be50[j] > be200[j] && c > be50[j] && badx[j] >= 20.0)); }
+            // 1h EMA정배열 타임라인
+            int hn = h1.Count; var h50 = new double[hn]; for (int j = 50; j < hn; j++) h50[j] = CalcEMA(h1, j, 50); var h200 = new double[hn]; for (int j = 200; j < hn; j++) h200[j] = CalcEMA(h1, j, 200);
+            var hreg = new List<(DateTime close, bool up)>(); for (int j = 0; j < hn; j++) { double c = (double)h1[j].ClosePrice; hreg.Add((h1[j].OpenTime.AddHours(1), j >= 200 && h50[j] > 0 && h200[j] > 0 && h50[j] > h200[j] && c > h50[j])); }
+            int n = k15.Count; Console.WriteLine($"15m={n}");
+            var close = new double[n]; var vol = new double[n]; for (int j = 0; j < n; j++) { close[j] = (double)k15[j].ClosePrice; vol[j] = (double)k15[j].Volume; }
+            var feats = new float[n][]; for (int j = 60; j < n; j++) { int ws = Math.Max(0, j - (featureWindow - 1)); feats[j] = LorentzianFeatures.Extract(k15.GetRange(ws, j - ws + 1))!; }
+            var e50 = new double[n]; for (int j = 50; j < n; j++) e50[j] = CalcEMA(k15, j, 50);
+            var e200 = new double[n]; for (int j = 200; j < n; j++) e200[j] = CalcEMA(k15, j, 200);
+            var atr = new double[n]; for (int j = 14; j < n; j++) { double tr = 0; for (int q = j - 13; q <= j; q++) { double hh = (double)k15[q].HighPrice, ll = (double)k15[q].LowPrice, pc = close[q - 1]; tr += Math.Max(hh - ll, Math.Max(Math.Abs(hh - pc), Math.Abs(ll - pc))); } atr[j] = tr / 14.0; }
+            var rsi = new double[n]; { double ag = 0, al = 0; int per = 14; for (int j = 1; j < n; j++) { double ch = close[j] - close[j - 1]; double g = ch > 0 ? ch : 0, ls = ch < 0 ? -ch : 0; if (j <= per) { ag += g; al += ls; if (j == per) { ag /= per; al /= per; rsi[j] = al == 0 ? 100 : 100 - 100 / (1 + ag / al); } } else { ag = (ag * (per - 1) + g) / per; al = (al * (per - 1) + ls) / per; rsi[j] = al == 0 ? 100 : 100 - 100 / (1 + ag / al); } } }
+            var hist = new double[n]; { double x12 = 0, x26 = 0, sig = 0; const double k12 = 2.0 / 13, k26 = 2.0 / 27, k9 = 2.0 / 10; for (int j = 0; j < n; j++) { double cc = close[j]; if (j == 0) { x12 = cc; x26 = cc; } else { x12 = cc * k12 + x12 * (1 - k12); x26 = cc * k26 + x26 * (1 - k26); } double macd = x12 - x26; sig = (j == 0) ? macd : macd * k9 + sig * (1 - k9); hist[j] = macd - sig; } }
+            // OBV
+            var obv = new double[n]; for (int j = 1; j < n; j++) obv[j] = obv[j - 1] + (close[j] > close[j - 1] ? vol[j] : (close[j] < close[j - 1] ? -vol[j] : 0));
+            // 거래량 SMA20
+            var volAvg = new double[n]; { double s = 0; for (int j = 0; j < n; j++) { s += vol[j]; if (j >= 20) s -= vol[j - 20]; volAvg[j] = j >= 19 ? s / 20 : vol[j]; } }
+            // VWAP20 (롤링)
+            var vwap = new double[n]; { for (int j = 0; j < n; j++) { double pv = 0, vv = 0; int st = Math.Max(0, j - 19); for (int q = st; q <= j; q++) { double tp = ((double)k15[q].HighPrice + (double)k15[q].LowPrice + close[q]) / 3.0; pv += tp * vol[q]; vv += vol[q]; } vwap[j] = vv > 0 ? pv / vv : close[j]; } }
+            // SuperTrend(10,3)
+            var st10 = new double[n]; { double atr10prev = 0; var stTrendUp = new bool[n]; var finalUp = new double[n]; var finalLo = new double[n]; for (int j = 1; j < n; j++) { double hh = (double)k15[j].HighPrice, ll = (double)k15[j].LowPrice, pc = close[j - 1]; double tr = Math.Max(hh - ll, Math.Max(Math.Abs(hh - pc), Math.Abs(ll - pc))); atr10prev = j == 1 ? tr : (atr10prev * 9 + tr) / 10.0; double mid = (hh + ll) / 2.0; double bu = mid + 3.0 * atr10prev, bl = mid - 3.0 * atr10prev; finalUp[j] = (j > 1 && (bu < finalUp[j - 1] || close[j - 1] > finalUp[j - 1])) ? bu : (j > 1 ? finalUp[j - 1] : bu); finalLo[j] = (j > 1 && (bl > finalLo[j - 1] || close[j - 1] < finalLo[j - 1])) ? bl : (j > 1 ? finalLo[j - 1] : bl); stTrendUp[j] = close[j] > (stTrendUp.Length > 0 && j > 1 && !stTrendUp[j - 1] ? finalUp[j] : finalLo[j]); st10[j] = stTrendUp[j] ? 1 : 0; } }
+            var engine = new LorentzianAnnEngine(sym, neighborsCount: K, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount);
+            var sg = new int[n];
+            for (int j = 65; j < n; j++) { int s = j - 1; if (s - Lh >= 0 && feats[s] != null) { double a = close[s], b = close[s - Lh]; engine.AddSample(feats[s], a > b ? 1 : (a < b ? -1 : 0)); } if (feats[j] == null) continue; var p = engine.Predict(feats[j]); if (!p.IsReady || p.K == 0) continue; sg[j] = p.Prediction > 0 ? 1 : (p.Prediction < 0 ? -1 : 0); }
+            int rp = 0, hp = 0, busy = -1;
+            for (int j = 250; j < n - 1; j++)
+            {
+                if (j <= busy) continue;
+                var t15 = k15[j].OpenTime;
+                while (rp + 1 < reg.Count && reg[rp + 1].close <= t15) rp++;
+                while (hp + 1 < hreg.Count && hreg[hp + 1].close <= t15) hp++;
+                if (!(reg[rp].close <= t15 && reg[rp].up)) continue;
+                if (!(sg[j] > 0 && e50[j] > 0 && e200[j] > 0 && e50[j] > e200[j] && close[j] > e50[j])) continue;
+                if (atr[j] <= 0 || k15[j + 1].OpenPrice <= 0) continue;
+                if ((close[j] - e50[j]) / atr[j] >= 2.0 || rsi[j] >= 60.0) continue;
+                if ((5.0 * atr[j]) / close[j] > 0.05) continue;
+                double uw = ((double)k15[j].HighPrice - Math.Max((double)k15[j].OpenPrice, close[j])) / atr[j];
+                if (hist[j] < 0 && uw > 0.4) continue;
+                // 지표 플래그
+                int flags = 0;
+                if (vol[j] > 1.2 * volAvg[j]) flags |= 1 << 0;
+                if (obv[j] > obv[Math.Max(0, j - 5)]) flags |= 1 << 1;
+                if (hist[j] > 0) flags |= 1 << 2;
+                if (st10[j] > 0) flags |= 1 << 3;
+                if (rsi[j] >= 45 && rsi[j] <= 58) flags |= 1 << 4;
+                if (close[j] > vwap[j]) flags |= 1 << 5;
+                if (hreg[hp].close <= t15 && hreg[hp].up) flags |= 1 << 6;
+                // 트레일 5×ATR 종가 (baseline 청산)
+                decimal entry = k15[j + 1].OpenPrice; double peak = (double)entry; int exi = n - 1; double exPx = close[n - 1];
+                for (int e = j + 1; e < n; e++) { double cc = close[e]; if (cc > peak) peak = cc; if (cc <= peak - atrMult * atr[e]) { exi = e; exPx = cc; break; } if (e == n - 1) { exi = e; exPx = cc; } }
+                double pnlPct = (exPx - (double)entry) / (double)entry - (double)feeRT;
+                cands.Add((k15[j + 1].OpenTime, k15[exi].OpenTime, pnlPct * (double)margin, flags));
+                busy = exi;
+            }
+        }
+        cands.Sort((a, b) => a.ent.CompareTo(b.ent));
+        Console.WriteLine($"\n총 진입후보 {cands.Count}건. 필터셋별 (6슬롯 적용):\n");
+        // 필터셋: 이름, 요구비트마스크 (해당 비트 모두 1이어야 진입)
+        var filters = new (string name, int mask)[]
+        {
+            ("baseline(v5.28.0)",       0),
+            ("+거래량>1.2avg",          1 << 0),
+            ("+OBV상승",                1 << 1),
+            ("+MACD히스토>0",           1 << 2),
+            ("+SuperTrend상승",         1 << 3),
+            ("+RSI 45~58밴드",          1 << 4),
+            ("+종가>VWAP20",            1 << 5),
+            ("+1h EMA정배열",           1 << 6),
+            ("+거래량&MACD",            (1<<0)|(1<<2)),
+            ("+거래량&SuperTrend",      (1<<0)|(1<<3)),
+            ("+MACD&SuperTrend",        (1<<2)|(1<<3)),
+            ("+거래량&MACD&ST",         (1<<0)|(1<<2)|(1<<3)),
+            ("+1h&MACD&거래량",         (1<<6)|(1<<2)|(1<<0)),
+        };
+        Console.WriteLine($"  {"필터셋",22} {"진입",5} {"총수익$",9} {"수익률%",8} {"승률%",6} {"PF",5} {"MDD%",6} {"건당$",7}");
+        foreach (var f in filters)
+        {
+            var open = new List<DateTime>(); double tot = 0, gw = 0, gl = 0, cum = 0, peakC = 0, mdd = 0; int nWin = 0, nTot = 0;
+            foreach (var c in cands)
+            {
+                if ((c.flags & f.mask) != f.mask) continue;   // 요구비트 미충족 스킵
+                open.RemoveAll(x => x <= c.ent); if (open.Count >= slots) continue; open.Add(c.ex);
+                tot += c.pnlUsd; nTot++; cum += c.pnlUsd; if (cum > peakC) peakC = cum; if (peakC - cum > mdd) mdd = peakC - cum;
+                if (c.pnlUsd > 0) { nWin++; gw += c.pnlUsd; } else gl += -c.pnlUsd;
+            }
+            double pf = gl > 0 ? gw / gl : 999; double wr = nTot > 0 ? 100.0 * nWin / nTot : 0; double per = nTot > 0 ? tot / nTot : 0;
+            Console.WriteLine($"  {f.name,22} {nTot,5} {tot,9:F0} {(double)((decimal)tot / capital * 100m),8:F0} {wr,6:F0} {pf,5:F2} {(double)((decimal)mdd / capital * 100m),6:F0} {per,7:F1}");
+        }
+        Console.WriteLine("\n  → baseline보다 총수익↑ AND 진입 과도하게 안 줄면(>절반 유지) = 채택가치. 건당$↑도 질 개선 신호.");
+    }
+
     // --freq-4h : 거래빈도 정상화 — 30코인 + ADX임계·BTC필터 스윕. 빈도(월평균 진입) vs 흑자월%·수익·MDD 균형점.
     private static async Task RunFreq4hAsync()
     {
@@ -22629,6 +22964,21 @@ internal static class Program
         if (HasArg("--mtf-final"))
         {
             await RunMtfFinalAsync();
+            return;
+        }
+        if (HasArg("--trail-sweep"))
+        {
+            await RunTrailSweepAsync();
+            return;
+        }
+        if (HasArg("--confluence"))
+        {
+            await RunConfluenceAsync();
+            return;
+        }
+        if (HasArg("--knn-ab"))
+        {
+            await RunKnnAbAsync();
             return;
         }
         if (HasArg("--regime-4h"))

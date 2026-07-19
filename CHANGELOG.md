@@ -5,6 +5,17 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.28.1] - 2026-07-19
+
+### ♻️ Changed — 확대 트레일링스톱 4→10 (승자 크게 태우기)
+`--trail-sweep`(동일진입에 트레일 11종 비교): 현행 5×ATR은 수익을 크게 남기고 있었음. 넓은 트레일이 승자를 끝까지 태워 수익 급증:
+- 5×($2699) → 10×($5938, +120%) / **확대 4→10($4940, +83%·PF1.32·MDD 21→18% 개선)** 채택.
+- `PositionMonitorService` 트렌드라이드 트레일: `peak−5×ATR` → **초반 4×ATR, 이익이 진입ATR 3배 넘으면 10×ATR로 확대**(검증된 승자만 넓게). 진입시점 ATR 캡처 추가.
+- 서버 STOP_MARKET(진입−5×ATR) 안전망은 유지(급락갭 백스톱).
+
+### 🔬 검증 — KNN 엔진 A/B (형님 클린코드 대조)
+`--knn-ab`: 현행 jdehorty ANN vs 클린 유클리드 Top-K(전역정규화). **PF 1.21 동일·건당 $2.5 vs $2.6로 엣지 동일** → 근사 KNN은 손실요인 아님(현행이 MDD 23<33로 오히려 우위). 신설툴: `--trail-sweep`, `--confluence`, `--knn-ab`.
+
 ## [5.28.0] - 2026-07-19
 
 ### ♻️ Changed — BTC 4h 게이트 제거 + 코인 ADX 25→20 (진입 가뭄 해소)
