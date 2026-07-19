@@ -5192,22 +5192,13 @@ namespace TradingBot
             {
                 int i4 = b4.Count - 2;
                 double e50a = CalcEmaClose(b4, i4, 50), e200a = CalcEmaClose(b4, i4, 200), adx4 = LorentzianGuard.CalcADX(b4, i4, 14), c4 = (double)b4[i4].ClosePrice;
-                if (!(e50a > 0 && e200a > 0 && e50a > e200a && c4 > e50a && adx4 >= 25.0))
-                { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [MTF] {symbol} 차단 | 4h 상승레짐 아님 (방향게이트: EMA50>200·종가>EMA50·ADX≥25)"); return; }
+                // [v5.28.0] 코인 4h ADX 25→20 — 진입 빈도↑ (백테 --mtf-final --adx20).
+                if (!(e50a > 0 && e200a > 0 && e50a > e200a && c4 > e50a && adx4 >= 20.0))
+                { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [MTF] {symbol} 차단 | 4h 상승레짐 아님 (방향게이트: EMA50>200·종가>EMA50·ADX≥20)"); return; }
             }
-            // ── 2) BTC 4h 완전정배열(시장 대세) ──
-            try
-            {
-                var btcK0 = await GetMultiTfKlinesThrottledAsync("BTCUSDT", KlineInterval.FourHour, 260, token);
-                var bl0 = btcK0 as List<IBinanceKline> ?? (btcK0 != null ? new List<IBinanceKline>(btcK0) : null);
-                if (bl0 != null && bl0.Count >= 210)
-                {
-                    int bi = bl0.Count - 2; double be2 = CalcEmaClose(bl0, bi, 200), be5 = CalcEmaClose(bl0, bi, 50), bc = (double)bl0[bi].ClosePrice;
-                    if (!(be2 > 0 && be5 > 0 && bc > be5 && be5 > be2))
-                    { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [MTF] {symbol} 차단 | BTC 4h 완전정배열 아님 — 하락/횡보장 방어"); return; }
-                }
-            }
-            catch { }
+            // [v5.28.0] ★BTC 4h 완전정배열 게이트 제거 — "며칠째 진입 0"의 주범. BTC가 정배열 아니면 상승중 알트까지 전부 차단했음.
+            //   백테 --mtf-final --nobtc --adx20: 진입 1211→1827(+51%)·0원달 13→5·MDD 15%동일·수익 −2%($4587→$4492).
+            //   코인 자체 4h 추세(EMA50>200·종가>EMA50·ADX≥20)가 이미 방향필터라 BTC 이중게이트는 과필터. 남는 0원 5달은 전면 하락장(정상 회피).
             // ── 3) 15m 진입봉 — KNN·EMA정배열·방어는 15m에서 판단 (단타 타점) ──
             var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 1500, token);
             if (k15 == null || k15.Count < 300) return;
