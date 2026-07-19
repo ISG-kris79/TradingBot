@@ -295,4 +295,19 @@ namespace TradingBot
         public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture)
             => throw new NotImplementedException();
     }
+
+    // [v5.28.3] 대시보드 카드 가격사다리 — 퍼센트(double 0~100) → GridLength(Star). 2컬럼(pct : 100-pct) 그리드로 마커 위치.
+    public class StarGridLengthConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            double pct = 0;
+            if (value != null) double.TryParse(value.ToString(), out pct);
+            if (double.IsNaN(pct) || double.IsInfinity(pct)) pct = 0;
+            pct = System.Math.Max(0.0001, System.Math.Min(100.0, pct));
+            return new System.Windows.GridLength(pct, System.Windows.GridUnitType.Star);
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
 }

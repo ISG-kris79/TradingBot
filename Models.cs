@@ -638,7 +638,7 @@ namespace TradingBot.Models
         public decimal EntryPrice
         {
             get => _entryPrice;
-            set { _entryPrice = value; OnPropertyChanged(nameof(EntryPrice)); OnPropertyChanged(nameof(ProfitRate)); OnPropertyChanged(nameof(ProfitColor)); OnPropertyChanged(nameof(PriceColor)); OnPropertyChanged(nameof(Status)); OnPropertyChanged(nameof(EntryMarginUsdt)); OnPropertyChanged(nameof(EntryNotionalUsdt)); OnPropertyChanged(nameof(ProfitUsdt)); OnPropertyChanged(nameof(RiskSummary)); }
+            set { _entryPrice = value; OnPropertyChanged(nameof(EntryPrice)); OnPropertyChanged(nameof(ProfitRate)); OnPropertyChanged(nameof(ProfitColor)); OnPropertyChanged(nameof(PriceColor)); OnPropertyChanged(nameof(Status)); OnPropertyChanged(nameof(EntryMarginUsdt)); OnPropertyChanged(nameof(EntryNotionalUsdt)); OnPropertyChanged(nameof(ProfitUsdt)); OnPropertyChanged(nameof(RiskSummary)); NotifyCardProps(); }
         }
         private bool _isPositionActive;
         public bool IsPositionActive
@@ -659,6 +659,7 @@ namespace TradingBot.Models
                 OnPropertyChanged(nameof(EntryMarginUsdt));
                 OnPropertyChanged(nameof(EntryNotionalUsdt));
                 OnPropertyChanged(nameof(ProfitUsdt));
+                NotifyCardProps();
             }
         }
 
@@ -1046,6 +1047,7 @@ namespace TradingBot.Models
                         OnPropertyChanged(nameof(ProfitColor));
                         OnPropertyChanged(nameof(Status));
                         OnPropertyChanged(nameof(PriceColor));
+                        NotifyCardProps();
                     }
                 }
             }
@@ -1381,6 +1383,7 @@ namespace TradingBot.Models
                 OnPropertyChanged(nameof(TargetPrice));
                 OnPropertyChanged(nameof(ExitStrategySummary));
                 OnPropertyChanged(nameof(RiskSummary));
+                NotifyCardProps();
             }
         }
 
@@ -1394,6 +1397,7 @@ namespace TradingBot.Models
                 OnPropertyChanged(nameof(StopLossPrice));
                 OnPropertyChanged(nameof(ExitStrategySummary));
                 OnPropertyChanged(nameof(RiskSummary));
+                NotifyCardProps();
             }
         }
 
@@ -1406,6 +1410,7 @@ namespace TradingBot.Models
                 _trailingStopPrice = value;
                 OnPropertyChanged(nameof(TrailingStopPrice));
                 OnPropertyChanged(nameof(RiskSummary));
+                NotifyCardProps();
             }
         }
         // 1. 감시 가격 요약 (예: "TP: 2.5% | SL: -1.5%")
@@ -1424,6 +1429,125 @@ namespace TradingBot.Models
                 if (ProfitRate >= 2.0) return PositionStatus.TakeProfitReady; // 익절 구간 진입
                 return PositionStatus.Monitoring; // 일반 감시 중
             }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // [v5.28.3] 대시보드 카드 — 청산 트리거 칩 + 가격 사다리 (redesign)
+        //   기존 필드(EntryPrice/LastPrice/StopLossPrice/TrailingStopPrice/TargetPrice/ProfitRate)에서 파생.
+        //   트레일 단계(4×/10×)는 라이브 로컬상태라 ROE로 근사 표시(실제 트리거는 PositionMonitorService).
+        // ═══════════════════════════════════════════════════════════════
+        private static readonly Brush s_cardGreen = Freeze(new SolidColorBrush(Color.FromRgb(0, 230, 118)));
+        private static readonly Brush s_cardAmber = Freeze(new SolidColorBrush(Color.FromRgb(255, 179, 0)));
+        private static readonly Brush s_cardRed = Freeze(new SolidColorBrush(Color.FromRgb(255, 83, 112)));
+
+        // 현재가가 트레일스탑에서 1% 이내로 근접 = 손절 임박
+        private bool NearStopFlag
+        {
+            get
+            {
+                if (TrailingStopPrice <= 0 || LastPrice <= 0) return false;
+                return (double)((LastPrice - TrailingStopPrice) / LastPrice) < 0.008;
+            }
+        }
+
+        public string ExitTriggerIcon
+        {
+            get
+            {
+                if (!IsPositionActive) return "";
+                if (ProfitRate <= -1.0 || NearStopFlag) return "🔴";
+                if (ProfitRate >= 8.0) return "🟡";
+                return "🟢";
+            }
+        }
+        public Brush ExitTriggerColor
+        {
+            get
+            {
+                if (ProfitRate <= -1.0 || NearStopFlag) return s_cardRed;
+                if (ProfitRate >= 8.0) return s_cardAmber;
+                return s_cardGreen;
+            }
+        }
+        public string ExitTriggerTitle
+        {
+            get
+            {
+                if (!IsPositionActive) return "";
+                if (ProfitRate <= -1.0 || NearStopFlag) return "손절 근접 — 트레일 방어";
+                if (ProfitRate >= 15.0) return "트레일링 10×ATR — 승자 태우는 중";
+                if (ProfitRate >= 8.0) return "반전 감시 — 긴꼬리 음봉 대기";
+                if (ProfitRate >= 0.0) return "트레일링 4×ATR — 감시 중";
+                return "손절 대기 — 초기 방어구간";
+            }
+        }
+        public string ExitTriggerDetail
+        {
+            get
+            {
+                if (!IsPositionActive) return "";
+                string Fmt(decimal p) => p >= 100 ? p.ToString("F2") : p >= 1 ? p.ToString("F4") : p >= 0.01m ? p.ToString("F6") : p.ToString("F8");
+                if (ProfitRate >= 8.0 && !(ProfitRate <= -1.0 || NearStopFlag))
+                    return "수익 8%↑ 구간 · 1h/15m 상단거부 음봉 마감 시 즉시 익절";
+                if (TrailingStopPrice > 0)
+                    return $"15m 종가가 {Fmt(TrailingStopPrice)} 아래 마감 시 청산 · 목표 없이 추세 끝까지";
+                return "추세 유지 중 · 넓은 ATR 트레일로 승자 홀딩";
+            }
+        }
+
+        // 카드 좌측 스트라이프
+        public Brush CardAccentBrush
+        {
+            get
+            {
+                if (ProfitRate <= -1.0 || NearStopFlag) return s_cardRed;
+                if (ProfitRate >= 8.0) return s_cardAmber;
+                return s_cardGreen;
+            }
+        }
+
+        // 가격 사다리 — SL(0%) ~ 상단(100%) 범위에서 현재가/트레일 위치(0~100)
+        private (double lo, double hi) LadderRange()
+        {
+            double entry = (double)EntryPrice, cur = (double)LastPrice, sl = (double)StopLossPrice, trail = (double)TrailingStopPrice, tp = (double)TargetPrice;
+            if (entry <= 0) return (0, 1);
+            double lo = sl > 0 ? sl : entry * 0.97;
+            if (trail > 0) lo = Math.Min(lo, trail);
+            if (cur > 0) lo = Math.Min(lo, cur);
+            double hi = Math.Max(Math.Max(entry, cur), Math.Max(trail, tp));
+            hi = Math.Max(hi, entry * 1.01);
+            if (hi <= lo) hi = lo + 1;
+            return (lo, hi);
+        }
+        private double LadderPct(decimal price)
+        {
+            if (price <= 0) return 0;
+            var (lo, hi) = LadderRange();
+            double v = ((double)price - lo) / (hi - lo) * 100.0;
+            return Math.Max(0.0, Math.Min(100.0, v));
+        }
+        public bool HasTrail => IsPositionActive && TrailingStopPrice > 0;
+        public double LadderCurrentPct => LadderPct(LastPrice);
+        public double LadderCurrentRemain => 100.0 - LadderCurrentPct;
+        public double LadderEntryPct => LadderPct(EntryPrice);
+        public double LadderEntryRemain => 100.0 - LadderEntryPct;
+        public double LadderTrailPct => LadderPct(TrailingStopPrice);
+        public double LadderTrailRemain => 100.0 - LadderTrailPct;
+
+        private void NotifyCardProps()
+        {
+            OnPropertyChanged(nameof(ExitTriggerIcon));
+            OnPropertyChanged(nameof(ExitTriggerColor));
+            OnPropertyChanged(nameof(ExitTriggerTitle));
+            OnPropertyChanged(nameof(ExitTriggerDetail));
+            OnPropertyChanged(nameof(CardAccentBrush));
+            OnPropertyChanged(nameof(HasTrail));
+            OnPropertyChanged(nameof(LadderCurrentPct));
+            OnPropertyChanged(nameof(LadderCurrentRemain));
+            OnPropertyChanged(nameof(LadderEntryPct));
+            OnPropertyChanged(nameof(LadderEntryRemain));
+            OnPropertyChanged(nameof(LadderTrailPct));
+            OnPropertyChanged(nameof(LadderTrailRemain));
         }
 
         // TargetPrice, StopLossPrice 등 값이 바뀔 때 OnPropertyChanged("ExitStrategySummary") 호출 필요

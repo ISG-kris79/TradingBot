@@ -215,7 +215,7 @@ namespace TradingBot
             // 트레이 아이콘 초기화 (ViewModel 이후에 호출)
             InitializeTrayIcon();
 
-            dgMultiTimeframe.ItemsSource = ViewModel.MarketDataList;
+            // [v5.28.3] 카드 대시보드 — ItemsControl 은 XAML 에서 MarketDataList 바인딩. 정렬은 기본뷰 공유.
             lstAlerts.ItemsSource = ViewModel.Alerts;
 
             // 텍스트 및 색상 바인딩
@@ -572,7 +572,7 @@ namespace TradingBot
         {
             void Refresh()
             {
-                var view = CollectionViewSource.GetDefaultView(dgMultiTimeframe.ItemsSource);
+                var view = CollectionViewSource.GetDefaultView(ViewModel.MarketDataList);
                 if (view != null)
                 {
                     view.SortDescriptions.Clear();
@@ -674,12 +674,14 @@ namespace TradingBot
         private void PerfWeekly_Checked(object sender, RoutedEventArgs e) { if (ViewModel != null) ViewModel.PerformancePeriod = "주별"; }
         private void PerfMonthly_Checked(object sender, RoutedEventArgs e) { if (ViewModel != null) ViewModel.PerformancePeriod = "월별"; }
 
-        private async void dgMultiTimeframe_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        // [v5.28.3] 포지션 카드 더블클릭 → 심볼 차트 (기존 dgMultiTimeframe 더블클릭 대체)
+        private async void PositionCard_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
             try
             {
                 if (ViewModel == null) return;
-                if (dgMultiTimeframe.SelectedItem is not MultiTimeframeViewModel selectedItem) return;
+                if (e.ClickCount != 2) return;   // 더블클릭만 (Border MouseDown)
+                if ((sender as FrameworkElement)?.DataContext is not MultiTimeframeViewModel selectedItem) return;
 
                 ViewModel.SelectedSymbol = selectedItem;
                 await Task.Delay(500);
@@ -805,7 +807,7 @@ namespace TradingBot
                 return;
             }
 
-            var view = CollectionViewSource.GetDefaultView(dgMultiTimeframe.ItemsSource);
+            var view = CollectionViewSource.GetDefaultView(ViewModel.MarketDataList);
             if (view != null)
             {
                 view.SortDescriptions.Clear();
@@ -824,7 +826,7 @@ namespace TradingBot
         }
         public void ApplyCustomSort()
         {
-            ICollectionView view = CollectionViewSource.GetDefaultView(dgMultiTimeframe.ItemsSource);
+            ICollectionView view = CollectionViewSource.GetDefaultView(ViewModel.MarketDataList);
             if (view != null)
             {
                 view.SortDescriptions.Clear();

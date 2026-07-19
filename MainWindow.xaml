@@ -34,6 +34,7 @@
         <local:LogTextToColorConverter x:Key="LogTextToColorConverter"/>
         <local:ScoreToArcGeometryConverter x:Key="ScoreToArcGeometryConverter"/>
         <local:PercentageWidthConverter x:Key="PercentageWidthConverter"/>
+        <local:StarGridLengthConverter x:Key="StarGridLengthConverter"/>
         <local:NullToCollapsedConverter x:Key="NullToCollapsedConverter"/>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
         <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
@@ -1231,400 +1232,313 @@
                         </ScrollViewer>
 
                         <!-- Main Content Area -->
+                        <!-- [v5.28.3] 카드형 실시간 대시보드 — 진입중 포지션 카드 + 진입임박 큐 + 로그 -->
                         <Grid Grid.Column="1">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="*"/>
-                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="352"/>
+                            </Grid.ColumnDefinitions>
 
-                            <!-- Main Split: DataGrid only (v4.9.0 Right Panel 제거) -->
-                            <Grid Grid.Row="0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
+                            <!-- ═══ LEFT: 진입 중 포지션 카드 ═══ -->
+                            <Grid Grid.Column="0" Margin="0,0,10,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="2,0,0,12" VerticalAlignment="Center">
+                                    <TextBlock Text="진입 중 포지션" FontSize="14" FontWeight="Bold" Foreground="#E6ECFF" VerticalAlignment="Center"/>
+                                    <Border Background="#111A33" BorderBrush="#274060" BorderThickness="1" CornerRadius="999" Padding="9,1" Margin="9,0,0,0" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding TotalPositionInfo}" FontSize="10" FontFamily="Consolas" Foreground="#00E5FF"/>
+                                    </Border>
+                                    <TextBlock Text="● 실시간 · 코인별 백그라운드 감시" FontSize="10" Foreground="#00E676" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                                </StackPanel>
 
-                                <!-- Live Market Signals DataGrid -->
-                                <Border Grid.Column="0"
-                                        Background="{StaticResource BackgroundDarkBrush}"
-                                        BorderBrush="{StaticResource BackgroundLightBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="10"
-                                        Padding="12"
-                                        Margin="0,0,10,0">
+                                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                    <ItemsControl ItemsSource="{Binding MarketDataList}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel Orientation="Horizontal"/>
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <!-- CARD — 진입중일 때만 표시 -->
+                                                <Border Width="368" Margin="0,0,12,12" CornerRadius="14"
+                                                        Background="#141A33" BorderBrush="#252B48" BorderThickness="1"
+                                                        Cursor="Hand"
+                                                        MouseDown="PositionCard_MouseDoubleClick"
+                                                        Visibility="{Binding IsPositionActive, Converter={StaticResource BoolToVisibilityConverter}}">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="3"/>
+                                                            <ColumnDefinition Width="*"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <!-- accent stripe -->
+                                                        <Border Grid.Column="0" Background="{Binding CardAccentBrush}" CornerRadius="14,0,0,14"/>
+                                                        <StackPanel Grid.Column="1" Margin="14,13,14,12">
+
+                                                            <!-- HEAD: symbol + side + strategy + 청산 -->
+                                                            <Grid Margin="0,0,0,10">
+                                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                                    <TextBlock Text="{Binding Symbol}" FontSize="17" FontWeight="Bold" Foreground="White" VerticalAlignment="Center"/>
+                                                                    <Border Background="{Binding PositionSideColor}" CornerRadius="5" Padding="6,1" Margin="8,0,0,0" VerticalAlignment="Center">
+                                                                        <TextBlock Text="{Binding PositionSide}" FontSize="9" FontWeight="Bold" Foreground="#0F172A"/>
+                                                                    </Border>
+                                                                    <Border Background="{Binding StrategyBg}" CornerRadius="5" Padding="6,1" Margin="5,0,0,0" VerticalAlignment="Center"
+                                                                            Visibility="{Binding StrategyName, Converter={StaticResource NullToCollapsedConverter}}">
+                                                                        <TextBlock Text="{Binding StrategyName}" FontSize="9" FontWeight="Bold" Foreground="White"/>
+                                                                    </Border>
+                                                                </StackPanel>
+                                                                <Button Content="청산" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                                        Command="{Binding DataContext.ClosePositionCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                        CommandParameter="{Binding Symbol}"
+                                                                        Style="{StaticResource DangerButtonStyle}" FontSize="11" Padding="12,5"/>
+                                                            </Grid>
+
+                                                            <!-- ROE + PnL -->
+                                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                                                <TextBlock Text="{Binding ProfitRate, StringFormat={}{0:+0.0;-0.0}%}" FontFamily="Consolas" FontSize="28" FontWeight="Bold"
+                                                                           Foreground="{Binding ProfitColor}" VerticalAlignment="Center"/>
+                                                                <StackPanel Margin="14,0,0,0" VerticalAlignment="Center">
+                                                                    <TextBlock Text="{Binding ProfitUsdt}" FontFamily="Consolas" FontSize="13" FontWeight="Bold" Foreground="{Binding ProfitColor}"/>
+                                                                    <TextBlock Text="{Binding EntryMarginUsdt, StringFormat='마진 {0}'}" FontSize="10" Foreground="#5B6480"/>
+                                                                </StackPanel>
+                                                            </StackPanel>
+
+                                                            <!-- PRICE LADDER -->
+                                                            <Grid Height="26" Margin="2,2,2,8">
+                                                                <Border VerticalAlignment="Center" Height="6" CornerRadius="3">
+                                                                    <Border.Background>
+                                                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                                                            <GradientStop Color="#59FF5370" Offset="0"/>
+                                                                            <GradientStop Color="#40252B48" Offset="0.5"/>
+                                                                            <GradientStop Color="#5900E676" Offset="1"/>
+                                                                        </LinearGradientBrush>
+                                                                    </Border.Background>
+                                                                </Border>
+                                                                <!-- entry marker -->
+                                                                <Grid VerticalAlignment="Center">
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="{Binding LadderEntryPct, Converter={StaticResource StarGridLengthConverter}}"/>
+                                                                        <ColumnDefinition Width="{Binding LadderEntryRemain, Converter={StaticResource StarGridLengthConverter}}"/>
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <Ellipse Grid.Column="1" HorizontalAlignment="Left" Width="9" Height="9" Fill="White" Stroke="#0A0E27" StrokeThickness="2" Margin="-5,0,0,0"/>
+                                                                </Grid>
+                                                                <!-- trail marker -->
+                                                                <Grid VerticalAlignment="Center" Visibility="{Binding HasTrail, Converter={StaticResource BoolToVisibilityConverter}}">
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="{Binding LadderTrailPct, Converter={StaticResource StarGridLengthConverter}}"/>
+                                                                        <ColumnDefinition Width="{Binding LadderTrailRemain, Converter={StaticResource StarGridLengthConverter}}"/>
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <Rectangle Grid.Column="1" HorizontalAlignment="Left" Width="2" Height="18" Fill="#FFB300" Margin="-1,0,0,0"/>
+                                                                </Grid>
+                                                                <!-- current marker -->
+                                                                <Grid VerticalAlignment="Center">
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="{Binding LadderCurrentPct, Converter={StaticResource StarGridLengthConverter}}"/>
+                                                                        <ColumnDefinition Width="{Binding LadderCurrentRemain, Converter={StaticResource StarGridLengthConverter}}"/>
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <Ellipse Grid.Column="1" HorizontalAlignment="Left" Width="13" Height="13" Fill="#00E5FF" Stroke="#0A0E27" StrokeThickness="2" Margin="-6,0,0,0"/>
+                                                                </Grid>
+                                                            </Grid>
+
+                                                            <!-- ladder values -->
+                                                            <UniformGrid Columns="4" Margin="0,0,0,10">
+                                                                <StackPanel HorizontalAlignment="Left">
+                                                                    <TextBlock Text="손절" FontSize="9" Foreground="#ff8aa0"/>
+                                                                    <TextBlock FontFamily="Consolas" FontSize="10" Foreground="#ff8aa0">
+                                                                        <TextBlock.Text>
+                                                                            <MultiBinding Converter="{StaticResource PriceFormattingConverter}">
+                                                                                <Binding Path="Symbol"/><Binding Path="StopLossPrice"/>
+                                                                            </MultiBinding>
+                                                                        </TextBlock.Text>
+                                                                    </TextBlock>
+                                                                </StackPanel>
+                                                                <StackPanel HorizontalAlignment="Left">
+                                                                    <TextBlock Text="진입" FontSize="9" Foreground="#94A3B8"/>
+                                                                    <TextBlock FontFamily="Consolas" FontSize="10" Foreground="#CBD5E1">
+                                                                        <TextBlock.Text>
+                                                                            <MultiBinding Converter="{StaticResource PriceFormattingConverter}">
+                                                                                <Binding Path="Symbol"/><Binding Path="EntryPrice"/>
+                                                                            </MultiBinding>
+                                                                        </TextBlock.Text>
+                                                                    </TextBlock>
+                                                                </StackPanel>
+                                                                <StackPanel HorizontalAlignment="Left" Visibility="{Binding HasTrail, Converter={StaticResource BoolToVisibilityConverter}}">
+                                                                    <TextBlock Text="트레일" FontSize="9" Foreground="#FFB300"/>
+                                                                    <TextBlock FontFamily="Consolas" FontSize="10" Foreground="#FFB300">
+                                                                        <TextBlock.Text>
+                                                                            <MultiBinding Converter="{StaticResource PriceFormattingConverter}">
+                                                                                <Binding Path="Symbol"/><Binding Path="TrailingStopPrice"/>
+                                                                            </MultiBinding>
+                                                                        </TextBlock.Text>
+                                                                    </TextBlock>
+                                                                </StackPanel>
+                                                                <StackPanel HorizontalAlignment="Right">
+                                                                    <TextBlock Text="현재" FontSize="9" Foreground="#00E5FF" HorizontalAlignment="Right"/>
+                                                                    <TextBlock FontFamily="Consolas" FontSize="10" Foreground="#00E5FF">
+                                                                        <TextBlock.Text>
+                                                                            <MultiBinding Converter="{StaticResource PriceFormattingConverter}">
+                                                                                <Binding Path="Symbol"/><Binding Path="LastPrice"/>
+                                                                            </MultiBinding>
+                                                                        </TextBlock.Text>
+                                                                    </TextBlock>
+                                                                </StackPanel>
+                                                            </UniformGrid>
+
+                                                            <!-- EXIT TRIGGER CHIP -->
+                                                            <Border Background="#0E1430" BorderBrush="#252B48" BorderThickness="1" CornerRadius="10" Padding="11,9" Margin="0,0,0,8">
+                                                                <StackPanel Orientation="Horizontal">
+                                                                    <TextBlock Text="{Binding ExitTriggerIcon}" FontSize="15" VerticalAlignment="Top" Margin="0,0,9,0"/>
+                                                                    <StackPanel>
+                                                                        <TextBlock Text="{Binding ExitTriggerTitle}" FontSize="12" FontWeight="Bold" Foreground="{Binding ExitTriggerColor}" TextWrapping="Wrap"/>
+                                                                        <TextBlock Text="{Binding ExitTriggerDetail}" FontSize="10.5" Foreground="#94A3B8" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                                                    </StackPanel>
+                                                                </StackPanel>
+                                                            </Border>
+
+                                                            <!-- META -->
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <TextBlock Text="{Binding SignalSource}" FontSize="10" Foreground="#5B6480" VerticalAlignment="Center"/>
+                                                                <TextBlock Text="{Binding RSI_1H, StringFormat='· RSI {0:F0}'}" FontSize="10" Foreground="#5B6480" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                                                <TextBlock Text="{Binding Trend4H, StringFormat='· 4h {0}'}" FontSize="10" Foreground="#5B6480" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                                            </StackPanel>
+
+                                                        </StackPanel>
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Grid>
+
+                            <!-- ═══ RIGHT: 진입 임박 + 로그 ═══ -->
+                            <Grid Grid.Column="1">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*"/>
+                                    <RowDefinition Height="188"/>
+                                </Grid.RowDefinitions>
+
+                                <!-- 진입 임박 -->
+                                <Border Grid.Row="0" Background="#111629" BorderBrush="#252B48" BorderThickness="1" CornerRadius="12" Padding="12" Margin="0,0,0,10">
                                     <Grid>
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="*"/>
-                                            <RowDefinition Height="260"/>
-                                            <RowDefinition Height="150"/>
                                         </Grid.RowDefinitions>
                                         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
-                                            <TextBlock Text="📊 실시간 시장 신호" FontSize="12" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}" VerticalAlignment="Center"/>
-                                            <Border Background="#0D2010" BorderBrush="#00E676" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="10,0,0,0">
-                                                <TextBlock Text="● 실시간" Foreground="#00E676" FontSize="9" FontWeight="Bold"/>
-                                            </Border>
+                                            <TextBlock Text="진입 임박" FontSize="13" FontWeight="Bold" Foreground="#E6ECFF" VerticalAlignment="Center"/>
+                                            <TextBlock Text="게이트 근접 감시" FontSize="10" Foreground="#00E676" Margin="10,0,0,0" VerticalAlignment="Center"/>
                                         </StackPanel>
-                                        <Border Grid.Row="1" Padding="0">
-                                            <DataGrid x:Name="dgMultiTimeframe"
-                                                      Style="{StaticResource ModernDataGridStyle}"
-                                                      ColumnHeaderStyle="{StaticResource ModernColumnHeaderStyle}"
-                                                      RowHeight="48"
-                                                      EnableRowVirtualization="True"
-                                                      EnableColumnVirtualization="True"
-                                                      VirtualizingStackPanel.IsVirtualizing="True"
-                                                      VirtualizingStackPanel.VirtualizationMode="Recycling"
-                                                      ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                                                      SelectedItem="{Binding SelectedSymbol, Mode=TwoWay}"
-                                                      MouseDoubleClick="dgMultiTimeframe_MouseDoubleClick">
-                                                <DataGrid.RowStyle>
-                                                    <Style TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
-                                                        <Setter Property="Background" Value="Transparent"/>
-                                                        <Setter Property="Foreground" Value="#E0E7FF"/>
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding IsPositionActive}" Value="True">
-                                                                <Setter Property="Background" Value="#081A0F"/>
-                                                            </DataTrigger>
-                                                            <Trigger Property="IsMouseOver" Value="True">
-                                                                <Setter Property="Background" Value="#1A1F3A"/>
-                                                            </Trigger>
-                                                            <Trigger Property="IsSelected" Value="True">
-                                                                <Setter Property="Background" Value="#1E2547"/>
-                                                            </Trigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </DataGrid.RowStyle>
-                                                <DataGrid.Columns>
-
-                                                    <!-- ① SYMBOL: 심볼 + 전략 배지 + 포지션 방향 -->
-                                                    <DataGridTemplateColumn Header="심볼" Width="152">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <StackPanel Margin="8,4">
-                                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                                                        <TextBlock Text="{Binding Symbol}" FontSize="14" FontWeight="Bold" Foreground="White" VerticalAlignment="Center"/>
-                                                                        <!-- 전략 배지: Major Scalp=파랑, Pump Breakout=빨강 -->
-                                                                        <Border Background="{Binding StrategyBg}" CornerRadius="3" Padding="4,1" Margin="5,0,0,0" VerticalAlignment="Center"
-                                                                                Visibility="{Binding StrategyName, Converter={StaticResource NullToCollapsedConverter}}">
-                                                                            <TextBlock Text="{Binding StrategyName}" FontSize="8" FontWeight="Bold" Foreground="White"/>
-                                                                        </Border>
-                                                                    </StackPanel>
-                                                                    <!-- 포지션 방향 pill (진입중일 때만) -->
-                                                                    <Border Background="{Binding PositionSideColor}" CornerRadius="3" Padding="5,1"
-                                                                            HorizontalAlignment="Left" Margin="0,2,0,0"
-                                                                            Visibility="{Binding IsPositionActive, Converter={StaticResource BoolToVisibilityConverter}}">
-                                                                        <TextBlock Text="{Binding PositionSide}" FontSize="9" FontWeight="Bold" Foreground="#0F172A"/>
+                                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                                            <ItemsControl ItemsSource="{Binding NearEntryItems}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Background="#151B33" BorderBrush="#252B48" BorderThickness="1" CornerRadius="10" Padding="11,9" Margin="0,0,0,9">
+                                                            <StackPanel>
+                                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                                    <Border Background="#00E5FF" CornerRadius="5" Padding="6,0" VerticalAlignment="Center">
+                                                                        <TextBlock Text="{Binding Rank}" FontFamily="Consolas" FontSize="11" FontWeight="Bold" Foreground="#0A0E27"/>
+                                                                    </Border>
+                                                                    <TextBlock Text="{Binding Symbol}" FontSize="14" FontWeight="Bold" Foreground="White" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                                                    <Border CornerRadius="999" Padding="8,2" Margin="0" HorizontalAlignment="Right"
+                                                                            Background="{Binding VerdictColor}">
+                                                                        <TextBlock Text="{Binding Verdict}" FontSize="10" FontWeight="Bold" Foreground="#0A0E27"/>
                                                                     </Border>
                                                                 </StackPanel>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-
-                                                    <!-- ② PRICE: 현재가 + 진입가 (진입중) -->
-                                                    <DataGridTemplateColumn Header="가격" Width="128">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <StackPanel Margin="8,4">
-                                                                    <TextBlock FontFamily="Consolas" FontSize="14" FontWeight="Bold" Foreground="{Binding PriceColor}">
-                                                                        <TextBlock.Text>
-                                                                            <MultiBinding Converter="{StaticResource PriceFormattingConverter}">
-                                                                                <Binding Path="Symbol"/>
-                                                                                <Binding Path="LastPrice"/>
-                                                                            </MultiBinding>
-                                                                        </TextBlock.Text>
-                                                                    </TextBlock>
-                                                                    <TextBlock Visibility="{Binding IsPositionActive, Converter={StaticResource BoolToVisibilityConverter}}">
-                                                                        <Run Text="진입 " Foreground="#6B7280" FontSize="10"/>
-                                                                        <Run FontSize="10" FontFamily="Consolas" Foreground="#94A3B8">
-                                                                            <Run.Text>
-                                                                                <MultiBinding Converter="{StaticResource PriceFormattingConverter}">
-                                                                                    <Binding Path="Symbol"/>
-                                                                                    <Binding Path="EntryPrice"/>
-                                                                                </MultiBinding>
-                                                                            </Run.Text>
-                                                                        </Run>
-                                                                    </TextBlock>
-                                                                </StackPanel>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-
-                                                    <!-- [v5.10.87] ②-1 마진/손익 USDT -->
-                                                    <DataGridTemplateColumn Header="마진/손익" Width="120">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <StackPanel Margin="8,4" Visibility="{Binding IsPositionActive, Converter={StaticResource BoolToVisibilityConverter}}">
-                                                                    <TextBlock FontFamily="Consolas" FontSize="13" FontWeight="Bold" Foreground="#E0E7FF" Text="{Binding EntryMarginUsdt}" ToolTip="진입 마진 (증거금)"/>
-                                                                    <TextBlock FontFamily="Consolas" FontSize="11" Foreground="{Binding ProfitColor}" Text="{Binding ProfitUsdt}" ToolTip="실시간 손익"/>
-                                                                    <TextBlock FontSize="9" Foreground="#6B7280" Text="{Binding EntryNotionalUsdt, StringFormat='Notional {0}'}" ToolTip="명목금액 (마진 × 레버리지)"/>
-                                                                </StackPanel>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-
-                                                    <!-- ③ ROI: 수익률 + USDT 금액 -->
-                                                    <DataGridTemplateColumn Header="ROI" Width="100">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                                                                    <TextBlock Text="{Binding ProfitRate, StringFormat={}{0:+0.00;-0.00;0.00}%}"
-                                                                               Foreground="{Binding ProfitColor}"
-                                                                               FontFamily="Consolas" FontSize="13" FontWeight="Bold"
-                                                                               HorizontalAlignment="Center"/>
-                                                                    <TextBlock Text="{Binding ProfitUsdt, Mode=OneWay}"
-                                                                               Foreground="{Binding ProfitColor}"
-                                                                               FontFamily="Consolas" FontSize="9"
-                                                                               HorizontalAlignment="Center" Opacity="0.7"/>
-                                                                </StackPanel>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-
-                                                    <!-- [v5.22.27] AI 점수 컬럼 제거 — AI 시스템 폐기 (2026-04-29). 기존 AIScore/MLProbability 0 영구 표시 잔존 코드 제거. -->
-                                                    <DataGridTemplateColumn Header="신호점수" Width="100">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <TextBlock Text="{Binding AIScoreText}"
-                                                                           Foreground="{Binding ScoreColor}"
-                                                                           FontFamily="Consolas" FontSize="15" FontWeight="Bold"
-                                                                           HorizontalAlignment="Center" VerticalAlignment="Center" Margin="4,4"/>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-
-                                                    <!-- ⑤ STATUS: 진입 상태 Badge (v3.2.34) -->
-                                                    <DataGridTemplateColumn Header="상태" Width="118">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <StackPanel Margin="4,0" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                                                    <Border BorderBrush="{Binding EntryStatusColor}" BorderThickness="1.5"
-                                                                            CornerRadius="4" Padding="8,3"
-                                                                            HorizontalAlignment="Center">
-                                                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                                                            <TextBlock Text="{Binding EntryStatusIcon}" FontSize="11" Margin="0,0,3,0"
-                                                                                       VerticalAlignment="Center"/>
-                                                                            <TextBlock Text="{Binding EntryStatus}" Foreground="{Binding EntryStatusColor}"
-                                                                                       FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
+                                                                <UniformGrid Columns="4" Margin="0,0,0,8">
+                                                                    <Border Background="#0E1430" BorderBrush="#252B48" BorderThickness="1" CornerRadius="7" Margin="0,0,4,0" Padding="0,5">
+                                                                        <StackPanel>
+                                                                            <TextBlock Text="KNN" FontSize="8" Foreground="#5B6480" HorizontalAlignment="Center"/>
+                                                                            <TextBlock Text="{Binding KnnText}" FontFamily="Consolas" FontSize="12" FontWeight="Bold" Foreground="{Binding KnnColor}" HorizontalAlignment="Center"/>
                                                                         </StackPanel>
                                                                     </Border>
-                                                                    <TextBlock Text="{Binding AIScoreUpdatedText}" Foreground="#374151" FontSize="9"
-                                                                               FontFamily="Consolas" HorizontalAlignment="Center" Margin="0,1,0,0"/>
-                                                                </StackPanel>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-
-                                                    <!-- ⑥ SL / TP: 손절/익절 가격 + USD 금액 [v5.22.29] -->
-                                                    <DataGridTemplateColumn Header="손절/익절 (가격+금액)" Width="280">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <TextBlock Text="{Binding RiskSummary}" Foreground="#CBD5E1" FontFamily="Consolas" FontSize="10"
-                                                                           HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="NoWrap"/>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-
-                                                    <!-- ⑦ SIGNAL: 매수/매도/대기 배지 -->
-                                                    <DataGridTemplateColumn Header="신호" Width="108">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Border Background="{Binding DecisionBg}" CornerRadius="6" Padding="10,5" Margin="4,4">
-                                                                    <TextBlock Text="{Binding DisplayDecision}" Foreground="White"
-                                                                               FontWeight="Bold" FontSize="11" HorizontalAlignment="Center"/>
-                                                                </Border>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-
-                                                    <!-- ⑧ EXIT: 청산 상태 -->
-                                                    <DataGridTemplateColumn Header="청산" Width="92">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Border Background="{Binding CloseStatusBackground}" CornerRadius="6" Padding="8,5" Margin="4,4"
-                                                                        ToolTip="{Binding CloseIncompleteDetail}">
-                                                                    <TextBlock Text="{Binding CloseStatusText}" Foreground="{Binding CloseStatusForeground}"
-                                                                               FontWeight="Bold" FontSize="11" HorizontalAlignment="Center"/>
-                                                                </Border>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-
-                                                    <!-- ⑨ ACTION: 강제청산 버튼 -->
-                                                    <DataGridTemplateColumn Header="ACTION" Width="76">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Button Content="CLOSE"
-                                                                        Command="{Binding DataContext.ClosePositionCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                        CommandParameter="{Binding Symbol}"
-                                                                        Style="{StaticResource DangerButtonStyle}"
-                                                                        FontSize="10" Padding="8,4"
-                                                                        Visibility="{Binding IsPositionActive, Converter={StaticResource BoolToVisibilityConverter}}"/>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-
-                                                </DataGrid.Columns>
-                                            </DataGrid>
-                                        </Border>
-
-                                        <!-- [v4.9.0] AI INSIGHT PANEL — 대기/보유 자동 전환 -->
-                                        <Border Grid.Row="2"
-                                                Background="#0B1220"
-                                                BorderBrush="#1E3A5F"
-                                                BorderThickness="1"
-                                                CornerRadius="8"
-                                                Padding="12,10"
-                                                Margin="0,8,0,0">
-                                            <!-- [v5.24.5] 진입 임박 패널 — 차단/활성포지션 패널 제거(사용자 지정).
-                                                 각 코인이 LCC 가드 진입조건에 얼마나 가깝고(KNN/NW커널/DBB) 진입까지 무엇이 필요한지 표시. -->
-                                            <Grid>
-                                                <Grid.RowDefinitions>
-                                                    <RowDefinition Height="Auto"/>
-                                                    <RowDefinition Height="*"/>
-                                                </Grid.RowDefinitions>
-                                                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
-                                                    <TextBlock Text="⏳ 진입 임박 (LCC 가드 근접도)" FontSize="11" FontWeight="Bold"
-                                                               Foreground="#FBBF24"
-                                                               ToolTip="각 코인이 진입조건(KNN net≥4 · NW커널 상승 · DBB 과열아님)에 얼마나 가까운지 + 진입까지 필요한 것"/>
-                                                    <TextBlock Text="{Binding NearEntryItems.Count, StringFormat={} ({0})}"
-                                                               FontSize="10" Foreground="#6B7280" Margin="6,0,0,0" VerticalAlignment="Center"/>
-                                                </StackPanel>
-                                                <ListBox Grid.Row="1"
-                                                         ItemsSource="{Binding NearEntryItems}"
-                                                         Background="Transparent"
-                                                         BorderThickness="0"
-                                                         VirtualizingStackPanel.IsVirtualizing="True"
-                                                         ScrollViewer.VerticalScrollBarVisibility="Auto"
-                                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                                                    <ListBox.ItemContainerStyle>
-                                                        <Style TargetType="ListBoxItem">
-                                                            <Setter Property="Padding" Value="0,2"/>
-                                                            <Setter Property="Background" Value="Transparent"/>
-                                                            <Setter Property="BorderThickness" Value="0"/>
-                                                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                                                        </Style>
-                                                    </ListBox.ItemContainerStyle>
-                                                    <ListBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <Border Background="#111827" CornerRadius="5" Padding="8,5" Margin="0,2">
-                                                                <Grid>
-                                                                    <Grid.ColumnDefinitions>
-                                                                        <ColumnDefinition Width="78"/>
-                                                                        <ColumnDefinition Width="Auto"/>
-                                                                        <ColumnDefinition Width="*"/>
-                                                                        <ColumnDefinition Width="Auto"/>
-                                                                    </Grid.ColumnDefinitions>
-                                                                    <TextBlock Grid.Column="0" Text="{Binding Symbol}" Foreground="#E0E7FF"
-                                                                               FontWeight="Bold" FontSize="12" FontFamily="Consolas" VerticalAlignment="Center"/>
-                                                                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0">
-                                                                        <TextBlock Text="{Binding KnnText}" Foreground="{Binding KnnColor}"
-                                                                                   FontSize="10" FontFamily="Consolas" Margin="0,0,6,0"/>
-                                                                        <TextBlock Text="{Binding NwText}" Foreground="{Binding NwColor}"
-                                                                                   FontSize="10" FontFamily="Consolas" Margin="0,0,6,0"/>
-                                                                        <TextBlock Text="{Binding DbbText}" Foreground="{Binding DbbColor}"
-                                                                                   FontSize="10" FontFamily="Consolas"/>
-                                                                        <TextBlock Text="{Binding SurgeText}" Foreground="{Binding SurgeColor}"
-                                                                                   FontSize="10" FontWeight="Bold" FontFamily="Consolas" Margin="6,0,0,0"/>
-                                                                    </StackPanel>
-                                                                    <TextBlock Grid.Column="2" Text="{Binding NeedText}" Foreground="#9CA3AF"
-                                                                               FontSize="9" FontFamily="Consolas" VerticalAlignment="Center"
-                                                                               TextTrimming="CharacterEllipsis" Margin="8,0"/>
-                                                                    <Border Grid.Column="3" Background="{Binding VerdictColor}"
-                                                                            CornerRadius="4" Padding="6,2" VerticalAlignment="Center">
-                                                                        <TextBlock Text="{Binding Verdict}" Foreground="#000000" FontSize="9" FontWeight="Bold"/>
+                                                                    <Border Background="#0E1430" BorderBrush="#252B48" BorderThickness="1" CornerRadius="7" Margin="0,0,4,0" Padding="0,5">
+                                                                        <StackPanel>
+                                                                            <TextBlock Text="NW커널" FontSize="8" Foreground="#5B6480" HorizontalAlignment="Center"/>
+                                                                            <TextBlock Text="{Binding NwText}" FontFamily="Consolas" FontSize="12" FontWeight="Bold" Foreground="{Binding NwColor}" HorizontalAlignment="Center"/>
+                                                                        </StackPanel>
                                                                     </Border>
-                                                                </Grid>
-                                                            </Border>
-                                                        </DataTemplate>
-                                                    </ListBox.ItemTemplate>
-                                                </ListBox>
-                                            </Grid>
-                                        </Border>
-
-                                        <!-- FAST LOG (3) + Critical Alerts (2) 나란히 (v3.2.32) -->
-                                        <Grid Grid.Row="3" Margin="0,8,0,6">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="3*"/>
-                                                <ColumnDefinition Width="2*"/>
-                                            </Grid.ColumnDefinitions>
-
-                                            <!-- FAST LOG -->
-                                            <Border Grid.Column="0"
-                                                    Background="#0D1117"
-                                                    BorderBrush="#1E3A5F"
-                                                    BorderThickness="1"
-                                                    CornerRadius="6"
-                                                    Padding="6,4,6,6"
-                                                    Margin="0,0,4,0">
-                                                <Grid>
-                                                    <Grid.RowDefinitions>
-                                                        <RowDefinition Height="Auto"/>
-                                                        <RowDefinition Height="*"/>
-                                                    </Grid.RowDefinitions>
-                                                    <TextBlock Text="📡 빠른 로그" FontSize="10" FontWeight="Bold"
-                                                               Foreground="{StaticResource PrimaryBrush}" Margin="0,0,0,3"/>
-                                                    <ListBox Grid.Row="1"
-                                                             ItemsSource="{Binding FastLogs}"
-                                                             Background="Transparent"
-                                                             BorderThickness="0"
-                                                             FontFamily="Consolas"
-                                                             FontSize="10"
-                                                             VirtualizingStackPanel.IsVirtualizing="True"
-                                                             ScrollViewer.VerticalScrollBarVisibility="Hidden"
-                                                             ScrollViewer.HorizontalScrollBarVisibility="Hidden"
-                                                             ScrollViewer.CanContentScroll="True">
-                                                        <ListBox.ItemContainerStyle>
-                                                            <Style TargetType="ListBoxItem">
-                                                                <Setter Property="Padding" Value="2,1"/>
-                                                                <Setter Property="Foreground" Value="#8B949E"/>
-                                                                <Setter Property="Background" Value="Transparent"/>
-                                                            </Style>
-                                                        </ListBox.ItemContainerStyle>
-                                                    </ListBox>
-                                                </Grid>
-                                            </Border>
-
-                                            <!-- Critical Alerts -->
-                                            <Border Grid.Column="1"
-                                                    Background="#1A0A0A"
-                                                    BorderBrush="#5F1E1E"
-                                                    BorderThickness="1"
-                                                    CornerRadius="6"
-                                                    Padding="6,4,6,6"
-                                                    Margin="4,0,0,0">
-                                                <Grid>
-                                                    <Grid.RowDefinitions>
-                                                        <RowDefinition Height="Auto"/>
-                                                        <RowDefinition Height="*"/>
-                                                    </Grid.RowDefinitions>
-                                                    <TextBlock Text="⚠  긴급 알림" FontSize="10" FontWeight="Bold"
-                                                               Foreground="#FF6B6B" Margin="0,0,0,3"/>
-                                                    <ListBox x:Name="lstAlerts"
-                                                             Grid.Row="1"
-                                                             ItemsSource="{Binding Alerts}"
-                                                             Background="Transparent"
-                                                             BorderThickness="0"
-                                                             FontFamily="Consolas"
-                                                             FontSize="10"
-                                                             VirtualizingStackPanel.IsVirtualizing="True"
-                                                             ScrollViewer.VerticalScrollBarVisibility="Hidden"
-                                                             ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                                                             ScrollViewer.CanContentScroll="True">
-                                                        <ListBox.Resources>
-                                                            <Style TargetType="ScrollBar" BasedOn="{StaticResource MinimalScrollBar}"/>
-                                                        </ListBox.Resources>
-                                                        <ListBox.ItemContainerStyle>
-                                                            <Style TargetType="ListBoxItem">
-                                                                <Setter Property="Padding" Value="2,1"/>
-                                                                <Setter Property="Foreground" Value="#FF9999"/>
-                                                                <Setter Property="Background" Value="Transparent"/>
-                                                            </Style>
-                                                        </ListBox.ItemContainerStyle>
-                                                    </ListBox>
-                                                </Grid>
-                                            </Border>
-                                        </Grid>
+                                                                    <Border Background="#0E1430" BorderBrush="#252B48" BorderThickness="1" CornerRadius="7" Margin="0,0,4,0" Padding="0,5">
+                                                                        <StackPanel>
+                                                                            <TextBlock Text="DBB여유" FontSize="8" Foreground="#5B6480" HorizontalAlignment="Center"/>
+                                                                            <TextBlock Text="{Binding DbbText}" FontFamily="Consolas" FontSize="12" FontWeight="Bold" Foreground="{Binding DbbColor}" HorizontalAlignment="Center"/>
+                                                                        </StackPanel>
+                                                                    </Border>
+                                                                    <Border Background="#0E1430" BorderBrush="#252B48" BorderThickness="1" CornerRadius="7" Padding="0,5">
+                                                                        <StackPanel>
+                                                                            <TextBlock Text="🔥서지" FontSize="8" Foreground="#5B6480" HorizontalAlignment="Center"/>
+                                                                            <TextBlock Text="{Binding SurgeText}" FontFamily="Consolas" FontSize="12" FontWeight="Bold" Foreground="{Binding SurgeColor}" HorizontalAlignment="Center"/>
+                                                                        </StackPanel>
+                                                                    </Border>
+                                                                </UniformGrid>
+                                                                <TextBlock Text="{Binding NeedText}" FontSize="10.5" Foreground="#94A3B8" TextWrapping="Wrap"/>
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </ScrollViewer>
                                     </Grid>
                                 </Border>
 
+                                <!-- 로그 + 알림 -->
+                                <Border Grid.Row="1" Background="#111629" BorderBrush="#252B48" BorderThickness="1" CornerRadius="12" Padding="12">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid Grid.Column="0" Margin="0,0,6,0">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="*"/>
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Grid.Row="0" Text="📡 실시간 로그" FontSize="11" FontWeight="Bold" Foreground="#94A3B8" Margin="0,0,0,6"/>
+                                            <ListBox Grid.Row="1" ItemsSource="{Binding FastLogs}" Background="Transparent" BorderThickness="0"
+                                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                                <ListBox.ItemContainerStyle>
+                                                    <Style TargetType="ListBoxItem">
+                                                        <Setter Property="Background" Value="Transparent"/>
+                                                        <Setter Property="Padding" Value="0,1"/>
+                                                        <Setter Property="Template">
+                                                            <Setter.Value>
+                                                                <ControlTemplate TargetType="ListBoxItem">
+                                                                    <TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="10.5" TextTrimming="CharacterEllipsis"
+                                                                               Foreground="{Binding Converter={StaticResource LogTextToColorConverter}}"/>
+                                                                </ControlTemplate>
+                                                            </Setter.Value>
+                                                        </Setter>
+                                                    </Style>
+                                                </ListBox.ItemContainerStyle>
+                                            </ListBox>
+                                        </Grid>
+                                        <Grid Grid.Column="1" Margin="6,0,0,0">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="*"/>
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Grid.Row="0" Text="⚠ 긴급 알림" FontSize="11" FontWeight="Bold" Foreground="#FF5370" Margin="0,0,0,6"/>
+                                            <ListBox Grid.Row="1" x:Name="lstAlerts" Background="Transparent" BorderThickness="0"
+                                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                                <ListBox.ItemContainerStyle>
+                                                    <Style TargetType="ListBoxItem">
+                                                        <Setter Property="Background" Value="Transparent"/>
+                                                        <Setter Property="Padding" Value="0,1"/>
+                                                        <Setter Property="Template">
+                                                            <Setter.Value>
+                                                                <ControlTemplate TargetType="ListBoxItem">
+                                                                    <TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="10.5" TextWrapping="Wrap" Foreground="#FF9DB0"/>
+                                                                </ControlTemplate>
+                                                            </Setter.Value>
+                                                        </Setter>
+                                                    </Style>
+                                                </ListBox.ItemContainerStyle>
+                                            </ListBox>
+                                        </Grid>
+                                    </Grid>
+                                </Border>
                             </Grid>
                         </Grid>
                     </Grid>
