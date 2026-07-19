@@ -5,6 +5,13 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.28.2] - 2026-07-19
+
+### ✨ Added — 1h EMA 컨플루언스 (4h→1h→15m 3중 추세정렬)
+`--confluence`(지표층 조합 백테): 여러 add-on 중 **+1h EMA정배열이 유일하게 총수익↑**($4492→$5129,+14%)·PF 1.20→1.27·MDD 23→19%·진입 85%유지. 거래량/OBV/SuperTrend/MACD/VWAP 단독은 진입 과삭감으로 총액↓.
+- `AnalyzeLorentzianEntryAsync`: 4h 방향게이트와 15m 진입 사이에 **1h EMA정배열(EMA50>200·종가>EMA50) 컨플루언스** 추가.
+- 사례기억 게이트(`--casemem`, 실현손익 K최근접 walk-forward)는 전 K·임계에서 baseline↓(승률 38% 불변)=진입시점 손익예측 불가 재확인 → **라이브 미반영**.
+
 ## [5.28.1] - 2026-07-19
 
 ### ♻️ Changed — 확대 트레일링스톱 4→10 (승자 크게 태우기)

@@ -5199,6 +5199,19 @@ namespace TradingBot
             // [v5.28.0] ★BTC 4h 완전정배열 게이트 제거 — "며칠째 진입 0"의 주범. BTC가 정배열 아니면 상승중 알트까지 전부 차단했음.
             //   백테 --mtf-final --nobtc --adx20: 진입 1211→1827(+51%)·0원달 13→5·MDD 15%동일·수익 −2%($4587→$4492).
             //   코인 자체 4h 추세(EMA50>200·종가>EMA50·ADX≥20)가 이미 방향필터라 BTC 이중게이트는 과필터. 남는 0원 5달은 전면 하락장(정상 회피).
+            // ── 2) 1h EMA 정배열 컨플루언스 (4h→1h→15m 3중 추세정렬) ──
+            //   [v5.28.2] 백테 --confluence: +1h EMA정배열이 유일하게 총수익↑($4492→$5129,+14%)·PF 1.20→1.27·MDD 23→19%·진입 85%유지.
+            {
+                var h1raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 300, token);
+                var h1 = h1raw as List<IBinanceKline> ?? (h1raw != null ? new List<IBinanceKline>(h1raw) : null);
+                if (h1 != null && h1.Count >= 210)
+                {
+                    int i1 = h1.Count - 2;
+                    double he50 = CalcEmaClose(h1, i1, 50), he200 = CalcEmaClose(h1, i1, 200), hc = (double)h1[i1].ClosePrice;
+                    if (!(he50 > 0 && he200 > 0 && he50 > he200 && hc > he50))
+                    { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [MTF] {symbol} 차단 | 1h EMA정배열 아님 (3중추세정렬 컨플루언스)"); return; }
+                }
+            }
             // ── 3) 15m 진입봉 — KNN·EMA정배열·방어는 15m에서 판단 (단타 타점) ──
             var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 1500, token);
             if (k15 == null || k15.Count < 300) return;
