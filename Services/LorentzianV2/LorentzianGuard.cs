@@ -413,7 +413,8 @@ namespace TradingBot.Services.LorentzianV2
         //    KNN 이 "현재와 닮은 과거 봉들의 *그 시점* 4봉 추세"를 합산하는 jdehorty 설계와 불일치 → 예측 랜덤화 원인)
         //   futureBars 인자명은 호환 유지(=lookback 봉수).
         // [최적화 2026-07-14] 라벨기간 4→8봉 — --knn-optimize 30종 검증: 라벨8이 신호 질 최적(월0.94%→4.08%의 핵심 인자).
-        public static int LabelForBar(List<IBinanceKline> kl, int idx, int futureBars = 8)
+        // [v5.28.5] jdehorty 원본 라벨 룩백 4로 정렬 (기존 8 → TradingView 원본과 동일). src[4]<src[0]?long
+        public static int LabelForBar(List<IBinanceKline> kl, int idx, int futureBars = 4)
         {
             if (idx - futureBars < 0) return 0;
             decimal nowC  = kl[idx].ClosePrice;

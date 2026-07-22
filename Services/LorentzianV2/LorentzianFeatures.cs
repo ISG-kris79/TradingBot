@@ -17,7 +17,9 @@ namespace TradingBot.Services.LorentzianV2
     //     · 정규화 causal 보장 (Pine var 누적 min/max 와 동일, 미래 미사용)
     public static class LorentzianFeatures
     {
-        public const int FeatureCount = 6;   // [2026-07-15] f6 MACD히스토 기울기 추가 (사용자 설계: 다이버전스 정량화)
+        // [v5.28.5] TradingView jdehorty 원본과 동일하게 5특징으로 복원 (f6 MACD기울기 제거).
+        //   사유: 봇이 6특징이라 TradingView 5특징 KNN과 예측이 달라 상승장서 매수신호 누락(07-20 3회 미발화). 원본 정렬.
+        public const int FeatureCount = 5;
 
         public static float[]? Extract(List<IBinanceKline> klines)
         {
@@ -43,12 +45,7 @@ namespace TradingBot.Services.LorentzianV2
             double rsi9 = CalcRSI(klines, 9);
             float f5 = (float)(rsi9 / 100.0);
 
-            // [2026-07-15] f6: MACD 오실레이터(히스토그램) 기울기 — ATR정규화 + Tanh (사용자 설계).
-            //   rawSlope=hist[t]-hist[t-1], tanh(rawSlope/ATR × 2.0) → 0.5*(1+tanh)로 0-1 매핑.
-            //   목적: "가격↓인데 MACD기울기↑"(상승 다이버전스) 패턴을 KNN이 스스로 학습. 1=세력팽창 0=숏 0.5=평탄.
-            float f6 = MacdHistSlope(klines);
-
-            return new[] { Clamp01(f1), Clamp01(f2), Clamp01(f3), Clamp01(f4), Clamp01(f5), Clamp01(f6) };
+            return new[] { Clamp01(f1), Clamp01(f2), Clamp01(f3), Clamp01(f4), Clamp01(f5) };
         }
 
         // MACD(12,26,9) 히스토그램 기울기 → ATR정규화 + Tanh → 0-1 (0.5=평탄, →1=상승가속/세력팽창, →0=하락가속/숏)

@@ -14126,7 +14126,7 @@ internal static class Program
     // --mtf-combo : 지표 조합(2~3개 묶음) 전수탐색 — 손실만 몰린 패턴 발굴. train/test 분할로 과최적화 검증.
     private static async Task RunMtfComboAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; double atrMult = 5.0; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","ARBUSDT","SUIUSDT" };
         Console.WriteLine("=== 지표 조합(2~3묶음) 전수탐색 — 손실 몰린 패턴 발굴 (train/test 검증) ===\n");
@@ -14214,7 +14214,7 @@ internal static class Program
     // --mtf-defense : 승자 vs 패자 전수비교 + 방어필터 병렬탐색. 손실만 걸러지는 지표(Δ수익>0) 발굴.
     private static async Task RunMtfDefenseAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; double atrMult = 5.0; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","ARBUSDT","SUIUSDT" };
         Console.WriteLine("=== 승자 vs 패자 전수비교 + 방어필터 병렬탐색 (손실만 걸러지는 지표 발굴) ===\n");
@@ -14306,7 +14306,7 @@ internal static class Program
     // --mtf-rsi : OP·LINK 제거 + RSI 진입밴드 스윕 (하한~상한). 약세구간 진입 제거로 수익집중 검증.
     private static async Task RunMtfRsiAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; double atrMult = 5.0; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","ARBUSDT","SUIUSDT" };   // OP·LINK 제거
         Console.WriteLine("=== OP·LINK 제거 + RSI 밴드 스윕 (10코인) ===\n");
@@ -14372,7 +14372,7 @@ internal static class Program
     // --mtf-lock : 이익반납 방지 스윕 — 본절이동(+X%→SL진입가) / 수익후 트레일축소. 반납손실 제거 검증.
     private static async Task RunMtfLockAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","ARBUSDT","OPUSDT","SUIUSDT" };
         Console.WriteLine("=== 이익반납 방지 스윕 (본절이동 / 수익후 트레일축소) ===\n");
@@ -14455,7 +14455,7 @@ internal static class Program
     // --mtf-lossstat : 손절 전수 통계 — 모든 손실건을 유형(MFE·MAE·보유·RSI·코인·시간대)별로 분류. 고칠 패턴 발굴.
     private static async Task RunMtfLossStatAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; double atrMult = 5.0; decimal margin = 1000m;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","ARBUSDT","OPUSDT","SUIUSDT" };
         Console.WriteLine("=== MTF 손절 전수 통계 (왜 손절되는가 패턴 발굴) ===\n");
@@ -14534,7 +14534,7 @@ internal static class Program
     // --mtf-stopcap : 손절폭(변동성) 상한 스윕 — 5×ATR이 진입가 X% 넘는 고변동 진입 스킵. 대형손실 제거 검증.
     private static async Task RunMtfStopcapAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; double atrMult = 5.0; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","ARBUSDT","OPUSDT","SUIUSDT" };
         Console.WriteLine("=== 손절폭 상한 스윕 (5ATR/진입가 > cap 스킵) — 대형손실 제거 검증 ===\n");
@@ -14599,7 +14599,7 @@ internal static class Program
     // --mtf-worst : MTF 손실 트레이드 점검 — 큰 손실건의 진입가·손절선(진입−5ATR)·이탈가·최대역행·손실원인 진단.
     private static async Task RunMtfWorstAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; double atrMult = 5.0; decimal margin = 1000m;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","ARBUSDT","OPUSDT","SUIUSDT" };
         Console.WriteLine("=== MTF 손실 트레이드 점검 (진입·손절선·이탈·원인) ===\n");
@@ -14664,7 +14664,7 @@ internal static class Program
     //   4h 상승레짐(EMA50>200·close>EMA50·ADX≥25) + BTC 4h정배열 일 때만, 15m KNN매수+EMA정배열+방어에서 진입. 15m 종가트레일.
     private static async Task RunMtf4h15mAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; double atrMult = 5.0;
         decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","ARBUSDT","OPUSDT","SUIUSDT" };
@@ -14739,7 +14739,7 @@ internal static class Program
     // --mtf-final : ★라이브 v5.27.3 정확재현 월별리포트. 4h방향+15m진입 + OP·LINK제외 + 손절폭상한5% + MACD음전&윗꼬리조합 제외.
     private static async Task RunMtfFinalAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; double atrMult = 5.0;
         decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
         // v5.27.2: OP·LINK 순손실 제외 → 10코인
@@ -14858,10 +14858,43 @@ internal static class Program
         Console.WriteLine("\n  → mtf-final.json 저장. 현재 라이브(v5.27.3)와 동일 로직. 월/일 0원 구간 = BTC 4h 비정배열로 전코인 미진입(설계).");
     }
 
+    // --major17 : ★메이저 4개 07-17부터 4h/1h 정배열 타임라인 — "17일22시부터 상승인데 왜 진입0" 검증. EMA지연이 원인인지.
+    private static async Task RunMajor17Async()
+    {
+        var majors = new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+        var start = new DateTime(2026, 7, 17, 0, 0, 0);
+        Console.WriteLine("=== 메이저 4개: 07-17부터 4h/1h 추세정렬 타임라인 (가격상승 vs 봇의 '정배열' 정의) ===\n");
+        foreach (var sym in majors)
+        {
+            List<IBinanceKline> b4, h1;
+            try { b4 = await FetchKlines4hAsync(sym, 6); h1 = await FetchKlines1hAsync(sym, 8); } catch { Console.WriteLine($"{sym} fail"); continue; }
+            // 4h EMA/ADX
+            int bn = b4.Count; var be200 = new double[bn]; for (int j = 200; j < bn; j++) be200[j] = CalcEMA(b4, j, 200);
+            var be50 = new double[bn]; for (int j = 50; j < bn; j++) be50[j] = CalcEMA(b4, j, 50);
+            var badx = new double[bn]; { double aS = 0, pS = 0, mS = 0; int per = 14; for (int j = 1; j < bn; j++) { double hh = (double)b4[j].HighPrice, ll = (double)b4[j].LowPrice, pc = (double)b4[j - 1].ClosePrice, ph = (double)b4[j - 1].HighPrice, pl = (double)b4[j - 1].LowPrice; double tr = Math.Max(hh - ll, Math.Max(Math.Abs(hh - pc), Math.Abs(ll - pc))); double up = hh - ph, dn = pl - ll; double pdm = (up > dn && up > 0) ? up : 0, mdm = (dn > up && dn > 0) ? dn : 0; if (j <= per) { aS += tr; pS += pdm; mS += mdm; } else { aS = aS - aS / per + tr; pS = pS - pS / per + pdm; mS = mS - mS / per + mdm; } if (j >= per && aS > 0) { double pd = 100 * pS / aS, md = 100 * mS / aS; double dx = (pd + md) > 0 ? 100 * Math.Abs(pd - md) / (pd + md) : 0; badx[j] = j <= per * 2 ? dx : (badx[j - 1] * (per - 1) + dx) / per; } } }
+            int hn = h1.Count; var he50 = new double[hn]; for (int j = 50; j < hn; j++) he50[j] = CalcEMA(h1, j, 50); var he200 = new double[hn]; for (int j = 200; j < hn; j++) he200[j] = CalcEMA(h1, j, 200);
+            Console.WriteLine($"── {sym} ── (4h봉: 시각KST · 종가 · 4h정배열 · ADX  |  1h정배열)");
+            for (int j = 200; j < bn; j++)
+            {
+                var kst = b4[j].OpenTime.AddHours(9); if (kst < start) continue;
+                double c = (double)b4[j].ClosePrice;
+                bool r4 = be50[j] > 0 && be200[j] > 0 && be50[j] > be200[j] && c > be50[j] && badx[j] >= 20.0;
+                // 이 4h봉 시점의 1h 정배열 (가장 가까운 마감 1h)
+                var t4end = b4[j].OpenTime.AddHours(4);
+                int hi = -1; for (int q = hn - 1; q >= 0; q--) { if (h1[q].OpenTime.AddHours(1) <= t4end) { hi = q; break; } }
+                string h1state = "?"; double hgap = 0;
+                if (hi >= 200) { bool r1 = he50[hi] > 0 && he200[hi] > 0 && he50[hi] > he200[hi] && (double)h1[hi].ClosePrice > he50[hi]; hgap = he50[hi] - he200[hi]; h1state = r1 ? "✅" : (he50[hi] <= he200[hi] ? $"❌(50<200,gap{hgap:F2})" : "❌(종가<50)"); }
+                Console.WriteLine($"   {kst:MM-dd HH:mm}  {c,11:F4}  4h:{(r4 ? "✅상승" : "❌")}  ADX{badx[j],3:F0}  |  1h:{h1state}");
+            }
+            Console.WriteLine();
+        }
+        Console.WriteLine("  → 가격은 07-17부터 오르는데 '4h✅' 또는 '1h✅'가 늦게 뜨면 = EMA200 지연으로 봇 '정배열'이 실제 상승보다 며칠 늦음(과필터).");
+    }
+
     // --top50-recent : ★시총 상위 50코인에서 07-16 이후 진입 가능(★진입!)한 게 있었나. 개발로직 그대로, 신선데이터.
     private static async Task RunTop50RecentAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         var universe = new[] {
             "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","TRXUSDT","AVAXUSDT","LINKUSDT",
             "DOTUSDT","LTCUSDT","BCHUSDT","NEARUSDT","UNIUSDT","APTUSDT","ICPUSDT","ETCUSDT","XLMUSDT","ATOMUSDT",
@@ -14927,7 +14960,7 @@ internal static class Program
     // --check-recent : ★최신 신선데이터로 최근 4일(KST) 진입 깔때기 + 4h 추세 타임라인. "어제 상승인데 왜 진입0" 규명. KNN포함. 새 페이지수=강제 fresh fetch.
     private static async Task RunCheckRecentAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","ARBUSDT","SUIUSDT" };
         Console.WriteLine("=== 최근 4일 진입 진단 (신선데이터·KNN포함) — 어제 상승인데 왜 진입0? ===\n");
         var candLines = new List<string>();
@@ -15020,7 +15053,7 @@ internal static class Program
     //   코인별 KNN·지표·HA 1회 프리컴퓨트 → 다변형(트레일 5종 × 1h컨플루언스 × ADX) 재생. 모든 트레이드/월별 저장.
     private static async Task RunOptimize2020Async()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LTCUSDT","BCHUSDT","ETCUSDT","LINKUSDT" };
         Console.WriteLine("=== 2020~현재 옵티마이저 — 흑자월 최대 로직 (훈련2020-23/검증2024-26 분리, KNN+HA) ===\n");
@@ -15140,7 +15173,7 @@ internal static class Program
     // --funnel2026 : ★개발 로직(v5.28.3, KNN포함) 그대로 — 2026 월별 진입 깔때기. 각 관문(4h→1h→KNN+EMA→방어→진입)에서 몇 개가 떨어지나. 진입0월 원인 규명.
     private static async Task RunFunnel2026Async()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","ARBUSDT","SUIUSDT" };
         Console.WriteLine("=== 개발로직(v5.28.3·KNN포함) 2026 월별 진입 깔때기 — 어느 관문에서 0이 되나 (진입0월 원인) ===\n");
         // month -> [evalBars, pass4h, pass1h, passKnnEma, passDef]
@@ -15205,7 +15238,7 @@ internal static class Program
     // --daily-2026 : ★현재 라이브(v5.28.3) 전체 로직 2026 일별 백테. BTC제거+ADX20 + 1h컨플루언스 + 확대트레일4→10. KST(+9h) 일별.
     private static async Task RunDaily2026Async()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","ARBUSDT","SUIUSDT" };
         Console.WriteLine("=== v5.28.3 전체로직 2026 일별 백테 (BTC제거+ADX20 + 1h컨플루언스 + 확대트레일4→10, 마진$1,000×6·1x) ===\n");
@@ -15244,7 +15277,9 @@ internal static class Program
                 while (hp + 1 < hreg.Count && hreg[hp + 1].close <= t15) hp++;
                 if (!(reg[rp].close <= t15 && reg[rp].up)) continue;
                 if (!(hreg[hp].close <= t15 && hreg[hp].up)) continue;   // v5.28.2: 1h EMA정배열 컨플루언스
-                if (!(sg[j] > 0 && e50[j] > 0 && e200[j] > 0 && e50[j] > e200[j] && close[j] > e50[j])) continue;
+                // [--knn-off] KNN veto 제거 옵션 — 트렌드(4h+1h+15m정배열)만으로 진입. 형님: "1h/4h 상승이면 KNN이 막으면 안됨"
+                bool knnOff = Environment.GetCommandLineArgs().Any(a => a.Equals("--knn-off", StringComparison.OrdinalIgnoreCase));
+                if (!((knnOff || sg[j] > 0) && e50[j] > 0 && e200[j] > 0 && e50[j] > e200[j] && close[j] > e50[j])) continue;
                 if (atr[j] <= 0 || k15[j + 1].OpenPrice <= 0) continue;
                 if ((close[j] - e50[j]) / atr[j] >= 2.0 || rsi[j] >= 60.0) continue;
                 if ((5.0 * atr[j]) / close[j] > 0.05) continue;
@@ -15440,7 +15475,7 @@ internal static class Program
     //   질문: "코인 늘리면 진짜 수익 느나?" 진입조건·1x·6슬롯 동일. 5m/레버상향 없음.
     private static async Task RunU30Async()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
         var uni10 = new HashSet<string> { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","ARBUSDT","SUIUSDT" };
         var uni30 = new[] {
@@ -15528,7 +15563,7 @@ internal static class Program
     //   리서치(Chandelier Exit): ATR적응 트레일 > 고정%. "승자 크게"엔 넓게 or 초반타이트→검증후확대(widening)가 핵심.
     private static async Task RunTrailSweepAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","ARBUSDT","SUIUSDT" };
         Console.WriteLine("=== 트레일링스탑 스윕 (v5.28.0 게이트 동일진입, 마진$1,000×6·1x) — 승자 크게 키우는 트레일 찾기 ===\n");
@@ -15667,7 +15702,7 @@ internal static class Program
     // --knn-ab : ★KNN A/B — 동일 게이트/트레일에서 진입KNN을 (A)현행 jdehorty ANN vs (B)클린 유클리드 Top-K 로 바꿔 3년 성적 비교.
     private static async Task RunKnnAbAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; const double atrMult = 5.0; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","ARBUSDT","SUIUSDT" };
         Console.WriteLine("=== KNN A/B: (A)jdehorty ANN vs (B)클린 유클리드Top-K — 동일 v5.28.0게이트+5×트레일 (마진$1,000×6·1x) ===\n");
@@ -15751,7 +15786,7 @@ internal static class Program
     //   walk-forward: 과거 매매만 기억. K최근접 과거사례의 평균손익/승률로 판정. K와 차단임계("포함범위") 스윕.
     private static async Task RunCaseMemAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; const double atrMult = 5.0; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","ARBUSDT","SUIUSDT" };
         Console.WriteLine("=== 사례기억 진입게이트 (실현손익 라벨·K최근접·walk-forward, 마진$1,000×6·1x) ===\n");
@@ -15865,7 +15900,7 @@ internal static class Program
     //   리서치: 추세+모멘텀+거래량 3층이 정석. 각 add-on 단독 + 유망 조합을 baseline대비 총수익·승률·PF·진입수로 비교.
     private static async Task RunConfluenceAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; const double atrMult = 5.0; decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","ARBUSDT","SUIUSDT" };
         Console.WriteLine("=== 진입 컨플루언스 (v5.28.0 게이트 + 지표층, 마진$1,000×6·1x) — 어떤 조합이 수익 올리나 ===\n");
@@ -15976,7 +16011,7 @@ internal static class Program
     // --freq-4h : 거래빈도 정상화 — 30코인 + ADX임계·BTC필터 스윕. 빈도(월평균 진입) vs 흑자월%·수익·MDD 균형점.
     private static async Task RunFreq4hAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; const double atrMult = 5.0;
         decimal margin = 1000m; int slots = 6; decimal capital = margin * slots;   // 진입마진 $1,000×6
         var universe = new[] {
@@ -16049,7 +16084,7 @@ internal static class Program
     // --long-short-4h : 숏 허용 검증 — 하락 추세타기(미러)를 롱과 결합. 롱만/숏만/합산 × 전체 vs 최근2년.
     private static async Task RunLongShort4hAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; const double atrMult = 5.0, adxThr = 30;
         decimal margin = 500m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] {
@@ -16145,7 +16180,7 @@ internal static class Program
     // --regime-4h : BTC 대세필터 강화 스윕 — 하락/횡보장에서 쉬어서 적자월을 무손실로. 전체 vs 최근2년 성과 비교.
     private static async Task RunRegime4hAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; const double atrMult = 5.0, adxThr = 30;
         decimal margin = 500m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] {
@@ -16223,7 +16258,7 @@ internal static class Program
     // --report-final : v5.26.5 최종로직(4h·ADX30·ATR5·EMA50+RSI방어) 월별전체 + 최근3개월 일별. report-final.json 저장.
     private static async Task RunReportFinalAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; const double atrMult = 5.0, adxThr = 30;
         decimal margin = 500m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] {
@@ -16301,7 +16336,7 @@ internal static class Program
     // --tune-4h : 4h 기준 파라미터 재최적화 — ADX임계 × ATR트레일배수 병렬스윕 (방어3종 포함). 흑자월%·수익·MDD 최적점.
     private static async Task RunTune4hAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; decimal margin = 500m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] {
             "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","TRXUSDT","AVAXUSDT","LINKUSDT",
@@ -16373,7 +16408,7 @@ internal static class Program
     //   4h가 추세 깨끗해 흑자월↑·MDD↓ 되는지 검증. 1x 6슬롯.
     private static async Task RunTfCompareAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; const double atrMult = 5.0, adxThr = 20;
         decimal margin = 500m; int slots = 6; decimal capital = margin * slots;
         var universe = new[] {
@@ -16438,7 +16473,7 @@ internal static class Program
     //   손실 원인을 지표로 정량화하고, 그 지표로 손실만 골라 막는 필터를 Parallel.For로 탐색.
     private static async Task RunLossDefenseAsync()
     {
-        const int featureWindow = 500, K = 8, Lh = 8;
+        const int featureWindow = 500, K = 8, Lh = 4;
         const decimal feeRT = 0.0008m; const double atrMult = 4.0, adxThr = 30;   // [v5.26.4] 4h·ADX30·트레일4 기준
         decimal margin = 500m; int slots = 6; decimal capital = margin * slots;
         var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
@@ -23779,6 +23814,11 @@ internal static class Program
         if (HasArg("--top50-recent"))
         {
             await RunTop50RecentAsync();
+            return;
+        }
+        if (HasArg("--major17"))
+        {
+            await RunMajor17Async();
             return;
         }
         if (HasArg("--u30"))

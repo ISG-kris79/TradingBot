@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.28.5] - 2026-07-22
+
+### ♻️ Changed — KNN을 TradingView jdehorty 원본에 정렬 (6→5특징, 라벨 8→4)
+라이브 진단: 07-19~22 BTC가 4h·1h 상승추세 3일 유지인데 15m KNN이 매수신호를 안 줘 진입0. 원인 = 봇 KNN이 TradingView 원본과 다름:
+- **특징 6→5개**: 커스텀 f6(MACD히스토 기울기, 2026-07-15 추가) 제거 → jdehorty 정통 5특징(RSI14·WT·CCI·ADX·RSI9). TradingView 차트가 "Feature Count=5"라 봇 6특징은 이웃선택이 달라 상승장서 매수 누락.
+- **라벨 룩백 8→4**: `LabelForBar` 기본 8 → jdehorty 원본 4 (src[4]<src[0]?long).
+- Live/Validator LorentzianFeatures 1:1 동기화 + validator Lh 4 정렬.
+
 ## [5.28.4] - 2026-07-22
 
 ### 🐛 Fixed — ActivePosition 유령 포지션 주기 셀프힐 (60초)

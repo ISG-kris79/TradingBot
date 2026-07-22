@@ -5243,7 +5243,8 @@ namespace TradingBot
                 }
             }
             // ── 3) 15m 진입봉 — KNN·EMA정배열·방어는 15m에서 판단 (단타 타점) ──
-            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 1500, token);
+            //   [v5.28.5] 1500→2500 — KNN maxBarsBack 2000 을 꽉 채우도록(TradingView 원본 정렬). 1500은 학습샘플 부족으로 상승장 매수 누락 요인.
+            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 2500, token);
             if (k15 == null || k15.Count < 300) return;
             var k15List = k15 as List<IBinanceKline> ?? new List<IBinanceKline>(k15);
 

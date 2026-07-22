@@ -9,7 +9,8 @@ namespace TradingBot.Services.LorentzianV2
     //   f1 n_rsi(14) f2 n_wt(10,11) f3 n_cci(20) f4 n_adx(14) f5 n_rsi(9) f6 MACD히스토 기울기(ATR정규화+Tanh)
     public static class LorentzianFeatures
     {
-        public const int FeatureCount = 6;   // [2026-07-15] f6 MACD히스토 기울기 추가 (사용자 설계: 다이버전스 정량화)
+        // [v5.28.5] TradingView jdehorty 원본과 동일 5특징 복원 (f6 제거) — 라이브와 1:1.
+        public const int FeatureCount = 5;
 
         public static float[]? Extract(List<IBinanceKline> klines)
         {
@@ -30,10 +31,7 @@ namespace TradingBot.Services.LorentzianV2
             double rsi9 = CalcRSI(klines, 9);
             float f5 = (float)(rsi9 / 100.0);
 
-            // [2026-07-15] f6: MACD 히스토그램 기울기 — ATR정규화 + Tanh (다이버전스 정량화).
-            float f6 = MacdHistSlope(klines);
-
-            return new[] { Clamp01(f1), Clamp01(f2), Clamp01(f3), Clamp01(f4), Clamp01(f5), Clamp01(f6) };
+            return new[] { Clamp01(f1), Clamp01(f2), Clamp01(f3), Clamp01(f4), Clamp01(f5) };
         }
 
         // MACD(12,26,9) 히스토그램 기울기 → ATR정규화 + Tanh → 0-1 (0.5=평탄, →1=상승가속/세력팽창, →0=하락가속/숏)
