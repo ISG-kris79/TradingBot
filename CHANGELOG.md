@@ -5,6 +5,13 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.28.4] - 2026-07-22
+
+### 🐛 Fixed — ActivePosition 유령 포지션 주기 셀프힐 (60초)
+라이브 진단 중 ActivePosition 레지스트리에 거래소 실잔량 없는 유령 행(ZECUSDT qty0, 07-15 stale) 발견. 원인: 셀프힐(`SyncActivePositionsWithExchangeAsync`)이 `ReconcileDbWithExchangePositionsAsync` 안에 있고 "DB 오픈트레이드 0개면 early return"이라 TradeHistory가 깨끗하면 유령 정리를 건너뜀.
+- `TradingEngine` 60초 주기 스윕에 **독립 유령 셀프힐** 추가 — 오픈트레이드 유무와 무관하게 거래소 실잔량과 대조, 거래소에 없는 stale ActivePosition 행 삭제. 거래소 조회 실패 시 오판 방지 스킵. 제거 시 `🧹 [유령정리]` 로그.
+- 진단 툴 신설: `--check-recent`(최근 진입 깔때기·신선데이터), `--top50-recent`(시총50 진입가능 스캔), `--regime-now`, `--funnel2026`.
+
 ## [5.28.3] - 2026-07-19
 
 ### ✨ Added — 메인 대시보드 카드형 리디자인

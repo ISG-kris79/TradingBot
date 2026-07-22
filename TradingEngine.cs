@@ -1773,6 +1773,7 @@ namespace TradingBot
         private DateTime _lastPositionSyncTime = DateTime.MinValue; // [FIX] 마지막 포지션 동기화 시간
         private DateTime _lastProtectionCheckTime = DateTime.MinValue; // [v5.10.62] 활성 포지션 SL 없으면 자동 등록
         private DateTime _lastOrphanCleanupTime = DateTime.MinValue;   // [v5.25.13] 청산 후 고아 조건부주문(STOP_MARKET 등) 주기 스윕
+        private DateTime _lastPhantomCheckTime = DateTime.MinValue;    // [v5.28.4] ActivePosition 유령(거래소에 없는 stale 행) 주기 셀프힐
         private DateTime _lastSuccessfulEntryTime = DateTime.MinValue; // [드라이스펠] 마지막 진입 성공 시각
         private DateTime _lastDroughtScanTime = DateTime.MinValue;     // [드라이스펠] 마지막 진단 스캔 시각
         private static readonly TimeSpan DroughtScanThreshold = TimeSpan.FromMinutes(30);  // 30분 진입 없으면 진단
@@ -3774,6 +3775,35 @@ namespace TradingBot
                             {
                                 try { await CleanupOrphanAlgoOrdersAsync(allSymbols: true, reason: "periodic"); }
                                 catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [고아정리] 예외: {ex.Message}"); }
+                            }, token);
+                        }
+
+                        // [v5.28.4] ★유령 포지션 주기 셀프힐 (60초) — ActivePosition 레지스트리를 거래소 실잔량에 무조건 수렴.
+                        //   기존 셀프힐(SyncActivePositionsWithExchangeAsync)은 ReconcileDb 안에 있고 "DB 오픈트레이드 0개면 early return"이라
+                        //   TradeHistory가 깨끗하면 유령(예: qty0 stale 행)이 잔존 → 여기서 오픈트레이드 유무와 무관하게 독립 실행.
+                        //   거래소 조회 실패(null) 시엔 오판 방지 위해 스킵. 삭제/복원은 SyncActivePositionsWithExchangeAsync 가 담당.
+                        if ((DateTime.Now - _lastPhantomCheckTime).TotalSeconds >= 60)
+                        {
+                            _lastPhantomCheckTime = DateTime.Now;
+                            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    int uid = AppConfig.CurrentUser?.Id ?? 0;
+                                    if (uid <= 0) return;
+                                    var before = await _dbManager.GetActivePositionSymbolsAsync(uid);
+                                    if (before.Count == 0) return;   // 레지스트리 비었으면 점검 불필요
+                                    var live = await _exchangeService.GetPositionsAsync(token);
+                                    if (live == null) return;         // 거래소 조회 실패 → 오판 방지, 이번 회차 스킵
+                                    await _dbManager.SyncActivePositionsWithExchangeAsync(uid,
+                                        live.Where(p => !string.IsNullOrEmpty(p.Symbol) && Math.Abs(p.Quantity) > 0m)
+                                            .Select(p => (p.Symbol, p.IsLong ? "LONG" : "SHORT", p.EntryPrice, p.Quantity, (int)p.Leverage)));
+                                    var after = await _dbManager.GetActivePositionSymbolsAsync(uid);
+                                    var removed = before.Except(after, StringComparer.OrdinalIgnoreCase).ToList();
+                                    if (removed.Count > 0)
+                                        OnStatusLog?.Invoke($"🧹 [유령정리] ActivePosition 유령 {removed.Count}개 제거(거래소 실잔량 없음): {string.Join(", ", removed)}");
+                                }
+                                catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [유령정리] 예외: {ex.Message}"); }
                             }, token);
                         }
 
