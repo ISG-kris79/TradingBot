@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.28.6] - 2026-07-23
+
+### ♻️ Changed — 4h/1h 방향게이트를 후행 EMA에서 빠른 캔들·기울기로 교체 (사용자 지시)
+EMA 골든크로스(EMA50>EMA200)는 EMA200 지연(수주)으로 상승 초반을 놓쳐, 07-19~22 BTC가 4h·1h 상승인데도 게이트에서 막힘. 후행 제거:
+- **4h 방향**: EMA50>200·종가>EMA50·ADX≥20 → **마지막 마감 4h봉이 양봉(종가>시가)**.
+- **1h 방향**: EMA50>200·종가>EMA50 정배열 → **1h EMA20 기울기 상승**(EMA20[마감] > EMA20[3봉전]).
+- 15m KNN·EMA정배열·방어·확대트레일은 그대로. ⚠️게이트 대폭 완화 = 진입 급증 예상, 라이브 품질 관찰 필요.
+
 ## [5.28.5] - 2026-07-22
 
 ### ♻️ Changed — KNN을 TradingView jdehorty 원본에 정렬 (6→5특징, 라벨 8→4)

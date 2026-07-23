@@ -5215,31 +5215,28 @@ namespace TradingBot
 
             // [v5.27.0] ★MTF 전환 — 4h/BTC로 방향(상승) 판단 + 15m로 진입(단타 기본). 4h=방향(장타 맥락), 15m=KNN·진입·방어.
             //   백테(--mtf-4h15m, 최근15개월): 진입 6→32건/월, 흑자월 58→67%, MDD 27→6%, "월0" 기간 대부분 흑자로.
-            // ── 1) 4h 방향 게이트: 상승레짐(EMA50>200 · 종가>EMA50 · ADX(4h)≥25)일 때만 ──
+            // ── 1) 4h 방향 게이트 [v5.28.6 사용자 지시] — EMA골든크로스(후행) 폐기 → 마지막 마감 4h봉이 양봉(종가>시가)일 때만 ──
+            //   사유: EMA50>200 골든크로스는 EMA200 지연(수주)으로 상승 초반을 놓침. 전봉 양봉 = 빠른 4h 방향확인.
             var b4raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FourHour, 300, token);
             var b4 = b4raw as List<IBinanceKline> ?? (b4raw != null ? new List<IBinanceKline>(b4raw) : null);
             if (b4 == null || b4.Count < 210) return;
             {
-                int i4 = b4.Count - 2;
-                double e50a = CalcEmaClose(b4, i4, 50), e200a = CalcEmaClose(b4, i4, 200), adx4 = LorentzianGuard.CalcADX(b4, i4, 14), c4 = (double)b4[i4].ClosePrice;
-                // [v5.28.0] 코인 4h ADX 25→20 — 진입 빈도↑ (백테 --mtf-final --adx20).
-                if (!(e50a > 0 && e200a > 0 && e50a > e200a && c4 > e50a && adx4 >= 20.0))
-                { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [MTF] {symbol} 차단 | 4h 상승레짐 아님 (방향게이트: EMA50>200·종가>EMA50·ADX≥20)"); return; }
+                int i4 = b4.Count - 2;   // 마지막 마감 4h봉
+                double o4 = (double)b4[i4].OpenPrice, c4 = (double)b4[i4].ClosePrice;
+                if (!(c4 > o4))
+                { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [MTF] {symbol} 차단 | 4h 전봉 음봉 (방향게이트: 마지막 마감 4h봉 양봉 아님)"); return; }
             }
-            // [v5.28.0] ★BTC 4h 완전정배열 게이트 제거 — "며칠째 진입 0"의 주범. BTC가 정배열 아니면 상승중 알트까지 전부 차단했음.
-            //   백테 --mtf-final --nobtc --adx20: 진입 1211→1827(+51%)·0원달 13→5·MDD 15%동일·수익 −2%($4587→$4492).
-            //   코인 자체 4h 추세(EMA50>200·종가>EMA50·ADX≥20)가 이미 방향필터라 BTC 이중게이트는 과필터. 남는 0원 5달은 전면 하락장(정상 회피).
-            // ── 2) 1h EMA 정배열 컨플루언스 (4h→1h→15m 3중 추세정렬) ──
-            //   [v5.28.2] 백테 --confluence: +1h EMA정배열이 유일하게 총수익↑($4492→$5129,+14%)·PF 1.20→1.27·MDD 23→19%·진입 85%유지.
+            // ── 2) 1h 방향 게이트 [v5.28.6 사용자 지시] — EMA정배열(후행) 폐기 → 1h EMA20 기울기 상승일 때만 ──
+            //   상승/하락 기울기 = EMA20[마지막마감] > EMA20[3봉전]. 골든크로스 지연 없이 1h 추세 방향만 빠르게 확인.
             {
                 var h1raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 300, token);
                 var h1 = h1raw as List<IBinanceKline> ?? (h1raw != null ? new List<IBinanceKline>(h1raw) : null);
                 if (h1 != null && h1.Count >= 210)
                 {
                     int i1 = h1.Count - 2;
-                    double he50 = CalcEmaClose(h1, i1, 50), he200 = CalcEmaClose(h1, i1, 200), hc = (double)h1[i1].ClosePrice;
-                    if (!(he50 > 0 && he200 > 0 && he50 > he200 && hc > he50))
-                    { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [MTF] {symbol} 차단 | 1h EMA정배열 아님 (3중추세정렬 컨플루언스)"); return; }
+                    double he20now = CalcEmaClose(h1, i1, 20), he20prev = CalcEmaClose(h1, i1 - 3, 20);
+                    if (!(he20now > 0 && he20prev > 0 && he20now > he20prev))
+                    { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [MTF] {symbol} 차단 | 1h 하락 기울기 (방향게이트: EMA20 기울기 상승 아님)"); return; }
                 }
             }
             // ── 3) 15m 진입봉 — KNN·EMA정배열·방어는 15m에서 판단 (단타 타점) ──
