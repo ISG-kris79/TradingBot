@@ -1292,11 +1292,12 @@ namespace TradingBot.Services
                     //   하방 방어는 넓은 초기SL(진입−5ATR) + ATR close-only 스톱이 담당. 8봉시간정지·EMA20컷·반전캔들·RSI2 스킵.
                     if (isTrendRide)
                     {
-                        // [v5.27.0] 실시간 반전익절 (수익 구간) — 1h/15m 긴꼬리음봉 상단거부 시 익절. 트레일보다 먼저 체크.
-                        if (await TryTrendRideReversalTPAsync(symbol, currentROE, token)) break;
-                        // [v5.26.0] peak−5×ATR ★종가기준★ 트레일 (승자 수익잠금). 서버 STOP_MARKET(진입−5ATR)은 안전망.
-                        //   백테 검증: 종가기준(1h 마감봉 종가가 최고종가−5ATR 아래일 때만 청산, 꼬리 무시) = 65%흑자·+50%.
-                        //   틱기준(장중저가)은 꼬리에 털려 −22% → 반드시 마감봉 종가로만 판정. 90초마다 1h 마감봉 확인.
+                        // [v5.29.0] ★반전익절 비활성화 — ROE≥15%(5배=3%수익)에서 발동해 12×ATR 트레일 작동 전 승자를 잘라
+                        //   넓은트레일 전략을 무력화(백테는 순수 트레일). "타이트손절로 승자자름"이 손실 근원 → 순수 트레일만.
+                        // if (await TryTrendRideReversalTPAsync(symbol, currentROE, token)) break;
+                        // [v5.29.0] peak−12×ATR ★종가기준★ 고정 트레일 (--levfinal 확정: +141%/4.7년·38%승률·PF1.35·5배생존).
+                        //   서버 STOP_MARKET(진입−12ATR)은 재난안전망. 종가기준(15m 마감종가가 최고종가−12ATR 아래일 때만 청산, 꼬리무시).
+                        //   틱기준(장중저가)은 꼬리에 털려 손실 → 반드시 마감봉 종가로만 판정. 90초마다 15m 마감봉 확인.
                         if (DateTime.Now >= trendRideAtrNext)
                         {
                             trendRideAtrNext = DateTime.Now.AddSeconds(90);
@@ -1306,15 +1307,16 @@ namespace TradingBot.Services
                                 trendRideAtr1h = atr1h;
                                 if (trendRideEntryAtr <= 0) trendRideEntryAtr = atr1h;   // 진입시점 ATR 첫 관측 캡처
                                 if ((double)lastClose > trendRidePeakClose) trendRidePeakClose = (double)lastClose;
-                                // [v5.28.1] ★확대 트레일 4→10 (--trail-sweep: 확대4→10 = 수익+83%·PF1.32·MDD 21→18%개선).
-                                //   초반 4×ATR로 손실 짧게 → 이익이 진입ATR 3배 넘으면(검증된 승자) 10×로 넓혀 끝까지 태움.
+                                // [v5.29.0] ★고정 12×ATR 트레일 (--megasearch/--levfinal 확정 — 4.7년·20코인).
+                                //   확대4→10(초반 타이트)은 승률24%로 stop-out 과다 → 고정12(항상 넓게)가 승률38%·수익+141%로 우위.
+                                //   BB중심상+ADX25 진입필터와 결합 시 계좌낙폭 17%(1x), 5배에서 계좌 6천→4.8만(연56%복리) 생존.
                                 double profAtr = trendRideEntryAtr > 0 ? (trendRidePeakClose - (double)entryPrice) / trendRideEntryAtr : 0;
-                                double trailMult = profAtr < 3.0 ? 4.0 : 10.0;
+                                const double trailMult = 12.0;
                                 double trailStop = trendRidePeakClose - trailMult * atr1h;
                                 if ((double)lastClose <= trailStop)
                                 {
-                                    OnLog?.Invoke($"📉 {symbol} 트렌드라이드 확대트레일({trailMult:F0}×ATR) 청산 | 최고종가={trendRidePeakClose:F4} 트레일={trailStop:F4} 마감종가={lastClose:F4} 이익{profAtr:F1}ATR (ROE {currentROE:F1}%)");
-                                    await ExecuteMarketClose(symbol, $"트렌드라이드 확대트레일 {trailMult:F0}ATR (peak {trendRidePeakClose:F4})", token);
+                                    OnLog?.Invoke($"📉 {symbol} 트렌드라이드 고정트레일(12×ATR) 청산 | 최고종가={trendRidePeakClose:F4} 트레일={trailStop:F4} 마감종가={lastClose:F4} 이익{profAtr:F1}ATR (ROE {currentROE:F1}%)");
+                                    await ExecuteMarketClose(symbol, $"트렌드라이드 고정트레일 12ATR (peak {trendRidePeakClose:F4})", token);
                                     break;
                                 }
                             }

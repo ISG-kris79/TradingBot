@@ -5234,9 +5234,10 @@ namespace TradingBot
                 if (h1 != null && h1.Count >= 210)
                 {
                     int i1 = h1.Count - 2;
-                    double he20now = CalcEmaClose(h1, i1, 20), he20prev = CalcEmaClose(h1, i1 - 3, 20);
+                    // [v5.28.7] 기울기를 6봉(4~8 범위)으로 측정 — 3봉은 노이즈. EMA20[마감] > EMA20[6봉전]
+                    double he20now = CalcEmaClose(h1, i1, 20), he20prev = CalcEmaClose(h1, i1 - 6, 20);
                     if (!(he20now > 0 && he20prev > 0 && he20now > he20prev))
-                    { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [MTF] {symbol} 차단 | 1h 하락 기울기 (방향게이트: EMA20 기울기 상승 아님)"); return; }
+                    { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [MTF] {symbol} 차단 | 1h 하락 기울기 (방향게이트: EMA20 6봉 기울기 상승 아님)"); return; }
                 }
             }
             // ── 3) 15m 진입봉 — KNN·EMA정배열·방어는 15m에서 판단 (단타 타점) ──
@@ -5322,7 +5323,18 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | EMA정배열 아님 (close={c1h:F4} ema50={ema50v:F4} ema200={ema200v:F4})");
                 return;
             }
-            // [v5.27.0] ADX는 4h 방향게이트(ADX≥25)에서 담당 — 15m 진입은 ADX 없이 (백테 --mtf-4h15m 기준).
+            // [v5.29.0] ★발굴필터 2종 추가 (--megasearch/--levfinal, 4.7년·20코인 KNN+BB+ADX 병렬탐색 확정).
+            //   BB중심상(15m 종가>SMA20) + ADX(15m,14)≥25 = MDD 47→17%(계좌기준)로 급감시켜 5배 생존을 가능케 한 레버.
+            //   결과: 고정12트레일 결합 시 +141%/4.7년·승률38%·PF1.35, 5배 계좌 6천→4.8만(연56%복리·낙폭69% 생존).
+            {
+                // BB중심선 = SMA20. 종가가 기준선 위 = 상승 골격 (아래면 약세 되돌림 진입 배제).
+                double sma20v = 0; for (int q = evalIdx - 19; q <= evalIdx; q++) sma20v += (double)k15List[q].ClosePrice; sma20v /= 20.0;
+                if (!(c1h > sma20v))
+                { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | BB중심선 아래 (종가={c1h:F4} < SMA20={sma20v:F4})"); return; }
+                double adx15v = LorentzianGuard.CalcADX(k15List, evalIdx, 14);
+                if (!(adx15v >= 25.0))
+                { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [TREND_RIDE] {symbol} 차단 | ADX<25 약추세 (adx15={adx15v:F1}, 강추세 질선별)"); return; }
+            }
 
             // [v5.26.5] ★손실 방어 (4h 재분석 --loss-defense) — 4h에선 거래량·윗꼬리 방어가 승자를 잘라 해로움 → 제거.
             //   유효 방어 2종만: ①EMA50 위 2×ATR 이상 과확장(고점매수 방어) ②RSI14≥60 과매수 회피. (백테: 흑자월 58%·월평균 7.1→8.4%)
@@ -5369,9 +5381,11 @@ namespace TradingBot
                 return;
             }
             double atr1hV = LorentzianGuard.CalcATR(k15List, evalIdx, 14);   // 15m ATR
-            decimal atrStopPx = atr1hV > 0 ? currentPrice - (decimal)(5.0 * atr1hV) : 0m;
+            // [v5.29.0] 초기 SL 5→12×ATR — 발굴 '고정12' 트레일과 일치. 서버 STOP은 재난안전망(꼬리털림 방지),
+            //   실제 청산은 모니터의 15m 마감종가 기준 peak−12×ATR 트레일이 담당. 진입필터가 5×ATR>5% 고변동은 이미 배제.
+            decimal atrStopPx = atr1hV > 0 ? currentPrice - (decimal)(12.0 * atr1hV) : 0m;
             _lorentzianCooldown[symbol] = DateTime.UtcNow;
-            OnStatusLog?.Invoke($"✅ [MTF_TRENDRIDE] {symbol} 진입 | 4h상승 · 15m KNN={guard.KnnPrediction} · EMA정배열 | 초기SL=진입−5ATR15({atrStopPx:F4})");
+            OnStatusLog?.Invoke($"✅ [MTF_TRENDRIDE] {symbol} 진입 | 4h상승 · 15m KNN={guard.KnnPrediction} · EMA정배열 · BB중심상 · ADX≥25 | 초기SL=진입−12ATR15({atrStopPx:F4})");
             //   signalSource="LORENTZIAN_TRENDRIDE": "LORENTZIAN" 포함 → isLcc 라우팅(온체인 부분익절 OFF) 유지 +
             //   "TRENDRIDE" 태그 → 모니터가 조기컷(8봉/EMA20/반전캔들)·부분익절 제외하고 넓은 트레일로 태움.
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
