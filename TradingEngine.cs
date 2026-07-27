@@ -4726,6 +4726,8 @@ namespace TradingBot
                     //   폐기(호출제거, 메서드는 보존): AnalyzeMeanRevEntryAsync / AnalyzeRsi2ReversalEntryAsync — 넓은트레일 구조와 충돌.
                     //   사유: 역추세 눌림/타이트손절 전부 백테 적자(PF<1). 롱전용 추세타기+승자홀딩만 흑자.
                     await AnalyzeLorentzianEntryAsync(symbol, currentPrice, token);
+                    // [v5.30.0] 5분봉 롱 스캘프 카나리 병행 (발굴 5m 레시피 롱side). 중복진입은 IsEntryAllowed+1코인1포지션 DB가 차단.
+                    await AnalyzeScalp5mEntryAsync(symbol, currentPrice, token);
                 }
                 catch (Exception ex)
                 {
@@ -5002,6 +5004,13 @@ namespace TradingBot
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lorentzianLast15mTrained
             = new(StringComparer.OrdinalIgnoreCase);
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lorentzianCooldown
+            = new(StringComparer.OrdinalIgnoreCase);
+        // [v5.30.0] 5분봉 롱 스캘프 카나리 — 7라운드 자율탐색 발굴레시피(Ichimoku+CCI+거래량폭발+KNN+BB+MACD+RSI). 별도 5m KNN 엔진.
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, LorentzianAnnEngine> _scalp5mEngines
+            = new(StringComparer.OrdinalIgnoreCase);
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _scalp5mLastTrained
+            = new(StringComparer.OrdinalIgnoreCase);
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _scalp5mCooldown
             = new(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan LorentzianCooldown = TimeSpan.FromMinutes(15);
         // [v5.25.11] 손절 후 재진입 쿨다운 — 같은 종목 손실 청산 시 재진입 금지(연속손실 시 가중, 승리 시 리셋).
@@ -5390,6 +5399,87 @@ namespace TradingBot
             //   "TRENDRIDE" 태그 → 모니터가 조기컷(8봉/EMA20/반전캔들)·부분익절 제외하고 넓은 트레일로 태움.
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
                 signalSource: "LORENTZIAN_TRENDRIDE", customStopLossPrice: atrStopPx > 0 ? atrStopPx : 0m);
+        }
+
+        // [v5.30.0] ★5분봉 롱 스캘프 카나리 — 7라운드 자율탐색 발굴레시피(롱 side). 기존 15m 롱과 병행(중복은 IsEntryAllowed+1코인1포지션 DB로 차단).
+        //   레시피: 4h상승레짐 + 5m EMA정배열 + RSI40-65 + MACD히스>0 + BB하단반등존 + Ichimoku구름위 + CCI>0 + 거래량폭발(≥1.5×) + KNN매수 + 과확장/손절폭 방어.
+        //   청산: signalSource에 "TRENDRIDE" 포함 → 모니터 12×ATR 넓은 트레일 공유. 롱전용(숏은 phase2). 백테전용 검증 → 소액 카나리로 라이브 대조.
+        private async Task AnalyzeScalp5mEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            if (!IsEntryAllowed(symbol, "LORENTZIAN", out _)) return;
+            if (_scalp5mCooldown.TryGetValue(symbol, out var lastE) && DateTime.UtcNow - lastE < TimeSpan.FromMinutes(20)) return;
+            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var exi) && exi != null && Math.Abs(exi.Quantity) > 0) return; }
+
+            // 1) 4h 상승 레짐: EMA50>EMA200 · 종가>EMA50 · ADX≥20
+            var b4raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FourHour, 300, token);
+            var b4 = b4raw as List<IBinanceKline> ?? (b4raw != null ? new List<IBinanceKline>(b4raw) : null);
+            if (b4 == null || b4.Count < 210) return;
+            {
+                int i4 = b4.Count - 2;
+                double e50 = CalcEmaClose(b4, i4, 50), e200 = CalcEmaClose(b4, i4, 200), c4 = (double)b4[i4].ClosePrice;
+                double adx4 = LorentzianGuard.CalcADX(b4, i4, 14);
+                if (!(e50 > 0 && e200 > 0 && e50 > e200 && c4 > e50 && adx4 >= 20))
+                { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M] {symbol} 차단 | 4h 상승레짐 아님"); return; }
+            }
+
+            // 2) 5분봉 로드 + 전용 KNN 학습(walk-forward)
+            var k5raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 2500, token);
+            if (k5raw == null) return;
+            var k5 = k5raw as List<IBinanceKline> ?? new List<IBinanceKline>(k5raw);
+            if (k5.Count < 300) return;
+            var engine = _scalp5mEngines.GetOrAdd(symbol, s => new LorentzianAnnEngine(s, neighborsCount: 8, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount));
+            var lastClosed = k5[^2];
+            if (!_scalp5mLastTrained.TryGetValue(symbol, out var pt) || pt != lastClosed.OpenTime)
+            {
+                _scalp5mLastTrained[symbol] = lastClosed.OpenTime;
+                if (engine.SampleCount < 200)
+                { for (int j = 60; j <= k5.Count - 6; j++) { int ws = Math.Max(0, j - 499); var win = k5.GetRange(ws, j - ws + 1); var f = LorentzianFeatures.Extract(win); if (f == null) continue; engine.AddSample(f, LorentzianGuard.LabelForBar(k5, j)); } }
+                else { int sIdx = k5.Count - 6; if (sIdx >= 60) { int ws = Math.Max(0, sIdx - 499); var win = k5.GetRange(ws, sIdx - ws + 1); var f = LorentzianFeatures.Extract(win); if (f != null) engine.AddSample(f, LorentzianGuard.LabelForBar(k5, sIdx)); } }
+            }
+
+            int ei = k5.Count - 2; int wStart = Math.Max(0, ei - 499);
+            var winE = k5.GetRange(wStart, ei - wStart + 1);
+            var guard = LorentzianGuard.EvaluateEntry(winE, engine);
+            if (guard.KnnPrediction <= 0) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M] {symbol} 차단 | KNN 매수신호 아님"); return; }
+
+            double c = (double)k5[ei].ClosePrice;
+            double ema50 = CalcEmaClose(k5, ei, 50), ema200 = CalcEmaClose(k5, ei, 200);
+            if (!(ema50 > 0 && ema200 > 0 && ema50 > ema200 && c > ema50)) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M] {symbol} 차단 | 5m EMA정배열 아님"); return; }
+            double atr = LorentzianGuard.CalcATR(k5, ei, 14);
+            if (atr <= 0) return;
+            double rsi = CalcRsiClose(k5, ei, 14);
+            if (!(rsi >= 40 && rsi <= 65)) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M] {symbol} 차단 | RSI밖({rsi:F0})"); return; }
+            // MACD(12,26,9) 히스토>0
+            { double e12 = 0, e26 = 0, s9 = 0; const double k12 = 2.0 / 13, k26 = 2.0 / 27, k9 = 2.0 / 10; double hist = 0;
+              for (int q = 0; q <= ei; q++) { double cc = (double)k5[q].ClosePrice; if (q == 0) { e12 = cc; e26 = cc; } else { e12 = cc * k12 + e12 * (1 - k12); e26 = cc * k26 + e26 * (1 - k26); } double mc = e12 - e26; s9 = (q == 0) ? mc : mc * k9 + s9 * (1 - k9); hist = mc - s9; }
+              if (!(hist > 0)) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M] {symbol} 차단 | MACD히스≤0"); return; } }
+            // BB(20,2) 하단반등존
+            double sma = 0; for (int q = ei - 19; q <= ei; q++) sma += (double)k5[q].ClosePrice; sma /= 20;
+            double var2 = 0; for (int q = ei - 19; q <= ei; q++) { double cc = (double)k5[q].ClosePrice; var2 += (cc - sma) * (cc - sma); }
+            double sd = Math.Sqrt(var2 / 20), up2 = sma + 2 * sd, lo2 = sma - 2 * sd;
+            if (!(c > lo2 + 0.25 * (up2 - lo2))) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M] {symbol} 차단 | BB하단반등존 아님"); return; }
+            // Ichimoku 구름 위 (26봉전 senkouA/B)
+            double HH(int m, int w) { double v = (double)k5[m].HighPrice; for (int q = m - 1; q > m - w && q >= 0; q--) { double h = (double)k5[q].HighPrice; if (h > v) v = h; } return v; }
+            double LL(int m, int w) { double v = (double)k5[m].LowPrice; for (int q = m - 1; q > m - w && q >= 0; q--) { double l = (double)k5[q].LowPrice; if (l < v) v = l; } return v; }
+            int mIchi = ei - 26;
+            if (mIchi >= 52) { double tenkan = (HH(mIchi, 9) + LL(mIchi, 9)) / 2, kijun = (HH(mIchi, 26) + LL(mIchi, 26)) / 2; double senA = (tenkan + kijun) / 2, senB = (HH(mIchi, 52) + LL(mIchi, 52)) / 2; if (!(c > Math.Max(senA, senB))) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M] {symbol} 차단 | Ichimoku 구름 아래"); return; } }
+            // CCI(20)>0
+            double tpsum = 0; for (int q = ei - 19; q <= ei; q++) tpsum += ((double)k5[q].HighPrice + (double)k5[q].LowPrice + (double)k5[q].ClosePrice) / 3; double tpsma = tpsum / 20;
+            double mdev = 0; for (int q = ei - 19; q <= ei; q++) mdev += Math.Abs(((double)k5[q].HighPrice + (double)k5[q].LowPrice + (double)k5[q].ClosePrice) / 3 - tpsma); mdev /= 20;
+            double tpn = ((double)k5[ei].HighPrice + (double)k5[ei].LowPrice + (double)k5[ei].ClosePrice) / 3;
+            if (!(mdev > 0 && (tpn - tpsma) / (0.015 * mdev) > 0)) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M] {symbol} 차단 | CCI≤0"); return; }
+            // 거래량 폭발 ≥1.5×20평균
+            double vsum = 0; for (int q = ei - 19; q <= ei; q++) vsum += (double)k5[q].Volume; double vavg = vsum / 20;
+            if (!(vavg > 0 && (double)k5[ei].Volume / vavg >= 1.5)) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M] {symbol} 차단 | 거래량폭발 아님"); return; }
+            // 과확장/손절폭 방어
+            if ((c - ema50) / atr >= 2.0) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M] {symbol} 차단 | EMA50 과확장"); return; }
+            if ((5.0 * atr) / c > 0.05) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M] {symbol} 차단 | 손절폭 과대"); return; }
+            if (Math.Abs((currentPrice - (decimal)c) / (decimal)c) > 0.01m) return;   // 급변 스킵
+
+            decimal atrStopPx = currentPrice - (decimal)(12.0 * atr);
+            _scalp5mCooldown[symbol] = DateTime.UtcNow;
+            OnStatusLog?.Invoke($"✅ [SCALP5M] {symbol} 진입 | 4h상승·5m KNN={guard.KnnPrediction}·Ichimoku·CCI·거래량폭발·BB반등존 | SL=진입−12ATR5({atrStopPx:F6})");
+            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "LORENTZIAN_SCALP5M_TRENDRIDE", customStopLossPrice: atrStopPx > 0 ? atrStopPx : 0m);
         }
 
         // [v5.23.97] RSI2 과매도 반등 전략 — 3년·119코인 OOS 검증(승률 66%, 기대 +0.103%/건, 과최적화 아님).

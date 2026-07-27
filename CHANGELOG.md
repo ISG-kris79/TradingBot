@@ -5,6 +5,15 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.30.0] - 2026-07-27
+
+### 🧪 Added — 5분봉 롱 스캘프 카나리 (7라운드 자율탐색 발굴레시피, 롱side)
+백테 대탐색(--scalp-search5m/allgreen, 5m·40코인·3.4년)에서 발굴한 5분봉 승리레시피의 **롱 슬리브**를 라이브에 카나리로 추가. 기존 15분봉 롱(TRENDRIDE)과 **병행**하며 중복진입은 IsEntryAllowed + 1코인1포지션 DB 레지스트리가 차단.
+- **`AnalyzeScalp5mEntryAsync`** (전용 5m KNN 엔진 `_scalp5mEngines`): 4h상승레짐 + 5m EMA정배열 + RSI40-65 + MACD히스>0 + BB하단반등존 + Ichimoku구름위 + CCI>0 + 거래량폭발(≥1.5×) + KNN매수 + EMA50 과확장(≥2ATR)·손절폭(5×ATR>5%) 방어. 20분 쿨다운.
+- 청산: signalSource `LORENTZIAN_SCALP5M_TRENDRIDE` → 모니터 12×ATR 넓은 트레일 공유(승자 홀딩).
+- **롱 전용** — 숏 슬리브(하락월 공략, 백테 흑자월 55→71% 돌파)는 하드 SHORT차단 해제+숏 실행경로 신설이 필요해 phase2로 분리.
+- ⚠️ 백테 검증만 된 상태 — 소액 카나리로 라이브 대조 필수(백테 불신 원칙). 레버는 설정창 값(2~3배 권장, 5배는 최악월 −40%).
+
 ## [5.29.0] - 2026-07-23
 
 ### 🚀 Changed — 발굴조합 라이브 반영: KNN+BB중심상+ADX25 진입 + 고정 12×ATR 트레일 (5배 생존구조)
