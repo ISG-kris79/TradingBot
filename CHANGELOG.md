@@ -5,6 +5,16 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.31.0] - 2026-07-28
+
+### 🩳 Added — 5분봉 숏 스캘프 (하락월 공략, phase2). 하락장 무진입 해소
+롱 전용 봇은 4h 하락장에서 구조적으로 진입 0(라이브 확인: BTC/ETH/SOL/XRP 전부 "4h 전봉 음봉"→무진입). 백테 자율탐색에서 숏 도입이 흑자월 55→71% 돌파를 만든 근거로, **의도적 하락레짐 숏**을 라이브에 추가(2026-07-27 사용자 숏허용).
+- **`AnalyzeScalp5mShortEntryAsync`**: 4h하락레짐(EMA50<200·종가<EMA50·ADX≥20) + 5m EMA역배열 + RSI35-60 + MACD히스<0 + BB상단거부존 + Ichimoku구름아래 + CCI<0 + 거래량폭발 + KNN숏(pred<0) + 과확장/손절폭 방어. SL=진입+12ATR.
+- **모니터 숏 청산**: `isTrendRideShort` → trough(최저종가)+12×ATR 트레일(롱 peak 트레일의 미러).
+- **SHORT_BLOCK 예외**: "LORENTZIAN_SCALP5M_SHORT*" 소스만 숏 발주 허용, 나머지 숏은 계속 차단(오발주 방지).
+- **IsEntryAllowed 숏 우회**: source에 "SHORT" 포함 시 BTC_1H_DOWNTREND 롱게이트 우회(BTC하락=숏 진입조건). entryCat=GENERIC이라 PUMP EMA20게이트 미해당.
+- ⚠️ 라이브 최초 숏 — 테스트넷 소액 카나리로 발주/청산 정상동작 대조 필수.
+
 ## [5.30.2] - 2026-07-28
 
 ### 🐛 Fixed — 스캔 universe 4→40: LORENTZIAN/스캘프 엔진이 4개 메이저만 스캔하던 문제 (무진입 핵심원인2)

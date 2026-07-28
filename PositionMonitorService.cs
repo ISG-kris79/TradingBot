@@ -442,12 +442,14 @@ namespace TradingBot.Services
 
             // [v5.26.0] 트렌드라이드 peak−5×ATR 종가기준 트레일 상태 (승자 수익잠금 — 백테 검증: 종가기준 65%흑자·+50%, 틱기준은 꼬리털림 −22%)
             double trendRidePeakClose = (double)entryPrice;   // 마감된 1h봉 종가의 최고값
+            double trendRideTroughClose = (double)entryPrice; // [v5.31.0] 숏용: 마감종가의 최저값
             double trendRideAtr1h = 0;
             double trendRideEntryAtr = 0;   // [v5.28.1] 진입시점 ATR(첫 관측값) — 확대트레일 이익측정 기준
             DateTime trendRideAtrNext = DateTime.MinValue;
             //   본절/부분익절/조기컷 전부 제외 — 백테: 본절 ON은 +28%(승자 본절컷), OFF는 +50%. 순수 종가트레일만.
             bool isTrendRide = false;
-            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var trInit) && trInit != null) isTrendRide = (trInit.EntrySignalSource ?? "").IndexOf("TRENDRIDE", StringComparison.OrdinalIgnoreCase) >= 0; }
+            bool isTrendRideShort = false;   // [v5.31.0] 숏 트렌드라이드(하락월 공략) — trough+12ATR 트레일
+            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var trInit) && trInit != null) { isTrendRide = (trInit.EntrySignalSource ?? "").IndexOf("TRENDRIDE", StringComparison.OrdinalIgnoreCase) >= 0; isTrendRideShort = isTrendRide && !trInit.IsLong; } }
 
             while (!token.IsCancellationRequested)
             {
@@ -1306,18 +1308,34 @@ namespace TradingBot.Services
                             {
                                 trendRideAtr1h = atr1h;
                                 if (trendRideEntryAtr <= 0) trendRideEntryAtr = atr1h;   // 진입시점 ATR 첫 관측 캡처
-                                if ((double)lastClose > trendRidePeakClose) trendRidePeakClose = (double)lastClose;
+                                const double trailMult = 12.0;
+                                if (isTrendRideShort)
+                                {
+                                    // [v5.31.0] ★숏 trough+12×ATR 트레일 (롱 peak 트레일의 미러). 최저종가 갱신, 마감종가가 trough+12ATR 위면 청산.
+                                    if ((double)lastClose < trendRideTroughClose) trendRideTroughClose = (double)lastClose;
+                                    double profAtrS = trendRideEntryAtr > 0 ? ((double)entryPrice - trendRideTroughClose) / trendRideEntryAtr : 0;
+                                    double trailStopS = trendRideTroughClose + trailMult * atr1h;
+                                    if ((double)lastClose >= trailStopS)
+                                    {
+                                        OnLog?.Invoke($"📈 {symbol} 숏 트렌드라이드 고정트레일(12×ATR) 청산 | 최저종가={trendRideTroughClose:F4} 트레일={trailStopS:F4} 마감종가={lastClose:F4} 이익{profAtrS:F1}ATR (ROE {currentROE:F1}%)");
+                                        await ExecuteMarketClose(symbol, $"숏 트렌드라이드 고정트레일 12ATR (trough {trendRideTroughClose:F4})", token);
+                                        break;
+                                    }
+                                }
+                                else
+                                {
                                 // [v5.29.0] ★고정 12×ATR 트레일 (--megasearch/--levfinal 확정 — 4.7년·20코인).
                                 //   확대4→10(초반 타이트)은 승률24%로 stop-out 과다 → 고정12(항상 넓게)가 승률38%·수익+141%로 우위.
                                 //   BB중심상+ADX25 진입필터와 결합 시 계좌낙폭 17%(1x), 5배에서 계좌 6천→4.8만(연56%복리) 생존.
+                                if ((double)lastClose > trendRidePeakClose) trendRidePeakClose = (double)lastClose;
                                 double profAtr = trendRideEntryAtr > 0 ? (trendRidePeakClose - (double)entryPrice) / trendRideEntryAtr : 0;
-                                const double trailMult = 12.0;
                                 double trailStop = trendRidePeakClose - trailMult * atr1h;
                                 if ((double)lastClose <= trailStop)
                                 {
                                     OnLog?.Invoke($"📉 {symbol} 트렌드라이드 고정트레일(12×ATR) 청산 | 최고종가={trendRidePeakClose:F4} 트레일={trailStop:F4} 마감종가={lastClose:F4} 이익{profAtr:F1}ATR (ROE {currentROE:F1}%)");
                                     await ExecuteMarketClose(symbol, $"트렌드라이드 고정트레일 12ATR (peak {trendRidePeakClose:F4})", token);
                                     break;
+                                }
                                 }
                             }
                         }

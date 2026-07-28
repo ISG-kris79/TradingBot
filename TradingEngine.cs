@@ -1262,7 +1262,8 @@ namespace TradingBot
             //   기존 -0.8% 임계는 너무 느슨 → -0.5% 기준 + 카테고리별 차등
             //   메이저 면제도 해제 — LONG 전용 봇은 메이저 하락장도 위험 (MAJOR DOWN 22건 40.9% -$78)
             //   BTC 캐시 부족 시 silent pass → 안전 차단으로 변경
-            if (_marketDataManager != null)
+            // [v5.31.0] 숏 스캘프는 이 롱 게이트 우회 — BTC 하락은 숏의 진입조건(반대로 막으면 안 됨).
+            if (_marketDataManager != null && !source.Contains("SHORT", StringComparison.OrdinalIgnoreCase))
             {
                 decimal downThreshold = entryCat == "PUMP" ? -0.3m
                                        : entryCat == "MAJOR" ? -0.5m
@@ -4734,6 +4735,8 @@ namespace TradingBot
                     await AnalyzeLorentzianEntryAsync(symbol, currentPrice, token);
                     // [v5.30.0] 5분봉 롱 스캘프 카나리 병행 (발굴 5m 레시피 롱side). 중복진입은 IsEntryAllowed+1코인1포지션 DB가 차단.
                     await AnalyzeScalp5mEntryAsync(symbol, currentPrice, token);
+                    // [v5.31.0] 5분봉 숏 스캘프 (하락월 공략). 4h 하락레짐에서만 발화 — 하락장 무진입 해소.
+                    await AnalyzeScalp5mShortEntryAsync(symbol, currentPrice, token);
                 }
                 catch (Exception ex)
                 {
@@ -5486,6 +5489,79 @@ namespace TradingBot
             _scalp5mCooldown[symbol] = DateTime.UtcNow;
             OnStatusLog?.Invoke($"✅ [SCALP5M] {symbol} 진입 | 4h상승·5m KNN={guard.KnnPrediction}·Ichimoku·CCI·거래량폭발·BB반등존 | SL=진입−12ATR5({atrStopPx:F6})");
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "LORENTZIAN_SCALP5M_TRENDRIDE", customStopLossPrice: atrStopPx > 0 ? atrStopPx : 0m);
+        }
+
+        // [v5.31.0] ★5분봉 숏 스캘프 (하락월 공략, phase2) — 롱 레시피 미러. 4h하락레짐 + 5m EMA역배열 + RSI35-60 + MACD히스<0
+        //   + BB상단거부존 + Ichimoku구름아래 + CCI<0 + 거래량폭발 + KNN숏(pred<0) + 과확장/손절폭 방어. 청산: 모니터 trough+12×ATR 트레일.
+        //   SHORT_BLOCK 예외("LORENTZIAN_SCALP5M_SHORT*")로만 발주 허용. 소액 카나리 — 라이브 최초 숏이라 대조 필수.
+        private async Task AnalyzeScalp5mShortEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            if (!IsEntryAllowed(symbol, "LORENTZIAN_SCALP5M_SHORT", out _)) return;   // SHORT 소스 → BTC하락 게이트 우회
+            if (_scalp5mCooldown.TryGetValue(symbol, out var lastE) && DateTime.UtcNow - lastE < TimeSpan.FromMinutes(20)) return;
+            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var exi) && exi != null && Math.Abs(exi.Quantity) > 0) return; }
+
+            // 1) 4h 하락 레짐: EMA50<EMA200 · 종가<EMA50 · ADX≥20
+            var b4raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FourHour, 300, token);
+            var b4 = b4raw as List<IBinanceKline> ?? (b4raw != null ? new List<IBinanceKline>(b4raw) : null);
+            if (b4 == null || b4.Count < 210) return;
+            {
+                int i4 = b4.Count - 2;
+                double e50 = CalcEmaClose(b4, i4, 50), e200 = CalcEmaClose(b4, i4, 200), c4 = (double)b4[i4].ClosePrice;
+                double adx4 = LorentzianGuard.CalcADX(b4, i4, 14);
+                if (!(e50 > 0 && e200 > 0 && e50 < e200 && c4 < e50 && adx4 >= 20))
+                { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M_S] {symbol} 차단 | 4h 하락레짐 아님"); return; }
+            }
+
+            var k5raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 2500, token);
+            if (k5raw == null) return;
+            var k5 = k5raw as List<IBinanceKline> ?? new List<IBinanceKline>(k5raw);
+            if (k5.Count < 300) return;
+            var engine = _scalp5mEngines.GetOrAdd(symbol, s => new LorentzianAnnEngine(s, neighborsCount: 8, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount));
+            var lastClosed = k5[^2];
+            if (!_scalp5mLastTrained.TryGetValue(symbol, out var pt) || pt != lastClosed.OpenTime)
+            {
+                _scalp5mLastTrained[symbol] = lastClosed.OpenTime;
+                if (engine.SampleCount < 200)
+                { for (int j = 60; j <= k5.Count - 6; j++) { int ws = Math.Max(0, j - 499); var win = k5.GetRange(ws, j - ws + 1); var f = LorentzianFeatures.Extract(win); if (f == null) continue; engine.AddSample(f, LorentzianGuard.LabelForBar(k5, j)); } }
+                else { int sIdx = k5.Count - 6; if (sIdx >= 60) { int ws = Math.Max(0, sIdx - 499); var win = k5.GetRange(ws, sIdx - ws + 1); var f = LorentzianFeatures.Extract(win); if (f != null) engine.AddSample(f, LorentzianGuard.LabelForBar(k5, sIdx)); } }
+            }
+            int ei = k5.Count - 2; int wStart = Math.Max(0, ei - 499);
+            var winE = k5.GetRange(wStart, ei - wStart + 1);
+            var guard = LorentzianGuard.EvaluateEntry(winE, engine);
+            if (guard.KnnPrediction >= 0) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M_S] {symbol} 차단 | KNN 매도신호 아님"); return; }
+
+            double c = (double)k5[ei].ClosePrice;
+            double ema50 = CalcEmaClose(k5, ei, 50), ema200 = CalcEmaClose(k5, ei, 200);
+            if (!(ema50 > 0 && ema200 > 0 && ema50 < ema200 && c < ema50)) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M_S] {symbol} 차단 | 5m EMA역배열 아님"); return; }
+            double atr = LorentzianGuard.CalcATR(k5, ei, 14);
+            if (atr <= 0) return;
+            double rsi = CalcRsiClose(k5, ei, 14);
+            if (!(rsi >= 35 && rsi <= 60)) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M_S] {symbol} 차단 | RSI밖({rsi:F0})"); return; }
+            { double e12 = 0, e26 = 0, s9 = 0; const double k12 = 2.0 / 13, k26 = 2.0 / 27, k9 = 2.0 / 10; double hist = 0;
+              for (int q = 0; q <= ei; q++) { double cc = (double)k5[q].ClosePrice; if (q == 0) { e12 = cc; e26 = cc; } else { e12 = cc * k12 + e12 * (1 - k12); e26 = cc * k26 + e26 * (1 - k26); } double mc = e12 - e26; s9 = (q == 0) ? mc : mc * k9 + s9 * (1 - k9); hist = mc - s9; }
+              if (!(hist < 0)) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M_S] {symbol} 차단 | MACD히스≥0"); return; } }
+            double sma = 0; for (int q = ei - 19; q <= ei; q++) sma += (double)k5[q].ClosePrice; sma /= 20;
+            double var2 = 0; for (int q = ei - 19; q <= ei; q++) { double cc = (double)k5[q].ClosePrice; var2 += (cc - sma) * (cc - sma); }
+            double sd = Math.Sqrt(var2 / 20), up2 = sma + 2 * sd, lo2 = sma - 2 * sd;
+            if (!(c < up2 - 0.25 * (up2 - lo2))) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M_S] {symbol} 차단 | BB상단거부존 아님"); return; }
+            double HH(int m, int w) { double v = (double)k5[m].HighPrice; for (int q = m - 1; q > m - w && q >= 0; q--) { double h = (double)k5[q].HighPrice; if (h > v) v = h; } return v; }
+            double LL(int m, int w) { double v = (double)k5[m].LowPrice; for (int q = m - 1; q > m - w && q >= 0; q--) { double l = (double)k5[q].LowPrice; if (l < v) v = l; } return v; }
+            int mIchi = ei - 26;
+            if (mIchi >= 52) { double tenkan = (HH(mIchi, 9) + LL(mIchi, 9)) / 2, kijun = (HH(mIchi, 26) + LL(mIchi, 26)) / 2; double senA = (tenkan + kijun) / 2, senB = (HH(mIchi, 52) + LL(mIchi, 52)) / 2; if (!(c < Math.Min(senA, senB))) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M_S] {symbol} 차단 | Ichimoku 구름 위"); return; } }
+            double tpsum = 0; for (int q = ei - 19; q <= ei; q++) tpsum += ((double)k5[q].HighPrice + (double)k5[q].LowPrice + (double)k5[q].ClosePrice) / 3; double tpsma = tpsum / 20;
+            double mdev = 0; for (int q = ei - 19; q <= ei; q++) mdev += Math.Abs(((double)k5[q].HighPrice + (double)k5[q].LowPrice + (double)k5[q].ClosePrice) / 3 - tpsma); mdev /= 20;
+            double tpn = ((double)k5[ei].HighPrice + (double)k5[ei].LowPrice + (double)k5[ei].ClosePrice) / 3;
+            if (!(mdev > 0 && (tpn - tpsma) / (0.015 * mdev) < 0)) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M_S] {symbol} 차단 | CCI≥0"); return; }
+            double vsum = 0; for (int q = ei - 19; q <= ei; q++) vsum += (double)k5[q].Volume; double vavg = vsum / 20;
+            if (!(vavg > 0 && (double)k5[ei].Volume / vavg >= 1.5)) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M_S] {symbol} 차단 | 거래량폭발 아님"); return; }
+            if ((ema50 - c) / atr >= 2.0) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M_S] {symbol} 차단 | EMA50 과확장(하방)"); return; }
+            if ((5.0 * atr) / c > 0.05) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M_S] {symbol} 차단 | 손절폭 과대"); return; }
+            if (Math.Abs((currentPrice - (decimal)c) / (decimal)c) > 0.01m) return;
+
+            decimal atrStopPx = currentPrice + (decimal)(12.0 * atr);   // 숏 손절 = 진입 위
+            _scalp5mCooldown[symbol] = DateTime.UtcNow;
+            OnStatusLog?.Invoke($"✅ [SCALP5M_S] {symbol} 숏진입 | 4h하락·5m KNN={guard.KnnPrediction}·Ichimoku아래·CCI<0·거래량폭발·BB상단거부 | SL=진입+12ATR5({atrStopPx:F6})");
+            _ = ExecuteAutoOrder(symbol, "SHORT", currentPrice, token, signalSource: "LORENTZIAN_SCALP5M_SHORT_TRENDRIDE", customStopLossPrice: atrStopPx);
         }
 
         // [v5.23.97] RSI2 과매도 반등 전략 — 3년·119코인 OOS 검증(승률 66%, 기대 +0.103%/건, 과최적화 아님).
@@ -8732,11 +8808,12 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"⚠️ [ENTRY-SETTINGS] {symbol} reload 실패: {sex.Message} — 메모리 캐시 사용");
             }
 
-            // [v5.22.61] 모든 SHORT 절대 차단 — 사용자 정책 "메이저도 숏 빼고 모든 진입로직 LONG만 유지"
-            //   v5.22.58 알트만 차단 → v5.22.61 메이저 포함 전체 SHORT 차단
-            if (string.Equals(decision, "SHORT", StringComparison.OrdinalIgnoreCase))
+            // [v5.22.61→v5.31.0] SHORT 차단 — 단, 발굴 하락레짐 스캘프 숏("LORENTZIAN_SCALP5M_SHORT*")만 예외 허용(2026-07-27 사용자 숏허용).
+            //   나머지 모든 숏(오발주·타 신호)은 계속 차단(defense-in-depth). 하락월 공략용 의도적 숏만 통과.
+            if (string.Equals(decision, "SHORT", StringComparison.OrdinalIgnoreCase)
+                && !signalSource.StartsWith("LORENTZIAN_SCALP5M_SHORT", StringComparison.OrdinalIgnoreCase))
             {
-                OnStatusLog?.Invoke($"⛔ [SHORT_BLOCK] {symbol} {signalSource} SHORT 차단 — 봇 전체 LONG 전용 (사용자 정책)");
+                OnStatusLog?.Invoke($"⛔ [SHORT_BLOCK] {symbol} {signalSource} SHORT 차단 — 의도적 스캘프 숏 외 전부 차단");
                 return;
             }
 
