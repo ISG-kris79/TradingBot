@@ -5,6 +5,11 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.30.1] - 2026-07-28
+
+### 🐛 Fixed — LCC_ONLY 정확일치 버그: LORENTZIAN 계열 진입이 최종 발주 직전 전부 차단되던 문제
+`ExecuteAutoOrderInner`의 LCC_ONLY 게이트가 `signalSource == "LORENTZIAN"` **정확일치**라, 실제 진입 소스인 **"LORENTZIAN_TRENDRIDE"(15m)·"LORENTZIAN_SCALP5M_TRENDRIDE"(5m)** 가 모든 진입게이트를 통과해도 발주 직전에 차단됨(라이브 로그 전체에서 해당 소스 실제 발주 0건 확인). `StartsWith("LORENTZIAN")` 로 수정 — LORENTZIAN 계열은 통과, PUMP/SPIKE 등 비-LCC는 계속 차단. **롱 진입이 실제로 이뤄지도록 하는 핵심 수정.**
+
 ## [5.30.0] - 2026-07-27
 
 ### 🧪 Added — 5분봉 롱 스캘프 카나리 (7라운드 자율탐색 발굴레시피, 롱side)

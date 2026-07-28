@@ -8737,7 +8737,9 @@ namespace TradingBot
             // [v5.23.86] LCC(Lorentzian) 단일 진입 정책 (사용자 지시: LCC 외 모든 진입로직 폐기).
             //   자동진입 funnel은 source=LORENTZIAN 만 통과 — 단일 차단점. 어떤 잔존 디스패치도 여기서 전부 차단.
             //   (수동진입 ManualEntryAsync 는 이 funnel 안 거침 → 영향 없음.)
-            if (!string.Equals(signalSource, "LORENTZIAN", StringComparison.OrdinalIgnoreCase)
+            // [v5.30.1] ★버그수정 — 정확일치 → StartsWith. "LORENTZIAN_TRENDRIDE"(15m)·"LORENTZIAN_SCALP5M*"(5m)가
+            //   정확일치("LORENTZIAN")에 걸려 게이트 통과해도 최종 발주 직전 차단되던 문제(로그상 실제 발주 0건). 의도는 LORENTZIAN 계열 통과.
+            if (!signalSource.StartsWith("LORENTZIAN", StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(signalSource, "RSI2_REVERSAL", StringComparison.OrdinalIgnoreCase))   // [v5.23.97] RSI2 검증전략 허용
             {
                 OnStatusLog?.Invoke($"⛔ [LCC_ONLY] {symbol} {signalSource} 차단 — LCC/RSI2 외 진입로직 전부 폐기");
