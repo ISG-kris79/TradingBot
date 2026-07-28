@@ -1922,8 +1922,14 @@ namespace TradingBot
             _symbols = AppConfig.Current?.Trading?.Symbols ?? new List<string>();
             if (_symbols.Count == 0)
             {
-                _symbols.AddRange(new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"});
-                OnStatusLog?.Invoke($"⚠️ 설정에 심볼이 없어 기본 메이저코인 4개 추가: {string.Join(", ", _symbols)}");
+                // [v5.30.2] ★기본 스캔 universe 4→40 확장 — appsettings 미설정 시 LORENTZIAN/스캘프 엔진이 4개 메이저만 스캔하던 문제
+                //   (라이브 로그: [MTF] 고유심볼 4개 = "일주일째 진입 없음"의 핵심). 백테 검증 40코인으로 확장.
+                _symbols.AddRange(new[] {
+                    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","LTCUSDT",
+                    "BCHUSDT","ETCUSDT","DOTUSDT","UNIUSDT","ATOMUSDT","NEARUSDT","APTUSDT","ARBUSDT","INJUSDT","SUIUSDT",
+                    "OPUSDT","FILUSDT","AAVEUSDT","MKRUSDT","RUNEUSDT","IMXUSDT","GRTUSDT","SANDUSDT","AXSUSDT","ALGOUSDT",
+                    "GALAUSDT","CHZUSDT","XLMUSDT","EOSUSDT","MANAUSDT","ENJUSDT","CRVUSDT","LDOUSDT","STXUSDT","TIAUSDT" });
+                OnStatusLog?.Invoke($"⚠️ 설정에 심볼이 없어 기본 40코인 검증 universe 사용: {_symbols.Count}개");
             }
             _soundService = new SoundService();
 

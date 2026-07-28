@@ -5,6 +5,12 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.30.2] - 2026-07-28
+
+### 🐛 Fixed — 스캔 universe 4→40: LORENTZIAN/스캘프 엔진이 4개 메이저만 스캔하던 문제 (무진입 핵심원인2)
+appsettings의 `Trading.Symbols`가 비어 있으면 기본값이 **BTC/ETH/SOL/XRP 4개뿐**이었음. 라이브 로그 확인 결과 LORENTZIAN 트렌드 엔진의 스캔 고유심볼이 정확히 4개 → 4개 메이저가 4h 하락/횡보인 동안 진입 후보 자체가 없음("일주일째 진입 없음"). 기본 fallback을 **백테 검증 40코인**(메이저+주요알트)으로 확장. LCC_ONLY 수정(v5.30.1)과 합쳐 진입이 실제로 발생하도록 함.
+- ⚠️ ORDER/MMT 등 초소형 신규 펌프코인은 여전히 PUMP 감시 경로(LCC_ONLY 차단·과거 -84% 검증)라 트렌드 엔진 미포함. 펌프 추격은 별도 정책.
+
 ## [5.30.1] - 2026-07-28
 
 ### 🐛 Fixed — LCC_ONLY 정확일치 버그: LORENTZIAN 계열 진입이 최종 발주 직전 전부 차단되던 문제
