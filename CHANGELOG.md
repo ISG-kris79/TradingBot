@@ -5,6 +5,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.31.2] - 2026-07-30
+
+### ♻️ Changed — 사용자 스펙 정렬: 진입 15분봉 + 방향(상하방) 1시간봉
+사용자 지시 "15분봉으로 하고 1시간으로 상하방 체크". 스캘프를 5m→15m 진입, 4h→1h 방향으로 재정렬.
+- **스캘프 롱/숏**(`AnalyzeScalp5mEntryAsync`/`ShortEntryAsync`): 진입 TF 5m→**15m**, 방향은 **1h EMA20 6봉 기울기**(롱=상승·숏=하락). 발굴 레시피(Ichimoku·CCI·거래량·KNN·BB·MACD·RSI) 유지. 로그 태그 [SCALP15M]/[SCALP15M_S].
+- **TRENDRIDE 롱**(`AnalyzeLorentzianEntryAsync`): 4h 전봉양봉 게이트 제거 → 방향은 기존 1h EMA20 기울기가 담당(15m 진입 유지).
+- 결과: 봇 전체가 15m 진입 + 1h 상하방 방향으로 통일. 4h 의존 제거.
+
 ## [5.31.1] - 2026-07-30
 
 ### 🐛 Fixed — 스캔 4코인 갇힘: appsettings가 BTC/ETH/SOL/XRP 4개라 40코인 확장(v5.30.2)이 안 먹던 문제
