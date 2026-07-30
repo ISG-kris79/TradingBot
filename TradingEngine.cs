@@ -1921,16 +1921,17 @@ namespace TradingBot
             _dailyTargetResetDate = DateTime.Today;
 
             _symbols = AppConfig.Current?.Trading?.Symbols ?? new List<string>();
-            if (_symbols.Count == 0)
+            // [v5.31.1] ★소규모 설정(<10개)도 40코인으로 대체 — appsettings가 4개 메이저(BTC/ETH/SOL/XRP)라 4h 횡보 시
+            //   롱·숏 둘 다 무진입("상방이든 하방이든 진입 안됨")의 근본원인. 스캔 universe가 넓어야 어느 코인이든 추세가 잡힘.
+            if (_symbols.Count < 10)
             {
-                // [v5.30.2] ★기본 스캔 universe 4→40 확장 — appsettings 미설정 시 LORENTZIAN/스캘프 엔진이 4개 메이저만 스캔하던 문제
-                //   (라이브 로그: [MTF] 고유심볼 4개 = "일주일째 진입 없음"의 핵심). 백테 검증 40코인으로 확장.
-                _symbols.AddRange(new[] {
+                var prev = _symbols.Count;
+                _symbols = new List<string> {
                     "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","LTCUSDT",
                     "BCHUSDT","ETCUSDT","DOTUSDT","UNIUSDT","ATOMUSDT","NEARUSDT","APTUSDT","ARBUSDT","INJUSDT","SUIUSDT",
                     "OPUSDT","FILUSDT","AAVEUSDT","MKRUSDT","RUNEUSDT","IMXUSDT","GRTUSDT","SANDUSDT","AXSUSDT","ALGOUSDT",
-                    "GALAUSDT","CHZUSDT","XLMUSDT","EOSUSDT","MANAUSDT","ENJUSDT","CRVUSDT","LDOUSDT","STXUSDT","TIAUSDT" });
-                OnStatusLog?.Invoke($"⚠️ 설정에 심볼이 없어 기본 40코인 검증 universe 사용: {_symbols.Count}개");
+                    "GALAUSDT","CHZUSDT","XLMUSDT","EOSUSDT","MANAUSDT","ENJUSDT","CRVUSDT","LDOUSDT","STXUSDT","TIAUSDT" };
+                OnStatusLog?.Invoke($"⚠️ 스캔 심볼 {prev}개(소규모)→40코인 검증 universe로 확장 (횡보장 무진입 방지)");
             }
             _soundService = new SoundService();
 

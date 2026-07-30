@@ -5,6 +5,13 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.31.1] - 2026-07-30
+
+### 🐛 Fixed — 스캔 4코인 갇힘: appsettings가 BTC/ETH/SOL/XRP 4개라 40코인 확장(v5.30.2)이 안 먹던 문제
+v5.30.2의 40코인 기본값은 `Symbols`가 **빈 배열일 때만** 적용됐는데, 실제 appsettings엔 메이저 4개가 설정돼 있어 미적용. 라이브 로그 확인: 4개 메이저가 4h 횡보 → 롱은 "4h 상승레짐 아님"·숏은 "4h 하락레짐 아님"에 **동시 차단 = 상방·하방 둘 다 무진입**.
+- **`_symbols.Count < 10`이면 40코인 검증 universe로 대체** (소규모 설정=스캔부족→횡보장 무진입 방지). appsettings.json Symbols도 40코인으로 갱신.
+- 효과: 40코인 중 명확한 4h 상승코인→롱, 하락코인→숏 진입 발생. 8코인 횡보 갇힘 해소.
+
 ## [5.31.0] - 2026-07-28
 
 ### 🩳 Added — 5분봉 숏 스캘프 (하락월 공략, phase2). 하락장 무진입 해소
