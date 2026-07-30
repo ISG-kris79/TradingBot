@@ -15961,7 +15961,8 @@ internal static class Program
     private static async Task RunScalpAllGreenAsync()
     {
         const int featureWindow = 500, K = 8, Lh = 4; const decimal feeRT = 0.0008m; int fetchPages5m = 240;
-        var trails = new[] { 8.0, 10.0, 12.0, 15.0 };
+        var trails = new[] { 12.0, 15.0, 18.0, 22.0 };   // 트레일 정점 근처
+        bool use4hRegime = false;   // [10R] 4h 레짐 제거판(사용자 지시) — 방향은 5m EMA정배열/역배열 + KNN + Ichimoku만
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","LTCUSDT","BCHUSDT","ETCUSDT","DOTUSDT","UNIUSDT","ATOMUSDT","NEARUSDT","APTUSDT","ARBUSDT","INJUSDT","SUIUSDT" };
         // [2라운드] 분산 확대 — 코인 40개
         universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","LTCUSDT","BCHUSDT","ETCUSDT","DOTUSDT","UNIUSDT","ATOMUSDT","NEARUSDT","APTUSDT","ARBUSDT","INJUSDT","SUIUSDT",
@@ -16010,7 +16011,7 @@ internal static class Program
             {
                 var t5 = k5[j].OpenTime;
                 while (rp + 1 < reg.Count && reg[rp + 1].c <= t5) rp++;
-                if (!(reg[rp].c <= t5 && reg[rp].up)) continue;
+                if (use4hRegime && !(reg[rp].c <= t5 && reg[rp].up)) continue;
                 if (!(e50[j] > 0 && e200[j] > 0 && e50[j] > e200[j] && close[j] > e50[j])) continue;
                 if (atr[j] <= 0 || vavg[j] <= 0) continue;
                 if (!(rsi[j] >= 40 && rsi[j] <= 65)) continue;
@@ -16035,7 +16036,7 @@ internal static class Program
             {
                 var t5 = k5[j].OpenTime;
                 while (rp2 + 1 < regDown.Count && regDown[rp2 + 1].c <= t5) rp2++;
-                if (!(regDown[rp2].c <= t5 && regDown[rp2].dn)) continue;
+                if (use4hRegime && !(regDown[rp2].c <= t5 && regDown[rp2].dn)) continue;
                 if (!(e50[j] > 0 && e200[j] > 0 && e50[j] < e200[j] && close[j] < e50[j])) continue;
                 if (atr[j] <= 0 || vavg[j] <= 0) continue;
                 if (!(rsi[j] >= 35 && rsi[j] <= 60)) continue;
@@ -16168,6 +16169,17 @@ internal static class Program
         Console.WriteLine("   연월     | 거래 | 월수익%");
         foreach (var (mk, ret, nt) in m2.months) Console.WriteLine($"   {mk} | {nt,4} | {ret,7:F1}");
         Console.WriteLine($"  ── 2배: 총 {m2.tot:F0}% · 월복리 {m2.mo:F1}% · 흑자월 {m2.green}/{m2.months.Count} · 최악월 {m2.worst:F1}% · 낙폭 {m2.dd:F0}% ──");
+        // ── [★수익 극대화] 흑자월 무관, 총수익 최대 (낙폭<50 제한) TOP + 레버표 ──
+        var poolP = order.Where(i => res[i].mdd < 50).OrderByDescending(i => res[i].ret).ToList();
+        if (poolP.Count > 0)
+        {
+            Console.WriteLine("\n★★★ 수익 극대화 TOP 10 (총수익 최대·1x낙폭<50) ★★★");
+            foreach (var i in poolP.Take(10)) { var r = res[i]; Console.WriteLine($"  1x수익 {r.ret,5:F0}% · 흑자월 {r.green}/{r.total} · 최악월 {r.worst:F1}% · 낙폭 {r.mdd:F0}% · {r.nt}건 | {Desc(i)}"); }
+            int pb = poolP[0];
+            Console.WriteLine($"\n  ▶ 최고수익 config 레버표: {Desc(pb)}");
+            Console.WriteLine("   레버 | 총수익 | 월복리 | 흑자월 | 최악월 | 최대낙폭 | 생존");
+            foreach (var L in new[] { 1.0, 2.0, 3.0, 5.0 }) { var a = SimLev(pb, L); Console.WriteLine($"   {L,3:F0}x | {a.tot,7:F0}% | {a.mo,5:F1}% | {a.green}/{a.months.Count} | {a.worst,6:F1}% | {a.dd,6:F0}% | {(a.ruin ? "소각" : "생존")}"); }
+        }
         Console.WriteLine("\n※ 롱+숏 베이스. 레버↑ = 수익↑·적자월↑ 동반. 적자 견딜 레버 선택용. 백테라 라이브 카나리 필수.");
     }
 

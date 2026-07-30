@@ -5420,19 +5420,10 @@ namespace TradingBot
             if (_scalp5mCooldown.TryGetValue(symbol, out var lastE) && DateTime.UtcNow - lastE < TimeSpan.FromMinutes(20)) return;
             lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var exi) && exi != null && Math.Abs(exi.Quantity) > 0) return; }
 
-            // 1) 4h 상승 레짐: EMA50>EMA200 · 종가>EMA50 · ADX≥20
-            var b4raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FourHour, 300, token);
-            var b4 = b4raw as List<IBinanceKline> ?? (b4raw != null ? new List<IBinanceKline>(b4raw) : null);
-            if (b4 == null || b4.Count < 210) return;
-            {
-                int i4 = b4.Count - 2;
-                double e50 = CalcEmaClose(b4, i4, 50), e200 = CalcEmaClose(b4, i4, 200), c4 = (double)b4[i4].ClosePrice;
-                double adx4 = LorentzianGuard.CalcADX(b4, i4, 14);
-                if (!(e50 > 0 && e200 > 0 && e50 > e200 && c4 > e50 && adx4 >= 20))
-                { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M] {symbol} 차단 | 4h 상승레짐 아님"); return; }
-            }
+            // [v5.31.1] 4h 레짐 게이트 제거(사용자 지시) — 방향은 코인 자신의 5m EMA정배열 + KNN + Ichimoku로 결정.
+            //   4h는 횡보 시 롱·숏 둘 다 막아 무진입 유발. 상승코인→롱은 아래 5m EMA50>200 + KNN>0 + 구름위가 담당.
 
-            // 2) 5분봉 로드 + 전용 KNN 학습(walk-forward)
+            // 5분봉 로드 + 전용 KNN 학습(walk-forward)
             var k5raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 2500, token);
             if (k5raw == null) return;
             var k5 = k5raw as List<IBinanceKline> ?? new List<IBinanceKline>(k5raw);
@@ -5501,17 +5492,7 @@ namespace TradingBot
             if (_scalp5mCooldown.TryGetValue(symbol, out var lastE) && DateTime.UtcNow - lastE < TimeSpan.FromMinutes(20)) return;
             lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var exi) && exi != null && Math.Abs(exi.Quantity) > 0) return; }
 
-            // 1) 4h 하락 레짐: EMA50<EMA200 · 종가<EMA50 · ADX≥20
-            var b4raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FourHour, 300, token);
-            var b4 = b4raw as List<IBinanceKline> ?? (b4raw != null ? new List<IBinanceKline>(b4raw) : null);
-            if (b4 == null || b4.Count < 210) return;
-            {
-                int i4 = b4.Count - 2;
-                double e50 = CalcEmaClose(b4, i4, 50), e200 = CalcEmaClose(b4, i4, 200), c4 = (double)b4[i4].ClosePrice;
-                double adx4 = LorentzianGuard.CalcADX(b4, i4, 14);
-                if (!(e50 > 0 && e200 > 0 && e50 < e200 && c4 < e50 && adx4 >= 20))
-                { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP5M_S] {symbol} 차단 | 4h 하락레짐 아님"); return; }
-            }
+            // [v5.31.1] 4h 레짐 게이트 제거(사용자 지시) — 하락코인→숏은 아래 5m EMA역배열 + KNN<0 + 구름아래가 담당.
 
             var k5raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FiveMinutes, 2500, token);
             if (k5raw == null) return;
