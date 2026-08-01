@@ -15963,6 +15963,7 @@ internal static class Program
         const int featureWindow = 500, K = 8, Lh = 4; const decimal feeRT = 0.0008m; int fetchPages5m = 240;
         var trails = new[] { 12.0, 15.0, 18.0, 22.0 };   // 트레일 정점 근처
         bool use4hRegime = false;   // [10R] 4h 레짐 제거판(사용자 지시) — 방향은 5m EMA정배열/역배열 + KNN + Ichimoku만
+        bool looseRecipe = true;    // [11R] 완화판 — RSI/MACD/BB/Ichimoku/CCI 제거, 핵심(KNN+EMA추세+거래량)만. 진입빈도↑ 확인용
         var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","LTCUSDT","BCHUSDT","ETCUSDT","DOTUSDT","UNIUSDT","ATOMUSDT","NEARUSDT","APTUSDT","ARBUSDT","INJUSDT","SUIUSDT" };
         // [2라운드] 분산 확대 — 코인 40개
         universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","LTCUSDT","BCHUSDT","ETCUSDT","DOTUSDT","UNIUSDT","ATOMUSDT","NEARUSDT","APTUSDT","ARBUSDT","INJUSDT","SUIUSDT",
@@ -16014,11 +16015,11 @@ internal static class Program
                 if (use4hRegime && !(reg[rp].c <= t5 && reg[rp].up)) continue;
                 if (!(e50[j] > 0 && e200[j] > 0 && e50[j] > e200[j] && close[j] > e50[j])) continue;
                 if (atr[j] <= 0 || vavg[j] <= 0) continue;
-                if (!(rsi[j] >= 40 && rsi[j] <= 65)) continue;
-                if (!(hist[j] > 0)) continue;
-                if (!(close[j] > lo2[j] + 0.25 * (up2[j] - lo2[j]))) continue;
-                if (!ichiUp[j]) continue;
-                if (!(cci[j] > 0)) continue;
+                if (!looseRecipe && !(rsi[j] >= 40 && rsi[j] <= 65)) continue;
+                if (!looseRecipe && !(hist[j] > 0)) continue;
+                if (!looseRecipe && !(close[j] > lo2[j] + 0.25 * (up2[j] - lo2[j]))) continue;
+                if (!looseRecipe && !ichiUp[j]) continue;
+                if (!looseRecipe && !(cci[j] > 0)) continue;
                 if (!(vol[j] / vavg[j] >= 1.5)) continue;
                 if (!(sg[j] > 0)) continue;
                 if ((close[j] - e50[j]) / atr[j] >= 2.0) continue;
@@ -16039,11 +16040,11 @@ internal static class Program
                 if (use4hRegime && !(regDown[rp2].c <= t5 && regDown[rp2].dn)) continue;
                 if (!(e50[j] > 0 && e200[j] > 0 && e50[j] < e200[j] && close[j] < e50[j])) continue;
                 if (atr[j] <= 0 || vavg[j] <= 0) continue;
-                if (!(rsi[j] >= 35 && rsi[j] <= 60)) continue;
-                if (!(hist[j] < 0)) continue;
-                if (!(close[j] < up2[j] - 0.25 * (up2[j] - lo2[j]))) continue;
-                if (!ichiDown[j]) continue;
-                if (!(cci[j] < 0)) continue;
+                if (!looseRecipe && !(rsi[j] >= 35 && rsi[j] <= 60)) continue;
+                if (!looseRecipe && !(hist[j] < 0)) continue;
+                if (!looseRecipe && !(close[j] < up2[j] - 0.25 * (up2[j] - lo2[j]))) continue;
+                if (!looseRecipe && !ichiDown[j]) continue;
+                if (!looseRecipe && !(cci[j] < 0)) continue;
                 if (!(vol[j] / vavg[j] >= 1.5)) continue;
                 if (!(sg[j] < 0)) continue;
                 if ((e50[j] - close[j]) / atr[j] >= 2.0) continue;
@@ -16179,8 +16180,136 @@ internal static class Program
             Console.WriteLine($"\n  ▶ 최고수익 config 레버표: {Desc(pb)}");
             Console.WriteLine("   레버 | 총수익 | 월복리 | 흑자월 | 최악월 | 최대낙폭 | 생존");
             foreach (var L in new[] { 1.0, 2.0, 3.0, 5.0 }) { var a = SimLev(pb, L); Console.WriteLine($"   {L,3:F0}x | {a.tot,7:F0}% | {a.mo,5:F1}% | {a.green}/{a.months.Count} | {a.worst,6:F1}% | {a.dd,6:F0}% | {(a.ruin ? "소각" : "생존")}"); }
+            // ★ 월 $3000 목표 분석 — 월복리%에서 필요자본 + 계좌별 월$ 역산
+            Console.WriteLine("\n  ★★★ 월 $3000 목표 분석 (최고수익 config) ★★★");
+            Console.WriteLine("   레버 | 월복리% | 월$3000 필요자본 | $1만계좌 월$ | $5만계좌 월$ | $10만계좌 월$ | 최대낙폭");
+            foreach (var L in new[] { 1.0, 2.0, 3.0 })
+            {
+                var a = SimLev(pb, L); double mo = a.mo / 100.0;
+                double need = mo > 0 ? 3000.0 / mo : 0;
+                Console.WriteLine($"   {L,3:F0}x | {a.mo,6:F1}% | {(need > 0 ? $"${need,10:N0}" : "불가"),12} | ${10000 * mo,7:N0} | ${50000 * mo,7:N0} | ${100000 * mo,7:N0} | {a.dd:F0}%");
+            }
+            Console.WriteLine("   ※ 월복리%는 3.4년 백테 실측. 월$=계좌×월복리%. 낙폭은 그 레버의 실제 최대낙폭(자본 그만큼 빠졌다 복구).");
         }
         Console.WriteLine("\n※ 롱+숏 베이스. 레버↑ = 수익↑·적자월↑ 동반. 적자 견딜 레버 선택용. 백테라 라이브 카나리 필수.");
+    }
+
+    // --scalp-full : ★전체기간(상장~현재) 백테 — 라이브 v5.31.2 로직 그대로(진입 15m + 방향 1h EMA20 6봉 기울기).
+    //   ※ 바이낸스 선물 데이터는 2019-09(BTC 무기한 출범)부터 존재 — 2016~2019 데이터는 물리적으로 없음.
+    //   STRICT(라이브 현재 8조건 레시피) vs LOOSE(핵심 KNN+EMA추세+거래량+1h방향) 동시 비교 + 월별표 + 레버표.
+    private static async Task RunScalpFullAsync()
+    {
+        const int featureWindow = 500, K = 8, Lh = 4; const decimal feeRT = 0.0008m;
+        const int pages15 = 170, pages1h = 45; const double TRAIL = 12.0;
+        var universe = new[] { "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","LTCUSDT","BCHUSDT","ETCUSDT","DOTUSDT","UNIUSDT","ATOMUSDT","NEARUSDT","APTUSDT","ARBUSDT","INJUSDT","SUIUSDT",
+            "OPUSDT","FILUSDT","AAVEUSDT","MKRUSDT","RUNEUSDT","IMXUSDT","GRTUSDT","SANDUSDT","AXSUSDT","ALGOUSDT","GALAUSDT","CHZUSDT","XLMUSDT","EOSUSDT","MANAUSDT","ENJUSDT","CRVUSDT","LDOUSDT","STXUSDT","TIAUSDT" };
+        Console.WriteLine("=== 전체기간 백테 (15m 진입 + 1h EMA20 방향 · 라이브 v5.31.2 로직) ===");
+        Console.WriteLine("※ 바이낸스 선물 데이터 시작: 2019-09 (BTC). 2016~2019-08 데이터는 거래소에 존재하지 않음.\n");
+        var strictAll = new List<GCand>(); var looseAll = new List<GCand>(); int ci = 0;
+        foreach (var sym in universe)
+        {
+            ci++; Console.Write($"[{ci}/{universe.Length}] {sym} ");
+            List<IBinanceKline> k1h, k15;
+            try { k1h = await FetchKlines1hAsync(sym, pages1h); k15 = await FetchKlines15mAsync(sym, pages15); } catch { Console.WriteLine("fail"); continue; }
+            if (k1h.Count < 100 || k15.Count < 1000) { Console.WriteLine("skip"); continue; }
+            int hn = k1h.Count; var he20 = new double[hn]; for (int j = 20; j < hn; j++) he20[j] = CalcEMA(k1h, j, 20);
+            var hup = new bool[hn]; var hdn = new bool[hn];
+            for (int j = 26; j < hn; j++) { if (he20[j] > 0 && he20[j - 6] > 0) { hup[j] = he20[j] > he20[j - 6]; hdn[j] = he20[j] < he20[j - 6]; } }
+            int n = k15.Count; var close = new double[n]; var hi = new double[n]; var lo = new double[n]; var vol = new double[n];
+            for (int j = 0; j < n; j++) { close[j] = (double)k15[j].ClosePrice; hi[j] = (double)k15[j].HighPrice; lo[j] = (double)k15[j].LowPrice; vol[j] = (double)k15[j].Volume; }
+            var feats = new float[n][]; for (int j = 60; j < n; j++) { int ws = Math.Max(0, j - (featureWindow - 1)); feats[j] = LorentzianFeatures.Extract(k15.GetRange(ws, j - ws + 1))!; }
+            var e50 = new double[n]; for (int j = 50; j < n; j++) e50[j] = CalcEMA(k15, j, 50);
+            var e200 = new double[n]; for (int j = 200; j < n; j++) e200[j] = CalcEMA(k15, j, 200);
+            var atr = new double[n]; for (int j = 14; j < n; j++) { double tr = 0; for (int q = j - 13; q <= j; q++) { double hh = hi[q], ll = lo[q], pc = close[q - 1]; tr += Math.Max(hh - ll, Math.Max(Math.Abs(hh - pc), Math.Abs(ll - pc))); } atr[j] = tr / 14.0; }
+            var hist = new double[n]; { double e12 = 0, e26 = 0, s9 = 0; const double k12 = 2.0 / 13, k26 = 2.0 / 27, k9 = 2.0 / 10; for (int j = 0; j < n; j++) { double cc = close[j]; if (j == 0) { e12 = cc; e26 = cc; } else { e12 = cc * k12 + e12 * (1 - k12); e26 = cc * k26 + e26 * (1 - k26); } double mc = e12 - e26; s9 = (j == 0) ? mc : mc * k9 + s9 * (1 - k9); hist[j] = mc - s9; } }
+            var lo2 = new double[n]; var up2 = new double[n];
+            { double s = 0, s2 = 0; for (int j = 0; j < n; j++) { s += close[j]; s2 += close[j] * close[j]; if (j >= 20) { s -= close[j - 20]; s2 -= close[j - 20] * close[j - 20]; } int cnt = j >= 19 ? 20 : j + 1; double m = s / cnt; double v = Math.Max(0, s2 / cnt - m * m); double sd = Math.Sqrt(v); up2[j] = m + 2 * sd; lo2[j] = m - 2 * sd; } }
+            var rsi = new double[n]; { double ag = 0, al = 0; int per = 14; for (int j = 1; j < n; j++) { double ch = close[j] - close[j - 1]; double g = ch > 0 ? ch : 0, l = ch < 0 ? -ch : 0; if (j <= per) { ag += g; al += l; if (j == per) { ag /= per; al /= per; } } else { ag = (ag * (per - 1) + g) / per; al = (al * (per - 1) + l) / per; } rsi[j] = al == 0 ? 100 : 100 - 100 / (1 + ag / al); } }
+            var vavg = new double[n]; { double s = 0; for (int j = 0; j < n; j++) { s += vol[j]; if (j >= 20) s -= vol[j - 20]; int cnt = j >= 20 ? 20 : j + 1; vavg[j] = s / cnt; } }
+            double HHf(int j, int w) { double m = hi[j]; for (int q = j - 1; q > j - w && q >= 0; q--) if (hi[q] > m) m = hi[q]; return m; }
+            double LLf(int j, int w) { double m = lo[j]; for (int q = j - 1; q > j - w && q >= 0; q--) if (lo[q] < m) m = lo[q]; return m; }
+            var senA = new double[n]; var senB = new double[n]; for (int j = 0; j < n; j++) { double tenkan = (HHf(j, 9) + LLf(j, 9)) / 2, kijun = (HHf(j, 26) + LLf(j, 26)) / 2; senA[j] = (tenkan + kijun) / 2; senB[j] = (HHf(j, 52) + LLf(j, 52)) / 2; }
+            var ichiUp = new bool[n]; var ichiDown = new bool[n];
+            for (int j = 78; j < n; j++) { double cTop = Math.Max(senA[j - 26], senB[j - 26]), cBot = Math.Min(senA[j - 26], senB[j - 26]); ichiUp[j] = close[j] > cTop; ichiDown[j] = close[j] < cBot; }
+            var cci = new double[n]; for (int j = 20; j < n; j++) { double tpsum = 0; for (int q = j - 19; q <= j; q++) tpsum += (hi[q] + lo[q] + close[q]) / 3; double sma = tpsum / 20; double md = 0; for (int q = j - 19; q <= j; q++) md += Math.Abs((hi[q] + lo[q] + close[q]) / 3 - sma); md /= 20; double tp = (hi[j] + lo[j] + close[j]) / 3; cci[j] = md > 0 ? (tp - sma) / (0.015 * md) : 0; }
+            var engine = new LorentzianAnnEngine(sym, neighborsCount: K, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount);
+            var sg = new int[n];
+            for (int j = 65; j < n; j++) { int s = j - 1; if (s - Lh >= 0 && feats[s] != null) { double a = close[s], b = close[s - Lh]; engine.AddSample(feats[s], a > b ? 1 : (a < b ? -1 : 0)); } if (feats[j] == null) continue; var p = engine.Predict(feats[j]); if (!p.IsReady || p.K == 0) continue; sg[j] = p.Prediction > 0 ? 1 : (p.Prediction < 0 ? -1 : 0); }
+            int hp = 0, cS = 0, cL = 0;
+            for (int j = 250; j < n - 1; j++)
+            {
+                var t = k15[j].OpenTime.AddMinutes(15);
+                while (hp + 1 < hn && k1h[hp + 1].OpenTime.AddHours(1) <= t) hp++;
+                bool dirUp = hp >= 26 && hup[hp], dirDn = hp >= 26 && hdn[hp];
+                if (atr[j] <= 0 || vavg[j] <= 0) continue;
+                bool coreL = dirUp && e50[j] > 0 && e200[j] > 0 && e50[j] > e200[j] && close[j] > e50[j] && sg[j] > 0
+                    && vol[j] / vavg[j] >= 1.5 && (close[j] - e50[j]) / atr[j] < 2.0 && 5.0 * atr[j] / close[j] <= 0.05;
+                bool coreS = dirDn && e50[j] > 0 && e200[j] > 0 && e50[j] < e200[j] && close[j] < e50[j] && sg[j] < 0
+                    && vol[j] / vavg[j] >= 1.5 && (e50[j] - close[j]) / atr[j] < 2.0 && 5.0 * atr[j] / close[j] <= 0.05;
+                if (!coreL && !coreS) continue;
+                bool strictOk = coreL
+                    ? (rsi[j] >= 40 && rsi[j] <= 65 && hist[j] > 0 && close[j] > lo2[j] + 0.25 * (up2[j] - lo2[j]) && ichiUp[j] && cci[j] > 0)
+                    : (rsi[j] >= 35 && rsi[j] <= 60 && hist[j] < 0 && close[j] < up2[j] - 0.25 * (up2[j] - lo2[j]) && ichiDown[j] && cci[j] < 0);
+                double entry = close[j]; int ei = n - 1; double exPx = close[n - 1]; double pnl;
+                if (coreL) { double peak = entry; for (int e = j + 1; e < n; e++) { double cc = close[e]; if (cc > peak) peak = cc; if (cc <= peak - TRAIL * atr[e]) { ei = e; exPx = cc; break; } if (e == n - 1) { ei = e; exPx = cc; } } pnl = (exPx - entry) / entry - (double)feeRT; }
+                else { double trough = entry; for (int e = j + 1; e < n; e++) { double cc = close[e]; if (cc < trough) trough = cc; if (cc >= trough + TRAIL * atr[e]) { ei = e; exPx = cc; break; } if (e == n - 1) { ei = e; exPx = cc; } } pnl = (entry - exPx) / entry - (double)feeRT; }
+                var gc = new GCand { t = t, sym = sym }; gc.pnlByTrail[0] = pnl; gc.exitByTrail[0] = k15[ei].OpenTime.AddMinutes(15);
+                if (strictOk) { strictAll.Add(gc); cS++; }
+                looseAll.Add(gc); cL++;
+            }
+            Console.WriteLine($"15m={n}봉 · 시작={k15[0].OpenTime:yyyy-MM-dd} · STRICT={cS} · LOOSE={cL}");
+        }
+        void Report(string name, List<GCand> all)
+        {
+            all.Sort((a, b) => a.t.CompareTo(b.t));
+            Console.WriteLine($"\n════════ [{name}] ════════");
+            if (all.Count < 30) { Console.WriteLine($"  후보 {all.Count}건 — 표본부족, 시뮬 생략"); return; }
+            var t0 = new DateTime(all[0].t.Year, all[0].t.Month, 1); var tN = all[^1].t;
+            var monthKeys = new List<string>(); for (var d = t0; d <= tN; d = d.AddMonths(1)) monthKeys.Add(d.ToString("yyyy-MM"));
+            (double tot, double mo, int green, double worst, double dd, bool ruin, List<(string mk, double ret, int nt)> months, int nt, int win) Sim(double L)
+            {
+                const int slot = 10; const double startEq = 6000;
+                double eq = startEq, peak = startEq, mdd = 0; bool ruin = false;
+                var monEq = new Dictionary<string, double>(); var monStart = new Dictionary<string, double>(); var monNt = new Dictionary<string, int>();
+                var open = new List<(DateTime exit, double pnl, double margin, string sym)>(); string curMon = ""; int nt = 0, win = 0;
+                foreach (var s in all)
+                {
+                    DateTime now = s.t; string mk = now.ToString("yyyy-MM");
+                    if (mk != curMon) { if (curMon != "") monEq[curMon] = eq; curMon = mk; if (!monStart.ContainsKey(mk)) monStart[mk] = eq; }
+                    for (int k = open.Count - 1; k >= 0; k--) if (open[k].exit <= now) { eq += open[k].pnl * open[k].margin * L; nt++; if (open[k].pnl > 0) win++; if (eq > peak) peak = eq; if (peak > 0 && (peak - eq) / peak > mdd) mdd = (peak - eq) / peak; if (eq <= 0) ruin = true; open.RemoveAt(k); }
+                    if (ruin) break;
+                    if (open.Count >= slot) continue; bool dup = false; for (int k = 0; k < open.Count; k++) if (open[k].sym == s.sym) { dup = true; break; } if (dup) continue;
+                    open.Add((s.exitByTrail[0], s.pnlByTrail[0], eq / slot, s.sym)); monNt[mk] = (monNt.TryGetValue(mk, out var q) ? q : 0) + 1;
+                }
+                open.Sort((a, b) => a.exit.CompareTo(b.exit)); foreach (var o in open) { if (ruin) break; eq += o.pnl * o.margin * L; nt++; if (o.pnl > 0) win++; if (eq > peak) peak = eq; if (peak > 0 && (peak - eq) / peak > mdd) mdd = (peak - eq) / peak; if (eq <= 0) ruin = true; }
+                if (curMon != "") monEq[curMon] = eq;
+                int green = 0; double worst = 999; var months = new List<(string, double, int)>();
+                foreach (var mk in monthKeys) { if (!monStart.ContainsKey(mk)) { months.Add((mk, 0.0, 0)); continue; } double se = monStart[mk], ee = monEq.TryGetValue(mk, out var v) ? v : se; double r = se > 0 ? (ee / se - 1) * 100 : 0; if (r > 0) green++; if (r < worst) worst = r; months.Add((mk, r, monNt.TryGetValue(mk, out var nn) ? nn : 0)); }
+                double moC = (Math.Pow(Math.Max(0.0001, eq / startEq), 1.0 / Math.Max(1, monthKeys.Count)) - 1) * 100;
+                return ((eq / startEq - 1) * 100, moC, green, worst == 999 ? 0 : worst, mdd * 100, ruin, months, nt, win);
+            }
+            var m1 = Sim(1.0);
+            Console.WriteLine($"  기간 {all[0].t:yyyy-MM-dd} ~ {tN:yyyy-MM-dd} ({monthKeys.Count}개월) · 후보 {all.Count} · 체결 {m1.nt}건 · 승률 {(m1.nt > 0 ? 100.0 * m1.win / m1.nt : 0):F1}%");
+            Console.WriteLine("  레버 | 총수익 | 월복리 | 흑자월 | 최악월 | 최대낙폭 | 생존");
+            foreach (var L in new[] { 1.0, 2.0, 3.0, 5.0 }) { var a = Sim(L); Console.WriteLine($"  {L,3:F0}x | {a.tot,8:F0}% | {a.mo,5:F1}% | {a.green}/{monthKeys.Count} | {a.worst,7:F1}% | {a.dd,6:F0}% | {(a.ruin ? "소각" : "생존")}"); }
+            Console.WriteLine("\n  ── 1x 월별 손익표 (% · $6000 시작·복리) ──");
+            var map = m1.months.ToDictionary(x => x.mk, x => x.ret);
+            var cntMap = m1.months.ToDictionary(x => x.mk, x => x.nt);
+            Console.Write("   연도 |"); for (int m = 1; m <= 12; m++) Console.Write($" {m,5}월"); Console.WriteLine(" | 연간%");
+            for (int y = all[0].t.Year; y <= tN.Year; y++)
+            {
+                Console.Write($"   {y} |"); double yr = 1;
+                for (int m = 1; m <= 12; m++) { string mk = $"{y}-{m:D2}"; if (map.TryGetValue(mk, out var r)) { Console.Write($" {r,6:F1}"); yr *= 1 + r / 100; } else Console.Write("      ·"); }
+                Console.WriteLine($" | {(yr - 1) * 100,6:F1}");
+            }
+            int nMon = monthKeys.Count(mk => cntMap.TryGetValue(mk, out var c) && c > 0);
+            Console.WriteLine($"  월평균 거래 {(nMon > 0 ? (double)m1.nt / monthKeys.Count : 0):F0}건 · 거래있는달 {nMon}/{monthKeys.Count}");
+            Console.WriteLine("\n  ★ 월 $3000 목표 (이 로직 기준)");
+            foreach (var L in new[] { 1.0, 2.0, 3.0 }) { var a = Sim(L); double mo = a.mo / 100.0; Console.WriteLine($"   {L:F0}x: 월복리 {a.mo:F1}% → 필요자본 {(mo > 0 ? $"${3000 / mo:N0}" : "불가(월복리≤0)")} · $1만계좌 월 ${10000 * mo:N0}"); }
+        }
+        Report("STRICT — 라이브 v5.31.2 현재 레시피(8조건: KNN·EMA·RSI·MACD·BB·Ichimoku·CCI·거래량)", strictAll);
+        Report("LOOSE — 완화판(KNN·EMA추세·거래량폭발·1h방향만)", looseAll);
+        Console.WriteLine("\n※ 진입=15m 마감봉, 방향=1h EMA20 6봉 기울기, 청산=12×ATR 트레일(종가) — 라이브 동일 구조. 슬롯10·코인중복금지.");
     }
 
     // --megasearch : ★대규모 병렬 탐색 — KNN + 보조지표 8종 조합(단일·쌍·삼중) × 청산 다양 × Parallel.For. 3년 수익 최대 로직 발굴.
@@ -25333,6 +25462,11 @@ internal static class Program
         if (HasArg("--scalp-allgreen"))
         {
             await RunScalpAllGreenAsync();
+            return;
+        }
+        if (HasArg("--scalp-full"))
+        {
+            await RunScalpFullAsync();
             return;
         }
         if (HasArg("--funnel2026"))
