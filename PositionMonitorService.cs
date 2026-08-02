@@ -449,7 +449,10 @@ namespace TradingBot.Services
             //   본절/부분익절/조기컷 전부 제외 — 백테: 본절 ON은 +28%(승자 본절컷), OFF는 +50%. 순수 종가트레일만.
             bool isTrendRide = false;
             bool isTrendRideShort = false;   // [v5.31.0] 숏 트렌드라이드(하락월 공략) — trough+12ATR 트레일
-            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var trInit) && trInit != null) { isTrendRide = (trInit.EntrySignalSource ?? "").IndexOf("TRENDRIDE", StringComparison.OrdinalIgnoreCase) >= 0; isTrendRideShort = isTrendRide && !trInit.IsLong; } }
+            bool isScalpTrendRide = false;   // [v5.32.0] SCALP5M 소스 → 트레일 8×ATR (수익형 config), MTF는 12 유지
+            bool isMeanRevPos = false; bool mrIsLong = true;   // [v5.32.0] MR 슬리브 — BB중심 익절+12h 타임캡 전용 (레거시 조기청산 차단)
+            DateTime mrStartUtc = DateTime.UtcNow;
+            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var trInit) && trInit != null) { var src0 = trInit.EntrySignalSource ?? ""; isTrendRide = src0.IndexOf("TRENDRIDE", StringComparison.OrdinalIgnoreCase) >= 0; isTrendRideShort = isTrendRide && !trInit.IsLong; isScalpTrendRide = isTrendRide && src0.IndexOf("SCALP5M", StringComparison.OrdinalIgnoreCase) >= 0; isMeanRevPos = src0.IndexOf("MEANREV15M", StringComparison.OrdinalIgnoreCase) >= 0 || src0.IndexOf("SHORT_MEANREV", StringComparison.OrdinalIgnoreCase) >= 0; mrIsLong = trInit.IsLong; } }
 
             while (!token.IsCancellationRequested)
             {
@@ -591,7 +594,7 @@ namespace TradingBot.Services
                         if (_activePositions.TryGetValue(symbol, out var _ppos))
                             _v562_partialFilled = _ppos.PartialProfitStage >= 1 || _ppos.TakeProfitStep >= 1;
                     }
-                    if (!isTrendRide && !breakEvenActivated && (highestROE >= breakEvenROE || _v562_partialFilled))
+                    if (!isTrendRide && !isMeanRevPos && !breakEvenActivated && (highestROE >= breakEvenROE || _v562_partialFilled))
                     {
                         breakEvenActivated = true;
                         PersistPositionState(symbol, isBreakEvenTriggered: true, highestROE: highestROE);
@@ -721,7 +724,7 @@ namespace TradingBot.Services
                     // 2단계: 메이저 2차 구간 진입 시 부분익절 + 스탑 상향
                     // ═══════════════════════════════════════════════
                     //   [v5.26.0] 트렌드라이드는 부분익절 제외 — 40% 조기실현이 승자를 잘라 손익비 파괴(백테 교훈). 전량 태움.
-                    if (!isTrendRide && breakEvenActivated && !profitLockActivated && highestROE >= profitLockROE)
+                    if (!isTrendRide && !isMeanRevPos && breakEvenActivated && !profitLockActivated && highestROE >= profitLockROE)
                     {
                         profitLockActivated = true;
 
@@ -1308,17 +1311,17 @@ namespace TradingBot.Services
                             {
                                 trendRideAtr1h = atr1h;
                                 if (trendRideEntryAtr <= 0) trendRideEntryAtr = atr1h;   // 진입시점 ATR 첫 관측 캡처
-                                const double trailMult = 12.0;
+                                double trailMult = isScalpTrendRide ? 8.0 : 12.0;   // [v5.32.0] SCALP=8(수익형 config)·MTF=12(v5.29 검증)
                                 if (isTrendRideShort)
                                 {
-                                    // [v5.31.0] ★숏 trough+12×ATR 트레일 (롱 peak 트레일의 미러). 최저종가 갱신, 마감종가가 trough+12ATR 위면 청산.
+                                    // [v5.31.0] ★숏 trough+트레일 (롱 peak 트레일의 미러). 최저종가 갱신, 마감종가가 trough+N×ATR 위면 청산.
                                     if ((double)lastClose < trendRideTroughClose) trendRideTroughClose = (double)lastClose;
                                     double profAtrS = trendRideEntryAtr > 0 ? ((double)entryPrice - trendRideTroughClose) / trendRideEntryAtr : 0;
                                     double trailStopS = trendRideTroughClose + trailMult * atr1h;
                                     if ((double)lastClose >= trailStopS)
                                     {
-                                        OnLog?.Invoke($"📈 {symbol} 숏 트렌드라이드 고정트레일(12×ATR) 청산 | 최저종가={trendRideTroughClose:F4} 트레일={trailStopS:F4} 마감종가={lastClose:F4} 이익{profAtrS:F1}ATR (ROE {currentROE:F1}%)");
-                                        await ExecuteMarketClose(symbol, $"숏 트렌드라이드 고정트레일 12ATR (trough {trendRideTroughClose:F4})", token);
+                                        OnLog?.Invoke($"📈 {symbol} 숏 트렌드라이드 고정트레일({trailMult:F0}×ATR) 청산 | 최저종가={trendRideTroughClose:F4} 트레일={trailStopS:F4} 마감종가={lastClose:F4} 이익{profAtrS:F1}ATR (ROE {currentROE:F1}%)");
+                                        await ExecuteMarketClose(symbol, $"숏 트렌드라이드 고정트레일 {trailMult:F0}ATR (trough {trendRideTroughClose:F4})", token);
                                         break;
                                     }
                                 }
@@ -1332,12 +1335,45 @@ namespace TradingBot.Services
                                 double trailStop = trendRidePeakClose - trailMult * atr1h;
                                 if ((double)lastClose <= trailStop)
                                 {
-                                    OnLog?.Invoke($"📉 {symbol} 트렌드라이드 고정트레일(12×ATR) 청산 | 최고종가={trendRidePeakClose:F4} 트레일={trailStop:F4} 마감종가={lastClose:F4} 이익{profAtr:F1}ATR (ROE {currentROE:F1}%)");
-                                    await ExecuteMarketClose(symbol, $"트렌드라이드 고정트레일 12ATR (peak {trendRidePeakClose:F4})", token);
+                                    OnLog?.Invoke($"📉 {symbol} 트렌드라이드 고정트레일({trailMult:F0}×ATR) 청산 | 최고종가={trendRidePeakClose:F4} 트레일={trailStop:F4} 마감종가={lastClose:F4} 이익{profAtr:F1}ATR (ROE {currentROE:F1}%)");
+                                    await ExecuteMarketClose(symbol, $"트렌드라이드 고정트레일 {trailMult:F0}ATR (peak {trendRidePeakClose:F4})", token);
                                     break;
                                 }
                                 }
                             }
+                        }
+                    }
+                    else if (isMeanRevPos)
+                    {
+                        // [v5.32.0] ★MR 슬리브 전용 청산 — BB(20,2) 중심 회귀 익절 + 12시간 타임캡. 손절은 서버 STOP(진입∓2×ATR).
+                        //   레거시 조기청산(반전캔들/EMA20컷/시간정지)은 백테와 다른 행동이라 MR에는 미적용.
+                        if (DateTime.Now >= trendRideAtrNext)
+                        {
+                            trendRideAtrNext = DateTime.Now.AddSeconds(90);
+                            try
+                            {
+                                var mrK = await _exchangeService.GetKlinesAsync(symbol, KlineInterval.FifteenMinutes, 40, token);
+                                var mrL = mrK?.ToList();
+                                if (mrL != null && mrL.Count >= 22)
+                                {
+                                    int mi = mrL.Count - 2;
+                                    double msum = 0; for (int q = mi - 19; q <= mi; q++) msum += (double)mrL[q].ClosePrice;
+                                    double mrMid = msum / 20; double mrC = (double)mrL[mi].ClosePrice;
+                                    if (mrMid > 0 && ((mrIsLong && mrC >= mrMid) || (!mrIsLong && mrC <= mrMid)))
+                                    {
+                                        OnLog?.Invoke($"🎯 [MR15M] {symbol} BB중심 회귀 익절 | 마감종가={mrC:F6} 중심={mrMid:F6} (ROE {currentROE:F1}%)");
+                                        await ExecuteMarketClose(symbol, $"MR BB중심 회귀 익절 (mid {mrMid:F6})", token);
+                                        break;
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+                        if (DateTime.UtcNow - mrStartUtc > TimeSpan.FromHours(12))
+                        {
+                            OnLog?.Invoke($"⏱️ [MR15M] {symbol} 12시간 타임캡 청산 (ROE {currentROE:F1}%)");
+                            await ExecuteMarketClose(symbol, "MR 12시간 타임캡", token);
+                            break;
                         }
                     }
                     else

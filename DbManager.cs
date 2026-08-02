@@ -541,6 +541,22 @@ END");
             catch { return 0m; }
         }
 
+        /// <summary>[v5.32.0] 이번달(1일 이후) 청산 PnL 합계 — 리스크사이징 안티마틴게일(월적자 시 리스크 축소)용</summary>
+        public async Task<decimal> GetMonthClosedPnlAsync(int userId)
+        {
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                var sum = await db.QueryFirstOrDefaultAsync<decimal?>(
+                    @"SELECT ISNULL(SUM(PnL), 0) FROM dbo.TradeHistory
+                      WHERE UserId=@UserId AND IsClosed=1
+                            AND ExitTime >= DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)",
+                    new { UserId = userId }, commandTimeout: 10);
+                return sum ?? 0m;
+            }
+            catch { return 0m; }
+        }
+
         /// <summary>포지션 청산 시 상태 삭제</summary>
         public async Task DeletePositionStateAsync(int userId, string symbol)
         {
