@@ -174,6 +174,7 @@ namespace TradingBot.Services
                 _ = EnsureTradeHistoryUserIndexAsync();
                 _ = EnsureActivePositionTableAsync();
                 _ = EnsureStrategyRegimeOutcomeTableAsync();
+                _ = EnsureAiEntryOutcomeTableAsync();   // [v5.32.1] AI 95% 유사도 게이트 메모리
                 _ = TradingBot.DbProcedures.EnsureAllAsync(connectionString);
             }
         }
@@ -539,6 +540,82 @@ END");
                 return sum ?? 0m;
             }
             catch { return 0m; }
+        }
+
+        /// <summary>[v5.32.1] AI 진입결과 메모리 테이블 — 진입시점 특징벡터(9차원) + 승/패 라벨. 95% 유사도 게이트용</summary>
+        public async Task EnsureAiEntryOutcomeTableAsync()
+        {
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                await db.ExecuteAsync(@"
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'AiEntryOutcome' AND schema_id = SCHEMA_ID('dbo'))
+BEGIN
+    CREATE TABLE dbo.AiEntryOutcome (
+        Id INT IDENTITY(1,1) PRIMARY KEY,
+        UserId INT NOT NULL,
+        Symbol NVARCHAR(20) NOT NULL,
+        Dir INT NOT NULL,                -- 1=롱 · -1=숏
+        Sleeve NVARCHAR(40) NOT NULL,    -- 진입 소스
+        EntryTime DATETIME2 NOT NULL,
+        F1 FLOAT NOT NULL, F2 FLOAT NOT NULL, F3 FLOAT NOT NULL, F4 FLOAT NOT NULL, F5 FLOAT NOT NULL,
+        F6 FLOAT NOT NULL, F7 FLOAT NOT NULL, F8 FLOAT NOT NULL, F9 FLOAT NOT NULL,
+        Outcome BIT NOT NULL,            -- 1=수익 · 0=손절
+        PnlPct FLOAT NOT NULL,
+        CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+    );
+    CREATE INDEX IX_AEO_User_Dir ON dbo.AiEntryOutcome (UserId, Dir);
+END", commandTimeout: 15);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] AiEntryOutcome 테이블 생성 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>[v5.32.1] 진입결과 저장 (청산 시 호출)</summary>
+        public async Task InsertAiEntryOutcomeAsync(int userId, string symbol, int dir, string sleeve, DateTime entryTime, float[] f, bool win, double pnlPct)
+        {
+            try
+            {
+                if (f == null || f.Length < 9) return;
+                using var db = new SqlConnection(_connectionString);
+                await db.ExecuteAsync(@"
+INSERT INTO dbo.AiEntryOutcome (UserId, Symbol, Dir, Sleeve, EntryTime, F1,F2,F3,F4,F5,F6,F7,F8,F9, Outcome, PnlPct)
+VALUES (@UserId, @Symbol, @Dir, @Sleeve, @EntryTime, @F1,@F2,@F3,@F4,@F5,@F6,@F7,@F8,@F9, @Outcome, @PnlPct)",
+                    new
+                    {
+                        UserId = userId, Symbol = symbol, Dir = dir, Sleeve = sleeve, EntryTime = entryTime,
+                        F1 = (double)f[0], F2 = (double)f[1], F3 = (double)f[2], F4 = (double)f[3], F5 = (double)f[4],
+                        F6 = (double)f[5], F7 = (double)f[6], F8 = (double)f[7], F9 = (double)f[8],
+                        Outcome = win, PnlPct = pnlPct
+                    }, commandTimeout: 10);
+            }
+            catch { }
+        }
+
+        /// <summary>[v5.32.1] 진입결과 로드 (최근 N건) — 시작 시 유사도 메모리 워밍업</summary>
+        public async Task<List<(int dir, float[] vec, bool win)>> LoadAiEntryOutcomesAsync(int userId, int take = 3000)
+        {
+            var list = new List<(int, float[], bool)>();
+            try
+            {
+                using var db = new SqlConnection(_connectionString);
+                var rows = await db.QueryAsync(
+                    @"SELECT TOP (@Take) Dir, F1,F2,F3,F4,F5,F6,F7,F8,F9, Outcome
+                      FROM dbo.AiEntryOutcome WHERE UserId=@UserId ORDER BY Id DESC",
+                    new { UserId = userId, Take = take }, commandTimeout: 15);
+                foreach (var r in rows)
+                {
+                    list.Add(((int)r.Dir, new float[]
+                    {
+                        (float)(double)r.F1, (float)(double)r.F2, (float)(double)r.F3, (float)(double)r.F4, (float)(double)r.F5,
+                        (float)(double)r.F6, (float)(double)r.F7, (float)(double)r.F8, (float)(double)r.F9
+                    }, (bool)r.Outcome));
+                }
+            }
+            catch { }
+            return list;
         }
 
         /// <summary>[v5.32.0] 이번달(1일 이후) 청산 PnL 합계 — 리스크사이징 안티마틴게일(월적자 시 리스크 축소)용</summary>

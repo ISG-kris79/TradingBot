@@ -2124,6 +2124,16 @@ namespace TradingBot
                     _lorentzianLossCooldown.TryRemove(symbol, out _);
                 }
 
+                // [v5.32.1] AI 95% 유사도 게이트 — 진입 스냅샷을 승/패 라벨과 함께 축적 (메모리 + DB)
+                if (_aiCaseSnapshots.TryRemove(symbol, out var aiSnap))
+                {
+                    bool aiWin = actualProfitPct > 0m;
+                    lock (_aiCaseLock) _aiCaseMemory.Add((aiSnap.dir, aiSnap.vec, aiWin));
+                    if (_dbManager != null && AppConfig.CurrentUser != null)
+                        _ = _dbManager.InsertAiEntryOutcomeAsync(AppConfig.CurrentUser.Id, symbol, aiSnap.dir, aiSnap.sleeve, aiSnap.t, aiSnap.vec, aiWin, (double)actualProfitPct);
+                    OnStatusLog?.Invoke($"🧠 [AI유사도] {symbol} 결과 학습 — {(aiWin ? "수익" : "손절")} {actualProfitPct:F2}% ({aiSnap.sleeve})");
+                }
+
                 // [AI 제거] EntryZoneCollector / ProfitRegressor 학습 피드백 코드 통째 제거
             };
 
@@ -5413,6 +5423,7 @@ namespace TradingBot
             lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var exi) && exi != null && Math.Abs(exi.Quantity) > 0) return; }
 
             // [v5.31.2] ★사용자 스펙 — 진입 15분봉 + 방향(상하방) 1시간봉. 롱: 1h EMA20 상승 기울기.
+            double slope1h = 0;   // [v5.32.1] AI 유사도 벡터용으로 승격
             {
                 var h1raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 300, token);
                 var h1 = h1raw as List<IBinanceKline> ?? (h1raw != null ? new List<IBinanceKline>(h1raw) : null);
@@ -5422,7 +5433,8 @@ namespace TradingBot
                 if (!(he20now > 0 && he20prev > 0 && he20now > he20prev))
                 { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP15M] {symbol} 차단 | 1h 상승방향 아님"); return; }
                 // [v5.32.0] 기울기 강도 ≥0.1% — 약기울기(횡보) 진입 차단 (백테: 연환산 111→126% 기여)
-                if (he20now / he20prev - 1 < 0.001)
+                slope1h = he20now / he20prev - 1;
+                if (slope1h < 0.001)
                 { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP15M] {symbol} 차단 | 1h 기울기 약함(<0.1%)"); return; }
             }
 
@@ -5462,8 +5474,13 @@ namespace TradingBot
             if ((5.0 * atr) / c > 0.05) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP15M] {symbol} 차단 | 손절폭 과대"); return; }
             if (Math.Abs((currentPrice - (decimal)c) / (decimal)c) > 0.01m) return;   // 급변 스킵
 
+            // [v5.32.1] AI 95% 유사도 게이트 — 과거 손절과 95%+ 일치하면 진입 포기
+            var aiVec = BuildAiCaseVector(LorentzianFeatures.Extract(winE), CalcRsiClose(k5, ei, 14), atr / c, (double)k5[ei].Volume / vavg, slope1h);
+            if (AiSimilarityBlocked(symbol, 1, aiVec, "[SCALP15M]")) return;
+
             decimal atrStopPx = currentPrice - (decimal)(8.0 * atr);   // [v5.32.0] 트레일8 config — 초기SL도 8×ATR
             _scalp5mCooldown[symbol] = DateTime.UtcNow;
+            RegisterAiCaseSnapshot(symbol, 1, "SCALP15M", aiVec);
             OnStatusLog?.Invoke($"✅ [SCALP15M] {symbol} 진입 | 1h상승(기울기OK)·15m KNN={guard.KnnPrediction}·EMA정배열·거래량폭발·저변동 | SL=진입−8ATR15({atrStopPx:F6})");
             _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "LORENTZIAN_SCALP5M_TRENDRIDE", customStopLossPrice: atrStopPx > 0 ? atrStopPx : 0m);
         }
@@ -5478,6 +5495,7 @@ namespace TradingBot
             lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var exi) && exi != null && Math.Abs(exi.Quantity) > 0) return; }
 
             // [v5.31.2] ★사용자 스펙 — 진입 15분봉 + 방향 1시간봉. 숏: 1h EMA20 하락 기울기.
+            double slope1hS = 0;   // [v5.32.1] AI 유사도 벡터용 (숏은 음수)
             {
                 var h1raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 300, token);
                 var h1 = h1raw as List<IBinanceKline> ?? (h1raw != null ? new List<IBinanceKline>(h1raw) : null);
@@ -5487,6 +5505,7 @@ namespace TradingBot
                 if (!(he20now > 0 && he20prev > 0 && he20now < he20prev))
                 { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP15M_S] {symbol} 차단 | 1h 하락방향 아님"); return; }
                 // [v5.32.0] 기울기 강도 ≥0.1% (하방) — 약기울기 숏이 반등에 물리는 패턴 차단(적자월 부검 근거)
+                slope1hS = he20now / he20prev - 1;
                 if (he20prev / he20now - 1 < 0.001)
                 { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP15M_S] {symbol} 차단 | 1h 하락기울기 약함(<0.1%)"); return; }
             }
@@ -5523,8 +5542,13 @@ namespace TradingBot
             if ((5.0 * atr) / c > 0.05) { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP15M_S] {symbol} 차단 | 손절폭 과대"); return; }
             if (Math.Abs((currentPrice - (decimal)c) / (decimal)c) > 0.01m) return;
 
+            // [v5.32.1] AI 95% 유사도 게이트 — 과거 손절 숏과 95%+ 일치하면 진입 포기
+            var aiVecS = BuildAiCaseVector(LorentzianFeatures.Extract(winE), CalcRsiClose(k5, ei, 14), atr / c, (double)k5[ei].Volume / vavg, slope1hS);
+            if (AiSimilarityBlocked(symbol, -1, aiVecS, "[SCALP15M_S]")) return;
+
             decimal atrStopPx = currentPrice + (decimal)(8.0 * atr);   // [v5.32.0] 숏 손절 = 진입+8×ATR (트레일8 config)
             _scalp5mCooldown[symbol] = DateTime.UtcNow;
+            RegisterAiCaseSnapshot(symbol, -1, "SCALP15M_S", aiVecS);
             OnStatusLog?.Invoke($"✅ [SCALP15M_S] {symbol} 숏진입 | 1h하락(기울기OK)·15m KNN={guard.KnnPrediction}·EMA역배열·거래량폭발·저변동 | SL=진입+8ATR15({atrStopPx:F6})");
             _ = ExecuteAutoOrder(symbol, "SHORT", currentPrice, token, signalSource: "LORENTZIAN_SCALP5M_SHORT_TRENDRIDE", customStopLossPrice: atrStopPx);
         }
@@ -5535,6 +5559,75 @@ namespace TradingBot
         //   소스에 LORENTZIAN 포함 → LCC_ONLY 통과·모멘텀게이트 우회(isMeanRev). 숏은 SHORT_BLOCK 예외 prefix 재사용.
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _mr15Cooldown = new();
         private decimal _monthPnlCache = 0m; private DateTime _monthPnlCheckedAt = DateTime.MinValue;   // [v5.32.0] 리스크사이징 월PnL 캐시(10분)
+
+        // ═══ [v5.32.1] ★AI 95% 유사도 게이트 (사용자 지시: "과거 데이터 95% 일치 — 손절 케이스면 진입 포기, 수익 케이스면 진입") ═══
+        //   진입 시 9차원 특징벡터(KNN 5특징 + RSI + ATR% + 거래량배율 + 1h기울기, 전부 0..1 정규화) 스냅샷 →
+        //   청산 시 승/패 라벨과 함께 DB(AiEntryOutcome) 축적 → 다음 진입 직전 같은 방향 과거케이스와 유사도 대조.
+        //   유사도 = 1 − 유클리드거리/√9. ≥95% 일치 케이스 중 패(손절)가 승보다 많으면 진입 차단. 데이터 없으면 통과(콜드스타트).
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime t, int dir, string sleeve, float[] vec)> _aiCaseSnapshots = new();
+        private readonly List<(int dir, float[] vec, bool win)> _aiCaseMemory = new();
+        private readonly object _aiCaseLock = new(); private bool _aiCaseLoaded = false;
+
+        private static float[] BuildAiCaseVector(float[]? feats, double rsi, double atrPct, double volX, double slope1h)
+        {
+            var v = new float[9];
+            for (int i = 0; i < 5; i++) v[i] = feats != null && feats.Length > i ? Math.Clamp(feats[i], 0f, 1f) : 0.5f;
+            v[5] = (float)Math.Clamp(rsi / 100.0, 0, 1);
+            v[6] = (float)Math.Clamp(atrPct / 0.01, 0, 1);        // ATR/P 0~1% → 0..1
+            v[7] = (float)Math.Clamp(volX / 5.0, 0, 1);           // 거래량배율 0~5x → 0..1
+            v[8] = (float)Math.Clamp(slope1h * 200.0 + 0.5, 0, 1); // 기울기 ±0.25% → 0..1 (0.5=평평)
+            return v;
+        }
+
+        /// <summary>true=차단(과거 95%+ 일치 케이스가 손절 다수)</summary>
+        private bool AiSimilarityBlocked(string symbol, int dir, float[] vec, string tag)
+        {
+            try
+            {
+                lock (_aiCaseLock)
+                {
+                    if (!_aiCaseLoaded)
+                    {
+                        _aiCaseLoaded = true;
+                        if (_dbManager != null && AppConfig.CurrentUser != null)
+                        {
+                            var uid = AppConfig.CurrentUser.Id;
+                            _ = Task.Run(async () =>
+                            {
+                                var loaded = await _dbManager.LoadAiEntryOutcomesAsync(uid);
+                                lock (_aiCaseLock) { _aiCaseMemory.Clear(); _aiCaseMemory.AddRange(loaded); }
+                                OnStatusLog?.Invoke($"🧠 [AI유사도] 과거 진입결과 {loaded.Count}건 로드 (95% 게이트 워밍업)");
+                            });
+                        }
+                        return false;   // 첫 호출은 로드 대기 없이 통과
+                    }
+                    int wins95 = 0, losses95 = 0; double bestSim = 0; bool bestWin = false;
+                    foreach (var c in _aiCaseMemory)
+                    {
+                        if (c.dir != dir || c.vec.Length < 9) continue;
+                        double d2 = 0; for (int i = 0; i < 9; i++) { double df = vec[i] - c.vec[i]; d2 += df * df; }
+                        double sim = 1.0 - Math.Sqrt(d2) / 3.0;
+                        if (sim >= 0.95)
+                        {
+                            if (c.win) wins95++; else losses95++;
+                            if (sim > bestSim) { bestSim = sim; bestWin = c.win; }
+                        }
+                    }
+                    if (losses95 > wins95)
+                    {
+                        OnStatusLog?.Invoke($"⛔ [AI유사도] {symbol} {tag} 진입 포기 — 과거 95%+ 일치 {losses95 + wins95}건 중 손절 {losses95}·수익 {wins95} (최고 {bestSim:P1}={(bestWin ? "수익" : "손절")})");
+                        return true;
+                    }
+                    if (wins95 + losses95 > 0)
+                        OnStatusLog?.Invoke($"🧠 [AI유사도] {symbol} {tag} 과거 95%+ 일치 수익 {wins95}·손절 {losses95} → 진입 허용 (최고 {bestSim:P1})");
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private void RegisterAiCaseSnapshot(string symbol, int dir, string sleeve, float[] vec)
+            => _aiCaseSnapshots[symbol] = (DateTime.UtcNow, dir, sleeve, vec);
         private async Task AnalyzeMeanRev15mEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
             if (_mr15Cooldown.TryGetValue(symbol, out var lastMr) && DateTime.UtcNow - lastMr < TimeSpan.FromMinutes(30)) return;
@@ -5557,11 +5650,19 @@ namespace TradingBot
             bool shortMR = c < e200 && pb > 0.75 && rsi > 62 && c < cPrev;
             if (!longMR && !shortMR) return;
             if (Math.Abs((currentPrice - (decimal)c) / (decimal)c) > 0.01m) return;   // 급변 스킵
+
+            // [v5.32.1] AI 95% 유사도 게이트 — MR도 동일 (과거 손절 케이스 95%+ 일치 시 진입 포기)
+            int mrDir = longMR ? 1 : -1;
+            var mrFeats = LorentzianFeatures.Extract(k.GetRange(Math.Max(0, ei - 499), Math.Min(ei + 1, 500)));
+            var mrVec = BuildAiCaseVector(mrFeats, rsi, atr / c, (double)k[ei].Volume / vavg, 0);
+            if (AiSimilarityBlocked(symbol, mrDir, mrVec, longMR ? "[MR15M]" : "[MR15M_S]")) return;
+
             if (longMR)
             {
                 if (!IsEntryAllowed(symbol, "LORENTZIAN_MEANREV15M", out _)) return;
                 decimal sl = currentPrice - (decimal)(2.0 * atr);
                 _mr15Cooldown[symbol] = DateTime.UtcNow;
+                RegisterAiCaseSnapshot(symbol, 1, "MEANREV15M", mrVec);
                 OnStatusLog?.Invoke($"✅ [MR15M] {symbol} 롱진입 | 횡보(ADX<25)·BB하단존(pb {pb:F2})·RSI{rsi:F0}·거래량OK | TP=BB중심({mid:F6}) SL=진입−2ATR({sl:F6})");
                 _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token, signalSource: "LORENTZIAN_MEANREV15M", customStopLossPrice: sl > 0 ? sl : 0m);
             }
@@ -5570,6 +5671,7 @@ namespace TradingBot
                 if (!IsEntryAllowed(symbol, "LORENTZIAN_SCALP5M_SHORT_MEANREV", out _)) return;
                 decimal sl = currentPrice + (decimal)(2.0 * atr);
                 _mr15Cooldown[symbol] = DateTime.UtcNow;
+                RegisterAiCaseSnapshot(symbol, -1, "MEANREV15M_S", mrVec);
                 OnStatusLog?.Invoke($"✅ [MR15M_S] {symbol} 숏진입 | 횡보(ADX<25)·BB상단존(pb {pb:F2})·RSI{rsi:F0}·거래량OK | TP=BB중심({mid:F6}) SL=진입+2ATR({sl:F6})");
                 _ = ExecuteAutoOrder(symbol, "SHORT", currentPrice, token, signalSource: "LORENTZIAN_SCALP5M_SHORT_MEANREV", customStopLossPrice: sl);
             }
