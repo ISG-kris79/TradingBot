@@ -4458,22 +4458,31 @@ namespace TradingBot
         /// [v5.22.16] 멀티TF WebSocket 캐시 대체 — REST 호출 + 30초 throttle 캐싱 (async)
         /// 캐시 hit 시 즉시 반환. miss 시 REST 1회 후 캐시.
         /// </summary>
+        // [v5.32.2] ★바이낸스 선물 klines limit 상한 = 1500. 초과 요청 시 서버가 -1130("limit is not valid") 반환 →
+        //   GetKlinesAsync 가 빈 리스트를 돌려주고 호출부의 `Count < 300 → return` 에서 로그 없이 조용히 종료됐다.
+        //   v5.28.5(7/22) 가 15m 학습창을 1500→2500 으로 올린 뒤 MTF/SCALP15M/SCALP15M_S 진입경로가 전부 사망(진입 0건).
+        //   호출부를 개별 수정하면 캐시 hit 조건(Count >= limit)이 영원히 거짓이 되어 매 호출 REST 재요청 → 단일 관문에서 클램프.
+        private const int BinanceKlineMaxLimit = 1500;
+
         private async Task<List<IBinanceKline>?> GetMultiTfKlinesThrottledAsync(
             string symbol, KlineInterval interval, int limit, CancellationToken token)
         {
+            int reqLimit = Math.Min(limit, BinanceKlineMaxLimit);   // [v5.32.2] 상한 클램프 (캐시 비교도 동일 기준)
             string key = $"{symbol}|{interval}";
             var nowUtc = DateTime.UtcNow;
             if (_multiTfRestCache.TryGetValue(key, out var cached)
                 && (nowUtc - cached.ts) < MultiTfRestThrottle
-                && cached.klines.Count >= limit)
+                && cached.klines.Count >= reqLimit)
             {
                 return cached.klines;
             }
             try
             {
-                var fetched = await _exchangeService.GetKlinesAsync(symbol, interval, limit, token);
+                var fetched = await _exchangeService.GetKlinesAsync(symbol, interval, reqLimit, token);
                 if (fetched == null) return cached.klines; // null 시 직전 캐시 재활용
                 var list = fetched.ToList();
+                // [v5.32.2] 빈 응답(API 오류)을 캐시에 덮어써 정상 캐시를 오염시키던 문제 차단 — 직전 캐시 유지
+                if (list.Count == 0) return cached.klines;
                 _multiTfRestCache[key] = (nowUtc, list);
                 return list;
             }
@@ -4490,10 +4499,11 @@ namespace TradingBot
         private List<IBinanceKline>? GetMultiTfKlinesCachedOrRefresh(
             string symbol, KlineInterval interval, int limit)
         {
+            int reqLimit = Math.Min(limit, BinanceKlineMaxLimit);   // [v5.32.2] async 경로와 동일 클램프 (같은 캐시 공유)
             string key = $"{symbol}|{interval}";
             var nowUtc = DateTime.UtcNow;
             if (_multiTfRestCache.TryGetValue(key, out var cached)
-                && cached.klines.Count >= limit)
+                && cached.klines.Count >= reqLimit)
             {
                 // 캐시 만료 시 백그라운드 새로고침 (반환은 stale 그대로)
                 if ((nowUtc - cached.ts) >= MultiTfRestThrottle)
@@ -4502,9 +4512,10 @@ namespace TradingBot
                     {
                         try
                         {
-                            var fetched = await _exchangeService.GetKlinesAsync(symbol, interval, limit, default);
-                            if (fetched != null)
-                                _multiTfRestCache[key] = (DateTime.UtcNow, fetched.ToList());
+                            var fetched = await _exchangeService.GetKlinesAsync(symbol, interval, reqLimit, default);
+                            var fl = fetched?.ToList();
+                            if (fl != null && fl.Count > 0)   // [v5.32.2] 빈 응답으로 정상 캐시 덮어쓰기 금지
+                                _multiTfRestCache[key] = (DateTime.UtcNow, fl);
                         }
                         catch { /* 무시 */ }
                     });
@@ -4519,9 +4530,10 @@ namespace TradingBot
                 {
                     try
                     {
-                        var fetched = await _exchangeService.GetKlinesAsync(symbol, interval, limit, default);
-                        if (fetched != null)
-                            _multiTfRestCache[key] = (DateTime.UtcNow, fetched.ToList());
+                        var fetched = await _exchangeService.GetKlinesAsync(symbol, interval, reqLimit, default);
+                        var fl = fetched?.ToList();
+                        if (fl != null && fl.Count > 0)   // [v5.32.2] 빈 응답 캐시 오염 차단
+                            _multiTfRestCache[key] = (DateTime.UtcNow, fl);
                     }
                     catch { /* 무시 */ }
                 });
@@ -5263,8 +5275,11 @@ namespace TradingBot
             }
             // ── 3) 15m 진입봉 — KNN·EMA정배열·방어는 15m에서 판단 (단타 타점) ──
             //   [v5.28.5] 1500→2500 — KNN maxBarsBack 2000 을 꽉 채우도록(TradingView 원본 정렬). 1500은 학습샘플 부족으로 상승장 매수 누락 요인.
-            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 2500, token);
-            if (k15 == null || k15.Count < 300) return;
+            //   [v5.32.2] ★2500 → 1500 되돌림 — 바이낸스 klines limit 상한이 1500이라 2500 요청은 -1130 오류(빈 리스트) →
+            //     이 return 에서 조용히 죽어 7/22 이후 이 경로 진입 0건이었다. 학습창은 봉마다 누적(AddSample)으로 채워진다.
+            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, BinanceKlineMaxLimit, token);
+            if (k15 == null || k15.Count < 300)
+            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [MTF] {symbol} 차단 | 15m 캔들 부족({k15?.Count ?? 0}<300)"); return; }
             var k15List = k15 as List<IBinanceKline> ?? new List<IBinanceKline>(k15);
 
             var engine = _lorentzianEngines.GetOrAdd(symbol,
@@ -5439,10 +5454,11 @@ namespace TradingBot
             }
 
             // 15분봉 로드 + 전용 KNN 학습(walk-forward)
-            var k5raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 2500, token);
-            if (k5raw == null) return;
-            var k5 = k5raw as List<IBinanceKline> ?? new List<IBinanceKline>(k5raw);
-            if (k5.Count < 300) return;
+            // [v5.32.2] 2500 → 1500(API 상한). 2500 요청은 -1130 오류로 빈 리스트 → 아래 return 에서 무로그 사망(진입 0건 근본원인).
+            var k5raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, BinanceKlineMaxLimit, token);
+            var k5 = k5raw as List<IBinanceKline> ?? (k5raw != null ? new List<IBinanceKline>(k5raw) : null);
+            if (k5 == null || k5.Count < 300)
+            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP15M] {symbol} 차단 | 15m 캔들 부족({k5?.Count ?? 0}<300)"); return; }
             var engine = _scalp5mEngines.GetOrAdd(symbol, s => new LorentzianAnnEngine(s, neighborsCount: 8, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount));
             var lastClosed = k5[^2];
             if (!_scalp5mLastTrained.TryGetValue(symbol, out var pt) || pt != lastClosed.OpenTime)
@@ -5510,10 +5526,11 @@ namespace TradingBot
                 { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP15M_S] {symbol} 차단 | 1h 하락기울기 약함(<0.1%)"); return; }
             }
 
-            var k5raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, 2500, token);
-            if (k5raw == null) return;
-            var k5 = k5raw as List<IBinanceKline> ?? new List<IBinanceKline>(k5raw);
-            if (k5.Count < 300) return;
+            // [v5.32.2] 2500 → 1500(API 상한) — 롱 슬리브와 동일 사유
+            var k5raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, BinanceKlineMaxLimit, token);
+            var k5 = k5raw as List<IBinanceKline> ?? (k5raw != null ? new List<IBinanceKline>(k5raw) : null);
+            if (k5 == null || k5.Count < 300)
+            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [SCALP15M_S] {symbol} 차단 | 15m 캔들 부족({k5?.Count ?? 0}<300)"); return; }
             var engine = _scalp5mEngines.GetOrAdd(symbol, s => new LorentzianAnnEngine(s, neighborsCount: 8, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount));
             var lastClosed = k5[^2];
             if (!_scalp5mLastTrained.TryGetValue(symbol, out var pt) || pt != lastClosed.OpenTime)
