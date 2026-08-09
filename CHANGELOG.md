@@ -5,6 +5,36 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.33.2] - 2026-08-09
+
+### 🐛 Fixed — ★설정 마진 무시 문제 (메이저=기본마진 / 알트·밈=PUMP증거금 규칙 복구)
+사용자 설정은 DefaultMargin=$1,000 · PumpMargin=$1,000 · 레버 15배 → 명목 $15,000 이어야 하는데,
+실거래는 전혀 다른 값으로 들어갔다. **설정 마진을 덮어쓰는 경로가 4개** 있었다.
+
+**실측 (2026-08-09, UserId=1)**
+| 심볼 | 명목 | 역산 마진 |
+|---|---|---|
+| LTCUSDT | 5,251 | 350 |
+| LINKUSDT | 5,550 | 370 |
+| ETHUSDT | 6,540 | 436 |
+| AVAXUSDT | 580 | 39 |
+| BTCUSDT | 2,546 | 170 |
+
+**원인 4곳 (전부 제거)**
+1. `GetAdaptiveEntryMarginUsdtAsync` — 메이저 마진을 `가용잔고 × MajorMarginPercent(10%)`, clamp[50, 가용×20%] 로 산정. DefaultMargin 은 **가용잔고가 0일 때만** 쓰는 fallback 이었다. → 설정값 그대로 사용.
+2. `GetLiquidityAdjustedPumpMarginUsdt` — 24h 거래대금 < $10M 이면 PumpMargin **50% 축소**. → 경고만 남기고 설정값 유지.
+3. **[v5.32.0] 리스크사이징 (주범)** — SCALP5M/MEANREV15M 소스에서 마진 = `(가용×2%) / (손절폭×레버)` 로 재계산, 설정마진은 상한으로만. 실측 350 = (10,000×2%)/(3.8%×15) 와 정확히 일치. → `RiskSizingEnabled=false` 로 비활성화.
+4. 회복모드(`IsVolatilityRecovery`) 마진 **60% 축소** → 제거(넓은 손절 방어는 유지).
+
+**라우팅 자체는 정상이었다** — 메이저(BTC/ETH/SOL/XRP)는 `ExecuteMajorLongEntry`, 나머지 알트/밈은 `ExecutePumpLongEntry` 로 이미 올바르게 분기하고 있었다. 문제는 각 경로가 설정값을 안 쓴 것.
+
+- `[SIZE][BASE]` 로그 문구도 `sizingRule=equity*10%` → `sizingRule=DefaultMargin(설정값)` 으로 정정(실제와 불일치했음).
+- ⚠️ 3번은 2026-08-02 사용자 승인 항목이었다. 재활성화하려면 `RiskSizingEnabled=true` 한 줄. 끄면 백테 기준 낙폭이 커진다.
+
+### ⚡ Changed — 설정창 지연 방어
+- `btnSettings_Click` 의 DB 선조회에 **2초 타임아웃**. DB가 느린 순간(앱 시작 직후 Ensure-DDL 스키마락 등)에 설정창 자체가 안 뜨던 문제.
+  실측 17:12 재시작 구간에서 선조회 21~23초 발생(같은 쿼리 평시 6ms). 타임아웃 시 캐시 값으로 즉시 표시.
+
 ## [5.33.1] - 2026-08-09
 
 ### 🐛 Fixed — ★DB 오류 2종 근본 제거 (OpenTime 슬롯 대기 초과 / Bulk Insert 실패)

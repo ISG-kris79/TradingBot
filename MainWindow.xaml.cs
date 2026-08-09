@@ -391,13 +391,30 @@ namespace TradingBot
                     // 앱당 1회만 생성 (생성자의 Ensure* 스키마 DDL은 내부에서 static flag로 1회만 실행됨)
                     _sharedDbManager ??= new DbManager(AppConfig.ConnectionString);
 
+                    // [v5.33.2] 선조회에 2초 타임아웃 — DB가 느린 순간(앱 시작 직후 Ensure-DDL 스키마락, 유지보수 IO 등)에
+                    //   이 await 가 끝날 때까지 설정창 자체가 안 뜨던 문제. 실측 17:12 재시작 구간에서 21~23초 대기 발생.
+                    //   타임아웃 시에는 인메모리 캐시 값으로 창을 즉시 띄운다(저장 시점엔 어차피 DB에 최신값을 쓴다).
                     var sw = System.Diagnostics.Stopwatch.StartNew();
-                    var dbSettings = await _sharedDbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id);
+                    var loadTask = _sharedDbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id);
+                    var winner = await Task.WhenAny(loadTask, Task.Delay(2000));
                     sw.Stop();
-                    if (dbSettings != null)
+                    if (winner == loadTask)
                     {
-                        ApplyGeneralSettings(dbSettings);
-                        AddLog($"[Settings] ✅ DB 선조회 완료 ({sw.ElapsedMilliseconds}ms) | EnableMajor={dbSettings.EnableMajorTrading} MaxMajor={dbSettings.MaxMajorSlots} MaxPump={dbSettings.MaxPumpSlots}");
+                        var dbSettings = await loadTask;
+                        if (dbSettings != null)
+                        {
+                            ApplyGeneralSettings(dbSettings);
+                            AddLog($"[Settings] ✅ DB 선조회 완료 ({sw.ElapsedMilliseconds}ms) | EnableMajor={dbSettings.EnableMajorTrading} MaxMajor={dbSettings.MaxMajorSlots} MaxPump={dbSettings.MaxPumpSlots}");
+                        }
+                    }
+                    else
+                    {
+                        AddLog($"⏱️ [Settings] DB 선조회 2초 초과 — 캐시 값으로 창 표시 (백그라운드에서 계속 조회)");
+                        _ = loadTask.ContinueWith(t =>
+                        {
+                            if (t.Status == TaskStatus.RanToCompletion && t.Result != null)
+                                Dispatcher.Invoke(() => AddLog($"[Settings] ℹ️ DB 선조회 뒤늦게 완료 ({sw.ElapsedMilliseconds}ms 초과분) — 다음 진입부터 최신값 반영"));
+                        }, TaskScheduler.Default);
                     }
                 }
             }

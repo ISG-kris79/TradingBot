@@ -6320,33 +6320,26 @@ namespace TradingBot
             return "OTHER";
         }
 
+        // [v5.33.2] ★사용자 지시 복구 — "메이저는 설정 기본마진 그대로" (마진은 사용자 결정 영역).
+        //   기존(v5.2.1)은 DefaultMargin 을 available<=0 일 때만 쓰는 fallback 으로 두고,
+        //   실제로는 가용잔고 × MajorMarginPercent(기본 10%) 를 clamp[50, 가용×20%] 해서 썼다 →
+        //   설정 $1,000 을 해놔도 잔고에 따라 제멋대로 바뀌는 값이 나갔다. 자동 산정 제거.
         private async Task<decimal> GetAdaptiveEntryMarginUsdtAsync(CancellationToken token, decimal overrideBaseMargin = 0)
         {
-            // [v5.2.1] 메이저 마진 = 가용 잔고(AvailableBalance) × %
-            // 가용 잔고 = 실제 주문 가능한 금액 (전체 잔고 - 사용 중인 증거금)
-            // 예: 가용 $2,200 × 10% = $220 (정상)
             decimal baseMargin = overrideBaseMargin > 0
                 ? overrideBaseMargin
                 : (_settings.DefaultMargin > 0 ? _settings.DefaultMargin : 200.0m);
 
-            decimal available = 0m;
+            // 가용잔고는 '부족 경고' 용도로만 조회 — 마진 값 자체는 조정하지 않는다.
             try
             {
-                available = await _exchangeService.GetAvailableBalanceAsync("USDT", token);
+                decimal available = await _exchangeService.GetAvailableBalanceAsync("USDT", token);
+                if (available > 0 && available < baseMargin)
+                    OnStatusLog?.Invoke($"⚠️ [마진] 설정 기본마진 ${baseMargin:F0} > 가용 ${available:F0} — 거래소가 주문을 거절할 수 있습니다(설정값은 그대로 사용).");
             }
             catch { }
 
-            if (available <= 0)
-                return baseMargin;
-
-            decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
-            decimal margin = Math.Round(available * (majorMarginPercent / 100m), 0, MidpointRounding.AwayFromZero);
-
-            // 최소 $50, 최대 가용잔고의 20%
-            decimal maxMargin = Math.Round(available * 0.2m, 0);
-            margin = Math.Clamp(margin, 50m, maxMargin);
-
-            return margin;
+            return baseMargin;
         }
 
         private decimal GetConfiguredPumpMarginUsdt()
@@ -6381,18 +6374,14 @@ namespace TradingBot
         {
             decimal baseMargin = GetConfiguredPumpMarginUsdt();
 
+            // [v5.33.2] ★유동성 50% 자동축소 제거 — 사용자 지시("알트/밈은 PUMP 증거금 그대로").
+            //   저유동성은 마진을 몰래 깎을 게 아니라 진입 자체를 막을 문제 → 경고만 남긴다.
             try
             {
-                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var ticker) && ticker.QuoteVolume > 0)
+                if (_marketDataManager.TickerCache.TryGetValue(symbol, out var ticker) && ticker.QuoteVolume > 0
+                    && ticker.QuoteVolume < 10_000_000m)
                 {
-                    decimal vol24h = ticker.QuoteVolume;
-                    if (vol24h < 10_000_000m)
-                    {
-                        decimal adjusted = Math.Max(10m, baseMargin * 0.5m);
-                        OnStatusLog?.Invoke(
-                            $"💧 [LIQUIDITY] {symbol} 24h=${vol24h / 1_000_000m:F1}M < $10M → 마진 ${baseMargin:F0} → ${adjusted:F0} (50% 축소)");
-                        baseMargin = adjusted;
-                    }
+                    OnStatusLog?.Invoke($"💧 [LIQUIDITY] {symbol} 24h=${ticker.QuoteVolume / 1_000_000m:F1}M < $10M (저유동성) — 마진은 설정값 ${baseMargin:F0} 그대로 사용");
                 }
             }
             catch { }
@@ -10081,13 +10070,19 @@ namespace TradingBot
             ctx.MarginUsdt = await GetAdaptiveEntryMarginUsdtAsync(ctx.Token);
             ctx.IsPumpStrategy = false;
 
-            // [v3.3.6] 회복 모드 마진 축소 (60%): 넓은 손절 대비 리스크 일정 유지
+            // [v3.3.6 → v5.33.2 비활성화] 회복 모드 마진 60% 축소 — 이것도 설정마진을 몰래 바꾸는 경로라 제거.
+            //   넓은 손절은 그대로 유지되므로 방어는 살아있다(마진만 설정값 그대로).
             if (ctx.IsVolatilityRecovery)
-                ctx.MarginUsdt = Math.Round(ctx.MarginUsdt * 0.6m, 2);
+                OnStatusLog?.Invoke($"🌊 [회복구간] {ctx.Symbol} 넓은 손절 적용 — 마진은 설정값 ${ctx.MarginUsdt:F0} 그대로");
 
-            // [v5.32.0] ★리스크사이징 (수익형 config·사용자 승인 2026-08-02) — SCALP5M/MEANREV15M 슬리브 한정.
-            //   건당리스크 = 가용잔고×2% (이번달 청산PnL<0 → 0.5%로 축소 = 백테 손실축소x0.25). 마진 = 리스크액/(손절폭×레버).
-            //   ※ 기존 설정마진을 '상한'으로만 사용(cap) — 사용자 마진을 초과 발주하지 않음(마진 자동조정 금지 규칙과의 절충).
+            // [v5.32.0 → v5.33.2 비활성화] 리스크사이징 — 사용자 지시로 제거.
+            //   문제: SCALP5M/MEANREV15M 소스에서 마진 = (가용×2%)/(손절폭×레버) 로 재계산해 설정마진을 '상한'으로만 썼다.
+            //   실측(2026-08-09): 설정 $1,000·15배(명목 $15,000)인데 실제 진입은
+            //     LTC 명목 5,251(마진 350) · LINK 5,550(370) · ETH 6,540(436) · AVAX 580(39) · BTC 2,546(170).
+            //   "설정 마진을 쓰라"는 사용자 규칙과 정면 충돌 → 상한 절충안 폐기. 설정값 그대로 발주한다.
+            //   ⚠️ 되돌리려면 RiskSizingEnabled 를 true 로. (백테 수익형 config 의 일부였음 — 재활성화는 사용자 승인 후)
+            const bool RiskSizingEnabled = false;
+            if (RiskSizingEnabled)
             {
                 string rsSrc = (ctx.SignalSource ?? "").ToUpperInvariant();
                 if ((rsSrc.Contains("SCALP5M") || rsSrc.Contains("MEANREV15M")) && ctx.CustomStopLossPrice > 0 && ctx.CurrentPrice > 0)
@@ -10120,7 +10115,7 @@ namespace TradingBot
             }
 
             decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
-            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=equity*{majorMarginPercent:F1}%{(ctx.IsVolatilityRecovery ? " [RECOVERY 60%]" : "")}");
+            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=DefaultMargin(설정값){(ctx.IsVolatilityRecovery ? " [RECOVERY:마진유지]" : "")}");
 
             // 7. R:R 체크
             if (!EvaluateRiskRewardForEntry(ctx))
@@ -10249,7 +10244,7 @@ namespace TradingBot
                 ctx.MarginUsdt = Math.Round(ctx.MarginUsdt * 0.6m, 2);
 
             decimal majorMarginPercent = GetConfiguredMajorMarginPercent();
-            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=equity*{majorMarginPercent:F1}%{(ctx.IsVolatilityRecovery ? " [RECOVERY 60%]" : "")}");
+            EntryLog("SIZE", "BASE", $"margin={ctx.MarginUsdt:F2} leverage={ctx.Leverage}x sizingRule=DefaultMargin(설정값){(ctx.IsVolatilityRecovery ? " [RECOVERY:마진유지]" : "")}");
 
             // 7. R:R 체크
             if (!EvaluateRiskRewardForEntry(ctx))
