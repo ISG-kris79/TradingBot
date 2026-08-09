@@ -4762,6 +4762,9 @@ namespace TradingBot
                     await AnalyzeScalp5mShortEntryAsync(symbol, currentPrice, token);
                     // [v5.32.0] MR 15m 슬리브 (수익형 혼합 config — 횡보월 보완). 추세 슬리브와 병행.
                     await AnalyzeMeanRev15mEntryAsync(symbol, currentPrice, token);
+                    // [v5.33.0] ★엘리엇 파동 슬리브 (사용자 지시) — 진입 15m · 손익비 1:3(진입가 기준).
+                    //   3년·30코인·80만후보 워크포워드 검증에서 5폴드 전부 양수인 유일 규칙(C파 ∪ 숏&ADX25).
+                    await AnalyzeElliottWaveEntryAsync(symbol, currentPrice, token);
                 }
                 catch (Exception ex)
                 {
@@ -5692,6 +5695,110 @@ namespace TradingBot
                 OnStatusLog?.Invoke($"✅ [MR15M_S] {symbol} 숏진입 | 횡보(ADX<25)·BB상단존(pb {pb:F2})·RSI{rsi:F0}·거래량OK | TP=BB중심({mid:F6}) SL=진입+2ATR({sl:F6})");
                 _ = ExecuteAutoOrder(symbol, "SHORT", currentPrice, token, signalSource: "LORENTZIAN_SCALP5M_SHORT_MEANREV", customStopLossPrice: sl);
             }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════════
+        // [v5.33.0] ★엘리엇 파동 진입 — 사용자 스펙: 진입 15분봉 · 손익비 1:3 (진입가 기준)
+        //   검증(Tools/LorentzianValidator --elliott / --elliott2 / --elliott-oos / --elliott-final):
+        //     30코인 · 3년(2023-07~2026-07) · 후보 797,060건 · 필터조합 8,640개 워크포워드.
+        //     ⚠ "최고 조합 1개 고르기"는 OOS에서 붕괴(F4 −0.257R) → 폐기.
+        //     ✅ 채택 = 80만건 한계효과로 검증된 필터만 적층한 고정규칙(M):
+        //        [공통] ZigZag ATR배수≥5 · 되돌림≤0.5 · 거래량≥1.2× · MACD 방향일치 · 1h EMA20 방향일치 · 돌파진입
+        //        [셋업] C파(WC) 전체  ∪  (숏 && ADX≥25)
+        //        → 3,150건 · 승률 37.4% · 기대 +0.139R · PF 1.23 · ★5개 폴드 전부 양수(0.04/0.44/0.08/0.06/0.08)
+        //           흑자월 27/37 · 건당리스크 0.5%·슬롯5 기준 3.1년 +255%(월복리 3.5%·최악월 −10.1%·MDD 15%)
+        //   ※ 롱 단독은 기대 0.003R(무효) — 엣지는 숏과 C파에 있음. 롱은 WC 셋업에서만 발화.
+        //   ※ 손익비 1:3은 "진입가 기준" — SL=구조적 극점(되돌림 극점), TP=진입가 ± 3×(진입가−SL).
+        //   ※ 청산은 TP/SL 두 지점 뿐(트레일·부분익절 금지) + 96시간 시간정지 — 백테와 동일 행동.
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _elliottCooldown = new();
+        private async Task AnalyzeElliottWaveEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
+        {
+            if (_elliottCooldown.TryGetValue(symbol, out var lastEw) && DateTime.UtcNow - lastEw < TimeSpan.FromMinutes(30)) return;
+            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var exi) && exi != null && Math.Abs(exi.Quantity) > 0) return; }
+
+            // ── 15m 진입봉 (사용자 스펙: 진입=15분봉) ──
+            var kraw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, BinanceKlineMaxLimit, token);
+            var k15 = kraw as List<IBinanceKline> ?? (kraw != null ? new List<IBinanceKline>(kraw) : null);
+            if (k15 == null || k15.Count < 400)
+            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [ELLIOTT] {symbol} 차단 | 15m 캔들 부족({k15?.Count ?? 0}<400)"); return; }
+            int ei = k15.Count - 2;                       // 마지막 마감봉
+            double c = (double)k15[ei].ClosePrice;
+            if (Math.Abs((currentPrice - (decimal)c) / (decimal)c) > 0.01m) return;   // 마감봉 대비 1% 이상 급변 → 스킵
+
+            // ── 방향: 1h EMA20 6봉 기울기 (사용자 스펙: 상하방=1시간봉) ──
+            int dir1h = 0;
+            {
+                var h1raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 300, token);
+                var h1 = h1raw as List<IBinanceKline> ?? (h1raw != null ? new List<IBinanceKline>(h1raw) : null);
+                if (h1 == null || h1.Count < 40) return;
+                int i1 = h1.Count - 2;
+                double now20 = CalcEmaClose(h1, i1, 20), prev20 = CalcEmaClose(h1, i1 - 6, 20);
+                if (!(now20 > 0 && prev20 > 0)) return;
+                dir1h = now20 > prev20 ? 1 : (now20 < prev20 ? -1 : 0);
+            }
+            if (dir1h == 0) return;
+
+            // ── 파동 탐지 (ZZ 배수 5·6·8 멀티스케일 — 검증규칙 "ZZ≥5") ──
+            var atrArr = ElliottWaveEngine.BuildAtr(k15, 14);
+            ElliottWaveEngine.Setup? setup = null;
+            foreach (var mult in new[] { 5.0, 6.0, 8.0 })
+            {
+                var s = ElliottWaveEngine.DetectSetup(k15, atrArr, mult, ei, retraceMin: 0.15, retraceMax: 0.50, maxWaitBars: 96);
+                if (s == null) continue;
+                if ((s.IsLong ? 1 : -1) != dir1h) continue;          // 1h 방향 일치 필수
+                setup = s; break;
+            }
+            if (setup == null) return;
+            bool isLong = setup.IsLong;
+
+            // ── 공통 필터 (한계효과 검증분) ──
+            double vsum = 0; for (int q = ei - 19; q <= ei; q++) vsum += (double)k15[q].Volume;
+            double vavg = vsum / 20.0;
+            if (!(vavg > 0 && (double)k15[ei].Volume / vavg >= 1.2))
+            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [ELLIOTT] {symbol} 차단 | 거래량 부족(<1.2×)"); return; }
+            double macdHist = 0;
+            {
+                double e12 = 0, e26 = 0, sig = 0; const double k12 = 2.0 / 13, k26 = 2.0 / 27, k9 = 2.0 / 10;
+                for (int q = 0; q <= ei; q++)
+                {
+                    double cc = (double)k15[q].ClosePrice;
+                    if (q == 0) { e12 = cc; e26 = cc; } else { e12 = cc * k12 + e12 * (1 - k12); e26 = cc * k26 + e26 * (1 - k26); }
+                    double m = e12 - e26;
+                    sig = (q == 0) ? m : m * k9 + sig * (1 - k9);
+                    macdHist = m - sig;
+                }
+            }
+            if (isLong ? !(macdHist > 0) : !(macdHist < 0))
+            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [ELLIOTT] {symbol} 차단 | MACD 방향 불일치(hist={macdHist:F6})"); return; }
+
+            // ── 셋업 채택 규칙 M: C파 전체 ∪ (숏 && ADX≥25) ──
+            double adx15 = LorentzianGuard.CalcADX(k15, ei, 14);
+            bool accept = setup.Kind == "WC" || (!isLong && adx15 >= 25.0);
+            if (!accept)
+            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [ELLIOTT] {symbol} 차단 | 미채택 셋업({setup.Kind}/{(isLong ? "롱" : "숏")}/ADX{adx15:F0}) — 검증규칙은 C파 또는 숏&ADX≥25"); return; }
+
+            // ── 돌파 진입 판정: 현재가가 파동 극점을 돌파했는가 (늦은 추격은 배제) ──
+            bool broke = isLong ? currentPrice >= (decimal)setup.TriggerPrice : currentPrice <= (decimal)setup.TriggerPrice;
+            if (!broke) return;
+            double overshoot = Math.Abs((double)currentPrice - setup.TriggerPrice) / setup.TriggerPrice;
+            if (overshoot > 0.003)
+            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [ELLIOTT] {symbol} 차단 | 돌파선 이탈 과다({overshoot:P2}>0.3% 늦은추격)"); return; }
+
+            // ── 손익비 1:3 (진입가 기준) — SL=구조적 극점, TP=진입가 ± 3×손절폭 ──
+            decimal slPx = (decimal)setup.StopPrice;
+            decimal risk = isLong ? currentPrice - slPx : slPx - currentPrice;
+            if (risk <= 0) return;
+            double stopFrac = (double)(risk / currentPrice);
+            if (stopFrac < 0.002 || stopFrac > 0.06)
+            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [ELLIOTT] {symbol} 차단 | 손절폭 범위밖({stopFrac:P2} — 0.2~6%만 허용)"); return; }
+            decimal tpPx = isLong ? currentPrice + 3m * risk : currentPrice - 3m * risk;
+
+            string src = isLong ? "LORENTZIAN_ELLIOTT" : "LORENTZIAN_SCALP5M_SHORT_ELLIOTT";   // 숏은 SHORT 화이트리스트 prefix 준수
+            if (!IsEntryAllowed(symbol, src, out _)) return;
+            _elliottCooldown[symbol] = DateTime.UtcNow;
+            OnStatusLog?.Invoke($"✅ [ELLIOTT] {symbol} {(isLong ? "롱" : "숏")}진입 | {setup.Kind}파(ZZ{setup.ZzMult:F0}·되돌림{setup.Retrace:P0}·대기{setup.BarsWaited}봉) · 1h방향일치 · 거래량{(double)k15[ei].Volume / vavg:F1}× · ADX{adx15:F0} | 진입{currentPrice:F6} SL{slPx:F6}({stopFrac:P2}) TP{tpPx:F6} = 손익비 1:3");
+            _ = ExecuteAutoOrder(symbol, isLong ? "LONG" : "SHORT", currentPrice, token,
+                signalSource: src, customTakeProfitPrice: tpPx, customStopLossPrice: slPx);
         }
 
         // [v5.23.97] RSI2 과매도 반등 전략 — 3년·119코인 OOS 검증(승률 66%, 기대 +0.103%/건, 과최적화 아님).
@@ -8940,6 +9047,7 @@ namespace TradingBot
 
             // [v5.22.61→v5.31.0] SHORT 차단 — 단, 발굴 하락레짐 스캘프 숏("LORENTZIAN_SCALP5M_SHORT*")만 예외 허용(2026-07-27 사용자 숏허용).
             //   나머지 모든 숏(오발주·타 신호)은 계속 차단(defense-in-depth). 하락월 공략용 의도적 숏만 통과.
+            // [v5.33.0] 엘리엇 숏("LORENTZIAN_SCALP5M_SHORT_ELLIOTT")도 동일 prefix 규칙을 따르므로 별도 예외 불필요.
             if (string.Equals(decision, "SHORT", StringComparison.OrdinalIgnoreCase)
                 && !signalSource.StartsWith("LORENTZIAN_SCALP5M_SHORT", StringComparison.OrdinalIgnoreCase))
             {
@@ -10809,6 +10917,23 @@ namespace TradingBot
                             decimal tpRoe = isLcc ? 300m : (isPump ? Math.Max(_settings.PumpTp1Roe > 0 ? _settings.PumpTp1Roe : 25m, 25m) : 40m);
                             decimal tpPartial = isLcc ? 0.95m : (isPump ? Math.Clamp((_settings.PumpFirstTakeProfitRatioPct > 0 ? _settings.PumpFirstTakeProfitRatioPct : 40m) / 100m, 0.05m, 0.95m) : 0.4m);
                             decimal trailCallback = isPump ? Math.Clamp((_settings.PumpTrailingGapRoe > 0 ? _settings.PumpTrailingGapRoe : 20m) / pumpLev, 0.1m, 5.0m) : 2.0m;
+
+                            // [v5.33.0] ★엘리엇 슬리브 — 거래소 브래킷도 손익비 1:3(진입가 기준)으로 등록.
+                            //   손절폭(구조적 극점까지 %) × 레버 = SL ROE, 그 3배 = TP ROE, 부분익절 없이 전량(1.0).
+                            //   실체결가(actualEntryPrice) 기준으로 다시 계산하므로 슬리피지가 있어도 1:3 비율은 정확히 유지된다.
+                            bool isElliottSrc = ctx.SignalSource != null && ctx.SignalSource.IndexOf("ELLIOTT", StringComparison.OrdinalIgnoreCase) >= 0;
+                            if (isElliottSrc && ctx.CustomStopLossPrice > 0 && actualEntryPrice > 0)
+                            {
+                                decimal lvE = ctx.Leverage > 0 ? ctx.Leverage : 20;
+                                decimal stopFracE = Math.Abs(actualEntryPrice - ctx.CustomStopLossPrice) / actualEntryPrice;
+                                if (stopFracE > 0m)
+                                {
+                                    slRoe = -(stopFracE * lvE * 100m);
+                                    tpRoe = stopFracE * 3m * lvE * 100m;
+                                    tpPartial = 1.0m;
+                                    trailCallback = 5.0m;   // 트레일은 사실상 미사용(청산은 TP/SL 두 지점) — 최대 콜백으로 무해화
+                                }
+                            }
 
                             var result = await _orderLifecycle.RegisterOnEntryAsync(
                                 symbol, isLong, actualEntryPrice, filledQty,

@@ -48,6 +48,7 @@ Modes (each fetches fresh klines from `fapi.binance.com`, paginated, with 0.8s t
 - `--redesign` — sweep filter combinations searching for profitable setups
 - `--target70` / `--target70-90d` — sweep tight-TP/wide-SL combos targeting 70%+ win-rate
 - `--pump-tune` — PUMP-only deep sweep (RSI threshold × TP/SL × WIN)
+- `--elliott` / `--elliott2` / `--elliott-oos` / `--elliott-final` / `--elliott-live` — [v5.33.0] 엘리엇 파동(15m 진입 · 손익비 1:3). 순서대로 구조기본 → 필터조합 스윕(8,640) → 워크포워드 OOS(과최적화 판정) → 고정규칙 폴드안정성 → **라이브 코드 재생검증**(`Services/ElliottWaveEngine.cs` 링크 컴파일). 새 규칙을 만들면 반드시 `--elliott-oos`로 곡선맞춤 여부부터 확인할 것 — 조합 1등 선택은 OOS에서 붕괴했다.
 
 Flags (any mode):
 - `--lev N` — leverage override (default 10)

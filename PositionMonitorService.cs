@@ -451,8 +451,11 @@ namespace TradingBot.Services
             bool isTrendRideShort = false;   // [v5.31.0] 숏 트렌드라이드(하락월 공략) — trough+12ATR 트레일
             bool isScalpTrendRide = false;   // [v5.32.0] SCALP5M 소스 → 트레일 8×ATR (수익형 config), MTF는 12 유지
             bool isMeanRevPos = false; bool mrIsLong = true;   // [v5.32.0] MR 슬리브 — BB중심 익절+12h 타임캡 전용 (레거시 조기청산 차단)
+            bool isElliottPos = false;                        // [v5.33.0] 엘리엇 슬리브 — TP/SL(1:3) 단 두 지점 + 96h 타임캡 전용
+            decimal elliottSlPrice = customStopLossPrice;      // 진입 시점 구조적 극점 — 이후 어떤 경로도 이 값을 옮기지 않음
+            decimal elliottTpPrice = customTakeProfitPrice;    // 진입가 + 3×손절폭
             DateTime mrStartUtc = DateTime.UtcNow;
-            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var trInit) && trInit != null) { var src0 = trInit.EntrySignalSource ?? ""; isTrendRide = src0.IndexOf("TRENDRIDE", StringComparison.OrdinalIgnoreCase) >= 0; isTrendRideShort = isTrendRide && !trInit.IsLong; isScalpTrendRide = isTrendRide && src0.IndexOf("SCALP5M", StringComparison.OrdinalIgnoreCase) >= 0; isMeanRevPos = src0.IndexOf("MEANREV15M", StringComparison.OrdinalIgnoreCase) >= 0 || src0.IndexOf("SHORT_MEANREV", StringComparison.OrdinalIgnoreCase) >= 0; mrIsLong = trInit.IsLong; } }
+            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var trInit) && trInit != null) { var src0 = trInit.EntrySignalSource ?? ""; isElliottPos = src0.IndexOf("ELLIOTT", StringComparison.OrdinalIgnoreCase) >= 0; isTrendRide = !isElliottPos && src0.IndexOf("TRENDRIDE", StringComparison.OrdinalIgnoreCase) >= 0; isTrendRideShort = isTrendRide && !trInit.IsLong; isScalpTrendRide = isTrendRide && src0.IndexOf("SCALP5M", StringComparison.OrdinalIgnoreCase) >= 0; isMeanRevPos = !isElliottPos && (src0.IndexOf("MEANREV15M", StringComparison.OrdinalIgnoreCase) >= 0 || src0.IndexOf("SHORT_MEANREV", StringComparison.OrdinalIgnoreCase) >= 0); mrIsLong = trInit.IsLong; } }
 
             while (!token.IsCancellationRequested)
             {
@@ -494,6 +497,40 @@ namespace TradingBot.Services
                     TimeSpan holdingTime = DateTime.Now - positionEntryTime;
 
                     OnTickerUpdate?.Invoke(symbol, 0m, (double)currentROE);
+
+                    // ═══ [v5.33.0] ★엘리엇 슬리브 전용 루프 — 손익비 1:3 구조 보존 ═══
+                    //   청산지점은 오직 둘: TP=진입가+3R · SL=구조적 극점(되돌림 극점). + 96시간(15m×384봉) 타임캡.
+                    //   레거시 경로(ATR스탑 재계산·ROE backstop·본절·부분익절·트레일·반전캔들컷)를 전면 우회한다 —
+                    //   승자를 3R 전에 자르거나 손절선을 옮기면 승률 37%·1:3(손익분기 25%) 구조가 즉시 적자로 뒤집히기 때문.
+                    //   백테 --elliott-final 과 동일 행동 보장 목적.
+                    if (isElliottPos)
+                    {
+                        if (elliottSlPrice > 0 && (isLong ? currentPrice <= elliottSlPrice : currentPrice >= elliottSlPrice))
+                        {
+                            OnLog?.Invoke($"🔴 [ELLIOTT] {symbol} 손절 — 구조적 극점 이탈 (현재 {currentPrice:F6} / SL {elliottSlPrice:F6}, ROE {currentROE:F1}%)");
+                            await ExecuteMarketClose(symbol, $"엘리엇 SL(1R) {elliottSlPrice:F6}", token);
+                            break;
+                        }
+                        if (elliottTpPrice > 0 && (isLong ? currentPrice >= elliottTpPrice : currentPrice <= elliottTpPrice))
+                        {
+                            OnLog?.Invoke($"🟢 [ELLIOTT] {symbol} 익절 — 3R 도달 (현재 {currentPrice:F6} / TP {elliottTpPrice:F6}, ROE {currentROE:F1}%)");
+                            await ExecuteMarketClose(symbol, $"엘리엇 TP(3R) {elliottTpPrice:F6}", token);
+                            break;
+                        }
+                        if (DateTime.UtcNow - mrStartUtc > TimeSpan.FromHours(96))
+                        {
+                            OnLog?.Invoke($"⏱️ [ELLIOTT] {symbol} 96시간 타임캡 청산 (ROE {currentROE:F1}%)");
+                            await ExecuteMarketClose(symbol, "엘리엇 96시간 타임캡", token);
+                            break;
+                        }
+                        lock (_posLock)
+                        {
+                            if (!_activePositions.ContainsKey(symbol))
+                            { OnLog?.Invoke($"ℹ️ {symbol} 포지션이 외부에서 종료됨."); break; }
+                        }
+                        await Task.Delay(400, token);
+                        continue;
+                    }
 
                     // ═══════════════════════════════════════════════════════════════
                     lock (_posLock)
@@ -594,7 +631,8 @@ namespace TradingBot.Services
                         if (_activePositions.TryGetValue(symbol, out var _ppos))
                             _v562_partialFilled = _ppos.PartialProfitStage >= 1 || _ppos.TakeProfitStep >= 1;
                     }
-                    if (!isTrendRide && !isMeanRevPos && !breakEvenActivated && (highestROE >= breakEvenROE || _v562_partialFilled))
+                    // [v5.33.0] 엘리엇(1:3 고정)도 본절전환 제외 — 3R 도달 전 본절컷은 손익비 구조를 파괴.
+                    if (!isTrendRide && !isMeanRevPos && !isElliottPos && !breakEvenActivated && (highestROE >= breakEvenROE || _v562_partialFilled))
                     {
                         breakEvenActivated = true;
                         PersistPositionState(symbol, isBreakEvenTriggered: true, highestROE: highestROE);
@@ -724,7 +762,8 @@ namespace TradingBot.Services
                     // 2단계: 메이저 2차 구간 진입 시 부분익절 + 스탑 상향
                     // ═══════════════════════════════════════════════
                     //   [v5.26.0] 트렌드라이드는 부분익절 제외 — 40% 조기실현이 승자를 잘라 손익비 파괴(백테 교훈). 전량 태움.
-                    if (!isTrendRide && !isMeanRevPos && breakEvenActivated && !profitLockActivated && highestROE >= profitLockROE)
+                    //   [v5.33.0] 엘리엇도 동일 — TP(3R) 전량 익절만 허용.
+                    if (!isTrendRide && !isMeanRevPos && !isElliottPos && breakEvenActivated && !profitLockActivated && highestROE >= profitLockROE)
                     {
                         profitLockActivated = true;
 

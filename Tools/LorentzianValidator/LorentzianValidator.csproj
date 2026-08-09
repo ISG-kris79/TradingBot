@@ -18,5 +18,7 @@
     <Compile Include="..\..\Services\LorentzianV2\LorentzianAnnEngine.cs" Link="Shared\LorentzianAnnEngine.cs" />
     <Compile Include="..\..\Services\LorentzianV2\LorentzianFeatures.cs" Link="Shared\LorentzianFeatures.cs" />
     <Compile Include="..\..\Services\LorentzianV2\LorentzianGuard.cs" Link="Shared\LorentzianGuard.cs" />
+    <!-- [v5.33.0] 엘리엇 파동 엔진 — 라이브(TradingEngine.AnalyzeElliottWaveEntryAsync)와 동일 코드로 백테 재생검증 -->
+    <Compile Include="..\..\Services\ElliottWaveEngine.cs" Link="Shared\ElliottWaveEngine.cs" />
   </ItemGroup>
 </Project>
