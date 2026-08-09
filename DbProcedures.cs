@@ -134,6 +134,10 @@ END";
         // sp_GetOpenTimeAcrossTables — 단일 심볼의 4개 테이블 OpenTime 집계
         // DBNull/MinValue 방어는 호출 측 SqlDataReader에서 수행.
         // ════════════════════════════════════════════════════════════════════
+        // [v5.33.1] ★튜닝 — 집계 안의 CAST 제거. MAX(CAST(OpenTime AS DATETIME2(7))) 는 컬럼을 감싸므로
+        //   "인덱스 역방향 TOP 1 seek"(MAX 최적화)가 무력화되어 심볼별 전체 행을 읽었다 → 1회 4.5~13.9초.
+        //   CAST 를 집계 밖으로 빼면 (Symbol[,Interval],OpenTime) 인덱스로 즉시 seek — ms 단위.
+        //   증상: ⚠️ [DB] OpenTime 슬롯 대기 초과 → null → 중복제거 스킵 → 4개 테이블 재삽입 → 악순환.
         private const string sp_GetOpenTimeAcrossTables = @"
 CREATE OR ALTER PROCEDURE dbo.sp_GetOpenTimeAcrossTables
     @Symbol   NVARCHAR(32),
@@ -142,10 +146,10 @@ AS
 BEGIN
     SET NOCOUNT ON;
     SELECT
-        (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM dbo.MarketCandles WITH (NOLOCK) WHERE Symbol = @Symbol AND OpenTime > '1800-01-01') AS mc,
-        (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM dbo.CandleData    WITH (NOLOCK) WHERE Symbol = @Symbol AND IntervalText = @Interval AND OpenTime > '1800-01-01') AS cd,
-        (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM dbo.CandleHistory WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval AND OpenTime > '1800-01-01') AS ch,
-        (SELECT MAX(CAST(OpenTime AS DATETIME2(7))) FROM dbo.MarketData    WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval AND OpenTime > '1800-01-01') AS md;
+        CAST((SELECT MAX(OpenTime) FROM dbo.MarketCandles WITH (NOLOCK) WHERE Symbol = @Symbol) AS DATETIME2(7)) AS mc,
+        CAST((SELECT MAX(OpenTime) FROM dbo.CandleData    WITH (NOLOCK) WHERE Symbol = @Symbol AND IntervalText = @Interval) AS DATETIME2(7)) AS cd,
+        CAST((SELECT MAX(OpenTime) FROM dbo.CandleHistory WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval) AS DATETIME2(7)) AS ch,
+        CAST((SELECT MAX(OpenTime) FROM dbo.MarketData    WITH (NOLOCK) WHERE Symbol = @Symbol AND [Interval] = @Interval) AS DATETIME2(7)) AS md;
 END";
 
         // ════════════════════════════════════════════════════════════════════
@@ -167,21 +171,21 @@ BEGIN
     DECLARE @sql NVARCHAR(MAX) = N'';
 
     IF @hasMC = 1
-        SET @sql = @sql + N'SELECT Symbol, MAX(CAST(OpenTime AS DATETIME2(7))) AS MaxOT FROM dbo.MarketCandles WITH (NOLOCK) WHERE Symbol IS NOT NULL AND OpenTime > ''1800-01-01'' GROUP BY Symbol' + CHAR(10);
+        SET @sql = @sql + N'SELECT Symbol, CAST(MAX(OpenTime) AS DATETIME2(7)) AS MaxOT FROM dbo.MarketCandles WITH (NOLOCK) WHERE Symbol IS NOT NULL AND OpenTime > ''1800-01-01'' GROUP BY Symbol' + CHAR(10);
     IF @hasCD = 1
     BEGIN
         IF LEN(@sql) > 0 SET @sql = @sql + N'UNION ALL' + CHAR(10);
-        SET @sql = @sql + N'SELECT Symbol, MAX(CAST(OpenTime AS DATETIME2(7))) AS MaxOT FROM dbo.CandleData WITH (NOLOCK) WHERE Symbol IS NOT NULL AND IntervalText = @Interval AND OpenTime > ''1800-01-01'' GROUP BY Symbol' + CHAR(10);
+        SET @sql = @sql + N'SELECT Symbol, CAST(MAX(OpenTime) AS DATETIME2(7)) AS MaxOT FROM dbo.CandleData WITH (NOLOCK) WHERE Symbol IS NOT NULL AND IntervalText = @Interval AND OpenTime > ''1800-01-01'' GROUP BY Symbol' + CHAR(10);
     END
     IF @hasCH = 1
     BEGIN
         IF LEN(@sql) > 0 SET @sql = @sql + N'UNION ALL' + CHAR(10);
-        SET @sql = @sql + N'SELECT Symbol, MAX(CAST(OpenTime AS DATETIME2(7))) AS MaxOT FROM dbo.CandleHistory WITH (NOLOCK) WHERE [Interval] = @Interval AND OpenTime > ''1800-01-01'' GROUP BY Symbol' + CHAR(10);
+        SET @sql = @sql + N'SELECT Symbol, CAST(MAX(OpenTime) AS DATETIME2(7)) AS MaxOT FROM dbo.CandleHistory WITH (NOLOCK) WHERE [Interval] = @Interval AND OpenTime > ''1800-01-01'' GROUP BY Symbol' + CHAR(10);
     END
     IF @hasMD = 1
     BEGIN
         IF LEN(@sql) > 0 SET @sql = @sql + N'UNION ALL' + CHAR(10);
-        SET @sql = @sql + N'SELECT Symbol, MAX(CAST(OpenTime AS DATETIME2(7))) AS MaxOT FROM dbo.MarketData WITH (NOLOCK) WHERE [Interval] = @Interval AND OpenTime > ''1800-01-01'' GROUP BY Symbol' + CHAR(10);
+        SET @sql = @sql + N'SELECT Symbol, CAST(MAX(OpenTime) AS DATETIME2(7)) AS MaxOT FROM dbo.MarketData WITH (NOLOCK) WHERE [Interval] = @Interval AND OpenTime > ''1800-01-01'' GROUP BY Symbol' + CHAR(10);
     END
 
     IF LEN(@sql) = 0

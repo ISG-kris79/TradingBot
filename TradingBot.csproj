@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -8,26 +8,26 @@
     <UseWPF>true</UseWPF>
     <Platforms>AnyCPU;x64</Platforms>
     <ApplicationIcon>trading_bot.ico</ApplicationIcon>
-    <!-- WPF MarkupCompile 임시 어셈블리 생성 비활성화 -->
+    <!-- WPF MarkupCompile ?꾩떆 ?댁뀍釉붾━ ?앹꽦 鍮꾪솢?깊솕 -->
     <GenerateTemporaryTargetAssembly>false</GenerateTemporaryTargetAssembly>
-    <!-- WPF 디자인타임 빌드 무시 -->
+    <!-- WPF ?붿옄?명???鍮뚮뱶 臾댁떆 -->
     <DesignTimeBuild>false</DesignTimeBuild>
-    <!-- SDK 자동 AssemblyInfo 생성 활성화 (.csproj 버전 정보 사용) -->
+    <!-- SDK ?먮룞 AssemblyInfo ?앹꽦 ?쒖꽦??(.csproj 踰꾩쟾 ?뺣낫 ?ъ슜) -->
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <UserSecretsId>dfccb0df-ed10-4b34-b169-e0e2db206589</UserSecretsId>
     <LangVersion>latest</LangVersion>
-    <Version>5.33.0</Version>
-    <AssemblyVersion>5.33.0.0</AssemblyVersion>
-    <FileVersion>5.33.0.0</FileVersion>
+    <Version>5.33.1</Version>
+    <AssemblyVersion>5.33.1.0</AssemblyVersion>
+    <FileVersion>5.33.1.0</FileVersion>
     <Company>TradingBot</Company>
     <Product>CoinFF TradingBot</Product>
     <Description>Cryptocurrency Trading Bot with AI/ML capabilities</Description>
-    <!-- ko 언어 리소스만 포함 -->
+    <!-- ko ?몄뼱 由ъ냼?ㅻ쭔 ?ы븿 -->
     <SatelliteResourceLanguages>ko</SatelliteResourceLanguages>
-    <!-- app.manifest 포함 -->
+    <!-- app.manifest ?ы븿 -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
     
-    <!-- [Phase 16] 자체 포함 배포 설정 - Windows Desktop Runtime 포함 -->
+    <!-- [Phase 16] ?먯껜 ?ы븿 諛고룷 ?ㅼ젙 - Windows Desktop Runtime ?ы븿 -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <UseAppHost>true</UseAppHost>
@@ -37,9 +37,9 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <PublishSingleFile>false</PublishSingleFile>
     <DebugType>pdbonly</DebugType>
-    <!-- Velopack용 임시 디렉터리 -->
+    <!-- Velopack???꾩떆 ?붾젆?곕━ -->
     <VelopackRid>win-x64</VelopackRid>
-    <!-- ucrtbase.dll 호환성 개선 -->
+    <!-- ucrtbase.dll ?명솚??媛쒖꽑 -->
     <EnableIncludeSourceLink>false</EnableIncludeSourceLink>
     <DebugSymbols>true</DebugSymbols>
     <TieredCompilation>true</TieredCompilation>
@@ -47,24 +47,24 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- [v5.20.7] Tools 하위 csproj는 별도 빌드. 메인 빌드에서 제외. -->
+    <!-- [v5.20.7] Tools ?섏쐞 csproj??蹂꾨룄 鍮뚮뱶. 硫붿씤 鍮뚮뱶?먯꽌 ?쒖쇅. -->
     <Compile Remove="Tools\**\*.cs" />
     <None Remove="Tools\**\*" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- WPF Window Icon용 (어셈블리에 임베드) -->
+    <!-- WPF Window Icon??(?댁뀍釉붾━???꾨쿋?? -->
     <Resource Include="trading_bot.ico" />
     <Resource Include="trading_bot.jpg" />
     <Resource Include="trading_bot.png" />
-    <!-- 시스템 트레이 및 출력 폴더용 -->
+    <!-- ?쒖뒪???몃젅??諛?異쒕젰 ?대뜑??-->
     <Content Include="trading_bot.ico">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Mobile MAUI 파일 제외 -->
+    <!-- Mobile MAUI ?뚯씪 ?쒖쇅 -->
     <Page Remove="Mobile/**/*.xaml" />
     <Page Remove="Releases\**" />
     <Page Remove="TradingBot.Web/**/*.razor" />
@@ -80,10 +80,10 @@
     <Compile Remove="TradingBot.Shared/**/*.cs" />
     <EmbeddedResource Remove="Releases\**" />
     
-    <!-- [v5.19.2] 레거시 Transformer/Torch/TensorFlow 파일 모두 디스크에서 삭제 — Compile Remove 불필요 -->
+    <!-- [v5.19.2] ?덇굅??Transformer/Torch/TensorFlow ?뚯씪 紐⑤몢 ?붿뒪?ъ뿉????젣 ??Compile Remove 遺덊븘??-->
 
     
-    <!-- 루트에 있는 중복 파일 제외 (Services 폴더 사용) -->
+    <!-- 猷⑦듃???덈뒗 以묐났 ?뚯씪 ?쒖쇅 (Services ?대뜑 ?ъ슜) -->
     <Compile Remove="IExchangeService.cs" />
     <Compile Remove="BinanceOrderService.cs" />
     <Compile Remove="WebServerService.cs" />
@@ -111,7 +111,7 @@
     <PackageReference Include="Serilog.Sinks.Console" Version="5.0.1" />
     <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
     <PackageReference Include="Telegram.Bot" Version="22.9.0" />
-    <!-- TensorFlow.NET 제거: ML.NET으로 통합 (v3.0.7) -->
+    <!-- TensorFlow.NET ?쒓굅: ML.NET?쇰줈 ?듯빀 (v3.0.7) -->
     <PackageReference Include="Velopack" Version="0.0.1298" />
   </ItemGroup>
 
@@ -124,6 +124,6 @@
     </None>
   </ItemGroup>
 
-  <!-- 외부 중복 링크/삭제된 프로젝트 참조 제거 -->
+  <!-- ?몃? 以묐났 留곹겕/??젣???꾨줈?앺듃 李몄“ ?쒓굅 -->
 
 </Project>

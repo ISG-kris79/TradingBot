@@ -31,6 +31,12 @@ namespace TradingBot.Services
         private static readonly ConcurrentDictionary<string, DateTime> _openTimeCache
             = new(StringComparer.OrdinalIgnoreCase);
 
+        // [v5.33.1] 네거티브 캐시 — "DB에 아직 데이터 없음"을 기억해 신규 심볼의 무한 재조회를 차단.
+        //   key: "{Symbol}|{Interval}", value: 조회 실패(=데이터 없음) 시각(UTC)
+        private static readonly ConcurrentDictionary<string, DateTime> _openTimeMissCache
+            = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan OpenTimeMissTtl = TimeSpan.FromMinutes(30);
+
         // [v5.10.22] 시작 시 동시 DB 조회 제한 — 신규 심볼 개별 조회용 (일괄 로드 후 드문 케이스)
         private static readonly SemaphoreSlim _openTimeDbSlot = new SemaphoreSlim(5, 5);
         // [v5.10.37] 전체 심볼 일괄 캐시 로드 동시 실행 방지
@@ -216,6 +222,12 @@ SELECT CASE WHEN EXISTS (
             string cacheKey = $"{symbol}|{interval}";
             if (_openTimeCache.TryGetValue(cacheKey, out var cached))
                 return cached;
+            // [v5.33.1] 네거티브 캐시 히트 — "DB에 데이터 없음"을 30분간 기억(신규 심볼 반복조회 차단)
+            if (_openTimeMissCache.TryGetValue(cacheKey, out var missedAt))
+            {
+                if (DateTime.UtcNow - missedAt < OpenTimeMissTtl) return null;
+                _openTimeMissCache.TryRemove(cacheKey, out _);
+            }
 
             // [v5.22.4] BulkPreloadOpenTime 호출 비활성화 — SP 60-120초+ timeout 발생
             //   원인: 4개 candle 테이블 UNION ALL + GROUP BY → 봇 시작 시 매번 timeout
@@ -266,6 +278,11 @@ SELECT CASE WHEN EXISTS (
                 if (result.HasValue)
                     _openTimeCache.AddOrUpdate(cacheKey, result.Value,
                         (_, existing) => result.Value < existing ? result.Value : existing);
+                else
+                    // [v5.33.1] ★네거티브 캐시 — DB에 아직 데이터가 없는 신규 심볼(FORMUSDT 등)은 결과가 null 이라
+                    //   기존 코드에선 캐시가 채워지지 않아 5분마다 같은 조회를 영구 반복했다(슬롯 고갈의 실제 연료).
+                    //   "없음"도 30분간 기억해서 재조회를 막는다. 저장이 일어나면 UpdateOpenTimeCache 가 즉시 덮어쓴다.
+                    _openTimeMissCache[cacheKey] = DateTime.UtcNow;
                 return result;
             }
             catch (Exception ex)
@@ -286,6 +303,7 @@ SELECT CASE WHEN EXISTS (
         {
             if (string.IsNullOrEmpty(symbol)) return;
             string key = $"{symbol}|{interval}";
+            _openTimeMissCache.TryRemove(key, out _);   // [v5.33.1] 저장이 생겼으니 "데이터 없음" 기억 해제
             foreach (var t in openTimes)
             {
                 _openTimeCache.AddOrUpdate(key, t, (_, existing) => t > existing ? t : existing);
@@ -816,17 +834,48 @@ SELECT CASE WHEN EXISTS (
             using var conn = new SqlConnection(_connStr);
             await conn.OpenAsync();
 
-            using var bulkCopy = new SqlBulkCopy(conn);
-            bulkCopy.DestinationTableName = "MarketCandles";
-            bulkCopy.BulkCopyTimeout = 60; // 대량 삽입 타임아웃 (60초)
-            foreach (DataColumn col in dt.Columns)
-            {
-                bulkCopy.ColumnMappings.Add(col.ColumnName, col.ColumnName);
-            }
-
+            // [v5.33.1] ★중복삽입 제거 — 기존엔 MarketCandles 실테이블로 곧장 bulk 했고, 이 테이블엔 유니크 제약도 없어
+            //   같은 봉이 무제한 중복 적재됐다(OpenTime 조회 실패 → 중복제거 스킵 경로와 맞물려 폭증).
+            //   결과: 26.8M행에 29.2GB 할당(실사용 4.0GB) — 데이터파일 여유 고갈 → bulk 60초 타임아웃("Bulk Insert 실패").
+            //   해결: 다른 3개 테이블과 동일하게 임시 스테이징 → NOT EXISTS 삽입(멱등). 타임아웃 60→180초, BatchSize 지정.
             try
             {
-                await bulkCopy.WriteToServerAsync(dt);
+                const string createStageSql = @"
+                    IF OBJECT_ID('tempdb..#McStage') IS NOT NULL DROP TABLE #McStage;
+                    SELECT TOP 0 Symbol, OpenTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume,
+                                 RSI, MACD, MACD_Signal, MACD_Hist, ATR, BollingerUpper, BollingerLower,
+                                 Fib_236, Fib_382, Fib_500, Fib_618, ElliottWaveState, Label
+                    INTO #McStage FROM dbo.MarketCandles WITH (NOLOCK);";
+                using (var cmd = new SqlCommand(createStageSql, conn) { CommandTimeout = 60 })
+                    await cmd.ExecuteNonQueryAsync();
+
+                using (var bulkCopy = new SqlBulkCopy(conn)
+                {
+                    DestinationTableName = "#McStage",
+                    BulkCopyTimeout = 180,
+                    BatchSize = 5000
+                })
+                {
+                    foreach (DataColumn col in dt.Columns)
+                        bulkCopy.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+                    await bulkCopy.WriteToServerAsync(dt);
+                }
+
+                const string insertSql = @"
+                    INSERT INTO dbo.MarketCandles (Symbol, OpenTime, OpenPrice, HighPrice, LowPrice, ClosePrice, Volume,
+                                                   RSI, MACD, MACD_Signal, MACD_Hist, ATR, BollingerUpper, BollingerLower,
+                                                   Fib_236, Fib_382, Fib_500, Fib_618, ElliottWaveState, Label)
+                    SELECT s.Symbol, s.OpenTime, s.OpenPrice, s.HighPrice, s.LowPrice, s.ClosePrice, s.Volume,
+                           s.RSI, s.MACD, s.MACD_Signal, s.MACD_Hist, s.ATR, s.BollingerUpper, s.BollingerLower,
+                           s.Fib_236, s.Fib_382, s.Fib_500, s.Fib_618, s.ElliottWaveState, s.Label
+                    FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY Symbol, OpenTime ORDER BY (SELECT 0)) AS rn FROM #McStage) s
+                    WHERE s.rn = 1
+                      AND NOT EXISTS (SELECT 1 FROM dbo.MarketCandles m WITH (NOLOCK)
+                                      WHERE m.Symbol = s.Symbol AND m.OpenTime = s.OpenTime);
+                    DROP TABLE #McStage;";
+                using (var cmd = new SqlCommand(insertSql, conn) { CommandTimeout = 180 })
+                    await cmd.ExecuteNonQueryAsync();
+
                 UpdateOpenTimeCache(data.First().Symbol, "5m", data.Select(d => d.OpenTime));
             }
             catch (Exception ex) { Log($"❌ [DB] Bulk Insert 실패: {ex.Message}"); }

@@ -5,6 +5,34 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.33.1] - 2026-08-09
+
+### 🐛 Fixed — ★DB 오류 2종 근본 제거 (OpenTime 슬롯 대기 초과 / Bulk Insert 실패)
+
+**증상**
+- `⚠️ [DB] OpenTime 슬롯 대기 초과 (SYMBOL) → null (전체 동기화 수행)`
+- `❌ [DB] Bulk Insert 실패: ...` (60초 타임아웃)
+
+**실측 진단**
+- 캔들 4개 테이블 합계 **9,000만 행 / 56.6GB**. 데이터파일 여유 공간 **205MB**뿐.
+- `sp_GetOpenTimeAcrossTables` 1회 **4.5~13.9초** (BTCUSDT 13.9s).
+- `MarketCandles` PK: **29.2GB 할당 / 4.0GB 사용** → 25.2GB가 빈 페이지. 보조 인덱스도 9.3GB/1.3GB.
+  단편화 PK 95.2% · UQ_MarketData 98.7% · UQ_Candle 95.9%.
+
+**원인 3개 (연쇄)**
+1. **SP가 집계 안에서 CAST** — `MAX(CAST(OpenTime AS DATETIME2(7)))` 는 컬럼을 감싸므로 인덱스 역방향 TOP1 seek(MAX 최적화)가 죽고 심볼별 전체 행을 읽었다.
+2. **네거티브 캐시 부재** — `GetLatestSyncedOpenTimeAcrossTablesAsync` 가 결과가 있을 때만 캐시(`if (result.HasValue)`). DB에 데이터가 없는 신규 알트는 5~14초 스캔을 **매 주기 영구 반복** → 슬롯 5개 고갈 → 30초 대기 초과.
+3. **MarketCandles 중복 무제한 적재** — 이 테이블만 스테이징 없이 실테이블로 직접 bulk 삽입, 게다가 유니크 제약이 없다. ①②로 OpenTime 조회가 null 이 되면 호출부가 중복제거를 건너뛰고 재삽입 → 같은 봉이 계속 쌓임 → 파일 여유 고갈 → **bulk 60초 타임아웃**. (오류가 오류를 키우는 되먹임)
+
+**수정**
+- `DbProcedures.cs` — `sp_GetOpenTimeAcrossTables` / `sp_BulkPreloadOpenTime` 의 CAST 를 집계 **밖으로** 이동.
+  → 실측 **13.9초 → 5ms** (ICNTUSDT 11.8s → 10ms).
+- `DatabaseService.cs` — `_openTimeMissCache` 신설(TTL 30분). "데이터 없음"도 기억해 재조회 차단. 저장 발생 시 `UpdateOpenTimeCache` 가 즉시 해제.
+- `DatabaseService.cs` — `BulkInsertMarketDataAsync` 를 나머지 3개 테이블과 동일한 **스테이징 → NOT EXISTS 삽입(멱등)** 구조로 교체. 스테이징 내 중복도 `ROW_NUMBER()` 로 1건만. 타임아웃 60→180초, `BatchSize=5000` 지정.
+- DB 유지보수: 단편화 인덱스 10개 `REORGANIZE` + `UPDATE STATISTICS` 로 빈 페이지 회수.
+
+**주의**: SP는 앱 시작 시 `DbProcedures` 가 재생성하므로 **코드 수정이 없으면 재시작 때 옛 정의로 되돌아간다.** 그래서 DB 직접 적용과 코드 수정을 함께 했다.
+
 ## [5.33.0] - 2026-08-09
 
 ### ✨ Added — ★엘리엇 파동 진입 슬리브 (사용자 지시: 진입 15분봉 · 손익비 1:3 진입가 기준)
