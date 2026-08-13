@@ -899,9 +899,22 @@ namespace TradingBot
             decimal symMul = Services.SymbolScorecard.Instance.GetMultiplier(symbol);
             if (symMul <= 0m)
             {
-                blockReason = $"SCORECARD_BLOCKED (30d WR≤30% PnL≤-$30 — 자가학습 차단)";
-                OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason}");
-                return false;
+                // [v5.33.3] ★엘리엇 슬리브 면제 — 스코어카드는 "심볼" 단위라 신규 슬리브가 연좌 차단된다.
+                //   실측(2026-08-12 00:00~00:15): BTC 숏 엘리엇이 전 필터를 통과하고도 SCORECARD_BLOCKED 로
+                //   151회 연속 차단 → 4일간 엘리엇 진입 0건의 직접 원인. 차단 근거였던 BTC 30일 -$86.34 는
+                //   전부 다른 전략(LORENTZIAN/MAJOR)이 낸 손실이고, 엘리엇은 표본이 0건이었다.
+                //   엘리엇은 진입 시점에 구조적 SL(되돌림 극점)을 고정하므로 심볼 무관하게 손실이 1R로 캡된다.
+                //   ※ 면제는 엘리엇 한정. 다른 소스는 기존대로 차단 유지.
+                if (srcU.Contains("ELLIOTT"))
+                {
+                    OnStatusLog?.Invoke($"🌊 [ELLIOTT] {symbol} 스코어카드 차단 면제 (심볼 연좌 — 엘리엇 표본 별도)");
+                }
+                else
+                {
+                    blockReason = $"SCORECARD_BLOCKED (30d WR≤30% PnL≤-$30 — 자가학습 차단)";
+                    OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason}");
+                    return false;
+                }
             }
 
             // [v5.25.32] LCC_RANGE_TOP 고점차단 제거 — 사용자: "급등중이면 KNN이 더 오를지 판단하는 건데 왜 blanket 차단?".
@@ -4639,32 +4652,50 @@ namespace TradingBot
             //         (5-28 진입 0건, MCAP_OUT_OF_TOP30 차단 341K건 = 93%)
             //   해결: 동적 후보를 MarketCapTracker.IsTopN(=Top30) 통과 심볼로 제한 → 추적 = 진입가능 심볼 일치
             //   MarketCapTracker 미준비(IsReady=false) 시 후보 0 → 메이저4만 추적 (부팅 직후 일시적, 캐시 채워지면 정상)
+            // [v5.33.3] ★숏 유니버스 확보 — 하락종목 슬라이스 신설.
+            //   문제: v5.22.54 의 `PriceChangePercent > 0` 은 봇이 롱전용이던 시절 규칙인데,
+            //         v5.31.0 숏 스캘프 · v5.33.0 엘리엇(엣지가 숏과 C파에 있음)이 들어온 뒤에도 그대로 남아
+            //         "숏 전략인데 24h 상승코인만 추적"하는 모순이 됐다. 실측 4일간 엘리엇 로직이 돈 심볼은 11개뿐.
+            //   해결: 동적 30슬롯을 상승 20 / 하락 10 으로 분할. 하락 슬라이스는 |변동률| 큰 순.
+            //   ※ 롱 슬리브는 각자 자체 방향필터(트렌드라이드 EMA50>EMA200, 스캘프 1h/4h 레짐)를 이미 갖고 있어
+            //     하락코인이 풀에 들어와도 롱 진입으로 이어지지 않는다. 풀은 "추적 대상"일 뿐 진입 허가가 아니다.
+            const int DownSliceSize = 10;
             var dynamicSymbols = new List<string>();
+            int downCount = 0;
             var mcapTracker = Services.MarketCapTracker.Instance;
             if (_marketDataManager?.TickerCache != null && mcapTracker.IsReady)
             {
                 HashSet<string> activeSet;
                 lock (_posLock) { activeSet = new HashSet<string>(_activePositions.Keys, StringComparer.OrdinalIgnoreCase); }
 
-                var sorted = _marketDataManager.TickerCache.Values
-                    .Where(t => !string.IsNullOrWhiteSpace(t.Symbol)
-                                && t.Symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
-                                && !FixedMajorPool.Contains(t.Symbol)
-                                && mcapTracker.IsTopN(t.Symbol)          // [v5.23.66] 시총 Top 30 만
-                                && t.PriceChangePercent > 0m)            // 상승 종목만
-                    .Select(t => new
-                    {
-                        t.Symbol,
-                        Score = (double)t.PriceChangePercent
-                              * Math.Log10(Math.Max(1.0, (double)t.QuoteVolume))
-                    })
-                    .OrderByDescending(x => x.Score)
-                    .Select(x => x.Symbol)
+                bool Eligible(TickerCacheItem t) =>
+                    !string.IsNullOrWhiteSpace(t.Symbol)
+                    && t.Symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
+                    && !FixedMajorPool.Contains(t.Symbol)
+                    && mcapTracker.IsTopN(t.Symbol);                     // [v5.23.66] 시총 Top 30 만
+
+                var upSorted = _marketDataManager.TickerCache.Values
+                    .Where(t => Eligible(t) && t.PriceChangePercent > 0m)
+                    .OrderByDescending(t => (double)t.PriceChangePercent * Math.Log10(Math.Max(1.0, (double)t.QuoteVolume)))
+                    .Select(t => t.Symbol)
                     .ToList();
 
-                foreach (var sym in sorted)
+                // 하락 슬라이스 — 낙폭이 큰 순(=score 최소). 숏 슬리브(엘리엇 숏 · SCALP5M_SHORT) 전용 후보.
+                var downSorted = _marketDataManager.TickerCache.Values
+                    .Where(t => Eligible(t) && t.PriceChangePercent < 0m)
+                    .OrderBy(t => (double)t.PriceChangePercent * Math.Log10(Math.Max(1.0, (double)t.QuoteVolume)))
+                    .Select(t => t.Symbol)
+                    .ToList();
+
+                foreach (var sym in downSorted)
                 {
                     if (activeSet.Contains(sym)) continue;
+                    dynamicSymbols.Add(sym); downCount++;
+                    if (downCount >= DownSliceSize) break;
+                }
+                foreach (var sym in upSorted)
+                {
+                    if (activeSet.Contains(sym) || dynamicSymbols.Contains(sym)) continue;
                     dynamicSymbols.Add(sym);
                     if (dynamicSymbols.Count >= DynamicPoolSize) break;
                 }
@@ -4682,7 +4713,7 @@ namespace TradingBot
             foreach (var added in newPool)
                 _activeTrackingPool.TryAdd(added, 0);
 
-            OnStatusLog?.Invoke($"🎯 [추적풀] 갱신 — 메이저4 + 동적{dynamicSymbols.Count}개 = 총 {_activeTrackingPool.Count}개 ({string.Join(",", dynamicSymbols)})");
+            OnStatusLog?.Invoke($"🎯 [추적풀] 갱신 — 메이저4 + 동적{dynamicSymbols.Count}개(상승{dynamicSymbols.Count - downCount}·하락{downCount}) = 총 {_activeTrackingPool.Count}개 ({string.Join(",", dynamicSymbols)})");
         }
 
         private async Task ProcessCoinAndTradeBySymbolAsync(string symbol, decimal currentPrice, CancellationToken token)
@@ -5711,51 +5742,82 @@ namespace TradingBot
         //   ※ 손익비 1:3은 "진입가 기준" — SL=구조적 극점(되돌림 극점), TP=진입가 ± 3×(진입가−SL).
         //   ※ 청산은 TP/SL 두 지점 뿐(트레일·부분익절 금지) + 96시간 시간정지 — 백테와 동일 행동.
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _elliottCooldown = new();
+
+        // [v5.33.3] ★엘리엇 진단 계측 — 기존엔 탈락 지점 대부분이 무로그 return 이라 "왜 진입 0건인지"를 셀 수 없었다.
+        //   (특히 `if (!broke) return;` — 셋업까지 갔는데 돌파를 안 한 건수가 통째로 안 보였음)
+        //   ①모든 탈락 단계에 카운터 ②블록 로그의 `Second % 30 == 0` 샘플링 제거(같은 사유는 5분 1회로 디듀프)
+        //   ③10분마다 단계별 누적 요약 1줄. 다음 무진입 진단 때 로그 grep 만으로 병목이 바로 나온다.
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _ewStage = new();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _ewLogDedup = new();
+        private DateTime _ewNextSummary = DateTime.MinValue;
+
+        private void EwStage(string symbol, string stage)
+        {
+            _ewStage.AddOrUpdate(stage, 1, (_, v) => v + 1);
+            if (DateTime.UtcNow < _ewNextSummary) return;
+            _ewNextSummary = DateTime.UtcNow.AddMinutes(10);
+            var snap = _ewStage.ToArray();
+            if (snap.Length == 0) return;
+            Array.Sort(snap, (a, b) => b.Value.CompareTo(a.Value));
+            OnStatusLog?.Invoke($"📊 [ELLIOTT] 10분 단계요약 | {string.Join(" · ", snap.Select(kv => $"{kv.Key}:{kv.Value}"))}");
+        }
+
+        /// <summary>같은 심볼·같은 사유는 5분에 1회만 출력(스팸 방지). 기존 30초 초단위 샘플링과 달리 사유를 놓치지 않는다.</summary>
+        private void EwLog(string symbol, string msg)
+        {
+            string key = symbol + "|" + msg.GetHashCode().ToString();
+            var now = DateTime.UtcNow;
+            if (_ewLogDedup.TryGetValue(key, out var last) && now - last < TimeSpan.FromMinutes(5)) return;
+            _ewLogDedup[key] = now;
+            OnStatusLog?.Invoke(msg);
+        }
+
         private async Task AnalyzeElliottWaveEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
-            if (_elliottCooldown.TryGetValue(symbol, out var lastEw) && DateTime.UtcNow - lastEw < TimeSpan.FromMinutes(30)) return;
-            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var exi) && exi != null && Math.Abs(exi.Quantity) > 0) return; }
+            if (_elliottCooldown.TryGetValue(symbol, out var lastEw) && DateTime.UtcNow - lastEw < TimeSpan.FromMinutes(30)) { EwStage(symbol, "쿨다운"); return; }
+            lock (_posLock) { if (_activePositions.TryGetValue(symbol, out var exi) && exi != null && Math.Abs(exi.Quantity) > 0) { EwStage(symbol, "포지션보유"); return; } }
 
             // ── 15m 진입봉 (사용자 스펙: 진입=15분봉) ──
             var kraw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, BinanceKlineMaxLimit, token);
             var k15 = kraw as List<IBinanceKline> ?? (kraw != null ? new List<IBinanceKline>(kraw) : null);
             if (k15 == null || k15.Count < 400)
-            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [ELLIOTT] {symbol} 차단 | 15m 캔들 부족({k15?.Count ?? 0}<400)"); return; }
+            { EwStage(symbol, "캔들부족"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 차단 | 15m 캔들 부족({k15?.Count ?? 0}<400)"); return; }
             int ei = k15.Count - 2;                       // 마지막 마감봉
             double c = (double)k15[ei].ClosePrice;
-            if (Math.Abs((currentPrice - (decimal)c) / (decimal)c) > 0.01m) return;   // 마감봉 대비 1% 이상 급변 → 스킵
+            if (Math.Abs((currentPrice - (decimal)c) / (decimal)c) > 0.01m) { EwStage(symbol, "마감봉대비급변"); return; }   // 1% 이상 급변 → 스킵
 
             // ── 방향: 1h EMA20 6봉 기울기 (사용자 스펙: 상하방=1시간봉) ──
             int dir1h = 0;
             {
                 var h1raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 300, token);
                 var h1 = h1raw as List<IBinanceKline> ?? (h1raw != null ? new List<IBinanceKline>(h1raw) : null);
-                if (h1 == null || h1.Count < 40) return;
+                if (h1 == null || h1.Count < 40) { EwStage(symbol, "1h캔들부족"); return; }
                 int i1 = h1.Count - 2;
                 double now20 = CalcEmaClose(h1, i1, 20), prev20 = CalcEmaClose(h1, i1 - 6, 20);
-                if (!(now20 > 0 && prev20 > 0)) return;
+                if (!(now20 > 0 && prev20 > 0)) { EwStage(symbol, "1hEMA무효"); return; }
                 dir1h = now20 > prev20 ? 1 : (now20 < prev20 ? -1 : 0);
             }
-            if (dir1h == 0) return;
+            if (dir1h == 0) { EwStage(symbol, "1h방향평탄"); return; }
 
             // ── 파동 탐지 (ZZ 배수 5·6·8 멀티스케일 — 검증규칙 "ZZ≥5") ──
             var atrArr = ElliottWaveEngine.BuildAtr(k15, 14);
             ElliottWaveEngine.Setup? setup = null;
+            bool setupDirMismatch = false;   // [v5.33.3] "셋업은 있었는데 1h 방향이 반대" 와 "셋업 자체가 없음" 을 구분
             foreach (var mult in new[] { 5.0, 6.0, 8.0 })
             {
                 var s = ElliottWaveEngine.DetectSetup(k15, atrArr, mult, ei, retraceMin: 0.15, retraceMax: 0.50, maxWaitBars: 96);
                 if (s == null) continue;
-                if ((s.IsLong ? 1 : -1) != dir1h) continue;          // 1h 방향 일치 필수
+                if ((s.IsLong ? 1 : -1) != dir1h) { setupDirMismatch = true; continue; }   // 1h 방향 일치 필수
                 setup = s; break;
             }
-            if (setup == null) return;
+            if (setup == null) { EwStage(symbol, setupDirMismatch ? "셋업-1h방향불일치" : "셋업없음"); return; }
             bool isLong = setup.IsLong;
 
             // ── 공통 필터 (한계효과 검증분) ──
             double vsum = 0; for (int q = ei - 19; q <= ei; q++) vsum += (double)k15[q].Volume;
             double vavg = vsum / 20.0;
             if (!(vavg > 0 && (double)k15[ei].Volume / vavg >= 1.2))
-            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [ELLIOTT] {symbol} 차단 | 거래량 부족(<1.2×)"); return; }
+            { EwStage(symbol, "거래량부족"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 차단 | 거래량 부족({(vavg > 0 ? (double)k15[ei].Volume / vavg : 0):F2}×<1.2×)"); return; }
             double macdHist = 0;
             {
                 double e12 = 0, e26 = 0, sig = 0; const double k12 = 2.0 / 13, k26 = 2.0 / 27, k9 = 2.0 / 10;
@@ -5769,33 +5831,46 @@ namespace TradingBot
                 }
             }
             if (isLong ? !(macdHist > 0) : !(macdHist < 0))
-            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [ELLIOTT] {symbol} 차단 | MACD 방향 불일치(hist={macdHist:F6})"); return; }
+            { EwStage(symbol, "MACD불일치"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 차단 | MACD 방향 불일치(hist={macdHist:F6})"); return; }
 
             // ── 셋업 채택 규칙 M: C파 전체 ∪ (숏 && ADX≥25) ──
             double adx15 = LorentzianGuard.CalcADX(k15, ei, 14);
             bool accept = setup.Kind == "WC" || (!isLong && adx15 >= 25.0);
             if (!accept)
-            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [ELLIOTT] {symbol} 차단 | 미채택 셋업({setup.Kind}/{(isLong ? "롱" : "숏")}/ADX{adx15:F0}) — 검증규칙은 C파 또는 숏&ADX≥25"); return; }
+            { EwStage(symbol, $"미채택({setup.Kind}/{(isLong ? "롱" : "숏")})"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 차단 | 미채택 셋업({setup.Kind}/{(isLong ? "롱" : "숏")}/ADX{adx15:F0}) — 검증규칙은 C파 또는 숏&ADX≥25"); return; }
 
             // ── 돌파 진입 판정: 현재가가 파동 극점을 돌파했는가 (늦은 추격은 배제) ──
             bool broke = isLong ? currentPrice >= (decimal)setup.TriggerPrice : currentPrice <= (decimal)setup.TriggerPrice;
-            if (!broke) return;
+            if (!broke) { EwStage(symbol, "돌파대기"); return; }
             double overshoot = Math.Abs((double)currentPrice - setup.TriggerPrice) / setup.TriggerPrice;
-            if (overshoot > 0.003)
-            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [ELLIOTT] {symbol} 차단 | 돌파선 이탈 과다({overshoot:P2}>0.3% 늦은추격)"); return; }
+            // [v5.33.3] ★늦은추격 상한 0.3% → 0.15% (완화가 아니라 강화 — 측정 결과가 완화안을 반증했다).
+            //   당초 계획은 "8/12 01:00 ETHUSDT 가 0.34% 로 0.04%p 초과해 탈락했으니 0.5%로 완화"였으나,
+            //   --elliott-live 3년·30코인 재생으로 실제 측정하니 추격을 허용할수록 성적이 단조 악화했다:
+            //     0.50%+리스크비례 → 1,391건 0.171R PF1.27 F0 −0.07 흑자월 22/37
+            //     0.30%(기존)      → 1,275건 0.213R PF1.35 F0 −0.06 흑자월 24/37
+            //     0.15%(채택)      → 1,141건 0.234R PF1.39 F0 +0.06 흑자월 25/37  ← 처음으로 5폴드 전부 양수
+            //   추격분은 그대로 손절폭 확대(=TP 목표 원거리화)로 전가되므로, 늦게 잡은 돌파는 건수만 늘리고
+            //   기대값을 깎는다. 건수 −10.5%를 내주고 기대R +10%·F0 양전을 얻는 쪽이 맞다.
+            //   ※ 라이브의 overshoot 은 갭이 아니라 스캔지연에서 생기므로 이 상한이 실제로 몇 건을 걷어내는지는
+            //     새로 넣은 EwStage("늦은추격") 카운터로 배포 후 확인할 것. 지배적 병목이면 지연 자체를 줄여야 한다.
+            const double ChaseCap = 0.0015;
+            if (overshoot > ChaseCap)
+            { EwStage(symbol, "늦은추격"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 차단 | 돌파선 이탈 과다({overshoot:P2}>{ChaseCap:P2} 늦은추격)"); return; }
 
             // ── 손익비 1:3 (진입가 기준) — SL=구조적 극점, TP=진입가 ± 3×손절폭 ──
             decimal slPx = (decimal)setup.StopPrice;
             decimal risk = isLong ? currentPrice - slPx : slPx - currentPrice;
-            if (risk <= 0) return;
+            if (risk <= 0) { EwStage(symbol, "risk≤0"); return; }
             double stopFrac = (double)(risk / currentPrice);
             if (stopFrac < 0.002 || stopFrac > 0.06)
-            { if (DateTime.UtcNow.Second % 30 == 0) OnStatusLog?.Invoke($"⛔ [ELLIOTT] {symbol} 차단 | 손절폭 범위밖({stopFrac:P2} — 0.2~6%만 허용)"); return; }
+            { EwStage(symbol, "손절폭범위밖"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 차단 | 손절폭 범위밖({stopFrac:P2} — 0.2~6%만 허용)"); return; }
             decimal tpPx = isLong ? currentPrice + 3m * risk : currentPrice - 3m * risk;
 
             string src = isLong ? "LORENTZIAN_ELLIOTT" : "LORENTZIAN_SCALP5M_SHORT_ELLIOTT";   // 숏은 SHORT 화이트리스트 prefix 준수
-            if (!IsEntryAllowed(symbol, src, out _)) return;
+            if (!IsEntryAllowed(symbol, src, out var ewGateReason))
+            { EwStage(symbol, "게이트차단"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 차단 | 공용게이트 reason={ewGateReason}"); return; }
             _elliottCooldown[symbol] = DateTime.UtcNow;
+            EwStage(symbol, "★진입");
             OnStatusLog?.Invoke($"✅ [ELLIOTT] {symbol} {(isLong ? "롱" : "숏")}진입 | {setup.Kind}파(ZZ{setup.ZzMult:F0}·되돌림{setup.Retrace:P0}·대기{setup.BarsWaited}봉) · 1h방향일치 · 거래량{(double)k15[ei].Volume / vavg:F1}× · ADX{adx15:F0} | 진입{currentPrice:F6} SL{slPx:F6}({stopFrac:P2}) TP{tpPx:F6} = 손익비 1:3");
             _ = ExecuteAutoOrder(symbol, isLong ? "LONG" : "SHORT", currentPrice, token,
                 signalSource: src, customTakeProfitPrice: tpPx, customStopLossPrice: slPx);

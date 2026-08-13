@@ -26209,7 +26209,12 @@ internal static class Program
                 if (!touch) continue;
                 double entry = isLong ? Math.Max(st.TriggerPrice, op[eb]) : Math.Min(st.TriggerPrice, op[eb]);
                 double overshoot = Math.Abs(entry - st.TriggerPrice) / st.TriggerPrice;
-                if (overshoot > 0.003) continue;                    // 라이브 늦은추격 가드와 동일
+                // [v5.33.3] 라이브 늦은추격 가드와 동일 (0.3% → 0.15% 강화). 이 값 스윕 결과가 채택 근거:
+                //   0.50%+리스크비례 1,391건 0.171R PF1.27 F0 −0.07 / 0.30% 1,275건 0.213R PF1.35 F0 −0.06
+                //   / 0.15% 1,141건 0.234R PF1.39 F0 +0.06(5폴드 전부 양수) ← 채택
+                //   ※ 백테의 overshoot 은 "다음 봉이 트리거를 갭으로 넘겨 시가형성"할 때만 발생하고,
+                //     라이브에선 스캔지연분이 여기 실린다 — 같은 숫자라도 걷어내는 모집단이 다르다는 점 유의.
+                if (overshoot > 0.0015) continue;
                 double risk = Math.Abs(entry - st.StopPrice); if (risk <= 0) continue;
                 double stopFrac = risk / entry;
                 if (stopFrac < 0.002 || stopFrac > 0.06) continue;
