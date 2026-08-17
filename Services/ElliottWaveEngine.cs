@@ -137,7 +137,11 @@ namespace TradingBot.Services
         //  ※ 상위 카운트 최초 성립 중앙값 154봉·최대 1070봉 → 1500봉 윈도우로 100% 성립.
         // ═══════════════════════════════════════════════════════════════════════════
         public const int FractalK = 21;          // 프랙탈 폭 (차트 모양 정의)
-        public const double BosRetrMin = 0.236;  // 파동2 되돌림 하한 (피보)
+        // [v5.34.1] 파동2 되돌림 38.2~78.6% · 상위게이트 해제 — '건당R'이 아니라 '총R'로 재선정.
+        //   v5.34.0 은 상위 3·5파 순행 게이트로 진입의 90%를 걷어내 건당 0.218R 을 만들었으나
+        //   건수가 월 3건까지 줄어 롱 총R 이 25R 에 그쳤다. 게이트를 풀면 건당 0.074R 로 얇아지는
+        //   대신 854건(월 24건)이 되어 롱 총R 63R — 2.5배다. 계좌에 쌓이는 건 건당R×건수다.
+        public const double BosRetrMin = 0.382;  // 파동2 되돌림 하한 (피보)
         public const double BosRetrMax = 0.786;  // 파동2 되돌림 상한 (피보)
 
         public sealed class SetupBos
@@ -189,9 +193,10 @@ namespace TradingBot.Services
 
             private readonly bool _reachGate;   // 3R 목표가 파동3 확장목표(1.618×파동1) 안에 들어와야 진입
             private readonly bool _specInval;   // true = 명세식 구조 재해석 / false = 단순 재앵커
+            private readonly bool _higherGate;  // 상위(중첩) 3·5파 순행일 때만 진입
             public WaveCounter(int k = FractalK, double rMin = BosRetrMin, double rMax = BosRetrMax,
-                               bool reachGate = false, bool specInval = false)
-            { _K = k; _rMin = rMin; _rMax = rMax; _reachGate = reachGate; _specInval = specInval; }
+                               bool reachGate = false, bool specInval = false, bool higherGate = false)
+            { _K = k; _rMin = rMin; _rMax = rMax; _reachGate = reachGate; _specInval = specInval; _higherGate = higherGate; }
 
             /// <summary>파동3 확장목표 = 파동2 종점 ± 1.618×파동1 (엘리엇 표준 투영).</summary>
             public double Wave3Target { get; private set; }
@@ -285,7 +290,7 @@ namespace TradingBot.Services
                                 // ★파동3 확장목표 = 파동2 종점 ± 1.618×파동1
                                 Wave3Target = up ? _legExt + 1.618 * w1len : _legExt - 1.618 * w1len;
                                 bool bandOk = retr >= _rMin && retr <= _rMax;
-                                bool hiOk = (hiLab == 2 || hiLab == 3) && hiDir == (up ? 1 : -1);
+                                bool hiOk = !_higherGate || ((hiLab == 2 || hiLab == 3) && hiDir == (up ? 1 : -1));
                                 // ★1:3 도달가능성 — 3R 익절선이 파동3 확장목표 안에 들어와야 구조적으로 성립
                                 double entryApprox = close, riskApprox = Math.Abs(entryApprox - _legExt);
                                 double tp3 = up ? entryApprox + 3 * riskApprox : entryApprox - 3 * riskApprox;

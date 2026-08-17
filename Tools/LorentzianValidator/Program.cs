@@ -26891,19 +26891,13 @@ internal static class Program
             for (int j = 0; j < n; j++) { hiA[j] = (double)k15[j].HighPrice; loA[j] = (double)k15[j].LowPrice; clA[j] = (double)k15[j].ClosePrice; opA[j] = (double)k15[j].OpenPrice; }
 
             // ★라이브와 동일 엔진. 명세 피보 구간 × 도달가능성 게이트 × 프랙탈K 를 나란히 측정.
-            var cfgs = new (int K, double lo, double hi, bool reach, bool spec)[]{
-                (21,0.236,0.786,false,false),   // 단순무효화 · 게이트X  ← 직전 최고 (롱 +0.218R)
-                (21,0.236,0.786,true ,false),   // 단순무효화 · 게이트O
-                (21,0.236,0.786,false,true ),   // 명세무효화 · 게이트X
-                (21,0.236,0.786,true ,true ),   // 명세무효화 · 게이트O
-                (21,0.382,0.618,false,false),   // 단순무효화 · 좁은피보
-                (21,0.382,0.786,false,false),   // 단순무효화 · 중간피보
-                (13,0.236,0.786,false,false),   // K13
-                (34,0.236,0.786,false,false),   // K34
+            // ★상위게이트 ON/OFF 를 축으로 — 건당R 이 아니라 '총R' 로 판단하기 위함
+            var cfgs = new (int K, double lo, double hi, bool reach, bool spec, bool hgate)[]{
+                (21,0.382,0.786,false,false,false),   // ★v5.34.1 채택 (라이브 기본값과 동일)
             };
             for (int cf = 0; cf < cfgs.Length; cf++)
             {
-            var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(cfgs[cf].K, cfgs[cf].lo, cfgs[cf].hi, cfgs[cf].reach, cfgs[cf].spec);
+            var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(cfgs[cf].K, cfgs[cf].lo, cfgs[cf].hi, cfgs[cf].reach, cfgs[cf].spec, cfgs[cf].hgate);
             busyUntil = -1;
             for (int j = 0; j < n - 2; j++)
             {
@@ -26952,7 +26946,7 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("── 설정별 (라이브 엔진 WaveCounter 직접 구동) ──");
         Console.WriteLine("   설정                     건수  승률  기대R    PF | 롱건수 롱기대R | 숏건수 숏기대R | 5폴드");
-        var cfgNames = new[]{"K21 23.6~78.6 단순·게이트X","K21 23.6~78.6 단순·게이트O","K21 23.6~78.6 명세·게이트X","K21 23.6~78.6 명세·게이트O","K21 38.2~61.8 단순·게이트X","K21 38.2~78.6 단순·게이트X","K13 23.6~78.6 단순·게이트X","K34 23.6~78.6 단순·게이트X"};
+        var cfgNames = new[]{"v5.34.1 채택설정"};
         for (int cf = 0; cf < cfgNames.Length; cf++)
         {
             var sset = trades.Where(x => x.variant == cf).ToList();
@@ -26961,14 +26955,14 @@ internal static class Program
             double gp2 = sset.Where(x => x.r > 0).Sum(x => x.r), gl2 = -sset.Where(x => x.r <= 0).Sum(x => x.r);
             var fR2 = new double[folds]; bool ap = true;
             for (int f = 0; f < folds; f++) { var fs = sset.Where(x => x.fold == f).ToList(); fR2[f] = fs.Count > 0 ? fs.Average(x => x.r) : 0; if (fs.Count < 8 || fR2[f] <= 0) ap = false; }
-            Console.WriteLine($"   {cfgNames[cf],-22} {sset.Count,5} {100.0 * sset.Count(x => x.win) / sset.Count,5:F1}% {sset.Average(x => x.r),6:F3} {(gl2 > 0 ? gp2 / gl2 : 99),5:F2} | {LL.Count,5} {(LL.Count > 0 ? LL.Average(x => x.r) : 0),7:F3} | {SS.Count,5} {(SS.Count > 0 ? SS.Average(x => x.r) : 0),7:F3} | {string.Join(" ", fR2.Select(x => $"{x,5:F2}"))}{(ap ? " ★" : "")}");
+            Console.WriteLine($"   {cfgNames[cf],-22} {sset.Count,5} {100.0 * sset.Count(x => x.win) / sset.Count,5:F1}% {sset.Average(x => x.r),6:F3} {(gl2 > 0 ? gp2 / gl2 : 99),5:F2} | {LL.Count,5} {(LL.Count > 0 ? LL.Average(x => x.r) : 0),7:F3} | {SS.Count,5} {(SS.Count > 0 ? SS.Average(x => x.r) : 0),7:F3} | {string.Join(" ", fR2.Select(x => $"{x,5:F2}"))}{(ap ? " ★" : "")}  총{sset.Sum(x => x.r),6:F0}R");
             foreach (var (dn, dv) in new[] { ("  └롱", 1), ("  └숏", -1) })
             {
                 var ds = sset.Where(x => x.dir == dv).ToList(); if (ds.Count < 20) continue;
                 var dR = new double[folds]; bool dap = true;
                 for (int f = 0; f < folds; f++) { var fs = ds.Where(x => x.fold == f).ToList(); dR[f] = fs.Count > 0 ? fs.Average(x => x.r) : 0; if (fs.Count < 5 || dR[f] <= 0) dap = false; }
                 double dgp = ds.Where(x => x.r > 0).Sum(x => x.r), dgl = -ds.Where(x => x.r <= 0).Sum(x => x.r);
-                Console.WriteLine($"   {dn,-22} {ds.Count,5} {100.0 * ds.Count(x => x.win) / ds.Count,5:F1}% {ds.Average(x => x.r),6:F3} {(dgl > 0 ? dgp / dgl : 99),5:F2} |                       | {string.Join(" ", dR.Select(x => $"{x,5:F2}"))}{(dap ? " ★방향별 전폴드양수" : "")}");
+                Console.WriteLine($"   {dn,-22} {ds.Count,5} {100.0 * ds.Count(x => x.win) / ds.Count,5:F1}% {ds.Average(x => x.r),6:F3} {(dgl > 0 ? dgp / dgl : 99),5:F2} |                       | {string.Join(" ", dR.Select(x => $"{x,5:F2}"))}  총{ds.Sum(x => x.r),6:F0}R{(dap ? " ★전폴드양수" : "")}");
             }
         }
         var L = trades.Where(x => x.dir > 0).ToList(); var S = trades.Where(x => x.dir < 0).ToList();
