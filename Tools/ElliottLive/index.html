@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>실시간 엘리엇 파동 카운터 — 15분봉</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--line:#30363d;--tx:#e6edf3;--dim:#8b949e;
+        --up:#26a69a;--dn:#ef5350;--w:#f0b429;--hi:#7c5cff;--ok:#3fb950;--no:#f85149}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--tx);font:13px/1.5 "Segoe UI",system-ui,sans-serif}
+  header{display:flex;gap:10px;align-items:center;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+  select,input,button{background:#0d1117;color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:5px 9px;font:inherit}
+  button{cursor:pointer}button:hover{border-color:var(--w)}
+  #dot{width:9px;height:9px;border-radius:50%;background:var(--no);display:inline-block}
+  #dot.on{background:var(--ok)}
+  main{display:grid;grid-template-columns:1fr 340px;gap:0;height:calc(100vh - 49px)}
+  #wrap{position:relative;overflow:hidden}
+  canvas{display:block;width:100%;height:100%}
+  aside{background:var(--panel);border-left:1px solid var(--line);padding:14px;overflow-y:auto}
+  h2{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 7px}
+  h2:first-child{margin-top:0}
+  .row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #21262d}
+  .row b{font-weight:600}
+  .big{font-size:22px;font-weight:700;color:var(--w)}
+  .sig{border:1px solid var(--line);border-radius:8px;padding:11px;margin-top:8px}
+  .sig.long{border-color:var(--up);background:rgba(38,166,154,.09)}
+  .sig.short{border-color:var(--dn);background:rgba(239,83,80,.09)}
+  .sig.none{color:var(--dim)}
+  .mono{font-family:Consolas,monospace}
+  ul{list-style:none;font-size:12px;color:var(--dim)}
+  li{padding:2px 0}
+  .tag{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;background:#21262d;color:var(--dim)}
+  .tag.ok{background:rgba(63,185,80,.18);color:var(--ok)}
+  .tag.no{background:rgba(248,81,73,.18);color:var(--no)}
+</style>
+</head>
+<body>
+<header>
+  <span id="dot"></span><span id="st" class="mono">연결 대기</span>
+  <select id="sym"></select>
+  <select id="tf"><option value="15m" selected>15분봉</option><option value="5m">5분봉</option><option value="1h">1시간봉</option></select>
+  <label>프랙탈 K <input id="k" type="number" value="21" min="3" max="60" style="width:62px"></label>
+  <label>표시봉수 <input id="show" type="number" value="260" min="80" max="900" style="width:70px"></label>
+  <button id="re">재연결</button>
+  <span class="mono" id="px" style="margin-left:auto;font-size:16px"></span>
+</header>
+<main>
+  <div id="wrap"><canvas id="cv"></canvas></div>
+  <aside>
+    <h2>현재 파동</h2>
+    <div class="row"><span>하위 degree</span><b id="w0" class="big">–</b></div>
+    <div class="row"><span>상위 degree (중첩)</span><b id="w1">–</b></div>
+    <div class="row"><span>진행 방향</span><b id="dir">–</b></div>
+    <div class="row"><span>현재 파동 상태</span><b id="ext">–</b></div>
+    <div class="row"><span>마감 기준선</span><b id="ref" class="mono">–</b></div>
+
+    <h2>피보나치</h2>
+    <div class="row"><span>파동2 되돌림</span><b id="retr">–</b></div>
+    <div id="fibs"></div>
+
+    <h2>진입 신호 (손익비 1:3)</h2>
+    <div id="sig" class="sig none">대기 중</div>
+
+    <h2>규칙 검사</h2>
+    <ul id="rules"></ul>
+
+    <h2>완성된 파동</h2>
+    <ul id="hist"></ul>
+  </aside>
+</main>
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   실시간 엘리엇 파동 카운터
+   · 파동 마감/연장을 ATR 같은 고정 수식이 아니라 차트 구조로 판정한다:
+       상승 파동은 직전 스윙 저점을 깨는 순간 끝난다(구조 이탈).
+       깨지 않고 고점을 갱신하는 동안은 연장 중 → 기준선을 따라 올린다.
+   · 스윙점 = 프랙탈(좌우 K봉보다 높은 고점 / 낮은 저점) — 크기 수식이 아닌 모양 정의
+   · 1·2·3·4·5 를 매 봉 연속 카운팅하고 절대규칙을 실시간 검사한다
+       파동2는 파동1 시작점을 이탈 불가 / 파동3은 파동1보다 짧을 수 없음 / 파동4는 파동1 영역 비침범
+   · 임펄스 5파 완성 → A·B·C 조정 카운팅 → 다시 임펄스 (교대)
+   · 하위 1~5 완성 = 상위 1파 (degree 는 중첩으로 생성, 임계값을 키우지 않는다)
+   · 진입 = 파동2가 구조이탈로 마감된 봉(파동3 시작) · 되돌림 23.6~78.6% · 상위 3·5파 순행
+     손절 = 파동2 극값(구조 무효화점) · 익절 = 진입가 ± 3×손절폭
+   백테 근거: 3년·30코인 279건 승률 36.9% 기대 0.206R PF 1.34 (5폴드 전부 양수)
+   ═══════════════════════════════════════════════════════════════════════════ */
+const REST='https://fapi.binance.com/fapi/v1/klines', WS='wss://fstream.binance.com/ws';
+const RETR_MIN=0.236, RETR_MAX=0.786;
+const SYMS=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','BNBUSDT','DOGEUSDT','ADAUSDT','LINKUSDT','AVAXUSDT','SUIUSDT'];
+let bars=[], ws=null, engine=null, sym='BTCUSDT', tf='15m';
+
+const $=id=>document.getElementById(id);
+SYMS.forEach(s=>{const o=document.createElement('option');o.value=o.textContent=s;$('sym').appendChild(o)});
+
+/* ── 프랙탈: i봉이 좌우 K봉보다 극단이면 스윙점. i+K 봉에서야 확정(미래참조 없음) ── */
+function fractals(b,K){
+  const fh=new Array(b.length).fill(null), fl=new Array(b.length).fill(null);
+  for(let i=K;i<b.length-K;i++){
+    let H=true,L=true;
+    for(let d=1;d<=K;d++){
+      if(H&&!(b[i].h>b[i-d].h&&b[i].h>b[i+d].h))H=false;
+      if(L&&!(b[i].l<b[i-d].l&&b[i].l<b[i+d].l))L=false;
+      if(!H&&!L)break;
+    }
+    if(H)fh[i+K]=b[i].h;
+    if(L)fl[i+K]=b[i].l;
+  }
+  return {fh,fl};
+}
+
+/* ── 파동 카운팅 상태기계 (전진, 재계산 없음) ── */
+function countWaves(b,K){
+  const {fh,fl}=fractals(b,K);
+  let dir=1, mode='I', phase=1;                    // mode: I=임펄스(1~5) / C=조정(A~C)
+  let anchor={p:b[K+1].l,i:K+1};
+  let w1=null,w2=null,w3=null,w4=null;
+  let legExt=anchor.p, legExtBar=anchor.i, ref=null;
+  const pts=[{p:anchor.p,i:anchor.i,lab:'0'}];     // 화면에 그릴 파동 꼭짓점
+  const lvl1=[];                                   // 상위 degree 피벗 (중첩 생성)
+  const done=[];                                   // 완성된 구조 기록
+  let signal=null;
+
+  const push1=(p,i,t)=>{
+    if(lvl1.length&&lvl1[lvl1.length-1].t===t){
+      const L=lvl1[lvl1.length-1];
+      if((t===1&&p>L.p)||(t===-1&&p<L.p)){L.p=p;L.i=i}
+      return;
+    }
+    lvl1.push({p,i,t});
+  };
+  const reset=(d,p,i,m)=>{
+    dir=d;anchor={p,i};phase=1;mode=m;w1=w2=w3=w4=null;
+    legExt=p;legExtBar=i;ref=null;
+    pts.push({p,i,lab:m==='I'?'0':'0'});
+  };
+
+  for(let j=K+2;j<b.length;j++){
+    const up=dir>0, bar=b[j];
+    const impulseLeg = mode==='I' ? (phase===1||phase===3||phase===5) : (phase===1||phase===3);
+    const legUp = impulseLeg ? up : !up;
+
+    if(legUp){ if(bar.h>legExt){legExt=bar.h;legExtBar=j} }
+    else     { if(bar.l<legExt){legExt=bar.l;legExtBar=j} }
+
+    // 기준선 갱신 = 연장 추적
+    if(legUp){ const v=fl[j]; if(v!==null&&(ref===null||v>ref)&&v<legExt) ref=v; }
+    else     { const v=fh[j]; if(v!==null&&(ref===null||v<ref)&&v>legExt) ref=v; }
+
+    const bos = ref!==null && (legUp ? bar.l<ref : bar.h>ref);   // 구조 이탈 = 파동 마감
+    let hi=hiCount(lvl1);
+
+    if(mode==='I'){
+      if(phase===1){
+        if(bos){ w1={p:legExt,i:legExtBar}; pts.push({p:w1.p,i:w1.i,lab:'1'});
+                 phase=2; legExt=legUp?bar.l:bar.h; legExtBar=j; ref=null; }
+      } else if(phase===2){
+        if(up? legExt<=anchor.p : legExt>=anchor.p){        // ★파동2 절대규칙 위반
+          push1(anchor.p,anchor.i,up?-1:1); push1(w1.p,w1.i,up?1:-1);
+          done.push({t:'무효(2파 이탈)',i:j}); reset(dir,legExt,legExtBar,'I'); continue;
+        }
+        if(bos){
+          w2={p:legExt,i:legExtBar}; pts.push({p:w2.p,i:w2.i,lab:'2'});
+          const w1len=Math.abs(w1.p-anchor.p), retr=w1len>0?Math.abs(w1.p-w2.p)/w1len:9;
+          if(j===b.length-1 && retr>=RETR_MIN && retr<=RETR_MAX && (hi.lab===3||hi.lab===5) && hi.dir===(up?1:-1)){
+            const entry=bar.c, stop=w2.p, risk=Math.abs(entry-stop);
+            if(risk>0) signal={long:up,entry,stop,tp:up?entry+3*risk:entry-3*risk,retr,hi:hi.lab};
+          }
+          phase=3; legExt=up?bar.h:bar.l; legExtBar=j; ref=null;
+        }
+      } else if(phase===3){
+        if(bos){
+          const a=Math.abs(w1.p-anchor.p), c=Math.abs(legExt-w2.p);
+          if(c<=a){                                           // ★파동3 최단 불가 위반 → 임펄스 아님
+            push1(anchor.p,anchor.i,up?-1:1); push1(legExt,legExtBar,up?1:-1);
+            done.push({t:'무효(3파<1파)',i:j}); reset(-dir,legExt,legExtBar,'I'); continue;
+          }
+          w3={p:legExt,i:legExtBar}; pts.push({p:w3.p,i:w3.i,lab:'3'});
+          phase=4; legExt=legUp?bar.l:bar.h; legExtBar=j; ref=null;
+        }
+      } else if(phase===4){
+        if(up? legExt<=w1.p : legExt>=w1.p){                  // ★파동4 비중첩 위반
+          push1(anchor.p,anchor.i,up?-1:1); push1(w3.p,w3.i,up?1:-1);
+          done.push({t:'무효(4파 중첩)',i:j}); reset(dir,legExt,legExtBar,'I'); continue;
+        }
+        if(bos){ w4={p:legExt,i:legExtBar}; pts.push({p:w4.p,i:w4.i,lab:'4'});
+                 phase=5; legExt=up?bar.h:bar.l; legExtBar=j; ref=null; }
+      } else if(phase===5){
+        if(bos){                                              // 1~5 완성 = 상위 1파
+          pts.push({p:legExt,i:legExtBar,lab:'5'});
+          push1(anchor.p,anchor.i,up?-1:1); push1(legExt,legExtBar,up?1:-1);
+          done.push({t:(up?'상승':'하락')+' 임펄스 5파 완성',i:legExtBar});
+          reset(-dir,legExt,legExtBar,'C');                   // → A-B-C 조정 시작
+        }
+      }
+    } else {                                                  // ── 조정 A-B-C ──
+      if(phase===1){
+        if(bos){ w1={p:legExt,i:legExtBar}; pts.push({p:w1.p,i:w1.i,lab:'A'});
+                 phase=2; legExt=legUp?bar.l:bar.h; legExtBar=j; ref=null; }
+      } else if(phase===2){
+        if(bos){ w2={p:legExt,i:legExtBar}; pts.push({p:w2.p,i:w2.i,lab:'B'});
+                 phase=3; legExt=up?bar.h:bar.l; legExtBar=j; ref=null; }
+      } else if(phase===3){
+        if(bos){                                              // C 완성 → 임펄스 재개
+          pts.push({p:legExt,i:legExtBar,lab:'C'});
+          push1(anchor.p,anchor.i,up?-1:1); push1(legExt,legExtBar,up?1:-1);
+          done.push({t:'A-B-C 조정 완료',i:legExtBar});
+          reset(-dir,legExt,legExtBar,'I');
+        }
+      }
+    }
+  }
+  return {pts,lvl1,dir,mode,phase,anchor,w1,w2,w3,w4,legExt,ref,signal,done,
+          hi:hiCount(lvl1),
+          retr:(w1&&w2)?Math.abs(w1.p-w2.p)/Math.max(1e-9,Math.abs(w1.p-anchor.p)):null};
+}
+
+/* ── 상위 degree 카운트 (중첩으로 쌓인 피벗열에 같은 규칙 적용) ── */
+function hiCount(vp){
+  if(vp.length<3) return {lab:0,dir:0,name:'집계중'};
+  const p1=vp[vp.length-1], dir=p1.t===-1?1:-1, up=dir>0;
+  if(vp.length>=5){
+    const [a,b,c,d]=[vp[vp.length-5],vp[vp.length-4],vp[vp.length-3],vp[vp.length-2]];
+    const shape=up?(a.t===-1&&b.t===1&&c.t===-1&&d.t===1):(a.t===1&&b.t===-1&&c.t===1&&d.t===-1);
+    if(shape){
+      const w1=Math.abs(b.p-a.p), w3=Math.abs(d.p-c.p);
+      const w2ok=up?c.p>a.p:c.p<a.p, w4ok=up?p1.p>b.p:p1.p<b.p;
+      if(w1>0&&w3>w1&&w2ok&&w4ok) return {lab:5,dir,name:'상위 5파'};
+    }
+  }
+  if(vp.length>=4){
+    const [m,a,b]=[vp[vp.length-4],vp[vp.length-3],vp[vp.length-2]];
+    const shape=up?(m.t===1&&a.t===-1&&b.t===1):(m.t===-1&&a.t===1&&b.t===-1);
+    if(shape){
+      const prior=Math.abs(a.p-m.p), wA=Math.abs(b.p-a.p);
+      const ok=up?p1.p>a.p:p1.p<a.p;
+      if(prior>0&&wA>0&&wA<prior&&ok) return {lab:6,dir,name:'상위 C파'};
+    }
+  }
+  const a=vp[vp.length-3], b=vp[vp.length-2];
+  const shape=up?(a.t===-1&&b.t===1):(a.t===1&&b.t===-1);
+  if(shape&&(up?p1.p>a.p:p1.p<a.p)) return {lab:3,dir,name:'상위 3파'};
+  return {lab:2,dir,name:'상위 B파'};
+}
+
+/* ── 차트 ── */
+const cv=$('cv'), cx=cv.getContext('2d');
+function draw(){
+  const wrap=$('wrap'), W=wrap.clientWidth, H=wrap.clientHeight, R=devicePixelRatio||1;
+  cv.width=W*R; cv.height=H*R; cx.setTransform(R,0,0,R,0,0);
+  cx.clearRect(0,0,W,H);
+  if(!bars.length||!engine) return;
+  const N=Math.min(+$('show').value||260, bars.length), s=bars.length-N, view=bars.slice(s);
+  const PL=8,PR=74,PT=12,PB=22, cw=W-PL-PR, ch=H-PT-PB;
+  let lo=Infinity,hi=-Infinity;
+  view.forEach(b=>{lo=Math.min(lo,b.l);hi=Math.max(hi,b.h)});
+  if(engine.signal){lo=Math.min(lo,engine.signal.tp,engine.signal.stop);hi=Math.max(hi,engine.signal.tp,engine.signal.stop)}
+  const pad=(hi-lo)*0.07||1; lo-=pad; hi+=pad;
+  const X=i=>PL+(i+0.5)*(cw/N), Y=p=>PT+(hi-p)/(hi-lo)*ch;
+
+  cx.strokeStyle='#21262d'; cx.fillStyle='#8b949e'; cx.font='10px Consolas'; cx.lineWidth=1;
+  for(let g=0;g<=5;g++){const y=PT+ch*g/5, p=hi-(hi-lo)*g/5;
+    cx.beginPath();cx.moveTo(PL,y);cx.lineTo(PL+cw,y);cx.stroke();
+    cx.fillText(p.toFixed(p<10?4:1),PL+cw+5,y+3);}
+
+  const bw=Math.max(1.2,cw/N*0.62);
+  view.forEach((b,i)=>{
+    const x=X(i), up=b.c>=b.o;
+    cx.strokeStyle=cx.fillStyle=up?'#26a69a':'#ef5350';
+    cx.beginPath();cx.moveTo(x,Y(b.h));cx.lineTo(x,Y(b.l));cx.stroke();
+    const y1=Y(Math.max(b.o,b.c)),y2=Y(Math.min(b.o,b.c));
+    cx.fillRect(x-bw/2,y1,bw,Math.max(1,y2-y1));
+  });
+
+  // 파동 연결선 + 번호
+  const pts=engine.pts.filter(p=>p.i>=s);
+  if(pts.length>1){
+    cx.strokeStyle='#f0b429';cx.lineWidth=1.6;cx.beginPath();
+    pts.forEach((p,k)=>{const x=X(p.i-s),y=Y(p.p);k?cx.lineTo(x,y):cx.moveTo(x,y)});
+    cx.stroke();
+  }
+  pts.forEach(p=>{
+    if(p.lab==='0')return;
+    const x=X(p.i-s),y=Y(p.p), isC=/[ABC]/.test(p.lab);
+    cx.fillStyle=isC?'#7c5cff':'#f0b429';
+    cx.beginPath();cx.arc(x,y,3.4,0,7);cx.fill();
+    cx.font='bold 12px Segoe UI';cx.fillText(p.lab,x+5,y-5);
+  });
+
+  // 진행 중인 레그 + 마감 기준선
+  if(engine.ref!==null){
+    cx.strokeStyle='#8b949e';cx.setLineDash([4,4]);cx.lineWidth=1;
+    cx.beginPath();cx.moveTo(PL,Y(engine.ref));cx.lineTo(PL+cw,Y(engine.ref));cx.stroke();
+    cx.setLineDash([]);cx.fillStyle='#8b949e';cx.font='10px Consolas';
+    cx.fillText('마감기준 '+engine.ref.toFixed(engine.ref<10?4:1),PL+4,Y(engine.ref)-4);
+  }
+
+  // 피보 되돌림 (파동1 구간)
+  if(engine.w1&&engine.mode==='I'&&engine.phase>=2){
+    const a=engine.anchor.p,b=engine.w1.p;
+    [0.236,0.382,0.5,0.618,0.786].forEach(f=>{
+      const p=b-(b-a)*f, y=Y(p);
+      cx.strokeStyle='rgba(124,92,255,.35)';cx.beginPath();cx.moveTo(PL,y);cx.lineTo(PL+cw,y);cx.stroke();
+      cx.fillStyle='rgba(124,92,255,.9)';cx.font='9px Consolas';cx.fillText((f*100).toFixed(1)+'%',PL+cw-38,y-2);
+    });
+  }
+
+  // 진입 신호 라인
+  const sg=engine.signal;
+  if(sg){
+    [['진입',sg.entry,'#f0b429'],['손절',sg.stop,'#ef5350'],['익절 3R',sg.tp,'#26a69a']].forEach(([t,p,c])=>{
+      const y=Y(p);cx.strokeStyle=c;cx.lineWidth=1.4;cx.setLineDash([7,3]);
+      cx.beginPath();cx.moveTo(PL,y);cx.lineTo(PL+cw,y);cx.stroke();cx.setLineDash([]);
+      cx.fillStyle=c;cx.font='bold 10px Consolas';cx.fillText(t+' '+p.toFixed(p<10?4:1),PL+4,y-3);
+    });
+  }
+}
+
+/* ── 패널 ── */
+function paint(){
+  if(!engine)return;
+  const e=engine, up=e.dir>0;
+  const lab = e.mode==='I' ? ['','1파 진행','2파 되돌림','3파 진행','4파 되돌림','5파 진행'][e.phase]
+                           : ['','A파 진행','B파 되돌림','C파 진행'][e.phase];
+  $('w0').textContent=lab; $('w0').style.color=e.mode==='I'?'#f0b429':'#7c5cff';
+  $('w1').textContent=e.hi.name+(e.hi.dir?(e.hi.dir>0?' ↑':' ↓'):'');
+  $('dir').innerHTML=up?'<span style="color:#26a69a">상승 구조</span>':'<span style="color:#ef5350">하락 구조</span>';
+  const legUp=(e.mode==='I'?[1,3,5]:[1,3]).includes(e.phase)?up:!up;
+  $('ext').textContent=e.ref===null?'기준선 형성 대기':(legUp?'연장 중 (기준선 미이탈)':'되돌림 진행 중');
+  $('ref').textContent=e.ref===null?'–':e.ref.toFixed(e.ref<10?4:1);
+  $('retr').textContent=e.retr===null?'–':(e.retr*100).toFixed(1)+'%';
+
+  let fh='';
+  if(e.w1&&e.mode==='I'){
+    const a=e.anchor.p,b=e.w1.p;
+    [0.236,0.382,0.5,0.618,0.786].forEach(f=>{
+      const p=b-(b-a)*f, inz=e.retr!==null&&Math.abs(e.retr-f)<0.06;
+      fh+=`<div class="row"><span>${(f*100).toFixed(1)}%</span><b class="mono" style="${inz?'color:#f0b429':''}">${p.toFixed(p<10?4:1)}</b></div>`;
+    });
+    const t=b+(b-a)*0.618;
+    fh+=`<div class="row"><span>3파 목표 1.618</span><b class="mono" style="color:#26a69a">${(a+(b-a)*1.618).toFixed(4)}</b></div>`;
+  }
+  $('fibs').innerHTML=fh||'<div class="row"><span>파동1 미확정</span><b>–</b></div>';
+
+  const sg=e.signal, box=$('sig');
+  if(sg){
+    const risk=Math.abs(sg.entry-sg.stop), rp=risk/sg.entry*100;
+    box.className='sig '+(sg.long?'long':'short');
+    box.innerHTML=`<div style="font-size:15px;font-weight:700;margin-bottom:6px">${sg.long?'🟢 롱':'🔴 숏'} 진입 — 파동3 시작</div>
+      <div class="row"><span>진입가</span><b class="mono">${sg.entry.toFixed(sg.entry<10?4:1)}</b></div>
+      <div class="row"><span>손절 (파동2 극값)</span><b class="mono" style="color:#ef5350">${sg.stop.toFixed(sg.stop<10?4:1)} (${rp.toFixed(2)}%)</b></div>
+      <div class="row"><span>익절 (3×손절폭)</span><b class="mono" style="color:#26a69a">${sg.tp.toFixed(sg.tp<10?4:1)} (${(rp*3).toFixed(2)}%)</b></div>
+      <div class="row"><span>파동2 되돌림</span><b>${(sg.retr*100).toFixed(1)}%</b></div>
+      <div class="row"><span>손익비</span><b>1 : 3</b></div>`;
+  } else {
+    box.className='sig none';
+    box.textContent='대기 중 — 파동2가 구조이탈로 마감되고 되돌림 23.6~78.6% + 상위 3·5파 순행일 때 신호';
+  }
+
+  const ok=(c,t)=>`<li><span class="tag ${c?'ok':'no'}">${c?'통과':'위반'}</span> ${t}</li>`;
+  let r='';
+  if(e.mode==='I'){
+    r+=ok(!e.w2||(up?e.w2.p>e.anchor.p:e.w2.p<e.anchor.p),'파동2 — 파동1 시작점 미이탈');
+    if(e.w3)r+=ok(Math.abs(e.w3.p-e.w2.p)>Math.abs(e.w1.p-e.anchor.p),'파동3 — 파동1보다 김');
+    if(e.w4)r+=ok(up?e.w4.p>e.w1.p:e.w4.p<e.w1.p,'파동4 — 파동1 영역 비침범');
+  } else r+='<li class="tag">조정 A-B-C 진행 중</li>';
+  r+=`<li><span class="tag">상위 degree</span> 중첩 피벗 ${e.lvl1.length}개</li>`;
+  $('rules').innerHTML=r;
+
+  $('hist').innerHTML=e.done.slice(-8).reverse().map(d=>{
+    const b=bars[d.i]; const t=b?new Date(b.t).toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+    return `<li>${t} — ${d.t}</li>`;
+  }).join('')||'<li>아직 없음</li>';
+}
+
+function recompute(){
+  const K=Math.max(3,Math.min(60,+$('k').value||21));
+  if(bars.length<K*4+10)return;
+  engine=countWaves(bars,K);
+  paint(); draw();
+}
+
+/* ── 데이터 ── */
+async function load(){
+  $('dot').classList.remove('on'); $('st').textContent='캔들 로딩…';
+  const r=await fetch(`${REST}?symbol=${sym}&interval=${tf}&limit=1500`);
+  const j=await r.json();
+  bars=j.map(k=>({t:k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4]}));
+  $('st').textContent=`${bars.length}봉 로드`;
+  recompute(); connect();
+}
+function connect(){
+  if(ws){try{ws.onclose=null;ws.close()}catch(e){}}
+  ws=new WebSocket(`${WS}/${sym.toLowerCase()}@kline_${tf}`);
+  ws.onopen=()=>{$('dot').classList.add('on');$('st').textContent=`실시간 연결 · ${sym} ${tf}`};
+  ws.onclose=()=>{$('dot').classList.remove('on');$('st').textContent='끊김 — 3초 후 재연결';setTimeout(connect,3000)};
+  ws.onerror=()=>{$('st').textContent='연결 오류'};
+  ws.onmessage=m=>{
+    const k=JSON.parse(m.data).k; if(!k)return;
+    const b={t:k.t,o:+k.o,h:+k.h,l:+k.l,c:+k.c};
+    const last=bars[bars.length-1];
+    if(last&&last.t===b.t) bars[bars.length-1]=b; else { bars.push(b); if(bars.length>1600)bars.shift(); }
+    $('px').textContent=b.c.toFixed(b.c<10?4:1);
+    recompute();
+  };
+}
+$('sym').onchange=e=>{sym=e.target.value;load()};
+$('tf').onchange=e=>{tf=e.target.value;load()};
+$('k').onchange=recompute; $('show').onchange=recompute;
+$('re').onclick=load;
+addEventListener('resize',draw);
+load();
+</script>
+</body>
+</html>

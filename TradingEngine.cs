@@ -5742,6 +5742,9 @@ namespace TradingBot
         //   ※ 손익비 1:3은 "진입가 기준" — SL=구조적 극점(되돌림 극점), TP=진입가 ± 3×(진입가−SL).
         //   ※ 청산은 TP/SL 두 지점 뿐(트레일·부분익절 금지) + 96시간 시간정지 — 백테와 동일 행동.
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _elliottCooldown = new();
+        // [v5.34.0] ★심볼별 연속 파동 카운터 — 창 재계산 금지. 앵커·파동번호·상위 피벗을 계속 들고 간다.
+        //   파동이 깨지면 카운터 내부에서 그 지점 재앵커 후 이어서 센다(외부에서 리셋하지 말 것).
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, ElliottWaveEngine.WaveCounter> _ewCounters = new();
 
         // [v5.33.3] ★엘리엇 진단 계측 — 기존엔 탈락 지점 대부분이 무로그 return 이라 "왜 진입 0건인지"를 셀 수 없었다.
         //   (특히 `if (!broke) return;` — 셋업까지 갔는데 돌파를 안 한 건수가 통째로 안 보였음)
@@ -5786,38 +5789,104 @@ namespace TradingBot
             double c = (double)k15[ei].ClosePrice;
             if (Math.Abs((currentPrice - (decimal)c) / (decimal)c) > 0.01m) { EwStage(symbol, "마감봉대비급변"); return; }   // 1% 이상 급변 → 스킵
 
-            // ── 방향: 1h EMA20 6봉 기울기 (사용자 스펙: 상하방=1시간봉) ──
-            int dir1h = 0;
-            {
-                var h1raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 300, token);
-                var h1 = h1raw as List<IBinanceKline> ?? (h1raw != null ? new List<IBinanceKline>(h1raw) : null);
-                if (h1 == null || h1.Count < 40) { EwStage(symbol, "1h캔들부족"); return; }
-                int i1 = h1.Count - 2;
-                double now20 = CalcEmaClose(h1, i1, 20), prev20 = CalcEmaClose(h1, i1 - 6, 20);
-                if (!(now20 > 0 && prev20 > 0)) { EwStage(symbol, "1hEMA무효"); return; }
-                dir1h = now20 > prev20 ? 1 : (now20 < prev20 ? -1 : 0);
-            }
-            if (dir1h == 0) { EwStage(symbol, "1h방향평탄"); return; }
+            // ═══════════════════════════════════════════════════════════════════════
+            //  [v5.34.0] ★방향별 엔진 분리 — 3년·30코인 방향별 5폴드 측정 결과
+            //
+            //    롱 : 신규 15m 차트기반 연속 카운터  +0.218R · PF 1.34 · 폴드 4/5 양수
+            //         (v5.33.3 롱 −0.121R · PF 0.84 · 폴드 1/5 양수 — 명백한 적자 슬리브)
+            //    숏 : v5.33.3 규칙 유지               +0.364R · PF 1.66 · 폴드 5/5 양수
+            //         (신규 숏은 +0.279R·PF 1.46 로 현행보다 못하다)
+            //
+            //  두 결정은 각각 독립적으로 정당화된다 — 적자 롱을 걷어내는 것과, 더 나은 숏을
+            //  건드리지 않는 것. 총R 기준 267R → 330R(+24%), 적자 슬리브 소멸.
+            // ═══════════════════════════════════════════════════════════════════════
 
-            // ── 파동 탐지 (ZZ 배수 5·6·8 멀티스케일 — 검증규칙 "ZZ≥5") ──
+            // ── ① 롱: 연속 파동 카운터 (창 재계산 없음 · 1h/ATR/EMA/MACD/ADX/거래량 미사용) ──
+            //   심볼별 상태를 계속 들고 가며 '새로 마감된 봉만' 밀어 넣는다.
+            //   실측 — 연속 카운팅 +0.108R(롱 +0.218R) vs 매 스캔 1500봉 재계산 −0.090R.
+            //   파동이 깨지면(절대규칙 위반) 카운터가 그 지점에서 스스로 재앵커해 이어서 센다.
+            var counter = _ewCounters.GetOrAdd(symbol, _ => new ElliottWaveEngine.WaveCounter());
+            ElliottWaveEngine.SetupBos? bosSetup = null;
+            bool counterReady;
+            lock (counter)
+            {
+                for (int q = 0; q <= ei; q++)                       // 아직 반영 안 된 마감봉만 전진
+                {
+                    long ot = new DateTimeOffset(k15[q].OpenTime, TimeSpan.Zero).ToUnixTimeMilliseconds();
+                    if (counter.LastBarOpenMs >= 0 && ot <= counter.LastBarOpenMs) continue;
+                    counter.Advance((double)k15[q].HighPrice, (double)k15[q].LowPrice, (double)k15[q].ClosePrice, ot);
+                    if (counter.Signal != null && q == ei) bosSetup = counter.Signal;   // 마지막 마감봉의 신호만
+                }
+                counterReady = counter.HigherReady;
+            }
+            // 롱만 채택 — 신규 엔진의 숏(+0.279R)은 현행 숏(+0.364R)보다 못하다.
+            if (counterReady && bosSetup != null && bosSetup.IsLong)
+            {
+                double slipL = Math.Abs((double)currentPrice - c) / c;
+                if (slipL > 0.0015)
+                { EwStage(symbol, "지연과다"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 롱 차단 | 신호봉 종가 대비 이탈 과다({slipL:P2}>0.15%)"); }
+                else
+                {
+                    decimal slL = (decimal)bosSetup.StopPrice;
+                    decimal riskL = currentPrice - slL;
+                    if (riskL > 0)
+                    {
+                        double sfL = (double)(riskL / currentPrice);
+                        if (sfL < 0.002 || sfL > 0.06)
+                            EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 롱 차단 | 손절폭 범위밖({sfL:P2})");
+                        else if (!IsEntryAllowed(symbol, "LORENTZIAN_ELLIOTT", out var gL))
+                        { EwStage(symbol, "게이트차단"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 롱 차단 | 공용게이트 reason={gL}"); }
+                        else
+                        {
+                            decimal tpL = currentPrice + 3m * riskL;
+                            _elliottCooldown[symbol] = DateTime.UtcNow;
+                            EwStage(symbol, "★진입");
+                            OnStatusLog?.Invoke($"✅ [ELLIOTT] {symbol} 롱진입 | 15m 차트기반 파동3 · 상위{(bosSetup.HigherWave == 3 ? "5파" : "3파")}순행(중첩) · 파동2 되돌림{bosSetup.Retrace:P1} · 구조이탈 확정 | 진입{currentPrice:F6} SL{slL:F6}({sfL:P2}) TP{tpL:F6} = 손익비 1:3");
+                            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
+                                signalSource: "LORENTZIAN_ELLIOTT", customTakeProfitPrice: tpL, customStopLossPrice: slL);
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // ── ② 숏: v5.33.3 규칙 그대로 유지 (5폴드 전부 양수 · +0.364R) ──
+            await TryElliottShortLegacyAsync(symbol, currentPrice, k15, ei, token);
+        }
+
+        /// <summary>
+        /// [v5.34.0] 엘리엇 숏 — v5.33.3 검증 규칙을 그대로 보존한다.
+        ///   3년·30코인: 836건 · 승률 43.2% · +0.364R · PF 1.66 · 5폴드 전부 양수.
+        ///   신규 15m 차트기반 엔진의 숏은 +0.279R(PF 1.46)로 이보다 못해 교체하지 않았다.
+        ///   ※ 롱은 이 경로를 타지 않는다 — 여기 롱은 −0.121R·PF 0.84 의 적자 슬리브였다.
+        /// </summary>
+        private async Task TryElliottShortLegacyAsync(string symbol, decimal currentPrice,
+            List<IBinanceKline> k15, int ei, CancellationToken token)
+        {
+            // 방향: 1h EMA20 6봉 기울기 (이 경로 한정 — 숏에서는 이 필터가 유효하다)
+            var h1raw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 300, token);
+            var h1 = h1raw as List<IBinanceKline> ?? (h1raw != null ? new List<IBinanceKline>(h1raw) : null);
+            if (h1 == null || h1.Count < 40) { EwStage(symbol, "1h캔들부족"); return; }
+            int i1 = h1.Count - 2;
+            double now20 = CalcEmaClose(h1, i1, 20), prev20 = CalcEmaClose(h1, i1 - 6, 20);
+            if (!(now20 > 0 && prev20 > 0)) { EwStage(symbol, "1hEMA무효"); return; }
+            int dir1h = now20 > prev20 ? 1 : (now20 < prev20 ? -1 : 0);
+            if (dir1h >= 0) { EwStage(symbol, "숏방향아님"); return; }        // 숏 전용 경로
+
             var atrArr = ElliottWaveEngine.BuildAtr(k15, 14);
             ElliottWaveEngine.Setup? setup = null;
-            bool setupDirMismatch = false;   // [v5.33.3] "셋업은 있었는데 1h 방향이 반대" 와 "셋업 자체가 없음" 을 구분
             foreach (var mult in new[] { 5.0, 6.0, 8.0 })
             {
                 var s = ElliottWaveEngine.DetectSetup(k15, atrArr, mult, ei, retraceMin: 0.15, retraceMax: 0.50, maxWaitBars: 96);
-                if (s == null) continue;
-                if ((s.IsLong ? 1 : -1) != dir1h) { setupDirMismatch = true; continue; }   // 1h 방향 일치 필수
+                if (s == null || s.IsLong) continue;
                 setup = s; break;
             }
-            if (setup == null) { EwStage(symbol, setupDirMismatch ? "셋업-1h방향불일치" : "셋업없음"); return; }
-            bool isLong = setup.IsLong;
+            if (setup == null) { EwStage(symbol, "셋업없음"); return; }
 
-            // ── 공통 필터 (한계효과 검증분) ──
             double vsum = 0; for (int q = ei - 19; q <= ei; q++) vsum += (double)k15[q].Volume;
             double vavg = vsum / 20.0;
             if (!(vavg > 0 && (double)k15[ei].Volume / vavg >= 1.2))
-            { EwStage(symbol, "거래량부족"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 차단 | 거래량 부족({(vavg > 0 ? (double)k15[ei].Volume / vavg : 0):F2}×<1.2×)"); return; }
+            { EwStage(symbol, "거래량부족"); return; }
             double macdHist = 0;
             {
                 double e12 = 0, e26 = 0, sig = 0; const double k12 = 2.0 / 13, k26 = 2.0 / 27, k9 = 2.0 / 10;
@@ -5830,49 +5899,32 @@ namespace TradingBot
                     macdHist = m - sig;
                 }
             }
-            if (isLong ? !(macdHist > 0) : !(macdHist < 0))
-            { EwStage(symbol, "MACD불일치"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 차단 | MACD 방향 불일치(hist={macdHist:F6})"); return; }
+            if (!(macdHist < 0)) { EwStage(symbol, "MACD불일치"); return; }
 
-            // ── 셋업 채택 규칙 M: C파 전체 ∪ (숏 && ADX≥25) ──
             double adx15 = LorentzianGuard.CalcADX(k15, ei, 14);
-            bool accept = setup.Kind == "WC" || (!isLong && adx15 >= 25.0);
-            if (!accept)
-            { EwStage(symbol, $"미채택({setup.Kind}/{(isLong ? "롱" : "숏")})"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 차단 | 미채택 셋업({setup.Kind}/{(isLong ? "롱" : "숏")}/ADX{adx15:F0}) — 검증규칙은 C파 또는 숏&ADX≥25"); return; }
+            if (!(setup.Kind == "WC" || adx15 >= 25.0))
+            { EwStage(symbol, $"미채택({setup.Kind}/숏)"); return; }
 
-            // ── 돌파 진입 판정: 현재가가 파동 극점을 돌파했는가 (늦은 추격은 배제) ──
-            bool broke = isLong ? currentPrice >= (decimal)setup.TriggerPrice : currentPrice <= (decimal)setup.TriggerPrice;
-            if (!broke) { EwStage(symbol, "돌파대기"); return; }
+            if (!(currentPrice <= (decimal)setup.TriggerPrice)) { EwStage(symbol, "돌파대기"); return; }
             double overshoot = Math.Abs((double)currentPrice - setup.TriggerPrice) / setup.TriggerPrice;
-            // [v5.33.3] ★늦은추격 상한 0.3% → 0.15% (완화가 아니라 강화 — 측정 결과가 완화안을 반증했다).
-            //   당초 계획은 "8/12 01:00 ETHUSDT 가 0.34% 로 0.04%p 초과해 탈락했으니 0.5%로 완화"였으나,
-            //   --elliott-live 3년·30코인 재생으로 실제 측정하니 추격을 허용할수록 성적이 단조 악화했다:
-            //     0.50%+리스크비례 → 1,391건 0.171R PF1.27 F0 −0.07 흑자월 22/37
-            //     0.30%(기존)      → 1,275건 0.213R PF1.35 F0 −0.06 흑자월 24/37
-            //     0.15%(채택)      → 1,141건 0.234R PF1.39 F0 +0.06 흑자월 25/37  ← 처음으로 5폴드 전부 양수
-            //   추격분은 그대로 손절폭 확대(=TP 목표 원거리화)로 전가되므로, 늦게 잡은 돌파는 건수만 늘리고
-            //   기대값을 깎는다. 건수 −10.5%를 내주고 기대R +10%·F0 양전을 얻는 쪽이 맞다.
-            //   ※ 라이브의 overshoot 은 갭이 아니라 스캔지연에서 생기므로 이 상한이 실제로 몇 건을 걷어내는지는
-            //     새로 넣은 EwStage("늦은추격") 카운터로 배포 후 확인할 것. 지배적 병목이면 지연 자체를 줄여야 한다.
-            const double ChaseCap = 0.0015;
-            if (overshoot > ChaseCap)
-            { EwStage(symbol, "늦은추격"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 차단 | 돌파선 이탈 과다({overshoot:P2}>{ChaseCap:P2} 늦은추격)"); return; }
+            if (overshoot > 0.0015)
+            { EwStage(symbol, "늦은추격"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 숏 차단 | 돌파선 이탈 과다({overshoot:P2}>0.15%)"); return; }
 
-            // ── 손익비 1:3 (진입가 기준) — SL=구조적 극점, TP=진입가 ± 3×손절폭 ──
             decimal slPx = (decimal)setup.StopPrice;
-            decimal risk = isLong ? currentPrice - slPx : slPx - currentPrice;
+            decimal risk = slPx - currentPrice;
             if (risk <= 0) { EwStage(symbol, "risk≤0"); return; }
             double stopFrac = (double)(risk / currentPrice);
             if (stopFrac < 0.002 || stopFrac > 0.06)
-            { EwStage(symbol, "손절폭범위밖"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 차단 | 손절폭 범위밖({stopFrac:P2} — 0.2~6%만 허용)"); return; }
-            decimal tpPx = isLong ? currentPrice + 3m * risk : currentPrice - 3m * risk;
+            { EwStage(symbol, "손절폭범위밖"); return; }
+            decimal tpPx = currentPrice - 3m * risk;
 
-            string src = isLong ? "LORENTZIAN_ELLIOTT" : "LORENTZIAN_SCALP5M_SHORT_ELLIOTT";   // 숏은 SHORT 화이트리스트 prefix 준수
+            const string src = "LORENTZIAN_SCALP5M_SHORT_ELLIOTT";   // SHORT 화이트리스트 prefix 준수
             if (!IsEntryAllowed(symbol, src, out var ewGateReason))
-            { EwStage(symbol, "게이트차단"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 차단 | 공용게이트 reason={ewGateReason}"); return; }
+            { EwStage(symbol, "게이트차단"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 숏 차단 | 공용게이트 reason={ewGateReason}"); return; }
             _elliottCooldown[symbol] = DateTime.UtcNow;
             EwStage(symbol, "★진입");
-            OnStatusLog?.Invoke($"✅ [ELLIOTT] {symbol} {(isLong ? "롱" : "숏")}진입 | {setup.Kind}파(ZZ{setup.ZzMult:F0}·되돌림{setup.Retrace:P0}·대기{setup.BarsWaited}봉) · 1h방향일치 · 거래량{(double)k15[ei].Volume / vavg:F1}× · ADX{adx15:F0} | 진입{currentPrice:F6} SL{slPx:F6}({stopFrac:P2}) TP{tpPx:F6} = 손익비 1:3");
-            _ = ExecuteAutoOrder(symbol, isLong ? "LONG" : "SHORT", currentPrice, token,
+            OnStatusLog?.Invoke($"✅ [ELLIOTT] {symbol} 숏진입(v5.33.3 검증규칙) | {setup.Kind}파(ZZ{setup.ZzMult:F0}·되돌림{setup.Retrace:P0}) · 1h하락 · 거래량{(double)k15[ei].Volume / vavg:F1}× · ADX{adx15:F0} | 진입{currentPrice:F6} SL{slPx:F6}({stopFrac:P2}) TP{tpPx:F6} = 손익비 1:3");
+            _ = ExecuteAutoOrder(symbol, "SHORT", currentPrice, token,
                 signalSource: src, customTakeProfitPrice: tpPx, customStopLossPrice: slPx);
         }
 

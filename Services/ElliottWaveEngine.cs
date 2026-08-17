@@ -45,6 +45,528 @@ namespace TradingBot.Services
             public int BarsWaited;          // 확정 후 경과 봉수
         }
 
+        // ═══════════════════════════════════════════════════════════════════════════
+        //  [v5.34.0] 15분봉 단독 2-degree 엘리엇 — 사용자 스펙: "엘리엇은 15분봉만"
+        //
+        //  종전(v5.33.x) 실패 원인: 방향판정에 1시간봉 EMA20 기울기를 썼다.
+        //    3년·30코인 측정 → 1h 방향필터를 쓰는 한 롱은 −0.121R(PF 0.84)로 구조적 적자.
+        //    1h 를 전부 제거하고 15m 단독 2-degree 로 재구축하니 롱 +0.308R 로 흑자 전환.
+        //
+        //  ★파동 degree 는 타임프레임이 아니라 같은 15m 시계열의 ZigZag 스케일이다.
+        //    상위 degree = 15m ZigZag ATR×20  → 지금 몇 번 파동인지 카운트 (1·3·5·A·B·C)
+        //    하위 degree = 15m ZigZag ATR×4   → 그 안에서 진입 지점(파동2 되돌림)을 잡는다
+        //
+        //  채택 규칙 (--elliott-15m, 3년·30코인·54변형 중 5폴드 전부 양수):
+        //    상위ZZ20 임펄스(3파/5파) 진행 + 방향일치
+        //    · 하위ZZ4 파동2 되돌림 38.2~61.8% · 파동2 미전량되돌림
+        //    · 진입 = 하위 파동1 극점 돌파   (전환확인형은 54변형 전부 음수였다)
+        //    · 손절 = 되돌림 극값 ∓ 0.5×ATR14 · 익절 = 진입가 ± 3×손절폭
+        //    측정: 438건 · 승률 33.6% · 기대 0.165R · PF 1.24 · 폴드 0.14/0.01/0.16/0.51/0.08
+        //          롱 188건 +0.308R · 숏 250건 +0.059R
+        //  ※ EMA·MACD·ADX·거래량 필터는 전부 제거했다(사용자 지시 + 측정상 불필요).
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        /// <summary>상위 degree 파동 라벨. 0=미상 1=1파 2=3파 3=5파 5=B파 6=C파.</summary>
+        public static int LabelHigherWave(List<Pivot> vp, out int legDir)
+        {
+            legDir = 0;
+            if (vp.Count < 3) return 0;
+            var p1 = vp[^1];
+            legDir = p1.Type == -1 ? 1 : -1;              // 저점에서 끝났다 → 지금 상승 진행 중
+            bool up = legDir > 0;
+            if (vp.Count >= 5)                            // 파동5 — 1·2·3·4 완성 뒤 진행 중인 레그
+            {
+                var a = vp[^5]; var b = vp[^4]; var c = vp[^3]; var d = vp[^2];
+                bool shape = up ? (a.Type == -1 && b.Type == 1 && c.Type == -1 && d.Type == 1)
+                                : (a.Type == 1 && b.Type == -1 && c.Type == 1 && d.Type == -1);
+                if (shape)
+                {
+                    double w1 = Math.Abs(b.Price - a.Price), w3 = Math.Abs(d.Price - c.Price);
+                    bool w2ok = up ? c.Price > a.Price : c.Price < a.Price;      // 파동2 미전량되돌림
+                    bool w4ok = up ? p1.Price > b.Price : p1.Price < b.Price;    // 파동4 비중첩
+                    if (w1 > 0 && w3 > w1 && w2ok && w4ok) return 3;
+                }
+            }
+            if (vp.Count >= 4)                            // C파 — 직전 큰 레그의 조정 마지막 다리
+            {
+                var m = vp[^4]; var a = vp[^3]; var b = vp[^2];
+                bool shape = up ? (m.Type == 1 && a.Type == -1 && b.Type == 1)
+                                : (m.Type == -1 && a.Type == 1 && b.Type == -1);
+                if (shape)
+                {
+                    double prior = Math.Abs(a.Price - m.Price), wA = Math.Abs(b.Price - a.Price);
+                    bool p2ok = up ? p1.Price > a.Price : p1.Price < a.Price;
+                    if (prior > 0 && wA > 0 && wA < prior && p2ok) return 6;
+                }
+            }
+            {                                             // 파동3 — 1·2 완성 뒤 진행 중인 레그
+                var a = vp[^3]; var b = vp[^2];
+                bool shape = up ? (a.Type == -1 && b.Type == 1) : (a.Type == 1 && b.Type == -1);
+                bool w2ok = up ? p1.Price > a.Price : p1.Price < a.Price;
+                if (shape && w2ok) return 2;
+            }
+            if (vp.Count >= 4) return 5;                  // B파 진행 중
+            return 0;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        //  [v5.34.0] 차트기반 파동 판정 (BOS) — ATR·고정수식 전면 폐기
+        //
+        //  이전 시도들이 실패한 이유:
+        //    · 파동 마감을 "ATR×N 되돌리면 끝"이라는 고정 수식으로 판정 → 변동성 바뀌면 파동이 달라짐
+        //    · 상위 degree 를 ATR×20 으로 잡음 → 15m 에서 몇 주에 한 번이라 1500봉에 안 잡힘
+        //    · 매 스캔 최근 N봉을 다시 계산 → 창이 밀릴 때마다 카운트가 뒤집힘
+        //      (실측: 진입의 97.7%가 96봉 뒤 카운트가 뒤집히는 자리였고, 그것들이 전부 손실)
+        //
+        //  차트는 파동 마감을 이렇게 말한다 — 숫자가 아니라 구조다:
+        //    · 상승 파동은 직전 스윙 저점을 깨는 순간 끝난다 (구조 이탈 = BOS)
+        //    · 깨지 않고 고점을 갱신하는 동안은 연장 중이다 → 기준선을 따라 올린다
+        //  스윙점은 프랙탈(좌우 K봉보다 높은 고점 / 낮은 저점)로 잡는다. 크기 수식이 아니라 모양 정의다.
+        //
+        //  1→2→3→4→5 를 매 봉 연속 추적하고 절대규칙을 실시간 검사한다:
+        //    파동2가 파동1 시작(앵커)을 깨면 무효 → 재앵커
+        //    파동3이 파동1보다 짧으면 임펄스 아님 → 재앵커
+        //    파동4가 파동1 가격영역을 침범하면 무효 → 재앵커
+        //  하위 1~5 가 완성되면 그 전체를 상위 피벗으로 적립한다 = degree 는 중첩으로 만든다.
+        //
+        //  채택 규칙 (--elliott-bos, 3년·30코인, 56변형 중 5폴드 전부 양수 2개):
+        //    프랙탈 K=21 · 파동2 되돌림 23.6~78.6% · 상위(중첩) 3파·5파 순행 · 파동3 진입만
+        //    279건 · 승률 36.9% · 기대 0.206R · PF 1.34 · 폴드 0.02/0.38/0.50/0.05/0.14
+        //    롱 108건 +0.375R · 숏 171건 +0.099R      (현행 v5.33.3: 롱 −0.121R PF 0.84)
+        //  ※ 파동5 진입은 −0.178R(롱 −0.276R)로 적자라 채택하지 않는다.
+        //  ※ 상위 카운트 최초 성립 중앙값 154봉·최대 1070봉 → 1500봉 윈도우로 100% 성립.
+        // ═══════════════════════════════════════════════════════════════════════════
+        public const int FractalK = 21;          // 프랙탈 폭 (차트 모양 정의)
+        public const double BosRetrMin = 0.236;  // 파동2 되돌림 하한 (피보)
+        public const double BosRetrMax = 0.786;  // 파동2 되돌림 상한 (피보)
+
+        public sealed class SetupBos
+        {
+            public bool IsLong;
+            public int HigherWave;        // 2 = 상위3파 · 3 = 상위5파
+            public double StopPrice;      // 구조 무효화점 = 파동2 극값 (버퍼 없음)
+            public double Retrace;        // 파동2 되돌림 비율
+            public double Wave1Len;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        //  [v5.34.0] ★연속 파동 카운터 — 창(window) 없음, 재계산 없음.
+        //
+        //  파동은 기준점(앵커)에서 시작해 앞으로 세어 나가는 것이다. 파동이 깨지면 그 지점에서
+        //  다시 시작한다. "최근 N봉" 같은 고정 구간을 매번 다시 계산하면 스캔할 때마다 카운트가
+        //  달라진다 — 실측으로 확인된 실패 원인이다:
+        //    · 연속 카운팅 백테 +0.206R  vs  매 스캔 1500봉 재계산 −0.090R
+        //    · 진입의 97.7%가 96봉 뒤 카운트가 뒤집히는 자리였고 그것들이 전부 손실
+        //
+        //  이 카운터는 심볼별로 상태를 들고 가며 새로 마감된 봉만 밀어 넣는다(Advance).
+        //  필요한 히스토리는 프랙탈 확정용 링버퍼 2K+1봉뿐이다. 앵커·파동번호·상위 피벗은
+        //  상태로 계속 유지되고, 절대규칙 위반이 나면 그 자리에서 재앵커해 이어서 센다.
+        // ═══════════════════════════════════════════════════════════════════════════
+        public sealed class WaveCounter
+        {
+            private readonly int _K;
+            private readonly double _rMin, _rMax;
+            private readonly List<(double h, double l, double c)> _buf = new();   // 프랙탈 확정용 링버퍼 (2K+1)
+            private int _bar = -1;                                                // 전역 봉 인덱스(단조 증가)
+
+            private int _dir = 1, _phase = 1;
+            private bool _impulse = true;                                         // true=1~5 / false=A~C
+            private double _anchorPx; private int _anchorBar;
+            private double _w1End, _w2End, _w3End; private int _w1Bar, _w3Bar;
+            private double _legExt; private int _legExtBar;
+            private double _ref; private bool _hasRef;
+            private readonly List<Pivot> _lvl1 = new();
+            private bool _init;
+
+            public long LastBarOpenMs { get; private set; } = -1;
+            public int BarsProcessed => _bar + 1;
+            public bool HigherReady => _lvl1.Count >= 3;
+            public int Phase => _phase;
+            public bool IsImpulse => _impulse;
+            public int Dir => _dir;
+            /// <summary>직전 Advance 에서 파동2가 구조이탈로 마감되며 발생한 진입신호(없으면 null).</summary>
+            public SetupBos? Signal { get; private set; }
+
+            private readonly bool _reachGate;   // 3R 목표가 파동3 확장목표(1.618×파동1) 안에 들어와야 진입
+            private readonly bool _specInval;   // true = 명세식 구조 재해석 / false = 단순 재앵커
+            public WaveCounter(int k = FractalK, double rMin = BosRetrMin, double rMax = BosRetrMax,
+                               bool reachGate = false, bool specInval = false)
+            { _K = k; _rMin = rMin; _rMax = rMax; _reachGate = reachGate; _specInval = specInval; }
+
+            /// <summary>파동3 확장목표 = 파동2 종점 ± 1.618×파동1 (엘리엇 표준 투영).</summary>
+            public double Wave3Target { get; private set; }
+
+            private void ResetTo(int dir, double px, int bar, bool impulse)
+            {
+                _dir = dir; _anchorPx = px; _anchorBar = bar; _phase = 1; _impulse = impulse;
+                _w1End = _w2End = _w3End = 0; _legExt = px; _legExtBar = bar; _hasRef = false; _ref = 0;
+            }
+
+            private void PushLvl1(double px, int bar, int type)
+            {
+                if (_lvl1.Count > 0 && _lvl1[^1].Type == type)
+                {
+                    if ((type == 1 && px > _lvl1[^1].Price) || (type == -1 && px < _lvl1[^1].Price))
+                    { _lvl1[^1].Price = px; _lvl1[^1].Index = bar; _lvl1[^1].ConfirmIndex = bar; }
+                    return;
+                }
+                _lvl1.Add(new Pivot { Price = px, Index = bar, ConfirmIndex = bar, Type = type });
+                if (_lvl1.Count > 64) _lvl1.RemoveAt(0);      // 상위 카운트는 최근 몇 개만 쓰므로 무한 성장 방지
+            }
+
+            /// <summary>마감된 봉 하나를 전진 반영한다. 같은 봉을 두 번 넣지 않도록 호출측이 OpenTime 으로 관리.</summary>
+            public void Advance(double high, double low, double close, long openTimeMs)
+            {
+                Signal = null;
+                _bar++; LastBarOpenMs = openTimeMs;
+                _buf.Add((high, low, close));
+                if (_buf.Count > 2 * _K + 1) _buf.RemoveAt(0);
+
+                if (!_init) { ResetTo(1, low, _bar, true); _init = true; return; }
+
+                // ── 프랙탈 확정: 버퍼가 2K+1 이면 가운데 봉(현재−K)을 판정할 수 있다 ──
+                double fHi = double.NaN, fLo = double.NaN;
+                if (_buf.Count == 2 * _K + 1)
+                {
+                    var m = _buf[_K]; bool isH = true, isL = true;
+                    for (int d = 1; d <= _K; d++)
+                    {
+                        if (isH && !(m.h > _buf[_K - d].h && m.h > _buf[_K + d].h)) isH = false;
+                        if (isL && !(m.l < _buf[_K - d].l && m.l < _buf[_K + d].l)) isL = false;
+                        if (!isH && !isL) break;
+                    }
+                    if (isH) fHi = m.h;
+                    if (isL) fLo = m.l;
+                }
+
+                bool up = _dir > 0;
+                bool impulseLeg = _impulse ? (_phase == 1 || _phase == 3 || _phase == 5) : (_phase == 1 || _phase == 3);
+                bool legUp = impulseLeg ? up : !up;
+
+                if (legUp) { if (high > _legExt) { _legExt = high; _legExtBar = _bar; } }
+                else { if (low < _legExt) { _legExt = low; _legExtBar = _bar; } }
+
+                // 기준선 갱신 = 파동 연장 추적
+                if (legUp) { if (!double.IsNaN(fLo) && (!_hasRef || fLo > _ref) && fLo < _legExt) { _ref = fLo; _hasRef = true; } }
+                else { if (!double.IsNaN(fHi) && (!_hasRef || fHi < _ref) && fHi > _legExt) { _ref = fHi; _hasRef = true; } }
+
+                bool bos = _hasRef && (legUp ? low < _ref : high > _ref);   // 구조 이탈 = 파동 마감
+
+                int hiLab = 0, hiDir = 0;
+                if (_lvl1.Count >= 3) hiLab = LabelHigherWave(_lvl1, out hiDir);
+
+                if (_impulse)
+                {
+                    switch (_phase)
+                    {
+                        case 1:
+                            if (bos) { _w1End = _legExt; _w1Bar = _legExtBar; _phase = 2; _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false; }
+                            break;
+                        case 2:
+                            {
+                                // ★2파 법칙 위반 → 재해석: "1파 상승은 단순 반등(B파)이었다"
+                                //   → 지그재그 C파 진행 중으로 구조 전환 (방향 반전 + 조정 모드)
+                                if (up ? _legExt <= _anchorPx : _legExt >= _anchorPx)
+                                {
+                                    PushLvl1(_anchorPx, _anchorBar, up ? -1 : 1);
+                                    PushLvl1(_w1End, _w1Bar, up ? 1 : -1);
+                                    if (_specInval)
+                                    {   // 명세: 1파는 B파 반등이었다 → 지그재그 C파 진행으로 전환
+                                        ResetTo(-_dir, _w1End, _w1Bar, false); _phase = 3;
+                                        _legExtBar = _bar; _hasRef = false;
+                                    }
+                                    else ResetTo(_dir, _legExt, _legExtBar, true);   // 단순: 이탈 지점에서 같은 방향 재시작
+                                    break;
+                                }
+                                if (!bos) break;
+                                _w2End = _legExt;
+                                double w1len = Math.Abs(_w1End - _anchorPx);
+                                double retr = w1len > 0 ? Math.Abs(_w1End - _legExt) / w1len : 9;
+                                // ★파동3 확장목표 = 파동2 종점 ± 1.618×파동1
+                                Wave3Target = up ? _legExt + 1.618 * w1len : _legExt - 1.618 * w1len;
+                                bool bandOk = retr >= _rMin && retr <= _rMax;
+                                bool hiOk = (hiLab == 2 || hiLab == 3) && hiDir == (up ? 1 : -1);
+                                // ★1:3 도달가능성 — 3R 익절선이 파동3 확장목표 안에 들어와야 구조적으로 성립
+                                double entryApprox = close, riskApprox = Math.Abs(entryApprox - _legExt);
+                                double tp3 = up ? entryApprox + 3 * riskApprox : entryApprox - 3 * riskApprox;
+                                bool reachOk = !_reachGate || riskApprox <= 0 ||
+                                               (up ? tp3 <= Wave3Target : tp3 >= Wave3Target);
+                                if (bandOk && hiOk && reachOk)
+                                    Signal = new SetupBos { IsLong = up, HigherWave = hiLab, StopPrice = _legExt, Retrace = retr, Wave1Len = w1len };
+                                _phase = 3; _legExt = up ? high : low; _legExtBar = _bar; _hasRef = false;
+                                break;
+                            }
+                        case 3:
+                            if (bos)
+                            {
+                                double a = Math.Abs(_w1End - _anchorPx), c3 = Math.Abs(_legExt - _w2End);
+                                // ★3파 법칙 위반 → 재해석: "1~2파는 더 큰 3파의 세부 1-2파였다"
+                                //   → 방향을 유지한 채 degree 승격. 원래 앵커를 살리고 파동1을 이번 고점으로 다시 잡는다.
+                                if (c3 <= a)
+                                {
+                                    if (_specInval)
+                                    {   // 명세: 1~2파는 더 큰 3파의 세부 1-2파 → degree 승격, 방향 유지
+                                        _w1End = _legExt; _w1Bar = _legExtBar; _phase = 2;
+                                        _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false;
+                                    }
+                                    else
+                                    {
+                                        PushLvl1(_anchorPx, _anchorBar, up ? -1 : 1);
+                                        PushLvl1(_legExt, _legExtBar, up ? 1 : -1);
+                                        ResetTo(-_dir, _legExt, _legExtBar, true);
+                                    }
+                                    break;
+                                }
+                                _w3End = _legExt; _w3Bar = _legExtBar; _phase = 4; _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false;
+                            }
+                            break;
+                        case 4:
+                            {
+                                // ★4파 법칙 위반 → 재해석: "추진파가 아니라 조정파(ABC/WXY)였다"
+                                //   → 조정 모드로 전환. 방향은 현재 진행 방향을 유지한다.
+                                if (up ? _legExt <= _w1End : _legExt >= _w1End)
+                                {
+                                    PushLvl1(_anchorPx, _anchorBar, up ? -1 : 1);
+                                    PushLvl1(_w3End, _w3Bar, up ? 1 : -1);
+                                    // 명세: 추진파 아님 → ABC 조정 / 단순: 같은 방향 임펄스 재시작
+                                    ResetTo(_dir, _legExt, _legExtBar, !_specInval);
+                                    break;
+                                }
+                                if (!bos) break;
+                                _phase = 5; _legExt = up ? high : low; _legExtBar = _bar; _hasRef = false;   // 파동5 진입은 미채택(적자)
+                                break;
+                            }
+                        case 5:
+                            if (bos)
+                            {   // 하위 1~5 완성 = 상위 1파 → 중첩 적립 후 A-B-C 조정으로 전환
+                                PushLvl1(_anchorPx, _anchorBar, up ? -1 : 1);
+                                PushLvl1(_legExt, _legExtBar, up ? 1 : -1);
+                                ResetTo(-_dir, _legExt, _legExtBar, false);
+                            }
+                            break;
+                    }
+                }
+                else
+                {
+                    switch (_phase)
+                    {
+                        case 1: if (bos) { _w1End = _legExt; _w1Bar = _legExtBar; _phase = 2; _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false; } break;
+                        case 2: if (bos) { _w2End = _legExt; _phase = 3; _legExt = up ? high : low; _legExtBar = _bar; _hasRef = false; } break;
+                        case 3:
+                            if (bos)
+                            {   // C 완성 → 임펄스 재개
+                                PushLvl1(_anchorPx, _anchorBar, up ? -1 : 1);
+                                PushLvl1(_legExt, _legExtBar, up ? 1 : -1);
+                                ResetTo(-_dir, _legExt, _legExtBar, true);
+                            }
+                            break;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// [구버전] 창 단위 일괄 계산. 매 스캔 재계산하면 카운트가 뒤집히므로 라이브에서는 쓰지 않는다.
+        /// WaveCounter 시딩 검증용으로만 남긴다.
+        /// </summary>
+        public static SetupBos? DetectSetupBos(IList<IBinanceKline> k, int evalIdx)
+        {
+            int n = k.Count;
+            if (evalIdx < FractalK * 4 || evalIdx >= n) return null;
+
+            // ── 프랙탈 확정 (i+K 봉에서야 알 수 있다 = 인과적) ──
+            var fHi = new double[n]; var fLo = new double[n];
+            for (int i = 0; i < n; i++) { fHi[i] = double.NaN; fLo[i] = double.NaN; }
+            for (int i = FractalK; i < n - FractalK; i++)
+            {
+                double h = (double)k[i].HighPrice, l = (double)k[i].LowPrice;
+                bool isH = true, isL = true;
+                for (int d = 1; d <= FractalK; d++)
+                {
+                    if (isH && !(h > (double)k[i - d].HighPrice && h > (double)k[i + d].HighPrice)) isH = false;
+                    if (isL && !(l < (double)k[i - d].LowPrice && l < (double)k[i + d].LowPrice)) isL = false;
+                    if (!isH && !isL) break;
+                }
+                if (isH) fHi[i + FractalK] = h;
+                if (isL) fLo[i + FractalK] = l;
+            }
+
+            // ── 전진 상태기계 ──
+            int dir = 1, phase = 1;
+            double anchorPx = (double)k[FractalK + 1].LowPrice; int anchorBar = FractalK + 1;
+            double w1End = 0, w2End = 0, w3End = 0;
+            double legExt = anchorPx; int legExtBar = anchorBar;
+            double refLevel = 0; bool hasRef = false;
+            var lvl1 = new List<Pivot>();
+            SetupBos? fired = null;
+
+            void PushLvl1(double px, int bar, int type)
+            {
+                if (lvl1.Count > 0 && lvl1[^1].Type == type)
+                {
+                    if ((type == 1 && px > lvl1[^1].Price) || (type == -1 && px < lvl1[^1].Price))
+                    { lvl1[^1].Price = px; lvl1[^1].Index = bar; lvl1[^1].ConfirmIndex = bar; }
+                    return;
+                }
+                lvl1.Add(new Pivot { Price = px, Index = bar, ConfirmIndex = bar, Type = type });
+            }
+            void ResetTo(int d, double px, int bar)
+            { dir = d; anchorPx = px; anchorBar = bar; phase = 1; w1End = w2End = w3End = 0; legExt = px; legExtBar = bar; hasRef = false; refLevel = 0; }
+
+            for (int j = FractalK + 2; j <= evalIdx; j++)
+            {
+                double hj = (double)k[j].HighPrice, lj = (double)k[j].LowPrice;
+                bool up = dir > 0;
+                bool legUp = (phase == 1 || phase == 3 || phase == 5) ? up : !up;
+
+                if (legUp) { if (hj > legExt) { legExt = hj; legExtBar = j; } }
+                else { if (lj < legExt) { legExt = lj; legExtBar = j; } }
+
+                // 기준선 갱신 = 파동 연장 추적
+                if (legUp) { double v = fLo[j]; if (!double.IsNaN(v) && (!hasRef || v > refLevel) && v < legExt) { refLevel = v; hasRef = true; } }
+                else { double v = fHi[j]; if (!double.IsNaN(v) && (!hasRef || v < refLevel) && v > legExt) { refLevel = v; hasRef = true; } }
+
+                bool bos = hasRef && (legUp ? lj < refLevel : hj > refLevel);   // 구조 이탈 = 파동 마감
+
+                int hiLab = 0, hiDir = 0;
+                if (lvl1.Count >= 3) hiLab = LabelHigherWave(lvl1, out hiDir);
+
+                switch (phase)
+                {
+                    case 1:
+                        if (bos) { w1End = legExt; phase = 2; legExt = legUp ? lj : hj; legExtBar = j; hasRef = false; }
+                        break;
+
+                    case 2:
+                        {
+                            bool broke = up ? legExt <= anchorPx : legExt >= anchorPx;      // ★파동2 절대규칙
+                            if (broke)
+                            {
+                                PushLvl1(anchorPx, anchorBar, up ? -1 : 1);
+                                PushLvl1(w1End, legExtBar, up ? 1 : -1);
+                                ResetTo(dir, legExt, legExtBar); break;
+                            }
+                            if (!bos) break;
+                            double w1len = Math.Abs(w1End - anchorPx);
+                            double retr = w1len > 0 ? Math.Abs(w1End - legExt) / w1len : 9;
+                            w2End = legExt;
+                            // ★진입 판정 — 평가봉(마지막 마감봉)에서 일어난 구조이탈만 신호로 낸다
+                            if (j == evalIdx && retr >= BosRetrMin && retr <= BosRetrMax
+                                && (hiLab == 2 || hiLab == 3) && hiDir == (up ? 1 : -1))
+                            {
+                                fired = new SetupBos
+                                { IsLong = up, HigherWave = hiLab, StopPrice = legExt, Retrace = retr, Wave1Len = w1len };
+                            }
+                            phase = 3; legExt = up ? hj : lj; legExtBar = j; hasRef = false;
+                            break;
+                        }
+                    case 3:
+                        if (bos)
+                        {
+                            double w1 = Math.Abs(w1End - anchorPx), w3 = Math.Abs(legExt - w2End);
+                            if (w3 <= w1)                                                    // ★파동3 최단 불가
+                            {
+                                PushLvl1(anchorPx, anchorBar, up ? -1 : 1);
+                                PushLvl1(legExt, legExtBar, up ? 1 : -1);
+                                ResetTo(-dir, legExt, legExtBar); break;
+                            }
+                            w3End = legExt; phase = 4; legExt = legUp ? lj : hj; legExtBar = j; hasRef = false;
+                        }
+                        break;
+
+                    case 4:
+                        {
+                            bool overlap = up ? legExt <= w1End : legExt >= w1End;           // ★파동4 비중첩
+                            if (overlap)
+                            {
+                                PushLvl1(anchorPx, anchorBar, up ? -1 : 1);
+                                PushLvl1(w3End, legExtBar, up ? 1 : -1);
+                                ResetTo(dir, legExt, legExtBar); break;
+                            }
+                            if (!bos) break;
+                            phase = 5; legExt = up ? hj : lj; legExtBar = j; hasRef = false;  // 파동5 진입은 미채택(적자)
+                            break;
+                        }
+                    case 5:
+                        if (bos)
+                        {   // 하위 1~5 완성 = 상위 1파. 중첩으로 degree 생성 후 방향 반전.
+                            PushLvl1(anchorPx, anchorBar, up ? -1 : 1);
+                            PushLvl1(legExt, legExtBar, up ? 1 : -1);
+                            ResetTo(-dir, legExt, legExtBar);
+                        }
+                        break;
+                }
+            }
+            return fired;
+        }
+
+        /// <summary>15m 2-degree 채택 규칙의 셋업.</summary>
+        public sealed class Setup15
+        {
+            public bool IsLong;
+            public int HigherWave;        // 2=상위3파 3=상위5파
+            public double TriggerPrice;   // 하위 파동1 극점 (돌파 진입선)
+            public double StopPrice;      // 되돌림 극값 ∓ 0.5×ATR
+            public double Retrace;        // 하위 파동2 되돌림 비율
+            public double Wave1Len;
+        }
+
+        public const double Hi15Mult = 20.0;      // 상위 degree ZigZag ATR 배수
+        public const double Lo15Mult = 4.0;       // 하위 degree ZigZag ATR 배수
+        public const double Retr15Min = 0.382;    // 파동2 되돌림 하한 (피보)
+        public const double Retr15Max = 0.618;    // 파동2 되돌림 상한 (피보)
+        public const double StopBufAtr15 = 0.5;   // 손절 버퍼 (ATR14 배수)
+
+        /// <summary>
+        /// 15분봉만으로 상위/하위 degree 를 동시에 세어 진입 셋업을 낸다. 1시간봉 사용 안 함.
+        /// evalIdx = 마지막 마감봉. 되돌림 극값은 피벗 확정을 기다리지 않고 실시간 추적한다
+        /// (확정 대기가 곧 늦은 진입이라 v5.33.x 에서 꼭대기 매수를 유발했다).
+        /// </summary>
+        public static Setup15? DetectSetup15m(IList<IBinanceKline> k, double[] atr, int evalIdx)
+        {
+            if (evalIdx < 300 || evalIdx >= k.Count) return null;
+
+            // ── 상위 degree: 지금 몇 번 파동인가 ──
+            var hiPiv = ZigZag(k, atr, Hi15Mult);
+            var hiVis = new List<Pivot>();
+            foreach (var p in hiPiv) { if (p.ConfirmIndex > evalIdx) break; hiVis.Add(p); }
+            int hiLab = LabelHigherWave(hiVis, out int hiDir);
+            if (!(hiLab == 2 || hiLab == 3) || hiDir == 0) return null;   // 임펄스 3파·5파 진행 중일 때만
+            bool isLong = hiDir > 0;
+
+            // ── 하위 degree: 파동1 → 파동2 되돌림 ──
+            var loPiv = ZigZag(k, atr, Lo15Mult);
+            var loVis = new List<Pivot>();
+            foreach (var p in loPiv) { if (p.ConfirmIndex > evalIdx) break; loVis.Add(p); }
+            if (loVis.Count < 3) return null;
+            var s1 = loVis[^1];                       // 하위 파동1 끝
+            if ((isLong ? s1.Type != 1 : s1.Type != -1)) return null;   // 방향과 맞는 극점이어야 함
+            var s0 = loVis[^2];
+            if ((isLong ? s0.Type != -1 : s0.Type != 1)) return null;
+            double w1 = Math.Abs(s1.Price - s0.Price);
+            if (w1 <= 0 || w1 / s1.Price < 0.003) return null;
+
+            // 되돌림 극값 실시간 추적 (피벗 확정 대기 없음)
+            double ext = isLong ? double.MaxValue : double.MinValue; int extBar = s1.Index;
+            for (int e = s1.Index + 1; e <= evalIdx; e++)
+            {
+                double h = (double)k[e].HighPrice, l = (double)k[e].LowPrice;
+                if (isLong) { if (l < ext) { ext = l; extBar = e; } }
+                else { if (h > ext) { ext = h; extBar = e; } }
+            }
+            if (extBar <= s1.Index) return null;
+            if (isLong ? ext <= s0.Price : ext >= s0.Price) return null;   // ★파동2 미전량되돌림(절대규칙)
+            double retr = Math.Abs(s1.Price - ext) / w1;
+            if (retr < Retr15Min || retr > Retr15Max) return null;         // ★피보 되돌림대
+
+            double stop = isLong ? ext - StopBufAtr15 * atr[evalIdx] : ext + StopBufAtr15 * atr[evalIdx];
+            return new Setup15
+            {
+                IsLong = isLong, HigherWave = hiLab, TriggerPrice = s1.Price,
+                StopPrice = stop, Retrace = retr, Wave1Len = w1
+            };
+        }
+
         /// <summary>Wilder ATR(14) 배열 — ZigZag 임계값 산출용.</summary>
         public static double[] BuildAtr(IList<IBinanceKline> k, int period = 14)
         {
