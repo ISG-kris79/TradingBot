@@ -5,6 +5,33 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.34.2] - 2026-08-18
+
+### 🐛 Fixed — ★COIN-M 계약 오염으로 통계·텔레그램 수익률 붕괴
+
+**증상** — 텔레그램에 수익률 오류와 "전부 손실"이 표시됨. 실제로는 매매가 흑자였다.
+
+**원인** — 2026-08-18 10:16~10:23 (7분) 사이에 `BTCUSD_PERP` `ETHUSD_PERP` `BNBUSD_PERP` 등
+**COIN-M(코인마진) 계약 11종·70행**이 포지션 목록에 섞여 들어와 `RUNTIME_ADOPT` 가 자기 매매로
+채택했다. COIN-M 의 Quantity 는 코인 개수가 아니라 **계약 수(1계약 = $100)** 라서 손익 계산이
+통째로 깨진다:
+
+    BTCUSD_PERP  진입 90,899.8 → 청산 64,258.5 × 수량 778 = **−20,800,213**
+
+이 1행이 전체 통계를 삼켜 모든 집계가 대규모 손실로 표시됐다. 실제 USDT 매매 24h 성적은
+TRENDRIDE 6건 +$44.39 · RUNTIME_ADOPT(USDT) 2건 +$52.96 = **+$97.35 흑자**였다.
+게다가 4행이 열린 상태로 남아 1분 주기로 계속 재채택되고 있었다.
+
+**수정** — 이 봇은 USDT 무기한 전용이므로 진입점에서 잘라낸다
+- `BinanceExchangeService.GetPositionsAsync` — 심볼이 `USDT` 로 끝나지 않으면 포지션 목록에서 제외.
+  단일 초크포인트라 재입양·팬텀정리·모니터·SL/TP 등 모든 하위 로직이 자동으로 무시한다.
+  최초 1회 `⛔ [비USDT제외]` 로그로 어떤 심볼이 걸러졌는지 남긴다.
+- `TradingEngine.AdoptUntrackedExchangePositionsAsync` — 2차 방어로 동일 조건 재확인 후 채택 거부.
+
+**남은 조치(수동)** — 이미 기록된 70행은 DB에 남아 있어 과거 통계를 계속 오염시킨다.
+`TradeHistory_CoinM_Backup` 으로 백업 후 `WHERE Symbol NOT LIKE '%USDT'` 삭제 필요.
+(엘리엇 v5.34.0/v5.34.1 과는 무관 — 해당 기간 엘리엇 진입은 0건이었다.)
+
 ## [5.34.1] - 2026-08-17
 
 ### 🔧 Fixed — 엘리엇 롱 진입빈도 정상화 (건당R → 총R 기준으로 재선정)

@@ -2665,6 +2665,13 @@ namespace TradingBot
                 foreach (var pos in realPositions)
                 {
                     if (string.IsNullOrEmpty(pos.Symbol) || Math.Abs(pos.Quantity) <= 0m) continue;
+                    // [v5.34.2] 2차 방어 — USDT 무기한만 채택. COIN-M(*USD_PERP) 은 Quantity 가 계약수라
+                    //   손익이 수천만 단위로 깨져 통계·텔레그램을 오염시킨다(2026-08-18 실측).
+                    if (!pos.Symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase))
+                    {
+                        OnStatusLog?.Invoke($"⛔ [런타임재입양] {pos.Symbol} 비-USDT 심볼 → 채택 안 함");
+                        continue;
+                    }
 
                     // 이미 추적 중(또는 진입 예약 Quantity=0)이면 스킵
                     lock (_posLock)

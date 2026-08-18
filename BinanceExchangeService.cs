@@ -810,6 +810,8 @@ namespace TradingBot.Services
         //         + 백그라운드에서 reduceOnly market 으로 자동 청산 시도 (stepSize 미달이면 실패해도 무해)
         private const decimal DUST_NOTIONAL_USD = 5.0m;
         private readonly HashSet<string> _dustCleanupAttempted = new(StringComparer.OrdinalIgnoreCase);
+        // [v5.34.2] 비-USDT(COIN-M 등) 심볼 제외 로그 1회용
+        private readonly HashSet<string> _nonUsdtSkipped = new(StringComparer.OrdinalIgnoreCase);
         private readonly object _dustLock = new object();
 
         public async Task<List<PositionInfo>> GetPositionsAsync(CancellationToken ct = default)
@@ -821,6 +823,22 @@ namespace TradingBot.Services
             foreach (var p in result.Data)
             {
                 if (Math.Abs(p.Quantity) <= 0) continue;
+
+                // [v5.34.2] ★USDT 무기한 외 심볼 전면 배제 (COIN-M 오염 차단).
+                //   실측: 2026-08-18 10:19 에 BTCUSD_PERP / ETHUSD_PERP 등 COIN-M(코인마진) 계약이
+                //   포지션 목록에 섞여 들어와 RUNTIME_ADOPT 가 자기 매매로 채택했다. COIN-M 의 Quantity 는
+                //   코인 개수가 아니라 '계약 수'(1계약=$100)라서 손익 계산이 통째로 깨진다 —
+                //   BTCUSD_PERP 1건이 (64,258.5−90,899.8)×778 = −20,800,213 으로 기록되어
+                //   텔레그램 수익률·전체 통계를 오염시켰다(실제 손실 아님).
+                //   이 봇은 USDT 무기한 전용이므로 여기서 잘라내면 모든 하위 로직이 자동으로 무시한다.
+                if (string.IsNullOrEmpty(p.Symbol) || !p.Symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase))
+                {
+                    bool firstSkip;
+                    lock (_dustLock) { firstSkip = _nonUsdtSkipped.Add(p.Symbol ?? ""); }
+                    if (firstSkip)
+                        OnLog?.Invoke($"⛔ [비USDT제외] {p.Symbol} (수량 {p.Quantity}) — USDT 무기한이 아니므로 포지션 목록에서 제외");
+                    continue;
+                }
 
                 // dust 판정: entryPrice * |qty| < DUST_NOTIONAL_USD
                 decimal notional = Math.Abs(p.Quantity) * (p.EntryPrice > 0 ? p.EntryPrice : (p.MarkPrice > 0 ? p.MarkPrice : 0));
