@@ -160,6 +160,12 @@ namespace TradingBot.Services
         //   S5 건당 품질은 1시간봉 숏(+0.364R·PF 1.66)과 동등 — 건수만 적다.
         //   L4(4파종점 −23R) · LC(ABC완료 −32R) · SB(B파종점 −4R) 은 적자라 미채택.
         public const int SpecMixDefault = 1;
+        // [v5.34.8] 1파 역방향 무효화 — ETH 방향 고착(+19% 상승을 하락1파로 카운트)은 눈으로 고쳐지나
+        //   3년 측정에서 총R 이 105R → 53~79R 로 하락하고 5폴드 전부 양수가 깨진다.
+        //   방향이 틀린 채 갇히면 '신호를 내지 않아' 손실이 없다 — 갇힘이 사실상 필터로 작동한다.
+        //   따라서 기본 비활성. 스위치는 재검증용으로 보존.
+        //     0.2% → 69R · 0.4% → 53R · 0.8% → 55R · 1.5% → 79R (모두 105R 미만)
+        public const double W1WrongWayDefault = 0.0;
         public const int TermKDefault = 21;         // 파동 마감 판정 프랙탈 (termMode=0 일 때)
         public const int TermModeDefault = 0;       // 0=프랙탈(현행) · 1=되돌림비율
         public const double TermRetrDefault = 0.236;// 파동 마감 되돌림 비율 (termMode=1)
@@ -236,9 +242,10 @@ namespace TradingBot.Services
                                bool dirFromHigher = DirFromHigherDefault, int entryMode = 0, int minorK = 5,
                                bool entryW5 = EntryW5Default, double w4RetrMin = 0.146, double w4RetrMax = 0.618,
                                int termK = TermKDefault, int termMode = TermModeDefault, double termRetr = TermRetrDefault,
-                               double minLegPct = MinLegPctDefault, bool dirFromWave1 = DirFromWave1Default, int dirMode = 0, bool specEntries = false, int specMix = SpecMixDefault)
+                               double minLegPct = MinLegPctDefault, bool dirFromWave1 = DirFromWave1Default, int dirMode = 0, bool specEntries = false, int specMix = SpecMixDefault,
+                               double w1WrongWay = W1WrongWayDefault)
             { _K = k; _rMin = rMin; _rMax = rMax; _reachGate = reachGate; _specInval = specInval; _higherGate = higherGate;
-              _entryWindow = Math.Max(0, entryWindowBars); _flipOnW2Break = flipOnW2Break; _dirFromHigher = dirFromHigher; _entryMode = entryMode; _minorK = Math.Max(2, minorK); _entryW5 = entryW5; _w4Min = w4RetrMin; _w4Max = w4RetrMax; _termK = Math.Max(2, termK); _termMode = termMode; _termRetr = termRetr; _minLegPct = minLegPct; _dirFromWave1 = dirFromWave1; _dirMode = dirMode; _specEntries = specEntries; _specMix = specMix; }
+              _entryWindow = Math.Max(0, entryWindowBars); _flipOnW2Break = flipOnW2Break; _dirFromHigher = dirFromHigher; _entryMode = entryMode; _minorK = Math.Max(2, minorK); _entryW5 = entryW5; _w4Min = w4RetrMin; _w4Max = w4RetrMax; _termK = Math.Max(2, termK); _termMode = termMode; _termRetr = termRetr; _minLegPct = minLegPct; _dirFromWave1 = dirFromWave1; _dirMode = dirMode; _specEntries = specEntries; _specMix = specMix; _w1WrongWay = w1WrongWay; }
 
             private readonly bool _dirFromHigher;
             // [v5.34.4] 진입 모드 — 0: 파동2 마감 순간만(검증본) / 1: +파동3 진행중 재개 / 2: +파동3·5 진행중 재개
@@ -284,6 +291,12 @@ namespace TradingBot.Services
             // [v5.34.5] specMix 1 = ★롱은 현행 규칙(2파종점·타이트손절) + 숏은 스펙 S5(5파종점 반전)만.
             //   측정: 롱 타이트손절 63R vs 스펙 넓은손절 0R / 숏 S5 32R vs 미러숏 8R → 각각의 최선을 조합.
             private readonly int _specMix;
+            // [v5.34.8] ★1파 역방향 무효화 — 방향이 틀렸다는 증거가 나오면 다시 판정한다.
+            //   실측(2026-08-19~20): ETH 가 재앵커 직후 한 봉에서 저가가 먼저 0.4% 빠져 '하락 1파'로
+            //   확정된 뒤, 1920→2294(+19%) 상승 내내 '1파↓' 에 갇혔다. 하락 레그의 마감 기준선은
+            //   프랙탈 고점인데 상승장에서는 확정되지 않아 기준선이 안 생기고 파동이 영영 안 끝난다.
+            //   → 1파 진행 중 가격이 앵커를 역방향으로 이 비율만큼 이탈하면 카운트 무효 → phase0 재판정.
+            private readonly double _w1WrongWay;
             private double _w4End; private int _w4Bar;
             private double _cA, _cB;   // 조정 A파 끝 / B파 끝
             private double _p0Max, _p0Min;
@@ -439,8 +452,29 @@ namespace TradingBot.Services
                                 break;
                             }
                         case 1:
-                            if (bos) { _w1End = _legExt; _w1Bar = _legExtBar; _phase = 2; _legStart = _w1End; _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false; }
-                            break;
+                            {
+                                // ★1파 역방향 무효화 — 상승 1파인데 앵커 아래로, 하락 1파인데 앵커 위로
+                                //   임계만큼 이탈하면 방향 판정이 틀린 것이다. phase0 으로 되돌려 다시 관찰한다.
+                                if (_w1WrongWay > 0 && _anchorPx > 0)
+                                {
+                                    double wrong = up ? (_anchorPx - low) / _anchorPx : (high - _anchorPx) / _anchorPx;
+                                    if (wrong >= _w1WrongWay)
+                                    {
+                                        // 역방향 이탈 자체가 방향 증거다 — 다시 관찰하지 않고 그 자리에서 뒤집는다.
+                                        //   진행 중이던 레그의 극값(하락1파면 최저점)이 새 1파의 시작점이 된다.
+                                        //   phase0 로 되돌리면 재앵커를 그 봉 극점에 두게 되어 같은 방향으로 재확정되는
+                                        //   루프가 생긴다(실측: ETH 0파↓→1파↓ 반복하며 +19% 상승 내내 하락 카운트).
+                                        _dir = -_dir;
+                                        _anchorPx = _legExt; _anchorBar = _legExtBar;
+                                        _phase = 1; _legStart = _anchorPx;
+                                        _legExt = up ? low : high; _legExtBar = _bar; _hasRef = false;
+                                        _lastFiredRef = double.NaN; _lastMinorLow = double.NaN; _lastMinorHigh = double.NaN;
+                                        break;
+                                    }
+                                }
+                                if (bos) { _w1End = _legExt; _w1Bar = _legExtBar; _phase = 2; _legStart = _w1End; _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false; }
+                                break;
+                            }
                         case 2:
                             {
                                 // ★2파 법칙 위반 → 재해석: "1파 상승은 단순 반등(B파)이었다"

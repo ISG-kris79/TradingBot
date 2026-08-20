@@ -26321,40 +26321,35 @@ internal static class Program
     }
 
 
-    // --elliott-tf : 최근 신호 이력 + 라이브 1500봉 시딩 시 HigherReady(차단여부) 확인.
+    // --elliott-tf : ETH 등 특정 심볼의 카운터 상태 전이를 봉 단위로 추적(방향 오판 원인 규명).
     private static async Task RunElliottTfAsync(string[] args)
     {
-        var syms = new[] { "BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT" };
-        Console.WriteLine("=== 최근 3일 엘리엇 신호 + 라이브(1500봉 시딩) 차단여부 ===");
+        var syms = new[] { "ETHUSDT", "BTCUSDT" };
         foreach (var sym in syms)
         {
             List<IBinanceKline> k15;
             try { k15 = await FetchKlines15mAsync(sym, 4); } catch { continue; }
-            if (k15.Count < 2000) continue;
             int n = k15.Count;
-
-            // (A) 전체 히스토리로 카운트 — 신호 이력
-            var cFull = new TradingBot.Services.ElliottWaveEngine.WaveCounter();
-            var sigs = new List<string>();
-            for (int q = 0; q < n - 1; q++)
-            {
-                cFull.Advance((double)k15[q].HighPrice, (double)k15[q].LowPrice, (double)k15[q].ClosePrice, q);
-                if (cFull.Signal != null)
-                    sigs.Add($"{k15[q].OpenTime.AddHours(9):MM-dd HH:mm}{(cFull.Signal.IsLong ? "롱" : "숏")}");
-            }
-
-            // (B) 라이브와 동일: 최근 1500봉만 시딩 → HigherReady 확인
-            var cLive = new TradingBot.Services.ElliottWaveEngine.WaveCounter();
-            int st = Math.Max(0, n - 1 - 1500);
+            int st = Math.Max(0, n - 1 - 1500);   // 라이브와 동일 시딩
+            var c = new TradingBot.Services.ElliottWaveEngine.WaveCounter();
+            string prev = ""; var rows = new List<string>();
+            double prevAnchor = 0;
             for (int q = st; q < n - 1; q++)
-                cLive.Advance((double)k15[q].HighPrice, (double)k15[q].LowPrice, (double)k15[q].ClosePrice, q);
-
-            var recent = sigs.Where(x => string.Compare(x, "08-18") >= 0).ToList();
+            {
+                double h = (double)k15[q].HighPrice, l = (double)k15[q].LowPrice, cl = (double)k15[q].ClosePrice;
+                c.Advance(h, l, cl, q);
+                string ph = (c.IsImpulse ? c.Phase + "파" : "조" + c.Phase) + (c.Dir > 0 ? "↑" : "↓");
+                if (ph != prev)
+                {
+                    rows.Add($"{k15[q].OpenTime.AddHours(9):MM-dd HH:mm} {ph,-6} close={cl:F2}");
+                    prev = ph;
+                }
+            }
+            double first = (double)k15[st].ClosePrice, last = (double)k15[n - 2].ClosePrice;
             Console.WriteLine();
-            Console.WriteLine($"[{sym}]");
-            Console.WriteLine($"   전체시딩 신호(최근3일) {recent.Count}건 : {(recent.Count > 0 ? string.Join(", ", recent.TakeLast(6)) : "없음")}");
-            Console.WriteLine($"   라이브 1500봉 시딩 → HigherReady = {cLive.HigherReady}  (false 면 v5.34.5 에서 이 종목은 진입 전면 차단)");
-            Console.WriteLine($"   현재 카운트: {(cLive.IsImpulse ? cLive.Phase + "파" : "조정" + cLive.Phase)} · {(cLive.Dir > 0 ? "앵커상방" : "앵커하방")}");
+            Console.WriteLine($"=== [{sym}] 라이브 시딩 1500봉 · 구간 {first:F2} -> {last:F2} ({(last / first - 1) * 100:+0.0;-0.0}%) ===");
+            Console.WriteLine($"  전이 {rows.Count}회 (최근 14개)");
+            foreach (var r in rows.TakeLast(14)) Console.WriteLine("   " + r);
         }
     }
 
@@ -27057,12 +27052,16 @@ internal static class Program
 
             // ★라이브와 동일 엔진. 명세 피보 구간 × 도달가능성 게이트 × 프랙탈K 를 나란히 측정.
             // ★상위게이트 ON/OFF 를 축으로 — 건당R 이 아니라 '총R' 로 판단하기 위함
-            var cfgs = new (int K, double lo, double hi, bool reach, bool spec, bool hgate, int win, bool flip, bool dfh, int em, int mk, double trail, bool w5, double w4a, double w4b, int sf, bool d1, int tm, double tr, double mlp, int dm, bool se, int sx)[]{
-                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1), // v5.34.5 채택 기본값 회귀검증
+            var cfgs = new (int K, double lo, double hi, bool reach, bool spec, bool hgate, int win, bool flip, bool dfh, int em, int mk, double trail, bool w5, double w4a, double w4b, int sf, bool d1, int tm, double tr, double mlp, int dm, bool se, int sx, double ww)[]{
+                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // v5.34.7 (역방향 무효화 없음)
+                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.004), // ★역방향 0.4%
+                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.008), // 역방향 0.8%
+                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.015), // 역방향 1.5%
+                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.002), // 역방향 0.2%
             };
             for (int cf = 0; cf < cfgs.Length; cf++)
             {
-            var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(cfgs[cf].K, cfgs[cf].lo, cfgs[cf].hi, cfgs[cf].reach, cfgs[cf].spec, cfgs[cf].hgate, cfgs[cf].win, cfgs[cf].flip, cfgs[cf].dfh, cfgs[cf].em, cfgs[cf].mk, cfgs[cf].w5, cfgs[cf].w4a, cfgs[cf].w4b, 21, cfgs[cf].tm, cfgs[cf].tr, cfgs[cf].mlp, cfgs[cf].d1, cfgs[cf].dm, cfgs[cf].se, cfgs[cf].sx);
+            var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(cfgs[cf].K, cfgs[cf].lo, cfgs[cf].hi, cfgs[cf].reach, cfgs[cf].spec, cfgs[cf].hgate, cfgs[cf].win, cfgs[cf].flip, cfgs[cf].dfh, cfgs[cf].em, cfgs[cf].mk, cfgs[cf].w5, cfgs[cf].w4a, cfgs[cf].w4b, 21, cfgs[cf].tm, cfgs[cf].tr, cfgs[cf].mlp, cfgs[cf].d1, cfgs[cf].dm, cfgs[cf].se, cfgs[cf].sx, cfgs[cf].ww);
             int shortFilt = cfgs[cf].sf;
             busyUntil = -1;
             for (int j = 0; j < n - 2; j++)
@@ -27156,7 +27155,7 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("── 설정별 (라이브 엔진 WaveCounter 직접 구동) ──");
         Console.WriteLine("   설정                     건수  승률  기대R    PF | 롱건수 롱기대R | 숏건수 숏기대R | 5폴드");
-        var cfgNames = new[]{"v5.34.5 채택 기본값(회귀검증)"};
+        var cfgNames = new[]{"v5.34.7 (역방향무효화 없음)","★역방향 0.4%","역방향 0.8%","역방향 1.5%","역방향 0.2%"};
         for (int cf = 0; cf < cfgNames.Length; cf++)
         {
             var sset = trades.Where(x => x.variant == cf).ToList();
