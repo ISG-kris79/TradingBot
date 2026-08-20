@@ -26321,45 +26321,40 @@ internal static class Program
     }
 
 
-    // --elliott-tf : 같은 WaveCounter 를 15m/1h/2h/4h 에 각각 돌려 오늘 구간 신호 유무 비교.
+    // --elliott-tf : 최근 신호 이력 + 라이브 1500봉 시딩 시 HigherReady(차단여부) 확인.
     private static async Task RunElliottTfAsync(string[] args)
     {
         var syms = new[] { "BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT" };
-        var t0 = new DateTime(2026, 8, 20, 7, 0, 0, DateTimeKind.Utc);   // 16:00 KST
-        Console.WriteLine("=== 타임프레임별 엘리엇 신호 (2026-08-20 16:00 KST 이후) ===");
+        Console.WriteLine("=== 최근 3일 엘리엇 신호 + 라이브(1500봉 시딩) 차단여부 ===");
         foreach (var sym in syms)
         {
             List<IBinanceKline> k15;
-            try { k15 = await FetchKlines15mAsync(sym, 4); } catch { Console.WriteLine(sym + " fail"); continue; }
+            try { k15 = await FetchKlines15mAsync(sym, 4); } catch { continue; }
             if (k15.Count < 2000) continue;
-            double a = (double)k15.First(x => x.OpenTime >= t0).ClosePrice, z = (double)k15[k15.Count - 2].ClosePrice;
-            Console.WriteLine();
-            Console.WriteLine($"[{sym}] 16:00 이후 {(z / a - 1) * 100:+0.0;-0.0}%");
-            foreach (var (nm, agg) in new (string, int)[] { ("15m", 1), ("1h", 4), ("2h", 8), ("4h", 16) })
+            int n = k15.Count;
+
+            // (A) 전체 히스토리로 카운트 — 신호 이력
+            var cFull = new TradingBot.Services.ElliottWaveEngine.WaveCounter();
+            var sigs = new List<string>();
+            for (int q = 0; q < n - 1; q++)
             {
-                // 15m 을 agg 개씩 묶어 상위봉 생성
-                var bars = new List<(double h, double l, double c, DateTime t)>();
-                for (int i = 0; i + agg <= k15.Count - 1; i += agg)
-                {
-                    double hh = double.MinValue, ll = double.MaxValue;
-                    for (int q = i; q < i + agg; q++)
-                    { hh = Math.Max(hh, (double)k15[q].HighPrice); ll = Math.Min(ll, (double)k15[q].LowPrice); }
-                    bars.Add((hh, ll, (double)k15[i + agg - 1].ClosePrice, k15[i].OpenTime));
-                }
-                var c = new TradingBot.Services.ElliottWaveEngine.WaveCounter();
-                var sigs = new List<string>(); string prev = ""; var tl = new List<string>(); int inPh = 0;
-                foreach (var b in bars)
-                {
-                    c.Advance(b.h, b.l, b.c, 0);
-                    string ph = (c.IsImpulse ? c.Phase + "파" : "조" + c.Phase) + (c.Dir > 0 ? "↑" : "↓");
-                    if (b.t < t0) { prev = ph; inPh = 0; continue; }
-                    if (c.Signal != null) sigs.Add($"{b.t.AddHours(9):HH:mm}{(c.Signal.IsLong ? "롱" : "숏")}");
-                    if (ph != prev) { tl.Add($"{prev}({inPh})"); prev = ph; inPh = 0; }
-                    inPh++;
-                }
-                tl.Add($"{prev}({inPh})");
-                Console.WriteLine($"   {nm,-4} 신호 {sigs.Count,2}건 {(sigs.Count > 0 ? "[" + string.Join(",", sigs.Take(4)) + "]" : "        ")}  {string.Join(">", tl.Take(7))}");
+                cFull.Advance((double)k15[q].HighPrice, (double)k15[q].LowPrice, (double)k15[q].ClosePrice, q);
+                if (cFull.Signal != null)
+                    sigs.Add($"{k15[q].OpenTime.AddHours(9):MM-dd HH:mm}{(cFull.Signal.IsLong ? "롱" : "숏")}");
             }
+
+            // (B) 라이브와 동일: 최근 1500봉만 시딩 → HigherReady 확인
+            var cLive = new TradingBot.Services.ElliottWaveEngine.WaveCounter();
+            int st = Math.Max(0, n - 1 - 1500);
+            for (int q = st; q < n - 1; q++)
+                cLive.Advance((double)k15[q].HighPrice, (double)k15[q].LowPrice, (double)k15[q].ClosePrice, q);
+
+            var recent = sigs.Where(x => string.Compare(x, "08-18") >= 0).ToList();
+            Console.WriteLine();
+            Console.WriteLine($"[{sym}]");
+            Console.WriteLine($"   전체시딩 신호(최근3일) {recent.Count}건 : {(recent.Count > 0 ? string.Join(", ", recent.TakeLast(6)) : "없음")}");
+            Console.WriteLine($"   라이브 1500봉 시딩 → HigherReady = {cLive.HigherReady}  (false 면 v5.34.5 에서 이 종목은 진입 전면 차단)");
+            Console.WriteLine($"   현재 카운트: {(cLive.IsImpulse ? cLive.Phase + "파" : "조정" + cLive.Phase)} · {(cLive.Dir > 0 ? "앵커상방" : "앵커하방")}");
         }
     }
 
