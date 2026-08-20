@@ -153,16 +153,27 @@ namespace TradingBot.Services
         //     그 구조의 파동2 완성이 실제 엣지다. 이를 '시장 방향'으로 교정하려 하면 엣지가 사라진다.
         //     (스위치는 재검증용으로 남긴다 — 기본값 변경 전 --elliott-live15 총R 재확인 필수)
         public const bool DirFromHigherDefault = false;
-        public const bool EntryW5Default = false;   // 파동5 진입 (측정 후 결정)
+        public const bool EntryW5Default = false;   // 파동5 진입 (측정: 적자 → 미채택)
+        // [v5.34.5] ★채택 — 롱은 현행 규칙(2파 종점·타이트 손절), 숏은 스펙 S5(상승 5파 완성 후 반전).
+        //   숏을 '하락구조의 2파 종점'(롱의 미러)으로 잡던 것이 오류였다 — 스펙은 5파 종점 반전이다.
+        //   측정: 숏 미러 8R(+0.011R) → S5 24~53R(+0.159~0.364R · PF 1.68).
+        //   S5 건당 품질은 1시간봉 숏(+0.364R·PF 1.66)과 동등 — 건수만 적다.
+        //   L4(4파종점 −23R) · LC(ABC완료 −32R) · SB(B파종점 −4R) 은 적자라 미채택.
+        public const int SpecMixDefault = 1;
         public const int TermKDefault = 21;         // 파동 마감 판정 프랙탈 (termMode=0 일 때)
         public const int TermModeDefault = 0;       // 0=프랙탈(현행) · 1=되돌림비율
         public const double TermRetrDefault = 0.236;// 파동 마감 되돌림 비율 (termMode=1)
         public const double MinLegPctDefault = 0.004;// 최소 파동 크기 (가격 대비)
+        // [v5.34.5] ★채택 — 1파가 실제로 어느 쪽으로 갔는지 관찰해 방향 확정(가정하지 않는다).
+        //   측정: 롱 63R → 80R. 방향을 가정하던 구조적 결함 제거.
+        public const bool DirFromWave1Default = true;
         public const double BosRetrMin = 0.382;  // 파동2 되돌림 하한 (피보)
         public const double BosRetrMax = 0.786;  // 파동2 되돌림 상한 (피보)
 
         public sealed class SetupBos
         {
+            /// <summary>L2=2파종점 L4=4파종점 LC=ABC완료 S5=5파종점 SB=B파종점</summary>
+            public string Kind = "";
             public bool IsLong;
             public int HigherWave;        // 2 = 상위3파 · 3 = 상위5파
             public double StopPrice;      // 구조 무효화점 = 파동2 극값 (버퍼 없음)
@@ -225,9 +236,9 @@ namespace TradingBot.Services
                                bool dirFromHigher = DirFromHigherDefault, int entryMode = 0, int minorK = 5,
                                bool entryW5 = EntryW5Default, double w4RetrMin = 0.146, double w4RetrMax = 0.618,
                                int termK = TermKDefault, int termMode = TermModeDefault, double termRetr = TermRetrDefault,
-                               double minLegPct = MinLegPctDefault)
+                               double minLegPct = MinLegPctDefault, bool dirFromWave1 = DirFromWave1Default, int dirMode = 0, bool specEntries = false, int specMix = SpecMixDefault)
             { _K = k; _rMin = rMin; _rMax = rMax; _reachGate = reachGate; _specInval = specInval; _higherGate = higherGate;
-              _entryWindow = Math.Max(0, entryWindowBars); _flipOnW2Break = flipOnW2Break; _dirFromHigher = dirFromHigher; _entryMode = entryMode; _minorK = Math.Max(2, minorK); _entryW5 = entryW5; _w4Min = w4RetrMin; _w4Max = w4RetrMax; _termK = Math.Max(2, termK); _termMode = termMode; _termRetr = termRetr; _minLegPct = minLegPct; }
+              _entryWindow = Math.Max(0, entryWindowBars); _flipOnW2Break = flipOnW2Break; _dirFromHigher = dirFromHigher; _entryMode = entryMode; _minorK = Math.Max(2, minorK); _entryW5 = entryW5; _w4Min = w4RetrMin; _w4Max = w4RetrMax; _termK = Math.Max(2, termK); _termMode = termMode; _termRetr = termRetr; _minLegPct = minLegPct; _dirFromWave1 = dirFromWave1; _dirMode = dirMode; _specEntries = specEntries; _specMix = specMix; }
 
             private readonly bool _dirFromHigher;
             // [v5.34.4] 진입 모드 — 0: 파동2 마감 순간만(검증본) / 1: +파동3 진행중 재개 / 2: +파동3·5 진행중 재개
@@ -257,6 +268,25 @@ namespace TradingBot.Services
             private double _legStart;   // 현재 진행 레그의 시작가 (되돌림 계산 기준)
             // 최소 파동 크기 — 없으면 0.05% 움직인 레그가 0.01% 되돌림에 종료되어 매 봉 새 파동이 생긴다(노이즈).
             private readonly double _minLegPct;
+            // [v5.34.5] ★방향을 '가정'하지 않고 '관찰'한다 — 1파가 실제로 어느 쪽으로 갔는지가 곧 구조 방향.
+            //   기존: 재앵커 시 방향을 먼저 정하고 그 방향으로 1파를 추적 → 시장이 반대로 가면
+            //         ETH +21.6% 상승을 '하방 구조'로 세는 일이 생긴다(실측).
+            //   변경: 앵커 직후 phase 0(방향 미정)에서 상·하 양쪽을 동시에 추적하다가,
+            //         최소 파동 크기만큼 먼저 움직인 쪽을 1파 방향으로 확정한다.
+            //   → 롱/숏 방향이 파동 카운트 자체에서 나오므로 EMA 기울기 같은 외부 필터가 불필요하다.
+            private readonly bool _dirFromWave1;
+            // [v5.34.5] dirMode 2 = 1~2파로 방향 확정 (2파가 앵커를 깨면 방향을 뒤집어 이어서 센다)
+            private readonly int _dirMode;
+            // [v5.34.5] ★사용자 스펙 5종 진입 — 롱 3종(2파종점·4파종점·ABC완료) / 숏 2종(5파종점·B파종점).
+            //   종전 숏은 '하락구조의 2파 종점'(롱을 뒤집은 것)이라 스펙과 전혀 다른 자리였다 → 숏 8R.
+            //   스펙의 숏은 상승 5파 완성 직후(S5)와 A파 후 B파 반등 소진(SB) 이다.
+            private readonly bool _specEntries;
+            // [v5.34.5] specMix 1 = ★롱은 현행 규칙(2파종점·타이트손절) + 숏은 스펙 S5(5파종점 반전)만.
+            //   측정: 롱 타이트손절 63R vs 스펙 넓은손절 0R / 숏 S5 32R vs 미러숏 8R → 각각의 최선을 조합.
+            private readonly int _specMix;
+            private double _w4End; private int _w4Bar;
+            private double _cA, _cB;   // 조정 A파 끝 / B파 끝
+            private double _p0Max, _p0Min;
             private double _lastMinorLow = double.NaN, _lastMinorHigh = double.NaN;
             private double _lastFiredRef = double.NaN;
 
@@ -267,7 +297,8 @@ namespace TradingBot.Services
 
             private void ResetTo(int dir, double px, int bar, bool impulse)
             {
-                _dir = dir; _anchorPx = px; _anchorBar = bar; _phase = 1; _impulse = impulse; _lastFiredRef = double.NaN; _lastMinorLow = double.NaN; _lastMinorHigh = double.NaN;
+                _dir = dir; _anchorPx = px; _anchorBar = bar; _phase = (_dirFromWave1 && impulse) ? 0 : 1; _impulse = impulse; _lastFiredRef = double.NaN; _lastMinorLow = double.NaN; _lastMinorHigh = double.NaN;
+                _p0Max = px; _p0Min = px;
                 _w1End = _w2End = _w3End = 0; _legExt = px; _legStart = px; _legExtBar = bar; _hasRef = false; _ref = 0;
             }
 
@@ -284,6 +315,14 @@ namespace TradingBot.Services
             }
 
             /// <summary>마감된 봉 하나를 전진 반영한다. 같은 봉을 두 번 넣지 않도록 호출측이 OpenTime 으로 관리.</summary>
+
+            private void Emit(string kind, bool isLong, double stop, double retr, double wref, int hiLab)
+            {
+                _pending = new SetupBos { Kind = kind, IsLong = isLong, HigherWave = hiLab, StopPrice = stop, Retrace = retr, Wave1Len = wref };
+                _pendingLeft = _entryWindow;
+                Signal = _pending;
+            }
+
             public void Advance(double high, double low, double close, long openTimeMs)
             {
                 // [v5.34.3] 진입창 유지 — 구조가 살아있는 동안 신호를 EntryWindowBars 봉까지 유효하게 둔다.
@@ -315,7 +354,7 @@ namespace TradingBot.Services
                 }
 
                 bool up = _dir > 0;
-                bool impulseLeg = _impulse ? (_phase == 1 || _phase == 3 || _phase == 5) : (_phase == 1 || _phase == 3);
+                bool impulseLeg = _impulse ? (_phase <= 1 || _phase == 3 || _phase == 5) : (_phase == 1 || _phase == 3);
                 bool legUp = impulseLeg ? up : !up;
 
                 if (legUp) { if (high > _legExt) { _legExt = high; _legExtBar = _bar; } }
@@ -385,6 +424,20 @@ namespace TradingBot.Services
                 {
                     switch (_phase)
                     {
+                        case 0:
+                            {
+                                // ★방향 미정 — 앵커에서 상·하 양쪽을 추적하다가 최소 파동 크기만큼
+                                //   먼저 움직인 쪽을 1파 방향으로 확정한다(관찰). 그게 곧 롱/숏 방향이다.
+                                if (high > _p0Max) _p0Max = high;
+                                if (low < _p0Min) _p0Min = low;
+                                double upMove = _anchorPx > 0 ? (_p0Max - _anchorPx) / _anchorPx : 0;
+                                double dnMove = _anchorPx > 0 ? (_anchorPx - _p0Min) / _anchorPx : 0;
+                                if (upMove >= _minLegPct && upMove >= dnMove)
+                                { _dir = 1; _phase = 1; _legStart = _anchorPx; _legExt = _p0Max; _legExtBar = _bar; _hasRef = false; }
+                                else if (dnMove >= _minLegPct)
+                                { _dir = -1; _phase = 1; _legStart = _anchorPx; _legExt = _p0Min; _legExtBar = _bar; _hasRef = false; }
+                                break;
+                            }
                         case 1:
                             if (bos) { _w1End = _legExt; _w1Bar = _legExtBar; _phase = 2; _legStart = _w1End; _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false; }
                             break;
@@ -400,6 +453,13 @@ namespace TradingBot.Services
                                     {   // 명세: 1파는 B파 반등이었다 → 지그재그 C파 진행으로 전환
                                         ResetTo(-_dir, _w1End, _w1Bar, false); _phase = 3;
                                         _legExtBar = _bar; _hasRef = false;
+                                    }
+                                    else if (_dirMode == 2)
+                                    {
+                                        // [v5.34.5] ★1~2파로 방향 확정 — 2파가 앵커를 깼다는 것 자체가 '실제 방향은 반대'라는 정보.
+                                        //   구조를 버리지 않고 그 지점에서 방향을 뒤집어 이어서 센다.
+                                        //   (v5.34.3 의 flipOnW2Break 와 달리, 1파 방향은 phase0 실측으로 이미 잠정 확정된 상태다)
+                                        ResetTo(-_dir, _legExt, _legExtBar, true);
                                     }
                                     else
                                     {
@@ -432,7 +492,13 @@ namespace TradingBot.Services
                                 double tp3 = up ? entryApprox + 3 * riskApprox : entryApprox - 3 * riskApprox;
                                 bool reachOk = !_reachGate || riskApprox <= 0 ||
                                                (up ? tp3 <= Wave3Target : tp3 >= Wave3Target);
-                                if (bandOk && hiOk && reachOk)
+                                if (_specEntries && _specMix == 0)
+                                {
+                                    // ★L2 = 2파 종점 — 되돌림 0.5~0.618, 손절 = 1파 시작점(앵커), 3파를 노림
+                                    if (retr >= 0.500 && retr <= 0.618)
+                                        Emit("L2", up, _anchorPx, retr, w1len, hiLab);
+                                }
+                                else if (bandOk && hiOk && reachOk && (_specMix == 0 || up))
                                 {
                                     _pending = new SetupBos { IsLong = up, HigherWave = hiLab, StopPrice = _legExt, Retrace = retr, Wave1Len = w1len };
                                     _pendingLeft = _entryWindow;
@@ -481,7 +547,15 @@ namespace TradingBot.Services
                                 // ★파동4 마감 = 파동5 시작 → 진입 판정 (파동3 진입과 완전 대칭)
                                 //   1파 시작점을 앵커로 고정하고 2·3·4·5를 매 봉 추적하다가,
                                 //   파동2 마감봉에서 3파 진입 / 파동4 마감봉에서 5파 진입한다.
-                                if (_entryW5)
+                                {
+                                    double w3len0 = Math.Abs(_w3End - _w2End);
+                                    double r40 = w3len0 > 0 ? Math.Abs(_w3End - _legExt) / w3len0 : 9;
+                                    _w4End = _legExt; _w4Bar = _legExtBar;
+                                    // ★L4 = 4파 종점 — 되돌림 0.382 근방, 손절 = 1파 고점(비중첩 무효화선), 5파를 노림
+                                    if (_specEntries && _specMix == 0 && r40 >= 0.236 && r40 <= 0.500)
+                                        Emit("L4", up, _w1End, r40, w3len0, hiLab);
+                                }
+                                if (_entryW5 && !_specEntries)
                                 {
                                     double w3len = Math.Abs(_w3End - _w2End);
                                     double r4 = w3len > 0 ? Math.Abs(_w3End - _legExt) / w3len : 9;
@@ -501,6 +575,8 @@ namespace TradingBot.Services
                         case 5:
                             if (bos)
                             {   // 하위 1~5 완성 = 상위 1파 → 중첩 적립 후 A-B-C 조정으로 전환
+                                // ★S5 = 5파 종점 — 상승 5파 완성 직후 반전. 손절 = 5파 고점. A파 하락을 노림.
+                                if (_specEntries || _specMix == 1) Emit("S5", !up, _legExt, 0, Math.Abs(_legExt - _anchorPx), hiLab);
                                 PushLvl1(_anchorPx, _anchorBar, up ? -1 : 1);
                                 PushLvl1(_legExt, _legExtBar, up ? 1 : -1);
                                 ResetTo(-_dir, _legExt, _legExtBar, false);
@@ -512,11 +588,22 @@ namespace TradingBot.Services
                 {
                     switch (_phase)
                     {
-                        case 1: if (bos) { _w1End = _legExt; _w1Bar = _legExtBar; _phase = 2; _legStart = _w1End; _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false; } break;
-                        case 2: if (bos) { _w2End = _legExt; _phase = 3; _legStart = _w2End; _legExt = up ? high : low; _legExtBar = _bar; _hasRef = false; } break;
+                        case 1: if (bos) { _w1End = _legExt; _w1Bar = _legExtBar; _cA = _legExt; _phase = 2; _legStart = _w1End; _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false; } break;
+                        case 2:
+                            if (bos)
+                            {
+                                _w2End = _legExt; _cB = _legExt;
+                                // ★SB = B파 종점 — A파 하락 후 반등(B)이 식는 지점. 손절 = B파 고점. C파 하락을 노림.
+                                //   조정모드에서 _dir 은 조정 진행방향이므로, C파 방향 = _dir 방향.
+                                if (_specEntries && _specMix == 0) Emit("SB", up, _legExt, 0, Math.Abs(_cA - _anchorPx), hiLab);
+                                _phase = 3; _legStart = _w2End; _legExt = up ? high : low; _legExtBar = _bar; _hasRef = false;
+                            }
+                            break;
                         case 3:
                             if (bos)
                             {   // C 완성 → 임펄스 재개
+                                // ★LC = ABC 조정 완료(C파 종점) — 새 대파동 1파 시작을 노림. 손절 = C파 극점.
+                                if (_specEntries && _specMix == 0) Emit("LC", !up, _legExt, 0, Math.Abs(_legExt - _anchorPx), hiLab);
                                 PushLvl1(_anchorPx, _anchorBar, up ? -1 : 1);
                                 PushLvl1(_legExt, _legExtBar, up ? 1 : -1);
                                 ResetTo(-_dir, _legExt, _legExtBar, true);

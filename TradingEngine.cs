@@ -5867,8 +5867,35 @@ namespace TradingBot
                 }
             }
 
-            // ── ② 숏: v5.33.3 규칙 그대로 유지 (5폴드 전부 양수 · +0.364R) ──
-            await TryElliottShortLegacyAsync(symbol, currentPrice, k15, ei, token);
+            // ── ② 숏: [v5.34.5] 1시간봉 의존 제거 (사용자 지시: 엘리엇은 15분봉만).
+            //   기존 숏 경로는 v5.33.3 규칙이라 방향을 1h EMA20 6봉 기울기로 판정했다.
+            //   엘리엇 파동 카운터가 방향을 스스로 정하므로 1h 기울기는 불필요하고,
+            //   1h 필터는 실측에서 롱을 −0.121R 로 죽인 전력이 있다(15m 단독 전환 시 +0.308R).
+            //   숏도 같은 카운터의 숏 신호를 쓴다 — 측정: +0.279R·PF 1.46
+            //   (구 경로 +0.364R·PF 1.66 보다 건당 낮지만, 1h 의존을 없애라는 지시를 우선한다)
+            if (counterReady && bosSetup != null && !bosSetup.IsLong)
+            {
+                double slipS = Math.Abs((double)currentPrice - c) / c;
+                if (slipS > 0.0015)
+                { EwStage(symbol, "지연과다"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 숏 차단 | 신호봉 종가 대비 이탈 과다({slipS:P2}>0.15%)"); return; }
+                decimal slS = (decimal)bosSetup.StopPrice;
+                decimal riskS = slS - currentPrice;
+                if (riskS <= 0) { EwStage(symbol, "risk≤0"); return; }
+                double sfS = (double)(riskS / currentPrice);
+                if (sfS < 0.002 || sfS > 0.06)
+                { EwStage(symbol, "손절폭범위밖"); return; }
+                const string srcS = "LORENTZIAN_SCALP5M_SHORT_ELLIOTT";   // SHORT 화이트리스트 prefix 준수
+                if (!IsEntryAllowed(symbol, srcS, out var gS))
+                { EwStage(symbol, "게이트차단"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 숏 차단 | 공용게이트 reason={gS}"); return; }
+                decimal tpS = currentPrice - 3m * riskS;
+                _elliottCooldown[symbol] = DateTime.UtcNow;
+                EwStage(symbol, "★진입");
+                OnStatusLog?.Invoke($"✅ [ELLIOTT] {symbol} 숏진입 | 15m 차트기반 파동3 · 상위{(bosSetup.HigherWave == 3 ? "5파" : "3파")}순행(중첩) · 파동2 되돌림{bosSetup.Retrace:P1} | 진입{currentPrice:F6} SL{slS:F6}({sfS:P2}) TP{tpS:F6} = 손익비 1:3");
+                _ = ExecuteAutoOrder(symbol, "SHORT", currentPrice, token,
+                    signalSource: srcS, customTakeProfitPrice: tpS, customStopLossPrice: slS);
+                return;
+            }
+            EwStage(symbol, "신호없음");
         }
 
         /// <summary>

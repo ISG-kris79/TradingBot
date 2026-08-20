@@ -26245,6 +26245,81 @@ internal static class Program
         }
     }
 
+
+    // --trendride-why : 8/19 급등 구간에서 TRENDRIDE 게이트가 봉마다 어디서 막혔는지 순서대로 출력.
+
+    private static double RsiCloseLocal(List<IBinanceKline> k, int idx, int p)
+    {
+        if (idx < p) return 50;
+        double g = 0, l = 0;
+        for (int i = idx - p + 1; i <= idx; i++)
+        { double d = (double)(k[i].ClosePrice - k[i - 1].ClosePrice); if (d > 0) g += d; else l -= d; }
+        double ag = g / p, al = l / p;
+        for (int i = idx - p + 1; i <= idx; i++) { }
+        if (al <= 0) return 100;
+        double rs = ag / al; return 100 - 100 / (1 + rs);
+    }
+
+    private static async Task RunTrendRideWhyAsync(string[] args)
+    {
+        var syms = new[] { "BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT" };
+        var from = new DateTime(2026, 8, 19, 7, 30, 0, DateTimeKind.Utc);   // 16:30 KST
+        var to   = new DateTime(2026, 8, 19, 14, 0, 0, DateTimeKind.Utc);   // 23:00 KST
+        Console.WriteLine("=== TRENDRIDE 게이트 봉단위 재생 (8/19 16:30~23:00 KST) ===");
+        foreach (var sym in syms)
+        {
+            List<IBinanceKline> k15, k1h;
+            try { k15 = await FetchKlines15mAsync(sym, 2); k1h = await FetchKlines1hAsync(sym, 8); } catch { continue; }
+            if (k15.Count < 600 || k1h.Count < 250) { Console.WriteLine($"{sym}: data short"); continue; }
+            // 라이브와 동일: 엔진 bulk 학습
+            var eng = new LorentzianAnnEngine(sym, neighborsCount: 8, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount);
+            for (int j = 60; j <= k15.Count - 6; j++)
+            {
+                int ws = Math.Max(0, j - 499);
+                var w = k15.GetRange(ws, j - ws + 1);
+                var f = LorentzianFeatures.Extract(w);
+                if (f != null) eng.AddSample(f, LorentzianGuard.LabelForBar(k15, j));
+            }
+            var h1idx = new int[k15.Count];
+            { int hp = 0; for (int j = 0; j < k15.Count; j++) { var t = k15[j].OpenTime.AddMinutes(15);
+                while (hp + 1 < k1h.Count && k1h[hp + 1].OpenTime.AddHours(1) <= t) hp++; h1idx[j] = hp; } }
+            Console.WriteLine();
+            Console.WriteLine($"[{sym}]");
+            var counts = new Dictionary<string, int>();
+            for (int e = 0; e < k15.Count - 1; e++)
+            {
+                if (k15[e].OpenTime < from || k15[e].OpenTime > to) continue;
+                string why = "★통과";
+                int hi = h1idx[e];
+                double he20n = hi >= 26 ? CalcEMA(k1h, hi, 20) : 0, he20p = hi >= 32 ? CalcEMA(k1h, hi - 6, 20) : 0;
+                if (!(he20n > 0 && he20p > 0 && he20n > he20p))
+                    why = $"1h 하락기울기(hi={hi} n={he20n:F2} p={he20p:F2} 1hbar={(hi >= 0 && hi < k1h.Count ? k1h[hi].OpenTime.AddHours(9).ToString("MM-dd HH:mm") : "?")})";
+                else
+                {
+                    int ws = Math.Max(0, e - 499);
+                    var win = k15.GetRange(ws, e - ws + 1);
+                    var g = LorentzianGuard.EvaluateEntry(win, eng);
+                    double c = (double)k15[e].ClosePrice;
+                    double ema50 = CalcEMA(k15, e, 50), ema200 = CalcEMA(k15, e, 200);
+                    LorentzianGuard.CalcBB(k15, e, 20, 2.0, out double sma20, out _, out _);
+                    double adx = LorentzianGuard.CalcADX(k15, e, 14), atr = LorentzianGuard.CalcATR(k15, e, 14);
+                    double rsi = RsiCloseLocal(k15, e, 14);
+                    if (g.KnnPrediction <= 0) why = $"KNN 매수아님(pred={g.KnnPrediction})";
+                    else if (!(ema50 > 0 && ema200 > 0 && ema50 > ema200 && c > ema50)) why = "EMA정배열 아님";
+                    else if (!(c > sma20)) why = "BB중심선 아래";
+                    else if (!(adx >= 25.0)) why = $"ADX<25({adx:F0})";
+                    else if (atr > 0 && (c - ema50) / atr >= 2.0) why = $"EMA50 과확장({(c - ema50) / atr:F1}ATR)";
+                    else if (rsi >= 60.0) why = $"RSI≥60({rsi:F0})";
+                    else if (atr > 0 && (5.0 * atr) / c > 0.05) why = "손절폭 과대";
+                }
+                counts[why] = counts.TryGetValue(why, out var v) ? v + 1 : 1;
+                if (why == "★통과" || k15[e].OpenTime >= new DateTime(2026,8,19,8,0,0,DateTimeKind.Utc) && k15[e].OpenTime <= new DateTime(2026,8,19,9,0,0,DateTimeKind.Utc))
+                    Console.WriteLine($"   {k15[e].OpenTime.AddHours(9):HH:mm}  {why}");
+            }
+            Console.WriteLine("   -- 구간 집계: " + string.Join(" · ", counts.OrderByDescending(x => x.Value).Select(x => $"{x.Key}:{x.Value}")));
+        }
+    }
+
     private static async Task RunElliottBosAsync(string[] args)
     {
         const double feeRT = 0.0008; const int maxHold = 384; const int folds = 5;
@@ -26901,6 +26976,20 @@ internal static class Program
     //    ZigZag 시드가 달라져 백테와 다른 카운트가 나온다. 이 저장소는 "백테 흑자·라이브 무진입"
     //    사고를 v5.32.2 / v5.33.3 두 번 겪었으므로 배포 전 이 관문을 반드시 통과시킨다.)
     // ═══════════════════════════════════════════════════════════════════════════════
+
+    private static double Ema15(double[] c, int idx, int p)
+    {
+        if (idx < p) return 0;
+        double m = 2.0 / (p + 1), e = c[idx - p + 1];
+        for (int i = idx - p + 2; i <= idx; i++) e = c[i] * m + e * (1 - m);
+        return e;
+    }
+    private static double Sma15(double[] c, int idx, int p)
+    {
+        if (idx < p) return 0;
+        double t = 0; for (int i = idx - p + 1; i <= idx; i++) t += c[i]; return t / p;
+    }
+
     private static async Task RunElliottLive15Async(string[] args)
     {
         const double feeRT = 0.0008; const int maxHold = 384; const int folds = 5;
@@ -26930,12 +27019,13 @@ internal static class Program
 
             // ★라이브와 동일 엔진. 명세 피보 구간 × 도달가능성 게이트 × 프랙탈K 를 나란히 측정.
             // ★상위게이트 ON/OFF 를 축으로 — 건당R 이 아니라 '총R' 로 판단하기 위함
-            var cfgs = new (int K, double lo, double hi, bool reach, bool spec, bool hgate, int win, bool flip, bool dfh, int em, int mk, double trail, bool w5, double w4a, double w4b)[]{
-                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618),  // 배포본 기본값 회귀검증
+            var cfgs = new (int K, double lo, double hi, bool reach, bool spec, bool hgate, int win, bool flip, bool dfh, int em, int mk, double trail, bool w5, double w4a, double w4b, int sf, bool d1, int tm, double tr, double mlp, int dm, bool se, int sx)[]{
+                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1), // v5.34.5 채택 기본값 회귀검증
             };
             for (int cf = 0; cf < cfgs.Length; cf++)
             {
-            var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(cfgs[cf].K, cfgs[cf].lo, cfgs[cf].hi, cfgs[cf].reach, cfgs[cf].spec, cfgs[cf].hgate, cfgs[cf].win, cfgs[cf].flip, cfgs[cf].dfh, cfgs[cf].em, cfgs[cf].mk, cfgs[cf].w5, cfgs[cf].w4a, cfgs[cf].w4b);
+            var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(cfgs[cf].K, cfgs[cf].lo, cfgs[cf].hi, cfgs[cf].reach, cfgs[cf].spec, cfgs[cf].hgate, cfgs[cf].win, cfgs[cf].flip, cfgs[cf].dfh, cfgs[cf].em, cfgs[cf].mk, cfgs[cf].w5, cfgs[cf].w4a, cfgs[cf].w4b, 21, cfgs[cf].tm, cfgs[cf].tr, cfgs[cf].mlp, cfgs[cf].d1, cfgs[cf].dm, cfgs[cf].se, cfgs[cf].sx);
+            int shortFilt = cfgs[cf].sf;
             busyUntil = -1;
             for (int j = 0; j < n - 2; j++)
             {
@@ -26946,6 +27036,22 @@ internal static class Program
                 var st = counter.Signal;
                 if (st == null) continue;
                 bool isLong = st.IsLong;
+                // ★숏 전용 15m 레짐필터 — 1h EMA20 6봉기울기가 주던 정보를 15분봉만으로 복원
+                if (!isLong && shortFilt > 0)
+                {
+                    bool ok;
+                    switch (shortFilt)
+                    {
+                        case 1: ok = Ema15(clA, j, 80) < Ema15(clA, j - 24, 80); break;   // 1h EMA20 6봉 등가
+                        case 2: ok = Ema15(clA, j, 80) < Ema15(clA, j - 12, 80); break;
+                        case 3: ok = Ema15(clA, j, 50) < Ema15(clA, j, 200); break;       // 15m 역배열
+                        case 4: ok = clA[j] < Sma15(clA, j, 200); break;                  // 15m SMA200 아래
+                        case 5: ok = Ema15(clA, j, 120) < Ema15(clA, j - 24, 120); break;
+                        case 6: ok = Ema15(clA, j, 80) < Ema15(clA, j - 24, 80) && clA[j] < Sma15(clA, j, 200); break;
+                        default: ok = true; break;
+                    }
+                    if (!ok) continue;
+                }
                 int eb = j + 1; if (eb >= n - 1) continue;
                 double entry = opA[eb];
                 double risk = isLong ? entry - st.StopPrice : st.StopPrice - entry;
@@ -26995,7 +27101,7 @@ internal static class Program
                 trades.Add(new Ew15Cand
                 {
                     t = k15[eb].OpenTime.AddMinutes(15), exit = k15[xi].OpenTime.AddMinutes(15), sym = sym,
-                    dir = isLong ? 1 : -1, hiWave = st.HigherWave, stopFrac = stopFrac, retr = st.Retrace,
+                    dir = isLong ? 1 : -1, hiWave = st.HigherWave, stopFrac = stopFrac, retr = st.Retrace, sym2 = st.Kind,
                     pnl = pnl, r = pnl / stopFrac, win = win2, variant = cf
                 });
                 busyUntil = xi; made++;
@@ -27012,7 +27118,7 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("── 설정별 (라이브 엔진 WaveCounter 직접 구동) ──");
         Console.WriteLine("   설정                     건수  승률  기대R    PF | 롱건수 롱기대R | 숏건수 숏기대R | 5폴드");
-        var cfgNames = new[]{"배포본 기본값(회귀검증)"};
+        var cfgNames = new[]{"v5.34.5 채택 기본값(회귀검증)"};
         for (int cf = 0; cf < cfgNames.Length; cf++)
         {
             var sset = trades.Where(x => x.variant == cf).ToList();
@@ -27022,6 +27128,12 @@ internal static class Program
             var fR2 = new double[folds]; bool ap = true;
             for (int f = 0; f < folds; f++) { var fs = sset.Where(x => x.fold == f).ToList(); fR2[f] = fs.Count > 0 ? fs.Average(x => x.r) : 0; if (fs.Count < 8 || fR2[f] <= 0) ap = false; }
             Console.WriteLine($"   {cfgNames[cf],-22} {sset.Count,5} {100.0 * sset.Count(x => x.win) / sset.Count,5:F1}% {sset.Average(x => x.r),6:F3} {(gl2 > 0 ? gp2 / gl2 : 99),5:F2} | {LL.Count,5} {(LL.Count > 0 ? LL.Average(x => x.r) : 0),7:F3} | {SS.Count,5} {(SS.Count > 0 ? SS.Average(x => x.r) : 0),7:F3} | {string.Join(" ", fR2.Select(x => $"{x,5:F2}"))}{(ap ? " ★" : "")}  총{sset.Sum(x => x.r),6:F0}R");
+            foreach (var kk in sset.Select(x => x.sym2).Distinct().Where(x => !string.IsNullOrEmpty(x)).OrderBy(x => x))
+            {
+                var ks = sset.Where(x => x.sym2 == kk).ToList(); if (ks.Count < 10) continue;
+                double kgp = ks.Where(x => x.r > 0).Sum(x => x.r), kgl = -ks.Where(x => x.r <= 0).Sum(x => x.r);
+                Console.WriteLine($"     ·{kk,-20} {ks.Count,5} {100.0 * ks.Count(x => x.win) / ks.Count,5:F1}% {ks.Average(x => x.r),6:F3} {(kgl > 0 ? kgp / kgl : 99),5:F2} |                       | 총{ks.Sum(x => x.r),6:F0}R");
+            }
             foreach (var (dn, dv) in new[] { ("  └롱", 1), ("  └숏", -1) })
             {
                 var ds = sset.Where(x => x.dir == dv).ToList(); if (ds.Count < 20) continue;
@@ -27071,6 +27183,7 @@ internal static class Program
     {
         public DateTime t, exit; public string sym = ""; public int dir, hiWave, fold, variant;
         public double stopFrac, retr, pnl, r; public bool win, fibOk;
+            public string sym2 = "";
     }
 
     private static async Task RunElliott15mAsync(string[] args)
@@ -28983,6 +29096,7 @@ internal static class Program
         //   기존: --lev 10 --daily-60d 호출 시 args[0]=="--lev" 라 default 분기로 떨어져
         //   real-lorentzian C# engine 경로가 실행되며 daily-60d 절대 안 돌았음.
         bool HasArg(string flag) => args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
+        if (HasArg("--trendride-why")) { await RunTrendRideWhyAsync(args); return; }
         if (HasArg("--elliott-now")) { await RunElliottNowAsync(args); return; }
         if (HasArg("--elliott-bos")) { await RunElliottBosAsync(args); return; }
         if (HasArg("--elliott-nested")) { await RunElliottNestedAsync(args); return; }
