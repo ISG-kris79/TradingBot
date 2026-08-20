@@ -26921,19 +26921,19 @@ internal static class Program
 
             // ★라이브와 동일 엔진. 명세 피보 구간 × 도달가능성 게이트 × 프랙탈K 를 나란히 측정.
             // ★상위게이트 ON/OFF 를 축으로 — 건당R 이 아니라 '총R' 로 판단하기 위함
-            var cfgs = new (int K, double lo, double hi, bool reach, bool spec, bool hgate, int win, bool flip)[]{
-                (21,0.382,0.786,false,false,false,  0,false),  // 현행 v5.34.1 (기준)
-                (21,0.382,0.786,false,false,false,  4,false),  // 창4 (방향 현행유지)
-                (21,0.382,0.786,false,false,false,  8,false),  // 창8
-                (21,0.382,0.786,false,false,false, 16,false),  // 창16
-                (21,0.382,0.786,false,false,false, 32,false),  // 창32
-                (21,0.382,0.786,false,false,false, 64,false),  // 창64
-                (21,0.236,0.786,false,false,false, 16,false),  // 창16 + 넓은피보
-                (13,0.382,0.786,false,false,false, 16,false),  // 창16 + K13
+            var cfgs = new (int K, double lo, double hi, bool reach, bool spec, bool hgate, int win, bool flip, bool dfh)[]{
+                (21,0.382,0.786,false,false,false, 0,false,false),  // 현행 v5.34.1 (기준 +71R)
+                (21,0.382,0.786,false,false,false, 0,false,true ),  // ★상위구조에서 방향유도
+                (21,0.382,0.786,false,false,false, 8,false,true ),  // 상위구조 방향 + 창8
+                (21,0.236,0.786,false,false,false, 0,false,true ),  // 상위구조 방향 + 넓은피보
+                (13,0.382,0.786,false,false,false, 0,false,true ),  // 상위구조 방향 + K13
+                (13,0.236,0.786,false,false,false, 0,false,true ),  // K13 + 넓은피보
+                (34,0.382,0.786,false,false,false, 0,false,true ),  // K34
+                (21,0.382,0.786,false,false,true , 0,false,true ),  // 상위게이트도 ON
             };
             for (int cf = 0; cf < cfgs.Length; cf++)
             {
-            var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(cfgs[cf].K, cfgs[cf].lo, cfgs[cf].hi, cfgs[cf].reach, cfgs[cf].spec, cfgs[cf].hgate, cfgs[cf].win, cfgs[cf].flip);
+            var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(cfgs[cf].K, cfgs[cf].lo, cfgs[cf].hi, cfgs[cf].reach, cfgs[cf].spec, cfgs[cf].hgate, cfgs[cf].win, cfgs[cf].flip, cfgs[cf].dfh);
             busyUntil = -1;
             for (int j = 0; j < n - 2; j++)
             {
@@ -26982,7 +26982,7 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("── 설정별 (라이브 엔진 WaveCounter 직접 구동) ──");
         Console.WriteLine("   설정                     건수  승률  기대R    PF | 롱건수 롱기대R | 숏건수 숏기대R | 5폴드");
-        var cfgNames = new[]{"창0 (현행 v5.34.1)","창4","창8","창16","창32","창64","창16·넓은피보","창16·K13"};
+        var cfgNames = new[]{"현행 v5.34.1","상위구조방향","상위구조방향·창8","상위구조·넓은피보","상위구조·K13","K13·넓은피보","K34","상위구조·게이트ON"};
         for (int cf = 0; cf < cfgNames.Length; cf++)
         {
             var sset = trades.Where(x => x.variant == cf).ToList();

@@ -5832,9 +5832,9 @@ namespace TradingBot
             if (!counterReady)
                 EwStage(symbol, $"롱:상위집계중({ewBars}봉/lvl1부족)");
             else if (bosSetup == null)
-                EwStage(symbol, $"롱:파동2미마감({(ewImpulse ? ewPhase + "파" : "조정" + ewPhase)}·{(ewDir > 0 ? "상승구조" : "하락구조")})");
+                EwStage(symbol, $"롱:파동2미마감({(ewImpulse ? ewPhase + "파" : "조정" + ewPhase)}·앵커{(ewDir > 0 ? "상방" : "하방")})");
             else if (!bosSetup.IsLong)
-                EwStage(symbol, "롱:하락구조신호(숏경로로)");
+                EwStage(symbol, "롱:하방앵커신호(숏경로로)");
 
             // 롱만 채택 — 신규 엔진의 숏(+0.279R)은 현행 숏(+0.364R)보다 못하다.
             if (counterReady && bosSetup != null && bosSetup.IsLong)

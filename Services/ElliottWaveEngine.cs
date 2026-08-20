@@ -146,6 +146,13 @@ namespace TradingBot.Services
         //   방향뒤집기: 전체 +71R → −110R (앵커 이탈 시 방향전환 = 역추세 추격)
         //   ※ 스위치는 남겨둔다(재검증용). 기본값을 바꾸려면 --elliott-live15 총R 로 먼저 재확인할 것.
         public const int EntryWindowBarsDefault = 0;   // 진입신호 유효 봉수 (0 = 마감봉 당봉만 · 검증 채택)
+        // [v5.34.3] 방향 판정 3가지를 3년·30코인으로 비교한 결과 '앵커 방향 유지'가 유일한 흑자다:
+        //     앵커 유지(현행) +71R / 이탈시 뒤집기 −110R / 상위 degree 에서 유도 −80R
+        //   ★Dir 은 '시장 추세'가 아니라 '추적 중인 앵커 구조의 방향'이다. ETH 가 +21.6% 오르는 동안
+        //     Dir=-1 이어도 그건 하락 예측이 아니라 하락 방향으로 잡힌 로컬 구조를 추적한다는 뜻이고,
+        //     그 구조의 파동2 완성이 실제 엣지다. 이를 '시장 방향'으로 교정하려 하면 엣지가 사라진다.
+        //     (스위치는 재검증용으로 남긴다 — 기본값 변경 전 --elliott-live15 총R 재확인 필수)
+        public const bool DirFromHigherDefault = false;
         public const double BosRetrMin = 0.382;  // 파동2 되돌림 하한 (피보)
         public const double BosRetrMax = 0.786;  // 파동2 되돌림 상한 (피보)
 
@@ -209,9 +216,12 @@ namespace TradingBot.Services
             private readonly bool _flipOnW2Break;
             public WaveCounter(int k = FractalK, double rMin = BosRetrMin, double rMax = BosRetrMax,
                                bool reachGate = false, bool specInval = false, bool higherGate = false,
-                               int entryWindowBars = EntryWindowBarsDefault, bool flipOnW2Break = false)
+                               int entryWindowBars = EntryWindowBarsDefault, bool flipOnW2Break = false,
+                               bool dirFromHigher = DirFromHigherDefault)
             { _K = k; _rMin = rMin; _rMax = rMax; _reachGate = reachGate; _specInval = specInval; _higherGate = higherGate;
-              _entryWindow = Math.Max(0, entryWindowBars); _flipOnW2Break = flipOnW2Break; }
+              _entryWindow = Math.Max(0, entryWindowBars); _flipOnW2Break = flipOnW2Break; _dirFromHigher = dirFromHigher; }
+
+            private readonly bool _dirFromHigher;
 
             private SetupBos? _pending; private int _pendingLeft;
 
@@ -303,9 +313,22 @@ namespace TradingBot.Services
                                         ResetTo(-_dir, _w1End, _w1Bar, false); _phase = 3;
                                         _legExtBar = _bar; _hasRef = false;
                                     }
-                                    // [v5.34.3] ★방향고착 수정 — 파동2가 앵커를 깼다는 건 구조를 반대로 읽었다는 뜻이다.
-                                    //   같은 방향으로만 재앵커하면 상승장에서 '하락구조' 가 영원히 유지된다(ETH +21.6% 실측).
-                                    else ResetTo(_flipOnW2Break ? -_dir : _dir, _legExt, _legExtBar, true);
+                                    else
+                                    {
+                                        // [v5.34.4] ★방향 판정을 '로컬 앵커 이탈 1회'가 아니라 '중첩 상위 degree 구조'에서 끌어온다.
+                                        //   ETH +21.6% 상승을 하락구조로 세던 고착의 진짜 원인: 하락구조(dir=-1)에서 파동2 상승이
+                                        //   앵커 고점을 넘으면 무효 → 같은 방향(-1)으로 새 고점에 재앵커 → 상승장 내내 이 루프가 반복.
+                                        //   방향을 통째로 뒤집는 것(flipOnW2Break)은 역추세 추격이 되어 −110R 로 반증됐다(v5.34.3).
+                                        //   상위 구조가 임펄스(3파/5파)로 서 있으면 그 방향을 따르고, 불명확하면 기존 방향을 유지한다.
+                                        int newDir = _dir;
+                                        if (_dirFromHigher && _lvl1.Count >= 3)
+                                        {
+                                            int hl2 = LabelHigherWave(_lvl1, out int hd2);
+                                            if ((hl2 == 2 || hl2 == 3) && hd2 != 0) newDir = hd2;
+                                        }
+                                        else if (_flipOnW2Break) newDir = -_dir;
+                                        ResetTo(newDir, _legExt, _legExtBar, true);
+                                    }
                                     break;
                                 }
                                 if (!bos) break;
