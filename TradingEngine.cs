@@ -5824,14 +5824,18 @@ namespace TradingBot
                     counter.Advance((double)k15[q].HighPrice, (double)k15[q].LowPrice, (double)k15[q].ClosePrice, ot);
                     if (counter.Signal != null && q == ei) bosSetup = counter.Signal;   // 마지막 마감봉의 신호만
                 }
-                counterReady = counter.HigherReady;
+                // [v5.34.6] ★HigherReady 를 진입 전제조건에서 제거.
+                //   상위(중첩) 카운트는 higherGate 가 켜졌을 때만 진입 판정에 쓰이는데 기본 OFF 다.
+                //   그런데 '상위 피벗 3개' 를 하드 전제로 걸어둬서, 1파 실측 방향 도입 후
+                //   무효화가 줄자 상위 피벗이 안 쌓여 20여 종목이 1,500봉을 먹고도 영구 차단됐다
+                //   (실측 2026-08-20: 롱:상위집계중(1500~1521봉/lvl1부족) 이 지배적 단계).
+                //   쓰지도 않는 값이 진입을 막고 있었다.
+                counterReady = true;
                 ewPhase = counter.Phase; ewImpulse = counter.IsImpulse; ewDir = counter.Dir; ewBars = counter.BarsProcessed;
             }
             // [v5.34.3] ★롱 경로 단계 카운터 — v5.34.0 이식 때 빠뜨려 "왜 롱이 안 들어가는지"를
             //   로그로 전혀 볼 수 없었다(2026-08-20 사용자 지적). 무진입 진단은 단계별 분포가 전부다.
-            if (!counterReady)
-                EwStage(symbol, $"롱:상위집계중({ewBars}봉/lvl1부족)");
-            else if (bosSetup == null)
+            if (bosSetup == null)
                 EwStage(symbol, $"롱:파동2미마감({(ewImpulse ? ewPhase + "파" : "조정" + ewPhase)}·앵커{(ewDir > 0 ? "상방" : "하방")})");
             else if (!bosSetup.IsLong)
                 EwStage(symbol, "롱:하방앵커신호(숏경로로)");

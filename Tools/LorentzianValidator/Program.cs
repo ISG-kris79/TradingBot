@@ -27032,7 +27032,7 @@ internal static class Program
                 counter.Advance(hiA[j], loA[j], clA[j], j);
                 if (j < 200) continue;
                 if (j <= busyUntil) continue;
-                if (!counter.HigherReady) continue;
+                // [v5.34.6] HigherReady 전제 제거 — higherGate 기본 OFF 라 상위카운트는 판정에 쓰이지 않는다.
                 var st = counter.Signal;
                 if (st == null) continue;
                 bool isLong = st.IsLong;
