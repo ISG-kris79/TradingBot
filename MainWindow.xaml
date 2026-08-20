@@ -1457,7 +1457,7 @@
                                                                 <UniformGrid Columns="4" Margin="0,0,0,8">
                                                                     <Border Background="#0E1430" BorderBrush="#252B48" BorderThickness="1" CornerRadius="7" Margin="0,0,4,0" Padding="0,5">
                                                                         <StackPanel>
-                                                                            <TextBlock Text="KNN" FontSize="8" Foreground="#5B6480" HorizontalAlignment="Center"/>
+                                                                            <TextBlock Text="파동" FontSize="8" Foreground="#5B6480" HorizontalAlignment="Center"/>
                                                                             <TextBlock Text="{Binding KnnText}" FontFamily="Consolas" FontSize="12" FontWeight="Bold" Foreground="{Binding KnnColor}" HorizontalAlignment="Center"/>
                                                                         </StackPanel>
                                                                     </Border>

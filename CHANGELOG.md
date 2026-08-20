@@ -5,6 +5,24 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 기반으로 하며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [5.34.9] - 2026-08-20
+
+### 🧹 Removed — 진입임박 패널의 KNN 잔존 제거 (표시 전용 스캔 루프)
+
+**증상** — 진입 로직에서 KNN 을 모두 제거(v5.34.7)했는데도 메인창 **진입임박 패널에
+"KNN 9표" 가 계속 표시**됐다.
+
+**원인** — `RunNearEntryScanLoopAsync` → `UpdateNearEntryForSymbolAsync` 가 **표시 전용**으로
+Lorentzian KNN 가드를 별도로 돌리고 있었다. 진입 실행 경로가 아니라 호출 제거 대상에서 누락됐다.
+
+**수정**
+- 진입임박 스캔을 **실제 진입 판정과 동일한 `WaveCounter`** 로 교체. KNN·NW커널 계산 제거.
+- `NearEntryInfo` 에 파동 필드 추가(WavePhase / WaveImpulse / WaveDir / WaveRetr).
+- UI 표기 교체: `KNN n/8` → `3파↑` · `조정2↓`, 컬럼 헤더 `KNN` → `파동`,
+  안내문 `KNN n표↑` → `파동2 마감 대기`.
+
+이제 진입임박 패널이 **봇이 실제로 보고 있는 파동 상태**를 그대로 보여준다.
+
 ## [5.34.7] - 2026-08-20
 
 ### 🌊 Changed — ★엘리엇 파동 단일 진입 (사용자 지시)

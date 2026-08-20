@@ -5127,6 +5127,11 @@ namespace TradingBot
             public bool Passed;         // 가드 통과 여부
             public bool InPool;         // 현재 추적풀(실제 진입후보) 여부 — false면 '풀밖'
             public double SurgeScore;   // [v5.24.7] 급등 임박 점수 (거래량급증×BB스퀴즈×모멘텀)
+            // [v5.34.9] 엘리엇 단일 진입 전환 — 진입임박 패널을 파동 상태로 교체 (KNN 표기 제거)
+            public int WavePhase;       // 현재 파동 번호 (임펄스 1~5 / 조정 1~3)
+            public bool WaveImpulse;    // true=임펄스 false=조정
+            public int WaveDir;         // +1 앵커상방 / -1 앵커하방
+            public double WaveRetr;     // 진행 중 되돌림 비율 (파동2 판정용, 0이면 미산출)
             public DateTime UpdatedUtc;
         }
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, NearEntryInfo> _nearEntrySnapshot
@@ -5219,59 +5224,41 @@ namespace TradingBot
         /// <summary>[v5.24.6] 단일 심볼 LCC 가드 평가 → 진입 임박 스냅샷만 기록 (진입 안 함).</summary>
         private async Task UpdateNearEntryForSymbolAsync(string symbol, CancellationToken token)
         {
-            // [v5.25.33] KNN=1h 방향판단 (사용자 지정 구조: 방향 1h→진입대기 15m→진입 5m마감). 엔진 공유하므로 진입/스냅샷 동일 TF 필수.
-            var k15 = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.OneHour, 1500, token);
-            if (k15 == null || k15.Count < 300) return;
-            var k15List = k15 as List<IBinanceKline> ?? new List<IBinanceKline>(k15);
-
-            var engine = _lorentzianEngines.GetOrAdd(symbol,
-                s => new LorentzianAnnEngine(s, neighborsCount: 8, maxBarsBack: 2000, featureCount: LorentzianFeatures.FeatureCount));
-
-            // walk-forward 학습 (AnalyzeLorentzianEntryAsync와 동일 — 마지막 마감봉 변경 시만)
-            var lastClosed15m = k15List[^2];
-            bool needTrain = !_lorentzianLast15mTrained.TryGetValue(symbol, out var prevTrained)
-                             || prevTrained != lastClosed15m.OpenTime;
-            if (needTrain)
+            // [v5.34.9] ★엘리엇 단일 진입 — 진입임박 패널을 파동 상태로 교체.
+            //   종전에는 표시 전용으로 Lorentzian KNN 가드를 돌려 "KNN n표"를 띄웠다.
+            //   진입 로직에서 KNN 을 제거했는데도 이 루프가 살아 있어 화면에는 계속 KNN 이 보였다.
+            //   이제 실제 진입 판정과 동일한 WaveCounter 상태를 그대로 보여준다.
+            try
             {
-                _lorentzianLast15mTrained[symbol] = lastClosed15m.OpenTime;
-                if (engine.SampleCount < 200)
+                var kraw = await GetMultiTfKlinesThrottledAsync(symbol, KlineInterval.FifteenMinutes, BinanceKlineMaxLimit, token);
+                var k15 = kraw as List<IBinanceKline> ?? (kraw != null ? new List<IBinanceKline>(kraw) : null);
+                if (k15 == null || k15.Count < 400) return;
+                int ei = k15.Count - 2;
+
+                var counter = _ewCounters.GetOrAdd(symbol, _ => new ElliottWaveEngine.WaveCounter());
+                int phase; bool impulse; int dir;
+                lock (counter)
                 {
-                    for (int j = 60; j <= k15List.Count - 6; j++)
+                    for (int q = 0; q <= ei; q++)
                     {
-                        int wStart = Math.Max(0, j - 499);
-                        var win = k15List.GetRange(wStart, j - wStart + 1);
-                        var feats = LorentzianFeatures.Extract(win);
-                        if (feats == null) continue;
-                        engine.AddSample(feats, LorentzianGuard.LabelForBar(k15List, j));
+                        long ot = new DateTimeOffset(k15[q].OpenTime, TimeSpan.Zero).ToUnixTimeMilliseconds();
+                        if (counter.LastBarOpenMs >= 0 && ot <= counter.LastBarOpenMs) continue;
+                        counter.Advance((double)k15[q].HighPrice, (double)k15[q].LowPrice, (double)k15[q].ClosePrice, ot);
                     }
+                    phase = counter.Phase; impulse = counter.IsImpulse; dir = counter.Dir;
                 }
-                else
+
+                _nearEntrySnapshot[symbol] = new NearEntryInfo
                 {
-                    int sIdx = k15List.Count - 6;
-                    if (sIdx >= 60)
-                    {
-                        int wStart = Math.Max(0, sIdx - 499);
-                        var win = k15List.GetRange(wStart, sIdx - wStart + 1);
-                        var feats = LorentzianFeatures.Extract(win);
-                        if (feats != null) engine.AddSample(feats, LorentzianGuard.LabelForBar(k15List, sIdx));
-                    }
-                }
+                    Symbol = symbol,
+                    WavePhase = phase, WaveImpulse = impulse, WaveDir = dir, WaveRetr = 0,
+                    InPool = _activeTrackingPool.ContainsKey(symbol),
+                    Passed = false,
+                    UpdatedUtc = DateTime.UtcNow
+                };
             }
-
-            int evalIdx = k15List.Count - 2;
-            int wStartE = Math.Max(0, evalIdx - 499);
-            var winE = k15List.GetRange(wStartE, evalIdx - wStartE + 1);
-            var guard = LorentzianGuard.EvaluateEntry(winE, engine);
-
-            int eiN = winE.Count - 1;
-            double nwNowN = LorentzianGuard.CalcNWKernel(winE, eiN);
-            double nwPrevN = eiN >= 1 ? LorentzianGuard.CalcNWKernel(winE, eiN - 1) : nwNowN;
-            LorentzianGuard.CalcBB(winE, eiN, 20, 1.0, out _, out double up1N, out _);
-            double closeN = (double)winE[eiN].ClosePrice;
-            double roomN = up1N > 0 ? (up1N - closeN) / closeN * 100.0 : 0.0;
-            UpdateNearEntrySnapshot(symbol, guard, nwNowN - nwPrevN, roomN, up1N, ComputeSurgeScore(winE, eiN));
+            catch { }
         }
-
         private async Task AnalyzeLorentzianEntryAsync(string symbol, decimal currentPrice, CancellationToken token)
         {
             // [v5.27.2] 순손실 코인 제외 (--mtf-lossstat 통계: OP 승률24%·−$367, LINK 30%·−$407 순손실).

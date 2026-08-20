@@ -5136,7 +5136,8 @@ ORDER BY CloseTime DESC, Id DESC", new { UserId = userId, StartUtc = startUtc, E
                     else { verdict = $"{prox}%"; vColor = !s.InPool ? BrGray : (prox >= 80 ? BrYellow : BrGray); }
 
                     var needs = new List<string>();
-                    if (!knnOk) needs.Add($"KNN {4 - s.KnnNet}표↑");
+                    // [v5.34.9] KNN 표기 제거 — 엘리엇 단일 진입이므로 파동 상태로 안내한다.
+                    if (!knnOk) needs.Add(s.WaveImpulse && s.WavePhase == 2 ? "파동2 마감 대기" : "파동2 진입 대기");
                     if (!nwOk) needs.Add("NW커널 상승전환");
                     if (!dbbOk) needs.Add($"+1σ({s.EntryUpper:G6}) 이하 눌림");
                     string need = s.Passed ? "✅ 진입조건 충족 (5m 양봉 마감 시 진입)" : (needs.Count > 0 ? string.Join(" / ", needs) : "기타 가드");
@@ -5146,7 +5147,7 @@ ORDER BY CloseTime DESC, Id DESC", new { UserId = userId, StartUtc = startUtc, E
                     built.Add((new TradingBot.Models.NearEntryItem
                     {
                         Symbol = s.Symbol,
-                        KnnText = $"KNN {s.KnnNet}/{s.KnnK}",
+                        KnnText = s.WaveImpulse ? $"{s.WavePhase}파{(s.WaveDir > 0 ? "↑" : "↓")}" : $"조정{s.WavePhase}{(s.WaveDir > 0 ? "↑" : "↓")}",
                         KnnColor = knnOk ? BrGreen : BrGray,
                         NwText = $"NW {(s.NwGap >= 0 ? "↑" : "↓")}",
                         NwColor = nwOk ? BrGreen : BrGray,
