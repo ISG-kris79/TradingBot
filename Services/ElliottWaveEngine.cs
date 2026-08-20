@@ -141,6 +141,11 @@ namespace TradingBot.Services
         //   v5.34.0 은 상위 3·5파 순행 게이트로 진입의 90%를 걷어내 건당 0.218R 을 만들었으나
         //   건수가 월 3건까지 줄어 롱 총R 이 25R 에 그쳤다. 게이트를 풀면 건당 0.074R 로 얇아지는
         //   대신 854건(월 24건)이 되어 롱 총R 63R — 2.5배다. 계좌에 쌓이는 건 건당R×건수다.
+        // [v5.34.3] 진입창·방향뒤집기 둘 다 측정으로 반증됨 → 검증된 v5.34.1 동작을 기본값으로 고정.
+        //   진입창(롱 총R): 0봉 +63R · 4봉 +59R · 8봉 +59R · 16봉 +48R · 32봉 +50R · 64봉 +45R  → 넓힐수록 악화
+        //   방향뒤집기: 전체 +71R → −110R (앵커 이탈 시 방향전환 = 역추세 추격)
+        //   ※ 스위치는 남겨둔다(재검증용). 기본값을 바꾸려면 --elliott-live15 총R 로 먼저 재확인할 것.
+        public const int EntryWindowBarsDefault = 0;   // 진입신호 유효 봉수 (0 = 마감봉 당봉만 · 검증 채택)
         public const double BosRetrMin = 0.382;  // 파동2 되돌림 하한 (피보)
         public const double BosRetrMax = 0.786;  // 파동2 되돌림 상한 (피보)
 
@@ -188,15 +193,27 @@ namespace TradingBot.Services
             public int Phase => _phase;
             public bool IsImpulse => _impulse;
             public int Dir => _dir;
-            /// <summary>직전 Advance 에서 파동2가 구조이탈로 마감되며 발생한 진입신호(없으면 null).</summary>
+            /// <summary>유효한 진입신호(없으면 null). 파동2 마감 봉에서 발생해 EntryWindowBars 동안 유지된다.</summary>
             public SetupBos? Signal { get; private set; }
 
             private readonly bool _reachGate;   // 3R 목표가 파동3 확장목표(1.618×파동1) 안에 들어와야 진입
             private readonly bool _specInval;   // true = 명세식 구조 재해석 / false = 단순 재앵커
             private readonly bool _higherGate;  // 상위(중첩) 3·5파 순행일 때만 진입
+            // [v5.34.3] ★두 결함 수정 스위치
+            //  ①진입창(EntryWindowBars): 진입 신호가 '파동2 마감 한 봉'에서만 유효해, 그 봉을 놓치면
+            //    추세가 끝날 때까지 재진입 기회가 없었다. 실측(2026-08-19~20): SOL 이 엔진 스스로
+            //    '임펄스 3파 상승' 으로 세는 동안 +12.1% 상승, 신호 0건. BTC 도 5파까지 진행 중 0건.
+            //  ②방향고착(FlipOnW2Break): 상승장에서 파동2가 앵커를 깨면 같은 방향으로만 재앵커해
+            //    '하락구조' 가 영원히 유지됐다. 실측: ETH +21.6% 상승 구간을 하락구조로 카운트.
+            private readonly int _entryWindow;
+            private readonly bool _flipOnW2Break;
             public WaveCounter(int k = FractalK, double rMin = BosRetrMin, double rMax = BosRetrMax,
-                               bool reachGate = false, bool specInval = false, bool higherGate = false)
-            { _K = k; _rMin = rMin; _rMax = rMax; _reachGate = reachGate; _specInval = specInval; _higherGate = higherGate; }
+                               bool reachGate = false, bool specInval = false, bool higherGate = false,
+                               int entryWindowBars = EntryWindowBarsDefault, bool flipOnW2Break = false)
+            { _K = k; _rMin = rMin; _rMax = rMax; _reachGate = reachGate; _specInval = specInval; _higherGate = higherGate;
+              _entryWindow = Math.Max(0, entryWindowBars); _flipOnW2Break = flipOnW2Break; }
+
+            private SetupBos? _pending; private int _pendingLeft;
 
             /// <summary>파동3 확장목표 = 파동2 종점 ± 1.618×파동1 (엘리엇 표준 투영).</summary>
             public double Wave3Target { get; private set; }
@@ -222,7 +239,13 @@ namespace TradingBot.Services
             /// <summary>마감된 봉 하나를 전진 반영한다. 같은 봉을 두 번 넣지 않도록 호출측이 OpenTime 으로 관리.</summary>
             public void Advance(double high, double low, double close, long openTimeMs)
             {
-                Signal = null;
+                // [v5.34.3] 진입창 유지 — 구조가 살아있는 동안 신호를 EntryWindowBars 봉까지 유효하게 둔다.
+                if (_pending != null)
+                {
+                    bool dead = _pending.IsLong ? low <= _pending.StopPrice : high >= _pending.StopPrice;
+                    if (dead || --_pendingLeft < 0) _pending = null;
+                }
+                Signal = _pending;
                 _bar++; LastBarOpenMs = openTimeMs;
                 _buf.Add((high, low, close));
                 if (_buf.Count > 2 * _K + 1) _buf.RemoveAt(0);
@@ -280,7 +303,9 @@ namespace TradingBot.Services
                                         ResetTo(-_dir, _w1End, _w1Bar, false); _phase = 3;
                                         _legExtBar = _bar; _hasRef = false;
                                     }
-                                    else ResetTo(_dir, _legExt, _legExtBar, true);   // 단순: 이탈 지점에서 같은 방향 재시작
+                                    // [v5.34.3] ★방향고착 수정 — 파동2가 앵커를 깼다는 건 구조를 반대로 읽었다는 뜻이다.
+                                    //   같은 방향으로만 재앵커하면 상승장에서 '하락구조' 가 영원히 유지된다(ETH +21.6% 실측).
+                                    else ResetTo(_flipOnW2Break ? -_dir : _dir, _legExt, _legExtBar, true);
                                     break;
                                 }
                                 if (!bos) break;
@@ -297,7 +322,11 @@ namespace TradingBot.Services
                                 bool reachOk = !_reachGate || riskApprox <= 0 ||
                                                (up ? tp3 <= Wave3Target : tp3 >= Wave3Target);
                                 if (bandOk && hiOk && reachOk)
-                                    Signal = new SetupBos { IsLong = up, HigherWave = hiLab, StopPrice = _legExt, Retrace = retr, Wave1Len = w1len };
+                                {
+                                    _pending = new SetupBos { IsLong = up, HigherWave = hiLab, StopPrice = _legExt, Retrace = retr, Wave1Len = w1len };
+                                    _pendingLeft = _entryWindow;
+                                    Signal = _pending;
+                                }
                                 _phase = 3; _legExt = up ? high : low; _legExtBar = _bar; _hasRef = false;
                                 break;
                             }

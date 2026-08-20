@@ -212,6 +212,21 @@ namespace TradingBot.Services
         public void IncrementWsLost() => System.Threading.Interlocked.Increment(ref _wsLostCount);
         public void IncrementWsRestored() => System.Threading.Interlocked.Increment(ref _wsRestoredCount);
 
+        // ═══════════════════════════════════════════════════════════════════════════════════
+        // [v5.34.3] ★데이터 흐름 워치독 — 소켓은 ESTABLISHED 인데 데이터만 조용히 끊기는 좀비 차단.
+        //   실측(2026-08-19 16:15 ~ 08-20 10:07, 18시간): 프로세스 정상·소켓 68개 ESTABLISHED 인데
+        //   시세 틱이 한 건도 안 들어와 전 전략 진입 0건. 그 사이 BTC/ETH/XRP/SOL 4~20% 상승을 통째로 놓쳤다.
+        //   기존 워치독은 '끊김 이벤트>3 + 복구=0' 으로만 발동하는데, 이 케이스는 끊김 이벤트 자체가
+        //   발생하지 않아 영원히 발동하지 않았다. → 이벤트가 아니라 '마지막 데이터 수신 시각'을 본다.
+        //   전체 시세 스트림은 초당 수십 건이 정상이므로 90초 무수신이면 명백한 정지다.
+        // ═══════════════════════════════════════════════════════════════════════════════════
+        /// <summary>시세 무수신 판정 임계(초). 전체 시세 스트림은 정상시 초당 수십 건이 들어온다.</summary>
+        public const double DataStallTriggerSec = 180.0;
+        private long _lastDataUtcTicks = DateTime.UtcNow.Ticks;
+        public void MarkDataReceived() => System.Threading.Interlocked.Exchange(ref _lastDataUtcTicks, DateTime.UtcNow.Ticks);
+        public DateTime LastDataUtc => new DateTime(System.Threading.Interlocked.Read(ref _lastDataUtcTicks), DateTimeKind.Utc);
+        public double DataStaleSeconds => (DateTime.UtcNow - LastDataUtc).TotalSeconds;
+
         private async Task StartWebSocketWatchdogAsync(CancellationToken token)
         {
             try
@@ -236,9 +251,15 @@ namespace TradingBot.Services
                     //   (기존 끊김>10 + 5분 → 너무 느림. 사용자 사례 1분 4000+건 끊김 → 30초 안에 트리거됨)
                     // [v5.22.12] grace period 내에는 트리거 스킵 (재구독 직후 새 연결의 일시적 끊김 누적 방지)
                     bool inGrace = DateTime.UtcNow < resubscribeGraceUntil;
-                    if (lostDelta > 3 && restoredDelta == 0 && !inGrace)
+                    // [v5.34.3] ★무수신 정지 감지 — 끊김 이벤트 없이 데이터만 멈추는 좀비를 잡는다.
+                    double staleSec = DataStaleSeconds;
+                    bool dataStalled = staleSec >= DataStallTriggerSec;
+                    if ((lostDelta > 3 && restoredDelta == 0 || dataStalled) && !inGrace)
                     {
-                        OnLog?.Invoke($"🚨 [WS-WATCHDOG] 1분간 끊김={lostDelta} 복구={restoredDelta} → 전체 강제 재구독 시도");
+                        if (dataStalled)
+                            OnLog?.Invoke($"🚨 [WS-WATCHDOG] 시세 무수신 {staleSec:F0}초(임계 {DataStallTriggerSec}초) — 소켓은 연결돼 있으나 데이터 정지 → 전체 강제 재구독");
+                        else
+                            OnLog?.Invoke($"🚨 [WS-WATCHDOG] 1분간 끊김={lostDelta} 복구={restoredDelta} → 전체 강제 재구독 시도");
                         try
                         {
                             // SocketClient 자체 재생성 (모든 구독 끊고 처음부터)
@@ -264,6 +285,7 @@ namespace TradingBot.Services
                             curLost = 0;
                             curRestored = 0;
                             // 3분 grace period — 새 연결이 자리잡을 시간
+                            MarkDataReceived();   // [v5.34.3] 재구독 직후 무수신 타이머 리셋(즉시 재트리거 방지)
                             resubscribeGraceUntil = DateTime.UtcNow.AddMinutes(3);
                         }
                         catch (Exception ex)
@@ -437,6 +459,7 @@ namespace TradingBot.Services
                         k => new TickerCacheItem { Symbol = t.Symbol, LastPrice = t.LastPrice, HighPrice = t.HighPrice, OpenPrice = t.OpenPrice, QuoteVolume = t.QuoteVolume, PriceChangePercent = t.PriceChangePercent },
                         (k, v) => { v.LastPrice = t.LastPrice; v.HighPrice = t.HighPrice; v.OpenPrice = t.OpenPrice; v.QuoteVolume = t.QuoteVolume; v.PriceChangePercent = t.PriceChangePercent; return v; });
                 }
+                MarkDataReceived();          // [v5.34.3] 데이터 흐름 워치독용 수신 각인
                 OnAllTickerUpdate?.Invoke(data.Data);
             }, ct: token);
 
@@ -460,6 +483,7 @@ namespace TradingBot.Services
                 // [v5.22.19] 도착 카운트 — UI/로그에서 ticker flow 가시화
                 try
                 {
+                    MarkDataReceived();      // [v5.34.3] 데이터 흐름 워치독용 수신 각인
                     var sym = data.Data?.Symbol ?? string.Empty;
                     if (!string.IsNullOrEmpty(sym))
                         _majorTickRecv.AddOrUpdate(sym, 1L, (_, v) => v + 1);

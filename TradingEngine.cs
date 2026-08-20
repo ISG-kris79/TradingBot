@@ -5814,7 +5814,7 @@ namespace TradingBot
             //   파동이 깨지면(절대규칙 위반) 카운터가 그 지점에서 스스로 재앵커해 이어서 센다.
             var counter = _ewCounters.GetOrAdd(symbol, _ => new ElliottWaveEngine.WaveCounter());
             ElliottWaveEngine.SetupBos? bosSetup = null;
-            bool counterReady;
+            bool counterReady; int ewPhase = 0, ewBars = 0; bool ewImpulse = true; int ewDir = 0;
             lock (counter)
             {
                 for (int q = 0; q <= ei; q++)                       // 아직 반영 안 된 마감봉만 전진
@@ -5825,7 +5825,17 @@ namespace TradingBot
                     if (counter.Signal != null && q == ei) bosSetup = counter.Signal;   // 마지막 마감봉의 신호만
                 }
                 counterReady = counter.HigherReady;
+                ewPhase = counter.Phase; ewImpulse = counter.IsImpulse; ewDir = counter.Dir; ewBars = counter.BarsProcessed;
             }
+            // [v5.34.3] ★롱 경로 단계 카운터 — v5.34.0 이식 때 빠뜨려 "왜 롱이 안 들어가는지"를
+            //   로그로 전혀 볼 수 없었다(2026-08-20 사용자 지적). 무진입 진단은 단계별 분포가 전부다.
+            if (!counterReady)
+                EwStage(symbol, $"롱:상위집계중({ewBars}봉/lvl1부족)");
+            else if (bosSetup == null)
+                EwStage(symbol, $"롱:파동2미마감({(ewImpulse ? ewPhase + "파" : "조정" + ewPhase)}·{(ewDir > 0 ? "상승구조" : "하락구조")})");
+            else if (!bosSetup.IsLong)
+                EwStage(symbol, "롱:하락구조신호(숏경로로)");
+
             // 롱만 채택 — 신규 엔진의 숏(+0.279R)은 현행 숏(+0.364R)보다 못하다.
             if (counterReady && bosSetup != null && bosSetup.IsLong)
             {

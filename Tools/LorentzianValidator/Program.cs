@@ -26208,6 +26208,35 @@ internal static class Program
         { Dir = dir; AnchorPx = px; AnchorBar = bar; Phase = 1; W1End = W2End = W3End = 0; LegExt = px; LegExtBar = bar; HasRef = false; RefLevel = 0; }
     }
 
+
+    // --elliott-now : BTC/ETH/XRP/SOL 최근 구간을 라이브 WaveCounter 로 재생해 파동 카운트와 신호를 출력.
+    private static async Task RunElliottNowAsync(string[] args)
+    {
+        var syms = new[] { "BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT" };
+        Console.WriteLine("=== 라이브 WaveCounter 재생 (15m) — 최근 구간 파동 카운트/신호 ===");
+        foreach (var sym in syms)
+        {
+            List<IBinanceKline> k;
+            try { k = await FetchKlines15mAsync(sym, 2); } catch { Console.WriteLine($"{sym}: fetch fail"); continue; }
+            if (k.Count < 300) { Console.WriteLine($"{sym}: bars {k.Count}"); continue; }
+            var c = new TradingBot.Services.ElliottWaveEngine.WaveCounter();
+            var sigs = new List<string>();
+            var since = new DateTime(2026, 8, 19, 10, 0, 0, DateTimeKind.Utc);   // 8/19 19:00 KST
+            for (int j = 0; j < k.Count - 1; j++)
+            {
+                c.Advance((double)k[j].HighPrice, (double)k[j].LowPrice, (double)k[j].ClosePrice, j);
+                if (c.Signal != null && k[j].OpenTime >= since)
+                    sigs.Add($"{k[j].OpenTime.AddHours(9):MM-dd HH:mm} {(c.Signal.IsLong ? "롱" : "숏")} 되돌림{c.Signal.Retrace:P1} 손절{c.Signal.StopPrice:F4}");
+            }
+            double first = (double)k[0].ClosePrice, last = (double)k[k.Count - 2].ClosePrice;
+            Console.WriteLine();
+            Console.WriteLine($"[{sym}] 봉 {k.Count} · 구간 {first:F4} -> {last:F4} ({(last / first - 1) * 100:+0.0;-0.0}%)");
+            Console.WriteLine($"  현재 카운트: {(c.IsImpulse ? "임펄스 " + c.Phase + "파" : "조정 " + c.Phase + "단계")} · {(c.Dir > 0 ? "상승구조" : "하락구조")} · 상위카운트준비={c.HigherReady} · 처리봉={c.BarsProcessed}");
+            Console.WriteLine($"  8/19 19:00 이후 신호 {sigs.Count}건");
+            foreach (var g in sigs.TakeLast(8)) Console.WriteLine("    " + g);
+        }
+    }
+
     private static async Task RunElliottBosAsync(string[] args)
     {
         const double feeRT = 0.0008; const int maxHold = 384; const int folds = 5;
@@ -26892,12 +26921,19 @@ internal static class Program
 
             // ★라이브와 동일 엔진. 명세 피보 구간 × 도달가능성 게이트 × 프랙탈K 를 나란히 측정.
             // ★상위게이트 ON/OFF 를 축으로 — 건당R 이 아니라 '총R' 로 판단하기 위함
-            var cfgs = new (int K, double lo, double hi, bool reach, bool spec, bool hgate)[]{
-                (21,0.382,0.786,false,false,false),   // ★v5.34.1 채택 (라이브 기본값과 동일)
+            var cfgs = new (int K, double lo, double hi, bool reach, bool spec, bool hgate, int win, bool flip)[]{
+                (21,0.382,0.786,false,false,false,  0,false),  // 현행 v5.34.1 (기준)
+                (21,0.382,0.786,false,false,false,  4,false),  // 창4 (방향 현행유지)
+                (21,0.382,0.786,false,false,false,  8,false),  // 창8
+                (21,0.382,0.786,false,false,false, 16,false),  // 창16
+                (21,0.382,0.786,false,false,false, 32,false),  // 창32
+                (21,0.382,0.786,false,false,false, 64,false),  // 창64
+                (21,0.236,0.786,false,false,false, 16,false),  // 창16 + 넓은피보
+                (13,0.382,0.786,false,false,false, 16,false),  // 창16 + K13
             };
             for (int cf = 0; cf < cfgs.Length; cf++)
             {
-            var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(cfgs[cf].K, cfgs[cf].lo, cfgs[cf].hi, cfgs[cf].reach, cfgs[cf].spec, cfgs[cf].hgate);
+            var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(cfgs[cf].K, cfgs[cf].lo, cfgs[cf].hi, cfgs[cf].reach, cfgs[cf].spec, cfgs[cf].hgate, cfgs[cf].win, cfgs[cf].flip);
             busyUntil = -1;
             for (int j = 0; j < n - 2; j++)
             {
@@ -26946,7 +26982,7 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("── 설정별 (라이브 엔진 WaveCounter 직접 구동) ──");
         Console.WriteLine("   설정                     건수  승률  기대R    PF | 롱건수 롱기대R | 숏건수 숏기대R | 5폴드");
-        var cfgNames = new[]{"v5.34.1 채택설정"};
+        var cfgNames = new[]{"창0 (현행 v5.34.1)","창4","창8","창16","창32","창64","창16·넓은피보","창16·K13"};
         for (int cf = 0; cf < cfgNames.Length; cf++)
         {
             var sset = trades.Where(x => x.variant == cf).ToList();
@@ -28917,6 +28953,7 @@ internal static class Program
         //   기존: --lev 10 --daily-60d 호출 시 args[0]=="--lev" 라 default 분기로 떨어져
         //   real-lorentzian C# engine 경로가 실행되며 daily-60d 절대 안 돌았음.
         bool HasArg(string flag) => args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
+        if (HasArg("--elliott-now")) { await RunElliottNowAsync(args); return; }
         if (HasArg("--elliott-bos")) { await RunElliottBosAsync(args); return; }
         if (HasArg("--elliott-nested")) { await RunElliottNestedAsync(args); return; }
         if (HasArg("--elliott-anchor")) { await RunElliottAnchorAsync(args); return; }
