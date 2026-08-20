@@ -26320,6 +26320,49 @@ internal static class Program
         }
     }
 
+
+    // --elliott-tf : 같은 WaveCounter 를 15m/1h/2h/4h 에 각각 돌려 오늘 구간 신호 유무 비교.
+    private static async Task RunElliottTfAsync(string[] args)
+    {
+        var syms = new[] { "BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT" };
+        var t0 = new DateTime(2026, 8, 20, 7, 0, 0, DateTimeKind.Utc);   // 16:00 KST
+        Console.WriteLine("=== 타임프레임별 엘리엇 신호 (2026-08-20 16:00 KST 이후) ===");
+        foreach (var sym in syms)
+        {
+            List<IBinanceKline> k15;
+            try { k15 = await FetchKlines15mAsync(sym, 4); } catch { Console.WriteLine(sym + " fail"); continue; }
+            if (k15.Count < 2000) continue;
+            double a = (double)k15.First(x => x.OpenTime >= t0).ClosePrice, z = (double)k15[k15.Count - 2].ClosePrice;
+            Console.WriteLine();
+            Console.WriteLine($"[{sym}] 16:00 이후 {(z / a - 1) * 100:+0.0;-0.0}%");
+            foreach (var (nm, agg) in new (string, int)[] { ("15m", 1), ("1h", 4), ("2h", 8), ("4h", 16) })
+            {
+                // 15m 을 agg 개씩 묶어 상위봉 생성
+                var bars = new List<(double h, double l, double c, DateTime t)>();
+                for (int i = 0; i + agg <= k15.Count - 1; i += agg)
+                {
+                    double hh = double.MinValue, ll = double.MaxValue;
+                    for (int q = i; q < i + agg; q++)
+                    { hh = Math.Max(hh, (double)k15[q].HighPrice); ll = Math.Min(ll, (double)k15[q].LowPrice); }
+                    bars.Add((hh, ll, (double)k15[i + agg - 1].ClosePrice, k15[i].OpenTime));
+                }
+                var c = new TradingBot.Services.ElliottWaveEngine.WaveCounter();
+                var sigs = new List<string>(); string prev = ""; var tl = new List<string>(); int inPh = 0;
+                foreach (var b in bars)
+                {
+                    c.Advance(b.h, b.l, b.c, 0);
+                    string ph = (c.IsImpulse ? c.Phase + "파" : "조" + c.Phase) + (c.Dir > 0 ? "↑" : "↓");
+                    if (b.t < t0) { prev = ph; inPh = 0; continue; }
+                    if (c.Signal != null) sigs.Add($"{b.t.AddHours(9):HH:mm}{(c.Signal.IsLong ? "롱" : "숏")}");
+                    if (ph != prev) { tl.Add($"{prev}({inPh})"); prev = ph; inPh = 0; }
+                    inPh++;
+                }
+                tl.Add($"{prev}({inPh})");
+                Console.WriteLine($"   {nm,-4} 신호 {sigs.Count,2}건 {(sigs.Count > 0 ? "[" + string.Join(",", sigs.Take(4)) + "]" : "        ")}  {string.Join(">", tl.Take(7))}");
+            }
+        }
+    }
+
     private static async Task RunElliottBosAsync(string[] args)
     {
         const double feeRT = 0.0008; const int maxHold = 384; const int folds = 5;
@@ -29097,6 +29140,7 @@ internal static class Program
         //   real-lorentzian C# engine 경로가 실행되며 daily-60d 절대 안 돌았음.
         bool HasArg(string flag) => args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
         if (HasArg("--trendride-why")) { await RunTrendRideWhyAsync(args); return; }
+        if (HasArg("--elliott-tf")) { await RunElliottTfAsync(args); return; }
         if (HasArg("--elliott-now")) { await RunElliottNowAsync(args); return; }
         if (HasArg("--elliott-bos")) { await RunElliottBosAsync(args); return; }
         if (HasArg("--elliott-nested")) { await RunElliottNestedAsync(args); return; }

@@ -4773,11 +4773,10 @@ namespace TradingBot
                             decimal entryPrice = 0m;
                             if (_marketDataManager.TickerCache.TryGetValue(symbol, out var tk))
                                 entryPrice = tk.LastPrice;
+                            // [v5.34.7] ★엘리엇 단일 진입 지시 — ETA_TRIGGER 발주 제거(복원 금지).
                             if (entryPrice > 0m)
                             {
-                                _ = ExecuteAutoOrder(symbol, "LONG", entryPrice, token,
-                                    signalSource: "ETA_TRIGGER",
-                                    skipAiGateCheck: false);
+                                OnStatusLog?.Invoke($"⛔ [ETA_TRIGGER] {symbol} 진입 안 함 (엘리엇 단일 진입 지시)");
                             }
                         }
                         catch { }
@@ -4793,13 +4792,13 @@ namespace TradingBot
                     //   청산: peak−5×ATR 넓은 트레일(승자 끝까지 홀딩)이 핵심 — 부분익절/타이트손절은 승자를 잘라 적자화(세션 교훈).
                     //   폐기(호출제거, 메서드는 보존): AnalyzeMeanRevEntryAsync / AnalyzeRsi2ReversalEntryAsync — 넓은트레일 구조와 충돌.
                     //   사유: 역추세 눌림/타이트손절 전부 백테 적자(PF<1). 롱전용 추세타기+승자홀딩만 흑자.
-                    await AnalyzeLorentzianEntryAsync(symbol, currentPrice, token);
-                    // [v5.30.0] 5분봉 롱 스캘프 카나리 병행 (발굴 5m 레시피 롱side). 중복진입은 IsEntryAllowed+1코인1포지션 DB가 차단.
-                    await AnalyzeScalp5mEntryAsync(symbol, currentPrice, token);
-                    // [v5.31.0] 5분봉 숏 스캘프 (하락월 공략). 4h 하락레짐에서만 발화 — 하락장 무진입 해소.
-                    await AnalyzeScalp5mShortEntryAsync(symbol, currentPrice, token);
-                    // [v5.32.0] MR 15m 슬리브 (수익형 혼합 config — 횡보월 보완). 추세 슬리브와 병행.
-                    await AnalyzeMeanRev15mEntryAsync(symbol, currentPrice, token);
+                    // [v5.34.7] ★사용자 지시 — 엘리엇 파동 단일 진입. 그 외 모든 진입 로직 호출 제거.
+                    //   폐기(메서드는 보존, 호출만 제거): TRENDRIDE / 5m 롱·숏 스캘프 / MR 15m.
+                    //   복원 금지 — 재도입은 사용자 지시가 있을 때만.
+                    //   await AnalyzeLorentzianEntryAsync(symbol, currentPrice, token);
+                    //   await AnalyzeScalp5mEntryAsync(symbol, currentPrice, token);
+                    //   await AnalyzeScalp5mShortEntryAsync(symbol, currentPrice, token);
+                    //   await AnalyzeMeanRev15mEntryAsync(symbol, currentPrice, token);
                     // [v5.33.0] ★엘리엇 파동 슬리브 (사용자 지시) — 진입 15m · 손익비 1:3(진입가 기준).
                     //   3년·30코인·80만후보 워크포워드 검증에서 5폴드 전부 양수인 유일 규칙(C파 ∪ 숏&ADX25).
                     await AnalyzeElliottWaveEntryAsync(symbol, currentPrice, token);
