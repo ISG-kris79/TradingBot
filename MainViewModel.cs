@@ -5137,7 +5137,9 @@ ORDER BY CloseTime DESC, Id DESC", new { UserId = userId, StartUtc = startUtc, E
 
                     var needs = new List<string>();
                     // [v5.34.9] KNN 표기 제거 — 엘리엇 단일 진입이므로 파동 상태로 안내한다.
-                    if (!knnOk) needs.Add(s.WaveImpulse && s.WavePhase == 2 ? "파동2 마감 대기" : "파동2 진입 대기");
+                    if (!knnOk) needs.Add(s.WaveImpulse && s.WavePhase == 2 && !double.IsNaN(s.WaveRetr)
+                        ? $"파동2 되돌림 {s.WaveRetr:P0} (진입밴드 38~79%)"
+                        : "파동2 마감 대기");
                     if (!nwOk) needs.Add("NW커널 상승전환");
                     if (!dbbOk) needs.Add($"+1σ({s.EntryUpper:G6}) 이하 눌림");
                     string need = s.Passed ? "✅ 진입조건 충족 (5m 양봉 마감 시 진입)" : (needs.Count > 0 ? string.Join(" / ", needs) : "기타 가드");

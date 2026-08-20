@@ -26209,6 +26209,62 @@ internal static class Program
     }
 
 
+    // --elliott-state : 라이브 WaveCounter 를 현재 시세로 그대로 재생하고, 파동상태 + 신호발생 이력을 출력.
+    //   TradingEngine.AnalyzeElliottWaveEntryAsync 와 동일 조건(15m 1500봉, 기본 파라미터)으로 돌린다.
+    private static async Task RunElliottStateAsync(string[] args)
+    {
+        var syms = new[] { "BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT" };
+        Console.WriteLine("=== 라이브 WaveCounter 현재상태 (15m·1500봉·기본파라미터) ===");
+        foreach (var sym in syms)
+        {
+            var all = new List<List<IBinanceKline>>();
+            long endMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            for (int p = 0; p < 2; p++)
+            {
+                var page = await FetchKlines15mPageAsync(sym, endMs, BARS_PER_REQ);
+                if (page == null || page.Count == 0) break;
+                all.Insert(0, page);
+                endMs = ((DateTimeOffset)page[0].OpenTime).ToUnixTimeMilliseconds() - 1;
+                if (page.Count < BARS_PER_REQ) break;
+            }
+            var k = all.SelectMany(c => c).ToList();
+            if (k.Count > 1500) k = k.Skip(k.Count - 1500).ToList();
+            if (k.Count < 400) { Console.WriteLine($"[{sym}] 데이터부족 {k.Count}"); continue; }
+            int ei = k.Count - 2;
+
+            var wc = new TradingBot.Services.ElliottWaveEngine.WaveCounter();
+            var sigs = new List<string>();
+            var phaseLog = new List<string>();
+            int lastPhase = -99; bool lastImp = true; int lastDir = 0;
+            for (int q = 0; q <= ei; q++)
+            {
+                long ot = ((DateTimeOffset)k[q].OpenTime).ToUnixTimeMilliseconds();
+                wc.Advance((double)k[q].HighPrice, (double)k[q].LowPrice, (double)k[q].ClosePrice, ot);
+                if (wc.Phase != lastPhase || wc.IsImpulse != lastImp || wc.Dir != lastDir)
+                {
+                    bool w23 = lastImp && lastPhase == 2 && wc.IsImpulse && wc.Phase == 3;
+                    lastPhase = wc.Phase; lastImp = wc.IsImpulse; lastDir = wc.Dir;
+                    string tag = w23 ? (string.IsNullOrEmpty(wc.LastW2Block) ? "  ★신호" : "  X " + wc.LastW2Block) : "";
+                    phaseLog.Add($"{k[q].OpenTime.AddHours(9):MM-dd HH:mm} {(lastImp ? lastPhase + "파" : "조" + lastPhase)}{(lastDir > 0 ? "^" : "v")}{tag}");
+                }
+                if (wc.Signal != null)
+                {
+                    var sg = wc.Signal;
+                    double px = (double)k[q].ClosePrice;
+                    double stopFrac = Math.Abs(px - sg.StopPrice) / Math.Max(1e-9, px);
+                    sigs.Add($"{k[q].OpenTime.AddHours(9):MM-dd HH:mm} {sg.Kind} {(sg.IsLong ? "LONG" : "SHORT")} px={px:0.####} sl={sg.StopPrice:0.####} stop={stopFrac * 100:0.00}% retr={sg.Retrace * 100:0.0}%");
+                }
+            }
+            double chg7 = ((double)k[ei].ClosePrice / (double)k[Math.Max(0, ei - 672)].ClosePrice - 1) * 100;
+            Console.WriteLine();
+            Console.WriteLine($"[{sym}] 7일 {chg7:+0.0;-0.0}%  현재 {(wc.IsImpulse ? wc.Phase + "파" : "조" + wc.Phase)}{(wc.Dir > 0 ? " 앵커상방" : " 앵커하방")}  봉수={wc.BarsProcessed}");
+            foreach (var pl in phaseLog.Skip(Math.Max(0, phaseLog.Count - 12))) Console.WriteLine("   " + pl);
+            if (!double.IsNaN(wc.LiveRetr)) Console.WriteLine($"   진행중 파동2 되돌림 = {wc.LiveRetr:P1} (진입밴드 38.2~78.6%)");
+            Console.WriteLine($"   신호 {sigs.Count}건" + (sigs.Count > 0 ? "" : "  ← 진입기회 없음"));
+            foreach (var g in sigs.Skip(Math.Max(0, sigs.Count - 8))) Console.WriteLine("      " + g);
+        }
+    }
+
     // --elliott-now : 2-스케일 카운터가 8/19 급등에서 진입 지점을 만들어내는지 확인.
     private static async Task RunElliottNowAsync(string[] args)
     {
@@ -27053,11 +27109,12 @@ internal static class Program
             // ★라이브와 동일 엔진. 명세 피보 구간 × 도달가능성 게이트 × 프랙탈K 를 나란히 측정.
             // ★상위게이트 ON/OFF 를 축으로 — 건당R 이 아니라 '총R' 로 판단하기 위함
             var cfgs = new (int K, double lo, double hi, bool reach, bool spec, bool hgate, int win, bool flip, bool dfh, int em, int mk, double trail, bool w5, double w4a, double w4b, int sf, bool d1, int tm, double tr, double mlp, int dm, bool se, int sx, double ww)[]{
-                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // v5.34.7 (역방향 무효화 없음)
-                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.004), // ★역방향 0.4%
-                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.008), // 역방향 0.8%
-                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.015), // 역방향 1.5%
-                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.002), // 역방향 0.2%
+                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 현행 상한 78.6%
+                (21,0.382,0.850,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 상한 85%
+                (21,0.382,0.900,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 상한 90%
+                (21,0.382,0.950,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 상한 95%
+                (21,0.382,0.990,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 상한 99% (엘리엇 절대규칙 한계)
+                (21,0.236,0.990,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 하한23.6+상한99 (밴드 최대개방)
             };
             for (int cf = 0; cf < cfgs.Length; cf++)
             {
@@ -27155,7 +27212,7 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("── 설정별 (라이브 엔진 WaveCounter 직접 구동) ──");
         Console.WriteLine("   설정                     건수  승률  기대R    PF | 롱건수 롱기대R | 숏건수 숏기대R | 5폴드");
-        var cfgNames = new[]{"v5.34.7 (역방향무효화 없음)","★역방향 0.4%","역방향 0.8%","역방향 1.5%","역방향 0.2%"};
+        var cfgNames = new[]{"현행 38.2~78.6%","상한 85%","상한 90%","상한 95%","상한 99%","23.6~99% 최대개방"};
         for (int cf = 0; cf < cfgNames.Length; cf++)
         {
             var sset = trades.Where(x => x.variant == cf).ToList();
@@ -29135,6 +29192,7 @@ internal static class Program
         bool HasArg(string flag) => args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
         if (HasArg("--trendride-why")) { await RunTrendRideWhyAsync(args); return; }
         if (HasArg("--elliott-tf")) { await RunElliottTfAsync(args); return; }
+        if (HasArg("--elliott-state")) { await RunElliottStateAsync(args); return; }
         if (HasArg("--elliott-now")) { await RunElliottNowAsync(args); return; }
         if (HasArg("--elliott-bos")) { await RunElliottBosAsync(args); return; }
         if (HasArg("--elliott-nested")) { await RunElliottNestedAsync(args); return; }

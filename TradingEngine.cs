@@ -5236,7 +5236,7 @@ namespace TradingBot
                 int ei = k15.Count - 2;
 
                 var counter = _ewCounters.GetOrAdd(symbol, _ => new ElliottWaveEngine.WaveCounter());
-                int phase; bool impulse; int dir;
+                int phase; bool impulse; int dir; double retr;
                 lock (counter)
                 {
                     for (int q = 0; q <= ei; q++)
@@ -5245,13 +5245,13 @@ namespace TradingBot
                         if (counter.LastBarOpenMs >= 0 && ot <= counter.LastBarOpenMs) continue;
                         counter.Advance((double)k15[q].HighPrice, (double)k15[q].LowPrice, (double)k15[q].ClosePrice, ot);
                     }
-                    phase = counter.Phase; impulse = counter.IsImpulse; dir = counter.Dir;
+                    phase = counter.Phase; impulse = counter.IsImpulse; dir = counter.Dir; retr = counter.LiveRetr;
                 }
 
                 _nearEntrySnapshot[symbol] = new NearEntryInfo
                 {
                     Symbol = symbol,
-                    WavePhase = phase, WaveImpulse = impulse, WaveDir = dir, WaveRetr = 0,
+                    WavePhase = phase, WaveImpulse = impulse, WaveDir = dir, WaveRetr = retr,
                     InPool = _activeTrackingPool.ContainsKey(symbol),
                     Passed = false,
                     UpdatedUtc = DateTime.UtcNow
@@ -5801,6 +5801,7 @@ namespace TradingBot
             var counter = _ewCounters.GetOrAdd(symbol, _ => new ElliottWaveEngine.WaveCounter());
             ElliottWaveEngine.SetupBos? bosSetup = null;
             bool counterReady; int ewPhase = 0, ewBars = 0; bool ewImpulse = true; int ewDir = 0;
+            double ewLiveRetr = double.NaN, ewW2Retr = double.NaN; string ewW2Block = "";
             lock (counter)
             {
                 for (int q = 0; q <= ei; q++)                       // 아직 반영 안 된 마감봉만 전진
@@ -5818,11 +5819,23 @@ namespace TradingBot
                 //   쓰지도 않는 값이 진입을 막고 있었다.
                 counterReady = true;
                 ewPhase = counter.Phase; ewImpulse = counter.IsImpulse; ewDir = counter.Dir; ewBars = counter.BarsProcessed;
+                ewLiveRetr = counter.LiveRetr; ewW2Block = counter.LastW2Block; ewW2Retr = counter.LastW2Retr;
             }
             // [v5.34.3] ★롱 경로 단계 카운터 — v5.34.0 이식 때 빠뜨려 "왜 롱이 안 들어가는지"를
             //   로그로 전혀 볼 수 없었다(2026-08-20 사용자 지적). 무진입 진단은 단계별 분포가 전부다.
             if (bosSetup == null)
-                EwStage(symbol, $"롱:파동2미마감({(ewImpulse ? ewPhase + "파" : "조정" + ewPhase)}·앵커{(ewDir > 0 ? "상방" : "하방")})");
+            {
+                // [v5.34.10] ★"3파 진행중인데 왜 진입 안 하냐" 에 로그로 답한다.
+                //   파동2 되돌림이 진입밴드(38.2~78.6%) 밖이면 신호가 조용히 죽어, 화면상 3파로 세면서도
+                //   진입은 없는 상태가 된다(실측 2026-08-20: BTC 08-17 11:45 되돌림 96%, ETH 08-17 01:15 86%).
+                //   밴드 확대는 3년·30코인 측정에서 반증됐다(78.6%→99% 시 건당 0.143R→0.002R·롱 적자전환).
+                string why = ewImpulse && ewPhase == 2 && !double.IsNaN(ewLiveRetr)
+                    ? $"롱:파동2진행중(되돌림{ewLiveRetr:P0}·밴드38~79%)"
+                    : (ewImpulse && ewPhase >= 3 && !string.IsNullOrEmpty(ewW2Block))
+                        ? $"롱:파동2탈락({ewW2Block})→{ewPhase}파진행"
+                        : $"롱:파동2미마감({(ewImpulse ? ewPhase + "파" : "조정" + ewPhase)}·앵커{(ewDir > 0 ? "상방" : "하방")})";
+                EwStage(symbol, why);
+            }
             else if (!bosSetup.IsLong)
                 EwStage(symbol, "롱:하방앵커신호(숏경로로)");
 

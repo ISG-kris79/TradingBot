@@ -222,6 +222,23 @@ namespace TradingBot.Services
             public int Phase => _phase;
             public bool IsImpulse => _impulse;
             public int Dir => _dir;
+            // [v5.34.10] ★진단 노출 — "3파 진행중인데 왜 진입 안 하냐"를 로그/화면에서 즉시 답하기 위함.
+            //   파동2 마감 시 되돌림이 밴드(38.2~78.6%) 밖이면 신호가 조용히 죽는데, 그 사실이 어디에도
+            //   드러나지 않아 '3파 카운트 중 = 진입기회 있었음'으로 오인됐다(실측 BTC 08-17 11:45).
+            /// <summary>직전 파동2 마감의 되돌림 비율. 미발생이면 NaN.</summary>
+            public double LastW2Retr { get; private set; } = double.NaN;
+            /// <summary>직전 파동2 마감이 신호로 이어지지 못한 사유("" = 신호발생).</summary>
+            public string LastW2Block { get; private set; } = "";
+            /// <summary>진행 중인 파동2의 현재 되돌림 비율(파동2가 아니면 NaN).</summary>
+            public double LiveRetr
+            {
+                get
+                {
+                    if (!_impulse || _phase != 2) return double.NaN;
+                    double w1 = Math.Abs(_w1End - _anchorPx);
+                    return w1 > 0 ? Math.Abs(_w1End - _legExt) / w1 : double.NaN;
+                }
+            }
             /// <summary>유효한 진입신호(없으면 null). 파동2 마감 봉에서 발생해 EntryWindowBars 동안 유지된다.</summary>
             public SetupBos? Signal { get; private set; }
 
@@ -526,6 +543,13 @@ namespace TradingBot.Services
                                 double tp3 = up ? entryApprox + 3 * riskApprox : entryApprox - 3 * riskApprox;
                                 bool reachOk = !_reachGate || riskApprox <= 0 ||
                                                (up ? tp3 <= Wave3Target : tp3 >= Wave3Target);
+                                // [v5.34.10] 파동2 마감의 판정근거 기록 (진단 전용 · 로직 불변)
+                                LastW2Retr = retr;
+                                LastW2Block = !bandOk ? (retr < _rMin ? $"되돌림얕음({retr:P0}<{_rMin:P0})" : $"되돌림깊음({retr:P0}>{_rMax:P0})")
+                                            : !hiOk ? "상위구조불일치"
+                                            : !reachOk ? "3R도달불가"
+                                            : (_specMix == 1 && !up) ? "하방앵커(롱전용)"
+                                            : "";
                                 if (_specEntries && _specMix == 0)
                                 {
                                     // ★L2 = 2파 종점 — 되돌림 0.5~0.618, 손절 = 1파 시작점(앵커), 3파를 노림
