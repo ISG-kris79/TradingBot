@@ -265,7 +265,16 @@ namespace TradingBot.Services
                     if (customStopLossPrice <= 0 && p.StopLoss > 0)
                         customStopLossPrice = p.StopLoss;
 
-                    isSidewaysMode = isSidewaysMode || (p.TakeProfit > 0 && p.StopLoss > 0);
+                    // [v5.34.4] ★승자 자르기 근본원인 수정 — TP/SL 값이 있다는 이유로 TREND 를 SIDEWAYS 로 승격하지 않는다.
+                    //   기존: DB 에 TP/SL 이 채워져 있으면 mode="TREND" 로 호출해도 SIDEWAYS 로 바뀌고,
+                    //         SidewaysTakeProfitRoe(기본 5%) 익절이 발동해 추세 슬리브의 '넓은 ATR 트레일로
+                    //         승자를 끝까지' 구조를 통째로 무력화했다.
+                    //   실측(2026-08-19): ETHUSDT TRENDRIDE 진입 1913.07 → "SIDEWAYS ROE 익절 달성(5.07%)" 으로
+                    //         1919.53 청산(+$6.16). 그 직후 ETH 는 2261 까지 +17.5% 진행 — 승자를 3시간 먼저 잘랐다.
+                    //   수정: 호출측이 명시한 mode 를 존중한다. TREND 로 들어온 포지션은 TP/SL 유무와 무관하게 TREND.
+                    //   (SIDEWAYS 로 명시 호출된 포지션의 동작은 그대로 유지 — 회귀 없음)
+                    if (!string.Equals(mode, "TREND", StringComparison.OrdinalIgnoreCase))
+                        isSidewaysMode = isSidewaysMode || (p.TakeProfit > 0 && p.StopLoss > 0);
                 }
             }
 
