@@ -26209,31 +26209,39 @@ internal static class Program
     }
 
 
-    // --elliott-now : BTC/ETH/XRP/SOL 최근 구간을 라이브 WaveCounter 로 재생해 파동 카운트와 신호를 출력.
+    // --elliott-now : 2-스케일 카운터가 8/19 급등에서 진입 지점을 만들어내는지 확인.
     private static async Task RunElliottNowAsync(string[] args)
     {
         var syms = new[] { "BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT" };
-        Console.WriteLine("=== 라이브 WaveCounter 재생 (15m) — 최근 구간 파동 카운트/신호 ===");
+        var t0 = new DateTime(2026, 8, 19, 8, 0, 0, DateTimeKind.Utc);    // 17:00 KST
+        var cfgs = new (string nm, double br, double bm, double sr, double sm)[] {
+            ("큰50·1.5% / 작38.2·0.4%", 0.50, 0.015, 0.382, 0.004),
+            ("큰50·1.0% / 작38.2·0.3%", 0.50, 0.010, 0.382, 0.003),
+            ("큰61.8·2% / 작50·0.5%",   0.618, 0.020, 0.500, 0.005),
+            ("큰38.2·1% / 작23.6·0.3%", 0.382, 0.010, 0.236, 0.003),
+        };
+        Console.WriteLine("=== 2-스케일 카운터 — 8/19 17:00 이후 롱 진입신호 ===");
         foreach (var sym in syms)
         {
             List<IBinanceKline> k;
-            try { k = await FetchKlines15mAsync(sym, 2); } catch { Console.WriteLine($"{sym}: fetch fail"); continue; }
-            if (k.Count < 300) { Console.WriteLine($"{sym}: bars {k.Count}"); continue; }
-            var c = new TradingBot.Services.ElliottWaveEngine.WaveCounter();
-            var sigs = new List<string>();
-            var since = new DateTime(2026, 8, 19, 10, 0, 0, DateTimeKind.Utc);   // 8/19 19:00 KST
-            for (int j = 0; j < k.Count - 1; j++)
-            {
-                c.Advance((double)k[j].HighPrice, (double)k[j].LowPrice, (double)k[j].ClosePrice, j);
-                if (c.Signal != null && k[j].OpenTime >= since)
-                    sigs.Add($"{k[j].OpenTime.AddHours(9):MM-dd HH:mm} {(c.Signal.IsLong ? "롱" : "숏")} 되돌림{c.Signal.Retrace:P1} 손절{c.Signal.StopPrice:F4}");
-            }
-            double first = (double)k[0].ClosePrice, last = (double)k[k.Count - 2].ClosePrice;
+            try { k = await FetchKlines15mAsync(sym, 3); } catch { continue; }
+            if (k.Count < 500) continue;
+            double a = (double)k.First(x => x.OpenTime >= t0).ClosePrice, z = (double)k[k.Count - 2].ClosePrice;
             Console.WriteLine();
-            Console.WriteLine($"[{sym}] 봉 {k.Count} · 구간 {first:F4} -> {last:F4} ({(last / first - 1) * 100:+0.0;-0.0}%)");
-            Console.WriteLine($"  현재 카운트: {(c.IsImpulse ? "임펄스 " + c.Phase + "파" : "조정 " + c.Phase + "단계")} · {(c.Dir > 0 ? "상승구조" : "하락구조")} · 상위카운트준비={c.HigherReady} · 처리봉={c.BarsProcessed}");
-            Console.WriteLine($"  8/19 19:00 이후 신호 {sigs.Count}건");
-            foreach (var g in sigs.TakeLast(8)) Console.WriteLine("    " + g);
+            Console.WriteLine($"[{sym}] 17:00 이후 {(z / a - 1) * 100:+0.0;-0.0}%");
+            foreach (var cf in cfgs)
+            {
+                var d = new TradingBot.Services.ElliottWaveEngine.DualWaveCounter(cf.br, cf.bm, cf.sr, cf.sm);
+                var sigs = new List<string>();
+                foreach (var b in k.Take(k.Count - 1))
+                {
+                    d.Advance((double)b.HighPrice, (double)b.LowPrice, (double)b.ClosePrice, 0);
+                    if (b.OpenTime >= t0 && d.Signal != null && d.Signal.IsLong)
+                        sigs.Add(b.OpenTime.AddHours(9).ToString("dd HH:mm"));
+                }
+                string big = (d.BigImpulse ? d.BigPhase + "파" : "조" + d.BigPhase) + (d.BigDir > 0 ? "↑" : "↓");
+                Console.WriteLine($"   {cf.nm,-24} 롱신호 {sigs.Count,2}건 {(sigs.Count > 0 ? "[" + string.Join(",", sigs.Take(4)) + "]" : "")}  (현재 큰degree {big})");
+            }
         }
     }
 
@@ -26918,22 +26926,16 @@ internal static class Program
             int n = k15.Count; int made = 0, busyUntil = -1;
             var hiA = new double[n]; var loA = new double[n]; var clA = new double[n]; var opA = new double[n];
             for (int j = 0; j < n; j++) { hiA[j] = (double)k15[j].HighPrice; loA[j] = (double)k15[j].LowPrice; clA[j] = (double)k15[j].ClosePrice; opA[j] = (double)k15[j].OpenPrice; }
+            var atrA = TradingBot.Services.ElliottWaveEngine.BuildAtr(k15, 14);   // 추적청산용
 
             // ★라이브와 동일 엔진. 명세 피보 구간 × 도달가능성 게이트 × 프랙탈K 를 나란히 측정.
             // ★상위게이트 ON/OFF 를 축으로 — 건당R 이 아니라 '총R' 로 판단하기 위함
-            var cfgs = new (int K, double lo, double hi, bool reach, bool spec, bool hgate, int win, bool flip, bool dfh)[]{
-                (21,0.382,0.786,false,false,false, 0,false,false),  // 현행 v5.34.1 (기준 +71R)
-                (21,0.382,0.786,false,false,false, 0,false,true ),  // ★상위구조에서 방향유도
-                (21,0.382,0.786,false,false,false, 8,false,true ),  // 상위구조 방향 + 창8
-                (21,0.236,0.786,false,false,false, 0,false,true ),  // 상위구조 방향 + 넓은피보
-                (13,0.382,0.786,false,false,false, 0,false,true ),  // 상위구조 방향 + K13
-                (13,0.236,0.786,false,false,false, 0,false,true ),  // K13 + 넓은피보
-                (34,0.382,0.786,false,false,false, 0,false,true ),  // K34
-                (21,0.382,0.786,false,false,true , 0,false,true ),  // 상위게이트도 ON
+            var cfgs = new (int K, double lo, double hi, bool reach, bool spec, bool hgate, int win, bool flip, bool dfh, int em, int mk, double trail, bool w5, double w4a, double w4b)[]{
+                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618),  // 배포본 기본값 회귀검증
             };
             for (int cf = 0; cf < cfgs.Length; cf++)
             {
-            var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(cfgs[cf].K, cfgs[cf].lo, cfgs[cf].hi, cfgs[cf].reach, cfgs[cf].spec, cfgs[cf].hgate, cfgs[cf].win, cfgs[cf].flip, cfgs[cf].dfh);
+            var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(cfgs[cf].K, cfgs[cf].lo, cfgs[cf].hi, cfgs[cf].reach, cfgs[cf].spec, cfgs[cf].hgate, cfgs[cf].win, cfgs[cf].flip, cfgs[cf].dfh, cfgs[cf].em, cfgs[cf].mk, cfgs[cf].w5, cfgs[cf].w4a, cfgs[cf].w4b);
             busyUntil = -1;
             for (int j = 0; j < n - 2; j++)
             {
@@ -26953,14 +26955,42 @@ internal static class Program
                 double tp = isLong ? entry + 3 * risk : entry - 3 * risk;
 
                 int last = Math.Min(n - 1, eb + maxHold); double pnl; bool win2; int xi = last;
-                for (int e = eb; e <= last; e++)
+                double trailK = cfgs[cf].trail;
+                if (trailK <= 0)
                 {
-                    if (isLong) { if (loA[e] <= st.StopPrice) { xi = e; goto sl; } if (hiA[e] >= tp) { xi = e; goto tpz; } }
-                    else { if (hiA[e] >= st.StopPrice) { xi = e; goto sl; } if (loA[e] <= tp) { xi = e; goto tpz; } }
+                    // 고정 1:3 청산 (기존)
+                    for (int e = eb; e <= last; e++)
+                    {
+                        if (isLong) { if (loA[e] <= st.StopPrice) { xi = e; goto sl; } if (hiA[e] >= tp) { xi = e; goto tpz; } }
+                        else { if (hiA[e] >= st.StopPrice) { xi = e; goto sl; } if (loA[e] <= tp) { xi = e; goto tpz; } }
+                    }
+                    { double ex = clA[last]; pnl = (isLong ? (ex - entry) / entry : (entry - ex) / entry) - feeRT; win2 = pnl > 0; goto rec; }
+                    sl: pnl = -stopFrac - feeRT; win2 = false; goto rec;
+                    tpz: pnl = 3 * stopFrac - feeRT; win2 = true;
                 }
-                { double ex = clA[last]; pnl = (isLong ? (ex - entry) / entry : (entry - ex) / entry) - feeRT; win2 = pnl > 0; goto rec; }
-                sl: pnl = -stopFrac - feeRT; win2 = false; goto rec;
-                tpz: pnl = 3 * stopFrac - feeRT; win2 = true;
+                else
+                {
+                    // ★추적 청산 — 고정 익절 없음. 초기손절 = 구조점, 이후 peak ∓ trailK×ATR 로 끌어올린다.
+                    //   저장소 검증이력상 롱이 흑자였던 유일한 구조(승자 끝까지 홀딩, PF 1.74)를 3파 진입에 적용.
+                    double cur = st.StopPrice, peak = entry, exitPx = clA[last];
+                    for (int e = eb; e <= last; e++)
+                    {
+                        if (isLong)
+                        {
+                            if (loA[e] <= cur) { exitPx = cur; xi = e; break; }
+                            if (hiA[e] > peak) peak = hiA[e];
+                            double t2 = peak - trailK * atrA[e]; if (t2 > cur) cur = t2;
+                        }
+                        else
+                        {
+                            if (hiA[e] >= cur) { exitPx = cur; xi = e; break; }
+                            if (loA[e] < peak || peak == entry) peak = Math.Min(peak, loA[e]);
+                            double t2 = peak + trailK * atrA[e]; if (t2 < cur) cur = t2;
+                        }
+                    }
+                    pnl = (isLong ? (exitPx - entry) / entry : (entry - exitPx) / entry) - feeRT;
+                    win2 = pnl > 0;
+                }
                 rec:
                 trades.Add(new Ew15Cand
                 {
@@ -26982,7 +27012,7 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("── 설정별 (라이브 엔진 WaveCounter 직접 구동) ──");
         Console.WriteLine("   설정                     건수  승률  기대R    PF | 롱건수 롱기대R | 숏건수 숏기대R | 5폴드");
-        var cfgNames = new[]{"현행 v5.34.1","상위구조방향","상위구조방향·창8","상위구조·넓은피보","상위구조·K13","K13·넓은피보","K34","상위구조·게이트ON"};
+        var cfgNames = new[]{"배포본 기본값(회귀검증)"};
         for (int cf = 0; cf < cfgNames.Length; cf++)
         {
             var sset = trades.Where(x => x.variant == cf).ToList();

@@ -153,6 +153,11 @@ namespace TradingBot.Services
         //     그 구조의 파동2 완성이 실제 엣지다. 이를 '시장 방향'으로 교정하려 하면 엣지가 사라진다.
         //     (스위치는 재검증용으로 남긴다 — 기본값 변경 전 --elliott-live15 총R 재확인 필수)
         public const bool DirFromHigherDefault = false;
+        public const bool EntryW5Default = false;   // 파동5 진입 (측정 후 결정)
+        public const int TermKDefault = 21;         // 파동 마감 판정 프랙탈 (termMode=0 일 때)
+        public const int TermModeDefault = 0;       // 0=프랙탈(현행) · 1=되돌림비율
+        public const double TermRetrDefault = 0.236;// 파동 마감 되돌림 비율 (termMode=1)
+        public const double MinLegPctDefault = 0.004;// 최소 파동 크기 (가격 대비)
         public const double BosRetrMin = 0.382;  // 파동2 되돌림 하한 (피보)
         public const double BosRetrMax = 0.786;  // 파동2 되돌림 상한 (피보)
 
@@ -217,11 +222,43 @@ namespace TradingBot.Services
             public WaveCounter(int k = FractalK, double rMin = BosRetrMin, double rMax = BosRetrMax,
                                bool reachGate = false, bool specInval = false, bool higherGate = false,
                                int entryWindowBars = EntryWindowBarsDefault, bool flipOnW2Break = false,
-                               bool dirFromHigher = DirFromHigherDefault)
+                               bool dirFromHigher = DirFromHigherDefault, int entryMode = 0, int minorK = 5,
+                               bool entryW5 = EntryW5Default, double w4RetrMin = 0.146, double w4RetrMax = 0.618,
+                               int termK = TermKDefault, int termMode = TermModeDefault, double termRetr = TermRetrDefault,
+                               double minLegPct = MinLegPctDefault)
             { _K = k; _rMin = rMin; _rMax = rMax; _reachGate = reachGate; _specInval = specInval; _higherGate = higherGate;
-              _entryWindow = Math.Max(0, entryWindowBars); _flipOnW2Break = flipOnW2Break; _dirFromHigher = dirFromHigher; }
+              _entryWindow = Math.Max(0, entryWindowBars); _flipOnW2Break = flipOnW2Break; _dirFromHigher = dirFromHigher; _entryMode = entryMode; _minorK = Math.Max(2, minorK); _entryW5 = entryW5; _w4Min = w4RetrMin; _w4Max = w4RetrMax; _termK = Math.Max(2, termK); _termMode = termMode; _termRetr = termRetr; _minLegPct = minLegPct; }
 
             private readonly bool _dirFromHigher;
+            // [v5.34.4] 진입 모드 — 0: 파동2 마감 순간만(검증본) / 1: +파동3 진행중 재개 / 2: +파동3·5 진행중 재개
+            //   "3파·5파 구간 자체가 롱 타점 아니냐"(사용자 지적)를 측정하기 위한 축.
+            //   진행중 진입의 손절은 '구조 이탈선(_ref)' — 그 파동이 끝났다고 판정되는 자리라
+            //   3파 중간에 들어가도 손절폭이 벌어지지 않는다.
+            private readonly int _entryMode;
+            // [v5.34.4] 3파 진행중 진입용 '작은 프랙탈' — 직전 눌림 저점을 손절로 쓴다.
+            //   K21 프랙탈(좌우 21봉) 저점은 빠른 3파에서 한참 아래라 손절폭이 벌어지고 3R 목표가 멀어진다.
+            //   눌림 저점에 붙이면 손익비 1:3 을 그대로 두고도 목표가 가까워진다.
+            private readonly int _minorK;
+            // [v5.34.4] ★파동5 진입 — 파동4가 구조이탈로 마감되는 순간(= 파동5 시작). 파동3 진입과 대칭.
+            private readonly bool _entryW5; private readonly double _w4Min, _w4Max;
+            // [v5.34.4] ★파동 마감 판정용 프랙탈을 구조 프랙탈(K)과 분리한다.
+            //   실측(2026-08-19 급등): ETH +17.5%·XRP +9.3% 가 81봉 내내 '1파'에서 멈췄다.
+            //   마감 판정이 '반대방향 K21 프랙탈 이탈'인데, 강한 추세에서는 좌우 21봉보다 높은
+            //   반대방향 극점이 형성되지 않아 기준선 자체가 안 생긴다 → 파동이 영원히 안 끝난다.
+            //   = 시장이 가장 크게 움직일 때 카운터가 얼어붙는다. 마감용은 빠른 프랙탈로 분리.
+            private readonly int _termK;
+            // [v5.34.4] ★파동 마감 판정 = '그 파동 자신의 되돌림 비율'(피보). 고정폭 프랙탈 폐기.
+            //   프랙탈 방식의 두 실패모드(실측 2026-08-19):
+            //     K21 → 강한 추세에서 반대방향 극점이 안 생겨 기준선 미형성 → 파동이 영영 안 끝남
+            //            (ETH +17.5% 가 81봉 내내 '1파'. XRP +9.3% 동일)
+            //     K3~8 → 매 봉 흔들려 2파가 1봉 만에 무효 → 재앵커 반복 → 3파 도달 불가
+            //   되돌림 비율은 파동 크기에 비례하므로 얼어붙지도, 요동치지도 않는다.
+            private readonly int _termMode; private readonly double _termRetr;
+            private double _legStart;   // 현재 진행 레그의 시작가 (되돌림 계산 기준)
+            // 최소 파동 크기 — 없으면 0.05% 움직인 레그가 0.01% 되돌림에 종료되어 매 봉 새 파동이 생긴다(노이즈).
+            private readonly double _minLegPct;
+            private double _lastMinorLow = double.NaN, _lastMinorHigh = double.NaN;
+            private double _lastFiredRef = double.NaN;
 
             private SetupBos? _pending; private int _pendingLeft;
 
@@ -230,8 +267,8 @@ namespace TradingBot.Services
 
             private void ResetTo(int dir, double px, int bar, bool impulse)
             {
-                _dir = dir; _anchorPx = px; _anchorBar = bar; _phase = 1; _impulse = impulse;
-                _w1End = _w2End = _w3End = 0; _legExt = px; _legExtBar = bar; _hasRef = false; _ref = 0;
+                _dir = dir; _anchorPx = px; _anchorBar = bar; _phase = 1; _impulse = impulse; _lastFiredRef = double.NaN; _lastMinorLow = double.NaN; _lastMinorHigh = double.NaN;
+                _w1End = _w2End = _w3End = 0; _legExt = px; _legStart = px; _legExtBar = bar; _hasRef = false; _ref = 0;
             }
 
             private void PushLvl1(double px, int bar, int type)
@@ -264,13 +301,13 @@ namespace TradingBot.Services
 
                 // ── 프랙탈 확정: 버퍼가 2K+1 이면 가운데 봉(현재−K)을 판정할 수 있다 ──
                 double fHi = double.NaN, fLo = double.NaN;
-                if (_buf.Count == 2 * _K + 1)
+                if (_buf.Count >= 2 * _termK + 1)
                 {
-                    var m = _buf[_K]; bool isH = true, isL = true;
-                    for (int d = 1; d <= _K; d++)
+                    int ti = _buf.Count - 1 - _termK; var m = _buf[ti]; bool isH = true, isL = true;
+                    for (int d = 1; d <= _termK; d++)
                     {
-                        if (isH && !(m.h > _buf[_K - d].h && m.h > _buf[_K + d].h)) isH = false;
-                        if (isL && !(m.l < _buf[_K - d].l && m.l < _buf[_K + d].l)) isL = false;
+                        if (isH && !(m.h > _buf[ti - d].h && m.h > _buf[ti + d].h)) isH = false;
+                        if (isL && !(m.l < _buf[ti - d].l && m.l < _buf[ti + d].l)) isL = false;
                         if (!isH && !isL) break;
                     }
                     if (isH) fHi = m.h;
@@ -288,7 +325,58 @@ namespace TradingBot.Services
                 if (legUp) { if (!double.IsNaN(fLo) && (!_hasRef || fLo > _ref) && fLo < _legExt) { _ref = fLo; _hasRef = true; } }
                 else { if (!double.IsNaN(fHi) && (!_hasRef || fHi < _ref) && fHi > _legExt) { _ref = fHi; _hasRef = true; } }
 
-                bool bos = _hasRef && (legUp ? low < _ref : high > _ref);   // 구조 이탈 = 파동 마감
+                // 구조 이탈 = 파동 마감
+                bool bos;
+                if (_termMode == 1)
+                {
+                    // ★그 파동이 진행한 폭의 _termRetr 만큼 되돌리면 마감. 파동 크기에 비례 → 스케일 무관.
+                    double legLen = Math.Abs(_legExt - _legStart);
+                    bool bigEnough = _legExt > 0 && legLen / _legExt >= _minLegPct;   // 최소 파동 크기
+                    bos = bigEnough && (legUp ? low <= _legExt - _termRetr * legLen
+                                              : high >= _legExt + _termRetr * legLen);
+                }
+                else bos = _hasRef && (legUp ? low < _ref : high > _ref);
+
+                // [v5.34.4] ★파동3(·5) 진행 중 눌림 재개 진입.
+                //   작은 프랙탈(_minorK)로 '직전 눌림 저점'을 잡고, 그 저점이 이전보다 높으면(higher low)
+                //   눌림이 끝나고 파동이 이어진다는 차트 신호다. 손절은 그 눌림 저점 — 손익비 1:3 유지.
+                double mLow = double.NaN, mHigh = double.NaN;
+                if (_buf.Count >= 2 * _minorK + 1)
+                {
+                    int mi = _buf.Count - 1 - _minorK; var mm = _buf[mi];
+                    bool mH = true, mL = true;
+                    for (int d = 1; d <= _minorK; d++)
+                    {
+                        if (mH && !(mm.h > _buf[mi - d].h && mm.h > _buf[mi + d].h)) mH = false;
+                        if (mL && !(mm.l < _buf[mi - d].l && mm.l < _buf[mi + d].l)) mL = false;
+                        if (!mH && !mL) break;
+                    }
+                    if (mH) mHigh = mm.h;
+                    if (mL) mLow = mm.l;
+                }
+                if (_entryMode > 0 && _impulse && !bos
+                    && (_phase == 3 || (_entryMode >= 2 && _phase == 5)))
+                {
+                    // 진행방향의 '눌림 극점'이 새로 확정되고, 직전 눌림 극점보다 진행방향으로 갱신됐는가
+                    double cand = up ? mLow : mHigh;
+                    double prev = up ? _lastMinorLow : _lastMinorHigh;
+                    bool higher = !double.IsNaN(cand) && (double.IsNaN(prev) || (up ? cand > prev : cand < prev));
+                    if (!double.IsNaN(cand)) { if (up) _lastMinorLow = cand; else _lastMinorHigh = cand; }
+                    bool alive = !double.IsNaN(cand) && (up ? close > cand : close < cand);
+                    if (higher && alive)
+                    {
+                        int hlR = 0, hdR = 0;
+                        if (_lvl1.Count >= 3) hlR = LabelHigherWave(_lvl1, out hdR);
+                        bool hiOkR = !_higherGate || ((hlR == 2 || hlR == 3) && hdR == (up ? 1 : -1));
+                        if (hiOkR)
+                        {
+                            _pending = new SetupBos
+                            { IsLong = up, HigherWave = hlR, StopPrice = cand, Retrace = 0, Wave1Len = Math.Abs(_w1End - _anchorPx) };
+                            _pendingLeft = _entryWindow;
+                            Signal = _pending;
+                        }
+                    }
+                }
 
                 int hiLab = 0, hiDir = 0;
                 if (_lvl1.Count >= 3) hiLab = LabelHigherWave(_lvl1, out hiDir);
@@ -298,7 +386,7 @@ namespace TradingBot.Services
                     switch (_phase)
                     {
                         case 1:
-                            if (bos) { _w1End = _legExt; _w1Bar = _legExtBar; _phase = 2; _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false; }
+                            if (bos) { _w1End = _legExt; _w1Bar = _legExtBar; _phase = 2; _legStart = _w1End; _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false; }
                             break;
                         case 2:
                             {
@@ -350,7 +438,7 @@ namespace TradingBot.Services
                                     _pendingLeft = _entryWindow;
                                     Signal = _pending;
                                 }
-                                _phase = 3; _legExt = up ? high : low; _legExtBar = _bar; _hasRef = false;
+                                _phase = 3; _legStart = _w2End; _legExt = up ? high : low; _legExtBar = _bar; _hasRef = false; _lastFiredRef = double.NaN; _lastMinorLow = double.NaN; _lastMinorHigh = double.NaN;
                                 break;
                             }
                         case 3:
@@ -374,7 +462,7 @@ namespace TradingBot.Services
                                     }
                                     break;
                                 }
-                                _w3End = _legExt; _w3Bar = _legExtBar; _phase = 4; _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false;
+                                _w3End = _legExt; _w3Bar = _legExtBar; _phase = 4; _legStart = _w3End; _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false; _lastFiredRef = double.NaN; _lastMinorLow = double.NaN; _lastMinorHigh = double.NaN;
                             }
                             break;
                         case 4:
@@ -390,7 +478,24 @@ namespace TradingBot.Services
                                     break;
                                 }
                                 if (!bos) break;
-                                _phase = 5; _legExt = up ? high : low; _legExtBar = _bar; _hasRef = false;   // 파동5 진입은 미채택(적자)
+                                // ★파동4 마감 = 파동5 시작 → 진입 판정 (파동3 진입과 완전 대칭)
+                                //   1파 시작점을 앵커로 고정하고 2·3·4·5를 매 봉 추적하다가,
+                                //   파동2 마감봉에서 3파 진입 / 파동4 마감봉에서 5파 진입한다.
+                                if (_entryW5)
+                                {
+                                    double w3len = Math.Abs(_w3End - _w2End);
+                                    double r4 = w3len > 0 ? Math.Abs(_w3End - _legExt) / w3len : 9;
+                                    bool band4 = r4 >= _w4Min && r4 <= _w4Max;   // 파동4 되돌림 (정석: 얕다)
+                                    bool hi4ok = !_higherGate || ((hiLab == 2 || hiLab == 3) && hiDir == (up ? 1 : -1));
+                                    if (band4 && hi4ok)
+                                    {
+                                        _pending = new SetupBos
+                                        { IsLong = up, HigherWave = hiLab, StopPrice = _legExt, Retrace = r4, Wave1Len = w3len };
+                                        _pendingLeft = _entryWindow;
+                                        Signal = _pending;
+                                    }
+                                }
+                                _phase = 5; _legExt = up ? high : low; _legExtBar = _bar; _hasRef = false;
                                 break;
                             }
                         case 5:
@@ -407,8 +512,8 @@ namespace TradingBot.Services
                 {
                     switch (_phase)
                     {
-                        case 1: if (bos) { _w1End = _legExt; _w1Bar = _legExtBar; _phase = 2; _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false; } break;
-                        case 2: if (bos) { _w2End = _legExt; _phase = 3; _legExt = up ? high : low; _legExtBar = _bar; _hasRef = false; } break;
+                        case 1: if (bos) { _w1End = _legExt; _w1Bar = _legExtBar; _phase = 2; _legStart = _w1End; _legExt = legUp ? low : high; _legExtBar = _bar; _hasRef = false; } break;
+                        case 2: if (bos) { _w2End = _legExt; _phase = 3; _legStart = _w2End; _legExt = up ? high : low; _legExtBar = _bar; _hasRef = false; } break;
                         case 3:
                             if (bos)
                             {   // C 완성 → 임펄스 재개
@@ -555,6 +660,53 @@ namespace TradingBot.Services
                 }
             }
             return fired;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        //  [v5.34.4] ★2-스케일 동시 카운팅 — 단일 스케일의 구조적 한계 해소.
+        //
+        //  단일 기준은 추세/횡보를 동시에 만족시킬 수 없다(실측 10종 설계 전부 둘 중 하나에 실패):
+        //    느슨 → 0~2봉짜리 파동을 매 봉 생성(노이즈) / 조임 → 큰 추세에서 파동이 안 끝남(동결)
+        //  해법: 두 스케일을 동시에 돌리고 역할을 나눈다.
+        //    큰 degree  = 방향 판정. 동결돼도 무방 — 동결 = "큰 추세가 아직 진행 중"이라는 뜻.
+        //    작은 degree = 진입 지점 생성. 노이즈가 있어도 큰 쪽이 방향으로 걸러준다.
+        //  진입 = 큰 degree 가 상승 임펄스(1·3·5파) 진행 중 + 작은 degree 의 파동2가 마감되는 봉.
+        //  → 두 실패 모드가 서로를 상쇄한다.
+        // ═══════════════════════════════════════════════════════════════════════════
+        public sealed class DualWaveCounter
+        {
+            private readonly WaveCounter _big, _small;
+            public DualWaveCounter(double bigRetr = 0.50, double bigMinLeg = 0.015,
+                                   double smallRetr = 0.382, double smallMinLeg = 0.004,
+                                   int fracK = FractalK, double rMin = BosRetrMin, double rMax = BosRetrMax)
+            {
+                _big   = new WaveCounter(fracK, rMin, rMax, false, false, false, 0, false, false, 0, 5,
+                                         false, 0.146, 0.618, FractalK, 1, bigRetr, bigMinLeg);
+                _small = new WaveCounter(fracK, rMin, rMax, false, false, false, 0, false, false, 0, 5,
+                                         false, 0.146, 0.618, FractalK, 1, smallRetr, smallMinLeg);
+            }
+            public SetupBos? Signal { get; private set; }
+            public int BigPhase => _big.Phase;
+            public int BigDir => _big.Dir;
+            public bool BigImpulse => _big.IsImpulse;
+            public int SmallPhase => _small.Phase;
+            public long LastBarOpenMs => _small.LastBarOpenMs;
+            public int BarsProcessed => _small.BarsProcessed;
+            public bool HigherReady => _big.BarsProcessed > 100;
+
+            public void Advance(double high, double low, double close, long openTimeMs)
+            {
+                Signal = null;
+                _big.Advance(high, low, close, openTimeMs);
+                _small.Advance(high, low, close, openTimeMs);
+                var sg = _small.Signal;
+                if (sg == null) return;
+                // 큰 degree 가 같은 방향 임펄스(1·3·5파) 진행 중일 때만 채택
+                bool bigImpulseUp = _big.IsImpulse && (_big.Phase == 1 || _big.Phase == 3 || _big.Phase == 5);
+                if (!bigImpulseUp) return;
+                if ((_big.Dir > 0) != sg.IsLong) return;
+                Signal = sg;
+            }
         }
 
         /// <summary>15m 2-degree 채택 규칙의 셋업.</summary>
