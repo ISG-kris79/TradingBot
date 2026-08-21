@@ -167,7 +167,12 @@ namespace TradingBot.Services
         //     0.2% → 69R · 0.4% → 53R · 0.8% → 55R · 1.5% → 79R (모두 105R 미만)
         public const double W1WrongWayDefault = 0.0;
         public const int TermKDefault = 21;         // 파동 마감 판정 프랙탈 (termMode=0 일 때)
-        public const int TermModeDefault = 0;       // 0=프랙탈(현행) · 1=되돌림비율
+        // [v5.34.13] ★프랙탈 마감 폐기 → 피보나치 되돌림 마감 (사용자 지시: 엘리엇+피보나치 단독).
+        //   프랙탈 마감은 '좌우 21봉보다 높은 고점'을 요구하는데, 상승추세에선 매 봉이 신고가라
+        //   우측 21봉 조건이 영원히 확정되지 않는다 → 기준선 미형성 → 파동이 안 끝난다.
+        //   실측(2026-08-21 라이브 5시간): 무신호 스캔 169,073 중 69% 가 '파동1 미마감'.
+        //   되돌림 마감은 파동 크기에 비례하므로 스케일·추세 무관하게 항상 확정된다.
+        public const int TermModeDefault = 1;       // 0=프랙탈(폐기) · 1=되돌림비율(피보 23.6%)
         public const double TermRetrDefault = 0.236;// 파동 마감 되돌림 비율 (termMode=1)
         public const double MinLegPctDefault = 0.004;// 최소 파동 크기 (가격 대비)
         // [v5.34.5] ★채택 — 1파가 실제로 어느 쪽으로 갔는지 관찰해 방향 확정(가정하지 않는다).
@@ -185,6 +190,10 @@ namespace TradingBot.Services
             public double StopPrice;      // 구조 무효화점 = 파동2 극값 (버퍼 없음)
             public double Retrace;        // 파동2 되돌림 비율
             public double Wave1Len;
+            // [v5.34.13] ★익절 = 피보나치 투영. 고정 손익비(3×손절폭)는 엘리엇도 피보나치도 아니다.
+            //   롱(파동3) = 파동2종점 + 1.618×파동1 · 숏(S5) = 5파고점 − 0.618×(1~5파 전체폭).
+            //   0 이면 미산출.
+            public double TargetPrice;
         }
 
         // ═══════════════════════════════════════════════════════════════════════════
@@ -351,9 +360,9 @@ namespace TradingBot.Services
 
             /// <summary>마감된 봉 하나를 전진 반영한다. 같은 봉을 두 번 넣지 않도록 호출측이 OpenTime 으로 관리.</summary>
 
-            private void Emit(string kind, bool isLong, double stop, double retr, double wref, int hiLab)
+            private void Emit(string kind, bool isLong, double stop, double retr, double wref, int hiLab, double target = 0)
             {
-                _pending = new SetupBos { Kind = kind, IsLong = isLong, HigherWave = hiLab, StopPrice = stop, Retrace = retr, Wave1Len = wref };
+                _pending = new SetupBos { Kind = kind, IsLong = isLong, HigherWave = hiLab, StopPrice = stop, Retrace = retr, Wave1Len = wref, TargetPrice = target };
                 _pendingLeft = _entryWindow;
                 Signal = _pending;
             }
@@ -559,11 +568,12 @@ namespace TradingBot.Services
                                 {
                                     // ★L2 = 2파 종점 — 되돌림 0.5~0.618, 손절 = 1파 시작점(앵커), 3파를 노림
                                     if (retr >= 0.500 && retr <= 0.618)
-                                        Emit("L2", up, _anchorPx, retr, w1len, hiLab);
+                                        Emit("L2", up, _anchorPx, retr, w1len, hiLab, Wave3Target);
                                 }
                                 else if (bandOk && hiOk && reachOk && (_specMix == 0 || up))
                                 {
-                                    _pending = new SetupBos { IsLong = up, HigherWave = hiLab, StopPrice = _legExt, Retrace = retr, Wave1Len = w1len };
+                                    // [v5.34.13] 익절 = 파동3 피보나치 확장투영(1.618×파동1)
+                                    _pending = new SetupBos { IsLong = up, HigherWave = hiLab, StopPrice = _legExt, Retrace = retr, Wave1Len = w1len, TargetPrice = Wave3Target };
                                     _pendingLeft = _entryWindow;
                                     Signal = _pending;
                                 }
@@ -639,7 +649,12 @@ namespace TradingBot.Services
                             if (bos)
                             {   // 하위 1~5 완성 = 상위 1파 → 중첩 적립 후 A-B-C 조정으로 전환
                                 // ★S5 = 5파 종점 — 상승 5파 완성 직후 반전. 손절 = 5파 고점. A파 하락을 노림.
-                                if (_specEntries || _specMix == 1) Emit("S5", !up, _legExt, 0, Math.Abs(_legExt - _anchorPx), hiLab);
+                                // [v5.34.13] 익절 = 조정의 피보나치 되돌림(1~5파 전체폭 × 0.618)
+                                if (_specEntries || _specMix == 1)
+                                {
+                                    double imp5 = Math.Abs(_legExt - _anchorPx);
+                                    Emit("S5", !up, _legExt, 0, imp5, hiLab, up ? _legExt - 0.618 * imp5 : _legExt + 0.618 * imp5);
+                                }
                                 PushLvl1(_anchorPx, _anchorBar, up ? -1 : 1);
                                 PushLvl1(_legExt, _legExtBar, up ? 1 : -1);
                                 ResetTo(-_dir, _legExt, _legExtBar, false);

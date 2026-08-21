@@ -27283,6 +27283,129 @@ internal static class Program
     private static readonly string[] Ew15EntryName = { "돌파", "전환확인" };
 
     // ===============================================================================
+    //  --elliott-spec : [v5.34.13] 사용자 스펙 "엘리엇 파동 + 피보나치 단독" 을 그대로 측정.
+    //
+    //  사용자 지시(2026-08-21): "엘리엇파동 피보나치수열 단독으로 진입하라고 했는데 이상한거 또 해놨지"
+    //  종전 라이브에는 엘리엇도 피보나치도 아닌 것이 붙어 있었다 —
+    //    (1) 파동 마감 판정 = 프랙탈 K21 (좌우 21봉 고점)   <- 피보나치 아님
+    //    (2) 익절 = 진입가 +- 3x손절폭 (고정 손익비)         <- 피보나치 아님
+    //    (3) 손절폭 0.2~6% 범위 강제 / 슬립컷 0.15% / 마감봉 1% 급변컷 / BTC 레짐게이트
+    //
+    //  여기서는 (1)(2) 를 2x2 로 분리해 어느 변수가 총R 을 움직이는지 본다.
+    //    마감축 : 프랙탈K21  vs  피보 되돌림 23.6%
+    //    익절축 : 고정 3x손절폭  vs  피보 확장투영(롱 1.618x파동1 · 숏 0.618 되돌림)
+    //  (3) 은 신스펙 행에서 전부 해제한다.
+    //
+    //  판정: 총R · 5폴드 부호 · 신호수(급등 참여) 를 함께 본다.
+    // ===============================================================================
+    private static async Task RunElliottSpecAsync(string[] args)
+    {
+        const double feeRT = 0.0008; const int maxHold = 384; const int folds = 5;
+        int pages15 = 70;
+        for (int a = 0; a < args.Length; a++)
+            if (args[a] == "--ew-pages" && a + 1 < args.Length && int.TryParse(args[a + 1], out var pp) && pp > 0) pages15 = pp;
+
+        // nm, termMode(0=프랙탈 1=피보되돌림), termRetr, fibTp(피보확장익절), filt(손절폭범위 강제)
+        var cfgs = new List<(string nm, int termMode, double termRetr, bool fibTp, bool filt)>
+        {
+            ("구라이브 프랙탈+3배TP",      0, 0.236, false, true ),
+            ("마감만 피보(23.6%)+3배TP",   1, 0.236, false, true ),
+            ("익절만 피보(1.618)+프랙탈",  0, 0.236, true,  false),
+            ("*신스펙 피보마감+피보익절",  1, 0.236, true,  false),
+            ("  신스펙 피보마감38.2%",     1, 0.382, true,  false),
+            ("  신스펙 피보마감50.0%",     1, 0.500, true,  false),
+        };
+
+        Console.WriteLine("=== --elliott-spec : 엘리엇+피보나치 단독 스펙 측정 (2x2 분해) ===\n");
+
+        var trades = new List<Ew15Cand>();
+        var sigCnt = new int[cfgs.Count]; var lateSig = new int[cfgs.Count];
+        int ci = 0;
+        foreach (var sym in EwUniverse)
+        {
+            ci++; Console.Write($"[{ci}/{EwUniverse.Length}] {sym} ");
+            List<IBinanceKline> k15;
+            try { k15 = await FetchKlines15mAsync(sym, pages15); } catch { Console.WriteLine("fail"); continue; }
+            if (k15.Count < 1000) { Console.WriteLine("skip"); continue; }
+            int n = k15.Count;
+            var hiA = new double[n]; var loA = new double[n]; var clA = new double[n]; var opA = new double[n];
+            for (int j = 0; j < n; j++) { hiA[j] = (double)k15[j].HighPrice; loA[j] = (double)k15[j].LowPrice; clA[j] = (double)k15[j].ClosePrice; opA[j] = (double)k15[j].OpenPrice; }
+
+            for (int cf = 0; cf < cfgs.Count; cf++)
+            {
+                var c = cfgs[cf];
+                // 라이브와 동일 인자 - 다른 것은 마감축(termMode/termRetr) 뿐
+                var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(
+                    21, 0.382, 0.786, false, false, false, 0, false, false, 0, 5, false, 0.146, 0.618,
+                    21, c.termMode, c.termRetr, 0.004, true, 0, false, 1, 0.0);
+                int busyUntil = -1;
+                for (int j = 0; j < n - 2; j++)
+                {
+                    counter.Advance(hiA[j], loA[j], clA[j], j);
+                    if (j < 200) continue;
+                    if (j <= busyUntil) continue;
+                    var st = counter.Signal;
+                    if (st == null) continue;
+                    sigCnt[cf]++; if (j >= n - 200) lateSig[cf]++;
+                    bool isLong = st.IsLong;
+                    int eb = j + 1; if (eb >= n - 1) continue;
+                    double entry = opA[eb];
+                    double risk = isLong ? entry - st.StopPrice : st.StopPrice - entry;
+                    if (risk <= 0) continue;
+                    double stopFrac = risk / entry;
+                    if (c.filt && (stopFrac < 0.002 || stopFrac > 0.06)) continue;
+
+                    double tp;
+                    if (c.fibTp)
+                    {
+                        tp = st.TargetPrice;
+                        // 피보 투영이 이미 초과됐으면 구조상 여유 없음 -> 진입 안 함(라이브와 동일)
+                        if (!(tp > 0) || (isLong ? tp <= entry : tp >= entry)) continue;
+                    }
+                    else tp = isLong ? entry + 3 * risk : entry - 3 * risk;
+
+                    int last = Math.Min(n - 1, eb + maxHold); double pnl; bool win2; int xi = last;
+                    for (int e = eb; e <= last; e++)
+                    {
+                        if (isLong) { if (loA[e] <= st.StopPrice) { xi = e; goto sl; } if (hiA[e] >= tp) { xi = e; goto tpz; } }
+                        else { if (hiA[e] >= st.StopPrice) { xi = e; goto sl; } if (loA[e] <= tp) { xi = e; goto tpz; } }
+                    }
+                    { double ex = clA[last]; pnl = (isLong ? (ex - entry) / entry : (entry - ex) / entry) - feeRT; win2 = pnl > 0; goto rec; }
+                    sl: pnl = -stopFrac - feeRT; win2 = false; goto rec;
+                    tpz: pnl = (isLong ? (tp - entry) / entry : (entry - tp) / entry) - feeRT; win2 = true;
+                    rec:
+                    trades.Add(new Ew15Cand
+                    {
+                        t = k15[eb].OpenTime.AddMinutes(15), exit = k15[xi].OpenTime.AddMinutes(15), sym = sym,
+                        dir = isLong ? 1 : -1, hiWave = st.HigherWave, stopFrac = stopFrac, retr = st.Retrace, sym2 = st.Kind,
+                        pnl = pnl, r = pnl / stopFrac, win = win2, variant = cf
+                    });
+                    busyUntil = xi;
+                }
+            }
+            Console.WriteLine($"{n}bars");
+        }
+        if (trades.Count == 0) { Console.WriteLine("진입 0건"); return; }
+
+        var tMin = trades.Min(x => x.t); var tMax = trades.Max(x => x.t);
+        double span = Math.Max(1e-9, (tMax - tMin).TotalDays / folds);
+        foreach (var c in trades) { int f = 0; while (f < folds - 1 && c.t >= tMin.AddDays(span * (f + 1))) f++; c.fold = f; }
+        Console.WriteLine($"\n기간 {tMin:yyyy-MM-dd} ~ {tMax:yyyy-MM-dd} ({(tMax - tMin).TotalDays / 30.4:F1}개월) · {EwUniverse.Length}코인\n");
+        Console.WriteLine("   설정                       건수  승률  기대R    PF    총R | 롱건수 롱기대R  롱총R | 숏건수 숏기대R  숏총R | 최근신호 | 5폴드");
+        for (int cf = 0; cf < cfgs.Count; cf++)
+        {
+            var ss = trades.Where(x => x.variant == cf).ToList();
+            if (ss.Count < 30) { Console.WriteLine($"   {cfgs[cf].nm,-24} {ss.Count,5}건 (표본부족) 신호 {sigCnt[cf]}"); continue; }
+            var LL = ss.Where(x => x.dir > 0).ToList(); var SS = ss.Where(x => x.dir < 0).ToList();
+            double gp = ss.Where(x => x.r > 0).Sum(x => x.r), gl = -ss.Where(x => x.r <= 0).Sum(x => x.r);
+            var fR = new double[folds]; bool ap = true;
+            for (int f = 0; f < folds; f++) { var fs = ss.Where(x => x.fold == f).ToList(); fR[f] = fs.Count > 0 ? fs.Average(x => x.r) : 0; if (fs.Count < 8 || fR[f] <= 0) ap = false; }
+            Console.WriteLine($"   {cfgs[cf].nm,-24} {ss.Count,5} {100.0 * ss.Count(x => x.win) / ss.Count,5:F1}% {ss.Average(x => x.r),6:F3} {(gl > 0 ? gp / gl : 99),5:F2} {ss.Sum(x => x.r),6:F0}R | {LL.Count,5} {(LL.Count > 0 ? LL.Average(x => x.r) : 0),7:F3} {(LL.Count > 0 ? LL.Sum(x => x.r) : 0),5:F0}R | {SS.Count,5} {(SS.Count > 0 ? SS.Average(x => x.r) : 0),7:F3} {(SS.Count > 0 ? SS.Sum(x => x.r) : 0),5:F0}R | {lateSig[cf],5}건 | {string.Join(" ", fR.Select(x => $"{x,5:F2}"))}{(ap ? " *전폴드양수" : "")}");
+        }
+        Console.WriteLine("\n판정: 신스펙(4행)이 구라이브(1행) 대비 총R·5폴드 부호를 지키는지. 2·3행은 각 변수의 단독 기여.");
+    }
+
+    // ===============================================================================
     //  --elliott-freeze : 방향 고착(상승장을 '하락 1파'로 세는 얼어붙음) 축만 스윕.
     //
     //  실측 근거(--elliott-state, 2026-08-21):
@@ -29502,6 +29625,7 @@ internal static class Program
         if (HasArg("--elliott-nested")) { await RunElliottNestedAsync(args); return; }
         if (HasArg("--elliott-anchor")) { await RunElliottAnchorAsync(args); return; }
         if (HasArg("--elliott-live15")) { await RunElliottLive15Async(args); return; }
+        if (HasArg("--elliott-spec")) { await RunElliottSpecAsync(args); return; }
         if (HasArg("--elliott-freeze")) { await RunElliottFreezeAsync(args); return; }
         if (HasArg("--elliott-resume")) { await RunElliottResumeAsync(args); return; }
         if (HasArg("--elliott-jitter")) { await RunElliottJitterAsync(args); return; }

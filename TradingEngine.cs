@@ -704,6 +704,10 @@ namespace TradingBot
             //   신호가 뜨는데, 그 순간은 5m RSI<50 + 직전 15m 음봉(눌림이니 당연)이라 모멘텀게이트가 막음 →
             //   봇이 모멘텀 꺾일 때(=더 높은 가격=꼭대기)까지 기다려 진입(XMR 14시 LCC신호 → 17시 꼭대기 진입 버그). H1M1 폐기.
             bool isMeanRev = srcU.Contains("MEANREV") || srcU.Contains("LORENTZIAN");  // 눌림(하단지지) 진입 → 모멘텀/고점도장 게이트 우회
+            // [v5.34.13] ★엘리엇 = 파동+피보나치 단독 진입(사용자 지시). 재량 게이트(BTC 레짐·횡보박스 등)를
+            //   면제한다 — 엘리엇도 피보나치도 아닌 조건이고, BTC 레짐 게이트는 이미 금지 규칙이다(코인 디커플링).
+            //   안전장치(설정미로드·중복포지션·슬롯한도·수동청산 쿨다운)는 그대로 통과시킨다.
+            bool isElliott = srcU.Contains("ELLIOTT");
             string entryCat;
             // [v5.22.25] 메이저 심볼은 source 무관 MAJOR 강제 — MaxMajorSlots 회피 버그 fix
             //   v5.22.24 까지: BTC/ETH/SOL/XRP 가 BB_SQUEEZE/ENGINE_151 source 로 들어오면 entryCat=SQUEEZE/GENERIC
@@ -1253,7 +1257,7 @@ namespace TradingBot
                             double sd = Math.Sqrt(variance);
                             double bbWidthPct = sma > 0 ? (sd * 4.0) / sma * 100.0 : 0;  // upper-lower = 4σ
 
-                            if (range20Pct < 0.5m && bbWidthPct < 1.0)
+                            if (!isElliott && range20Pct < 0.5m && bbWidthPct < 1.0)   // [v5.34.13] 엘리엇 면제
                             {
                                 blockReason = $"SIDEWAYS_BOX:range20={range20Pct:F2}%_bbw={bbWidthPct:F2}%";
                                 OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (좁은 박스 — 진입 후 횡보 위험)");
@@ -1306,7 +1310,7 @@ namespace TradingBot
                     }
 
                     decimal btc1hChangePct = (btcNow - btc1hAgo) / btc1hAgo * 100m;
-                    if (btc1hChangePct <= downThreshold)
+                    if (!isElliott && btc1hChangePct <= downThreshold)   // [v5.34.13] 엘리엇 면제 (BTC 레짐게이트 금지 규칙)
                     {
                         blockReason = $"BTC_1H_DOWNTREND ({btc1hChangePct:F2}% <= {downThreshold}% for {entryCat})";
                         OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason}");
@@ -5780,7 +5784,8 @@ namespace TradingBot
             { EwStage(symbol, "캔들부족"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 차단 | 15m 캔들 부족({k15?.Count ?? 0}<400)"); return; }
             int ei = k15.Count - 2;                       // 마지막 마감봉
             double c = (double)k15[ei].ClosePrice;
-            if (Math.Abs((currentPrice - (decimal)c) / (decimal)c) > 0.01m) { EwStage(symbol, "마감봉대비급변"); return; }   // 1% 이상 급변 → 스킵
+            // [v5.34.13] ★마감봉 대비 1% 급변컷 제거 — 엘리엇도 피보나치도 아닌 조건이다(사용자 지시).
+            //   실측(2026-08-21 라이브 5시간): 17,765회 발동. 급등장에서 스캔 자체를 포기시키던 컷.
 
             // ═══════════════════════════════════════════════════════════════════════
             //  [v5.34.0] ★방향별 엔진 분리 — 3년·30코인 방향별 5폴드 측정 결과
@@ -5857,30 +5862,30 @@ namespace TradingBot
             // 롱만 채택 — 신규 엔진의 숏(+0.279R)은 현행 숏(+0.364R)보다 못하다.
             if (counterReady && bosSetup != null && bosSetup.IsLong)
             {
-                double slipL = Math.Abs((double)currentPrice - c) / c;
-                if (slipL > 0.0015)
-                { EwStage(symbol, "지연과다"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 롱 차단 | 신호봉 종가 대비 이탈 과다({slipL:P2}>0.15%)"); }
-                else
+                // [v5.34.13] ★슬립컷(0.15%)·손절폭범위(0.2~6%) 제거 — 엘리엇도 피보나치도 아니다(사용자 지시).
+                decimal slL = (decimal)bosSetup.StopPrice;
+                decimal riskL = currentPrice - slL;
+                if (riskL > 0)
                 {
-                    decimal slL = (decimal)bosSetup.StopPrice;
-                    decimal riskL = currentPrice - slL;
-                    if (riskL > 0)
+                    double sfL = (double)(riskL / currentPrice);
+                    if (!IsEntryAllowed(symbol, "LORENTZIAN_ELLIOTT", out var gL))
+                    { EwStage(symbol, "게이트차단"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 롱 차단 | 공용게이트 reason={gL}"); }
+                    else
                     {
-                        double sfL = (double)(riskL / currentPrice);
-                        if (sfL < 0.002 || sfL > 0.06)
-                            EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 롱 차단 | 손절폭 범위밖({sfL:P2})");
-                        else if (!IsEntryAllowed(symbol, "LORENTZIAN_ELLIOTT", out var gL))
-                        { EwStage(symbol, "게이트차단"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 롱 차단 | 공용게이트 reason={gL}"); }
-                        else
-                        {
-                            decimal tpL = currentPrice + 3m * riskL;
-                            _elliottCooldown[symbol] = DateTime.UtcNow;
-                            EwStage(symbol, "★진입");
-                            OnStatusLog?.Invoke($"✅ [ELLIOTT] {symbol} 롱진입 | 15m 차트기반 파동3 · 상위{(bosSetup.HigherWave == 3 ? "5파" : "3파")}순행(중첩) · 파동2 되돌림{bosSetup.Retrace:P1} · 구조이탈 확정 | 진입{currentPrice:F6} SL{slL:F6}({sfL:P2}) TP{tpL:F6} = 손익비 1:3");
-                            _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
-                                signalSource: "LORENTZIAN_ELLIOTT", customTakeProfitPrice: tpL, customStopLossPrice: slL);
-                            return;
-                        }
+                        // [v5.34.13] ★익절 = 파동3 피보나치 확장투영(파동2종점 + 1.618×파동1).
+                        //   고정 손익비 3×손절폭은 피보나치가 아니므로 폐기. 투영이 진입가보다 아래면(이미 초과)
+                        //   구조상 남은 여유가 없다는 뜻이라 진입하지 않는다.
+                        decimal tgtL = (decimal)bosSetup.TargetPrice;
+                        if (!(tgtL > currentPrice))
+                        { EwStage(symbol, "피보목표초과"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 롱 차단 | 1.618 확장목표({tgtL:F6}) 이미 초과"); return; }
+                        decimal tpL = tgtL;
+                        double rrL = riskL > 0 ? (double)((tpL - currentPrice) / riskL) : 0;
+                        _elliottCooldown[symbol] = DateTime.UtcNow;
+                        EwStage(symbol, "★진입");
+                        OnStatusLog?.Invoke($"✅ [ELLIOTT] {symbol} 롱진입 | 15m 파동3 · 파동2 되돌림{bosSetup.Retrace:P1}(피보 38.2~78.6%) | 진입{currentPrice:F6} SL{slL:F6}({sfL:P2}) TP{tpL:F6}=1.618확장 · 손익비 1:{rrL:F2}");
+                        _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
+                            signalSource: "LORENTZIAN_ELLIOTT", customTakeProfitPrice: tpL, customStopLossPrice: slL);
+                        return;
                     }
                 }
             }
@@ -5893,22 +5898,23 @@ namespace TradingBot
             //   (구 경로 +0.364R·PF 1.66 보다 건당 낮지만, 1h 의존을 없애라는 지시를 우선한다)
             if (counterReady && bosSetup != null && !bosSetup.IsLong)
             {
-                double slipS = Math.Abs((double)currentPrice - c) / c;
-                if (slipS > 0.0015)
-                { EwStage(symbol, "지연과다"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 숏 차단 | 신호봉 종가 대비 이탈 과다({slipS:P2}>0.15%)"); return; }
+                // [v5.34.13] ★슬립컷·손절폭범위 제거 (사용자 지시: 엘리엇+피보나치 단독)
                 decimal slS = (decimal)bosSetup.StopPrice;
                 decimal riskS = slS - currentPrice;
                 if (riskS <= 0) { EwStage(symbol, "risk≤0"); return; }
                 double sfS = (double)(riskS / currentPrice);
-                if (sfS < 0.002 || sfS > 0.06)
-                { EwStage(symbol, "손절폭범위밖"); return; }
                 const string srcS = "LORENTZIAN_SCALP5M_SHORT_ELLIOTT";   // SHORT 화이트리스트 prefix 준수
                 if (!IsEntryAllowed(symbol, srcS, out var gS))
                 { EwStage(symbol, "게이트차단"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 숏 차단 | 공용게이트 reason={gS}"); return; }
-                decimal tpS = currentPrice - 3m * riskS;
+                // [v5.34.13] ★익절 = 조정 피보나치 되돌림(1~5파 전체폭 × 0.618). 고정 1:3 폐기.
+                decimal tgtS = (decimal)bosSetup.TargetPrice;
+                if (!(tgtS > 0m && tgtS < currentPrice))
+                { EwStage(symbol, "피보목표초과"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 숏 차단 | 0.618 되돌림목표({tgtS:F6}) 이미 초과"); return; }
+                decimal tpS = tgtS;
+                double rrS = (double)((currentPrice - tpS) / riskS);
                 _elliottCooldown[symbol] = DateTime.UtcNow;
                 EwStage(symbol, "★진입");
-                OnStatusLog?.Invoke($"✅ [ELLIOTT] {symbol} 숏진입 | 15m 차트기반 파동3 · 상위{(bosSetup.HigherWave == 3 ? "5파" : "3파")}순행(중첩) · 파동2 되돌림{bosSetup.Retrace:P1} | 진입{currentPrice:F6} SL{slS:F6}({sfS:P2}) TP{tpS:F6} = 손익비 1:3");
+                OnStatusLog?.Invoke($"✅ [ELLIOTT] {symbol} 숏진입 | 15m 5파종점 반전(S5) | 진입{currentPrice:F6} SL{slS:F6}({sfS:P2}) TP{tpS:F6}=0.618되돌림 · 손익비 1:{rrS:F2}");
                 _ = ExecuteAutoOrder(symbol, "SHORT", currentPrice, token,
                     signalSource: srcS, customTakeProfitPrice: tpS, customStopLossPrice: slS);
                 return;
