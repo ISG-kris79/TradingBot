@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Binance.Net.Interfaces;
 
@@ -222,6 +222,11 @@ namespace TradingBot.Services
             public int Phase => _phase;
             public bool IsImpulse => _impulse;
             public int Dir => _dir;
+            // [v5.34.11] 진단 노출 — 방향 고착(상승장을 하락구조로 카운트)을 가격으로 검증하기 위함. 판정 로직 불변.
+            public double AnchorPx => _anchorPx;
+            public double W1End => _w1End;
+            public double W2End => _w2End;
+            public double LegExt => _legExt;
             // [v5.34.10] ★진단 노출 — "3파 진행중인데 왜 진입 안 하냐"를 로그/화면에서 즉시 답하기 위함.
             //   파동2 마감 시 되돌림이 밴드(38.2~78.6%) 밖이면 신호가 조용히 죽는데, 그 사실이 어디에도
             //   드러나지 않아 '3파 카운트 중 = 진입기회 있었음'으로 오인됐다(실측 BTC 08-17 11:45).

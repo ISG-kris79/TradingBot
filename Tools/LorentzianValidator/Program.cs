@@ -26254,7 +26254,7 @@ internal static class Program
                     bool w23 = lastImp && lastPhase == 2 && wc.IsImpulse && wc.Phase == 3;
                     lastPhase = wc.Phase; lastImp = wc.IsImpulse; lastDir = wc.Dir;
                     string tag = w23 ? (string.IsNullOrEmpty(wc.LastW2Block) ? "  ★신호" : "  X " + wc.LastW2Block) : "";
-                    phaseLog.Add($"{k[q].OpenTime.AddHours(9):MM-dd HH:mm} {(lastImp ? lastPhase + "파" : "조" + lastPhase)}{(lastDir > 0 ? "^" : "v")}{tag}");
+                    phaseLog.Add($"{k[q].OpenTime.AddHours(9):MM-dd HH:mm} {(lastImp ? lastPhase + "파" : "조" + lastPhase)}{(lastDir > 0 ? "^" : "v")} 종가={(double)k[q].ClosePrice:0.####} 앵커={wc.AnchorPx:0.####} 1파끝={wc.W1End:0.####}{tag}");
                 }
                 if (wc.Signal != null)
                 {
@@ -27281,6 +27281,301 @@ internal static class Program
     private static readonly (double lo, double hi)[] Ew15Fib = { (0.382, 0.618), (0.382, 0.786), (0.236, 0.618) };
     private static readonly string[] Ew15FibName = { "38.2~61.8%", "38.2~78.6%", "23.6~61.8%" };
     private static readonly string[] Ew15EntryName = { "돌파", "전환확인" };
+
+    // ===============================================================================
+    //  --elliott-freeze : 방향 고착(상승장을 '하락 1파'로 세는 얼어붙음) 축만 스윕.
+    //
+    //  실측 근거(--elliott-state, 2026-08-21):
+    //    ETH 08-19 17:45 앵커 1929.8 로 '1파 하락' 시작 -> 08-21 00:45 까지 1920->2325(+21%)
+    //         내내 '1파v' 유지. 파동2 선언은 2325 에서 나왔고 즉시 무효(앵커초과) -> 재앵커 -> 반복.
+    //    XRP 08-19 18:30 앵커 1.0094 '1파 하락' -> 1.1408(+13.7%) 까지 '1파v'.
+    //
+    //  기전: 하락 레그의 마감 판정 = '프랙탈 고점(_termK 좌우 21봉보다 높은 고점) 돌파'.
+    //        상승 추세에서는 매 봉이 신고가라 우측 21봉 조건을 만족하는 고점이 영영 확정되지 않는다
+    //        -> _hasRef=false -> bos 영영 미발생 -> 파동이 안 끝난다.
+    //        = 시장이 가장 크게 오를 때 카운터가 정확히 얼어붙는다.
+    //
+    //  v5.34.4 가 이 문제를 위해 termMode=1(되돌림비율 마감)을 구현해놓고 기본값은 0(프랙탈)로 두었다.
+    //  여기서 termMode/termK/w1WrongWay 를 총R 기준으로 비교한다. 판정 지표:
+    //    (1)총R (2)5폴드 부호 (3)역방향비율(96봉 가격변화와 Dir 이 어긋난 봉 비율)
+    //    (4)최근 200봉(8/19~) 신호수 - "급등을 잡느냐"를 직접 본다.
+    // ===============================================================================
+    private static async Task RunElliottFreezeAsync(string[] args)
+    {
+        const double feeRT = 0.0008; const int maxHold = 384; const int folds = 5;
+        int pages15 = 70;
+        for (int a = 0; a < args.Length; a++)
+            if (args[a] == "--ew-pages" && a + 1 < args.Length && int.TryParse(args[a + 1], out var pp) && pp > 0) pages15 = pp;
+
+        var cfgs = new List<(string nm, int termK, int termMode, double termRetr, double ww)>
+        {
+            ("현행 프랙탈K21", 21, 0, 0.236, 0.000),
+            ("프랙탈K13", 13, 0, 0.236, 0.000),
+            ("프랙탈K8", 8, 0, 0.236, 0.000),
+            ("프랙탈K34", 34, 0, 0.236, 0.000),
+            ("되돌림마감 14.6%", 21, 1, 0.146, 0.000),
+            ("되돌림마감 23.6%", 21, 1, 0.236, 0.000),
+            ("되돌림마감 38.2%", 21, 1, 0.382, 0.000),
+            ("되돌림마감 50.0%", 21, 1, 0.500, 0.000),
+            ("되돌림23.6%+역행0.4%", 21, 1, 0.236, 0.004),
+            ("되돌림38.2%+역행0.4%", 21, 1, 0.382, 0.004),
+            ("프랙탈K13+역행0.4%", 13, 0, 0.236, 0.004),
+            ("현행+역행0.8%", 21, 0, 0.236, 0.008),
+        };
+
+        Console.WriteLine("=== --elliott-freeze : 방향 고착(상승장 = 하락1파) 해소 축 스윕 ===\n");
+
+        var trades = new List<Ew15Cand>();
+        var wrongBars = new long[cfgs.Count]; var totBars = new long[cfgs.Count];
+        var lateSig = new int[cfgs.Count];
+        var frozen = new long[cfgs.Count];
+        int ci = 0;
+        foreach (var sym in EwUniverse)
+        {
+            ci++; Console.Write($"[{ci}/{EwUniverse.Length}] {sym} ");
+            List<IBinanceKline> k15;
+            try { k15 = await FetchKlines15mAsync(sym, pages15); } catch { Console.WriteLine("fail"); continue; }
+            if (k15.Count < 1000) { Console.WriteLine("skip"); continue; }
+            int n = k15.Count;
+            var hiA = new double[n]; var loA = new double[n]; var clA = new double[n]; var opA = new double[n];
+            for (int j = 0; j < n; j++) { hiA[j] = (double)k15[j].HighPrice; loA[j] = (double)k15[j].LowPrice; clA[j] = (double)k15[j].ClosePrice; opA[j] = (double)k15[j].OpenPrice; }
+
+            for (int cf = 0; cf < cfgs.Count; cf++)
+            {
+                var c = cfgs[cf];
+                var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(
+                    21, 0.382, 0.786, false, false, false, 0, false, false, 0, 5, false, 0.146, 0.618,
+                    c.termK, c.termMode, c.termRetr, 0.004, true, 0, false, 1, c.ww);
+                int busyUntil = -1; int lastPhase = -99, lastDir = 0, sameFor = 0;
+                for (int j = 0; j < n - 2; j++)
+                {
+                    counter.Advance(hiA[j], loA[j], clA[j], j);
+                    if (j < 200) continue;
+
+                    double chg = clA[j] / clA[j - 96] - 1;
+                    if (Math.Abs(chg) > 0.02) { totBars[cf]++; if ((chg > 0) != (counter.Dir > 0)) wrongBars[cf]++; }
+                    if (counter.Phase == lastPhase && counter.Dir == lastDir) { sameFor++; if (sameFor > 96) frozen[cf]++; }
+                    else { lastPhase = counter.Phase; lastDir = counter.Dir; sameFor = 0; }
+
+                    if (j <= busyUntil) continue;
+                    var st = counter.Signal;
+                    if (st == null) continue;
+                    if (j >= n - 200) lateSig[cf]++;
+                    bool isLong = st.IsLong;
+                    int eb = j + 1; if (eb >= n - 1) continue;
+                    double entry = opA[eb];
+                    double risk = isLong ? entry - st.StopPrice : st.StopPrice - entry;
+                    if (risk <= 0) continue;
+                    double stopFrac = risk / entry;
+                    if (stopFrac < 0.002 || stopFrac > 0.06) continue;
+                    double tp = isLong ? entry + 3 * risk : entry - 3 * risk;
+
+                    int last = Math.Min(n - 1, eb + maxHold); double pnl; bool win2; int xi = last;
+                    for (int e = eb; e <= last; e++)
+                    {
+                        if (isLong) { if (loA[e] <= st.StopPrice) { xi = e; goto sl; } if (hiA[e] >= tp) { xi = e; goto tpz; } }
+                        else { if (hiA[e] >= st.StopPrice) { xi = e; goto sl; } if (loA[e] <= tp) { xi = e; goto tpz; } }
+                    }
+                    { double ex = clA[last]; pnl = (isLong ? (ex - entry) / entry : (entry - ex) / entry) - feeRT; win2 = pnl > 0; goto rec; }
+                    sl: pnl = -stopFrac - feeRT; win2 = false; goto rec;
+                    tpz: pnl = 3 * stopFrac - feeRT; win2 = true;
+                    rec:
+                    trades.Add(new Ew15Cand
+                    {
+                        t = k15[eb].OpenTime.AddMinutes(15), exit = k15[xi].OpenTime.AddMinutes(15), sym = sym,
+                        dir = isLong ? 1 : -1, hiWave = st.HigherWave, stopFrac = stopFrac, retr = st.Retrace, sym2 = st.Kind,
+                        pnl = pnl, r = pnl / stopFrac, win = win2, variant = cf
+                    });
+                    busyUntil = xi;
+                }
+            }
+            Console.WriteLine($"{n}bars");
+        }
+        if (trades.Count == 0) { Console.WriteLine("진입 0건"); return; }
+
+        var tMin = trades.Min(x => x.t); var tMax = trades.Max(x => x.t);
+        double span = Math.Max(1e-9, (tMax - tMin).TotalDays / folds);
+        foreach (var c in trades) { int f = 0; while (f < folds - 1 && c.t >= tMin.AddDays(span * (f + 1))) f++; c.fold = f; }
+        Console.WriteLine($"\n기간 {tMin:yyyy-MM-dd} ~ {tMax:yyyy-MM-dd} ({(tMax - tMin).TotalDays / 30.4:F1}개월) · {EwUniverse.Length}코인\n");
+        Console.WriteLine("   설정                    건수  승률  기대R    PF   총R | 롱건수 롱기대R  롱총R | 역방향% 정체% 최근신호 | 5폴드");
+        for (int cf = 0; cf < cfgs.Count; cf++)
+        {
+            var ss = trades.Where(x => x.variant == cf).ToList();
+            double wrongPct = totBars[cf] > 0 ? 100.0 * wrongBars[cf] / totBars[cf] : 0;
+            double frzPct = totBars[cf] > 0 ? 100.0 * frozen[cf] / Math.Max(1, totBars[cf]) : 0;
+            if (ss.Count < 30) { Console.WriteLine($"   {cfgs[cf].nm,-21} {ss.Count,5}건 (표본부족) 역방향 {wrongPct:F1}%"); continue; }
+            var LL = ss.Where(x => x.dir > 0).ToList();
+            double gp = ss.Where(x => x.r > 0).Sum(x => x.r), gl = -ss.Where(x => x.r <= 0).Sum(x => x.r);
+            var fR = new double[folds]; bool ap = true;
+            for (int f = 0; f < folds; f++) { var fs = ss.Where(x => x.fold == f).ToList(); fR[f] = fs.Count > 0 ? fs.Average(x => x.r) : 0; if (fs.Count < 8 || fR[f] <= 0) ap = false; }
+            Console.WriteLine($"   {cfgs[cf].nm,-21} {ss.Count,5} {100.0 * ss.Count(x => x.win) / ss.Count,5:F1}% {ss.Average(x => x.r),6:F3} {(gl > 0 ? gp / gl : 99),5:F2} {ss.Sum(x => x.r),5:F0}R | {LL.Count,5} {(LL.Count > 0 ? LL.Average(x => x.r) : 0),7:F3} {(LL.Count > 0 ? LL.Sum(x => x.r) : 0),5:F0}R | {wrongPct,6:F1}% {frzPct,5:F1}% {lateSig[cf],5}건 | {string.Join(" ", fR.Select(x => $"{x,5:F2}"))}{(ap ? " *전폴드양수" : "")}");
+        }
+        Console.WriteLine("\n판정: 총R 이 현행 이상 + 5폴드 부호 유지 + 역방향% 하락 이어야 채택.");
+    }
+
+    // ===============================================================================
+    //  --elliott-resume : "상승 중 눌림에서 왜 안 들어가나" 를 직접 겨냥한 축.
+    //
+    //  사용자 지적(2026-08-21): "XRP 29% 상승하는 동안 진입도 없었다는게 말이 되냐"
+    //  현행 규칙은 '파동2 마감 봉' 한 지점에서만 진입한다. 파동3/5 가 진행되는 동안의
+    //  중간 눌림은 전부 무시한다 -> 눌림 없이 밀고 올라가는 구간을 구조적으로 못 잡는다.
+    //
+    //  v5.34.4 가 이를 위해 entryMode 1/2(파동3·5 진행중 눌림 재개 진입)를 구현해뒀으나
+    //  채택/반증 기록이 없다. 손절은 '직전 눌림 저점'(minorK 프랙탈)이라 손익비 1:3 유지된다.
+    //  여기서 entryMode x minorK 를 총R 로 판정한다. 현행(entryMode=0) = 105R 이 기준선.
+    // ===============================================================================
+    private static async Task RunElliottResumeAsync(string[] args)
+    {
+        const double feeRT = 0.0008; const int maxHold = 384; const int folds = 5;
+        int pages15 = 70;
+        for (int a = 0; a < args.Length; a++)
+            if (args[a] == "--ew-pages" && a + 1 < args.Length && int.TryParse(args[a + 1], out var pp) && pp > 0) pages15 = pp;
+
+        var cfgs = new List<(string nm, int em, int mk)>
+        {
+            ("현행 파동2마감만", 0, 5),
+            ("+3파중 눌림 K3", 1, 3),
+            ("+3파중 눌림 K5", 1, 5),
+            ("+3파중 눌림 K8", 1, 8),
+            ("+3파중 눌림 K13", 1, 13),
+            ("+3파중 눌림 K21", 1, 21),
+            ("+3·5파중 눌림 K5", 2, 5),
+            ("+3·5파중 눌림 K8", 2, 8),
+            ("+3·5파중 눌림 K13", 2, 13),
+            ("+3·5파중 눌림 K21", 2, 21),
+        };
+
+        Console.WriteLine("=== --elliott-resume : 파동3/5 진행중 눌림 재개 진입 (총R 판정) ===\n");
+
+        var trades = new List<Ew15Cand>();
+        var lateSig = new int[cfgs.Count];
+        int ci = 0;
+        foreach (var sym in EwUniverse)
+        {
+            ci++; Console.Write($"[{ci}/{EwUniverse.Length}] {sym} ");
+            List<IBinanceKline> k15;
+            try { k15 = await FetchKlines15mAsync(sym, pages15); } catch { Console.WriteLine("fail"); continue; }
+            if (k15.Count < 1000) { Console.WriteLine("skip"); continue; }
+            int n = k15.Count;
+            var hiA = new double[n]; var loA = new double[n]; var clA = new double[n]; var opA = new double[n];
+            for (int j = 0; j < n; j++) { hiA[j] = (double)k15[j].HighPrice; loA[j] = (double)k15[j].LowPrice; clA[j] = (double)k15[j].ClosePrice; opA[j] = (double)k15[j].OpenPrice; }
+
+            for (int cf = 0; cf < cfgs.Count; cf++)
+            {
+                var c = cfgs[cf];
+                var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(
+                    21, 0.382, 0.786, false, false, false, 0, false, false, c.em, c.mk, false, 0.146, 0.618,
+                    21, 0, 0.236, 0.004, true, 0, false, 1, 0.0);
+                int busyUntil = -1;
+                for (int j = 0; j < n - 2; j++)
+                {
+                    counter.Advance(hiA[j], loA[j], clA[j], j);
+                    if (j < 200) continue;
+                    if (j <= busyUntil) continue;
+                    var st = counter.Signal;
+                    if (st == null) continue;
+                    if (j >= n - 200) lateSig[cf]++;
+                    bool isLong = st.IsLong;
+                    int eb = j + 1; if (eb >= n - 1) continue;
+                    double entry = opA[eb];
+                    double risk = isLong ? entry - st.StopPrice : st.StopPrice - entry;
+                    if (risk <= 0) continue;
+                    double stopFrac = risk / entry;
+                    if (stopFrac < 0.002 || stopFrac > 0.06) continue;
+                    double tp = isLong ? entry + 3 * risk : entry - 3 * risk;
+
+                    int last = Math.Min(n - 1, eb + maxHold); double pnl; bool win2; int xi = last;
+                    for (int e = eb; e <= last; e++)
+                    {
+                        if (isLong) { if (loA[e] <= st.StopPrice) { xi = e; goto sl; } if (hiA[e] >= tp) { xi = e; goto tpz; } }
+                        else { if (hiA[e] >= st.StopPrice) { xi = e; goto sl; } if (loA[e] <= tp) { xi = e; goto tpz; } }
+                    }
+                    { double ex = clA[last]; pnl = (isLong ? (ex - entry) / entry : (entry - ex) / entry) - feeRT; win2 = pnl > 0; goto rec; }
+                    sl: pnl = -stopFrac - feeRT; win2 = false; goto rec;
+                    tpz: pnl = 3 * stopFrac - feeRT; win2 = true;
+                    rec:
+                    trades.Add(new Ew15Cand
+                    {
+                        t = k15[eb].OpenTime.AddMinutes(15), exit = k15[xi].OpenTime.AddMinutes(15), sym = sym,
+                        dir = isLong ? 1 : -1, hiWave = st.HigherWave, stopFrac = stopFrac, retr = st.Retrace, sym2 = st.Kind,
+                        pnl = pnl, r = pnl / stopFrac, win = win2, variant = cf
+                    });
+                    busyUntil = xi;
+                }
+            }
+            Console.WriteLine($"{n}bars");
+        }
+        if (trades.Count == 0) { Console.WriteLine("진입 0건"); return; }
+
+        var tMin = trades.Min(x => x.t); var tMax = trades.Max(x => x.t);
+        double span = Math.Max(1e-9, (tMax - tMin).TotalDays / folds);
+        foreach (var c in trades) { int f = 0; while (f < folds - 1 && c.t >= tMin.AddDays(span * (f + 1))) f++; c.fold = f; }
+        double months = (tMax - tMin).TotalDays / 30.4;
+        Console.WriteLine($"\n기간 {tMin:yyyy-MM-dd} ~ {tMax:yyyy-MM-dd} ({months:F1}개월) · {EwUniverse.Length}코인\n");
+        Console.WriteLine("   설정                   건수  월건수  승률  기대R    PF   총R | 롱건수 롱기대R  롱총R | 최근신호 | 5폴드");
+        for (int cf = 0; cf < cfgs.Count; cf++)
+        {
+            var ss = trades.Where(x => x.variant == cf).ToList();
+            if (ss.Count < 30) { Console.WriteLine($"   {cfgs[cf].nm,-20} {ss.Count,5}건 (표본부족)"); continue; }
+            var LL = ss.Where(x => x.dir > 0).ToList();
+            double gp = ss.Where(x => x.r > 0).Sum(x => x.r), gl = -ss.Where(x => x.r <= 0).Sum(x => x.r);
+            var fR = new double[folds]; bool ap = true;
+            for (int f = 0; f < folds; f++) { var fs = ss.Where(x => x.fold == f).ToList(); fR[f] = fs.Count > 0 ? fs.Average(x => x.r) : 0; if (fs.Count < 8 || fR[f] <= 0) ap = false; }
+            Console.WriteLine($"   {cfgs[cf].nm,-20} {ss.Count,5} {ss.Count / months,6:F1} {100.0 * ss.Count(x => x.win) / ss.Count,5:F1}% {ss.Average(x => x.r),6:F3} {(gl > 0 ? gp / gl : 99),5:F2} {ss.Sum(x => x.r),5:F0}R | {LL.Count,5} {(LL.Count > 0 ? LL.Average(x => x.r) : 0),7:F3} {(LL.Count > 0 ? LL.Sum(x => x.r) : 0),5:F0}R | {lateSig[cf],5}건 | {string.Join(" ", fR.Select(x => $"{x,5:F2}"))}{(ap ? " *전폴드양수" : "")}");
+        }
+        Console.WriteLine("\n판정: 총R 이 현행(105R) 이상 + 5폴드 전부 양수여야 채택.");
+    }
+
+    // ===============================================================================
+    //  --elliott-jitter : 봇 재시작 시각에 따라 파동 카운트가 달라지는지 측정.
+    //
+    //  라이브 카운터는 상태를 계속 들고 가지만, 재시작하면 '그 시점의 1500봉'으로 처음부터
+    //  다시 센다. 시작 봉이 몇 개만 밀려도 첫 앵커가 달라지고 그 뒤 전부가 달라질 수 있다.
+    //  같은 심볼을 시작 오프셋 0..23봉(=재시작 시각 0~6시간 차이)으로 세어보고
+    //  현재 (파동,방향) 과 최근 200봉 신호수가 얼마나 흩어지는지 본다.
+    //  흩어지면 = 백테로 재현 불가 + 재시작마다 다른 봇이 된다.
+    // ===============================================================================
+    private static async Task RunElliottJitterAsync(string[] args)
+    {
+        var syms = new[] { "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT",
+                           "LINKUSDT","TRXUSDT","SUIUSDT","LTCUSDT","BCHUSDT","XLMUSDT","DOTUSDT","HYPEUSDT" };
+        for (int a = 0; a < args.Length; a++)
+            if (args[a] == "--ew-syms" && a + 1 < args.Length) syms = args[a + 1].Split(',', StringSplitOptions.RemoveEmptyEntries);
+        const int OFF = 24;
+
+        Console.WriteLine("=== --elliott-jitter : 시작 오프셋 0~23봉(재시작 0~6시간차)에 따른 카운트 산포 ===\n");
+        Console.WriteLine("   심볼        현재상태 종류수  최빈상태(비율)        방향분포(상방/하방)  최근200봉 신호수 범위");
+        int unstable = 0;
+        foreach (var sym in syms)
+        {
+            List<IBinanceKline> k;
+            try { k = await FetchKlines15mAsync(sym, 2); } catch { Console.WriteLine($"   {sym} fail"); continue; }
+            if (k.Count < 1600) { Console.WriteLine($"   {sym} 데이터부족"); continue; }
+            var states = new List<string>(); var sigCounts = new List<int>(); int up = 0, dn = 0;
+            for (int off = 0; off < OFF; off++)
+            {
+                int end = k.Count - 1 - off;                 // 재시작 시각을 off봉 앞으로
+                int start = end - 1500; if (start < 0) break;
+                var wc = new TradingBot.Services.ElliottWaveEngine.WaveCounter();
+                int sig = 0;
+                for (int q = start; q < end; q++)
+                {
+                    wc.Advance((double)k[q].HighPrice, (double)k[q].LowPrice, (double)k[q].ClosePrice, q);
+                    if (q >= end - 200 && wc.Signal != null) sig++;
+                }
+                states.Add($"{(wc.IsImpulse ? wc.Phase + "파" : "조" + wc.Phase)}{(wc.Dir > 0 ? "^" : "v")}");
+                sigCounts.Add(sig);
+                if (wc.Dir > 0) up++; else dn++;
+            }
+            if (states.Count == 0) continue;
+            var grp = states.GroupBy(x => x).OrderByDescending(g => g.Count()).ToList();
+            int kinds = grp.Count;
+            if (kinds > 1) unstable++;
+            Console.WriteLine($"   {sym,-11} {kinds,6}종  {grp[0].Key,-6} {100.0 * grp[0].Count() / states.Count,5:F0}%          {up,3}/{dn,-3}              {sigCounts.Min()}~{sigCounts.Max()}건");
+        }
+        Console.WriteLine($"\n   재시작 시각에 따라 현재 파동상태가 달라진 심볼: {unstable}/{syms.Length}");
+        Console.WriteLine("   (1종 = 재시작해도 같은 카운트 = 재현가능 / 2종 이상 = 재시작마다 다른 봇)");
+    }
 
     private sealed class Ew15Cand
     {
@@ -29207,6 +29502,9 @@ internal static class Program
         if (HasArg("--elliott-nested")) { await RunElliottNestedAsync(args); return; }
         if (HasArg("--elliott-anchor")) { await RunElliottAnchorAsync(args); return; }
         if (HasArg("--elliott-live15")) { await RunElliottLive15Async(args); return; }
+        if (HasArg("--elliott-freeze")) { await RunElliottFreezeAsync(args); return; }
+        if (HasArg("--elliott-resume")) { await RunElliottResumeAsync(args); return; }
+        if (HasArg("--elliott-jitter")) { await RunElliottJitterAsync(args); return; }
         if (HasArg("--elliott-15m")) { await RunElliott15mAsync(args); return; }
         if (HasArg("--elliott-full")) { await RunElliottFullAsync(args); return; }
         if (HasArg("--elliott-degree2")) { await RunElliottDegree2Async(args); return; }
