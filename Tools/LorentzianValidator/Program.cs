@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
@@ -26213,7 +26213,16 @@ internal static class Program
     //   TradingEngine.AnalyzeElliottWaveEntryAsync 와 동일 조건(15m 1500봉, 기본 파라미터)으로 돌린다.
     private static async Task RunElliottStateAsync(string[] args)
     {
-        var syms = new[] { "BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT" };
+        // [v5.34.11] 라이브 진입임박 유니버스(TradingEngine.NearEntryUniverse) 전체로 확대.
+        //   메이저 4개만 보면 "신호가 원래 이렇게 드문가"를 판정할 표본이 안 된다.
+        var syms = new[] {
+            "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT",
+            "BNBUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","TRXUSDT",
+            "SUIUSDT","LTCUSDT","BCHUSDT","XLMUSDT","DOTUSDT","HYPEUSDT"
+        };
+        for (int a = 0; a < args.Length; a++)
+            if (args[a] == "--ew-syms" && a + 1 < args.Length)
+                syms = args[a + 1].Split(',', StringSplitOptions.RemoveEmptyEntries);
         Console.WriteLine("=== 라이브 WaveCounter 현재상태 (15m·1500봉·기본파라미터) ===");
         foreach (var sym in syms)
         {
@@ -27109,12 +27118,12 @@ internal static class Program
             // ★라이브와 동일 엔진. 명세 피보 구간 × 도달가능성 게이트 × 프랙탈K 를 나란히 측정.
             // ★상위게이트 ON/OFF 를 축으로 — 건당R 이 아니라 '총R' 로 판단하기 위함
             var cfgs = new (int K, double lo, double hi, bool reach, bool spec, bool hgate, int win, bool flip, bool dfh, int em, int mk, double trail, bool w5, double w4a, double w4b, int sf, bool d1, int tm, double tr, double mlp, int dm, bool se, int sx, double ww)[]{
-                (21,0.382,0.786,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 현행 상한 78.6%
-                (21,0.382,0.850,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 상한 85%
-                (21,0.382,0.900,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 상한 90%
-                (21,0.382,0.950,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 상한 95%
-                (21,0.382,0.990,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 상한 99% (엘리엇 절대규칙 한계)
-                (21,0.236,0.990,false,false,false,0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 하한23.6+상한99 (밴드 최대개방)
+                (21,0.382,0.786,false,false,false, 0,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 진입창 1봉 (현행)
+                (21,0.382,0.786,false,false,false, 2,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 진입창 3봉 (45분)
+                (21,0.382,0.786,false,false,false, 4,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 진입창 5봉 (75분)
+                (21,0.382,0.786,false,false,false, 8,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 진입창 9봉 (2시간)
+                (21,0.382,0.786,false,false,false,16,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 진입창 17봉 (4시간)
+                (21,0.382,0.786,false,false,false,32,false,false,0,5,0,false,0.146,0.618,0,true,0,0.236,0.004,0,false,1,0.000), // 진입창 33봉 (8시간)
             };
             for (int cf = 0; cf < cfgs.Length; cf++)
             {
@@ -27212,7 +27221,7 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("── 설정별 (라이브 엔진 WaveCounter 직접 구동) ──");
         Console.WriteLine("   설정                     건수  승률  기대R    PF | 롱건수 롱기대R | 숏건수 숏기대R | 5폴드");
-        var cfgNames = new[]{"현행 38.2~78.6%","상한 85%","상한 90%","상한 95%","상한 99%","23.6~99% 최대개방"};
+        var cfgNames = new[]{"진입창 1봉(현행)","진입창 3봉(45분)","진입창 5봉(75분)","진입창 9봉(2시간)","진입창 17봉(4시간)","진입창 33봉(8시간)"};
         for (int cf = 0; cf < cfgNames.Length; cf++)
         {
             var sset = trades.Where(x => x.variant == cf).ToList();

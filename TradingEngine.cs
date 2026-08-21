@@ -1,4 +1,4 @@
-using Binance.Net;
+﻿using Binance.Net;
 using Binance.Net.Clients;
 using Binance.Net.Enums;
 using Binance.Net.Interfaces;
@@ -5800,17 +5800,28 @@ namespace TradingBot
             //   파동이 깨지면(절대규칙 위반) 카운터가 그 지점에서 스스로 재앵커해 이어서 센다.
             var counter = _ewCounters.GetOrAdd(symbol, _ => new ElliottWaveEngine.WaveCounter());
             ElliottWaveEngine.SetupBos? bosSetup = null;
+            bool staleSignalPickup = false;
             bool counterReady; int ewPhase = 0, ewBars = 0; bool ewImpulse = true; int ewDir = 0;
             double ewLiveRetr = double.NaN, ewW2Retr = double.NaN; string ewW2Block = "";
             lock (counter)
             {
+                long lastAdvancedMs = counter.LastBarOpenMs;
                 for (int q = 0; q <= ei; q++)                       // 아직 반영 안 된 마감봉만 전진
                 {
                     long ot = new DateTimeOffset(k15[q].OpenTime, TimeSpan.Zero).ToUnixTimeMilliseconds();
                     if (counter.LastBarOpenMs >= 0 && ot <= counter.LastBarOpenMs) continue;
                     counter.Advance((double)k15[q].HighPrice, (double)k15[q].LowPrice, (double)k15[q].ClosePrice, ot);
-                    if (counter.Signal != null && q == ei) bosSetup = counter.Signal;   // 마지막 마감봉의 신호만
                 }
+                // [v5.34.11] ★신호를 '전진 루프 안'이 아니라 '전진 후 현재 상태'에서 읽는다.
+                //   종전 코드는 `q == ei` 인 Advance 직후에만 신호를 집었다. 즉 "그 마감봉을 처음 밀어넣은
+                //   단 한 번의 스캔"에서만 진입이 가능했고, 다른 무엇이 그 봉을 먼저 밀어넣으면 신호가 증발했다.
+                //   v5.34.9 가 진입임박 패널(UpdateNearEntryForSymbolAsync)을 같은 _ewCounters 로 교체하면서
+                //   표시 전용 루프가 진입 경로보다 먼저 봉을 소비하는 경쟁이 생겼다 — 그 경우 진입 경로는
+                //   전진할 봉이 없어 루프 본문이 아예 안 돌고 bosSetup 이 null 이 된다(신호는 살아있는데 무진입).
+                //   EntryWindowBars=0 이면 Signal 은 다음 Advance 에서 소멸하므로 '마감봉 당봉만' 의미는 그대로다.
+                bool advanced = counter.LastBarOpenMs != lastAdvancedMs;
+                bosSetup = counter.Signal;
+                if (bosSetup != null && !advanced) staleSignalPickup = true;
                 // [v5.34.6] ★HigherReady 를 진입 전제조건에서 제거.
                 //   상위(중첩) 카운트는 higherGate 가 켜졌을 때만 진입 판정에 쓰이는데 기본 OFF 다.
                 //   그런데 '상위 피벗 3개' 를 하드 전제로 걸어둬서, 1파 실측 방향 도입 후
@@ -5836,8 +5847,12 @@ namespace TradingBot
                         : $"롱:파동2미마감({(ewImpulse ? ewPhase + "파" : "조정" + ewPhase)}·앵커{(ewDir > 0 ? "상방" : "하방")})";
                 EwStage(symbol, why);
             }
-            else if (!bosSetup.IsLong)
-                EwStage(symbol, "롱:하방앵커신호(숏경로로)");
+            else
+            {
+                if (staleSignalPickup)
+                    EwLog(symbol, $"♻️ [ELLIOTT] {symbol} 신호 회수 | 다른 루프가 마감봉을 먼저 소비했으나 신호는 유효 (v5.34.11 이전이면 유실됐을 건)");
+                if (!bosSetup.IsLong) EwStage(symbol, "롱:하방앵커신호(숏경로로)");
+            }
 
             // 롱만 채택 — 신규 엔진의 숏(+0.279R)은 현행 숏(+0.364R)보다 못하다.
             if (counterReady && bosSetup != null && bosSetup.IsLong)
