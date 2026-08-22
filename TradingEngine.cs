@@ -5239,7 +5239,15 @@ namespace TradingBot
                 if (k15 == null || k15.Count < 400) return;
                 int ei = k15.Count - 2;
 
-                var counter = _ewCounters.GetOrAdd(symbol, _ => new ElliottWaveEngine.WaveCounter());
+                // [v5.34.14] ★표시 전용 패널은 '진입용 카운터'를 절대 건드리지 않는다 (_ewCountersView).
+                //   진입창(EntryWindowBarsDefault=0) 때문에 신호는 다음 Advance 한 번에 소멸한다.
+                //   이 패널이 같은 인스턴스를 Advance 하면, 파동2가 마감돼 신호가 떠도 패널이 한 봉 더
+                //   전진시키는 순간 _pending 이 null 이 되어 진입 루프는 영원히 신호를 못 본다.
+                //   실측(2026-08-22 12시간): 파동2가 밴드 안에서 계속 순환했는데 진입 0건,
+                //   v5.34.11 의 '신호 회수(♻️)' 로그마저 0건 = 진입 루프가 살아있는 신호를 한 번도 못 봄.
+                //   v5.34.11 은 '패널이 봉을 먼저 먹어 진입루프가 전진할 게 없는' 경우만 고쳤고,
+                //   '패널이 한 봉 더 전진시켜 신호를 지우는' 경우는 남아 있었다.
+                var counter = _ewCountersView.GetOrAdd(symbol, _ => new ElliottWaveEngine.WaveCounter());
                 int phase; bool impulse; int dir; double retr;
                 lock (counter)
                 {
@@ -5742,6 +5750,8 @@ namespace TradingBot
         // [v5.34.0] ★심볼별 연속 파동 카운터 — 창 재계산 금지. 앵커·파동번호·상위 피벗을 계속 들고 간다.
         //   파동이 깨지면 카운터 내부에서 그 지점 재앵커 후 이어서 센다(외부에서 리셋하지 말 것).
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, ElliottWaveEngine.WaveCounter> _ewCounters = new();
+        // [v5.34.14] 진입임박 패널 전용 — 진입 카운터와 상태를 공유하면 신호가 파괴된다(위 주석 참조).
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, ElliottWaveEngine.WaveCounter> _ewCountersView = new();
 
         // [v5.33.3] ★엘리엇 진단 계측 — 기존엔 탈락 지점 대부분이 무로그 return 이라 "왜 진입 0건인지"를 셀 수 없었다.
         //   (특히 `if (!broke) return;` — 셋업까지 갔는데 돌파를 안 한 건수가 통째로 안 보였음)
@@ -5760,6 +5770,29 @@ namespace TradingBot
             if (snap.Length == 0) return;
             Array.Sort(snap, (a, b) => b.Value.CompareTo(a.Value));
             OnStatusLog?.Invoke($"📊 [ELLIOTT] 10분 단계요약 | {string.Join(" · ", snap.Select(kv => $"{kv.Key}:{kv.Value}"))}");
+
+            // [v5.34.14] ★심볼별 파동상태 스냅샷 — 라이브 카운터를 `--elliott-state` 재생과 직접 대조하기 위한 것.
+            //   실측(2026-08-22): 검증기 재생은 ADA 03:15·06:00·08:15·10:15, XLM 06:00·07:00·08:15·10:15·11:30 에
+            //   신호를 냈는데 라이브는 13시간 진입 0건이고 '★진입/게이트차단/피보목표초과' 단계가 하나도 안 찍혔다.
+            //   = 라이브 카운터가 신호를 아예 못 냈다는 뜻. 단계 집계(문자열 버킷)만으로는 어느 심볼이 어느
+            //   파동에 갇혔는지 알 수 없어 원인 특정이 불가능했다. 여기서 심볼·파동·방향·되돌림을 그대로 찍는다.
+            //   대조법: 같은 시각 `dotnet run -- --elliott-state` 의 '현재 N파 앵커X' 와 심볼별로 비교.
+            try
+            {
+                var st = _ewCounters.ToArray();
+                if (st.Length > 0)
+                {
+                    var parts = st.OrderBy(kv => kv.Key).Select(kv =>
+                    {
+                        var wc = kv.Value; int ph; bool imp; int dr; double lr; int bars;
+                        lock (wc) { ph = wc.Phase; imp = wc.IsImpulse; dr = wc.Dir; lr = wc.LiveRetr; bars = wc.BarsProcessed; }
+                        string r = double.IsNaN(lr) ? "-" : $"{lr:P0}";
+                        return $"{kv.Key.Replace("USDT", "")}:{(imp ? "" : "조")}{ph}파{(dr > 0 ? "^" : "v")}/되{r}/봉{bars}";
+                    });
+                    OnStatusLog?.Invoke($"🌊 [ELLIOTT] 파동상태 | {string.Join(" · ", parts)}");
+                }
+            }
+            catch { }
         }
 
         /// <summary>같은 심볼·같은 사유는 5분에 1회만 출력(스팸 방지). 기존 30초 초단위 샘플링과 달리 사유를 놓치지 않는다.</summary>
@@ -5865,6 +5898,8 @@ namespace TradingBot
                 // [v5.34.13] ★슬립컷(0.15%)·손절폭범위(0.2~6%) 제거 — 엘리엇도 피보나치도 아니다(사용자 지시).
                 decimal slL = (decimal)bosSetup.StopPrice;
                 decimal riskL = currentPrice - slL;
+                // [v5.34.14] riskL<=0 은 종전에 무로그로 빠져나가 '신호없음'으로 집계됐다 — 사유를 남긴다.
+                if (riskL <= 0) { EwStage(symbol, "롱:현재가가손절선이하"); return; }
                 if (riskL > 0)
                 {
                     double sfL = (double)(riskL / currentPrice);
