@@ -26209,6 +26209,106 @@ internal static class Program
     }
 
 
+    // ===============================================================================
+    //  --elliott-seedsim : [v5.34.14] "라이브가 왜 신호를 못 냈나" 를 배포 없이 재현한다.
+    //
+    //  라이브는 봇 재시작 시점의 1500봉으로 카운터를 시딩한 뒤, 그 뒤로는 새 마감봉만 이어서 민다.
+    //  검증기(--elliott-state)는 '지금 시점' 1500봉을 새로 센다. 두 카운터는 시작점이 다르므로
+    //  같은 종목이라도 다른 파동 분기로 수렴할 수 있다(=경로 의존성, --elliott-jitter 가 본 현상).
+    //
+    //  여기서는 라이브와 '완전히 동일한 순서'로 재현한다:
+    //    ① 재시작 시각(--seed-at, KST) 기준 직전 1500봉으로 시딩
+    //    ② 그 뒤 마감봉을 하나씩 Advance 하며 신호를 기록  ← 라이브가 실제로 한 일
+    //  그리고 콜드스타트(지금 1500봉)와 나란히 비교한다.
+    //
+    //  판정
+    //    · 시딩본도 신호를 냈다  → 라이브 배선 결함(신호가 진입경로에 안 닿음)
+    //    · 시딩본은 신호가 없다  → 경로 의존성. 규칙이 재시작 시점에 따라 갈린다는 뜻(설계 결함)
+    // ===============================================================================
+    private static async Task RunElliottSeedSimAsync(string[] args)
+    {
+        var syms = new[] {
+            "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT",
+            "BNBUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","TRXUSDT",
+            "SUIUSDT","LTCUSDT","BCHUSDT","XLMUSDT","DOTUSDT","HYPEUSDT"
+        };
+        // 기본 = 2026-08-21 22:54 KST (봇 재시작 시각) → UTC 13:54
+        var seedAtUtc = new DateTime(2026, 8, 21, 13, 54, 0, DateTimeKind.Utc);
+        for (int a = 0; a < args.Length; a++)
+        {
+            if (args[a] == "--ew-syms" && a + 1 < args.Length)
+                syms = args[a + 1].Split(',', StringSplitOptions.RemoveEmptyEntries);
+            if (args[a] == "--seed-at" && a + 1 < args.Length && DateTime.TryParse(args[a + 1], out var dt))
+                seedAtUtc = DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+        }
+
+        Console.WriteLine("=== --elliott-seedsim : 라이브 시딩 재현 vs 콜드스타트 ===");
+        Console.WriteLine($"    시딩 시각(UTC) {seedAtUtc:yyyy-MM-dd HH:mm} = KST {seedAtUtc.AddHours(9):MM-dd HH:mm}\n");
+
+        int totSeed = 0, totCold = 0;
+        foreach (var sym in syms)
+        {
+            // 넉넉히 3페이지 받아 시딩창 + 이후 구간을 모두 확보
+            var all = new List<List<IBinanceKline>>();
+            long endMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            for (int pg = 0; pg < 3; pg++)
+            {
+                var page = await FetchKlines15mPageAsync(sym, endMs, BARS_PER_REQ);
+                if (page == null || page.Count == 0) break;
+                all.Insert(0, page);
+                endMs = ((DateTimeOffset)page[0].OpenTime).ToUnixTimeMilliseconds() - 1;
+                if (page.Count < BARS_PER_REQ) break;
+            }
+            var k = all.SelectMany(c => c).ToList();
+            if (k.Count < 1600) { Console.WriteLine($"[{sym}] 데이터부족 {k.Count}"); continue; }
+
+            // 시딩 컷오프 = seedAtUtc 이전 마지막 마감봉 인덱스
+            int cut = -1;
+            for (int j = 0; j < k.Count; j++)
+                if (k[j].OpenTime <= seedAtUtc) cut = j; else break;
+            if (cut < 500) { Console.WriteLine($"[{sym}] 시딩구간 부족 cut={cut}"); continue; }
+
+            // ── ① 라이브 재현: [cut-1499 .. cut] 로 시딩 → 이후 봉을 이어서 Advance ──
+            int from = Math.Max(0, cut - 1499);
+            var wcSeed = new TradingBot.Services.ElliottWaveEngine.WaveCounter();
+            var seedSigs = new List<string>();
+            for (int j = from; j < k.Count - 1; j++)
+            {
+                wcSeed.Advance((double)k[j].HighPrice, (double)k[j].LowPrice, (double)k[j].ClosePrice,
+                               ((DateTimeOffset)k[j].OpenTime).ToUnixTimeMilliseconds());
+                if (j <= cut) continue;                       // 시딩 구간 신호는 과거라 무시
+                var sg = wcSeed.Signal;
+                if (sg != null)
+                    seedSigs.Add($"{k[j].OpenTime.AddHours(9):MM-dd HH:mm} {(sg.IsLong ? "LONG " : "SHORT")} {sg.Kind} retr={sg.Retrace:P1}");
+            }
+
+            // ── ② 콜드스타트: 지금 시점 직전 1500봉 ──
+            var kc = k.Count > 1500 ? k.Skip(k.Count - 1500).ToList() : k;
+            var wcCold = new TradingBot.Services.ElliottWaveEngine.WaveCounter();
+            var coldSigs = new List<string>();
+            for (int j = 0; j < kc.Count - 1; j++)
+            {
+                wcCold.Advance((double)kc[j].HighPrice, (double)kc[j].LowPrice, (double)kc[j].ClosePrice,
+                               ((DateTimeOffset)kc[j].OpenTime).ToUnixTimeMilliseconds());
+                if (kc[j].OpenTime <= seedAtUtc) continue;    // 같은 구간만 비교
+                var sg = wcCold.Signal;
+                if (sg != null)
+                    coldSigs.Add($"{kc[j].OpenTime.AddHours(9):MM-dd HH:mm} {(sg.IsLong ? "LONG " : "SHORT")} {sg.Kind} retr={sg.Retrace:P1}");
+            }
+
+            totSeed += seedSigs.Count; totCold += coldSigs.Count;
+            string stSeed = $"{(wcSeed.IsImpulse ? "" : "조")}{wcSeed.Phase}파{(wcSeed.Dir > 0 ? "^" : "v")}";
+            string stCold = $"{(wcCold.IsImpulse ? "" : "조")}{wcCold.Phase}파{(wcCold.Dir > 0 ? "^" : "v")}";
+            string same = stSeed == stCold ? "일치" : "★불일치";
+            Console.WriteLine($"[{sym,-10}] 시딩본 신호 {seedSigs.Count,3}건 (상태 {stSeed})  |  콜드 {coldSigs.Count,3}건 (상태 {stCold})  {same}");
+            foreach (var x in seedSigs.Take(6)) Console.WriteLine($"      시딩 {x}");
+            foreach (var x in coldSigs.Take(6)) Console.WriteLine($"      콜드 {x}");
+        }
+
+        Console.WriteLine($"\n합계 — 시딩본 {totSeed}건 · 콜드스타트 {totCold}건");
+        Console.WriteLine("판정: 시딩본도 신호가 있으면 라이브 배선 결함. 시딩본만 0이면 경로 의존성(설계 결함).");
+    }
+
     // --elliott-state : 라이브 WaveCounter 를 현재 시세로 그대로 재생하고, 파동상태 + 신호발생 이력을 출력.
     //   TradingEngine.AnalyzeElliottWaveEntryAsync 와 동일 조건(15m 1500봉, 기본 파라미터)으로 돌린다.
     private static async Task RunElliottStateAsync(string[] args)
@@ -29619,6 +29719,7 @@ internal static class Program
         bool HasArg(string flag) => args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
         if (HasArg("--trendride-why")) { await RunTrendRideWhyAsync(args); return; }
         if (HasArg("--elliott-tf")) { await RunElliottTfAsync(args); return; }
+        if (HasArg("--elliott-seedsim")) { await RunElliottSeedSimAsync(args); return; }
         if (HasArg("--elliott-state")) { await RunElliottStateAsync(args); return; }
         if (HasArg("--elliott-now")) { await RunElliottNowAsync(args); return; }
         if (HasArg("--elliott-bos")) { await RunElliottBosAsync(args); return; }

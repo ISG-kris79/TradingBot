@@ -5844,11 +5844,21 @@ namespace TradingBot
             lock (counter)
             {
                 long lastAdvancedMs = counter.LastBarOpenMs;
+                // [v5.34.14] ★신호를 '봉마다' 집는다 — 전진 루프가 끝난 뒤 한 번만 읽으면 신호가 증발한다.
+                //   진입창(EntryWindowBarsDefault=0) 때문에 Signal 은 다음 Advance 한 번에 소멸한다.
+                //   따라서 한 패스에서 2봉 이상 따라잡으면(캐시 30초 정체·루프 지연·재시작 직후 등)
+                //   중간 봉이 낸 신호는 그 자리에서 죽고, 루프 종료 후 읽으면 언제나 null 이다.
+                //   실측(--elliott-seedsim, 2026-08-22): 라이브와 동일하게 08-21 22:54 시딩 후 이어서 세면
+                //   ADA 5건·BCH 5건·DOT 2건 = 12건이 나와야 했다. 라이브 실제 진입은 0건이었고
+                //   ★진입/게이트차단/피보목표초과/♻️ 단계가 하나도 안 찍혔다 = 신호가 여기서 죽었다는 뜻.
+                //   시뮬레이터는 Advance 한 번마다 Signal 을 읽어 12건을 얻었다 — 그 순서를 그대로 맞춘다.
+                ElliottWaveEngine.SetupBos? caught = null;
                 for (int q = 0; q <= ei; q++)                       // 아직 반영 안 된 마감봉만 전진
                 {
                     long ot = new DateTimeOffset(k15[q].OpenTime, TimeSpan.Zero).ToUnixTimeMilliseconds();
                     if (counter.LastBarOpenMs >= 0 && ot <= counter.LastBarOpenMs) continue;
                     counter.Advance((double)k15[q].HighPrice, (double)k15[q].LowPrice, (double)k15[q].ClosePrice, ot);
+                    if (counter.Signal != null) caught = counter.Signal;   // 최신 봉이 낸 것으로 갱신
                 }
                 // [v5.34.11] ★신호를 '전진 루프 안'이 아니라 '전진 후 현재 상태'에서 읽는다.
                 //   종전 코드는 `q == ei` 인 Advance 직후에만 신호를 집었다. 즉 "그 마감봉을 처음 밀어넣은
@@ -5858,8 +5868,11 @@ namespace TradingBot
                 //   전진할 봉이 없어 루프 본문이 아예 안 돌고 bosSetup 이 null 이 된다(신호는 살아있는데 무진입).
                 //   EntryWindowBars=0 이면 Signal 은 다음 Advance 에서 소멸하므로 '마감봉 당봉만' 의미는 그대로다.
                 bool advanced = counter.LastBarOpenMs != lastAdvancedMs;
-                bosSetup = counter.Signal;
+                // 전진했으면 봉마다 집어둔 것을, 아니면 아직 살아있는 현재 신호를 쓴다.
+                bosSetup = advanced ? (caught ?? counter.Signal) : counter.Signal;
                 if (bosSetup != null && !advanced) staleSignalPickup = true;
+                if (bosSetup != null && advanced && !ReferenceEquals(bosSetup, counter.Signal))
+                    EwLog(symbol, $"♻️ [ELLIOTT] {symbol} 신호 구조 | 다봉 따라잡기 중 소멸할 뻔한 신호를 봉단위로 회수 (v5.34.14 이전이면 유실됐을 건)");
                 // [v5.34.6] ★HigherReady 를 진입 전제조건에서 제거.
                 //   상위(중첩) 카운트는 higherGate 가 켜졌을 때만 진입 판정에 쓰이는데 기본 OFF 다.
                 //   그런데 '상위 피벗 3개' 를 하드 전제로 걸어둬서, 1파 실측 방향 도입 후
@@ -5889,6 +5902,13 @@ namespace TradingBot
             {
                 if (staleSignalPickup)
                     EwLog(symbol, $"♻️ [ELLIOTT] {symbol} 신호 회수 | 다른 루프가 마감봉을 먼저 소비했으나 신호는 유효 (v5.34.11 이전이면 유실됐을 건)");
+                // [v5.34.14] ★신호가 잡힌 사실 자체를 무조건 남긴다.
+                //   실측(2026-08-22): --elliott-seedsim 이 라이브와 동일 시딩으로 12건(ADA5·BCH5·DOT2)을 냈는데
+                //   라이브는 진입 0건이고 ★진입/게이트차단/피보목표초과/♻️ 가 전부 0건이었다.
+                //   즉 "신호가 잡혔는지"조차 로그로 확인할 수 없었다 — 그 사각을 없앤다.
+                //   심볼당 2초 분석이라 다봉 따라잡기는 원인일 수 없다(15분봉). 여기서 갈린다.
+                EwStage(symbol, "★신호포착");
+                EwLog(symbol, $"🌊 [ELLIOTT] {symbol} 신호포착 | {(bosSetup.IsLong ? "LONG" : "SHORT")} {bosSetup.Kind} 손절={bosSetup.StopPrice:F6} 목표={bosSetup.TargetPrice:F6} 되돌림={bosSetup.Retrace:P1} 현재가={currentPrice:F6}");
                 if (!bosSetup.IsLong) EwStage(symbol, "롱:하방앵커신호(숏경로로)");
             }
 
@@ -5899,7 +5919,8 @@ namespace TradingBot
                 decimal slL = (decimal)bosSetup.StopPrice;
                 decimal riskL = currentPrice - slL;
                 // [v5.34.14] riskL<=0 은 종전에 무로그로 빠져나가 '신호없음'으로 집계됐다 — 사유를 남긴다.
-                if (riskL <= 0) { EwStage(symbol, "롱:현재가가손절선이하"); return; }
+                if (riskL <= 0)
+                { EwStage(symbol, "롱:현재가가손절선이하"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 롱 차단 | 현재가({currentPrice:F6}) <= 손절선({slL:F6})"); return; }
                 if (riskL > 0)
                 {
                     double sfL = (double)(riskL / currentPrice);
@@ -5936,7 +5957,7 @@ namespace TradingBot
                 // [v5.34.13] ★슬립컷·손절폭범위 제거 (사용자 지시: 엘리엇+피보나치 단독)
                 decimal slS = (decimal)bosSetup.StopPrice;
                 decimal riskS = slS - currentPrice;
-                if (riskS <= 0) { EwStage(symbol, "risk≤0"); return; }
+                if (riskS <= 0) { EwStage(symbol, "숏:현재가가손절선이상"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 숏 차단 | 현재가({currentPrice:F6}) >= 손절선({slS:F6})"); return; }
                 double sfS = (double)(riskS / currentPrice);
                 const string srcS = "LORENTZIAN_SCALP5M_SHORT_ELLIOTT";   // SHORT 화이트리스트 prefix 준수
                 if (!IsEntryAllowed(symbol, srcS, out var gS))
