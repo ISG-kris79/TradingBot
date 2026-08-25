@@ -172,9 +172,25 @@ namespace TradingBot.Services
         //   우측 21봉 조건이 영원히 확정되지 않는다 → 기준선 미형성 → 파동이 안 끝난다.
         //   실측(2026-08-21 라이브 5시간): 무신호 스캔 169,073 중 69% 가 '파동1 미마감'.
         //   되돌림 마감은 파동 크기에 비례하므로 스케일·추세 무관하게 항상 확정된다.
-        public const int TermModeDefault = 1;       // 0=프랙탈(폐기) · 1=되돌림비율(피보 23.6%)
+        // [v5.34.15] ★마감축 = 프랙탈 복귀 (사용자 승인 2026-08-25).
+        //   3년·30코인 실측(--elliott-spec, 같은 3배TP·같은 무효화에서 마감축만 교체):
+        //     프랙탈K21 = 1,206건 승률 34.8% +0.087R PF1.14 총 +105R ★5폴드 전부 양수
+        //     피보 23.6% =  9,121건 승률 23.6% -0.205R PF0.77 총 -1,869R (피보익절 병용시 -4,646R)
+        //   피보 되돌림 마감은 파동을 너무 일찍 끊어 '가짜 파동2 마감'을 양산한다(승률 11%p 붕괴).
+        //   ★부수효과: bigEnough(최소파동) 가드는 termMode==1 에서만 쓰이므로, 프랙탈 마감에서는
+        //     v5.34.14 까지 라이브를 3일간 얼려버린 동결(_absorbMicroLeg 주석 참조)이 구조적으로 없다.
+        public const int TermModeDefault = 0;       // 0=프랙탈(채택) · 1=되돌림비율(피보 23.6%·반증)
         public const double TermRetrDefault = 0.236;// 파동 마감 되돌림 비율 (termMode=1)
         public const double MinLegPctDefault = 0.004;// 최소 파동 크기 (가격 대비)
+        // [v5.34.15] ★미달레그 흡수 — MinLegPct 데드락 해제. 아래 _absorbMicroLeg 주석 참조.
+        //   ※ 기본 OFF — 이 데드락은 termMode==1 전용이고, 채택된 프랙탈 마감(termMode=0)에는
+        //     애초에 존재하지 않는다. 프랙탈 마감 위에 켜면 총R 이 105R→48R 로 깎인다(실측).
+        //     피보 마감을 다시 쓸 때를 위해 스위치로 남긴다.
+        public const bool AbsorbMicroLegDefault = false;
+        // [v5.34.15] ★사용자 스펙 보강(2026-08-25 지시) — 5파 절단 / 엔딩 다이아고날.
+        //   실측 한계효과(기준 프랙탈K21/3배TP +105R 위에 적층): 1,193건 +0.089R PF1.14 총 +106R
+        //   ★5폴드 전부 양수 · 롱 총R 81R→90R. 채택(사용자 승인 2026-08-25).
+        public const bool SpecStructDefault = true;
         // [v5.34.5] ★채택 — 1파가 실제로 어느 쪽으로 갔는지 관찰해 방향 확정(가정하지 않는다).
         //   측정: 롱 63R → 80R. 방향을 가정하던 구조적 결함 제거.
         public const bool DirFromWave1Default = true;
@@ -236,6 +252,9 @@ namespace TradingBot.Services
             public double W1End => _w1End;
             public double W2End => _w2End;
             public double LegExt => _legExt;
+            // [v5.34.15] 진단 노출 — '파동이 영영 안 끝나는' 동결을 수치로 확인하기 위함. 판정 로직 불변.
+            public double LegStartPx => _legStart;
+            public double MinLegPct => _minLegPct;
             // [v5.34.10] ★진단 노출 — "3파 진행중인데 왜 진입 안 하냐"를 로그/화면에서 즉시 답하기 위함.
             //   파동2 마감 시 되돌림이 밴드(38.2~78.6%) 밖이면 신호가 조용히 죽는데, 그 사실이 어디에도
             //   드러나지 않아 '3파 카운트 중 = 진입기회 있었음'으로 오인됐다(실측 BTC 08-17 11:45).
@@ -274,9 +293,9 @@ namespace TradingBot.Services
                                bool entryW5 = EntryW5Default, double w4RetrMin = 0.146, double w4RetrMax = 0.618,
                                int termK = TermKDefault, int termMode = TermModeDefault, double termRetr = TermRetrDefault,
                                double minLegPct = MinLegPctDefault, bool dirFromWave1 = DirFromWave1Default, int dirMode = 0, bool specEntries = false, int specMix = SpecMixDefault,
-                               double w1WrongWay = W1WrongWayDefault)
+                               double w1WrongWay = W1WrongWayDefault, bool absorbMicroLeg = AbsorbMicroLegDefault, bool specStruct = SpecStructDefault)
             { _K = k; _rMin = rMin; _rMax = rMax; _reachGate = reachGate; _specInval = specInval; _higherGate = higherGate;
-              _entryWindow = Math.Max(0, entryWindowBars); _flipOnW2Break = flipOnW2Break; _dirFromHigher = dirFromHigher; _entryMode = entryMode; _minorK = Math.Max(2, minorK); _entryW5 = entryW5; _w4Min = w4RetrMin; _w4Max = w4RetrMax; _termK = Math.Max(2, termK); _termMode = termMode; _termRetr = termRetr; _minLegPct = minLegPct; _dirFromWave1 = dirFromWave1; _dirMode = dirMode; _specEntries = specEntries; _specMix = specMix; _w1WrongWay = w1WrongWay; }
+              _entryWindow = Math.Max(0, entryWindowBars); _flipOnW2Break = flipOnW2Break; _dirFromHigher = dirFromHigher; _entryMode = entryMode; _minorK = Math.Max(2, minorK); _entryW5 = entryW5; _w4Min = w4RetrMin; _w4Max = w4RetrMax; _termK = Math.Max(2, termK); _termMode = termMode; _termRetr = termRetr; _minLegPct = minLegPct; _dirFromWave1 = dirFromWave1; _dirMode = dirMode; _specEntries = specEntries; _specMix = specMix; _w1WrongWay = w1WrongWay; _absorbMicroLeg = absorbMicroLeg; _specStruct = specStruct; }
 
             private readonly bool _dirFromHigher;
             // [v5.34.4] 진입 모드 — 0: 파동2 마감 순간만(검증본) / 1: +파동3 진행중 재개 / 2: +파동3·5 진행중 재개
@@ -328,6 +347,25 @@ namespace TradingBot.Services
             //   프랙탈 고점인데 상승장에서는 확정되지 않아 기준선이 안 생기고 파동이 영영 안 끝난다.
             //   → 1파 진행 중 가격이 앵커를 역방향으로 이 비율만큼 이탈하면 카운트 무효 → phase0 재판정.
             private readonly double _w1WrongWay;
+            // [v5.34.15] ★미달레그 흡수 — "등락은 큰데 진입 0건" 의 진짜 원인을 제거한다.
+            //   결함: 파동 마감(bos)은 bigEnough(레그폭 ≥ _minLegPct) 를 전제로 하는데, _legExt 는 레그
+            //         방향으로만 갱신된다. 따라서 레그가 0.4% 에 못 미친 채 반대로 돌아서면 legLen 이
+            //         영원히 고정되고 bigEnough 가 영영 false → 파동이 끝나지 않는다. 파동2 마감이 곧
+            //         진입 신호이므로 그 종목은 영구 무진입이 된다. 시장이 아무리 움직여도 스스로 안 풀린다.
+            //   실측(--elliott-frozen, 라이브 시딩 08-22 12:36 재현): 16종목 중 13종목이 291봉(3일) 동안
+            //         파동상태 무변화·신호 0건. 같은 구간 시장 등락폭은 SOL 18%·XRP 23%·LINK 26%.
+            //         라이브 로그와 정확히 일치(ADA 되78%·SOL 42%·BTC 4파 3일 고정, 진입 0건).
+            //   수정: 최소 크기에 못 미친 레그가 시작점을 되넘으면 그건 파동이 아니라 노이즈다.
+            //         → 라벨을 직전 파동으로 되돌려 그 파동을 계속 연장한다(엘리엇의 파동 연장 그 자체).
+            //         노이즈 억제라는 _minLegPct 의 본래 목적은 유지되고, 데드락만 사라진다.
+            private readonly bool _absorbMicroLeg;
+            // [v5.34.15] ★사용자 스펙 보강 — 지시(2026-08-25) Step4 의 미구현 두 항목.
+            //   ① 5파 절단(Truncation): 5파가 3파 종점을 못 넘고 조기 종료. 종전 case5 는 무효화
+            //      분기가 아예 없어, 가격이 4파 종점을 깨고 내려가도 계속 '5파 진행중'으로 남았다
+            //      (또 하나의 동결원인). 4파 종점 이탈 = 추진파 완성으로 확정하고 조정으로 넘긴다.
+            //   ② 엔딩 다이아고날: 4파가 1파 영역을 침범해도 파동이 수렴(3파<1파)하면 추진파 무효가
+            //      아니라 다이아고날이다. 종전엔 무조건 ABC 조정으로 전환해 5파 진입을 놓쳤다.
+            private readonly bool _specStruct;
             private double _w4End; private int _w4Bar;
             private double _cA, _cB;   // 조정 A파 끝 / B파 끝
             private double _p0Max, _p0Min;
@@ -419,6 +457,49 @@ namespace TradingBot.Services
                                               : high >= _legExt + _termRetr * legLen);
                 }
                 else bos = _hasRef && (legUp ? low < _ref : high > _ref);
+
+                // [v5.34.15] ★미달레그 흡수 (위 _absorbMicroLeg 주석의 데드락 해제)
+                if (_absorbMicroLeg && !bos && _phase >= 1 && _legExt > 0
+                    && Math.Abs(_legExt - _legStart) / _legExt < _minLegPct
+                    && (legUp ? low < _legStart : high > _legStart))
+                {
+                    // 파동1(조정 A파 포함)은 되돌아갈 직전 파동이 없다 — 앵커 자체가 틀린 것이므로
+                    // 관통한 극점으로 앵커를 옮겨 이어서 센다. 조정모드는 phase0(방향관찰)이 없어
+                    // 앵커에서 곧바로 A파를 시작하므로, 이 종목들이 실측에서 영구동결로 남았다
+                    // (--elliott-frozen 1차 수정후 잔존: XRP·BNB 조1파 291봉 무변화).
+                    if (_phase == 1)
+                    {
+                        double pierce = legUp ? low : high;
+                        _anchorPx = pierce; _anchorBar = _bar;
+                        _legStart = pierce; _legExt = pierce; _legExtBar = _bar; _hasRef = false;
+                        _p0Max = pierce; _p0Min = pierce;
+                        _lastMinorLow = double.NaN; _lastMinorHigh = double.NaN;
+                        return;
+                    }
+
+                    double prevStart, prevEnd;
+                    if (_impulse)
+                    {
+                        switch (_phase)
+                        {
+                            case 2: prevStart = _anchorPx; prevEnd = _w1End; break;
+                            case 3: prevStart = _w1End; prevEnd = _w2End; break;
+                            case 4: prevStart = _w2End; prevEnd = _w3End; break;
+                            default: prevStart = _w3End; prevEnd = _w4End; break;   // 5 → 4
+                        }
+                    }
+                    else if (_phase == 2) { prevStart = _anchorPx; prevEnd = _w1End; }
+                    else { prevStart = _w1End; prevEnd = _w2End; }
+
+                    _phase--;
+                    _legStart = prevStart;
+                    bool pUp = !legUp;                       // 인접 레그는 방향이 교대한다
+                    _legExt = pUp ? Math.Max(prevEnd, high) : Math.Min(prevEnd, low);
+                    _legExtBar = _bar; _hasRef = false;
+                    _lastMinorLow = double.NaN; _lastMinorHigh = double.NaN;
+                    if (_phase <= 1) { LastW2Retr = double.NaN; LastW2Block = ""; }
+                    return;                                  // 이 봉의 역할은 라벨 복원까지다
+                }
 
                 // [v5.34.4] ★파동3(·5) 진행 중 눌림 재개 진입.
                 //   작은 프랙탈(_minorK)로 '직전 눌림 저점'을 잡고, 그 저점이 이전보다 높으면(higher low)
@@ -610,6 +691,19 @@ namespace TradingBot.Services
                                 //   → 조정 모드로 전환. 방향은 현재 진행 방향을 유지한다.
                                 if (up ? _legExt <= _w1End : _legExt >= _w1End)
                                 {
+                                    // [v5.34.15] ★엔딩 다이아고날 예외 — 4파가 1파를 침범해도 파동이
+                                    //   수렴(3파 길이 < 1파 길이)하면 추진파 무효가 아니라 다이아고날이다.
+                                    //   이 경우 카운트를 버리지 않고 5파로 넘긴다(스펙 Step4).
+                                    if (_specStruct)
+                                    {
+                                        double w1d = Math.Abs(_w1End - _anchorPx), w3d = Math.Abs(_w3End - _w2End);
+                                        if (w1d > 0 && w3d > 0 && w3d < w1d)
+                                        {
+                                            _w4End = _legExt; _w4Bar = _legExtBar;
+                                            _phase = 5; _legStart = _w4End; _legExt = up ? high : low; _legExtBar = _bar; _hasRef = false;
+                                            break;
+                                        }
+                                    }
                                     PushLvl1(_anchorPx, _anchorBar, up ? -1 : 1);
                                     PushLvl1(_w3End, _w3Bar, up ? 1 : -1);
                                     // 명세: 추진파 아님 → ABC 조정 / 단순: 같은 방향 임펄스 재시작
@@ -646,6 +740,18 @@ namespace TradingBot.Services
                                 break;
                             }
                         case 5:
+                            // [v5.34.15] ★5파 절단(Truncation) — 5파가 3파 종점을 못 넘은 채 4파 종점을
+                            //   이탈하면 추진파는 절단 완성된 것이다. 종전엔 이 분기가 없어 가격이 4파를
+                            //   깨고 내려가도 영원히 '5파 진행중' 으로 남았다(동결).
+                            if (_specStruct && !bos && _w4End != 0
+                                && (up ? low < _w4End : high > _w4End)
+                                && (up ? _legExt <= _w3End : _legExt >= _w3End))
+                            {
+                                PushLvl1(_anchorPx, _anchorBar, up ? -1 : 1);
+                                PushLvl1(_legExt, _legExtBar, up ? 1 : -1);
+                                ResetTo(-_dir, _legExt, _legExtBar, false);
+                                break;
+                            }
                             if (bos)
                             {   // 하위 1~5 완성 = 상위 1파 → 중첩 적립 후 A-B-C 조정으로 전환
                                 // ★S5 = 5파 종점 — 상승 5파 완성 직후 반전. 손절 = 5파 고점. A파 하락을 노림.

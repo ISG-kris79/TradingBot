@@ -5924,21 +5924,26 @@ namespace TradingBot
                 if (riskL > 0)
                 {
                     double sfL = (double)(riskL / currentPrice);
+                    // [v5.34.15] ★손절폭 범위(0.2~6%) 복귀 — v5.34.13 이 '비스펙'으로 뺐으나, 채택된
+                    //   흑자 구조(3년 +106R·5폴드 양수)는 이 필터가 켜진 상태로 측정된 것이다.
+                    //   구조적 극점이 현재가에 붙거나(0.2% 미만) 지나치게 먼(6% 초과) 자리는 1:3 이 성립하지 않는다.
+                    if (sfL < 0.002 || sfL > 0.06)
+                    { EwStage(symbol, "롱:손절폭범위밖"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 롱 차단 | 손절폭 {sfL:P2} (허용 0.2~6%)"); return; }
                     if (!IsEntryAllowed(symbol, "LORENTZIAN_ELLIOTT", out var gL))
                     { EwStage(symbol, "게이트차단"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 롱 차단 | 공용게이트 reason={gL}"); }
                     else
                     {
-                        // [v5.34.13] ★익절 = 파동3 피보나치 확장투영(파동2종점 + 1.618×파동1).
-                        //   고정 손익비 3×손절폭은 피보나치가 아니므로 폐기. 투영이 진입가보다 아래면(이미 초과)
-                        //   구조상 남은 여유가 없다는 뜻이라 진입하지 않는다.
-                        decimal tgtL = (decimal)bosSetup.TargetPrice;
-                        if (!(tgtL > currentPrice))
-                        { EwStage(symbol, "피보목표초과"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 롱 차단 | 1.618 확장목표({tgtL:F6}) 이미 초과"); return; }
-                        decimal tpL = tgtL;
-                        double rrL = riskL > 0 ? (double)((tpL - currentPrice) / riskL) : 0;
+                        // [v5.34.15] ★익절 = 진입가 + 3×손절폭 (손익비 1:3) 복귀. 사용자 승인 2026-08-25.
+                        //   v5.34.13 의 1.618 피보 확장투영은 3년·30코인 측정에서 반증됐다:
+                        //     프랙탈마감+3배TP  = 1,206건 34.8% +0.087R PF1.14 총 +105R ★5폴드 전부 양수
+                        //     프랙탈마감+피보TP = 1,526건 37.7% +0.026R PF1.04 총  +40R  (5폴드 2개 음수)
+                        //     피보마감+피보TP(v5.34.13 라이브) = 12,794건 -0.363R PF0.67 총 -4,646R 전폴드 음수
+                        //   승률은 피보TP 가 높지만 건당 R 이 무너진다 — 목표가 구조상 가까워 이익이 잘린다.
+                        decimal tpL = currentPrice + 3m * riskL;
+                        double rrL = 3.0;
                         _elliottCooldown[symbol] = DateTime.UtcNow;
                         EwStage(symbol, "★진입");
-                        OnStatusLog?.Invoke($"✅ [ELLIOTT] {symbol} 롱진입 | 15m 파동3 · 파동2 되돌림{bosSetup.Retrace:P1}(피보 38.2~78.6%) | 진입{currentPrice:F6} SL{slL:F6}({sfL:P2}) TP{tpL:F6}=1.618확장 · 손익비 1:{rrL:F2}");
+                        OnStatusLog?.Invoke($"✅ [ELLIOTT] {symbol} 롱진입 | 15m 파동3 · 파동2 되돌림{bosSetup.Retrace:P1}(피보 38.2~78.6%) | 진입{currentPrice:F6} SL{slL:F6}({sfL:P2}) TP{tpL:F6}=진입+3×손절폭 · 손익비 1:{rrL:F2}");
                         _ = ExecuteAutoOrder(symbol, "LONG", currentPrice, token,
                             signalSource: "LORENTZIAN_ELLIOTT", customTakeProfitPrice: tpL, customStopLossPrice: slL);
                         return;
@@ -5959,18 +5964,18 @@ namespace TradingBot
                 decimal riskS = slS - currentPrice;
                 if (riskS <= 0) { EwStage(symbol, "숏:현재가가손절선이상"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 숏 차단 | 현재가({currentPrice:F6}) >= 손절선({slS:F6})"); return; }
                 double sfS = (double)(riskS / currentPrice);
+                // [v5.34.15] ★손절폭 범위(0.2~6%) 복귀 — 롱과 동일 근거.
+                if (sfS < 0.002 || sfS > 0.06)
+                { EwStage(symbol, "숏:손절폭범위밖"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 숏 차단 | 손절폭 {sfS:P2} (허용 0.2~6%)"); return; }
                 const string srcS = "LORENTZIAN_SCALP5M_SHORT_ELLIOTT";   // SHORT 화이트리스트 prefix 준수
                 if (!IsEntryAllowed(symbol, srcS, out var gS))
                 { EwStage(symbol, "게이트차단"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 숏 차단 | 공용게이트 reason={gS}"); return; }
-                // [v5.34.13] ★익절 = 조정 피보나치 되돌림(1~5파 전체폭 × 0.618). 고정 1:3 폐기.
-                decimal tgtS = (decimal)bosSetup.TargetPrice;
-                if (!(tgtS > 0m && tgtS < currentPrice))
-                { EwStage(symbol, "피보목표초과"); EwLog(symbol, $"⛔ [ELLIOTT] {symbol} 숏 차단 | 0.618 되돌림목표({tgtS:F6}) 이미 초과"); return; }
-                decimal tpS = tgtS;
-                double rrS = (double)((currentPrice - tpS) / riskS);
+                // [v5.34.15] ★익절 = 진입가 − 3×손절폭 (손익비 1:3) 복귀. 롱과 동일 근거.
+                decimal tpS = currentPrice - 3m * riskS;
+                double rrS = 3.0;
                 _elliottCooldown[symbol] = DateTime.UtcNow;
                 EwStage(symbol, "★진입");
-                OnStatusLog?.Invoke($"✅ [ELLIOTT] {symbol} 숏진입 | 15m 5파종점 반전(S5) | 진입{currentPrice:F6} SL{slS:F6}({sfS:P2}) TP{tpS:F6}=0.618되돌림 · 손익비 1:{rrS:F2}");
+                OnStatusLog?.Invoke($"✅ [ELLIOTT] {symbol} 숏진입 | 15m 5파종점 반전(S5) | 진입{currentPrice:F6} SL{slS:F6}({sfS:P2}) TP{tpS:F6}=진입−3×손절폭 · 손익비 1:{rrS:F2}");
                 _ = ExecuteAutoOrder(symbol, "SHORT", currentPrice, token,
                     signalSource: srcS, customTakeProfitPrice: tpS, customStopLossPrice: slS);
                 return;

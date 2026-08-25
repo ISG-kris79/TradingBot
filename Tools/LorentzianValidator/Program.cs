@@ -25520,7 +25520,7 @@ internal static class Program
                                     if (eb < 0) continue;
                                 }
                                 double stopFrac = Math.Abs(entry - stopPx) / entry;
-                                if (stopFrac < 0.002 || stopFrac > 0.06) continue;             // 손절폭 0.2~6% 밖은 제외(수수료·과대리스크)
+                                if (stopFrac < 0.002 || stopFrac > 0.06) continue;   // v5.34.15 라이브와 동일(손절폭 범위)             // 손절폭 0.2~6% 밖은 제외(수수료·과대리스크)
                                 var r = Play(eb, isLong, entry, stopPx);
                                 Add(key, new EwTrade
                                 {
@@ -26307,6 +26307,88 @@ internal static class Program
 
         Console.WriteLine($"\n합계 — 시딩본 {totSeed}건 · 콜드스타트 {totCold}건");
         Console.WriteLine("판정: 시딩본도 신호가 있으면 라이브 배선 결함. 시딩본만 0이면 경로 의존성(설계 결함).");
+    }
+
+    // ===============================================================================
+    //  --elliott-frozen : [v5.34.15] "등락은 큰데 진입 0" 의 정체 = 파동 카운터 동결을 수치로 잡는다.
+    //    라이브 로그 실측(2026-08-22 12:36 KST 시딩 ~ 08-25 13:28): 21종목 전부 파동상태가
+    //    3일(290봉) 동안 단 한 글자도 안 변했다(ADA 2파^ 되78% 고정 · SOL 42% · BTC 4파).
+    //    봉은 정상 공급됐다(봉1500→1790). 즉 데이터가 아니라 상태기계가 얼었다.
+    //    여기서는 라이브와 동일 시딩으로 재현하며 봉마다 내부값을 찍어 '왜 안 끝나는가'를 특정한다.
+    // ===============================================================================
+    private static async Task RunElliottFrozenAsync(string[] args)
+    {
+        var syms = new[] {
+            "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT",
+            "LINKUSDT","TRXUSDT","SUIUSDT","LTCUSDT","BCHUSDT","XLMUSDT","DOTUSDT","HYPEUSDT"
+        };
+        var seedAtUtc = new DateTime(2026, 8, 22, 3, 36, 0, DateTimeKind.Utc);   // = KST 08-22 12:36 (라이브 시딩)
+        // 기본값 = v5.34.15 라이브(프랙탈K21 마감 · 흡수OFF · 스펙구조ON)
+        int fzTermMode = 0, fzTermK = 21; bool fzAbsorb = false, fzSpecStruct = true;
+        for (int a = 0; a < args.Length; a++)
+        {
+            if (args[a] == "--ew-syms" && a + 1 < args.Length) syms = args[a + 1].Split(',', StringSplitOptions.RemoveEmptyEntries);
+            if (args[a] == "--seed-at" && a + 1 < args.Length && DateTime.TryParse(args[a + 1], out var dt)) seedAtUtc = DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+            if (args[a] == "--ew-termmode" && a + 1 < args.Length) int.TryParse(args[a + 1], out fzTermMode);
+            if (args[a] == "--ew-termk" && a + 1 < args.Length) int.TryParse(args[a + 1], out fzTermK);
+            if (args[a] == "--ew-absorb" && a + 1 < args.Length) fzAbsorb = args[a + 1] == "1";
+            if (args[a] == "--ew-specstruct" && a + 1 < args.Length) fzSpecStruct = args[a + 1] == "1";
+        }
+        Console.WriteLine($"    마감축 termMode={fzTermMode} termK={fzTermK} · 흡수={(fzAbsorb ? "ON" : "OFF")} · 스펙구조={(fzSpecStruct ? "ON" : "OFF")}");
+        Console.WriteLine("=== --elliott-frozen : 파동 카운터 동결 진단 ===");
+        Console.WriteLine($"    시딩(UTC) {seedAtUtc:yyyy-MM-dd HH:mm} = KST {seedAtUtc.AddHours(9):MM-dd HH:mm}\n");
+        Console.WriteLine($"{"심볼",-10} {"시딩상태",-10} {"현재상태",-10} {"무변화봉",6} {"레그폭%",8} {"최소요구%",9} {"충족",4} {"구간등락%",9} {"신호",4}");
+
+        int frozen = 0;
+        foreach (var sym in syms)
+        {
+            var all = new List<List<IBinanceKline>>();
+            long endMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            for (int pg = 0; pg < 3; pg++)
+            {
+                var page = await FetchKlines15mPageAsync(sym, endMs, BARS_PER_REQ);
+                if (page == null || page.Count == 0) break;
+                all.Insert(0, page);
+                endMs = ((DateTimeOffset)page[0].OpenTime).ToUnixTimeMilliseconds() - 1;
+                if (page.Count < BARS_PER_REQ) break;
+            }
+            var k = all.SelectMany(c => c).ToList();
+            if (k.Count < 1600) { Console.WriteLine($"[{sym}] 데이터부족 {k.Count}"); continue; }
+            int cut = -1;
+            for (int j = 0; j < k.Count; j++) if (k[j].OpenTime <= seedAtUtc) cut = j; else break;
+            if (cut < 500) { Console.WriteLine($"[{sym}] 시딩구간 부족 cut={cut}"); continue; }
+
+            int from = Math.Max(0, cut - 1499);
+            var wc = new TradingBot.Services.ElliottWaveEngine.WaveCounter(
+                21, 0.382, 0.786, false, false, false, 0, false, false, 0, 5, false, 0.146, 0.618,
+                fzTermK, fzTermMode, 0.236, 0.004, true, 0, false, 1, 0.0, fzAbsorb, fzSpecStruct);
+            string St() => $"{(wc.IsImpulse ? "" : "조")}{wc.Phase}파{(wc.Dir > 0 ? "^" : "v")}";
+            string seedState = "", prev = ""; int unchanged = 0, sigs = 0;
+            for (int j = from; j < k.Count - 1; j++)
+            {
+                wc.Advance((double)k[j].HighPrice, (double)k[j].LowPrice, (double)k[j].ClosePrice,
+                           ((DateTimeOffset)k[j].OpenTime).ToUnixTimeMilliseconds());
+                if (j < cut) continue;
+                if (j == cut) { seedState = St(); prev = seedState; unchanged = 0; continue; }
+                if (wc.Signal != null) sigs++;
+                string now = St();
+                if (now == prev) unchanged++; else { unchanged = 0; prev = now; }
+            }
+            // 동결 사유 수치 — 진행 레그가 '최소 파동 크기'(_minLegPct)를 못 넘으면 마감(bos)이 영영 안 난다
+            double legLen = Math.Abs(wc.LegExt - wc.LegStartPx);
+            double ratio = wc.LegExt > 0 ? legLen / wc.LegExt : 0;
+            // 시딩 이후 실제 시장 등락폭(고가-저가 / 시가)
+            double hi = double.MinValue, lo = double.MaxValue;
+            for (int j = cut + 1; j < k.Count - 1; j++) { hi = Math.Max(hi, (double)k[j].HighPrice); lo = Math.Min(lo, (double)k[j].LowPrice); }
+            double swing = lo > 0 ? (hi - lo) / lo : 0;
+            bool big = ratio >= wc.MinLegPct;
+            if (!big) frozen++;
+            Console.WriteLine($"{sym.Replace("USDT", ""),-10} {seedState,-10} {St(),-10} {unchanged,6} {ratio * 100,8:F3} {wc.MinLegPct * 100,9:F3} {(big ? "OK" : "★미달"),4} {swing * 100,9:F2} {sigs,4}");
+        }
+        Console.WriteLine($"\n최소파동크기 미달(=마감 불가 · 영구동결) 종목: {frozen}/{syms.Length}");
+        Console.WriteLine("판정: '무변화봉'이 크고 '충족'이 ★미달이면, 진행레그가 최소파동크기(0.4%)를 못 넘어");
+        Console.WriteLine("      bos(파동 마감)가 영영 안 나는 상태다. 이 경우 시장이 아무리 크게 움직여도");
+        Console.WriteLine("      추적 극점(_legExt)이 반대방향이라 갱신되지 않아 스스로 풀리지 않는다.");
     }
 
     // --elliott-state : 라이브 WaveCounter 를 현재 시세로 그대로 재생하고, 파동상태 + 신호발생 이력을 출력.
@@ -27406,14 +27488,22 @@ internal static class Program
             if (args[a] == "--ew-pages" && a + 1 < args.Length && int.TryParse(args[a + 1], out var pp) && pp > 0) pages15 = pp;
 
         // nm, termMode(0=프랙탈 1=피보되돌림), termRetr, fibTp(피보확장익절), filt(손절폭범위 강제)
-        var cfgs = new List<(string nm, int termMode, double termRetr, bool fibTp, bool filt)>
+        // [v5.34.15] ★미달레그 흡수(동결 해제) A/B 축 추가 — 마지막 항목 absorb.
+        //   동결 자체는 --elliott-frozen 으로 입증됐다(13/16 종목 291봉 무변화·신호 0건).
+        //   여기서는 "동결을 풀면 수익구조가 버티는가"만 본다. 진입 급증이 총R 을 붕괴시킨
+        //   전례(v5.34.13: +105R → -4,646R)가 있으므로 총R·5폴드 부호를 반드시 대조한다.
+        // [v5.34.15] ★한계효과 적층 — 흑자 기준선(프랙탈K21 마감 + 3배TP + 흡수OFF, 3년 +105R
+        //   전폴드양수) 위에 사용자 지시 스펙을 하나씩 얹어 각각의 순효과를 본다.
+        //   조합 1등 고르기는 OOS 에서 붕괴한 전력이 있으므로(v5.33.0) 한계효과로만 채택한다.
+        var cfgs = new List<(string nm, bool specStruct, bool specInval, bool absorb, bool fibTp)>
         {
-            ("구라이브 프랙탈+3배TP",      0, 0.236, false, true ),
-            ("마감만 피보(23.6%)+3배TP",   1, 0.236, false, true ),
-            ("익절만 피보(1.618)+프랙탈",  0, 0.236, true,  false),
-            ("*신스펙 피보마감+피보익절",  1, 0.236, true,  false),
-            ("  신스펙 피보마감38.2%",     1, 0.382, true,  false),
-            ("  신스펙 피보마감50.0%",     1, 0.500, true,  false),
+            ("기준 프랙탈K21/3배TP", false, false, false, false),
+            ("+스펙구조(절단·다이아고날)", true , false, false, false),
+            ("+스펙무효화(구조재해석)", false, true , false, false),
+            ("+동결해제(흡수)", false, false, true , false),
+            ("+3종 전부", true , true , true , false),
+            ("참고: 피보1.618 익절", false, false, false, true ),
+            ("참고: 스펙구조+피보익절", true , false, false, true ),
         };
 
         Console.WriteLine("=== --elliott-spec : 엘리엇+피보나치 단독 스펙 측정 (2x2 분해) ===\n");
@@ -27436,8 +27526,8 @@ internal static class Program
                 var c = cfgs[cf];
                 // 라이브와 동일 인자 - 다른 것은 마감축(termMode/termRetr) 뿐
                 var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(
-                    21, 0.382, 0.786, false, false, false, 0, false, false, 0, 5, false, 0.146, 0.618,
-                    21, c.termMode, c.termRetr, 0.004, true, 0, false, 1, 0.0);
+                    21, 0.382, 0.786, false, c.specInval, false, 0, false, false, 0, 5, false, 0.146, 0.618,
+                    21, 0, 0.236, 0.004, true, 0, false, 1, 0.0, c.absorb, c.specStruct);
                 int busyUntil = -1;
                 for (int j = 0; j < n - 2; j++)
                 {
@@ -27453,7 +27543,7 @@ internal static class Program
                     double risk = isLong ? entry - st.StopPrice : st.StopPrice - entry;
                     if (risk <= 0) continue;
                     double stopFrac = risk / entry;
-                    if (c.filt && (stopFrac < 0.002 || stopFrac > 0.06)) continue;
+                    if (stopFrac < 0.002 || stopFrac > 0.06) continue;
 
                     double tp;
                     if (c.fibTp)
@@ -27495,14 +27585,14 @@ internal static class Program
         for (int cf = 0; cf < cfgs.Count; cf++)
         {
             var ss = trades.Where(x => x.variant == cf).ToList();
-            if (ss.Count < 30) { Console.WriteLine($"   {cfgs[cf].nm,-24} {ss.Count,5}건 (표본부족) 신호 {sigCnt[cf]}"); continue; }
+            if (ss.Count < 30) { Console.WriteLine($"   {cfgs[cf].nm,-30} {ss.Count,5}건 (표본부족) 신호 {sigCnt[cf]}"); continue; }
             var LL = ss.Where(x => x.dir > 0).ToList(); var SS = ss.Where(x => x.dir < 0).ToList();
             double gp = ss.Where(x => x.r > 0).Sum(x => x.r), gl = -ss.Where(x => x.r <= 0).Sum(x => x.r);
             var fR = new double[folds]; bool ap = true;
             for (int f = 0; f < folds; f++) { var fs = ss.Where(x => x.fold == f).ToList(); fR[f] = fs.Count > 0 ? fs.Average(x => x.r) : 0; if (fs.Count < 8 || fR[f] <= 0) ap = false; }
-            Console.WriteLine($"   {cfgs[cf].nm,-24} {ss.Count,5} {100.0 * ss.Count(x => x.win) / ss.Count,5:F1}% {ss.Average(x => x.r),6:F3} {(gl > 0 ? gp / gl : 99),5:F2} {ss.Sum(x => x.r),6:F0}R | {LL.Count,5} {(LL.Count > 0 ? LL.Average(x => x.r) : 0),7:F3} {(LL.Count > 0 ? LL.Sum(x => x.r) : 0),5:F0}R | {SS.Count,5} {(SS.Count > 0 ? SS.Average(x => x.r) : 0),7:F3} {(SS.Count > 0 ? SS.Sum(x => x.r) : 0),5:F0}R | {lateSig[cf],5}건 | {string.Join(" ", fR.Select(x => $"{x,5:F2}"))}{(ap ? " *전폴드양수" : "")}");
+            Console.WriteLine($"   {cfgs[cf].nm,-30} {ss.Count,5} {100.0 * ss.Count(x => x.win) / ss.Count,5:F1}% {ss.Average(x => x.r),6:F3} {(gl > 0 ? gp / gl : 99),5:F2} {ss.Sum(x => x.r),6:F0}R | {LL.Count,5} {(LL.Count > 0 ? LL.Average(x => x.r) : 0),7:F3} {(LL.Count > 0 ? LL.Sum(x => x.r) : 0),5:F0}R | {SS.Count,5} {(SS.Count > 0 ? SS.Average(x => x.r) : 0),7:F3} {(SS.Count > 0 ? SS.Sum(x => x.r) : 0),5:F0}R | {lateSig[cf],5}건 | {string.Join(" ", fR.Select(x => $"{x,5:F2}"))}{(ap ? " *전폴드양수" : "")}");
         }
-        Console.WriteLine("\n판정: 신스펙(4행)이 구라이브(1행) 대비 총R·5폴드 부호를 지키는지. 2·3행은 각 변수의 단독 기여.");
+        Console.WriteLine("\n판정: ★수정(흡수ON) 행이 바로 위 흡수OFF 행 대비 총R·5폴드 부호를 지키면서 건수가 늘었는지.");
     }
 
     // ===============================================================================
@@ -29720,6 +29810,7 @@ internal static class Program
         if (HasArg("--trendride-why")) { await RunTrendRideWhyAsync(args); return; }
         if (HasArg("--elliott-tf")) { await RunElliottTfAsync(args); return; }
         if (HasArg("--elliott-seedsim")) { await RunElliottSeedSimAsync(args); return; }
+        if (HasArg("--elliott-frozen")) { await RunElliottFrozenAsync(args); return; }
         if (HasArg("--elliott-state")) { await RunElliottStateAsync(args); return; }
         if (HasArg("--elliott-now")) { await RunElliottNowAsync(args); return; }
         if (HasArg("--elliott-bos")) { await RunElliottBosAsync(args); return; }
