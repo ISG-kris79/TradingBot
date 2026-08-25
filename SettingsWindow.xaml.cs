@@ -560,17 +560,25 @@ namespace TradingBot
                     WriteIndented = true,
                     NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
                 };
+                // [v5.33.3] ★저장 지연 원인 추적용 단계별 실측 — "어디가 느린가"를 로그로 확정한다.
+                var swAll = System.Diagnostics.Stopwatch.StartNew();
                 File.WriteAllText(path, _rootNode.ToJsonString(options));
+                long msFile = swAll.ElapsedMilliseconds;
 
                 MainWindow.ApplyGeneralSettings(generalSettings);
+                long msApply = swAll.ElapsedMilliseconds - msFile;
 
                 // 4. GeneralSettings를 DB에도 저장
                 if (_dbManager != null && AppConfig.CurrentUser != null)
                 {
+                    var swDb = System.Diagnostics.Stopwatch.StartNew();
                     await _dbManager.SaveGeneralSettingsAsync(AppConfig.CurrentUser.Id, generalSettings);
+                    long msSave = swDb.ElapsedMilliseconds;
 
                     // [v5.23.10] 저장 후 DB reload + MainWindow 메모리 동기화 (사용자 사양)
                     var fresh = await _dbManager.LoadGeneralSettingsAsync(AppConfig.CurrentUser.Id);
+                    long msReload = swDb.ElapsedMilliseconds - msSave;
+                    MainWindow.Instance?.AddLog($"[Settings] ⏱️ 저장 단계별 | 파일 {msFile}ms · 적용 {msApply}ms · DB저장 {msSave}ms · reload {msReload}ms · 합계 {swAll.ElapsedMilliseconds}ms");
                     if (fresh != null)
                     {
                         MainWindow.ApplyGeneralSettings(fresh);

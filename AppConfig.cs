@@ -25,6 +25,11 @@ namespace TradingBot
                 // [v5.10.14] 커넥션 풀 기본 100 → 200으로 자동 확장 (다수 심볼 동시 저장 시 풀 고갈 방지)
                 if (!cs.Contains("Max Pool Size", StringComparison.OrdinalIgnoreCase))
                     cs += ";Max Pool Size=200";
+                // [v5.33.3] ★상시 대기 커넥션 확보 — DB가 원격(TCP+TLS 핸드셰이크)이라 '차가운' 커넥션의 첫 문장이
+                //   실측 80~670ms(부하 시 1.6~3.2초)인 반면 재사용 커넥션은 4~20ms. 설정 저장은 커넥션을 2개 새로 연다.
+                //   Min Pool Size 로 핸드셰이크를 미리 치러두면 저장/조회의 체감 지연이 사라진다.
+                if (!cs.Contains("Min Pool Size", StringComparison.OrdinalIgnoreCase))
+                    cs += ";Min Pool Size=10";
                 return cs;
             }
         }
