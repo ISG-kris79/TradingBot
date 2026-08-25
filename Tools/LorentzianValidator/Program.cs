@@ -27701,23 +27701,30 @@ internal static class Program
         for (int a = 0; a < args.Length; a++)
             if (args[a] == "--ew-pages" && a + 1 < args.Length && int.TryParse(args[a + 1], out var pp) && pp > 0) pages15 = pp;
 
-        // nm, termMode(0=프랙탈 1=피보되돌림), termRetr, fibTp(피보확장익절), filt(손절폭범위 강제)
-        // [v5.34.15] ★미달레그 흡수(동결 해제) A/B 축 추가 — 마지막 항목 absorb.
-        //   동결 자체는 --elliott-frozen 으로 입증됐다(13/16 종목 291봉 무변화·신호 0건).
-        //   여기서는 "동결을 풀면 수익구조가 버티는가"만 본다. 진입 급증이 총R 을 붕괴시킨
-        //   전례(v5.34.13: +105R → -4,646R)가 있으므로 총R·5폴드 부호를 반드시 대조한다.
-        // [v5.34.15] ★한계효과 적층 — 흑자 기준선(프랙탈K21 마감 + 3배TP + 흡수OFF, 3년 +105R
-        //   전폴드양수) 위에 사용자 지시 스펙을 하나씩 얹어 각각의 순효과를 본다.
-        //   조합 1등 고르기는 OOS 에서 붕괴한 전력이 있으므로(v5.33.0) 한계효과로만 채택한다.
-        var cfgs = new List<(string nm, bool specStruct, bool specInval, bool absorb, bool fibTp)>
+        // [v5.34.17] ★한계효과 적층 — 채택된 흑자 기준선(프랙탈K21 마감 + 3배TP + 스펙구조 + 손절폭
+        //   0.2~6%, 3년 +106R·5폴드 전부 양수) 위에 --scalp15 에서 나온 두 발견을 얹는다.
+        //     ① 상위프레임 방향필터 — 15분봉 단타 3종 전부에서 1h+4h 가 건당 R 을 개선했다
+        //        (A −0.138→−0.121R). 건수는 1/3 로 준다. 엘리엇에서도 같은 효과가 나는지 본다.
+        //        ※ 엘리엇 롱은 v5.34.5 에서 1h 의존을 뺐다(1h 필터가 롱을 −0.121R 로 죽인 전력).
+        //          그때는 '1h 단독'이었고 4h 는 측정된 적이 없다 — 여기서 처음 잰다.
+        //     ② 손익비 확대 — RR2.0 > RR1.5 가 단타에서 일관됐다. 엘리엇 현행 3.0 위아래를 훑는다.
+        //   방향필터는 롱이면 상승, 숏이면 하락을 요구한다(신호 방향과 상위추세 일치).
+        var cfgs = new List<(string nm, int dirf, double rr)>
         {
-            ("기준 프랙탈K21/3배TP", false, false, false, false),
-            ("+스펙구조(절단·다이아고날)", true , false, false, false),
-            ("+스펙무효화(구조재해석)", false, true , false, false),
-            ("+동결해제(흡수)", false, false, true , false),
-            ("+3종 전부", true , true , true , false),
-            ("참고: 피보1.618 익절", false, false, false, true ),
-            ("참고: 스펙구조+피보익절", true , false, false, true ),
+            ("방향필터없음 RR2.0", 0, 2.0),
+            ("방향필터없음 RR2.5", 0, 2.5),
+            ("방향필터없음 RR3.0 기준", 0, 3.0),
+            ("방향필터없음 RR3.5", 0, 3.5),
+            ("방향필터없음 RR4.0", 0, 4.0),
+            ("방향필터없음 RR4.5", 0, 4.5),
+            ("방향필터없음 RR5.0", 0, 5.0),
+            ("방향필터없음 RR6.0", 0, 6.0),
+            ("+1h방향 RR3.0", 1, 3.0),
+            ("+1h+4h방향 RR3.0", 2, 3.0),
+            ("+1h방향 RR4.0", 1, 4.0),
+            ("+1h+4h방향 RR4.0", 2, 4.0),
+            ("+1h방향 RR5.0", 1, 5.0),
+            ("+1h+4h방향 RR5.0", 2, 5.0),
         };
 
         Console.WriteLine("=== --elliott-spec : 엘리엇+피보나치 단독 스펙 측정 (2x2 분해) ===\n");
@@ -27728,29 +27735,34 @@ internal static class Program
         foreach (var sym in EwUniverse)
         {
             ci++; Console.Write($"[{ci}/{EwUniverse.Length}] {sym} ");
-            List<IBinanceKline> k15;
-            try { k15 = await FetchKlines15mAsync(sym, pages15); } catch { Console.WriteLine("fail"); continue; }
+            List<IBinanceKline> k15, k1h, k4h;
+            try
+            {
+                k15 = await FetchKlines15mAsync(sym, pages15);
+                k1h = await FetchKlines1hAsync(sym, 20);
+                k4h = await FetchKlines4hAsync(sym, 6);
+            }
+            catch { Console.WriteLine("fail"); continue; }
             if (k15.Count < 1000) { Console.WriteLine("skip"); continue; }
+            var d1h = HtfDir(k15, k1h, 60);
+            var d4h = HtfDir(k15, k4h, 240);
             int n = k15.Count;
             var hiA = new double[n]; var loA = new double[n]; var clA = new double[n]; var opA = new double[n];
             for (int j = 0; j < n; j++) { hiA[j] = (double)k15[j].HighPrice; loA[j] = (double)k15[j].LowPrice; clA[j] = (double)k15[j].ClosePrice; opA[j] = (double)k15[j].OpenPrice; }
 
-            for (int cf = 0; cf < cfgs.Count; cf++)
             {
-                var c = cfgs[cf];
+                // 카운터는 채택 설정 하나뿐 — cfg 는 진입 후 필터/익절만 바꾸므로 재계산이 필요없다
                 // 라이브와 동일 인자 - 다른 것은 마감축(termMode/termRetr) 뿐
                 var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(
-                    21, 0.382, 0.786, false, c.specInval, false, 0, false, false, 0, 5, false, 0.146, 0.618,
-                    21, 0, 0.236, 0.004, true, 0, false, 1, 0.0, c.absorb, c.specStruct);
-                int busyUntil = -1;
+                    21, 0.382, 0.786, false, false, false, 0, false, false, 0, 5, false, 0.146, 0.618,
+                    21, 0, 0.236, 0.004, true, 0, false, 1, 0.0, false, true);   // = v5.34.15 라이브 채택값
+                var busy = new int[cfgs.Count]; for (int q = 0; q < busy.Length; q++) busy[q] = -1;
                 for (int j = 0; j < n - 2; j++)
                 {
                     counter.Advance(hiA[j], loA[j], clA[j], j);
                     if (j < 200) continue;
-                    if (j <= busyUntil) continue;
                     var st = counter.Signal;
                     if (st == null) continue;
-                    sigCnt[cf]++; if (j >= n - 200) lateSig[cf]++;
                     bool isLong = st.IsLong;
                     int eb = j + 1; if (eb >= n - 1) continue;
                     double entry = opA[eb];
@@ -27758,33 +27770,36 @@ internal static class Program
                     if (risk <= 0) continue;
                     double stopFrac = risk / entry;
                     if (stopFrac < 0.002 || stopFrac > 0.06) continue;
+                    int want = isLong ? 1 : -1;
 
-                    double tp;
-                    if (c.fibTp)
+                    for (int cf = 0; cf < cfgs.Count; cf++)
                     {
-                        tp = st.TargetPrice;
-                        // 피보 투영이 이미 초과됐으면 구조상 여유 없음 -> 진입 안 함(라이브와 동일)
-                        if (!(tp > 0) || (isLong ? tp <= entry : tp >= entry)) continue;
-                    }
-                    else tp = isLong ? entry + 3 * risk : entry - 3 * risk;
+                        var c = cfgs[cf];
+                        if (j <= busy[cf]) continue;
+                        // 상위프레임 방향필터 — 신호 방향과 상위추세가 일치할 때만 진입
+                        if (c.dirf >= 1 && d1h[j] != want) continue;
+                        if (c.dirf == 2 && d4h[j] != want) continue;
+                        sigCnt[cf]++; if (j >= n - 200) lateSig[cf]++;
 
-                    int last = Math.Min(n - 1, eb + maxHold); double pnl; bool win2; int xi = last;
-                    for (int e = eb; e <= last; e++)
-                    {
-                        if (isLong) { if (loA[e] <= st.StopPrice) { xi = e; goto sl; } if (hiA[e] >= tp) { xi = e; goto tpz; } }
-                        else { if (hiA[e] >= st.StopPrice) { xi = e; goto sl; } if (loA[e] <= tp) { xi = e; goto tpz; } }
+                        double tp = isLong ? entry + c.rr * risk : entry - c.rr * risk;
+                        int last = Math.Min(n - 1, eb + maxHold); double pnl; bool win2; int xi = last;
+                        for (int e = eb; e <= last; e++)
+                        {
+                            if (isLong) { if (loA[e] <= st.StopPrice) { xi = e; goto sl; } if (hiA[e] >= tp) { xi = e; goto tpz; } }
+                            else { if (hiA[e] >= st.StopPrice) { xi = e; goto sl; } if (loA[e] <= tp) { xi = e; goto tpz; } }
+                        }
+                        { double ex = clA[last]; pnl = (isLong ? (ex - entry) / entry : (entry - ex) / entry) - feeRT; win2 = pnl > 0; goto rec; }
+                        sl: pnl = -stopFrac - feeRT; win2 = false; goto rec;
+                        tpz: pnl = (isLong ? (tp - entry) / entry : (entry - tp) / entry) - feeRT; win2 = true;
+                        rec:
+                        trades.Add(new Ew15Cand
+                        {
+                            t = k15[eb].OpenTime.AddMinutes(15), exit = k15[xi].OpenTime.AddMinutes(15), sym = sym,
+                            dir = isLong ? 1 : -1, hiWave = st.HigherWave, stopFrac = stopFrac, retr = st.Retrace, sym2 = st.Kind,
+                            pnl = pnl, r = pnl / stopFrac, win = win2, variant = cf
+                        });
+                        busy[cf] = xi;
                     }
-                    { double ex = clA[last]; pnl = (isLong ? (ex - entry) / entry : (entry - ex) / entry) - feeRT; win2 = pnl > 0; goto rec; }
-                    sl: pnl = -stopFrac - feeRT; win2 = false; goto rec;
-                    tpz: pnl = (isLong ? (tp - entry) / entry : (entry - tp) / entry) - feeRT; win2 = true;
-                    rec:
-                    trades.Add(new Ew15Cand
-                    {
-                        t = k15[eb].OpenTime.AddMinutes(15), exit = k15[xi].OpenTime.AddMinutes(15), sym = sym,
-                        dir = isLong ? 1 : -1, hiWave = st.HigherWave, stopFrac = stopFrac, retr = st.Retrace, sym2 = st.Kind,
-                        pnl = pnl, r = pnl / stopFrac, win = win2, variant = cf
-                    });
-                    busyUntil = xi;
                 }
             }
             Console.WriteLine($"{n}bars");
@@ -27799,12 +27814,12 @@ internal static class Program
         for (int cf = 0; cf < cfgs.Count; cf++)
         {
             var ss = trades.Where(x => x.variant == cf).ToList();
-            if (ss.Count < 30) { Console.WriteLine($"   {cfgs[cf].nm,-30} {ss.Count,5}건 (표본부족) 신호 {sigCnt[cf]}"); continue; }
+            if (ss.Count < 30) { Console.WriteLine($"   {cfgs[cf].nm,-28} {ss.Count,5}건 (표본부족) 신호 {sigCnt[cf]}"); continue; }
             var LL = ss.Where(x => x.dir > 0).ToList(); var SS = ss.Where(x => x.dir < 0).ToList();
             double gp = ss.Where(x => x.r > 0).Sum(x => x.r), gl = -ss.Where(x => x.r <= 0).Sum(x => x.r);
             var fR = new double[folds]; bool ap = true;
             for (int f = 0; f < folds; f++) { var fs = ss.Where(x => x.fold == f).ToList(); fR[f] = fs.Count > 0 ? fs.Average(x => x.r) : 0; if (fs.Count < 8 || fR[f] <= 0) ap = false; }
-            Console.WriteLine($"   {cfgs[cf].nm,-30} {ss.Count,5} {100.0 * ss.Count(x => x.win) / ss.Count,5:F1}% {ss.Average(x => x.r),6:F3} {(gl > 0 ? gp / gl : 99),5:F2} {ss.Sum(x => x.r),6:F0}R | {LL.Count,5} {(LL.Count > 0 ? LL.Average(x => x.r) : 0),7:F3} {(LL.Count > 0 ? LL.Sum(x => x.r) : 0),5:F0}R | {SS.Count,5} {(SS.Count > 0 ? SS.Average(x => x.r) : 0),7:F3} {(SS.Count > 0 ? SS.Sum(x => x.r) : 0),5:F0}R | {lateSig[cf],5}건 | {string.Join(" ", fR.Select(x => $"{x,5:F2}"))}{(ap ? " *전폴드양수" : "")}");
+            Console.WriteLine($"   {cfgs[cf].nm,-28} {ss.Count,5} {100.0 * ss.Count(x => x.win) / ss.Count,5:F1}% {ss.Average(x => x.r),6:F3} {(gl > 0 ? gp / gl : 99),5:F2} {ss.Sum(x => x.r),6:F0}R | {LL.Count,5} {(LL.Count > 0 ? LL.Average(x => x.r) : 0),7:F3} {(LL.Count > 0 ? LL.Sum(x => x.r) : 0),5:F0}R | {SS.Count,5} {(SS.Count > 0 ? SS.Average(x => x.r) : 0),7:F3} {(SS.Count > 0 ? SS.Sum(x => x.r) : 0),5:F0}R | {lateSig[cf],5}건 | {string.Join(" ", fR.Select(x => $"{x,5:F2}"))}{(ap ? " *전폴드양수" : "")}");
         }
         Console.WriteLine("\n판정: ★수정(흡수ON) 행이 바로 위 흡수OFF 행 대비 총R·5폴드 부호를 지키면서 건수가 늘었는지.");
     }
