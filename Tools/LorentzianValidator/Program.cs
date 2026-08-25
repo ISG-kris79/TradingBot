@@ -26391,6 +26391,220 @@ internal static class Program
         Console.WriteLine("      추적 극점(_legExt)이 반대방향이라 갱신되지 않아 스스로 풀리지 않는다.");
     }
 
+    // ===============================================================================
+    //  --scalp15 : [v5.34.16] 사용자 15분봉 단타 스펙 3종 측정 (2026-08-25 지시)
+    //    A. 20/60 EMA 추세 눌림목  B. 볼린저 스퀴즈 돌파  C. RSI 다이버전스 역추세
+    //  상위프레임 방향필터(없음 / 1h / 1h+4h) x 익절(RR1.5 / RR2.0 / 스펙동적) 전수 대조.
+    //  리스크 원칙 반영: 손익비 최소 1:1.5 · 보유 최대 4시간(16봉) · 손절폭 0.2~6%.
+    // ===============================================================================
+    private sealed class Sc15T { public DateTime t; public int strat, dirf, tpm, fold; public double r; public bool win; }
+
+    private static async Task RunScalp15Async(string[] args)
+    {
+        double feeRT = 0.0008; const int folds = 5;
+        int maxHold = 16;                       // 4시간 (당일청산 원칙)
+        int pages15 = 70; double sfMin = 0.002;
+        for (int a = 0; a < args.Length; a++)
+        {
+            if (args[a] == "--sc-hold" && a + 1 < args.Length) int.TryParse(args[a + 1], out maxHold);
+            if (args[a] == "--sc-pages" && a + 1 < args.Length) int.TryParse(args[a + 1], out pages15);
+            // 진단축: 엣지 부재인지 비용 문제인지 가른다
+            if (args[a] == "--sc-fee" && a + 1 < args.Length) double.TryParse(args[a + 1], out feeRT);
+            if (args[a] == "--sc-sfmin" && a + 1 < args.Length) double.TryParse(args[a + 1], out sfMin);
+        }
+        string[] stratNm = { "A.EMA눌림목", "B.BB스퀴즈돌파", "C.RSI다이버전스" };
+        string[] dirNm = { "방향필터없음", "1h방향", "1h+4h방향" };
+        string[] tpNm = { "RR1.5", "RR2.0", "스펙동적익절" };
+
+        Console.WriteLine("=== --scalp15 : 15분봉 단타 스펙 3종 (3년·30코인) ===");
+        Console.WriteLine($"    보유상한 {maxHold}봉({maxHold * 15 / 60.0:F1}h) · 손절폭 {sfMin:P2}~6% · 왕복수수료 {feeRT:P3}\n");
+
+        var trades = new List<Sc15T>();
+        var sig = new int[3];
+        int ci = 0;
+        foreach (var sym in EwUniverse)
+        {
+            ci++; Console.Write($"[{ci}/{EwUniverse.Length}] {sym} ");
+            List<IBinanceKline> k15, k1h, k4h;
+            try
+            {
+                k15 = await FetchKlines15mAsync(sym, pages15);
+                k1h = await FetchKlines1hAsync(sym, 20);
+                k4h = await FetchKlines4hAsync(sym, 6);
+            }
+            catch { Console.WriteLine("fail"); continue; }
+            if (k15 == null || k15.Count < 2000) { Console.WriteLine("skip"); continue; }
+            int n = k15.Count;
+            var op = new double[n]; var hi = new double[n]; var lo = new double[n]; var cl = new double[n]; var vo = new double[n];
+            for (int j = 0; j < n; j++) { op[j] = (double)k15[j].OpenPrice; hi[j] = (double)k15[j].HighPrice; lo[j] = (double)k15[j].LowPrice; cl[j] = (double)k15[j].ClosePrice; vo[j] = (double)k15[j].Volume; }
+
+            // 지표
+            var e20 = Ema(cl, 20); var e60 = Ema(cl, 60); var e200 = Ema(cl, 200);
+            var rsi = RsiArr(cl, 14);   // 기존 헬퍼 재사용
+            var bbM = new double[n]; var bbU = new double[n]; var bbL = new double[n]; var bw = new double[n];
+            var vAvg = new double[n];
+            double sum = 0, sum2 = 0, vsum = 0;
+            for (int j = 0; j < n; j++)
+            {
+                sum += cl[j]; sum2 += cl[j] * cl[j]; vsum += vo[j];
+                if (j >= 20) { sum -= cl[j - 20]; sum2 -= cl[j - 20] * cl[j - 20]; vsum -= vo[j - 20]; }
+                if (j >= 19)
+                {
+                    double m = sum / 20; double va = Math.Max(0, sum2 / 20 - m * m); double sd = Math.Sqrt(va);
+                    bbM[j] = m; bbU[j] = m + 2 * sd; bbL[j] = m - 2 * sd; bw[j] = m > 0 ? (bbU[j] - bbL[j]) / m : 0;
+                    vAvg[j] = vsum / 20;
+                }
+            }
+            // 상위 프레임 방향 (1h / 4h EMA20 6봉 기울기)
+            var d1h = HtfDir(k15, k1h, 60);
+            var d4h = HtfDir(k15, k4h, 240);
+
+            for (int j = 210; j < n - 2; j++)
+            {
+                int eb = j + 1; if (eb >= n - 1) break;
+                double entry = op[eb];
+                for (int st = 0; st < 3; st++)
+                {
+                    double slp = 0; bool fire = false;
+                    if (st == 0)
+                    {
+                        // A. 200EMA 위 + 20>60 정배열 + 20EMA 눌림터치 + 지지캔들(양봉전환 또는 망치)
+                        if (cl[j] > e200[j] && e20[j] > e60[j] && lo[j] <= e20[j] && cl[j] > e20[j])
+                        {
+                            double body = Math.Abs(cl[j] - op[j]); double lw = Math.Min(op[j], cl[j]) - lo[j];
+                            bool support = (cl[j] > op[j] && cl[j - 1] < op[j - 1]) || (body > 0 && lw >= 2 * body);
+                            if (support)
+                            {
+                                double sw = lo[j]; for (int q = Math.Max(0, j - 9); q <= j; q++) sw = Math.Min(sw, lo[q]);
+                                slp = sw; fire = true;
+                            }
+                        }
+                    }
+                    else if (st == 1)
+                    {
+                        // B. 스퀴즈(직전 bw 가 최근 96봉 하위 25%) + 거래량 1.5배 + 상단밴드 종가돌파
+                        if (bbM[j] > 0 && vAvg[j - 1] > 0 && cl[j] > bbU[j] && vo[j] >= 1.5 * vAvg[j - 1])
+                        {
+                            int lb = Math.Max(20, j - 96); int cnt = 0, tot = 0;
+                            for (int q = lb; q < j; q++) { if (bw[q] <= 0) continue; tot++; if (bw[q] <= bw[j - 1]) cnt++; }
+                            if (tot > 40 && cnt <= tot * 0.25) { slp = bbM[j]; fire = true; }
+                        }
+                    }
+                    else
+                    {
+                        // C. 상승 다이버전스(가격 저점 낮춤 + RSI 저점 높임) 후 RSI 50선 상향돌파
+                        if (rsi[j] > 50 && rsi[j - 1] <= 50)
+                        {
+                            int p2 = -1, p1 = -1;
+                            for (int q = j - 3; q >= j - 30 && q >= 4; q--)
+                                if (IsLocalLow(lo, q, 3)) { if (p2 < 0) p2 = q; else { p1 = q; break; } }
+                            if (p1 > 0 && p2 > 0 && lo[p2] < lo[p1] && rsi[p2] > rsi[p1]
+                                && (rsi[p1] <= 30 || rsi[p2] <= 35))
+                            { slp = lo[p2]; fire = true; }
+                        }
+                    }
+                    if (!fire) continue;
+                    double risk = entry - slp;
+                    if (risk <= 0) continue;
+                    double sf = risk / entry;
+                    if (sf < sfMin || sf > 0.06) continue;
+                    sig[st]++;
+
+                    for (int df = 0; df < 3; df++)
+                    {
+                        if (df >= 1 && d1h[j] <= 0) continue;
+                        if (df == 2 && d4h[j] <= 0) continue;
+                        for (int tm = 0; tm < 3; tm++)
+                        {
+                            double tp; bool dyn = false;
+                            if (tm == 0) tp = entry + 1.5 * risk;
+                            else if (tm == 1) tp = entry + 2.0 * risk;
+                            else { tp = double.MaxValue; dyn = true; }
+
+                            int last = Math.Min(n - 1, eb + maxHold); double pnl; bool win;
+                            for (int e = eb; e <= last; e++)
+                            {
+                                if (lo[e] <= slp) { pnl = -sf - feeRT; win = false; goto rec; }
+                                if (!dyn && hi[e] >= tp) { pnl = (tp - entry) / entry - feeRT; win = true; goto rec; }
+                                if (dyn)
+                                {
+                                    // 스펙 동적익절: A=직전고점(20봉) 도달 / B=밴드 밖에서 안으로 복귀 / C=20EMA 도달
+                                    if (st == 1)
+                                    {
+                                        if (e > eb && cl[e] < bbU[e] && cl[e - 1] >= bbU[e - 1])
+                                        { pnl = (cl[e] - entry) / entry - feeRT; win = pnl > 0; goto rec; }
+                                    }
+                                    else
+                                    {
+                                        double tgt = st == 0 ? SwingHigh(hi, j, 20) : e20[e];
+                                        if (tgt > entry && hi[e] >= tgt) { pnl = (tgt - entry) / entry - feeRT; win = true; goto rec; }
+                                    }
+                                }
+                            }
+                            { double ex = cl[last]; pnl = (ex - entry) / entry - feeRT; win = pnl > 0; }
+                        rec:
+                            trades.Add(new Sc15T { t = k15[eb].OpenTime, strat = st, dirf = df, tpm = tm, r = pnl / sf, win = win });
+                        }
+                    }
+                }
+            }
+            Console.WriteLine($"{n}bars");
+        }
+        if (trades.Count == 0) { Console.WriteLine("진입 0건"); return; }
+        var tMin = trades.Min(x => x.t); var tMax = trades.Max(x => x.t);
+        double span = Math.Max(1e-9, (tMax - tMin).TotalDays / folds);
+        foreach (var c in trades) { int f = 0; while (f < folds - 1 && c.t >= tMin.AddDays(span * (f + 1))) f++; c.fold = f; }
+        Console.WriteLine($"\n기간 {tMin:yyyy-MM-dd} ~ {tMax:yyyy-MM-dd} ({(tMax - tMin).TotalDays / 30.4:F1}개월) · {EwUniverse.Length}코인");
+        Console.WriteLine($"원시신호수 — A:{sig[0]} · B:{sig[1]} · C:{sig[2]}\n");
+        Console.WriteLine("   전략            방향필터      익절         건수  승률  기대R    PF    총R | 5폴드");
+        for (int st = 0; st < 3; st++)
+            for (int df = 0; df < 3; df++)
+                for (int tm = 0; tm < 3; tm++)
+                {
+                    var ss = trades.Where(x => x.strat == st && x.dirf == df && x.tpm == tm).ToList();
+                    if (ss.Count < 30) { Console.WriteLine($"   {stratNm[st],-15} {dirNm[df],-12} {tpNm[tm],-11} {ss.Count,5} (표본부족)"); continue; }
+                    double gp = ss.Where(x => x.r > 0).Sum(x => x.r), gl = -ss.Where(x => x.r <= 0).Sum(x => x.r);
+                    var fR = new double[folds]; bool ap = true;
+                    for (int f = 0; f < folds; f++) { var fs = ss.Where(x => x.fold == f).ToList(); fR[f] = fs.Count > 0 ? fs.Average(x => x.r) : 0; if (fs.Count < 8 || fR[f] <= 0) ap = false; }
+                    Console.WriteLine($"   {stratNm[st],-15} {dirNm[df],-12} {tpNm[tm],-11} {ss.Count,5} {100.0 * ss.Count(x => x.win) / ss.Count,5:F1}% {ss.Average(x => x.r),6:F3} {(gl > 0 ? gp / gl : 99),5:F2} {ss.Sum(x => x.r),6:F0}R | {string.Join(" ", fR.Select(x => $"{x,5:F2}"))}{(ap ? " *전폴드양수" : "")}");
+                }
+        Console.WriteLine("\n판정: 기대R>0 · PF>1 · 5폴드 전부 양수 를 동시에 만족하는 행만 라이브 후보다.");
+    }
+
+    private static double[] Ema(double[] v, int p)
+    {
+        var e = new double[v.Length]; double k = 2.0 / (p + 1); double cur = v[0];
+        for (int i = 0; i < v.Length; i++) { cur = i == 0 ? v[0] : v[i] * k + cur * (1 - k); e[i] = cur; }
+        return e;
+    }
+    private static bool IsLocalLow(double[] lo, int i, int k)
+    {
+        if (i - k < 0 || i + k >= lo.Length) return false;
+        for (int d = 1; d <= k; d++) if (!(lo[i] < lo[i - d] && lo[i] < lo[i + d])) return false;
+        return true;
+    }
+    private static double SwingHigh(double[] hi, int j, int look)
+    {
+        double m = 0; for (int q = Math.Max(0, j - look); q <= j; q++) m = Math.Max(m, hi[q]); return m;
+    }
+    /// <summary>상위 프레임 EMA20 6봉 기울기 방향을 15m 봉 인덱스에 매핑(마감된 상위봉만 사용).</summary>
+    private static int[] HtfDir(List<IBinanceKline> k15, List<IBinanceKline> kh, int minutes)
+    {
+        var d = new int[k15.Count];
+        if (kh == null || kh.Count < 30) return d;
+        var hc = new double[kh.Count]; for (int i = 0; i < kh.Count; i++) hc[i] = (double)kh[i].ClosePrice;
+        var he = Ema(hc, 20);
+        int p = 0;
+        for (int j = 0; j < k15.Count; j++)
+        {
+            var t = k15[j].OpenTime;
+            while (p + 1 < kh.Count && kh[p + 1].OpenTime.AddMinutes(minutes) <= t) p++;
+            if (p < 7 || kh[p].OpenTime.AddMinutes(minutes) > t) { d[j] = 0; continue; }
+            d[j] = he[p] > he[p - 6] ? 1 : (he[p] < he[p - 6] ? -1 : 0);
+        }
+        return d;
+    }
+
     // --elliott-state : 라이브 WaveCounter 를 현재 시세로 그대로 재생하고, 파동상태 + 신호발생 이력을 출력.
     //   TradingEngine.AnalyzeElliottWaveEntryAsync 와 동일 조건(15m 1500봉, 기본 파라미터)으로 돌린다.
     private static async Task RunElliottStateAsync(string[] args)
@@ -29810,6 +30024,7 @@ internal static class Program
         if (HasArg("--trendride-why")) { await RunTrendRideWhyAsync(args); return; }
         if (HasArg("--elliott-tf")) { await RunElliottTfAsync(args); return; }
         if (HasArg("--elliott-seedsim")) { await RunElliottSeedSimAsync(args); return; }
+        if (HasArg("--scalp15")) { await RunScalp15Async(args); return; }
         if (HasArg("--elliott-frozen")) { await RunElliottFrozenAsync(args); return; }
         if (HasArg("--elliott-state")) { await RunElliottStateAsync(args); return; }
         if (HasArg("--elliott-now")) { await RunElliottNowAsync(args); return; }
