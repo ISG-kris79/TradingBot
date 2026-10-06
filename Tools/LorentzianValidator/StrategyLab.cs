@@ -36,12 +36,12 @@ internal static class StrategyLab
         public Dictionary<int, int[]> lastClosed = new();   // 15m j → 그 봉 시가 이전에 마감된 마지막 TF 봉 index
     }
     sealed class Trade { public int sym; public bool major; public int dir; public long tIn, tOut; public double pnl; public string how = "", name = "", status = ""; public double px0, px1; }
-    sealed class Exit { public double stopAtr = 2, trailAtr, tpR, timeStopAtr = 1, riskUsd; public int maxHoldTf, timeStopTf; public long forceExitT; }
+    sealed class Exit { public double stopAtr = 2, trailAtr, tpR, timeStopAtr = 1, riskUsd, failLevel = double.NaN; public int maxHoldTf, timeStopTf, failBars; public long forceExitT; }
     sealed class Cfg { public string fam = "", name = ""; public Func<List<Sym>, List<Trade>> gen = _ => new(); }
     sealed class Res { public Cfg cfg = null!; public List<Trade> taken = new(), rejected = new(); public double[] seg = new double[Segs]; public double total, pf, mdd, win, worstMonth; public int posMonths, months; }
 
     static long seg0, segLen;
-    static bool Neighborhood, ElliottMode, MlMode, PortMode, MonthMode; static string Pick = "";
+    static bool Neighborhood, ElliottMode, MlMode, PortMode, MonthMode, TimingMode; static string Pick = "";
     static int Base = 15; static string CacheSuffix = "_15m_71"; static long UntilMs = long.MaxValue, FromMs = 0;
 
     public static void Run(string[] args)
@@ -67,6 +67,7 @@ internal static class StrategyLab
         Neighborhood = args.Contains("--lab-donchian");
         PortMode = args.Contains("--lab-port");
         MonthMode = args.Contains("--lab-month");
+        TimingMode = args.Contains("--lab-timing");
         ElliottMode = args.Contains("--lab-elliott");
         MlMode = args.Contains("--lab-ml");
         var cfgs = BuildConfigs();
@@ -76,7 +77,14 @@ internal static class StrategyLab
             var cands = cfg.gen(syms);
             var r = Portfolio(cfg, cands);
             results.Add(r);
-            Console.WriteLine($"  {cfg.name,-44} 체결{r.taken.Count,5} 승률{r.win,5:F1}% PF{r.pf,5:F2} 총{r.total,9:F0}$ 낙폭{r.mdd,8:F0}$ 흑자월 {r.posMonths}/{r.months} 최악월{r.worstMonth,7:F0}$ | {string.Join(" ", r.seg.Select(x => x >= 0 ? "+" : "-"))}");
+            {
+                var real = r.taken.Where(t => t.how != "END").ToList();
+                double realTot = real.Sum(t => t.pnl), ex10 = realTot - real.OrderByDescending(t => t.pnl).Take(10).Sum(t => t.pnl);
+                long cut = r.taken.Count > 0 ? r.taken.Max(t => t.tOut) - 21L * 30 * 86400000 : 0;   // 최근 21개월
+                var rec = real.Where(t => t.tOut >= cut).ToList();
+                var rm = rec.GroupBy(t => D(t.tOut).AddHours(9).ToString("yyyy-MM")).Select(g => g.Sum(t => t.pnl)).ToList();
+                Console.WriteLine($"  {cfg.name,-30} 체결{r.taken.Count,4} 승률{r.win,5:F1}% PF{r.pf,5:F2} 실현{realTot,8:F0}$ 상위10제외{ex10,8:F0}$ 낙폭{r.mdd,7:F0}$ 흑자월 {r.posMonths}/{r.months} 최악월{r.worstMonth,6:F0}$ | 최근21개월 실현{rec.Sum(t => t.pnl),7:F0}$ 흑자월 {rm.Count(v => v > 0)}/{rm.Count}");
+            }
         }
 
         // 벤치마크: BTC 매수 보유 $3,000
@@ -125,6 +133,24 @@ internal static class StrategyLab
     static List<Cfg> BuildConfigs()
     {
         var L = new List<Cfg>();
+        if (TimingMode)
+        {
+            // [v5.35.x] 사용자 지시: 4h 신호 즉시 진입 금지 — 15m 로 진입 시점 판단(상승 확인/눌림 반등/돌파선 재확인), 하락 시 신호 폐기
+            L.Add(new Cfg { fam = "T", name = "현행 v5.35.2 (신호 즉시 진입)", gen = S => DonchianTimed(S, 0, 0) });
+            foreach (var w in new[] { 16, 32 })
+                foreach (var (mode, nm) in new[] { (1, "A 상승확인"), (2, "B 눌림후반등"), (3, "C 돌파선재확인") })
+                {
+                    int w_ = w, m_ = mode;
+                    L.Add(new Cfg { fam = "T", name = $"{nm} · 대기 {w / 4}h", gen = S => DonchianTimed(S, m_, w_) });
+                }
+            foreach (var fb in new[] { 16, 32, 96 })
+            {
+                int fb_ = fb;
+                L.Add(new Cfg { fam = "T", name = $"D 돌파실패 조기정리 {fb / 4}h", gen = S => DonchianTimed(S, 0, 0, fb_) });
+            }
+            L.Add(new Cfg { fam = "T", name = "E 구조손절(돌파선-0.5ATR)", gen = S => DonchianTimed(S, 0, 0, 0, true) });
+            return L;
+        }
         if (MonthMode)
         {
             // [v5.35.x] 적자 월 축소 후보 — 사전에 정한 일반 기법만 (사후 최적화 금지)
@@ -380,6 +406,59 @@ internal static class StrategyLab
     }
 
     // ───────────────────────── 거래 생성 ─────────────────────────
+    static readonly Dictionary<Sym, double[]> E50Cache = new();
+    /// <summary>v5.35.2 신호(N55 돌파 + 과열추격 4.5ATR 제외) 후 15m 진입 타이밍.
+    ///   mode 0=즉시(다음 15m 시가) · 1=15m 종가가 신호봉 종가 위로 마감 · 2=0.5ATR 눌림 후 15m 종가>직전봉 고가 · 3=돌파선 터치 후 그 위 마감.
+    ///   공통 무효화: 대기 중 15m 종가가 돌파선(55봉 극값) 밖으로 되돌아가면 진입 안 함(손실 없음). 대기 window 봉 초과 시 폐기.</summary>
+    static List<Trade> DonchianTimed(List<Sym> S, int mode, int window, int failBars = 0, bool structStop = false)
+    {
+        var res = new List<Trade>();
+        for (int si = 0; si < S.Count; si++)
+        {
+            var s = S[si]; var T = s.tf[240]; var m = s.m;
+            double[] e50; lock (E50Cache) { if (!E50Cache.TryGetValue(s, out e50!)) { e50 = Ema(T.b.c, 50); E50Cache[s] = e50; } }
+            for (int i = 57; i < T.b.n - 1; i++)
+            {
+                double hi = Max(T.b.h, i - 55, i - 1), lo = Min(T.b.l, i - 55, i - 1);
+                double hiP = Max(T.b.h, i - 56, i - 2), loP = Min(T.b.l, i - 56, i - 2);
+                int d = (T.b.c[i] > hi && T.b.c[i - 1] <= hiP) ? 1 : (T.b.c[i] < lo && T.b.c[i - 1] >= loP) ? -1 : 0;
+                if (d == 0) continue;
+                double atr = T.atr[i]; if (atr <= 0) continue;
+                if (d * (T.b.c[i] - e50[i]) / atr >= 4.5) continue;            // 과열추격 제외 (v5.35.2)
+                int e0 = T.end15[i] + 1; if (e0 >= m.n) continue;
+                double level = d > 0 ? hi : lo, sc = T.b.c[i];
+                int entryJ = -1;
+                if (mode == 0) entryJ = e0;
+                else
+                {
+                    bool pulled = false, touched = false;
+                    for (int j = e0; j < Math.Min(m.n - 1, e0 + window); j++)
+                    {
+                        if (d * (m.c[j] - level) < 0) break;                        // 돌파 실패 → 신호 폐기
+                        if (mode == 1 && d * (m.c[j] - sc) > 0) { entryJ = j + 1; break; }
+                        if (mode == 2)
+                        {
+                            if (d * (sc - (d > 0 ? m.l[j] : m.h[j])) >= 0.5 * atr) pulled = true;
+                            if (pulled && j > e0 && d * (m.c[j] - (d > 0 ? m.h[j - 1] : m.l[j - 1])) > 0) { entryJ = j + 1; break; }
+                        }
+                        if (mode == 3)
+                        {
+                            if (d * ((d > 0 ? m.l[j] : m.h[j]) - level) <= 0) touched = true;
+                            if (touched && d * (m.c[j] - level) > 0) { entryJ = j + 1; break; }
+                        }
+                    }
+                }
+                if (entryJ < 0 || entryJ >= m.n) continue;
+                // 진입봉이 속한 시점 이전에 마감된 4h 봉 기준으로 트레일 갱신(Sim 내부) — 신호봉 ATR 로 초기손절
+                var x = new Exit { stopAtr = 2, trailAtr = 5, failBars = failBars, failLevel = level };
+                double fixedStop = structStop ? level - d * 0.5 * atr : double.NaN;
+                if (structStop && d * (m.o[entryJ] - fixedStop) <= 0) continue;
+                var tr = Sim(s, si, 240, i, entryJ, m.o[entryJ], d, x, null, fixedStop);
+                if (tr != null) res.Add(tr);
+            }
+        }
+        return res;
+    }
     static readonly Dictionary<(string, int), int[]> MlPredCache = new();
 
     /// <summary>라이브 KNN 예측 시계열 — 봉 i 마감 시점에 그때까지 라벨이 확정된 표본만으로 예측(미래 누설 없음). 종목 병렬.</summary>
@@ -506,6 +585,8 @@ internal static class StrategyLab
                 if (x.timeStopTf > 0 && lastTf - sigTf == x.timeStopTf && dir * (T.b.c[lastTf] - entry) < x.timeStopAtr * atr) { px = m.o[j]; how = "TSTOP"; xj = j; goto done; }
             }
             if (x.forceExitT > 0 && m.t[j] >= x.forceExitT) { px = m.o[j]; how = "TIME"; xj = j; goto done; }
+            // 돌파 실패 조기 정리: 진입 후 failBars(15m) 이내 직전 15m 종가가 돌파선 반대편이면 이 봉 시가에 정리
+            if (x.failBars > 0 && !double.IsNaN(x.failLevel) && j > e0 && j - e0 <= x.failBars && dir * (m.c[j - 1] - x.failLevel) < 0) { px = m.o[j]; how = "FAIL"; xj = j; goto done; }
             if (dir > 0)
             {
                 if (m.o[j] <= stop) { px = m.o[j]; how = "SL"; xj = j; goto done; }
