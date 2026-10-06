@@ -18,8 +18,11 @@ using LorentzianValidator;
 internal static class StrategyLab
 {
     const double Notional = 3000, FeeRT = 0.0012, FundPer8h = 0.0001;
-    const int MajSlots = 2, AltSlots = 3, Segs = 6;
-    static readonly string[] Universe = { "BTCUSDT","ETHUSDT","XRPUSDT","BNBUSDT","SOLUSDT","DOGEUSDT","ADAUSDT","TRXUSDT","AVAXUSDT","LINKUSDT",
+    const int Segs = 6;
+    static int MajSlots = 2, AltSlots = 3;
+    // 확대 후보(--lab-extra): 장기 캐시에 있는 비유니버스 16종 — 순위가 떨어진 코인 포함(생존편향 점검)
+    public static readonly string[] Extra = { "AXSUSDT","CHZUSDT","CRVUSDT","ENJUSDT","EOSUSDT","GALAUSDT","GRTUSDT","IMXUSDT","LDOUSDT","MANAUSDT","MKRUSDT","RUNEUSDT","SANDUSDT","STXUSDT","TIAUSDT","TONUSDT" };
+    static string[] Universe = { "BTCUSDT","ETHUSDT","XRPUSDT","BNBUSDT","SOLUSDT","DOGEUSDT","ADAUSDT","TRXUSDT","AVAXUSDT","LINKUSDT",
         "DOTUSDT","LTCUSDT","BCHUSDT","NEARUSDT","UNIUSDT","APTUSDT","ICPUSDT","ETCUSDT","FILUSDT","ARBUSDT",
         "OPUSDT","ATOMUSDT","SUIUSDT","AAVEUSDT","XLMUSDT","INJUSDT","ALGOUSDT","HBARUSDT","SEIUSDT","VETUSDT" };
     static readonly HashSet<string> Majors = new() { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
@@ -38,7 +41,7 @@ internal static class StrategyLab
     sealed class Res { public Cfg cfg = null!; public List<Trade> taken = new(), rejected = new(); public double[] seg = new double[Segs]; public double total, pf, mdd, win; }
 
     static long seg0, segLen;
-    static bool Neighborhood, ElliottMode, MlMode; static string Pick = "";
+    static bool Neighborhood, ElliottMode, MlMode, PortMode; static string Pick = "";
     static int Base = 15; static string CacheSuffix = "_15m_71"; static long UntilMs = long.MaxValue, FromMs = 0;
 
     public static void Run(string[] args)
@@ -47,6 +50,8 @@ internal static class StrategyLab
         {
             // --lab-base 60 : 1h 캐시(_1h_40, 2019~) 기반 — 미사용 과거구간 검증용
             if (args[a] == "--lab-pick") Pick = args[a + 1];
+            if (args[a] == "--lab-extra" || args[a + 1] == "--lab-extra") { if (!Universe.Contains(Extra[0])) Universe = Universe.Concat(Extra).ToArray(); }
+            if (args[a] == "--lab-slots") { var sp = args[a + 1].Split('/'); MajSlots = int.Parse(sp[0]); AltSlots = int.Parse(sp[1]); }
             if (args[a] == "--lab-base" && args[a + 1] == "60") { Base = 60; CacheSuffix = "_1h_40"; }
             // --lab-base 15old : 15m 장기 캐시(_15m_170, 2019~) — 15분봉 전략(엘리엇)의 미사용 과거구간 검증용
             if (args[a] == "--lab-base" && args[a + 1] == "15old") { Base = 15; CacheSuffix = "_15m_170"; }
@@ -60,6 +65,7 @@ internal static class StrategyLab
         Console.WriteLine($"데이터 {D(tMin):yyyy-MM-dd} ~ {D(tMax):yyyy-MM-dd} · {syms.Count}코인 · 구간 {segLen / 86400000}일 × {Segs}\n");
 
         Neighborhood = args.Contains("--lab-donchian");
+        PortMode = args.Contains("--lab-port");
         ElliottMode = args.Contains("--lab-elliott");
         MlMode = args.Contains("--lab-ml");
         var cfgs = BuildConfigs();
@@ -118,6 +124,24 @@ internal static class StrategyLab
     static List<Cfg> BuildConfigs()
     {
         var L = new List<Cfg>();
+        if (PortMode)
+        {
+            L.Add(new Cfg { fam = "DONCHIAN", name = "돈치안 4h N55 (현행)", gen = S => DonchianLive(S) });
+            foreach (var dN in new[] { 20, 30, 40, 55 })
+            {
+                int N_ = dN;
+                L.Add(new Cfg { fam = "PORT", name = $"돈치안 4h N55 + 1d N{dN} 병행", gen = S => DonchianLive(S).Concat(SignalTrades(S, 1440, (s, T, i) =>
+                {
+                    if (i < N_ + 2) return 0;
+                    double hi = Max(T.b.h, i - N_, i - 1), lo = Min(T.b.l, i - N_, i - 1);
+                    double hiP = Max(T.b.h, i - N_ - 1, i - 2), loP = Min(T.b.l, i - N_ - 1, i - 2);
+                    if (T.b.c[i] > hi && T.b.c[i - 1] <= hiP) return 1;
+                    if (T.b.c[i] < lo && T.b.c[i - 1] >= loP) return -1;
+                    return 0;
+                }, new Exit { stopAtr = 2, trailAtr = 5 }, null)).ToList() });
+            }
+            return L;
+        }
         if (MlMode)
         {
             // [v5.35.x] 머신러닝 알트 봇 — 라이브 KNN 엔진(LorentzianAnnEngine, K=8, 4봉 뒤 방향 라벨) 30종목 병렬
@@ -556,6 +580,7 @@ internal static class StrategyLab
             var rows = File.ReadAllLines(f).Select(x => x.Split(',')).Where(p => p.Length >= 6)
                 .Where(p => { long t0 = long.Parse(p[0]); return t0 >= FromMs && t0 < UntilMs; }).ToList();
             if (rows.Count < 24 * 60 * 60 / Base) { Console.WriteLine($"  [{name}] 기간내 데이터 부족 — 제외"); continue; }
+            Console.Write("");
             var b = new Bars { n = rows.Count, t = new long[rows.Count], o = new double[rows.Count], h = new double[rows.Count], l = new double[rows.Count], c = new double[rows.Count] };
             for (int i = 0; i < rows.Count; i++)
             {

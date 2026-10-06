@@ -30166,6 +30166,12 @@ internal static class Program
         if (HasArg("--trendride-why")) { await RunTrendRideWhyAsync(args); return; }
         if (HasArg("--lab")) { StrategyLab.Run(args); return; }
         if (HasArg("--donchian-parity")) { DonchianParity.Run(); return; }
+        if (HasArg("--fetch-extra15"))
+        {
+            // --lab-extra 용 최근 15m 캐시(_15m_71) 수집
+            foreach (var sym in StrategyLab.Extra) { Console.Write($"{sym} "); var k = await FetchKlines15mAsync(sym, 71); Console.WriteLine(k.Count); }
+            return;
+        }
         if (HasArg("--elliott-daily")) { await RunElliottDailyAsync(args); return; }
         if (HasArg("--elliott-tf")) { await RunElliottTfAsync(args); return; }
         if (HasArg("--elliott-seedsim")) { await RunElliottSeedSimAsync(args); return; }

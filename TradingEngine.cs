@@ -9290,6 +9290,15 @@ namespace TradingBot
         {
             string flowTag = $"src={signalSource} mode={mode} sym={symbol} side={decision}";
 
+            // [v5.35.1] ★돈치안 단일 진입 — 자동 진입은 RunDonchianLoopAsync → PlaceAndTrackEntryAsync 경로만 허용.
+            //   이 함수(ExecuteAutoOrder)로 들어오는 모든 자동 진입(MACD 스캔·꼬리숏·급락/급등 반전·펌프큐·정찰 본진입·
+            //   ETA·잔존 LCC/엘리엇 등)은 라이브 조건 검증(--lab)을 통과하지 못했으므로 차단한다. 수동진입은 이 경로를 쓰지 않는다.
+            if (!DonchianTrend.IsDonchianSource(signalSource))
+            {
+                OnStatusLog?.Invoke($"⛔ [DONCHIAN_ONLY] {symbol} {decision} {signalSource} 자동진입 차단 — 검증된 돈치안 외 진입 경로 폐기");
+                return;
+            }
+
             // [v5.23.11] 진입 시점 settings DB 강제 reload (로그인 user 기준)
             //   사용자 사양: "로그인 ID 별로 다른 사람이 사용 — 로그인 정보가 제일 중요"
             //   진입 결정 직전 DB 에서 GeneralSettings 새로 가져와서 _settings 갱신
