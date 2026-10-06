@@ -9,6 +9,21 @@ UNIV = ["BTCUSDT","ETHUSDT","XRPUSDT","BNBUSDT","SOLUSDT","DOGEUSDT","ADAUSDT","
 MAJ = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}
 SPLIT = int(datetime.datetime(2023, 9, 22, tzinfo=datetime.timezone.utc).timestamp() * 1000)
 FEE, FUND8H = 0.0012, 0.0001
+REAL_FUNDING = False   # True: 실제 펀딩비(롱 지불·숏 수취, 부호 반영) / False: 방향 무관 0.01%/8h 차감(보수적)
+_FUND = {}
+def funding_sum(sym, t0, t1):
+    import bisect, os
+    if sym not in _FUND:
+        f = f'cache/funding_{sym}.csv'
+        rows = [l.split(',') for l in open(f)] if os.path.exists(f) else []
+        ts = [int(r[0]) for r in rows]; pref = [0.0]
+        for r in rows: pref.append(pref[-1] + float(r[1]))
+        _FUND[sym] = (ts, pref)
+    ts, pref = _FUND[sym]
+    if not ts: return None
+    a = bisect.bisect_right(ts, t0); b = bisect.bisect_right(ts, t1)
+    return pref[b] - pref[a]
+
 M15 = 900_000
 
 def load_all():
@@ -50,7 +65,7 @@ def ema_s(x, p):
     for i, v in enumerate(x): r.append(v if i == 0 else a * v + (1 - a) * r[-1])
     return r
 
-def donchian(data, tf=240, N=55, init=2.0, trail=5.0, chase=4.5, tight_after=None, tight=None, ptp=None, tag='', cooldown_h=0, min_brk=0.0, base_max=None):
+def donchian(data, tf=240, N=55, init=2.0, trail=5.0, chase=4.5, tight_after=None, tight=None, ptp=None, tag='', cooldown_h=0, min_brk=0.0, base_max=None, be_after=None, be_lock=0.0):
     """돈치안 돌파 거래 생성. tight_after=(수익 xATR 도달 시) 트레일을 tight×ATR 로 좁힘. ptp=(x ATR 도달 시 50% 익절).
        반환: [(sym, tin, tout, pnl_frac_net, tag)] — pnl 은 명목 1.0 기준 비율(수수료·펀딩 반영)."""
     out = []
@@ -90,9 +105,17 @@ def donchian(data, tf=240, N=55, init=2.0, trail=5.0, chase=4.5, tight_after=Non
                         realized += 0.5 * d * (tp - entry) / entry; size = 0.5; half = True
                 if (d > 0 and O[j] <= stop) or (d < 0 and O[j] >= stop): px = O[j]; break
                 if (d > 0 and L[j] <= stop) or (d < 0 and H[j] >= stop): px = stop; break
+                # 본절 전환: 이 15m 봉에서 수익이 be_after×ATR 도달 → 다음 봉부터 손절선 = 진입 ± be_lock×ATR
+                if be_after and d * ((H[j] if d > 0 else L[j]) - entry) >= be_after * at:
+                    bs = entry + d * be_lock * at
+                    if (d > 0 and bs > stop) or (d < 0 and bs < stop): stop = bs
             if px is None: continue                                             # 미청산은 제외(실현만)
             hours = (T[j] - T[e0]) / 3600000
-            pnl = realized + size * d * (px - entry) / entry - FEE - FUND8H * hours / 8
+            fund = FUND8H * hours / 8
+            if REAL_FUNDING:
+                fs = funding_sum(sym, T[e0], T[j])
+                if fs is not None: fund = d * fs * (0.5 + 0.5 * size if half else 1.0)   # 롱은 +rate 지불, 숏은 수취
+            pnl = realized + size * d * (px - entry) / entry - FEE - fund
             out.append((sym, T[e0], T[j] + M15, pnl, tag, d))
             if cooldown_h and pnl < 0: cool_until[sym] = T[j] + cooldown_h * 3600000
     return out
