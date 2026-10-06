@@ -93,7 +93,7 @@ def donchian(data, tf=240, N=55, init=2.0, trail=5.0, chase=4.5, tight_after=Non
             if px is None: continue                                             # 미청산은 제외(실현만)
             hours = (T[j] - T[e0]) / 3600000
             pnl = realized + size * d * (px - entry) / entry - FEE - FUND8H * hours / 8
-            out.append((sym, T[e0], T[j] + M15, pnl, tag))
+            out.append((sym, T[e0], T[j] + M15, pnl, tag, d))
             if cooldown_h and pnl < 0: cool_until[sym] = T[j] + cooldown_h * 3600000
     return out
 
@@ -105,7 +105,7 @@ def portfolio(trades, slots_maj, slots_alt, notional, order):
         if busy.get(key, 0) > t[1]: continue
         mj = t[0] in MAJ
         if sum(1 for o in open_ if (o[0] in MAJ) == mj and o[4] == t[4]) >= (slots_maj if mj else slots_alt): continue
-        open_.append(t); taken.append((t[0], t[1], t[2], t[3] * notional, t[4])); busy[key] = t[2]
+        open_.append(t); taken.append((t[0], t[1], t[2], t[3] * notional, t[4]) + tuple(t[5:])); busy[key] = t[2]
     return taken
 
 def month_key(ms): return datetime.datetime.fromtimestamp(ms / 1000 + 9 * 3600, datetime.timezone.utc).strftime('%Y-%m')
