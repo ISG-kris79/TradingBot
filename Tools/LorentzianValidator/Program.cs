@@ -30165,6 +30165,7 @@ internal static class Program
         bool HasArg(string flag) => args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
         if (HasArg("--trendride-why")) { await RunTrendRideWhyAsync(args); return; }
         if (HasArg("--lab")) { StrategyLab.Run(args); return; }
+        if (HasArg("--donchian-parity")) { DonchianParity.Run(); return; }
         if (HasArg("--elliott-daily")) { await RunElliottDailyAsync(args); return; }
         if (HasArg("--elliott-tf")) { await RunElliottTfAsync(args); return; }
         if (HasArg("--elliott-seedsim")) { await RunElliottSeedSimAsync(args); return; }

@@ -34,6 +34,14 @@
 
 ## 2. 진입 파이프라인
 
+> **[2026-10-06 v5.35.0] 현행 진입 = 돈치안 추세추종 단일.** 아래 2.1~2.3(MeanRev/LCC 시절)은 이력이다.
+> - 규칙: `Services/DonchianTrend.cs` — 4h 종가가 직전 55봉 최고가 첫 돌파 → 롱 / 최저가 첫 이탈 → 숏. 초기손절 2×ATR(14,4h), 4h 종가 ∓ 5×ATR 트레일, 익절 없음. 고정 30종목.
+> - 엔진: `TradingEngine.Donchian.cs` `RunDonchianLoopAsync` — 4h 마감 후 15초에 보유분 트레일 갱신 → 신규 스캔(마감 후 30분 내). 추적풀/틱 흐름과 무관.
+> - 진입 경로: `IsEntryAllowed` → `PlaceAndTrackEntryAsync` 직행(ExecuteAutoOrderInner 미경유). 거래소엔 SL 하나만(`OrderLifecycleManager.RegisterStopOnlyAsync`).
+> - 소유 표시: `DonchianTrend.Active`/`Owns(symbol)` — 이 심볼엔 레거시 감시·청산(표준/PUMP 모니터, 하이브리드, 하락반전, CRASH/PUMP 긴급청산)이 붙지 않는다. 재시작 시 `ActivePosition.SignalSource` 로 복원.
+> - 검증: `Tools/LorentzianValidator` `--lab`(라이브 조건 하네스) · `--donchian-parity`(라이브 코드 = 백테스트, 신호 6,919/6,919·손절 554/554 일치).
+> - ⚠️ 함정: 재시작 시 `PositionInfo.EntrySignalSource` 는 복원되지 않는다(전략별 청산 분기가 깨지는 원인). `MajorSymbols` 는 설정의 40종목이라 "메이저 판정"에 쓰면 알트가 섞인다 — 메이저는 BTC/ETH/SOL/XRP 4개.
+
 ### 2.1 구동 경로
 `ProcessTickerChannelAsync`(웹소켓 틱) → `_pendingAnalysisPrices[sym]` → `TryStartSymbolAnalysisWorker`(심볼당 1워커) → **`ProcessCoinAndTradeBySymbolAsync`**(핵심).
 

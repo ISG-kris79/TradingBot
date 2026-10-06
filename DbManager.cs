@@ -777,6 +777,31 @@ VALUES (@UserId,@Symbol,@Strategy,@Regime,@NetPnl,@IsWin,@EntryTime,@ExitTime);"
             catch { return (null, null); }
         }
 
+        /// <summary>[v5.35.0] 재시작 복원용 — 유저의 오픈 포지션 진입 소스/시각(UTC)/방향/진입가.
+        ///   메모리 PositionInfo.EntrySignalSource 는 재시작 시 복원되지 않으므로, 돈치안 소유 포지션은 이 표로 되찾는다.</summary>
+        public async Task<List<(string Symbol, string SignalSource, DateTime EntryUtc, string Side, decimal EntryPrice)>> GetActivePositionSourcesAsync(int userId)
+        {
+            var list = new List<(string, string, DateTime, string, decimal)>();
+            try
+            {
+                if (userId <= 0) return list;
+                await using var db = new SqlConnection(_connectionString);
+                await db.OpenAsync();
+                var rows = await db.QueryAsync(
+                    "SELECT Symbol, SignalSource, EntryTime, PositionSide, EntryPrice FROM dbo.ActivePosition WHERE UserId=@UserId",
+                    new { UserId = userId });
+                foreach (var r in rows)
+                    list.Add(((string?)r.Symbol ?? "", (string?)r.SignalSource ?? "",
+                              DateTime.SpecifyKind((DateTime)r.EntryTime, DateTimeKind.Utc),
+                              (string?)r.PositionSide ?? "", (decimal?)r.EntryPrice ?? 0m));
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Instance?.AddLog($"⚠️ [DB] ActivePosition 소스 조회 실패: {ex.Message}");
+            }
+            return list;
+        }
+
         /// <summary>진입 시 원자적 등록. 이미 (UserId,Symbol) 행이 있으면 false(=중복 → 진입 차단). DB실패 시 true(가용성).</summary>
         public async Task<bool> TryOpenActivePositionAsync(int userId, string symbol, string positionSide,
             decimal entryPrice, decimal quantity, int leverage, string? signalSource, string? regimeAtEntry = null)

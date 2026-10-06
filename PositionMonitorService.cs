@@ -468,6 +468,7 @@ namespace TradingBot.Services
 
             while (!token.IsCancellationRequested)
             {
+                if (DonchianTrend.Owns(symbol)) { OnLog?.Invoke($"📐 [DONCHIAN] {symbol} 레거시 감시 해제 — 청산은 4h 5ATR 트레일 전용"); break; }   // [v5.35.0]
                 try
                 {
                     // [v4.5.5] CPU 최적화: REST API 호출 제거, WebSocket TickerCache만 사용
@@ -1521,6 +1522,7 @@ namespace TradingBot.Services
 
             while (!token.IsCancellationRequested)
             {
+                if (DonchianTrend.Owns(symbol)) { OnLog?.Invoke($"📐 [DONCHIAN] {symbol} 레거시 감시 해제 — 청산은 4h 5ATR 트레일 전용"); break; }   // [v5.35.0]
                 await Task.Delay(500, token);
 
                 decimal currentPrice = await _exchangeService.GetPriceAsync(symbol, ct: token);

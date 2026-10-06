@@ -29,10 +29,10 @@ internal static class StrategyLab
         public Dictionary<int, TfData> tf = new();
         public Dictionary<int, int[]> lastClosed = new();   // 15m j → 그 봉 시가 이전에 마감된 마지막 TF 봉 index
     }
-    sealed class Trade { public int sym; public bool major; public int dir; public long tIn, tOut; public double pnl; public string how = ""; }
+    sealed class Trade { public int sym; public bool major; public int dir; public long tIn, tOut; public double pnl; public string how = "", name = "", status = ""; public double px0, px1; }
     sealed class Exit { public double stopAtr = 2, trailAtr, tpR; public int maxHoldTf; public long forceExitT; }
     sealed class Cfg { public string fam = "", name = ""; public Func<List<Sym>, List<Trade>> gen = _ => new(); }
-    sealed class Res { public Cfg cfg = null!; public List<Trade> taken = new(); public double[] seg = new double[Segs]; public double total, pf, mdd, win; }
+    sealed class Res { public Cfg cfg = null!; public List<Trade> taken = new(), rejected = new(); public double[] seg = new double[Segs]; public double total, pf, mdd, win; }
 
     static long seg0, segLen;
     static bool Neighborhood; static string Pick = "";
@@ -95,7 +95,11 @@ internal static class StrategyLab
         var outDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..");
         WriteDaily(Path.Combine(outDir, "lab-wf-daily.csv"), oosTrades);
         foreach (var r in results.Where(r => Pick.Length > 0 && r.cfg.name.Contains(Pick)))
+        {
             WriteDaily(Path.Combine(outDir, $"lab-pick-{Safe(r.cfg.name)}-{Base}m.csv"), r.taken);
+            File.WriteAllLines(Path.Combine(outDir, $"lab-trades-{Safe(r.cfg.name)}-{Base}m.csv"), new[] { "status,symbol,dir,inUTC,outUTC,entry,exit,how,pnlUSD" }
+                .Concat(r.taken.Concat(r.rejected).OrderBy(t => t.tIn).Select(t => $"{t.status},{t.name},{(t.dir > 0 ? "L" : "S")},{D(t.tIn):yyyy-MM-dd HH:mm},{D(t.tOut):yyyy-MM-dd HH:mm},{t.px0.ToString(CultureInfo.InvariantCulture)},{t.px1.ToString(CultureInfo.InvariantCulture)},{t.how},{t.pnl.ToString("F2", CultureInfo.InvariantCulture)}")));
+        }
         foreach (var r in robust.Take(3))
             WriteDaily(Path.Combine(outDir, $"lab-daily-{Safe(r.cfg.name)}.csv"), r.taken);
         File.WriteAllLines(Path.Combine(outDir, "lab-summary.csv"), new[] { "fam,name,trades,winPct,pf,totalUSD,mddUSD," + string.Join(",", Enumerable.Range(0, Segs).Select(i => "seg" + i)) }
@@ -127,6 +131,29 @@ internal static class StrategyLab
                                 if (T.b.c[i] < lo && T.b.c[i - 1] >= loP) return -1;
                                 return 0;
                             }, new Exit { stopAtr = 2, trailAtr = m_ }, null)
+                        });
+                    }
+            // 신고가 필터 — 롱은 돌파 시점 종가가 최근 H봉 최고가(=장기 신고가)일 때만, 숏은 장기 신저가일 때만
+            //   (사용자 지적 2026-10-06: "전고점 돌파한 코인이면 수익이 나야 한다")
+            foreach (var hd in new[] { 90, 180, 365 })
+                foreach (var shortToo in new[] { false, true })
+                    foreach (var N in new[] { 20, 55 })
+                    {
+                        int N_ = N, H_ = hd * 6; bool st_ = shortToo;
+                        L.Add(new Cfg
+                        {
+                            fam = "DONCHIAN_HI", name = $"돈치안 4h N{N} 트레일5ATR 롱숏 +{hd}일신고가{(shortToo ? "(숏도신저가)" : "(롱만)")}",
+                            gen = S => SignalTrades(S, 240, (s, T, i) =>
+                            {
+                                if (i < N_ + 2) return 0;
+                                double hi = Max(T.b.h, i - N_, i - 1), lo = Min(T.b.l, i - N_, i - 1);
+                                double hiP = Max(T.b.h, i - N_ - 1, i - 2), loP = Min(T.b.l, i - N_ - 1, i - 2);
+                                if (T.b.c[i] > hi && T.b.c[i - 1] <= hiP)
+                                    return i >= H_ && T.b.c[i] > Max(T.b.h, i - H_, i - 1) ? 1 : 0;
+                                if (T.b.c[i] < lo && T.b.c[i - 1] >= loP)
+                                    return !st_ || (i >= H_ && T.b.c[i] < Min(T.b.l, i - H_, i - 1)) ? -1 : 0;
+                                return 0;
+                            }, new Exit { stopAtr = 2, trailAtr = 5 }, null)
                         });
                     }
             return L;
@@ -270,7 +297,7 @@ internal static class StrategyLab
     done:
         double hours = (m.t[xj] - m.t[e0]) / 3600000.0;
         double pnl = dir * (px - entry) / entry - FeeRT - FundPer8h * Math.Max(0, hours) / 8;
-        return new Trade { sym = si, major = s.major, dir = dir, tIn = m.t[e0], tOut = m.t[xj] + Base * 60000L, pnl = pnl * Notional, how = how };
+        return new Trade { sym = si, major = s.major, dir = dir, tIn = m.t[e0], tOut = m.t[xj] + Base * 60000L, pnl = pnl * Notional, how = how, name = s.name, px0 = entry, px1 = px };
     }
 
     static List<Trade> VolBreakout(List<Sym> S, double k, bool ls)
@@ -346,9 +373,9 @@ internal static class StrategyLab
         foreach (var c in cands.OrderBy(x => x.tIn).ThenBy(x => x.sym))
         {
             open.RemoveAll(o => o.tOut <= c.tIn);
-            if (busy.TryGetValue(c.sym, out var bt) && c.tIn < bt) continue;
-            if (open.Count(o => o.major == c.major) >= (c.major ? MajSlots : AltSlots)) continue;
-            open.Add(c); r.taken.Add(c); busy[c.sym] = c.tOut;
+            if (busy.TryGetValue(c.sym, out var bt) && c.tIn < bt) { c.status = "SYM_BUSY"; r.rejected.Add(c); continue; }
+            if (open.Count(o => o.major == c.major) >= (c.major ? MajSlots : AltSlots)) { c.status = "SLOT_FULL:" + string.Join("/", open.Where(o => o.major == c.major).Select(o => o.name.Replace("USDT", ""))); r.rejected.Add(c); continue; }
+            c.status = "TAKEN"; open.Add(c); r.taken.Add(c); busy[c.sym] = c.tOut;
         }
         foreach (var t in r.taken) { int sg = SegOf(t.tIn); if (sg >= 0 && sg < Segs) r.seg[sg] += t.pnl; }
         r.total = r.taken.Sum(t => t.pnl);

@@ -25,7 +25,7 @@ using ExchangeType = TradingBot.Shared.Models.ExchangeType;
 
 namespace TradingBot
 {
-    public class TradingEngine : IDisposable
+    public partial class TradingEngine : IDisposable
     {
         private bool _disposed = false;
         public bool IsBotRunning { get; private set; } = false;
@@ -652,7 +652,7 @@ namespace TradingBot
             {
                 switch (symbol)
                 {
-                    case "BTCUSDT": case "ETHUSDT": case "SOLUSDT": case "XRPUSDT": case "BNBUSDT":
+                    case "BTCUSDT": case "ETHUSDT": case "SOLUSDT": case "XRPUSDT":   // [v5.35.0] BNB 제외 — 메이저 4개
                         return "MAJOR";
                 }
             }
@@ -708,13 +708,17 @@ namespace TradingBot
             //   면제한다 — 엘리엇도 피보나치도 아닌 조건이고, BTC 레짐 게이트는 이미 금지 규칙이다(코인 디커플링).
             //   안전장치(설정미로드·중복포지션·슬롯한도·수동청산 쿨다운)는 그대로 통과시킨다.
             bool isElliott = srcU.Contains("ELLIOTT");
+            // [v5.35.0] ★돈치안 — 고정 30종목·4h 돌파 규칙 그대로 진입해야 백테스트와 같다.
+            //   추적풀(상승 알트만)·시총Top30·손절 60분 쿨다운·스코어카드는 검증에 없던 재량 필터라 면제.
+            //   안전장치(설정 로드·슬롯 한도·수동청산 쿨다운·메이저 토글)는 그대로 적용.
+            bool isDonchian = DonchianTrend.IsDonchianSource(srcU);
             string entryCat;
             // [v5.22.25] 메이저 심볼은 source 무관 MAJOR 강제 — MaxMajorSlots 회피 버그 fix
             //   v5.22.24 까지: BTC/ETH/SOL/XRP 가 BB_SQUEEZE/ENGINE_151 source 로 들어오면 entryCat=SQUEEZE/GENERIC
             //   → MaxSqueezeSlots(3)/MaxGenericSlots(3) 만 체크하고 MaxMajorSlots(1) 우회 → 사용자 BTC+SOL 동시진입 사례
             //   해결: 메이저 심볼은 항상 MAJOR 카테고리 (활성카운트의 ResolveActivePositionCategory 와 일관)
             if (!string.IsNullOrEmpty(symbol) &&
-                (symbol == "BTCUSDT" || symbol == "ETHUSDT" || symbol == "SOLUSDT" || symbol == "XRPUSDT" || symbol == "BNBUSDT"))
+                (symbol == "BTCUSDT" || symbol == "ETHUSDT" || symbol == "SOLUSDT" || symbol == "XRPUSDT"))   // [v5.35.0] 메이저=4개(BNB 제외, 사용자 규칙)
             {
                 entryCat = "MAJOR";
             }
@@ -813,7 +817,7 @@ namespace TradingBot
 
             // [v5.22.24] 진입풀 일원화 — UI 그리드 (메이저4 + 알트8) 외 심볼 차단.
             //   활성포지션은 면제 (TP/SL 보호 위해 풀 외라도 분석 통과).
-            if (_activeTrackingPool.Count > 0 && !_activeTrackingPool.ContainsKey(symbol))
+            if (!isDonchian && _activeTrackingPool.Count > 0 && !_activeTrackingPool.ContainsKey(symbol))
             {
                 bool hasActivePos;
                 lock (_posLock) { hasActivePos = _activePositions.ContainsKey(symbol); }
@@ -840,7 +844,7 @@ namespace TradingBot
 
             // [v5.25.17] 손절 재진입 쿨다운 — 손실 청산 후 60분(연속손실 시 120/180분) 재진입 차단(사용자 지시: "손절시 1시간 진입불가").
             //   전략무관(MEANREV/RSI2/LORENTZIAN/펜딩 전부) — 모든 진입이 이 게이트를 통과. 등록은 OnPositionClosedForAiLabel.
-            if (_lorentzianLossCooldown.TryGetValue(symbol, out var lossUntil) && DateTime.UtcNow < lossUntil)
+            if (!isDonchian && _lorentzianLossCooldown.TryGetValue(symbol, out var lossUntil) && DateTime.UtcNow < lossUntil)
             {
                 blockReason = $"STOPLOSS_COOLDOWN:{(lossUntil - DateTime.UtcNow).TotalMinutes:F0}m";
                 OnStatusLog?.Invoke($"⛔ [GATE] {symbol} {source} 차단 | reason={blockReason} (손절 후 재진입 금지)");
@@ -877,7 +881,7 @@ namespace TradingBot
                     return false;
                 }
             }
-            else
+            else if (!isDonchian)
             {
                 // [v5.23.63] 알트 시가총액 Top 30 제한 (메이저는 entryCat=MAJOR 별도 통과)
                 //   CoinGecko 시총 순위 1시간 캐시. 첫 부팅 / API 실패 시 IsReady=false → 안전 차단.
@@ -909,9 +913,9 @@ namespace TradingBot
                 //   전부 다른 전략(LORENTZIAN/MAJOR)이 낸 손실이고, 엘리엇은 표본이 0건이었다.
                 //   엘리엇은 진입 시점에 구조적 SL(되돌림 극점)을 고정하므로 심볼 무관하게 손실이 1R로 캡된다.
                 //   ※ 면제는 엘리엇 한정. 다른 소스는 기존대로 차단 유지.
-                if (srcU.Contains("ELLIOTT"))
+                if (srcU.Contains("ELLIOTT") || isDonchian)
                 {
-                    OnStatusLog?.Invoke($"🌊 [ELLIOTT] {symbol} 스코어카드 차단 면제 (심볼 연좌 — 엘리엇 표본 별도)");
+                    OnStatusLog?.Invoke($"🌊 [{(isDonchian ? "DONCHIAN" : "ELLIOTT")}] {symbol} 스코어카드 차단 면제 (심볼 연좌 — 전략 표본 별도)");
                 }
                 else
                 {
@@ -3380,6 +3384,10 @@ namespace TradingBot
                 _cts = new CancellationTokenSource();
                 var token = _cts.Token;
 
+                // [v5.35.0] ★돈치안 추세추종 엔진 — 4h 마감마다 고정 30종목 스캔 + 보유분 5ATR 트레일.
+                //   포지션 동기화(레거시 감시 부착)보다 먼저 띄워 재시작 시 돈치안 보유분을 먼저 되찾는다.
+                _ = Task.Run(() => RunDonchianLoopAsync(token), token);
+
                 // [v5.10.18] 거래소 폴링 동기화 시작
                 _positionSyncService.Start(token);
 
@@ -4805,7 +4813,10 @@ namespace TradingBot
                     //   await AnalyzeMeanRev15mEntryAsync(symbol, currentPrice, token);
                     // [v5.33.0] ★엘리엇 파동 슬리브 (사용자 지시) — 진입 15m · 손익비 1:3(진입가 기준).
                     //   3년·30코인·80만후보 워크포워드 검증에서 5폴드 전부 양수인 유일 규칙(C파 ∪ 숏&ADX25).
-                    await AnalyzeElliottWaveEntryAsync(symbol, currentPrice, token);
+                    // [v5.35.0] ★엘리엇 진입 중단 — 돈치안 추세추종 단일 진입으로 교체(사용자 승인 2026-10-06).
+                    //   근거: 라이브 조건(명목 $3,000·슬롯 2/3) 3년 재생 −$2,330(--elliott-daily). 메서드는 보존.
+                    //   진입은 RunDonchianLoopAsync(TradingEngine.Donchian.cs) 가 4h 마감마다 수행한다.
+                    // await AnalyzeElliottWaveEntryAsync(symbol, currentPrice, token);
                 }
                 catch (Exception ex)
                 {
@@ -4828,6 +4839,8 @@ namespace TradingBot
                     OnStatusLog?.Invoke($"⚠️ [LORENTZIAN_CONFIRM] {symbol} 오류: {ex.Message}");
                 }
 
+                // [v5.35.0] 돈치안 보유분은 하이브리드/하락반전 청산 제외 — 청산은 4h 5ATR 트레일 전용
+                if (!DonchianTrend.Owns(symbol))
                 await CheckHybridExitAsync(symbol, currentPrice, token);
 
                 // [v5.23.2] 하락 반전 시그널별 즉시 탈출 (3가지)
@@ -4836,6 +4849,7 @@ namespace TradingBot
                 //   3. 거래량 실린 장대음봉 (음봉 vol > 직전 양봉 vol) → 100% 청산
                 try
                 {
+                    if (!DonchianTrend.Owns(symbol))
                     await CheckBearishReversalExitAsync(symbol, currentPrice, token);
                 }
                 catch (Exception ex)
@@ -8257,6 +8271,7 @@ namespace TradingBot
 
             foreach (var sym in longSymbols)
             {
+                if (DonchianTrend.Owns(sym)) { OnStatusLog?.Invoke($"📐 [DONCHIAN] {sym} CRASH 긴급청산 제외 — 손절은 거래소 트레일 SL 이 담당"); continue; }
                 decimal qty, entry;
                 lock (_posLock)
                 {
@@ -8343,6 +8358,7 @@ namespace TradingBot
 
             foreach (var sym in shortSymbols)
             {
+                if (DonchianTrend.Owns(sym)) { OnStatusLog?.Invoke($"📐 [DONCHIAN] {sym} PUMP 긴급청산 제외 — 손절은 거래소 트레일 SL 이 담당"); continue; }
                 decimal qty, entry;
                 lock (_posLock)
                 {
@@ -9020,6 +9036,9 @@ namespace TradingBot
             if (token.IsCancellationRequested)
                 return;
 
+            // [v5.35.0] 돈치안 보유분엔 레거시 감시(본절·부분익절·SIDEWAYS 익절·반전캔들 등) 미부착
+            if (DonchianTrend.Owns(symbol)) { OnStatusLog?.Invoke($"📐 [DONCHIAN] {symbol} 표준 감시 미부착 ({source}) — 청산은 4h 5ATR 트레일 전용"); return; }
+
             if (!_runningStandardMonitors.TryAdd(symbol, 0))
                 return;
 
@@ -9048,6 +9067,8 @@ namespace TradingBot
         {
             if (token.IsCancellationRequested)
                 return;
+
+            if (DonchianTrend.Owns(symbol)) { OnStatusLog?.Invoke($"📐 [DONCHIAN] {symbol} PUMP 감시 미부착 ({source}) — 청산은 4h 5ATR 트레일 전용"); return; }
 
             if (!_runningPumpMonitors.TryAdd(symbol, 0))
                 return;
@@ -10645,6 +10666,8 @@ namespace TradingBot
             string decision = ctx.Decision;
             // [ActivePosition] 진입 커밋 시 DB표에 INSERT, 실패 rollback 시 DELETE — userId 캡처.
             int apUserId = AppConfig.CurrentUser?.Id ?? 0;
+            // [v5.35.0] 돈치안 — 사이즈 배수·기본TP·부분익절·하이브리드·레거시 보호주문/감시 전부 건너뜀(백테스트 동일성)
+            bool isDonchian = DonchianTrend.IsDonchianSource(ctx.SignalSource);
 
             void CleanupReservedPosition(string reason)
             {
@@ -10677,6 +10700,7 @@ namespace TradingBot
 
                 // [v5.25.18] 전략×레짐 자가학습 사이즈 배수 — 현 BTC레짐에서 이 전략의 최근 30일 성과로 비중 가감(0.5/1.0/1.5x).
                 //   미준비/표본부족/레짐미상 → 1.0x(무영향). SymbolScorecard(심볼별)와 직교 — 둘 다 사이즈 조절만.
+                if (!isDonchian)
                 {
                     string srRegime = GetCurrentBtcRegime();
                     string srStrat = NormalizeStrategyKey(ctx.SignalSource);
@@ -10689,7 +10713,7 @@ namespace TradingBot
                 }
 
                 // [v4.5.5] 알트 불장 모드: 레버리지 50% 하향 + 사이즈 70%
-                if (_altBullDetector.IsActive)
+                if (!isDonchian && _altBullDetector.IsActive)
                 {
                     int originalLev = leverage;
                     decimal originalMul = effectiveSizeMultiplier;
@@ -10785,10 +10809,14 @@ namespace TradingBot
                     // [v3.2.21] ScoutMode여도 슬롯 제한 적용 (무제한 진입 방지)
                     if (!ctx.IsScoutAddOnOrder)
                     {
-                        bool isMajorSymbol = MajorSymbols.Contains(symbol);
+                        // [v5.35.0] 돈치안은 메이저=BTC/ETH/SOL/XRP 4개 기준(백테스트 슬롯 분류). MajorSymbols 는 설정의 40종목 목록이라 알트가 메이저로 섞인다.
+                        var majorSetFinal = isDonchian
+                            ? new HashSet<string>(new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" }, StringComparer.OrdinalIgnoreCase)
+                            : MajorSymbols;
+                        bool isMajorSymbol = majorSetFinal.Contains(symbol);
                         // [v5.2.2] IsOwnPosition만 카운트
                         int finalTotal = _activePositions.Count(p => p.Value.IsOwnPosition);
-                        int finalMajorCount = _activePositions.Count(p => p.Value.IsOwnPosition && MajorSymbols.Contains(p.Key));
+                        int finalMajorCount = _activePositions.Count(p => p.Value.IsOwnPosition && majorSetFinal.Contains(p.Key));
                         int finalPumpCount = finalTotal - finalMajorCount;
 
                         if (isMajorSymbol && finalMajorCount >= MAX_MAJOR_SLOTS)
@@ -10936,8 +10964,8 @@ namespace TradingBot
                 decimal slPrice = ctx.CustomStopLossPrice;
                 decimal leverageDecimal = leverage;
 
-                // TP 가격 계산 (설정값 없으면 ROE 기반)
-                if (tpPrice <= 0 && leverageDecimal > 0)
+                // TP 가격 계산 (설정값 없으면 ROE 기반) — [v5.35.0] 돈치안은 익절 없음(0 유지 → 거래소 TP 미등록)
+                if (!isDonchian && tpPrice <= 0 && leverageDecimal > 0)
                 {
                     decimal tp1Roe = ctx.IsPumpStrategy ? 25.0m : (symbol.StartsWith("BTC", StringComparison.OrdinalIgnoreCase) ? 20.0m : 30.0m);
                     tpPrice = (decision == "LONG")
@@ -11058,7 +11086,7 @@ namespace TradingBot
                         {
                             pos.TakeProfit = ctx.CustomTakeProfitPrice;
                         }
-                        else if (pos.Leverage > 0 && pos.EntryPrice > 0)
+                        else if (!isDonchian && pos.Leverage > 0 && pos.EntryPrice > 0)
                         {
                             // TP1 ROE%를 가격으로 변환: BTC=20%, ETH/SOL/XRP=30%, PUMP=25%
                             decimal tp1Roe = pos.IsPumpStrategy ? 25.0m
@@ -11149,7 +11177,12 @@ namespace TradingBot
 
                 // [v5.10.54] OrderLifecycleManager 단일 진입점 — SL/TP/Trailing 3개 한 번에 등록
                 // 긴급 대응(CRASH_REVERSE/PUMP_REVERSE) 은 OrderLifecycle 제외 (위에 폴백 등록됨)
-                if (_orderLifecycle != null
+                // [v5.35.0] 돈치안 — 보호주문은 DonchianEnterAsync 가 SL 단독으로 등록(RegisterStopOnlyAsync). 레거시 브래킷/워치독 폴백 미사용.
+                if (isDonchian)
+                {
+                    OnStatusLog?.Invoke($"📐 [DONCHIAN] {symbol} 레거시 브래킷(TP·부분익절·트레일) 미등록 — SL 단독 등록은 돈치안 엔진이 수행");
+                }
+                else if (_orderLifecycle != null
                     && ctx.SignalSource != "CRASH_REVERSE"
                     && ctx.SignalSource != "PUMP_REVERSE")
                 {
@@ -11257,8 +11290,8 @@ namespace TradingBot
                     });
                 }
 
-                // HybridExitManager 등록
-                if (finalTakeProfit > 0 && _hybridExitManager != null)
+                // HybridExitManager 등록 — [v5.35.0] 돈치안 제외
+                if (!isDonchian && finalTakeProfit > 0 && _hybridExitManager != null)
                 {
                     _hybridExitManager.RegisterEntry(symbol, decision, actualEntryPrice, finalTakeProfit);
                     OnStatusLog?.Invoke($"📋 [Hybrid Exit] {symbol} 등록 | 목표가: ${finalTakeProfit:F2}, 손절: ${finalStopLoss:F2}");
@@ -11374,7 +11407,11 @@ namespace TradingBot
                             isPumpPosition = activePos.IsPumpStrategy;
                     }
 
-                    if (isPumpPosition)
+                    if (isDonchian)
+                    {
+                        // [v5.35.0] 레거시 감시 미부착 — TryStart*Monitor 도 Owns() 가드가 있지만 명시적으로 건너뜀
+                    }
+                    else if (isPumpPosition)
                     {
                         double pumpAtr = ctx.LatestCandle != null ? Math.Max(0d, ctx.LatestCandle.ATR) : 0d;
                         TryStartPumpMonitor(symbol, actualEntryPrice, ctx.SignalSource, pumpAtr, ctx.Token, "new-entry");

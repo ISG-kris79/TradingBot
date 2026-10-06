@@ -163,6 +163,37 @@ namespace TradingBot.Services
         }
 
         /// <summary>
+        /// [v5.35.0] 돈치안 전용 — 기존 조건부 주문 전부 취소 후 SL 하나만 등록 (TP·부분익절·트레일 주문 없음).
+        ///   트레일 이동(4h 마감마다)도 이 메서드로 통째 재등록한다. 돈치안 포지션엔 SL 외 주문이 없어야 하므로
+        ///   CancelAll 이 안전하고, 재시작 시 남아 있던 레거시 TP/트레일 주문도 함께 정리된다.
+        /// </summary>
+        public async Task<string> RegisterStopOnlyAsync(string symbol, bool isLong, decimal quantity, decimal stopPrice, CancellationToken ct = default)
+        {
+            if (quantity <= 0 || stopPrice <= 0) return "";
+            try
+            {
+                await _exchange.CancelAllOrdersAsync(symbol, ct);
+                await Task.Delay(CANCEL_SETTLE_DELAY_MS, ct);
+            }
+            catch (Exception ex) { OnLog?.Invoke($"⚠️ [DONCHIAN SL] {symbol} 기존 주문 취소 예외: {ex.Message}"); }
+
+            string closeSide = isLong ? "SELL" : "BUY";
+            try
+            {
+                var (ok, orderId) = await _exchange.PlaceStopOrderAsync(symbol, closeSide, quantity, stopPrice, ct);
+                if (ok)
+                {
+                    _lastRegistered[symbol] = DateTime.Now;
+                    OnLog?.Invoke($"✅ [DONCHIAN SL] {symbol} 등록 | {closeSide} qty={quantity} stop=${stopPrice:F6}");
+                    return orderId;
+                }
+                OnLog?.Invoke($"❌ [DONCHIAN SL] {symbol} 등록 실패 stop=${stopPrice:F6}");
+            }
+            catch (Exception ex) { OnLog?.Invoke($"❌ [DONCHIAN SL] {symbol} 예외: {ex.Message}"); }
+            return "";
+        }
+
+        /// <summary>
         /// 본절 전환 — 기존 SL 취소 후 새 SL(본절가) 등록.
         /// PumpMonitor 본절 로직 및 MonitorPositionStandard Smart Protective Stop에서 호출.
         /// </summary>
