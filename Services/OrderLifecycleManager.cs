@@ -57,6 +57,13 @@ namespace TradingBot.Services
             decimal trailingCallbackRate, // 0.1~5.0 (%)
             CancellationToken ct = default)
         {
+            // [v5.35.3] 돈치안 보유분엔 레거시 브래킷(TP·부분익절·트레일) 금지 — 재시작/재입양/외부동기화 경로가 +2% 부분익절을 걸던 결함 차단.
+            //   돈치안 SL 은 RegisterStopOnlyAsync 로만 관리한다.
+            if (DonchianTrend.Owns(symbol))
+            {
+                OnLog?.Invoke($"📐 [DONCHIAN] {symbol} 레거시 브래킷 등록 차단 — SL 단독(4h 5ATR 트레일) 전용");
+                return new BracketIds("", "", "", false);
+            }
             if (entryPrice <= 0 || quantity <= 0)
             {
                 OnLog?.Invoke($"⚠️ [OrderLifecycle] {symbol} 유효하지 않은 진입 (price={entryPrice} qty={quantity})");

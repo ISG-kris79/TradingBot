@@ -1582,6 +1582,9 @@ namespace TradingBot
         private async Task RegisterProtectionOrdersAsync(
             string symbol, bool isLong, decimal filledQty, decimal entryPrice, int leverage, string source, CancellationToken token)
         {
+            // [v5.35.3] 돈치안 보유분엔 레거시 보호주문(TP·부분익절) 금지 — SL 은 돈치안 엔진이 단독 관리
+            if (DonchianTrend.Owns(symbol)) { OnStatusLog?.Invoke($"📐 [DONCHIAN] {symbol} 레거시 보호주문 차단 ({source})"); return; }
+
             try
             {
                 if (filledQty <= 0 || entryPrice <= 0 || leverage <= 0)
