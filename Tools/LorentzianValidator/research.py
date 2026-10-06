@@ -9,7 +9,7 @@ UNIV = ["BTCUSDT","ETHUSDT","XRPUSDT","BNBUSDT","SOLUSDT","DOGEUSDT","ADAUSDT","
 MAJ = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}
 SPLIT = int(datetime.datetime(2023, 9, 22, tzinfo=datetime.timezone.utc).timestamp() * 1000)
 FEE, FUND8H = 0.0012, 0.0001
-REAL_FUNDING = False   # True: 실제 펀딩비(롱 지불·숏 수취, 부호 반영) / False: 방향 무관 0.01%/8h 차감(보수적)
+REAL_FUNDING = True    # True: 실제 펀딩비(롱 지불·숏 수취, 부호 반영) / False: 방향 무관 0.01%/8h 차감(보수적)
 _FUND = {}
 def funding_sum(sym, t0, t1):
     import bisect, os
@@ -150,14 +150,17 @@ def evaluate(name, sleeves, n_mc=20, show=True):
         for t in sorted(tk, key=lambda x: x[2]): cum += t[3]; pk = max(pk, cum); mdd = min(mdd, cum - pk)
         yr = collections.defaultdict(float)
         for k in months: yr[k[:4]] += m[k]
-        res.append(dict(tot=sum(allm), pos=sum(1 for v in allm if v > 0) / len(allm), pos1=sum(1 for v in first if v > 0) / max(1, len(first)),
+        streak = mx = 0
+        for v in allm:
+            streak = streak + 1 if v <= 0 else 0; mx = max(mx, streak)
+        res.append(dict(maxstreak=mx, lossyears=sum(1 for v in yr.values() if v <= 0), tot=sum(allm), pos=sum(1 for v in allm if v > 0) / len(allm), pos1=sum(1 for v in first if v > 0) / max(1, len(first)),
                         pos2=sum(1 for v in second if v > 0) / max(1, len(second)), t3=sum(last3), t5=sum(last5), worst=min(allm), mdd=mdd,
                         n=len(tk), yr=yr, nm=len(allm)))
     a = lambda k: st.mean(r[k] for r in res)
     yrs = sorted(res[0]['yr'])
     if show:
         print(f'{name:44} 7년 {a("tot"):9,.0f}$(±{st.pstdev(r["tot"] for r in res):6,.0f}) 5년 {a("t5"):8,.0f}$ 3년 {a("t3"):8,.0f}$ | '
-              f'흑자월 {a("pos"):.0%} (전반 {a("pos1"):.0%} · 후반 {a("pos2"):.0%}) 최악월 {a("worst"):7,.0f}$ 낙폭 {a("mdd"):8,.0f}$ 체결 {a("n"):.0f} | '
+              f'연속적자월 최대 {a("maxstreak"):.1f} · 적자연도 {a("lossyears"):.1f} · 흑자월 {a("pos"):.0%} 최악월 {a("worst"):7,.0f}$ 낙폭 {a("mdd"):8,.0f}$ 체결 {a("n"):.0f} | '
               + ' '.join(f'{y}:{st.mean(r["yr"].get(y, 0) for r in res)/1000:+.1f}k' for y in yrs))
     return res
 
