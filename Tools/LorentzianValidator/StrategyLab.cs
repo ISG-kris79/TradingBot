@@ -149,6 +149,14 @@ internal static class StrategyLab
                 L.Add(new Cfg { fam = "T", name = $"D 돌파실패 조기정리 {fb / 4}h", gen = S => DonchianTimed(S, 0, 0, fb_) });
             }
             L.Add(new Cfg { fam = "T", name = "E 구조손절(돌파선-0.5ATR)", gen = S => DonchianTimed(S, 0, 0, 0, true) });
+            L.Add(new Cfg { fam = "T", name = "F 롱즉시 + 숏 반등대기", gen = S => DonchianTimed(S, 0, 16, 0, false, 2) });
+            L.Add(new Cfg { fam = "T", name = "G 롱즉시 + 숏 안함", gen = S => DonchianTimed(S, 0, 16, 0, false, 9) });
+            foreach (var p in new[] { 20, 50, 100 })
+            {
+                int p_ = p;
+                L.Add(new Cfg { fam = "T", name = $"H 코인일봉추세 EMA{p} 일치(롱숏)", gen = S => DonchianTimed(S, 0, 0, 0, false, -1, p_) });
+                L.Add(new Cfg { fam = "T", name = $"I 롱만 일봉추세 EMA{p} 위", gen = S => DonchianTimed(S, 0, 0, 0, false, -1, p_, 1) });
+            }
             return L;
         }
         if (MonthMode)
@@ -410,7 +418,8 @@ internal static class StrategyLab
     /// <summary>v5.35.2 신호(N55 돌파 + 과열추격 4.5ATR 제외) 후 15m 진입 타이밍.
     ///   mode 0=즉시(다음 15m 시가) · 1=15m 종가가 신호봉 종가 위로 마감 · 2=0.5ATR 눌림 후 15m 종가>직전봉 고가 · 3=돌파선 터치 후 그 위 마감.
     ///   공통 무효화: 대기 중 15m 종가가 돌파선(55봉 극값) 밖으로 되돌아가면 진입 안 함(손실 없음). 대기 window 봉 초과 시 폐기.</summary>
-    static List<Trade> DonchianTimed(List<Sym> S, int mode, int window, int failBars = 0, bool structStop = false)
+    static readonly Dictionary<(Sym, int), double[]> DEma = new();
+    static List<Trade> DonchianTimed(List<Sym> S, int mode, int window, int failBars = 0, bool structStop = false, int shortMode = -1, int dTrend = 0, int longOnlyTrend = 0)
     {
         var res = new List<Trade>();
         for (int si = 0; si < S.Count; si++)
@@ -425,23 +434,35 @@ internal static class StrategyLab
                 if (d == 0) continue;
                 double atr = T.atr[i]; if (atr <= 0) continue;
                 if (d * (T.b.c[i] - e50[i]) / atr >= 4.5) continue;            // 과열추격 제외 (v5.35.2)
+                // 코인 자체 일봉 추세 일치: 4h 신호 시점 직전에 마감된 일봉 종가 vs 일봉 EMA(dTrend)
+                if (dTrend > 0 && (longOnlyTrend == 0 || d > 0))
+                {
+                    var Dy = s.tf[1440].b; double[] de;
+                    lock (DEma) { if (!DEma.TryGetValue((s, dTrend), out de!)) { de = Ema(Dy.c, dTrend); DEma[(s, dTrend)] = de; } }
+                    long tClose = T.b.t[i] + 240 * 60000L;
+                    int k = Array.BinarySearch(Dy.t, tClose - 1440 * 60000L); if (k < 0) k = ~k - 1;
+                    if (k < dTrend || d * (Dy.c[k] - de[k]) <= 0) continue;
+                }
                 int e0 = T.end15[i] + 1; if (e0 >= m.n) continue;
+                // shortMode: -1 = mode 그대로 · 0 = 숏 즉시 · 2 = 숏만 반등 대기(B) · 9 = 숏 안 함 (롱은 즉시)
+                int modeEff = mode;
+                if (shortMode >= 0) { if (d < 0) { if (shortMode == 9) continue; modeEff = shortMode; window = 16; } else modeEff = 0; }
                 double level = d > 0 ? hi : lo, sc = T.b.c[i];
                 int entryJ = -1;
-                if (mode == 0) entryJ = e0;
+                if (modeEff == 0) entryJ = e0;
                 else
                 {
                     bool pulled = false, touched = false;
                     for (int j = e0; j < Math.Min(m.n - 1, e0 + window); j++)
                     {
                         if (d * (m.c[j] - level) < 0) break;                        // 돌파 실패 → 신호 폐기
-                        if (mode == 1 && d * (m.c[j] - sc) > 0) { entryJ = j + 1; break; }
-                        if (mode == 2)
+                        if (modeEff == 1 && d * (m.c[j] - sc) > 0) { entryJ = j + 1; break; }
+                        if (modeEff == 2)
                         {
                             if (d * (sc - (d > 0 ? m.l[j] : m.h[j])) >= 0.5 * atr) pulled = true;
                             if (pulled && j > e0 && d * (m.c[j] - (d > 0 ? m.h[j - 1] : m.l[j - 1])) > 0) { entryJ = j + 1; break; }
                         }
-                        if (mode == 3)
+                        if (modeEff == 3)
                         {
                             if (d * ((d > 0 ? m.l[j] : m.h[j]) - level) <= 0) touched = true;
                             if (touched && d * (m.c[j] - level) > 0) { entryJ = j + 1; break; }
