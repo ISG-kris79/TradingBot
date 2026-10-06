@@ -11,6 +11,9 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
+using Binance.Net.Interfaces;
+using LorentzianValidator;
 
 internal static class StrategyLab
 {
@@ -35,7 +38,7 @@ internal static class StrategyLab
     sealed class Res { public Cfg cfg = null!; public List<Trade> taken = new(), rejected = new(); public double[] seg = new double[Segs]; public double total, pf, mdd, win; }
 
     static long seg0, segLen;
-    static bool Neighborhood; static string Pick = "";
+    static bool Neighborhood, ElliottMode, MlMode; static string Pick = "";
     static int Base = 15; static string CacheSuffix = "_15m_71"; static long UntilMs = long.MaxValue, FromMs = 0;
 
     public static void Run(string[] args)
@@ -45,6 +48,8 @@ internal static class StrategyLab
             // --lab-base 60 : 1h 캐시(_1h_40, 2019~) 기반 — 미사용 과거구간 검증용
             if (args[a] == "--lab-pick") Pick = args[a + 1];
             if (args[a] == "--lab-base" && args[a + 1] == "60") { Base = 60; CacheSuffix = "_1h_40"; }
+            // --lab-base 15old : 15m 장기 캐시(_15m_170, 2019~) — 15분봉 전략(엘리엇)의 미사용 과거구간 검증용
+            if (args[a] == "--lab-base" && args[a + 1] == "15old") { Base = 15; CacheSuffix = "_15m_170"; }
             if (args[a] == "--lab-until") UntilMs = new DateTimeOffset(DateTime.SpecifyKind(DateTime.Parse(args[a + 1]), DateTimeKind.Utc)).ToUnixTimeMilliseconds();
             if (args[a] == "--lab-from") FromMs = new DateTimeOffset(DateTime.SpecifyKind(DateTime.Parse(args[a + 1]), DateTimeKind.Utc)).ToUnixTimeMilliseconds();
         }
@@ -55,6 +60,8 @@ internal static class StrategyLab
         Console.WriteLine($"데이터 {D(tMin):yyyy-MM-dd} ~ {D(tMax):yyyy-MM-dd} · {syms.Count}코인 · 구간 {segLen / 86400000}일 × {Segs}\n");
 
         Neighborhood = args.Contains("--lab-donchian");
+        ElliottMode = args.Contains("--lab-elliott");
+        MlMode = args.Contains("--lab-ml");
         var cfgs = BuildConfigs();
         var results = new List<Res>();
         foreach (var cfg in cfgs)
@@ -111,6 +118,61 @@ internal static class StrategyLab
     static List<Cfg> BuildConfigs()
     {
         var L = new List<Cfg>();
+        if (MlMode)
+        {
+            // [v5.35.x] 머신러닝 알트 봇 — 라이브 KNN 엔진(LorentzianAnnEngine, K=8, 4봉 뒤 방향 라벨) 30종목 병렬
+            foreach (var tf in new[] { 60, 240 })
+            {
+                int tf_ = tf;
+                L.Add(new Cfg { fam = "ML", name = $"ML KNN {TfName(tf)} 전환진입 · 4봉보유(원본)", gen = S => MlTrades(S, tf_, 1, new Exit { stopAtr = 2, maxHoldTf = 4 }, false) });
+                L.Add(new Cfg { fam = "ML", name = $"ML KNN {TfName(tf)} 전환진입 · 반대신호 청산", gen = S => MlTrades(S, tf_, 1, new Exit { stopAtr = 2 }, true) });
+                L.Add(new Cfg { fam = "ML", name = $"ML KNN {TfName(tf)} 강신호(|예측|≥6) · 4봉보유", gen = S => MlTrades(S, tf_, 6, new Exit { stopAtr = 2, maxHoldTf = 4 }, false) });
+                L.Add(new Cfg { fam = "ML", name = $"ML KNN {TfName(tf)} 전환진입 · 5ATR 트레일", gen = S => MlTrades(S, tf_, 1, new Exit { stopAtr = 2, trailAtr = 5 }, false) });
+            }
+            L.Add(new Cfg { fam = "DONCHIAN", name = "돈치안 4h N55 트레일5ATR 롱숏 (현행)", gen = S => DonchianLive(S) });
+            // 돈치안 신호 + KNN 동의 필터 (ML 을 진입 확인용으로만)
+            foreach (var mtf in new[] { 60, 240 })
+                foreach (var th in new[] { 1, 4 })
+                {
+                    int mtf_ = mtf, th_ = th;
+                    L.Add(new Cfg
+                    {
+                        fam = "DONCHIAN_ML", name = $"돈치안 + KNN {TfName(mtf)} 동의(|예측|≥{th})",
+                        gen = S =>
+                        {
+                            Parallel.ForEach(S, s => MlPred(s, mtf_));
+                            return SignalTrades(S, 240, (s, T, i) =>
+                            {
+                                if (i < 57) return 0;
+                                double hi = Max(T.b.h, i - 55, i - 1), lo = Min(T.b.l, i - 55, i - 1);
+                                double hiP = Max(T.b.h, i - 56, i - 2), loP = Min(T.b.l, i - 56, i - 2);
+                                int d = (T.b.c[i] > hi && T.b.c[i - 1] <= hiP) ? 1 : (T.b.c[i] < lo && T.b.c[i - 1] >= loP) ? -1 : 0;
+                                if (d == 0) return 0;
+                                // 4h 봉 i 마감 시점 = mtf 봉 중 같은 시각에 마감한 마지막 봉
+                                var M = s.tf[mtf_].b; long tClose = T.b.t[i] + 240 * 60000L;
+                                int k = Array.BinarySearch(M.t, tClose - mtf_ * 60000L); if (k < 0) return 0;
+                                int pv = MlPred(s, mtf_)[k];
+                                return (d > 0 && pv >= th_) || (d < 0 && pv <= -th_) ? d : 0;
+                            }, new Exit { stopAtr = 2, trailAtr = 5 }, null);
+                        }
+                    });
+                }
+            return L;
+        }
+        if (ElliottMode)
+        {
+            // [v5.35.x] 엘리엇 파동 1:3 (v5.34.15 라이브 카운터 그대로) — 사이징 방식별 + 돈치안 동시운용(슬롯 공유)
+            L.Add(new Cfg { fam = "ELLIOTT", name = "엘리엇 1:3 금액고정 $3000", gen = S => ElliottTrades(S, 0, Notional) });
+            foreach (var r in new[] { 30.0, 45.0, 60.0 })
+            {
+                double r_ = r;
+                L.Add(new Cfg { fam = "ELLIOTT", name = $"엘리엇 1:3 손실고정 1R=${r} (최대 $3000)", gen = S => ElliottTrades(S, r_, Notional) });
+            }
+            L.Add(new Cfg { fam = "ELLIOTT", name = "엘리엇 1:3 손실고정 1R=$45 (상한없음)", gen = S => ElliottTrades(S, 45, double.MaxValue) });
+            L.Add(new Cfg { fam = "DONCHIAN", name = "돈치안 4h N55 트레일5ATR 롱숏 (현행)", gen = S => DonchianLive(S) });
+            L.Add(new Cfg { fam = "COMBO", name = "돈치안 + 엘리엇(1R=$45) 슬롯공유", gen = S => DonchianLive(S).Concat(ElliottTrades(S, 45, Notional)).ToList() });
+            return L;
+        }
         if (Neighborhood)
         {
             // 파라미터 이웃 검증 — 한 점만 흑자인지, 지형 전체가 흑자인지
@@ -240,6 +302,90 @@ internal static class StrategyLab
     }
 
     // ───────────────────────── 거래 생성 ─────────────────────────
+    static readonly Dictionary<(string, int), int[]> MlPredCache = new();
+
+    /// <summary>라이브 KNN 예측 시계열 — 봉 i 마감 시점에 그때까지 라벨이 확정된 표본만으로 예측(미래 누설 없음). 종목 병렬.</summary>
+    static int[] MlPred(Sym s, int tf)
+    {
+        lock (MlPredCache) if (MlPredCache.TryGetValue((s.name, tf), out var c)) return c;
+        var T = s.tf[tf].b; int n = T.n;
+        var kl = new List<IBinanceKline>(n);
+        for (int i = 0; i < n; i++)
+            kl.Add(new SimpleKline { OpenTime = D(T.t[i]), OpenPrice = (decimal)T.o[i], HighPrice = (decimal)T.h[i], LowPrice = (decimal)T.l[i], ClosePrice = (decimal)T.c[i], Volume = 0m, CloseTime = D(T.t[i] + tf * 60000L - 1) });
+        var feats = new float[]?[n];
+        for (int i = 300; i < n; i++) feats[i] = TradingBot.Services.LorentzianV2.LorentzianFeatures.Extract(kl.GetRange(i - 299, 300));
+        var eng = new TradingBot.Services.LorentzianV2.LorentzianAnnEngine(s.name, 8, 2000, TradingBot.Services.LorentzianV2.LorentzianFeatures.FeatureCount);
+        var pred = new int[n];
+        for (int i = 304; i < n; i++)
+        {
+            var f4 = feats[i - 4];
+            if (f4 != null) eng.AddSample(f4, Math.Sign(T.c[i] - T.c[i - 4]));
+            if (feats[i] == null) continue;
+            var pr = eng.Predict(feats[i]);
+            pred[i] = pr.IsReady ? pr.Prediction : 0;
+        }
+        lock (MlPredCache) MlPredCache[(s.name, tf)] = pred;
+        return pred;
+    }
+
+    static List<Trade> MlTrades(List<Sym> S, int tf, int minAbs, Exit x, bool exitOnFlip)
+    {
+        Parallel.ForEach(S, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, s => MlPred(s, tf));
+        return SignalTrades(S, tf, (s, T, i) =>
+        {
+            var p = MlPred(s, tf); if (i < 1) return 0;
+            if (p[i] >= minAbs && p[i - 1] < minAbs && p[i - 1] <= 0) return 1;
+            if (p[i] <= -minAbs && p[i - 1] > -minAbs && p[i - 1] >= 0) return -1;
+            return 0;
+        }, x, exitOnFlip ? (s, T, k, dir) => { var p = MlPred(s, tf); return dir > 0 ? p[k] < 0 : p[k] > 0; } : null);
+    }
+    static List<Trade> DonchianLive(List<Sym> S) => SignalTrades(S, 240, (s, T, i) =>
+    {
+        if (i < 57) return 0;
+        double hi = Max(T.b.h, i - 55, i - 1), lo = Min(T.b.l, i - 55, i - 1);
+        double hiP = Max(T.b.h, i - 56, i - 2), loP = Min(T.b.l, i - 56, i - 2);
+        if (T.b.c[i] > hi && T.b.c[i - 1] <= hiP) return 1;
+        if (T.b.c[i] < lo && T.b.c[i - 1] >= loP) return -1;
+        return 0;
+    }, new Exit { stopAtr = 2, trailAtr = 5 }, null);
+
+    /// <summary>엘리엇 1:3 — 15m 연속 카운터 신호 · 다음봉 시가 진입 · SL=구조 극점 · TP=3R · 96h 타임캡 · 손절폭 0.2~6%.
+    ///   riskUsd&gt;0 이면 1R 손실을 riskUsd 로 고정(명목 = riskUsd/손절폭, cap 상한), 0 이면 명목 cap 고정.</summary>
+    static List<Trade> ElliottTrades(List<Sym> S, double riskUsd, double cap)
+    {
+        var res = new List<Trade>();
+        if (Base != 15) return res;
+        for (int si = 0; si < S.Count; si++)
+        {
+            var s = S[si]; var m = s.m;
+            var wc = new TradingBot.Services.ElliottWaveEngine.WaveCounter(
+                21, 0.382, 0.786, false, false, false, 0, false, false, 0, 5, false, 0.146, 0.618,
+                21, 0, 0.236, 0.004, true, 0, false, 1, 0.0, false, true);
+            for (int j = 0; j < m.n - 2; j++)
+            {
+                wc.Advance(m.h[j], m.l[j], m.c[j], j);
+                if (j < 200) continue;
+                var st = wc.Signal; if (st == null) continue;
+                int eb = j + 1; double entry = m.o[eb];
+                double risk = st.IsLong ? entry - st.StopPrice : st.StopPrice - entry;
+                if (risk <= 0) continue;
+                double sf = risk / entry; if (sf < 0.002 || sf > 0.06) continue;
+                int dir = st.IsLong ? 1 : -1;
+                double tp = entry + dir * 3 * risk, stop = st.StopPrice;
+                int last = Math.Min(m.n - 1, eb + 384), xj = last; double px = m.c[last]; string how = "TIME";
+                for (int e = eb; e <= last; e++)
+                {
+                    if (dir > 0) { if (m.l[e] <= stop) { xj = e; px = Math.Min(stop, m.o[e]); how = "SL"; break; } if (m.h[e] >= tp) { xj = e; px = tp; how = "TP"; break; } }
+                    else { if (m.h[e] >= stop) { xj = e; px = Math.Max(stop, m.o[e]); how = "SL"; break; } if (m.l[e] <= tp) { xj = e; px = tp; how = "TP"; break; } }
+                }
+                double hours = (m.t[xj] - m.t[eb]) / 3600000.0;
+                double frac = dir * (px - entry) / entry - FeeRT - FundPer8h * hours / 8;
+                double notional = riskUsd > 0 ? Math.Min(cap, riskUsd / sf) : cap;
+                res.Add(new Trade { sym = si, major = s.major, dir = dir, tIn = m.t[eb], tOut = m.t[xj] + Base * 60000L, pnl = frac * notional, how = how, name = s.name, px0 = entry, px1 = px });
+            }
+        }
+        return res;
+    }
     static List<Trade> SignalTrades(List<Sym> S, int tf, Func<Sym, TfData, int, int> sig, Exit x, Func<Sym, TfData, int, int, bool>? exitCond)
     {
         var res = new List<Trade>();
