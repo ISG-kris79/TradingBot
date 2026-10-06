@@ -20,6 +20,11 @@ namespace TradingBot.Services
         public const int AtrLen = 14;
         public const decimal InitStopAtr = 2m;
         public const decimal TrailAtr = 5m;
+        // [v5.35.2] 과열 추격 제외 — 돌파 시점 종가가 EMA50(4h) 에서 진입방향으로 4.5×ATR 이상 떨어져 있으면 진입 안 함.
+        //   손실 해부(두 기간 공통): EMA50+4~6ATR 추격 진입이 적자. 이웃 4/4.5/5 전부 개선, 3/3.5 는 정상 돌파까지 잘라 악화.
+        //   2023~26 +$26,332→+$30,727 · 2019~23 +$56,023→+$59,143 (1h데이터 +$58,810→+$60,691).
+        public const decimal MaxChaseAtr = 4.5m;
+        public const int EmaLen = 50;
         public static readonly TimeSpan BarSpan = TimeSpan.FromHours(4);
 
         public const string LongSource = "LORENTZIAN_DONCHIAN";
@@ -85,6 +90,21 @@ namespace TradingBot.Services
             if (k[i].ClosePrice > hi && k[i - 1].ClosePrice <= hiP) return 1;
             if (k[i].ClosePrice < lo && k[i - 1].ClosePrice >= loP) return -1;
             return 0;
+        }
+
+        /// <summary>EMA(50) — 백테스트(StrategyLab.Ema)와 같은 식(첫 값 시드). 창이 길수록(500봉) 시드 영향 소멸.</summary>
+        public static decimal[] Ema(IList<IBinanceKline> k, int p)
+        {
+            var r = new decimal[k.Count]; decimal a = 2m / (p + 1);
+            for (int i = 0; i < k.Count; i++) r[i] = i == 0 ? k[0].ClosePrice : a * k[i].ClosePrice + (1 - a) * r[i - 1];
+            return r;
+        }
+
+        /// <summary>과열 추격이면 true — 진입방향 기준 (종가 − EMA50)/ATR ≥ 4.5.</summary>
+        public static bool IsChasing(IList<IBinanceKline> k, int i, decimal[] atr, decimal[] ema50, int dir, out decimal ext)
+        {
+            ext = atr[i] > 0 ? dir * (k[i].ClosePrice - ema50[i]) / atr[i] : 0m;
+            return ext >= MaxChaseAtr;
         }
 
         /// <summary>

@@ -30165,7 +30165,7 @@ internal static class Program
         bool HasArg(string flag) => args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
         if (HasArg("--trendride-why")) { await RunTrendRideWhyAsync(args); return; }
         if (HasArg("--lab")) { StrategyLab.Run(args); return; }
-        if (HasArg("--donchian-parity")) { DonchianParity.Run(); return; }
+        if (HasArg("--donchian-parity")) { DonchianParity.Run(args); return; }
         if (HasArg("--fetch-extra15"))
         {
             // --lab-extra 용 최근 15m 캐시(_15m_71) 수집

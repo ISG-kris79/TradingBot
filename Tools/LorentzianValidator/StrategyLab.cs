@@ -36,12 +36,12 @@ internal static class StrategyLab
         public Dictionary<int, int[]> lastClosed = new();   // 15m j → 그 봉 시가 이전에 마감된 마지막 TF 봉 index
     }
     sealed class Trade { public int sym; public bool major; public int dir; public long tIn, tOut; public double pnl; public string how = "", name = "", status = ""; public double px0, px1; }
-    sealed class Exit { public double stopAtr = 2, trailAtr, tpR; public int maxHoldTf; public long forceExitT; }
+    sealed class Exit { public double stopAtr = 2, trailAtr, tpR, timeStopAtr = 1, riskUsd; public int maxHoldTf, timeStopTf; public long forceExitT; }
     sealed class Cfg { public string fam = "", name = ""; public Func<List<Sym>, List<Trade>> gen = _ => new(); }
-    sealed class Res { public Cfg cfg = null!; public List<Trade> taken = new(), rejected = new(); public double[] seg = new double[Segs]; public double total, pf, mdd, win; }
+    sealed class Res { public Cfg cfg = null!; public List<Trade> taken = new(), rejected = new(); public double[] seg = new double[Segs]; public double total, pf, mdd, win, worstMonth; public int posMonths, months; }
 
     static long seg0, segLen;
-    static bool Neighborhood, ElliottMode, MlMode, PortMode; static string Pick = "";
+    static bool Neighborhood, ElliottMode, MlMode, PortMode, MonthMode; static string Pick = "";
     static int Base = 15; static string CacheSuffix = "_15m_71"; static long UntilMs = long.MaxValue, FromMs = 0;
 
     public static void Run(string[] args)
@@ -66,6 +66,7 @@ internal static class StrategyLab
 
         Neighborhood = args.Contains("--lab-donchian");
         PortMode = args.Contains("--lab-port");
+        MonthMode = args.Contains("--lab-month");
         ElliottMode = args.Contains("--lab-elliott");
         MlMode = args.Contains("--lab-ml");
         var cfgs = BuildConfigs();
@@ -75,7 +76,7 @@ internal static class StrategyLab
             var cands = cfg.gen(syms);
             var r = Portfolio(cfg, cands);
             results.Add(r);
-            Console.WriteLine($"  {cfg.name,-44} 체결{r.taken.Count,5} 승률{r.win,5:F1}% PF{r.pf,5:F2} 총{r.total,9:F0}$ 낙폭{r.mdd,8:F0}$ | {string.Join(" ", r.seg.Select(x => x >= 0 ? "+" : "-"))}");
+            Console.WriteLine($"  {cfg.name,-44} 체결{r.taken.Count,5} 승률{r.win,5:F1}% PF{r.pf,5:F2} 총{r.total,9:F0}$ 낙폭{r.mdd,8:F0}$ 흑자월 {r.posMonths}/{r.months} 최악월{r.worstMonth,7:F0}$ | {string.Join(" ", r.seg.Select(x => x >= 0 ? "+" : "-"))}");
         }
 
         // 벤치마크: BTC 매수 보유 $3,000
@@ -124,6 +125,59 @@ internal static class StrategyLab
     static List<Cfg> BuildConfigs()
     {
         var L = new List<Cfg>();
+        if (MonthMode)
+        {
+            // [v5.35.x] 적자 월 축소 후보 — 사전에 정한 일반 기법만 (사후 최적화 금지)
+            Func<Sym, TfData, int, int> don = (s, T, i) =>
+            {
+                if (i < 57) return 0;
+                double hi = Max(T.b.h, i - 55, i - 1), lo = Min(T.b.l, i - 55, i - 1);
+                double hiP = Max(T.b.h, i - 56, i - 2), loP = Min(T.b.l, i - 56, i - 2);
+                if (T.b.c[i] > hi && T.b.c[i - 1] <= hiP) return 1;
+                if (T.b.c[i] < lo && T.b.c[i - 1] >= loP) return -1;
+                return 0;
+            };
+            var adxCache = new Dictionary<Sym, double[]>();
+            double[] AdxOf(Sym s, TfData T) { lock (adxCache) { if (!adxCache.TryGetValue(s, out var a)) { a = Adx(T.b, 14); adxCache[s] = a; } return a; } }
+            L.Add(new Cfg { fam = "M", name = "현행 (N55 · 2ATR · 트레일5)", gen = S => SignalTrades(S, 240, don, new Exit { stopAtr = 2, trailAtr = 5 }, null) });
+            foreach (var th in new[] { 20.0, 25.0 })
+            {
+                double th_ = th;
+                L.Add(new Cfg { fam = "M", name = $"+ ADX(4h)≥{th}", gen = S => SignalTrades(S, 240, (s, T, i) => { int d = don(s, T, i); return d != 0 && AdxOf(s, T)[i] >= th_ ? d : 0; }, new Exit { stopAtr = 2, trailAtr = 5 }, null) });
+            }
+            foreach (var k in new[] { 6, 12 })
+            {
+                int k_ = k;
+                L.Add(new Cfg { fam = "M", name = $"+ 시간손절 {k * 4}h 내 +1ATR 미달 시 정리", gen = S => SignalTrades(S, 240, don, new Exit { stopAtr = 2, trailAtr = 5, timeStopTf = k_ }, null) });
+            }
+            foreach (var ru in new[] { 60.0, 100.0, 150.0, 200.0 })
+            {
+                double ru_ = ru;
+                L.Add(new Cfg { fam = "M", name = $"+ 손실균등 1회 손절 ${ru} (최대 $3000)", gen = S => SignalTrades(S, 240, don, new Exit { stopAtr = 2, trailAtr = 5, riskUsd = ru_ }, null) });
+            }
+            L.Add(new Cfg { fam = "M", name = "+ 초기손절 1.5ATR", gen = S => SignalTrades(S, 240, don, new Exit { stopAtr = 1.5, trailAtr = 5 }, null) });
+            // 손실 해부 결과(두 기간 공통): 과열 추격 진입(EMA50 에서 4ATR 이상 떨어진 돌파) 적자
+            var e50 = new Dictionary<Sym, double[]>();
+            double[] E50(Sym s, TfData T) { lock (e50) { if (!e50.TryGetValue(s, out var a)) { a = Ema(T.b.c, 50); e50[s] = a; } return a; } }
+            Func<Sym, TfData, int, int> donNoChase = (s, T, i) =>
+            {
+                int d = don(s, T, i); if (d == 0) return 0;
+                double ext = d * (T.b.c[i] - E50(s, T)[i]) / T.atr[i];
+                return ext < 4 ? d : 0;
+            };
+            L.Add(new Cfg { fam = "M", name = "+ 과열추격 제외(EMA50+4ATR)", gen = S => SignalTrades(S, 240, donNoChase, new Exit { stopAtr = 2, trailAtr = 5 }, null) });
+            foreach (var ex in new[] { 3.0, 3.5, 4.5, 5.0 })
+            {
+                double ex_ = ex;
+                L.Add(new Cfg { fam = "M", name = $"  이웃: 과열추격 제외 {ex}ATR", gen = S => SignalTrades(S, 240, (s, T, i) => { int d = don(s, T, i); return d != 0 && d * (T.b.c[i] - E50(s, T)[i]) / T.atr[i] < ex_ ? d : 0; }, new Exit { stopAtr = 2, trailAtr = 5 }, null) });
+            }
+            foreach (var ru in new[] { 100.0, 150.0 })
+            {
+                double ru_ = ru;
+                L.Add(new Cfg { fam = "M", name = $"+ 과열추격 제외 + 손실균등 ${ru}", gen = S => SignalTrades(S, 240, donNoChase, new Exit { stopAtr = 2, trailAtr = 5, riskUsd = ru_ }, null) });
+            }
+            return L;
+        }
         if (PortMode)
         {
             L.Add(new Cfg { fam = "DONCHIAN", name = "돈치안 4h N55 (현행)", gen = S => DonchianLive(S) });
@@ -448,6 +502,8 @@ internal static class StrategyLab
                 }
                 if (exitCond != null && exitCond(lastTf, dir)) { px = m.o[j]; how = "SIG"; xj = j; goto done; }
                 if (x.maxHoldTf > 0 && lastTf - sigTf >= x.maxHoldTf) { px = m.o[j]; how = "TIME"; xj = j; goto done; }
+                // 시간 손절: 진입 후 timeStopTf 봉 마감 시점에 timeStopAtr×ATR 이상 유리하게 못 갔으면 정리 (가짜 돌파 컷)
+                if (x.timeStopTf > 0 && lastTf - sigTf == x.timeStopTf && dir * (T.b.c[lastTf] - entry) < x.timeStopAtr * atr) { px = m.o[j]; how = "TSTOP"; xj = j; goto done; }
             }
             if (x.forceExitT > 0 && m.t[j] >= x.forceExitT) { px = m.o[j]; how = "TIME"; xj = j; goto done; }
             if (dir > 0)
@@ -467,7 +523,9 @@ internal static class StrategyLab
     done:
         double hours = (m.t[xj] - m.t[e0]) / 3600000.0;
         double pnl = dir * (px - entry) / entry - FeeRT - FundPer8h * Math.Max(0, hours) / 8;
-        return new Trade { sym = si, major = s.major, dir = dir, tIn = m.t[e0], tOut = m.t[xj] + Base * 60000L, pnl = pnl * Notional, how = how, name = s.name, px0 = entry, px1 = px };
+        // 손실 균등화: 초기손절까지 잃는 금액 = riskUsd (명목 상한 Notional)
+        double notional = x.riskUsd > 0 ? Math.Min(Notional, x.riskUsd / (risk / entry)) : Notional;
+        return new Trade { sym = si, major = s.major, dir = dir, tIn = m.t[e0], tOut = m.t[xj] + Base * 60000L, pnl = pnl * notional, how = how, name = s.name, px0 = entry, px1 = px };
     }
 
     static List<Trade> VolBreakout(List<Sym> S, double k, bool ls)
@@ -550,6 +608,8 @@ internal static class StrategyLab
         foreach (var t in r.taken) { int sg = SegOf(t.tIn); if (sg >= 0 && sg < Segs) r.seg[sg] += t.pnl; }
         r.total = r.taken.Sum(t => t.pnl);
         double gp = r.taken.Where(t => t.pnl > 0).Sum(t => t.pnl), gl = -r.taken.Where(t => t.pnl <= 0).Sum(t => t.pnl);
+        var mon = r.taken.GroupBy(t => D(t.tOut).AddHours(9).ToString("yyyy-MM")).Select(g => g.Sum(t => t.pnl)).ToList();
+        r.months = mon.Count; r.posMonths = mon.Count(v => v > 0); r.worstMonth = mon.Count > 0 ? mon.Min() : 0;
         r.pf = gl > 0 ? gp / gl : 99; r.win = r.taken.Count > 0 ? 100.0 * r.taken.Count(t => t.pnl > 0) / r.taken.Count : 0;
         double cum = 0, pk = 0; foreach (var t in r.taken.OrderBy(t => t.tOut)) { cum += t.pnl; pk = Math.Max(pk, cum); r.mdd = Math.Min(r.mdd, cum - pk); }
         return r;
@@ -636,6 +696,22 @@ internal static class StrategyLab
             a = i <= p ? a + tr / p : (a * (p - 1) + tr) / p; r[i] = i >= p ? a : 0;
         }
         return r;
+    }
+    static double[] Adx(Bars b, int p)
+    {
+        int n = b.n; var adx = new double[n]; double tr = 0, pdm = 0, ndm = 0, ax = 0;
+        for (int i = 1; i < n; i++)
+        {
+            double up = b.h[i] - b.h[i - 1], dn = b.l[i - 1] - b.l[i];
+            double pd = up > dn && up > 0 ? up : 0, nd = dn > up && dn > 0 ? dn : 0;
+            double t = Math.Max(b.h[i] - b.l[i], Math.Max(Math.Abs(b.h[i] - b.c[i - 1]), Math.Abs(b.l[i] - b.c[i - 1])));
+            if (i <= p) { tr += t; pdm += pd; ndm += nd; } else { tr = tr - tr / p + t; pdm = pdm - pdm / p + pd; ndm = ndm - ndm / p + nd; }
+            if (i < p) continue;
+            double pdi = tr > 0 ? 100 * pdm / tr : 0, ndi = tr > 0 ? 100 * ndm / tr : 0;
+            double dx = pdi + ndi > 0 ? 100 * Math.Abs(pdi - ndi) / (pdi + ndi) : 0;
+            ax = i == p ? dx : (ax * (p - 1) + dx) / p; adx[i] = i >= 2 * p ? ax : 0;
+        }
+        return adx;
     }
     static double Max(double[] x, int a, int b) { double m = double.MinValue; for (int i = Math.Max(0, a); i <= b; i++) m = Math.Max(m, x[i]); return m; }
     static double Min(double[] x, int a, int b) { double m = double.MaxValue; for (int i = Math.Max(0, a); i <= b; i++) m = Math.Min(m, x[i]); return m; }

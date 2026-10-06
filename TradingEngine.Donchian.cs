@@ -94,7 +94,8 @@ namespace TradingBot
                     if (hasPos || DonchianTrend.Owns(sym)) continue;
                     try
                     {
-                        var raw = await _exchangeService.GetKlinesAsync(sym, KlineInterval.FourHour, 120, token);
+                        // [v5.35.2] 500봉 — EMA50 시드 영향 제거(백테스트와 일치)
+                        var raw = await _exchangeService.GetKlinesAsync(sym, KlineInterval.FourHour, DonchianKlineLimit, token);
                         if (raw == null || raw.Count < DonchianTrend.Lookback + 20) continue;
                         var k = DonchianTrend.ClosedOnly(raw, nowUtc);
                         int i = k.Count - 1;
@@ -103,6 +104,12 @@ namespace TradingBot
                         if (dir > 0) longSig++; else shortSig++;
                         var atr = DonchianTrend.Atr(k);
                         if (atr[i] <= 0) continue;
+                        var ema50 = DonchianTrend.Ema(k, DonchianTrend.EmaLen);
+                        if (DonchianTrend.IsChasing(k, i, atr, ema50, dir, out var ext))
+                        {
+                            OnStatusLog?.Invoke($"⛔ [DONCHIAN] {sym} {(dir > 0 ? "롱" : "숏")} 신호 제외 — 과열 추격 (EMA50 대비 {ext:F1}ATR ≥ {DonchianTrend.MaxChaseAtr})");
+                            continue;
+                        }
                         if (await DonchianEnterAsync(sym, dir > 0, k[i].ClosePrice, atr[i], token)) entered++;
                     }
                     catch (Exception ex) { OnStatusLog?.Invoke($"⚠️ [DONCHIAN] {sym} 스캔 오류: {ex.Message}"); }

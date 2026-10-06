@@ -15,9 +15,12 @@ using LorentzianValidator;
 
 internal static class DonchianParity
 {
-    public static void Run()
+    public static void Run(string[] args)
     {
-        var csv = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "lab-trades-돈치안_4h_N55_트레일5ATR_롱숏-15m.csv");
+        // [v5.35.2] 과열추격 필터 포함 라이브 규칙 대조 — 기본 후보 CSV 는 --lab --lab-month --lab-pick "과열추격 제외 4.5ATR" 산출물
+        string csvArg = "trades-chase45.csv";
+        for (int a = 0; a < args.Length - 1; a++) if (args[a] == "--parity-csv") csvArg = args[a + 1];
+        var csv = csvArg;
         if (!File.Exists(csv)) { Console.WriteLine("후보 CSV 없음 — 먼저 --lab --lab-donchian --lab-pick \"4h N55 트레일5ATR 롱숏\" 실행"); return; }
         var lab = File.ReadAllLines(csv).Skip(1).Select(l => l.Split(',')).Where(p => p.Length >= 9).Select(p => new
         {
@@ -38,12 +41,14 @@ internal static class DonchianParity
             var f = Path.Combine("cache", sym + "_15m_71.csv");
             if (!File.Exists(f)) continue;
             var k4 = Aggregate4h(f); k4BySym[sym] = k4;
-            for (int i = 120; i < k4.Count; i++)
+            for (int i = 500; i < k4.Count; i++)
             {
-                // 라이브: GetKlinesAsync(4h,120) 에서 진행봉 제외 → 마지막 마감봉이 i
-                var win = k4.GetRange(i - 119, 120);
+                // 라이브: GetKlinesAsync(4h,500) 에서 진행봉 제외 → 마지막 마감봉이 i
+                var win = k4.GetRange(i - 499, 500);
                 int d = DonchianTrend.Signal(win, win.Count - 1);
                 if (d == 0) continue;
+                var wAtr = DonchianTrend.Atr(win); var wEma = DonchianTrend.Ema(win, DonchianTrend.EmaLen);
+                if (wAtr[win.Count - 1] <= 0 || DonchianTrend.IsChasing(win, win.Count - 1, wAtr, wEma, d, out _)) continue;
                 liveN++;
                 string key = $"{sym}|{(d > 0 ? "L" : "S")}|{k4[i].CloseTime.AddMilliseconds(1):yyyy-MM-dd HH:mm}";
                 liveAll.Add(key);
@@ -51,7 +56,7 @@ internal static class DonchianParity
             }
         }
         // 백테스트는 데이터 시작부터 신호를 내므로, 라이브 창(120봉)이 성립하는 구간만 비교
-        var labInRange = lab.Where(x => k4BySym.TryGetValue(x.sym, out var k) && k.Count > 120 && x.tIn > k[119].CloseTime.AddMilliseconds(1)).ToList();
+        var labInRange = lab.Where(x => k4BySym.TryGetValue(x.sym, out var k) && k.Count > 500 && x.tIn > k[499].CloseTime.AddMilliseconds(1)).ToList();
         var labOnlyList = labInRange.Select(x => $"{x.sym}|{(x.isLong ? "L" : "S")}|{x.tIn:yyyy-MM-dd HH:mm}").Where(k => !liveAll.Contains(k)).ToList();
         int labOnly = labOnlyList.Count;
         Console.WriteLine($"[신호] 백테스트 {labInRange.Count}건 · 라이브코드 {liveN}건 · 일치 {matched}건 · 라이브만 {liveOnly.Count}건 · 백테만 {Math.Max(0, labOnly)}건");
