@@ -27825,6 +27825,133 @@ internal static class Program
     }
 
     // ===============================================================================
+    //  --elliott-daily : [v5.34.17] 현행 라이브(v5.34.15) 진입·청산 그대로 3년 일별 손익 ($).
+    //    진입 = 라이브 WaveCounter(링크 컴파일) 신호 · 다음봉 시가 · 손절폭 0.2~6%
+    //    청산 = SL(구조적 극점) / TP(진입+3×손절폭) / 96시간 타임캡 — 스펙 3지점뿐
+    //    포트폴리오 = 심볼당 1포지션 + 슬롯(메이저/알트) 한도 · 1건 명목 $notional · 왕복수수료 0.08%
+    //    기본값 = UserId=10 설정(증거금 $200 × 15배 = $3,000 · 메이저 2슬롯 · 알트 3슬롯)
+    // ===============================================================================
+    private sealed class EwDayT { public DateTime t, exit; public string sym = ""; public int dir, eb, xi; public double pnl, r; public bool win, major; public string how = ""; }
+
+    private static async Task RunElliottDailyAsync(string[] args)
+    {
+        const double feeRT = 0.0008; const int maxHold = 384;
+        int pages15 = 70, majSlots = 2, altSlots = 3; double notional = 3000;
+        for (int a = 0; a < args.Length - 1; a++)
+        {
+            if (args[a] == "--ew-pages") int.TryParse(args[a + 1], out pages15);
+            if (args[a] == "--slots-major") int.TryParse(args[a + 1], out majSlots);
+            if (args[a] == "--slots-alt") int.TryParse(args[a + 1], out altSlots);
+            if (args[a] == "--notional") double.TryParse(args[a + 1], out notional);
+        }
+        var majors = new HashSet<string> { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT" };
+        Console.WriteLine("=== --elliott-daily : 현행 라이브 진입·청산 3년 일별 손익 ===");
+        Console.WriteLine($"    명목 ${notional:F0}/건 · 슬롯 메이저 {majSlots} / 알트 {altSlots} · 수수료 {feeRT:P2} · {EwUniverse.Length}코인\n");
+
+        // 1) 심볼별 전체 후보(슬롯 무관) — 슬롯 거절된 신호 뒤의 신호도 살리기 위해 busy 는 2단계에서 적용
+        var cands = new List<EwDayT>();
+        int ci = 0;
+        foreach (var sym in EwUniverse)
+        {
+            ci++; Console.Write($"[{ci}/{EwUniverse.Length}] {sym} ");
+            List<IBinanceKline> k15;
+            try { k15 = await FetchKlines15mAsync(sym, pages15); } catch { Console.WriteLine("fail"); continue; }
+            if (k15.Count < 1000) { Console.WriteLine("skip"); continue; }
+            int n = k15.Count;
+            var hiA = new double[n]; var loA = new double[n]; var clA = new double[n]; var opA = new double[n];
+            for (int j = 0; j < n; j++) { hiA[j] = (double)k15[j].HighPrice; loA[j] = (double)k15[j].LowPrice; clA[j] = (double)k15[j].ClosePrice; opA[j] = (double)k15[j].OpenPrice; }
+            var counter = new TradingBot.Services.ElliottWaveEngine.WaveCounter(
+                21, 0.382, 0.786, false, false, false, 0, false, false, 0, 5, false, 0.146, 0.618,
+                21, 0, 0.236, 0.004, true, 0, false, 1, 0.0, false, true);   // = v5.34.15 라이브 채택값 (--elliott-spec 와 동일)
+            int sc = 0;
+            for (int j = 0; j < n - 2; j++)
+            {
+                counter.Advance(hiA[j], loA[j], clA[j], j);
+                if (j < 200) continue;
+                var st = counter.Signal;
+                if (st == null) continue;
+                bool isLong = st.IsLong;
+                int eb = j + 1; if (eb >= n - 1) continue;
+                double entry = opA[eb];
+                double risk = isLong ? entry - st.StopPrice : st.StopPrice - entry;
+                if (risk <= 0) continue;
+                double stopFrac = risk / entry;
+                if (stopFrac < 0.002 || stopFrac > 0.06) continue;
+                double tp = isLong ? entry + 3 * risk : entry - 3 * risk;
+                int last = Math.Min(n - 1, eb + maxHold); int xi = last; string how = "TIME";
+                for (int e = eb; e <= last; e++)
+                {
+                    // 같은 봉에서 SL·TP 둘 다 닿으면 SL 우선(보수적)
+                    if (isLong) { if (loA[e] <= st.StopPrice) { xi = e; how = "SL"; break; } if (hiA[e] >= tp) { xi = e; how = "TP"; break; } }
+                    else { if (hiA[e] >= st.StopPrice) { xi = e; how = "SL"; break; } if (loA[e] <= tp) { xi = e; how = "TP"; break; } }
+                }
+                double pnl = how == "SL" ? -stopFrac - feeRT
+                           : how == "TP" ? 3 * stopFrac - feeRT
+                           : (isLong ? (clA[last] - entry) / entry : (entry - clA[last]) / entry) - feeRT;
+                cands.Add(new EwDayT
+                {
+                    t = k15[eb].OpenTime, exit = k15[xi].OpenTime.AddMinutes(15), sym = sym, dir = isLong ? 1 : -1,
+                    eb = eb, xi = xi, pnl = pnl, r = pnl / stopFrac, win = pnl > 0, major = majors.Contains(sym), how = how
+                });
+                sc++;
+            }
+            Console.WriteLine($"{n}bars 신호{sc}");
+        }
+        if (cands.Count == 0) { Console.WriteLine("진입 0건"); return; }
+
+        // 2) 시간순 포트폴리오 재생 — 심볼당 1포지션 + 슬롯 한도
+        var taken = new List<EwDayT>();
+        var open = new List<EwDayT>();
+        var busyTill = new Dictionary<string, DateTime>();
+        int rejSlot = 0;
+        foreach (var c in cands.OrderBy(x => x.t))
+        {
+            open.RemoveAll(o => o.exit <= c.t);
+            if (busyTill.TryGetValue(c.sym, out var bt) && c.t < bt) continue;
+            int used = open.Count(o => o.major == c.major);
+            if (used >= (c.major ? majSlots : altSlots)) { rejSlot++; continue; }
+            open.Add(c); taken.Add(c); busyTill[c.sym] = c.exit;
+        }
+
+        // 3) 일별 (청산일 KST 기준 실현손익)
+        DateTime Kst(DateTime u) => u.AddHours(9).Date;
+        var d0 = Kst(cands.Min(x => x.t)); var d1 = Kst(cands.Max(x => x.exit));
+        var byDay = taken.GroupBy(x => Kst(x.exit)).ToDictionary(g => g.Key, g => g.ToList());
+        var rows = new List<(DateTime d, int n, int w, double usd)>();
+        for (var d = d0; d <= d1; d = d.AddDays(1))
+        {
+            byDay.TryGetValue(d, out var l);
+            rows.Add((d, l?.Count ?? 0, l?.Count(x => x.win) ?? 0, (l?.Sum(x => x.pnl) ?? 0) * notional));
+        }
+        string csv = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "elliott-daily-3y.csv");
+        File.WriteAllLines(csv, new[] { "dateKST,trades,wins,pnlUSD,cumUSD" }
+            .Concat(rows.Select((r, i) => $"{r.d:yyyy-MM-dd},{r.n},{r.w},{r.usd:F2},{rows.Take(i + 1).Sum(x => x.usd):F2}")));
+
+        double tot = rows.Sum(x => x.usd), peak = 0, cum = 0, mdd = 0;
+        foreach (var r in rows) { cum += r.usd; peak = Math.Max(peak, cum); mdd = Math.Min(mdd, cum - peak); }
+        var active = rows.Where(x => x.n > 0).ToList();
+        Console.WriteLine($"\n기간(KST) {d0:yyyy-MM-dd} ~ {d1:yyyy-MM-dd} ({rows.Count}일)");
+        Console.WriteLine($"신호 {cands.Count}건 → 체결 {taken.Count}건 (슬롯초과 거절 {rejSlot}, 심볼중복 {cands.Count - taken.Count - rejSlot})");
+        Console.WriteLine($"승률 {100.0 * taken.Count(x => x.win) / taken.Count:F1}% · 평균 {taken.Average(x => x.r):F3}R · 청산 TP {taken.Count(x => x.how == "TP")} / SL {taken.Count(x => x.how == "SL")} / 타임캡 {taken.Count(x => x.how == "TIME")}");
+        Console.WriteLine($"롱 {taken.Count(x => x.dir > 0)}건 ${taken.Where(x => x.dir > 0).Sum(x => x.pnl) * notional:F0} · 숏 {taken.Count(x => x.dir < 0)}건 ${taken.Where(x => x.dir < 0).Sum(x => x.pnl) * notional:F0}");
+        Console.WriteLine($"총손익 ${tot:F0} · 일평균 ${tot / rows.Count:F2} · 최대낙폭 ${mdd:F0}");
+        Console.WriteLine($"거래 있는 날 {active.Count}일 중 흑자 {active.Count(x => x.usd > 0)}일 / 적자 {active.Count(x => x.usd < 0)}일 · 거래 없는 날 {rows.Count - active.Count}일");
+        Console.WriteLine($"최고의 날 ${rows.Max(x => x.usd):F0} · 최악의 날 ${rows.Min(x => x.usd):F0}");
+
+        Console.WriteLine("\n월        건수  승  손익($)   누적($)  흑자일/거래일");
+        double mc = 0;
+        foreach (var g in rows.GroupBy(x => new DateTime(x.d.Year, x.d.Month, 1)))
+        {
+            double m = g.Sum(x => x.usd); mc += m;
+            Console.WriteLine($"{g.Key:yyyy-MM} {g.Sum(x => x.n),5} {g.Sum(x => x.w),3} {m,9:F0} {mc,9:F0}   {g.Count(x => x.usd > 0)}/{g.Count(x => x.n > 0)}");
+        }
+        Console.WriteLine("\n최근 30일:");
+        foreach (var r in rows.Skip(Math.Max(0, rows.Count - 30)))
+            Console.WriteLine($"  {r.d:yyyy-MM-dd} {r.n,2}건 {r.w,2}승 {r.usd,8:F2}");
+        Console.WriteLine($"\nCSV: {Path.GetFullPath(csv)}");
+    }
+
+    // ===============================================================================
     //  --elliott-freeze : 방향 고착(상승장을 '하락 1파'로 세는 얼어붙음) 축만 스윕.
     //
     //  실측 근거(--elliott-state, 2026-08-21):
@@ -30037,6 +30164,8 @@ internal static class Program
         //   real-lorentzian C# engine 경로가 실행되며 daily-60d 절대 안 돌았음.
         bool HasArg(string flag) => args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
         if (HasArg("--trendride-why")) { await RunTrendRideWhyAsync(args); return; }
+        if (HasArg("--lab")) { StrategyLab.Run(args); return; }
+        if (HasArg("--elliott-daily")) { await RunElliottDailyAsync(args); return; }
         if (HasArg("--elliott-tf")) { await RunElliottTfAsync(args); return; }
         if (HasArg("--elliott-seedsim")) { await RunElliottSeedSimAsync(args); return; }
         if (HasArg("--scalp15")) { await RunScalp15Async(args); return; }
