@@ -65,7 +65,7 @@ def ema_s(x, p):
     for i, v in enumerate(x): r.append(v if i == 0 else a * v + (1 - a) * r[-1])
     return r
 
-def donchian(data, tf=240, N=55, init=2.0, trail=5.0, chase=4.5, tight_after=None, tight=None, ptp=None, tag='', cooldown_h=0, min_brk=0.0, base_max=None, be_after=None, be_lock=0.0):
+def donchian(data, tf=240, N=55, init=2.0, trail=5.0, chase=4.5, tight_after=None, tight=None, ptp=None, tag='', cooldown_h=0, min_brk=0.0, base_max=None, be_after=None, be_lock=0.0, tp_atr=None):
     """돈치안 돌파 거래 생성. tight_after=(수익 xATR 도달 시) 트레일을 tight×ATR 로 좁힘. ptp=(x ATR 도달 시 50% 익절).
        반환: [(sym, tin, tout, pnl_frac_net, tag)] — pnl 은 명목 1.0 기준 비율(수수료·펀딩 반영)."""
     out = []
@@ -99,6 +99,11 @@ def donchian(data, tf=240, N=55, init=2.0, trail=5.0, chase=4.5, tight_after=Non
                     if tight_after and d * (b[kk][4] - entry) >= tight_after * at: t_mult = tight
                     ns = b[kk][4] - d * t_mult * A[kk]
                     if (d > 0 and ns > stop) or (d < 0 and ns < stop): stop = ns
+                if tp_atr:
+                    tpx = entry + d * tp_atr * at
+                    if (d > 0 and O[j] >= tpx) or (d < 0 and O[j] <= tpx): px = O[j]; break
+                    if (d > 0 and H[j] >= tpx) or (d < 0 and L[j] <= tpx):
+                        if not ((d > 0 and L[j] <= stop) or (d < 0 and H[j] >= stop)): px = tpx; break
                 if ptp and not half:
                     tp = entry + d * ptp * at
                     if (d > 0 and H[j] >= tp) or (d < 0 and L[j] <= tp):
