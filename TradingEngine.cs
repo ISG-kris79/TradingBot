@@ -786,7 +786,8 @@ namespace TradingBot
                 catMax = liveSettings.MaxPumpSlots;
                 slotKey = "PUMP";
             }
-            if (catMax > 0 && catMax < int.MaxValue)
+            // [v5.36.0] 돈치안은 슬리브별 슬롯(A·B 각 메이저2/알트3)을 엔진이 직접 관리 — 공용 슬롯 게이트 제외
+            if (!isDonchian && catMax > 0 && catMax < int.MaxValue)
             {
                 int activeInCat = 0;
                 lock (_posLock)
@@ -10831,21 +10832,21 @@ namespace TradingBot
                         int finalMajorCount = _activePositions.Count(p => p.Value.IsOwnPosition && majorSetFinal.Contains(p.Key));
                         int finalPumpCount = finalTotal - finalMajorCount;
 
-                        if (isMajorSymbol && finalMajorCount >= MAX_MAJOR_SLOTS)
+                        if (!isDonchian && isMajorSymbol && finalMajorCount >= MAX_MAJOR_SLOTS)
                         {
                             OnStatusLog?.Invoke($"⛔ [슬롯 최종 재확인] {symbol} 메이저 포화 ({finalMajorCount}/{MAX_MAJOR_SLOTS}) → 진입 차단");
                             EntryLog("SLOT", "FINAL_RECHECK_FAIL", $"major={finalMajorCount}/{MAX_MAJOR_SLOTS}");
                             return;
                         }
 
-                        if (!isMajorSymbol && finalPumpCount >= MAX_PUMP_SLOTS)
+                        if (!isDonchian && !isMajorSymbol && finalPumpCount >= MAX_PUMP_SLOTS)
                         {
                             OnStatusLog?.Invoke($"⛔ [슬롯 최종 재확인] {symbol} PUMP 포화 ({finalPumpCount}/{MAX_PUMP_SLOTS}) → 진입 차단");
                             EntryLog("SLOT", "FINAL_RECHECK_FAIL", $"pump={finalPumpCount}/{MAX_PUMP_SLOTS}");
                             return;
                         }
 
-                        if (finalTotal >= MAX_TOTAL_SLOTS)
+                        if (!isDonchian && finalTotal >= MAX_TOTAL_SLOTS)
                         {
                             OnStatusLog?.Invoke($"⛔ [슬롯 최종 재확인] {symbol} 총 포화 ({finalTotal}/{MAX_TOTAL_SLOTS}) → 진입 차단");
                             EntryLog("SLOT", "FINAL_RECHECK_FAIL", $"total={finalTotal}/{MAX_TOTAL_SLOTS}");

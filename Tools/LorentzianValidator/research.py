@@ -121,19 +121,23 @@ def donchian(data, tf=240, N=55, init=2.0, trail=5.0, chase=4.5, tight_after=Non
                 fs = funding_sum(sym, T[e0], T[j])
                 if fs is not None: fund = d * fs * (0.5 + 0.5 * size if half else 1.0)   # 롱은 +rate 지불, 숏은 수취
             pnl = realized + size * d * (px - entry) / entry - FEE - fund
-            out.append((sym, T[e0], T[j] + M15, pnl, tag, d))
+            out.append((sym, T[e0], T[j] + M15, pnl, tag, d, entry, px, half, b[i][0]))
             if cooldown_h and pnl < 0: cool_until[sym] = T[j] + cooldown_h * 3600000
     return out
 
+SHARED_SYMBOL = False   # True: 슬리브 간에도 코인당 1포지션(바이낸스 원웨이 모드와 동일)
+_GLOBAL_BUSY = {}
 def portfolio(trades, slots_maj, slots_alt, notional, order):
     taken = []; open_ = []; busy = {}
     for t in sorted(trades, key=lambda x: (x[1], order[x[0]])):
         open_ = [o for o in open_ if o[2] > t[1]]
         key = (t[0], t[4])
         if busy.get(key, 0) > t[1]: continue
+        if SHARED_SYMBOL and _GLOBAL_BUSY.get(t[0], 0) > t[1]: continue
         mj = t[0] in MAJ
         if sum(1 for o in open_ if (o[0] in MAJ) == mj and o[4] == t[4]) >= (slots_maj if mj else slots_alt): continue
         open_.append(t); taken.append((t[0], t[1], t[2], t[3] * notional, t[4]) + tuple(t[5:])); busy[key] = t[2]
+        if SHARED_SYMBOL: _GLOBAL_BUSY[t[0]] = max(_GLOBAL_BUSY.get(t[0], 0), t[2])
     return taken
 
 def month_key(ms): return datetime.datetime.fromtimestamp(ms / 1000 + 9 * 3600, datetime.timezone.utc).strftime('%Y-%m')
@@ -174,3 +178,44 @@ if __name__ == '__main__':
     print(f'데이터 {len(data)}종목\n')
     base = donchian(data, tag='4h')
     evaluate('기준: 4h N55 · 슬롯2/3 · $3000', [(base, 2, 3, 3000)])
+
+def portfolio_multi(sleeves, order, shared=True):
+    """여러 슬리브를 시간순으로 합쳐 처리 — 슬리브별 슬롯 · shared=True 면 코인당 1포지션(원웨이 모드)"""
+    ev = []
+    for si, (tr, sm, sa, nt) in enumerate(sleeves):
+        for t in tr: ev.append((t[1], order[t[0]], si, t))
+    ev.sort()
+    open_ = []; busy = {}; taken = []
+    for tin, _, si, t in ev:
+        open_ = [o for o in open_ if o[2] > tin]
+        if shared:
+            if any(o[0] == t[0] for o in open_): continue
+        elif busy.get((t[0], si), 0) > tin: continue
+        _, sm, sa, nt = sleeves[si]; mj = t[0] in MAJ
+        if sum(1 for o in open_ if o[5] == si and (o[0] in MAJ) == mj) >= (sm if mj else sa): continue
+        rec = (t[0], t[1], t[2], t[3] * nt, t[4], si)
+        open_.append(rec); taken.append(rec); busy[(t[0], si)] = t[2]
+    return taken
+
+def evaluate_multi(name, sleeves, n_mc=20, shared=True):
+    import statistics as st
+    R = []
+    for seed in range(n_mc):
+        random.seed(seed); sh = list(UNIV); random.shuffle(sh); order = {s: k for k, s in enumerate(sh)}
+        tk = portfolio_multi(sleeves, order, shared)
+        m = collections.defaultdict(float)
+        for t in tk: m[month_key(t[2])] += t[3]
+        months = sorted(m); allm = [m[k] for k in months]
+        yr = collections.defaultdict(float)
+        for k in months: yr[k[:4]] += m[k]
+        s = mx = 0
+        for v in allm: s = s + 1 if v <= 0 else 0; mx = max(mx, s)
+        cum = pk = mdd = 0
+        for t in sorted(tk, key=lambda x: x[2]): cum += t[3]; pk = max(pk, cum); mdd = min(mdd, cum - pk)
+        R.append(dict(tot=sum(allm), pos=sum(1 for v in allm if v > 0) / len(allm), mx=mx, ly=sum(1 for v in yr.values() if v <= 0),
+                      worst=min(allm), mdd=mdd, yr=yr, n=len(tk)))
+    a = lambda k: st.mean(r[k] for r in R)
+    yrs = sorted(R[0]['yr'])
+    print(f'{name:44} 7년 {a("tot"):9,.0f}$ | 적자연도 {a("ly"):.1f} · 연속적자월 {a("mx"):.1f} · 흑자월 {a("pos"):.0%} · 최악월 {a("worst"):7,.0f}$ · 낙폭 {a("mdd"):8,.0f}$ · 체결 {a("n"):.0f} | '
+          + ' '.join(f'{y}:{st.mean(r["yr"].get(y, 0) for r in R)/1000:+.1f}k' for y in yrs))
+    return R

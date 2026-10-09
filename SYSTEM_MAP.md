@@ -34,7 +34,8 @@
 
 ## 2. 진입 파이프라인
 
-> **[2026-10-06 v5.35.0] 현행 진입 = 돈치안 추세추종 단일.** 아래 2.1~2.3(MeanRev/LCC 시절)은 이력이다.
+> **[2026-10-09 v5.36.0] 현행 진입 = 돈치안 2슬리브(A 4h N100 · B 1d N55, 50% 부분익절 · 손절후 7일 재진입금지 · 1건=설정 절반).** 상세는 Services/DonchianTrend.cs 헤더. 아래 v5.35 설명 중 N55·5ATR·익절없음은 구버전.
+> **[2026-10-06 v5.35.0] 돈치안 추세추종 단일.** 아래 2.1~2.3(MeanRev/LCC 시절)은 이력이다.
 > - 규칙: `Services/DonchianTrend.cs` — 4h 종가가 직전 55봉 최고가 첫 돌파 → 롱 / 최저가 첫 이탈 → 숏. 초기손절 2×ATR(14,4h), 4h 종가 ∓ 5×ATR 트레일, 익절 없음. 고정 30종목.
 > - 엔진: `TradingEngine.Donchian.cs` `RunDonchianLoopAsync` — 4h 마감 후 15초에 보유분 트레일 갱신 → 신규 스캔(마감 후 30분 내). 추적풀/틱 흐름과 무관.
 > - 진입 경로: `IsEntryAllowed` → `PlaceAndTrackEntryAsync` 직행(ExecuteAutoOrderInner 미경유). 거래소엔 SL 하나만(`OrderLifecycleManager.RegisterStopOnlyAsync`).

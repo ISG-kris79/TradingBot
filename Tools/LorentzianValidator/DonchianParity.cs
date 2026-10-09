@@ -1,8 +1,8 @@
 // ===============================================================================
-//  --donchian-parity : [v5.35.0] 라이브 규칙 코드(Services/DonchianTrend.cs, 링크 컴파일)가
-//    백테스트(--lab 돈치안 4h N55 트레일5ATR 롱숏)와 같은 신호·같은 손절가를 내는지 건별 대조.
-//    라이브와 똑같이 창을 자른다: 진입 판단 = 4h 120봉 창 · 트레일 재계산 = 4h 500봉 창.
-//    선행 조건: --lab --lab-donchian --lab-pick "4h N55 트레일5ATR 롱숏" 로 후보 CSV 생성.
+//  --donchian-parity : [v5.36.0] 라이브 규칙 코드(Services/DonchianTrend.cs, 링크 컴파일)가
+//    백테스트(research.py · dump_parity.py 산출 parity_A.csv / parity_B.csv)와 같은 신호·같은 손절가를 내는지 슬리브별 건별 대조.
+//    라이브와 똑같이 창을 자른다: 진입 판단·트레일 재계산 = 해당 TF 500봉 창.
+//    대상 구간: 15m_71 캐시(2023-09~) — 신호는 과열추격 필터 포함, 쿨다운 제외(거래 결과 의존이라 양쪽 모두 미적용).
 // ===============================================================================
 using System;
 using System.Collections.Generic;
@@ -17,86 +17,91 @@ internal static class DonchianParity
 {
     public static void Run(string[] args)
     {
-        // [v5.35.2] 과열추격 필터 포함 라이브 규칙 대조 — 기본 후보 CSV 는 --lab --lab-month --lab-pick "과열추격 제외 4.5ATR" 산출물
-        string csvArg = "trades-chase45.csv";
-        for (int a = 0; a < args.Length - 1; a++) if (args[a] == "--parity-csv") csvArg = args[a + 1];
-        var csv = csvArg;
-        if (!File.Exists(csv)) { Console.WriteLine("후보 CSV 없음 — 먼저 --lab --lab-donchian --lab-pick \"4h N55 트레일5ATR 롱숏\" 실행"); return; }
-        var lab = File.ReadAllLines(csv).Skip(1).Select(l => l.Split(',')).Where(p => p.Length >= 9).Select(p => new
-        {
-            status = p[0], sym = p[1], isLong = p[2] == "L",
-            tIn = DateTime.SpecifyKind(DateTime.ParseExact(p[3], "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture), DateTimeKind.Utc),
-            tOut = DateTime.SpecifyKind(DateTime.ParseExact(p[4], "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture), DateTimeKind.Utc),
-            px0 = decimal.Parse(p[5], NumberStyles.Float, CultureInfo.InvariantCulture),
-            px1 = decimal.Parse(p[6], NumberStyles.Float, CultureInfo.InvariantCulture),
-            how = p[7]
-        }).ToList();
-        var labSig = new HashSet<string>(lab.Select(x => $"{x.sym}|{(x.isLong ? "L" : "S")}|{x.tIn:yyyy-MM-dd HH:mm}"));
+        Console.WriteLine("=== --donchian-parity : 라이브 규칙 코드 vs 백테스트(research.py) 슬리브별 건별 대조 ===\n");
+        bool allOk = true;
+        foreach (var sl in DonchianTrend.Sleeves) allOk &= RunSleeve(sl);
+        Console.WriteLine($"\n최종 판정: {(allOk ? "★라이브 규칙 = 백테스트 규칙 (A·B 신호·손절가 일치)" : "불일치 있음 — 위 목록 확인")}");
+    }
 
-        Console.WriteLine("=== --donchian-parity : 라이브 규칙 코드 vs 백테스트 건별 대조 ===\n");
+    static bool RunSleeve(DonchianTrend.Sleeve sl)
+    {
+        var csv = $"parity_{sl.Id}.csv";
+        if (!File.Exists(csv)) { Console.WriteLine($"[{sl.Id}] {csv} 없음 — python dump_parity.py 먼저 실행"); return false; }
+        var py = File.ReadAllLines(csv).Skip(1).Select(l => l.Split(',')).Select(p => new
+        {
+            sym = p[0], dir = int.Parse(p[1]), sigOpen = long.Parse(p[2]), entryMs = long.Parse(p[3]), exitMs = long.Parse(p[4]),
+            entry = decimal.Parse(p[5], NumberStyles.Float, CultureInfo.InvariantCulture), exitPx = decimal.Parse(p[6], NumberStyles.Float, CultureInfo.InvariantCulture)
+        }).ToList();
+        var pySig = new HashSet<string>(py.Select(x => $"{x.sym}|{x.dir}|{x.sigOpen}"));
+
         int liveN = 0, matched = 0; var liveOnly = new List<string>(); var liveAll = new HashSet<string>();
-        var k4BySym = new Dictionary<string, List<IBinanceKline>>();
+        var kBySym = new Dictionary<string, List<IBinanceKline>>();
         foreach (var sym in DonchianTrend.Universe)
         {
             var f = Path.Combine("cache", sym + "_15m_71.csv");
             if (!File.Exists(f)) continue;
-            var k4 = Aggregate4h(f); k4BySym[sym] = k4;
-            for (int i = 500; i < k4.Count; i++)
+            var k = Aggregate(f, sl.TfMinutes); kBySym[sym] = k;
+            for (int i = 500; i < k.Count; i++)
             {
-                // 라이브: GetKlinesAsync(4h,500) 에서 진행봉 제외 → 마지막 마감봉이 i
-                var win = k4.GetRange(i - 499, 500);
-                int d = DonchianTrend.Signal(win, win.Count - 1);
+                var win = k.GetRange(i - 499, 500);
+                int d = DonchianTrend.Signal(win, win.Count - 1, sl.Lookback);
                 if (d == 0) continue;
                 var wAtr = DonchianTrend.Atr(win); var wEma = DonchianTrend.Ema(win, DonchianTrend.EmaLen);
-                if (wAtr[win.Count - 1] <= 0 || DonchianTrend.IsChasing(win, win.Count - 1, wAtr, wEma, d, out _)) continue;
+                if (wAtr[^1] <= 0 || DonchianTrend.IsChasing(win, win.Count - 1, wAtr, wEma, d, out _)) continue;
                 liveN++;
-                string key = $"{sym}|{(d > 0 ? "L" : "S")}|{k4[i].CloseTime.AddMilliseconds(1):yyyy-MM-dd HH:mm}";
+                string key = $"{sym}|{d}|{new DateTimeOffset(k[i].OpenTime).ToUnixTimeMilliseconds()}";
                 liveAll.Add(key);
-                if (labSig.Contains(key)) matched++; else liveOnly.Add(key);
+                if (pySig.Contains(key)) matched++; else liveOnly.Add(key);
             }
         }
-        // 백테스트는 데이터 시작부터 신호를 내므로, 라이브 창(120봉)이 성립하는 구간만 비교
-        var labInRange = lab.Where(x => k4BySym.TryGetValue(x.sym, out var k) && k.Count > 500 && x.tIn > k[499].CloseTime.AddMilliseconds(1)).ToList();
-        var labOnlyList = labInRange.Select(x => $"{x.sym}|{(x.isLong ? "L" : "S")}|{x.tIn:yyyy-MM-dd HH:mm}").Where(k => !liveAll.Contains(k)).ToList();
-        int labOnly = labOnlyList.Count;
-        Console.WriteLine($"[신호] 백테스트 {labInRange.Count}건 · 라이브코드 {liveN}건 · 일치 {matched}건 · 라이브만 {liveOnly.Count}건 · 백테만 {Math.Max(0, labOnly)}건");
-        foreach (var s in liveOnly.Take(5)) Console.WriteLine($"   라이브만: {s}");
-        foreach (var s in labOnlyList.Take(5)) Console.WriteLine($"   백테만: {s}");
+        // 백테스트 덤프는 '청산된' 거래만 담는다 → 데이터 끝까지 안 끝난 신호는 라이브만으로 남는 게 정상.
+        var pyInRange = py.Where(x => kBySym.TryGetValue(x.sym, out var k) && k.Count > 500 && x.sigOpen >= new DateTimeOffset(k[500].OpenTime).ToUnixTimeMilliseconds()).ToList();
+        var pyOnly = pyInRange.Select(x => $"{x.sym}|{x.dir}|{x.sigOpen}").Where(key => !liveAll.Contains(key)).ToList();
+        int liveOnlyUnexplained = liveOnly.Count(key => !IsRecent(key, kBySym));
+        Console.WriteLine($"[{sl.Id}] 신호: 백테스트 {pyInRange.Count}건(청산분) · 라이브코드 {liveN}건 · 일치 {matched} · 백테만 {pyOnly.Count} · 라이브만 {liveOnly.Count} (그중 최근 120일 미청산 가능 {liveOnly.Count - liveOnlyUnexplained})");
+        foreach (var s in pyOnly.Take(3)) Console.WriteLine($"   백테만: {s}");
+        foreach (var s in liveOnly.Where(k2 => !IsRecent(k2, kBySym)).Take(3)) Console.WriteLine($"   라이브만: {s}");
 
-        // 손절가 대조 — 백테스트에서 손절(SL)로 끝난 체결 건: 청산 시점에 라이브가 재계산한 손절가 = 백테 청산가?
-        int nSl = 0, exact = 0, gap = 0, bad = 0; double worst = 0;
-        foreach (var t in lab.Where(x => x.status == "TAKEN" && x.how == "SL"))
+        // 손절가: 백테스트 청산가 vs 청산 시점 라이브 RecomputeStop (부분익절은 손절선 경로에 영향 없음)
+        int n = 0, exact = 0, gap = 0, bad = 0;
+        foreach (var t in pyInRange)
         {
-            if (!k4BySym.TryGetValue(t.sym, out var k4)) continue;
-            var exitBarOpen = t.tOut.AddMinutes(-15);
-            var closed = k4.Where(b => b.CloseTime <= exitBarOpen).ToList();
+            var k = kBySym[t.sym];
+            var exitBarOpen = DateTimeOffset.FromUnixTimeMilliseconds(t.exitMs - 900_000).UtcDateTime;
+            var closed = k.Where(b => b.CloseTime <= exitBarOpen).ToList();
             if (closed.Count > 500) closed = closed.GetRange(closed.Count - 500, 500);
             var atr = DonchianTrend.Atr(closed);
-            decimal stop = DonchianTrend.RecomputeStop(closed, atr, t.tIn, t.isLong, t.px0);
+            var entryUtc = DateTimeOffset.FromUnixTimeMilliseconds(t.entryMs).UtcDateTime;
+            decimal stop = DonchianTrend.RecomputeStop(closed, atr, entryUtc, t.dir > 0, t.entry, sl);
             if (stop <= 0) continue;
-            nSl++;
-            double rel = (double)Math.Abs(stop - t.px1) / (double)t.px1;
-            bool gapExit = t.isLong ? t.px1 < stop : t.px1 > stop;   // 봉 시가가 손절선 너머 → 시가 청산
-            if (rel < 0.002) exact++;
-            else if (gapExit) gap++;
-            else { bad++; worst = Math.Max(worst, rel); if (bad <= 5) Console.WriteLine($"   불일치: {t.sym} {(t.isLong ? "L" : "S")} {t.tIn:MM-dd HH:mm}→{t.tOut:MM-dd HH:mm} 라이브SL {stop} vs 백테청산 {t.px1} ({rel:P2})"); }
+            n++;
+            double rel = (double)Math.Abs(stop - t.exitPx) / (double)t.exitPx;
+            bool gapExit = t.dir > 0 ? t.exitPx < stop : t.exitPx > stop;
+            if (rel < 0.002) exact++; else if (gapExit) gap++; else { bad++; if (bad <= 3) Console.WriteLine($"   손절 불일치: {t.sym} {t.dir} 라이브 {stop} vs 백테 {t.exitPx} ({rel:P2})"); }
         }
-        Console.WriteLine($"[손절가] 손절 청산 {nSl}건 · 일치(0.2% 이내) {exact}건 · 갭 청산(시가가 손절선 너머) {gap}건 · 불일치 {bad}건{(bad > 0 ? $" (최대 {worst:P2})" : "")}");
-        Console.WriteLine($"\n판정: {(liveOnly.Count == 0 && labOnly <= 0 && bad == 0 ? "★라이브 규칙 = 백테스트 규칙 (신호·손절가 일치)" : "불일치 있음 — 위 목록 확인")}");
+        Console.WriteLine($"[{sl.Id}] 손절가: {n}건 · 일치(0.2%) {exact} · 갭 청산 {gap} · 불일치 {bad}");
+        return pyOnly.Count == 0 && liveOnlyUnexplained == 0 && bad == 0;
     }
 
-    static List<IBinanceKline> Aggregate4h(string file)
+    static bool IsRecent(string key, Dictionary<string, List<IBinanceKline>> kBySym)
     {
-        const long W = 4 * 3600_000L;
+        var p = key.Split('|'); var k = kBySym[p[0]]; long sig = long.Parse(p[2]);
+        long end = new DateTimeOffset(k[^1].CloseTime).ToUnixTimeMilliseconds();
+        return end - sig < 120L * 86_400_000;
+    }
+
+    static List<IBinanceKline> Aggregate(string file, int tfMin)
+    {
+        long W = tfMin * 60_000L; int need = tfMin / 15;
         var rows = File.ReadAllLines(file).Select(l => l.Split(',')).Where(p => p.Length >= 6).ToList();
         var res = new List<IBinanceKline>();
         int i = 0;
         while (i < rows.Count)
         {
-            long t0 = long.Parse(rows[i][0]); long bk = t0 / W; int j = i;
+            long bk = long.Parse(rows[i][0]) / W; int j = i;
             decimal o = D(rows[i][1]), h = D(rows[i][2]), l = D(rows[i][3]);
             while (j + 1 < rows.Count && long.Parse(rows[j + 1][0]) / W == bk) { j++; h = Math.Max(h, D(rows[j][2])); l = Math.Min(l, D(rows[j][3])); }
-            if (j - i + 1 == 16)
+            if (j - i + 1 == need)
                 res.Add(new SimpleKline
                 {
                     OpenTime = DateTimeOffset.FromUnixTimeMilliseconds(bk * W).UtcDateTime,

@@ -201,6 +201,29 @@ namespace TradingBot.Services
         }
 
         /// <summary>
+        /// [v5.36.0] 돈치안 2슬리브 — 기존 조건부 주문 전부 취소 후 SL(보유 전량) + 50% 익절 TP(아직 미체결일 때만) 등록.
+        ///   반환: (SL 주문ID, TP 주문ID). TP 가 즉시 발동가(현재가 너머)면 거래소가 거부하므로 호출 측이 사전 처리한다.
+        /// </summary>
+        public async Task<(string SlId, string TpId)> RegisterStopAndTpAsync(string symbol, bool isLong, decimal quantity, decimal stopPrice,
+            decimal tpQuantity, decimal tpPrice, CancellationToken ct = default)
+        {
+            string slId = await RegisterStopOnlyAsync(symbol, isLong, quantity, stopPrice, ct);
+            string tpId = "";
+            if (tpQuantity > 0 && tpPrice > 0)
+            {
+                string closeSide = isLong ? "SELL" : "BUY";
+                try
+                {
+                    var (ok, orderId) = await _exchange.PlaceTakeProfitOrderAsync(symbol, closeSide, tpQuantity, tpPrice, ct);
+                    if (ok) { tpId = orderId; OnLog?.Invoke($"✅ [DONCHIAN TP50] {symbol} 등록 | {closeSide} qty={tpQuantity} @ ${tpPrice:F6}"); }
+                    else OnLog?.Invoke($"❌ [DONCHIAN TP50] {symbol} 등록 실패 @ ${tpPrice:F6}");
+                }
+                catch (Exception ex) { OnLog?.Invoke($"❌ [DONCHIAN TP50] {symbol} 예외: {ex.Message}"); }
+            }
+            return (slId, tpId);
+        }
+
+        /// <summary>
         /// 본절 전환 — 기존 SL 취소 후 새 SL(본절가) 등록.
         /// PumpMonitor 본절 로직 및 MonitorPositionStandard Smart Protective Stop에서 호출.
         /// </summary>
